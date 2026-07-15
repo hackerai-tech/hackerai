@@ -289,6 +289,13 @@ export type AgentToolApprovalRequester = (
   request: AgentToolApprovalRequest,
 ) => Promise<AgentToolApprovalResult>;
 
+export type AgentActiveTimeCategory = "terminal_wait" | "sandbox_recovery";
+
+export type AgentActiveTimeMeasurer = <T>(
+  category: AgentActiveTimeCategory,
+  operation: () => Promise<T>,
+) => Promise<T>;
+
 export const AGENT_TOOL_APPROVAL_PROTOCOL_VERSION = 2 as const;
 
 export type AgentToolApprovalAuthorization = {
@@ -351,4 +358,6 @@ export interface ToolContext {
   onToolFailure?: ToolFailureLogger;
   /** Optional approval gate for mutating or command-executing agent tools. */
   requestToolApproval?: AgentToolApprovalRequester;
+  /** Aggregates active wall time for cost attribution in Trigger-hosted Agent runs. */
+  measureAgentActiveTime?: AgentActiveTimeMeasurer;
 }

@@ -91,6 +91,16 @@ export const createRunTerminalCmd = (context: ToolContext) => {
     ptySessionManager,
     chatId,
   } = context;
+  const measureTerminalWait = <T>(operation: () => Promise<T>): Promise<T> =>
+    context.measureAgentActiveTime
+      ? context.measureAgentActiveTime("terminal_wait", operation)
+      : operation();
+  const measureSandboxRecovery = <T>(
+    operation: () => Promise<T>,
+  ): Promise<T> =>
+    context.measureAgentActiveTime
+      ? context.measureAgentActiveTime("sandbox_recovery", operation)
+      : operation();
   const runTerminalCmdTool = createRunTerminalCmdToolSchema({
     approvalGated: !!context.requestToolApproval,
     // The conditional schema adds approval-only fields, but both branches
@@ -268,13 +278,15 @@ export const createRunTerminalCmd = (context: ToolContext) => {
           // Stream output chunks as they arrive. Resolve early on a brief
           // quiet window so launching a REPL/shell returns when its prompt
           // finishes drawing rather than blocking the full timeout ceiling.
-          const delta = await waitForOutput(
-            session,
-            effectiveStreamTimeout * 1000,
-            abortSignal,
-            emitTerminal,
-            (s) => ptySessionManager.consumeDelta(s),
-            { quietMs: INTERACTIVE_QUIET_WINDOW_MS },
+          const delta = await measureTerminalWait(() =>
+            waitForOutput(
+              session,
+              effectiveStreamTimeout * 1000,
+              abortSignal,
+              emitTerminal,
+              (s) => ptySessionManager.consumeDelta(s),
+              { quietMs: INTERACTIVE_QUIET_WINDOW_MS },
+            ),
           );
           await drainEmitQueue();
           const snapshots = await getSessionSnapshots(
@@ -355,46 +367,51 @@ export const createRunTerminalCmd = (context: ToolContext) => {
               };
             }
 
-            // Sandbox health check failed - log diagnostics and wait briefly before recreating
-            const diagnostics = await getSandboxDiagnostics(sandbox).catch(
-              () => "diagnostics unavailable",
-            );
-            console.warn(
-              `[Terminal Command] Sandbox health check failed (${diagnostics}), waiting before recreating sandbox`,
-            );
-            await new Promise((resolve) => setTimeout(resolve, 2000));
+            const recovery = await measureSandboxRecovery(async () => {
+              // Sandbox health check failed - log diagnostics and wait briefly before recreating
+              const diagnostics = await getSandboxDiagnostics(sandbox).catch(
+                () => "diagnostics unavailable",
+              );
+              console.warn(
+                `[Terminal Command] Sandbox health check failed (${diagnostics}), waiting before recreating sandbox`,
+              );
+              await new Promise((resolve) => setTimeout(resolve, 2000));
 
-            // Reset cached instance to force ensureSandboxConnection to create a fresh one
-            sandboxManager.setSandbox(null as any);
-            const { sandbox: freshSandbox } = await getSandboxWithFallbackGuard(
-              {
-                sandboxManager,
-              },
-            );
+              // Reset cached instance to force ensureSandboxConnection to create a fresh one
+              sandboxManager.setSandbox(null as any);
+              const { sandbox: freshSandbox } =
+                await getSandboxWithFallbackGuard({ sandboxManager });
 
-            // Verify the fresh sandbox is ready
-            try {
-              await waitForSandboxReady(freshSandbox, 5, abortSignal);
-              sandboxManager.resetHealthFailures();
-            } catch (freshHealthError) {
-              if (
-                freshHealthError instanceof DOMException &&
-                freshHealthError.name === "AbortError"
-              ) {
-                throw freshHealthError;
+              // Verify the fresh sandbox is ready
+              try {
+                await waitForSandboxReady(freshSandbox, 5, abortSignal);
+                sandboxManager.resetHealthFailures();
+              } catch (freshHealthError) {
+                if (
+                  freshHealthError instanceof DOMException &&
+                  freshHealthError.name === "AbortError"
+                ) {
+                  throw freshHealthError;
+                }
+                sandboxManager.recordHealthFailure();
+                return {
+                  ok: false as const,
+                  response: {
+                    result: {
+                      output: "",
+                      exitCode: 1,
+                      error:
+                        "Sandbox recreation failed. The sandbox environment is not responding. Another attempt may be made but the sandbox will be marked unavailable after repeated failures.",
+                    },
+                  },
+                };
               }
-              sandboxManager.recordHealthFailure();
-              return {
-                result: {
-                  output: "",
-                  exitCode: 1,
-                  error:
-                    "Sandbox recreation failed. The sandbox environment is not responding. Another attempt may be made but the sandbox will be marked unavailable after repeated failures.",
-                },
-              };
-            }
 
-            return executeCommand(freshSandbox);
+              return { ok: true as const, sandbox: freshSandbox };
+            });
+
+            if (!recovery.ok) return recovery.response;
+            return executeCommand(recovery.sandbox);
           }
         }
 
@@ -838,14 +855,16 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                 execution = started;
                 processId = started.pid;
                 commandHandle?.setPid(started.pid);
-                const result = await started.wait();
+                const result = await measureTerminalWait(() => started.wait());
                 return { ...result, pid: started.pid };
               }
 
-              return retryWithBackoff(
-                () =>
-                  sandboxInstance.commands.run(effectiveCommand, runOptions),
-                retryOptions,
+              return measureTerminalWait(() =>
+                retryWithBackoff(
+                  () =>
+                    sandboxInstance.commands.run(effectiveCommand, runOptions),
+                  retryOptions,
+                ),
               );
             });
 

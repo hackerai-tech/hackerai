@@ -1166,6 +1166,14 @@ type AgentCompletionAnalyticsArgs = {
   finishReason?: string;
   budgetAbortDetails?: BudgetAbortDetails;
   agentPermissionMode?: AgentPermissionMode;
+  triggerRunId?: string;
+  triggerUsageDurationMs?: number;
+  triggerTotalCostUsd?: number;
+  approvalWaitCount?: number;
+  approvalWaitDurationMs?: number;
+  activeModelStreamDurationMs?: number;
+  activeTerminalWaitDurationMs?: number;
+  activeSandboxRecoveryDurationMs?: number;
 };
 
 export function captureAgentRun({
@@ -1182,6 +1190,14 @@ export function captureAgentRun({
   finishReason,
   budgetAbortDetails,
   agentPermissionMode,
+  triggerRunId,
+  triggerUsageDurationMs,
+  triggerTotalCostUsd,
+  approvalWaitCount,
+  approvalWaitDurationMs,
+  activeModelStreamDurationMs,
+  activeTerminalWaitDurationMs,
+  activeSandboxRecoveryDurationMs,
 }: {
   posthog: PostHog | null;
   userId: string;
@@ -1196,6 +1212,14 @@ export function captureAgentRun({
   finishReason?: string;
   budgetAbortDetails?: BudgetAbortDetails;
   agentPermissionMode?: AgentPermissionMode;
+  triggerRunId?: string;
+  triggerUsageDurationMs?: number;
+  triggerTotalCostUsd?: number;
+  approvalWaitCount?: number;
+  approvalWaitDurationMs?: number;
+  activeModelStreamDurationMs?: number;
+  activeTerminalWaitDurationMs?: number;
+  activeSandboxRecoveryDurationMs?: number;
 }) {
   if (!posthog || mode !== "agent") return;
   posthog.capture({
@@ -1210,6 +1234,28 @@ export function captureAgentRun({
       configured_model: configuredModelId,
       ...(agentPermissionMode && {
         agent_permission_mode: agentPermissionMode,
+      }),
+      ...(triggerRunId && { trigger_run_id: triggerRunId }),
+      ...(triggerUsageDurationMs !== undefined && {
+        trigger_usage_duration_ms: triggerUsageDurationMs,
+      }),
+      ...(triggerTotalCostUsd !== undefined && {
+        trigger_total_cost_usd: triggerTotalCostUsd,
+      }),
+      ...(approvalWaitCount !== undefined && {
+        approval_wait_count: approvalWaitCount,
+      }),
+      ...(approvalWaitDurationMs !== undefined && {
+        approval_wait_duration_ms: approvalWaitDurationMs,
+      }),
+      ...(activeModelStreamDurationMs !== undefined && {
+        active_model_stream_duration_ms: activeModelStreamDurationMs,
+      }),
+      ...(activeTerminalWaitDurationMs !== undefined && {
+        active_terminal_wait_duration_ms: activeTerminalWaitDurationMs,
+      }),
+      ...(activeSandboxRecoveryDurationMs !== undefined && {
+        active_sandbox_recovery_duration_ms: activeSandboxRecoveryDurationMs,
       }),
       ...(responseModel && { response_model: responseModel }),
       ...(responseModel &&
@@ -1245,6 +1291,14 @@ export function captureAgentCompletionAnalytics(
     finishReason: args.finishReason,
     budgetAbortDetails: args.budgetAbortDetails,
     agentPermissionMode: args.agentPermissionMode,
+    triggerRunId: args.triggerRunId,
+    triggerUsageDurationMs: args.triggerUsageDurationMs,
+    triggerTotalCostUsd: args.triggerTotalCostUsd,
+    approvalWaitCount: args.approvalWaitCount,
+    approvalWaitDurationMs: args.approvalWaitDurationMs,
+    activeModelStreamDurationMs: args.activeModelStreamDurationMs,
+    activeTerminalWaitDurationMs: args.activeTerminalWaitDurationMs,
+    activeSandboxRecoveryDurationMs: args.activeSandboxRecoveryDurationMs,
   });
 }
 

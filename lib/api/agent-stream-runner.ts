@@ -466,6 +466,8 @@ export type AgentStreamContext = {
   chatLogger: ChatLogger | undefined;
   usageRefundTracker: UsageRefundTracker;
   onBudgetAbort?: (details: BudgetAbortDetails & { model: string }) => void;
+  onModelStreamStart?: () => void;
+  onModelStreamFinish?: () => void;
   settleUsageAfterStep?: (args: {
     currentCostDollars: number;
     force: boolean;
@@ -753,6 +755,8 @@ export async function createAgentStream(
     activeTools: initialActiveTools,
     abortSignal,
     providerOptions: initialProviderOptions,
+    experimental_onStepStart: () => ctx.onModelStreamStart?.(),
+    experimental_onToolCallStart: () => ctx.onModelStreamFinish?.(),
 
     prepareStep: async ({ steps, messages }) => {
       const rawModelMessages = messages as ModelMessage[];
@@ -1173,6 +1177,7 @@ export async function createAgentStream(
     },
 
     onStepFinish: async ({ usage, response, providerMetadata }) => {
+      ctx.onModelStreamFinish?.();
       let stepUsageCostIndex: number | undefined;
       if (usage) {
         stepUsageCostIndex = ctx.usageTracker.accumulateStep(
@@ -1223,6 +1228,7 @@ export async function createAgentStream(
     },
 
     onFinish: async (finishResult) => {
+      ctx.onModelStreamFinish?.();
       const { finishReason, usage, response } = finishResult;
       const hardReason = ctx.getHardTimeoutReason();
       if (
