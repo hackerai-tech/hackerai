@@ -63,4 +63,15 @@ describe("ChatItem project actions", () => {
       ).toBeInTheDocument();
     });
   });
+
+  it("uses compact side padding for project chat rows", () => {
+    render(<ChatItem id="chat-1" title="Target notes" indentContent />);
+
+    expect(screen.getByTestId("chat-item-chat-1")).toHaveClass(
+      "py-2",
+      "ps-6",
+      "pe-0.5",
+    );
+    expect(screen.getByTestId("chat-item-chat-1")).not.toHaveClass("p-2");
+  });
 });

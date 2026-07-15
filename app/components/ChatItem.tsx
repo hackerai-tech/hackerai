@@ -139,6 +139,8 @@ const ChatItem: React.FC<ChatItemProps> = ({
       : showActions || showStreamingIndicator
         ? "pr-7"
         : "";
+  const rowPaddingClass = indentContent ? "py-2 ps-6 pe-0.5" : "p-2";
+  const actionsRightClass = indentContent ? "right-0.5" : "right-2";
 
   useEffect(() => {
     if (optimisticChatId && optimisticChatId === routeChatId) {
@@ -379,7 +381,7 @@ const ChatItem: React.FC<ChatItemProps> = ({
 
   return (
     <div
-      className={`group relative flex w-full cursor-grab select-none items-center rounded-lg p-2 hover:bg-sidebar-accent/50 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 active:cursor-grabbing ${
+      className={`group relative flex w-full cursor-grab select-none items-center rounded-lg ${rowPaddingClass} hover:bg-sidebar-accent/50 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 active:cursor-grabbing ${
         isCurrentlyActive
           ? "bg-sidebar-accent text-sidebar-accent-foreground"
           : ""
@@ -406,7 +408,7 @@ const ChatItem: React.FC<ChatItemProps> = ({
       data-testid={`chat-item-${id}`}
     >
       <div
-        className={`mr-2 min-w-0 flex-1 overflow-hidden text-sm font-medium ${rightPaddingClass} ${indentContent ? "ps-5" : ""}`}
+        className={`mr-2 min-w-0 flex-1 overflow-hidden text-sm font-medium ${rightPaddingClass}`}
         dir="auto"
       >
         <span className="flex min-w-0 items-center gap-1.5">
@@ -441,7 +443,7 @@ const ChatItem: React.FC<ChatItemProps> = ({
       </div>
 
       <div
-        className={`absolute right-2 flex items-center gap-1 transition-opacity ${
+        className={`absolute ${actionsRightClass} flex items-center gap-1 transition-opacity ${
           showActions || showStreamingIndicator
             ? "opacity-100"
             : "pointer-events-none opacity-0"
