@@ -31,6 +31,7 @@ import type {
   SandboxBootInfo,
   ToolFailureLogger,
   AgentToolApprovalRequester,
+  AgentActiveTimeMeasurer,
 } from "@/types";
 import { isAgentMode } from "@/lib/utils/mode-helpers";
 import type { Geo } from "@vercel/functions";
@@ -62,6 +63,7 @@ export const createTools = (
   modelName?: string,
   onToolFailure?: ToolFailureLogger,
   requestToolApproval?: AgentToolApprovalRequester,
+  measureAgentActiveTime?: AgentActiveTimeMeasurer,
 ) => {
   let sandbox: AnySandbox | null = null;
   let sandboxFirstUsedAt: number | null = null;
@@ -129,6 +131,7 @@ export const createTools = (
     onToolCost,
     onToolFailure,
     requestToolApproval,
+    measureAgentActiveTime,
   };
 
   const buildTools = (): ToolSet => {

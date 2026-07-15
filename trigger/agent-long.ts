@@ -3,6 +3,7 @@ import {
   tags,
   metadata,
   logger as triggerLogger,
+  usage as triggerUsage,
 } from "@trigger.dev/sdk";
 import * as triggerSdk from "@trigger.dev/sdk";
 import { agentUiStream } from "./streams";
@@ -207,6 +208,7 @@ import {
 } from "@/lib/chat/multimodal-tool-result-recovery";
 import { FREE_AGENT_LONG_RUN_LOCK_TTL_SECONDS } from "@/lib/rate-limit/free-config";
 import { isCentrifugoSandbox } from "@/lib/ai/tools/utils/sandbox-types";
+import { AgentRunTimingTracker } from "@/lib/chat/agent-run-timing";
 
 const AGENT_LONG_FREE_MAX_DURATION_SECONDS = 60 * 60;
 const AGENT_LONG_PAID_MAX_DURATION_SECONDS = 2 * 60 * 60;
@@ -402,6 +404,7 @@ const buildAgentToolApprovalRequester = ({
   beforeSuspend,
   revalidateAfterSuspend,
   onPostWaitAuthorizationDenied,
+  onApprovalWait,
 }: {
   agentPermissionMode: AgentPermissionMode;
   approvalSessionId?: string;
@@ -422,6 +425,7 @@ const buildAgentToolApprovalRequester = ({
     input: AgentToolApprovalInputRecord,
   ) => Promise<void>;
   onPostWaitAuthorizationDenied: () => void;
+  onApprovalWait?: (durationMs: number, incrementCount: boolean) => void;
 }): AgentToolApprovalRequester | undefined => {
   if (agentPermissionMode !== "ask_approval") return undefined;
   let approvalQueue: Promise<void> = Promise.resolve();
@@ -581,13 +585,20 @@ const buildAgentToolApprovalRequester = ({
           };
         }
       }
+      let approvalWaitCounted = false;
       while (!signal.aborted) {
+        const approvalWaitStartedAt = Date.now();
         activeRuntimeBudget.pause();
         let waitOutcome: TriggerSessionInputWaitOutcome;
         try {
           waitOutcome = await waitForApprovalInput(session, signal);
         } finally {
           activeRuntimeBudget.resume();
+          onApprovalWait?.(
+            Date.now() - approvalWaitStartedAt,
+            !approvalWaitCounted,
+          );
+          approvalWaitCounted = true;
         }
         if (waitOutcome.status === "aborted") break;
 
@@ -1622,6 +1633,16 @@ export const agentLongTask = task({
     // the soft stop past the plan-specific runtime cap.
     const taskStartTime = Date.now();
     const agentLongMaxDurationMs = getAgentLongMaxDurationMs(subscription);
+    const runTimingTracker = new AgentRunTimingTracker();
+    const getTriggerRunTelemetry = () => {
+      const currentUsage = triggerUsage.getCurrent();
+      return {
+        triggerRunId: ctx.run.id,
+        triggerUsageDurationMs: currentUsage.compute.total.durationMs,
+        triggerTotalCostUsd: currentUsage.totalCostInCents / 100,
+        ...runTimingTracker.snapshot(),
+      };
+    };
 
     // Tag for dashboard filtering; add subscription tier for paid-only queries.
     await tags.add([`user_${userId}`, `chat_${chatId}`]);
@@ -2126,6 +2147,7 @@ export const agentLongTask = task({
                 subscription === "free" ? releaseFreeRunLockOnce : undefined,
               revalidateAfterSuspend: revalidateAfterApprovalSuspend,
               onPostWaitAuthorizationDenied: () => userStopSignal.abort(),
+              onApprovalWait: runTimingTracker.recordApprovalWait,
             });
             const {
               tools,
@@ -2161,6 +2183,7 @@ export const agentLongTask = task({
               selectedModel,
               onToolFailure,
               requestToolApproval,
+              runTimingTracker.measureActiveTime,
             );
             approvalSandboxManager = sandboxManager;
 
@@ -2732,6 +2755,8 @@ export const agentLongTask = task({
               ensureSandbox,
               chatLogger,
               usageRefundTracker,
+              onModelStreamStart: runTimingTracker.startModelStream,
+              onModelStreamFinish: runTimingTracker.finishModelStream,
               settleUsageAfterStep,
               onBudgetAbort: (details) =>
                 captureAgentBudgetAbort({
@@ -3067,6 +3092,7 @@ export const agentLongTask = task({
                                     budgetAbortDetails:
                                       state.budgetAbortDetails,
                                     agentPermissionMode,
+                                    ...getTriggerRunTelemetry(),
                                   });
                                   if (!isTerminalProviderStreamError(state)) {
                                     chatLogger?.emitSuccess({
@@ -3205,6 +3231,7 @@ export const agentLongTask = task({
                         finishReason: state.streamFinishReason,
                         budgetAbortDetails: state.budgetAbortDetails,
                         agentPermissionMode,
+                        ...getTriggerRunTelemetry(),
                       });
                       if (!isTerminalProviderStreamError(state)) {
                         chatLogger?.emitSuccess({

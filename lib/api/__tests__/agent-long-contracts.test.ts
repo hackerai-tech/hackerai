@@ -635,10 +635,34 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
 
   test("runs are triggered with filterable queued metadata and tags", () => {
     expect(routeSrc).toMatch(/tags:\s*triggerTags/);
+    expect(routeSrc).toMatch(
+      /triggerTags\.push\(`permission_\$\{agentPermissionMode\}`\)/,
+    );
     expect(routeSrc).toMatch(/const triggerMetadata\s*=\s*{/);
     expect(routeSrc).toMatch(/metadata:\s*triggerMetadata/);
     expect(routeSrc).toMatch(/status:\s*"queued"/);
     expect(routeSrc).toMatch(/loginRequired:\s*false/);
+  });
+
+  test("captures Trigger usage and active-time attribution on Agent completion", () => {
+    expect(taskSrc).toMatch(/triggerUsage\.getCurrent\(\)/);
+    expect(taskSrc).toMatch(
+      /triggerUsageDurationMs:\s*currentUsage\.compute\.total\.durationMs/,
+    );
+    expect(taskSrc).toMatch(
+      /triggerTotalCostUsd:\s*currentUsage\.totalCostInCents\s*\/\s*100/,
+    );
+    expect(taskSrc).toMatch(
+      /onApprovalWait:\s*runTimingTracker\.recordApprovalWait/,
+    );
+    expect(taskSrc).toMatch(
+      /onModelStreamStart:\s*runTimingTracker\.startModelStream/,
+    );
+    expect(taskSrc).toMatch(
+      /onModelStreamFinish:\s*runTimingTracker\.finishModelStream/,
+    );
+    expect(agentStreamRunnerSrc).toMatch(/experimental_onStepStart/);
+    expect(agentStreamRunnerSrc).toMatch(/experimental_onToolCallStart/);
   });
 
   test("validates agent trigger request bodies before auth and Trigger work", () => {
@@ -859,7 +883,9 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
       /await\s+recordAgentLongHandledToolFailureForDashboard/,
     );
     expect(taskSrc).toMatch(/handled tool failure dashboard update failed/);
-    expect(taskSrc).toMatch(/onToolFailure,\s*requestToolApproval,\s*\)/);
+    expect(taskSrc).toMatch(
+      /onToolFailure,\s*requestToolApproval,\s*runTimingTracker\.measureActiveTime,\s*\)/,
+    );
   });
 
   test("direct runs use small subscription-aware Trigger.dev priority offsets", () => {

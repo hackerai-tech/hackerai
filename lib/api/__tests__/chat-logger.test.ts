@@ -87,6 +87,14 @@ describe("captureAgentRun", () => {
       agentPermissionMode: "ask_approval",
       responseModel: "deepseek/deepseek-v4-pro",
       fallbackServed: false,
+      triggerRunId: "run_123",
+      triggerUsageDurationMs: 42_000,
+      triggerTotalCostUsd: 0.00714,
+      approvalWaitCount: 1,
+      approvalWaitDurationMs: 90_000,
+      activeModelStreamDurationMs: 30_000,
+      activeTerminalWaitDurationMs: 10_000,
+      activeSandboxRecoveryDurationMs: 2_000,
     });
 
     expect(capture).toHaveBeenCalledWith({
@@ -100,11 +108,55 @@ describe("captureAgentRun", () => {
         selected_model: "agent-model",
         configured_model: "deepseek/deepseek-v4-pro",
         agent_permission_mode: "ask_approval",
+        trigger_run_id: "run_123",
+        trigger_usage_duration_ms: 42_000,
+        trigger_total_cost_usd: 0.00714,
+        approval_wait_count: 1,
+        approval_wait_duration_ms: 90_000,
+        active_model_stream_duration_ms: 30_000,
+        active_terminal_wait_duration_ms: 10_000,
+        active_sandbox_recovery_duration_ms: 2_000,
         response_model: "deepseek/deepseek-v4-pro",
         fallback_served: false,
         sandbox_type: "remote-connection",
       },
     });
+  });
+
+  it("preserves zero-valued Trigger timing fields", () => {
+    const capture = jest.fn();
+
+    captureAgentRun({
+      posthog: { capture } as any,
+      userId: "user_123",
+      mode: "agent",
+      subscription: "pro",
+      sandboxInfo: null,
+      outcome: "success",
+      selectedModel: "agent-model",
+      configuredModelId: "minimax/minimax-m3",
+      triggerRunId: "run_zero",
+      triggerUsageDurationMs: 0,
+      triggerTotalCostUsd: 0,
+      approvalWaitCount: 0,
+      approvalWaitDurationMs: 0,
+      activeModelStreamDurationMs: 0,
+      activeTerminalWaitDurationMs: 0,
+      activeSandboxRecoveryDurationMs: 0,
+    });
+
+    expect(capture.mock.calls[0][0].properties).toEqual(
+      expect.objectContaining({
+        trigger_run_id: "run_zero",
+        trigger_usage_duration_ms: 0,
+        trigger_total_cost_usd: 0,
+        approval_wait_count: 0,
+        approval_wait_duration_ms: 0,
+        active_model_stream_duration_ms: 0,
+        active_terminal_wait_duration_ms: 0,
+        active_sandbox_recovery_duration_ms: 0,
+      }),
+    );
   });
 
   it("attributes a served fallback without inferring it from model names", () => {
@@ -295,6 +347,14 @@ describe("captureAgentCompletionAnalytics", () => {
       configuredModelId: "deepseek/deepseek-v4-pro",
       responseModel: "deepseek/deepseek-v4-pro",
       fallbackServed: false,
+      triggerRunId: "run_completion",
+      triggerUsageDurationMs: 12_345,
+      triggerTotalCostUsd: 0.0021,
+      approvalWaitCount: 0,
+      approvalWaitDurationMs: 0,
+      activeModelStreamDurationMs: 8_000,
+      activeTerminalWaitDurationMs: 4_000,
+      activeSandboxRecoveryDurationMs: 0,
     });
 
     expect(capture).toHaveBeenCalledTimes(1);
@@ -308,6 +368,14 @@ describe("captureAgentCompletionAnalytics", () => {
         outcome: "success",
         selected_model: "agent-model",
         configured_model: "deepseek/deepseek-v4-pro",
+        trigger_run_id: "run_completion",
+        trigger_usage_duration_ms: 12_345,
+        trigger_total_cost_usd: 0.0021,
+        approval_wait_count: 0,
+        approval_wait_duration_ms: 0,
+        active_model_stream_duration_ms: 8_000,
+        active_terminal_wait_duration_ms: 4_000,
+        active_sandbox_recovery_duration_ms: 0,
         response_model: "deepseek/deepseek-v4-pro",
         fallback_served: false,
         sandbox_type: "e2b",

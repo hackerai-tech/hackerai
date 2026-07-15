@@ -505,6 +505,7 @@ export const createAgentTriggerPost =
 
       const triggerTags = [`user_${userId}`, `chat_${chatId}`];
       if (subscription !== "free") triggerTags.push(`sub_${subscription}`);
+      triggerTags.push(`permission_${agentPermissionMode}`);
 
       // Persisted chats are rehydrated from Convex inside the task after the
       // route saves the latest user message. Avoid sending the same history
