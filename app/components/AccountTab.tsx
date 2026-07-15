@@ -147,16 +147,18 @@ const AccountTab = () => {
     setShowCancelDialog(true);
   };
 
-  const handleCancellationScheduled = ({
+  const handleCancellationCompleted = ({
+    cancelAtPeriodEnd,
     currentPeriodEnd,
   }: {
+    cancelAtPeriodEnd: boolean;
     currentPeriodEnd?: number;
   }) => {
     setCancellationStatus({
       subscription,
-      hasActiveSubscription: true,
-      cancelAtPeriodEnd: true,
-      currentPeriodEnd,
+      hasActiveSubscription: cancelAtPeriodEnd,
+      cancelAtPeriodEnd,
+      currentPeriodEnd: cancelAtPeriodEnd ? currentPeriodEnd : undefined,
     });
   };
 
@@ -414,7 +416,7 @@ const AccountTab = () => {
       <CancelSubscriptionDialog
         open={showCancelDialog}
         onOpenChange={setShowCancelDialog}
-        onCancellationScheduled={handleCancellationScheduled}
+        onCancellationCompleted={handleCancellationCompleted}
       />
     </div>
   );

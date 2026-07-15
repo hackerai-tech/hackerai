@@ -7,6 +7,10 @@ import {
   afterEach,
 } from "@jest/globals";
 import { HACKERAI_PRO_20_MONTHLY_PRICE_ID } from "@/lib/billing/included-usage";
+import {
+  PAID_FUNNEL_EVENTS,
+  cancellationCompletionInsertId,
+} from "@/lib/analytics/paid-funnel";
 
 const mockConstructEvent = jest.fn();
 const mockRetrieveCustomer = jest.fn();
@@ -650,6 +654,13 @@ describe("POST /api/subscription/webhook", () => {
     mockListMemberships.mockResolvedValue({
       autoPagination: jest.fn().mockResolvedValue([{ userId: "user_paid" }]),
     } as never);
+    mockConvexMutation.mockImplementation((mutation) =>
+      Promise.resolve(
+        mutation === "cancellationReasons.markCancellationCompleted"
+          ? { matchedCount: 1, updatedCount: 1 }
+          : { alreadyProcessed: false },
+      ),
+    );
 
     const { POST } = await import("../route");
 
@@ -685,6 +696,12 @@ describe("POST /api/subscription/webhook", () => {
         tier: "pro-plus",
         org_id: "org_hackerai",
         $set: { subscription_tier: "free" },
+      }),
+    );
+    expect(mockPostHogEvent).toHaveBeenCalledWith(
+      PAID_FUNNEL_EVENTS.cancellationCompleted,
+      expect.objectContaining({
+        $insert_id: cancellationCompletionInsertId("sub_hackerai_deleted"),
       }),
     );
     expect(console.warn).toHaveBeenCalledWith(

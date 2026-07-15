@@ -1,5 +1,6 @@
 "use server";
 
+import type Stripe from "stripe";
 import { stripe } from "../../app/api/stripe";
 import { api } from "@/convex/_generated/api";
 import {
@@ -16,6 +17,7 @@ import { getConvexClient } from "@/lib/db/convex-client";
 import { phLogger } from "@/lib/posthog/server";
 import {
   PAID_FUNNEL_EVENTS,
+  cancellationCompletionInsertId,
   paidFunnelProperties,
   planLookupKeyToTier,
 } from "@/lib/analytics/paid-funnel";
@@ -37,6 +39,7 @@ type ParsedCancellationReasonInput = {
 
 type SubscriptionContext = {
   id: string;
+  status: Stripe.Subscription.Status;
   priceId?: string;
   plan?: string;
   tier?: SubscriptionTier;
@@ -115,12 +118,17 @@ async function getActiveSubscriptionContext(
   const price = currentSubscription.items.data[0]?.price;
   return {
     id: currentSubscription.id,
+    status: currentSubscription.status,
     priceId: price?.id,
     plan: price?.lookup_key ?? undefined,
     tier: subscriptionTierFromLookupKey(price?.lookup_key),
     currentPeriodEnd: currentPeriodEndMs(currentSubscription),
     cancelAtPeriodEnd: currentSubscription.cancel_at_period_end === true,
   };
+}
+
+function shouldCancelImmediately(status: Stripe.Subscription.Status) {
+  return status === "past_due" || status === "unpaid";
 }
 
 function stripeCancellationFeedback(
@@ -178,7 +186,9 @@ export default async function cancelSubscriptionAction(
     throw error;
   }
 
-  if (subscriptionContext.cancelAtPeriodEnd) {
+  const cancelImmediately = shouldCancelImmediately(subscriptionContext.status);
+
+  if (subscriptionContext.cancelAtPeriodEnd && !cancelImmediately) {
     return {
       canceled: true,
       cancelAtPeriodEnd: true,
@@ -193,6 +203,8 @@ export default async function cancelSubscriptionAction(
     ? Math.max(0, Math.floor((now - accountCreatedAt) / 86_400_000))
     : undefined;
   const serviceKey = process.env.CONVEX_SERVICE_ROLE_KEY;
+  let cancellationStartRecorded = false;
+  let shouldEmitCancellationCompleted = true;
 
   if (serviceKey) {
     try {
@@ -215,6 +227,7 @@ export default async function cancelSubscriptionAction(
           source: "in_app",
         },
       );
+      cancellationStartRecorded = true;
     } catch (error) {
       phLogger.error("Failed to record cancellation reason", {
         userId: user.id,
@@ -234,26 +247,29 @@ export default async function cancelSubscriptionAction(
     });
   }
 
-  let updatedSubscription: Awaited<
-    ReturnType<typeof stripe.subscriptions.update>
-  >;
+  let updatedSubscription: Stripe.Subscription;
   try {
-    updatedSubscription = await stripe.subscriptions.update(
-      subscriptionContext.id,
-      {
-        cancel_at_period_end: true,
-        cancellation_details: {
-          feedback: stripeCancellationFeedback(
-            cancellationReason.reasonCategory,
-          ),
-        },
-      },
-    );
+    const cancellationDetails = {
+      feedback: stripeCancellationFeedback(cancellationReason.reasonCategory),
+    } as const;
+
+    updatedSubscription = cancelImmediately
+      ? await stripe.subscriptions.cancel(subscriptionContext.id, {
+          cancellation_details: cancellationDetails,
+          invoice_now: false,
+          prorate: false,
+        })
+      : await stripe.subscriptions.update(subscriptionContext.id, {
+          cancel_at_period_end: true,
+          cancellation_details: cancellationDetails,
+        });
   } catch (error) {
     phLogger.error("billing_subscription_cancellation_action_failed", {
       event: "billing_subscription_cancellation_action_failed",
       ...billingFields,
-      stage: "stripe_subscription_update",
+      stage: cancelImmediately
+        ? "stripe_subscription_cancel"
+        : "stripe_subscription_update",
       stripe_subscription_id: subscriptionContext.id,
       duration_ms: Date.now() - startedAt,
       error,
@@ -267,7 +283,7 @@ export default async function cancelSubscriptionAction(
 
   if (serviceKey) {
     try {
-      await getConvexClient().mutation(
+      const result = await getConvexClient().mutation(
         api.cancellationReasons.markCancellationCompleted,
         {
           serviceKey,
@@ -282,6 +298,8 @@ export default async function cancelSubscriptionAction(
           completedAt,
         },
       );
+      shouldEmitCancellationCompleted =
+        !cancellationStartRecorded || result.updatedCount > 0;
     } catch (error) {
       phLogger.warn("cancellation_reason_completion_update_failed", {
         userId: user.id,
@@ -306,29 +324,37 @@ export default async function cancelSubscriptionAction(
       stripe_subscription_id: subscriptionContext.id,
     }),
   );
-  phLogger.event(
-    PAID_FUNNEL_EVENTS.cancellationCompleted,
-    paidFunnelProperties({
-      userId: user.id,
-      org_id: organizationId,
-      subscription_tier: subscriptionContext.tier,
-      plan: subscriptionContext.plan,
-      reason_category: cancellationReason.reasonCategory,
-      cancellation_completion_type: "scheduled_in_app",
-      cancel_at_period_end: updatedSubscription.cancel_at_period_end,
-      stripe_customer_id: stripeCustomerId,
-      stripe_subscription_id: subscriptionContext.id,
-      stripe_price_id: subscriptionContext.priceId,
-      $insert_id: `${PAID_FUNNEL_EVENTS.cancellationCompleted}:${subscriptionContext.id}:in_app`,
-    }),
-  );
+  if (shouldEmitCancellationCompleted) {
+    phLogger.event(
+      PAID_FUNNEL_EVENTS.cancellationCompleted,
+      paidFunnelProperties({
+        userId: user.id,
+        org_id: organizationId,
+        subscription_tier: subscriptionContext.tier,
+        plan: subscriptionContext.plan,
+        reason_category: cancellationReason.reasonCategory,
+        cancellation_completion_type: cancelImmediately
+          ? "immediate_in_app"
+          : "scheduled_in_app",
+        cancel_at_period_end: updatedSubscription.cancel_at_period_end,
+        stripe_customer_id: stripeCustomerId,
+        stripe_subscription_id: subscriptionContext.id,
+        stripe_price_id: subscriptionContext.priceId,
+        $insert_id: cancellationCompletionInsertId(subscriptionContext.id),
+      }),
+    );
+  }
 
   return {
     canceled: true,
     cancelAtPeriodEnd: updatedSubscription.cancel_at_period_end,
-    currentPeriodEnd:
-      currentPeriodEndMs(updatedSubscription) ??
-      subscriptionContext.currentPeriodEnd,
+    ...(updatedSubscription.cancel_at_period_end
+      ? {
+          currentPeriodEnd:
+            currentPeriodEndMs(updatedSubscription) ??
+            subscriptionContext.currentPeriodEnd,
+        }
+      : {}),
     alreadyScheduled: false,
   };
 }

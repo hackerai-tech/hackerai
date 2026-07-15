@@ -24,6 +24,12 @@ export const PAID_FUNNEL_EVENTS = {
   paidDailyFreeAllowanceCutOff: "paid_daily_free_allowance_cut_off",
 } as const;
 
+export function cancellationCompletionInsertId(
+  stripeSubscriptionId: string,
+): string {
+  return `${PAID_FUNNEL_EVENTS.cancellationCompleted}:${stripeSubscriptionId}`;
+}
+
 export type PaidFunnelPlan =
   | "pro-monthly-plan"
   | "pro-plus-monthly-plan"
