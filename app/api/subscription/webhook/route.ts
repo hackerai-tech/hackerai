@@ -21,6 +21,7 @@ import type { SubscriptionTier } from "@/types";
 import { getReferralRewardConfig } from "@/lib/referrals/config";
 import {
   PAID_FUNNEL_EVENTS,
+  cancellationCompletionInsertId,
   paidFunnelProperties,
 } from "@/lib/analytics/paid-funnel";
 import {
@@ -1319,7 +1320,7 @@ async function recordCancellationCompleted(args: {
         stripe_customer_id: args.customerId,
         stripe_subscription_id: args.subscription.id,
         stripe_price_id: args.price?.id,
-        $insert_id: `${PAID_FUNNEL_EVENTS.cancellationCompleted}:${args.subscription.id}`,
+        $insert_id: cancellationCompletionInsertId(args.subscription.id),
       }),
     );
   }

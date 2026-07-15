@@ -17,6 +17,7 @@ import { getConvexClient } from "@/lib/db/convex-client";
 import { phLogger } from "@/lib/posthog/server";
 import {
   PAID_FUNNEL_EVENTS,
+  cancellationCompletionInsertId,
   paidFunnelProperties,
   planLookupKeyToTier,
 } from "@/lib/analytics/paid-funnel";
@@ -339,7 +340,7 @@ export default async function cancelSubscriptionAction(
         stripe_customer_id: stripeCustomerId,
         stripe_subscription_id: subscriptionContext.id,
         stripe_price_id: subscriptionContext.priceId,
-        $insert_id: `${PAID_FUNNEL_EVENTS.cancellationCompleted}:${subscriptionContext.id}:in_app`,
+        $insert_id: cancellationCompletionInsertId(subscriptionContext.id),
       }),
     );
   }

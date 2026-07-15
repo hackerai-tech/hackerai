@@ -6,7 +6,10 @@ import {
   beforeEach,
   afterEach,
 } from "@jest/globals";
-import { PAID_FUNNEL_EVENTS } from "@/lib/analytics/paid-funnel";
+import {
+  PAID_FUNNEL_EVENTS,
+  cancellationCompletionInsertId,
+} from "@/lib/analytics/paid-funnel";
 
 const mockListSubscriptions = jest.fn();
 const mockUpdateSubscription = jest.fn();
@@ -179,7 +182,9 @@ describe("cancelSubscriptionAction", () => {
     expect(mockPostHogEvent).toHaveBeenNthCalledWith(
       2,
       PAID_FUNNEL_EVENTS.cancellationCompleted,
-      expect.any(Object),
+      expect.objectContaining({
+        $insert_id: cancellationCompletionInsertId("sub_123"),
+      }),
     );
   });
 
@@ -340,7 +345,9 @@ describe("cancelSubscriptionAction", () => {
     expect(mockPostHogEvent).toHaveBeenNthCalledWith(
       2,
       PAID_FUNNEL_EVENTS.cancellationCompleted,
-      expect.any(Object),
+      expect.objectContaining({
+        $insert_id: cancellationCompletionInsertId("sub_123"),
+      }),
     );
   });
 
