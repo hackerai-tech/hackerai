@@ -1,16 +1,6 @@
 #!/usr/bin/env node
 
-import { spawn, spawnSync } from "node:child_process";
-import path from "node:path";
-
-const readGit = (args) => {
-  const result = spawnSync("git", args, {
-    encoding: "utf8",
-    stdio: ["ignore", "pipe", "ignore"],
-  });
-
-  return result.status === 0 ? result.stdout.trim() : "";
-};
+import { spawn } from "node:child_process";
 
 const sanitizeBranchName = (value) => {
   const normalized = value
@@ -22,26 +12,23 @@ const sanitizeBranchName = (value) => {
   return normalized || "local";
 };
 
-const branchFromGit =
-  readGit(["branch", "--show-current"]) ||
-  [path.basename(process.cwd()), readGit(["rev-parse", "--short", "HEAD"])]
-    .filter(Boolean)
-    .join("-");
+const configuredBranch = process.env.TRIGGER_DEV_BRANCH?.trim();
+const triggerArgs = ["dev", "start"];
 
-const triggerBranch = sanitizeBranchName(
-  process.env.TRIGGER_DEV_BRANCH || branchFromGit || "local",
-);
+if (configuredBranch) {
+  const triggerBranch = sanitizeBranchName(configuredBranch);
+  triggerArgs.push("--branch", triggerBranch);
+  console.log(
+    `[trigger-dev] using explicit Trigger.dev branch: ${triggerBranch}`,
+  );
+} else {
+  console.log("[trigger-dev] using default Trigger.dev branch");
+}
 
-console.log(`[trigger-dev] using Trigger.dev branch: ${triggerBranch}`);
-
-const child = spawn(
-  "trigger",
-  ["dev", "start", "--branch", triggerBranch, ...process.argv.slice(2)],
-  {
-    stdio: "inherit",
-    shell: process.platform === "win32",
-  },
-);
+const child = spawn("trigger", [...triggerArgs, ...process.argv.slice(2)], {
+  stdio: "inherit",
+  shell: process.platform === "win32",
+});
 
 child.on("exit", (code, signal) => {
   if (signal) {

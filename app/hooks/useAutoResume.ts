@@ -15,6 +15,7 @@ export interface UseAutoResumeParams {
   initialMessages: ChatMessage[];
   resumeStream: UseChatHelpers<ChatMessage>["resumeStream"];
   setMessages: UseChatHelpers<ChatMessage>["setMessages"];
+  status: UseChatHelpers<ChatMessage>["status"];
   // Tri-state: undefined = chat data still loading (wait), true = server is
   // actively producing (resume), false = no active stream (don't resume —
   // the user message went unanswered, but resuming would just GET an empty
@@ -43,26 +44,46 @@ export function useAutoResume({
   initialMessages,
   resumeStream,
   setMessages,
+  status,
   hasActiveStream,
 }: UseAutoResumeParams) {
   const { dataStream } = useDataStreamState();
   const { setIsAutoResuming } = useDataStreamDispatch();
   const hasAutoResumedRef = useRef(false);
+  const hasEvaluatedInitialResumeRef = useRef(false);
+  const hasLocalRequestStartedRef = useRef(false);
 
   const isPartForCurrentChat = (part: ScopedDataUIPart) =>
     part.__chatId === undefined || part.__chatId === chatId;
 
   useEffect(() => {
     hasAutoResumedRef.current = false;
+    hasEvaluatedInitialResumeRef.current = false;
+    hasLocalRequestStartedRef.current = false;
   }, [chatId]);
 
   useEffect(() => {
-    if (!autoResume || hasAutoResumedRef.current) return;
-    if (initialMessages.length === 0) return;
-    // Wait for chat data to load, then only resume when the server says
-    // it's actively producing a response.
+    if (status !== "ready") {
+      hasLocalRequestStartedRef.current = true;
+    }
+  }, [status]);
+
+  useEffect(() => {
+    if (!autoResume || hasEvaluatedInitialResumeRef.current) return;
     if (hasActiveStream === undefined) return;
-    if (!hasActiveStream) return;
+
+    // Auto-resume is a one-time hydration decision. Once the initial server
+    // state says there is no active stream, a later local request must not
+    // become eligible when it publishes its own active run id.
+    if (!hasActiveStream) {
+      hasEvaluatedInitialResumeRef.current = true;
+      return;
+    }
+
+    if (initialMessages.length === 0) return;
+
+    hasEvaluatedInitialResumeRef.current = true;
+    if (status !== "ready" || hasLocalRequestStartedRef.current) return;
 
     const mostRecentMessage = initialMessages.at(-1);
 
@@ -72,7 +93,7 @@ export function useAutoResume({
       resumeStream();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [autoResume, initialMessages.length > 0, hasActiveStream]);
+  }, [autoResume, initialMessages.length > 0, hasActiveStream, status]);
 
   useEffect(() => {
     if (!autoResume || !hasAutoResumedRef.current) return;

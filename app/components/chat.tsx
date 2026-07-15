@@ -442,6 +442,7 @@ function StreamEffects({
     initialMessages: serverMessages,
     resumeStream,
     setMessages,
+    status,
     hasActiveStream,
   });
 

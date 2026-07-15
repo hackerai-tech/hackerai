@@ -12,7 +12,7 @@ const { spawnSync } = require("node:child_process");
 const scriptPath = path.resolve("scripts/trigger-dev-branch.mjs");
 
 describe("trigger-dev-branch", () => {
-  it("starts the Trigger 4.5 dev branch with forwarded arguments", () => {
+  function runScript(environment = {}) {
     const tempDir = mkdtempSync(path.join(tmpdir(), "trigger-dev-branch-"));
     const capturePath = path.join(tempDir, "args.json");
 
@@ -37,25 +37,48 @@ describe("trigger-dev-branch", () => {
             ...process.env,
             PATH: `${tempDir}:${process.env.PATH}`,
             TRIGGER_ARGS_CAPTURE: capturePath,
-            TRIGGER_DEV_BRANCH: "feature/codex health",
+            TRIGGER_DEV_BRANCH: undefined,
+            ...environment,
           },
         },
       );
 
-      expect(result.status).toBe(0);
-      expect(result.stderr).toBe("");
-      expect(result.stdout).toContain(
-        "[trigger-dev] using Trigger.dev branch: feature-codex-health",
-      );
-      expect(JSON.parse(readFileSync(capturePath, "utf8"))).toEqual([
-        "dev",
-        "start",
-        "--branch",
-        "feature-codex-health",
-        "--skip-update-check",
-      ]);
+      return {
+        result,
+        args: JSON.parse(readFileSync(capturePath, "utf8")),
+      };
     } finally {
       rmSync(tempDir, { recursive: true, force: true });
     }
+  }
+
+  it("starts the default Trigger.dev worker with forwarded arguments", () => {
+    const { result, args } = runScript();
+
+    expect(result.status).toBe(0);
+    expect(result.stderr).toBe("");
+    expect(result.stdout).toContain(
+      "[trigger-dev] using default Trigger.dev branch",
+    );
+    expect(args).toEqual(["dev", "start", "--skip-update-check"]);
+  });
+
+  it("uses a sanitized branch only when explicitly configured", () => {
+    const { result, args } = runScript({
+      TRIGGER_DEV_BRANCH: "feature/codex health",
+    });
+
+    expect(result.status).toBe(0);
+    expect(result.stderr).toBe("");
+    expect(result.stdout).toContain(
+      "[trigger-dev] using explicit Trigger.dev branch: feature-codex-health",
+    );
+    expect(args).toEqual([
+      "dev",
+      "start",
+      "--branch",
+      "feature-codex-health",
+      "--skip-update-check",
+    ]);
   });
 });
