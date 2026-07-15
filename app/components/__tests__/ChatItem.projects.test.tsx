@@ -64,14 +64,25 @@ describe("ChatItem project actions", () => {
     });
   });
 
-  it("uses compact side padding for project chat rows", () => {
-    render(<ChatItem id="chat-1" title="Target notes" indentContent />);
+  it("uses compact side padding for standard and project chat rows", () => {
+    render(
+      <>
+        <ChatItem id="chat-1" title="General notes" />
+        <ChatItem id="chat-2" title="Target notes" indentContent />
+      </>,
+    );
 
     expect(screen.getByTestId("chat-item-chat-1")).toHaveClass(
+      "py-2",
+      "ps-2",
+      "pe-0.5",
+    );
+    expect(screen.getByTestId("chat-item-chat-2")).toHaveClass(
       "py-2",
       "ps-6",
       "pe-0.5",
     );
     expect(screen.getByTestId("chat-item-chat-1")).not.toHaveClass("p-2");
+    expect(screen.getByTestId("chat-item-chat-2")).not.toHaveClass("p-2");
   });
 });
