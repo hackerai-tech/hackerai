@@ -750,4 +750,55 @@ describe("POST /api/subscribe", () => {
       }),
     );
   });
+
+  it("retries an idempotent Stripe customer read after a lock timeout", async () => {
+    mockListOrganizationMemberships.mockResolvedValue({
+      data: [
+        {
+          organizationId: "org_team",
+          role: { slug: "owner" },
+        },
+      ],
+    } as never);
+    mockGetOrganization.mockResolvedValue({
+      id: "org_team",
+      stripeCustomerId: "cus_existing_org",
+    } as never);
+    const lockTimeout = Object.assign(new Error("Stripe object is locked"), {
+      code: "lock_timeout",
+      requestId: "req_lock_timeout",
+    });
+    mockRetrieveCustomer
+      .mockRejectedValueOnce(lockTimeout as never)
+      .mockResolvedValueOnce({
+        id: "cus_existing_org",
+        metadata: { workOSOrganizationId: "org_team" },
+      } as never);
+    const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+
+    try {
+      const { POST } = await import("../route");
+
+      const response = await POST(makeRequest({ plan: "pro-monthly-plan" }));
+
+      expect(response.status).toBe(200);
+      expect(mockRetrieveCustomer).toHaveBeenCalledTimes(2);
+      expect(JSON.parse(String(warnSpy.mock.calls[0]?.[0]))).toMatchObject({
+        event: "billing.stripe_customer_retrieve_retry_scheduled",
+        request_id: "unknown",
+        service: "hackerai-web",
+        route: "/api/subscribe",
+        user_id: "user_123",
+        organization_id: "org_team",
+        stripe_customer_id: "cus_existing_org",
+        stripe_error_code: "lock_timeout",
+        stripe_request_id: "req_lock_timeout",
+        attempt: 1,
+        next_attempt: 2,
+        retry_delay_ms: 0,
+      });
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
 });
