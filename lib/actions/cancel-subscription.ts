@@ -202,6 +202,8 @@ export default async function cancelSubscriptionAction(
     ? Math.max(0, Math.floor((now - accountCreatedAt) / 86_400_000))
     : undefined;
   const serviceKey = process.env.CONVEX_SERVICE_ROLE_KEY;
+  let cancellationStartRecorded = false;
+  let shouldEmitCancellationCompleted = true;
 
   if (serviceKey) {
     try {
@@ -224,6 +226,7 @@ export default async function cancelSubscriptionAction(
           source: "in_app",
         },
       );
+      cancellationStartRecorded = true;
     } catch (error) {
       phLogger.error("Failed to record cancellation reason", {
         userId: user.id,
@@ -279,7 +282,7 @@ export default async function cancelSubscriptionAction(
 
   if (serviceKey) {
     try {
-      await getConvexClient().mutation(
+      const result = await getConvexClient().mutation(
         api.cancellationReasons.markCancellationCompleted,
         {
           serviceKey,
@@ -294,6 +297,8 @@ export default async function cancelSubscriptionAction(
           completedAt,
         },
       );
+      shouldEmitCancellationCompleted =
+        !cancellationStartRecorded || result.updatedCount > 0;
     } catch (error) {
       phLogger.warn("cancellation_reason_completion_update_failed", {
         userId: user.id,
@@ -318,24 +323,26 @@ export default async function cancelSubscriptionAction(
       stripe_subscription_id: subscriptionContext.id,
     }),
   );
-  phLogger.event(
-    PAID_FUNNEL_EVENTS.cancellationCompleted,
-    paidFunnelProperties({
-      userId: user.id,
-      org_id: organizationId,
-      subscription_tier: subscriptionContext.tier,
-      plan: subscriptionContext.plan,
-      reason_category: cancellationReason.reasonCategory,
-      cancellation_completion_type: cancelImmediately
-        ? "immediate_in_app"
-        : "scheduled_in_app",
-      cancel_at_period_end: updatedSubscription.cancel_at_period_end,
-      stripe_customer_id: stripeCustomerId,
-      stripe_subscription_id: subscriptionContext.id,
-      stripe_price_id: subscriptionContext.priceId,
-      $insert_id: `${PAID_FUNNEL_EVENTS.cancellationCompleted}:${subscriptionContext.id}:in_app`,
-    }),
-  );
+  if (shouldEmitCancellationCompleted) {
+    phLogger.event(
+      PAID_FUNNEL_EVENTS.cancellationCompleted,
+      paidFunnelProperties({
+        userId: user.id,
+        org_id: organizationId,
+        subscription_tier: subscriptionContext.tier,
+        plan: subscriptionContext.plan,
+        reason_category: cancellationReason.reasonCategory,
+        cancellation_completion_type: cancelImmediately
+          ? "immediate_in_app"
+          : "scheduled_in_app",
+        cancel_at_period_end: updatedSubscription.cancel_at_period_end,
+        stripe_customer_id: stripeCustomerId,
+        stripe_subscription_id: subscriptionContext.id,
+        stripe_price_id: subscriptionContext.priceId,
+        $insert_id: `${PAID_FUNNEL_EVENTS.cancellationCompleted}:${subscriptionContext.id}:in_app`,
+      }),
+    );
+  }
 
   return {
     canceled: true,

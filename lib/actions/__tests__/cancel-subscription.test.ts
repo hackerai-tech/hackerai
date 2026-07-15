@@ -14,6 +14,8 @@ const mockCancelSubscription = jest.fn();
 const mockGetBillingActionContext = jest.fn();
 const mockPostHogEvent = jest.fn();
 const mockPostHogError = jest.fn();
+const mockConvexMutation = jest.fn();
+const mockGetConvexClient = jest.fn();
 
 jest.mock("@/app/api/stripe", () => ({
   stripe: {
@@ -30,7 +32,7 @@ jest.mock("@/lib/actions/billing-context", () => ({
 }));
 
 jest.mock("@/lib/db/convex-client", () => ({
-  getConvexClient: jest.fn(),
+  getConvexClient: mockGetConvexClient,
 }));
 
 jest.mock("@/lib/posthog/server", () => ({
@@ -47,6 +49,9 @@ describe("cancelSubscriptionAction", () => {
   beforeEach(() => {
     jest.clearAllMocks();
     delete process.env.CONVEX_SERVICE_ROLE_KEY;
+    mockGetConvexClient.mockReturnValue({
+      mutation: mockConvexMutation,
+    } as never);
 
     mockGetBillingActionContext.mockResolvedValue({
       organizationId: "org_123",
@@ -238,6 +243,104 @@ describe("cancelSubscriptionAction", () => {
         cancellation_completion_type: "immediate_in_app",
         cancel_at_period_end: false,
       }),
+    );
+  });
+
+  it("does not emit a duplicate completion event when the webhook completes first", async () => {
+    process.env.CONVEX_SERVICE_ROLE_KEY = "service_key";
+    mockListSubscriptions.mockResolvedValue({
+      data: [
+        {
+          id: "sub_123",
+          status: "active",
+          cancel_at_period_end: false,
+          current_period_end: 1_782_444_800,
+          items: {
+            data: [
+              {
+                price: {
+                  id: "price_pro",
+                  lookup_key: "pro-monthly-plan",
+                },
+              },
+            ],
+          },
+        },
+      ],
+    } as never);
+    mockUpdateSubscription.mockResolvedValue({
+      id: "sub_123",
+      cancel_at_period_end: true,
+      current_period_end: 1_782_444_800,
+      cancellation_details: {},
+    } as never);
+    mockConvexMutation
+      .mockResolvedValueOnce("reason_123" as never)
+      .mockResolvedValueOnce({ matchedCount: 1, updatedCount: 0 } as never);
+
+    const { default: cancelSubscriptionAction } =
+      await import("../cancel-subscription");
+
+    await cancelSubscriptionAction({
+      cancellationReason: {
+        reasonCategory: "other",
+        reasonDetails: "Done for now",
+      },
+    });
+
+    expect(mockPostHogEvent).toHaveBeenCalledTimes(1);
+    expect(mockPostHogEvent).toHaveBeenCalledWith(
+      PAID_FUNNEL_EVENTS.cancellationReasonSubmitted,
+      expect.any(Object),
+    );
+  });
+
+  it("keeps fallback completion analytics when the completion mutation fails", async () => {
+    process.env.CONVEX_SERVICE_ROLE_KEY = "service_key";
+    mockListSubscriptions.mockResolvedValue({
+      data: [
+        {
+          id: "sub_123",
+          status: "active",
+          cancel_at_period_end: false,
+          current_period_end: 1_782_444_800,
+          items: {
+            data: [
+              {
+                price: {
+                  id: "price_pro",
+                  lookup_key: "pro-monthly-plan",
+                },
+              },
+            ],
+          },
+        },
+      ],
+    } as never);
+    mockUpdateSubscription.mockResolvedValue({
+      id: "sub_123",
+      cancel_at_period_end: true,
+      current_period_end: 1_782_444_800,
+      cancellation_details: {},
+    } as never);
+    mockConvexMutation
+      .mockResolvedValueOnce("reason_123" as never)
+      .mockRejectedValueOnce(new Error("Convex unavailable") as never);
+
+    const { default: cancelSubscriptionAction } =
+      await import("../cancel-subscription");
+
+    await cancelSubscriptionAction({
+      cancellationReason: {
+        reasonCategory: "other",
+        reasonDetails: "Done for now",
+      },
+    });
+
+    expect(mockPostHogEvent).toHaveBeenNthCalledWith(
+      2,
+      PAID_FUNNEL_EVENTS.cancellationCompleted,
+      expect.any(Object),
     );
   });
 
