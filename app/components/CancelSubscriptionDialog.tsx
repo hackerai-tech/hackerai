@@ -43,10 +43,11 @@ import { cn } from "@/lib/utils";
 type CancelSubscriptionDialogProps = {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  onCancellationScheduled?: (result: CancellationResult) => void;
+  onCancellationCompleted?: (result: CancellationResult) => void;
 };
 
 type CancellationResult = {
+  cancelAtPeriodEnd: boolean;
   currentPeriodEnd?: number;
   alreadyScheduled?: boolean;
 };
@@ -100,7 +101,7 @@ function getPlanDisplayName(tier: SubscriptionTier) {
 export const CancelSubscriptionDialog = ({
   open,
   onOpenChange,
-  onCancellationScheduled,
+  onCancellationCompleted,
 }: CancelSubscriptionDialogProps) => {
   const { subscription } = useGlobalState();
   const [isProcessing, setIsProcessing] = useState(false);
@@ -190,17 +191,21 @@ export const CancelSubscriptionDialog = ({
         return;
       }
       setCancellationResult({
+        cancelAtPeriodEnd: result.cancelAtPeriodEnd,
         currentPeriodEnd: result.currentPeriodEnd,
         alreadyScheduled: result.alreadyScheduled,
       });
-      onCancellationScheduled?.({
+      onCancellationCompleted?.({
+        cancelAtPeriodEnd: result.cancelAtPeriodEnd,
         currentPeriodEnd: result.currentPeriodEnd,
         alreadyScheduled: result.alreadyScheduled,
       });
       toast.success(
         result.alreadyScheduled
           ? "Subscription already scheduled to cancel"
-          : "Subscription scheduled to cancel",
+          : result.cancelAtPeriodEnd
+            ? "Subscription scheduled to cancel"
+            : "Subscription canceled. Payment retries stopped.",
       );
     } catch (error) {
       if (!openRef.current || requestIdRef.current !== requestId) {
@@ -216,7 +221,7 @@ export const CancelSubscriptionDialog = ({
         setIsProcessing(false);
       }
     }
-  }, [onCancellationScheduled, reasonCategory, reasonDetails]);
+  }, [onCancellationCompleted, reasonCategory, reasonDetails]);
 
   const handleReasonCategoryChange = useCallback(
     (value: string) => {
@@ -258,6 +263,7 @@ export const CancelSubscriptionDialog = ({
         year: "numeric",
       }).format(new Date(cancellationResult.currentPeriodEnd))
     : null;
+  const canceledImmediately = cancellationResult?.cancelAtPeriodEnd === false;
   const isConfirmStep = step === "confirm";
   const StepIcon = cancellationResult
     ? CheckCircle2
@@ -265,7 +271,9 @@ export const CancelSubscriptionDialog = ({
       ? LockKeyhole
       : Heart;
   const stepLabel = cancellationResult
-    ? "Cancellation scheduled"
+    ? canceledImmediately
+      ? "Subscription canceled"
+      : "Cancellation scheduled"
     : isConfirmStep
       ? "Final confirmation"
       : "Your feedback";
@@ -305,12 +313,16 @@ export const CancelSubscriptionDialog = ({
             <div className="min-h-0 flex-1 overflow-y-auto px-6 py-7 sm:px-8">
               <DialogHeader className="gap-3 text-left sm:text-left">
                 <DialogTitle className="text-3xl leading-tight font-semibold sm:text-4xl">
-                  Cancellation scheduled
+                  {canceledImmediately
+                    ? "Subscription canceled"
+                    : "Cancellation scheduled"}
                 </DialogTitle>
                 <DialogDescription className="text-base leading-7">
-                  {periodEndDate
-                    ? `You'll keep your ${planName} plan until ${periodEndDate}.`
-                    : `You'll keep your ${planName} plan until the end of your current billing period.`}
+                  {canceledImmediately
+                    ? `Your ${planName} subscription is canceled. We won't retry the failed renewal payment.`
+                    : periodEndDate
+                      ? `You'll keep your ${planName} plan until ${periodEndDate}.`
+                      : `You'll keep your ${planName} plan until the end of your current billing period.`}
                 </DialogDescription>
               </DialogHeader>
             </div>
@@ -331,7 +343,7 @@ export const CancelSubscriptionDialog = ({
                   Are you sure you want to cancel?
                 </DialogTitle>
                 <DialogDescription className="text-base leading-7">
-                  {`You'll keep your ${planName} plan until the end of your current billing period, then lose access to these benefits.`}
+                  {`You'll keep your ${planName} plan through any period you've already paid for. If a renewal payment is overdue, cancellation takes effect immediately and stops further retries.`}
                 </DialogDescription>
               </DialogHeader>
 

@@ -10,6 +10,7 @@ import { PAID_FUNNEL_EVENTS } from "@/lib/analytics/paid-funnel";
 
 const mockListSubscriptions = jest.fn();
 const mockUpdateSubscription = jest.fn();
+const mockCancelSubscription = jest.fn();
 const mockGetBillingActionContext = jest.fn();
 const mockPostHogEvent = jest.fn();
 const mockPostHogError = jest.fn();
@@ -19,6 +20,7 @@ jest.mock("@/app/api/stripe", () => ({
     subscriptions: {
       list: mockListSubscriptions,
       update: mockUpdateSubscription,
+      cancel: mockCancelSubscription,
     },
   },
 }));
@@ -173,6 +175,69 @@ describe("cancelSubscriptionAction", () => {
       2,
       PAID_FUNNEL_EVENTS.cancellationCompleted,
       expect.any(Object),
+    );
+  });
+
+  it("cancels a past-due subscription immediately to stop payment retries", async () => {
+    mockListSubscriptions.mockResolvedValue({
+      data: [
+        {
+          id: "sub_past_due",
+          status: "past_due",
+          cancel_at_period_end: true,
+          current_period_end: 1_782_444_800,
+          items: {
+            data: [
+              {
+                price: {
+                  id: "price_pro",
+                  lookup_key: "pro-monthly-plan",
+                },
+              },
+            ],
+          },
+        },
+      ],
+    } as never);
+    mockCancelSubscription.mockResolvedValue({
+      id: "sub_past_due",
+      status: "canceled",
+      cancel_at_period_end: false,
+      canceled_at: 1_752_537_600,
+      cancellation_details: {},
+    } as never);
+
+    const { default: cancelSubscriptionAction } =
+      await import("../cancel-subscription");
+
+    await expect(
+      cancelSubscriptionAction({
+        cancellationReason: {
+          reasonCategory: "too_expensive",
+          reasonDetails: "The renewal payment failed",
+        },
+      }),
+    ).resolves.toEqual({
+      canceled: true,
+      cancelAtPeriodEnd: false,
+      alreadyScheduled: false,
+    });
+
+    expect(mockCancelSubscription).toHaveBeenCalledWith("sub_past_due", {
+      cancellation_details: {
+        feedback: "too_expensive",
+      },
+      invoice_now: false,
+      prorate: false,
+    });
+    expect(mockUpdateSubscription).not.toHaveBeenCalled();
+    expect(mockPostHogEvent).toHaveBeenNthCalledWith(
+      2,
+      PAID_FUNNEL_EVENTS.cancellationCompleted,
+      expect.objectContaining({
+        cancellation_completion_type: "immediate_in_app",
+        cancel_at_period_end: false,
+      }),
     );
   });
 

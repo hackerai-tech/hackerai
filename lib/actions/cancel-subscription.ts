@@ -1,5 +1,6 @@
 "use server";
 
+import type Stripe from "stripe";
 import { stripe } from "../../app/api/stripe";
 import { api } from "@/convex/_generated/api";
 import {
@@ -37,6 +38,7 @@ type ParsedCancellationReasonInput = {
 
 type SubscriptionContext = {
   id: string;
+  status: Stripe.Subscription.Status;
   priceId?: string;
   plan?: string;
   tier?: SubscriptionTier;
@@ -115,12 +117,17 @@ async function getActiveSubscriptionContext(
   const price = currentSubscription.items.data[0]?.price;
   return {
     id: currentSubscription.id,
+    status: currentSubscription.status,
     priceId: price?.id,
     plan: price?.lookup_key ?? undefined,
     tier: subscriptionTierFromLookupKey(price?.lookup_key),
     currentPeriodEnd: currentPeriodEndMs(currentSubscription),
     cancelAtPeriodEnd: currentSubscription.cancel_at_period_end === true,
   };
+}
+
+function shouldCancelImmediately(status: Stripe.Subscription.Status) {
+  return status === "past_due" || status === "unpaid";
 }
 
 function stripeCancellationFeedback(
@@ -178,7 +185,9 @@ export default async function cancelSubscriptionAction(
     throw error;
   }
 
-  if (subscriptionContext.cancelAtPeriodEnd) {
+  const cancelImmediately = shouldCancelImmediately(subscriptionContext.status);
+
+  if (subscriptionContext.cancelAtPeriodEnd && !cancelImmediately) {
     return {
       canceled: true,
       cancelAtPeriodEnd: true,
@@ -234,26 +243,29 @@ export default async function cancelSubscriptionAction(
     });
   }
 
-  let updatedSubscription: Awaited<
-    ReturnType<typeof stripe.subscriptions.update>
-  >;
+  let updatedSubscription: Stripe.Subscription;
   try {
-    updatedSubscription = await stripe.subscriptions.update(
-      subscriptionContext.id,
-      {
-        cancel_at_period_end: true,
-        cancellation_details: {
-          feedback: stripeCancellationFeedback(
-            cancellationReason.reasonCategory,
-          ),
-        },
-      },
-    );
+    const cancellationDetails = {
+      feedback: stripeCancellationFeedback(cancellationReason.reasonCategory),
+    } as const;
+
+    updatedSubscription = cancelImmediately
+      ? await stripe.subscriptions.cancel(subscriptionContext.id, {
+          cancellation_details: cancellationDetails,
+          invoice_now: false,
+          prorate: false,
+        })
+      : await stripe.subscriptions.update(subscriptionContext.id, {
+          cancel_at_period_end: true,
+          cancellation_details: cancellationDetails,
+        });
   } catch (error) {
     phLogger.error("billing_subscription_cancellation_action_failed", {
       event: "billing_subscription_cancellation_action_failed",
       ...billingFields,
-      stage: "stripe_subscription_update",
+      stage: cancelImmediately
+        ? "stripe_subscription_cancel"
+        : "stripe_subscription_update",
       stripe_subscription_id: subscriptionContext.id,
       duration_ms: Date.now() - startedAt,
       error,
@@ -314,7 +326,9 @@ export default async function cancelSubscriptionAction(
       subscription_tier: subscriptionContext.tier,
       plan: subscriptionContext.plan,
       reason_category: cancellationReason.reasonCategory,
-      cancellation_completion_type: "scheduled_in_app",
+      cancellation_completion_type: cancelImmediately
+        ? "immediate_in_app"
+        : "scheduled_in_app",
       cancel_at_period_end: updatedSubscription.cancel_at_period_end,
       stripe_customer_id: stripeCustomerId,
       stripe_subscription_id: subscriptionContext.id,
@@ -326,9 +340,13 @@ export default async function cancelSubscriptionAction(
   return {
     canceled: true,
     cancelAtPeriodEnd: updatedSubscription.cancel_at_period_end,
-    currentPeriodEnd:
-      currentPeriodEndMs(updatedSubscription) ??
-      subscriptionContext.currentPeriodEnd,
+    ...(updatedSubscription.cancel_at_period_end
+      ? {
+          currentPeriodEnd:
+            currentPeriodEndMs(updatedSubscription) ??
+            subscriptionContext.currentPeriodEnd,
+        }
+      : {}),
     alreadyScheduled: false,
   };
 }
