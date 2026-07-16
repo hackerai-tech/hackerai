@@ -17,6 +17,8 @@ docker rm -f "$CONTAINER_NAME" 2>/dev/null || true
 # Run with required capabilities for penetration testing
 docker run -it \
     --name "$CONTAINER_NAME" \
+    --log-opt max-size="${HACKERAI_DOCKER_LOG_MAX_SIZE:-50m}" \
+    --log-opt max-file="${HACKERAI_DOCKER_LOG_MAX_FILE:-3}" \
     --cap-add=NET_RAW \
     --cap-add=NET_ADMIN \
     --cap-add=SYS_PTRACE \
@@ -28,4 +30,3 @@ docker run -it \
 # - NET_RAW: Required for ping, nmap, masscan, hping3, arp-scan, raw sockets
 # - NET_ADMIN: Required for network interface manipulation, arp-scan, netdiscover
 # - SYS_PTRACE: Required for gdb, strace, ltrace debugging tools
-

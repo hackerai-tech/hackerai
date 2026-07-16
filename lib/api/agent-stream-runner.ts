@@ -55,6 +55,7 @@ import {
   repairAnthropicModelMessagesWithTelemetry,
   pruneToolOutputs,
   pruneModelMessages,
+  limitModelImageToolResults,
 } from "@/lib/chat/compaction/prune-tool-outputs";
 import {
   isProviderMultimodalToolResultRejectionError,
@@ -764,6 +765,9 @@ export async function createAgentStream(
         rawModelMessages,
         rollingContextCheckpoint,
       );
+      rollingModelMessages = limitModelImageToolResults(
+        rollingModelMessages as Array<Record<string, unknown>>,
+      ).messages as ModelMessage[];
       try {
         const pruneResult = pruneToolOutputs(state.finalMessages);
         if (pruneResult.prunedCount > 0) {

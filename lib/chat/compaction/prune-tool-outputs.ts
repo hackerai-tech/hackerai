@@ -894,6 +894,117 @@ const toTextModelToolOutput = (value: string) => ({
   value,
 });
 
+export const MODEL_IMAGE_TOOL_RESULT_LIMIT = 3;
+export const ELIDED_IMAGE_TOOL_RESULT_MESSAGE =
+  "[Older image tool result omitted to bound Agent context. Re-run the view action if visual inspection is still needed.]";
+
+export interface ModelImageToolResultLimit {
+  messages: Array<Record<string, unknown>>;
+  totalImageCount: number;
+  elidedImageCount: number;
+}
+
+const isModelImageOutputPart = (part: unknown): boolean =>
+  typeof part === "object" &&
+  part !== null &&
+  ((part as { type?: unknown }).type === "image-data" ||
+    (part as { type?: unknown }).type === "image" ||
+    (part as { type?: unknown }).type === "image-url");
+
+const replaceModelToolOutputValue = (
+  output: unknown,
+  value: unknown,
+): unknown =>
+  isModelToolOutput(output) && Object.hasOwn(output, "value")
+    ? { ...output, value }
+    : value;
+
+/**
+ * Keeps only the newest image blocks returned by tools during an agentic loop.
+ *
+ * Image payloads are much heavier than their token estimate suggests and can
+ * otherwise accumulate across consecutive file view calls. Text blocks in the
+ * same result are preserved so paths, dimensions, and other evidence remain
+ * available to the model.
+ */
+export function limitModelImageToolResults(
+  messages: Array<Record<string, unknown>>,
+  maxImages: number = MODEL_IMAGE_TOOL_RESULT_LIMIT,
+): ModelImageToolResultLimit {
+  const normalizedMaxImages = Math.max(0, Math.floor(maxImages));
+  let totalImageCount = 0;
+  const imagePartsToElide = new Set<string>();
+
+  for (let mi = messages.length - 1; mi >= 0; mi--) {
+    const message = messages[mi];
+    if (message.role !== "tool" || !Array.isArray(message.content)) continue;
+
+    for (let pi = message.content.length - 1; pi >= 0; pi--) {
+      const part = message.content[pi] as ToolResultPart;
+      if (part.type !== "tool-result") continue;
+
+      const outputValue = unwrapModelToolOutput(part.output);
+      if (!Array.isArray(outputValue)) continue;
+
+      for (let oi = outputValue.length - 1; oi >= 0; oi--) {
+        if (!isModelImageOutputPart(outputValue[oi])) continue;
+        totalImageCount++;
+        if (totalImageCount > normalizedMaxImages) {
+          imagePartsToElide.add(`${mi}:${pi}:${oi}`);
+        }
+      }
+    }
+  }
+
+  if (imagePartsToElide.size === 0) {
+    return {
+      messages,
+      totalImageCount,
+      elidedImageCount: 0,
+    };
+  }
+
+  const limitedMessages = messages.map((message, mi) => {
+    if (message.role !== "tool" || !Array.isArray(message.content)) {
+      return message;
+    }
+
+    let messageChanged = false;
+    const content = message.content.map((rawPart, pi) => {
+      const part = rawPart as ToolResultPart;
+      if (part.type !== "tool-result") return rawPart;
+
+      const outputValue = unwrapModelToolOutput(part.output);
+      if (!Array.isArray(outputValue)) return rawPart;
+
+      let outputChanged = false;
+      const limitedOutput = outputValue.map((outputPart, oi) => {
+        if (!imagePartsToElide.has(`${mi}:${pi}:${oi}`)) return outputPart;
+        outputChanged = true;
+        return {
+          type: "text" as const,
+          text: ELIDED_IMAGE_TOOL_RESULT_MESSAGE,
+        };
+      });
+
+      if (!outputChanged) return rawPart;
+      messageChanged = true;
+      return {
+        ...part,
+        output: replaceModelToolOutputValue(part.output, limitedOutput),
+      };
+    });
+
+    return messageChanged ? { ...message, content } : message;
+  });
+
+  return {
+    messages: limitedMessages,
+    totalImageCount,
+    elidedImageCount: imagePartsToElide.size,
+  };
+}
+
 export interface ModelPruneResult {
   messages: Array<Record<string, unknown>>;
   prunedCount: number;

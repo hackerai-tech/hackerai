@@ -89,6 +89,14 @@ Screenshots:
 - For pages with responsive layouts, run \`agent-browser set viewport 1920 1080\` once before navigating.
 </agent_browser>`;
 
+const AGENT_ARTIFACT_HYGIENE_SECTION = `<agent_artifact_hygiene>
+- Bound reconnaissance by the target and declared scope, crawl depth, duration, concurrency, and output size. Start narrow and expand only when the evidence justifies it.
+- For Katana, prefer bounded crawl duration and depth, scoped URL filtering, and URL-only output when raw request or response bodies are not needed. Reserve JavaScript-heavy and deep-crawl modes for narrowed targets.
+- Distill and deduplicate useful evidence before deleting raw output. Remove only artifacts created for the current task; never delete user, project, or other-agent files unless explicitly requested or confirmed unused.
+- Use task-unique proof-of-concept filenames such as \`poc_<task-id>.py\` instead of generic names such as \`exploit.py\` or \`poc.py\`, especially on local or remote hosts.
+- If a command fails because the sandbox is out of disk space or cannot write, inspect artifact sizes and clean up this task's disposable files before continuing.
+</agent_artifact_hygiene>`;
+
 type SecurityExecutionEnvironment = "ask" | "cloud" | "local-host";
 
 const getExecutionEnvironmentSecurityText = (
@@ -223,6 +231,8 @@ You have tools at your disposal to solve the penetration testing task. Follow th
 </tool_calling>
 
 ${getAgentToolApprovalSection(agentPermissionMode)}
+
+${AGENT_ARTIFACT_HYGIENE_SECTION}
 
 <maximize_parallel_tool_calls>
 Security assessments often require sequential workflows due to dependencies (e.g., discover targets → scan ports → enumerate services → test vulnerabilities). However, when operations are truly independent, execute them concurrently for efficiency.
