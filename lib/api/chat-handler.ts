@@ -655,6 +655,7 @@ export const createChatHandler = () => {
               selectedModel,
               undefined,
               undefined,
+              undefined,
               projectContext.workingDirectory,
             );
 
