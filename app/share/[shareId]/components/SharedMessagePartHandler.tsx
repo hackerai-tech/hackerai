@@ -42,6 +42,7 @@ import {
 } from "@/app/components/tools/shell-tool-utils";
 import { PROXY_COMPLETED_LABELS } from "@/app/components/tools/ProxyToolHandler";
 import { isUserStoppedToolError } from "@/lib/chat/tool-abort-utils";
+import { FindingCard } from "@/app/components/findings/FindingCard";
 
 interface MessagePart {
   type: string;
@@ -52,6 +53,7 @@ interface MessagePart {
   output?: any;
   toolCallId?: string;
   errorText?: string;
+  data?: any;
 }
 
 interface SharedMessagePartHandlerProps {
@@ -105,6 +107,17 @@ export const SharedMessagePartHandler = ({
           <span>{isImage ? "Uploaded an image" : "Uploaded a file"}</span>
         </div>
       </div>
+    );
+  }
+
+  if (part.type === "data-shared-finding" && part.data) {
+    return (
+      <FindingCard
+        title={part.data.title}
+        target={part.data.target}
+        severity={part.data.severity}
+        cvssScore={part.data.cvss_score}
+      />
     );
   }
 

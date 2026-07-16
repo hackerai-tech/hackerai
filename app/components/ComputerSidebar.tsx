@@ -31,11 +31,13 @@ import {
   isSidebarProxy,
   isSidebarWebSearch,
   isSidebarNotes,
+  isSidebarFinding,
   isSidebarSharedFiles,
   type SidebarContent,
   type ChatStatus,
   type NoteCategory,
 } from "@/types/chat";
+import { FindingDetail } from "./findings/FindingDetail";
 import type { Id } from "@/convex/_generated/dataModel";
 import type { FilePart } from "@/types/file";
 import { FilePartRenderer } from "./FilePartRenderer";
@@ -439,6 +441,7 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
   const isProxy = isSidebarProxy(sidebarContent);
   const isWebSearch = isSidebarWebSearch(sidebarContent);
   const isNotes = isSidebarNotes(sidebarContent);
+  const isFinding = isSidebarFinding(sidebarContent);
   const isSharedFiles = isSidebarSharedFiles(sidebarContent);
 
   // Use resolved versions for display metadata so streaming updates are reflected
@@ -452,9 +455,11 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
   const icon = getSidebarIcon(displayContent);
   const toolName = getToolName(displayContent);
   const displayTarget = getDisplayTarget(displayContent);
-  const headerTitle = isProxy
-    ? "HackerAI\u2019s Proxy"
-    : "HackerAI\u2019s Computer";
+  const headerTitle = isFinding
+    ? "Finding"
+    : isProxy
+      ? "HackerAI\u2019s Proxy"
+      : "HackerAI\u2019s Computer";
 
   const handleClose = () => {
     closeSidebar();
@@ -542,6 +547,10 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
                     <div className="max-w-[250px] truncate text-muted-foreground text-sm font-medium">
                       Notes
                     </div>
+                  ) : isFinding ? (
+                    <div className="max-w-[250px] truncate text-muted-foreground text-sm font-medium">
+                      Vulnerability report
+                    </div>
                   ) : isSharedFiles ? (
                     <div className="max-w-[250px] truncate text-muted-foreground text-sm font-medium">
                       Shared Files
@@ -558,7 +567,7 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
                 </div>
 
                 {/* Action buttons - far right */}
-                {!isWebSearch && !isNotes && !isSharedFiles && (
+                {!isWebSearch && !isNotes && !isFinding && !isSharedFiles && (
                   <CodeActionButtons
                     content={
                       isFile && resolvedFile
@@ -750,8 +759,7 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
                                   key={file.fileId || `file-${index}`}
                                   part={{
                                     fileId: file.fileId as
-                                      | Id<"files">
-                                      | undefined,
+                                      Id<"files"> | undefined,
                                     s3Key: file.s3Key,
                                     name: file.name,
                                     filename: file.name,
@@ -765,6 +773,13 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
                             )}
                           </div>
                         </div>
+                      )}
+                      {isFinding && (
+                        <FindingDetail
+                          findingId={sidebarContent.findingId}
+                          surface="computer_sidebar"
+                          className="font-sans"
+                        />
                       )}
                       {isNotes && (
                         <div className="flex-1 min-h-0 h-full overflow-y-auto">

@@ -126,13 +126,16 @@ Commands run directly on the host OS "workstation" without Docker isolation. Be 
       "Treat scanner output, tool hits, and suspicious behavior as leads until validated with evidence",
     );
     expect(prompt).toContain(
-      "affected asset, concrete evidence, reliable reproduction steps, demonstrated impact, remediation guidance, and confidence level",
+      "affected asset, concrete evidence, reliable reproduction steps, a working proof of concept, demonstrated impact, remediation guidance, and understood exploitability prerequisites",
     );
     expect(prompt).toContain(
-      "Deduplicate equivalent findings and consolidate repeated evidence",
+      "call create_vulnerability_report exactly once for that distinct root cause",
     );
     expect(prompt).toContain(
-      "label it as a hypothesis or needs-validation item rather than a confirmed vulnerability",
+      'Do not also save the confirmed vulnerability as a Notes "findings" entry',
+    );
+    expect(prompt).toContain(
+      "If impact cannot be reproduced or the PoC does not work, keep it as a hypothesis or needs-validation item",
     );
   });
 
@@ -148,6 +151,25 @@ Commands run directly on the host OS "workstation" without Docker isolation. Be 
     );
 
     expect(prompt).not.toContain("<finding_quality>");
+  });
+
+  it("does not instruct temporary agents to call the unavailable finding tool", async () => {
+    const prompt = await systemPrompt(
+      "user_123",
+      "agent",
+      "pro",
+      "agent-model",
+      null,
+      true,
+      null,
+    );
+
+    expect(prompt).toContain(
+      "Temporary chats cannot persist structured findings",
+    );
+    expect(prompt).not.toContain(
+      "call create_vulnerability_report exactly once for that distinct root cause",
+    );
   });
 
   it("adds bounded reconnaissance and artifact hygiene in cloud and local agent modes", async () => {

@@ -750,6 +750,32 @@ export function extractSidebarContentFromMessage(
         modified,
       });
     }
+
+    if (
+      part.type === "tool-create_vulnerability_report" &&
+      part.state === "output-available"
+    ) {
+      const result = part.output?.result ?? part.output;
+      if (
+        result?.success === true &&
+        typeof result.finding_id === "string" &&
+        typeof result.title === "string" &&
+        typeof result.target === "string" &&
+        typeof result.severity === "string" &&
+        typeof result.cvss_score === "number"
+      ) {
+        contentList.push({
+          findingId: result.finding_id,
+          title: result.title,
+          target: result.target,
+          endpoint: result.endpoint,
+          severity: result.severity,
+          cvssScore: result.cvss_score,
+          isExecuting: false,
+          toolCallId: part.toolCallId || "",
+        });
+      }
+    }
   });
 
   return contentList;

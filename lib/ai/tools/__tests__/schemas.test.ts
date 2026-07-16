@@ -1,6 +1,8 @@
 import {
+  createAgentToolSchemaSet,
   createFileToolSchema,
   createRunTerminalCmdToolSchema,
+  createVulnerabilityReportToolInputSchema,
   runTerminalCmdTool,
 } from "../schemas";
 
@@ -12,6 +14,41 @@ const getInputShape = (value: unknown): Record<string, unknown> =>
     .shape;
 
 describe("agent tool schema descriptions", () => {
+  test("exposes structured findings only in persistent Agent modes", () => {
+    expect(createAgentToolSchemaSet({ mode: "agent" })).toHaveProperty(
+      "create_vulnerability_report",
+    );
+    expect(createAgentToolSchemaSet({ mode: "ask" })).not.toHaveProperty(
+      "create_vulnerability_report",
+    );
+    expect(
+      createAgentToolSchemaSet({ mode: "agent", isTemporary: true }),
+    ).not.toHaveProperty("create_vulnerability_report");
+  });
+
+  test("uses the complete strict report schema in the model-facing contract", () => {
+    const parsed = createVulnerabilityReportToolInputSchema.safeParse({});
+    expect(parsed.success).toBe(false);
+    if (!parsed.success) {
+      expect(parsed.error.issues.map((issue) => issue.path[0])).toEqual(
+        expect.arrayContaining([
+          "title",
+          "description",
+          "impact",
+          "target",
+          "technical_analysis",
+          "poc_description",
+          "poc_script_code",
+          "remediation_steps",
+          "evidence",
+          "assumptions",
+          "fix_effort",
+          "cvss_breakdown",
+        ]),
+      );
+    }
+  });
+
   test("terminal command approval wording is mode-specific", () => {
     const fullAccessDescription = getDescription(runTerminalCmdTool);
     expect(fullAccessDescription).not.toContain("ask the user to approve it");
