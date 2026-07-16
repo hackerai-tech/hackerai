@@ -62,6 +62,11 @@ jest.mock("@/lib/chat/compaction/prune-tool-outputs", () => ({
     messages,
     prunedCount: 0,
   }),
+  limitModelImageToolResults: (messages: ModelMessage[]) => ({
+    messages,
+    totalImageCount: 0,
+    elidedImageCount: 0,
+  }),
 }));
 jest.mock("@/lib/chat/multimodal-tool-result-recovery", () => ({
   isProviderMultimodalToolResultRejectionError: () => false,

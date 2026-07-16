@@ -150,6 +150,58 @@ Commands run directly on the host OS "workstation" without Docker isolation. Be 
     expect(prompt).not.toContain("<finding_quality>");
   });
 
+  it("adds bounded reconnaissance and artifact hygiene in cloud and local agent modes", async () => {
+    const cloudPrompt = await systemPrompt(
+      "user_123",
+      "agent",
+      "pro",
+      "agent-model",
+      null,
+      false,
+      null,
+    );
+    const localPrompt = await systemPrompt(
+      "user_123",
+      "agent",
+      "pro",
+      "agent-model",
+      null,
+      false,
+      "Local sandbox context",
+    );
+
+    for (const prompt of [cloudPrompt, localPrompt]) {
+      expect(prompt).toContain("<agent_artifact_hygiene>");
+      expect(prompt).toContain(
+        "Bound reconnaissance by the target and declared scope, crawl depth, duration, concurrency, and output size",
+      );
+      expect(prompt).toContain(
+        "Distill and deduplicate useful evidence before deleting raw output",
+      );
+      expect(prompt).toContain(
+        "never delete user, project, or other-agent files unless explicitly requested or confirmed unused",
+      );
+      expect(prompt).toContain("poc_<task-id>.py");
+      expect(prompt).toContain(
+        "clean up this task's disposable files before continuing",
+      );
+    }
+  });
+
+  it("does not add agent artifact hygiene guidance to ask mode", async () => {
+    const prompt = await systemPrompt(
+      "user_123",
+      "ask",
+      "pro",
+      "ask-model",
+      null,
+      false,
+      null,
+    );
+
+    expect(prompt).not.toContain("<agent_artifact_hygiene>");
+  });
+
   it("keeps cloud sandbox isolation scoped to the default cloud sandbox", async () => {
     const prompt = await systemPrompt(
       "user_123",
