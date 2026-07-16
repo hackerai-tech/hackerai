@@ -15,9 +15,8 @@ import {
   useSidebar,
 } from "@/components/ui/sidebar";
 import SidebarUserNav from "./SidebarUserNav";
-import SidebarHistory from "./SidebarHistory";
 import SidebarHeaderContent from "./SidebarHeader";
-import { SidebarProjects } from "./SidebarProjects";
+import { SidebarChatSections } from "./SidebarChatSections";
 import { useProjects } from "../hooks/useProjects";
 
 /** Chat list data lifted from parent so the subscription stays active when sidebar closes. */
@@ -36,13 +35,12 @@ const ChatListContent: FC<{ chatListData: ChatListData }> = ({
       ref={scrollContainerRef}
       data-testid="sidebar-chat-list-scroll-container"
     >
-      <SidebarProjects projects={projects} />
-      <SidebarHistory
+      <SidebarChatSections
         chats={chatListData.results || []}
+        projects={projects}
         paginationStatus={chatListData.status}
         loadMore={chatListData.loadMore}
         containerRef={scrollContainerRef}
-        showEmptyState={projects !== undefined && projects.length === 0}
       />
     </div>
   );

@@ -107,4 +107,32 @@ describe("SidebarHistory", () => {
       screen.getByTestId("streaming-stored-approval-chat"),
     ).toBeInTheDocument();
   });
+
+  it("keeps the pagination sentinel when the loaded page has no unpinned chats", () => {
+    const observe = jest.fn();
+    const disconnect = jest.fn();
+    global.IntersectionObserver = jest.fn(
+      () =>
+        ({
+          disconnect,
+          observe,
+        }) as unknown as IntersectionObserver,
+    ) as unknown as typeof IntersectionObserver;
+
+    render(
+      <SidebarHistory
+        chats={[]}
+        paginationStatus="CanLoadMore"
+        loadMore={jest.fn()}
+        showEmptyState={false}
+      />,
+    );
+
+    expect(
+      screen.getByTestId("sidebar-load-more-sentinel"),
+    ).toBeInTheDocument();
+    expect(observe).toHaveBeenCalledWith(
+      screen.getByTestId("sidebar-load-more-sentinel"),
+    );
+  });
 });

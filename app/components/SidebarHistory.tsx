@@ -5,13 +5,16 @@ import { MessageSquare } from "lucide-react";
 import ChatItem from "./ChatItem";
 import Loading from "@/components/ui/loading";
 
+export type SidebarPaginationStatus =
+  "LoadingFirstPage" | "CanLoadMore" | "LoadingMore" | "Exhausted";
+
 interface SidebarHistoryProps {
   chats: any[];
-  paginationStatus?:
-    "LoadingFirstPage" | "CanLoadMore" | "LoadingMore" | "Exhausted";
+  paginationStatus?: SidebarPaginationStatus;
   loadMore?: (numItems: number) => void;
   containerRef?: React.RefObject<HTMLDivElement | null>;
   showEmptyState?: boolean;
+  testId?: string;
 }
 
 const SidebarHistory: React.FC<SidebarHistoryProps> = ({
@@ -19,6 +22,7 @@ const SidebarHistory: React.FC<SidebarHistoryProps> = ({
   paginationStatus,
   loadMore,
   showEmptyState = true,
+  testId = "sidebar-chat-list",
 }) => {
   const loaderRef = useRef<HTMLDivElement>(null);
   const observerRef = useRef<IntersectionObserver | null>(null);
@@ -31,7 +35,7 @@ const SidebarHistory: React.FC<SidebarHistoryProps> = ({
       observerRef.current.disconnect();
     }
 
-    if (paginationStatus === "CanLoadMore" && chats.length > 0 && loadMore) {
+    if (paginationStatus === "CanLoadMore" && loadMore) {
       const options: IntersectionObserverInit = {
         root: null,
         rootMargin: "50px",
@@ -74,7 +78,10 @@ const SidebarHistory: React.FC<SidebarHistoryProps> = ({
     );
   }
 
-  if (!chats || chats.length === 0) {
+  const isWaitingForMore =
+    paginationStatus === "CanLoadMore" || paginationStatus === "LoadingMore";
+
+  if ((!chats || chats.length === 0) && !isWaitingForMore) {
     if (!showEmptyState) return null;
     // Empty state
     return (
@@ -95,7 +102,7 @@ const SidebarHistory: React.FC<SidebarHistoryProps> = ({
 
   // Chat list with buttons (same for mobile and desktop)
   return (
-    <div className="space-y-1 py-2" data-testid="sidebar-chat-list">
+    <div className="space-y-1 py-2" data-testid={testId}>
       {chats.map((chat: any) => (
         <ChatItem
           key={chat._id}
@@ -122,7 +129,7 @@ const SidebarHistory: React.FC<SidebarHistoryProps> = ({
       )}
 
       {/* Sentinel for IntersectionObserver – load more when scrolled into view */}
-      {paginationStatus === "CanLoadMore" && chats.length > 0 && (
+      {paginationStatus === "CanLoadMore" && (
         <div
           ref={loaderRef}
           data-testid="sidebar-load-more-sentinel"
