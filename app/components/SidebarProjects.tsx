@@ -110,7 +110,7 @@ export function SidebarProjects({ projects }: SidebarProjectsProps) {
         </button>
 
         <div className="flex items-center">
-          {projectIds.length > 0 ? (
+          {isSectionOpen && projectIds.length > 0 ? (
             <Button
               type="button"
               variant="ghost"

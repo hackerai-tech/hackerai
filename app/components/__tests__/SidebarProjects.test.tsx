@@ -102,6 +102,12 @@ describe("SidebarProjects", () => {
       "rotate-90",
     );
     expect(screen.queryByTestId("project-project-1")).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Expand all projects" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Create project" }),
+    ).toBeInTheDocument();
   });
 
   it("moves a dropped chat and opens the target project", async () => {
