@@ -497,9 +497,9 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     hasUserDismissedRateLimitWarning,
     setHasUserDismissedRateLimitWarning,
     messageQueue,
+    editingQueuedMessageId,
     removeQueuedMessage,
     clearQueue,
-    queueBehavior,
     todos,
     sandboxPreference,
     setSandboxPreference,
@@ -1624,10 +1624,10 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     if (
       status === "ready" &&
       messageQueue.length > 0 &&
+      editingQueuedMessageId === null &&
       !isProcessingQueue &&
       !isSendingNowRef.current &&
-      !hasManuallyStoppedRef.current &&
-      queueBehavior === "queue"
+      !hasManuallyStoppedRef.current
     ) {
       setIsProcessingQueue(true);
       const nextMessage = messageQueue[0];
@@ -1665,10 +1665,10 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   }, [
     status,
     messageQueue,
+    editingQueuedMessageId,
     isProcessingQueue,
     removeQueuedMessage,
     sendMessage,
-    queueBehavior,
     chatModeRef,
     todosRef,
     temporaryChatsEnabledRef,

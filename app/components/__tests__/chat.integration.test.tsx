@@ -1,6 +1,8 @@
 import "@testing-library/jest-dom";
 import { describe, it, expect, jest, beforeEach } from "@jest/globals";
 import { render, renderHook, screen } from "@testing-library/react";
+import { useEffect } from "react";
+import { useGlobalState } from "@/app/contexts/GlobalState";
 
 // ===== IMPORTANT: Mock all dependencies BEFORE importing Chat =====
 // These mocks are hoisted by Jest
@@ -182,6 +184,18 @@ import {
 import { ChatLayout } from "../ChatLayout";
 import { TestWrapper } from "../testUtils";
 
+const QueueEditingHarness = () => {
+  const { messageQueue, queueMessage, setEditingQueuedMessageId } =
+    useGlobalState();
+
+  useEffect(() => {
+    queueMessage("updated queued message");
+    setEditingQueuedMessageId("editing-message");
+  }, [queueMessage, setEditingQueuedMessageId]);
+
+  return <div data-testid="queue-state">Queued: {messageQueue.length}</div>;
+};
+
 describe("Chat Component Integration", () => {
   let mockUseChat: jest.Mock;
 
@@ -349,6 +363,18 @@ describe("Chat Component Integration", () => {
   });
 
   describe("Message Display", () => {
+    it("keeps a ready queued message pending while it is being edited", () => {
+      render(
+        <TestWrapper>
+          <QueueEditingHarness />
+          <Chat autoResume={false} />
+        </TestWrapper>,
+      );
+
+      expect(screen.getByTestId("queue-state")).toHaveTextContent("Queued: 1");
+      expect(mockSendMessage).not.toHaveBeenCalled();
+    });
+
     it("should render with existing messages", () => {
       mockUseChat.mockReturnValue({
         messages: [

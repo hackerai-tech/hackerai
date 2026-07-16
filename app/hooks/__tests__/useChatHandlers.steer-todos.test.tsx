@@ -172,6 +172,36 @@ describe("useChatHandlers steer todo handoff", () => {
     );
   });
 
+  it("sends a queued message after the stream has already stopped", async () => {
+    const { result } = renderHook(() =>
+      useChatHandlers({
+        chatId: "chat-1",
+        messages,
+        sendMessage: mockSendMessage,
+        stop: mockStop,
+        regenerate: jest.fn(),
+        setMessages: mockSetMessages,
+        isExistingChat: true,
+        status: "ready",
+        isSendingNowRef: { current: false },
+        hasManuallyStoppedRef: { current: true },
+        activeTriggerRunRef: { current: undefined },
+      }),
+    );
+
+    await act(async () => {
+      await result.current.handleSendNow("queued-1");
+    });
+
+    expect(mockCancelStream).not.toHaveBeenCalled();
+    expect(globalThis.fetch).not.toHaveBeenCalled();
+    expect(mockRemoveQueuedMessage).toHaveBeenCalledWith("queued-1");
+    expect(mockSendMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ text: "Change direction" }),
+      expect.any(Object),
+    );
+  });
+
   it("keeps the queued message when the todo snapshot cannot be persisted", async () => {
     mockCancelStream.mockRejectedValueOnce(new Error("write failed"));
     const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
