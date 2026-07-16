@@ -877,7 +877,7 @@ describe("compactMessageForStorage", () => {
     expect(newestSavedCommand).toBe(newestCommand);
   });
 
-  it("does not byte-compact unfinished tool calls", () => {
+  it("compacts oversized unfinished tool inputs without changing their state", () => {
     const command = "python -c \"print('still streaming')\" ".repeat(200);
     const message = makeAssistantMessage([
       {
@@ -889,16 +889,89 @@ describe("compactMessageForStorage", () => {
     ]);
 
     const result = compactMessageForStorage(message, {
-      softLimitBytes: 100,
+      softLimitBytes: 180,
       toolOutputTokenBudget: 0,
     });
     const part = result.message.parts[0] as any;
 
-    expect(result.compacted).toBe(false);
-    expect(result.afterSizeBytes).toBe(result.beforeSizeBytes);
+    expect(result.compacted).toBe(true);
+    expect(result.afterSizeBytes).toBeLessThanOrEqual(180);
     expect(part.state).toBe("input-streaming");
-    expect(part.input.command).toBe(command);
+    expect(part.input).toEqual({ __hackeraiStorageTruncated: true });
     expect(part.output).toBeUndefined();
+  });
+
+  it("drops an oversized tool part instead of storing an invalid type-only part", () => {
+    const message = makeAssistantMessage([
+      {
+        type: "tool-run_terminal_cmd",
+        toolCallId: "call-streaming",
+        state: "input-streaming",
+        input: { command: "x".repeat(5_000) },
+      } as any,
+    ]);
+
+    const result = compactMessageForStorage(message, {
+      softLimitBytes: 10,
+      toolOutputTokenBudget: 0,
+    });
+
+    expect(result.afterSizeBytes).toBeLessThanOrEqual(10);
+    expect(result.message.parts).toEqual([]);
+  });
+
+  it("compacts protected list_notes output only when required by the hard byte cap", () => {
+    const notes = Array.from({ length: 30 }, (_, index) => ({
+      note_id: `note-${index}`,
+      title: `Finding ${index}`,
+      content: `Detailed finding ${index}: ${"evidence ".repeat(500)}`,
+      category: "findings",
+      tags: ["confirmed", "critical"],
+      _creationTime: index,
+      updated_at: index,
+    }));
+    const message = makeAssistantMessage([
+      makeToolPart(
+        "list_notes",
+        { success: true, notes, total_count: notes.length },
+        { category: "findings" },
+      ),
+      { type: "text", text: "I reviewed the saved findings." },
+    ]);
+
+    const result = compactMessageForStorage(message, {
+      softLimitBytes: 40_000,
+      toolOutputTokenBudget: 0,
+    });
+    const listNotesPart = result.message.parts[0] as any;
+
+    expect(result.compacted).toBe(true);
+    expect(result.afterSizeBytes).toBeLessThanOrEqual(40_000);
+    expect(listNotesPart.output.__hackeraiStorageCompacted).toBe(true);
+    expect(listNotesPart.output.notes[0]).toMatchObject({
+      note_id: "note-0",
+      title: "Finding 0",
+      category: "findings",
+    });
+    expect(listNotesPart.output.notes[0].content).toContain(
+      "[truncated for storage]",
+    );
+  });
+
+  it("enforces the byte cap for a single oversized assistant text part", () => {
+    const message = makeAssistantMessage([
+      { type: "text", text: "analysis ".repeat(50_000) },
+    ]);
+
+    const result = compactMessageForStorage(message, {
+      softLimitBytes: 10_000,
+    });
+
+    expect(result.compacted).toBe(true);
+    expect(result.afterSizeBytes).toBeLessThanOrEqual(10_000);
+    expect((result.message.parts[0] as any).text).toContain(
+      "[truncated for storage]",
+    );
   });
 
   it("compacts oversized reasoning and storage-only status parts", () => {

@@ -309,6 +309,44 @@ describe("desktop-local sandbox file helpers", () => {
     }
   });
 
+  it("retries only after the Desktop command relay reports not subscribed", async () => {
+    jest.useFakeTimers();
+    const consoleWarnSpy = jest
+      .spyOn(console, "warn")
+      .mockImplementation(() => {});
+    const run = jest
+      .fn()
+      .mockRejectedValueOnce(
+        new Error(
+          "Local sandbox connection conn-1 is not subscribed to the command relay.",
+        ),
+      )
+      .mockResolvedValueOnce({ exitCode: 0, stdout: "", stderr: "" });
+
+    try {
+      const pendingResult = uploadSandboxFiles(
+        [
+          {
+            kind: "url",
+            url: "https://example.com/screenshot.png",
+            localPath: "/home/user/upload/screenshot.png",
+          },
+        ],
+        async () => ({ commands: { run } }),
+      );
+      await jest.advanceTimersByTimeAsync(5_000);
+
+      await expect(pendingResult).resolves.toEqual({
+        failedCount: 0,
+        pathRewrites: [],
+      });
+      expect(run).toHaveBeenCalledTimes(2);
+    } finally {
+      jest.useRealTimers();
+      consoleWarnSpy.mockRestore();
+    }
+  });
+
   it("refreshes the sandbox once after exhausted transient upload command failures", async () => {
     jest.useFakeTimers();
     const consoleWarnSpy = jest

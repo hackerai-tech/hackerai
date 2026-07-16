@@ -1041,6 +1041,27 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(readerLoopIdx).toBeGreaterThan(immediateModelHeartbeatIdx);
   });
 
+  test("sanitizes every model stream chunk before the final Trigger realtime pipe", () => {
+    const wrapperIdx = taskSrc.indexOf("const withAgentLongStreamHeartbeat");
+    const sanitizerIdx = taskSrc.indexOf(
+      "sanitizeAgentLongRealtimeChunk(",
+      wrapperIdx,
+    );
+    const mergeIdx = taskSrc.indexOf(
+      "writer.merge(\n              withAgentLongStreamHeartbeat(",
+      sanitizerIdx,
+    );
+    const finalPipeIdx = taskSrc.indexOf(
+      "agentUiStream.pipe(uiStream)",
+      mergeIdx,
+    );
+
+    expect(wrapperIdx).toBeGreaterThan(-1);
+    expect(sanitizerIdx).toBeGreaterThan(wrapperIdx);
+    expect(mergeIdx).toBeGreaterThan(sanitizerIdx);
+    expect(finalPipeIdx).toBeGreaterThan(mergeIdx);
+  });
+
   test("both Agent backends route provider finishes through the shared auto-continue helper", () => {
     for (const source of [chatHandlerSrc, taskSrc]) {
       expect(source).toMatch(/getAgentAutoContinueStopSource\(\{/);
@@ -1426,6 +1447,47 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(handledReturnGuardIdx).toBeGreaterThan(syntheticFlushIdx);
     expect(returnIdx).toBeGreaterThan(handledReturnGuardIdx);
     expect(throwIdx).toBeGreaterThan(returnIdx);
+  });
+
+  test("invalid provider image URLs are handled as user-correctable input", () => {
+    expect(taskSrc).toMatch(/isInvalidImageInputError/);
+    expect(taskSrc).toMatch(/"invalid_image_input"/);
+    expect(taskSrc).toMatch(
+      /USER_CORRECTABLE_AGENT_LONG_ERROR_CATEGORIES[\s\S]*"invalid_image_input"/,
+    );
+    expect(taskSrc).toMatch(
+      /isProviderApiError\(error\)\s*&&\s*!isInvalidImageInputError\(error\)/,
+    );
+  });
+
+  test("recognizes every observed Trigger S2 terminal signature", () => {
+    expect(taskSrc).toMatch(/Connection timeout after \\d\+ms/);
+    expect(taskSrc).toMatch(/cs:\[a-z0-9\]\+/);
+    expect(taskSrc).toMatch(/Request timeout after \\d\+ms/);
+  });
+
+  test("chat metadata failure cannot discard main or fallback generations", () => {
+    const finalizationBlockIndexes = [
+      ...taskSrc.matchAll(/const generatedTitle = await titlePromise/g),
+    ].map((match) => match.index);
+
+    expect(finalizationBlockIndexes).toHaveLength(2);
+    for (const finalizationBlockIdx of finalizationBlockIndexes) {
+      const updateIdx = taskSrc.indexOf(
+        "await updateChat({",
+        finalizationBlockIdx,
+      );
+      const guardedFailureIdx = taskSrc.indexOf(
+        "recordAgentLongChatMetadataUpdateFailure(",
+        updateIdx,
+      );
+      const saveMessageIdx = taskSrc.indexOf("await saveMessage({", updateIdx);
+
+      expect(updateIdx).toBeGreaterThan(finalizationBlockIdx);
+      expect(guardedFailureIdx).toBeGreaterThan(updateIdx);
+      expect(saveMessageIdx).toBeGreaterThan(guardedFailureIdx);
+    }
+    expect(taskSrc).toMatch(/chatFinalizationStatus/);
   });
 
   test("empty rehydrated history is classified separately from oversized input", () => {

@@ -6,6 +6,7 @@ import {
   getUserFriendlyProviderError,
   getProviderErrorCategory,
   getProviderStatusCode,
+  isInvalidImageInputError,
   isProviderContentBlockedError,
   isProviderStreamTerminatedError,
 } from "../error-utils";
@@ -279,14 +280,47 @@ describe("extractErrorDetails -> wrapped provider errors", () => {
 
 describe("provider error classification", () => {
   it("classifies undici terminated errors as provider stream termination", () => {
+    const cause = Object.assign(new Error("other side closed"), {
+      code: "UND_ERR_SOCKET",
+    });
     const err = Object.assign(new TypeError("terminated"), {
-      cause: "other side closed",
+      cause,
     });
 
     expect(getProviderErrorCategory(extractErrorDetails(err))).toBe(
       "stream_terminated",
     );
+    expect(extractErrorDetails(err)).toMatchObject({
+      cause: "other side closed",
+      errorCode: "UND_ERR_SOCKET",
+    });
     expect(isProviderStreamTerminatedError(err)).toBe(true);
+  });
+
+  it("classifies ECONNRESET provider socket closures as stream termination", () => {
+    const err = Object.assign(new TypeError("terminated"), {
+      cause: Object.assign(new Error("read ECONNRESET"), {
+        code: "ECONNRESET",
+      }),
+    });
+
+    expect(getProviderErrorCategory(extractErrorDetails(err))).toBe(
+      "stream_terminated",
+    );
+    expect(extractErrorDetails(err)).toMatchObject({ errorCode: "ECONNRESET" });
+  });
+
+  it("recognizes expired provider image URLs as user-correctable input", () => {
+    const err = apiCallError({
+      statusCode: 400,
+      message:
+        "Failed to download the provided image because the image host returned HTTP status 404.",
+    });
+
+    expect(isInvalidImageInputError(err)).toBe(true);
+    expect(getUserFriendlyProviderError(err)).toBe(
+      "An attached image is no longer available at its source URL. Reattach the image and try again.",
+    );
   });
 
   it("classifies network-loss messages as provider stream termination", () => {

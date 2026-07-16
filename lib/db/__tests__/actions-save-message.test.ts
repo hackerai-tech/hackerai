@@ -49,6 +49,7 @@ const loadSaveMessageWithMocks = async () => {
     saveChat,
     saveMessage,
     setActiveTriggerRun,
+    updateChat,
   } = await import("../actions");
   return {
     deleteAllChatsForBackend,
@@ -63,6 +64,7 @@ const loadSaveMessageWithMocks = async () => {
     saveChat,
     saveMessage,
     setActiveTriggerRun,
+    updateChat,
   };
 };
 
@@ -440,6 +442,60 @@ describe("getChatById", () => {
       expect(errorSpy).toHaveBeenCalledTimes(1);
     } finally {
       warnSpy.mockRestore();
+      errorSpy.mockRestore();
+    }
+  });
+});
+
+describe("updateChat", () => {
+  it("retries transient fetch failures before updating final chat metadata", async () => {
+    const { mockMutation, updateChat } = await loadSaveMessageWithMocks();
+    const fetchError = new TypeError("fetch failed");
+    mockMutation
+      .mockRejectedValueOnce(fetchError as never)
+      .mockRejectedValueOnce(fetchError as never)
+      .mockResolvedValueOnce("chat-doc-1" as never);
+    const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+
+    try {
+      await expect(
+        updateChat({ chatId: "chat-1", finishReason: "stop" }),
+      ).resolves.toBe("chat-doc-1");
+
+      expect(mockMutation).toHaveBeenCalledTimes(3);
+      const retryEvents = warnSpy.mock.calls
+        .map(([line]) => JSON.parse(String(line)))
+        .filter((payload) => payload.event === "chat_update_retry_scheduled");
+      expect(retryEvents).toHaveLength(2);
+      expect(retryEvents[0]).toMatchObject({
+        db_operation: "chats.updateChat",
+        retry_reason: "network_fetch_failed",
+        attempt: 1,
+        next_attempt: 2,
+        retry_delay_ms: 0,
+        chat_id: "chat-1",
+      });
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it("does not retry non-transient update failures", async () => {
+    const { mockMutation, updateChat } = await loadSaveMessageWithMocks();
+    mockMutation.mockRejectedValue(new Error("Invalid todos") as never);
+    const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+
+    try {
+      await expect(updateChat({ chatId: "chat-1" })).rejects.toMatchObject({
+        type: "bad_request",
+        surface: "database",
+        metadata: expect.objectContaining({
+          db_operation: "chats.updateChat",
+          chat_id: "chat-1",
+        }),
+      });
+      expect(mockMutation).toHaveBeenCalledTimes(1);
+    } finally {
       errorSpy.mockRestore();
     }
   });

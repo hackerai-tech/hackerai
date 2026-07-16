@@ -53,6 +53,8 @@ const SAVE_MESSAGE_RETRY_DELAYS_MS =
   process.env.NODE_ENV === "test" ? [0, 0] : [250, 1000];
 const SAVE_CHAT_RETRY_DELAYS_MS =
   process.env.NODE_ENV === "test" ? [0, 0] : [250, 1000];
+const UPDATE_CHAT_RETRY_DELAYS_MS =
+  process.env.NODE_ENV === "test" ? [0, 0] : [250, 1000];
 const GET_CHAT_RETRY_DELAYS_MS =
   process.env.NODE_ENV === "test" ? [0, 0] : [250, 1000];
 const GET_MESSAGES_PAGE_RETRY_DELAYS_MS =
@@ -1147,22 +1149,50 @@ export async function updateChat({
   sandboxType?: string;
   selectedModel?: string;
 }) {
-  try {
-    return await getConvexClient().mutation(api.chats.updateChat, {
-      serviceKey,
-      chatId,
-      title,
-      finishReason,
-      todos,
-      defaultModelSlug,
-      sandboxType,
-      selectedModel,
-    });
-  } catch (error) {
-    throw new ChatSDKError(
-      "bad_request:database",
-      `Failed to update chat: ${error}`,
-    );
+  const mutationArgs = {
+    serviceKey,
+    chatId,
+    title,
+    finishReason,
+    todos,
+    defaultModelSlug,
+    sandboxType,
+    selectedModel,
+  };
+
+  for (let attemptIndex = 0; ; attemptIndex++) {
+    try {
+      return await getConvexClient().mutation(
+        api.chats.updateChat,
+        mutationArgs,
+      );
+    } catch (error) {
+      const retryReason = getRetryableDatabaseErrorReason(error);
+      const retryDelayMs = UPDATE_CHAT_RETRY_DELAYS_MS[attemptIndex];
+      if (!retryReason || retryDelayMs === undefined) {
+        throw databaseError("chats.updateChat", error, {
+          chat_id: chatId,
+        });
+      }
+
+      console.warn(
+        JSON.stringify({
+          level: "warn",
+          event: "chat_update_retry_scheduled",
+          service: "chat-handler",
+          environment:
+            process.env.VERCEL_ENV ?? process.env.NODE_ENV ?? "unknown",
+          timestamp: new Date().toISOString(),
+          db_operation: "chats.updateChat",
+          retry_reason: retryReason,
+          attempt: attemptIndex + 1,
+          next_attempt: attemptIndex + 2,
+          retry_delay_ms: retryDelayMs,
+          chat_id: chatId,
+        }),
+      );
+      await waitForRetryDelay(retryDelayMs);
+    }
   }
 }
 
