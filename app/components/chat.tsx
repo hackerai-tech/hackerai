@@ -88,6 +88,7 @@ import { useDataStreamDispatch } from "./DataStreamProvider";
 import { removeDraft } from "@/lib/utils/client-storage";
 import { parseRateLimitWarning } from "@/lib/utils/parse-rate-limit-warning";
 import Loading from "@/components/ui/loading";
+import { formatTaskUiCopy } from "@/app/utils/task-ui-copy";
 
 import { HackingSuggestions } from "./HackingSuggestions";
 
@@ -949,10 +950,12 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
             ? displayError.cause
             : displayError.message;
         if (displayError.type !== "rate_limit") {
-          toast.error(errorMessage);
+          toast.error(formatTaskUiCopy(errorMessage));
         }
       } else if (isMobile && displayError.name !== "AbortError") {
-        toast.error(displayError.message || "An error occurred.");
+        toast.error(
+          formatTaskUiCopy(displayError.message || "An error occurred."),
+        );
       }
     },
   });
@@ -1734,7 +1737,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
         router.push(`/c/${newChatId}`);
       } catch (error) {
         console.error("Failed to branch chat:", error);
-        toast.error("Failed to branch chat. Please try again.");
+        toast.error("Failed to branch task. Please try again.");
       }
     },
     [branchChatMutation, initializeChat, router],
@@ -1843,10 +1846,10 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
                   <div className="w-full max-w-full sm:max-w-[768px] sm:min-w-[390px] flex flex-col items-center space-y-8">
                     <div className="text-center">
                       <h1 className="text-2xl font-bold text-foreground mb-2">
-                        Chat Not Found
+                        Task Not Found
                       </h1>
                       <p className="text-muted-foreground">
-                        This chat doesn&apos;t exist or you don&apos;t have
+                        This task doesn&apos;t exist or you don&apos;t have
                         permission to view it.
                       </p>
                     </div>
@@ -1891,12 +1894,12 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
                         {temporaryChatsEnabled ? (
                           <>
                             <h1 className="text-3xl font-bold text-foreground mb-2">
-                              Temporary Chat
+                              Temporary Task
                             </h1>
                             <p className="text-muted-foreground max-w-md mx-auto px-4 py-3">
-                              This chat won&apos;t appear in history, use or
+                              This task won&apos;t appear in history, use or
                               update HackerAI&apos;s memory, or be used to train
-                              models. This chat will be deleted when you refresh
+                              models. This task will be deleted when you refresh
                               the page.
                             </p>
                           </>

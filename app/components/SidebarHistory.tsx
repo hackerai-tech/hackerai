@@ -91,10 +91,10 @@ const SidebarHistory: React.FC<SidebarHistoryProps> = ({
       >
         <MessageSquare className="w-12 h-12 text-sidebar-accent-foreground mb-4" />
         <h3 className="text-lg font-medium text-sidebar-foreground mb-2">
-          No chats yet
+          No tasks yet
         </h3>
         <p className="text-sm text-sidebar-accent-foreground mb-4">
-          Start a conversation to see your chat history here
+          Start a task to see your task history here
         </p>
       </div>
     );

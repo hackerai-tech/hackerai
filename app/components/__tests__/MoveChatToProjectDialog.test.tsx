@@ -106,7 +106,7 @@ describe("MoveChatToProjectDialog", () => {
       fireEvent.click(screen.getByRole("button", { name: "Acme target" }));
 
       await waitFor(() => {
-        expect(mockToast.error).toHaveBeenCalledWith("Failed to move chat", {
+        expect(mockToast.error).toHaveBeenCalledWith("Failed to move task", {
           description: "Move failed",
         });
       });

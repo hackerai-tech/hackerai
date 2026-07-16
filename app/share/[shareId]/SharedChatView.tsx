@@ -17,6 +17,7 @@ import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { ChatInput } from "@/app/components/ChatInput";
 import { upsertDraft } from "@/lib/utils/client-storage";
+import { formatTaskTitle } from "@/app/utils/task-ui-copy";
 
 // Desktop wrapper component that connects ComputerSidebarBase to SharedChatContext
 function SharedComputerSidebarDesktop({
@@ -161,17 +162,18 @@ export function SharedChatView({ shareId }: SharedChatViewProps) {
   const isSnapshotCurrent = snapshot.shareId === shareId;
   const chat = isSnapshotCurrent ? snapshot.chat : undefined;
   const messages = isSnapshotCurrent ? snapshot.messages : undefined;
+  const taskTitle = chat?.title ? formatTaskTitle(chat.title) : chat?.title;
 
   // Update page title when chat loads
   useEffect(() => {
-    if (chat?.title) {
-      document.title = `${chat.title} | HackerAI`;
+    if (taskTitle) {
+      document.title = `${taskTitle} | HackerAI`;
     }
 
     return () => {
-      document.title = "Shared Chat | HackerAI";
+      document.title = "Shared Task | HackerAI";
     };
-  }, [chat?.title]);
+  }, [taskTitle]);
 
   const handleContinueChat = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -216,7 +218,7 @@ export function SharedChatView({ shareId }: SharedChatViewProps) {
         <div className="flex flex-col items-center gap-4">
           <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
           <p className="text-sm text-muted-foreground">
-            Loading shared chat...
+            Loading shared task...
           </p>
         </div>
       </div>
@@ -229,9 +231,9 @@ export function SharedChatView({ shareId }: SharedChatViewProps) {
       <div className="flex items-center justify-center min-h-screen">
         <div className="flex flex-col items-center gap-4 max-w-md text-center p-6">
           <AlertCircle className="h-12 w-12 text-muted-foreground" />
-          <h1 className="text-2xl font-semibold">Chat not found</h1>
+          <h1 className="text-2xl font-semibold">Task not found</h1>
           <p className="text-sm text-muted-foreground">
-            This shared chat doesn&apos;t exist or is no longer available. It
+            This shared task doesn&apos;t exist or is no longer available. It
             may have been unshared by the owner.
           </p>
         </div>
@@ -245,7 +247,7 @@ export function SharedChatView({ shareId }: SharedChatViewProps) {
         {/* Header for unlogged users */}
         {!authLoading && !user && (
           <div className="flex-shrink-0">
-            <Header chatTitle={chat.title} />
+            <Header chatTitle={formatTaskTitle(chat.title)} />
           </div>
         )}
 
@@ -278,7 +280,7 @@ export function SharedChatView({ shareId }: SharedChatViewProps) {
                 <ChatHeader
                   hasMessages={true}
                   hasActiveChat={true}
-                  chatTitle={chat.title}
+                  chatTitle={formatTaskTitle(chat.title)}
                   isExistingChat={true}
                   isChatNotFound={false}
                   chatSidebarOpen={chatSidebarOpen}

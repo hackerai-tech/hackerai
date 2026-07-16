@@ -136,7 +136,7 @@ function useAutoSelectNewRemoteConnection({
 
     if (temporaryChatsEnabled) {
       toast.info("Local sandbox connected", {
-        description: "Turn off temporary chat to use Agent mode.",
+        description: "Turn off temporary task to use Agent mode.",
       });
       return;
     }

@@ -58,6 +58,7 @@ import { ShareDialog } from "./ShareDialog";
 import { MoveChatToProjectDialog } from "./MoveChatToProjectDialog";
 import { usePinChat, useUnpinChat } from "../hooks/useChats";
 import { setSidebarChatDragData } from "./sidebar-chat-drag";
+import { formatTaskTitle, formatTaskUiCopy } from "@/app/utils/task-ui-copy";
 
 interface ChatItemProps {
   id: string;
@@ -93,6 +94,7 @@ const ChatItem: React.FC<ChatItemProps> = ({
   isStreaming = false,
   isAwaitingApproval = false,
 }) => {
+  const taskTitle = formatTaskTitle(title);
   const router = useRouter();
   const pathname = usePathname();
   const [isHovered, setIsHovered] = useState(false);
@@ -102,7 +104,7 @@ const ChatItem: React.FC<ChatItemProps> = ({
   const [showShareDialog, setShowShareDialog] = useState(false);
   const [showMoveProjectDialog, setShowMoveProjectDialog] = useState(false);
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
-  const [editTitle, setEditTitle] = useState(title);
+  const [editTitle, setEditTitle] = useState(taskTitle);
   const [isRenaming, setIsRenaming] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -216,7 +218,7 @@ const ChatItem: React.FC<ChatItemProps> = ({
 
       if (!response.ok) {
         const errorText = await response.text().catch(() => "");
-        throw new Error(errorText || "Failed to delete chat");
+        throw new Error(errorText || "Failed to delete task");
       }
 
       // Remove draft from localStorage immediately after successful deletion
@@ -233,13 +235,16 @@ const ChatItem: React.FC<ChatItemProps> = ({
         error instanceof ConvexError
           ? (error.data as { message?: string })?.message ||
             error.message ||
-            "Failed to delete chat"
+            "Failed to delete task"
           : error instanceof Error
             ? error.message
             : String(error?.message || error);
 
       // Treat not found as success, and show other errors
-      if (errorMessage.includes("Chat not found")) {
+      if (
+        errorMessage.includes("Chat not found") ||
+        errorMessage.includes("Task not found")
+      ) {
         // Even if chat not found in DB, still clean up draft
         removeDraft(id);
         if (isCurrentlyActive) {
@@ -248,7 +253,7 @@ const ChatItem: React.FC<ChatItemProps> = ({
         }
       } else {
         console.error("Failed to delete chat:", error);
-        toast.error(errorMessage);
+        toast.error(formatTaskUiCopy(errorMessage));
       }
     } finally {
       setIsDeleting(false);
@@ -261,7 +266,7 @@ const ChatItem: React.FC<ChatItemProps> = ({
     e.stopPropagation();
     // Close dropdown first, then open dialog with a small delay to avoid focus conflicts
     setIsDropdownOpen(false);
-    setEditTitle(title); // Set the current title when opening dialog
+    setEditTitle(taskTitle); // Set the current title when opening dialog
 
     // Small delay to ensure dropdown is fully closed before opening dialog
     setTimeout(() => {
@@ -299,7 +304,7 @@ const ChatItem: React.FC<ChatItemProps> = ({
       await pinChat({ chatId: id });
     } catch (error) {
       console.error("Failed to pin chat:", error);
-      toast.error("Failed to pin chat");
+      toast.error("Failed to pin task");
     }
   };
 
@@ -311,7 +316,7 @@ const ChatItem: React.FC<ChatItemProps> = ({
       await unpinChat({ chatId: id });
     } catch (error) {
       console.error("Failed to unpin chat:", error);
-      toast.error("Failed to unpin chat");
+      toast.error("Failed to unpin task");
     }
   };
 
@@ -321,7 +326,7 @@ const ChatItem: React.FC<ChatItemProps> = ({
     // Don't save if title is empty or unchanged
     if (!trimmedTitle || trimmedTitle === title) {
       setShowRenameDialog(false);
-      setEditTitle(title); // Reset to original title
+      setEditTitle(taskTitle); // Reset to original title
       return;
     }
 
@@ -335,12 +340,12 @@ const ChatItem: React.FC<ChatItemProps> = ({
         error instanceof ConvexError
           ? (error.data as { message?: string })?.message ||
             error.message ||
-            "Failed to rename chat"
+            "Failed to rename task"
           : error instanceof Error
             ? error.message
-            : "Failed to rename chat";
-      toast.error(errorMessage);
-      setEditTitle(title); // Reset to original title on error
+            : "Failed to rename task";
+      toast.error(formatTaskUiCopy(errorMessage));
+      setEditTitle(taskTitle); // Reset to original title on error
     } finally {
       setIsRenaming(false);
     }
@@ -348,7 +353,7 @@ const ChatItem: React.FC<ChatItemProps> = ({
 
   const handleCancelRename = () => {
     setShowRenameDialog(false);
-    setEditTitle(title); // Reset to original title
+    setEditTitle(taskTitle); // Reset to original title
   };
 
   const handleInputKeyDown = (e: React.KeyboardEvent) => {
@@ -398,10 +403,10 @@ const ChatItem: React.FC<ChatItemProps> = ({
       }}
       onClick={handleClick}
       onKeyDown={handleKeyDown}
-      title={title}
+      title={taskTitle}
       role="button"
       tabIndex={0}
-      aria-label={`Open chat: ${title}${
+      aria-label={`Open task: ${taskTitle}${
         isAwaitingApproval ? " awaiting approval" : ""
       }`}
       data-testid={`chat-item-${id}`}
@@ -424,12 +429,14 @@ const ChatItem: React.FC<ChatItemProps> = ({
                   <Split className="size-3 flex-shrink-0 text-muted-foreground" />
                 </TooltipTrigger>
                 <TooltipContent side="right">
-                  <p className="text-xs">Branched from: {branchedFromTitle}</p>
+                  <p className="text-xs">
+                    Branched from: {formatTaskTitle(branchedFromTitle)}
+                  </p>
                 </TooltipContent>
               </Tooltip>
             </TooltipProvider>
           )}
-          <span className="min-w-0 truncate">{title}</span>
+          <span className="min-w-0 truncate">{taskTitle}</span>
           {isAwaitingApproval && (
             <span
               className="shrink-0 rounded-full bg-emerald-500/20 px-2 py-0.5 text-xs font-medium text-emerald-400"
@@ -519,9 +526,9 @@ const ChatItem: React.FC<ChatItemProps> = ({
       <Dialog open={showRenameDialog} onOpenChange={setShowRenameDialog}>
         <DialogContent className="sm:max-w-[425px]">
           <DialogHeader>
-            <DialogTitle>Rename Chat</DialogTitle>
+            <DialogTitle>Rename Task</DialogTitle>
             <DialogDescription>
-              Enter a new name for this chat conversation.
+              Enter a new name for this task.
             </DialogDescription>
           </DialogHeader>
           <div className="grid gap-4 py-4">
@@ -531,7 +538,7 @@ const ChatItem: React.FC<ChatItemProps> = ({
               onChange={(e) => setEditTitle(e.target.value)}
               onKeyDown={handleInputKeyDown}
               disabled={isRenaming}
-              placeholder="Chat name"
+              placeholder="Task name"
               maxLength={100}
               className="w-full"
               autoFocus
@@ -562,7 +569,7 @@ const ChatItem: React.FC<ChatItemProps> = ({
         open={showShareDialog}
         onOpenChange={setShowShareDialog}
         chatId={id}
-        chatTitle={title}
+        chatTitle={taskTitle}
         existingShareId={shareId}
       />
 
@@ -578,11 +585,11 @@ const ChatItem: React.FC<ChatItemProps> = ({
       <AlertDialog open={showDeleteDialog} onOpenChange={setShowDeleteDialog}>
         <AlertDialogContent onClick={(e) => e.stopPropagation()}>
           <AlertDialogHeader>
-            <AlertDialogTitle>Delete chat?</AlertDialogTitle>
+            <AlertDialogTitle>Delete task?</AlertDialogTitle>
             <AlertDialogDescription asChild>
               <div>
                 <p>
-                  This will delete <strong>{title}</strong>.
+                  This will delete <strong>{taskTitle}</strong>.
                 </p>
                 <p className="mt-2 text-sm text-muted-foreground">
                   Visit{" "}
@@ -596,7 +603,7 @@ const ChatItem: React.FC<ChatItemProps> = ({
                   >
                     settings
                   </button>{" "}
-                  to delete any notes saved during this chat.
+                  to delete any notes saved during this task.
                 </p>
               </div>
             </AlertDialogDescription>

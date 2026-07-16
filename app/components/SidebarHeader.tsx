@@ -120,7 +120,7 @@ const SidebarHeaderContentImpl: FC<SidebarHeaderContentImplProps> = ({
                 size="sm"
                 className="h-8 w-8 p-0 hover:bg-sidebar-accent/50"
                 onClick={handleNewChat}
-                aria-label="Start new chat"
+                aria-label="Start new task"
               >
                 <SquarePen className="w-4 h-4" />
               </Button>
@@ -133,7 +133,7 @@ const SidebarHeaderContentImpl: FC<SidebarHeaderContentImplProps> = ({
                 size="sm"
                 className="h-8 w-8 p-0 hover:bg-sidebar-accent/50"
                 onClick={handleSearchOpen}
-                aria-label="Search chats"
+                aria-label="Search tasks"
                 onMouseEnter={() => setIsSearchHovered(true)}
                 onMouseLeave={() => setIsSearchHovered(false)}
               >
@@ -177,11 +177,11 @@ const SidebarHeaderContentImpl: FC<SidebarHeaderContentImplProps> = ({
             variant="ghost"
             className="group relative flex w-full justify-start items-center rounded-lg p-2 h-auto hover:bg-sidebar-accent/50 text-left"
             onClick={handleNewChat}
-            aria-label="Start new chat"
+            aria-label="Start new task"
           >
             <SquarePen className="w-4 h-4" />
             <div className="mr-2 flex-1 overflow-hidden text-clip whitespace-nowrap text-sm font-medium text-left">
-              New chat
+              New task
             </div>
           </Button>
         </div>
@@ -192,13 +192,13 @@ const SidebarHeaderContentImpl: FC<SidebarHeaderContentImplProps> = ({
             variant="ghost"
             className="relative flex w-full justify-start items-center rounded-lg p-2 h-auto hover:bg-sidebar-accent/50 text-left"
             onClick={handleSearchOpen}
-            aria-label="Search chats"
+            aria-label="Search tasks"
             onMouseEnter={() => setIsSearchHovered(true)}
             onMouseLeave={() => setIsSearchHovered(false)}
           >
             <Search className="w-4 h-4" />
             <div className="mr-2 flex-1 overflow-hidden text-clip whitespace-nowrap text-sm font-medium text-left">
-              Search chats
+              Search tasks
             </div>
             {/* Only show shortcut when hovering directly on the search button */}
             <div

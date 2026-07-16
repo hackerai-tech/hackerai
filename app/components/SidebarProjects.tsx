@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { useGlobalState } from "@/app/contexts/GlobalState";
 import { useMoveChatToProject } from "@/app/hooks/useProjects";
 import { useStartNewChat } from "@/app/hooks/useStartNewChat";
+import { formatTaskUiCopy } from "@/app/utils/task-ui-copy";
 import { ProjectCreateDialog } from "./ProjectCreateDialog";
 import { SidebarProjectItem } from "./SidebarProjectItem";
 
@@ -73,9 +74,11 @@ export function SidebarProjects({ projects }: SidebarProjectsProps) {
       if (moved) toast.success(`Moved to ${project.name}`);
     } catch (error) {
       console.error("Failed to move chat to project:", error);
-      toast.error("Failed to move chat", {
+      toast.error("Failed to move task", {
         description:
-          error instanceof Error ? error.message : "Please try again.",
+          error instanceof Error
+            ? formatTaskUiCopy(error.message)
+            : "Please try again.",
       });
     }
   };

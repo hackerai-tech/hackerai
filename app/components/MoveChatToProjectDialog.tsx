@@ -14,6 +14,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { useMoveChatToProject, useProjects } from "@/app/hooks/useProjects";
+import { formatTaskUiCopy } from "@/app/utils/task-ui-copy";
 
 interface MoveChatToProjectDialogProps {
   chatId: string;
@@ -45,9 +46,11 @@ export function MoveChatToProjectDialog({
       }
     } catch (error) {
       console.error("Failed to move chat to project:", error);
-      toast.error("Failed to move chat", {
+      toast.error("Failed to move task", {
         description:
-          error instanceof Error ? error.message : "Please try again.",
+          error instanceof Error
+            ? formatTaskUiCopy(error.message)
+            : "Please try again.",
       });
     } finally {
       setMovingToProjectId(null);
@@ -66,7 +69,7 @@ export function MoveChatToProjectDialog({
         <DialogHeader>
           <DialogTitle>Move to project</DialogTitle>
           <DialogDescription>
-            Choose the project where this chat should appear.
+            Choose the project where this task should appear.
           </DialogDescription>
         </DialogHeader>
 
