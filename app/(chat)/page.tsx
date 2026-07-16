@@ -23,12 +23,12 @@ import { PUBLIC_POSITIONING } from "@/lib/marketing/positioning";
 
 const LOGIN_TYPING_PREFIX = "Ask HackerAI to ";
 const LOGIN_TYPING_TAILS = [
-  "debug this issue across the codebase…",
-  "turn this idea into a working prototype…",
-  "automate this workflow with a script…",
-  "research this stack and compare options…",
-  "review this auth flow for security gaps…",
-  "validate this finding and draft the report…",
+  "map this target and find the next move…",
+  "trace this auth flaw through the codebase…",
+  "turn this request into a working exploit…",
+  "run the right tools against this scope…",
+  "validate the impact and kill false positives…",
+  "turn this evidence into a clean report…",
 ];
 
 // Simple unauthenticated content that redirects to signup on message send

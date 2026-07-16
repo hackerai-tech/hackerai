@@ -51,7 +51,7 @@ function DownloadContent() {
           <p className="text-lg text-muted-foreground">
             {isMobile
               ? "Keep your workspace within reach"
-              : "Run Agent with your local tools, files, and projects"}
+              : "Bring the hacking workspace to your tools, files, and test environments"}
           </p>
         </div>
 

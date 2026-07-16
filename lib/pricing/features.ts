@@ -46,14 +46,14 @@ export const freeFeatures: Array<PricingFeature> = [
 ];
 
 export const proFeatures: Array<PricingFeature> = [
-  { icon: Check, text: "Best available AI models" },
-  { icon: Check, text: "Higher limits for longer technical workflows" },
+  { icon: Check, text: "Best available AI models for security work" },
+  { icon: Check, text: "Higher limits for longer investigations" },
   {
     icon: Check,
     text: "Upload code, requests, documents, reports, and screenshots",
   },
   { icon: Check, text: "Cloud Agent with terminal and browser tools" },
-  { icon: Check, text: "Maximum context for large codebases and research" },
+  { icon: Check, text: "Maximum context for large targets and codebases" },
 ];
 
 export const proPlusFeatures: Array<PricingFeature> = [

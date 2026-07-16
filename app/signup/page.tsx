@@ -136,9 +136,9 @@ export default async function SignupPage({ searchParams }: SignupPageProps) {
           Create your account
         </h1>
         <p className="text-muted-foreground mt-4 max-w-lg text-lg leading-relaxed text-pretty">
-          Bring a question, codebase, project, lab, or authorized target. Learn,
-          build, debug, research, automate, or test security with Ask and Agent
-          workflows.
+          Bring a target, codebase, lab, or raw finding. Use Ask to think it
+          through or Agent to run the tools—then validate the impact, fix the
+          bug, and write the report.
         </p>
 
         <div className="border-border bg-muted/25 mt-8 rounded-2xl border p-6">

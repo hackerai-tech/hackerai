@@ -97,10 +97,10 @@ export function getPricingIntentCopy(
     return {
       title: "Keep working",
       description:
-        "Upgrade to continue today with higher usage limits, file uploads, and stronger models for heavier technical work.",
+        "Upgrade to continue today with higher usage limits, file uploads, and stronger models for deeper security work.",
       proDescription: "Continue with higher limits",
       proPlusDescription: "More room for heavier work",
-      ultraDescription: "Maximum usage for intensive work",
+      ultraDescription: "Maximum usage for intensive research",
       proButtonText: "Continue with Pro",
       proPlusButtonText: "Keep going with Pro+",
       ultraButtonText: "Scale up with Ultra",
@@ -503,11 +503,11 @@ const PricingDialog: React.FC<PricingDialogProps> = ({
             <div></div>
             <div className="my-1 flex flex-col items-center justify-center md:mt-0 md:mb-0">
               <DialogTitle className="text-3xl font-semibold">
-                {pricingIntentCopy?.title ?? "Plans for Hands-On Work"}
+                {pricingIntentCopy?.title ?? "Plans for Hands-On Hacking"}
               </DialogTitle>
               <p className="text-muted-foreground mt-2 max-w-2xl text-center text-sm text-pretty">
                 {pricingIntentCopy?.description ??
-                  "Start with Ask and a local Agent, then scale model access, cloud tools, context, and usage as your work gets heavier."}
+                  "Start with Ask and your local sandbox. Add stronger models, Cloud Agent, larger context, and higher limits when the work goes deeper."}
               </p>
             </div>
             <button
@@ -538,7 +538,7 @@ const PricingDialog: React.FC<PricingDialogProps> = ({
                 <PlanCard
                   planName="Free"
                   price={0}
-                  description="Learn, explore, and use a local Agent"
+                  description="Learn, investigate, and hack in a local sandbox"
                   features={freeFeatures}
                   buttonText={freeButtonConfig.text}
                   buttonVariant={freeButtonConfig.variant}
@@ -555,7 +555,7 @@ const PricingDialog: React.FC<PricingDialogProps> = ({
                 price={isYearly ? PRICING.pro.yearly : PRICING.pro.monthly}
                 description={
                   pricingIntentCopy?.proDescription ??
-                  "For regular technical and security work"
+                  "For regular hands-on security work"
                 }
                 features={proFeatures}
                 buttonText={proButtonConfig.text}
@@ -579,7 +579,7 @@ const PricingDialog: React.FC<PricingDialogProps> = ({
                 }
                 description={
                   pricingIntentCopy?.proPlusDescription ??
-                  "For individuals who need more Agent usage"
+                  "For individual operators running deeper Agent workflows"
                 }
                 features={proPlusFeatures}
                 buttonText={proPlusButtonConfig.text}
@@ -598,7 +598,7 @@ const PricingDialog: React.FC<PricingDialogProps> = ({
                 price={isYearly ? PRICING.ultra.yearly : PRICING.ultra.monthly}
                 description={
                   pricingIntentCopy?.ultraDescription ??
-                  "For sustained, high-volume workflows"
+                  "For sustained, high-volume security research"
                 }
                 features={ultraFeatures}
                 buttonText={ultraButtonConfig.text}

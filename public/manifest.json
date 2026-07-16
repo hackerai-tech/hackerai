@@ -1,7 +1,7 @@
 {
   "short_name": "HackerAI",
   "name": "HackerAI",
-  "description": "Practical AI for technical work and authorized security testing",
+  "description": "The hands-on AI workspace for authorized security work",
   "icons": [
     {
       "src": "/icon-192x192.png",

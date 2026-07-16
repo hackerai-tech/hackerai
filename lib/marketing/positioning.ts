@@ -1,20 +1,20 @@
 export const PUBLIC_POSITIONING = {
-  eyebrow: "AI for hands-on technical work",
-  headline: "Build. Debug. Secure. Ship.",
+  eyebrow: "The hacker's AI workspace",
+  headline: "What will you hack today?",
   description:
-    "Work through code, systems, research, automation, and authorized security testing with an AI that can reason across files, tools, and long-running tasks.",
+    "Think through the target. Run the tools. Build the exploit. Prove the impact. HackerAI works beside you from first lead to final report.",
   audience:
-    "Built first for individuals doing real technical work—not an anything-goes chatbot.",
+    "Built for individual hackers, security researchers, students, and technical builders working on systems they own or are authorized to test.",
   footerBoundary:
-    "Only test systems you own or are authorized to assess. Model-provider policies and abuse controls still apply.",
+    "Hack only what you own or are authorized to test. Model-provider policies and abuse controls still apply.",
   boundary:
-    "HackerAI gives practical, end-to-end help across technical work, including authorized security testing. It is not sold as a “jailbroken,” “unrestricted,” or anything-goes AI. Provider policies, abuse controls, usage limits, and technical constraints still apply, and no plan guarantees an answer to every request.",
+    "HackerAI is built to go deep on authorized security work: reconnaissance, code review, exploit development, validation, remediation, and reporting. It is not sold as a “jailbroken,” “unrestricted,” or anything-goes AI. Provider policies, abuse controls, usage limits, and technical constraints still apply, so no plan guarantees an answer to every request.",
   pricingBoundary:
     "Plans expand model access, tools, and usage; they do not bypass provider policies or abuse controls. No plan guarantees every request will be answered.",
 } as const;
 
 export const PUBLIC_METADATA = {
-  title: "HackerAI — AI for Technical Work",
+  title: "HackerAI — The Hacker's AI Workspace",
   description:
-    "Practical AI for individuals working across code, research, automation, and authorized security—with files, terminal, browser, and Agent workflows.",
+    "A hands-on AI workspace for individual hackers, security researchers, students, and builders. Investigate targets, run tools, validate exploits, and report authorized security findings.",
 } as const;
