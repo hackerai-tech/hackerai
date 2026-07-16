@@ -16,7 +16,9 @@ jest.mock("@/app/hooks/useProjects", () => ({
   useMoveChatToProject: jest.fn(),
 }));
 jest.mock("../ProjectCreateDialog", () => ({
-  ProjectCreateDialog: () => null,
+  ProjectCreateDialog: ({ open }: { open: boolean }) => (
+    <div data-testid="project-create-dialog" data-open={String(open)} />
+  ),
 }));
 jest.mock("../SidebarProjectItem", () => ({
   SidebarProjectItem: ({
@@ -103,6 +105,33 @@ describe("SidebarProjects", () => {
       "data-open",
       "false",
     );
+  });
+
+  it("shows a new-project row when there are no projects", () => {
+    render(<SidebarProjects projects={[]} />);
+
+    expect(
+      screen.getByRole("button", { name: "New project" }),
+    ).toBeInTheDocument();
+    expect(screen.getByTestId("project-create-dialog")).toHaveAttribute(
+      "data-open",
+      "false",
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "New project" }));
+
+    expect(screen.getByTestId("project-create-dialog")).toHaveAttribute(
+      "data-open",
+      "true",
+    );
+  });
+
+  it("does not show the new-project row when projects exist", () => {
+    render(<SidebarProjects projects={projects} />);
+
+    expect(
+      screen.queryByRole("button", { name: "New project" }),
+    ).not.toBeInTheDocument();
   });
 
   it("collapses the entire projects section from its heading", () => {

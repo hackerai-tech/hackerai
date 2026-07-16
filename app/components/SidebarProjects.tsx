@@ -1,7 +1,12 @@
 "use client";
 
 import { useState } from "react";
-import { ChevronRight, ListChevronsDownUp, Plus } from "lucide-react";
+import {
+  ChevronRight,
+  FolderPlus,
+  ListChevronsDownUp,
+  Plus,
+} from "lucide-react";
 import { toast } from "sonner";
 import type { Doc, Id } from "@/convex/_generated/dataModel";
 import { Button } from "@/components/ui/button";
@@ -145,6 +150,15 @@ export function SidebarProjects({ projects }: SidebarProjectsProps) {
             <div className="px-2 py-0.5" aria-label="Loading projects">
               <div className="h-9 animate-pulse rounded-[10px] bg-sidebar-accent/50" />
             </div>
+          ) : projects.length === 0 ? (
+            <button
+              type="button"
+              className="flex h-9 w-full items-center gap-2 rounded-[10px] ps-2.5 pe-2 text-left text-sm text-sidebar-foreground hover:bg-sidebar-accent/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring"
+              onClick={() => setIsCreateOpen(true)}
+            >
+              <FolderPlus className="size-[18px] shrink-0" aria-hidden="true" />
+              <span>New project</span>
+            </button>
           ) : (
             projects.map((project) => (
               <SidebarProjectItem
