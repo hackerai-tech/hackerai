@@ -725,6 +725,20 @@ describe("userDeletion", () => {
     ).rejects.toThrow("processes one userId per mutation");
   });
 
+  it("rejects combined user and orphan-summary residue cleanup", async () => {
+    const { cleanupDeletedUserResidue } = await import("../userDeletion");
+    const tables = seedTables();
+    const { ctx } = createMockCtx(tables);
+
+    await expect(
+      cleanupDeletedUserResidue.handler(ctx as any, {
+        serviceKey: "service_key",
+        userIds: ["user_123"],
+        deleteOrphanChatSummaries: true,
+      }),
+    ).rejects.toThrow("separate mutations");
+  });
+
   it("keeps cleanup reads bounded and preserves chats until a later message batch", async () => {
     const { deleteAllUserData } = await import("../userDeletion");
     const tables = seedTables();

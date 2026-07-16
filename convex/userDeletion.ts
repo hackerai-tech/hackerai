@@ -808,6 +808,12 @@ export const cleanupDeletedUserResidue = mutation({
       );
     }
 
+    if (userIds.length > 0 && args.deleteOrphanChatSummaries) {
+      throw new Error(
+        "Run user data cleanup and orphan chat summary cleanup in separate mutations to keep Convex transactions bounded",
+      );
+    }
+
     if (userIds.length > MAX_RESIDUE_USER_IDS_PER_MUTATION) {
       throw new Error(
         "cleanupDeletedUserResidue processes one userId per mutation to keep Convex transactions bounded",
