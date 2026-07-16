@@ -301,6 +301,10 @@ const AGENT_ONLY_TERMINAL_MESSAGE_REPLACEMENTS = new Map([
   ],
 ]);
 
+/**
+ * Removes platform-authored recovery guidance before terminal output is shown
+ * in the Computer sidebar. The persisted/model-facing tool result is unchanged.
+ */
 export function stripAgentOnlyTerminalGuidance(output: string): string {
   const trimmedOutput = output.trimEnd();
   const trailingWhitespace = output.slice(trimmedOutput.length);
