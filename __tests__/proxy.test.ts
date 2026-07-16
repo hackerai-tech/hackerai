@@ -76,22 +76,25 @@ describe("proxy", () => {
     mockNextResponseRedirect.mockClear();
   });
 
-  it("bypasses AuthKit for the Trigger Agent health endpoint", async () => {
-    const { default: proxy } = await import("../proxy");
+  it.each(["/api/health/core", "/api/health/trigger-agent-mode"])(
+    "bypasses AuthKit for the health endpoint %s",
+    async (pathname) => {
+      const { default: proxy } = await import("../proxy");
 
-    const response = await proxy(
-      createRequest({
-        pathname: "/api/health/trigger-agent-mode",
-        hasSession: true,
-      }),
-    );
+      const response = await proxy(
+        createRequest({
+          pathname,
+          hasSession: true,
+        }),
+      );
 
-    expect(response).toMatchObject({ kind: "next" });
-    expect(mockAuthkit).not.toHaveBeenCalled();
-    expect(mockNextResponseNext).toHaveBeenCalledWith();
-    expect(mockNextResponseJson).not.toHaveBeenCalled();
-    expect(mockNextResponseRedirect).not.toHaveBeenCalled();
-  });
+      expect(response).toMatchObject({ kind: "next" });
+      expect(mockAuthkit).not.toHaveBeenCalled();
+      expect(mockNextResponseNext).toHaveBeenCalledWith();
+      expect(mockNextResponseJson).not.toHaveBeenCalled();
+      expect(mockNextResponseRedirect).not.toHaveBeenCalled();
+    },
+  );
 
   it.each(["/robots.txt", "/sitemap.xml"])(
     "bypasses AuthKit for the public SEO route %s",
