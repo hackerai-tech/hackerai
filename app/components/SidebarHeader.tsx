@@ -1,13 +1,14 @@
 "use client";
 
 import { useState, useEffect, useMemo, FC } from "react";
-import { useRouter } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import {
   PanelLeft,
   Sidebar as SidebarIcon,
   SquarePen,
   Search,
+  ShieldAlert,
 } from "lucide-react";
 import { useSidebar } from "@/components/ui/sidebar";
 import { HackerAISVG } from "@/components/icons/hackerai-svg";
@@ -39,6 +40,7 @@ const SidebarHeaderContentImpl: FC<SidebarHeaderContentImplProps> = ({
 }) => {
   const isMobile = useIsMobile();
   const router = useRouter();
+  const pathname = usePathname();
   const {
     setChatSidebarOpen,
     closeSidebar,
@@ -101,6 +103,12 @@ const SidebarHeaderContentImpl: FC<SidebarHeaderContentImplProps> = ({
     setIsSearchOpen(true);
   };
 
+  const handleFindingsOpen = () => {
+    closeSidebar();
+    if (isMobile) setChatSidebarOpen(false);
+    router.push("/findings");
+  };
+
   const handleSearchClose = () => {
     setIsSearchOpen(false);
   };
@@ -160,6 +168,20 @@ const SidebarHeaderContentImpl: FC<SidebarHeaderContentImplProps> = ({
                 onMouseLeave={() => setIsSearchHovered(false)}
               >
                 <Search className="w-4 h-4" />
+              </Button>
+            </div>
+
+            <div className="p-1">
+              <Button
+                variant="ghost"
+                size="sm"
+                className={`h-8 w-8 p-0 hover:bg-sidebar-accent/50 ${
+                  pathname === "/findings" ? "bg-sidebar-accent" : ""
+                }`}
+                onClick={handleFindingsOpen}
+                aria-label="Open findings"
+              >
+                <ShieldAlert className="w-4 h-4" />
               </Button>
             </div>
           </div>
@@ -229,6 +251,22 @@ const SidebarHeaderContentImpl: FC<SidebarHeaderContentImplProps> = ({
               }`}
             >
               {modifierKey}K
+            </div>
+          </Button>
+        </div>
+
+        <div className="px-2 py-1">
+          <Button
+            variant="ghost"
+            className={`relative flex w-full justify-start items-center rounded-lg p-2 h-auto hover:bg-sidebar-accent/50 text-left ${
+              pathname === "/findings" ? "bg-sidebar-accent" : ""
+            }`}
+            onClick={handleFindingsOpen}
+            aria-label="Open findings"
+          >
+            <ShieldAlert className="w-4 h-4" />
+            <div className="mr-2 flex-1 overflow-hidden text-clip whitespace-nowrap text-sm font-medium text-left">
+              Findings
             </div>
           </Button>
         </div>

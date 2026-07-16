@@ -14,6 +14,7 @@ export const USER_DELETION_TABLE_POLICY = {
     "messages",
     "files",
     "feedback",
+    "findings",
     "notes",
     "user_customization",
     "extra_usage",
@@ -362,6 +363,13 @@ async function cleanupUserDataForUser(
     "by_user_and_updated",
     (q) => q.eq("user_id", userId),
   );
+  const findingsBatch = await collectByIndexBatch<Doc<"findings">>(
+    ctx,
+    budget,
+    "findings",
+    "by_user_and_created",
+    (q) => q.eq("user_id", userId),
+  );
   const customizationBatch = await collectByIndexBatch<
     Doc<"user_customization">
   >(ctx, budget, "user_customization", "by_user_id", (q) =>
@@ -409,6 +417,7 @@ async function cleanupUserDataForUser(
   const deletionBatches = [
     chatsBatch,
     filesBatch,
+    findingsBatch,
     notesBatch,
     customizationBatch,
     messagesBatch,
@@ -422,6 +431,7 @@ async function cleanupUserDataForUser(
   stats.hasMore ||= deletionBatches.some((batch) => batch.hasMore);
 
   const files = filesBatch.docs;
+  const findings = findingsBatch.docs;
   const notes = notesBatch.docs;
   const customization = customizationBatch.docs;
   const tempStreams = tempStreamsBatch.docs;
@@ -443,6 +453,7 @@ async function cleanupUserDataForUser(
   await deleteDocs(ctx, stats, "chat_summaries", chatSummaries, mode);
   await deleteDocs(ctx, stats, "chats", chatsReadyToDelete, mode);
   await deleteFiles(ctx, stats, files, mode);
+  await deleteDocs(ctx, stats, "findings", findings, mode);
   await deleteDocs(ctx, stats, "notes", notes, mode);
   await deleteDocs(ctx, stats, "user_customization", customization, mode);
   await deleteDocs(ctx, stats, "temp_streams", tempStreams, mode);

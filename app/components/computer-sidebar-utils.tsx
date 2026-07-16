@@ -7,6 +7,7 @@ import {
   Search,
   FolderSearch,
   StickyNote,
+  ShieldAlert,
   FileDown,
   Radar,
 } from "lucide-react";
@@ -16,6 +17,7 @@ import {
   isSidebarProxy,
   isSidebarWebSearch,
   isSidebarNotes,
+  isSidebarFinding,
   isSidebarSharedFiles,
   type SidebarContent,
   type NoteCategory,
@@ -163,6 +165,8 @@ export function getActionText(content: SidebarContent): string {
     return completedActionMap[content.action];
   }
 
+  if (isSidebarFinding(content)) return "Saved finding";
+
   if (isSidebarSharedFiles(content)) {
     if (content.isExecuting) {
       const ready = content.files.length;
@@ -198,6 +202,7 @@ export function getSidebarIcon(content: SidebarContent): React.ReactNode {
   if (isSidebarTerminal(content)) return <Terminal className={iconClass} />;
   if (isSidebarWebSearch(content)) return <Search className={iconClass} />;
   if (isSidebarNotes(content)) return <StickyNote className={iconClass} />;
+  if (isSidebarFinding(content)) return <ShieldAlert className={iconClass} />;
   if (isSidebarSharedFiles(content)) return <FileDown className={iconClass} />;
   return <Edit className={iconClass} />;
 }
@@ -215,6 +220,7 @@ export function getToolName(content: SidebarContent): string {
   }
   if (isSidebarWebSearch(content)) return "Search";
   if (isSidebarNotes(content)) return "Notes";
+  if (isSidebarFinding(content)) return "Findings";
   if (isSidebarSharedFiles(content)) return "Downloads";
   return "Tool";
 }
@@ -244,6 +250,7 @@ export function getDisplayTarget(content: SidebarContent): string {
     }
     return content.affectedTitle || "";
   }
+  if (isSidebarFinding(content)) return content.title;
   if (isSidebarSharedFiles(content)) {
     const names = content.files.length
       ? content.files.map((f) => f.name)

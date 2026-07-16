@@ -9,6 +9,7 @@ import {
   isSidebarTerminal,
   isSidebarProxy,
   isSidebarWebSearch,
+  isSidebarFinding,
   type SidebarContent,
 } from "@/types/chat";
 
@@ -61,6 +62,9 @@ export const useSidebarNavigation = ({
       }
       if (isSidebarWebSearch(item) && isSidebarWebSearch(sidebarContent)) {
         return item.toolCallId === sidebarContent.toolCallId;
+      }
+      if (isSidebarFinding(item) && isSidebarFinding(sidebarContent)) {
+        return item.findingId === sidebarContent.findingId;
       }
       return false;
     });

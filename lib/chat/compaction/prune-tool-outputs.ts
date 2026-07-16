@@ -28,6 +28,7 @@ const PROTECTED_TOOLS = new Set([
   "list_notes",
   "update_note",
   "delete_note",
+  "create_vulnerability_report",
 ]);
 
 const TOOL_TYPE_PREFIX = "tool-";

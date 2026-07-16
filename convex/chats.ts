@@ -28,6 +28,7 @@ import {
 
 const DELETE_ALL_CHATS_MESSAGE_BATCH_SIZE = 10;
 const DELETE_ALL_CHATS_SUMMARY_BATCH_SIZE = 25;
+const DELETE_ALL_CHATS_FINDING_BATCH_SIZE = 25;
 const CHAT_DELETION_FENCE_BATCH_SIZE = 100;
 const MAX_ACTIVE_TRIGGER_RUNS_TO_RETURN = 100;
 const CHAT_SUMMARY_TELEMETRY_CLEANUP_DEFAULT_BATCH_SIZE = 500;
@@ -248,8 +249,34 @@ async function deleteMessageForChatDeletion(
   await ctx.db.delete(message._id);
 }
 
+async function deleteFindingsForChatBatch(
+  ctx: MutationCtx,
+  chat: Doc<"chats">,
+): Promise<boolean> {
+  const findings = await ctx.db
+    .query("findings")
+    .withIndex("by_user_chat_created", (q) =>
+      q.eq("user_id", chat.user_id).eq("chat_id", chat.id),
+    )
+    .take(DELETE_ALL_CHATS_FINDING_BATCH_SIZE + 1);
+
+  for (const finding of findings.slice(
+    0,
+    DELETE_ALL_CHATS_FINDING_BATCH_SIZE,
+  )) {
+    await ctx.db.delete(finding._id);
+  }
+
+  return findings.length > DELETE_ALL_CHATS_FINDING_BATCH_SIZE;
+}
+
 async function deleteChatDocument(ctx: MutationCtx, chat: Doc<"chats">) {
   await prepareChatForDeletion(ctx, chat);
+
+  if (await deleteFindingsForChatBatch(ctx, chat)) {
+    await scheduleDeleteChatDocumentBatch(ctx, chat.id, chat.user_id);
+    return;
+  }
 
   const messages = await ctx.db
     .query("messages")
@@ -320,6 +347,11 @@ async function deleteNextUserChatBatch(ctx: MutationCtx, userId: string) {
   }
 
   await prepareChatForDeletion(ctx, chat);
+
+  if (await deleteFindingsForChatBatch(ctx, chat)) {
+    await scheduleDeleteAllChatsBatch(ctx, userId);
+    return true;
+  }
 
   const messages = await ctx.db
     .query("messages")
@@ -1589,6 +1621,16 @@ export const deleteAllChatsForUser = mutation({
       .collect();
 
     for (const chat of userChats) {
+      const findings = await ctx.db
+        .query("findings")
+        .withIndex("by_user_chat_created", (q) =>
+          q.eq("user_id", args.userId).eq("chat_id", chat.id),
+        )
+        .collect();
+      for (const finding of findings) {
+        await ctx.db.delete(finding._id);
+      }
+
       const messages = await ctx.db
         .query("messages")
         .withIndex("by_chat_id", (q) => q.eq("chat_id", chat.id))
