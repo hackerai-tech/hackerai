@@ -155,6 +155,34 @@ describe("GET /api/health/core", () => {
     );
   });
 
+  it("authenticates before exposing missing WorkOS configuration", async () => {
+    delete process.env.WORKOS_API_KEY;
+    const { GET } = await import("../route");
+
+    const unauthorizedResponse = await GET(createRequest());
+    const unauthorizedBody = await unauthorizedResponse.json();
+
+    expect(unauthorizedResponse.status).toBe(401);
+    expect(unauthorizedBody).toMatchObject({
+      ok: false,
+      error: "unauthorized",
+    });
+    expect(warnSpy).not.toHaveBeenCalled();
+
+    const authorizedResponse = await GET(createRequest("monitor-secret"));
+    const authorizedBody = await authorizedResponse.json();
+
+    expect(authorizedResponse.status).toBe(503);
+    expect(authorizedBody).toMatchObject({
+      ok: false,
+      error: "health_check_not_configured",
+    });
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('"missing_workos_api_key":true'),
+    );
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
   it("returns 503 when WorkOS returns an error status", async () => {
     mockFetch.mockResolvedValueOnce(
       fetchResponse({ ok: false, status: 504 }) as never,
@@ -183,29 +211,52 @@ describe("GET /api/health/core", () => {
     );
   });
 
-  it("returns 503 when the WorkOS request fails", async () => {
-    mockFetch.mockRejectedValueOnce(new Error("request timeout") as never);
-    const { GET } = await import("../route");
+  it("returns 503 when the four-second WorkOS timeout aborts", async () => {
+    const abortController = new AbortController();
+    const timeoutSpy = jest
+      .spyOn(AbortSignal, "timeout")
+      .mockReturnValue(abortController.signal);
+    mockFetch.mockImplementationOnce(
+      (_url, init) =>
+        new Promise((_resolve, reject) => {
+          init?.signal?.addEventListener(
+            "abort",
+            () => reject(new DOMException("request timeout", "AbortError")),
+            { once: true },
+          );
+          abortController.abort();
+        }) as never,
+    );
 
-    const response = await GET(createRequest("monitor-secret"));
-    const body = await response.json();
+    try {
+      const { GET } = await import("../route");
 
-    expect(response.status).toBe(503);
-    expect(body).toMatchObject({
-      ok: false,
-      error: "workos_fetch_failed",
-      dependencies: {
-        workos: {
-          ok: false,
-          status: null,
+      const response = await GET(createRequest("monitor-secret"));
+      const body = await response.json();
+
+      expect(timeoutSpy).toHaveBeenCalledWith(4_000);
+      expect(response.status).toBe(503);
+      expect(body).toMatchObject({
+        ok: false,
+        error: "workos_fetch_failed",
+        dependencies: {
+          workos: {
+            ok: false,
+            status: null,
+          },
         },
-      },
-    });
-    expect(warnSpy).toHaveBeenCalledWith(
-      expect.stringContaining('"reason":"fetch_failed"'),
-    );
-    expect(warnSpy).toHaveBeenCalledWith(
-      expect.stringContaining('"error_message":"request timeout"'),
-    );
+      });
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining('"reason":"fetch_failed"'),
+      );
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining('"error_name":"AbortError"'),
+      );
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining('"error_message":"request timeout"'),
+      );
+    } finally {
+      timeoutSpy.mockRestore();
+    }
   });
 });

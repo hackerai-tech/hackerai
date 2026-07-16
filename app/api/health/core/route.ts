@@ -93,14 +93,12 @@ function unhealthyResponse(
 
 export async function GET(request: NextRequest) {
   const healthCheckToken = process.env.CORE_HEALTH_CHECK_TOKEN;
-  const workosApiKey = process.env.WORKOS_API_KEY;
 
-  if (!healthCheckToken || !workosApiKey) {
+  if (!healthCheckToken) {
     const checkedAt = new Date().toISOString();
     logHealthFailure(request, checkedAt, {
       reason: "missing_configuration",
-      missing_health_check_token: !healthCheckToken,
-      missing_workos_api_key: !workosApiKey,
+      missing_health_check_token: true,
     });
 
     return unhealthyResponse(
@@ -128,6 +126,25 @@ export async function GET(request: NextRequest) {
         error: "unauthorized",
       },
       { status: 401 },
+    );
+  }
+
+  const workosApiKey = process.env.WORKOS_API_KEY;
+  if (!workosApiKey) {
+    const checkedAt = new Date().toISOString();
+    logHealthFailure(request, checkedAt, {
+      reason: "missing_configuration",
+      missing_workos_api_key: true,
+    });
+
+    return unhealthyResponse(
+      checkedAt,
+      {
+        ok: false,
+        status: null,
+        latencyMs: 0,
+      },
+      "health_check_not_configured",
     );
   }
 
