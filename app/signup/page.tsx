@@ -136,8 +136,9 @@ export default async function SignupPage({ searchParams }: SignupPageProps) {
           Create your account
         </h1>
         <p className="text-muted-foreground mt-4 max-w-lg text-lg leading-relaxed text-pretty">
-          Bring a real target, lab, or codebase. HackerAI is built for practical
-          bug bounty, pentest, and security research workflows.
+          Bring a question, codebase, project, lab, or authorized target. Learn,
+          build, debug, research, automate, or test security with Ask and Agent
+          workflows.
         </p>
 
         <div className="border-border bg-muted/25 mt-8 rounded-2xl border p-6">

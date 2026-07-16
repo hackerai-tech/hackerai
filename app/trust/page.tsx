@@ -21,18 +21,18 @@ import { PUBLIC_POSITIONING } from "@/lib/marketing/positioning";
 export const metadata: Metadata = {
   title: "Security & Trust | HackerAI",
   description:
-    "How HackerAI supports authorized security testing, where product and provider boundaries apply, and how data, sandboxes, billing, and account security work.",
+    "How HackerAI supports technical work and authorized security testing, where provider boundaries apply, and how data, sandboxes, billing, and account security work.",
   openGraph: {
     title: "Security & Trust | HackerAI",
     description:
-      "How HackerAI supports authorized security testing, where product and provider boundaries apply, and how data, sandboxes, billing, and account security work.",
+      "How HackerAI supports technical work and authorized security testing, where provider boundaries apply, and how data, sandboxes, billing, and account security work.",
     type: "website",
   },
   twitter: {
     card: "summary",
     title: "Security & Trust | HackerAI",
     description:
-      "How HackerAI supports authorized security testing, where product and provider boundaries apply, and how data, sandboxes, billing, and account security work.",
+      "How HackerAI supports technical work and authorized security testing, where provider boundaries apply, and how data, sandboxes, billing, and account security work.",
   },
 };
 
@@ -182,9 +182,10 @@ export default function TrustPage() {
             Security &amp; Trust
           </h1>
           <p className="mx-auto mt-4 max-w-2xl text-lg leading-relaxed text-muted-foreground">
-            Built for serious, authorized security testing. This page explains
-            where HackerAI goes deep, where provider and abuse controls still
-            apply, and how your data and agent execution are handled.
+            HackerAI is built for practical technical work, including serious,
+            authorized security testing. This page explains where provider and
+            abuse controls apply and how your data and Agent execution are
+            handled.
           </p>
           <div className="mt-6 flex flex-wrap items-center justify-center gap-2">
             <span className="inline-flex items-center gap-1.5 rounded-full border border-border bg-card px-3 py-1 text-xs font-medium text-muted-foreground">
@@ -194,11 +195,12 @@ export default function TrustPage() {
         </header>
 
         <div className="space-y-6">
-          <Section icon={Crosshair} title="Authorized Security Work">
+          <Section icon={Crosshair} title="Authorized Security Testing">
             <p>
-              Use HackerAI across the full workflow: attack-surface mapping,
-              code review, exploit development, validation, remediation, and
-              reporting on systems you own or are authorized to test.
+              Security is one of HackerAI&apos;s deepest workflows:
+              attack-surface mapping, code review, exploit development,
+              validation, remediation, and reporting on systems you own or are
+              authorized to test.
             </p>
             <p>{PUBLIC_POSITIONING.boundary}</p>
           </Section>

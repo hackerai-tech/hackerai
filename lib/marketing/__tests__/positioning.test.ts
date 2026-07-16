@@ -4,14 +4,21 @@ import {
 } from "@/lib/marketing/positioning";
 
 describe("public positioning", () => {
-  it("leads with authorized, practitioner-focused security work", () => {
-    expect(PUBLIC_METADATA.description).toContain("authorized bug bounty");
-    expect(PUBLIC_POSITIONING.description).toContain("exploit validation");
-    expect(PUBLIC_POSITIONING.audience).toContain("security labs");
+  it("leads with broad, individual-first technical work", () => {
+    expect(PUBLIC_METADATA.description).toContain("individuals");
+    expect(PUBLIC_POSITIONING.description).toContain("automation");
+    expect(PUBLIC_POSITIONING.description).toContain(
+      "authorized security testing",
+    );
+    expect(PUBLIC_POSITIONING.audience).toContain(
+      "Built first for individuals",
+    );
   });
 
   it("sets clear capability boundaries without weakening the product promise", () => {
-    expect(PUBLIC_POSITIONING.boundary).toContain("end-to-end help");
+    expect(PUBLIC_POSITIONING.boundary).toContain(
+      "end-to-end help across technical work",
+    );
     expect(PUBLIC_POSITIONING.boundary).toContain(
       "“jailbroken,” “unrestricted,”",
     );
@@ -19,7 +26,9 @@ describe("public positioning", () => {
     expect(PUBLIC_POSITIONING.boundary).toContain(
       "no plan guarantees an answer to every request",
     );
-    expect(PUBLIC_POSITIONING.footerBoundary).toContain("Authorized targets");
+    expect(PUBLIC_POSITIONING.footerBoundary).toContain(
+      "Only test systems you own",
+    );
     expect(PUBLIC_POSITIONING.footerBoundary).toContain(
       "Model-provider policies",
     );

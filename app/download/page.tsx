@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import { DownloadPageContent } from "./DownloadPageContent";
 
 const DOWNLOAD_DESCRIPTION =
-  "Download HackerAI for macOS, Windows, Linux, iOS, and Android. Run practical, authorized bug bounty and penetration-testing workflows anywhere.";
+  "Download HackerAI for macOS, Windows, Linux, iOS, and Android. Work across code, research, automation, and authorized security from anywhere.";
 
 export const metadata: Metadata = {
   title: "Download | HackerAI",
