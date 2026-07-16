@@ -21,6 +21,7 @@ import { validateDownloadUrl } from "./path-validation";
 const VALID_MESSAGE_TYPES = new Set([
   "command",
   "command_cancel",
+  "command_cancel_result",
   "stdout",
   "stderr",
   "exit",
@@ -53,6 +54,7 @@ const FILE_DOWNLOAD_TIMEOUT_MS = 120000;
 const SETUP_COMMAND_TIMEOUT_MS = 30000;
 const SETUP_COMMAND_MAX_ATTEMPTS = 2;
 const SETUP_COMMAND_RETRY_DELAY_MS = 500;
+const COMMAND_CANCEL_ACK_TIMEOUT_MS = 5000;
 const TRANSIENT_COMMAND_TIMEOUT_ERROR_PATTERN =
   /\b(?:deadline_exceeded|operation timed out:.*\btimeoutMs\b|exceeding ['"]?timeoutMs['"]?|Command timeout after \d+ms)\b/i;
 
@@ -116,6 +118,15 @@ export function parseSandboxMessage(
       }
       break;
     case "command_cancel":
+      break;
+    case "command_cancel_result":
+      if (typeof msg.canceled !== "boolean") {
+        console.warn(
+          "Invalid command_cancel_result message: missing canceled",
+          msg,
+        );
+        return null;
+      }
       break;
   }
 
@@ -439,6 +450,7 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
         onStderr?: (data: string) => void;
         displayName?: string;
         signal?: AbortSignal;
+        onCancelReady?: (cancel: () => Promise<boolean>) => void;
       },
     ): Promise<{
       stdout: string;
@@ -468,11 +480,15 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
         let stderr = "";
         let settled = false;
         let timeoutId: NodeJS.Timeout | undefined;
+        let cancelAckTimeoutId: NodeJS.Timeout | undefined;
         let subscription: Subscription | undefined;
         let publishedCommand = false;
         let commandPublishInFlight = false;
         let cancelRequested = false;
         let cancelPublishStarted = false;
+        let cancelTriggeredBySignal = false;
+        let cancelAttemptPromise: Promise<boolean> | null = null;
+        let resolveCancelAttempt: ((confirmed: boolean) => void) | null = null;
 
         const maxWaitTime = timeout + 5000; // Add 5s buffer for network
 
@@ -487,6 +503,10 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
           if (timeoutId) {
             clearTimeout(timeoutId);
             timeoutId = undefined;
+          }
+          if (cancelAckTimeoutId) {
+            clearTimeout(cancelAckTimeoutId);
+            cancelAckTimeoutId = undefined;
           }
           if (subscription) {
             try {
@@ -510,6 +530,9 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
 
         const resolveCanceled = () => {
           if (settled) return;
+          resolveCancelAttempt?.(true);
+          resolveCancelAttempt = null;
+          cancelAttemptPromise = null;
           settled = true;
           cleanup();
           resolve({
@@ -517,6 +540,24 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
             stderr,
             exitCode: 130,
           });
+        };
+
+        const failCancellation = (message: string) => {
+          if (cancelAckTimeoutId) {
+            clearTimeout(cancelAckTimeoutId);
+            cancelAckTimeoutId = undefined;
+          }
+          resolveCancelAttempt?.(false);
+          resolveCancelAttempt = null;
+          cancelAttemptPromise = null;
+          cancelRequested = false;
+          cancelPublishStarted = false;
+
+          if (cancelTriggeredBySignal && !settled) {
+            settled = true;
+            cleanup();
+            reject(new Error(message));
+          }
         };
 
         const publishCancel = () => {
@@ -529,6 +570,14 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
           }
           if (cancelPublishStarted) return;
           cancelPublishStarted = true;
+          const attempt = cancelAttemptPromise;
+          cancelAckTimeoutId = setTimeout(() => {
+            if (cancelAttemptPromise === attempt) {
+              failCancellation(
+                "Local command cancellation was not acknowledged.",
+              );
+            }
+          }, COMMAND_CANCEL_ACK_TIMEOUT_MS);
 
           subscription
             .publish({
@@ -537,15 +586,33 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
               targetConnectionId: this.connectionInfo.connectionId,
             })
             .catch(() => {
-              // The run is being aborted already; resolve locally even if the
-              // remote relay disappeared before it accepted the cancel message.
-            })
-            .finally(resolveCanceled);
+              if (cancelAttemptPromise === attempt) {
+                failCancellation(
+                  "Failed to publish local command cancellation.",
+                );
+              }
+            });
+        };
+
+        const requestCancellation = (
+          triggeredBySignal = false,
+        ): Promise<boolean> => {
+          cancelTriggeredBySignal ||= triggeredBySignal;
+          if (settled) return Promise.resolve(true);
+          if (cancelAttemptPromise) return cancelAttemptPromise;
+
+          cancelAttemptPromise = new Promise<boolean>((resolveAttempt) => {
+            resolveCancelAttempt = resolveAttempt;
+          });
+          publishCancel();
+          return cancelAttemptPromise;
         };
 
         const handleAbort = () => {
-          publishCancel();
+          void requestCancellation(true);
         };
+
+        opts?.onCancelReady?.(() => requestCancellation(false));
 
         if (opts?.signal?.aborted) {
           resolveCanceled();
@@ -597,6 +664,10 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
               opts?.onStderr?.(message.data);
               break;
             case "exit":
+              if (cancelRequested) {
+                resolveCanceled();
+                break;
+              }
               settled = true;
               cleanup();
               resolve({
@@ -606,7 +677,21 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
                 pid: message.pid,
               });
               break;
+            case "command_cancel_result":
+              if (!cancelRequested) break;
+              if (message.canceled) {
+                resolveCanceled();
+              } else {
+                failCancellation(
+                  "Local command cancellation was not confirmed.",
+                );
+              }
+              break;
             case "error":
+              if (cancelRequested) {
+                resolveCanceled();
+                break;
+              }
               console.warn(
                 "[local-command]",
                 JSON.stringify({
@@ -711,8 +796,9 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
               .catch((err: unknown) => {
                 commandPublishInFlight = false;
                 if (cancelRequested || opts?.signal?.aborted) {
-                  resolveCanceled();
-                  return;
+                  failCancellation(
+                    "Command publication failed while cancellation was pending.",
+                  );
                 }
                 if (!settled) {
                   settled = true;

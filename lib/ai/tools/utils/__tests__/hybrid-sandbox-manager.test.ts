@@ -18,6 +18,7 @@ import {
   LOCAL_SANDBOX_PRESENCE_GRACE_MS,
 } from "../hybrid-sandbox-manager";
 import {
+  assertAgentApprovalSandboxIdentity,
   assertLocalSandboxFallbackAllowed,
   getSandboxFallbackErrorMessage,
   getSandboxFallbackPromptReminder,
@@ -355,6 +356,30 @@ describe("HybridSandboxManager prompt-time fallback", () => {
     expect((error as Error & { cause?: unknown }).cause).toContain(
       "commands would run on the wrong host",
     );
+  });
+
+  it("binds an approved operation to the exact local connection", () => {
+    const desktopA = {
+      sandboxKind: "centrifugo" as const,
+      getConnectionId: () => "desktop-a",
+    } as never;
+    const desktopB = {
+      sandboxKind: "centrifugo" as const,
+      getConnectionId: () => "desktop-b",
+    } as never;
+
+    expect(() =>
+      assertAgentApprovalSandboxIdentity({
+        sandbox: desktopA,
+        expectedSandboxIdentity: "connection:desktop-a",
+      }),
+    ).not.toThrow();
+    expect(() =>
+      assertAgentApprovalSandboxIdentity({
+        sandbox: desktopB,
+        expectedSandboxIdentity: "connection:desktop-a",
+      }),
+    ).toThrow("selected sandbox changed after approval");
   });
 
   it("blocks Desktop-local attachment preparation when Desktop falls back", () => {

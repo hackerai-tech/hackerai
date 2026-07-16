@@ -347,7 +347,7 @@ describe("CentrifugoSandbox", () => {
   });
 
   describe("commands.run cancellation", () => {
-    it("publishes command_cancel and resolves with exitCode 130 when aborted", async () => {
+    it("resolves with exitCode 130 only after a positive cancellation acknowledgement", async () => {
       const sandbox = createSandbox();
       const abortController = new AbortController();
 
@@ -374,6 +374,21 @@ describe("CentrifugoSandbox", () => {
       abortController.abort();
       await jest.advanceTimersByTimeAsync(0);
 
+      let settled = false;
+      void promise.finally(() => {
+        settled = true;
+      });
+      await jest.advanceTimersByTimeAsync(0);
+      expect(settled).toBe(false);
+
+      sub.emit("publication", {
+        data: {
+          type: "command_cancel_result",
+          commandId: FIXED_UUID,
+          canceled: true,
+        },
+      });
+
       await expect(promise).resolves.toMatchObject({
         exitCode: 130,
       });
@@ -384,6 +399,185 @@ describe("CentrifugoSandbox", () => {
       });
       expect(sub.unsubscribe).toHaveBeenCalled();
       expect(client.disconnect).toHaveBeenCalled();
+    });
+
+    it("rejects and keeps cancellation distinct when the native runner reports false", async () => {
+      const sandbox = createSandbox();
+      const abortController = new AbortController();
+      const { promise } = startCommand(sandbox, "sleep 999", {
+        timeoutMs: 5000,
+        signal: abortController.signal,
+      });
+
+      await jest.advanceTimersByTimeAsync(0);
+      const sub = mockSubscriptions[0];
+      sub.emit("subscribed");
+      await jest.advanceTimersByTimeAsync(0);
+
+      abortController.abort();
+      await jest.advanceTimersByTimeAsync(0);
+      sub.emit("publication", {
+        data: {
+          type: "command_cancel_result",
+          commandId: FIXED_UUID,
+          canceled: false,
+        },
+      });
+
+      await expect(promise).rejects.toThrow(
+        "Local command cancellation was not confirmed",
+      );
+    });
+
+    it("rejects when publishing the cancellation fails", async () => {
+      const sandbox = createSandbox();
+      const abortController = new AbortController();
+      const { promise } = startCommand(sandbox, "sleep 999", {
+        timeoutMs: 5000,
+        signal: abortController.signal,
+      });
+
+      await jest.advanceTimersByTimeAsync(0);
+      const sub = mockSubscriptions[0];
+      sub.publish = jest.fn((msg: { type: string }) =>
+        msg.type === "command_cancel"
+          ? Promise.reject(new Error("relay unavailable"))
+          : Promise.resolve(),
+      );
+      sub.emit("subscribed");
+      await jest.advanceTimersByTimeAsync(0);
+
+      const rejection = expect(promise).rejects.toThrow(
+        "Failed to publish local command cancellation",
+      );
+      abortController.abort();
+      await jest.advanceTimersByTimeAsync(0);
+
+      await rejection;
+    });
+
+    it("rejects when no cancellation acknowledgement arrives", async () => {
+      const sandbox = createSandbox();
+      const abortController = new AbortController();
+      const { promise } = startCommand(sandbox, "sleep 999", {
+        timeoutMs: 10000,
+        signal: abortController.signal,
+      });
+
+      await jest.advanceTimersByTimeAsync(0);
+      const sub = mockSubscriptions[0];
+      sub.emit("subscribed");
+      await jest.advanceTimersByTimeAsync(0);
+
+      abortController.abort();
+      await jest.advanceTimersByTimeAsync(0);
+      jest.advanceTimersByTime(5001);
+
+      await expect(promise).rejects.toThrow(
+        "Local command cancellation was not acknowledged",
+      );
+    });
+
+    it("times out a stalled cancellation publish and ignores its late rejection", async () => {
+      const sandbox = createSandbox();
+      let cancel!: () => Promise<boolean>;
+      const { promise } = startCommand(sandbox, "sleep 999", {
+        timeoutMs: 10000,
+        onCancelReady: (readyCancel) => {
+          cancel = readyCancel;
+        },
+      });
+
+      await jest.advanceTimersByTimeAsync(0);
+      const sub = mockSubscriptions[0];
+      sub.emit("subscribed");
+      await jest.advanceTimersByTimeAsync(0);
+
+      let rejectFirstPublish!: (error: Error) => void;
+      let cancellationPublishes = 0;
+      sub.publish = jest.fn((message: { type: string }) => {
+        if (message.type !== "command_cancel") return Promise.resolve();
+        cancellationPublishes += 1;
+        if (cancellationPublishes === 1) {
+          return new Promise<void>((_resolve, reject) => {
+            rejectFirstPublish = reject;
+          });
+        }
+        return Promise.resolve();
+      });
+
+      const firstAttempt = cancel();
+      await jest.advanceTimersByTimeAsync(5001);
+      await expect(firstAttempt).resolves.toBe(false);
+
+      const secondAttempt = cancel();
+      await jest.advanceTimersByTimeAsync(0);
+      rejectFirstPublish(new Error("late relay failure"));
+      await jest.advanceTimersByTimeAsync(0);
+
+      sub.emit("publication", {
+        data: {
+          type: "command_cancel_result",
+          commandId: FIXED_UUID,
+          canceled: true,
+        },
+      });
+
+      await expect(secondAttempt).resolves.toBe(true);
+      await expect(promise).resolves.toMatchObject({ exitCode: 130 });
+    });
+
+    it("keeps the command live after an uncertain callback cancellation so it can be retried", async () => {
+      const sandbox = createSandbox();
+      let cancel!: () => Promise<boolean>;
+      const { promise } = startCommand(sandbox, "sleep 999", {
+        timeoutMs: 10000,
+        onCancelReady: (readyCancel) => {
+          cancel = readyCancel;
+        },
+      });
+
+      await jest.advanceTimersByTimeAsync(0);
+      const sub = mockSubscriptions[0];
+      sub.emit("subscribed");
+      await jest.advanceTimersByTimeAsync(0);
+
+      const firstAttempt = cancel();
+      await jest.advanceTimersByTimeAsync(0);
+      sub.emit("publication", {
+        data: {
+          type: "command_cancel_result",
+          commandId: FIXED_UUID,
+          canceled: false,
+        },
+      });
+      await expect(firstAttempt).resolves.toBe(false);
+      expect(sub.unsubscribe).not.toHaveBeenCalled();
+
+      let commandSettled = false;
+      void promise.then(() => {
+        commandSettled = true;
+      });
+      await jest.advanceTimersByTimeAsync(0);
+      expect(commandSettled).toBe(false);
+
+      const secondAttempt = cancel();
+      await jest.advanceTimersByTimeAsync(0);
+      expect(
+        sub.publish.mock.calls.filter(
+          ([message]) => message.type === "command_cancel",
+        ),
+      ).toHaveLength(2);
+      sub.emit("publication", {
+        data: {
+          type: "command_cancel_result",
+          commandId: FIXED_UUID,
+          canceled: true,
+        },
+      });
+
+      await expect(secondAttempt).resolves.toBe(true);
+      await expect(promise).resolves.toMatchObject({ exitCode: 130 });
     });
 
     it("publishes command_cancel when aborted while command publish is in flight", async () => {
@@ -427,6 +621,14 @@ describe("CentrifugoSandbox", () => {
 
       resolveCommandPublish();
       await jest.advanceTimersByTimeAsync(0);
+
+      sub.emit("publication", {
+        data: {
+          type: "command_cancel_result",
+          commandId: FIXED_UUID,
+          canceled: true,
+        },
+      });
 
       await expect(promise).resolves.toMatchObject({
         exitCode: 130,

@@ -278,6 +278,7 @@ export type AgentToolApprovalResult =
   | {
       approved: true;
       approvalId: string;
+      sandboxIdentity: AgentApprovalSandboxIdentity;
     }
   | {
       approved: false;

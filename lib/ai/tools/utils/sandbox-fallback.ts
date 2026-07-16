@@ -1,6 +1,12 @@
 import type { UIMessageStreamWriter } from "ai";
+import {
+  getAgentApprovalConnectionSandboxIdentity,
+  type AgentApprovalSandboxIdentity,
+  type AnySandbox,
+} from "@/types";
 import { ChatSDKError } from "@/lib/errors";
 import type { SandboxFallbackInfo } from "./hybrid-sandbox-manager";
+import { isCentrifugoSandbox } from "./sandbox-types";
 
 type SandboxContextForPromptManager = {
   getSandboxInfo?: () => unknown;
@@ -34,6 +40,25 @@ const LOCAL_ATTACHMENT_BLOCK_MESSAGE =
   "Desktop-local attachments require the Desktop sandbox. Reconnect Desktop, then resend the message with the attachment.";
 
 const CLOUD_SANDBOX_TYPE = "e2b";
+const APPROVED_SANDBOX_CHANGED_MESSAGE =
+  "The selected sandbox changed after approval. The operation was not run. Retry it to approve in the current sandbox.";
+
+export function assertAgentApprovalSandboxIdentity({
+  sandbox,
+  expectedSandboxIdentity,
+}: {
+  sandbox: AnySandbox;
+  expectedSandboxIdentity?: AgentApprovalSandboxIdentity;
+}): void {
+  if (!expectedSandboxIdentity) return;
+
+  const actualSandboxIdentity = isCentrifugoSandbox(sandbox)
+    ? getAgentApprovalConnectionSandboxIdentity(sandbox.getConnectionId())
+    : "e2b";
+  if (actualSandboxIdentity !== expectedSandboxIdentity) {
+    throw new Error(APPROVED_SANDBOX_CHANGED_MESSAGE);
+  }
+}
 
 export function assertLocalSandboxFallbackAllowed({
   fallbackInfo,
@@ -83,9 +108,11 @@ export function writeSandboxFallbackEvent(
 export async function getSandboxWithFallbackGuard<TSandbox>({
   sandboxManager,
   requireLocalSandbox = false,
+  expectedSandboxIdentity,
 }: {
   sandboxManager: SandboxAcquisitionManager<TSandbox>;
   requireLocalSandbox?: boolean;
+  expectedSandboxIdentity?: AgentApprovalSandboxIdentity;
 }): Promise<{ sandbox: TSandbox }> {
   const result = await sandboxManager.getSandbox();
   const fallbackInfo =
@@ -112,6 +139,11 @@ export async function getSandboxWithFallbackGuard<TSandbox>({
       throw error;
     }
   }
+
+  assertAgentApprovalSandboxIdentity({
+    sandbox: result.sandbox as AnySandbox,
+    expectedSandboxIdentity,
+  });
 
   return result;
 }

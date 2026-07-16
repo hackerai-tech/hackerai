@@ -681,10 +681,30 @@ export class DesktopSandboxBridge {
   private async handleCommandCancel(
     command: CommandCancelMessage,
   ): Promise<void> {
-    if (!this.activeCommands.has(command.commandId)) return;
-    const { invoke } = await import("@tauri-apps/api/core");
-    await invoke("cancel_stream_command", {
+    let canceled = false;
+    if (this.activeCommands.has(command.commandId)) {
+      try {
+        const { invoke } = await import("@tauri-apps/api/core");
+        canceled = await invoke<boolean>("cancel_stream_command", {
+          commandId: command.commandId,
+        });
+      } catch (error) {
+        console.error(
+          "[desktop-bridge]",
+          JSON.stringify({
+            event: "desktop_stream_command_cancel_failed",
+            service: "desktop_bridge",
+            command_id: command.commandId,
+            error_name: error instanceof Error ? error.name : "UnknownError",
+          }),
+        );
+      }
+    }
+
+    await this.publishResult({
+      type: "command_cancel_result",
       commandId: command.commandId,
+      canceled,
     });
   }
 

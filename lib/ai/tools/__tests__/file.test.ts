@@ -114,11 +114,12 @@ function makeSandbox(
   };
 }
 
-function makeNativeDesktopSandbox() {
+function makeNativeDesktopSandbox(connectionId = "desktop-a") {
   const commandRun = jest.fn<Promise<FakeCommandResult>, [string, any?]>();
   return {
     sandbox: {
       sandboxKind: "centrifugo" as const,
+      getConnectionId: () => connectionId,
       isWindows: () => true,
       supportsNativeFileRelay: () => true,
       commands: { run: commandRun },
@@ -148,6 +149,50 @@ function makeNativeDesktopSandbox() {
 }
 
 describe("file tool large text safety", () => {
+  test("does not write on a replacement Desktop connection after approval", async () => {
+    const { sandbox } = makeNativeDesktopSandbox("desktop-b");
+    const requestToolApproval = jest.fn(async () => ({
+      approved: true as const,
+      approvalId: "approval-1",
+      sandboxIdentity: "connection:desktop-a" as const,
+    }));
+    const tool = createFile(makeContext(sandbox, { requestToolApproval }));
+
+    const result = (await runTool(tool, {
+      action: "write",
+      path: "C:\\repo\\approved-on-a.txt",
+      brief: "test connection binding",
+      text: "must not reach desktop B",
+    })) as { error: string };
+
+    expect(result.error).toContain("selected sandbox changed after approval");
+    expect(sandbox.files.write).not.toHaveBeenCalled();
+  });
+
+  test("preserves an approved write on the same Desktop connection", async () => {
+    const { sandbox } = makeNativeDesktopSandbox("desktop-a");
+    const requestToolApproval = jest.fn(async () => ({
+      approved: true as const,
+      approvalId: "approval-1",
+      sandboxIdentity: "connection:desktop-a" as const,
+    }));
+    const tool = createFile(makeContext(sandbox, { requestToolApproval }));
+
+    await expect(
+      runTool(tool, {
+        action: "write",
+        path: "C:\\repo\\approved-on-a.txt",
+        brief: "test connection binding",
+        text: "allowed on desktop A",
+      }),
+    ).resolves.toBe("File written: C:\\repo\\approved-on-a.txt");
+    expect(sandbox.files.write).toHaveBeenCalledWith(
+      "C:\\repo\\approved-on-a.txt",
+      "allowed on desktop A",
+      { user: "user" },
+    );
+  });
+
   test("blocks file operations when a selected local sandbox falls back", async () => {
     const commandRun = jest.fn(async () => ({
       stdout: "",

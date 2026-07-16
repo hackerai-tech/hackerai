@@ -29,6 +29,7 @@ import {
   ProcessRunResult,
   isPtyAvailable,
 } from "./process-runner";
+import { confirmProcessTermination } from "./command-cancellation";
 
 const DEFAULT_SHELL = getDefaultShell(os.platform());
 
@@ -120,6 +121,12 @@ interface CentrifugoErrorMessage {
   type: "error";
   commandId: string;
   message: string;
+}
+
+interface CentrifugoCommandCancelResultMessage {
+  type: "command_cancel_result";
+  commandId: string;
+  canceled: boolean;
 }
 
 // --- PTY incoming message types ---
@@ -217,6 +224,7 @@ type CentrifugoOutgoingMessage =
   | CentrifugoStderrMessage
   | CentrifugoExitMessage
   | CentrifugoErrorMessage
+  | CentrifugoCommandCancelResultMessage
   | CentrifugoPtyReadyMessage
   | CentrifugoPtyDataMessage
   | CentrifugoPtyExitMessage
@@ -508,7 +516,15 @@ class LocalSandboxClient {
           break;
 
         case "command_cancel":
-          this.handleCommandCancel(message as CentrifugoCommandCancelMessage);
+          this.handleCommandCancel(
+            message as CentrifugoCommandCancelMessage,
+          ).catch((error: unknown) => {
+            console.error(
+              chalk.red(
+                `[CMD] Failed to handle cancellation: ${error instanceof Error ? error.message : String(error)}`,
+              ),
+            );
+          });
           break;
 
         case "pty_create":
@@ -672,12 +688,20 @@ class LocalSandboxClient {
     }
   }
 
-  private handleCommandCancel(msg: CentrifugoCommandCancelMessage): void {
+  private async handleCommandCancel(
+    msg: CentrifugoCommandCancelMessage,
+  ): Promise<void> {
     const proc = this.activeStreamCommands.get(msg.commandId);
-    if (!proc) {
-      return;
-    }
-    this.terminateProcessTree(proc);
+    const canceled = proc
+      ? await confirmProcessTermination(proc, () =>
+          this.terminateProcessTree(proc),
+        )
+      : false;
+    await this.publishToChannel({
+      type: "command_cancel_result",
+      commandId: msg.commandId,
+      canceled,
+    });
   }
 
   private terminateProcessTree(proc: ChildProcess): void {

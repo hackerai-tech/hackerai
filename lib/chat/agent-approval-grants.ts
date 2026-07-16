@@ -58,6 +58,8 @@ const SHELL_CONTROL_CHARACTERS = new Set([
 
 const SHELL_DYNAMIC_CHARACTERS = new Set([
   "$",
+  "%",
+  "^",
   "*",
   "?",
   "[",
@@ -98,6 +100,8 @@ const NON_REUSABLE_COMMAND_WRAPPERS = new Set([
   "busybox.exe",
   "cmd",
   "cmd.exe",
+  "command.com",
+  "call",
   "command",
   "csh",
   "csh.exe",
@@ -119,15 +123,27 @@ const NON_REUSABLE_COMMAND_WRAPPERS = new Set([
   "sh",
   "sh.exe",
   "sudo",
+  "start",
   "tcsh",
   "tcsh.exe",
   "xargs",
+  "wsl",
+  "wsl.exe",
   "zsh",
   "zsh.exe",
 ]);
 
 const isShellWhitespace = (character: string): boolean =>
   character === " " || character === "\t";
+
+const getRawExecutableBasename = (command: string): string | null => {
+  const match = /^\s*(?:"([^"]+)"|'([^']+)'|(\S+))/.exec(command);
+  const rawExecutable = match?.[1] ?? match?.[2] ?? match?.[3];
+  if (!rawExecutable) return null;
+  return (
+    rawExecutable.replace(/\\/g, "/").split("/").pop()?.toLowerCase() ?? null
+  );
+};
 
 /**
  * Parses a static shell command into argv. Any syntax that could introduce
@@ -157,6 +173,10 @@ export const parseStaticCommandArgv = (command: string): string[] | null => {
     if (quote === "single") {
       if (character === "'") {
         quote = null;
+      } else if (character === "%" || character === "!" || character === "^") {
+        // Single quotes are not quoting characters for cmd.exe. Reject
+        // syntax that can still expand or escape on the Windows fallback.
+        return null;
       } else {
         token += character;
       }
@@ -168,7 +188,14 @@ export const parseStaticCommandArgv = (command: string): string[] | null => {
         quote = null;
         continue;
       }
-      if (character === "$") return null;
+      if (
+        character === "$" ||
+        character === "%" ||
+        character === "!" ||
+        character === "^"
+      ) {
+        return null;
+      }
       if (character === "\\") {
         const nextCharacter = command[index + 1];
         if (
@@ -231,103 +258,23 @@ export const parseStaticCommandArgv = (command: string): string[] | null => {
   const executable = argv[0];
   if (!executable) return null;
   if (/^[A-Za-z_][A-Za-z0-9_]*\+?=/.test(executable)) return null;
-  if (NON_EXECUTABLE_SHELL_TOKENS.has(executable)) return null;
+  if (NON_EXECUTABLE_SHELL_TOKENS.has(executable.toLowerCase())) return null;
   const executableBasename = executable
     .replace(/\\/g, "/")
     .split("/")
     .pop()
     ?.toLowerCase();
+  const rawExecutableBasename = getRawExecutableBasename(command);
   if (
-    executableBasename &&
-    NON_REUSABLE_COMMAND_WRAPPERS.has(executableBasename)
+    (executableBasename &&
+      NON_REUSABLE_COMMAND_WRAPPERS.has(executableBasename)) ||
+    (rawExecutableBasename &&
+      NON_REUSABLE_COMMAND_WRAPPERS.has(rawExecutableBasename))
   ) {
     return null;
   }
 
   return argv;
-};
-
-const normalizePathSegments = (
-  segments: string[],
-  absolute: boolean,
-): string[] => {
-  const normalized: string[] = [];
-
-  for (const segment of segments) {
-    if (!segment || segment === ".") continue;
-    if (segment === "..") {
-      const previous = normalized[normalized.length - 1];
-      if (previous && previous !== "..") {
-        normalized.pop();
-      } else if (!absolute) {
-        normalized.push(segment);
-      }
-      continue;
-    }
-    normalized.push(segment);
-  }
-
-  return normalized;
-};
-
-const normalizeWindowsPath = (
-  rawPath: string,
-): { path: string; pathFlavor: "windows" } | null => {
-  const slashPath = rawPath.replace(/\\/g, "/");
-  if (/^\/\/[?.]\//.test(slashPath)) return null;
-
-  if (/^\/\//.test(slashPath)) {
-    const segments = slashPath.slice(2).split("/").filter(Boolean);
-    if (segments.length < 2) return null;
-    const [server, share, ...rest] = segments;
-    const normalized = normalizePathSegments(rest, true);
-    return {
-      path: `//${server}/${share}${normalized.length ? `/${normalized.join("/")}` : ""}`,
-      pathFlavor: "windows",
-    };
-  }
-
-  const driveMatch = /^([A-Za-z]):(.*)$/.exec(slashPath);
-  if (driveMatch) {
-    const drive = driveMatch[1].toUpperCase();
-    const suffix = driveMatch[2];
-    const absolute = suffix.charAt(0) === "/";
-    const normalized = normalizePathSegments(suffix.split("/"), absolute);
-    const tail = normalized.join("/");
-    return {
-      path: absolute
-        ? `${drive}:/${tail}`.replace(/\/$/, tail ? "" : "/")
-        : `${drive}:${tail || "."}`,
-      pathFlavor: "windows",
-    };
-  }
-
-  const absolute = slashPath.charAt(0) === "/";
-  const normalized = normalizePathSegments(slashPath.split("/"), absolute);
-  return {
-    path: absolute
-      ? `/${normalized.join("/")}` || "/"
-      : normalized.join("/") || ".",
-    pathFlavor: "windows",
-  };
-};
-
-export const normalizeAgentApprovalFilePath = (
-  path: string,
-): { path: string; pathFlavor: "posix" | "windows" } | null => {
-  if (!path || path !== path.trim() || path.includes("\0")) return null;
-
-  const isWindowsPath = /^[A-Za-z]:/.test(path) || path.includes("\\");
-  if (isWindowsPath) return normalizeWindowsPath(path);
-
-  const absolute = path.charAt(0) === "/";
-  const normalized = normalizePathSegments(path.split("/"), absolute);
-  return {
-    path: absolute
-      ? `/${normalized.join("/")}` || "/"
-      : normalized.join("/") || ".",
-    pathFlavor: "posix",
-  };
 };
 
 const parseTerminalInteraction = (
@@ -401,14 +348,10 @@ export const deriveAgentApprovalTargetGrant = (
     request.operation === "file_append" ||
     request.operation === "file_edit"
   ) {
-    const normalized = normalizeAgentApprovalFilePath(request.target);
-    return normalized
-      ? {
-          kind: "file_change",
-          targetPrefix: normalized.path,
-          ...normalized,
-        }
-      : null;
+    // Reusable file grants cannot be bound to a canonical filesystem object
+    // across E2B, Local, and Desktop backends. Require a fresh approval for
+    // every mutation instead of treating lexical path equality as authority.
+    return null;
   }
 
   // Older persisted prompts may not include operation. This inference is only
@@ -419,14 +362,7 @@ export const deriveAgentApprovalTargetGrant = (
     return deriveTerminalCommandGrant(request.target, request.prefixRule);
   }
   if (request.kind === "file") {
-    const normalized = normalizeAgentApprovalFilePath(request.target);
-    return normalized
-      ? {
-          kind: "file_change",
-          targetPrefix: normalized.path,
-          ...normalized,
-        }
-      : null;
+    return null;
   }
 
   return null;
@@ -447,6 +383,10 @@ export const matchesAgentApprovalTargetGrant = (
   request: AgentApprovalGrantSource,
   grant: AgentApprovalTargetGrant,
 ): boolean => {
+  // Invalidate file grants persisted by older workers. Lexical paths are not
+  // stable identities across symlinks, junctions, or backend operations.
+  if (grant.kind === "file_change") return false;
+
   if (
     request.operation === "terminal_execute" &&
     grant.kind === "terminal_command"
@@ -481,11 +421,5 @@ export const matchesAgentApprovalTargetGrant = (
       candidate.sessionId === grant.sessionId
     );
   }
-  if (candidate.kind === "file_change" && grant.kind === "file_change") {
-    return (
-      candidate.pathFlavor === grant.pathFlavor && candidate.path === grant.path
-    );
-  }
-
   return false;
 };

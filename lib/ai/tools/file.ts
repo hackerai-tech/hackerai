@@ -1,6 +1,10 @@
 import { tool } from "ai";
 import { createHash } from "crypto";
-import type { AnySandbox, ToolContext } from "@/types";
+import type {
+  AgentApprovalSandboxIdentity,
+  AnySandbox,
+  ToolContext,
+} from "@/types";
 import { truncateOutput } from "@/lib/token-utils";
 import { supportsMultimodalToolResults } from "@/lib/ai/providers";
 import { buildSandboxCommandOptions } from "./utils/sandbox-command-options";
@@ -1208,9 +1212,12 @@ async function uploadViewPreviewFiles(args: {
 
 export const createFile = (context: ToolContext) => {
   const { sandboxManager, modelName, getCurrentModelName } = context;
-  const getSandboxForFileTool = () =>
+  const getSandboxForFileTool = (
+    expectedSandboxIdentity?: AgentApprovalSandboxIdentity,
+  ) =>
     getSandboxWithFallbackGuard({
       sandboxManager,
+      expectedSandboxIdentity,
     });
   const canViewMultimodalFiles = () =>
     supportsMultimodalToolResults(getCurrentModelName?.() ?? modelName);
@@ -1227,6 +1234,7 @@ export const createFile = (context: ToolContext) => {
       { toolCallId },
     ) => {
       try {
+        let approvedSandboxIdentity: AgentApprovalSandboxIdentity | undefined;
         if (action === "write" || action === "append" || action === "edit") {
           const approval = await context.requestToolApproval?.({
             toolCallId,
@@ -1246,9 +1254,14 @@ export const createFile = (context: ToolContext) => {
               approvalDenied: true,
             };
           }
+          approvedSandboxIdentity = approval?.approved
+            ? approval.sandboxIdentity
+            : undefined;
         }
 
-        const { sandbox } = await getSandboxForFileTool();
+        const { sandbox } = await getSandboxForFileTool(
+          approvedSandboxIdentity,
+        );
 
         switch (action) {
           case "view": {

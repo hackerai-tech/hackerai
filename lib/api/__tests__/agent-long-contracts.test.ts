@@ -724,7 +724,7 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
   test("agent approval denial resolves as rejected without aborting the run", () => {
     expect(taskSrc).toMatch(/next\.output\.decision\s*===\s*"approve"/);
     expect(taskSrc).toMatch(
-      /next\.output\.decision\s*===\s*"approve"[\s\S]*return\s*\{\s*approved:\s*true,\s*approvalId\s*\}/,
+      /next\.output\.decision\s*===\s*"approve"[\s\S]*return\s*\{\s*approved:\s*true,\s*approvalId,\s*sandboxIdentity\s*\}/,
     );
     expect(taskSrc).toMatch(
       /tool approval denied[\s\S]*return\s*\{\s*approved:\s*false,[\s\S]*reason:\s*buildDeniedApprovalReason\(next\.output\.message\)/,
@@ -848,6 +848,69 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(agentApprovalRouteSrc).toMatch(
       /sessions\.open\(approvalSessionId\)\.in\.send\(signedInput/,
     );
+  });
+
+  test("approval telemetry keeps correlation context without raw targets", () => {
+    const expectedKeysByMessage = {
+      "[agent-long] tool approval reused": [
+        "event",
+        "service",
+        "runId",
+        "approvalId",
+        "tool_call_id",
+        "tool_name",
+        "operation",
+        "target_kind",
+      ],
+      "[agent-long] waiting for tool approval": [
+        "event",
+        "service",
+        "runId",
+        "approvalId",
+        "tool_call_id",
+        "tool_name",
+        "operation",
+      ],
+      "[agent-long] tool approval granted": [
+        "event",
+        "service",
+        "runId",
+        "approvalId",
+        "tool_call_id",
+        "tool_name",
+        "operation",
+        "requested_grant",
+        "grant",
+        "target_kind",
+      ],
+      "[agent-long] tool approval denied": [
+        "event",
+        "service",
+        "runId",
+        "approvalId",
+        "tool_call_id",
+        "tool_name",
+        "operation",
+      ],
+    } as const;
+
+    for (const [message, expectedKeys] of Object.entries(
+      expectedKeysByMessage,
+    )) {
+      const escapedMessage = message.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const payload = new RegExp(
+        `triggerLogger\\.info\\("${escapedMessage}",\\s*\\{([\\s\\S]*?)\\n\\s*\\}\\);`,
+      ).exec(taskSrc)?.[1];
+      expect(payload).toBeDefined();
+      const keys = Array.from(
+        payload?.matchAll(/^\s*([A-Za-z_][A-Za-z0-9_]*)(?:\s*:|\s*,\s*$)/gm) ??
+          [],
+        (match) => match[1],
+      );
+      expect(keys.sort()).toEqual([...expectedKeys].sort());
+    }
+
+    expect(taskSrc).not.toContain('.set("approvalTargetPrefix"');
   });
 
   test("terminal approval cleanup compare-clears stale composer state", () => {
