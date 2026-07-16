@@ -475,7 +475,7 @@ const ChatItem: React.FC<ChatItemProps> = ({
                   e.stopPropagation();
                   e.preventDefault();
                 }}
-                aria-label="Open conversation options"
+                aria-label="Open task options"
               >
                 <Ellipsis className="h-4 w-4" />
               </Button>

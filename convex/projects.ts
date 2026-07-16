@@ -1,12 +1,20 @@
 import { paginationOptsValidator } from "convex/server";
 import { ConvexError, v } from "convex/values";
-import { mutation, query } from "./_generated/server";
+import { internal } from "./_generated/api";
+import {
+  internalMutation,
+  mutation,
+  query,
+  type MutationCtx,
+} from "./_generated/server";
+import type { Id } from "./_generated/dataModel";
 import { validateServiceKey } from "./lib/utils";
 import { assertUserCanAccessChatHistory } from "./lib/suspensionGuards";
 
 const MAX_PROJECT_NAME_LENGTH = 80;
 const MAX_FOLDER_PATH_LENGTH = 4096;
 const MAX_PROJECTS_PER_USER = 100;
+const PROJECT_TASK_DETACH_BATCH_SIZE = 50;
 
 const emptyPage = () => ({
   page: [],
@@ -47,6 +55,59 @@ const normalizeFolderPath = (value?: string): string | undefined => {
   return folderPath;
 };
 
+const getOwnedProject = async (
+  ctx: MutationCtx,
+  projectId: Id<"projects">,
+  userId: string,
+) => {
+  const project = await ctx.db.get(projectId);
+  if (
+    !project ||
+    project.user_id !== userId ||
+    project.deletion_started_at !== undefined
+  ) {
+    throw new ConvexError({
+      code: "PROJECT_NOT_FOUND",
+      message: "Project not found",
+    });
+  }
+  return project;
+};
+
+const detachNextProjectTasksBatch = async (
+  ctx: MutationCtx,
+  projectId: Id<"projects">,
+  userId: string,
+) => {
+  const project = await ctx.db.get(projectId);
+  if (
+    !project ||
+    project.user_id !== userId ||
+    project.deletion_started_at === undefined
+  ) {
+    return;
+  }
+
+  const tasks = await ctx.db
+    .query("chats")
+    .withIndex("by_project_and_updated", (q) => q.eq("project_id", projectId))
+    .take(PROJECT_TASK_DETACH_BATCH_SIZE + 1);
+
+  for (const task of tasks.slice(0, PROJECT_TASK_DETACH_BATCH_SIZE)) {
+    await ctx.db.patch(task._id, { project_id: undefined });
+  }
+
+  if (tasks.length > PROJECT_TASK_DETACH_BATCH_SIZE) {
+    await ctx.scheduler.runAfter(0, internal.projects.detachProjectTasksBatch, {
+      projectId,
+      userId,
+    });
+    return;
+  }
+
+  await ctx.db.delete(projectId);
+};
+
 export const createProject = mutation({
   args: {
     name: v.string(),
@@ -63,6 +124,19 @@ export const createProject = mutation({
     }
     await assertUserCanAccessChatHistory(ctx, identity.subject);
 
+    const existingProjects = await ctx.db
+      .query("projects")
+      .withIndex("by_user_and_updated", (q) =>
+        q.eq("user_id", identity.subject),
+      )
+      .take(MAX_PROJECTS_PER_USER);
+    if (existingProjects.length >= MAX_PROJECTS_PER_USER) {
+      throw new ConvexError({
+        code: "PROJECT_LIMIT_REACHED",
+        message: `You can have up to ${MAX_PROJECTS_PER_USER} projects. Delete one before creating another.`,
+      });
+    }
+
     const now = Date.now();
     return ctx.db.insert("projects", {
       user_id: identity.subject,
@@ -75,19 +149,148 @@ export const createProject = mutation({
 });
 
 export const listProjects = query({
-  args: {},
-  handler: async (ctx) => {
+  args: { paginationOpts: paginationOptsValidator },
+  handler: async (ctx, args) => {
     const identity = await ctx.auth.getUserIdentity();
-    if (!identity) return [];
+    if (!identity) return emptyPage();
     await assertUserCanAccessChatHistory(ctx, identity.subject);
 
-    return ctx.db
+    const isFirstPage =
+      args.paginationOpts.cursor == null || args.paginationOpts.cursor === "";
+    const pinnedProjects = isFirstPage
+      ? await ctx.db
+          .query("projects")
+          .withIndex("by_user_and_pinned", (q) =>
+            q.eq("user_id", identity.subject).gt("pinned_at", 0),
+          )
+          .filter((q) => q.eq(q.field("deletion_started_at"), undefined))
+          .order("desc")
+          .take(MAX_PROJECTS_PER_USER)
+      : [];
+
+    const result = await ctx.db
       .query("projects")
       .withIndex("by_user_and_updated", (q) =>
         q.eq("user_id", identity.subject),
       )
+      .filter((q) =>
+        q.and(
+          q.eq(q.field("pinned_at"), undefined),
+          q.eq(q.field("deletion_started_at"), undefined),
+        ),
+      )
       .order("desc")
-      .take(MAX_PROJECTS_PER_USER);
+      .paginate(args.paginationOpts);
+
+    return {
+      ...result,
+      page: isFirstPage ? [...pinnedProjects, ...result.page] : result.page,
+    };
+  },
+});
+
+export const updateProject = mutation({
+  args: {
+    projectId: v.id("projects"),
+    name: v.string(),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const identity = await ctx.auth.getUserIdentity();
+    if (!identity) {
+      throw new ConvexError({
+        code: "UNAUTHORIZED",
+        message: "Not authenticated",
+      });
+    }
+    await assertUserCanAccessChatHistory(ctx, identity.subject);
+    await getOwnedProject(ctx, args.projectId, identity.subject);
+
+    await ctx.db.patch(args.projectId, {
+      name: normalizeProjectName(args.name),
+      updated_at: Date.now(),
+    });
+    return null;
+  },
+});
+
+export const pinProject = mutation({
+  args: { projectId: v.id("projects") },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const identity = await ctx.auth.getUserIdentity();
+    if (!identity) {
+      throw new ConvexError({
+        code: "UNAUTHORIZED",
+        message: "Not authenticated",
+      });
+    }
+    await assertUserCanAccessChatHistory(ctx, identity.subject);
+    const project = await getOwnedProject(
+      ctx,
+      args.projectId,
+      identity.subject,
+    );
+    if (project.pinned_at === undefined) {
+      await ctx.db.patch(args.projectId, { pinned_at: Date.now() });
+    }
+    return null;
+  },
+});
+
+export const unpinProject = mutation({
+  args: { projectId: v.id("projects") },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const identity = await ctx.auth.getUserIdentity();
+    if (!identity) {
+      throw new ConvexError({
+        code: "UNAUTHORIZED",
+        message: "Not authenticated",
+      });
+    }
+    await assertUserCanAccessChatHistory(ctx, identity.subject);
+    await getOwnedProject(ctx, args.projectId, identity.subject);
+
+    await ctx.db.patch(args.projectId, {
+      pinned_at: undefined,
+      updated_at: Date.now(),
+    });
+    return null;
+  },
+});
+
+export const deleteProject = mutation({
+  args: { projectId: v.id("projects") },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const identity = await ctx.auth.getUserIdentity();
+    if (!identity) {
+      throw new ConvexError({
+        code: "UNAUTHORIZED",
+        message: "Not authenticated",
+      });
+    }
+    await assertUserCanAccessChatHistory(ctx, identity.subject);
+    await getOwnedProject(ctx, args.projectId, identity.subject);
+
+    await ctx.db.patch(args.projectId, {
+      deletion_started_at: Date.now(),
+    });
+    await detachNextProjectTasksBatch(ctx, args.projectId, identity.subject);
+    return null;
+  },
+});
+
+export const detachProjectTasksBatch = internalMutation({
+  args: {
+    projectId: v.id("projects"),
+    userId: v.string(),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    await detachNextProjectTasksBatch(ctx, args.projectId, args.userId);
+    return null;
   },
 });
 
@@ -102,7 +305,11 @@ export const getProjectThreads = query({
     await assertUserCanAccessChatHistory(ctx, identity.subject);
 
     const project = await ctx.db.get(args.projectId);
-    if (!project || project.user_id !== identity.subject) {
+    if (
+      !project ||
+      project.user_id !== identity.subject ||
+      project.deletion_started_at !== undefined
+    ) {
       return emptyPage();
     }
 
@@ -166,7 +373,13 @@ export const getProjectForBackend = query({
     if (!projectId) return null;
 
     const project = await ctx.db.get(projectId);
-    if (!project || project.user_id !== args.userId) return null;
+    if (
+      !project ||
+      project.user_id !== args.userId ||
+      project.deletion_started_at !== undefined
+    ) {
+      return null;
+    }
     return project;
   },
 });

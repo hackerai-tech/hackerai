@@ -17,7 +17,7 @@ export function SidebarProjectThreads({ project }: SidebarProjectThreadsProps) {
     return (
       <div
         className="flex h-9 items-center justify-center ps-9 pe-2"
-        aria-label="Loading threads"
+        aria-label="Loading tasks"
       >
         <Loading size={5} />
       </div>
@@ -30,7 +30,7 @@ export function SidebarProjectThreads({ project }: SidebarProjectThreadsProps) {
         className="flex h-9 items-center ps-9 pe-2 text-sm text-sidebar-foreground/35"
         data-testid={`project-${project._id}-empty`}
       >
-        No threads yet
+        No tasks yet
       </p>
     );
   }

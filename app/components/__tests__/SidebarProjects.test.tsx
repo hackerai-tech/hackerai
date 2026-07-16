@@ -134,6 +134,20 @@ describe("SidebarProjects", () => {
     ).not.toBeInTheDocument();
   });
 
+  it("loads ten more projects", () => {
+    const loadMore = jest.fn();
+    render(
+      <SidebarProjects
+        projects={projects}
+        paginationStatus="CanLoadMore"
+        loadMore={loadMore}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Show more projects" }));
+    expect(loadMore).toHaveBeenCalledWith(10);
+  });
+
   it("collapses the entire projects section from its heading", () => {
     render(<SidebarProjects projects={projects} />);
 

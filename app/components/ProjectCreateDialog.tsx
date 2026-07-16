@@ -15,6 +15,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import type { Id } from "@/convex/_generated/dataModel";
+import { useIsMobile } from "@/hooks/use-mobile";
 import { useGlobalState } from "@/app/contexts/GlobalState";
 import { useCreateProject } from "@/app/hooks/useProjects";
 import { isTauriEnvironment, pickLocalFolder } from "@/app/hooks/useTauri";
@@ -36,6 +37,7 @@ export function ProjectCreateDialog({
   onCreated,
 }: ProjectCreateDialogProps) {
   const createProject = useCreateProject();
+  const isMobile = useIsMobile();
   const { desktopBridgeActive } = useGlobalState();
   const [name, setName] = useState("");
   const [folderPath, setFolderPath] = useState<string | null>(null);
@@ -51,6 +53,11 @@ export function ProjectCreateDialog({
       setIsSaving(false);
     }
   }, [open]);
+
+  const setOpen = (nextOpen: boolean) => {
+    if (isSaving || isPickingFolder) return;
+    onOpenChange(nextOpen);
+  };
 
   const handleChooseFolder = async () => {
     setIsPickingFolder(true);
@@ -90,13 +97,16 @@ export function ProjectCreateDialog({
   };
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-md">
+    <Dialog open={open} onOpenChange={setOpen}>
+      <DialogContent
+        className="sm:max-w-md"
+        showCloseButton={!isSaving && !isPickingFolder}
+      >
         <form onSubmit={handleSubmit}>
           <DialogHeader>
             <DialogTitle>Create project</DialogTitle>
             <DialogDescription>
-              Group related threads. Desktop projects can also start Agent in a
+              Group related tasks. Desktop projects can also start Agent in a
               selected local folder.
             </DialogDescription>
           </DialogHeader>
@@ -106,11 +116,14 @@ export function ProjectCreateDialog({
               <Label htmlFor="project-name">Project name</Label>
               <Input
                 id="project-name"
+                name="projectName"
+                autoComplete="off"
                 value={name}
                 onChange={(event) => setName(event.target.value)}
                 placeholder="New project"
                 maxLength={80}
-                autoFocus
+                autoFocus={isMobile === false}
+                disabled={isSaving}
               />
             </div>
 
@@ -134,6 +147,7 @@ export function ProjectCreateDialog({
                       size="icon"
                       className="size-7 shrink-0"
                       onClick={() => setFolderPath(null)}
+                      disabled={isSaving}
                       aria-label="Remove selected folder"
                     >
                       <X className="size-4" />
@@ -145,7 +159,7 @@ export function ProjectCreateDialog({
                     variant="outline"
                     className="w-full justify-start"
                     onClick={handleChooseFolder}
-                    disabled={isPickingFolder}
+                    disabled={isPickingFolder || isSaving}
                   >
                     <Laptop className="size-4" />
                     {isPickingFolder
@@ -155,8 +169,8 @@ export function ProjectCreateDialog({
                 )}
                 <p className="text-xs text-muted-foreground">
                   {desktopBridgeActive
-                    ? "New Agent threads in this project will use this folder as their working directory."
-                    : "You can choose a folder while Desktop connects. Agent threads will be available once it is connected."}
+                    ? "New Agent tasks in this project will use the selected folder as their working directory."
+                    : "You can choose a folder while Desktop connects. Agent tasks will be available once it is connected."}
                 </p>
               </div>
             ) : null}
@@ -166,12 +180,15 @@ export function ProjectCreateDialog({
             <Button
               type="button"
               variant="outline"
-              onClick={() => onOpenChange(false)}
-              disabled={isSaving}
+              onClick={() => setOpen(false)}
+              disabled={isSaving || isPickingFolder}
             >
               Cancel
             </Button>
-            <Button type="submit" disabled={!name.trim() || isSaving}>
+            <Button
+              type="submit"
+              disabled={!name.trim() || isSaving || isPickingFolder}
+            >
               {isSaving ? "Creating…" : "Create"}
             </Button>
           </DialogFooter>

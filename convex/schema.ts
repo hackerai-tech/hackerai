@@ -54,9 +54,13 @@ export default defineSchema({
     user_id: v.string(),
     name: v.string(),
     folder_path: v.optional(v.string()),
+    pinned_at: v.optional(v.number()),
+    deletion_started_at: v.optional(v.number()),
     created_at: v.number(),
     updated_at: v.number(),
-  }).index("by_user_and_updated", ["user_id", "updated_at"]),
+  })
+    .index("by_user_and_updated", ["user_id", "updated_at"])
+    .index("by_user_and_pinned", ["user_id", "pinned_at"]),
 
   chats: defineTable({
     id: v.string(),

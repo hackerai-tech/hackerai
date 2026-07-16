@@ -597,7 +597,11 @@ export const saveChat = mutation({
         }
         projectId = normalizedProjectId;
         const project = await ctx.db.get(projectId);
-        if (!project || project.user_id !== args.userId) {
+        if (
+          !project ||
+          project.user_id !== args.userId ||
+          project.deletion_started_at !== undefined
+        ) {
           throw new ConvexError({
             code: "PROJECT_ACCESS_DENIED",
             message: "Project does not belong to user",
@@ -883,11 +887,8 @@ export const getUserChats = query({
       const pinnedChats = isFirstPage
         ? await ctx.db
             .query("chats")
-            .withIndex("by_user_project_and_pinned", (q) =>
-              q
-                .eq("user_id", identity.subject)
-                .eq("project_id", undefined)
-                .gt("pinned_at", 0),
+            .withIndex("by_user_and_pinned", (q) =>
+              q.eq("user_id", identity.subject).gt("pinned_at", 0),
             )
             .order("asc")
             .take(MAX_PINNED_CHATS)
@@ -1235,7 +1236,11 @@ export const moveChatToProject = mutation({
         message: "Unauthorized: Chat does not belong to user",
       });
     }
-    if (!project || project.user_id !== user.subject) {
+    if (
+      !project ||
+      project.user_id !== user.subject ||
+      project.deletion_started_at !== undefined
+    ) {
       throw new ConvexError({
         code: "PROJECT_ACCESS_DENIED",
         message: "Project does not belong to user",

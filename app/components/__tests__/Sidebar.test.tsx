@@ -34,7 +34,11 @@ jest.mock("@/app/hooks/useChats", () => ({
   }),
 }));
 jest.mock("@/app/hooks/useProjects", () => ({
-  useProjects: () => [],
+  useProjects: () => ({
+    results: [],
+    status: "Exhausted",
+    loadMore: jest.fn(),
+  }),
 }));
 jest.mock("../SidebarHeader", () => ({
   __esModule: true,

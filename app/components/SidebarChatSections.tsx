@@ -17,6 +17,8 @@ interface SidebarChat {
 interface SidebarChatSectionsProps {
   chats: SidebarChat[];
   projects: Doc<"projects">[] | undefined;
+  projectPaginationStatus?: SidebarPaginationStatus;
+  loadMoreProjects?: (numItems: number) => void;
   paginationStatus?: SidebarPaginationStatus;
   loadMore?: (numItems: number) => void;
   containerRef?: RefObject<HTMLDivElement | null>;
@@ -73,6 +75,8 @@ function CollapsibleChatSection({
 export function SidebarChatSections({
   chats,
   projects,
+  projectPaginationStatus,
+  loadMoreProjects,
   paginationStatus,
   loadMore,
   containerRef,
@@ -103,7 +107,11 @@ export function SidebarChatSections({
         </CollapsibleChatSection>
       ) : null}
 
-      <SidebarProjects projects={projects} />
+      <SidebarProjects
+        projects={projects}
+        paginationStatus={projectPaginationStatus}
+        loadMore={loadMoreProjects}
+      />
 
       <CollapsibleChatSection
         title="Tasks"

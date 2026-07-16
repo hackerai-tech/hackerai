@@ -88,7 +88,7 @@ describe("SidebarProjectThreads", () => {
 
     render(<SidebarProjectThreads project={project} />);
 
-    expect(screen.getByText("No threads yet")).toBeInTheDocument();
+    expect(screen.getByText("No tasks yet")).toBeInTheDocument();
     expect(screen.queryByText("Show more")).not.toBeInTheDocument();
   });
 });

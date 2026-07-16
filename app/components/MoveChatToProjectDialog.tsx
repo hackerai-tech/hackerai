@@ -27,7 +27,8 @@ export function MoveChatToProjectDialog({
   open,
   onOpenChange,
 }: MoveChatToProjectDialogProps) {
-  const projects = useProjects();
+  const projectListData = useProjects();
+  const projects = projectListData.results;
   const moveChatToProject = useMoveChatToProject();
   const [movingToProjectId, setMovingToProjectId] =
     useState<Id<"projects"> | null>(null);
@@ -65,7 +66,10 @@ export function MoveChatToProjectDialog({
         onOpenChange(nextOpen);
       }}
     >
-      <DialogContent className="sm:max-w-md">
+      <DialogContent
+        className="sm:max-w-md"
+        showCloseButton={movingToProjectId === null}
+      >
         <DialogHeader>
           <DialogTitle>Move to project</DialogTitle>
           <DialogDescription>
@@ -105,6 +109,28 @@ export function MoveChatToProjectDialog({
               </Button>
             ))
           )}
+
+          {projectListData.status === "LoadingMore" ? (
+            <div
+              className="flex items-center justify-center gap-2 py-3 text-sm text-muted-foreground"
+              role="status"
+            >
+              <LoaderCircle className="size-4 animate-spin" />
+              Loading more projects…
+            </div>
+          ) : null}
+
+          {projectListData.status === "CanLoadMore" ? (
+            <Button
+              type="button"
+              variant="ghost"
+              className="h-10 w-full"
+              onClick={() => projectListData.loadMore(10)}
+              disabled={movingToProjectId !== null}
+            >
+              Show more projects
+            </Button>
+          ) : null}
         </div>
 
         <DialogFooter>

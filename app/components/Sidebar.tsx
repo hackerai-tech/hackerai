@@ -27,7 +27,7 @@ const ChatListContent: FC<{ chatListData: ChatListData }> = ({
   chatListData,
 }) => {
   const scrollContainerRef = useRef<HTMLDivElement>(null);
-  const projects = useProjects();
+  const projectListData = useProjects();
 
   return (
     <div
@@ -37,7 +37,9 @@ const ChatListContent: FC<{ chatListData: ChatListData }> = ({
     >
       <SidebarChatSections
         chats={chatListData.results || []}
-        projects={projects}
+        projects={projectListData.results}
+        projectPaginationStatus={projectListData.status}
+        loadMoreProjects={projectListData.loadMore}
         paginationStatus={chatListData.status}
         loadMore={chatListData.loadMore}
         containerRef={scrollContainerRef}

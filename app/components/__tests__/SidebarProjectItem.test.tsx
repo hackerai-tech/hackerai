@@ -1,15 +1,33 @@
 import "@testing-library/jest-dom";
 import { describe, expect, it, jest } from "@jest/globals";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import type { Doc } from "@/convex/_generated/dataModel";
 import { SIDEBAR_CHAT_DRAG_TYPE } from "../sidebar-chat-drag";
 
 const mockProjectThreads = jest.fn(() => (
-  <div data-testid="project-threads">Threads</div>
+  <div data-testid="project-threads">Tasks</div>
 ));
+const mockPinProject = jest.fn<any>().mockResolvedValue(null);
+const mockUnpinProject = jest.fn<any>().mockResolvedValue(null);
+
+jest.mock("@/app/hooks/useProjects", () => ({
+  usePinProject: () => mockPinProject,
+  useUnpinProject: () => mockUnpinProject,
+}));
 
 jest.mock("../SidebarProjectThreads", () => ({
   SidebarProjectThreads: () => mockProjectThreads(),
+}));
+jest.mock("../ProjectEditDialog", () => ({
+  ProjectEditDialog: ({ open }: { open: boolean }) => (
+    <div data-testid="project-edit-dialog" data-open={String(open)} />
+  ),
+}));
+jest.mock("../ProjectDeleteDialog", () => ({
+  ProjectDeleteDialog: ({ open }: { open: boolean }) => (
+    <div data-testid="project-delete-dialog" data-open={String(open)} />
+  ),
 }));
 
 const { SidebarProjectItem } =
@@ -81,5 +99,69 @@ describe("SidebarProjectItem", () => {
     fireEvent.drop(dropTarget, { dataTransfer });
     expect(onDropChat).toHaveBeenCalledWith("chat-1");
     expect(dropTarget).not.toHaveClass("ring-1");
+  });
+
+  it("offers pin, edit, and delete actions from the project menu", async () => {
+    const user = userEvent.setup();
+    render(
+      <SidebarProjectItem
+        project={project}
+        open={false}
+        onOpenChange={jest.fn()}
+        onNewThread={jest.fn()}
+        onDropChat={jest.fn<() => Promise<void>>().mockResolvedValue(undefined)}
+      />,
+    );
+
+    await user.click(
+      screen.getByRole("button", { name: "Project options for Acme" }),
+    );
+    await user.click(await screen.findByRole("menuitem", { name: "Pin" }));
+    await waitFor(() => {
+      expect(mockPinProject).toHaveBeenCalledWith({ projectId: "project-1" });
+    });
+
+    await user.click(
+      screen.getByRole("button", { name: "Project options for Acme" }),
+    );
+    await user.click(await screen.findByRole("menuitem", { name: "Edit" }));
+    expect(screen.getByTestId("project-edit-dialog")).toHaveAttribute(
+      "data-open",
+      "true",
+    );
+
+    await user.click(
+      screen.getByRole("button", { name: "Project options for Acme" }),
+    );
+    await user.click(await screen.findByRole("menuitem", { name: "Delete" }));
+    expect(screen.getByTestId("project-delete-dialog")).toHaveAttribute(
+      "data-open",
+      "true",
+    );
+  });
+
+  it("shows pinned state and allows unpinning", async () => {
+    const user = userEvent.setup();
+    const pinnedProject = { ...project, pinned_at: 10 } as Doc<"projects">;
+    render(
+      <SidebarProjectItem
+        project={pinnedProject}
+        open={false}
+        onOpenChange={jest.fn()}
+        onNewThread={jest.fn()}
+        onDropChat={jest.fn<() => Promise<void>>().mockResolvedValue(undefined)}
+      />,
+    );
+
+    expect(screen.getByTestId("project-pin-icon")).toBeInTheDocument();
+    await user.click(
+      screen.getByRole("button", { name: "Project options for Acme" }),
+    );
+    await user.click(await screen.findByRole("menuitem", { name: "Unpin" }));
+    await waitFor(() => {
+      expect(mockUnpinProject).toHaveBeenCalledWith({
+        projectId: "project-1",
+      });
+    });
   });
 });

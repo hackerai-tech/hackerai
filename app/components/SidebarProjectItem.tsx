@@ -3,11 +3,17 @@
 import { useState, type DragEvent } from "react";
 import {
   ChevronRight,
+  Ellipsis,
   Folder,
   FolderOpen,
   Laptop,
+  Pencil,
+  Pin,
+  PinOff,
   SquarePen,
+  Trash2,
 } from "lucide-react";
+import { toast } from "sonner";
 import type { Doc } from "@/convex/_generated/dataModel";
 import { Button } from "@/components/ui/button";
 import {
@@ -15,6 +21,15 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import { usePinProject, useUnpinProject } from "@/app/hooks/useProjects";
+import { ProjectDeleteDialog } from "./ProjectDeleteDialog";
+import { ProjectEditDialog } from "./ProjectEditDialog";
 import { SidebarProjectThreads } from "./SidebarProjectThreads";
 import {
   hasSidebarChatDragData,
@@ -37,6 +52,12 @@ export function SidebarProjectItem({
   onDropChat,
 }: SidebarProjectItemProps) {
   const [isDragOver, setIsDragOver] = useState(false);
+  const [isMenuOpen, setIsMenuOpen] = useState(false);
+  const [isEditOpen, setIsEditOpen] = useState(false);
+  const [isDeleteOpen, setIsDeleteOpen] = useState(false);
+  const [isPinning, setIsPinning] = useState(false);
+  const pinProject = usePinProject();
+  const unpinProject = useUnpinProject();
 
   const handleDragOver = (event: DragEvent<HTMLDivElement>) => {
     if (!hasSidebarChatDragData(event.dataTransfer)) return;
@@ -62,6 +83,27 @@ export function SidebarProjectItem({
     setIsDragOver(false);
     const chatId = event.dataTransfer.getData(SIDEBAR_CHAT_DRAG_TYPE);
     if (chatId) void onDropChat(chatId);
+  };
+
+  const handleTogglePinned = async () => {
+    if (isPinning) return;
+    setIsPinning(true);
+    try {
+      if (project.pinned_at !== undefined) {
+        await unpinProject({ projectId: project._id });
+      } else {
+        await pinProject({ projectId: project._id });
+      }
+    } catch (error) {
+      console.error("Failed to update project pin:", error);
+      toast.error(
+        project.pinned_at !== undefined
+          ? "Failed to unpin project"
+          : "Failed to pin project",
+      );
+    } finally {
+      setIsPinning(false);
+    }
   };
 
   return (
@@ -103,6 +145,13 @@ export function SidebarProjectItem({
             <span className="min-w-0 flex-1 truncate" title={project.name}>
               {project.name}
             </span>
+            {project.pinned_at !== undefined ? (
+              <Pin
+                className="size-3 shrink-0 text-sidebar-foreground/35"
+                data-testid="project-pin-icon"
+                aria-hidden="true"
+              />
+            ) : null}
             {project.folder_path ? (
               <Laptop
                 className="size-3.5 shrink-0 text-sidebar-foreground/35"
@@ -112,13 +161,51 @@ export function SidebarProjectItem({
           </button>
         </CollapsibleTrigger>
 
+        <DropdownMenu open={isMenuOpen} onOpenChange={setIsMenuOpen}>
+          <DropdownMenuTrigger asChild>
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              className="size-8 shrink-0 rounded-lg text-sidebar-foreground/45 opacity-0 transition-opacity hover:bg-sidebar-accent hover:text-sidebar-foreground group-hover/project:opacity-100 group-focus-within/project:opacity-100 focus-visible:opacity-100 data-[state=open]:opacity-100 touch-device:!opacity-100"
+              aria-label={`Project options for ${project.name}`}
+            >
+              <Ellipsis className="size-[18px]" />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" side="bottom" sideOffset={5}>
+            <DropdownMenuItem
+              disabled={isPinning}
+              onSelect={() => void handleTogglePinned()}
+            >
+              {project.pinned_at !== undefined ? (
+                <PinOff className="mr-2 size-4" />
+              ) : (
+                <Pin className="mr-2 size-4" />
+              )}
+              {project.pinned_at !== undefined ? "Unpin" : "Pin"}
+            </DropdownMenuItem>
+            <DropdownMenuItem onSelect={() => setIsEditOpen(true)}>
+              <Pencil className="mr-2 size-4" />
+              Edit
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              className="text-destructive focus:text-destructive"
+              onSelect={() => setIsDeleteOpen(true)}
+            >
+              <Trash2 className="mr-2 size-4" />
+              Delete
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+
         <Button
           type="button"
           variant="ghost"
           size="icon"
           className="size-8 shrink-0 rounded-lg text-sidebar-foreground/45 opacity-0 transition-opacity hover:bg-sidebar-accent hover:text-sidebar-foreground group-hover/project:opacity-100 group-focus-within/project:opacity-100 focus-visible:opacity-100 touch-device:!opacity-100"
           onClick={onNewThread}
-          aria-label={`New thread in ${project.name}`}
+          aria-label={`New task in ${project.name}`}
         >
           <SquarePen className="size-[18px]" />
         </Button>
@@ -127,6 +214,21 @@ export function SidebarProjectItem({
       <CollapsibleContent>
         {open ? <SidebarProjectThreads project={project} /> : null}
       </CollapsibleContent>
+
+      {isEditOpen ? (
+        <ProjectEditDialog
+          project={project}
+          open
+          onOpenChange={setIsEditOpen}
+        />
+      ) : null}
+      {isDeleteOpen ? (
+        <ProjectDeleteDialog
+          project={project}
+          open
+          onOpenChange={setIsDeleteOpen}
+        />
+      ) : null}
     </Collapsible>
   );
 }

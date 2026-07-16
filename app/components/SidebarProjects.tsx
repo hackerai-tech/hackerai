@@ -10,6 +10,7 @@ import {
 import { toast } from "sonner";
 import type { Doc, Id } from "@/convex/_generated/dataModel";
 import { Button } from "@/components/ui/button";
+import Loading from "@/components/ui/loading";
 import { useGlobalState } from "@/app/contexts/GlobalState";
 import { useMoveChatToProject } from "@/app/hooks/useProjects";
 import { useStartNewChat } from "@/app/hooks/useStartNewChat";
@@ -19,9 +20,16 @@ import { SidebarProjectItem } from "./SidebarProjectItem";
 
 interface SidebarProjectsProps {
   projects: Doc<"projects">[] | undefined;
+  paginationStatus?:
+    "LoadingFirstPage" | "CanLoadMore" | "LoadingMore" | "Exhausted";
+  loadMore?: (numItems: number) => void;
 }
 
-export function SidebarProjects({ projects }: SidebarProjectsProps) {
+export function SidebarProjects({
+  projects,
+  paginationStatus,
+  loadMore,
+}: SidebarProjectsProps) {
   const { desktopBridgeActive } = useGlobalState();
   const moveChatToProject = useMoveChatToProject();
   const startNewChat = useStartNewChat();
@@ -57,7 +65,7 @@ export function SidebarProjects({ projects }: SidebarProjectsProps) {
   const handleNewThread = (project: Doc<"projects">) => {
     if (project.folder_path && !desktopBridgeActive) {
       toast.error("Connect HackerAI Desktop", {
-        description: `“${project.name}” is linked to a local folder. Open HackerAI Desktop and wait for it to connect before starting a thread.`,
+        description: `“${project.name}” is linked to a local folder. Open HackerAI Desktop and wait for it to connect before starting a task.`,
       });
       return;
     }
@@ -160,16 +168,40 @@ export function SidebarProjects({ projects }: SidebarProjectsProps) {
               <span>New project</span>
             </button>
           ) : (
-            projects.map((project) => (
-              <SidebarProjectItem
-                key={project._id}
-                project={project}
-                open={openProjectIds.has(project._id)}
-                onOpenChange={(open) => setProjectOpen(project._id, open)}
-                onNewThread={() => handleNewThread(project)}
-                onDropChat={(chatId) => handleDropChat(project, chatId)}
-              />
-            ))
+            <>
+              {projects.map((project) => (
+                <SidebarProjectItem
+                  key={project._id}
+                  project={project}
+                  open={openProjectIds.has(project._id)}
+                  onOpenChange={(open) => setProjectOpen(project._id, open)}
+                  onNewThread={() => handleNewThread(project)}
+                  onDropChat={(chatId) => handleDropChat(project, chatId)}
+                />
+              ))}
+
+              {paginationStatus === "LoadingMore" ? (
+                <div
+                  className="flex h-9 items-center justify-center"
+                  role="status"
+                  aria-label="Loading more projects"
+                >
+                  <Loading size={5} />
+                </div>
+              ) : null}
+
+              {paginationStatus === "CanLoadMore" && loadMore ? (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  className="ms-7 h-9 self-start px-2 text-sidebar-foreground/50 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground"
+                  onClick={() => loadMore(10)}
+                >
+                  Show more projects
+                </Button>
+              ) : null}
+            </>
           )}
         </div>
       ) : null}

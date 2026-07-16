@@ -33,16 +33,21 @@ describe("MoveChatToProjectDialog", () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
-    mockUseProjects.mockReturnValue([
-      {
-        _id: "project-1",
-        _creationTime: 1,
-        user_id: "user-1",
-        name: "Acme target",
-        created_at: 1,
-        updated_at: 1,
-      },
-    ] as Doc<"projects">[]);
+    mockUseProjects.mockReturnValue({
+      results: [
+        {
+          _id: "project-1",
+          _creationTime: 1,
+          user_id: "user-1",
+          name: "Acme target",
+          created_at: 1,
+          updated_at: 1,
+        },
+      ] as Doc<"projects">[],
+      status: "Exhausted",
+      loadMore: jest.fn(),
+      isLoading: false,
+    });
     mockUseMoveChatToProject.mockReturnValue(moveChatToProject);
   });
 
@@ -150,7 +155,12 @@ describe("MoveChatToProjectDialog", () => {
   });
 
   it("explains how to add a destination when there are no projects", () => {
-    mockUseProjects.mockReturnValue([]);
+    mockUseProjects.mockReturnValue({
+      results: [],
+      status: "Exhausted",
+      loadMore: jest.fn(),
+      isLoading: false,
+    });
 
     render(
       <MoveChatToProjectDialog chatId="chat-1" open onOpenChange={jest.fn()} />,
@@ -159,5 +169,22 @@ describe("MoveChatToProjectDialog", () => {
     expect(
       screen.getByText("Create a project from the sidebar first."),
     ).toBeInTheDocument();
+  });
+
+  it("loads ten more project destinations", () => {
+    const loadMore = jest.fn();
+    mockUseProjects.mockReturnValue({
+      results: [],
+      status: "CanLoadMore",
+      loadMore,
+      isLoading: false,
+    });
+
+    render(
+      <MoveChatToProjectDialog chatId="chat-1" open onOpenChange={jest.fn()} />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Show more projects" }));
+    expect(loadMore).toHaveBeenCalledWith(10);
   });
 });

@@ -49,9 +49,7 @@ describe("ChatItem project actions", () => {
     render(<ChatItem id="chat-1" title="Target notes" />);
 
     fireEvent.focus(screen.getByRole("button", { name: /Open task:/ }));
-    await user.click(
-      screen.getByRole("button", { name: "Open conversation options" }),
-    );
+    await user.click(screen.getByRole("button", { name: "Open task options" }));
 
     await user.click(
       await screen.findByRole("menuitem", { name: "Move to project…" }),
