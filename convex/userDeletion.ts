@@ -46,7 +46,10 @@ export const USER_DELETION_TABLE_POLICY = {
 type AnyDoc = { _id: Id<any>; [key: string]: any };
 type CleanupMode = "execute" | "dryRun";
 
-const MAX_CLEANUP_DOCS_PER_INDEX = 500;
+// Convex counts full document payloads toward a mutation's 16 MiB read limit.
+// Keep each cleanup pass small enough for message-heavy accounts; the account
+// deletion route already repeats the mutation while `hasMore` is true.
+const MAX_CLEANUP_DOCS_PER_INDEX = 100;
 const MAX_RESIDUE_USER_IDS_PER_MUTATION = 1;
 
 type CleanupStats = {

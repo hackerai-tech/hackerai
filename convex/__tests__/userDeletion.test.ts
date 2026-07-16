@@ -706,13 +706,17 @@ describe("userDeletion", () => {
     ).rejects.toThrow("processes one userId per mutation");
   });
 
-  it("reports remaining work and completes on a later batch when an indexed query exceeds the batch size", async () => {
+  it("keeps cleanup reads bounded and preserves chats until a later message batch", async () => {
     const { deleteAllUserData } = await import("../userDeletion");
     const tables = seedTables();
-    tables.notes = Array.from({ length: 501 }, (_, index) => ({
-      _id: `note-user-${index}`,
+    tables.messages = Array.from({ length: 101 }, (_, index) => ({
+      _id: `message-user-${index}`,
+      id: `msg-${index}`,
+      chat_id: "chat-1",
       user_id: "user_123",
-      note_id: `note-${index}`,
+      role: "user",
+      parts: [{ type: "text", text: "large message payload" }],
+      update_time: index,
     }));
     const { ctx } = createMockCtx(tables);
 
@@ -720,16 +724,17 @@ describe("userDeletion", () => {
 
     expect(firstBatch.hasMore).toBe(true);
     expect(
-      tables.notes.filter((candidate) => candidate.user_id === "user_123"),
+      tables.messages.filter((candidate) => candidate.user_id === "user_123"),
     ).toHaveLength(1);
-    expect(row(tables, "chats", "chat-doc")).toBeUndefined();
+    expect(row(tables, "chats", "chat-doc")).toBeTruthy();
 
     const secondBatch = await deleteAllUserData.handler(ctx as any, {});
 
     expect(secondBatch.hasMore).toBe(false);
     expect(
-      tables.notes.filter((candidate) => candidate.user_id === "user_123"),
+      tables.messages.filter((candidate) => candidate.user_id === "user_123"),
     ).toHaveLength(0);
+    expect(row(tables, "chats", "chat-doc")).toBeUndefined();
   });
 
   it("fails user deletion if S3 cleanup scheduling fails", async () => {
