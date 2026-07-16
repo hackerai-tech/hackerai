@@ -478,6 +478,55 @@ describe("CentrifugoSandbox", () => {
       );
     });
 
+    it("times out a stalled cancellation publish and ignores its late rejection", async () => {
+      const sandbox = createSandbox();
+      let cancel!: () => Promise<boolean>;
+      const { promise } = startCommand(sandbox, "sleep 999", {
+        timeoutMs: 10000,
+        onCancelReady: (readyCancel) => {
+          cancel = readyCancel;
+        },
+      });
+
+      await jest.advanceTimersByTimeAsync(0);
+      const sub = mockSubscriptions[0];
+      sub.emit("subscribed");
+      await jest.advanceTimersByTimeAsync(0);
+
+      let rejectFirstPublish!: (error: Error) => void;
+      let cancellationPublishes = 0;
+      sub.publish = jest.fn((message: { type: string }) => {
+        if (message.type !== "command_cancel") return Promise.resolve();
+        cancellationPublishes += 1;
+        if (cancellationPublishes === 1) {
+          return new Promise<void>((_resolve, reject) => {
+            rejectFirstPublish = reject;
+          });
+        }
+        return Promise.resolve();
+      });
+
+      const firstAttempt = cancel();
+      await jest.advanceTimersByTimeAsync(5001);
+      await expect(firstAttempt).resolves.toBe(false);
+
+      const secondAttempt = cancel();
+      await jest.advanceTimersByTimeAsync(0);
+      rejectFirstPublish(new Error("late relay failure"));
+      await jest.advanceTimersByTimeAsync(0);
+
+      sub.emit("publication", {
+        data: {
+          type: "command_cancel_result",
+          commandId: FIXED_UUID,
+          canceled: true,
+        },
+      });
+
+      await expect(secondAttempt).resolves.toBe(true);
+      await expect(promise).resolves.toMatchObject({ exitCode: 130 });
+    });
+
     it("keeps the command live after an uncertain callback cancellation so it can be retried", async () => {
       const sandbox = createSandbox();
       let cancel!: () => Promise<boolean>;

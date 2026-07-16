@@ -570,6 +570,14 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
           }
           if (cancelPublishStarted) return;
           cancelPublishStarted = true;
+          const attempt = cancelAttemptPromise;
+          cancelAckTimeoutId = setTimeout(() => {
+            if (cancelAttemptPromise === attempt) {
+              failCancellation(
+                "Local command cancellation was not acknowledged.",
+              );
+            }
+          }, COMMAND_CANCEL_ACK_TIMEOUT_MS);
 
           subscription
             .publish({
@@ -577,16 +585,12 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
               commandId,
               targetConnectionId: this.connectionInfo.connectionId,
             })
-            .then(() => {
-              if (settled) return;
-              cancelAckTimeoutId = setTimeout(() => {
-                failCancellation(
-                  "Local command cancellation was not acknowledged.",
-                );
-              }, COMMAND_CANCEL_ACK_TIMEOUT_MS);
-            })
             .catch(() => {
-              failCancellation("Failed to publish local command cancellation.");
+              if (cancelAttemptPromise === attempt) {
+                failCancellation(
+                  "Failed to publish local command cancellation.",
+                );
+              }
             });
         };
 

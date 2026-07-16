@@ -26,16 +26,17 @@ export function confirmProcessTermination(
       if (settled) return;
       settled = true;
       clearTimeout(timeoutId);
-      proc.off("close", handleTerminal);
-      proc.off("error", handleTerminal);
+      proc.off("close", handleClose);
+      proc.off("error", handleError);
       resolve(confirmed);
     };
-    const handleTerminal = () => finish(true);
+    const handleClose = () => finish(true);
+    const handleError = () => finish(false);
     const timeoutId = setTimeout(() => finish(false), timeoutMs);
     timeoutId.unref?.();
 
-    proc.once("close", handleTerminal);
-    proc.once("error", handleTerminal);
+    proc.once("close", handleClose);
+    proc.once("error", handleError);
     try {
       requestTermination();
     } catch {

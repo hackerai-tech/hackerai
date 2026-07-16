@@ -851,17 +851,65 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
   });
 
   test("approval telemetry keeps correlation context without raw targets", () => {
-    expect(taskSrc).toContain('event: "agent_tool_approval_waiting"');
-    expect(taskSrc).toContain('event: "agent_tool_approval_reused"');
-    expect(taskSrc).toContain('event: "agent_tool_approval_granted"');
-    expect(taskSrc).toContain('event: "agent_tool_approval_denied"');
-    expect(taskSrc).toContain("tool_call_id: request.toolCallId");
-    expect(taskSrc).toContain("operation: request.operation");
-    expect(taskSrc).not.toContain("target: request.target.slice");
-    expect(taskSrc).not.toContain("target_prefix: existingGrant.targetPrefix");
-    expect(taskSrc).not.toContain(
-      "target_prefix: approvedTargetGrant?.targetPrefix",
-    );
+    const expectedKeysByMessage = {
+      "[agent-long] tool approval reused": [
+        "event",
+        "service",
+        "runId",
+        "approvalId",
+        "tool_call_id",
+        "tool_name",
+        "operation",
+        "target_kind",
+      ],
+      "[agent-long] waiting for tool approval": [
+        "event",
+        "service",
+        "runId",
+        "approvalId",
+        "tool_call_id",
+        "tool_name",
+        "operation",
+      ],
+      "[agent-long] tool approval granted": [
+        "event",
+        "service",
+        "runId",
+        "approvalId",
+        "tool_call_id",
+        "tool_name",
+        "operation",
+        "requested_grant",
+        "grant",
+        "target_kind",
+      ],
+      "[agent-long] tool approval denied": [
+        "event",
+        "service",
+        "runId",
+        "approvalId",
+        "tool_call_id",
+        "tool_name",
+        "operation",
+      ],
+    } as const;
+
+    for (const [message, expectedKeys] of Object.entries(
+      expectedKeysByMessage,
+    )) {
+      const escapedMessage = message.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const payload = new RegExp(
+        `triggerLogger\\.info\\("${escapedMessage}",\\s*\\{([\\s\\S]*?)\\n\\s*\\}\\);`,
+      ).exec(taskSrc)?.[1];
+      expect(payload).toBeDefined();
+      const keys = Array.from(
+        payload?.matchAll(/^\s*([A-Za-z_][A-Za-z0-9_]*)(?:\s*:|\s*,\s*$)/gm) ??
+          [],
+        (match) => match[1],
+      );
+      expect(keys.sort()).toEqual([...expectedKeys].sort());
+    }
+
     expect(taskSrc).not.toContain('.set("approvalTargetPrefix"');
   });
 

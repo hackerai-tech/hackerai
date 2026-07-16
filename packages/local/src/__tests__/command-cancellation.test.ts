@@ -49,6 +49,15 @@ describe("confirmProcessTermination", () => {
     ).resolves.toBe(false);
   });
 
+  it("reports false when the child emits an error", async () => {
+    const proc = new FakeProcess();
+    const confirmation = confirmProcessTermination(proc, jest.fn());
+
+    proc.emit("error", new Error("signal delivery failed"));
+
+    await expect(confirmation).resolves.toBe(false);
+  });
+
   it("preserves already-confirmed terminal state", async () => {
     const proc = new FakeProcess();
     proc.exitCode = 0;
