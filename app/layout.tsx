@@ -13,6 +13,7 @@ import { AgentApprovalProvider } from "./contexts/AgentApprovalContext";
 import { PostHogProvider } from "./providers";
 import { DataStreamProvider } from "./components/DataStreamProvider";
 import { ChunkLoadRecovery } from "./components/ChunkLoadRecovery";
+import { PUBLIC_METADATA } from "@/lib/marketing/positioning";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -25,10 +26,9 @@ const geistMono = Geist_Mono({
 });
 
 const APP_NAME = "HackerAI";
-const APP_DEFAULT_TITLE = "HackerAI - AI-Powered Penetration Testing Assistant";
+const APP_DEFAULT_TITLE = PUBLIC_METADATA.title;
 const APP_TITLE_TEMPLATE = "%s | HackerAI";
-const APP_DESCRIPTION =
-  "HackerAI is an AI pentesting assistant that helps you scan targets, exploit vulnerabilities, analyze findings, and write reports faster.";
+const APP_DESCRIPTION = PUBLIC_METADATA.description;
 
 export const metadata: Metadata = {
   applicationName: APP_NAME,
@@ -45,15 +45,19 @@ export const metadata: Metadata = {
     "pentest ai",
     "penetration testing tool",
     "penetration testing ai",
-    "hacking ai",
     "pentesting ai",
     "pentest automation",
+    "authorized security testing ai",
     "security assessment ai",
-    "vulnerability scanner ai",
+    "application security ai",
+    "security code review ai",
+    "exploit validation ai",
+    "pentest reporting ai",
     "offensive security ai",
-    "red team ai",
     "cybersecurity ai assistant",
     "bug bounty ai",
+    "bug bounty assistant",
+    "security lab assistant",
     "pentest gpt",
     "security ai",
   ],

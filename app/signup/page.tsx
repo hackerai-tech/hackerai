@@ -10,6 +10,7 @@ import {
   isValidReferralCode,
 } from "@/lib/referrals/config";
 import { workos } from "@/app/api/workos";
+import { PUBLIC_POSITIONING } from "@/lib/marketing/positioning";
 
 export const runtime = "nodejs";
 
@@ -128,9 +129,16 @@ export default async function SignupPage({ searchParams }: SignupPageProps) {
           <HackerAISVG theme="dark" scale={0.15} />
         </div>
 
-        <h1 className="text-4xl font-semibold tracking-normal md:text-5xl">
+        <p className="text-muted-foreground mb-3 font-mono text-xs font-medium uppercase tracking-[0.2em]">
+          {PUBLIC_POSITIONING.eyebrow}
+        </p>
+        <h1 className="text-4xl font-semibold tracking-normal text-balance md:text-5xl">
           Create your account
         </h1>
+        <p className="text-muted-foreground mt-4 max-w-lg text-lg leading-relaxed text-pretty">
+          Bring a real target, lab, or codebase. HackerAI is built for practical
+          bug bounty, pentest, and security research workflows.
+        </p>
 
         <div className="border-border bg-muted/25 mt-8 rounded-2xl border p-6">
           <div className="flex gap-4">
@@ -164,6 +172,11 @@ export default async function SignupPage({ searchParams }: SignupPageProps) {
         </p>
 
         <p className="text-muted-foreground mx-auto mt-8 max-w-md text-center text-sm leading-relaxed">
+          {PUBLIC_POSITIONING.audience} Provider policies and abuse controls
+          still apply.
+        </p>
+
+        <p className="text-muted-foreground mx-auto mt-4 max-w-md text-center text-sm leading-relaxed">
           By continuing, you agree to the{" "}
           <Link
             className="underline underline-offset-4"

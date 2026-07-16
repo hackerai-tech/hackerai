@@ -50,8 +50,8 @@ function DownloadContent() {
           </h1>
           <p className="text-lg text-muted-foreground">
             {isMobile
-              ? "Add the app to your home screen"
-              : "Get the desktop app for the best experience"}
+              ? "Keep your security workspace within reach"
+              : "Run Agent with your local tools, files, and test environment"}
           </p>
         </div>
 

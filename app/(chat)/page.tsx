@@ -19,15 +19,16 @@ import { useTypingAnimation } from "../hooks/useTypingAnimation";
 import { upsertDraft } from "@/lib/utils/client-storage";
 import Loading from "@/components/ui/loading";
 import { useHasAuthenticatedBefore } from "../hooks/useHasAuthenticatedBefore";
+import { PUBLIC_POSITIONING } from "@/lib/marketing/positioning";
 
 const LOGIN_TYPING_PREFIX = "Ask HackerAI to ";
 const LOGIN_TYPING_TAILS = [
-  "find vulnerabilities in...",
-  "audit the security of...",
-  "test the defenses of...",
-  "review the code of...",
-  "write a pentest report for...",
-  "hunt for bugs in...",
+  "map the attack surface of my authorized target…",
+  "review this auth flow for IDOR…",
+  "turn these Burp requests into a working repro…",
+  "audit this codebase for SSRF paths…",
+  "validate impact and draft the finding…",
+  "turn my notes into a clean pentest report…",
 ];
 
 // Simple unauthenticated content that redirects to signup on message send
@@ -78,12 +79,15 @@ const UnauthenticatedContent = () => {
         {/* Centered content area */}
         <div className="flex-1 flex flex-col items-center justify-center px-6 py-[15vh] pb-[18vh] min-h-0">
           {/* Title */}
-          <div className="mb-4 flex flex-col items-center px-4 text-center md:mb-6">
-            <h1 className="text-4xl font-bold text-foreground mb-2 md:text-5xl">
-              What will you hack today?
+          <div className="mb-5 flex max-w-3xl flex-col items-center px-4 text-center md:mb-7">
+            <p className="text-muted-foreground mb-3 font-mono text-xs font-medium uppercase tracking-[0.2em]">
+              {PUBLIC_POSITIONING.eyebrow}
+            </p>
+            <h1 className="text-foreground mb-3 text-4xl font-bold text-balance md:text-5xl">
+              {PUBLIC_POSITIONING.headline}
             </h1>
-            <p className="text-muted-foreground text-lg leading-tight md:text-xl">
-              Find and fix vulnerabilities by chatting with AI.
+            <p className="text-muted-foreground max-w-2xl text-lg leading-relaxed text-pretty md:text-xl">
+              {PUBLIC_POSITIONING.description}
             </p>
           </div>
 
@@ -102,6 +106,9 @@ const UnauthenticatedContent = () => {
               restoreDraftAttachments={false}
             />
           </div>
+          <p className="text-muted-foreground mt-4 max-w-2xl px-4 text-center text-xs leading-relaxed text-pretty md:text-sm">
+            {PUBLIC_POSITIONING.audience}
+          </p>
         </div>
 
         {/* Footer */}
@@ -154,8 +161,7 @@ export default function Page() {
     }
 
     const plan = (urlPlan === "yearly" ? "yearly" : "monthly") as
-      | "monthly"
-      | "yearly";
+      "monthly" | "yearly";
 
     return { initialSeats: seats, initialPlan: plan };
   }, [searchParams]);

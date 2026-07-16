@@ -40,17 +40,17 @@ export const PLAN_HEADERS = {
 } as const;
 
 export const freeFeatures: Array<PricingFeature> = [
-  { icon: Check, text: "Access to basic AI model" },
-  { icon: Check, text: "Limited responses" },
-  { icon: Check, text: "Agent mode with local sandbox" },
+  { icon: Check, text: "Ask with a core AI model" },
+  { icon: Check, text: "Limited monthly responses" },
+  { icon: Check, text: "Agent mode with your local sandbox" },
 ];
 
 export const proFeatures: Array<PricingFeature> = [
-  { icon: Check, text: "Access to the best AI models for pentesting" },
-  { icon: Check, text: "Extended limits" },
-  { icon: Check, text: "File uploads" },
-  { icon: Check, text: "Cloud agents" },
-  { icon: Check, text: "Maximum context window" },
+  { icon: Check, text: "Best available AI models for pentesting" },
+  { icon: Check, text: "Higher limits for longer security workflows" },
+  { icon: Check, text: "Upload code, requests, reports, and screenshots" },
+  { icon: Check, text: "Cloud Agent with terminal and browser tools" },
+  { icon: Check, text: "Maximum context for large targets and reports" },
 ];
 
 export const proPlusFeatures: Array<PricingFeature> = [

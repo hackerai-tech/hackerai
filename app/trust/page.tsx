@@ -6,6 +6,7 @@ import {
   Bug,
   Code,
   CreditCard,
+  Crosshair,
   Database,
   ExternalLink as ExternalLinkIcon,
   FileText,
@@ -15,28 +16,29 @@ import {
   Terminal,
   Trash2,
 } from "lucide-react";
+import { PUBLIC_POSITIONING } from "@/lib/marketing/positioning";
 
 export const metadata: Metadata = {
   title: "Security & Trust | HackerAI",
   description:
-    "How HackerAI handles your data: AI providers, sandbox execution, storage, billing, account security, and subprocessors.",
+    "How HackerAI supports authorized security testing, where product and provider boundaries apply, and how data, sandboxes, billing, and account security work.",
   openGraph: {
     title: "Security & Trust | HackerAI",
     description:
-      "How HackerAI handles your data: AI providers, sandbox execution, storage, billing, account security, and subprocessors.",
+      "How HackerAI supports authorized security testing, where product and provider boundaries apply, and how data, sandboxes, billing, and account security work.",
     type: "website",
   },
   twitter: {
     card: "summary",
     title: "Security & Trust | HackerAI",
     description:
-      "How HackerAI handles your data: AI providers, sandbox execution, storage, billing, account security, and subprocessors.",
+      "How HackerAI supports authorized security testing, where product and provider boundaries apply, and how data, sandboxes, billing, and account security work.",
   },
 };
 
 export const dynamic = "force-static";
 
-const LAST_UPDATED = "June 24, 2026";
+const LAST_UPDATED = "July 16, 2026";
 
 const HELP_CENTER_URL =
   process.env.NEXT_PUBLIC_HELP_CENTER_URL || "https://help.hackerai.co/en/";
@@ -180,9 +182,9 @@ export default function TrustPage() {
             Security &amp; Trust
           </h1>
           <p className="mx-auto mt-4 max-w-2xl text-lg leading-relaxed text-muted-foreground">
-            HackerAI is an AI agent for penetration testing and security work.
-            This page describes the data we process, where agent code runs, and
-            the services we rely on to operate.
+            Built for serious, authorized security testing. This page explains
+            where HackerAI goes deep, where provider and abuse controls still
+            apply, and how your data and agent execution are handled.
           </p>
           <div className="mt-6 flex flex-wrap items-center justify-center gap-2">
             <span className="inline-flex items-center gap-1.5 rounded-full border border-border bg-card px-3 py-1 text-xs font-medium text-muted-foreground">
@@ -192,6 +194,15 @@ export default function TrustPage() {
         </header>
 
         <div className="space-y-6">
+          <Section icon={Crosshair} title="Authorized Security Work">
+            <p>
+              Use HackerAI across the full workflow: attack-surface mapping,
+              code review, exploit development, validation, remediation, and
+              reporting on systems you own or are authorized to test.
+            </p>
+            <p>{PUBLIC_POSITIONING.boundary}</p>
+          </Section>
+
           <Section icon={Database} title="Data we process">
             <p>Depending on how you use HackerAI, the service processes:</p>
             <CheckList

@@ -22,6 +22,7 @@ import BillingFrequencySelector from "./BillingFrequencySelector";
 import UpgradeConfirmationDialog from "./UpgradeConfirmationDialog";
 import { captureUpgradeCtaImpression } from "@/lib/analytics/client";
 import type { PricingDialogContext } from "../hooks/usePricingDialog";
+import { PUBLIC_POSITIONING } from "@/lib/marketing/positioning";
 
 interface PricingDialogProps {
   isOpen: boolean;
@@ -502,19 +503,19 @@ const PricingDialog: React.FC<PricingDialogProps> = ({
             <div></div>
             <div className="my-1 flex flex-col items-center justify-center md:mt-0 md:mb-0">
               <DialogTitle className="text-3xl font-semibold">
-                {pricingIntentCopy?.title ?? "Upgrade your plan"}
+                {pricingIntentCopy?.title ?? "Plans for Real Security Work"}
               </DialogTitle>
-              {pricingIntentCopy && (
-                <p className="text-muted-foreground mt-2 max-w-2xl text-center text-sm">
-                  {pricingIntentCopy.description}
-                </p>
-              )}
+              <p className="text-muted-foreground mt-2 max-w-2xl text-center text-sm text-pretty">
+                {pricingIntentCopy?.description ??
+                  "Start with local Agent workflows, then scale model access, cloud tools, and usage as your testing gets deeper."}
+              </p>
             </div>
             <button
               onClick={onClose}
+              aria-label="Close pricing"
               className="text-foreground justify-self-end opacity-50 transition hover:opacity-75 md:absolute md:end-6 md:top-6"
             >
-              <X className="h-6 w-6" />
+              <X aria-hidden="true" className="h-6 w-6" />
             </button>
           </div>
 
@@ -537,7 +538,7 @@ const PricingDialog: React.FC<PricingDialogProps> = ({
                 <PlanCard
                   planName="Free"
                   price={0}
-                  description="Try HackerAI"
+                  description="Learn with Ask and a local sandbox"
                   features={freeFeatures}
                   buttonText={freeButtonConfig.text}
                   buttonVariant={freeButtonConfig.variant}
@@ -554,7 +555,7 @@ const PricingDialog: React.FC<PricingDialogProps> = ({
                 price={isYearly ? PRICING.pro.yearly : PRICING.pro.monthly}
                 description={
                   pricingIntentCopy?.proDescription ??
-                  "For everyday productivity"
+                  "For regular bug bounty and pentest work"
                 }
                 features={proFeatures}
                 buttonText={proButtonConfig.text}
@@ -578,7 +579,7 @@ const PricingDialog: React.FC<PricingDialogProps> = ({
                 }
                 description={
                   pricingIntentCopy?.proPlusDescription ??
-                  "For power users who need more"
+                  "For active hunters and deeper Agent runs"
                 }
                 features={proPlusFeatures}
                 buttonText={proPlusButtonConfig.text}
@@ -597,7 +598,7 @@ const PricingDialog: React.FC<PricingDialogProps> = ({
                 price={isYearly ? PRICING.ultra.yearly : PRICING.ultra.monthly}
                 description={
                   pricingIntentCopy?.ultraDescription ??
-                  "Get the most out of HackerAI"
+                  "For sustained, high-volume security research"
                 }
                 features={ultraFeatures}
                 buttonText={ultraButtonConfig.text}
@@ -621,8 +622,9 @@ const PricingDialog: React.FC<PricingDialogProps> = ({
               </Button>
             </div>
 
-            <p className="text-muted-foreground mx-auto mt-8 max-w-[88rem] text-center text-xs">
-              Learn how we handle your data on our{" "}
+            <p className="text-muted-foreground mx-auto mt-8 max-w-3xl text-center text-xs leading-relaxed text-pretty">
+              {PUBLIC_POSITIONING.pricingBoundary} Learn how we handle your data
+              on our{" "}
               <a
                 href="/trust"
                 target="_blank"

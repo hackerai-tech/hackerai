@@ -1,7 +1,7 @@
 {
   "short_name": "HackerAI",
   "name": "HackerAI",
-  "description": "HackerAI - AI-Powered Penetration Testing Assistant",
+  "description": "Practical AI for authorized bug bounty and penetration testing",
   "icons": [
     {
       "src": "/icon-192x192.png",
