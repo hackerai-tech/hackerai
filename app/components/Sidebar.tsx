@@ -71,8 +71,19 @@ const DesktopSidebarContent: FC<{
       <SidebarContent>
         <SidebarGroup>
           <SidebarGroupContent>
-            {/* Subscription stays active in MainSidebar; only render list when expanded */}
-            {!isCollapsed && <ChatListContent chatListData={chatListData} />}
+            <div
+              className={`h-full transition-opacity duration-100 ease-out motion-reduce:transition-none ${
+                isCollapsed
+                  ? "pointer-events-none invisible opacity-0"
+                  : "visible opacity-100 delay-200 motion-reduce:delay-0"
+              }`}
+              aria-hidden={isCollapsed}
+              inert={isCollapsed}
+              data-testid="sidebar-chat-list-visibility"
+            >
+              {/* Keep project subscriptions and section state alive across collapse. */}
+              <ChatListContent chatListData={chatListData} />
+            </div>
           </SidebarGroupContent>
         </SidebarGroup>
       </SidebarContent>
