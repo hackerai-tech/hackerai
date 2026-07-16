@@ -23,13 +23,20 @@ jest.mock("../SidebarProjectItem", () => ({
     project,
     open,
     onDropChat,
+    onOpenChange,
   }: {
     project: Doc<"projects">;
     open: boolean;
     onDropChat: (chatId: string) => Promise<void>;
+    onOpenChange: (open: boolean) => void;
   }) => (
     <div data-testid={`project-${project._id}`} data-open={String(open)}>
       {project.name}
+      <button
+        type="button"
+        onClick={() => onOpenChange(!open)}
+        aria-label={`Toggle ${project.name}`}
+      />
       <button
         type="button"
         onClick={() => void onDropChat("chat-1")}
@@ -66,25 +73,33 @@ describe("SidebarProjects", () => {
     mockUseMoveChatToProject.mockReturnValue(moveChatToProject);
   });
 
-  it("expands and collapses every project from the compact header control", () => {
+  it("only shows collapse-all while an individual project is open", () => {
     render(<SidebarProjects projects={projects} />);
 
-    fireEvent.click(
-      screen.getByRole("button", { name: "Expand all projects" }),
-    );
+    expect(
+      screen.queryByRole("button", { name: "Collapse all projects" }),
+    ).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Toggle Acme" }));
     expect(screen.getByTestId("project-project-1")).toHaveAttribute(
       "data-open",
       "true",
     );
-    expect(screen.getByTestId("project-project-2")).toHaveAttribute(
-      "data-open",
-      "true",
-    );
+    expect(
+      screen.getByRole("button", { name: "Collapse all projects" }),
+    ).toBeInTheDocument();
 
     fireEvent.click(
       screen.getByRole("button", { name: "Collapse all projects" }),
     );
     expect(screen.getByTestId("project-project-1")).toHaveAttribute(
+      "data-open",
+      "false",
+    );
+    expect(
+      screen.queryByRole("button", { name: "Collapse all projects" }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByTestId("project-project-2")).toHaveAttribute(
       "data-open",
       "false",
     );
@@ -95,15 +110,19 @@ describe("SidebarProjects", () => {
 
     expect(screen.getByTestId("projects-section-chevron")).toHaveClass(
       "rotate-90",
+      "opacity-0",
     );
     fireEvent.click(screen.getByRole("button", { name: "Projects" }));
 
     expect(screen.getByTestId("projects-section-chevron")).not.toHaveClass(
       "rotate-90",
     );
+    expect(screen.getByTestId("projects-section-chevron")).toHaveClass(
+      "opacity-100",
+    );
     expect(screen.queryByTestId("project-project-1")).not.toBeInTheDocument();
     expect(
-      screen.queryByRole("button", { name: "Expand all projects" }),
+      screen.queryByRole("button", { name: "Collapse all projects" }),
     ).not.toBeInTheDocument();
     expect(
       screen.getByRole("button", { name: "Create project" }),

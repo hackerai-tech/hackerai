@@ -55,7 +55,11 @@ function CollapsibleChatSection({
           {title}
         </span>
         <ChevronRight
-          className={`size-3.5 shrink-0 text-sidebar-foreground/45 opacity-0 transition-[transform,opacity] group-hover/chat-section:opacity-100 ${open ? "rotate-90" : ""}`}
+          className={`size-3.5 shrink-0 text-sidebar-foreground/45 transition-[transform,opacity] ${
+            open
+              ? "rotate-90 opacity-0 group-hover/chat-section:opacity-100"
+              : "opacity-100"
+          }`}
           data-testid={`${testId}-chevron`}
           aria-hidden="true"
         />

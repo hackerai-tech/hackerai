@@ -89,9 +89,11 @@ describe("SidebarChatSections", () => {
 
     expect(screen.getByTestId("sidebar-pinned-section-chevron")).toHaveClass(
       "rotate-90",
+      "opacity-0",
     );
     expect(screen.getByTestId("sidebar-tasks-section-chevron")).toHaveClass(
       "rotate-90",
+      "opacity-0",
     );
 
     fireEvent.click(screen.getByRole("button", { name: "Pinned" }));
@@ -99,9 +101,15 @@ describe("SidebarChatSections", () => {
       screen.queryByTestId("sidebar-pinned-chat-list"),
     ).not.toBeInTheDocument();
     expect(screen.getByTestId("sidebar-chat-list")).toBeInTheDocument();
+    expect(screen.getByTestId("sidebar-pinned-section-chevron")).toHaveClass(
+      "opacity-100",
+    );
 
     fireEvent.click(screen.getByRole("button", { name: "Tasks" }));
     expect(screen.queryByTestId("sidebar-chat-list")).not.toBeInTheDocument();
     expect(screen.getByTestId("sidebar-projects-section")).toBeInTheDocument();
+    expect(screen.getByTestId("sidebar-tasks-section-chevron")).toHaveClass(
+      "opacity-100",
+    );
   });
 });

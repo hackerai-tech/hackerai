@@ -27,9 +27,9 @@ export function SidebarProjects({ projects }: SidebarProjectsProps) {
   );
 
   const projectIds = projects?.map((project) => project._id) ?? [];
-  const areAllProjectsOpen =
-    projectIds.length > 0 &&
-    projectIds.every((projectId) => openProjectIds.has(projectId));
+  const hasOpenProjects = projectIds.some((projectId) =>
+    openProjectIds.has(projectId),
+  );
 
   const setProjectOpen = (projectId: string, open: boolean) => {
     setOpenProjectIds((current) => {
@@ -45,9 +45,8 @@ export function SidebarProjects({ projects }: SidebarProjectsProps) {
     setProjectOpen(projectId, true);
   };
 
-  const toggleAllProjects = () => {
-    setIsSectionOpen(true);
-    setOpenProjectIds(areAllProjectsOpen ? new Set() : new Set(projectIds));
+  const collapseAllProjects = () => {
+    setOpenProjectIds(new Set());
   };
 
   const handleNewThread = (project: Doc<"projects">) => {
@@ -103,25 +102,25 @@ export function SidebarProjects({ projects }: SidebarProjectsProps) {
             Projects
           </span>
           <ChevronRight
-            className={`size-3.5 shrink-0 text-sidebar-foreground/45 opacity-0 transition-[transform,opacity] group-hover/projects-header:opacity-100 ${isSectionOpen ? "rotate-90" : ""}`}
+            className={`size-3.5 shrink-0 text-sidebar-foreground/45 transition-[transform,opacity] ${
+              isSectionOpen
+                ? "rotate-90 opacity-0 group-hover/projects-header:opacity-100"
+                : "opacity-100"
+            }`}
             data-testid="projects-section-chevron"
             aria-hidden="true"
           />
         </button>
 
         <div className="flex items-center">
-          {isSectionOpen && projectIds.length > 0 ? (
+          {isSectionOpen && hasOpenProjects ? (
             <Button
               type="button"
               variant="ghost"
               size="icon"
               className="size-8 rounded-lg text-sidebar-foreground/45 hover:bg-sidebar-accent hover:text-sidebar-foreground"
-              onClick={toggleAllProjects}
-              aria-label={
-                areAllProjectsOpen
-                  ? "Collapse all projects"
-                  : "Expand all projects"
-              }
+              onClick={collapseAllProjects}
+              aria-label="Collapse all projects"
             >
               <ListChevronsDownUp className="size-[18px]" />
             </Button>
