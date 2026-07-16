@@ -499,7 +499,7 @@ const buildAgentToolApprovalRequester = ({
           operation: request.operation,
           target_kind: existingGrant.kind,
         });
-        return { approved: true, approvalId };
+        return { approved: true, approvalId, sandboxIdentity };
       }
 
       if (!approvalSessionId) {
@@ -747,7 +747,7 @@ const buildAgentToolApprovalRequester = ({
             grant: approvedTargetGrant ? "target_prefix" : "full_access",
             target_kind: approvedTargetGrant?.kind,
           });
-          return { approved: true, approvalId };
+          return { approved: true, approvalId, sandboxIdentity };
         }
 
         triggerLogger.info("[agent-long] tool approval denied", {

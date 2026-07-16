@@ -724,7 +724,7 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
   test("agent approval denial resolves as rejected without aborting the run", () => {
     expect(taskSrc).toMatch(/next\.output\.decision\s*===\s*"approve"/);
     expect(taskSrc).toMatch(
-      /next\.output\.decision\s*===\s*"approve"[\s\S]*return\s*\{\s*approved:\s*true,\s*approvalId\s*\}/,
+      /next\.output\.decision\s*===\s*"approve"[\s\S]*return\s*\{\s*approved:\s*true,\s*approvalId,\s*sandboxIdentity\s*\}/,
     );
     expect(taskSrc).toMatch(
       /tool approval denied[\s\S]*return\s*\{\s*approved:\s*false,[\s\S]*reason:\s*buildDeniedApprovalReason\(next\.output\.message\)/,

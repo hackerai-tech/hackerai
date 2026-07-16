@@ -217,6 +217,7 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
   test("forwards the user-facing justification and reusable argv prefix", async () => {
     const nonE2B = {
       sandboxKind: "centrifugo" as const,
+      getConnectionId: () => "desktop-a",
       isWindows: () => false,
       commands: {
         run: jest.fn(
@@ -230,6 +231,7 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
     const requestToolApproval = jest.fn(async () => ({
       approved: true as const,
       approvalId: "approval-1",
+      sandboxIdentity: "connection:desktop-a" as const,
     }));
     const { context } = makeContext({
       sandbox: nonE2B,
@@ -255,6 +257,81 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
       justification: "Check whether the target host is reachable.",
       prefixRule: ["ping", "-c", "4"],
     });
+  });
+
+  test("does not execute a command on a replacement Desktop connection", async () => {
+    const run = jest.fn(async () => ({
+      stdout: "wrong host\n",
+      stderr: "",
+      exitCode: 0,
+    }));
+    const replacementDesktop = {
+      sandboxKind: "centrifugo" as const,
+      getConnectionId: () => "desktop-b",
+      isWindows: () => false,
+      commands: { run },
+    };
+    const requestToolApproval = jest.fn(async () => ({
+      approved: true as const,
+      approvalId: "approval-1",
+      sandboxIdentity: "connection:desktop-a" as const,
+    }));
+    const { context } = makeContext({
+      sandbox: replacementDesktop,
+      requestToolApproval,
+    });
+
+    const result = (await runTool(createRunTerminalCmd(context), {
+      command: "echo approved-on-a",
+      brief: "test connection binding",
+      is_background: false,
+      timeout: 5,
+      interactive: false,
+    })) as { result: { error?: string; exitCode: number | null } };
+
+    expect(result.result.error).toContain(
+      "selected sandbox changed after approval",
+    );
+    expect(run).not.toHaveBeenCalled();
+  });
+
+  test("does not create an interactive PTY on a replacement Desktop connection", async () => {
+    const fakeHandle = makeFakeHandle();
+    mockCreateCentrifugoPtyHandle.mockResolvedValue(fakeHandle);
+    const replacementDesktop = {
+      sandboxKind: "centrifugo" as const,
+      getConnectionId: () => "desktop-b",
+      getUserId: () => "user-1",
+      getConfig: () => ({ wsUrl: "ws://fake", tokenSecret: "secret" }),
+      isWindows: () => false,
+      commands: { run: jest.fn() },
+    };
+    const requestToolApproval = jest.fn(async () => ({
+      approved: true as const,
+      approvalId: "approval-1",
+      sandboxIdentity: "connection:desktop-a" as const,
+    }));
+    const { context } = makeContext({
+      sandbox: replacementDesktop,
+      requestToolApproval,
+    });
+
+    setTimeout(() => {
+      fakeHandle.emit(new TextEncoder().encode("wrong host\n"));
+      fakeHandle.resolveExit(0);
+    }, 10);
+    const result = (await runTool(createRunTerminalCmd(context), {
+      command: "sh",
+      brief: "test connection binding",
+      is_background: false,
+      timeout: 0.1,
+      interactive: true,
+    })) as { result: { error?: string; exitCode: number | null } };
+
+    expect(result.result.error).toContain(
+      "selected sandbox changed after approval",
+    );
+    expect(mockCreateCentrifugoPtyHandle).not.toHaveBeenCalled();
   });
 
   test("detectAgentBrowserUsage extracts sanitized actions", () => {

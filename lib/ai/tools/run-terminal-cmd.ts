@@ -193,13 +193,19 @@ export const createRunTerminalCmd = (context: ToolContext) => {
           },
         };
       }
+      const approvedSandboxIdentity = approval?.approved
+        ? approval.sandboxIdentity
+        : undefined;
+      const getApprovedExecutionSandbox = () =>
+        getSandboxWithFallbackGuard({
+          sandboxManager,
+          expectedSandboxIdentity: approvedSandboxIdentity,
+        });
 
       // ─── Interactive PTY exec branch ─────────────────────────────────
       if (interactive) {
         try {
-          const { sandbox } = await getSandboxWithFallbackGuard({
-            sandboxManager,
-          });
+          const { sandbox } = await getApprovedExecutionSandbox();
           const isCentrifugo = isCentrifugoSandbox(sandbox);
           const isE2B = isE2BSandbox(sandbox);
 
@@ -321,9 +327,7 @@ export const createRunTerminalCmd = (context: ToolContext) => {
 
       try {
         // Get fresh sandbox and verify it's ready
-        const { sandbox } = await getSandboxWithFallbackGuard({
-          sandboxManager,
-        });
+        const { sandbox } = await getApprovedExecutionSandbox();
 
         // Bail early if sandbox was already marked unavailable by any tool
         if (sandboxManager.isSandboxUnavailable()) {
@@ -380,7 +384,7 @@ export const createRunTerminalCmd = (context: ToolContext) => {
               // Reset cached instance to force ensureSandboxConnection to create a fresh one
               sandboxManager.setSandbox(null as any);
               const { sandbox: freshSandbox } =
-                await getSandboxWithFallbackGuard({ sandboxManager });
+                await getApprovedExecutionSandbox();
 
               // Verify the fresh sandbox is ready
               try {
