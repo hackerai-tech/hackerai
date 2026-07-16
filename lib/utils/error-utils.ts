@@ -282,8 +282,7 @@ export const extractErrorDetails = (
 ): Record<string, unknown> => {
   const sources = collectErrorSources(error);
   const err = sources.find((source) => source instanceof Error) as
-    | Error
-    | undefined;
+    Error | undefined;
   const records = sources.filter(isRecord);
   const primaryRecord = records[0];
 
@@ -365,6 +364,14 @@ const getProviderMessageText = (details: Record<string, unknown>): string => {
     .filter((value): value is string => typeof value === "string")
     .join(" ");
 };
+
+const INVALID_IMAGE_INPUT_PATTERN =
+  /failed to download the provided image[\s\S]{0,500}(?:image host returned )?HTTP status (?:404|410)\b/i;
+
+export const isInvalidImageInputError = (error: unknown): boolean =>
+  INVALID_IMAGE_INPUT_PATTERN.test(
+    getProviderMessageText(extractErrorDetails(error)),
+  );
 
 const PROVIDER_CONTENT_BLOCK_PATTERN =
   /\bPROHIBITED_CONTENT\b|\b(?:content[_ -]?(?:filter(?:ing)?|policy)|safety policy|moderation policy|safety system|moderation system)\b.{0,80}\b(?:block(?:ed)?|flag(?:ged)?|reject(?:ed)?|prohibit(?:ed)?|violate(?:s|d|ion)?|unsafe|harmful)\b|\b(?:block(?:ed)?|flag(?:ged)?|reject(?:ed)?|prohibit(?:ed)?|violate(?:s|d|ion)?|unsafe|harmful)\b.{0,80}\b(?:content[_ -]?(?:filter(?:ing)?|policy)|safety policy|moderation policy|safety system|moderation system)\b|\bblocked by (?:the )?(?:provider )?(?:safety|moderation)(?: system| filter)?\b|\b(?:unsafe|harmful) content\b/i;
@@ -552,6 +559,10 @@ export const getUserFriendlyProviderError = (error: unknown): string => {
   const { providerName, detail } = extractProviderDetails(error);
   const overflowKind = classifyProviderOverflowError(error);
 
+  if (isInvalidImageInputError(error)) {
+    return "An attached image is no longer available at its source URL. Reattach the image and try again.";
+  }
+
   if (isProviderContentBlockedError(error)) {
     return "The model provider blocked this request because the conversation content was flagged by its safety system. Edit your last message or remove sensitive or raw tool output, then try again.";
   }
@@ -663,8 +674,7 @@ function extractStatusCode(error: unknown): number | undefined {
     "error" in anyError.data
   ) {
     const nested = (anyError.data as Record<string, unknown>).error as
-      | Record<string, unknown>
-      | undefined;
+      Record<string, unknown> | undefined;
     if (nested && typeof nested.code === "number") {
       return nested.code;
     }

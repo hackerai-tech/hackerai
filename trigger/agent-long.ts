@@ -128,6 +128,7 @@ import {
   extractErrorDetails,
   getProviderErrorCategory,
   getUserFriendlyProviderError,
+  isInvalidImageInputError,
 } from "@/lib/utils/error-utils";
 import { ChatSDKError, serializeChatSDKErrorForStream } from "@/lib/errors";
 import type { Id } from "@/convex/_generated/dataModel";
@@ -998,6 +999,7 @@ const USER_CORRECTABLE_AGENT_LONG_ERROR_CATEGORIES = new Set([
   "input_too_large",
   "empty_after_processing",
   "local_sandbox_fallback_blocked",
+  "invalid_image_input",
 ]);
 
 const isUserCorrectableAgentLongErrorCategory = (category: string): boolean =>
@@ -1017,6 +1019,8 @@ const TRIGGER_REALTIME_TRANSPORT_ERROR_PATTERNS = [
   /S2MetadataStream/i,
   /StreamsWriterV2/i,
   /sendBatchNonBlocking/i,
+  /Max attempts \(\d+\) exhausted: Connection timeout after \d+ms/i,
+  /Max attempts \(\d+\) exhausted: cs:[a-z0-9]+/i,
   /Max attempts \(\d+\) exhausted: Request timeout after \d+ms \(\d+ records, \d+ bytes\)/i,
   /Request timeout after \d+ms \(\d+ records, \d+ bytes\)/i,
 ];
@@ -1048,6 +1052,7 @@ const classifyProviderDashboardCategory = (
   error: unknown,
   details: Record<string, unknown>,
 ): string => {
+  if (isInvalidImageInputError(error)) return "invalid_image_input";
   const category = getProviderErrorCategory(details);
   if (category === "stream_terminated") return "provider_stream_terminated";
   if (category === "timeout") return "provider_timeout";
@@ -3259,16 +3264,51 @@ export const agentLongTask = task({
                             );
 
                         if (shouldPersist) {
-                          await updateChat({
-                            chatId,
-                            title: generatedTitle,
-                            finishReason: state.streamFinishReason,
-                            todos: mergedTodos,
-                            defaultModelSlug: "agent",
-                            sandboxType:
-                              sandboxManager.getEffectivePreference(),
-                            selectedModel: selectedModelOverride,
-                          });
+                          try {
+                            await updateChat({
+                              chatId,
+                              title: generatedTitle,
+                              finishReason: state.streamFinishReason,
+                              todos: mergedTodos,
+                              defaultModelSlug: "agent",
+                              sandboxType:
+                                sandboxManager.getEffectivePreference(),
+                              selectedModel: selectedModelOverride,
+                            });
+                          } catch (error) {
+                            const summary = classifyAgentLongError(error);
+                            metadata
+                              .set(
+                                "chatFinalizationStatus",
+                                "metadata_update_failed",
+                              )
+                              .set(
+                                "chatFinalizationErrorCategory",
+                                summary.category,
+                              )
+                              .set(
+                                "chatFinalizationErrorMessage",
+                                summary.message,
+                              );
+                            triggerLogger.warn(
+                              "[agent-long] final chat metadata update failed",
+                              {
+                                event: "agent_long_chat_metadata_update_failed",
+                                service: "agent-long",
+                                environment:
+                                  process.env.VERCEL_ENV ??
+                                  process.env.NODE_ENV ??
+                                  "unknown",
+                                timestamp: new Date().toISOString(),
+                                chat_id: chatId,
+                                user_id: userId,
+                                run_id: ctx.run.id,
+                                error_category: summary.category,
+                                error_name: summary.name,
+                                error_code: summary.code,
+                              },
+                            );
+                          }
                         } else {
                           await prepareForNewStream({ chatId });
                         }
