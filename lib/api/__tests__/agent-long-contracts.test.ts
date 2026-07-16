@@ -1392,6 +1392,9 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(taskSrc).toMatch(
       /USER_CORRECTABLE_AGENT_LONG_ERROR_CATEGORIES[\s\S]*"invalid_image_input"/,
     );
+    expect(taskSrc).toMatch(
+      /isProviderApiError\(error\)\s*&&\s*!isInvalidImageInputError\(error\)/,
+    );
   });
 
   test("recognizes every observed Trigger S2 terminal signature", () => {
@@ -1400,24 +1403,27 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(taskSrc).toMatch(/Request timeout after \\d\+ms/);
   });
 
-  test("final chat metadata failure cannot discard a saved generation", () => {
-    const finalizationBlockIdx = taskSrc.lastIndexOf(
-      "const generatedTitle = await titlePromise",
-    );
-    const updateIdx = taskSrc.indexOf(
-      "await updateChat({",
-      finalizationBlockIdx,
-    );
-    const finalizationCatchIdx = taskSrc.indexOf(
-      "agent_long_chat_metadata_update_failed",
-      updateIdx,
-    );
-    const saveMessageIdx = taskSrc.indexOf("await saveMessage({", updateIdx);
+  test("chat metadata failure cannot discard main or fallback generations", () => {
+    const finalizationBlockIndexes = [
+      ...taskSrc.matchAll(/const generatedTitle = await titlePromise/g),
+    ].map((match) => match.index);
 
-    expect(finalizationBlockIdx).toBeGreaterThan(-1);
-    expect(updateIdx).toBeGreaterThan(finalizationBlockIdx);
-    expect(finalizationCatchIdx).toBeGreaterThan(updateIdx);
-    expect(saveMessageIdx).toBeGreaterThan(finalizationCatchIdx);
+    expect(finalizationBlockIndexes).toHaveLength(2);
+    for (const finalizationBlockIdx of finalizationBlockIndexes) {
+      const updateIdx = taskSrc.indexOf(
+        "await updateChat({",
+        finalizationBlockIdx,
+      );
+      const guardedFailureIdx = taskSrc.indexOf(
+        "recordAgentLongChatMetadataUpdateFailure(",
+        updateIdx,
+      );
+      const saveMessageIdx = taskSrc.indexOf("await saveMessage({", updateIdx);
+
+      expect(updateIdx).toBeGreaterThan(finalizationBlockIdx);
+      expect(guardedFailureIdx).toBeGreaterThan(updateIdx);
+      expect(saveMessageIdx).toBeGreaterThan(guardedFailureIdx);
+    }
     expect(taskSrc).toMatch(/chatFinalizationStatus/);
   });
 

@@ -1185,6 +1185,29 @@ const classifyAgentLongError = (error: unknown): AgentLongErrorSummary => {
   };
 };
 
+const recordAgentLongChatMetadataUpdateFailure = (
+  error: unknown,
+  context: { chatId: string; userId: string; runId: string },
+) => {
+  const summary = classifyAgentLongError(error);
+  metadata
+    .set("chatFinalizationStatus", "metadata_update_failed")
+    .set("chatFinalizationErrorCategory", summary.category)
+    .set("chatFinalizationErrorMessage", summary.message);
+  triggerLogger.warn("[agent-long] final chat metadata update failed", {
+    event: "agent_long_chat_metadata_update_failed",
+    service: "agent-long",
+    environment: process.env.VERCEL_ENV ?? process.env.NODE_ENV ?? "unknown",
+    timestamp: new Date().toISOString(),
+    chat_id: context.chatId,
+    user_id: context.userId,
+    run_id: context.runId,
+    error_category: summary.category,
+    error_name: summary.name,
+    error_code: summary.code,
+  });
+};
+
 const getTerminalProviderStreamError = (
   state:
     Pick<AgentStreamState, "streamFinishReason" | "providerError"> | undefined,
@@ -2797,6 +2820,7 @@ export const agentLongTask = task({
             } catch (error) {
               if (
                 isProviderApiError(error) &&
+                !isInvalidImageInputError(error) &&
                 !isRetryWithFallback &&
                 isAutoModel
               ) {
@@ -3121,16 +3145,28 @@ export const agentLongTask = task({
                                       state.streamFinishReason ||
                                       mergedTodos.length > 0
                                     ) {
-                                      await updateChat({
-                                        chatId,
-                                        title: generatedTitle,
-                                        finishReason: state.streamFinishReason,
-                                        todos: mergedTodos,
-                                        defaultModelSlug: "agent",
-                                        sandboxType:
-                                          sandboxManager.getEffectivePreference(),
-                                        selectedModel: selectedModelOverride,
-                                      });
+                                      try {
+                                        await updateChat({
+                                          chatId,
+                                          title: generatedTitle,
+                                          finishReason:
+                                            state.streamFinishReason,
+                                          todos: mergedTodos,
+                                          defaultModelSlug: "agent",
+                                          sandboxType:
+                                            sandboxManager.getEffectivePreference(),
+                                          selectedModel: selectedModelOverride,
+                                        });
+                                      } catch (error) {
+                                        recordAgentLongChatMetadataUpdateFailure(
+                                          error,
+                                          {
+                                            chatId,
+                                            userId,
+                                            runId: ctx.run.id,
+                                          },
+                                        );
+                                      }
                                     } else {
                                       await prepareForNewStream({ chatId });
                                     }
@@ -3276,38 +3312,11 @@ export const agentLongTask = task({
                               selectedModel: selectedModelOverride,
                             });
                           } catch (error) {
-                            const summary = classifyAgentLongError(error);
-                            metadata
-                              .set(
-                                "chatFinalizationStatus",
-                                "metadata_update_failed",
-                              )
-                              .set(
-                                "chatFinalizationErrorCategory",
-                                summary.category,
-                              )
-                              .set(
-                                "chatFinalizationErrorMessage",
-                                summary.message,
-                              );
-                            triggerLogger.warn(
-                              "[agent-long] final chat metadata update failed",
-                              {
-                                event: "agent_long_chat_metadata_update_failed",
-                                service: "agent-long",
-                                environment:
-                                  process.env.VERCEL_ENV ??
-                                  process.env.NODE_ENV ??
-                                  "unknown",
-                                timestamp: new Date().toISOString(),
-                                chat_id: chatId,
-                                user_id: userId,
-                                run_id: ctx.run.id,
-                                error_category: summary.category,
-                                error_name: summary.name,
-                                error_code: summary.code,
-                              },
-                            );
+                            recordAgentLongChatMetadataUpdateFailure(error, {
+                              chatId,
+                              userId,
+                              runId: ctx.run.id,
+                            });
                           }
                         } else {
                           await prepareForNewStream({ chatId });

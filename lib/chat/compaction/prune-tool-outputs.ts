@@ -567,6 +567,8 @@ const fitSinglePartToByteLimit = (
     if (estimateSerializedSizeBytes([minimalToolPart]) <= byteLimit) {
       return minimalToolPart;
     }
+
+    return null;
   }
 
   const minimalPart = { type: part.type } as UIMessage["parts"][number];

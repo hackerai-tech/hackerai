@@ -901,6 +901,25 @@ describe("compactMessageForStorage", () => {
     expect(part.output).toBeUndefined();
   });
 
+  it("drops an oversized tool part instead of storing an invalid type-only part", () => {
+    const message = makeAssistantMessage([
+      {
+        type: "tool-run_terminal_cmd",
+        toolCallId: "call-streaming",
+        state: "input-streaming",
+        input: { command: "x".repeat(5_000) },
+      } as any,
+    ]);
+
+    const result = compactMessageForStorage(message, {
+      softLimitBytes: 10,
+      toolOutputTokenBudget: 0,
+    });
+
+    expect(result.afterSizeBytes).toBeLessThanOrEqual(10);
+    expect(result.message.parts).toEqual([]);
+  });
+
   it("compacts protected list_notes output only when required by the hard byte cap", () => {
     const notes = Array.from({ length: 30 }, (_, index) => ({
       note_id: `note-${index}`,
