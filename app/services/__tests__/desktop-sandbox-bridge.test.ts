@@ -248,6 +248,69 @@ describe("targetConnectionId filtering", () => {
   });
 });
 
+describe("command cancellation acknowledgement", () => {
+  it.each([true, false])(
+    "publishes the native cancellation result when invoke returns %s",
+    async (nativeResult) => {
+      const bridge = new DesktopSandboxBridge(buildConfig());
+      await bridge.start();
+      const handler = getPublicationHandler();
+      (bridge as unknown as { activeCommands: Set<string> }).activeCommands.add(
+        "cmd-cancel",
+      );
+      mockInvokeHandler = async (cmd: string) => {
+        if (cmd === "cancel_stream_command") return nativeResult;
+        return undefined;
+      };
+
+      handler({
+        data: {
+          type: "command_cancel",
+          commandId: "cmd-cancel",
+          targetConnectionId: "conn-123",
+        },
+      });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      expect(mockSubscription.publish).toHaveBeenCalledWith({
+        type: "command_cancel_result",
+        commandId: "cmd-cancel",
+        canceled: nativeResult,
+      });
+    },
+  );
+
+  it("publishes false when native cancellation throws", async () => {
+    const bridge = new DesktopSandboxBridge(buildConfig());
+    await bridge.start();
+    const handler = getPublicationHandler();
+    (bridge as unknown as { activeCommands: Set<string> }).activeCommands.add(
+      "cmd-cancel",
+    );
+    mockInvokeHandler = async (cmd: string) => {
+      if (cmd === "cancel_stream_command") {
+        throw new Error("native transport failed");
+      }
+      return undefined;
+    };
+
+    handler({
+      data: {
+        type: "command_cancel",
+        commandId: "cmd-cancel",
+        targetConnectionId: "conn-123",
+      },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(mockSubscription.publish).toHaveBeenCalledWith({
+      type: "command_cancel_result",
+      commandId: "cmd-cancel",
+      canceled: false,
+    });
+  });
+});
+
 // ── native desktop file relay ─────────────────────────────────────────
 
 describe("native desktop file relay", () => {

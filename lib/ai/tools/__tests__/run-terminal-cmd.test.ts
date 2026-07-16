@@ -193,6 +193,7 @@ const mockPhEvent = phLogger.event as jest.MockedFunction<
 async function runTool(
   tool: ReturnType<typeof createRunTerminalCmd>,
   input: Record<string, unknown>,
+  abortSignal?: AbortSignal,
 ) {
   const execute = (
     tool as unknown as {
@@ -201,7 +202,7 @@ async function runTool(
   ).execute;
   return execute(input, {
     toolCallId: "call-1",
-    abortSignal: undefined,
+    abortSignal,
     messages: [],
   });
 }
@@ -628,6 +629,63 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
     } finally {
       warnSpy.mockRestore();
     }
+  });
+
+  test("retains local command tracking when cancellation is not confirmed", async () => {
+    const abortController = new AbortController();
+    let commandStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      commandStarted = resolve;
+    });
+    const nonE2B = {
+      sandboxKind: "centrifugo" as const,
+      isWindows: () => false,
+      commands: {
+        run: jest.fn(
+          async (
+            _command: string,
+            opts?: {
+              signal?: AbortSignal;
+              onCancelReady?: (cancel: () => Promise<boolean>) => void;
+            },
+          ): Promise<{ stdout: string; stderr: string; exitCode: number }> => {
+            commandStarted();
+            opts?.onCancelReady?.(async () => false);
+            return new Promise(() => {});
+          },
+        ),
+      },
+    };
+    const { context, ptySessionManager } = makeContext({ sandbox: nonE2B });
+    const resultPromise = runTool(
+      createRunTerminalCmd(context),
+      {
+        action: "exec",
+        command: "sleep 999",
+        brief: "wait",
+        is_background: false,
+        interactive: false,
+        timeout: 30,
+      },
+      abortController.signal,
+    ) as Promise<{
+      result: { error?: string; exitCode?: number | null; session?: string };
+    }>;
+
+    await started;
+    abortController.abort();
+    const result = await resultPromise;
+
+    expect(result.result.exitCode).toBeNull();
+    expect(result.result.error).toContain(
+      "Command cancellation could not be confirmed",
+    );
+    expect(result.result.session).toBeDefined();
+    expect(
+      ptySessionManager.get("chat-1", result.result.session!),
+    ).toBeDefined();
+
+    ptySessionManager.forget("chat-1", result.result.session!);
   });
 
   test("does not retry a foreground command after its tool timeout resolves", async () => {

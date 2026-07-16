@@ -850,6 +850,21 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     );
   });
 
+  test("approval telemetry keeps correlation context without raw targets", () => {
+    expect(taskSrc).toContain('event: "agent_tool_approval_waiting"');
+    expect(taskSrc).toContain('event: "agent_tool_approval_reused"');
+    expect(taskSrc).toContain('event: "agent_tool_approval_granted"');
+    expect(taskSrc).toContain('event: "agent_tool_approval_denied"');
+    expect(taskSrc).toContain("tool_call_id: request.toolCallId");
+    expect(taskSrc).toContain("operation: request.operation");
+    expect(taskSrc).not.toContain("target: request.target.slice");
+    expect(taskSrc).not.toContain("target_prefix: existingGrant.targetPrefix");
+    expect(taskSrc).not.toContain(
+      "target_prefix: approvedTargetGrant?.targetPrefix",
+    );
+    expect(taskSrc).not.toContain('.set("approvalTargetPrefix"');
+  });
+
   test("terminal approval cleanup compare-clears stale composer state", () => {
     expect(taskSrc).toMatch(
       /expectedRunId:\s*ctx\.run\.id,[\s\S]*clearApprovalPending:\s*true/,

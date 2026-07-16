@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect } from "react";
+import { useCallback } from "react";
 import { AlertTriangle, ChevronDown, Hand, LoaderCircle } from "lucide-react";
 import { toast } from "sonner";
 
@@ -23,66 +23,6 @@ type AgentApprovalPromptProps = {
   onRetryConnection?: () => void;
   onStop: () => void;
 };
-
-const isPlainEnterKey = (event: {
-  key: string;
-  altKey: boolean;
-  ctrlKey: boolean;
-  metaKey: boolean;
-  shiftKey: boolean;
-}) =>
-  event.key === "Enter" &&
-  !event.altKey &&
-  !event.ctrlKey &&
-  !event.metaKey &&
-  !event.shiftKey;
-
-const INTERACTIVE_KEY_TARGET_SELECTOR = [
-  "a",
-  "area[href]",
-  "button",
-  "input",
-  "textarea",
-  "select",
-  "details",
-  "summary",
-  '[contenteditable=""]',
-  '[contenteditable="true"]',
-  '[contenteditable="plaintext-only"]',
-  '[role~="button"]',
-  '[role~="checkbox"]',
-  '[role~="combobox"]',
-  '[role~="grid"]',
-  '[role~="gridcell"]',
-  '[role~="link"]',
-  '[role~="listbox"]',
-  '[role~="menu"]',
-  '[role~="menubar"]',
-  '[role~="menuitem"]',
-  '[role~="menuitemcheckbox"]',
-  '[role~="menuitemradio"]',
-  '[role~="option"]',
-  '[role~="radio"]',
-  '[role~="radiogroup"]',
-  '[role~="scrollbar"]',
-  '[role~="searchbox"]',
-  '[role~="slider"]',
-  '[role~="spinbutton"]',
-  '[role~="switch"]',
-  '[role~="tab"]',
-  '[role~="tablist"]',
-  '[role~="textbox"]',
-  '[role~="tree"]',
-  '[role~="treegrid"]',
-  '[role~="treeitem"]',
-  '[tabindex]:not([tabindex="-1"])',
-].join(",");
-
-const isInteractiveKeyTarget = (target: EventTarget | null) =>
-  target instanceof Element &&
-  (target instanceof HTMLElement && target.isContentEditable
-    ? true
-    : target.closest(INTERACTIVE_KEY_TARGET_SELECTOR) !== null);
 
 const getApprovalCategory = (request: ActiveAgentToolApprovalRequest) => {
   if (request.operation === "terminal_execute") return "Terminal command";
@@ -181,26 +121,6 @@ export function AgentApprovalPrompt({
       );
     }
   }, [canSubmit, request.approvalId, request.toolCallId, sendToolApproval]);
-
-  useEffect(() => {
-    const handleDocumentKeyDown = (event: globalThis.KeyboardEvent) => {
-      if (!canSubmit || event.defaultPrevented || !isPlainEnterKey(event)) {
-        return;
-      }
-      if (
-        isInteractiveKeyTarget(event.target) ||
-        isInteractiveKeyTarget(document.activeElement)
-      ) {
-        return;
-      }
-
-      event.preventDefault();
-      void submitApproval(false);
-    };
-
-    document.addEventListener("keydown", handleDocumentKeyDown);
-    return () => document.removeEventListener("keydown", handleDocumentKeyDown);
-  }, [canSubmit, submitApproval]);
 
   const allowLabel = isApproved
     ? "Approved"

@@ -17,6 +17,28 @@ const request = (
   ...(prefixRule ? { prefixRule } : {}),
 });
 
+const expectFileOperationRequiresFreshApproval = (
+  operation: "file_write" | "file_append" | "file_edit",
+) => {
+  const approvedPath = "/workspace/project/victim.txt";
+  const legacyGrant = {
+    kind: "file_change" as const,
+    targetPrefix: approvedPath,
+    path: approvedPath,
+    pathFlavor: "posix" as const,
+  };
+
+  expect(
+    deriveAgentApprovalTargetGrant(request(operation, approvedPath)),
+  ).toBeNull();
+  expect(
+    matchesAgentApprovalTargetGrant(
+      request(operation, "/workspace/project/link/../victim.txt"),
+      legacyGrant,
+    ),
+  ).toBe(false);
+};
+
 describe("agent approval grants", () => {
   it("matches an exact static argv, not another command or executable", () => {
     const grant = deriveAgentApprovalTargetGrant(
@@ -160,10 +182,34 @@ describe("agent approval grants", () => {
     ["shell", "bash -c 'npm test && npm publish'"],
     ["absolute shell", "/bin/bash -lc 'npm test'"],
     ["Windows shell", String.raw`"C:\Windows\System32\cmd.exe" /c dir`],
+    ["unquoted Windows shell", String.raw`C:\Windows\System32\cmd.exe /c dir`],
+    ["Windows command.com", "command.com /c dir"],
+    ["Windows call builtin", "call script.cmd"],
+    ["Windows start builtin", "start cmd.exe /c dir"],
+    ["Windows subsystem wrapper", "wsl.exe sh -c 'id'"],
     ["evaluator", "eval 'npm test'"],
     ["environment dispatcher", "env npm test"],
     ["privilege dispatcher", "sudo npm test"],
   ])("rejects a reusable %s wrapper", (_description, target) => {
+    expect(
+      deriveAgentApprovalTargetGrant(request("terminal_execute", target)),
+    ).toBeNull();
+  });
+
+  it.each([
+    ["COMSPEC", "%COMSPEC% /c echo harmless"],
+    ["lowercase COMSPEC", "%comspec% /c echo harmless"],
+    ["mixed-case COMSPEC", "%ComSpec% /c echo harmless"],
+    [
+      "SystemRoot cmd path",
+      String.raw`%SystemRoot%\System32\cmd.exe /c echo harmless`,
+    ],
+    [
+      "windir PowerShell path",
+      String.raw`%windir%\System32\WindowsPowerShell\v1.0\powershell.exe -Command Get-ChildItem`,
+    ],
+    ["caret-obfuscated cmd", "c^m^d /c echo harmless"],
+  ])("rejects a reusable Windows %s expansion", (_description, target) => {
     expect(
       deriveAgentApprovalTargetGrant(request("terminal_execute", target)),
     ).toBeNull();
@@ -190,94 +236,16 @@ describe("agent approval grants", () => {
     },
   );
 
-  it("normalizes POSIX paths while keeping sibling and traversal targets separate", () => {
-    const grant = deriveAgentApprovalTargetGrant(
-      request("file_write", "/workspace/reports/report.txt"),
-    );
-
-    expect(grant).toMatchObject({
-      kind: "file_change",
-      path: "/workspace/reports/report.txt",
-      pathFlavor: "posix",
-    });
-    expect(
-      grant &&
-        matchesAgentApprovalTargetGrant(
-          request("file_edit", "/workspace/reports/drafts/.././report.txt"),
-          grant,
-        ),
-    ).toBe(true);
-    expect(
-      grant &&
-        matchesAgentApprovalTargetGrant(
-          request("file_append", "/workspace/reports/report.txt.bak"),
-          grant,
-        ),
-    ).toBe(false);
-    expect(
-      grant &&
-        matchesAgentApprovalTargetGrant(
-          request("file_edit", "/workspace/reports/../report.txt"),
-          grant,
-        ),
-    ).toBe(false);
+  it("requires fresh file_write approval and invalidates old grants", () => {
+    expectFileOperationRequiresFreshApproval("file_write");
   });
 
-  it("rejects surrounding path whitespace while preserving internal spaces", () => {
-    expect(
-      deriveAgentApprovalTargetGrant(
-        request("file_write", " /workspace/report.txt"),
-      ),
-    ).toBeNull();
-    expect(
-      deriveAgentApprovalTargetGrant(
-        request("file_write", "/workspace/report.txt "),
-      ),
-    ).toBeNull();
-    expect(
-      deriveAgentApprovalTargetGrant(
-        request("file_write", "/workspace/project files/report.txt"),
-      ),
-    ).toMatchObject({
-      kind: "file_change",
-      path: "/workspace/project files/report.txt",
-    });
+  it("requires fresh file_append approval and invalidates old grants", () => {
+    expectFileOperationRequiresFreshApproval("file_append");
   });
 
-  it("normalizes Windows paths while keeping sibling and traversal targets separate", () => {
-    const grant = deriveAgentApprovalTargetGrant(
-      request("file_write", String.raw`C:\workspace\reports\report.txt`),
-    );
-
-    expect(grant).toMatchObject({
-      kind: "file_change",
-      path: "C:/workspace/reports/report.txt",
-      pathFlavor: "windows",
-    });
-    expect(
-      grant &&
-        matchesAgentApprovalTargetGrant(
-          request(
-            "file_edit",
-            String.raw`c:\workspace\reports\drafts\..\report.txt`,
-          ),
-          grant,
-        ),
-    ).toBe(true);
-    expect(
-      grant &&
-        matchesAgentApprovalTargetGrant(
-          request("file_append", "C:/workspace/reports/report.txt.bak"),
-          grant,
-        ),
-    ).toBe(false);
-    expect(
-      grant &&
-        matchesAgentApprovalTargetGrant(
-          request("file_edit", String.raw`C:\workspace\reports\..\report.txt`),
-          grant,
-        ),
-    ).toBe(false);
+  it("requires fresh file_edit approval and invalidates old grants", () => {
+    expectFileOperationRequiresFreshApproval("file_edit");
   });
 
   it("keeps terminal interaction grants within one PTY session and action", () => {

@@ -490,14 +490,14 @@ const buildAgentToolApprovalRequester = ({
           .set("approvalToolName", request.toolName)
           .set("approvalOperation", request.operation);
         triggerLogger.info("[agent-long] tool approval reused", {
-          chatId,
-          userId,
+          event: "agent_tool_approval_reused",
+          service: "agent-long",
           runId,
           approvalId,
+          tool_call_id: request.toolCallId,
           tool_name: request.toolName,
           operation: request.operation,
           target_kind: existingGrant.kind,
-          target_prefix: existingGrant.targetPrefix,
         });
         return { approved: true, approvalId };
       }
@@ -551,13 +551,13 @@ const buildAgentToolApprovalRequester = ({
       } as AgentLongUiStreamPart);
 
       triggerLogger.info("[agent-long] waiting for tool approval", {
-        chatId,
-        userId,
+        event: "agent_tool_approval_waiting",
+        service: "agent-long",
         runId,
         approvalId,
+        tool_call_id: request.toolCallId,
         tool_name: request.toolName,
         operation: request.operation,
-        target: request.target.slice(0, 200),
       });
 
       const session = triggerSessions.open(approvalSessionId);
@@ -733,29 +733,29 @@ const buildAgentToolApprovalRequester = ({
             }
             metadata
               .set("approvalGrant", "target_prefix")
-              .set("approvalTargetKind", approvedTargetGrant.kind)
-              .set("approvalTargetPrefix", approvedTargetGrant.targetPrefix);
+              .set("approvalTargetKind", approvedTargetGrant.kind);
           }
           triggerLogger.info("[agent-long] tool approval granted", {
-            chatId,
-            userId,
+            event: "agent_tool_approval_granted",
+            service: "agent-long",
             runId,
             approvalId,
+            tool_call_id: request.toolCallId,
             tool_name: request.toolName,
             operation: request.operation,
             requested_grant: next.output.grant,
             grant: approvedTargetGrant ? "target_prefix" : "full_access",
             target_kind: approvedTargetGrant?.kind,
-            target_prefix: approvedTargetGrant?.targetPrefix,
           });
           return { approved: true, approvalId };
         }
 
         triggerLogger.info("[agent-long] tool approval denied", {
-          chatId,
-          userId,
+          event: "agent_tool_approval_denied",
+          service: "agent-long",
           runId,
           approvalId,
+          tool_call_id: request.toolCallId,
           tool_name: request.toolName,
           operation: request.operation,
         });

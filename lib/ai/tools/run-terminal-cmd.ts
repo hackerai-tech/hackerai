@@ -449,6 +449,13 @@ export const createRunTerminalCmd = (context: ToolContext) => {
             let commandHandle: CommandSessionHandle | null = null;
             let commandSessionExposed = false;
             const commandAbortController = new AbortController();
+            let cancelCentrifugoCommand: (() => Promise<boolean>) | null = null;
+            let runPromise: Promise<{
+              stdout: string;
+              stderr: string;
+              exitCode: number;
+              pid?: number;
+            }> | null = null;
 
             const forgetUnexposedCommandSession = () => {
               if (!commandSession || commandSessionExposed) return;
@@ -457,10 +464,19 @@ export const createRunTerminalCmd = (context: ToolContext) => {
 
             const terminateManagedCommand = async (): Promise<boolean> => {
               if (isCentrifugoSandbox(sandboxInstance)) {
+                if (cancelCentrifugoCommand) {
+                  return cancelCentrifugoCommand();
+                }
                 if (!commandAbortController.signal.aborted) {
                   commandAbortController.abort();
                 }
-                return true;
+                if (!runPromise) return false;
+                try {
+                  const result = await runPromise;
+                  return result.exitCode === 130;
+                } catch {
+                  return false;
+                }
               }
 
               if (!processId && execution?.pid) {
@@ -530,10 +546,15 @@ export const createRunTerminalCmd = (context: ToolContext) => {
               // This must happen before we kill the process, otherwise the error
               // from the killed process might trigger retries
               resolved = true;
+              // Keep the session addressable until termination is confirmed.
+              // runPromise may settle before this async handler resumes.
+              commandSessionExposed = true;
+
+              let terminated = false;
 
               if (commandHandle) {
                 try {
-                  const terminated = await terminateManagedCommand();
+                  terminated = await terminateManagedCommand();
                   if (!terminated) {
                     console.warn(
                       "[Terminal Command] Managed command could not be terminated during abort",
@@ -545,19 +566,13 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                     error,
                   );
                 }
-              } else if (isCentrifugoSandbox(sandboxInstance)) {
-                const result = handler ? handler.getResult() : { output: "" };
-                if (handler) {
-                  handler.cleanup();
+              } else if (isCentrifugoSandbox(sandboxInstance) && runPromise) {
+                try {
+                  const executionResult = await runPromise;
+                  terminated = executionResult.exitCode === 130;
+                } catch {
+                  terminated = false;
                 }
-                resolve({
-                  result: {
-                    output: result.output,
-                    exitCode: 130,
-                    error: "Command execution aborted by user",
-                  },
-                });
-                return;
               } else {
                 // Try to get PID from execution object first (cheap, no shell call)
                 if (!processId && execution && (execution as any)?.pid) {
@@ -567,7 +582,7 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                 // Terminate the current process
                 try {
                   if ((execution && execution.kill) || processId) {
-                    await terminateProcessReliably(
+                    terminated = await terminateProcessReliably(
                       sandboxInstance,
                       execution,
                       processId,
@@ -593,11 +608,21 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                 handler.cleanup();
               }
 
+              if (terminated) {
+                commandSessionExposed = false;
+                forgetUnexposedCommandSession();
+              }
+
               resolve({
                 result: {
                   output: result.output,
-                  exitCode: 130, // Standard SIGINT exit code
-                  error: "Command execution aborted by user",
+                  exitCode: terminated ? 130 : null,
+                  error: terminated
+                    ? "Command execution aborted by user"
+                    : "Command cancellation could not be confirmed. The local session was retained so termination can be retried.",
+                  ...(!terminated && commandSession
+                    ? { session: commandSession.sessionId }
+                    : {}),
                 },
               });
             };
@@ -757,6 +782,9 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                   signal: is_background
                     ? abortSignal
                     : commandAbortController.signal,
+                  onCancelReady: (cancel: () => Promise<boolean>) => {
+                    cancelCentrifugoCommand = cancel;
+                  },
                 }
               : isE2BSandbox(sandboxInstance)
                 ? { ...commonOptions, signal: abortSignal }
@@ -810,12 +838,7 @@ export const createRunTerminalCmd = (context: ToolContext) => {
             // Execute command with retry logic for transient failures
             // Sandbox readiness already checked, so these retries handle race conditions
             // Retries: 6 attempts with exponential backoff (500ms, 1s, 2s, 4s, 8s, 16s) + jitter (±50ms)
-            const runPromise: Promise<{
-              stdout: string;
-              stderr: string;
-              exitCode: number;
-              pid?: number;
-            }> = commandSessionReady.then(async () => {
+            runPromise = commandSessionReady.then(async () => {
               if (resolved || abortSignal?.aborted) {
                 return { stdout: "", stderr: "", exitCode: 130 };
               }
