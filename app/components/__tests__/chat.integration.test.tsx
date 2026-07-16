@@ -1,8 +1,18 @@
 import "@testing-library/jest-dom";
 import { describe, it, expect, jest, beforeEach } from "@jest/globals";
-import { render, renderHook, screen } from "@testing-library/react";
-import { useEffect } from "react";
+import {
+  fireEvent,
+  render,
+  renderHook,
+  screen,
+  waitFor,
+} from "@testing-library/react";
+import { useEffect, useRef } from "react";
 import { useGlobalState } from "@/app/contexts/GlobalState";
+
+jest.mock("uuid", () => ({
+  v4: () => "queued-message-id",
+}));
 
 // ===== IMPORTANT: Mock all dependencies BEFORE importing Chat =====
 // These mocks are hoisted by Jest
@@ -185,15 +195,42 @@ import { ChatLayout } from "../ChatLayout";
 import { TestWrapper } from "../testUtils";
 
 const QueueEditingHarness = () => {
-  const { messageQueue, queueMessage, setEditingQueuedMessageId } =
-    useGlobalState();
+  const {
+    messageQueue,
+    queueMessage,
+    updateQueuedMessage,
+    setEditingQueuedMessageId,
+  } = useGlobalState();
+  const hasSetActualEditingId = useRef(false);
 
   useEffect(() => {
-    queueMessage("updated queued message");
-    setEditingQueuedMessageId("editing-message");
+    queueMessage("original queued message");
+    setEditingQueuedMessageId("queued-message-id");
   }, [queueMessage, setEditingQueuedMessageId]);
 
-  return <div data-testid="queue-state">Queued: {messageQueue.length}</div>;
+  useEffect(() => {
+    if (messageQueue[0] && !hasSetActualEditingId.current) {
+      hasSetActualEditingId.current = true;
+      setEditingQueuedMessageId(messageQueue[0].id);
+    }
+  }, [messageQueue, setEditingQueuedMessageId]);
+
+  const saveEdit = () => {
+    const queuedMessage = messageQueue[0];
+    if (!queuedMessage) return;
+
+    updateQueuedMessage(queuedMessage.id, "updated queued message");
+    setEditingQueuedMessageId(null);
+  };
+
+  return (
+    <>
+      <div data-testid="queue-state">Queued: {messageQueue.length}</div>
+      <button type="button" onClick={saveEdit}>
+        Save queued edit
+      </button>
+    </>
+  );
 };
 
 describe("Chat Component Integration", () => {
@@ -363,7 +400,7 @@ describe("Chat Component Integration", () => {
   });
 
   describe("Message Display", () => {
-    it("keeps a ready queued message pending while it is being edited", () => {
+    it("keeps an edited queued message pending, then resumes with updated text", async () => {
       render(
         <TestWrapper>
           <QueueEditingHarness />
@@ -371,8 +408,22 @@ describe("Chat Component Integration", () => {
         </TestWrapper>,
       );
 
-      expect(screen.getByTestId("queue-state")).toHaveTextContent("Queued: 1");
+      await waitFor(() =>
+        expect(screen.getByTestId("queue-state")).toHaveTextContent(
+          "Queued: 1",
+        ),
+      );
+
       expect(mockSendMessage).not.toHaveBeenCalled();
+
+      fireEvent.click(screen.getByRole("button", { name: "Save queued edit" }));
+
+      await waitFor(() => {
+        expect(screen.getByText("updated queued message")).toBeInTheDocument();
+        expect(screen.getByTestId("queue-state")).toHaveTextContent(
+          "Queued: 0",
+        );
+      });
     });
 
     it("should render with existing messages", () => {
