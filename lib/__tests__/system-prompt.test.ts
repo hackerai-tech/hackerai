@@ -178,6 +178,9 @@ Commands run directly on the host OS "workstation" without Docker isolation. Be 
       expect(prompt).toContain(
         "Distill and deduplicate useful evidence before deleting raw output",
       );
+      expect(prompt).toContain(
+        "never delete user, project, or other-agent files unless explicitly requested or confirmed unused",
+      );
       expect(prompt).toContain("poc_<task-id>.py");
       expect(prompt).toContain(
         "clean up this task's disposable files before continuing",

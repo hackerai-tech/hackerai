@@ -6,6 +6,7 @@ import { asCommonSandbox, isE2BSandbox } from "./sandbox-types";
 
 export const MAX_SAVED_TERMINAL_OUTPUT_FILES = 10;
 
+/** Builds a stable, non-identifying output directory for one chat scope. */
 const getOutputDirectory = (sandbox: AnySandbox, scopeId?: string): string => {
   const baseDirectory = isE2BSandbox(sandbox)
     ? "/home/user/terminal_full_output"
@@ -17,6 +18,7 @@ const getOutputDirectory = (sandbox: AnySandbox, scopeId?: string): string => {
   return `${baseDirectory}/chat-${scopeKey}`;
 };
 
+/** Deletes the oldest timestamped output files beyond the per-chat limit. */
 const pruneOldSavedOutputs = async (
   sandbox: AnySandbox,
   directory: string,

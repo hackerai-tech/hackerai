@@ -904,6 +904,7 @@ export interface ModelImageToolResultLimit {
   elidedImageCount: number;
 }
 
+/** Identifies image blocks supported by AI SDK model tool-result content. */
 const isModelImageOutputPart = (part: unknown): boolean =>
   typeof part === "object" &&
   part !== null &&
@@ -911,6 +912,7 @@ const isModelImageOutputPart = (part: unknown): boolean =>
     (part as { type?: unknown }).type === "image" ||
     (part as { type?: unknown }).type === "image-url");
 
+/** Preserves an AI SDK output wrapper while replacing its underlying value. */
 const replaceModelToolOutputValue = (
   output: unknown,
   value: unknown,

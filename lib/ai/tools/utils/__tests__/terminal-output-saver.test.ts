@@ -71,6 +71,22 @@ describe("saveFullOutputToFile", () => {
     jest.useRealTimers();
   });
 
+  it("uses an unscoped directory when no chat identifier is available", async () => {
+    jest.useFakeTimers().setSystemTime(new Date("2026-07-16T15:30:45.123Z"));
+    const sandbox = createSandbox();
+
+    const savedPath = await saveFullOutputToFile(sandbox as any, "full output");
+
+    expect(savedPath).toBe(
+      "/home/user/terminal_full_output/chat-unscoped/2026-07-16_15-30-45_123Z.txt",
+    );
+    expect(sandbox.commands.run).toHaveBeenCalledWith(
+      "mkdir -p /home/user/terminal_full_output/chat-unscoped",
+      { timeoutMs: 5000 },
+    );
+    jest.useRealTimers();
+  });
+
   it("removes saved outputs beyond the per-chat retention limit", async () => {
     jest.useFakeTimers().setSystemTime(new Date("2026-07-16T15:30:45.123Z"));
     const listedFiles = [
