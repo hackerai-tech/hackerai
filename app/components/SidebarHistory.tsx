@@ -95,7 +95,7 @@ const SidebarHistory: React.FC<SidebarHistoryProps> = ({
 
   // Chat list with buttons (same for mobile and desktop)
   return (
-    <div className="p-2 space-y-1" data-testid="sidebar-chat-list">
+    <div className="space-y-1 py-2" data-testid="sidebar-chat-list">
       {chats.map((chat: any) => (
         <ChatItem
           key={chat._id}

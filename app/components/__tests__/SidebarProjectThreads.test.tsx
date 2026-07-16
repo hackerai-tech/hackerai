@@ -67,9 +67,9 @@ describe("SidebarProjectThreads", () => {
     );
     expect(screen.getByTestId("chat-chat-0").parentElement).toHaveClass(
       "w-full",
-      "px-2",
     );
     expect(screen.getByTestId("chat-chat-0").parentElement).not.toHaveClass(
+      "px-2",
       "ps-7",
     );
     fireEvent.click(screen.getByRole("button", { name: "Show more" }));

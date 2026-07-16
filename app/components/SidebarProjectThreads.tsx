@@ -37,7 +37,7 @@ export function SidebarProjectThreads({ project }: SidebarProjectThreadsProps) {
 
   return (
     <div data-testid={`project-${project._id}-threads`}>
-      <div className="flex w-full flex-col gap-px px-2">
+      <div className="flex w-full flex-col gap-px">
         {results.map((chat) => (
           <ChatItem
             key={chat._id}

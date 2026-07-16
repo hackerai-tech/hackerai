@@ -38,6 +38,11 @@ describe("SidebarHistory", () => {
     );
 
     expect(screen.getByTestId("streaming-ask-chat")).toBeInTheDocument();
+    expect(screen.getByTestId("sidebar-chat-list")).toHaveClass("py-2");
+    expect(screen.getByTestId("sidebar-chat-list")).not.toHaveClass(
+      "p-2",
+      "px-2",
+    );
   });
 
   it("marks chats with active agent trigger runs as streaming", () => {
