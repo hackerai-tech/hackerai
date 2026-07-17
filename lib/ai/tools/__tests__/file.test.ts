@@ -635,6 +635,104 @@ describe("file tool image view", () => {
     expect(mockPhEvent.mock.calls[0][1]).not.toHaveProperty("path");
   });
 
+  test("allows a non-vision Agent model to initiate a vision handoff", async () => {
+    mockUploadSandboxFileToConvex.mockResolvedValue({
+      fileId: "file-1" as never,
+      name: "screenshot.png",
+      mediaType: "image/png",
+    });
+
+    const commandRun = jest
+      .fn<Promise<FakeCommandResult>, [string, any?]>()
+      .mockImplementationOnce(async (_command, opts) => {
+        expect(opts.envVars.HACKERAI_FILE_VIEW_INCLUDE_DATA).toBe("0");
+        return {
+          stdout: JSON.stringify({
+            path: "/tmp/screenshot.png",
+            mediaType: "image/png",
+            sizeBytes: 68,
+            kind: "image",
+          }),
+          stderr: "",
+          exitCode: 0,
+        };
+      })
+      .mockImplementationOnce(async (_command, opts) => {
+        expect(opts.envVars.HACKERAI_FILE_VIEW_INCLUDE_DATA).toBe("1");
+        return {
+          stdout: JSON.stringify({
+            path: "/tmp/screenshot.png",
+            mediaType: "image/png",
+            sizeBytes: 68,
+            kind: "image",
+            data: VALID_PNG_BASE64,
+          }),
+          stderr: "",
+          exitCode: 0,
+        };
+      });
+    const sandbox = makeSandbox(commandRun);
+    const tool = createFile(
+      makeContext(sandbox, { modelName: "model-deepseek-v4-pro" }),
+    );
+    const inputSchema = (
+      tool as unknown as {
+        inputSchema: {
+          safeParse: (input: unknown) => { success: boolean };
+        };
+      }
+    ).inputSchema;
+
+    expect(
+      inputSchema.safeParse({
+        action: "view",
+        path: "/tmp/screenshot.png",
+        brief: "Inspect the screenshot",
+      }).success,
+    ).toBe(true);
+
+    const result = await runTool(tool, {
+      action: "view",
+      path: "/tmp/screenshot.png",
+      brief: "Inspect the screenshot",
+    });
+
+    await expect(runToModelOutput(tool, result)).resolves.toEqual({
+      type: "content",
+      value: [
+        {
+          type: "text",
+          text: "Viewing image file: screenshot.png (image/png, 68 bytes).",
+        },
+        {
+          type: "image-data",
+          data: VALID_PNG_BASE64,
+          mediaType: "image/png",
+        },
+      ],
+    });
+  });
+
+  test("redirects raster image reads to the view action", async () => {
+    const commandRun = jest.fn<Promise<FakeCommandResult>, [string, any?]>();
+    const sandbox = makeSandbox(commandRun);
+    const tool = createFile(
+      makeContext(sandbox, { modelName: "model-deepseek-v4-pro" }),
+    );
+
+    await expect(
+      runTool(tool, {
+        action: "read",
+        path: "/tmp/screenshot.png",
+        brief: "Inspect the screenshot",
+      }),
+    ).resolves.toEqual({
+      error:
+        "Raster image files cannot be read as text. Use the view action instead; Agent will automatically route image inspection to a vision-capable model when necessary.",
+    });
+    expect(commandRun).not.toHaveBeenCalled();
+  });
+
   test("logs initial inspection failures with safe path diagnostics", async () => {
     const commandRun = jest.fn(async () => ({
       stdout: JSON.stringify({

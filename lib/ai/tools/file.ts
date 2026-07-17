@@ -23,6 +23,7 @@ import { createFileToolSchema } from "./schemas";
 const MAX_VIEW_FILE_BYTES = 10 * 1024 * 1024;
 const MAX_TEXT_FILE_READ_BYTES = 1024 * 1024;
 const MAX_TEXT_READ_RESULT_BYTES = 1024 * 1024;
+const RASTER_IMAGE_EXTENSIONS = new Set(["gif", "jpeg", "jpg", "png", "webp"]);
 const MULTIMODAL_UPGRADE_MESSAGE =
   "The current model does not support multimodal tool results for sandbox images. Please select a model with image viewing support and retry the view action.";
 
@@ -292,6 +293,11 @@ const getFileExtension = (path: string): string | undefined => {
   const dotIndex = filename.lastIndexOf(".");
   if (dotIndex <= 0 || dotIndex === filename.length - 1) return undefined;
   return filename.slice(dotIndex + 1).toLowerCase();
+};
+
+const isRasterImagePath = (path: string): boolean => {
+  const extension = getFileExtension(path);
+  return extension ? RASTER_IMAGE_EXTENSIONS.has(extension) : false;
 };
 
 function getViewSandboxType(sandbox: any): "centrifugo" | "e2b" {
@@ -1221,7 +1227,10 @@ export const createFile = (context: ToolContext) => {
     });
   const canViewMultimodalFiles = () =>
     supportsMultimodalToolResults(getCurrentModelName?.() ?? modelName);
-  const supportsViewInSchema = canViewMultimodalFiles();
+  const canHandoffMultimodalFiles = context.mode === "agent";
+  const canReturnMultimodalFiles = () =>
+    canHandoffMultimodalFiles || canViewMultimodalFiles();
+  const supportsViewInSchema = canReturnMultimodalFiles();
   const fileToolSchema = createFileToolSchema({
     supportsView: supportsViewInSchema,
     approvalGated: !!context.requestToolApproval,
@@ -1267,7 +1276,7 @@ export const createFile = (context: ToolContext) => {
           case "view": {
             const viewStartedAt = Date.now();
 
-            if (!canViewMultimodalFiles()) {
+            if (!canReturnMultimodalFiles()) {
               captureFileViewImageUsage({
                 context,
                 sandbox,
@@ -1352,6 +1361,13 @@ export const createFile = (context: ToolContext) => {
           }
 
           case "read": {
+            if (isRasterImagePath(path)) {
+              return {
+                error:
+                  "Raster image files cannot be read as text. Use the view action instead; Agent will automatically route image inspection to a vision-capable model when necessary.",
+              };
+            }
+
             const filename = path.split("/").pop() || path;
             const readPayload = await readSandboxTextFileWithFallback(
               sandbox,
@@ -1598,7 +1614,7 @@ export const createFile = (context: ToolContext) => {
         ) {
           const viewOutput = output as ViewMetadata;
 
-          if (!canViewMultimodalFiles()) {
+          if (!canReturnMultimodalFiles()) {
             return {
               type: "text" as const,
               value: `Error: ${MULTIMODAL_UPGRADE_MESSAGE}`,

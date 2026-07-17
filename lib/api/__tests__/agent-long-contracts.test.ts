@@ -228,7 +228,7 @@ describe("agent tool schemas — Head Start bundle boundary", () => {
       /get_terminal_files:\s*getTerminalFilesTool/,
     );
     expect(toolSchemasSrc).toMatch(
-      /file:\s*createFileToolSchema\(\{\s*supportsView:\s*supportsFileView/,
+      /file:\s*createFileToolSchema\(\{\s*supportsView:\s*true/,
     );
     expect(toolSchemasSrc).toMatch(/todo_write:\s*todoWriteTool/);
     expect(toolSchemasSrc).toMatch(/create_note:\s*createNoteTool/);
