@@ -626,12 +626,9 @@ const HIGH_REASONING_MODELS = [
   "model-opus-4.6",
 ] as const satisfies readonly ModelName[];
 
-const isHighReasoningModel = (modelName?: string, mode?: ChatMode): boolean =>
+const isHighReasoningModel = (modelName?: string): boolean =>
   typeof modelName === "string" &&
-  ((HIGH_REASONING_MODELS as readonly string[]).includes(modelName) ||
-    // Paid Agent Auto/Standard text routes resolve to DeepSeek V4 Pro. Keep
-    // this mode-scoped so the paid Ask route remains at medium reasoning.
-    (mode === "agent" && modelName === "model-deepseek-v4-pro"));
+  (HIGH_REASONING_MODELS as readonly string[]).includes(modelName);
 
 const ASK_KIMI_REASONING_MODELS = [
   "model-kimi-k2.7-code",
@@ -789,10 +786,13 @@ export function buildProviderOptions(
 ) {
   const modelId = modelName ? resolveSlug(modelName) : undefined;
   const isDeepSeekV4 = modelId?.startsWith("deepseek/deepseek-v4") ?? false;
+  // Agent routes use high for both DeepSeek V4 Flash and Pro. Keep this
+  // mode-scoped so the corresponding Ask routes retain their existing effort.
+  const isAgentDeepSeekV4 = mode === "agent" && isDeepSeekV4;
   const fallbackSlugs = getFallbackSlugs(modelName, mode, options);
   const reasoning =
     options.reasoningOverride ??
-    (isHighReasoningModel(modelName, mode)
+    (isHighReasoningModel(modelName) || isAgentDeepSeekV4
       ? {
           enabled: true,
           effort: "high",
