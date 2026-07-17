@@ -13,6 +13,7 @@ import {
   Play,
   SkipBack,
   SkipForward,
+  X,
 } from "lucide-react";
 import { useState, useEffect, useRef, useMemo } from "react";
 import { useGlobalState } from "../contexts/GlobalState";
@@ -491,14 +492,28 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
                     type="button"
                     onClick={handleClose}
                     className="w-7 h-7 relative rounded-md inline-flex items-center justify-center gap-2.5 cursor-pointer hover:bg-muted/50 transition-colors"
-                    aria-label="Minimize sidebar"
+                    aria-label={
+                      isFinding ? "Close finding" : "Minimize sidebar"
+                    }
                     tabIndex={0}
                     onKeyDown={handleKeyDown}
                   >
-                    <Minimize2 className="w-5 h-5 text-muted-foreground" />
+                    {isFinding ? (
+                      <X
+                        className="w-5 h-5 text-muted-foreground"
+                        aria-hidden="true"
+                      />
+                    ) : (
+                      <Minimize2
+                        className="w-5 h-5 text-muted-foreground"
+                        aria-hidden="true"
+                      />
+                    )}
                   </button>
                 </TooltipTrigger>
-                <TooltipContent>Minimize</TooltipContent>
+                <TooltipContent>
+                  {isFinding ? "Close" : "Minimize"}
+                </TooltipContent>
               </Tooltip>
             </div>
 

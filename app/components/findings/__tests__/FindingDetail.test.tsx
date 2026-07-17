@@ -65,10 +65,18 @@ describe("FindingDetail", () => {
   it("renders the complete report and source chat link", () => {
     render(<FindingDetail finding={finding} />);
     expect(screen.getByRole("heading", { name: finding.title })).toBeVisible();
+    expect(screen.getByText("Confirmed")).toBeVisible();
     expect(screen.getByText("CWE-639")).toBeVisible();
     expect(screen.getByText(finding.poc_script_code)).toBeVisible();
     expect(screen.getByText(finding.evidence)).toBeVisible();
-    expect(screen.getByText("app/api/invoices/route.ts:20-22")).toBeVisible();
+    expect(
+      screen.getAllByText("app/api/invoices/route.ts:20-22")[0],
+    ).toBeVisible();
+    expect(screen.getByText("Working PoC")).toBeVisible();
+    expect(
+      screen.getByRole("heading", { name: "Technical Details" }),
+    ).toBeVisible();
+    expect(screen.getByText("Network")).toBeVisible();
     expect(
       screen.getByRole("link", {
         name: "Open source message in Invoice test",
@@ -89,8 +97,8 @@ describe("FindingDetail", () => {
     );
 
     fireEvent.click(screen.getByRole("button", { name: "Delete" }));
-    expect(screen.getByText("Delete this finding?")).toBeVisible();
-    fireEvent.click(screen.getByRole("button", { name: "Delete finding" }));
+    expect(screen.getByText("Delete This Finding?")).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Delete Finding" }));
 
     await waitFor(() => {
       expect(mutation).toHaveBeenCalledWith({ findingId: "finding-1" });

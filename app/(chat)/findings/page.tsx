@@ -1,10 +1,10 @@
 "use client";
 
-import { useDeferredValue, useEffect, useRef, useState } from "react";
+import { Suspense, useDeferredValue, useEffect, useRef, useState } from "react";
 import { useConvexAuth, usePaginatedQuery, useQuery } from "convex/react";
 import { formatDistanceToNow } from "date-fns";
 import { ArrowLeft, PanelLeft, Search, ShieldAlert, X } from "lucide-react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { api } from "@/convex/_generated/api";
 import { Button } from "@/components/ui/button";
 import {
@@ -42,8 +42,34 @@ const SEVERITIES: FindingSeverity[] = [
   "info",
 ];
 
-export default function FindingsPage() {
+const getSeverityFilter = (value: string | null): "all" | FindingSeverity =>
+  SEVERITIES.includes(value as FindingSeverity)
+    ? (value as FindingSeverity)
+    : "all";
+
+const getFindingsHref = ({
+  search,
+  severity,
+  chatId,
+  findingId,
+}: {
+  search: string;
+  severity: "all" | FindingSeverity;
+  chatId: string;
+  findingId: string | null;
+}) => {
+  const params = new URLSearchParams();
+  if (search) params.set("q", search);
+  if (severity !== "all") params.set("severity", severity);
+  if (chatId !== "all") params.set("chat", chatId);
+  if (findingId) params.set("finding", findingId);
+  const query = params.toString();
+  return query ? `/findings?${query}` : "/findings";
+};
+
+function FindingsPageContent() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const { isLoading, isAuthenticated } = useConvexAuth();
   const {
     setChatSidebarOpen,
@@ -53,12 +79,14 @@ export default function FindingsPage() {
     setTemporaryChatsEnabled,
   } = useGlobalState();
   const isMobile = useIsMobile();
-  const [search, setSearch] = useState("");
+  const [search, setSearch] = useState(() => searchParams.get("q") ?? "");
   const deferredSearch = useDeferredValue(search.trim());
-  const [severity, setSeverity] = useState<"all" | FindingSeverity>("all");
-  const [chatId, setChatId] = useState("all");
+  const [severity, setSeverity] = useState<"all" | FindingSeverity>(() =>
+    getSeverityFilter(searchParams.get("severity")),
+  );
+  const [chatId, setChatId] = useState(() => searchParams.get("chat") ?? "all");
   const [selectedFindingId, setSelectedFindingId] = useState<string | null>(
-    null,
+    () => searchParams.get("finding"),
   );
   const selectedFindingTriggerRef = useRef<HTMLButtonElement | null>(null);
 
@@ -70,6 +98,45 @@ export default function FindingsPage() {
     if (!isAuthenticated) return;
     captureAuthenticatedEvent("findings_page_viewed");
   }, [isAuthenticated]);
+
+  useEffect(() => {
+    const syncFromBrowserHistory = () => {
+      const params = new URLSearchParams(window.location.search);
+      setSearch(params.get("q") ?? "");
+      setSeverity(getSeverityFilter(params.get("severity")));
+      setChatId(params.get("chat") ?? "all");
+      setSelectedFindingId(params.get("finding"));
+    };
+
+    window.addEventListener("popstate", syncFromBrowserHistory);
+    return () => window.removeEventListener("popstate", syncFromBrowserHistory);
+  }, []);
+
+  useEffect(() => {
+    const currentSearch = searchParams.get("q") ?? "";
+    if (currentSearch === deferredSearch) return;
+    router.replace(
+      getFindingsHref({
+        search: deferredSearch,
+        severity,
+        chatId,
+        findingId: selectedFindingId,
+      }),
+      { scroll: false },
+    );
+  }, [
+    chatId,
+    deferredSearch,
+    router,
+    searchParams,
+    selectedFindingId,
+    severity,
+  ]);
+
+  useEffect(() => {
+    if (!selectedFindingId) return;
+    captureAuthenticatedEvent("finding_viewed", { surface: "findings_page" });
+  }, [selectedFindingId]);
 
   const findingsQuery = usePaginatedQuery(
     api.findings.listFindings,
@@ -93,8 +160,16 @@ export default function FindingsPage() {
   const selectFinding = (findingId: string, trigger: HTMLButtonElement) => {
     selectedFindingTriggerRef.current = trigger;
     setSelectedFindingId(findingId);
+    router[selectedFindingId ? "replace" : "push"](
+      getFindingsHref({
+        search: deferredSearch,
+        severity,
+        chatId,
+        findingId,
+      }),
+      { scroll: false },
+    );
     closeSidebar();
-    captureAuthenticatedEvent("finding_viewed", { surface: "findings_page" });
   };
 
   const closeDesktopFinding = () => {
@@ -102,6 +177,28 @@ export default function FindingsPage() {
       selectedFindingTriggerRef.current.focus();
     }
     setSelectedFindingId(null);
+    router.replace(
+      getFindingsHref({
+        search: deferredSearch,
+        severity,
+        chatId,
+        findingId: null,
+      }),
+      { scroll: false },
+    );
+  };
+
+  const clearSelectedFinding = () => {
+    setSelectedFindingId(null);
+    router.replace(
+      getFindingsHref({
+        search: deferredSearch,
+        severity,
+        chatId,
+        findingId: null,
+      }),
+      { scroll: false },
+    );
   };
 
   const startFirstTest = () => {
@@ -116,6 +213,15 @@ export default function FindingsPage() {
     setSearch("");
     setSeverity("all");
     setChatId("all");
+    router.replace(
+      getFindingsHref({
+        search: "",
+        severity: "all",
+        chatId: "all",
+        findingId: selectedFindingId,
+      }),
+      { scroll: false },
+    );
   };
 
   if (isLoading || !isAuthenticated) {
@@ -141,7 +247,7 @@ export default function FindingsPage() {
             onClick={() => setChatSidebarOpen(true)}
             aria-label="Open navigation"
           >
-            <PanelLeft className="size-5" />
+            <PanelLeft className="size-5" aria-hidden="true" />
           </Button>
           <div className="min-w-0 flex-1">
             <h1 className="text-lg font-semibold text-foreground">Findings</h1>
@@ -154,20 +260,35 @@ export default function FindingsPage() {
         <div className="flex min-h-0 flex-1 flex-col">
           <div className="grid shrink-0 gap-2 border-b border-border p-4 sm:grid-cols-[minmax(220px,1fr)_160px_220px] sm:px-6">
             <div className="relative">
-              <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+              <Search
+                className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground"
+                aria-hidden="true"
+              />
               <Input
                 value={search}
                 onChange={(event) => setSearch(event.target.value)}
-                placeholder="Search title, target, endpoint, CVE, or CWE"
+                name="finding-search"
+                autoComplete="off"
+                placeholder="Search title, target, endpoint, CVE, or CWE…"
                 className="pl-9"
                 aria-label="Search findings"
               />
             </div>
             <Select
               value={severity}
-              onValueChange={(value) =>
-                setSeverity(value as "all" | FindingSeverity)
-              }
+              onValueChange={(value) => {
+                const nextSeverity = value as "all" | FindingSeverity;
+                setSeverity(nextSeverity);
+                router.replace(
+                  getFindingsHref({
+                    search: deferredSearch,
+                    severity: nextSeverity,
+                    chatId,
+                    findingId: selectedFindingId,
+                  }),
+                  { scroll: false },
+                );
+              }}
             >
               <SelectTrigger aria-label="Filter by severity">
                 <SelectValue placeholder="All severities" />
@@ -181,7 +302,21 @@ export default function FindingsPage() {
                 ))}
               </SelectContent>
             </Select>
-            <Select value={chatId} onValueChange={setChatId}>
+            <Select
+              value={chatId}
+              onValueChange={(value) => {
+                setChatId(value);
+                router.replace(
+                  getFindingsHref({
+                    search: deferredSearch,
+                    severity,
+                    chatId: value,
+                    findingId: selectedFindingId,
+                  }),
+                  { scroll: false },
+                );
+              }}
+            >
               <SelectTrigger aria-label="Filter by source chat">
                 <SelectValue placeholder="All source chats" />
               </SelectTrigger>
@@ -204,7 +339,10 @@ export default function FindingsPage() {
             ) : findings.length === 0 ? (
               <div className="flex h-full min-h-64 flex-col items-center justify-center gap-3 p-8 text-center">
                 <div className="flex size-12 items-center justify-center rounded-xl border border-border bg-muted/30">
-                  <ShieldAlert className="size-6 text-muted-foreground" />
+                  <ShieldAlert
+                    className="size-6 text-muted-foreground"
+                    aria-hidden="true"
+                  />
                 </div>
                 <div>
                   <p className="font-medium text-foreground">
@@ -271,7 +409,7 @@ export default function FindingsPage() {
                     <div className="truncate text-xs text-muted-foreground">
                       {finding.chat_title}
                     </div>
-                    <div className="text-xs text-muted-foreground sm:text-right">
+                    <div className="text-xs tabular-nums text-muted-foreground sm:text-right">
                       {formatDistanceToNow(new Date(finding.created_at), {
                         addSuffix: true,
                       })}
@@ -310,14 +448,14 @@ export default function FindingsPage() {
               onClick={closeDesktopFinding}
               aria-label="Close finding"
             >
-              <X className="size-5" />
+              <X className="size-5" aria-hidden="true" />
             </Button>
           </div>
           <div className="min-h-0 flex-1">
             <FindingDetail
               findingId={selectedFindingId}
               surface="findings_page"
-              onDeleted={() => setSelectedFindingId(null)}
+              onDeleted={clearSelectedFinding}
             />
           </div>
         </aside>
@@ -327,7 +465,7 @@ export default function FindingsPage() {
         <Dialog
           open
           onOpenChange={(open) => {
-            if (!open) setSelectedFindingId(null);
+            if (!open) clearSelectedFinding();
           }}
         >
           <DialogContent
@@ -348,7 +486,7 @@ export default function FindingsPage() {
                   size="icon"
                   aria-label="Back to findings"
                 >
-                  <ArrowLeft className="size-5" />
+                  <ArrowLeft className="size-5" aria-hidden="true" />
                 </Button>
               </DialogClose>
               <DialogTitle className="text-base">Finding</DialogTitle>
@@ -357,12 +495,26 @@ export default function FindingsPage() {
               <FindingDetail
                 findingId={selectedFindingId}
                 surface="findings_page"
-                onDeleted={() => setSelectedFindingId(null)}
+                onDeleted={clearSelectedFinding}
               />
             </div>
           </DialogContent>
         </Dialog>
       )}
     </div>
+  );
+}
+
+export default function FindingsPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
+          Loading findings…
+        </div>
+      }
+    >
+      <FindingsPageContent />
+    </Suspense>
   );
 }

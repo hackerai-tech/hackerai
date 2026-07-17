@@ -8,6 +8,8 @@ const mockUseQuery = jest.fn((_ref: unknown, args: any) =>
 );
 const mockCapture = jest.fn();
 const mockPush = jest.fn();
+const mockReplace = jest.fn();
+const mockSearchParams = new URLSearchParams();
 const mockCloseSidebar = jest.fn();
 const mockInitializeNewChat = jest.fn();
 const mockSetChatMode = jest.fn();
@@ -32,7 +34,8 @@ jest.mock("@/app/contexts/GlobalState", () => ({
 }));
 
 jest.mock("next/navigation", () => ({
-  useRouter: () => ({ push: mockPush }),
+  useRouter: () => ({ push: mockPush, replace: mockReplace }),
+  useSearchParams: () => mockSearchParams,
 }));
 
 jest.mock("@/hooks/use-mobile", () => ({
@@ -86,6 +89,9 @@ const Page = require("../page").default as typeof import("../page").default;
 describe("FindingsPage", () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    for (const key of [...mockSearchParams.keys()]) {
+      mockSearchParams.delete(key);
+    }
     mockMobile = false;
     mockUsePaginatedQuery.mockReturnValue({
       results: [mockFinding],
@@ -182,6 +188,19 @@ describe("FindingsPage", () => {
     fireEvent.click(screen.getByRole("button", { name: "Close finding" }));
     expect(screen.queryByText(mockFinding.description)).toBeNull();
     expect(findingRow).toHaveFocus();
+    expect(mockReplace).toHaveBeenCalledWith("/findings", { scroll: false });
+  });
+
+  it("opens a finding directly from the URL", () => {
+    mockSearchParams.set("finding", "finding-1");
+
+    render(<Page />);
+
+    expect(screen.getByText(mockFinding.description)).toBeVisible();
+    expect(screen.getByRole("button", { name: "Close finding" })).toBeVisible();
+    expect(mockCapture).toHaveBeenCalledWith("finding_viewed", {
+      surface: "findings_page",
+    });
   });
 
   it("uses a modal full-screen mobile detail and restores list focus", async () => {
