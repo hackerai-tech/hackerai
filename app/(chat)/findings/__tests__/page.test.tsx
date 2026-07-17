@@ -7,6 +7,11 @@ const mockUseQuery = jest.fn((_ref: unknown, args: any) =>
   args?.findingId ? mockFinding : mockSourceChats,
 );
 const mockCapture = jest.fn();
+const mockPush = jest.fn();
+const mockCloseSidebar = jest.fn();
+const mockInitializeNewChat = jest.fn();
+const mockSetChatMode = jest.fn();
+const mockSetTemporaryChatsEnabled = jest.fn();
 let mockMobile = false;
 
 jest.mock("convex/react", () => ({
@@ -19,8 +24,15 @@ jest.mock("convex/react", () => ({
 jest.mock("@/app/contexts/GlobalState", () => ({
   useGlobalState: () => ({
     setChatSidebarOpen: jest.fn(),
-    closeSidebar: jest.fn(),
+    closeSidebar: mockCloseSidebar,
+    initializeNewChat: mockInitializeNewChat,
+    setChatMode: mockSetChatMode,
+    setTemporaryChatsEnabled: mockSetTemporaryChatsEnabled,
   }),
+}));
+
+jest.mock("next/navigation", () => ({
+  useRouter: () => ({ push: mockPush }),
 }));
 
 jest.mock("@/hooks/use-mobile", () => ({
@@ -103,6 +115,52 @@ describe("FindingsPage", () => {
       );
     });
     expect(mockCapture).toHaveBeenCalledWith("findings_page_viewed");
+  });
+
+  it("guides first-time users into a persistent Agent security test", () => {
+    mockUsePaginatedQuery.mockReturnValue({
+      results: [],
+      status: "Exhausted",
+      loadMore: jest.fn(),
+    });
+
+    render(<Page />);
+
+    expect(screen.getByText("No findings yet")).toBeVisible();
+    expect(
+      screen.getByText(/Once it confirms a vulnerability with solid evidence/i),
+    ).toBeVisible();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Start your first security test" }),
+    );
+
+    expect(mockCloseSidebar).toHaveBeenCalled();
+    expect(mockInitializeNewChat).toHaveBeenCalled();
+    expect(mockSetTemporaryChatsEnabled).toHaveBeenCalledWith(false);
+    expect(mockSetChatMode).toHaveBeenCalledWith("agent");
+    expect(mockPush).toHaveBeenCalledWith("/");
+  });
+
+  it("shows a reset action when search results are empty", async () => {
+    mockUsePaginatedQuery.mockReturnValue({
+      results: [],
+      status: "Exhausted",
+      loadMore: jest.fn(),
+    });
+
+    render(<Page />);
+    fireEvent.change(screen.getByLabelText("Search findings"), {
+      target: { value: "missing target" },
+    });
+
+    expect(await screen.findByText("No matching findings")).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Clear filters" }));
+
+    expect(screen.getByLabelText("Search findings")).toHaveValue("");
+    await waitFor(() => {
+      expect(screen.getByText("No findings yet")).toBeVisible();
+    });
   });
 
   it("opens the reusable detail alongside the desktop list", () => {

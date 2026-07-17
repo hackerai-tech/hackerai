@@ -4,6 +4,7 @@ import { useDeferredValue, useEffect, useState } from "react";
 import { useConvexAuth, usePaginatedQuery, useQuery } from "convex/react";
 import { formatDistanceToNow } from "date-fns";
 import { ArrowLeft, PanelLeft, Search, ShieldAlert } from "lucide-react";
+import { useRouter } from "next/navigation";
 import { api } from "@/convex/_generated/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -36,8 +37,15 @@ const SEVERITIES: FindingSeverity[] = [
 ];
 
 export default function FindingsPage() {
+  const router = useRouter();
   const { isLoading, isAuthenticated } = useConvexAuth();
-  const { setChatSidebarOpen, closeSidebar } = useGlobalState();
+  const {
+    setChatSidebarOpen,
+    closeSidebar,
+    initializeNewChat,
+    setChatMode,
+    setTemporaryChatsEnabled,
+  } = useGlobalState();
   const isMobile = useIsMobile();
   const [search, setSearch] = useState("");
   const deferredSearch = useDeferredValue(search.trim());
@@ -72,11 +80,27 @@ export default function FindingsPage() {
     isAuthenticated ? {} : "skip",
   ) as FindingSourceChat[] | undefined;
   const findings = (findingsQuery.results ?? []) as FindingSummary[];
+  const hasActiveFilters =
+    Boolean(deferredSearch) || severity !== "all" || chatId !== "all";
 
   const selectFinding = (findingId: string) => {
     setSelectedFindingId(findingId);
     closeSidebar();
     captureAuthenticatedEvent("finding_viewed", { surface: "findings_page" });
+  };
+
+  const startFirstTest = () => {
+    closeSidebar();
+    initializeNewChat();
+    setTemporaryChatsEnabled(false);
+    setChatMode("agent");
+    router.push("/");
+  };
+
+  const clearFilters = () => {
+    setSearch("");
+    setSeverity("all");
+    setChatId("all");
   };
 
   if (isLoading || !isAuthenticated) {
@@ -169,13 +193,25 @@ export default function FindingsPage() {
                 </div>
                 <div>
                   <p className="font-medium text-foreground">
-                    No findings found
+                    {hasActiveFilters
+                      ? "No matching findings"
+                      : "No findings yet"}
                   </p>
                   <p className="mt-1 max-w-sm text-sm text-muted-foreground">
-                    Agent saves a finding only after it has concrete evidence,
-                    reliable reproduction, and a working PoC.
+                    {hasActiveFilters
+                      ? "Try a different search or clear your filters to see all findings."
+                      : "Use Agent to test a target. Once it confirms a vulnerability with solid evidence and a working proof of concept, you’ll find it here."}
                   </p>
                 </div>
+                {hasActiveFilters ? (
+                  <Button variant="outline" onClick={clearFilters}>
+                    Clear filters
+                  </Button>
+                ) : (
+                  <Button onClick={startFirstTest}>
+                    Start your first security test
+                  </Button>
+                )}
               </div>
             ) : (
               <div className="divide-y divide-border">
