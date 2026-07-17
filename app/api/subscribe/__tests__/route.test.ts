@@ -21,6 +21,19 @@ const mockPostHogEvent = jest.fn();
 const mockPostHogWarn = jest.fn();
 const mockPostHogFlush = jest.fn();
 const mockResponseCookieDelete = jest.fn();
+const mockClaimCheckoutStarted = jest.fn(async () => true);
+
+jest.mock("@/lib/analytics/paid-funnel-server", () => ({
+  claimCheckoutStarted: mockClaimCheckoutStarted,
+  paidFunnelEventUuid: jest.fn(
+    ({ checkoutAttemptId }: { checkoutAttemptId: string }) =>
+      `event_uuid:${checkoutAttemptId}`,
+  ),
+  paidFunnelIdempotencyKey: jest.fn(
+    ({ operation, scopeId, checkoutAttemptId }) =>
+      `${operation}:${scopeId}:${checkoutAttemptId}`,
+  ),
+}));
 
 jest.mock("next/server", () => {
   return {
@@ -110,6 +123,7 @@ describe("POST /api/subscribe", () => {
     delete process.env.REFERRAL_PROGRAM_ENABLED;
 
     mockConvexMutation.mockResolvedValue(null);
+    mockClaimCheckoutStarted.mockResolvedValue(true);
 
     mockGetUserIDAndPro.mockResolvedValue({
       userId: "user_123",
@@ -317,6 +331,64 @@ describe("POST /api/subscribe", () => {
           stripe_checkout_session_id: "cs_open",
           stripe_checkout_session_reused: true,
         }),
+        expect.objectContaining({
+          uuid: "event_uuid:ca_retry_123",
+          timestamp: expect.any(Date),
+        }),
+      );
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it("does not emit checkout_started again for a reused session with the same attempt", async () => {
+    mockListOrganizationMemberships.mockResolvedValue({
+      data: [
+        {
+          organizationId: "org_team",
+          role: { slug: "admin" },
+        },
+      ],
+    } as never);
+    mockGetOrganization.mockResolvedValue({
+      id: "org_team",
+      stripeCustomerId: "cus_existing_org",
+    } as never);
+    mockRetrieveCustomer.mockResolvedValue({
+      id: "cus_existing_org",
+      metadata: { workOSOrganizationId: "org_team" },
+    } as never);
+    mockListCheckoutSessions.mockResolvedValueOnce({
+      data: [
+        {
+          id: "cs_open",
+          url: "https://stripe.example/existing-checkout",
+          metadata: {
+            workOSOrganizationId: "org_team",
+            requestedPlan: "pro-monthly-plan",
+            checkoutAttemptId: "ca_same_attempt",
+          },
+        },
+      ],
+      has_more: false,
+    } as never);
+    const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+
+    try {
+      const { POST } = await import("../route");
+      const response = await POST(
+        makeRequest({
+          plan: "pro-monthly-plan",
+          checkoutAttemptId: "ca_same_attempt",
+        }),
+      );
+
+      expect(response.status).toBe(200);
+      expect(mockClaimCheckoutStarted).not.toHaveBeenCalled();
+      expect(mockPostHogEvent).not.toHaveBeenCalledWith(
+        "checkout_started",
+        expect.anything(),
+        expect.anything(),
       );
     } finally {
       warnSpy.mockRestore();
@@ -425,6 +497,7 @@ describe("POST /api/subscribe", () => {
           metadata: expect.objectContaining({ checkoutQuantity: "1" }),
         }),
       }),
+      expect.objectContaining({ idempotencyKey: expect.any(String) }),
     );
   });
 
@@ -473,6 +546,7 @@ describe("POST /api/subscribe", () => {
           checkoutAttemptId: body.checkoutAttemptId,
         }),
       }),
+      expect.objectContaining({ idempotencyKey: expect.any(String) }),
     );
   });
 
@@ -606,6 +680,7 @@ describe("POST /api/subscribe", () => {
           }),
         }),
       }),
+      expect.objectContaining({ idempotencyKey: expect.any(String) }),
     );
     const checkoutArgs = mockCreateCheckoutSession.mock.calls[0]?.[0] as any;
     expect(checkoutArgs.client_reference_id).toBeUndefined();
@@ -703,18 +778,16 @@ describe("POST /api/subscribe", () => {
     } as never);
 
     const { POST } = await import("../route");
-
-    const response = await POST(
-      makeRequest({
-        plan: "pro-plus-monthly-plan",
-        checkoutAttemptId: "ca_limit_pressure_123",
-        source: "limit_pressure",
-        surface: "rate_limit_warning",
-        reason: "monthly_exhausted",
-        limitType: "monthly",
-        fromTier: "free",
-      }),
-    );
+    const requestBody = {
+      plan: "pro-plus-monthly-plan",
+      checkoutAttemptId: "ca_limit_pressure_123",
+      source: "limit_pressure",
+      surface: "rate_limit_warning",
+      reason: "monthly_exhausted",
+      limitType: "monthly",
+      fromTier: "free",
+    };
+    const response = await POST(makeRequest(requestBody));
     const body = await response.json();
 
     expect(response.status).toBe(200);
@@ -738,6 +811,9 @@ describe("POST /api/subscribe", () => {
           }),
         }),
       }),
+      expect.objectContaining({
+        idempotencyKey: "checkout_session_create:cus_new:ca_limit_pressure_123",
+      }),
     );
     expect(mockPostHogEvent).toHaveBeenCalledWith(
       "checkout_started",
@@ -748,6 +824,21 @@ describe("POST /api/subscribe", () => {
         reason: "monthly_exhausted",
         limit_type: "monthly",
       }),
+      expect.objectContaining({
+        uuid: "event_uuid:ca_limit_pressure_123",
+        timestamp: expect.any(Date),
+      }),
+    );
+
+    mockPostHogEvent.mockClear();
+    mockClaimCheckoutStarted.mockResolvedValueOnce(false);
+    const replayResponse = await POST(makeRequest(requestBody));
+
+    expect(replayResponse.status).toBe(200);
+    expect(mockPostHogEvent).not.toHaveBeenCalledWith(
+      "checkout_started",
+      expect.anything(),
+      expect.anything(),
     );
   });
 

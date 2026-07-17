@@ -9,10 +9,15 @@ import {
   PAID_FUNNEL_EVENTS,
   createCheckoutAttemptId,
   normalizeCheckoutAttemptId,
+  normalizeCheckoutAttemptStartedAt,
   normalizePaidFunnelLabel,
   paidFunnelProperties,
   planLookupKeyToTier,
 } from "@/lib/analytics/paid-funnel";
+import {
+  claimCheckoutStarted,
+  paidFunnelEventUuid,
+} from "@/lib/analytics/paid-funnel-server";
 
 const MAX_TEAM_SEATS = 999;
 
@@ -67,6 +72,9 @@ export const POST = async (req: NextRequest) => {
     const checkoutAttemptId =
       normalizeCheckoutAttemptId(body?.checkoutAttemptId) ??
       createCheckoutAttemptId();
+    const checkoutStartedAt =
+      normalizeCheckoutAttemptStartedAt(body?.checkoutAttemptStartedAt) ??
+      new Date();
     const checkoutSource = normalizePaidFunnelLabel(body?.source);
     const checkoutSurface = normalizePaidFunnelLabel(body?.surface);
     const checkoutReason = normalizePaidFunnelLabel(body?.reason);
@@ -321,36 +329,46 @@ export const POST = async (req: NextRequest) => {
       // If confirm flag is true, actually update the subscription
       if (confirm) {
         try {
-          phLogger.event(
-            PAID_FUNNEL_EVENTS.checkoutStarted,
-            paidFunnelProperties({
-              userId,
-              org_id: organization.id,
-              checkout_attempt_id: checkoutAttemptId,
-              checkout_type: "subscription_change",
-              from_tier: planType,
-              to_tier: planLookupKeyToTier(targetPlan),
-              plan: targetPlan,
-              billing_interval: targetPrice.recurring?.interval,
-              billing_interval_count: targetPrice.recurring?.interval_count,
-              quantity,
-              surface: checkoutSurface,
-              source: checkoutSource,
-              reason: checkoutReason,
-              limit_type: checkoutLimitType,
-              checkout_amount_dollars: totalDue,
-              currency: targetPrice.currency,
-              stripe_customer_id: matchingCustomer.id,
-              stripe_subscription_id: subscription.id,
-              stripe_price_id: targetPrice.id,
-              $session_id: posthogSessionId ?? undefined,
-              $insert_id: `${PAID_FUNNEL_EVENTS.checkoutStarted}:${checkoutAttemptId}`,
-              $set: {
-                last_checkout_started_at: new Date().toISOString(),
+          if (await claimCheckoutStarted({ userId, checkoutAttemptId })) {
+            phLogger.event(
+              PAID_FUNNEL_EVENTS.checkoutStarted,
+              paidFunnelProperties({
+                userId,
+                org_id: organization.id,
+                checkout_attempt_id: checkoutAttemptId,
+                checkout_type: "subscription_change",
+                from_tier: planType,
+                to_tier: planLookupKeyToTier(targetPlan),
+                plan: targetPlan,
+                billing_interval: targetPrice.recurring?.interval,
+                billing_interval_count: targetPrice.recurring?.interval_count,
+                quantity,
+                surface: checkoutSurface,
+                source: checkoutSource,
+                reason: checkoutReason,
+                limit_type: checkoutLimitType,
+                checkout_amount_dollars: totalDue,
+                currency: targetPrice.currency,
+                stripe_customer_id: matchingCustomer.id,
+                stripe_subscription_id: subscription.id,
+                stripe_price_id: targetPrice.id,
+                $session_id: posthogSessionId ?? undefined,
+                $insert_id: `${PAID_FUNNEL_EVENTS.checkoutStarted}:${checkoutAttemptId}`,
+                $set: {
+                  last_checkout_started_at: checkoutStartedAt.toISOString(),
+                },
+              }),
+              {
+                uuid: paidFunnelEventUuid({
+                  event: PAID_FUNNEL_EVENTS.checkoutStarted,
+                  userId,
+                  checkoutAttemptId,
+                }),
+                timestamp: checkoutStartedAt,
               },
-            }),
-          );
-          after(() => phLogger.flush());
+            );
+            after(() => phLogger.flush());
+          }
 
           const updatedSubscription = await stripe.subscriptions.update(
             subscription.id,

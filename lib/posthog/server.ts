@@ -21,6 +21,11 @@ type EventFields = Record<string, unknown> & {
   $set?: Record<string, unknown>;
 };
 
+type EventOptions = {
+  uuid?: string;
+  timestamp?: Date;
+};
+
 const TELEMETRY_STRING_MAX_LENGTH = 2_000;
 
 function distinctIdFor(userId: unknown): string {
@@ -171,7 +176,7 @@ export const phLogger = {
     if (!wroteLog) console.log(message, fields);
   },
 
-  event(name: string, fields: EventFields = {}) {
+  event(name: string, fields: EventFields = {}, options: EventOptions = {}) {
     const client = getClient();
     if (!client) return;
     try {
@@ -180,6 +185,7 @@ export const phLogger = {
         distinctId: distinctIdFor(userId),
         event: name,
         properties: { ...rest, ...($set && { $set }) },
+        ...options,
       });
     } catch {
       // best-effort

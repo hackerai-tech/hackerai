@@ -98,6 +98,24 @@ export function normalizeCheckoutAttemptId(value: unknown): string | undefined {
   return trimmed;
 }
 
+export function normalizeCheckoutAttemptStartedAt(
+  value: unknown,
+  nowMs = Date.now(),
+): Date | undefined {
+  if (typeof value !== "string" || value.length > 64) return undefined;
+  const timestamp = Date.parse(value);
+  const maximumPastAgeMs = 24 * 60 * 60 * 1_000;
+  const maximumFutureSkewMs = 5 * 60 * 1_000;
+  if (
+    !Number.isFinite(timestamp) ||
+    timestamp < nowMs - maximumPastAgeMs ||
+    timestamp > nowMs + maximumFutureSkewMs
+  ) {
+    return undefined;
+  }
+  return new Date(timestamp);
+}
+
 export function paidFunnelProperties(properties: Record<string, unknown> = {}) {
   return {
     ...properties,

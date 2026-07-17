@@ -160,6 +160,7 @@ describe("UpgradeConfirmationDialog", () => {
         confirm: false,
         quantity: 5,
         checkoutAttemptId: expect.stringMatching(/^ca_/),
+        checkoutAttemptStartedAt: expect.any(String),
       });
     });
 
@@ -211,8 +212,16 @@ describe("UpgradeConfirmationDialog", () => {
         confirm: true,
         quantity: 2,
         checkoutAttemptId: expect.stringMatching(/^ca_/),
+        checkoutAttemptStartedAt: expect.any(String),
         fromTier: "pro",
       });
+      const previewBody = JSON.parse(
+        (mockFetch.mock.calls[0]?.[1] as RequestInit).body as string,
+      );
+      const confirmBody = JSON.parse(init.body as string);
+      expect(confirmBody.checkoutAttemptStartedAt).toBe(
+        previewBody.checkoutAttemptStartedAt,
+      );
     });
 
     it("should pass attribution context to preview and confirm APIs", async () => {

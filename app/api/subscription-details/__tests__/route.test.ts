@@ -1,4 +1,11 @@
-import { describe, it, expect, jest, beforeEach } from "@jest/globals";
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  jest,
+} from "@jest/globals";
 
 const mockGetUserID = jest.fn();
 const mockGetUser = jest.fn();
@@ -11,6 +18,19 @@ const mockCreatePreview = jest.fn();
 const mockUpdateSubscription = jest.fn();
 const mockPostHogEvent = jest.fn();
 const mockPostHogFlush = jest.fn();
+const mockClaimCheckoutStarted = jest.fn(async () => true);
+
+jest.mock("@/lib/analytics/paid-funnel-server", () => ({
+  claimCheckoutStarted: mockClaimCheckoutStarted,
+  paidFunnelEventUuid: jest.fn(
+    ({ checkoutAttemptId }: { checkoutAttemptId: string }) =>
+      `event_uuid:${checkoutAttemptId}`,
+  ),
+  paidFunnelIdempotencyKey: jest.fn(
+    ({ operation, scopeId, checkoutAttemptId }) =>
+      `${operation}:${scopeId}:${checkoutAttemptId}`,
+  ),
+}));
 
 jest.mock("next/server", () => ({
   after: jest.fn((callback: () => void) => callback()),
@@ -75,6 +95,7 @@ function makeRequest(body: Record<string, unknown> = {}) {
 describe("POST /api/subscription-details", () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockClaimCheckoutStarted.mockResolvedValue(true);
 
     mockGetUserID.mockResolvedValue("user_123" as never);
     mockGetUser.mockResolvedValue({
@@ -107,6 +128,10 @@ describe("POST /api/subscription-details", () => {
       ],
     } as never);
     mockListSubscriptions.mockResolvedValue({ data: [] } as never);
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
   });
 
   it.each(["pro-plus-monthly-plan", "pro-plus-yearly-plan"])(
@@ -208,7 +233,9 @@ describe("POST /api/subscription-details", () => {
   });
 
   it("persists subscription-change attribution in metadata and analytics", async () => {
-    mockListPrices.mockResolvedValueOnce({
+    const checkoutStartedAt = new Date("2026-07-17T16:30:45.123Z");
+    jest.useFakeTimers().setSystemTime(checkoutStartedAt);
+    mockListPrices.mockResolvedValue({
       data: [
         {
           id: "price_ultra",
@@ -218,7 +245,7 @@ describe("POST /api/subscription-details", () => {
         },
       ],
     } as never);
-    mockListSubscriptions.mockResolvedValueOnce({
+    mockListSubscriptions.mockResolvedValue({
       data: [
         {
           id: "sub_123",
@@ -242,34 +269,37 @@ describe("POST /api/subscription-details", () => {
         },
       ],
     } as never);
-    mockCreatePreview.mockResolvedValueOnce({
+    mockCreatePreview.mockResolvedValue({
       amount_due: 8000,
       lines: {
         data: [{ amount: 10000 }, { amount: -2000 }],
       },
     } as never);
-    mockUpdateSubscription.mockResolvedValueOnce({
+    mockUpdateSubscription.mockResolvedValue({
       id: "sub_123",
       latest_invoice: null,
     } as never);
 
     const { POST } = await import("../route");
-
-    const response = await POST(
-      makeRequest({
-        plan: "ultra-monthly-plan",
-        confirm: true,
-        checkoutAttemptId: "ca_paid_limit_123",
-        source: "limit_pressure",
-        surface: "pricing_dialog",
-        reason: "monthly_exhausted",
-        limitType: "monthly",
-      }),
-    );
+    const requestBody = {
+      plan: "ultra-monthly-plan",
+      confirm: true,
+      checkoutAttemptId: "ca_paid_limit_123",
+      checkoutAttemptStartedAt: checkoutStartedAt.toISOString(),
+      source: "limit_pressure",
+      surface: "pricing_dialog",
+      reason: "monthly_exhausted",
+      limitType: "monthly",
+    };
+    const response = await POST(makeRequest(requestBody));
     const body = await response.json();
 
     expect(response.status).toBe(200);
     expect(body.success).toBe(true);
+    expect(mockClaimCheckoutStarted).toHaveBeenCalledWith({
+      userId: "user_123",
+      checkoutAttemptId: "ca_paid_limit_123",
+    });
     expect(mockUpdateSubscription).toHaveBeenCalledWith(
       "sub_123",
       expect.objectContaining({
@@ -294,6 +324,10 @@ describe("POST /api/subscription-details", () => {
         reason: "monthly_exhausted",
         limit_type: "monthly",
       }),
+      expect.objectContaining({
+        uuid: "event_uuid:ca_paid_limit_123",
+        timestamp: expect.any(Date),
+      }),
     );
     expect(mockPostHogEvent).toHaveBeenCalledWith(
       "checkout_succeeded",
@@ -306,5 +340,48 @@ describe("POST /api/subscription-details", () => {
         limit_type: "monthly",
       }),
     );
+
+    jest.advanceTimersByTime(5_000);
+    mockClaimCheckoutStarted.mockResolvedValueOnce(false);
+
+    const replayResponse = await POST(makeRequest(requestBody));
+
+    expect(replayResponse.status).toBe(200);
+    expect(mockUpdateSubscription).toHaveBeenCalledTimes(2);
+    expect(
+      mockPostHogEvent.mock.calls.filter(
+        ([event]) => event === "checkout_started",
+      ),
+    ).toHaveLength(1);
+
+    const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+    mockUpdateSubscription.mockRejectedValueOnce(
+      new Error("card was declined") as never,
+    );
+    const failedAttemptId = "ca_paid_limit_456";
+    const failedResponse = await POST(
+      makeRequest({
+        ...requestBody,
+        checkoutAttemptId: failedAttemptId,
+        checkoutAttemptStartedAt: new Date().toISOString(),
+      }),
+    );
+
+    expect(failedResponse.status).toBe(400);
+    expect(
+      mockPostHogEvent.mock.calls.filter(
+        ([event, properties]) =>
+          event === "checkout_started" &&
+          properties?.checkout_attempt_id === failedAttemptId,
+      ),
+    ).toHaveLength(1);
+    expect(
+      mockPostHogEvent.mock.calls.filter(
+        ([event, properties]) =>
+          event === "checkout_succeeded" &&
+          properties?.checkout_attempt_id === failedAttemptId,
+      ),
+    ).toHaveLength(0);
+    errorSpy.mockRestore();
   });
 });

@@ -59,17 +59,23 @@ const UpgradeConfirmationDialog: React.FC<UpgradeConfirmationDialogProps> = ({
   const [loadingDetails, setLoadingDetails] = useState(false);
   const [confirming, setConfirming] = useState(false);
   const [error, setError] = useState<string>("");
-  const [checkoutAttemptId, setCheckoutAttemptId] = useState<string | null>(
-    null,
-  );
+  const [checkoutAttempt, setCheckoutAttempt] = useState<{
+    id: string;
+    startedAt: string;
+  } | null>(null);
+  const checkoutAttemptId = checkoutAttempt?.id;
+  const checkoutAttemptStartedAt = checkoutAttempt?.startedAt;
 
   useEffect(() => {
     if (!isOpen) {
-      setCheckoutAttemptId(null);
+      setCheckoutAttempt(null);
       return;
     }
 
-    setCheckoutAttemptId(newCheckoutAttemptId());
+    setCheckoutAttempt({
+      id: newCheckoutAttemptId(),
+      startedAt: new Date().toISOString(),
+    });
   }, [isOpen, targetPlan]);
 
   useEffect(() => {
@@ -91,6 +97,7 @@ const UpgradeConfirmationDialog: React.FC<UpgradeConfirmationDialogProps> = ({
             confirm: false,
             quantity: quantity,
             checkoutAttemptId,
+            checkoutAttemptStartedAt,
             source,
             surface,
             reason,
@@ -140,6 +147,7 @@ const UpgradeConfirmationDialog: React.FC<UpgradeConfirmationDialogProps> = ({
     price,
     quantity,
     checkoutAttemptId,
+    checkoutAttemptStartedAt,
     source,
     surface,
     reason,
@@ -152,7 +160,7 @@ const UpgradeConfirmationDialog: React.FC<UpgradeConfirmationDialogProps> = ({
   const canConfirm = Boolean(checkoutAttemptId && details);
 
   const handleConfirmPayment = async () => {
-    if (!checkoutAttemptId || !details) {
+    if (!checkoutAttemptId || !checkoutAttemptStartedAt || !details) {
       setError("Still preparing checkout details. Please wait a moment.");
       return;
     }
@@ -171,6 +179,7 @@ const UpgradeConfirmationDialog: React.FC<UpgradeConfirmationDialogProps> = ({
           confirm: true,
           quantity: quantity,
           checkoutAttemptId,
+          checkoutAttemptStartedAt,
           source,
           surface,
           reason,

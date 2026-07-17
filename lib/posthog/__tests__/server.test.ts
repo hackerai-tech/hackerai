@@ -64,4 +64,28 @@ describe("phLogger", () => {
     expect(mockEmitPostHogLog).toHaveBeenCalledTimes(1);
     expect(mockCaptureException).toHaveBeenCalledTimes(1);
   });
+
+  it("forwards event identity fields at the PostHog envelope level", () => {
+    const timestamp = new Date("2026-07-17T16:30:45.123Z");
+
+    phLogger.event(
+      "checkout_started",
+      {
+        userId: "user_123",
+        checkout_attempt_id: "ca_attempt_123",
+      },
+      {
+        uuid: "a0f4f90b-0a46-52d8-87d2-9ef6792e2e56",
+        timestamp,
+      },
+    );
+
+    expect(mockCapture).toHaveBeenCalledWith({
+      distinctId: "user_123",
+      event: "checkout_started",
+      properties: { checkout_attempt_id: "ca_attempt_123" },
+      uuid: "a0f4f90b-0a46-52d8-87d2-9ef6792e2e56",
+      timestamp,
+    });
+  });
 });

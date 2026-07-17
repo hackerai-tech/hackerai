@@ -19,12 +19,18 @@ import {
 import {
   PAID_FUNNEL_EVENTS,
   createCheckoutAttemptId,
+  normalizeCheckoutAttemptStartedAt,
   normalizePaidFunnelLabel,
   normalizeCheckoutAttemptId,
   paidFunnelTierFromUnknown,
   paidFunnelProperties,
   planLookupKeyToTier,
 } from "@/lib/analytics/paid-funnel";
+import {
+  claimCheckoutStarted,
+  paidFunnelEventUuid,
+  paidFunnelIdempotencyKey,
+} from "@/lib/analytics/paid-funnel-server";
 
 function canManageOrganizationBilling(
   membership: Awaited<
@@ -227,6 +233,9 @@ export const POST = async (req: NextRequest) => {
     const checkoutAttemptId =
       normalizeCheckoutAttemptId(body?.checkoutAttemptId) ??
       createCheckoutAttemptId();
+    const checkoutStartedAt =
+      normalizeCheckoutAttemptStartedAt(body?.checkoutAttemptStartedAt) ??
+      new Date();
     const checkoutSource = normalizePaidFunnelLabel(body?.source);
     const checkoutSurface = normalizePaidFunnelLabel(body?.surface);
     const checkoutReason = normalizePaidFunnelLabel(body?.reason);
@@ -503,33 +512,22 @@ export const POST = async (req: NextRequest) => {
       quantity,
     });
     const reusedCheckoutSession = Boolean(session);
+    const previousCheckoutAttemptId = session?.metadata?.checkoutAttemptId;
 
     if (!session) {
-      session = await stripe.checkout.sessions.create({
-        customer: customer.id,
-        billing_address_collection: "auto",
-        line_items: [
-          {
-            price: price.data[0].id,
-            quantity: quantity,
-          },
-        ],
-        mode: "subscription",
-        success_url: successUrl.toString(),
-        cancel_url: cancelUrl.toString(),
-        metadata: {
-          userId,
-          workOSOrganizationId: organization.id,
-          requestedPlan: subscriptionLevel,
-          checkoutQuantity: String(quantity),
-          checkoutAttemptId,
-          ...(checkoutSource && { checkoutSource }),
-          ...(checkoutSurface && { checkoutSurface }),
-          ...(checkoutReason && { checkoutReason }),
-          ...(checkoutLimitType && { checkoutLimitType }),
-          checkoutType: "new_subscription",
-        },
-        subscription_data: {
+      session = await stripe.checkout.sessions.create(
+        {
+          customer: customer.id,
+          billing_address_collection: "auto",
+          line_items: [
+            {
+              price: price.data[0].id,
+              quantity: quantity,
+            },
+          ],
+          mode: "subscription",
+          success_url: successUrl.toString(),
+          cancel_url: cancelUrl.toString(),
           metadata: {
             userId,
             workOSOrganizationId: organization.id,
@@ -542,16 +540,36 @@ export const POST = async (req: NextRequest) => {
             ...(checkoutLimitType && { checkoutLimitType }),
             checkoutType: "new_subscription",
           },
-        },
-        custom_text: {
-          submit: {
-            message:
-              "Renews monthly until cancelled. Cancel anytime in Settings.",
+          subscription_data: {
+            metadata: {
+              userId,
+              workOSOrganizationId: organization.id,
+              requestedPlan: subscriptionLevel,
+              checkoutQuantity: String(quantity),
+              checkoutAttemptId,
+              ...(checkoutSource && { checkoutSource }),
+              ...(checkoutSurface && { checkoutSurface }),
+              ...(checkoutReason && { checkoutReason }),
+              ...(checkoutLimitType && { checkoutLimitType }),
+              checkoutType: "new_subscription",
+            },
+          },
+          custom_text: {
+            submit: {
+              message:
+                "Renews monthly until cancelled. Cancel anytime in Settings.",
+            },
           },
         },
-      });
+        {
+          idempotencyKey: paidFunnelIdempotencyKey({
+            operation: "checkout_session_create",
+            scopeId: customer.id,
+            checkoutAttemptId,
+          }),
+        },
+      );
     } else {
-      const previousCheckoutAttemptId = session.metadata?.checkoutAttemptId;
       session = await stripe.checkout.sessions.update(session.id, {
         metadata: {
           ...session.metadata,
@@ -633,40 +651,53 @@ export const POST = async (req: NextRequest) => {
     }
 
     const selectedPrice = price.data[0];
-    phLogger.event(
-      PAID_FUNNEL_EVENTS.checkoutStarted,
-      paidFunnelProperties({
-        userId,
-        org_id: organization.id,
-        checkout_attempt_id: checkoutAttemptId,
-        checkout_type: "new_subscription",
-        from_tier: fromTier,
-        to_tier: planLookupKeyToTier(subscriptionLevel),
-        plan: subscriptionLevel,
-        billing_interval: selectedPrice.recurring?.interval,
-        billing_interval_count: selectedPrice.recurring?.interval_count,
-        quantity,
-        surface: checkoutSurface,
-        source: checkoutSource,
-        reason: checkoutReason,
-        limit_type: checkoutLimitType,
-        checkout_amount_dollars:
-          selectedPrice.unit_amount != null
-            ? (selectedPrice.unit_amount * quantity) / 100
-            : undefined,
-        currency: selectedPrice.currency,
-        stripe_customer_id: customer.id,
-        stripe_checkout_session_id: session.id,
-        stripe_checkout_session_reused: reusedCheckoutSession,
-        stripe_price_id: selectedPrice.id,
-        $session_id: posthogSessionId ?? undefined,
-        $insert_id: `${PAID_FUNNEL_EVENTS.checkoutStarted}:${checkoutAttemptId}`,
-        $set: {
-          last_checkout_started_at: new Date().toISOString(),
+    const shouldEmitCheckoutStarted =
+      previousCheckoutAttemptId !== checkoutAttemptId &&
+      (await claimCheckoutStarted({ userId, checkoutAttemptId }));
+    if (shouldEmitCheckoutStarted) {
+      phLogger.event(
+        PAID_FUNNEL_EVENTS.checkoutStarted,
+        paidFunnelProperties({
+          userId,
+          org_id: organization.id,
+          checkout_attempt_id: checkoutAttemptId,
+          checkout_type: "new_subscription",
+          from_tier: fromTier,
+          to_tier: planLookupKeyToTier(subscriptionLevel),
+          plan: subscriptionLevel,
+          billing_interval: selectedPrice.recurring?.interval,
+          billing_interval_count: selectedPrice.recurring?.interval_count,
+          quantity,
+          surface: checkoutSurface,
+          source: checkoutSource,
+          reason: checkoutReason,
+          limit_type: checkoutLimitType,
+          checkout_amount_dollars:
+            selectedPrice.unit_amount != null
+              ? (selectedPrice.unit_amount * quantity) / 100
+              : undefined,
+          currency: selectedPrice.currency,
+          stripe_customer_id: customer.id,
+          stripe_checkout_session_id: session.id,
+          stripe_checkout_session_reused: reusedCheckoutSession,
+          stripe_price_id: selectedPrice.id,
+          $session_id: posthogSessionId ?? undefined,
+          $insert_id: `${PAID_FUNNEL_EVENTS.checkoutStarted}:${checkoutAttemptId}`,
+          $set: {
+            last_checkout_started_at: checkoutStartedAt.toISOString(),
+          },
+        }),
+        {
+          uuid: paidFunnelEventUuid({
+            event: PAID_FUNNEL_EVENTS.checkoutStarted,
+            userId,
+            checkoutAttemptId,
+          }),
+          timestamp: checkoutStartedAt,
         },
-      }),
-    );
-    after(() => phLogger.flush());
+      );
+      after(() => phLogger.flush());
+    }
 
     return json({ url: session.url, checkoutAttemptId });
   } catch (error: unknown) {

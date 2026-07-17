@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useAuth } from "@workos-inc/authkit-nextjs/components";
 import { toast } from "sonner";
 import {
@@ -15,6 +15,7 @@ import {
 export const useUpgrade = () => {
   const { user } = useAuth();
   const [upgradeLoading, setUpgradeLoading] = useState(false);
+  const upgradeInFlightRef = useRef(false);
 
   const handleUpgrade = async (
     planKey?: PaidFunnelPlan,
@@ -31,7 +32,7 @@ export const useUpgrade = () => {
     e?.preventDefault();
 
     // Prevent duplicate submits
-    if (upgradeLoading) {
+    if (upgradeInFlightRef.current) {
       return;
     }
 
@@ -40,17 +41,20 @@ export const useUpgrade = () => {
       return;
     }
 
+    upgradeInFlightRef.current = true;
     setUpgradeLoading(true);
 
     try {
       const selectedPlan = planKey || "pro-monthly-plan";
       const checkoutAttemptId = newCheckoutAttemptId();
+      const checkoutAttemptStartedAt = new Date().toISOString();
       const toTier = planLookupKeyToTier(selectedPlan);
       const billingInterval = planLookupKeyToBillingInterval(selectedPlan);
       const requestBody: {
         plan: string;
         quantity?: number;
         checkoutAttemptId: string;
+        checkoutAttemptStartedAt: string;
         source?: string;
         surface?: string;
         reason?: string;
@@ -59,6 +63,7 @@ export const useUpgrade = () => {
       } = {
         plan: selectedPlan,
         checkoutAttemptId,
+        checkoutAttemptStartedAt,
         source: analyticsContext.source,
         surface: analyticsContext.surface,
         reason: analyticsContext.reason,
@@ -158,6 +163,7 @@ export const useUpgrade = () => {
             confirm: true,
             quantity: quantity,
             checkoutAttemptId,
+            checkoutAttemptStartedAt,
             source: analyticsContext.source,
             surface: analyticsContext.surface,
             reason: analyticsContext.reason,
@@ -198,6 +204,7 @@ export const useUpgrade = () => {
         toast.error("An unexpected error occurred");
       }
     } finally {
+      upgradeInFlightRef.current = false;
       setUpgradeLoading(false);
     }
   };
