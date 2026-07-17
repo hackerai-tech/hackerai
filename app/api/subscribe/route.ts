@@ -57,15 +57,18 @@ function isReusableCheckoutSession(
     organizationId,
     requestedPlan,
     quantity,
+    checkoutAttemptId,
   }: {
     organizationId: string;
     requestedPlan: string;
     quantity: number;
+    checkoutAttemptId: string;
   },
 ): boolean {
   if (!session.url) return false;
   if (session.metadata?.workOSOrganizationId !== organizationId) return false;
   if (session.metadata?.requestedPlan !== requestedPlan) return false;
+  if (session.metadata?.checkoutAttemptId !== checkoutAttemptId) return false;
 
   const checkoutQuantity = session.metadata?.checkoutQuantity;
   return checkoutQuantity
@@ -182,11 +185,13 @@ async function findReusableCheckoutSession({
   organizationId,
   requestedPlan,
   quantity,
+  checkoutAttemptId,
 }: {
   customerId: string;
   organizationId: string;
   requestedPlan: string;
   quantity: number;
+  checkoutAttemptId: string;
 }): Promise<Stripe.Checkout.Session | undefined> {
   let startingAfter: string | undefined;
 
@@ -202,6 +207,7 @@ async function findReusableCheckoutSession({
         organizationId,
         requestedPlan,
         quantity,
+        checkoutAttemptId,
       }),
     );
 
@@ -510,6 +516,7 @@ export const POST = async (req: NextRequest) => {
       organizationId: organization.id,
       requestedPlan: subscriptionLevel,
       quantity,
+      checkoutAttemptId,
     });
     const reusedCheckoutSession = Boolean(session);
     const previousCheckoutAttemptId = session?.metadata?.checkoutAttemptId;

@@ -17,6 +17,7 @@ import {
 import {
   claimCheckoutStarted,
   paidFunnelEventUuid,
+  paidFunnelIdempotencyKey,
 } from "@/lib/analytics/paid-funnel-server";
 
 const MAX_TEAM_SEATS = 999;
@@ -381,7 +382,6 @@ export const POST = async (req: NextRequest) => {
                 },
               ],
               proration_behavior: "always_invoice",
-              proration_date: Math.floor(Date.now() / 1000),
               payment_behavior: "pending_if_incomplete",
               metadata: {
                 ...subscription.metadata,
@@ -392,6 +392,13 @@ export const POST = async (req: NextRequest) => {
                 ...(checkoutLimitType && { checkoutLimitType }),
                 checkoutType: "subscription_change",
               },
+            },
+            {
+              idempotencyKey: paidFunnelIdempotencyKey({
+                operation: "subscription_update",
+                scopeId: subscription.id,
+                checkoutAttemptId,
+              }),
             },
           );
 

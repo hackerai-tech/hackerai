@@ -229,7 +229,7 @@ describe("POST /api/subscribe", () => {
     }
   });
 
-  it("reuses a matching legacy open Checkout Session", async () => {
+  it("creates a separate Checkout Session for a different attempt", async () => {
     mockListOrganizationMemberships.mockResolvedValue({
       data: [
         {
@@ -289,7 +289,7 @@ describe("POST /api/subscribe", () => {
 
       expect(response.status).toBe(200);
       expect(body).toEqual({
-        url: "https://stripe.example/existing-checkout",
+        url: "https://stripe.example/checkout",
         checkoutAttemptId: "ca_retry_123",
       });
       expect(mockListCheckoutSessions).toHaveBeenNthCalledWith(1, {
@@ -303,33 +303,31 @@ describe("POST /api/subscribe", () => {
         limit: 100,
         starting_after: "cs_other_plan",
       });
-      expect(mockUpdateCheckoutSession).toHaveBeenCalledWith("cs_open", {
-        metadata: {
-          workOSOrganizationId: "org_team",
-          requestedPlan: "pro-monthly-plan",
-          checkoutAttemptId: "ca_retry_123",
-          userId: "user_123",
-          checkoutQuantity: "1",
-          checkoutType: "new_subscription",
+      expect(mockUpdateCheckoutSession).not.toHaveBeenCalled();
+      expect(mockCreateCheckoutSession).toHaveBeenCalledWith(
+        expect.objectContaining({
+          customer: "cus_existing_org",
+          metadata: expect.objectContaining({
+            checkoutAttemptId: "ca_retry_123",
+          }),
+          subscription_data: expect.objectContaining({
+            metadata: expect.objectContaining({
+              checkoutAttemptId: "ca_retry_123",
+            }),
+          }),
+        }),
+        {
+          idempotencyKey:
+            "checkout_session_create:cus_existing_org:ca_retry_123",
         },
-      });
-      expect(mockCreateCheckoutSession).not.toHaveBeenCalled();
-      expect(warnSpy).toHaveBeenCalledTimes(1);
-      expect(JSON.parse(String(warnSpy.mock.calls[0]?.[0]))).toMatchObject({
-        event: "billing.checkout_session_reused",
-        service: "hackerai-web",
-        route: "/api/subscribe",
-        stripe_customer_id: "cus_existing_org",
-        stripe_checkout_session_id: "cs_open",
-        checkout_attempt_id: "ca_retry_123",
-        previous_checkout_attempt_id: "ca_original",
-      });
+      );
+      expect(warnSpy).not.toHaveBeenCalled();
       expect(mockPostHogEvent).toHaveBeenCalledWith(
         "checkout_started",
         expect.objectContaining({
           checkout_attempt_id: "ca_retry_123",
-          stripe_checkout_session_id: "cs_open",
-          stripe_checkout_session_reused: true,
+          stripe_checkout_session_id: "cs_123",
+          stripe_checkout_session_reused: false,
         }),
         expect.objectContaining({
           uuid: "event_uuid:ca_retry_123",

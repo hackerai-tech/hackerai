@@ -303,6 +303,8 @@ describe("POST /api/subscription-details", () => {
     expect(mockUpdateSubscription).toHaveBeenCalledWith(
       "sub_123",
       expect.objectContaining({
+        proration_behavior: "always_invoice",
+        payment_behavior: "pending_if_incomplete",
         metadata: expect.objectContaining({
           existing: "metadata",
           checkoutAttemptId: "ca_paid_limit_123",
@@ -313,6 +315,12 @@ describe("POST /api/subscription-details", () => {
           checkoutType: "subscription_change",
         }),
       }),
+      {
+        idempotencyKey: "subscription_update:sub_123:ca_paid_limit_123",
+      },
+    );
+    expect(mockUpdateSubscription.mock.calls[0]?.[1]).not.toHaveProperty(
+      "proration_date",
     );
     expect(mockPostHogEvent).toHaveBeenCalledWith(
       "checkout_started",
@@ -348,6 +356,9 @@ describe("POST /api/subscription-details", () => {
 
     expect(replayResponse.status).toBe(200);
     expect(mockUpdateSubscription).toHaveBeenCalledTimes(2);
+    expect(mockUpdateSubscription.mock.calls[1]?.[2]).toEqual({
+      idempotencyKey: "subscription_update:sub_123:ca_paid_limit_123",
+    });
     expect(
       mockPostHogEvent.mock.calls.filter(
         ([event]) => event === "checkout_started",
