@@ -180,6 +180,7 @@ const SidebarHeaderContentImpl: FC<SidebarHeaderContentImplProps> = ({
                 }`}
                 onClick={handleFindingsOpen}
                 aria-label="Open findings"
+                aria-current={pathname === "/findings" ? "page" : undefined}
               >
                 <ShieldAlert className="w-4 h-4" />
               </Button>
@@ -263,6 +264,7 @@ const SidebarHeaderContentImpl: FC<SidebarHeaderContentImplProps> = ({
             }`}
             onClick={handleFindingsOpen}
             aria-label="Open findings"
+            aria-current={pathname === "/findings" ? "page" : undefined}
           >
             <ShieldAlert className="w-4 h-4" />
             <div className="mr-2 flex-1 overflow-hidden text-clip whitespace-nowrap text-sm font-medium text-left">

@@ -66,7 +66,7 @@ function deepEqual(a: any, b: any): boolean {
 }
 
 // Custom comparison for MessagePartHandler to minimize re-renders
-function arePropsEqual(
+export function areMessagePartHandlerPropsEqual(
   prevProps: MessagePartHandlerProps,
   nextProps: MessagePartHandlerProps,
 ): boolean {
@@ -85,6 +85,8 @@ function arePropsEqual(
     nextProps.deferReasoningCollapseUntilParent
   )
     return false;
+
+  if (prevProps.part?.type !== nextProps.part?.type) return false;
 
   // Shared file details change for get_terminal_files during streaming
   // Must be checked before the part reference check below, because the part
@@ -105,6 +107,10 @@ function arePropsEqual(
   )
     return false;
 
+  if (prevProps.part?.type === "data-shared-finding") {
+    return deepEqual(prevProps.part.data, nextProps.part.data);
+  }
+
   // For tool parts, compare state and output which change during streaming
   if (
     prevProps.part?.type?.startsWith("tool-") ||
@@ -116,7 +122,7 @@ function arePropsEqual(
       prevProps.part.output === nextProps.part.output &&
       deepEqual(prevProps.part.approval, nextProps.part.approval) &&
       // Tool input is an object — reference check first (fast path), then
-      // shallow comparison so new objects with identical content don't re-render.
+      // deep comparison so new objects with identical content don't re-render.
       (prevProps.part.input === nextProps.part.input ||
         deepEqual(prevProps.part.input, nextProps.part.input))
     );
@@ -308,4 +314,4 @@ export const MessagePartHandler = memo(function MessagePartHandler({
     default:
       return null;
   }
-}, arePropsEqual);
+}, areMessagePartHandlerPropsEqual);

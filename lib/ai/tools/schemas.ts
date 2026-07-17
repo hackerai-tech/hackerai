@@ -857,9 +857,10 @@ Use this tool only after all of the following are true:
 </when_not_to_use>
 
 <instructions>
-- Call this tool exactly once after a vulnerability becomes confirmed
+- Persist at most one successful report for each distinct confirmed root cause
 - File one distinct root cause per call; do not combine unrelated vulnerabilities
-- Do not retry a duplicate response
+- Call once after confirmation; if a non-duplicate response explicitly returns retryable: true, retry the same report once
+- Never retry a duplicate response
 - Use formal, objective, vendor-neutral markdown in the report fields
 - Put reproduction steps in poc_description and executable exploit/payload code in poc_script_code
 - Put concrete requests, responses, observed behavior, logs, or code proof in evidence

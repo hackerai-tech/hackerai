@@ -15,6 +15,7 @@ export const createCreateVulnerabilityReport = (context: ToolContext) =>
         return {
           success: false as const,
           error: "general" as const,
+          retryable: false as const,
           message:
             "Finding provenance is unavailable. The report was not saved.",
         };
@@ -45,8 +46,9 @@ export const createCreateVulnerabilityReport = (context: ToolContext) =>
         return {
           success: false as const,
           error: "general" as const,
+          retryable: true as const,
           message:
-            "The finding could not be saved. Do not assume it persisted.",
+            "The finding could not be saved. Retry the same report once.",
         };
       }
     },

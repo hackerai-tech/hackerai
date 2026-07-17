@@ -34,7 +34,11 @@ jest.mock("convex/server", () => ({
 }));
 
 jest.mock("../_generated/api", () => ({
-  internal: { chats: {}, redisPubsub: {}, s3Cleanup: {} },
+  internal: {
+    chats: { deleteAllChatsBatch: "internal.chats.deleteAllChatsBatch" },
+    redisPubsub: {},
+    s3Cleanup: {},
+  },
 }));
 
 jest.mock("../fileAggregate", () => ({
@@ -55,6 +59,7 @@ jest.mock("../lib/suspensionGuards", () => ({
 
 const {
   deleteChatForBackend,
+  deleteAllChatsForUser,
   fenceChatsForDeletion,
   getActiveTriggerRunsForUser,
   setActiveTriggerRun,
@@ -160,6 +165,66 @@ describe("Agent approval lifecycle guards", () => {
     ).resolves.toBe("deleted");
 
     expect(deleted).toEqual(["finding-doc-1", "chat-doc-1"]);
+  });
+
+  it("uses bounded continuation batches for service-key test cleanup", async () => {
+    const chat = {
+      _id: "chat-doc-1",
+      id: "chat-1",
+      user_id: "user-1",
+      canceled_at: 1,
+    };
+    const findings = Array.from({ length: 26 }, (_, index) => ({
+      _id: `finding-doc-${index + 1}`,
+      user_id: "user-1",
+      chat_id: "chat-1",
+      created_at: index + 1,
+    }));
+    const deleteDoc = jest.fn<any>().mockResolvedValue(undefined);
+    const runAfter = jest.fn<any>().mockResolvedValue(undefined);
+    const db = {
+      query: jest.fn((table: string) => ({
+        withIndex: jest.fn((_index: string, build: (q: any) => any) => {
+          const filters: Array<[string, unknown]> = [];
+          const q: any = {
+            eq: (field: string, value: unknown) => {
+              filters.push([field, value]);
+              return q;
+            },
+          };
+          build(q);
+          const rows = table === "chats" ? [chat] : findings;
+          const filtered = rows.filter((row) =>
+            filters.every(
+              ([field, value]) => row[field as keyof typeof row] === value,
+            ),
+          );
+          return {
+            first: jest.fn(async () => filtered[0] ?? null),
+            take: jest.fn(async (limit: number) => filtered.slice(0, limit)),
+          };
+        }),
+      })),
+      delete: deleteDoc,
+      patch: jest.fn<any>().mockResolvedValue(undefined),
+    };
+
+    await expect(
+      deleteAllChatsForUser.handler({ db, scheduler: { runAfter } } as any, {
+        serviceKey: "service-key",
+        userId: "user-1",
+      }),
+    ).resolves.toBeNull();
+
+    expect(deleteDoc).toHaveBeenCalledTimes(25);
+    expect(deleteDoc).not.toHaveBeenCalledWith("chat-doc-1");
+    expect(runAfter).toHaveBeenCalledWith(
+      0,
+      "internal.chats.deleteAllChatsBatch",
+      {
+        userId: "user-1",
+      },
+    );
   });
 
   it("does not attach a new run after chat deletion starts", async () => {

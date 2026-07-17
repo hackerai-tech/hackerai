@@ -2,6 +2,7 @@ import {
   createAgentToolSchemaSet,
   createFileToolSchema,
   createRunTerminalCmdToolSchema,
+  createVulnerabilityReportTool,
   createVulnerabilityReportToolInputSchema,
   runTerminalCmdTool,
 } from "../schemas";
@@ -47,6 +48,18 @@ describe("agent tool schema descriptions", () => {
         ]),
       );
     }
+  });
+
+  test("allows one bounded retry only for an explicitly retryable save failure", () => {
+    const description = getDescription(createVulnerabilityReportTool);
+
+    expect(description).toContain(
+      "Persist at most one successful report for each distinct confirmed root cause",
+    );
+    expect(description).toContain(
+      "explicitly returns retryable: true, retry the same report once",
+    );
+    expect(description).toContain("Never retry a duplicate response");
   });
 
   test("terminal command approval wording is mode-specific", () => {

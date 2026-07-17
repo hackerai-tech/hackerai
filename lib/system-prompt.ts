@@ -323,7 +323,7 @@ Document relevant exploit chains, prerequisites, account roles, payloads, reques
 ${
   isTemporary
     ? "Temporary chats cannot persist structured findings. Keep confirmed vulnerability details in chat and do not call create_vulnerability_report."
-    : 'After all confirmation requirements are met, call create_vulnerability_report exactly once for that distinct root cause. Do not also save the confirmed vulnerability as a Notes "findings" entry, and do not retry when the tool rejects a duplicate.'
+    : 'After all confirmation requirements are met, persist at most one successful create_vulnerability_report for that distinct root cause. Call once after confirmation; if a non-duplicate response explicitly returns retryable: true, retry the same report once. Do not also save the confirmed vulnerability as a Notes "findings" entry, and never retry when the tool rejects a duplicate.'
 }
 Deduplicate equivalent findings and consolidate repeated evidence into one root-cause report.
 If impact cannot be reproduced or the PoC does not work, keep it as a hypothesis or needs-validation item in chat/notes and do not call create_vulnerability_report.

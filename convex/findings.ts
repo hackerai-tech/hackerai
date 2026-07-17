@@ -1,4 +1,5 @@
 import { mutation, query } from "./_generated/server";
+import type { QueryCtx } from "./_generated/server";
 import { paginationOptsValidator } from "convex/server";
 import { ConvexError, v } from "convex/values";
 import { validateServiceKey } from "./lib/utils";
@@ -13,17 +14,19 @@ import type { Doc } from "./_generated/dataModel";
 
 const MAX_SEARCH_LENGTH = 200;
 
-const getChat = async (ctx: any, chatId: string) =>
+type FindingReadCtx = Pick<QueryCtx, "db">;
+
+const getChat = async (ctx: FindingReadCtx, chatId: string) =>
   await ctx.db
     .query("chats")
-    .withIndex("by_chat_id", (q: any) => q.eq("id", chatId))
-    .first();
+    .withIndex("by_chat_id", (q) => q.eq("id", chatId))
+    .unique();
 
-const getFindingByPublicId = async (ctx: any, findingId: string) =>
+const getFindingByPublicId = async (ctx: FindingReadCtx, findingId: string) =>
   await ctx.db
     .query("findings")
-    .withIndex("by_finding_id", (q: any) => q.eq("finding_id", findingId))
-    .first();
+    .withIndex("by_finding_id", (q) => q.eq("finding_id", findingId))
+    .unique();
 
 const toFindingSummary = (finding: Doc<"findings">, chatTitle: string) => ({
   finding_id: finding.finding_id,
@@ -222,7 +225,16 @@ export const listFindings = query({
       continueCursor = result.continueCursor;
     } else {
       let findingsQuery;
-      if (args.severity) {
+      if (args.severity && args.chatId) {
+        findingsQuery = ctx.db
+          .query("findings")
+          .withIndex("by_user_severity_chat_created", (q) =>
+            q
+              .eq("user_id", identity.subject)
+              .eq("severity", args.severity!)
+              .eq("chat_id", args.chatId!),
+          );
+      } else if (args.severity) {
         findingsQuery = ctx.db
           .query("findings")
           .withIndex("by_user_severity_created", (q) =>
@@ -240,12 +252,6 @@ export const listFindings = query({
           .withIndex("by_user_and_created", (q) =>
             q.eq("user_id", identity.subject),
           );
-      }
-
-      if (args.severity && args.chatId) {
-        findingsQuery = findingsQuery.filter((q: any) =>
-          q.eq(q.field("chat_id"), args.chatId),
-        );
       }
 
       const result = await findingsQuery
@@ -274,17 +280,31 @@ export const getFindingSourceChats = query({
     if (!identity) return [];
     await assertUserCanAccessChatHistory(ctx, identity.subject);
 
-    const chats = await ctx.db
-      .query("chats")
-      .withIndex("by_user_and_updated", (q) =>
+    const chatIds = new Set<string>();
+    const userFindings = ctx.db
+      .query("findings")
+      .withIndex("by_user_and_created", (q) =>
         q.eq("user_id", identity.subject),
+      );
+
+    for await (const finding of userFindings) {
+      chatIds.add(finding.chat_id);
+    }
+
+    const chats = await Promise.all(
+      Array.from(chatIds, (sourceChatId) => getChat(ctx, sourceChatId)),
+    );
+
+    return chats
+      .filter(
+        (chat): chat is Doc<"chats"> =>
+          chat !== null && chat.user_id === identity.subject,
       )
-      .order("desc")
-      .collect();
-    return chats.map((chat) => ({
-      chat_id: chat.id,
-      chat_title: chat.title,
-    }));
+      .sort((a, b) => b.update_time - a.update_time)
+      .map((chat) => ({
+        chat_id: chat.id,
+        chat_title: chat.title,
+      }));
   },
 });
 

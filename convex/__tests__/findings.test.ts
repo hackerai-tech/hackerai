@@ -112,6 +112,11 @@ function createResult(rows: Row[], filters: Array<[string, unknown]>) {
     );
   const result: any = {
     first: jest.fn(async () => filtered()[0] ?? null),
+    unique: jest.fn(async () => {
+      const matches = filtered();
+      if (matches.length > 1) throw new Error("Expected a unique result");
+      return matches[0] ?? null;
+    }),
     collect: jest.fn(async () => filtered()),
     take: jest.fn(async (limit: number) => filtered().slice(0, limit)),
     order: jest.fn((direction: "asc" | "desc") => {
@@ -153,14 +158,19 @@ function createResult(rows: Row[], filters: Array<[string, unknown]>) {
         };
       },
     ),
+    async *[Symbol.asyncIterator]() {
+      for (const row of filtered()) yield row;
+    },
   };
   return result;
 }
 
 function createMockCtx(tables: Tables, subject = "user-1") {
   let nextId = 1;
+  const indexes: string[] = [];
   const query = jest.fn((table: string) => ({
-    withIndex: jest.fn((_index: string, build: (q: any) => any) => {
+    withIndex: jest.fn((index: string, build: (q: any) => any) => {
+      indexes.push(index);
       const filters: Array<[string, unknown]> = [];
       const q: any = {
         eq: (field: string, value: unknown) => {
@@ -222,6 +232,7 @@ function createMockCtx(tables: Tables, subject = "user-1") {
     insert,
     patch,
     deleteDoc,
+    indexes,
   };
 }
 
@@ -368,7 +379,7 @@ describe("findings Convex lifecycle", () => {
         created_at: 30,
       },
     ];
-    const { ctx } = createMockCtx(tables);
+    const { ctx, indexes } = createMockCtx(tables);
 
     const first = await listFindings.handler(ctx, {
       paginationOpts: { cursor: null, numItems: 1 },
@@ -387,12 +398,54 @@ describe("findings Convex lifecycle", () => {
       chatId: "chat-1",
     });
     expect(filtered.page.map((item: any) => item.finding_id)).toEqual(["old"]);
+    expect(indexes).toContain("by_user_severity_chat_created");
 
     const searched = await listFindings.handler(ctx, {
       paginationOpts: { cursor: null, numItems: 10 },
       search: "CWE-639",
     });
     expect(searched.page.map((item: any) => item.finding_id)).toEqual(["new"]);
+  });
+
+  it("lists only source chats that contain the user's findings", async () => {
+    const { getFindingSourceChats } = await import("../findings");
+    const tables = seedTables();
+    tables.findings = [
+      {
+        _id: "finding-chat-1",
+        finding_id: "finding-1",
+        user_id: "user-1",
+        chat_id: "chat-1",
+        created_at: 10,
+      },
+      {
+        _id: "finding-chat-2",
+        finding_id: "finding-2",
+        user_id: "user-1",
+        chat_id: "chat-2",
+        created_at: 20,
+      },
+      {
+        _id: "finding-other",
+        finding_id: "finding-other",
+        user_id: "other-user",
+        chat_id: "chat-other",
+        created_at: 30,
+      },
+    ];
+    tables.chats.push({
+      _id: "chat-doc-empty",
+      id: "chat-empty",
+      user_id: "user-1",
+      title: "No findings here",
+      update_time: 99,
+    });
+    const { ctx } = createMockCtx(tables);
+
+    await expect(getFindingSourceChats.handler(ctx, {})).resolves.toEqual([
+      { chat_id: "chat-2", chat_title: "Retest" },
+      { chat_id: "chat-1", chat_title: "Invoice test" },
+    ]);
   });
 
   it("enforces read ownership", async () => {

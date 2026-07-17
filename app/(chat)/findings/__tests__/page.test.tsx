@@ -176,13 +176,25 @@ describe("FindingsPage", () => {
     });
   });
 
-  it("uses a full-screen mobile detail with a back control", () => {
+  it("uses a modal full-screen mobile detail and restores list focus", async () => {
     mockMobile = true;
     render(<Page />);
-    fireEvent.click(screen.getByText("Confirmed IDOR"));
+    const findingRow = screen.getByRole("button", {
+      name: /Confirmed IDOR/i,
+    });
+    findingRow.focus();
+    fireEvent.click(findingRow);
+
+    expect(screen.getByRole("dialog", { name: "Finding" })).toBeVisible();
     expect(
       screen.getByRole("button", { name: "Back to findings" }),
     ).toBeVisible();
     expect(screen.getByText(mockFinding.description)).toBeVisible();
+
+    fireEvent.click(screen.getByRole("button", { name: "Back to findings" }));
+    await waitFor(() => {
+      expect(screen.queryByRole("dialog", { name: "Finding" })).toBeNull();
+      expect(findingRow).toHaveFocus();
+    });
   });
 });

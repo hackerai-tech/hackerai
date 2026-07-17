@@ -129,7 +129,10 @@ Commands run directly on the host OS "workstation" without Docker isolation. Be 
       "affected asset, concrete evidence, reliable reproduction steps, a working proof of concept, demonstrated impact, remediation guidance, and understood exploitability prerequisites",
     );
     expect(prompt).toContain(
-      "call create_vulnerability_report exactly once for that distinct root cause",
+      "persist at most one successful create_vulnerability_report for that distinct root cause",
+    );
+    expect(prompt).toContain(
+      "explicitly returns retryable: true, retry the same report once",
     );
     expect(prompt).toContain(
       'Do not also save the confirmed vulnerability as a Notes "findings" entry',
@@ -168,7 +171,7 @@ Commands run directly on the host OS "workstation" without Docker isolation. Be 
       "Temporary chats cannot persist structured findings",
     );
     expect(prompt).not.toContain(
-      "call create_vulnerability_report exactly once for that distinct root cause",
+      "persist at most one successful create_vulnerability_report for that distinct root cause",
     );
   });
 

@@ -101,7 +101,33 @@ describe("create_vulnerability_report execution", () => {
 
     await expect(
       tool.execute(input, { toolCallId: "tool-3" }),
-    ).resolves.toMatchObject({ success: false, error: "general" });
+    ).resolves.toMatchObject({
+      success: false,
+      error: "general",
+      retryable: false,
+    });
     expect(mockCreateFinding).not.toHaveBeenCalled();
+  });
+
+  it("marks an unexpected persistence failure for one model-managed retry", async () => {
+    mockCreateFinding.mockRejectedValue(new Error("temporary outage"));
+    const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+    const { createCreateVulnerabilityReport } = await import("../findings");
+    const tool = createCreateVulnerabilityReport({
+      userID: "user-1",
+      chatId: "chat-1",
+      assistantMessageId: "message-1",
+    } as any) as any;
+
+    await expect(
+      tool.execute(input, { toolCallId: "tool-4" }),
+    ).resolves.toMatchObject({
+      success: false,
+      error: "general",
+      retryable: true,
+      message: expect.stringContaining("Retry the same report once"),
+    });
+    expect(mockCreateFinding).toHaveBeenCalledTimes(1);
+    errorSpy.mockRestore();
   });
 });

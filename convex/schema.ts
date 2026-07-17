@@ -249,6 +249,12 @@ export default defineSchema({
     .index("by_finding_id", ["finding_id"])
     .index("by_user_and_created", ["user_id", "created_at"])
     .index("by_user_severity_created", ["user_id", "severity", "created_at"])
+    .index("by_user_severity_chat_created", [
+      "user_id",
+      "severity",
+      "chat_id",
+      "created_at",
+    ])
     .index("by_user_chat_created", ["user_id", "chat_id", "created_at"])
     .index("by_user_chat_dedupe", ["user_id", "chat_id", "dedupe_key"])
     .searchIndex("search_findings", {

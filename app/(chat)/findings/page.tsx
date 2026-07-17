@@ -1,12 +1,18 @@
 "use client";
 
-import { useDeferredValue, useEffect, useState } from "react";
+import { useDeferredValue, useEffect, useRef, useState } from "react";
 import { useConvexAuth, usePaginatedQuery, useQuery } from "convex/react";
 import { formatDistanceToNow } from "date-fns";
 import { ArrowLeft, PanelLeft, Search, ShieldAlert } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { api } from "@/convex/_generated/api";
 import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogClose,
+  DialogContent,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import {
   Select,
@@ -54,6 +60,7 @@ export default function FindingsPage() {
   const [selectedFindingId, setSelectedFindingId] = useState<string | null>(
     null,
   );
+  const selectedFindingTriggerRef = useRef<HTMLButtonElement | null>(null);
 
   useEffect(() => {
     if (!isLoading && !isAuthenticated) navigateToAuth("/login");
@@ -83,7 +90,8 @@ export default function FindingsPage() {
   const hasActiveFilters =
     Boolean(deferredSearch) || severity !== "all" || chatId !== "all";
 
-  const selectFinding = (findingId: string) => {
+  const selectFinding = (findingId: string, trigger: HTMLButtonElement) => {
+    selectedFindingTriggerRef.current = trigger;
     setSelectedFindingId(findingId);
     closeSidebar();
     captureAuthenticatedEvent("finding_viewed", { surface: "findings_page" });
@@ -219,7 +227,9 @@ export default function FindingsPage() {
                   <button
                     type="button"
                     key={finding.finding_id}
-                    onClick={() => selectFinding(finding.finding_id)}
+                    onClick={(event) =>
+                      selectFinding(finding.finding_id, event.currentTarget)
+                    }
                     className={cn(
                       "grid w-full gap-2 px-4 py-4 text-left transition-colors hover:bg-muted/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring sm:grid-cols-[100px_minmax(180px,1.5fr)_minmax(160px,1fr)_minmax(130px,0.8fr)_100px] sm:items-center sm:px-6",
                       selectedFindingId === finding.finding_id && "bg-muted/40",
@@ -294,26 +304,44 @@ export default function FindingsPage() {
       )}
 
       {selectedFindingId && isMobile && (
-        <div className="fixed inset-0 z-50 flex flex-col bg-background">
-          <div className="flex h-14 shrink-0 items-center gap-2 border-b border-border px-3">
-            <Button
-              variant="ghost"
-              size="icon"
-              onClick={() => setSelectedFindingId(null)}
-              aria-label="Back to findings"
-            >
-              <ArrowLeft className="size-5" />
-            </Button>
-            <span className="font-medium text-foreground">Finding</span>
-          </div>
-          <div className="min-h-0 flex-1">
-            <FindingDetail
-              findingId={selectedFindingId}
-              surface="findings_page"
-              onDeleted={() => setSelectedFindingId(null)}
-            />
-          </div>
-        </div>
+        <Dialog
+          open
+          onOpenChange={(open) => {
+            if (!open) setSelectedFindingId(null);
+          }}
+        >
+          <DialogContent
+            showCloseButton={false}
+            aria-describedby={undefined}
+            onCloseAutoFocus={(event) => {
+              event.preventDefault();
+              if (selectedFindingTriggerRef.current?.isConnected) {
+                selectedFindingTriggerRef.current.focus();
+              }
+            }}
+            className="inset-0 h-dvh w-screen max-w-none translate-x-0 translate-y-0 gap-0 rounded-none border-0 p-0 shadow-none duration-0 sm:max-w-none"
+          >
+            <div className="flex h-14 shrink-0 items-center gap-2 border-b border-border px-3">
+              <DialogClose asChild>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  aria-label="Back to findings"
+                >
+                  <ArrowLeft className="size-5" />
+                </Button>
+              </DialogClose>
+              <DialogTitle className="text-base">Finding</DialogTitle>
+            </div>
+            <div className="min-h-0 flex-1">
+              <FindingDetail
+                findingId={selectedFindingId}
+                surface="findings_page"
+                onDeleted={() => setSelectedFindingId(null)}
+              />
+            </div>
+          </DialogContent>
+        </Dialog>
       )}
     </div>
   );
