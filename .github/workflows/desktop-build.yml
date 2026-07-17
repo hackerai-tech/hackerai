@@ -7,6 +7,7 @@ on:
     paths:
       - "packages/desktop/**"
       - ".github/workflows/desktop-build.yml"
+      - ".github/scripts/prepare-desktop-release.sh"
     tags:
       - "desktop-v*"
   workflow_dispatch:
@@ -33,18 +34,41 @@ jobs:
       - name: Determine version
         id: version
         run: |
-          if [[ "${{ github.ref }}" == refs/tags/desktop-v* ]]; then
+          set -euo pipefail
+
+          if [[ "$GITHUB_REF" == refs/tags/desktop-v* ]]; then
             # Triggered by tag push
             TAG_NAME="${GITHUB_REF_NAME}"
             VERSION="${TAG_NAME#desktop-v}"
+            if [[ ! "$VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+              echo "Invalid desktop release tag: $TAG_NAME" >&2
+              exit 1
+            fi
             echo "Using existing tag: $TAG_NAME"
             echo "version=$VERSION" >> $GITHUB_OUTPUT
             echo "tag_name=$TAG_NAME" >> $GITHUB_OUTPUT
             echo "should_release=true" >> $GITHUB_OUTPUT
           else
-            # Main and manual runs build without publishing a release.
-            echo "version=dev" >> $GITHUB_OUTPUT
-            echo "tag_name=" >> $GITHUB_OUTPUT
+            # Main and manual runs build the next patch as a promotable release
+            # candidate. The separate promotion workflow can publish these
+            # exact signed artifacts later without rebuilding them.
+            LATEST_TAG="$(git tag --list 'desktop-v*' --sort=-version:refname | sed -n '1p')"
+            if [[ -z "$LATEST_TAG" ]]; then
+              VERSION="0.0.1"
+            elif [[ "$LATEST_TAG" =~ ^desktop-v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+              MAJOR="${BASH_REMATCH[1]}"
+              MINOR="${BASH_REMATCH[2]}"
+              PATCH="${BASH_REMATCH[3]}"
+              VERSION="${MAJOR}.${MINOR}.$((10#$PATCH + 1))"
+            else
+              echo "Latest desktop tag is not a stable semver tag: $LATEST_TAG" >&2
+              exit 1
+            fi
+
+            TAG_NAME="desktop-v$VERSION"
+            echo "Building promotable candidate: $TAG_NAME"
+            echo "version=$VERSION" >> $GITHUB_OUTPUT
+            echo "tag_name=$TAG_NAME" >> $GITHUB_OUTPUT
             echo "should_release=false" >> $GITHUB_OUTPUT
           fi
 
@@ -182,7 +206,6 @@ jobs:
         working-directory: packages/desktop
 
       - name: Update version
-        if: needs.prepare.outputs.version != 'dev'
         shell: bash
         env:
           VERSION: ${{ needs.prepare.outputs.version }}
@@ -318,7 +341,6 @@ jobs:
   build-macos-universal:
     needs: [prepare, build]
     runs-on: macos-latest
-    if: needs.prepare.outputs.should_release == 'true'
     permissions:
       contents: read
 
@@ -504,6 +526,7 @@ jobs:
           name: desktop-macOS-universal
           path: HackerAI-universal.dmg
           if-no-files-found: error
+          retention-days: 7
 
   create-release:
     needs: [prepare, build, build-macos-universal]
