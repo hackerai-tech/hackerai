@@ -259,6 +259,12 @@ describe("SidebarProjects", () => {
       "data-open",
       "true",
     );
+    expect(mockToast.success).toHaveBeenCalledWith(
+      "Task moved into Acme.",
+      expect.objectContaining({
+        action: expect.objectContaining({ label: "Undo" }),
+      }),
+    );
 
     const successOptions = mockToast.success.mock.calls[0]?.[1] as
       { action?: { onClick?: () => void } } | undefined;

@@ -126,7 +126,7 @@ export const createProject = mutation({
 
     const existingProjects = await ctx.db
       .query("projects")
-      .withIndex("by_user_and_updated", (q) =>
+      .withIndex("by_user_and_created", (q) =>
         q.eq("user_id", identity.subject),
       )
       .take(MAX_PROJECTS_PER_USER);
@@ -170,7 +170,7 @@ export const listProjects = query({
 
     const result = await ctx.db
       .query("projects")
-      .withIndex("by_user_and_updated", (q) =>
+      .withIndex("by_user_and_created", (q) =>
         q.eq("user_id", identity.subject),
       )
       .filter((q) =>

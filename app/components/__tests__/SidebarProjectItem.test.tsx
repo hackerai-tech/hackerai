@@ -9,7 +9,11 @@ import {
 } from "../sidebar-chat-drag";
 
 const mockProjectThreads = jest.fn(() => (
-  <div data-testid="project-threads">Tasks</div>
+  <div data-testid="project-threads">
+    <button type="button" data-testid="nested-project-task">
+      Existing task
+    </button>
+  </div>
 ));
 const mockPinProject = jest.fn<any>().mockResolvedValue(null);
 const mockUnpinProject = jest.fn<any>().mockResolvedValue(null);
@@ -105,6 +109,47 @@ describe("SidebarProjectItem", () => {
     fireEvent.drop(dropTarget, { dataTransfer });
     expect(onDropChat).toHaveBeenCalledWith("chat-1", "project-previous");
     expect(dropTarget).not.toHaveClass("ring-1");
+  });
+
+  it("accepts a drop on an existing task anywhere inside an open project", () => {
+    const onDropChat = jest
+      .fn<() => Promise<void>>()
+      .mockResolvedValue(undefined);
+    const values = new Map([
+      [SIDEBAR_CHAT_DRAG_TYPE, "chat-1"],
+      [SIDEBAR_CHAT_DRAG_PROJECT_TYPE, "project-previous"],
+    ]);
+    const dataTransfer = {
+      types: [SIDEBAR_CHAT_DRAG_TYPE, SIDEBAR_CHAT_DRAG_PROJECT_TYPE],
+      dropEffect: "none",
+      getData: (type: string) => values.get(type) ?? "",
+    } as DataTransfer;
+
+    const outerDrop = jest.fn();
+    render(
+      <div onDrop={outerDrop}>
+        <SidebarProjectItem
+          project={project}
+          open
+          onOpenChange={jest.fn()}
+          onNewThread={jest.fn()}
+          onDropChat={onDropChat}
+        />
+      </div>,
+    );
+
+    const projectDropTarget = screen.getByTestId(
+      "project-project-1-drop-target",
+    );
+    const nestedTask = screen.getByTestId("nested-project-task");
+
+    fireEvent.dragOver(nestedTask, { dataTransfer });
+    expect(projectDropTarget).toHaveClass("ring-1");
+
+    fireEvent.drop(nestedTask, { dataTransfer });
+    expect(onDropChat).toHaveBeenCalledWith("chat-1", "project-previous");
+    expect(outerDrop).not.toHaveBeenCalled();
+    expect(projectDropTarget).not.toHaveClass("ring-1");
   });
 
   it("shows the linked Desktop folder in the project menu", async () => {

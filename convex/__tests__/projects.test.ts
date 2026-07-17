@@ -82,6 +82,10 @@ describe("projects", () => {
       }),
     ).resolves.toBe("project-1");
 
+    expect(withIndex).toHaveBeenCalledWith(
+      "by_user_and_created",
+      expect.any(Function),
+    );
     expect(take).toHaveBeenCalledWith(100);
     expect(insert).toHaveBeenCalledWith("projects", {
       user_id: "user-1",
@@ -136,8 +140,11 @@ describe("projects", () => {
     const unpinnedFilter = jest
       .fn<any>()
       .mockReturnValue({ order: unpinnedOrder });
-    const unpinnedWithIndex = jest.fn<any>().mockReturnValue({
-      filter: unpinnedFilter,
+    const unpinnedEq = jest.fn<any>().mockReturnThis();
+    const unpinnedWithIndex = jest.fn<any>((indexName, applyIndex) => {
+      expect(indexName).toBe("by_user_and_created");
+      applyIndex({ eq: unpinnedEq });
+      return { filter: unpinnedFilter };
     });
     const ctx = {
       auth: authenticated,
@@ -158,6 +165,7 @@ describe("projects", () => {
       page: [pinnedProject, unpinnedProject],
     });
     expect(pinnedTake).toHaveBeenCalledWith(100);
+    expect(unpinnedEq).toHaveBeenCalledWith("user_id", "user-1");
     expect(paginate).toHaveBeenCalledWith({ cursor: null, numItems: 10 });
   });
 

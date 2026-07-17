@@ -59,6 +59,7 @@ export default defineSchema({
     created_at: v.number(),
     updated_at: v.number(),
   })
+    .index("by_user_and_created", ["user_id", "created_at"])
     .index("by_user_and_updated", ["user_id", "updated_at"])
     .index("by_user_and_pinned", ["user_id", "pinned_at"]),
 

@@ -70,6 +70,7 @@ export function SidebarProjectItem({
   const handleDragOver = (event: DragEvent<HTMLDivElement>) => {
     if (!hasSidebarChatDragData(event.dataTransfer)) return;
     event.preventDefault();
+    event.stopPropagation();
     event.dataTransfer.dropEffect = "move";
     setIsDragOver(true);
   };
@@ -88,6 +89,7 @@ export function SidebarProjectItem({
   const handleDrop = (event: DragEvent<HTMLDivElement>) => {
     if (!hasSidebarChatDragData(event.dataTransfer)) return;
     event.preventDefault();
+    event.stopPropagation();
     setIsDragOver(false);
     const chatId = event.dataTransfer.getData(SIDEBAR_CHAT_DRAG_TYPE);
     const previousProjectId = getSidebarChatDragProjectId(event.dataTransfer);
@@ -116,14 +118,18 @@ export function SidebarProjectItem({
   };
 
   return (
-    <Collapsible open={open} onOpenChange={onOpenChange}>
+    <Collapsible
+      open={open}
+      onOpenChange={onOpenChange}
+      className={`rounded-[10px] ${isDragOver ? "bg-sidebar-accent/40 ring-1 ring-sidebar-ring" : ""}`}
+      onDragEnter={handleDragOver}
+      onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
+      onDrop={handleDrop}
+      data-testid={`project-${project._id}-drop-target`}
+    >
       <div
         className={`group/project sticky top-9 z-[1] flex h-9 items-center gap-3 bg-sidebar ps-2 pe-0.5 hover:rounded-[10px] hover:bg-sidebar-accent/50 ${isDragOver ? "rounded-[10px] bg-sidebar-accent ring-1 ring-sidebar-ring" : ""}`}
-        onDragEnter={handleDragOver}
-        onDragOver={handleDragOver}
-        onDragLeave={handleDragLeave}
-        onDrop={handleDrop}
-        data-testid={`project-${project._id}-drop-target`}
       >
         <CollapsibleTrigger asChild>
           <button

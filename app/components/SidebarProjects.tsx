@@ -97,7 +97,7 @@ export function SidebarProjects({
         projectId: project._id,
       });
       if (moved) {
-        toast.success(`Moved to ${project.name}`, {
+        toast.success(`Task moved into ${project.name}.`, {
           action: {
             label: "Undo",
             onClick: () => {

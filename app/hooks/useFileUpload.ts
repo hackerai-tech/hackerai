@@ -28,6 +28,12 @@ import {
 // Show warning when remaining uploads are at or below this threshold
 const RATE_LIMIT_WARNING_THRESHOLD = 10;
 
+const hasFileDragData = (dataTransfer: DataTransfer | null): boolean => {
+  if (!dataTransfer) return false;
+  if (Array.from(dataTransfer.types).includes("Files")) return true;
+  return Array.from(dataTransfer.items).some((item) => item.kind === "file");
+};
+
 const logLocalAttachmentDebug = (
   event: string,
   data: Record<string, unknown>,
@@ -95,6 +101,7 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
   const [isDragOver, setIsDragOver] = useState(false);
   const [showDragOverlay, setShowDragOverlay] = useState(false);
   const dragCounterRef = useRef(0);
+  const fileDragActiveRef = useRef(false);
 
   // Track last shown rate limit warning to avoid spamming (show once per minute max)
   const lastRateLimitWarningRef = useRef<number>(0);
@@ -773,29 +780,35 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
 
   // Drag and drop event handlers
   const handleDragEnter = useCallback((e: DragEvent) => {
+    if (!hasFileDragData(e.dataTransfer)) return;
+
     e.preventDefault();
     e.stopPropagation();
 
+    fileDragActiveRef.current = true;
     dragCounterRef.current++;
 
-    if (e.dataTransfer?.items && e.dataTransfer.items.length > 0) {
-      setShowDragOverlay(true);
-    }
+    setShowDragOverlay(true);
   }, []);
 
   const handleDragLeave = useCallback((e: DragEvent) => {
+    if (!fileDragActiveRef.current && !hasFileDragData(e.dataTransfer)) return;
+
     e.preventDefault();
     e.stopPropagation();
 
-    dragCounterRef.current--;
+    dragCounterRef.current = Math.max(0, dragCounterRef.current - 1);
 
     if (dragCounterRef.current === 0) {
+      fileDragActiveRef.current = false;
       setShowDragOverlay(false);
       setIsDragOver(false);
     }
   }, []);
 
   const handleDragOver = useCallback((e: DragEvent) => {
+    if (!fileDragActiveRef.current && !hasFileDragData(e.dataTransfer)) return;
+
     e.preventDefault();
     e.stopPropagation();
 
@@ -808,10 +821,15 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
 
   const handleDrop = useCallback(
     async (e: DragEvent) => {
+      if (!fileDragActiveRef.current && !hasFileDragData(e.dataTransfer)) {
+        return;
+      }
+
       e.preventDefault();
       e.stopPropagation();
 
       // Reset drag state
+      fileDragActiveRef.current = false;
       setShowDragOverlay(false);
       setIsDragOver(false);
       dragCounterRef.current = 0;

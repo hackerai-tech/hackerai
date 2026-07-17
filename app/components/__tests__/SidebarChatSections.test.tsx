@@ -1,6 +1,22 @@
 import "@testing-library/jest-dom";
-import { describe, expect, it, jest } from "@jest/globals";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { beforeEach, describe, expect, it, jest } from "@jest/globals";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+
+const mockPinChat = jest.fn();
+const mockUnpinChat = jest.fn();
+const mockToastSuccess = jest.fn();
+const mockToastError = jest.fn();
+
+jest.mock("@/app/hooks/useChats", () => ({
+  usePinChat: () => mockPinChat,
+  useUnpinChat: () => mockUnpinChat,
+}));
+jest.mock("sonner", () => ({
+  toast: {
+    success: mockToastSuccess,
+    error: mockToastError,
+  },
+}));
 
 jest.mock("../SidebarProjects", () => ({
   SidebarProjects: ({
@@ -72,6 +88,12 @@ const projects = [
 ] as any;
 
 describe("SidebarChatSections", () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockPinChat.mockResolvedValue(null);
+    mockUnpinChat.mockResolvedValue(null);
+  });
+
   it("moves pinned projects under Pinned and keeps unpinned projects in Projects", () => {
     render(
       <SidebarChatSections
@@ -160,5 +182,124 @@ describe("SidebarChatSections", () => {
     expect(screen.getByTestId("sidebar-tasks-section-chevron")).toHaveClass(
       "opacity-100",
     );
+  });
+
+  it("pins a dropped task and shows the requested toast", async () => {
+    render(
+      <SidebarChatSections
+        chats={[chats[1]]}
+        projects={[]}
+        paginationStatus="Exhausted"
+      />,
+    );
+
+    expect(
+      screen.queryByTestId("sidebar-pinned-section"),
+    ).not.toBeInTheDocument();
+
+    const values = new Map([["application/x-hackerai-chat-id", "task-chat"]]);
+    const dataTransfer = {
+      types: ["application/x-hackerai-chat-id"],
+      dropEffect: "none",
+      getData: (type: string) => values.get(type) ?? "",
+    } as DataTransfer;
+
+    fireEvent.dragStart(screen.getByTestId("sidebar-chat-sections"), {
+      dataTransfer,
+    });
+
+    const pinnedDropTarget = screen.getByTestId("sidebar-pinned-section");
+    fireEvent.dragOver(pinnedDropTarget, { dataTransfer });
+    expect(pinnedDropTarget).toHaveAttribute("data-drop-active", "true");
+
+    fireEvent.drop(pinnedDropTarget, { dataTransfer });
+
+    await waitFor(() => {
+      expect(mockPinChat).toHaveBeenCalledWith({ chatId: "task-chat" });
+      expect(mockToastSuccess).toHaveBeenCalledWith("Task pinned");
+    });
+    expect(mockToastError).not.toHaveBeenCalled();
+  });
+
+  it("accepts a drop on an existing task anywhere inside Pinned", async () => {
+    render(
+      <SidebarChatSections
+        chats={chats}
+        projects={projects}
+        paginationStatus="Exhausted"
+      />,
+    );
+
+    const values = new Map([["application/x-hackerai-chat-id", "task-chat"]]);
+    const dataTransfer = {
+      types: ["application/x-hackerai-chat-id"],
+      dropEffect: "none",
+      getData: (type: string) => values.get(type) ?? "",
+    } as DataTransfer;
+    const pinnedSection = screen.getByTestId("sidebar-pinned-section");
+    const existingPinnedTask = screen.getByTestId("section-chat-pinned-chat");
+
+    fireEvent.dragOver(existingPinnedTask, { dataTransfer });
+    expect(pinnedSection).toHaveAttribute("data-drop-active", "true");
+
+    fireEvent.drop(existingPinnedTask, { dataTransfer });
+    await waitFor(() => {
+      expect(mockPinChat).toHaveBeenCalledWith({ chatId: "task-chat" });
+      expect(mockToastSuccess).toHaveBeenCalledWith("Task pinned");
+    });
+  });
+
+  it("does not pin a task that is already pinned", () => {
+    render(
+      <SidebarChatSections
+        chats={chats}
+        projects={projects}
+        paginationStatus="Exhausted"
+      />,
+    );
+
+    const values = new Map([["application/x-hackerai-chat-id", "pinned-chat"]]);
+    const dataTransfer = {
+      types: ["application/x-hackerai-chat-id"],
+      dropEffect: "none",
+      getData: (type: string) => values.get(type) ?? "",
+    } as DataTransfer;
+
+    fireEvent.drop(screen.getByRole("button", { name: "Pinned" }), {
+      dataTransfer,
+    });
+
+    expect(mockPinChat).not.toHaveBeenCalled();
+    expect(mockToastSuccess).not.toHaveBeenCalled();
+  });
+
+  it("unpins a task dropped anywhere inside Tasks", async () => {
+    render(
+      <SidebarChatSections
+        chats={chats}
+        projects={projects}
+        paginationStatus="Exhausted"
+      />,
+    );
+
+    const values = new Map([["application/x-hackerai-chat-id", "pinned-chat"]]);
+    const dataTransfer = {
+      types: ["application/x-hackerai-chat-id"],
+      dropEffect: "none",
+      getData: (type: string) => values.get(type) ?? "",
+    } as DataTransfer;
+    const tasksSection = screen.getByTestId("sidebar-tasks-section");
+    const existingTask = screen.getByTestId("section-chat-task-chat");
+
+    fireEvent.dragOver(existingTask, { dataTransfer });
+    expect(tasksSection).toHaveAttribute("data-drop-active", "true");
+
+    fireEvent.drop(existingTask, { dataTransfer });
+    await waitFor(() => {
+      expect(mockUnpinChat).toHaveBeenCalledWith({ chatId: "pinned-chat" });
+      expect(mockToastSuccess).toHaveBeenCalledWith("Task unpinned");
+    });
+    expect(mockPinChat).not.toHaveBeenCalled();
+    expect(mockToastError).not.toHaveBeenCalled();
   });
 });
