@@ -106,13 +106,13 @@ export function SidebarChatSections({
           onOpenChange={setIsPinnedOpen}
           testId="sidebar-pinned-section"
         >
-          <SidebarProjects projects={pinnedProjects} variant="pinned-list" />
           <SidebarHistory
             chats={pinnedChats}
             containerRef={containerRef}
             showEmptyState={false}
             testId="sidebar-pinned-chat-list"
           />
+          <SidebarProjects projects={pinnedProjects} variant="pinned-list" />
         </CollapsibleChatSection>
       ) : null}
 

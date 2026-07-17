@@ -92,6 +92,15 @@ describe("SidebarChatSections", () => {
       "sidebar-tasks-section",
     ]);
 
+    const pinnedContent = screen.getByTestId(
+      "sidebar-pinned-section",
+    ).lastElementChild;
+    expect(
+      Array.from(pinnedContent?.children ?? []).map((element) =>
+        element.getAttribute("data-testid"),
+      ),
+    ).toEqual(["sidebar-pinned-chat-list", "sidebar-pinned-project-list"]);
+
     expect(screen.getByTestId("sidebar-pinned-chat-list")).toHaveTextContent(
       "Pinned target",
     );
