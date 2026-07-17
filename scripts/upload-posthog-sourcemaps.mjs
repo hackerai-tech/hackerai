@@ -18,6 +18,13 @@ const hasProjectId = Boolean(projectId);
 const failOnError =
   process.env.POSTHOG_SOURCEMAP_UPLOAD_STRICT?.trim().toLowerCase() === "true";
 
+if (process.env.VERCEL_ENV !== "production") {
+  console.log(
+    "[PostHog] Skipping source map upload because this is not a Vercel production build.",
+  );
+  process.exit(0);
+}
+
 if (!hasApiKey && !hasProjectId) {
   console.log(
     "[PostHog] Skipping source map upload. Set POSTHOG_CLI_API_KEY and POSTHOG_CLI_PROJECT_ID to enable it.",
