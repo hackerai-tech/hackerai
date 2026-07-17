@@ -120,13 +120,11 @@ export default defineSchema({
       "project_id",
       "update_time",
     ])
-    .index("by_project_and_updated", ["project_id", "update_time"])
     .index("by_user_and_active_trigger_run", [
       "user_id",
       "active_trigger_run_id",
     ])
     .index("by_user_and_pinned", ["user_id", "pinned_at"])
-    .index("by_user_project_and_pinned", ["user_id", "project_id", "pinned_at"])
     .index("by_share_id", ["share_id"])
     .searchIndex("search_title", {
       searchField: "title",
