@@ -287,12 +287,14 @@ describe("POST /api/subscription-details", () => {
     expect(mockPostHogEvent).toHaveBeenCalledWith(
       "checkout_started",
       expect.objectContaining({
+        eventUuid: expect.stringMatching(/^[0-9a-f-]{36}$/i),
         checkout_attempt_id: "ca_paid_limit_123",
         checkout_type: "subscription_change",
         source: "limit_pressure",
         surface: "pricing_dialog",
         reason: "monthly_exhausted",
         limit_type: "monthly",
+        $insert_id: "checkout_started:ca_paid_limit_123",
       }),
     );
     expect(mockPostHogEvent).toHaveBeenCalledWith(

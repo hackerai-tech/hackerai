@@ -18,6 +18,7 @@ import {
 } from "@/lib/referrals/config";
 import {
   PAID_FUNNEL_EVENTS,
+  checkoutStartedInsertId,
   createCheckoutAttemptId,
   normalizePaidFunnelLabel,
   normalizeCheckoutAttemptId,
@@ -25,6 +26,7 @@ import {
   paidFunnelProperties,
   planLookupKeyToTier,
 } from "@/lib/analytics/paid-funnel";
+import { checkoutStartedEventUuid } from "@/lib/analytics/paid-funnel-server";
 
 function canManageOrganizationBilling(
   membership: Awaited<
@@ -637,6 +639,7 @@ export const POST = async (req: NextRequest) => {
       PAID_FUNNEL_EVENTS.checkoutStarted,
       paidFunnelProperties({
         userId,
+        eventUuid: checkoutStartedEventUuid(checkoutAttemptId),
         org_id: organization.id,
         checkout_attempt_id: checkoutAttemptId,
         checkout_type: "new_subscription",
@@ -660,7 +663,7 @@ export const POST = async (req: NextRequest) => {
         stripe_checkout_session_reused: reusedCheckoutSession,
         stripe_price_id: selectedPrice.id,
         $session_id: posthogSessionId ?? undefined,
-        $insert_id: `${PAID_FUNNEL_EVENTS.checkoutStarted}:${checkoutAttemptId}`,
+        $insert_id: checkoutStartedInsertId(checkoutAttemptId),
         $set: {
           last_checkout_started_at: new Date().toISOString(),
         },
