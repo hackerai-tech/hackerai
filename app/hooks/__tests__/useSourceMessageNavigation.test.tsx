@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, jest } from "@jest/globals";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { useSourceMessageNavigation } from "../useSourceMessageNavigation";
 import { getChatMessageElementId } from "@/lib/findings/source-message";
+import { STICKY_BOTTOM_ESCAPE_EVENT } from "@/lib/utils/scroll-events";
 
 describe("useSourceMessageNavigation", () => {
   afterEach(() => {
@@ -19,6 +20,8 @@ describe("useSourceMessageNavigation", () => {
     const scrollIntoView = jest.fn();
     target.scrollIntoView = scrollIntoView;
     document.body.appendChild(target);
+    const escapeStickyBottom = jest.fn();
+    window.addEventListener(STICKY_BOTTOM_ESCAPE_EVENT, escapeStickyBottom);
 
     const { result } = renderHook(() =>
       useSourceMessageNavigation({
@@ -34,7 +37,10 @@ describe("useSourceMessageNavigation", () => {
         block: "start",
       });
       expect(target).toHaveFocus();
+      expect(escapeStickyBottom).toHaveBeenCalled();
     });
+
+    window.removeEventListener(STICKY_BOTTOM_ESCAPE_EVENT, escapeStickyBottom);
   });
 
   it("keeps loading when a page adds only hidden messages", async () => {
