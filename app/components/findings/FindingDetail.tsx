@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useMutation, useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
-import { ExternalLink, ShieldAlert, Trash2 } from "lucide-react";
+import { MessageSquareText, ShieldAlert, Trash2 } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -22,6 +22,7 @@ import { MemoizedMarkdown } from "@/app/components/MemoizedMarkdown";
 import { captureAuthenticatedEvent } from "@/lib/analytics/client";
 import type { FindingDetailRecord } from "@/types/finding";
 import { cn } from "@/lib/utils";
+import { getSourceMessageHref } from "@/lib/findings/source-message";
 import { getFindingSeverityClasses } from "./FindingCard";
 
 const DetailSection = ({
@@ -152,11 +153,17 @@ export function FindingDetail({
           </div>
           <div className="flex flex-wrap items-center justify-between gap-3 border-t border-border pt-3">
             <Link
-              href={`/c/${finding.chat_id}`}
+              href={getSourceMessageHref(finding.chat_id, finding.message_id)}
               className="inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground"
+              aria-label={`Open source message in ${finding.chat_title}`}
             >
-              {finding.chat_title}
-              <ExternalLink className="size-3.5" aria-hidden="true" />
+              <MessageSquareText className="size-4" aria-hidden="true" />
+              <span className="font-medium text-foreground">
+                Open source message
+              </span>
+              <span className="hidden max-w-48 truncate sm:inline">
+                in {finding.chat_title}
+              </span>
             </Link>
             <AlertDialog>
               <AlertDialogTrigger asChild>

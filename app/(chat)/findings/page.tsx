@@ -3,7 +3,7 @@
 import { useDeferredValue, useEffect, useRef, useState } from "react";
 import { useConvexAuth, usePaginatedQuery, useQuery } from "convex/react";
 import { formatDistanceToNow } from "date-fns";
-import { ArrowLeft, PanelLeft, Search, ShieldAlert } from "lucide-react";
+import { ArrowLeft, PanelLeft, Search, ShieldAlert, X } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { api } from "@/convex/_generated/api";
 import { Button } from "@/components/ui/button";
@@ -95,6 +95,13 @@ export default function FindingsPage() {
     setSelectedFindingId(findingId);
     closeSidebar();
     captureAuthenticatedEvent("finding_viewed", { surface: "findings_page" });
+  };
+
+  const closeDesktopFinding = () => {
+    if (selectedFindingTriggerRef.current?.isConnected) {
+      selectedFindingTriggerRef.current.focus();
+    }
+    setSelectedFindingId(null);
   };
 
   const startFirstTest = () => {
@@ -294,12 +301,25 @@ export default function FindingsPage() {
       </main>
 
       {selectedFindingId && isMobile === false && (
-        <aside className="h-full min-w-0 flex-[1.15] bg-background">
-          <FindingDetail
-            findingId={selectedFindingId}
-            surface="findings_page"
-            onDeleted={() => setSelectedFindingId(null)}
-          />
+        <aside className="flex h-full min-w-0 flex-[1.15] flex-col bg-background">
+          <div className="flex h-14 shrink-0 items-center justify-between border-b border-border px-4">
+            <h2 className="text-base font-medium text-foreground">Finding</h2>
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={closeDesktopFinding}
+              aria-label="Close finding"
+            >
+              <X className="size-5" />
+            </Button>
+          </div>
+          <div className="min-h-0 flex-1">
+            <FindingDetail
+              findingId={selectedFindingId}
+              surface="findings_page"
+              onDeleted={() => setSelectedFindingId(null)}
+            />
+          </div>
         </aside>
       )}
 

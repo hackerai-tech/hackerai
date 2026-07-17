@@ -163,17 +163,25 @@ describe("FindingsPage", () => {
     });
   });
 
-  it("opens the reusable detail alongside the desktop list", () => {
+  it("opens and closes the reusable detail alongside the desktop list", () => {
     render(<Page />);
-    fireEvent.click(screen.getByText("Confirmed IDOR"));
+    const findingRow = screen.getByRole("button", {
+      name: /Confirmed IDOR/i,
+    });
+    fireEvent.click(findingRow);
     expect(screen.getByText(mockFinding.description)).toBeVisible();
-    expect(screen.getByRole("link", { name: /Invoice test/i })).toHaveAttribute(
-      "href",
-      "/c/chat-1",
-    );
+    expect(
+      screen.getByRole("link", {
+        name: "Open source message in Invoice test",
+      }),
+    ).toHaveAttribute("href", "/c/chat-1#message=message-1");
     expect(mockCapture).toHaveBeenCalledWith("finding_viewed", {
       surface: "findings_page",
     });
+
+    fireEvent.click(screen.getByRole("button", { name: "Close finding" }));
+    expect(screen.queryByText(mockFinding.description)).toBeNull();
+    expect(findingRow).toHaveFocus();
   });
 
   it("uses a modal full-screen mobile detail and restores list focus", async () => {

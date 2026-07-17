@@ -69,10 +69,11 @@ describe("FindingDetail", () => {
     expect(screen.getByText(finding.poc_script_code)).toBeVisible();
     expect(screen.getByText(finding.evidence)).toBeVisible();
     expect(screen.getByText("app/api/invoices/route.ts:20-22")).toBeVisible();
-    expect(screen.getByRole("link", { name: /Invoice test/i })).toHaveAttribute(
-      "href",
-      "/c/chat-1",
-    );
+    expect(
+      screen.getByRole("link", {
+        name: "Open source message in Invoice test",
+      }),
+    ).toHaveAttribute("href", "/c/chat-1#message=message-1");
   });
 
   it("requires confirmation, deletes, and emits only surface analytics", async () => {
