@@ -12,7 +12,7 @@ import {
   ShieldCheck,
   Trash2,
 } from "lucide-react";
-import { useState } from "react";
+import { useState, useSyncExternalStore } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import {
@@ -68,6 +68,29 @@ const CVSS_VALUE_LABELS: Record<
 
 const formatLabel = (value: string) =>
   value.charAt(0).toUpperCase() + value.slice(1).replaceAll("_", " ");
+
+const subscribeToHydration = () => () => {};
+const getHydratedSnapshot = () => true;
+const getServerSnapshot = () => false;
+
+const FindingDiscoveredAt = ({ timestamp }: { timestamp: number }) => {
+  const useClientLocale = useSyncExternalStore(
+    subscribeToHydration,
+    getHydratedSnapshot,
+    getServerSnapshot,
+  );
+  const date = new Date(timestamp);
+  const formatted = new Intl.DateTimeFormat(
+    useClientLocale ? undefined : "en-US",
+    {
+      dateStyle: "medium",
+      timeStyle: "short",
+      ...(useClientLocale ? {} : { timeZone: "UTC" }),
+    },
+  ).format(date);
+
+  return <time dateTime={date.toISOString()}>{formatted}</time>;
+};
 
 const DetailSection = ({
   id,
@@ -172,10 +195,6 @@ export function FindingDetail({
   };
 
   const sectionId = (section: string) => `${finding.finding_id}-${section}`;
-  const discoveredAt = new Intl.DateTimeFormat(undefined, {
-    dateStyle: "medium",
-    timeStyle: "short",
-  }).format(new Date(finding.created_at));
 
   return (
     <div
@@ -577,9 +596,7 @@ export function FindingDetail({
                     className="mt-0.5 size-3.5 shrink-0"
                     aria-hidden="true"
                   />
-                  <time dateTime={new Date(finding.created_at).toISOString()}>
-                    {discoveredAt}
-                  </time>
+                  <FindingDiscoveredAt timestamp={finding.created_at} />
                 </dd>
               </div>
             </dl>
