@@ -258,6 +258,7 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                   command,
                   cols,
                   rows,
+                  cwd: sandbox.getWorkingDirectory(),
                 });
               }
               return createE2BPtyHandle(sandbox, {

@@ -1,7 +1,12 @@
 import { invoke } from "@tauri-apps/api/core";
+import { open } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { toast } from "sonner";
-import { DESKTOP_UPDATE_URL, navigateToAuth } from "../useTauri";
+import {
+  DESKTOP_UPDATE_URL,
+  navigateToAuth,
+  pickLocalFolder,
+} from "../useTauri";
 
 jest.mock("@tauri-apps/api/core", () => ({
   invoke: jest.fn(),
@@ -11,6 +16,10 @@ jest.mock("@tauri-apps/plugin-opener", () => ({
   openUrl: jest.fn(),
 }));
 
+jest.mock("@tauri-apps/plugin-dialog", () => ({
+  open: jest.fn(),
+}));
+
 jest.mock("sonner", () => ({
   toast: {
     error: jest.fn(),
@@ -18,6 +27,7 @@ jest.mock("sonner", () => ({
 }));
 
 const mockInvoke = invoke as jest.Mock;
+const mockDialogOpen = open as jest.Mock;
 const mockOpenUrl = openUrl as jest.Mock;
 const mockToastError = toast.error as jest.Mock;
 let consoleErrorSpy: jest.SpiedFunction<typeof console.error>;
@@ -77,5 +87,37 @@ describe("navigateToAuth", () => {
     );
     expect(mockOpenUrl).toHaveBeenCalledTimes(1);
     expect(mockOpenUrl).toHaveBeenCalledWith(DESKTOP_UPDATE_URL);
+  });
+});
+
+describe("pickLocalFolder", () => {
+  beforeEach(() => {
+    setTauriEnvironment();
+    mockDialogOpen.mockReset();
+  });
+
+  afterEach(() => {
+    Object.defineProperty(window, "__TAURI_INTERNALS__", {
+      configurable: true,
+      value: undefined,
+    });
+  });
+
+  it("opens a single-directory picker and returns the selected path", async () => {
+    mockDialogOpen.mockResolvedValue("/Users/hackerai/targets/acme");
+
+    await expect(pickLocalFolder()).resolves.toBe(
+      "/Users/hackerai/targets/acme",
+    );
+    expect(mockDialogOpen).toHaveBeenCalledWith({
+      directory: true,
+      multiple: false,
+    });
+  });
+
+  it("returns null when the user cancels", async () => {
+    mockDialogOpen.mockResolvedValue(null);
+
+    await expect(pickLocalFolder()).resolves.toBeNull();
   });
 });

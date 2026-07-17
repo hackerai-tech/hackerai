@@ -175,6 +175,7 @@ export function ChatLayout({ children }: { children: React.ReactNode }) {
             ref={panelRef}
             role="dialog"
             aria-modal="true"
+            aria-label="Task sidebar"
             tabIndex={-1}
             className="w-full max-w-80 h-full bg-background shadow-lg transform transition-transform duration-300 ease-in-out"
             onClick={(e) => e.stopPropagation()}

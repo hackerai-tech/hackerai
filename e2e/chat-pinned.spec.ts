@@ -41,7 +41,7 @@ test.describe("Pinned Chats", () => {
       const name = SHARED_CHAT_NAMES[initialCount + i];
 
       if (i > 0 || initialCount === 0) {
-        await page.getByRole("button", { name: "Start new chat" }).click();
+        await page.getByRole("button", { name: "Start new task" }).click();
         await page.waitForTimeout(300);
       }
 
@@ -128,7 +128,7 @@ test.describe("Pinned Chats", () => {
     const titles: string[] = [];
     for (let i = 0; i < count; i++) {
       const label = await items.nth(i).getAttribute("aria-label");
-      const m = label?.match(/^Open chat: (.+)$/);
+      const m = label?.match(/^Open task: (.+)$/);
       titles.push(m ? m[1] : "");
     }
     return titles;

@@ -273,7 +273,7 @@ export const Messages = ({
           await onBranchMessage(messageId);
         } catch (error) {
           console.error("Failed to branch message:", error);
-          toast.error("Failed to branch chat. Please try again.");
+          toast.error("Failed to branch task. Please try again.");
         }
       }
     },

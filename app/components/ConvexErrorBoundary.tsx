@@ -37,7 +37,7 @@ export class ConvexErrorBoundary extends Component<Props, State> {
       // by returning empty results, so we don't need to handle it here
       if (errorData?.code === "CHAT_UNAUTHORIZED") {
         toast.error("Access denied", {
-          description: "You don't have permission to access this chat.",
+          description: "You don't have permission to access this task.",
         });
       } else {
         toast.error("Error", {
@@ -95,7 +95,7 @@ export class ConvexErrorBoundary extends Component<Props, State> {
                     onClick={this.handleGoHome}
                     className="px-4 py-2 bg-secondary text-secondary-foreground rounded-md hover:bg-secondary/90 transition-colors text-sm font-medium"
                   >
-                    New Chat
+                    New Task
                   </button>
                 </div>
               </div>

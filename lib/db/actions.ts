@@ -693,6 +693,27 @@ export async function getChatById({ id }: { id: string }) {
   }
 }
 
+export async function getProjectById({
+  id,
+  userId,
+}: {
+  id: string;
+  userId: string;
+}) {
+  try {
+    return await getConvexClient().query(api.projects.getProjectForBackend, {
+      serviceKey,
+      id,
+      userId,
+    });
+  } catch (error) {
+    throw databaseError("projects.getProjectForBackend", error, {
+      project_id: id,
+      user_id: userId,
+    });
+  }
+}
+
 export async function deleteChatForBackend({
   chatId,
   userId,
@@ -816,16 +837,19 @@ export async function saveChat({
   id,
   userId,
   title,
+  projectId,
 }: {
   id: string;
   userId: string;
   title: string;
+  projectId?: string;
 }) {
   const mutationArgs = {
     serviceKey,
     id,
     userId,
     title,
+    ...(projectId ? { projectId } : {}),
   };
 
   try {
@@ -1069,6 +1093,7 @@ export async function handleInitialChatAndUserMessage({
   regenerate,
   chat,
   isHidden,
+  projectId,
 }: {
   chatId: string;
   userId: string;
@@ -1076,6 +1101,7 @@ export async function handleInitialChatAndUserMessage({
   regenerate?: boolean;
   chat: any; // Chat data from getMessagesByChatId
   isHidden?: boolean;
+  projectId?: string;
 }) {
   if (!chat) {
     // Save new chat and get the document _id
@@ -1102,6 +1128,7 @@ export async function handleInitialChatAndUserMessage({
       id: chatId,
       userId,
       title,
+      projectId,
     });
   } else {
     // Check if user owns the chat

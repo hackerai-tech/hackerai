@@ -23,6 +23,17 @@ import { createFileToolSchema } from "./schemas";
 const MAX_VIEW_FILE_BYTES = 10 * 1024 * 1024;
 const MAX_TEXT_FILE_READ_BYTES = 1024 * 1024;
 const MAX_TEXT_READ_RESULT_BYTES = 1024 * 1024;
+const RASTER_IMAGE_EXTENSIONS = new Set([
+  "gif",
+  "jpe",
+  "jfif",
+  "jpeg",
+  "jpg",
+  "png",
+  "webp",
+]);
+const RASTER_READ_REDIRECT_MESSAGE =
+  "Raster image files cannot be read as text. Use the view action instead; Agent will automatically route image inspection to a vision-capable model when necessary.";
 const MULTIMODAL_UPGRADE_MESSAGE =
   "The current model does not support multimodal tool results for sandbox images. Please select a model with image viewing support and retry the view action.";
 
@@ -148,6 +159,7 @@ emit(payload)
 
 const READ_TEXT_FILE_SCRIPT = String.raw`
 import json
+import mimetypes
 import os
 import sys
 
@@ -170,6 +182,32 @@ if not os.path.isfile(path):
     emit({"error": f"File not found or is not a regular file: {path}"}, 3)
 
 size = os.path.getsize(path)
+
+with open(path, "rb") as f:
+    head = f.read(32)
+
+def detect_raster_media_type(head_bytes, file_path):
+    if head_bytes.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if head_bytes.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if head_bytes.startswith(b"GIF87a") or head_bytes.startswith(b"GIF89a"):
+        return "image/gif"
+    if head_bytes.startswith(b"RIFF") and head_bytes[8:12] == b"WEBP":
+        return "image/webp"
+    guessed, _ = mimetypes.guess_type(file_path)
+    if guessed in {"image/gif", "image/jpeg", "image/png", "image/webp"}:
+        return guessed
+    return None
+
+image_media_type = detect_raster_media_type(head, path)
+if image_media_type:
+    emit({
+        "path": path,
+        "sizeBytes": size,
+        "totalLines": 0,
+        "imageMediaType": image_media_type,
+    })
 
 def count_lines(file_path, file_size):
     if file_size == 0:
@@ -292,6 +330,11 @@ const getFileExtension = (path: string): string | undefined => {
   const dotIndex = filename.lastIndexOf(".");
   if (dotIndex <= 0 || dotIndex === filename.length - 1) return undefined;
   return filename.slice(dotIndex + 1).toLowerCase();
+};
+
+const isRasterImagePath = (path: string): boolean => {
+  const extension = getFileExtension(path);
+  return extension ? RASTER_IMAGE_EXTENSIONS.has(extension) : false;
 };
 
 function getViewSandboxType(sandbox: any): "centrifugo" | "e2b" {
@@ -608,6 +651,7 @@ type SandboxTextReadPayload = {
   path: string;
   sizeBytes: number;
   totalLines: number;
+  imageMediaType?: string;
   content?: string;
   startLine?: number;
   tooLarge?: boolean;
@@ -1221,7 +1265,10 @@ export const createFile = (context: ToolContext) => {
     });
   const canViewMultimodalFiles = () =>
     supportsMultimodalToolResults(getCurrentModelName?.() ?? modelName);
-  const supportsViewInSchema = canViewMultimodalFiles();
+  const canHandoffMultimodalFiles = context.mode === "agent";
+  const canReturnMultimodalFiles = () =>
+    canHandoffMultimodalFiles || canViewMultimodalFiles();
+  const supportsViewInSchema = canReturnMultimodalFiles();
   const fileToolSchema = createFileToolSchema({
     supportsView: supportsViewInSchema,
     approvalGated: !!context.requestToolApproval,
@@ -1267,7 +1314,7 @@ export const createFile = (context: ToolContext) => {
           case "view": {
             const viewStartedAt = Date.now();
 
-            if (!canViewMultimodalFiles()) {
+            if (!canReturnMultimodalFiles()) {
               captureFileViewImageUsage({
                 context,
                 sandbox,
@@ -1352,12 +1399,20 @@ export const createFile = (context: ToolContext) => {
           }
 
           case "read": {
+            if (isRasterImagePath(path)) {
+              return { error: RASTER_READ_REDIRECT_MESSAGE };
+            }
+
             const filename = path.split("/").pop() || path;
             const readPayload = await readSandboxTextFileWithFallback(
               sandbox,
               path,
               range,
             );
+
+            if (readPayload.imageMediaType) {
+              return { error: RASTER_READ_REDIRECT_MESSAGE };
+            }
 
             if (readPayload.tooLarge) {
               const totalLines =
@@ -1598,7 +1653,7 @@ export const createFile = (context: ToolContext) => {
         ) {
           const viewOutput = output as ViewMetadata;
 
-          if (!canViewMultimodalFiles()) {
+          if (!canReturnMultimodalFiles()) {
             return {
               type: "text" as const,
               value: `Error: ${MULTIMODAL_UPGRADE_MESSAGE}`,

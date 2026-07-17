@@ -64,4 +64,21 @@ describe("phLogger", () => {
     expect(mockEmitPostHogLog).toHaveBeenCalledTimes(1);
     expect(mockCaptureException).toHaveBeenCalledTimes(1);
   });
+
+  it("passes stable event UUIDs to PostHog without leaking them into properties", () => {
+    phLogger.event("checkout_started", {
+      userId: "user_123",
+      eventUuid: "b01882bb-b996-52d2-aaca-b2f4edc0fa3d",
+      checkout_attempt_id: "ca_12345678",
+    });
+
+    expect(mockCapture).toHaveBeenCalledWith({
+      distinctId: "user_123",
+      event: "checkout_started",
+      uuid: "b01882bb-b996-52d2-aaca-b2f4edc0fa3d",
+      properties: {
+        checkout_attempt_id: "ca_12345678",
+      },
+    });
+  });
 });

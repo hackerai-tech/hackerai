@@ -30,6 +30,8 @@ import {
   normalizeSelectedModelOverrideForSubscription,
 } from "@/types";
 import { ChatSDKError } from "@/lib/errors";
+import { requireOptionalIdentifier } from "@/lib/api/chat-request-validation";
+import { resolveProjectExecutionContext } from "@/lib/chat/project-context";
 import type {
   Todo,
   LimitRescueRequest,
@@ -97,6 +99,7 @@ type AgentTriggerRequestBody = {
   isAutoContinue?: boolean;
   limitRescue?: LimitRescueRequest;
   agentRunRequestId?: string;
+  projectId?: string;
 };
 
 type AgentTriggerRequestParseResult =
@@ -176,6 +179,7 @@ const parseAgentTriggerRequestBody = async (
         typeof body.agentRunRequestId === "string"
           ? body.agentRunRequestId
           : undefined,
+      projectId: requireOptionalIdentifier("projectId", body.projectId),
     },
   };
 };
@@ -358,6 +362,7 @@ export const createAgentTriggerPost =
         isAutoContinue,
         limitRescue,
         agentRunRequestId,
+        projectId: requestedProjectId,
       } = parsedBody.body;
 
       const { userId, subscription, organizationId, freeQuotaSubject } =
@@ -410,6 +415,15 @@ export const createAgentTriggerPost =
       // (b) pass to handleInitialChatAndUserMessage so it skips saveChat on
       //     regenerate/auto-continue and does the ownership check instead.
       const existingChat = temporary ? null : await getChatById({ id: chatId });
+      const projectContext = temporary
+        ? {}
+        : await resolveProjectExecutionContext({
+            chat: existingChat,
+            requestedProjectId,
+            userId,
+            mode: "agent",
+            sandboxPreference,
+          });
       const isNewChat =
         !temporary && !existingChat && !regenerate && !isAutoContinue;
       const userCustomization = await getUserCustomization({ userId });
@@ -500,6 +514,7 @@ export const createAgentTriggerPost =
           regenerate,
           chat: existingChat ?? null,
           isHidden: isAutoContinue ? true : undefined,
+          projectId: projectContext.projectId,
         });
       }
 

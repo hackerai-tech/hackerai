@@ -253,6 +253,7 @@ export const createFileToolSchema = ({
     ...(supportsView
       ? [
           "Use 'view' only for raster image files such as PNG, JPEG, GIF, and WebP.",
+          "When the current Agent model is not vision-capable, calling 'view' automatically routes subsequent Agent steps to a vision-capable model.",
           "Do not use 'view' for PDFs. Use 'read' for extractable text, or use the shell tool to convert PDF pages to images first if visual inspection is required.",
           "Use 'read' for text-based or line-oriented formats.",
         ]
@@ -880,14 +881,12 @@ export const createAgentToolSchemaSet = ({
   isTemporary = false,
   hasPerplexityApiKey = false,
   hasJinaApiKey = false,
-  supportsFileView = false,
 }: {
   mode?: AgentToolSchemaMode;
   notesEnabled?: boolean;
   isTemporary?: boolean;
   hasPerplexityApiKey?: boolean;
   hasJinaApiKey?: boolean;
-  supportsFileView?: boolean;
 } = {}) => {
   const notes =
     !isTemporary && notesEnabled
@@ -914,7 +913,7 @@ export const createAgentToolSchemaSet = ({
     run_terminal_cmd: runTerminalCmdTool,
     interact_terminal_session: interactTerminalSessionTool,
     get_terminal_files: getTerminalFilesTool,
-    file: createFileToolSchema({ supportsView: supportsFileView }),
+    file: createFileToolSchema({ supportsView: true }),
     todo_write: todoWriteTool,
     ...(!isTemporary && {
       create_vulnerability_report: createVulnerabilityReportTool,

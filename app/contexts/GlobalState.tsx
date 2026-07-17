@@ -93,6 +93,8 @@ interface GlobalStateType {
   setChatSidebarOpen: (open: boolean) => void;
   optimisticChatId: string | null;
   setOptimisticChatId: (chatId: string | null) => void;
+  activeProjectId: string | null;
+  setActiveProjectId: (projectId: string | null) => void;
 
   // Todos state
   todos: Todo[];
@@ -115,6 +117,9 @@ interface GlobalStateType {
   // Message queue state (for Agent mode)
   messageQueue: QueuedMessage[];
   queueMessage: (text: string, files?: FileMessagePart[]) => void;
+  updateQueuedMessage: (id: string, text: string) => void;
+  editingQueuedMessageId: string | null;
+  setEditingQueuedMessageId: (messageId: string | null) => void;
   removeQueuedMessage: (id: string) => void;
   clearQueue: () => void;
 
@@ -375,6 +380,23 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     chatSidebarStorage.get(isMobile ?? false),
   );
   const [optimisticChatId, setOptimisticChatId] = useState<string | null>(null);
+  const [activeProjectId, setActiveProjectId] = useState<string | null>(() => {
+    if (typeof window === "undefined") return null;
+    return new URLSearchParams(window.location.search).get("project");
+  });
+
+  useEffect(() => {
+    const syncActiveProjectFromUrl = () => {
+      setActiveProjectId(
+        new URLSearchParams(window.location.search).get("project"),
+      );
+    };
+
+    window.addEventListener("popstate", syncActiveProjectFromUrl);
+    return () => {
+      window.removeEventListener("popstate", syncActiveProjectFromUrl);
+    };
+  }, []);
   const [todos, setTodos] = useState<Todo[]>([]);
   const [isTodoPanelExpanded, setIsTodoPanelExpanded] = useState(false);
   const mergeTodos = useCallback((newTodos: TodoLike[]) => {
@@ -399,6 +421,9 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
 
   // Message queue state (for Agent mode queueing)
   const [messageQueue, setMessageQueue] = useState<QueuedMessage[]>([]);
+  const [editingQueuedMessageId, setEditingQueuedMessageId] = useState<
+    string | null
+  >(null);
 
   // Queue behavior preference (persisted to localStorage)
   const [queueBehavior, setQueueBehaviorState] = useState<QueueBehavior>(() => {
@@ -948,10 +973,22 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
 
   const removeQueuedMessage = useCallback((id: string) => {
     setMessageQueue((prev) => prev.filter((msg) => msg.id !== id));
+    setEditingQueuedMessageId((currentId) =>
+      currentId === id ? null : currentId,
+    );
+  }, []);
+
+  const updateQueuedMessage = useCallback((id: string, text: string) => {
+    setMessageQueue((prev) =>
+      prev.map((message) =>
+        message.id === id ? { ...message, text } : message,
+      ),
+    );
   }, []);
 
   const clearQueue = useCallback(() => {
     setMessageQueue([]);
+    setEditingQueuedMessageId(null);
   }, []);
 
   const initializeChat = useCallback((chatId: string, _fromRoute?: boolean) => {
@@ -961,6 +998,7 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     setIsTodoPanelExpanded(false);
     // Navigating to an existing chat means we're no longer in temporary chat mode
     setTemporaryChatsEnabled(false);
+    setActiveProjectId(null);
   }, []);
 
   const initializeNewChat = useCallback(() => {
@@ -970,6 +1008,7 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     }
     setTodos([]);
     setIsTodoPanelExpanded(false);
+    setActiveProjectId(null);
   }, []);
 
   const setChatReset = useCallback((fn: (() => void) | null) => {
@@ -1079,6 +1118,8 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     setChatSidebarOpen,
     optimisticChatId,
     setOptimisticChatId,
+    activeProjectId,
+    setActiveProjectId,
     todos,
     setTodos,
     mergeTodos,
@@ -1119,6 +1160,9 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
 
     messageQueue,
     queueMessage,
+    updateQueuedMessage,
+    editingQueuedMessageId,
+    setEditingQueuedMessageId,
     removeQueuedMessage,
     clearQueue,
 

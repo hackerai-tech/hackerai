@@ -866,7 +866,9 @@ export const useChatHandlers = ({
 
     try {
       setIsAutoResuming(false);
-      await stopActiveRunForSteer();
+      if (hasActiveRunToReplace()) {
+        await stopActiveRunForSteer();
+      }
 
       // Keep the queued message available if stopping fails.
       removeQueuedMessage(messageId);

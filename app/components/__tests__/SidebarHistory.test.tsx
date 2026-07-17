@@ -38,6 +38,11 @@ describe("SidebarHistory", () => {
     );
 
     expect(screen.getByTestId("streaming-ask-chat")).toBeInTheDocument();
+    expect(screen.getByTestId("sidebar-chat-list")).toHaveClass("py-2");
+    expect(screen.getByTestId("sidebar-chat-list")).not.toHaveClass(
+      "p-2",
+      "px-2",
+    );
   });
 
   it("marks chats with active agent trigger runs as streaming", () => {
@@ -101,5 +106,33 @@ describe("SidebarHistory", () => {
     expect(
       screen.getByTestId("streaming-stored-approval-chat"),
     ).toBeInTheDocument();
+  });
+
+  it("keeps the pagination sentinel when the loaded page has no unpinned chats", () => {
+    const observe = jest.fn();
+    const disconnect = jest.fn();
+    global.IntersectionObserver = jest.fn(
+      () =>
+        ({
+          disconnect,
+          observe,
+        }) as unknown as IntersectionObserver,
+    ) as unknown as typeof IntersectionObserver;
+
+    render(
+      <SidebarHistory
+        chats={[]}
+        paginationStatus="CanLoadMore"
+        loadMore={jest.fn()}
+        showEmptyState={false}
+      />,
+    );
+
+    expect(
+      screen.getByTestId("sidebar-load-more-sentinel"),
+    ).toBeInTheDocument();
+    expect(observe).toHaveBeenCalledWith(
+      screen.getByTestId("sidebar-load-more-sentinel"),
+    );
   });
 });

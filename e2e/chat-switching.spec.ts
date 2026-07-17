@@ -110,7 +110,7 @@ test.describe("Chat switching", () => {
     expect(countBefore).toBeGreaterThan(0);
 
     await page
-      .getByRole("button", { name: /new chat/i })
+      .getByRole("button", { name: /new task/i })
       .first()
       .click();
     await expect(page).toHaveURL(/\/(c\/[^/]+)?$/, {
@@ -140,7 +140,7 @@ test.describe("Chat switching", () => {
 
     await page
       .locator('[data-testid="messages-container"]')
-      .getByRole("button", { name: "Branch in new chat" })
+      .getByRole("button", { name: "Branch in new task" })
       .first()
       .click();
 

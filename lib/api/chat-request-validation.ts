@@ -40,6 +40,30 @@ export const requireBooleanFlag = (field: string, value: unknown): boolean => {
   );
 };
 
+export const requireOptionalIdentifier = (
+  field: string,
+  value: unknown,
+): string | undefined => {
+  if (value === undefined) return undefined;
+  if (
+    typeof value !== "string" ||
+    value.length === 0 ||
+    value.length > 128 ||
+    /[\u0000-\u001f\u007f]/.test(value)
+  ) {
+    throw new ChatSDKError(
+      "bad_request:api",
+      `Invalid chat request: ${field} must be a valid identifier.`,
+      {
+        invalid_request_field: field,
+        invalid_request_field_type: getValueKind(value),
+        invalid_request_field_reason: "invalid_identifier",
+      },
+    );
+  }
+  return value;
+};
+
 export const requireChatMessagesArray = (messages: unknown): UIMessage[] => {
   if (!Array.isArray(messages)) {
     throw invalidMessagesError("messages", messages, "not_array");
