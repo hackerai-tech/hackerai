@@ -11,6 +11,11 @@ import { toast } from "sonner";
 import type { Doc, Id } from "@/convex/_generated/dataModel";
 import { Button } from "@/components/ui/button";
 import Loading from "@/components/ui/loading";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { useGlobalState } from "@/app/contexts/GlobalState";
 import { useMoveChatToProject } from "@/app/hooks/useProjects";
 import { useStartNewChat } from "@/app/hooks/useStartNewChat";
@@ -195,28 +200,50 @@ export function SidebarProjects({
 
         <div className="flex items-center">
           {isSectionOpen && hasOpenProjects ? (
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon"
-              className="size-8 rounded-lg text-sidebar-foreground/45 hover:bg-sidebar-accent hover:text-sidebar-foreground"
-              onClick={collapseAllProjects}
-              aria-label="Collapse all projects"
-            >
-              <ListChevronsDownUp className="size-[18px]" />
-            </Button>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  className="size-8 rounded-lg text-sidebar-foreground/45 hover:bg-sidebar-accent hover:text-sidebar-foreground"
+                  onClick={collapseAllProjects}
+                  aria-label="Collapse all projects"
+                >
+                  <ListChevronsDownUp className="size-[18px]" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent
+                side="top"
+                sideOffset={8}
+                className="border-0 bg-black px-3 py-1.5 text-sm text-white shadow-md [&_svg]:bg-black [&_svg]:fill-black"
+              >
+                Collapse all
+              </TooltipContent>
+            </Tooltip>
           ) : null}
 
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon"
-            className="size-8 rounded-lg text-sidebar-foreground/45 hover:bg-sidebar-accent hover:text-sidebar-foreground"
-            onClick={() => setIsCreateOpen(true)}
-            aria-label="Create project"
-          >
-            <Plus className="size-[18px]" />
-          </Button>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                className="size-8 rounded-lg text-sidebar-foreground/45 hover:bg-sidebar-accent hover:text-sidebar-foreground"
+                onClick={() => setIsCreateOpen(true)}
+                aria-label="Create project"
+              >
+                <Plus className="size-[18px]" />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent
+              side="top"
+              sideOffset={8}
+              className="border-0 bg-black px-3 py-1.5 text-sm text-white shadow-md [&_svg]:bg-black [&_svg]:fill-black"
+            >
+              Create project
+            </TooltipContent>
+          </Tooltip>
         </div>
       </div>
 

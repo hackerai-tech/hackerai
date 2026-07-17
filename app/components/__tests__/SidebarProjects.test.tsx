@@ -1,7 +1,25 @@
 import "@testing-library/jest-dom";
 import { beforeEach, describe, expect, it, jest } from "@jest/globals";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import type { Doc } from "@/convex/_generated/dataModel";
+
+Object.defineProperty(globalThis, "ResizeObserver", {
+  configurable: true,
+  value: class ResizeObserverMock {
+    observe() {
+      return undefined;
+    }
+
+    unobserve() {
+      return undefined;
+    }
+
+    disconnect() {
+      return undefined;
+    }
+  },
+});
 
 jest.mock("sonner", () => ({
   toast: { success: jest.fn(), error: jest.fn() },
@@ -104,6 +122,32 @@ describe("SidebarProjects", () => {
     expect(screen.getByTestId("project-project-2")).toHaveAttribute(
       "data-open",
       "false",
+    );
+  });
+
+  it("shows the create-project label on hover", async () => {
+    const user = userEvent.setup();
+    render(<SidebarProjects projects={projects} />);
+
+    const createButton = screen.getByRole("button", {
+      name: "Create project",
+    });
+    await user.hover(createButton);
+    expect(await screen.findByRole("tooltip")).toHaveTextContent(
+      "Create project",
+    );
+  });
+
+  it("shows the collapse-all label on hover", async () => {
+    const user = userEvent.setup();
+    render(<SidebarProjects projects={projects} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Toggle Acme" }));
+    await user.hover(
+      screen.getByRole("button", { name: "Collapse all projects" }),
+    );
+    expect(await screen.findByRole("tooltip")).toHaveTextContent(
+      "Collapse all",
     );
   });
 
