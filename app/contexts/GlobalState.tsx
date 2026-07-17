@@ -115,6 +115,9 @@ interface GlobalStateType {
   // Message queue state (for Agent mode)
   messageQueue: QueuedMessage[];
   queueMessage: (text: string, files?: FileMessagePart[]) => void;
+  updateQueuedMessage: (id: string, text: string) => void;
+  editingQueuedMessageId: string | null;
+  setEditingQueuedMessageId: (messageId: string | null) => void;
   removeQueuedMessage: (id: string) => void;
   clearQueue: () => void;
 
@@ -399,6 +402,9 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
 
   // Message queue state (for Agent mode queueing)
   const [messageQueue, setMessageQueue] = useState<QueuedMessage[]>([]);
+  const [editingQueuedMessageId, setEditingQueuedMessageId] = useState<
+    string | null
+  >(null);
 
   // Queue behavior preference (persisted to localStorage)
   const [queueBehavior, setQueueBehaviorState] = useState<QueueBehavior>(() => {
@@ -948,10 +954,22 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
 
   const removeQueuedMessage = useCallback((id: string) => {
     setMessageQueue((prev) => prev.filter((msg) => msg.id !== id));
+    setEditingQueuedMessageId((currentId) =>
+      currentId === id ? null : currentId,
+    );
+  }, []);
+
+  const updateQueuedMessage = useCallback((id: string, text: string) => {
+    setMessageQueue((prev) =>
+      prev.map((message) =>
+        message.id === id ? { ...message, text } : message,
+      ),
+    );
   }, []);
 
   const clearQueue = useCallback(() => {
     setMessageQueue([]);
+    setEditingQueuedMessageId(null);
   }, []);
 
   const initializeChat = useCallback((chatId: string, _fromRoute?: boolean) => {
@@ -1119,6 +1137,9 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
 
     messageQueue,
     queueMessage,
+    updateQueuedMessage,
+    editingQueuedMessageId,
+    setEditingQueuedMessageId,
     removeQueuedMessage,
     clearQueue,
 

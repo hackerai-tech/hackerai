@@ -22,10 +22,12 @@ describe("QueuedMessagesPanel", () => {
     const onDelete = jest.fn();
     const onQueueBehaviorChange = jest.fn();
 
-    render(
+    const { rerender } = render(
       <QueuedMessagesPanel
         messages={[messages[0]]}
         onSendNow={onSendNow}
+        onEdit={jest.fn()}
+        onEditingMessageChange={jest.fn()}
         onDelete={onDelete}
         isStreaming
         onQueueBehaviorChange={onQueueBehaviorChange}
@@ -40,64 +42,144 @@ describe("QueuedMessagesPanel", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Steer" }));
     fireEvent.click(
-      screen.getByRole("button", { name: "Remove queued message" }),
+      screen.getByRole("button", {
+        name: "Remove queued message: do ping now",
+      }),
     );
 
     expect(onSendNow).toHaveBeenCalledWith("message-1");
     expect(onDelete).toHaveBeenCalledWith("message-1");
     expect(
-      screen.getByRole("button", { name: "Queue settings" }),
+      screen.getByRole("button", {
+        name: "More options for queued message: do ping now",
+      }),
     ).toBeInTheDocument();
 
-    fireEvent.keyDown(screen.getByRole("button", { name: "Queue settings" }), {
-      key: "Enter",
-    });
+    fireEvent.keyDown(
+      screen.getByRole("button", {
+        name: "More options for queued message: do ping now",
+      }),
+      { key: "Enter" },
+    );
     fireEvent.click(
-      await screen.findByRole("menuitemradio", {
-        name: "Stop & send right away",
+      await screen.findByRole("menuitem", {
+        name: "Turn off queueing",
       }),
     );
 
     expect(onQueueBehaviorChange).toHaveBeenCalledWith("stop-and-send");
+
+    rerender(
+      <QueuedMessagesPanel
+        messages={[messages[0]]}
+        onSendNow={onSendNow}
+        onEdit={jest.fn()}
+        onEditingMessageChange={jest.fn()}
+        onDelete={onDelete}
+        isStreaming
+        queueBehavior="stop-and-send"
+        onQueueBehaviorChange={onQueueBehaviorChange}
+      />,
+    );
+
+    fireEvent.keyDown(
+      screen.getByRole("button", {
+        name: "More options for queued message: do ping now",
+      }),
+      { key: "Enter" },
+    );
+    expect(
+      await screen.findByRole("menuitem", { name: "Turn on queueing" }),
+    ).toBeInTheDocument();
   });
 
-  it("keeps the collapsible count view for multiple queued messages", async () => {
+  it("shows multiple queued messages as a flat list", () => {
     const onQueueBehaviorChange = jest.fn();
 
     render(
       <QueuedMessagesPanel
         messages={messages}
         onSendNow={jest.fn()}
+        onEdit={jest.fn()}
+        onEditingMessageChange={jest.fn()}
         onDelete={jest.fn()}
         isStreaming
         onQueueBehaviorChange={onQueueBehaviorChange}
       />,
     );
 
-    expect(screen.getByText("2 Queued")).toBeInTheDocument();
+    expect(screen.queryByText("2 Queued")).not.toBeInTheDocument();
     expect(screen.getAllByRole("button", { name: "Steer" })).toHaveLength(2);
+    expect(screen.getByText("do ping now")).toBeInTheDocument();
+    expect(screen.getByText("then check the headers")).toBeInTheDocument();
+    expect(
+      screen.queryByText("When to send follow-ups"),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Queue settings" }),
+    ).not.toBeInTheDocument();
+  });
 
-    fireEvent.click(
-      screen.getByRole("button", { name: "Collapse queued messages" }),
+  it("allows a stopped queued message to be sent immediately", () => {
+    const onSendNow = jest.fn();
+
+    render(
+      <QueuedMessagesPanel
+        messages={[messages[0]]}
+        onSendNow={onSendNow}
+        onEdit={jest.fn()}
+        onEditingMessageChange={jest.fn()}
+        onDelete={jest.fn()}
+        isStreaming={false}
+      />,
     );
 
-    expect(screen.queryByText("do ping now")).not.toBeInTheDocument();
-    expect(
-      screen.getByRole("button", { name: "Expand queued messages" }),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByRole("button", { name: "Queue settings" }),
-    ).toBeInTheDocument();
+    const steerButton = screen.getByRole("button", { name: "Steer" });
+    expect(steerButton).toBeEnabled();
+    expect(steerButton).toHaveAttribute(
+      "title",
+      "Send this queued message now",
+    );
 
-    fireEvent.keyDown(screen.getByRole("button", { name: "Queue settings" }), {
-      key: "Enter",
-    });
-    fireEvent.click(
-      await screen.findByRole("menuitemradio", {
-        name: "Stop & send right away",
+    fireEvent.click(steerButton);
+    expect(onSendNow).toHaveBeenCalledWith("message-1");
+  });
+
+  it("edits a specific queued message from its menu", async () => {
+    const onEdit = jest.fn();
+    const onEditingMessageChange = jest.fn();
+
+    render(
+      <QueuedMessagesPanel
+        messages={messages}
+        onSendNow={jest.fn()}
+        onEdit={onEdit}
+        onEditingMessageChange={onEditingMessageChange}
+        onDelete={jest.fn()}
+        isStreaming
+      />,
+    );
+
+    fireEvent.keyDown(
+      screen.getByRole("button", {
+        name: "More options for queued message: do ping now",
       }),
+      { key: "Enter" },
+    );
+    fireEvent.click(
+      await screen.findByRole("menuitem", { name: "Edit message" }),
     );
 
-    expect(onQueueBehaviorChange).toHaveBeenCalledWith("stop-and-send");
+    expect(onEditingMessageChange).toHaveBeenCalledWith("message-1");
+
+    const editor = screen.getByRole("textbox", { name: "Edit queued message" });
+    fireEvent.change(editor, { target: { value: "do ping carefully" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    expect(onEdit).toHaveBeenCalledWith("message-1", "do ping carefully");
+    expect(onEditingMessageChange).toHaveBeenLastCalledWith(null);
+    expect(
+      screen.queryByRole("button", { name: /Reorder queued message/ }),
+    ).not.toBeInTheDocument();
   });
 });
