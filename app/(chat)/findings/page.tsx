@@ -124,7 +124,8 @@ function FindingsPageContent() {
   }, []);
 
   useEffect(() => {
-    const currentSearch = searchParams.get("q") ?? "";
+    const currentSearch =
+      new URLSearchParams(window.location.search).get("q") ?? "";
     if (currentSearch === deferredSearch) return;
     updateFindingsHistory(
       getFindingsHref({
@@ -134,7 +135,7 @@ function FindingsPageContent() {
         findingId: selectedFindingId,
       }),
     );
-  }, [chatId, deferredSearch, searchParams, selectedFindingId, severity]);
+  }, [chatId, deferredSearch, selectedFindingId, severity]);
 
   useEffect(() => {
     if (!selectedFindingId) return;

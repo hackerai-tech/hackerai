@@ -121,6 +121,13 @@ describe("FindingsPage", () => {
       );
     });
     expect(window.location.search).toBe("?q=CWE-639");
+
+    fireEvent.change(screen.getByLabelText("Search findings"), {
+      target: { value: "" },
+    });
+    await waitFor(() => {
+      expect(window.location.search).toBe("");
+    });
     expect(mockCapture).toHaveBeenCalledWith("findings_page_viewed");
   });
 
