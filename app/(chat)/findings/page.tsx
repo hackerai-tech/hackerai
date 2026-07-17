@@ -72,7 +72,7 @@ const updateFindingsHistory = (
   method: "push" | "replace" = "replace",
 ) => {
   window.history[method === "push" ? "pushState" : "replaceState"](
-    window.history.state,
+    null,
     "",
     href,
   );
