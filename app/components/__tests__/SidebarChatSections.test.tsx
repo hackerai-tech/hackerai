@@ -3,8 +3,24 @@ import { describe, expect, it, jest } from "@jest/globals";
 import { fireEvent, render, screen } from "@testing-library/react";
 
 jest.mock("../SidebarProjects", () => ({
-  SidebarProjects: () => (
-    <section data-testid="sidebar-projects-section">Projects</section>
+  SidebarProjects: ({
+    projects,
+    variant = "section",
+  }: {
+    projects: Array<{ _id: string; name: string }>;
+    variant?: "section" | "pinned-list";
+  }) => (
+    <section
+      data-testid={
+        variant === "pinned-list"
+          ? "sidebar-pinned-project-list"
+          : "sidebar-projects-section"
+      }
+    >
+      {projects.map((project) => (
+        <span key={project._id}>{project.name}</span>
+      ))}
+    </section>
   ),
 }));
 jest.mock("../SidebarHistory", () => ({
@@ -43,12 +59,24 @@ const chats = [
   },
 ];
 
+const projects = [
+  {
+    _id: "pinned-project",
+    name: "Pinned project",
+    pinned_at: 2,
+  },
+  {
+    _id: "regular-project",
+    name: "Regular project",
+  },
+] as any;
+
 describe("SidebarChatSections", () => {
-  it("orders pinned chats before projects and unpinned tasks without duplication", () => {
+  it("moves pinned projects under Pinned and keeps unpinned projects in Projects", () => {
     render(
       <SidebarChatSections
         chats={chats}
-        projects={[]}
+        projects={projects}
         paginationStatus="Exhausted"
       />,
     );
@@ -67,6 +95,18 @@ describe("SidebarChatSections", () => {
     expect(screen.getByTestId("sidebar-pinned-chat-list")).toHaveTextContent(
       "Pinned target",
     );
+    expect(screen.getByTestId("sidebar-pinned-project-list")).toHaveTextContent(
+      "Pinned project",
+    );
+    expect(
+      screen.getByTestId("sidebar-pinned-project-list"),
+    ).not.toHaveTextContent("Regular project");
+    expect(screen.getByTestId("sidebar-projects-section")).toHaveTextContent(
+      "Regular project",
+    );
+    expect(
+      screen.getByTestId("sidebar-projects-section"),
+    ).not.toHaveTextContent("Pinned project");
     expect(
       screen.getByTestId("sidebar-pinned-chat-list"),
     ).not.toHaveTextContent("Regular target");
@@ -82,7 +122,7 @@ describe("SidebarChatSections", () => {
     render(
       <SidebarChatSections
         chats={chats}
-        projects={[]}
+        projects={projects}
         paginationStatus="Exhausted"
       />,
     );

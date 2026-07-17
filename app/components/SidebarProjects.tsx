@@ -20,6 +20,7 @@ import { SidebarProjectItem } from "./SidebarProjectItem";
 
 interface SidebarProjectsProps {
   projects: Doc<"projects">[] | undefined;
+  variant?: "section" | "pinned-list";
   paginationStatus?:
     "LoadingFirstPage" | "CanLoadMore" | "LoadingMore" | "Exhausted";
   loadMore?: (numItems: number) => void;
@@ -27,6 +28,7 @@ interface SidebarProjectsProps {
 
 export function SidebarProjects({
   projects,
+  variant = "section",
   paginationStatus,
   loadMore,
 }: SidebarProjectsProps) {
@@ -62,6 +64,8 @@ export function SidebarProjects({
     setOpenProjectIds(new Set());
   };
 
+  const isPinnedList = variant === "pinned-list";
+
   const handleNewThread = (project: Doc<"projects">) => {
     if (project.folder_path && !desktopBridgeActive) {
       toast.error("Connect HackerAI Desktop", {
@@ -94,6 +98,70 @@ export function SidebarProjects({
       });
     }
   };
+
+  const projectList = (
+    <div
+      id={isPinnedList ? undefined : "sidebar-project-list"}
+      className="flex flex-col gap-px"
+      data-testid={isPinnedList ? "sidebar-pinned-project-list" : undefined}
+    >
+      {projects === undefined ? (
+        isPinnedList ? null : (
+          <div className="px-2 py-0.5" aria-label="Loading projects">
+            <div className="h-9 animate-pulse rounded-[10px] bg-sidebar-accent/50" />
+          </div>
+        )
+      ) : projects.length === 0 ? (
+        isPinnedList ? null : (
+          <button
+            type="button"
+            className="flex h-9 w-full items-center gap-2 rounded-[10px] ps-2.5 pe-2 text-left text-sm text-sidebar-foreground hover:bg-sidebar-accent/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring"
+            onClick={() => setIsCreateOpen(true)}
+          >
+            <FolderPlus className="size-[18px] shrink-0" aria-hidden="true" />
+            <span>New project</span>
+          </button>
+        )
+      ) : (
+        <>
+          {projects.map((project) => (
+            <SidebarProjectItem
+              key={project._id}
+              project={project}
+              open={openProjectIds.has(project._id)}
+              onOpenChange={(open) => setProjectOpen(project._id, open)}
+              onNewThread={() => handleNewThread(project)}
+              onDropChat={(chatId) => handleDropChat(project, chatId)}
+            />
+          ))}
+
+          {!isPinnedList && paginationStatus === "LoadingMore" ? (
+            <div
+              className="flex h-9 items-center justify-center"
+              role="status"
+              aria-label="Loading more projects"
+            >
+              <Loading size={5} />
+            </div>
+          ) : null}
+
+          {!isPinnedList && paginationStatus === "CanLoadMore" && loadMore ? (
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="ms-7 h-9 self-start px-2 text-sidebar-foreground/50 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground"
+              onClick={() => loadMore(10)}
+            >
+              Show more projects
+            </Button>
+          ) : null}
+        </>
+      )}
+    </div>
+  );
+
+  if (isPinnedList) return projectList;
 
   return (
     <section
@@ -152,59 +220,7 @@ export function SidebarProjects({
         </div>
       </div>
 
-      {isSectionOpen ? (
-        <div id="sidebar-project-list" className="flex flex-col gap-px">
-          {projects === undefined ? (
-            <div className="px-2 py-0.5" aria-label="Loading projects">
-              <div className="h-9 animate-pulse rounded-[10px] bg-sidebar-accent/50" />
-            </div>
-          ) : projects.length === 0 ? (
-            <button
-              type="button"
-              className="flex h-9 w-full items-center gap-2 rounded-[10px] ps-2.5 pe-2 text-left text-sm text-sidebar-foreground hover:bg-sidebar-accent/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring"
-              onClick={() => setIsCreateOpen(true)}
-            >
-              <FolderPlus className="size-[18px] shrink-0" aria-hidden="true" />
-              <span>New project</span>
-            </button>
-          ) : (
-            <>
-              {projects.map((project) => (
-                <SidebarProjectItem
-                  key={project._id}
-                  project={project}
-                  open={openProjectIds.has(project._id)}
-                  onOpenChange={(open) => setProjectOpen(project._id, open)}
-                  onNewThread={() => handleNewThread(project)}
-                  onDropChat={(chatId) => handleDropChat(project, chatId)}
-                />
-              ))}
-
-              {paginationStatus === "LoadingMore" ? (
-                <div
-                  className="flex h-9 items-center justify-center"
-                  role="status"
-                  aria-label="Loading more projects"
-                >
-                  <Loading size={5} />
-                </div>
-              ) : null}
-
-              {paginationStatus === "CanLoadMore" && loadMore ? (
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  className="ms-7 h-9 self-start px-2 text-sidebar-foreground/50 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground"
-                  onClick={() => loadMore(10)}
-                >
-                  Show more projects
-                </Button>
-              ) : null}
-            </>
-          )}
-        </div>
-      ) : null}
+      {isSectionOpen ? projectList : null}
 
       <ProjectCreateDialog
         open={isCreateOpen}

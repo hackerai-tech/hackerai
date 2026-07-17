@@ -85,19 +85,28 @@ export function SidebarChatSections({
   const [isTasksOpen, setIsTasksOpen] = useState(true);
   const pinnedChats = chats.filter((chat) => chat.pinned_at != null);
   const taskChats = chats.filter((chat) => chat.pinned_at == null);
+  const pinnedProjects = projects?.filter(
+    (project) => project.pinned_at != null,
+  );
+  const unpinnedProjects = projects?.filter(
+    (project) => project.pinned_at == null,
+  );
+  const hasPinnedItems =
+    pinnedChats.length > 0 || (pinnedProjects?.length ?? 0) > 0;
 
   return (
     <div
       className="flex min-h-full flex-col gap-3 pb-3"
       data-testid="sidebar-chat-sections"
     >
-      {pinnedChats.length > 0 ? (
+      {hasPinnedItems ? (
         <CollapsibleChatSection
           title="Pinned"
           open={isPinnedOpen}
           onOpenChange={setIsPinnedOpen}
           testId="sidebar-pinned-section"
         >
+          <SidebarProjects projects={pinnedProjects} variant="pinned-list" />
           <SidebarHistory
             chats={pinnedChats}
             containerRef={containerRef}
@@ -108,7 +117,7 @@ export function SidebarChatSections({
       ) : null}
 
       <SidebarProjects
-        projects={projects}
+        projects={unpinnedProjects}
         paginationStatus={projectPaginationStatus}
         loadMore={loadMoreProjects}
       />

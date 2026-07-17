@@ -148,6 +148,31 @@ describe("SidebarProjects", () => {
     expect(loadMore).toHaveBeenCalledWith(10);
   });
 
+  it("renders pinned projects without a nested Projects heading or pagination", () => {
+    const loadMore = jest.fn();
+    render(
+      <SidebarProjects
+        projects={projects}
+        variant="pinned-list"
+        paginationStatus="CanLoadMore"
+        loadMore={loadMore}
+      />,
+    );
+
+    expect(screen.getByTestId("sidebar-pinned-project-list")).toHaveTextContent(
+      "Acme",
+    );
+    expect(
+      screen.queryByRole("button", { name: "Projects" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Show more projects" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId("project-create-dialog"),
+    ).not.toBeInTheDocument();
+  });
+
   it("collapses the entire projects section from its heading", () => {
     render(<SidebarProjects projects={projects} />);
 
