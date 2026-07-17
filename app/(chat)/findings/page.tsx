@@ -67,6 +67,17 @@ const getFindingsHref = ({
   return query ? `/findings?${query}` : "/findings";
 };
 
+const updateFindingsHistory = (
+  href: string,
+  method: "push" | "replace" = "replace",
+) => {
+  window.history[method === "push" ? "pushState" : "replaceState"](
+    window.history.state,
+    "",
+    href,
+  );
+};
+
 function FindingsPageContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -115,23 +126,15 @@ function FindingsPageContent() {
   useEffect(() => {
     const currentSearch = searchParams.get("q") ?? "";
     if (currentSearch === deferredSearch) return;
-    router.replace(
+    updateFindingsHistory(
       getFindingsHref({
         search: deferredSearch,
         severity,
         chatId,
         findingId: selectedFindingId,
       }),
-      { scroll: false },
     );
-  }, [
-    chatId,
-    deferredSearch,
-    router,
-    searchParams,
-    selectedFindingId,
-    severity,
-  ]);
+  }, [chatId, deferredSearch, searchParams, selectedFindingId, severity]);
 
   useEffect(() => {
     if (!selectedFindingId) return;
@@ -160,14 +163,14 @@ function FindingsPageContent() {
   const selectFinding = (findingId: string, trigger: HTMLButtonElement) => {
     selectedFindingTriggerRef.current = trigger;
     setSelectedFindingId(findingId);
-    router[selectedFindingId ? "replace" : "push"](
+    updateFindingsHistory(
       getFindingsHref({
         search: deferredSearch,
         severity,
         chatId,
         findingId,
       }),
-      { scroll: false },
+      selectedFindingId ? "replace" : "push",
     );
     closeSidebar();
   };
@@ -177,27 +180,25 @@ function FindingsPageContent() {
       selectedFindingTriggerRef.current.focus();
     }
     setSelectedFindingId(null);
-    router.replace(
+    updateFindingsHistory(
       getFindingsHref({
         search: deferredSearch,
         severity,
         chatId,
         findingId: null,
       }),
-      { scroll: false },
     );
   };
 
   const clearSelectedFinding = () => {
     setSelectedFindingId(null);
-    router.replace(
+    updateFindingsHistory(
       getFindingsHref({
         search: deferredSearch,
         severity,
         chatId,
         findingId: null,
       }),
-      { scroll: false },
     );
   };
 
@@ -213,14 +214,13 @@ function FindingsPageContent() {
     setSearch("");
     setSeverity("all");
     setChatId("all");
-    router.replace(
+    updateFindingsHistory(
       getFindingsHref({
         search: "",
         severity: "all",
         chatId: "all",
         findingId: selectedFindingId,
       }),
-      { scroll: false },
     );
   };
 
@@ -279,14 +279,13 @@ function FindingsPageContent() {
               onValueChange={(value) => {
                 const nextSeverity = value as "all" | FindingSeverity;
                 setSeverity(nextSeverity);
-                router.replace(
+                updateFindingsHistory(
                   getFindingsHref({
                     search: deferredSearch,
                     severity: nextSeverity,
                     chatId,
                     findingId: selectedFindingId,
                   }),
-                  { scroll: false },
                 );
               }}
             >
@@ -306,14 +305,13 @@ function FindingsPageContent() {
               value={chatId}
               onValueChange={(value) => {
                 setChatId(value);
-                router.replace(
+                updateFindingsHistory(
                   getFindingsHref({
                     search: deferredSearch,
                     severity,
                     chatId: value,
                     findingId: selectedFindingId,
                   }),
-                  { scroll: false },
                 );
               }}
             >

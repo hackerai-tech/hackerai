@@ -8,7 +8,6 @@ const mockUseQuery = jest.fn((_ref: unknown, args: any) =>
 );
 const mockCapture = jest.fn();
 const mockPush = jest.fn();
-const mockReplace = jest.fn();
 const mockSearchParams = new URLSearchParams();
 const mockCloseSidebar = jest.fn();
 const mockInitializeNewChat = jest.fn();
@@ -34,7 +33,7 @@ jest.mock("@/app/contexts/GlobalState", () => ({
 }));
 
 jest.mock("next/navigation", () => ({
-  useRouter: () => ({ push: mockPush, replace: mockReplace }),
+  useRouter: () => ({ push: mockPush }),
   useSearchParams: () => mockSearchParams,
 }));
 
@@ -92,6 +91,7 @@ describe("FindingsPage", () => {
     for (const key of [...mockSearchParams.keys()]) {
       mockSearchParams.delete(key);
     }
+    window.history.replaceState({}, "", "/findings");
     mockMobile = false;
     mockUsePaginatedQuery.mockReturnValue({
       results: [mockFinding],
@@ -120,6 +120,7 @@ describe("FindingsPage", () => {
         { initialNumItems: 25 },
       );
     });
+    expect(window.location.search).toBe("?q=CWE-639");
     expect(mockCapture).toHaveBeenCalledWith("findings_page_viewed");
   });
 
@@ -166,6 +167,7 @@ describe("FindingsPage", () => {
     expect(screen.getByLabelText("Search findings")).toHaveValue("");
     await waitFor(() => {
       expect(screen.getByText("No findings yet")).toBeVisible();
+      expect(window.location.search).toBe("");
     });
   });
 
@@ -188,7 +190,8 @@ describe("FindingsPage", () => {
     fireEvent.click(screen.getByRole("button", { name: "Close finding" }));
     expect(screen.queryByText(mockFinding.description)).toBeNull();
     expect(findingRow).toHaveFocus();
-    expect(mockReplace).toHaveBeenCalledWith("/findings", { scroll: false });
+    expect(window.location.pathname).toBe("/findings");
+    expect(window.location.search).toBe("");
   });
 
   it("opens a finding directly from the URL", () => {
