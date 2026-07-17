@@ -22,7 +22,7 @@ export const ASK_MODEL_OPTIONS: ModelOption[] = [
     id: "hackerai-pro",
     label: "HackerAI Pro",
     description: "Superior performance for most assignments",
-    poweredBy: "Z.ai GLM 5.2 · Kimi K2.7 for vision",
+    poweredBy: "xAI Grok 4.5 · Z.ai GLM 5.2 fallback",
   },
   {
     id: "hackerai-max",
@@ -44,7 +44,7 @@ export const AGENT_MODEL_OPTIONS: ModelOption[] = [
     id: "hackerai-pro",
     label: "HackerAI Pro",
     description: "Superior performance for most assignments",
-    poweredBy: "Z.ai GLM 5.2 · Grok 4.5 for vision",
+    poweredBy: "xAI Grok 4.5 · Z.ai GLM 5.2 fallback",
     thinking: true,
   },
   {

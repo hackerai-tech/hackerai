@@ -26,6 +26,10 @@ describe("provider registry", () => {
         .modelId,
     ).toBe("x-ai/grok-4.5");
     expect(
+      (myProvider.languageModel("model-grok-4.5-pro") as { modelId: string })
+        .modelId,
+    ).toBe("x-ai/grok-4.5");
+    expect(
       (myProvider.languageModel("model-glm-5.2") as { modelId: string })
         .modelId,
     ).toBe("z-ai/glm-5.2");
@@ -57,6 +61,7 @@ describe("provider registry", () => {
     ).toBe("x-ai/grok-4.5");
     expect(getModelDisplayName("model-minimax-m3")).toBe("MiniMax M3");
     expect(getModelDisplayName("model-grok-4.5")).toBe("xAI Grok 4.5");
+    expect(getModelDisplayName("model-grok-4.5-pro")).toBe("xAI Grok 4.5");
     expect(getModelDisplayName("model-glm-5.2")).toBe("Z.ai GLM 5.2");
     expect(getModelDisplayName("model-gemini-3-flash")).toBe("xAI Grok 4.5");
     expect(getModelDisplayName("title-generator-model")).toBe("xAI Grok 4.5");
@@ -206,6 +211,7 @@ describe("supportsMultimodalToolResults", () => {
 
   it("allows multimodal fallback keys and slugs used after image tool results", () => {
     expect(supportsMultimodalToolResults("model-grok-4.5")).toBe(true);
+    expect(supportsMultimodalToolResults("model-grok-4.5-pro")).toBe(true);
     expect(supportsMultimodalToolResults("model-gemini-3-flash")).toBe(true);
     expect(supportsMultimodalToolResults("fallback-grok-4.5")).toBe(true);
     expect(supportsMultimodalToolResults("x-ai/grok-4.5")).toBe(true);

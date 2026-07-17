@@ -176,7 +176,24 @@ describe("buildProviderOptions fallback chain", () => {
     });
   });
 
-  it("falls back from Agent Pro vision Grok 4.5 directly to Kimi 2.7 Code", () => {
+  it.each(["ask", "agent"] as const)(
+    "falls back from HackerAI Pro Grok 4.5 to GLM 5.2 then Kimi in %s mode",
+    (mode) => {
+      const opts = buildProviderOptions(
+        mode === "agent",
+        "user-1",
+        "model-grok-4.5-pro",
+        mode,
+      );
+      expect(opts.openrouter).toMatchObject({
+        reasoning: { enabled: true, effort: "high" },
+        models: [GLM_SLUG, KIMI_SLUG],
+        user: "user-1",
+      });
+    },
+  );
+
+  it("keeps the legacy Agent vision Grok route on its direct Kimi fallback", () => {
     const opts = buildProviderOptions(
       true,
       "user-1",
@@ -336,27 +353,31 @@ describe("buildProviderOptions fallback chain", () => {
     });
   });
 
-  it.each(["model-glm-5.2", "model-sonnet-4.6", "model-opus-4.6"])(
-    "enables high reasoning for ask mode model %s",
-    (modelName) => {
-      const opts = buildProviderOptions(false, "user-1", modelName, "ask");
-      expect(opts.openrouter.reasoning).toEqual({
-        enabled: true,
-        effort: "high",
-      });
-    },
-  );
+  it.each([
+    "model-grok-4.5-pro",
+    "model-glm-5.2",
+    "model-sonnet-4.6",
+    "model-opus-4.6",
+  ])("enables high reasoning for ask mode model %s", (modelName) => {
+    const opts = buildProviderOptions(false, "user-1", modelName, "ask");
+    expect(opts.openrouter.reasoning).toEqual({
+      enabled: true,
+      effort: "high",
+    });
+  });
 
-  it.each(["model-glm-5.2", "model-sonnet-4.6", "model-opus-4.6"])(
-    "enables high reasoning for agent mode model %s",
-    (modelName) => {
-      const opts = buildProviderOptions(true, "user-1", modelName, "agent");
-      expect(opts.openrouter.reasoning).toEqual({
-        enabled: true,
-        effort: "high",
-      });
-    },
-  );
+  it.each([
+    "model-grok-4.5-pro",
+    "model-glm-5.2",
+    "model-sonnet-4.6",
+    "model-opus-4.6",
+  ])("enables high reasoning for agent mode model %s", (modelName) => {
+    const opts = buildProviderOptions(true, "user-1", modelName, "agent");
+    expect(opts.openrouter.reasoning).toEqual({
+      enabled: true,
+      effort: "high",
+    });
+  });
 
   it("uses max reasoning for DeepSeek V4 Pro in agent mode", () => {
     const opts = buildProviderOptions(
@@ -435,7 +456,7 @@ describe("isAutoModelSelectionForRetry", () => {
     ).toBe(false);
     expect(
       isAutoModelSelectionForRetry({
-        selectedModel: "model-glm-5.2",
+        selectedModel: "model-grok-4.5-pro",
         selectedModelOverride: "hackerai-pro",
       }),
     ).toBe(false);
@@ -472,7 +493,16 @@ describe("getRetryFallbackModel", () => {
     expect(getRetryFallbackModel("ask-model", "ask")).toBe("fallback-grok-4.5");
   });
 
-  it("retries Agent Pro vision Grok with Kimi 2.7 Code", () => {
+  it("retries HackerAI Pro Grok with GLM 5.2", () => {
+    expect(getRetryFallbackModel("model-grok-4.5-pro", "agent")).toBe(
+      "model-glm-5.2",
+    );
+    expect(getRetryFallbackModel("model-grok-4.5-pro", "ask")).toBe(
+      "model-glm-5.2",
+    );
+  });
+
+  it("retries the legacy Agent vision Grok route with Kimi 2.7 Code", () => {
     expect(getRetryFallbackModel("model-grok-4.5", "agent")).toBe(
       "model-kimi-k2.7-code",
     );
@@ -541,7 +571,31 @@ describe("resolveServedModelForCostAccounting", () => {
     ).toBe("model-grok-4.5");
   });
 
-  it("maps Agent Pro vision Kimi fallback usage back to the Kimi cost key", () => {
+  it("maps HackerAI Pro primary and fallback usage to their exact cost keys", () => {
+    expect(
+      resolveServedModelForCostAccounting({
+        modelName: "model-grok-4.5-pro",
+        responseModel: GROK_SLUG,
+        mode: "agent",
+      }),
+    ).toBe("model-grok-4.5-pro");
+    expect(
+      resolveServedModelForCostAccounting({
+        modelName: "model-grok-4.5-pro",
+        responseModel: GLM_SLUG,
+        mode: "ask",
+      }),
+    ).toBe("model-glm-5.2");
+    expect(
+      resolveServedModelForCostAccounting({
+        modelName: "model-grok-4.5-pro",
+        responseModel: KIMI_SLUG,
+        mode: "agent",
+      }),
+    ).toBe("model-kimi-k2.7-code");
+  });
+
+  it("maps legacy Agent Pro vision Kimi fallback usage back to the Kimi cost key", () => {
     expect(
       resolveServedModelForCostAccounting({
         modelName: "model-grok-4.5",
