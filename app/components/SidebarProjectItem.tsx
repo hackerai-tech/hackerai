@@ -25,14 +25,22 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { usePinProject, useUnpinProject } from "@/app/hooks/useProjects";
 import { ProjectDeleteDialog } from "./ProjectDeleteDialog";
 import { ProjectEditDialog } from "./ProjectEditDialog";
 import { SidebarProjectThreads } from "./SidebarProjectThreads";
 import {
   hasSidebarChatDragData,
+  getSidebarChatDragProjectId,
   SIDEBAR_CHAT_DRAG_TYPE,
 } from "./sidebar-chat-drag";
 
@@ -41,7 +49,7 @@ interface SidebarProjectItemProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onNewThread: () => void;
-  onDropChat: (chatId: string) => Promise<void>;
+  onDropChat: (chatId: string, previousProjectId?: string) => Promise<void>;
 }
 
 export function SidebarProjectItem({
@@ -82,7 +90,8 @@ export function SidebarProjectItem({
     event.preventDefault();
     setIsDragOver(false);
     const chatId = event.dataTransfer.getData(SIDEBAR_CHAT_DRAG_TYPE);
-    if (chatId) void onDropChat(chatId);
+    const previousProjectId = getSidebarChatDragProjectId(event.dataTransfer);
+    if (chatId) void onDropChat(chatId, previousProjectId);
   };
 
   const handleTogglePinned = async () => {
@@ -146,10 +155,19 @@ export function SidebarProjectItem({
               {project.name}
             </span>
             {project.folder_path ? (
-              <Laptop
-                className="size-3.5 shrink-0 text-sidebar-foreground/35"
-                aria-hidden="true"
-              />
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <span className="flex shrink-0 items-center">
+                    <Laptop
+                      className="size-3.5 text-sidebar-foreground/35"
+                      aria-hidden="true"
+                    />
+                  </span>
+                </TooltipTrigger>
+                <TooltipContent side="right" className="max-w-80 break-all">
+                  {project.folder_path}
+                </TooltipContent>
+              </Tooltip>
             ) : null}
           </button>
         </CollapsibleTrigger>
@@ -167,6 +185,17 @@ export function SidebarProjectItem({
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" side="bottom" sideOffset={5}>
+            {project.folder_path ? (
+              <>
+                <DropdownMenuLabel className="flex max-w-72 items-center gap-2 font-normal text-muted-foreground">
+                  <Laptop className="size-4 shrink-0" aria-hidden="true" />
+                  <span className="truncate" title={project.folder_path}>
+                    {project.folder_path}
+                  </span>
+                </DropdownMenuLabel>
+                <DropdownMenuSeparator />
+              </>
+            ) : null}
             <DropdownMenuItem
               disabled={isPinning}
               onSelect={() => void handleTogglePinned()}

@@ -71,7 +71,45 @@ describe("MoveChatToProjectDialog", () => {
       });
     });
     expect(onOpenChange).toHaveBeenCalledWith(false);
-    expect(mockToast.success).toHaveBeenCalledWith("Moved to Acme target");
+    expect(mockToast.success).toHaveBeenCalledWith("Moved to Acme target", {
+      action: expect.objectContaining({ label: "Undo" }),
+    });
+  });
+
+  it("removes a task from its project and can undo", async () => {
+    const onOpenChange = jest.fn();
+
+    render(
+      <MoveChatToProjectDialog
+        chatId="chat-1"
+        currentProjectId={"project-1" as any}
+        open
+        onOpenChange={onOpenChange}
+      />,
+    );
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Remove from project" }),
+    );
+
+    await waitFor(() => {
+      expect(moveChatToProject).toHaveBeenCalledWith({
+        chatId: "chat-1",
+        projectId: null,
+      });
+    });
+    const successOptions = mockToast.success.mock.calls.find(
+      ([message]) => message === "Removed from project",
+    )?.[1] as { action?: { onClick?: () => void } } | undefined;
+    successOptions?.action?.onClick?.();
+
+    await waitFor(() => {
+      expect(moveChatToProject).toHaveBeenCalledWith({
+        chatId: "chat-1",
+        projectId: "project-1",
+      });
+      expect(mockToast.success).toHaveBeenCalledWith("Move undone");
+    });
   });
 
   it("shows an info toast when the chat is already in the project", async () => {

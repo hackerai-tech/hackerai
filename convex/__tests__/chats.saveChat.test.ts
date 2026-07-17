@@ -342,4 +342,29 @@ describe("moveChatToProject", () => {
     });
     expect(patch).not.toHaveBeenCalled();
   });
+
+  it("removes an owned chat from its project", async () => {
+    const { moveChatToProject } = await import("../chats");
+    const { ctx, get, patch } = makeCtx({
+      existingChat: {
+        _id: "chat-doc-1",
+        id: "chat-1",
+        user_id: "user-1",
+        project_id: "project-1",
+      },
+    });
+
+    await expect(
+      moveChatToProject.handler(ctx, {
+        chatId: "chat-1",
+        projectId: null,
+      }),
+    ).resolves.toBe(true);
+
+    expect(get).not.toHaveBeenCalled();
+    expect(patch).toHaveBeenCalledWith("chat-doc-1", {
+      project_id: undefined,
+      update_time: expect.any(Number),
+    });
+  });
 });

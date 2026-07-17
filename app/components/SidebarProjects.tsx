@@ -85,14 +85,42 @@ export function SidebarProjects({
     });
   };
 
-  const handleDropChat = async (project: Doc<"projects">, chatId: string) => {
+  const handleDropChat = async (
+    project: Doc<"projects">,
+    chatId: string,
+    previousProjectId?: string,
+  ) => {
     setProjectOpen(project._id, true);
     try {
       const moved = await moveChatToProject({
         chatId,
         projectId: project._id,
       });
-      if (moved) toast.success(`Moved to ${project.name}`);
+      if (moved) {
+        toast.success(`Moved to ${project.name}`, {
+          action: {
+            label: "Undo",
+            onClick: () => {
+              void moveChatToProject({
+                chatId,
+                projectId: previousProjectId
+                  ? (previousProjectId as Id<"projects">)
+                  : null,
+              }).catch((error) => {
+                console.error("Failed to undo task move:", error);
+                toast.error("Failed to undo move", {
+                  description:
+                    error instanceof Error
+                      ? formatTaskUiCopy(error.message)
+                      : "Please try again.",
+                });
+              });
+            },
+          },
+        });
+      } else {
+        toast.info(`Already in ${project.name}`);
+      }
     } catch (error) {
       console.error("Failed to move chat to project:", error);
       toast.error("Failed to move task", {
@@ -136,7 +164,9 @@ export function SidebarProjects({
               open={openProjectIds.has(project._id)}
               onOpenChange={(open) => setProjectOpen(project._id, open)}
               onNewThread={() => handleNewThread(project)}
-              onDropChat={(chatId) => handleDropChat(project, chatId)}
+              onDropChat={(chatId, previousProjectId) =>
+                handleDropChat(project, chatId, previousProjectId)
+              }
             />
           ))}
 

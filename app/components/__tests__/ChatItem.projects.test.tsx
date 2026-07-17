@@ -31,8 +31,15 @@ jest.mock("../ShareDialog", () => ({
   ShareDialog: () => null,
 }));
 jest.mock("../MoveChatToProjectDialog", () => ({
-  MoveChatToProjectDialog: () => (
-    <div data-testid="move-chat-to-project-dialog" />
+  MoveChatToProjectDialog: ({
+    currentProjectId,
+  }: {
+    currentProjectId?: string;
+  }) => (
+    <div
+      data-testid="move-chat-to-project-dialog"
+      data-project-id={currentProjectId}
+    />
   ),
 }));
 
@@ -46,20 +53,46 @@ describe("ChatItem project actions", () => {
 
   it("reveals an accessible move action when the row receives keyboard focus", async () => {
     const user = userEvent.setup();
-    render(<ChatItem id="chat-1" title="Target notes" />);
+    render(
+      <ChatItem
+        id="chat-1"
+        title="Target notes"
+        projectId={"project-1" as any}
+      />,
+    );
 
     fireEvent.focus(screen.getByRole("button", { name: /Open task:/ }));
-    await user.click(screen.getByRole("button", { name: "Open task options" }));
+    const optionsButton = screen.getByRole("button", {
+      name: "Open task options",
+    });
+    expect(optionsButton).toHaveClass("size-8");
+    expect(optionsButton.querySelector("svg")).toHaveClass("size-[18px]");
+    await user.click(optionsButton);
 
     await user.click(
       await screen.findByRole("menuitem", { name: "Move to project…" }),
     );
 
     await waitFor(() => {
-      expect(
-        screen.getByTestId("move-chat-to-project-dialog"),
-      ).toBeInTheDocument();
+      expect(screen.getByTestId("move-chat-to-project-dialog")).toHaveAttribute(
+        "data-project-id",
+        "project-1",
+      );
     });
+  });
+
+  it("labels the Rename Task field for keyboard and screen-reader users", async () => {
+    const user = userEvent.setup();
+    render(<ChatItem id="chat-1" title="Target notes" />);
+
+    fireEvent.focus(screen.getByRole("button", { name: /Open task:/ }));
+    await user.click(screen.getByRole("button", { name: "Open task options" }));
+    await user.click(await screen.findByRole("menuitem", { name: "Rename" }));
+
+    const input = await screen.findByLabelText("Task name");
+    expect(input).toHaveAttribute("name", "taskTitle");
+    expect(input).toHaveAttribute("autocomplete", "off");
+    expect(input).toHaveAttribute("placeholder", "Task name…");
   });
 
   it("uses compact side padding for standard and project chat rows", () => {

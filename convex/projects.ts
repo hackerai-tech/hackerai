@@ -193,6 +193,7 @@ export const updateProject = mutation({
   args: {
     projectId: v.id("projects"),
     name: v.string(),
+    folderPath: v.optional(v.union(v.string(), v.null())),
   },
   returns: v.null(),
   handler: async (ctx, args) => {
@@ -206,10 +207,22 @@ export const updateProject = mutation({
     await assertUserCanAccessChatHistory(ctx, identity.subject);
     await getOwnedProject(ctx, args.projectId, identity.subject);
 
-    await ctx.db.patch(args.projectId, {
+    const updates: {
+      name: string;
+      updated_at: number;
+      folder_path?: string;
+    } = {
       name: normalizeProjectName(args.name),
       updated_at: Date.now(),
-    });
+    };
+    if (args.folderPath !== undefined) {
+      updates.folder_path =
+        args.folderPath === null
+          ? undefined
+          : normalizeFolderPath(args.folderPath);
+    }
+
+    await ctx.db.patch(args.projectId, updates);
     return null;
   },
 });

@@ -43,6 +43,7 @@ export function SidebarProjectThreads({ project }: SidebarProjectThreadsProps) {
             key={chat._id}
             id={chat.id}
             title={chat.title}
+            projectId={project._id}
             indentContent
             isBranched={!!chat.branched_from_chat_id}
             branchedFromTitle={chat.branched_from_title}

@@ -22,7 +22,7 @@ Object.defineProperty(globalThis, "ResizeObserver", {
 });
 
 jest.mock("sonner", () => ({
-  toast: { success: jest.fn(), error: jest.fn() },
+  toast: { success: jest.fn(), info: jest.fn(), error: jest.fn() },
 }));
 jest.mock("@/app/contexts/GlobalState", () => ({
   useGlobalState: () => ({ desktopBridgeActive: true }),
@@ -47,7 +47,7 @@ jest.mock("../SidebarProjectItem", () => ({
   }: {
     project: Doc<"projects">;
     open: boolean;
-    onDropChat: (chatId: string) => Promise<void>;
+    onDropChat: (chatId: string, previousProjectId?: string) => Promise<void>;
     onOpenChange: (open: boolean) => void;
   }) => (
     <div data-testid={`project-${project._id}`} data-open={String(open)}>
@@ -59,7 +59,7 @@ jest.mock("../SidebarProjectItem", () => ({
       />
       <button
         type="button"
-        onClick={() => void onDropChat("chat-1")}
+        onClick={() => void onDropChat("chat-1", "project-previous")}
         aria-label={`Drop chat in ${project.name}`}
       />
     </div>
@@ -69,6 +69,9 @@ jest.mock("../SidebarProjectItem", () => ({
 const { useMoveChatToProject: mockUseMoveChatToProject } = jest.requireMock<{
   useMoveChatToProject: jest.Mock;
 }>("@/app/hooks/useProjects");
+const { toast: mockToast } = jest.requireMock<{
+  toast: { success: jest.Mock; info: jest.Mock; error: jest.Mock };
+}>("sonner");
 
 const { SidebarProjects } =
   require("../SidebarProjects") as typeof import("../SidebarProjects");
@@ -256,5 +259,15 @@ describe("SidebarProjects", () => {
       "data-open",
       "true",
     );
+
+    const successOptions = mockToast.success.mock.calls[0]?.[1] as
+      { action?: { onClick?: () => void } } | undefined;
+    successOptions?.action?.onClick?.();
+    await waitFor(() => {
+      expect(moveChatToProject).toHaveBeenCalledWith({
+        chatId: "chat-1",
+        projectId: "project-previous",
+      });
+    });
   });
 });

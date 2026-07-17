@@ -3,7 +3,10 @@ import { describe, expect, it, jest } from "@jest/globals";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { Doc } from "@/convex/_generated/dataModel";
-import { SIDEBAR_CHAT_DRAG_TYPE } from "../sidebar-chat-drag";
+import {
+  SIDEBAR_CHAT_DRAG_PROJECT_TYPE,
+  SIDEBAR_CHAT_DRAG_TYPE,
+} from "../sidebar-chat-drag";
 
 const mockProjectThreads = jest.fn(() => (
   <div data-testid="project-threads">Tasks</div>
@@ -75,9 +78,12 @@ describe("SidebarProjectItem", () => {
     const onDropChat = jest
       .fn<() => Promise<void>>()
       .mockResolvedValue(undefined);
-    const values = new Map([[SIDEBAR_CHAT_DRAG_TYPE, "chat-1"]]);
+    const values = new Map([
+      [SIDEBAR_CHAT_DRAG_TYPE, "chat-1"],
+      [SIDEBAR_CHAT_DRAG_PROJECT_TYPE, "project-previous"],
+    ]);
     const dataTransfer = {
-      types: [SIDEBAR_CHAT_DRAG_TYPE],
+      types: [SIDEBAR_CHAT_DRAG_TYPE, SIDEBAR_CHAT_DRAG_PROJECT_TYPE],
       dropEffect: "none",
       getData: (type: string) => values.get(type) ?? "",
     } as DataTransfer;
@@ -97,8 +103,33 @@ describe("SidebarProjectItem", () => {
     expect(dropTarget).toHaveClass("ring-1");
 
     fireEvent.drop(dropTarget, { dataTransfer });
-    expect(onDropChat).toHaveBeenCalledWith("chat-1");
+    expect(onDropChat).toHaveBeenCalledWith("chat-1", "project-previous");
     expect(dropTarget).not.toHaveClass("ring-1");
+  });
+
+  it("shows the linked Desktop folder in the project menu", async () => {
+    const user = userEvent.setup();
+    const linkedProject = {
+      ...project,
+      folder_path: "/Users/hackerai/targets/acme",
+    } as Doc<"projects">;
+
+    render(
+      <SidebarProjectItem
+        project={linkedProject}
+        open={false}
+        onOpenChange={jest.fn()}
+        onNewThread={jest.fn()}
+        onDropChat={jest.fn<() => Promise<void>>().mockResolvedValue(undefined)}
+      />,
+    );
+
+    await user.click(
+      screen.getByRole("button", { name: "Project options for Acme" }),
+    );
+    expect(
+      await screen.findByText("/Users/hackerai/targets/acme"),
+    ).toBeInTheDocument();
   });
 
   it("offers pin, edit, and delete actions from the project menu", async () => {

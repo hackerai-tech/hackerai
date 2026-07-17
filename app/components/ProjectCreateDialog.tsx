@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { FolderOpen, Laptop, X } from "lucide-react";
+import { FolderOpen, X } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import {
@@ -44,6 +44,11 @@ export function ProjectCreateDialog({
   const [isPickingFolder, setIsPickingFolder] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const isDesktopApp = isTauriEnvironment();
+  const folderHelpText = folderPath
+    ? desktopBridgeActive
+      ? "New Agent tasks will start in this folder."
+      : "This folder will be ready for Agent tasks when Desktop finishes connecting."
+    : "Use an existing folder to make new Agent tasks start there, or skip this for a lightweight project.";
 
   useEffect(() => {
     if (!open) {
@@ -106,8 +111,9 @@ export function ProjectCreateDialog({
           <DialogHeader>
             <DialogTitle>Create project</DialogTitle>
             <DialogDescription>
-              Group related tasks. Desktop projects can also start Agent in a
-              selected local folder.
+              {isDesktopApp
+                ? "Group related tasks and optionally link a local folder for Agent."
+                : "Group related tasks in one place."}
             </DialogDescription>
           </DialogHeader>
 
@@ -128,12 +134,18 @@ export function ProjectCreateDialog({
             </div>
 
             {isDesktopApp ? (
-              <div className="space-y-2">
-                <p className="text-sm font-medium leading-none">
+              <div className="space-y-2" aria-labelledby="project-folder-label">
+                <p
+                  id="project-folder-label"
+                  className="text-sm font-medium leading-none"
+                >
                   Local folder (optional)
                 </p>
                 {folderPath ? (
-                  <div className="flex items-center gap-2 rounded-lg border bg-muted/30 p-3">
+                  <div
+                    className="flex items-center gap-2 rounded-lg border bg-muted/30 p-3"
+                    aria-describedby="project-folder-help"
+                  >
                     <FolderOpen className="size-4 shrink-0 text-muted-foreground" />
                     <span
                       className="min-w-0 flex-1 truncate font-mono text-xs"
@@ -160,17 +172,20 @@ export function ProjectCreateDialog({
                     className="w-full justify-start"
                     onClick={handleChooseFolder}
                     disabled={isPickingFolder || isSaving}
+                    aria-describedby="project-folder-help"
                   >
-                    <Laptop className="size-4" />
+                    <FolderOpen className="size-4" />
                     {isPickingFolder
                       ? "Opening folder picker…"
-                      : "Choose folder"}
+                      : "Use existing folder"}
                   </Button>
                 )}
-                <p className="text-xs text-muted-foreground">
-                  {desktopBridgeActive
-                    ? "New Agent tasks in this project will use the selected folder as their working directory."
-                    : "You can choose a folder while Desktop connects. Agent tasks will be available once it is connected."}
+                <p
+                  id="project-folder-help"
+                  className="text-xs text-muted-foreground"
+                  aria-live="polite"
+                >
+                  {folderHelpText}
                 </p>
               </div>
             ) : null}
@@ -189,7 +204,7 @@ export function ProjectCreateDialog({
               type="submit"
               disabled={!name.trim() || isSaving || isPickingFolder}
             >
-              {isSaving ? "Creating…" : "Create"}
+              {isSaving ? "Creating…" : "Create project"}
             </Button>
           </DialogFooter>
         </form>

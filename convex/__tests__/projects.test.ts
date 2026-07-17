@@ -16,6 +16,7 @@ jest.mock("convex/values", () => ({
     null: jest.fn(() => "null"),
     string: jest.fn(() => "string"),
     optional: jest.fn(() => "optional"),
+    union: jest.fn(() => "union"),
   },
   ConvexError: class ConvexError extends Error {
     data: unknown;
@@ -176,6 +177,28 @@ describe("projects", () => {
     });
     expect(patch).toHaveBeenCalledWith("project-1", {
       name: "Renamed",
+      updated_at: expect.any(Number),
+    });
+
+    await updateProject.handler(ctx as any, {
+      projectId: "project-1" as any,
+      name: "Renamed",
+      folderPath: "  /Users/hackerai/targets/renamed  ",
+    });
+    expect(patch).toHaveBeenCalledWith("project-1", {
+      name: "Renamed",
+      folder_path: "/Users/hackerai/targets/renamed",
+      updated_at: expect.any(Number),
+    });
+
+    await updateProject.handler(ctx as any, {
+      projectId: "project-1" as any,
+      name: "Renamed",
+      folderPath: null,
+    });
+    expect(patch).toHaveBeenCalledWith("project-1", {
+      name: "Renamed",
+      folder_path: undefined,
       updated_at: expect.any(Number),
     });
 

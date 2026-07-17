@@ -1203,7 +1203,7 @@ export const deleteChatForBackendBatch = internalMutation({
 export const moveChatToProject = mutation({
   args: {
     chatId: v.string(),
-    projectId: v.id("projects"),
+    projectId: v.union(v.id("projects"), v.null()),
   },
   returns: v.boolean(),
   handler: async (ctx, args) => {
@@ -1216,13 +1216,10 @@ export const moveChatToProject = mutation({
     }
     await assertUserCanAccessChatHistory(ctx, user.subject);
 
-    const [chat, project] = await Promise.all([
-      ctx.db
-        .query("chats")
-        .withIndex("by_chat_id", (q) => q.eq("id", args.chatId))
-        .first(),
-      ctx.db.get(args.projectId),
-    ]);
+    const chat = await ctx.db
+      .query("chats")
+      .withIndex("by_chat_id", (q) => q.eq("id", args.chatId))
+      .first();
 
     if (!chat) {
       throw new ConvexError({
@@ -1236,6 +1233,17 @@ export const moveChatToProject = mutation({
         message: "Unauthorized: Chat does not belong to user",
       });
     }
+
+    if (args.projectId === null) {
+      if (chat.project_id === undefined) return false;
+      await ctx.db.patch(chat._id, {
+        project_id: undefined,
+        update_time: Date.now(),
+      });
+      return true;
+    }
+
+    const project = await ctx.db.get(args.projectId);
     if (
       !project ||
       project.user_id !== user.subject ||

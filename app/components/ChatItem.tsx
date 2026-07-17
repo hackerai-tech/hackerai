@@ -1,12 +1,14 @@
 "use client";
 
-import React, { useEffect, useState, useRef } from "react";
+import React, { useEffect, useId, useState, useRef } from "react";
 import { useRouter, usePathname } from "next/navigation";
 import { ConvexError } from "convex/values";
 import { useGlobalState } from "../contexts/GlobalState";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import type { Id } from "@/convex/_generated/dataModel";
 import { toast } from "sonner";
 import {
   DropdownMenu,
@@ -63,6 +65,7 @@ import { formatTaskTitle, formatTaskUiCopy } from "@/app/utils/task-ui-copy";
 interface ChatItemProps {
   id: string;
   title: string;
+  projectId?: Id<"projects">;
   indentContent?: boolean;
   isBranched?: boolean;
   branchedFromTitle?: string;
@@ -86,6 +89,7 @@ const getRouteChatIdFromPathname = (pathname: string | null): string | null => {
 const ChatItem: React.FC<ChatItemProps> = ({
   id,
   title,
+  projectId,
   indentContent = false,
   isBranched = false,
   branchedFromTitle,
@@ -109,6 +113,7 @@ const ChatItem: React.FC<ChatItemProps> = ({
   const [isDragging, setIsDragging] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const suppressClickAfterDragRef = useRef(false);
+  const renameInputId = useId();
 
   const {
     closeSidebar,
@@ -138,9 +143,11 @@ const ChatItem: React.FC<ChatItemProps> = ({
   const rightPaddingClass =
     isMobile && showActions && showStreamingIndicator
       ? "pr-14"
-      : showActions || showStreamingIndicator
-        ? "pr-7"
-        : "";
+      : showActions
+        ? "pr-9"
+        : showStreamingIndicator
+          ? "pr-7"
+          : "";
   const rowStartPaddingClass = indentContent ? "ps-6" : "ps-2";
 
   useEffect(() => {
@@ -152,7 +159,7 @@ const ChatItem: React.FC<ChatItemProps> = ({
   const handleDragStart = (event: React.DragEvent<HTMLDivElement>) => {
     suppressClickAfterDragRef.current = true;
     setIsDragging(true);
-    setSidebarChatDragData(event.dataTransfer, id);
+    setSidebarChatDragData(event.dataTransfer, id, projectId);
   };
 
   const handleDragEnd = () => {
@@ -463,7 +470,7 @@ const ChatItem: React.FC<ChatItemProps> = ({
               <Button
                 variant="ghost"
                 size="sm"
-                className="h-6 w-6 p-0 hover:bg-sidebar-accent"
+                className="size-8 p-0 hover:bg-sidebar-accent"
                 tabIndex={showActions ? 0 : -1}
                 onClick={(e) => {
                   e.stopPropagation();
@@ -471,7 +478,7 @@ const ChatItem: React.FC<ChatItemProps> = ({
                 }}
                 aria-label="Open task options"
               >
-                <Ellipsis className="h-4 w-4" />
+                <Ellipsis className="size-[18px]" />
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent
@@ -526,16 +533,20 @@ const ChatItem: React.FC<ChatItemProps> = ({
             </DialogDescription>
           </DialogHeader>
           <div className="grid gap-4 py-4">
+            <Label htmlFor={renameInputId}>Task name</Label>
             <Input
               ref={inputRef}
+              id={renameInputId}
+              name="taskTitle"
+              autoComplete="off"
               value={editTitle}
               onChange={(e) => setEditTitle(e.target.value)}
               onKeyDown={handleInputKeyDown}
               disabled={isRenaming}
-              placeholder="Task name"
+              placeholder="Task name…"
               maxLength={100}
               className="w-full"
-              autoFocus
+              autoFocus={isMobile === false}
             />
           </div>
           <DialogFooter>
@@ -552,7 +563,7 @@ const ChatItem: React.FC<ChatItemProps> = ({
               onClick={handleSaveRename}
               disabled={isRenaming || !editTitle.trim()}
             >
-              {isRenaming ? "Saving..." : "Save"}
+              {isRenaming ? "Saving…" : "Save"}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -570,6 +581,7 @@ const ChatItem: React.FC<ChatItemProps> = ({
       {showMoveProjectDialog ? (
         <MoveChatToProjectDialog
           chatId={id}
+          currentProjectId={projectId}
           open={showMoveProjectDialog}
           onOpenChange={setShowMoveProjectDialog}
         />
@@ -609,7 +621,7 @@ const ChatItem: React.FC<ChatItemProps> = ({
               disabled={isDeleting}
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
             >
-              {isDeleting ? "Deleting..." : "Delete"}
+              {isDeleting ? "Deleting…" : "Delete"}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
