@@ -733,6 +733,62 @@ describe("file tool image view", () => {
     expect(commandRun).not.toHaveBeenCalled();
   });
 
+  test.each([
+    ["extensionless PNG", "/tmp/screenshot", "image/png"],
+    ["renamed JPEG", "/tmp/screenshot.data", "image/jpeg"],
+  ])(
+    "redirects %s reads after bounded content inspection",
+    async (_label, path, imageMediaType) => {
+      const commandRun = jest.fn(async () => ({
+        stdout: JSON.stringify({
+          path,
+          sizeBytes: 68,
+          totalLines: 0,
+          imageMediaType,
+        }),
+        stderr: "",
+        exitCode: 0,
+      }));
+      const sandbox = makeSandbox(commandRun);
+      const tool = createFile(
+        makeContext(sandbox, { modelName: "model-deepseek-v4-pro" }),
+      );
+
+      await expect(
+        runTool(tool, {
+          action: "read",
+          path,
+          brief: "Inspect the screenshot",
+        }),
+      ).resolves.toEqual({
+        error:
+          "Raster image files cannot be read as text. Use the view action instead; Agent will automatically route image inspection to a vision-capable model when necessary.",
+      });
+      expect(commandRun).toHaveBeenCalledTimes(1);
+      expect(sandbox.files.read).not.toHaveBeenCalled();
+    },
+  );
+
+  test("redirects JPEG alias extensions without sandbox inspection", async () => {
+    const commandRun = jest.fn<Promise<FakeCommandResult>, [string, any?]>();
+    const sandbox = makeSandbox(commandRun);
+    const tool = createFile(
+      makeContext(sandbox, { modelName: "model-deepseek-v4-pro" }),
+    );
+
+    await expect(
+      runTool(tool, {
+        action: "read",
+        path: "/tmp/screenshot.jfif",
+        brief: "Inspect the screenshot",
+      }),
+    ).resolves.toEqual({
+      error:
+        "Raster image files cannot be read as text. Use the view action instead; Agent will automatically route image inspection to a vision-capable model when necessary.",
+    });
+    expect(commandRun).not.toHaveBeenCalled();
+  });
+
   test("logs initial inspection failures with safe path diagnostics", async () => {
     const commandRun = jest.fn(async () => ({
       stdout: JSON.stringify({
