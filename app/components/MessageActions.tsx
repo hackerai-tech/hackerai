@@ -353,13 +353,13 @@ export const MessageActions = ({
             {/* Show branch only for assistant messages and not in temporary chats */}
             {!isUser && onBranch && !isTemporaryChat && (
               <WithTooltip
-                display={"Branch in new chat"}
+                display={"Branch in new task"}
                 trigger={
                   <button
                     type="button"
                     onClick={onBranch}
                     className="p-1.5 opacity-70 hover:opacity-100 transition-opacity rounded hover:bg-secondary text-muted-foreground"
-                    aria-label="Branch in new chat"
+                    aria-label="Branch in new task"
                   >
                     <Split size={16} />
                   </button>

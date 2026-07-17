@@ -64,6 +64,7 @@ export const createTools = (
   onToolFailure?: ToolFailureLogger,
   requestToolApproval?: AgentToolApprovalRequester,
   measureAgentActiveTime?: AgentActiveTimeMeasurer,
+  workingDirectory?: string,
 ) => {
   let sandbox: AnySandbox | null = null;
   let sandboxFirstUsedAt: number | null = null;
@@ -99,6 +100,7 @@ export const createTools = (
           isE2BSandbox(sandbox) ? sandbox : null,
           subscription,
           onSandboxBoot,
+          workingDirectory,
         )
       : new DefaultSandboxManager(
           userID,

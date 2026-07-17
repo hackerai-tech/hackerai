@@ -6,7 +6,11 @@ import type {
   SandboxType,
   SubscriptionTier,
 } from "@/types";
-import { CentrifugoSandbox, type CentrifugoConfig } from "./centrifugo-sandbox";
+import {
+  CentrifugoSandbox,
+  serializePromptText,
+  type CentrifugoConfig,
+} from "./centrifugo-sandbox";
 import { isCentrifugoSandbox, type ConnectionInfo } from "./sandbox-types";
 import { ensureSandboxConnection } from "./sandbox";
 import { getConvexClient } from "@/lib/db/convex-client";
@@ -228,6 +232,7 @@ export class HybridSandboxManager implements SandboxManager {
     initialSandbox?: Sandbox | null,
     private subscription?: SubscriptionTier,
     private onBoot?: (info: SandboxBootInfo) => void,
+    private workingDirectory?: string,
   ) {
     this.sandbox = initialSandbox || null;
   }
@@ -576,6 +581,7 @@ export class HybridSandboxManager implements SandboxManager {
       this.userID,
       connection,
       centrifugoConfig,
+      this.workingDirectory,
     );
     this.isLocal = true;
     this.currentConnectionId = connection.connectionId;
@@ -732,6 +738,7 @@ System Environment:
 - Mode: DANGEROUS (no Docker isolation)
 - User attachments: ${uploadPath}
 - Interactive terminal: ${connection.capabilities?.pty === false ? "unavailable" : "available"}
+${this.workingDirectory ? `- Active project folder: ${serializePromptText(this.workingDirectory)}\n- Run commands from this folder by default and resolve relative file paths from it.` : ""}
 
 Security Warning:
 - File system operations affect the host directly

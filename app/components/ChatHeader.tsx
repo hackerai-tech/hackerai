@@ -24,6 +24,7 @@ import {
 import { ShareDialog } from "./ShareDialog";
 import { navigateToAuth } from "@/app/hooks/useTauri";
 import { captureUpgradeCtaImpression } from "@/lib/analytics/client";
+import { formatTaskTitle } from "@/app/utils/task-ui-copy";
 
 interface ChatHeaderProps {
   hasMessages: boolean;
@@ -69,6 +70,7 @@ const ChatHeader: React.FC<ChatHeaderProps> = ({
   const router = useRouter();
   const isMobile = useIsMobile();
   const [showShareDialog, setShowShareDialog] = useState(false);
+  const taskTitle = chatTitle ? formatTaskTitle(chatTitle) : chatTitle;
 
   // Show sidebar toggle for logged-in users
   const showSidebarToggle = user && !loading;
@@ -154,7 +156,7 @@ const ChatHeader: React.FC<ChatHeaderProps> = ({
                         <Button
                           variant={temporaryChatsEnabled ? "default" : "ghost"}
                           size="sm"
-                          aria-label="Toggle temporary chats for new chats"
+                          aria-label="Toggle temporary tasks for new tasks"
                           aria-pressed={temporaryChatsEnabled}
                           onClick={() =>
                             setTemporaryChatsEnabled(!temporaryChatsEnabled)
@@ -167,8 +169,8 @@ const ChatHeader: React.FC<ChatHeaderProps> = ({
                       <TooltipContent>
                         <p>
                           {temporaryChatsEnabled
-                            ? "Turn off temporary chat"
-                            : "Turn on temporary chat"}
+                            ? "Turn off temporary task"
+                            : "Turn on temporary task"}
                         </p>
                       </TooltipContent>
                     </Tooltip>
@@ -206,7 +208,7 @@ const ChatHeader: React.FC<ChatHeaderProps> = ({
                 <Button
                   variant="ghost"
                   size="icon"
-                  aria-label="Toggle chat sidebar"
+                  aria-label="Toggle task sidebar"
                   onClick={toggleChatSidebar}
                   className="h-7 w-7 mr-2"
                 >
@@ -234,7 +236,7 @@ const ChatHeader: React.FC<ChatHeaderProps> = ({
                       <Button
                         variant={temporaryChatsEnabled ? "default" : "ghost"}
                         size="icon"
-                        aria-label="Toggle temporary chats for new chats"
+                        aria-label="Toggle temporary tasks for new tasks"
                         aria-pressed={temporaryChatsEnabled}
                         onClick={() =>
                           setTemporaryChatsEnabled(!temporaryChatsEnabled)
@@ -247,8 +249,8 @@ const ChatHeader: React.FC<ChatHeaderProps> = ({
                     <TooltipContent>
                       <p>
                         {temporaryChatsEnabled
-                          ? "Turn off temporary chat"
-                          : "Turn on temporary chat"}
+                          ? "Turn off temporary task"
+                          : "Turn on temporary task"}
                       </p>
                     </TooltipContent>
                   </Tooltip>
@@ -290,7 +292,7 @@ const ChatHeader: React.FC<ChatHeaderProps> = ({
           open={showShareDialog}
           onOpenChange={setShowShareDialog}
           chatId={id || ""}
-          chatTitle={chatTitle || ""}
+          chatTitle={taskTitle || ""}
           existingShareId={chatData?.share_id}
         />
         <div className="px-4 bg-background flex-shrink-0">
@@ -314,7 +316,7 @@ const ChatHeader: React.FC<ChatHeaderProps> = ({
                     ""
                   ) : !isExistingChat && temporaryChatsEnabled ? (
                     <>
-                      Temporary Chat
+                      Temporary Task
                       <HatGlasses className="size-5" />
                     </>
                   ) : (
@@ -333,7 +335,7 @@ const ChatHeader: React.FC<ChatHeaderProps> = ({
                           </Tooltip>
                         </TooltipProvider>
                       )}
-                      {chatTitle || (isExistingChat ? " " : "New Chat")}
+                      {taskTitle || (isExistingChat ? " " : "New Task")}
                     </>
                   )}
                 </span>
@@ -348,7 +350,7 @@ const ChatHeader: React.FC<ChatHeaderProps> = ({
                   data-testid="share-chat-button"
                   onClick={() => setShowShareDialog(true)}
                   className={`relative flex-shrink-0 rounded-full h-[34px] px-3 py-0 text-sm font-medium transition-colors hover:bg-[#ffffff1a] max-md:hidden ${
-                    isExistingChat && id && chatTitle
+                    isExistingChat && id && taskTitle
                       ? ""
                       : "invisible pointer-events-none"
                   }`}
@@ -366,7 +368,7 @@ const ChatHeader: React.FC<ChatHeaderProps> = ({
                   <Button
                     variant="ghost"
                     size="icon"
-                    aria-label="Start new chat"
+                    aria-label="Start new task"
                     onClick={handleNewChat}
                     className="h-7 w-7"
                   >

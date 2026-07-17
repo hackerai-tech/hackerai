@@ -30,6 +30,7 @@ import {
   MIN_MESSAGE_SEARCH_QUERY_LENGTH,
   splitTextBySearchTerm,
 } from "@/lib/utils/message-search";
+import { formatTaskTitle } from "@/app/utils/task-ui-copy";
 
 interface MessageSearchResult {
   id: string;
@@ -360,9 +361,9 @@ export const MessageSearchDialog: React.FC<MessageSearchDialogProps> = ({
                       size={48}
                       className="mx-auto mb-4 opacity-50"
                     />
-                    <p className="text-sm">No chats yet</p>
+                    <p className="text-sm">No tasks yet</p>
                     <p className="text-xs mt-2">
-                      Start a conversation to see your chats here
+                      Start a task to see your tasks here
                     </p>
                   </div>
                 </div>
@@ -398,7 +399,7 @@ export const MessageSearchDialog: React.FC<MessageSearchDialogProps> = ({
                                 className="text-muted-foreground shrink-0"
                               />
                               <span className="text-sm font-medium truncate">
-                                {chat.title}
+                                {formatTaskTitle(chat.title)}
                               </span>
                             </div>
                           </div>
@@ -416,7 +417,7 @@ export const MessageSearchDialog: React.FC<MessageSearchDialogProps> = ({
                         ref={chatsLoaderRef}
                         className="flex justify-center py-4 text-muted-foreground"
                       >
-                        <div className="text-sm">Scroll for more chats...</div>
+                        <div className="text-sm">Scroll for more tasks...</div>
                       </div>
                     )}
 
@@ -424,7 +425,7 @@ export const MessageSearchDialog: React.FC<MessageSearchDialogProps> = ({
                   {chatsQuery.isLoading && chats.length > 0 && (
                     <div className="flex justify-center py-4">
                       <Loader2 className="animate-spin mr-2" size={16} />
-                      <span className="text-sm">Loading more chats...</span>
+                      <span className="text-sm">Loading more tasks...</span>
                     </div>
                   )}
                 </div>
@@ -468,7 +469,9 @@ export const MessageSearchDialog: React.FC<MessageSearchDialogProps> = ({
                         {getMatchIcon()}
                         <span className="text-sm font-medium truncate">
                           {highlightSearchTerm(
-                            message.chat_title || "Untitled Chat",
+                            message.chat_title
+                              ? formatTaskTitle(message.chat_title)
+                              : "Untitled Task",
                             message.match_type === "title" ||
                               message.match_type === "both"
                               ? trimmedDebouncedQuery

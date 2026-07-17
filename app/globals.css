@@ -4,6 +4,7 @@
 
 @custom-variant dark (&:is(.dark *));
 @custom-variant desktop (@media (min-width: 950px));
+@custom-variant touch-device (@media (hover: none));
 
 @theme inline {
   --color-background: var(--background);

@@ -5,18 +5,24 @@ import { MessageSquare } from "lucide-react";
 import ChatItem from "./ChatItem";
 import Loading from "@/components/ui/loading";
 
+export type SidebarPaginationStatus =
+  "LoadingFirstPage" | "CanLoadMore" | "LoadingMore" | "Exhausted";
+
 interface SidebarHistoryProps {
   chats: any[];
-  paginationStatus?:
-    "LoadingFirstPage" | "CanLoadMore" | "LoadingMore" | "Exhausted";
+  paginationStatus?: SidebarPaginationStatus;
   loadMore?: (numItems: number) => void;
   containerRef?: React.RefObject<HTMLDivElement | null>;
+  showEmptyState?: boolean;
+  testId?: string;
 }
 
 const SidebarHistory: React.FC<SidebarHistoryProps> = ({
   chats,
   paginationStatus,
   loadMore,
+  showEmptyState = true,
+  testId = "sidebar-chat-list",
 }) => {
   const loaderRef = useRef<HTMLDivElement>(null);
   const observerRef = useRef<IntersectionObserver | null>(null);
@@ -29,7 +35,7 @@ const SidebarHistory: React.FC<SidebarHistoryProps> = ({
       observerRef.current.disconnect();
     }
 
-    if (paginationStatus === "CanLoadMore" && chats.length > 0 && loadMore) {
+    if (paginationStatus === "CanLoadMore" && loadMore) {
       const options: IntersectionObserverInit = {
         root: null,
         rootMargin: "50px",
@@ -72,7 +78,11 @@ const SidebarHistory: React.FC<SidebarHistoryProps> = ({
     );
   }
 
-  if (!chats || chats.length === 0) {
+  const isWaitingForMore =
+    paginationStatus === "CanLoadMore" || paginationStatus === "LoadingMore";
+
+  if ((!chats || chats.length === 0) && !isWaitingForMore) {
+    if (!showEmptyState) return null;
     // Empty state
     return (
       <div
@@ -81,10 +91,10 @@ const SidebarHistory: React.FC<SidebarHistoryProps> = ({
       >
         <MessageSquare className="w-12 h-12 text-sidebar-accent-foreground mb-4" />
         <h3 className="text-lg font-medium text-sidebar-foreground mb-2">
-          No chats yet
+          No tasks yet
         </h3>
         <p className="text-sm text-sidebar-accent-foreground mb-4">
-          Start a conversation to see your chat history here
+          Start a task to see your task history here
         </p>
       </div>
     );
@@ -92,12 +102,13 @@ const SidebarHistory: React.FC<SidebarHistoryProps> = ({
 
   // Chat list with buttons (same for mobile and desktop)
   return (
-    <div className="p-2 space-y-1" data-testid="sidebar-chat-list">
+    <div className="space-y-1 py-2" data-testid={testId}>
       {chats.map((chat: any) => (
         <ChatItem
           key={chat._id}
           id={chat.id}
           title={chat.title}
+          projectId={chat.project_id}
           isBranched={!!chat.branched_from_chat_id}
           branchedFromTitle={chat.branched_from_title}
           shareId={chat.share_id}
@@ -119,7 +130,7 @@ const SidebarHistory: React.FC<SidebarHistoryProps> = ({
       )}
 
       {/* Sentinel for IntersectionObserver – load more when scrolled into view */}
-      {paginationStatus === "CanLoadMore" && chats.length > 0 && (
+      {paginationStatus === "CanLoadMore" && (
         <div
           ref={loaderRef}
           data-testid="sidebar-load-more-sentinel"

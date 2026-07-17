@@ -56,7 +56,7 @@ describe("ChatHeader temporary chat entitlement", () => {
 
     expect(
       screen.queryByRole("button", {
-        name: "Toggle temporary chats for new chats",
+        name: "Toggle temporary tasks for new tasks",
       }),
     ).not.toBeInTheDocument();
   });
@@ -68,7 +68,7 @@ describe("ChatHeader temporary chat entitlement", () => {
 
     expect(
       screen.getAllByRole("button", {
-        name: "Toggle temporary chats for new chats",
+        name: "Toggle temporary tasks for new tasks",
       }),
     ).toHaveLength(2);
   });

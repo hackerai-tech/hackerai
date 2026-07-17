@@ -18,6 +18,7 @@ import {
 import { toast } from "sonner";
 import { Copy, Trash2, ExternalLink, Share2 } from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
+import { formatTaskTitle } from "@/app/utils/task-ui-copy";
 
 const SharedLinksTab = () => {
   const sharedChats = useQuery(api.sharedChats.getUserSharedChats);
@@ -33,7 +34,7 @@ const SharedLinksTab = () => {
     const shareUrl = `${window.location.origin}/share/${shareId}`;
     try {
       await navigator.clipboard.writeText(shareUrl);
-      toast.success(`Link copied for "${chatTitle}"`);
+      toast.success(`Link copied for "${formatTaskTitle(chatTitle)}"`);
     } catch (error) {
       console.error("Failed to copy share link:", error);
       toast.error("Unable to copy link. Please copy manually.");
@@ -50,10 +51,10 @@ const SharedLinksTab = () => {
     setIsUnsharing(true);
     try {
       await unshareChat({ chatId });
-      toast.success(`"${chatTitle}" is no longer shared`);
+      toast.success(`"${formatTaskTitle(chatTitle)}" is no longer shared`);
     } catch (error) {
       console.error("Failed to unshare chat:", error);
-      toast.error("Failed to unshare chat");
+      toast.error("Failed to unshare task");
     } finally {
       setUnshareTarget(null);
       setIsUnsharing(false);
@@ -65,10 +66,10 @@ const SharedLinksTab = () => {
     setIsUnsharingAll(true);
     try {
       await unshareAllChats();
-      toast.success("All chats unshared successfully");
+      toast.success("All tasks unshared successfully");
     } catch (error) {
       console.error("Failed to unshare all chats:", error);
-      toast.error("Failed to unshare all chats");
+      toast.error("Failed to unshare all tasks");
     } finally {
       setShowUnshareAll(false);
       setIsUnsharingAll(false);
@@ -98,9 +99,9 @@ const SharedLinksTab = () => {
       <div className="space-y-6 min-h-0">
         <div className="flex flex-col items-center justify-center py-12 text-center">
           <Share2 className="h-12 w-12 text-muted-foreground mb-4" />
-          <h3 className="text-lg font-medium mb-2">No shared chats</h3>
+          <h3 className="text-lg font-medium mb-2">No shared tasks</h3>
           <p className="text-sm text-muted-foreground max-w-sm">
-            When you share a chat, it will appear here. You can manage all your
+            When you share a task, it will appear here. You can manage all your
             shared links from this page.
           </p>
         </div>
@@ -114,7 +115,7 @@ const SharedLinksTab = () => {
       <div className="flex items-center justify-between">
         <div>
           <h3 className="text-sm font-medium">
-            Shared Chats ({sharedChats.length})
+            Shared Tasks ({sharedChats.length})
           </h3>
           <p className="text-xs text-muted-foreground mt-1">
             Manage your publicly shared conversations
@@ -125,7 +126,7 @@ const SharedLinksTab = () => {
             variant="outline"
             size="sm"
             onClick={() => setShowUnshareAll(true)}
-            aria-label="Unshare all chats"
+            aria-label="Unshare all tasks"
           >
             Unshare All
           </Button>
@@ -140,7 +141,9 @@ const SharedLinksTab = () => {
             className="flex items-center justify-between p-4 rounded-lg border bg-card hover:bg-accent/50 transition-colors"
           >
             <div className="flex-1 min-w-0 mr-4">
-              <div className="font-medium truncate">{chat.title}</div>
+              <div className="font-medium truncate">
+                {formatTaskTitle(chat.title)}
+              </div>
               <div className="text-xs text-muted-foreground mt-1">
                 Shared {formatShareDate(chat.share_date!)}
               </div>
@@ -159,7 +162,7 @@ const SharedLinksTab = () => {
                 variant="ghost"
                 size="sm"
                 onClick={() => handleOpenShare(chat.share_id!)}
-                aria-label="Open shared chat"
+                aria-label="Open shared task"
                 title="Open in new tab"
               >
                 <ExternalLink className="h-4 w-4" />
@@ -168,7 +171,7 @@ const SharedLinksTab = () => {
                 variant="ghost"
                 size="sm"
                 onClick={() => setUnshareTarget(chat.id)}
-                aria-label="Unshare chat"
+                aria-label="Unshare task"
                 title="Unshare"
                 className="text-destructive hover:text-destructive hover:bg-destructive/10"
               >
@@ -186,10 +189,10 @@ const SharedLinksTab = () => {
       >
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Unshare this chat?</AlertDialogTitle>
+            <AlertDialogTitle>Unshare this task?</AlertDialogTitle>
             <AlertDialogDescription>
               The public link will stop working and no one will be able to
-              access this shared chat anymore. You can always share it again
+              access this shared task anymore. You can always share it again
               later.
             </AlertDialogDescription>
           </AlertDialogHeader>
@@ -219,11 +222,11 @@ const SharedLinksTab = () => {
       <AlertDialog open={showUnshareAll} onOpenChange={setShowUnshareAll}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Unshare all chats?</AlertDialogTitle>
+            <AlertDialogTitle>Unshare all tasks?</AlertDialogTitle>
             <AlertDialogDescription>
               This will remove public access to all {sharedChats.length} of your
-              shared chats. All share links will stop working. You can always
-              share your chats again later.
+              shared tasks. All share links will stop working. You can always
+              share your tasks again later.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

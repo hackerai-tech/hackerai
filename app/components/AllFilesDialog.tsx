@@ -17,6 +17,7 @@ import type { FilePart } from "@/types/file";
 import JSZip from "jszip";
 import { toast } from "sonner";
 import { isTauriEnvironment, openDownloadsFolder } from "@/app/hooks/useTauri";
+import { formatTaskTitle } from "@/app/utils/task-ui-copy";
 
 interface AllFilesDialogProps {
   open: boolean;
@@ -360,17 +361,17 @@ const AllFilesDialog = ({
       link.href = blobUrl;
 
       // Create filename from chat title or use fallback
-      let fileName = "chat-files";
+      let fileName = "task-files";
       if (chatTitle) {
         // Sanitize the title for use in filename
-        fileName = chatTitle
+        fileName = formatTaskTitle(chatTitle)
           .replace(/[^a-zA-Z0-9-_ ]/g, "") // Remove invalid characters
           .replace(/\s+/g, "-") // Replace spaces with hyphens
           .substring(0, 50); // Limit length
       }
       if (!fileName || fileName === "") {
         const timestamp = new Date().toISOString().split("T")[0];
-        fileName = `chat-files-${timestamp}`;
+        fileName = `task-files-${timestamp}`;
       }
 
       link.download = `${fileName}.zip`;
@@ -408,9 +409,9 @@ const AllFilesDialog = ({
         style={{ width: "600px" }}
         showCloseButton={false}
       >
-        <DialogTitle className="sr-only">All files in this chat</DialogTitle>
+        <DialogTitle className="sr-only">All files in this task</DialogTitle>
         <DialogDescription className="sr-only">
-          Download files attached to this chat.
+          Download files attached to this task.
         </DialogDescription>
         {selectionMode ? (
           <header className="flex items-center justify-between pt-6 pr-6 pl-6 pb-2.5">
@@ -439,7 +440,7 @@ const AllFilesDialog = ({
         ) : (
           <header className="flex items-center pt-6 pr-6 pl-6 pb-2.5">
             <h1 className="flex-1 text-foreground text-lg font-semibold">
-              All files in this chat
+              All files in this task
             </h1>
             <div className="flex items-center gap-2">
               <Button
