@@ -37,7 +37,7 @@ describe("useSourceMessageNavigation", () => {
         block: "start",
       });
       expect(target).toHaveFocus();
-      expect(escapeStickyBottom).toHaveBeenCalled();
+      expect(escapeStickyBottom).toHaveBeenCalledTimes(1);
     });
 
     window.removeEventListener(STICKY_BOTTOM_ESCAPE_EVENT, escapeStickyBottom);

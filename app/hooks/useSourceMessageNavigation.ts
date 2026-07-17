@@ -45,7 +45,6 @@ export function useSourceMessageNavigation({
       if (scrolledMessageIdRef.current === sourceMessageId) return;
 
       scrolledMessageIdRef.current = sourceMessageId;
-      window.dispatchEvent(new CustomEvent(STICKY_BOTTOM_ESCAPE_EVENT));
       target.dispatchEvent(
         new CustomEvent(STICKY_BOTTOM_ESCAPE_EVENT, { bubbles: true }),
       );
