@@ -22,7 +22,7 @@ describe("useSourceMessageNavigation", () => {
 
     const { result } = renderHook(() =>
       useSourceMessageNavigation({
-        messageIds: ["message-1"],
+        loadedMessageCount: 1,
         paginationStatus: "Exhausted",
       }),
     );
@@ -37,16 +37,16 @@ describe("useSourceMessageNavigation", () => {
     });
   });
 
-  it("loads older pages until the source message can be rendered", async () => {
+  it("keeps loading when a page adds only hidden messages", async () => {
     window.history.replaceState(null, "", "/c/chat-1#message=message-older");
     const loadMore = jest.fn();
-    let messageIds = ["message-newer"];
+    let loadedMessageCount = 1;
     let paginationStatus: "CanLoadMore" | "LoadingMore" | "Exhausted" =
       "CanLoadMore";
 
     const { rerender } = renderHook(() =>
       useSourceMessageNavigation({
-        messageIds,
+        loadedMessageCount,
         paginationStatus,
         loadMore,
       }),
@@ -60,12 +60,17 @@ describe("useSourceMessageNavigation", () => {
     rerender();
     expect(loadMore).toHaveBeenCalledTimes(1);
 
+    loadedMessageCount = 2;
+    paginationStatus = "CanLoadMore";
+    rerender();
+    await waitFor(() => expect(loadMore).toHaveBeenCalledTimes(2));
+
     const target = document.createElement("div");
     target.id = getChatMessageElementId("message-older");
     target.tabIndex = -1;
     target.scrollIntoView = jest.fn();
     document.body.appendChild(target);
-    messageIds = ["message-older", "message-newer"];
+    loadedMessageCount = 3;
     paginationStatus = "Exhausted";
     rerender();
 
@@ -81,7 +86,7 @@ describe("useSourceMessageNavigation", () => {
 
     const { result } = renderHook(() =>
       useSourceMessageNavigation({
-        messageIds: ["message-2"],
+        loadedMessageCount: 1,
         paginationStatus: "Exhausted",
       }),
     );

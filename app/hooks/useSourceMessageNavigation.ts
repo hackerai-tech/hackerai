@@ -8,11 +8,11 @@ type MessagePaginationStatus =
   "LoadingFirstPage" | "CanLoadMore" | "LoadingMore" | "Exhausted";
 
 export function useSourceMessageNavigation({
-  messageIds,
+  loadedMessageCount,
   paginationStatus,
   loadMore,
 }: {
-  messageIds: string[];
+  loadedMessageCount: number;
   paginationStatus?: MessagePaginationStatus;
   loadMore?: (numItems: number) => void;
 }) {
@@ -52,12 +52,12 @@ export function useSourceMessageNavigation({
     if (
       paginationStatus === "CanLoadMore" &&
       loadMore &&
-      requestedPageAtMessageCountRef.current !== messageIds.length
+      requestedPageAtMessageCountRef.current !== loadedMessageCount
     ) {
-      requestedPageAtMessageCountRef.current = messageIds.length;
+      requestedPageAtMessageCountRef.current = loadedMessageCount;
       loadMore(28);
     }
-  }, [loadMore, messageIds, paginationStatus, sourceMessageId]);
+  }, [loadMore, loadedMessageCount, paginationStatus, sourceMessageId]);
 
   return sourceMessageId;
 }

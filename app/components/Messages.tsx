@@ -123,12 +123,8 @@ export const Messages = ({
     () => messages.filter((msg) => !msg.metadata?.isAutoContinue),
     [messages],
   );
-  const visibleMessageIds = useMemo(
-    () => visibleMessages.map((message) => message.id),
-    [visibleMessages],
-  );
   const sourceMessageId = useSourceMessageNavigation({
-    messageIds: visibleMessageIds,
+    loadedMessageCount: messages.length,
     paginationStatus,
     loadMore,
   });
