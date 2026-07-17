@@ -221,6 +221,12 @@ describe("projects", () => {
   it("deletes a project while preserving its tasks", async () => {
     const tasks = [{ _id: "task-1" }, { _id: "task-2" }];
     const take = jest.fn<any>().mockResolvedValue(tasks);
+    const projectEq = jest.fn<any>().mockReturnThis();
+    const withIndex = jest.fn<any>((indexName, applyIndex) => {
+      expect(indexName).toBe("by_user_project_and_updated");
+      applyIndex({ eq: projectEq });
+      return { take };
+    });
     const patch = jest.fn<any>().mockResolvedValue(undefined);
     const deleteDocument = jest.fn<any>().mockResolvedValue(undefined);
     const ctx = {
@@ -233,7 +239,7 @@ describe("projects", () => {
         patch,
         delete: deleteDocument,
         query: jest.fn<any>().mockReturnValue({
-          withIndex: jest.fn<any>().mockReturnValue({ take }),
+          withIndex,
         }),
       },
       scheduler: { runAfter: jest.fn() },
@@ -250,6 +256,43 @@ describe("projects", () => {
     expect(patch).toHaveBeenCalledWith("task-2", { project_id: undefined });
     expect(deleteDocument).toHaveBeenCalledWith("project-1");
     expect(ctx.scheduler.runAfter).not.toHaveBeenCalled();
+    expect(projectEq).toHaveBeenNthCalledWith(1, "user_id", "user-1");
+    expect(projectEq).toHaveBeenNthCalledWith(2, "project_id", "project-1");
+  });
+
+  it("paginates project tasks through the user and project index", async () => {
+    const page = {
+      page: [{ _id: "task-1", user_id: "user-1", project_id: "project-1" }],
+      isDone: true,
+      continueCursor: "",
+    };
+    const paginate = jest.fn<any>().mockResolvedValue(page);
+    const order = jest.fn<any>().mockReturnValue({ paginate });
+    const projectEq = jest.fn<any>().mockReturnThis();
+    const withIndex = jest.fn<any>((indexName, applyIndex) => {
+      expect(indexName).toBe("by_user_project_and_updated");
+      applyIndex({ eq: projectEq });
+      return { order };
+    });
+    const ctx = {
+      auth: authenticated,
+      db: {
+        get: jest.fn<any>().mockResolvedValue(project),
+        query: jest.fn<any>().mockReturnValue({ withIndex }),
+      },
+    };
+
+    await expect(
+      getProjectThreads.handler(ctx as any, {
+        projectId: "project-1" as any,
+        paginationOpts: { cursor: null, numItems: 5 },
+      }),
+    ).resolves.toEqual(page);
+
+    expect(projectEq).toHaveBeenNthCalledWith(1, "user_id", "user-1");
+    expect(projectEq).toHaveBeenNthCalledWith(2, "project_id", "project-1");
+    expect(order).toHaveBeenCalledWith("desc");
+    expect(paginate).toHaveBeenCalledWith({ cursor: null, numItems: 5 });
   });
 
   it("returns no tasks when the project is not owned by the user", async () => {
