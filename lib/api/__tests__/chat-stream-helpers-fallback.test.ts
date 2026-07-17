@@ -220,7 +220,7 @@ describe("buildProviderOptions fallback chain", () => {
     },
   );
 
-  it("runs free Agent on DeepSeek Flash max and falls back through MiniMax, Kimi, then Grok", () => {
+  it("runs free Agent on DeepSeek Flash high and falls back through MiniMax, Kimi, then Grok", () => {
     const opts = buildProviderOptions(
       true,
       "user-1",
@@ -228,7 +228,7 @@ describe("buildProviderOptions fallback chain", () => {
       "agent",
     );
     expect(opts.openrouter).toMatchObject({
-      reasoning: { enabled: true, effort: "xhigh" },
+      reasoning: { enabled: true, effort: "high" },
       models: [MINIMAX_SLUG, KIMI_SLUG, GROK_SLUG],
       user: "user-1",
     });
@@ -379,7 +379,7 @@ describe("buildProviderOptions fallback chain", () => {
     });
   });
 
-  it("uses max reasoning for DeepSeek V4 Pro in agent mode", () => {
+  it("uses high reasoning for DeepSeek V4 Pro in agent mode", () => {
     const opts = buildProviderOptions(
       true,
       "user-1",
@@ -388,7 +388,7 @@ describe("buildProviderOptions fallback chain", () => {
     );
     expect(opts.openrouter.reasoning).toEqual({
       enabled: true,
-      effort: "xhigh",
+      effort: "high",
     });
   });
 

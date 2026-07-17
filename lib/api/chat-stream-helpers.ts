@@ -800,10 +800,13 @@ export function buildProviderOptions(
 ) {
   const modelId = modelName ? resolveSlug(modelName) : undefined;
   const isDeepSeekV4 = modelId?.startsWith("deepseek/deepseek-v4") ?? false;
+  // Agent routes use high for both DeepSeek V4 Flash and Pro. Keep this
+  // mode-scoped so the corresponding Ask routes retain their existing effort.
+  const isAgentDeepSeekV4 = mode === "agent" && isDeepSeekV4;
   const fallbackSlugs = getFallbackSlugs(modelName, mode, options);
   const reasoning =
     options.reasoningOverride ??
-    (isHighReasoningModel(modelName)
+    (isHighReasoningModel(modelName) || isAgentDeepSeekV4
       ? {
           enabled: true,
           effort: "high",
