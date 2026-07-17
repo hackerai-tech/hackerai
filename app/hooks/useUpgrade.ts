@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useAuth } from "@workos-inc/authkit-nextjs/components";
 import { toast } from "sonner";
 import {
@@ -15,6 +15,7 @@ import {
 export const useUpgrade = () => {
   const { user } = useAuth();
   const [upgradeLoading, setUpgradeLoading] = useState(false);
+  const upgradeInFlightRef = useRef(false);
 
   const handleUpgrade = async (
     planKey?: PaidFunnelPlan,
@@ -31,7 +32,7 @@ export const useUpgrade = () => {
     e?.preventDefault();
 
     // Prevent duplicate submits
-    if (upgradeLoading) {
+    if (upgradeInFlightRef.current) {
       return;
     }
 
@@ -40,6 +41,7 @@ export const useUpgrade = () => {
       return;
     }
 
+    upgradeInFlightRef.current = true;
     setUpgradeLoading(true);
 
     try {
@@ -198,6 +200,7 @@ export const useUpgrade = () => {
         toast.error("An unexpected error occurred");
       }
     } finally {
+      upgradeInFlightRef.current = false;
       setUpgradeLoading(false);
     }
   };

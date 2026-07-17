@@ -313,9 +313,11 @@ describe("POST /api/subscribe", () => {
       expect(mockPostHogEvent).toHaveBeenCalledWith(
         "checkout_started",
         expect.objectContaining({
+          eventUuid: expect.stringMatching(/^[0-9a-f-]{36}$/i),
           checkout_attempt_id: "ca_retry_123",
           stripe_checkout_session_id: "cs_open",
           stripe_checkout_session_reused: true,
+          $insert_id: "checkout_started:ca_retry_123",
         }),
       );
     } finally {
@@ -742,11 +744,13 @@ describe("POST /api/subscribe", () => {
     expect(mockPostHogEvent).toHaveBeenCalledWith(
       "checkout_started",
       expect.objectContaining({
+        eventUuid: expect.stringMatching(/^[0-9a-f-]{36}$/i),
         checkout_attempt_id: "ca_limit_pressure_123",
         source: "limit_pressure",
         surface: "rate_limit_warning",
         reason: "monthly_exhausted",
         limit_type: "monthly",
+        $insert_id: "checkout_started:ca_limit_pressure_123",
       }),
     );
   });
