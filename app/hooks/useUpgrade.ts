@@ -44,6 +44,8 @@ export const useUpgrade = () => {
     upgradeInFlightRef.current = true;
     setUpgradeLoading(true);
 
+    let navigationStarted = false;
+
     try {
       const selectedPlan = planKey || "pro-monthly-plan";
       const checkoutAttemptId = newCheckoutAttemptId();
@@ -124,6 +126,7 @@ export const useUpgrade = () => {
             checkout_type: "new_subscription",
           });
           window.location.href = url;
+          navigationStarted = true;
           return;
         }
 
@@ -183,9 +186,11 @@ export const useUpgrade = () => {
           url.searchParams.set("refresh", "entitlements");
           url.hash = ""; // Remove #pricing hash if present
           window.location.href = url.toString();
+          navigationStarted = true;
         } else if (result.invoiceUrl) {
           // Payment failed, redirect to invoice payment page
           window.location.href = result.invoiceUrl;
+          navigationStarted = true;
         } else if (result.error) {
           toast.error(`Error: ${result.error}`);
         } else {
@@ -200,8 +205,10 @@ export const useUpgrade = () => {
         toast.error("An unexpected error occurred");
       }
     } finally {
-      upgradeInFlightRef.current = false;
-      setUpgradeLoading(false);
+      if (!navigationStarted) {
+        upgradeInFlightRef.current = false;
+        setUpgradeLoading(false);
+      }
     }
   };
 

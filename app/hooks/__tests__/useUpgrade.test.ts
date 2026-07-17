@@ -70,6 +70,10 @@ describe("useUpgrade checkout attempts", () => {
     global.fetch = originalFetch;
   });
 
+  afterEach(() => {
+    window.history.replaceState(null, "", "/");
+  });
+
   it("coalesces duplicate clicks before React commits the loading state", async () => {
     let resolveFetch: ((value: Response) => void) | undefined;
     global.fetch = jest.fn(
@@ -166,5 +170,29 @@ describe("useUpgrade checkout attempts", () => {
     expect(mockToastError).toHaveBeenCalledWith(
       "Checkout temporarily unavailable",
     );
+  });
+
+  it("keeps the submit lock held once checkout navigation starts", async () => {
+    global.fetch = jest.fn().mockResolvedValue(
+      response({
+        ok: true,
+        status: 200,
+        body: { url: `${window.location.origin}/#checkout` },
+      }),
+    );
+    mockNewCheckoutAttemptId.mockReturnValue("ca_redirect_123");
+    const { result } = renderHook(() => useUpgrade());
+
+    await act(async () => {
+      await result.current.handleUpgrade("pro-monthly-plan");
+    });
+    await act(async () => {
+      await result.current.handleUpgrade("pro-monthly-plan");
+    });
+
+    expect(window.location.hash).toBe("#checkout");
+    expect(global.fetch).toHaveBeenCalledTimes(1);
+    expect(mockNewCheckoutAttemptId).toHaveBeenCalledTimes(1);
+    expect(result.current.upgradeLoading).toBe(true);
   });
 });
