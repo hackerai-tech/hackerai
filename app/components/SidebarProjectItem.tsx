@@ -145,13 +145,6 @@ export function SidebarProjectItem({
             <span className="min-w-0 flex-1 truncate" title={project.name}>
               {project.name}
             </span>
-            {project.pinned_at !== undefined ? (
-              <Pin
-                className="size-3 shrink-0 text-sidebar-foreground/35"
-                data-testid="project-pin-icon"
-                aria-hidden="true"
-              />
-            ) : null}
             {project.folder_path ? (
               <Laptop
                 className="size-3.5 shrink-0 text-sidebar-foreground/35"

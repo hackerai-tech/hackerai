@@ -140,7 +140,7 @@ describe("SidebarProjectItem", () => {
     );
   });
 
-  it("shows pinned state and allows unpinning", async () => {
+  it("hides the passive pin icon while allowing unpinning", async () => {
     const user = userEvent.setup();
     const pinnedProject = { ...project, pinned_at: 10 } as Doc<"projects">;
     render(
@@ -153,7 +153,7 @@ describe("SidebarProjectItem", () => {
       />,
     );
 
-    expect(screen.getByTestId("project-pin-icon")).toBeInTheDocument();
+    expect(screen.queryByTestId("project-pin-icon")).not.toBeInTheDocument();
     await user.click(
       screen.getByRole("button", { name: "Project options for Acme" }),
     );

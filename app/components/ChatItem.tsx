@@ -416,12 +416,6 @@ const ChatItem: React.FC<ChatItemProps> = ({
         dir="auto"
       >
         <span className="flex min-w-0 items-center gap-1.5">
-          {isPinned && !isStreaming && (
-            <Pin
-              className="size-3 flex-shrink-0 text-muted-foreground"
-              data-testid="chat-item-pin-icon"
-            />
-          )}
           {isBranched && branchedFromTitle && !isStreaming && (
             <TooltipProvider delayDuration={300}>
               <Tooltip>

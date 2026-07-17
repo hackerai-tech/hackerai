@@ -83,4 +83,18 @@ describe("ChatItem project actions", () => {
     expect(screen.getByTestId("chat-item-chat-1")).not.toHaveClass("p-2");
     expect(screen.getByTestId("chat-item-chat-2")).not.toHaveClass("p-2");
   });
+
+  it("hides the passive pin icon while keeping the unpin action", async () => {
+    const user = userEvent.setup();
+    render(<ChatItem id="chat-1" title="Pinned target" isPinned />);
+
+    expect(screen.queryByTestId("chat-item-pin-icon")).not.toBeInTheDocument();
+
+    fireEvent.focus(screen.getByRole("button", { name: /Open task:/ }));
+    await user.click(screen.getByRole("button", { name: "Open task options" }));
+
+    expect(
+      await screen.findByRole("menuitem", { name: "Unpin" }),
+    ).toBeInTheDocument();
+  });
 });
