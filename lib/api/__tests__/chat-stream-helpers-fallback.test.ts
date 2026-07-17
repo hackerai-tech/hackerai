@@ -358,7 +358,7 @@ describe("buildProviderOptions fallback chain", () => {
     },
   );
 
-  it("uses max reasoning for DeepSeek V4 Pro in agent mode", () => {
+  it("uses high reasoning for DeepSeek V4 Pro in agent mode", () => {
     const opts = buildProviderOptions(
       true,
       "user-1",
@@ -367,7 +367,7 @@ describe("buildProviderOptions fallback chain", () => {
     );
     expect(opts.openrouter.reasoning).toEqual({
       enabled: true,
-      effort: "xhigh",
+      effort: "high",
     });
   });
 
