@@ -44,7 +44,7 @@ export function useSourceMessageNavigation({
       if (scrolledMessageIdRef.current === sourceMessageId) return;
 
       scrolledMessageIdRef.current = sourceMessageId;
-      target.scrollIntoView?.({ behavior: "smooth", block: "center" });
+      target.scrollIntoView?.({ behavior: "smooth", block: "start" });
       target.focus({ preventScroll: true });
       return;
     }

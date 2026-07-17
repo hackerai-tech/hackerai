@@ -31,7 +31,7 @@ describe("useSourceMessageNavigation", () => {
       expect(result.current).toBe("message-1");
       expect(scrollIntoView).toHaveBeenCalledWith({
         behavior: "smooth",
-        block: "center",
+        block: "start",
       });
       expect(target).toHaveFocus();
     });
