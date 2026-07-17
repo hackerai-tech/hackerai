@@ -450,13 +450,15 @@ describe("token-bucket", () => {
       );
     });
 
-    it.each(["model-grok-4.5", "model-gemini-3-flash", "fallback-grok-4.5"])(
-      "should use Grok 4.5 pricing for %s ($2.00/$6.00)",
-      (modelName) => {
-        expect(calculateTokenCost(1_000_000, "input", modelName)).toBe(28000);
-        expect(calculateTokenCost(1_000_000, "output", modelName)).toBe(84000);
-      },
-    );
+    it.each([
+      "model-grok-4.5",
+      "model-grok-4.5-pro",
+      "model-gemini-3-flash",
+      "fallback-grok-4.5",
+    ])("should use Grok 4.5 pricing for %s ($2.00/$6.00)", (modelName) => {
+      expect(calculateTokenCost(1_000_000, "input", modelName)).toBe(28000);
+      expect(calculateTokenCost(1_000_000, "output", modelName)).toBe(84000);
+    });
 
     it("expensive models should deplete budget faster", () => {
       const monthlyBudget = getBudgetLimits("pro").monthly;

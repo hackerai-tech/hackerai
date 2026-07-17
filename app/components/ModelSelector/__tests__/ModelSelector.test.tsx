@@ -93,7 +93,7 @@ describe("ModelSelector", () => {
     ).toHaveAttribute("aria-pressed", "false");
   });
 
-  it("uses consistent vision wording for Agent Standard and Pro", async () => {
+  it("discloses the Agent Standard and Pro providers", async () => {
     const user = userEvent.setup();
     render(<ModelSelector value="auto" onChange={jest.fn()} mode="agent" />);
 
@@ -114,7 +114,7 @@ describe("ModelSelector", () => {
     await user.hover(screen.getByRole("button", { name: /HackerAI Pro/i }));
     expect(
       await screen.findAllByText(
-        "Powered by Z.ai GLM 5.2 · Grok 4.5 for vision",
+        "Powered by xAI Grok 4.5 · Z.ai GLM 5.2 fallback",
       ),
     ).not.toHaveLength(0);
   });

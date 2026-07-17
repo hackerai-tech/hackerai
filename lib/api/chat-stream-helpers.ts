@@ -547,8 +547,17 @@ const AGENT_TEXT_FALLBACK_CHAIN = [
   ...MINIMAX_M3_FALLBACK_CHAIN,
 ] as const satisfies readonly ModelName[];
 
+// HackerAI Pro uses Grok 4.5 for every request. GLM 5.2 remains its first
+// fallback, followed by Kimi so media requests still have a multimodal final
+// recovery path if both primary providers are unavailable.
+const HACKERAI_PRO_FALLBACK_CHAIN = [
+  "model-glm-5.2",
+  "model-kimi-k2.7-code",
+] as const satisfies readonly ModelName[];
+
 // Agent Pro promotes vision steps to Grok 4.5. Keep Kimi as its direct
-// multimodal fallback without routing back through the cheaper Agent chain.
+// multimodal fallback for legacy in-flight routes that still use the generic
+// Grok key rather than the dedicated HackerAI Pro alias.
 const AGENT_PRO_VISION_FALLBACK_CHAIN = [
   "model-kimi-k2.7-code",
 ] as const satisfies readonly ModelName[];
@@ -561,6 +570,7 @@ const MODEL_FALLBACK_CHAIN: Partial<Record<ModelName, readonly ModelName[]>> = {
   "ask-model": MINIMAX_M3_FALLBACK_CHAIN,
   "agent-model": MINIMAX_M3_FALLBACK_CHAIN,
   "model-grok-4.5": AGENT_TEXT_FALLBACK_CHAIN,
+  "model-grok-4.5-pro": HACKERAI_PRO_FALLBACK_CHAIN,
   "model-gemini-3-flash": AGENT_TEXT_FALLBACK_CHAIN,
   "model-glm-5.2": MINIMAX_M3_FALLBACK_CHAIN,
   "model-minimax-m3": MINIMAX_M3_FALLBACK_CHAIN,
@@ -621,6 +631,7 @@ const isAskMediumReasoningModel = (modelName?: string): boolean =>
   (ASK_MEDIUM_REASONING_MODELS as readonly string[]).includes(modelName);
 
 const HIGH_REASONING_MODELS = [
+  "model-grok-4.5-pro",
   "model-glm-5.2",
   "model-sonnet-4.6",
   "model-opus-4.6",
@@ -672,6 +683,9 @@ export function getRetryFallbackModel(
   modelName: ModelName,
   mode: ChatMode,
 ): ModelName {
+  if (modelName === "model-grok-4.5-pro") {
+    return "model-glm-5.2";
+  }
   if (modelName === "model-grok-4.5" && mode === "agent") {
     return "model-kimi-k2.7-code";
   }
