@@ -17,8 +17,9 @@ jest.mock("@/app/contexts/GlobalState", () => ({
     setOptimisticChatId: jest.fn(),
   }),
 }));
+const mockUseIsMobile = jest.fn(() => false);
 jest.mock("@/hooks/use-mobile", () => ({
-  useIsMobile: () => false,
+  useIsMobile: () => mockUseIsMobile(),
 }));
 jest.mock("convex/react", () => ({
   useMutation: () => jest.fn(),
@@ -49,6 +50,7 @@ const ChatItem = require("../ChatItem")
 describe("ChatItem project actions", () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockUseIsMobile.mockReturnValue(false);
   });
 
   it("reveals an accessible move action when the row receives keyboard focus", async () => {
@@ -115,6 +117,34 @@ describe("ChatItem project actions", () => {
     );
     expect(screen.getByTestId("chat-item-chat-1")).not.toHaveClass("p-2");
     expect(screen.getByTestId("chat-item-chat-2")).not.toHaveClass("p-2");
+  });
+
+  it("centers the streaming indicator in the task action slot", () => {
+    render(<ChatItem id="chat-1" title="Running task" isStreaming />);
+
+    const streamingIcon = screen.getByTestId("chat-item-streaming-icon");
+    expect(streamingIcon.parentElement).toHaveClass(
+      "flex",
+      "size-8",
+      "items-center",
+      "justify-center",
+    );
+    expect(
+      screen.getByText("Running task").parentElement?.parentElement,
+    ).toHaveClass("pr-9");
+  });
+
+  it("reserves space for streaming and task actions on mobile", () => {
+    mockUseIsMobile.mockReturnValue(true);
+    render(<ChatItem id="chat-1" title="Running task" isStreaming />);
+
+    expect(
+      screen.getByText("Running task").parentElement?.parentElement,
+    ).toHaveClass("pr-[4.5rem]");
+    expect(
+      screen.getByRole("button", { name: "Open task options" }),
+    ).toBeInTheDocument();
+    expect(screen.getByTestId("chat-item-streaming-icon")).toBeInTheDocument();
   });
 
   it("hides the passive pin icon while keeping the unpin action", async () => {
