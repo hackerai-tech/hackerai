@@ -36,7 +36,7 @@ const validReport = (): CreateVulnerabilityReportInput => ({
     {
       file: "app/api/invoices/[id]/route.ts",
       start_line: 20,
-      end_line: 32,
+      end_line: 20,
       snippet: "db.invoice.findUnique({ where: { id } })",
       label: "Missing owner predicate",
       fix_before: "where: { id }",
@@ -148,6 +148,44 @@ describe("structured finding validation", () => {
         ],
       }).success,
     ).toBe(false);
+  });
+
+  it("requires fix_before to match the declared line range", () => {
+    expect(
+      createVulnerabilityReportInputSchema.safeParse({
+        ...validReport(),
+        code_locations: [
+          {
+            file: "src/a.ts",
+            start_line: 4,
+            end_line: 5,
+            fix_before: "unsafe()",
+            fix_after: "safe()",
+          },
+        ],
+      }).success,
+    ).toBe(false);
+  });
+
+  it("preserves code indentation while removing boundary newlines", () => {
+    const parsed = createVulnerabilityReportInputSchema.parse({
+      ...validReport(),
+      poc_script_code: "\n  if vulnerable:\n    exploit()\n",
+      code_locations: [
+        {
+          file: "src/a.py",
+          start_line: 4,
+          end_line: 5,
+          fix_before: "\n  unsafe()\n  return value\n",
+          fix_after: "\n  safe()\n  return value\n",
+        },
+      ],
+    });
+
+    expect(parsed.poc_script_code).toBe("  if vulnerable:\n    exploit()");
+    expect(parsed.code_locations?.[0].fix_before).toBe(
+      "  unsafe()\n  return value",
+    );
   });
 
   it("rejects empty required text after trimming", () => {

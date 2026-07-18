@@ -53,14 +53,25 @@ const finding: FindingDetailRecord = {
       end_line: 22,
       label: "Missing ownership predicate",
       snippet: "findUnique({ id })",
-      fix_before: "where: { id }",
-      fix_after: "where: { id, userId }",
+      fix_before:
+        "const invoice = await db.invoice.findUnique({\n  where: { id },\n});",
+      fix_after:
+        "const invoice = await db.invoice.findUnique({\n  where: { id, userId },\n});",
     },
   ],
 };
 
 describe("FindingDetail", () => {
-  beforeEach(() => jest.clearAllMocks());
+  const writeText = jest.fn<() => Promise<void>>();
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    writeText.mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText },
+    });
+  });
 
   it("renders the complete report and source chat link", () => {
     render(<FindingDetail finding={finding} />);
@@ -82,6 +93,18 @@ describe("FindingDetail", () => {
         name: "Open source message in Invoice test",
       }),
     ).toHaveAttribute("href", "/c/chat-1#message=message-1");
+  });
+
+  it("copies the PoC and CVSS vector", async () => {
+    render(<FindingDetail finding={finding} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Copy PoC" }));
+    fireEvent.click(screen.getByRole("button", { name: "Copy CVSS vector" }));
+
+    await waitFor(() => {
+      expect(writeText).toHaveBeenNthCalledWith(1, finding.poc_script_code);
+      expect(writeText).toHaveBeenNthCalledWith(2, finding.cvss_vector);
+    });
   });
 
   it("requires confirmation, deletes, and emits only surface analytics", async () => {

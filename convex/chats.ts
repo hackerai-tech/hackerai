@@ -270,6 +270,36 @@ async function deleteFindingsForChatBatch(
   return findings.length > DELETE_ALL_CHATS_FINDING_BATCH_SIZE;
 }
 
+async function deleteFindingSourceForChat(
+  ctx: MutationCtx,
+  chat: Doc<"chats">,
+) {
+  const source = await ctx.db
+    .query("finding_sources")
+    .withIndex("by_user_chat", (q) =>
+      q.eq("user_id", chat.user_id).eq("chat_id", chat.id),
+    )
+    .unique();
+  if (source) await ctx.db.delete(source._id);
+}
+
+async function syncFindingSourceChatTitle(
+  ctx: MutationCtx,
+  userId: string,
+  chatId: string,
+  title: string,
+) {
+  const source = await ctx.db
+    .query("finding_sources")
+    .withIndex("by_user_chat", (q) =>
+      q.eq("user_id", userId).eq("chat_id", chatId),
+    )
+    .unique();
+  if (source && source.chat_title !== title) {
+    await ctx.db.patch(source._id, { chat_title: title });
+  }
+}
+
 async function deleteChatDocument(ctx: MutationCtx, chat: Doc<"chats">) {
   await prepareChatForDeletion(ctx, chat);
 
@@ -277,6 +307,8 @@ async function deleteChatDocument(ctx: MutationCtx, chat: Doc<"chats">) {
     await scheduleDeleteChatDocumentBatch(ctx, chat.id, chat.user_id);
     return;
   }
+
+  await deleteFindingSourceForChat(ctx, chat);
 
   const messages = await ctx.db
     .query("messages")
@@ -352,6 +384,8 @@ async function deleteNextUserChatBatch(ctx: MutationCtx, userId: string) {
     await scheduleDeleteAllChatsBatch(ctx, userId);
     return true;
   }
+
+  await deleteFindingSourceForChat(ctx, chat);
 
   const messages = await ctx.db
     .query("messages")
@@ -838,6 +872,12 @@ export const updateChat = mutation({
 
       if (args.title !== undefined) {
         updateData.title = args.title;
+        await syncFindingSourceChatTitle(
+          ctx,
+          chat.user_id,
+          chat.id,
+          args.title,
+        );
       }
 
       if (args.finishReason !== undefined) {
@@ -1360,6 +1400,12 @@ export const renameChat = mutation({
         title: trimmedTitle,
         update_time: Date.now(),
       });
+      await syncFindingSourceChatTitle(
+        ctx,
+        chat.user_id,
+        chat.id,
+        trimmedTitle,
+      );
 
       return null;
     } catch (error) {

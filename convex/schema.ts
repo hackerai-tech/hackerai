@@ -281,6 +281,18 @@ export default defineSchema({
       filterFields: ["user_id", "severity", "chat_id"],
     }),
 
+  // Compact source-chat metadata keeps the Findings filter bounded without
+  // reading large PoC/evidence payloads from every finding.
+  finding_sources: defineTable({
+    user_id: v.string(),
+    chat_id: v.string(),
+    chat_title: v.string(),
+    finding_count: v.number(),
+    latest_finding_at: v.number(),
+  })
+    .index("by_user_and_latest", ["user_id", "latest_finding_at"])
+    .index("by_user_chat", ["user_id", "chat_id"]),
+
   files: defineTable({
     s3_key: v.optional(v.string()),
     user_id: v.string(),

@@ -6,6 +6,7 @@ import {
   createVulnerabilityReportToolInputSchema,
   runTerminalCmdTool,
 } from "../schemas";
+import { createVulnerabilityReportInputSchema } from "@/lib/findings/validation";
 
 const getDescription = (value: unknown): string =>
   (value as { description: string }).description;
@@ -13,6 +14,61 @@ const getDescription = (value: unknown): string =>
 const getInputShape = (value: unknown): Record<string, unknown> =>
   (value as { inputSchema: { shape: Record<string, unknown> } }).inputSchema
     .shape;
+
+const validFindingReport = () => ({
+  title: "Cross-tenant invoice access",
+  description: "An authenticated user can read another user's invoice.",
+  impact: "A user can disclose another customer's billing address.",
+  target: "https://app.example.test",
+  endpoint: "/api/invoices/:id",
+  method: "GET",
+  cve: "CVE-2026-12345",
+  cwe: "CWE-639",
+  technical_analysis: "The handler loads by invoice id without an owner check.",
+  poc_description: "Sign in as user A and request user B's invoice id.",
+  poc_script_code: "\n  curl /api/invoices/user-b\n",
+  remediation_steps: "Scope the query to the authenticated account.",
+  evidence: "The response returned HTTP 200 and user B's billing address.",
+  assumptions: "Both accounts are ordinary customer accounts.",
+  fix_effort: "low",
+  cvss_breakdown: {
+    attack_vector: "N",
+    attack_complexity: "L",
+    privileges_required: "L",
+    user_interaction: "N",
+    scope: "U",
+    confidentiality: "H",
+    integrity: "N",
+    availability: "N",
+  },
+  code_locations: [
+    {
+      file: "app/api/invoices/[id]/route.ts",
+      start_line: 20,
+      end_line: 21,
+      fix_before: "\n  where: { id },\n  include: { items: true },\n",
+      fix_after: "\n  where: { id, userId },\n  include: { items: true },\n",
+    },
+  ],
+});
+
+const findingValidationResult = (result: {
+  success: boolean;
+  data?: unknown;
+  error?: {
+    issues: Array<{ code: string; message: string; path: PropertyKey[] }>;
+  };
+}) =>
+  result.success
+    ? { success: true, data: result.data }
+    : {
+        success: false,
+        issues: result.error?.issues.map(({ code, message, path }) => ({
+          code,
+          message,
+          path,
+        })),
+      };
 
 describe("agent tool schema descriptions", () => {
   test("exposes structured findings only in persistent Agent modes", () => {
@@ -27,7 +83,7 @@ describe("agent tool schema descriptions", () => {
     ).not.toHaveProperty("create_vulnerability_report");
   });
 
-  test("uses the complete strict report schema in the model-facing contract", () => {
+  test("keeps the standalone model schema in parity with server validation", () => {
     const parsed = createVulnerabilityReportToolInputSchema.safeParse({});
     expect(parsed.success).toBe(false);
     if (!parsed.success) {
@@ -48,6 +104,42 @@ describe("agent tool schema descriptions", () => {
         ]),
       );
     }
+
+    const validReport = validFindingReport();
+    const parityCases = [
+      validReport,
+      {},
+      { ...validReport, cve: "CVE-26-1234" },
+      {
+        ...validReport,
+        code_locations: [{ file: "../secret.ts", start_line: 1, end_line: 1 }],
+      },
+      {
+        ...validReport,
+        code_locations: [
+          {
+            file: "src/a.ts",
+            start_line: 4,
+            end_line: 5,
+            fix_before: "unsafe()",
+            fix_after: "safe()",
+          },
+        ],
+      },
+      { ...validReport, evidence: "x".repeat(132_000) },
+    ];
+
+    for (const input of parityCases) {
+      expect(
+        findingValidationResult(
+          createVulnerabilityReportToolInputSchema.safeParse(input),
+        ),
+      ).toEqual(
+        findingValidationResult(
+          createVulnerabilityReportInputSchema.safeParse(input),
+        ),
+      );
+    }
   });
 
   test("allows one bounded retry only for an explicitly retryable save failure", () => {
@@ -60,6 +152,12 @@ describe("agent tool schema descriptions", () => {
       "explicitly returns retryable: true, retry the same report once",
     );
     expect(description).toContain("Never retry a duplicate response");
+    expect(description).toContain(
+      "fix_before must be a verbatim copy of exactly that range",
+    );
+    expect(description).toContain(
+      "Split non-contiguous changes into separate labeled code locations",
+    );
   });
 
   test("terminal command approval wording is mode-specific", () => {

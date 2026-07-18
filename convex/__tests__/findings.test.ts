@@ -103,6 +103,7 @@ const seedTables = (): Tables => ({
     },
   ],
   findings: [],
+  finding_sources: [],
 });
 
 function createResult(rows: Row[], filters: Array<[string, unknown]>) {
@@ -122,8 +123,10 @@ function createResult(rows: Row[], filters: Array<[string, unknown]>) {
     order: jest.fn((direction: "asc" | "desc") => {
       rows = [...filtered()].sort((a, b) =>
         direction === "desc"
-          ? (b.created_at ?? 0) - (a.created_at ?? 0)
-          : (a.created_at ?? 0) - (b.created_at ?? 0),
+          ? (b.latest_finding_at ?? b.created_at ?? 0) -
+            (a.latest_finding_at ?? a.created_at ?? 0)
+          : (a.latest_finding_at ?? a.created_at ?? 0) -
+            (b.latest_finding_at ?? b.created_at ?? 0),
       );
       filters = [];
       return result;
@@ -281,6 +284,13 @@ describe("findings Convex lifecycle", () => {
         updated_at: expect.any(Number),
       }),
     );
+    expect(insert).toHaveBeenCalledWith("finding_sources", {
+      user_id: "user-1",
+      chat_id: "chat-1",
+      chat_title: "Invoice test",
+      finding_count: 1,
+      latest_finding_at: expect.any(Number),
+    });
   });
 
   it("rejects a missing, deleted, or foreign source chat", async () => {
@@ -332,10 +342,22 @@ describe("findings Convex lifecycle", () => {
         toolCallId: "tool-3",
       }),
     );
+    const secondInSourceChat = await createFindingForBackend.handler(
+      ctx,
+      createArgs({
+        toolCallId: "tool-4",
+        report: report({ title: "Cross-tenant invoice modification" }),
+      }),
+    );
 
     expect(duplicate).toMatchObject({ success: false, error: "duplicate" });
     expect(crossChat).toMatchObject({ success: true });
-    expect(tables.findings).toHaveLength(2);
+    expect(secondInSourceChat).toMatchObject({ success: true });
+    expect(tables.findings).toHaveLength(3);
+    expect(tables.finding_sources).toHaveLength(2);
+    expect(
+      tables.finding_sources.find((source) => source.chat_id === "chat-1"),
+    ).toMatchObject({ finding_count: 2 });
   });
 
   it("paginates newest-first and applies ownership, severity, chat, and search", async () => {
@@ -410,27 +432,30 @@ describe("findings Convex lifecycle", () => {
   it("lists only source chats that contain the user's findings", async () => {
     const { getFindingSourceChats } = await import("../findings");
     const tables = seedTables();
-    tables.findings = [
+    tables.finding_sources = [
       {
-        _id: "finding-chat-1",
-        finding_id: "finding-1",
+        _id: "finding-source-1",
         user_id: "user-1",
         chat_id: "chat-1",
-        created_at: 10,
+        chat_title: "Invoice test",
+        finding_count: 1,
+        latest_finding_at: 10,
       },
       {
-        _id: "finding-chat-2",
-        finding_id: "finding-2",
+        _id: "finding-source-2",
         user_id: "user-1",
         chat_id: "chat-2",
-        created_at: 20,
+        chat_title: "Retest",
+        finding_count: 2,
+        latest_finding_at: 20,
       },
       {
-        _id: "finding-other",
-        finding_id: "finding-other",
+        _id: "finding-source-other",
         user_id: "other-user",
         chat_id: "chat-other",
-        created_at: 30,
+        chat_title: "Private other chat",
+        finding_count: 1,
+        latest_finding_at: 30,
       },
     ];
     tables.chats.push({
@@ -440,12 +465,36 @@ describe("findings Convex lifecycle", () => {
       title: "No findings here",
       update_time: 99,
     });
-    const { ctx } = createMockCtx(tables);
+    const { ctx, indexes } = createMockCtx(tables);
 
     await expect(getFindingSourceChats.handler(ctx, {})).resolves.toEqual([
       { chat_id: "chat-2", chat_title: "Retest" },
       { chat_id: "chat-1", chat_title: "Invoice test" },
     ]);
+    expect(indexes).toContain("by_user_and_latest");
+    expect(indexes).not.toContain("by_user_and_created");
+  });
+
+  it("bounds source-chat metadata reads", async () => {
+    const { getFindingSourceChats } = await import("../findings");
+    const tables = seedTables();
+    tables.finding_sources = Array.from({ length: 501 }, (_, index) => ({
+      _id: `finding-source-${index}`,
+      user_id: "user-1",
+      chat_id: `chat-${index}`,
+      chat_title: `Chat ${index}`,
+      finding_count: 1,
+      latest_finding_at: index,
+    }));
+    const { ctx } = createMockCtx(tables);
+
+    const sources = await getFindingSourceChats.handler(ctx, {});
+
+    expect(sources).toHaveLength(500);
+    expect(sources[0]).toEqual({
+      chat_id: "chat-500",
+      chat_title: "Chat 500",
+    });
   });
 
   it("enforces read ownership", async () => {
@@ -479,6 +528,16 @@ describe("findings Convex lifecycle", () => {
         tool_call_id: "tool-1",
       },
     ];
+    tables.finding_sources = [
+      {
+        _id: "finding-source-1",
+        user_id: "user-1",
+        chat_id: "chat-1",
+        chat_title: "Invoice test",
+        finding_count: 1,
+        latest_finding_at: 1,
+      },
+    ];
     const { ctx, patch, deleteDoc } = createMockCtx(tables);
 
     await expect(
@@ -494,6 +553,52 @@ describe("findings Convex lifecycle", () => {
       }),
     );
     expect(deleteDoc).toHaveBeenCalledWith("finding-doc-1");
+    expect(deleteDoc).toHaveBeenCalledWith("finding-source-1");
+  });
+
+  it("keeps source metadata while another finding remains in the chat", async () => {
+    const { deleteFinding } = await import("../findings");
+    const tables = seedTables();
+    tables.findings = [
+      {
+        _id: "finding-doc-1",
+        finding_id: "finding-public-1",
+        user_id: "user-1",
+        chat_id: "chat-1",
+        message_id: "message-1",
+        tool_call_id: "tool-1",
+        created_at: 10,
+      },
+      {
+        _id: "finding-doc-2",
+        finding_id: "finding-public-2",
+        user_id: "user-1",
+        chat_id: "chat-1",
+        message_id: "message-2",
+        tool_call_id: "tool-2",
+        created_at: 20,
+      },
+    ];
+    tables.finding_sources = [
+      {
+        _id: "finding-source-1",
+        user_id: "user-1",
+        chat_id: "chat-1",
+        chat_title: "Invoice test",
+        finding_count: 2,
+        latest_finding_at: 20,
+      },
+    ];
+    const { ctx, patch, deleteDoc } = createMockCtx(tables);
+
+    await deleteFinding.handler(ctx, { findingId: "finding-public-2" });
+
+    expect(deleteDoc).toHaveBeenCalledWith("finding-doc-2");
+    expect(deleteDoc).not.toHaveBeenCalledWith("finding-source-1");
+    expect(patch).toHaveBeenCalledWith("finding-source-1", {
+      finding_count: 1,
+      latest_finding_at: 10,
+    });
   });
 
   it("rejects deletion by a different user", async () => {

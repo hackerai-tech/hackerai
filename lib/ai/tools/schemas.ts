@@ -741,27 +741,56 @@ const findingRequiredText = (label: string, max: number) =>
     .max(max, `${label} must be ${max.toLocaleString()} characters or fewer`);
 
 const findingOptionalText = (label: string, max: number) =>
-  findingRequiredText(label, max).optional();
+  z
+    .string()
+    .trim()
+    .min(1, `${label} cannot be empty`)
+    .max(max, `${label} must be ${max.toLocaleString()} characters or fewer`)
+    .optional();
+
+const stripFindingBoundaryNewlines = (value: string) =>
+  value.replace(/^(?:\r?\n)+|(?:\r?\n)+$/g, "");
+
+const findingRequiredCodeText = (label: string, max: number) =>
+  z
+    .string()
+    .transform(stripFindingBoundaryNewlines)
+    .refine((value) => value.trim().length > 0, `${label} is required`)
+    .refine(
+      (value) => value.length <= max,
+      `${label} must be ${max.toLocaleString()} characters or fewer`,
+    );
+
+const findingOptionalCodeText = (label: string, max: number) =>
+  findingRequiredCodeText(label, max).optional();
+
+const getFindingLineCount = (value: string) => value.split(/\r?\n/).length;
 
 const findingCodeLocationSchema = z
   .object({
-    file: findingRequiredText("File", 500).refine((path) => {
+    file: findingRequiredText("File", 500).superRefine((path, ctx) => {
       const segments = path.split("/");
-      return !(
+      if (
         path.startsWith("/") ||
         path.startsWith("./") ||
         /^[A-Za-z]:/.test(path) ||
         path.includes("\\") ||
         path.includes("\0") ||
         segments.some((segment) => segment === ".." || segment === "")
-      );
-    }, "File must be a relative repository path without traversal, empty segments, or backslashes"),
+      ) {
+        ctx.addIssue({
+          code: "custom",
+          message:
+            "File must be a relative repository path without traversal, empty segments, or backslashes",
+        });
+      }
+    }),
     start_line: z.number().int().positive(),
     end_line: z.number().int().positive(),
-    snippet: findingOptionalText("Snippet", 16_000),
+    snippet: findingOptionalCodeText("Snippet", 16_000),
     label: findingOptionalText("Label", 200),
-    fix_before: findingOptionalText("Fix before", 16_000),
-    fix_after: findingOptionalText("Fix after", 16_000),
+    fix_before: findingOptionalCodeText("Fix before", 16_000),
+    fix_after: findingOptionalCodeText("Fix after", 16_000),
   })
   .strict()
   .superRefine((location, ctx) => {
@@ -779,6 +808,18 @@ const findingCodeLocationSchema = z
         message: "fix_before and fix_after must be provided together",
       });
     }
+    if (
+      location.fix_before &&
+      getFindingLineCount(location.fix_before) !==
+        location.end_line - location.start_line + 1
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["fix_before"],
+        message:
+          "fix_before must contain exactly the lines covered by start_line and end_line",
+      });
+    }
   });
 
 export const createVulnerabilityReportToolInputSchema = z
@@ -789,7 +830,7 @@ export const createVulnerabilityReportToolInputSchema = z
     target: findingRequiredText("Target", 1_000),
     technical_analysis: findingRequiredText("Technical analysis", 12_000),
     poc_description: findingRequiredText("PoC description", 8_000),
-    poc_script_code: findingRequiredText("PoC script/code", 32_000),
+    poc_script_code: findingRequiredCodeText("PoC script/code", 32_000),
     remediation_steps: findingRequiredText("Remediation steps", 8_000),
     evidence: findingRequiredText("Evidence", 16_000),
     assumptions: findingRequiredText("Assumptions", 4_000),
@@ -863,10 +904,13 @@ Use this tool only after all of the following are true:
 - Call once after confirmation; if a non-duplicate response explicitly returns retryable: true, retry the same report once
 - Never retry a duplicate response
 - Use formal, objective, vendor-neutral markdown in the report fields
-- Put reproduction steps in poc_description and executable exploit/payload code in poc_script_code
+- Put numbered reproduction steps only in poc_description and executable exploit/payload code only in poc_script_code
 - Put concrete requests, responses, observed behavior, logs, or code proof in evidence
-- Populate code_locations whenever source code is available
-- Pass bare CVE/CWE identifiers only when certain
+- Keep remediation_steps as prose; put code replacements in code_locations
+- Populate code_locations whenever source code is available, after reading the actual file
+- Verify start_line and end_line instead of guessing; fix_before must be a verbatim copy of exactly that range and fix_after must be the complete replacement
+- Split non-contiguous changes into separate labeled code locations and do not duplicate the same change
+- Pass bare CVE/CWE identifiers only when certain; prefer the most specific applicable CWE
 - CVSS 3.1 must include all eight base metrics; the server calculates the score and severity
 - Do not mention internal agents, models, prompts, sandboxes, report IDs, or tester-only paths in report content
 </instructions>`,

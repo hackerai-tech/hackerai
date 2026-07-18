@@ -117,6 +117,13 @@ describe("Agent approval lifecycle guards", () => {
           created_at: 1,
         },
       ],
+      finding_sources: [
+        {
+          _id: "finding-source-1",
+          user_id: "user-1",
+          chat_id: "chat-1",
+        },
+      ],
       messages: [],
       chat_summaries: [],
     };
@@ -138,6 +145,7 @@ describe("Agent approval lifecycle guards", () => {
             );
           return {
             first: jest.fn(async () => rows()[0] ?? null),
+            unique: jest.fn(async () => rows()[0] ?? null),
             take: jest.fn(async (limit: number) => rows().slice(0, limit)),
           };
         }),
@@ -164,7 +172,11 @@ describe("Agent approval lifecycle guards", () => {
       ),
     ).resolves.toBe("deleted");
 
-    expect(deleted).toEqual(["finding-doc-1", "chat-doc-1"]);
+    expect(deleted).toEqual([
+      "finding-doc-1",
+      "finding-source-1",
+      "chat-doc-1",
+    ]);
   });
 
   it("uses bounded continuation batches for service-key test cleanup", async () => {

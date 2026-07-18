@@ -13,6 +13,7 @@ import {
 import type { Doc } from "./_generated/dataModel";
 
 const MAX_SEARCH_LENGTH = 200;
+const MAX_FINDING_SOURCE_CHATS = 500;
 
 type FindingReadCtx = Pick<QueryCtx, "db">;
 
@@ -26,6 +27,18 @@ const getFindingByPublicId = async (ctx: FindingReadCtx, findingId: string) =>
   await ctx.db
     .query("findings")
     .withIndex("by_finding_id", (q) => q.eq("finding_id", findingId))
+    .unique();
+
+const getFindingSource = async (
+  ctx: FindingReadCtx,
+  userId: string,
+  chatId: string,
+) =>
+  await ctx.db
+    .query("finding_sources")
+    .withIndex("by_user_chat", (q) =>
+      q.eq("user_id", userId).eq("chat_id", chatId),
+    )
     .unique();
 
 const toFindingSummary = (finding: Doc<"findings">, chatTitle: string) => ({
@@ -152,6 +165,23 @@ export const createFindingForBackend = mutation({
       created_at: now,
       updated_at: now,
     });
+
+    const source = await getFindingSource(ctx, args.userId, args.chatId);
+    if (source) {
+      await ctx.db.patch(source._id, {
+        chat_title: chat.title,
+        finding_count: source.finding_count + 1,
+        latest_finding_at: now,
+      });
+    } else {
+      await ctx.db.insert("finding_sources", {
+        user_id: args.userId,
+        chat_id: args.chatId,
+        chat_title: chat.title,
+        finding_count: 1,
+        latest_finding_at: now,
+      });
+    }
 
     return {
       success: true as const,
@@ -280,31 +310,16 @@ export const getFindingSourceChats = query({
     if (!identity) return [];
     await assertUserCanAccessChatHistory(ctx, identity.subject);
 
-    const chatIds = new Set<string>();
-    const userFindings = ctx.db
-      .query("findings")
-      .withIndex("by_user_and_created", (q) =>
-        q.eq("user_id", identity.subject),
-      );
+    const sources = await ctx.db
+      .query("finding_sources")
+      .withIndex("by_user_and_latest", (q) => q.eq("user_id", identity.subject))
+      .order("desc")
+      .take(MAX_FINDING_SOURCE_CHATS);
 
-    for await (const finding of userFindings) {
-      chatIds.add(finding.chat_id);
-    }
-
-    const chats = await Promise.all(
-      Array.from(chatIds, (sourceChatId) => getChat(ctx, sourceChatId)),
-    );
-
-    return chats
-      .filter(
-        (chat): chat is Doc<"chats"> =>
-          chat !== null && chat.user_id === identity.subject,
-      )
-      .sort((a, b) => b.update_time - a.update_time)
-      .map((chat) => ({
-        chat_id: chat.id,
-        chat_title: chat.title,
-      }));
+    return sources.map((source) => ({
+      chat_id: source.chat_id,
+      chat_title: source.chat_title,
+    }));
   },
 });
 
@@ -347,6 +362,30 @@ export const deleteFinding = mutation({
     }
 
     await ctx.db.delete(finding._id);
+
+    const source = await getFindingSource(
+      ctx,
+      identity.subject,
+      finding.chat_id,
+    );
+    if (source) {
+      const latestRemaining = await ctx.db
+        .query("findings")
+        .withIndex("by_user_chat_created", (q) =>
+          q.eq("user_id", identity.subject).eq("chat_id", finding.chat_id),
+        )
+        .order("desc")
+        .first();
+
+      if (latestRemaining) {
+        await ctx.db.patch(source._id, {
+          finding_count: Math.max(1, source.finding_count - 1),
+          latest_finding_at: latestRemaining.created_at,
+        });
+      } else {
+        await ctx.db.delete(source._id);
+      }
+    }
     return { deleted: true };
   },
 });

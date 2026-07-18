@@ -120,6 +120,7 @@ describe("FindingsPage", () => {
         { initialNumItems: 25 },
       );
     });
+    expect(screen.getByText("Best matches for “CWE-639”")).toBeVisible();
     expect(window.location.search).toBe("?q=CWE-639");
 
     fireEvent.change(screen.getByLabelText("Search findings"), {
@@ -180,9 +181,10 @@ describe("FindingsPage", () => {
 
   it("opens and closes the reusable detail alongside the desktop list", () => {
     render(<Page />);
-    const findingRow = screen.getByRole("button", {
+    const findingRow = screen.getByRole("link", {
       name: /Confirmed IDOR/i,
     });
+    expect(findingRow).toHaveAttribute("href", "/findings?finding=finding-1");
     fireEvent.click(findingRow);
     expect(screen.getByText(mockFinding.description)).toBeVisible();
     expect(
@@ -216,7 +218,7 @@ describe("FindingsPage", () => {
   it("uses a modal full-screen mobile detail and restores list focus", async () => {
     mockMobile = true;
     render(<Page />);
-    const findingRow = screen.getByRole("button", {
+    const findingRow = screen.getByRole("link", {
       name: /Confirmed IDOR/i,
     });
     findingRow.focus();

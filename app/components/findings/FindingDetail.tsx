@@ -7,12 +7,13 @@ import {
   CheckCircle2,
   Clock3,
   Code2,
+  Copy,
   MessageSquareText,
   ShieldAlert,
   ShieldCheck,
   Trash2,
 } from "lucide-react";
-import { useState, useSyncExternalStore } from "react";
+import { useState } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import {
@@ -32,6 +33,7 @@ import type { Cvss31Breakdown, FindingDetailRecord } from "@/types/finding";
 import { cn } from "@/lib/utils";
 import { getSourceMessageHref } from "@/lib/findings/source-message";
 import { getFindingSeverityClasses } from "./FindingCard";
+import { FindingDiscoveredAt } from "./FindingTime";
 
 const CVSS_METRICS: Array<{
   key: keyof Cvss31Breakdown;
@@ -69,27 +71,36 @@ const CVSS_VALUE_LABELS: Record<
 const formatLabel = (value: string) =>
   value.charAt(0).toUpperCase() + value.slice(1).replaceAll("_", " ");
 
-const subscribeToHydration = () => () => {};
-const getHydratedSnapshot = () => true;
-const getServerSnapshot = () => false;
+const CopyTextButton = ({
+  value,
+  label,
+  successMessage,
+}: {
+  value: string;
+  label: string;
+  successMessage: string;
+}) => {
+  const handleCopy = async () => {
+    try {
+      await navigator.clipboard.writeText(value);
+      toast.success(successMessage);
+    } catch {
+      toast.error("Could not copy. Try again.");
+    }
+  };
 
-const FindingDiscoveredAt = ({ timestamp }: { timestamp: number }) => {
-  const useClientLocale = useSyncExternalStore(
-    subscribeToHydration,
-    getHydratedSnapshot,
-    getServerSnapshot,
+  return (
+    <Button
+      type="button"
+      variant="ghost"
+      size="icon"
+      className="size-8"
+      onClick={() => void handleCopy()}
+      aria-label={label}
+    >
+      <Copy className="size-3.5" aria-hidden="true" />
+    </Button>
   );
-  const date = new Date(timestamp);
-  const formatted = new Intl.DateTimeFormat(
-    useClientLocale ? undefined : "en-US",
-    {
-      dateStyle: "medium",
-      timeStyle: "short",
-      ...(useClientLocale ? {} : { timeZone: "UTC" }),
-    },
-  ).format(date);
-
-  return <time dateTime={date.toISOString()}>{formatted}</time>;
 };
 
 const DetailSection = ({
@@ -387,9 +398,18 @@ export function FindingDetail({
                 value={finding.poc_description}
               />
               <DetailSection title="PoC Script or Payload">
-                <pre className="max-w-full overflow-x-auto rounded-lg border border-border bg-muted/30 p-3 text-xs leading-relaxed">
-                  <code translate="no">{finding.poc_script_code}</code>
-                </pre>
+                <div className="relative max-w-full">
+                  <div className="absolute right-1.5 top-1.5">
+                    <CopyTextButton
+                      value={finding.poc_script_code}
+                      label="Copy PoC"
+                      successMessage="PoC copied"
+                    />
+                  </div>
+                  <pre className="max-w-full overflow-x-auto rounded-lg border border-border bg-muted/30 p-3 pr-12 text-xs leading-relaxed">
+                    <code translate="no">{finding.poc_script_code}</code>
+                  </pre>
+                </div>
               </DetailSection>
             </section>
 
@@ -518,11 +538,18 @@ export function FindingDetail({
                       </div>
                     ))}
                   </dl>
-                  <div
-                    className="break-all border-t border-border px-3 py-2 font-mono text-[11px] text-muted-foreground"
-                    translate="no"
-                  >
-                    {finding.cvss_vector}
+                  <div className="flex min-w-0 items-center gap-2 border-t border-border px-3 py-1.5">
+                    <div
+                      className="min-w-0 flex-1 break-all font-mono text-[11px] text-muted-foreground"
+                      translate="no"
+                    >
+                      {finding.cvss_vector}
+                    </div>
+                    <CopyTextButton
+                      value={finding.cvss_vector}
+                      label="Copy CVSS vector"
+                      successMessage="CVSS vector copied"
+                    />
                   </div>
                 </div>
               </DetailSection>

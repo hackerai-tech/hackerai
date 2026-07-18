@@ -1,8 +1,8 @@
 "use client";
 
+import Link from "next/link";
 import { Suspense, useDeferredValue, useEffect, useRef, useState } from "react";
 import { useConvexAuth, usePaginatedQuery, useQuery } from "convex/react";
-import { formatDistanceToNow } from "date-fns";
 import { ArrowLeft, PanelLeft, Search, ShieldAlert, X } from "lucide-react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { api } from "@/convex/_generated/api";
@@ -23,6 +23,7 @@ import {
 } from "@/components/ui/select";
 import { FindingDetail } from "@/app/components/findings/FindingDetail";
 import { getFindingSeverityClasses } from "@/app/components/findings/FindingCard";
+import { FindingRelativeTime } from "@/app/components/findings/FindingTime";
 import { useGlobalState } from "@/app/contexts/GlobalState";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { navigateToAuth } from "@/app/hooks/useTauri";
@@ -99,7 +100,7 @@ function FindingsPageContent() {
   const [selectedFindingId, setSelectedFindingId] = useState<string | null>(
     () => searchParams.get("finding"),
   );
-  const selectedFindingTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const selectedFindingTriggerRef = useRef<HTMLAnchorElement | null>(null);
 
   useEffect(() => {
     if (!isLoading && !isAuthenticated) navigateToAuth("/login");
@@ -161,7 +162,7 @@ function FindingsPageContent() {
   const hasActiveFilters =
     Boolean(deferredSearch) || severity !== "all" || chatId !== "all";
 
-  const selectFinding = (findingId: string, trigger: HTMLButtonElement) => {
+  const selectFinding = (findingId: string, trigger: HTMLAnchorElement) => {
     selectedFindingTriggerRef.current = trigger;
     setSelectedFindingId(findingId);
     updateFindingsHistory(
@@ -330,6 +331,15 @@ function FindingsPageContent() {
             </Select>
           </div>
 
+          {deferredSearch && (
+            <div
+              className="break-words border-b border-border px-4 py-2 text-xs text-muted-foreground sm:px-6"
+              aria-live="polite"
+            >
+              Best matches for “{deferredSearch}”
+            </div>
+          )}
+
           <div className="min-h-0 flex-1 overflow-y-auto">
             {findingsQuery.status === "LoadingFirstPage" ? (
               <div className="flex h-48 items-center justify-center text-sm text-muted-foreground">
@@ -368,12 +378,28 @@ function FindingsPageContent() {
             ) : (
               <div className="divide-y divide-border">
                 {findings.map((finding) => (
-                  <button
-                    type="button"
+                  <Link
                     key={finding.finding_id}
-                    onClick={(event) =>
-                      selectFinding(finding.finding_id, event.currentTarget)
-                    }
+                    href={getFindingsHref({
+                      search: deferredSearch,
+                      severity,
+                      chatId,
+                      findingId: finding.finding_id,
+                    })}
+                    prefetch={false}
+                    onClick={(event) => {
+                      if (
+                        event.button !== 0 ||
+                        event.metaKey ||
+                        event.ctrlKey ||
+                        event.shiftKey ||
+                        event.altKey
+                      ) {
+                        return;
+                      }
+                      event.preventDefault();
+                      selectFinding(finding.finding_id, event.currentTarget);
+                    }}
                     className={cn(
                       "grid w-full gap-2 px-4 py-4 text-left transition-colors hover:bg-muted/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring sm:grid-cols-[100px_minmax(180px,1.5fr)_minmax(160px,1fr)_minmax(130px,0.8fr)_100px] sm:items-center sm:px-6",
                       selectedFindingId === finding.finding_id && "bg-muted/40",
@@ -409,11 +435,9 @@ function FindingsPageContent() {
                       {finding.chat_title}
                     </div>
                     <div className="text-xs tabular-nums text-muted-foreground sm:text-right">
-                      {formatDistanceToNow(new Date(finding.created_at), {
-                        addSuffix: true,
-                      })}
+                      <FindingRelativeTime timestamp={finding.created_at} />
                     </div>
-                  </button>
+                  </Link>
                 ))}
               </div>
             )}

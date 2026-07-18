@@ -19,6 +19,24 @@ const optionalText = (label: string, max: number) =>
     .max(max, `${label} must be ${max.toLocaleString()} characters or fewer`)
     .optional();
 
+const stripBoundaryNewlines = (value: string) =>
+  value.replace(/^(?:\r?\n)+|(?:\r?\n)+$/g, "");
+
+const requiredCodeText = (label: string, max: number) =>
+  z
+    .string()
+    .transform(stripBoundaryNewlines)
+    .refine((value) => value.trim().length > 0, `${label} is required`)
+    .refine(
+      (value) => value.length <= max,
+      `${label} must be ${max.toLocaleString()} characters or fewer`,
+    );
+
+const optionalCodeText = (label: string, max: number) =>
+  requiredCodeText(label, max).optional();
+
+const getLineCount = (value: string) => value.split(/\r?\n/).length;
+
 const relativeCodePathSchema = requiredText("File", 500).superRefine(
   (path, ctx) => {
     const segments = path.split("/");
@@ -44,10 +62,10 @@ export const findingCodeLocationSchema = z
     file: relativeCodePathSchema,
     start_line: z.number().int().positive(),
     end_line: z.number().int().positive(),
-    snippet: optionalText("Snippet", 16_000),
+    snippet: optionalCodeText("Snippet", 16_000),
     label: optionalText("Label", 200),
-    fix_before: optionalText("Fix before", 16_000),
-    fix_after: optionalText("Fix after", 16_000),
+    fix_before: optionalCodeText("Fix before", 16_000),
+    fix_after: optionalCodeText("Fix after", 16_000),
   })
   .strict()
   .superRefine((location, ctx) => {
@@ -63,6 +81,18 @@ export const findingCodeLocationSchema = z
         code: "custom",
         path: [location.fix_before ? "fix_after" : "fix_before"],
         message: "fix_before and fix_after must be provided together",
+      });
+    }
+    if (
+      location.fix_before &&
+      getLineCount(location.fix_before) !==
+        location.end_line - location.start_line + 1
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["fix_before"],
+        message:
+          "fix_before must contain exactly the lines covered by start_line and end_line",
       });
     }
   });
@@ -88,7 +118,7 @@ export const createVulnerabilityReportInputSchema = z
     target: requiredText("Target", 1_000),
     technical_analysis: requiredText("Technical analysis", 12_000),
     poc_description: requiredText("PoC description", 8_000),
-    poc_script_code: requiredText("PoC script/code", 32_000),
+    poc_script_code: requiredCodeText("PoC script/code", 32_000),
     remediation_steps: requiredText("Remediation steps", 8_000),
     evidence: requiredText("Evidence", 16_000),
     assumptions: requiredText("Assumptions", 4_000),
