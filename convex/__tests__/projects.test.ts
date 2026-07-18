@@ -223,7 +223,7 @@ describe("projects", () => {
     const take = jest.fn<any>().mockResolvedValue(tasks);
     const projectEq = jest.fn<any>().mockReturnThis();
     const withIndex = jest.fn<any>((indexName, applyIndex) => {
-      expect(indexName).toBe("by_user_project_and_updated");
+      expect(indexName).toBe("by_project_and_updated");
       applyIndex({ eq: projectEq });
       return { take };
     });
@@ -256,11 +256,10 @@ describe("projects", () => {
     expect(patch).toHaveBeenCalledWith("task-2", { project_id: undefined });
     expect(deleteDocument).toHaveBeenCalledWith("project-1");
     expect(ctx.scheduler.runAfter).not.toHaveBeenCalled();
-    expect(projectEq).toHaveBeenNthCalledWith(1, "user_id", "user-1");
-    expect(projectEq).toHaveBeenNthCalledWith(2, "project_id", "project-1");
+    expect(projectEq).toHaveBeenCalledWith("project_id", "project-1");
   });
 
-  it("paginates project tasks through the user and project index", async () => {
+  it("paginates project tasks through the temporary project index", async () => {
     const page = {
       page: [{ _id: "task-1", user_id: "user-1", project_id: "project-1" }],
       isDone: true,
@@ -270,7 +269,7 @@ describe("projects", () => {
     const order = jest.fn<any>().mockReturnValue({ paginate });
     const projectEq = jest.fn<any>().mockReturnThis();
     const withIndex = jest.fn<any>((indexName, applyIndex) => {
-      expect(indexName).toBe("by_user_project_and_updated");
+      expect(indexName).toBe("by_project_and_updated");
       applyIndex({ eq: projectEq });
       return { order };
     });
@@ -289,8 +288,7 @@ describe("projects", () => {
       }),
     ).resolves.toEqual(page);
 
-    expect(projectEq).toHaveBeenNthCalledWith(1, "user_id", "user-1");
-    expect(projectEq).toHaveBeenNthCalledWith(2, "project_id", "project-1");
+    expect(projectEq).toHaveBeenCalledWith("project_id", "project-1");
     expect(order).toHaveBeenCalledWith("desc");
     expect(paginate).toHaveBeenCalledWith({ cursor: null, numItems: 5 });
   });
