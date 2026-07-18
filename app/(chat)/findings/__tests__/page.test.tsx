@@ -108,9 +108,11 @@ describe("FindingsPage", () => {
       "md:hidden",
     );
     expect(screen.getByText("Confirmed IDOR")).toBeVisible();
-    expect(screen.getByText("/api/invoices/other")).toBeVisible();
+    expect(screen.getAllByText("/api/invoices/other")).toHaveLength(2);
     expect(screen.getByText("Invoice test")).toBeVisible();
     expect(screen.getByText("CVSS 7.1")).toBeVisible();
+    expect(screen.getByText("Affected Target")).toBeVisible();
+    expect(screen.getByRole("list", { name: "Findings" })).toBeVisible();
     expect(screen.getByLabelText("Filter by severity")).toBeVisible();
     expect(screen.queryByLabelText("Filter by source chat")).toBeNull();
 
@@ -215,7 +217,9 @@ describe("FindingsPage", () => {
     });
     expect(findingRow).toHaveAttribute("href", "/findings?finding=finding-1");
     fireEvent.click(findingRow);
-    const dialog = screen.getByRole("dialog", { name: "Finding" });
+    const dialog = screen.getByRole("dialog", {
+      name: "Vulnerability Report",
+    });
     expect(dialog).toBeVisible();
     expect(dialog).toHaveClass("sm:max-w-6xl", "sm:rounded-2xl");
     expect(document.querySelector('[data-slot="dialog-overlay"]')).toHaveClass(
@@ -261,10 +265,9 @@ describe("FindingsPage", () => {
     findingRow.focus();
     fireEvent.click(findingRow);
 
-    expect(screen.getByRole("dialog", { name: "Finding" })).toHaveClass(
-      "h-dvh",
-      "w-screen",
-    );
+    expect(
+      screen.getByRole("dialog", { name: "Vulnerability Report" }),
+    ).toHaveClass("h-dvh", "w-screen");
     expect(
       screen.getByRole("button", { name: "Back to findings" }),
     ).toBeVisible();
@@ -272,7 +275,9 @@ describe("FindingsPage", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Back to findings" }));
     await waitFor(() => {
-      expect(screen.queryByRole("dialog", { name: "Finding" })).toBeNull();
+      expect(
+        screen.queryByRole("dialog", { name: "Vulnerability Report" }),
+      ).toBeNull();
       expect(findingRow).toHaveFocus();
     });
   });

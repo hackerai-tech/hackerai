@@ -3,7 +3,15 @@
 import Link from "next/link";
 import { Suspense, useDeferredValue, useEffect, useRef, useState } from "react";
 import { useConvexAuth, usePaginatedQuery, useQuery } from "convex/react";
-import { ArrowLeft, PanelLeft, Search, ShieldAlert, X } from "lucide-react";
+import {
+  ArrowLeft,
+  ChevronRight,
+  MessageSquareText,
+  PanelLeft,
+  Search,
+  ShieldAlert,
+  X,
+} from "lucide-react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { api } from "@/convex/_generated/api";
 import { Button } from "@/components/ui/button";
@@ -235,7 +243,7 @@ function FindingsPageContent() {
           <div className="min-w-0 flex-1">
             <h1 className="text-lg font-semibold text-foreground">Findings</h1>
             <p className="hidden text-xs text-muted-foreground sm:block">
-              Confirmed vulnerabilities saved by Agent
+              Validated vulnerabilities with evidence and working PoCs
             </p>
           </div>
         </header>
@@ -243,7 +251,7 @@ function FindingsPageContent() {
         <div className="flex min-h-0 flex-1 flex-col">
           <div
             className={cn(
-              "grid shrink-0 gap-2 border-b border-border p-4 sm:px-6",
+              "grid shrink-0 gap-2 border-b border-border bg-muted/10 p-4 sm:px-6",
               showSourceChatFilter
                 ? "sm:grid-cols-[minmax(220px,1fr)_160px_220px]"
                 : "sm:grid-cols-[minmax(220px,1fr)_160px]",
@@ -366,69 +374,128 @@ function FindingsPageContent() {
                 )}
               </div>
             ) : (
-              <div className="divide-y divide-border">
-                {findings.map((finding) => (
-                  <Link
-                    key={finding.finding_id}
-                    href={getFindingsHref({
-                      search: deferredSearch,
-                      severity,
-                      chatId,
-                      findingId: finding.finding_id,
-                    })}
-                    prefetch={false}
-                    onClick={(event) => {
-                      if (
-                        event.button !== 0 ||
-                        event.metaKey ||
-                        event.ctrlKey ||
-                        event.shiftKey ||
-                        event.altKey
-                      ) {
-                        return;
-                      }
-                      event.preventDefault();
-                      selectFinding(finding.finding_id, event.currentTarget);
-                    }}
-                    className={cn(
-                      "grid w-full gap-2 px-4 py-4 text-left transition-colors hover:bg-muted/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring sm:grid-cols-[100px_minmax(180px,1.5fr)_minmax(160px,1fr)_minmax(130px,0.8fr)_100px] sm:items-center sm:px-6",
-                      selectedFindingId === finding.finding_id && "bg-muted/40",
-                    )}
+              <div className="p-3 sm:p-6">
+                <div className="overflow-hidden rounded-xl border border-border bg-card/30 shadow-sm">
+                  <div
+                    className="hidden grid-cols-[145px_minmax(220px,1.5fr)_minmax(210px,1fr)_minmax(140px,0.7fr)_110px_20px] items-center gap-4 border-b border-border bg-muted/30 px-4 py-2.5 text-[11px] font-medium uppercase tracking-wide text-muted-foreground lg:grid"
+                    aria-hidden="true"
                   >
-                    <div className="flex items-center gap-2 sm:block">
-                      <span
-                        className={cn(
-                          "inline-flex rounded-md border px-2 py-1 text-[11px] font-semibold uppercase",
-                          getFindingSeverityClasses(finding.severity),
-                        )}
-                      >
-                        {finding.severity}
-                      </span>
-                      <span className="font-mono text-xs text-muted-foreground sm:mt-1 sm:block">
-                        CVSS {finding.cvss_score.toFixed(1)}
-                      </span>
-                    </div>
-                    <div className="min-w-0">
-                      <div className="truncate text-sm font-medium text-foreground">
-                        {finding.title}
-                      </div>
-                    </div>
-                    <div className="min-w-0 font-mono text-xs text-muted-foreground">
-                      <div className="truncate">{finding.target}</div>
-                      {finding.endpoint && (
-                        <div className="mt-0.5 truncate">
-                          {finding.endpoint}
-                        </div>
-                      )}
-                    </div>
-                    <div className="truncate text-xs text-muted-foreground">
-                      {finding.chat_title}
-                    </div>
-                    <div className="text-xs tabular-nums text-muted-foreground sm:text-right">
-                      <FindingRelativeTime timestamp={finding.created_at} />
-                    </div>
-                  </Link>
-                ))}
+                    <div>Risk</div>
+                    <div>Finding</div>
+                    <div>Affected Target</div>
+                    <div>Source</div>
+                    <div className="text-right">Found</div>
+                    <div />
+                  </div>
+                  <ul className="divide-y divide-border" aria-label="Findings">
+                    {findings.map((finding) => (
+                      <li key={finding.finding_id}>
+                        <Link
+                          href={getFindingsHref({
+                            search: deferredSearch,
+                            severity,
+                            chatId,
+                            findingId: finding.finding_id,
+                          })}
+                          prefetch={false}
+                          onClick={(event) => {
+                            if (
+                              event.button !== 0 ||
+                              event.metaKey ||
+                              event.ctrlKey ||
+                              event.shiftKey ||
+                              event.altKey
+                            ) {
+                              return;
+                            }
+                            event.preventDefault();
+                            selectFinding(
+                              finding.finding_id,
+                              event.currentTarget,
+                            );
+                          }}
+                          className={cn(
+                            "group block min-w-0 p-4 text-left transition-colors hover:bg-muted/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring lg:grid lg:grid-cols-[145px_minmax(220px,1.5fr)_minmax(210px,1fr)_minmax(140px,0.7fr)_110px_20px] lg:items-center lg:gap-4",
+                            selectedFindingId === finding.finding_id &&
+                              "bg-muted/40",
+                          )}
+                        >
+                          <div className="flex items-center justify-between gap-3 lg:block">
+                            <span
+                              className={cn(
+                                "inline-flex items-center gap-1.5 whitespace-nowrap rounded-lg border px-2.5 py-1.5 text-[11px] font-semibold uppercase",
+                                getFindingSeverityClasses(finding.severity),
+                              )}
+                            >
+                              {finding.severity}
+                              <span className="opacity-50" aria-hidden="true">
+                                ·
+                              </span>
+                              <span className="tabular-nums">
+                                CVSS {finding.cvss_score.toFixed(1)}
+                              </span>
+                            </span>
+                            <span className="text-xs tabular-nums text-muted-foreground lg:hidden">
+                              <FindingRelativeTime
+                                timestamp={finding.created_at}
+                              />
+                            </span>
+                          </div>
+
+                          <div className="mt-3 min-w-0 lg:mt-0">
+                            <div className="line-clamp-2 text-sm font-medium leading-5 text-foreground lg:truncate">
+                              {finding.title}
+                            </div>
+                            <div
+                              className="mt-2 min-w-0 font-mono text-xs text-muted-foreground lg:hidden"
+                              translate="no"
+                            >
+                              <div className="truncate">{finding.target}</div>
+                              {finding.endpoint ? (
+                                <div className="mt-1 truncate text-foreground/70">
+                                  {finding.endpoint}
+                                </div>
+                              ) : null}
+                            </div>
+                          </div>
+
+                          <div
+                            className="hidden min-w-0 font-mono text-xs text-muted-foreground lg:block"
+                            translate="no"
+                          >
+                            <div className="truncate">{finding.target}</div>
+                            {finding.endpoint ? (
+                              <div className="mt-1 truncate text-foreground/70">
+                                {finding.endpoint}
+                              </div>
+                            ) : null}
+                          </div>
+
+                          <div className="mt-3 flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground lg:mt-0">
+                            <MessageSquareText
+                              className="size-3.5 shrink-0"
+                              aria-hidden="true"
+                            />
+                            <span className="truncate">
+                              {finding.chat_title}
+                            </span>
+                          </div>
+
+                          <div className="hidden text-right text-xs tabular-nums text-muted-foreground lg:block">
+                            <FindingRelativeTime
+                              timestamp={finding.created_at}
+                            />
+                          </div>
+
+                          <ChevronRight
+                            className="hidden size-4 text-muted-foreground transition-transform group-hover:translate-x-0.5 group-hover:text-foreground motion-reduce:transition-none lg:block"
+                            aria-hidden="true"
+                          />
+                        </Link>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
               </div>
             )}
 
@@ -481,7 +548,9 @@ function FindingsPageContent() {
                   <ArrowLeft className="size-5" aria-hidden="true" />
                 </Button>
               </DialogClose>
-              <DialogTitle className="flex-1 text-base">Finding</DialogTitle>
+              <DialogTitle className="flex-1 text-base">
+                Vulnerability Report
+              </DialogTitle>
               <DialogClose asChild>
                 <Button
                   variant="ghost"

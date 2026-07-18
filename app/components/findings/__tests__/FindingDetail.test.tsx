@@ -77,6 +77,10 @@ describe("FindingDetail", () => {
     render(<FindingDetail finding={finding} surface="findings_page" />);
     expect(screen.getByRole("heading", { name: finding.title })).toBeVisible();
     expect(screen.getByText("Confirmed")).toBeVisible();
+    expect(
+      screen.getByRole("heading", { name: "What Was Confirmed" }),
+    ).toBeVisible();
+    expect(screen.getByText("Validated Finding")).toBeVisible();
     expect(screen.getByText("CWE-639")).toBeVisible();
     expect(screen.getByText(finding.poc_script_code)).toBeVisible();
     expect(screen.getByText(finding.evidence)).toBeVisible();
