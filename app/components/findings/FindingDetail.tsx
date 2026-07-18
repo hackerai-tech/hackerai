@@ -267,55 +267,53 @@ export function FindingDetail({
             </div>
           </div>
 
-          <div className="flex flex-wrap items-center gap-2">
-            {surface === "findings_page" ? (
-              <>
-                <Button asChild size="sm">
-                  <Link
-                    href={getSourceMessageHref(
-                      finding.chat_id,
-                      finding.message_id,
-                    )}
-                    aria-label={`Open source message in ${finding.chat_title}`}
-                  >
-                    <MessageSquareText className="size-4" aria-hidden="true" />
-                    Open source message
-                  </Link>
-                </Button>
-                <span className="min-w-0 max-w-56 truncate text-xs text-muted-foreground">
-                  {finding.chat_title}
-                </span>
-              </>
-            ) : null}
-            <div className="ml-auto">
-              <AlertDialog>
-                <AlertDialogTrigger asChild>
-                  <Button variant="outline" size="sm" disabled={isDeleting}>
-                    <Trash2 className="size-4" aria-hidden="true" />
-                    Delete
-                  </Button>
-                </AlertDialogTrigger>
-                <AlertDialogContent>
-                  <AlertDialogHeader>
-                    <AlertDialogTitle>Delete This Finding?</AlertDialogTitle>
-                    <AlertDialogDescription>
-                      This permanently deletes the report and removes its card
-                      from the source assistant message.
-                    </AlertDialogDescription>
-                  </AlertDialogHeader>
-                  <AlertDialogFooter>
-                    <AlertDialogCancel>Cancel</AlertDialogCancel>
-                    <AlertDialogAction
-                      onClick={() => void handleDelete()}
-                      className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-                    >
-                      Delete Finding
-                    </AlertDialogAction>
-                  </AlertDialogFooter>
-                </AlertDialogContent>
-              </AlertDialog>
+          {surface === "findings_page" ? (
+            <div className="flex flex-wrap items-center gap-2">
+              <Button asChild size="sm">
+                <Link
+                  href={getSourceMessageHref(
+                    finding.chat_id,
+                    finding.message_id,
+                  )}
+                  aria-label={`Open source message in ${finding.chat_title}`}
+                >
+                  <MessageSquareText className="size-4" aria-hidden="true" />
+                  Open source message
+                </Link>
+              </Button>
+              <span className="min-w-0 max-w-56 truncate text-xs text-muted-foreground">
+                {finding.chat_title}
+              </span>
+              <div className="ml-auto">
+                <AlertDialog>
+                  <AlertDialogTrigger asChild>
+                    <Button variant="outline" size="sm" disabled={isDeleting}>
+                      <Trash2 className="size-4" aria-hidden="true" />
+                      Delete
+                    </Button>
+                  </AlertDialogTrigger>
+                  <AlertDialogContent>
+                    <AlertDialogHeader>
+                      <AlertDialogTitle>Delete This Finding?</AlertDialogTitle>
+                      <AlertDialogDescription>
+                        This permanently deletes the report and removes its card
+                        from the source assistant message.
+                      </AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <AlertDialogFooter>
+                      <AlertDialogCancel>Cancel</AlertDialogCancel>
+                      <AlertDialogAction
+                        onClick={() => void handleDelete()}
+                        className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                      >
+                        Delete Finding
+                      </AlertDialogAction>
+                    </AlertDialogFooter>
+                  </AlertDialogContent>
+                </AlertDialog>
+              </div>
             </div>
-          </div>
+          ) : null}
         </header>
 
         <nav

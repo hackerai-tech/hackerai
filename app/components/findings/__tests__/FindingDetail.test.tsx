@@ -95,7 +95,7 @@ describe("FindingDetail", () => {
     ).toHaveAttribute("href", "/c/chat-1#message=message-1");
   });
 
-  it("omits redundant source navigation in the chat sidebar", () => {
+  it("omits management controls in the chat sidebar", () => {
     render(<FindingDetail finding={finding} surface="computer_sidebar" />);
 
     expect(
@@ -104,6 +104,7 @@ describe("FindingDetail", () => {
       }),
     ).toBeNull();
     expect(screen.queryByText("Invoice test")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Delete" })).toBeNull();
   });
 
   it("copies the PoC and CVSS vector", async () => {
