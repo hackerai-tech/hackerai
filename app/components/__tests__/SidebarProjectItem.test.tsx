@@ -8,6 +8,23 @@ import {
   SIDEBAR_CHAT_DRAG_TYPE,
 } from "../sidebar-chat-drag";
 
+Object.defineProperty(globalThis, "ResizeObserver", {
+  configurable: true,
+  value: class ResizeObserverMock {
+    observe() {
+      return undefined;
+    }
+
+    unobserve() {
+      return undefined;
+    }
+
+    disconnect() {
+      return undefined;
+    }
+  },
+});
+
 const mockProjectThreads = jest.fn(() => (
   <div data-testid="project-threads">
     <button type="button" data-testid="nested-project-task">
@@ -175,6 +192,66 @@ describe("SidebarProjectItem", () => {
     expect(
       await screen.findByText("/Users/hackerai/targets/acme"),
     ).toBeInTheDocument();
+  });
+
+  it("marks a linked Desktop project on the folder icon", () => {
+    const linkedProject = {
+      ...project,
+      folder_path: "/Users/hackerai/targets/acme",
+    } as Doc<"projects">;
+
+    render(
+      <SidebarProjectItem
+        project={linkedProject}
+        open={false}
+        onOpenChange={jest.fn()}
+        onNewThread={jest.fn()}
+        onDropChat={jest.fn<() => Promise<void>>().mockResolvedValue(undefined)}
+      />,
+    );
+
+    expect(screen.getByTestId("project-folder-closed")).toBeInTheDocument();
+    expect(screen.getByTestId("project-local-folder-badge")).toHaveClass(
+      "text-blue-500",
+      "group-hover/project:opacity-0",
+    );
+  });
+
+  it("shows the more-options label on hover", async () => {
+    const user = userEvent.setup();
+    render(
+      <SidebarProjectItem
+        project={project}
+        open={false}
+        onOpenChange={jest.fn()}
+        onNewThread={jest.fn()}
+        onDropChat={jest.fn<() => Promise<void>>().mockResolvedValue(undefined)}
+      />,
+    );
+
+    const optionsButton = screen.getByRole("button", {
+      name: "Project options for Acme",
+    });
+    await user.hover(optionsButton);
+    expect(await screen.findByRole("tooltip")).toHaveTextContent(
+      "More options",
+    );
+  });
+
+  it("shows the new-task label on hover", async () => {
+    const user = userEvent.setup();
+    render(
+      <SidebarProjectItem
+        project={project}
+        open={false}
+        onOpenChange={jest.fn()}
+        onNewThread={jest.fn()}
+        onDropChat={jest.fn<() => Promise<void>>().mockResolvedValue(undefined)}
+      />,
+    );
+
+    await user.hover(screen.getByRole("button", { name: "New task in Acme" }));
+    expect(await screen.findByRole("tooltip")).toHaveTextContent("New task");
   });
 
   it("offers pin, edit, and delete actions from the project menu", async () => {

@@ -117,6 +117,38 @@ export function SidebarProjectItem({
     }
   };
 
+  const projectIcon = (
+    <span className="relative flex size-5 shrink-0 items-center justify-center">
+      {open ? (
+        <FolderOpen
+          className="absolute size-4 transition-opacity group-hover/project:opacity-0 touch-device:!opacity-100"
+          data-testid="project-folder-open"
+          aria-hidden="true"
+        />
+      ) : (
+        <Folder
+          className="absolute size-4 transition-opacity group-hover/project:opacity-0 touch-device:!opacity-100"
+          data-testid="project-folder-closed"
+          aria-hidden="true"
+        />
+      )}
+      {project.folder_path ? (
+        <span
+          className="absolute -right-0.5 -bottom-0.5 flex size-2.5 items-center justify-center rounded-[2px] bg-sidebar text-blue-500 transition-opacity group-hover/project:opacity-0 touch-device:!opacity-100"
+          data-testid="project-local-folder-badge"
+          aria-hidden="true"
+        >
+          <Laptop className="size-2 stroke-[2.5]" />
+        </span>
+      ) : null}
+      <ChevronRight
+        className={`absolute size-[18px] text-sidebar-foreground/45 opacity-0 transition-[transform,opacity] duration-200 group-hover/project:opacity-100 touch-device:!opacity-0 ${open ? "rotate-90" : ""}`}
+        data-testid="project-chevron"
+        aria-hidden="true"
+      />
+    </span>
+  );
+
   return (
     <Collapsible
       open={open}
@@ -137,59 +169,47 @@ export function SidebarProjectItem({
             className="flex h-full min-w-0 flex-1 items-center gap-2 rounded-lg text-left text-sm text-sidebar-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring"
             aria-label={`${open ? "Collapse" : "Expand"} project ${project.name}`}
           >
-            <span className="relative flex size-5 shrink-0 items-center justify-center">
-              {open ? (
-                <FolderOpen
-                  className="absolute size-4 transition-opacity group-hover/project:opacity-0 touch-device:!opacity-100"
-                  data-testid="project-folder-open"
-                  aria-hidden="true"
-                />
-              ) : (
-                <Folder
-                  className="absolute size-4 transition-opacity group-hover/project:opacity-0 touch-device:!opacity-100"
-                  data-testid="project-folder-closed"
-                  aria-hidden="true"
-                />
-              )}
-              <ChevronRight
-                className={`absolute size-[18px] text-sidebar-foreground/45 opacity-0 transition-[transform,opacity] duration-200 group-hover/project:opacity-100 touch-device:!opacity-0 ${open ? "rotate-90" : ""}`}
-                data-testid="project-chevron"
-                aria-hidden="true"
-              />
-            </span>
-            <span className="min-w-0 flex-1 truncate" title={project.name}>
-              {project.name}
-            </span>
             {project.folder_path ? (
               <Tooltip>
-                <TooltipTrigger asChild>
-                  <span className="flex shrink-0 items-center">
-                    <Laptop
-                      className="size-3.5 text-sidebar-foreground/35"
-                      aria-hidden="true"
-                    />
-                  </span>
-                </TooltipTrigger>
+                <TooltipTrigger asChild>{projectIcon}</TooltipTrigger>
                 <TooltipContent side="right" className="max-w-80 break-all">
                   {project.folder_path}
                 </TooltipContent>
               </Tooltip>
-            ) : null}
+            ) : (
+              projectIcon
+            )}
+            <span className="min-w-0 flex-1 truncate" title={project.name}>
+              {project.name}
+            </span>
           </button>
         </CollapsibleTrigger>
 
         <DropdownMenu open={isMenuOpen} onOpenChange={setIsMenuOpen}>
-          <DropdownMenuTrigger asChild>
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon"
-              className="size-8 shrink-0 rounded-lg text-sidebar-foreground/45 opacity-0 transition-opacity hover:bg-sidebar-accent hover:text-sidebar-foreground group-hover/project:opacity-100 group-focus-within/project:opacity-100 focus-visible:opacity-100 data-[state=open]:opacity-100 touch-device:!opacity-100"
-              aria-label={`Project options for ${project.name}`}
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <span className="flex size-8 shrink-0">
+                <DropdownMenuTrigger asChild>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    className="size-8 shrink-0 rounded-lg text-sidebar-foreground/45 opacity-0 transition-opacity hover:bg-sidebar-accent hover:text-sidebar-foreground group-hover/project:opacity-100 group-focus-within/project:opacity-100 focus-visible:opacity-100 data-[state=open]:opacity-100 touch-device:!opacity-100"
+                    aria-label={`Project options for ${project.name}`}
+                  >
+                    <Ellipsis className="size-[18px]" />
+                  </Button>
+                </DropdownMenuTrigger>
+              </span>
+            </TooltipTrigger>
+            <TooltipContent
+              side="top"
+              sideOffset={8}
+              className="border-0 bg-black px-3 py-1.5 text-sm text-white shadow-md [&_svg]:bg-black [&_svg]:fill-black"
             >
-              <Ellipsis className="size-[18px]" />
-            </Button>
-          </DropdownMenuTrigger>
+              More options
+            </TooltipContent>
+          </Tooltip>
           <DropdownMenuContent align="end" side="bottom" sideOffset={5}>
             {project.folder_path ? (
               <>
@@ -227,16 +247,27 @@ export function SidebarProjectItem({
           </DropdownMenuContent>
         </DropdownMenu>
 
-        <Button
-          type="button"
-          variant="ghost"
-          size="icon"
-          className="size-8 shrink-0 rounded-lg text-sidebar-foreground/45 opacity-0 transition-opacity hover:bg-sidebar-accent hover:text-sidebar-foreground group-hover/project:opacity-100 group-focus-within/project:opacity-100 focus-visible:opacity-100 touch-device:!opacity-100"
-          onClick={onNewThread}
-          aria-label={`New task in ${project.name}`}
-        >
-          <SquarePen className="size-[18px]" />
-        </Button>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              className="size-8 shrink-0 rounded-lg text-sidebar-foreground/45 opacity-0 transition-opacity hover:bg-sidebar-accent hover:text-sidebar-foreground group-hover/project:opacity-100 group-focus-within/project:opacity-100 focus-visible:opacity-100 touch-device:!opacity-100"
+              onClick={onNewThread}
+              aria-label={`New task in ${project.name}`}
+            >
+              <SquarePen className="size-[18px]" />
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent
+            side="top"
+            sideOffset={8}
+            className="border-0 bg-black px-3 py-1.5 text-sm text-white shadow-md [&_svg]:bg-black [&_svg]:fill-black"
+          >
+            New task
+          </TooltipContent>
+        </Tooltip>
       </div>
 
       <CollapsibleContent>
