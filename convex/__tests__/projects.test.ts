@@ -222,10 +222,11 @@ describe("projects", () => {
     const tasks = [{ _id: "task-1" }, { _id: "task-2" }];
     const take = jest.fn<any>().mockResolvedValue(tasks);
     const projectEq = jest.fn<any>().mockReturnThis();
+    const filter = jest.fn<any>().mockReturnValue({ take });
     const withIndex = jest.fn<any>((indexName, applyIndex) => {
-      expect(indexName).toBe("by_project_and_updated");
+      expect(indexName).toBe("by_user_and_updated");
       applyIndex({ eq: projectEq });
-      return { take };
+      return { filter };
     });
     const patch = jest.fn<any>().mockResolvedValue(undefined);
     const deleteDocument = jest.fn<any>().mockResolvedValue(undefined);
@@ -256,10 +257,11 @@ describe("projects", () => {
     expect(patch).toHaveBeenCalledWith("task-2", { project_id: undefined });
     expect(deleteDocument).toHaveBeenCalledWith("project-1");
     expect(ctx.scheduler.runAfter).not.toHaveBeenCalled();
-    expect(projectEq).toHaveBeenCalledWith("project_id", "project-1");
+    expect(projectEq).toHaveBeenCalledWith("user_id", "user-1");
+    expect(filter).toHaveBeenCalledWith(expect.any(Function));
   });
 
-  it("paginates project tasks through the temporary project index", async () => {
+  it("paginates project tasks through the existing user index", async () => {
     const page = {
       page: [{ _id: "task-1", user_id: "user-1", project_id: "project-1" }],
       isDone: true,
@@ -267,11 +269,12 @@ describe("projects", () => {
     };
     const paginate = jest.fn<any>().mockResolvedValue(page);
     const order = jest.fn<any>().mockReturnValue({ paginate });
+    const filter = jest.fn<any>().mockReturnValue({ order });
     const projectEq = jest.fn<any>().mockReturnThis();
     const withIndex = jest.fn<any>((indexName, applyIndex) => {
-      expect(indexName).toBe("by_project_and_updated");
+      expect(indexName).toBe("by_user_and_updated");
       applyIndex({ eq: projectEq });
-      return { order };
+      return { filter };
     });
     const ctx = {
       auth: authenticated,
@@ -288,7 +291,8 @@ describe("projects", () => {
       }),
     ).resolves.toEqual(page);
 
-    expect(projectEq).toHaveBeenCalledWith("project_id", "project-1");
+    expect(projectEq).toHaveBeenCalledWith("user_id", "user-1");
+    expect(filter).toHaveBeenCalledWith(expect.any(Function));
     expect(order).toHaveBeenCalledWith("desc");
     expect(paginate).toHaveBeenCalledWith({ cursor: null, numItems: 5 });
   });
