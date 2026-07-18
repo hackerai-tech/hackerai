@@ -25,7 +25,6 @@ import { FindingDetail } from "@/app/components/findings/FindingDetail";
 import { getFindingSeverityClasses } from "@/app/components/findings/FindingCard";
 import { FindingRelativeTime } from "@/app/components/findings/FindingTime";
 import { useGlobalState } from "@/app/contexts/GlobalState";
-import { useIsMobile } from "@/hooks/use-mobile";
 import { navigateToAuth } from "@/app/hooks/useTauri";
 import { captureAuthenticatedEvent } from "@/lib/analytics/client";
 import { cn } from "@/lib/utils";
@@ -90,7 +89,6 @@ function FindingsPageContent() {
     setChatMode,
     setTemporaryChatsEnabled,
   } = useGlobalState();
-  const isMobile = useIsMobile();
   const [search, setSearch] = useState(() => searchParams.get("q") ?? "");
   const deferredSearch = useDeferredValue(search.trim());
   const [severity, setSeverity] = useState<"all" | FindingSeverity>(() =>
@@ -177,21 +175,6 @@ function FindingsPageContent() {
     closeSidebar();
   };
 
-  const closeDesktopFinding = () => {
-    if (selectedFindingTriggerRef.current?.isConnected) {
-      selectedFindingTriggerRef.current.focus();
-    }
-    setSelectedFindingId(null);
-    updateFindingsHistory(
-      getFindingsHref({
-        search: deferredSearch,
-        severity,
-        chatId,
-        findingId: null,
-      }),
-    );
-  };
-
   const clearSelectedFinding = () => {
     setSelectedFindingId(null);
     updateFindingsHistory(
@@ -236,12 +219,7 @@ function FindingsPageContent() {
 
   return (
     <div className="flex h-full min-h-0 bg-background">
-      <main
-        className={cn(
-          "flex min-w-0 flex-1 flex-col",
-          selectedFindingId && isMobile === false && "border-r border-border",
-        )}
-      >
+      <main className="flex min-w-0 flex-1 flex-col">
         <header className="flex shrink-0 items-center gap-3 border-b border-border px-4 py-3 sm:px-6">
           <Button
             variant="ghost"
@@ -461,30 +439,7 @@ function FindingsPageContent() {
         </div>
       </main>
 
-      {selectedFindingId && isMobile === false && (
-        <aside className="flex h-full min-w-0 flex-[1.15] flex-col bg-background">
-          <div className="flex h-14 shrink-0 items-center justify-between border-b border-border px-4">
-            <h2 className="text-base font-medium text-foreground">Finding</h2>
-            <Button
-              variant="ghost"
-              size="icon"
-              onClick={closeDesktopFinding}
-              aria-label="Close finding"
-            >
-              <X className="size-5" aria-hidden="true" />
-            </Button>
-          </div>
-          <div className="min-h-0 flex-1">
-            <FindingDetail
-              findingId={selectedFindingId}
-              surface="findings_page"
-              onDeleted={clearSelectedFinding}
-            />
-          </div>
-        </aside>
-      )}
-
-      {selectedFindingId && isMobile && (
+      {selectedFindingId && (
         <Dialog
           open
           onOpenChange={(open) => {
@@ -493,6 +448,7 @@ function FindingsPageContent() {
         >
           <DialogContent
             showCloseButton={false}
+            overlayClassName="bg-black/60 backdrop-blur-sm"
             aria-describedby={undefined}
             onCloseAutoFocus={(event) => {
               event.preventDefault();
@@ -500,19 +456,30 @@ function FindingsPageContent() {
                 selectedFindingTriggerRef.current.focus();
               }
             }}
-            className="inset-0 h-dvh w-screen max-w-none translate-x-0 translate-y-0 gap-0 rounded-none border-0 p-0 shadow-none duration-0 sm:max-w-none"
+            className="inset-0 flex h-dvh w-screen max-w-none translate-x-0 translate-y-0 flex-col gap-0 overflow-hidden rounded-none border-0 p-0 shadow-none sm:inset-auto sm:top-1/2 sm:left-1/2 sm:h-[calc(100dvh-3rem)] sm:w-[calc(100vw-3rem)] sm:max-w-6xl sm:-translate-x-1/2 sm:-translate-y-1/2 sm:rounded-2xl sm:border sm:shadow-2xl"
           >
-            <div className="flex h-14 shrink-0 items-center gap-2 border-b border-border px-3">
+            <div className="flex h-14 shrink-0 items-center gap-2 border-b border-border px-3 sm:px-5">
               <DialogClose asChild>
                 <Button
                   variant="ghost"
                   size="icon"
                   aria-label="Back to findings"
+                  className="sm:hidden"
                 >
                   <ArrowLeft className="size-5" aria-hidden="true" />
                 </Button>
               </DialogClose>
-              <DialogTitle className="text-base">Finding</DialogTitle>
+              <DialogTitle className="flex-1 text-base">Finding</DialogTitle>
+              <DialogClose asChild>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  aria-label="Close finding"
+                  className="hidden sm:inline-flex"
+                >
+                  <X className="size-5" aria-hidden="true" />
+                </Button>
+              </DialogClose>
             </div>
             <div className="min-h-0 flex-1">
               <FindingDetail

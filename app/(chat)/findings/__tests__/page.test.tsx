@@ -13,7 +13,6 @@ const mockCloseSidebar = jest.fn();
 const mockInitializeNewChat = jest.fn();
 const mockSetChatMode = jest.fn();
 const mockSetTemporaryChatsEnabled = jest.fn();
-let mockMobile = false;
 
 jest.mock("convex/react", () => ({
   useConvexAuth: () => ({ isLoading: false, isAuthenticated: true }),
@@ -35,10 +34,6 @@ jest.mock("@/app/contexts/GlobalState", () => ({
 jest.mock("next/navigation", () => ({
   useRouter: () => ({ push: mockPush }),
   useSearchParams: () => mockSearchParams,
-}));
-
-jest.mock("@/hooks/use-mobile", () => ({
-  useIsMobile: () => mockMobile,
 }));
 
 jest.mock("@/app/hooks/useTauri", () => ({ navigateToAuth: jest.fn() }));
@@ -92,7 +87,6 @@ describe("FindingsPage", () => {
       mockSearchParams.delete(key);
     }
     window.history.replaceState({}, "", "/findings");
-    mockMobile = false;
     mockUsePaginatedQuery.mockReturnValue({
       results: [mockFinding],
       status: "Exhausted",
@@ -179,13 +173,20 @@ describe("FindingsPage", () => {
     });
   });
 
-  it("opens and closes the reusable detail alongside the desktop list", () => {
+  it("opens and closes the reusable detail in a focused modal", async () => {
     render(<Page />);
     const findingRow = screen.getByRole("link", {
       name: /Confirmed IDOR/i,
     });
     expect(findingRow).toHaveAttribute("href", "/findings?finding=finding-1");
     fireEvent.click(findingRow);
+    const dialog = screen.getByRole("dialog", { name: "Finding" });
+    expect(dialog).toBeVisible();
+    expect(dialog).toHaveClass("sm:max-w-6xl", "sm:rounded-2xl");
+    expect(document.querySelector('[data-slot="dialog-overlay"]')).toHaveClass(
+      "bg-black/60",
+      "backdrop-blur-sm",
+    );
     expect(screen.getByText(mockFinding.description)).toBeVisible();
     expect(
       screen.getByRole("link", {
@@ -197,8 +198,10 @@ describe("FindingsPage", () => {
     });
 
     fireEvent.click(screen.getByRole("button", { name: "Close finding" }));
-    expect(screen.queryByText(mockFinding.description)).toBeNull();
-    expect(findingRow).toHaveFocus();
+    await waitFor(() => {
+      expect(screen.queryByText(mockFinding.description)).toBeNull();
+      expect(findingRow).toHaveFocus();
+    });
     expect(window.location.pathname).toBe("/findings");
     expect(window.location.search).toBe("");
   });
@@ -215,8 +218,7 @@ describe("FindingsPage", () => {
     });
   });
 
-  it("uses a modal full-screen mobile detail and restores list focus", async () => {
-    mockMobile = true;
+  it("keeps a full-screen mobile close path and restores list focus", async () => {
     render(<Page />);
     const findingRow = screen.getByRole("link", {
       name: /Confirmed IDOR/i,
@@ -224,7 +226,10 @@ describe("FindingsPage", () => {
     findingRow.focus();
     fireEvent.click(findingRow);
 
-    expect(screen.getByRole("dialog", { name: "Finding" })).toBeVisible();
+    expect(screen.getByRole("dialog", { name: "Finding" })).toHaveClass(
+      "h-dvh",
+      "w-screen",
+    );
     expect(
       screen.getByRole("button", { name: "Back to findings" }),
     ).toBeVisible();
