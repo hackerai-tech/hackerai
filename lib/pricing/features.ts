@@ -46,13 +46,13 @@ export const freeFeatures: Array<PricingFeature> = [
 ];
 
 export const proFeatures: Array<PricingFeature> = [
-  { icon: Check, text: "Best available AI models for security work" },
-  { icon: Check, text: "Higher limits for longer investigations" },
+  { icon: Check, text: "Top AI models for security research" },
+  { icon: Check, text: "Higher limits for long-running investigations" },
   {
     icon: Check,
-    text: "Upload code, requests, documents, reports, and screenshots",
+    text: "Upload code, HTTP requests, PoCs, screenshots, and reports",
   },
-  { icon: Check, text: "Cloud Agent with terminal and browser tools" },
+  { icon: Check, text: "Cloud Agent with terminal and browser" },
   { icon: Check, text: "Maximum context for large targets and codebases" },
 ];
 

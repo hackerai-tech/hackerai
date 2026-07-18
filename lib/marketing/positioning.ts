@@ -1,20 +1,47 @@
 export const PUBLIC_POSITIONING = {
-  eyebrow: "The hacker's AI workspace",
-  headline: "What will you hack today?",
+  eyebrow: "AI hacking assistant for security research",
+  headline: "You hack. HackerAI goes deeper.",
   description:
-    "Think through the target. Run the tools. Build the exploit. Prove the impact. HackerAI works beside you from first lead to final report.",
+    "From first question to working proof: analyze code, research attack paths, run terminal and browser tools, validate exploits, automate workflows, and document findings—with an AI security copilot that follows your lead.",
   audience:
-    "Built for individual hackers, security researchers, students, and technical builders working on systems they own or are authorized to test.",
+    "Built for individual operators—ethical hackers, pentesters, security researchers, students, and technical builders—testing systems they own or are authorized to assess.",
   footerBoundary:
-    "Hack only what you own or are authorized to test. Model-provider policies and abuse controls still apply.",
+    "Authorized targets only. Model-provider policies and abuse controls still apply.",
   boundary:
-    "HackerAI is built to go deep on authorized security work: reconnaissance, code review, exploit development, validation, remediation, and reporting. It is not sold as a “jailbroken,” “unrestricted,” or anything-goes AI. Provider policies, abuse controls, usage limits, and technical constraints still apply, so no plan guarantees an answer to every request.",
+    "HackerAI goes deep on authorized security work: reconnaissance, code review, exploit development, validation, remediation, and reporting. It is not a “jailbroken,” “unrestricted,” or anything-goes chatbot. Provider policies, abuse controls, usage limits, and technical constraints still apply; no plan guarantees an answer to every request.",
   pricingBoundary:
     "Plans expand model access, tools, and usage; they do not bypass provider policies or abuse controls. No plan guarantees every request will be answered.",
 } as const;
 
 export const PUBLIC_METADATA = {
-  title: "HackerAI — The Hacker's AI Workspace",
+  title: "HackerAI — AI-Powered Penetration Testing Assistant",
   description:
-    "A hands-on AI workspace for individual hackers, security researchers, students, and builders. Investigate targets, run tools, validate exploits, and report authorized security findings.",
+    "AI hacking assistant for pentesting and security research. Analyze code, run tools, validate exploits, and report findings in cloud or local sandboxes.",
+} as const;
+
+export const PUBLIC_STRUCTURED_DATA = {
+  "@context": "https://schema.org",
+  "@graph": [
+    {
+      "@type": "WebSite",
+      "@id": "https://hackerai.co/#website",
+      url: "https://hackerai.co/",
+      name: "HackerAI",
+      alternateName: "Hacker AI",
+    },
+    {
+      "@type": "WebApplication",
+      "@id": "https://hackerai.co/#application",
+      url: "https://hackerai.co/",
+      name: "HackerAI",
+      description: PUBLIC_METADATA.description,
+      applicationCategory: "SecurityApplication",
+      operatingSystem: "Web, macOS, Windows, Linux, iOS, Android",
+      offers: {
+        "@type": "Offer",
+        price: "0",
+        priceCurrency: "USD",
+      },
+    },
+  ],
 } as const;

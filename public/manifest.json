@@ -1,7 +1,7 @@
 {
   "short_name": "HackerAI",
   "name": "HackerAI",
-  "description": "The hands-on AI workspace for authorized security work",
+  "description": "AI hacking assistant for pentesting, security research, and code analysis",
   "icons": [
     {
       "src": "/icon-192x192.png",

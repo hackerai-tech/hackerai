@@ -2,19 +2,19 @@ import type { Metadata } from "next";
 import { DownloadPageContent } from "./DownloadPageContent";
 
 const DOWNLOAD_DESCRIPTION =
-  "Download HackerAI for macOS, Windows, Linux, iOS, and Android. Bring its hands-on authorized security workspace to your tools, files, and test environments.";
+  "Download the HackerAI desktop and mobile app. Connect your AI hacking assistant to local tools, files, codebases, and authorized test environments.";
 
 export const metadata: Metadata = {
-  title: "Download | HackerAI",
+  title: "Download HackerAI — Desktop AI Hacking Assistant",
   description: DOWNLOAD_DESCRIPTION,
   openGraph: {
-    title: "Download HackerAI",
+    title: "Download HackerAI — Desktop AI Hacking Assistant",
     description: DOWNLOAD_DESCRIPTION,
     type: "website",
   },
   twitter: {
     card: "summary",
-    title: "Download HackerAI",
+    title: "Download HackerAI — Desktop AI Hacking Assistant",
     description: DOWNLOAD_DESCRIPTION,
   },
 };

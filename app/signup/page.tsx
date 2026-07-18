@@ -133,7 +133,7 @@ export default async function SignupPage({ searchParams }: SignupPageProps) {
           {PUBLIC_POSITIONING.eyebrow}
         </p>
         <h1 className="text-4xl font-semibold tracking-normal text-balance md:text-5xl">
-          Create your account
+          Start hacking smarter
         </h1>
         <p className="text-muted-foreground mt-4 max-w-lg text-lg leading-relaxed text-pretty">
           Bring a target, codebase, lab, or raw finding. Use Ask to think it
@@ -157,7 +157,7 @@ export default async function SignupPage({ searchParams }: SignupPageProps) {
 
         <Button asChild size="lg" className="mt-6 h-12 w-full text-base">
           <Link href={authHref}>
-            Continue to sign up
+            Start with HackerAI
             <ArrowRight className="size-4" />
           </Link>
         </Button>

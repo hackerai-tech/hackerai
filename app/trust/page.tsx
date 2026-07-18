@@ -182,9 +182,9 @@ export default function TrustPage() {
             Security &amp; Trust
           </h1>
           <p className="mx-auto mt-4 max-w-2xl text-lg leading-relaxed text-muted-foreground">
-            HackerAI is a hands-on AI workspace for authorized security work.
-            You choose the target and execution style; HackerAI helps you
-            investigate, run tools, validate impact, fix, and report.
+            Built for serious, authorized security work. Clear about what runs,
+            where it runs, which providers process data, and what stays under
+            your control.
           </p>
           <div className="mt-6 flex flex-wrap items-center justify-center gap-2">
             <span className="inline-flex items-center gap-1.5 rounded-full border border-border bg-card px-3 py-1 text-xs font-medium text-muted-foreground">
@@ -194,7 +194,7 @@ export default function TrustPage() {
         </header>
 
         <div className="space-y-6">
-          <Section icon={Crosshair} title="Built for the Operator">
+          <Section icon={Crosshair} title="Operator in the Loop">
             <p>
               Work across the full authorized security workflow: attack-surface
               mapping, code review, exploit development, validation,

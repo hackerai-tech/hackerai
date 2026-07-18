@@ -97,7 +97,7 @@ export function getPricingIntentCopy(
     return {
       title: "Keep working",
       description:
-        "Upgrade to continue today with higher usage limits, file uploads, and stronger models for deeper security work.",
+        "Get back on target with higher usage limits, file uploads, and stronger models for deeper security work.",
       proDescription: "Continue with higher limits",
       proPlusDescription: "More room for heavier work",
       ultraDescription: "Maximum usage for intensive research",
@@ -503,11 +503,11 @@ const PricingDialog: React.FC<PricingDialogProps> = ({
             <div></div>
             <div className="my-1 flex flex-col items-center justify-center md:mt-0 md:mb-0">
               <DialogTitle className="text-3xl font-semibold">
-                {pricingIntentCopy?.title ?? "Plans for Hands-On Hacking"}
+                {pricingIntentCopy?.title ?? "Pick Your Loadout"}
               </DialogTitle>
               <p className="text-muted-foreground mt-2 max-w-2xl text-center text-sm text-pretty">
                 {pricingIntentCopy?.description ??
-                  "Start with Ask and your local sandbox. Add stronger models, Cloud Agent, larger context, and higher limits when the work goes deeper."}
+                  "Start free with Ask and a local sandbox. Upgrade when you need stronger models, Cloud Agent, larger context, and more time on target."}
               </p>
             </div>
             <button
@@ -538,7 +538,7 @@ const PricingDialog: React.FC<PricingDialogProps> = ({
                 <PlanCard
                   planName="Free"
                   price={0}
-                  description="Learn, investigate, and hack in a local sandbox"
+                  description="Learn, test, and run Agent locally"
                   features={freeFeatures}
                   buttonText={freeButtonConfig.text}
                   buttonVariant={freeButtonConfig.variant}
@@ -555,7 +555,7 @@ const PricingDialog: React.FC<PricingDialogProps> = ({
                 price={isYearly ? PRICING.pro.yearly : PRICING.pro.monthly}
                 description={
                   pricingIntentCopy?.proDescription ??
-                  "For regular hands-on security work"
+                  "For pentesting, bug hunting, and security research"
                 }
                 features={proFeatures}
                 buttonText={proButtonConfig.text}

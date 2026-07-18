@@ -46,12 +46,12 @@ function DownloadContent() {
       <div className="container mx-auto max-w-3xl space-y-8">
         <div className="text-center">
           <h1 className="mb-4 text-4xl font-bold text-card-foreground">
-            {isMobile ? "Install HackerAI" : "Download HackerAI"}
+            {isMobile ? "Install HackerAI" : "Put HackerAI on Your Machine"}
           </h1>
           <p className="text-lg text-muted-foreground">
             {isMobile
               ? "Keep your workspace within reach"
-              : "Bring the hacking workspace to your tools, files, and test environments"}
+              : "Connect your AI hacking assistant to local tools, files, and test environments"}
           </p>
         </div>
 

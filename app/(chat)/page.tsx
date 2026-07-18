@@ -19,16 +19,19 @@ import { useTypingAnimation } from "../hooks/useTypingAnimation";
 import { upsertDraft } from "@/lib/utils/client-storage";
 import Loading from "@/components/ui/loading";
 import { useHasAuthenticatedBefore } from "../hooks/useHasAuthenticatedBefore";
-import { PUBLIC_POSITIONING } from "@/lib/marketing/positioning";
+import {
+  PUBLIC_POSITIONING,
+  PUBLIC_STRUCTURED_DATA,
+} from "@/lib/marketing/positioning";
 
 const LOGIN_TYPING_PREFIX = "Ask HackerAI to ";
 const LOGIN_TYPING_TAILS = [
-  "map this target and find the next move…",
-  "trace this auth flaw through the codebase…",
-  "turn this request into a working exploit…",
-  "run the right tools against this scope…",
-  "validate the impact and kill false positives…",
-  "turn this evidence into a clean report…",
+  "map this attack surface and choose the next move…",
+  "trace this auth bypass through the codebase…",
+  "turn this HTTP request into a working exploit…",
+  "run recon against this authorized target…",
+  "prove the impact and rule out false positives…",
+  "turn this PoC into a report-ready finding…",
 ];
 
 // Simple unauthenticated content that redirects to signup on message send
@@ -71,6 +74,15 @@ const UnauthenticatedContent = () => {
 
   return (
     <div className="h-full bg-background flex flex-col overflow-hidden">
+      <script
+        type="application/ld+json"
+        dangerouslySetInnerHTML={{
+          __html: JSON.stringify(PUBLIC_STRUCTURED_DATA).replace(
+            /</g,
+            "\\u003c",
+          ),
+        }}
+      />
       <div className="flex-shrink-0">
         <Header />
       </div>
