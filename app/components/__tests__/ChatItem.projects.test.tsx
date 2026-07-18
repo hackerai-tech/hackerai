@@ -117,6 +117,21 @@ describe("ChatItem project actions", () => {
     expect(screen.getByTestId("chat-item-chat-2")).not.toHaveClass("p-2");
   });
 
+  it("centers the streaming indicator in the task action slot", () => {
+    render(<ChatItem id="chat-1" title="Running task" isStreaming />);
+
+    const streamingIcon = screen.getByTestId("chat-item-streaming-icon");
+    expect(streamingIcon.parentElement).toHaveClass(
+      "flex",
+      "size-8",
+      "items-center",
+      "justify-center",
+    );
+    expect(
+      screen.getByText("Running task").parentElement?.parentElement,
+    ).toHaveClass("pr-9");
+  });
+
   it("hides the passive pin icon while keeping the unpin action", async () => {
     const user = userEvent.setup();
     render(<ChatItem id="chat-1" title="Pinned target" isPinned />);

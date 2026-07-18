@@ -142,11 +142,11 @@ const ChatItem: React.FC<ChatItemProps> = ({
     isStreaming && (!isHovered || isMobile) && (!isDropdownOpen || isMobile);
   const rightPaddingClass =
     isMobile && showActions && showStreamingIndicator
-      ? "pr-14"
+      ? "pr-[4.5rem]"
       : showActions
         ? "pr-9"
         : showStreamingIndicator
-          ? "pr-7"
+          ? "pr-9"
           : "";
   const rowStartPaddingClass = indentContent ? "ps-6" : "ps-2";
 
@@ -458,11 +458,13 @@ const ChatItem: React.FC<ChatItemProps> = ({
         aria-hidden={!showActions && !showStreamingIndicator}
       >
         {showStreamingIndicator ? (
-          <LoaderCircle
-            className="size-4 flex-shrink-0 animate-spin text-muted-foreground"
-            data-testid="chat-item-streaming-icon"
-            aria-hidden="true"
-          />
+          <div className="flex size-8 flex-shrink-0 items-center justify-center">
+            <LoaderCircle
+              className="size-4 animate-spin text-muted-foreground"
+              data-testid="chat-item-streaming-icon"
+              aria-hidden="true"
+            />
+          </div>
         ) : null}
         {showActions ? (
           <DropdownMenu open={isDropdownOpen} onOpenChange={setIsDropdownOpen}>
