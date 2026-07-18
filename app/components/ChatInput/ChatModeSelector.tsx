@@ -7,7 +7,7 @@ import { useGlobalState } from "@/app/contexts/GlobalState";
 import { useAuth } from "@workos-inc/authkit-nextjs/components";
 import { toast } from "sonner";
 import { AgentUpgradeDialog } from "./AgentUpgradeDialog";
-import { navigateToAuth } from "@/app/hooks/useTauri";
+import { navigateToAuth, useTauri } from "@/app/hooks/useTauri";
 
 export interface ChatModeSelectorProps {
   className?: string;
@@ -20,6 +20,8 @@ export function ChatModeSelector({ className }: ChatModeSelectorProps) {
     subscription,
     temporaryChatsEnabled,
     hasLocalSandbox,
+    desktopBridgeStatus,
+    retryDesktopBridge,
     defaultLocalSandboxPreference,
     sandboxPreference,
     setSandboxPreference,
@@ -27,7 +29,22 @@ export function ChatModeSelector({ className }: ChatModeSelectorProps) {
     setSelectedModel,
   } = useGlobalState();
   const { user } = useAuth();
+  const { isTauri } = useTauri();
   const [agentUpgradeDialogOpen, setAgentUpgradeDialogOpen] = useState(false);
+
+  const enableLocalAgentMode = () => {
+    setChatMode("agent");
+    if (
+      (sandboxPreference === "e2b" || !sandboxPreference) &&
+      defaultLocalSandboxPreference
+    ) {
+      setSandboxPreference(defaultLocalSandboxPreference);
+    }
+    if (selectedModel !== "auto") {
+      setSelectedModel("auto");
+    }
+    setAgentUpgradeDialogOpen(false);
+  };
 
   const handleAgentModeClick = () => {
     if (!user) {
@@ -43,15 +60,7 @@ export function ChatModeSelector({ className }: ChatModeSelectorProps) {
     if (subscription !== "free") {
       setChatMode("agent");
     } else if (hasLocalSandbox) {
-      setChatMode("agent");
-      if (sandboxPreference === "e2b" || !sandboxPreference) {
-        if (defaultLocalSandboxPreference) {
-          setSandboxPreference(defaultLocalSandboxPreference);
-        }
-      }
-      if (selectedModel !== "auto") {
-        setSelectedModel("auto");
-      }
+      enableLocalAgentMode();
     } else {
       setAgentUpgradeDialogOpen(true);
     }
@@ -75,6 +84,10 @@ export function ChatModeSelector({ className }: ChatModeSelectorProps) {
       <AgentUpgradeDialog
         open={agentUpgradeDialogOpen}
         onOpenChange={setAgentUpgradeDialogOpen}
+        isDesktopEnvironment={isTauri}
+        desktopBridgeStatus={desktopBridgeStatus}
+        onRetryDesktopBridge={retryDesktopBridge}
+        onUseConnectedDesktop={enableLocalAgentMode}
       />
     </>
   );

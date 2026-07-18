@@ -6,21 +6,31 @@ import { api } from "@/convex/_generated/api";
 import type { SandboxPreference } from "@/types/chat";
 import { toast } from "sonner";
 import { DesktopSandboxBridge } from "@/app/services/desktop-sandbox-bridge";
+import { isTauriEnvironment } from "@/app/hooks/useTauri";
+
+export type DesktopBridgeStatus =
+  "idle" | "connecting" | "connected" | "failed";
 
 interface SandboxPreferenceState {
   sandboxPreference: SandboxPreference;
   setSandboxPreference: (preference: SandboxPreference) => void;
   desktopBridgeActive: boolean;
+  desktopBridgeStatus: DesktopBridgeStatus;
+  retryDesktopBridge: () => void;
 }
 
 // Module-level singleton to survive React strict mode double-mount
 let activeBridge: DesktopSandboxBridge | null = null;
-let bridgeStarting = false;
+let bridgeStartPromise: Promise<DesktopSandboxBridge> | null = null;
+const PERSISTABLE_SANDBOX_PREFERENCES = new Set(["e2b", "desktop"]);
 
 export function useSandboxPreference(
   isAuthenticated: boolean,
 ): SandboxPreferenceState {
   const [desktopBridgeActive, setDesktopBridgeActive] = useState(false);
+  const [desktopBridgeStatus, setDesktopBridgeStatus] =
+    useState<DesktopBridgeStatus>("idle");
+  const [desktopBridgeRetryAttempt, setDesktopBridgeRetryAttempt] = useState(0);
 
   const [sandboxPreference, setSandboxPreferenceState] =
     useState<SandboxPreference>(() => {
@@ -49,53 +59,73 @@ export function useSandboxPreference(
   }, [connectDesktopMutation, refreshTokenMutation, disconnectMutation]);
 
   useEffect(() => {
-    if (!isAuthenticated) return;
+    let cancelled = false;
+    const syncBridgeState = (active: boolean, status: DesktopBridgeStatus) => {
+      queueMicrotask(() => {
+        if (cancelled) return;
+        setDesktopBridgeActive(active);
+        setDesktopBridgeStatus(status);
+      });
+    };
+
+    if (!isAuthenticated || !isTauriEnvironment()) {
+      syncBridgeState(false, "idle");
+      return () => {
+        cancelled = true;
+      };
+    }
 
     // Already running — just sync bridge active state (keep Cloud as default)
     if (activeBridge?.getConnectionId()) {
-      setDesktopBridgeActive(true);
+      syncBridgeState(true, "connected");
       // setSandboxPreferenceState(activeBridge.getConnectionId()!);
-      return;
+      return () => {
+        cancelled = true;
+      };
     }
 
-    // Another call is already starting the bridge
-    if (bridgeStarting) return;
-
-    let cancelled = false;
-
     async function startBridge() {
-      bridgeStarting = true;
+      setDesktopBridgeActive(false);
+      setDesktopBridgeStatus("connecting");
       try {
-        const { isTauriEnvironment } = await import("@/app/hooks/useTauri");
-        if (!isTauriEnvironment()) return;
+        if (!bridgeStartPromise) {
+          const bridge = new DesktopSandboxBridge({
+            connectDesktop: (args) => connectDesktopRef.current(args),
+            refreshCentrifugoTokenDesktop: (args) =>
+              refreshTokenRef.current(args),
+            disconnectDesktop: (args) => disconnectRef.current(args),
+          });
 
-        if (cancelled) return;
-
-        // Double-check after async gap
-        if (activeBridge?.getConnectionId()) return;
-
-        const bridge = new DesktopSandboxBridge({
-          connectDesktop: (args) => connectDesktopRef.current(args),
-          refreshCentrifugoTokenDesktop: (args) =>
-            refreshTokenRef.current(args),
-          disconnectDesktop: (args) => disconnectRef.current(args),
-        });
-
-        await bridge.start();
-        if (cancelled) {
-          bridge.stop();
-          return;
+          bridgeStartPromise = bridge
+            .start()
+            .then(() => {
+              activeBridge = bridge;
+              return bridge;
+            })
+            .catch(async (error) => {
+              await bridge.stop();
+              throw error;
+            })
+            .finally(() => {
+              bridgeStartPromise = null;
+            });
         }
 
-        activeBridge = bridge;
+        await bridgeStartPromise;
+        if (cancelled) return;
+
         setDesktopBridgeActive(true);
+        setDesktopBridgeStatus("connected");
         // Keep Cloud selected by default; user can switch to Local if desired
         // setSandboxPreferenceState(connectionId);
       } catch (error) {
+        if (cancelled) return;
         console.error("[DesktopSandboxBridge] Failed to start:", error);
-        toast.error("Desktop sandbox failed to connect. Using cloud.");
-      } finally {
-        bridgeStarting = false;
+        setDesktopBridgeActive(false);
+        setDesktopBridgeStatus("failed");
+        toast.error("Desktop sandbox failed to connect.", {
+          description: "Retry the local connection to use Agent mode.",
+        });
       }
     }
 
@@ -118,9 +148,7 @@ export function useSandboxPreference(
       // Don't tear down the bridge on React strict mode unmount —
       // it's a module-level singleton that persists across remounts.
     };
-  }, [isAuthenticated]);
-
-  const PERSISTABLE_PREFERENCES = new Set(["e2b", "desktop"]);
+  }, [desktopBridgeRetryAttempt, isAuthenticated]);
 
   const isFirstRender = useRef(true);
   useEffect(() => {
@@ -130,7 +158,7 @@ export function useSandboxPreference(
     }
     if (
       typeof window !== "undefined" &&
-      PERSISTABLE_PREFERENCES.has(sandboxPreference)
+      PERSISTABLE_SANDBOX_PREFERENCES.has(sandboxPreference)
     ) {
       localStorage.setItem("sandbox-preference", sandboxPreference);
     }
@@ -140,5 +168,18 @@ export function useSandboxPreference(
     setSandboxPreferenceState(preference);
   }, []);
 
-  return { sandboxPreference, setSandboxPreference, desktopBridgeActive };
+  const retryDesktopBridge = useCallback(() => {
+    if (!isAuthenticated || !isTauriEnvironment()) return;
+    setDesktopBridgeActive(false);
+    setDesktopBridgeStatus("connecting");
+    setDesktopBridgeRetryAttempt((attempt) => attempt + 1);
+  }, [isAuthenticated]);
+
+  return {
+    sandboxPreference,
+    setSandboxPreference,
+    desktopBridgeActive,
+    desktopBridgeStatus,
+    retryDesktopBridge,
+  };
 }

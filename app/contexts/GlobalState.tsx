@@ -31,7 +31,10 @@ import {
 import type { UploadedFileState } from "@/types/file";
 import type { FileMessagePart } from "@/types/file";
 import { useIsMobile } from "@/hooks/use-mobile";
-import { useSandboxPreference } from "@/app/hooks/useSandboxPreference";
+import {
+  useSandboxPreference,
+  type DesktopBridgeStatus,
+} from "@/app/hooks/useSandboxPreference";
 import { isTauriEnvironment } from "@/app/hooks/useTauri";
 import { resolveSubscriptionTier } from "@/lib/auth/entitlements";
 import { clearSharedToken, setSharedToken } from "@/lib/auth/shared-token";
@@ -137,6 +140,8 @@ interface GlobalStateType {
 
   // Desktop bridge active (Centrifugo-based desktop sandbox)
   desktopBridgeActive: boolean;
+  desktopBridgeStatus: DesktopBridgeStatus;
+  retryDesktopBridge: () => void;
 
   // Whether a local sandbox (desktop or remote) is available
   hasLocalSandbox: boolean;
@@ -436,8 +441,13 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
   });
 
   // Tauri detection + sandbox preference (co-located in a custom hook)
-  const { sandboxPreference, setSandboxPreference, desktopBridgeActive } =
-    useSandboxPreference(!!user);
+  const {
+    sandboxPreference,
+    setSandboxPreference,
+    desktopBridgeActive,
+    desktopBridgeStatus,
+    retryDesktopBridge,
+  } = useSandboxPreference(!!user);
 
   const [agentPermissionMode, setAgentPermissionMode] =
     useState<AgentPermissionMode>(() => readAgentPermissionMode());
@@ -1174,6 +1184,8 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     agentPermissionMode,
     setAgentPermissionMode,
     desktopBridgeActive,
+    desktopBridgeStatus,
+    retryDesktopBridge,
     hasLocalSandbox,
     localConnections,
     defaultLocalSandboxPreference,
