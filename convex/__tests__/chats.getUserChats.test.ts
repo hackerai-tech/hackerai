@@ -174,8 +174,11 @@ describe("getUserChats", () => {
     };
     const paginate = jest.fn<any>().mockResolvedValue(page);
     const regularOrder = jest.fn<any>().mockReturnValue({ paginate });
-    const regularWithIndex = jest.fn<any>().mockReturnValue({
-      order: regularOrder,
+    const regularEq = jest.fn<any>().mockReturnThis();
+    const regularWithIndex = jest.fn<any>((indexName, applyIndex) => {
+      expect(indexName).toBe("by_user_project_and_updated");
+      applyIndex({ eq: regularEq });
+      return { order: regularOrder };
     });
     const ctx = {
       auth: {
@@ -201,5 +204,7 @@ describe("getUserChats", () => {
     });
     expect(pinnedEq).toHaveBeenCalledWith("user_id", "user-123");
     expect(gt).toHaveBeenCalledWith("pinned_at", 0);
+    expect(regularEq).toHaveBeenCalledWith("user_id", "user-123");
+    expect(regularEq).toHaveBeenCalledWith("project_id", undefined);
   });
 });
