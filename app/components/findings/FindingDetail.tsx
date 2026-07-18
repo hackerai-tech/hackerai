@@ -268,18 +268,25 @@ export function FindingDetail({
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
-            <Button asChild size="sm">
-              <Link
-                href={getSourceMessageHref(finding.chat_id, finding.message_id)}
-                aria-label={`Open source message in ${finding.chat_title}`}
-              >
-                <MessageSquareText className="size-4" aria-hidden="true" />
-                Open source message
-              </Link>
-            </Button>
-            <span className="min-w-0 max-w-56 truncate text-xs text-muted-foreground">
-              {finding.chat_title}
-            </span>
+            {surface === "findings_page" ? (
+              <>
+                <Button asChild size="sm">
+                  <Link
+                    href={getSourceMessageHref(
+                      finding.chat_id,
+                      finding.message_id,
+                    )}
+                    aria-label={`Open source message in ${finding.chat_title}`}
+                  >
+                    <MessageSquareText className="size-4" aria-hidden="true" />
+                    Open source message
+                  </Link>
+                </Button>
+                <span className="min-w-0 max-w-56 truncate text-xs text-muted-foreground">
+                  {finding.chat_title}
+                </span>
+              </>
+            ) : null}
             <div className="ml-auto">
               <AlertDialog>
                 <AlertDialogTrigger asChild>

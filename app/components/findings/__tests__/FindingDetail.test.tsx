@@ -74,7 +74,7 @@ describe("FindingDetail", () => {
   });
 
   it("renders the complete report and source chat link", () => {
-    render(<FindingDetail finding={finding} />);
+    render(<FindingDetail finding={finding} surface="findings_page" />);
     expect(screen.getByRole("heading", { name: finding.title })).toBeVisible();
     expect(screen.getByText("Confirmed")).toBeVisible();
     expect(screen.getByText("CWE-639")).toBeVisible();
@@ -93,6 +93,17 @@ describe("FindingDetail", () => {
         name: "Open source message in Invoice test",
       }),
     ).toHaveAttribute("href", "/c/chat-1#message=message-1");
+  });
+
+  it("omits redundant source navigation in the chat sidebar", () => {
+    render(<FindingDetail finding={finding} surface="computer_sidebar" />);
+
+    expect(
+      screen.queryByRole("link", {
+        name: "Open source message in Invoice test",
+      }),
+    ).toBeNull();
+    expect(screen.queryByText("Invoice test")).toBeNull();
   });
 
   it("copies the PoC and CVSS vector", async () => {
