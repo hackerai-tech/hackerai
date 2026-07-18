@@ -115,11 +115,11 @@ export default defineSchema({
   })
     .index("by_chat_id", ["id"])
     .index("by_user_and_updated", ["user_id", "update_time"])
-    .index("by_user_project_and_updated", [
-      "user_id",
-      "project_id",
-      "update_time",
-    ])
+    .index("by_user_project_and_updated", {
+      fields: ["user_id", "project_id", "update_time"],
+      staged: true,
+    })
+    .index("by_project_and_updated", ["project_id", "update_time"])
     .index("by_user_and_active_trigger_run", [
       "user_id",
       "active_trigger_run_id",
