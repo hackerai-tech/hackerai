@@ -19,7 +19,7 @@ const FREE_STOP_BUTTON_VARIANT_CLASSES: Record<ChatMode, string> = {
 
 const PAID_STOP_BUTTON_VARIANT_CLASSES: Record<ChatMode, string> = {
   agent: "bg-muted hover:bg-muted/70 text-foreground",
-  ask: "bg-blue-500/10 hover:bg-blue-500/20 text-blue-700 dark:bg-blue-400/10 dark:hover:bg-blue-400/20 dark:text-blue-400 focus-visible:ring-blue-500",
+  ask: "bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-700 dark:bg-emerald-400/10 dark:hover:bg-emerald-400/20 dark:text-emerald-400 focus-visible:ring-emerald-500",
 };
 
 function getStopButtonVariantClasses(mode: ChatMode, isPaid: boolean): string {
@@ -37,7 +37,7 @@ function getSubmitButtonVariantClasses(
     return "bg-red-500/10 hover:bg-red-500/20 text-red-700 dark:bg-red-400/10 dark:hover:bg-red-400/20 dark:text-red-400 focus-visible:ring-red-500";
   }
   if (isPaid && mode === "ask") {
-    return "bg-blue-500/10 hover:bg-blue-500/20 text-blue-700 dark:bg-blue-400/10 dark:hover:bg-blue-400/20 dark:text-blue-400 focus-visible:ring-blue-500";
+    return "bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-700 dark:bg-emerald-400/10 dark:hover:bg-emerald-400/20 dark:text-emerald-400 focus-visible:ring-emerald-500";
   }
   return "";
 }

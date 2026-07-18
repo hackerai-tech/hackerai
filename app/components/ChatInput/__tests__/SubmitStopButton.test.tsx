@@ -43,11 +43,11 @@ describe("SubmitStopButton paid mode colors", () => {
     expect(button).not.toHaveClass("bg-red-500/10");
   });
 
-  it("uses the blue submit treatment for paid Ask mode", () => {
-    expect(renderButton("ask", true)).toHaveClass("bg-blue-500/10");
+  it("uses the green submit treatment for paid Ask mode", () => {
+    expect(renderButton("ask", true)).toHaveClass("bg-emerald-500/10");
   });
 
-  it("uses neutral Agent and blue Ask stop treatments for paid users", () => {
+  it("uses neutral Agent and green Ask stop treatments for paid users", () => {
     const { rerender } = render(
       <TooltipProvider>
         <SubmitStopButton
@@ -74,7 +74,7 @@ describe("SubmitStopButton paid mode colors", () => {
       </TooltipProvider>,
     );
 
-    expect(screen.getByRole("button")).toHaveClass("bg-blue-500/10");
+    expect(screen.getByRole("button")).toHaveClass("bg-emerald-500/10");
   });
 
   it("preserves the existing submit colors for free users", () => {

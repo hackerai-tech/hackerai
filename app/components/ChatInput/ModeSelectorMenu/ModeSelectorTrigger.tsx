@@ -12,7 +12,7 @@ const FREE_MODE_VARIANT_CLASSES: Record<ChatMode, string> = {
 };
 
 const PAID_MODE_VARIANT_CLASSES: Record<ChatMode, string> = {
-  ask: "bg-blue-500/10 text-blue-700 hover:bg-blue-500/20 dark:bg-blue-400/10 dark:text-blue-400 dark:hover:bg-blue-400/20",
+  ask: "bg-emerald-500/10 text-emerald-700 hover:bg-emerald-500/20 dark:bg-emerald-400/10 dark:text-emerald-400 dark:hover:bg-emerald-400/20",
   agent: "bg-muted text-foreground hover:bg-muted/50",
 };
 

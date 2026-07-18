@@ -4,7 +4,7 @@ import { DropdownMenu } from "@/components/ui/dropdown-menu";
 import { ModeSelectorTrigger } from "../ModeSelectorTrigger";
 
 describe("ModeSelectorTrigger", () => {
-  it("uses neutral Agent and blue Ask treatments for paid users", () => {
+  it("uses neutral Agent and green Ask treatments for paid users", () => {
     const { rerender } = render(
       <DropdownMenu>
         <ModeSelectorTrigger chatMode="agent" isPaid />
@@ -22,7 +22,9 @@ describe("ModeSelectorTrigger", () => {
       </DropdownMenu>,
     );
 
-    expect(screen.getByTestId("mode-selector")).toHaveClass("bg-blue-500/10");
+    expect(screen.getByTestId("mode-selector")).toHaveClass(
+      "bg-emerald-500/10",
+    );
   });
 
   it("preserves the existing colors for free users", () => {
@@ -42,7 +44,7 @@ describe("ModeSelectorTrigger", () => {
 
     expect(screen.getByTestId("mode-selector")).toHaveClass("bg-muted");
     expect(screen.getByTestId("mode-selector")).not.toHaveClass(
-      "bg-blue-500/10",
+      "bg-emerald-500/10",
     );
   });
 });
