@@ -63,7 +63,10 @@ export function ChatModeSelector({ className }: ChatModeSelectorProps) {
         className={`flex items-center gap-1.5 min-w-0 overflow-hidden ${className ?? ""}`}
       >
         <DropdownMenu>
-          <ModeSelectorTrigger chatMode={chatMode} />
+          <ModeSelectorTrigger
+            chatMode={chatMode}
+            isPaid={subscription !== "free"}
+          />
           <ModeSelectorContent
             setChatMode={setChatMode}
             onAgentModeClick={handleAgentModeClick}

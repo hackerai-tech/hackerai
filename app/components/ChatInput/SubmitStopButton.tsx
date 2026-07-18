@@ -11,19 +11,33 @@ import type { UploadedFileState } from "@/types/file";
 
 const BASE_BUTTON_CLASSES = "rounded-full p-0 w-8 h-8 min-w-0";
 
-const STOP_BUTTON_VARIANT_CLASSES: Record<ChatMode, string> = {
+const FREE_STOP_BUTTON_VARIANT_CLASSES: Record<ChatMode, string> = {
   agent:
     "bg-red-500/10 hover:bg-red-500/20 text-red-700 dark:bg-red-400/10 dark:hover:bg-red-400/20 dark:text-red-400 focus-visible:ring-red-500",
   ask: "bg-muted hover:bg-muted/70 text-foreground",
 };
 
-function getStopButtonVariantClasses(mode: ChatMode): string {
-  return STOP_BUTTON_VARIANT_CLASSES[mode] ?? STOP_BUTTON_VARIANT_CLASSES.ask;
+const PAID_STOP_BUTTON_VARIANT_CLASSES: Record<ChatMode, string> = {
+  agent: "bg-muted hover:bg-muted/70 text-foreground",
+  ask: "bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-700 dark:bg-emerald-400/10 dark:hover:bg-emerald-400/20 dark:text-emerald-400 focus-visible:ring-emerald-500",
+};
+
+function getStopButtonVariantClasses(mode: ChatMode, isPaid: boolean): string {
+  const modeVariantClasses = isPaid
+    ? PAID_STOP_BUTTON_VARIANT_CLASSES
+    : FREE_STOP_BUTTON_VARIANT_CLASSES;
+  return modeVariantClasses[mode] ?? modeVariantClasses.ask;
 }
 
-function getSubmitButtonVariantClasses(mode: ChatMode): string {
-  if (mode === "agent") {
+function getSubmitButtonVariantClasses(
+  mode: ChatMode,
+  isPaid: boolean,
+): string {
+  if (!isPaid && mode === "agent") {
     return "bg-red-500/10 hover:bg-red-500/20 text-red-700 dark:bg-red-400/10 dark:hover:bg-red-400/20 dark:text-red-400 focus-visible:ring-red-500";
+  }
+  if (isPaid && mode === "ask") {
+    return "bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-700 dark:bg-emerald-400/10 dark:hover:bg-emerald-400/20 dark:text-emerald-400 focus-visible:ring-emerald-500";
   }
   return "";
 }
@@ -47,6 +61,7 @@ export interface SubmitStopButtonProps {
   input: string;
   uploadedFiles: UploadedFileState[];
   chatMode: ChatMode;
+  isPaid?: boolean;
 }
 
 export function SubmitStopButton({
@@ -59,6 +74,7 @@ export function SubmitStopButton({
   input,
   uploadedFiles,
   chatMode,
+  isPaid = false,
 }: SubmitStopButtonProps) {
   useHotkeys(
     "ctrl+c",
@@ -87,7 +103,7 @@ export function SubmitStopButton({
               type="button"
               onClick={onStop}
               variant="ghost"
-              className={`${BASE_BUTTON_CLASSES} ${getStopButtonVariantClasses(chatMode)}`}
+              className={`${BASE_BUTTON_CLASSES} ${getStopButtonVariantClasses(chatMode, isPaid)}`}
               aria-label="Stop generation"
             >
               <Square className="w-[15px] h-[15px]" fill="currentColor" />
@@ -115,7 +131,7 @@ export function SubmitStopButton({
                   (!input.trim() && uploadedFiles.length === 0)
                 }
                 variant="default"
-                className={`${BASE_BUTTON_CLASSES} ${getSubmitButtonVariantClasses(chatMode)}`}
+                className={`${BASE_BUTTON_CLASSES} ${getSubmitButtonVariantClasses(chatMode, isPaid)}`}
                 aria-label="Send message"
                 data-testid="send-button"
               >
