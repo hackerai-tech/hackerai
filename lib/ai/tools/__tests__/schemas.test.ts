@@ -7,6 +7,7 @@ import {
   runTerminalCmdTool,
 } from "../schemas";
 import { createVulnerabilityReportInputSchema } from "@/lib/findings/validation";
+import { zodSchema } from "ai";
 
 const getDescription = (value: unknown): string =>
   (value as { description: string }).description;
@@ -109,6 +110,8 @@ describe("agent tool schema descriptions", () => {
     const parityCases = [
       validReport,
       {},
+      { ...validReport, cve: "" },
+      { ...validReport, cwe: "   " },
       { ...validReport, cve: "CVE-26-1234" },
       {
         ...validReport,
@@ -140,6 +143,38 @@ describe("agent tool schema descriptions", () => {
         ),
       );
     }
+  });
+
+  test.each(["cve", "cwe"] as const)(
+    "normalizes a blank optional %s instead of rejecting the report",
+    (field) => {
+      const input = { ...validFindingReport(), [field]: "   " };
+
+      expect(
+        createVulnerabilityReportToolInputSchema.parse(input)[field],
+      ).toBeUndefined();
+      expect(
+        createVulnerabilityReportInputSchema.parse(input)[field],
+      ).toBeUndefined();
+    },
+  );
+
+  test("keeps CVE and CWE optional in the model-visible JSON schema", () => {
+    const jsonSchema = zodSchema(createVulnerabilityReportToolInputSchema)
+      .jsonSchema as {
+      required?: string[];
+      properties?: Record<string, unknown>;
+    };
+
+    expect(jsonSchema.required).not.toEqual(
+      expect.arrayContaining(["cve", "cwe"]),
+    );
+    expect(jsonSchema.properties).toEqual(
+      expect.objectContaining({
+        cve: expect.any(Object),
+        cwe: expect.any(Object),
+      }),
+    );
   });
 
   test("allows one bounded retry only for an explicitly retryable save failure", () => {

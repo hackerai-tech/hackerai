@@ -129,14 +129,16 @@ export const createVulnerabilityReportInputSchema = z
     cve: z
       .string()
       .trim()
-      .regex(/^CVE-\d{4}-\d{4,}$/, "CVE must use CVE-YYYY-NNNN format")
+      .regex(/^(?:CVE-\d{4}-\d{4,})?$/, "CVE must use CVE-YYYY-NNNN format")
       .max(32)
+      .transform((value) => value || undefined)
       .optional(),
     cwe: z
       .string()
       .trim()
-      .regex(/^CWE-\d+$/, "CWE must use CWE-NNN format")
+      .regex(/^(?:CWE-\d+)?$/, "CWE must use CWE-NNN format")
       .max(24)
+      .transform((value) => value || undefined)
       .optional(),
     code_locations: z
       .array(findingCodeLocationSchema)

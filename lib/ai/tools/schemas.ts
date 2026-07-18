@@ -852,14 +852,16 @@ export const createVulnerabilityReportToolInputSchema = z
     cve: z
       .string()
       .trim()
-      .regex(/^CVE-\d{4}-\d{4,}$/, "CVE must use CVE-YYYY-NNNN format")
+      .regex(/^(?:CVE-\d{4}-\d{4,})?$/, "CVE must use CVE-YYYY-NNNN format")
       .max(32)
+      .transform((value) => value || undefined)
       .optional(),
     cwe: z
       .string()
       .trim()
-      .regex(/^CWE-\d+$/, "CWE must use CWE-NNN format")
+      .regex(/^(?:CWE-\d+)?$/, "CWE must use CWE-NNN format")
       .max(24)
+      .transform((value) => value || undefined)
       .optional(),
     code_locations: z.array(findingCodeLocationSchema).max(50).optional(),
   })
@@ -910,7 +912,7 @@ Use this tool only after all of the following are true:
 - Populate code_locations whenever source code is available, after reading the actual file
 - Verify start_line and end_line instead of guessing; fix_before must be a verbatim copy of exactly that range and fix_after must be the complete replacement
 - Split non-contiguous changes into separate labeled code locations and do not duplicate the same change
-- Pass bare CVE/CWE identifiers only when certain; prefer the most specific applicable CWE
+- Pass bare CVE/CWE identifiers only when certain; omit unknown identifiers instead of sending empty strings, and prefer the most specific applicable CWE
 - CVSS 3.1 must include all eight base metrics; the server calculates the score and severity
 - Do not mention internal agents, models, prompts, sandboxes, report IDs, or tester-only paths in report content
 </instructions>`,

@@ -104,6 +104,18 @@ describe("structured finding validation", () => {
     ).toBe(false);
   });
 
+  test.each(["cve", "cwe"] as const)(
+    "normalizes a blank optional %s to an omitted value",
+    (field) => {
+      const parsed = createVulnerabilityReportInputSchema.parse({
+        ...validReport(),
+        [field]: "   ",
+      });
+
+      expect(parsed[field]).toBeUndefined();
+    },
+  );
+
   test.each([
     "/etc/passwd",
     "../secret.ts",
