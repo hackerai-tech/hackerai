@@ -16,9 +16,13 @@ const mockClient = {
   disconnect: jest.fn(),
   on: jest.fn(),
 };
+let mockClientOptions: { getToken?: () => Promise<string> } | null = null;
 
 jest.mock("centrifuge", () => ({
-  Centrifuge: jest.fn().mockImplementation(() => mockClient),
+  Centrifuge: jest.fn().mockImplementation((_, options) => {
+    mockClientOptions = options;
+    return mockClient;
+  }),
 }));
 
 // Mock Tauri IPC
@@ -81,6 +85,7 @@ function getPublicationHandler(): (ctx: { data: unknown }) => void {
 beforeEach(() => {
   jest.clearAllMocks();
   capturedChannel = null;
+  mockClientOptions = null;
   global.fetch = originalFetch;
 
   mockInvokeHandler = async (cmd: string) => {
@@ -115,6 +120,58 @@ describe("desktop capability registration", () => {
         capabilities: { commands: true, pty: true, files: true },
       }),
     );
+  });
+});
+
+describe("terminal connection state", () => {
+  it("notifies the owner when the server terminates the connection", async () => {
+    const onTerminated = jest.fn();
+    mockSubscription.unsubscribe.mockImplementationOnce(() => {
+      throw new Error("already unsubscribed");
+    });
+    const config = buildConfig({
+      onTerminated,
+      refreshCentrifugoTokenDesktop: jest.fn().mockResolvedValue({
+        ok: false,
+        terminated: true,
+        reason: "connection_inactive",
+        connectionId: "conn-123",
+        clientVersion: "desktop",
+        status: "disconnected",
+        disconnectReason: "presence_sweep",
+        msSinceDisconnected: 100,
+        msSinceLastHeartbeat: 200,
+        msSinceCreated: 300,
+      }),
+    });
+    const bridge = new DesktopSandboxBridge(config);
+    await bridge.start();
+
+    await expect(mockClientOptions?.getToken?.()).rejects.toThrow(
+      "Centrifugo refresh aborted: connection_inactive",
+    );
+
+    expect(onTerminated).toHaveBeenCalledWith("connection_inactive");
+    expect(bridge.getConnectionId()).toBeNull();
+    expect(mockSubscription.unsubscribe).toHaveBeenCalledTimes(1);
+    expect(mockSubscription.removeAllListeners).toHaveBeenCalledTimes(1);
+    expect(mockClient.disconnect).toHaveBeenCalledTimes(1);
+  });
+
+  it("reports unauthenticated token refresh termination", async () => {
+    const onTerminated = jest.fn();
+    const error = { data: { code: "UNAUTHORIZED" } };
+    const config = buildConfig({
+      onTerminated,
+      refreshCentrifugoTokenDesktop: jest.fn().mockRejectedValue(error),
+    });
+    const bridge = new DesktopSandboxBridge(config);
+    await bridge.start();
+
+    await expect(mockClientOptions?.getToken?.()).rejects.toBe(error);
+
+    expect(onTerminated).toHaveBeenCalledWith("unauthenticated");
+    expect(bridge.getConnectionId()).toBeNull();
   });
 });
 
