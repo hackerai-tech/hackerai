@@ -21,7 +21,7 @@ export function ChatInputToolbar({
   chatMode,
   ...submitStopProps
 }: ChatInputToolbarProps) {
-  const { selectedModel, setSelectedModel } = useGlobalState();
+  const { selectedModel, setSelectedModel, subscription } = useGlobalState();
   const { user } = useAuth();
 
   return (
@@ -43,7 +43,11 @@ export function ChatInputToolbar({
             mode={chatMode}
           />
         ) : null}
-        <SubmitStopButton {...submitStopProps} chatMode={chatMode} />
+        <SubmitStopButton
+          {...submitStopProps}
+          chatMode={chatMode}
+          isPaid={subscription !== "free"}
+        />
       </div>
     </div>
   );

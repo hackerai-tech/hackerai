@@ -5,10 +5,15 @@ import { DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { MessageSquare, Infinity, ChevronDown } from "lucide-react";
 import type { ChatMode } from "@/types/chat";
 
-const MODE_VARIANT_CLASSES: Record<ChatMode, string> = {
+const FREE_MODE_VARIANT_CLASSES: Record<ChatMode, string> = {
   ask: "bg-muted hover:bg-muted/50",
   agent:
     "bg-red-500/10 text-red-700 hover:bg-red-500/20 dark:bg-red-400/10 dark:text-red-400 dark:hover:bg-red-400/20",
+};
+
+const PAID_MODE_VARIANT_CLASSES: Record<ChatMode, string> = {
+  ask: "bg-blue-500/10 text-blue-700 hover:bg-blue-500/20 dark:bg-blue-400/10 dark:text-blue-400 dark:hover:bg-blue-400/20",
+  agent: "bg-muted text-foreground hover:bg-muted/50",
 };
 
 const baseClasses =
@@ -16,16 +21,24 @@ const baseClasses =
 
 export interface ModeSelectorTriggerProps {
   chatMode: ChatMode;
+  isPaid: boolean;
 }
 
-export function ModeSelectorTrigger({ chatMode }: ModeSelectorTriggerProps) {
+export function ModeSelectorTrigger({
+  chatMode,
+  isPaid,
+}: ModeSelectorTriggerProps) {
+  const modeVariantClasses = isPaid
+    ? PAID_MODE_VARIANT_CLASSES
+    : FREE_MODE_VARIANT_CLASSES;
+
   return (
     <DropdownMenuTrigger asChild>
       <Button
         variant="ghost"
         size="sm"
         data-testid="mode-selector"
-        className={`${baseClasses} ${MODE_VARIANT_CLASSES[chatMode]}`}
+        className={`${baseClasses} ${modeVariantClasses[chatMode]}`}
       >
         {chatMode === "agent" ? (
           <>
