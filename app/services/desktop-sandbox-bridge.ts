@@ -44,6 +44,12 @@ type RefreshTokenResult =
       msSinceCreated: number | null;
     };
 
+type DesktopBridgeTerminationReason =
+  | "unauthenticated"
+  | "connection_not_found"
+  | "ownership_mismatch"
+  | "connection_inactive";
+
 interface StreamChunk {
   type: "stdout" | "stderr" | "exit" | "error";
   data?: string;
@@ -122,6 +128,7 @@ interface DesktopBridgeConfig {
   disconnectDesktop: (args: {
     connectionId: string;
   }) => Promise<{ success: boolean }>;
+  onTerminated?: (reason: DesktopBridgeTerminationReason) => void;
 }
 
 export class DesktopSandboxBridge {
@@ -140,16 +147,26 @@ export class DesktopSandboxBridge {
     return this.connectionId;
   }
 
-  private terminateClient(): void {
+  private terminateClient(reason: DesktopBridgeTerminationReason): void {
+    if (this.isStoppingOrStopped) return;
     this.isStoppingOrStopped = true;
     const client = this.client;
+    const subscription = this.subscription;
     this.client = null;
+    this.subscription = null;
     this.connectionId = null;
+    try {
+      subscription?.unsubscribe();
+      subscription?.removeAllListeners();
+    } catch {
+      // already in a terminal state
+    }
     try {
       client?.disconnect();
     } catch {
       // already in a terminal state
     }
+    this.config.onTerminated?.(reason);
   }
 
   async start(): Promise<string> {
@@ -193,7 +210,7 @@ export class DesktopSandboxBridge {
               "sandbox_connection_terminated",
               eventProps,
             );
-            this.terminateClient();
+            this.terminateClient("unauthenticated");
           } else {
             console.error(
               "[DesktopSandboxBridge] Failed to refresh Centrifugo token:",
@@ -221,7 +238,7 @@ export class DesktopSandboxBridge {
           eventProps,
         );
         captureAuthenticatedEvent("sandbox_connection_terminated", eventProps);
-        this.terminateClient();
+        this.terminateClient(result.reason);
         throw new Error(`Centrifugo refresh aborted: ${result.reason}`);
       },
     });

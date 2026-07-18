@@ -21,7 +21,10 @@ interface SandboxPreferenceState {
 
 // Module-level singleton to survive React strict mode double-mount
 let activeBridge: DesktopSandboxBridge | null = null;
-let bridgeStartPromise: Promise<DesktopSandboxBridge> | null = null;
+let bridgeStartPromise: Promise<DesktopSandboxBridge | null> | null = null;
+let bridgeGeneration = 0;
+let bridgeStateListener:
+  ((active: boolean, status: DesktopBridgeStatus) => void) | null = null;
 const PERSISTABLE_SANDBOX_PREFERENCES = new Set(["e2b", "desktop"]);
 
 export function useSandboxPreference(
@@ -60,20 +63,34 @@ export function useSandboxPreference(
 
   useEffect(() => {
     let cancelled = false;
+    const updateBridgeState = (
+      active: boolean,
+      status: DesktopBridgeStatus,
+    ) => {
+      if (cancelled) return;
+      setDesktopBridgeActive(active);
+      setDesktopBridgeStatus(status);
+    };
     const syncBridgeState = (active: boolean, status: DesktopBridgeStatus) => {
       queueMicrotask(() => {
-        if (cancelled) return;
-        setDesktopBridgeActive(active);
-        setDesktopBridgeStatus(status);
+        updateBridgeState(active, status);
       });
     };
 
     if (!isAuthenticated || !isTauriEnvironment()) {
+      bridgeStateListener = null;
+      bridgeGeneration += 1;
+      bridgeStartPromise = null;
+      const bridgeToStop = activeBridge;
+      activeBridge = null;
+      void bridgeToStop?.stop();
       syncBridgeState(false, "idle");
       return () => {
         cancelled = true;
       };
     }
+
+    bridgeStateListener = updateBridgeState;
 
     // Already running — just sync bridge active state (keep Cloud as default)
     if (activeBridge?.getConnectionId()) {
@@ -81,6 +98,9 @@ export function useSandboxPreference(
       // setSandboxPreferenceState(activeBridge.getConnectionId()!);
       return () => {
         cancelled = true;
+        if (bridgeStateListener === updateBridgeState) {
+          bridgeStateListener = null;
+        }
       };
     }
 
@@ -89,16 +109,28 @@ export function useSandboxPreference(
       setDesktopBridgeStatus("connecting");
       try {
         if (!bridgeStartPromise) {
-          const bridge = new DesktopSandboxBridge({
+          const generation = bridgeGeneration;
+          let bridge: DesktopSandboxBridge;
+          bridge = new DesktopSandboxBridge({
             connectDesktop: (args) => connectDesktopRef.current(args),
             refreshCentrifugoTokenDesktop: (args) =>
               refreshTokenRef.current(args),
             disconnectDesktop: (args) => disconnectRef.current(args),
+            onTerminated: (reason) => {
+              if (generation !== bridgeGeneration) return;
+              if (activeBridge === bridge) activeBridge = null;
+              bridgeStateListener?.(false, "failed");
+            },
           });
 
-          bridgeStartPromise = bridge
+          let startPromise: Promise<DesktopSandboxBridge | null>;
+          startPromise = bridge
             .start()
-            .then(() => {
+            .then(async () => {
+              if (generation !== bridgeGeneration) {
+                await bridge.stop();
+                return null;
+              }
               activeBridge = bridge;
               return bridge;
             })
@@ -107,12 +139,15 @@ export function useSandboxPreference(
               throw error;
             })
             .finally(() => {
-              bridgeStartPromise = null;
+              if (bridgeStartPromise === startPromise) {
+                bridgeStartPromise = null;
+              }
             });
+          bridgeStartPromise = startPromise;
         }
 
-        await bridgeStartPromise;
-        if (cancelled) return;
+        const bridge = await bridgeStartPromise;
+        if (cancelled || !bridge) return;
 
         setDesktopBridgeActive(true);
         setDesktopBridgeStatus("connected");
@@ -133,6 +168,9 @@ export function useSandboxPreference(
 
     // Cleanup on beforeunload (page close/refresh)
     const handleBeforeUnload = () => {
+      bridgeGeneration += 1;
+      bridgeStartPromise = null;
+      bridgeStateListener = null;
       try {
         activeBridge?.stop();
       } catch {
@@ -144,6 +182,9 @@ export function useSandboxPreference(
 
     return () => {
       cancelled = true;
+      if (bridgeStateListener === updateBridgeState) {
+        bridgeStateListener = null;
+      }
       window.removeEventListener("beforeunload", handleBeforeUnload);
       // Don't tear down the bridge on React strict mode unmount —
       // it's a module-level singleton that persists across remounts.
@@ -170,6 +211,8 @@ export function useSandboxPreference(
 
   const retryDesktopBridge = useCallback(() => {
     if (!isAuthenticated || !isTauriEnvironment()) return;
+    bridgeGeneration += 1;
+    bridgeStartPromise = null;
     setDesktopBridgeActive(false);
     setDesktopBridgeStatus("connecting");
     setDesktopBridgeRetryAttempt((attempt) => attempt + 1);
