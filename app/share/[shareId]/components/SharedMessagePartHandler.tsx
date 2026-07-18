@@ -43,6 +43,11 @@ import {
 import { PROXY_COMPLETED_LABELS } from "@/app/components/tools/ProxyToolHandler";
 import { isUserStoppedToolError } from "@/lib/chat/tool-abort-utils";
 import { FindingCard } from "@/app/components/findings/FindingCard";
+import { ToolErrorBlock } from "@/app/components/tools/ToolErrorHandler";
+import {
+  createToolInputErrorContent,
+  isToolInputValidationError,
+} from "@/lib/chat/tool-error-display";
 
 interface MessagePart {
   type: string;
@@ -52,6 +57,7 @@ interface MessagePart {
   input?: any;
   output?: any;
   toolCallId?: string;
+  toolName?: string;
   errorText?: string;
   data?: any;
 }
@@ -118,6 +124,26 @@ export const SharedMessagePartHandler = ({
         severity={part.data.severity}
         cvssScore={part.data.cvss_score}
       />
+    );
+  }
+
+  const validationToolType = part.type.startsWith("tool-")
+    ? part.type
+    : part.type === "dynamic-tool" && typeof part.toolName === "string"
+      ? `tool-${part.toolName}`
+      : null;
+  if (
+    validationToolType &&
+    part.state === "output-error" &&
+    isToolInputValidationError(part.errorText)
+  ) {
+    const content = createToolInputErrorContent({
+      toolType: validationToolType,
+      toolCallId: part.toolCallId || "",
+      errorText: part.errorText,
+    });
+    return (
+      <ToolErrorBlock content={content} onOpen={() => openSidebar(content)} />
     );
   }
 

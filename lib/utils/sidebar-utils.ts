@@ -10,6 +10,10 @@ import {
   isInteractiveShellAction,
   stripAgentOnlyTerminalGuidance,
 } from "@/app/components/tools/shell-tool-utils";
+import {
+  createToolInputErrorContent,
+  isToolInputValidationError,
+} from "@/lib/chat/tool-error-display";
 
 interface MessagePart {
   type: string;
@@ -78,6 +82,28 @@ export function extractSidebarContentFromMessage(
       part.type.startsWith("tool-") &&
       !STREAMS_DURING_INPUT.has(part.type)
     ) {
+      return;
+    }
+
+    const validationToolType =
+      typeof part.type === "string" && part.type.startsWith("tool-")
+        ? part.type
+        : part.type === "dynamic-tool" && typeof part.toolName === "string"
+          ? `tool-${part.toolName}`
+          : null;
+
+    if (
+      validationToolType &&
+      part.state === "output-error" &&
+      isToolInputValidationError(part.errorText)
+    ) {
+      contentList.push(
+        createToolInputErrorContent({
+          toolType: validationToolType,
+          toolCallId: part.toolCallId || "",
+          errorText: part.errorText,
+        }),
+      );
       return;
     }
 

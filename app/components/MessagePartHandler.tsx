@@ -9,6 +9,7 @@ import { WebToolHandler } from "./tools/WebToolHandler";
 import { TodoToolHandler } from "./tools/TodoToolHandler";
 import { NotesToolHandler } from "./tools/NotesToolHandler";
 import { FindingToolHandler } from "./tools/FindingToolHandler";
+import { ToolValidationErrorHandler } from "./tools/ToolErrorHandler";
 import { FindingCard } from "./findings/FindingCard";
 import { ProxyToolHandler } from "./tools/ProxyToolHandler";
 import { GetTerminalFilesHandler } from "./tools/GetTerminalFilesHandler";
@@ -16,6 +17,7 @@ import { SummarizationHandler } from "./tools/SummarizationHandler";
 import type { ChatStatus } from "@/types";
 import type { FileDetails } from "@/types/file";
 import { ReasoningHandler } from "./ReasoningHandler";
+import { isToolInputValidationError } from "@/lib/chat/tool-error-display";
 
 interface MessagePartHandlerProps {
   message: UIMessage;
@@ -119,7 +121,9 @@ export function areMessagePartHandlerPropsEqual(
     return (
       prevProps.part.state === nextProps.part.state &&
       prevProps.part.toolCallId === nextProps.part.toolCallId &&
+      prevProps.part.toolName === nextProps.part.toolName &&
       prevProps.part.output === nextProps.part.output &&
+      prevProps.part.errorText === nextProps.part.errorText &&
       deepEqual(prevProps.part.approval, nextProps.part.approval) &&
       // Tool input is an object — reference check first (fast path), then
       // deep comparison so new objects with identical content don't re-render.
@@ -156,6 +160,26 @@ export const MessagePartHandler = memo(function MessagePartHandler({
   terminalOutputByToolCallId,
   sharedFileDetails,
 }: MessagePartHandlerProps) {
+  const validationToolType =
+    typeof part.type === "string" && part.type.startsWith("tool-")
+      ? part.type
+      : part.type === "dynamic-tool" && typeof part.toolName === "string"
+        ? `tool-${part.toolName}`
+        : null;
+  if (
+    validationToolType &&
+    part.state === "output-error" &&
+    isToolInputValidationError(part.errorText)
+  ) {
+    return (
+      <ToolValidationErrorHandler
+        toolType={validationToolType}
+        toolCallId={part.toolCallId || ""}
+        errorText={part.errorText}
+      />
+    );
+  }
+
   // Main switch for different part types
   switch (part.type) {
     case "text": {

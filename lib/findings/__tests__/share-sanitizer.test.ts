@@ -89,4 +89,24 @@ describe("public finding sanitizer", () => {
     const text = { type: "text", text: "Public explanation" };
     expect(sanitizeFindingPartsForShare([text])).toEqual([text]);
   });
+
+  it("scrubs payload-bearing validation errors from unrelated tools", () => {
+    const [part] = sanitizeFindingPartsForShare([
+      {
+        type: "tool-http_request",
+        toolCallId: "request-1",
+        state: "output-error",
+        input: { url: "https://example.test" },
+        errorText:
+          'Invalid input for tool http_request: Type validation failed: Value: {"auth":{"password":"private"}}',
+      },
+    ]);
+
+    expect(part).toMatchObject({
+      type: "tool-http_request",
+      state: "output-error",
+      errorText: "Some tool parameters did not match the required format.",
+    });
+    expect(part.errorText).not.toMatch(/password|private|Value:/);
+  });
 });

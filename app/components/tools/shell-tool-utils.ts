@@ -6,6 +6,10 @@
  */
 
 import type { SidebarTerminal } from "@/types/chat";
+import {
+  getSafeToolErrorText,
+  isToolInputValidationError as isToolInputValidationErrorValue,
+} from "@/lib/chat/tool-error-display";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -111,11 +115,7 @@ export function getShellDisplayCommand(
 }
 
 export function isToolInputValidationError(errorText?: string): boolean {
-  if (!errorText) return false;
-  return (
-    errorText.includes("Invalid input for tool") ||
-    errorText.includes("Type validation failed")
-  );
+  return isToolInputValidationErrorValue(errorText);
 }
 
 export function getTerminalFailureAction(errorText?: string): string {
@@ -268,7 +268,7 @@ export function getShellOutput(
     extra?.streamingOutput ||
     (result?.error ?? "") ||
     (typeof output?.error === "string" ? output.error : "") ||
-    extra?.errorText ||
+    getSafeToolErrorText(extra?.errorText, "") ||
     ""
   );
 }

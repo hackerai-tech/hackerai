@@ -366,6 +366,22 @@ export interface SidebarFinding {
   toolCallId: string;
 }
 
+export interface SidebarToolError {
+  kind: "tool-error";
+  errorKind: "validation" | "execution" | "not_found";
+  toolName: string;
+  action: string;
+  title: string;
+  summary: string;
+  nextStep: string;
+  issues?: Array<{
+    field: string;
+    problem: string;
+  }>;
+  isExecuting: false;
+  toolCallId: string;
+}
+
 export type SidebarContent =
   | SidebarFile
   | SidebarTerminal
@@ -373,6 +389,7 @@ export type SidebarContent =
   | SidebarWebSearch
   | SidebarNotes
   | SidebarFinding
+  | SidebarToolError
   | SidebarSharedFiles;
 
 export const isSidebarFile = (
@@ -409,6 +426,12 @@ export const isSidebarFinding = (
   content: SidebarContent,
 ): content is SidebarFinding => {
   return "findingId" in content;
+};
+
+export const isSidebarToolError = (
+  content: SidebarContent,
+): content is SidebarToolError => {
+  return "kind" in content && content.kind === "tool-error";
 };
 
 export const isSidebarSharedFiles = (

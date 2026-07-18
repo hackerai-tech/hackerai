@@ -11,6 +11,14 @@ import ToolBlock from "@/components/ui/tool-block";
 import { useToolSidebar } from "@/app/hooks/useToolSidebar";
 import { captureAuthenticatedEvent } from "@/lib/analytics/client";
 import { FindingCard } from "@/app/components/findings/FindingCard";
+import {
+  ToolErrorHandler,
+  ToolValidationErrorHandler,
+} from "./ToolErrorHandler";
+import {
+  createFindingFailureContent,
+  isToolInputValidationError,
+} from "@/lib/chat/tool-error-display";
 
 type FindingOutput = {
   success?: boolean;
@@ -26,7 +34,6 @@ type FindingOutput = {
 
 const failureAction = (output: FindingOutput) => {
   if (output.error === "duplicate") return "Duplicate finding rejected";
-  if (output.error === "validation") return "Finding validation failed";
   return "Finding was not saved";
 };
 
@@ -125,17 +132,39 @@ export const FindingToolHandler = memo(function FindingToolHandler({
   }
 
   if (state === "output-error") {
-    return (
-      <ToolBlock
-        icon={<ShieldAlert aria-hidden="true" />}
-        action="Finding validation failed"
-        target={errorText || target}
+    return isToolInputValidationError(errorText) ? (
+      <ToolValidationErrorHandler
+        toolType="tool-create_vulnerability_report"
+        toolCallId={toolCallId}
+        errorText={errorText}
+      />
+    ) : (
+      <ToolErrorHandler
+        content={createFindingFailureContent({
+          toolCallId,
+          reason: "general",
+        })}
       />
     );
   }
 
   if (state === "output-available") {
     if (result.success === false) {
+      if (result.error !== "duplicate") {
+        return (
+          <ToolErrorHandler
+            content={createFindingFailureContent({
+              toolCallId,
+              reason:
+                result.error === "validation" ||
+                result.error === "chat_not_found"
+                  ? result.error
+                  : "general",
+            })}
+          />
+        );
+      }
+
       return (
         <ToolBlock
           icon={<ShieldAlert aria-hidden="true" />}
@@ -169,10 +198,11 @@ export const FindingToolHandler = memo(function FindingToolHandler({
     }
 
     return (
-      <ToolBlock
-        icon={<ShieldAlert aria-hidden="true" />}
-        action="Finding was not saved"
-        target="The tool returned an invalid result"
+      <ToolErrorHandler
+        content={createFindingFailureContent({
+          toolCallId,
+          reason: "invalid_result",
+        })}
       />
     );
   }

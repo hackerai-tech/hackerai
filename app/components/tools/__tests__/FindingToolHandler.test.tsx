@@ -87,38 +87,71 @@ describe("FindingToolHandler", () => {
     expect(screen.getByText("Confirmed IDOR")).toBeVisible();
   });
 
-  it.each([
-    ["validation", "Finding validation failed"],
-    ["duplicate", "Duplicate finding rejected"],
-    ["general", "Finding was not saved"],
-  ])("renders %s failures", (error, action) => {
+  it.each(["validation", "general"])(
+    "shows safe, expandable details for %s failures",
+    (error) => {
+      render(
+        <FindingToolHandler
+          status="ready"
+          part={{
+            toolCallId: "tool-1",
+            state: "output-available",
+            output: { success: false, error, message: "Private raw error" },
+          }}
+        />,
+      );
+      expect(
+        screen.getByText("Vulnerability report wasn’t saved"),
+      ).toBeVisible();
+      expect(screen.getByText("View details")).toBeVisible();
+      expect(screen.queryByText("Private raw error")).not.toBeInTheDocument();
+
+      fireEvent.click(
+        screen.getByRole("button", {
+          name: "Open vulnerability report error details",
+        }),
+      );
+      expect(mockOpenInSidebar).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it("shows duplicate failures without opening error details", () => {
     render(
       <FindingToolHandler
         status="ready"
         part={{
           toolCallId: "tool-1",
           state: "output-available",
-          output: { success: false, error, message: "Safe error message" },
+          output: {
+            success: false,
+            error: "duplicate",
+            message: "Already saved in this chat",
+          },
         }}
       />,
     );
-    expect(screen.getByText(action)).toBeVisible();
-    expect(screen.getByText("Safe error message")).toBeVisible();
+    expect(screen.getByText("Duplicate finding rejected")).toBeVisible();
+    expect(screen.getByText("Already saved in this chat")).toBeVisible();
+    expect(screen.queryByRole("button")).not.toBeInTheDocument();
   });
 
-  it("renders tool execution errors", () => {
+  it("never exposes framework validation payloads inline", () => {
+    const rawError =
+      'Invalid input for tool create_vulnerability_report: Type validation failed: Value: {"poc_script_code":"private exploit"}';
     render(
       <FindingToolHandler
         status="ready"
         part={{
           toolCallId: "tool-1",
           state: "output-error",
-          errorText: "Invalid CVE format",
+          errorText: rawError,
         }}
       />,
     );
-    expect(screen.getByText("Finding validation failed")).toBeVisible();
-    expect(screen.getByText("Invalid CVE format")).toBeVisible();
+    expect(screen.getByText("Vulnerability report wasn’t saved")).toBeVisible();
+    expect(screen.getByText("View details")).toBeVisible();
+    expect(screen.queryByText(rawError)).not.toBeInTheDocument();
+    expect(screen.queryByText(/private exploit/i)).not.toBeInTheDocument();
   });
 
   it("reactively replaces a card with the deleted state", () => {

@@ -1,3 +1,8 @@
+import {
+  isToolInputValidationError,
+  SAFE_TOOL_INPUT_ERROR_TEXT,
+} from "../chat/tool-error-display";
+
 type SharedFindingPart = {
   type: "data-shared-finding";
   data: {
@@ -53,7 +58,15 @@ export const sanitizeFindingPartsForShare = (parts: any[]): any[] =>
     ) {
       return [];
     }
-    if (part?.type !== "tool-create_vulnerability_report") return [part];
+    if (part?.type !== "tool-create_vulnerability_report") {
+      if (
+        part?.state === "output-error" &&
+        isToolInputValidationError(part?.errorText)
+      ) {
+        return [{ ...part, errorText: SAFE_TOOL_INPUT_ERROR_TEXT }];
+      }
+      return [part];
+    }
     const safePart = sanitizeFindingToolPart(part);
     return safePart ? [safePart] : [];
   });
