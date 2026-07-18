@@ -34,10 +34,10 @@ export {
   refundUsage,
   resetRateLimitBuckets,
   capCurrentCycleAllocation,
-  stashOldBucketRemaining,
-  popOldBucketRemaining,
+  stashTierChangeBucketState,
+  applyProratedTierChangeBucket,
+  calculateTierChangeCredits,
   initProratedBucket,
-  calculateProratedCredits,
   getTeamMemberConsumed,
   addOrgRemovedUsage,
   clearOrgRemovedUsage,
@@ -53,6 +53,9 @@ export {
   type UsageDeductionFailureReason,
   type UsageDeductionResult,
   type CycleAllocationCapResult,
+  type TierChangeBucketState,
+  type TierChangeCredits,
+  type AppliedTierChangeBucket,
 } from "./token-bucket";
 
 // Re-export sliding window functions

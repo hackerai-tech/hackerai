@@ -24,6 +24,7 @@ describe("token-bucket async functions", () => {
   const mockExistsFn = jest.fn();
   const mockEvalFn = jest.fn();
   const mockDelFn = jest.fn();
+  const mockSetFn = jest.fn();
   const mockExpireFn = jest.fn();
   const mockScanFn = jest.fn();
   const mockDeductFromBalance = jest.fn();
@@ -49,6 +50,7 @@ describe("token-bucket async functions", () => {
     mockExistsFn.mockResolvedValue(1);
     mockEvalFn.mockResolvedValue([-1, -1, 0]);
     mockDelFn.mockResolvedValue(1);
+    mockSetFn.mockResolvedValue("OK");
     mockExpireFn.mockResolvedValue(1);
     mockScanFn.mockResolvedValue(["0", []]);
     mockDeductFromBalance.mockResolvedValue({
@@ -78,6 +80,7 @@ describe("token-bucket async functions", () => {
       exists: mockExistsFn,
       eval: mockEvalFn,
       del: mockDelFn,
+      set: mockSetFn,
       expire: mockExpireFn,
       scan: mockScanFn,
     });
@@ -114,6 +117,7 @@ describe("token-bucket async functions", () => {
           exists: mockExistsFn,
           eval: mockEvalFn,
           del: mockDelFn,
+          set: mockSetFn,
           expire: mockExpireFn,
           scan: mockScanFn,
         })),
@@ -156,6 +160,172 @@ describe("token-bucket async functions", () => {
       await expect(deleteUserRateLimitKeys("user-123")).resolves.toBe(1);
 
       expect(mockDelFn).toHaveBeenCalledWith("usage:monthly:user-123:pro");
+    });
+  });
+
+  describe("tier-change bucket migration", () => {
+    it("atomically stashes the real cycle state and deletes the old bucket", async () => {
+      const resetAtMs = Date.now() + 12 * 24 * 60 * 60 * 1000;
+      const state = JSON.stringify({
+        version: 2,
+        oldTier: "pro",
+        remaining: 0,
+        cycleAllocation: 250_000,
+        resetAtMs,
+      });
+      mockLimitFn.mockResolvedValueOnce({
+        success: true,
+        remaining: 0,
+        reset: resetAtMs,
+        limit: 250_000,
+      });
+      mockEvalFn.mockResolvedValueOnce(state);
+      const { stashTierChangeBucketState } = getIsolatedModule();
+
+      await expect(
+        stashTierChangeBucketState("user-123", "pro"),
+      ).resolves.toEqual(JSON.parse(state));
+
+      expect(mockLimitFn).toHaveBeenCalledWith("user-123:pro", { rate: 0 });
+      expect(mockEvalFn).toHaveBeenCalledWith(
+        expect.stringContaining('redis.call("SET", stashKey'),
+        ["usage:monthly:user-123:pro", "upgrade:carryover:user-123"],
+        [250_000, resetAtMs, "pro", 86_400],
+      );
+    });
+
+    it("uses a price-specific old-cycle allocation when metadata is absent", async () => {
+      const resetAtMs = Date.now() + 12 * 24 * 60 * 60 * 1000;
+      mockLimitFn.mockResolvedValueOnce({
+        success: true,
+        remaining: 50_000,
+        reset: resetAtMs,
+        limit: 250_000,
+      });
+      mockEvalFn.mockResolvedValueOnce(
+        JSON.stringify({
+          version: 2,
+          oldTier: "pro",
+          remaining: 50_000,
+          cycleAllocation: 200_000,
+          resetAtMs,
+        }),
+      );
+      const { stashTierChangeBucketState } = getIsolatedModule();
+
+      await stashTierChangeBucketState("user-123", "pro", 200_000);
+
+      expect(mockEvalFn).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.any(Array),
+        [200_000, resetAtMs, "pro", 86_400],
+      );
+    });
+
+    it("applies only the prorated Pro→Pro+ difference and preserves reset", async () => {
+      const resetAtMs = Date.now() + 12 * 24 * 60 * 60 * 1000;
+      const periodEndSeconds = Math.ceil(resetAtMs / 1000);
+      mockEvalFn.mockResolvedValueOnce(
+        JSON.stringify({
+          version: 2,
+          oldTier: "pro",
+          remaining: 0,
+          cycleAllocation: 250_000,
+          resetAtMs,
+        }),
+      );
+      const { applyProratedTierChangeBucket } = getIsolatedModule();
+
+      const result = await applyProratedTierChangeBucket(
+        "user-123",
+        "pro-plus",
+        {
+          proratedRatio: 0.41581478,
+          periodEndSeconds,
+        },
+      );
+
+      expect(result).toMatchObject({
+        consumedCredits: 250_000,
+        incrementalCredits: 145_535,
+        cycleAllocation: 395_535,
+        remainingCredits: 145_535,
+        proratedRatio: 0.41581478,
+      });
+      expect(mockLimitFn).toHaveBeenNthCalledWith(1, "user-123:pro-plus", {
+        rate: 0,
+      });
+      expect(mockLimitFn).toHaveBeenNthCalledWith(2, "user-123:pro-plus", {
+        rate: 454_465,
+      });
+      expect(mockHsetFn).toHaveBeenCalledWith(
+        "usage:monthly:user-123:pro-plus",
+        expect.objectContaining({
+          tokens: 145_535,
+          cycleAllocation: 395_535,
+          cycleTierMax: 600_000,
+          refilledAt: (periodEndSeconds - 30 * 24 * 60 * 60) * 1000,
+        }),
+      );
+    });
+
+    it("does not create credits when no tier-change state exists", async () => {
+      mockEvalFn.mockResolvedValueOnce(null);
+      const { applyProratedTierChangeBucket } = getIsolatedModule();
+
+      await expect(
+        applyProratedTierChangeBucket("user-123", "pro-plus", {
+          proratedRatio: 0.5,
+        }),
+      ).resolves.toBeNull();
+
+      expect(mockDelFn).not.toHaveBeenCalled();
+      expect(mockLimitFn).not.toHaveBeenCalled();
+    });
+
+    it("does not let a delayed proration overwrite a newer cycle", async () => {
+      mockEvalFn.mockResolvedValueOnce(
+        JSON.stringify({
+          version: 2,
+          oldTier: "pro",
+          remaining: 0,
+          cycleAllocation: 250_000,
+          resetAtMs: Date.now() - 1_000,
+        }),
+      );
+      const { applyProratedTierChangeBucket } = getIsolatedModule();
+
+      await expect(
+        applyProratedTierChangeBucket("user-123", "pro-plus"),
+      ).resolves.toBeNull();
+
+      expect(mockDelFn).not.toHaveBeenCalled();
+      expect(mockLimitFn).not.toHaveBeenCalled();
+    });
+
+    it("restores claimed state when writing the new bucket fails", async () => {
+      const state = JSON.stringify({
+        version: 2,
+        oldTier: "pro",
+        remaining: 80_000,
+        cycleAllocation: 250_000,
+        resetAtMs: Date.now() + 12 * 24 * 60 * 60 * 1000,
+      });
+      mockEvalFn.mockResolvedValueOnce(state);
+      mockHsetFn.mockRejectedValueOnce(new Error("redis write failed"));
+      const { applyProratedTierChangeBucket } = getIsolatedModule();
+
+      await expect(
+        applyProratedTierChangeBucket("user-123", "pro-plus", {
+          proratedRatio: 1 / 3,
+        }),
+      ).rejects.toThrow("redis write failed");
+
+      expect(mockSetFn).toHaveBeenCalledWith(
+        "upgrade:carryover:user-123",
+        state,
+        { ex: 86_400 },
+      );
     });
   });
 
