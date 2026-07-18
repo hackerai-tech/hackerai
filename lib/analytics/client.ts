@@ -1,10 +1,13 @@
 "use client";
 
 import type posthogJs from "posthog-js";
+import { v5 as uuidv5 } from "uuid";
 import {
   PAID_FUNNEL_EVENTS,
+  UPGRADE_CTA_IMPRESSION_DEDUPE,
   createCheckoutAttemptId,
   paidFunnelProperties,
+  upgradeCtaImpressionInsertId,
 } from "@/lib/analytics/paid-funnel";
 
 type ClientAnalyticsProperties = Record<string, unknown>;
@@ -12,6 +15,7 @@ type ClientAnalyticsProperties = Record<string, unknown>;
 type PostHogClient = typeof posthogJs & {
   get_session_id?: () => string;
 };
+type PostHogCaptureOptions = Parameters<PostHogClient["capture"]>[2];
 
 let posthogClient: PostHogClient | null = null;
 let posthogImportPromise: Promise<PostHogClient> | null = null;
@@ -50,6 +54,7 @@ function getReadyPostHogClient() {
 export function captureAuthenticatedEvent(
   event: string,
   properties: ClientAnalyticsProperties = {},
+  options?: PostHogCaptureOptions,
 ) {
   if (!process.env.NEXT_PUBLIC_POSTHOG_KEY) return false;
 
@@ -60,7 +65,11 @@ export function captureAuthenticatedEvent(
   }
 
   try {
-    posthog.capture(event, properties);
+    if (options) {
+      posthog.capture(event, properties, options);
+    } else {
+      posthog.capture(event, properties);
+    }
     return true;
   } catch {
     return false;
@@ -102,8 +111,9 @@ export function captureUpgradeCtaImpression(
   }
 
   const day = new Date().toISOString().slice(0, 10);
+  const distinctId = posthog.get_distinct_id();
   const dedupeKey = [
-    posthog.get_distinct_id(),
+    distinctId,
     properties.surface,
     properties.source ?? "",
   ].join(":");
@@ -129,7 +139,23 @@ export function captureUpgradeCtaImpression(
 
   const captured = captureAuthenticatedEvent(
     PAID_FUNNEL_EVENTS.upgradeCtaImpressed,
-    paidFunnelProperties(properties),
+    paidFunnelProperties({
+      ...properties,
+      impression_dedupe_scope: UPGRADE_CTA_IMPRESSION_DEDUPE.scope,
+      impression_dedupe_version: UPGRADE_CTA_IMPRESSION_DEDUPE.version,
+      impression_utc_day: day,
+    }),
+    {
+      uuid: uuidv5(
+        upgradeCtaImpressionInsertId({
+          distinctId,
+          surface: properties.surface,
+          source: properties.source,
+          utcDay: day,
+        }),
+        uuidv5.URL,
+      ),
+    },
   );
   if (!captured) return false;
 

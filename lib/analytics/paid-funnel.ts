@@ -1,5 +1,10 @@
 export const PAID_FUNNEL_EVENT_VERSION = 1;
 
+export const UPGRADE_CTA_IMPRESSION_DEDUPE = {
+  scope: "identified_user_surface_source_utc_day",
+  version: 1,
+} as const;
+
 export const PAID_FUNNEL_EVENTS = {
   upgradeCtaImpressed: "upgrade_cta_impressed",
   upgradeCtaClicked: "upgrade_cta_clicked",
@@ -32,6 +37,27 @@ export function cancellationCompletionInsertId(
 
 export function checkoutStartedInsertId(checkoutAttemptId: string): string {
   return `${PAID_FUNNEL_EVENTS.checkoutStarted}:${checkoutAttemptId}`;
+}
+
+export function upgradeCtaImpressionInsertId({
+  distinctId,
+  surface,
+  source,
+  utcDay,
+}: {
+  distinctId: string;
+  surface: string;
+  source?: string;
+  utcDay: string;
+}): string {
+  return JSON.stringify([
+    PAID_FUNNEL_EVENTS.upgradeCtaImpressed,
+    UPGRADE_CTA_IMPRESSION_DEDUPE.version,
+    distinctId,
+    surface,
+    source ?? null,
+    utcDay,
+  ]);
 }
 
 export type PaidFunnelPlan =
