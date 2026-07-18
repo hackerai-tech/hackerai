@@ -157,6 +157,10 @@ export class DesktopSandboxBridge {
     this.connectionId = null;
     try {
       subscription?.unsubscribe();
+    } catch {
+      // already in a terminal state
+    }
+    try {
       subscription?.removeAllListeners();
     } catch {
       // already in a terminal state

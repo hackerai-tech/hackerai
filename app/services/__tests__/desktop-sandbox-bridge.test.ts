@@ -126,6 +126,9 @@ describe("desktop capability registration", () => {
 describe("terminal connection state", () => {
   it("notifies the owner when the server terminates the connection", async () => {
     const onTerminated = jest.fn();
+    mockSubscription.unsubscribe.mockImplementationOnce(() => {
+      throw new Error("already unsubscribed");
+    });
     const config = buildConfig({
       onTerminated,
       refreshCentrifugoTokenDesktop: jest.fn().mockResolvedValue({
@@ -151,6 +154,7 @@ describe("terminal connection state", () => {
     expect(onTerminated).toHaveBeenCalledWith("connection_inactive");
     expect(bridge.getConnectionId()).toBeNull();
     expect(mockSubscription.unsubscribe).toHaveBeenCalledTimes(1);
+    expect(mockSubscription.removeAllListeners).toHaveBeenCalledTimes(1);
     expect(mockClient.disconnect).toHaveBeenCalledTimes(1);
   });
 
