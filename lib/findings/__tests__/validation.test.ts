@@ -104,17 +104,51 @@ describe("structured finding validation", () => {
     ).toBe(false);
   });
 
-  test.each(["cve", "cwe"] as const)(
-    "normalizes a blank optional %s to an omitted value",
+  test.each(["endpoint", "method", "cve", "cwe"] as const)(
+    "normalizes a blank or null optional %s to an omitted value",
     (field) => {
-      const parsed = createVulnerabilityReportInputSchema.parse({
-        ...validReport(),
-        [field]: "   ",
-      });
+      for (const value of ["   ", null]) {
+        const parsed = createVulnerabilityReportInputSchema.parse({
+          ...validReport(),
+          [field]: value,
+        });
 
-      expect(parsed[field]).toBeUndefined();
+        expect(parsed[field]).toBeUndefined();
+      }
     },
   );
+
+  it("normalizes null and blank optional code-location values", () => {
+    const parsed = createVulnerabilityReportInputSchema.parse({
+      ...validReport(),
+      code_locations: [
+        {
+          file: "src/a.ts",
+          start_line: 1,
+          end_line: 1,
+          snippet: "   ",
+          label: null,
+          fix_before: "",
+          fix_after: null,
+        },
+      ],
+    });
+    const location = parsed.code_locations?.[0];
+
+    expect(location?.snippet).toBeUndefined();
+    expect(location?.label).toBeUndefined();
+    expect(location?.fix_before).toBeUndefined();
+    expect(location?.fix_after).toBeUndefined();
+  });
+
+  it("normalizes a null optional code-location list", () => {
+    const parsed = createVulnerabilityReportInputSchema.parse({
+      ...validReport(),
+      code_locations: null,
+    });
+
+    expect(parsed.code_locations).toBeUndefined();
+  });
 
   test.each([
     "/etc/passwd",

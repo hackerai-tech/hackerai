@@ -15,9 +15,10 @@ const optionalText = (label: string, max: number) =>
   z
     .string()
     .trim()
-    .min(1, `${label} cannot be empty`)
     .max(max, `${label} must be ${max.toLocaleString()} characters or fewer`)
-    .optional();
+    .nullable()
+    .optional()
+    .transform((value) => value || undefined);
 
 const stripBoundaryNewlines = (value: string) =>
   value.replace(/^(?:\r?\n)+|(?:\r?\n)+$/g, "");
@@ -33,7 +34,19 @@ const requiredCodeText = (label: string, max: number) =>
     );
 
 const optionalCodeText = (label: string, max: number) =>
-  requiredCodeText(label, max).optional();
+  z
+    .string()
+    .nullable()
+    .optional()
+    .transform((value) => {
+      if (value == null) return undefined;
+      const normalized = stripBoundaryNewlines(value);
+      return normalized.trim().length > 0 ? normalized : undefined;
+    })
+    .refine(
+      (value) => value === undefined || value.length <= max,
+      `${label} must be ${max.toLocaleString()} characters or fewer`,
+    );
 
 const getLineCount = (value: string) => value.split(/\r?\n/).length;
 
@@ -131,22 +144,26 @@ export const createVulnerabilityReportInputSchema = z
       .trim()
       .regex(/^(?:CVE-\d{4}-\d{4,})?$/, "CVE must use CVE-YYYY-NNNN format")
       .max(32)
-      .transform((value) => value || undefined)
-      .optional(),
+      .nullable()
+      .optional()
+      .transform((value) => value || undefined),
     cwe: z
       .string()
       .trim()
       .regex(/^(?:CWE-\d+)?$/, "CWE must use CWE-NNN format")
       .max(24)
-      .transform((value) => value || undefined)
-      .optional(),
+      .nullable()
+      .optional()
+      .transform((value) => value || undefined),
     code_locations: z
       .array(findingCodeLocationSchema)
       .max(
         FINDING_CODE_LOCATIONS_MAX,
         `Code locations are limited to ${FINDING_CODE_LOCATIONS_MAX}`,
       )
-      .optional(),
+      .nullable()
+      .optional()
+      .transform((value) => value ?? undefined),
   })
   .strict()
   .superRefine((input, ctx) => {

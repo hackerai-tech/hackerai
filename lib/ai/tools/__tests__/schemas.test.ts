@@ -110,8 +110,24 @@ describe("agent tool schema descriptions", () => {
     const parityCases = [
       validReport,
       {},
+      { ...validReport, endpoint: null, method: "   " },
       { ...validReport, cve: "" },
-      { ...validReport, cwe: "   " },
+      { ...validReport, cwe: null },
+      { ...validReport, code_locations: null },
+      {
+        ...validReport,
+        code_locations: [
+          {
+            file: "src/a.ts",
+            start_line: 1,
+            end_line: 1,
+            snippet: "   ",
+            label: null,
+            fix_before: "",
+            fix_after: null,
+          },
+        ],
+      },
       { ...validReport, cve: "CVE-26-1234" },
       {
         ...validReport,
@@ -145,21 +161,69 @@ describe("agent tool schema descriptions", () => {
     }
   });
 
-  test.each(["cve", "cwe"] as const)(
-    "normalizes a blank optional %s instead of rejecting the report",
+  test.each(["endpoint", "method", "cve", "cwe"] as const)(
+    "normalizes a blank or null optional %s instead of rejecting the report",
     (field) => {
-      const input = { ...validFindingReport(), [field]: "   " };
+      for (const value of ["   ", null]) {
+        const input = { ...validFindingReport(), [field]: value };
 
-      expect(
-        createVulnerabilityReportToolInputSchema.parse(input)[field],
-      ).toBeUndefined();
-      expect(
-        createVulnerabilityReportInputSchema.parse(input)[field],
-      ).toBeUndefined();
+        expect(
+          createVulnerabilityReportToolInputSchema.parse(input)[field],
+        ).toBeUndefined();
+        expect(
+          createVulnerabilityReportInputSchema.parse(input)[field],
+        ).toBeUndefined();
+      }
     },
   );
 
-  test("keeps CVE and CWE optional in the model-visible JSON schema", () => {
+  test("normalizes null and blank optional code-location metadata", () => {
+    const input = {
+      ...validFindingReport(),
+      code_locations: [
+        {
+          file: "src/a.ts",
+          start_line: 1,
+          end_line: 1,
+          snippet: "   ",
+          label: null,
+          fix_before: "",
+          fix_after: null,
+        },
+      ],
+    };
+
+    for (const schema of [
+      createVulnerabilityReportToolInputSchema,
+      createVulnerabilityReportInputSchema,
+    ]) {
+      const location = schema.parse(input).code_locations?.[0];
+      expect(location?.snippet).toBeUndefined();
+      expect(location?.label).toBeUndefined();
+      expect(location?.fix_before).toBeUndefined();
+      expect(location?.fix_after).toBeUndefined();
+    }
+  });
+
+  test("normalizes a null optional code-location list", () => {
+    const input = { ...validFindingReport(), code_locations: null };
+
+    expect(
+      createVulnerabilityReportToolInputSchema.parse(input).code_locations,
+    ).toBeUndefined();
+    expect(
+      createVulnerabilityReportInputSchema.parse(input).code_locations,
+    ).toBeUndefined();
+  });
+
+  test("keeps all optional fields optional in the model-visible JSON schema", () => {
+    const optionalFields = [
+      "endpoint",
+      "method",
+      "cve",
+      "cwe",
+      "code_locations",
+    ];
     const jsonSchema = zodSchema(createVulnerabilityReportToolInputSchema)
       .jsonSchema as {
       required?: string[];
@@ -167,14 +231,22 @@ describe("agent tool schema descriptions", () => {
     };
 
     expect(jsonSchema.required).not.toEqual(
-      expect.arrayContaining(["cve", "cwe"]),
+      expect.arrayContaining(optionalFields),
     );
     expect(jsonSchema.properties).toEqual(
       expect.objectContaining({
+        endpoint: expect.any(Object),
+        method: expect.any(Object),
         cve: expect.any(Object),
         cwe: expect.any(Object),
+        code_locations: expect.any(Object),
       }),
     );
+    for (const field of optionalFields) {
+      expect(JSON.stringify(jsonSchema.properties?.[field])).toContain(
+        '"null"',
+      );
+    }
   });
 
   test("allows one bounded retry only for an explicitly retryable save failure", () => {
