@@ -11,7 +11,7 @@ import {
 } from "@/components/ui/tooltip";
 
 const ACTION_TOOLTIP_CLASS =
-  "border-0 bg-black px-3 py-1.5 text-sm text-white shadow-md [&_svg]:bg-black [&_svg]:fill-black";
+  "border-0 bg-black px-3 py-1.5 text-xs text-white shadow-md [&_svg]:bg-black [&_svg]:fill-black";
 
 interface PreviewRowProps {
   id: "local" | "cloud";
@@ -49,7 +49,7 @@ function PreviewRow({ id, name, isLocal, open, onToggle }: PreviewRowProps) {
         </TooltipTrigger>
         <TooltipContent
           side="top"
-          sideOffset={8}
+          sideOffset={4}
           className={ACTION_TOOLTIP_CLASS}
         >
           More options
@@ -70,7 +70,7 @@ function PreviewRow({ id, name, isLocal, open, onToggle }: PreviewRowProps) {
         </TooltipTrigger>
         <TooltipContent
           side="top"
-          sideOffset={8}
+          sideOffset={4}
           className={ACTION_TOOLTIP_CLASS}
         >
           New task

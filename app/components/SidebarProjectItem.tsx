@@ -174,8 +174,8 @@ export function SidebarProjectItem({
             </TooltipTrigger>
             <TooltipContent
               side="top"
-              sideOffset={8}
-              className="border-0 bg-black px-3 py-1.5 text-sm text-white shadow-md [&_svg]:bg-black [&_svg]:fill-black"
+              sideOffset={4}
+              className="border-0 bg-black px-3 py-1.5 text-xs text-white shadow-md [&_svg]:bg-black [&_svg]:fill-black"
             >
               More options
             </TooltipContent>
@@ -232,8 +232,8 @@ export function SidebarProjectItem({
           </TooltipTrigger>
           <TooltipContent
             side="top"
-            sideOffset={8}
-            className="border-0 bg-black px-3 py-1.5 text-sm text-white shadow-md [&_svg]:bg-black [&_svg]:fill-black"
+            sideOffset={4}
+            className="border-0 bg-black px-3 py-1.5 text-xs text-white shadow-md [&_svg]:bg-black [&_svg]:fill-black"
           >
             New task
           </TooltipContent>
