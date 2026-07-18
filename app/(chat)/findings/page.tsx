@@ -157,6 +157,8 @@ function FindingsPageContent() {
     isAuthenticated ? {} : "skip",
   ) as FindingSourceChat[] | undefined;
   const findings = (findingsQuery.results ?? []) as FindingSummary[];
+  const showSourceChatFilter =
+    chatId !== "all" || (sourceChats?.length ?? 0) >= 2;
   const hasActiveFilters =
     Boolean(deferredSearch) || severity !== "all" || chatId !== "all";
 
@@ -238,7 +240,14 @@ function FindingsPageContent() {
         </header>
 
         <div className="flex min-h-0 flex-1 flex-col">
-          <div className="grid shrink-0 gap-2 border-b border-border p-4 sm:grid-cols-[minmax(220px,1fr)_160px_220px] sm:px-6">
+          <div
+            className={cn(
+              "grid shrink-0 gap-2 border-b border-border p-4 sm:px-6",
+              showSourceChatFilter
+                ? "sm:grid-cols-[minmax(220px,1fr)_160px_220px]"
+                : "sm:grid-cols-[minmax(220px,1fr)_160px]",
+            )}
+          >
             <div className="relative">
               <Search
                 className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground"
@@ -281,32 +290,34 @@ function FindingsPageContent() {
                 ))}
               </SelectContent>
             </Select>
-            <Select
-              value={chatId}
-              onValueChange={(value) => {
-                setChatId(value);
-                updateFindingsHistory(
-                  getFindingsHref({
-                    search: deferredSearch,
-                    severity,
-                    chatId: value,
-                    findingId: selectedFindingId,
-                  }),
-                );
-              }}
-            >
-              <SelectTrigger aria-label="Filter by source chat">
-                <SelectValue placeholder="All source chats" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">All source chats</SelectItem>
-                {(sourceChats ?? []).map((chat) => (
-                  <SelectItem key={chat.chat_id} value={chat.chat_id}>
-                    {chat.chat_title}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+            {showSourceChatFilter ? (
+              <Select
+                value={chatId}
+                onValueChange={(value) => {
+                  setChatId(value);
+                  updateFindingsHistory(
+                    getFindingsHref({
+                      search: deferredSearch,
+                      severity,
+                      chatId: value,
+                      findingId: selectedFindingId,
+                    }),
+                  );
+                }}
+              >
+                <SelectTrigger aria-label="Filter by source chat">
+                  <SelectValue placeholder="All source chats" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All source chats</SelectItem>
+                  {(sourceChats ?? []).map((chat) => (
+                    <SelectItem key={chat.chat_id} value={chat.chat_id}>
+                      {chat.chat_title}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            ) : null}
           </div>
 
           {deferredSearch && (

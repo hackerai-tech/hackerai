@@ -4,7 +4,7 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 
 const mockUsePaginatedQuery = jest.fn();
 const mockUseQuery = jest.fn((_ref: unknown, args: any) =>
-  args?.findingId ? mockFinding : mockSourceChats,
+  args?.findingId ? mockFinding : oneSourceChat,
 );
 const mockCapture = jest.fn();
 const mockPush = jest.fn();
@@ -76,7 +76,11 @@ const mockFinding = {
   },
 };
 
-const mockSourceChats = [{ chat_id: "chat-1", chat_title: "Invoice test" }];
+const oneSourceChat = [{ chat_id: "chat-1", chat_title: "Invoice test" }];
+const multipleSourceChats = [
+  ...oneSourceChat,
+  { chat_id: "chat-2", chat_title: "API retest" },
+];
 
 const Page = require("../page").default as typeof import("../page").default;
 
@@ -87,6 +91,9 @@ describe("FindingsPage", () => {
       mockSearchParams.delete(key);
     }
     window.history.replaceState({}, "", "/findings");
+    mockUseQuery.mockImplementation((_ref: unknown, args: any) =>
+      args?.findingId ? mockFinding : oneSourceChat,
+    );
     mockUsePaginatedQuery.mockReturnValue({
       results: [mockFinding],
       status: "Exhausted",
@@ -94,7 +101,7 @@ describe("FindingsPage", () => {
     });
   });
 
-  it("lists metadata, searches, and exposes severity/source filters", async () => {
+  it("lists metadata, searches, and hides a redundant source filter", async () => {
     render(<Page />);
     expect(screen.getByRole("heading", { name: "Findings" })).toBeVisible();
     expect(screen.getByText("Confirmed IDOR")).toBeVisible();
@@ -102,7 +109,7 @@ describe("FindingsPage", () => {
     expect(screen.getByText("Invoice test")).toBeVisible();
     expect(screen.getByText("CVSS 7.1")).toBeVisible();
     expect(screen.getByLabelText("Filter by severity")).toBeVisible();
-    expect(screen.getByLabelText("Filter by source chat")).toBeVisible();
+    expect(screen.queryByLabelText("Filter by source chat")).toBeNull();
 
     fireEvent.change(screen.getByLabelText("Search findings"), {
       target: { value: "CWE-639" },
@@ -124,6 +131,31 @@ describe("FindingsPage", () => {
       expect(window.location.search).toBe("");
     });
     expect(mockCapture).toHaveBeenCalledWith("findings_page_viewed");
+  });
+
+  it("shows source-chat titles when findings span multiple chats", () => {
+    mockUseQuery.mockImplementation((_ref: unknown, args: any) =>
+      args?.findingId ? mockFinding : multipleSourceChats,
+    );
+
+    render(<Page />);
+
+    const sourceFilter = screen.getByLabelText("Filter by source chat");
+    expect(sourceFilter).toBeVisible();
+    fireEvent.click(sourceFilter);
+    expect(
+      screen.getByRole("option", { name: "All source chats" }),
+    ).toBeVisible();
+    expect(screen.getByRole("option", { name: "Invoice test" })).toBeVisible();
+    expect(screen.getByRole("option", { name: "API retest" })).toBeVisible();
+  });
+
+  it("keeps an active source filter visible so it can be cleared", () => {
+    mockSearchParams.set("chat", "chat-1");
+
+    render(<Page />);
+
+    expect(screen.getByLabelText("Filter by source chat")).toBeVisible();
   });
 
   it("guides first-time users into a persistent Agent security test", () => {
