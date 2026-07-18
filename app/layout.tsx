@@ -13,6 +13,7 @@ import { AgentApprovalProvider } from "./contexts/AgentApprovalContext";
 import { PostHogProvider } from "./providers";
 import { DataStreamProvider } from "./components/DataStreamProvider";
 import { ChunkLoadRecovery } from "./components/ChunkLoadRecovery";
+import { resolveClientInitialAuth } from "@/lib/auth/initial-auth";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -101,8 +102,9 @@ async function getInitialAuth() {
   }
 
   // Never serialize the server-only access token into the client provider.
-  const { accessToken, ...initialAuth } = await withAuth();
-  return initialAuth;
+  // An ended refresh session is equivalent to being signed out; hydrating that
+  // state keeps the root layout available so the user can sign in again.
+  return resolveClientInitialAuth(withAuth);
 }
 
 export default async function RootLayout({
