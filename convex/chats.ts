@@ -907,10 +907,9 @@ export const getUserChats = query({
       // because the cursor advances past all fetched items)
       const result = await ctx.db
         .query("chats")
-        .withIndex("by_user_and_updated", (q) =>
-          q.eq("user_id", identity.subject),
+        .withIndex("by_user_project_and_updated", (q) =>
+          q.eq("user_id", identity.subject).eq("project_id", undefined),
         )
-        .filter((q) => q.eq(q.field("project_id"), undefined))
         .order("desc")
         .paginate(args.paginationOpts);
 
