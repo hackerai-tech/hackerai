@@ -62,6 +62,11 @@ jest.mock("@/lib/chat/compaction/prune-tool-outputs", () => ({
     messages,
     prunedCount: 0,
   }),
+  limitModelImageToolResults: (messages: ModelMessage[]) => ({
+    messages,
+    totalImageCount: 0,
+    elidedImageCount: 0,
+  }),
 }));
 jest.mock("@/lib/chat/multimodal-tool-result-recovery", () => ({
   isProviderMultimodalToolResultRejectionError: () => false,
@@ -171,10 +176,10 @@ describe("resolveAgentModelForImageToolResults", () => {
     ).toBe("model-kimi-k2.7-code");
   });
 
-  it("switches Agent Pro GLM steps to Grok 4.5 after image tool results", () => {
+  it("keeps the HackerAI Pro GLM fallback active after image tool results", () => {
     expect(
       resolveAgentModelForImageToolResults("model-glm-5.2", "agent", true),
-    ).toBe("model-grok-4.5");
+    ).toBe("model-glm-5.2");
   });
 
   it("switches free DeepSeek Agent steps to MiniMax after image tool results", () => {
@@ -194,6 +199,9 @@ describe("resolveAgentModelForImageToolResults", () => {
     expect(
       resolveAgentModelForImageToolResults("model-minimax-m3", "agent", true),
     ).toBe("model-minimax-m3");
+    expect(
+      resolveAgentModelForImageToolResults("model-grok-4.5-pro", "agent", true),
+    ).toBe("model-grok-4.5-pro");
   });
 });
 

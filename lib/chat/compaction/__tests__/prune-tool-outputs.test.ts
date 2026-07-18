@@ -7,6 +7,9 @@ import {
   repairAnthropicModelMessages,
   compactMessageForStorage,
   estimateSerializedSizeBytes,
+  ELIDED_IMAGE_TOOL_RESULT_MESSAGE,
+  limitModelImageToolResults,
+  MODEL_IMAGE_TOOL_RESULT_LIMIT,
 } from "../prune-tool-outputs";
 
 // Helper to create a UIMessage with tool parts
@@ -1049,6 +1052,100 @@ function makeToolModelMsg(
     })),
   };
 }
+
+describe("limitModelImageToolResults", () => {
+  const makeImageOutput = (label: string) => ({
+    type: "content",
+    value: [
+      { type: "text", text: `Viewed ${label}` },
+      {
+        type: "image-data",
+        data: Buffer.from(label).toString("base64"),
+        mediaType: "image/png",
+      },
+    ],
+  });
+
+  it("keeps the newest image tool results and elides older image blocks", () => {
+    const messages = Array.from(
+      { length: MODEL_IMAGE_TOOL_RESULT_LIMIT + 1 },
+      (_, index) =>
+        makeToolModelMsg([
+          {
+            toolCallId: `view-${index}`,
+            toolName: "file",
+            output: makeImageOutput(`image-${index}`),
+          },
+        ]),
+    );
+
+    const result = limitModelImageToolResults(messages);
+
+    expect(result.totalImageCount).toBe(MODEL_IMAGE_TOOL_RESULT_LIMIT + 1);
+    expect(result.elidedImageCount).toBe(1);
+    expect((messages[0] as any).content[0].output.value[1].type).toBe(
+      "image-data",
+    );
+    expect((result.messages[0] as any).content[0].output).toEqual({
+      type: "content",
+      value: [
+        { type: "text", text: "Viewed image-0" },
+        { type: "text", text: ELIDED_IMAGE_TOOL_RESULT_MESSAGE },
+      ],
+    });
+    expect(
+      (result.messages.at(-1) as any).content[0].output.value[1].type,
+    ).toBe("image-data");
+  });
+
+  it("preserves sibling text and image ordering within one tool result", () => {
+    const messages = [
+      makeToolModelMsg([
+        {
+          toolCallId: "multi-view",
+          toolName: "file",
+          output: {
+            type: "content",
+            value: [
+              { type: "text", text: "before" },
+              { type: "image-data", data: "old", mediaType: "image/png" },
+              { type: "text", text: "between" },
+              { type: "image-data", data: "new", mediaType: "image/png" },
+            ],
+          },
+        },
+      ]),
+    ];
+
+    const result = limitModelImageToolResults(messages, 1);
+    const value = (result.messages[0] as any).content[0].output.value;
+
+    expect(value).toEqual([
+      { type: "text", text: "before" },
+      { type: "text", text: ELIDED_IMAGE_TOOL_RESULT_MESSAGE },
+      { type: "text", text: "between" },
+      { type: "image-data", data: "new", mediaType: "image/png" },
+    ]);
+  });
+
+  it("returns the original messages when the image count is within the limit", () => {
+    const messages = [
+      makeToolModelMsg([
+        {
+          toolCallId: "view-1",
+          toolName: "file",
+          output: makeImageOutput("image-1"),
+        },
+      ]),
+    ];
+
+    const result = limitModelImageToolResults(messages);
+
+    expect(result.messages).toBe(messages);
+    expect(result.totalImageCount).toBe(1);
+    expect(result.elidedImageCount).toBe(0);
+  });
+});
 
 describe("pruneModelMessages", () => {
   it("returns messages unchanged when within budget", () => {

@@ -54,7 +54,7 @@ interface Subprocessor {
 const subprocessors: Subprocessor[] = [
   {
     name: "OpenRouter",
-    purpose: "Routes chat requests to third-party AI model providers",
+    purpose: "Routes task requests to third-party AI model providers",
     dataCategories: "Prompts, conversation context, file content, tool output",
   },
   {
@@ -80,7 +80,7 @@ const subprocessors: Subprocessor[] = [
   {
     name: "Convex",
     purpose: "Primary application database",
-    dataCategories: "Account data, chats, messages, files, settings",
+    dataCategories: "Account data, tasks, messages, files, settings",
   },
   {
     name: "Amazon Web Services (S3)",
@@ -213,7 +213,7 @@ export default function TrustPage() {
             <p>Depending on how you use HackerAI, the service processes:</p>
             <CheckList
               items={[
-                "Prompts and chat messages you send to the agent",
+                "Prompts and task messages you send to the agent",
                 "Files you upload (PDF, CSV, JSON, TXT, Markdown, DOC/DOCX, and PNG/JPEG/WebP/GIF images), including text extracted from them",
                 "URLs and search queries used when the agent browses or searches the web",
                 "Terminal commands and their output from agent sandbox sessions",
@@ -227,7 +227,7 @@ export default function TrustPage() {
 
           <Section icon={Bot} title="AI model providers">
             <p>
-              Chat requests are routed through OpenRouter to the provider behind
+              Task requests are routed through OpenRouter to the provider behind
               the model you select, such as Anthropic, Google, DeepSeek,
               Moonshot AI, or xAI. Your prompt, relevant conversation context,
               and tool results are sent to that provider to generate a response.
@@ -291,9 +291,9 @@ export default function TrustPage() {
             <Section icon={Trash2} title="Data deletion">
               <CheckList
                 items={[
-                  "Delete individual chats, or all chats at once",
+                  "Delete individual tasks, or all tasks at once",
                   "Delete your terminal sandboxes",
-                  "Revoke links to chats you have shared",
+                  "Revoke links to tasks you have shared",
                   "Delete your account, which removes database records, cancels your Stripe subscription, and deletes your authentication record",
                   "Deleting and recreating an account does not reset usage limits or referral eligibility",
                 ]}

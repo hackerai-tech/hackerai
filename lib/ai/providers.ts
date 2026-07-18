@@ -191,6 +191,9 @@ const buildProviderMap = (or: OpenRouterInstance) =>
     "agent-model-free": or(DEEPSEEK_V4_FLASH_SLUG),
     "model-sonnet-4.6": or("anthropic/claude-sonnet-4-6"),
     "model-grok-4.5": or(GROK_4_5_SLUG),
+    // Dedicated HackerAI Pro alias so its GLM fallback can evolve without
+    // changing Standard PDF or legacy Grok fallback behavior.
+    "model-grok-4.5-pro": or(GROK_4_5_SLUG),
     // Compatibility alias for stale internal references persisted before the
     // paid Ask PDF route settled on Grok 4.5.
     "model-gemini-3-flash": or(GROK_4_5_SLUG),
@@ -221,6 +224,7 @@ export const modelCutoffDates: Record<ModelName, string> &
   "agent-model-free": "May 2025",
   "model-sonnet-4.6": "May 2025",
   "model-grok-4.5": "July 2026",
+  "model-grok-4.5-pro": "July 2026",
   "model-gemini-3-flash": "July 2026",
   "model-deepseek-v4-flash": "May 2025",
   "model-deepseek-v4-pro": "May 2025",
@@ -243,6 +247,7 @@ export const modelDisplayNames: Record<ModelName, string> &
   "agent-model-free": "Auto, an intelligent model router built by HackerAI",
   "model-sonnet-4.6": "Anthropic Claude Sonnet 4.6",
   "model-grok-4.5": "xAI Grok 4.5",
+  "model-grok-4.5-pro": "xAI Grok 4.5",
   "model-gemini-3-flash": "xAI Grok 4.5",
   "model-deepseek-v4-flash": "DeepSeek V4 Flash",
   "model-deepseek-v4-pro": "DeepSeek V4 Pro",
@@ -323,7 +328,7 @@ export function supportsMultimodalToolResults(modelName?: string): boolean {
 /**
  * Map a HackerAI tier id to the underlying provider key for a given mode.
  * Returns `null` for `"auto"` (the caller routes to the auto-router model
- * key instead). Standard maps to DeepSeek, Pro to GLM, and Max to Opus in
+ * key instead). Standard maps to DeepSeek, Pro to Grok, and Max to Opus in
  * both modes; media-aware promotion happens in `selectModel`.
  */
 export function resolveTierToProviderKey(
@@ -335,7 +340,7 @@ export function resolveTierToProviderKey(
     case "hackerai-standard":
       return "model-deepseek-v4-pro";
     case "hackerai-pro":
-      return "model-glm-5.2";
+      return "model-grok-4.5-pro";
     case "hackerai-max":
       return "model-opus-4.6";
   }

@@ -18,6 +18,7 @@ type LogFields = Record<string, unknown> & {
 
 type EventFields = Record<string, unknown> & {
   userId?: string;
+  eventUuid?: string;
   $set?: Record<string, unknown>;
 };
 
@@ -175,10 +176,11 @@ export const phLogger = {
     const client = getClient();
     if (!client) return;
     try {
-      const { userId, $set, ...rest } = fields;
+      const { userId, eventUuid, $set, ...rest } = fields;
       client.capture({
         distinctId: distinctIdFor(userId),
         event: name,
+        ...(eventUuid && { uuid: eventUuid }),
         properties: { ...rest, ...($set && { $set }) },
       });
     } catch {

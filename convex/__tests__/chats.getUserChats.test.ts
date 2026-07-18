@@ -138,4 +138,73 @@ describe("getUserChats", () => {
       }),
     ).rejects.toThrow("unexpected");
   });
+
+  it("returns pinned project tasks in the global pinned results", async () => {
+    const pinnedProjectTask = {
+      _id: "pinned-doc",
+      id: "pinned-task",
+      title: "Pinned project task",
+      user_id: "user-123",
+      project_id: "project-1",
+      pinned_at: 10,
+      update_time: 10,
+    };
+    const regularTask = {
+      _id: "regular-doc",
+      id: "regular-task",
+      title: "Regular task",
+      user_id: "user-123",
+      update_time: 9,
+    };
+
+    const pinnedTake = jest.fn<any>().mockResolvedValue([pinnedProjectTask]);
+    const pinnedOrder = jest.fn<any>().mockReturnValue({ take: pinnedTake });
+    const gt = jest.fn<any>().mockReturnThis();
+    const pinnedEq = jest.fn<any>().mockReturnValue({ gt });
+    const pinnedWithIndex = jest.fn<any>((indexName, applyIndex) => {
+      expect(indexName).toBe("by_user_and_pinned");
+      applyIndex({ eq: pinnedEq });
+      return { order: pinnedOrder };
+    });
+
+    const page = {
+      page: [regularTask],
+      isDone: true,
+      continueCursor: "",
+    };
+    const paginate = jest.fn<any>().mockResolvedValue(page);
+    const regularOrder = jest.fn<any>().mockReturnValue({ paginate });
+    const regularEq = jest.fn<any>().mockReturnThis();
+    const regularWithIndex = jest.fn<any>((indexName, applyIndex) => {
+      expect(indexName).toBe("by_user_project_and_updated");
+      applyIndex({ eq: regularEq });
+      return { order: regularOrder };
+    });
+    const ctx = {
+      auth: {
+        getUserIdentity: jest
+          .fn<any>()
+          .mockResolvedValue({ subject: "user-123" }),
+      },
+      db: {
+        query: jest
+          .fn<any>()
+          .mockReturnValueOnce({ withIndex: pinnedWithIndex })
+          .mockReturnValueOnce({ withIndex: regularWithIndex }),
+      },
+    };
+
+    await expect(
+      getUserChats.handler(ctx as any, {
+        paginationOpts: { numItems: 20, cursor: null },
+      }),
+    ).resolves.toEqual({
+      ...page,
+      page: [pinnedProjectTask, regularTask],
+    });
+    expect(pinnedEq).toHaveBeenCalledWith("user_id", "user-123");
+    expect(gt).toHaveBeenCalledWith("pinned_at", 0);
+    expect(regularEq).toHaveBeenCalledWith("user_id", "user-123");
+    expect(regularEq).toHaveBeenCalledWith("project_id", undefined);
+  });
 });

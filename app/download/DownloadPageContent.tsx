@@ -28,7 +28,7 @@ function AuthenticatedHeader() {
         >
           <Link href="/">
             <ArrowLeft className="h-4 w-4 mr-1.5" />
-            Back to Chat
+            Back to Task
           </Link>
         </Button>
       </div>

@@ -9,6 +9,7 @@ export const DELETED_USER_ID = "__deleted_user__";
 
 export const USER_DELETION_TABLE_POLICY = {
   delete: [
+    "projects",
     "chats",
     "chat_summaries",
     "messages",
@@ -46,8 +47,15 @@ export const USER_DELETION_TABLE_POLICY = {
 type AnyDoc = { _id: Id<any>; [key: string]: any };
 type CleanupMode = "execute" | "dryRun";
 
-const MAX_CLEANUP_DOCS_PER_INDEX = 500;
+// Convex counts full document payloads toward a mutation's 16 MiB read limit.
+// Share one document budget across the entire cleanup pass; the account
+// deletion route already repeats the mutation while `hasMore` is true.
+const MAX_CLEANUP_DOCS_PER_MUTATION = 100;
 const MAX_RESIDUE_USER_IDS_PER_MUTATION = 1;
+
+type ReadBudget = {
+  remaining: number;
+};
 
 type CleanupStats = {
   deleted: Record<string, number>;
@@ -129,11 +137,14 @@ function uniqueDocs<T extends AnyDoc>(docs: Array<T | null | undefined>): T[] {
 
 async function collectByIndexBatch<T extends AnyDoc>(
   ctx: MutationCtx,
+  budget: ReadBudget,
   table: string,
   indexName: string,
   build: (q: any) => any,
-  limit = MAX_CLEANUP_DOCS_PER_INDEX,
+  requestedLimit = MAX_CLEANUP_DOCS_PER_MUTATION,
 ): Promise<IndexedBatch<T>> {
+  // Reserve one read for the lookahead row used to determine `hasMore`.
+  const limit = Math.min(requestedLimit, budget.remaining - 1);
   if (limit <= 0) {
     return { docs: [], hasMore: true };
   }
@@ -141,6 +152,7 @@ async function collectByIndexBatch<T extends AnyDoc>(
   const rows = await (ctx.db.query(table as any) as any)
     .withIndex(indexName, build)
     .take(limit + 1);
+  budget.remaining -= rows.length;
 
   const hasMore = rows.length > limit;
   const docs = hasMore ? rows.slice(0, limit) : rows;
@@ -197,15 +209,15 @@ async function anonymizeDocs(
 
 async function collectChatSummariesForChats(
   ctx: MutationCtx,
+  budget: ReadBudget,
   chats: Doc<"chats">[],
   stats: CleanupStats,
 ) {
   const summaries: Doc<"chat_summaries">[] = [];
   const incompleteChatIds = new Set<string>();
-  let remainingSummaryReads = MAX_CLEANUP_DOCS_PER_INDEX;
 
   for (const chat of chats) {
-    if (remainingSummaryReads <= 0) {
+    if (budget.remaining <= 1) {
       stats.hasMore = true;
       incompleteChatIds.add(chat.id);
       continue;
@@ -213,13 +225,12 @@ async function collectChatSummariesForChats(
 
     const batch = await collectByIndexBatch<Doc<"chat_summaries">>(
       ctx,
+      budget,
       "chat_summaries",
       "by_chat_id",
       (q) => q.eq("chat_id", chat.id),
-      remainingSummaryReads,
     );
     summaries.push(...batch.docs);
-    remainingSummaryReads -= batch.docs.length;
 
     if (batch.hasMore) {
       stats.hasMore = true;
@@ -231,14 +242,18 @@ async function collectChatSummariesForChats(
       continue;
     }
 
-    if (remainingSummaryReads <= 0) {
+    if (summaries.some((summary) => summary._id === chat.latest_summary_id)) {
+      continue;
+    }
+
+    if (budget.remaining <= 0) {
       stats.hasMore = true;
       incompleteChatIds.add(chat.id);
       continue;
     }
 
     const latestSummary = await ctx.db.get(chat.latest_summary_id);
-    remainingSummaryReads -= 1;
+    budget.remaining -= 1;
     if (latestSummary) {
       summaries.push(latestSummary);
     }
@@ -290,83 +305,117 @@ async function cleanupUserDataForUser(
 ) {
   const stats = createStats();
   const now = Date.now();
+  const budget: ReadBudget = {
+    remaining: MAX_CLEANUP_DOCS_PER_MUTATION,
+  };
 
-  const [
-    chatsBatch,
-    filesBatch,
-    notesBatch,
-    customizationBatch,
-    messagesBatch,
-    tempStreamsBatch,
-    localSandboxTokensBatch,
-    localSandboxConnectionsBatch,
-    extraUsageBatch,
-    teamMemberUsageBatch,
-    cancellationReasonDetailsBatch,
-  ] = await Promise.all([
-    collectByIndexBatch<Doc<"chats">>(
-      ctx,
-      "chats",
-      "by_user_and_updated",
-      (q) => q.eq("user_id", userId),
-    ),
-    collectByIndexBatch<Doc<"files">>(ctx, "files", "by_user_id", (q) =>
-      q.eq("user_id", userId),
-    ),
-    collectByIndexBatch<Doc<"notes">>(
-      ctx,
-      "notes",
-      "by_user_and_updated",
-      (q) => q.eq("user_id", userId),
-    ),
-    collectByIndexBatch<Doc<"user_customization">>(
-      ctx,
-      "user_customization",
-      "by_user_id",
-      (q) => q.eq("user_id", userId),
-    ),
-    collectByIndexBatch<Doc<"messages">>(ctx, "messages", "by_user_id", (q) =>
-      q.eq("user_id", userId),
-    ),
-    collectByIndexBatch<Doc<"temp_streams">>(
-      ctx,
-      "temp_streams",
-      "by_user_id",
-      (q) => q.eq("user_id", userId),
-    ),
-    collectByIndexBatch<Doc<"local_sandbox_tokens">>(
-      ctx,
-      "local_sandbox_tokens",
-      "by_user_id",
-      (q) => q.eq("user_id", userId),
-    ),
-    collectByIndexBatch<Doc<"local_sandbox_connections">>(
-      ctx,
-      "local_sandbox_connections",
-      "by_user_id",
-      (q) => q.eq("user_id", userId),
-    ),
-    collectByIndexBatch<Doc<"extra_usage">>(
-      ctx,
-      "extra_usage",
-      "by_user_id",
-      (q) => q.eq("user_id", userId),
-    ),
-    collectByIndexBatch<Doc<"team_member_usage">>(
-      ctx,
-      "team_member_usage",
-      "by_user_id",
-      (q) => q.eq("user_id", userId),
-    ),
-    collectByIndexBatch<Doc<"cancellation_reason_details">>(
-      ctx,
-      "cancellation_reason_details",
-      "by_user_id_and_created_at",
-      (q) => q.eq("user_id", userId),
-    ),
-  ]);
+  // A message may point to one feedback document that must be deleted first,
+  // so reserve enough of the shared budget for those direct lookups.
+  const messageLimit = Math.floor((budget.remaining - 1) / 2);
+  const messagesBatch = await collectByIndexBatch<Doc<"messages">>(
+    ctx,
+    budget,
+    "messages",
+    "by_user_id",
+    (q) => q.eq("user_id", userId),
+    messageLimit,
+  );
+  const messages = messagesBatch.docs;
+  const feedbackIds = uniqueDocs(messages)
+    .map((message) => message.feedback_id)
+    .filter((id): id is Id<"feedback"> => !!id);
+  const feedback: Array<Doc<"feedback"> | null> = [];
+  for (const feedbackId of feedbackIds) {
+    if (budget.remaining <= 0) {
+      stats.hasMore = true;
+      break;
+    }
+    feedback.push(await ctx.db.get(feedbackId));
+    budget.remaining -= 1;
+  }
+
+  // Chat cleanup can require both an indexed summary read and a legacy latest
+  // summary lookup for each chat, so leave room for both.
+  const chatLimit = Math.floor((budget.remaining - 1) / 3);
+  const chatsBatch = await collectByIndexBatch<Doc<"chats">>(
+    ctx,
+    budget,
+    "chats",
+    "by_user_and_updated",
+    (q) => q.eq("user_id", userId),
+    chatLimit,
+  );
+  const chats = chatsBatch.docs;
+  const { summaries: chatSummaries, incompleteChatIds } =
+    await collectChatSummariesForChats(ctx, budget, chats, stats);
+
+  const projectsBatch = await collectByIndexBatch<Doc<"projects">>(
+    ctx,
+    budget,
+    "projects",
+    "by_user_and_updated",
+    (q) => q.eq("user_id", userId),
+  );
+  const filesBatch = await collectByIndexBatch<Doc<"files">>(
+    ctx,
+    budget,
+    "files",
+    "by_user_id",
+    (q) => q.eq("user_id", userId),
+  );
+  const notesBatch = await collectByIndexBatch<Doc<"notes">>(
+    ctx,
+    budget,
+    "notes",
+    "by_user_and_updated",
+    (q) => q.eq("user_id", userId),
+  );
+  const customizationBatch = await collectByIndexBatch<
+    Doc<"user_customization">
+  >(ctx, budget, "user_customization", "by_user_id", (q) =>
+    q.eq("user_id", userId),
+  );
+  const tempStreamsBatch = await collectByIndexBatch<Doc<"temp_streams">>(
+    ctx,
+    budget,
+    "temp_streams",
+    "by_user_id",
+    (q) => q.eq("user_id", userId),
+  );
+  const localSandboxTokensBatch = await collectByIndexBatch<
+    Doc<"local_sandbox_tokens">
+  >(ctx, budget, "local_sandbox_tokens", "by_user_id", (q) =>
+    q.eq("user_id", userId),
+  );
+  const localSandboxConnectionsBatch = await collectByIndexBatch<
+    Doc<"local_sandbox_connections">
+  >(ctx, budget, "local_sandbox_connections", "by_user_id", (q) =>
+    q.eq("user_id", userId),
+  );
+  const extraUsageBatch = await collectByIndexBatch<Doc<"extra_usage">>(
+    ctx,
+    budget,
+    "extra_usage",
+    "by_user_id",
+    (q) => q.eq("user_id", userId),
+  );
+  const teamMemberUsageBatch = await collectByIndexBatch<
+    Doc<"team_member_usage">
+  >(ctx, budget, "team_member_usage", "by_user_id", (q) =>
+    q.eq("user_id", userId),
+  );
+  const cancellationReasonDetailsBatch = await collectByIndexBatch<
+    Doc<"cancellation_reason_details">
+  >(
+    ctx,
+    budget,
+    "cancellation_reason_details",
+    "by_user_id_and_created_at",
+    (q) => q.eq("user_id", userId),
+  );
 
   const deletionBatches = [
+    projectsBatch,
     chatsBatch,
     filesBatch,
     notesBatch,
@@ -381,11 +430,10 @@ async function cleanupUserDataForUser(
   ];
   stats.hasMore ||= deletionBatches.some((batch) => batch.hasMore);
 
-  const chats = chatsBatch.docs;
+  const projects = projectsBatch.docs;
   const files = filesBatch.docs;
   const notes = notesBatch.docs;
   const customization = customizationBatch.docs;
-  const messages = messagesBatch.docs;
   const tempStreams = tempStreamsBatch.docs;
   const localSandboxTokens = localSandboxTokensBatch.docs;
   const localSandboxConnections = localSandboxConnectionsBatch.docs;
@@ -393,12 +441,6 @@ async function cleanupUserDataForUser(
   const teamMemberUsage = teamMemberUsageBatch.docs;
   const cancellationReasonDetails = cancellationReasonDetailsBatch.docs;
 
-  const feedbackIds = uniqueDocs(messages)
-    .map((message) => message.feedback_id)
-    .filter((id): id is Id<"feedback"> => !!id);
-  const feedback = await Promise.all(feedbackIds.map((id) => ctx.db.get(id)));
-  const { summaries: chatSummaries, incompleteChatIds } =
-    await collectChatSummariesForChats(ctx, chats, stats);
   const chatsReadyToDelete = messagesBatch.hasMore
     ? []
     : chats.filter((chat) => !incompleteChatIds.has(chat.id));
@@ -410,6 +452,7 @@ async function cleanupUserDataForUser(
   await deleteDocs(ctx, stats, "messages", messages, mode);
   await deleteDocs(ctx, stats, "chat_summaries", chatSummaries, mode);
   await deleteDocs(ctx, stats, "chats", chatsReadyToDelete, mode);
+  await deleteDocs(ctx, stats, "projects", projects, mode);
   await deleteFiles(ctx, stats, files, mode);
   await deleteDocs(ctx, stats, "notes", notes, mode);
   await deleteDocs(ctx, stats, "user_customization", customization, mode);
@@ -438,118 +481,94 @@ async function cleanupUserDataForUser(
     mode,
   );
 
-  const [
-    cancellationReasonsBatch,
-    usageLogsBatch,
-    referralCodesBatch,
-    referredAttributionsBatch,
-    referrerAttributionsBatch,
-    referralRewardsByUserBatch,
-    referralRewardsByReferrerBatch,
-    referralRewardsByReferredBatch,
-    userSuspensionsBatch,
-    revenueByUserBatch,
-    revenueByEntityBatch,
-    extraUsagePurchasesBatch,
-    paidStartsByUserBatch,
-    paidStartsByEntityBatch,
-    unitEconomicsByUserBatch,
-    unitEconomicsByEntityBatch,
-  ] = await Promise.all([
-    collectByIndexBatch<Doc<"cancellation_reasons">>(
-      ctx,
-      "cancellation_reasons",
-      "by_user_started",
-      (q) => q.eq("user_id", userId),
-    ),
-    collectByIndexBatch<Doc<"usage_logs">>(ctx, "usage_logs", "by_user", (q) =>
-      q.eq("user_id", userId),
-    ),
-    collectByIndexBatch<Doc<"referral_codes">>(
-      ctx,
-      "referral_codes",
-      "by_user_id",
-      (q) => q.eq("user_id", userId),
-    ),
-    collectByIndexBatch<Doc<"referral_attributions">>(
-      ctx,
-      "referral_attributions",
-      "by_referred_user_id",
-      (q) => q.eq("referred_user_id", userId),
-    ),
-    collectByIndexBatch<Doc<"referral_attributions">>(
-      ctx,
-      "referral_attributions",
-      "by_referrer_user_id",
-      (q) => q.eq("referrer_user_id", userId),
-    ),
-    collectByIndexBatch<Doc<"referral_rewards">>(
-      ctx,
-      "referral_rewards",
-      "by_user_id",
-      (q) => q.eq("user_id", userId),
-    ),
-    collectByIndexBatch<Doc<"referral_rewards">>(
-      ctx,
-      "referral_rewards",
-      "by_referrer_user_id",
-      (q) => q.eq("referrer_user_id", userId),
-    ),
-    collectByIndexBatch<Doc<"referral_rewards">>(
-      ctx,
-      "referral_rewards",
-      "by_referred_user_id",
-      (q) => q.eq("referred_user_id", userId),
-    ),
-    collectByIndexBatch<Doc<"user_suspensions">>(
-      ctx,
-      "user_suspensions",
-      "by_user_id",
-      (q) => q.eq("user_id", userId),
-    ),
-    collectByIndexBatch<Doc<"revenue_events">>(
-      ctx,
-      "revenue_events",
-      "by_user_occurred",
-      (q) => q.eq("user_id", userId),
-    ),
-    collectByIndexBatch<Doc<"revenue_events">>(
-      ctx,
-      "revenue_events",
-      "by_entity_occurred",
-      (q) => q.eq("entity_type", "user").eq("entity_id", userId),
-    ),
-    collectByIndexBatch<Doc<"extra_usage_purchases">>(
-      ctx,
-      "extra_usage_purchases",
-      "by_user_created_at",
-      (q) => q.eq("user_id", userId),
-    ),
-    collectByIndexBatch<Doc<"paid_start_events">>(
-      ctx,
-      "paid_start_events",
-      "by_user_day",
-      (q) => q.eq("user_id", userId),
-    ),
-    collectByIndexBatch<Doc<"paid_start_events">>(
-      ctx,
-      "paid_start_events",
-      "by_entity_day",
-      (q) => q.eq("entity_type", "user").eq("entity_id", userId),
-    ),
-    collectByIndexBatch<Doc<"unit_economics_daily">>(
-      ctx,
-      "unit_economics_daily",
-      "by_user_day",
-      (q) => q.eq("user_id", userId),
-    ),
-    collectByIndexBatch<Doc<"unit_economics_daily">>(
-      ctx,
-      "unit_economics_daily",
-      "by_entity_day",
-      (q) => q.eq("entity_type", "user").eq("entity_id", userId),
-    ),
-  ]);
+  const cancellationReasonsBatch = await collectByIndexBatch<
+    Doc<"cancellation_reasons">
+  >(ctx, budget, "cancellation_reasons", "by_user_started", (q) =>
+    q.eq("user_id", userId),
+  );
+  const usageLogsBatch = await collectByIndexBatch<Doc<"usage_logs">>(
+    ctx,
+    budget,
+    "usage_logs",
+    "by_user",
+    (q) => q.eq("user_id", userId),
+  );
+  const referralCodesBatch = await collectByIndexBatch<Doc<"referral_codes">>(
+    ctx,
+    budget,
+    "referral_codes",
+    "by_user_id",
+    (q) => q.eq("user_id", userId),
+  );
+  const referredAttributionsBatch = await collectByIndexBatch<
+    Doc<"referral_attributions">
+  >(ctx, budget, "referral_attributions", "by_referred_user_id", (q) =>
+    q.eq("referred_user_id", userId),
+  );
+  const referrerAttributionsBatch = await collectByIndexBatch<
+    Doc<"referral_attributions">
+  >(ctx, budget, "referral_attributions", "by_referrer_user_id", (q) =>
+    q.eq("referrer_user_id", userId),
+  );
+  const referralRewardsByUserBatch = await collectByIndexBatch<
+    Doc<"referral_rewards">
+  >(ctx, budget, "referral_rewards", "by_user_id", (q) =>
+    q.eq("user_id", userId),
+  );
+  const referralRewardsByReferrerBatch = await collectByIndexBatch<
+    Doc<"referral_rewards">
+  >(ctx, budget, "referral_rewards", "by_referrer_user_id", (q) =>
+    q.eq("referrer_user_id", userId),
+  );
+  const referralRewardsByReferredBatch = await collectByIndexBatch<
+    Doc<"referral_rewards">
+  >(ctx, budget, "referral_rewards", "by_referred_user_id", (q) =>
+    q.eq("referred_user_id", userId),
+  );
+  const userSuspensionsBatch = await collectByIndexBatch<
+    Doc<"user_suspensions">
+  >(ctx, budget, "user_suspensions", "by_user_id", (q) =>
+    q.eq("user_id", userId),
+  );
+  const revenueByUserBatch = await collectByIndexBatch<Doc<"revenue_events">>(
+    ctx,
+    budget,
+    "revenue_events",
+    "by_user_occurred",
+    (q) => q.eq("user_id", userId),
+  );
+  const revenueByEntityBatch = await collectByIndexBatch<Doc<"revenue_events">>(
+    ctx,
+    budget,
+    "revenue_events",
+    "by_entity_occurred",
+    (q) => q.eq("entity_type", "user").eq("entity_id", userId),
+  );
+  const extraUsagePurchasesBatch = await collectByIndexBatch<
+    Doc<"extra_usage_purchases">
+  >(ctx, budget, "extra_usage_purchases", "by_user_created_at", (q) =>
+    q.eq("user_id", userId),
+  );
+  const paidStartsByUserBatch = await collectByIndexBatch<
+    Doc<"paid_start_events">
+  >(ctx, budget, "paid_start_events", "by_user_day", (q) =>
+    q.eq("user_id", userId),
+  );
+  const paidStartsByEntityBatch = await collectByIndexBatch<
+    Doc<"paid_start_events">
+  >(ctx, budget, "paid_start_events", "by_entity_day", (q) =>
+    q.eq("entity_type", "user").eq("entity_id", userId),
+  );
+  const unitEconomicsByUserBatch = await collectByIndexBatch<
+    Doc<"unit_economics_daily">
+  >(ctx, budget, "unit_economics_daily", "by_user_day", (q) =>
+    q.eq("user_id", userId),
+  );
+  const unitEconomicsByEntityBatch = await collectByIndexBatch<
+    Doc<"unit_economics_daily">
+  >(ctx, budget, "unit_economics_daily", "by_entity_day", (q) =>
+    q.eq("entity_type", "user").eq("entity_id", userId),
+  );
 
   const anonymizeBatches = [
     cancellationReasonsBatch,
@@ -797,6 +816,12 @@ export const cleanupDeletedUserResidue = mutation({
     if (userIds.length === 0 && !args.deleteOrphanChatSummaries) {
       throw new Error(
         "Pass at least one userId or enable deleteOrphanChatSummaries",
+      );
+    }
+
+    if (userIds.length > 0 && args.deleteOrphanChatSummaries) {
+      throw new Error(
+        "Run user data cleanup and orphan chat summary cleanup in separate mutations to keep Convex transactions bounded",
       );
     }
 

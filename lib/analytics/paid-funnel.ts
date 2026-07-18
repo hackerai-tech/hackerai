@@ -30,6 +30,10 @@ export function cancellationCompletionInsertId(
   return `${PAID_FUNNEL_EVENTS.cancellationCompleted}:${stripeSubscriptionId}`;
 }
 
+export function checkoutStartedInsertId(checkoutAttemptId: string): string {
+  return `${PAID_FUNNEL_EVENTS.checkoutStarted}:${checkoutAttemptId}`;
+}
+
 export type PaidFunnelPlan =
   | "pro-monthly-plan"
   | "pro-plus-monthly-plan"

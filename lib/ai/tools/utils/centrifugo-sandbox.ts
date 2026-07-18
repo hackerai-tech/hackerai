@@ -67,6 +67,9 @@ const isTransientCommandTimeoutError = (error: unknown): boolean =>
 const delay = (ms: number): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, ms));
 
+export const serializePromptText = (value: string): string =>
+  JSON.stringify(value).replaceAll("<", "\\u003c").replaceAll(">", "\\u003e");
+
 export function parseSandboxMessage(
   data: unknown,
 ): CommandResponseMessage | null {
@@ -212,6 +215,7 @@ export class CentrifugoSandbox extends EventEmitter {
     private userId: string,
     private connectionInfo: ConnectionInfo,
     private config: CentrifugoConfig,
+    private workingDirectory?: string,
   ) {
     super();
   }
@@ -222,6 +226,10 @@ export class CentrifugoSandbox extends EventEmitter {
 
   getConnectionName(): string {
     return this.connectionInfo.name;
+  }
+
+  getWorkingDirectory(): string | undefined {
+    return this.workingDirectory;
   }
 
   supportsPty(): boolean {
@@ -269,12 +277,15 @@ export class CentrifugoSandbox extends EventEmitter {
         platform === "win32"
           ? "where agent-browser && agent-browser --version"
           : "command -v agent-browser && agent-browser --version";
+      const projectContext = this.workingDirectory
+        ? `\nActive project folder: ${serializePromptText(this.workingDirectory)}\nRun commands from this folder by default and resolve relative file paths from it.`
+        : "";
       return `You are executing commands on ${platformName} ${release} (${arch}) in DANGEROUS MODE.
 ${shellInfo}
 Commands run directly on the host OS "${hostname}" without Docker isolation. Be careful with:
 - File system operations (no sandbox protection)
 - Network operations (direct access to host network)
-- Process management (can affect host system)
+- Process management (can affect host system)${projectContext}
 
 Browser automation is host-dependent on this connection. Chromium and agent-browser are preinstalled only in the Cloud sandbox. If browser automation is needed, first check with \`${agentBrowserProbe}\`. Use agent-browser only if it is already installed, and do not install browser automation packages on the host unless the user explicitly asks.${capabilities?.pty === false ? "\n\nInteractive PTY sessions are not available on this connection. Use non-interactive terminal commands only." : ""}`;
     }
@@ -415,6 +426,7 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
           if (settled || !subscription) return;
           const request = {
             ...input,
+            path: this.resolveWorkingPath(input.path),
             requestId,
             targetConnectionId: this.connectionInfo.connectionId,
           } as FileRequestMessage;
@@ -775,7 +787,7 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
               commandId,
               command,
               env: opts?.envVars,
-              cwd: opts?.cwd,
+              cwd: opts?.cwd ?? this.workingDirectory,
               timeout,
               background: opts?.background,
               displayName: opts?.displayName,
@@ -862,6 +874,20 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
   // Escape paths for shell using single quotes (prevents $(), backticks, etc.)
   private static escapePath(path: string): string {
     return `'${path.replace(/'/g, "'\\''")}'`;
+  }
+
+  private resolveWorkingPath(path: string): string {
+    if (!this.workingDirectory) return path;
+    const isAbsolute =
+      path.startsWith("/") ||
+      (this.isWindows() && path.startsWith("\\")) ||
+      /^[A-Za-z]:[\\/]/.test(path);
+    if (isAbsolute) return path;
+
+    const separator = this.workingDirectory.includes("\\") ? "\\" : "/";
+    const base = this.workingDirectory.replace(/[\\/]+$/, "");
+    const relative = path.replace(/^[\\/]+/, "");
+    return `${base}${separator}${relative}`;
   }
 
   // Max chunk size ~500KB base64 to stay under size limits (bash path)
@@ -992,7 +1018,7 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
   }> {
     const shell = await this.detectShell();
     const useBash = shell === "bash";
-    const nativePath = this.toNativePath(rawPath);
+    const nativePath = this.toNativePath(this.resolveWorkingPath(rawPath));
     const path = useBash
       ? CentrifugoSandbox.toBashPath(nativePath)
       : nativePath;

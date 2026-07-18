@@ -32,6 +32,7 @@ const MODEL_PRICING_MAP: Record<string, { input: number; output: number }> = {
   "model-sonnet-4.6": { input: 3.0, output: 15.0 },
   // Grok 4.5 rates from OpenRouter: $2.00 in / $6.00 out per 1M tokens.
   "model-grok-4.5": { input: 2.0, output: 6.0 },
+  "model-grok-4.5-pro": { input: 2.0, output: 6.0 },
   "model-gemini-3-flash": { input: 2.0, output: 6.0 },
   // Rates from OpenRouter: $0.09 in / $0.18 out per 1M tokens.
   "agent-model-free": { input: 0.09, output: 0.18 },

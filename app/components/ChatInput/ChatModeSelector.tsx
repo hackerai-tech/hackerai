@@ -35,8 +35,8 @@ export function ChatModeSelector({ className }: ChatModeSelectorProps) {
       return;
     }
     if (temporaryChatsEnabled) {
-      toast.info("Agent mode requires chat history", {
-        description: "Turn off temporary chat to use Agent mode.",
+      toast.info("Agent mode requires task history", {
+        description: "Turn off temporary task to use Agent mode.",
       });
       return;
     }

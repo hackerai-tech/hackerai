@@ -228,7 +228,7 @@ describe("agent tool schemas — Head Start bundle boundary", () => {
       /get_terminal_files:\s*getTerminalFilesTool/,
     );
     expect(toolSchemasSrc).toMatch(
-      /file:\s*createFileToolSchema\(\{\s*supportsView:\s*supportsFileView/,
+      /file:\s*createFileToolSchema\(\{\s*supportsView:\s*true/,
     );
     expect(toolSchemasSrc).toMatch(/todo_write:\s*todoWriteTool/);
     expect(toolSchemasSrc).toMatch(/create_note:\s*createNoteTool/);
@@ -947,7 +947,7 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     );
     expect(taskSrc).toMatch(/handled tool failure dashboard update failed/);
     expect(taskSrc).toMatch(
-      /onToolFailure,\s*requestToolApproval,\s*runTimingTracker\.measureActiveTime,\s*\)/,
+      /onToolFailure,\s*requestToolApproval,\s*runTimingTracker\.measureActiveTime,\s*projectContext\.workingDirectory,\s*\)/,
     );
   });
 

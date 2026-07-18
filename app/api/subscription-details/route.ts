@@ -7,12 +7,14 @@ import { getSuspensionMessage } from "@/lib/suspensionMessage";
 import { phLogger } from "@/lib/posthog/server";
 import {
   PAID_FUNNEL_EVENTS,
+  checkoutStartedInsertId,
   createCheckoutAttemptId,
   normalizeCheckoutAttemptId,
   normalizePaidFunnelLabel,
   paidFunnelProperties,
   planLookupKeyToTier,
 } from "@/lib/analytics/paid-funnel";
+import { checkoutStartedEventUuid } from "@/lib/analytics/paid-funnel-server";
 
 const MAX_TEAM_SEATS = 999;
 
@@ -325,6 +327,7 @@ export const POST = async (req: NextRequest) => {
             PAID_FUNNEL_EVENTS.checkoutStarted,
             paidFunnelProperties({
               userId,
+              eventUuid: checkoutStartedEventUuid(checkoutAttemptId),
               org_id: organization.id,
               checkout_attempt_id: checkoutAttemptId,
               checkout_type: "subscription_change",
@@ -344,7 +347,7 @@ export const POST = async (req: NextRequest) => {
               stripe_subscription_id: subscription.id,
               stripe_price_id: targetPrice.id,
               $session_id: posthogSessionId ?? undefined,
-              $insert_id: `${PAID_FUNNEL_EVENTS.checkoutStarted}:${checkoutAttemptId}`,
+              $insert_id: checkoutStartedInsertId(checkoutAttemptId),
               $set: {
                 last_checkout_started_at: new Date().toISOString(),
               },

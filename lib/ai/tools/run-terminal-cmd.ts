@@ -258,6 +258,7 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                   command,
                   cols,
                   rows,
+                  cwd: sandbox.getWorkingDirectory(),
                 });
               }
               return createE2BPtyHandle(sandbox, {
@@ -942,6 +943,7 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                       handler,
                       sandbox: sandboxInstance,
                       terminalWriter: createTerminalWriter,
+                      scopeId: chatId,
                     });
                     if (saveMsg) {
                       outputWithSaveInfo = saveMsg + "\n" + outputWithSaveInfo;
@@ -996,6 +998,7 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                         handler,
                         sandbox: sandboxInstance,
                         terminalWriter: createTerminalWriter,
+                        scopeId: chatId,
                       });
                       if (saveMsg) {
                         outputWithSaveInfo =

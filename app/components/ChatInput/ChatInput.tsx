@@ -142,6 +142,8 @@ export const ChatInput = ({
     setUploadedFiles,
     isUploadingFiles,
     messageQueue,
+    updateQueuedMessage,
+    setEditingQueuedMessageId,
     removeQueuedMessage,
     queueBehavior,
     setQueueBehavior,
@@ -344,6 +346,8 @@ export const ChatInput = ({
             <QueuedMessagesPanel
               messages={messageQueue}
               onSendNow={onSendNow}
+              onEdit={updateQueuedMessage}
+              onEditingMessageChange={setEditingQueuedMessageId}
               onDelete={removeQueuedMessage}
               isStreaming={status === "streaming"}
               queueBehavior={queueBehavior}

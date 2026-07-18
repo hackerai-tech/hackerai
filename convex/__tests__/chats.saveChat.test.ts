@@ -70,9 +70,13 @@ const saveChatArgs = {
 const makeCtx = ({
   existingChat,
   insertResult = "chat-doc-1",
+  project,
+  authenticatedUserId = "user-1",
 }: {
   existingChat?: Record<string, unknown> | null;
   insertResult?: string;
+  project?: Record<string, unknown> | null;
+  authenticatedUserId?: string | null;
 }) => {
   const unique = jest.fn<any>().mockResolvedValue(existingChat ?? null);
   const first = jest.fn<any>().mockResolvedValue(existingChat ?? null);
@@ -89,10 +93,23 @@ const makeCtx = ({
   });
   const query = jest.fn(() => ({ withIndex }));
   const insert = jest.fn<any>().mockResolvedValue(insertResult);
+  const normalizeId = jest.fn<any>((_table: string, id: string) => id);
+  const get = jest.fn<any>().mockResolvedValue(project ?? null);
+  const patch = jest.fn<any>().mockResolvedValue(undefined);
 
   return {
     ctx: {
+      auth: {
+        getUserIdentity: jest
+          .fn<any>()
+          .mockResolvedValue(
+            authenticatedUserId ? { subject: authenticatedUserId } : null,
+          ),
+      },
       db: {
+        get,
+        normalizeId,
+        patch,
         query,
         insert,
       },
@@ -100,6 +117,9 @@ const makeCtx = ({
     first,
     indexEq,
     insert,
+    get,
+    normalizeId,
+    patch,
     query,
     unique,
     withIndex,
@@ -125,6 +145,44 @@ describe("saveChat", () => {
       user_id: "user-1",
       update_time: expect.any(Number),
     });
+  });
+
+  it("associates a new chat with an owned project", async () => {
+    const { saveChat } = await import("../chats");
+    const { ctx, get, insert, normalizeId, patch } = makeCtx({
+      project: { _id: "project-1", user_id: "user-1" },
+    });
+
+    await expect(
+      saveChat.handler(ctx, { ...saveChatArgs, projectId: "project-1" }),
+    ).resolves.toBe("chat-doc-1");
+
+    expect(normalizeId).toHaveBeenCalledWith("projects", "project-1");
+    expect(get).toHaveBeenCalledWith("project-1");
+    expect(insert).toHaveBeenCalledWith(
+      "chats",
+      expect.objectContaining({ project_id: "project-1" }),
+    );
+    expect(patch).toHaveBeenCalledWith(
+      "project-1",
+      expect.objectContaining({ updated_at: expect.any(Number) }),
+    );
+  });
+
+  it("rejects a project owned by another user", async () => {
+    const { saveChat } = await import("../chats");
+    const { ctx, insert, patch } = makeCtx({
+      project: { _id: "project-1", user_id: "other-user" },
+    });
+
+    await expect(
+      saveChat.handler(ctx, { ...saveChatArgs, projectId: "project-1" }),
+    ).rejects.toMatchObject({
+      name: "ConvexError",
+      data: expect.objectContaining({ code: "PROJECT_ACCESS_DENIED" }),
+    });
+    expect(insert).not.toHaveBeenCalled();
+    expect(patch).not.toHaveBeenCalled();
   });
 
   it("wraps unexpected insert failures with chat save metadata", async () => {
@@ -230,5 +288,83 @@ describe("saveChat", () => {
     } finally {
       errorSpy.mockRestore();
     }
+  });
+});
+
+describe("moveChatToProject", () => {
+  it("moves an owned chat to an owned project", async () => {
+    const { moveChatToProject } = await import("../chats");
+    const { ctx, get, patch } = makeCtx({
+      existingChat: {
+        _id: "chat-doc-1",
+        id: "chat-1",
+        user_id: "user-1",
+      },
+      project: { _id: "project-1", user_id: "user-1" },
+    });
+
+    await expect(
+      moveChatToProject.handler(ctx, {
+        chatId: "chat-1",
+        projectId: "project-1" as any,
+      }),
+    ).resolves.toBe(true);
+
+    expect(get).toHaveBeenCalledWith("project-1");
+    expect(patch).toHaveBeenCalledWith("chat-doc-1", {
+      project_id: "project-1",
+      update_time: expect.any(Number),
+    });
+    expect(patch).toHaveBeenCalledWith("project-1", {
+      updated_at: expect.any(Number),
+    });
+  });
+
+  it("rejects moving another user's chat", async () => {
+    const { moveChatToProject } = await import("../chats");
+    const { ctx, patch } = makeCtx({
+      existingChat: {
+        _id: "chat-doc-1",
+        id: "chat-1",
+        user_id: "other-user",
+      },
+      project: { _id: "project-1", user_id: "user-1" },
+    });
+
+    await expect(
+      moveChatToProject.handler(ctx, {
+        chatId: "chat-1",
+        projectId: "project-1" as any,
+      }),
+    ).rejects.toMatchObject({
+      name: "ConvexError",
+      data: expect.objectContaining({ code: "ACCESS_DENIED" }),
+    });
+    expect(patch).not.toHaveBeenCalled();
+  });
+
+  it("removes an owned chat from its project", async () => {
+    const { moveChatToProject } = await import("../chats");
+    const { ctx, get, patch } = makeCtx({
+      existingChat: {
+        _id: "chat-doc-1",
+        id: "chat-1",
+        user_id: "user-1",
+        project_id: "project-1",
+      },
+    });
+
+    await expect(
+      moveChatToProject.handler(ctx, {
+        chatId: "chat-1",
+        projectId: null,
+      }),
+    ).resolves.toBe(true);
+
+    expect(get).not.toHaveBeenCalled();
+    expect(patch).toHaveBeenCalledWith("chat-doc-1", {
+      project_id: undefined,
+      update_time: expect.any(Number),
+    });
   });
 });

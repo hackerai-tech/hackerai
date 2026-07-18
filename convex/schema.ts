@@ -50,6 +50,19 @@ const agentApprovalTargetGrantValidator = v.union(
 );
 
 export default defineSchema({
+  projects: defineTable({
+    user_id: v.string(),
+    name: v.string(),
+    folder_path: v.optional(v.string()),
+    pinned_at: v.optional(v.number()),
+    deletion_started_at: v.optional(v.number()),
+    created_at: v.number(),
+    updated_at: v.number(),
+  })
+    .index("by_user_and_created", ["user_id", "created_at"])
+    .index("by_user_and_updated", ["user_id", "updated_at"])
+    .index("by_user_and_pinned", ["user_id", "pinned_at"]),
+
   chats: defineTable({
     id: v.string(),
     title: v.string(),
@@ -94,6 +107,7 @@ export default defineSchema({
     pinned_at: v.optional(v.number()),
     sandbox_type: v.optional(v.string()),
     selected_model: v.optional(v.string()),
+    project_id: v.optional(v.id("projects")),
     // Legacy field retained on historical rows. The local-provider feature
     // was removed and nothing reads or writes this anymore — kept in the
     // schema so old rows still pass validation.
@@ -101,6 +115,11 @@ export default defineSchema({
   })
     .index("by_chat_id", ["id"])
     .index("by_user_and_updated", ["user_id", "update_time"])
+    .index("by_user_project_and_updated", [
+      "user_id",
+      "project_id",
+      "update_time",
+    ])
     .index("by_user_and_active_trigger_run", [
       "user_id",
       "active_trigger_run_id",

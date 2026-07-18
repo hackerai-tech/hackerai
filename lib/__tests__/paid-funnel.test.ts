@@ -1,5 +1,6 @@
 import {
   PAID_FUNNEL_EVENT_VERSION,
+  checkoutStartedInsertId,
   normalizePaidFunnelLabel,
   paidFunnelProperties,
 } from "@/lib/analytics/paid-funnel";
@@ -21,5 +22,11 @@ describe("paid funnel analytics helpers", () => {
     expect(normalizePaidFunnelLabel("pricing_dialog")).toBe("pricing_dialog");
     expect(normalizePaidFunnelLabel(" user@example.com ")).toBeUndefined();
     expect(normalizePaidFunnelLabel("free form label")).toBeUndefined();
+  });
+
+  it("keeps checkout insert IDs stable per logical attempt", () => {
+    expect(checkoutStartedInsertId("ca_attempt_123")).toBe(
+      "checkout_started:ca_attempt_123",
+    );
   });
 });

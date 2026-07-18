@@ -48,9 +48,8 @@ export const getMaxStepsForUser = (
  *   (text-only); image-only prompts promote to MiniMax M3, while PDF prompts
  *   stay on Grok 4.5 for native document support. Paid Agent Auto/Standard
  *   routes use DeepSeek V4 Pro for text-only prompts and MiniMax M3 when
- *   provider-visible media is attached. HackerAI Pro uses GLM 5.2 for
- *   text-only prompts, Grok 4.5 for Agent vision, and Kimi K2.7 Code for Ask
- *   media prompts.
+ *   provider-visible media is attached. HackerAI Pro uses Grok 4.5 for both
+ *   text and vision; its GLM 5.2 fallback is configured downstream.
  * @returns Model name to use
  */
 export function selectModel(
@@ -116,8 +115,7 @@ export function selectModel(
   }
 
   if (allowedSelectedModel === "hackerai-pro") {
-    if (!hasProviderMedia) return "model-glm-5.2";
-    return isAgent ? "model-grok-4.5" : "model-kimi-k2.7-code";
+    return "model-grok-4.5-pro";
   }
 
   const providerKey = resolveTierToProviderKey(allowedSelectedModel, mode);

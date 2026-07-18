@@ -35,6 +35,7 @@ function runUpload({ cliExitCode = 0, env = {} } = {}) {
       cwd,
       env: {
         PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}`,
+        VERCEL_ENV: "production",
         POSTHOG_CLI_API_KEY: "phx_test",
         POSTHOG_CLI_PROJECT_ID: "project_test",
         ...env,
@@ -47,6 +48,22 @@ function runUpload({ cliExitCode = 0, env = {} } = {}) {
 }
 
 describe("upload-posthog-sourcemaps", () => {
+  test("skips source map uploads outside Vercel production builds", () => {
+    const result = runUpload({
+      cliExitCode: 1,
+      env: {
+        VERCEL_ENV: "preview",
+        POSTHOG_SOURCEMAP_UPLOAD_STRICT: "true",
+      },
+    });
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain(
+      "Skipping source map upload because this is not a Vercel production build",
+    );
+    expect(result.stdout).not.toContain("fake posthog-cli");
+  });
+
   test("continues the build when posthog-cli fails by default", () => {
     const result = runUpload({ cliExitCode: 1 });
 

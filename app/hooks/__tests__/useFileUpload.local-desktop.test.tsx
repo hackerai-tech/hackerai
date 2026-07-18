@@ -294,4 +294,63 @@ describe("useFileUpload desktop-local agent attachments", () => {
       expect.objectContaining({ uploading: true, uploaded: false }),
     );
   });
+
+  it("ignores internal sidebar task drags", async () => {
+    const { result } = renderHook(() => useFileUpload("ask"));
+    const event = {
+      dataTransfer: {
+        types: ["application/x-hackerai-chat-id"],
+        items: [{ kind: "string" }],
+        files: [],
+        dropEffect: "none",
+      },
+      preventDefault: jest.fn(),
+      stopPropagation: jest.fn(),
+    } as unknown as DragEvent;
+
+    act(() => {
+      result.current.handleDragEnter(event);
+      result.current.handleDragOver(event);
+      result.current.handleDragLeave(event);
+    });
+    await act(async () => {
+      await result.current.handleDrop(event);
+    });
+
+    expect(event.preventDefault).not.toHaveBeenCalled();
+    expect(event.stopPropagation).not.toHaveBeenCalled();
+    expect(result.current.showDragOverlay).toBe(false);
+    expect(result.current.isDragOver).toBe(false);
+  });
+
+  it("keeps the upload overlay behavior for genuine file drags", async () => {
+    const { result } = renderHook(() => useFileUpload("ask"));
+    const event = {
+      dataTransfer: {
+        types: ["Files"],
+        items: [{ kind: "file" }],
+        files: [],
+        dropEffect: "none",
+      },
+      preventDefault: jest.fn(),
+      stopPropagation: jest.fn(),
+    } as unknown as DragEvent;
+
+    act(() => {
+      result.current.handleDragEnter(event);
+      result.current.handleDragOver(event);
+    });
+
+    expect(event.preventDefault).toHaveBeenCalledTimes(2);
+    expect(event.stopPropagation).toHaveBeenCalledTimes(2);
+    expect(event.dataTransfer!.dropEffect).toBe("copy");
+    expect(result.current.showDragOverlay).toBe(true);
+    expect(result.current.isDragOver).toBe(true);
+
+    await act(async () => {
+      await result.current.handleDrop(event);
+    });
+    expect(result.current.showDragOverlay).toBe(false);
+    expect(result.current.isDragOver).toBe(false);
+  });
 });

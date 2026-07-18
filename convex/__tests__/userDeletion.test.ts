@@ -38,18 +38,31 @@ jest.mock("../fileAggregate", () => ({
 
 type Row = { _id: string; [key: string]: any };
 type Tables = Record<string, Row[]>;
+type ReadCounter = { value: number };
 
-function createQueryResult(rows: Row[]) {
+function createQueryResult(rows: Row[], readCounter: ReadCounter) {
   return {
     collect: jest.fn(async () => rows),
-    first: jest.fn(async () => rows[0] ?? null),
+    first: jest.fn(async () => {
+      const result = rows[0] ?? null;
+      if (result) readCounter.value += 1;
+      return result;
+    }),
     unique: jest.fn(async () => rows[0] ?? null),
-    take: jest.fn(async (limit: number) => rows.slice(0, limit)),
-    order: jest.fn(() => createQueryResult(rows)),
+    take: jest.fn(async (limit: number) => {
+      const result = rows.slice(0, limit);
+      readCounter.value += result.length;
+      return result;
+    }),
+    order: jest.fn(() => createQueryResult(rows, readCounter)),
   };
 }
 
-function createQueryBuilder(tables: Tables, table: string) {
+function createQueryBuilder(
+  tables: Tables,
+  table: string,
+  readCounter: ReadCounter,
+) {
   const tableRows = () => tables[table] ?? [];
 
   const filterRows = (filters: Array<{ field: string; value: any }>) =>
@@ -69,7 +82,7 @@ function createQueryBuilder(tables: Tables, table: string) {
         lte: () => q,
       };
       build(q);
-      return createQueryResult(filterRows(filters));
+      return createQueryResult(filterRows(filters), readCounter);
     }),
     collect: jest.fn(async () => tableRows()),
     take: jest.fn(async (limit: number) => tableRows().slice(0, limit)),
@@ -83,6 +96,7 @@ function createQueryBuilder(tables: Tables, table: string) {
       }) => {
         const start = cursor ? Number(cursor) : 0;
         const page = tableRows().slice(start, start + numItems);
+        readCounter.value += page.length;
         const next = start + page.length;
         return {
           page,
@@ -97,13 +111,17 @@ function createQueryBuilder(tables: Tables, table: string) {
 function createMockCtx(tables: Tables, subject = "user_123") {
   const deletedIds: string[] = [];
   const patches: Array<{ id: string; patch: Record<string, any> }> = [];
+  const readCounter: ReadCounter = { value: 0 };
   const scheduler = {
     runAfter: jest.fn().mockResolvedValue(undefined),
   };
 
   const db = {
-    query: jest.fn((table: string) => createQueryBuilder(tables, table)),
+    query: jest.fn((table: string) =>
+      createQueryBuilder(tables, table, readCounter),
+    ),
     get: jest.fn(async (id: string) => {
+      readCounter.value += 1;
       for (const rows of Object.values(tables)) {
         const row = rows.find((candidate) => candidate._id === id);
         if (row) return row;
@@ -147,6 +165,7 @@ function createMockCtx(tables: Tables, subject = "user_123") {
     scheduler,
     deletedIds,
     patches,
+    readCounter,
   };
 }
 
@@ -706,30 +725,72 @@ describe("userDeletion", () => {
     ).rejects.toThrow("processes one userId per mutation");
   });
 
-  it("reports remaining work and completes on a later batch when an indexed query exceeds the batch size", async () => {
-    const { deleteAllUserData } = await import("../userDeletion");
+  it("rejects combined user and orphan-summary residue cleanup", async () => {
+    const { cleanupDeletedUserResidue } = await import("../userDeletion");
     const tables = seedTables();
-    tables.notes = Array.from({ length: 501 }, (_, index) => ({
-      _id: `note-user-${index}`,
-      user_id: "user_123",
-      note_id: `note-${index}`,
-    }));
     const { ctx } = createMockCtx(tables);
 
+    await expect(
+      cleanupDeletedUserResidue.handler(ctx as any, {
+        serviceKey: "service_key",
+        userIds: ["user_123"],
+        deleteOrphanChatSummaries: true,
+      }),
+    ).rejects.toThrow("separate mutations");
+  });
+
+  it("keeps cleanup reads bounded and preserves chats until a later message batch", async () => {
+    const { deleteAllUserData } = await import("../userDeletion");
+    const tables = seedTables();
+    tables.feedback = Array.from({ length: 101 }, (_, index) => ({
+      _id: `feedback-user-${index}`,
+      feedback_type: "positive",
+    }));
+    tables.messages = Array.from({ length: 101 }, (_, index) => ({
+      _id: `message-user-${index}`,
+      id: `msg-${index}`,
+      chat_id: "chat-1",
+      user_id: "user_123",
+      role: "user",
+      parts: [{ type: "text", text: "large message payload" }],
+      feedback_id: `feedback-user-${index}`,
+      update_time: index,
+    }));
+    const { ctx, readCounter } = createMockCtx(tables);
+
     const firstBatch = await deleteAllUserData.handler(ctx as any, {});
+    const firstBatchReads = readCounter.value;
 
     expect(firstBatch.hasMore).toBe(true);
     expect(
-      tables.notes.filter((candidate) => candidate.user_id === "user_123"),
-    ).toHaveLength(1);
-    expect(row(tables, "chats", "chat-doc")).toBeUndefined();
+      tables.messages.filter((candidate) => candidate.user_id === "user_123"),
+    ).toHaveLength(52);
+    expect(tables.feedback).toHaveLength(52);
+    expect(firstBatchReads).toBeLessThanOrEqual(100);
+    expect(row(tables, "chats", "chat-doc")).toBeTruthy();
 
     const secondBatch = await deleteAllUserData.handler(ctx as any, {});
+    const secondBatchReads = readCounter.value - firstBatchReads;
 
-    expect(secondBatch.hasMore).toBe(false);
+    expect(secondBatch.hasMore).toBe(true);
     expect(
-      tables.notes.filter((candidate) => candidate.user_id === "user_123"),
+      tables.messages.filter((candidate) => candidate.user_id === "user_123"),
+    ).toHaveLength(3);
+    expect(tables.feedback).toHaveLength(3);
+    expect(secondBatchReads).toBeLessThanOrEqual(100);
+    expect(row(tables, "chats", "chat-doc")).toBeTruthy();
+
+    const thirdBatch = await deleteAllUserData.handler(ctx as any, {});
+    const thirdBatchReads =
+      readCounter.value - firstBatchReads - secondBatchReads;
+
+    expect(thirdBatch.hasMore).toBe(false);
+    expect(
+      tables.messages.filter((candidate) => candidate.user_id === "user_123"),
     ).toHaveLength(0);
+    expect(tables.feedback).toHaveLength(0);
+    expect(thirdBatchReads).toBeLessThanOrEqual(100);
+    expect(row(tables, "chats", "chat-doc")).toBeUndefined();
   });
 
   it("fails user deletion if S3 cleanup scheduling fails", async () => {

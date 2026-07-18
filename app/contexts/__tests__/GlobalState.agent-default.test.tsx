@@ -1,5 +1,5 @@
 import "@testing-library/jest-dom";
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, jest } from "@jest/globals";
 import { useAccessToken, useAuth } from "@workos-inc/authkit-nextjs/components";
 import { GlobalStateProvider, useGlobalState } from "../GlobalState";
@@ -50,6 +50,12 @@ function TemporaryChatProbe() {
       {String(temporaryChatsEnabled)}
     </div>
   );
+}
+
+function ActiveProjectProbe() {
+  const { activeProjectId } = useGlobalState();
+
+  return <div data-testid="active-project-id">{activeProjectId ?? "none"}</div>;
 }
 
 describe("GlobalStateProvider agent defaults", () => {
@@ -124,6 +130,31 @@ describe("GlobalStateProvider agent defaults", () => {
       );
     });
     expect(window.location.search).toBe("?temporary-chat=true");
+  });
+
+  it("syncs the active project when browser history changes", async () => {
+    window.history.pushState({}, "", "/?project=project-one");
+
+    render(
+      <GlobalStateProvider>
+        <ActiveProjectProbe />
+      </GlobalStateProvider>,
+    );
+
+    expect(screen.getByTestId("active-project-id")).toHaveTextContent(
+      "project-one",
+    );
+
+    act(() => {
+      window.history.pushState({}, "", "/?project=project-two");
+      window.dispatchEvent(new PopStateEvent("popstate"));
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("active-project-id")).toHaveTextContent(
+        "project-two",
+      );
+    });
   });
 
   it("defaults first-time Ultra users to Agent with the auto model and cloud sandbox", async () => {
