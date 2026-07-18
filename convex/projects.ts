@@ -90,8 +90,9 @@ const detachNextProjectTasksBatch = async (
 
   const tasks = await ctx.db
     .query("chats")
-    .withIndex("by_user_and_updated", (q) => q.eq("user_id", userId))
-    .filter((q) => q.eq(q.field("project_id"), projectId))
+    .withIndex("by_user_project_and_updated", (q) =>
+      q.eq("user_id", userId).eq("project_id", projectId),
+    )
     .take(PROJECT_TASK_DETACH_BATCH_SIZE + 1);
 
   for (const task of tasks.slice(0, PROJECT_TASK_DETACH_BATCH_SIZE)) {
@@ -329,10 +330,9 @@ export const getProjectThreads = query({
 
     const result = await ctx.db
       .query("chats")
-      .withIndex("by_user_and_updated", (q) =>
-        q.eq("user_id", identity.subject),
+      .withIndex("by_user_project_and_updated", (q) =>
+        q.eq("user_id", identity.subject).eq("project_id", args.projectId),
       )
-      .filter((q) => q.eq(q.field("project_id"), args.projectId))
       .order("desc")
       .paginate(args.paginationOpts);
 
