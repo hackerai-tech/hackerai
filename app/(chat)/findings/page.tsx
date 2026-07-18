@@ -226,6 +226,7 @@ function FindingsPageContent() {
           <Button
             variant="ghost"
             size="icon"
+            className="md:hidden"
             onClick={() => setChatSidebarOpen(true)}
             aria-label="Open navigation"
           >

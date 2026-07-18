@@ -104,6 +104,9 @@ describe("FindingsPage", () => {
   it("lists metadata, searches, and hides a redundant source filter", async () => {
     render(<Page />);
     expect(screen.getByRole("heading", { name: "Findings" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "Open navigation" })).toHaveClass(
+      "md:hidden",
+    );
     expect(screen.getByText("Confirmed IDOR")).toBeVisible();
     expect(screen.getByText("/api/invoices/other")).toBeVisible();
     expect(screen.getByText("Invoice test")).toBeVisible();
