@@ -1248,7 +1248,7 @@ export const capCurrentCycleAllocation = async (
  *
  * Namespaces (keep in sync with key builders in this file and sliding-window.ts):
  *   - usage:monthly:<userId>:*       — monthly token bucket (any tier)
- *   - upgrade:carryover:<userId>     — upgrade proration stash
+ *   - upgrade:carryover:<userId>:*   — tier-change stash, claim, and completion keys
  *   - free_limit:<userId>:*          — free-tier shared ask/agent sliding window
  *   - free_referral_bonus:<userId>   — one-time free request units from referral signup
  *   - free_referral_bonus_grant:*:<userId> — referral bonus grant idempotency marker
@@ -1291,13 +1291,26 @@ export const deleteUserRateLimitKeys = async (
 // =============================================================================
 
 const TIER_CHANGE_STASH_TTL_SECONDS = 24 * 60 * 60;
+const TIER_CHANGE_COMPLETED_TTL_SECONDS = 35 * 24 * 60 * 60;
 const THIRTY_DAYS_MS = THIRTY_DAYS_SECONDS * 1000;
 
-const tierChangeStashKey = (userId: string) => `upgrade:carryover:${userId}`;
+export type TierChangeIdentity = {
+  subscriptionId: string;
+  targetTier: SubscriptionTier;
+  transitionId: string;
+};
+
+const tierChangeStashKey = (userId: string, transitionId: string) =>
+  `upgrade:carryover:${userId}:${transitionId}`;
+const tierChangeClaimKey = (stashKey: string) => `${stashKey}:claim`;
+const tierChangeCompletedKey = (stashKey: string) => `${stashKey}:completed`;
 
 export type TierChangeBucketState = {
-  version: 2;
+  version: 3;
   oldTier: SubscriptionTier | null;
+  targetTier: SubscriptionTier | null;
+  subscriptionId: string | null;
+  transitionId: string | null;
   remaining: number;
   cycleAllocation: number;
   resetAtMs: number;
@@ -1332,10 +1345,26 @@ const parseTierChangeBucketState = (
     typeof parsed.oldTier === "string" && parsed.oldTier in MONTHLY_CREDITS
       ? (parsed.oldTier as SubscriptionTier)
       : null;
+  const targetTier =
+    typeof parsed.targetTier === "string" &&
+    parsed.targetTier in MONTHLY_CREDITS
+      ? (parsed.targetTier as SubscriptionTier)
+      : null;
+  const subscriptionId =
+    typeof parsed.subscriptionId === "string" && parsed.subscriptionId
+      ? parsed.subscriptionId
+      : null;
+  const transitionId =
+    typeof parsed.transitionId === "string" && parsed.transitionId
+      ? parsed.transitionId
+      : null;
 
   return {
-    version: 2,
+    version: 3,
     oldTier,
+    targetTier,
+    subscriptionId,
+    transitionId,
     remaining: Math.min(remaining, cycleAllocation),
     cycleAllocation,
     resetAtMs,
@@ -1345,10 +1374,19 @@ const parseTierChangeBucketState = (
 const STASH_TIER_CHANGE_BUCKET_SCRIPT = `
 local bucketKey = KEYS[1]
 local stashKey = KEYS[2]
+local completedKey = KEYS[3]
 local oldCycleMax = tonumber(ARGV[1])
 local resetAtMs = tonumber(ARGV[2])
 local oldTier = ARGV[3]
 local ttlSeconds = tonumber(ARGV[4])
+local subscriptionId = ARGV[5]
+local targetTier = ARGV[6]
+local transitionId = ARGV[7]
+
+if redis.call("EXISTS", completedKey) == 1 then
+  redis.call("DEL", bucketKey)
+  return nil
+end
 
 local existing = redis.call("GET", stashKey)
 if existing then
@@ -1361,8 +1399,11 @@ local allocation = tonumber(redis.call("HGET", bucketKey, "cycleAllocation")) or
 allocation = math.max(0, math.min(oldCycleMax, allocation))
 local remaining = math.max(0, math.min(allocation, tokens))
 local state = cjson.encode({
-  version = 2,
+  version = 3,
   oldTier = oldTier,
+  targetTier = targetTier,
+  subscriptionId = subscriptionId,
+  transitionId = transitionId,
   remaining = remaining,
   cycleAllocation = allocation,
   resetAtMs = resetAtMs
@@ -1373,12 +1414,94 @@ redis.call("DEL", bucketKey)
 return state
 `;
 
-const POP_TIER_CHANGE_BUCKET_SCRIPT = `
-local raw = redis.call("GET", KEYS[1])
-if raw then
-  redis.call("DEL", KEYS[1])
+const CLAIM_TIER_CHANGE_BUCKET_SCRIPT = `
+local stashKey = KEYS[1]
+local claimKey = KEYS[2]
+local completedKey = KEYS[3]
+local ttlSeconds = tonumber(ARGV[1])
+
+if redis.call("EXISTS", completedKey) == 1 then
+  return nil
 end
+
+local raw = redis.call("GET", claimKey)
+if raw then return raw end
+
+raw = redis.call("GET", stashKey)
+if not raw then return nil end
+
+redis.call("SET", claimKey, raw, "EX", ttlSeconds)
 return raw
+`;
+
+const SET_MONTHLY_BUCKET_STATE_SCRIPT = `
+local bucketKey = KEYS[1]
+local remaining = tonumber(ARGV[1])
+local allocation = tonumber(ARGV[2])
+local tierMax = tonumber(ARGV[3])
+local cycleStartedAt = tonumber(ARGV[4])
+local refilledAt = tonumber(ARGV[5])
+local expireSeconds = tonumber(ARGV[6])
+
+redis.call("DEL", bucketKey)
+redis.call(
+  "HSET",
+  bucketKey,
+  "tokens", remaining,
+  "cycleAllocation", allocation,
+  "cycleTierMax", tierMax,
+  "cycleStartedAt", cycleStartedAt,
+  "refilledAt", refilledAt
+)
+redis.call("EXPIRE", bucketKey, expireSeconds)
+return remaining
+`;
+
+const APPLY_TIER_CHANGE_BUCKET_SCRIPT = `
+local bucketKey = KEYS[1]
+local stashKey = KEYS[2]
+local claimKey = KEYS[3]
+local completedKey = KEYS[4]
+local expectedClaim = ARGV[1]
+local desiredRemaining = tonumber(ARGV[2])
+local allocation = tonumber(ARGV[3])
+local tierMax = tonumber(ARGV[4])
+local cycleStartedAt = tonumber(ARGV[5])
+local refilledAt = tonumber(ARGV[6])
+local expireSeconds = tonumber(ARGV[7])
+local completedTtlSeconds = tonumber(ARGV[8])
+
+if redis.call("GET", claimKey) ~= expectedClaim then
+  return {0, 0}
+end
+if redis.call("GET", stashKey) ~= expectedClaim then
+  return {0, 0}
+end
+
+-- A request can create the target-tier bucket in the short interval between
+-- Stripe changing the entitlement and this migration. Preserve that usage.
+local existingTokens = tonumber(redis.call("HGET", bucketKey, "tokens"))
+local existingAllocation = redis.call("HGET", bucketKey, "cycleAllocation")
+local remaining = desiredRemaining
+if existingTokens and not existingAllocation then
+  local provisionalConsumed = math.max(0, tierMax - existingTokens)
+  remaining = math.max(0, desiredRemaining - provisionalConsumed)
+end
+
+redis.call("DEL", bucketKey)
+redis.call(
+  "HSET",
+  bucketKey,
+  "tokens", remaining,
+  "cycleAllocation", allocation,
+  "cycleTierMax", tierMax,
+  "cycleStartedAt", cycleStartedAt,
+  "refilledAt", refilledAt
+)
+redis.call("EXPIRE", bucketKey, expireSeconds)
+redis.call("SET", completedKey, "1", "EX", completedTtlSeconds)
+redis.call("DEL", stashKey, claimKey)
+return {1, remaining}
 `;
 
 /**
@@ -1389,8 +1512,11 @@ return raw
 export const stashTierChangeBucketState = async (
   userId: string,
   oldTier: SubscriptionTier,
-  oldCycleAllocationPoints?: number,
-): Promise<TierChangeBucketState> => {
+  options: {
+    identity: TierChangeIdentity;
+    oldCycleAllocationPoints?: number;
+  },
+): Promise<TierChangeBucketState | null> => {
   const redis = createRedisClient();
   if (!redis) throw new Error(RATE_LIMIT_SERVICE_NOT_CONFIGURED);
 
@@ -1400,7 +1526,7 @@ export const stashTierChangeBucketState = async (
   }
   const oldCycleMax = normalizeCycleAllocation(
     oldTierMax,
-    oldCycleAllocationPoints,
+    options.oldCycleAllocationPoints,
   );
 
   const { monthly } = createRateLimiter(redis, userId, oldTier);
@@ -1409,13 +1535,29 @@ export const stashTierChangeBucketState = async (
     Number.isFinite(snapshot.reset) && snapshot.reset > Date.now()
       ? snapshot.reset
       : Date.now() + THIRTY_DAYS_MS;
-  const raw = await redis.eval<[number, number, string, number], string>(
+  const stashKey = tierChangeStashKey(userId, options.identity.transitionId);
+  const raw = await redis.eval<
+    [number, number, string, number, string, string, string],
+    string | null
+  >(
     STASH_TIER_CHANGE_BUCKET_SCRIPT,
-    [getMonthlyBucketKey(userId, oldTier), tierChangeStashKey(userId)],
-    [oldCycleMax, resetAtMs, oldTier, TIER_CHANGE_STASH_TTL_SECONDS],
+    [
+      getMonthlyBucketKey(userId, oldTier),
+      stashKey,
+      tierChangeCompletedKey(stashKey),
+    ],
+    [
+      oldCycleMax,
+      resetAtMs,
+      oldTier,
+      TIER_CHANGE_STASH_TTL_SECONDS,
+      options.identity.subscriptionId,
+      options.identity.targetTier,
+      options.identity.transitionId,
+    ],
   );
 
-  return parseTierChangeBucketState(raw);
+  return raw ? parseTierChangeBucketState(raw) : null;
 };
 
 /**
@@ -1479,37 +1621,25 @@ const writeMonthlyBucketState = async (
     normalizedAllocation,
     Math.max(0, Math.round(remainingCredits)),
   );
-  const monthlyKey = getMonthlyBucketKey(userId, tier);
-
-  await redis.del(monthlyKey);
-  const { monthly } = createRateLimiter(redis, userId, tier);
-  await monthly.limiter.limit(monthly.key, { rate: 0 });
-
-  const burnAmount = tierMax - normalizedRemaining;
-  if (burnAmount > 0) {
-    await monthly.limiter.limit(monthly.key, { rate: burnAmount });
-  }
-
   const nowMs = Date.now();
   const nowSeconds = Math.floor(nowMs / 1000);
-  const bucketMetadata: Record<string, number> = {
-    tokens: normalizedRemaining,
-    cycleAllocation: normalizedAllocation,
-    cycleTierMax: tierMax,
-    cycleStartedAt: nowMs,
-  };
-  if (
+  const refilledAt =
     periodEndSeconds &&
     Number.isFinite(periodEndSeconds) &&
     periodEndSeconds > nowSeconds
-  ) {
-    bucketMetadata.refilledAt = (periodEndSeconds - THIRTY_DAYS_SECONDS) * 1000;
-  }
-
-  await redis.hset(monthlyKey, bucketMetadata);
-  await redis.expire(
-    monthlyKey,
-    getCycleExpireSeconds(periodEndSeconds, nowSeconds),
+      ? (periodEndSeconds - THIRTY_DAYS_SECONDS) * 1000
+      : nowMs;
+  await redis.eval<[number, number, number, number, number, number], number>(
+    SET_MONTHLY_BUCKET_STATE_SCRIPT,
+    [getMonthlyBucketKey(userId, tier)],
+    [
+      normalizedRemaining,
+      normalizedAllocation,
+      tierMax,
+      nowMs,
+      refilledAt,
+      getCycleExpireSeconds(periodEndSeconds, nowSeconds),
+    ],
   );
 };
 
@@ -1521,30 +1651,41 @@ export const applyProratedTierChangeBucket = async (
   userId: string,
   newTier: SubscriptionTier,
   options: {
+    identity: TierChangeIdentity;
     proratedRatio?: number;
     periodEndSeconds?: number;
     cycleAllocationPoints?: number;
-  } = {},
+  },
 ): Promise<AppliedTierChangeBucket | null> => {
   const redis = createRedisClient();
   if (!redis) throw new Error(RATE_LIMIT_SERVICE_NOT_CONFIGURED);
 
-  const stashKey = tierChangeStashKey(userId);
-  const raw = await redis.eval<[], string | null>(
-    POP_TIER_CHANGE_BUCKET_SCRIPT,
-    [stashKey],
-    [],
+  const stashKey = tierChangeStashKey(userId, options.identity.transitionId);
+  const claimKey = tierChangeClaimKey(stashKey);
+  const completedKey = tierChangeCompletedKey(stashKey);
+  const raw = await redis.eval<[number], string | null>(
+    CLAIM_TIER_CHANGE_BUCKET_SCRIPT,
+    [stashKey, claimKey, completedKey],
+    [TIER_CHANGE_STASH_TTL_SECONDS],
   );
   if (!raw) return null;
 
   const state = parseTierChangeBucketState(raw);
+  if (
+    state.subscriptionId !== options.identity.subscriptionId ||
+    state.targetTier !== newTier ||
+    state.transitionId !== options.identity.transitionId
+  ) {
+    return null;
+  }
   const nowMs = Date.now();
-  const requestedResetAtMs =
+  const fallbackResetAtMs =
     options.periodEndSeconds && Number.isFinite(options.periodEndSeconds)
       ? options.periodEndSeconds * 1000
-      : state.resetAtMs;
+      : 0;
+  const storedResetAtMs = state.resetAtMs || fallbackResetAtMs;
   // Never let a delayed proration webhook overwrite a newer renewal bucket.
-  if (requestedResetAtMs > 0 && requestedResetAtMs <= nowMs) return null;
+  if (state.resetAtMs > 0 && state.resetAtMs <= nowMs) return null;
 
   const tierMax = MONTHLY_CREDITS[newTier] ?? 0;
   const newCycleMax = normalizeCycleAllocation(
@@ -1565,27 +1706,33 @@ export const applyProratedTierChangeBucket = async (
     state.remaining,
     proratedRatio,
   );
-  const storedResetAtMs = requestedResetAtMs;
   const periodEndSeconds =
     storedResetAtMs > nowMs ? Math.ceil(storedResetAtMs / 1000) : undefined;
-
-  try {
-    await writeMonthlyBucketState(
-      redis,
-      userId,
-      newTier,
-      credits.cycleAllocation,
+  const refilledAt = periodEndSeconds
+    ? (periodEndSeconds - THIRTY_DAYS_SECONDS) * 1000
+    : nowMs;
+  const [applied, appliedRemaining] = await redis.eval<
+    [string, number, number, number, number, number, number, number],
+    [number, number]
+  >(
+    APPLY_TIER_CHANGE_BUCKET_SCRIPT,
+    [getMonthlyBucketKey(userId, newTier), stashKey, claimKey, completedKey],
+    [
+      raw,
       credits.remainingCredits,
-      periodEndSeconds,
-    );
-  } catch (error) {
-    // Restore the claim so a Stripe retry can safely finish the migration.
-    await redis.set(stashKey, raw, { ex: TIER_CHANGE_STASH_TTL_SECONDS });
-    throw error;
-  }
+      credits.cycleAllocation,
+      tierMax,
+      nowMs,
+      refilledAt,
+      getCycleExpireSeconds(periodEndSeconds, Math.floor(nowMs / 1000)),
+      TIER_CHANGE_COMPLETED_TTL_SECONDS,
+    ],
+  );
+  if (applied !== 1) return null;
 
   return {
     ...credits,
+    remainingCredits: appliedRemaining,
     proratedRatio,
     resetAtMs: storedResetAtMs,
   };

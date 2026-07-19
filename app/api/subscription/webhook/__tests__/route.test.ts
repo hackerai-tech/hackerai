@@ -658,6 +658,11 @@ describe("POST /api/subscription/webhook", () => {
       "user_upgrade",
       "pro-plus",
       expect.objectContaining({
+        identity: {
+          subscriptionId: "sub_upgrade",
+          targetTier: "pro-plus",
+          transitionId: "in_upgrade",
+        },
         periodEndSeconds: periodEnd,
       }),
     );
@@ -721,6 +726,7 @@ describe("POST /api/subscription/webhook", () => {
       status: "paid",
       amount_paid: 1459,
       billing_reason: "subscription_update",
+      status_transitions: { paid_at: nowSeconds - 24 * 60 * 60 },
     } as never);
     mockApplyProratedTierChangeBucket.mockResolvedValue({
       remainingCredits: 140_000,
@@ -733,19 +739,31 @@ describe("POST /api/subscription/webhook", () => {
     expect(mockStashTierChangeBucketState).toHaveBeenCalledWith(
       "user_upgrade",
       "pro",
-      undefined,
+      {
+        identity: {
+          subscriptionId: "sub_upgrade",
+          targetTier: "pro-plus",
+          transitionId: "in_upgrade",
+        },
+        oldCycleAllocationPoints: undefined,
+      },
     );
     expect(mockRetrieveInvoice).toHaveBeenCalledWith("in_upgrade");
     expect(mockApplyProratedTierChangeBucket).toHaveBeenCalledWith(
       "user_upgrade",
       "pro-plus",
       expect.objectContaining({
+        identity: {
+          subscriptionId: "sub_upgrade",
+          targetTier: "pro-plus",
+          transitionId: "in_upgrade",
+        },
         periodEndSeconds: periodEnd,
       }),
     );
     expect(
       mockApplyProratedTierChangeBucket.mock.calls[0][2].proratedRatio,
-    ).toBeCloseTo(0.4, 4);
+    ).toBeCloseTo(13 / 30, 4);
     expect(mockResetRateLimitBuckets).not.toHaveBeenCalled();
   });
 

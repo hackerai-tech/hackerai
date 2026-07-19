@@ -229,6 +229,12 @@ describe("token-bucket", () => {
       expect(isUserRateLimitKey(`upgrade:carryover:${userId}`, userId)).toBe(
         true,
       );
+      expect(
+        isUserRateLimitKey(
+          `upgrade:carryover:${userId}:in_upgrade:claim`,
+          userId,
+        ),
+      ).toBe(true);
       expect(isUserRateLimitKey(`free_limit:${userId}:free:ask`, userId)).toBe(
         true,
       );

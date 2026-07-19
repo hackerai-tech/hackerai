@@ -56,6 +56,7 @@ export {
   type TierChangeBucketState,
   type TierChangeCredits,
   type AppliedTierChangeBucket,
+  type TierChangeIdentity,
 } from "./token-bucket";
 
 // Re-export sliding window functions

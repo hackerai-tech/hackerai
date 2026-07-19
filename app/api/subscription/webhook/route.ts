@@ -143,7 +143,10 @@ function monthlyUsagePeriodEndSeconds(
   return subscriptionCurrentPeriodEndSeconds(subscription);
 }
 
-function monthlyTierChangeProration(subscription: Stripe.Subscription): {
+function monthlyTierChangeProration(
+  subscription: Stripe.Subscription,
+  effectiveChangeAtMs: number,
+): {
   proratedRatio?: number;
   periodEndSeconds?: number;
 } {
@@ -155,11 +158,11 @@ function monthlyTierChangeProration(subscription: Stripe.Subscription): {
   const periodStartSeconds =
     subscriptionItem?.current_period_start ??
     (subscription as { current_period_start?: number }).current_period_start;
-  const nowSeconds = Math.floor(Date.now() / 1000);
+  const effectiveChangeAtSeconds = Math.floor(effectiveChangeAtMs / 1000);
   const totalDuration = periodStartSeconds
     ? periodEndSeconds - periodStartSeconds
     : 0;
-  const remainingDuration = periodEndSeconds - nowSeconds;
+  const remainingDuration = periodEndSeconds - effectiveChangeAtSeconds;
 
   return {
     periodEndSeconds,
@@ -177,18 +180,28 @@ async function applyTierChangeBuckets({
   tier,
   subscription,
   includedUsagePoints,
+  subscriptionId,
+  transitionId,
+  effectiveChangeAtMs,
   source,
 }: {
   userIds: string[];
   tier: SubscriptionTier;
   subscription: Stripe.Subscription;
   includedUsagePoints?: number;
+  subscriptionId: string;
+  transitionId: string;
+  effectiveChangeAtMs: number;
   source: "invoice.paid" | "subscription.updated";
 }): Promise<number> {
-  const proration = monthlyTierChangeProration(subscription);
+  const proration = monthlyTierChangeProration(
+    subscription,
+    effectiveChangeAtMs,
+  );
   const results = await Promise.all(
     userIds.map((userId) =>
       applyProratedTierChangeBucket(userId, tier, {
+        identity: { subscriptionId, targetTier: tier, transitionId },
         ...proration,
         cycleAllocationPoints: includedUsagePoints,
       }),
@@ -801,6 +814,9 @@ async function handleInvoicePaid(invoice: Stripe.Invoice): Promise<void> {
       tier,
       subscription,
       includedUsagePoints,
+      subscriptionId,
+      transitionId: invoice.id,
+      effectiveChangeAtMs: invoicePaidAtMs(invoice),
       source: "invoice.paid",
     });
     return;
@@ -1270,16 +1286,23 @@ async function handleSubscriptionUpdated(
   // following invoice.paid event applies the new bucket. If Stripe delivered
   // invoice.paid first, apply it here from the already-paid latest invoice.
   if (previousTier && currentTier) {
+    const latestInvoiceId = stripeObjectId(subscription.latest_invoice);
+    const transitionId =
+      latestInvoiceId ??
+      `subscription:${subscription.id}:${currentTier}:${subscriptionCurrentPeriodEndSeconds(subscription) ?? "unknown"}`;
     const previousIncludedUsagePoints = includedUsagePointsForStripePrice(
       typeof previousPriceId === "string" ? previousPriceId : undefined,
     );
     await Promise.all(
       userIds.map((uid) =>
-        stashTierChangeBucketState(
-          uid,
-          previousTier,
-          previousIncludedUsagePoints,
-        ),
+        stashTierChangeBucketState(uid, previousTier, {
+          identity: {
+            subscriptionId: subscription.id,
+            targetTier: currentTier,
+            transitionId,
+          },
+          oldCycleAllocationPoints: previousIncludedUsagePoints,
+        }),
       ),
     );
 
@@ -1292,6 +1315,9 @@ async function handleSubscriptionUpdated(
         includedUsagePoints: includedUsagePointsForStripePrice(
           currentPrice?.id,
         ),
+        subscriptionId: subscription.id,
+        transitionId: paidTierChangeInvoice.id,
+        effectiveChangeAtMs: invoicePaidAtMs(paidTierChangeInvoice),
         source: "subscription.updated",
       });
     }
