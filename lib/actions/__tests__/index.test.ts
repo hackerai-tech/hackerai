@@ -55,6 +55,12 @@ describe("generateTitleFromUserMessage", () => {
       expect.objectContaining({
         maxOutputTokens: 64,
         maxRetries: 1,
+        providerOptions: {
+          openrouter: {
+            reasoning: { enabled: true, effort: "high" },
+          },
+          xai: { store: false },
+        },
         temperature: 0,
       }),
     );

@@ -610,26 +610,6 @@ const ANTHROPIC_FALLBACK_CHAIN_BY_MODE: Record<ChatMode, readonly ModelName[]> =
 
 const ANTHROPIC_MULTIMODAL_AGENT_FALLBACK_CHAIN = KIMI_THEN_GROK_FALLBACK_CHAIN;
 
-// Standard Ask routes text-only prompts to DeepSeek and media prompts to Grok.
-// Keep those route keys and persisted Grok aliases on one effort level so they
-// do not drift. Grok 4.5 rejects requests that explicitly disable reasoning.
-const ASK_STANDARD_REASONING_MODELS = [
-  "model-deepseek-v4-pro",
-  "ask-model",
-  "model-minimax-m3",
-  "model-grok-4.5",
-  "model-gemini-3-flash",
-  "fallback-grok-4.5",
-] as const satisfies readonly ModelName[];
-
-const ASK_MEDIUM_REASONING_MODELS = [
-  ...ASK_STANDARD_REASONING_MODELS,
-] as const satisfies readonly ModelName[];
-
-const isAskMediumReasoningModel = (modelName?: string): boolean =>
-  typeof modelName === "string" &&
-  (ASK_MEDIUM_REASONING_MODELS as readonly string[]).includes(modelName);
-
 const HIGH_REASONING_MODELS = [
   "model-grok-4.5-pro",
   "model-glm-5.2",
@@ -805,36 +785,34 @@ export function buildProviderOptions(
   const isDeepSeekV4 = modelId?.startsWith("deepseek/deepseek-v4") ?? false;
   const isGrok45 = modelId === GROK_4_5_SLUG;
   // Agent routes use high for both DeepSeek V4 Flash and Pro. Keep this
-  // mode-scoped so the corresponding Ask routes retain their existing effort.
+  // mode-scoped for any future route that does not also include Grok.
   const isAgentDeepSeekV4 = mode === "agent" && isDeepSeekV4;
   const fallbackSlugs = getFallbackSlugs(modelName, mode, options);
-  const reasoning =
-    options.reasoningOverride ??
-    (isHighReasoningModel(modelName) || isAgentDeepSeekV4
-      ? {
-          enabled: true,
-          effort: "high",
-        }
-      : isReasoningModel
+  // OpenRouter applies one reasoning configuration to both the primary model
+  // and every provider fallback. Force high whenever this request can resolve
+  // to Grok 4.5 so fallback execution cannot inherit a lower effort.
+  const routesThroughGrok45 = isGrok45 || fallbackSlugs.includes(GROK_4_5_SLUG);
+  const reasoning = routesThroughGrok45
+    ? {
+        enabled: true,
+        effort: "high",
+      }
+    : (options.reasoningOverride ??
+      (isHighReasoningModel(modelName) || isAgentDeepSeekV4
         ? {
             enabled: true,
-            ...(isDeepSeekV4 ? { effort: "xhigh" } : {}),
+            effort: "high",
           }
-        : isGrok45
+        : isReasoningModel
           ? {
               enabled: true,
-              ...(mode === "ask" ? { effort: "medium" } : {}),
+              ...(isDeepSeekV4 ? { effort: "xhigh" } : {}),
             }
           : mode === "ask" && isAskKimiReasoningModel(modelName)
             ? {
                 enabled: true,
               }
-            : mode === "ask" && isAskMediumReasoningModel(modelName)
-              ? {
-                  enabled: true,
-                  effort: "medium",
-                }
-              : { enabled: false });
+            : { enabled: false }));
 
   return {
     openrouter: {

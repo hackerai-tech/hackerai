@@ -195,7 +195,7 @@ const buildSummarizationRetryProviderOptions = (
 
   retryProviderOptions.openrouter = {
     ...(retryProviderOptions.openrouter ?? {}),
-    reasoning: { enabled: true },
+    reasoning: { enabled: true, effort: "high" },
     models: [...SUMMARIZATION_RETRY_FALLBACK_MODEL_SLUGS],
   };
 

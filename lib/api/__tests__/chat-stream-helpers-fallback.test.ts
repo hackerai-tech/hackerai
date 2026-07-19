@@ -27,8 +27,47 @@ const GROK_SLUG = "x-ai/grok-4.5";
 const KIMI_SLUG = "moonshotai/kimi-k2.7-code:exacto";
 const GLM_SLUG = "z-ai/glm-5.2";
 const DEEPSEEK_FLASH_SLUG = "deepseek/deepseek-v4-flash";
+const GROK_PRIMARY_OR_FALLBACK_MODELS = [
+  "ask-model",
+  "ask-model-free",
+  "agent-model",
+  "agent-model-free",
+  "model-sonnet-4.6",
+  "model-grok-4.5",
+  "model-grok-4.5-pro",
+  "model-gemini-3-flash",
+  "model-deepseek-v4-flash",
+  "model-deepseek-v4-pro",
+  "model-opus-4.6",
+  "model-glm-5.2",
+  "model-minimax-m3",
+  "model-kimi-k2.7-code",
+  "model-kimi-k2.6",
+  "fallback-agent-model",
+  "fallback-ask-model",
+  "fallback-grok-4.5",
+  "title-generator-model",
+] as const;
 
 describe("buildProviderOptions fallback chain", () => {
+  it.each(GROK_PRIMARY_OR_FALLBACK_MODELS)(
+    "uses high reasoning whenever %s can resolve to Grok",
+    (modelName) => {
+      for (const mode of ["ask", "agent"] as const) {
+        const opts = buildProviderOptions(
+          mode === "agent",
+          "user-1",
+          modelName,
+          mode,
+        );
+        expect(opts.openrouter.reasoning).toEqual({
+          enabled: true,
+          effort: "high",
+        });
+      }
+    },
+  );
+
   it("resolves Opus 4.6 ask chain to Grok", () => {
     const opts = buildProviderOptions(false, "user-1", "model-opus-4.6", "ask");
     expect(opts.openrouter).toMatchObject({
@@ -255,7 +294,7 @@ describe("buildProviderOptions fallback chain", () => {
   it("falls back from paid Ask PDF Grok route to Kimi", () => {
     const opts = buildProviderOptions(false, "user-1", "model-grok-4.5", "ask");
     expect(opts.openrouter).toMatchObject({
-      reasoning: { enabled: true, effort: "medium" },
+      reasoning: { enabled: true, effort: "high" },
       models: [KIMI_SLUG],
       user: "user-1",
     });
@@ -283,14 +322,17 @@ describe("buildProviderOptions fallback chain", () => {
   });
 
   it.each(["ask-model-free", "model-deepseek-v4-flash"])(
-    "keeps reasoning disabled for free/flash ask mode model %s",
+    "uses high reasoning when free/flash ask model %s can fall back to Grok",
     (modelName) => {
       const opts = buildProviderOptions(false, "user-1", modelName, "ask");
-      expect(opts.openrouter.reasoning).toEqual({ enabled: false });
+      expect(opts.openrouter.reasoning).toEqual({
+        enabled: true,
+        effort: "high",
+      });
     },
   );
 
-  it("allows a scoped reasoning override", () => {
+  it("keeps Grok fallback reasoning high over a lower scoped override", () => {
     const opts = buildProviderOptions(
       false,
       "user-1",
@@ -303,9 +345,27 @@ describe("buildProviderOptions fallback chain", () => {
 
     expect(opts.openrouter.reasoning).toEqual({
       enabled: true,
-      effort: "medium",
+      effort: "high",
     });
     expect(opts.openrouter.models).toEqual([GROK_SLUG, KIMI_SLUG]);
+  });
+
+  it("allows a scoped reasoning override when Grok is not in the route", () => {
+    const opts = buildProviderOptions(
+      false,
+      "user-1",
+      "model-does-not-exist",
+      "ask",
+      {
+        reasoningOverride: { enabled: true, effort: "medium" },
+      },
+    );
+
+    expect(opts.openrouter.reasoning).toEqual({
+      enabled: true,
+      effort: "medium",
+    });
+    expect(opts.openrouter).not.toHaveProperty("models");
   });
 
   it("enables reasoning for the current Kimi 2.7 Code ask route", () => {
@@ -317,6 +377,7 @@ describe("buildProviderOptions fallback chain", () => {
     );
     expect(opts.openrouter.reasoning).toEqual({
       enabled: true,
+      effort: "high",
     });
   });
 
@@ -329,6 +390,7 @@ describe("buildProviderOptions fallback chain", () => {
     );
     expect(opts.openrouter.reasoning).toEqual({
       enabled: true,
+      effort: "high",
     });
   });
 
@@ -339,13 +401,16 @@ describe("buildProviderOptions fallback chain", () => {
     "model-grok-4.5",
     "model-gemini-3-flash",
     "fallback-grok-4.5",
-  ])("enables medium reasoning for ask mode model %s", (modelName) => {
-    const opts = buildProviderOptions(false, "user-1", modelName, "ask");
-    expect(opts.openrouter.reasoning).toEqual({
-      enabled: true,
-      effort: "medium",
-    });
-  });
+  ])(
+    "enables high reasoning for Grok-backed ask mode model %s",
+    (modelName) => {
+      const opts = buildProviderOptions(false, "user-1", modelName, "ask");
+      expect(opts.openrouter.reasoning).toEqual({
+        enabled: true,
+        effort: "high",
+      });
+    },
+  );
 
   it.each([
     "model-grok-4.5-pro",
@@ -405,7 +470,7 @@ describe("buildProviderOptions fallback chain", () => {
       "agent",
     );
     expect(grokReasoning.openrouter).toMatchObject({
-      reasoning: { enabled: true },
+      reasoning: { enabled: true, effort: "high" },
       models: [KIMI_SLUG],
     });
 

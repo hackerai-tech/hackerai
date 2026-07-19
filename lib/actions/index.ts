@@ -65,6 +65,9 @@ export const generateTitleFromUserMessage = async (
     const { output } = await generateText({
       model: myProvider.languageModel("title-generator-model"),
       providerOptions: {
+        openrouter: {
+          reasoning: { enabled: true, effort: "high" },
+        },
         xai: {
           // Disable storing the conversation in XAI's database
           store: false,

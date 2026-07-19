@@ -966,7 +966,7 @@ describe("checkAndSummarizeIfNeeded", () => {
     expect(retryCall.providerOptions).toEqual({
       openrouter: {
         user: "user_123",
-        reasoning: { enabled: true },
+        reasoning: { enabled: true, effort: "high" },
         models: ["moonshotai/kimi-k2.7-code:exacto"],
       },
     });
