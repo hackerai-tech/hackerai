@@ -255,6 +255,7 @@ describe("buildProviderOptions fallback chain", () => {
   it("falls back from paid Ask PDF Grok route to Kimi", () => {
     const opts = buildProviderOptions(false, "user-1", "model-grok-4.5", "ask");
     expect(opts.openrouter).toMatchObject({
+      reasoning: { enabled: true, effort: "medium" },
       models: [KIMI_SLUG],
       user: "user-1",
     });
