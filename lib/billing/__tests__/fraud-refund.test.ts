@@ -98,4 +98,35 @@ describe("getRemainingRefundAmountCents", () => {
       create.mock.invocationCallOrder[1],
     );
   });
+
+  it("treats Stripe's non-refundable charge error as terminal", async () => {
+    jest.spyOn(console, "log").mockImplementation(() => {});
+    const create = jest
+      .fn<
+        (
+          params: { amount: number; charge: string; reason: "fraudulent" },
+          options: { idempotencyKey: string },
+        ) => Promise<unknown>
+      >()
+      .mockRejectedValue({
+        statusCode: 400,
+        code: "charge_not_refundable",
+      });
+    const retrieve = jest.fn<(chargeId: string) => Promise<Stripe.Charge>>();
+
+    await expect(
+      refundChargeForEFW(
+        { charges: { retrieve }, refunds: { create } },
+        {
+          id: "ch_123",
+          amount: 2_500,
+          amount_refunded: 0,
+        } as Stripe.Charge,
+        "issfr_123",
+      ),
+    ).resolves.toBeUndefined();
+
+    expect(retrieve).not.toHaveBeenCalled();
+    expect(create).toHaveBeenCalledTimes(1);
+  });
 });

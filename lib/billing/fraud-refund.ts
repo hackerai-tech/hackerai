@@ -19,7 +19,7 @@ type FraudRefundStripeClient = {
 const TERMINAL_REFUND_ERROR_CODES = new Set([
   "charge_already_refunded",
   "charge_disputed",
-  "charge_pending",
+  "charge_not_refundable",
 ]);
 
 export function getRemainingRefundAmountCents(
