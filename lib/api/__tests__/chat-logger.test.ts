@@ -134,7 +134,7 @@ describe("captureAgentRun", () => {
       sandboxInfo: null,
       outcome: "success",
       selectedModel: "agent-model",
-      configuredModelId: "minimax/minimax-m3",
+      configuredModelId: "x-ai/grok-4.5",
       triggerRunId: "run_zero",
       triggerUsageDurationMs: 0,
       triggerTotalCostUsd: 0,
@@ -171,7 +171,7 @@ describe("captureAgentRun", () => {
       outcome: "success",
       selectedModel: "agent-model-free",
       configuredModelId: "deepseek/deepseek-v4-flash",
-      responseModel: "minimax/minimax-m3",
+      responseModel: "x-ai/grok-4.5",
       fallbackServed: true,
     });
 
@@ -181,7 +181,7 @@ describe("captureAgentRun", () => {
       properties: expect.objectContaining({
         selected_model: "agent-model-free",
         configured_model: "deepseek/deepseek-v4-flash",
-        response_model: "minimax/minimax-m3",
+        response_model: "x-ai/grok-4.5",
         fallback_served: true,
       }),
     });
@@ -759,7 +759,7 @@ describe("createChatLogger provider stream termination", () => {
       chatLogger.recordProviderError(err, {
         mode: "agent",
         model: "agent-model",
-        requestedModelSlug: "minimax/minimax-m3",
+        requestedModelSlug: "x-ai/grok-4.5",
       });
       chatLogger.emitUnexpectedError(err);
 
@@ -1541,7 +1541,7 @@ describe("createChatLogger provider stream timeout", () => {
       chatLogger.recordProviderError(err, {
         mode: "agent",
         model: "agent-model",
-        requestedModelSlug: "minimax/minimax-m3",
+        requestedModelSlug: "x-ai/grok-4.5",
       });
       chatLogger.emitUnexpectedError(err);
 

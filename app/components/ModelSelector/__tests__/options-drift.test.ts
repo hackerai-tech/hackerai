@@ -72,21 +72,21 @@ describe("ModelSelector tier ↔ provider drift", () => {
     }
   });
 
-  it("discloses the text and vision providers for Agent Standard", () => {
+  it("discloses the text and Grok vision providers for Agent Standard", () => {
     expect(
       AGENT_MODEL_OPTIONS.find((option) => option.id === "hackerai-standard")
         ?.poweredBy,
-    ).toBe("DeepSeek V4 Pro · MiniMax M3 for vision");
+    ).toBe("DeepSeek V4 Pro · xAI Grok 4.5 for vision");
   });
 
-  it("discloses Grok primary and GLM fallback for HackerAI Pro", () => {
+  it("discloses Grok 4.5 for HackerAI Pro", () => {
     expect(
       ASK_MODEL_OPTIONS.find((option) => option.id === "hackerai-pro")
         ?.poweredBy,
-    ).toBe("xAI Grok 4.5 · Z.ai GLM 5.2 fallback");
+    ).toBe("xAI Grok 4.5");
     expect(
       AGENT_MODEL_OPTIONS.find((option) => option.id === "hackerai-pro")
         ?.poweredBy,
-    ).toBe("xAI Grok 4.5 · Z.ai GLM 5.2 fallback");
+    ).toBe("xAI Grok 4.5");
   });
 });

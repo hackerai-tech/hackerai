@@ -45,11 +45,10 @@ export const getMaxStepsForUser = (
  * @param hasImageAttachment - Whether any message has an image attachment.
  * @param hasPdfAttachment - Whether any message has a PDF attachment.
  *   Paid ASK on the Standard/auto route normally uses DeepSeek V4 Pro
- *   (text-only); image-only prompts promote to MiniMax M3, while PDF prompts
- *   stay on Grok 4.5 for native document support. Paid Agent Auto/Standard
- *   routes use DeepSeek V4 Pro for text-only prompts and MiniMax M3 when
- *   provider-visible media is attached. HackerAI Pro uses Grok 4.5 for both
- *   text and vision; its GLM 5.2 fallback is configured downstream.
+ *   (text-only); image and PDF prompts promote to Grok 4.5. Paid Agent
+ *   Auto/Standard routes use DeepSeek V4 Pro for text-only prompts and Grok
+ *   4.5 when provider-visible media is attached. HackerAI Pro uses Grok 4.5
+ *   for both text and vision; its GLM 5.2 fallback is configured downstream.
  * @returns Model name to use
  */
 export function selectModel(
@@ -68,8 +67,7 @@ export function selectModel(
   );
   // DeepSeek routes are text-only, so image/PDF prompts promote to a
   // media-capable route unless the selected tier intentionally uses a
-  // multimodal/file-capable model such as Kimi or Opus. PDFs take precedence
-  // when mixed with images because the MiniMax ask route is image-scoped.
+  // multimodal/file-capable model such as Grok, Kimi, or Opus.
   const isFreeAsk = !isAgent && subscription === "free";
   const hasAskImage = !isAgent && !!hasImageAttachment;
   const hasAskPdf = !isAgent && !!hasPdfAttachment;
@@ -105,13 +103,11 @@ export function selectModel(
   // the auto-router label.
   if (allowedSelectedModel === "hackerai-standard") {
     if (isAgent) {
-      return hasProviderMedia ? "model-minimax-m3" : "model-deepseek-v4-pro";
+      return hasProviderMedia ? "model-grok-4.5" : "model-deepseek-v4-pro";
     }
-    return hasAskPdf
+    return hasAskImage || hasAskPdf
       ? "model-grok-4.5"
-      : hasAskImage
-        ? "model-minimax-m3"
-        : "model-deepseek-v4-pro";
+      : "model-deepseek-v4-pro";
   }
 
   if (allowedSelectedModel === "hackerai-pro") {

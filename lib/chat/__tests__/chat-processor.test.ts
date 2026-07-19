@@ -179,13 +179,13 @@ describe("selectModel", () => {
       },
     );
 
-    it("should return agent-model (MiniMax) for paid agent with an image", () => {
+    it("should return the Grok-backed agent model for paid agent with an image", () => {
       expect(selectModel("agent", "pro", undefined, true, false)).toBe(
         "agent-model",
       );
     });
 
-    it("should return agent-model (MiniMax) for paid agent with a PDF", () => {
+    it("should return the Grok-backed agent model for paid agent with a PDF", () => {
       expect(selectModel("agent", "pro", undefined, false, true)).toBe(
         "agent-model",
       );
@@ -195,7 +195,7 @@ describe("selectModel", () => {
       expect(selectModel("ask", "pro")).toBe("model-deepseek-v4-pro");
     });
 
-    it("should return ask-model (MiniMax) for paid ask when an image is attached", () => {
+    it("should return the Grok-backed ask model when an image is attached", () => {
       expect(selectModel("ask", "pro", undefined, true, false)).toBe(
         "ask-model",
       );
@@ -258,9 +258,9 @@ describe("selectModel", () => {
       );
     });
 
-    it("should promote HackerAI Standard to MiniMax M3 when an image is attached", () => {
+    it("should promote HackerAI Standard to Grok 4.5 when an image is attached", () => {
       expect(selectModel("ask", "pro", "hackerai-standard", true, false)).toBe(
-        "model-minimax-m3",
+        "model-grok-4.5",
       );
     });
 
@@ -311,16 +311,16 @@ describe("selectModel", () => {
       );
     });
 
-    it("should route HackerAI Standard to MiniMax M3 when an image is attached", () => {
+    it("should route HackerAI Standard to Grok 4.5 when an image is attached", () => {
       expect(
         selectModel("agent", "pro", "hackerai-standard", true, false),
-      ).toBe("model-minimax-m3");
+      ).toBe("model-grok-4.5");
     });
 
-    it("should route HackerAI Standard to MiniMax M3 when a PDF is attached", () => {
+    it("should route HackerAI Standard to Grok 4.5 when a PDF is attached", () => {
       expect(
         selectModel("agent", "pro", "hackerai-standard", false, true),
-      ).toBe("model-minimax-m3");
+      ).toBe("model-grok-4.5");
     });
 
     it("should map HackerAI Pro to Grok 4.5 in text-only agent mode", () => {
@@ -398,7 +398,7 @@ describe("selectModel", () => {
       expect(selectModel("agent", "pro", "auto")).toBe("model-deepseek-v4-pro");
     });
 
-    it("should route paid agent Auto media to agent-model (MiniMax)", () => {
+    it("should route paid agent Auto media to the Grok-backed agent model", () => {
       expect(selectModel("agent", "pro", "auto", true, false)).toBe(
         "agent-model",
       );
@@ -411,7 +411,7 @@ describe("selectModel", () => {
       expect(selectModel("ask", "pro", "auto")).toBe("model-deepseek-v4-pro");
     });
 
-    it("should treat 'auto' as no override in ask mode with image -> MiniMax", () => {
+    it("should treat 'auto' as no override in ask mode with image -> Grok", () => {
       expect(selectModel("ask", "pro", "auto", true, false)).toBe("ask-model");
     });
 
