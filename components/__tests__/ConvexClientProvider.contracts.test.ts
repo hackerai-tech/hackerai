@@ -9,6 +9,13 @@ const rootLayoutSource = fs.readFileSync(
   path.resolve(__dirname, "../../app/layout.tsx"),
   "utf8",
 );
+const authkitPatchSource = fs.readFileSync(
+  path.resolve(
+    __dirname,
+    "../../patches/@workos-inc__authkit-nextjs@4.2.0.patch",
+  ),
+  "utf8",
+);
 
 describe("ConvexClientProvider auth recovery contracts", () => {
   it("disables AuthKit focus and visibility session probes", () => {
@@ -27,5 +34,26 @@ describe("ConvexClientProvider auth recovery contracts", () => {
       "<ConvexClientProvider initialAuth={initialAuth}>",
     );
     expect(providerSource).toContain("initialAuth={initialAuth}");
+  });
+
+  it("recovers exact ended sessions at automatic AuthKit action boundaries", () => {
+    expect(authkitPatchSource).toContain(
+      "const isEndedSessionRefreshError = (value",
+    );
+    expect(authkitPatchSource).toContain("errorText.includes('invalid_grant')");
+    expect(authkitPatchSource).toContain("throw error;");
+    expect(authkitPatchSource).toContain(
+      "recoverEndedSession(() => refreshSession({ organizationId })",
+    );
+    expect(authkitPatchSource).toContain(
+      "recoverEndedSession(() => switchToOrganization(organizationId, options)",
+    );
+    expect(authkitPatchSource).toContain(
+      "recoverEndedSession(() => withAuth(), { user: null })",
+    );
+    expect(authkitPatchSource).toContain(
+      "if (isEndedSessionRefreshError(error))",
+    );
+    expect(authkitPatchSource).toContain("return { accessToken: undefined };");
   });
 });

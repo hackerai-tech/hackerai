@@ -8,7 +8,10 @@ import {
   logStripeWebhookMissingSignature,
   logStripeWebhookSignatureVerificationFailed,
 } from "@/lib/billing/stripe-webhook-logging";
-import { getRemainingRefundAmountCents } from "@/lib/billing/fraud-refund";
+import {
+  getRemainingRefundAmountCents,
+  isRefundAmountRaceError,
+} from "@/lib/billing/fraud-refund";
 import {
   isTerminalPaymentMethodDetachError,
   isTerminalStripeResourceError,
@@ -162,6 +165,8 @@ async function refundChargeForEFW(
     return;
   }
 
+  let refundError: unknown;
+
   try {
     await stripe.refunds.create(
       {
@@ -174,27 +179,66 @@ async function refundChargeForEFW(
     console.log(
       `[Fraud Webhook] Refunded ${remainingAmount} cents from charge ${charge.id} (early fraud warning ${efwId})`,
     );
+    return;
   } catch (err) {
-    if (err instanceof Stripe.errors.StripeError) {
-      const code = err.code;
-      if (
-        code === "charge_already_refunded" ||
-        code === "charge_disputed" ||
-        code === "charge_pending"
-      ) {
+    refundError = err;
+  }
+
+  // Another refund can land after the charge retrieval above. Refresh once
+  // and bound one retry to Stripe's current remaining balance. A distinct,
+  // event-derived idempotency key keeps concurrent race retries idempotent.
+  if (isRefundAmountRaceError(refundError)) {
+    try {
+      const refreshedCharge = await stripe.charges.retrieve(charge.id);
+      const refreshedRemainingAmount =
+        getRemainingRefundAmountCents(refreshedCharge);
+
+      if (refreshedRemainingAmount === 0) {
         console.log(
-          `[Fraud Webhook] Refund skipped for ${charge.id} (EFW ${efwId}): ${code}`,
+          `[Fraud Webhook] Refund skipped for ${charge.id} (EFW ${efwId}): charge has no refundable balance after refresh`,
         );
         return;
       }
+
+      if (refreshedRemainingAmount < remainingAmount) {
+        await stripe.refunds.create(
+          {
+            charge: charge.id,
+            reason: "fraudulent",
+            amount: refreshedRemainingAmount,
+          },
+          { idempotencyKey: `efw-refund:${efwId}:remaining` },
+        );
+        console.log(
+          `[Fraud Webhook] Refunded refreshed remaining balance of ${refreshedRemainingAmount} cents from charge ${charge.id} (early fraud warning ${efwId})`,
+        );
+        return;
+      }
+    } catch (err) {
+      refundError = err;
     }
-    // Transient or unexpected — bubble so Stripe retries the webhook.
-    console.error(
-      `[Fraud Webhook] Refund failed for ${charge.id} (EFW ${efwId}):`,
-      err,
-    );
-    throw err;
   }
+
+  if (refundError instanceof Stripe.errors.StripeError) {
+    const code = refundError.code;
+    if (
+      code === "charge_already_refunded" ||
+      code === "charge_disputed" ||
+      code === "charge_pending"
+    ) {
+      console.log(
+        `[Fraud Webhook] Refund skipped for ${charge.id} (EFW ${efwId}): ${code}`,
+      );
+      return;
+    }
+  }
+
+  // Transient or unexpected — bubble so Stripe retries the webhook.
+  console.error(
+    `[Fraud Webhook] Refund failed for ${charge.id} (EFW ${efwId}):`,
+    refundError,
+  );
+  throw refundError;
 }
 
 /** Resolve Stripe customer ID from a charge. */

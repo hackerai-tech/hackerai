@@ -762,7 +762,9 @@ const redactSandboxUploadError = (
   error: unknown,
 ): string => {
   const message = error instanceof Error ? error.message : String(error);
-  if (file.kind !== "localPath") return message;
+  if (file.kind === "url") {
+    return message.split(file.url).join(safeUrlForLog(file.url));
+  }
   return message.split(file.path).join("[redacted-local-path]");
 };
 

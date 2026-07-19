@@ -55,6 +55,9 @@ overrides:
   undici@>=7.0.0 <7.28.0: 7.28.0
 
 patchedDependencies:
+  '@workos-inc/authkit-nextjs@4.2.0':
+    hash: d280094ebf5ae4aec314c2a50eac6a004ce97078f318e4c47741c7b3953e9649
+    path: patches/@workos-inc__authkit-nextjs@4.2.0.patch
   ai@6.0.200:
     hash: 1079dc939735763e1ec40ea672cd70da577a253b731d47f34d1506acb47febf9
     path: patches/ai@6.0.200.patch
@@ -161,7 +164,7 @@ importers:
         version: 3.7.5(@aws-sdk/credential-provider-web-identity@3.972.63)(ws@8.21.0)
       '@workos-inc/authkit-nextjs':
         specifier: 4.2.0
-        version: 4.2.0(@workos-inc/node@10.7.0)(next@16.2.10(@babel/core@7.29.6)(@opentelemetry/api@1.9.1)(@playwright/test@1.61.1)(babel-plugin-macros@3.1.0)(react-dom@19.2.7(react@19.2.7))(react@19.2.7))(react-dom@19.2.7(react@19.2.7))(react@19.2.7)(typescript@6.0.3)
+        version: 4.2.0(patch_hash=d280094ebf5ae4aec314c2a50eac6a004ce97078f318e4c47741c7b3953e9649)(@workos-inc/node@10.7.0)(next@16.2.10(@babel/core@7.29.6)(@opentelemetry/api@1.9.1)(@playwright/test@1.61.1)(babel-plugin-macros@3.1.0)(react-dom@19.2.7(react@19.2.7))(react@19.2.7))(react-dom@19.2.7(react@19.2.7))(react@19.2.7)(typescript@6.0.3)
       '@workos-inc/node':
         specifier: ^10.7.0
         version: 10.7.0
@@ -12022,7 +12025,7 @@ snapshots:
 
   '@workos-inc/authkit-js@0.20.0': {}
 
-  '@workos-inc/authkit-nextjs@4.2.0(@workos-inc/node@10.7.0)(next@16.2.10(@babel/core@7.29.6)(@opentelemetry/api@1.9.1)(@playwright/test@1.61.1)(babel-plugin-macros@3.1.0)(react-dom@19.2.7(react@19.2.7))(react@19.2.7))(react-dom@19.2.7(react@19.2.7))(react@19.2.7)(typescript@6.0.3)':
+  '@workos-inc/authkit-nextjs@4.2.0(patch_hash=d280094ebf5ae4aec314c2a50eac6a004ce97078f318e4c47741c7b3953e9649)(@workos-inc/node@10.7.0)(next@16.2.10(@babel/core@7.29.6)(@opentelemetry/api@1.9.1)(@playwright/test@1.61.1)(babel-plugin-macros@3.1.0)(react-dom@19.2.7(react@19.2.7))(react@19.2.7))(react-dom@19.2.7(react@19.2.7))(react@19.2.7)(typescript@6.0.3)':
     dependencies:
       '@sindresorhus/fnv1a': 3.1.0
       '@workos-inc/node': 10.7.0
