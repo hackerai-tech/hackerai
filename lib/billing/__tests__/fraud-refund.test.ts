@@ -1,15 +1,14 @@
-import fs from "fs";
-import path from "path";
-import { describe, expect, it } from "@jest/globals";
+import { afterEach, describe, expect, it, jest } from "@jest/globals";
+import type Stripe from "stripe";
 import {
   getRemainingRefundAmountCents,
   isRefundAmountRaceError,
+  refundChargeForEFW,
 } from "../fraud-refund";
 
-const fraudWebhookSource = fs.readFileSync(
-  path.resolve(__dirname, "../../../app/api/fraud/webhook/route.ts"),
-  "utf8",
-);
+afterEach(() => {
+  jest.restoreAllMocks();
+});
 
 describe("getRemainingRefundAmountCents", () => {
   it("returns the full charge amount when nothing has been refunded", () => {
@@ -37,35 +36,66 @@ describe("getRemainingRefundAmountCents", () => {
     expect(
       isRefundAmountRaceError({
         statusCode: 400,
-        message:
-          "Refund amount ($25.00) is greater than unrefunded amount on charge ($0.03)",
+        code: "amount_too_large",
       }),
     ).toBe(true);
     expect(
       isRefundAmountRaceError({
         statusCode: 500,
-        message:
-          "Refund amount ($25.00) is greater than unrefunded amount on charge ($0.03)",
+        code: "amount_too_large",
       }),
     ).toBe(false);
     expect(
       isRefundAmountRaceError({
         statusCode: 400,
-        message: "No such charge",
+        code: "resource_missing",
       }),
     ).toBe(false);
   });
 
-  it("refreshes the charge and bounds one idempotent race retry", () => {
-    const refreshIndex = fraudWebhookSource.indexOf(
-      "stripe.charges.retrieve(charge.id)",
-    );
-    const boundedRetryIndex = fraudWebhookSource.indexOf(
-      "amount: refreshedRemainingAmount",
+  it("refreshes the charge and bounds one idempotent race retry", async () => {
+    jest.spyOn(console, "log").mockImplementation(() => {});
+    const raceError = { statusCode: 400, code: "amount_too_large" };
+    const create = jest
+      .fn<
+        (
+          params: { amount: number; charge: string; reason: "fraudulent" },
+          options: { idempotencyKey: string },
+        ) => Promise<unknown>
+      >()
+      .mockRejectedValueOnce(raceError)
+      .mockResolvedValueOnce({ id: "re_123" });
+    const retrieve = jest
+      .fn<(chargeId: string) => Promise<Stripe.Charge>>()
+      .mockResolvedValue({
+        id: "ch_123",
+        amount: 2_500,
+        amount_refunded: 2_497,
+      } as Stripe.Charge);
+
+    await refundChargeForEFW(
+      { charges: { retrieve }, refunds: { create } },
+      {
+        id: "ch_123",
+        amount: 2_500,
+        amount_refunded: 0,
+      } as Stripe.Charge,
+      "issfr_123",
     );
 
-    expect(refreshIndex).toBeGreaterThan(-1);
-    expect(boundedRetryIndex).toBeGreaterThan(refreshIndex);
-    expect(fraudWebhookSource).toContain("`efw-refund:${efwId}:remaining`");
+    expect(create).toHaveBeenNthCalledWith(
+      1,
+      { amount: 2_500, charge: "ch_123", reason: "fraudulent" },
+      { idempotencyKey: "efw-refund:issfr_123:2500" },
+    );
+    expect(retrieve).toHaveBeenCalledWith("ch_123");
+    expect(create).toHaveBeenNthCalledWith(
+      2,
+      { amount: 3, charge: "ch_123", reason: "fraudulent" },
+      { idempotencyKey: "efw-refund:issfr_123:remaining:3" },
+    );
+    expect(retrieve.mock.invocationCallOrder[0]).toBeLessThan(
+      create.mock.invocationCallOrder[1],
+    );
   });
 });

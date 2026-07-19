@@ -16,6 +16,10 @@ const authkitPatchSource = fs.readFileSync(
   ),
   "utf8",
 );
+const expectedAuthErrorSource = fs.readFileSync(
+  path.resolve(__dirname, "../../lib/auth/expected-auth-errors.ts"),
+  "utf8",
+);
 
 describe("ConvexClientProvider auth recovery contracts", () => {
   it("disables AuthKit focus and visibility session probes", () => {
@@ -40,7 +44,14 @@ describe("ConvexClientProvider auth recovery contracts", () => {
     expect(authkitPatchSource).toContain(
       "const isEndedSessionRefreshError = (value",
     );
-    expect(authkitPatchSource).toContain("errorText.includes('invalid_grant')");
+    for (const contractText of [
+      "invalid_grant",
+      "session has already ended",
+      "session ended due to inactivity",
+    ]) {
+      expect(authkitPatchSource).toContain(contractText);
+      expect(expectedAuthErrorSource).toContain(contractText);
+    }
     expect(authkitPatchSource).toContain("throw error;");
     expect(authkitPatchSource).toContain(
       "recoverEndedSession(() => refreshSession({ organizationId })",
@@ -48,8 +59,14 @@ describe("ConvexClientProvider auth recovery contracts", () => {
     expect(authkitPatchSource).toContain(
       "recoverEndedSession(() => switchToOrganization(organizationId, options)",
     );
-    expect(authkitPatchSource).toContain(
-      "recoverEndedSession(() => withAuth(), { user: null })",
+    expect(authkitPatchSource).toMatch(
+      /const \{ user, organizationId: sessionOrganizationId \} = await recoverEndedSession[\s\S]{0,160}\(\) => withAuth\(\)/,
+    );
+    expect(authkitPatchSource).toMatch(
+      /export const getAuthAction[\s\S]{0,700}const auth = await recoverEndedSession\(\(\) => withAuth\(\), \{ user: null \}/,
+    );
+    expect(authkitPatchSource).toMatch(
+      /export async function getAccessTokenAction[\s\S]{0,350}recoverEndedSession\(\(\) => withAuth\(\), \{ user: null \}[\s\S]{0,100}return auth\.accessToken/,
     );
     expect(authkitPatchSource).toContain(
       "if (isEndedSessionRefreshError(error))",

@@ -159,12 +159,18 @@ describe("desktop-local sandbox file helpers", () => {
         }),
       );
 
+      const normalizedLogCalls = consoleErrorSpy.mock.calls.map((call) =>
+        call.map((value) =>
+          value instanceof Error ? { message: value.message } : value,
+        ),
+      );
       const diagnostics = JSON.stringify({
-        logged: consoleErrorSpy.mock.calls,
+        logged: normalizedLogCalls,
         metadata: getSandboxUploadFailureMetadata(result),
       });
       expect(diagnostics).not.toContain("X-Amz-Credential");
       expect(diagnostics).not.toContain("X-Amz-Signature");
+      expect(diagnostics).not.toContain("opaque");
       expect(diagnostics).not.toContain("secret");
       expect(diagnostics).toContain(safeUrl);
       expect(getSandboxUploadFailureMetadata(result)).toMatchObject({
