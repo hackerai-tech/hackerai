@@ -5,9 +5,8 @@ import { api } from "@/convex/_generated/api";
 import Stripe from "stripe";
 import {
   resetRateLimitBuckets,
-  stashOldBucketRemaining,
-  popOldBucketRemaining,
-  initProratedBucket,
+  stashTierChangeBucketState,
+  applyProratedTierChangeBucket,
   clearOrgRemovedUsage,
 } from "@/lib/rate-limit";
 import { phLogger } from "@/lib/posthog/server";
@@ -142,6 +141,102 @@ function monthlyUsagePeriodEndSeconds(
   if (priceBillingInterval(price) !== "month") return undefined;
   if ((price?.recurring?.interval_count ?? 1) !== 1) return undefined;
   return subscriptionCurrentPeriodEndSeconds(subscription);
+}
+
+function monthlyTierChangeProration(
+  subscription: Stripe.Subscription,
+  effectiveChangeAtMs: number,
+): {
+  proratedRatio?: number;
+  periodEndSeconds?: number;
+} {
+  const periodEndSeconds = monthlyUsagePeriodEndSeconds(subscription);
+  if (!periodEndSeconds) return {};
+
+  const subscriptionItem = subscription.items?.data[0] as
+    { current_period_start?: number } | undefined;
+  const periodStartSeconds =
+    subscriptionItem?.current_period_start ??
+    (subscription as { current_period_start?: number }).current_period_start;
+  const effectiveChangeAtSeconds = Math.floor(effectiveChangeAtMs / 1000);
+  const totalDuration = periodStartSeconds
+    ? periodEndSeconds - periodStartSeconds
+    : 0;
+  const remainingDuration = periodEndSeconds - effectiveChangeAtSeconds;
+
+  return {
+    periodEndSeconds,
+    ...(totalDuration > 0 && {
+      proratedRatio: Math.max(
+        0,
+        Math.min(1, remainingDuration / totalDuration),
+      ),
+    }),
+  };
+}
+
+async function applyTierChangeBuckets({
+  userIds,
+  tier,
+  subscription,
+  includedUsagePoints,
+  subscriptionId,
+  transitionId,
+  effectiveChangeAtMs,
+  source,
+}: {
+  userIds: string[];
+  tier: SubscriptionTier;
+  subscription: Stripe.Subscription;
+  includedUsagePoints?: number;
+  subscriptionId: string;
+  transitionId: string;
+  effectiveChangeAtMs: number;
+  source: "invoice.paid" | "subscription.updated";
+}): Promise<number> {
+  const proration = monthlyTierChangeProration(
+    subscription,
+    effectiveChangeAtMs,
+  );
+  const results = await Promise.all(
+    userIds.map((userId) =>
+      applyProratedTierChangeBucket(userId, tier, {
+        identity: { subscriptionId, targetTier: tier, transitionId },
+        ...proration,
+        cycleAllocationPoints: includedUsagePoints,
+      }),
+    ),
+  );
+  const appliedResults = results.filter((result) => result !== null);
+  const appliedCount = appliedResults.length;
+  const incrementalPoints = appliedResults.reduce(
+    (total, result) => total + result.incrementalCredits,
+    0,
+  );
+
+  console.log(
+    appliedCount > 0
+      ? `[Subscription Webhook] ${source}: applied ${tier} tier-change proration for ${appliedCount} user(s), ${incrementalPoints} incremental point(s)`
+      : `[Subscription Webhook] ${source}: no tier-change state found; skipping bucket reset`,
+  );
+  return appliedCount;
+}
+
+async function getPaidTierChangeInvoice(
+  subscription: Stripe.Subscription,
+): Promise<Stripe.Invoice | null> {
+  const latestInvoice = subscription.latest_invoice;
+  if (!latestInvoice) return null;
+
+  const invoice =
+    typeof latestInvoice === "string"
+      ? await stripe.invoices.retrieve(latestInvoice)
+      : latestInvoice;
+  if (invoice.status !== "paid") return null;
+  return getInvoicePaidBucketResetMode(invoice).mode ===
+    "subscription_update_proration"
+    ? invoice
+    : null;
 }
 
 type BillingFailureAnalyticsContext = {
@@ -710,80 +805,20 @@ async function handleInvoicePaid(invoice: Stripe.Invoice): Promise<void> {
     return;
   }
 
-  // Mid-cycle tier change: prorate credits based on remaining time in the cycle.
-  // Only prorate if handleSubscriptionUpdated stashed old-tier data (confirms
-  // a real tier change). Other subscription_update reasons (quantity changes,
-  // billing anchor changes) are ignored so they cannot mint fresh credits.
+  // Mid-cycle tier change: apply only a previously stashed bucket migration.
+  // Missing state is intentionally a no-op so quantity/anchor changes cannot
+  // mint a fresh monthly allocation.
   if (resetMode.mode === "subscription_update_proration") {
-    // Check each user for a tier-change stash; collect those that have one
-    const stashResults = await Promise.all(
-      userIds.map(async (uid) => ({
-        uid,
-        stash: await popOldBucketRemaining(uid),
-      })),
-    );
-
-    const tierChangeUsers = stashResults.filter((r) => r.stash !== null);
-
-    if (tierChangeUsers.length > 0) {
-      console.log(
-        `[Subscription Webhook] invoice.paid (upgrade): prorating ${tier} buckets for ${tierChangeUsers.length} user(s)`,
-      );
-
-      const subscriptionItem = subscription.items?.data[0] as
-        | { current_period_start?: number; current_period_end?: number }
-        | undefined;
-      const periodStart =
-        subscriptionItem?.current_period_start ??
-        ((subscription as any).current_period_start as number);
-      const periodEnd =
-        subscriptionItem?.current_period_end ??
-        ((subscription as any).current_period_end as number);
-      const now = Math.floor(Date.now() / 1000);
-      const totalDuration = periodEnd - periodStart;
-      const remaining = periodEnd - now;
-
-      const proratedRatio = Math.max(
-        0,
-        Math.min(1, totalDuration > 0 ? remaining / totalDuration : 1),
-      );
-
-      await Promise.all(
-        tierChangeUsers.map(({ uid, stash }) =>
-          initProratedBucket(
-            uid,
-            tier,
-            proratedRatio,
-            stash!.consumed,
-            periodEnd,
-            includedUsagePoints,
-          ),
-        ),
-      );
-
-      // Any users without a stash (shouldn't happen, but safe fallback)
-      const nonTierChangeUsers = stashResults.filter((r) => r.stash === null);
-      if (nonTierChangeUsers.length > 0) {
-        const fallbackUsagePeriodEnd =
-          monthlyUsagePeriodEndSeconds(subscription);
-        await Promise.all(
-          nonTierChangeUsers.map(({ uid }) =>
-            resetRateLimitBuckets(
-              uid,
-              tier,
-              fallbackUsagePeriodEnd,
-              includedUsagePoints,
-            ),
-          ),
-        );
-      }
-
-      return;
-    }
-
-    console.log(
-      `[Subscription Webhook] invoice.paid (subscription_update): no tier-change stash for invoice ${invoice.id}; skipping bucket reset`,
-    );
+    await applyTierChangeBuckets({
+      userIds,
+      tier,
+      subscription,
+      includedUsagePoints,
+      subscriptionId,
+      transitionId: invoice.id,
+      effectiveChangeAtMs: invoicePaidAtMs(invoice),
+      source: "invoice.paid",
+    });
     return;
   }
 
@@ -1187,6 +1222,7 @@ async function handleSubscriptionUpdated(
   }
 
   const prevLookupKey = previousItems?.data?.[0]?.price?.lookup_key ?? null;
+  const previousPriceId = previousItems?.data?.[0]?.price?.id;
   const previousTier = prevLookupKey
     ? planLookupKeyToTier(prevLookupKey)
     : null;
@@ -1246,14 +1282,45 @@ async function handleSubscriptionUpdated(
     });
   }
 
-  // Stash remaining credits from old tier before deleting, then reset old buckets
-  if (previousTier) {
-    await Promise.all(
-      userIds.map((uid) => stashOldBucketRemaining(uid, previousTier)),
+  // Preserve the old cycle before removing its tier-specific key. Usually the
+  // following invoice.paid event applies the new bucket. If Stripe delivered
+  // invoice.paid first, apply it here from the already-paid latest invoice.
+  if (previousTier && currentTier) {
+    const latestInvoiceId = stripeObjectId(subscription.latest_invoice);
+    const transitionId =
+      latestInvoiceId ??
+      `subscription:${subscription.id}:${currentTier}:${subscriptionCurrentPeriodEndSeconds(subscription) ?? "unknown"}`;
+    const previousIncludedUsagePoints = includedUsagePointsForStripePrice(
+      typeof previousPriceId === "string" ? previousPriceId : undefined,
     );
     await Promise.all(
-      userIds.map((uid) => resetRateLimitBuckets(uid, previousTier)),
+      userIds.map((uid) =>
+        stashTierChangeBucketState(uid, previousTier, {
+          identity: {
+            subscriptionId: subscription.id,
+            targetTier: currentTier,
+            transitionId,
+          },
+          oldCycleAllocationPoints: previousIncludedUsagePoints,
+        }),
+      ),
     );
+
+    const paidTierChangeInvoice = await getPaidTierChangeInvoice(subscription);
+    if (paidTierChangeInvoice) {
+      await applyTierChangeBuckets({
+        userIds,
+        tier: currentTier,
+        subscription,
+        includedUsagePoints: includedUsagePointsForStripePrice(
+          currentPrice?.id,
+        ),
+        subscriptionId: subscription.id,
+        transitionId: paidTierChangeInvoice.id,
+        effectiveChangeAtMs: invoicePaidAtMs(paidTierChangeInvoice),
+        source: "subscription.updated",
+      });
+    }
   }
 }
 

@@ -17,6 +17,7 @@ export const isUserRateLimitKey = (key: string, userId: string): boolean => {
   return (
     key.startsWith(`usage:monthly:${userId}:`) ||
     key === `upgrade:carryover:${userId}` ||
+    key.startsWith(`upgrade:carryover:${userId}:`) ||
     isFreeQuotaSubjectRateLimitKey(key, userId) ||
     (key.startsWith("team:debt_applied:") && key.endsWith(`:${userId}`))
   );
