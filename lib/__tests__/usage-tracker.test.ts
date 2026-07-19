@@ -655,7 +655,7 @@ describe("UsageTracker", () => {
       const usage = tracker.createUsageCostRecord({
         selectedModel: "agent-model-free",
         accountingModel: "model-kimi-k2.7-code",
-        configuredModelId: "minimax/minimax-m3",
+        configuredModelId: "x-ai/grok-4.5",
         rateLimitInfo: {
           remaining: 1000,
           resetTime: new Date(),
@@ -680,7 +680,7 @@ describe("UsageTracker", () => {
       const usage = tracker.createUsageCostRecord({
         selectedModel: "agent-model-free",
         accountingModel: "model-kimi-k2.7-code",
-        configuredModelId: "minimax/minimax-m3",
+        configuredModelId: "x-ai/grok-4.5",
         rateLimitInfo: {
           remaining: 1000,
           resetTime: new Date(),
@@ -748,7 +748,7 @@ describe("UsageTracker", () => {
       const usage = tracker.createUsageCostRecord({
         selectedModel: "agent-model-free",
         accountingModel: "model-kimi-k2.7-code",
-        configuredModelId: "minimax/minimax-m3",
+        configuredModelId: "x-ai/grok-4.5",
         rateLimitInfo: {
           remaining: 1000,
           resetTime: new Date(),

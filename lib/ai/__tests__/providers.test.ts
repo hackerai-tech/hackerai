@@ -9,10 +9,10 @@ describe("provider registry", () => {
   it("keeps active routes and stale compatibility keys pointed at their provider slugs", () => {
     expect(
       (myProvider.languageModel("ask-model") as { modelId: string }).modelId,
-    ).toBe("minimax/minimax-m3");
+    ).toBe("x-ai/grok-4.5");
     expect(
       (myProvider.languageModel("agent-model") as { modelId: string }).modelId,
-    ).toBe("minimax/minimax-m3");
+    ).toBe("x-ai/grok-4.5");
     expect(
       (myProvider.languageModel("agent-model-free") as { modelId: string })
         .modelId,
@@ -20,7 +20,7 @@ describe("provider registry", () => {
     expect(
       (myProvider.languageModel("model-minimax-m3") as { modelId: string })
         .modelId,
-    ).toBe("minimax/minimax-m3");
+    ).toBe("x-ai/grok-4.5");
     expect(
       (myProvider.languageModel("model-grok-4.5") as { modelId: string })
         .modelId,
@@ -50,16 +50,16 @@ describe("provider registry", () => {
     expect(
       (myProvider.languageModel("fallback-agent-model") as { modelId: string })
         .modelId,
-    ).toBe("minimax/minimax-m3");
+    ).toBe("x-ai/grok-4.5");
     expect(
       (myProvider.languageModel("fallback-ask-model") as { modelId: string })
         .modelId,
-    ).toBe("minimax/minimax-m3");
+    ).toBe("x-ai/grok-4.5");
     expect(
       (myProvider.languageModel("title-generator-model") as { modelId: string })
         .modelId,
     ).toBe("x-ai/grok-4.5");
-    expect(getModelDisplayName("model-minimax-m3")).toBe("MiniMax M3");
+    expect(getModelDisplayName("model-minimax-m3")).toBe("xAI Grok 4.5");
     expect(getModelDisplayName("model-grok-4.5")).toBe("xAI Grok 4.5");
     expect(getModelDisplayName("model-grok-4.5-pro")).toBe("xAI Grok 4.5");
     expect(getModelDisplayName("model-glm-5.2")).toBe("Z.ai GLM 5.2");
@@ -71,7 +71,7 @@ describe("provider registry", () => {
 describe("sanitizeOpenRouterRequestForXai", () => {
   it("strips encrypted reasoning details when an OpenRouter fallback can route to xAI", () => {
     const body = {
-      model: "minimax/minimax-m3",
+      model: "moonshotai/kimi-k2.7-code:exacto",
       models: ["x-ai/grok-4.5"],
       messages: [
         {
@@ -135,7 +135,7 @@ describe("sanitizeOpenRouterRequestForXai", () => {
 
   it("leaves non-xAI routes unchanged", () => {
     const body = {
-      model: "minimax/minimax-m3",
+      model: "moonshotai/kimi-k2.7-code:exacto",
       messages: [
         {
           role: "assistant",
@@ -198,11 +198,12 @@ describe("sanitizeOpenRouterRequestForXai", () => {
 });
 
 describe("supportsMultimodalToolResults", () => {
-  it("allows MiniMax and Kimi registry keys and OpenRouter slugs for image tool result experiments", () => {
+  it("allows Grok aliases and Kimi routes for image tool result experiments", () => {
     expect(supportsMultimodalToolResults("agent-model")).toBe(true);
     expect(supportsMultimodalToolResults("ask-model")).toBe(true);
     expect(supportsMultimodalToolResults("model-minimax-m3")).toBe(true);
-    expect(supportsMultimodalToolResults("minimax/minimax-m3")).toBe(true);
+    expect(supportsMultimodalToolResults("fallback-agent-model")).toBe(true);
+    expect(supportsMultimodalToolResults("fallback-ask-model")).toBe(true);
     expect(supportsMultimodalToolResults("model-kimi-k2.7-code")).toBe(true);
     expect(
       supportsMultimodalToolResults("moonshotai/kimi-k2.7-code:exacto"),

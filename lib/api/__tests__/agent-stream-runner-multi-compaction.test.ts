@@ -166,14 +166,14 @@ describe("resolveAgentModelForImageToolResults", () => {
     ).toBe("model-deepseek-v4-pro");
   });
 
-  it("switches DeepSeek Agent steps to Kimi after image tool results", () => {
+  it("switches DeepSeek Agent steps to Grok after image tool results", () => {
     expect(
       resolveAgentModelForImageToolResults(
         "model-deepseek-v4-pro",
         "agent",
         true,
       ),
-    ).toBe("model-kimi-k2.7-code");
+    ).toBe("model-grok-4.5");
   });
 
   it("keeps the HackerAI Pro GLM fallback active after image tool results", () => {
@@ -182,10 +182,10 @@ describe("resolveAgentModelForImageToolResults", () => {
     ).toBe("model-glm-5.2");
   });
 
-  it("switches free DeepSeek Agent steps to MiniMax after image tool results", () => {
+  it("switches free DeepSeek Agent steps to Grok after image tool results", () => {
     expect(
       resolveAgentModelForImageToolResults("agent-model-free", "agent", true),
-    ).toBe("model-minimax-m3");
+    ).toBe("model-grok-4.5");
   });
 
   it("does not change Ask routes or multimodal Agent models", () => {
@@ -211,7 +211,7 @@ describe("resolveFallbackServedTelemetry", () => {
       resolveFallbackServedTelemetry({
         requestedModel: "deepseek/deepseek-v4-pro",
         responseModel: "deepseek/deepseek-v4-pro",
-        fallbackModels: ["minimax/minimax-m3"],
+        fallbackModels: ["x-ai/grok-4.5"],
       }),
     ).toBe(false);
   });
@@ -220,15 +220,15 @@ describe("resolveFallbackServedTelemetry", () => {
     expect(
       resolveFallbackServedTelemetry({
         requestedModel: "deepseek/deepseek-v4-pro",
-        responseModel: "minimax/minimax-m3",
-        fallbackModels: ["minimax/minimax-m3"],
+        responseModel: "x-ai/grok-4.5",
+        fallbackModels: ["x-ai/grok-4.5"],
       }),
     ).toBe(true);
     expect(
       resolveFallbackServedTelemetry({
-        requestedModel: "minimax/minimax-m3",
-        responseModel: "minimax/minimax-m3",
-        fallbackModels: ["minimax/minimax-m3"],
+        requestedModel: "x-ai/grok-4.5",
+        responseModel: "x-ai/grok-4.5",
+        fallbackModels: ["x-ai/grok-4.5"],
       }),
     ).toBe(false);
   });
@@ -255,9 +255,9 @@ describe("retry served-model telemetry", () => {
     expect(
       retryUsesDifferentModel("agent-model-free", "agent-model-free"),
     ).toBe(false);
-    expect(
-      retryUsesDifferentModel("agent-model-free", "model-minimax-m3"),
-    ).toBe(true);
+    expect(retryUsesDifferentModel("agent-model-free", "model-grok-4.5")).toBe(
+      true,
+    );
   });
 
   it("clears prior served-model state before a retry can abort without metadata", () => {

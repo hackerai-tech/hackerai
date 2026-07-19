@@ -948,7 +948,7 @@ describe("checkAndSummarizeIfNeeded", () => {
         openrouter: {
           user: "user_123",
           reasoning: { enabled: false },
-          models: ["minimax/minimax-m3"],
+          models: ["x-ai/grok-4.5", "moonshotai/kimi-k2.7-code:exacto"],
         },
       },
     );
@@ -966,8 +966,8 @@ describe("checkAndSummarizeIfNeeded", () => {
     expect(retryCall.providerOptions).toEqual({
       openrouter: {
         user: "user_123",
-        reasoning: { enabled: false },
-        models: ["moonshotai/kimi-k2.7-code:exacto", "x-ai/grok-4.5"],
+        reasoning: { enabled: true },
+        models: ["moonshotai/kimi-k2.7-code:exacto"],
       },
     });
 

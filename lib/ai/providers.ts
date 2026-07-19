@@ -179,15 +179,14 @@ type OpenRouterInstance = typeof openrouter;
 
 export const KIMI_K2_7_CODE_SLUG = "moonshotai/kimi-k2.7-code:exacto";
 export const GLM_5_2_SLUG = "z-ai/glm-5.2";
-export const MINIMAX_M3_SLUG = "minimax/minimax-m3";
 export const GROK_4_5_SLUG = "x-ai/grok-4.5";
 export const DEEPSEEK_V4_FLASH_SLUG = "deepseek/deepseek-v4-flash";
 
 const buildProviderMap = (or: OpenRouterInstance) =>
   ({
-    "ask-model": or(MINIMAX_M3_SLUG),
+    "ask-model": or(GROK_4_5_SLUG),
     "ask-model-free": or(DEEPSEEK_V4_FLASH_SLUG),
-    "agent-model": or(MINIMAX_M3_SLUG),
+    "agent-model": or(GROK_4_5_SLUG),
     "agent-model-free": or(DEEPSEEK_V4_FLASH_SLUG),
     "model-sonnet-4.6": or("anthropic/claude-sonnet-4-6"),
     "model-grok-4.5": or(GROK_4_5_SLUG),
@@ -201,13 +200,15 @@ const buildProviderMap = (or: OpenRouterInstance) =>
     "model-deepseek-v4-pro": or("deepseek/deepseek-v4-pro"),
     "model-opus-4.6": or("anthropic/claude-opus-4.6"),
     "model-glm-5.2": or(GLM_5_2_SLUG),
-    "model-minimax-m3": or(MINIMAX_M3_SLUG),
+    // Compatibility alias for persisted MiniMax selections. All new and stale
+    // callers now resolve to Grok 4.5 so no route continues sending MiniMax.
+    "model-minimax-m3": or(GROK_4_5_SLUG),
     "model-kimi-k2.7-code": or(KIMI_K2_7_CODE_SLUG),
     // Compatibility alias for stale internal references persisted before the
-    // Kimi 2.7 Code rollout. New Agent Standard selections use model-minimax-m3.
+    // Kimi 2.7 Code rollout. New Agent Standard media selections use Grok 4.5.
     "model-kimi-k2.6": or(KIMI_K2_7_CODE_SLUG),
-    "fallback-agent-model": or(MINIMAX_M3_SLUG),
-    "fallback-ask-model": or(MINIMAX_M3_SLUG),
+    "fallback-agent-model": or(GROK_4_5_SLUG),
+    "fallback-ask-model": or(GROK_4_5_SLUG),
     "fallback-grok-4.5": or(GROK_4_5_SLUG),
     "title-generator-model": or(GROK_4_5_SLUG),
   }) as Record<string, any>;
@@ -218,9 +219,9 @@ export type ModelName = keyof typeof baseProviders;
 
 export const modelCutoffDates: Record<ModelName, string> &
   Record<string, string> = {
-  "ask-model": "May 2026",
+  "ask-model": "July 2026",
   "ask-model-free": "May 2025",
-  "agent-model": "May 2026",
+  "agent-model": "July 2026",
   "agent-model-free": "May 2025",
   "model-sonnet-4.6": "May 2025",
   "model-grok-4.5": "July 2026",
@@ -230,11 +231,11 @@ export const modelCutoffDates: Record<ModelName, string> &
   "model-deepseek-v4-pro": "May 2025",
   "model-opus-4.6": "May 2025",
   "model-glm-5.2": "June 2026",
-  "model-minimax-m3": "May 2026",
+  "model-minimax-m3": "July 2026",
   "model-kimi-k2.7-code": "June 2025",
   "model-kimi-k2.6": "June 2025",
-  "fallback-agent-model": "May 2026",
-  "fallback-ask-model": "May 2026",
+  "fallback-agent-model": "July 2026",
+  "fallback-ask-model": "July 2026",
   "fallback-grok-4.5": "July 2026",
   "title-generator-model": "July 2026",
 };
@@ -253,7 +254,7 @@ export const modelDisplayNames: Record<ModelName, string> &
   "model-deepseek-v4-pro": "DeepSeek V4 Pro",
   "model-opus-4.6": "Anthropic Claude Opus 4.6",
   "model-glm-5.2": "Z.ai GLM 5.2",
-  "model-minimax-m3": "MiniMax M3",
+  "model-minimax-m3": "xAI Grok 4.5",
   "model-kimi-k2.7-code": "Moonshot Kimi K2.7 Code",
   "model-kimi-k2.6": "Moonshot Kimi K2.7 Code",
   "fallback-agent-model": "Auto, an intelligent model router built by HackerAI",
@@ -293,13 +294,17 @@ export function isKimiModel(modelName: string): boolean {
   );
 }
 
-export function isMiniMaxModel(modelName: string): boolean {
+function isGrokModel(modelName: string): boolean {
   const normalized = modelName.toLowerCase();
   return (
     normalized === "agent-model" ||
     normalized === "ask-model" ||
+    normalized === "fallback-agent-model" ||
+    normalized === "fallback-ask-model" ||
     normalized === "model-minimax-m3" ||
-    normalized.includes("minimax/minimax-m3")
+    normalized === "model-gemini-3-flash" ||
+    normalized.includes("x-ai/") ||
+    normalized.includes("grok")
   );
 }
 
@@ -309,9 +314,8 @@ export function supportsMultimodalToolResults(modelName?: string): boolean {
   const normalized = modelName.toLowerCase();
 
   return (
-    normalized === "model-gemini-3-flash" ||
     isKimiModel(normalized) ||
-    isMiniMaxModel(normalized) ||
+    isGrokModel(normalized) ||
     isAnthropicModel(normalized) ||
     normalized.includes("anthropic/") ||
     normalized.includes("claude") ||
@@ -319,9 +323,7 @@ export function supportsMultimodalToolResults(modelName?: string): boolean {
     normalized.includes("gpt-") ||
     normalized.includes("o1") ||
     normalized.includes("o3") ||
-    normalized.includes("o4") ||
-    normalized.includes("x-ai/") ||
-    normalized.includes("grok")
+    normalized.includes("o4")
   );
 }
 

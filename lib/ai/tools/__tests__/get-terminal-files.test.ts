@@ -42,7 +42,7 @@ function makeContext(overrides: Partial<ToolContext> = {}): ToolContext {
     assistantMessageId: "assistant-1",
     ptySessionManager: {} as never,
     mode: "agent",
-    modelName: "model-minimax-m3",
+    modelName: "model-grok-4.5",
     subscription: "pro",
     isE2BSandbox: (() => true) as never,
     ...overrides,
