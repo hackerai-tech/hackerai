@@ -14,6 +14,10 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import {
@@ -49,7 +53,11 @@ import {
   Pin,
   PinOff,
   LoaderCircle,
+  Folder,
   FolderInput,
+  FolderMinus,
+  FolderPlus,
+  ListPlus,
 } from "lucide-react";
 import { useMutation } from "convex/react";
 import { api } from "@/convex/_generated/api";
@@ -58,9 +66,12 @@ import { openSettingsDialog } from "@/lib/utils/settings-dialog";
 import { cancelAgentLongRealtimeStreams } from "@/lib/chat/agent-long-transport";
 import { ShareDialog } from "./ShareDialog";
 import { MoveChatToProjectDialog } from "./MoveChatToProjectDialog";
+import { ProjectCreateDialog } from "./ProjectCreateDialog";
 import { usePinChat, useUnpinChat } from "../hooks/useChats";
+import { useMoveChatToProjectAction } from "../hooks/useMoveChatToProjectAction";
 import { setSidebarChatDragData } from "./sidebar-chat-drag";
 import { formatTaskTitle, formatTaskUiCopy } from "@/app/utils/task-ui-copy";
+import { useSidebarProjectList } from "@/app/contexts/SidebarProjectList";
 
 interface ChatItemProps {
   id: string;
@@ -74,6 +85,15 @@ interface ChatItemProps {
   isStreaming?: boolean;
   isAwaitingApproval?: boolean;
 }
+
+const CHAT_OPTIONS_CONTENT_CLASS =
+  "z-50 min-w-52 rounded-xl border-border/80 p-1.5 shadow-xl";
+const CHAT_OPTION_ITEM_CLASS =
+  "h-9 gap-2.5 rounded-md px-2.5 py-1.5 text-sm font-normal text-foreground focus:bg-accent focus:text-foreground data-[highlighted]:bg-accent data-[highlighted]:text-foreground";
+const CHAT_OPTION_DESTRUCTIVE_ITEM_CLASS =
+  "h-9 gap-2.5 rounded-md px-2.5 py-1.5 text-sm font-normal text-destructive focus:bg-destructive/10 focus:text-destructive data-[highlighted]:bg-destructive/10 data-[highlighted]:text-destructive";
+const CHAT_OPTIONS_SEPARATOR_CLASS = "mx-1 my-1 bg-border/80";
+const CHAT_OPTION_ICON_CLASS = "size-4 shrink-0 text-foreground/75";
 
 const getRouteChatIdFromPathname = (pathname: string | null): string | null => {
   const match = pathname?.match(/^\/c\/([^/?#]+)/);
@@ -107,6 +127,7 @@ const ChatItem: React.FC<ChatItemProps> = ({
   const [showRenameDialog, setShowRenameDialog] = useState(false);
   const [showShareDialog, setShowShareDialog] = useState(false);
   const [showMoveProjectDialog, setShowMoveProjectDialog] = useState(false);
+  const [showCreateProjectDialog, setShowCreateProjectDialog] = useState(false);
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
   const [editTitle, setEditTitle] = useState(taskTitle);
   const [isRenaming, setIsRenaming] = useState(false);
@@ -127,6 +148,17 @@ const ChatItem: React.FC<ChatItemProps> = ({
   const renameChat = useMutation(api.chats.renameChat);
   const pinChat = usePinChat();
   const unpinChat = useUnpinChat();
+  const {
+    movingDestination: movingProjectId,
+    moveToProject: handleProjectMove,
+  } = useMoveChatToProjectAction({ chatId: id, currentProjectId: projectId });
+  const {
+    projects,
+    paginationStatus: projectPaginationStatus,
+    loadMoreProjects,
+  } = useSidebarProjectList();
+  const destinationProjects =
+    projects?.filter((project) => project._id !== projectId) ?? [];
 
   const routeChatId = getRouteChatIdFromPathname(pathname);
   const selectedChatId = optimisticChatId ?? routeChatId;
@@ -177,6 +209,7 @@ const ChatItem: React.FC<ChatItemProps> = ({
       showRenameDialog ||
       showShareDialog ||
       showMoveProjectDialog ||
+      showCreateProjectDialog ||
       showDeleteDialog ||
       isDropdownOpen
     ) {
@@ -303,6 +336,11 @@ const ChatItem: React.FC<ChatItemProps> = ({
     }, 50);
   };
 
+  const handleCreateProject = () => {
+    setIsDropdownOpen(false);
+    window.setTimeout(() => setShowCreateProjectDialog(true), 50);
+  };
+
   const handlePin = async (e: React.MouseEvent) => {
     e.preventDefault();
     e.stopPropagation();
@@ -378,6 +416,7 @@ const ChatItem: React.FC<ChatItemProps> = ({
     if (
       showRenameDialog ||
       showMoveProjectDialog ||
+      showCreateProjectDialog ||
       isDropdownOpen ||
       showDeleteDialog
     ) {
@@ -480,44 +519,165 @@ const ChatItem: React.FC<ChatItemProps> = ({
                 }}
                 aria-label="Open task options"
               >
-                <Ellipsis className="size-[18px]" />
+                <Ellipsis className="size-[18px]" aria-hidden="true" />
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent
               align="start"
               side="bottom"
               sideOffset={5}
-              className="z-50 py-2"
+              className={CHAT_OPTIONS_CONTENT_CLASS}
               onClick={(e) => e.stopPropagation()}
             >
-              <DropdownMenuItem onClick={handleRename}>
-                <Edit2 className="mr-2 h-4 w-4" />
+              <DropdownMenuItem
+                className={CHAT_OPTION_ITEM_CLASS}
+                onClick={handleShare}
+              >
+                <Share className={CHAT_OPTION_ICON_CLASS} aria-hidden="true" />
+                Share
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                className={CHAT_OPTION_ITEM_CLASS}
+                onClick={handleRename}
+              >
+                <Edit2 className={CHAT_OPTION_ICON_CLASS} aria-hidden="true" />
                 Rename
               </DropdownMenuItem>
+              <DropdownMenuSeparator className={CHAT_OPTIONS_SEPARATOR_CLASS} />
               {isPinned ? (
-                <DropdownMenuItem onClick={handleUnpin}>
-                  <PinOff className="mr-2 h-4 w-4" />
+                <DropdownMenuItem
+                  className={CHAT_OPTION_ITEM_CLASS}
+                  onClick={handleUnpin}
+                >
+                  <PinOff
+                    className={CHAT_OPTION_ICON_CLASS}
+                    aria-hidden="true"
+                  />
                   Unpin
                 </DropdownMenuItem>
               ) : (
-                <DropdownMenuItem onClick={handlePin}>
-                  <Pin className="mr-2 h-4 w-4" />
+                <DropdownMenuItem
+                  className={CHAT_OPTION_ITEM_CLASS}
+                  onClick={handlePin}
+                >
+                  <Pin className={CHAT_OPTION_ICON_CLASS} aria-hidden="true" />
                   Pin
                 </DropdownMenuItem>
               )}
-              <DropdownMenuItem onClick={handleShare}>
-                <Share className="mr-2 h-4 w-4" />
-                Share
-              </DropdownMenuItem>
-              <DropdownMenuItem onClick={handleMoveToProject}>
-                <FolderInput className="mr-2 h-4 w-4" />
-                Move to project…
-              </DropdownMenuItem>
+              {projects && projects.length > 0 ? (
+                <DropdownMenuSub>
+                  <DropdownMenuSubTrigger className={CHAT_OPTION_ITEM_CLASS}>
+                    <FolderInput
+                      className={CHAT_OPTION_ICON_CLASS}
+                      aria-hidden="true"
+                    />
+                    Move to project
+                  </DropdownMenuSubTrigger>
+                  <DropdownMenuSubContent
+                    className={CHAT_OPTIONS_CONTENT_CLASS}
+                    onClick={(event) => event.stopPropagation()}
+                  >
+                    <DropdownMenuItem
+                      className={CHAT_OPTION_ITEM_CLASS}
+                      onSelect={handleCreateProject}
+                    >
+                      <FolderPlus
+                        className={CHAT_OPTION_ICON_CLASS}
+                        aria-hidden="true"
+                      />
+                      New project
+                    </DropdownMenuItem>
+                    <DropdownMenuSeparator
+                      className={CHAT_OPTIONS_SEPARATOR_CLASS}
+                    />
+                    {projectId ? (
+                      <>
+                        <DropdownMenuItem
+                          className={CHAT_OPTION_ITEM_CLASS}
+                          disabled={movingProjectId !== null}
+                          onSelect={() => void handleProjectMove(null)}
+                        >
+                          <FolderMinus
+                            className={CHAT_OPTION_ICON_CLASS}
+                            aria-hidden="true"
+                          />
+                          Remove from project
+                        </DropdownMenuItem>
+                        {destinationProjects.length > 0 ? (
+                          <DropdownMenuSeparator
+                            className={CHAT_OPTIONS_SEPARATOR_CLASS}
+                          />
+                        ) : null}
+                      </>
+                    ) : null}
+                    {destinationProjects.map((project) => (
+                      <DropdownMenuItem
+                        key={project._id}
+                        className={CHAT_OPTION_ITEM_CLASS}
+                        disabled={movingProjectId !== null}
+                        onSelect={() =>
+                          void handleProjectMove(project._id, project.name)
+                        }
+                      >
+                        <Folder
+                          className={CHAT_OPTION_ICON_CLASS}
+                          aria-hidden="true"
+                        />
+                        <span className="min-w-0 truncate">{project.name}</span>
+                      </DropdownMenuItem>
+                    ))}
+                    {projectPaginationStatus === "LoadingMore" ? (
+                      <DropdownMenuItem
+                        className={CHAT_OPTION_ITEM_CLASS}
+                        disabled
+                      >
+                        <LoaderCircle
+                          className={`${CHAT_OPTION_ICON_CLASS} animate-spin`}
+                          aria-hidden="true"
+                        />
+                        Loading more projects…
+                      </DropdownMenuItem>
+                    ) : null}
+                    {projectPaginationStatus === "CanLoadMore" &&
+                    loadMoreProjects ? (
+                      <DropdownMenuItem
+                        className={CHAT_OPTION_ITEM_CLASS}
+                        onSelect={(event) => {
+                          event.preventDefault();
+                          loadMoreProjects(10);
+                        }}
+                      >
+                        <ListPlus
+                          className={CHAT_OPTION_ICON_CLASS}
+                          aria-hidden="true"
+                        />
+                        Show more projects
+                      </DropdownMenuItem>
+                    ) : null}
+                  </DropdownMenuSubContent>
+                </DropdownMenuSub>
+              ) : (
+                <DropdownMenuItem
+                  className={CHAT_OPTION_ITEM_CLASS}
+                  onClick={handleMoveToProject}
+                >
+                  <FolderInput
+                    className={CHAT_OPTION_ICON_CLASS}
+                    aria-hidden="true"
+                  />
+                  Move to project…
+                </DropdownMenuItem>
+              )}
+              <DropdownMenuSeparator className={CHAT_OPTIONS_SEPARATOR_CLASS} />
               <DropdownMenuItem
+                variant="destructive"
                 onClick={handleDeleteClick}
-                className="text-destructive focus:text-destructive"
+                className={CHAT_OPTION_DESTRUCTIVE_ITEM_CLASS}
               >
-                <Trash2 className="mr-2 h-4 w-4" />
+                <Trash2
+                  className="size-4 shrink-0 text-destructive"
+                  aria-hidden="true"
+                />
                 Delete
               </DropdownMenuItem>
             </DropdownMenuContent>
@@ -586,6 +746,17 @@ const ChatItem: React.FC<ChatItemProps> = ({
           currentProjectId={projectId}
           open={showMoveProjectDialog}
           onOpenChange={setShowMoveProjectDialog}
+        />
+      ) : null}
+
+      {showCreateProjectDialog ? (
+        <ProjectCreateDialog
+          open
+          onOpenChange={setShowCreateProjectDialog}
+          onCreated={(newProjectId, projectName) => {
+            void handleProjectMove(newProjectId, projectName);
+          }}
+          showSuccessToast={false}
         />
       ) : null}
 

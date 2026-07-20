@@ -18,6 +18,7 @@ import SidebarUserNav from "./SidebarUserNav";
 import SidebarHeaderContent from "./SidebarHeader";
 import { SidebarChatSections } from "./SidebarChatSections";
 import { useProjects } from "../hooks/useProjects";
+import { SidebarProjectListProvider } from "../contexts/SidebarProjectList";
 
 /** Chat list data lifted from parent so the subscription stays active when sidebar closes. */
 export type ChatListData = ReturnType<typeof useChats>;
@@ -35,15 +36,21 @@ const ChatListContent: FC<{ chatListData: ChatListData }> = ({
       ref={scrollContainerRef}
       data-testid="sidebar-chat-list-scroll-container"
     >
-      <SidebarChatSections
-        chats={chatListData.results || []}
+      <SidebarProjectListProvider
         projects={projectListData.results}
-        projectPaginationStatus={projectListData.status}
+        paginationStatus={projectListData.status}
         loadMoreProjects={projectListData.loadMore}
-        paginationStatus={chatListData.status}
-        loadMore={chatListData.loadMore}
-        containerRef={scrollContainerRef}
-      />
+      >
+        <SidebarChatSections
+          chats={chatListData.results || []}
+          projects={projectListData.results}
+          projectPaginationStatus={projectListData.status}
+          loadMoreProjects={projectListData.loadMore}
+          paginationStatus={chatListData.status}
+          loadMore={chatListData.loadMore}
+          containerRef={scrollContainerRef}
+        />
+      </SidebarProjectListProvider>
     </div>
   );
 };

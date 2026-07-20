@@ -1,7 +1,18 @@
 import "@testing-library/jest-dom";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, jest } from "@jest/globals";
+
+const mockMoveChatToProject = jest.fn<any>();
+const mockToastSuccess = jest.fn();
+const mockToastInfo = jest.fn();
+let mockProjects: any[] | undefined;
 
 jest.mock("next/navigation", () => ({
   useRouter: () => ({ push: jest.fn() }),
@@ -28,8 +39,38 @@ jest.mock("@/app/hooks/useChats", () => ({
   usePinChat: () => jest.fn(),
   useUnpinChat: () => jest.fn(),
 }));
+jest.mock("@/app/hooks/useProjects", () => ({
+  useMoveChatToProject: () => mockMoveChatToProject,
+}));
+jest.mock("@/app/contexts/SidebarProjectList", () => ({
+  useSidebarProjectList: () => ({ projects: mockProjects }),
+}));
+jest.mock("sonner", () => ({
+  toast: {
+    success: mockToastSuccess,
+    info: mockToastInfo,
+    error: jest.fn(),
+  },
+}));
 jest.mock("../ShareDialog", () => ({
   ShareDialog: () => null,
+}));
+jest.mock("../ProjectCreateDialog", () => ({
+  ProjectCreateDialog: ({
+    open,
+    onCreated,
+  }: {
+    open: boolean;
+    onCreated: (projectId: string, projectName: string) => void;
+  }) =>
+    open ? (
+      <button
+        type="button"
+        onClick={() => onCreated("project-new", "New target")}
+      >
+        Complete project creation
+      </button>
+    ) : null,
 }));
 jest.mock("../MoveChatToProjectDialog", () => ({
   MoveChatToProjectDialog: ({
@@ -51,6 +92,8 @@ describe("ChatItem project actions", () => {
   beforeEach(() => {
     jest.clearAllMocks();
     mockUseIsMobile.mockReturnValue(false);
+    mockMoveChatToProject.mockResolvedValue(true);
+    mockProjects = undefined;
   });
 
   it("reveals an accessible move action when the row receives keyboard focus", async () => {
@@ -80,6 +123,119 @@ describe("ChatItem project actions", () => {
         "data-project-id",
         "project-1",
       );
+    });
+  });
+
+  it("shows existing projects in a submenu instead of the move dialog", async () => {
+    const user = userEvent.setup();
+    mockProjects = [
+      {
+        _id: "project-1",
+        _creationTime: 1,
+        user_id: "user-1",
+        name: "Acme target",
+        created_at: 1,
+        updated_at: 1,
+      },
+    ];
+    render(<ChatItem id="chat-1" title="Target notes" />);
+
+    fireEvent.focus(screen.getByRole("button", { name: /Open task:/ }));
+    await user.click(screen.getByRole("button", { name: "Open task options" }));
+
+    const moveTrigger = await screen.findByRole("menuitem", {
+      name: "Move to project",
+    });
+    const taskOptionsMenu = moveTrigger.closest('[role="menu"]');
+    expect(taskOptionsMenu).toHaveClass(
+      "min-w-52",
+      "rounded-xl",
+      "border-border/80",
+      "p-1.5",
+    );
+    expect(
+      taskOptionsMenu?.querySelectorAll('[role="separator"]'),
+    ).toHaveLength(2);
+    for (const itemName of ["Share", "Rename", "Pin", "Move to project"]) {
+      expect(screen.getByRole("menuitem", { name: itemName })).toHaveClass(
+        "h-9",
+        "gap-2.5",
+        "rounded-md",
+        "px-2.5",
+        "text-foreground",
+      );
+    }
+    const deleteItem = screen.getByRole("menuitem", { name: "Delete" });
+    expect(deleteItem).toHaveAttribute("data-variant", "destructive");
+    expect(deleteItem).toHaveClass("h-9", "px-2.5", "text-destructive");
+
+    act(() => moveTrigger.focus());
+    fireEvent.keyDown(moveTrigger, { key: "ArrowRight" });
+
+    const destinationItem = await screen.findByRole("menuitem", {
+      name: "Acme target",
+    });
+    expect(destinationItem).toHaveClass(
+      "h-9",
+      "gap-2.5",
+      "rounded-md",
+      "px-2.5",
+      "text-foreground",
+    );
+    await user.click(destinationItem);
+
+    await waitFor(() => {
+      expect(mockMoveChatToProject).toHaveBeenCalledWith({
+        chatId: "chat-1",
+        projectId: "project-1",
+      });
+    });
+    expect(
+      screen.queryByTestId("move-chat-to-project-dialog"),
+    ).not.toBeInTheDocument();
+    expect(mockToastSuccess).toHaveBeenCalledWith("Moved to Acme target", {
+      action: expect.objectContaining({ label: "Undo" }),
+    });
+  });
+
+  it("creates a project from the submenu and moves the task into it", async () => {
+    const user = userEvent.setup();
+    mockProjects = [
+      {
+        _id: "project-1",
+        _creationTime: 1,
+        user_id: "user-1",
+        name: "Acme target",
+        created_at: 1,
+        updated_at: 1,
+      },
+    ];
+    render(<ChatItem id="chat-1" title="Target notes" />);
+
+    fireEvent.focus(screen.getByRole("button", { name: /Open task:/ }));
+    await user.click(screen.getByRole("button", { name: "Open task options" }));
+    const moveTrigger = await screen.findByRole("menuitem", {
+      name: "Move to project",
+    });
+    act(() => moveTrigger.focus());
+    fireEvent.keyDown(moveTrigger, { key: "ArrowRight" });
+    await user.click(
+      await screen.findByRole("menuitem", { name: "New project" }),
+    );
+    await user.click(
+      await screen.findByRole("button", {
+        name: "Complete project creation",
+      }),
+    );
+
+    await waitFor(() => {
+      expect(mockMoveChatToProject).toHaveBeenCalledWith({
+        chatId: "chat-1",
+        projectId: "project-new",
+      });
+    });
+    expect(mockToastSuccess).toHaveBeenCalledWith("Moved to New target", {
+      action: expect.objectContaining({ label: "Undo" }),
     });
   });
 
