@@ -141,6 +141,7 @@ const UsageLogsTable = () => {
     ];
     const rows = results.map((log) => {
       const {
+        componentBreakdownAvailable,
         includedChargeDollars,
         extraUsageChargeDollars,
         totalChargeDollars,
@@ -155,8 +156,8 @@ const UsageLogsTable = () => {
         log.output_tokens.toString(),
         log.total_tokens.toString(),
         formatCost(totalChargeDollars),
-        formatCost(includedChargeDollars),
-        formatCost(extraUsageChargeDollars),
+        componentBreakdownAvailable ? formatCost(includedChargeDollars) : "",
+        componentBreakdownAvailable ? formatCost(extraUsageChargeDollars) : "",
       ];
     });
 
@@ -298,6 +299,7 @@ const UsageLogsTable = () => {
               results.map((log) => {
                 const billingLabel = getUsageBillingLabel(log);
                 const {
+                  componentBreakdownAvailable,
                   includedChargeDollars,
                   extraUsageChargeDollars,
                   totalChargeDollars,
@@ -327,7 +329,8 @@ const UsageLogsTable = () => {
                     </td>
                     <td className="px-3 py-2.5 text-right tabular-nums text-muted-foreground">
                       <div>{formatCost(totalChargeDollars)}</div>
-                      {billingLabel === "Included + Extra" ? (
+                      {billingLabel === "Included + Extra" &&
+                      componentBreakdownAvailable ? (
                         <div className="mt-0.5 text-[11px] leading-4 text-muted-foreground/80">
                           Included {formatCost(includedChargeDollars)} + Extra{" "}
                           {formatCost(extraUsageChargeDollars)}

@@ -25,6 +25,7 @@ describe("getUsageChargeBreakdown", () => {
     });
 
     expect(result).toEqual({
+      componentBreakdownAvailable: true,
       includedChargeDollars: 1,
       extraUsageChargeDollars: 1.15,
       totalChargeDollars: 2.15,
@@ -50,8 +51,23 @@ describe("getUsageChargeBreakdown", () => {
     });
 
     expect(result).toEqual({
+      componentBreakdownAvailable: true,
       includedChargeDollars: 0,
       extraUsageChargeDollars: 2.5,
+      totalChargeDollars: 2.5,
+    });
+  });
+
+  it("marks the component breakdown unavailable for legacy mixed rows", () => {
+    const result = getUsageChargeBreakdown({
+      type: "mixed",
+      cost_dollars: 2.5,
+    });
+
+    expect(result).toEqual({
+      componentBreakdownAvailable: false,
+      includedChargeDollars: 0,
+      extraUsageChargeDollars: 0,
       totalChargeDollars: 2.5,
     });
   });

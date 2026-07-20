@@ -42,4 +42,33 @@ describe("UsageLogsTable", () => {
     expect(screen.getByText("$19.38")).toBeInTheDocument();
     expect(screen.queryByText("$12.04")).not.toBeInTheDocument();
   });
+
+  it("does not show a false component split for legacy mixed rows", () => {
+    convexReact.setMockPaginatedQueryResult?.({
+      results: [
+        {
+          _id: "usage-legacy-mixed",
+          _creationTime: Date.parse("2026-07-19T15:29:18.000Z"),
+          type: "mixed",
+          model: "anthropic/claude-opus-4.6",
+          input_tokens: 100,
+          output_tokens: 50,
+          total_tokens: 150,
+          cost_dollars: 2.5,
+        },
+      ],
+      status: "Exhausted",
+      loadMore: jest.fn(),
+      isLoading: false,
+    });
+
+    render(
+      <TooltipProvider>
+        <UsageLogsTable />
+      </TooltipProvider>,
+    );
+
+    expect(screen.getByText("$2.50")).toBeInTheDocument();
+    expect(screen.queryByText(/Included \$0\.00/)).not.toBeInTheDocument();
+  });
 });

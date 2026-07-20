@@ -29,11 +29,17 @@ export const getUsageChargeBreakdown = (log: UsageLogBilling) => {
     );
 
     return {
+      componentBreakdownAvailable: true,
       includedChargeDollars,
       extraUsageChargeDollars,
       totalChargeDollars: includedChargeDollars + extraUsageChargeDollars,
     };
   }
+
+  const componentBreakdownAvailable =
+    log.type !== "mixed" ||
+    (typeof log.included_cost_dollars === "number" &&
+      typeof log.extra_usage_cost_dollars === "number");
 
   const includedChargeDollars =
     log.included_cost_dollars ??
@@ -43,6 +49,7 @@ export const getUsageChargeBreakdown = (log: UsageLogBilling) => {
     (log.type === "extra" ? log.cost_dollars : 0);
 
   return {
+    componentBreakdownAvailable,
     includedChargeDollars,
     extraUsageChargeDollars,
     totalChargeDollars: log.cost_dollars,
