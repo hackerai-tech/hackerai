@@ -1,5 +1,11 @@
 import "@testing-library/jest-dom";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import { beforeEach, describe, expect, it, jest } from "@jest/globals";
 import type { Doc } from "@/convex/_generated/dataModel";
 
@@ -101,7 +107,7 @@ describe("MoveChatToProjectDialog", () => {
     const successOptions = mockToast.success.mock.calls.find(
       ([message]) => message === "Removed from project",
     )?.[1] as { action?: { onClick?: () => void } } | undefined;
-    successOptions?.action?.onClick?.();
+    act(() => successOptions?.action?.onClick?.());
 
     await waitFor(() => {
       expect(moveChatToProject).toHaveBeenCalledWith({
@@ -109,6 +115,51 @@ describe("MoveChatToProjectDialog", () => {
         projectId: "project-1",
       });
       expect(mockToast.success).toHaveBeenCalledWith("Move undone");
+    });
+  });
+
+  it("does not race an undo with another move", async () => {
+    let finishMove: ((moved: boolean) => void) | undefined;
+    const onOpenChange = jest.fn();
+
+    render(
+      <MoveChatToProjectDialog
+        chatId="chat-1"
+        open
+        onOpenChange={onOpenChange}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Acme target" }));
+    await waitFor(() => {
+      expect(mockToast.success).toHaveBeenCalledWith("Moved to Acme target", {
+        action: expect.objectContaining({ label: "Undo" }),
+      });
+    });
+    const undo = mockToast.success.mock.calls.find(
+      ([message]) => message === "Moved to Acme target",
+    )?.[1]?.action?.onClick as (() => void) | undefined;
+    expect(undo).toBeDefined();
+
+    moveChatToProject.mockImplementationOnce(
+      () =>
+        new Promise<boolean>((resolve) => {
+          finishMove = resolve;
+        }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Acme target" }));
+    await waitFor(() => {
+      expect(
+        screen.getByRole("button", { name: "Acme target" }),
+      ).toBeDisabled();
+    });
+
+    undo?.();
+    expect(moveChatToProject).toHaveBeenCalledTimes(2);
+
+    finishMove?.(true);
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "Acme target" })).toBeEnabled();
     });
   });
 

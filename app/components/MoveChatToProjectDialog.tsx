@@ -1,8 +1,6 @@
 "use client";
 
-import { useState } from "react";
 import { Folder, FolderMinus, LoaderCircle } from "lucide-react";
-import { toast } from "sonner";
 import type { Id } from "@/convex/_generated/dataModel";
 import { Button } from "@/components/ui/button";
 import {
@@ -13,8 +11,11 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { useMoveChatToProject, useProjects } from "@/app/hooks/useProjects";
-import { formatTaskUiCopy } from "@/app/utils/task-ui-copy";
+import { useProjects } from "@/app/hooks/useProjects";
+import {
+  TASKS_DESTINATION,
+  useMoveChatToProjectAction,
+} from "@/app/hooks/useMoveChatToProjectAction";
 
 interface MoveChatToProjectDialogProps {
   chatId: string;
@@ -22,8 +23,6 @@ interface MoveChatToProjectDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }
-
-const TASKS_DESTINATION = "tasks" as const;
 
 export function MoveChatToProjectDialog({
   chatId,
@@ -33,63 +32,18 @@ export function MoveChatToProjectDialog({
 }: MoveChatToProjectDialogProps) {
   const projectListData = useProjects();
   const projects = projectListData.results;
-  const moveChatToProject = useMoveChatToProject();
-  const [movingDestination, setMovingDestination] = useState<
-    Id<"projects"> | typeof TASKS_DESTINATION | null
-  >(null);
-
-  const undoMove = async (projectId: Id<"projects"> | null) => {
-    try {
-      await moveChatToProject({ chatId, projectId });
-      toast.success("Move undone");
-    } catch (error) {
-      console.error("Failed to undo task move:", error);
-      toast.error("Failed to undo move", {
-        description:
-          error instanceof Error
-            ? formatTaskUiCopy(error.message)
-            : "Please try again.",
-      });
-    }
-  };
+  const { movingDestination, moveToProject } = useMoveChatToProjectAction({
+    chatId,
+    currentProjectId,
+  });
 
   const handleMove = async (
     projectId: Id<"projects"> | null,
     projectName?: string,
   ) => {
-    if (movingDestination !== null) return;
-
-    setMovingDestination(projectId ?? TASKS_DESTINATION);
-    try {
-      const moved = await moveChatToProject({ chatId, projectId });
+    const moveFinished = await moveToProject(projectId, projectName);
+    if (moveFinished) {
       onOpenChange(false);
-      if (moved) {
-        toast.success(
-          projectId === null
-            ? "Removed from project"
-            : `Moved to ${projectName}`,
-          {
-            action: {
-              label: "Undo",
-              onClick: () => void undoMove(currentProjectId ?? null),
-            },
-          },
-        );
-      } else {
-        toast.info(
-          projectId === null ? "Already in Tasks" : `Already in ${projectName}`,
-        );
-      }
-    } catch (error) {
-      console.error("Failed to move chat to project:", error);
-      toast.error("Failed to move task", {
-        description:
-          error instanceof Error
-            ? formatTaskUiCopy(error.message)
-            : "Please try again.",
-      });
-    } finally {
-      setMovingDestination(null);
     }
   };
 

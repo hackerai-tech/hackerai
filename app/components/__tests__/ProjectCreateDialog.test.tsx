@@ -102,7 +102,7 @@ describe("ProjectCreateDialog", () => {
         name: "acme-security",
         folderPath: "/Users/hackerai/targets/acme-security",
       });
-      expect(onCreated).toHaveBeenCalledWith("project-1");
+      expect(onCreated).toHaveBeenCalledWith("project-1", "acme-security");
     });
   });
 
@@ -170,7 +170,7 @@ describe("ProjectCreateDialog", () => {
 
     finishCreate?.("project-1");
     await waitFor(() => {
-      expect(onCreated).toHaveBeenCalledWith("project-1");
+      expect(onCreated).toHaveBeenCalledWith("project-1", "Acme");
       expect(onOpenChange).toHaveBeenCalledWith(false);
     });
   });
