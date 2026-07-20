@@ -131,6 +131,58 @@ describe("desktop-local sandbox file helpers", () => {
     }
   });
 
+  it("redacts signed URL queries from staging failure diagnostics", async () => {
+    const sourceUrl =
+      "https://storage.example.com/report.pdf?X-Amz-Credential=opaque&X-Amz-Signature=secret";
+    const safeUrl = "https://storage.example.com/report.pdf";
+    const consoleErrorSpy = jest
+      .spyOn(console, "error")
+      .mockImplementation(() => {});
+
+    try {
+      const result = await uploadSandboxFiles(
+        [
+          {
+            kind: "url",
+            url: sourceUrl,
+            localPath: "/home/user/upload/report.pdf",
+          },
+        ],
+        async () => ({
+          files: {
+            downloadFromUrl: jest
+              .fn()
+              .mockRejectedValue(
+                new Error(`Failed to download ${sourceUrl}: timed out`),
+              ),
+          },
+        }),
+      );
+
+      const normalizedLogCalls = consoleErrorSpy.mock.calls.map((call) =>
+        call.map((value) =>
+          value instanceof Error ? { message: value.message } : value,
+        ),
+      );
+      const diagnostics = JSON.stringify({
+        logged: normalizedLogCalls,
+        metadata: getSandboxUploadFailureMetadata(result),
+      });
+      expect(diagnostics).not.toContain("X-Amz-Credential");
+      expect(diagnostics).not.toContain("X-Amz-Signature");
+      expect(diagnostics).not.toContain("opaque");
+      expect(diagnostics).not.toContain("secret");
+      expect(diagnostics).toContain(safeUrl);
+      expect(getSandboxUploadFailureMetadata(result)).toMatchObject({
+        upload_failure_kind: "url",
+        upload_failure_protocol: "https",
+        upload_failure_url_length: sourceUrl.length,
+      });
+    } finally {
+      consoleErrorSpy.mockRestore();
+    }
+  });
+
   it("retries url uploads in a writable directory when /tmp is not writable", async () => {
     const consoleWarnSpy = jest
       .spyOn(console, "warn")

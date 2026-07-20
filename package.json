@@ -230,7 +230,8 @@
       "undici@>=7.0.0 <7.28.0": "7.28.0"
     },
     "patchedDependencies": {
-      "ai@6.0.200": "patches/ai@6.0.200.patch"
+      "ai@6.0.200": "patches/ai@6.0.200.patch",
+      "@workos-inc/authkit-nextjs@4.2.0": "patches/@workos-inc__authkit-nextjs@4.2.0.patch"
     }
   }
 }
