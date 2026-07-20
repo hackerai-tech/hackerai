@@ -112,6 +112,50 @@ describe("MoveChatToProjectDialog", () => {
     });
   });
 
+  it("does not race an undo with another move", async () => {
+    let finishMove: ((moved: boolean) => void) | undefined;
+    const onOpenChange = jest.fn();
+
+    render(
+      <MoveChatToProjectDialog
+        chatId="chat-1"
+        open
+        onOpenChange={onOpenChange}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Acme target" }));
+    await waitFor(() => {
+      expect(mockToast.success).toHaveBeenCalledWith("Moved to Acme target", {
+        action: expect.objectContaining({ label: "Undo" }),
+      });
+    });
+    const undo = mockToast.success.mock.calls.find(
+      ([message]) => message === "Moved to Acme target",
+    )?.[1]?.action?.onClick as (() => void) | undefined;
+
+    moveChatToProject.mockImplementationOnce(
+      () =>
+        new Promise<boolean>((resolve) => {
+          finishMove = resolve;
+        }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Acme target" }));
+    await waitFor(() => {
+      expect(
+        screen.getByRole("button", { name: "Acme target" }),
+      ).toBeDisabled();
+    });
+
+    undo?.();
+    expect(moveChatToProject).toHaveBeenCalledTimes(2);
+
+    finishMove?.(true);
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "Acme target" })).toBeEnabled();
+    });
+  });
+
   it("shows an info toast when the chat is already in the project", async () => {
     moveChatToProject.mockResolvedValueOnce(false);
     const onOpenChange = jest.fn();

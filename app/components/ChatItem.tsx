@@ -579,6 +579,7 @@ const ChatItem: React.FC<ChatItemProps> = ({
                   >
                     <DropdownMenuItem
                       className={CHAT_OPTION_ITEM_CLASS}
+                      disabled={movingProjectId !== null}
                       onSelect={handleCreateProject}
                     >
                       <FolderPlus

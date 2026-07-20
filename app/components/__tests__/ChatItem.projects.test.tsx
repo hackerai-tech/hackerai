@@ -239,6 +239,51 @@ describe("ChatItem project actions", () => {
     });
   });
 
+  it("disables project creation while a move is in progress", async () => {
+    const user = userEvent.setup();
+    let finishMove: ((moved: boolean) => void) | undefined;
+    mockMoveChatToProject.mockImplementationOnce(
+      () =>
+        new Promise<boolean>((resolve) => {
+          finishMove = resolve;
+        }),
+    );
+    mockProjects = [
+      {
+        _id: "project-1",
+        _creationTime: 1,
+        user_id: "user-1",
+        name: "Acme target",
+        created_at: 1,
+        updated_at: 1,
+      },
+    ];
+    render(<ChatItem id="chat-1" title="Target notes" />);
+
+    fireEvent.focus(screen.getByRole("button", { name: /Open task:/ }));
+    await user.click(screen.getByRole("button", { name: "Open task options" }));
+    let moveTrigger = await screen.findByRole("menuitem", {
+      name: "Move to project",
+    });
+    act(() => moveTrigger.focus());
+    fireEvent.keyDown(moveTrigger, { key: "ArrowRight" });
+    await user.click(
+      await screen.findByRole("menuitem", { name: "Acme target" }),
+    );
+
+    await user.click(screen.getByRole("button", { name: "Open task options" }));
+    moveTrigger = await screen.findByRole("menuitem", {
+      name: "Move to project",
+    });
+    act(() => moveTrigger.focus());
+    fireEvent.keyDown(moveTrigger, { key: "ArrowRight" });
+    expect(
+      await screen.findByRole("menuitem", { name: "New project" }),
+    ).toHaveAttribute("data-disabled");
+
+    await act(async () => finishMove?.(true));
+  });
+
   it("labels the Rename Task field for keyboard and screen-reader users", async () => {
     const user = userEvent.setup();
     render(<ChatItem id="chat-1" title="Target notes" />);

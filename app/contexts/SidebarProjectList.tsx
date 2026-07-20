@@ -1,14 +1,12 @@
 "use client";
 
 import { createContext, useContext, useMemo, type ReactNode } from "react";
+import type { PaginationStatus } from "convex/react";
 import type { Doc } from "@/convex/_generated/dataModel";
-
-export type ProjectPaginationStatus =
-  "LoadingFirstPage" | "CanLoadMore" | "LoadingMore" | "Exhausted";
 
 interface SidebarProjectListValue {
   projects: Doc<"projects">[] | undefined;
-  paginationStatus?: ProjectPaginationStatus;
+  paginationStatus?: PaginationStatus;
   loadMoreProjects?: (numItems: number) => void;
 }
 

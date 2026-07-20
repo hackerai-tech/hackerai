@@ -1,12 +1,14 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { toast } from "sonner";
 import type { Id } from "@/convex/_generated/dataModel";
 import { useMoveChatToProject } from "@/app/hooks/useProjects";
 import { formatTaskUiCopy } from "@/app/utils/task-ui-copy";
 
 export const TASKS_DESTINATION = "tasks" as const;
+
+type MoveDestination = Id<"projects"> | typeof TASKS_DESTINATION;
 
 interface UseMoveChatToProjectActionOptions {
   chatId: string;
@@ -18,11 +20,26 @@ export function useMoveChatToProjectAction({
   currentProjectId,
 }: UseMoveChatToProjectActionOptions) {
   const moveChatToProject = useMoveChatToProject();
-  const [movingDestination, setMovingDestination] = useState<
-    Id<"projects"> | typeof TASKS_DESTINATION | null
-  >(null);
+  const movingDestinationRef = useRef<MoveDestination | null>(null);
+  const [movingDestination, setMovingDestination] =
+    useState<MoveDestination | null>(null);
+
+  const startMove = (destination: MoveDestination) => {
+    if (movingDestinationRef.current !== null) return false;
+
+    movingDestinationRef.current = destination;
+    setMovingDestination(destination);
+    return true;
+  };
+
+  const finishMove = () => {
+    movingDestinationRef.current = null;
+    setMovingDestination(null);
+  };
 
   const undoMove = async (projectId: Id<"projects"> | null) => {
+    if (!startMove(projectId ?? TASKS_DESTINATION)) return;
+
     try {
       await moveChatToProject({ chatId, projectId });
       toast.success("Move undone");
@@ -34,6 +51,8 @@ export function useMoveChatToProjectAction({
             ? formatTaskUiCopy(error.message)
             : "Please try again.",
       });
+    } finally {
+      finishMove();
     }
   };
 
@@ -41,9 +60,8 @@ export function useMoveChatToProjectAction({
     projectId: Id<"projects"> | null,
     projectName?: string,
   ): Promise<boolean> => {
-    if (movingDestination !== null) return false;
+    if (!startMove(projectId ?? TASKS_DESTINATION)) return false;
 
-    setMovingDestination(projectId ?? TASKS_DESTINATION);
     try {
       const moved = await moveChatToProject({ chatId, projectId });
       if (moved) {
@@ -74,7 +92,7 @@ export function useMoveChatToProjectAction({
       });
       return false;
     } finally {
-      setMovingDestination(null);
+      finishMove();
     }
   };
 
