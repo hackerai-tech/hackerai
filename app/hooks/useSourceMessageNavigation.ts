@@ -44,13 +44,29 @@ export function useSourceMessageNavigation({
     if (target) {
       if (scrolledMessageIdRef.current === sourceMessageId) return;
 
-      scrolledMessageIdRef.current = sourceMessageId;
       target.dispatchEvent(
         new CustomEvent(STICKY_BOTTOM_ESCAPE_EVENT, { bubbles: true }),
       );
       target.focus({ preventScroll: true });
-      target.scrollIntoView?.({ behavior: "smooth", block: "start" });
-      return;
+      let scrollFrame: number | null = null;
+      const layoutFrame = window.requestAnimationFrame(() => {
+        scrollFrame = window.requestAnimationFrame(() => {
+          if (!target.isConnected) return;
+          scrolledMessageIdRef.current = sourceMessageId;
+          target.scrollIntoView?.({
+            behavior: window.matchMedia("(prefers-reduced-motion: reduce)")
+              .matches
+              ? "auto"
+              : "smooth",
+            block: "start",
+          });
+        });
+      });
+
+      return () => {
+        window.cancelAnimationFrame(layoutFrame);
+        if (scrollFrame !== null) window.cancelAnimationFrame(scrollFrame);
+      };
     }
 
     if (
