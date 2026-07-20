@@ -48,8 +48,8 @@ export function useSourceMessageNavigation({
       target.dispatchEvent(
         new CustomEvent(STICKY_BOTTOM_ESCAPE_EVENT, { bubbles: true }),
       );
-      target.scrollIntoView?.({ behavior: "smooth", block: "start" });
       target.focus({ preventScroll: true });
+      target.scrollIntoView?.({ behavior: "smooth", block: "start" });
       return;
     }
 

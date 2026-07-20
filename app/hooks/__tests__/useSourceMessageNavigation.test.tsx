@@ -19,6 +19,7 @@ describe("useSourceMessageNavigation", () => {
     target.tabIndex = -1;
     const scrollIntoView = jest.fn();
     target.scrollIntoView = scrollIntoView;
+    const focus = jest.spyOn(target, "focus");
     document.body.appendChild(target);
     const escapeStickyBottom = jest.fn();
     window.addEventListener(STICKY_BOTTOM_ESCAPE_EVENT, escapeStickyBottom);
@@ -37,6 +38,10 @@ describe("useSourceMessageNavigation", () => {
         block: "start",
       });
       expect(target).toHaveFocus();
+      expect(focus).toHaveBeenCalledWith({ preventScroll: true });
+      expect(focus.mock.invocationCallOrder[0]).toBeLessThan(
+        scrollIntoView.mock.invocationCallOrder[0],
+      );
       expect(escapeStickyBottom).toHaveBeenCalledTimes(1);
     });
 
