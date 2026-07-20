@@ -12,6 +12,10 @@ import {
 } from "@/components/ui/popover";
 import { RefreshCw, Download, ChevronDown } from "lucide-react";
 import { TokenBreakdownTooltip } from "@/app/components/usage/TokenBreakdownTooltip";
+import {
+  getUsageChargeBreakdown,
+  type UsageLogBilling,
+} from "@/app/components/usage/usage-charge";
 import type { DateRange } from "react-day-picker";
 
 type Preset = "1d" | "7d" | "30d" | "custom";
@@ -61,24 +65,6 @@ const formatTimestamp = (ms: number): string => {
     minute: "2-digit",
   });
 };
-
-type UsageLogBilling = {
-  type: "included" | "extra" | "mixed";
-  cost_dollars: number;
-  included_cost_dollars?: number;
-  extra_usage_cost_dollars?: number;
-  included_points_deducted?: number;
-  extra_usage_points_deducted?: number;
-};
-
-const getUsageCostBreakdown = (log: UsageLogBilling) => ({
-  includedCost:
-    log.included_cost_dollars ??
-    (log.type === "included" ? log.cost_dollars : 0),
-  extraUsageCost:
-    log.extra_usage_cost_dollars ??
-    (log.type === "extra" ? log.cost_dollars : 0),
-});
 
 const getUsageBillingLabel = (log: UsageLogBilling): string => {
   const hasIncludedPoints = (log.included_points_deducted ?? 0) > 0;
@@ -154,7 +140,12 @@ const UsageLogsTable = () => {
       "Extra Usage Cost",
     ];
     const rows = results.map((log) => {
-      const { includedCost, extraUsageCost } = getUsageCostBreakdown(log);
+      const {
+        componentBreakdownAvailable,
+        includedChargeDollars,
+        extraUsageChargeDollars,
+        totalChargeDollars,
+      } = getUsageChargeBreakdown(log);
       return [
         new Date(log._creationTime).toISOString(),
         getUsageBillingLabel(log),
@@ -164,9 +155,9 @@ const UsageLogsTable = () => {
         log.input_tokens.toString(),
         log.output_tokens.toString(),
         log.total_tokens.toString(),
-        formatCost(log.cost_dollars),
-        formatCost(includedCost),
-        formatCost(extraUsageCost),
+        formatCost(totalChargeDollars),
+        componentBreakdownAvailable ? formatCost(includedChargeDollars) : "",
+        componentBreakdownAvailable ? formatCost(extraUsageChargeDollars) : "",
       ];
     });
 
@@ -307,8 +298,12 @@ const UsageLogsTable = () => {
             ) : (
               results.map((log) => {
                 const billingLabel = getUsageBillingLabel(log);
-                const { includedCost, extraUsageCost } =
-                  getUsageCostBreakdown(log);
+                const {
+                  componentBreakdownAvailable,
+                  includedChargeDollars,
+                  extraUsageChargeDollars,
+                  totalChargeDollars,
+                } = getUsageChargeBreakdown(log);
                 return (
                   <tr
                     key={log._id}
@@ -333,11 +328,12 @@ const UsageLogsTable = () => {
                       />
                     </td>
                     <td className="px-3 py-2.5 text-right tabular-nums text-muted-foreground">
-                      <div>{formatCost(log.cost_dollars)}</div>
-                      {billingLabel === "Included + Extra" ? (
+                      <div>{formatCost(totalChargeDollars)}</div>
+                      {billingLabel === "Included + Extra" &&
+                      componentBreakdownAvailable ? (
                         <div className="mt-0.5 text-[11px] leading-4 text-muted-foreground/80">
-                          Included {formatCost(includedCost)} + Extra{" "}
-                          {formatCost(extraUsageCost)}
+                          Included {formatCost(includedChargeDollars)} + Extra{" "}
+                          {formatCost(extraUsageChargeDollars)}
                         </div>
                       ) : null}
                     </td>
