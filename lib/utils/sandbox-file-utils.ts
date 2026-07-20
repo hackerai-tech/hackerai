@@ -1,6 +1,6 @@
 import "server-only";
 
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { UIMessage } from "ai";
 import type { SandboxPreference } from "@/types";
 import { validateDownloadUrl } from "@/lib/ai/tools/utils/path-validation";
@@ -540,16 +540,22 @@ const resolveWritableUploadFallbackPath = async (
 ): Promise<string | null> => {
   const fileName = originalLocalPath.split(/[/\\]/).pop();
   if (!fileName || !sandbox.commands?.run) return null;
+  const fallbackDirectory = `fallback-${randomUUID()}`;
 
   const script = [
     `filename=${shellQuote(fileName)}`,
     `for base in "\${TMPDIR:-/tmp}" /var/tmp "\${HOME:-}" "\${PWD:-.}"; do`,
     `  [ -n "$base" ] || continue`,
-    `  dir="$base/hackerai-upload"`,
-    `  if mkdir -p "$dir" 2>/dev/null && [ -w "$dir" ]; then`,
-    `    cd "$dir" 2>/dev/null && printf '%s/%s' "$(pwd -P)" "$filename"`,
-    `    exit 0`,
-    `  fi`,
+    `  root="$base/hackerai-upload"`,
+    `  mkdir -p "$root" 2>/dev/null && [ -w "$root" ] || continue`,
+    `  root="$(cd "$root" 2>/dev/null && pwd -P)" || continue`,
+    // A reused sandbox can contain a stale root-owned file with the same
+    // basename. Reserve a fresh directory so the fallback destination cannot
+    // collide with an existing file that the sandbox user cannot overwrite.
+    `  dir="$root/${fallbackDirectory}"`,
+    `  mkdir "$dir" 2>/dev/null || continue`,
+    `  printf '%s/%s' "$dir" "$filename"`,
+    `  exit 0`,
     `done`,
     `exit 1`,
   ].join("\n");
