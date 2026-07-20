@@ -183,7 +183,7 @@ describe("desktop-local sandbox file helpers", () => {
     }
   });
 
-  it("retries url uploads in a writable directory when /tmp is not writable", async () => {
+  it("retries url uploads at a unique writable path when /tmp is not writable", async () => {
     const consoleWarnSpy = jest
       .spyOn(console, "warn")
       .mockImplementation(() => {});
@@ -197,7 +197,7 @@ describe("desktop-local sandbox file helpers", () => {
       .mockResolvedValueOnce(undefined);
     const run = jest.fn().mockResolvedValue({
       exitCode: 0,
-      stdout: "/home/alice/hackerai-upload/report.pdf",
+      stdout: "/home/alice/hackerai-upload/fallback.a1b2c3/report.pdf",
       stderr: "",
     });
 
@@ -221,7 +221,7 @@ describe("desktop-local sandbox file helpers", () => {
         pathRewrites: [
           {
             from: "/tmp/hackerai-upload/report.pdf",
-            to: "/home/alice/hackerai-upload/report.pdf",
+            to: "/home/alice/hackerai-upload/fallback.a1b2c3/report.pdf",
           },
         ],
       });
@@ -231,7 +231,15 @@ describe("desktop-local sandbox file helpers", () => {
       );
       expect(downloadFromUrl).toHaveBeenCalledWith(
         "https://example.com/report.pdf",
-        "/home/alice/hackerai-upload/report.pdf",
+        "/home/alice/hackerai-upload/fallback.a1b2c3/report.pdf",
+      );
+      expect(run).toHaveBeenCalledWith(
+        expect.stringContaining('dir="$root/fallback-'),
+        { displayName: "" },
+      );
+      expect(run).toHaveBeenCalledWith(
+        expect.stringContaining('mkdir "$dir" 2>/dev/null || continue'),
+        { displayName: "" },
       );
     } finally {
       consoleWarnSpy.mockRestore();
@@ -259,7 +267,7 @@ describe("desktop-local sandbox file helpers", () => {
       if (command.includes("for base in")) {
         return {
           exitCode: 0,
-          stdout: "/tmp/hackerai-upload/report.pdf",
+          stdout: "/tmp/hackerai-upload/fallback.d4e5f6/report.pdf",
           stderr: "",
         };
       }
@@ -303,7 +311,7 @@ describe("desktop-local sandbox file helpers", () => {
         pathRewrites: [
           {
             from: "/home/user/upload/report.pdf",
-            to: "/tmp/hackerai-upload/report.pdf",
+            to: "/tmp/hackerai-upload/fallback.d4e5f6/report.pdf",
           },
         ],
       });
@@ -312,10 +320,17 @@ describe("desktop-local sandbox file helpers", () => {
         String(command).includes("-o '/home/user/upload/report.pdf'"),
       );
       const fallbackCurlAttempts = run.mock.calls.filter(([command]) =>
-        String(command).includes("-o '/tmp/hackerai-upload/report.pdf'"),
+        String(command).includes(
+          "-o '/tmp/hackerai-upload/fallback.d4e5f6/report.pdf'",
+        ),
       );
       expect(homeCurlAttempts).toHaveLength(3);
       expect(fallbackCurlAttempts).toHaveLength(1);
+      expect(
+        run.mock.calls.some(([command]) =>
+          String(command).includes('dir="$root/fallback-'),
+        ),
+      ).toBe(true);
     } finally {
       jest.useRealTimers();
       consoleWarnSpy.mockRestore();
