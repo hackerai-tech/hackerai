@@ -330,9 +330,8 @@ export const Messages = ({
                 id={getChatMessageElementId(message.id)}
                 tabIndex={isSourceMessage ? -1 : undefined}
                 className={cn(
-                  "rounded-2xl transition-[background-color,box-shadow] duration-300",
-                  isSourceMessage &&
-                    "bg-primary/5 ring-2 ring-primary/40 ring-offset-4 ring-offset-background",
+                  "rounded-2xl",
+                  isSourceMessage && "source-message-highlight",
                 )}
               >
                 <MessageItem
