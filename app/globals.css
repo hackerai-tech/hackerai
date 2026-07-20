@@ -245,6 +245,7 @@
 
 .source-message-highlight {
   position: relative;
+  outline: none;
 }
 
 .source-message-highlight::after {
