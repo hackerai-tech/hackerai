@@ -75,8 +75,12 @@ const getCategoryFilter = (value: string | null): "all" | FindingCategory =>
 const getStatusFilter = (value: string | null): "all" | FindingStatus =>
   value === "active" || value === "closed" ? value : "all";
 
-const escapeCsvCell = (value: string | number) =>
-  `"${String(value).replaceAll('"', '""')}"`;
+const escapeCsvCell = (value: string | number) => {
+  const raw = String(value);
+  const guarded = /^[=+\-@\t\r]/.test(raw) ? `'${raw}` : raw;
+
+  return `"${guarded.replaceAll('"', '""')}"`;
+};
 
 const getFindingsHref = ({
   search,

@@ -216,6 +216,35 @@ describe("FindingsPage", () => {
     });
   });
 
+  it("guards exported cells against spreadsheet formulas", async () => {
+    mockConvexQuery.mockResolvedValue({
+      page: [
+        {
+          ...mockFinding,
+          title: '=HYPERLINK("https://evil.example","Open")',
+          target: "+cmd|' /C calc'!A0",
+        },
+      ],
+      isDone: true,
+      continueCursor: "",
+    });
+    render(<Page />);
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Export findings as CSV" }),
+    );
+
+    await waitFor(() => {
+      expect(mockDownloadFile).toHaveBeenCalledWith(
+        expect.objectContaining({
+          content: expect.stringContaining(
+            `"'=HYPERLINK(""https://evil.example"",""Open"")","'+cmd|' /C calc'!A0"`,
+          ),
+        }),
+      );
+    });
+  });
+
   it("drops legacy source-chat filter parameters", () => {
     mockSearchParams.set("chat", "chat-1");
     window.history.replaceState({}, "", "/findings?chat=chat-1");
