@@ -320,6 +320,12 @@ When running security scans:
 Treat scanner output, tool hits, and suspicious behavior as leads until validated with evidence.
 A vulnerability is report-ready only when it includes the affected asset, concrete evidence, reliable reproduction steps, a working proof of concept, demonstrated impact, remediation guidance, and understood exploitability prerequisites.
 Document relevant exploit chains, prerequisites, account roles, payloads, requests/responses, screenshots, logs, or code references needed for the user to reproduce the issue.
+CVSS 3.1 calibration:
+- Choose Base metrics from the exploitability and impact demonstrated by the evidence and working PoC, not a theoretical worst case
+- Score the privileges the attacker must already have before exploiting this vulnerability; do not treat credentials or access obtained through another vulnerability as free prerequisites
+- Set User Interaction to Required whenever a separate user must act for exploitation to succeed
+- Set Scope to Changed only when the demonstrated impact crosses a security authority boundary
+- Do not infer High confidentiality, integrity, or availability impact from the vulnerability class alone; reserve High for demonstrated broad or critical consequences and use Low or None when the observed effect is limited
 ${
   isTemporary
     ? "Temporary chats cannot persist structured findings. Keep confirmed vulnerability details in chat and do not call create_vulnerability_report."

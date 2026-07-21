@@ -6,6 +6,7 @@ import { api } from "@/convex/_generated/api";
 import {
   ArrowLeft,
   CheckCircle2,
+  ChevronDown,
   Clock3,
   Copy,
   LockKeyhole,
@@ -17,6 +18,11 @@ import {
 import { useState } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@/components/ui/collapsible";
 import {
   Dialog,
   DialogContent,
@@ -78,6 +84,50 @@ const CVSS_VALUE_LABELS: Record<
   confidentiality: { N: "None", L: "Low", H: "High" },
   integrity: { N: "None", L: "Low", H: "High" },
   availability: { N: "None", L: "Low", H: "High" },
+};
+
+const CVSS_VALUE_EXPLANATIONS: Record<
+  keyof Cvss31Breakdown,
+  Record<string, string>
+> = {
+  attack_vector: {
+    N: "Reachable over a network",
+    A: "Requires access to an adjacent network",
+    L: "Requires local system access",
+    P: "Requires physical access",
+  },
+  attack_complexity: {
+    L: "No special conditions are required",
+    H: "Requires conditions beyond the attacker's control",
+  },
+  privileges_required: {
+    N: "No existing account or privileges are required",
+    L: "Requires basic user privileges",
+    H: "Requires elevated privileges",
+  },
+  user_interaction: {
+    N: "No separate user action is required",
+    R: "A separate user must take an action",
+  },
+  scope: {
+    U: "Impact stays within the vulnerable component's security boundary",
+    C: "Impact crosses into another component's security boundary",
+  },
+  confidentiality: {
+    N: "No confidentiality impact was demonstrated",
+    L: "Limited confidential information can be exposed",
+    H: "Broad or critical confidential information can be exposed",
+  },
+  integrity: {
+    N: "No integrity impact was demonstrated",
+    L: "Limited data or behavior can be modified",
+    H: "Broad or critical data or behavior can be modified",
+  },
+  availability: {
+    N: "No availability impact was demonstrated",
+    L: "Availability can be partially reduced",
+    H: "Availability can be severely disrupted",
+  },
 };
 
 const formatLabel = (value: string) =>
@@ -702,6 +752,47 @@ export function FindingDetail({
                 title="Assumptions"
                 value={finding.assumptions}
               />
+
+              <Collapsible className="group overflow-hidden rounded-xl border border-border bg-muted/10">
+                <CollapsibleTrigger className="flex w-full items-center justify-between gap-4 px-4 py-3.5 text-left transition-colors hover:bg-muted/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset">
+                  <span className="min-w-0">
+                    <span className="block text-sm font-semibold text-foreground">
+                      Why this severity?
+                    </span>
+                    <span className="mt-0.5 block text-xs leading-5 text-muted-foreground">
+                      See how exploitability and demonstrated impact produced
+                      this score.
+                    </span>
+                  </span>
+                  <ChevronDown
+                    className="size-4 shrink-0 text-muted-foreground transition-transform group-data-[state=open]:rotate-180"
+                    aria-hidden="true"
+                  />
+                </CollapsibleTrigger>
+                <CollapsibleContent className="border-t border-border">
+                  <dl className="grid grid-cols-1 @min-[620px]:grid-cols-2">
+                    {CVSS_METRICS.map((metric) => {
+                      const value = finding.cvss_breakdown[metric.key];
+                      return (
+                        <div
+                          key={metric.key}
+                          className="border-b border-border px-4 py-3 last:border-b-0 @min-[620px]:odd:border-r @min-[620px]:[&:nth-last-child(-n+2)]:border-b-0"
+                        >
+                          <dt className="flex items-center justify-between gap-3 text-xs font-medium text-foreground">
+                            <span>{metric.label}</span>
+                            <span className="shrink-0 rounded-md bg-muted px-1.5 py-0.5 text-[11px] text-muted-foreground">
+                              {CVSS_VALUE_LABELS[metric.key][value] ?? value}
+                            </span>
+                          </dt>
+                          <dd className="mt-1 text-xs leading-5 text-muted-foreground">
+                            {CVSS_VALUE_EXPLANATIONS[metric.key][value]}
+                          </dd>
+                        </div>
+                      );
+                    })}
+                  </dl>
+                </CollapsibleContent>
+              </Collapsible>
 
               <DetailSection title="CVSS 3.1 Breakdown">
                 <div className="overflow-hidden rounded-lg border border-border">

@@ -140,6 +140,15 @@ Commands run directly on the host OS "workstation" without Docker isolation. Be 
     expect(prompt).toContain(
       "If impact cannot be reproduced or the PoC does not work, keep it as a hypothesis or needs-validation item",
     );
+    expect(prompt).toContain(
+      "Choose Base metrics from the exploitability and impact demonstrated by the evidence and working PoC, not a theoretical worst case",
+    );
+    expect(prompt).toContain(
+      "Set Scope to Changed only when the demonstrated impact crosses a security authority boundary",
+    );
+    expect(prompt).toContain(
+      "Do not infer High confidentiality, integrity, or availability impact from the vulnerability class alone",
+    );
   });
 
   it("does not add agent finding quality guidance to ask mode", async () => {

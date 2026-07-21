@@ -265,6 +265,15 @@ describe("agent tool schema descriptions", () => {
     expect(description).toContain(
       "Split non-contiguous changes into separate labeled code locations",
     );
+    expect(description).toContain(
+      "Choose Base metrics from the exploitability and impact demonstrated by the evidence and working PoC, not a theoretical worst case",
+    );
+    expect(description).toContain(
+      "Score the privileges the attacker must already have before exploiting this vulnerability",
+    );
+    expect(description).toContain(
+      "Set User Interaction to Required whenever a separate user must act",
+    );
   });
 
   test("terminal command approval wording is mode-specific", () => {

@@ -108,10 +108,36 @@ describe("FindingDetail", () => {
     ).toBeVisible();
     expect(screen.getByText("Network")).toBeVisible();
     expect(
+      screen.getByRole("button", { name: /Why this severity\?/ }),
+    ).toHaveAttribute("aria-expanded", "false");
+    expect(
       screen.getByRole("link", {
         name: "Open source message in Invoice test",
       }),
     ).toHaveAttribute("href", "/c/chat-1#message=message-1");
+  });
+
+  it("explains the CVSS metrics in plain language on request", () => {
+    render(<FindingDetail finding={finding} />);
+
+    expect(screen.queryByText("Reachable over a network")).toBeNull();
+
+    const trigger = screen.getByRole("button", {
+      name: /Why this severity\?/,
+    });
+    fireEvent.click(trigger);
+
+    expect(trigger).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByText("Reachable over a network")).toBeVisible();
+    expect(screen.getByText("Requires basic user privileges")).toBeVisible();
+    expect(
+      screen.getByText(
+        "Broad or critical confidential information can be exposed",
+      ),
+    ).toBeVisible();
+    expect(
+      screen.getByText("No integrity impact was demonstrated"),
+    ).toBeVisible();
   });
 
   it("omits management controls in the chat sidebar", () => {

@@ -934,6 +934,11 @@ Use this tool only after all of the following are true:
 - Split non-contiguous changes into separate labeled code locations and do not duplicate the same change
 - Pass bare CVE/CWE identifiers only when certain; omit unknown identifiers instead of sending empty strings, and prefer the most specific applicable CWE
 - CVSS 3.1 must include all eight base metrics; the server calculates the score and severity
+- Choose Base metrics from the exploitability and impact demonstrated by the evidence and working PoC, not a theoretical worst case
+- Score the privileges the attacker must already have before exploiting this vulnerability; do not treat credentials or access obtained through another vulnerability as free prerequisites
+- Set User Interaction to Required whenever a separate user must act for exploitation to succeed
+- Set Scope to Changed only when the demonstrated impact crosses a security authority boundary
+- Do not infer High confidentiality, integrity, or availability impact from the vulnerability class alone; reserve High for demonstrated broad or critical consequences and use Low or None when the observed effect is limited
 - Do not mention internal agents, models, prompts, sandboxes, report IDs, or tester-only paths in report content
 </instructions>`,
   inputSchema: createVulnerabilityReportToolInputSchema,
