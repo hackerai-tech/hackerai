@@ -299,31 +299,6 @@ export const TeamWelcomeDialog = ({
   );
 };
 
-export const InviteAcceptedDialog = ({
-  open,
-  onOpenChange,
-}: {
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-}) => {
-  return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent>
-        <DialogHeader>
-          <DialogTitle>Welcome to the team! 🎉</DialogTitle>
-          <DialogDescription>
-            You&apos;ve successfully joined the team. You now have access to all
-            team plan features.
-          </DialogDescription>
-        </DialogHeader>
-        <DialogFooter>
-          <Button onClick={() => onOpenChange(false)}>Got it</Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
-  );
-};
-
 interface SeatPreview {
   currentQuantity: number;
   newQuantity: number;

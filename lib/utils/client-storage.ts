@@ -311,17 +311,6 @@ export const removeDraft = (id: string): void => {
   writeDraftStore({ ...store, drafts: nextDrafts });
 };
 
-export const getDrafts = (): Array<ConversationDraft> =>
-  readDraftStore().drafts;
-
-export const getUserIdFromDrafts = (): string | undefined =>
-  readDraftStore().userId;
-
-export const setUserIdInDrafts = (userId: string): void => {
-  const store = readDraftStore();
-  writeDraftStore({ ...store, userId });
-};
-
 export const clearAllDrafts = (): void => {
   if (!isBrowser()) return;
   try {
