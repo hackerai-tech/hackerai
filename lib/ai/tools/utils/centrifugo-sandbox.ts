@@ -61,6 +61,15 @@ const TRANSIENT_COMMAND_TIMEOUT_ERROR_PATTERN =
 const getErrorMessage = (error: unknown): string =>
   error instanceof Error ? error.message : String(error);
 
+const safeUrlForLog = (url: string): string => {
+  try {
+    const parsed = new URL(url);
+    return `${parsed.origin}${parsed.pathname}`;
+  } catch {
+    return url.split("?")[0];
+  }
+};
+
 const isTransientCommandTimeoutError = (error: unknown): boolean =>
   TRANSIENT_COMMAND_TIMEOUT_ERROR_PATTERN.test(getErrorMessage(error));
 
@@ -1055,6 +1064,7 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
 
   // Cache for detected HTTP client (curl or wget)
   private httpClient: "curl" | "wget" | null = null;
+  private snapCurlFallbackSelected = false;
 
   // Cache for detected curl capabilities (probed once per sandbox).
   // --retry-all-errors requires curl >= 7.71.0
@@ -1111,7 +1121,11 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
     const curlCheck = await this.runSetupCommand("command -v curl || true", {
       displayName: "",
     });
-    if (curlCheck.stdout.includes("curl")) {
+    const curlPath = curlCheck.stdout.trim().split(/\s+/)[0] ?? "";
+    // Strict Snap packages use a private /tmp mount namespace. A shell probe
+    // can report the destination writable while Snap curl still cannot open
+    // that same host path, so prefer the already-supported wget when present.
+    if (curlPath && !curlPath.endsWith("/snap/bin/curl")) {
       this.httpClient = "curl";
       return "curl";
     }
@@ -1120,8 +1134,34 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
       displayName: "",
     });
     if (wgetCheck.stdout.includes("wget")) {
+      if (curlPath.endsWith("/snap/bin/curl")) {
+        this.snapCurlFallbackSelected = true;
+        console.warn(
+          "[centrifugo-http]",
+          JSON.stringify({
+            level: "warn",
+            event: "centrifugo_http_client_fallback_selected",
+            service: "web",
+            environment:
+              process.env.VERCEL_ENV ?? process.env.NODE_ENV ?? "unknown",
+            timestamp: new Date().toISOString(),
+            trace_id: this.connectionInfo.connectionId,
+            user_id: this.userId,
+            connection_id: this.connectionInfo.connectionId,
+            from_client: "curl",
+            from_package: "snap",
+            to_client: "wget",
+            reason: "snap_filesystem_confinement",
+          }),
+        );
+      }
       this.httpClient = "wget";
       return "wget";
+    }
+
+    if (curlPath) {
+      this.httpClient = "curl";
+      return "curl";
     }
 
     this.httpClient = "curl";
@@ -1569,7 +1609,10 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
       //   56 = failure receiving network data
       //   92 = HTTP/2 stream error
       //   124 = local command wrapper timeout
-      const TRANSIENT_EXIT_CODES = new Set([7, 18, 23, 28, 35, 56, 92, 124]);
+      const transientExitCodes =
+        httpClient === "curl"
+          ? new Set([7, 18, 23, 28, 35, 56, 92, 124])
+          : new Set([4, 124]);
       const MAX_ATTEMPTS = 3;
 
       let result: Awaited<ReturnType<typeof this.commands.run>> | null = null;
@@ -1599,7 +1642,7 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
         if (result.exitCode === 0) break;
         if (
           attempt === MAX_ATTEMPTS ||
-          !TRANSIENT_EXIT_CODES.has(result.exitCode)
+          !transientExitCodes.has(result.exitCode)
         ) {
           break;
         }
@@ -1622,9 +1665,11 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
           ? `test -d ${diagDir} && echo target_dir_exists=true || echo target_dir_exists=false; test -w ${diagDir} && echo target_dir_writable=true || echo target_dir_writable=false; df -h /tmp 2>&1 | sed -n '1,2p'`
           : `if exist ${diagDir} (echo target_dir_exists=true) else (echo target_dir_exists=false) & (pushd ${diagDir} >nul 2>nul && (copy /Y NUL .hackerai_write_probe.tmp >nul 2>nul && del /q .hackerai_write_probe.tmp >nul 2>nul && echo target_dir_writable=true || echo target_dir_writable=false) & popd >nul 2>nul) || echo target_dir_writable=false`;
         const diag = await this.commands.run(diagCmd, { displayName: "" });
+        const safeUrl = safeUrlForLog(url);
+        const safeStderr = result.stderr.split(url).join(safeUrl);
         throw new Error(
-          `Failed to download file: ${result.stderr}\n` +
-            `  url: ${url.substring(0, 120)}${url.length > 120 ? "..." : ""}\n` +
+          `Failed to download file: ${safeStderr}\n` +
+            `  url: ${safeUrl.substring(0, 120)}${safeUrl.length > 120 ? "..." : ""}\n` +
             `  path: ${path}\n` +
             `  command: ${httpClient}\n` +
             `  exitCode: ${result.exitCode}\n` +
@@ -1647,6 +1692,11 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
           displayName: "",
         });
         if (versionCheck.stdout.toLowerCase().includes("busybox")) {
+          if (this.snapCurlFallbackSelected) {
+            throw new Error(
+              "File upload failed: Snap curl cannot safely access sandbox file paths, and BusyBox wget does not support PUT requests. Install GNU wget or a native curl package to enable file uploads.",
+            );
+          }
           throw new Error(
             "File upload failed: curl is not available and BusyBox wget does not support PUT requests. " +
               "Install curl to enable file uploads (e.g., 'apk add curl' on Alpine or 'apt install curl' on Debian).",

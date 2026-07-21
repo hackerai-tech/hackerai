@@ -6,6 +6,7 @@ import { isXaiSafetyError } from "@/lib/api/chat-stream-helpers";
 const MAX_GENERATED_TITLE_LENGTH = 100;
 const TITLE_GENERATION_MAX_OUTPUT_TOKENS = 64;
 const FALLBACK_TITLE_WORD_LIMIT = 5;
+const IMAGE_ONLY_CHAT_TITLE = "New chat";
 
 const truncateMiddle = (text: string, maxLength: number): string => {
   if (text.length <= maxLength) return text;
@@ -59,6 +60,14 @@ export const generateTitleFromUserMessage = async (
     .filter((part: { type: string; text?: string }) => part.type === "text")
     .map((part: { type: string; text?: string }) => part.text || "")
     .join(" ");
+  const hasImage = (firstMessage?.parts ?? []).some(
+    (part) => part.type === "file" && part.mediaType.startsWith("image/"),
+  );
+
+  if (!textContent.trim() && hasImage) {
+    return IMAGE_ONLY_CHAT_TITLE;
+  }
+
   const fallbackTitle = fallbackTitleFromMessage(textContent);
 
   try {
