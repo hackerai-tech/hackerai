@@ -33,6 +33,22 @@ const makeMessage = (text: string): UIMessage[] =>
     },
   ] as UIMessage[];
 
+const makeImageOnlyMessage = (): UIMessage[] =>
+  [
+    {
+      id: "message-1",
+      role: "user",
+      parts: [
+        {
+          type: "file",
+          mediaType: "image/png",
+          filename: "screenshot.png",
+          url: "https://example.com/screenshot.png",
+        },
+      ],
+    },
+  ] as UIMessage[];
+
 describe("generateTitleFromUserMessage", () => {
   beforeEach(() => {
     mockGenerateText.mockReset();
@@ -64,6 +80,15 @@ describe("generateTitleFromUserMessage", () => {
         temperature: 0,
       }),
     );
+  });
+
+  it("keeps the default title without calling the title model for an image-only message", async () => {
+    await expect(
+      generateTitleFromUserMessage(makeImageOnlyMessage()),
+    ).resolves.toBe("New chat");
+
+    expect(mockLanguageModel).not.toHaveBeenCalled();
+    expect(mockGenerateText).not.toHaveBeenCalled();
   });
 
   it("constrains generated titles to non-empty strings under the chat title limit", async () => {
