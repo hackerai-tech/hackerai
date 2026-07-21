@@ -1144,6 +1144,279 @@ describe("CentrifugoSandbox", () => {
       expect(runs[0]).not.toContain("--ssl-no-revoke");
     });
 
+    it("prefers wget when Linux curl is installed as a strict Snap", async () => {
+      const consoleWarnSpy = jest
+        .spyOn(console, "warn")
+        .mockImplementation(() => {});
+      const sandbox = createSandbox({
+        osInfo: {
+          platform: "linux",
+          arch: "x64",
+          release: "6.1",
+          hostname: "devbox",
+        },
+      });
+      const run = jest
+        .fn()
+        .mockResolvedValueOnce({
+          stdout: "/snap/bin/curl\n",
+          stderr: "",
+          exitCode: 0,
+        })
+        .mockResolvedValueOnce({
+          stdout: "/usr/bin/wget\n",
+          stderr: "",
+          exitCode: 0,
+        })
+        .mockResolvedValueOnce({ stdout: "", stderr: "", exitCode: 0 });
+      (sandbox as any).commands.run = run;
+
+      try {
+        await sandbox.files.downloadFromUrl(
+          "https://example.com/image.png",
+          "/tmp/hackerai-upload/image.png",
+        );
+
+        expect(run).toHaveBeenNthCalledWith(1, "command -v curl || true", {
+          displayName: "",
+          timeoutMs: 30000,
+        });
+        expect(run).toHaveBeenNthCalledWith(2, "command -v wget || true", {
+          displayName: "",
+          timeoutMs: 30000,
+        });
+        expect(run).toHaveBeenNthCalledWith(
+          3,
+          expect.stringContaining("wget -q --tries=3 --waitretry=1"),
+          expect.objectContaining({
+            displayName: "Downloading: image.png",
+            timeoutMs: 120000,
+          }),
+        );
+        expect(consoleWarnSpy).toHaveBeenCalledWith(
+          "[centrifugo-http]",
+          expect.stringContaining('"reason":"snap_filesystem_confinement"'),
+        );
+        const warning = JSON.parse(consoleWarnSpy.mock.calls[0][1] as string);
+        expect(warning).toMatchObject({
+          level: "warn",
+          event: "centrifugo_http_client_fallback_selected",
+          service: "web",
+          environment: "test",
+          trace_id: "conn-1",
+          user_id: "user-1",
+          connection_id: "conn-1",
+          from_client: "curl",
+          from_package: "snap",
+          to_client: "wget",
+          reason: "snap_filesystem_confinement",
+        });
+        expect(warning).not.toHaveProperty("url");
+        expect(warning).not.toHaveProperty("path");
+      } finally {
+        consoleWarnSpy.mockRestore();
+      }
+    });
+
+    it("uses the Snap-safe wget selection for URL uploads", async () => {
+      const consoleWarnSpy = jest
+        .spyOn(console, "warn")
+        .mockImplementation(() => {});
+      const sandbox = createSandbox({
+        osInfo: {
+          platform: "linux",
+          arch: "x64",
+          release: "6.1",
+          hostname: "devbox",
+        },
+      });
+      const run = jest
+        .fn()
+        .mockResolvedValueOnce({
+          stdout: "/snap/bin/curl\n",
+          stderr: "",
+          exitCode: 0,
+        })
+        .mockResolvedValueOnce({
+          stdout: "/usr/bin/wget\n",
+          stderr: "",
+          exitCode: 0,
+        })
+        .mockResolvedValueOnce({
+          stdout: "GNU Wget 1.21.4\n",
+          stderr: "",
+          exitCode: 0,
+        })
+        .mockResolvedValueOnce({ stdout: "", stderr: "", exitCode: 0 });
+      (sandbox as any).commands.run = run;
+
+      try {
+        await sandbox.files.uploadToUrl(
+          "/tmp/hackerai-upload/report.txt",
+          "https://example.com/upload",
+          "text/plain",
+        );
+
+        expect(run).toHaveBeenNthCalledWith(
+          4,
+          expect.stringContaining("wget -q --method=PUT"),
+          {
+            displayName: "Uploading: report.txt",
+            timeoutMs: 120000,
+          },
+        );
+      } finally {
+        consoleWarnSpy.mockRestore();
+      }
+    });
+
+    it("retries wget network failures", async () => {
+      const consoleWarnSpy = jest
+        .spyOn(console, "warn")
+        .mockImplementation(() => {});
+      const sandbox = createSandbox({
+        osInfo: {
+          platform: "linux",
+          arch: "x64",
+          release: "6.1",
+          hostname: "devbox",
+        },
+      });
+      (sandbox as any).httpClient = "wget";
+      const run = jest
+        .fn()
+        .mockResolvedValueOnce({ stdout: "", stderr: "", exitCode: 4 })
+        .mockResolvedValueOnce({ stdout: "", stderr: "", exitCode: 0 });
+      (sandbox as any).commands.run = run;
+
+      try {
+        const promise = sandbox.files.downloadFromUrl(
+          "https://example.com/image.png",
+          "/tmp/hackerai-upload/image.png",
+        );
+        await jest.advanceTimersByTimeAsync(500);
+        await promise;
+
+        expect(run).toHaveBeenCalledTimes(2);
+        expect(run).toHaveBeenNthCalledWith(
+          2,
+          expect.stringContaining("wget -q --tries=3 --waitretry=1"),
+          expect.objectContaining({
+            displayName: "Downloading: image.png (retry 1)",
+          }),
+        );
+      } finally {
+        consoleWarnSpy.mockRestore();
+      }
+    });
+
+    it("does not retry wget protocol failures", async () => {
+      const sandbox = createSandbox({
+        osInfo: {
+          platform: "linux",
+          arch: "x64",
+          release: "6.1",
+          hostname: "devbox",
+        },
+      });
+      (sandbox as any).httpClient = "wget";
+      const run = jest.fn(async (cmd: string) => {
+        if (cmd.includes("target_dir_exists")) {
+          return {
+            stdout: "target_dir_exists=true\ntarget_dir_writable=true\n",
+            stderr: "",
+            exitCode: 0,
+          };
+        }
+        return { stdout: "", stderr: "protocol error", exitCode: 7 };
+      });
+      (sandbox as any).commands.run = run;
+
+      await expect(
+        sandbox.files.downloadFromUrl(
+          "https://example.com/image.png",
+          "/tmp/hackerai-upload/image.png",
+        ),
+      ).rejects.toThrow("Failed to download file");
+
+      expect(
+        run.mock.calls.filter(([command]) =>
+          String(command).includes("wget -q --tries=3 --waitretry=1"),
+        ),
+      ).toHaveLength(1);
+    });
+
+    it("keeps Snap curl when wget is unavailable", async () => {
+      const sandbox = createSandbox({
+        osInfo: {
+          platform: "linux",
+          arch: "x64",
+          release: "6.1",
+          hostname: "devbox",
+        },
+      });
+      const run = jest
+        .fn()
+        .mockResolvedValueOnce({
+          stdout: "/snap/bin/curl\n",
+          stderr: "",
+          exitCode: 0,
+        })
+        .mockResolvedValueOnce({ stdout: "", stderr: "", exitCode: 0 })
+        .mockResolvedValueOnce({
+          stdout: "--retry-all-errors --retry-connrefused\n",
+          stderr: "",
+          exitCode: 0,
+        })
+        .mockResolvedValueOnce({ stdout: "", stderr: "", exitCode: 0 });
+      (sandbox as any).commands.run = run;
+
+      await sandbox.files.downloadFromUrl(
+        "https://example.com/image.png",
+        "/tmp/hackerai-upload/image.png",
+      );
+
+      expect(run).toHaveBeenNthCalledWith(
+        4,
+        expect.stringContaining("curl -fsSL"),
+        expect.objectContaining({
+          displayName: "Downloading: image.png",
+          timeoutMs: 120000,
+        }),
+      );
+    });
+
+    it("redacts signed URL queries from direct download failures", async () => {
+      const { sandbox } = createWindowsBashSandbox();
+      (sandbox as any).commands.run = jest.fn(async (cmd: string) => {
+        if (cmd.includes("target_dir_exists")) {
+          return {
+            stdout: "target_dir_exists=true\ntarget_dir_writable=true\n",
+            stderr: "",
+            exitCode: 0,
+          };
+        }
+        return {
+          stdout: "",
+          stderr: "curl: (23) client returned ERROR on write",
+          exitCode: 23,
+        };
+      });
+      const signedUrl =
+        "https://storage.example.com/image.png?X-Amz-Credential=" +
+        "a".repeat(160) +
+        "&X-Amz-Signature=secret";
+
+      const assertion = expect(
+        sandbox.files.downloadFromUrl(
+          signedUrl,
+          "/tmp/hackerai-upload/image.png",
+        ),
+      ).rejects.toThrow("url: https://storage.example.com/image.png\n");
+      await jest.advanceTimersByTimeAsync(5_000);
+      await assertion;
+    });
+
     it("uploadToUrl emits Windows curl with --ssl-no-revoke when supported", async () => {
       const { sandbox, runs, runOptions } = createWindowsBashSandbox();
 
