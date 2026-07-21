@@ -247,23 +247,22 @@ export function FindingDetail({
         className,
       )}
     >
-      <article className="mx-auto w-full max-w-6xl p-4 sm:p-6 @min-[760px]:p-8">
-        <header className="space-y-6 border-b border-border pb-7">
+      <article className="mx-auto w-full max-w-5xl p-4 sm:p-6 @min-[760px]:p-8">
+        <header className="space-y-6 border-b border-border pb-8">
           <div className="flex flex-col gap-5 @min-[760px]:flex-row @min-[760px]:items-start @min-[760px]:justify-between">
             <div className="min-w-0 flex-1 space-y-4">
-              <div className="flex flex-wrap items-center gap-2">
-                <span className="inline-flex items-center gap-1.5 rounded-md border border-emerald-500/30 bg-emerald-500/10 px-2 py-1 text-xs font-medium text-emerald-600 dark:text-emerald-400">
+              <div className="flex items-center gap-2 text-xs font-medium text-emerald-600 dark:text-emerald-400">
+                <span className="flex size-6 items-center justify-center rounded-md border border-emerald-500/30 bg-emerald-500/10">
                   <ShieldCheck className="size-3.5" aria-hidden="true" />
-                  Confirmed
                 </span>
-                <span
-                  className={cn(
-                    "rounded-md border px-2 py-1 text-xs font-semibold uppercase tabular-nums",
-                    getFindingSeverityClasses(finding.severity),
-                  )}
-                >
-                  {finding.severity} · CVSS {finding.cvss_score.toFixed(1)}
-                </span>
+                Confirmed Vulnerability
+              </div>
+
+              <h2 className="max-w-4xl text-balance text-2xl font-semibold leading-tight text-foreground @min-[760px]:text-3xl">
+                {finding.title}
+              </h2>
+
+              <div className="flex flex-wrap items-center gap-2">
                 {finding.cwe ? (
                   <span
                     className="rounded-md border border-border px-2 py-1 font-mono text-xs text-muted-foreground"
@@ -281,10 +280,6 @@ export function FindingDetail({
                   </span>
                 ) : null}
               </div>
-
-              <h2 className="max-w-4xl text-balance text-2xl font-semibold leading-tight text-foreground @min-[760px]:text-3xl">
-                {finding.title}
-              </h2>
             </div>
 
             {surface === "findings_page" ? (
@@ -339,6 +334,52 @@ export function FindingDetail({
             ) : null}
           </div>
 
+          <dl className="grid gap-px overflow-hidden rounded-xl border border-border bg-border @min-[520px]:grid-cols-2 @min-[860px]:grid-cols-4">
+            <div className="min-w-0 bg-muted/20 p-3.5">
+              <dt className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                Severity
+              </dt>
+              <dd className="mt-1.5">
+                <span
+                  className={cn(
+                    "inline-flex rounded-md border px-2 py-1 text-[11px] font-semibold uppercase",
+                    getFindingSeverityClasses(finding.severity),
+                  )}
+                >
+                  {formatLabel(finding.severity)}
+                </span>
+              </dd>
+            </div>
+            <div className="min-w-0 bg-muted/20 p-3.5">
+              <dt className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                CVSS 3.1
+              </dt>
+              <dd className="mt-1.5 font-mono text-sm font-semibold tabular-nums text-foreground">
+                {finding.cvss_score.toFixed(1)}
+              </dd>
+            </div>
+            <div className="min-w-0 bg-muted/20 p-3.5">
+              <dt className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                Fix Effort
+              </dt>
+              <dd className="mt-1.5 text-sm font-medium text-foreground">
+                {formatLabel(finding.fix_effort)}
+              </dd>
+            </div>
+            <div className="min-w-0 bg-muted/20 p-3.5">
+              <dt className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                Discovered
+              </dt>
+              <dd className="mt-1.5 flex items-start gap-1.5 text-xs leading-5 text-muted-foreground">
+                <Clock3
+                  className="mt-0.5 size-3.5 shrink-0"
+                  aria-hidden="true"
+                />
+                <FindingDiscoveredAt timestamp={finding.created_at} />
+              </dd>
+            </div>
+          </dl>
+
           <dl
             className={cn(
               "grid gap-px overflow-hidden rounded-xl border border-border bg-border",
@@ -385,10 +426,10 @@ export function FindingDetail({
         >
           <div className="flex w-max gap-1 py-2 text-xs font-medium text-muted-foreground">
             {[
-              ["overview", "Summary"],
-              ["reproduce", "Exploit"],
+              ["overview", "Overview"],
+              ["reproduce", "Reproduce"],
               ["evidence", "Evidence"],
-              ["remediation", "Fix"],
+              ["remediation", "Remediation"],
               ["technical", "Technical"],
             ].map(([id, label]) => (
               <a
@@ -402,8 +443,8 @@ export function FindingDetail({
           </div>
         </nav>
 
-        <div className="grid gap-8 pt-8 @min-[760px]:grid-cols-[minmax(0,1fr)_14rem]">
-          <div className="min-w-0 space-y-10">
+        <div className="pt-8">
+          <div className="min-w-0 space-y-12">
             <section
               id={sectionId("overview")}
               className="scroll-mt-20 space-y-8"
@@ -411,14 +452,14 @@ export function FindingDetail({
             >
               <FindingSectionHeading
                 id={sectionId("overview")}
-                title="What Was Confirmed"
+                title="Overview"
                 description="The validated behavior and its real-world security impact."
                 icon={<ShieldCheck className="size-4" aria-hidden="true" />}
               />
               <div className="grid gap-3 @min-[620px]:grid-cols-2">
                 <section className="rounded-xl border border-border bg-muted/15 p-4">
                   <h4 className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-                    TL;DR
+                    Summary
                   </h4>
                   <div className="mt-3 min-w-0 break-words text-sm leading-6 text-foreground">
                     <MemoizedMarkdown content={finding.description} />
@@ -439,37 +480,6 @@ export function FindingDetail({
                   </div>
                 </section>
               </div>
-              {finding.code_locations && finding.code_locations.length > 0 ? (
-                <DetailSection title="Affected Locations">
-                  <div className="space-y-2">
-                    {finding.code_locations.map((location, index) => (
-                      <div
-                        key={`${location.file}:${location.start_line}:${index}`}
-                        className="flex min-w-0 items-start gap-2 rounded-lg border border-border bg-muted/20 p-3"
-                      >
-                        <Code2
-                          className="mt-0.5 size-4 shrink-0 text-muted-foreground"
-                          aria-hidden="true"
-                        />
-                        <div className="min-w-0">
-                          <div
-                            className="break-all font-mono text-xs text-foreground"
-                            translate="no"
-                          >
-                            {location.file}:{location.start_line}-
-                            {location.end_line}
-                          </div>
-                          {location.label && (
-                            <div className="mt-1 text-xs text-muted-foreground">
-                              {location.label}
-                            </div>
-                          )}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </DetailSection>
-              ) : null}
             </section>
 
             <section
@@ -479,8 +489,8 @@ export function FindingDetail({
             >
               <FindingSectionHeading
                 id={sectionId("reproduce")}
-                title="Exploit & Reproduction"
-                description="A repeatable path that demonstrates the vulnerability."
+                title="Reproduce the Finding"
+                description="The repeatable steps and payload used to confirm the vulnerability."
                 icon={<Terminal className="size-4" aria-hidden="true" />}
               />
               <MarkdownSection
@@ -519,8 +529,8 @@ export function FindingDetail({
             >
               <FindingSectionHeading
                 id={sectionId("evidence")}
-                title="Observed Evidence"
-                description="The concrete response or behavior captured during validation."
+                title="Evidence & Affected Code"
+                description="The captured behavior and any source locations tied to the finding."
                 icon={<Eye className="size-4" aria-hidden="true" />}
               />
               <section className="rounded-xl border border-emerald-500/20 bg-emerald-500/5 p-4">
@@ -532,6 +542,51 @@ export function FindingDetail({
                   <MemoizedMarkdown content={finding.evidence} />
                 </div>
               </section>
+              {finding.code_locations && finding.code_locations.length > 0 ? (
+                <DetailSection title="Code Evidence">
+                  <div className="space-y-3">
+                    {finding.code_locations.map((location, index) => (
+                      <section
+                        key={`${location.file}:${location.start_line}:${index}`}
+                        className="overflow-hidden rounded-xl border border-border bg-muted/10"
+                        aria-label={
+                          location.label ??
+                          `${location.file}:${location.start_line}-${location.end_line}`
+                        }
+                      >
+                        <div className="flex min-w-0 flex-col gap-1 border-b border-border px-4 py-3 @min-[620px]:flex-row @min-[620px]:items-center @min-[620px]:justify-between">
+                          <div className="min-w-0">
+                            {location.label ? (
+                              <div className="text-sm font-medium text-foreground">
+                                {location.label}
+                              </div>
+                            ) : null}
+                            <div
+                              className="break-all font-mono text-xs text-muted-foreground"
+                              translate="no"
+                            >
+                              {location.file}:{location.start_line}-
+                              {location.end_line}
+                            </div>
+                          </div>
+                          <span className="shrink-0 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                            Source Reference
+                          </span>
+                        </div>
+                        {location.snippet ? (
+                          <pre className="max-w-full overflow-x-auto p-4 text-xs leading-relaxed">
+                            <code translate="no">{location.snippet}</code>
+                          </pre>
+                        ) : (
+                          <p className="px-4 py-3 text-xs text-muted-foreground">
+                            No source snippet was included with this report.
+                          </p>
+                        )}
+                      </section>
+                    ))}
+                  </div>
+                </DetailSection>
+              ) : null}
             </section>
 
             <section
@@ -541,8 +596,8 @@ export function FindingDetail({
             >
               <FindingSectionHeading
                 id={sectionId("remediation")}
-                title="Remediation"
-                description="Specific changes to remove the root cause and prevent regression."
+                title="Remediation Guidance"
+                description="Recommended changes to remove the root cause and prevent regression."
                 icon={<Wrench className="size-4" aria-hidden="true" />}
               />
               <MarkdownSection
@@ -550,36 +605,36 @@ export function FindingDetail({
                 value={finding.remediation_steps}
               />
 
-              {finding.code_locations && finding.code_locations.length > 0 ? (
-                <DetailSection title="Code Changes">
+              {finding.code_locations?.some(
+                (location) => location.fix_before && location.fix_after,
+              ) ? (
+                <DetailSection title="Suggested Code Changes">
                   <div className="space-y-3">
-                    {finding.code_locations.map((location, index) => (
-                      <div
-                        key={`${location.file}:${location.start_line}:${index}`}
-                        className="rounded-lg border border-border bg-muted/20 p-3"
-                      >
-                        <div
-                          className="break-all font-mono text-xs text-foreground"
-                          translate="no"
+                    {finding.code_locations
+                      ?.filter(
+                        (location) => location.fix_before && location.fix_after,
+                      )
+                      .map((location, index) => (
+                        <section
+                          key={`${location.file}:${location.start_line}:${index}`}
+                          className="rounded-xl border border-border bg-muted/10 p-4"
                         >
-                          {location.file}:{location.start_line}-
-                          {location.end_line}
-                        </div>
-                        {location.label && (
-                          <div className="mt-1 text-xs text-muted-foreground">
-                            {location.label}
+                          <div className="flex min-w-0 flex-wrap items-center justify-between gap-2">
+                            <div
+                              className="break-all font-mono text-xs text-foreground"
+                              translate="no"
+                            >
+                              {location.file}:{location.start_line}-
+                              {location.end_line}
+                            </div>
+                            <span className="rounded-md border border-border px-2 py-1 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                              Read-only Guidance
+                            </span>
                           </div>
-                        )}
-                        {location.snippet && (
-                          <pre className="mt-3 max-w-full overflow-x-auto rounded-md bg-background p-3 text-xs">
-                            <code translate="no">{location.snippet}</code>
-                          </pre>
-                        )}
-                        {location.fix_before && location.fix_after && (
                           <div className="mt-3 grid gap-3 @min-[620px]:grid-cols-2">
                             <div className="min-w-0">
                               <div className="mb-1 text-[11px] font-medium uppercase text-muted-foreground">
-                                Before
+                                Current Code
                               </div>
                               <pre className="max-w-full overflow-x-auto rounded-md border border-red-500/20 bg-red-500/5 p-3 text-xs">
                                 <code translate="no">
@@ -589,16 +644,15 @@ export function FindingDetail({
                             </div>
                             <div className="min-w-0">
                               <div className="mb-1 text-[11px] font-medium uppercase text-muted-foreground">
-                                After
+                                Suggested Change
                               </div>
                               <pre className="max-w-full overflow-x-auto rounded-md border border-green-500/20 bg-green-500/5 p-3 text-xs">
                                 <code translate="no">{location.fix_after}</code>
                               </pre>
                             </div>
                           </div>
-                        )}
-                      </div>
-                    ))}
+                        </section>
+                      ))}
                   </div>
                 </DetailSection>
               ) : null}
@@ -611,12 +665,12 @@ export function FindingDetail({
             >
               <FindingSectionHeading
                 id={sectionId("technical")}
-                title="Technical Details"
+                title="Technical Analysis"
                 description="Root-cause analysis, assumptions, and CVSS 3.1 scoring."
                 icon={<Code2 className="size-4" aria-hidden="true" />}
               />
               <MarkdownSection
-                title="Technical Analysis"
+                title="Root Cause"
                 value={finding.technical_analysis}
               />
               <MarkdownSection
@@ -659,91 +713,6 @@ export function FindingDetail({
               </DetailSection>
             </section>
           </div>
-
-          <aside className="self-start @min-[760px]:sticky @min-[760px]:top-14">
-            <div className="overflow-hidden rounded-xl border border-border bg-muted/10">
-              <div className="border-b border-emerald-500/20 bg-emerald-500/5 p-4">
-                <div className="flex items-center gap-2 text-sm font-medium text-foreground">
-                  <ShieldCheck
-                    className="size-4 text-emerald-500"
-                    aria-hidden="true"
-                  />
-                  Validated Finding
-                </div>
-                <p className="mt-1.5 text-xs leading-5 text-muted-foreground">
-                  Confirmed with a working exploit and captured evidence.
-                </p>
-              </div>
-
-              <dl className="divide-y divide-border px-4">
-                <div className="flex items-center justify-between gap-3 py-3">
-                  <dt className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-                    Severity
-                  </dt>
-                  <dd>
-                    <span
-                      className={cn(
-                        "inline-flex rounded-md border px-2 py-1 text-[11px] font-semibold uppercase",
-                        getFindingSeverityClasses(finding.severity),
-                      )}
-                    >
-                      {formatLabel(finding.severity)}
-                    </span>
-                  </dd>
-                </div>
-                <div className="flex items-center justify-between gap-3 py-3">
-                  <dt className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-                    CVSS
-                  </dt>
-                  <dd className="font-mono text-sm font-medium tabular-nums text-foreground">
-                    {finding.cvss_score.toFixed(1)}
-                  </dd>
-                </div>
-                <div className="flex items-center justify-between gap-3 py-3">
-                  <dt className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-                    Fix Effort
-                  </dt>
-                  <dd className="text-sm font-medium text-foreground">
-                    {formatLabel(finding.fix_effort)}
-                  </dd>
-                </div>
-                <div className="py-3">
-                  <dt className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-                    Discovered
-                  </dt>
-                  <dd className="mt-1.5 flex items-start gap-1.5 text-xs text-muted-foreground">
-                    <Clock3
-                      className="mt-0.5 size-3.5 shrink-0"
-                      aria-hidden="true"
-                    />
-                    <FindingDiscoveredAt timestamp={finding.created_at} />
-                  </dd>
-                </div>
-              </dl>
-
-              <div className="border-t border-border p-4">
-                <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-                  Validation
-                </div>
-                <div className="mt-2 space-y-2 text-xs text-muted-foreground">
-                  <span className="flex items-center gap-1.5">
-                    <CheckCircle2
-                      className="size-3.5 text-emerald-500"
-                      aria-hidden="true"
-                    />
-                    Working PoC
-                  </span>
-                  <span className="flex items-center gap-1.5">
-                    <CheckCircle2
-                      className="size-3.5 text-emerald-500"
-                      aria-hidden="true"
-                    />
-                    Evidence Captured
-                  </span>
-                </div>
-              </div>
-            </div>
-          </aside>
         </div>
       </article>
     </div>

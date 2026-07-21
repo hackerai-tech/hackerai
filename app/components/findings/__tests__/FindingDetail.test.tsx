@@ -76,20 +76,21 @@ describe("FindingDetail", () => {
   it("renders the complete report and source chat link", () => {
     render(<FindingDetail finding={finding} surface="findings_page" />);
     expect(screen.getByRole("heading", { name: finding.title })).toBeVisible();
-    expect(screen.getByText("Confirmed")).toBeVisible();
-    expect(
-      screen.getByRole("heading", { name: "What Was Confirmed" }),
-    ).toBeVisible();
-    expect(screen.getByText("Validated Finding")).toBeVisible();
+    expect(screen.getByText("Confirmed Vulnerability")).toBeVisible();
+    expect(screen.getByRole("heading", { name: "Overview" })).toBeVisible();
+    expect(screen.getByText("Fix Effort")).toBeVisible();
     expect(screen.getByText("CWE-639")).toBeVisible();
     expect(screen.getByText(finding.poc_script_code)).toBeVisible();
     expect(screen.getByText(finding.evidence)).toBeVisible();
     expect(
       screen.getAllByText("app/api/invoices/route.ts:20-22")[0],
     ).toBeVisible();
-    expect(screen.getByText("Working PoC")).toBeVisible();
+    expect(screen.getByText("Source Reference")).toBeVisible();
+    expect(screen.getByText("Read-only Guidance")).toBeVisible();
+    expect(screen.getByText("Current Code")).toBeVisible();
+    expect(screen.getByText("Suggested Change")).toBeVisible();
     expect(
-      screen.getByRole("heading", { name: "Technical Details" }),
+      screen.getByRole("heading", { name: "Technical Analysis" }),
     ).toBeVisible();
     expect(screen.getByText("Network")).toBeVisible();
     expect(

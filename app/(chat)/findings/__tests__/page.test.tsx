@@ -110,8 +110,12 @@ describe("FindingsPage", () => {
     expect(screen.getByText("Confirmed IDOR")).toBeVisible();
     expect(screen.getAllByText("/api/invoices/other")).toHaveLength(2);
     expect(screen.getByText("Invoice test")).toBeVisible();
-    expect(screen.getByText("CVSS 7.1")).toBeVisible();
-    expect(screen.getByText("Affected Target")).toBeVisible();
+    expect(screen.getByText("7.1")).toBeVisible();
+    expect(screen.getByText("Current Results")).toBeVisible();
+    expect(screen.getByText("Validation Standard")).toBeVisible();
+    expect(screen.getByText("Endpoint")).toBeVisible();
+    expect(screen.getByText("Risk")).toBeVisible();
+    expect(screen.getByText("Source Chat")).toBeVisible();
     expect(screen.getByRole("list", { name: "Findings" })).toBeVisible();
     expect(screen.getByLabelText("Filter by severity")).toBeVisible();
     expect(screen.queryByLabelText("Filter by source chat")).toBeNull();
