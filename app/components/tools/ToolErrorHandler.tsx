@@ -1,6 +1,6 @@
 "use client";
 
-import { memo, useMemo } from "react";
+import { memo, useMemo, type KeyboardEventHandler } from "react";
 import { CircleAlert, ShieldAlert } from "lucide-react";
 import ToolBlock from "@/components/ui/tool-block";
 import { isSidebarToolError, type SidebarToolError } from "@/types/chat";
@@ -10,9 +10,11 @@ import { createToolInputErrorContent } from "@/lib/chat/tool-error-display";
 export function ToolErrorBlock({
   content,
   onOpen,
+  onKeyDown,
 }: {
   content: SidebarToolError;
   onOpen: () => void;
+  onKeyDown?: KeyboardEventHandler;
 }) {
   const isFinding = content.toolName === "Vulnerability report";
 
@@ -29,6 +31,7 @@ export function ToolErrorBlock({
       target="View details"
       isClickable
       onClick={onOpen}
+      onKeyDown={onKeyDown}
       ariaLabel={`Open ${content.toolName.toLowerCase()} error details`}
     />
   );
@@ -39,13 +42,19 @@ export const ToolErrorHandler = memo(function ToolErrorHandler({
 }: {
   content: SidebarToolError;
 }) {
-  const { handleOpenInSidebar } = useToolSidebar({
+  const { handleOpenInSidebar, handleKeyDown } = useToolSidebar({
     toolCallId: content.toolCallId,
     content,
     typeGuard: isSidebarToolError,
   });
 
-  return <ToolErrorBlock content={content} onOpen={handleOpenInSidebar} />;
+  return (
+    <ToolErrorBlock
+      content={content}
+      onOpen={handleOpenInSidebar}
+      onKeyDown={handleKeyDown}
+    />
+  );
 });
 
 export const ToolValidationErrorHandler = memo(

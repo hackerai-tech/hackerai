@@ -4,12 +4,13 @@ import { fireEvent, render, screen } from "@testing-library/react";
 import { resetMockConvexQueries, setMockQueryResult } from "convex/react";
 
 const mockOpenInSidebar = jest.fn();
+const mockHandleKeyDown = jest.fn();
 const mockCapture = jest.fn();
 
 jest.mock("@/app/hooks/useToolSidebar", () => ({
   useToolSidebar: () => ({
     handleOpenInSidebar: mockOpenInSidebar,
-    handleKeyDown: jest.fn(),
+    handleKeyDown: mockHandleKeyDown,
     isSidebarActive: false,
   }),
 }));
@@ -112,6 +113,14 @@ describe("FindingToolHandler", () => {
         }),
       );
       expect(mockOpenInSidebar).toHaveBeenCalledTimes(1);
+
+      fireEvent.keyDown(
+        screen.getByRole("button", {
+          name: "Open vulnerability report error details",
+        }),
+        { key: "Escape" },
+      );
+      expect(mockHandleKeyDown).toHaveBeenCalledTimes(1);
     },
   );
 
