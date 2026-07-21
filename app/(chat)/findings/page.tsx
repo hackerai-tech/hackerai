@@ -273,7 +273,7 @@ function FindingsPageContent() {
                 aria-label="Findings overview"
                 className="border-b border-border px-4 py-5 sm:px-6"
               >
-                <dl className="grid gap-5 sm:grid-cols-2 xl:grid-cols-[0.7fr_1.6fr_0.7fr_1fr] xl:gap-8">
+                <dl className="grid grid-cols-2 gap-5 xl:grid-cols-[0.7fr_1.6fr_0.7fr_1fr] xl:gap-8">
                   <div>
                     <dt className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
                       Current Results
@@ -577,7 +577,8 @@ function FindingsPageContent() {
                               >
                                 {finding.target}
                               </div>
-                              {finding.endpoint ? (
+                              {finding.endpoint &&
+                              finding.endpoint !== finding.target ? (
                                 <div
                                   className="mt-1 flex min-w-0 items-center gap-1.5 font-mono text-xs text-foreground/70 xl:hidden"
                                   translate="no"
@@ -594,7 +595,9 @@ function FindingsPageContent() {
                               translate="no"
                             >
                               <span className="truncate">
-                                {finding.endpoint ?? "Target-wide"}
+                                {finding.endpoint === finding.target
+                                  ? "Same as target"
+                                  : (finding.endpoint ?? "Target-wide")}
                               </span>
                             </div>
 
