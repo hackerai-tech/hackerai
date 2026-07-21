@@ -474,8 +474,6 @@ When in doubt, use this tool. Systematic task management ensures comprehensive s
   inputSchema: todoWriteToolInputSchema,
 });
 
-export type TodoWriteToolInput = z.infer<typeof todoWriteToolInputSchema>;
-
 export const PERPLEXITY_QUERY_MAX_LENGTH = 8192;
 const webSearchQuerySchema = z
   .string()
@@ -544,7 +542,6 @@ export const NOTE_CATEGORIES = [
   "questions",
   "plan",
 ] as const;
-export type ToolNoteCategory = (typeof NOTE_CATEGORIES)[number];
 const noteCategorySchema = z.enum(NOTE_CATEGORIES);
 
 export const createNoteToolInputSchema = z.object({
