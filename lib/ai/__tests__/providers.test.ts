@@ -58,13 +58,15 @@ describe("provider registry", () => {
     expect(
       (myProvider.languageModel("title-generator-model") as { modelId: string })
         .modelId,
-    ).toBe("x-ai/grok-4.5");
+    ).toBe("deepseek/deepseek-v4-flash");
     expect(getModelDisplayName("model-minimax-m3")).toBe("xAI Grok 4.5");
     expect(getModelDisplayName("model-grok-4.5")).toBe("xAI Grok 4.5");
     expect(getModelDisplayName("model-grok-4.5-pro")).toBe("xAI Grok 4.5");
     expect(getModelDisplayName("model-glm-5.2")).toBe("Z.ai GLM 5.2");
     expect(getModelDisplayName("model-gemini-3-flash")).toBe("xAI Grok 4.5");
-    expect(getModelDisplayName("title-generator-model")).toBe("xAI Grok 4.5");
+    expect(getModelDisplayName("title-generator-model")).toBe(
+      "DeepSeek V4 Flash",
+    );
   });
 });
 

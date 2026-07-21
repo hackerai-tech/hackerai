@@ -730,6 +730,49 @@ export const updateChatPreferences = mutation({
 });
 
 /**
+ * Persist a generated title while the response is still streaming.
+ * Intentionally does not touch active stream state.
+ */
+export const updateChatTitle = mutation({
+  args: {
+    serviceKey: v.string(),
+    chatId: v.string(),
+    title: v.string(),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    validateServiceKey(args.serviceKey);
+
+    const title = args.title.trim();
+    if (!title || title.length > 100) {
+      throw new ConvexError({
+        code: "VALIDATION_ERROR",
+        message: !title
+          ? "Chat title cannot be empty"
+          : "Chat title cannot exceed 100 characters",
+      });
+    }
+
+    const chat = await ctx.db
+      .query("chats")
+      .withIndex("by_chat_id", (q) => q.eq("id", args.chatId))
+      .first();
+
+    if (!chat) {
+      // Benign race: the user deleted the chat while its title was generating.
+      return null;
+    }
+
+    await ctx.db.patch(chat._id, {
+      title,
+      update_time: Date.now(),
+    });
+
+    return null;
+  },
+});
+
+/**
  * Update an existing chat with title and finish reason
  * Automatically clears active_stream_id and canceled_at for stream cleanup
  */

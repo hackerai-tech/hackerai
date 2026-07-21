@@ -50,6 +50,7 @@ const loadSaveMessageWithMocks = async () => {
     saveMessage,
     setActiveTriggerRun,
     updateChat,
+    updateChatTitle,
   } = await import("../actions");
   return {
     deleteAllChatsForBackend,
@@ -65,6 +66,7 @@ const loadSaveMessageWithMocks = async () => {
     saveMessage,
     setActiveTriggerRun,
     updateChat,
+    updateChatTitle,
   };
 };
 
@@ -498,6 +500,31 @@ describe("updateChat", () => {
     } finally {
       errorSpy.mockRestore();
     }
+  });
+});
+
+describe("updateChatTitle", () => {
+  it("sends only title fields through the title-specific mutation", async () => {
+    const { mockMutation, updateChatTitle } = await loadSaveMessageWithMocks();
+
+    await expect(
+      updateChatTitle({ chatId: "chat-1", title: "Generated Title" }),
+    ).resolves.toEqual({ id: "message-1" });
+
+    expect(mockMutation).toHaveBeenCalledTimes(1);
+    const mutationArgs = mockMutation.mock.calls[0]?.[1] as Record<
+      string,
+      unknown
+    >;
+    expect(mutationArgs).toMatchObject({
+      chatId: "chat-1",
+      title: "Generated Title",
+    });
+    expect(Object.keys(mutationArgs).sort()).toEqual([
+      "chatId",
+      "serviceKey",
+      "title",
+    ]);
   });
 });
 

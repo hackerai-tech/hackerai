@@ -291,6 +291,52 @@ describe("saveChat", () => {
   });
 });
 
+describe("updateChatTitle", () => {
+  it("updates the sidebar title without clearing active stream state", async () => {
+    const { updateChatTitle } = await import("../chats");
+    const { ctx, patch } = makeCtx({
+      existingChat: {
+        _id: "chat-doc-1",
+        id: "chat-1",
+        user_id: "user-1",
+        active_stream_id: "stream-1",
+        canceled_at: 123,
+      },
+    });
+
+    await expect(
+      updateChatTitle.handler(ctx, {
+        serviceKey: SERVICE_KEY,
+        chatId: "chat-1",
+        title: "  Generated Sidebar Title  ",
+      }),
+    ).resolves.toBeNull();
+
+    expect(patch).toHaveBeenCalledWith("chat-doc-1", {
+      title: "Generated Sidebar Title",
+      update_time: expect.any(Number),
+    });
+    const update = patch.mock.calls[0]?.[1] as Record<string, unknown>;
+    expect(update).not.toHaveProperty("active_stream_id");
+    expect(update).not.toHaveProperty("canceled_at");
+  });
+
+  it("does nothing if the chat was deleted while its title generated", async () => {
+    const { updateChatTitle } = await import("../chats");
+    const { ctx, patch } = makeCtx({ existingChat: null });
+
+    await expect(
+      updateChatTitle.handler(ctx, {
+        serviceKey: SERVICE_KEY,
+        chatId: "deleted-chat",
+        title: "Generated Title",
+      }),
+    ).resolves.toBeNull();
+
+    expect(patch).not.toHaveBeenCalled();
+  });
+});
+
 describe("moveChatToProject", () => {
   it("moves an owned chat to an owned project", async () => {
     const { moveChatToProject } = await import("../chats");

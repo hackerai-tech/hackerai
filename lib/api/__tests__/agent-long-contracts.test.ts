@@ -1490,6 +1490,17 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(taskSrc).toMatch(/chatFinalizationStatus/);
   });
 
+  test("generated titles update reactive sidebar data before finalization", () => {
+    expect(dbActionsSrc).toMatch(/export async function updateChatTitle/);
+    expect(dbActionsSrc).toMatch(/api\.chats\.updateChatTitle/);
+    expect(chatHandlerSrc).toMatch(
+      /generateTitleFromUserMessageWithWriter\([\s\S]*?\(title\) => updateChatTitle\(\{ chatId, title \}\)/,
+    );
+    expect(taskSrc).toMatch(
+      /generateTitleFromUserMessageWithWriter\([\s\S]*?\(title\) => updateChatTitle\(\{ chatId, title \}\)/,
+    );
+  });
+
   test("empty rehydrated history is classified separately from oversized input", () => {
     const emptyPromptIdx = dbActionsSrc.indexOf("chat_prompt_empty");
     const emptyMessageIdx = dbActionsSrc.indexOf(

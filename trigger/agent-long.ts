@@ -72,6 +72,7 @@ import { assertUserCanMakeCostIncurringRequest } from "@/lib/suspensions";
 import {
   saveMessage,
   updateChat,
+  updateChatTitle,
   getUserCustomization,
   setActiveTriggerRun,
   setActiveAgentApprovalPending,
@@ -2323,6 +2324,7 @@ export const agentLongTask = task({
                 ? generateTitleFromUserMessageWithWriter(
                     processedMessages,
                     writer,
+                    (title) => updateChatTitle({ chatId, title }),
                   )
                 : Promise.resolve(undefined);
 
