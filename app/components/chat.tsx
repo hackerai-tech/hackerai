@@ -922,6 +922,9 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
       }
     },
     onFinish: () => {
+      if (!isChatMountedRef.current || activeChatIdRef.current !== chatId) {
+        return;
+      }
       browserStreamFinishedRef.current = true;
       setIsAutoResuming(false);
       setAwaitingServerChat(false);
@@ -938,6 +941,9 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
       }
     },
     onError: (error) => {
+      if (!isChatMountedRef.current || activeChatIdRef.current !== chatId) {
+        return;
+      }
       browserStreamFinishedRef.current = true;
       setIsAutoResuming(false);
       setAwaitingServerChat(false);
@@ -1026,20 +1032,29 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   );
   shouldUseAgentLongForCurrentChatRef.current =
     shouldUseAgentLongForCurrentChat;
-  const stopActiveBrowserStream = useCallback(() => {
-    cancelAgentLongRealtimeStreams(activeChatIdRef.current);
-    const streamAlreadyFinished =
-      shouldUseAgentLongForCurrentChatRef.current &&
-      browserStreamFinishedRef.current;
-    if (
-      !streamAlreadyFinished &&
-      (statusRef.current === "streaming" || statusRef.current === "submitted")
-    ) {
-      stopRef.current();
-    }
-    setDataStream([]);
-    setIsAutoResuming(false);
-  }, [setDataStream, setIsAutoResuming]);
+  const stopActiveBrowserStream = useCallback(
+    (nextChatId?: string) => {
+      const activeChatId = activeChatIdRef.current;
+      cancelAgentLongRealtimeStreams(activeChatId);
+      if (nextChatId) {
+        // Invalidate terminal callbacks before aborting. Some transports finish
+        // asynchronously after the user has already started a new task.
+        activeChatIdRef.current = nextChatId;
+      }
+      const streamAlreadyFinished =
+        shouldUseAgentLongForCurrentChatRef.current &&
+        browserStreamFinishedRef.current;
+      if (
+        !streamAlreadyFinished &&
+        (statusRef.current === "streaming" || statusRef.current === "submitted")
+      ) {
+        stopRef.current();
+      }
+      setDataStream([]);
+      setIsAutoResuming(false);
+    },
+    [setDataStream, setIsAutoResuming],
+  );
 
   const saveAgentLongPartialSnapshot = useCallback(
     (clientReason: string) => {
@@ -1179,7 +1194,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     const abortController = new AbortController();
 
     const finishLocally = () => {
-      if (stopped) return;
+      if (stopped || activeChatIdRef.current !== chatId) return;
       stopped = true;
       stop();
       setIsAutoResuming(false);
@@ -1273,9 +1288,10 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   // Register a reset function with global state so initializeNewChat can call it
   useEffect(() => {
     const reset = () => {
-      stopActiveBrowserStream();
+      const nextChatId = uuidv4();
+      stopActiveBrowserStream(nextChatId);
       setMessages([]);
-      setChatId(uuidv4());
+      setChatId(nextChatId);
       setIsExistingChat(false);
       wasNewChatRef.current = true;
       setTodos([]);

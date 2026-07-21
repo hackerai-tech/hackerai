@@ -467,7 +467,7 @@ describe("agent-long chat UI — completion reconciliation", () => {
     expect(chatComponentSrc).toMatch(/const stopRef = useRef\(stop\)/);
     expect(chatComponentSrc).toMatch(/stopActiveBrowserStream/);
     expect(chatComponentSrc).toMatch(
-      /cancelAgentLongRealtimeStreams\(activeChatIdRef\.current\)/,
+      /const activeChatId = activeChatIdRef\.current;[\s\S]*cancelAgentLongRealtimeStreams\(activeChatId\)/,
     );
     expect(chatComponentSrc).toMatch(
       /statusRef\.current\s*===\s*"streaming"[\s\S]*statusRef\.current\s*===\s*"submitted"[\s\S]*stopRef\.current\(\)/,
@@ -475,6 +475,45 @@ describe("agent-long chat UI — completion reconciliation", () => {
     expect(chatComponentSrc).toMatch(
       /return\s*\(\)\s*=>\s*\{\s*stopActiveBrowserStream\(\);[\s\S]*\}/,
     );
+  });
+
+  test("new-task reset invalidates stale terminal callbacks before aborting", () => {
+    const stopHelperIdx = chatComponentSrc.indexOf(
+      "const stopActiveBrowserStream = useCallback(",
+    );
+    const cancelIdx = chatComponentSrc.indexOf(
+      "cancelAgentLongRealtimeStreams(activeChatId)",
+      stopHelperIdx,
+    );
+    const invalidateIdx = chatComponentSrc.indexOf(
+      "activeChatIdRef.current = nextChatId",
+      cancelIdx,
+    );
+    const abortIdx = chatComponentSrc.indexOf(
+      "stopRef.current()",
+      invalidateIdx,
+    );
+    const resetIdx = chatComponentSrc.indexOf("const reset = () => {");
+    const nextChatIdIdx = chatComponentSrc.indexOf(
+      "const nextChatId = uuidv4()",
+      resetIdx,
+    );
+    const guardedStopIdx = chatComponentSrc.indexOf(
+      "stopActiveBrowserStream(nextChatId)",
+      nextChatIdIdx,
+    );
+
+    expect(stopHelperIdx).toBeGreaterThan(-1);
+    expect(cancelIdx).toBeGreaterThan(stopHelperIdx);
+    expect(invalidateIdx).toBeGreaterThan(cancelIdx);
+    expect(abortIdx).toBeGreaterThan(invalidateIdx);
+    expect(nextChatIdIdx).toBeGreaterThan(resetIdx);
+    expect(guardedStopIdx).toBeGreaterThan(nextChatIdIdx);
+    expect(
+      chatComponentSrc.match(
+        /!isChatMountedRef\.current \|\| activeChatIdRef\.current !== chatId/g,
+      ),
+    ).toHaveLength(3);
   });
 
   test("sidebar navigation cancels stale agent-long realtime before route commit", () => {
