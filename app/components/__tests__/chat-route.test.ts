@@ -51,4 +51,19 @@ describe("finalizeNewChatRoute", () => {
 
     expect(window.location.pathname).toBe("/c/completed-chat");
   });
+
+  it("does not let a stale normal completion replace another chat route", () => {
+    window.history.replaceState({}, "", "/c/destination-chat");
+
+    expect(
+      finalizeNewChatRoute({
+        chatId: "stale-chat",
+        isAbort: false,
+        isExistingChat: false,
+        isTemporaryChat: false,
+      }),
+    ).toBe(false);
+
+    expect(window.location.pathname).toBe("/c/destination-chat");
+  });
 });

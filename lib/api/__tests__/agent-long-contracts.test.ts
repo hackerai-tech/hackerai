@@ -436,7 +436,9 @@ describe("agent-long chat UI — completion reconciliation", () => {
       /getLatestAgentLongAssistantMessageForPartialSave/,
     );
     expect(chatComponentSrc).toMatch(/stop\(\)/);
-    expect(chatComponentSrc).toMatch(/window\.history\.replaceState/);
+    expect(chatComponentSrc).toMatch(
+      /const finishLocally = \(\) => \{[\s\S]*finalizeNewChatRoute/,
+    );
     expect(chatComponentSrc).toMatch(/setIsExistingChat\(true\)/);
   });
 

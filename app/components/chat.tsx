@@ -1206,8 +1206,14 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
       setAwaitingServerChat(false);
       dispatchStreaming({ type: "RESET_ON_FINISH" });
 
-      if (!isExistingChatRef.current) {
-        window.history.replaceState({}, "", `/c/${chatId}`);
+      if (
+        finalizeNewChatRoute({
+          chatId,
+          isAbort: false,
+          isExistingChat: isExistingChatRef.current,
+          isTemporaryChat: temporaryChatsEnabled,
+        })
+      ) {
         removeDraft("new");
         setIsExistingChat(true);
       }
