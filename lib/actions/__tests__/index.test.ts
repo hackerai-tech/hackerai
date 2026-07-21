@@ -162,26 +162,28 @@ describe("generateTitleFromUserMessage", () => {
       .spyOn(console, "error")
       .mockImplementation(() => undefined);
 
-    await expect(
-      generateTitleFromUserMessageWithWriter(
-        makeMessage("do not lose this title"),
-        writer,
-        async () => {
-          throw persistenceError;
-        },
-      ),
-    ).resolves.toBe("Resilient Generated Title");
+    try {
+      await expect(
+        generateTitleFromUserMessageWithWriter(
+          makeMessage("do not lose this title"),
+          writer,
+          async () => {
+            throw persistenceError;
+          },
+        ),
+      ).resolves.toBe("Resilient Generated Title");
 
-    expect(writer.write).toHaveBeenCalledWith({
-      type: "data-title",
-      data: { chatTitle: "Resilient Generated Title" },
-      transient: true,
-    });
-    expect(consoleErrorSpy).toHaveBeenCalledWith(
-      "Failed to persist generated chat title:",
-      persistenceError,
-    );
-
-    consoleErrorSpy.mockRestore();
+      expect(writer.write).toHaveBeenCalledWith({
+        type: "data-title",
+        data: { chatTitle: "Resilient Generated Title" },
+        transient: true,
+      });
+      expect(consoleErrorSpy).toHaveBeenCalledWith(
+        "Failed to persist generated chat title:",
+        persistenceError,
+      );
+    } finally {
+      consoleErrorSpy.mockRestore();
+    }
   });
 });
