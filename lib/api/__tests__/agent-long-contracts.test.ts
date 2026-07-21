@@ -487,12 +487,9 @@ describe("agent-long chat UI — completion reconciliation", () => {
     );
     const invalidateIdx = chatComponentSrc.indexOf(
       "activeChatIdRef.current = nextChatId",
-      cancelIdx,
+      stopHelperIdx,
     );
-    const abortIdx = chatComponentSrc.indexOf(
-      "stopRef.current()",
-      invalidateIdx,
-    );
+    const abortIdx = chatComponentSrc.indexOf("stopRef.current()", cancelIdx);
     const resetIdx = chatComponentSrc.indexOf("const reset = () => {");
     const nextChatIdIdx = chatComponentSrc.indexOf(
       "const nextChatId = uuidv4()",
@@ -504,9 +501,9 @@ describe("agent-long chat UI — completion reconciliation", () => {
     );
 
     expect(stopHelperIdx).toBeGreaterThan(-1);
-    expect(cancelIdx).toBeGreaterThan(stopHelperIdx);
-    expect(invalidateIdx).toBeGreaterThan(cancelIdx);
-    expect(abortIdx).toBeGreaterThan(invalidateIdx);
+    expect(invalidateIdx).toBeGreaterThan(stopHelperIdx);
+    expect(cancelIdx).toBeGreaterThan(invalidateIdx);
+    expect(abortIdx).toBeGreaterThan(cancelIdx);
     expect(nextChatIdIdx).toBeGreaterThan(resetIdx);
     expect(guardedStopIdx).toBeGreaterThan(nextChatIdIdx);
     expect(

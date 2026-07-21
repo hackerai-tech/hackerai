@@ -89,6 +89,7 @@ import { removeDraft } from "@/lib/utils/client-storage";
 import { parseRateLimitWarning } from "@/lib/utils/parse-rate-limit-warning";
 import Loading from "@/components/ui/loading";
 import { formatTaskUiCopy } from "@/app/utils/task-ui-copy";
+import { finalizeNewChatRoute } from "./chat-route";
 
 import { HackingSuggestions } from "./HackingSuggestions";
 
@@ -921,7 +922,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
         }
       }
     },
-    onFinish: () => {
+    onFinish: ({ isAbort }) => {
       if (!isChatMountedRef.current || activeChatIdRef.current !== chatId) {
         return;
       }
@@ -932,10 +933,14 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
 
       const isTemporaryChat =
         !isExistingChatRef.current && temporaryChatsEnabledRef.current;
-      if (!isExistingChatRef.current && !isTemporaryChat) {
-        // Update URL without full navigation so this Chat stays mounted and
-        // status can transition to "ready" (stop button → send button).
-        window.history.replaceState({}, "", `/c/${chatId}`);
+      if (
+        finalizeNewChatRoute({
+          chatId,
+          isAbort,
+          isExistingChat: isExistingChatRef.current,
+          isTemporaryChat,
+        })
+      ) {
         removeDraft("new");
         setIsExistingChat(true);
       }
@@ -1035,12 +1040,12 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   const stopActiveBrowserStream = useCallback(
     (nextChatId?: string) => {
       const activeChatId = activeChatIdRef.current;
-      cancelAgentLongRealtimeStreams(activeChatId);
       if (nextChatId) {
-        // Invalidate terminal callbacks before aborting. Some transports finish
-        // asynchronously after the user has already started a new task.
+        // Invalidate terminal callbacks before either cancellation path can
+        // finish synchronously.
         activeChatIdRef.current = nextChatId;
       }
+      cancelAgentLongRealtimeStreams(activeChatId);
       const streamAlreadyFinished =
         shouldUseAgentLongForCurrentChatRef.current &&
         browserStreamFinishedRef.current;
