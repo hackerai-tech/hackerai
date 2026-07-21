@@ -1270,6 +1270,58 @@ describe("CentrifugoSandbox", () => {
       }
     });
 
+    it("rejects Snap-safe URL uploads when only BusyBox wget is available", async () => {
+      const consoleWarnSpy = jest
+        .spyOn(console, "warn")
+        .mockImplementation(() => {});
+      const sandbox = createSandbox({
+        osInfo: {
+          platform: "linux",
+          arch: "x64",
+          release: "6.1",
+          hostname: "devbox",
+        },
+      });
+      const run = jest
+        .fn()
+        .mockResolvedValueOnce({
+          stdout: "/snap/bin/curl\n",
+          stderr: "",
+          exitCode: 0,
+        })
+        .mockResolvedValueOnce({
+          stdout: "/usr/bin/wget\n",
+          stderr: "",
+          exitCode: 0,
+        })
+        .mockResolvedValueOnce({
+          stdout: "BusyBox v1.36.1 multi-call binary.\n",
+          stderr: "",
+          exitCode: 0,
+        });
+      (sandbox as any).commands.run = run;
+
+      try {
+        await expect(
+          sandbox.files.uploadToUrl(
+            "/tmp/hackerai-upload/report.txt",
+            "https://example.com/upload",
+            "text/plain",
+          ),
+        ).rejects.toThrow(
+          "Snap curl cannot safely access sandbox file paths, and BusyBox wget does not support PUT requests",
+        );
+
+        expect(
+          run.mock.calls.some(([command]) =>
+            String(command).includes("--method=PUT"),
+          ),
+        ).toBe(false);
+      } finally {
+        consoleWarnSpy.mockRestore();
+      }
+    });
+
     it("retries wget network failures", async () => {
       const consoleWarnSpy = jest
         .spyOn(console, "warn")
@@ -1388,6 +1440,10 @@ describe("CentrifugoSandbox", () => {
 
     it("redacts signed URL queries from direct download failures", async () => {
       const { sandbox } = createWindowsBashSandbox();
+      const signedUrl =
+        "https://storage.example.com/image.png?X-Amz-Credential=" +
+        "a".repeat(160) +
+        "&X-Amz-Signature=secret";
       (sandbox as any).commands.run = jest.fn(async (cmd: string) => {
         if (cmd.includes("target_dir_exists")) {
           return {
@@ -1398,23 +1454,23 @@ describe("CentrifugoSandbox", () => {
         }
         return {
           stdout: "",
-          stderr: "curl: (23) client returned ERROR on write",
+          stderr: `curl: (23) failed to write ${signedUrl}`,
           exitCode: 23,
         };
       });
-      const signedUrl =
-        "https://storage.example.com/image.png?X-Amz-Credential=" +
-        "a".repeat(160) +
-        "&X-Amz-Signature=secret";
 
-      const assertion = expect(
-        sandbox.files.downloadFromUrl(
-          signedUrl,
-          "/tmp/hackerai-upload/image.png",
-        ),
-      ).rejects.toThrow("url: https://storage.example.com/image.png\n");
+      const failure = sandbox.files
+        .downloadFromUrl(signedUrl, "/tmp/hackerai-upload/image.png")
+        .catch((error: unknown) => error);
       await jest.advanceTimersByTimeAsync(5_000);
-      await assertion;
+      const error = await failure;
+
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).message).toContain(
+        "url: https://storage.example.com/image.png\n",
+      );
+      expect((error as Error).message).not.toContain("X-Amz-Credential");
+      expect((error as Error).message).not.toContain("X-Amz-Signature");
     });
 
     it("uploadToUrl emits Windows curl with --ssl-no-revoke when supported", async () => {
