@@ -1,7 +1,7 @@
 "use client";
 
-import React, { useState, useEffect, useRef } from "react";
-import { usePaginatedQuery } from "convex/react";
+import React, { useCallback, useState, useEffect, useRef } from "react";
+import { useConvex } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import { useAuth } from "@workos-inc/authkit-nextjs/components";
 import { useRouter } from "next/navigation";
@@ -56,6 +56,7 @@ export const MessageSearchDialog: React.FC<MessageSearchDialogProps> = ({
 }) => {
   const { user } = useAuth();
   const router = useRouter();
+  const convex = useConvex();
   const { setChatSidebarOpen, closeSidebar } = useGlobalState();
   const isMobile = useIsMobile();
   const [searchQuery, setSearchQuery] = useState("");
@@ -70,17 +71,14 @@ export const MessageSearchDialog: React.FC<MessageSearchDialogProps> = ({
     trimmedDebouncedQuery.length <= MAX_MESSAGE_SEARCH_QUERY_LENGTH;
   const [allResults, setAllResults] = useState<MessageSearchResult[]>([]);
   const [isSearching, setIsSearching] = useState(false);
+  const [isLoadingMore, setIsLoadingMore] = useState(false);
+  const [continueCursor, setContinueCursor] = useState<string | null>(null);
   const loaderRef = useRef<HTMLDivElement>(null);
   const chatsLoaderRef = useRef<HTMLDivElement>(null);
   const observerRef = useRef<IntersectionObserver | null>(null);
   const chatsObserverRef = useRef<IntersectionObserver | null>(null);
-
-  // Use Convex usePaginatedQuery for search
-  const searchResults = usePaginatedQuery(
-    api.messages.searchMessages,
-    isSearchReady && user ? { searchQuery: trimmedDebouncedQuery } : "skip",
-    { initialNumItems: 20 },
-  );
+  const searchGenerationRef = useRef(0);
+  const canSearch = isOpen && isSearchReady && Boolean(user);
 
   // Date categorization functions
   const getChatDateCategory = (chat: Doc<"chats">): DateCategory => {
@@ -106,40 +104,95 @@ export const MessageSearchDialog: React.FC<MessageSearchDialogProps> = ({
     return () => clearTimeout(timer);
   }, [searchQuery]);
 
-  // Handle search results updates
+  // Clear the query when the dialog closes so a previous search cannot restart
+  // when the always-mounted sidebar header renders again.
   useEffect(() => {
-    if (!isSearchReady) {
-      setIsSearching(false);
+    if (isOpen) return;
+    setSearchQuery("");
+    setDebouncedQuery("");
+  }, [isOpen]);
+
+  // Message history search does not need realtime updates. A one-shot query
+  // prevents Convex from keeping a costly full-text subscription alive while
+  // messages are written in the background.
+  useEffect(() => {
+    const generation = searchGenerationRef.current + 1;
+    searchGenerationRef.current = generation;
+    let cancelled = false;
+
+    if (!canSearch) {
       setAllResults([]);
+      setIsSearching(false);
+      setIsLoadingMore(false);
+      setContinueCursor(null);
       return;
     }
 
-    if (searchResults.status === "LoadingFirstPage") {
-      setIsSearching(true);
+    setAllResults([]);
+    setIsSearching(true);
+    setIsLoadingMore(false);
+    setContinueCursor(null);
 
-      setAllResults([]);
-    } else if (
-      searchResults.status === "CanLoadMore" ||
-      searchResults.status === "Exhausted"
-    ) {
-      setIsSearching(false);
+    const loadFirstPage = async () => {
+      try {
+        const result = await convex.query(api.messages.searchMessages, {
+          searchQuery: trimmedDebouncedQuery,
+          paginationOpts: { numItems: 20, cursor: null },
+        });
+        if (cancelled || searchGenerationRef.current !== generation) return;
 
-      if (searchResults.results) {
-        // Use all accumulated results from the paginated query
+        setAllResults(result.page);
+        setContinueCursor(
+          result.isDone || !result.continueCursor
+            ? null
+            : result.continueCursor,
+        );
+      } catch (error) {
+        if (cancelled || searchGenerationRef.current !== generation) return;
+        console.error("Failed to search messages:", error);
+        setAllResults([]);
+        setContinueCursor(null);
+      } finally {
+        if (!cancelled && searchGenerationRef.current === generation) {
+          setIsSearching(false);
+        }
+      }
+    };
 
-        setAllResults(searchResults.results);
+    void loadFirstPage();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [canSearch, convex, trimmedDebouncedQuery]);
+
+  const loadMoreSearchResults = useCallback(async () => {
+    if (!canSearch || !continueCursor || isLoadingMore) return;
+
+    const generation = searchGenerationRef.current;
+    setIsLoadingMore(true);
+
+    try {
+      const result = await convex.query(api.messages.searchMessages, {
+        searchQuery: trimmedDebouncedQuery,
+        paginationOpts: { numItems: 10, cursor: continueCursor },
+      });
+      if (searchGenerationRef.current !== generation) return;
+
+      setAllResults((current) => [...current, ...result.page]);
+      setContinueCursor(
+        result.isDone || !result.continueCursor ? null : result.continueCursor,
+      );
+    } catch (error) {
+      if (searchGenerationRef.current !== generation) return;
+      console.error("Failed to load more message search results:", error);
+      setContinueCursor(null);
+    } finally {
+      if (searchGenerationRef.current === generation) {
+        setIsLoadingMore(false);
       }
     }
-  }, [isSearchReady, searchResults.status, searchResults.results]);
-
-  // Reset results when query changes
-  useEffect(() => {
-    if (!isSearchReady) {
-      setAllResults([]);
-
-      setIsSearching(false);
-    }
-  }, [isSearchReady]);
+  }, [canSearch, continueCursor, convex, isLoadingMore, trimmedDebouncedQuery]);
 
   // Set up Intersection Observer for infinite scrolling of search results
   useEffect(() => {
@@ -149,11 +202,7 @@ export const MessageSearchDialog: React.FC<MessageSearchDialogProps> = ({
     }
 
     // Only set up observer if we have results and can load more
-    if (
-      searchResults.status === "CanLoadMore" &&
-      isSearchReady &&
-      allResults.length > 0
-    ) {
+    if (continueCursor && canSearch && allResults.length > 0) {
       const options = {
         root: null,
         rootMargin: "50px",
@@ -164,11 +213,11 @@ export const MessageSearchDialog: React.FC<MessageSearchDialogProps> = ({
         const [entry] = entries;
         if (
           entry.isIntersecting &&
-          searchResults.status === "CanLoadMore" &&
-          isSearchReady &&
-          !searchResults.isLoading
+          continueCursor &&
+          canSearch &&
+          !isLoadingMore
         ) {
-          searchResults.loadMore(10);
+          void loadMoreSearchResults();
         }
       }, options);
 
@@ -183,12 +232,11 @@ export const MessageSearchDialog: React.FC<MessageSearchDialogProps> = ({
         observerRef.current.disconnect();
       }
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
-    searchResults.status,
-    isSearchReady,
-    searchResults.loadMore,
-    searchResults.isLoading,
+    continueCursor,
+    canSearch,
+    loadMoreSearchResults,
+    isLoadingMore,
     allResults.length,
   ]);
 
@@ -501,10 +549,10 @@ export const MessageSearchDialog: React.FC<MessageSearchDialogProps> = ({
                 ))}
 
                 {/* Loader element for intersection observer - only show if we have results and can load more */}
-                {searchResults.status === "CanLoadMore" &&
-                  isSearchReady &&
+                {continueCursor &&
+                  canSearch &&
                   allResults.length > 0 &&
-                  !searchResults.isLoading && (
+                  !isLoadingMore && (
                     <div
                       ref={loaderRef}
                       className="flex justify-center py-4 text-muted-foreground"
@@ -514,7 +562,7 @@ export const MessageSearchDialog: React.FC<MessageSearchDialogProps> = ({
                   )}
 
                 {/* Show loading state when actively loading more */}
-                {searchResults.isLoading && allResults.length > 0 && (
+                {isLoadingMore && allResults.length > 0 && (
                   <div className="flex justify-center py-4">
                     <Loader2 className="animate-spin mr-2" size={16} />
                     <span className="text-sm">Loading more...</span>
