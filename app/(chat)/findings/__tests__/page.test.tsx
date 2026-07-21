@@ -4,8 +4,10 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 
 const mockUsePaginatedQuery = jest.fn();
 const mockUseQuery = jest.fn((_ref: unknown, args: any) =>
-  args?.findingId ? mockFinding : oneSourceChat,
+  args?.findingId ? mockFinding : undefined,
 );
+const mockConvexQuery = jest.fn();
+const mockDownloadFile = jest.fn();
 const mockCapture = jest.fn();
 const mockPush = jest.fn();
 const mockSearchParams = new URLSearchParams();
@@ -15,6 +17,7 @@ const mockSetChatMode = jest.fn();
 const mockSetTemporaryChatsEnabled = jest.fn();
 
 jest.mock("convex/react", () => ({
+  useConvex: () => ({ query: mockConvexQuery }),
   useConvexAuth: () => ({ isLoading: false, isAuthenticated: true }),
   usePaginatedQuery: (...args: unknown[]) => mockUsePaginatedQuery(...args),
   useQuery: (...args: unknown[]) => mockUseQuery(...args),
@@ -40,6 +43,9 @@ jest.mock("@/app/hooks/useTauri", () => ({ navigateToAuth: jest.fn() }));
 jest.mock("@/lib/analytics/client", () => ({
   captureAuthenticatedEvent: mockCapture,
 }));
+jest.mock("@/lib/utils/file-download", () => ({
+  downloadFile: (...args: unknown[]) => mockDownloadFile(...args),
+}));
 
 const mockFinding = {
   finding_id: "finding-1",
@@ -49,6 +55,8 @@ const mockFinding = {
   method: "GET",
   severity: "high",
   cvss_score: 7.1,
+  category: "access_control",
+  status: "active",
   chat_id: "chat-1",
   chat_title: "Invoice test",
   created_at: Date.now(),
@@ -76,12 +84,6 @@ const mockFinding = {
   },
 };
 
-const oneSourceChat = [{ chat_id: "chat-1", chat_title: "Invoice test" }];
-const multipleSourceChats = [
-  ...oneSourceChat,
-  { chat_id: "chat-2", chat_title: "API retest" },
-];
-
 const Page = require("../page").default as typeof import("../page").default;
 
 describe("FindingsPage", () => {
@@ -92,33 +94,53 @@ describe("FindingsPage", () => {
     }
     window.history.replaceState({}, "", "/findings");
     mockUseQuery.mockImplementation((_ref: unknown, args: any) =>
-      args?.findingId ? mockFinding : oneSourceChat,
+      args?.findingId ? mockFinding : undefined,
     );
     mockUsePaginatedQuery.mockReturnValue({
       results: [mockFinding],
       status: "Exhausted",
       loadMore: jest.fn(),
     });
+    mockConvexQuery.mockResolvedValue({
+      page: [mockFinding],
+      isDone: true,
+      continueCursor: "",
+    });
+    mockDownloadFile.mockResolvedValue(undefined);
   });
 
-  it("lists metadata, searches, and hides a redundant source filter", async () => {
+  it("lists metadata and searches without a source-chat filter", async () => {
     render(<Page />);
     expect(screen.getByRole("heading", { name: "Findings" })).toBeVisible();
     expect(screen.getByRole("button", { name: "Open navigation" })).toHaveClass(
       "md:hidden",
     );
     expect(screen.getByText("Confirmed IDOR")).toBeVisible();
-    expect(screen.getAllByText("/api/invoices/other")).toHaveLength(2);
-    expect(screen.getByText("Invoice test")).toBeVisible();
+    expect(screen.queryByText("/api/invoices/other")).toBeNull();
     expect(screen.getByText("7.1")).toBeVisible();
+    expect(screen.getByTestId("finding-severity-dot-finding-1")).toHaveClass(
+      "bg-orange-500",
+    );
     expect(screen.getByText("Current Results")).toBeVisible();
-    expect(screen.getByText("Validation Standard")).toBeVisible();
-    expect(screen.getByText("Endpoint")).toBeVisible();
-    expect(screen.getByText("Risk")).toBeVisible();
-    expect(screen.getByText("Source Chat")).toBeVisible();
+    expect(screen.queryByText("Validation Standard")).toBeNull();
+    expect(screen.queryByText("Evidence + working PoC")).toBeNull();
+    expect(screen.queryByText("Endpoint")).toBeNull();
+    expect(screen.queryByText("Source Chat")).toBeNull();
+    expect(screen.getAllByText("Category").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Status").length).toBeGreaterThan(0);
+    expect(screen.getByText("Access Control / IDOR")).toBeVisible();
+    expect(screen.getAllByText("Active").length).toBeGreaterThan(0);
     expect(screen.getByRole("list", { name: "Findings" })).toBeVisible();
+    expect(screen.getByLabelText("Filter by category")).toBeVisible();
+    expect(screen.getByLabelText("Filter by status")).toBeVisible();
     expect(screen.getByLabelText("Filter by severity")).toBeVisible();
     expect(screen.queryByLabelText("Filter by source chat")).toBeNull();
+    expect(
+      screen.getByRole("button", { name: "Export findings as CSV" }),
+    ).toBeVisible();
+    expect(
+      screen.getByRole("button", { name: "Start new scan" }),
+    ).toBeVisible();
 
     fireEvent.change(screen.getByLabelText("Search findings"), {
       target: { value: "CWE-639" },
@@ -142,29 +164,71 @@ describe("FindingsPage", () => {
     expect(mockCapture).toHaveBeenCalledWith("findings_page_viewed");
   });
 
-  it("shows source-chat titles when findings span multiple chats", () => {
-    mockUseQuery.mockImplementation((_ref: unknown, args: any) =>
-      args?.findingId ? mockFinding : multipleSourceChats,
-    );
-
+  it("filters by category and lifecycle status", async () => {
     render(<Page />);
 
-    const sourceFilter = screen.getByLabelText("Filter by source chat");
-    expect(sourceFilter).toBeVisible();
-    fireEvent.click(sourceFilter);
-    expect(
-      screen.getByRole("option", { name: "All source chats" }),
-    ).toBeVisible();
-    expect(screen.getByRole("option", { name: "Invoice test" })).toBeVisible();
-    expect(screen.getByRole("option", { name: "API retest" })).toBeVisible();
+    fireEvent.click(screen.getByLabelText("Filter by category"));
+    fireEvent.click(screen.getByRole("option", { name: "Injection" }));
+    await waitFor(() => {
+      expect(mockUsePaginatedQuery).toHaveBeenLastCalledWith(
+        expect.anything(),
+        expect.objectContaining({ category: "injection" }),
+        { initialNumItems: 25 },
+      );
+    });
+
+    fireEvent.click(screen.getByLabelText("Filter by status"));
+    fireEvent.click(screen.getByRole("option", { name: "Closed" }));
+    await waitFor(() => {
+      expect(mockUsePaginatedQuery).toHaveBeenLastCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          category: "injection",
+          status: "closed",
+        }),
+        { initialNumItems: 25 },
+      );
+    });
+    expect(window.location.search).toContain("category=injection");
+    expect(window.location.search).toContain("status=closed");
   });
 
-  it("keeps an active source filter visible so it can be cleared", () => {
+  it("exports the complete filtered summary as CSV", async () => {
+    render(<Page />);
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Export findings as CSV" }),
+    );
+
+    await waitFor(() => {
+      expect(mockConvexQuery).toHaveBeenCalledWith(expect.anything(), {
+        paginationOpts: { cursor: null, numItems: 25 },
+      });
+      expect(mockDownloadFile).toHaveBeenCalledWith(
+        expect.objectContaining({
+          filename: expect.stringMatching(/^findings-\d{4}-\d{2}-\d{2}\.csv$/),
+          mimeType: "text/csv;charset=utf-8",
+          content: expect.stringContaining(
+            '"Confirmed IDOR","https://app.example.test","Access Control / IDOR","high","7.1","active"',
+          ),
+        }),
+      );
+    });
+  });
+
+  it("drops legacy source-chat filter parameters", () => {
     mockSearchParams.set("chat", "chat-1");
+    window.history.replaceState({}, "", "/findings?chat=chat-1");
 
     render(<Page />);
 
-    expect(screen.getByLabelText("Filter by source chat")).toBeVisible();
+    expect(screen.queryByLabelText("Filter by source chat")).toBeNull();
+    expect(window.location.search).toBe("");
+    expect(mockUsePaginatedQuery).toHaveBeenLastCalledWith(
+      expect.anything(),
+      expect.not.objectContaining({ chatId: expect.anything() }),
+      { initialNumItems: 25 },
+    );
   });
 
   it("guides first-time users into a persistent Agent security test", () => {
@@ -182,7 +246,7 @@ describe("FindingsPage", () => {
     ).toBeVisible();
 
     fireEvent.click(
-      screen.getByRole("button", { name: "Start your first security test" }),
+      screen.getByRole("button", { name: "Start your first scan" }),
     );
 
     expect(mockCloseSidebar).toHaveBeenCalled();
@@ -240,7 +304,9 @@ describe("FindingsPage", () => {
       surface: "findings_page",
     });
 
-    fireEvent.click(screen.getByRole("button", { name: "Close finding" }));
+    fireEvent.click(
+      screen.getByRole("button", { name: "Close vulnerability report" }),
+    );
     await waitFor(() => {
       expect(screen.queryByText(mockFinding.description)).toBeNull();
       expect(findingRow).toHaveFocus();
@@ -251,11 +317,15 @@ describe("FindingsPage", () => {
 
   it("opens a finding directly from the URL", () => {
     mockSearchParams.set("finding", "finding-1");
+    window.history.replaceState({}, "", "/findings?finding=finding-1");
 
     render(<Page />);
 
     expect(screen.getByText(mockFinding.description)).toBeVisible();
-    expect(screen.getByRole("button", { name: "Close finding" })).toBeVisible();
+    expect(
+      screen.getByRole("button", { name: "Close vulnerability report" }),
+    ).toBeVisible();
+    expect(screen.getByRole("button", { name: "Close Finding" })).toBeVisible();
     expect(mockCapture).toHaveBeenCalledWith("finding_viewed", {
       surface: "findings_page",
     });
@@ -273,11 +343,11 @@ describe("FindingsPage", () => {
       screen.getByRole("dialog", { name: "Vulnerability Report" }),
     ).toHaveClass("h-dvh", "w-screen");
     expect(
-      screen.getByRole("button", { name: "Back to findings" }),
+      screen.getByRole("button", { name: "Back to Findings" }),
     ).toBeVisible();
     expect(screen.getByText(mockFinding.description)).toBeVisible();
 
-    fireEvent.click(screen.getByRole("button", { name: "Back to findings" }));
+    fireEvent.click(screen.getByRole("button", { name: "Back to Findings" }));
     await waitFor(() => {
       expect(
         screen.queryByRole("dialog", { name: "Vulnerability Report" }),

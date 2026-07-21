@@ -282,12 +282,13 @@ describe("structured finding validation", () => {
 
   it("indexes only the approved searchable metadata", () => {
     const report = validReport();
-    const searchText = createFindingSearchText(report);
+    const searchText = createFindingSearchText(report, "Access Control / IDOR");
     expect(searchText).toContain(report.title);
     expect(searchText).toContain(report.target);
     expect(searchText).toContain(report.endpoint);
     expect(searchText).toContain(report.cve);
     expect(searchText).toContain(report.cwe);
+    expect(searchText).toContain("Access Control / IDOR");
     expect(searchText).not.toContain(report.evidence);
   });
 });

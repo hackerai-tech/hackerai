@@ -12,8 +12,19 @@ const severityClasses: Record<FindingSeverity, string> = {
   info: "border-slate-500/30 bg-slate-500/10 text-slate-500",
 };
 
+const severityDotClasses: Record<FindingSeverity, string> = {
+  critical: "bg-red-500",
+  high: "bg-orange-500",
+  medium: "bg-yellow-500",
+  low: "bg-blue-500",
+  info: "bg-slate-500",
+};
+
 export const getFindingSeverityClasses = (severity: FindingSeverity) =>
   severityClasses[severity];
+
+export const getFindingSeverityDotClasses = (severity: FindingSeverity) =>
+  severityDotClasses[severity];
 
 export function FindingCard({
   title,

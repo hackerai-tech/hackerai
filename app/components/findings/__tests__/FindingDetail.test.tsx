@@ -4,10 +4,14 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { useMutation } from "convex/react";
 import type { FindingDetailRecord } from "@/types/finding";
 
-const mockCapture = jest.fn();
-jest.mock("@/lib/analytics/client", () => ({
-  captureAuthenticatedEvent: mockCapture,
-}));
+Object.defineProperty(global, "ResizeObserver", {
+  configurable: true,
+  value: class ResizeObserver {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  },
+});
 
 const { FindingDetail } =
   require("../FindingDetail") as typeof import("../FindingDetail");
@@ -20,6 +24,8 @@ const finding: FindingDetailRecord = {
   method: "GET",
   severity: "high",
   cvss_score: 7.1,
+  category: "access_control",
+  status: "active",
   chat_id: "chat-1",
   chat_title: "Invoice test",
   created_at: 1,
@@ -77,7 +83,15 @@ describe("FindingDetail", () => {
     render(<FindingDetail finding={finding} surface="findings_page" />);
     expect(screen.getByRole("heading", { name: finding.title })).toBeVisible();
     expect(screen.getByText("Confirmed Vulnerability")).toBeVisible();
-    expect(screen.getByRole("heading", { name: "Overview" })).toBeVisible();
+    expect(screen.getByText("Access Control / IDOR")).toBeVisible();
+    expect(screen.getByText("Active")).toBeVisible();
+    expect(screen.getByRole("heading", { name: "Summary" })).toBeVisible();
+    expect(screen.getByRole("heading", { name: "Impact" })).toBeVisible();
+    expect(screen.getByRole("heading", { name: "Root Cause" })).toBeVisible();
+    expect(screen.getByRole("heading", { name: "Validation" })).toBeVisible();
+    expect(
+      screen.getByRole("heading", { name: "Observed Evidence" }),
+    ).toBeVisible();
     expect(screen.getByText("Fix Effort")).toBeVisible();
     expect(screen.getByText("CWE-639")).toBeVisible();
     expect(screen.getByText(finding.poc_script_code)).toBeVisible();
@@ -90,7 +104,7 @@ describe("FindingDetail", () => {
     expect(screen.getByText("Current Code")).toBeVisible();
     expect(screen.getByText("Suggested Change")).toBeVisible();
     expect(
-      screen.getByRole("heading", { name: "Technical Analysis" }),
+      screen.getByRole("heading", { name: "Assessment Details" }),
     ).toBeVisible();
     expect(screen.getByText("Network")).toBeVisible();
     expect(
@@ -109,7 +123,7 @@ describe("FindingDetail", () => {
       }),
     ).toBeNull();
     expect(screen.queryByText("Invoice test")).toBeNull();
-    expect(screen.queryByRole("button", { name: "Delete" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Close Finding" })).toBeNull();
   });
 
   it("copies the PoC and CVSS vector", async () => {
@@ -124,32 +138,40 @@ describe("FindingDetail", () => {
     });
   });
 
-  it("requires confirmation, deletes, and emits only surface analytics", async () => {
+  it("requires a resolution and context, then preserves the closed finding", async () => {
     const mutation = useMutation({} as any) as jest.Mock;
-    mutation.mockResolvedValue({ deleted: true });
-    const onDeleted = jest.fn();
-    render(
-      <FindingDetail
-        finding={finding}
-        surface="findings_page"
-        onDeleted={onDeleted}
-      />,
-    );
+    mutation.mockResolvedValue({ closed: true, closed_at: 2 });
+    render(<FindingDetail finding={finding} surface="findings_page" />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Delete" }));
-    expect(screen.getByText("Delete This Finding?")).toBeVisible();
-    fireEvent.click(screen.getByRole("button", { name: "Delete Finding" }));
+    fireEvent.click(screen.getByRole("button", { name: "Close Finding" }));
+    expect(
+      screen.getByRole("heading", { name: "Close finding" }),
+    ).toBeVisible();
+    expect(screen.getByLabelText("Already fixed")).toBeChecked();
+    expect(screen.queryByText("The issue is fixed and retested.")).toBeNull();
+    expect(screen.queryByText("The risk is accepted for now.")).toBeNull();
+    expect(
+      screen.queryByText("The issue is not valid or reproducible."),
+    ).toBeNull();
+    fireEvent.click(screen.getByLabelText("False positive"));
+    fireEvent.change(screen.getByLabelText(/Closure note/), {
+      target: { value: "Could not reproduce after validating tenant scope." },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Close finding" }));
 
     await waitFor(() => {
-      expect(mutation).toHaveBeenCalledWith({ findingId: "finding-1" });
-      expect(onDeleted).toHaveBeenCalledTimes(1);
+      expect(mutation).toHaveBeenCalledWith({
+        findingId: "finding-1",
+        reason: "false_positive",
+        context: "Could not reproduce after validating tenant scope.",
+      });
     });
-    expect(mockCapture).toHaveBeenCalledWith("finding_deleted", {
-      surface: "findings_page",
-    });
-    expect(JSON.stringify(mockCapture.mock.calls)).not.toMatch(
-      /Confirmed IDOR|app\.example|HTTP 200|curl/,
-    );
+    expect(screen.getAllByText("Closed").length).toBeGreaterThan(0);
+    expect(screen.getByText("False positive")).toBeVisible();
+    expect(
+      screen.getByText("Could not reproduce after validating tenant scope."),
+    ).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Close Finding" })).toBeNull();
   });
 
   it("renders loading and deleted states", () => {

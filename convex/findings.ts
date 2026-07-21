@@ -10,10 +10,55 @@ import {
   createFindingSearchText,
   createVulnerabilityReportInputSchema,
 } from "../lib/findings/validation";
+import {
+  deriveFindingCategory,
+  FINDING_CATEGORIES,
+  FINDING_CATEGORY_LABELS,
+  type FindingCategory,
+} from "../lib/findings/category";
+import {
+  closeFindingInputSchema,
+  type FindingStatus,
+} from "../lib/findings/lifecycle";
 import type { Doc } from "./_generated/dataModel";
 
 const MAX_SEARCH_LENGTH = 200;
 const MAX_FINDING_SOURCE_CHATS = 500;
+
+const findingSeverityArgValidator = v.union(
+  v.literal("critical"),
+  v.literal("high"),
+  v.literal("medium"),
+  v.literal("low"),
+  v.literal("info"),
+);
+
+const findingCategoryArgValidator = v.union(
+  v.literal("access_control"),
+  v.literal("authentication_session"),
+  v.literal("injection"),
+  v.literal("cross_site_scripting"),
+  v.literal("request_forgery"),
+  v.literal("file_path_access"),
+  v.literal("data_exposure"),
+  v.literal("cryptography_secrets"),
+  v.literal("parsing_deserialization"),
+  v.literal("security_misconfiguration"),
+  v.literal("denial_of_service"),
+  v.literal("business_logic"),
+  v.literal("other"),
+);
+
+const findingStatusArgValidator = v.union(
+  v.literal("active"),
+  v.literal("closed"),
+);
+
+const findingClosureReasonArgValidator = v.union(
+  v.literal("already_fixed"),
+  v.literal("wont_fix"),
+  v.literal("false_positive"),
+);
 
 type FindingReadCtx = Pick<QueryCtx, "db">;
 
@@ -41,17 +86,171 @@ const getFindingSource = async (
     )
     .unique();
 
-const toFindingSummary = (finding: Doc<"findings">, chatTitle: string) => ({
-  finding_id: finding.finding_id,
-  title: finding.title,
-  target: finding.target,
-  ...(finding.endpoint ? { endpoint: finding.endpoint } : {}),
-  severity: finding.severity,
-  cvss_score: finding.cvss_score,
-  chat_id: finding.chat_id,
-  chat_title: chatTitle,
-  created_at: finding.created_at,
-});
+type FindingListFilters = {
+  severity?: Doc<"findings">["severity"];
+  category?: FindingCategory;
+  status?: FindingStatus;
+  chatId?: string;
+};
+
+const getFindingsByFacets = (
+  ctx: FindingReadCtx,
+  userId: string,
+  { severity, category, status, chatId }: FindingListFilters,
+) => {
+  if (status && category && severity && chatId) {
+    return ctx.db
+      .query("findings")
+      .withIndex("by_user_status_category_severity_chat_created", (q) =>
+        q
+          .eq("user_id", userId)
+          .eq("status", status)
+          .eq("category", category)
+          .eq("severity", severity)
+          .eq("chat_id", chatId),
+      );
+  }
+  if (status && category && severity) {
+    return ctx.db
+      .query("findings")
+      .withIndex("by_user_status_category_severity_created", (q) =>
+        q
+          .eq("user_id", userId)
+          .eq("status", status)
+          .eq("category", category)
+          .eq("severity", severity),
+      );
+  }
+  if (status && category && chatId) {
+    return ctx.db
+      .query("findings")
+      .withIndex("by_user_status_category_chat_created", (q) =>
+        q
+          .eq("user_id", userId)
+          .eq("status", status)
+          .eq("category", category)
+          .eq("chat_id", chatId),
+      );
+  }
+  if (status && severity && chatId) {
+    return ctx.db
+      .query("findings")
+      .withIndex("by_user_status_severity_chat_created", (q) =>
+        q
+          .eq("user_id", userId)
+          .eq("status", status)
+          .eq("severity", severity)
+          .eq("chat_id", chatId),
+      );
+  }
+  if (category && severity && chatId) {
+    return ctx.db
+      .query("findings")
+      .withIndex("by_user_category_severity_chat_created", (q) =>
+        q
+          .eq("user_id", userId)
+          .eq("category", category)
+          .eq("severity", severity)
+          .eq("chat_id", chatId),
+      );
+  }
+  if (status && category) {
+    return ctx.db
+      .query("findings")
+      .withIndex("by_user_status_category_created", (q) =>
+        q.eq("user_id", userId).eq("status", status).eq("category", category),
+      );
+  }
+  if (status && severity) {
+    return ctx.db
+      .query("findings")
+      .withIndex("by_user_status_severity_created", (q) =>
+        q.eq("user_id", userId).eq("status", status).eq("severity", severity),
+      );
+  }
+  if (status && chatId) {
+    return ctx.db
+      .query("findings")
+      .withIndex("by_user_status_chat_created", (q) =>
+        q.eq("user_id", userId).eq("status", status).eq("chat_id", chatId),
+      );
+  }
+  if (category && severity) {
+    return ctx.db
+      .query("findings")
+      .withIndex("by_user_category_severity_created", (q) =>
+        q
+          .eq("user_id", userId)
+          .eq("category", category)
+          .eq("severity", severity),
+      );
+  }
+  if (category && chatId) {
+    return ctx.db
+      .query("findings")
+      .withIndex("by_user_category_chat_created", (q) =>
+        q.eq("user_id", userId).eq("category", category).eq("chat_id", chatId),
+      );
+  }
+  if (severity && chatId) {
+    return ctx.db
+      .query("findings")
+      .withIndex("by_user_severity_chat_created", (q) =>
+        q.eq("user_id", userId).eq("severity", severity).eq("chat_id", chatId),
+      );
+  }
+  if (status) {
+    return ctx.db
+      .query("findings")
+      .withIndex("by_user_status_created", (q) =>
+        q.eq("user_id", userId).eq("status", status),
+      );
+  }
+  if (category) {
+    return ctx.db
+      .query("findings")
+      .withIndex("by_user_category_created", (q) =>
+        q.eq("user_id", userId).eq("category", category),
+      );
+  }
+  if (severity) {
+    return ctx.db
+      .query("findings")
+      .withIndex("by_user_severity_created", (q) =>
+        q.eq("user_id", userId).eq("severity", severity),
+      );
+  }
+  if (chatId) {
+    return ctx.db
+      .query("findings")
+      .withIndex("by_user_chat_created", (q) =>
+        q.eq("user_id", userId).eq("chat_id", chatId),
+      );
+  }
+  return ctx.db
+    .query("findings")
+    .withIndex("by_user_and_created", (q) => q.eq("user_id", userId));
+};
+
+const toFindingSummary = (finding: Doc<"findings">, chatTitle: string) => {
+  const category =
+    finding.category ??
+    deriveFindingCategory({ cwe: finding.cwe, title: finding.title });
+
+  return {
+    finding_id: finding.finding_id,
+    title: finding.title,
+    target: finding.target,
+    ...(finding.endpoint ? { endpoint: finding.endpoint } : {}),
+    severity: finding.severity,
+    cvss_score: finding.cvss_score,
+    category,
+    status: finding.status ?? ("active" as const),
+    chat_id: finding.chat_id,
+    chat_title: chatTitle,
+    created_at: finding.created_at,
+  };
+};
 
 const toFindingDetail = (finding: Doc<"findings">, chatTitle: string) => ({
   ...toFindingSummary(finding, chatTitle),
@@ -71,6 +270,11 @@ const toFindingDetail = (finding: Doc<"findings">, chatTitle: string) => ({
   ...(finding.cwe ? { cwe: finding.cwe } : {}),
   ...(finding.code_locations ? { code_locations: finding.code_locations } : {}),
   message_id: finding.message_id,
+  ...(finding.closure_reason ? { closure_reason: finding.closure_reason } : {}),
+  ...(finding.closure_context
+    ? { closure_context: finding.closure_context }
+    : {}),
+  ...(finding.closed_at ? { closed_at: finding.closed_at } : {}),
   updated_at: finding.updated_at,
 });
 
@@ -133,6 +337,10 @@ export const createFindingForBackend = mutation({
     const now = Date.now();
     const cvss = calculateCvss31(input.cvss_breakdown);
     const method = input.method?.toUpperCase();
+    const category = deriveFindingCategory({
+      cwe: input.cwe,
+      title: input.title,
+    });
 
     await ctx.db.insert("findings", {
       finding_id: findingId,
@@ -155,13 +363,18 @@ export const createFindingForBackend = mutation({
       cvss_score: cvss.score,
       cvss_vector: cvss.vector,
       severity: cvss.severity,
+      category,
+      status: "active",
       ...(input.endpoint ? { endpoint: input.endpoint } : {}),
       ...(method ? { method } : {}),
       ...(input.cve ? { cve: input.cve } : {}),
       ...(input.cwe ? { cwe: input.cwe } : {}),
       ...(input.code_locations ? { code_locations: input.code_locations } : {}),
       dedupe_key: dedupeKey,
-      search_text: createFindingSearchText(input),
+      search_text: createFindingSearchText(
+        input,
+        FINDING_CATEGORY_LABELS[category],
+      ),
       created_at: now,
       updated_at: now,
     });
@@ -214,15 +427,9 @@ export const listFindings = query({
   args: {
     paginationOpts: paginationOptsValidator,
     search: v.optional(v.string()),
-    severity: v.optional(
-      v.union(
-        v.literal("critical"),
-        v.literal("high"),
-        v.literal("medium"),
-        v.literal("low"),
-        v.literal("info"),
-      ),
-    ),
+    severity: v.optional(findingSeverityArgValidator),
+    category: v.optional(findingCategoryArgValidator),
+    status: v.optional(findingStatusArgValidator),
     chatId: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
@@ -244,6 +451,8 @@ export const listFindings = query({
           let builder = q
             .search("search_text", search)
             .eq("user_id", identity.subject);
+          if (args.status) builder = builder.eq("status", args.status);
+          if (args.category) builder = builder.eq("category", args.category);
           if (args.severity) builder = builder.eq("severity", args.severity);
           if (args.chatId) builder = builder.eq("chat_id", args.chatId);
           return builder;
@@ -254,35 +463,7 @@ export const listFindings = query({
       isDone = result.isDone;
       continueCursor = result.continueCursor;
     } else {
-      let findingsQuery;
-      if (args.severity && args.chatId) {
-        findingsQuery = ctx.db
-          .query("findings")
-          .withIndex("by_user_severity_chat_created", (q) =>
-            q
-              .eq("user_id", identity.subject)
-              .eq("severity", args.severity!)
-              .eq("chat_id", args.chatId!),
-          );
-      } else if (args.severity) {
-        findingsQuery = ctx.db
-          .query("findings")
-          .withIndex("by_user_severity_created", (q) =>
-            q.eq("user_id", identity.subject).eq("severity", args.severity!),
-          );
-      } else if (args.chatId) {
-        findingsQuery = ctx.db
-          .query("findings")
-          .withIndex("by_user_chat_created", (q) =>
-            q.eq("user_id", identity.subject).eq("chat_id", args.chatId!),
-          );
-      } else {
-        findingsQuery = ctx.db
-          .query("findings")
-          .withIndex("by_user_and_created", (q) =>
-            q.eq("user_id", identity.subject),
-          );
-      }
+      const findingsQuery = getFindingsByFacets(ctx, identity.subject, args);
 
       const result = await findingsQuery
         .order("desc")
@@ -320,6 +501,58 @@ export const getFindingSourceChats = query({
       chat_id: source.chat_id,
       chat_title: source.chat_title,
     }));
+  },
+});
+
+export const closeFinding = mutation({
+  args: {
+    findingId: v.string(),
+    reason: findingClosureReasonArgValidator,
+    context: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const identity = await ctx.auth.getUserIdentity();
+    if (!identity) {
+      throw new ConvexError({ code: "UNAUTHORIZED", message: "Unauthorized" });
+    }
+    await assertUserCanAccessChatHistory(ctx, identity.subject);
+
+    const parsed = closeFindingInputSchema.safeParse({
+      reason: args.reason,
+      context: args.context,
+    });
+    if (!parsed.success) {
+      throw new ConvexError({
+        code: "INVALID_CLOSURE",
+        message: parsed.error.issues[0]?.message ?? "Invalid closure details",
+      });
+    }
+
+    const finding = await getFindingByPublicId(ctx, args.findingId);
+    if (!finding) return { closed: false, not_found: true };
+    if (finding.user_id !== identity.subject) {
+      throw new ConvexError({
+        code: "ACCESS_DENIED",
+        message: "Access denied",
+      });
+    }
+    if (finding.status === "closed") {
+      return { closed: false, already_closed: true };
+    }
+
+    const now = Date.now();
+    await ctx.db.patch(finding._id, {
+      status: "closed",
+      category:
+        finding.category ??
+        deriveFindingCategory({ cwe: finding.cwe, title: finding.title }),
+      closure_reason: parsed.data.reason,
+      closure_context: parsed.data.context,
+      closed_at: now,
+      updated_at: now,
+    });
+
+    return { closed: true, closed_at: now };
   },
 });
 

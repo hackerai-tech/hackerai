@@ -203,8 +203,9 @@ export const createFindingSearchText = (
     CreateVulnerabilityReportInput,
     "title" | "target" | "endpoint" | "cve" | "cwe"
   >,
+  category?: string,
 ): string =>
-  [input.title, input.target, input.endpoint, input.cve, input.cwe]
+  [input.title, input.target, input.endpoint, input.cve, input.cwe, category]
     .filter((value): value is string => Boolean(value))
     .join(" \n")
     .slice(0, 4_000);

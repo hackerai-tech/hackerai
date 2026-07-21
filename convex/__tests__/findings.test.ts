@@ -276,10 +276,14 @@ describe("findings Convex lifecycle", () => {
         tool_call_id: "tool-1",
         method: "GET",
         severity: "medium",
+        category: "access_control",
+        status: "active",
         cvss_score: 6.5,
         cvss_vector: "CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:N/A:N",
         dedupe_key: expect.any(String),
-        search_text: expect.stringContaining("CWE-639"),
+        search_text: expect.stringMatching(
+          /CWE-639[\s\S]*Access Control \/ IDOR/,
+        ),
         created_at: expect.any(Number),
         updated_at: expect.any(Number),
       }),
@@ -371,6 +375,8 @@ describe("findings Convex lifecycle", () => {
         chat_id: "chat-1",
         title: "Old SQL injection",
         target: "api.example.test",
+        category: "injection",
+        status: "active",
         severity: "critical",
         cvss_score: 9.8,
         search_text: "Old SQL injection api.example.test CWE-89",
@@ -383,6 +389,8 @@ describe("findings Convex lifecycle", () => {
         chat_id: "chat-2",
         title: "New IDOR",
         target: "app.example.test",
+        category: "access_control",
+        status: "closed",
         severity: "high",
         cvss_score: 7.1,
         search_text: "New IDOR app.example.test /invoices CWE-639",
@@ -395,6 +403,8 @@ describe("findings Convex lifecycle", () => {
         chat_id: "chat-other",
         title: "Other private finding",
         target: "private.test",
+        category: "other",
+        status: "active",
         severity: "critical",
         cvss_score: 10,
         search_text: "Other private finding",
@@ -422,11 +432,56 @@ describe("findings Convex lifecycle", () => {
     expect(filtered.page.map((item: any) => item.finding_id)).toEqual(["old"]);
     expect(indexes).toContain("by_user_severity_chat_created");
 
+    const lifecycleFiltered = await listFindings.handler(ctx, {
+      paginationOpts: { cursor: null, numItems: 10 },
+      status: "closed",
+      category: "access_control",
+      severity: "high",
+      chatId: "chat-2",
+    });
+    expect(lifecycleFiltered.page.map((item: any) => item.finding_id)).toEqual([
+      "new",
+    ]);
+    expect(indexes).toContain("by_user_status_category_severity_chat_created");
+
     const searched = await listFindings.handler(ctx, {
       paginationOpts: { cursor: null, numItems: 10 },
       search: "CWE-639",
     });
     expect(searched.page.map((item: any) => item.finding_id)).toEqual(["new"]);
+  });
+
+  it("derives lifecycle metadata when reading a pre-lifecycle finding", async () => {
+    const { listFindings } = await import("../findings");
+    const tables = seedTables();
+    tables.findings = [
+      {
+        _id: "finding-legacy",
+        finding_id: "legacy",
+        user_id: "user-1",
+        chat_id: "chat-1",
+        title: "SQL injection in the login handler",
+        target: "api.example.test",
+        cwe: "CWE-89",
+        severity: "critical",
+        cvss_score: 9.8,
+        search_text: "SQL injection api.example.test CWE-89",
+        created_at: 10,
+      },
+    ];
+    const { ctx } = createMockCtx(tables);
+
+    const result = await listFindings.handler(ctx, {
+      paginationOpts: { cursor: null, numItems: 10 },
+    });
+
+    expect(result.page).toEqual([
+      expect.objectContaining({
+        finding_id: "legacy",
+        category: "injection",
+        status: "active",
+      }),
+    ]);
   });
 
   it("lists only source chats that contain the user's findings", async () => {
@@ -513,6 +568,88 @@ describe("findings Convex lifecycle", () => {
     await expect(getFinding.handler(ctx, { findingId: "other" })).resolves.toBe(
       null,
     );
+  });
+
+  it("closes an owned finding with a reason and context without deleting it", async () => {
+    const { closeFinding } = await import("../findings");
+    const tables = seedTables();
+    tables.findings = [
+      {
+        _id: "finding-doc-1",
+        finding_id: "finding-public-1",
+        user_id: "user-1",
+        status: "active",
+        updated_at: 1,
+      },
+    ];
+    const { ctx, patch, deleteDoc } = createMockCtx(tables);
+
+    await expect(
+      closeFinding.handler(ctx, {
+        findingId: "finding-public-1",
+        reason: "already_fixed",
+        context: "  Confirmed fixed in the July retest.  ",
+      }),
+    ).resolves.toMatchObject({ closed: true, closed_at: expect.any(Number) });
+    expect(patch).toHaveBeenCalledWith(
+      "finding-doc-1",
+      expect.objectContaining({
+        status: "closed",
+        closure_reason: "already_fixed",
+        closure_context: "Confirmed fixed in the July retest.",
+        closed_at: expect.any(Number),
+        updated_at: expect.any(Number),
+      }),
+    );
+    expect(deleteDoc).not.toHaveBeenCalled();
+    expect(tables.messages[0].parts).toHaveLength(3);
+  });
+
+  it("rejects invalid, repeated, and foreign closure requests", async () => {
+    const { closeFinding } = await import("../findings");
+    const tables = seedTables();
+    tables.findings = [
+      {
+        _id: "finding-doc-closed",
+        finding_id: "finding-closed",
+        user_id: "user-1",
+        status: "closed",
+      },
+      {
+        _id: "finding-doc-other",
+        finding_id: "finding-other",
+        user_id: "other-user",
+        status: "active",
+      },
+    ];
+    const { ctx, patch } = createMockCtx(tables);
+
+    await expect(
+      closeFinding.handler(ctx, {
+        findingId: "finding-closed",
+        reason: "wont_fix",
+        context: "Already accepted.",
+      }),
+    ).resolves.toEqual({ closed: false, already_closed: true });
+    await expect(
+      closeFinding.handler(ctx, {
+        findingId: "finding-closed",
+        reason: "wont_fix",
+        context: "   ",
+      }),
+    ).rejects.toMatchObject({
+      data: expect.objectContaining({ code: "INVALID_CLOSURE" }),
+    });
+    await expect(
+      closeFinding.handler(ctx, {
+        findingId: "finding-other",
+        reason: "false_positive",
+        context: "Not reproducible.",
+      }),
+    ).rejects.toMatchObject({
+      data: expect.objectContaining({ code: "ACCESS_DENIED" }),
+    });
+    expect(patch).not.toHaveBeenCalled();
   });
 
   it("deletes an owned finding and scrubs its structured source tool part", async () => {
