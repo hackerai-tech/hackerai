@@ -89,6 +89,7 @@ import { removeDraft } from "@/lib/utils/client-storage";
 import { parseRateLimitWarning } from "@/lib/utils/parse-rate-limit-warning";
 import Loading from "@/components/ui/loading";
 import { formatTaskUiCopy } from "@/app/utils/task-ui-copy";
+import { finalizeNewChatRoute } from "./chat-route";
 
 import { HackingSuggestions } from "./HackingSuggestions";
 
@@ -921,7 +922,10 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
         }
       }
     },
-    onFinish: () => {
+    onFinish: ({ isAbort }) => {
+      if (!isChatMountedRef.current || activeChatIdRef.current !== chatId) {
+        return;
+      }
       browserStreamFinishedRef.current = true;
       setIsAutoResuming(false);
       setAwaitingServerChat(false);
@@ -929,15 +933,22 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
 
       const isTemporaryChat =
         !isExistingChatRef.current && temporaryChatsEnabledRef.current;
-      if (!isExistingChatRef.current && !isTemporaryChat) {
-        // Update URL without full navigation so this Chat stays mounted and
-        // status can transition to "ready" (stop button → send button).
-        window.history.replaceState({}, "", `/c/${chatId}`);
+      if (
+        finalizeNewChatRoute({
+          chatId,
+          isAbort,
+          isExistingChat: isExistingChatRef.current,
+          isTemporaryChat,
+        })
+      ) {
         removeDraft("new");
         setIsExistingChat(true);
       }
     },
     onError: (error) => {
+      if (!isChatMountedRef.current || activeChatIdRef.current !== chatId) {
+        return;
+      }
       browserStreamFinishedRef.current = true;
       setIsAutoResuming(false);
       setAwaitingServerChat(false);
@@ -1026,20 +1037,29 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   );
   shouldUseAgentLongForCurrentChatRef.current =
     shouldUseAgentLongForCurrentChat;
-  const stopActiveBrowserStream = useCallback(() => {
-    cancelAgentLongRealtimeStreams(activeChatIdRef.current);
-    const streamAlreadyFinished =
-      shouldUseAgentLongForCurrentChatRef.current &&
-      browserStreamFinishedRef.current;
-    if (
-      !streamAlreadyFinished &&
-      (statusRef.current === "streaming" || statusRef.current === "submitted")
-    ) {
-      stopRef.current();
-    }
-    setDataStream([]);
-    setIsAutoResuming(false);
-  }, [setDataStream, setIsAutoResuming]);
+  const stopActiveBrowserStream = useCallback(
+    (nextChatId?: string) => {
+      const activeChatId = activeChatIdRef.current;
+      if (nextChatId) {
+        // Invalidate terminal callbacks before either cancellation path can
+        // finish synchronously.
+        activeChatIdRef.current = nextChatId;
+      }
+      cancelAgentLongRealtimeStreams(activeChatId);
+      const streamAlreadyFinished =
+        shouldUseAgentLongForCurrentChatRef.current &&
+        browserStreamFinishedRef.current;
+      if (
+        !streamAlreadyFinished &&
+        (statusRef.current === "streaming" || statusRef.current === "submitted")
+      ) {
+        stopRef.current();
+      }
+      setDataStream([]);
+      setIsAutoResuming(false);
+    },
+    [setDataStream, setIsAutoResuming],
+  );
 
   const saveAgentLongPartialSnapshot = useCallback(
     (clientReason: string) => {
@@ -1179,15 +1199,21 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     const abortController = new AbortController();
 
     const finishLocally = () => {
-      if (stopped) return;
+      if (stopped || activeChatIdRef.current !== chatId) return;
       stopped = true;
       stop();
       setIsAutoResuming(false);
       setAwaitingServerChat(false);
       dispatchStreaming({ type: "RESET_ON_FINISH" });
 
-      if (!isExistingChatRef.current) {
-        window.history.replaceState({}, "", `/c/${chatId}`);
+      if (
+        finalizeNewChatRoute({
+          chatId,
+          isAbort: false,
+          isExistingChat: isExistingChatRef.current,
+          isTemporaryChat: temporaryChatsEnabled,
+        })
+      ) {
         removeDraft("new");
         setIsExistingChat(true);
       }
@@ -1273,9 +1299,10 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   // Register a reset function with global state so initializeNewChat can call it
   useEffect(() => {
     const reset = () => {
-      stopActiveBrowserStream();
+      const nextChatId = uuidv4();
+      stopActiveBrowserStream(nextChatId);
       setMessages([]);
-      setChatId(uuidv4());
+      setChatId(nextChatId);
       setIsExistingChat(false);
       wasNewChatRef.current = true;
       setTodos([]);

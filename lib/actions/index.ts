@@ -66,11 +66,7 @@ export const generateTitleFromUserMessage = async (
       model: myProvider.languageModel("title-generator-model"),
       providerOptions: {
         openrouter: {
-          reasoning: { enabled: true, effort: "high" },
-        },
-        xai: {
-          // Disable storing the conversation in XAI's database
-          store: false,
+          reasoning: { enabled: false },
         },
       },
       output: Output.object({
@@ -105,6 +101,7 @@ export const generateTitleFromUserMessage = async (
 export const generateTitleFromUserMessageWithWriter = async (
   truncatedMessages: UIMessage[],
   writer: UIMessageStreamWriter,
+  onTitleGenerated?: (title: string) => Promise<unknown>,
 ): Promise<string | undefined> => {
   try {
     const chatTitle = await generateTitleFromUserMessage(truncatedMessages);
@@ -114,6 +111,14 @@ export const generateTitleFromUserMessageWithWriter = async (
       data: { chatTitle },
       transient: true,
     });
+
+    if (chatTitle && onTitleGenerated) {
+      try {
+        await onTitleGenerated(chatTitle);
+      } catch (error) {
+        console.error("Failed to persist generated chat title:", error);
+      }
+    }
 
     return chatTitle;
   } catch (error) {

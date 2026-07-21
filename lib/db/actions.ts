@@ -1223,6 +1223,57 @@ export async function updateChat({
   }
 }
 
+export async function updateChatTitle({
+  chatId,
+  title,
+}: {
+  chatId: string;
+  title: string;
+}) {
+  const mutationArgs = {
+    serviceKey,
+    chatId,
+    title,
+  };
+
+  for (let attemptIndex = 0; ; attemptIndex++) {
+    try {
+      return await getConvexClient().mutation(
+        api.chats.updateChatTitle,
+        mutationArgs,
+      );
+    } catch (error) {
+      const retryReason = getRetryableDatabaseErrorReason(error);
+      const retryDelayMs = UPDATE_CHAT_RETRY_DELAYS_MS[attemptIndex];
+      if (!retryReason || retryDelayMs === undefined) {
+        throw databaseError("chats.updateChatTitle", error, {
+          chat_id: chatId,
+          title_length: title.length,
+        });
+      }
+
+      console.warn(
+        JSON.stringify({
+          level: "warn",
+          event: "chat_title_update_retry_scheduled",
+          service: "chat-handler",
+          environment:
+            process.env.VERCEL_ENV ?? process.env.NODE_ENV ?? "unknown",
+          timestamp: new Date().toISOString(),
+          db_operation: "chats.updateChatTitle",
+          retry_reason: retryReason,
+          attempt: attemptIndex + 1,
+          next_attempt: attemptIndex + 2,
+          retry_delay_ms: retryDelayMs,
+          chat_id: chatId,
+          title_length: title.length,
+        }),
+      );
+      await waitForRetryDelay(retryDelayMs);
+    }
+  }
+}
+
 export async function getMessagesByChatId({
   chatId,
   userId,

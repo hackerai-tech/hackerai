@@ -96,6 +96,7 @@ import {
   handleInitialChatAndUserMessage,
   saveMessage,
   updateChat,
+  updateChatTitle,
   getMessagesByChatId,
   getUserCustomization,
   prepareForNewStream,
@@ -772,6 +773,7 @@ export const createChatHandler = () => {
                 ? generateTitleFromUserMessageWithWriter(
                     processedMessages,
                     writer,
+                    (title) => updateChatTitle({ chatId, title }),
                   )
                 : Promise.resolve(undefined);
 

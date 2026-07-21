@@ -436,7 +436,9 @@ describe("agent-long chat UI — completion reconciliation", () => {
       /getLatestAgentLongAssistantMessageForPartialSave/,
     );
     expect(chatComponentSrc).toMatch(/stop\(\)/);
-    expect(chatComponentSrc).toMatch(/window\.history\.replaceState/);
+    expect(chatComponentSrc).toMatch(
+      /const finishLocally = \(\) => \{[\s\S]*finalizeNewChatRoute/,
+    );
     expect(chatComponentSrc).toMatch(/setIsExistingChat\(true\)/);
   });
 
@@ -467,7 +469,7 @@ describe("agent-long chat UI — completion reconciliation", () => {
     expect(chatComponentSrc).toMatch(/const stopRef = useRef\(stop\)/);
     expect(chatComponentSrc).toMatch(/stopActiveBrowserStream/);
     expect(chatComponentSrc).toMatch(
-      /cancelAgentLongRealtimeStreams\(activeChatIdRef\.current\)/,
+      /const activeChatId = activeChatIdRef\.current;[\s\S]*cancelAgentLongRealtimeStreams\(activeChatId\)/,
     );
     expect(chatComponentSrc).toMatch(
       /statusRef\.current\s*===\s*"streaming"[\s\S]*statusRef\.current\s*===\s*"submitted"[\s\S]*stopRef\.current\(\)/,
@@ -475,6 +477,42 @@ describe("agent-long chat UI — completion reconciliation", () => {
     expect(chatComponentSrc).toMatch(
       /return\s*\(\)\s*=>\s*\{\s*stopActiveBrowserStream\(\);[\s\S]*\}/,
     );
+  });
+
+  test("new-task reset invalidates stale terminal callbacks before aborting", () => {
+    const stopHelperIdx = chatComponentSrc.indexOf(
+      "const stopActiveBrowserStream = useCallback(",
+    );
+    const cancelIdx = chatComponentSrc.indexOf(
+      "cancelAgentLongRealtimeStreams(activeChatId)",
+      stopHelperIdx,
+    );
+    const invalidateIdx = chatComponentSrc.indexOf(
+      "activeChatIdRef.current = nextChatId",
+      stopHelperIdx,
+    );
+    const abortIdx = chatComponentSrc.indexOf("stopRef.current()", cancelIdx);
+    const resetIdx = chatComponentSrc.indexOf("const reset = () => {");
+    const nextChatIdIdx = chatComponentSrc.indexOf(
+      "const nextChatId = uuidv4()",
+      resetIdx,
+    );
+    const guardedStopIdx = chatComponentSrc.indexOf(
+      "stopActiveBrowserStream(nextChatId)",
+      nextChatIdIdx,
+    );
+
+    expect(stopHelperIdx).toBeGreaterThan(-1);
+    expect(invalidateIdx).toBeGreaterThan(stopHelperIdx);
+    expect(cancelIdx).toBeGreaterThan(invalidateIdx);
+    expect(abortIdx).toBeGreaterThan(cancelIdx);
+    expect(nextChatIdIdx).toBeGreaterThan(resetIdx);
+    expect(guardedStopIdx).toBeGreaterThan(nextChatIdIdx);
+    expect(
+      chatComponentSrc.match(
+        /!isChatMountedRef\.current \|\| activeChatIdRef\.current !== chatId/g,
+      ),
+    ).toHaveLength(3);
   });
 
   test("sidebar navigation cancels stale agent-long realtime before route commit", () => {
@@ -1488,6 +1526,17 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
       expect(saveMessageIdx).toBeGreaterThan(guardedFailureIdx);
     }
     expect(taskSrc).toMatch(/chatFinalizationStatus/);
+  });
+
+  test("generated titles update reactive sidebar data before finalization", () => {
+    expect(dbActionsSrc).toMatch(/export async function updateChatTitle/);
+    expect(dbActionsSrc).toMatch(/api\.chats\.updateChatTitle/);
+    expect(chatHandlerSrc).toMatch(
+      /generateTitleFromUserMessageWithWriter\([\s\S]*?\(title\) => updateChatTitle\(\{ chatId, title \}\)/,
+    );
+    expect(taskSrc).toMatch(
+      /generateTitleFromUserMessageWithWriter\([\s\S]*?\(title\) => updateChatTitle\(\{ chatId, title \}\)/,
+    );
   });
 
   test("empty rehydrated history is classified separately from oversized input", () => {

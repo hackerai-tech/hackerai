@@ -46,10 +46,23 @@ const GROK_PRIMARY_OR_FALLBACK_MODELS = [
   "fallback-agent-model",
   "fallback-ask-model",
   "fallback-grok-4.5",
-  "title-generator-model",
 ] as const;
 
 describe("buildProviderOptions fallback chain", () => {
+  it("keeps title generation on a non-reasoning route", () => {
+    const opts = buildProviderOptions(
+      false,
+      "user-1",
+      "title-generator-model",
+      "ask",
+    );
+
+    expect(opts.openrouter).toEqual({
+      reasoning: { enabled: false },
+      user: "user-1",
+    });
+  });
+
   it.each(GROK_PRIMARY_OR_FALLBACK_MODELS)(
     "uses high reasoning whenever %s can resolve to Grok",
     (modelName) => {
