@@ -23,6 +23,10 @@ import {
   type ToolSet,
 } from "ai";
 import {
+  recordAgentStepCompletion,
+  type AgentCompletionSignalTracker,
+} from "@/lib/analytics/agent-completion-signals";
+import {
   buildProviderOptions,
   buildSystemPrompt,
   addCacheBreakpointToLastUserMessage,
@@ -465,6 +469,7 @@ export type AgentStreamContext = {
   ensureSandbox: import("@/lib/chat/summarization").EnsureSandbox;
   chatLogger: ChatLogger | undefined;
   usageRefundTracker: UsageRefundTracker;
+  completionSignalTracker: AgentCompletionSignalTracker;
   onBudgetAbort?: (details: BudgetAbortDetails & { model: string }) => void;
   onModelStreamStart?: () => void;
   onModelStreamFinish?: () => void;
@@ -1179,8 +1184,9 @@ export async function createAgentStream(
       }
     },
 
-    onStepFinish: async ({ usage, response, providerMetadata }) => {
+    onStepFinish: async ({ usage, response, providerMetadata, content }) => {
       ctx.onModelStreamFinish?.();
+      recordAgentStepCompletion(ctx.completionSignalTracker, content);
       let stepUsageCostIndex: number | undefined;
       if (usage) {
         stepUsageCostIndex = ctx.usageTracker.accumulateStep(
