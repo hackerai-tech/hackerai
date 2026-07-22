@@ -163,7 +163,7 @@ describe("PostHogProvider", () => {
     const setAgentPermissionMode = jest.fn();
     const setChatMode = jest.fn();
     mockUseGlobalState.mockReturnValue({
-      agentPermissionMode: "full_access",
+      agentPermissionMode: "ask_approval",
       chatMode: "ask",
       setAgentPermissionMode,
       setChatMode,
@@ -202,6 +202,7 @@ describe("PostHogProvider", () => {
       expect(setChatMode).toHaveBeenCalledWith("agent");
       expect(screen.getByTestId("hac45-treatment")).toHaveTextContent("true");
     });
+    expect(setAgentPermissionMode).toHaveBeenCalledTimes(1);
     expect(posthog.isFeatureEnabled).toHaveBeenCalledWith(
       "hac45-agent-full-access-v2",
     );
@@ -211,7 +212,7 @@ describe("PostHogProvider", () => {
         variant: "agent_full_access",
         exposure_event_version: 2,
         previous_chat_mode: "ask",
-        previous_agent_permission_mode: "full_access",
+        previous_agent_permission_mode: "ask_approval",
         agent_permission_mode: "full_access",
       }),
       { uuid: expect.any(String) },

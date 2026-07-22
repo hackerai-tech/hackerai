@@ -1,7 +1,6 @@
 import "@testing-library/jest-dom";
 import { fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, jest } from "@jest/globals";
-import { Hac45AgentOnlyContext } from "@/app/contexts/Hac45AgentOnlyContext";
 
 const setAgentPermissionMode = jest.fn();
 const captureAuthenticatedEvent = jest.fn();
@@ -54,13 +53,11 @@ describe("AgentPermissionSelector", () => {
     expect(setAgentPermissionMode).toHaveBeenCalledWith("ask_approval");
   });
 
-  it("is unavailable while the HAC-45 Agent-only treatment is active", () => {
-    const { container } = render(
-      <Hac45AgentOnlyContext.Provider value>
-        <AgentPermissionSelector analyticsSurface="chat_input" />
-      </Hac45AgentOnlyContext.Provider>,
-    );
+  it("keeps the permission choice available in Agent-only experiences", () => {
+    render(<AgentPermissionSelector analyticsSurface="chat_input" />);
 
-    expect(container).toBeEmptyDOMElement();
+    expect(
+      screen.getByRole("button", { name: /full access/i }),
+    ).toBeInTheDocument();
   });
 });

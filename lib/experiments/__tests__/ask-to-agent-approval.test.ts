@@ -13,7 +13,7 @@ describe("applyAskToAgentApprovalExperiment", () => {
     window.localStorage.clear();
   });
 
-  it("records exposure before locking a paid cohort user to Agent with full access", () => {
+  it("records exposure before defaulting a paid cohort user to Agent with full access", () => {
     const captureExposure = jest.fn(() => true);
     const setAgentPermissionMode = jest.fn();
     const setChatMode = jest.fn();
@@ -113,7 +113,7 @@ describe("applyAskToAgentApprovalExperiment", () => {
     expect(hasAskToAgentApprovalExposure("user-123")).toBe(false);
   });
 
-  it("re-enforces Agent with full access without duplicating exposure", () => {
+  it("re-enforces Agent without overwriting the user's permission choice", () => {
     const captureExposure = jest.fn(() => true);
     const setAgentPermissionMode = jest.fn();
     const setChatMode = jest.fn();
@@ -146,7 +146,7 @@ describe("applyAskToAgentApprovalExperiment", () => {
       }),
     ).toBe(true);
     expect(captureExposure).toHaveBeenCalledTimes(1);
-    expect(setAgentPermissionMode).toHaveBeenCalledWith("full_access");
+    expect(setAgentPermissionMode).not.toHaveBeenCalled();
     expect(setChatMode).toHaveBeenCalledWith("agent");
   });
 

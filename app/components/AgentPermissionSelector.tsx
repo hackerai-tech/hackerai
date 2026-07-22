@@ -11,7 +11,6 @@ import {
 import { useGlobalState } from "@/app/contexts/GlobalState";
 import { captureAuthenticatedEvent } from "@/lib/analytics/client";
 import type { AgentPermissionMode } from "@/types";
-import { useHac45AgentOnlyTreatment } from "@/app/contexts/Hac45AgentOnlyContext";
 
 type AgentPermissionSelectorProps = {
   size?: "sm" | "md";
@@ -49,7 +48,6 @@ export function AgentPermissionSelector({
 }: AgentPermissionSelectorProps) {
   const [open, setOpen] = useState(false);
   const { agentPermissionMode, setAgentPermissionMode } = useGlobalState();
-  const hac45AgentOnlyActive = useHac45AgentOnlyTreatment();
   const selectedOption =
     options.find((option) => option.id === agentPermissionMode) ?? options[0];
   const Icon = selectedOption.icon;
@@ -60,8 +58,6 @@ export function AgentPermissionSelector({
       : "h-8 px-2.5 gap-2 text-sm font-medium rounded-md bg-transparent hover:bg-muted/30 focus-visible:ring-1 min-w-0 shrink";
 
   const iconClassName = size === "md" ? "h-4 w-4 shrink-0" : "h-5 w-5 shrink-0";
-
-  if (hac45AgentOnlyActive) return null;
 
   return (
     <Popover open={open} onOpenChange={setOpen}>

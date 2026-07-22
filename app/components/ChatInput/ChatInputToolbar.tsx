@@ -32,7 +32,7 @@ export function ChatInputToolbar({
         <AttachmentButton onAttachClick={onAttachClick} />
       </div>
       {hac45AgentOnlyActive ? null : <ChatModeSelector />}
-      {!hac45AgentOnlyActive && isAgentMode(chatMode) ? (
+      {isAgentMode(chatMode) ? (
         <div className="hidden md:block">
           <AgentPermissionSelector analyticsSurface="chat_input" />
         </div>

@@ -108,16 +108,14 @@ describe("ChatInputToolbar", () => {
     expect(screen.getByTestId("agent-permission-selector")).toBeInTheDocument();
   });
 
-  it("removes mode and permission selectors for the HAC-45 treatment", () => {
+  it("removes only the mode selector for the HAC-45 treatment", () => {
     mockAuthUser({ id: "user_123" });
     mockHac45AgentOnlyActive = true;
 
     render(<ChatInputToolbar {...defaultProps} chatMode="agent" />);
 
     expect(screen.queryByTestId("chat-mode-selector")).not.toBeInTheDocument();
-    expect(
-      screen.queryByTestId("agent-permission-selector"),
-    ).not.toBeInTheDocument();
+    expect(screen.getByTestId("agent-permission-selector")).toBeInTheDocument();
   });
 
   it("enables the paid visual treatment only for paid subscriptions", () => {

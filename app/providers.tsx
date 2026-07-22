@@ -198,19 +198,10 @@ export function PostHogProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     if (!hac45AgentOnlyActive) return;
 
-    if (agentPermissionMode !== "full_access") {
-      setAgentPermissionMode("full_access");
-    }
     if (chatMode !== "agent") {
       setChatMode("agent");
     }
-  }, [
-    agentPermissionMode,
-    chatMode,
-    hac45AgentOnlyActive,
-    setAgentPermissionMode,
-    setChatMode,
-  ]);
+  }, [chatMode, hac45AgentOnlyActive, setChatMode]);
 
   return (
     <Hac45AgentOnlyContext.Provider value={hac45AgentOnlyActive}>

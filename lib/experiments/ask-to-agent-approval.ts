@@ -86,6 +86,7 @@ export function applyAskToAgentApprovalExperiment({
     return false;
   }
 
+  let firstExposure = false;
   if (!hasAskToAgentApprovalExposure(userId)) {
     const exposedAt = now().toISOString();
     const captured = captureExposure(
@@ -125,9 +126,12 @@ export function applyAskToAgentApprovalExperiment({
     if (!captured) return false;
 
     rememberAskToAgentApprovalExposure(userId, exposedAt);
+    firstExposure = true;
   }
 
-  setAgentPermissionMode("full_access");
+  if (firstExposure) {
+    setAgentPermissionMode("full_access");
+  }
   setChatMode("agent");
   return true;
 }
