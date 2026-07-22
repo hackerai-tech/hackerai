@@ -71,6 +71,17 @@ describe("getRemainingRefundAmountCents", () => {
     ).toBe(true);
     expect(
       isRefundAmountRaceError({
+        raw: {
+          statusCode: 400,
+          type: "invalid_request_error",
+          param: "amount",
+          message:
+            "Refund amount ($25.00) is greater than unrefunded amount on charge ($0.21)",
+        },
+      }),
+    ).toBe(true);
+    expect(
+      isRefundAmountRaceError({
         statusCode: 400,
         type: "StripeInvalidRequestError",
         rawType: "invalid_request_error",
