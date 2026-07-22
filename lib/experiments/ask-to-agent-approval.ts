@@ -11,6 +11,9 @@ export const ASK_TO_AGENT_APPROVAL_EXPERIMENT_KEY =
 export const ASK_TO_AGENT_APPROVAL_EXPOSURE_EVENT =
   "ask_to_agent_approval_experiment_exposed";
 
+// The PostHog identifiers are retained for continuity with the live HAC-45
+// flag. The corrected treatment is Agent-only with full access.
+
 export const ASK_TO_AGENT_APPROVAL_ELIGIBILITY_WINDOW = {
   start: "2026-07-14T02:08:00.000Z",
   end: "2026-07-21T02:08:00.000Z",
@@ -79,53 +82,52 @@ export function applyAskToAgentApprovalExperiment({
   temporaryChatsEnabled,
   userId,
 }: ApplyAskToAgentApprovalExperimentArgs): boolean {
-  if (
-    !enabled ||
-    subscription === "free" ||
-    temporaryChatsEnabled ||
-    hasAskToAgentApprovalExposure(userId)
-  ) {
+  if (!enabled || subscription === "free" || temporaryChatsEnabled) {
     return false;
   }
 
-  const exposedAt = now().toISOString();
-  const captured = captureExposure(
-    ASK_TO_AGENT_APPROVAL_EXPOSURE_EVENT,
-    {
-      experiment_key: ASK_TO_AGENT_APPROVAL_EXPERIMENT_KEY,
-      feature_flag_key: ASK_TO_AGENT_APPROVAL_FLAG_KEY,
-      variant: "agent_ask_approval",
-      exposure_event_version: 1,
-      exposure_surface: "global_state",
-      previous_chat_mode: chatMode,
-      previous_agent_permission_mode: agentPermissionMode,
-      mode: "agent",
-      agent_permission_mode: "ask_approval",
-      subscription,
-      eligibility_window_start: ASK_TO_AGENT_APPROVAL_ELIGIBILITY_WINDOW.start,
-      eligibility_window_end: ASK_TO_AGENT_APPROVAL_ELIGIBILITY_WINDOW.end,
-      eligible_user_denominator:
-        ASK_TO_AGENT_APPROVAL_ELIGIBILITY_WINDOW.eligibleUsers,
-      cohort_user_count: ASK_TO_AGENT_APPROVAL_ELIGIBILITY_WINDOW.cohortUsers,
-      rollout_percentage:
-        ASK_TO_AGENT_APPROVAL_ELIGIBILITY_WINDOW.rolloutPercentage,
-      $set_once: {
-        ask_to_agent_approval_experiment_variant: "agent_ask_approval",
-        ask_to_agent_approval_experiment_exposed_at: exposedAt,
+  if (!hasAskToAgentApprovalExposure(userId)) {
+    const exposedAt = now().toISOString();
+    const captured = captureExposure(
+      ASK_TO_AGENT_APPROVAL_EXPOSURE_EVENT,
+      {
+        experiment_key: ASK_TO_AGENT_APPROVAL_EXPERIMENT_KEY,
+        feature_flag_key: ASK_TO_AGENT_APPROVAL_FLAG_KEY,
+        variant: "agent_full_access",
+        exposure_event_version: 2,
+        exposure_surface: "global_state",
+        previous_chat_mode: chatMode,
+        previous_agent_permission_mode: agentPermissionMode,
+        mode: "agent",
+        agent_permission_mode: "full_access",
+        subscription,
+        eligibility_window_start:
+          ASK_TO_AGENT_APPROVAL_ELIGIBILITY_WINDOW.start,
+        eligibility_window_end: ASK_TO_AGENT_APPROVAL_ELIGIBILITY_WINDOW.end,
+        eligible_user_denominator:
+          ASK_TO_AGENT_APPROVAL_ELIGIBILITY_WINDOW.eligibleUsers,
+        cohort_user_count: ASK_TO_AGENT_APPROVAL_ELIGIBILITY_WINDOW.cohortUsers,
+        rollout_percentage:
+          ASK_TO_AGENT_APPROVAL_ELIGIBILITY_WINDOW.rolloutPercentage,
+        $set_once: {
+          ask_to_agent_approval_experiment_variant: "agent_full_access",
+          ask_to_agent_approval_experiment_exposed_at: exposedAt,
+        },
       },
-    },
-    {
-      uuid: uuidv5(
-        `${ASK_TO_AGENT_APPROVAL_EXPERIMENT_KEY}:${userId}`,
-        uuidv5.URL,
-      ),
-    },
-  );
+      {
+        uuid: uuidv5(
+          `${ASK_TO_AGENT_APPROVAL_EXPERIMENT_KEY}:v2:${userId}`,
+          uuidv5.URL,
+        ),
+      },
+    );
 
-  if (!captured) return false;
+    if (!captured) return false;
 
-  rememberAskToAgentApprovalExposure(userId, exposedAt);
-  setAgentPermissionMode("ask_approval");
+    rememberAskToAgentApprovalExposure(userId, exposedAt);
+  }
+
+  setAgentPermissionMode("full_access");
   setChatMode("agent");
   return true;
 }

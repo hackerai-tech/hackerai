@@ -1,5 +1,5 @@
 import { describe, expect, it, jest, beforeEach } from "@jest/globals";
-import { render, waitFor } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 
 jest.mock("@workos-inc/authkit-nextjs/components", () => ({
   useAuth: jest.fn(),
@@ -36,11 +36,18 @@ const { captureAuthenticatedEvent, loadPostHogClient } = jest.requireMock<
 >("@/lib/analytics/client");
 const { PostHogProvider } =
   require("../providers") as typeof import("../providers");
+const { useHac45AgentOnlyTreatment } =
+  require("../contexts/Hac45AgentOnlyContext") as typeof import("../contexts/Hac45AgentOnlyContext");
 
 const mockUseAuth = useAuth as jest.Mock;
 const mockUseGlobalState = useGlobalState as jest.Mock;
 const mockCaptureAuthenticatedEvent = captureAuthenticatedEvent as jest.Mock;
 const mockLoadPostHogClient = loadPostHogClient as jest.Mock;
+
+function TreatmentProbe() {
+  const active = useHac45AgentOnlyTreatment();
+  return <div data-testid="hac45-treatment">{String(active)}</div>;
+}
 
 describe("PostHogProvider", () => {
   beforeEach(() => {
@@ -186,13 +193,14 @@ describe("PostHogProvider", () => {
 
     render(
       <PostHogProvider>
-        <div>child</div>
+        <TreatmentProbe />
       </PostHogProvider>,
     );
 
     await waitFor(() => {
-      expect(setAgentPermissionMode).toHaveBeenCalledWith("ask_approval");
+      expect(setAgentPermissionMode).toHaveBeenCalledWith("full_access");
       expect(setChatMode).toHaveBeenCalledWith("agent");
+      expect(screen.getByTestId("hac45-treatment")).toHaveTextContent("true");
     });
     expect(posthog.isFeatureEnabled).toHaveBeenCalledWith(
       "hac45-ask-to-agent-approval-v1",
@@ -200,8 +208,11 @@ describe("PostHogProvider", () => {
     expect(mockCaptureAuthenticatedEvent).toHaveBeenCalledWith(
       "ask_to_agent_approval_experiment_exposed",
       expect.objectContaining({
+        variant: "agent_full_access",
+        exposure_event_version: 2,
         previous_chat_mode: "ask",
         previous_agent_permission_mode: "full_access",
+        agent_permission_mode: "full_access",
       }),
       { uuid: expect.any(String) },
     );

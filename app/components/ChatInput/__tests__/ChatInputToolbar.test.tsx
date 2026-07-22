@@ -5,6 +5,7 @@ import { useAuth } from "@workos-inc/authkit-nextjs/components";
 import type { SubscriptionTier } from "@/types";
 
 let mockSubscription: SubscriptionTier = "free";
+let mockHac45AgentOnlyActive = false;
 
 jest.mock("@/app/components/AttachmentButton", () => ({
   AttachmentButton: () => <button type="button">Attach</button>,
@@ -40,6 +41,10 @@ jest.mock("@/app/contexts/GlobalState", () => ({
   }),
 }));
 
+jest.mock("@/app/contexts/Hac45AgentOnlyContext", () => ({
+  useHac45AgentOnlyTreatment: () => mockHac45AgentOnlyActive,
+}));
+
 const { ChatInputToolbar } = jest.requireActual<
   typeof import("../ChatInputToolbar")
 >("../ChatInputToolbar");
@@ -70,6 +75,7 @@ const mockAuthUser = (user: unknown) => {
 describe("ChatInputToolbar", () => {
   beforeEach(() => {
     mockSubscription = "free";
+    mockHac45AgentOnlyActive = false;
     mockAuthUser(null);
   });
 
@@ -100,6 +106,18 @@ describe("ChatInputToolbar", () => {
 
     rerender(<ChatInputToolbar {...defaultProps} chatMode="agent" />);
     expect(screen.getByTestId("agent-permission-selector")).toBeInTheDocument();
+  });
+
+  it("removes mode and permission selectors for the HAC-45 treatment", () => {
+    mockAuthUser({ id: "user_123" });
+    mockHac45AgentOnlyActive = true;
+
+    render(<ChatInputToolbar {...defaultProps} chatMode="agent" />);
+
+    expect(screen.queryByTestId("chat-mode-selector")).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId("agent-permission-selector"),
+    ).not.toBeInTheDocument();
   });
 
   it("enables the paid visual treatment only for paid subscriptions", () => {

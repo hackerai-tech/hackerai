@@ -12,13 +12,13 @@ describe("applyAskToAgentApprovalExperiment", () => {
     window.localStorage.clear();
   });
 
-  it("records exposure before moving a paid cohort user to Agent with approval", () => {
+  it("records exposure before locking a paid cohort user to Agent with full access", () => {
     const captureExposure = jest.fn(() => true);
     const setAgentPermissionMode = jest.fn();
     const setChatMode = jest.fn();
 
     const applied = applyAskToAgentApprovalExperiment({
-      agentPermissionMode: "full_access",
+      agentPermissionMode: "ask_approval",
       captureExposure,
       chatMode: "ask",
       enabled: true,
@@ -36,23 +36,24 @@ describe("applyAskToAgentApprovalExperiment", () => {
       expect.objectContaining({
         experiment_key: ASK_TO_AGENT_APPROVAL_EXPERIMENT_KEY,
         feature_flag_key: ASK_TO_AGENT_APPROVAL_FLAG_KEY,
-        variant: "agent_ask_approval",
+        variant: "agent_full_access",
+        exposure_event_version: 2,
         previous_chat_mode: "ask",
-        previous_agent_permission_mode: "full_access",
+        previous_agent_permission_mode: "ask_approval",
         mode: "agent",
-        agent_permission_mode: "ask_approval",
+        agent_permission_mode: "full_access",
         eligible_user_denominator: 452,
         cohort_user_count: 113,
         rollout_percentage: 25,
         $set_once: {
-          ask_to_agent_approval_experiment_variant: "agent_ask_approval",
+          ask_to_agent_approval_experiment_variant: "agent_full_access",
           ask_to_agent_approval_experiment_exposed_at:
             "2026-07-22T14:00:00.000Z",
         },
       }),
       { uuid: expect.any(String) },
     );
-    expect(setAgentPermissionMode).toHaveBeenCalledWith("ask_approval");
+    expect(setAgentPermissionMode).toHaveBeenCalledWith("full_access");
     expect(setChatMode).toHaveBeenCalledWith("agent");
     expect(hasAskToAgentApprovalExposure("user-123")).toBe(true);
   });
@@ -79,7 +80,7 @@ describe("applyAskToAgentApprovalExperiment", () => {
     expect(hasAskToAgentApprovalExposure("user-123")).toBe(false);
   });
 
-  it("applies only once so users can return to Ask without being forced back", () => {
+  it("re-enforces Agent with full access without duplicating exposure", () => {
     const captureExposure = jest.fn(() => true);
     const setAgentPermissionMode = jest.fn();
     const setChatMode = jest.fn();
@@ -96,7 +97,7 @@ describe("applyAskToAgentApprovalExperiment", () => {
     expect(
       applyAskToAgentApprovalExperiment({
         ...base,
-        agentPermissionMode: "full_access",
+        agentPermissionMode: "ask_approval",
         chatMode: "ask",
       }),
     ).toBe(true);
@@ -110,10 +111,10 @@ describe("applyAskToAgentApprovalExperiment", () => {
         agentPermissionMode: "ask_approval",
         chatMode: "ask",
       }),
-    ).toBe(false);
+    ).toBe(true);
     expect(captureExposure).toHaveBeenCalledTimes(1);
-    expect(setAgentPermissionMode).not.toHaveBeenCalled();
-    expect(setChatMode).not.toHaveBeenCalled();
+    expect(setAgentPermissionMode).toHaveBeenCalledWith("full_access");
+    expect(setChatMode).toHaveBeenCalledWith("agent");
   });
 
   it.each([

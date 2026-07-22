@@ -2,8 +2,9 @@
 
 import { useAuth } from "@workos-inc/authkit-nextjs/components";
 import type { PostHogConfig } from "posthog-js";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { useGlobalState } from "./contexts/GlobalState";
+import { Hac45AgentOnlyContext } from "./contexts/Hac45AgentOnlyContext";
 import {
   enrichFrontendExceptionEvent,
   shouldDropExpectedFrontendException,
@@ -21,6 +22,10 @@ import {
 let lastIdentifiedSignature: string | null = null;
 
 export function PostHogProvider({ children }: { children: React.ReactNode }) {
+  const [hac45Evaluation, setHac45Evaluation] = useState<{
+    active: boolean;
+    userId: string;
+  } | null>(null);
   const {
     agentPermissionMode,
     chatMode,
@@ -34,6 +39,15 @@ export function PostHogProvider({ children }: { children: React.ReactNode }) {
   const userEmail = user?.email;
   const userFirstName = user?.firstName;
   const userLastName = user?.lastName;
+  const hac45Eligible =
+    Boolean(process.env.NEXT_PUBLIC_POSTHOG_KEY) &&
+    Boolean(userId) &&
+    subscription !== "free" &&
+    !temporaryChatsEnabled;
+  const hac45AgentOnlyActive =
+    hac45Eligible &&
+    hac45Evaluation?.userId === userId &&
+    hac45Evaluation?.active === true;
 
   useEffect(() => {
     const posthogKey = process.env.NEXT_PUBLIC_POSTHOG_KEY;
@@ -125,7 +139,7 @@ export function PostHogProvider({ children }: { children: React.ReactNode }) {
   }, [subscription, userEmail, userFirstName, userId, userLastName]);
 
   useEffect(() => {
-    if (!process.env.NEXT_PUBLIC_POSTHOG_KEY || !userId) return;
+    if (!hac45Eligible || !userId) return;
 
     let cancelled = false;
     let unsubscribeFeatureFlags: (() => void) | undefined;
@@ -137,7 +151,7 @@ export function PostHogProvider({ children }: { children: React.ReactNode }) {
         unsubscribeFeatureFlags = posthog.onFeatureFlags(() => {
           if (cancelled) return;
 
-          applyAskToAgentApprovalExperiment({
+          const active = applyAskToAgentApprovalExperiment({
             agentPermissionMode,
             captureExposure: captureAuthenticatedEvent,
             chatMode,
@@ -149,9 +163,22 @@ export function PostHogProvider({ children }: { children: React.ReactNode }) {
             temporaryChatsEnabled,
             userId,
           });
+          setHac45Evaluation((current) =>
+            current?.active === active && current.userId === userId
+              ? current
+              : { active, userId },
+          );
         });
       })
-      .catch(() => {});
+      .catch(() => {
+        if (!cancelled) {
+          setHac45Evaluation((current) =>
+            current?.active === false && current.userId === userId
+              ? current
+              : { active: false, userId },
+          );
+        }
+      });
 
     return () => {
       cancelled = true;
@@ -160,6 +187,7 @@ export function PostHogProvider({ children }: { children: React.ReactNode }) {
   }, [
     agentPermissionMode,
     chatMode,
+    hac45Eligible,
     setAgentPermissionMode,
     setChatMode,
     subscription,
@@ -167,5 +195,26 @@ export function PostHogProvider({ children }: { children: React.ReactNode }) {
     userId,
   ]);
 
-  return <>{children}</>;
+  useEffect(() => {
+    if (!hac45AgentOnlyActive) return;
+
+    if (agentPermissionMode !== "full_access") {
+      setAgentPermissionMode("full_access");
+    }
+    if (chatMode !== "agent") {
+      setChatMode("agent");
+    }
+  }, [
+    agentPermissionMode,
+    chatMode,
+    hac45AgentOnlyActive,
+    setAgentPermissionMode,
+    setChatMode,
+  ]);
+
+  return (
+    <Hac45AgentOnlyContext.Provider value={hac45AgentOnlyActive}>
+      {children}
+    </Hac45AgentOnlyContext.Provider>
+  );
 }
