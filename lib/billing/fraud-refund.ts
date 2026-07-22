@@ -31,9 +31,40 @@ export function getRemainingRefundAmountCents(
 export function isRefundAmountRaceError(error: unknown): boolean {
   if (!error || typeof error !== "object") return false;
 
-  const stripeError = error as { code?: unknown; statusCode?: unknown };
+  const stripeError = error as {
+    code?: unknown;
+    message?: unknown;
+    param?: unknown;
+    raw?: unknown;
+    rawType?: unknown;
+    statusCode?: unknown;
+    type?: unknown;
+  };
+  const rawError =
+    stripeError.raw && typeof stripeError.raw === "object"
+      ? (stripeError.raw as Record<string, unknown>)
+      : undefined;
+  const statusCode = stripeError.statusCode ?? rawError?.statusCode;
+  const code = stripeError.code ?? rawError?.code;
+
+  if (statusCode !== 400) return false;
+  if (code === "amount_too_large") return true;
+  if (code != null) return false;
+
+  const param = stripeError.param ?? rawError?.param;
+  const message = stripeError.message ?? rawError?.message;
+  const isInvalidRequest =
+    stripeError.type === "StripeInvalidRequestError" ||
+    stripeError.rawType === "invalid_request_error" ||
+    rawError?.type === "invalid_request_error";
+
   return (
-    stripeError.statusCode === 400 && stripeError.code === "amount_too_large"
+    isInvalidRequest &&
+    param === "amount" &&
+    typeof message === "string" &&
+    /^Refund amount \(.+\) is greater than unrefunded amount on charge \(.+\)$/.test(
+      message,
+    )
   );
 }
 

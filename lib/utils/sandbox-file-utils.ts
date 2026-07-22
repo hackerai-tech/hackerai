@@ -39,10 +39,8 @@ type SandboxCommandResult = {
 
 type SandboxUploadFailureDetail = {
   kind: SandboxFile["kind"];
-  localPath: string;
   error: string;
   transientSandboxCommand: boolean;
-  url?: string;
   urlLength?: number;
   protocol?: string;
 };
@@ -627,7 +625,7 @@ const stageSandboxFile = async (
   }
 };
 
-const safeUrlForLog = (url: string): string => {
+const getUrlWithoutQuery = (url: string): string => {
   try {
     const parsed = new URL(url);
     return `${parsed.origin}${parsed.pathname}`;
@@ -636,20 +634,45 @@ const safeUrlForLog = (url: string): string => {
   }
 };
 
+const getUrlPathname = (url: string): string | undefined => {
+  try {
+    const pathname = new URL(url).pathname;
+    return pathname && pathname !== "/" ? pathname : undefined;
+  } catch {
+    return undefined;
+  }
+};
+
+const getPathBasename = (path: string): string | undefined => {
+  const parts = path.split(/[\\/]/).filter(Boolean);
+  return parts[parts.length - 1];
+};
+
+const redactSensitiveValues = (
+  message: string,
+  values: Array<string | undefined>,
+  replacement: string,
+): string => {
+  const orderedValues = [...new Set(values.filter(Boolean) as string[])].sort(
+    (left, right) => right.length - left.length,
+  );
+  for (const value of orderedValues) {
+    message = message.split(value).join(replacement);
+  }
+  return message;
+};
+
 const describeSandboxFileForLog = (file: SandboxFile) => {
   if (file.kind === "url") {
     return {
       kind: file.kind,
-      url: safeUrlForLog(file.url),
       urlLength: file.url.length,
       protocol: file.url.split("://")[0],
-      localPath: file.localPath,
     };
   }
   return {
     kind: file.kind,
     sourcePath: "[redacted-local-path]",
-    localPath: file.localPath,
   };
 };
 
@@ -659,13 +682,11 @@ const summarizeSandboxUploadFailure = (
 ): SandboxUploadFailureDetail => {
   const summary: SandboxUploadFailureDetail = {
     kind: file.kind,
-    localPath: file.localPath,
     error: redactSandboxUploadError(file, error),
     transientSandboxCommand: isTransientSandboxCommandError(error),
   };
 
   if (file.kind === "url") {
-    summary.url = safeUrlForLog(file.url);
     summary.urlLength = file.url.length;
     summary.protocol = file.url.split("://")[0];
   }
@@ -767,11 +788,40 @@ const redactSandboxUploadError = (
   file: SandboxFile,
   error: unknown,
 ): string => {
-  const message = error instanceof Error ? error.message : String(error);
+  let message = error instanceof Error ? error.message : String(error);
   if (file.kind === "url") {
-    return message.split(file.url).join(safeUrlForLog(file.url));
+    const urlPathname = getUrlPathname(file.url);
+    message = redactSensitiveValues(
+      message,
+      [file.url, getUrlWithoutQuery(file.url), urlPathname],
+      "[redacted-url]",
+    );
+    message = redactSensitiveValues(
+      message,
+      [file.localPath, getPathBasename(file.localPath)],
+      "[redacted-destination-path]",
+    );
+    return redactSensitiveValues(
+      message,
+      [urlPathname ? getPathBasename(urlPathname) : undefined],
+      "[redacted-url]",
+    );
   }
-  return message.split(file.path).join("[redacted-local-path]");
+  message = redactSensitiveValues(
+    message,
+    [file.path],
+    "[redacted-local-path]",
+  );
+  message = redactSensitiveValues(
+    message,
+    [file.localPath, getPathBasename(file.localPath)],
+    "[redacted-destination-path]",
+  );
+  return redactSensitiveValues(
+    message,
+    [getPathBasename(file.path)],
+    "[redacted-local-path]",
+  );
 };
 
 /**
