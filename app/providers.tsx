@@ -8,12 +8,27 @@ import {
   enrichFrontendExceptionEvent,
   shouldDropExpectedFrontendException,
 } from "@/lib/posthog/expected-frontend-exceptions";
-import { getPostHogClient, loadPostHogClient } from "@/lib/analytics/client";
+import {
+  captureAuthenticatedEvent,
+  getPostHogClient,
+  loadPostHogClient,
+} from "@/lib/analytics/client";
+import {
+  applyAskToAgentApprovalExperiment,
+  ASK_TO_AGENT_APPROVAL_FLAG_KEY,
+} from "@/lib/experiments/ask-to-agent-approval";
 
 let lastIdentifiedSignature: string | null = null;
 
 export function PostHogProvider({ children }: { children: React.ReactNode }) {
-  const { subscription } = useGlobalState();
+  const {
+    agentPermissionMode,
+    chatMode,
+    setAgentPermissionMode,
+    setChatMode,
+    subscription,
+    temporaryChatsEnabled,
+  } = useGlobalState();
   const { user } = useAuth();
   const userId = user?.id;
   const userEmail = user?.email;
@@ -108,6 +123,49 @@ export function PostHogProvider({ children }: { children: React.ReactNode }) {
       cancelled = true;
     };
   }, [subscription, userEmail, userFirstName, userId, userLastName]);
+
+  useEffect(() => {
+    if (!process.env.NEXT_PUBLIC_POSTHOG_KEY || !userId) return;
+
+    let cancelled = false;
+    let unsubscribeFeatureFlags: (() => void) | undefined;
+
+    void loadPostHogClient()
+      .then((posthog) => {
+        if (cancelled || !posthog.__loaded) return;
+
+        unsubscribeFeatureFlags = posthog.onFeatureFlags(() => {
+          if (cancelled) return;
+
+          applyAskToAgentApprovalExperiment({
+            agentPermissionMode,
+            captureExposure: captureAuthenticatedEvent,
+            chatMode,
+            enabled:
+              posthog.isFeatureEnabled(ASK_TO_AGENT_APPROVAL_FLAG_KEY) === true,
+            setAgentPermissionMode,
+            setChatMode,
+            subscription,
+            temporaryChatsEnabled,
+            userId,
+          });
+        });
+      })
+      .catch(() => {});
+
+    return () => {
+      cancelled = true;
+      unsubscribeFeatureFlags?.();
+    };
+  }, [
+    agentPermissionMode,
+    chatMode,
+    setAgentPermissionMode,
+    setChatMode,
+    subscription,
+    temporaryChatsEnabled,
+    userId,
+  ]);
 
   return <>{children}</>;
 }

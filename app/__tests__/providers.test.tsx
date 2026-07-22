@@ -7,11 +7,17 @@ jest.mock("@workos-inc/authkit-nextjs/components", () => ({
 
 jest.mock("../contexts/GlobalState", () => ({
   useGlobalState: jest.fn(() => ({
+    agentPermissionMode: "full_access",
+    chatMode: "ask",
+    setAgentPermissionMode: jest.fn(),
+    setChatMode: jest.fn(),
     subscription: "pro",
+    temporaryChatsEnabled: false,
   })),
 }));
 
 jest.mock("@/lib/analytics/client", () => ({
+  captureAuthenticatedEvent: jest.fn(() => true),
   getPostHogClient: jest.fn(() => null),
   loadPostHogClient: jest.fn(),
 }));
@@ -22,13 +28,18 @@ process.env.NEXT_PUBLIC_POSTHOG_HOST = "https://us.i.posthog.com";
 const { useAuth } = jest.requireMock<
   typeof import("@workos-inc/authkit-nextjs/components")
 >("@workos-inc/authkit-nextjs/components");
-const { loadPostHogClient } = jest.requireMock<
+const { useGlobalState } = jest.requireMock<
+  typeof import("../contexts/GlobalState")
+>("../contexts/GlobalState");
+const { captureAuthenticatedEvent, loadPostHogClient } = jest.requireMock<
   typeof import("@/lib/analytics/client")
 >("@/lib/analytics/client");
 const { PostHogProvider } =
   require("../providers") as typeof import("../providers");
 
 const mockUseAuth = useAuth as jest.Mock;
+const mockUseGlobalState = useGlobalState as jest.Mock;
+const mockCaptureAuthenticatedEvent = captureAuthenticatedEvent as jest.Mock;
 const mockLoadPostHogClient = loadPostHogClient as jest.Mock;
 
 describe("PostHogProvider", () => {
@@ -36,6 +47,17 @@ describe("PostHogProvider", () => {
     jest.clearAllMocks();
     process.env.NEXT_PUBLIC_POSTHOG_KEY = "phc_test";
     process.env.NEXT_PUBLIC_POSTHOG_HOST = "https://us.i.posthog.com";
+    window.localStorage.clear();
+
+    mockUseGlobalState.mockReturnValue({
+      agentPermissionMode: "full_access",
+      chatMode: "ask",
+      setAgentPermissionMode: jest.fn(),
+      setChatMode: jest.fn(),
+      subscription: "pro",
+      temporaryChatsEnabled: false,
+    });
+    mockCaptureAuthenticatedEvent.mockReturnValue(true);
 
     mockUseAuth.mockReturnValue({
       user: {
@@ -55,6 +77,8 @@ describe("PostHogProvider", () => {
       opt_in_capturing: jest.fn(),
       has_opted_out_capturing: jest.fn(() => true),
       identify: jest.fn(),
+      isFeatureEnabled: jest.fn(() => false),
+      onFeatureFlags: jest.fn(() => jest.fn()),
       sessionRecordingStarted: jest.fn(() => false),
       startSessionRecording: jest.fn(),
       stopSessionRecording: jest.fn(),
@@ -97,6 +121,8 @@ describe("PostHogProvider", () => {
       opt_in_capturing: jest.fn(),
       has_opted_out_capturing: jest.fn(() => false),
       identify: jest.fn(),
+      isFeatureEnabled: jest.fn(() => false),
+      onFeatureFlags: jest.fn(() => jest.fn()),
       sessionRecordingStarted: jest.fn(() => false),
       startSessionRecording: jest.fn(),
       stopSessionRecording: jest.fn(),
@@ -123,6 +149,61 @@ describe("PostHogProvider", () => {
           capture_console_errors: false,
         },
       }),
+    );
+  });
+
+  it("applies the HAC-45 treatment only after the selected flag evaluates", async () => {
+    const setAgentPermissionMode = jest.fn();
+    const setChatMode = jest.fn();
+    mockUseGlobalState.mockReturnValue({
+      agentPermissionMode: "full_access",
+      chatMode: "ask",
+      setAgentPermissionMode,
+      setChatMode,
+      subscription: "pro",
+      temporaryChatsEnabled: false,
+    });
+
+    const posthog = {
+      __loaded: true,
+      init: jest.fn(),
+      set_config: jest.fn(),
+      opt_in_capturing: jest.fn(),
+      has_opted_out_capturing: jest.fn(() => false),
+      identify: jest.fn(),
+      isFeatureEnabled: jest.fn(() => true),
+      onFeatureFlags: jest.fn((callback: () => void) => {
+        callback();
+        return jest.fn();
+      }),
+      sessionRecordingStarted: jest.fn(() => false),
+      startSessionRecording: jest.fn(),
+      stopSessionRecording: jest.fn(),
+      reset: jest.fn(),
+      opt_out_capturing: jest.fn(),
+    };
+    mockLoadPostHogClient.mockResolvedValue(posthog);
+
+    render(
+      <PostHogProvider>
+        <div>child</div>
+      </PostHogProvider>,
+    );
+
+    await waitFor(() => {
+      expect(setAgentPermissionMode).toHaveBeenCalledWith("ask_approval");
+      expect(setChatMode).toHaveBeenCalledWith("agent");
+    });
+    expect(posthog.isFeatureEnabled).toHaveBeenCalledWith(
+      "hac45-ask-to-agent-approval-v1",
+    );
+    expect(mockCaptureAuthenticatedEvent).toHaveBeenCalledWith(
+      "ask_to_agent_approval_experiment_exposed",
+      expect.objectContaining({
+        previous_chat_mode: "ask",
+        previous_agent_permission_mode: "full_access",
+      }),
+      { uuid: expect.any(String) },
     );
   });
 });
