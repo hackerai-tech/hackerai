@@ -51,11 +51,76 @@ describe("getRemainingRefundAmountCents", () => {
         code: "resource_missing",
       }),
     ).toBe(false);
+    expect(
+      isRefundAmountRaceError({
+        statusCode: 400,
+        type: "StripeInvalidRequestError",
+        rawType: "invalid_request_error",
+        code: undefined,
+        param: "amount",
+        message:
+          "Refund amount ($25.00) is greater than unrefunded amount on charge ($0.21)",
+        raw: {
+          type: "invalid_request_error",
+          code: undefined,
+          param: "amount",
+          message:
+            "Refund amount ($25.00) is greater than unrefunded amount on charge ($0.21)",
+        },
+      }),
+    ).toBe(true);
+    expect(
+      isRefundAmountRaceError({
+        raw: {
+          statusCode: 400,
+          type: "invalid_request_error",
+          param: "amount",
+          message:
+            "Refund amount ($25.00) is greater than unrefunded amount on charge ($0.21)",
+        },
+      }),
+    ).toBe(true);
+    expect(
+      isRefundAmountRaceError({
+        statusCode: 400,
+        type: "StripeInvalidRequestError",
+        rawType: "invalid_request_error",
+        code: undefined,
+        param: "amount",
+        message: "Amount must be at least 1 cent",
+      }),
+    ).toBe(false);
+    expect(
+      isRefundAmountRaceError({
+        statusCode: 400,
+        type: "StripeInvalidRequestError",
+        rawType: "invalid_request_error",
+        code: "resource_missing",
+        param: "amount",
+        message:
+          "Refund amount ($25.00) is greater than unrefunded amount on charge ($0.21)",
+      }),
+    ).toBe(false);
   });
 
   it("refreshes the charge and bounds one idempotent race retry", async () => {
     jest.spyOn(console, "log").mockImplementation(() => {});
-    const raceError = { statusCode: 400, code: "amount_too_large" };
+    const raceError = {
+      statusCode: 400,
+      type: "StripeInvalidRequestError",
+      rawType: "invalid_request_error",
+      code: undefined,
+      param: "amount",
+      message:
+        "Refund amount ($25.00) is greater than unrefunded amount on charge ($0.03)",
+      raw: {
+        type: "invalid_request_error",
+        code: undefined,
+        param: "amount",
+        message:
+          "Refund amount ($25.00) is greater than unrefunded amount on charge ($0.03)",
+      },
+    };
     const create = jest
       .fn<
         (
@@ -94,9 +159,45 @@ describe("getRemainingRefundAmountCents", () => {
       { amount: 3, charge: "ch_123", reason: "fraudulent" },
       { idempotencyKey: "efw-refund:issfr_123:remaining:3" },
     );
+    expect(create).toHaveBeenCalledTimes(2);
+    expect(retrieve).toHaveBeenCalledTimes(1);
     expect(retrieve.mock.invocationCallOrder[0]).toBeLessThan(
       create.mock.invocationCallOrder[1],
     );
+  });
+
+  it("does not retry again when the bounded race retry also fails", async () => {
+    jest.spyOn(console, "log").mockImplementation(() => {});
+    const raceError = {
+      statusCode: 400,
+      type: "StripeInvalidRequestError",
+      rawType: "invalid_request_error",
+      code: undefined,
+      param: "amount",
+      message:
+        "Refund amount ($25.00) is greater than unrefunded amount on charge ($0.03)",
+    };
+    const create = jest.fn().mockRejectedValue(raceError);
+    const retrieve = jest.fn().mockResolvedValue({
+      id: "ch_123",
+      amount: 2_500,
+      amount_refunded: 2_497,
+    } as Stripe.Charge);
+
+    await expect(
+      refundChargeForEFW(
+        { charges: { retrieve }, refunds: { create } },
+        {
+          id: "ch_123",
+          amount: 2_500,
+          amount_refunded: 0,
+        } as Stripe.Charge,
+        "issfr_123",
+      ),
+    ).rejects.toBe(raceError);
+
+    expect(create).toHaveBeenCalledTimes(2);
+    expect(retrieve).toHaveBeenCalledTimes(1);
   });
 
   it("treats Stripe's non-refundable charge error as terminal", async () => {

@@ -61,13 +61,47 @@ const TRANSIENT_COMMAND_TIMEOUT_ERROR_PATTERN =
 const getErrorMessage = (error: unknown): string =>
   error instanceof Error ? error.message : String(error);
 
-const safeUrlForLog = (url: string): string => {
+const getPathBasename = (path: string): string | undefined => {
+  const parts = path.split(/[\\/]/).filter(Boolean);
+  return parts[parts.length - 1];
+};
+
+const redactTransferDetails = (
+  value: string,
+  url: string,
+  paths: string[],
+): string => {
+  let redacted = value;
+  const urlVariants = [url];
+  let urlPathname: string | undefined;
   try {
     const parsed = new URL(url);
-    return `${parsed.origin}${parsed.pathname}`;
+    urlVariants.push(`${parsed.origin}${parsed.pathname}`);
+    if (parsed.pathname && parsed.pathname !== "/") {
+      urlPathname = parsed.pathname;
+      urlVariants.push(parsed.pathname);
+    }
   } catch {
-    return url.split("?")[0];
+    urlVariants.push(url.split("?")[0]);
   }
+  for (const urlVariant of new Set(
+    urlVariants.sort((left, right) => right.length - left.length),
+  )) {
+    redacted = redacted.split(urlVariant).join("[redacted-url]");
+  }
+  const pathVariants = paths.flatMap((path) => [path, getPathBasename(path)]);
+  for (const path of new Set(
+    pathVariants
+      .filter((value): value is string => Boolean(value))
+      .sort((left, right) => right.length - left.length),
+  )) {
+    redacted = redacted.split(path).join("[redacted-destination-path]");
+  }
+  const sourceBasename = urlPathname ? getPathBasename(urlPathname) : undefined;
+  if (sourceBasename) {
+    redacted = redacted.split(sourceBasename).join("[redacted-url]");
+  }
+  return redacted;
 };
 
 const isTransientCommandTimeoutError = (error: unknown): boolean =>
@@ -1633,7 +1667,7 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
             throw error;
           }
           console.warn(
-            `[centrifugo-download] command timeout on attempt ${attempt}/${MAX_ATTEMPTS} for ${path}, retrying: ${getErrorMessage(error)}`,
+            `[centrifugo-download] command timeout on attempt ${attempt}/${MAX_ATTEMPTS}, retrying: ${redactTransferDetails(getErrorMessage(error), url, [rawPath, path])}`,
           );
           await new Promise((r) => setTimeout(r, 500 * attempt));
           continue;
@@ -1647,7 +1681,7 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
           break;
         }
         console.warn(
-          `[centrifugo-download] ${httpClient} exit ${result.exitCode} on attempt ${attempt}/${MAX_ATTEMPTS} for ${path}, retrying`,
+          `[centrifugo-download] ${httpClient} exit ${result.exitCode} on attempt ${attempt}/${MAX_ATTEMPTS}, retrying`,
         );
         await new Promise((r) => setTimeout(r, 500 * attempt));
         continue;
@@ -1665,12 +1699,14 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
           ? `test -d ${diagDir} && echo target_dir_exists=true || echo target_dir_exists=false; test -w ${diagDir} && echo target_dir_writable=true || echo target_dir_writable=false; df -h /tmp 2>&1 | sed -n '1,2p'`
           : `if exist ${diagDir} (echo target_dir_exists=true) else (echo target_dir_exists=false) & (pushd ${diagDir} >nul 2>nul && (copy /Y NUL .hackerai_write_probe.tmp >nul 2>nul && del /q .hackerai_write_probe.tmp >nul 2>nul && echo target_dir_writable=true || echo target_dir_writable=false) & popd >nul 2>nul) || echo target_dir_writable=false`;
         const diag = await this.commands.run(diagCmd, { displayName: "" });
-        const safeUrl = safeUrlForLog(url);
-        const safeStderr = result.stderr.split(url).join(safeUrl);
+        const safeStderr = redactTransferDetails(result.stderr, url, [
+          rawPath,
+          path,
+        ]);
         throw new Error(
           `Failed to download file: ${safeStderr}\n` +
-            `  url: ${safeUrl.substring(0, 120)}${safeUrl.length > 120 ? "..." : ""}\n` +
-            `  path: ${path}\n` +
+            `  source: [redacted-url]\n` +
+            `  destination: [redacted-destination-path]\n` +
             `  command: ${httpClient}\n` +
             `  exitCode: ${result.exitCode}\n` +
             `  diagnostics: ${diag.stdout}`,

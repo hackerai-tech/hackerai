@@ -1438,12 +1438,13 @@ describe("CentrifugoSandbox", () => {
       );
     });
 
-    it("redacts signed URL queries from direct download failures", async () => {
+    it("redacts source and destination paths from direct download failures", async () => {
       const { sandbox } = createWindowsBashSandbox();
       const signedUrl =
-        "https://storage.example.com/image.png?X-Amz-Credential=" +
+        "https://storage.example.com/opaque-object/private-image.png?X-Amz-Credential=" +
         "a".repeat(160) +
         "&X-Amz-Signature=secret";
+      const localPath = "/tmp/hackerai-upload/private-image.png";
       (sandbox as any).commands.run = jest.fn(async (cmd: string) => {
         if (cmd.includes("target_dir_exists")) {
           return {
@@ -1454,21 +1455,26 @@ describe("CentrifugoSandbox", () => {
         }
         return {
           stdout: "",
-          stderr: `curl: (23) failed to write ${signedUrl}`,
+          stderr: `curl: (23) failed to write /opaque-object/private-image.png to C:\\sandbox\\private-image.png`,
           exitCode: 23,
         };
       });
 
       const failure = sandbox.files
-        .downloadFromUrl(signedUrl, "/tmp/hackerai-upload/image.png")
+        .downloadFromUrl(signedUrl, localPath)
         .catch((error: unknown) => error);
       await jest.advanceTimersByTimeAsync(5_000);
       const error = await failure;
 
       expect(error).toBeInstanceOf(Error);
+      expect((error as Error).message).toContain("source: [redacted-url]");
       expect((error as Error).message).toContain(
-        "url: https://storage.example.com/image.png\n",
+        "destination: [redacted-destination-path]",
       );
+      expect((error as Error).message).not.toContain("storage.example.com");
+      expect((error as Error).message).not.toContain("opaque-object");
+      expect((error as Error).message).not.toContain("private-image.png");
+      expect((error as Error).message).not.toContain(localPath);
       expect((error as Error).message).not.toContain("X-Amz-Credential");
       expect((error as Error).message).not.toContain("X-Amz-Signature");
     });

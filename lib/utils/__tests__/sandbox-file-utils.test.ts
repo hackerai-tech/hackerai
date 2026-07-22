@@ -131,10 +131,10 @@ describe("desktop-local sandbox file helpers", () => {
     }
   });
 
-  it("redacts signed URL queries from staging failure diagnostics", async () => {
+  it("redacts source and destination paths from staging failure diagnostics", async () => {
     const sourceUrl =
-      "https://storage.example.com/report.pdf?X-Amz-Credential=opaque&X-Amz-Signature=secret";
-    const safeUrl = "https://storage.example.com/report.pdf";
+      "https://storage.example.com/object-key/private-report.pdf?X-Amz-Credential=opaque&X-Amz-Signature=secret";
+    const localPath = "/home/user/upload/private-report.pdf";
     const consoleErrorSpy = jest
       .spyOn(console, "error")
       .mockImplementation(() => {});
@@ -145,7 +145,7 @@ describe("desktop-local sandbox file helpers", () => {
           {
             kind: "url",
             url: sourceUrl,
-            localPath: "/home/user/upload/report.pdf",
+            localPath,
           },
         ],
         async () => ({
@@ -153,7 +153,9 @@ describe("desktop-local sandbox file helpers", () => {
             downloadFromUrl: jest
               .fn()
               .mockRejectedValue(
-                new Error(`Failed to download ${sourceUrl}: timed out`),
+                new Error(
+                  `Failed to download ${sourceUrl} to C:\\sandbox\\private-report.pdf: timed out`,
+                ),
               ),
           },
         }),
@@ -172,7 +174,12 @@ describe("desktop-local sandbox file helpers", () => {
       expect(diagnostics).not.toContain("X-Amz-Signature");
       expect(diagnostics).not.toContain("opaque");
       expect(diagnostics).not.toContain("secret");
-      expect(diagnostics).toContain(safeUrl);
+      expect(diagnostics).not.toContain("storage.example.com");
+      expect(diagnostics).not.toContain("object-key");
+      expect(diagnostics).not.toContain("private-report.pdf");
+      expect(diagnostics).not.toContain(localPath);
+      expect(diagnostics).toContain("[redacted-url]");
+      expect(diagnostics).toContain("[redacted-destination-path]");
       expect(getSandboxUploadFailureMetadata(result)).toMatchObject({
         upload_failure_kind: "url",
         upload_failure_protocol: "https",
