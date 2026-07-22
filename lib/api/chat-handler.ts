@@ -139,6 +139,11 @@ import { Id } from "@/convex/_generated/dataModel";
 import { phLogger } from "@/lib/posthog/server";
 import { PAID_FUNNEL_EVENTS } from "@/lib/analytics/paid-funnel";
 import {
+  buildAgentCompletionSignals,
+  createAgentCompletionSignalTracker,
+  recordHandledToolFailure,
+} from "@/lib/analytics/agent-completion-signals";
+import {
   capturePaidDailyFreeAllowanceServerEvent,
   createPaidDailyFreeAllowanceBudgetSnapshot,
   createPaidDailyFreeAllowanceRateLimitInfo,
@@ -622,6 +627,10 @@ export const createChatHandler = () => {
               }),
             });
 
+            const completionSignalTracker =
+              createAgentCompletionSignalTracker();
+            const onToolFailure = () =>
+              recordHandledToolFailure(completionSignalTracker);
             const {
               tools,
               ensureSandbox,
@@ -654,7 +663,7 @@ export const createChatHandler = () => {
                 chatLogger?.setSandboxBoot(info);
               },
               selectedModel,
-              undefined,
+              onToolFailure,
               undefined,
               undefined,
               projectContext.workingDirectory,
@@ -1259,6 +1268,7 @@ export const createChatHandler = () => {
               ensureSandbox,
               chatLogger,
               usageRefundTracker,
+              completionSignalTracker,
               settleUsageAfterStep,
               onBudgetAbort: (details) =>
                 captureAgentBudgetAbort({
@@ -1604,6 +1614,14 @@ export const createChatHandler = () => {
                                       : state.fallbackServed,
                                   finishReason: state.streamFinishReason,
                                   budgetAbortDetails: state.budgetAbortDetails,
+                                  isAutoContinue,
+                                  completionSignals:
+                                    buildAgentCompletionSignals({
+                                      outcome,
+                                      finishReason: state.streamFinishReason,
+                                      todos: getTodoManager().getAllTodos(),
+                                      tracker: completionSignalTracker,
+                                    }),
                                 });
                                 chatLogger!.emitSuccess({
                                   finishReason: state.streamFinishReason,
@@ -1895,6 +1913,13 @@ export const createChatHandler = () => {
                           : state.fallbackServed,
                       finishReason: state.streamFinishReason,
                       budgetAbortDetails: state.budgetAbortDetails,
+                      isAutoContinue,
+                      completionSignals: buildAgentCompletionSignals({
+                        outcome,
+                        finishReason: state.streamFinishReason,
+                        todos: getTodoManager().getAllTodos(),
+                        tracker: completionSignalTracker,
+                      }),
                     });
                     chatLogger!.emitSuccess({
                       finishReason: state.streamFinishReason,

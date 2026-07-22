@@ -29,6 +29,7 @@ import {
   PAID_FUNNEL_EVENTS,
   paidFunnelProperties,
 } from "@/lib/analytics/paid-funnel";
+import type { AgentCompletionSignals } from "@/lib/analytics/agent-completion-signals";
 import type { UsageCostRecord } from "@/lib/usage-tracker";
 import type { UsageDeductionResult } from "@/lib/rate-limit";
 import type { BudgetAbortDetails } from "@/lib/chat/budget-monitor";
@@ -1174,6 +1175,8 @@ type AgentCompletionAnalyticsArgs = {
   activeModelStreamDurationMs?: number;
   activeTerminalWaitDurationMs?: number;
   activeSandboxRecoveryDurationMs?: number;
+  isAutoContinue?: boolean;
+  completionSignals?: AgentCompletionSignals;
 };
 
 export function captureAgentRun({
@@ -1198,6 +1201,8 @@ export function captureAgentRun({
   activeModelStreamDurationMs,
   activeTerminalWaitDurationMs,
   activeSandboxRecoveryDurationMs,
+  isAutoContinue,
+  completionSignals,
 }: {
   posthog: PostHog | null;
   userId: string;
@@ -1220,6 +1225,8 @@ export function captureAgentRun({
   activeModelStreamDurationMs?: number;
   activeTerminalWaitDurationMs?: number;
   activeSandboxRecoveryDurationMs?: number;
+  isAutoContinue?: boolean;
+  completionSignals?: AgentCompletionSignals;
 }) {
   if (!posthog || mode !== "agent") return;
   posthog.capture({
@@ -1257,6 +1264,9 @@ export function captureAgentRun({
       ...(activeSandboxRecoveryDurationMs !== undefined && {
         active_sandbox_recovery_duration_ms: activeSandboxRecoveryDurationMs,
       }),
+      ...(isAutoContinue !== undefined && {
+        is_auto_continue: isAutoContinue,
+      }),
       ...(responseModel && { response_model: responseModel }),
       ...(responseModel &&
         fallbackServed !== undefined && { fallback_served: fallbackServed }),
@@ -1264,6 +1274,23 @@ export function captureAgentRun({
         sandbox_type: sandboxInfo.type,
       }),
       ...(finishReason && { finish_reason: finishReason }),
+      ...(completionSignals && {
+        completion_signal_version: completionSignals.version,
+        natural_stop: completionSignals.naturalStop,
+        agent_step_count: completionSignals.stepCount,
+        todo_total_count: completionSignals.todoTotalCount,
+        todo_pending_count: completionSignals.todoPendingCount,
+        todo_in_progress_count: completionSignals.todoInProgressCount,
+        has_unfinished_todos: completionSignals.hasUnfinishedTodos,
+        handled_tool_failure_count: completionSignals.handledToolFailureCount,
+        sdk_tool_error_count: completionSignals.sdkToolErrorCount,
+        has_tool_failure: completionSignals.hasToolFailure,
+        recent_tool_failure: completionSignals.recentToolFailure,
+        ...(completionSignals.stepsSinceLastToolFailure !== undefined && {
+          steps_since_last_tool_failure:
+            completionSignals.stepsSinceLastToolFailure,
+        }),
+      }),
       ...(budgetAbortDetails && {
         budget_abort_cap_reason: budgetAbortDetails.capReason,
         budget_abort_billing_stop_reason: budgetAbortDetails.billingStopReason,
@@ -1299,6 +1326,8 @@ export function captureAgentCompletionAnalytics(
     activeModelStreamDurationMs: args.activeModelStreamDurationMs,
     activeTerminalWaitDurationMs: args.activeTerminalWaitDurationMs,
     activeSandboxRecoveryDurationMs: args.activeSandboxRecoveryDurationMs,
+    isAutoContinue: args.isAutoContinue,
+    completionSignals: args.completionSignals,
   });
 }
 

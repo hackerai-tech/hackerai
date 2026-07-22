@@ -159,6 +159,56 @@ describe("captureAgentRun", () => {
     );
   });
 
+  it("adds content-free completion signals to the existing run event", () => {
+    const capture = jest.fn();
+
+    captureAgentRun({
+      posthog: { capture } as any,
+      userId: "user_123",
+      mode: "agent",
+      subscription: "pro",
+      sandboxInfo: null,
+      outcome: "success",
+      selectedModel: "agent-model",
+      configuredModelId: "x-ai/grok-4.5",
+      finishReason: "stop",
+      isAutoContinue: false,
+      completionSignals: {
+        version: 1,
+        naturalStop: true,
+        stepCount: 12,
+        todoTotalCount: 3,
+        todoPendingCount: 1,
+        todoInProgressCount: 1,
+        hasUnfinishedTodos: true,
+        handledToolFailureCount: 1,
+        sdkToolErrorCount: 0,
+        hasToolFailure: true,
+        recentToolFailure: true,
+        stepsSinceLastToolFailure: 1,
+      },
+    });
+
+    expect(capture.mock.calls[0][0].properties).toEqual(
+      expect.objectContaining({
+        finish_reason: "stop",
+        is_auto_continue: false,
+        completion_signal_version: 1,
+        natural_stop: true,
+        agent_step_count: 12,
+        todo_total_count: 3,
+        todo_pending_count: 1,
+        todo_in_progress_count: 1,
+        has_unfinished_todos: true,
+        handled_tool_failure_count: 1,
+        sdk_tool_error_count: 0,
+        has_tool_failure: true,
+        recent_tool_failure: true,
+        steps_since_last_tool_failure: 1,
+      }),
+    );
+  });
+
   it("attributes a served fallback without inferring it from model names", () => {
     const capture = jest.fn();
 
