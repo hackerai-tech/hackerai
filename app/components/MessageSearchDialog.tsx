@@ -50,6 +50,11 @@ interface MessageSearchDialogProps {
 type DateCategory =
   "Today" | "Yesterday" | "Previous 7 Days" | "Previous 30 Days" | "Older";
 
+const resolveNextCursor = (result: {
+  isDone: boolean;
+  continueCursor?: string | null;
+}) => (result.isDone || !result.continueCursor ? null : result.continueCursor);
+
 export const MessageSearchDialog: React.FC<MessageSearchDialogProps> = ({
   isOpen,
   onClose,
@@ -72,6 +77,9 @@ export const MessageSearchDialog: React.FC<MessageSearchDialogProps> = ({
   const [allResults, setAllResults] = useState<MessageSearchResult[]>([]);
   const [isSearching, setIsSearching] = useState(false);
   const [isLoadingMore, setIsLoadingMore] = useState(false);
+  const [searchError, setSearchError] = useState<
+    "initial" | "pagination" | null
+  >(null);
   const [continueCursor, setContinueCursor] = useState<string | null>(null);
   const loaderRef = useRef<HTMLDivElement>(null);
   const chatsLoaderRef = useRef<HTMLDivElement>(null);
@@ -124,6 +132,7 @@ export const MessageSearchDialog: React.FC<MessageSearchDialogProps> = ({
       setAllResults([]);
       setIsSearching(false);
       setIsLoadingMore(false);
+      setSearchError(null);
       setContinueCursor(null);
       return;
     }
@@ -131,6 +140,7 @@ export const MessageSearchDialog: React.FC<MessageSearchDialogProps> = ({
     setAllResults([]);
     setIsSearching(true);
     setIsLoadingMore(false);
+    setSearchError(null);
     setContinueCursor(null);
 
     const loadFirstPage = async () => {
@@ -142,15 +152,12 @@ export const MessageSearchDialog: React.FC<MessageSearchDialogProps> = ({
         if (cancelled || searchGenerationRef.current !== generation) return;
 
         setAllResults(result.page);
-        setContinueCursor(
-          result.isDone || !result.continueCursor
-            ? null
-            : result.continueCursor,
-        );
+        setContinueCursor(resolveNextCursor(result));
       } catch (error) {
         if (cancelled || searchGenerationRef.current !== generation) return;
         console.error("Failed to search messages:", error);
         setAllResults([]);
+        setSearchError("initial");
         setContinueCursor(null);
       } finally {
         if (!cancelled && searchGenerationRef.current === generation) {
@@ -171,6 +178,7 @@ export const MessageSearchDialog: React.FC<MessageSearchDialogProps> = ({
 
     const generation = searchGenerationRef.current;
     setIsLoadingMore(true);
+    setSearchError(null);
 
     try {
       const result = await convex.query(api.messages.searchMessages, {
@@ -180,12 +188,11 @@ export const MessageSearchDialog: React.FC<MessageSearchDialogProps> = ({
       if (searchGenerationRef.current !== generation) return;
 
       setAllResults((current) => [...current, ...result.page]);
-      setContinueCursor(
-        result.isDone || !result.continueCursor ? null : result.continueCursor,
-      );
+      setContinueCursor(resolveNextCursor(result));
     } catch (error) {
       if (searchGenerationRef.current !== generation) return;
       console.error("Failed to load more message search results:", error);
+      setSearchError("pagination");
       setContinueCursor(null);
     } finally {
       if (searchGenerationRef.current === generation) {
@@ -494,6 +501,16 @@ export const MessageSearchDialog: React.FC<MessageSearchDialogProps> = ({
                 <Loader2 className="animate-spin mr-2" size={20} />
                 <span className="text-sm">Searching...</span>
               </div>
+            ) : searchError === "initial" ? (
+              <div className="flex items-center justify-center py-12 text-muted-foreground">
+                <div className="text-center">
+                  <Search size={48} className="mx-auto mb-4 opacity-50" />
+                  <p className="text-sm">Search failed</p>
+                  <p className="text-xs mt-2">
+                    Try again or use different keywords
+                  </p>
+                </div>
+              </div>
             ) : allResults.length === 0 ? (
               <div className="flex items-center justify-center py-12 text-muted-foreground">
                 <div className="text-center">
@@ -566,6 +583,14 @@ export const MessageSearchDialog: React.FC<MessageSearchDialogProps> = ({
                   <div className="flex justify-center py-4">
                     <Loader2 className="animate-spin mr-2" size={16} />
                     <span className="text-sm">Loading more...</span>
+                  </div>
+                )}
+
+                {searchError === "pagination" && (
+                  <div className="flex justify-center py-4 text-muted-foreground">
+                    <span className="text-sm">
+                      Couldn&apos;t load more results. Try searching again.
+                    </span>
                   </div>
                 )}
               </div>
