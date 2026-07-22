@@ -5,14 +5,14 @@ import type {
   SubscriptionTier,
 } from "@/types/chat";
 
-export const ASK_TO_AGENT_APPROVAL_FLAG_KEY = "hac45-ask-to-agent-approval-v1";
+export const ASK_TO_AGENT_APPROVAL_FLAG_KEY = "hac45-agent-full-access-v2";
 export const ASK_TO_AGENT_APPROVAL_EXPERIMENT_KEY =
-  "hac45_ask_to_agent_approval_v1";
+  "hac45_agent_full_access_v2";
 export const ASK_TO_AGENT_APPROVAL_EXPOSURE_EVENT =
-  "ask_to_agent_approval_experiment_exposed";
+  "hac45_agent_full_access_experiment_exposed";
 
-// The PostHog identifiers are retained for continuity with the live HAC-45
-// flag. The corrected treatment is Agent-only with full access.
+// Keep the frozen HAC-45 baseline and cohort metadata while versioning every
+// treatment identifier away from the invalid v1 Agent approval rollout.
 
 export const ASK_TO_AGENT_APPROVAL_ELIGIBILITY_WINDOW = {
   start: "2026-07-14T02:08:00.000Z",
@@ -22,7 +22,7 @@ export const ASK_TO_AGENT_APPROVAL_ELIGIBILITY_WINDOW = {
   rolloutPercentage: 25,
 } as const;
 
-const EXPOSURE_STORAGE_PREFIX = "hackerai:hac45-ask-agent-exposure:v1";
+const EXPOSURE_STORAGE_PREFIX = "hackerai:hac45-agent-full-access-exposure:v2";
 
 type CaptureExposure = (
   event: string,
@@ -110,8 +110,8 @@ export function applyAskToAgentApprovalExperiment({
         rollout_percentage:
           ASK_TO_AGENT_APPROVAL_ELIGIBILITY_WINDOW.rolloutPercentage,
         $set_once: {
-          ask_to_agent_approval_experiment_variant: "agent_full_access",
-          ask_to_agent_approval_experiment_exposed_at: exposedAt,
+          hac45_agent_full_access_v2_variant: "agent_full_access",
+          hac45_agent_full_access_v2_exposed_at: exposedAt,
         },
       },
       {

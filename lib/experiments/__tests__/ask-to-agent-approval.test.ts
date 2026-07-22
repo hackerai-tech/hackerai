@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, jest } from "@jest/globals";
+import { v5 as uuidv5 } from "uuid";
 import {
   applyAskToAgentApprovalExperiment,
   ASK_TO_AGENT_APPROVAL_EXPERIMENT_KEY,
@@ -46,9 +47,8 @@ describe("applyAskToAgentApprovalExperiment", () => {
         cohort_user_count: 113,
         rollout_percentage: 25,
         $set_once: {
-          ask_to_agent_approval_experiment_variant: "agent_full_access",
-          ask_to_agent_approval_experiment_exposed_at:
-            "2026-07-22T14:00:00.000Z",
+          hac45_agent_full_access_v2_variant: "agent_full_access",
+          hac45_agent_full_access_v2_exposed_at: "2026-07-22T14:00:00.000Z",
         },
       }),
       { uuid: expect.any(String) },
@@ -56,6 +56,39 @@ describe("applyAskToAgentApprovalExperiment", () => {
     expect(setAgentPermissionMode).toHaveBeenCalledWith("full_access");
     expect(setChatMode).toHaveBeenCalledWith("agent");
     expect(hasAskToAgentApprovalExposure("user-123")).toBe(true);
+  });
+
+  it("does not let the invalid v1 browser marker suppress a v2 exposure", () => {
+    const userId = "user-with-v1-exposure";
+    window.localStorage.setItem(
+      `hackerai:hac45-ask-agent-exposure:v1:${uuidv5(userId, uuidv5.URL)}`,
+      "2026-07-22T19:57:49.170Z",
+    );
+    const captureExposure = jest.fn(() => true);
+
+    expect(
+      applyAskToAgentApprovalExperiment({
+        agentPermissionMode: "ask_approval",
+        captureExposure,
+        chatMode: "ask",
+        enabled: true,
+        setAgentPermissionMode: jest.fn(),
+        setChatMode: jest.fn(),
+        subscription: "pro",
+        temporaryChatsEnabled: false,
+        userId,
+      }),
+    ).toBe(true);
+    expect(captureExposure).toHaveBeenCalledWith(
+      ASK_TO_AGENT_APPROVAL_EXPOSURE_EVENT,
+      expect.objectContaining({
+        experiment_key: "hac45_agent_full_access_v2",
+        feature_flag_key: "hac45-agent-full-access-v2",
+        exposure_event_version: 2,
+      }),
+      { uuid: expect.any(String) },
+    );
+    expect(hasAskToAgentApprovalExposure(userId)).toBe(true);
   });
 
   it("does not change behavior unless the exposure event can be queued", () => {

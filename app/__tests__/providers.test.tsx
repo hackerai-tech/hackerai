@@ -203,10 +203,10 @@ describe("PostHogProvider", () => {
       expect(screen.getByTestId("hac45-treatment")).toHaveTextContent("true");
     });
     expect(posthog.isFeatureEnabled).toHaveBeenCalledWith(
-      "hac45-ask-to-agent-approval-v1",
+      "hac45-agent-full-access-v2",
     );
     expect(mockCaptureAuthenticatedEvent).toHaveBeenCalledWith(
-      "ask_to_agent_approval_experiment_exposed",
+      "hac45_agent_full_access_experiment_exposed",
       expect.objectContaining({
         variant: "agent_full_access",
         exposure_event_version: 2,
