@@ -309,6 +309,41 @@ const getRouteKind = (currentUrl: unknown): string | undefined => {
   }
 };
 
+const stripUrlQueryAndFragment = (value: string): string => {
+  const queryIndex = value.indexOf("?");
+  const fragmentIndex = value.indexOf("#");
+  const firstSensitiveIndex =
+    queryIndex === -1
+      ? fragmentIndex
+      : fragmentIndex === -1
+        ? queryIndex
+        : Math.min(queryIndex, fragmentIndex);
+
+  return firstSensitiveIndex === -1
+    ? value
+    : value.slice(0, firstSensitiveIndex);
+};
+
+export function sanitizeFrontendExceptionUrlProperties<
+  T extends PostHogEventLike,
+>(event: T): T {
+  if (event.event !== "$exception" || !event.properties) return event;
+
+  const currentUrl = event.properties.$current_url;
+  const referrer = event.properties.$referrer;
+  event.properties = {
+    ...event.properties,
+    ...(typeof currentUrl === "string"
+      ? { $current_url: stripUrlQueryAndFragment(currentUrl) }
+      : {}),
+    ...(typeof referrer === "string"
+      ? { $referrer: stripUrlQueryAndFragment(referrer) }
+      : {}),
+  };
+
+  return event;
+}
+
 const getDeploymentIdFromFrameSources = (
   frameSources: string[],
 ): string | undefined => {
