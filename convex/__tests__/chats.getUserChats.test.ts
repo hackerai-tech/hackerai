@@ -57,7 +57,8 @@ const { ConvexError } =
 const { assertUserCanAccessChatHistory } = jest.requireMock<
   typeof import("../lib/suspensionGuards")
 >("../lib/suspensionGuards");
-const { getUserChats } = require("../chats") as typeof import("../chats");
+const { getChatByIdFromClient, getUserChats } =
+  require("../chats") as typeof import("../chats");
 
 const emptyPage = {
   page: [],
@@ -206,5 +207,106 @@ describe("getUserChats", () => {
     expect(gt).toHaveBeenCalledWith("pinned_at", 0);
     expect(regularEq).toHaveBeenCalledWith("user_id", "user-123");
     expect(regularEq).toHaveBeenCalledWith("project_id", undefined);
+  });
+
+  it("uses a safe legacy fork title after another user's share is revoked", async () => {
+    const legacyFork = {
+      _id: "fork-doc",
+      id: "fork-1",
+      title: "My legacy fork",
+      user_id: "user-123",
+      branched_from_chat_id: "source-1",
+      update_time: 1,
+    };
+    const page = {
+      page: [legacyFork],
+      isDone: true,
+      continueCursor: "",
+    };
+    const paginate = jest.fn<any>().mockResolvedValue(page);
+    const regularOrder = jest.fn<any>().mockReturnValue({ paginate });
+    const regularWithIndex = jest.fn<any>().mockReturnValue({
+      order: regularOrder,
+    });
+    const sourceFirst = jest.fn<any>().mockResolvedValue({
+      _id: "source-doc",
+      id: "source-1",
+      title: "Private renamed source",
+      user_id: "source-owner",
+      update_time: 2,
+    });
+    const sourceWithIndex = jest.fn<any>().mockReturnValue({
+      first: sourceFirst,
+    });
+    const ctx = {
+      auth: {
+        getUserIdentity: jest
+          .fn<any>()
+          .mockResolvedValue({ subject: "user-123" }),
+      },
+      db: {
+        query: jest
+          .fn<any>()
+          .mockReturnValueOnce({ withIndex: regularWithIndex })
+          .mockReturnValueOnce({ withIndex: sourceWithIndex }),
+      },
+    };
+
+    await expect(
+      getUserChats.handler(ctx as any, {
+        paginationOpts: { numItems: 20, cursor: "next-page" },
+      }),
+    ).resolves.toEqual({
+      ...page,
+      page: [
+        expect.objectContaining({
+          branched_from_title: "My legacy fork",
+        }),
+      ],
+    });
+  });
+
+  it("uses the fork-time title in the single-chat query after revocation", async () => {
+    const fork = {
+      _id: "fork-doc",
+      _creationTime: 1,
+      id: "fork-1",
+      title: "My fork",
+      user_id: "user-123",
+      branched_from_chat_id: "source-1",
+      branched_from_title: "Title when forked",
+      update_time: 1,
+    };
+    const source = {
+      _id: "source-doc",
+      _creationTime: 1,
+      id: "source-1",
+      title: "Private renamed source",
+      user_id: "source-owner",
+      update_time: 2,
+    };
+    const first = jest
+      .fn<any>()
+      .mockResolvedValueOnce(fork)
+      .mockResolvedValueOnce(source);
+    const withIndex = jest.fn<any>().mockReturnValue({ first });
+    const ctx = {
+      auth: {
+        getUserIdentity: jest
+          .fn<any>()
+          .mockResolvedValue({ subject: "user-123" }),
+      },
+      db: {
+        query: jest.fn<any>().mockReturnValue({ withIndex }),
+      },
+    };
+
+    await expect(
+      getChatByIdFromClient.handler(ctx as any, { id: "fork-1" }),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        branched_from_title: "Title when forked",
+      }),
+    );
   });
 });

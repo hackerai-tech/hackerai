@@ -25,6 +25,7 @@ import {
   CHAT_ACCESS_SUSPENDED_CODE,
   assertUserCanAccessChatHistory,
 } from "./lib/suspensionGuards";
+import { resolveBranchedFromTitle } from "./lib/branchedChatTitle";
 
 const DELETE_ALL_CHATS_MESSAGE_BATCH_SIZE = 10;
 const DELETE_ALL_CHATS_SUMMARY_BATCH_SIZE = 25;
@@ -452,7 +453,11 @@ export const getChatByIdFromClient = query({
 
         return {
           ...chatPublic,
-          branched_from_title: branchedFromChat?.title,
+          branched_from_title: resolveBranchedFromTitle(
+            chatPublic,
+            branchedFromChat,
+            identity.subject,
+          ),
         };
       }
 
@@ -500,6 +505,7 @@ export const getChatById = query({
         ),
       ),
       branched_from_chat_id: v.optional(v.string()),
+      branched_from_title: v.optional(v.string()),
       latest_summary_id: v.optional(v.id("chat_summaries")),
       share_id: v.optional(v.string()),
       share_date: v.optional(v.number()),
@@ -996,7 +1002,11 @@ export const getUserChats = query({
           );
           return {
             ...chat,
-            branched_from_title: branchedFromChat?.title,
+            branched_from_title: resolveBranchedFromTitle(
+              chat,
+              branchedFromChat,
+              identity.subject,
+            ),
           };
         }
         return chat;
@@ -1281,6 +1291,7 @@ export const moveChatToProject = mutation({
       if (chat.project_id === undefined) return false;
       await ctx.db.patch(chat._id, {
         project_id: undefined,
+        agent_approval_grants: undefined,
         update_time: Date.now(),
       });
       return true;
@@ -1303,6 +1314,7 @@ export const moveChatToProject = mutation({
     await Promise.all([
       ctx.db.patch(chat._id, {
         project_id: args.projectId,
+        agent_approval_grants: undefined,
         update_time: now,
       }),
       ctx.db.patch(args.projectId, { updated_at: now }),

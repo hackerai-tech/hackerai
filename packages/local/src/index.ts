@@ -29,7 +29,10 @@ import {
   ProcessRunResult,
   isPtyAvailable,
 } from "./process-runner";
-import { confirmProcessTermination } from "./command-cancellation";
+import {
+  confirmProcessTermination,
+  isProcessTreeTerminationConfirmed,
+} from "./command-cancellation";
 
 const DEFAULT_SHELL = getDefaultShell(os.platform());
 
@@ -693,8 +696,11 @@ class LocalSandboxClient {
   ): Promise<void> {
     const proc = this.activeStreamCommands.get(msg.commandId);
     const canceled = proc
-      ? await confirmProcessTermination(proc, () =>
-          this.terminateProcessTree(proc),
+      ? await confirmProcessTermination(
+          proc,
+          () => this.terminateProcessTree(proc),
+          undefined,
+          () => isProcessTreeTerminationConfirmed(proc),
         )
       : false;
     await this.publishToChannel({
@@ -726,7 +732,7 @@ class LocalSandboxClient {
     }
 
     setTimeout(() => {
-      if (proc.exitCode !== null || proc.signalCode !== null) {
+      if (isProcessTreeTerminationConfirmed(proc)) {
         return;
       }
       try {

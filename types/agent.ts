@@ -97,6 +97,8 @@ export type AgentApprovalSandboxIdentity = "e2b" | `connection:${string}`;
 
 const AGENT_APPROVAL_SANDBOX_SCOPE_VERSION =
   "agent-approval-sandbox-scope-v1" as const;
+const AGENT_APPROVAL_EXECUTION_SCOPE_VERSION =
+  "agent-approval-execution-scope-v2" as const;
 
 export const getAgentApprovalConnectionSandboxIdentity = (
   connectionId: string,
@@ -118,14 +120,17 @@ const isAgentApprovalSandboxIdentity = (
 
 export const serializeSandboxScopedAgentApprovalTargetPrefix = ({
   sandboxIdentity,
+  workingDirectory,
   targetPrefix,
 }: {
   sandboxIdentity: AgentApprovalSandboxIdentity;
+  workingDirectory?: string;
   targetPrefix: string;
 }): string =>
   JSON.stringify([
-    AGENT_APPROVAL_SANDBOX_SCOPE_VERSION,
+    AGENT_APPROVAL_EXECUTION_SCOPE_VERSION,
     sandboxIdentity,
+    workingDirectory ?? null,
     targetPrefix,
   ]);
 
@@ -133,22 +138,45 @@ export const parseSandboxScopedAgentApprovalTargetPrefix = (
   value: string,
 ): {
   sandboxIdentity: AgentApprovalSandboxIdentity;
+  workingDirectory?: string;
   targetPrefix: string;
+  version: 1 | 2;
 } | null => {
   try {
     const parsed: unknown = JSON.parse(value);
     if (
+      Array.isArray(parsed) &&
+      parsed.length === 3 &&
+      parsed[0] === AGENT_APPROVAL_SANDBOX_SCOPE_VERSION &&
+      isAgentApprovalSandboxIdentity(parsed[1]) &&
+      typeof parsed[2] === "string"
+    ) {
+      return {
+        sandboxIdentity: parsed[1],
+        targetPrefix: parsed[2],
+        version: 1,
+      };
+    }
+    if (
       !Array.isArray(parsed) ||
-      parsed.length !== 3 ||
-      parsed[0] !== AGENT_APPROVAL_SANDBOX_SCOPE_VERSION ||
+      parsed.length !== 4 ||
+      parsed[0] !== AGENT_APPROVAL_EXECUTION_SCOPE_VERSION ||
       !isAgentApprovalSandboxIdentity(parsed[1]) ||
-      typeof parsed[2] !== "string"
+      !(
+        parsed[2] === null ||
+        (typeof parsed[2] === "string" &&
+          parsed[2].length > 0 &&
+          !/[\u0000-\u001f]/.test(parsed[2]))
+      ) ||
+      typeof parsed[3] !== "string"
     ) {
       return null;
     }
     return {
       sandboxIdentity: parsed[1],
-      targetPrefix: parsed[2],
+      ...(parsed[2] === null ? {} : { workingDirectory: parsed[2] }),
+      targetPrefix: parsed[3],
+      version: 2,
     };
   } catch {
     return null;
@@ -158,14 +186,24 @@ export const parseSandboxScopedAgentApprovalTargetPrefix = (
 export const getAgentApprovalTargetPrefixForSandbox = ({
   persistedTargetPrefix,
   sandboxIdentity,
+  workingDirectory,
 }: {
   persistedTargetPrefix: string;
   sandboxIdentity: AgentApprovalSandboxIdentity;
+  workingDirectory?: string;
 }): string | null => {
   const scoped = parseSandboxScopedAgentApprovalTargetPrefix(
     persistedTargetPrefix,
   );
-  return scoped?.sandboxIdentity === sandboxIdentity
+  if (!scoped || scoped.sandboxIdentity !== sandboxIdentity) return null;
+
+  // Version 1 grants predate working-directory scoping. They remain safe for
+  // contexts without an active project folder, but must not cross into one.
+  if (scoped.version === 1) {
+    return workingDirectory === undefined ? scoped.targetPrefix : null;
+  }
+
+  return scoped.workingDirectory === workingDirectory
     ? scoped.targetPrefix
     : null;
 };

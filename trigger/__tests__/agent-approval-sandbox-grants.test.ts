@@ -25,6 +25,36 @@ describe("sandbox-scoped reusable Agent approval grants", () => {
     ).toBe(targetPrefix);
   });
 
+  it("reuses a persisted grant only within the same working directory", () => {
+    const persistedTargetPrefix =
+      serializeSandboxScopedAgentApprovalTargetPrefix({
+        sandboxIdentity: desktopA,
+        workingDirectory: "/targets/acme",
+        targetPrefix,
+      });
+
+    expect(
+      getAgentApprovalTargetPrefixForSandbox({
+        persistedTargetPrefix,
+        sandboxIdentity: desktopA,
+        workingDirectory: "/targets/acme",
+      }),
+    ).toBe(targetPrefix);
+    expect(
+      getAgentApprovalTargetPrefixForSandbox({
+        persistedTargetPrefix,
+        sandboxIdentity: desktopA,
+        workingDirectory: "/targets/other",
+      }),
+    ).toBeNull();
+    expect(
+      getAgentApprovalTargetPrefixForSandbox({
+        persistedTargetPrefix,
+        sandboxIdentity: desktopA,
+      }),
+    ).toBeNull();
+  });
+
   it("does not reuse E2B grants on desktop or desktop grants on E2B", () => {
     const e2bGrant = serializeSandboxScopedAgentApprovalTargetPrefix({
       sandboxIdentity: "e2b",
@@ -72,6 +102,28 @@ describe("sandbox-scoped reusable Agent approval grants", () => {
       parseSandboxScopedAgentApprovalTargetPrefix(
         '["agent-approval-sandbox-scope-v1","connection:","prefix"]',
       ),
+    ).toBeNull();
+  });
+
+  it("allows version 1 grants only without a project working directory", () => {
+    const versionOneGrant = JSON.stringify([
+      "agent-approval-sandbox-scope-v1",
+      desktopA,
+      targetPrefix,
+    ]);
+
+    expect(
+      getAgentApprovalTargetPrefixForSandbox({
+        persistedTargetPrefix: versionOneGrant,
+        sandboxIdentity: desktopA,
+      }),
+    ).toBe(targetPrefix);
+    expect(
+      getAgentApprovalTargetPrefixForSandbox({
+        persistedTargetPrefix: versionOneGrant,
+        sandboxIdentity: desktopA,
+        workingDirectory: "/targets/acme",
+      }),
     ).toBeNull();
   });
 });
