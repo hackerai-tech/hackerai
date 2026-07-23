@@ -7,6 +7,7 @@ import { useGlobalState } from "./contexts/GlobalState";
 import { Hac45AgentOnlyContext } from "./contexts/Hac45AgentOnlyContext";
 import {
   enrichFrontendExceptionEvent,
+  sanitizeFrontendExceptionUrlProperties,
   shouldDropExpectedFrontendException,
 } from "@/lib/posthog/expected-frontend-exceptions";
 import {
@@ -84,11 +85,17 @@ export function PostHogProvider({ children }: { children: React.ReactNode }) {
           },
           disable_session_recording: true,
           before_send: (event) => {
-            if (!event || shouldDropExpectedFrontendException(event)) {
+            if (!event) {
               return null;
             }
 
-            return enrichFrontendExceptionEvent(event);
+            const sanitizedEvent =
+              sanitizeFrontendExceptionUrlProperties(event);
+            if (shouldDropExpectedFrontendException(sanitizedEvent)) {
+              return null;
+            }
+
+            return enrichFrontendExceptionEvent(sanitizedEvent);
           },
         } satisfies Partial<PostHogConfig>;
 

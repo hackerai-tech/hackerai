@@ -118,6 +118,32 @@ describe("PostHogProvider", () => {
     expect(posthog.opt_in_capturing).toHaveBeenCalledWith({
       captureEventName: false,
     });
+
+    const [, config] = posthog.init.mock.calls[0] as unknown as [
+      string,
+      {
+        before_send: (event: {
+          event: string;
+          properties: Record<string, unknown>;
+        }) => {
+          event?: string;
+          properties?: Record<string, unknown>;
+        } | null;
+      },
+    ];
+    const retainedException = config.before_send({
+      event: "$exception",
+      properties: {
+        $current_url: "https://hackerai.co/auth-error?state=secret",
+        $referrer: "https://idp.example/callback?code=secret",
+        $exception_values: ["Unexpected application error"],
+      },
+    });
+
+    expect(retainedException?.properties).toMatchObject({
+      $current_url: "https://hackerai.co/auth-error",
+      $referrer: "https://idp.example/callback",
+    });
   });
 
   it("applies exception hooks when the shared client is already initialized", async () => {

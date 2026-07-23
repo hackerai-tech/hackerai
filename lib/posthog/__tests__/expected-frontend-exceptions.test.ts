@@ -1,5 +1,6 @@
 import {
   enrichFrontendExceptionEvent,
+  sanitizeFrontendExceptionUrlProperties,
   shouldDropExpectedFrontendException,
 } from "../expected-frontend-exceptions";
 
@@ -573,5 +574,41 @@ describe("shouldDropExpectedFrontendException", () => {
         hackerai_exception_category: "stack_overflow",
       });
     }
+  });
+
+  it("removes query strings and fragments from retained exception URLs", () => {
+    const event = sanitizeFrontendExceptionUrlProperties({
+      event: "$exception",
+      properties: {
+        $current_url:
+          "https://hackerai.co/auth-error?state=secret#client_redirect_key=secret",
+        $referrer: "https://idp.example/callback?code=secret&state=secret",
+        $exception_values: [
+          "Request failed for https://api.example/resource?diagnostic=keep",
+        ],
+      },
+    });
+
+    expect(event.properties).toEqual({
+      $current_url: "https://hackerai.co/auth-error",
+      $referrer: "https://idp.example/callback",
+      $exception_values: [
+        "Request failed for https://api.example/resource?diagnostic=keep",
+      ],
+    });
+  });
+
+  it("does not change URL properties on non-exception events", () => {
+    const event = {
+      event: "custom_event",
+      properties: {
+        $current_url: "https://hackerai.co/c/chat-123?tab=files",
+        $referrer: "https://hackerai.co/?source=home",
+      },
+    };
+
+    expect(sanitizeFrontendExceptionUrlProperties(event)).toBe(event);
+    expect(event.properties.$current_url).toContain("?tab=files");
+    expect(event.properties.$referrer).toContain("?source=home");
   });
 });
