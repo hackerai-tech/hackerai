@@ -10,6 +10,10 @@ import {
   isInteractiveShellAction,
   stripAgentOnlyTerminalGuidance,
 } from "@/app/components/tools/shell-tool-utils";
+import {
+  createToolInputErrorContent,
+  isToolInputValidationError,
+} from "@/lib/chat/tool-error-display";
 
 interface MessagePart {
   type: string;
@@ -78,6 +82,28 @@ export function extractSidebarContentFromMessage(
       part.type.startsWith("tool-") &&
       !STREAMS_DURING_INPUT.has(part.type)
     ) {
+      return;
+    }
+
+    const validationToolType =
+      typeof part.type === "string" && part.type.startsWith("tool-")
+        ? part.type
+        : part.type === "dynamic-tool" && typeof part.toolName === "string"
+          ? `tool-${part.toolName}`
+          : null;
+
+    if (
+      validationToolType &&
+      part.state === "output-error" &&
+      isToolInputValidationError(part.errorText)
+    ) {
+      contentList.push(
+        createToolInputErrorContent({
+          toolType: validationToolType,
+          toolCallId: part.toolCallId || "",
+          errorText: part.errorText,
+        }),
+      );
       return;
     }
 
@@ -750,6 +776,32 @@ export function extractSidebarContentFromMessage(
         original,
         modified,
       });
+    }
+
+    if (
+      part.type === "tool-create_vulnerability_report" &&
+      part.state === "output-available"
+    ) {
+      const result = part.output?.result ?? part.output;
+      if (
+        result?.success === true &&
+        typeof result.finding_id === "string" &&
+        typeof result.title === "string" &&
+        typeof result.target === "string" &&
+        typeof result.severity === "string" &&
+        typeof result.cvss_score === "number"
+      ) {
+        contentList.push({
+          findingId: result.finding_id,
+          title: result.title,
+          target: result.target,
+          endpoint: result.endpoint,
+          severity: result.severity,
+          cvssScore: result.cvss_score,
+          isExecuting: false,
+          toolCallId: part.toolCallId || "",
+        });
+      }
     }
   });
 

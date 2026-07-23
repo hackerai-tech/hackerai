@@ -16,6 +16,7 @@ import {
   isUserBlockedByActiveFraudDispute,
 } from "./lib/suspensionGuards";
 import { stripOpenRouterReasoningMetadataFromParts } from "../lib/chat/provider-metadata-sanitizer";
+import { sanitizeFindingPartsForShare } from "../lib/findings/share-sanitizer";
 import {
   MAX_MESSAGE_SEARCH_QUERY_LENGTH,
   MIN_MESSAGE_SEARCH_QUERY_LENGTH,
@@ -2116,22 +2117,22 @@ export const getSharedMessages = query({
         content: msg.content,
         update_time: msg.update_time,
         // Process parts to replace files/images with placeholders
-        parts: stripOpenRouterReasoningMetadataFromParts(msg.parts).map(
-          (part: any) => {
-            // Replace file references with placeholder
-            if (part.type === "file") {
-              // Determine if it's an image based on mediaType
-              const isImage = part.mediaType?.startsWith("image/");
-              return {
-                type: isImage ? "image" : "file",
-                placeholder: true,
-                // SECURITY: Do NOT include url, file_id, name, or mediaType
-              };
-            }
-            // Keep text parts as-is
-            return part;
-          },
-        ),
+        parts: sanitizeFindingPartsForShare(
+          stripOpenRouterReasoningMetadataFromParts(msg.parts),
+        ).map((part: any) => {
+          // Replace file references with placeholder
+          if (part.type === "file") {
+            // Determine if it's an image based on mediaType
+            const isImage = part.mediaType?.startsWith("image/");
+            return {
+              type: isImage ? "image" : "file",
+              placeholder: true,
+              // SECURITY: Do NOT include url, file_id, name, or mediaType
+            };
+          }
+          // Keep text parts as-is
+          return part;
+        }),
         // SECURITY: user_id is NOT included in response (anonymity)
       }));
     } catch (error) {

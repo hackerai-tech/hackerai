@@ -34,7 +34,11 @@ jest.mock("convex/server", () => ({
 }));
 
 jest.mock("../_generated/api", () => ({
-  internal: { chats: {}, redisPubsub: {}, s3Cleanup: {} },
+  internal: {
+    chats: { deleteAllChatsBatch: "internal.chats.deleteAllChatsBatch" },
+    redisPubsub: {},
+    s3Cleanup: {},
+  },
 }));
 
 jest.mock("../fileAggregate", () => ({
@@ -55,6 +59,7 @@ jest.mock("../lib/suspensionGuards", () => ({
 
 const {
   deleteChatForBackend,
+  deleteAllChatsForUser,
   fenceChatsForDeletion,
   getActiveTriggerRunsForUser,
   setActiveTriggerRun,
@@ -92,6 +97,146 @@ describe("Agent approval lifecycle guards", () => {
       }),
     ).resolves.toBe("stale");
     expect(patch).not.toHaveBeenCalled();
+  });
+
+  it("cascades structured findings before deleting their source chat", async () => {
+    const tables: Record<string, Array<Record<string, any>>> = {
+      chats: [
+        {
+          _id: "chat-doc-1",
+          id: "chat-1",
+          user_id: "user-1",
+          canceled_at: 1,
+        },
+      ],
+      findings: [
+        {
+          _id: "finding-doc-1",
+          user_id: "user-1",
+          chat_id: "chat-1",
+          created_at: 1,
+        },
+      ],
+      finding_sources: [
+        {
+          _id: "finding-source-1",
+          user_id: "user-1",
+          chat_id: "chat-1",
+        },
+      ],
+      messages: [],
+      chat_summaries: [],
+    };
+    const deleted: string[] = [];
+    const db = {
+      query: jest.fn((table: string) => ({
+        withIndex: jest.fn((_index: string, build: (q: any) => any) => {
+          const filters: Array<[string, unknown]> = [];
+          const q: any = {
+            eq: (field: string, value: unknown) => {
+              filters.push([field, value]);
+              return q;
+            },
+          };
+          build(q);
+          const rows = () =>
+            (tables[table] ?? []).filter((row) =>
+              filters.every(([field, value]) => row[field] === value),
+            );
+          return {
+            first: jest.fn(async () => rows()[0] ?? null),
+            unique: jest.fn(async () => rows()[0] ?? null),
+            take: jest.fn(async (limit: number) => rows().slice(0, limit)),
+          };
+        }),
+      })),
+      patch: jest.fn().mockResolvedValue(undefined),
+      delete: jest.fn(async (id: string) => {
+        deleted.push(id);
+        for (const [table, rows] of Object.entries(tables)) {
+          tables[table] = rows.filter((row) => row._id !== id);
+        }
+      }),
+    };
+
+    await expect(
+      deleteChatForBackend.handler(
+        { db, scheduler: { runAfter: jest.fn() } } as any,
+        {
+          serviceKey: "service-key",
+          chatId: "chat-1",
+          userId: "user-1",
+          expectedTriggerRunId: null,
+          expectedApprovalSessionId: null,
+        },
+      ),
+    ).resolves.toBe("deleted");
+
+    expect(deleted).toEqual([
+      "finding-doc-1",
+      "finding-source-1",
+      "chat-doc-1",
+    ]);
+  });
+
+  it("uses bounded continuation batches for service-key test cleanup", async () => {
+    const chat = {
+      _id: "chat-doc-1",
+      id: "chat-1",
+      user_id: "user-1",
+      canceled_at: 1,
+    };
+    const findings = Array.from({ length: 26 }, (_, index) => ({
+      _id: `finding-doc-${index + 1}`,
+      user_id: "user-1",
+      chat_id: "chat-1",
+      created_at: index + 1,
+    }));
+    const deleteDoc = jest.fn<any>().mockResolvedValue(undefined);
+    const runAfter = jest.fn<any>().mockResolvedValue(undefined);
+    const db = {
+      query: jest.fn((table: string) => ({
+        withIndex: jest.fn((_index: string, build: (q: any) => any) => {
+          const filters: Array<[string, unknown]> = [];
+          const q: any = {
+            eq: (field: string, value: unknown) => {
+              filters.push([field, value]);
+              return q;
+            },
+          };
+          build(q);
+          const rows = table === "chats" ? [chat] : findings;
+          const filtered = rows.filter((row) =>
+            filters.every(
+              ([field, value]) => row[field as keyof typeof row] === value,
+            ),
+          );
+          return {
+            first: jest.fn(async () => filtered[0] ?? null),
+            take: jest.fn(async (limit: number) => filtered.slice(0, limit)),
+          };
+        }),
+      })),
+      delete: deleteDoc,
+      patch: jest.fn<any>().mockResolvedValue(undefined),
+    };
+
+    await expect(
+      deleteAllChatsForUser.handler({ db, scheduler: { runAfter } } as any, {
+        serviceKey: "service-key",
+        userId: "user-1",
+      }),
+    ).resolves.toBeNull();
+
+    expect(deleteDoc).toHaveBeenCalledTimes(25);
+    expect(deleteDoc).not.toHaveBeenCalledWith("chat-doc-1");
+    expect(runAfter).toHaveBeenCalledWith(
+      0,
+      "internal.chats.deleteAllChatsBatch",
+      {
+        userId: "user-1",
+      },
+    );
   });
 
   it("does not attach a new run after chat deletion starts", async () => {

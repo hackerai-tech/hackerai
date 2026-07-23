@@ -22,6 +22,7 @@ import type {
   SubscriptionTier,
   NoteCategory,
 } from "@/types";
+import type { CreateVulnerabilityReportInput } from "@/lib/findings/validation";
 import type { Id } from "@/convex/_generated/dataModel";
 import { v4 as uuidv4 } from "uuid";
 import { AGENT_RESUME_PREAMBLE } from "@/lib/chat/summarization/prompts";
@@ -1924,6 +1925,45 @@ export async function getLatestSummary({ chatId }: { chatId: string }) {
   } catch (error) {
     console.error("[DB Actions] Failed to get latest summary:", error);
     return null;
+  }
+}
+
+// ============================================================================
+// Findings Actions
+// ============================================================================
+
+export async function createFinding({
+  userId,
+  chatId,
+  messageId,
+  toolCallId,
+  report,
+}: {
+  userId: string;
+  chatId: string;
+  messageId: string;
+  toolCallId: string;
+  report: CreateVulnerabilityReportInput;
+}) {
+  try {
+    return await getConvexClient().mutation(
+      api.findings.createFindingForBackend,
+      {
+        serviceKey,
+        userId,
+        chatId,
+        messageId,
+        toolCallId,
+        report,
+      },
+    );
+  } catch (error) {
+    throw databaseError("findings.createFindingForBackend", error, {
+      user_id: userId,
+      chat_id: chatId,
+      message_id: messageId,
+      tool_call_id: toolCallId,
+    });
   }
 }
 

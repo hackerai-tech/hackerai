@@ -49,6 +49,57 @@ const agentApprovalTargetGrantValidator = v.union(
   }),
 );
 
+const findingSeverityValidator = v.union(
+  v.literal("critical"),
+  v.literal("high"),
+  v.literal("medium"),
+  v.literal("low"),
+  v.literal("info"),
+);
+
+const findingCategoryValidator = v.union(
+  v.literal("access_control"),
+  v.literal("authentication_session"),
+  v.literal("injection"),
+  v.literal("cross_site_scripting"),
+  v.literal("request_forgery"),
+  v.literal("file_path_access"),
+  v.literal("data_exposure"),
+  v.literal("cryptography_secrets"),
+  v.literal("parsing_deserialization"),
+  v.literal("security_misconfiguration"),
+  v.literal("denial_of_service"),
+  v.literal("business_logic"),
+  v.literal("other"),
+);
+
+const findingStatusValidator = v.union(
+  v.literal("active"),
+  v.literal("closed"),
+);
+
+const findingClosureReasonValidator = v.union(
+  v.literal("already_fixed"),
+  v.literal("wont_fix"),
+  v.literal("false_positive"),
+);
+
+const cvss31BreakdownValidator = v.object({
+  attack_vector: v.union(
+    v.literal("N"),
+    v.literal("A"),
+    v.literal("L"),
+    v.literal("P"),
+  ),
+  attack_complexity: v.union(v.literal("L"), v.literal("H")),
+  privileges_required: v.union(v.literal("N"), v.literal("L"), v.literal("H")),
+  user_interaction: v.union(v.literal("N"), v.literal("R")),
+  scope: v.union(v.literal("U"), v.literal("C")),
+  confidentiality: v.union(v.literal("N"), v.literal("L"), v.literal("H")),
+  integrity: v.union(v.literal("N"), v.literal("L"), v.literal("H")),
+  availability: v.union(v.literal("N"), v.literal("L"), v.literal("H")),
+});
+
 export default defineSchema({
   projects: defineTable({
     user_id: v.string(),
@@ -195,6 +246,157 @@ export default defineSchema({
       searchField: "content",
       filterFields: ["user_id"],
     }),
+
+  findings: defineTable({
+    finding_id: v.string(),
+    user_id: v.string(),
+    chat_id: v.string(),
+    message_id: v.string(),
+    tool_call_id: v.string(),
+    title: v.string(),
+    description: v.string(),
+    impact: v.string(),
+    target: v.string(),
+    technical_analysis: v.string(),
+    poc_description: v.string(),
+    poc_script_code: v.string(),
+    remediation_steps: v.string(),
+    evidence: v.string(),
+    assumptions: v.string(),
+    fix_effort: v.union(
+      v.literal("trivial"),
+      v.literal("low"),
+      v.literal("medium"),
+      v.literal("high"),
+    ),
+    cvss_breakdown: cvss31BreakdownValidator,
+    cvss_score: v.number(),
+    cvss_vector: v.string(),
+    severity: findingSeverityValidator,
+    // Optional only for findings created before lifecycle/category support.
+    // Every new finding persists both fields, and reads derive safe defaults.
+    category: v.optional(findingCategoryValidator),
+    status: v.optional(findingStatusValidator),
+    endpoint: v.optional(v.string()),
+    method: v.optional(v.string()),
+    cve: v.optional(v.string()),
+    cwe: v.optional(v.string()),
+    code_locations: v.optional(
+      v.array(
+        v.object({
+          file: v.string(),
+          start_line: v.number(),
+          end_line: v.number(),
+          snippet: v.optional(v.string()),
+          label: v.optional(v.string()),
+          fix_before: v.optional(v.string()),
+          fix_after: v.optional(v.string()),
+        }),
+      ),
+    ),
+    dedupe_key: v.string(),
+    search_text: v.string(),
+    closure_reason: v.optional(findingClosureReasonValidator),
+    closure_context: v.optional(v.string()),
+    closed_at: v.optional(v.number()),
+    created_at: v.number(),
+    updated_at: v.number(),
+  })
+    .index("by_finding_id", ["finding_id"])
+    .index("by_user_and_created", ["user_id", "created_at"])
+    .index("by_user_severity_created", ["user_id", "severity", "created_at"])
+    .index("by_user_category_created", ["user_id", "category", "created_at"])
+    .index("by_user_category_severity_created", [
+      "user_id",
+      "category",
+      "severity",
+      "created_at",
+    ])
+    .index("by_user_status_created", ["user_id", "status", "created_at"])
+    .index("by_user_status_severity_created", [
+      "user_id",
+      "status",
+      "severity",
+      "created_at",
+    ])
+    .index("by_user_status_category_created", [
+      "user_id",
+      "status",
+      "category",
+      "created_at",
+    ])
+    .index("by_user_status_category_severity_created", [
+      "user_id",
+      "status",
+      "category",
+      "severity",
+      "created_at",
+    ])
+    .index("by_user_severity_chat_created", [
+      "user_id",
+      "severity",
+      "chat_id",
+      "created_at",
+    ])
+    .index("by_user_chat_created", ["user_id", "chat_id", "created_at"])
+    .index("by_user_category_chat_created", [
+      "user_id",
+      "category",
+      "chat_id",
+      "created_at",
+    ])
+    .index("by_user_category_severity_chat_created", [
+      "user_id",
+      "category",
+      "severity",
+      "chat_id",
+      "created_at",
+    ])
+    .index("by_user_status_chat_created", [
+      "user_id",
+      "status",
+      "chat_id",
+      "created_at",
+    ])
+    .index("by_user_status_severity_chat_created", [
+      "user_id",
+      "status",
+      "severity",
+      "chat_id",
+      "created_at",
+    ])
+    .index("by_user_status_category_chat_created", [
+      "user_id",
+      "status",
+      "category",
+      "chat_id",
+      "created_at",
+    ])
+    .index("by_user_status_category_severity_chat_created", [
+      "user_id",
+      "status",
+      "category",
+      "severity",
+      "chat_id",
+      "created_at",
+    ])
+    .index("by_user_chat_dedupe", ["user_id", "chat_id", "dedupe_key"])
+    .searchIndex("search_findings", {
+      searchField: "search_text",
+      filterFields: ["user_id", "status", "category", "severity", "chat_id"],
+    }),
+
+  // Compact source-chat metadata keeps the Findings filter bounded without
+  // reading large PoC/evidence payloads from every finding.
+  finding_sources: defineTable({
+    user_id: v.string(),
+    chat_id: v.string(),
+    chat_title: v.string(),
+    finding_count: v.number(),
+    latest_finding_at: v.number(),
+  })
+    .index("by_user_and_latest", ["user_id", "latest_finding_at"])
+    .index("by_user_chat", ["user_id", "chat_id"]),
 
   files: defineTable({
     s3_key: v.optional(v.string()),

@@ -29,6 +29,7 @@ import { resolveBranchedFromTitle } from "./lib/branchedChatTitle";
 
 const DELETE_ALL_CHATS_MESSAGE_BATCH_SIZE = 10;
 const DELETE_ALL_CHATS_SUMMARY_BATCH_SIZE = 25;
+const DELETE_ALL_CHATS_FINDING_BATCH_SIZE = 25;
 const CHAT_DELETION_FENCE_BATCH_SIZE = 100;
 const MAX_ACTIVE_TRIGGER_RUNS_TO_RETURN = 100;
 const CHAT_SUMMARY_TELEMETRY_CLEANUP_DEFAULT_BATCH_SIZE = 500;
@@ -249,8 +250,66 @@ async function deleteMessageForChatDeletion(
   await ctx.db.delete(message._id);
 }
 
+async function deleteFindingsForChatBatch(
+  ctx: MutationCtx,
+  chat: Doc<"chats">,
+): Promise<boolean> {
+  const findings = await ctx.db
+    .query("findings")
+    .withIndex("by_user_chat_created", (q) =>
+      q.eq("user_id", chat.user_id).eq("chat_id", chat.id),
+    )
+    .take(DELETE_ALL_CHATS_FINDING_BATCH_SIZE + 1);
+
+  for (const finding of findings.slice(
+    0,
+    DELETE_ALL_CHATS_FINDING_BATCH_SIZE,
+  )) {
+    await ctx.db.delete(finding._id);
+  }
+
+  return findings.length > DELETE_ALL_CHATS_FINDING_BATCH_SIZE;
+}
+
+async function deleteFindingSourceForChat(
+  ctx: MutationCtx,
+  chat: Doc<"chats">,
+) {
+  const source = await ctx.db
+    .query("finding_sources")
+    .withIndex("by_user_chat", (q) =>
+      q.eq("user_id", chat.user_id).eq("chat_id", chat.id),
+    )
+    .unique();
+  if (source) await ctx.db.delete(source._id);
+}
+
+async function syncFindingSourceChatTitle(
+  ctx: MutationCtx,
+  userId: string,
+  chatId: string,
+  title: string,
+) {
+  const source = await ctx.db
+    .query("finding_sources")
+    .withIndex("by_user_chat", (q) =>
+      q.eq("user_id", userId).eq("chat_id", chatId),
+    )
+    .unique();
+  if (source && source.chat_title !== title) {
+    await ctx.db.patch(source._id, { chat_title: title });
+  }
+}
+
 async function deleteChatDocument(ctx: MutationCtx, chat: Doc<"chats">) {
   await prepareChatForDeletion(ctx, chat);
+
+  if (await deleteFindingsForChatBatch(ctx, chat)) {
+    await scheduleDeleteChatDocumentBatch(ctx, chat.id, chat.user_id);
+    return;
+  }
+
+  await deleteFindingSourceForChat(ctx, chat);
 
   const messages = await ctx.db
     .query("messages")
@@ -321,6 +380,13 @@ async function deleteNextUserChatBatch(ctx: MutationCtx, userId: string) {
   }
 
   await prepareChatForDeletion(ctx, chat);
+
+  if (await deleteFindingsForChatBatch(ctx, chat)) {
+    await scheduleDeleteAllChatsBatch(ctx, userId);
+    return true;
+  }
+
+  await deleteFindingSourceForChat(ctx, chat);
 
   const messages = await ctx.db
     .query("messages")
@@ -855,6 +921,12 @@ export const updateChat = mutation({
 
       if (args.title !== undefined) {
         updateData.title = args.title;
+        await syncFindingSourceChatTitle(
+          ctx,
+          chat.user_id,
+          chat.id,
+          args.title,
+        );
       }
 
       if (args.finishReason !== undefined) {
@@ -1383,6 +1455,12 @@ export const renameChat = mutation({
         title: trimmedTitle,
         update_time: Date.now(),
       });
+      await syncFindingSourceChatTitle(
+        ctx,
+        chat.user_id,
+        chat.id,
+        trimmedTitle,
+      );
 
       return null;
     } catch (error) {
@@ -1749,78 +1827,7 @@ export const deleteAllChatsForUser = mutation({
   returns: v.null(),
   handler: async (ctx, args) => {
     validateServiceKey(args.serviceKey);
-
-    const userChats = await ctx.db
-      .query("chats")
-      .withIndex("by_user_and_updated", (q) => q.eq("user_id", args.userId))
-      .collect();
-
-    for (const chat of userChats) {
-      const messages = await ctx.db
-        .query("messages")
-        .withIndex("by_chat_id", (q) => q.eq("chat_id", chat.id))
-        .collect();
-
-      for (const message of messages) {
-        if (!message.source_message_id && message.file_ids?.length) {
-          for (const fileId of message.file_ids) {
-            try {
-              const file = await ctx.db.get(fileId);
-              if (file) {
-                if (file.s3_key) {
-                  await ctx.scheduler.runAfter(
-                    0,
-                    internal.s3Cleanup.deleteS3ObjectAction,
-                    { s3Key: file.s3_key },
-                  );
-                }
-                await fileCountAggregate.deleteIfExists(ctx, file);
-                await ctx.db.delete(file._id);
-              }
-            } catch (error) {
-              console.error(`Failed to delete file ${fileId}:`, error);
-            }
-          }
-        }
-        if (message.feedback_id) {
-          try {
-            await ctx.db.delete(message.feedback_id);
-          } catch (error) {
-            console.error(
-              `Failed to delete feedback ${message.feedback_id}:`,
-              error,
-            );
-          }
-        }
-        await ctx.db.delete(message._id);
-      }
-
-      if (chat.latest_summary_id) {
-        try {
-          await ctx.db.delete(chat.latest_summary_id);
-        } catch (error) {
-          console.error(
-            `Failed to delete summary ${chat.latest_summary_id}:`,
-            error,
-          );
-        }
-      }
-
-      const summaries = await ctx.db
-        .query("chat_summaries")
-        .withIndex("by_chat_id", (q) => q.eq("chat_id", chat.id))
-        .collect();
-      for (const summary of summaries) {
-        try {
-          await ctx.db.delete(summary._id);
-        } catch (error) {
-          console.error(`Failed to delete summary ${summary._id}:`, error);
-        }
-      }
-
-      await ctx.db.delete(chat._id);
-    }
-
+    await deleteNextUserChatBatch(ctx, args.userId);
     return null;
   },
 });

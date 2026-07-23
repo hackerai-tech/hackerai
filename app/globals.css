@@ -230,11 +230,45 @@
   contain-intrinsic-size: auto 180px;
 }
 
+@keyframes source-message-arrival {
+  0% {
+    opacity: 0;
+  }
+  12%,
+  45% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
+.source-message-highlight {
+  position: relative;
+  outline: none;
+}
+
+.source-message-highlight::after {
+  position: absolute;
+  inset: -0.375rem;
+  border-radius: calc(1rem + 0.375rem);
+  background-color: color-mix(in srgb, var(--link-color) 7%, transparent);
+  box-shadow: 0 0 1.5rem color-mix(in srgb, var(--link-color) 10%, transparent);
+  content: "";
+  opacity: 0;
+  pointer-events: none;
+  animation: source-message-arrival 2400ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
 @media (prefers-reduced-motion: reduce) {
   .worked-for-content[data-state="open"],
   .worked-for-content[data-state="closed"] {
     animation-duration: 1ms;
     transform: none;
+  }
+
+  .source-message-highlight::after {
+    animation: none;
   }
 }
 

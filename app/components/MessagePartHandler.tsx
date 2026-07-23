@@ -8,12 +8,16 @@ import { HttpRequestToolHandler } from "./tools/HttpRequestToolHandler";
 import { WebToolHandler } from "./tools/WebToolHandler";
 import { TodoToolHandler } from "./tools/TodoToolHandler";
 import { NotesToolHandler } from "./tools/NotesToolHandler";
+import { FindingToolHandler } from "./tools/FindingToolHandler";
+import { ToolValidationErrorHandler } from "./tools/ToolErrorHandler";
+import { FindingCard } from "./findings/FindingCard";
 import { ProxyToolHandler } from "./tools/ProxyToolHandler";
 import { GetTerminalFilesHandler } from "./tools/GetTerminalFilesHandler";
 import { SummarizationHandler } from "./tools/SummarizationHandler";
 import type { ChatStatus } from "@/types";
 import type { FileDetails } from "@/types/file";
 import { ReasoningHandler } from "./ReasoningHandler";
+import { isToolInputValidationError } from "@/lib/chat/tool-error-display";
 
 interface MessagePartHandlerProps {
   message: UIMessage;
@@ -64,7 +68,7 @@ function deepEqual(a: any, b: any): boolean {
 }
 
 // Custom comparison for MessagePartHandler to minimize re-renders
-function arePropsEqual(
+export function areMessagePartHandlerPropsEqual(
   prevProps: MessagePartHandlerProps,
   nextProps: MessagePartHandlerProps,
 ): boolean {
@@ -83,6 +87,8 @@ function arePropsEqual(
     nextProps.deferReasoningCollapseUntilParent
   )
     return false;
+
+  if (prevProps.part?.type !== nextProps.part?.type) return false;
 
   // Shared file details change for get_terminal_files during streaming
   // Must be checked before the part reference check below, because the part
@@ -103,6 +109,10 @@ function arePropsEqual(
   )
     return false;
 
+  if (prevProps.part?.type === "data-shared-finding") {
+    return deepEqual(prevProps.part.data, nextProps.part.data);
+  }
+
   // For tool parts, compare state and output which change during streaming
   if (
     prevProps.part?.type?.startsWith("tool-") ||
@@ -111,10 +121,12 @@ function arePropsEqual(
     return (
       prevProps.part.state === nextProps.part.state &&
       prevProps.part.toolCallId === nextProps.part.toolCallId &&
+      prevProps.part.toolName === nextProps.part.toolName &&
       prevProps.part.output === nextProps.part.output &&
+      prevProps.part.errorText === nextProps.part.errorText &&
       deepEqual(prevProps.part.approval, nextProps.part.approval) &&
       // Tool input is an object — reference check first (fast path), then
-      // shallow comparison so new objects with identical content don't re-render.
+      // deep comparison so new objects with identical content don't re-render.
       (prevProps.part.input === nextProps.part.input ||
         deepEqual(prevProps.part.input, nextProps.part.input))
     );
@@ -148,6 +160,26 @@ export const MessagePartHandler = memo(function MessagePartHandler({
   terminalOutputByToolCallId,
   sharedFileDetails,
 }: MessagePartHandlerProps) {
+  const validationToolType =
+    typeof part.type === "string" && part.type.startsWith("tool-")
+      ? part.type
+      : part.type === "dynamic-tool" && typeof part.toolName === "string"
+        ? `tool-${part.toolName}`
+        : null;
+  if (
+    validationToolType &&
+    part.state === "output-error" &&
+    isToolInputValidationError(part.errorText)
+  ) {
+    return (
+      <ToolValidationErrorHandler
+        toolType={validationToolType}
+        toolCallId={part.toolCallId || ""}
+        errorText={part.errorText}
+      />
+    );
+  }
+
   // Main switch for different part types
   switch (part.type) {
     case "text": {
@@ -257,6 +289,19 @@ export const MessagePartHandler = memo(function MessagePartHandler({
         <NotesToolHandler part={part} status={status} toolName="delete_note" />
       );
 
+    case "tool-create_vulnerability_report":
+      return <FindingToolHandler part={part} status={status} />;
+
+    case "data-shared-finding":
+      return part.data ? (
+        <FindingCard
+          title={part.data.title}
+          target={part.data.target}
+          severity={part.data.severity}
+          cvssScore={part.data.cvss_score}
+        />
+      ) : null;
+
     case "tool-list_requests":
       return (
         <ProxyToolHandler
@@ -293,4 +338,4 @@ export const MessagePartHandler = memo(function MessagePartHandler({
     default:
       return null;
   }
-}, arePropsEqual);
+}, areMessagePartHandlerPropsEqual);

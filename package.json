@@ -5,7 +5,7 @@
   "packageManager": "pnpm@10.33.2",
   "scripts": {
     "dev": "concurrently \"next dev --turbopack\" \"npx convex dev\"",
-    "dev:local": "concurrently \"next dev --turbopack\" \"npx convex dev --local\"",
+    "dev:local": "npx convex deployment select local && concurrently \"next dev --turbopack\" \"npx convex dev\"",
     "dev:next": "next dev --turbopack",
     "dev:convex": "npx convex dev",
     "dev:trigger": "node scripts/trigger-dev-branch.mjs",

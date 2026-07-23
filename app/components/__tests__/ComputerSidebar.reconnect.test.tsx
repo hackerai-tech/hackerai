@@ -1,6 +1,6 @@
 import "@testing-library/jest-dom";
 import React from "react";
-import { act, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import {
   afterEach,
   beforeEach,
@@ -10,6 +10,7 @@ import {
   jest,
 } from "@jest/globals";
 import type { SidebarContent } from "@/types/chat";
+import { createToolInputErrorContent } from "@/lib/chat/tool-error-display";
 
 jest.mock("next/dynamic", () => ({
   __esModule: true,
@@ -152,5 +153,46 @@ describe("ComputerSidebar reconnect behavior", () => {
     expect(onNavigate).toHaveBeenCalledWith(
       expect.objectContaining({ toolCallId: "tool-other" }),
     );
+  });
+
+  it("shows safe tool failure details and provides a clear close action", () => {
+    const closeSidebar = jest.fn();
+    const rawError =
+      'Invalid input for tool create_vulnerability_report: Value: {"evidence":"private"}';
+    const toolError = createToolInputErrorContent({
+      toolType: "tool-create_vulnerability_report",
+      toolCallId: "finding-error",
+    });
+
+    render(
+      <ComputerSidebarBase
+        sidebarOpen
+        sidebarContent={toolError}
+        closeSidebar={closeSidebar}
+        messages={[
+          {
+            role: "assistant",
+            parts: [
+              {
+                type: "tool-create_vulnerability_report",
+                toolCallId: "finding-error",
+                state: "output-error",
+                errorText: rawError,
+              },
+            ],
+          },
+        ]}
+        status="ready"
+      />,
+    );
+
+    expect(
+      screen.getByText("The vulnerability report wasn’t saved"),
+    ).toBeVisible();
+    expect(screen.getByText("What to do next")).toBeVisible();
+    expect(screen.queryByText(rawError)).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Close details" }));
+    expect(closeSidebar).toHaveBeenCalledTimes(1);
   });
 });

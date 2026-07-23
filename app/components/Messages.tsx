@@ -26,6 +26,9 @@ import { hasTextContent } from "@/lib/utils/message-utils";
 import { useDataStreamState } from "./DataStreamProvider";
 import type { RateLimitWarningData } from "./RateLimitWarning";
 import type { SelectedModel } from "@/types";
+import { cn } from "@/lib/utils";
+import { getChatMessageElementId } from "@/lib/findings/source-message";
+import { useSourceMessageNavigation } from "../hooks/useSourceMessageNavigation";
 
 const AllFilesDialog = dynamic(
   () => import("./AllFilesDialog").then((module) => module.AllFilesDialog),
@@ -120,6 +123,11 @@ export const Messages = ({
     () => messages.filter((msg) => !msg.metadata?.isAutoContinue),
     [messages],
   );
+  const sourceMessageId = useSourceMessageNavigation({
+    loadedMessageCount: messages.length,
+    paginationStatus,
+    loadMore,
+  });
 
   // Memoize expensive calculations
   const lastAssistantMessageIndex = useMemo(() => {
@@ -313,46 +321,59 @@ export const Messages = ({
               <Loading size={6} />
             </div>
           )}
-          {visibleMessages.map((message, index) => (
-            <MessageItem
-              key={message.id}
-              message={message}
-              index={index}
-              messagesLength={visibleMessages.length}
-              lastAssistantMessageIndex={lastAssistantMessageIndex}
-              status={status}
-              isEditing={editingMessageId === message.id}
-              isMobile={isMobile}
-              feedbackInputMessageId={feedbackInputMessageId}
-              tempChatFileDetails={tempChatFileDetails}
-              finishReason={finishReason}
-              mode={mode}
-              agentRunSpendCapWarning={agentRunSpendCapWarning}
-              isTemporaryChat={isTemporaryChat}
-              branchedFromChatId={branchedFromChatId}
-              branchedFromChatTitle={branchedFromChatTitle}
-              branchBoundaryIndex={branchBoundaryIndex}
-              onStartEdit={handleStartEdit}
-              onSaveEdit={handleSaveEdit}
-              onCancelEdit={handleCancelEdit}
-              onRegenerate={onRegenerate}
-              onContinue={onContinue}
-              onBranchMessage={
-                onBranchMessage ? handleBranchMessage : undefined
-              }
-              onFeedback={handleFeedback}
-              onFeedbackSubmit={handleFeedbackSubmit}
-              onFeedbackCancel={handleFeedbackCancel}
-              onShowAllFiles={handleShowAllFiles}
-              getCachedUrl={getCachedUrl}
-              showingLoadingIndicator={
-                summarizationStatus?.status === "started" ||
-                uploadStatus?.isUploading ||
-                shouldShowLoadingDots
-              }
-              summarizationStatus={summarizationStatus}
-            />
-          ))}
+          {visibleMessages.map((message, index) => {
+            const isSourceMessage = sourceMessageId === message.id;
+
+            return (
+              <div
+                key={message.id}
+                id={getChatMessageElementId(message.id)}
+                tabIndex={isSourceMessage ? -1 : undefined}
+                className={cn(
+                  "rounded-2xl",
+                  isSourceMessage && "source-message-highlight",
+                )}
+              >
+                <MessageItem
+                  message={message}
+                  index={index}
+                  messagesLength={visibleMessages.length}
+                  lastAssistantMessageIndex={lastAssistantMessageIndex}
+                  status={status}
+                  isEditing={editingMessageId === message.id}
+                  isMobile={isMobile}
+                  feedbackInputMessageId={feedbackInputMessageId}
+                  tempChatFileDetails={tempChatFileDetails}
+                  finishReason={finishReason}
+                  mode={mode}
+                  agentRunSpendCapWarning={agentRunSpendCapWarning}
+                  isTemporaryChat={isTemporaryChat}
+                  branchedFromChatId={branchedFromChatId}
+                  branchedFromChatTitle={branchedFromChatTitle}
+                  branchBoundaryIndex={branchBoundaryIndex}
+                  onStartEdit={handleStartEdit}
+                  onSaveEdit={handleSaveEdit}
+                  onCancelEdit={handleCancelEdit}
+                  onRegenerate={onRegenerate}
+                  onContinue={onContinue}
+                  onBranchMessage={
+                    onBranchMessage ? handleBranchMessage : undefined
+                  }
+                  onFeedback={handleFeedback}
+                  onFeedbackSubmit={handleFeedbackSubmit}
+                  onFeedbackCancel={handleFeedbackCancel}
+                  onShowAllFiles={handleShowAllFiles}
+                  getCachedUrl={getCachedUrl}
+                  showingLoadingIndicator={
+                    summarizationStatus?.status === "started" ||
+                    uploadStatus?.isUploading ||
+                    shouldShowLoadingDots
+                  }
+                  summarizationStatus={summarizationStatus}
+                />
+              </div>
+            );
+          })}
 
           {/* Processing status - upload/loading dots always separate, summarization only when no content */}
           {(showSummarizationSeparately ||

@@ -20,6 +20,7 @@ import type * as feedback from "../feedback.js";
 import type * as fileActions from "../fileActions.js";
 import type * as fileAggregate from "../fileAggregate.js";
 import type * as fileStorage from "../fileStorage.js";
+import type * as findings from "../findings.js";
 import type * as lib_extraUsagePricing from "../lib/extraUsagePricing.js";
 import type * as lib_extraUsageValidation from "../lib/extraUsageValidation.js";
 import type * as lib_logger from "../lib/logger.js";
@@ -66,6 +67,7 @@ declare const fullApi: ApiFromModules<{
   fileActions: typeof fileActions;
   fileAggregate: typeof fileAggregate;
   fileStorage: typeof fileStorage;
+  findings: typeof findings;
   "lib/extraUsagePricing": typeof lib_extraUsagePricing;
   "lib/extraUsageValidation": typeof lib_extraUsageValidation;
   "lib/logger": typeof lib_logger;

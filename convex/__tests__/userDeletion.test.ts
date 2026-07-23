@@ -259,6 +259,40 @@ function seedTables(userId = "user_123", otherUserId = "user_other"): Tables {
       { _id: "note-user", user_id: userId, note_id: "note-1" },
       { _id: "note-other", user_id: otherUserId, note_id: "note-2" },
     ],
+    findings: [
+      {
+        _id: "finding-user",
+        finding_id: "finding-1",
+        user_id: userId,
+        chat_id: "chat-1",
+        created_at: 1,
+      },
+      {
+        _id: "finding-other",
+        finding_id: "finding-2",
+        user_id: otherUserId,
+        chat_id: "chat-other-id",
+        created_at: 1,
+      },
+    ],
+    finding_sources: [
+      {
+        _id: "finding-source-user",
+        user_id: userId,
+        chat_id: "chat-1",
+        chat_title: "User chat",
+        finding_count: 1,
+        latest_finding_at: 1,
+      },
+      {
+        _id: "finding-source-other",
+        user_id: otherUserId,
+        chat_id: "chat-other-id",
+        chat_title: "Other chat",
+        finding_count: 1,
+        latest_finding_at: 1,
+      },
+    ],
     user_customization: [
       { _id: "custom-user", user_id: userId, updated_at: 1 },
       { _id: "custom-other", user_id: otherUserId, updated_at: 1 },

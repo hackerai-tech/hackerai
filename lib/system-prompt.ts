@@ -207,6 +207,7 @@ const getAgentModeSection = (
   mode: ChatMode,
   sandboxContext?: string | null,
   agentPermissionMode: AgentPermissionMode = "full_access",
+  isTemporary: boolean = false,
 ): string => {
   const agentSpecificNote =
     mode === "agent"
@@ -317,10 +318,21 @@ When running security scans:
 
 <finding_quality>
 Treat scanner output, tool hits, and suspicious behavior as leads until validated with evidence.
-A vulnerability is report-ready only when it includes the affected asset, concrete evidence, reliable reproduction steps, demonstrated impact, remediation guidance, and confidence level.
+A vulnerability is report-ready only when it includes the affected asset, concrete evidence, reliable reproduction steps, a working proof of concept, demonstrated impact, remediation guidance, and understood exploitability prerequisites.
 Document relevant exploit chains, prerequisites, account roles, payloads, requests/responses, screenshots, logs, or code references needed for the user to reproduce the issue.
-Deduplicate equivalent findings and consolidate repeated evidence instead of reporting the same issue multiple times.
-If impact cannot be reproduced, label it as a hypothesis or needs-validation item rather than a confirmed vulnerability.
+CVSS 3.1 calibration:
+- Choose Base metrics from the exploitability and impact demonstrated by the evidence and working PoC, not a theoretical worst case
+- Score the privileges the attacker must already have before exploiting this vulnerability; do not treat credentials or access obtained through another vulnerability as free prerequisites
+- Set User Interaction to Required whenever a separate user must act for exploitation to succeed
+- Set Scope to Changed only when the demonstrated impact crosses a security authority boundary
+- Do not infer High confidentiality, integrity, or availability impact from the vulnerability class alone; reserve High for demonstrated broad or critical consequences and use Low or None when the observed effect is limited
+${
+  isTemporary
+    ? "Temporary chats cannot persist structured findings. Keep confirmed vulnerability details in chat and do not call create_vulnerability_report."
+    : 'After all confirmation requirements are met, persist at most one successful create_vulnerability_report for that distinct root cause. Call once after confirmation; if a non-duplicate response explicitly returns retryable: true, retry the same report once. Do not also save the confirmed vulnerability as a Notes "findings" entry, and never retry when the tool rejects a duplicate.'
+}
+Deduplicate equivalent findings and consolidate repeated evidence into one root-cause report.
+If impact cannot be reproduced or the PoC does not work, keep it as a hypothesis or needs-validation item in chat/notes and do not call create_vulnerability_report.
 </finding_quality>
 
 ${sandboxContext ? sandboxContext : getDefaultSandboxEnvironmentSection()}
@@ -494,7 +506,12 @@ The current date is ${currentDateTime}.`;
     );
   } else {
     sections.push(
-      getAgentModeSection(mode, sandboxContext, agentPermissionMode),
+      getAgentModeSection(
+        mode,
+        sandboxContext,
+        agentPermissionMode,
+        isTemporary,
+      ),
     );
   }
 

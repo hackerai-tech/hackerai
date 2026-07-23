@@ -195,6 +195,7 @@ const ABORT_RENDERABLE_TOOL_TYPES = new Set([
   "tool-list_notes",
   "tool-update_note",
   "tool-delete_note",
+  "tool-create_vulnerability_report",
   "tool-list_requests",
   "tool-view_request",
   "tool-send_request",
@@ -649,7 +650,10 @@ function stripProviderMetadata(messages: UIMessage[]): UIMessage[] {
 }
 
 // UI-only part types that should not be sent to AI providers
-const UI_ONLY_PART_TYPES = new Set(["data-summarization"]);
+const UI_ONLY_PART_TYPES = new Set([
+  "data-summarization",
+  "data-shared-finding",
+]);
 
 /**
  * Filters out UI-only parts from a message that AI providers don't understand.
