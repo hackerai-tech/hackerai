@@ -357,6 +357,7 @@ export const forkSharedChat = mutation({
       title: chat.title,
       user_id: identity.subject,
       branched_from_chat_id: chat.id,
+      branched_from_title: chat.title,
       update_time: Date.now(),
     });
 

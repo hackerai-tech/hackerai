@@ -215,6 +215,49 @@ describe("agent approval grants", () => {
     ).toBeNull();
   });
 
+  it.each([
+    ["and operator", "&"],
+    ["pipe operator", "|"],
+    ["input redirection", "<"],
+    ["output redirection", ">"],
+    ["group opening", "("],
+    ["group closing", ")"],
+    ["newline", "\n"],
+    ["carriage return", "\r"],
+    ["NUL byte", "\0"],
+  ])(
+    "requires fresh approval for a Windows single-quoted %s",
+    (_description, operator) => {
+      const safeGrant = deriveAgentApprovalTargetGrant(
+        request("terminal_execute", "echo harmless"),
+      );
+      const target = `echo 'harmless ${operator} whoami'`;
+
+      expect(
+        deriveAgentApprovalTargetGrant(request("terminal_execute", target)),
+      ).toBeNull();
+      expect(
+        safeGrant &&
+          matchesAgentApprovalTargetGrant(
+            request("terminal_execute", target),
+            safeGrant,
+          ),
+      ).toBe(false);
+    },
+  );
+
+  it("keeps harmless single-quoted arguments eligible for approval reuse", () => {
+    expect(
+      deriveAgentApprovalTargetGrant(
+        request("terminal_execute", "echo 'hello world'"),
+      ),
+    ).toMatchObject({
+      kind: "terminal_command",
+      executable: "echo",
+      argv: ["echo", "hello world"],
+    });
+  });
+
   it("does not confuse a wrapper name with a sibling executable", () => {
     expect(
       deriveAgentApprovalTargetGrant(

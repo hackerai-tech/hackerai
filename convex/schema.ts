@@ -99,6 +99,9 @@ export default defineSchema({
       ),
     ),
     branched_from_chat_id: v.optional(v.string()),
+    // Snapshot the source title when another user's shared chat is forked.
+    // This avoids reading later source-title changes after sharing is revoked.
+    branched_from_title: v.optional(v.string()),
     latest_summary_id: v.optional(v.id("chat_summaries")),
     update_time: v.number(),
     // Sharing fields

@@ -359,6 +359,7 @@ describe("moveChatToProject", () => {
     expect(get).toHaveBeenCalledWith("project-1");
     expect(patch).toHaveBeenCalledWith("chat-doc-1", {
       project_id: "project-1",
+      agent_approval_grants: undefined,
       update_time: expect.any(Number),
     });
     expect(patch).toHaveBeenCalledWith("project-1", {
@@ -410,7 +411,39 @@ describe("moveChatToProject", () => {
     expect(get).not.toHaveBeenCalled();
     expect(patch).toHaveBeenCalledWith("chat-doc-1", {
       project_id: undefined,
+      agent_approval_grants: undefined,
       update_time: expect.any(Number),
     });
+  });
+
+  it("preserves approvals when the project assignment does not change", async () => {
+    const { moveChatToProject } = await import("../chats");
+    const existingGrants = [
+      {
+        kind: "terminal_command",
+        targetPrefix: '["npm","test"]',
+        executable: "npm",
+        argv: ["npm", "test"],
+      },
+    ];
+    const { ctx, patch } = makeCtx({
+      existingChat: {
+        _id: "chat-doc-1",
+        id: "chat-1",
+        user_id: "user-1",
+        project_id: "project-1",
+        agent_approval_grants: existingGrants,
+      },
+      project: { _id: "project-1", user_id: "user-1" },
+    });
+
+    await expect(
+      moveChatToProject.handler(ctx, {
+        chatId: "chat-1",
+        projectId: "project-1" as any,
+      }),
+    ).resolves.toBe(false);
+
+    expect(patch).not.toHaveBeenCalled();
   });
 });

@@ -10,6 +10,7 @@ import {
 import type { Id } from "./_generated/dataModel";
 import { validateServiceKey } from "./lib/utils";
 import { assertUserCanAccessChatHistory } from "./lib/suspensionGuards";
+import { resolveBranchedFromTitle } from "./lib/branchedChatTitle";
 
 const MAX_PROJECT_NAME_LENGTH = 80;
 const MAX_FOLDER_PATH_LENGTH = 4096;
@@ -96,7 +97,10 @@ const detachNextProjectTasksBatch = async (
     .take(PROJECT_TASK_DETACH_BATCH_SIZE + 1);
 
   for (const task of tasks.slice(0, PROJECT_TASK_DETACH_BATCH_SIZE)) {
-    await ctx.db.patch(task._id, { project_id: undefined });
+    await ctx.db.patch(task._id, {
+      project_id: undefined,
+      agent_approval_grants: undefined,
+    });
   }
 
   if (tasks.length > PROJECT_TASK_DETACH_BATCH_SIZE) {
@@ -351,10 +355,10 @@ export const getProjectThreads = query({
           .first(),
       ),
     );
-    const branchedTitles = new Map(
+    const branchedChatMap = new Map(
       branchedChats
         .filter((chat): chat is NonNullable<typeof chat> => chat !== null)
-        .map((chat) => [chat.id, chat.title]),
+        .map((chat) => [chat.id, chat]),
     );
 
     return {
@@ -363,8 +367,10 @@ export const getProjectThreads = query({
         ...chat,
         ...(chat.branched_from_chat_id
           ? {
-              branched_from_title: branchedTitles.get(
-                chat.branched_from_chat_id,
+              branched_from_title: resolveBranchedFromTitle(
+                chat,
+                branchedChatMap.get(chat.branched_from_chat_id),
+                identity.subject,
               ),
             }
           : {}),

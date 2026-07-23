@@ -69,6 +69,18 @@ const SHELL_DYNAMIC_CHARACTERS = new Set([
   "!",
 ]);
 
+const CMD_SINGLE_QUOTE_CONTROL_CHARACTERS = new Set([
+  "&",
+  "|",
+  "<",
+  ">",
+  "(",
+  ")",
+  "\n",
+  "\r",
+  "\0",
+]);
+
 const NON_EXECUTABLE_SHELL_TOKENS = new Set([
   ".",
   "case",
@@ -173,9 +185,16 @@ export const parseStaticCommandArgv = (command: string): string[] | null => {
     if (quote === "single") {
       if (character === "'") {
         quote = null;
-      } else if (character === "%" || character === "!" || character === "^") {
+      } else if (
+        character === "%" ||
+        character === "!" ||
+        character === "^" ||
+        CMD_SINGLE_QUOTE_CONTROL_CHARACTERS.has(character)
+      ) {
         // Single quotes are not quoting characters for cmd.exe. Reject
-        // syntax that can still expand or escape on the Windows fallback.
+        // syntax that can still expand, escape, chain, or redirect on the
+        // Windows fallback. The command remains executable after a fresh
+        // approval; only automatic approval reuse is disabled.
         return null;
       } else {
         token += character;

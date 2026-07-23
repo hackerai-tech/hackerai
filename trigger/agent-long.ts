@@ -372,16 +372,19 @@ const waitForApprovalInput = async (
 
 type SandboxScopedAgentApprovalTargetGrant = {
   sandboxIdentity: AgentApprovalSandboxIdentity;
+  workingDirectory?: string;
   grant: AgentApprovalTargetGrant;
 };
 
 const restoreSandboxScopedAgentApprovalTargetGrant = (
   grant: PersistedAgentApprovalTargetGrant,
   sandboxIdentity: AgentApprovalSandboxIdentity,
+  workingDirectory?: string,
 ): AgentApprovalTargetGrant | null => {
   const targetPrefix = getAgentApprovalTargetPrefixForSandbox({
     persistedTargetPrefix: grant.targetPrefix,
     sandboxIdentity,
+    workingDirectory,
   });
   return targetPrefix === null ? null : { ...grant, targetPrefix };
 };
@@ -389,10 +392,12 @@ const restoreSandboxScopedAgentApprovalTargetGrant = (
 const scopePersistedAgentApprovalTargetGrant = (
   grant: PersistedAgentApprovalTargetGrant,
   sandboxIdentity: AgentApprovalSandboxIdentity,
+  workingDirectory?: string,
 ): PersistedAgentApprovalTargetGrant => ({
   ...grant,
   targetPrefix: serializeSandboxScopedAgentApprovalTargetPrefix({
     sandboxIdentity,
+    workingDirectory,
     targetPrefix: grant.targetPrefix,
   }),
 });
@@ -409,6 +414,7 @@ const buildAgentToolApprovalRequester = ({
   initialTargetGrants = [],
   persistTargetGrant,
   resolveSandboxIdentity,
+  workingDirectory,
   beforeSuspend,
   revalidateAfterSuspend,
   onPostWaitAuthorizationDenied,
@@ -428,6 +434,7 @@ const buildAgentToolApprovalRequester = ({
     sandboxIdentity: AgentApprovalSandboxIdentity,
   ) => Promise<void>;
   resolveSandboxIdentity: () => Promise<AgentApprovalSandboxIdentity>;
+  workingDirectory?: string;
   beforeSuspend?: () => Promise<void>;
   revalidateAfterSuspend: (
     input: AgentToolApprovalInputRecord,
@@ -479,6 +486,7 @@ const buildAgentToolApprovalRequester = ({
         approvedTargetGrants.find(
           (scopedGrant) =>
             scopedGrant.sandboxIdentity === sandboxIdentity &&
+            scopedGrant.workingDirectory === workingDirectory &&
             matchesApprovalTargetGrant(request, scopedGrant.grant),
         )?.grant ??
         initialTargetGrants
@@ -486,6 +494,7 @@ const buildAgentToolApprovalRequester = ({
             restoreSandboxScopedAgentApprovalTargetGrant(
               grant,
               sandboxIdentity,
+              workingDirectory,
             ),
           )
           .find(
@@ -716,6 +725,7 @@ const buildAgentToolApprovalRequester = ({
           if (approvedTargetGrant) {
             approvedTargetGrants.push({
               sandboxIdentity,
+              workingDirectory,
               grant: approvedTargetGrant,
             });
             if (
@@ -2186,9 +2196,11 @@ export const agentLongTask = task({
                       grant: scopePersistedAgentApprovalTargetGrant(
                         grant,
                         sandboxIdentity,
+                        projectContext.workingDirectory,
                       ),
                     }),
               resolveSandboxIdentity: resolveApprovalSandboxIdentity,
+              workingDirectory: projectContext.workingDirectory,
               beforeSuspend:
                 subscription === "free" ? releaseFreeRunLockOnce : undefined,
               revalidateAfterSuspend: revalidateAfterApprovalSuspend,

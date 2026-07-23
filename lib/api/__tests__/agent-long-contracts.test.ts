@@ -791,6 +791,12 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(taskSrc).toMatch(/persistAgentApprovalGrant/);
     expect(taskSrc).toMatch(/agent_approval_grants/);
     expect(taskSrc).toMatch(
+      /scopedGrant\.workingDirectory === workingDirectory/,
+    );
+    expect(taskSrc).toMatch(
+      /workingDirectory:\s*projectContext\.workingDirectory/,
+    );
+    expect(taskSrc).toMatch(
       /approvedTargetGrant\.kind !== "terminal_interaction"/,
     );
     expect(taskSrc).toMatch(/matchesApprovalTargetGrant/);
