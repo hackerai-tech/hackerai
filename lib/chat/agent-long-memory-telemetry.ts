@@ -81,61 +81,66 @@ export class AgentLongMemoryTelemetry {
   }
 
   checkpoint(input: MemoryCheckpointInput): boolean {
-    const now = this.now();
-    const memory = this.readMemory();
-    const rss = finiteNonNegative(memory.rss);
-    const heapTotal = finiteNonNegative(memory.heapTotal);
-    const heapUsed = finiteNonNegative(memory.heapUsed);
-    const external = finiteNonNegative(memory.external);
-    const arrayBuffers = finiteNonNegative(memory.arrayBuffers);
-    const heapLimit = finiteNonNegative(this.readHeapLimit());
+    try {
+      const now = this.now();
+      const memory = this.readMemory();
+      const rss = finiteNonNegative(memory.rss);
+      const heapTotal = finiteNonNegative(memory.heapTotal);
+      const heapUsed = finiteNonNegative(memory.heapUsed);
+      const external = finiteNonNegative(memory.external);
+      const arrayBuffers = finiteNonNegative(memory.arrayBuffers);
+      const heapLimit = finiteNonNegative(this.readHeapLimit());
 
-    this.rssHighWater = Math.max(this.rssHighWater, rss);
-    this.heapUsedHighWater = Math.max(this.heapUsedHighWater, heapUsed);
+      this.rssHighWater = Math.max(this.rssHighWater, rss);
+      this.heapUsedHighWater = Math.max(this.heapUsedHighWater, heapUsed);
 
-    const reason =
-      this.lastEmittedAt === undefined
-        ? "initial"
-        : input.force
-          ? "forced"
-          : heapUsed - this.lastEmittedHeapUsed >= HEAP_GROWTH_CHECKPOINT_BYTES
-            ? "heap_growth"
-            : now - this.lastEmittedAt >= CHECKPOINT_INTERVAL_MS
-              ? "interval"
-              : undefined;
+      const reason =
+        this.lastEmittedAt === undefined
+          ? "initial"
+          : input.force
+            ? "forced"
+            : heapUsed - this.lastEmittedHeapUsed >=
+                HEAP_GROWTH_CHECKPOINT_BYTES
+              ? "heap_growth"
+              : now - this.lastEmittedAt >= CHECKPOINT_INTERVAL_MS
+                ? "interval"
+                : undefined;
 
-    if (!reason) return false;
+      if (!reason) return false;
 
-    this.options.emit({
-      level: "info",
-      event: "agent_long_memory_checkpoint",
-      service: "agent-long",
-      environment:
-        this.options.environment ??
-        process.env.VERCEL_ENV ??
-        process.env.NODE_ENV ??
-        "unknown",
-      timestamp: new Date(now).toISOString(),
-      run_id: this.options.runId,
-      chat_id: this.options.chatId,
-      user_id: this.options.userId,
-      phase: input.phase,
-      checkpoint_reason: reason,
-      rss_bytes: rss,
-      rss_high_water_bytes: this.rssHighWater,
-      heap_total_bytes: heapTotal,
-      heap_used_bytes: heapUsed,
-      heap_used_high_water_bytes: this.heapUsedHighWater,
-      heap_limit_bytes: heapLimit,
-      heap_used_percent:
-        heapLimit > 0 ? Math.round((heapUsed / heapLimit) * 1000) / 10 : 0,
-      external_bytes: external,
-      array_buffer_bytes: arrayBuffers,
-      provider_request: input.providerRequest,
-      retention: input.retention,
-    });
-    this.lastEmittedAt = now;
-    this.lastEmittedHeapUsed = heapUsed;
-    return true;
+      this.options.emit({
+        level: "info",
+        event: "agent_long_memory_checkpoint",
+        service: "agent-long",
+        environment:
+          this.options.environment ??
+          process.env.VERCEL_ENV ??
+          process.env.NODE_ENV ??
+          "unknown",
+        timestamp: new Date(now).toISOString(),
+        run_id: this.options.runId,
+        chat_id: this.options.chatId,
+        user_id: this.options.userId,
+        phase: input.phase,
+        checkpoint_reason: reason,
+        rss_bytes: rss,
+        rss_high_water_bytes: this.rssHighWater,
+        heap_total_bytes: heapTotal,
+        heap_used_bytes: heapUsed,
+        heap_used_high_water_bytes: this.heapUsedHighWater,
+        heap_limit_bytes: heapLimit,
+        heap_used_percent:
+          heapLimit > 0 ? Math.round((heapUsed / heapLimit) * 1000) / 10 : 0,
+        external_bytes: external,
+        array_buffer_bytes: arrayBuffers,
+        provider_request: input.providerRequest,
+        retention: input.retention,
+      });
+      this.lastEmittedAt = now;
+      this.lastEmittedHeapUsed = heapUsed;
+      return true;
+    } catch {
+      return false;
+    }
   }
 }
