@@ -1,6 +1,10 @@
+/** Maximum provider silence allowed before the active model request is aborted. */
 export const PROVIDER_STREAM_INACTIVITY_TIMEOUT_MS = 5 * 60 * 1000;
+
+/** Stable error code used to classify provider inactivity separately from cancellation. */
 export const PROVIDER_STREAM_TIMEOUT_CODE = "PROVIDER_STREAM_TIMEOUT";
 
+/** Identifies whether provider activity stopped before or after its first event. */
 export type ProviderStreamTimeoutPhase = "first_chunk" | "between_chunks";
 
 /** Typed abort reason that distinguishes provider inactivity from caller cancellation. */
@@ -23,6 +27,7 @@ type TimeoutHandle = ReturnType<typeof setTimeout> & {
   unref?: () => void;
 };
 
+/** Lifecycle controls for timing provider activity without timing local tools. */
 export type ProviderStreamTimeoutGuard = {
   signal: AbortSignal;
   startProviderStep: () => void;
