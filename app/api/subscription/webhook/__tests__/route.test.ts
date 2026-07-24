@@ -525,6 +525,116 @@ describe("POST /api/subscription/webhook", () => {
     );
   });
 
+  it.each(["canceled", "incomplete_expired"] as const)(
+    "skips paid invoice side effects for a terminal %s subscription",
+    async (subscriptionStatus) => {
+      mockGetReferralRewardConfig.mockReturnValue({
+        enabled: true,
+        referrerRewardDollars: 10,
+      });
+      mockConstructEvent.mockReturnValue({
+        id: `evt_invoice_paid_${subscriptionStatus}`,
+        type: "invoice.paid",
+        data: {
+          object: {
+            id: `in_${subscriptionStatus}`,
+            customer: "cus_terminal",
+            amount_paid: 2500,
+            currency: "usd",
+            billing_reason: "subscription_cycle",
+            parent: {
+              subscription_details: {
+                subscription: "sub_terminal",
+              },
+            },
+            status_transitions: {
+              paid_at: 1_784_456_277,
+            },
+          },
+        },
+      });
+      mockRetrieveCustomer.mockResolvedValue({
+        deleted: false,
+        id: "cus_terminal",
+        metadata: {
+          workOSOrganizationId: "org_terminal",
+        },
+      } as never);
+      mockListMemberships.mockResolvedValue({
+        autoPagination: jest
+          .fn()
+          .mockResolvedValue([{ userId: "user_terminal" }]),
+      } as never);
+      mockRetrieveSubscription.mockResolvedValue({
+        id: "sub_terminal",
+        status: subscriptionStatus,
+        canceled_at: subscriptionStatus === "canceled" ? 1_784_285_151 : null,
+        ended_at: 1_784_285_151,
+        metadata: {},
+        items: {
+          data: [
+            {
+              quantity: 1,
+              current_period_end: 1_786_900_800,
+              price: {
+                id: "price_pro",
+                lookup_key: "pro-monthly-plan",
+                recurring: { interval: "month", interval_count: 1 },
+                product: {
+                  id: "prod_pro",
+                  name: "HackerAI Pro",
+                  metadata: {},
+                },
+              },
+            },
+          ],
+        },
+      } as never);
+
+      const { POST } = await import("../route");
+
+      const response = await POST(makeWebhookRequest());
+      const body = await response.json();
+
+      expect(response.status).toBe(200);
+      expect(body).toEqual({ received: true });
+      expect(mockPostHogWarn).toHaveBeenCalledWith(
+        "billing_invoice_paid_terminal_subscription_skipped",
+        expect.objectContaining({
+          event: "billing_invoice_paid_terminal_subscription_skipped",
+          userId: "user_terminal",
+          user_ids: ["user_terminal"],
+          org_id: "org_terminal",
+          stripe_customer_id: "cus_terminal",
+          stripe_subscription_id: "sub_terminal",
+          stripe_invoice_id: `in_${subscriptionStatus}`,
+          subscription_status: subscriptionStatus,
+          billing_reason: "subscription_cycle",
+          amount_paid_dollars: 25,
+          requires_manual_reconciliation: true,
+        }),
+      );
+      expect(mockResetRateLimitBuckets).not.toHaveBeenCalled();
+      expect(mockApplyProratedTierChangeBucket).not.toHaveBeenCalled();
+      expect(mockConvexMutation).not.toHaveBeenCalledWith(
+        "referrals.setReferralCodesPaidEligibility",
+        expect.anything(),
+      );
+      expect(mockConvexMutation).not.toHaveBeenCalledWith(
+        "unitEconomics.recordRevenueEvent",
+        expect.anything(),
+      );
+      expect(mockConvexMutation).toHaveBeenNthCalledWith(
+        2,
+        "extraUsage.checkAndMarkWebhook",
+        {
+          serviceKey: "service_key",
+          eventId: `evt_invoice_paid_${subscriptionStatus}`,
+        },
+      );
+    },
+  );
+
   it("resets the grandfathered $20 Pro price to $20 of included usage", async () => {
     const periodEnd = 1_785_000_000;
     mockConstructEvent.mockReturnValue({
