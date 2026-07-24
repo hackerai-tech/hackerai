@@ -186,4 +186,53 @@ describe("AgentLongMemoryTelemetry", () => {
       heap_used_percent: 0,
     });
   });
+
+  it("does not propagate memory collector failures", () => {
+    const emit = jest.fn();
+    const telemetry = new AgentLongMemoryTelemetry({
+      runId: "run_123",
+      chatId: "chat_123",
+      userId: "user_123",
+      emit,
+      readMemory: () => {
+        throw new Error("memory stats unavailable");
+      },
+    });
+
+    expect(telemetry.checkpoint({ phase: "run_failed", force: true })).toBe(
+      false,
+    );
+    expect(emit).not.toHaveBeenCalled();
+  });
+
+  it("does not mark a failed emission as a completed checkpoint", () => {
+    const emit = jest
+      .fn()
+      .mockImplementationOnce(() => {
+        throw new Error("logger unavailable");
+      })
+      .mockImplementation(() => undefined);
+    const telemetry = new AgentLongMemoryTelemetry({
+      runId: "run_123",
+      chatId: "chat_123",
+      userId: "user_123",
+      emit,
+      now: () => 1_000,
+      readMemory: () => ({
+        rss: 200 * MIB,
+        heapTotal: 180 * MIB,
+        heapUsed: 100 * MIB,
+        external: 0,
+        arrayBuffers: 0,
+      }),
+      readHeapLimit: () => 416 * MIB,
+    });
+
+    expect(telemetry.checkpoint({ phase: "provider_request" })).toBe(false);
+    expect(telemetry.checkpoint({ phase: "provider_request" })).toBe(true);
+    expect(emit).toHaveBeenCalledTimes(2);
+    expect(emit.mock.calls[1]?.[0]).toMatchObject({
+      checkpoint_reason: "initial",
+    });
+  });
 });
