@@ -1,4 +1,4 @@
-export const PROVIDER_STREAM_INACTIVITY_TIMEOUT_MS = 2 * 60 * 1000;
+export const PROVIDER_STREAM_INACTIVITY_TIMEOUT_MS = 5 * 60 * 1000;
 export const PROVIDER_STREAM_TIMEOUT_CODE = "PROVIDER_STREAM_TIMEOUT";
 
 export type ProviderStreamTimeoutPhase = "first_chunk" | "between_chunks";
@@ -34,9 +34,10 @@ export type ProviderStreamTimeoutGuard = {
 };
 
 /**
- * AI SDK chunk timeouts begin after the first chunk and remain active while a
- * tool executes. Track provider callbacks directly so both initial and
- * between-chunk stalls are bounded without putting terminal work on the clock.
+ * AI SDK chunk timeouts are first armed after the SDK receives a stream event
+ * and can remain active while a tool executes. Track provider callbacks
+ * directly so initial and between-chunk stalls are bounded without putting
+ * terminal work on the clock.
  */
 export const createProviderStreamTimeoutGuard = (args: {
   externalAbortSignal: AbortSignal;

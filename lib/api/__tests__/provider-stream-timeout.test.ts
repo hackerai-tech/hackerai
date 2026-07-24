@@ -4,6 +4,7 @@ import {
 } from "@/lib/utils/error-utils";
 import {
   createProviderStreamTimeoutGuard,
+  PROVIDER_STREAM_INACTIVITY_TIMEOUT_MS,
   ProviderStreamTimeoutError,
 } from "@/lib/api/provider-stream-timeout";
 
@@ -14,6 +15,10 @@ describe("provider stream inactivity timeout", () => {
 
   afterEach(() => {
     jest.useRealTimers();
+  });
+
+  it("uses a five-minute provider inactivity window by default", () => {
+    expect(PROVIDER_STREAM_INACTIVITY_TIMEOUT_MS).toBe(5 * 60 * 1000);
   });
 
   it("times out a provider step that never emits a first chunk", async () => {
@@ -104,7 +109,7 @@ describe("provider stream inactivity timeout", () => {
   it("uses the existing provider timeout error category", () => {
     const error = new ProviderStreamTimeoutError({
       phase: "between_chunks",
-      timeoutMs: 120_000,
+      timeoutMs: PROVIDER_STREAM_INACTIVITY_TIMEOUT_MS,
     });
 
     expect(getProviderErrorCategory(extractErrorDetails(error))).toBe(
