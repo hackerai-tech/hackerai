@@ -217,6 +217,7 @@ import {
 import { FREE_AGENT_LONG_RUN_LOCK_TTL_SECONDS } from "@/lib/rate-limit/free-config";
 import { isCentrifugoSandbox } from "@/lib/ai/tools/utils/sandbox-types";
 import { AgentRunTimingTracker } from "@/lib/chat/agent-run-timing";
+import { AgentLongMemoryTelemetry } from "@/lib/chat/agent-long-memory-telemetry";
 
 const AGENT_LONG_FREE_MAX_DURATION_SECONDS = 60 * 60;
 const AGENT_LONG_PAID_MAX_DURATION_SECONDS = 2 * 60 * 60;
@@ -1679,6 +1680,13 @@ export const agentLongTask = task({
     const taskStartTime = Date.now();
     const agentLongMaxDurationMs = getAgentLongMaxDurationMs(subscription);
     const runTimingTracker = new AgentRunTimingTracker();
+    const memoryTelemetry = new AgentLongMemoryTelemetry({
+      runId: ctx.run.id,
+      chatId,
+      userId,
+      emit: (event) =>
+        triggerLogger.info("[agent-long] memory checkpoint", event),
+    });
     const getTriggerRunTelemetry = () => {
       const currentUsage = triggerUsage.getCurrent();
       return {
@@ -2818,6 +2826,13 @@ export const agentLongTask = task({
               completionSignalTracker,
               onModelStreamStart: runTimingTracker.startModelStream,
               onModelStreamFinish: runTimingTracker.finishModelStream,
+              onProviderRequestDiagnostics: (providerRequest, retention) => {
+                memoryTelemetry.checkpoint({
+                  phase: "provider_request",
+                  providerRequest,
+                  retention,
+                });
+              },
               settleUsageAfterStep,
               onBudgetAbort: (details) =>
                 captureAgentBudgetAbort({
@@ -3607,6 +3622,7 @@ export const agentLongTask = task({
           error,
         });
       }
+      memoryTelemetry.checkpoint({ phase: "stream_finished" });
 
       const terminalStreamError =
         streamError ?? getTerminalProviderStreamError(terminalAgentState);
@@ -3638,6 +3654,7 @@ export const agentLongTask = task({
       await phLogger.flush().catch(() => {});
     } catch (error) {
       await releaseFreeRunLockOnce();
+      memoryTelemetry.checkpoint({ phase: "run_failed", force: true });
       const chatMissingAfterStream =
         streamPiped &&
         error instanceof ChatSDKError &&

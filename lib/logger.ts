@@ -39,6 +39,15 @@ export interface ProviderRequestDiagnostics {
   has_multimodal_tool_results: boolean;
 }
 
+export interface ProviderRequestRetentionDiagnostics {
+  raw_message_count: number;
+  rolling_message_count: number;
+  final_ui_message_count: number;
+  transcript_source_message_count: number;
+  summarization_count: number;
+  compaction_attempt_count: number;
+}
+
 /**
  * Wide event structure for chat/agent API requests
  */
