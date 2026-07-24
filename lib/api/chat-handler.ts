@@ -1332,6 +1332,7 @@ export const createChatHandler = () => {
                 state.lastStepInputTokens = 0;
                 state.stoppedDueToTokenExhaustion = false;
                 state.stoppedDueToElapsedTimeout = false;
+                state.stoppedDueToProviderStreamTimeout = false;
                 state.stoppedDueToDoomLoop = false;
                 state.stoppedDueToAssistantContentLoop = false;
                 state.assistantContentLoopDetection = undefined;
@@ -1432,9 +1433,11 @@ export const createChatHandler = () => {
                           ? "assistant_content_loop"
                           : state.stoppedDueToDoomLoop
                             ? "doom_loop"
-                            : shouldRetryInterruptedToolInput
-                              ? "interrupted_tool_input"
-                              : "incomplete_stream";
+                            : state.stoppedDueToProviderStreamTimeout
+                              ? "provider_timeout"
+                              : shouldRetryInterruptedToolInput
+                                ? "interrupted_tool_input"
+                                : "incomplete_stream";
                       phLogger.warn(
                         shouldRetryWithoutImageToolResults
                           ? "Provider rejected image tool output - retrying without images"
@@ -1442,11 +1445,13 @@ export const createChatHandler = () => {
                             ? "Assistant content loop detected - triggering fallback"
                             : retryReason === "doom_loop"
                               ? "Agent doom loop detected - triggering fallback"
-                              : retryReason === "interrupted_tool_input"
-                                ? "Provider stream errored during tool input - triggering bounded fallback"
-                                : hasTerminalProviderStreamError
-                                  ? "Provider stream errored before useful output - triggering fallback"
-                                  : "Stream finished incomplete - triggering fallback",
+                              : retryReason === "provider_timeout"
+                                ? "Provider stream timed out before useful output - triggering fallback"
+                                : retryReason === "interrupted_tool_input"
+                                  ? "Provider stream errored during tool input - triggering bounded fallback"
+                                  : hasTerminalProviderStreamError
+                                    ? "Provider stream errored before useful output - triggering fallback"
+                                    : "Stream finished incomplete - triggering fallback",
                         {
                           chatId,
                           endpoint,
@@ -1476,7 +1481,9 @@ export const createChatHandler = () => {
                       // text placeholders.
                       if (
                         !isRetryWithFallback &&
-                        (!isAborted || stoppedDueToAssistantContentLoop) &&
+                        (!isAborted ||
+                          state.stoppedDueToProviderStreamTimeout ||
+                          stoppedDueToAssistantContentLoop) &&
                         (isAutoModel ||
                           shouldRetryWithoutImageToolResults ||
                           loopTriggeredRetry ||
@@ -1489,6 +1496,7 @@ export const createChatHandler = () => {
                         state.providerRejectedMultimodalToolResults = false;
                         state.stoppedDueToTokenExhaustion = false;
                         state.stoppedDueToElapsedTimeout = false;
+                        state.stoppedDueToProviderStreamTimeout = false;
                         state.stoppedDueToDoomLoop = false;
                         state.stoppedDueToAssistantContentLoop = false;
                         state.assistantContentLoopDetection = undefined;
@@ -1591,9 +1599,14 @@ export const createChatHandler = () => {
                                 // reason to budget-exhausted; do it before
                                 // analytics and persistence consume state.
                                 await deductAccumulatedUsage();
-                                const outcome = retryAborted
-                                  ? "aborted"
-                                  : "success";
+                                const retryHasTerminalProviderStreamError =
+                                  state.streamFinishReason === "error";
+                                const outcome =
+                                  retryHasTerminalProviderStreamError
+                                    ? "error"
+                                    : retryAborted
+                                      ? "aborted"
+                                      : "success";
                                 captureAgentCompletionAnalytics({
                                   posthog,
                                   userId,
@@ -1623,13 +1636,15 @@ export const createChatHandler = () => {
                                       tracker: completionSignalTracker,
                                     }),
                                 });
-                                chatLogger!.emitSuccess({
-                                  finishReason: state.streamFinishReason,
-                                  wasAborted: retryAborted,
-                                  wasPreemptiveTimeout: false,
-                                  hadSummarization:
-                                    summarizationTracker.hasSummarized,
-                                });
+                                if (!retryHasTerminalProviderStreamError) {
+                                  chatLogger!.emitSuccess({
+                                    finishReason: state.streamFinishReason,
+                                    wasAborted: retryAborted,
+                                    wasPreemptiveTimeout: false,
+                                    hadSummarization:
+                                      summarizationTracker.hasSummarized,
+                                  });
+                                }
 
                                 const generatedTitle = await titlePromise;
 
@@ -1874,7 +1889,8 @@ export const createChatHandler = () => {
                       isAborted &&
                       !isPreemptiveAbort &&
                       !state.stoppedDueToBudgetExhaustion &&
-                      !state.stoppedDueToAgentRunSpendCap
+                      !state.stoppedDueToAgentRunSpendCap &&
+                      !state.stoppedDueToProviderStreamTimeout
                     ) {
                       state.streamFinishReason = undefined;
                     }
@@ -1893,7 +1909,13 @@ export const createChatHandler = () => {
                     // budget-exhausted; do it before analytics and persistence
                     // consume state.
                     await deductAccumulatedUsage();
-                    const outcome = isAborted ? "aborted" : "success";
+                    const terminalProviderStreamError =
+                      state.streamFinishReason === "error";
+                    const outcome = terminalProviderStreamError
+                      ? "error"
+                      : isAborted
+                        ? "aborted"
+                        : "success";
                     captureAgentCompletionAnalytics({
                       posthog,
                       userId,
@@ -1921,12 +1943,14 @@ export const createChatHandler = () => {
                         tracker: completionSignalTracker,
                       }),
                     });
-                    chatLogger!.emitSuccess({
-                      finishReason: state.streamFinishReason,
-                      wasAborted: isAborted,
-                      wasPreemptiveTimeout: isPreemptiveAbort,
-                      hadSummarization: summarizationTracker.hasSummarized,
-                    });
+                    if (!terminalProviderStreamError) {
+                      chatLogger!.emitSuccess({
+                        finishReason: state.streamFinishReason,
+                        wasAborted: isAborted,
+                        wasPreemptiveTimeout: isPreemptiveAbort,
+                        hadSummarization: summarizationTracker.hasSummarized,
+                      });
+                    }
                     logStep("settle_usage_and_emit_success", stepStart);
 
                     // Sandbox cleanup is automatic with auto-pause

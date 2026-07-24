@@ -1,5 +1,6 @@
 import type { ModelMessage, UIMessage } from "ai";
 import { MAX_CONTEXT_COMPACTION_ATTEMPTS_PER_AGENT_STREAM } from "@/lib/chat/summarization/constants";
+import { PROVIDER_STREAM_INACTIVITY_TIMEOUT_MS } from "@/lib/api/provider-stream-timeout";
 
 const mockStreamText = jest.fn();
 const mockRunSummarizationStep = jest.fn();
@@ -81,7 +82,10 @@ jest.mock("@/lib/ai/providers", () => ({
     modelName === "model-deepseek-v4-flash",
 }));
 jest.mock("@/lib/ai/tools/utils/pty-session-manager", () => ({
-  ptySessionManager: { closeAllSessions: jest.fn() },
+  ptySessionManager: {
+    closeAll: jest.fn(() => Promise.resolve()),
+    closeAllSessions: jest.fn(),
+  },
 }));
 jest.mock("@/lib/ai/tools/prompt-serialization", () => ({
   createPromptSerializationTools: () => ({}),
@@ -279,6 +283,65 @@ describe("createAgentStream repeated compaction", () => {
   beforeEach(() => {
     jest.clearAllMocks();
     mockStreamText.mockImplementation((options) => options);
+  });
+
+  it("classifies a no-first-chunk guard abort as a provider timeout", async () => {
+    jest.useFakeTimers();
+    try {
+      const usageRefundTracker = { refund: jest.fn(() => Promise.resolve()) };
+      const chatLogger = {
+        recordProviderRequestDiagnostics: jest.fn(),
+        recordProviderError: jest.fn(),
+      };
+      const onModelStreamStart = jest.fn();
+      const onModelStreamFinish = jest.fn();
+      const state = initAgentStreamState([uiMessage("initial", "hello")], {
+        usedTokens: 0,
+        maxTokens: 128_000,
+      });
+      const stream = (await createAgentStream(
+        "test-model",
+        createTestStreamContext({
+          usageTracker: { hasUsage: false },
+          usageRefundTracker,
+          chatLogger,
+          onModelStreamStart,
+          onModelStreamFinish,
+        }) as any,
+        state,
+      )) as any;
+
+      stream.experimental_onStepStart();
+      await jest.advanceTimersByTimeAsync(
+        PROVIDER_STREAM_INACTIVITY_TIMEOUT_MS,
+      );
+
+      expect(stream.abortSignal.aborted).toBe(true);
+      expect(state).toMatchObject({
+        stoppedDueToProviderStreamTimeout: true,
+        streamFinishReason: "error",
+        providerError: expect.objectContaining({
+          name: "ProviderStreamTimeoutError",
+          code: "PROVIDER_STREAM_TIMEOUT",
+          phase: "first_chunk",
+        }),
+      });
+      expect(onModelStreamStart).toHaveBeenCalledTimes(1);
+      expect(onModelStreamFinish).toHaveBeenCalledTimes(1);
+
+      await stream.onAbort({ steps: [] });
+
+      expect(chatLogger.recordProviderError).toHaveBeenCalledWith(
+        state.providerError,
+        expect.objectContaining({
+          mode: "agent",
+          model: "test-model",
+        }),
+      );
+      expect(usageRefundTracker.refund).toHaveBeenCalledTimes(1);
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
   it("rebases every later prepareStep onto the latest in-run summary", async () => {

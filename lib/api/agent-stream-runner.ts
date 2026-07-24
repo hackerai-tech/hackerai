@@ -92,6 +92,7 @@ import {
   extractOpenRouterMetadata,
   mergeOpenRouterMetadata,
 } from "@/lib/api/openrouter-metadata";
+import { createProviderStreamTimeoutGuard } from "@/lib/api/provider-stream-timeout";
 import { getOpenRouterUpstreamInferenceCostFromUsageRaw } from "@/lib/provider-usage-cost";
 import { classifyProviderOverflowError } from "@/lib/utils/error-utils";
 import type { UsageTracker } from "@/lib/usage-tracker";
@@ -199,6 +200,8 @@ export type AgentStreamState = {
   stoppedDueToTokenExhaustion: boolean;
   /** Maps to stoppedDueToPreemptiveTimeout in chat-handler, stoppedDueToElapsedTimeout in agent-long. */
   stoppedDueToElapsedTimeout: boolean;
+  /** Internal provider inactivity timeout; distinct from caller/user aborts. */
+  stoppedDueToProviderStreamTimeout: boolean;
   stoppedDueToDoomLoop: boolean;
   stoppedDueToAssistantContentLoop: boolean;
   assistantContentLoopDetection: AssistantContentLoopDetection | undefined;
@@ -227,6 +230,7 @@ export function initAgentStreamState(
     providerRejectedMultimodalToolResults: false,
     stoppedDueToTokenExhaustion: false,
     stoppedDueToElapsedTimeout: false,
+    stoppedDueToProviderStreamTimeout: false,
     stoppedDueToDoomLoop: false,
     stoppedDueToAssistantContentLoop: false,
     assistantContentLoopDetection: undefined,
@@ -302,16 +306,16 @@ const combineAbortSignals = (signals: AbortSignal[]): AbortSignal => {
   }
 
   const controller = new AbortController();
-  const abort = () => {
-    if (!controller.signal.aborted) controller.abort();
+  const abort = (signal: AbortSignal) => {
+    if (!controller.signal.aborted) controller.abort(signal.reason);
   };
 
   for (const signal of signals) {
     if (signal.aborted) {
-      abort();
+      abort(signal);
       break;
     }
-    signal.addEventListener("abort", abort, { once: true });
+    signal.addEventListener("abort", () => abort(signal), { once: true });
   }
 
   return controller.signal;
@@ -536,10 +540,6 @@ export async function createAgentStream(
   let lastRequestedSlug = requestedSlug;
   const assistantContentLoopMonitor = createAssistantContentLoopMonitor();
   const assistantContentLoopAbortController = new AbortController();
-  const abortSignal = combineAbortSignals([
-    ctx.abortController.signal,
-    assistantContentLoopAbortController.signal,
-  ]);
   const summarizationThreshold = getSummarizationThresholdTokens(
     getMaxTokensForSubscription(ctx.subscription, { mode: ctx.mode }),
   );
@@ -727,6 +727,64 @@ export async function createAgentStream(
     );
     return latestProviderRequestDiagnostics;
   };
+  let recordedProviderError: unknown;
+  const recordProviderError = async (error: unknown) => {
+    if (recordedProviderError === error) return;
+    recordedProviderError = error;
+    state.providerError = error;
+    if (
+      streamHasImageViewResults &&
+      isProviderMultimodalToolResultRejectionError(error)
+    ) {
+      state.providerRejectedMultimodalToolResults = true;
+    }
+    const overflowKind = classifyProviderOverflowError(error);
+    if (overflowKind) {
+      state.stoppedDueToTokenExhaustion = true;
+      state.streamFinishReason = TOKEN_EXHAUSTION_FINISH_REASON;
+      console.warn("[agent-stream] provider overflow detected", {
+        overflowKind,
+        chatId: ctx.chatId,
+        model: modelName,
+        hadSummarization: ctx.summarizationTracker.hasSummarized,
+      });
+    }
+    if (!isXaiSafetyError(error)) {
+      const fallbackSlugs = getFallbackSlugs(modelName, ctx.mode, {
+        hasMultimodalToolResults: streamHasImageViewResults,
+      });
+      ctx.chatLogger?.recordProviderError(error, {
+        mode: ctx.mode,
+        model: modelName,
+        requestedModelSlug: requestedSlug,
+        fallbackModelSlugs:
+          fallbackSlugs.length > 0 ? fallbackSlugs : undefined,
+        userId: ctx.userId,
+        subscription: ctx.subscription,
+        isTemporary: ctx.temporary,
+        providerRequest: latestProviderRequestDiagnostics,
+      });
+    }
+    if (!ctx.usageTracker.hasUsage) {
+      await ctx.usageRefundTracker.refund();
+    }
+  };
+  let providerTimeoutCleanupPromise: Promise<void> | undefined;
+  const providerStreamTimeoutGuard = createProviderStreamTimeoutGuard({
+    externalAbortSignal: ctx.abortController.signal,
+    onTimeout: (error) => {
+      state.stoppedDueToProviderStreamTimeout = true;
+      state.streamFinishReason = "error";
+      state.providerError = error;
+      ctx.onModelStreamFinish?.();
+      providerTimeoutCleanupPromise = recordProviderError(error);
+    },
+  });
+  const abortSignal = combineAbortSignals([
+    ctx.abortController.signal,
+    assistantContentLoopAbortController.signal,
+    providerStreamTimeoutGuard.signal,
+  ]);
   const initialModelInfo = getEffectiveModelInfo();
   const initialProviderOptions = getStepProviderOptions(
     initialModelInfo.modelName,
@@ -760,8 +818,14 @@ export async function createAgentStream(
     activeTools: initialActiveTools,
     abortSignal,
     providerOptions: initialProviderOptions,
-    experimental_onStepStart: () => ctx.onModelStreamStart?.(),
-    experimental_onToolCallStart: () => ctx.onModelStreamFinish?.(),
+    experimental_onStepStart: () => {
+      providerStreamTimeoutGuard.startProviderStep();
+      ctx.onModelStreamStart?.();
+    },
+    experimental_onToolCallStart: () => {
+      providerStreamTimeoutGuard.pauseForToolExecution();
+      ctx.onModelStreamFinish?.();
+    },
 
     prepareStep: async ({ steps, messages }) => {
       const rawModelMessages = messages as ModelMessage[];
@@ -1141,6 +1205,7 @@ export async function createAgentStream(
     ],
 
     onChunk: async (chunk) => {
+      providerStreamTimeoutGuard.recordProviderActivity();
       if (chunk.chunk.type === "text-delta") {
         if (state.postSummarizationContinuationActive) {
           state.postSummarizationText += chunk.chunk.text;
@@ -1174,6 +1239,7 @@ export async function createAgentStream(
       }
 
       if (chunk.chunk.type === "tool-call") {
+        providerStreamTimeoutGuard.pauseForToolExecution();
         if (state.postSummarizationContinuationActive) {
           state.postSummarizationToolCallCount++;
         }
@@ -1185,6 +1251,7 @@ export async function createAgentStream(
     },
 
     onStepFinish: async ({ usage, response, providerMetadata, content }) => {
+      providerStreamTimeoutGuard.finishProviderStep();
       ctx.onModelStreamFinish?.();
       recordAgentStepCompletion(ctx.completionSignalTracker, content);
       let stepUsageCostIndex: number | undefined;
@@ -1237,6 +1304,7 @@ export async function createAgentStream(
     },
 
     onFinish: async (finishResult) => {
+      providerStreamTimeoutGuard.dispose();
       ctx.onModelStreamFinish?.();
       const { finishReason, usage, response } = finishResult;
       const hardReason = ctx.getHardTimeoutReason();
@@ -1263,6 +1331,8 @@ export async function createAgentStream(
       }
       if (hardReason !== null) {
         state.streamFinishReason = hardReason;
+      } else if (state.stoppedDueToProviderStreamTimeout) {
+        state.streamFinishReason = "error";
       } else if (state.stoppedDueToElapsedTimeout) {
         state.streamFinishReason = PREEMPTIVE_TIMEOUT_FINISH_REASON;
       } else if (state.stoppedDueToTokenExhaustion) {
@@ -1355,43 +1425,8 @@ export async function createAgentStream(
     },
 
     onError: async ({ error }) => {
-      state.providerError = error;
-      if (
-        streamHasImageViewResults &&
-        isProviderMultimodalToolResultRejectionError(error)
-      ) {
-        state.providerRejectedMultimodalToolResults = true;
-      }
-      const overflowKind = classifyProviderOverflowError(error);
-      if (overflowKind) {
-        state.stoppedDueToTokenExhaustion = true;
-        state.streamFinishReason = TOKEN_EXHAUSTION_FINISH_REASON;
-        console.warn("[agent-stream] provider overflow detected", {
-          overflowKind,
-          chatId: ctx.chatId,
-          model: modelName,
-          hadSummarization: ctx.summarizationTracker.hasSummarized,
-        });
-      }
-      if (!isXaiSafetyError(error)) {
-        const fallbackSlugs = getFallbackSlugs(modelName, ctx.mode, {
-          hasMultimodalToolResults: streamHasImageViewResults,
-        });
-        ctx.chatLogger?.recordProviderError(error, {
-          mode: ctx.mode,
-          model: modelName,
-          requestedModelSlug: requestedSlug,
-          fallbackModelSlugs:
-            fallbackSlugs.length > 0 ? fallbackSlugs : undefined,
-          userId: ctx.userId,
-          subscription: ctx.subscription,
-          isTemporary: ctx.temporary,
-          providerRequest: latestProviderRequestDiagnostics,
-        });
-      }
-      if (!ctx.usageTracker.hasUsage) {
-        await ctx.usageRefundTracker.refund();
-      }
+      providerStreamTimeoutGuard.dispose();
+      await recordProviderError(error);
       await ptySessionManager
         .closeAll(ctx.chatId)
         .catch((err) =>
@@ -1400,7 +1435,13 @@ export async function createAgentStream(
     },
 
     onAbort: async ({ steps }) => {
+      providerStreamTimeoutGuard.dispose();
       recordAssistantContentLoopAbortState(steps);
+      const timeoutError = providerStreamTimeoutGuard.getTimeoutError();
+      if (timeoutError) {
+        await (providerTimeoutCleanupPromise ??
+          recordProviderError(timeoutError));
+      }
       await ptySessionManager
         .closeAll(ctx.chatId)
         .catch((err) =>

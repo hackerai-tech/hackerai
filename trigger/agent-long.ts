@@ -2882,6 +2882,7 @@ export const agentLongTask = task({
                 state.lastStepInputTokens = 0;
                 state.stoppedDueToTokenExhaustion = false;
                 state.stoppedDueToElapsedTimeout = false;
+                state.stoppedDueToProviderStreamTimeout = false;
                 state.stoppedDueToDoomLoop = false;
                 state.stoppedDueToAssistantContentLoop = false;
                 state.assistantContentLoopDetection = undefined;
@@ -2981,7 +2982,9 @@ export const agentLongTask = task({
                         (shouldRetryWithFallback ||
                           shouldRetryWithoutImageToolResults) &&
                         !isRetryWithFallback &&
-                        (!isAborted || stoppedDueToAssistantContentLoop) &&
+                        (!isAborted ||
+                          state.stoppedDueToProviderStreamTimeout ||
+                          stoppedDueToAssistantContentLoop) &&
                         (isAutoModel ||
                           shouldRetryWithoutImageToolResults ||
                           stoppedDueToAssistantContentLoop ||
@@ -2994,9 +2997,11 @@ export const agentLongTask = task({
                             ? "assistant_content_loop"
                             : state.stoppedDueToDoomLoop
                               ? "doom_loop"
-                              : shouldRetryInterruptedToolInput
-                                ? "interrupted_tool_input"
-                                : "incomplete_stream";
+                              : state.stoppedDueToProviderStreamTimeout
+                                ? "provider_timeout"
+                                : shouldRetryInterruptedToolInput
+                                  ? "interrupted_tool_input"
+                                  : "incomplete_stream";
                         phLogger.warn(
                           "[agent-long] Provider output triggered fallback retry",
                           {
@@ -3026,6 +3031,7 @@ export const agentLongTask = task({
                         state.providerRejectedMultimodalToolResults = false;
                         state.stoppedDueToTokenExhaustion = false;
                         state.stoppedDueToElapsedTimeout = false;
+                        state.stoppedDueToProviderStreamTimeout = false;
                         state.stoppedDueToDoomLoop = false;
                         state.stoppedDueToAssistantContentLoop = false;
                         state.assistantContentLoopDetection = undefined;
@@ -3127,10 +3133,12 @@ export const agentLongTask = task({
                                   // reason to budget-exhausted; do it before
                                   // analytics and persistence consume state.
                                   await deductAccumulatedUsage();
-                                  const outcome = retryAborted
-                                    ? "aborted"
-                                    : isTerminalProviderStreamError(state)
-                                      ? "error"
+                                  const outcome = isTerminalProviderStreamError(
+                                    state,
+                                  )
+                                    ? "error"
+                                    : retryAborted
+                                      ? "aborted"
                                       : "success";
                                   captureAgentCompletionAnalytics({
                                     posthog,
@@ -3271,7 +3279,8 @@ export const agentLongTask = task({
                         isAborted &&
                         triggerSignal.aborted &&
                         !state.stoppedDueToBudgetExhaustion &&
-                        !state.stoppedDueToElapsedTimeout
+                        !state.stoppedDueToElapsedTimeout &&
+                        !state.stoppedDueToProviderStreamTimeout
                       ) {
                         state.streamFinishReason = undefined;
                       }
@@ -3288,10 +3297,10 @@ export const agentLongTask = task({
                       // budget-exhausted; do it before analytics and
                       // persistence consume state.
                       await deductAccumulatedUsage();
-                      const outcome = isAborted
-                        ? "aborted"
-                        : isTerminalProviderStreamError(state)
-                          ? "error"
+                      const outcome = isTerminalProviderStreamError(state)
+                        ? "error"
+                        : isAborted
+                          ? "aborted"
                           : "success";
                       captureAgentCompletionAnalytics({
                         posthog,
