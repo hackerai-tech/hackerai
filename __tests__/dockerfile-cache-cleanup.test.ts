@@ -57,27 +57,27 @@ describe("sandbox Dockerfile cache cleanup", () => {
   });
 
   test("disables pip's download cache for every package installation", () => {
-    const pipRuns = runInstructions.filter((run) =>
-      run.includes("pip3 install"),
+    const pipCommands = runInstructions.flatMap((run) =>
+      run.split("&&").filter((command) => command.includes("pip3 install")),
     );
 
-    expect(pipRuns).not.toHaveLength(0);
-    for (const run of pipRuns) {
-      expect(run.match(/pip3 install/g)).toHaveLength(
-        run.match(/--no-cache-dir/g)?.length ?? 0,
-      );
+    expect(pipCommands).not.toHaveLength(0);
+    for (const command of pipCommands) {
+      expect(command).toContain("--no-cache-dir");
     }
   });
 
   test("removes the temporary npm cache before validating agent-browser", () => {
     const npmRun = findRun("agent-browser@0.26.0");
+    const installIndex = npmRun.indexOf("npm install");
     const cleanupIndex = npmRun.indexOf("rm -rf /tmp/npm-cache");
     const doctorIndex = npmRun.indexOf(
       "agent-browser doctor --offline --quick",
     );
 
     expect(npmRun).toContain("--cache /tmp/npm-cache");
-    expect(cleanupIndex).toBeGreaterThan(-1);
+    expect(installIndex).toBeGreaterThan(-1);
+    expect(cleanupIndex).toBeGreaterThan(installIndex);
     expect(doctorIndex).toBeGreaterThan(cleanupIndex);
   });
 
@@ -85,9 +85,13 @@ describe("sandbox Dockerfile cache cleanup", () => {
     const goRun = findRun(
       "github.com/projectdiscovery/interactsh/cmd/interactsh-client",
     );
+    const lastInstallIndex = goRun.lastIndexOf("go install");
+    const cleanIndex = goRun.indexOf("go clean -cache -modcache");
+    const removeIndex = goRun.indexOf('rm -rf "$GOCACHE" "$GOPATH/pkg/mod"');
 
-    expect(goRun).toContain("go clean -cache -modcache");
-    expect(goRun).toContain('rm -rf "$GOCACHE" "$GOPATH/pkg/mod"');
+    expect(lastInstallIndex).toBeGreaterThan(-1);
+    expect(cleanIndex).toBeGreaterThan(lastInstallIndex);
+    expect(removeIndex).toBeGreaterThan(cleanIndex);
   });
 
   test("validates caches and important runtimes after cleanup", () => {
@@ -118,5 +122,6 @@ describe("sandbox Dockerfile cache cleanup", () => {
 
     expect(dockerfile.match(/^FROM\b/gm)).toHaveLength(1);
     expect(template).toContain(".fromDockerfile(");
+    expect(template).toContain('resolve(__dirname, "../docker/Dockerfile")');
   });
 });
