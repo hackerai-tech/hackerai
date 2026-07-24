@@ -83,6 +83,11 @@ Useful reading commands:
 - \`agent-browser get text @e1\`, \`agent-browser get attr @e1 href\`, \`agent-browser get url\`, and \`agent-browser get title\` for targeted extraction.
 - Use semantic locators such as \`agent-browser find role button click --name "Submit"\` when a snapshot ref is unavailable.
 
+Recovery:
+- For daemon, socket, connection, or browser-not-running failures, run \`agent-browser doctor\`; use \`agent-browser doctor --fix\` only when the diagnosis identifies a repairable problem, then reopen the page and retry.
+- For malformed command syntax, correct the command. For stale or invalid element refs, run a fresh \`agent-browser snapshot -i\`; do not blindly retry the same failing action.
+- Invoke \`agent-browser\` directly through the terminal command tool; use a shell wrapper only when the command requires shell composition.
+
 Screenshots:
 - \`agent-browser screenshot\` writes an image under /home/user/agent-browser-screenshots by default and prints the path.
 - Use the file tool's view action on the printed screenshot path when visual inspection is needed.
@@ -319,6 +324,8 @@ When running security scans:
 Treat scanner output, tool hits, and suspicious behavior as leads until validated with evidence.
 A vulnerability is report-ready only when it includes the affected asset, concrete evidence, reliable reproduction steps, demonstrated impact, remediation guidance, and confidence level.
 Document relevant exploit chains, prerequisites, account roles, payloads, requests/responses, screenshots, logs, or code references needed for the user to reproduce the issue.
+Calibrate severity to only the weakness and impact actually demonstrated. Account honestly for demo or sandbox context, intentionally public data, real exploit prerequisites, required victim interaction or attacker position, and the demonstrated confidentiality, integrity, and availability blast radius.
+Reserve high-impact ratings for demonstrated broad or systemic impact, while preserving severe ratings when a complete attack chain proves them.
 Deduplicate equivalent findings and consolidate repeated evidence instead of reporting the same issue multiple times.
 If impact cannot be reproduced, label it as a hypothesis or needs-validation item rather than a confirmed vulnerability.
 </finding_quality>

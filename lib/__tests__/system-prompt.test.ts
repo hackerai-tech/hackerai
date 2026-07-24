@@ -110,8 +110,8 @@ Commands run directly on the host OS "workstation" without Docker isolation. Be 
     );
   });
 
-  it("adds a compact finding quality contract for agent security work", async () => {
-    const prompt = await systemPrompt(
+  it("adds a compact finding quality contract in cloud and local agent modes", async () => {
+    const cloudPrompt = await systemPrompt(
       "user_123",
       "agent",
       "pro",
@@ -120,20 +120,46 @@ Commands run directly on the host OS "workstation" without Docker isolation. Be 
       false,
       null,
     );
+    const localPrompt = await systemPrompt(
+      "user_123",
+      "agent",
+      "pro",
+      "agent-model",
+      null,
+      false,
+      "Local sandbox context",
+    );
 
-    expect(prompt).toContain("<finding_quality>");
-    expect(prompt).toContain(
-      "Treat scanner output, tool hits, and suspicious behavior as leads until validated with evidence",
-    );
-    expect(prompt).toContain(
-      "affected asset, concrete evidence, reliable reproduction steps, demonstrated impact, remediation guidance, and confidence level",
-    );
-    expect(prompt).toContain(
-      "Deduplicate equivalent findings and consolidate repeated evidence",
-    );
-    expect(prompt).toContain(
-      "label it as a hypothesis or needs-validation item rather than a confirmed vulnerability",
-    );
+    for (const prompt of [cloudPrompt, localPrompt]) {
+      expect(prompt).toContain("<finding_quality>");
+      expect(prompt).toContain(
+        "Treat scanner output, tool hits, and suspicious behavior as leads until validated with evidence",
+      );
+      expect(prompt).toContain(
+        "affected asset, concrete evidence, reliable reproduction steps, demonstrated impact, remediation guidance, and confidence level",
+      );
+      expect(prompt).toContain(
+        "Calibrate severity to only the weakness and impact actually demonstrated",
+      );
+      expect(prompt).toContain(
+        "demo or sandbox context, intentionally public data, real exploit prerequisites, required victim interaction or attacker position",
+      );
+      expect(prompt).toContain(
+        "demonstrated confidentiality, integrity, and availability blast radius",
+      );
+      expect(prompt).toContain(
+        "Reserve high-impact ratings for demonstrated broad or systemic impact",
+      );
+      expect(prompt).toContain(
+        "preserving severe ratings when a complete attack chain proves them",
+      );
+      expect(prompt).toContain(
+        "Deduplicate equivalent findings and consolidate repeated evidence",
+      );
+      expect(prompt).toContain(
+        "label it as a hypothesis or needs-validation item rather than a confirmed vulnerability",
+      );
+    }
   });
 
   it("does not add agent finding quality guidance to ask mode", async () => {
@@ -240,6 +266,65 @@ Commands run directly on the host OS "workstation" without Docker isolation. Be 
     expect(prompt).toContain("file tool's view action");
     expect(prompt).toContain("Inline image attachments are already visible");
     expect(prompt).toContain("do not call the file view action");
+  });
+
+  it("adds browser recovery guidance only to cloud agent mode", async () => {
+    const cloudPrompt = await systemPrompt(
+      "user_123",
+      "agent",
+      "pro",
+      "agent-model",
+      null,
+      false,
+      null,
+    );
+    const localPrompt = await systemPrompt(
+      "user_123",
+      "agent",
+      "pro",
+      "agent-model",
+      null,
+      false,
+      "Local sandbox context",
+    );
+    const askPrompt = await systemPrompt(
+      "user_123",
+      "ask",
+      "pro",
+      "ask-model",
+      null,
+      false,
+      null,
+    );
+
+    expect(cloudPrompt).toContain("<agent_browser>");
+    expect(cloudPrompt).toContain(
+      "For daemon, socket, connection, or browser-not-running failures, run `agent-browser doctor`",
+    );
+    expect(cloudPrompt).toContain(
+      "use `agent-browser doctor --fix` only when the diagnosis identifies a repairable problem",
+    );
+    expect(cloudPrompt).toContain("then reopen the page and retry");
+    expect(cloudPrompt).toContain(
+      "For malformed command syntax, correct the command",
+    );
+    expect(cloudPrompt).toContain(
+      "For stale or invalid element refs, run a fresh `agent-browser snapshot -i`",
+    );
+    expect(cloudPrompt).toContain(
+      "do not blindly retry the same failing action",
+    );
+    expect(cloudPrompt).toContain(
+      "Invoke `agent-browser` directly through the terminal command tool",
+    );
+
+    for (const prompt of [localPrompt, askPrompt]) {
+      expect(prompt).not.toContain("<agent_browser>");
+      expect(prompt).not.toContain("agent-browser doctor --fix");
+      expect(prompt).not.toContain(
+        "Invoke `agent-browser` directly through the terminal command tool",
+      );
+    }
   });
 
   it("adds compact cloud sandbox tool recipes for solo security workflows", async () => {
