@@ -42,6 +42,10 @@ const WEBHOOK_LOG_CONTEXT = {
   webhook: "subscription",
   route: "/api/subscription/webhook",
 };
+const TERMINAL_SUBSCRIPTION_STATUSES = new Set<Stripe.Subscription.Status>([
+  "canceled",
+  "incomplete_expired",
+]);
 
 // Linear ranking used to label tier transitions as upgrade/downgrade. Team is
 // pinned at the top because moves between team and individual plans are rare
@@ -765,6 +769,29 @@ async function handleInvoicePaid(invoice: Stripe.Invoice): Promise<void> {
   }
 
   const { tier, subscription } = resolved;
+
+  // Stripe can keep an invoice collectible after its subscription reaches a
+  // terminal state. Paying that invoice does not reactivate the subscription,
+  // so it must not restore paid eligibility, MRR, or usage credits.
+  if (TERMINAL_SUBSCRIPTION_STATUSES.has(subscription.status)) {
+    phLogger.warn("billing_invoice_paid_terminal_subscription_skipped", {
+      event: "billing_invoice_paid_terminal_subscription_skipped",
+      userId: userIds[0],
+      user_ids: userIds,
+      org_id: orgId,
+      stripe_customer_id: customerId,
+      stripe_subscription_id: subscription.id,
+      stripe_invoice_id: invoice.id,
+      subscription_status: subscription.status,
+      billing_reason: invoice.billing_reason,
+      amount_paid_dollars: centsToDollars(invoice.amount_paid),
+      canceled_at: subscription.canceled_at,
+      ended_at: subscription.ended_at,
+      requires_manual_reconciliation: true,
+    });
+    return;
+  }
+
   const includedUsagePoints = includedUsagePointsForStripePrice(
     subscription.items?.data[0]?.price?.id,
   );
