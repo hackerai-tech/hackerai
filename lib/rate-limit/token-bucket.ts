@@ -84,6 +84,7 @@ export const billableCostDollarsToPoints = (costDollars: number): number =>
 
 /** 30 days in seconds — used for Redis TTLs aligned with billing cycles. */
 const THIRTY_DAYS_SECONDS = 30 * 24 * 60 * 60;
+const BILLING_CREDIT_STATE_TTL_SECONDS = 35 * 24 * 60 * 60;
 const REDIS_SCAN_COUNT = 500;
 const REDIS_DELETE_BATCH_SIZE = 100;
 const RATE_LIMIT_SERVICE_NOT_CONFIGURED =
@@ -112,6 +113,22 @@ export interface UsageDeductionResult {
   usageDeductionFailed: boolean;
   usageDeductionFailureReason?: UsageDeductionFailureReason;
 }
+
+export type BillingCreditTransitionIdentity = {
+  subscriptionId: string;
+  invoiceId: string;
+  occurredAtMs: number;
+};
+
+export type DelinquencyCreditHoldResult = {
+  outcome: "applied" | "already_applied" | "stale";
+  remainingPoints: number;
+  previousAllocationPoints: number;
+};
+
+export type PaidCreditResetResult = {
+  outcome: "applied" | "already_applied" | "stale";
+};
 
 const emptyUsageDeductionResult = (): UsageDeductionResult => ({
   includedPointsDeducted: 0,
@@ -435,6 +452,108 @@ return {
   targetRemaining,
   pointsRemoved
 }
+`;
+
+const FREEZE_DELINQUENT_BUCKET_SCRIPT = `
+local bucketKey = KEYS[1]
+local tierMax = tonumber(ARGV[1])
+local transitionAtMs = tonumber(ARGV[2])
+local nowMs = tonumber(ARGV[3])
+local expireSeconds = tonumber(ARGV[4])
+local subscriptionId = ARGV[5]
+local invoiceId = ARGV[6]
+
+local existingTransitionType = redis.call("HGET", bucketKey, "billingTransitionType")
+local existingTransitionAtMs = tonumber(redis.call("HGET", bucketKey, "billingTransitionAtMs"))
+local existingSubscriptionId = redis.call("HGET", bucketKey, "billingSubscriptionId")
+local existingInvoiceId = redis.call("HGET", bucketKey, "billingInvoiceId")
+local currentTokens = tonumber(redis.call("HGET", bucketKey, "tokens")) or 0
+local currentAllocation = tonumber(redis.call("HGET", bucketKey, "cycleAllocation")) or 0
+
+if existingTransitionType == "payment_failed"
+  and existingSubscriptionId == subscriptionId
+  and existingInvoiceId == invoiceId then
+  return {2, currentTokens, currentAllocation}
+end
+
+if existingTransitionAtMs and existingTransitionAtMs >= transitionAtMs then
+  return {0, currentTokens, currentAllocation}
+end
+
+local bucketExists = redis.call("EXISTS", bucketKey) == 1
+local allocation = tonumber(redis.call("HGET", bucketKey, "cycleAllocation"))
+if not allocation then
+  allocation = bucketExists and tierMax or 0
+end
+allocation = math.max(0, math.min(tierMax, allocation))
+local remaining = math.max(0, math.min(allocation, currentTokens))
+local cycleStartedAt = tonumber(redis.call("HGET", bucketKey, "cycleStartedAt")) or nowMs
+
+redis.call(
+  "HSET",
+  bucketKey,
+  "tokens", remaining,
+  "cycleAllocation", remaining,
+  "cycleTierMax", tierMax,
+  "cycleStartedAt", cycleStartedAt,
+  "refilledAt", nowMs,
+  "billingTransitionType", "payment_failed",
+  "billingTransitionAtMs", transitionAtMs,
+  "billingSubscriptionId", subscriptionId,
+  "billingInvoiceId", invoiceId
+)
+redis.call("EXPIRE", bucketKey, expireSeconds)
+return {1, remaining, allocation}
+`;
+
+const APPLY_PAID_BUCKET_RESET_SCRIPT = `
+local bucketKey = KEYS[1]
+local remaining = tonumber(ARGV[1])
+local allocation = tonumber(ARGV[2])
+local tierMax = tonumber(ARGV[3])
+local cycleStartedAt = tonumber(ARGV[4])
+local refilledAt = tonumber(ARGV[5])
+local expireSeconds = tonumber(ARGV[6])
+local transitionAtMs = tonumber(ARGV[7])
+local subscriptionId = ARGV[8]
+local invoiceId = ARGV[9]
+
+local existingTransitionType = redis.call("HGET", bucketKey, "billingTransitionType")
+local existingTransitionAtMs = tonumber(redis.call("HGET", bucketKey, "billingTransitionAtMs"))
+local existingSubscriptionId = redis.call("HGET", bucketKey, "billingSubscriptionId")
+local existingInvoiceId = redis.call("HGET", bucketKey, "billingInvoiceId")
+
+if existingTransitionType == "paid"
+  and existingSubscriptionId == subscriptionId
+  and existingInvoiceId == invoiceId then
+  return 2
+end
+
+if existingTransitionAtMs and existingTransitionAtMs > transitionAtMs then
+  return 0
+end
+if existingTransitionAtMs
+  and existingTransitionAtMs == transitionAtMs
+  and existingTransitionType ~= "payment_failed" then
+  return 0
+end
+
+redis.call("DEL", bucketKey)
+redis.call(
+  "HSET",
+  bucketKey,
+  "tokens", remaining,
+  "cycleAllocation", allocation,
+  "cycleTierMax", tierMax,
+  "cycleStartedAt", cycleStartedAt,
+  "refilledAt", refilledAt,
+  "billingTransitionType", "paid",
+  "billingTransitionAtMs", transitionAtMs,
+  "billingSubscriptionId", subscriptionId,
+  "billingInvoiceId", invoiceId
+)
+redis.call("EXPIRE", bucketKey, expireSeconds)
+return 1
 `;
 
 const enforceStoredCycleAllocation = async (
@@ -1136,6 +1255,129 @@ export const resetRateLimitBuckets = async (
     periodEndSeconds,
     cycleAllocationPoints,
   );
+};
+
+/**
+ * Freeze a past-due subscriber at the credits remaining when renewal failed.
+ *
+ * The transition is atomic and durable beyond the recovery window. Duplicate
+ * failures preserve usage since the first hold, while failures older than a
+ * recorded paid transition are ignored.
+ */
+export const freezeRateLimitBucketForDelinquency = async (
+  userId: string,
+  subscription: SubscriptionTier,
+  transition: BillingCreditTransitionIdentity,
+): Promise<DelinquencyCreditHoldResult> => {
+  const redis = createRedisClient();
+  if (!redis) throw new Error(RATE_LIMIT_SERVICE_NOT_CONFIGURED);
+
+  const tierMax = MONTHLY_CREDITS[subscription] ?? 0;
+  if (tierMax <= 0) {
+    throw new Error(
+      `Cannot freeze a delinquency bucket for tier "${subscription}"`,
+    );
+  }
+
+  const nowMs = Date.now();
+  const transitionAtMs =
+    Number.isFinite(transition.occurredAtMs) && transition.occurredAtMs > 0
+      ? Math.floor(transition.occurredAtMs)
+      : nowMs;
+  const [outcomeCode, remainingPoints, previousAllocationPoints] =
+    await redis.eval<
+      [number, number, number, number, string, string],
+      [number, number, number]
+    >(
+      FREEZE_DELINQUENT_BUCKET_SCRIPT,
+      [getMonthlyBucketKey(userId, subscription)],
+      [
+        tierMax,
+        transitionAtMs,
+        nowMs,
+        BILLING_CREDIT_STATE_TTL_SECONDS,
+        transition.subscriptionId,
+        transition.invoiceId,
+      ],
+    );
+
+  return {
+    outcome:
+      outcomeCode === 1
+        ? "applied"
+        : outcomeCode === 2
+          ? "already_applied"
+          : "stale",
+    remainingPoints: finiteNonNegativePoints(remainingPoints) ?? 0,
+    previousAllocationPoints:
+      finiteNonNegativePoints(previousAllocationPoints) ?? 0,
+  };
+};
+
+/**
+ * Atomically replace the monthly bucket after a paid subscription invoice.
+ *
+ * A duplicate paid event cannot refill credits twice, and a paid event older
+ * than a recorded failure cannot clear a newer delinquency hold.
+ */
+export const resetRateLimitBucketAfterPayment = async (
+  userId: string,
+  subscription: SubscriptionTier,
+  transition: BillingCreditTransitionIdentity,
+  periodEndSeconds?: number,
+  cycleAllocationPoints?: number,
+): Promise<PaidCreditResetResult> => {
+  const redis = createRedisClient();
+  if (!redis) throw new Error(RATE_LIMIT_SERVICE_NOT_CONFIGURED);
+
+  const tierMax = MONTHLY_CREDITS[subscription] ?? 0;
+  if (tierMax <= 0) {
+    throw new Error(`Cannot reset a paid bucket for tier "${subscription}"`);
+  }
+
+  const cycleAllocation = normalizeCycleAllocation(
+    tierMax,
+    cycleAllocationPoints,
+  );
+  const nowMs = Date.now();
+  const nowSeconds = Math.floor(nowMs / 1000);
+  const refilledAt =
+    periodEndSeconds &&
+    Number.isFinite(periodEndSeconds) &&
+    periodEndSeconds > nowSeconds
+      ? (periodEndSeconds - THIRTY_DAYS_SECONDS) * 1000
+      : nowMs;
+  const transitionAtMs =
+    Number.isFinite(transition.occurredAtMs) && transition.occurredAtMs > 0
+      ? Math.floor(transition.occurredAtMs)
+      : nowMs;
+  const outcomeCode = await redis.eval<
+    [number, number, number, number, number, number, number, string, string],
+    number
+  >(
+    APPLY_PAID_BUCKET_RESET_SCRIPT,
+    [getMonthlyBucketKey(userId, subscription)],
+    [
+      cycleAllocation,
+      cycleAllocation,
+      tierMax,
+      nowMs,
+      refilledAt,
+      getCycleExpireSeconds(periodEndSeconds, nowSeconds),
+      transitionAtMs,
+      transition.subscriptionId,
+      transition.invoiceId,
+    ],
+  );
+
+  return {
+    outcome:
+      outcomeCode === 1
+        ? "applied"
+        : outcomeCode === 2
+          ? "already_applied"
+          : "stale",
+  };
 };
 
 export type CycleAllocationCapResult = {
