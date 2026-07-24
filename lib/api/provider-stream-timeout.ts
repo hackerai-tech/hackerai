@@ -3,6 +3,7 @@ export const PROVIDER_STREAM_TIMEOUT_CODE = "PROVIDER_STREAM_TIMEOUT";
 
 export type ProviderStreamTimeoutPhase = "first_chunk" | "between_chunks";
 
+/** Typed abort reason that distinguishes provider inactivity from caller cancellation. */
 export class ProviderStreamTimeoutError extends Error {
   readonly code = PROVIDER_STREAM_TIMEOUT_CODE;
   readonly phase: ProviderStreamTimeoutPhase;
