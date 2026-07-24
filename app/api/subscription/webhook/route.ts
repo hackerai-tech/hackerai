@@ -4,7 +4,8 @@ import { getConvexClient } from "@/lib/db/convex-client";
 import { api } from "@/convex/_generated/api";
 import Stripe from "stripe";
 import {
-  resetRateLimitBuckets,
+  freezeRateLimitBucketForDelinquency,
+  resetRateLimitBucketAfterPayment,
   stashTierChangeBucketState,
   applyProratedTierChangeBucket,
   clearOrgRemovedUsage,
@@ -80,6 +81,14 @@ function invoicePaidAtMs(invoice: Stripe.Invoice): number {
   return (
     ((invoice as { created?: number }).created ?? Date.now() / 1000) * 1000
   );
+}
+
+function stripeEventOccurredAtMs(event: Stripe.Event): number {
+  return typeof event.created === "number" &&
+    Number.isFinite(event.created) &&
+    event.created > 0
+    ? event.created * 1000
+    : Date.now();
 }
 
 // =============================================================================
@@ -711,7 +720,10 @@ async function emitBillingPaymentFailed(args: {
 // =============================================================================
 
 /** Handle invoice.paid — reset rate limit buckets on subscription payment. */
-async function handleInvoicePaid(invoice: Stripe.Invoice): Promise<void> {
+async function handleInvoicePaid(
+  invoice: Stripe.Invoice,
+  eventOccurredAtMs: number,
+): Promise<void> {
   // In Stripe API 2026-03-25, subscription lives under invoice.parent.subscription_details
   const subDetails = invoice.parent?.subscription_details;
   const subscriptionId = subDetails
@@ -854,11 +866,41 @@ async function handleInvoicePaid(invoice: Stripe.Invoice): Promise<void> {
     `[Subscription Webhook] invoice.paid (${resetMode.reason}): resetting ${tier} buckets for ${userIds.length} user(s)`,
   );
   const usagePeriodEnd = monthlyUsagePeriodEndSeconds(subscription);
-  await Promise.all(
+  const paidTransitionAtMs = invoice.status_transitions?.paid_at
+    ? invoice.status_transitions.paid_at * 1000
+    : eventOccurredAtMs;
+  const resetResults = await Promise.all(
     userIds.map((uid) =>
-      resetRateLimitBuckets(uid, tier, usagePeriodEnd, includedUsagePoints),
+      resetRateLimitBucketAfterPayment(
+        uid,
+        tier,
+        {
+          subscriptionId,
+          invoiceId: invoice.id,
+          occurredAtMs: paidTransitionAtMs,
+        },
+        usagePeriodEnd,
+        includedUsagePoints,
+      ),
     ),
   );
+  const staleResetCount = resetResults.filter(
+    (result) => result.outcome === "stale",
+  ).length;
+  if (staleResetCount > 0) {
+    phLogger.warn("billing_paid_credit_reset_stale_ignored", {
+      event: "billing_paid_credit_reset_stale_ignored",
+      userId: userIds[0],
+      user_ids: userIds,
+      org_id: orgId,
+      stripe_customer_id: customerId,
+      stripe_subscription_id: subscriptionId,
+      stripe_invoice_id: invoice.id,
+      subscription_tier: tier,
+      transition_at_ms: paidTransitionAtMs,
+      stale_user_count: staleResetCount,
+    });
+  }
 
   if (resetMode.reason === "subscription_create") {
     const item = subscription.items?.data[0];
@@ -983,6 +1025,7 @@ async function handleInvoicePaid(invoice: Stripe.Invoice): Promise<void> {
 
 async function handleInvoicePaymentFailed(
   invoice: Stripe.Invoice,
+  eventOccurredAtMs: number,
 ): Promise<void> {
   const subscriptionId = invoiceSubscriptionId(invoice);
   if (!subscriptionId) return;
@@ -1030,6 +1073,61 @@ async function handleInvoicePaymentFailed(
   const subscription =
     resolved?.kind === "resolved" ? resolved.subscription : undefined;
   const price = subscription?.items?.data[0]?.price;
+
+  if (
+    resolved?.kind === "resolved" &&
+    failureInvoice.billing_reason === "subscription_cycle" &&
+    failureInvoice.status !== "paid" &&
+    subscription?.status === "past_due"
+  ) {
+    const holdResults = await Promise.all(
+      userIds.map((userId) =>
+        freezeRateLimitBucketForDelinquency(userId, resolved.tier, {
+          subscriptionId,
+          invoiceId: failureInvoice.id,
+          occurredAtMs: eventOccurredAtMs,
+        }),
+      ),
+    );
+    const appliedUserCount = holdResults.filter(
+      (result) => result.outcome === "applied",
+    ).length;
+    const alreadyAppliedUserCount = holdResults.filter(
+      (result) => result.outcome === "already_applied",
+    ).length;
+    const staleUserCount = holdResults.filter(
+      (result) => result.outcome === "stale",
+    ).length;
+    const remainingPoints = holdResults.reduce(
+      (total, result) => total + result.remainingPoints,
+      0,
+    );
+    const logFields = {
+      event:
+        staleUserCount > 0
+          ? "billing_delinquency_credit_hold_stale_ignored"
+          : "billing_delinquency_credit_hold_processed",
+      userId: userIds[0],
+      user_ids: userIds,
+      org_id: orgId,
+      stripe_customer_id: customerId,
+      stripe_subscription_id: subscriptionId,
+      stripe_invoice_id: failureInvoice.id,
+      subscription_tier: resolved.tier,
+      subscription_status: subscription.status,
+      billing_reason: failureInvoice.billing_reason,
+      transition_at_ms: eventOccurredAtMs,
+      applied_user_count: appliedUserCount,
+      already_applied_user_count: alreadyAppliedUserCount,
+      stale_user_count: staleUserCount,
+      remaining_points: remainingPoints,
+    };
+    if (staleUserCount > 0) {
+      phLogger.warn("billing_delinquency_credit_hold_stale_ignored", logFields);
+    } else {
+      phLogger.info("billing_delinquency_credit_hold_processed", logFields);
+    }
+  }
 
   await emitBillingPaymentFailed({
     invoice: failureInvoice,
@@ -1638,11 +1736,17 @@ export async function POST(req: NextRequest) {
       break;
     }
     case "invoice.paid": {
-      await handleInvoicePaid(event.data.object as Stripe.Invoice);
+      await handleInvoicePaid(
+        event.data.object as Stripe.Invoice,
+        stripeEventOccurredAtMs(event),
+      );
       break;
     }
     case "invoice.payment_failed": {
-      await handleInvoicePaymentFailed(event.data.object as Stripe.Invoice);
+      await handleInvoicePaymentFailed(
+        event.data.object as Stripe.Invoice,
+        stripeEventOccurredAtMs(event),
+      );
       break;
     }
     case "customer.subscription.updated": {

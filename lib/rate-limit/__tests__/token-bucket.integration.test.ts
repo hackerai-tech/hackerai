@@ -1174,6 +1174,167 @@ describe("token-bucket async functions", () => {
     });
   });
 
+  describe("delinquency credit holds", () => {
+    const transition = {
+      subscriptionId: "sub_past_due",
+      invoiceId: "in_past_due",
+      occurredAtMs: 1_782_000_100_000,
+    };
+
+    it("atomically freezes the current remaining credits beyond the recovery window", async () => {
+      const nowMs = 1_782_000_200_000;
+      const nowSpy = jest.spyOn(Date, "now").mockReturnValue(nowMs);
+      mockEvalFn.mockResolvedValueOnce([1, 120_000, 250_000]);
+
+      try {
+        const { freezeRateLimitBucketForDelinquency } = getIsolatedModule();
+
+        await expect(
+          freezeRateLimitBucketForDelinquency(
+            "user-past-due",
+            "pro",
+            transition,
+          ),
+        ).resolves.toEqual({
+          outcome: "applied",
+          remainingPoints: 120_000,
+          previousAllocationPoints: 250_000,
+        });
+
+        expect(mockLimitFn).not.toHaveBeenCalled();
+        expect(mockEvalFn).toHaveBeenCalledWith(
+          expect.stringContaining('"billingTransitionType", "payment_failed"'),
+          ["usage:monthly:user-past-due:pro"],
+          [
+            250_000,
+            transition.occurredAtMs,
+            nowMs,
+            35 * 24 * 60 * 60,
+            transition.subscriptionId,
+            transition.invoiceId,
+          ],
+        );
+      } finally {
+        nowSpy.mockRestore();
+      }
+    });
+
+    it.each([
+      {
+        outcomeCode: 2,
+        expectedOutcome: "already_applied",
+      },
+      {
+        outcomeCode: 0,
+        expectedOutcome: "stale",
+      },
+    ] as const)(
+      "maps Redis outcome $outcomeCode to $expectedOutcome without changing credits",
+      async ({ outcomeCode, expectedOutcome }) => {
+        mockEvalFn.mockResolvedValueOnce([outcomeCode, 90_000, 120_000]);
+        const { freezeRateLimitBucketForDelinquency } = getIsolatedModule();
+
+        await expect(
+          freezeRateLimitBucketForDelinquency(
+            "user-past-due",
+            "pro",
+            transition,
+          ),
+        ).resolves.toEqual({
+          outcome: expectedOutcome,
+          remainingPoints: 90_000,
+          previousAllocationPoints: 120_000,
+        });
+      },
+    );
+
+    it("throws when Redis cannot persist the hold so Stripe can retry", async () => {
+      mockEvalFn.mockRejectedValueOnce(new Error("Redis down"));
+      const { freezeRateLimitBucketForDelinquency } = getIsolatedModule();
+
+      await expect(
+        freezeRateLimitBucketForDelinquency("user-past-due", "pro", transition),
+      ).rejects.toThrow("Redis down");
+    });
+  });
+
+  describe("paid credit resets", () => {
+    const transition = {
+      subscriptionId: "sub_recovered",
+      invoiceId: "in_recovered",
+      occurredAtMs: 1_782_100_100_000,
+    };
+
+    it("atomically replaces a delinquent bucket with the paid cycle", async () => {
+      const nowSeconds = 1_782_100_200;
+      const periodEndSeconds = nowSeconds + 30 * 24 * 60 * 60;
+      const nowSpy = jest.spyOn(Date, "now").mockReturnValue(nowSeconds * 1000);
+      mockEvalFn.mockResolvedValueOnce(1);
+
+      try {
+        const { resetRateLimitBucketAfterPayment } = getIsolatedModule();
+
+        await expect(
+          resetRateLimitBucketAfterPayment(
+            "user-recovered",
+            "pro",
+            transition,
+            periodEndSeconds,
+            200_000,
+          ),
+        ).resolves.toEqual({ outcome: "applied" });
+
+        expect(mockEvalFn).toHaveBeenCalledWith(
+          expect.stringContaining('"billingTransitionType", "paid"'),
+          ["usage:monthly:user-recovered:pro"],
+          [
+            200_000,
+            200_000,
+            250_000,
+            nowSeconds * 1000,
+            (periodEndSeconds - 30 * 24 * 60 * 60) * 1000,
+            31 * 24 * 60 * 60,
+            transition.occurredAtMs,
+            transition.subscriptionId,
+            transition.invoiceId,
+          ],
+        );
+      } finally {
+        nowSpy.mockRestore();
+      }
+    });
+
+    it.each([
+      {
+        outcomeCode: 2,
+        expectedOutcome: "already_applied",
+      },
+      {
+        outcomeCode: 0,
+        expectedOutcome: "stale",
+      },
+    ] as const)(
+      "maps Redis outcome $outcomeCode to $expectedOutcome without refilling",
+      async ({ outcomeCode, expectedOutcome }) => {
+        mockEvalFn.mockResolvedValueOnce(outcomeCode);
+        const { resetRateLimitBucketAfterPayment } = getIsolatedModule();
+
+        await expect(
+          resetRateLimitBucketAfterPayment("user-recovered", "pro", transition),
+        ).resolves.toEqual({ outcome: expectedOutcome });
+      },
+    );
+
+    it("throws when Redis cannot persist the paid reset so Stripe can retry", async () => {
+      mockEvalFn.mockRejectedValueOnce(new Error("Redis down"));
+      const { resetRateLimitBucketAfterPayment } = getIsolatedModule();
+
+      await expect(
+        resetRateLimitBucketAfterPayment("user-recovered", "pro", transition),
+      ).rejects.toThrow("Redis down");
+    });
+  });
+
   describe("capCurrentCycleAllocation", () => {
     it("initializes a missing bucket at the requested allocation", async () => {
       const { capCurrentCycleAllocation } = getIsolatedModule();
