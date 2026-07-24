@@ -703,6 +703,31 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(agentStreamRunnerSrc).toMatch(/experimental_onToolCallStart/);
   });
 
+  test("shares a provider-only inactivity guard without timing terminal tools", () => {
+    expect(agentStreamRunnerSrc).toMatch(
+      /createProviderStreamTimeoutGuard\(\{/,
+    );
+    expect(agentStreamRunnerSrc).toMatch(
+      /experimental_onStepStart:[\s\S]*startProviderStep\(\)/,
+    );
+    expect(agentStreamRunnerSrc).toMatch(
+      /experimental_onToolCallStart:[\s\S]*pauseForToolExecution\(\)/,
+    );
+    expect(agentStreamRunnerSrc).toMatch(
+      /onChunk:[\s\S]*recordProviderActivity\(\)/,
+    );
+    expect(agentStreamRunnerSrc).toMatch(
+      /onStepFinish:[\s\S]*finishProviderStep\(\)/,
+    );
+
+    for (const source of [taskSrc, chatHandlerSrc]) {
+      expect(source).toMatch(/state\.stoppedDueToProviderStreamTimeout/);
+      expect(source).toMatch(
+        /!isAborted\s*\|\|\s*state\.stoppedDueToProviderStreamTimeout/,
+      );
+    }
+  });
+
   test("validates agent trigger request bodies before auth and Trigger work", () => {
     expect(routeSrc).toMatch(/parseAgentTriggerRequestBody/);
     expect(routeSrc).toMatch(/Invalid JSON body/);

@@ -6,6 +6,26 @@ import {
 } from "../agent-long-provider-retry";
 
 describe("shouldRetryAgentLongWithFallback", () => {
+  it("allows an internal timeout fallback before meaningful output", () => {
+    expect(
+      shouldRetryAgentLongWithFallback([{ type: "step-start" }], {
+        hasTerminalProviderStreamError: true,
+      }),
+    ).toBe(true);
+  });
+
+  it("does not replay after an internal timeout with meaningful partial output", () => {
+    expect(
+      shouldRetryAgentLongWithFallback(
+        [
+          { type: "step-start" },
+          { type: "text", text: "I found the vulnerable endpoint." },
+        ],
+        { hasTerminalProviderStreamError: true },
+      ),
+    ).toBe(false);
+  });
+
   it("preserves the legacy retry for streams that only emitted step-start", () => {
     expect(
       shouldRetryAgentLongWithFallback([{ type: "step-start" }], {
