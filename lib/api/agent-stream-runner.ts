@@ -107,7 +107,10 @@ import type {
 import type { ChatLogger } from "@/lib/api/chat-logger";
 import type { ChatApiEndpoint } from "@/lib/api/agent-endpoints";
 import type { createTrackedProvider } from "@/lib/ai/providers";
-import type { ProviderRequestDiagnostics } from "@/lib/logger";
+import type {
+  ProviderRequestDiagnostics,
+  ProviderRequestRetentionDiagnostics,
+} from "@/lib/logger";
 import type { ChatMode, SubscriptionTier } from "@/types";
 
 const AGENT_VISION_MODEL = "model-grok-4.5";
@@ -473,6 +476,10 @@ export type AgentStreamContext = {
   onBudgetAbort?: (details: BudgetAbortDetails & { model: string }) => void;
   onModelStreamStart?: () => void;
   onModelStreamFinish?: () => void;
+  onProviderRequestDiagnostics?: (
+    diagnostics: ProviderRequestDiagnostics,
+    retention: ProviderRequestRetentionDiagnostics,
+  ) => void;
   settleUsageAfterStep?: (args: {
     currentCostDollars: number;
     force: boolean;
@@ -705,6 +712,8 @@ export async function createAgentStream(
     stepIndex: number;
     source: ProviderRequestDiagnostics["source"];
     messages: ModelMessage[];
+    rawMessages?: ModelMessage[];
+    rollingMessages?: ModelMessage[];
     providerOptions: unknown;
     activeTools: Array<keyof typeof ctx.tools> | undefined;
   }) => {
@@ -725,6 +734,16 @@ export async function createAgentStream(
     ctx.chatLogger?.recordProviderRequestDiagnostics(
       latestProviderRequestDiagnostics,
     );
+    ctx.onProviderRequestDiagnostics?.(latestProviderRequestDiagnostics, {
+      raw_message_count: args.rawMessages?.length ?? args.messages.length,
+      rolling_message_count:
+        args.rollingMessages?.length ?? args.messages.length,
+      final_ui_message_count: state.finalMessages.length,
+      transcript_source_message_count:
+        state.transcriptSourceMessages?.length ?? 0,
+      summarization_count: ctx.summarizationTracker.summarizationCount,
+      compaction_attempt_count: compactionAttemptCount,
+    });
     return latestProviderRequestDiagnostics;
   };
   const initialModelInfo = getEffectiveModelInfo();
@@ -744,6 +763,8 @@ export async function createAgentStream(
     stepIndex: 0,
     source: "initial",
     messages: initialModelMessages,
+    rawMessages: initialModelMessages,
+    rollingMessages: initialModelMessages,
     providerOptions: initialProviderOptions,
     activeTools: initialActiveTools,
   });
@@ -879,6 +900,8 @@ export async function createAgentStream(
                 stepIndex: steps.length + 1,
                 source: "summarized_prepare_step",
                 messages: preparedMessages,
+                rawMessages: rawModelMessages,
+                rollingMessages: summarizedModelMessages,
                 providerOptions,
                 activeTools,
               });
@@ -1032,6 +1055,8 @@ export async function createAgentStream(
                   stepIndex: steps.length + 1,
                   source: "summarized_prepare_step",
                   messages: preparedMessages,
+                  rawMessages: rawModelMessages,
+                  rollingMessages: nextBaseMessages,
                   providerOptions,
                   activeTools,
                 });
@@ -1083,6 +1108,8 @@ export async function createAgentStream(
           stepIndex: steps.length + 1,
           source: "prepare_step",
           messages: preparedMessages as ModelMessage[],
+          rawMessages: rawModelMessages,
+          rollingMessages: rollingModelMessages,
           providerOptions,
           activeTools,
         });
@@ -1102,6 +1129,17 @@ export async function createAgentStream(
         const fallbackMessages = prepareProviderMessages(
           rollingModelMessages,
         ) as typeof messages;
+        recordProviderRequestDiagnostics({
+          modelName: getEffectiveModelName(),
+          requestedSlug: lastRequestedSlug,
+          stepIndex: steps.length + 1,
+          source: "prepare_step",
+          messages: fallbackMessages as ModelMessage[],
+          rawMessages: rawModelMessages,
+          rollingMessages: rollingModelMessages,
+          providerOptions,
+          activeTools: undefined,
+        });
         return {
           providerOptions,
           messages: fallbackMessages,

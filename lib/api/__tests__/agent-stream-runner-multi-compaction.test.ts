@@ -281,6 +281,114 @@ describe("createAgentStream repeated compaction", () => {
     mockStreamText.mockImplementation((options) => options);
   });
 
+  it("emits sanitized provider and retained-message diagnostics", async () => {
+    const onProviderRequestDiagnostics = jest.fn();
+    const tracker = {
+      hasSummarized: true,
+      summarizationCount: 2,
+    };
+    const state = initAgentStreamState(
+      [
+        uiMessage("initial-1", "private initial content"),
+        uiMessage("initial-2", "more private content"),
+      ],
+      { usedTokens: 1_000, maxTokens: 128_000 },
+    );
+    state.transcriptSourceMessages = [
+      uiMessage("transcript-1", "private transcript content"),
+    ];
+
+    await createAgentStream(
+      "test-model",
+      createTestStreamContext({
+        summarizationTracker: tracker,
+        usageTracker: {},
+        onProviderRequestDiagnostics,
+      }) as any,
+      state,
+    );
+
+    expect(onProviderRequestDiagnostics).toHaveBeenCalledWith(
+      expect.objectContaining({
+        source: "initial",
+        message_count: 2,
+        role_counts: { user: 2 },
+        serialized_message_bytes: expect.any(Number),
+      }),
+      {
+        raw_message_count: 2,
+        rolling_message_count: 2,
+        final_ui_message_count: 2,
+        transcript_source_message_count: 1,
+        summarization_count: 2,
+        compaction_attempt_count: 0,
+      },
+    );
+    expect(
+      JSON.stringify(onProviderRequestDiagnostics.mock.calls),
+    ).not.toContain("private initial content");
+    expect(
+      JSON.stringify(onProviderRequestDiagnostics.mock.calls),
+    ).not.toContain("private transcript content");
+  });
+
+  it("emits retained-message diagnostics on prepare-step fallback", async () => {
+    const onProviderRequestDiagnostics = jest.fn();
+    const consoleError = jest
+      .spyOn(console, "error")
+      .mockImplementation(() => undefined);
+    mockGetProviderPromptPressure.mockImplementationOnce(() => {
+      throw new Error("pressure inspection failed");
+    });
+    const state = initAgentStreamState(
+      [uiMessage("initial", "initial message")],
+      { usedTokens: 1_000, maxTokens: 128_000 },
+    );
+
+    try {
+      const stream = (await createAgentStream(
+        "test-model",
+        createTestStreamContext({
+          summarizationTracker: {
+            hasSummarized: false,
+            summarizationCount: 0,
+          },
+          usageTracker: {},
+          onProviderRequestDiagnostics,
+        }) as any,
+        state,
+      )) as any;
+      const rawMessages: ModelMessage[] = [
+        { role: "user", content: "initial message" },
+        { role: "assistant", content: "partial response" },
+      ];
+
+      await stream.prepareStep({
+        steps: [{ toolResults: [] }],
+        messages: rawMessages,
+      });
+
+      expect(onProviderRequestDiagnostics).toHaveBeenCalledTimes(2);
+      expect(onProviderRequestDiagnostics).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          source: "prepare_step",
+          step_index: 2,
+          message_count: 2,
+        }),
+        {
+          raw_message_count: 2,
+          rolling_message_count: 2,
+          final_ui_message_count: 1,
+          transcript_source_message_count: 0,
+          summarization_count: 0,
+          compaction_attempt_count: 0,
+        },
+      );
+    } finally {
+      consoleError.mockRestore();
+    }
+  });
+
   it("rebases every later prepareStep onto the latest in-run summary", async () => {
     const summary1 = uiMessage("summary-1", "summary 1");
     const summary2 = uiMessage("summary-2", "summary 2");
