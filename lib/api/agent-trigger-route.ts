@@ -31,6 +31,7 @@ import {
 } from "@/types";
 import { ChatSDKError } from "@/lib/errors";
 import { requireOptionalIdentifier } from "@/lib/api/chat-request-validation";
+import { readAnalyticsRequestContext } from "@/lib/analytics/request-context";
 import { resolveProjectExecutionContext } from "@/lib/chat/project-context";
 import type {
   Todo,
@@ -349,6 +350,7 @@ export const createAgentTriggerPost =
     try {
       const parsedBody = await parseAgentTriggerRequestBody(req);
       if (!parsedBody.ok) return parsedBody.response;
+      const analyticsRequestContext = readAnalyticsRequestContext(req.headers);
 
       const {
         messages,
@@ -591,6 +593,7 @@ export const createAgentTriggerPost =
         limitRescue,
         isNewChat,
         endpoint,
+        analyticsRequestContext,
         convexUrl: process.env.NEXT_PUBLIC_CONVEX_URL,
         requestTiming: {
           routeStartedAt,

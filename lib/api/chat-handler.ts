@@ -138,6 +138,7 @@ import {
 import { Id } from "@/convex/_generated/dataModel";
 import { phLogger } from "@/lib/posthog/server";
 import { PAID_FUNNEL_EVENTS } from "@/lib/analytics/paid-funnel";
+import { readAnalyticsRequestContext } from "@/lib/analytics/request-context";
 import {
   buildAgentCompletionSignals,
   createAgentCompletionSignalTracker,
@@ -247,6 +248,7 @@ export const createChatHandler = () => {
         limitRescue?: unknown;
         projectId?: unknown;
       } = await req.json();
+      const analyticsRequestContext = readAnalyticsRequestContext(req.headers);
       const temporary = requireBooleanFlag("temporary", rawTemporary);
       const requestedProjectId = requireOptionalIdentifier(
         "projectId",
@@ -1109,6 +1111,7 @@ export const createChatHandler = () => {
                   mode,
                   usage: usageCostRecord,
                   responseModel: state.responseModel,
+                  analyticsRequestContext,
                   ...(usageSettlementState && {
                     usageSettlement: {
                       id: usageTracker.usageSettlementId,

@@ -64,7 +64,11 @@ import {
 } from "@/lib/chat/agent-long-heartbeat";
 import { hasVisibleAssistantContent } from "@/lib/chat/abort-persistence";
 import { toast } from "sonner";
-import { addAuthenticatedExceptionStep } from "@/lib/analytics/client";
+import {
+  addAuthenticatedExceptionStep,
+  getPostHogRequestHeaders,
+} from "@/lib/analytics/client";
+import { useHac45AgentOnlyTreatment } from "@/app/contexts/Hac45AgentOnlyContext";
 import {
   normalizeSelectedModelForSubscription,
   type Todo,
@@ -474,6 +478,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   const routeChatId = params?.id as string | undefined;
   const router = useRouter();
   const isMobile = useIsMobile();
+  const hac45AgentOnlyActive = useHac45AgentOnlyTreatment();
   const { setDataStream, setIsAutoResuming } = useDataStreamDispatch();
   const {
     isLoading: isConvexAuthLoading,
@@ -534,6 +539,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   const isExistingChatRef = useLatestRef(isExistingChat);
   const chatModeRef = useLatestRef(chatMode);
   const subscriptionRef = useLatestRef(subscription);
+  const hac45AgentOnlyActiveRef = useLatestRef(hac45AgentOnlyActive);
 
   // Suppress transient "Chat Not Found" while server creates the chat
   const [awaitingServerChat, setAwaitingServerChat] = useState<boolean>(false);
@@ -773,6 +779,9 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
         const messagesWithoutUrls = stripUrlsFromMessages(messagesToSend);
 
         return {
+          headers: getPostHogRequestHeaders({
+            hac45AgentOnlyActive: hac45AgentOnlyActiveRef.current,
+          }),
           body: {
             chatId: id,
             messages: messagesWithoutUrls,

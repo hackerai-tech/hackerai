@@ -30,6 +30,8 @@ import {
   paidFunnelProperties,
 } from "@/lib/analytics/paid-funnel";
 import type { AgentCompletionSignals } from "@/lib/analytics/agent-completion-signals";
+import type { AnalyticsRequestContext } from "@/lib/analytics/request-context";
+import { extraUsagePointsToDollars } from "@/convex/lib/extraUsagePricing";
 import type { UsageCostRecord } from "@/lib/usage-tracker";
 import type { UsageDeductionResult } from "@/lib/rate-limit";
 import type { BudgetAbortDetails } from "@/lib/chat/budget-monitor";
@@ -1334,7 +1336,10 @@ export function captureAgentCompletionAnalytics(
 /**
  * Capture one cost event per request with usage. In PostHog, answer
  * "how much does each user cost you?" by summing cost_dollars on
- * hackerai-usage_cost grouped by distinct_id (or user_id).
+ * hackerai-usage_cost grouped by distinct_id (or user_id). Sum
+ * consumption_contribution_dollars for extra-usage value consumed minus
+ * provider/tool cost; subscription revenue is intentionally reported
+ * separately.
  */
 export function captureUsageCost({
   posthog,
@@ -1349,6 +1354,7 @@ export function captureUsageCost({
   responseModel,
   paidDailyFreeAllowance,
   usageSettlement,
+  analyticsRequestContext,
 }: {
   posthog: PostHog | null;
   userId: string;
@@ -1371,8 +1377,12 @@ export function captureUsageCost({
     id: string;
     midRunCount: number;
   };
+  analyticsRequestContext?: AnalyticsRequestContext;
 }) {
   if (!posthog) return;
+  const extraUsageChargeDollars = extraUsagePointsToDollars(
+    usage.extraUsagePointsDeducted,
+  );
   posthog.capture({
     distinctId: userId,
     event: "hackerai-usage_cost",
@@ -1396,6 +1406,10 @@ export function captureUsageCost({
       uncovered_cost_dollars: usage.uncoveredCostDollars,
       included_points_deducted: usage.includedPointsDeducted,
       extra_usage_points_deducted: usage.extraUsagePointsDeducted,
+      usage_economics_version: 1,
+      extra_usage_charge_dollars: extraUsageChargeDollars,
+      consumption_contribution_dollars:
+        extraUsageChargeDollars - usage.costDollars,
       uncovered_points: usage.uncoveredPoints,
       usage_deduction_failed: usage.usageDeductionFailed,
       usage_deduction_failure_reason: usage.usageDeductionFailureReason,
@@ -1407,6 +1421,17 @@ export function captureUsageCost({
       cache_read_tokens: usage.cacheReadTokens ?? 0,
       cache_write_tokens: usage.cacheWriteTokens ?? 0,
       cost_source: usage.costSource,
+      ...(analyticsRequestContext?.posthogSessionId && {
+        $session_id: analyticsRequestContext.posthogSessionId,
+      }),
+      ...(analyticsRequestContext?.analyticsContextVersion !== undefined && {
+        client_analytics_context_version:
+          analyticsRequestContext.analyticsContextVersion,
+      }),
+      ...(analyticsRequestContext?.hac45AgentOnlyClientActive !== undefined && {
+        hac45_agent_only_client_active:
+          analyticsRequestContext.hac45AgentOnlyClientActive,
+      }),
       ...(usageSettlement && {
         usage_settlement_id: usageSettlement.id,
         mid_run_usage_settlement_count: usageSettlement.midRunCount,
