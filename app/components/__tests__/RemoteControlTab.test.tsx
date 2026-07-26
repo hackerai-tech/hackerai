@@ -148,11 +148,9 @@ describe("RemoteControlTab", () => {
   it("reports command copy success only after the clipboard write succeeds", async () => {
     render(<RemoteControlTab />);
 
-    const copyButton = document
-      .querySelector(".lucide-copy")
-      ?.closest("button");
-    expect(copyButton).not.toBeNull();
-    fireEvent.click(copyButton!);
+    fireEvent.click(
+      screen.getByRole("button", { name: "Copy Connect Machine command" }),
+    );
 
     await waitFor(() => {
       expect(mockWriteText).toHaveBeenCalledWith(
@@ -169,11 +167,9 @@ describe("RemoteControlTab", () => {
     );
     render(<RemoteControlTab />);
 
-    const copyButton = document
-      .querySelector(".lucide-copy")
-      ?.closest("button");
-    expect(copyButton).not.toBeNull();
-    fireEvent.click(copyButton!);
+    fireEvent.click(
+      screen.getByRole("button", { name: "Copy Connect Machine command" }),
+    );
 
     await waitFor(() => {
       expect(toast.error).toHaveBeenCalledWith("Failed to copy command");
@@ -192,12 +188,7 @@ describe("RemoteControlTab", () => {
       expect(screen.getByDisplayValue("test-token")).toBeInTheDocument();
     });
 
-    const copyButtons = Array.from(
-      document.querySelectorAll(".lucide-copy"),
-      (icon) => icon.closest("button"),
-    );
-    expect(copyButtons).toHaveLength(2);
-    fireEvent.click(copyButtons[0]!);
+    fireEvent.click(screen.getByRole("button", { name: "Copy auth token" }));
 
     await waitFor(() => {
       expect(mockWriteText).toHaveBeenCalledWith("test-token");
