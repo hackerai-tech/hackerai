@@ -74,6 +74,7 @@ const CommandBlock = ({
         size="icon"
         className="shrink-0 h-9 w-9"
         onClick={onCopy}
+        aria-label={`Copy ${label} command`}
       >
         <Copy className="h-4 w-4" />
       </Button>
@@ -221,16 +222,34 @@ const RemoteControlTab = () => {
     }
   };
 
-  const handleCopyCommand = (command: string) => {
-    navigator.clipboard.writeText(command);
-    toast.success("Command copied to clipboard");
+  const copyToClipboard = async (
+    text: string,
+    successMessage: string,
+    errorMessage: string,
+  ) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      toast.success(successMessage);
+    } catch {
+      toast.error(errorMessage);
+    }
   };
 
+  const handleCopyCommand = (command: string) =>
+    copyToClipboard(
+      command,
+      "Command copied to clipboard",
+      "Failed to copy command",
+    );
+
   const handleCopyToken = () => {
-    if (token) {
-      navigator.clipboard.writeText(token);
-      toast.success("Token copied to clipboard");
-    }
+    if (!token) return;
+
+    return copyToClipboard(
+      token,
+      "Token copied to clipboard",
+      "Failed to copy token",
+    );
   };
 
   return (
@@ -349,6 +368,7 @@ const RemoteControlTab = () => {
                   size="sm"
                   className="h-7 w-7 p-0"
                   onClick={handleCopyToken}
+                  aria-label="Copy auth token"
                 >
                   <Copy className="h-3.5 w-3.5" />
                 </Button>
