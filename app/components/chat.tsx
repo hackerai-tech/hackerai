@@ -47,6 +47,7 @@ import {
   fetchAgentLongStream,
   resumeAgentLongStream,
 } from "@/lib/chat/agent-long-transport";
+import { areMessagesEquivalentForConvexSync } from "@/lib/chat/message-reconciliation";
 import {
   LEGACY_DESKTOP_AGENT_UPDATE_MESSAGE,
   isLegacyDesktopAgentClient,
@@ -1512,19 +1513,16 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   ]);
 
   // Sync Convex real-time data with useChat messages.
-  // Uses statusRef (not status state) so this effect only fires when
-  // paginatedMessages.results actually changes — not on status transitions.
   // Guards against BOTH "streaming" and "submitted" statuses to prevent
-  // Convex real-time updates from overwriting useChat's in-flight state.
+  // Convex real-time updates from overwriting useChat's in-flight state, then
+  // reruns when the status settles so a completion persisted during streaming
+  // is not left unapplied.
   // Without the "submitted" guard, a race condition occurs in production:
   // Convex receives the user message (via handleInitialChatAndUserMessage)
   // and pushes a subscription update before the first streaming chunk arrives,
   // resetting useChat's messages and causing an empty AI response.
   useEffect(() => {
-    if (
-      statusRef.current === "streaming" ||
-      statusRef.current === "submitted"
-    ) {
+    if (status === "streaming" || status === "submitted") {
       return;
     }
     if (!paginatedMessageResults || paginatedMessageResults.length === 0) {
@@ -1535,11 +1533,12 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
       [...paginatedMessageResults].reverse(),
     );
 
-    // Skip if useChat already has the same messages (same IDs, same part count).
+    // Skip if useChat already has the same rendered message content.
     // This prevents redundant setMessages calls — e.g. after a local provider
     // save, Convex echoes the same data back via reactive query, which would
     // otherwise cause a visible flicker from new object references.
-    // Comparing parts.length catches content updates where the ID stays the same.
+    // Content comparison is required because a partial and completed text part can
+    // share the same message ID and part count.
     const current = messagesRef.current;
 
     // Don't overwrite with fewer messages — the backend (e.g. agent-long Trigger.dev
@@ -1549,14 +1548,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
       return;
     }
 
-    if (
-      current.length === uiMessages.length &&
-      current.every(
-        (m, i) =>
-          m.id === uiMessages[i].id &&
-          (m.parts?.length ?? 0) === (uiMessages[i].parts?.length ?? 0),
-      )
-    ) {
+    if (areMessagesEquivalentForConvexSync(current, uiMessages)) {
       return;
     }
 
@@ -1582,7 +1574,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     if (isExistingChat) {
       setMessages(uiMessages);
     }
-  }, [paginatedMessageResults, setMessages, isExistingChat, chatId]);
+  }, [paginatedMessageResults, setMessages, isExistingChat, chatId, status]);
 
   const { scrollRef, contentRef, scrollToBottom, isAtBottom } =
     useMessageScroll();
