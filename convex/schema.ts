@@ -184,6 +184,7 @@ export default defineSchema({
     generation_started_at: v.optional(v.number()),
     generation_time_ms: v.optional(v.number()),
     finish_reason: v.optional(v.string()),
+    trigger_run_id: v.optional(v.string()),
     usage: v.optional(v.any()),
     is_hidden: v.optional(v.boolean()),
   })
@@ -191,6 +192,7 @@ export default defineSchema({
     .index("by_chat_id", ["chat_id"])
     .index("by_feedback_id", ["feedback_id"])
     .index("by_user_id", ["user_id"])
+    .index("by_trigger_run_id", ["trigger_run_id"])
     .searchIndex("search_content", {
       searchField: "content",
       filterFields: ["user_id"],

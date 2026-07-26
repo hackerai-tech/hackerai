@@ -162,6 +162,59 @@ describe("saveMessage — is_hidden handling", () => {
     );
   });
 
+  it("stores the Trigger run ID on an inserted assistant message", async () => {
+    setupExistingMessage(null);
+
+    const { saveMessage } = await import("../messages");
+
+    await saveMessage.handler(mockCtx, {
+      serviceKey: SERVICE_KEY,
+      id: "msg-agent",
+      chatId: CHAT_ID,
+      userId: USER_ID,
+      role: "assistant" as const,
+      parts: [{ type: "text", text: "partial output" }],
+      finishReason: "trigger_crashed_client_saved",
+      triggerRunId: "run-1",
+    });
+
+    expect(mockCtx.db.insert).toHaveBeenCalledWith(
+      "messages",
+      expect.objectContaining({
+        finish_reason: "trigger_crashed_client_saved",
+        trigger_run_id: "run-1",
+      }),
+    );
+  });
+
+  it("rejects changing an existing message to a different Trigger run", async () => {
+    const existing = makeMessage({
+      role: "assistant",
+      trigger_run_id: "run-1",
+    });
+    setupExistingMessage(existing);
+
+    const { saveMessage } = await import("../messages");
+
+    await expect(
+      saveMessage.handler(mockCtx, {
+        serviceKey: SERVICE_KEY,
+        id: "msg-1",
+        chatId: CHAT_ID,
+        userId: USER_ID,
+        role: "assistant" as const,
+        parts: [{ type: "text", text: "partial output" }],
+        triggerRunId: "run-2",
+      }),
+    ).rejects.toMatchObject({
+      data: expect.objectContaining({
+        code: "MESSAGE_SAVE_FAILED",
+        failureStage: "verify_existing_message_trigger_run",
+      }),
+    });
+    expect(mockCtx.db.patch).not.toHaveBeenCalled();
+  });
+
   it("should store is_hidden on update when isHidden is provided", async () => {
     const existing = makeMessage({ _id: "existing-doc" as Id<"messages"> });
     setupExistingMessage(existing);

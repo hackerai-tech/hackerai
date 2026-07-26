@@ -574,6 +574,30 @@ describe("setActiveTriggerRun", () => {
 });
 
 describe("saveMessage", () => {
+  it("forwards the durable Trigger run ID to Convex", async () => {
+    const { saveMessage, mockMutation } = await loadSaveMessageWithMocks();
+
+    await saveMessage({
+      chatId: "chat-1",
+      userId: "user-1",
+      message: {
+        id: "message-1",
+        role: "assistant",
+        parts: [{ type: "text", text: "partial output" }],
+      },
+      finishReason: "trigger_crashed_client_saved",
+      triggerRunId: "run-1",
+    });
+
+    expect(mockMutation).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        finishReason: "trigger_crashed_client_saved",
+        triggerRunId: "run-1",
+      }),
+    );
+  });
+
   it("sanitizes assistant parts before storage compaction", async () => {
     const { saveMessage, mockCompactMessageForStorage } =
       await loadSaveMessageWithMocks();

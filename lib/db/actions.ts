@@ -902,6 +902,7 @@ export async function saveMessage({
   generationStartedAt,
   generationTimeMs,
   finishReason,
+  triggerRunId,
   usage,
   updateOnly,
   isHidden,
@@ -921,6 +922,7 @@ export async function saveMessage({
   generationStartedAt?: number;
   generationTimeMs?: number;
   finishReason?: string;
+  triggerRunId?: string;
   usage?: Record<string, unknown>;
   updateOnly?: boolean;
   isHidden?: boolean;
@@ -1021,6 +1023,7 @@ export async function saveMessage({
       generationStartedAt,
       generationTimeMs,
       finishReason,
+      triggerRunId,
       usage: usageForSave,
       updateOnly,
       isHidden,

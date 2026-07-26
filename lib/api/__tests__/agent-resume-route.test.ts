@@ -9,6 +9,7 @@ const mockGetTemporaryRefreshHandle = jest.fn();
 const mockSetTemporaryRefreshCookie = jest.fn();
 const mockClearTemporaryRefreshCookie = jest.fn();
 const mockCloseAgentApprovalSession = jest.fn();
+const mockCreateAgentRunCorrelationToken = jest.fn();
 
 jest.mock("next/server", () => ({
   NextResponse: class MockNextResponse {
@@ -69,6 +70,10 @@ jest.mock("@/lib/api/agent-route-errors", () => ({
   }),
 }));
 
+jest.mock("@/lib/api/agent-run-correlation", () => ({
+  createAgentRunCorrelationToken: mockCreateAgentRunCorrelationToken,
+}));
+
 const requestFor = (chatId: string) =>
   ({
     headers: { get: () => null },
@@ -90,6 +95,9 @@ describe("agent resume route", () => {
     mockCreatePublicToken
       .mockResolvedValueOnce("fresh-run-token" as never)
       .mockResolvedValueOnce("fresh-approval-token" as never);
+    mockCreateAgentRunCorrelationToken.mockReturnValue(
+      "v1.signed-run-correlation",
+    );
   });
 
   it("refreshes temporary approval tokens from the signed mapping", async () => {
@@ -102,6 +110,7 @@ describe("agent resume route", () => {
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toEqual({
       runId: "run-1",
+      runCorrelationToken: "v1.signed-run-correlation",
       publicAccessToken: "fresh-run-token",
       chatId: "temporary-chat-1",
       approvalProtocolVersion: 2,
@@ -111,6 +120,11 @@ describe("agent resume route", () => {
     expect(mockCreatePublicToken).toHaveBeenNthCalledWith(2, {
       scopes: { write: { sessions: "approval-session-1" } },
       expirationTime: "1m",
+    });
+    expect(mockCreateAgentRunCorrelationToken).toHaveBeenCalledWith({
+      userId: "user-1",
+      chatId: "temporary-chat-1",
+      runId: "run-1",
     });
     expect(mockSetTemporaryRefreshCookie).toHaveBeenCalledWith(response, {
       req,
