@@ -12,6 +12,7 @@ const mockPostHog = {
   __loaded: true,
   capture: mockCapture,
   get_distinct_id: jest.fn(() => "user_123"),
+  get_session_id: jest.fn(() => "session_123"),
 };
 
 jest.mock("posthog-js", () => ({
@@ -19,8 +20,11 @@ jest.mock("posthog-js", () => ({
   default: mockPostHog,
 }));
 
-const { captureUpgradeCtaImpression, loadPostHogClient } =
-  require("../client") as typeof import("../client");
+const {
+  captureUpgradeCtaImpression,
+  getPostHogRequestHeaders,
+  loadPostHogClient,
+} = require("../client") as typeof import("../client");
 
 describe("client analytics", () => {
   beforeAll(async () => {
@@ -93,5 +97,14 @@ describe("client analytics", () => {
     window.localStorage.clear();
     expect(captureUpgradeCtaImpression(properties)).toBe(true);
     expect(mockCapture.mock.calls[2]?.[2]?.uuid).not.toBe(firstDeviceUuid);
+  });
+
+  it("adds versioned HAC-45 state and PostHog session correlation headers", () => {
+    expect(getPostHogRequestHeaders({ hac45AgentOnlyActive: true })).toEqual({
+      "x-hackerai-analytics-context-version": "1",
+      "x-hackerai-hac45-agent-only": "active",
+      "X-POSTHOG-DISTINCT-ID": "user_123",
+      "x-posthog-session-id": "session_123",
+    });
   });
 });

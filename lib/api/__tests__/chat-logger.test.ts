@@ -479,6 +479,11 @@ describe("captureUsageCost", () => {
         id: "settlement_123",
         midRunCount: 7,
       },
+      analyticsRequestContext: {
+        analyticsContextVersion: 1,
+        hac45AgentOnlyClientActive: true,
+        posthogSessionId: "session_123",
+      },
     });
 
     expect(capture).toHaveBeenCalledWith({
@@ -501,6 +506,9 @@ describe("captureUsageCost", () => {
         extra_usage_cost_dollars: 0.32,
         included_points_deducted: 1000,
         extra_usage_points_deducted: 3200,
+        usage_economics_version: 1,
+        extra_usage_charge_dollars: 0.368,
+        consumption_contribution_dollars: -0.05199999999999999,
         model_cost_dollars: 0.3,
         non_model_cost_dollars: 0.12,
         input_tokens: 1000,
@@ -509,6 +517,9 @@ describe("captureUsageCost", () => {
         cache_read_tokens: 200,
         cache_write_tokens: 0,
         cost_source: "provider",
+        $session_id: "session_123",
+        client_analytics_context_version: 1,
+        hac45_agent_only_client_active: true,
         usage_settlement_id: "settlement_123",
         mid_run_usage_settlement_count: 7,
         usage_settlement_step_events_sampled:

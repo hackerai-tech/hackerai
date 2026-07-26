@@ -118,6 +118,7 @@ import {
 } from "@/lib/api/agent-endpoints";
 import { phLogger } from "@/lib/posthog/server";
 import { PAID_FUNNEL_EVENTS } from "@/lib/analytics/paid-funnel";
+import type { AnalyticsRequestContext } from "@/lib/analytics/request-context";
 import {
   buildAgentCompletionSignals,
   createAgentCompletionSignalTracker,
@@ -1587,6 +1588,7 @@ export type AgentLongPayload = {
   isNewChat?: boolean;
   limitRescue?: LimitRescueRequest;
   endpoint?: AgentApiEndpoint;
+  analyticsRequestContext?: AnalyticsRequestContext;
   convexUrl?: string;
   requestTiming?: {
     routeStartedAt: number;
@@ -1653,6 +1655,7 @@ export const agentLongTask = task({
       isNewChat,
       limitRescue,
       endpoint: payloadEndpoint,
+      analyticsRequestContext,
     } = payload;
     let selectedModelOverride = rawSelectedModelOverride;
     const endpoint = payloadEndpoint ?? LEGACY_AGENT_API_ENDPOINT;
@@ -2661,6 +2664,7 @@ export const agentLongTask = task({
                   endpoint,
                   mode,
                   agentPermissionMode,
+                  analyticsRequestContext,
                   usage: usageCostRecord,
                   responseModel: state.responseModel,
                   ...(usageSettlementState && {
