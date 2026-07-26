@@ -1,5 +1,5 @@
 import "@testing-library/jest-dom";
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, it, expect, jest, beforeEach } from "@jest/globals";
 
 type MockConnection = {
@@ -22,6 +22,9 @@ let mockSandboxPreference: string;
 let mockSelectedModel: "auto" | "hackerai-standard" | "hackerai-pro";
 let mockTemporaryChatsEnabled: boolean;
 
+const mockGetToken = jest.fn<() => Promise<{ token: string }>>();
+const mockRegenerateToken = jest.fn<() => Promise<{ token: string }>>();
+const mockWriteText = jest.fn<(text: string) => Promise<void>>();
 const mockSetChatMode = jest.fn((mode: "ask" | "agent") => {
   mockChatMode = mode;
 });
@@ -34,8 +37,19 @@ const mockSetSelectedModel = jest.fn(
   },
 );
 
+jest.mock("@/convex/_generated/api", () => ({
+  api: {
+    localSandbox: {
+      getToken: "getToken",
+      regenerateToken: "regenerateToken",
+    },
+  },
+}));
+
 jest.mock("convex/react", () => ({
-  useMutation: jest.fn(() => jest.fn()),
+  useMutation: jest.fn((mutation: string) =>
+    mutation === "getToken" ? mockGetToken : mockRegenerateToken,
+  ),
 }));
 
 jest.mock("@/app/contexts/GlobalState", () => ({
@@ -87,6 +101,13 @@ describe("RemoteControlTab", () => {
     mockSandboxPreference = "e2b";
     mockSelectedModel = "hackerai-pro";
     mockTemporaryChatsEnabled = false;
+    mockGetToken.mockResolvedValue({ token: "test-token" });
+    mockRegenerateToken.mockResolvedValue({ token: "regenerated-token" });
+    mockWriteText.mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText: mockWriteText },
+    });
   });
 
   it("selects agent mode with the new local connection after an empty baseline", async () => {
@@ -121,6 +142,67 @@ describe("RemoteControlTab", () => {
     expect(mockSetSandboxPreference).not.toHaveBeenCalled();
     expect(mockSetSelectedModel).not.toHaveBeenCalled();
     expect(mockSetChatMode).not.toHaveBeenCalled();
+    expect(toast.success).not.toHaveBeenCalled();
+  });
+
+  it("reports command copy success only after the clipboard write succeeds", async () => {
+    render(<RemoteControlTab />);
+
+    const copyButton = document
+      .querySelector(".lucide-copy")
+      ?.closest("button");
+    expect(copyButton).not.toBeNull();
+    fireEvent.click(copyButton!);
+
+    await waitFor(() => {
+      expect(mockWriteText).toHaveBeenCalledWith(
+        expect.stringContaining("--token YOUR_TOKEN"),
+      );
+    });
+    expect(toast.success).toHaveBeenCalledWith("Command copied to clipboard");
+    expect(toast.error).not.toHaveBeenCalled();
+  });
+
+  it("handles a rejected command clipboard write without a false success", async () => {
+    mockWriteText.mockRejectedValue(
+      new DOMException("Document is not focused"),
+    );
+    render(<RemoteControlTab />);
+
+    const copyButton = document
+      .querySelector(".lucide-copy")
+      ?.closest("button");
+    expect(copyButton).not.toBeNull();
+    fireEvent.click(copyButton!);
+
+    await waitFor(() => {
+      expect(toast.error).toHaveBeenCalledWith("Failed to copy command");
+    });
+    expect(toast.success).not.toHaveBeenCalled();
+  });
+
+  it("handles a rejected token clipboard write without a false success", async () => {
+    mockWriteText.mockRejectedValue(
+      new DOMException("Clipboard write requires user activation"),
+    );
+    render(<RemoteControlTab />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Generate Token" }));
+    await waitFor(() => {
+      expect(screen.getByDisplayValue("test-token")).toBeInTheDocument();
+    });
+
+    const copyButtons = Array.from(
+      document.querySelectorAll(".lucide-copy"),
+      (icon) => icon.closest("button"),
+    );
+    expect(copyButtons).toHaveLength(2);
+    fireEvent.click(copyButtons[0]!);
+
+    await waitFor(() => {
+      expect(mockWriteText).toHaveBeenCalledWith("test-token");
+      expect(toast.error).toHaveBeenCalledWith("Failed to copy token");
+    });
     expect(toast.success).not.toHaveBeenCalled();
   });
 });

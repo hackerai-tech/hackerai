@@ -221,15 +221,23 @@ const RemoteControlTab = () => {
     }
   };
 
-  const handleCopyCommand = (command: string) => {
-    navigator.clipboard.writeText(command);
-    toast.success("Command copied to clipboard");
+  const handleCopyCommand = async (command: string) => {
+    try {
+      await navigator.clipboard.writeText(command);
+      toast.success("Command copied to clipboard");
+    } catch {
+      toast.error("Failed to copy command");
+    }
   };
 
-  const handleCopyToken = () => {
-    if (token) {
-      navigator.clipboard.writeText(token);
+  const handleCopyToken = async () => {
+    if (!token) return;
+
+    try {
+      await navigator.clipboard.writeText(token);
       toast.success("Token copied to clipboard");
+    } catch {
+      toast.error("Failed to copy token");
     }
   };
 
