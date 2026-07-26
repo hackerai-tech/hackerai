@@ -249,6 +249,29 @@ describe("createAgentPartialSavePost", () => {
     expect(mockSaveMessage).not.toHaveBeenCalled();
   });
 
+  it("rejects missing Agent run correlation before lookup", async () => {
+    const { createAgentPartialSavePost } =
+      await import("@/lib/api/agent-partial-save-route");
+    const {
+      triggerRunId: _runId,
+      runCorrelationToken: _token,
+      ...bodyWithoutCorrelation
+    } = validBody;
+
+    const response = await createAgentPartialSavePost()(
+      request(bodyWithoutCorrelation),
+    );
+    const body = await response.json();
+
+    expect(response.status).toBe(400);
+    expect(body).toMatchObject({
+      code: "bad_request:api",
+      cause: "Agent run correlation is incomplete.",
+    });
+    expect(mockGetChatById).not.toHaveBeenCalled();
+    expect(mockSaveMessage).not.toHaveBeenCalled();
+  });
+
   it("rejects non-assistant messages before looking up the chat", async () => {
     const { createAgentPartialSavePost } =
       await import("@/lib/api/agent-partial-save-route");

@@ -40,8 +40,8 @@ type PartialSaveBody = {
   generationStartedAt?: number;
   generationTimeMs?: number;
   clientReason?: string;
-  triggerRunId?: string;
-  runCorrelationToken?: string;
+  triggerRunId: string;
+  runCorrelationToken: string;
 };
 
 const getOptionalFiniteNumber = (value: unknown): number | undefined =>
@@ -169,6 +169,22 @@ const parsePartialSaveBody = async (
     throw new ChatSDKError("bad_request:api", "message.parts required");
   }
 
+  const triggerRunId =
+    typeof body.triggerRunId === "string" && body.triggerRunId.length > 0
+      ? body.triggerRunId
+      : undefined;
+  const runCorrelationToken =
+    typeof body.runCorrelationToken === "string" &&
+    body.runCorrelationToken.length > 0
+      ? body.runCorrelationToken
+      : undefined;
+  if (!triggerRunId || !runCorrelationToken) {
+    throw new ChatSDKError(
+      "bad_request:api",
+      "Agent run correlation is incomplete.",
+    );
+  }
+
   const parsed: PartialSaveBody = {
     chatId,
     message: {
@@ -180,26 +196,9 @@ const parsePartialSaveBody = async (
     generationTimeMs: getOptionalFiniteNumber(body.generationTimeMs),
     clientReason:
       typeof body.clientReason === "string" ? body.clientReason : undefined,
-    triggerRunId:
-      typeof body.triggerRunId === "string" && body.triggerRunId.length > 0
-        ? body.triggerRunId
-        : undefined,
-    runCorrelationToken:
-      typeof body.runCorrelationToken === "string" &&
-      body.runCorrelationToken.length > 0
-        ? body.runCorrelationToken
-        : undefined,
+    triggerRunId,
+    runCorrelationToken,
   };
-
-  if (
-    (parsed.triggerRunId === undefined) !==
-    (parsed.runCorrelationToken === undefined)
-  ) {
-    throw new ChatSDKError(
-      "bad_request:api",
-      "Agent run correlation is incomplete.",
-    );
-  }
 
   if (!hasVisibleAssistantContent([parsed.message])) {
     throw new ChatSDKError(
@@ -225,8 +224,6 @@ export const createAgentPartialSavePost =
         throw new ChatSDKError("forbidden:chat");
       }
       if (
-        body.triggerRunId &&
-        body.runCorrelationToken &&
         !verifyAgentRunCorrelationToken({
           token: body.runCorrelationToken,
           userId,
