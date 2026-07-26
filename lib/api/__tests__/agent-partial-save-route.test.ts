@@ -14,6 +14,7 @@ const mockSaveMessage = jest.fn();
 const mockUpdateChat = jest.fn();
 const mockAssertUserCanAccessChatHistory = jest.fn();
 const mockCreateRedisClient = jest.fn();
+const mockVerifyAgentRunCorrelationToken = jest.fn();
 
 jest.mock("next/server", () => ({
   NextResponse: class MockNextResponse {
@@ -59,6 +60,10 @@ jest.mock("@/lib/rate-limit/redis", () => ({
   createRedisClient: mockCreateRedisClient,
 }));
 
+jest.mock("@/lib/api/agent-run-correlation", () => ({
+  verifyAgentRunCorrelationToken: mockVerifyAgentRunCorrelationToken,
+}));
+
 function installResponseShim() {
   (globalThis as any).Response = {
     json: (body: unknown, init?: ResponseInit) => ({
@@ -80,6 +85,8 @@ const validBody = {
   generationStartedAt: 100,
   generationTimeMs: 250,
   clientReason: "resume_terminal_204",
+  triggerRunId: "run-1",
+  runCorrelationToken: "v1.signed-run-correlation",
 };
 
 const request = (
@@ -125,6 +132,7 @@ describe("createAgentPartialSavePost", () => {
     mockGetUserID.mockResolvedValue("user-1" as never);
     mockAssertUserCanAccessChatHistory.mockResolvedValue(undefined as never);
     mockCreateRedisClient.mockReturnValue(null);
+    mockVerifyAgentRunCorrelationToken.mockReturnValue(true);
     mockGetChatById.mockResolvedValue(chat() as never);
     mockSaveMessage.mockResolvedValue(undefined as never);
     mockUpdateChat.mockResolvedValue(undefined as never);
@@ -157,9 +165,16 @@ describe("createAgentPartialSavePost", () => {
         generationStartedAt: 100,
         generationTimeMs: 250,
         finishReason: "trigger_crashed_client_saved",
+        triggerRunId: "run-1",
         wasAborted: true,
       }),
     );
+    expect(mockVerifyAgentRunCorrelationToken).toHaveBeenCalledWith({
+      token: "v1.signed-run-correlation",
+      userId: "user-1",
+      chatId: "chat-1",
+      runId: "run-1",
+    });
     expect(mockUpdateChat).toHaveBeenCalledWith({
       chatId: "chat-1",
       finishReason: "trigger_crashed_client_saved",
@@ -199,6 +214,39 @@ describe("createAgentPartialSavePost", () => {
     expect(body).toMatchObject({ code: "forbidden:chat" });
     expect(mockSaveMessage).not.toHaveBeenCalled();
     expect(mockUpdateChat).not.toHaveBeenCalled();
+  });
+
+  it("rejects an invalid Agent run correlation before writing", async () => {
+    const { createAgentPartialSavePost } =
+      await import("@/lib/api/agent-partial-save-route");
+    mockVerifyAgentRunCorrelationToken.mockReturnValue(false);
+
+    const response = await createAgentPartialSavePost()(request());
+    const body = await response.json();
+
+    expect(response.status).toBe(403);
+    expect(body).toMatchObject({ code: "forbidden:chat" });
+    expect(mockSaveMessage).not.toHaveBeenCalled();
+    expect(mockUpdateChat).not.toHaveBeenCalled();
+  });
+
+  it("rejects incomplete Agent run correlation before lookup", async () => {
+    const { createAgentPartialSavePost } =
+      await import("@/lib/api/agent-partial-save-route");
+    const { runCorrelationToken: _token, ...bodyWithoutToken } = validBody;
+
+    const response = await createAgentPartialSavePost()(
+      request(bodyWithoutToken),
+    );
+    const body = await response.json();
+
+    expect(response.status).toBe(400);
+    expect(body).toMatchObject({
+      code: "bad_request:api",
+      cause: "Agent run correlation is incomplete.",
+    });
+    expect(mockGetChatById).not.toHaveBeenCalled();
+    expect(mockSaveMessage).not.toHaveBeenCalled();
   });
 
   it("rejects non-assistant messages before looking up the chat", async () => {

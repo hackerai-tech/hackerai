@@ -505,6 +505,7 @@ export const saveMessage = mutation({
     generationStartedAt: v.optional(v.number()),
     generationTimeMs: v.optional(v.number()),
     finishReason: v.optional(v.string()),
+    triggerRunId: v.optional(v.string()),
     usage: v.optional(v.any()),
     updateOnly: v.optional(v.boolean()),
     isHidden: v.optional(v.boolean()),
@@ -632,6 +633,20 @@ export const saveMessage = mutation({
         if (args.finishReason && !existingMessage.finish_reason) {
           patch.finish_reason = args.finishReason;
         }
+        if (
+          args.triggerRunId &&
+          existingMessage.trigger_run_id &&
+          existingMessage.trigger_run_id !== args.triggerRunId
+        ) {
+          failureStage = "verify_existing_message_trigger_run";
+          throw new ConvexError({
+            code: "MESSAGE_TRIGGER_RUN_MISMATCH",
+            message: "Message is already associated with another Agent run",
+          });
+        }
+        if (args.triggerRunId && !existingMessage.trigger_run_id) {
+          patch.trigger_run_id = args.triggerRunId;
+        }
         if (args.isHidden !== undefined) {
           patch.is_hidden = args.isHidden;
         }
@@ -682,6 +697,7 @@ export const saveMessage = mutation({
         generation_started_at: args.generationStartedAt,
         generation_time_ms: args.generationTimeMs,
         finish_reason: args.finishReason,
+        trigger_run_id: args.triggerRunId,
         usage: args.usage,
         is_hidden: args.isHidden,
       };
@@ -1825,6 +1841,7 @@ export const branchChat = mutation({
           generation_started_at: msg.generation_started_at,
           generation_time_ms: msg.generation_time_ms,
           finish_reason: msg.finish_reason,
+          trigger_run_id: msg.trigger_run_id,
           usage: msg.usage,
         });
       }

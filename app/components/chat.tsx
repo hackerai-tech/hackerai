@@ -659,6 +659,10 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   const browserStreamFinishedRef = useRef(false);
   const activeChatIdRef = useRef(chatId);
   const agentLongPartialSaveKeysRef = useRef<Set<string>>(new Set());
+  const agentLongRunCorrelationRef = useRef<{
+    runId: string;
+    token: string;
+  } | null>(null);
   activeChatIdRef.current = chatId;
 
   useEffect(() => {
@@ -805,6 +809,25 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
 
     onData: (dataPart) => {
       if (!isChatMountedRef.current || activeChatIdRef.current !== chatId) {
+        return;
+      }
+      if (dataPart.type === "data-agent-run-correlation") {
+        const correlationData = dataPart.data as {
+          chatId?: unknown;
+          runId?: unknown;
+          token?: unknown;
+        };
+        if (
+          typeof correlationData.runId === "string" &&
+          typeof correlationData.token === "string" &&
+          (correlationData.chatId === undefined ||
+            correlationData.chatId === chatId)
+        ) {
+          agentLongRunCorrelationRef.current = {
+            runId: correlationData.runId,
+            token: correlationData.token,
+          };
+        }
         return;
       }
       setDataStream((ds) => [...ds, { ...dataPart, __chatId: chatId }]);
@@ -1071,6 +1094,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
       const saveKey = `${chatId}:${partialMessage.id}`;
       if (agentLongPartialSaveKeysRef.current.has(saveKey)) return;
       agentLongPartialSaveKeysRef.current.add(saveKey);
+      const runCorrelation = agentLongRunCorrelationRef.current;
 
       void fetch(AGENT_PARTIAL_SAVE_ENDPOINT, {
         method: "POST",
@@ -1081,6 +1105,12 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
           generationStartedAt: partialMessage.generationStartedAt,
           generationTimeMs: partialMessage.generationTimeMs,
           clientReason,
+          ...(runCorrelation
+            ? {
+                triggerRunId: runCorrelation.runId,
+                runCorrelationToken: runCorrelation.token,
+              }
+            : {}),
         }),
       })
         .then((response) => {
@@ -1096,6 +1126,9 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   );
 
   useEffect(() => {
+    if (status === "submitted") {
+      agentLongRunCorrelationRef.current = null;
+    }
     if (
       shouldUseAgentLongForCurrentChat &&
       (status === "streaming" || status === "submitted")
@@ -1155,6 +1188,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   }, []);
 
   useEffect(() => {
+    agentLongRunCorrelationRef.current = null;
     setDataStream([]);
     setIsAutoResuming(false);
     dispatchStreaming({ type: "RESET_ON_CHAT_CHANGE" });

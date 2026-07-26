@@ -13,6 +13,7 @@ import {
   getTemporaryAgentApprovalRefreshHandle,
   setTemporaryAgentApprovalRefreshCookie,
 } from "@/lib/api/agent-approval-session";
+import { createAgentRunCorrelationToken } from "@/lib/api/agent-run-correlation";
 
 const TERMINAL_STATUSES = new Set([
   "COMPLETED",
@@ -161,6 +162,11 @@ export const createAgentResumeGet =
 
       const response = NextResponse.json({
         runId,
+        runCorrelationToken: createAgentRunCorrelationToken({
+          userId,
+          chatId,
+          runId,
+        }),
         publicAccessToken,
         chatId,
         approvalProtocolVersion: AGENT_APPROVAL_PROTOCOL_VERSION,

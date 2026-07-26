@@ -62,6 +62,7 @@ import {
   closeAgentApprovalSession,
   setTemporaryAgentApprovalRefreshCookie,
 } from "@/lib/api/agent-approval-session";
+import { createAgentRunCorrelationToken } from "@/lib/api/agent-run-correlation";
 
 const AGENT_TRIGGER_PRIORITY_BY_SUBSCRIPTION: Record<SubscriptionTier, number> =
   {
@@ -676,6 +677,11 @@ export const createAgentTriggerPost =
 
       const response = NextResponse.json({
         runId,
+        runCorrelationToken: createAgentRunCorrelationToken({
+          userId,
+          chatId,
+          runId,
+        }),
         publicAccessToken,
         chatId,
         approvalProtocolVersion: AGENT_APPROVAL_PROTOCOL_VERSION,

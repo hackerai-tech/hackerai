@@ -460,6 +460,15 @@ describe("agent-long chat UI — completion reconciliation", () => {
     expect(agentPartialSaveRouteSrc).toMatch(/hasVisibleAssistantContent/);
     expect(agentPartialSaveRouteSrc).toMatch(/saveMessage\(\{/);
     expect(agentPartialSaveRouteSrc).toMatch(
+      /verifyAgentRunCorrelationToken\(\{/,
+    );
+    expect(agentPartialSaveRouteSrc).toMatch(
+      /triggerRunId:\s*body\.triggerRunId/,
+    );
+    expect(chatComponentSrc).toMatch(/data-agent-run-correlation/);
+    expect(chatComponentSrc).toMatch(/runCorrelationToken/);
+    expect(convexMessagesSrc).toMatch(/trigger_run_id:\s*args\.triggerRunId/);
+    expect(agentPartialSaveRouteSrc).toMatch(
       /finishReason:\s*CLIENT_SAVED_FINISH_REASON/,
     );
     expect(agentPartialSaveRouteSrc).toMatch(/updateChat\(\{/);
@@ -620,7 +629,7 @@ describe("agent-long resume route — 204 on terminal + self-heal on 404", () =>
 
   test("returns chat id with the public run handle", () => {
     expect(resumeSrc).toMatch(
-      /NextResponse\.json\(\{[\s\S]*runId,[\s\S]*publicAccessToken,[\s\S]*chatId,[\s\S]*approvalSessionPublicAccessToken/,
+      /NextResponse\.json\(\{[\s\S]*runId,[\s\S]*runCorrelationToken:[\s\S]*publicAccessToken,[\s\S]*chatId,[\s\S]*approvalSessionPublicAccessToken/,
     );
   });
 });

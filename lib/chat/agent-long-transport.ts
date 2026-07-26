@@ -34,6 +34,7 @@ import { createContentSequenceGuard } from "./agent-long-content-sequence-guard"
  */
 type RunHandle = {
   runId: string;
+  runCorrelationToken?: string;
   publicAccessToken: string;
   chatId?: string;
   approvalSessionId?: string;
@@ -261,6 +262,26 @@ const buildSSEResponseFromRun = (
         );
       };
 
+      const enqueueAgentRunCorrelationPart = () => {
+        if (!handle.runCorrelationToken || closed) {
+          return;
+        }
+        controller.enqueue(
+          encoder.encode(
+            `data: ${JSON.stringify({
+              type: "data-agent-run-correlation",
+              id: `agent-run-correlation-${runId}`,
+              transient: true,
+              data: {
+                chatId,
+                runId,
+                token: handle.runCorrelationToken,
+              },
+            })}\n\n`,
+          ),
+        );
+      };
+
       cancelRealtimeSubscriptions = async () => {
         readAbortController?.abort();
         if (statusMonitorInterval !== undefined) {
@@ -335,6 +356,7 @@ const buildSSEResponseFromRun = (
           return;
         }
 
+        enqueueAgentRunCorrelationPart();
         enqueueAgentApprovalSessionPart();
 
         const completedRunDrainTimeout = Symbol("completed-run-drain-timeout");
