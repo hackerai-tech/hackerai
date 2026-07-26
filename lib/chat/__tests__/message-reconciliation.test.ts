@@ -1,4 +1,7 @@
-import { areMessagesEquivalentForConvexSync } from "../message-reconciliation";
+import {
+  areMessagesEquivalentForConvexSync,
+  arePersistedMessagesAtLeastAsComplete,
+} from "../message-reconciliation";
 import type { ChatMessage } from "@/types";
 
 const createAssistantMessage = (
@@ -82,5 +85,65 @@ describe("areMessagesEquivalentForConvexSync", () => {
     ];
 
     expect(areMessagesEquivalentForConvexSync(current, persisted)).toBe(false);
+  });
+});
+
+describe("arePersistedMessagesAtLeastAsComplete", () => {
+  it("accepts completed persisted text that extends the local partial text", () => {
+    const current = [createAssistantMessage("The latest")];
+    const persisted = [
+      createAssistantMessage(
+        "The latest release includes the complete researched answer.",
+      ),
+    ];
+
+    expect(arePersistedMessagesAtLeastAsComplete(current, persisted)).toBe(
+      true,
+    );
+  });
+
+  it("rejects stale persisted text that would truncate the local answer", () => {
+    const current = [
+      createAssistantMessage(
+        "The latest release includes the complete researched answer.",
+      ),
+    ];
+    const persisted = [createAssistantMessage("The latest")];
+
+    expect(arePersistedMessagesAtLeastAsComplete(current, persisted)).toBe(
+      false,
+    );
+  });
+
+  it("rejects persisted tool state that regresses local progress", () => {
+    const current = [
+      createAssistantMessage("", {
+        parts: [
+          {
+            type: "tool-web_search",
+            toolCallId: "tool-1",
+            state: "output-available",
+            input: { query: "latest release" },
+            output: { results: [] },
+          } as ChatMessage["parts"][number],
+        ],
+      }),
+    ];
+    const persisted = [
+      createAssistantMessage("", {
+        parts: [
+          {
+            type: "tool-web_search",
+            toolCallId: "tool-1",
+            state: "input-available",
+            input: { query: "latest release" },
+          } as ChatMessage["parts"][number],
+        ],
+      }),
+    ];
+
+    expect(arePersistedMessagesAtLeastAsComplete(current, persisted)).toBe(
+      false,
+    );
   });
 });

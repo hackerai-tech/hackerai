@@ -42,6 +42,63 @@ const haveSameJsonValue = (current: unknown, next: unknown): boolean => {
   );
 };
 
+const partStateProgress: Record<string, number> = {
+  "input-streaming": 0,
+  "input-available": 1,
+  "approval-requested": 2,
+  "approval-responded": 3,
+  "output-available": 4,
+  "output-error": 4,
+  "output-denied": 4,
+};
+
+const isPersistedPartAtLeastAsComplete = (
+  current: ChatMessage["parts"][number],
+  persisted: ChatMessage["parts"][number],
+): boolean => {
+  const currentPart = current as Record<string, unknown>;
+  const persistedPart = persisted as Record<string, unknown>;
+
+  if (currentPart.type !== persistedPart.type) return false;
+
+  for (const field of ["text", "delta"] as const) {
+    const currentText = currentPart[field];
+    if (typeof currentText !== "string") continue;
+    const persistedText = persistedPart[field];
+    if (
+      typeof persistedText !== "string" ||
+      !persistedText.startsWith(currentText)
+    ) {
+      return false;
+    }
+  }
+
+  const currentState = currentPart.state;
+  if (typeof currentState === "string") {
+    const persistedState = persistedPart.state;
+    if (typeof persistedState !== "string") return false;
+
+    const currentProgress = partStateProgress[currentState];
+    const persistedProgress = partStateProgress[persistedState];
+    if (
+      currentProgress === undefined || persistedProgress === undefined
+        ? currentState !== persistedState
+        : persistedProgress < currentProgress
+    ) {
+      return false;
+    }
+  }
+
+  if (
+    Object.prototype.hasOwnProperty.call(currentPart, "output") &&
+    !Object.prototype.hasOwnProperty.call(persistedPart, "output")
+  ) {
+    return false;
+  }
+
+  return true;
+};
+
 export const areMessagesEquivalentForConvexSync = (
   current: readonly ReconciledMessage[],
   next: readonly ReconciledMessage[],
@@ -53,3 +110,24 @@ export const areMessagesEquivalentForConvexSync = (
       message.role === next[index].role &&
       haveSameJsonValue(message.parts, next[index].parts),
   );
+
+export const arePersistedMessagesAtLeastAsComplete = (
+  current: readonly ReconciledMessage[],
+  persisted: readonly ReconciledMessage[],
+): boolean => {
+  const persistedById = new Map(
+    persisted.map((message) => [message.id, message]),
+  );
+
+  return current.every((message) => {
+    const persistedMessage = persistedById.get(message.id);
+    if (!persistedMessage || persistedMessage.role !== message.role) {
+      return false;
+    }
+    if (persistedMessage.parts.length < message.parts.length) return false;
+
+    return message.parts.every((part, index) =>
+      isPersistedPartAtLeastAsComplete(part, persistedMessage.parts[index]),
+    );
+  });
+};

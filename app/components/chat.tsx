@@ -47,7 +47,10 @@ import {
   fetchAgentLongStream,
   resumeAgentLongStream,
 } from "@/lib/chat/agent-long-transport";
-import { areMessagesEquivalentForConvexSync } from "@/lib/chat/message-reconciliation";
+import {
+  areMessagesEquivalentForConvexSync,
+  arePersistedMessagesAtLeastAsComplete,
+} from "@/lib/chat/message-reconciliation";
 import {
   LEGACY_DESKTOP_AGENT_UPDATE_MESSAGE,
   isLegacyDesktopAgentClient,
@@ -1019,8 +1022,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     setTodos(latestTodoOutput.todos);
   }, [messages, setTodos, shouldFetchMessages, status]);
 
-  // Ref (not state) so the Convex sync effect only fires when paginatedMessages.results
-  // changes, not on status transitions — avoiding the stale-data overwrite on stream stop.
+  // Ref keeps asynchronous completion and cancellation callbacks on the latest status.
   const statusRef = useRef(status);
   statusRef.current = status;
   const stopRef = useRef(stop);
@@ -1568,6 +1570,13 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
       uiSharedOrder.length > 0 &&
       uiSharedOrder.join("\0") !== currentSharedOrder.join("\0")
     ) {
+      return;
+    }
+
+    // A status transition can rerun this effect before Convex has published the
+    // final save. Never replace more complete local text or tool progress with a
+    // stale persisted snapshot; the later Convex update will rerun the effect.
+    if (!arePersistedMessagesAtLeastAsComplete(current, uiMessages)) {
       return;
     }
 
