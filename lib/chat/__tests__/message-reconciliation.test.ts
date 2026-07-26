@@ -132,7 +132,7 @@ describe("arePersistedMessagesAtLeastAsComplete", () => {
         parts: [
           {
             type: "text",
-            text: "The latest release includes the complete researched answer.",
+            text: "The latest",
             state: "done",
           } as ChatMessage["parts"][number],
         ],
