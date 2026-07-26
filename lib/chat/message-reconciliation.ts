@@ -43,6 +43,8 @@ const haveSameJsonValue = (current: unknown, next: unknown): boolean => {
 };
 
 const partStateProgress: Record<string, number> = {
+  streaming: 0,
+  done: 1,
   "input-streaming": 0,
   "input-available": 1,
   "approval-requested": 2,
@@ -60,6 +62,12 @@ const isPersistedPartAtLeastAsComplete = (
   const persistedPart = persisted as Record<string, unknown>;
 
   if (currentPart.type !== persistedPart.type) return false;
+  if (
+    typeof currentPart.toolCallId === "string" &&
+    currentPart.toolCallId !== persistedPart.toolCallId
+  ) {
+    return false;
+  }
 
   for (const field of ["text", "delta"] as const) {
     const currentText = currentPart[field];
