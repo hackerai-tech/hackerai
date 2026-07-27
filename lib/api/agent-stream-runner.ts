@@ -34,6 +34,7 @@ import {
   runSummarizationStep,
   getFallbackSlugs,
   isXaiSafetyError,
+  resolveServedModelForCostAccounting,
 } from "@/lib/api/chat-stream-helpers";
 import {
   elapsedTimeExceeds,
@@ -1227,8 +1228,17 @@ export async function createAgentStream(
       recordAgentStepCompletion(ctx.completionSignalTracker, content);
       let stepUsageCostIndex: number | undefined;
       if (usage) {
+        const stepAccountingModel = resolveServedModelForCostAccounting({
+          modelName,
+          responseModel: response?.modelId,
+          mode: ctx.mode,
+          options: {
+            hasMultimodalToolResults: streamHasImageViewResults,
+          },
+        });
         stepUsageCostIndex = ctx.usageTracker.accumulateStep(
           usage as Parameters<typeof ctx.usageTracker.accumulateStep>[0],
+          stepAccountingModel,
         );
         state.lastStepInputTokens = usage.inputTokens || 0;
         if (usage.inputTokens) {

@@ -2,6 +2,7 @@ import { describe, it, expect } from "@jest/globals";
 
 import {
   billableCostDollarsToPoints,
+  calculateRawModelUsageCostDollars,
   calculateTokenCost,
   calculateRawTokenCost,
   calculateTierChangeCredits,
@@ -89,6 +90,50 @@ describe("token-bucket", () => {
     it("should calculate raw output token cost without the 1.4x multiplier", () => {
       expect(calculateRawTokenCost(1_000_000, "output")).toBe(30000);
       expect(calculateRawTokenCost(1000, "output")).toBe(30);
+    });
+  });
+
+  describe("calculateRawModelUsageCostDollars", () => {
+    it("prices cached and uncached input at the served model's rates", () => {
+      expect(
+        calculateRawModelUsageCostDollars({
+          inputTokens: 1_000_000,
+          outputTokens: 100_000,
+          cacheReadTokens: 800_000,
+          modelName: "x-ai/grok-4.5",
+        }),
+      ).toBeCloseTo(1.4);
+    });
+
+    it("recognizes dated Anthropic response model IDs", () => {
+      expect(
+        calculateRawModelUsageCostDollars({
+          inputTokens: 200,
+          outputTokens: 40,
+          cacheReadTokens: 20,
+          cacheWriteTokens: 10,
+          modelName: "anthropic/claude-4.6-opus-20260205",
+        }),
+      ).toBeCloseTo(0.0019225);
+    });
+
+    it("clamps invalid and overlapping cache token counts", () => {
+      expect(
+        calculateRawModelUsageCostDollars({
+          inputTokens: 100,
+          outputTokens: Number.NaN,
+          cacheReadTokens: 80,
+          cacheWriteTokens: 80,
+          modelName: "model-deepseek-v4-pro",
+        }),
+      ).toBeCloseTo(0.00000899);
+      expect(
+        calculateRawModelUsageCostDollars({
+          inputTokens: Number.POSITIVE_INFINITY,
+          outputTokens: Number.NEGATIVE_INFINITY,
+          cacheReadTokens: Number.NaN,
+        }),
+      ).toBe(0);
     });
   });
 
@@ -413,12 +458,12 @@ describe("token-bucket", () => {
       ).toBe(12180);
     });
 
-    it("should use GLM 5.2 pricing ($0.9086/$2.856)", () => {
+    it("should use GLM 5.2 baseline pricing ($0.76/$2.42)", () => {
       expect(calculateTokenCost(1_000_000, "input", "model-glm-5.2")).toBe(
-        12721,
+        10640,
       );
       expect(calculateTokenCost(1_000_000, "output", "model-glm-5.2")).toBe(
-        39984,
+        33880,
       );
     });
 

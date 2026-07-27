@@ -45,6 +45,7 @@ export {
   clearOrgRemovedUsage,
   applyTeamSeatDebt,
   billableCostDollarsToPoints,
+  calculateRawModelUsageCostDollars,
   calculateTokenCost,
   calculateRawTokenCost,
   getBudgetLimits,

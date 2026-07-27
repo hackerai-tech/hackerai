@@ -721,6 +721,7 @@ export default defineSchema({
     cost_source: v.optional(
       v.union(
         v.literal("provider"),
+        v.literal("hybrid"),
         v.literal("token_estimate"),
         v.literal("raw_token_estimate"),
       ),

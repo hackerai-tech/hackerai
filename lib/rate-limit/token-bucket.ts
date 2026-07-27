@@ -26,35 +26,120 @@ export { isUserRateLimitKey } from "./key-cleanup";
 // Configuration
 // =============================================================================
 
-/** Model pricing: $/1M tokens per model. */
-const MODEL_PRICING_MAP: Record<string, { input: number; output: number }> = {
-  default: { input: 0.5, output: 3.0 },
-  "model-sonnet-4.6": { input: 3.0, output: 15.0 },
-  // Grok 4.5 rates from OpenRouter: $2.00 in / $6.00 out per 1M tokens.
-  "model-grok-4.5": { input: 2.0, output: 6.0 },
-  "model-grok-4.5-pro": { input: 2.0, output: 6.0 },
-  "model-gemini-3-flash": { input: 2.0, output: 6.0 },
-  // Auto and compatibility aliases now resolve to Grok 4.5.
-  "ask-model": { input: 2.0, output: 6.0 },
-  "agent-model": { input: 2.0, output: 6.0 },
-  "model-minimax-m3": { input: 2.0, output: 6.0 },
-  "fallback-agent-model": { input: 2.0, output: 6.0 },
-  "fallback-ask-model": { input: 2.0, output: 6.0 },
-  // Rates from OpenRouter: $0.09 in / $0.18 out per 1M tokens.
-  "agent-model-free": { input: 0.09, output: 0.18 },
-  "model-deepseek-v4-pro": { input: 0.435, output: 0.87 },
-  "fallback-grok-4.5": { input: 2.0, output: 6.0 },
-  "model-opus-4.6": { input: 5.0, output: 25.0 },
-  // Rates from OpenRouter: $0.9086 in / $2.856 out per 1M tokens.
-  "model-glm-5.2": { input: 0.9086, output: 2.856 },
-  // Kimi keys are retained as compatibility aliases for stale persisted routes.
-  // Rates from OpenRouter: $0.95 in / $4.00 out per 1M tokens.
-  "model-kimi-k2.7-code": { input: 0.95, output: 4.0 },
-  "model-kimi-k2.6": { input: 0.95, output: 4.0 },
+type ModelPricing = {
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
 };
 
-const getModelPricing = (modelName?: string) =>
-  (modelName && MODEL_PRICING_MAP[modelName]) || MODEL_PRICING_MAP.default;
+const DEFAULT_PRICING: ModelPricing = {
+  input: 0.5,
+  output: 3.0,
+  cacheRead: 0.5,
+  cacheWrite: 0.5,
+};
+const SONNET_4_6_PRICING: ModelPricing = {
+  input: 3.0,
+  output: 15.0,
+  cacheRead: 0.3,
+  cacheWrite: 3.75,
+};
+const GROK_4_5_PRICING: ModelPricing = {
+  input: 2.0,
+  output: 6.0,
+  cacheRead: 0.5,
+  cacheWrite: 2.0,
+};
+const DEEPSEEK_V4_FLASH_PRICING: ModelPricing = {
+  input: 0.09,
+  output: 0.18,
+  cacheRead: 0.018,
+  cacheWrite: 0.09,
+};
+const DEEPSEEK_V4_PRO_PRICING: ModelPricing = {
+  input: 0.435,
+  output: 0.87,
+  cacheRead: 0.003625,
+  cacheWrite: 0.435,
+};
+const OPUS_4_6_PRICING: ModelPricing = {
+  input: 5.0,
+  output: 25.0,
+  cacheRead: 0.5,
+  cacheWrite: 6.25,
+};
+const GLM_5_2_PRICING: ModelPricing = {
+  input: 0.76,
+  output: 2.42,
+  cacheRead: 0.14,
+  cacheWrite: 0.76,
+};
+const KIMI_K2_7_CODE_PRICING: ModelPricing = {
+  input: 0.95,
+  output: 4.0,
+  cacheRead: 0.19,
+  cacheWrite: 0.95,
+};
+
+/** Model pricing: $/1M tokens per model, including provider cache rates. */
+const MODEL_PRICING_MAP: Record<string, ModelPricing> = {
+  default: DEFAULT_PRICING,
+  "model-sonnet-4.6": SONNET_4_6_PRICING,
+  // Grok 4.5 rates from OpenRouter: $2.00 in / $6.00 out per 1M tokens.
+  "model-grok-4.5": GROK_4_5_PRICING,
+  "model-grok-4.5-pro": GROK_4_5_PRICING,
+  "model-gemini-3-flash": GROK_4_5_PRICING,
+  // Auto and compatibility aliases now resolve to Grok 4.5.
+  "ask-model": GROK_4_5_PRICING,
+  "agent-model": GROK_4_5_PRICING,
+  "model-minimax-m3": GROK_4_5_PRICING,
+  "fallback-agent-model": GROK_4_5_PRICING,
+  "fallback-ask-model": GROK_4_5_PRICING,
+  // Rates from OpenRouter: $0.09 in / $0.18 out per 1M tokens.
+  "ask-model-free": DEEPSEEK_V4_FLASH_PRICING,
+  "agent-model-free": DEEPSEEK_V4_FLASH_PRICING,
+  "model-deepseek-v4-flash": DEEPSEEK_V4_FLASH_PRICING,
+  "model-deepseek-v4-pro": DEEPSEEK_V4_PRO_PRICING,
+  "fallback-grok-4.5": GROK_4_5_PRICING,
+  "model-opus-4.6": OPUS_4_6_PRICING,
+  // Baseline OpenRouter rates: $0.76 in / $2.42 out per 1M tokens.
+  "model-glm-5.2": GLM_5_2_PRICING,
+  // Kimi keys are retained as compatibility aliases for stale persisted routes.
+  // Rates from OpenRouter: $0.95 in / $4.00 out per 1M tokens.
+  "model-kimi-k2.7-code": KIMI_K2_7_CODE_PRICING,
+  "model-kimi-k2.6": KIMI_K2_7_CODE_PRICING,
+  // Provider response ids can reach accounting before local-key normalization.
+  "x-ai/grok-4.5": GROK_4_5_PRICING,
+  "deepseek/deepseek-v4-flash": DEEPSEEK_V4_FLASH_PRICING,
+  "deepseek/deepseek-v4-pro": DEEPSEEK_V4_PRO_PRICING,
+  "anthropic/claude-sonnet-4-6": SONNET_4_6_PRICING,
+  "anthropic/claude-sonnet-4.6": SONNET_4_6_PRICING,
+  "anthropic/claude-opus-4.6": OPUS_4_6_PRICING,
+  "z-ai/glm-5.2": GLM_5_2_PRICING,
+  "z-ai/glm-5.2-20260616": GLM_5_2_PRICING,
+  "moonshotai/kimi-k2.7-code": KIMI_K2_7_CODE_PRICING,
+  "moonshotai/kimi-k2.7-code:exacto": KIMI_K2_7_CODE_PRICING,
+};
+
+const getModelPricing = (modelName?: string): ModelPricing => {
+  if (!modelName) return DEFAULT_PRICING;
+
+  const exactPricing = MODEL_PRICING_MAP[modelName];
+  if (exactPricing) return exactPricing;
+
+  if (/^anthropic\/claude-4\.6-opus-\d{8}$/.test(modelName)) {
+    return OPUS_4_6_PRICING;
+  }
+  if (/^anthropic\/claude-4\.6-sonnet-\d{8}$/.test(modelName)) {
+    return SONNET_4_6_PRICING;
+  }
+
+  return DEFAULT_PRICING;
+};
+
+const normalizeTokenCount = (value: number): number =>
+  Number.isFinite(value) ? Math.max(0, value) : 0;
 
 /** Points per dollar (1 point = $0.0001) */
 export const POINTS_PER_DOLLAR = 10_000;
@@ -336,6 +421,49 @@ export const calculateRawTokenCost = (
   const pricing = getModelPricing(modelName);
   const price = type === "input" ? pricing.input : pricing.output;
   return Math.ceil((tokens / 1_000_000) * price * POINTS_PER_DOLLAR);
+};
+
+/**
+ * Estimate raw model spend without applying HackerAI's billing multiplier.
+ *
+ * Provider usage reports cache reads/writes as subsets of input tokens. Price
+ * each subset at its model-specific rate and leave unknown models at the
+ * conservative full-input default.
+ */
+export const calculateRawModelUsageCostDollars = ({
+  inputTokens,
+  outputTokens,
+  cacheReadTokens = 0,
+  cacheWriteTokens = 0,
+  modelName,
+}: {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens?: number;
+  cacheWriteTokens?: number;
+  modelName?: string;
+}): number => {
+  const normalizedInput = normalizeTokenCount(inputTokens);
+  const normalizedOutput = normalizeTokenCount(outputTokens);
+  const normalizedCacheRead = Math.min(
+    normalizedInput,
+    normalizeTokenCount(cacheReadTokens),
+  );
+  const normalizedCacheWrite = Math.min(
+    normalizedInput - normalizedCacheRead,
+    normalizeTokenCount(cacheWriteTokens),
+  );
+  const uncachedInput =
+    normalizedInput - normalizedCacheRead - normalizedCacheWrite;
+  const pricing = getModelPricing(modelName);
+
+  return (
+    (uncachedInput * pricing.input +
+      normalizedCacheRead * pricing.cacheRead +
+      normalizedCacheWrite * pricing.cacheWrite +
+      normalizedOutput * pricing.output) /
+    1_000_000
+  );
 };
 
 // =============================================================================
@@ -993,11 +1121,10 @@ export const deductUsageDelta = async (
  * If extra usage was used for input (bucket at 0), also deducts output from extra usage.
  * If we over-estimated input cost, refunds the difference back to the bucket.
  *
- * @param providerCostDollars - If provided (from authoritative provider cost),
- *   uses this instead of token calculation. On clean completions this includes
- *   model + sandbox + tool costs.
- *   On non-clean completions this is undefined; nonModelCostDollars covers sandbox/tool costs.
- * @param nonModelCostDollars - Sandbox session and tool costs (always accurate). When providerCostDollars
+ * @param resolvedCostDollars - If provided, uses the UsageTracker's resolved
+ *   provider or hybrid total instead of recalculating aggregate tokens with one
+ *   model. This includes model + sandbox + tool costs.
+ * @param nonModelCostDollars - Sandbox session and tool costs (always accurate). When resolvedCostDollars
  *   is undefined (non-clean streams), this is added on top of token-based model cost.
  */
 export const deductUsage = async (
@@ -1007,7 +1134,7 @@ export const deductUsage = async (
   actualInputTokens: number,
   actualOutputTokens: number,
   extraUsageConfig?: ExtraUsageConfig,
-  providerCostDollars?: number,
+  resolvedCostDollars?: number,
   modelName?: string,
   nonModelCostDollars: number = 0,
   organizationId?: string,
@@ -1087,12 +1214,11 @@ export const deductUsage = async (
     });
     lastKnownDeductionResult = buildDeductionResult();
 
-    // Calculate actual billable cost - prefer provider cost if available.
-    // Provider cost already includes non-model costs (sandbox/tools) when present.
-    // When absent (non-clean streams), add billable non-model costs on top of
-    // token-based model pricing.
-    if (providerCostDollars !== undefined && providerCostDollars > 0) {
-      actualCostPoints = billableCostDollarsToPoints(providerCostDollars);
+    // Calculate actual billable cost from the UsageTracker's resolved provider
+    // or hybrid total. Legacy callers without a resolved total retain the
+    // aggregate token fallback.
+    if (resolvedCostDollars !== undefined && resolvedCostDollars > 0) {
+      actualCostPoints = billableCostDollarsToPoints(resolvedCostDollars);
     } else {
       const modelForActualCost = actualModelName ?? modelName;
       const actualInputCost = calculateTokenCost(

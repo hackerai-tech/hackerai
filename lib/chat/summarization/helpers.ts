@@ -43,6 +43,7 @@ export interface SummarizationUsage {
   cacheReadTokens?: number;
   cacheWriteTokens?: number;
   cost?: number;
+  model?: string;
 }
 
 export interface SummaryPersistenceMetadata {
@@ -724,6 +725,8 @@ export const generateSummaryText = async (
         ? { cacheWriteTokens: details.cacheWriteTokens }
         : undefined),
       ...(providerCost ? { cost: providerCost } : undefined),
+      model:
+        result.response?.modelId ?? getLanguageModelIdentifier(languageModel),
     },
   };
 };

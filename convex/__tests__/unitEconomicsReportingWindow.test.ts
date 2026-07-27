@@ -42,7 +42,7 @@ type UsageLogRow = {
   extra_usage_points_deducted?: number;
   model_cost_dollars?: number;
   non_model_cost_dollars?: number;
-  cost_source?: "provider" | "token_estimate" | "raw_token_estimate";
+  cost_source?: "provider" | "hybrid" | "token_estimate" | "raw_token_estimate";
 };
 
 type RevenueRow = {
