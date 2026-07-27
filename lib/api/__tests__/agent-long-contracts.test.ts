@@ -1243,6 +1243,26 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(fallbackIdx).toBeGreaterThan(retryModelIdx);
   });
 
+  test("/api/chat attributes fallback usage to the persisted retry message", () => {
+    expect(chatHandlerSrc).toMatch(
+      /const deductAccumulatedUsage = async \(\s*assistantMessageIdForUsage = assistantMessageId,\s*\)/,
+    );
+    expect(
+      chatHandlerSrc.match(/assistantMessageId: assistantMessageIdForUsage/g),
+    ).toHaveLength(2);
+
+    const retryMessageIdIdx = chatHandlerSrc.indexOf(
+      "const retryMessageId = generateId()",
+    );
+    const retryUsageIdx = chatHandlerSrc.indexOf(
+      "await deductAccumulatedUsage(retryMessageId)",
+      retryMessageIdIdx,
+    );
+
+    expect(retryMessageIdIdx).toBeGreaterThan(-1);
+    expect(retryUsageIdx).toBeGreaterThan(retryMessageIdIdx);
+  });
+
   test("retry streams reset served-model telemetry and distinguish same-model recovery", () => {
     for (const source of [taskSrc, chatHandlerSrc]) {
       expect(
