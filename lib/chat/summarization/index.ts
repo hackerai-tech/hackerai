@@ -17,7 +17,7 @@ import {
 } from "@/lib/utils/stream-writer-utils";
 import { isE2BSandbox } from "@/lib/ai/tools/utils/sandbox-types";
 import type { Id } from "@/convex/_generated/dataModel";
-import { KIMI_K2_7_CODE_SLUG, myProvider } from "@/lib/ai/providers";
+import { KIMI_K3_SLUG, myProvider } from "@/lib/ai/providers";
 import type { ProviderPromptPressure } from "./provider-pressure";
 
 import {
@@ -55,7 +55,7 @@ const SUMMARIZATION_RETRY_MODEL_BY_MODE: Record<ChatMode, string> = {
   ask: "fallback-ask-model",
   agent: "fallback-agent-model",
 };
-const SUMMARIZATION_RETRY_FALLBACK_MODEL_SLUGS = [KIMI_K2_7_CODE_SLUG] as const;
+const SUMMARIZATION_RETRY_FALLBACK_MODEL_SLUGS = [KIMI_K3_SLUG] as const;
 const SUMMARIZATION_ATTEMPT_ERROR_KEY = "__hackeraiSummarizationAttempt";
 
 const getLanguageModelId = (

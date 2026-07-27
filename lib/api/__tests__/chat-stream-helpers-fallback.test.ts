@@ -24,7 +24,7 @@ jest.mock("@/lib/logger", () => ({
 // Slugs the test asserts against. These match the registry in lib/ai/providers.ts.
 // If the registry slug for a model changes, update both places intentionally.
 const GROK_SLUG = "x-ai/grok-4.5";
-const KIMI_SLUG = "moonshotai/kimi-k2.7-code:exacto";
+const KIMI_K3_SLUG = "moonshotai/kimi-k3";
 const GLM_SLUG = "z-ai/glm-5.2";
 const DEEPSEEK_FLASH_SLUG = "deepseek/deepseek-v4-flash";
 const GROK_PRIMARY_OR_FALLBACK_MODELS = [
@@ -41,6 +41,7 @@ const GROK_PRIMARY_OR_FALLBACK_MODELS = [
   "model-opus-4.6",
   "model-glm-5.2",
   "model-minimax-m3",
+  "model-kimi-k3",
   "model-kimi-k2.7-code",
   "model-kimi-k2.6",
   "fallback-agent-model",
@@ -89,7 +90,7 @@ describe("buildProviderOptions fallback chain", () => {
     });
   });
 
-  it("resolves Opus 4.6 text-only agent chain to Grok then Kimi 2.7 Code", () => {
+  it("resolves Opus 4.6 text-only agent chain to Grok then Kimi K3", () => {
     const opts = buildProviderOptions(
       false,
       "user-1",
@@ -97,12 +98,12 @@ describe("buildProviderOptions fallback chain", () => {
       "agent",
     );
     expect(opts.openrouter).toMatchObject({
-      models: [GROK_SLUG, KIMI_SLUG],
+      models: [GROK_SLUG, KIMI_K3_SLUG],
       user: "user-1",
     });
   });
 
-  it("resolves Opus 4.6 multimodal agent chain to Kimi 2.7 Code then Grok", () => {
+  it("resolves Opus 4.6 multimodal agent chain to Kimi K3 then Grok", () => {
     const opts = buildProviderOptions(
       false,
       "user-1",
@@ -111,7 +112,7 @@ describe("buildProviderOptions fallback chain", () => {
       { hasMultimodalToolResults: true },
     );
     expect(opts.openrouter).toMatchObject({
-      models: [KIMI_SLUG, GROK_SLUG],
+      models: [KIMI_K3_SLUG, GROK_SLUG],
       user: "user-1",
     });
   });
@@ -129,7 +130,7 @@ describe("buildProviderOptions fallback chain", () => {
     });
   });
 
-  it("resolves Sonnet 4.6 text-only agent chain to Grok then Kimi 2.7 Code", () => {
+  it("resolves Sonnet 4.6 text-only agent chain to Grok then Kimi K3", () => {
     const opts = buildProviderOptions(
       false,
       "user-1",
@@ -137,12 +138,12 @@ describe("buildProviderOptions fallback chain", () => {
       "agent",
     );
     expect(opts.openrouter).toMatchObject({
-      models: [GROK_SLUG, KIMI_SLUG],
+      models: [GROK_SLUG, KIMI_K3_SLUG],
       user: "user-1",
     });
   });
 
-  it("resolves Sonnet 4.6 multimodal agent chain to Kimi 2.7 Code then Grok", () => {
+  it("resolves Sonnet 4.6 multimodal agent chain to Kimi K3 then Grok", () => {
     const opts = buildProviderOptions(
       false,
       "user-1",
@@ -151,12 +152,12 @@ describe("buildProviderOptions fallback chain", () => {
       { hasMultimodalToolResults: true },
     );
     expect(opts.openrouter).toMatchObject({
-      models: [KIMI_SLUG, GROK_SLUG],
+      models: [KIMI_K3_SLUG, GROK_SLUG],
       user: "user-1",
     });
   });
 
-  it("resolves GLM 5.2 to Kimi 2.7 Code then Grok", () => {
+  it("resolves GLM 5.2 to Kimi K3 then Grok", () => {
     const opts = buildProviderOptions(
       false,
       "user-1",
@@ -164,12 +165,12 @@ describe("buildProviderOptions fallback chain", () => {
       "agent",
     );
     expect(opts.openrouter).toMatchObject({
-      models: [KIMI_SLUG, GROK_SLUG],
+      models: [KIMI_K3_SLUG, GROK_SLUG],
       user: "user-1",
     });
   });
 
-  it("keeps Anthropic multimodal agent fallback on Kimi then Grok", () => {
+  it("keeps Anthropic multimodal agent fallback on Kimi K3 then Grok", () => {
     const opus = buildProviderOptions(
       false,
       "user-1",
@@ -187,19 +188,19 @@ describe("buildProviderOptions fallback chain", () => {
       { hasMultimodalToolResults: true },
     );
 
-    expect(opus.openrouter.models).toEqual([KIMI_SLUG, GROK_SLUG]);
-    expect(sonnet.openrouter.models).toEqual([KIMI_SLUG, GROK_SLUG]);
+    expect(opus.openrouter.models).toEqual([KIMI_K3_SLUG, GROK_SLUG]);
+    expect(sonnet.openrouter.models).toEqual([KIMI_K3_SLUG, GROK_SLUG]);
   });
 
-  it("falls back from the Grok-backed auto agent route to Kimi 2.7 Code", () => {
+  it("falls back from the Grok-backed auto agent route to Kimi K3", () => {
     const opts = buildProviderOptions(false, "user-1", "agent-model", "agent");
     expect(opts.openrouter).toMatchObject({
-      models: [KIMI_SLUG],
+      models: [KIMI_K3_SLUG],
       user: "user-1",
     });
   });
 
-  it("keeps the stale MiniMax key on Grok's Kimi fallback", () => {
+  it("keeps the stale MiniMax key on Grok's Kimi K3 fallback", () => {
     const opts = buildProviderOptions(
       false,
       "user-1",
@@ -207,7 +208,7 @@ describe("buildProviderOptions fallback chain", () => {
       "agent",
     );
     expect(opts.openrouter).toMatchObject({
-      models: [KIMI_SLUG],
+      models: [KIMI_K3_SLUG],
       user: "user-1",
     });
   });
@@ -226,7 +227,7 @@ describe("buildProviderOptions fallback chain", () => {
   });
 
   it.each(["ask", "agent"] as const)(
-    "falls back from HackerAI Pro Grok 4.5 to GLM 5.2 then Kimi in %s mode",
+    "falls back from HackerAI Pro Grok 4.5 to GLM 5.2 then Kimi K3 in %s mode",
     (mode) => {
       const opts = buildProviderOptions(
         mode === "agent",
@@ -236,13 +237,13 @@ describe("buildProviderOptions fallback chain", () => {
       );
       expect(opts.openrouter).toMatchObject({
         reasoning: { enabled: true, effort: "high" },
-        models: [GLM_SLUG, KIMI_SLUG],
+        models: [GLM_SLUG, KIMI_K3_SLUG],
         user: "user-1",
       });
     },
   );
 
-  it("keeps the legacy Agent vision Grok route on its direct Kimi fallback", () => {
+  it("keeps the legacy Agent vision Grok route on its direct Kimi K3 fallback", () => {
     const opts = buildProviderOptions(
       true,
       "user-1",
@@ -250,7 +251,7 @@ describe("buildProviderOptions fallback chain", () => {
       "agent",
     );
     expect(opts.openrouter).toMatchObject({
-      models: [KIMI_SLUG],
+      models: [KIMI_K3_SLUG],
       user: "user-1",
     });
   });
@@ -259,17 +260,17 @@ describe("buildProviderOptions fallback chain", () => {
     ["ask-model-free", "ask"],
     ["model-deepseek-v4-flash", "ask"],
   ] as const)(
-    "falls back from free DeepSeek route %s through the paid Agent chain with Kimi 2.7 Code",
+    "falls back from free DeepSeek route %s through the paid Agent chain with Kimi K3",
     (modelName, mode) => {
       const opts = buildProviderOptions(false, "user-1", modelName, mode);
       expect(opts.openrouter).toMatchObject({
-        models: [GROK_SLUG, KIMI_SLUG],
+        models: [GROK_SLUG, KIMI_K3_SLUG],
         user: "user-1",
       });
     },
   );
 
-  it("runs free Agent on DeepSeek Flash high and falls back through Grok then Kimi", () => {
+  it("runs free Agent on DeepSeek Flash high and falls back through Grok then Kimi K3", () => {
     const opts = buildProviderOptions(
       true,
       "user-1",
@@ -278,12 +279,12 @@ describe("buildProviderOptions fallback chain", () => {
     );
     expect(opts.openrouter).toMatchObject({
       reasoning: { enabled: true, effort: "high" },
-      models: [GROK_SLUG, KIMI_SLUG],
+      models: [GROK_SLUG, KIMI_K3_SLUG],
       user: "user-1",
     });
   });
 
-  it("falls back from explicit DeepSeek Pro ask model through Grok then Kimi", () => {
+  it("falls back from explicit DeepSeek Pro ask model through Grok then Kimi K3", () => {
     const opts = buildProviderOptions(
       false,
       "user-1",
@@ -291,24 +292,24 @@ describe("buildProviderOptions fallback chain", () => {
       "ask",
     );
     expect(opts.openrouter).toMatchObject({
-      models: [GROK_SLUG, KIMI_SLUG],
+      models: [GROK_SLUG, KIMI_K3_SLUG],
       user: "user-1",
     });
   });
 
-  it("falls back from the Grok-backed paid Ask image route to Kimi", () => {
+  it("falls back from the Grok-backed paid Ask image route to Kimi K3", () => {
     const opts = buildProviderOptions(false, "user-1", "ask-model", "ask");
     expect(opts.openrouter).toMatchObject({
-      models: [KIMI_SLUG],
+      models: [KIMI_K3_SLUG],
       user: "user-1",
     });
   });
 
-  it("falls back from paid Ask PDF Grok route to Kimi", () => {
+  it("falls back from paid Ask PDF Grok route to Kimi K3", () => {
     const opts = buildProviderOptions(false, "user-1", "model-grok-4.5", "ask");
     expect(opts.openrouter).toMatchObject({
       reasoning: { enabled: true, effort: "high" },
-      models: [KIMI_SLUG],
+      models: [KIMI_K3_SLUG],
       user: "user-1",
     });
   });
@@ -316,7 +317,7 @@ describe("buildProviderOptions fallback chain", () => {
   it("keeps the stale media route alias on the active Ask fallback chain", () => {
     const opts = buildProviderOptions(false, "user-1", "model-gemini-3-flash");
     expect(opts.openrouter).toMatchObject({
-      models: [KIMI_SLUG],
+      models: [KIMI_K3_SLUG],
       user: "user-1",
     });
   });
@@ -360,7 +361,7 @@ describe("buildProviderOptions fallback chain", () => {
       enabled: true,
       effort: "high",
     });
-    expect(opts.openrouter.models).toEqual([GROK_SLUG, KIMI_SLUG]);
+    expect(opts.openrouter.models).toEqual([GROK_SLUG, KIMI_K3_SLUG]);
   });
 
   it("allows a scoped reasoning override when Grok is not in the route", () => {
@@ -473,7 +474,7 @@ describe("buildProviderOptions fallback chain", () => {
     );
     expect(reasoning.openrouter).toMatchObject({
       reasoning: { enabled: true, effort: "high" },
-      models: [GROK_SLUG, KIMI_SLUG],
+      models: [GROK_SLUG, KIMI_K3_SLUG],
     });
 
     const grokReasoning = buildProviderOptions(
@@ -484,7 +485,7 @@ describe("buildProviderOptions fallback chain", () => {
     );
     expect(grokReasoning.openrouter).toMatchObject({
       reasoning: { enabled: true, effort: "high" },
-      models: [KIMI_SLUG],
+      models: [KIMI_K3_SLUG],
     });
 
     const multimodal = buildProviderOptions(
@@ -496,7 +497,7 @@ describe("buildProviderOptions fallback chain", () => {
     );
     expect(multimodal.openrouter).toMatchObject({
       reasoning: { enabled: true, effort: "high" },
-      models: [KIMI_SLUG, GROK_SLUG],
+      models: [KIMI_K3_SLUG, GROK_SLUG],
     });
   });
 });
@@ -561,10 +562,8 @@ describe("getRetryFallbackModel", () => {
     );
   });
 
-  it("retries the Grok-backed paid Ask image route with Kimi", () => {
-    expect(getRetryFallbackModel("ask-model", "ask")).toBe(
-      "model-kimi-k2.7-code",
-    );
+  it("retries the Grok-backed paid Ask image route with Kimi K3", () => {
+    expect(getRetryFallbackModel("ask-model", "ask")).toBe("model-kimi-k3");
   });
 
   it("retries HackerAI Pro Grok with GLM 5.2", () => {
@@ -576,9 +575,9 @@ describe("getRetryFallbackModel", () => {
     );
   });
 
-  it("retries the legacy Agent vision Grok route with Kimi 2.7 Code", () => {
+  it("retries the legacy Agent vision Grok route with Kimi K3", () => {
     expect(getRetryFallbackModel("model-grok-4.5", "agent")).toBe(
-      "model-kimi-k2.7-code",
+      "model-kimi-k3",
     );
   });
 
@@ -592,11 +591,9 @@ describe("getRetryFallbackModel", () => {
     ["model-grok-4.5", "ask"],
     ["model-gemini-3-flash", "ask"],
   ] as const)(
-    "retries Grok-backed paid Ask route %s with Kimi",
+    "retries Grok-backed paid Ask route %s with Kimi K3",
     (modelName, mode) => {
-      expect(getRetryFallbackModel(modelName, mode)).toBe(
-        "model-kimi-k2.7-code",
-      );
+      expect(getRetryFallbackModel(modelName, mode)).toBe("model-kimi-k3");
     },
   );
 });
@@ -622,14 +619,14 @@ describe("resolveServedModelForCostAccounting", () => {
     ).toBe("model-grok-4.5");
   });
 
-  it("maps a Kimi provider slug served from free Agent fallback back to the local cost key", () => {
+  it("maps a Kimi K3 slug served from free Agent fallback back to the local cost key", () => {
     expect(
       resolveServedModelForCostAccounting({
         modelName: "agent-model-free",
-        responseModel: KIMI_SLUG,
+        responseModel: KIMI_K3_SLUG,
         mode: "agent",
       }),
-    ).toBe("model-kimi-k2.7-code");
+    ).toBe("model-kimi-k3");
   });
 
   it("maps a direct Grok provider slug back to the Grok 4.5 cost key", () => {
@@ -640,6 +637,16 @@ describe("resolveServedModelForCostAccounting", () => {
         mode: "ask",
       }),
     ).toBe("model-grok-4.5");
+  });
+
+  it("maps the dated Kimi K3 provider slug back to the Kimi K3 cost key", () => {
+    expect(
+      resolveServedModelForCostAccounting({
+        modelName: "model-does-not-exist",
+        responseModel: "moonshotai/kimi-k3-20260715",
+        mode: "agent",
+      }),
+    ).toBe("model-kimi-k3");
   });
 
   it("maps HackerAI Pro primary and fallback usage to their exact cost keys", () => {
@@ -660,20 +667,20 @@ describe("resolveServedModelForCostAccounting", () => {
     expect(
       resolveServedModelForCostAccounting({
         modelName: "model-grok-4.5-pro",
-        responseModel: KIMI_SLUG,
+        responseModel: KIMI_K3_SLUG,
         mode: "agent",
       }),
-    ).toBe("model-kimi-k2.7-code");
+    ).toBe("model-kimi-k3");
   });
 
-  it("maps legacy Agent Pro vision Kimi fallback usage back to the Kimi cost key", () => {
+  it("maps legacy Agent Pro vision Kimi K3 fallback usage back to the Kimi K3 cost key", () => {
     expect(
       resolveServedModelForCostAccounting({
         modelName: "model-grok-4.5",
-        responseModel: KIMI_SLUG,
+        responseModel: KIMI_K3_SLUG,
         mode: "agent",
       }),
-    ).toBe("model-kimi-k2.7-code");
+    ).toBe("model-kimi-k3");
   });
 
   it("maps dated Opus provider response slugs back to the local cost key", () => {

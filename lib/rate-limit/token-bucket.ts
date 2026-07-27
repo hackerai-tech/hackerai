@@ -81,6 +81,12 @@ const KIMI_K2_7_CODE_PRICING: ModelPricing = {
   cacheRead: 0.19,
   cacheWrite: 0.95,
 };
+const KIMI_K3_PRICING: ModelPricing = {
+  input: 3.0,
+  output: 15.0,
+  cacheRead: 0.3,
+  cacheWrite: 3.0,
+};
 
 /** Model pricing: $/1M tokens per model, including provider cache rates. */
 const MODEL_PRICING_MAP: Record<string, ModelPricing> = {
@@ -105,6 +111,8 @@ const MODEL_PRICING_MAP: Record<string, ModelPricing> = {
   "model-opus-4.6": OPUS_4_6_PRICING,
   // Baseline OpenRouter rates: $0.76 in / $2.42 out per 1M tokens.
   "model-glm-5.2": GLM_5_2_PRICING,
+  // OpenRouter rates: $3.00 in / $15.00 out / $0.30 cached input per 1M tokens.
+  "model-kimi-k3": KIMI_K3_PRICING,
   // Kimi keys are retained as compatibility aliases for stale persisted routes.
   // Rates from OpenRouter: $0.95 in / $4.00 out per 1M tokens.
   "model-kimi-k2.7-code": KIMI_K2_7_CODE_PRICING,
@@ -118,6 +126,8 @@ const MODEL_PRICING_MAP: Record<string, ModelPricing> = {
   "anthropic/claude-opus-4.6": OPUS_4_6_PRICING,
   "z-ai/glm-5.2": GLM_5_2_PRICING,
   "z-ai/glm-5.2-20260616": GLM_5_2_PRICING,
+  "moonshotai/kimi-k3": KIMI_K3_PRICING,
+  "moonshotai/kimi-k3-20260715": KIMI_K3_PRICING,
   "moonshotai/kimi-k2.7-code": KIMI_K2_7_CODE_PRICING,
   "moonshotai/kimi-k2.7-code:exacto": KIMI_K2_7_CODE_PRICING,
 };
