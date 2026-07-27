@@ -125,26 +125,22 @@ export function SharedChatView({ shareId }: SharedChatViewProps) {
 
     const loadSharedSnapshot = async () => {
       try {
-        const nextChat = await convex.query(api.sharedChats.getSharedChat, {
-          shareId,
-        });
+        const nextSnapshot = await convex.query(
+          api.sharedChats.getSharedSnapshot,
+          { shareId },
+        );
         if (cancelled || loadGenerationRef.current !== generation) return;
 
-        if (!nextChat) {
+        if (!nextSnapshot) {
           setSnapshot({ shareId, chat: null, messages: [] });
           return;
         }
 
-        setSnapshot({ shareId, chat: nextChat, messages: undefined });
-
-        const nextMessages = await convex.query(
-          api.messages.getSharedMessages,
-          {
-            chatId: nextChat.id,
-          },
-        );
-        if (cancelled || loadGenerationRef.current !== generation) return;
-        setSnapshot({ shareId, chat: nextChat, messages: nextMessages });
+        setSnapshot({
+          shareId,
+          chat: nextSnapshot.chat,
+          messages: nextSnapshot.messages,
+        });
       } catch (error) {
         console.error("Failed to load shared chat:", error);
         if (cancelled || loadGenerationRef.current !== generation) return;

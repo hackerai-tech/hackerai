@@ -15,6 +15,11 @@ import {
   assertUserCanAccessChatHistory,
   isUserBlockedByActiveFraudDispute,
 } from "./lib/suspensionGuards";
+import {
+  getVisibleSharedChatByChatId,
+  listVisibleSharedMessages,
+  sharedMessageValidator,
+} from "./lib/sharedChatSnapshot";
 import { stripOpenRouterReasoningMetadataFromParts } from "../lib/chat/provider-metadata-sanitizer";
 import {
   MAX_MESSAGE_SEARCH_QUERY_LENGTH,
@@ -2071,86 +2076,11 @@ export const regenerateWithNewContent = mutation({
  */
 export const getSharedMessages = query({
   args: { chatId: v.string() },
-  returns: v.array(
-    v.object({
-      id: v.string(),
-      role: v.union(
-        v.literal("user"),
-        v.literal("assistant"),
-        v.literal("system"),
-      ),
-      parts: v.array(v.any()),
-      content: v.optional(v.string()),
-      update_time: v.number(),
-    }),
-  ),
+  returns: v.array(sharedMessageValidator),
   handler: async (ctx, args) => {
     try {
-      // Validate UUID format
-      const UUID_REGEX =
-        /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-      if (!UUID_REGEX.test(args.chatId)) {
-        return [];
-      }
-
-      // CRITICAL SECURITY CHECK: Verify the chat is actually shared
-      const chat = await ctx.db
-        .query("chats")
-        .withIndex("by_chat_id", (q) => q.eq("id", args.chatId))
-        .first();
-
-      // Return empty array if chat doesn't exist or isn't shared
-      if (!chat || !chat.share_id || !chat.share_date) {
-        return [];
-      }
-      if (await isUserBlockedByActiveFraudDispute(ctx, chat.user_id)) {
-        return [];
-      }
-
-      // Read the chat's messages via the existing per-chat index, then apply
-      // the frozen-share cutoff locally to avoid a production-wide backfill.
-      const messages = await ctx.db
-        .query("messages")
-        .withIndex("by_chat_id", (q) => q.eq("chat_id", args.chatId))
-        .order("asc")
-        .collect();
-
-      // FROZEN CONTENT: Exclude hidden messages (e.g. auto-continue rows).
-      const frozenMessages = messages
-        .filter(
-          (msg) =>
-            msg.update_time <= chat.share_date! && msg.is_hidden !== true,
-        )
-        .sort(
-          (a, b) =>
-            a.update_time - b.update_time || a._creationTime - b._creationTime,
-        );
-
-      // Strip sensitive data and replace files with placeholders
-      return frozenMessages.map((msg) => ({
-        id: msg.id,
-        role: msg.role,
-        content: msg.content,
-        update_time: msg.update_time,
-        // Process parts to replace files/images with placeholders
-        parts: stripOpenRouterReasoningMetadataFromParts(msg.parts).map(
-          (part: any) => {
-            // Replace file references with placeholder
-            if (part.type === "file") {
-              // Determine if it's an image based on mediaType
-              const isImage = part.mediaType?.startsWith("image/");
-              return {
-                type: isImage ? "image" : "file",
-                placeholder: true,
-                // SECURITY: Do NOT include url, file_id, name, or mediaType
-              };
-            }
-            // Keep text parts as-is
-            return part;
-          },
-        ),
-        // SECURITY: user_id is NOT included in response (anonymity)
-      }));
+      const chat = await getVisibleSharedChatByChatId(ctx, args.chatId);
+      return chat ? await listVisibleSharedMessages(ctx, chat) : [];
     } catch (error) {
       console.error("Failed to get shared messages:", error);
       // Return empty array on error (fail secure)
