@@ -94,7 +94,7 @@ async function recentUsageSummary(
     0,
   );
   const totalTokens = logs.reduce(
-    (sum, log) => sum + (log.total_tokens ?? 0),
+    (sum, log) => sum + log.input_tokens + log.output_tokens,
     0,
   );
 

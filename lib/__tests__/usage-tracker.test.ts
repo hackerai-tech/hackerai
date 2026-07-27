@@ -588,6 +588,7 @@ describe("UsageTracker", () => {
 
       t.log({
         userId: "user-123",
+        assistantMessageId: "assistant-message-123",
         selectedModel: "model-default",
         configuredModelId: "model-config",
         rateLimitInfo: {
@@ -603,6 +604,7 @@ describe("UsageTracker", () => {
         userId: "user-123",
         organizationId: undefined,
         chatId: undefined,
+        assistantMessageId: "assistant-message-123",
         endpoint: undefined,
         mode: undefined,
         subscription: undefined,
@@ -614,11 +616,9 @@ describe("UsageTracker", () => {
         includedPointsDeducted: 100,
         extraUsagePointsDeducted: 0,
         uncoveredPoints: 0,
-        usageDeductionFailed: false,
         usageDeductionFailureReason: undefined,
         inputTokens: 1000,
         outputTokens: 500,
-        totalTokens: 1500,
         cacheReadTokens: undefined,
         cacheWriteTokens: undefined,
         costDollars: 0.01,

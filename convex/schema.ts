@@ -685,6 +685,7 @@ export default defineSchema({
     user_id: v.string(),
     organization_id: v.optional(v.string()),
     chat_id: v.optional(v.string()),
+    assistant_message_id: v.optional(v.string()),
     endpoint: v.optional(
       v.union(
         v.literal("/api/chat"),
@@ -704,7 +705,10 @@ export default defineSchema({
     output_tokens: v.number(),
     cache_read_tokens: v.optional(v.number()),
     cache_write_tokens: v.optional(v.number()),
-    total_tokens: v.number(),
+    // Transitional validators for fields cleared by
+    // migrations:clearRemovedUsageLogFields. Remove these validators only
+    // after that migration has completed in production.
+    total_tokens: v.optional(v.number()),
     cost_dollars: v.number(),
     included_cost_dollars: v.optional(v.number()),
     extra_usage_cost_dollars: v.optional(v.number()),
@@ -725,13 +729,7 @@ export default defineSchema({
         v.literal("raw_token_estimate"),
       ),
     ),
-    // Legacy MAX Mode flag retained on historical rows. The feature was
-    // removed and nothing reads or writes this anymore — kept in the schema
-    // so old rows still pass validation.
     max_mode: v.optional(v.boolean()),
-    // Legacy BYOK flag retained on historical rows. The feature was removed
-    // and nothing reads or writes this anymore — kept in the schema so old
-    // rows still pass validation.
     byok: v.optional(v.boolean()),
   })
     .index("by_usage_settlement_id", ["usage_settlement_id"])

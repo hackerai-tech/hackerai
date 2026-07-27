@@ -446,7 +446,7 @@ export const rebuildEntityDailyRollups = mutation({
         outputTokens: log.output_tokens,
         cacheReadTokens: log.cache_read_tokens ?? 0,
         cacheWriteTokens: log.cache_write_tokens ?? 0,
-        totalTokens: log.total_tokens,
+        totalTokens: log.input_tokens + log.output_tokens,
       });
     }
 

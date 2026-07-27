@@ -2083,6 +2083,7 @@ export async function logUsageRecord({
   userId,
   organizationId,
   chatId,
+  assistantMessageId,
   endpoint,
   mode,
   subscription,
@@ -2094,11 +2095,9 @@ export async function logUsageRecord({
   includedPointsDeducted,
   extraUsagePointsDeducted,
   uncoveredPoints,
-  usageDeductionFailed,
   usageDeductionFailureReason,
   inputTokens,
   outputTokens,
-  totalTokens,
   cacheReadTokens,
   cacheWriteTokens,
   costDollars,
@@ -2110,6 +2109,7 @@ export async function logUsageRecord({
   userId: string;
   organizationId?: string;
   chatId?: string;
+  assistantMessageId?: string;
   endpoint?: ChatApiEndpoint;
   mode?: ChatMode;
   subscription?: SubscriptionTier;
@@ -2121,11 +2121,9 @@ export async function logUsageRecord({
   includedPointsDeducted?: number;
   extraUsagePointsDeducted?: number;
   uncoveredPoints?: number;
-  usageDeductionFailed?: boolean;
   usageDeductionFailureReason?: UsageDeductionFailureReason;
   inputTokens: number;
   outputTokens: number;
-  totalTokens: number;
   cacheReadTokens?: number;
   cacheWriteTokens?: number;
   costDollars: number;
@@ -2140,6 +2138,7 @@ export async function logUsageRecord({
       user_id: userId,
       organization_id: organizationId,
       chat_id: chatId,
+      assistant_message_id: assistantMessageId,
       endpoint,
       mode,
       subscription,
@@ -2151,13 +2150,11 @@ export async function logUsageRecord({
       included_points_deducted: includedPointsDeducted,
       extra_usage_points_deducted: extraUsagePointsDeducted,
       uncovered_points: uncoveredPoints,
-      usage_deduction_failed: usageDeductionFailed,
       usage_deduction_failure_reason: usageDeductionFailureReason,
       input_tokens: inputTokens,
       output_tokens: outputTokens,
       cache_read_tokens: cacheReadTokens,
       cache_write_tokens: cacheWriteTokens,
-      total_tokens: totalTokens,
       cost_dollars: costDollars,
       model_cost_dollars: modelCostDollars,
       non_model_cost_dollars: nonModelCostDollars,
