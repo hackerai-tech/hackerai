@@ -10,7 +10,6 @@ import {
 } from "lucide-react";
 import {
   Popover,
-  PopoverAnchor,
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
@@ -34,7 +33,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { Button } from "@/components/ui/button";
-import { useEffect, useId, useRef, useState } from "react";
+import { useId, useState } from "react";
 import { useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import {
@@ -211,7 +210,6 @@ const ModelOptionButton = ({
       disabled={isPending}
       aria-busy={isPending || undefined}
       aria-pressed={isSelected}
-      aria-haspopup={actionPanelId ? "dialog" : undefined}
       aria-expanded={actionPanelId ? actionPanelOpen : undefined}
       aria-controls={actionPanelId}
       aria-label={
@@ -287,105 +285,73 @@ const ModelOptionButton = ({
   );
 };
 
-const LockedMaxAccessPopover = ({
+const LockedMaxAccessOption = ({
   option,
   isSelected,
   subscription,
-  onSelect,
   onClose,
 }: {
   option: ModelOption;
   isSelected: boolean;
   subscription: SubscriptionTier;
-  onSelect: (option: ModelOption) => void;
   onClose: () => void;
 }) => {
   const [open, setOpen] = useState(false);
   const panelId = useId();
-  const closeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  const clearScheduledClose = () => {
-    if (closeTimerRef.current !== null) {
-      clearTimeout(closeTimerRef.current);
-      closeTimerRef.current = null;
-    }
-  };
-
-  const showPanel = () => {
-    clearScheduledClose();
-    setOpen(true);
-  };
-
-  const schedulePanelClose = () => {
-    clearScheduledClose();
-    closeTimerRef.current = setTimeout(() => setOpen(false), 150);
-  };
-
-  useEffect(() => clearScheduledClose, []);
 
   return (
-    <Popover open={open} onOpenChange={setOpen}>
-      <PopoverAnchor asChild>
+    <div
+      className={`rounded-lg transition-colors ${open ? "bg-muted/35" : ""}`}
+      onMouseEnter={() => setOpen(true)}
+      onMouseLeave={() => setOpen(false)}
+      onFocusCapture={() => setOpen(true)}
+      onBlurCapture={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget)) {
+          setOpen(false);
+        }
+      }}
+    >
+      <ModelOptionButton
+        option={option}
+        isSelected={isSelected}
+        isLocked
+        isPending={false}
+        subscription={subscription}
+        onSelect={() => setOpen(true)}
+        actionPanelId={panelId}
+        actionPanelOpen={open}
+      />
+      {open && (
         <div
-          onMouseEnter={showPanel}
-          onMouseLeave={schedulePanelClose}
-          onFocusCapture={showPanel}
+          id={panelId}
+          role="group"
+          aria-label="Choose how to access HackerAI Max"
+          className="mx-2 mb-1.5 mt-0.5 border-t border-border/50 pt-1"
         >
-          <ModelOptionButton
-            option={option}
-            isSelected={isSelected}
-            isLocked
-            isPending={false}
-            subscription={subscription}
-            onSelect={onSelect}
-            actionPanelId={panelId}
-            actionPanelOpen={open}
-          />
-        </div>
-      </PopoverAnchor>
-      <PopoverContent
-        id={panelId}
-        side="right"
-        sideOffset={12}
-        align="start"
-        aria-label="HackerAI Max access options"
-        className="w-[240px] rounded-xl px-4 py-3 space-y-1.5"
-        onMouseEnter={showPanel}
-        onMouseLeave={schedulePanelClose}
-        onOpenAutoFocus={(event) => event.preventDefault()}
-      >
-        <p className="text-sm font-semibold text-foreground leading-snug">
-          {option.description || option.label}
-        </p>
-        {option.poweredBy && (
-          <p className="text-xs text-muted-foreground">
-            Powered by {option.poweredBy}
-          </p>
-        )}
-        <p className="text-xs text-muted-foreground leading-relaxed pt-1">
-          Set up Extra Usage to use Max on your current plan, or upgrade to
-          Ultra to have Max included.
-        </p>
-        <div className="flex gap-2 pt-1">
           <Button
             type="button"
-            size="sm"
-            className="h-8 flex-1 px-2 text-xs"
+            variant="ghost"
+            className="group/action h-auto w-full justify-start gap-2 px-2 py-1.5 text-left font-normal"
             onClick={() => {
-              setOpen(false);
               onClose();
               openSettingsDialog("Extra Usage");
             }}
           >
-            Use Extra Usage
+            <span className="min-w-0 flex-1">
+              <span className="block text-xs font-medium text-foreground">
+                Use Extra Usage
+              </span>
+              <span className="block text-[11px] leading-4 text-muted-foreground">
+                Keep your current plan
+              </span>
+            </span>
+            <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform group-hover/action:translate-x-0.5" />
           </Button>
           <Button
             type="button"
-            size="sm"
-            variant="outline"
-            className="h-8 flex-1 px-2 text-xs"
+            variant="ghost"
+            className="group/action h-auto w-full justify-start gap-2 px-2 py-1.5 text-left font-normal"
             onClick={() => {
-              setOpen(false);
               onClose();
               openMaxUltraUpgrade({
                 mobile: false,
@@ -393,11 +359,19 @@ const LockedMaxAccessPopover = ({
               });
             }}
           >
-            Upgrade to Ultra
+            <span className="min-w-0 flex-1">
+              <span className="block text-xs font-medium text-foreground">
+                Upgrade to Ultra
+              </span>
+              <span className="block text-[11px] leading-4 text-muted-foreground">
+                Max included with your plan
+              </span>
+            </span>
+            <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform group-hover/action:translate-x-0.5" />
           </Button>
         </div>
-      </PopoverContent>
-    </Popover>
+      )}
+    </div>
   );
 };
 
@@ -497,12 +471,11 @@ const ModelOptionList = ({
         canChoosePersonalMaxAccessPath(subscription)
       ) {
         return (
-          <LockedMaxAccessPopover
+          <LockedMaxAccessOption
             key={option.id}
             option={option}
             isSelected={isSelected}
             subscription={subscription}
-            onSelect={onSelect}
             onClose={onClose}
           />
         );
@@ -716,9 +689,8 @@ export function ModelSelector({ value, onChange, mode }: ModelSelectorProps) {
             <DialogHeader>
               <DialogTitle>Unlock HackerAI Max</DialogTitle>
               <DialogDescription className="leading-relaxed">
-                Set up Extra Usage to use Max on your current plan, or upgrade
-                to Ultra to have Max included. Your included credits are used
-                first; Extra Usage covers any overflow.
+                Use Max with Extra Usage after your included credits, or upgrade
+                to Ultra to have Max included.
               </DialogDescription>
             </DialogHeader>
             <div className="flex flex-col gap-2 pt-2">
