@@ -532,7 +532,7 @@ describe("getMessagesByChatId — is_hidden filtering", () => {
     };
   });
 
-  function setupPaginatedMessages(messages: Record<string, any>[]): void {
+  function setupPaginatedMessages(messages: Record<string, any>[]) {
     const paginateMock = jest.fn<any>().mockResolvedValue({
       page: messages,
       isDone: true,
@@ -545,6 +545,7 @@ describe("getMessagesByChatId — is_hidden filtering", () => {
         }),
       }),
     });
+    return paginateMock;
   }
 
   it("should exclude messages where is_hidden is true", async () => {
@@ -560,7 +561,7 @@ describe("getMessagesByChatId — is_hidden filtering", () => {
       is_hidden: true,
     });
 
-    setupPaginatedMessages([visibleMsg, hiddenMsg]);
+    const paginateMock = setupPaginatedMessages([visibleMsg, hiddenMsg]);
 
     const { getMessagesByChatId } = await import("../messages");
 
@@ -571,6 +572,11 @@ describe("getMessagesByChatId — is_hidden filtering", () => {
 
     expect(result.page).toHaveLength(1);
     expect(result.page[0].id).toBe("msg-visible");
+    expect(paginateMock).toHaveBeenCalledWith({
+      numItems: 10,
+      cursor: null,
+      maximumBytesRead: 4 * 1024 * 1024,
+    });
   });
 
   it("should include messages where is_hidden is undefined or false", async () => {
@@ -608,6 +614,85 @@ describe("getMessagesByChatId — is_hidden filtering", () => {
     expect(ids).toContain("msg-2");
     expect(ids).not.toContain("msg-3");
   });
+
+  it("does not read user attachment rows but preserves assistant file details", async () => {
+    const userFileId = "file-user" as Id<"files">;
+    const assistantFileId = "file-assistant" as Id<"files">;
+    const feedbackId = "feedback-1" as Id<"feedback">;
+    const userMessage = makeMessage({
+      id: "msg-user-file",
+      role: "user",
+      parts: [
+        {
+          type: "file",
+          fileId: userFileId,
+          name: "request.txt",
+          mediaType: "text/plain",
+          size: 128,
+        },
+      ],
+      file_ids: [userFileId],
+    });
+    const assistantMessage = makeMessage({
+      id: "msg-assistant-file",
+      role: "assistant",
+      file_ids: [assistantFileId],
+      feedback_id: feedbackId,
+    });
+
+    setupPaginatedMessages([assistantMessage, userMessage]);
+    mockCtx.db.get.mockImplementation(async (id: string) => {
+      if (id === userFileId) {
+        throw new Error("user attachment row should not be read");
+      }
+      if (id === assistantFileId) {
+        return {
+          _id: assistantFileId,
+          user_id: USER_ID,
+          name: "artifact.zip",
+          media_type: "application/zip",
+          s3_key: "generated/artifact.zip",
+          size: 2048,
+          file_token_size: 0,
+          is_attached: true,
+        };
+      }
+      if (id === feedbackId) {
+        return {
+          _id: feedbackId,
+          feedback_type: "positive",
+        };
+      }
+      return null;
+    });
+
+    const { getMessagesByChatId } = await import("../messages");
+    const result = await getMessagesByChatId.handler(mockCtx, {
+      chatId: CHAT_ID,
+      paginationOpts: { numItems: 10, cursor: null },
+    });
+
+    const assistantResult = result.page.find(
+      (message: any) => message.id === "msg-assistant-file",
+    );
+    const userResult = result.page.find(
+      (message: any) => message.id === "msg-user-file",
+    );
+    expect(mockCtx.db.get).not.toHaveBeenCalledWith(userFileId);
+    expect(assistantResult?.fileDetails).toEqual([
+      {
+        fileId: assistantFileId,
+        name: "artifact.zip",
+        mediaType: "application/zip",
+        s3Key: "generated/artifact.zip",
+        sizeBytes: 2048,
+      },
+    ]);
+    expect(assistantResult?.feedback).toEqual({
+      feedbackType: "positive",
+    });
+    expect(userResult?.fileDetails).toBeUndefined();
+  });
 });
 
 describe("getMessagesPageForBackend — is_hidden filtering", () => {
@@ -626,7 +711,7 @@ describe("getMessagesPageForBackend — is_hidden filtering", () => {
     };
   });
 
-  function setupPaginatedMessages(messages: Record<string, any>[]): void {
+  function setupPaginatedMessages(messages: Record<string, any>[]) {
     const paginateMock = jest.fn<any>().mockResolvedValue({
       page: messages,
       isDone: true,
@@ -639,6 +724,7 @@ describe("getMessagesPageForBackend — is_hidden filtering", () => {
         }),
       }),
     });
+    return paginateMock;
   }
 
   it("should filter out hidden messages", async () => {
@@ -654,7 +740,7 @@ describe("getMessagesPageForBackend — is_hidden filtering", () => {
       is_hidden: true,
     });
 
-    setupPaginatedMessages([visibleMsg, hiddenMsg]);
+    const paginateMock = setupPaginatedMessages([visibleMsg, hiddenMsg]);
 
     const { getMessagesPageForBackend } = await import("../messages");
 
@@ -667,6 +753,12 @@ describe("getMessagesPageForBackend — is_hidden filtering", () => {
 
     expect(result.page).toHaveLength(1);
     expect(result.page[0].id).toBe("msg-visible");
+    expect(result.fileTokens).toEqual([]);
+    expect(paginateMock).toHaveBeenCalledWith({
+      numItems: 10,
+      cursor: null,
+      maximumBytesRead: 4 * 1024 * 1024,
+    });
   });
 
   it("should keep messages where is_hidden is false or undefined", async () => {
@@ -705,5 +797,32 @@ describe("getMessagesPageForBackend — is_hidden filtering", () => {
     expect(ids).toContain("msg-a");
     expect(ids).toContain("msg-b");
     expect(ids).not.toContain("msg-c");
+  });
+
+  it("reuses ownership reads as verified file token metadata", async () => {
+    const fileId = "file-owned" as Id<"files">;
+    const message = makeMessage({
+      id: "msg-with-file",
+      role: "user",
+      parts: [{ type: "file", fileId }],
+    });
+    setupPaginatedMessages([message]);
+    mockCtx.db.get = jest.fn<any>().mockResolvedValue({
+      _id: fileId,
+      user_id: USER_ID,
+      file_token_size: 321,
+    });
+
+    const { getMessagesPageForBackend } = await import("../messages");
+    const result = await getMessagesPageForBackend.handler(mockCtx, {
+      serviceKey: SERVICE_KEY,
+      chatId: CHAT_ID,
+      userId: USER_ID,
+      paginationOpts: { numItems: 10, cursor: null },
+    });
+
+    expect(result.page[0].parts).toEqual([{ type: "file", fileId }]);
+    expect(result.fileTokens).toEqual([{ fileId, tokenSize: 321 }]);
+    expect(mockCtx.db.get).toHaveBeenCalledTimes(1);
   });
 });

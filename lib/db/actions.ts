@@ -586,6 +586,7 @@ const databaseError = (
 
 type MessagesPageForBackendResult = {
   page: UIMessage[];
+  fileTokens?: Array<{ fileId: Id<"files">; tokenSize: number }>;
   isDone: boolean;
   continueCursor: string | null;
 };
@@ -1343,6 +1344,10 @@ export async function getMessagesByChatId({
         while (pagesFetched < MAX_PAGES) {
           const pageResult: {
             page: UIMessage[];
+            fileTokens?: Array<{
+              fileId: Id<"files">;
+              tokenSize: number;
+            }>;
             isDone: boolean;
             continueCursor: string | null;
           } = await getMessagesPageForBackendWithRetry({
@@ -1354,10 +1359,19 @@ export async function getMessagesByChatId({
             regenerate: !!regenerate,
             newMessagesCount: newMessages.length,
           });
-          const { page, isDone, continueCursor: nextCursor } = pageResult;
+          const {
+            page,
+            fileTokens: pageFileTokens = [],
+            isDone,
+            continueCursor: nextCursor,
+          } = pageResult;
 
           fetchedDesc = fetchedDesc.concat(page);
           pagesFetched++;
+
+          for (const { fileId, tokenSize } of pageFileTokens) {
+            fileTokensFromLoop[fileId] = tokenSize;
+          }
 
           const existingChrono = [...fetchedDesc].reverse();
           const candidate =
