@@ -14,6 +14,13 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover";
 import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import {
   Sheet,
   SheetContent,
   SheetDescription,
@@ -67,6 +74,10 @@ const isMaxModel = (model: SelectedModel): boolean => model === "hackerai-max";
 const canUnlockMaxWithExtraUsage = (subscription: SubscriptionTier): boolean =>
   subscription !== "free" && subscription !== "ultra";
 
+const canChoosePersonalMaxAccessPath = (
+  subscription: SubscriptionTier,
+): boolean => subscription === "pro" || subscription === "pro-plus";
+
 const isModelLockedForSubscription = (
   subscription: SubscriptionTier,
   model: SelectedModel,
@@ -88,10 +99,30 @@ const getLockedModelCta = (
 const getLockedModelAnnouncement = (
   model: SelectedModel,
   subscription: SubscriptionTier,
-): string =>
-  `${getLockedModelCta(model, subscription)}${
+): string => {
+  if (isMaxModel(model) && canChoosePersonalMaxAccessPath(subscription)) {
+    return "Use Extra Usage or upgrade to Ultra for Max mode";
+  }
+
+  return `${getLockedModelCta(model, subscription)}${
     isMaxModel(model) ? " for Max mode" : " to unlock"
   }`;
+};
+
+const openMaxUltraUpgrade = ({
+  mobile,
+  subscription,
+}: {
+  mobile: boolean;
+  subscription: SubscriptionTier;
+}) => {
+  redirectToPricing({
+    surface: mobile ? "model_selector_mobile" : "model_selector",
+    source: "max_model_gate",
+    from_tier: subscription,
+    cta_text: "Upgrade to Ultra",
+  });
+};
 
 const handleLockedModelCta = ({
   mobile,
@@ -374,30 +405,68 @@ const ModelOptionList = ({
                 Powered by {option.poweredBy}
               </p>
             )}
-            <p className="text-xs text-muted-foreground leading-relaxed pt-1">
-              <a
-                href={
-                  isMaxModel(option.id) &&
-                  canUnlockMaxWithExtraUsage(subscription)
-                    ? "#extra-usage"
-                    : "#pricing"
-                }
-                onClick={(event) => {
-                  event.preventDefault();
-                  onClose();
-                  handleLockedModelCta({
-                    mobile,
-                    option,
-                    subscription,
-                  });
-                }}
-                className="text-foreground underline underline-offset-2 hover:text-foreground/80"
-                tabIndex={0}
-              >
-                {getLockedModelCta(option.id, subscription)}
-              </a>
-              {isMaxModel(option.id) ? " for Max mode." : " to unlock."}
-            </p>
+            {isMaxModel(option.id) &&
+            canChoosePersonalMaxAccessPath(subscription) ? (
+              <>
+                <p className="text-xs text-muted-foreground leading-relaxed pt-1">
+                  Set up Extra Usage to use Max on your current plan, or upgrade
+                  to Ultra to have Max included.
+                </p>
+                <div className="flex gap-2 pt-1">
+                  <Button
+                    type="button"
+                    size="sm"
+                    className="h-8 flex-1 px-2 text-xs"
+                    onClick={() => {
+                      onClose();
+                      openSettingsDialog("Extra Usage");
+                    }}
+                  >
+                    Use Extra Usage
+                  </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    className="h-8 flex-1 px-2 text-xs"
+                    onClick={() => {
+                      onClose();
+                      openMaxUltraUpgrade({
+                        mobile,
+                        subscription,
+                      });
+                    }}
+                  >
+                    Upgrade to Ultra
+                  </Button>
+                </div>
+              </>
+            ) : (
+              <p className="text-xs text-muted-foreground leading-relaxed pt-1">
+                <a
+                  href={
+                    isMaxModel(option.id) &&
+                    canUnlockMaxWithExtraUsage(subscription)
+                      ? "#extra-usage"
+                      : "#pricing"
+                  }
+                  onClick={(event) => {
+                    event.preventDefault();
+                    onClose();
+                    handleLockedModelCta({
+                      mobile,
+                      option,
+                      subscription,
+                    });
+                  }}
+                  className="text-foreground underline underline-offset-2 hover:text-foreground/80"
+                  tabIndex={0}
+                >
+                  {getLockedModelCta(option.id, subscription)}
+                </a>
+                {isMaxModel(option.id) ? " for Max mode." : " to unlock."}
+              </p>
+            )}
           </TooltipContent>
         </Tooltip>
       );
@@ -409,6 +478,7 @@ const ModelOptionList = ({
 
 export function ModelSelector({ value, onChange, mode }: ModelSelectorProps) {
   const [open, setOpen] = useState(false);
+  const [maxAccessDialogOpen, setMaxAccessDialogOpen] = useState(false);
   const { subscription } = useGlobalState();
   const isMobile = Boolean(useIsMobile());
 
@@ -474,6 +544,15 @@ export function ModelSelector({ value, onChange, mode }: ModelSelectorProps) {
       )
     ) {
       setOpen(false);
+      if (
+        isMobile &&
+        isMaxModel(option.id) &&
+        canChoosePersonalMaxAccessPath(subscription)
+      ) {
+        setMaxAccessDialogOpen(true);
+        return;
+      }
+
       handleLockedModelCta({
         mobile: isMobile,
         option,
@@ -529,6 +608,45 @@ export function ModelSelector({ value, onChange, mode }: ModelSelectorProps) {
             />
           </SheetContent>
         </Sheet>
+        <Dialog
+          open={maxAccessDialogOpen}
+          onOpenChange={setMaxAccessDialogOpen}
+        >
+          <DialogContent className="w-[calc(100%-2rem)] max-w-sm rounded-2xl p-5">
+            <DialogHeader>
+              <DialogTitle>Unlock HackerAI Max</DialogTitle>
+              <DialogDescription className="leading-relaxed">
+                Set up Extra Usage to use Max on your current plan, or upgrade
+                to Ultra to have Max included. Your included credits are used
+                first; Extra Usage covers any overflow.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="flex flex-col gap-2 pt-2">
+              <Button
+                type="button"
+                onClick={() => {
+                  setMaxAccessDialogOpen(false);
+                  openSettingsDialog("Extra Usage");
+                }}
+              >
+                Use Extra Usage
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => {
+                  setMaxAccessDialogOpen(false);
+                  openMaxUltraUpgrade({
+                    mobile: true,
+                    subscription,
+                  });
+                }}
+              >
+                Upgrade to Ultra
+              </Button>
+            </div>
+          </DialogContent>
+        </Dialog>
       </>
     );
   }
