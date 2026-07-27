@@ -31,6 +31,11 @@ export const clearRemovedUsageLogFields = migrations.define({
       byok: undefined,
       total_tokens: undefined,
       usage_deduction_failed: undefined,
+      // Preserve any legacy boolean-only failure signal in the retained,
+      // queryable reason field before removing the redundant boolean.
+      usage_deduction_failure_reason:
+        log.usage_deduction_failure_reason ??
+        (log.usage_deduction_failed === true ? "deduction_failed" : undefined),
     };
   },
 });
