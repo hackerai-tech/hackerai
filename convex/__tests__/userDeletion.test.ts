@@ -342,6 +342,7 @@ function seedTables(userId = "user_123", otherUserId = "user_other"): Tables {
         _id: "usage-user",
         user_id: userId,
         chat_id: "chat-1",
+        assistant_message_id: "assistant-message-1",
         model: "model",
         total_tokens: 10,
       },
@@ -559,6 +560,9 @@ describe("userDeletion", () => {
       user_id: DELETED_USER_ID,
     });
     expect(row(tables, "usage_logs", "usage-user")?.chat_id).toBeUndefined();
+    expect(
+      row(tables, "usage_logs", "usage-user")?.assistant_message_id,
+    ).toBeUndefined();
     expect(row(tables, "referral_codes", "ref-code-user")).toMatchObject({
       user_id: DELETED_USER_ID,
       status: "deactivated",

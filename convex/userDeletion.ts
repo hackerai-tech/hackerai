@@ -624,7 +624,11 @@ async function cleanupUserDataForUser(
     stats,
     "usage_logs",
     usageLogs,
-    () => ({ user_id: DELETED_USER_ID, chat_id: undefined }),
+    () => ({
+      user_id: DELETED_USER_ID,
+      chat_id: undefined,
+      assistant_message_id: undefined,
+    }),
     mode,
   );
   await anonymizeDocs(

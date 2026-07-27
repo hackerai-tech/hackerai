@@ -913,7 +913,9 @@ export const createChatHandler = () => {
                 : createUsageSettlementState(rateLimitInfo);
             let usageSettlementSequence = 0;
 
-            const deductAccumulatedUsage = async () => {
+            const deductAccumulatedUsage = async (
+              assistantMessageIdForUsage = assistantMessageId,
+            ) => {
               try {
                 if (hasRecordedUsage) return;
                 // Add E2B sandbox session cost (duration-based)
@@ -978,6 +980,7 @@ export const createChatHandler = () => {
                     userId,
                     organizationId,
                     chatId,
+                    assistantMessageId: assistantMessageIdForUsage,
                     endpoint,
                     mode,
                     subscription,
@@ -1089,6 +1092,7 @@ export const createChatHandler = () => {
                     userId,
                     organizationId,
                     chatId,
+                    assistantMessageId: assistantMessageIdForUsage,
                     endpoint,
                     mode,
                     subscription,
@@ -1593,7 +1597,7 @@ export const createChatHandler = () => {
                                 // Final reconciliation can change the finish
                                 // reason to budget-exhausted; do it before
                                 // analytics and persistence consume state.
-                                await deductAccumulatedUsage();
+                                await deductAccumulatedUsage(retryMessageId);
                                 const outcome = retryAborted
                                   ? "aborted"
                                   : "success";

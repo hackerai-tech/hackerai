@@ -396,6 +396,7 @@ export class UsageTracker {
     userId: string;
     organizationId?: string;
     chatId?: string;
+    assistantMessageId?: string;
     endpoint?: ChatApiEndpoint;
     mode?: ChatMode;
     subscription?: SubscriptionTier;
@@ -413,6 +414,7 @@ export class UsageTracker {
       userId: args.userId,
       organizationId: args.organizationId,
       chatId: args.chatId,
+      assistantMessageId: args.assistantMessageId,
       endpoint: args.endpoint,
       mode: args.mode,
       subscription: args.subscription,
@@ -424,11 +426,9 @@ export class UsageTracker {
       extraUsagePointsDeducted: usage.extraUsagePointsDeducted,
       uncoveredCostDollars: usage.uncoveredCostDollars,
       uncoveredPoints: usage.uncoveredPoints,
-      usageDeductionFailed: usage.usageDeductionFailed,
       usageDeductionFailureReason: usage.usageDeductionFailureReason,
       inputTokens: usage.inputTokens,
       outputTokens: usage.outputTokens,
-      totalTokens: usage.totalTokens,
       cacheReadTokens: usage.cacheReadTokens,
       cacheWriteTokens: usage.cacheWriteTokens,
       costDollars: usage.costDollars,

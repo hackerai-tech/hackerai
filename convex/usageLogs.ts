@@ -42,6 +42,7 @@ export const logUsage = mutation({
     user_id: v.string(),
     organization_id: v.optional(v.string()),
     chat_id: v.optional(v.string()),
+    assistant_message_id: v.optional(v.string()),
     endpoint: v.optional(
       v.union(
         v.literal("/api/chat"),
@@ -57,7 +58,8 @@ export const logUsage = mutation({
     output_tokens: v.number(),
     cache_read_tokens: v.optional(v.number()),
     cache_write_tokens: v.optional(v.number()),
-    total_tokens: v.number(),
+    // Accepted temporarily for staggered deployments, but never persisted.
+    total_tokens: v.optional(v.number()),
     cost_dollars: v.number(),
     included_cost_dollars: v.optional(v.number()),
     extra_usage_cost_dollars: v.optional(v.number()),
@@ -65,6 +67,8 @@ export const logUsage = mutation({
     included_points_deducted: v.optional(v.number()),
     extra_usage_points_deducted: v.optional(v.number()),
     uncovered_points: v.optional(v.number()),
+    // Accepted temporarily for staggered deployments, but normalized to the
+    // existing failure reason instead of being persisted.
     usage_deduction_failed: v.optional(v.boolean()),
     usage_deduction_failure_reason: v.optional(
       usageDeductionFailureReasonValidator,
@@ -134,6 +138,9 @@ export const logUsage = mutation({
           ? costDollars
           : 0;
     const uncoveredUsageCostDollars = uncoveredCostDollars ?? 0;
+    const usageDeductionFailureReason =
+      args.usage_deduction_failure_reason ??
+      (args.usage_deduction_failed === true ? "deduction_failed" : undefined);
     const costSource =
       args.cost_source === "token_estimate"
         ? "raw_token_estimate"
@@ -145,6 +152,7 @@ export const logUsage = mutation({
       user_id: args.user_id,
       organization_id: args.organization_id,
       chat_id: args.chat_id,
+      assistant_message_id: args.assistant_message_id,
       endpoint: args.endpoint,
       mode: args.mode,
       subscription: args.subscription,
@@ -154,7 +162,6 @@ export const logUsage = mutation({
       output_tokens: args.output_tokens,
       cache_read_tokens: args.cache_read_tokens,
       cache_write_tokens: args.cache_write_tokens,
-      total_tokens: args.total_tokens,
       cost_dollars: costDollars,
       included_cost_dollars: includedUsageCostDollars,
       extra_usage_cost_dollars: extraUsageCostDollars,
@@ -162,10 +169,7 @@ export const logUsage = mutation({
       included_points_deducted: args.included_points_deducted,
       extra_usage_points_deducted: args.extra_usage_points_deducted,
       uncovered_points: args.uncovered_points,
-      usage_deduction_failed:
-        args.usage_deduction_failed === true ||
-        (args.uncovered_points ?? 0) > 0,
-      usage_deduction_failure_reason: args.usage_deduction_failure_reason,
+      usage_deduction_failure_reason: usageDeductionFailureReason,
       model_cost_dollars: modelCostDollars,
       non_model_cost_dollars: nonModelCostDollars,
       cost_source: costSource,
@@ -182,7 +186,7 @@ export const logUsage = mutation({
       outputTokens: args.output_tokens,
       cacheReadTokens: args.cache_read_tokens ?? 0,
       cacheWriteTokens: args.cache_write_tokens ?? 0,
-      totalTokens: args.total_tokens,
+      totalTokens: args.input_tokens + args.output_tokens,
     };
 
     await applyUnitEconomicsDelta(ctx, {
@@ -288,13 +292,14 @@ export const getUserUsageLogs = query({
       page: results.page.map((log) => ({
         _id: log._id,
         _creationTime: log._creationTime,
+        assistant_message_id: log.assistant_message_id,
         model: cleanModelName(log.model),
         type: log.type as "included" | "extra" | "mixed",
         input_tokens: log.input_tokens,
         output_tokens: log.output_tokens,
         cache_read_tokens: log.cache_read_tokens,
         cache_write_tokens: log.cache_write_tokens,
-        total_tokens: log.total_tokens,
+        total_tokens: log.input_tokens + log.output_tokens,
         cost_dollars: log.cost_dollars,
         included_cost_dollars:
           log.included_cost_dollars ??
@@ -306,7 +311,9 @@ export const getUserUsageLogs = query({
         included_points_deducted: log.included_points_deducted,
         extra_usage_points_deducted: log.extra_usage_points_deducted,
         uncovered_points: log.uncovered_points,
-        usage_deduction_failed: log.usage_deduction_failed,
+        usage_deduction_failed:
+          (log.uncovered_points ?? 0) > 0 ||
+          log.usage_deduction_failure_reason !== undefined,
         usage_deduction_failure_reason: log.usage_deduction_failure_reason,
         model_cost_dollars: log.model_cost_dollars,
         non_model_cost_dollars: log.non_model_cost_dollars,
