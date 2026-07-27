@@ -211,8 +211,12 @@ export class UsageTracker {
     this.modelProviderCost += costDollars - previousCost;
   }
 
+  private get allModelSteps(): ModelStepCost[] {
+    return [...this.modelStepCosts, ...this.summarizationStepCosts];
+  }
+
   get hasAuthoritativeModelCost(): boolean {
-    const modelSteps = [...this.modelStepCosts, ...this.summarizationStepCosts];
+    const modelSteps = this.allModelSteps;
     return (
       modelSteps.length > 0 &&
       modelSteps.every((stepCost) =>
@@ -222,9 +226,8 @@ export class UsageTracker {
   }
 
   get hasAnyAuthoritativeModelCost(): boolean {
-    return [...this.modelStepCosts, ...this.summarizationStepCosts].some(
-      (stepCost) =>
-        isPositiveFiniteNumber(stepCost.authoritativeCost ?? stepCost.rawCost),
+    return this.allModelSteps.some((stepCost) =>
+      isPositiveFiniteNumber(stepCost.authoritativeCost ?? stepCost.rawCost),
     );
   }
 
@@ -255,7 +258,7 @@ export class UsageTracker {
     selectedModel: string,
     accountingModel?: string,
   ): number {
-    const modelSteps = [...this.modelStepCosts, ...this.summarizationStepCosts];
+    const modelSteps = this.allModelSteps;
     if (modelSteps.length === 0) {
       return calculateRawModelUsageCostDollars({
         inputTokens: this.inputTokens,
