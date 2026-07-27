@@ -1191,6 +1191,38 @@ describe("getMessagesByChatId", () => {
     expect(mockQuery).toHaveBeenCalledTimes(2);
   });
 
+  it("ignores returned file token metadata in agent mode", async () => {
+    const { getMessagesByChatId, mockQuery } = await loadSaveMessageWithMocks();
+    const fileId = "file-from-ask-mode";
+    const existingMessage = {
+      id: "existing-message-with-file",
+      role: "user" as const,
+      parts: [{ type: "file" as const, fileId }],
+    };
+
+    mockQuery
+      .mockResolvedValueOnce({ id: "chat-1", user_id: "user-1" })
+      .mockResolvedValueOnce({
+        page: [existingMessage],
+        fileTokens: [{ fileId, tokenSize: 200_001 }],
+        isDone: true,
+        continueCursor: null,
+      });
+
+    const result = await getMessagesByChatId({
+      chatId: "chat-1",
+      userId: "user-1",
+      subscription: "pro",
+      newMessages: [],
+      isTemporary: false,
+      mode: "agent",
+    });
+
+    expect(result.truncatedMessages).toEqual([existingMessage]);
+    expect(result.fileTokens).toEqual({});
+    expect(mockQuery).toHaveBeenCalledTimes(2);
+  });
+
   it("does not inject a stored summary while regenerating", async () => {
     const { getMessagesByChatId, mockQuery } = await loadSaveMessageWithMocks();
     const lastUserMessage = {

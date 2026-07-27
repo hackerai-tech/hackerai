@@ -1369,8 +1369,10 @@ export async function getMessagesByChatId({
           fetchedDesc = fetchedDesc.concat(page);
           pagesFetched++;
 
-          for (const { fileId, tokenSize } of pageFileTokens) {
-            fileTokensFromLoop[fileId] = tokenSize;
+          if (!skipFileTokens) {
+            for (const { fileId, tokenSize } of pageFileTokens) {
+              fileTokensFromLoop[fileId] = tokenSize;
+            }
           }
 
           const existingChrono = [...fetchedDesc].reverse();
