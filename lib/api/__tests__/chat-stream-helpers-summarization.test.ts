@@ -8,18 +8,42 @@ jest.mock("@/lib/logger", () => ({
   logger: { warn: jest.fn(), info: jest.fn(), error: jest.fn() },
 }));
 
-const makeUsageTracker = () => ({
-  inputTokens: 0,
-  summarizationInputTokens: 0,
-  outputTokens: 0,
-  totalTokens: 0,
-  summarizationOutputTokens: 0,
-  cacheReadTokens: 0,
-  summarizationCacheReadTokens: 0,
-  cacheWriteTokens: 0,
-  summarizationCacheWriteTokens: 0,
-  providerCost: 0,
-});
+const makeUsageTracker = () => {
+  const tracker = {
+    inputTokens: 0,
+    summarizationInputTokens: 0,
+    outputTokens: 0,
+    totalTokens: 0,
+    summarizationOutputTokens: 0,
+    cacheReadTokens: 0,
+    summarizationCacheReadTokens: 0,
+    cacheWriteTokens: 0,
+    summarizationCacheWriteTokens: 0,
+    providerCost: 0,
+  };
+  Object.defineProperty(tracker, "accumulateSummarization", {
+    enumerable: false,
+    value: (usage: {
+      inputTokens: number;
+      outputTokens: number;
+      cacheReadTokens?: number;
+      cacheWriteTokens?: number;
+      cost?: number;
+    }) => {
+      tracker.inputTokens += usage.inputTokens;
+      tracker.summarizationInputTokens += usage.inputTokens;
+      tracker.outputTokens += usage.outputTokens;
+      tracker.summarizationOutputTokens += usage.outputTokens;
+      tracker.totalTokens += usage.inputTokens + usage.outputTokens;
+      tracker.cacheReadTokens += usage.cacheReadTokens ?? 0;
+      tracker.summarizationCacheReadTokens += usage.cacheReadTokens ?? 0;
+      tracker.cacheWriteTokens += usage.cacheWriteTokens ?? 0;
+      tracker.summarizationCacheWriteTokens += usage.cacheWriteTokens ?? 0;
+      tracker.providerCost += usage.cost ?? 0;
+    },
+  });
+  return tracker;
+};
 
 describe("SummarizationTracker", () => {
   it("tracks and bills every summarization round", () => {

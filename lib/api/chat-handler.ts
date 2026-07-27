@@ -946,13 +946,10 @@ export const createChatHandler = () => {
                 let usageCostRecord =
                   usageTracker.createUsageCostRecord(usageRecordArgs);
 
-                // Trust accumulated provider cost only when every model step has
-                // an authoritative cost. providerCost also includes tool/sandbox
-                // spend; if any model step is missing cost, keep token fallback
-                // for the model portion and add nonModelCost separately.
-                const providerCost = usageTracker.hasAuthoritativeModelCost
-                  ? usageTracker.providerCost
-                  : undefined;
+                // Use the same resolved provider/hybrid total that powers
+                // mid-run settlement. This preserves authoritative step costs
+                // and estimates only the individual steps missing provider cost.
+                const settledCostDollars = usageCostRecord.costDollars;
 
                 if (paidDailyFreeAllowanceReservation) {
                   const allowanceCostRecord =
@@ -1035,7 +1032,7 @@ export const createChatHandler = () => {
                     usageTracker.inputTokens,
                     usageTracker.outputTokens,
                     extraUsageConfig,
-                    providerCost,
+                    settledCostDollars,
                     selectedModel,
                     usageTracker.nonModelCost,
                     organizationId,

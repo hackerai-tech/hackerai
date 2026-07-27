@@ -475,20 +475,7 @@ export class SummarizationTracker {
     usageTracker: UsageTracker,
   ): void {
     if (usage) {
-      usageTracker.inputTokens += usage.inputTokens;
-      usageTracker.summarizationInputTokens += usage.inputTokens;
-      usageTracker.outputTokens += usage.outputTokens;
-      usageTracker.summarizationOutputTokens += usage.outputTokens;
-      usageTracker.totalTokens += usage.inputTokens + usage.outputTokens;
-      const cacheReadTokens = usage.cacheReadTokens || 0;
-      const cacheWriteTokens = usage.cacheWriteTokens || 0;
-      usageTracker.cacheReadTokens += cacheReadTokens;
-      usageTracker.summarizationCacheReadTokens += cacheReadTokens;
-      usageTracker.cacheWriteTokens += cacheWriteTokens;
-      usageTracker.summarizationCacheWriteTokens += cacheWriteTokens;
-      if (usage.cost) {
-        usageTracker.providerCost += usage.cost;
-      }
+      usageTracker.accumulateSummarization(usage);
     }
   }
 
