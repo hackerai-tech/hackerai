@@ -48,6 +48,10 @@ describe("provider registry", () => {
       ).modelId,
     ).toBe("moonshotai/kimi-k2.7-code:exacto");
     expect(
+      (myProvider.languageModel("model-kimi-k3") as { modelId: string })
+        .modelId,
+    ).toBe("moonshotai/kimi-k3");
+    expect(
       (myProvider.languageModel("fallback-agent-model") as { modelId: string })
         .modelId,
     ).toBe("x-ai/grok-4.5");
@@ -63,6 +67,7 @@ describe("provider registry", () => {
     expect(getModelDisplayName("model-grok-4.5")).toBe("xAI Grok 4.5");
     expect(getModelDisplayName("model-grok-4.5-pro")).toBe("xAI Grok 4.5");
     expect(getModelDisplayName("model-glm-5.2")).toBe("Z.ai GLM 5.2");
+    expect(getModelDisplayName("model-kimi-k3")).toBe("Moonshot Kimi K3");
     expect(getModelDisplayName("model-gemini-3-flash")).toBe("xAI Grok 4.5");
     expect(getModelDisplayName("title-generator-model")).toBe(
       "DeepSeek V4 Flash",
@@ -206,6 +211,7 @@ describe("supportsMultimodalToolResults", () => {
     expect(supportsMultimodalToolResults("model-minimax-m3")).toBe(true);
     expect(supportsMultimodalToolResults("fallback-agent-model")).toBe(true);
     expect(supportsMultimodalToolResults("fallback-ask-model")).toBe(true);
+    expect(supportsMultimodalToolResults("model-kimi-k3")).toBe(true);
     expect(supportsMultimodalToolResults("model-kimi-k2.7-code")).toBe(true);
     expect(
       supportsMultimodalToolResults("moonshotai/kimi-k2.7-code:exacto"),

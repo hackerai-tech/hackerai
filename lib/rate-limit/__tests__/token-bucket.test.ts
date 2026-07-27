@@ -105,6 +105,17 @@ describe("token-bucket", () => {
       ).toBeCloseTo(1.4);
     });
 
+    it("prices Kimi K3 cached input at OpenRouter's $0.30/M rate", () => {
+      expect(
+        calculateRawModelUsageCostDollars({
+          inputTokens: 1_000_000,
+          outputTokens: 100_000,
+          cacheReadTokens: 800_000,
+          modelName: "moonshotai/kimi-k3-20260715",
+        }),
+      ).toBeCloseTo(2.34);
+    });
+
     it("recognizes dated Anthropic response model IDs", () => {
       expect(
         calculateRawModelUsageCostDollars({
@@ -464,6 +475,15 @@ describe("token-bucket", () => {
       );
       expect(calculateTokenCost(1_000_000, "output", "model-glm-5.2")).toBe(
         33880,
+      );
+    });
+
+    it("should use Kimi K3 pricing ($3.00/$15.00)", () => {
+      expect(calculateTokenCost(1_000_000, "input", "model-kimi-k3")).toBe(
+        42000,
+      );
+      expect(calculateTokenCost(1_000_000, "output", "model-kimi-k3")).toBe(
+        210000,
       );
     });
 
