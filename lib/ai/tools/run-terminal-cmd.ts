@@ -346,7 +346,12 @@ export const createRunTerminalCmd = (context: ToolContext) => {
         // (they relay commands through Convex and have their own connectivity)
         if (isE2BSandbox(sandbox)) {
           try {
-            await waitForSandboxReady(sandbox, 5, abortSignal);
+            await waitForSandboxReady(
+              sandbox,
+              5,
+              abortSignal,
+              context.onSandboxResourceMetrics,
+            );
             sandboxManager.resetHealthFailures();
           } catch (healthError) {
             // If aborted, don't retry - propagate the abort
@@ -389,7 +394,12 @@ export const createRunTerminalCmd = (context: ToolContext) => {
 
               // Verify the fresh sandbox is ready
               try {
-                await waitForSandboxReady(freshSandbox, 5, abortSignal);
+                await waitForSandboxReady(
+                  freshSandbox,
+                  5,
+                  abortSignal,
+                  context.onSandboxResourceMetrics,
+                );
                 sandboxManager.resetHealthFailures();
               } catch (freshHealthError) {
                 if (

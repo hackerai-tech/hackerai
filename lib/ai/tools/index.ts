@@ -40,6 +40,7 @@ import { BackgroundProcessTracker } from "./utils/background-process-tracker";
 import { ptySessionManager } from "./utils/pty-session-manager";
 import { isE2BSandbox } from "./utils/sandbox-types";
 import { getSandboxWithFallbackGuard } from "./utils/sandbox-fallback";
+import { createE2BCpuSaturationObserver } from "@/lib/analytics/sandbox-resource-pressure";
 
 export { isE2BSandbox };
 
@@ -112,6 +113,12 @@ export const createTools = (
   const todoManager = new TodoManager(initialTodos);
   const fileAccumulator = new FileAccumulator();
   const backgroundProcessTracker = new BackgroundProcessTracker();
+  const onSandboxResourceMetrics = createE2BCpuSaturationObserver({
+    userId: userID,
+    chatId,
+    mode,
+    subscription,
+  });
 
   const context: ToolContext = {
     sandboxManager,
@@ -134,6 +141,7 @@ export const createTools = (
     onToolFailure,
     requestToolApproval,
     measureAgentActiveTime,
+    onSandboxResourceMetrics,
   };
 
   const buildTools = (): ToolSet => {

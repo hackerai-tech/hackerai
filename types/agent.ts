@@ -55,6 +55,16 @@ export interface SandboxBootInfo {
   create_attempts: number;
 }
 
+export interface SandboxResourceMetrics {
+  cpuPct: number;
+  memPct: number;
+  diskPct: number;
+}
+
+export type SandboxResourceMetricsObserver = (
+  metrics: SandboxResourceMetrics,
+) => void;
+
 export interface SandboxContext {
   userID: string;
   setSandbox: (sandbox: Sandbox) => void;
@@ -399,4 +409,6 @@ export interface ToolContext {
   requestToolApproval?: AgentToolApprovalRequester;
   /** Aggregates active wall time for cost attribution in Trigger-hosted Agent runs. */
   measureAgentActiveTime?: AgentActiveTimeMeasurer;
+  /** Observes resource metrics already fetched by E2B health checks. */
+  onSandboxResourceMetrics?: SandboxResourceMetricsObserver;
 }
