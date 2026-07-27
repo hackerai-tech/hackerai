@@ -235,7 +235,6 @@ export const modelCutoffDates: Record<ModelName, string> &
   "model-opus-4.6": "May 2025",
   "model-glm-5.2": "June 2026",
   "model-minimax-m3": "July 2026",
-  "model-kimi-k3": "July 2026",
   "model-kimi-k2.7-code": "June 2025",
   "model-kimi-k2.6": "June 2025",
   "fallback-agent-model": "July 2026",
