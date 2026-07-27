@@ -163,6 +163,7 @@ import {
   getAgentApprovalTargetPrefixForSandbox,
   normalizeMaxModelForSubscription,
   serializeSandboxScopedAgentApprovalTargetPrefix,
+  withExtraUsageBillingForModel,
 } from "@/types";
 import {
   createAgentStream,
@@ -1792,17 +1793,22 @@ export const agentLongTask = task({
             sandboxPreference,
           });
       const truncatedMessages = fetched.truncatedMessages;
-      const extraUsageConfig = await buildExtraUsageConfig({
+      const baseExtraUsageConfig = await buildExtraUsageConfig({
         userId,
         subscription,
         userCustomization,
         organizationId,
       });
-      const extraUsageAvailable = canUseExtraUsage(extraUsageConfig);
+      const extraUsageAvailable = canUseExtraUsage(baseExtraUsageConfig);
       selectedModelOverride =
         normalizeMaxModelForSubscription(selectedModelOverride, subscription, {
           extraUsageAvailable,
         }) ?? undefined;
+      const extraUsageConfig = withExtraUsageBillingForModel(
+        baseExtraUsageConfig,
+        selectedModelOverride,
+        subscription,
+      );
 
       const baseTodos: Todo[] = getBaseTodosForRequest(
         (chat?.todos as unknown as Todo[]) || [],
@@ -2152,12 +2158,18 @@ export const agentLongTask = task({
                   "The selected model is no longer authorized.",
                 );
               }
+              const currentModelExtraUsageConfig =
+                withExtraUsageBillingForModel(
+                  currentExtraUsageConfig,
+                  currentlyAllowedModel,
+                  authorization.subscription,
+                );
 
               await checkRateLimitCapacity(
                 userId,
                 mode,
                 authorization.subscription,
-                currentExtraUsageConfig,
+                currentModelExtraUsageConfig,
                 selectedModel,
                 authorization.organizationId,
                 freeQuotaSubject,

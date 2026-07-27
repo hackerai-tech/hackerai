@@ -295,8 +295,12 @@ const deductAdditionalUsagePoints = async ({
     };
   };
 
-  const peekResult = await monthly.limiter.limit(monthly.key, { rate: 0 });
-  const available = Math.max(0, peekResult.remaining);
+  const available = extraUsageConfig?.chargeAllUsage
+    ? 0
+    : Math.max(
+        0,
+        (await monthly.limiter.limit(monthly.key, { rate: 0 })).remaining,
+      );
   const fromBucket = Math.min(normalizedAdditionalCost, available);
   let includedDeducted = 0;
 
@@ -909,8 +913,11 @@ export const checkTokenBucketLimit = async (
       };
     }
 
-    // Step 2: Check if we have enough capacity, or if we need extra usage
-    const shortfall = Math.max(0, estimatedCost - monthlyCheck.remaining);
+    // Step 2: Check if we have enough capacity, or if we need extra usage.
+    // Models excluded from the plan allowance charge the full request to Extra Usage.
+    const shortfall = extraUsageConfig?.chargeAllUsage
+      ? estimatedCost
+      : Math.max(0, estimatedCost - monthlyCheck.remaining);
 
     // If we're over limit, try extra usage (prepaid balance)
     if (shortfall > 0) {
@@ -929,9 +936,12 @@ export const checkTokenBucketLimit = async (
           // Extra usage covered the shortfall. Deduct only what subscription contributed.
           const bucketDeduct = estimatedCost - shortfall;
 
-          const monthlyResult = await monthly.limiter.limit(monthly.key, {
-            rate: bucketDeduct,
-          });
+          const monthlyResult =
+            bucketDeduct > 0
+              ? await monthly.limiter.limit(monthly.key, {
+                  rate: bucketDeduct,
+                })
+              : monthlyCheck;
 
           if (!monthlyResult.success) {
             try {

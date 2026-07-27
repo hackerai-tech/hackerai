@@ -180,6 +180,25 @@ export function canUseMaxModel(
   );
 }
 
+export function withExtraUsageBillingForModel(
+  extraUsageConfig: ExtraUsageConfig | undefined,
+  model: SelectedModel | null | undefined,
+  subscription: SubscriptionTier,
+): ExtraUsageConfig | undefined {
+  if (
+    !extraUsageConfig ||
+    model !== "hackerai-max" ||
+    subscription === "ultra"
+  ) {
+    return extraUsageConfig;
+  }
+
+  return {
+    ...extraUsageConfig,
+    chargeAllUsage: true,
+  };
+}
+
 export const normalizeMaxModelForSubscription = (
   model: SelectedModel | null | undefined,
   subscription: SubscriptionTier,
@@ -479,6 +498,8 @@ export interface ExtraUsageConfig {
   monthlyRemainingDollars?: number;
   /** Whether auto-reload is enabled (can use extra usage even with $0 balance) */
   autoReloadEnabled?: boolean;
+  /** Bypass included plan credits and bill the full request as Extra Usage */
+  chargeAllUsage?: boolean;
 }
 
 export interface QueuedMessage {
