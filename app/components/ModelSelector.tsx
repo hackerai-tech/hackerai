@@ -10,6 +10,7 @@ import {
 } from "lucide-react";
 import {
   Popover,
+  PopoverAnchor,
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
@@ -33,7 +34,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { Button } from "@/components/ui/button";
-import { useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import {
@@ -189,6 +190,8 @@ const ModelOptionButton = ({
   isPending,
   subscription,
   onSelect,
+  actionPanelId,
+  actionPanelOpen,
   mobile = false,
 }: {
   option: ModelOption;
@@ -197,6 +200,8 @@ const ModelOptionButton = ({
   isPending: boolean;
   subscription: SubscriptionTier;
   onSelect: (option: ModelOption) => void;
+  actionPanelId?: string;
+  actionPanelOpen?: boolean;
   mobile?: boolean;
 }) => {
   const button = (
@@ -206,6 +211,9 @@ const ModelOptionButton = ({
       disabled={isPending}
       aria-busy={isPending || undefined}
       aria-pressed={isSelected}
+      aria-haspopup={actionPanelId ? "dialog" : undefined}
+      aria-expanded={actionPanelId ? actionPanelOpen : undefined}
+      aria-controls={actionPanelId}
       aria-label={
         isPending
           ? `${option.label}. Checking Extra Usage for Max mode.`
@@ -276,6 +284,120 @@ const ModelOptionButton = ({
         )}
       </TooltipContent>
     </Tooltip>
+  );
+};
+
+const LockedMaxAccessPopover = ({
+  option,
+  isSelected,
+  subscription,
+  onSelect,
+  onClose,
+}: {
+  option: ModelOption;
+  isSelected: boolean;
+  subscription: SubscriptionTier;
+  onSelect: (option: ModelOption) => void;
+  onClose: () => void;
+}) => {
+  const [open, setOpen] = useState(false);
+  const panelId = useId();
+  const closeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const clearScheduledClose = () => {
+    if (closeTimerRef.current !== null) {
+      clearTimeout(closeTimerRef.current);
+      closeTimerRef.current = null;
+    }
+  };
+
+  const showPanel = () => {
+    clearScheduledClose();
+    setOpen(true);
+  };
+
+  const schedulePanelClose = () => {
+    clearScheduledClose();
+    closeTimerRef.current = setTimeout(() => setOpen(false), 150);
+  };
+
+  useEffect(() => clearScheduledClose, []);
+
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverAnchor asChild>
+        <div
+          onMouseEnter={showPanel}
+          onMouseLeave={schedulePanelClose}
+          onFocusCapture={showPanel}
+        >
+          <ModelOptionButton
+            option={option}
+            isSelected={isSelected}
+            isLocked
+            isPending={false}
+            subscription={subscription}
+            onSelect={onSelect}
+            actionPanelId={panelId}
+            actionPanelOpen={open}
+          />
+        </div>
+      </PopoverAnchor>
+      <PopoverContent
+        id={panelId}
+        side="right"
+        sideOffset={12}
+        align="start"
+        aria-label="HackerAI Max access options"
+        className="w-[240px] rounded-xl px-4 py-3 space-y-1.5"
+        onMouseEnter={showPanel}
+        onMouseLeave={schedulePanelClose}
+        onOpenAutoFocus={(event) => event.preventDefault()}
+      >
+        <p className="text-sm font-semibold text-foreground leading-snug">
+          {option.description || option.label}
+        </p>
+        {option.poweredBy && (
+          <p className="text-xs text-muted-foreground">
+            Powered by {option.poweredBy}
+          </p>
+        )}
+        <p className="text-xs text-muted-foreground leading-relaxed pt-1">
+          Set up Extra Usage to use Max on your current plan, or upgrade to
+          Ultra to have Max included.
+        </p>
+        <div className="flex gap-2 pt-1">
+          <Button
+            type="button"
+            size="sm"
+            className="h-8 flex-1 px-2 text-xs"
+            onClick={() => {
+              setOpen(false);
+              onClose();
+              openSettingsDialog("Extra Usage");
+            }}
+          >
+            Use Extra Usage
+          </Button>
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            className="h-8 flex-1 px-2 text-xs"
+            onClick={() => {
+              setOpen(false);
+              onClose();
+              openMaxUltraUpgrade({
+                mobile: false,
+                subscription,
+              });
+            }}
+          >
+            Upgrade to Ultra
+          </Button>
+        </div>
+      </PopoverContent>
+    </Popover>
   );
 };
 
@@ -370,6 +492,22 @@ const ModelOptionList = ({
         );
       }
 
+      if (
+        isMaxModel(option.id) &&
+        canChoosePersonalMaxAccessPath(subscription)
+      ) {
+        return (
+          <LockedMaxAccessPopover
+            key={option.id}
+            option={option}
+            isSelected={isSelected}
+            subscription={subscription}
+            onSelect={onSelect}
+            onClose={onClose}
+          />
+        );
+      }
+
       return (
         <Tooltip key={option.id}>
           <TooltipTrigger asChild>
@@ -405,68 +543,30 @@ const ModelOptionList = ({
                 Powered by {option.poweredBy}
               </p>
             )}
-            {isMaxModel(option.id) &&
-            canChoosePersonalMaxAccessPath(subscription) ? (
-              <>
-                <p className="text-xs text-muted-foreground leading-relaxed pt-1">
-                  Set up Extra Usage to use Max on your current plan, or upgrade
-                  to Ultra to have Max included.
-                </p>
-                <div className="flex gap-2 pt-1">
-                  <Button
-                    type="button"
-                    size="sm"
-                    className="h-8 flex-1 px-2 text-xs"
-                    onClick={() => {
-                      onClose();
-                      openSettingsDialog("Extra Usage");
-                    }}
-                  >
-                    Use Extra Usage
-                  </Button>
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="outline"
-                    className="h-8 flex-1 px-2 text-xs"
-                    onClick={() => {
-                      onClose();
-                      openMaxUltraUpgrade({
-                        mobile,
-                        subscription,
-                      });
-                    }}
-                  >
-                    Upgrade to Ultra
-                  </Button>
-                </div>
-              </>
-            ) : (
-              <p className="text-xs text-muted-foreground leading-relaxed pt-1">
-                <a
-                  href={
-                    isMaxModel(option.id) &&
-                    canUnlockMaxWithExtraUsage(subscription)
-                      ? "#extra-usage"
-                      : "#pricing"
-                  }
-                  onClick={(event) => {
-                    event.preventDefault();
-                    onClose();
-                    handleLockedModelCta({
-                      mobile,
-                      option,
-                      subscription,
-                    });
-                  }}
-                  className="text-foreground underline underline-offset-2 hover:text-foreground/80"
-                  tabIndex={0}
-                >
-                  {getLockedModelCta(option.id, subscription)}
-                </a>
-                {isMaxModel(option.id) ? " for Max mode." : " to unlock."}
-              </p>
-            )}
+            <p className="text-xs text-muted-foreground leading-relaxed pt-1">
+              <a
+                href={
+                  isMaxModel(option.id) &&
+                  canUnlockMaxWithExtraUsage(subscription)
+                    ? "#extra-usage"
+                    : "#pricing"
+                }
+                onClick={(event) => {
+                  event.preventDefault();
+                  onClose();
+                  handleLockedModelCta({
+                    mobile,
+                    option,
+                    subscription,
+                  });
+                }}
+                className="text-foreground underline underline-offset-2 hover:text-foreground/80"
+                tabIndex={0}
+              >
+                {getLockedModelCta(option.id, subscription)}
+              </a>
+              {isMaxModel(option.id) ? " for Max mode." : " to unlock."}
+            </p>
           </TooltipContent>
         </Tooltip>
       );

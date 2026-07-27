@@ -185,7 +185,7 @@ describe("ModelSelector", () => {
     expect(mockRedirectToPricing).not.toHaveBeenCalled();
   });
 
-  it("offers Extra Usage or Ultra from the locked Max hover tooltip", async () => {
+  it("offers Extra Usage or Ultra from the locked Max hover panel", async () => {
     mockMaxEntitlement = {
       extraUsageAvailable: false,
       reason: "disabled",
@@ -206,6 +206,9 @@ describe("ModelSelector", () => {
     expect(
       screen.getByRole("button", { name: "Use Extra Usage" }),
     ).toBeVisible();
+    expect(
+      screen.getByRole("button", { name: /HackerAI Max/i }),
+    ).toHaveAttribute("aria-haspopup", "dialog");
 
     await user.click(screen.getByRole("button", { name: "Upgrade to Ultra" }));
 
