@@ -30,6 +30,8 @@ jest.mock("../lib/suspensionGuards", () => ({
 
 const { forkSharedChat, getSharedSnapshot } =
   require("../sharedChats") as typeof import("../sharedChats");
+const { getVisibleSharedChatByChatId } =
+  require("../lib/sharedChatSnapshot") as typeof import("../lib/sharedChatSnapshot");
 
 describe("getSharedSnapshot", () => {
   it("returns frozen, anonymous chat data with one shared-chat lookup", async () => {
@@ -162,6 +164,43 @@ describe("getSharedSnapshot", () => {
     expect(query).toHaveBeenCalledWith("chats");
   });
 
+  it("returns null without reading messages when the chat owner is blocked", async () => {
+    const { isUserBlockedByActiveFraudDispute } = jest.requireMock(
+      "../lib/suspensionGuards",
+    ) as { isUserBlockedByActiveFraudDispute: jest.Mock };
+    isUserBlockedByActiveFraudDispute.mockResolvedValueOnce(true);
+
+    const sharedChat = {
+      _id: "source-doc",
+      _creationTime: 1,
+      id: "source-1",
+      title: "Shared title",
+      user_id: "blocked-owner",
+      share_id: "11111111-1111-4111-8111-111111111111",
+      share_date: 200,
+      update_time: 200,
+    };
+    const query = jest.fn<any>(() => ({
+      withIndex: jest.fn<any>().mockReturnValue({
+        first: jest.fn<any>().mockResolvedValue(sharedChat),
+      }),
+    }));
+    const ctx = { db: { query } };
+
+    await expect(
+      getSharedSnapshot.handler(ctx as any, {
+        shareId: sharedChat.share_id,
+      }),
+    ).resolves.toBeNull();
+
+    expect(query).toHaveBeenCalledTimes(1);
+    expect(query).toHaveBeenCalledWith("chats");
+    expect(isUserBlockedByActiveFraudDispute).toHaveBeenCalledWith(
+      ctx,
+      sharedChat.user_id,
+    );
+  });
+
   it("preserves chat metadata when the message read fails", async () => {
     const consoleError = jest
       .spyOn(console, "error")
@@ -211,6 +250,18 @@ describe("getSharedSnapshot", () => {
       expect.any(Error),
     );
     consoleError.mockRestore();
+  });
+});
+
+describe("shared chat visibility helpers", () => {
+  it("rejects an invalid legacy chat ID without reading the database", async () => {
+    const query = jest.fn<any>();
+
+    await expect(
+      getVisibleSharedChatByChatId({ db: { query } } as any, "not-a-uuid"),
+    ).resolves.toBeNull();
+
+    expect(query).not.toHaveBeenCalled();
   });
 });
 
