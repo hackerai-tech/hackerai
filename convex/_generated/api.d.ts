@@ -28,7 +28,6 @@ import type * as lib_suspensionGuards from "../lib/suspensionGuards.js";
 import type * as lib_utils from "../lib/utils.js";
 import type * as localSandbox from "../localSandbox.js";
 import type * as messages from "../messages.js";
-import type * as migrations from "../migrations.js";
 import type * as notes from "../notes.js";
 import type * as projects from "../projects.js";
 import type * as rateLimitStatus from "../rateLimitStatus.js";
@@ -75,7 +74,6 @@ declare const fullApi: ApiFromModules<{
   "lib/utils": typeof lib_utils;
   localSandbox: typeof localSandbox;
   messages: typeof messages;
-  migrations: typeof migrations;
   notes: typeof notes;
   projects: typeof projects;
   rateLimitStatus: typeof rateLimitStatus;
@@ -124,5 +122,4 @@ export declare const internal: FilterApi<
 
 export declare const components: {
   fileCountByUser: import("@convex-dev/aggregate/_generated/component.js").ComponentApi<"fileCountByUser">;
-  migrations: import("@convex-dev/migrations/_generated/component.js").ComponentApi<"migrations">;
 };

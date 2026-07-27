@@ -123,30 +123,11 @@ describe("usageLogs", () => {
     expect(mockApplyUnitEconomicsDelta).not.toHaveBeenCalled();
   });
 
-  it("accepts deprecated inputs without persisting redundant fields", async () => {
+  it("does not expose deprecated usage log inputs", async () => {
     const { logUsage } = await import("../usageLogs");
-    const ctx: any = {
-      db: {
-        insert: jest.fn(async () => "usage-id"),
-      },
-    };
 
-    await (logUsage as any).handler(ctx, {
-      serviceKey: "test-service-key",
-      user_id: "user_1",
-      model: "model-sonnet-4.6",
-      type: "included",
-      input_tokens: 100,
-      output_tokens: 50,
-      total_tokens: 150,
-      cost_dollars: 1,
-      usage_deduction_failed: true,
-    });
-
-    const inserted = ctx.db.insert.mock.calls[0][1];
-    expect(inserted).not.toHaveProperty("total_tokens");
-    expect(inserted).not.toHaveProperty("usage_deduction_failed");
-    expect(inserted.usage_deduction_failure_reason).toBe("deduction_failed");
+    expect((logUsage as any).args).not.toHaveProperty("total_tokens");
+    expect((logUsage as any).args).not.toHaveProperty("usage_deduction_failed");
   });
 
   it("derives redundant display fields when reading usage logs", async () => {
