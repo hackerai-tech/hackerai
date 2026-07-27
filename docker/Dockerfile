@@ -20,7 +20,8 @@ ENV PATH=/home/user/.local/bin:/usr/local/go/bin:/home/user/go/bin:/usr/local/sb
 RUN apt-get update && \
     apt-get install -y kali-archive-keyring sudo && \
     apt-get update && \
-    apt-get upgrade -y
+    apt-get upgrade -y && \
+    apt-get clean && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*
 
 # ============================================================================
 # Core System Packages
@@ -173,7 +174,7 @@ RUN printf 'export PATH=/home/user/.local/bin:/usr/local/go/bin:/home/user/go/bi
 # ============================================================================
 # Python Packages for Document Generation & Security Tools
 # ============================================================================
-RUN pip3 install --break-system-packages \
+RUN pip3 install --break-system-packages --no-cache-dir \
     reportlab \
     python-docx \
     openpyxl \
@@ -187,8 +188,8 @@ RUN pip3 install --break-system-packages \
 # requirement, and pip cannot uninstall dpkg-owned packages without RECORD
 # metadata. Install a pip-managed compatible rich first so httpx[cli] resolves
 # against /usr/local without touching the distro package.
-RUN pip3 install --break-system-packages --ignore-installed 'rich<14,>=10' && \
-    pip3 install --break-system-packages requests aiohttp jinja2 'httpx[cli]' ratelimit pycryptodomex
+RUN pip3 install --break-system-packages --no-cache-dir --ignore-installed 'rich<14,>=10' && \
+    pip3 install --break-system-packages --no-cache-dir requests aiohttp jinja2 'httpx[cli]' ratelimit pycryptodomex
 
 # ============================================================================
 # Git-based Security Tools
@@ -245,7 +246,8 @@ ENV AGENT_BROWSER_USER_AGENT="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36
 ENV AGENT_BROWSER_ARGS="--disable-blink-features=AutomationControlled,--no-first-run,--no-default-browser-check,--disable-dev-shm-usage,--no-sandbox,--lang=en-US"
 ENV AGENT_BROWSER_SCREENSHOT_DIR=/home/user/agent-browser-screenshots
 
-RUN npm install -g agent-browser@0.26.0 && \
+RUN npm install -g --cache /tmp/npm-cache agent-browser@0.26.0 && \
+    rm -rf /tmp/npm-cache && \
     mkdir -p /home/user/agent-browser-screenshots && \
     chown -R user:user /home/user/agent-browser-screenshots && \
     agent-browser doctor --offline --quick
@@ -256,7 +258,9 @@ RUN npm install -g agent-browser@0.26.0 && \
 RUN set -eux; \
     go install github.com/projectdiscovery/interactsh/cmd/interactsh-client@latest && \
     go install github.com/projectdiscovery/katana/cmd/katana@latest && \
-    go install github.com/projectdiscovery/cvemap/cmd/cvemap@latest
+    go install github.com/projectdiscovery/cvemap/cmd/cvemap@latest && \
+    go clean -cache -modcache && \
+    rm -rf "$GOCACHE" "$GOPATH/pkg/mod"
 
 # ============================================================================
 # TestSSL Symlink - Allow access via both 'testssl' and 'testssl.sh'
@@ -276,6 +280,12 @@ RUN nuclei -update-templates
 # ============================================================================
 RUN set -eux; \
     echo "=== Starting tool validation ===" && \
+    test -z "$(find /var/lib/apt/lists -mindepth 1 -print -quit)" && \
+    test -z "$(find /var/cache/apt/archives -mindepth 1 -print -quit)" && \
+    test ! -e /home/user/.cache/pip && \
+    test ! -e /tmp/npm-cache && \
+    test ! -e "$GOCACHE" && \
+    test ! -e "$GOPATH/pkg/mod" && \
     test -d /usr/share/seclists && \
     echo "✓ SecLists installed" && \
     which nmap && echo "✓ nmap" && \
