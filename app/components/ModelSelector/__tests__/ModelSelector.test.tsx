@@ -186,8 +186,8 @@ describe("ModelSelector", () => {
         name: "Choose how to access HackerAI Max",
       }),
     ).toBeVisible();
-    expect(screen.getByText("Keep your current plan")).toBeVisible();
-    expect(screen.getByText("Max included with your plan")).toBeVisible();
+    expect(screen.getByText("Pay for Max as you use it")).toBeVisible();
+    expect(screen.getByText("Max included")).toBeVisible();
     expect(mockOpenSettingsDialog).not.toHaveBeenCalled();
     expect(mockRedirectToPricing).not.toHaveBeenCalled();
 
@@ -246,9 +246,7 @@ describe("ModelSelector", () => {
     expect(
       screen.getByRole("dialog", { name: "Unlock HackerAI Max" }),
     ).toBeVisible();
-    expect(
-      screen.getByText(/Extra Usage after your included credits/i),
-    ).toBeVisible();
+    expect(screen.getByText(/Max is paid through Extra Usage/i)).toBeVisible();
     expect(onChange).not.toHaveBeenCalled();
     expect(mockOpenSettingsDialog).not.toHaveBeenCalled();
     expect(mockRedirectToPricing).not.toHaveBeenCalled();

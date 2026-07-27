@@ -342,7 +342,7 @@ const LockedMaxAccessOption = ({
                 Use Extra Usage
               </span>
               <span className="block text-[11px] leading-4 text-muted-foreground">
-                Keep your current plan
+                Pay for Max as you use it
               </span>
             </span>
             <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform group-hover/action:translate-x-0.5" />
@@ -364,7 +364,7 @@ const LockedMaxAccessOption = ({
                 Upgrade to Ultra
               </span>
               <span className="block text-[11px] leading-4 text-muted-foreground">
-                Max included with your plan
+                Max included
               </span>
             </span>
             <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform group-hover/action:translate-x-0.5" />
@@ -689,8 +689,8 @@ export function ModelSelector({ value, onChange, mode }: ModelSelectorProps) {
             <DialogHeader>
               <DialogTitle>Unlock HackerAI Max</DialogTitle>
               <DialogDescription className="leading-relaxed">
-                Use Max with Extra Usage after your included credits, or upgrade
-                to Ultra to have Max included.
+                On Pro and Pro+, Max is paid through Extra Usage. Upgrade to
+                Ultra to have Max included.
               </DialogDescription>
             </DialogHeader>
             <div className="flex flex-col gap-2 pt-2">

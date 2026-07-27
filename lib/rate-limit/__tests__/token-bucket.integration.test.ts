@@ -466,6 +466,37 @@ describe("token-bucket async functions", () => {
       expect(result.extraUsagePointsDeducted).toBeGreaterThan(0);
     });
 
+    it("charges the full request to extra usage without consuming included credits", async () => {
+      const { checkTokenBucketLimit } = getIsolatedModule();
+
+      mockLimitFn.mockResolvedValue({
+        success: true,
+        remaining: 10000,
+        reset: Date.now() + 3600000,
+        limit: 250000,
+      });
+
+      const result = await checkTokenBucketLimit("user-123", "pro", 1000, {
+        enabled: true,
+        hasBalance: true,
+        autoReloadEnabled: false,
+        chargeAllUsage: true,
+      });
+
+      expect(mockDeductFromBalance).toHaveBeenCalledWith(
+        "user-123",
+        expect.any(Number),
+      );
+      expect(result.pointsDeducted).toBe(0);
+      expect(result.extraUsagePointsDeducted).toBeGreaterThan(0);
+      expect(result.remaining).toBe(10000);
+      expect(mockLimitFn).toHaveBeenCalledTimes(1);
+      expect(mockLimitFn).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.objectContaining({ rate: 0 }),
+      );
+    });
+
     it("should return monthly nested field matching top-level fields", async () => {
       const { checkTokenBucketLimit } = getIsolatedModule();
 
@@ -1407,6 +1438,45 @@ describe("token-bucket async functions", () => {
   });
 
   describe("deductUsage - split deduction (peek-then-deduct)", () => {
+    it("keeps final reconciliation entirely on extra usage when required", async () => {
+      const { deductUsage } = getIsolatedModule();
+
+      const result = await deductUsage(
+        "user-123",
+        "pro",
+        1000,
+        5000,
+        1000,
+        {
+          enabled: true,
+          hasBalance: true,
+          autoReloadEnabled: false,
+          chargeAllUsage: true,
+        },
+        0.005,
+        undefined,
+        0,
+        undefined,
+        {
+          pointsDeducted: 0,
+          extraUsagePointsDeducted: 7,
+        },
+      );
+
+      expect(mockLimitFn).not.toHaveBeenCalled();
+      expect(mockDeductFromBalance).toHaveBeenCalledWith(
+        "user-123",
+        63,
+        undefined,
+      );
+      expect(result).toEqual({
+        includedPointsDeducted: 0,
+        extraUsagePointsDeducted: 70,
+        uncoveredPoints: 0,
+        usageDeductionFailed: false,
+      });
+    });
+
     it("should deduct overflow from extra usage when bucket has insufficient balance", async () => {
       const { deductUsage } = getIsolatedModule();
 
@@ -1719,6 +1789,30 @@ describe("token-bucket async functions", () => {
       expect(result).toEqual({
         includedPointsDeducted: 10,
         extraUsagePointsDeducted: 33,
+        uncoveredPoints: 0,
+        usageDeductionFailed: false,
+      });
+    });
+
+    it("charges a full mid-run delta to extra usage when required", async () => {
+      const { deductUsageDelta } = getIsolatedModule();
+
+      const result = await deductUsageDelta("user-123", "pro", 43, {
+        enabled: true,
+        hasBalance: true,
+        autoReloadEnabled: false,
+        chargeAllUsage: true,
+      });
+
+      expect(mockLimitFn).not.toHaveBeenCalled();
+      expect(mockDeductFromBalance).toHaveBeenCalledWith(
+        "user-123",
+        43,
+        undefined,
+      );
+      expect(result).toEqual({
+        includedPointsDeducted: 0,
+        extraUsagePointsDeducted: 43,
         uncoveredPoints: 0,
         usageDeductionFailed: false,
       });

@@ -4,6 +4,7 @@ import {
   normalizeMaxModelForSubscription,
   normalizeSelectedModelForSubscription,
   normalizeSelectedModelOverrideForSubscription,
+  withExtraUsageBillingForModel,
 } from "../chat";
 
 describe("normalizeSelectedModelForSubscription", () => {
@@ -112,5 +113,34 @@ describe("Max model entitlement helpers", () => {
         },
       }),
     ).toBe("hackerai-pro");
+  });
+
+  it("bills Max entirely through Extra Usage outside Ultra", () => {
+    const extraUsageConfig = {
+      enabled: true,
+      hasBalance: true,
+      autoReloadEnabled: false,
+    };
+
+    expect(
+      withExtraUsageBillingForModel(
+        extraUsageConfig,
+        "hackerai-max",
+        "pro-plus",
+      ),
+    ).toEqual({
+      ...extraUsageConfig,
+      chargeAllUsage: true,
+    });
+    expect(
+      withExtraUsageBillingForModel(extraUsageConfig, "hackerai-max", "ultra"),
+    ).toBe(extraUsageConfig);
+    expect(
+      withExtraUsageBillingForModel(
+        extraUsageConfig,
+        "hackerai-pro",
+        "pro-plus",
+      ),
+    ).toBe(extraUsageConfig);
   });
 });

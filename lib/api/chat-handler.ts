@@ -29,6 +29,7 @@ import {
   isLimitRescueRequest,
   normalizeMaxModelForSubscription,
   normalizeSelectedModelOverrideForSubscription,
+  withExtraUsageBillingForModel,
 } from "@/types";
 import { getBaseTodosForRequest } from "@/lib/utils/todo-utils";
 import {
@@ -350,17 +351,22 @@ export const createChatHandler = () => {
         { isTemporary: temporary, regenerate },
       );
 
-      const extraUsageConfig = await buildExtraUsageConfig({
+      const baseExtraUsageConfig = await buildExtraUsageConfig({
         userId,
         subscription,
         userCustomization,
         organizationId,
       });
-      const extraUsageAvailable = canUseExtraUsage(extraUsageConfig);
+      const extraUsageAvailable = canUseExtraUsage(baseExtraUsageConfig);
       selectedModelOverride =
         normalizeMaxModelForSubscription(selectedModelOverride, subscription, {
           extraUsageAvailable,
         }) ?? undefined;
+      const extraUsageConfig = withExtraUsageBillingForModel(
+        baseExtraUsageConfig,
+        selectedModelOverride,
+        subscription,
+      );
 
       if (!temporary) {
         await handleInitialChatAndUserMessage({
