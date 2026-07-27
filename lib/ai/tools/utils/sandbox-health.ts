@@ -1,4 +1,8 @@
-import type { AnySandbox } from "@/types";
+import type {
+  AnySandbox,
+  SandboxResourceMetrics,
+  SandboxResourceMetricsObserver,
+} from "@/types";
 import { createRetryLogger } from "@/lib/posthog/worker";
 import { isE2BSandbox } from "./sandbox-types";
 import { retryWithBackoff } from "./retry-with-backoff";
@@ -17,12 +21,9 @@ const MEM_WARNING_THRESHOLD = 90; // percentage
  * Check sandbox resource metrics and return a diagnostic summary.
  * Returns null if metrics are unavailable (non-E2B sandbox or API error).
  */
-async function checkSandboxMetrics(sandbox: AnySandbox): Promise<{
-  cpuPct: number;
-  memPct: number;
-  diskPct: number;
-  warning: string | null;
-} | null> {
+async function checkSandboxMetrics(
+  sandbox: AnySandbox,
+): Promise<(SandboxResourceMetrics & { warning: string | null }) | null> {
   if (!isE2BSandbox(sandbox)) return null;
 
   try {
@@ -85,6 +86,7 @@ export async function waitForSandboxReady(
   sandbox: AnySandbox,
   maxRetries: number = 5,
   signal?: AbortSignal,
+  onResourceMetrics?: SandboxResourceMetricsObserver,
 ): Promise<void> {
   await retryWithBackoff(
     async () => {
@@ -97,6 +99,17 @@ export async function waitForSandboxReady(
 
         // Check resource metrics for early warning
         const metrics = await checkSandboxMetrics(sandbox);
+        if (metrics && onResourceMetrics) {
+          try {
+            onResourceMetrics({
+              cpuPct: metrics.cpuPct,
+              memPct: metrics.memPct,
+              diskPct: metrics.diskPct,
+            });
+          } catch {
+            // Analytics must never block sandbox health checks
+          }
+        }
         if (metrics?.warning) {
           console.warn(
             `[Sandbox Health] Resource pressure detected: ${metrics.warning}`,
