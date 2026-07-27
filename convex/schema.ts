@@ -705,10 +705,6 @@ export default defineSchema({
     output_tokens: v.number(),
     cache_read_tokens: v.optional(v.number()),
     cache_write_tokens: v.optional(v.number()),
-    // Transitional validators for fields cleared by
-    // migrations:clearRemovedUsageLogFields. Remove these validators only
-    // after that migration has completed in production.
-    total_tokens: v.optional(v.number()),
     cost_dollars: v.number(),
     included_cost_dollars: v.optional(v.number()),
     extra_usage_cost_dollars: v.optional(v.number()),
@@ -716,7 +712,6 @@ export default defineSchema({
     included_points_deducted: v.optional(v.number()),
     extra_usage_points_deducted: v.optional(v.number()),
     uncovered_points: v.optional(v.number()),
-    usage_deduction_failed: v.optional(v.boolean()),
     usage_deduction_failure_reason: v.optional(
       usageDeductionFailureReasonValidator,
     ),
@@ -730,8 +725,6 @@ export default defineSchema({
         v.literal("raw_token_estimate"),
       ),
     ),
-    max_mode: v.optional(v.boolean()),
-    byok: v.optional(v.boolean()),
   })
     .index("by_usage_settlement_id", ["usage_settlement_id"])
     .index("by_user", ["user_id"])

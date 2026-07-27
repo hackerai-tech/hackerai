@@ -85,9 +85,6 @@ importers:
       '@convex-dev/aggregate':
         specifier: ^0.2.2
         version: 0.2.2(convex@1.42.3(react@19.2.7))
-      '@convex-dev/migrations':
-        specifier: 0.3.5
-        version: 0.3.5(convex-helpers@0.1.120(@standard-schema/spec@1.1.0)(convex@1.42.3(react@19.2.7))(hono@4.12.27)(react@19.2.7)(typescript@6.0.3)(zod@4.4.3))(convex@1.42.3(react@19.2.7))
       '@convex-dev/workos':
         specifier: ^0.0.3
         version: 0.0.3(convex@1.42.3(react@19.2.7))(react@19.2.7)
@@ -874,12 +871,6 @@ packages:
     resolution: {integrity: sha512-9sskfPZdiH0mdc33Obcf2+gQSPDpyHqUDkYmXDsUqhqe5lLwGKYbrxw7LgxHmYm9c1YLbaXqxKiM1CgucfKAAw==}
     peerDependencies:
       convex: ^1.24.8
-
-  '@convex-dev/migrations@0.3.5':
-    resolution: {integrity: sha512-vj5qjY5XB8laX9WvvxeIFZe8sNW8DGvJ5cPo1zvpjJzYnPLqs5C+VG9HP6sSkEW2QGhsfYOZv56FUNkHiLe1wA==}
-    peerDependencies:
-      convex: ^1.35.0
-      convex-helpers: ^0.1.115
 
   '@convex-dev/workos@0.0.3':
     resolution: {integrity: sha512-2gHEm8heSpwDakP+s81tXgHuBDUtUOOvt1RjsoiUJpxUmuF4Ln7mWJt+Dr/I0gCP1wuY2r1N62YIafgOXcbx9Q==}
@@ -9125,11 +9116,6 @@ snapshots:
   '@convex-dev/aggregate@0.2.2(convex@1.42.3(react@19.2.7))':
     dependencies:
       convex: 1.42.3(react@19.2.7)
-
-  '@convex-dev/migrations@0.3.5(convex-helpers@0.1.120(@standard-schema/spec@1.1.0)(convex@1.42.3(react@19.2.7))(hono@4.12.27)(react@19.2.7)(typescript@6.0.3)(zod@4.4.3))(convex@1.42.3(react@19.2.7))':
-    dependencies:
-      convex: 1.42.3(react@19.2.7)
-      convex-helpers: 0.1.120(@standard-schema/spec@1.1.0)(convex@1.42.3(react@19.2.7))(hono@4.12.27)(react@19.2.7)(typescript@6.0.3)(zod@4.4.3)
 
   '@convex-dev/workos@0.0.3(convex@1.42.3(react@19.2.7))(react@19.2.7)':
     dependencies:

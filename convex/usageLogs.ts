@@ -58,8 +58,6 @@ export const logUsage = mutation({
     output_tokens: v.number(),
     cache_read_tokens: v.optional(v.number()),
     cache_write_tokens: v.optional(v.number()),
-    // Accepted temporarily for staggered deployments, but never persisted.
-    total_tokens: v.optional(v.number()),
     cost_dollars: v.number(),
     included_cost_dollars: v.optional(v.number()),
     extra_usage_cost_dollars: v.optional(v.number()),
@@ -67,9 +65,6 @@ export const logUsage = mutation({
     included_points_deducted: v.optional(v.number()),
     extra_usage_points_deducted: v.optional(v.number()),
     uncovered_points: v.optional(v.number()),
-    // Accepted temporarily for staggered deployments, but normalized to the
-    // existing failure reason instead of being persisted.
-    usage_deduction_failed: v.optional(v.boolean()),
     usage_deduction_failure_reason: v.optional(
       usageDeductionFailureReasonValidator,
     ),
@@ -139,9 +134,6 @@ export const logUsage = mutation({
           ? costDollars
           : 0;
     const uncoveredUsageCostDollars = uncoveredCostDollars ?? 0;
-    const usageDeductionFailureReason =
-      args.usage_deduction_failure_reason ??
-      (args.usage_deduction_failed === true ? "deduction_failed" : undefined);
     const costSource =
       args.cost_source === "token_estimate"
         ? "raw_token_estimate"
@@ -170,7 +162,7 @@ export const logUsage = mutation({
       included_points_deducted: args.included_points_deducted,
       extra_usage_points_deducted: args.extra_usage_points_deducted,
       uncovered_points: args.uncovered_points,
-      usage_deduction_failure_reason: usageDeductionFailureReason,
+      usage_deduction_failure_reason: args.usage_deduction_failure_reason,
       model_cost_dollars: modelCostDollars,
       non_model_cost_dollars: nonModelCostDollars,
       cost_source: costSource,
