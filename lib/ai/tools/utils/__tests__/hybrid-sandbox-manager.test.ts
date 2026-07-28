@@ -1,9 +1,16 @@
 jest.mock("@e2b/code-interpreter", () => ({
-  Sandbox: class MockSandbox {},
+  Sandbox: class MockSandbox {
+    static list = jest.fn();
+    static connect = jest.fn();
+  },
 }));
 
 import { Sandbox } from "@e2b/code-interpreter";
 
+const sandboxApi = Sandbox as unknown as {
+  list: jest.Mock;
+  connect: jest.Mock;
+};
 const mockConvexQuery = jest.fn();
 const mockConvexMutation = jest.fn();
 
@@ -565,6 +572,11 @@ describe("HybridSandboxManager prompt-time fallback", () => {
 });
 
 describe("HybridSandboxManager reset cleanup", () => {
+  beforeEach(() => {
+    sandboxApi.list.mockReset();
+    sandboxApi.connect.mockReset();
+  });
+
   it("returns a cached E2B sandbox after a transient lease refresh failure", async () => {
     const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
     try {
@@ -605,10 +617,26 @@ describe("HybridSandboxManager reset cleanup", () => {
     const sandbox = {
       kill: jest.fn(),
     };
+    const replacement = Object.assign(new Sandbox(), {
+      sandboxId: "sandbox-2",
+    });
+    sandboxApi.list.mockReturnValue({
+      nextItems: jest.fn(async () => [
+        {
+          sandboxId: "sandbox-2",
+          state: "running",
+          metadata: { sandboxVersion: "v11" },
+        },
+      ]),
+    });
+    sandboxApi.connect.mockResolvedValue(replacement);
 
     manager.setSandbox(sandbox as any);
     await manager.resetSandbox("test");
+    const reacquired = await manager.getSandbox();
 
     expect(sandbox.kill).not.toHaveBeenCalled();
+    expect(reacquired.sandbox).toBe(replacement);
+    expect(reacquired.sandbox).not.toBe(sandbox);
   });
 });
