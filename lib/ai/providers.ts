@@ -2,9 +2,6 @@ import { customProvider } from "ai";
 import { createOpenRouter } from "@openrouter/ai-sdk-provider";
 import type { ChatMode, SelectedModel } from "@/types/chat";
 import { openrouterAttributionHeaders } from "@/lib/ai/openrouter-attribution";
-// import { withTracing } from "@posthog/ai";
-// import PostHogClient from "@/app/posthog";
-// import type { SubscriptionTier } from "@/types";
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null;
@@ -177,7 +174,6 @@ const openrouter = createOpenRouter({
 
 type OpenRouterInstance = typeof openrouter;
 
-export const KIMI_K2_7_CODE_SLUG = "moonshotai/kimi-k2.7-code:exacto";
 export const KIMI_K3_SLUG = "moonshotai/kimi-k3";
 export const GLM_5_2_SLUG = "z-ai/glm-5.2";
 export const GROK_4_5_SLUG = "x-ai/grok-4.5";
@@ -191,26 +187,14 @@ const buildProviderMap = (or: OpenRouterInstance) =>
     "agent-model-free": or(DEEPSEEK_V4_FLASH_SLUG),
     "model-grok-4.5": or(GROK_4_5_SLUG),
     // Dedicated HackerAI Pro alias so its GLM fallback can evolve without
-    // changing Standard PDF or legacy Grok fallback behavior.
+    // changing Standard media fallback behavior.
     "model-grok-4.5-pro": or(GROK_4_5_SLUG),
-    // Compatibility alias for stale internal references persisted before the
-    // paid Ask PDF route settled on Grok 4.5.
-    "model-gemini-3-flash": or(GROK_4_5_SLUG),
-    "model-deepseek-v4-flash": or(DEEPSEEK_V4_FLASH_SLUG),
     "model-deepseek-v4-pro": or("deepseek/deepseek-v4-pro"),
     "model-opus-4.6": or("anthropic/claude-opus-4.6"),
     "model-glm-5.2": or(GLM_5_2_SLUG),
-    // Compatibility alias for persisted MiniMax selections. All new and stale
-    // callers now resolve to Grok 4.5 so no route continues sending MiniMax.
-    "model-minimax-m3": or(GROK_4_5_SLUG),
     "model-kimi-k3": or(KIMI_K3_SLUG),
-    "model-kimi-k2.7-code": or(KIMI_K2_7_CODE_SLUG),
-    // Compatibility alias for stale internal references persisted before the
-    // Kimi 2.7 Code rollout. New Agent Standard media selections use Grok 4.5.
-    "model-kimi-k2.6": or(KIMI_K2_7_CODE_SLUG),
     "fallback-agent-model": or(GROK_4_5_SLUG),
     "fallback-ask-model": or(GROK_4_5_SLUG),
-    "fallback-grok-4.5": or(GROK_4_5_SLUG),
     // Titles are a short structured-output task and should never use reasoning.
     "title-generator-model": or(DEEPSEEK_V4_FLASH_SLUG),
   }) as Record<string, any>;
@@ -227,17 +211,11 @@ export const modelCutoffDates: Record<ModelName, string> &
   "agent-model-free": "May 2025",
   "model-grok-4.5": "July 2026",
   "model-grok-4.5-pro": "July 2026",
-  "model-gemini-3-flash": "July 2026",
-  "model-deepseek-v4-flash": "May 2025",
   "model-deepseek-v4-pro": "May 2025",
   "model-opus-4.6": "May 2025",
   "model-glm-5.2": "June 2026",
-  "model-minimax-m3": "July 2026",
-  "model-kimi-k2.7-code": "June 2025",
-  "model-kimi-k2.6": "June 2025",
   "fallback-agent-model": "July 2026",
   "fallback-ask-model": "July 2026",
-  "fallback-grok-4.5": "July 2026",
   "title-generator-model": "May 2025",
 };
 
@@ -249,18 +227,12 @@ export const modelDisplayNames: Record<ModelName, string> &
   "agent-model-free": "Auto, an intelligent model router built by HackerAI",
   "model-grok-4.5": "xAI Grok 4.5",
   "model-grok-4.5-pro": "xAI Grok 4.5",
-  "model-gemini-3-flash": "xAI Grok 4.5",
-  "model-deepseek-v4-flash": "DeepSeek V4 Flash",
   "model-deepseek-v4-pro": "DeepSeek V4 Pro",
   "model-opus-4.6": "Anthropic Claude Opus 4.6",
   "model-glm-5.2": "Z.ai GLM 5.2",
-  "model-minimax-m3": "xAI Grok 4.5",
   "model-kimi-k3": "Moonshot Kimi K3",
-  "model-kimi-k2.7-code": "Moonshot Kimi K2.7 Code",
-  "model-kimi-k2.6": "Moonshot Kimi K2.7 Code",
   "fallback-agent-model": "Auto, an intelligent model router built by HackerAI",
   "fallback-ask-model": "Auto, an intelligent model router built by HackerAI",
-  "fallback-grok-4.5": "Auto, an intelligent model router built by HackerAI",
   "title-generator-model": "DeepSeek V4 Flash",
 };
 
@@ -280,7 +252,6 @@ export function isDeepSeekModel(modelName: string): boolean {
   return (
     modelName === "ask-model-free" ||
     modelName === "agent-model-free" ||
-    modelName === "model-deepseek-v4-flash" ||
     modelName === "model-deepseek-v4-pro"
   );
 }
@@ -288,10 +259,7 @@ export function isDeepSeekModel(modelName: string): boolean {
 export function isKimiModel(modelName: string): boolean {
   const normalized = modelName.toLowerCase();
   return (
-    normalized === "model-kimi-k2.7-code" ||
-    normalized === "model-kimi-k2.6" ||
-    normalized.includes("moonshotai/kimi") ||
-    normalized.includes("kimi-")
+    normalized === "model-kimi-k3" || normalized.includes("moonshotai/kimi")
   );
 }
 
@@ -302,10 +270,10 @@ function isGrokModel(modelName: string): boolean {
     normalized === "ask-model" ||
     normalized === "fallback-agent-model" ||
     normalized === "fallback-ask-model" ||
-    normalized === "model-minimax-m3" ||
-    normalized === "model-gemini-3-flash" ||
+    normalized === "model-grok-4.5" ||
+    normalized === "model-grok-4.5-pro" ||
     normalized.includes("x-ai/") ||
-    normalized.includes("grok")
+    normalized === "grok-4.5"
   );
 }
 
@@ -353,34 +321,4 @@ export const myProvider = customProvider({
   languageModels: baseProviders,
 });
 
-export const createTrackedProvider = () =>
-  // userId?: string,
-  // conversationId?: string,
-  // subscription?: SubscriptionTier,
-  // phClient?: ReturnType<typeof PostHogClient> | null,
-  {
-    // PostHog provider tracking disabled
-    // if (!phClient || subscription === "free") {
-    //   return myProvider;
-    // }
-    //
-    // const trackedModels: Record<string, any> = {};
-    //
-    // Object.entries(baseProviders).forEach(([modelName, model]) => {
-    //   trackedModels[modelName] = withTracing(model, phClient, {
-    //     ...(userId && { posthogDistinctId: userId }),
-    //     posthogProperties: {
-    //       modelType: modelName,
-    //       ...(conversationId && { conversationId }),
-    //       subscriptionTier: subscription,
-    //     },
-    //     posthogPrivacyMode: true,
-    //   });
-    // });
-    //
-    // return customProvider({
-    //   languageModels: trackedModels,
-    // });
-
-    return myProvider;
-  };
+export const createTrackedProvider = () => myProvider;

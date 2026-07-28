@@ -69,12 +69,6 @@ const GLM_5_2_PRICING: ModelPricing = {
   cacheRead: 0.14,
   cacheWrite: 0.76,
 };
-const KIMI_K2_7_CODE_PRICING: ModelPricing = {
-  input: 0.95,
-  output: 4.0,
-  cacheRead: 0.19,
-  cacheWrite: 0.95,
-};
 const KIMI_K3_PRICING: ModelPricing = {
   input: 3.0,
   output: 15.0,
@@ -88,28 +82,20 @@ const MODEL_PRICING_MAP: Record<string, ModelPricing> = {
   // Grok 4.5 rates from OpenRouter: $2.00 in / $6.00 out per 1M tokens.
   "model-grok-4.5": GROK_4_5_PRICING,
   "model-grok-4.5-pro": GROK_4_5_PRICING,
-  "model-gemini-3-flash": GROK_4_5_PRICING,
-  // Auto and compatibility aliases now resolve to Grok 4.5.
+  // Auto and summarization aliases resolve to Grok 4.5.
   "ask-model": GROK_4_5_PRICING,
   "agent-model": GROK_4_5_PRICING,
-  "model-minimax-m3": GROK_4_5_PRICING,
   "fallback-agent-model": GROK_4_5_PRICING,
   "fallback-ask-model": GROK_4_5_PRICING,
   // Rates from OpenRouter: $0.09 in / $0.18 out per 1M tokens.
   "ask-model-free": DEEPSEEK_V4_FLASH_PRICING,
   "agent-model-free": DEEPSEEK_V4_FLASH_PRICING,
-  "model-deepseek-v4-flash": DEEPSEEK_V4_FLASH_PRICING,
   "model-deepseek-v4-pro": DEEPSEEK_V4_PRO_PRICING,
-  "fallback-grok-4.5": GROK_4_5_PRICING,
   "model-opus-4.6": OPUS_4_6_PRICING,
   // Baseline OpenRouter rates: $0.76 in / $2.42 out per 1M tokens.
   "model-glm-5.2": GLM_5_2_PRICING,
   // OpenRouter rates: $3.00 in / $15.00 out / $0.30 cached input per 1M tokens.
   "model-kimi-k3": KIMI_K3_PRICING,
-  // Kimi keys are retained as compatibility aliases for stale persisted routes.
-  // Rates from OpenRouter: $0.95 in / $4.00 out per 1M tokens.
-  "model-kimi-k2.7-code": KIMI_K2_7_CODE_PRICING,
-  "model-kimi-k2.6": KIMI_K2_7_CODE_PRICING,
   // Provider response ids can reach accounting before local-key normalization.
   "x-ai/grok-4.5": GROK_4_5_PRICING,
   "deepseek/deepseek-v4-flash": DEEPSEEK_V4_FLASH_PRICING,
@@ -119,8 +105,6 @@ const MODEL_PRICING_MAP: Record<string, ModelPricing> = {
   "z-ai/glm-5.2-20260616": GLM_5_2_PRICING,
   "moonshotai/kimi-k3": KIMI_K3_PRICING,
   "moonshotai/kimi-k3-20260715": KIMI_K3_PRICING,
-  "moonshotai/kimi-k2.7-code": KIMI_K2_7_CODE_PRICING,
-  "moonshotai/kimi-k2.7-code:exacto": KIMI_K2_7_CODE_PRICING,
 };
 
 const getModelPricing = (modelName?: string): ModelPricing => {
