@@ -1,53 +1,121 @@
 import { phLogger } from "@/lib/posthog/server";
 import type {
   ChatMode,
+  SandboxResourceMetrics,
   SandboxResourceMetricsObserver,
   SubscriptionTier,
 } from "@/types";
 
 export const E2B_CPU_SATURATION_THRESHOLD_PCT = 99;
+export const E2B_MEMORY_PRESSURE_THRESHOLD_PCT = 90;
+export const E2B_RESOURCE_PRESSURE_EVENT_VERSION = 2;
 
 const roundPercentage = (value: number): number =>
   Math.round(value * 100) / 100;
 
+type ResourcePressureType = "none" | "cpu" | "memory" | "both" | "unknown";
+
+function classifyResourcePressure(
+  metrics: SandboxResourceMetrics | null,
+): ResourcePressureType {
+  if (!metrics) return "unknown";
+
+  const cpuIsPressured =
+    Number.isFinite(metrics.cpuPct) &&
+    metrics.cpuPct >= E2B_CPU_SATURATION_THRESHOLD_PCT;
+  const memoryIsPressured =
+    Number.isFinite(metrics.memPct) &&
+    metrics.memPct >= E2B_MEMORY_PRESSURE_THRESHOLD_PCT;
+
+  if (cpuIsPressured && memoryIsPressured) return "both";
+  if (cpuIsPressured) return "cpu";
+  if (memoryIsPressured) return "memory";
+  return "none";
+}
+
+function metricProperties(metrics: SandboxResourceMetrics | null) {
+  if (!metrics) {
+    return {
+      metrics_available: false,
+    };
+  }
+
+  return {
+    metrics_available: true,
+    cpu_used_pct: roundPercentage(metrics.cpuPct),
+    memory_used_pct: roundPercentage(metrics.memPct),
+    disk_used_pct: roundPercentage(metrics.diskPct),
+  };
+}
+
 /**
- * Tracks rising edges into CPU saturation for one chat request.
+ * Tracks independent rising edges into CPU and memory pressure for one request.
  *
- * A sustained period at or above the threshold emits once. A later observation
- * below the threshold rearms the tracker so a new saturation episode can emit.
+ * Sustained pressure for either resource emits once. Each resource rearms
+ * independently after recovering below its threshold.
  */
-export function createE2BCpuSaturationObserver(args: {
+export function createE2BResourcePressureObserver(args: {
   userId: string;
   chatId: string;
   mode: ChatMode;
   subscription?: SubscriptionTier;
 }): SandboxResourceMetricsObserver {
-  let cpuWasSaturated = false;
+  let cpuWasPressured = false;
+  let memoryWasPressured = false;
 
-  return ({ cpuPct, memPct, diskPct }) => {
-    const cpuIsSaturated =
-      Number.isFinite(cpuPct) && cpuPct >= E2B_CPU_SATURATION_THRESHOLD_PCT;
+  const commonProperties = {
+    userId: args.userId,
+    chat_id: args.chatId,
+    mode: args.mode,
+    subscription_tier: args.subscription ?? "unknown",
+    sandbox_type: "e2b",
+    cpu_saturation_threshold_pct: E2B_CPU_SATURATION_THRESHOLD_PCT,
+    memory_pressure_threshold_pct: E2B_MEMORY_PRESSURE_THRESHOLD_PCT,
+    resource_pressure_event_version: E2B_RESOURCE_PRESSURE_EVENT_VERSION,
+  };
 
-    if (!cpuIsSaturated) {
-      cpuWasSaturated = false;
+  return (observation) => {
+    const pressureType = classifyResourcePressure(observation.metrics);
+
+    if (observation.kind === "failure") {
+      phLogger.event("e2b_sandbox_resource_failure_observed", {
+        ...commonProperties,
+        ...metricProperties(observation.metrics),
+        pressure_type: pressureType,
+        failure_type: observation.failureType,
+        observation_source: observation.source,
+      });
       return;
     }
 
-    if (cpuWasSaturated) return;
-    cpuWasSaturated = true;
+    const { metrics } = observation;
+    const cpuIsPressured =
+      Number.isFinite(metrics.cpuPct) &&
+      metrics.cpuPct >= E2B_CPU_SATURATION_THRESHOLD_PCT;
+    const memoryIsPressured =
+      Number.isFinite(metrics.memPct) &&
+      metrics.memPct >= E2B_MEMORY_PRESSURE_THRESHOLD_PCT;
+    const cpuEnteredPressure = cpuIsPressured && !cpuWasPressured;
+    const memoryEnteredPressure = memoryIsPressured && !memoryWasPressured;
 
-    phLogger.event("e2b_sandbox_cpu_saturation_observed", {
-      userId: args.userId,
-      chat_id: args.chatId,
-      mode: args.mode,
-      subscription_tier: args.subscription ?? "unknown",
-      sandbox_type: "e2b",
-      cpu_used_pct: roundPercentage(cpuPct),
-      memory_used_pct: roundPercentage(memPct),
-      disk_used_pct: roundPercentage(diskPct),
-      cpu_saturation_threshold_pct: E2B_CPU_SATURATION_THRESHOLD_PCT,
-      observation_source: "pre_command_health_check",
-      cpu_saturation_event_version: 1,
+    cpuWasPressured = cpuIsPressured;
+    memoryWasPressured = memoryIsPressured;
+
+    if (!cpuEnteredPressure && !memoryEnteredPressure) return;
+
+    const newlyPressuredResource =
+      cpuEnteredPressure && memoryEnteredPressure
+        ? "both"
+        : cpuEnteredPressure
+          ? "cpu"
+          : "memory";
+
+    phLogger.event("e2b_sandbox_resource_pressure_observed", {
+      ...commonProperties,
+      ...metricProperties(metrics),
+      pressure_type: pressureType,
+      newly_pressured_resource: newlyPressuredResource,
+      observation_source: observation.source,
     });
   };
 }
