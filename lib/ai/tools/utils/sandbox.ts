@@ -6,7 +6,6 @@ import { isExpectedAlreadyGoneCleanupError } from "@/lib/utils/cleanup-errors";
 type SandboxReadyPath = SandboxBootInfo["path"];
 
 const SANDBOX_TEMPLATE = process.env.E2B_TEMPLATE || "terminal-agent-sandbox";
-const BASH_SANDBOX_RESUME_TIMEOUT = 5 * 60 * 1000; // 5 minutes for resuming paused sandbox
 export const BASH_SANDBOX_AUTOPAUSE_TIMEOUT = 7 * 60 * 1000;
 export const E2B_SANDBOX_OPERATION_TIMEOUT_BUFFER_MS = 60 * 1000;
 // Retry config for E2B 429 rate limits
@@ -133,7 +132,7 @@ export const ensureSandboxConnection = async (
       // Sandbox.connect() handles both running and paused sandboxes automatically
       try {
         const sandbox = await Sandbox.connect(existingSandbox.sandboxId, {
-          timeoutMs: BASH_SANDBOX_RESUME_TIMEOUT,
+          timeoutMs: BASH_SANDBOX_AUTOPAUSE_TIMEOUT,
         });
         setSandbox(sandbox);
         reportBoot("reuse_existing", 0);
