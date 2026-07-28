@@ -25,7 +25,7 @@ config({ path: resolve(process.cwd(), ".env.local") });
 
 import { extractRetryAttempts } from "../lib/utils/error-utils";
 
-const VALID_SLUG = "moonshotai/kimi-k2.7-code:exacto";
+const VALID_SLUG = "deepseek/deepseek-v4-flash";
 const INVALID_SLUG = "anthropic/this-model-does-not-exist-please-fail";
 
 function classify(id: string | undefined): string {
@@ -124,8 +124,7 @@ async function probeError(openrouter: ReturnType<typeof createOpenRouter>) {
 
   const e = caught as Record<string, unknown>;
   const inner = (e as { errors?: unknown[] }).errors?.[0] as
-    | Record<string, unknown>
-    | undefined;
+    Record<string, unknown> | undefined;
 
   console.log(`\nouter error: ${(caught as Error).name}`);
   console.log(
@@ -136,8 +135,7 @@ async function probeError(openrouter: ReturnType<typeof createOpenRouter>) {
     console.log(`\ninner attempt fields used by extractRequestId:`);
     console.log(`  statusCode: ${inner.statusCode}`);
     const data = inner.data as
-      | { id?: unknown; request_id?: unknown }
-      | undefined;
+      { id?: unknown; request_id?: unknown } | undefined;
     console.log(`  data.id: ${data?.id ?? "(missing)"}`);
     console.log(`  data.request_id: ${data?.request_id ?? "(missing)"}`);
     console.log(

@@ -76,9 +76,7 @@ jest.mock("@/lib/chat/multimodal-tool-result-recovery", () => ({
 jest.mock("@/lib/ai/providers", () => ({
   isAnthropicModel: () => false,
   isDeepSeekModel: (modelName: string) =>
-    modelName === "agent-model-free" ||
-    modelName === "model-deepseek-v4-pro" ||
-    modelName === "model-deepseek-v4-flash",
+    modelName === "agent-model-free" || modelName === "model-deepseek-v4-pro",
 }));
 jest.mock("@/lib/ai/tools/utils/pty-session-manager", () => ({
   ptySessionManager: { closeAllSessions: jest.fn() },
@@ -197,8 +195,8 @@ describe("resolveAgentModelForImageToolResults", () => {
       ),
     ).toBe("model-deepseek-v4-pro");
     expect(
-      resolveAgentModelForImageToolResults("model-minimax-m3", "agent", true),
-    ).toBe("model-minimax-m3");
+      resolveAgentModelForImageToolResults("model-kimi-k3", "agent", true),
+    ).toBe("model-kimi-k3");
     expect(
       resolveAgentModelForImageToolResults("model-grok-4.5-pro", "agent", true),
     ).toBe("model-grok-4.5-pro");

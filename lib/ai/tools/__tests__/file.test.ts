@@ -582,7 +582,7 @@ describe("file tool image view", () => {
       });
     const sandbox = makeSandbox(commandRun);
     const tool = createFile(
-      makeContext(sandbox, { modelName: "model-kimi-k2.7-code" }),
+      makeContext(sandbox, { modelName: "model-kimi-k3" }),
     );
 
     const result = await runTool(tool, {
@@ -888,7 +888,7 @@ describe("file tool image view", () => {
     });
     const sandbox = makeSandbox(commandRun);
     const tool = createFile(
-      makeContext(sandbox, { modelName: "model-kimi-k2.7-code" }),
+      makeContext(sandbox, { modelName: "model-kimi-k3" }),
     );
 
     await expect(
@@ -934,7 +934,7 @@ describe("file tool image view", () => {
     });
     const sandbox = makeSandbox(commandRun);
     const tool = createFile(
-      makeContext(sandbox, { modelName: "model-kimi-k2.7-code" }),
+      makeContext(sandbox, { modelName: "model-kimi-k3" }),
     );
 
     await expect(

@@ -528,7 +528,7 @@ export class SummarizationTracker {
  */
 const KIMI_K3_THEN_GROK_FALLBACK_CHAIN = [
   "model-kimi-k3",
-  "fallback-grok-4.5",
+  "model-grok-4.5",
 ] as const satisfies readonly ModelName[];
 
 const GROK_4_5_FALLBACK_CHAIN = [
@@ -551,20 +551,15 @@ const HACKERAI_PRO_FALLBACK_CHAIN = [
 const MODEL_FALLBACK_CHAIN: Partial<Record<ModelName, readonly ModelName[]>> = {
   "ask-model-free": AGENT_TEXT_FALLBACK_CHAIN,
   "agent-model-free": AGENT_TEXT_FALLBACK_CHAIN,
-  "model-deepseek-v4-flash": AGENT_TEXT_FALLBACK_CHAIN,
   "model-deepseek-v4-pro": AGENT_TEXT_FALLBACK_CHAIN,
   "ask-model": GROK_4_5_FALLBACK_CHAIN,
   "agent-model": GROK_4_5_FALLBACK_CHAIN,
   "model-grok-4.5": GROK_4_5_FALLBACK_CHAIN,
   "model-grok-4.5-pro": HACKERAI_PRO_FALLBACK_CHAIN,
-  "model-gemini-3-flash": GROK_4_5_FALLBACK_CHAIN,
   "model-glm-5.2": KIMI_K3_THEN_GROK_FALLBACK_CHAIN,
-  "model-minimax-m3": GROK_4_5_FALLBACK_CHAIN,
   "fallback-agent-model": GROK_4_5_FALLBACK_CHAIN,
   "fallback-ask-model": GROK_4_5_FALLBACK_CHAIN,
-  "model-kimi-k3": ["fallback-grok-4.5"],
-  "model-kimi-k2.7-code": ["fallback-grok-4.5"],
-  "model-kimi-k2.6": ["fallback-grok-4.5"],
+  "model-kimi-k3": ["model-grok-4.5"],
 };
 
 const AUTO_MODEL_KEYS = new Set<string>([
@@ -597,15 +592,6 @@ const HIGH_REASONING_MODELS = [
 const isHighReasoningModel = (modelName?: string): boolean =>
   typeof modelName === "string" &&
   (HIGH_REASONING_MODELS as readonly string[]).includes(modelName);
-
-const ASK_KIMI_REASONING_MODELS = [
-  "model-kimi-k2.7-code",
-  "model-kimi-k2.6",
-] as const satisfies readonly ModelName[];
-
-const isAskKimiReasoningModel = (modelName?: string): boolean =>
-  typeof modelName === "string" &&
-  (ASK_KIMI_REASONING_MODELS as readonly string[]).includes(modelName);
 
 type FallbackOptions = {
   hasMultimodalToolResults?: boolean;
@@ -641,7 +627,6 @@ export function getRetryFallbackModel(
   if (
     modelName === "ask-model-free" ||
     modelName === "agent-model-free" ||
-    modelName === "model-deepseek-v4-flash" ||
     modelName === "model-deepseek-v4-pro"
   ) {
     return "model-grok-4.5";
@@ -650,14 +635,12 @@ export function getRetryFallbackModel(
     modelName === "ask-model" ||
     modelName === "agent-model" ||
     modelName === "model-grok-4.5" ||
-    modelName === "model-gemini-3-flash" ||
-    modelName === "model-minimax-m3" ||
     modelName === "fallback-agent-model" ||
     modelName === "fallback-ask-model"
   ) {
     return "model-kimi-k3";
   }
-  return "fallback-grok-4.5";
+  return "model-grok-4.5";
 }
 
 const resolveSlug = (modelName: string): string | undefined => {
@@ -698,8 +681,6 @@ const OPENROUTER_RESPONSE_MODEL_COST_KEYS: Record<string, ModelName> = {
   "z-ai/glm-5.2-20260616": "model-glm-5.2",
   "moonshotai/kimi-k3": "model-kimi-k3",
   "moonshotai/kimi-k3-20260715": "model-kimi-k3",
-  "moonshotai/kimi-k2.7-code": "model-kimi-k2.7-code",
-  "moonshotai/kimi-k2.7-code:exacto": "model-kimi-k2.7-code",
 };
 
 function resolveOpenRouterResponseModelCostKey(
@@ -778,11 +759,7 @@ export function buildProviderOptions(
               enabled: true,
               ...(isDeepSeekV4 ? { effort: "xhigh" } : {}),
             }
-          : mode === "ask" && isAskKimiReasoningModel(modelName)
-            ? {
-                enabled: true,
-              }
-            : { enabled: false }));
+          : { enabled: false }));
 
   return {
     openrouter: {
