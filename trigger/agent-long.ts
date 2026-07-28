@@ -2846,11 +2846,15 @@ export const agentLongTask = task({
               onModelStreamStart: runTimingTracker.startModelStream,
               onModelStreamFinish: runTimingTracker.finishModelStream,
               onProviderRequestDiagnostics: (providerRequest, retention) => {
-                memoryTelemetry.checkpoint({
-                  phase: "provider_request",
-                  providerRequest,
-                  retention,
-                });
+                if (
+                  memoryTelemetry.checkpoint({
+                    phase: "provider_request",
+                    providerRequest,
+                    retention,
+                  })
+                ) {
+                  memoryTelemetry.startPeriodicCheckpoints();
+                }
               },
               settleUsageAfterStep,
               onBudgetAbort: (details) =>
@@ -3761,6 +3765,7 @@ export const agentLongTask = task({
 
       throw error;
     } finally {
+      memoryTelemetry.dispose();
       activeRuntimeBudget?.dispose();
       runCleanupMap.delete(ctx.run.id);
       if (payload.approvalSessionId && triggerSessions) {
