@@ -1769,6 +1769,7 @@ export const agentLongTask = task({
     let activeRuntimeBudget: ActiveRuntimeBudget | undefined;
 
     try {
+      memoryTelemetry.startPeriodicCheckpoints();
       // Re-fetch from DB so we have fileTokens for summarization.
       // The route already saved the user message; newMessages:[] avoids duplicates.
       const [userCustomization, fetched] = await Promise.all([
@@ -3761,6 +3762,7 @@ export const agentLongTask = task({
 
       throw error;
     } finally {
+      memoryTelemetry.dispose();
       activeRuntimeBudget?.dispose();
       runCleanupMap.delete(ctx.run.id);
       if (payload.approvalSessionId && triggerSessions) {

@@ -7,6 +7,7 @@ import type {
 
 const HEAP_GROWTH_CHECKPOINT_BYTES = 32 * 1024 * 1024;
 const CHECKPOINT_INTERVAL_MS = 10 * 60 * 1000;
+const PERIODIC_CHECKPOINT_INTERVAL_MS = 2 * 60 * 1000;
 
 type MemorySnapshot = {
   rss: number;
@@ -36,7 +37,8 @@ type MemoryCheckpointEvent = {
   chat_id: string;
   user_id: string;
   phase: MemoryCheckpointPhase;
-  checkpoint_reason: "initial" | "forced" | "heap_growth" | "interval";
+  checkpoint_reason:
+    "initial" | "forced" | "heap_growth" | "interval" | "periodic";
   rss_bytes: number;
   rss_high_water_bytes: number;
   heap_total_bytes: number;
@@ -72,6 +74,8 @@ export class AgentLongMemoryTelemetry {
   private lastEmittedHeapUsed = 0;
   private rssHighWater = 0;
   private heapUsedHighWater = 0;
+  private latestInput: MemoryCheckpointInput | undefined;
+  private periodicTimer: ReturnType<typeof setInterval> | undefined;
 
   constructor(private readonly options: AgentLongMemoryTelemetryOptions) {
     this.now = options.now ?? Date.now;
@@ -80,7 +84,35 @@ export class AgentLongMemoryTelemetry {
       options.readHeapLimit ?? (() => getHeapStatistics().heap_size_limit);
   }
 
+  startPeriodicCheckpoints(): void {
+    if (this.periodicTimer) return;
+
+    this.periodicTimer = setInterval(() => {
+      if (!this.latestInput) return;
+      this.captureCheckpoint(this.latestInput, "periodic");
+    }, PERIODIC_CHECKPOINT_INTERVAL_MS);
+    this.periodicTimer.unref?.();
+  }
+
+  dispose(): void {
+    if (!this.periodicTimer) return;
+    clearInterval(this.periodicTimer);
+    this.periodicTimer = undefined;
+  }
+
   checkpoint(input: MemoryCheckpointInput): boolean {
+    this.latestInput = {
+      phase: input.phase,
+      providerRequest: input.providerRequest,
+      retention: input.retention,
+    };
+    return this.captureCheckpoint(input);
+  }
+
+  private captureCheckpoint(
+    input: MemoryCheckpointInput,
+    reasonOverride?: MemoryCheckpointEvent["checkpoint_reason"],
+  ): boolean {
     try {
       const now = this.now();
       const memory = this.readMemory();
@@ -95,7 +127,8 @@ export class AgentLongMemoryTelemetry {
       this.heapUsedHighWater = Math.max(this.heapUsedHighWater, heapUsed);
 
       const reason =
-        this.lastEmittedAt === undefined
+        reasonOverride ??
+        (this.lastEmittedAt === undefined
           ? "initial"
           : input.force
             ? "forced"
@@ -104,7 +137,7 @@ export class AgentLongMemoryTelemetry {
               ? "heap_growth"
               : now - this.lastEmittedAt >= CHECKPOINT_INTERVAL_MS
                 ? "interval"
-                : undefined;
+                : undefined);
 
       if (!reason) return false;
 
