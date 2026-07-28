@@ -2,6 +2,8 @@ jest.mock("@e2b/code-interpreter", () => ({
   Sandbox: class MockSandbox {},
 }));
 
+import { Sandbox } from "@e2b/code-interpreter";
+
 const mockConvexQuery = jest.fn();
 const mockConvexMutation = jest.fn();
 
@@ -563,6 +565,34 @@ describe("HybridSandboxManager prompt-time fallback", () => {
 });
 
 describe("HybridSandboxManager reset cleanup", () => {
+  it("returns a cached E2B sandbox after a transient lease refresh failure", async () => {
+    const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const manager = new HybridSandboxManager(
+        "user-1",
+        jest.fn(),
+        "e2b",
+        "service-key",
+        null,
+        "pro",
+      );
+      const sandbox = Object.assign(new Sandbox(), {
+        sandboxId: "sandbox-1",
+        setTimeout: jest.fn(async () => {
+          throw new Error("temporary refresh failure");
+        }),
+      });
+      manager.setSandbox(sandbox as any);
+
+      await expect(manager.getSandbox()).resolves.toEqual({ sandbox });
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining('"source":"hybrid_manager_cache"'),
+      );
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
   it("forgets an E2B connection without killing the shared user sandbox", async () => {
     const manager = new HybridSandboxManager(
       "user-1",

@@ -395,7 +395,9 @@ export const createRunTerminalCmd = (context: ToolContext) => {
               await new Promise((resolve) => setTimeout(resolve, 2000));
 
               // Reset only the cached SDK instance.
-              sandboxManager.setSandbox(null as any);
+              await sandboxManager.resetSandbox?.(
+                "terminal_health_check_failed",
+              );
               const { sandbox: reconnectedSandbox } =
                 await getApprovedExecutionSandbox();
 

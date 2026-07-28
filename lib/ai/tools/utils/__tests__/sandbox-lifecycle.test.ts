@@ -106,6 +106,33 @@ describe("E2B sandbox lease lifecycle", () => {
     expect(setTimeout).toHaveBeenCalledTimes(3);
   });
 
+  it("runs foreground work when the initial lease refresh transiently fails", async () => {
+    const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const sandbox = {
+        sandboxId: "sandbox-1",
+        setTimeout: jest.fn(async () => {
+          throw new Error("temporary refresh failure");
+        }),
+      } as unknown as Sandbox;
+      const operation = jest.fn(async () => "done");
+
+      await expect(
+        withE2BSandboxLeaseHeartbeat(sandbox, operation),
+      ).resolves.toBe("done");
+
+      expect(operation).toHaveBeenCalledTimes(1);
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining("e2b_sandbox_lease_refresh_failed"),
+      );
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining('"source":"foreground_heartbeat"'),
+      );
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
   it("keeps a shared remote lease alive across independent worker clients", async () => {
     jest.useFakeTimers();
     jest.setSystemTime(0);
@@ -283,5 +310,26 @@ describe("E2B sandbox lease lifecycle", () => {
     await manager.resetSandbox("test");
 
     expect(sandbox.kill).not.toHaveBeenCalled();
+  });
+
+  it("manager returns a cached sandbox after a transient lease refresh failure", async () => {
+    const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const manager = new DefaultSandboxManager("user-1", jest.fn());
+      const sandbox = {
+        sandboxId: "sandbox-1",
+        setTimeout: jest.fn(async () => {
+          throw new Error("temporary refresh failure");
+        }),
+      } as unknown as Sandbox;
+      manager.setSandbox(sandbox);
+
+      await expect(manager.getSandbox()).resolves.toEqual({ sandbox });
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining('"source":"default_manager_cache"'),
+      );
+    } finally {
+      warnSpy.mockRestore();
+    }
   });
 });

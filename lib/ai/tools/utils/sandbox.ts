@@ -19,19 +19,45 @@ export const refreshE2BSandboxLease = async (
   return BASH_SANDBOX_AUTOPAUSE_TIMEOUT;
 };
 
-const logLeaseHeartbeatFailure = (sandbox: Sandbox, error: unknown): void => {
+type E2BSandboxLeaseRefreshSource =
+  "foreground_heartbeat" | "default_manager_cache" | "hybrid_manager_cache";
+
+const logLeaseRefreshFailure = (
+  sandbox: Sandbox,
+  source: E2BSandboxLeaseRefreshSource,
+  error: unknown,
+): void => {
   console.warn(
     JSON.stringify({
       timestamp: new Date().toISOString(),
       level: "warn",
-      event: "e2b_sandbox_lease_heartbeat_failed",
+      event: "e2b_sandbox_lease_refresh_failed",
       service: "chat-handler",
       environment: process.env.VERCEL_ENV ?? process.env.NODE_ENV ?? "unknown",
       request_id: process.env.VERCEL_REQUEST_ID ?? null,
       sandbox_id: sandbox.sandboxId,
+      source,
       error: error instanceof Error ? error.message : String(error),
     }),
   );
+};
+
+export const refreshE2BSandboxLeaseBestEffort = async (
+  sandbox: Sandbox,
+  options: {
+    source: E2BSandboxLeaseRefreshSource;
+    logFailure?: boolean;
+  },
+): Promise<boolean> => {
+  try {
+    await refreshE2BSandboxLease(sandbox);
+    return true;
+  } catch (error) {
+    if (options.logFailure !== false) {
+      logLeaseRefreshFailure(sandbox, options.source, error);
+    }
+    return false;
+  }
 };
 
 /**
@@ -44,25 +70,23 @@ export const withE2BSandboxLeaseHeartbeat = async <T>(
   sandbox: Sandbox,
   operation: () => Promise<T>,
 ): Promise<T> => {
-  await refreshE2BSandboxLease(sandbox);
-
   let refreshInFlight = false;
   let heartbeatFailureLogged = false;
   const refresh = async (): Promise<void> => {
     if (refreshInFlight) return;
     refreshInFlight = true;
     try {
-      await refreshE2BSandboxLease(sandbox);
-      heartbeatFailureLogged = false;
-    } catch (error) {
-      if (!heartbeatFailureLogged) {
-        logLeaseHeartbeatFailure(sandbox, error);
-        heartbeatFailureLogged = true;
-      }
+      const refreshed = await refreshE2BSandboxLeaseBestEffort(sandbox, {
+        source: "foreground_heartbeat",
+        logFailure: !heartbeatFailureLogged,
+      });
+      heartbeatFailureLogged = !refreshed;
     } finally {
       refreshInFlight = false;
     }
   };
+
+  await refresh();
 
   const heartbeat = setInterval(() => {
     void refresh();

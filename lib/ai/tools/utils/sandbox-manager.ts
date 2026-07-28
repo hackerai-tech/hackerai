@@ -5,7 +5,10 @@ import type {
   SandboxManager,
   SandboxType,
 } from "@/types";
-import { ensureSandboxConnection, refreshE2BSandboxLease } from "./sandbox";
+import {
+  ensureSandboxConnection,
+  refreshE2BSandboxLeaseBestEffort,
+} from "./sandbox";
 import { SANDBOX_ENVIRONMENT_TOOLS } from "./sandbox-tools";
 
 const MAX_SANDBOX_HEALTH_FAILURES = 5;
@@ -60,7 +63,9 @@ export class DefaultSandboxManager implements SandboxManager {
     sandbox: Sandbox;
   }> {
     if (this.sandbox) {
-      await refreshE2BSandboxLease(this.sandbox);
+      await refreshE2BSandboxLeaseBestEffort(this.sandbox, {
+        source: "default_manager_cache",
+      });
       return { sandbox: this.sandbox };
     }
 
