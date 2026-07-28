@@ -61,8 +61,21 @@ export interface SandboxResourceMetrics {
   diskPct: number;
 }
 
+export type SandboxResourceObservation =
+  | {
+      kind: "health_sample";
+      source: "pre_command_health_check";
+      metrics: SandboxResourceMetrics;
+    }
+  | {
+      kind: "failure";
+      source: "readiness_check_failure" | "terminal_command_timeout";
+      failureType: "readiness_check_failed" | "terminal_command_timed_out";
+      metrics: SandboxResourceMetrics | null;
+    };
+
 export type SandboxResourceMetricsObserver = (
-  metrics: SandboxResourceMetrics,
+  observation: SandboxResourceObservation,
 ) => void;
 
 export interface SandboxContext {

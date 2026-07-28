@@ -49,9 +49,36 @@ describe("sandbox health resource observations", () => {
     await waitForSandboxReady(sandbox, 1, undefined, onResourceMetrics);
 
     expect(onResourceMetrics).toHaveBeenCalledWith({
-      cpuPct: 100,
-      memPct: 75,
-      diskPct: 25,
+      kind: "health_sample",
+      source: "pre_command_health_check",
+      metrics: {
+        cpuPct: 100,
+        memPct: 75,
+        diskPct: 25,
+      },
+    });
+  });
+
+  test("reports final readiness failures with the latest resource metrics", async () => {
+    const sandbox = makeE2BSandbox();
+    (sandbox.commands.run as jest.Mock).mockRejectedValue(
+      new Error("envd unresponsive"),
+    );
+    const onResourceMetrics = jest.fn();
+
+    await expect(
+      waitForSandboxReady(sandbox, 1, undefined, onResourceMetrics),
+    ).rejects.toThrow("Sandbox running but not ready");
+
+    expect(onResourceMetrics).toHaveBeenLastCalledWith({
+      kind: "failure",
+      source: "readiness_check_failure",
+      failureType: "readiness_check_failed",
+      metrics: {
+        cpuPct: 100,
+        memPct: 75,
+        diskPct: 25,
+      },
     });
   });
 

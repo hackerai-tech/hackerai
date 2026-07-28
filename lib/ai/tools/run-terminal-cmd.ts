@@ -11,6 +11,7 @@ import { retryWithBackoff } from "./utils/retry-with-backoff";
 import {
   waitForSandboxReady,
   getSandboxDiagnostics,
+  observeSandboxResourceFailure,
 } from "./utils/sandbox-health";
 import { isE2BSandbox, isCentrifugoSandbox } from "./utils/sandbox-types";
 import {
@@ -667,6 +668,17 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                   resolved = true;
                   if (commandSession) commandSessionExposed = true;
 
+                  const resourceFailureObservation = isE2BSandbox(
+                    sandboxInstance,
+                  )
+                    ? observeSandboxResourceFailure(
+                        sandboxInstance,
+                        context.onSandboxResourceMetrics,
+                        "terminal_command_timeout",
+                        "terminal_command_timed_out",
+                      )
+                    : Promise.resolve();
+
                   // Try to get PID from execution object first (if available)
                   if (!processId && execution && (execution as any)?.pid) {
                     processId = (execution as any).pid;
@@ -727,6 +739,9 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                         resumableSession,
                       );
 
+                  await resourceFailureObservation.catch(() => {
+                    // Analytics must never delay or mask terminal timeout handling
+                  });
                   await createTerminalWriter(timeoutMessage);
 
                   abortSignal?.removeEventListener("abort", onAbort);
