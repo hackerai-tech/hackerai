@@ -45,30 +45,32 @@ describe("E2B sandbox lease lifecycle", () => {
 
   it("serializes refreshes without shortening a longer active lease", async () => {
     const dateNow = jest.spyOn(Date, "now").mockReturnValue(1_000);
-    let finishLongRefresh!: () => void;
-    const setTimeout = jest
-      .fn()
-      .mockImplementationOnce(
-        () =>
-          new Promise<void>((resolve) => {
-            finishLongRefresh = resolve;
-          }),
-      )
-      .mockResolvedValue(undefined);
-    const sandbox = { setTimeout } as unknown as Sandbox;
+    try {
+      let finishLongRefresh!: () => void;
+      const setTimeout = jest
+        .fn()
+        .mockImplementationOnce(
+          () =>
+            new Promise<void>((resolve) => {
+              finishLongRefresh = resolve;
+            }),
+        )
+        .mockResolvedValue(undefined);
+      const sandbox = { setTimeout } as unknown as Sandbox;
 
-    const longRefresh = refreshE2BSandboxLease(sandbox, 10 * 60 * 1000);
-    const defaultRefresh = refreshE2BSandboxLease(sandbox);
-    await Promise.resolve();
-    await Promise.resolve();
+      const longRefresh = refreshE2BSandboxLease(sandbox, 10 * 60 * 1000);
+      const defaultRefresh = refreshE2BSandboxLease(sandbox);
+      await Promise.resolve();
+      await Promise.resolve();
 
-    expect(setTimeout).toHaveBeenCalledTimes(1);
-    finishLongRefresh();
-    await expect(longRefresh).resolves.toBe(11 * 60 * 1000);
-    await expect(defaultRefresh).resolves.toBe(11 * 60 * 1000);
-    expect(setTimeout).toHaveBeenNthCalledWith(2, 11 * 60 * 1000);
-
-    dateNow.mockRestore();
+      expect(setTimeout).toHaveBeenCalledTimes(1);
+      finishLongRefresh();
+      await expect(longRefresh).resolves.toBe(11 * 60 * 1000);
+      await expect(defaultRefresh).resolves.toBe(11 * 60 * 1000);
+      expect(setTimeout).toHaveBeenNthCalledWith(2, 11 * 60 * 1000);
+    } finally {
+      dateNow.mockRestore();
+    }
   });
 
   it("uses the renewable cloud lease when reconnecting a paused sandbox", async () => {
