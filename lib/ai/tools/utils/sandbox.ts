@@ -12,6 +12,13 @@ export const E2B_SANDBOX_OPERATION_TIMEOUT_BUFFER_MS = 60 * 1000;
 const RATE_LIMIT_COOLDOWN_MS = 1_000;
 const MAX_CREATE_RETRIES = 3;
 
+type SandboxLeaseState = {
+  expiresAtMs: number;
+  pending: Promise<void>;
+};
+
+const sandboxLeaseStates = new WeakMap<Sandbox, SandboxLeaseState>();
+
 export const getE2BSandboxLeaseTimeoutMs = (
   operationTimeoutMs: number = 0,
 ): number => {
@@ -30,9 +37,31 @@ export const refreshE2BSandboxLease = async (
   sandbox: Sandbox,
   operationTimeoutMs: number = 0,
 ): Promise<number> => {
-  const timeoutMs = getE2BSandboxLeaseTimeoutMs(operationTimeoutMs);
-  await sandbox.setTimeout(timeoutMs);
-  return timeoutMs;
+  const requestedTimeoutMs = getE2BSandboxLeaseTimeoutMs(operationTimeoutMs);
+  const state = sandboxLeaseStates.get(sandbox) ?? {
+    expiresAtMs: 0,
+    pending: Promise.resolve(),
+  };
+  sandboxLeaseStates.set(sandbox, state);
+
+  const refresh = state.pending
+    .catch(() => undefined)
+    .then(async () => {
+      const remainingTimeoutMs = Math.max(0, state.expiresAtMs - Date.now());
+      const effectiveTimeoutMs = Math.max(
+        requestedTimeoutMs,
+        remainingTimeoutMs,
+      );
+      await sandbox.setTimeout(effectiveTimeoutMs);
+      state.expiresAtMs = Date.now() + effectiveTimeoutMs;
+      return effectiveTimeoutMs;
+    });
+  state.pending = refresh.then(
+    () => undefined,
+    () => undefined,
+  );
+
+  return refresh;
 };
 
 const logSandboxKillFailure = (

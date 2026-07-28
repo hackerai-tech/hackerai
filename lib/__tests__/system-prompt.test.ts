@@ -273,6 +273,9 @@ Commands run directly on the host OS "workstation" without Docker isolation. Be 
     );
     expect(localPrompt).not.toContain("4 vCPU");
     expect(localPrompt).not.toContain("2 GiB RAM");
+    expect(localPrompt).not.toContain(
+      "Avoid running multiple CPU-intensive cracking, fuzzing, or scanning jobs concurrently",
+    );
   });
 
   it("describes cloud sandbox browser automation tools", async () => {
