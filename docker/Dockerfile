@@ -153,13 +153,15 @@ RUN set -eux; \
 # ============================================================================
 # User Setup
 # ============================================================================
+# Avoid escaped newline sequences in generated files: E2B's Dockerfile parser
+# removes the backslash from RUN arguments.
 RUN set -eux; \
     if ! id -u user >/dev/null 2>&1; then \
       useradd --create-home --shell /bin/bash user; \
     fi; \
     usermod -aG sudo user; \
     install -d -m 0755 /etc/sudoers.d /home/user/upload /home/user/go; \
-    printf 'user ALL=(ALL) NOPASSWD: ALL\n' > /etc/sudoers.d/hackerai-user; \
+    echo 'user ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/hackerai-user; \
     chmod 0440 /etc/sudoers.d/hackerai-user; \
     user_group="$(id -gn user)"; \
     chown -R "user:${user_group}" /home/user
@@ -168,7 +170,7 @@ WORKDIR /home/user
 
 # Ensure login shells, including E2B's Dockerfile builder shell, keep system
 # binary directories after adding user-local and Go bin paths.
-RUN printf 'export PATH=/home/user/.local/bin:/usr/local/go/bin:/home/user/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\n' \
+RUN echo 'export PATH=/home/user/.local/bin:/usr/local/go/bin:/home/user/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin' \
     > /etc/profile.d/00-hackerai-path.sh && chmod 644 /etc/profile.d/00-hackerai-path.sh
 
 # ============================================================================
@@ -236,7 +238,12 @@ RUN set -eux; \
 # ============================================================================
 RUN set -eux; \
     # JWT Tool wrapper
-    ([ -f /opt/jwt_tool/jwt_tool.py ] && echo '#!/bin/bash\npython3 /opt/jwt_tool/jwt_tool.py "$@"' > /usr/local/bin/jwt-tool && chmod +x /usr/local/bin/jwt-tool) || true
+    ([ -f /opt/jwt_tool/jwt_tool.py ] && \
+      { \
+        echo '#!/bin/bash'; \
+        echo 'exec python3 /opt/jwt_tool/jwt_tool.py "$@"'; \
+      } > /usr/local/bin/jwt-tool && \
+      chmod +x /usr/local/bin/jwt-tool) || true
 
 # ============================================================================
 # Browser Automation
@@ -286,6 +293,10 @@ RUN set -eux; \
     test ! -e /tmp/npm-cache && \
     test ! -e "$GOCACHE" && \
     test ! -e "$GOPATH/pkg/mod" && \
+    visudo -cf /etc/sudoers.d/hackerai-user && \
+    echo "✓ sudoers" && \
+    grep -Fx 'export PATH=/home/user/.local/bin:/usr/local/go/bin:/home/user/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin' /etc/profile.d/00-hackerai-path.sh && \
+    echo "✓ login shell PATH" && \
     test -d /usr/share/seclists && \
     echo "✓ SecLists installed" && \
     which nmap && echo "✓ nmap" && \
@@ -317,7 +328,7 @@ RUN set -eux; \
     which interactsh-client && echo "✓ interactsh-client" && \
     which katana && echo "✓ katana" && \
     which cvemap && echo "✓ cvemap" && \
-    which jwt-tool && echo "✓ jwt_tool" && \
+    which jwt-tool && jwt-tool -h >/dev/null && echo "✓ jwt_tool" && \
     which gitdumper && echo "✓ gitdumper" && \
     which trufflehog && echo "✓ trufflehog" && \
     which trivy && echo "✓ trivy" && \
