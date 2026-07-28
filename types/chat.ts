@@ -52,6 +52,8 @@ export const SELECTABLE_MODELS: readonly SelectedModel[] = [
  * Used by `coerceSelectedModel` to migrate values on read.
  */
 export const LEGACY_MODEL_ID_MAP: Record<string, SelectedModel> = {
+  // Migration only: the Sonnet provider is retired, so old browser state now
+  // resolves to HackerAI Pro's current provider route.
   "sonnet-4.6": "hackerai-pro",
   "opus-4.6": "hackerai-max",
   "gemini-3-flash": "hackerai-standard",

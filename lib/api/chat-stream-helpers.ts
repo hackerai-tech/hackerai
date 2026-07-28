@@ -521,9 +521,6 @@ export class SummarizationTracker {
  *
  * Claude chats are repaired for Anthropic-compatible message shapes before
  * this fallback can fire. Opus 4.6 uses Kimi K3 then Grok 4.5 in every mode.
- * Sonnet agent calls use Grok and Kimi K3 fallbacks while the run is text-only,
- * then switch to multimodal-capable fallbacks once image tool results enter the
- * context.
  *
  * Keys and values are registry names (see lib/ai/providers.ts) — the actual
  * OpenRouter slugs are resolved at request-build time so this stays in sync
@@ -591,19 +588,9 @@ export function isAutoModelSelectionForRetry({
   );
 }
 
-const ANTHROPIC_FALLBACK_CHAIN_BY_MODE: Record<ChatMode, readonly ModelName[]> =
-  {
-    agent: AGENT_TEXT_FALLBACK_CHAIN,
-    ask: ["model-grok-4.5"],
-  };
-
-const ANTHROPIC_MULTIMODAL_AGENT_FALLBACK_CHAIN =
-  KIMI_K3_THEN_GROK_FALLBACK_CHAIN;
-
 const HIGH_REASONING_MODELS = [
   "model-grok-4.5-pro",
   "model-glm-5.2",
-  "model-sonnet-4.6",
   "model-opus-4.6",
 ] as const satisfies readonly ModelName[];
 
@@ -633,18 +620,10 @@ export type ProviderReasoningOverride = {
 
 const getFallbackKeys = (
   modelName?: string,
-  mode?: ChatMode,
-  options: FallbackOptions = {},
 ): readonly ModelName[] | undefined => {
   if (!modelName) return undefined;
   if (modelName === "model-opus-4.6") {
     return KIMI_K3_THEN_GROK_FALLBACK_CHAIN;
-  }
-  if (modelName === "model-sonnet-4.6") {
-    if (mode === "agent" && options.hasMultimodalToolResults) {
-      return ANTHROPIC_MULTIMODAL_AGENT_FALLBACK_CHAIN;
-    }
-    return ANTHROPIC_FALLBACK_CHAIN_BY_MODE[mode ?? "agent"];
   }
   return MODEL_FALLBACK_CHAIN[modelName as ModelName];
 };
@@ -701,10 +680,10 @@ const resolveSlug = (modelName: string): string | undefined => {
  */
 export function getFallbackSlugs(
   modelName?: string,
-  mode?: ChatMode,
-  options: FallbackOptions = {},
+  _mode?: ChatMode,
+  _options: FallbackOptions = {},
 ): string[] {
-  const fallbackKeys = getFallbackKeys(modelName, mode, options);
+  const fallbackKeys = getFallbackKeys(modelName);
   return (
     fallbackKeys
       ?.map((key) => resolveSlug(key))
@@ -714,8 +693,6 @@ export function getFallbackSlugs(
 
 const OPENROUTER_RESPONSE_MODEL_COST_KEYS: Record<string, ModelName> = {
   "anthropic/claude-opus-4.6": "model-opus-4.6",
-  "anthropic/claude-sonnet-4-6": "model-sonnet-4.6",
-  "anthropic/claude-sonnet-4.6": "model-sonnet-4.6",
   "x-ai/grok-4.5": "model-grok-4.5",
   "z-ai/glm-5.2": "model-glm-5.2",
   "z-ai/glm-5.2-20260616": "model-glm-5.2",
@@ -730,13 +707,10 @@ function resolveOpenRouterResponseModelCostKey(
 ): ModelName | undefined {
   const exactKey = OPENROUTER_RESPONSE_MODEL_COST_KEYS[responseModel];
   if (exactKey) return exactKey;
-  // Scope Claude response aliases to the priced generation. Families like
-  // Opus, Sonnet, and Haiku do not share one stable rate across versions.
+  // Scope Opus response aliases to the priced generation rather than matching
+  // every Claude family or version.
   if (/^anthropic\/claude-4\.6-opus-\d{8}$/.test(responseModel)) {
     return "model-opus-4.6";
-  }
-  if (/^anthropic\/claude-4\.6-sonnet-\d{8}$/.test(responseModel)) {
-    return "model-sonnet-4.6";
   }
   return undefined;
 }
@@ -744,8 +718,6 @@ function resolveOpenRouterResponseModelCostKey(
 export function resolveServedModelForCostAccounting({
   modelName,
   responseModel,
-  mode,
-  options = {},
 }: {
   modelName: string;
   responseModel?: string;
@@ -756,7 +728,7 @@ export function resolveServedModelForCostAccounting({
 
   const candidateKeys = [
     modelName as ModelName,
-    ...(getFallbackKeys(modelName, mode, options) ?? []),
+    ...(getFallbackKeys(modelName) ?? []),
   ];
   const matchedKey = candidateKeys.find(
     (key) => resolveSlug(key) === responseModel,

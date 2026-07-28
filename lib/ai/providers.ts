@@ -189,7 +189,6 @@ const buildProviderMap = (or: OpenRouterInstance) =>
     "ask-model-free": or(DEEPSEEK_V4_FLASH_SLUG),
     "agent-model": or(GROK_4_5_SLUG),
     "agent-model-free": or(DEEPSEEK_V4_FLASH_SLUG),
-    "model-sonnet-4.6": or("anthropic/claude-sonnet-4-6"),
     "model-grok-4.5": or(GROK_4_5_SLUG),
     // Dedicated HackerAI Pro alias so its GLM fallback can evolve without
     // changing Standard PDF or legacy Grok fallback behavior.
@@ -226,7 +225,6 @@ export const modelCutoffDates: Record<ModelName, string> &
   "ask-model-free": "May 2025",
   "agent-model": "July 2026",
   "agent-model-free": "May 2025",
-  "model-sonnet-4.6": "May 2025",
   "model-grok-4.5": "July 2026",
   "model-grok-4.5-pro": "July 2026",
   "model-gemini-3-flash": "July 2026",
@@ -249,7 +247,6 @@ export const modelDisplayNames: Record<ModelName, string> &
   "ask-model-free": "Auto, an intelligent model router built by HackerAI",
   "agent-model": "Auto, an intelligent model router built by HackerAI",
   "agent-model-free": "Auto, an intelligent model router built by HackerAI",
-  "model-sonnet-4.6": "Anthropic Claude Sonnet 4.6",
   "model-grok-4.5": "xAI Grok 4.5",
   "model-grok-4.5-pro": "xAI Grok 4.5",
   "model-gemini-3-flash": "xAI Grok 4.5",
@@ -276,7 +273,7 @@ export const getModelCutoffDate = (modelName: ModelName): string => {
 };
 
 export function isAnthropicModel(modelName: string): boolean {
-  return modelName.includes("sonnet") || modelName.includes("opus");
+  return modelName.includes("opus");
 }
 
 export function isDeepSeekModel(modelName: string): boolean {
