@@ -44,6 +44,11 @@ import {
   RUN_TERMINAL_MAX_TIMEOUT_SECONDS,
   createRunTerminalCmdToolSchema,
 } from "./schemas";
+import {
+  BASH_SANDBOX_AUTOPAUSE_TIMEOUT,
+  getE2BSandboxLeaseTimeoutMs,
+  refreshE2BSandboxLease,
+} from "./utils/sandbox";
 
 const DEFAULT_STREAM_TIMEOUT_SECONDS =
   RUN_TERMINAL_DEFAULT_STREAM_TIMEOUT_SECONDS;
@@ -196,11 +201,23 @@ export const createRunTerminalCmd = (context: ToolContext) => {
       const approvedSandboxIdentity = approval?.approved
         ? approval.sandboxIdentity
         : undefined;
-      const getApprovedExecutionSandbox = () =>
-        getSandboxWithFallbackGuard({
+      const getApprovedExecutionSandbox = async () => {
+        const result = await getSandboxWithFallbackGuard({
           sandboxManager,
           expectedSandboxIdentity: approvedSandboxIdentity,
         });
+        const operationTimeoutMs = is_background
+          ? 0
+          : effectiveStreamTimeout * 1000;
+        if (
+          isE2BSandbox(result.sandbox) &&
+          getE2BSandboxLeaseTimeoutMs(operationTimeoutMs) >
+            BASH_SANDBOX_AUTOPAUSE_TIMEOUT
+        ) {
+          await refreshE2BSandboxLease(result.sandbox, operationTimeoutMs);
+        }
+        return result;
+      };
 
       // ─── Interactive PTY exec branch ─────────────────────────────────
       if (interactive) {

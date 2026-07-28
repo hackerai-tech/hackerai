@@ -7,10 +7,34 @@ type SandboxReadyPath = SandboxBootInfo["path"];
 
 const SANDBOX_TEMPLATE = process.env.E2B_TEMPLATE || "terminal-agent-sandbox";
 const BASH_SANDBOX_RESUME_TIMEOUT = 5 * 60 * 1000; // 5 minutes for resuming paused sandbox
-const BASH_SANDBOX_AUTOPAUSE_TIMEOUT = 7 * 60 * 1000; // 7 minutes auto-pause inactivity timeout
+export const BASH_SANDBOX_AUTOPAUSE_TIMEOUT = 7 * 60 * 1000;
+export const E2B_SANDBOX_OPERATION_TIMEOUT_BUFFER_MS = 60 * 1000;
 // Retry config for E2B 429 rate limits
 const RATE_LIMIT_COOLDOWN_MS = 1_000;
 const MAX_CREATE_RETRIES = 3;
+
+export const getE2BSandboxLeaseTimeoutMs = (
+  operationTimeoutMs: number = 0,
+): number => {
+  const boundedOperationTimeoutMs =
+    Number.isFinite(operationTimeoutMs) && operationTimeoutMs > 0
+      ? Math.ceil(operationTimeoutMs)
+      : 0;
+
+  return Math.max(
+    BASH_SANDBOX_AUTOPAUSE_TIMEOUT,
+    boundedOperationTimeoutMs + E2B_SANDBOX_OPERATION_TIMEOUT_BUFFER_MS,
+  );
+};
+
+export const refreshE2BSandboxLease = async (
+  sandbox: Sandbox,
+  operationTimeoutMs: number = 0,
+): Promise<number> => {
+  const timeoutMs = getE2BSandboxLeaseTimeoutMs(operationTimeoutMs);
+  await sandbox.setTimeout(timeoutMs);
+  return timeoutMs;
+};
 
 const logSandboxKillFailure = (
   userID: string,
@@ -51,7 +75,7 @@ const SANDBOX_VERSION = "v11";
  * 3. Validates sandbox version metadata (auto-kills old versions)
  * 4. If found: connect to existing sandbox (works for both running and paused states)
  * 5. If not found or connection fails: creates new sandbox with auto-pause enabled
- * 6. Auto-pause automatically pauses sandbox after inactivity timeout (15 minutes)
+ * 6. Auto-pause automatically pauses sandbox after the configured lease expires
  * 7. Returns active sandbox ready for use
  */
 export const ensureSandboxConnection = async (

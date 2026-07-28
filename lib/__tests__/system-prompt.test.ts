@@ -247,6 +247,34 @@ Commands run directly on the host OS "workstation" without Docker isolation. Be 
     );
   });
 
+  it("describes compute capacity only for the cloud sandbox", async () => {
+    const cloudPrompt = await systemPrompt(
+      "user_123",
+      "agent",
+      "pro",
+      "agent-model",
+      null,
+      false,
+      null,
+    );
+    const localPrompt = await systemPrompt(
+      "user_123",
+      "agent",
+      "pro",
+      "agent-model",
+      null,
+      false,
+      "Local sandbox context",
+    );
+
+    expect(cloudPrompt).toContain("Compute: 4 vCPU, 2 GiB RAM");
+    expect(cloudPrompt).toContain(
+      "Avoid running multiple CPU-intensive cracking, fuzzing, or scanning jobs concurrently",
+    );
+    expect(localPrompt).not.toContain("4 vCPU");
+    expect(localPrompt).not.toContain("2 GiB RAM");
+  });
+
   it("describes cloud sandbox browser automation tools", async () => {
     const prompt = await systemPrompt(
       "user_123",

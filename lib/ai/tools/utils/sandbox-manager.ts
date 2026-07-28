@@ -5,7 +5,7 @@ import type {
   SandboxManager,
   SandboxType,
 } from "@/types";
-import { ensureSandboxConnection } from "./sandbox";
+import { ensureSandboxConnection, refreshE2BSandboxLease } from "./sandbox";
 import { SANDBOX_ENVIRONMENT_TOOLS } from "./sandbox-tools";
 import { isExpectedAlreadyGoneCleanupError } from "@/lib/utils/cleanup-errors";
 
@@ -60,19 +60,22 @@ export class DefaultSandboxManager implements SandboxManager {
   async getSandbox(): Promise<{
     sandbox: Sandbox;
   }> {
-    if (!this.sandbox) {
-      const result = await ensureSandboxConnection(
-        {
-          userID: this.userID,
-          setSandbox: this.setSandboxCallback,
-          onBoot: this.onBoot,
-        },
-        {
-          initialSandbox: this.sandbox,
-        },
-      );
-      this.sandbox = result.sandbox;
+    if (this.sandbox) {
+      await refreshE2BSandboxLease(this.sandbox);
+      return { sandbox: this.sandbox };
     }
+
+    const result = await ensureSandboxConnection(
+      {
+        userID: this.userID,
+        setSandbox: this.setSandboxCallback,
+        onBoot: this.onBoot,
+      },
+      {
+        initialSandbox: this.sandbox,
+      },
+    );
+    this.sandbox = result.sandbox;
 
     if (!this.sandbox) {
       throw new Error("Failed to initialize sandbox");
