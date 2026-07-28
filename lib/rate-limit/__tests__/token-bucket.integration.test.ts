@@ -926,10 +926,10 @@ describe("token-bucket async functions", () => {
       const { deductUsage, calculateTokenCost } = getIsolatedModule();
 
       const estimatedInputTokens = 1_000_000;
-      const actualInputTokens = 1_000_000;
-      const actualOutputTokens = 1_000_000;
+      const actualInputTokens = 300_000;
+      const actualOutputTokens = 300_000;
       const selectedModel = "agent-model-free";
-      const servedModel = "model-kimi-k2.7-code";
+      const servedModel = "model-kimi-k3";
       const initialDeduction = calculateTokenCost(
         estimatedInputTokens,
         "input",
@@ -969,7 +969,7 @@ describe("token-bucket async functions", () => {
         servedModel,
       );
 
-      expect(expectedAdditional).toBe(68_040);
+      expect(expectedAdditional).toBe(74_340);
       expect(mockLimitFn).toHaveBeenCalledWith(
         expect.any(String),
         expect.objectContaining({ rate: expectedAdditional }),
@@ -988,7 +988,7 @@ describe("token-bucket async functions", () => {
 
       const estimatedInputTokens = 1_000_000;
       const selectedModel = "agent-model-free";
-      const servedModel = "model-kimi-k2.7-code";
+      const servedModel = "model-kimi-k3";
       const providerCostDollars = 0.42;
       const initialDeduction = calculateTokenCost(
         estimatedInputTokens,

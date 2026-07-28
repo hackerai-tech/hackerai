@@ -608,8 +608,7 @@ export function limitImageParts(
   });
 }
 
-// isAnthropicModel is imported from @/lib/ai/providers
-// (covers both Sonnet and Opus)
+// isAnthropicModel is imported from @/lib/ai/providers.
 
 /**
  * Strips providerMetadata from all parts in all messages.

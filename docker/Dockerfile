@@ -20,7 +20,8 @@ ENV PATH=/home/user/.local/bin:/usr/local/go/bin:/home/user/go/bin:/usr/local/sb
 RUN apt-get update && \
     apt-get install -y kali-archive-keyring sudo && \
     apt-get update && \
-    apt-get upgrade -y
+    apt-get upgrade -y && \
+    apt-get clean && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*
 
 # ============================================================================
 # Core System Packages
@@ -152,13 +153,15 @@ RUN set -eux; \
 # ============================================================================
 # User Setup
 # ============================================================================
+# Avoid escaped newline sequences in generated files: E2B's Dockerfile parser
+# removes the backslash from RUN arguments.
 RUN set -eux; \
     if ! id -u user >/dev/null 2>&1; then \
       useradd --create-home --shell /bin/bash user; \
     fi; \
     usermod -aG sudo user; \
     install -d -m 0755 /etc/sudoers.d /home/user/upload /home/user/go; \
-    printf 'user ALL=(ALL) NOPASSWD: ALL\n' > /etc/sudoers.d/hackerai-user; \
+    echo 'user ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/hackerai-user; \
     chmod 0440 /etc/sudoers.d/hackerai-user; \
     user_group="$(id -gn user)"; \
     chown -R "user:${user_group}" /home/user
@@ -167,13 +170,13 @@ WORKDIR /home/user
 
 # Ensure login shells, including E2B's Dockerfile builder shell, keep system
 # binary directories after adding user-local and Go bin paths.
-RUN printf 'export PATH=/home/user/.local/bin:/usr/local/go/bin:/home/user/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\n' \
+RUN echo 'export PATH=/home/user/.local/bin:/usr/local/go/bin:/home/user/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin' \
     > /etc/profile.d/00-hackerai-path.sh && chmod 644 /etc/profile.d/00-hackerai-path.sh
 
 # ============================================================================
 # Python Packages for Document Generation & Security Tools
 # ============================================================================
-RUN pip3 install --break-system-packages \
+RUN pip3 install --break-system-packages --no-cache-dir \
     reportlab \
     python-docx \
     openpyxl \
@@ -187,8 +190,8 @@ RUN pip3 install --break-system-packages \
 # requirement, and pip cannot uninstall dpkg-owned packages without RECORD
 # metadata. Install a pip-managed compatible rich first so httpx[cli] resolves
 # against /usr/local without touching the distro package.
-RUN pip3 install --break-system-packages --ignore-installed 'rich<14,>=10' && \
-    pip3 install --break-system-packages requests aiohttp jinja2 'httpx[cli]' ratelimit pycryptodomex
+RUN pip3 install --break-system-packages --no-cache-dir --ignore-installed 'rich<14,>=10' && \
+    pip3 install --break-system-packages --no-cache-dir requests aiohttp jinja2 'httpx[cli]' ratelimit pycryptodomex
 
 # ============================================================================
 # Git-based Security Tools
@@ -235,7 +238,12 @@ RUN set -eux; \
 # ============================================================================
 RUN set -eux; \
     # JWT Tool wrapper
-    ([ -f /opt/jwt_tool/jwt_tool.py ] && echo '#!/bin/bash\npython3 /opt/jwt_tool/jwt_tool.py "$@"' > /usr/local/bin/jwt-tool && chmod +x /usr/local/bin/jwt-tool) || true
+    ([ -f /opt/jwt_tool/jwt_tool.py ] && \
+      { \
+        echo '#!/bin/bash'; \
+        echo 'exec python3 /opt/jwt_tool/jwt_tool.py "$@"'; \
+      } > /usr/local/bin/jwt-tool && \
+      chmod +x /usr/local/bin/jwt-tool) || true
 
 # ============================================================================
 # Browser Automation
@@ -245,7 +253,8 @@ ENV AGENT_BROWSER_USER_AGENT="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36
 ENV AGENT_BROWSER_ARGS="--disable-blink-features=AutomationControlled,--no-first-run,--no-default-browser-check,--disable-dev-shm-usage,--no-sandbox,--lang=en-US"
 ENV AGENT_BROWSER_SCREENSHOT_DIR=/home/user/agent-browser-screenshots
 
-RUN npm install -g agent-browser@0.26.0 && \
+RUN npm install -g --cache /tmp/npm-cache agent-browser@0.26.0 && \
+    rm -rf /tmp/npm-cache && \
     mkdir -p /home/user/agent-browser-screenshots && \
     chown -R user:user /home/user/agent-browser-screenshots && \
     agent-browser doctor --offline --quick
@@ -256,7 +265,9 @@ RUN npm install -g agent-browser@0.26.0 && \
 RUN set -eux; \
     go install github.com/projectdiscovery/interactsh/cmd/interactsh-client@latest && \
     go install github.com/projectdiscovery/katana/cmd/katana@latest && \
-    go install github.com/projectdiscovery/cvemap/cmd/cvemap@latest
+    go install github.com/projectdiscovery/cvemap/cmd/cvemap@latest && \
+    go clean -cache -modcache && \
+    rm -rf "$GOCACHE" "$GOPATH/pkg/mod"
 
 # ============================================================================
 # TestSSL Symlink - Allow access via both 'testssl' and 'testssl.sh'
@@ -276,6 +287,16 @@ RUN nuclei -update-templates
 # ============================================================================
 RUN set -eux; \
     echo "=== Starting tool validation ===" && \
+    test -z "$(find /var/lib/apt/lists -mindepth 1 -print -quit)" && \
+    test -z "$(find /var/cache/apt/archives -mindepth 1 -print -quit)" && \
+    test ! -e /home/user/.cache/pip && \
+    test ! -e /tmp/npm-cache && \
+    test ! -e "$GOCACHE" && \
+    test ! -e "$GOPATH/pkg/mod" && \
+    visudo -cf /etc/sudoers.d/hackerai-user && \
+    echo "✓ sudoers" && \
+    grep -Fx 'export PATH=/home/user/.local/bin:/usr/local/go/bin:/home/user/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin' /etc/profile.d/00-hackerai-path.sh && \
+    echo "✓ login shell PATH" && \
     test -d /usr/share/seclists && \
     echo "✓ SecLists installed" && \
     which nmap && echo "✓ nmap" && \
@@ -307,7 +328,7 @@ RUN set -eux; \
     which interactsh-client && echo "✓ interactsh-client" && \
     which katana && echo "✓ katana" && \
     which cvemap && echo "✓ cvemap" && \
-    which jwt-tool && echo "✓ jwt_tool" && \
+    which jwt-tool && jwt-tool -h >/dev/null && echo "✓ jwt_tool" && \
     which gitdumper && echo "✓ gitdumper" && \
     which trufflehog && echo "✓ trufflehog" && \
     which trivy && echo "✓ trivy" && \

@@ -520,34 +520,32 @@ export class SummarizationTracker {
  * model's rate (response.modelId reflects what actually ran).
  *
  * Claude chats are repaired for Anthropic-compatible message shapes before
- * this fallback can fire. Claude agent calls use Grok and Kimi fallbacks while
- * the run is text-only, then switch to multimodal-capable fallbacks once image
- * tool results enter the context.
+ * this fallback can fire. Opus 4.6 uses Kimi K3 then Grok 4.5 in every mode.
  *
  * Keys and values are registry names (see lib/ai/providers.ts) — the actual
  * OpenRouter slugs are resolved at request-build time so this stays in sync
  * with the registry.
  */
-const KIMI_THEN_GROK_FALLBACK_CHAIN = [
-  "model-kimi-k2.7-code",
+const KIMI_K3_THEN_GROK_FALLBACK_CHAIN = [
+  "model-kimi-k3",
   "fallback-grok-4.5",
 ] as const satisfies readonly ModelName[];
 
 const GROK_4_5_FALLBACK_CHAIN = [
-  "model-kimi-k2.7-code",
+  "model-kimi-k3",
 ] as const satisfies readonly ModelName[];
 
 const AGENT_TEXT_FALLBACK_CHAIN = [
   "model-grok-4.5",
-  "model-kimi-k2.7-code",
+  "model-kimi-k3",
 ] as const satisfies readonly ModelName[];
 
 // HackerAI Pro uses Grok 4.5 for every request. GLM 5.2 remains its first
-// fallback, followed by Kimi so media requests still have a multimodal final
+// fallback, followed by Kimi K3 so media requests still have a multimodal final
 // recovery path if both primary providers are unavailable.
 const HACKERAI_PRO_FALLBACK_CHAIN = [
   "model-glm-5.2",
-  "model-kimi-k2.7-code",
+  "model-kimi-k3",
 ] as const satisfies readonly ModelName[];
 
 const MODEL_FALLBACK_CHAIN: Partial<Record<ModelName, readonly ModelName[]>> = {
@@ -560,10 +558,11 @@ const MODEL_FALLBACK_CHAIN: Partial<Record<ModelName, readonly ModelName[]>> = {
   "model-grok-4.5": GROK_4_5_FALLBACK_CHAIN,
   "model-grok-4.5-pro": HACKERAI_PRO_FALLBACK_CHAIN,
   "model-gemini-3-flash": GROK_4_5_FALLBACK_CHAIN,
-  "model-glm-5.2": KIMI_THEN_GROK_FALLBACK_CHAIN,
+  "model-glm-5.2": KIMI_K3_THEN_GROK_FALLBACK_CHAIN,
   "model-minimax-m3": GROK_4_5_FALLBACK_CHAIN,
   "fallback-agent-model": GROK_4_5_FALLBACK_CHAIN,
   "fallback-ask-model": GROK_4_5_FALLBACK_CHAIN,
+  "model-kimi-k3": ["fallback-grok-4.5"],
   "model-kimi-k2.7-code": ["fallback-grok-4.5"],
   "model-kimi-k2.6": ["fallback-grok-4.5"],
 };
@@ -589,18 +588,9 @@ export function isAutoModelSelectionForRetry({
   );
 }
 
-const ANTHROPIC_FALLBACK_CHAIN_BY_MODE: Record<ChatMode, readonly ModelName[]> =
-  {
-    agent: AGENT_TEXT_FALLBACK_CHAIN,
-    ask: ["model-grok-4.5"],
-  };
-
-const ANTHROPIC_MULTIMODAL_AGENT_FALLBACK_CHAIN = KIMI_THEN_GROK_FALLBACK_CHAIN;
-
 const HIGH_REASONING_MODELS = [
   "model-grok-4.5-pro",
   "model-glm-5.2",
-  "model-sonnet-4.6",
   "model-opus-4.6",
 ] as const satisfies readonly ModelName[];
 
@@ -630,15 +620,10 @@ export type ProviderReasoningOverride = {
 
 const getFallbackKeys = (
   modelName?: string,
-  mode?: ChatMode,
-  options: FallbackOptions = {},
 ): readonly ModelName[] | undefined => {
   if (!modelName) return undefined;
-  if (modelName === "model-opus-4.6" || modelName === "model-sonnet-4.6") {
-    if (mode === "agent" && options.hasMultimodalToolResults) {
-      return ANTHROPIC_MULTIMODAL_AGENT_FALLBACK_CHAIN;
-    }
-    return ANTHROPIC_FALLBACK_CHAIN_BY_MODE[mode ?? "agent"];
+  if (modelName === "model-opus-4.6") {
+    return KIMI_K3_THEN_GROK_FALLBACK_CHAIN;
   }
   return MODEL_FALLBACK_CHAIN[modelName as ModelName];
 };
@@ -649,6 +634,9 @@ export function getRetryFallbackModel(
 ): ModelName {
   if (modelName === "model-grok-4.5-pro") {
     return "model-glm-5.2";
+  }
+  if (modelName === "model-opus-4.6") {
+    return "model-kimi-k3";
   }
   if (
     modelName === "ask-model-free" ||
@@ -667,7 +655,7 @@ export function getRetryFallbackModel(
     modelName === "fallback-agent-model" ||
     modelName === "fallback-ask-model"
   ) {
-    return "model-kimi-k2.7-code";
+    return "model-kimi-k3";
   }
   return "fallback-grok-4.5";
 }
@@ -692,10 +680,10 @@ const resolveSlug = (modelName: string): string | undefined => {
  */
 export function getFallbackSlugs(
   modelName?: string,
-  mode?: ChatMode,
-  options: FallbackOptions = {},
+  _mode?: ChatMode,
+  _options: FallbackOptions = {},
 ): string[] {
-  const fallbackKeys = getFallbackKeys(modelName, mode, options);
+  const fallbackKeys = getFallbackKeys(modelName);
   return (
     fallbackKeys
       ?.map((key) => resolveSlug(key))
@@ -705,11 +693,11 @@ export function getFallbackSlugs(
 
 const OPENROUTER_RESPONSE_MODEL_COST_KEYS: Record<string, ModelName> = {
   "anthropic/claude-opus-4.6": "model-opus-4.6",
-  "anthropic/claude-sonnet-4-6": "model-sonnet-4.6",
-  "anthropic/claude-sonnet-4.6": "model-sonnet-4.6",
   "x-ai/grok-4.5": "model-grok-4.5",
   "z-ai/glm-5.2": "model-glm-5.2",
   "z-ai/glm-5.2-20260616": "model-glm-5.2",
+  "moonshotai/kimi-k3": "model-kimi-k3",
+  "moonshotai/kimi-k3-20260715": "model-kimi-k3",
   "moonshotai/kimi-k2.7-code": "model-kimi-k2.7-code",
   "moonshotai/kimi-k2.7-code:exacto": "model-kimi-k2.7-code",
 };
@@ -719,13 +707,10 @@ function resolveOpenRouterResponseModelCostKey(
 ): ModelName | undefined {
   const exactKey = OPENROUTER_RESPONSE_MODEL_COST_KEYS[responseModel];
   if (exactKey) return exactKey;
-  // Scope Claude response aliases to the priced generation. Families like
-  // Opus, Sonnet, and Haiku do not share one stable rate across versions.
+  // Scope Opus response aliases to the priced generation rather than matching
+  // every Claude family or version.
   if (/^anthropic\/claude-4\.6-opus-\d{8}$/.test(responseModel)) {
     return "model-opus-4.6";
-  }
-  if (/^anthropic\/claude-4\.6-sonnet-\d{8}$/.test(responseModel)) {
-    return "model-sonnet-4.6";
   }
   return undefined;
 }
@@ -733,8 +718,6 @@ function resolveOpenRouterResponseModelCostKey(
 export function resolveServedModelForCostAccounting({
   modelName,
   responseModel,
-  mode,
-  options = {},
 }: {
   modelName: string;
   responseModel?: string;
@@ -745,7 +728,7 @@ export function resolveServedModelForCostAccounting({
 
   const candidateKeys = [
     modelName as ModelName,
-    ...(getFallbackKeys(modelName, mode, options) ?? []),
+    ...(getFallbackKeys(modelName) ?? []),
   ];
   const matchedKey = candidateKeys.find(
     (key) => resolveSlug(key) === responseModel,

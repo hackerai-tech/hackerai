@@ -40,7 +40,7 @@ jest.doMock("@/lib/db/actions", () => ({
 }));
 jest.doMock("@/lib/ai/providers", () => ({
   GROK_4_5_SLUG: "x-ai/grok-4.5",
-  KIMI_K2_7_CODE_SLUG: "moonshotai/kimi-k2.7-code:exacto",
+  KIMI_K3_SLUG: "moonshotai/kimi-k3",
   myProvider: {
     languageModel: mockProviderLanguageModel,
   },
@@ -1036,7 +1036,7 @@ describe("checkAndSummarizeIfNeeded", () => {
         openrouter: {
           user: "user_123",
           reasoning: { enabled: false },
-          models: ["x-ai/grok-4.5", "moonshotai/kimi-k2.7-code:exacto"],
+          models: ["x-ai/grok-4.5", "moonshotai/kimi-k3"],
         },
       },
     );
@@ -1055,7 +1055,7 @@ describe("checkAndSummarizeIfNeeded", () => {
       openrouter: {
         user: "user_123",
         reasoning: { enabled: true, effort: "high" },
-        models: ["moonshotai/kimi-k2.7-code:exacto"],
+        models: ["moonshotai/kimi-k3"],
       },
     });
 

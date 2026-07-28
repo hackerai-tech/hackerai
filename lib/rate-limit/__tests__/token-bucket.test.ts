@@ -105,6 +105,17 @@ describe("token-bucket", () => {
       ).toBeCloseTo(1.4);
     });
 
+    it("prices Kimi K3 cached input at OpenRouter's $0.30/M rate", () => {
+      expect(
+        calculateRawModelUsageCostDollars({
+          inputTokens: 1_000_000,
+          outputTokens: 100_000,
+          cacheReadTokens: 800_000,
+          modelName: "moonshotai/kimi-k3-20260715",
+        }),
+      ).toBeCloseTo(2.34);
+    });
+
     it("recognizes dated Anthropic response model IDs", () => {
       expect(
         calculateRawModelUsageCostDollars({
@@ -440,15 +451,6 @@ describe("token-bucket", () => {
       );
     });
 
-    it("should use Sonnet 4.6 pricing ($3.00/$15.00)", () => {
-      expect(calculateTokenCost(1_000_000, "input", "model-sonnet-4.6")).toBe(
-        42000,
-      );
-      expect(calculateTokenCost(1_000_000, "output", "model-sonnet-4.6")).toBe(
-        210000,
-      );
-    });
-
     it("should use DeepSeek V4 Pro pricing ($0.435/$0.87)", () => {
       expect(
         calculateTokenCost(1_000_000, "input", "model-deepseek-v4-pro"),
@@ -464,6 +466,15 @@ describe("token-bucket", () => {
       );
       expect(calculateTokenCost(1_000_000, "output", "model-glm-5.2")).toBe(
         33880,
+      );
+    });
+
+    it("should use Kimi K3 pricing ($3.00/$15.00)", () => {
+      expect(calculateTokenCost(1_000_000, "input", "model-kimi-k3")).toBe(
+        42000,
+      );
+      expect(calculateTokenCost(1_000_000, "output", "model-kimi-k3")).toBe(
+        210000,
       );
     });
 
@@ -491,19 +502,19 @@ describe("token-bucket", () => {
       expect(calculateTokenCost(1_000_000, "output", modelName)).toBe(84000);
     });
 
-    it("expensive models should deplete budget faster", () => {
+    it("higher-priced models should deplete budget faster", () => {
       const monthlyBudget = getBudgetLimits("pro").monthly;
       // Typical conversation: 2000 input + 500 output tokens
       const defaultCost =
         calculateTokenCost(2000, "input") + calculateTokenCost(500, "output");
-      const sonnetCost =
-        calculateTokenCost(2000, "input", "model-sonnet-4.6") +
-        calculateTokenCost(500, "output", "model-sonnet-4.6");
+      const kimiK3Cost =
+        calculateTokenCost(2000, "input", "model-kimi-k3") +
+        calculateTokenCost(500, "output", "model-kimi-k3");
 
       const defaultConversations = Math.floor(monthlyBudget / defaultCost);
-      const sonnetConversations = Math.floor(monthlyBudget / sonnetCost);
+      const kimiK3Conversations = Math.floor(monthlyBudget / kimiK3Cost);
 
-      expect(defaultConversations).toBeGreaterThan(sonnetConversations);
+      expect(defaultConversations).toBeGreaterThan(kimiK3Conversations);
     });
   });
 

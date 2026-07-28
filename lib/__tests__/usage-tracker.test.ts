@@ -710,7 +710,7 @@ describe("UsageTracker", () => {
 
       const usage = tracker.createUsageCostRecord({
         selectedModel: "agent-model-free",
-        accountingModel: "model-kimi-k2.7-code",
+        accountingModel: "model-kimi-k3",
         configuredModelId: "x-ai/grok-4.5",
         rateLimitInfo: {
           remaining: 1000,
@@ -721,8 +721,8 @@ describe("UsageTracker", () => {
       });
 
       expect(usage.model).toBe("auto");
-      expect(usage.modelCostDollars).toBe(4.95);
-      expect(usage.costDollars).toBe(4.95);
+      expect(usage.modelCostDollars).toBe(18);
+      expect(usage.costDollars).toBe(18);
       expect(usage.costSource).toBe("raw_token_estimate");
     });
 
@@ -735,7 +735,7 @@ describe("UsageTracker", () => {
 
       const usage = tracker.createUsageCostRecord({
         selectedModel: "agent-model-free",
-        accountingModel: "model-kimi-k2.7-code",
+        accountingModel: "model-kimi-k3",
         configuredModelId: "x-ai/grok-4.5",
         rateLimitInfo: {
           remaining: 1000,
@@ -803,7 +803,7 @@ describe("UsageTracker", () => {
 
       const usage = tracker.createUsageCostRecord({
         selectedModel: "agent-model-free",
-        accountingModel: "model-kimi-k2.7-code",
+        accountingModel: "model-kimi-k3",
         configuredModelId: "x-ai/grok-4.5",
         rateLimitInfo: {
           remaining: 1000,

@@ -131,6 +131,7 @@ function makeContext(opts: {
   ptySessionManager?: PtySessionManager;
   chatId?: string;
   requestToolApproval?: import("@/types").AgentToolApprovalRequester;
+  onSandboxResourceMetrics?: import("@/types").SandboxResourceMetricsObserver;
 }) {
   const writerWrites: unknown[] = [];
   const writer = {
@@ -174,6 +175,7 @@ function makeContext(opts: {
     getCurrentModelName: () => "active-model",
     subscription: "pro",
     requestToolApproval: opts.requestToolApproval,
+    onSandboxResourceMetrics: opts.onSandboxResourceMetrics,
     isE2BSandbox: (s: unknown) => {
       if (!s || typeof s !== "object") return false;
       if ((s as { sandboxKind?: unknown }).sandboxKind === "centrifugo")
@@ -551,10 +553,22 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
       setTimeout: jest.fn(async () => undefined),
       commands: { run },
       isRunning: jest.fn(async () => true),
-      getMetrics: jest.fn(async () => []),
+      getMetrics: jest.fn(async () => [
+        {
+          cpuUsedPct: 100,
+          memUsed: 1945,
+          memTotal: 2048,
+          diskUsed: 400,
+          diskTotal: 1000,
+        },
+      ]),
     };
+    const onSandboxResourceMetrics = jest.fn();
 
-    const { context } = makeContext({ sandbox: e2b });
+    const { context } = makeContext({
+      sandbox: e2b,
+      onSandboxResourceMetrics,
+    });
     const result = (await runTool(createRunTerminalCmd(context), {
       command: "yes",
       brief: "run noisy command",
@@ -578,6 +592,16 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
         String(calledCommand).includes("pgrep"),
       ),
     ).toBe(false);
+    expect(onSandboxResourceMetrics).toHaveBeenCalledWith({
+      kind: "failure",
+      source: "terminal_command_timeout",
+      failureType: "terminal_command_timed_out",
+      metrics: {
+        cpuPct: 100,
+        memPct: expect.closeTo(94.9707, 3),
+        diskPct: 40,
+      },
+    });
   });
 
   test("marks detached background PIDs as non-resumable", async () => {
