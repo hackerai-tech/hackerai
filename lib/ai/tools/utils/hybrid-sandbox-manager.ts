@@ -652,17 +652,9 @@ export class HybridSandboxManager implements SandboxManager {
       });
       return;
     }
-
-    try {
-      await sandbox.kill();
-    } catch (error) {
-      const message = `[${this.userID}] Failed to kill E2B sandbox during reset${reason ? ` (${reason})` : ""}:`;
-      if (isExpectedAlreadyGoneCleanupError(error)) {
-        console.debug(message, error);
-      } else {
-        console.warn(message, error);
-      }
-    }
+    // E2B sandboxes are shared per user. Forget this worker's SDK connection
+    // and let the next acquisition reconnect without terminating commands
+    // owned by another Agent run.
   }
 
   /**

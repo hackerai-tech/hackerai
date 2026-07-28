@@ -335,7 +335,7 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
     expect(mockCreateCentrifugoPtyHandle).not.toHaveBeenCalled();
   });
 
-  test("extends the cloud sandbox lease for a long foreground command", async () => {
+  test("starts the renewable cloud lease for a long foreground command", async () => {
     const fakeHandle = makeFakeHandle();
     const e2b = makeFakeE2BSandbox();
     mockCreateE2BPtyHandle.mockResolvedValue(fakeHandle);
@@ -354,7 +354,7 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
       interactive: true,
     });
 
-    expect(e2b.setTimeout).toHaveBeenCalledWith(11 * 60 * 1000);
+    expect(e2b.setTimeout).toHaveBeenCalledWith(7 * 60 * 1000);
   });
 
   test("detectAgentBrowserUsage extracts sanitized actions", () => {

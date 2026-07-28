@@ -563,20 +563,7 @@ describe("HybridSandboxManager prompt-time fallback", () => {
 });
 
 describe("HybridSandboxManager reset cleanup", () => {
-  let warnSpy: jest.SpyInstance;
-  let debugSpy: jest.SpyInstance;
-
-  beforeEach(() => {
-    warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
-    debugSpy = jest.spyOn(console, "debug").mockImplementation(() => {});
-  });
-
-  afterEach(() => {
-    warnSpy.mockRestore();
-    debugSpy.mockRestore();
-  });
-
-  it("downgrades already-gone E2B sandbox reset failures", async () => {
+  it("forgets an E2B connection without killing the shared user sandbox", async () => {
     const manager = new HybridSandboxManager(
       "user-1",
       jest.fn(),
@@ -586,24 +573,12 @@ describe("HybridSandboxManager reset cleanup", () => {
       "pro",
     );
     const sandbox = {
-      kill: jest
-        .fn()
-        .mockRejectedValue(
-          Object.assign(new Error("sandbox not_found"), { status: 404 }),
-        ),
+      kill: jest.fn(),
     };
 
     manager.setSandbox(sandbox as any);
     await manager.resetSandbox("test");
 
-    expect(sandbox.kill).toHaveBeenCalled();
-    expect(debugSpy).toHaveBeenCalledWith(
-      expect.stringContaining("Failed to kill E2B sandbox during reset"),
-      expect.any(Error),
-    );
-    expect(warnSpy).not.toHaveBeenCalledWith(
-      expect.stringContaining("Failed to kill E2B sandbox during reset"),
-      expect.anything(),
-    );
+    expect(sandbox.kill).not.toHaveBeenCalled();
   });
 });

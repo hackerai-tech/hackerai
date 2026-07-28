@@ -7,7 +7,6 @@ import type {
 } from "@/types";
 import { ensureSandboxConnection, refreshE2BSandboxLease } from "./sandbox";
 import { SANDBOX_ENVIRONMENT_TOOLS } from "./sandbox-tools";
-import { isExpectedAlreadyGoneCleanupError } from "@/lib/utils/cleanup-errors";
 
 const MAX_SANDBOX_HEALTH_FAILURES = 5;
 
@@ -89,20 +88,10 @@ export class DefaultSandboxManager implements SandboxManager {
     this.setSandboxCallback(sandbox);
   }
 
-  async resetSandbox(reason?: string): Promise<void> {
-    const sandbox = this.sandbox;
+  async resetSandbox(_reason?: string): Promise<void> {
+    // This manager holds only a local SDK connection. The E2B sandbox itself
+    // is shared per user and may contain commands from another Agent run, so
+    // recovery must reconnect instead of globally killing it.
     this.sandbox = null;
-    if (!sandbox) return;
-
-    try {
-      await sandbox.kill();
-    } catch (error) {
-      const message = `[${this.userID}] Failed to kill sandbox during reset${reason ? ` (${reason})` : ""}:`;
-      if (isExpectedAlreadyGoneCleanupError(error)) {
-        console.debug(message, error);
-      } else {
-        console.warn(message, error);
-      }
-    }
   }
 }

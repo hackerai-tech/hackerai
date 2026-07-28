@@ -44,11 +44,7 @@ import {
   RUN_TERMINAL_MAX_TIMEOUT_SECONDS,
   createRunTerminalCmdToolSchema,
 } from "./schemas";
-import {
-  BASH_SANDBOX_AUTOPAUSE_TIMEOUT,
-  getE2BSandboxLeaseTimeoutMs,
-  refreshE2BSandboxLease,
-} from "./utils/sandbox";
+import { withE2BSandboxLeaseHeartbeat } from "./utils/sandbox";
 
 const DEFAULT_STREAM_TIMEOUT_SECONDS =
   RUN_TERMINAL_DEFAULT_STREAM_TIMEOUT_SECONDS;
@@ -201,23 +197,11 @@ export const createRunTerminalCmd = (context: ToolContext) => {
       const approvedSandboxIdentity = approval?.approved
         ? approval.sandboxIdentity
         : undefined;
-      const getApprovedExecutionSandbox = async () => {
-        const result = await getSandboxWithFallbackGuard({
+      const getApprovedExecutionSandbox = () =>
+        getSandboxWithFallbackGuard({
           sandboxManager,
           expectedSandboxIdentity: approvedSandboxIdentity,
         });
-        const operationTimeoutMs = is_background
-          ? 0
-          : effectiveStreamTimeout * 1000;
-        if (
-          isE2BSandbox(result.sandbox) &&
-          getE2BSandboxLeaseTimeoutMs(operationTimeoutMs) >
-            BASH_SANDBOX_AUTOPAUSE_TIMEOUT
-        ) {
-          await refreshE2BSandboxLease(result.sandbox, operationTimeoutMs);
-        }
-        return result;
-      };
 
       // ─── Interactive PTY exec branch ─────────────────────────────────
       if (interactive) {
@@ -302,16 +286,20 @@ export const createRunTerminalCmd = (context: ToolContext) => {
           // Stream output chunks as they arrive. Resolve early on a brief
           // quiet window so launching a REPL/shell returns when its prompt
           // finishes drawing rather than blocking the full timeout ceiling.
-          const delta = await measureTerminalWait(() =>
-            waitForOutput(
-              session,
-              effectiveStreamTimeout * 1000,
-              abortSignal,
-              emitTerminal,
-              (s) => ptySessionManager.consumeDelta(s),
-              { quietMs: INTERACTIVE_QUIET_WINDOW_MS },
-            ),
-          );
+          const waitForInitialOutput = () =>
+            measureTerminalWait(() =>
+              waitForOutput(
+                session,
+                effectiveStreamTimeout * 1000,
+                abortSignal,
+                emitTerminal,
+                (s) => ptySessionManager.consumeDelta(s),
+                { quietMs: INTERACTIVE_QUIET_WINDOW_MS },
+              ),
+            );
+          const delta = await (isE2B
+            ? withE2BSandboxLeaseHeartbeat(sandbox, waitForInitialOutput)
+            : waitForInitialOutput());
           await drainEmitQueue();
           const snapshots = await getSessionSnapshots(
             ptySessionManager,
@@ -390,30 +378,31 @@ export const createRunTerminalCmd = (context: ToolContext) => {
             }
 
             const recovery = await measureSandboxRecovery(async () => {
-              // Sandbox health check failed - log diagnostics and wait briefly before recreating
+              // Discard this worker's connection and reconnect the shared
+              // sandbox. Never kill it: another Agent run may own commands.
               const diagnostics = await getSandboxDiagnostics(sandbox).catch(
                 () => "diagnostics unavailable",
               );
               console.warn(
-                `[Terminal Command] Sandbox health check failed (${diagnostics}), waiting before recreating sandbox`,
+                `[Terminal Command] Sandbox health check failed (${diagnostics}), waiting before reconnecting sandbox`,
               );
               await new Promise((resolve) => setTimeout(resolve, 2000));
 
-              // Reset cached instance to force ensureSandboxConnection to create a fresh one
+              // Reset only the cached SDK instance.
               sandboxManager.setSandbox(null as any);
-              const { sandbox: freshSandbox } =
+              const { sandbox: reconnectedSandbox } =
                 await getApprovedExecutionSandbox();
 
-              // Verify the fresh sandbox is ready
+              // Verify the reconnected sandbox is ready
               try {
-                await waitForSandboxReady(freshSandbox, 5, abortSignal);
+                await waitForSandboxReady(reconnectedSandbox, 5, abortSignal);
                 sandboxManager.resetHealthFailures();
-              } catch (freshHealthError) {
+              } catch (reconnectedHealthError) {
                 if (
-                  freshHealthError instanceof DOMException &&
-                  freshHealthError.name === "AbortError"
+                  reconnectedHealthError instanceof DOMException &&
+                  reconnectedHealthError.name === "AbortError"
                 ) {
-                  throw freshHealthError;
+                  throw reconnectedHealthError;
                 }
                 sandboxManager.recordHealthFailure();
                 return {
@@ -423,21 +412,27 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                       output: "",
                       exitCode: 1,
                       error:
-                        "Sandbox recreation failed. The sandbox environment is not responding. Another attempt may be made but the sandbox will be marked unavailable after repeated failures.",
+                        "Sandbox reconnection failed. The sandbox environment is not responding. Another attempt may be made but the sandbox will be marked unavailable after repeated failures.",
                     },
                   },
                 };
               }
 
-              return { ok: true as const, sandbox: freshSandbox };
+              return { ok: true as const, sandbox: reconnectedSandbox };
             });
 
             if (!recovery.ok) return recovery.response;
-            return executeCommand(recovery.sandbox);
+            return isE2BSandbox(recovery.sandbox) && !is_background
+              ? withE2BSandboxLeaseHeartbeat(recovery.sandbox, () =>
+                  executeCommand(recovery.sandbox),
+                )
+              : executeCommand(recovery.sandbox);
           }
         }
 
-        return executeCommand(sandbox);
+        return isE2BSandbox(sandbox) && !is_background
+          ? withE2BSandboxLeaseHeartbeat(sandbox, () => executeCommand(sandbox))
+          : executeCommand(sandbox);
 
         async function executeCommand(sandboxInstance: typeof sandbox) {
           captureAgentBrowserUsage({
