@@ -176,18 +176,19 @@ describe("AgentLongMemoryTelemetry", () => {
         readHeapLimit: () => 416 * MIB,
       });
 
-      telemetry.startPeriodicCheckpoints();
-      now = 2 * 60 * 1_000;
-      jest.advanceTimersByTime(2 * 60 * 1_000);
-      expect(emit).not.toHaveBeenCalled();
-
+      now = 30 * 1_000;
       telemetry.checkpoint({
         phase: "provider_request",
         providerRequest,
         retention,
       });
-      now = 4 * 60 * 1_000;
-      jest.advanceTimersByTime(2 * 60 * 1_000);
+      telemetry.startPeriodicCheckpoints();
+      now += 2 * 60 * 1_000 - 1;
+      jest.advanceTimersByTime(2 * 60 * 1_000 - 1);
+      expect(emit).toHaveBeenCalledTimes(1);
+
+      now += 1;
+      jest.advanceTimersByTime(1);
 
       expect(emit).toHaveBeenCalledTimes(2);
       expect(emit.mock.calls[1]?.[0]).toMatchObject({
@@ -198,7 +199,7 @@ describe("AgentLongMemoryTelemetry", () => {
       });
 
       telemetry.dispose();
-      now = 6 * 60 * 1_000;
+      now += 2 * 60 * 1_000;
       jest.advanceTimersByTime(2 * 60 * 1_000);
       expect(emit).toHaveBeenCalledTimes(2);
     } finally {

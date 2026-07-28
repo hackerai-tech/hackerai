@@ -1769,7 +1769,6 @@ export const agentLongTask = task({
     let activeRuntimeBudget: ActiveRuntimeBudget | undefined;
 
     try {
-      memoryTelemetry.startPeriodicCheckpoints();
       // Re-fetch from DB so we have fileTokens for summarization.
       // The route already saved the user message; newMessages:[] avoids duplicates.
       const [userCustomization, fetched] = await Promise.all([
@@ -2847,11 +2846,15 @@ export const agentLongTask = task({
               onModelStreamStart: runTimingTracker.startModelStream,
               onModelStreamFinish: runTimingTracker.finishModelStream,
               onProviderRequestDiagnostics: (providerRequest, retention) => {
-                memoryTelemetry.checkpoint({
-                  phase: "provider_request",
-                  providerRequest,
-                  retention,
-                });
+                if (
+                  memoryTelemetry.checkpoint({
+                    phase: "provider_request",
+                    providerRequest,
+                    retention,
+                  })
+                ) {
+                  memoryTelemetry.startPeriodicCheckpoints();
+                }
               },
               settleUsageAfterStep,
               onBudgetAbort: (details) =>
