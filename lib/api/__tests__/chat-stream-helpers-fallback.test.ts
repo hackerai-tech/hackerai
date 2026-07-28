@@ -82,15 +82,15 @@ describe("buildProviderOptions fallback chain", () => {
     },
   );
 
-  it("resolves Opus 4.6 ask chain to Grok", () => {
+  it("resolves Opus 4.6 ask chain to Kimi K3 then Grok", () => {
     const opts = buildProviderOptions(false, "user-1", "model-opus-4.6", "ask");
     expect(opts.openrouter).toMatchObject({
-      models: [GROK_SLUG],
+      models: [KIMI_K3_SLUG, GROK_SLUG],
       user: "user-1",
     });
   });
 
-  it("resolves Opus 4.6 text-only agent chain to Grok then Kimi K3", () => {
+  it("resolves Opus 4.6 text-only agent chain to Kimi K3 then Grok", () => {
     const opts = buildProviderOptions(
       false,
       "user-1",
@@ -98,7 +98,7 @@ describe("buildProviderOptions fallback chain", () => {
       "agent",
     );
     expect(opts.openrouter).toMatchObject({
-      models: [GROK_SLUG, KIMI_K3_SLUG],
+      models: [KIMI_K3_SLUG, GROK_SLUG],
       user: "user-1",
     });
   });
@@ -474,7 +474,7 @@ describe("buildProviderOptions fallback chain", () => {
     );
     expect(reasoning.openrouter).toMatchObject({
       reasoning: { enabled: true, effort: "high" },
-      models: [GROK_SLUG, KIMI_K3_SLUG],
+      models: [KIMI_K3_SLUG, GROK_SLUG],
     });
 
     const grokReasoning = buildProviderOptions(
@@ -565,6 +565,15 @@ describe("getRetryFallbackModel", () => {
   it("retries the Grok-backed paid Ask image route with Kimi K3", () => {
     expect(getRetryFallbackModel("ask-model", "ask")).toBe("model-kimi-k3");
   });
+
+  it.each(["ask", "agent"] as const)(
+    "retries Opus 4.6 with Kimi K3 in %s mode",
+    (mode) => {
+      expect(getRetryFallbackModel("model-opus-4.6", mode)).toBe(
+        "model-kimi-k3",
+      );
+    },
+  );
 
   it("retries HackerAI Pro Grok with GLM 5.2", () => {
     expect(getRetryFallbackModel("model-grok-4.5-pro", "agent")).toBe(

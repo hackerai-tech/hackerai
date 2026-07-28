@@ -520,9 +520,10 @@ export class SummarizationTracker {
  * model's rate (response.modelId reflects what actually ran).
  *
  * Claude chats are repaired for Anthropic-compatible message shapes before
- * this fallback can fire. Claude agent calls use Grok and Kimi K3 fallbacks while
- * the run is text-only, then switch to multimodal-capable fallbacks once image
- * tool results enter the context.
+ * this fallback can fire. Opus 4.6 uses Kimi K3 then Grok 4.5 in every mode.
+ * Sonnet agent calls use Grok and Kimi K3 fallbacks while the run is text-only,
+ * then switch to multimodal-capable fallbacks once image tool results enter the
+ * context.
  *
  * Keys and values are registry names (see lib/ai/providers.ts) — the actual
  * OpenRouter slugs are resolved at request-build time so this stays in sync
@@ -636,7 +637,10 @@ const getFallbackKeys = (
   options: FallbackOptions = {},
 ): readonly ModelName[] | undefined => {
   if (!modelName) return undefined;
-  if (modelName === "model-opus-4.6" || modelName === "model-sonnet-4.6") {
+  if (modelName === "model-opus-4.6") {
+    return KIMI_K3_THEN_GROK_FALLBACK_CHAIN;
+  }
+  if (modelName === "model-sonnet-4.6") {
     if (mode === "agent" && options.hasMultimodalToolResults) {
       return ANTHROPIC_MULTIMODAL_AGENT_FALLBACK_CHAIN;
     }
@@ -651,6 +655,9 @@ export function getRetryFallbackModel(
 ): ModelName {
   if (modelName === "model-grok-4.5-pro") {
     return "model-glm-5.2";
+  }
+  if (modelName === "model-opus-4.6") {
+    return "model-kimi-k3";
   }
   if (
     modelName === "ask-model-free" ||
