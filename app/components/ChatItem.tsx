@@ -57,6 +57,7 @@ import {
   FolderInput,
   FolderMinus,
   FolderPlus,
+  GripVertical,
   ListPlus,
 } from "lucide-react";
 import { useMutation } from "convex/react";
@@ -133,7 +134,6 @@ const ChatItem: React.FC<ChatItemProps> = ({
   const [isRenaming, setIsRenaming] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
-  const suppressClickAfterDragRef = useRef(false);
   const renameInputId = useId();
 
   const {
@@ -170,14 +170,19 @@ const ChatItem: React.FC<ChatItemProps> = ({
   const showActions = Boolean(
     isHovered || isFocusedWithin || isDropdownOpen || isMobile,
   );
+  const showDragHandle = (isHovered || isDragging) && !isMobile;
   const showStreamingIndicator =
     isStreaming && (!isHovered || isMobile) && (!isDropdownOpen || isMobile);
+  const visibleActionSlotCount =
+    Number(showStreamingIndicator) +
+    Number(showDragHandle) +
+    Number(showActions);
   const rightPaddingClass =
-    isMobile && showActions && showStreamingIndicator
-      ? "pr-[4.5rem]"
-      : showActions
-        ? "pr-9"
-        : showStreamingIndicator
+    visibleActionSlotCount >= 3
+      ? "pr-[6.5rem]"
+      : visibleActionSlotCount === 2
+        ? "pr-[4.5rem]"
+        : visibleActionSlotCount === 1
           ? "pr-9"
           : "";
   const rowStartPaddingClass = indentContent ? "ps-6" : "ps-2";
@@ -188,22 +193,16 @@ const ChatItem: React.FC<ChatItemProps> = ({
     }
   }, [optimisticChatId, routeChatId, setOptimisticChatId]);
 
-  const handleDragStart = (event: React.DragEvent<HTMLDivElement>) => {
-    suppressClickAfterDragRef.current = true;
+  const handleDragStart = (event: React.DragEvent<HTMLSpanElement>) => {
     setIsDragging(true);
     setSidebarChatDragData(event.dataTransfer, id, projectId);
   };
 
   const handleDragEnd = () => {
     setIsDragging(false);
-    window.setTimeout(() => {
-      suppressClickAfterDragRef.current = false;
-    }, 0);
   };
 
   const handleClick = () => {
-    if (suppressClickAfterDragRef.current) return;
-
     // Don't navigate if dialog is open or dropdown is open
     if (
       showRenameDialog ||
@@ -431,14 +430,11 @@ const ChatItem: React.FC<ChatItemProps> = ({
 
   return (
     <div
-      className={`group relative flex w-full cursor-grab select-none items-center rounded-lg py-2 pe-0.5 ${rowStartPaddingClass} hover:bg-sidebar-accent/50 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 active:cursor-grabbing ${
+      className={`group relative flex w-full cursor-pointer select-none items-center rounded-lg py-2 pe-0.5 ${rowStartPaddingClass} hover:bg-sidebar-accent/50 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 ${
         isCurrentlyActive
           ? "bg-sidebar-accent text-sidebar-accent-foreground"
           : ""
       } ${isDragging ? "opacity-50" : ""}`}
-      draggable
-      onDragStart={handleDragStart}
-      onDragEnd={handleDragEnd}
       onMouseEnter={() => setIsHovered(true)}
       onMouseLeave={() => setIsHovered(false)}
       onFocus={() => setIsFocusedWithin(true)}
@@ -504,6 +500,23 @@ const ChatItem: React.FC<ChatItemProps> = ({
               aria-hidden="true"
             />
           </div>
+        ) : null}
+        {showDragHandle ? (
+          <span
+            className="flex size-8 flex-shrink-0 cursor-grab items-center justify-center rounded-md text-muted-foreground hover:bg-sidebar-accent active:cursor-grabbing"
+            draggable
+            onClick={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+            }}
+            onDragStart={handleDragStart}
+            onDragEnd={handleDragEnd}
+            title="Drag task"
+            aria-hidden="true"
+            data-testid={`chat-drag-handle-${id}`}
+          >
+            <GripVertical className="size-4" />
+          </span>
         ) : null}
         {showActions ? (
           <DropdownMenu open={isDropdownOpen} onOpenChange={setIsDropdownOpen}>

@@ -10,12 +10,13 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, jest } from "@jest/globals";
 
 const mockMoveChatToProject = jest.fn<any>();
+const mockRouterPush = jest.fn();
 const mockToastSuccess = jest.fn();
 const mockToastInfo = jest.fn();
 let mockProjects: any[] | undefined;
 
 jest.mock("next/navigation", () => ({
-  useRouter: () => ({ push: jest.fn() }),
+  useRouter: () => ({ push: mockRouterPush }),
   usePathname: () => "/",
 }));
 jest.mock("@/app/contexts/GlobalState", () => ({
@@ -318,6 +319,50 @@ describe("ChatItem project actions", () => {
     );
     expect(screen.getByTestId("chat-item-chat-1")).not.toHaveClass("p-2");
     expect(screen.getByTestId("chat-item-chat-2")).not.toHaveClass("p-2");
+  });
+
+  it("keeps the task row clickable while limiting drag initiation to a handle", () => {
+    render(<ChatItem id="chat-1" title="Target notes" />);
+
+    const row = screen.getByRole("button", { name: /Open task:/ });
+    expect(row).not.toHaveAttribute("draggable");
+    expect(row).toHaveClass("cursor-pointer");
+
+    fireEvent.mouseEnter(row);
+    const dragHandle = screen.getByTestId("chat-drag-handle-chat-1");
+    expect(dragHandle).toHaveAttribute("draggable", "true");
+
+    fireEvent.click(row);
+
+    expect(mockRouterPush).toHaveBeenCalledWith("/c/chat-1");
+  });
+
+  it("does not open the task when the dedicated drag handle is used", () => {
+    render(<ChatItem id="chat-1" title="Target notes" />);
+
+    const row = screen.getByRole("button", { name: /Open task:/ });
+    fireEvent.mouseEnter(row);
+    const dragHandle = screen.getByTestId("chat-drag-handle-chat-1");
+    const dataTransfer = {
+      effectAllowed: "none",
+      setData: jest.fn(),
+    };
+
+    fireEvent.dragStart(dragHandle, { dataTransfer });
+    fireEvent.mouseLeave(row);
+    expect(dragHandle).toBeInTheDocument();
+    fireEvent.click(dragHandle);
+    fireEvent.dragEnd(dragHandle);
+
+    expect(dataTransfer.effectAllowed).toBe("move");
+    expect(dataTransfer.setData).toHaveBeenCalledWith(
+      "application/x-hackerai-chat-id",
+      "chat-1",
+    );
+    expect(mockRouterPush).not.toHaveBeenCalled();
+    expect(
+      screen.queryByTestId("chat-drag-handle-chat-1"),
+    ).not.toBeInTheDocument();
   });
 
   it("centers the streaming indicator in the task action slot", () => {
