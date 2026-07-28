@@ -115,6 +115,48 @@ async function getWorkOSClientId(): Promise<string> {
   return await question("Enter your WorkOS Client ID: ");
 }
 
+async function getWorkOSAuthDomain(): Promise<string> {
+  console.log(`\n${chalk.bold("Getting WorkOS Authentication API Domain")}`);
+  console.log(
+    "Press enter to use api.workos.com, or enter the custom domain configured in WorkOS.",
+  );
+
+  const input = (
+    await question("Enter your WorkOS auth domain [api.workos.com]: ")
+  ).trim();
+  const configuredDomain = input || "api.workos.com";
+
+  try {
+    const authOrigin = new URL(
+      configuredDomain.includes("://")
+        ? configuredDomain
+        : `https://${configuredDomain}`,
+    );
+
+    if (
+      authOrigin.protocol === "https:" &&
+      !authOrigin.username &&
+      !authOrigin.password &&
+      !authOrigin.port &&
+      /^[a-z0-9.-]+$/i.test(authOrigin.hostname) &&
+      /^\/+$/.test(authOrigin.pathname) &&
+      !authOrigin.search &&
+      !authOrigin.hash
+    ) {
+      return authOrigin.hostname;
+    }
+  } catch {
+    // Show the validation message below.
+  }
+
+  console.log(
+    chalk.red(
+      "Invalid WorkOS auth domain. Enter a hostname or HTTPS origin without a path.",
+    ),
+  );
+  return await getWorkOSAuthDomain();
+}
+
 function generateWorkOSCookiePassword(): string {
   console.log(`\n${chalk.bold("Generating WORKOS_COOKIE_PASSWORD")}`);
   console.log(
@@ -150,6 +192,7 @@ async function configureWorkOSDashboard() {
 
 async function configureConvexDashboard(
   workOSClientId: string,
+  workOSAuthDomain: string,
   convexServiceRoleKey: string,
 ) {
   console.log(`\n${chalk.bold("Configure Convex Dashboard")}`);
@@ -161,6 +204,7 @@ async function configureConvexDashboard(
   console.log("3. Go to Settings → Environment Variables");
   console.log("4. Add the following required variables:\n");
   console.log(chalk.bold(`   WORKOS_CLIENT_ID=${workOSClientId}`));
+  console.log(chalk.bold(`   WORKOS_AUTH_DOMAIN=${workOSAuthDomain}`));
   console.log(chalk.bold(`   CONVEX_SERVICE_ROLE_KEY=${convexServiceRoleKey}`));
   console.log("\nOptional variables (add later if using these features):");
   console.log("   - AWS_S3_* variables (if using S3 storage)");
@@ -182,6 +226,10 @@ WORKOS_API_KEY=${envVars.WORKOS_API_KEY}
 
 # ⚠️ IMPORTANT: Also add this to Convex Dashboard → Environment Variables
 WORKOS_CLIENT_ID=${envVars.WORKOS_CLIENT_ID}
+
+# Use api.workos.com unless WorkOS has configured a custom Authentication API domain.
+# ⚠️ IMPORTANT: Also add this to Convex Dashboard → Environment Variables
+WORKOS_AUTH_DOMAIN=${envVars.WORKOS_AUTH_DOMAIN}
 
 # Generate with: node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
 WORKOS_COOKIE_PASSWORD=${envVars.WORKOS_COOKIE_PASSWORD}
@@ -428,6 +476,7 @@ async function main() {
   // Get WorkOS configuration
   const WORKOS_API_KEY = await getWorkOSApiKey();
   const WORKOS_CLIENT_ID = await getWorkOSClientId();
+  const WORKOS_AUTH_DOMAIN = await getWorkOSAuthDomain();
   const NEXT_PUBLIC_BASE_URL = "http://localhost:3000";
   const NEXT_PUBLIC_WORKOS_REDIRECT_URI = `${NEXT_PUBLIC_BASE_URL}/callback`;
   const WORKOS_COOKIE_PASSWORD = generateWorkOSCookiePassword();
@@ -449,6 +498,7 @@ async function main() {
     E2B_API_KEY,
     WORKOS_API_KEY,
     WORKOS_CLIENT_ID,
+    WORKOS_AUTH_DOMAIN,
     NEXT_PUBLIC_WORKOS_REDIRECT_URI,
     WORKOS_COOKIE_PASSWORD,
     ACCOUNT_IDENTITY_HMAC_SECRET,
@@ -468,6 +518,9 @@ async function main() {
         `npx convex env set WORKOS_CLIENT_ID ${WORKOS_CLIENT_ID} --local`,
       );
       await execAsync(
+        `npx convex env set WORKOS_AUTH_DOMAIN ${WORKOS_AUTH_DOMAIN} --local`,
+      );
+      await execAsync(
         `npx convex env set CONVEX_SERVICE_ROLE_KEY ${CONVEX_SERVICE_ROLE_KEY} --local`,
       );
       console.log(
@@ -483,12 +536,19 @@ async function main() {
         `   npx convex env set WORKOS_CLIENT_ID ${WORKOS_CLIENT_ID} --local`,
       );
       console.log(
+        `   npx convex env set WORKOS_AUTH_DOMAIN ${WORKOS_AUTH_DOMAIN} --local`,
+      );
+      console.log(
         `   npx convex env set CONVEX_SERVICE_ROLE_KEY ${CONVEX_SERVICE_ROLE_KEY} --local`,
       );
     }
   } else {
     // Configure Convex Dashboard for cloud deployments
-    await configureConvexDashboard(WORKOS_CLIENT_ID, CONVEX_SERVICE_ROLE_KEY);
+    await configureConvexDashboard(
+      WORKOS_CLIENT_ID,
+      WORKOS_AUTH_DOMAIN,
+      CONVEX_SERVICE_ROLE_KEY,
+    );
   }
 
   const devCommand = useLocal ? "pnpm run dev:local" : "pnpm run dev";
