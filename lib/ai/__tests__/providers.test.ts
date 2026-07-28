@@ -73,6 +73,10 @@ describe("provider registry", () => {
       "DeepSeek V4 Flash",
     );
   });
+
+  it("does not register the retired Sonnet route", () => {
+    expect(() => myProvider.languageModel("model-sonnet-4.6")).toThrow();
+  });
 });
 
 describe("sanitizeOpenRouterRequestForXai", () => {

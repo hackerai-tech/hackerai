@@ -32,7 +32,6 @@ const GROK_PRIMARY_OR_FALLBACK_MODELS = [
   "ask-model-free",
   "agent-model",
   "agent-model-free",
-  "model-sonnet-4.6",
   "model-grok-4.5",
   "model-grok-4.5-pro",
   "model-gemini-3-flash",
@@ -82,15 +81,15 @@ describe("buildProviderOptions fallback chain", () => {
     },
   );
 
-  it("resolves Opus 4.6 ask chain to Grok", () => {
+  it("resolves Opus 4.6 ask chain to Kimi K3 then Grok", () => {
     const opts = buildProviderOptions(false, "user-1", "model-opus-4.6", "ask");
     expect(opts.openrouter).toMatchObject({
-      models: [GROK_SLUG],
+      models: [KIMI_K3_SLUG, GROK_SLUG],
       user: "user-1",
     });
   });
 
-  it("resolves Opus 4.6 text-only agent chain to Grok then Kimi K3", () => {
+  it("resolves Opus 4.6 text-only agent chain to Kimi K3 then Grok", () => {
     const opts = buildProviderOptions(
       false,
       "user-1",
@@ -98,7 +97,7 @@ describe("buildProviderOptions fallback chain", () => {
       "agent",
     );
     expect(opts.openrouter).toMatchObject({
-      models: [GROK_SLUG, KIMI_K3_SLUG],
+      models: [KIMI_K3_SLUG, GROK_SLUG],
       user: "user-1",
     });
   });
@@ -108,46 +107,6 @@ describe("buildProviderOptions fallback chain", () => {
       false,
       "user-1",
       "model-opus-4.6",
-      "agent",
-      { hasMultimodalToolResults: true },
-    );
-    expect(opts.openrouter).toMatchObject({
-      models: [KIMI_K3_SLUG, GROK_SLUG],
-      user: "user-1",
-    });
-  });
-
-  it("resolves Sonnet 4.6 ask chain to Grok", () => {
-    const opts = buildProviderOptions(
-      false,
-      "user-1",
-      "model-sonnet-4.6",
-      "ask",
-    );
-    expect(opts.openrouter).toMatchObject({
-      models: [GROK_SLUG],
-      user: "user-1",
-    });
-  });
-
-  it("resolves Sonnet 4.6 text-only agent chain to Grok then Kimi K3", () => {
-    const opts = buildProviderOptions(
-      false,
-      "user-1",
-      "model-sonnet-4.6",
-      "agent",
-    );
-    expect(opts.openrouter).toMatchObject({
-      models: [GROK_SLUG, KIMI_K3_SLUG],
-      user: "user-1",
-    });
-  });
-
-  it("resolves Sonnet 4.6 multimodal agent chain to Kimi K3 then Grok", () => {
-    const opts = buildProviderOptions(
-      false,
-      "user-1",
-      "model-sonnet-4.6",
       "agent",
       { hasMultimodalToolResults: true },
     );
@@ -168,28 +127,6 @@ describe("buildProviderOptions fallback chain", () => {
       models: [KIMI_K3_SLUG, GROK_SLUG],
       user: "user-1",
     });
-  });
-
-  it("keeps Anthropic multimodal agent fallback on Kimi K3 then Grok", () => {
-    const opus = buildProviderOptions(
-      false,
-      "user-1",
-      "model-opus-4.6",
-      "agent",
-      {
-        hasMultimodalToolResults: true,
-      },
-    );
-    const sonnet = buildProviderOptions(
-      false,
-      "user-1",
-      "model-sonnet-4.6",
-      "agent",
-      { hasMultimodalToolResults: true },
-    );
-
-    expect(opus.openrouter.models).toEqual([KIMI_K3_SLUG, GROK_SLUG]);
-    expect(sonnet.openrouter.models).toEqual([KIMI_K3_SLUG, GROK_SLUG]);
   });
 
   it("falls back from the Grok-backed auto agent route to Kimi K3", () => {
@@ -426,31 +363,27 @@ describe("buildProviderOptions fallback chain", () => {
     },
   );
 
-  it.each([
-    "model-grok-4.5-pro",
-    "model-glm-5.2",
-    "model-sonnet-4.6",
-    "model-opus-4.6",
-  ])("enables high reasoning for ask mode model %s", (modelName) => {
-    const opts = buildProviderOptions(false, "user-1", modelName, "ask");
-    expect(opts.openrouter.reasoning).toEqual({
-      enabled: true,
-      effort: "high",
-    });
-  });
+  it.each(["model-grok-4.5-pro", "model-glm-5.2", "model-opus-4.6"])(
+    "enables high reasoning for ask mode model %s",
+    (modelName) => {
+      const opts = buildProviderOptions(false, "user-1", modelName, "ask");
+      expect(opts.openrouter.reasoning).toEqual({
+        enabled: true,
+        effort: "high",
+      });
+    },
+  );
 
-  it.each([
-    "model-grok-4.5-pro",
-    "model-glm-5.2",
-    "model-sonnet-4.6",
-    "model-opus-4.6",
-  ])("enables high reasoning for agent mode model %s", (modelName) => {
-    const opts = buildProviderOptions(true, "user-1", modelName, "agent");
-    expect(opts.openrouter.reasoning).toEqual({
-      enabled: true,
-      effort: "high",
-    });
-  });
+  it.each(["model-grok-4.5-pro", "model-glm-5.2", "model-opus-4.6"])(
+    "enables high reasoning for agent mode model %s",
+    (modelName) => {
+      const opts = buildProviderOptions(true, "user-1", modelName, "agent");
+      expect(opts.openrouter.reasoning).toEqual({
+        enabled: true,
+        effort: "high",
+      });
+    },
+  );
 
   it("uses high reasoning for DeepSeek V4 Pro in agent mode", () => {
     const opts = buildProviderOptions(
@@ -474,7 +407,7 @@ describe("buildProviderOptions fallback chain", () => {
     );
     expect(reasoning.openrouter).toMatchObject({
       reasoning: { enabled: true, effort: "high" },
-      models: [GROK_SLUG, KIMI_K3_SLUG],
+      models: [KIMI_K3_SLUG, GROK_SLUG],
     });
 
     const grokReasoning = buildProviderOptions(
@@ -565,6 +498,15 @@ describe("getRetryFallbackModel", () => {
   it("retries the Grok-backed paid Ask image route with Kimi K3", () => {
     expect(getRetryFallbackModel("ask-model", "ask")).toBe("model-kimi-k3");
   });
+
+  it.each(["ask", "agent"] as const)(
+    "retries Opus 4.6 with Kimi K3 in %s mode",
+    (mode) => {
+      expect(getRetryFallbackModel("model-opus-4.6", mode)).toBe(
+        "model-kimi-k3",
+      );
+    },
+  );
 
   it("retries HackerAI Pro Grok with GLM 5.2", () => {
     expect(getRetryFallbackModel("model-grok-4.5-pro", "agent")).toBe(
@@ -698,23 +640,6 @@ describe("resolveServedModelForCostAccounting", () => {
         mode: "agent",
       }),
     ).toBe("model-opus-4.6");
-  });
-
-  it("maps dated Sonnet provider response slugs back to the local cost key", () => {
-    expect(
-      resolveServedModelForCostAccounting({
-        modelName: "model-sonnet-4.6",
-        responseModel: "anthropic/claude-4.6-sonnet-20260217",
-        mode: "ask",
-      }),
-    ).toBe("model-sonnet-4.6");
-    expect(
-      resolveServedModelForCostAccounting({
-        modelName: "model-sonnet-4.6",
-        responseModel: "anthropic/claude-4.6-sonnet-20261231",
-        mode: "ask",
-      }),
-    ).toBe("model-sonnet-4.6");
   });
 
   it("maps GLM provider response slugs back to the local cost key", () => {

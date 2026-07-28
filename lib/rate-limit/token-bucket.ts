@@ -39,12 +39,6 @@ const DEFAULT_PRICING: ModelPricing = {
   cacheRead: 0.5,
   cacheWrite: 0.5,
 };
-const SONNET_4_6_PRICING: ModelPricing = {
-  input: 3.0,
-  output: 15.0,
-  cacheRead: 0.3,
-  cacheWrite: 3.75,
-};
 const GROK_4_5_PRICING: ModelPricing = {
   input: 2.0,
   output: 6.0,
@@ -91,7 +85,6 @@ const KIMI_K3_PRICING: ModelPricing = {
 /** Model pricing: $/1M tokens per model, including provider cache rates. */
 const MODEL_PRICING_MAP: Record<string, ModelPricing> = {
   default: DEFAULT_PRICING,
-  "model-sonnet-4.6": SONNET_4_6_PRICING,
   // Grok 4.5 rates from OpenRouter: $2.00 in / $6.00 out per 1M tokens.
   "model-grok-4.5": GROK_4_5_PRICING,
   "model-grok-4.5-pro": GROK_4_5_PRICING,
@@ -121,8 +114,6 @@ const MODEL_PRICING_MAP: Record<string, ModelPricing> = {
   "x-ai/grok-4.5": GROK_4_5_PRICING,
   "deepseek/deepseek-v4-flash": DEEPSEEK_V4_FLASH_PRICING,
   "deepseek/deepseek-v4-pro": DEEPSEEK_V4_PRO_PRICING,
-  "anthropic/claude-sonnet-4-6": SONNET_4_6_PRICING,
-  "anthropic/claude-sonnet-4.6": SONNET_4_6_PRICING,
   "anthropic/claude-opus-4.6": OPUS_4_6_PRICING,
   "z-ai/glm-5.2": GLM_5_2_PRICING,
   "z-ai/glm-5.2-20260616": GLM_5_2_PRICING,
@@ -140,9 +131,6 @@ const getModelPricing = (modelName?: string): ModelPricing => {
 
   if (/^anthropic\/claude-4\.6-opus-\d{8}$/.test(modelName)) {
     return OPUS_4_6_PRICING;
-  }
-  if (/^anthropic\/claude-4\.6-sonnet-\d{8}$/.test(modelName)) {
-    return SONNET_4_6_PRICING;
   }
 
   return DEFAULT_PRICING;

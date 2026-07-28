@@ -120,7 +120,7 @@ describe("useAutoContinue", () => {
       todos,
       temporaryChatsEnabled: true,
       sandboxPreference: "local-123",
-      selectedModel: "sonnet-4.6",
+      selectedModel: "hackerai-pro",
     });
 
     const { result, rerender } = renderHook(
@@ -151,7 +151,7 @@ describe("useAutoContinue", () => {
           temporary: true,
           sandboxPreference: "local-123",
           agentPermissionMode: "full_access",
-          selectedModel: "sonnet-4.6",
+          selectedModel: "hackerai-pro",
         },
       },
     );
