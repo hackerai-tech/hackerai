@@ -337,11 +337,12 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
     expect(mockCreateCentrifugoPtyHandle).not.toHaveBeenCalled();
   });
 
-  test("starts the renewable cloud lease for a long foreground command", async () => {
+  test("does not duplicate the acquisition lease for a short foreground command", async () => {
     const fakeHandle = makeFakeHandle();
     const e2b = makeFakeE2BSandbox();
     mockCreateE2BPtyHandle.mockResolvedValue(fakeHandle);
     const { context } = makeContext({ sandbox: e2b });
+    await e2b.setTimeout(7 * 60 * 1000, { requestTimeoutMs: 5 * 1000 });
 
     setTimeout(() => {
       fakeHandle.emit(new TextEncoder().encode("done\n"));
@@ -356,7 +357,7 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
       interactive: true,
     });
 
-    expect(e2b.setTimeout).toHaveBeenCalledWith(7 * 60 * 1000);
+    expect(e2b.setTimeout).toHaveBeenCalledTimes(1);
   });
 
   test("detectAgentBrowserUsage extracts sanitized actions", () => {

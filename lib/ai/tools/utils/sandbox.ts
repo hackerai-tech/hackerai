@@ -8,6 +8,7 @@ type SandboxReadyPath = SandboxBootInfo["path"];
 const SANDBOX_TEMPLATE = process.env.E2B_TEMPLATE || "terminal-agent-sandbox";
 export const BASH_SANDBOX_AUTOPAUSE_TIMEOUT = 7 * 60 * 1000;
 export const E2B_SANDBOX_LEASE_HEARTBEAT_INTERVAL_MS = 60 * 1000;
+export const E2B_SANDBOX_LEASE_REQUEST_TIMEOUT_MS = 5 * 1000;
 // Retry config for E2B 429 rate limits
 const RATE_LIMIT_COOLDOWN_MS = 1_000;
 const MAX_CREATE_RETRIES = 3;
@@ -15,7 +16,9 @@ const MAX_CREATE_RETRIES = 3;
 export const refreshE2BSandboxLease = async (
   sandbox: Sandbox,
 ): Promise<number> => {
-  await sandbox.setTimeout(BASH_SANDBOX_AUTOPAUSE_TIMEOUT);
+  await sandbox.setTimeout(BASH_SANDBOX_AUTOPAUSE_TIMEOUT, {
+    requestTimeoutMs: E2B_SANDBOX_LEASE_REQUEST_TIMEOUT_MS,
+  });
   return BASH_SANDBOX_AUTOPAUSE_TIMEOUT;
 };
 
@@ -86,8 +89,9 @@ export const withE2BSandboxLeaseHeartbeat = async <T>(
     }
   };
 
-  await refresh();
-
+  // Acquisition already creates, connects, or refreshes the seven-minute
+  // lease. Delay the first heartbeat so foreground startup does not make a
+  // duplicate E2B API request.
   const heartbeat = setInterval(() => {
     void refresh();
   }, E2B_SANDBOX_LEASE_HEARTBEAT_INTERVAL_MS);

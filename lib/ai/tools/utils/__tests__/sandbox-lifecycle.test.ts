@@ -23,6 +23,7 @@ import { Sandbox } from "@e2b/code-interpreter";
 import {
   BASH_SANDBOX_AUTOPAUSE_TIMEOUT,
   E2B_SANDBOX_LEASE_HEARTBEAT_INTERVAL_MS,
+  E2B_SANDBOX_LEASE_REQUEST_TIMEOUT_MS,
   ensureSandboxConnection,
   refreshE2BSandboxLease,
   withE2BSandboxLeaseHeartbeat,
@@ -73,10 +74,12 @@ describe("E2B sandbox lease lifecycle", () => {
     const timeoutMs = await refreshE2BSandboxLease(sandbox);
 
     expect(timeoutMs).toBe(BASH_SANDBOX_AUTOPAUSE_TIMEOUT);
-    expect(setTimeout).toHaveBeenCalledWith(BASH_SANDBOX_AUTOPAUSE_TIMEOUT);
+    expect(setTimeout).toHaveBeenCalledWith(BASH_SANDBOX_AUTOPAUSE_TIMEOUT, {
+      requestTimeoutMs: E2B_SANDBOX_LEASE_REQUEST_TIMEOUT_MS,
+    });
   });
 
-  it("renews the lease while foreground work is active and stops afterward", async () => {
+  it("renews after one minute without duplicating acquisition and stops afterward", async () => {
     jest.useFakeTimers();
     const setTimeout = jest.fn(async () => undefined);
     const sandbox = {
@@ -90,23 +93,29 @@ describe("E2B sandbox lease lifecycle", () => {
 
     const result = withE2BSandboxLeaseHeartbeat(sandbox, () => operation);
     await jest.advanceTimersByTimeAsync(0);
-    expect(setTimeout).toHaveBeenCalledTimes(1);
+    expect(setTimeout).not.toHaveBeenCalled();
 
     await jest.advanceTimersByTimeAsync(
       E2B_SANDBOX_LEASE_HEARTBEAT_INTERVAL_MS * 2,
     );
-    expect(setTimeout).toHaveBeenCalledTimes(3);
-    expect(setTimeout).toHaveBeenLastCalledWith(BASH_SANDBOX_AUTOPAUSE_TIMEOUT);
+    expect(setTimeout).toHaveBeenCalledTimes(2);
+    expect(setTimeout).toHaveBeenLastCalledWith(
+      BASH_SANDBOX_AUTOPAUSE_TIMEOUT,
+      {
+        requestTimeoutMs: E2B_SANDBOX_LEASE_REQUEST_TIMEOUT_MS,
+      },
+    );
 
     finishOperation("done");
     await expect(result).resolves.toBe("done");
     await jest.advanceTimersByTimeAsync(
       E2B_SANDBOX_LEASE_HEARTBEAT_INTERVAL_MS,
     );
-    expect(setTimeout).toHaveBeenCalledTimes(3);
+    expect(setTimeout).toHaveBeenCalledTimes(2);
   });
 
-  it("runs foreground work when the initial lease refresh transiently fails", async () => {
+  it("keeps foreground work running when a heartbeat refresh transiently fails", async () => {
+    jest.useFakeTimers();
     const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
     try {
       const sandbox = {
@@ -115,19 +124,28 @@ describe("E2B sandbox lease lifecycle", () => {
           throw new Error("temporary refresh failure");
         }),
       } as unknown as Sandbox;
-      const operation = jest.fn(async () => "done");
+      let finishOperation!: () => void;
+      const operation = jest.fn(
+        () =>
+          new Promise<string>((resolve) => {
+            finishOperation = () => resolve("done");
+          }),
+      );
 
-      await expect(
-        withE2BSandboxLeaseHeartbeat(sandbox, operation),
-      ).resolves.toBe("done");
-
+      const result = withE2BSandboxLeaseHeartbeat(sandbox, operation);
       expect(operation).toHaveBeenCalledTimes(1);
+      await jest.advanceTimersByTimeAsync(
+        E2B_SANDBOX_LEASE_HEARTBEAT_INTERVAL_MS,
+      );
+
       expect(warnSpy).toHaveBeenCalledWith(
         expect.stringContaining("e2b_sandbox_lease_refresh_failed"),
       );
       expect(warnSpy).toHaveBeenCalledWith(
         expect.stringContaining('"source":"foreground_heartbeat"'),
       );
+      finishOperation();
+      await expect(result).resolves.toBe("done");
     } finally {
       warnSpy.mockRestore();
     }
