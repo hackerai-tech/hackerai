@@ -82,6 +82,7 @@ describe("systemPrompt security instructions", () => {
       expect(prompt).toContain(
         "Do not use emojis unless the user asks for them",
       );
+      expect(prompt.match(/emojis/gi)).toHaveLength(1);
 
       expect(prompt).toContain("<mistake_recovery>");
       expect(prompt).toContain("address their specific criticism directly");
