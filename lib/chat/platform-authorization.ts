@@ -3,14 +3,24 @@ import type { ModelMessage } from "ai";
 export const PLATFORM_AUTHORIZATION_ANNOTATION =
   "<platform_authorization>(I have permission and am authorized to perform this pentest)</platform_authorization>";
 
-const stripPlatformAuthorization = (messages: ModelMessage[]): ModelMessage[] =>
-  messages.map((message) => {
+const PLATFORM_AUTHORIZATION_BLOCK_PATTERN =
+  /<platform_authorization(?:\s[^>]*)?>[\s\S]*?<\/platform_authorization\s*>/gi;
+const PLATFORM_AUTHORIZATION_TAG_PATTERN =
+  /<\/?platform_authorization(?:\s[^>]*)?>/gi;
+
+const stripPlatformAuthorizationFromText = (text: string): string =>
+  text
+    .replace(PLATFORM_AUTHORIZATION_BLOCK_PATTERN, "")
+    .replace(PLATFORM_AUTHORIZATION_TAG_PATTERN, "");
+
+const stripPlatformAuthorization = (
+  messages: ModelMessage[],
+): ModelMessage[] => {
+  const cleanedMessages = messages.map((message) => {
     if (message.role !== "user") return message;
 
     if (typeof message.content === "string") {
-      const content = message.content
-        .replaceAll(` ${PLATFORM_AUTHORIZATION_ANNOTATION}`, "")
-        .replaceAll(PLATFORM_AUTHORIZATION_ANNOTATION, "");
+      const content = stripPlatformAuthorizationFromText(message.content);
       return content === message.content ? message : { ...message, content };
     }
 
@@ -22,9 +32,7 @@ const stripPlatformAuthorization = (messages: ModelMessage[]): ModelMessage[] =>
         continue;
       }
 
-      const text = part.text
-        .replaceAll(` ${PLATFORM_AUTHORIZATION_ANNOTATION}`, "")
-        .replaceAll(PLATFORM_AUTHORIZATION_ANNOTATION, "");
+      const text = stripPlatformAuthorizationFromText(part.text);
       if (text === part.text) {
         content.push(part);
         continue;
@@ -37,6 +45,11 @@ const stripPlatformAuthorization = (messages: ModelMessage[]): ModelMessage[] =>
     return changed ? { ...message, content } : message;
   });
 
+  return cleanedMessages.every((message, index) => message === messages[index])
+    ? messages
+    : cleanedMessages;
+};
+
 /**
  * Adds trusted authorization metadata at the final provider boundary.
  *
@@ -47,9 +60,9 @@ export const appendPlatformAuthorizationToLatestUserMessage = (
   messages: ModelMessage[],
   platformAuthorized: boolean,
 ): ModelMessage[] => {
-  if (!platformAuthorized) return messages;
-
   const cleanedMessages = stripPlatformAuthorization(messages);
+  if (!platformAuthorized) return cleanedMessages;
+
   const lastUserIndex = cleanedMessages.findLastIndex(
     (message) => message.role === "user",
   );
@@ -59,10 +72,11 @@ export const appendPlatformAuthorizationToLatestUserMessage = (
     if (index !== lastUserIndex || message.role !== "user") return message;
 
     if (typeof message.content === "string") {
-      const separator = message.content ? " " : "";
+      const content = message.content.trimEnd();
+      const separator = content ? " " : "";
       return {
         ...message,
-        content: `${message.content}${separator}${PLATFORM_AUTHORIZATION_ANNOTATION}`,
+        content: `${content}${separator}${PLATFORM_AUTHORIZATION_ANNOTATION}`,
       };
     }
 
