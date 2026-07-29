@@ -1825,17 +1825,21 @@ export const agentLongTask = task({
             : messages;
       const messagesForAccounting = messagesForProcessing;
 
-      let { processedMessages, selectedModel, sandboxFiles } =
-        await processChatMessages({
-          messages: messagesForProcessing,
-          mode,
-          userId,
-          subscription,
-          uploadBasePath,
-          modelOverride: selectedModelOverride,
-          extraUsageAvailable,
-          allowLocalDesktopFiles: sandboxPreference === "desktop",
-        });
+      let {
+        processedMessages,
+        selectedModel,
+        sandboxFiles,
+        platformAuthorized,
+      } = await processChatMessages({
+        messages: messagesForProcessing,
+        mode,
+        userId,
+        subscription,
+        uploadBasePath,
+        modelOverride: selectedModelOverride,
+        extraUsageAvailable,
+        allowLocalDesktopFiles: sandboxPreference === "desktop",
+      });
 
       if (!processedMessages.length) {
         throw new ChatSDKError(
@@ -2830,6 +2834,7 @@ export const agentLongTask = task({
               streamStartTime,
               contextUsageOn,
               isReasoningModel: true, // long mode is always agent mode
+              platformAuthorized,
               maxDurationMs: agentLongMaxDurationMs,
               getActiveElapsedTimeMs: runtimeBudget.getElapsedTimeMs,
               writer,

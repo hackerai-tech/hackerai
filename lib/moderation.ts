@@ -1,22 +1,17 @@
 import OpenAI from "openai";
 import { decode } from "gpt-tokenizer";
 import { safeEncode } from "@/lib/token-utils";
-import { detectLang, type SupportedLang } from "@/lib/chat/auth-disclaimer";
 
 const MODERATION_TOKEN_LIMIT = 512;
 
 export type ModerationResult = {
   shouldUncensorResponse: boolean;
   moderationText: string;
-  language: SupportedLang;
 };
 
-const emptyModerationResult = (
-  language: SupportedLang = "en",
-): ModerationResult => ({
+const emptyModerationResult = (): ModerationResult => ({
   shouldUncensorResponse: false,
   moderationText: "",
-  language,
 });
 
 export async function getModerationResult(
@@ -39,7 +34,6 @@ export async function getModerationResult(
   }
 
   const input = prepareInput(targetMessage);
-  const language = detectLang(input);
 
   try {
     const moderation = await openai.moderations.create({
@@ -50,7 +44,7 @@ export async function getModerationResult(
     // Check if moderation results exist and are not empty
     if (!moderation?.results || moderation.results.length === 0) {
       console.error("Moderation API returned no results");
-      return { shouldUncensorResponse: false, moderationText: input, language };
+      return { shouldUncensorResponse: false, moderationText: input };
     }
 
     const result = moderation.results[0];
@@ -65,9 +59,9 @@ export async function getModerationResult(
       isPaidUser,
     );
 
-    return { shouldUncensorResponse, moderationText: input, language };
+    return { shouldUncensorResponse, moderationText: input };
   } catch (_error: any) {
-    return emptyModerationResult(language);
+    return emptyModerationResult();
   }
 }
 

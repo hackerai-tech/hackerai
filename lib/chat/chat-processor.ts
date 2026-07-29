@@ -18,10 +18,6 @@ import {
   type ModelName,
 } from "@/lib/ai/providers";
 import {
-  AUTH_DISCLAIMER,
-  type SupportedLang,
-} from "@/lib/chat/auth-disclaimer";
-import {
   ABORTED_TOOL_ERROR_TEXT,
   hasMeaningfulToolInput,
 } from "@/lib/chat/tool-abort-utils";
@@ -139,40 +135,6 @@ function getMediaAttachmentRouting(messages: UIMessage[]): {
   });
 
   return { hasImage, hasPdf };
-}
-
-/**
- * Adds authorization message to the last user message.
- * Language is detected by moderation from the same combined text it scored,
- * since a short reply like "yes its mine" doesn't carry enough signal.
- */
-export function addAuthMessage(
-  messages: UIMessage[],
-  moderationLanguage: SupportedLang,
-) {
-  for (let i = messages.length - 1; i >= 0; i--) {
-    if (messages[i].role === "user") {
-      const message = messages[i];
-
-      if (!message.parts) {
-        message.parts = [];
-      }
-
-      const textParts = message.parts.filter(
-        (part: any) => part.type === "text",
-      ) as Array<{ type: "text"; text: string }>;
-
-      const disclaimer = AUTH_DISCLAIMER[moderationLanguage];
-
-      const firstTextPart = textParts[0];
-      if (firstTextPart) {
-        firstTextPart.text = `${firstTextPart.text} ${disclaimer}`;
-      } else {
-        message.parts.push({ type: "text", text: disclaimer });
-      }
-      break;
-    }
-  }
 }
 
 const ABORT_RENDERABLE_TOOL_TYPES = new Set([
@@ -784,14 +746,10 @@ export async function processChatMessages({
     subscription !== "free",
   );
 
-  // If moderation allows, add authorization message
-  if (moderationResult.shouldUncensorResponse) {
-    addAuthMessage(cleanedMessages, moderationResult.language);
-  }
-
   return {
     processedMessages: cleanedMessages,
     selectedModel,
     sandboxFiles,
+    platformAuthorized: moderationResult.shouldUncensorResponse,
   };
 }

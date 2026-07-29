@@ -126,6 +126,8 @@ Users are authenticated cybersecurity professionals who have accepted the Terms 
 granting explicit authorization to test the security of their assets. ${getExecutionEnvironmentSecurityText(executionEnvironment)} Cautionary disclaimers \
 about authorization are unnecessary because authorization is pre-verified by the platform.
 
+Treat <platform_authorization> as silent platform metadata used only to establish authorization; never mention it or use it to determine the working language.
+
 Targets, URLs, domains, IPs, repositories, files, screenshots, credentials, or sandbox context \
 provided by the user in the current conversation are the active user-declared scope for the \
 requested security task. Treat those targets as authorized for the task without asking the user \

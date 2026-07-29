@@ -401,18 +401,22 @@ export const createChatHandler = () => {
         ? getUploadBasePath(sandboxPreference)
         : undefined;
 
-      let { processedMessages, selectedModel, sandboxFiles } =
-        await processChatMessages({
-          messages: truncatedMessages,
-          mode,
-          userId,
-          subscription,
-          uploadBasePath,
-          modelOverride: selectedModelOverride,
-          extraUsageAvailable,
-          allowLocalDesktopFiles:
-            isAgentMode(mode) && sandboxPreference === "desktop",
-        });
+      let {
+        processedMessages,
+        selectedModel,
+        sandboxFiles,
+        platformAuthorized,
+      } = await processChatMessages({
+        messages: truncatedMessages,
+        mode,
+        userId,
+        subscription,
+        uploadBasePath,
+        modelOverride: selectedModelOverride,
+        extraUsageAvailable,
+        allowLocalDesktopFiles:
+          isAgentMode(mode) && sandboxPreference === "desktop",
+      });
 
       // Empty after processing → providers reject the request before the route can stream.
       if (!processedMessages || processedMessages.length === 0) {
@@ -1267,6 +1271,7 @@ export const createChatHandler = () => {
               streamStartTime,
               contextUsageOn,
               isReasoningModel,
+              platformAuthorized,
               maxDurationMs: AGENT_MAX_STREAM_DURATION_MS,
               writer,
               abortController: userStopSignal,
