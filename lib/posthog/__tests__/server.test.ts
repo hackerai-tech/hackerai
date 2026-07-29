@@ -75,10 +75,11 @@ describe("phLogger", () => {
       },
     );
 
-    phLogger.error("provider_failed", {
+    phLogger.error(`provider_failed ${signedUrl}`, {
       userId: "user_123",
       error,
       requestId: "req_123",
+      message: signedUrl,
     });
 
     const capturedError = mockCaptureException.mock.calls[0]?.[0] as Error;
@@ -97,6 +98,37 @@ describe("phLogger", () => {
     expect(serialized).not.toContain("access-key");
     expect(serialized).not.toContain("signature-secret");
     expect("cause" in capturedError).toBe(false);
+    expect(emittedLog?.body).toBe("provider_failed [Redacted signed URL]");
+    expect(capturedProperties?.message).toBe(
+      "provider_failed [Redacted signed URL]",
+    );
+  });
+
+  it("redacts signed URLs from error console fallbacks", () => {
+    const consoleError = jest
+      .spyOn(console, "error")
+      .mockImplementation(() => undefined);
+    const signedUrl =
+      "https://bucket.s3.amazonaws.com/user-files/user_123/private-image.png?X-Amz-Credential=access-key&X-Amz-Signature=signature-secret";
+    mockCaptureException.mockImplementationOnce(() => {
+      throw new Error(`Telemetry failed for ${signedUrl}`);
+    });
+
+    try {
+      phLogger.error(`provider_failed ${signedUrl}`, {
+        error: new Error(`Provider failed for ${signedUrl}`),
+        message: signedUrl,
+      });
+
+      const serialized = JSON.stringify(consoleError.mock.calls);
+
+      expect(serialized).toContain("[Redacted signed URL]");
+      expect(serialized).not.toContain("user-files");
+      expect(serialized).not.toContain("access-key");
+      expect(serialized).not.toContain("signature-secret");
+    } finally {
+      consoleError.mockRestore();
+    }
   });
 
   it("passes stable event UUIDs to PostHog without leaking them into properties", () => {

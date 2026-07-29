@@ -119,6 +119,34 @@ function sanitizeExceptionForCapture(error: Error): Error {
   return sanitized;
 }
 
+function sanitizeErrorForConsole(error: unknown): unknown {
+  if (error instanceof Error) {
+    const serialized = [
+      error.message,
+      error.stack ?? "",
+      stringifyUnknown(error),
+    ].join("\n");
+    return redactSensitiveErrorMessage(serialized) === serialized
+      ? error
+      : sanitizeExceptionForCapture(error);
+  }
+  if (error === undefined) return undefined;
+  return redactSensitiveErrorMessage(stringifyUnknown(error));
+}
+
+function sanitizeFieldsForConsole(fields: LogFields): LogFields {
+  return Object.fromEntries(
+    Object.entries(fields).map(([key, value]) => [
+      key,
+      key === "error"
+        ? sanitizeErrorForConsole(value)
+        : typeof value === "string"
+          ? redactSensitiveErrorMessage(value)
+          : value,
+    ]),
+  );
+}
+
 function commonLogFields({
   level,
   event,
@@ -158,8 +186,8 @@ function emitStructuredLog(
       event,
       body: message,
       attributes: {
-        ...commonLogFields({ level, event, message, userId }),
         ...rest,
+        ...commonLogFields({ level, event, message, userId }),
         ...serializeError(error),
       },
     });
@@ -170,29 +198,39 @@ function emitStructuredLog(
 
 export const phLogger = {
   error(message: string, fields: LogFields = {}) {
-    const wroteLog = emitStructuredLog("error", message, fields);
+    const redactedMessage = redactSensitiveErrorMessage(message);
+    const wroteLog = emitStructuredLog("error", redactedMessage, fields);
+    const safeFields = sanitizeFieldsForConsole(fields);
     const client = getClient();
     if (!client) {
-      if (!wroteLog) console.error(message, fields);
+      if (!wroteLog) console.error(redactedMessage, safeFields);
       return;
     }
     try {
       const { userId, error, ...rest } = fields;
       const exception = sanitizeExceptionForCapture(
-        error instanceof Error ? error : new Error(message),
+        error instanceof Error ? error : new Error(redactedMessage),
       );
       const event =
         typeof fields.event === "string" && fields.event.length > 0
           ? fields.event
-          : eventNameFor(message);
+          : eventNameFor(redactedMessage);
       client.captureException(exception, distinctIdFor(userId), {
-        ...commonLogFields({ level: "error", event, message, userId }),
-        ...serializeError(exception),
-        message,
         ...rest,
+        ...commonLogFields({
+          level: "error",
+          event,
+          message: redactedMessage,
+          userId,
+        }),
+        ...serializeError(exception),
+        message: redactedMessage,
       });
     } catch (telemetryError) {
-      console.error(message, { ...fields, telemetryError });
+      console.error(redactedMessage, {
+        ...safeFields,
+        telemetryError: sanitizeErrorForConsole(telemetryError),
+      });
     }
   },
 

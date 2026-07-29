@@ -77,4 +77,16 @@ describe("error redaction", () => {
 
     expect(redactSensitiveErrorMessage(message)).toBe(message);
   });
+
+  it("redacts signed URLs with apostrophes in object paths", () => {
+    const message =
+      "Provider failed for 'https://bucket.s3.amazonaws.com/user-files/user's-file.png?X-Amz-Credential=access-key&X-Amz-Signature=signature-secret'";
+
+    const redacted = redactSensitiveErrorMessage(message);
+
+    expect(redacted).toBe("Provider failed for '[Redacted signed URL]'");
+    expect(redacted).not.toContain("user's-file");
+    expect(redacted).not.toContain("access-key");
+    expect(redacted).not.toContain("signature-secret");
+  });
 });

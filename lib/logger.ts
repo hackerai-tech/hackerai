@@ -729,6 +729,7 @@ export const logger = {
   ): void {
     console.error(
       JSON.stringify({
+        ...context,
         level: "error",
         message: redactSensitiveErrorMessage(message),
         timestamp: new Date().toISOString(),
@@ -742,7 +743,6 @@ export const logger = {
                   : error.stack,
             }
           : undefined,
-        ...context,
       }),
     );
   },

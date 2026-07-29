@@ -6,7 +6,7 @@ const SENSITIVE_FIELD_PATTERN =
 const ENV_SECRET_PATTERN =
   /(["']?\b(?:CONVEX_SERVICE_ROLE_KEY|POSTHOG_API_KEY|STRIPE_SECRET_KEY)\b["']?)(\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,}]+)/gi;
 
-const URL_PATTERN = /https?:\/\/[^\s"'<>\\]+/gi;
+const URL_PATTERN = /https?:\/\/[^\s"<>\\]+/gi;
 const SIGNED_URL_CREDENTIAL_PATTERN =
   /[?&](?:x-amz-(?:algorithm|credential|date|expires|signedheaders|signature|security-token)|awsaccesskeyid|signature)=/i;
 const REDACTED_SIGNED_URL = "[Redacted signed URL]";
@@ -27,9 +27,14 @@ export const stripControlSequencesFromErrorMessage = (
 
 export const redactSensitiveErrorMessage = (message: string): string =>
   stripControlSequencesFromErrorMessage(message)
-    .replace(URL_PATTERN, (url) =>
-      SIGNED_URL_CREDENTIAL_PATTERN.test(url) ? REDACTED_SIGNED_URL : url,
-    )
+    .replace(URL_PATTERN, (url) => {
+      if (!SIGNED_URL_CREDENTIAL_PATTERN.test(url)) return url;
+
+      // Apostrophes are valid inside object paths, but a terminal apostrophe
+      // after the signed query is a surrounding string delimiter.
+      const trailingDelimiter = url.endsWith("'") ? "'" : "";
+      return `${REDACTED_SIGNED_URL}${trailingDelimiter}`;
+    })
     .replace(SENSITIVE_FIELD_PATTERN, (_match, key, separator) => {
       return `${key}${separator}"${REDACTED_VALUE}"`;
     })
