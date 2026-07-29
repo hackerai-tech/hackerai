@@ -17,11 +17,13 @@ import {
   convertToModelMessages,
   stepCountIs,
   streamText,
+  type LanguageModel,
   type ModelMessage,
   type UIMessage,
   type UIMessageStreamWriter,
   type ToolSet,
 } from "ai";
+import { randomUUID } from "crypto";
 import {
   recordAgentStepCompletion,
   type AgentCompletionSignalTracker,
@@ -77,7 +79,7 @@ import {
   ROLLING_COMPACTION_MAX_SIZE_RATIO,
 } from "@/lib/chat/summarization/constants";
 import { compactModelMessagesInRun } from "@/lib/chat/summarization";
-import { getLatestCompletedToolTransaction } from "@/lib/chat/summarization/helpers";
+import { getRecentCompleteModelTail } from "@/lib/chat/summarization/helpers";
 import { getProviderPromptPressure } from "@/lib/chat/summarization/provider-pressure";
 import { getMaxStepsForUser } from "@/lib/chat/chat-processor";
 import {
@@ -113,6 +115,7 @@ import type {
   ProviderRequestRetentionDiagnostics,
 } from "@/lib/logger";
 import type { ChatMode, SubscriptionTier } from "@/types";
+import { namespaceLanguageModelToolCalls } from "@/lib/ai/tool-call-id-namespace";
 
 const AGENT_VISION_MODEL = "model-grok-4.5";
 
@@ -504,6 +507,7 @@ export async function createAgentStream(
   ctx: AgentStreamContext,
   state: AgentStreamState,
 ) {
+  const toolCallRunNamespace = randomUUID().replaceAll("-", "").slice(0, 8);
   const stepUsageCostIndexes: Array<number | undefined> = [];
   const getActiveToolsWithExclusions = async (
     excludedToolNames: ReadonlySet<string> = new Set(),
@@ -557,6 +561,14 @@ export async function createAgentStream(
   const canSummarizeAgain = () =>
     !ctx.temporary &&
     compactionAttemptCount < MAX_CONTEXT_COMPACTION_ATTEMPTS_PER_AGENT_STREAM;
+  const getNamespacedLanguageModel = (
+    languageModel: LanguageModel,
+    stepIndex: number,
+  ): LanguageModel =>
+    namespaceLanguageModelToolCalls(
+      languageModel,
+      `r${toolCallRunNamespace}c${ctx.summarizationTracker.summarizationCount}s${stepIndex}`,
+    );
   type AbortStepLike = {
     usage?: unknown;
     response?: Parameters<typeof extractOpenRouterMetadata>[0]["response"] & {
@@ -771,7 +783,7 @@ export async function createAgentStream(
   });
 
   return streamText({
-    model: initialModelInfo.languageModel,
+    model: getNamespacedLanguageModel(initialModelInfo.languageModel, 0),
     maxOutputTokens,
     system: buildSystemPrompt(
       ctx.currentSystemPrompt,
@@ -907,7 +919,10 @@ export async function createAgentStream(
                 activeTools,
               });
               return {
-                model: effectiveModelInfo.languageModel,
+                model: getNamespacedLanguageModel(
+                  effectiveModelInfo.languageModel,
+                  steps.length,
+                ),
                 activeTools,
                 providerOptions,
                 messages: preparedMessages,
@@ -964,17 +979,11 @@ export async function createAgentStream(
               const continuationPrompt = loopRecovery.nudge
                 ? `${POST_SUMMARIZATION_CONTINUATION_PROMPT}\n\n${loopRecovery.nudge}`
                 : POST_SUMMARIZATION_CONTINUATION_PROMPT;
-              const lastStepResponseMessages =
-                (
-                  lastStep as
-                    { response?: { messages?: ModelMessage[] } } | undefined
-                )?.response?.messages ?? [];
-              const retainedToolTransaction = getLatestCompletedToolTransaction(
-                lastStepResponseMessages,
-              );
+              const retainedModelTail =
+                getRecentCompleteModelTail(rollingModelMessages);
               const nextBaseMessages: ModelMessage[] = [
                 ...compactedModelMessages,
-                ...retainedToolTransaction,
+                ...retainedModelTail,
                 { role: "user", content: continuationPrompt },
               ];
               const effectiveCompaction = isRollingCompactionEffective(
@@ -1029,7 +1038,7 @@ export async function createAgentStream(
                       ctx.summarizationTracker.summarizationCount,
                     persistence: "run_scoped",
                     raw_message_count: rawModelMessages.length,
-                    retained_tool_message_count: retainedToolTransaction.length,
+                    retained_model_tail_message_count: retainedModelTail.length,
                   }),
                 );
                 rollingContextCheckpoint = {
@@ -1062,7 +1071,10 @@ export async function createAgentStream(
                   activeTools,
                 });
                 return {
-                  model: effectiveModelInfo.languageModel,
+                  model: getNamespacedLanguageModel(
+                    effectiveModelInfo.languageModel,
+                    steps.length,
+                  ),
                   activeTools,
                   providerOptions,
                   messages: preparedMessages,
@@ -1115,7 +1127,10 @@ export async function createAgentStream(
           activeTools,
         });
         return {
-          model: effectiveModelInfo.languageModel,
+          model: getNamespacedLanguageModel(
+            effectiveModelInfo.languageModel,
+            steps.length,
+          ),
           activeTools,
           providerOptions,
           messages: preparedMessages,
@@ -1126,7 +1141,10 @@ export async function createAgentStream(
         } else {
           console.error("[agent-stream] prepareStep error:", error);
         }
-        const providerOptions = getStepProviderOptions();
+        const fallbackModelInfo = getEffectiveModelInfo();
+        const providerOptions = getStepProviderOptions(
+          fallbackModelInfo.modelName,
+        );
         const fallbackMessages = prepareProviderMessages(
           rollingModelMessages,
         ) as typeof messages;
@@ -1142,6 +1160,10 @@ export async function createAgentStream(
           activeTools: undefined,
         });
         return {
+          model: getNamespacedLanguageModel(
+            fallbackModelInfo.languageModel,
+            steps.length,
+          ),
           providerOptions,
           messages: fallbackMessages,
           ...(ctx.currentSystemPrompt

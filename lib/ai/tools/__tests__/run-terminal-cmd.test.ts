@@ -119,6 +119,7 @@ function makeFakeHandle(pid = 4242): FakeHandle {
 function makeFakeE2BSandbox() {
   return {
     jupyterUrl: "http://fake",
+    setTimeout: jest.fn(async () => undefined),
     commands: { run: jest.fn() },
   };
 }
@@ -336,6 +337,29 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
     expect(mockCreateCentrifugoPtyHandle).not.toHaveBeenCalled();
   });
 
+  test("does not duplicate the acquisition lease for a short foreground command", async () => {
+    const fakeHandle = makeFakeHandle();
+    const e2b = makeFakeE2BSandbox();
+    mockCreateE2BPtyHandle.mockResolvedValue(fakeHandle);
+    const { context } = makeContext({ sandbox: e2b });
+    await e2b.setTimeout(7 * 60 * 1000, { requestTimeoutMs: 5 * 1000 });
+
+    setTimeout(() => {
+      fakeHandle.emit(new TextEncoder().encode("done\n"));
+      fakeHandle.resolveExit(0);
+    }, 10);
+
+    await runTool(createRunTerminalCmd(context), {
+      command: "sleep 500",
+      brief: "run a long command",
+      is_background: false,
+      timeout: 600,
+      interactive: true,
+    });
+
+    expect(e2b.setTimeout).toHaveBeenCalledTimes(1);
+  });
+
   test("detectAgentBrowserUsage extracts sanitized actions", () => {
     const usage = detectAgentBrowserUsage(
       "agent-browser open https://secret.example/login && agent-browser snapshot -i",
@@ -527,6 +551,7 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
     );
     const e2b = {
       jupyterUrl: "http://fake",
+      setTimeout: jest.fn(async () => undefined),
       commands: { run },
       isRunning: jest.fn(async () => true),
       getMetrics: jest.fn(async () => [

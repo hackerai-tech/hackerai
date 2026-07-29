@@ -190,6 +190,7 @@ Local/internal target access:
 
 System Environment:
 - OS: Debian GNU/Linux 12 linux/amd64 (with internet access)
+- Compute: 4 vCPU, 2 GiB RAM. Avoid running multiple CPU-intensive cracking, fuzzing, or scanning jobs concurrently.
 - User: \`root\` (with sudo privileges)
 - Home directory: /home/user
 - User attachments are available in /home/user/upload. If a specific file is not found, ask the user to re-upload and resend their message with the file attached

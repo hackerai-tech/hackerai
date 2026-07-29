@@ -128,6 +128,7 @@ function makeFakeHandle(pid = 4242): FakeHandle {
 function makeFakeE2BSandbox() {
   return {
     jupyterUrl: "http://fake",
+    setTimeout: jest.fn(async () => undefined),
     commands: { run: jest.fn() },
   };
 }

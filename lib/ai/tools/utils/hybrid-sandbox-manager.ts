@@ -12,7 +12,10 @@ import {
   type CentrifugoConfig,
 } from "./centrifugo-sandbox";
 import { isCentrifugoSandbox, type ConnectionInfo } from "./sandbox-types";
-import { ensureSandboxConnection } from "./sandbox";
+import {
+  ensureSandboxConnection,
+  refreshE2BSandboxLeaseBestEffort,
+} from "./sandbox";
 import { getConvexClient } from "@/lib/db/convex-client";
 import { api } from "@/convex/_generated/api";
 import { SANDBOX_ENVIRONMENT_TOOLS } from "./sandbox-tools";
@@ -591,6 +594,9 @@ export class HybridSandboxManager implements SandboxManager {
 
   private async getE2BSandbox(): Promise<{ sandbox: Sandbox }> {
     if (!this.isLocal && this.sandbox && this.sandbox instanceof Sandbox) {
+      await refreshE2BSandboxLeaseBestEffort(this.sandbox, {
+        source: "hybrid_manager_cache",
+      });
       return { sandbox: this.sandbox };
     }
 
@@ -651,17 +657,9 @@ export class HybridSandboxManager implements SandboxManager {
       });
       return;
     }
-
-    try {
-      await sandbox.kill();
-    } catch (error) {
-      const message = `[${this.userID}] Failed to kill E2B sandbox during reset${reason ? ` (${reason})` : ""}:`;
-      if (isExpectedAlreadyGoneCleanupError(error)) {
-        console.debug(message, error);
-      } else {
-        console.warn(message, error);
-      }
-    }
+    // E2B sandboxes are shared per user. Forget this worker's SDK connection
+    // and let the next acquisition reconnect without terminating commands
+    // owned by another Agent run.
   }
 
   /**

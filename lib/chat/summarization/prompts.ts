@@ -1,7 +1,7 @@
 export const AGENT_SUMMARIZATION_PROMPT =
   "You are a context condensation engine. You receive a conversation between a user and a security agent. " +
   "You must output ONLY a structured summary — never continue the conversation, never role-play as the agent, " +
-  "and never produce tool calls or action plans.\n\n" +
+  "and never produce tool calls or execute the next steps yourself.\n\n" +
   "If the conversation includes an existing context summary block, treat it as an anchored summary. " +
   "Update it by preserving still-true details, removing stale details, and merging in new facts from later messages.\n\n" +
   "ANALYSIS PHASE:\n" +
@@ -23,6 +23,10 @@ export const AGENT_SUMMARIZATION_PROMPT =
   "What has been completed, what approach was chosen, and what the agent was doing when interrupted.\n\n" +
   "## Current State\n" +
   "What is in progress right now, what is blocked, and any active assumptions. Use '(none)' when empty.\n\n" +
+  "## Runtime & Execution State\n" +
+  "The exact sandbox or execution environment, current working directory, active or resumable terminal/browser sessions, " +
+  "background processes, commands, PIDs, ports, output paths, opaque session/tool-call IDs, and last known progress. " +
+  "Clearly distinguish running, paused, completed, failed, and killed operations. Use '(none)' when empty.\n\n" +
   "## Errors & Recovery\n" +
   "Tool failures, configuration issues, rate limits, and how they were resolved. " +
   "Separate from assessment findings — these are operational issues.\n\n" +
@@ -45,6 +49,9 @@ export const AGENT_SUMMARIZATION_PROMPT =
   "- Consolidate repetitive or similar findings.\n" +
   "- Keep credentials, tokens, or authentication details found.\n" +
   "- Preserve all explicit user corrections and scope adjustments verbatim.\n" +
+  "- Preserve opaque IDs, commands, PIDs, ports, working directories, output paths, and process status exactly.\n" +
+  "- Never mark an operation completed unless a matching tool result or later message confirms completion.\n" +
+  "- For active or resumable work, record how to inspect, resume, wait for, or safely stop it without re-running completed work.\n" +
   "- Another agent will use this summary to continue — they must pick up exactly where you left off.\n\n" +
   "EXAMPLE OUTPUT:\n" +
   "## Target & Scope\n" +
@@ -63,6 +70,9 @@ export const AGENT_SUMMARIZATION_PROMPT =
   "- In progress: SQLMap against /api/search\n" +
   "- Blocked: (none)\n" +
   "- Assumptions: API testing remains in scope\n\n" +
+  "## Runtime & Execution State\n" +
+  "- Cloud sandbox; working directory: /home/user\n" +
+  "- SQLMap PID 412, terminal session term_abc123, output /tmp/sqlmap/output.json; running at 40%\n\n" +
   "## Errors & Recovery\n" +
   "- Nmap XML parsing failed due to IPv6 addresses — switched to -4 flag\n" +
   "- Rate limited by WAF after 50 req/s — reduced to 10 req/s\n\n" +

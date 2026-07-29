@@ -5,9 +5,11 @@ import type {
   SandboxManager,
   SandboxType,
 } from "@/types";
-import { ensureSandboxConnection } from "./sandbox";
+import {
+  ensureSandboxConnection,
+  refreshE2BSandboxLeaseBestEffort,
+} from "./sandbox";
 import { SANDBOX_ENVIRONMENT_TOOLS } from "./sandbox-tools";
-import { isExpectedAlreadyGoneCleanupError } from "@/lib/utils/cleanup-errors";
 
 const MAX_SANDBOX_HEALTH_FAILURES = 5;
 
@@ -60,19 +62,24 @@ export class DefaultSandboxManager implements SandboxManager {
   async getSandbox(): Promise<{
     sandbox: Sandbox;
   }> {
-    if (!this.sandbox) {
-      const result = await ensureSandboxConnection(
-        {
-          userID: this.userID,
-          setSandbox: this.setSandboxCallback,
-          onBoot: this.onBoot,
-        },
-        {
-          initialSandbox: this.sandbox,
-        },
-      );
-      this.sandbox = result.sandbox;
+    if (this.sandbox) {
+      await refreshE2BSandboxLeaseBestEffort(this.sandbox, {
+        source: "default_manager_cache",
+      });
+      return { sandbox: this.sandbox };
     }
+
+    const result = await ensureSandboxConnection(
+      {
+        userID: this.userID,
+        setSandbox: this.setSandboxCallback,
+        onBoot: this.onBoot,
+      },
+      {
+        initialSandbox: this.sandbox,
+      },
+    );
+    this.sandbox = result.sandbox;
 
     if (!this.sandbox) {
       throw new Error("Failed to initialize sandbox");
@@ -86,20 +93,10 @@ export class DefaultSandboxManager implements SandboxManager {
     this.setSandboxCallback(sandbox);
   }
 
-  async resetSandbox(reason?: string): Promise<void> {
-    const sandbox = this.sandbox;
+  async resetSandbox(_reason?: string): Promise<void> {
+    // This manager holds only a local SDK connection. The E2B sandbox itself
+    // is shared per user and may contain commands from another Agent run, so
+    // recovery must reconnect instead of globally killing it.
     this.sandbox = null;
-    if (!sandbox) return;
-
-    try {
-      await sandbox.kill();
-    } catch (error) {
-      const message = `[${this.userID}] Failed to kill sandbox during reset${reason ? ` (${reason})` : ""}:`;
-      if (isExpectedAlreadyGoneCleanupError(error)) {
-        console.debug(message, error);
-      } else {
-        console.warn(message, error);
-      }
-    }
   }
 }

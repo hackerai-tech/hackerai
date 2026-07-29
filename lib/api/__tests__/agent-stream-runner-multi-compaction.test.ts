@@ -19,6 +19,7 @@ jest.mock("ai", () => ({
   ),
   stepCountIs: jest.fn(() => () => false),
   streamText: mockStreamText,
+  wrapLanguageModel: jest.fn(({ model }) => model),
 }));
 jest.mock("@/lib/api/chat-stream-helpers", () => ({
   addCacheBreakpointToLastUserMessage: (messages: ModelMessage[]) => messages,
