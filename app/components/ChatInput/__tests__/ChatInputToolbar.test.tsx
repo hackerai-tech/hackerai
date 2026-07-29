@@ -135,6 +135,14 @@ describe("ChatInputToolbar", () => {
     expect(screen.queryByTestId("chat-mode-selector")).not.toBeInTheDocument();
   });
 
+  it("shows the mode selector after access resolves for eligible users", () => {
+    mockAuthUser({ id: "user_123" });
+
+    render(<ChatInputToolbar {...defaultProps} />);
+
+    expect(screen.getByTestId("chat-mode-selector")).toBeInTheDocument();
+  });
+
   it("enables the paid visual treatment only for paid subscriptions", () => {
     const { rerender } = render(<ChatInputToolbar {...defaultProps} />);
 
