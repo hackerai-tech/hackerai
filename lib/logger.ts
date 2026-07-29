@@ -9,6 +9,7 @@ import type { ChatMode, ExtraUsageConfig } from "@/types";
 import type { ChatApiEndpoint } from "@/lib/api/agent-endpoints";
 import type { OpenRouterModelMetadata } from "@/lib/api/openrouter-metadata";
 import { getProviderUsageRawModelCost } from "@/lib/provider-usage-cost";
+import { redactSensitiveErrorMessage } from "@/lib/utils/error-redaction";
 
 export interface ProviderRequestDiagnostics {
   model: string;
@@ -728,17 +729,20 @@ export const logger = {
   ): void {
     console.error(
       JSON.stringify({
+        ...context,
         level: "error",
-        message,
+        message: redactSensitiveErrorMessage(message),
         timestamp: new Date().toISOString(),
         error: error
           ? {
               name: error.name,
-              message: error.message,
-              stack: error.stack,
+              message: redactSensitiveErrorMessage(error.message),
+              stack:
+                typeof error.stack === "string"
+                  ? redactSensitiveErrorMessage(error.stack)
+                  : error.stack,
             }
           : undefined,
-        ...context,
       }),
     );
   },
