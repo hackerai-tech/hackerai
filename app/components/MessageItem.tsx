@@ -555,23 +555,21 @@ export const MessageItem = memo(function MessageItem({
             )}
 
             {/* For assistant messages without the user-specific styling, render files mixed with content */}
-            {!isUser &&
-              fileParts.length > 0 &&
-              renderedNonFileParts.length === 0 && (
-                <div className="prose space-y-3 max-w-none dark:prose-invert min-w-0 overflow-hidden">
-                  {message.parts.map((part, partIndex) => (
-                    <MessagePartHandler
-                      key={`${message.id}-${partIndex}`}
-                      message={message}
-                      part={part}
-                      partIndex={partIndex}
-                      status={effectiveStatus}
-                      terminalOutputByToolCallId={terminalOutputByToolCallId}
-                      sharedFileDetails={effectiveFileDetails}
-                    />
-                  ))}
-                </div>
-              )}
+            {!isUser && fileParts.length > 0 && nonFileParts.length === 0 && (
+              <div className="prose space-y-3 max-w-none dark:prose-invert min-w-0 overflow-hidden">
+                {message.parts.map((part, partIndex) => (
+                  <MessagePartHandler
+                    key={`${message.id}-${partIndex}`}
+                    message={message}
+                    part={part}
+                    partIndex={partIndex}
+                    status={effectiveStatus}
+                    terminalOutputByToolCallId={terminalOutputByToolCallId}
+                    sharedFileDetails={effectiveFileDetails}
+                  />
+                ))}
+              </div>
+            )}
           </div>
         )}
 

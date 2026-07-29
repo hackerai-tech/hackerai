@@ -93,6 +93,37 @@ describe("deriveChatTimelineRows", () => {
     ]);
   });
 
+  it("keeps reasoning-only activity reachable from the settled header", () => {
+    const message = agentMessage([
+      { type: "reasoning", text: "analysis" },
+      { type: "text", text: "final answer" },
+    ] as ChatMessage["parts"]);
+
+    const collapsedRows = deriveChatTimelineRows({
+      messages: [message],
+      status: "ready",
+      lastAssistantMessageIndex: 0,
+      expandedAgentMessageIds: new Set(),
+    });
+    const expandedRows = deriveChatTimelineRows({
+      messages: [message],
+      status: "ready",
+      lastAssistantMessageIndex: 0,
+      expandedAgentMessageIds: new Set([message.id]),
+    });
+
+    expect(collapsedRows[0]).toMatchObject({
+      kind: "agent-work-header",
+      canToggle: true,
+      expanded: false,
+    });
+    expect(expandedRows.map((row) => row.kind)).toEqual([
+      "agent-work-header",
+      "agent-activity",
+      "message",
+    ]);
+  });
+
   it("merges tool lifecycle snapshots and terminal chunks into their logical row", () => {
     const message = agentMessage([
       {

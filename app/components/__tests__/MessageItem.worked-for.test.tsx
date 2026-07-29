@@ -266,6 +266,35 @@ describe("MessageItem WorkedFor rendering", () => {
     expect(screen.getByText("final answer")).toBeInTheDocument();
   });
 
+  it("does not duplicate Agent work for a file-bearing answer shell without final text", () => {
+    renderMessageItem({
+      mode: "agent",
+      message: {
+        ...assistantMessage,
+        parts: [
+          {
+            type: "tool-shell",
+            input: "ran command",
+            state: "output-available",
+          },
+          {
+            type: "file",
+            mediaType: "text/plain",
+            name: "result.txt",
+            url: "https://example.com/result.txt",
+          },
+        ],
+        metadata: {
+          mode: "agent",
+          generationTimeMs: 1_500,
+        },
+      } as unknown as ChatMessage,
+      workPresentation: "timeline-shell",
+    });
+
+    expect(screen.queryByTestId("part-tool-shell")).not.toBeInTheDocument();
+  });
+
   it("does not count terminal stream chunks as separate visible activity", () => {
     const terminalChunks = Array.from({ length: 100 }, (_, index) => ({
       type: "data-terminal",

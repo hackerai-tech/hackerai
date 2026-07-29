@@ -90,8 +90,7 @@ export function deriveChatTimelineRows({
       messageIndex === lastAssistantMessageIndex;
     const isTiming = status === "streaming" && isLastAssistantMessage;
     const hasFinalAnswer = trailingTextParts.length > 0;
-    const canToggle =
-      !isTiming && hasFinalAnswer && projection.hasExpandableWork;
+    const canToggle = !isTiming && hasFinalAnswer;
     const expanded =
       isTiming || !hasFinalAnswer || expandedAgentMessageIds.has(message.id);
 

@@ -4,7 +4,6 @@ import {
   useLayoutEffect,
   useMemo,
   useCallback,
-  useRef,
   startTransition,
   Dispatch,
   MutableRefObject,
@@ -72,9 +71,6 @@ const setElementRef = (ref: StickyElementRef, element: HTMLElement | null) => {
     ref.current = element;
   }
 };
-
-const getElementRefValue = (ref: StickyElementRef) =>
-  typeof ref === "function" ? (ref.current ?? null) : ref.current;
 
 interface MessagesProps {
   messages: ChatMessage[];
@@ -335,31 +331,44 @@ export const Messages = ({
     [onBranchMessage],
   );
 
-  const timelineRef = useRef<LegendListRef>(null);
+  const [timelineInstance, setTimelineInstance] =
+    useState<LegendListRef | null>(null);
+  const [timelineElements, setTimelineElements] = useState<{
+    content: HTMLElement | null;
+    scroll: HTMLElement | null;
+  }>({ content: null, scroll: null });
 
   // Keep the established bottom-follow hook connected to LegendList's actual
   // scroll and content elements. LegendList owns row virtualization and
   // measurement; use-stick-to-bottom continues to own the existing composer
   // follow/escape behavior.
   useLayoutEffect(() => {
-    const scrollElement = timelineRef.current?.getScrollableNode() ?? null;
+    const scrollElement = timelineInstance?.getScrollableNode() ?? null;
     const contentElement =
       scrollElement?.querySelector<HTMLElement>(
         ":scope > .legend-list-content-container",
       ) ?? null;
 
-    setElementRef(scrollRef, scrollElement);
-    setElementRef(contentRef, contentElement);
+    setTimelineElements((current) =>
+      current.scroll === scrollElement && current.content === contentElement
+        ? current
+        : { content: contentElement, scroll: scrollElement },
+    );
+  }, [timelineInstance]);
+
+  useLayoutEffect(() => {
+    setElementRef(scrollRef, timelineElements.scroll);
+    setElementRef(contentRef, timelineElements.content);
 
     return () => {
       setElementRef(contentRef, null);
       setElementRef(scrollRef, null);
     };
-  }, [contentRef, scrollRef]);
+  }, [contentRef, scrollRef, timelineElements]);
 
   // Handle scroll to load more messages when scrolling to top
   const handleScroll = useCallback(() => {
-    const scrollElement = getElementRefValue(scrollRef);
+    const scrollElement = timelineElements.scroll;
     if (!scrollElement || !loadMore || paginationStatus !== "CanLoadMore") {
       return;
     }
@@ -370,17 +379,16 @@ export const Messages = ({
     if (scrollTop < 100) {
       loadMore(28); // Load 28 more messages
     }
-  }, [scrollRef, loadMore, paginationStatus]);
+  }, [loadMore, paginationStatus, timelineElements.scroll]);
 
   // Add scroll event listener
   useEffect(() => {
-    const scrollElement = getElementRefValue(scrollRef);
+    const scrollElement = timelineElements.scroll;
     if (!scrollElement) return;
 
     scrollElement.addEventListener("scroll", handleScroll, { passive: true });
     return () => scrollElement.removeEventListener("scroll", handleScroll);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [handleScroll]);
+  }, [handleScroll, timelineElements.scroll]);
 
   const showingLoadingIndicator =
     summarizationStatus?.status === "started" ||
@@ -565,12 +573,12 @@ export const Messages = ({
     >
       <div className="relative flex-1 min-h-0">
         <LegendList<ChatTimelineRow>
-          ref={timelineRef}
+          ref={setTimelineInstance}
           data={timelineRows}
           keyExtractor={getTimelineRowKey}
           getItemType={getChatTimelineRowType}
           renderItem={renderTimelineRow}
-          estimatedItemSize={64}
+          estimatedItemSize={48}
           recycleItems={false}
           initialScrollAtEnd
           maintainVisibleContentPosition={{ data: true, size: true }}
