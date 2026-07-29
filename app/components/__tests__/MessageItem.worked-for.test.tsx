@@ -86,10 +86,12 @@ const renderMessageItem = ({
   mode,
   message = assistantMessage,
   status = "ready",
+  workPresentation = "inline",
 }: {
   mode: ChatMode;
   message?: ChatMessage;
   status?: ChatStatus;
+  workPresentation?: "inline" | "timeline-shell";
 }) =>
   render(
     <MessageItem
@@ -102,6 +104,7 @@ const renderMessageItem = ({
       isEditing={false}
       feedbackInputMessageId={null}
       mode={mode}
+      workPresentation={workPresentation}
       branchBoundaryIndex={undefined}
       onMouseEnter={jest.fn()}
       onMouseLeave={jest.fn()}
@@ -238,7 +241,7 @@ describe("MessageItem WorkedFor rendering", () => {
     expect(screen.getByText("regenerated final answer")).toBeInTheDocument();
   });
 
-  it("bounds live Agent activity and progressively reveals earlier tools", () => {
+  it("leaves Agent work to the virtual timeline when rendering its answer shell", () => {
     const toolParts = Array.from({ length: 100 }, (_, index) => ({
       type: "tool-shell",
       input: `command ${index + 1}`,
@@ -256,20 +259,11 @@ describe("MessageItem WorkedFor rendering", () => {
           generationStartedAt: Date.now(),
         },
       } as unknown as ChatMessage,
+      workPresentation: "timeline-shell",
     });
 
-    expect(screen.getAllByTestId("part-tool-shell")).toHaveLength(80);
-    expect(screen.queryByText("command 20")).not.toBeInTheDocument();
-    expect(screen.getByText("command 21")).toBeInTheDocument();
-
-    fireEvent.click(
-      screen.getByRole("button", {
-        name: /show earlier activity \(20 hidden\)/i,
-      }),
-    );
-
-    expect(screen.getAllByTestId("part-tool-shell")).toHaveLength(100);
-    expect(screen.getByText("command 1")).toBeInTheDocument();
+    expect(screen.queryByTestId("part-tool-shell")).not.toBeInTheDocument();
+    expect(screen.getByText("final answer")).toBeInTheDocument();
   });
 
   it("does not count terminal stream chunks as separate visible activity", () => {

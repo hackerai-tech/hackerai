@@ -1891,8 +1891,8 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
                 </div>
               ) : showChatLayout ? (
                 <Messages
-                  scrollRef={scrollRef as RefObject<HTMLDivElement | null>}
-                  contentRef={contentRef as RefObject<HTMLDivElement | null>}
+                  scrollRef={scrollRef}
+                  contentRef={contentRef}
                   messages={messages}
                   setMessages={setMessages}
                   onRegenerate={handleRegenerate}

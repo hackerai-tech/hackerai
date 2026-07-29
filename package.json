@@ -62,6 +62,7 @@
     "@convex-dev/workos": "^0.0.3",
     "@e2b/code-interpreter": "2.7.0",
     "@langchain/community": "^1.1.29",
+    "@legendapp/list": "3.2.0",
     "@monaco-editor/react": "^4.7.0",
     "@openrouter/ai-sdk-provider": "^2.10.0",
     "@posthog/ai": "8.4.0",
