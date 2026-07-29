@@ -238,6 +238,72 @@ describe("MessageItem WorkedFor rendering", () => {
     expect(screen.getByText("regenerated final answer")).toBeInTheDocument();
   });
 
+  it("bounds live Agent activity and progressively reveals earlier tools", () => {
+    const toolParts = Array.from({ length: 100 }, (_, index) => ({
+      type: "tool-shell",
+      input: `command ${index + 1}`,
+      state: "output-available",
+    }));
+
+    renderMessageItem({
+      mode: "agent",
+      status: "streaming",
+      message: {
+        ...assistantMessage,
+        parts: [...toolParts, { type: "text", text: "final answer" }],
+        metadata: {
+          mode: "agent",
+          generationStartedAt: Date.now(),
+        },
+      } as unknown as ChatMessage,
+    });
+
+    expect(screen.getAllByTestId("part-tool-shell")).toHaveLength(80);
+    expect(screen.queryByText("command 20")).not.toBeInTheDocument();
+    expect(screen.getByText("command 21")).toBeInTheDocument();
+
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: /show earlier activity \(20 hidden\)/i,
+      }),
+    );
+
+    expect(screen.getAllByTestId("part-tool-shell")).toHaveLength(100);
+    expect(screen.getByText("command 1")).toBeInTheDocument();
+  });
+
+  it("does not count terminal stream chunks as separate visible activity", () => {
+    const terminalChunks = Array.from({ length: 100 }, (_, index) => ({
+      type: "data-terminal",
+      data: { toolCallId: "tool-1", terminal: `chunk ${index}` },
+    }));
+
+    renderMessageItem({
+      mode: "agent",
+      status: "streaming",
+      message: {
+        ...assistantMessage,
+        parts: [
+          {
+            type: "tool-shell",
+            input: "ran command",
+            state: "input-available",
+          },
+          ...terminalChunks,
+        ],
+        metadata: {
+          mode: "agent",
+          generationStartedAt: Date.now(),
+        },
+      } as unknown as ChatMessage,
+    });
+
+    expect(screen.getAllByTestId("part-tool-shell")).toHaveLength(1);
+    expect(
+      screen.queryByRole("button", { name: /show earlier activity/i }),
+    ).not.toBeInTheDocument();
+  });
+
   it("does not show an expand icon when there are no expandable work parts", () => {
     renderMessageItem({
       mode: "agent",

@@ -1,4 +1,11 @@
-import { memo, useMemo, useCallback, Fragment, useState } from "react";
+import {
+  memo,
+  useMemo,
+  useCallback,
+  Fragment,
+  startTransition,
+  useState,
+} from "react";
 import { MessageActions } from "./MessageActions";
 import { MessagePartHandler } from "./MessagePartHandler";
 import { FilePartRenderer } from "./FilePartRenderer";
@@ -28,6 +35,7 @@ import type { FileDetails } from "@/types/file";
 
 const USER_MESSAGE_PREVIEW_LINE_LIMIT = 20;
 const USER_MESSAGE_PREVIEW_CHAR_LIMIT = 1_200;
+const WORK_ACTIVITY_RENDER_BATCH_SIZE = 80;
 
 const splitMessageLines = (text: string) => text.split(/\r\n|\r|\n/);
 
@@ -43,6 +51,16 @@ const getUserMessagePreview = (text: string) => {
   }
 
   return text.slice(0, USER_MESSAGE_PREVIEW_CHAR_LIMIT).trimEnd();
+};
+
+const shouldRenderWorkPart = (part: ChatMessage["parts"][number]): boolean => {
+  const type = (part as { type?: string }).type;
+  return (
+    type === "text" ||
+    type === "reasoning" ||
+    type === "data-summarization" ||
+    Boolean(type?.startsWith("tool-"))
+  );
 };
 
 interface MessageItemProps {
@@ -205,10 +223,35 @@ export const MessageItem = memo(function MessageItem({
     () => splitWorkedForParts(message.parts),
     [message.parts],
   );
-  const hasExpandableWork = useMemo(
-    () => workParts.some(isExpandableWorkedForPart),
+  const indexedWorkParts = useMemo(
+    () =>
+      workParts.flatMap((part, partIndex) =>
+        shouldRenderWorkPart(part) ? [{ part, partIndex }] : [],
+      ),
     [workParts],
   );
+  const [visibleWorkPartCount, setVisibleWorkPartCount] = useState(
+    WORK_ACTIVITY_RENDER_BATCH_SIZE,
+  );
+  const hiddenWorkPartCount = Math.max(
+    0,
+    indexedWorkParts.length - visibleWorkPartCount,
+  );
+  const visibleWorkParts = useMemo(
+    () => indexedWorkParts.slice(hiddenWorkPartCount),
+    [hiddenWorkPartCount, indexedWorkParts],
+  );
+  const hasExpandableWork = useMemo(
+    () => indexedWorkParts.some(({ part }) => isExpandableWorkedForPart(part)),
+    [indexedWorkParts],
+  );
+  const handleShowEarlierWork = useCallback(() => {
+    startTransition(() => {
+      setVisibleWorkPartCount(
+        (current) => current + WORK_ACTIVITY_RENDER_BATCH_SIZE,
+      );
+    });
+  }, []);
 
   const shouldCollapseUserMessage =
     isUser &&
@@ -292,6 +335,23 @@ export const MessageItem = memo(function MessageItem({
       terminalOutputByToolCallId={terminalOutputByToolCallId}
       sharedFileDetails={effectiveFileDetails}
     />
+  );
+
+  const renderVisibleWorkParts = () => (
+    <>
+      {hiddenWorkPartCount > 0 && (
+        <button
+          type="button"
+          onClick={handleShowEarlierWork}
+          className="not-prose w-full rounded-lg border border-border px-3 py-2 text-left text-sm text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground"
+        >
+          Show earlier activity ({hiddenWorkPartCount} hidden)
+        </button>
+      )}
+      {visibleWorkParts.map(({ part, partIndex }) =>
+        renderAssistantPart(part, partIndex),
+      )}
+    </>
   );
 
   const shouldShowBranchIndicator = Boolean(
@@ -474,7 +534,7 @@ export const MessageItem = memo(function MessageItem({
                           startedAt={generationStartedAt}
                         />
                         <WorkedForContent>
-                          {workParts.map(renderAssistantPart)}
+                          {renderVisibleWorkParts()}
                         </WorkedForContent>
                       </WorkedFor>
                     )}
@@ -496,18 +556,7 @@ export const MessageItem = memo(function MessageItem({
                 ) : trailingTextParts.length === 0 ? (
                   // If a run stops before producing final text, keep the work
                   // visible inline instead of leaving only a collapsed header.
-                  nonFileParts.map((part, partIndex) => (
-                    <MessagePartHandler
-                      key={`${message.id}-${partIndex}`}
-                      message={message}
-                      part={part}
-                      partIndex={partIndex}
-                      status={effectiveStatus}
-                      isLastMessage={isLastMessage}
-                      terminalOutputByToolCallId={terminalOutputByToolCallId}
-                      sharedFileDetails={effectiveFileDetails}
-                    />
-                  ))
+                  renderVisibleWorkParts()
                 ) : (
                   <>
                     {workParts.length > 0 && (
@@ -517,8 +566,8 @@ export const MessageItem = memo(function MessageItem({
                         isTiming={shouldShowWorkingTimer}
                       >
                         <WorkedForTrigger durationMs={generationTimeMs} />
-                        <WorkedForContent>
-                          {() => workParts.map(renderAssistantPart)}
+                        <WorkedForContent lazy>
+                          {renderVisibleWorkParts}
                         </WorkedForContent>
                       </WorkedFor>
                     )}
