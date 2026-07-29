@@ -45,7 +45,13 @@ export class ChatComponent {
   }
 
   private get modeDropdown(): Locator {
-    return this.page.getByRole("button", { name: /Ask|Agent/ });
+    return this.page.getByTestId("mode-selector");
+  }
+
+  private get agentPermissionSelector(): Locator {
+    return this.page.getByRole("button", {
+      name: /^(Ask for approval|Full access)$/,
+    });
   }
 
   private get askModeOption(): Locator {
@@ -165,8 +171,15 @@ export class ChatComponent {
   }
 
   async switchToAgentMode(): Promise<void> {
-    await this.modeDropdown.click();
-    await this.agentModeOption.click();
+    if (await this.modeDropdown.isVisible().catch(() => false)) {
+      await this.modeDropdown.click();
+      await this.agentModeOption.click();
+      return;
+    }
+
+    await expect(this.agentPermissionSelector).toBeVisible({
+      timeout: TIMEOUTS.MEDIUM,
+    });
   }
 
   async switchToAskMode(): Promise<void> {
@@ -383,9 +396,23 @@ export class ChatComponent {
   }
 
   async getCurrentMode(): Promise<string> {
+    if (!(await this.modeDropdown.isVisible().catch(() => false))) {
+      await expect(this.agentPermissionSelector).toBeVisible({
+        timeout: TIMEOUTS.MEDIUM,
+      });
+      return "agent";
+    }
+
     const modeText = await this.modeDropdown.innerText();
     if (modeText.includes("Agent")) return "agent";
     return "ask";
+  }
+
+  async expectPaidAgentOnlyControls(): Promise<void> {
+    await expect(this.modeDropdown).toBeHidden();
+    await expect(this.agentPermissionSelector).toBeVisible({
+      timeout: TIMEOUTS.MEDIUM,
+    });
   }
 
   async expectMode(mode: "ask" | "agent"): Promise<void> {

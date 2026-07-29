@@ -9,12 +9,7 @@ import {
   paidFunnelProperties,
   upgradeCtaImpressionInsertId,
 } from "@/lib/analytics/paid-funnel";
-import {
-  ANALYTICS_CONTEXT_VERSION,
-  ANALYTICS_CONTEXT_VERSION_HEADER,
-  HAC45_AGENT_ONLY_HEADER,
-  POSTHOG_SESSION_ID_HEADER,
-} from "@/lib/analytics/request-context";
+import { POSTHOG_SESSION_ID_HEADER } from "@/lib/analytics/request-context";
 
 type ClientAnalyticsProperties = Record<string, unknown>;
 
@@ -221,29 +216,13 @@ export function newCheckoutAttemptId() {
   return createCheckoutAttemptId();
 }
 
-export function getPostHogRequestHeaders({
-  hac45AgentOnlyActive,
-}: {
-  hac45AgentOnlyActive?: boolean;
-} = {}): HeadersInit {
-  const experimentHeaders: Record<string, string> = {};
-  if (hac45AgentOnlyActive !== undefined) {
-    experimentHeaders[ANALYTICS_CONTEXT_VERSION_HEADER] = String(
-      ANALYTICS_CONTEXT_VERSION,
-    );
-    experimentHeaders[HAC45_AGENT_ONLY_HEADER] = hac45AgentOnlyActive
-      ? "active"
-      : "inactive";
-  }
+export function getPostHogRequestHeaders(): HeadersInit {
   const posthog = getReadyPostHogClient();
-  if (!posthog) return experimentHeaders;
+  if (!posthog) return {};
 
-  const distinctId = posthog.get_distinct_id();
   const sessionId = posthog.get_session_id?.();
 
   return {
-    ...experimentHeaders,
-    ...(distinctId && { "X-POSTHOG-DISTINCT-ID": distinctId }),
     ...(sessionId && { [POSTHOG_SESSION_ID_HEADER]: sessionId }),
   };
 }

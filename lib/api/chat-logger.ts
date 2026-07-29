@@ -1424,14 +1424,6 @@ export function captureUsageCost({
       ...(analyticsRequestContext?.posthogSessionId && {
         $session_id: analyticsRequestContext.posthogSessionId,
       }),
-      ...(analyticsRequestContext?.analyticsContextVersion !== undefined && {
-        client_analytics_context_version:
-          analyticsRequestContext.analyticsContextVersion,
-      }),
-      ...(analyticsRequestContext?.hac45AgentOnlyClientActive !== undefined && {
-        hac45_agent_only_client_active:
-          analyticsRequestContext.hac45AgentOnlyClientActive,
-      }),
       ...(usageSettlement && {
         usage_settlement_id: usageSettlement.id,
         mid_run_usage_settlement_count: usageSettlement.midRunCount,

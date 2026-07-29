@@ -84,6 +84,7 @@ interface GlobalStateType {
   // Chat mode state
   chatMode: ChatMode;
   setChatMode: (mode: ChatMode) => void;
+  paidAgentOnlyActive: boolean;
 
   // Computer sidebar state (right side)
   sidebarOpen: boolean;
@@ -662,6 +663,22 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     user,
   ]);
 
+  const paidAgentOnlyActive =
+    Boolean(user) &&
+    subscriptionResolved &&
+    !isCheckingProPlan &&
+    temporaryChatSubscription !== "free" &&
+    !temporaryChatsEnabled;
+
+  useEffect(() => {
+    if (temporaryChatsEnabled) {
+      if (chatMode !== "ask") setChatModeState("ask");
+      return;
+    }
+    if (!paidAgentOnlyActive || chatMode === "agent") return;
+    setChatModeState("agent");
+  }, [chatMode, paidAgentOnlyActive, temporaryChatsEnabled]);
+
   // Initialize team pricing dialog from URL hash
   const [teamPricingDialogOpen, setTeamPricingDialogOpen] = useState(() => {
     if (typeof window === "undefined") return false;
@@ -1120,6 +1137,7 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     isUploadingFiles,
     chatMode,
     setChatMode,
+    paidAgentOnlyActive,
     sidebarOpen,
     setSidebarOpen,
     sidebarContent,
