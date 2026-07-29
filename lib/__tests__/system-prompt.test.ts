@@ -51,6 +51,61 @@ describe("systemPrompt security instructions", () => {
     }
   });
 
+  it("shares response style, mistake recovery, and freshness guidance across modes", async () => {
+    const askPrompt = await systemPrompt(
+      "user_123",
+      "ask",
+      "pro",
+      "ask-model",
+      null,
+      false,
+      null,
+    );
+    const agentPrompt = await systemPrompt(
+      "user_123",
+      "agent",
+      "pro",
+      "agent-model",
+      null,
+      false,
+      null,
+    );
+
+    for (const prompt of [askPrompt, agentPrompt]) {
+      expect(prompt).toContain("<response_style>");
+      expect(prompt).toContain(
+        "For simple or conversational requests, respond naturally and concisely",
+      );
+      expect(prompt).toContain(
+        "Give the best useful answer before asking a follow-up question.",
+      );
+      expect(prompt).toContain(
+        "Do not use emojis unless the user asks for them",
+      );
+      expect(prompt.match(/emojis/gi)).toHaveLength(1);
+
+      expect(prompt).toContain("<mistake_recovery>");
+      expect(prompt).toContain("address their specific criticism directly");
+      expect(prompt).toContain("Own and correct mistakes honestly.");
+      expect(prompt).toContain("Avoid excessive apology");
+      expect(prompt).not.toContain("'thumbs down' button");
+
+      expect(prompt).toContain("<freshness_and_web_search>");
+      expect(prompt).toContain("Your reliable knowledge cutoff is");
+      expect(prompt).toContain(
+        "Use web_search when the user asks for current or time-sensitive information",
+      );
+      expect(prompt).toContain(
+        "Use open_url when the user provides a specific page to inspect",
+      );
+      expect(prompt).toContain("Do not search for stable general concepts");
+
+      expect(prompt.match(/<response_style>/g)).toHaveLength(1);
+      expect(prompt.match(/<mistake_recovery>/g)).toHaveLength(1);
+      expect(prompt.match(/<freshness_and_web_search>/g)).toHaveLength(1);
+    }
+  });
+
   it("does not claim isolated container execution for dangerous local hosts", async () => {
     const localHostContext = `You are executing commands on macOS 15.0 (arm64) in DANGEROUS MODE.
 Commands are invoked via /bin/bash -c.
