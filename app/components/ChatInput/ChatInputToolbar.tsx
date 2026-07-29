@@ -11,7 +11,6 @@ import {
 import { useGlobalState } from "@/app/contexts/GlobalState";
 import { useAuth } from "@workos-inc/authkit-nextjs/components";
 import { isAgentMode } from "@/lib/utils/mode-helpers";
-import { useHac45AgentOnlyTreatment } from "@/app/contexts/Hac45AgentOnlyContext";
 
 export interface ChatInputToolbarProps extends SubmitStopButtonProps {
   onAttachClick: () => void;
@@ -22,16 +21,16 @@ export function ChatInputToolbar({
   chatMode,
   ...submitStopProps
 }: ChatInputToolbarProps) {
-  const { selectedModel, setSelectedModel, subscription } = useGlobalState();
+  const { paidAgentOnlyActive, selectedModel, setSelectedModel, subscription } =
+    useGlobalState();
   const { user } = useAuth();
-  const hac45AgentOnlyActive = useHac45AgentOnlyTreatment();
 
   return (
     <div className="px-3 flex gap-2 items-center min-w-0">
       <div className="shrink-0">
         <AttachmentButton onAttachClick={onAttachClick} />
       </div>
-      {hac45AgentOnlyActive ? null : <ChatModeSelector />}
+      {paidAgentOnlyActive ? null : <ChatModeSelector />}
       {isAgentMode(chatMode) ? (
         <div className="hidden md:block">
           <AgentPermissionSelector analyticsSurface="chat_input" />

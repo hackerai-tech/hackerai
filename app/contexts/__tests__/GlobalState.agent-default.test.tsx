@@ -24,20 +24,26 @@ const mockAuthUser = (
 
 function GlobalStateProbe() {
   const {
+    agentPermissionMode,
     chatMode,
     isCheckingProPlan,
+    paidAgentOnlyActive,
     sandboxPreference,
     selectedModel,
     subscription,
+    temporaryChatsEnabled,
   } = useGlobalState();
 
   return (
     <>
+      <div data-testid="agent-permission-mode">{agentPermissionMode}</div>
       <div data-testid="chat-mode">{chatMode}</div>
       <div data-testid="checking-pro-plan">{String(isCheckingProPlan)}</div>
+      <div data-testid="paid-agent-only">{String(paidAgentOnlyActive)}</div>
       <div data-testid="sandbox-preference">{sandboxPreference}</div>
       <div data-testid="selected-model">{selectedModel}</div>
       <div data-testid="subscription">{subscription}</div>
+      <div data-testid="temporary-chat">{String(temporaryChatsEnabled)}</div>
     </>
   );
 }
@@ -192,6 +198,45 @@ describe("GlobalStateProvider agent defaults", () => {
     expect(screen.getByTestId("subscription")).toHaveTextContent("pro-plus");
     expect(screen.getByTestId("selected-model")).toHaveTextContent("auto");
     expect(screen.getByTestId("sandbox-preference")).toHaveTextContent("e2b");
+  });
+
+  it("forces returning paid users from saved Ask into Agent without overwriting permission choice", async () => {
+    window.localStorage.setItem("chat_mode", "ask");
+    window.localStorage.setItem("agent_permission_mode", "ask_approval");
+    mockAuthUser(["pro-plan"]);
+
+    render(
+      <GlobalStateProvider>
+        <GlobalStateProbe />
+      </GlobalStateProvider>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId("chat-mode")).toHaveTextContent("agent");
+      expect(screen.getByTestId("paid-agent-only")).toHaveTextContent("true");
+    });
+    expect(screen.getByTestId("agent-permission-mode")).toHaveTextContent(
+      "ask_approval",
+    );
+  });
+
+  it("keeps paid temporary chats in Ask because Agent is unsupported there", async () => {
+    window.localStorage.setItem("chat_mode", "ask");
+    window.history.pushState({}, "", "/?temporary-chat=true");
+    mockAuthUser(["pro-plan"]);
+
+    render(
+      <GlobalStateProvider>
+        <GlobalStateProbe />
+      </GlobalStateProvider>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId("subscription")).toHaveTextContent("pro");
+      expect(screen.getByTestId("temporary-chat")).toHaveTextContent("true");
+    });
+    expect(screen.getByTestId("chat-mode")).toHaveTextContent("ask");
+    expect(screen.getByTestId("paid-agent-only")).toHaveTextContent("false");
   });
 
   it("refreshes AuthKit access token after checkout entitlement refresh before showing paid state", async () => {

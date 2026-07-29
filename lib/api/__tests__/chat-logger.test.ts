@@ -480,8 +480,6 @@ describe("captureUsageCost", () => {
         midRunCount: 7,
       },
       analyticsRequestContext: {
-        analyticsContextVersion: 1,
-        hac45AgentOnlyClientActive: true,
         posthogSessionId: "session_123",
       },
     });
@@ -518,8 +516,6 @@ describe("captureUsageCost", () => {
         cache_write_tokens: 0,
         cost_source: "provider",
         $session_id: "session_123",
-        client_analytics_context_version: 1,
-        hac45_agent_only_client_active: true,
         usage_settlement_id: "settlement_123",
         mid_run_usage_settlement_count: 7,
         usage_settlement_step_events_sampled:

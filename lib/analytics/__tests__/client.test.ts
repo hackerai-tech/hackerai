@@ -99,10 +99,8 @@ describe("client analytics", () => {
     expect(mockCapture.mock.calls[2]?.[2]?.uuid).not.toBe(firstDeviceUuid);
   });
 
-  it("adds versioned HAC-45 state and PostHog session correlation headers", () => {
-    expect(getPostHogRequestHeaders({ hac45AgentOnlyActive: true })).toEqual({
-      "x-hackerai-analytics-context-version": "1",
-      "x-hackerai-hac45-agent-only": "active",
+  it("adds PostHog identity and session correlation headers", () => {
+    expect(getPostHogRequestHeaders()).toEqual({
       "X-POSTHOG-DISTINCT-ID": "user_123",
       "x-posthog-session-id": "session_123",
     });
