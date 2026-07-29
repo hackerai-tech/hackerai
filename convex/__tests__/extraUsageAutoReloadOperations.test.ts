@@ -113,11 +113,11 @@ describe("personal auto-reload operation claims", () => {
 
     expect(result).toMatchObject({
       status: "operation",
-      amountDollars: 11.5,
+      amountDollars: 12,
       operationId: "op-1",
       claimed: true,
     });
-    expect(row.auto_reload_operation_amount_dollars).toBe(11.5);
+    expect(row.auto_reload_operation_amount_dollars).toBe(12);
   });
 
   it("keeps the one-dollar minimum for a sub-dollar shortfall", async () => {

@@ -39,7 +39,7 @@ describe("UsageLogsTable", () => {
       </TooltipProvider>,
     );
 
-    expect(screen.getByText("$19.38")).toBeInTheDocument();
+    expect(screen.getByText("$20.22")).toBeInTheDocument();
     expect(screen.queryByText("$12.04")).not.toBeInTheDocument();
   });
 

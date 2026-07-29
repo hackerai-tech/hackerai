@@ -12,8 +12,8 @@ describe("getUsageChargeBreakdown", () => {
     });
 
     expect(result.includedChargeDollars).toBe(0);
-    expect(result.extraUsageChargeDollars).toBeCloseTo(19.381065);
-    expect(result.totalChargeDollars).toBeCloseTo(19.381065);
+    expect(result.extraUsageChargeDollars).toBeCloseTo(20.22372);
+    expect(result.totalChargeDollars).toBeCloseTo(20.22372);
   });
 
   it("converts included and extra point deductions independently", () => {
@@ -27,8 +27,8 @@ describe("getUsageChargeBreakdown", () => {
     expect(result).toEqual({
       componentBreakdownAvailable: true,
       includedChargeDollars: 1,
-      extraUsageChargeDollars: 1.15,
-      totalChargeDollars: 2.15,
+      extraUsageChargeDollars: 1.2,
+      totalChargeDollars: 2.2,
     });
   });
 

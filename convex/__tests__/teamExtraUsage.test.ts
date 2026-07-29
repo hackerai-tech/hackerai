@@ -756,7 +756,7 @@ describe("team auto-reload operation claims", () => {
 
     expect(first).toMatchObject({
       operationId: "team-op-first",
-      amountDollars: 11.5,
+      amountDollars: 12,
       claimed: true,
     });
     expect(second).toMatchObject({
