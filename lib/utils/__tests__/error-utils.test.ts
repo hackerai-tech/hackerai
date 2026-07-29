@@ -323,6 +323,39 @@ describe("provider error classification", () => {
     );
   });
 
+  it("redacts signed image URLs from every extracted telemetry field", () => {
+    const signedUrl =
+      "https://bucket.s3.amazonaws.com/user-files/user_123/private-image.png?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=access-key&X-Amz-Signature=signature-secret";
+    const err = Object.assign(
+      new Error(
+        `Failed to download the provided image at ${signedUrl} because the image host returned HTTP status 404.`,
+      ),
+      {
+        statusCode: 400,
+        url: signedUrl,
+        responseBody: JSON.stringify({
+          error: { message: `Image unavailable at ${signedUrl}` },
+        }),
+        cause: new Error(`Upstream rejected ${signedUrl}`),
+      },
+    );
+
+    const details = extractErrorDetails(err);
+    const attempts = extractRetryAttempts({ errors: [err] });
+    const serialized = JSON.stringify({ details, attempts });
+
+    expect(isInvalidImageInputError(err)).toBe(true);
+    expect(attempts).toHaveLength(1);
+    expect(details).toMatchObject({
+      statusCode: 400,
+      providerUrl: "[Redacted signed URL]",
+    });
+    expect(serialized).toContain("[Redacted signed URL]");
+    expect(serialized).not.toContain("user-files");
+    expect(serialized).not.toContain("access-key");
+    expect(serialized).not.toContain("signature-secret");
+  });
+
   it("classifies network-loss messages as provider stream termination", () => {
     const err = new Error("Network connection lost.");
 

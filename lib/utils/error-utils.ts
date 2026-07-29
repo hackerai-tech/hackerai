@@ -1,3 +1,5 @@
+import { redactSensitiveErrorMessage } from "@/lib/utils/error-redaction";
+
 /**
  * Extracts a readable error message from any error type.
  */
@@ -129,7 +131,7 @@ const getOpenRouterProviderInfo = (
       nested.message.length > 0
     ) {
       details.providerErrorMessage = truncate(
-        nested.message,
+        redactSensitiveErrorMessage(nested.message),
         OPENROUTER_DETAIL_MAX_LENGTH,
       );
     }
@@ -149,7 +151,7 @@ const getOpenRouterProviderInfo = (
       metadata.raw.length > 0
     ) {
       details.providerRawError = truncate(
-        metadata.raw,
+        redactSensitiveErrorMessage(metadata.raw),
         OPENROUTER_DETAIL_MAX_LENGTH,
       );
     }
@@ -243,6 +245,9 @@ const removeSensitiveData = (data: unknown): unknown => {
 
   const recurse = (value: unknown): unknown => {
     if (value === null || value === undefined) return value;
+    if (typeof value === "string") {
+      return redactSensitiveErrorMessage(value);
+    }
     if (typeof value !== "object") return value;
 
     if (seen.has(value)) return "[Circular]";
@@ -259,11 +264,7 @@ const removeSensitiveData = (data: unknown): unknown => {
       if (SENSITIVE_KEYS.has(key)) {
         continue;
       }
-      if (val && typeof val === "object") {
-        cleaned[key] = recurse(val);
-      } else {
-        cleaned[key] = val;
-      }
+      cleaned[key] = recurse(val);
     }
 
     return cleaned;
@@ -292,12 +293,12 @@ export const extractErrorDetails = (
       (typeof primaryRecord?.name === "string"
         ? primaryRecord.name
         : "UnknownError"),
-    errorMessage: getErrorMessage(error),
+    errorMessage: redactSensitiveErrorMessage(getErrorMessage(error)),
   };
 
   // Add stack trace if available
   if (err?.stack) {
-    details.errorStack = err.stack;
+    details.errorStack = redactSensitiveErrorMessage(err.stack);
   }
 
   // Extract provider-specific error details (AI SDK format). Walk common
@@ -307,7 +308,10 @@ export const extractErrorDetails = (
       details.statusCode = source.statusCode;
     }
     if (details.providerUrl === undefined && "url" in source) {
-      details.providerUrl = source.url;
+      details.providerUrl =
+        typeof source.url === "string"
+          ? redactSensitiveErrorMessage(source.url)
+          : source.url;
     }
     if (details.responseBody === undefined && "responseBody" in source) {
       details.responseBody = removeSensitiveData(source.responseBody);
@@ -319,7 +323,9 @@ export const extractErrorDetails = (
       details.providerData = removeSensitiveData(source.data);
     }
     if (details.cause === undefined && "cause" in source && source.cause) {
-      details.cause = getErrorMessage(source.cause);
+      details.cause = redactSensitiveErrorMessage(
+        getErrorMessage(source.cause),
+      );
     }
     if (details.errorCode === undefined && "code" in source) {
       details.errorCode = source.code;
@@ -516,7 +522,7 @@ const toAttempt = (error: unknown): ProviderAttempt => {
         : undefined;
   return {
     status_code: statusCode,
-    message: getErrorMessage(error),
+    message: redactSensitiveErrorMessage(getErrorMessage(error)),
     error_name: errorName,
     request_id: extractRequestId(error),
     provider_name:
@@ -637,13 +643,13 @@ function extractProviderDetails(error: unknown): {
         }
         // metadata.raw has the most specific upstream error
         if (typeof meta.raw === "string" && meta.raw.length > 0) {
-          detail = truncate(meta.raw, 300);
+          detail = truncate(redactSensitiveErrorMessage(meta.raw), 300);
         }
       }
 
       // Fall back to data.error.message
       if (!detail && typeof nested.message === "string") {
-        detail = truncate(nested.message, 300);
+        detail = truncate(redactSensitiveErrorMessage(nested.message), 300);
       }
     }
   }
@@ -694,13 +700,13 @@ function extractMessageFromResponseBody(body: string): string | undefined {
     const parsed = JSON.parse(body);
     const msg = parsed?.error?.message ?? parsed?.message;
     if (typeof msg === "string" && msg.length > 0) {
-      return truncate(msg, 300);
+      return truncate(redactSensitiveErrorMessage(msg), 300);
     }
   } catch {
     // Not JSON — return a trimmed snippet if it's short enough to be useful
     const trimmed = body.trim();
     if (trimmed.length > 0 && trimmed.length <= 300) {
-      return trimmed;
+      return redactSensitiveErrorMessage(trimmed);
     }
   }
   return undefined;

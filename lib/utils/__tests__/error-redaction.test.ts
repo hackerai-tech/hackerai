@@ -55,4 +55,26 @@ describe("error redaction", () => {
     expect(redacted).not.toContain(bell);
     expect(redacted).not.toContain("secret-value");
   });
+
+  it("redacts complete presigned URLs including storage object paths", () => {
+    const signedUrl =
+      "https://bucket.s3.amazonaws.com/user-files/user_123/private-image.png?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=access-key&X-Amz-Signature=signature-secret";
+    const message = `Provider failed to download ${signedUrl} with HTTP 404`;
+
+    const redacted = redactSensitiveErrorMessage(message);
+
+    expect(redacted).toBe(
+      "Provider failed to download [Redacted signed URL] with HTTP 404",
+    );
+    expect(redacted).not.toContain("user-files");
+    expect(redacted).not.toContain("access-key");
+    expect(redacted).not.toContain("signature-secret");
+  });
+
+  it("preserves ordinary non-signed diagnostic URLs", () => {
+    const message =
+      "Provider request failed at https://openrouter.ai/api/v1/chat/completions";
+
+    expect(redactSensitiveErrorMessage(message)).toBe(message);
+  });
 });

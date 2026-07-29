@@ -65,6 +65,40 @@ describe("phLogger", () => {
     expect(mockCaptureException).toHaveBeenCalledTimes(1);
   });
 
+  it("redacts signed URLs and raw causes before exception capture", () => {
+    const signedUrl =
+      "https://bucket.s3.amazonaws.com/user-files/user_123/private-image.png?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=access-key&X-Amz-Signature=signature-secret";
+    const error = Object.assign(
+      new Error(`Provider could not fetch ${signedUrl}`),
+      {
+        cause: new Error(`Upstream rejected ${signedUrl}`),
+      },
+    );
+
+    phLogger.error("provider_failed", {
+      userId: "user_123",
+      error,
+      requestId: "req_123",
+    });
+
+    const capturedError = mockCaptureException.mock.calls[0]?.[0] as Error;
+    const capturedProperties = mockCaptureException.mock.calls[0]?.[2];
+    const emittedLog = mockEmitPostHogLog.mock.calls[0]?.[0];
+    const serialized = JSON.stringify({
+      message: capturedError.message,
+      stack: capturedError.stack,
+      properties: capturedProperties,
+      log: emittedLog,
+    });
+
+    expect(capturedError).toBeInstanceOf(Error);
+    expect(serialized).toContain("[Redacted signed URL]");
+    expect(serialized).not.toContain("user-files");
+    expect(serialized).not.toContain("access-key");
+    expect(serialized).not.toContain("signature-secret");
+    expect("cause" in capturedError).toBe(false);
+  });
+
   it("passes stable event UUIDs to PostHog without leaking them into properties", () => {
     phLogger.event("checkout_started", {
       userId: "user_123",

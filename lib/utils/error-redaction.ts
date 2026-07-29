@@ -6,6 +6,11 @@ const SENSITIVE_FIELD_PATTERN =
 const ENV_SECRET_PATTERN =
   /(["']?\b(?:CONVEX_SERVICE_ROLE_KEY|POSTHOG_API_KEY|STRIPE_SECRET_KEY)\b["']?)(\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,}]+)/gi;
 
+const URL_PATTERN = /https?:\/\/[^\s"'<>\\]+/gi;
+const SIGNED_URL_CREDENTIAL_PATTERN =
+  /[?&](?:x-amz-(?:algorithm|credential|date|expires|signedheaders|signature|security-token)|awsaccesskeyid|signature)=/i;
+const REDACTED_SIGNED_URL = "[Redacted signed URL]";
+
 // biome-ignore lint/suspicious/noControlCharactersInRegex: intentional ANSI/control-sequence cleanup for model/log-facing errors
 const ANSI_ESCAPE_PATTERN =
   /\x1B(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1B]*(?:\x07|\x1B\\)|[@-Z\\-_])/g;
@@ -22,6 +27,9 @@ export const stripControlSequencesFromErrorMessage = (
 
 export const redactSensitiveErrorMessage = (message: string): string =>
   stripControlSequencesFromErrorMessage(message)
+    .replace(URL_PATTERN, (url) =>
+      SIGNED_URL_CREDENTIAL_PATTERN.test(url) ? REDACTED_SIGNED_URL : url,
+    )
     .replace(SENSITIVE_FIELD_PATTERN, (_match, key, separator) => {
       return `${key}${separator}"${REDACTED_VALUE}"`;
     })

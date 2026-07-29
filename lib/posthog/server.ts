@@ -1,5 +1,6 @@
 import PostHogClient from "@/app/posthog";
 import { emitPostHogLog, flushPostHogLogs } from "@/lib/posthog/logs";
+import { redactSensitiveErrorMessage } from "@/lib/utils/error-redaction";
 import type { PostHog } from "posthog-node";
 
 let cachedClient: PostHog | null | undefined;
@@ -67,14 +68,24 @@ function serializeError(error: unknown): Record<string, unknown> {
   if (error instanceof Error) {
     return {
       error_name: error.name,
-      error_message: truncate(error.message),
-      ...(error.stack && { error_stack: truncate(error.stack, 4_000) }),
+      error_message: truncate(redactSensitiveErrorMessage(error.message)),
+      ...(error.stack && {
+        error_stack: truncate(redactSensitiveErrorMessage(error.stack), 4_000),
+      }),
       ...("cause" in error &&
         (error as { cause?: unknown }).cause !== undefined && {
           error_cause:
             (error as { cause?: unknown }).cause instanceof Error
-              ? truncate((error as { cause: Error }).cause.message)
-              : truncate(String((error as { cause?: unknown }).cause)),
+              ? truncate(
+                  redactSensitiveErrorMessage(
+                    (error as { cause: Error }).cause.message,
+                  ),
+                )
+              : truncate(
+                  redactSensitiveErrorMessage(
+                    String((error as { cause?: unknown }).cause),
+                  ),
+                ),
         }),
     };
   }
@@ -83,8 +94,29 @@ function serializeError(error: unknown): Record<string, unknown> {
 
   return {
     error_name: "UnknownError",
-    error_message: truncate(stringifyUnknown(error)),
+    error_message: truncate(
+      redactSensitiveErrorMessage(stringifyUnknown(error)),
+    ),
   };
+}
+
+function sanitizeExceptionForCapture(error: Error): Error {
+  const serialized = serializeError(error);
+  const message =
+    typeof serialized.error_message === "string"
+      ? serialized.error_message
+      : "Unknown error";
+  const sanitized = new Error(message);
+  sanitized.name =
+    typeof serialized.error_name === "string"
+      ? serialized.error_name
+      : error.name;
+  if (typeof serialized.error_stack === "string") {
+    sanitized.stack = serialized.error_stack;
+  }
+  // PostHog traverses Error.cause. Keep the diagnostic fields above, but do
+  // not retain a raw cause that could reintroduce a presigned URL or object key.
+  return sanitized;
 }
 
 function commonLogFields({
@@ -146,7 +178,9 @@ export const phLogger = {
     }
     try {
       const { userId, error, ...rest } = fields;
-      const exception = error instanceof Error ? error : new Error(message);
+      const exception = sanitizeExceptionForCapture(
+        error instanceof Error ? error : new Error(message),
+      );
       const event =
         typeof fields.event === "string" && fields.event.length > 0
           ? fields.event
