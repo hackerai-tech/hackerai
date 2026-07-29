@@ -1,5 +1,6 @@
 import type { ModelMessage, UIMessage } from "ai";
 import { MAX_CONTEXT_COMPACTION_ATTEMPTS_PER_AGENT_STREAM } from "@/lib/chat/summarization/constants";
+import { PLATFORM_AUTHORIZATION_ANNOTATION } from "@/lib/chat/platform-authorization";
 
 const mockStreamText = jest.fn();
 const mockRunSummarizationStep = jest.fn();
@@ -138,6 +139,7 @@ const createTestStreamContext = (
   streamStartTime: Date.now(),
   contextUsageOn: true,
   isReasoningModel: false,
+  platformAuthorized: false,
   maxDurationMs: 60_000,
   writer: { write: jest.fn() },
   abortController: new AbortController(),
@@ -279,6 +281,57 @@ describe("createAgentStream repeated compaction", () => {
     jest.clearAllMocks();
     mockStreamText.mockImplementation((options) => options);
   });
+
+  it.each(["ask", "agent"] as const)(
+    "keeps authorization provider-only across %s serialization and later steps",
+    async (mode) => {
+      const originalMessage = uiMessage("initial", "Continua in italiano");
+      const state = initAgentStreamState([originalMessage], {
+        usedTokens: 1_000,
+        maxTokens: 128_000,
+      });
+      const stream = (await createAgentStream(
+        "test-model",
+        createTestStreamContext({
+          mode,
+          platformAuthorized: true,
+          summarizationTracker: {
+            hasSummarized: false,
+            summarizationCount: 0,
+          },
+          usageTracker: {},
+        }) as any,
+        state,
+      )) as any;
+
+      expect(stream.messages).toEqual([
+        {
+          role: "user",
+          content: `Continua in italiano ${PLATFORM_AUTHORIZATION_ANNOTATION}`,
+        },
+      ]);
+      expect(originalMessage.parts[0]).toEqual({
+        type: "text",
+        text: "Continua in italiano",
+      });
+
+      const nextStep = await stream.prepareStep({
+        steps: [{ toolResults: [] }],
+        messages: [
+          ...stream.messages,
+          { role: "assistant", content: "Analisi" },
+          { role: "user", content: "Continua" },
+        ],
+      });
+      const serialized = JSON.stringify(nextStep.messages);
+
+      expect(serialized.match(/<platform_authorization>/g)).toHaveLength(1);
+      expect(nextStep.messages.at(-1)).toEqual({
+        role: "user",
+        content: `Continua ${PLATFORM_AUTHORIZATION_ANNOTATION}`,
+      });
+    },
+  );
 
   it("emits sanitized provider and retained-message diagnostics", async () => {
     const onProviderRequestDiagnostics = jest.fn();

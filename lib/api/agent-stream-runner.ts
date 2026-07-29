@@ -86,6 +86,7 @@ import {
   isIncompletePostSummarizationStop,
   POST_SUMMARIZATION_CONTINUATION_PROMPT,
 } from "@/lib/chat/post-summarization-continuation";
+import { appendPlatformAuthorizationToLatestUserMessage } from "@/lib/chat/platform-authorization";
 import { createPromptSerializationTools } from "@/lib/ai/tools/prompt-serialization";
 import {
   writeSummarizationCleared,
@@ -454,6 +455,7 @@ export type AgentStreamContext = {
   streamStartTime: number;
   contextUsageOn: boolean;
   isReasoningModel: boolean;
+  platformAuthorized: boolean;
   providerReasoningOverride?: {
     modelName: string;
     reasoning: ProviderReasoningOverride;
@@ -705,18 +707,26 @@ export async function createAgentStream(
     effectiveModelName = getEffectiveModelName(),
   ): ModelMessage[] => {
     const nonEmptyMessages = filterEmptyAssistantMessages(messages);
-    if (!isAnthropicModel(effectiveModelName)) return nonEmptyMessages;
+    let repairedMessages = nonEmptyMessages;
 
-    const repair = repairAnthropicModelMessagesWithTelemetry(nonEmptyMessages);
-    if (repair.action !== "none") {
-      ctx.chatLogger?.recordAnthropicPromptRepair({
-        action: repair.action,
-        reason: repair.reason,
-        trailingAssistantContentTypes: repair.trailingAssistantContentTypes,
-        model: effectiveModelName,
-      });
+    if (isAnthropicModel(effectiveModelName)) {
+      const repair =
+        repairAnthropicModelMessagesWithTelemetry(nonEmptyMessages);
+      if (repair.action !== "none") {
+        ctx.chatLogger?.recordAnthropicPromptRepair({
+          action: repair.action,
+          reason: repair.reason,
+          trailingAssistantContentTypes: repair.trailingAssistantContentTypes,
+          model: effectiveModelName,
+        });
+      }
+      repairedMessages = repair.messages as ModelMessage[];
     }
-    return repair.messages as ModelMessage[];
+
+    return appendPlatformAuthorizationToLatestUserMessage(
+      repairedMessages,
+      ctx.platformAuthorized,
+    );
   };
   let latestProviderRequestDiagnostics: ProviderRequestDiagnostics | undefined;
   const recordProviderRequestDiagnostics = (args: {
