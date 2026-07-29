@@ -35,6 +35,7 @@ describe("client analytics", () => {
   beforeEach(() => {
     window.localStorage.clear();
     mockCapture.mockClear();
+    mockPostHog.get_distinct_id.mockClear();
     mockPostHog.get_distinct_id.mockReturnValue("user_123");
     jest.useFakeTimers().setSystemTime(new Date("2026-07-14T12:00:00Z"));
   });
@@ -99,10 +100,10 @@ describe("client analytics", () => {
     expect(mockCapture.mock.calls[2]?.[2]?.uuid).not.toBe(firstDeviceUuid);
   });
 
-  it("adds PostHog identity and session correlation headers", () => {
+  it("adds only the PostHog session correlation header", () => {
     expect(getPostHogRequestHeaders()).toEqual({
-      "X-POSTHOG-DISTINCT-ID": "user_123",
       "x-posthog-session-id": "session_123",
     });
+    expect(mockPostHog.get_distinct_id).not.toHaveBeenCalled();
   });
 });

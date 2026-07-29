@@ -220,11 +220,9 @@ export function getPostHogRequestHeaders(): HeadersInit {
   const posthog = getReadyPostHogClient();
   if (!posthog) return {};
 
-  const distinctId = posthog.get_distinct_id();
   const sessionId = posthog.get_session_id?.();
 
   return {
-    ...(distinctId && { "X-POSTHOG-DISTINCT-ID": distinctId }),
     ...(sessionId && { [POSTHOG_SESSION_ID_HEADER]: sessionId }),
   };
 }

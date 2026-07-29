@@ -220,8 +220,8 @@ describe("GlobalStateProvider agent defaults", () => {
     );
   });
 
-  it("keeps paid temporary chats in Ask because Agent is unsupported there", async () => {
-    window.localStorage.setItem("chat_mode", "ask");
+  it("forces paid temporary chats from saved Agent back to Ask", async () => {
+    window.localStorage.setItem("chat_mode", "agent");
     window.history.pushState({}, "", "/?temporary-chat=true");
     mockAuthUser(["pro-plan"]);
 

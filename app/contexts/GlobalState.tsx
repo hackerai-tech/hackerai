@@ -671,9 +671,13 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     !temporaryChatsEnabled;
 
   useEffect(() => {
+    if (temporaryChatsEnabled) {
+      if (chatMode !== "ask") setChatModeState("ask");
+      return;
+    }
     if (!paidAgentOnlyActive || chatMode === "agent") return;
     setChatModeState("agent");
-  }, [chatMode, paidAgentOnlyActive]);
+  }, [chatMode, paidAgentOnlyActive, temporaryChatsEnabled]);
 
   // Initialize team pricing dialog from URL hash
   const [teamPricingDialogOpen, setTeamPricingDialogOpen] = useState(() => {
