@@ -84,6 +84,7 @@ interface GlobalStateType {
   // Chat mode state
   chatMode: ChatMode;
   setChatMode: (mode: ChatMode) => void;
+  chatModeAccessResolved: boolean;
   paidAgentOnlyActive: boolean;
 
   // Computer sidebar state (right side)
@@ -663,6 +664,8 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     user,
   ]);
 
+  const chatModeAccessResolved =
+    !authLoading && (!user || (subscriptionResolved && !isCheckingProPlan));
   const paidAgentOnlyActive =
     Boolean(user) &&
     subscriptionResolved &&
@@ -1137,6 +1140,7 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     isUploadingFiles,
     chatMode,
     setChatMode,
+    chatModeAccessResolved,
     paidAgentOnlyActive,
     sidebarOpen,
     setSidebarOpen,

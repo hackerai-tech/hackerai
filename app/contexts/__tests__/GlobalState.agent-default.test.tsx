@@ -25,6 +25,7 @@ const mockAuthUser = (
 function GlobalStateProbe() {
   const {
     agentPermissionMode,
+    chatModeAccessResolved,
     chatMode,
     isCheckingProPlan,
     paidAgentOnlyActive,
@@ -37,6 +38,9 @@ function GlobalStateProbe() {
   return (
     <>
       <div data-testid="agent-permission-mode">{agentPermissionMode}</div>
+      <div data-testid="chat-mode-access-resolved">
+        {String(chatModeAccessResolved)}
+      </div>
       <div data-testid="chat-mode">{chatMode}</div>
       <div data-testid="checking-pro-plan">{String(isCheckingProPlan)}</div>
       <div data-testid="paid-agent-only">{String(paidAgentOnlyActive)}</div>
@@ -95,6 +99,20 @@ describe("GlobalStateProvider agent defaults", () => {
       );
     });
     expect(window.location.search).toBe("");
+  });
+
+  it("keeps chat mode access unresolved while authentication is loading", () => {
+    mockAuthUser([], { loading: true });
+
+    render(
+      <GlobalStateProvider>
+        <GlobalStateProbe />
+      </GlobalStateProvider>,
+    );
+
+    expect(screen.getByTestId("chat-mode-access-resolved")).toHaveTextContent(
+      "false",
+    );
   });
 
   it("clears a temporary chat URL request after unauthenticated auth resolves", async () => {

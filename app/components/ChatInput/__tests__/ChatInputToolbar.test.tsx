@@ -5,6 +5,7 @@ import { useAuth } from "@workos-inc/authkit-nextjs/components";
 import type { SubscriptionTier } from "@/types";
 
 let mockSubscription: SubscriptionTier = "free";
+let mockChatModeAccessResolved = true;
 let mockPaidAgentOnlyActive = false;
 
 jest.mock("@/app/components/AttachmentButton", () => ({
@@ -38,6 +39,7 @@ jest.mock("@/app/contexts/GlobalState", () => ({
     selectedModel: "auto",
     setSelectedModel: jest.fn(),
     subscription: mockSubscription,
+    chatModeAccessResolved: mockChatModeAccessResolved,
     paidAgentOnlyActive: mockPaidAgentOnlyActive,
   }),
 }));
@@ -72,6 +74,7 @@ const mockAuthUser = (user: unknown) => {
 describe("ChatInputToolbar", () => {
   beforeEach(() => {
     mockSubscription = "free";
+    mockChatModeAccessResolved = true;
     mockPaidAgentOnlyActive = false;
     mockAuthUser(null);
   });
@@ -114,6 +117,22 @@ describe("ChatInputToolbar", () => {
 
     expect(screen.queryByTestId("chat-mode-selector")).not.toBeInTheDocument();
     expect(screen.getByTestId("agent-permission-selector")).toBeInTheDocument();
+  });
+
+  it("never flashes the mode selector while paid access resolves", () => {
+    mockAuthUser({ id: "user_123" });
+    mockChatModeAccessResolved = false;
+
+    const { rerender } = render(<ChatInputToolbar {...defaultProps} />);
+
+    expect(screen.queryByTestId("chat-mode-selector")).not.toBeInTheDocument();
+
+    mockSubscription = "pro";
+    mockChatModeAccessResolved = true;
+    mockPaidAgentOnlyActive = true;
+    rerender(<ChatInputToolbar {...defaultProps} chatMode="agent" />);
+
+    expect(screen.queryByTestId("chat-mode-selector")).not.toBeInTheDocument();
   });
 
   it("enables the paid visual treatment only for paid subscriptions", () => {

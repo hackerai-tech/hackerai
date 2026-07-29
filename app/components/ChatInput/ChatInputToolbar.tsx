@@ -21,8 +21,13 @@ export function ChatInputToolbar({
   chatMode,
   ...submitStopProps
 }: ChatInputToolbarProps) {
-  const { paidAgentOnlyActive, selectedModel, setSelectedModel, subscription } =
-    useGlobalState();
+  const {
+    chatModeAccessResolved,
+    paidAgentOnlyActive,
+    selectedModel,
+    setSelectedModel,
+    subscription,
+  } = useGlobalState();
   const { user } = useAuth();
 
   return (
@@ -30,7 +35,9 @@ export function ChatInputToolbar({
       <div className="shrink-0">
         <AttachmentButton onAttachClick={onAttachClick} />
       </div>
-      {paidAgentOnlyActive ? null : <ChatModeSelector />}
+      {chatModeAccessResolved && !paidAgentOnlyActive ? (
+        <ChatModeSelector />
+      ) : null}
       {isAgentMode(chatMode) ? (
         <div className="hidden md:block">
           <AgentPermissionSelector analyticsSurface="chat_input" />
