@@ -303,4 +303,36 @@ describe("useChatHandlers steer todo handoff", () => {
     expect(mockSetMessages).not.toHaveBeenCalled();
     expect(regenerate).not.toHaveBeenCalled();
   });
+
+  it("does not clean local state or regenerate when the persisted edit fails", async () => {
+    mockRegenerateWithNewContent.mockRejectedValueOnce(
+      new Error("write failed"),
+    );
+    const regenerate = jest.fn();
+    const { result } = renderHook(() =>
+      useChatHandlers({
+        chatId: "chat-1",
+        messages,
+        sendMessage: mockSendMessage,
+        stop: mockStop,
+        regenerate,
+        setMessages: mockSetMessages,
+        isExistingChat: true,
+        status: "ready",
+        isSendingNowRef: { current: false },
+        hasManuallyStoppedRef: { current: false },
+        activeTriggerRunRef: { current: undefined },
+      }),
+    );
+
+    await act(async () => {
+      await expect(
+        result.current.handleEditMessage("user-1", "Edited task"),
+      ).rejects.toThrow("write failed");
+    });
+
+    expect(mockSetTodos).not.toHaveBeenCalled();
+    expect(mockSetMessages).not.toHaveBeenCalled();
+    expect(regenerate).not.toHaveBeenCalled();
+  });
 });

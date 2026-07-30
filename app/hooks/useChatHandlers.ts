@@ -723,8 +723,7 @@ export const useChatHandlers = ({
           return;
         }
 
-        // Swallow benign errors (e.g., racing edits where the message was already removed)
-        // Avoid logging to keep console clean
+        throw error;
       }
     }
 
