@@ -602,6 +602,7 @@ export const Messages = ({
         <LegendList<ChatTimelineRow>
           ref={setTimelineInstance}
           data={timelineRows}
+          extraData={editingMessageId}
           keyExtractor={getTimelineRowKey}
           getItemType={getChatTimelineRowType}
           renderItem={renderTimelineRow}
