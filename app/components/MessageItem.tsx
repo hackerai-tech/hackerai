@@ -57,6 +57,7 @@ interface MessageItemProps {
   messagesLength: number;
   lastAssistantMessageIndex: number | undefined;
   status: ChatStatus;
+  canEdit: boolean;
   isEditing: boolean;
   isMobile?: boolean;
   feedbackInputMessageId: string | null;
@@ -99,6 +100,7 @@ function areMessageItemPropsEqual(
 ): boolean {
   // Always re-render if these change
   if (prev.status !== next.status) return false;
+  if (prev.canEdit !== next.canEdit) return false;
   if (prev.isEditing !== next.isEditing) return false;
   if (prev.isMobile !== next.isMobile) return false;
   if (prev.feedbackInputMessageId !== next.feedbackInputMessageId) return false;
@@ -155,6 +157,7 @@ export const MessageItem = memo(function MessageItem({
   messagesLength,
   lastAssistantMessageIndex,
   status,
+  canEdit,
   isEditing,
   isMobile,
   feedbackInputMessageId,
@@ -667,6 +670,7 @@ export const MessageItem = memo(function MessageItem({
           canRegenerate={canRegenerate}
           onRegenerate={onRegenerate}
           onEdit={handleEdit}
+          canEdit={canEdit}
           onBranch={!isUser && onBranchMessage ? handleBranch : undefined}
           isHovered={isHovered}
           isEditing={isEditing}

@@ -28,6 +28,7 @@ import { normalizeMessages } from "@/lib/utils/message-processor";
 import {
   getAutoContinueChainAssistantIds,
   getMessagesUpToLastRealUser,
+  findLastUserMessageIndex,
 } from "@/lib/utils/message-utils";
 import {
   createFileMessagePartFromUploadedFile,
@@ -675,6 +676,15 @@ export const useChatHandlers = ({
     newContent: string,
     remainingFileIds?: string[],
   ) => {
+    const lastUserMessageIndex = findLastUserMessageIndex(messages);
+    if (
+      lastUserMessageIndex === undefined ||
+      messages[lastUserMessageIndex]?.id !== messageId
+    ) {
+      toast.error("Only the latest user message can be edited.");
+      return;
+    }
+
     setIsAutoResuming(false);
 
     // Stop any active stream first to prevent message order issues and wasted tokens
