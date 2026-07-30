@@ -547,8 +547,15 @@ describe("POST /api/subscription/webhook", () => {
     );
   });
 
-  it.each(["canceled", "incomplete_expired"] as const)(
-    "skips paid invoice side effects for a terminal %s subscription",
+  it.each([
+    "incomplete",
+    "incomplete_expired",
+    "past_due",
+    "canceled",
+    "unpaid",
+    "paused",
+  ] as const)(
+    "skips paid invoice side effects for a non-entitled %s subscription",
     async (subscriptionStatus) => {
       mockGetReferralRewardConfig.mockReturnValue({
         enabled: true,
@@ -590,6 +597,7 @@ describe("POST /api/subscription/webhook", () => {
       mockRetrieveSubscription.mockResolvedValue({
         id: "sub_terminal",
         status: subscriptionStatus,
+        latest_invoice: `in_${subscriptionStatus}`,
         canceled_at: subscriptionStatus === "canceled" ? 1_784_285_151 : null,
         ended_at: 1_784_285_151,
         metadata: {},
@@ -621,16 +629,18 @@ describe("POST /api/subscription/webhook", () => {
       expect(response.status).toBe(200);
       expect(body).toEqual({ received: true });
       expect(mockPostHogWarn).toHaveBeenCalledWith(
-        "billing_invoice_paid_terminal_subscription_skipped",
+        "billing_invoice_paid_ineligible_subscription_skipped",
         expect.objectContaining({
-          event: "billing_invoice_paid_terminal_subscription_skipped",
+          event: "billing_invoice_paid_ineligible_subscription_skipped",
           userId: "user_terminal",
           user_ids: ["user_terminal"],
           org_id: "org_terminal",
           stripe_customer_id: "cus_terminal",
           stripe_subscription_id: "sub_terminal",
           stripe_invoice_id: `in_${subscriptionStatus}`,
+          stripe_latest_invoice_id: `in_${subscriptionStatus}`,
           subscription_status: subscriptionStatus,
+          skip_reason: "subscription_not_entitled",
           billing_reason: "subscription_cycle",
           amount_paid_dollars: 25,
           requires_manual_reconciliation: true,
@@ -656,6 +666,102 @@ describe("POST /api/subscription/webhook", () => {
       );
     },
   );
+
+  it("does not restore benefits when an older invoice is paid", async () => {
+    mockGetReferralRewardConfig.mockReturnValue({
+      enabled: true,
+      referrerRewardDollars: 10,
+    });
+    mockConstructEvent.mockReturnValue({
+      id: "evt_invoice_paid_old",
+      type: "invoice.paid",
+      data: {
+        object: {
+          id: "in_old",
+          customer: "cus_old_invoice",
+          amount_paid: 2500,
+          currency: "usd",
+          billing_reason: "subscription_cycle",
+          parent: {
+            subscription_details: {
+              subscription: "sub_old_invoice",
+            },
+          },
+          status_transitions: {
+            paid_at: 1_784_456_277,
+          },
+        },
+      },
+    });
+    mockRetrieveCustomer.mockResolvedValue({
+      deleted: false,
+      id: "cus_old_invoice",
+      metadata: {
+        workOSOrganizationId: "org_old_invoice",
+      },
+    } as never);
+    mockListMemberships.mockResolvedValue({
+      autoPagination: jest
+        .fn()
+        .mockResolvedValue([{ userId: "user_old_invoice" }]),
+    } as never);
+    mockRetrieveSubscription.mockResolvedValue({
+      id: "sub_old_invoice",
+      status: "active",
+      latest_invoice: "in_current",
+      metadata: {},
+      items: {
+        data: [
+          {
+            quantity: 1,
+            current_period_end: 1_786_900_800,
+            price: {
+              id: "price_pro",
+              lookup_key: "pro-monthly-plan",
+              recurring: { interval: "month", interval_count: 1 },
+              product: {
+                id: "prod_pro",
+                name: "HackerAI Pro",
+                metadata: {},
+              },
+            },
+          },
+        ],
+      },
+    } as never);
+
+    const { POST } = await import("../route");
+
+    const response = await POST(makeWebhookRequest());
+
+    expect(response.status).toBe(200);
+    expect(mockPostHogWarn).toHaveBeenCalledWith(
+      "billing_invoice_paid_ineligible_subscription_skipped",
+      expect.objectContaining({
+        event: "billing_invoice_paid_ineligible_subscription_skipped",
+        userId: "user_old_invoice",
+        user_ids: ["user_old_invoice"],
+        org_id: "org_old_invoice",
+        stripe_customer_id: "cus_old_invoice",
+        stripe_subscription_id: "sub_old_invoice",
+        stripe_invoice_id: "in_old",
+        stripe_latest_invoice_id: "in_current",
+        subscription_status: "active",
+        skip_reason: "invoice_not_current",
+        requires_manual_reconciliation: true,
+      }),
+    );
+    expect(mockResetRateLimitBucketAfterPayment).not.toHaveBeenCalled();
+    expect(mockApplyProratedTierChangeBucket).not.toHaveBeenCalled();
+    expect(mockConvexMutation).not.toHaveBeenCalledWith(
+      "referrals.setReferralCodesPaidEligibility",
+      expect.anything(),
+    );
+    expect(mockConvexMutation).not.toHaveBeenCalledWith(
+      "unitEconomics.recordRevenueEvent",
+      expect.anything(),
+    );
+  });
 
   it("resets the grandfathered $20 Pro price to $20 of included usage", async () => {
     const periodEnd = 1_785_000_000;
@@ -692,6 +798,8 @@ describe("POST /api/subscription/webhook", () => {
     } as never);
     mockRetrieveSubscription.mockResolvedValue({
       id: "sub_pro_20",
+      status: "active",
+      latest_invoice: "in_pro_20",
       metadata: {},
       items: {
         data: [
@@ -762,6 +870,8 @@ describe("POST /api/subscription/webhook", () => {
     } as never);
     mockRetrieveSubscription.mockResolvedValue({
       id: "sub_upgrade",
+      status: "active",
+      latest_invoice: "in_upgrade",
       metadata: {},
       items: {
         data: [

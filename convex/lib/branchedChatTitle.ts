@@ -11,20 +11,17 @@ type SourceChatTitleRecord = {
 };
 
 /**
- * Preserve live source titles only while the viewer is authorized to see the
- * source chat. Revoked cross-user shares use the title captured at fork time;
- * legacy forks fall back to their own title instead of exposing later changes.
+ * Preserve live source titles only for forks of the viewer's own chats.
+ * Cross-user forks always use the title captured at fork time so revoking and
+ * later replacing a share cannot expose a private rename through the old fork.
+ * Legacy forks fall back to their own title.
  */
 export const resolveBranchedFromTitle = (
   forkedChat: ForkedChatTitleRecord,
   sourceChat: SourceChatTitleRecord | null | undefined,
   viewerUserId: string,
 ): string => {
-  const canReadLiveSourceTitle =
-    sourceChat?.user_id === viewerUserId ||
-    (sourceChat?.share_id !== undefined && sourceChat.share_date !== undefined);
-
-  if (sourceChat && canReadLiveSourceTitle) {
+  if (sourceChat?.user_id === viewerUserId) {
     return sourceChat.title;
   }
 

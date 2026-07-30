@@ -43,9 +43,9 @@ const WEBHOOK_LOG_CONTEXT = {
   webhook: "subscription",
   route: "/api/subscription/webhook",
 };
-const TERMINAL_SUBSCRIPTION_STATUSES = new Set<Stripe.Subscription.Status>([
-  "canceled",
-  "incomplete_expired",
+const ENTITLED_SUBSCRIPTION_STATUSES = new Set<Stripe.Subscription.Status>([
+  "active",
+  "trialing",
 ]);
 
 // Linear ranking used to label tier transitions as upgrade/downgrade. Team is
@@ -782,19 +782,27 @@ async function handleInvoicePaid(
 
   const { tier, subscription } = resolved;
 
-  // Stripe can keep an invoice collectible after its subscription reaches a
-  // terminal state. Paying that invoice does not reactivate the subscription,
-  // so it must not restore paid eligibility, MRR, or usage credits.
-  if (TERMINAL_SUBSCRIPTION_STATUSES.has(subscription.status)) {
-    phLogger.warn("billing_invoice_paid_terminal_subscription_skipped", {
-      event: "billing_invoice_paid_terminal_subscription_skipped",
+  // A paid historical invoice does not reactivate its subscription. Only the
+  // current invoice of an entitled subscription may restore paid benefits.
+  const latestInvoiceId = stripeObjectId(subscription.latest_invoice);
+  const isEntitledSubscription = ENTITLED_SUBSCRIPTION_STATUSES.has(
+    subscription.status,
+  );
+  const isCurrentInvoice = latestInvoiceId === invoice.id;
+  if (!isEntitledSubscription || !isCurrentInvoice) {
+    phLogger.warn("billing_invoice_paid_ineligible_subscription_skipped", {
+      event: "billing_invoice_paid_ineligible_subscription_skipped",
       userId: userIds[0],
       user_ids: userIds,
       org_id: orgId,
       stripe_customer_id: customerId,
       stripe_subscription_id: subscription.id,
       stripe_invoice_id: invoice.id,
+      stripe_latest_invoice_id: latestInvoiceId,
       subscription_status: subscription.status,
+      skip_reason: !isEntitledSubscription
+        ? "subscription_not_entitled"
+        : "invoice_not_current",
       billing_reason: invoice.billing_reason,
       amount_paid_dollars: centsToDollars(invoice.amount_paid),
       canceled_at: subscription.canceled_at,
