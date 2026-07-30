@@ -18,6 +18,11 @@ const requestCanRouteToXai = (body: unknown): boolean => {
 const hasOwnEncryptedContent = (value: unknown): boolean =>
   isRecord(value) && Object.hasOwn(value, "encrypted_content");
 
+// OpenRouter 2.10 uses this shape for provider-private reasoning blobs.
+const isEncryptedReasoningDetail = (value: unknown): boolean =>
+  isRecord(value) &&
+  (hasOwnEncryptedContent(value) || value.type === "reasoning.encrypted");
+
 const stripEncryptedContent = (
   value: unknown,
   inReasoningDetails = false,
@@ -27,7 +32,7 @@ const stripEncryptedContent = (
     const cleaned: unknown[] = [];
 
     for (const item of value) {
-      if (inReasoningDetails && hasOwnEncryptedContent(item)) {
+      if (inReasoningDetails && isEncryptedReasoningDetail(item)) {
         changed = true;
         continue;
       }
