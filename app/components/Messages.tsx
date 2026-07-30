@@ -408,7 +408,6 @@ export const Messages = ({
       if (row.kind === "agent-work-header") {
         content = (
           <AgentWorkHeader
-            activityCount={row.activityCount}
             canToggle={row.canToggle}
             durationMs={row.durationMs}
             expanded={row.expanded}

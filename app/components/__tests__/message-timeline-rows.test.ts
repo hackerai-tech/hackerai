@@ -45,7 +45,6 @@ describe("deriveChatTimelineRows", () => {
     expect(rows).toHaveLength(102);
     expect(rows[0]).toMatchObject({
       kind: "agent-work-header",
-      activityCount: 100,
       expanded: true,
       isTiming: true,
     });

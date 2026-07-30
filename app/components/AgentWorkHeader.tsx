@@ -5,7 +5,6 @@ import { ChevronDownIcon, ChevronRightIcon } from "lucide-react";
 import { formatDuration } from "@/components/ai-elements/worked-for";
 
 type AgentWorkHeaderProps = {
-  activityCount: number;
   canToggle: boolean;
   durationMs?: number;
   expanded: boolean;
@@ -16,7 +15,6 @@ type AgentWorkHeaderProps = {
 };
 
 export const AgentWorkHeader = memo(function AgentWorkHeader({
-  activityCount,
   canToggle,
   durationMs,
   expanded,
@@ -50,9 +48,6 @@ export const AgentWorkHeader = memo(function AgentWorkHeader({
     : typeof durationMs === "number" && durationMs > 0
       ? `Worked for ${formatDuration(durationMs)}`
       : "Worked";
-  const activityLabel = `${activityCount} ${
-    activityCount === 1 ? "activity" : "activities"
-  }`;
 
   return (
     <button
@@ -65,7 +60,6 @@ export const AgentWorkHeader = memo(function AgentWorkHeader({
       }`}
     >
       <span>{label}</span>
-      <span className="text-xs text-muted-foreground/70">{activityLabel}</span>
       {canToggle &&
         (expanded ? (
           <ChevronDownIcon className="size-4" />

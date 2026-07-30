@@ -18,7 +18,6 @@ export type MessageTimelineRow = BaseTimelineRow & {
 
 export type AgentWorkHeaderTimelineRow = BaseTimelineRow & {
   kind: "agent-work-header";
-  activityCount: number;
   canToggle: boolean;
   durationMs?: number;
   expanded: boolean;
@@ -99,7 +98,6 @@ export function deriveChatTimelineRows({
       id: `work-header:${message.id}`,
       message,
       messageIndex,
-      activityCount: projection.activities.length,
       canToggle,
       durationMs:
         typeof message.metadata?.generationTimeMs === "number"
