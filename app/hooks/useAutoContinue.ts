@@ -49,6 +49,9 @@ export function useAutoContinue({
   const pendingAutoContinueRef = useRef(false);
   const autoContinueRunScheduledRef = useRef(false);
   const autoContinueRunStartedRef = useRef(false);
+  const autoContinueTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null,
+  );
   const lastProcessedIndexRef = useRef(0);
 
   const todosRef = useLatestRef(todos);
@@ -60,12 +63,20 @@ export function useAutoContinue({
   const isPartForCurrentChat = (part: ScopedDataUIPart) =>
     part.__chatId === undefined || part.__chatId === chatId;
 
+  const clearScheduledAutoContinue = useCallback(() => {
+    if (autoContinueTimerRef.current !== null) {
+      clearTimeout(autoContinueTimerRef.current);
+      autoContinueTimerRef.current = null;
+    }
+  }, []);
+
   const clearAutoContinueLifecycle = useCallback(() => {
+    clearScheduledAutoContinue();
     pendingAutoContinueRef.current = false;
     autoContinueRunScheduledRef.current = false;
     autoContinueRunStartedRef.current = false;
     setIsAutoContinuing(false);
-  }, [setIsAutoContinuing]);
+  }, [clearScheduledAutoContinue, setIsAutoContinuing]);
 
   useEffect(() => {
     pendingAutoContinueRef.current = false;
@@ -112,7 +123,10 @@ export function useAutoContinue({
     autoContinueCountRef.current += 1;
     setAutoContinueCount(autoContinueCountRef.current);
 
-    const timeout = setTimeout(() => {
+    clearScheduledAutoContinue();
+    autoContinueTimerRef.current = setTimeout(() => {
+      autoContinueTimerRef.current = null;
+      if (!autoContinueRunScheduledRef.current) return;
       sendMessageRef.current(
         {
           text: AUTO_CONTINUE_PROMPT,
@@ -132,7 +146,7 @@ export function useAutoContinue({
       );
     }, 500);
 
-    return () => clearTimeout(timeout);
+    return clearScheduledAutoContinue;
   }, [
     status,
     dataStream,
@@ -148,6 +162,7 @@ export function useAutoContinue({
     sandboxPreferenceRef,
     agentPermissionModeRef,
     selectedModelRef,
+    clearScheduledAutoContinue,
   ]);
 
   useEffect(() => {

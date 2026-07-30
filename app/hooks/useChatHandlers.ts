@@ -177,10 +177,14 @@ export const useChatHandlers = ({
 
   const cancelTriggerRun = async (): Promise<void> => {
     if (!shouldCancelTriggerRun()) return;
+    const expectedTriggerRunId = activeTriggerRunRef?.current;
     const response = await fetch(AGENT_CANCEL_ENDPOINT, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ chatId }),
+      body: JSON.stringify({
+        chatId,
+        ...(expectedTriggerRunId ? { expectedTriggerRunId } : {}),
+      }),
     });
     if (!response.ok) {
       throw new Error(
@@ -360,8 +364,8 @@ export const useChatHandlers = ({
       return false;
     }
 
-    // If streaming in Agent mode, check queue behavior
-    if (status === "streaming") {
+    // While an Agent run is starting or streaming, honor the queue behavior.
+    if (status === "streaming" || status === "submitted") {
       const validFiles = uploadedFiles
         .filter(isSendableUploadedFile)
         .map(createFileMessagePartFromUploadedFile)
@@ -829,7 +833,7 @@ export const useChatHandlers = ({
   };
 
   const handleContinue = (selectedModelOverride?: SelectedModel) => {
-    if (status === "streaming") return;
+    if (status === "streaming" || status === "submitted") return;
     hasManuallyStoppedRef.current = false;
     const continuationSelectedModel =
       selectedModelOverride ?? requestSelectedModelRef.current;

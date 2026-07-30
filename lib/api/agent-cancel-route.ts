@@ -47,15 +47,24 @@ export const createAgentCancelPost =
   ({ endpoint }: { endpoint: AgentApiEndpoint }) =>
   async (req: NextRequest) => {
     try {
-      let body: { chatId?: string };
+      let body: { chatId?: string; expectedTriggerRunId?: string };
       try {
         body = await req.json();
       } catch {
         return new NextResponse("Invalid JSON body", { status: 400 });
       }
-      const { chatId } = body;
+      const { chatId, expectedTriggerRunId } = body;
       if (!chatId || typeof chatId !== "string") {
         return new NextResponse("chatId required", { status: 400 });
+      }
+      if (
+        expectedTriggerRunId !== undefined &&
+        (typeof expectedTriggerRunId !== "string" ||
+          expectedTriggerRunId.length === 0)
+      ) {
+        return new NextResponse("expectedTriggerRunId must be a string", {
+          status: 400,
+        });
       }
 
       const { userId } = await getUserIDAndPro(req);
@@ -90,6 +99,12 @@ export const createAgentCancelPost =
         ? chat.active_agent_approval_session_id
         : temporaryRefresh?.approvalSessionId;
       const runId = chat ? chat.active_trigger_run_id : temporaryRefresh?.runId;
+      if (expectedTriggerRunId && runId !== expectedTriggerRunId) {
+        return NextResponse.json(
+          { canceled: false, reason: "stale_run" },
+          { status: 409 },
+        );
+      }
       await closeAgentApprovalSession(approvalSessionId, "agent-run-canceled");
       if (!runId) {
         if (approvalSessionId) {
