@@ -7,7 +7,7 @@ import type { UploadedFileState } from "@/types/file";
 const createGeneratedTextUpload = (
   content: string,
   id = "paste_1",
-  name = "pasted_content.txt",
+  name = "Pasted text.txt",
 ): UploadedFileState => ({
   file: new File([content], name, { type: "text/plain" }),
   uploading: false,
@@ -27,7 +27,8 @@ describe("FileUploadPreview generated pasted text attachments", () => {
     jest.useRealTimers();
   });
 
-  it("renders a compact text-file card with metadata", () => {
+  it("renders a compact Codex-style text-file card", () => {
+    const onShowGeneratedTextInField = jest.fn();
     render(
       <FileUploadPreview
         uploadedFiles={[
@@ -37,20 +38,22 @@ describe("FileUploadPreview generated pasted text attachments", () => {
         ]}
         onRemoveFile={jest.fn()}
         onUpdateGeneratedTextFile={jest.fn()}
+        onShowGeneratedTextInField={onShowGeneratedTextInField}
       />,
     );
 
-    expect(screen.getByText("pasted_content.txt")).toBeInTheDocument();
-    expect(screen.getByText(/^Text · /)).toBeInTheDocument();
-    expect(screen.getByText("Click to edit")).toBeInTheDocument();
+    expect(screen.getByText("Pasted text.txt")).toBeInTheDocument();
+    fireEvent.click(screen.getByText("Show in text field"));
+    expect(onShowGeneratedTextInField).toHaveBeenCalledWith(
+      0,
+      "First useful characters from the pasted source material.",
+    );
     expect(
       screen.queryByText(
         "First useful characters from the pasted source material.",
       ),
     ).not.toBeInTheDocument();
-    expect(
-      screen.getByLabelText("Open pasted_content.txt"),
-    ).toBeInTheDocument();
+    expect(screen.getByLabelText("Open Pasted text.txt")).toBeInTheDocument();
   });
 
   it("opens an editor and auto-saves edited content", () => {
@@ -65,7 +68,7 @@ describe("FileUploadPreview generated pasted text attachments", () => {
       />,
     );
 
-    fireEvent.click(screen.getByLabelText("Open pasted_content.txt"));
+    fireEvent.click(screen.getByLabelText("Open Pasted text.txt"));
     const editor = screen.getByLabelText("Pasted text content");
     expect(editor).toHaveValue("Original pasted content");
     expect(
@@ -85,6 +88,85 @@ describe("FileUploadPreview generated pasted text attachments", () => {
     );
   });
 
+  it("shows target incompatibility and keeps inline restoration available", () => {
+    const onShowGeneratedTextInField = jest.fn();
+
+    const { rerender } = render(
+      <FileUploadPreview
+        uploadedFiles={[createGeneratedTextUpload("Pasted source material")]}
+        onRemoveFile={jest.fn()}
+        onUpdateGeneratedTextFile={jest.fn()}
+        onShowGeneratedTextInField={onShowGeneratedTextInField}
+      />,
+    );
+
+    expect(screen.queryByText("Unavailable in Ask")).not.toBeInTheDocument();
+
+    rerender(
+      <FileUploadPreview
+        uploadedFiles={[createGeneratedTextUpload("Pasted source material")]}
+        onRemoveFile={jest.fn()}
+        onUpdateGeneratedTextFile={jest.fn()}
+        onShowGeneratedTextInField={onShowGeneratedTextInField}
+        generatedTextAttachmentsAvailable={false}
+      />,
+    );
+
+    expect(screen.getByText("Unavailable in Ask")).toBeInTheDocument();
+    fireEvent.click(screen.getByText("Show in text field"));
+    expect(onShowGeneratedTextInField).toHaveBeenCalledWith(
+      0,
+      "Pasted source material",
+    );
+  });
+
+  it("restores the latest editor content without waiting for autosave", () => {
+    jest.useFakeTimers();
+    const onShowGeneratedTextInField = jest.fn();
+    const onUpdateGeneratedTextFile = jest.fn();
+
+    render(
+      <FileUploadPreview
+        uploadedFiles={[createGeneratedTextUpload("Original pasted content")]}
+        onRemoveFile={jest.fn()}
+        onUpdateGeneratedTextFile={onUpdateGeneratedTextFile}
+        onShowGeneratedTextInField={onShowGeneratedTextInField}
+      />,
+    );
+
+    fireEvent.click(screen.getByLabelText("Open Pasted text.txt"));
+    fireEvent.change(screen.getByLabelText("Pasted text content"), {
+      target: { value: "Latest editor content" },
+    });
+    fireEvent.click(
+      screen.getAllByRole("button", { name: "Show in text field" }).at(-1)!,
+    );
+
+    expect(onShowGeneratedTextInField).toHaveBeenCalledWith(
+      0,
+      "Latest editor content",
+    );
+    expect(onUpdateGeneratedTextFile).not.toHaveBeenCalled();
+    expect(
+      screen.queryByLabelText("Pasted text content"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("keeps oversized pasted text editable without offering inline restoration", () => {
+    render(
+      <FileUploadPreview
+        uploadedFiles={[createGeneratedTextUpload("A".repeat(25_001))]}
+        onRemoveFile={jest.fn()}
+        onUpdateGeneratedTextFile={jest.fn()}
+        onShowGeneratedTextInField={jest.fn()}
+      />,
+    );
+
+    expect(screen.queryByText("Show in text field")).not.toBeInTheDocument();
+    expect(screen.getByText("Click to edit")).toBeInTheDocument();
+    expect(screen.getByLabelText("Open Pasted text.txt")).not.toBeDisabled();
+  });
+
   it("flushes pending edits when the editor closes", () => {
     jest.useFakeTimers();
     const onUpdateGeneratedTextFile = jest.fn();
@@ -97,7 +179,7 @@ describe("FileUploadPreview generated pasted text attachments", () => {
       />,
     );
 
-    fireEvent.click(screen.getByLabelText("Open pasted_content.txt"));
+    fireEvent.click(screen.getByLabelText("Open Pasted text.txt"));
     fireEvent.change(screen.getByLabelText("Pasted text content"), {
       target: { value: "Closed before debounce" },
     });
@@ -122,7 +204,7 @@ describe("FileUploadPreview generated pasted text attachments", () => {
       />,
     );
 
-    fireEvent.click(screen.getByLabelText("Open pasted_content.txt"));
+    fireEvent.click(screen.getByLabelText("Open Pasted text.txt"));
     fireEvent.change(screen.getByLabelText("Pasted text content"), {
       target: { value: "Unmounted before debounce" },
     });
@@ -148,12 +230,12 @@ describe("FileUploadPreview generated pasted text attachments", () => {
     const firstFile = createGeneratedTextUpload(
       "First pasted content",
       "paste_1",
-      "pasted_content.txt",
+      "Pasted text.txt",
     );
     const secondFile = createGeneratedTextUpload(
       "Second pasted content",
       "paste_2",
-      "pasted_content_2.txt",
+      "Pasted text 2.txt",
     );
 
     const { rerender } = render(
@@ -164,7 +246,7 @@ describe("FileUploadPreview generated pasted text attachments", () => {
       />,
     );
 
-    fireEvent.click(screen.getByLabelText("Open pasted_content_2.txt"));
+    fireEvent.click(screen.getByLabelText("Open Pasted text 2.txt"));
     fireEvent.change(screen.getByLabelText("Pasted text content"), {
       target: { value: "Updated second pasted content" },
     });

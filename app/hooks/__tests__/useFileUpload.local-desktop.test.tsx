@@ -96,10 +96,10 @@ describe("useFileUpload desktop-local agent attachments", () => {
       tokens: 10,
     });
     (writeGeneratedTextAttachment as jest.Mock).mockResolvedValue({
-      path: "/Users/alice/Library/Application Support/HackerAI/generated-text-attachments/paste-1/pasted_content.txt",
-      name: "pasted_content.txt",
+      path: "/Users/alice/Library/Application Support/HackerAI/generated-text-attachments/paste-1/Pasted text.txt",
+      name: "Pasted text.txt",
       mediaType: "text/plain",
-      size: 4100,
+      size: 5000,
       lastModified: 123,
     });
     (removeGeneratedTextAttachment as jest.Mock).mockResolvedValue(true);
@@ -143,7 +143,7 @@ describe("useFileUpload desktop-local agent attachments", () => {
   });
 
   it("keeps generated pasted text local in desktop Agent mode", async () => {
-    const pastedText = "A".repeat(4100);
+    const pastedText = "A".repeat(5000);
     const event = createTextPasteEvent(pastedText);
     const { result } = renderHook(() => useFileUpload("agent"));
 
@@ -156,7 +156,7 @@ describe("useFileUpload desktop-local agent attachments", () => {
     expect(event.preventDefault).toHaveBeenCalledTimes(1);
     expect(writeGeneratedTextAttachment).toHaveBeenCalledWith(
       expect.any(String),
-      "pasted_content.txt",
+      "Pasted text.txt",
       pastedText,
     );
     expect(addUploadedFile).toHaveBeenCalledWith(
@@ -166,7 +166,7 @@ describe("useFileUpload desktop-local agent attachments", () => {
         storage: "local-desktop",
         localAttachmentId: expect.any(String),
         localPath:
-          "/Users/alice/Library/Application Support/HackerAI/generated-text-attachments/paste-1/pasted_content.txt",
+          "/Users/alice/Library/Application Support/HackerAI/generated-text-attachments/paste-1/Pasted text.txt",
         generatedSource: "pasted-text",
         generatedTextAttachmentId: expect.any(String),
         generatedTextAttachment: expect.objectContaining({

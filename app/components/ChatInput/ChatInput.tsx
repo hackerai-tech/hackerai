@@ -36,6 +36,7 @@ import {
   type ActiveAgentToolApprovalRequest,
   useAgentApproval,
 } from "@/app/contexts/AgentApprovalContext";
+import { PASTED_TEXT_INLINE_RESTORE_MAX_CHARS } from "@/lib/utils/pasted-text-attachments";
 
 interface ChatInputProps {
   onSubmit: (e: React.FormEvent) => void | boolean | Promise<void | boolean>;
@@ -584,6 +585,23 @@ export const ChatInput = ({
     }
   };
 
+  const handleShowGeneratedTextInField = async (
+    index: number,
+    content: string,
+  ) => {
+    if (content.length > PASTED_TEXT_INLINE_RESTORE_MAX_CHARS) {
+      toast.error("Pasted text is too long to show in the text field", {
+        description: "Edit it below 25,000 characters and try again.",
+      });
+      return;
+    }
+
+    const separator =
+      input.length === 0 ? "" : input.endsWith("\n") ? "\n" : "\n\n";
+    setInput(`${input}${separator}${content}`);
+    await handleRemoveFile(index);
+  };
+
   return (
     <div className={`relative px-4 min-w-0 ${isCentered ? "" : "pb-3"}`}>
       <div className="mx-auto w-full max-w-full min-w-0 sm:max-w-[768px] sm:min-w-[390px] flex flex-col flex-1">
@@ -616,6 +634,8 @@ export const ChatInput = ({
             uploadedFiles={uploadedFiles}
             onRemoveFile={handleRemoveFile}
             onUpdateGeneratedTextFile={handleUpdateGeneratedTextFile}
+            onShowGeneratedTextInField={handleShowGeneratedTextInField}
+            generatedTextAttachmentsAvailable={isAgent}
           />
         )}
 

@@ -1,5 +1,11 @@
 import { Button } from "@/components/ui/button";
-import { X, File as FileIcon, FileText, Loader2 } from "lucide-react";
+import {
+  ChevronRight,
+  X,
+  File as FileIcon,
+  FileText,
+  Loader2,
+} from "lucide-react";
 import { useEffect, useState, useCallback, useRef } from "react";
 import Image from "next/image";
 import {
@@ -23,6 +29,7 @@ import {
   FilePreview,
   LocalDesktopFile,
 } from "@/types/file";
+import { PASTED_TEXT_INLINE_RESTORE_MAX_CHARS } from "@/lib/utils/pasted-text-attachments";
 
 const isBrowserFile = (file: File | LocalDesktopFile): file is File =>
   typeof globalThis.File !== "undefined" && file instanceof globalThis.File;
@@ -32,6 +39,8 @@ export const FileUploadPreview = ({
   uploadedFiles,
   onRemoveFile,
   onUpdateGeneratedTextFile,
+  onShowGeneratedTextInField,
+  generatedTextAttachmentsAvailable = true,
 }: FileUploadPreviewProps) => {
   const [filePreviews, setFilePreviews] = useState<FilePreview[]>([]);
   const [selectedImage, setSelectedImage] = useState<{
@@ -174,6 +183,25 @@ export const FileUploadPreview = ({
     ],
   );
 
+  const handleShowGeneratedTextInField = useCallback(
+    (index: number, content: string) => {
+      if (
+        !onShowGeneratedTextInField ||
+        content.length > PASTED_TEXT_INLINE_RESTORE_MAX_CHARS
+      ) {
+        return;
+      }
+
+      clearTextSaveTimeout();
+      hasPendingTextSaveRef.current = false;
+      setHasPendingTextSave(false);
+      onShowGeneratedTextInField(index, content);
+      setEditingTextAttachmentId(null);
+      editingTextAttachmentIdRef.current = null;
+    },
+    [clearTextSaveTimeout, onShowGeneratedTextInField],
+  );
+
   useEffect(() => {
     const loadPreviews = async () => {
       const previews: FilePreview[] = [];
@@ -293,6 +321,12 @@ export const FileUploadPreview = ({
               const canEditGeneratedText = Boolean(
                 generatedText && onUpdateGeneratedTextFile,
               );
+              const canShowGeneratedTextInField = Boolean(
+                generatedText &&
+                onShowGeneratedTextInField &&
+                generatedText.content.length <=
+                  PASTED_TEXT_INLINE_RESTORE_MAX_CHARS,
+              );
 
               return (
                 <div
@@ -325,14 +359,17 @@ export const FileUploadPreview = ({
                           <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-foreground"></div>
                         </div>
                       ) : isGeneratedPastedText ? (
-                        <button
-                          type="button"
-                          className="block w-72 p-2 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 rounded-2xl"
-                          onClick={() => openTextEditor(index)}
-                          disabled={!canEditGeneratedText}
-                          aria-label={`Open ${filePreview.file.name}`}
+                        <div
+                          className="relative w-72 p-2"
+                          title={`Text · ${formatFileSize(filePreview.file.size)}`}
                         >
-                          <div className="flex flex-row items-start gap-2">
+                          <button
+                            type="button"
+                            className="flex w-full flex-row items-start gap-2 rounded-xl pr-7 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+                            onClick={() => openTextEditor(index)}
+                            disabled={!canEditGeneratedText}
+                            aria-label={`Open ${filePreview.file.name}`}
+                          >
                             <div
                               className={`relative h-10 w-10 shrink-0 overflow-hidden rounded-lg flex items-center justify-center ${
                                 filePreview.error
@@ -346,41 +383,75 @@ export const FileUploadPreview = ({
                                 <FileText className="h-6 w-6 text-white" />
                               )}
                             </div>
-                            <div className="overflow-hidden flex-1 min-w-0">
+                            <div className="min-w-0 flex-1 overflow-hidden pb-5">
                               <div className="truncate font-semibold text-sm">
                                 {filePreview.file.name}
                               </div>
-                              <div
-                                className={`truncate text-xs ${
-                                  filePreview.error
-                                    ? "text-red-600 dark:text-red-400 font-medium"
-                                    : "text-muted-foreground"
-                                }`}
-                              >
-                                {isUnavailableGeneratedText ? (
-                                  "Unavailable on this device"
-                                ) : filePreview.error ? (
-                                  "Upload failed"
-                                ) : !canEditGeneratedText ? (
+                            </div>
+                          </button>
+
+                          <div
+                            className={`absolute bottom-2 left-14 right-8 flex min-w-0 items-center gap-1 truncate text-xs ${
+                              filePreview.error
+                                ? "font-medium text-red-600 dark:text-red-400"
+                                : "text-muted-foreground"
+                            }`}
+                          >
+                            {isUnavailableGeneratedText ? (
+                              "Unavailable on this device"
+                            ) : filePreview.error ? (
+                              "Upload failed"
+                            ) : !generatedTextAttachmentsAvailable ? (
+                              <>
+                                <span className="shrink-0">
+                                  Unavailable in Ask
+                                </span>
+                                {canShowGeneratedTextInField && (
                                   <>
-                                    Text ·{" "}
-                                    {formatFileSize(filePreview.file.size)}
-                                  </>
-                                ) : (
-                                  <>
-                                    <span className="group-hover:hidden group-focus-within:hidden">
-                                      Text ·{" "}
-                                      {formatFileSize(filePreview.file.size)}
-                                    </span>
-                                    <span className="hidden group-hover:inline group-focus-within:inline">
-                                      Click to edit
-                                    </span>
+                                    <span aria-hidden="true">·</span>
+                                    <button
+                                      type="button"
+                                      className="inline-flex min-w-0 items-center underline underline-offset-2 hover:text-foreground"
+                                      onClick={() =>
+                                        handleShowGeneratedTextInField(
+                                          index,
+                                          generatedText!.content,
+                                        )
+                                      }
+                                    >
+                                      <span className="truncate">
+                                        Show in text field
+                                      </span>
+                                      <ChevronRight className="size-3.5 shrink-0" />
+                                    </button>
                                   </>
                                 )}
-                              </div>
-                            </div>
+                              </>
+                            ) : canShowGeneratedTextInField ? (
+                              <button
+                                type="button"
+                                className="inline-flex min-w-0 items-center underline underline-offset-2 hover:text-foreground"
+                                onClick={() =>
+                                  handleShowGeneratedTextInField(
+                                    index,
+                                    generatedText!.content,
+                                  )
+                                }
+                              >
+                                <span className="truncate">
+                                  Show in text field
+                                </span>
+                                <ChevronRight className="size-3.5 shrink-0" />
+                              </button>
+                            ) : canEditGeneratedText ? (
+                              "Click to edit"
+                            ) : (
+                              <>
+                                Text · {formatFileSize(filePreview.file.size)}
+                              </>
+                            )}
                           </div>
-                        </button>
+                        </div>
                       ) : filePreview.error ? (
                         isImageFile(filePreview.file) ? (
                           <div className="h-full w-full flex items-center justify-center min-h-[100px]">
@@ -542,17 +613,46 @@ export const FileUploadPreview = ({
                 </DialogDescription>
               </div>
             </div>
-            <DialogClose asChild>
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon"
-                className="size-8 shrink-0 rounded-lg text-muted-foreground hover:bg-white/10 hover:text-foreground"
-                aria-label="Close pasted text editor"
-              >
-                <X className="size-4" />
-              </Button>
-            </DialogClose>
+            <div className="flex shrink-0 items-center gap-1">
+              {activeGeneratedText &&
+                onShowGeneratedTextInField &&
+                draftTextContent.length <=
+                  PASTED_TEXT_INLINE_RESTORE_MAX_CHARS && (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="h-8 rounded-lg px-2 text-xs text-muted-foreground hover:bg-white/10 hover:text-foreground"
+                    onClick={() => {
+                      const activeIndex = uploadedFiles.findIndex(
+                        (uploadedFile) =>
+                          uploadedFile.generatedTextAttachment?.id ===
+                          activeGeneratedText.id,
+                      );
+                      if (activeIndex !== -1) {
+                        handleShowGeneratedTextInField(
+                          activeIndex,
+                          draftTextContent,
+                        );
+                      }
+                    }}
+                  >
+                    Show in text field
+                    <ChevronRight className="size-3.5" />
+                  </Button>
+                )}
+              <DialogClose asChild>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  className="size-8 shrink-0 rounded-lg text-muted-foreground hover:bg-white/10 hover:text-foreground"
+                  aria-label="Close pasted text editor"
+                >
+                  <X className="size-4" />
+                </Button>
+              </DialogClose>
+            </div>
           </DialogHeader>
 
           <div className="flex min-h-0 flex-1">

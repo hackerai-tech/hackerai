@@ -88,7 +88,7 @@ describe("useFileUpload generated pasted text attachments", () => {
     };
     generateS3UploadUrlAction.mockResolvedValue({
       uploadUrl: "https://s3.example/upload",
-      s3Key: "users/u1/pasted_content.txt",
+      s3Key: "users/u1/Pasted text.txt",
     });
     saveFile.mockResolvedValue({
       url: "https://s3.example/download",
@@ -102,7 +102,7 @@ describe("useFileUpload generated pasted text attachments", () => {
   });
 
   it("converts large plain-text paste payloads into uploaded text files", async () => {
-    const pastedText = `${"A".repeat(4100)}\nsource material`;
+    const pastedText = "A".repeat(5000);
     const event = createTextPasteEvent(pastedText);
     const { result } = renderHook(() => useFileUpload("agent"));
 
@@ -125,13 +125,13 @@ describe("useFileUpload generated pasted text attachments", () => {
     );
 
     const addedFile = addUploadedFile.mock.calls[0][0].file as File;
-    expect(addedFile.name).toBe("pasted_content.txt");
+    expect(addedFile.name).toBe("Pasted text.txt");
     expect(addedFile.type).toBe("text/plain");
     await expect(readFileAsText(addedFile)).resolves.toBe(pastedText);
 
     await waitFor(() => {
       expect(generateS3UploadUrlAction).toHaveBeenCalledWith({
-        fileName: "pasted_content.txt",
+        fileName: "Pasted text.txt",
         contentType: "text/plain",
         size: addedFile.size,
         mode: "agent",
@@ -141,7 +141,7 @@ describe("useFileUpload generated pasted text attachments", () => {
 
   it("uses Agent mode alone to convert large pastes", async () => {
     globalState.subscription = "free";
-    const event = createTextPasteEvent("A".repeat(4100));
+    const event = createTextPasteEvent("A".repeat(5000));
     const { result } = renderHook(() => useFileUpload("agent"));
 
     let handled = false;
@@ -163,7 +163,7 @@ describe("useFileUpload generated pasted text attachments", () => {
   });
 
   it("keeps large plain-text paste payloads inline in Ask mode", async () => {
-    const event = createTextPasteEvent("A".repeat(4100));
+    const event = createTextPasteEvent("A".repeat(5000));
     const { result } = renderHook(() => useFileUpload("ask"));
 
     let handled = true;
@@ -191,9 +191,23 @@ describe("useFileUpload generated pasted text attachments", () => {
     expect(addUploadedFile).not.toHaveBeenCalled();
   });
 
+  it("keeps a 4,999-character paste inline in Agent mode", async () => {
+    const event = createTextPasteEvent("A".repeat(4999));
+    const { result } = renderHook(() => useFileUpload("agent"));
+
+    let handled = true;
+    await act(async () => {
+      handled = await result.current.handlePasteEvent(event);
+    });
+
+    expect(handled).toBe(false);
+    expect(event.preventDefault).not.toHaveBeenCalled();
+    expect(addUploadedFile).not.toHaveBeenCalled();
+  });
+
   it("allows free users to paste large text inline when file attachments are unavailable", async () => {
     globalState.subscription = "free";
-    const event = createTextPasteEvent("A".repeat(4100));
+    const event = createTextPasteEvent("A".repeat(5000));
     const { result } = renderHook(() => useFileUpload("ask"));
 
     let handled = true;
@@ -210,7 +224,7 @@ describe("useFileUpload generated pasted text attachments", () => {
   it("creates distinct generated filenames for multiple large pastes", async () => {
     globalState.uploadedFiles = [
       {
-        file: new File(["first"], "pasted_content.txt", {
+        file: new File(["first"], "Pasted text.txt", {
           type: "text/plain",
         }),
         uploading: false,
@@ -218,7 +232,7 @@ describe("useFileUpload generated pasted text attachments", () => {
         storage: "s3",
       },
     ];
-    const event = createTextPasteEvent("B".repeat(4100));
+    const event = createTextPasteEvent("B".repeat(5000));
     const { result } = renderHook(() => useFileUpload("agent"));
 
     await act(async () => {
@@ -226,11 +240,11 @@ describe("useFileUpload generated pasted text attachments", () => {
     });
 
     const addedFile = addUploadedFile.mock.calls[0][0].file as File;
-    expect(addedFile.name).toBe("pasted_content_2.txt");
+    expect(addedFile.name).toBe("Pasted text 2.txt");
   });
 
   it("does not create a file for whitespace-only large paste payloads", async () => {
-    const event = createTextPasteEvent(" ".repeat(4100));
+    const event = createTextPasteEvent(" ".repeat(5000));
     const { result } = renderHook(() => useFileUpload("ask"));
 
     let handled = false;

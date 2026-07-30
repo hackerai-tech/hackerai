@@ -30,11 +30,11 @@ import {
   removeGeneratedTextAttachment,
   writeGeneratedTextAttachment,
 } from "./useTauri";
+import { PASTED_TEXT_ATTACHMENT_MIN_CHARS } from "@/lib/utils/pasted-text-attachments";
 
 // Show warning when remaining uploads are at or below this threshold
 const RATE_LIMIT_WARNING_THRESHOLD = 10;
-const PASTED_TEXT_ATTACHMENT_MIN_CHARS = 4000;
-const PASTED_TEXT_ATTACHMENT_BASE_NAME = "pasted_content";
+const PASTED_TEXT_ATTACHMENT_BASE_NAME = "Pasted text";
 const PASTED_TEXT_ATTACHMENT_EXTENSION = ".txt";
 const TEXT_PLAIN_MEDIA_TYPE = "text/plain";
 
@@ -82,13 +82,13 @@ const getGeneratedPasteFileName = (
   let suffix = 2;
   while (
     existingNames.has(
-      `${PASTED_TEXT_ATTACHMENT_BASE_NAME}_${suffix}${PASTED_TEXT_ATTACHMENT_EXTENSION}`,
+      `${PASTED_TEXT_ATTACHMENT_BASE_NAME} ${suffix}${PASTED_TEXT_ATTACHMENT_EXTENSION}`,
     )
   ) {
     suffix += 1;
   }
 
-  return `${PASTED_TEXT_ATTACHMENT_BASE_NAME}_${suffix}${PASTED_TEXT_ATTACHMENT_EXTENSION}`;
+  return `${PASTED_TEXT_ATTACHMENT_BASE_NAME} ${suffix}${PASTED_TEXT_ATTACHMENT_EXTENSION}`;
 };
 
 const hasFileDragData = (dataTransfer: DataTransfer | null): boolean => {

@@ -73,6 +73,8 @@ export interface FileUploadPreviewProps {
   uploadedFiles: UploadedFileState[];
   onRemoveFile: (index: number) => void;
   onUpdateGeneratedTextFile?: (index: number, content: string) => void;
+  onShowGeneratedTextInField?: (index: number, content: string) => void;
+  generatedTextAttachmentsAvailable?: boolean;
 }
 
 export interface FilePreview {

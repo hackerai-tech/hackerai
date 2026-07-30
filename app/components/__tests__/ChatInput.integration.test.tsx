@@ -14,6 +14,7 @@ import type { UploadedFileState } from "@/types/file";
 
 const mockUseQuery = jest.fn(() => undefined);
 const mockReadGeneratedTextAttachment = jest.fn();
+const mockHandleRemoveFile = jest.fn();
 
 // Mock only external dependencies, not contexts
 jest.mock("react-hotkeys-hook", () => ({
@@ -32,7 +33,7 @@ jest.mock("@/app/hooks/useFileUpload", () => ({
   useFileUpload: () => ({
     fileInputRef: { current: null },
     handleFileUploadEvent: jest.fn(),
-    handleRemoveFile: jest.fn(),
+    handleRemoveFile: mockHandleRemoveFile,
     handleUpdateGeneratedTextFile: jest.fn(),
     handleAttachClick: jest.fn(),
     handlePasteEvent: jest.fn(),
@@ -167,6 +168,47 @@ describe("ChatInput - Integration Tests", () => {
       expect(
         screen.queryByLabelText("Stop generation"),
       ).not.toBeInTheDocument();
+    });
+
+    it("restores an unavailable pasted-text attachment into the Ask field", async () => {
+      const pastedContent = "Source material restored from the attachment";
+      const uploadedFile: UploadedFileState = {
+        file: new File([pastedContent], "Pasted text.txt", {
+          type: "text/plain",
+        }),
+        uploading: false,
+        uploaded: true,
+        storage: "s3",
+        fileId: "file_pasted",
+        generatedSource: "pasted-text",
+        generatedTextAttachment: {
+          id: "paste_123",
+          content: pastedContent,
+        },
+      };
+
+      render(
+        <TestWrapper>
+          <UploadedFilesSetter files={[uploadedFile]} label="Attach paste" />
+          <ChatInput
+            onSubmit={mockOnSubmit}
+            onStop={mockOnStop}
+            status="ready"
+          />
+        </TestWrapper>,
+      );
+
+      fireEvent.click(screen.getByText("Attach paste"));
+
+      expect(await screen.findByText("Unavailable in Ask")).toBeInTheDocument();
+      fireEvent.click(screen.getByText("Show in text field"));
+
+      await waitFor(() =>
+        expect(
+          screen.getByPlaceholderText("Ask, learn, brainstorm"),
+        ).toHaveValue(pastedContent),
+      );
+      expect(mockHandleRemoveFile).toHaveBeenCalledWith(0);
     });
 
     it("should show only stop button when streaming in ask mode", () => {
