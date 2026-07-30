@@ -9,10 +9,12 @@ import {
   KeyboardSensor,
   MouseSensor,
   pointerWithin,
+  rectIntersection,
   TouchSensor,
   useDroppable,
   useSensor,
   useSensors,
+  type CollisionDetection,
   type DragCancelEvent,
   type DragEndEvent,
   type DragStartEvent,
@@ -60,6 +62,14 @@ interface CollapsibleChatSectionProps {
   testId: string;
   title: string;
 }
+
+const sidebarChatCollisionDetection: CollisionDetection = (args) => {
+  const pointerCollisions = pointerWithin(args);
+
+  return pointerCollisions.length > 0
+    ? pointerCollisions
+    : rectIntersection(args);
+};
 
 function CollapsibleChatSection({
   children,
@@ -200,7 +210,7 @@ export function SidebarChatSections({
   return (
     <DndContext
       sensors={sensors}
-      collisionDetection={pointerWithin}
+      collisionDetection={sidebarChatCollisionDetection}
       onDragStart={handleDragStart}
       onDragCancel={handleDragCancel}
       onDragEnd={handleDragEnd}

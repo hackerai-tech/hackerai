@@ -27,6 +27,8 @@ let mockDndContextProps: {
 };
 let mockOverDropId: string | undefined;
 const mockDroppableData = new Map<string, SidebarChatDropData>();
+const mockPointerWithin = jest.fn();
+const mockRectIntersection = jest.fn();
 
 jest.mock("@dnd-kit/core", () => ({
   DndContext: ({
@@ -46,7 +48,8 @@ jest.mock("@dnd-kit/core", () => ({
   DragOverlay: ({ children }: { children: React.ReactNode }) => children,
   KeyboardSensor: class KeyboardSensor {},
   MouseSensor: class MouseSensor {},
-  pointerWithin: () => [],
+  pointerWithin: mockPointerWithin,
+  rectIntersection: mockRectIntersection,
   TouchSensor: class TouchSensor {},
   useDroppable: ({ data, id }: { data: SidebarChatDropData; id: string }) => {
     mockDroppableData.set(id, data);
@@ -144,6 +147,8 @@ describe("SidebarChatSections", () => {
     jest.clearAllMocks();
     mockDroppableData.clear();
     mockOverDropId = undefined;
+    mockPointerWithin.mockReturnValue([]);
+    mockRectIntersection.mockReturnValue([]);
     mockPinChat.mockResolvedValue(null);
     mockUnpinChat.mockResolvedValue(null);
   });
@@ -381,5 +386,45 @@ describe("SidebarChatSections", () => {
     });
     expect(mockPinChat).not.toHaveBeenCalled();
     expect(mockToastError).not.toHaveBeenCalled();
+  });
+
+  it("falls back to rectangle collisions and completes a keyboard drop", async () => {
+    render(
+      <SidebarChatSections
+        chats={chats}
+        projects={projects}
+        paginationStatus="Exhausted"
+      />,
+    );
+
+    const collisionArgs = { pointerCoordinates: null };
+    const keyboardCollisions = [{ id: SIDEBAR_TASKS_DROP_ID }];
+    mockRectIntersection.mockReturnValue(keyboardCollisions);
+
+    const detectCollisions =
+      mockDndContextProps.collisionDetection as typeof mockPointerWithin;
+    expect(detectCollisions(collisionArgs)).toEqual(keyboardCollisions);
+    expect(mockPointerWithin).toHaveBeenCalledWith(collisionArgs);
+    expect(mockRectIntersection).toHaveBeenCalledWith(collisionArgs);
+
+    const dragData: SidebarChatDragData = {
+      type: "sidebar-chat",
+      chatId: "pinned-chat",
+      isPinned: true,
+      title: "Pinned target",
+    };
+    act(() => {
+      mockDndContextProps.onDragEnd({
+        active: { data: { current: dragData } },
+        over: {
+          data: { current: mockDroppableData.get(keyboardCollisions[0].id) },
+        },
+      });
+    });
+
+    await waitFor(() => {
+      expect(mockUnpinChat).toHaveBeenCalledWith({ chatId: "pinned-chat" });
+      expect(mockToastSuccess).toHaveBeenCalledWith("Task unpinned");
+    });
   });
 });
