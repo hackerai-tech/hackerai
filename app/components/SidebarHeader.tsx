@@ -9,7 +9,6 @@ import {
   Search,
 } from "lucide-react";
 import { useSidebar } from "@/components/ui/sidebar";
-import { HackerAISVG } from "@/components/icons/hackerai-svg";
 import { useChats } from "../hooks/useChats";
 import { useStartNewChat } from "../hooks/useStartNewChat";
 import { MessageSearchDialog } from "./MessageSearchDialog";
@@ -87,29 +86,16 @@ const SidebarHeaderContentImpl: FC<SidebarHeaderContentImplProps> = ({
     return (
       <>
         <div className="flex flex-col items-center p-2">
-          {/* HackerAI Logo with hover sidebar toggle */}
-          <div
+          <Button
             data-testid="sidebar-toggle"
-            className="relative flex items-center justify-center mb-2 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 rounded"
+            variant="ghost"
+            size="sm"
+            className="mb-2 h-8 w-8 p-0 hover:bg-sidebar-accent/50"
             onClick={toggleSidebar}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" || e.key === " ") {
-                if (e.key === " ") {
-                  e.preventDefault();
-                }
-                toggleSidebar();
-              }
-            }}
-            tabIndex={0}
-            role="button"
             aria-label="Expand sidebar"
           >
-            <HackerAISVG theme="dark" scale={0.12} />
-            {/* Sidebar icon shown on hover over entire collapsed sidebar */}
-            <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity bg-sidebar/80 rounded">
-              <SidebarIcon className="w-5 h-5" />
-            </div>
-          </div>
+            <SidebarIcon className="size-5" />
+          </Button>
 
           {/* Sidebar Actions - Collapsed */}
           <div className="flex flex-col items-center">
