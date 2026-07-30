@@ -39,6 +39,7 @@ describe("SidebarHeaderContent", () => {
     expect(screen.queryByTestId("hackerai-svg")).not.toBeInTheDocument();
     expect(expandButton.querySelector("svg")).toBeInTheDocument();
 
+    expect(mockToggleSidebar).not.toHaveBeenCalled();
     fireEvent.click(expandButton);
     expect(mockToggleSidebar).toHaveBeenCalledTimes(1);
   });
