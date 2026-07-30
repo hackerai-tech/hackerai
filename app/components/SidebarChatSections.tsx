@@ -119,7 +119,7 @@ function CollapsibleChatSection({
   );
 }
 
-function SidebarChatSectionsContent({
+export function SidebarChatSections({
   chats,
   projects,
   projectPaginationStatus,
@@ -264,8 +264,4 @@ function SidebarChatSectionsContent({
       </DragOverlay>
     </DndContext>
   );
-}
-
-export function SidebarChatSections(props: SidebarChatSectionsProps) {
-  return <SidebarChatSectionsContent {...props} />;
 }

@@ -431,6 +431,8 @@ const ChatItem: React.FC<ChatItemProps> = ({
       return;
     }
 
+    if (isDragging) return;
+
     if (e.key === "Enter") {
       e.preventDefault();
       handleClick();

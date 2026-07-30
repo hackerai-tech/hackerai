@@ -8,6 +8,13 @@ import {
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, jest } from "@jest/globals";
+import {
+  DndContext,
+  KeyboardSensor,
+  useSensor,
+  useSensors,
+} from "@dnd-kit/core";
+import type { ReactNode } from "react";
 
 const mockMoveChatToProject = jest.fn<any>();
 const mockRouterPush = jest.fn();
@@ -88,6 +95,11 @@ jest.mock("../MoveChatToProjectDialog", () => ({
 
 const ChatItem = require("../ChatItem")
   .default as typeof import("../ChatItem").default;
+
+function KeyboardDragHarness({ children }: { children: ReactNode }) {
+  const sensors = useSensors(useSensor(KeyboardSensor));
+  return <DndContext sensors={sensors}>{children}</DndContext>;
+}
 
 describe("ChatItem project actions", () => {
   beforeEach(() => {
@@ -363,6 +375,22 @@ describe("ChatItem project actions", () => {
 
     fireEvent.keyDown(row, { key: "Enter" });
     expect(mockRouterPush).toHaveBeenCalledWith("/c/chat-1");
+  });
+
+  it("does not open the task when Enter completes a keyboard drag", async () => {
+    render(
+      <KeyboardDragHarness>
+        <ChatItem id="chat-1" title="Target notes" />
+      </KeyboardDragHarness>,
+    );
+
+    const row = screen.getByRole("button", { name: /Open task:/ });
+    fireEvent.keyDown(row, { code: "Space", key: " " });
+    await waitFor(() => expect(row).toHaveClass("opacity-50"));
+
+    fireEvent.keyDown(row, { code: "Enter", key: "Enter" });
+    await waitFor(() => expect(row).not.toHaveClass("opacity-50"));
+    expect(mockRouterPush).not.toHaveBeenCalled();
   });
 
   it("does not expose desktop drag semantics on mobile", () => {
