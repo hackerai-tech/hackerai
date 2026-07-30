@@ -18,19 +18,19 @@ describe("resolveBranchedFromTitle", () => {
     ).toBe("Current title");
   });
 
-  it("keeps live titles while another user's source remains shared", () => {
+  it("keeps the fork-time title when another user re-shares the source", () => {
     expect(
       resolveBranchedFromTitle(
         fork,
         {
-          title: "Current shared title",
+          title: "Private title after re-sharing",
           user_id: "owner",
-          share_id: "share-1",
-          share_date: 1,
+          share_id: "replacement-share",
+          share_date: 2,
         },
         "viewer",
       ),
-    ).toBe("Current shared title");
+    ).toBe("Title when forked");
   });
 
   it("uses the fork-time title after another user's share is revoked", () => {
