@@ -64,6 +64,20 @@ export type RetryOptions = {
   limitRescue?: LimitRescueRequest;
 };
 
+const getConvexErrorCode = (error: unknown): string | undefined => {
+  if (!error || typeof error !== "object" || !("data" in error)) {
+    return undefined;
+  }
+
+  const data = (error as { data?: unknown }).data;
+  if (!data || typeof data !== "object" || !("code" in data)) {
+    return undefined;
+  }
+
+  const code = (data as { code?: unknown }).code;
+  return typeof code === "string" ? code : undefined;
+};
+
 export const useChatHandlers = ({
   chatId,
   messages,
@@ -696,6 +710,24 @@ export const useChatHandlers = ({
     // Find the edited message index to identify subsequent messages
     const editedMessageIndex = messages.findIndex((m) => m.id === messageId);
 
+    if (!temporaryChatsEnabled) {
+      try {
+        await regenerateWithNewContent({
+          messageId: messageId as Id<"messages">,
+          newContent,
+          fileIds: remainingFileIds,
+        });
+      } catch (error) {
+        if (getConvexErrorCode(error) === "MESSAGE_NOT_EDITABLE") {
+          toast.error("Only the latest user message can be edited.");
+          return;
+        }
+
+        // Swallow benign errors (e.g., racing edits where the message was already removed)
+        // Avoid logging to keep console clean
+      }
+    }
+
     if (editedMessageIndex !== -1) {
       // Get all subsequent messages (both user and assistant) that will be removed
       const subsequentMessages = messages.slice(editedMessageIndex + 1);
@@ -711,19 +743,6 @@ export const useChatHandlers = ({
       if (idsToClean.length > 0) {
         const updatedTodos = removeTodosBySourceMessages(todos, idsToClean);
         setTodos(updatedTodos);
-      }
-    }
-
-    if (!temporaryChatsEnabled) {
-      try {
-        await regenerateWithNewContent({
-          messageId: messageId as Id<"messages">,
-          newContent,
-          fileIds: remainingFileIds,
-        });
-      } catch (error) {
-        // Swallow benign errors (e.g., racing edits where the message was already removed)
-        // Avoid logging to keep console clean
       }
     }
 

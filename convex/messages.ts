@@ -1986,6 +1986,7 @@ export const regenerateWithNewContent = mutation({
 
       if (
         message.role !== "user" ||
+        message.is_hidden ||
         messages.some((laterMessage) => {
           return laterMessage.role === "user" && !laterMessage.is_hidden;
         })
