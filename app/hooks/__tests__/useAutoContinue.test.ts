@@ -325,6 +325,28 @@ describe("useAutoContinue", () => {
     expect(result.current.isAutoContinuing).toBe(false);
   });
 
+  it("cancels a scheduled continuation when manual submission resets it", () => {
+    const sendMessage = jest.fn();
+    let params = buildParams({ status: "streaming", sendMessage });
+
+    const { result, rerender } = renderHook(
+      (p: UseAutoContinueParams) => useTestHarness(p),
+      { initialProps: params, wrapper: createWrapper() },
+    );
+
+    pushAutoContinue(result);
+    params = { ...params, status: "ready" };
+    rerender(params);
+
+    act(() => {
+      result.current.resetAutoContinueCount();
+      jest.advanceTimersByTime(500);
+    });
+
+    expect(sendMessage).not.toHaveBeenCalled();
+    expect(result.current.isAutoContinuing).toBe(false);
+  });
+
   it("keeps automatic continuation active until the follow-up run settles", () => {
     const sendMessage = jest.fn();
     let params = buildParams({ status: "streaming", sendMessage });

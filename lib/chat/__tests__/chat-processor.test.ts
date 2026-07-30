@@ -503,6 +503,29 @@ describe("fixIncompleteMessageParts", () => {
     });
   });
 
+  it("should identify output-limited tools without blaming the user", () => {
+    const parts = [
+      { type: "step-start" },
+      {
+        type: "tool-file",
+        toolCallId: "call_1",
+        state: "input-streaming",
+        input: { action: "write", path: "/tmp/result.py" },
+      },
+    ];
+
+    const result = fixIncompleteMessageParts(parts, {
+      logContext: { finishReason: "length" },
+    });
+
+    expect(result[1]).toMatchObject({
+      type: "tool-file",
+      state: "output-error",
+      errorText:
+        "The response reached its output limit before the tool completed.",
+    });
+  });
+
   it("should remove tool parts with input-streaming and no input", () => {
     const parts = [
       { type: "step-start" },

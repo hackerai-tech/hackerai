@@ -8,9 +8,11 @@ const mockSaveAssistantMessage = jest.fn(async () => null);
 const mockDeleteLastAssistantMessage = jest.fn(async () => null);
 const mockRegenerateWithNewContent = jest.fn(async () => null);
 const mockRemoveQueuedMessage = jest.fn();
+const mockQueueMessage = jest.fn();
 const mockSendMessage = jest.fn(async () => undefined);
 const mockStop = jest.fn();
 const mockSetMessages = jest.fn();
+let mockInput = "";
 
 const todos: Todo[] = [
   {
@@ -54,7 +56,7 @@ jest.mock("convex/react", () => ({
 
 jest.mock("@/app/contexts/GlobalState", () => ({
   useGlobalState: () => ({
-    input: "",
+    input: mockInput,
     uploadedFiles: [],
     chatMode: "agent",
     clearInput: jest.fn(),
@@ -64,7 +66,7 @@ jest.mock("@/app/contexts/GlobalState", () => ({
     isUploadingFiles: false,
     subscription: "pro",
     temporaryChatsEnabled: false,
-    queueMessage: jest.fn(),
+    queueMessage: mockQueueMessage,
     messageQueue: [
       {
         id: "queued-1",
@@ -120,6 +122,7 @@ const messages: ChatMessage[] = [
 describe("useChatHandlers steer todo handoff", () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockInput = "";
     Object.defineProperty(globalThis, "fetch", {
       configurable: true,
       value: jest.fn(async () => ({ ok: true, status: 200 }) as Response),
@@ -156,7 +159,10 @@ describe("useChatHandlers steer todo handoff", () => {
       "/api/agent/cancel",
       expect.objectContaining({
         method: "POST",
-        body: JSON.stringify({ chatId: "chat-1" }),
+        body: JSON.stringify({
+          chatId: "chat-1",
+          expectedTriggerRunId: "run-1",
+        }),
       }),
     );
     expect(mockCancelStream.mock.invocationCallOrder[0]).toBeLessThan(
@@ -170,6 +176,35 @@ describe("useChatHandlers steer todo handoff", () => {
       expect.objectContaining({ text: "Change direction" }),
       expect.objectContaining({ body: expect.objectContaining({ todos }) }),
     );
+  });
+
+  it("queues a manual message while an automatic continuation is submitted", async () => {
+    mockInput = "Use the latest result";
+    const { result } = renderHook(() =>
+      useChatHandlers({
+        chatId: "chat-1",
+        messages,
+        sendMessage: mockSendMessage,
+        stop: mockStop,
+        regenerate: jest.fn(),
+        setMessages: mockSetMessages,
+        isExistingChat: true,
+        status: "submitted",
+        isSendingNowRef: { current: false },
+        hasManuallyStoppedRef: { current: false },
+        activeTriggerRunRef: { current: "run-1" },
+      }),
+    );
+
+    await act(async () => {
+      await result.current.handleSubmit({
+        preventDefault: jest.fn(),
+      } as unknown as React.FormEvent);
+    });
+
+    expect(mockQueueMessage).toHaveBeenCalledWith("Use the latest result", []);
+    expect(globalThis.fetch).not.toHaveBeenCalled();
+    expect(mockSendMessage).not.toHaveBeenCalled();
   });
 
   it("sends a queued message after the stream has already stopped", async () => {

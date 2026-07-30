@@ -19,6 +19,7 @@ import {
 } from "@/lib/ai/providers";
 import {
   ABORTED_TOOL_ERROR_TEXT,
+  getIncompleteToolErrorText,
   hasMeaningfulToolInput,
 } from "@/lib/chat/tool-abort-utils";
 import { stripOpenRouterReasoningMetadataFromMessages } from "@/lib/chat/provider-metadata-sanitizer";
@@ -216,7 +217,10 @@ function logIncompleteToolPartHandled({
   );
 }
 
-function createAbortedToolPart(part: any): any | null {
+function createAbortedToolPart(
+  part: any,
+  errorText = ABORTED_TOOL_ERROR_TEXT,
+): any | null {
   if (
     !ABORT_RENDERABLE_TOOL_TYPES.has(part.type) ||
     !part.toolCallId ||
@@ -229,7 +233,7 @@ function createAbortedToolPart(part: any): any | null {
   return {
     ...restPart,
     state: "output-error",
-    errorText: ABORTED_TOOL_ERROR_TEXT,
+    errorText,
   };
 }
 
@@ -268,7 +272,10 @@ export function fixIncompleteMessageParts(
 
     if (isIncomplete || hasWrongFormat) {
       if (isIncomplete && part.output == null && part.result == null) {
-        const abortedPart = createAbortedToolPart(part);
+        const abortedPart = createAbortedToolPart(
+          part,
+          getIncompleteToolErrorText(options?.logContext?.finishReason),
+        );
         if (abortedPart) {
           logIncompleteToolPartHandled({
             action: "converted_to_output_error",
