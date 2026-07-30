@@ -1,0 +1,178 @@
+name: Promote Desktop Build
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_run_id:
+        description: Successful main Build Desktop App run ID to promote
+        required: true
+        type: string
+
+concurrency:
+  group: desktop-release
+  cancel-in-progress: false
+
+jobs:
+  promote:
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: write
+
+    steps:
+      - name: Checkout release tooling
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Validate source run
+        id: source
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+        run: |
+          set -euo pipefail
+
+          if [[ ! "$SOURCE_RUN_ID" =~ ^[0-9]+$ ]]; then
+            echo "Source run ID must be numeric: $SOURCE_RUN_ID" >&2
+            exit 1
+          fi
+
+          RUN_JSON="$(gh api "repos/${GH_REPO}/actions/runs/${SOURCE_RUN_ID}")"
+          STATUS="$(jq -r '.status' <<< "$RUN_JSON")"
+          CONCLUSION="$(jq -r '.conclusion' <<< "$RUN_JSON")"
+          EVENT="$(jq -r '.event' <<< "$RUN_JSON")"
+          HEAD_BRANCH="$(jq -r '.head_branch' <<< "$RUN_JSON")"
+          HEAD_SHA="$(jq -r '.head_sha' <<< "$RUN_JSON")"
+          WORKFLOW_PATH="$(jq -r '.path' <<< "$RUN_JSON")"
+
+          if [[ "$STATUS" != "completed" || "$CONCLUSION" != "success" ]]; then
+            echo "Source run must be completed successfully; got $STATUS/$CONCLUSION" >&2
+            exit 1
+          fi
+          if [[ "$WORKFLOW_PATH" != ".github/workflows/desktop-build.yml" ]]; then
+            echo "Source run used unexpected workflow: $WORKFLOW_PATH" >&2
+            exit 1
+          fi
+          if [[ "$HEAD_BRANCH" != "main" ]]; then
+            echo "Only main builds can be promoted; got $HEAD_BRANCH" >&2
+            exit 1
+          fi
+          if [[ "$EVENT" != "push" && "$EVENT" != "workflow_dispatch" ]]; then
+            echo "Unexpected source event: $EVENT" >&2
+            exit 1
+          fi
+
+          echo "head_sha=$HEAD_SHA" >> "$GITHUB_OUTPUT"
+          echo "Validated source run $SOURCE_RUN_ID at $HEAD_SHA"
+
+      - name: Download immutable build artifacts
+        uses: actions/download-artifact@v8
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.source_run_id }}
+          path: artifacts
+
+      - name: Determine embedded version
+        id: release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          mapfile -d '' INSTALLERS < <(
+            find artifacts/desktop-Windows-x64 -type f \
+              -name 'HackerAI_*_x64-setup.exe' -print0
+          )
+          if [[ "${#INSTALLERS[@]}" -ne 1 ]]; then
+            echo "Expected exactly one Windows installer, found ${#INSTALLERS[@]}" >&2
+            exit 1
+          fi
+
+          INSTALLER_NAME="$(basename "${INSTALLERS[0]}")"
+          if [[ ! "$INSTALLER_NAME" =~ ^HackerAI_((0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*))_x64-setup\.exe$ ]]; then
+            echo "Installer is not release-versioned: $INSTALLER_NAME" >&2
+            exit 1
+          fi
+
+          VERSION="${BASH_REMATCH[1]}"
+          TAG_NAME="desktop-v$VERSION"
+          LATEST_TAG="$(gh api "repos/${GH_REPO}/releases/latest" --jq '.tag_name')"
+          if [[ ! "$LATEST_TAG" =~ ^desktop-v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "Latest release is not a stable desktop release: $LATEST_TAG" >&2
+            exit 1
+          fi
+          EXPECTED_VERSION="${BASH_REMATCH[1]}.${BASH_REMATCH[2]}.$((10#${BASH_REMATCH[3]} + 1))"
+
+          if [[ "$VERSION" != "$EXPECTED_VERSION" ]]; then
+            echo "Artifact version $VERSION does not match next release $EXPECTED_VERSION" >&2
+            exit 1
+          fi
+          if gh api "repos/${GH_REPO}/git/ref/tags/${TAG_NAME}" >/dev/null 2>&1; then
+            echo "Tag already exists: $TAG_NAME" >&2
+            exit 1
+          fi
+          if gh release view "$TAG_NAME" --repo "$GH_REPO" >/dev/null 2>&1; then
+            echo "Release already exists: $TAG_NAME" >&2
+            exit 1
+          fi
+
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag_name=$TAG_NAME" >> "$GITHUB_OUTPUT"
+          echo "Promoting embedded version $VERSION as $TAG_NAME"
+
+      - name: Install updater signature verifier
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes minisign
+
+      - name: Prepare verified release assets
+        env:
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ steps.release.outputs.version }}
+          TAG_NAME: ${{ steps.release.outputs.tag_name }}
+        run: |
+          UPDATER_PUBLIC_KEY="$(
+            jq -r '.plugins.updater.pubkey' \
+              packages/desktop/src-tauri/tauri.conf.json | \
+              base64 --decode | sed -n '2p'
+          )"
+          if [[ -z "$UPDATER_PUBLIC_KEY" ]]; then
+            echo "Desktop updater public key is missing" >&2
+            exit 1
+          fi
+
+          MINISIGN_PUBLIC_KEY="$UPDATER_PUBLIC_KEY" \
+            bash .github/scripts/prepare-desktop-release.sh \
+            artifacts release-files "$VERSION" "$TAG_NAME" "$GH_REPO"
+
+      - name: Create draft release without rebuilding
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          TAG_NAME: ${{ steps.release.outputs.tag_name }}
+          TARGET_SHA: ${{ steps.source.outputs.head_sha }}
+          SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+        run: |
+          set -euo pipefail
+
+          # A tag created with GITHUB_TOKEN does not trigger the tag-build
+          # workflow, so these already-verified artifacts are not rebuilt.
+          gh release create "$TAG_NAME" \
+            --repo "$GH_REPO" \
+            --target "$TARGET_SHA" \
+            --title "HackerAI Desktop $TAG_NAME" \
+            --draft \
+            --generate-notes \
+            release-files/*
+
+          {
+            echo "## Desktop release promoted"
+            echo
+            echo "- Source run: $SOURCE_RUN_ID"
+            echo "- Commit: $TARGET_SHA"
+            echo "- Draft release: $TAG_NAME"
+          } >> "$GITHUB_STEP_SUMMARY"

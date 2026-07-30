@@ -209,7 +209,10 @@ describe("useChatHandlers regenerate model", () => {
       "/api/agent/cancel",
       expect.objectContaining({
         method: "POST",
-        body: JSON.stringify({ chatId: "chat-1" }),
+        body: JSON.stringify({
+          chatId: "chat-1",
+          expectedTriggerRunId: "run-1",
+        }),
       }),
     );
     expect(mockRegenerate).toHaveBeenCalledWith(
@@ -257,7 +260,10 @@ describe("useChatHandlers regenerate model", () => {
       "/api/agent/cancel",
       expect.objectContaining({
         method: "POST",
-        body: JSON.stringify({ chatId: "chat-1" }),
+        body: JSON.stringify({
+          chatId: "chat-1",
+          expectedTriggerRunId: "run-1",
+        }),
       }),
     );
     expect(mockRegenerate).toHaveBeenCalledWith(
@@ -308,7 +314,10 @@ describe("useChatHandlers regenerate model", () => {
       "/api/agent/cancel",
       expect.objectContaining({
         method: "POST",
-        body: JSON.stringify({ chatId: "chat-1" }),
+        body: JSON.stringify({
+          chatId: "chat-1",
+          expectedTriggerRunId: "run-1",
+        }),
       }),
     );
     expect(stop).toHaveBeenCalledTimes(1);

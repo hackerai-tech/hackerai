@@ -49,6 +49,8 @@ const loadSaveMessageWithMocks = async () => {
     saveChat,
     saveMessage,
     setActiveTriggerRun,
+    updateChat,
+    updateChatTitle,
   } = await import("../actions");
   return {
     deleteAllChatsForBackend,
@@ -63,6 +65,8 @@ const loadSaveMessageWithMocks = async () => {
     saveChat,
     saveMessage,
     setActiveTriggerRun,
+    updateChat,
+    updateChatTitle,
   };
 };
 
@@ -445,6 +449,85 @@ describe("getChatById", () => {
   });
 });
 
+describe("updateChat", () => {
+  it("retries transient fetch failures before updating final chat metadata", async () => {
+    const { mockMutation, updateChat } = await loadSaveMessageWithMocks();
+    const fetchError = new TypeError("fetch failed");
+    mockMutation
+      .mockRejectedValueOnce(fetchError as never)
+      .mockRejectedValueOnce(fetchError as never)
+      .mockResolvedValueOnce("chat-doc-1" as never);
+    const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+
+    try {
+      await expect(
+        updateChat({ chatId: "chat-1", finishReason: "stop" }),
+      ).resolves.toBe("chat-doc-1");
+
+      expect(mockMutation).toHaveBeenCalledTimes(3);
+      const retryEvents = warnSpy.mock.calls
+        .map(([line]) => JSON.parse(String(line)))
+        .filter((payload) => payload.event === "chat_update_retry_scheduled");
+      expect(retryEvents).toHaveLength(2);
+      expect(retryEvents[0]).toMatchObject({
+        db_operation: "chats.updateChat",
+        retry_reason: "network_fetch_failed",
+        attempt: 1,
+        next_attempt: 2,
+        retry_delay_ms: 0,
+        chat_id: "chat-1",
+      });
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it("does not retry non-transient update failures", async () => {
+    const { mockMutation, updateChat } = await loadSaveMessageWithMocks();
+    mockMutation.mockRejectedValue(new Error("Invalid todos") as never);
+    const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+
+    try {
+      await expect(updateChat({ chatId: "chat-1" })).rejects.toMatchObject({
+        type: "bad_request",
+        surface: "database",
+        metadata: expect.objectContaining({
+          db_operation: "chats.updateChat",
+          chat_id: "chat-1",
+        }),
+      });
+      expect(mockMutation).toHaveBeenCalledTimes(1);
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+});
+
+describe("updateChatTitle", () => {
+  it("sends only title fields through the title-specific mutation", async () => {
+    const { mockMutation, updateChatTitle } = await loadSaveMessageWithMocks();
+
+    await expect(
+      updateChatTitle({ chatId: "chat-1", title: "Generated Title" }),
+    ).resolves.toEqual({ id: "message-1" });
+
+    expect(mockMutation).toHaveBeenCalledTimes(1);
+    const mutationArgs = mockMutation.mock.calls[0]?.[1] as Record<
+      string,
+      unknown
+    >;
+    expect(mutationArgs).toMatchObject({
+      chatId: "chat-1",
+      title: "Generated Title",
+    });
+    expect(Object.keys(mutationArgs).sort()).toEqual([
+      "chatId",
+      "serviceKey",
+      "title",
+    ]);
+  });
+});
+
 describe("setActiveTriggerRun", () => {
   it("returns the explicit Convex association result", async () => {
     const { mockMutation, setActiveTriggerRun } =
@@ -491,6 +574,30 @@ describe("setActiveTriggerRun", () => {
 });
 
 describe("saveMessage", () => {
+  it("forwards the durable Trigger run ID to Convex", async () => {
+    const { saveMessage, mockMutation } = await loadSaveMessageWithMocks();
+
+    await saveMessage({
+      chatId: "chat-1",
+      userId: "user-1",
+      message: {
+        id: "message-1",
+        role: "assistant",
+        parts: [{ type: "text", text: "partial output" }],
+      },
+      finishReason: "trigger_crashed_client_saved",
+      triggerRunId: "run-1",
+    });
+
+    expect(mockMutation).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        finishReason: "trigger_crashed_client_saved",
+        triggerRunId: "run-1",
+      }),
+    );
+  });
+
   it("sanitizes assistant parts before storage compaction", async () => {
     const { saveMessage, mockCompactMessageForStorage } =
       await loadSaveMessageWithMocks();
@@ -1050,6 +1157,70 @@ describe("getMessagesByChatId", () => {
     } finally {
       warnSpy.mockRestore();
     }
+  });
+
+  it("reuses file token metadata returned with existing history pages", async () => {
+    const { getMessagesByChatId, mockQuery } = await loadSaveMessageWithMocks();
+    const fileId = "file-existing";
+    const existingMessage = {
+      id: "existing-message-with-file",
+      role: "user" as const,
+      parts: [{ type: "file" as const, fileId }],
+    };
+
+    mockQuery
+      .mockResolvedValueOnce({ id: "chat-1", user_id: "user-1" })
+      .mockResolvedValueOnce({
+        page: [existingMessage],
+        fileTokens: [{ fileId, tokenSize: 321 }],
+        isDone: true,
+        continueCursor: null,
+      });
+
+    const result = await getMessagesByChatId({
+      chatId: "chat-1",
+      userId: "user-1",
+      subscription: "pro",
+      newMessages: [],
+      isTemporary: false,
+      mode: "ask",
+    });
+
+    expect(result.truncatedMessages).toEqual([existingMessage]);
+    expect(result.fileTokens).toEqual({ [fileId]: 321 });
+    expect(mockQuery).toHaveBeenCalledTimes(2);
+  });
+
+  it("ignores returned file token metadata in agent mode", async () => {
+    const { getMessagesByChatId, mockQuery } = await loadSaveMessageWithMocks();
+    const fileId = "file-from-ask-mode";
+    const existingMessage = {
+      id: "existing-message-with-file",
+      role: "user" as const,
+      parts: [{ type: "file" as const, fileId }],
+    };
+
+    mockQuery
+      .mockResolvedValueOnce({ id: "chat-1", user_id: "user-1" })
+      .mockResolvedValueOnce({
+        page: [existingMessage],
+        fileTokens: [{ fileId, tokenSize: 200_001 }],
+        isDone: true,
+        continueCursor: null,
+      });
+
+    const result = await getMessagesByChatId({
+      chatId: "chat-1",
+      userId: "user-1",
+      subscription: "pro",
+      newMessages: [],
+      isTemporary: false,
+      mode: "agent",
+    });
+
+    expect(result.truncatedMessages).toEqual([existingMessage]);
+    expect(result.fileTokens).toEqual({});
+    expect(mockQuery).toHaveBeenCalledTimes(2);
   });
 
   it("does not inject a stored summary while regenerating", async () => {

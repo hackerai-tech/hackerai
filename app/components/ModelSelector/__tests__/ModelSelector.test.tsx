@@ -6,6 +6,7 @@ import type { SubscriptionTier } from "@/types/chat";
 
 let mockSubscription: SubscriptionTier;
 let mockMaxEntitlement: unknown;
+let mockIsMobile: boolean;
 const mockUseQuery = jest.fn((_query: unknown, args: unknown) =>
   args === "skip" ? undefined : mockMaxEntitlement,
 );
@@ -36,7 +37,7 @@ jest.mock("@/app/contexts/GlobalState", () => ({
 }));
 
 jest.mock("@/hooks/use-mobile", () => ({
-  useIsMobile: () => false,
+  useIsMobile: () => mockIsMobile,
 }));
 
 jest.mock("@/app/hooks/usePricingDialog", () => ({
@@ -59,6 +60,7 @@ describe("ModelSelector", () => {
   beforeEach(() => {
     mockSubscription = "pro-plus";
     mockMaxEntitlement = undefined;
+    mockIsMobile = false;
     mockUseQuery.mockClear();
     mockRedirectToPricing.mockClear();
     mockOpenSettingsDialog.mockClear();
@@ -93,7 +95,7 @@ describe("ModelSelector", () => {
     ).toHaveAttribute("aria-pressed", "false");
   });
 
-  it("uses consistent vision wording for Agent Standard and Pro", async () => {
+  it("discloses the Agent Standard and Pro providers", async () => {
     const user = userEvent.setup();
     render(<ModelSelector value="auto" onChange={jest.fn()} mode="agent" />);
 
@@ -104,7 +106,7 @@ describe("ModelSelector", () => {
     );
     expect(
       await screen.findAllByText(
-        "Powered by DeepSeek V4 Pro · MiniMax M3 for vision",
+        "Powered by DeepSeek V4 Pro · xAI Grok 4.5 for vision",
       ),
     ).not.toHaveLength(0);
 
@@ -113,9 +115,7 @@ describe("ModelSelector", () => {
     );
     await user.hover(screen.getByRole("button", { name: /HackerAI Pro/i }));
     expect(
-      await screen.findAllByText(
-        "Powered by Z.ai GLM 5.2 · Grok 4.5 for vision",
-      ),
+      await screen.findAllByText("Powered by xAI Grok 4.5"),
     ).not.toHaveLength(0);
   });
 
@@ -161,7 +161,7 @@ describe("ModelSelector", () => {
     expect(onChange).toHaveBeenCalledWith("hackerai-pro");
   });
 
-  it("locks HackerAI Max on Pro Plus and opens Extra Usage settings", () => {
+  it("reveals Max access choices when a Pro Plus user clicks the locked row", () => {
     mockMaxEntitlement = {
       extraUsageAvailable: false,
       reason: "disabled",
@@ -175,14 +175,109 @@ describe("ModelSelector", () => {
     const maxButton = screen.getByRole("button", { name: /HackerAI Max/i });
 
     expect(maxButton).toHaveAccessibleName(
-      "HackerAI Max. Set up Extra Usage for Max mode.",
+      "HackerAI Max. Use Extra Usage or upgrade to Ultra for Max mode.",
     );
 
     fireEvent.click(maxButton);
 
     expect(onChange).not.toHaveBeenCalled();
+    expect(
+      screen.getByRole("group", {
+        name: "Choose how to access HackerAI Max",
+      }),
+    ).toBeVisible();
+    expect(screen.getByText("Pay for Max as you use it")).toBeVisible();
+    expect(screen.getByText("Max included")).toBeVisible();
+    expect(mockOpenSettingsDialog).not.toHaveBeenCalled();
+    expect(mockRedirectToPricing).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: /^Use Extra Usage/i }));
+
+    expect(mockOpenSettingsDialog).toHaveBeenCalledWith("Extra Usage");
+  });
+
+  it("offers compact Extra Usage and Ultra actions inside the model menu", async () => {
+    mockMaxEntitlement = {
+      extraUsageAvailable: false,
+      reason: "disabled",
+      hasBalance: false,
+      autoReloadEnabled: false,
+    };
+    const user = userEvent.setup();
+    render(<ModelSelector value="auto" onChange={jest.fn()} mode="agent" />);
+
+    fireEvent.click(screen.getByRole("button", { name: /^Auto$/i }));
+    await user.hover(screen.getByRole("button", { name: /HackerAI Max/i }));
+
+    expect(
+      await screen.findByRole("group", {
+        name: "Choose how to access HackerAI Max",
+      }),
+    ).toBeVisible();
+    expect(
+      screen.getByRole("button", { name: /HackerAI Max/i }),
+    ).toHaveAttribute("aria-expanded", "true");
+
+    fireEvent.click(screen.getByRole("button", { name: /^Upgrade to Ultra/i }));
+
+    expect(mockRedirectToPricing).toHaveBeenCalledWith({
+      surface: "model_selector",
+      source: "max_model_gate",
+      from_tier: "pro-plus",
+      cta_text: "Upgrade to Ultra",
+    });
+    expect(mockOpenSettingsDialog).not.toHaveBeenCalled();
+  });
+
+  it("shows both Max access choices after a locked mobile selection", () => {
+    mockIsMobile = true;
+    mockMaxEntitlement = {
+      extraUsageAvailable: false,
+      reason: "disabled",
+      hasBalance: false,
+      autoReloadEnabled: false,
+    };
+    const onChange = jest.fn();
+    render(<ModelSelector value="auto" onChange={onChange} mode="agent" />);
+
+    fireEvent.click(screen.getByRole("button", { name: /^Auto$/i }));
+    fireEvent.click(screen.getByRole("button", { name: /HackerAI Max/i }));
+
+    expect(
+      screen.getByRole("dialog", { name: "Unlock HackerAI Max" }),
+    ).toBeVisible();
+    expect(screen.getByText(/Max is paid through Extra Usage/i)).toBeVisible();
+    expect(onChange).not.toHaveBeenCalled();
+    expect(mockOpenSettingsDialog).not.toHaveBeenCalled();
+    expect(mockRedirectToPricing).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Use Extra Usage" }));
+
     expect(mockOpenSettingsDialog).toHaveBeenCalledWith("Extra Usage");
     expect(mockRedirectToPricing).not.toHaveBeenCalled();
+  });
+
+  it("can upgrade to Ultra from the locked Max mobile dialog", () => {
+    mockIsMobile = true;
+    mockMaxEntitlement = {
+      extraUsageAvailable: false,
+      reason: "empty",
+      hasBalance: false,
+      autoReloadEnabled: false,
+    };
+    render(<ModelSelector value="auto" onChange={jest.fn()} mode="agent" />);
+
+    fireEvent.click(screen.getByRole("button", { name: /^Auto$/i }));
+    fireEvent.click(screen.getByRole("button", { name: /HackerAI Max/i }));
+    fireEvent.click(screen.getByRole("button", { name: "Upgrade to Ultra" }));
+
+    expect(mockRedirectToPricing).toHaveBeenCalledWith({
+      surface: "model_selector_mobile",
+      source: "max_model_gate",
+      from_tier: "pro-plus",
+      cta_text: "Upgrade to Ultra",
+    });
+    expect(mockOpenSettingsDialog).not.toHaveBeenCalled();
   });
 
   it("shows a checking state while lazy Max entitlement is loading", () => {

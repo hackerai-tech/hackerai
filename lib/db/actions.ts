@@ -53,6 +53,8 @@ const SAVE_MESSAGE_RETRY_DELAYS_MS =
   process.env.NODE_ENV === "test" ? [0, 0] : [250, 1000];
 const SAVE_CHAT_RETRY_DELAYS_MS =
   process.env.NODE_ENV === "test" ? [0, 0] : [250, 1000];
+const UPDATE_CHAT_RETRY_DELAYS_MS =
+  process.env.NODE_ENV === "test" ? [0, 0] : [250, 1000];
 const GET_CHAT_RETRY_DELAYS_MS =
   process.env.NODE_ENV === "test" ? [0, 0] : [250, 1000];
 const GET_MESSAGES_PAGE_RETRY_DELAYS_MS =
@@ -584,6 +586,7 @@ const databaseError = (
 
 type MessagesPageForBackendResult = {
   page: UIMessage[];
+  fileTokens?: Array<{ fileId: Id<"files">; tokenSize: number }>;
   isDone: boolean;
   continueCursor: string | null;
 };
@@ -687,6 +690,27 @@ export async function getChatById({ id }: { id: string }) {
     }
   } catch (error) {
     throw databaseError("chats.getChatById", error, { chat_id: id });
+  }
+}
+
+export async function getProjectById({
+  id,
+  userId,
+}: {
+  id: string;
+  userId: string;
+}) {
+  try {
+    return await getConvexClient().query(api.projects.getProjectForBackend, {
+      serviceKey,
+      id,
+      userId,
+    });
+  } catch (error) {
+    throw databaseError("projects.getProjectForBackend", error, {
+      project_id: id,
+      user_id: userId,
+    });
   }
 }
 
@@ -813,16 +837,19 @@ export async function saveChat({
   id,
   userId,
   title,
+  projectId,
 }: {
   id: string;
   userId: string;
   title: string;
+  projectId?: string;
 }) {
   const mutationArgs = {
     serviceKey,
     id,
     userId,
     title,
+    ...(projectId ? { projectId } : {}),
   };
 
   try {
@@ -876,6 +903,7 @@ export async function saveMessage({
   generationStartedAt,
   generationTimeMs,
   finishReason,
+  triggerRunId,
   usage,
   updateOnly,
   isHidden,
@@ -895,6 +923,7 @@ export async function saveMessage({
   generationStartedAt?: number;
   generationTimeMs?: number;
   finishReason?: string;
+  triggerRunId?: string;
   usage?: Record<string, unknown>;
   updateOnly?: boolean;
   isHidden?: boolean;
@@ -995,6 +1024,7 @@ export async function saveMessage({
       generationStartedAt,
       generationTimeMs,
       finishReason,
+      triggerRunId,
       usage: usageForSave,
       updateOnly,
       isHidden,
@@ -1066,6 +1096,7 @@ export async function handleInitialChatAndUserMessage({
   regenerate,
   chat,
   isHidden,
+  projectId,
 }: {
   chatId: string;
   userId: string;
@@ -1073,6 +1104,7 @@ export async function handleInitialChatAndUserMessage({
   regenerate?: boolean;
   chat: any; // Chat data from getMessagesByChatId
   isHidden?: boolean;
+  projectId?: string;
 }) {
   if (!chat) {
     // Save new chat and get the document _id
@@ -1099,6 +1131,7 @@ export async function handleInitialChatAndUserMessage({
       id: chatId,
       userId,
       title,
+      projectId,
     });
   } else {
     // Check if user owns the chat
@@ -1147,22 +1180,101 @@ export async function updateChat({
   sandboxType?: string;
   selectedModel?: string;
 }) {
-  try {
-    return await getConvexClient().mutation(api.chats.updateChat, {
-      serviceKey,
-      chatId,
-      title,
-      finishReason,
-      todos,
-      defaultModelSlug,
-      sandboxType,
-      selectedModel,
-    });
-  } catch (error) {
-    throw new ChatSDKError(
-      "bad_request:database",
-      `Failed to update chat: ${error}`,
-    );
+  const mutationArgs = {
+    serviceKey,
+    chatId,
+    title,
+    finishReason,
+    todos,
+    defaultModelSlug,
+    sandboxType,
+    selectedModel,
+  };
+
+  for (let attemptIndex = 0; ; attemptIndex++) {
+    try {
+      return await getConvexClient().mutation(
+        api.chats.updateChat,
+        mutationArgs,
+      );
+    } catch (error) {
+      const retryReason = getRetryableDatabaseErrorReason(error);
+      const retryDelayMs = UPDATE_CHAT_RETRY_DELAYS_MS[attemptIndex];
+      if (!retryReason || retryDelayMs === undefined) {
+        throw databaseError("chats.updateChat", error, {
+          chat_id: chatId,
+        });
+      }
+
+      console.warn(
+        JSON.stringify({
+          level: "warn",
+          event: "chat_update_retry_scheduled",
+          service: "chat-handler",
+          environment:
+            process.env.VERCEL_ENV ?? process.env.NODE_ENV ?? "unknown",
+          timestamp: new Date().toISOString(),
+          db_operation: "chats.updateChat",
+          retry_reason: retryReason,
+          attempt: attemptIndex + 1,
+          next_attempt: attemptIndex + 2,
+          retry_delay_ms: retryDelayMs,
+          chat_id: chatId,
+        }),
+      );
+      await waitForRetryDelay(retryDelayMs);
+    }
+  }
+}
+
+export async function updateChatTitle({
+  chatId,
+  title,
+}: {
+  chatId: string;
+  title: string;
+}) {
+  const mutationArgs = {
+    serviceKey,
+    chatId,
+    title,
+  };
+
+  for (let attemptIndex = 0; ; attemptIndex++) {
+    try {
+      return await getConvexClient().mutation(
+        api.chats.updateChatTitle,
+        mutationArgs,
+      );
+    } catch (error) {
+      const retryReason = getRetryableDatabaseErrorReason(error);
+      const retryDelayMs = UPDATE_CHAT_RETRY_DELAYS_MS[attemptIndex];
+      if (!retryReason || retryDelayMs === undefined) {
+        throw databaseError("chats.updateChatTitle", error, {
+          chat_id: chatId,
+          title_length: title.length,
+        });
+      }
+
+      console.warn(
+        JSON.stringify({
+          level: "warn",
+          event: "chat_title_update_retry_scheduled",
+          service: "chat-handler",
+          environment:
+            process.env.VERCEL_ENV ?? process.env.NODE_ENV ?? "unknown",
+          timestamp: new Date().toISOString(),
+          db_operation: "chats.updateChatTitle",
+          retry_reason: retryReason,
+          attempt: attemptIndex + 1,
+          next_attempt: attemptIndex + 2,
+          retry_delay_ms: retryDelayMs,
+          chat_id: chatId,
+          title_length: title.length,
+        }),
+      );
+      await waitForRetryDelay(retryDelayMs);
+    }
   }
 }
 
@@ -1232,6 +1344,10 @@ export async function getMessagesByChatId({
         while (pagesFetched < MAX_PAGES) {
           const pageResult: {
             page: UIMessage[];
+            fileTokens?: Array<{
+              fileId: Id<"files">;
+              tokenSize: number;
+            }>;
             isDone: boolean;
             continueCursor: string | null;
           } = await getMessagesPageForBackendWithRetry({
@@ -1243,10 +1359,21 @@ export async function getMessagesByChatId({
             regenerate: !!regenerate,
             newMessagesCount: newMessages.length,
           });
-          const { page, isDone, continueCursor: nextCursor } = pageResult;
+          const {
+            page,
+            fileTokens: pageFileTokens = [],
+            isDone,
+            continueCursor: nextCursor,
+          } = pageResult;
 
           fetchedDesc = fetchedDesc.concat(page);
           pagesFetched++;
+
+          if (!skipFileTokens) {
+            for (const { fileId, tokenSize } of pageFileTokens) {
+              fileTokensFromLoop[fileId] = tokenSize;
+            }
+          }
 
           const existingChrono = [...fetchedDesc].reverse();
           const candidate =
@@ -1972,6 +2099,7 @@ export async function logUsageRecord({
   userId,
   organizationId,
   chatId,
+  assistantMessageId,
   endpoint,
   mode,
   subscription,
@@ -1983,11 +2111,9 @@ export async function logUsageRecord({
   includedPointsDeducted,
   extraUsagePointsDeducted,
   uncoveredPoints,
-  usageDeductionFailed,
   usageDeductionFailureReason,
   inputTokens,
   outputTokens,
-  totalTokens,
   cacheReadTokens,
   cacheWriteTokens,
   costDollars,
@@ -1999,6 +2125,7 @@ export async function logUsageRecord({
   userId: string;
   organizationId?: string;
   chatId?: string;
+  assistantMessageId?: string;
   endpoint?: ChatApiEndpoint;
   mode?: ChatMode;
   subscription?: SubscriptionTier;
@@ -2010,17 +2137,15 @@ export async function logUsageRecord({
   includedPointsDeducted?: number;
   extraUsagePointsDeducted?: number;
   uncoveredPoints?: number;
-  usageDeductionFailed?: boolean;
   usageDeductionFailureReason?: UsageDeductionFailureReason;
   inputTokens: number;
   outputTokens: number;
-  totalTokens: number;
   cacheReadTokens?: number;
   cacheWriteTokens?: number;
   costDollars: number;
   modelCostDollars?: number;
   nonModelCostDollars?: number;
-  costSource?: "provider" | "token_estimate" | "raw_token_estimate";
+  costSource?: "provider" | "hybrid" | "token_estimate" | "raw_token_estimate";
 }) {
   try {
     await getConvexClient().mutation(api.usageLogs.logUsage, {
@@ -2029,6 +2154,7 @@ export async function logUsageRecord({
       user_id: userId,
       organization_id: organizationId,
       chat_id: chatId,
+      assistant_message_id: assistantMessageId,
       endpoint,
       mode,
       subscription,
@@ -2040,13 +2166,11 @@ export async function logUsageRecord({
       included_points_deducted: includedPointsDeducted,
       extra_usage_points_deducted: extraUsagePointsDeducted,
       uncovered_points: uncoveredPoints,
-      usage_deduction_failed: usageDeductionFailed,
       usage_deduction_failure_reason: usageDeductionFailureReason,
       input_tokens: inputTokens,
       output_tokens: outputTokens,
       cache_read_tokens: cacheReadTokens,
       cache_write_tokens: cacheWriteTokens,
-      total_tokens: totalTokens,
       cost_dollars: costDollars,
       model_cost_dollars: modelCostDollars,
       non_model_cost_dollars: nonModelCostDollars,

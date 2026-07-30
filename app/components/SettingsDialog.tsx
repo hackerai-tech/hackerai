@@ -52,12 +52,22 @@ const SettingsDialog = ({
     // Only consulted when subscription === "team"; tabs() condition gates
     // any other read, so a stale value after switching tier is harmless and
     // will be overwritten the next time the user becomes a team member.
-    if (subscription !== "team") return;
-    fetch("/api/team/members")
+    if (!open || subscription !== "team") return;
+    const controller = new AbortController();
+
+    fetch("/api/team/members", { signal: controller.signal })
       .then((res) => res.json())
-      .then((data) => setIsTeamAdmin(data.isAdmin ?? false))
-      .catch(() => setIsTeamAdmin(false));
-  }, [subscription]);
+      .then((data) => {
+        if (!controller.signal.aborted) {
+          setIsTeamAdmin(data.isAdmin ?? false);
+        }
+      })
+      .catch(() => {
+        if (!controller.signal.aborted) setIsTeamAdmin(false);
+      });
+
+    return () => controller.abort();
+  }, [open, subscription]);
 
   // Base tabs visible to all users
   const baseTabs = [

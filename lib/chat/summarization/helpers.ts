@@ -24,6 +24,7 @@ import {
   SUMMARY_OVERFLOW_TEXT_PART_MAX_TOKENS,
   SUMMARY_OVERFLOW_TOOL_OUTPUT_MAX_TOKENS,
   SUMMARY_PROMPT_VERSION,
+  SUMMARY_RECENT_MODEL_TAIL_MAX_TOKENS,
   SUMMARY_TODO_BLOCK_MAX_TOKENS,
   SUMMARY_TODO_CONTENT_MAX_TOKENS,
   SUMMARY_TODO_MAX_ITEMS,
@@ -43,6 +44,7 @@ export interface SummarizationUsage {
   cacheReadTokens?: number;
   cacheWriteTokens?: number;
   cost?: number;
+  model?: string;
 }
 
 export interface SummaryPersistenceMetadata {
@@ -489,6 +491,85 @@ const stringifySummaryMessages = (messages: ModelMessage[]): string => {
 export const estimateSummaryInputTokens = (messages: ModelMessage[]): number =>
   safeCountTokens(stringifySummaryMessages(messages));
 
+const isContextSummaryModelMessage = (message: ModelMessage): boolean => {
+  if (message.role !== "user") return false;
+  if (typeof message.content === "string") {
+    return message.content.includes("<context_summary>");
+  }
+  if (!Array.isArray(message.content)) return false;
+  return message.content.some((part) => {
+    const record = part as unknown as Record<string, unknown>;
+    return (
+      record.type === "text" &&
+      typeof record.text === "string" &&
+      record.text.includes("<context_summary>")
+    );
+  });
+};
+
+const hasCompleteToolPairs = (messages: ModelMessage[]): boolean => {
+  const toolCallCounts = new Map<string, number>();
+  const toolResultCounts = new Map<string, number>();
+  const increment = (counts: Map<string, number>, toolCallId: string) => {
+    counts.set(toolCallId, (counts.get(toolCallId) ?? 0) + 1);
+  };
+
+  for (const message of messages) {
+    getToolPartIds(message, "tool-call").forEach((toolCallId) =>
+      increment(toolCallCounts, toolCallId),
+    );
+    getToolPartIds(message, "tool-result").forEach((toolCallId) =>
+      increment(toolResultCounts, toolCallId),
+    );
+  }
+
+  const allToolCallIds = new Set([
+    ...toolCallCounts.keys(),
+    ...toolResultCounts.keys(),
+  ]);
+  return [...allToolCallIds].every(
+    (toolCallId) =>
+      toolCallCounts.get(toolCallId) === toolResultCounts.get(toolCallId),
+  );
+};
+
+/**
+ * Preserve the newest complete model-message suffix beside an in-run summary.
+ *
+ * The suffix stays within a fixed token budget and is only accepted at a
+ * boundary where every tool call still has its matching result. Previous
+ * synthetic summaries are excluded because the newly generated checkpoint
+ * already incorporates them.
+ */
+export const getRecentCompleteModelTail = (
+  messages: ModelMessage[],
+  maxTokens: number = SUMMARY_RECENT_MODEL_TAIL_MAX_TOKENS,
+): ModelMessage[] => {
+  if (messages.length === 0 || maxTokens <= 0) return [];
+
+  const compactedMessages = compactModelMessagesForSummarization(messages);
+  let earliestEligibleIndex = 0;
+  for (let index = compactedMessages.length - 1; index >= 0; index--) {
+    if (isContextSummaryModelMessage(compactedMessages[index])) {
+      earliestEligibleIndex = index + 1;
+      break;
+    }
+  }
+
+  let bestTail: ModelMessage[] = [];
+  for (
+    let startIndex = compactedMessages.length - 1;
+    startIndex >= earliestEligibleIndex;
+    startIndex--
+  ) {
+    const candidate = compactedMessages.slice(startIndex);
+    if (estimateSummaryInputTokens(candidate) > maxTokens) break;
+    if (hasCompleteToolPairs(candidate)) bestTail = candidate;
+  }
+
+  return bestTail;
+};
+
 const truncateSummaryText = (text: string, maxTokens: number): string =>
   safeCountTokens(text) > maxTokens
     ? truncateContent(
@@ -724,6 +805,8 @@ export const generateSummaryText = async (
         ? { cacheWriteTokens: details.cacheWriteTokens }
         : undefined),
       ...(providerCost ? { cost: providerCost } : undefined),
+      model:
+        result.response?.modelId ?? getLanguageModelIdentifier(languageModel),
     },
   };
 };

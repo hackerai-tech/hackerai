@@ -1,17 +1,23 @@
 import {
   useState,
-  RefObject,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useCallback,
   Dispatch,
+  MutableRefObject,
+  RefCallback,
   SetStateAction,
 } from "react";
+import dynamic from "next/dynamic";
+import { LegendList, type LegendListRef } from "@legendapp/list/react";
 import { MessageItem } from "./MessageItem";
+import { AgentActivityRow } from "./AgentActivityRow";
+import { AgentWorkHeader } from "./AgentWorkHeader";
 import { MessageErrorState } from "./MessageErrorState";
 import { SummarizationStatusDivider } from "./SummarizationStatusDivider";
 import { Shimmer } from "@/components/ai-elements/shimmer";
-import { AllFilesDialog } from "./AllFilesDialog";
+import { useScrollPreservation } from "@/components/ai-elements/worked-for";
 import Loading from "@/components/ui/loading";
 import { useFeedback } from "../hooks/useFeedback";
 import { useFileUrlCache } from "../hooks/useFileUrlCache";
@@ -26,6 +32,45 @@ import { hasTextContent } from "@/lib/utils/message-utils";
 import { useDataStreamState } from "./DataStreamProvider";
 import type { RateLimitWarningData } from "./RateLimitWarning";
 import type { SelectedModel } from "@/types";
+import {
+  deriveChatTimelineRows,
+  getChatTimelineRowType,
+  type ChatTimelineRow,
+} from "./message-timeline-rows";
+
+const AllFilesDialog = dynamic(
+  () => import("./AllFilesDialog").then((module) => module.AllFilesDialog),
+  {
+    ssr: false,
+    loading: () => (
+      <div
+        className="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
+        role="status"
+        aria-label="Loading files"
+      >
+        <div className="rounded-xl border bg-background p-6 shadow-lg">
+          <Loading size={6} />
+        </div>
+      </div>
+    ),
+  },
+);
+
+type StickyElementRef =
+  | MutableRefObject<HTMLElement | null>
+  | (RefCallback<HTMLElement> & {
+      current?: HTMLElement | null;
+    });
+
+const getTimelineRowKey = (row: ChatTimelineRow) => row.id;
+
+const setElementRef = (ref: StickyElementRef, element: HTMLElement | null) => {
+  if (typeof ref === "function") {
+    ref(element);
+  } else {
+    ref.current = element;
+  }
+};
 
 interface MessagesProps {
   messages: ChatMessage[];
@@ -42,8 +87,8 @@ interface MessagesProps {
   onBranchMessage?: (messageId: string) => Promise<void>;
   status: ChatStatus;
   error: Error | null;
-  scrollRef: RefObject<HTMLDivElement | null>;
-  contentRef: RefObject<HTMLDivElement | null>;
+  scrollRef: StickyElementRef;
+  contentRef: StickyElementRef;
   paginationStatus?:
     "LoadingFirstPage" | "CanLoadMore" | "LoadingMore" | "Exhausted";
   loadMore?: (numItems: number) => void;
@@ -161,11 +206,30 @@ export const Messages = ({
     return -1;
   }, [messages]);
 
+  const [expandedAgentMessageIds, setExpandedAgentMessageIds] = useState<
+    ReadonlySet<string>
+  >(() => new Set());
+  const timelineRows = useMemo(
+    () =>
+      deriveChatTimelineRows({
+        messages: visibleMessages,
+        status,
+        lastAssistantMessageIndex,
+        expandedAgentMessageIds,
+      }),
+    [
+      expandedAgentMessageIds,
+      lastAssistantMessageIndex,
+      status,
+      visibleMessages,
+    ],
+  );
   // Track edit state for messages
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
 
   // Track all files dialog state
   const [showAllFilesDialog, setShowAllFilesDialog] = useState(false);
+  const [hasOpenedAllFilesDialog, setHasOpenedAllFilesDialog] = useState(false);
   const [dialogFiles, setDialogFiles] = useState<
     Array<{
       part: any;
@@ -232,6 +296,7 @@ export const Messages = ({
         }));
 
       setDialogFiles(files);
+      setHasOpenedAllFilesDialog(true);
       setShowAllFilesDialog(true);
     },
     [],
@@ -245,136 +310,305 @@ export const Messages = ({
           await onBranchMessage(messageId);
         } catch (error) {
           console.error("Failed to branch message:", error);
-          toast.error("Failed to branch chat. Please try again.");
+          toast.error("Failed to branch task. Please try again.");
         }
       }
     },
     [onBranchMessage],
   );
 
+  const [timelineInstance, setTimelineInstance] =
+    useState<LegendListRef | null>(null);
+  const [timelineElements, setTimelineElements] = useState<{
+    content: HTMLElement | null;
+    scroll: HTMLElement | null;
+  }>({ content: null, scroll: null });
+  const { captureScrollPosition, preserveScrollPosition } =
+    useScrollPreservation();
+  const handleToggleAgentWork = useCallback(
+    (messageId: string, nextExpanded: boolean) => {
+      preserveScrollPosition(() => {
+        setExpandedAgentMessageIds((current) => {
+          const next = new Set(current);
+          if (nextExpanded) {
+            next.add(messageId);
+          } else {
+            next.delete(messageId);
+          }
+          return next;
+        });
+      }, nextExpanded);
+    },
+    [preserveScrollPosition],
+  );
+
+  // Keep the established bottom-follow hook connected to LegendList's actual
+  // scroll and content elements. LegendList owns row virtualization and
+  // measurement; use-stick-to-bottom continues to own the existing composer
+  // follow/escape behavior.
+  useLayoutEffect(() => {
+    const scrollElement = timelineInstance?.getScrollableNode() ?? null;
+    const contentElement =
+      scrollElement?.querySelector<HTMLElement>(
+        ":scope > .legend-list-content-container",
+      ) ?? null;
+
+    setTimelineElements((current) =>
+      current.scroll === scrollElement && current.content === contentElement
+        ? current
+        : { content: contentElement, scroll: scrollElement },
+    );
+  }, [timelineInstance]);
+
+  useLayoutEffect(() => {
+    setElementRef(scrollRef, timelineElements.scroll);
+    setElementRef(contentRef, timelineElements.content);
+
+    return () => {
+      setElementRef(contentRef, null);
+      setElementRef(scrollRef, null);
+    };
+  }, [contentRef, scrollRef, timelineElements]);
+
   // Handle scroll to load more messages when scrolling to top
   const handleScroll = useCallback(() => {
-    if (!scrollRef.current || !loadMore || paginationStatus !== "CanLoadMore") {
+    const scrollElement = timelineElements.scroll;
+    if (!scrollElement || !loadMore || paginationStatus !== "CanLoadMore") {
       return;
     }
 
-    const { scrollTop } = scrollRef.current;
+    const { scrollTop } = scrollElement;
 
     // Check if we're near the top (within 100px)
     if (scrollTop < 100) {
       loadMore(28); // Load 28 more messages
     }
-  }, [scrollRef, loadMore, paginationStatus]);
+  }, [loadMore, paginationStatus, timelineElements.scroll]);
 
   // Add scroll event listener
   useEffect(() => {
-    const scrollElement = scrollRef.current;
+    const scrollElement = timelineElements.scroll;
     if (!scrollElement) return;
 
     scrollElement.addEventListener("scroll", handleScroll, { passive: true });
     return () => scrollElement.removeEventListener("scroll", handleScroll);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [handleScroll]);
+  }, [handleScroll, timelineElements.scroll]);
+
+  const showingLoadingIndicator =
+    summarizationStatus?.status === "started" ||
+    uploadStatus?.isUploading ||
+    shouldShowLoadingDots;
+
+  const renderTimelineRow = useCallback(
+    ({ item: row }: { item: ChatTimelineRow }) => {
+      const rowClassName =
+        row.kind === "agent-work-header"
+          ? "pb-2"
+          : row.kind === "agent-activity"
+            ? "pb-3"
+            : "pb-4";
+
+      let content;
+      if (row.kind === "agent-work-header") {
+        content = (
+          <AgentWorkHeader
+            canToggle={row.canToggle}
+            durationMs={row.durationMs}
+            expanded={row.expanded}
+            isTiming={row.isTiming}
+            messageId={row.message.id}
+            onCaptureScroll={captureScrollPosition}
+            onToggle={handleToggleAgentWork}
+            startedAt={row.startedAt}
+          />
+        );
+      } else if (row.kind === "agent-activity") {
+        const effectiveStatus: ChatStatus =
+          status === "streaming" &&
+          row.messageIndex !== lastAssistantMessageIndex
+            ? "ready"
+            : status;
+        const sharedFileDetails =
+          row.message.fileDetails ||
+          tempChatFileDetails?.get(row.message.id) ||
+          undefined;
+
+        content = (
+          <AgentActivityRow
+            deferReasoningCollapseUntilParent={
+              row.deferReasoningCollapseUntilParent
+            }
+            isLastMessage={row.isLastMessage}
+            keepLatestReasoningOpenDuringStreaming={
+              row.keepLatestReasoningOpenDuringStreaming
+            }
+            message={row.message}
+            part={row.part}
+            partIndex={row.partIndex}
+            sharedFileDetails={sharedFileDetails}
+            status={effectiveStatus}
+            terminalChunksByToolCallId={row.terminalChunksByToolCallId}
+          />
+        );
+      } else {
+        content = (
+          <MessageItem
+            message={row.message}
+            index={row.messageIndex}
+            messagesLength={visibleMessages.length}
+            lastAssistantMessageIndex={lastAssistantMessageIndex}
+            status={status}
+            isEditing={editingMessageId === row.message.id}
+            isMobile={isMobile}
+            feedbackInputMessageId={feedbackInputMessageId}
+            tempChatFileDetails={tempChatFileDetails}
+            finishReason={finishReason}
+            mode={mode}
+            agentRunSpendCapWarning={agentRunSpendCapWarning}
+            isTemporaryChat={isTemporaryChat}
+            branchedFromChatId={branchedFromChatId}
+            branchedFromChatTitle={branchedFromChatTitle}
+            branchBoundaryIndex={branchBoundaryIndex}
+            onStartEdit={handleStartEdit}
+            onSaveEdit={handleSaveEdit}
+            onCancelEdit={handleCancelEdit}
+            onRegenerate={onRegenerate}
+            onContinue={onContinue}
+            onBranchMessage={onBranchMessage ? handleBranchMessage : undefined}
+            onFeedback={handleFeedback}
+            onFeedbackSubmit={handleFeedbackSubmit}
+            onFeedbackCancel={handleFeedbackCancel}
+            onShowAllFiles={handleShowAllFiles}
+            getCachedUrl={getCachedUrl}
+            showingLoadingIndicator={showingLoadingIndicator}
+            summarizationStatus={summarizationStatus}
+            workPresentation={row.workPresentation}
+          />
+        );
+      }
+
+      return (
+        <div
+          className={`mx-auto w-full max-w-full sm:max-w-[768px] sm:min-w-[390px] ${rowClassName}`}
+          data-timeline-row-kind={row.kind}
+        >
+          {content}
+        </div>
+      );
+    },
+    [
+      agentRunSpendCapWarning,
+      branchBoundaryIndex,
+      branchedFromChatId,
+      branchedFromChatTitle,
+      editingMessageId,
+      feedbackInputMessageId,
+      finishReason,
+      captureScrollPosition,
+      getCachedUrl,
+      handleBranchMessage,
+      handleCancelEdit,
+      handleFeedback,
+      handleFeedbackCancel,
+      handleFeedbackSubmit,
+      handleSaveEdit,
+      handleShowAllFiles,
+      handleStartEdit,
+      handleToggleAgentWork,
+      isMobile,
+      isTemporaryChat,
+      lastAssistantMessageIndex,
+      mode,
+      onBranchMessage,
+      onContinue,
+      onRegenerate,
+      showingLoadingIndicator,
+      status,
+      summarizationStatus,
+      tempChatFileDetails,
+      visibleMessages.length,
+    ],
+  );
+
+  const timelineHeader =
+    paginationStatus === "LoadingMore" ? (
+      <div className="mx-auto flex w-full max-w-[768px] justify-center pb-4">
+        <Loading size={6} />
+      </div>
+    ) : null;
+
+  const timelineFooter =
+    showSummarizationSeparately ||
+    uploadStatus?.isUploading ||
+    shouldShowLoadingDots ||
+    (error && finishReason !== "timeout") ? (
+      <div className="mx-auto flex w-full max-w-full flex-col items-start pb-20 sm:max-w-[768px] sm:min-w-[390px]">
+        {showSummarizationSeparately && (
+          <SummarizationStatusDivider
+            status={summarizationStatus?.status}
+            message={summarizationStatus?.message}
+            className="mb-1 mt-0"
+          />
+        )}
+        {uploadStatus?.isUploading && (
+          <Shimmer className="text-sm">{`${uploadStatus.message}...`}</Shimmer>
+        )}
+        {shouldShowLoadingDots && (
+          <div className="inline-flex items-center rounded-lg bg-muted px-3 py-2 text-muted-foreground">
+            <DotsSpinner size="sm" variant="primary" />
+          </div>
+        )}
+        {error && finishReason !== "timeout" && (
+          <MessageErrorState
+            error={error}
+            onRetry={onRetry}
+            onReconnect={onReconnect}
+            mode={mode}
+          />
+        )}
+      </div>
+    ) : (
+      <div className="h-20" />
+    );
 
   return (
     <FileUrlCacheProvider
       getCachedUrl={getCachedUrl}
       setCachedUrl={setCachedUrl}
     >
-      <div ref={scrollRef} className="flex-1 min-h-0 overflow-y-auto p-4">
-        <div
-          ref={contentRef}
-          className="mx-auto w-full max-w-full sm:max-w-[768px] sm:min-w-[390px] flex flex-col space-y-4 pb-20"
+      <div className="relative flex-1 min-h-0">
+        <LegendList<ChatTimelineRow>
+          ref={setTimelineInstance}
+          data={timelineRows}
+          keyExtractor={getTimelineRowKey}
+          getItemType={getChatTimelineRowType}
+          renderItem={renderTimelineRow}
+          estimatedItemSize={48}
+          recycleItems={false}
+          initialScrollAtEnd
+          maintainVisibleContentPosition={{ data: true, size: true }}
+          style={{ height: "100%", minHeight: 0 }}
+          className="h-full min-h-0 overflow-x-hidden"
+          contentContainerStyle={{
+            paddingTop: 16,
+            paddingRight: 16,
+            paddingBottom: 0,
+            paddingLeft: 16,
+          }}
+          ListHeaderComponent={timelineHeader}
+          ListFooterComponent={timelineFooter}
           data-testid="messages-container"
-        >
-          {/* Loading indicator at top when loading more messages */}
-          {paginationStatus === "LoadingMore" && (
-            <div className="flex justify-center py-2">
-              <Loading size={6} />
-            </div>
-          )}
-          {visibleMessages.map((message, index) => (
-            <MessageItem
-              key={message.id}
-              message={message}
-              index={index}
-              messagesLength={visibleMessages.length}
-              lastAssistantMessageIndex={lastAssistantMessageIndex}
-              status={status}
-              isEditing={editingMessageId === message.id}
-              isMobile={isMobile}
-              feedbackInputMessageId={feedbackInputMessageId}
-              tempChatFileDetails={tempChatFileDetails}
-              finishReason={finishReason}
-              mode={mode}
-              agentRunSpendCapWarning={agentRunSpendCapWarning}
-              isTemporaryChat={isTemporaryChat}
-              branchedFromChatId={branchedFromChatId}
-              branchedFromChatTitle={branchedFromChatTitle}
-              branchBoundaryIndex={branchBoundaryIndex}
-              onStartEdit={handleStartEdit}
-              onSaveEdit={handleSaveEdit}
-              onCancelEdit={handleCancelEdit}
-              onRegenerate={onRegenerate}
-              onContinue={onContinue}
-              onBranchMessage={
-                onBranchMessage ? handleBranchMessage : undefined
-              }
-              onFeedback={handleFeedback}
-              onFeedbackSubmit={handleFeedbackSubmit}
-              onFeedbackCancel={handleFeedbackCancel}
-              onShowAllFiles={handleShowAllFiles}
-              getCachedUrl={getCachedUrl}
-              showingLoadingIndicator={
-                summarizationStatus?.status === "started" ||
-                uploadStatus?.isUploading ||
-                shouldShowLoadingDots
-              }
-              summarizationStatus={summarizationStatus}
-            />
-          ))}
-
-          {/* Processing status - upload/loading dots always separate, summarization only when no content */}
-          {(showSummarizationSeparately ||
-            uploadStatus?.isUploading ||
-            shouldShowLoadingDots) && (
-            <div className="flex flex-col items-start">
-              {showSummarizationSeparately && (
-                <SummarizationStatusDivider
-                  status={summarizationStatus?.status}
-                  message={summarizationStatus?.message}
-                  className="mb-1 mt-0"
-                />
-              )}
-              {uploadStatus?.isUploading && (
-                <Shimmer className="text-sm">{`${uploadStatus.message}...`}</Shimmer>
-              )}
-              {shouldShowLoadingDots && (
-                <div className="bg-muted text-muted-foreground rounded-lg px-3 py-2 inline-flex items-center">
-                  <DotsSpinner size="sm" variant="primary" />
-                </div>
-              )}
-            </div>
-          )}
-
-          {/* Error state - hide if it was a graceful preemptive timeout */}
-          {error && finishReason !== "timeout" && (
-            <MessageErrorState
-              error={error}
-              onRetry={onRetry}
-              onReconnect={onReconnect}
-              mode={mode}
-            />
-          )}
-        </div>
+        />
 
         {/* All Files Dialog */}
-        <AllFilesDialog
-          open={showAllFilesDialog}
-          onOpenChange={setShowAllFilesDialog}
-          files={dialogFiles}
-          chatTitle={chatTitle}
-        />
+        {hasOpenedAllFilesDialog && (
+          <AllFilesDialog
+            open={showAllFilesDialog}
+            onOpenChange={setShowAllFilesDialog}
+            files={dialogFiles}
+            chatTitle={chatTitle}
+          />
+        )}
       </div>
     </FileUrlCacheProvider>
   );

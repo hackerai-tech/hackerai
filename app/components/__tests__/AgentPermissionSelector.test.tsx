@@ -52,4 +52,12 @@ describe("AgentPermissionSelector", () => {
     );
     expect(setAgentPermissionMode).toHaveBeenCalledWith("ask_approval");
   });
+
+  it("keeps the permission choice available in Agent-only experiences", () => {
+    render(<AgentPermissionSelector analyticsSurface="chat_input" />);
+
+    expect(
+      screen.getByRole("button", { name: /full access/i }),
+    ).toBeInTheDocument();
+  });
 });

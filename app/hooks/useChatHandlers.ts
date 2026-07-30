@@ -16,10 +16,10 @@ import {
 } from "@/types";
 import { Id } from "@/convex/_generated/dataModel";
 import {
-  countInputTokens,
-  getMaxTokensForSubscription,
   getMaxFileTokens,
-} from "@/lib/token-utils";
+  getMaxTokensForSubscription,
+} from "@/lib/token-limits";
+import { getInputTokenLimitStatus } from "@/lib/utils/client-token-validation";
 import { toast } from "sonner";
 import { removeTodosBySourceMessages } from "@/lib/utils/todo-utils";
 import { useDataStreamDispatch } from "@/app/components/DataStreamProvider";
@@ -177,10 +177,14 @@ export const useChatHandlers = ({
 
   const cancelTriggerRun = async (): Promise<void> => {
     if (!shouldCancelTriggerRun()) return;
+    const expectedTriggerRunId = activeTriggerRunRef?.current;
     const response = await fetch(AGENT_CANCEL_ENDPOINT, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ chatId }),
+      body: JSON.stringify({
+        chatId,
+        ...(expectedTriggerRunId ? { expectedTriggerRunId } : {}),
+      }),
     });
     if (!response.ok) {
       throw new Error(
@@ -196,6 +200,7 @@ export const useChatHandlers = ({
    */
   const stopActiveStream = async (options?: {
     skipSave?: boolean;
+    requireCancelSuccess?: boolean;
   }): Promise<ChatMessage[]> => {
     // Stop the stream immediately (client-side abort)
     stop();
@@ -259,18 +264,27 @@ export const useChatHandlers = ({
             })
           : Promise.resolve();
 
+      const cancelPromise = cancelStreamMutation({
+        chatId,
+        skipSave: options?.skipSave || undefined,
+        todos,
+      });
       await Promise.all([
-        cancelStreamMutation({
-          chatId,
-          skipSave: options?.skipSave || undefined,
-        }).catch((error) => {
-          console.error("Failed to cancel stream:", error);
-        }),
+        options?.requireCancelSuccess
+          ? cancelPromise
+          : cancelPromise.catch((error) => {
+              console.error("Failed to cancel stream:", error);
+            }),
         savePromise,
       ]);
     } else {
       // Temporary chats: signal cancel via temp stream coordination
-      await cancelTempStreamMutation({ chatId }).catch(() => {});
+      const cancelPromise = cancelTempStreamMutation({ chatId });
+      if (options?.requireCancelSuccess) {
+        await cancelPromise;
+      } else {
+        await cancelPromise.catch(() => {});
+      }
     }
 
     return normalizedMessages;
@@ -293,6 +307,13 @@ export const useChatHandlers = ({
     if (streamStopResult.status === "rejected") {
       throw streamStopResult.reason;
     }
+  };
+
+  const stopActiveRunForSteer = async (): Promise<void> => {
+    // Persist the latest message and todo snapshot before canceling the Trigger
+    // run. The next run reads persisted todos for non-temporary chats.
+    await stopActiveStream({ requireCancelSuccess: true });
+    await cancelTriggerRun();
   };
 
   const hasActiveRunToReplace = () =>
@@ -355,8 +376,8 @@ export const useChatHandlers = ({
       return false;
     }
 
-    // If streaming in Agent mode, check queue behavior
-    if (status === "streaming") {
+    // While an Agent run is starting or streaming, honor the queue behavior.
+    if (status === "streaming" || status === "submitted") {
       const validFiles = uploadedFiles
         .filter(isSendableUploadedFile)
         .map(createFileMessagePartFromUploadedFile)
@@ -369,18 +390,20 @@ export const useChatHandlers = ({
         clearUploadedFiles();
         return true;
       } else if (queueBehavior === "stop-and-send") {
-        // Cancel the trigger.dev run for Agent streams so the prior
-        // run stops burning compute instead of finishing in the background.
-        void cancelTriggerRun().catch((error) => {
-          console.error("Failed to cancel trigger.dev run:", error);
-        });
-
-        await stopActiveStream();
+        try {
+          await stopActiveRunForSteer();
+        } catch (error) {
+          console.error(
+            "Failed to stop the active run before steering:",
+            error,
+          );
+          toast.error("Could not steer the Agent run. Please try again.");
+          return false;
+        }
         // Continue to send the new message immediately below (don't return)
       }
     }
     // Check token limit before sending based on user plan
-    const tokenCount = countInputTokens(input, uploadedFiles);
     const maxTokens = getMaxTokensForSubscription(subscription, {
       mode: currentChatMode,
     });
@@ -401,11 +424,16 @@ export const useChatHandlers = ({
       }
     }
 
-    if (tokenCount > maxTokens) {
+    const tokenLimitStatus = await getInputTokenLimitStatus(
+      input,
+      uploadedFiles,
+      maxTokens,
+    );
+    if (tokenLimitStatus.exceedsLimit) {
       const hasFiles = uploadedFiles.length > 0;
       const planText = subscription !== "free" ? "" : " (Free plan limit)";
       toast.error("Message is too long", {
-        description: `Your message is too large (${tokenCount.toLocaleString()} tokens). Please make it shorter${hasFiles ? " or remove some files" : ""}${planText}.`,
+        description: `Your message is too large (${tokenLimitStatus.tokenCount.toLocaleString()} tokens). Please make it shorter${hasFiles ? " or remove some files" : ""}${planText}.`,
       });
       return false;
     }
@@ -817,7 +845,7 @@ export const useChatHandlers = ({
   };
 
   const handleContinue = (selectedModelOverride?: SelectedModel) => {
-    if (status === "streaming") return;
+    if (status === "streaming" || status === "submitted") return;
     hasManuallyStoppedRef.current = false;
     const continuationSelectedModel =
       selectedModelOverride ?? requestSelectedModelRef.current;
@@ -853,12 +881,13 @@ export const useChatHandlers = ({
     hasManuallyStoppedRef.current = false;
 
     try {
-      // Remove the message from queue FIRST (before stopping)
-      removeQueuedMessage(messageId);
-
-      // Stop the stream using the shared helper
       setIsAutoResuming(false);
-      await stopActiveStream();
+      if (hasActiveRunToReplace()) {
+        await stopActiveRunForSteer();
+      }
+
+      // Keep the queued message available if stopping fails.
+      removeQueuedMessage(messageId);
 
       // Send the queued message immediately
       const validFiles = message.files || [];
@@ -891,6 +920,7 @@ export const useChatHandlers = ({
       );
     } catch (error) {
       console.error("Failed to send queued message:", error);
+      toast.error("Could not steer the Agent run. Please try again.");
     } finally {
       // Clear flag after a brief delay to allow status to change
       setTimeout(() => {

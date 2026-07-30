@@ -22,7 +22,6 @@ import {
   isChatMode,
   normalizeSelectedModelForSubscription,
 } from "@/types/chat";
-import { isAgentMode } from "@/lib/utils/mode-helpers";
 import type { Todo } from "@/types";
 import {
   mergeTodos as mergeTodosUtil,
@@ -32,12 +31,14 @@ import {
 import type { UploadedFileState } from "@/types/file";
 import type { FileMessagePart } from "@/types/file";
 import { useIsMobile } from "@/hooks/use-mobile";
-import { useSandboxPreference } from "@/app/hooks/useSandboxPreference";
+import {
+  useSandboxPreference,
+  type DesktopBridgeStatus,
+} from "@/app/hooks/useSandboxPreference";
 import { isTauriEnvironment } from "@/app/hooks/useTauri";
 import { resolveSubscriptionTier } from "@/lib/auth/entitlements";
 import { clearSharedToken, setSharedToken } from "@/lib/auth/shared-token";
 import { chatSidebarStorage } from "@/lib/utils/sidebar-storage";
-import type { Id } from "@/convex/_generated/dataModel";
 import { useMutation, useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import type { SubscriptionTier } from "@/types";
@@ -83,6 +84,8 @@ interface GlobalStateType {
   // Chat mode state
   chatMode: ChatMode;
   setChatMode: (mode: ChatMode) => void;
+  chatModeAccessResolved: boolean;
+  paidAgentOnlyActive: boolean;
 
   // Computer sidebar state (right side)
   sidebarOpen: boolean;
@@ -95,6 +98,8 @@ interface GlobalStateType {
   setChatSidebarOpen: (open: boolean) => void;
   optimisticChatId: string | null;
   setOptimisticChatId: (chatId: string | null) => void;
+  activeProjectId: string | null;
+  setActiveProjectId: (projectId: string | null) => void;
 
   // Todos state
   todos: Todo[];
@@ -117,6 +122,9 @@ interface GlobalStateType {
   // Message queue state (for Agent mode)
   messageQueue: QueuedMessage[];
   queueMessage: (text: string, files?: FileMessagePart[]) => void;
+  updateQueuedMessage: (id: string, text: string) => void;
+  editingQueuedMessageId: string | null;
+  setEditingQueuedMessageId: (messageId: string | null) => void;
   removeQueuedMessage: (id: string) => void;
   clearQueue: () => void;
 
@@ -134,6 +142,8 @@ interface GlobalStateType {
 
   // Desktop bridge active (Centrifugo-based desktop sandbox)
   desktopBridgeActive: boolean;
+  desktopBridgeStatus: DesktopBridgeStatus;
+  retryDesktopBridge: () => void;
 
   // Whether a local sandbox (desktop or remote) is available
   hasLocalSandbox: boolean;
@@ -377,6 +387,23 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     chatSidebarStorage.get(isMobile ?? false),
   );
   const [optimisticChatId, setOptimisticChatId] = useState<string | null>(null);
+  const [activeProjectId, setActiveProjectId] = useState<string | null>(() => {
+    if (typeof window === "undefined") return null;
+    return new URLSearchParams(window.location.search).get("project");
+  });
+
+  useEffect(() => {
+    const syncActiveProjectFromUrl = () => {
+      setActiveProjectId(
+        new URLSearchParams(window.location.search).get("project"),
+      );
+    };
+
+    window.addEventListener("popstate", syncActiveProjectFromUrl);
+    return () => {
+      window.removeEventListener("popstate", syncActiveProjectFromUrl);
+    };
+  }, []);
   const [todos, setTodos] = useState<Todo[]>([]);
   const [isTodoPanelExpanded, setIsTodoPanelExpanded] = useState(false);
   const mergeTodos = useCallback((newTodos: TodoLike[]) => {
@@ -401,6 +428,9 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
 
   // Message queue state (for Agent mode queueing)
   const [messageQueue, setMessageQueue] = useState<QueuedMessage[]>([]);
+  const [editingQueuedMessageId, setEditingQueuedMessageId] = useState<
+    string | null
+  >(null);
 
   // Queue behavior preference (persisted to localStorage)
   const [queueBehavior, setQueueBehaviorState] = useState<QueueBehavior>(() => {
@@ -413,8 +443,13 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
   });
 
   // Tauri detection + sandbox preference (co-located in a custom hook)
-  const { sandboxPreference, setSandboxPreference, desktopBridgeActive } =
-    useSandboxPreference(!!user);
+  const {
+    sandboxPreference,
+    setSandboxPreference,
+    desktopBridgeActive,
+    desktopBridgeStatus,
+    retryDesktopBridge,
+  } = useSandboxPreference(!!user);
 
   const [agentPermissionMode, setAgentPermissionMode] =
     useState<AgentPermissionMode>(() => readAgentPermissionMode());
@@ -606,10 +641,9 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
       current_mode_before: chatMode,
       $set_once: {
         first_experience_variant: "agent_first",
-        first_experience_exposed_at: now,
+        first_experience_applied_at: now,
       },
     };
-    captureAuthenticatedEvent("first_experience_exposed", agentFirstProperties);
     captureAuthenticatedEvent(
       "agent_first_default_applied",
       agentFirstProperties,
@@ -629,6 +663,24 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     temporaryChatsEnabled,
     user,
   ]);
+
+  const chatModeAccessResolved =
+    !authLoading && (!user || (subscriptionResolved && !isCheckingProPlan));
+  const paidAgentOnlyActive =
+    Boolean(user) &&
+    subscriptionResolved &&
+    !isCheckingProPlan &&
+    temporaryChatSubscription !== "free" &&
+    !temporaryChatsEnabled;
+
+  useEffect(() => {
+    if (temporaryChatsEnabled) {
+      if (chatMode !== "ask") setChatModeState("ask");
+      return;
+    }
+    if (!paidAgentOnlyActive || chatMode === "agent") return;
+    setChatModeState("agent");
+  }, [chatMode, paidAgentOnlyActive, temporaryChatsEnabled]);
 
   // Initialize team pricing dialog from URL hash
   const [teamPricingDialogOpen, setTeamPricingDialogOpen] = useState(() => {
@@ -951,10 +1003,22 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
 
   const removeQueuedMessage = useCallback((id: string) => {
     setMessageQueue((prev) => prev.filter((msg) => msg.id !== id));
+    setEditingQueuedMessageId((currentId) =>
+      currentId === id ? null : currentId,
+    );
+  }, []);
+
+  const updateQueuedMessage = useCallback((id: string, text: string) => {
+    setMessageQueue((prev) =>
+      prev.map((message) =>
+        message.id === id ? { ...message, text } : message,
+      ),
+    );
   }, []);
 
   const clearQueue = useCallback(() => {
     setMessageQueue([]);
+    setEditingQueuedMessageId(null);
   }, []);
 
   const initializeChat = useCallback((chatId: string, _fromRoute?: boolean) => {
@@ -964,6 +1028,7 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     setIsTodoPanelExpanded(false);
     // Navigating to an existing chat means we're no longer in temporary chat mode
     setTemporaryChatsEnabled(false);
+    setActiveProjectId(null);
   }, []);
 
   const initializeNewChat = useCallback(() => {
@@ -973,6 +1038,7 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     }
     setTodos([]);
     setIsTodoPanelExpanded(false);
+    setActiveProjectId(null);
   }, []);
 
   const setChatReset = useCallback((fn: (() => void) | null) => {
@@ -1074,6 +1140,8 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     isUploadingFiles,
     chatMode,
     setChatMode,
+    chatModeAccessResolved,
+    paidAgentOnlyActive,
     sidebarOpen,
     setSidebarOpen,
     sidebarContent,
@@ -1082,6 +1150,8 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     setChatSidebarOpen,
     optimisticChatId,
     setOptimisticChatId,
+    activeProjectId,
+    setActiveProjectId,
     todos,
     setTodos,
     mergeTodos,
@@ -1122,6 +1192,9 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
 
     messageQueue,
     queueMessage,
+    updateQueuedMessage,
+    editingQueuedMessageId,
+    setEditingQueuedMessageId,
     removeQueuedMessage,
     clearQueue,
 
@@ -1133,6 +1206,8 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     agentPermissionMode,
     setAgentPermissionMode,
     desktopBridgeActive,
+    desktopBridgeStatus,
+    retryDesktopBridge,
     hasLocalSandbox,
     localConnections,
     defaultLocalSandboxPreference,

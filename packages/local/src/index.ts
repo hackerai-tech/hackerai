@@ -29,6 +29,10 @@ import {
   ProcessRunResult,
   isPtyAvailable,
 } from "./process-runner";
+import {
+  confirmProcessTermination,
+  isProcessTreeTerminationConfirmed,
+} from "./command-cancellation";
 
 const DEFAULT_SHELL = getDefaultShell(os.platform());
 
@@ -37,106 +41,6 @@ const IDLE_TIMEOUT_MS = 60 * 60 * 1000; // 1 hour
 
 // Idle check interval: check every 5 minutes
 const IDLE_CHECK_INTERVAL_MS = 5 * 60 * 1000;
-
-interface ShellCommandResult {
-  stdout: string;
-  stderr: string;
-  exitCode: number;
-}
-
-/**
- * Runs a shell command using spawn for better output control.
- * Collects stdout/stderr and handles timeouts gracefully.
- */
-function runShellCommand(
-  command: string,
-  options: {
-    timeout?: number;
-    shell?: string;
-    shellFlag?: string;
-    maxOutputSize?: number;
-  } = {},
-): Promise<ShellCommandResult> {
-  const {
-    timeout = 30000,
-    shell = DEFAULT_SHELL.shell,
-    shellFlag = DEFAULT_SHELL.shellFlag,
-    maxOutputSize = MAX_OUTPUT_SIZE,
-  } = options;
-
-  return new Promise((resolve) => {
-    let stdout = "";
-    let stderr = "";
-    let killed = false;
-    let timeoutId: NodeJS.Timeout | undefined;
-
-    const spawnSpec = buildShellSpawn(shell, shellFlag, command);
-    const proc: ChildProcess = spawn(shell, spawnSpec.args, {
-      stdio: ["ignore", "pipe", "pipe"],
-      ...spawnSpec.options,
-    });
-
-    // Set up timeout
-    if (timeout > 0) {
-      timeoutId = setTimeout(() => {
-        killed = true;
-        proc.kill("SIGTERM");
-        // Force kill after 2 seconds if still running
-        setTimeout(() => {
-          if (!proc.killed) {
-            proc.kill("SIGKILL");
-          }
-        }, 2000);
-      }, timeout);
-    }
-
-    proc.stdout?.on("data", (data: Buffer) => {
-      stdout += data.toString();
-      // Prevent memory issues by capping collection (we'll truncate at the end)
-      if (stdout.length > maxOutputSize * 2) {
-        stdout = truncateOutput(stdout, maxOutputSize * 2);
-      }
-    });
-
-    proc.stderr?.on("data", (data: Buffer) => {
-      stderr += data.toString();
-      if (stderr.length > maxOutputSize * 2) {
-        stderr = truncateOutput(stderr, maxOutputSize * 2);
-      }
-    });
-
-    proc.on("close", (code) => {
-      if (timeoutId) clearTimeout(timeoutId);
-
-      // Final truncation
-      const truncatedStdout = truncateOutput(stdout, maxOutputSize);
-      const truncatedStderr = truncateOutput(stderr, maxOutputSize);
-
-      if (killed) {
-        resolve({
-          stdout: truncatedStdout,
-          stderr: truncatedStderr + "\n[Command timed out and was terminated]",
-          exitCode: 124, // Standard timeout exit code
-        });
-      } else {
-        resolve({
-          stdout: truncatedStdout,
-          stderr: truncatedStderr,
-          exitCode: code ?? 1,
-        });
-      }
-    });
-
-    proc.on("error", (error) => {
-      if (timeoutId) clearTimeout(timeoutId);
-      resolve({
-        stdout: truncateOutput(stdout, maxOutputSize),
-        stderr: truncateOutput(stderr + "\n" + error.message, maxOutputSize),
-        exitCode: 1,
-      });
-    });
-  });
-}
 
 // Production Convex URL - hardcoded for the published package
 const PRODUCTION_CONVEX_URL = "https://convex.haiusercontent.com";
@@ -222,6 +126,12 @@ interface CentrifugoErrorMessage {
   message: string;
 }
 
+interface CentrifugoCommandCancelResultMessage {
+  type: "command_cancel_result";
+  commandId: string;
+  canceled: boolean;
+}
+
 // --- PTY incoming message types ---
 
 interface PtyCreateMessage {
@@ -258,10 +168,7 @@ interface PtyKillMessage {
 }
 
 type CentrifugoPtyIncomingMessage =
-  | PtyCreateMessage
-  | PtyInputMessage
-  | PtyResizeMessage
-  | PtyKillMessage;
+  PtyCreateMessage | PtyInputMessage | PtyResizeMessage | PtyKillMessage;
 
 type TargetedIncomingMessage =
   | CentrifugoCommandMessage
@@ -320,6 +227,7 @@ type CentrifugoOutgoingMessage =
   | CentrifugoStderrMessage
   | CentrifugoExitMessage
   | CentrifugoErrorMessage
+  | CentrifugoCommandCancelResultMessage
   | CentrifugoPtyReadyMessage
   | CentrifugoPtyDataMessage
   | CentrifugoPtyExitMessage
@@ -340,9 +248,7 @@ type RefreshTokenResult =
       ok: false;
       terminated: true;
       reason:
-        | "connection_not_found"
-        | "ownership_mismatch"
-        | "connection_inactive";
+        "connection_not_found" | "ownership_mismatch" | "connection_inactive";
       connectionId: string;
       clientVersion: string | null;
       status: string | null;
@@ -613,7 +519,15 @@ class LocalSandboxClient {
           break;
 
         case "command_cancel":
-          this.handleCommandCancel(message as CentrifugoCommandCancelMessage);
+          this.handleCommandCancel(
+            message as CentrifugoCommandCancelMessage,
+          ).catch((error: unknown) => {
+            console.error(
+              chalk.red(
+                `[CMD] Failed to handle cancellation: ${error instanceof Error ? error.message : String(error)}`,
+              ),
+            );
+          });
           break;
 
         case "pty_create":
@@ -777,12 +691,23 @@ class LocalSandboxClient {
     }
   }
 
-  private handleCommandCancel(msg: CentrifugoCommandCancelMessage): void {
+  private async handleCommandCancel(
+    msg: CentrifugoCommandCancelMessage,
+  ): Promise<void> {
     const proc = this.activeStreamCommands.get(msg.commandId);
-    if (!proc) {
-      return;
-    }
-    this.terminateProcessTree(proc);
+    const canceled = proc
+      ? await confirmProcessTermination(
+          proc,
+          () => this.terminateProcessTree(proc),
+          undefined,
+          () => isProcessTreeTerminationConfirmed(proc),
+        )
+      : false;
+    await this.publishToChannel({
+      type: "command_cancel_result",
+      commandId: msg.commandId,
+      canceled,
+    });
   }
 
   private terminateProcessTree(proc: ChildProcess): void {
@@ -807,7 +732,7 @@ class LocalSandboxClient {
     }
 
     setTimeout(() => {
-      if (proc.exitCode !== null || proc.signalCode !== null) {
+      if (isProcessTreeTerminationConfirmed(proc)) {
         return;
       }
       try {

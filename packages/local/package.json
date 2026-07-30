@@ -44,5 +44,10 @@
     "@types/node": "^25.8.0",
     "@types/ws": "^8.18.1",
     "typescript": "^6.0.3"
+  },
+  "pnpm": {
+    "overrides": {
+      "protobufjs@<=7.6.4": "7.6.5"
+    }
   }
 }

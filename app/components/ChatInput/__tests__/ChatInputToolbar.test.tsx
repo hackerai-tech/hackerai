@@ -2,6 +2,11 @@ import "@testing-library/jest-dom";
 import { render, screen } from "@testing-library/react";
 import { describe, it, expect, jest, beforeEach } from "@jest/globals";
 import { useAuth } from "@workos-inc/authkit-nextjs/components";
+import type { SubscriptionTier } from "@/types";
+
+let mockSubscription: SubscriptionTier = "free";
+let mockChatModeAccessResolved = true;
+let mockPaidAgentOnlyActive = false;
 
 jest.mock("@/app/components/AttachmentButton", () => ({
   AttachmentButton: () => <button type="button">Attach</button>,
@@ -22,13 +27,20 @@ jest.mock("@/app/components/AgentPermissionSelector", () => ({
 }));
 
 jest.mock("../SubmitStopButton", () => ({
-  SubmitStopButton: () => <button type="button">Send</button>,
+  SubmitStopButton: ({ isPaid }: { isPaid?: boolean }) => (
+    <button type="button" data-is-paid={String(isPaid)}>
+      Send
+    </button>
+  ),
 }));
 
 jest.mock("@/app/contexts/GlobalState", () => ({
   useGlobalState: () => ({
     selectedModel: "auto",
     setSelectedModel: jest.fn(),
+    subscription: mockSubscription,
+    chatModeAccessResolved: mockChatModeAccessResolved,
+    paidAgentOnlyActive: mockPaidAgentOnlyActive,
   }),
 }));
 
@@ -61,6 +73,9 @@ const mockAuthUser = (user: unknown) => {
 
 describe("ChatInputToolbar", () => {
   beforeEach(() => {
+    mockSubscription = "free";
+    mockChatModeAccessResolved = true;
+    mockPaidAgentOnlyActive = false;
     mockAuthUser(null);
   });
 
@@ -91,5 +106,57 @@ describe("ChatInputToolbar", () => {
 
     rerender(<ChatInputToolbar {...defaultProps} chatMode="agent" />);
     expect(screen.getByTestId("agent-permission-selector")).toBeInTheDocument();
+  });
+
+  it("removes only the mode selector for paid Agent-only mode", () => {
+    mockAuthUser({ id: "user_123" });
+    mockSubscription = "pro";
+    mockPaidAgentOnlyActive = true;
+
+    render(<ChatInputToolbar {...defaultProps} chatMode="agent" />);
+
+    expect(screen.queryByTestId("chat-mode-selector")).not.toBeInTheDocument();
+    expect(screen.getByTestId("agent-permission-selector")).toBeInTheDocument();
+  });
+
+  it("never flashes the mode selector while paid access resolves", () => {
+    mockAuthUser({ id: "user_123" });
+    mockChatModeAccessResolved = false;
+
+    const { rerender } = render(<ChatInputToolbar {...defaultProps} />);
+
+    expect(screen.queryByTestId("chat-mode-selector")).not.toBeInTheDocument();
+
+    mockSubscription = "pro";
+    mockChatModeAccessResolved = true;
+    mockPaidAgentOnlyActive = true;
+    rerender(<ChatInputToolbar {...defaultProps} chatMode="agent" />);
+
+    expect(screen.queryByTestId("chat-mode-selector")).not.toBeInTheDocument();
+  });
+
+  it("shows the mode selector after access resolves for eligible users", () => {
+    mockAuthUser({ id: "user_123" });
+
+    render(<ChatInputToolbar {...defaultProps} />);
+
+    expect(screen.getByTestId("chat-mode-selector")).toBeInTheDocument();
+  });
+
+  it("enables the paid visual treatment only for paid subscriptions", () => {
+    const { rerender } = render(<ChatInputToolbar {...defaultProps} />);
+
+    expect(screen.getByRole("button", { name: "Send" })).toHaveAttribute(
+      "data-is-paid",
+      "false",
+    );
+
+    mockSubscription = "pro";
+    rerender(<ChatInputToolbar {...defaultProps} />);
+
+    expect(screen.getByRole("button", { name: "Send" })).toHaveAttribute(
+      "data-is-paid",
+      "true",
+    );
   });
 });

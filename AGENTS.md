@@ -33,6 +33,35 @@ a preview branch. Avoid hard-coding current revenue, user counts, team-share
 percentages, pricing, or other volatile metrics in durable instructions; use
 qualitative direction and source-of-truth references instead.
 
+## Feature Rollouts and Measurement
+
+For meaningful user-facing features or behavior changes, consider a PostHog
+feature flag or experiment so the release can be staged and its impact
+evaluated. Good candidates include new workflows, changed defaults,
+onboarding or pricing changes, costly Agent behavior, operationally risky
+behavior, and UX changes with uncertain impact. Do not require a flag for every
+change: routine refactors, minor visual polish, accessibility fixes, and
+correctness or security fixes that should reach everyone immediately are not
+flag candidates.
+
+Before implementation, document in the owning Linear issue the hypothesis,
+eligible population, primary success metric, guardrail metrics, actual exposure
+event, rollback condition, owner, readout or review date, and flag removal plan.
+Start with internal users or an explicit allowlist, then ramp gradually. Choose
+each rollout percentage based on risk, expected sample size, and current
+traffic, and record it in Linear and PostHog rather than assuming a universal
+percentage. Assignment must be deterministic and stable.
+
+Keep assignment, exposure, activation, and outcome distinct. Emit exposure
+only when the user actually encounters the changed experience. Analytics must
+remain privacy-safe: never send prompts, targets, findings, evidence, code,
+payloads, or other user content.
+
+Shipping the implementation does not complete the experiment. Review the
+PostHog readout before expanding the rollout, removing the flag, or calling the
+experiment complete. Every flag needs an owner and cleanup plan so stale flags
+do not accumulate.
+
 ## Pull Request Review Workflow
 
 When a PR has been pushed and is ready for review, do not send the final

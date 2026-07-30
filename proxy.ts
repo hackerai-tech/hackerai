@@ -10,6 +10,7 @@ import {
 } from "@/lib/referrals/config";
 
 const AUTHKIT_BYPASS_PATHS = new Set([
+  "/api/health/core",
   "/api/health/trigger-agent-mode",
   "/robots.txt",
   "/sitemap.xml",

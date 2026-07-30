@@ -120,7 +120,7 @@ describe("useAutoContinue", () => {
       todos,
       temporaryChatsEnabled: true,
       sandboxPreference: "local-123",
-      selectedModel: "sonnet-4.6",
+      selectedModel: "hackerai-pro",
     });
 
     const { result, rerender } = renderHook(
@@ -151,7 +151,7 @@ describe("useAutoContinue", () => {
           temporary: true,
           sandboxPreference: "local-123",
           agentPermissionMode: "full_access",
-          selectedModel: "sonnet-4.6",
+          selectedModel: "hackerai-pro",
         },
       },
     );
@@ -322,6 +322,28 @@ describe("useAutoContinue", () => {
     });
 
     expect(result.current.autoContinueCount).toBe(0);
+    expect(result.current.isAutoContinuing).toBe(false);
+  });
+
+  it("cancels a scheduled continuation when manual submission resets it", () => {
+    const sendMessage = jest.fn();
+    let params = buildParams({ status: "streaming", sendMessage });
+
+    const { result, rerender } = renderHook(
+      (p: UseAutoContinueParams) => useTestHarness(p),
+      { initialProps: params, wrapper: createWrapper() },
+    );
+
+    pushAutoContinue(result);
+    params = { ...params, status: "ready" };
+    rerender(params);
+
+    act(() => {
+      result.current.resetAutoContinueCount();
+      jest.advanceTimersByTime(500);
+    });
+
+    expect(sendMessage).not.toHaveBeenCalled();
     expect(result.current.isAutoContinuing).toBe(false);
   });
 

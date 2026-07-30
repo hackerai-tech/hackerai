@@ -1,5 +1,6 @@
 import type { ModelMessage, UIMessage } from "ai";
 import { MAX_CONTEXT_COMPACTION_ATTEMPTS_PER_AGENT_STREAM } from "@/lib/chat/summarization/constants";
+import { PLATFORM_AUTHORIZATION_ANNOTATION } from "@/lib/chat/platform-authorization";
 
 const mockStreamText = jest.fn();
 const mockRunSummarizationStep = jest.fn();
@@ -19,6 +20,7 @@ jest.mock("ai", () => ({
   ),
   stepCountIs: jest.fn(() => () => false),
   streamText: mockStreamText,
+  wrapLanguageModel: jest.fn(({ model }) => model),
 }));
 jest.mock("@/lib/api/chat-stream-helpers", () => ({
   addCacheBreakpointToLastUserMessage: (messages: ModelMessage[]) => messages,
@@ -62,6 +64,11 @@ jest.mock("@/lib/chat/compaction/prune-tool-outputs", () => ({
     messages,
     prunedCount: 0,
   }),
+  limitModelImageToolResults: (messages: ModelMessage[]) => ({
+    messages,
+    totalImageCount: 0,
+    elidedImageCount: 0,
+  }),
 }));
 jest.mock("@/lib/chat/multimodal-tool-result-recovery", () => ({
   isProviderMultimodalToolResultRejectionError: () => false,
@@ -71,9 +78,7 @@ jest.mock("@/lib/chat/multimodal-tool-result-recovery", () => ({
 jest.mock("@/lib/ai/providers", () => ({
   isAnthropicModel: () => false,
   isDeepSeekModel: (modelName: string) =>
-    modelName === "agent-model-free" ||
-    modelName === "model-deepseek-v4-pro" ||
-    modelName === "model-deepseek-v4-flash",
+    modelName === "agent-model-free" || modelName === "model-deepseek-v4-pro",
 }));
 jest.mock("@/lib/ai/tools/utils/pty-session-manager", () => ({
   ptySessionManager: { closeAllSessions: jest.fn() },
@@ -134,6 +139,7 @@ const createTestStreamContext = (
   streamStartTime: Date.now(),
   contextUsageOn: true,
   isReasoningModel: false,
+  platformAuthorized: false,
   maxDurationMs: 60_000,
   writer: { write: jest.fn() },
   abortController: new AbortController(),
@@ -161,26 +167,26 @@ describe("resolveAgentModelForImageToolResults", () => {
     ).toBe("model-deepseek-v4-pro");
   });
 
-  it("switches DeepSeek Agent steps to Kimi after image tool results", () => {
+  it("switches DeepSeek Agent steps to Grok after image tool results", () => {
     expect(
       resolveAgentModelForImageToolResults(
         "model-deepseek-v4-pro",
         "agent",
         true,
       ),
-    ).toBe("model-kimi-k2.7-code");
-  });
-
-  it("switches Agent Pro GLM steps to Grok 4.5 after image tool results", () => {
-    expect(
-      resolveAgentModelForImageToolResults("model-glm-5.2", "agent", true),
     ).toBe("model-grok-4.5");
   });
 
-  it("switches free DeepSeek Agent steps to MiniMax after image tool results", () => {
+  it("keeps the HackerAI Pro GLM fallback active after image tool results", () => {
+    expect(
+      resolveAgentModelForImageToolResults("model-glm-5.2", "agent", true),
+    ).toBe("model-glm-5.2");
+  });
+
+  it("switches free DeepSeek Agent steps to Grok after image tool results", () => {
     expect(
       resolveAgentModelForImageToolResults("agent-model-free", "agent", true),
-    ).toBe("model-minimax-m3");
+    ).toBe("model-grok-4.5");
   });
 
   it("does not change Ask routes or multimodal Agent models", () => {
@@ -192,8 +198,11 @@ describe("resolveAgentModelForImageToolResults", () => {
       ),
     ).toBe("model-deepseek-v4-pro");
     expect(
-      resolveAgentModelForImageToolResults("model-minimax-m3", "agent", true),
-    ).toBe("model-minimax-m3");
+      resolveAgentModelForImageToolResults("model-kimi-k3", "agent", true),
+    ).toBe("model-kimi-k3");
+    expect(
+      resolveAgentModelForImageToolResults("model-grok-4.5-pro", "agent", true),
+    ).toBe("model-grok-4.5-pro");
   });
 });
 
@@ -203,7 +212,7 @@ describe("resolveFallbackServedTelemetry", () => {
       resolveFallbackServedTelemetry({
         requestedModel: "deepseek/deepseek-v4-pro",
         responseModel: "deepseek/deepseek-v4-pro",
-        fallbackModels: ["minimax/minimax-m3"],
+        fallbackModels: ["x-ai/grok-4.5"],
       }),
     ).toBe(false);
   });
@@ -212,15 +221,15 @@ describe("resolveFallbackServedTelemetry", () => {
     expect(
       resolveFallbackServedTelemetry({
         requestedModel: "deepseek/deepseek-v4-pro",
-        responseModel: "minimax/minimax-m3",
-        fallbackModels: ["minimax/minimax-m3"],
+        responseModel: "x-ai/grok-4.5",
+        fallbackModels: ["x-ai/grok-4.5"],
       }),
     ).toBe(true);
     expect(
       resolveFallbackServedTelemetry({
-        requestedModel: "minimax/minimax-m3",
-        responseModel: "minimax/minimax-m3",
-        fallbackModels: ["minimax/minimax-m3"],
+        requestedModel: "x-ai/grok-4.5",
+        responseModel: "x-ai/grok-4.5",
+        fallbackModels: ["x-ai/grok-4.5"],
       }),
     ).toBe(false);
   });
@@ -247,9 +256,9 @@ describe("retry served-model telemetry", () => {
     expect(
       retryUsesDifferentModel("agent-model-free", "agent-model-free"),
     ).toBe(false);
-    expect(
-      retryUsesDifferentModel("agent-model-free", "model-minimax-m3"),
-    ).toBe(true);
+    expect(retryUsesDifferentModel("agent-model-free", "model-grok-4.5")).toBe(
+      true,
+    );
   });
 
   it("clears prior served-model state before a retry can abort without metadata", () => {
@@ -271,6 +280,165 @@ describe("createAgentStream repeated compaction", () => {
   beforeEach(() => {
     jest.clearAllMocks();
     mockStreamText.mockImplementation((options) => options);
+  });
+
+  it.each(["ask", "agent"] as const)(
+    "keeps authorization provider-only across %s serialization and later steps",
+    async (mode) => {
+      const originalMessage = uiMessage("initial", "Continua in italiano");
+      const state = initAgentStreamState([originalMessage], {
+        usedTokens: 1_000,
+        maxTokens: 128_000,
+      });
+      const stream = (await createAgentStream(
+        "test-model",
+        createTestStreamContext({
+          mode,
+          platformAuthorized: true,
+          summarizationTracker: {
+            hasSummarized: false,
+            summarizationCount: 0,
+          },
+          usageTracker: {},
+        }) as any,
+        state,
+      )) as any;
+
+      expect(stream.messages).toEqual([
+        {
+          role: "user",
+          content: `Continua in italiano ${PLATFORM_AUTHORIZATION_ANNOTATION}`,
+        },
+      ]);
+      expect(originalMessage.parts[0]).toEqual({
+        type: "text",
+        text: "Continua in italiano",
+      });
+
+      const nextStep = await stream.prepareStep({
+        steps: [{ toolResults: [] }],
+        messages: [
+          ...stream.messages,
+          { role: "assistant", content: "Analisi" },
+          { role: "user", content: "Continua" },
+        ],
+      });
+      const serialized = JSON.stringify(nextStep.messages);
+
+      expect(serialized.match(/<platform_authorization>/g)).toHaveLength(1);
+      expect(nextStep.messages.at(-1)).toEqual({
+        role: "user",
+        content: `Continua ${PLATFORM_AUTHORIZATION_ANNOTATION}`,
+      });
+    },
+  );
+
+  it("emits sanitized provider and retained-message diagnostics", async () => {
+    const onProviderRequestDiagnostics = jest.fn();
+    const tracker = {
+      hasSummarized: true,
+      summarizationCount: 2,
+    };
+    const state = initAgentStreamState(
+      [
+        uiMessage("initial-1", "private initial content"),
+        uiMessage("initial-2", "more private content"),
+      ],
+      { usedTokens: 1_000, maxTokens: 128_000 },
+    );
+    state.transcriptSourceMessages = [
+      uiMessage("transcript-1", "private transcript content"),
+    ];
+
+    await createAgentStream(
+      "test-model",
+      createTestStreamContext({
+        summarizationTracker: tracker,
+        usageTracker: {},
+        onProviderRequestDiagnostics,
+      }) as any,
+      state,
+    );
+
+    expect(onProviderRequestDiagnostics).toHaveBeenCalledWith(
+      expect.objectContaining({
+        source: "initial",
+        message_count: 2,
+        role_counts: { user: 2 },
+        serialized_message_bytes: expect.any(Number),
+      }),
+      {
+        raw_message_count: 2,
+        rolling_message_count: 2,
+        final_ui_message_count: 2,
+        transcript_source_message_count: 1,
+        summarization_count: 2,
+        compaction_attempt_count: 0,
+      },
+    );
+    expect(
+      JSON.stringify(onProviderRequestDiagnostics.mock.calls),
+    ).not.toContain("private initial content");
+    expect(
+      JSON.stringify(onProviderRequestDiagnostics.mock.calls),
+    ).not.toContain("private transcript content");
+  });
+
+  it("emits retained-message diagnostics on prepare-step fallback", async () => {
+    const onProviderRequestDiagnostics = jest.fn();
+    const consoleError = jest
+      .spyOn(console, "error")
+      .mockImplementation(() => undefined);
+    mockGetProviderPromptPressure.mockImplementationOnce(() => {
+      throw new Error("pressure inspection failed");
+    });
+    const state = initAgentStreamState(
+      [uiMessage("initial", "initial message")],
+      { usedTokens: 1_000, maxTokens: 128_000 },
+    );
+
+    try {
+      const stream = (await createAgentStream(
+        "test-model",
+        createTestStreamContext({
+          summarizationTracker: {
+            hasSummarized: false,
+            summarizationCount: 0,
+          },
+          usageTracker: {},
+          onProviderRequestDiagnostics,
+        }) as any,
+        state,
+      )) as any;
+      const rawMessages: ModelMessage[] = [
+        { role: "user", content: "initial message" },
+        { role: "assistant", content: "partial response" },
+      ];
+
+      await stream.prepareStep({
+        steps: [{ toolResults: [] }],
+        messages: rawMessages,
+      });
+
+      expect(onProviderRequestDiagnostics).toHaveBeenCalledTimes(2);
+      expect(onProviderRequestDiagnostics).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          source: "prepare_step",
+          step_index: 2,
+          message_count: 2,
+        }),
+        {
+          raw_message_count: 2,
+          rolling_message_count: 2,
+          final_ui_message_count: 1,
+          transcript_source_message_count: 0,
+          summarization_count: 0,
+          compaction_attempt_count: 0,
+        },
+      );
+    } finally {
+      consoleError.mockRestore();
+    }
   });
 
   it("rebases every later prepareStep onto the latest in-run summary", async () => {

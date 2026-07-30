@@ -7,6 +7,7 @@ import { ChatSDKError } from "@/lib/errors";
 import { hasVisibleAssistantContent } from "@/lib/chat/abort-persistence";
 import { assertUserCanAccessChatHistory } from "@/lib/suspensions";
 import { createRedisClient } from "@/lib/rate-limit/redis";
+import { verifyAgentRunCorrelationToken } from "@/lib/api/agent-run-correlation";
 
 const CLIENT_SAVED_FINISH_REASON = "trigger_crashed_client_saved";
 const MAX_PARTIAL_SAVE_BODY_BYTES = 4 * 1024 * 1024;
@@ -39,6 +40,8 @@ type PartialSaveBody = {
   generationStartedAt?: number;
   generationTimeMs?: number;
   clientReason?: string;
+  triggerRunId: string;
+  runCorrelationToken: string;
 };
 
 const getOptionalFiniteNumber = (value: unknown): number | undefined =>
@@ -166,6 +169,22 @@ const parsePartialSaveBody = async (
     throw new ChatSDKError("bad_request:api", "message.parts required");
   }
 
+  const triggerRunId =
+    typeof body.triggerRunId === "string" && body.triggerRunId.length > 0
+      ? body.triggerRunId
+      : undefined;
+  const runCorrelationToken =
+    typeof body.runCorrelationToken === "string" &&
+    body.runCorrelationToken.length > 0
+      ? body.runCorrelationToken
+      : undefined;
+  if (!triggerRunId || !runCorrelationToken) {
+    throw new ChatSDKError(
+      "bad_request:api",
+      "Agent run correlation is incomplete.",
+    );
+  }
+
   const parsed: PartialSaveBody = {
     chatId,
     message: {
@@ -177,6 +196,8 @@ const parsePartialSaveBody = async (
     generationTimeMs: getOptionalFiniteNumber(body.generationTimeMs),
     clientReason:
       typeof body.clientReason === "string" ? body.clientReason : undefined,
+    triggerRunId,
+    runCorrelationToken,
   };
 
   if (!hasVisibleAssistantContent([parsed.message])) {
@@ -202,6 +223,16 @@ export const createAgentPartialSavePost =
       if (!chat || chat.user_id !== userId) {
         throw new ChatSDKError("forbidden:chat");
       }
+      if (
+        !verifyAgentRunCorrelationToken({
+          token: body.runCorrelationToken,
+          userId,
+          chatId: body.chatId,
+          runId: body.triggerRunId,
+        })
+      ) {
+        throw new ChatSDKError("forbidden:chat");
+      }
 
       await saveMessage({
         chatId: body.chatId,
@@ -211,6 +242,7 @@ export const createAgentPartialSavePost =
         generationStartedAt: body.generationStartedAt,
         generationTimeMs: body.generationTimeMs,
         finishReason: CLIENT_SAVED_FINISH_REASON,
+        triggerRunId: body.triggerRunId,
         wasAborted: true,
       });
 

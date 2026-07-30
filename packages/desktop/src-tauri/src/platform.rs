@@ -224,20 +224,50 @@ fn terminate_process_group(pid: u32, signal: libc::c_int) {
     }
 }
 
-/// Best-effort external cancellation for a streaming command by process id.
-pub async fn cancel_process_tree(pid: u32) {
+/// Cancel a streaming command and report success only after the OS confirms
+/// that the process tree is no longer running.
+pub async fn cancel_process_tree(pid: u32) -> bool {
     #[cfg(unix)]
     {
         terminate_process_group(pid, libc::SIGTERM);
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        for _ in 0..10 {
+            if !process_group_is_running(pid) {
+                return true;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
         terminate_process_group(pid, libc::SIGKILL);
+        for _ in 0..20 {
+            if !process_group_is_running(pid) {
+                return true;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        return !process_group_is_running(pid);
     }
 
     #[cfg(windows)]
     {
-        let _ = tokio::process::Command::new("taskkill")
+        return tokio::process::Command::new("taskkill")
             .args(["/PID", &pid.to_string(), "/T", "/F"])
             .output()
-            .await;
+            .await
+            .map(|output| output.status.success())
+            .unwrap_or(false);
     }
+
+    #[cfg(not(any(unix, windows)))]
+    {
+        false
+    }
+}
+
+#[cfg(unix)]
+fn process_group_is_running(pid: u32) -> bool {
+    let pid = pid as libc::pid_t;
+    let result = unsafe { libc::kill(-pid, 0) };
+    if result == 0 {
+        return true;
+    }
+    std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
 }

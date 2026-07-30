@@ -2,9 +2,10 @@ import { describe, it, expect } from "@jest/globals";
 
 import {
   billableCostDollarsToPoints,
+  calculateRawModelUsageCostDollars,
   calculateTokenCost,
   calculateRawTokenCost,
-  calculateProratedCredits,
+  calculateTierChangeCredits,
   getBudgetLimits,
   getCycleExpireSeconds,
   getSubscriptionPrice,
@@ -89,6 +90,61 @@ describe("token-bucket", () => {
     it("should calculate raw output token cost without the 1.4x multiplier", () => {
       expect(calculateRawTokenCost(1_000_000, "output")).toBe(30000);
       expect(calculateRawTokenCost(1000, "output")).toBe(30);
+    });
+  });
+
+  describe("calculateRawModelUsageCostDollars", () => {
+    it("prices cached and uncached input at the served model's rates", () => {
+      expect(
+        calculateRawModelUsageCostDollars({
+          inputTokens: 1_000_000,
+          outputTokens: 100_000,
+          cacheReadTokens: 800_000,
+          modelName: "x-ai/grok-4.5",
+        }),
+      ).toBeCloseTo(1.4);
+    });
+
+    it("prices Kimi K3 cached input at OpenRouter's $0.30/M rate", () => {
+      expect(
+        calculateRawModelUsageCostDollars({
+          inputTokens: 1_000_000,
+          outputTokens: 100_000,
+          cacheReadTokens: 800_000,
+          modelName: "moonshotai/kimi-k3-20260715",
+        }),
+      ).toBeCloseTo(2.34);
+    });
+
+    it("recognizes dated Anthropic response model IDs", () => {
+      expect(
+        calculateRawModelUsageCostDollars({
+          inputTokens: 200,
+          outputTokens: 40,
+          cacheReadTokens: 20,
+          cacheWriteTokens: 10,
+          modelName: "anthropic/claude-4.6-opus-20260205",
+        }),
+      ).toBeCloseTo(0.0019225);
+    });
+
+    it("clamps invalid and overlapping cache token counts", () => {
+      expect(
+        calculateRawModelUsageCostDollars({
+          inputTokens: 100,
+          outputTokens: Number.NaN,
+          cacheReadTokens: 80,
+          cacheWriteTokens: 80,
+          modelName: "model-deepseek-v4-pro",
+        }),
+      ).toBeCloseTo(0.00000899);
+      expect(
+        calculateRawModelUsageCostDollars({
+          inputTokens: Number.POSITIVE_INFINITY,
+          outputTokens: Number.NEGATIVE_INFINITY,
+          cacheReadTokens: Number.NaN,
+        }),
+      ).toBe(0);
     });
   });
 
@@ -229,6 +285,12 @@ describe("token-bucket", () => {
       expect(isUserRateLimitKey(`upgrade:carryover:${userId}`, userId)).toBe(
         true,
       );
+      expect(
+        isUserRateLimitKey(
+          `upgrade:carryover:${userId}:in_upgrade:claim`,
+          userId,
+        ),
+      ).toBe(true);
       expect(isUserRateLimitKey(`free_limit:${userId}:free:ask`, userId)).toBe(
         true,
       );
@@ -305,85 +367,68 @@ describe("token-bucket", () => {
   // ==========================================================================
   // Proration calculation logic
   // ==========================================================================
-  describe("calculateProratedCredits", () => {
-    // Tier maxes for reference: pro=250k, pro-plus=600k, ultra=2M, team=400k
-    // Third param is consumedCredits (deducted from prorated allocation)
+  describe("calculateTierChangeCredits", () => {
+    it("adds the prorated plan difference for an exhausted Pro→Pro+ upgrade", () => {
+      const result = calculateTierChangeCredits(
+        600_000,
+        250_000,
+        0,
+        0.41581478,
+      );
 
-    it("should give 50% credits at 50% ratio with no consumption", () => {
-      const result = calculateProratedCredits(2_000_000, 0.5, 0);
-      expect(result.proratedCredits).toBe(1_000_000);
-      expect(result.totalCredits).toBe(1_000_000);
-      expect(result.burnAmount).toBe(1_000_000);
+      expect(result).toEqual({
+        consumedCredits: 250_000,
+        incrementalCredits: 145_535,
+        cycleAllocation: 395_535,
+        remainingCredits: 145_535,
+      });
     });
 
-    it("should deduct consumed credits from prorated amount", () => {
-      // Pro → Ultra at day 15/30, user consumed 100k of Pro credits
-      const result = calculateProratedCredits(2_000_000, 0.5, 100_000);
-      expect(result.proratedCredits).toBe(1_000_000);
-      // total = 1M - 100k consumed = 900k
-      expect(result.totalCredits).toBe(900_000);
-      expect(result.burnAmount).toBe(1_100_000);
+    it("preserves unused old credits and adds only the prorated difference", () => {
+      const result = calculateTierChangeCredits(
+        600_000,
+        250_000,
+        80_000,
+        1 / 3,
+      );
+
+      expect(result).toEqual({
+        consumedCredits: 170_000,
+        incrementalCredits: 116_666,
+        cycleAllocation: 366_666,
+        remainingCredits: 196_666,
+      });
     });
 
-    it("should not go below 0 when consumed exceeds prorated", () => {
-      // User burned all 250k Pro credits, upgrades to Ultra at day 25/30
-      // prorated = floor(2M * 5/30) = 333_333
-      // consumed = 250_000 → 333_333 - 250_000 = 83_333
-      const result = calculateProratedCredits(2_000_000, 5 / 30, 250_000);
-      expect(result.totalCredits).toBe(83_333);
+    it("uses the stored cycle allocation for grandfathered plans", () => {
+      const result = calculateTierChangeCredits(600_000, 200_000, 50_000, 0.5);
 
-      // Edge: consumed > prorated → floor to 0
-      const result2 = calculateProratedCredits(2_000_000, 0.1, 250_000);
-      // prorated = 200k, consumed = 250k → 0
-      expect(result2.totalCredits).toBe(0);
+      expect(result).toEqual({
+        consumedCredits: 150_000,
+        incrementalCredits: 200_000,
+        cycleAllocation: 400_000,
+        remainingCredits: 250_000,
+      });
     });
 
-    it("should cap total credits at tier max", () => {
-      const result = calculateProratedCredits(250_000, 0.95, 0);
-      expect(result.totalCredits).toBeLessThanOrEqual(250_000);
+    it("caps a downgrade without restoring consumed usage", () => {
+      const result = calculateTierChangeCredits(250_000, 600_000, 400_000, 0.5);
+
+      expect(result).toEqual({
+        consumedCredits: 200_000,
+        incrementalCredits: 0,
+        cycleAllocation: 250_000,
+        remainingCredits: 50_000,
+      });
     });
 
-    it("should give full credits at ratio 1.0 with no consumption", () => {
-      const result = calculateProratedCredits(2_000_000, 1.0, 0);
-      expect(result.totalCredits).toBe(2_000_000);
-      expect(result.burnAmount).toBe(0);
-    });
-
-    it("should give 0 at ratio 0.0 with no consumption", () => {
-      const result = calculateProratedCredits(2_000_000, 0.0, 0);
-      expect(result.totalCredits).toBe(0);
-      expect(result.burnAmount).toBe(2_000_000);
-    });
-
-    it("should handle negative consumed as 0", () => {
-      const result = calculateProratedCredits(250_000, 0.5, -100);
-      expect(result.totalCredits).toBe(125_000); // just prorated, no deduction
-    });
-
-    it("should return 0 for zero tier max", () => {
-      const result = calculateProratedCredits(0, 0.5, 100_000);
-      expect(result.totalCredits).toBe(0);
-    });
-
-    it("user burns all Pro credits day 1, upgrades to Ultra", () => {
-      // Day 1 of 30 → ratio ≈ 29/30 = 0.967
-      // Consumed all 250k Pro credits
-      const result = calculateProratedCredits(2_000_000, 29 / 30, 250_000);
-      // prorated = floor(2M * 29/30) = 1_933_333
-      expect(result.proratedCredits).toBe(1_933_333);
-      // total = 1_933_333 - 250_000 = 1_683_333
-      expect(result.totalCredits).toBe(1_683_333);
-    });
-
-    it("Pro→Pro+ at 1/3 remaining, 170k consumed", () => {
-      // Day 20 of 30 → 10 days remaining → ratio = 1/3
-      // User consumed 170k of 250k Pro credits
-      const result = calculateProratedCredits(600_000, 1 / 3, 170_000);
-      // prorated = floor(600k * 0.333) = 200_000
-      expect(result.proratedCredits).toBe(200_000);
-      // total = 200k - 170k = 30k
-      expect(result.totalCredits).toBe(30_000);
-      expect(result.burnAmount).toBe(570_000);
+    it("clamps invalid remaining credits and proration ratios", () => {
+      expect(calculateTierChangeCredits(600_000, 250_000, 999_999, 2)).toEqual({
+        consumedCredits: 0,
+        incrementalCredits: 350_000,
+        cycleAllocation: 600_000,
+        remainingCredits: 600_000,
+      });
     });
   });
 
@@ -406,15 +451,6 @@ describe("token-bucket", () => {
       );
     });
 
-    it("should use Sonnet 4.6 pricing ($3.00/$15.00)", () => {
-      expect(calculateTokenCost(1_000_000, "input", "model-sonnet-4.6")).toBe(
-        42000,
-      );
-      expect(calculateTokenCost(1_000_000, "output", "model-sonnet-4.6")).toBe(
-        210000,
-      );
-    });
-
     it("should use DeepSeek V4 Pro pricing ($0.435/$0.87)", () => {
       expect(
         calculateTokenCost(1_000_000, "input", "model-deepseek-v4-pro"),
@@ -424,22 +460,23 @@ describe("token-bucket", () => {
       ).toBe(12180);
     });
 
-    it("should use GLM 5.2 pricing ($0.9086/$2.856)", () => {
+    it("should use GLM 5.2 baseline pricing ($0.76/$2.42)", () => {
       expect(calculateTokenCost(1_000_000, "input", "model-glm-5.2")).toBe(
-        12721,
+        10640,
       );
       expect(calculateTokenCost(1_000_000, "output", "model-glm-5.2")).toBe(
-        39984,
+        33880,
       );
     });
 
-    it.each(["ask-model", "agent-model", "model-minimax-m3"])(
-      "should use MiniMax M3 pricing for %s ($0.30/$1.20)",
-      (modelName) => {
-        expect(calculateTokenCost(1_000_000, "input", modelName)).toBe(4200);
-        expect(calculateTokenCost(1_000_000, "output", modelName)).toBe(16800);
-      },
-    );
+    it("should use Kimi K3 pricing ($3.00/$15.00)", () => {
+      expect(calculateTokenCost(1_000_000, "input", "model-kimi-k3")).toBe(
+        42000,
+      );
+      expect(calculateTokenCost(1_000_000, "output", "model-kimi-k3")).toBe(
+        210000,
+      );
+    });
 
     it("should use DeepSeek V4 Flash pricing for free Agent ($0.09/$0.18)", () => {
       expect(calculateTokenCost(1_000_000, "input", "agent-model-free")).toBe(
@@ -450,27 +487,31 @@ describe("token-bucket", () => {
       );
     });
 
-    it.each(["model-grok-4.5", "model-gemini-3-flash", "fallback-grok-4.5"])(
-      "should use Grok 4.5 pricing for %s ($2.00/$6.00)",
-      (modelName) => {
-        expect(calculateTokenCost(1_000_000, "input", modelName)).toBe(28000);
-        expect(calculateTokenCost(1_000_000, "output", modelName)).toBe(84000);
-      },
-    );
+    it.each([
+      "model-grok-4.5",
+      "model-grok-4.5-pro",
+      "ask-model",
+      "agent-model",
+      "fallback-agent-model",
+      "fallback-ask-model",
+    ])("should use Grok 4.5 pricing for %s ($2.00/$6.00)", (modelName) => {
+      expect(calculateTokenCost(1_000_000, "input", modelName)).toBe(28000);
+      expect(calculateTokenCost(1_000_000, "output", modelName)).toBe(84000);
+    });
 
-    it("expensive models should deplete budget faster", () => {
+    it("higher-priced models should deplete budget faster", () => {
       const monthlyBudget = getBudgetLimits("pro").monthly;
       // Typical conversation: 2000 input + 500 output tokens
       const defaultCost =
         calculateTokenCost(2000, "input") + calculateTokenCost(500, "output");
-      const sonnetCost =
-        calculateTokenCost(2000, "input", "model-sonnet-4.6") +
-        calculateTokenCost(500, "output", "model-sonnet-4.6");
+      const kimiK3Cost =
+        calculateTokenCost(2000, "input", "model-kimi-k3") +
+        calculateTokenCost(500, "output", "model-kimi-k3");
 
       const defaultConversations = Math.floor(monthlyBudget / defaultCost);
-      const sonnetConversations = Math.floor(monthlyBudget / sonnetCost);
+      const kimiK3Conversations = Math.floor(monthlyBudget / kimiK3Cost);
 
-      expect(defaultConversations).toBeGreaterThan(sonnetConversations);
+      expect(defaultConversations).toBeGreaterThan(kimiK3Conversations);
     });
   });
 

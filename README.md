@@ -97,8 +97,8 @@ To use the agent locally:
    pnpm dev:trigger
    ```
 
-   This runs `trigger dev start --branch <name>` so parallel Codex worktrees
-   and local dev sessions do not collide in Trigger.dev. The branch name
-   defaults to the current Git branch, sanitized for Trigger.dev. Override it
-   with `TRIGGER_DEV_BRANCH=my-local-agent pnpm dev:trigger` when you need a
-   stable custom branch name.
+   This starts the default Trigger.dev worker used by local Agent requests.
+   To start an explicitly routed Trigger.dev branch instead, set a stable
+   branch name with
+   `TRIGGER_DEV_BRANCH=my-local-agent pnpm dev:trigger`. Only use that override
+   when the request path is configured to target the same Trigger.dev branch.

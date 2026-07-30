@@ -6,6 +6,7 @@ import { isXaiSafetyError } from "@/lib/api/chat-stream-helpers";
 const MAX_GENERATED_TITLE_LENGTH = 100;
 const TITLE_GENERATION_MAX_OUTPUT_TOKENS = 64;
 const FALLBACK_TITLE_WORD_LIMIT = 5;
+const IMAGE_ONLY_CHAT_TITLE = "New chat";
 
 const truncateMiddle = (text: string, maxLength: number): string => {
   if (text.length <= maxLength) return text;
@@ -59,15 +60,22 @@ export const generateTitleFromUserMessage = async (
     .filter((part: { type: string; text?: string }) => part.type === "text")
     .map((part: { type: string; text?: string }) => part.text || "")
     .join(" ");
+  const hasImage = (firstMessage?.parts ?? []).some(
+    (part) => part.type === "file" && part.mediaType.startsWith("image/"),
+  );
+
+  if (!textContent.trim() && hasImage) {
+    return IMAGE_ONLY_CHAT_TITLE;
+  }
+
   const fallbackTitle = fallbackTitleFromMessage(textContent);
 
   try {
     const { output } = await generateText({
       model: myProvider.languageModel("title-generator-model"),
       providerOptions: {
-        xai: {
-          // Disable storing the conversation in XAI's database
-          store: false,
+        openrouter: {
+          reasoning: { enabled: false },
         },
       },
       output: Output.object({
@@ -102,6 +110,7 @@ export const generateTitleFromUserMessage = async (
 export const generateTitleFromUserMessageWithWriter = async (
   truncatedMessages: UIMessage[],
   writer: UIMessageStreamWriter,
+  onTitleGenerated?: (title: string) => Promise<unknown>,
 ): Promise<string | undefined> => {
   try {
     const chatTitle = await generateTitleFromUserMessage(truncatedMessages);
@@ -111,6 +120,14 @@ export const generateTitleFromUserMessageWithWriter = async (
       data: { chatTitle },
       transient: true,
     });
+
+    if (chatTitle && onTitleGenerated) {
+      try {
+        await onTitleGenerated(chatTitle);
+      } catch (error) {
+        console.error("Failed to persist generated chat title:", error);
+      }
+    }
 
     return chatTitle;
   } catch (error) {

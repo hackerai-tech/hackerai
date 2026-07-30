@@ -30,6 +30,9 @@ import {
   normalizeSelectedModelOverrideForSubscription,
 } from "@/types";
 import { ChatSDKError } from "@/lib/errors";
+import { requireOptionalIdentifier } from "@/lib/api/chat-request-validation";
+import { readAnalyticsRequestContext } from "@/lib/analytics/request-context";
+import { resolveProjectExecutionContext } from "@/lib/chat/project-context";
 import type {
   Todo,
   LimitRescueRequest,
@@ -60,6 +63,7 @@ import {
   closeAgentApprovalSession,
   setTemporaryAgentApprovalRefreshCookie,
 } from "@/lib/api/agent-approval-session";
+import { createAgentRunCorrelationToken } from "@/lib/api/agent-run-correlation";
 
 const AGENT_TRIGGER_PRIORITY_BY_SUBSCRIPTION: Record<SubscriptionTier, number> =
   {
@@ -97,6 +101,7 @@ type AgentTriggerRequestBody = {
   isAutoContinue?: boolean;
   limitRescue?: LimitRescueRequest;
   agentRunRequestId?: string;
+  projectId?: string;
 };
 
 type AgentTriggerRequestParseResult =
@@ -176,6 +181,7 @@ const parseAgentTriggerRequestBody = async (
         typeof body.agentRunRequestId === "string"
           ? body.agentRunRequestId
           : undefined,
+      projectId: requireOptionalIdentifier("projectId", body.projectId),
     },
   };
 };
@@ -345,6 +351,7 @@ export const createAgentTriggerPost =
     try {
       const parsedBody = await parseAgentTriggerRequestBody(req);
       if (!parsedBody.ok) return parsedBody.response;
+      const analyticsRequestContext = readAnalyticsRequestContext(req.headers);
 
       const {
         messages,
@@ -358,6 +365,7 @@ export const createAgentTriggerPost =
         isAutoContinue,
         limitRescue,
         agentRunRequestId,
+        projectId: requestedProjectId,
       } = parsedBody.body;
 
       const { userId, subscription, organizationId, freeQuotaSubject } =
@@ -410,6 +418,15 @@ export const createAgentTriggerPost =
       // (b) pass to handleInitialChatAndUserMessage so it skips saveChat on
       //     regenerate/auto-continue and does the ownership check instead.
       const existingChat = temporary ? null : await getChatById({ id: chatId });
+      const projectContext = temporary
+        ? {}
+        : await resolveProjectExecutionContext({
+            chat: existingChat,
+            requestedProjectId,
+            userId,
+            mode: "agent",
+            sandboxPreference,
+          });
       const isNewChat =
         !temporary && !existingChat && !regenerate && !isAutoContinue;
       const userCustomization = await getUserCustomization({ userId });
@@ -500,11 +517,13 @@ export const createAgentTriggerPost =
           regenerate,
           chat: existingChat ?? null,
           isHidden: isAutoContinue ? true : undefined,
+          projectId: projectContext.projectId,
         });
       }
 
       const triggerTags = [`user_${userId}`, `chat_${chatId}`];
       if (subscription !== "free") triggerTags.push(`sub_${subscription}`);
+      triggerTags.push(`permission_${agentPermissionMode}`);
 
       // Persisted chats are rehydrated from Convex inside the task after the
       // route saves the latest user message. Avoid sending the same history
@@ -575,6 +594,7 @@ export const createAgentTriggerPost =
         limitRescue,
         isNewChat,
         endpoint,
+        analyticsRequestContext,
         convexUrl: process.env.NEXT_PUBLIC_CONVEX_URL,
         requestTiming: {
           routeStartedAt,
@@ -660,6 +680,11 @@ export const createAgentTriggerPost =
 
       const response = NextResponse.json({
         runId,
+        runCorrelationToken: createAgentRunCorrelationToken({
+          userId,
+          chatId,
+          runId,
+        }),
         publicAccessToken,
         chatId,
         approvalProtocolVersion: AGENT_APPROVAL_PROTOCOL_VERSION,

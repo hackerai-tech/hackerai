@@ -1,6 +1,6 @@
 import "server-only";
 
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { UIMessage } from "ai";
 import type { SandboxPreference } from "@/types";
 import { validateDownloadUrl } from "@/lib/ai/tools/utils/path-validation";
@@ -39,10 +39,8 @@ type SandboxCommandResult = {
 
 type SandboxUploadFailureDetail = {
   kind: SandboxFile["kind"];
-  localPath: string;
   error: string;
   transientSandboxCommand: boolean;
-  url?: string;
   urlLength?: number;
   protocol?: string;
 };
@@ -110,7 +108,7 @@ const commandErrorToResult = (error: unknown): SandboxCommandResult | null => {
 };
 
 const TRANSIENT_SANDBOX_COMMAND_ERROR_PATTERN =
-  /\b(?:request handshake timed out(?: after \d+ms)?|sandbox command(?: request| channel| transport)? timed out|command (?:channel|transport) timed out|deadline_exceeded|operation timed out:.*\btimeoutMs\b|exceeding ['"]?timeoutMs['"]?|Command timeout after \d+ms)\b/i;
+  /\b(?:request handshake timed out(?: after \d+ms)?|sandbox command(?: request| channel| transport)? timed out|command (?:channel|transport) timed out|deadline_exceeded|operation timed out:.*\btimeoutMs\b|exceeding ['"]?timeoutMs['"]?|Command timeout after \d+ms|is not subscribed to the command relay)\b/i;
 const WRAPPED_FILE_TRANSFER_ERROR_PATTERN =
   /\bfailed to (?:download|copy) file:|curl:\s*\(|\bexitCode:\s*\d+\b/i;
 const SANDBOX_COMMAND_MAX_ATTEMPTS = 3;
@@ -540,16 +538,22 @@ const resolveWritableUploadFallbackPath = async (
 ): Promise<string | null> => {
   const fileName = originalLocalPath.split(/[/\\]/).pop();
   if (!fileName || !sandbox.commands?.run) return null;
+  const fallbackDirectory = `fallback-${randomUUID()}`;
 
   const script = [
     `filename=${shellQuote(fileName)}`,
     `for base in "\${TMPDIR:-/tmp}" /var/tmp "\${HOME:-}" "\${PWD:-.}"; do`,
     `  [ -n "$base" ] || continue`,
-    `  dir="$base/hackerai-upload"`,
-    `  if mkdir -p "$dir" 2>/dev/null && [ -w "$dir" ]; then`,
-    `    cd "$dir" 2>/dev/null && printf '%s/%s' "$(pwd -P)" "$filename"`,
-    `    exit 0`,
-    `  fi`,
+    `  root="$base/hackerai-upload"`,
+    `  mkdir -p "$root" 2>/dev/null && [ -w "$root" ] || continue`,
+    `  root="$(cd "$root" 2>/dev/null && pwd -P)" || continue`,
+    // A reused sandbox can contain a stale root-owned file with the same
+    // basename. Reserve a fresh directory so the fallback destination cannot
+    // collide with an existing file that the sandbox user cannot overwrite.
+    `  dir="$root/${fallbackDirectory}"`,
+    `  mkdir "$dir" 2>/dev/null || continue`,
+    `  printf '%s/%s' "$dir" "$filename"`,
+    `  exit 0`,
     `done`,
     `exit 1`,
   ].join("\n");
@@ -621,7 +625,7 @@ const stageSandboxFile = async (
   }
 };
 
-const safeUrlForLog = (url: string): string => {
+const getUrlWithoutQuery = (url: string): string => {
   try {
     const parsed = new URL(url);
     return `${parsed.origin}${parsed.pathname}`;
@@ -630,20 +634,45 @@ const safeUrlForLog = (url: string): string => {
   }
 };
 
+const getUrlPathname = (url: string): string | undefined => {
+  try {
+    const pathname = new URL(url).pathname;
+    return pathname && pathname !== "/" ? pathname : undefined;
+  } catch {
+    return undefined;
+  }
+};
+
+const getPathBasename = (path: string): string | undefined => {
+  const parts = path.split(/[\\/]/).filter(Boolean);
+  return parts[parts.length - 1];
+};
+
+const redactSensitiveValues = (
+  message: string,
+  values: Array<string | undefined>,
+  replacement: string,
+): string => {
+  const orderedValues = [...new Set(values.filter(Boolean) as string[])].sort(
+    (left, right) => right.length - left.length,
+  );
+  for (const value of orderedValues) {
+    message = message.split(value).join(replacement);
+  }
+  return message;
+};
+
 const describeSandboxFileForLog = (file: SandboxFile) => {
   if (file.kind === "url") {
     return {
       kind: file.kind,
-      url: safeUrlForLog(file.url),
       urlLength: file.url.length,
       protocol: file.url.split("://")[0],
-      localPath: file.localPath,
     };
   }
   return {
     kind: file.kind,
     sourcePath: "[redacted-local-path]",
-    localPath: file.localPath,
   };
 };
 
@@ -653,13 +682,11 @@ const summarizeSandboxUploadFailure = (
 ): SandboxUploadFailureDetail => {
   const summary: SandboxUploadFailureDetail = {
     kind: file.kind,
-    localPath: file.localPath,
     error: redactSandboxUploadError(file, error),
     transientSandboxCommand: isTransientSandboxCommandError(error),
   };
 
   if (file.kind === "url") {
-    summary.url = safeUrlForLog(file.url);
     summary.urlLength = file.url.length;
     summary.protocol = file.url.split("://")[0];
   }
@@ -761,9 +788,40 @@ const redactSandboxUploadError = (
   file: SandboxFile,
   error: unknown,
 ): string => {
-  const message = error instanceof Error ? error.message : String(error);
-  if (file.kind !== "localPath") return message;
-  return message.split(file.path).join("[redacted-local-path]");
+  let message = error instanceof Error ? error.message : String(error);
+  if (file.kind === "url") {
+    const urlPathname = getUrlPathname(file.url);
+    message = redactSensitiveValues(
+      message,
+      [file.url, getUrlWithoutQuery(file.url), urlPathname],
+      "[redacted-url]",
+    );
+    message = redactSensitiveValues(
+      message,
+      [file.localPath, getPathBasename(file.localPath)],
+      "[redacted-destination-path]",
+    );
+    return redactSensitiveValues(
+      message,
+      [urlPathname ? getPathBasename(urlPathname) : undefined],
+      "[redacted-url]",
+    );
+  }
+  message = redactSensitiveValues(
+    message,
+    [file.path],
+    "[redacted-local-path]",
+  );
+  message = redactSensitiveValues(
+    message,
+    [file.localPath, getPathBasename(file.localPath)],
+    "[redacted-destination-path]",
+  );
+  return redactSensitiveValues(
+    message,
+    [getPathBasename(file.path)],
+    "[redacted-local-path]",
+  );
 };
 
 /**

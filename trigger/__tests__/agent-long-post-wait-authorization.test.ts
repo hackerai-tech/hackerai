@@ -26,7 +26,7 @@ describe("agent-long post-wait authorization contract", () => {
       approvedBranch,
     );
     const approvedReturn = taskSource.indexOf(
-      "return { approved: true, approvalId }",
+      "return { approved: true, approvalId, sandboxIdentity }",
       deriveGrant,
     );
 
@@ -34,6 +34,14 @@ describe("agent-long post-wait authorization contract", () => {
     expect(revalidate).toBeGreaterThan(approvedBranch);
     expect(deriveGrant).toBeGreaterThan(revalidate);
     expect(approvedReturn).toBeGreaterThan(deriveGrant);
+  });
+
+  it("carries the checked sandbox identity in every approval success", () => {
+    expect(
+      taskSource.match(
+        /return \{ approved: true, approvalId, sandboxIdentity \};/g,
+      ),
+    ).toHaveLength(2);
   });
 
   it("excludes suspension time and reacquires free concurrency after checks", () => {

@@ -131,7 +131,66 @@ describe("desktop-local sandbox file helpers", () => {
     }
   });
 
-  it("retries url uploads in a writable directory when /tmp is not writable", async () => {
+  it("redacts source and destination paths from staging failure diagnostics", async () => {
+    const sourceUrl =
+      "https://storage.example.com/object-key/private-report.pdf?X-Amz-Credential=opaque&X-Amz-Signature=secret";
+    const localPath = "/home/user/upload/private-report.pdf";
+    const consoleErrorSpy = jest
+      .spyOn(console, "error")
+      .mockImplementation(() => {});
+
+    try {
+      const result = await uploadSandboxFiles(
+        [
+          {
+            kind: "url",
+            url: sourceUrl,
+            localPath,
+          },
+        ],
+        async () => ({
+          files: {
+            downloadFromUrl: jest
+              .fn()
+              .mockRejectedValue(
+                new Error(
+                  `Failed to download ${sourceUrl} to C:\\sandbox\\private-report.pdf: timed out`,
+                ),
+              ),
+          },
+        }),
+      );
+
+      const normalizedLogCalls = consoleErrorSpy.mock.calls.map((call) =>
+        call.map((value) =>
+          value instanceof Error ? { message: value.message } : value,
+        ),
+      );
+      const diagnostics = JSON.stringify({
+        logged: normalizedLogCalls,
+        metadata: getSandboxUploadFailureMetadata(result),
+      });
+      expect(diagnostics).not.toContain("X-Amz-Credential");
+      expect(diagnostics).not.toContain("X-Amz-Signature");
+      expect(diagnostics).not.toContain("opaque");
+      expect(diagnostics).not.toContain("secret");
+      expect(diagnostics).not.toContain("storage.example.com");
+      expect(diagnostics).not.toContain("object-key");
+      expect(diagnostics).not.toContain("private-report.pdf");
+      expect(diagnostics).not.toContain(localPath);
+      expect(diagnostics).toContain("[redacted-url]");
+      expect(diagnostics).toContain("[redacted-destination-path]");
+      expect(getSandboxUploadFailureMetadata(result)).toMatchObject({
+        upload_failure_kind: "url",
+        upload_failure_protocol: "https",
+        upload_failure_url_length: sourceUrl.length,
+      });
+    } finally {
+      consoleErrorSpy.mockRestore();
+    }
+  });
+
+  it("retries url uploads at a unique writable path when /tmp is not writable", async () => {
     const consoleWarnSpy = jest
       .spyOn(console, "warn")
       .mockImplementation(() => {});
@@ -145,7 +204,7 @@ describe("desktop-local sandbox file helpers", () => {
       .mockResolvedValueOnce(undefined);
     const run = jest.fn().mockResolvedValue({
       exitCode: 0,
-      stdout: "/home/alice/hackerai-upload/report.pdf",
+      stdout: "/home/alice/hackerai-upload/fallback.a1b2c3/report.pdf",
       stderr: "",
     });
 
@@ -169,7 +228,7 @@ describe("desktop-local sandbox file helpers", () => {
         pathRewrites: [
           {
             from: "/tmp/hackerai-upload/report.pdf",
-            to: "/home/alice/hackerai-upload/report.pdf",
+            to: "/home/alice/hackerai-upload/fallback.a1b2c3/report.pdf",
           },
         ],
       });
@@ -179,7 +238,15 @@ describe("desktop-local sandbox file helpers", () => {
       );
       expect(downloadFromUrl).toHaveBeenCalledWith(
         "https://example.com/report.pdf",
-        "/home/alice/hackerai-upload/report.pdf",
+        "/home/alice/hackerai-upload/fallback.a1b2c3/report.pdf",
+      );
+      expect(run).toHaveBeenCalledWith(
+        expect.stringContaining('dir="$root/fallback-'),
+        { displayName: "" },
+      );
+      expect(run).toHaveBeenCalledWith(
+        expect.stringContaining('mkdir "$dir" 2>/dev/null || continue'),
+        { displayName: "" },
       );
     } finally {
       consoleWarnSpy.mockRestore();
@@ -207,7 +274,7 @@ describe("desktop-local sandbox file helpers", () => {
       if (command.includes("for base in")) {
         return {
           exitCode: 0,
-          stdout: "/tmp/hackerai-upload/report.pdf",
+          stdout: "/tmp/hackerai-upload/fallback.d4e5f6/report.pdf",
           stderr: "",
         };
       }
@@ -251,7 +318,7 @@ describe("desktop-local sandbox file helpers", () => {
         pathRewrites: [
           {
             from: "/home/user/upload/report.pdf",
-            to: "/tmp/hackerai-upload/report.pdf",
+            to: "/tmp/hackerai-upload/fallback.d4e5f6/report.pdf",
           },
         ],
       });
@@ -260,10 +327,17 @@ describe("desktop-local sandbox file helpers", () => {
         String(command).includes("-o '/home/user/upload/report.pdf'"),
       );
       const fallbackCurlAttempts = run.mock.calls.filter(([command]) =>
-        String(command).includes("-o '/tmp/hackerai-upload/report.pdf'"),
+        String(command).includes(
+          "-o '/tmp/hackerai-upload/fallback.d4e5f6/report.pdf'",
+        ),
       );
       expect(homeCurlAttempts).toHaveLength(3);
       expect(fallbackCurlAttempts).toHaveLength(1);
+      expect(
+        run.mock.calls.some(([command]) =>
+          String(command).includes('dir="$root/fallback-'),
+        ),
+      ).toBe(true);
     } finally {
       jest.useRealTimers();
       consoleWarnSpy.mockRestore();
@@ -303,6 +377,44 @@ describe("desktop-local sandbox file helpers", () => {
 
       expect(result).toEqual({ failedCount: 0, pathRewrites: [] });
       expect(run).toHaveBeenCalledTimes(3);
+    } finally {
+      jest.useRealTimers();
+      consoleWarnSpy.mockRestore();
+    }
+  });
+
+  it("retries only after the Desktop command relay reports not subscribed", async () => {
+    jest.useFakeTimers();
+    const consoleWarnSpy = jest
+      .spyOn(console, "warn")
+      .mockImplementation(() => {});
+    const run = jest
+      .fn()
+      .mockRejectedValueOnce(
+        new Error(
+          "Local sandbox connection conn-1 is not subscribed to the command relay.",
+        ),
+      )
+      .mockResolvedValueOnce({ exitCode: 0, stdout: "", stderr: "" });
+
+    try {
+      const pendingResult = uploadSandboxFiles(
+        [
+          {
+            kind: "url",
+            url: "https://example.com/screenshot.png",
+            localPath: "/home/user/upload/screenshot.png",
+          },
+        ],
+        async () => ({ commands: { run } }),
+      );
+      await jest.advanceTimersByTimeAsync(5_000);
+
+      await expect(pendingResult).resolves.toEqual({
+        failedCount: 0,
+        pathRewrites: [],
+      });
+      expect(run).toHaveBeenCalledTimes(2);
     } finally {
       jest.useRealTimers();
       consoleWarnSpy.mockRestore();

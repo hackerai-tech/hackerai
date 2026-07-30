@@ -1,6 +1,6 @@
 import { query, mutation, internalMutation } from "./_generated/server";
 import type { MutationCtx } from "./_generated/server";
-import type { Doc } from "./_generated/dataModel";
+import type { Doc, Id } from "./_generated/dataModel";
 import { v, ConvexError, type Value } from "convex/values";
 import { paginationOptsValidator } from "convex/server";
 import { internal } from "./_generated/api";
@@ -25,6 +25,7 @@ import {
   CHAT_ACCESS_SUSPENDED_CODE,
   assertUserCanAccessChatHistory,
 } from "./lib/suspensionGuards";
+import { resolveBranchedFromTitle } from "./lib/branchedChatTitle";
 
 const DELETE_ALL_CHATS_MESSAGE_BATCH_SIZE = 10;
 const DELETE_ALL_CHATS_SUMMARY_BATCH_SIZE = 25;
@@ -407,6 +408,7 @@ export const getChatByIdFromClient = query({
       ),
       sandbox_type: v.optional(v.string()),
       selected_model: v.optional(v.string()),
+      project_id: v.optional(v.id("projects")),
     }),
     v.null(),
   ),
@@ -451,7 +453,11 @@ export const getChatByIdFromClient = query({
 
         return {
           ...chatPublic,
-          branched_from_title: branchedFromChat?.title,
+          branched_from_title: resolveBranchedFromTitle(
+            chatPublic,
+            branchedFromChat,
+            identity.subject,
+          ),
         };
       }
 
@@ -499,6 +505,7 @@ export const getChatById = query({
         ),
       ),
       branched_from_chat_id: v.optional(v.string()),
+      branched_from_title: v.optional(v.string()),
       latest_summary_id: v.optional(v.id("chat_summaries")),
       share_id: v.optional(v.string()),
       share_date: v.optional(v.number()),
@@ -515,6 +522,7 @@ export const getChatById = query({
       ),
       sandbox_type: v.optional(v.string()),
       selected_model: v.optional(v.string()),
+      project_id: v.optional(v.id("projects")),
     }),
     v.null(),
   ),
@@ -550,6 +558,7 @@ export const saveChat = mutation({
     id: v.string(),
     userId: v.string(),
     title: v.string(),
+    projectId: v.optional(v.string()),
   },
   returns: v.string(),
   handler: async (ctx, args) => {
@@ -578,17 +587,55 @@ export const saveChat = mutation({
       }
 
       failureStage = "insert_chat";
+      let projectId: Id<"projects"> | undefined;
+      if (args.projectId) {
+        failureStage = "validate_project";
+        const normalizedProjectId = ctx.db.normalizeId(
+          "projects",
+          args.projectId,
+        );
+        if (!normalizedProjectId) {
+          throw new ConvexError({
+            code: "PROJECT_NOT_FOUND",
+            message: "Project not found",
+            operation: "chats.saveChat",
+          });
+        }
+        projectId = normalizedProjectId;
+        const project = await ctx.db.get(projectId);
+        if (
+          !project ||
+          project.user_id !== args.userId ||
+          project.deletion_started_at !== undefined
+        ) {
+          throw new ConvexError({
+            code: "PROJECT_ACCESS_DENIED",
+            message: "Project does not belong to user",
+            operation: "chats.saveChat",
+          });
+        }
+      }
+
       const chatId = await ctx.db.insert("chats", {
         id: args.id,
         title: args.title,
         user_id: args.userId,
+        project_id: projectId,
         update_time: Date.now(),
       });
+
+      if (projectId) {
+        await ctx.db.patch(projectId, { updated_at: Date.now() });
+      }
 
       return chatId;
     } catch (error) {
       const causeData = getConvexErrorData(error);
-      if (getConvexErrorCode(causeData) === "CHAT_UNAUTHORIZED") {
+      if (
+        getConvexErrorCode(causeData) === "CHAT_UNAUTHORIZED" ||
+        getConvexErrorCode(causeData) === "PROJECT_NOT_FOUND" ||
+        getConvexErrorCode(causeData) === "PROJECT_ACCESS_DENIED"
+      ) {
         throw error;
       }
 
@@ -684,6 +731,49 @@ export const updateChatPreferences = mutation({
     if (Object.keys(patch).length === 0) return null;
 
     await ctx.db.patch(chat._id, patch);
+    return null;
+  },
+});
+
+/**
+ * Persist a generated title while the response is still streaming.
+ * Intentionally does not touch active stream state.
+ */
+export const updateChatTitle = mutation({
+  args: {
+    serviceKey: v.string(),
+    chatId: v.string(),
+    title: v.string(),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    validateServiceKey(args.serviceKey);
+
+    const title = args.title.trim();
+    if (!title || title.length > 100) {
+      throw new ConvexError({
+        code: "VALIDATION_ERROR",
+        message: !title
+          ? "Chat title cannot be empty"
+          : "Chat title cannot exceed 100 characters",
+      });
+    }
+
+    const chat = await ctx.db
+      .query("chats")
+      .withIndex("by_chat_id", (q) => q.eq("id", args.chatId))
+      .first();
+
+    if (!chat) {
+      // Benign race: the user deleted the chat while its title was generating.
+      return null;
+    }
+
+    await ctx.db.patch(chat._id, {
+      title,
+      update_time: Date.now(),
+    });
+
     return null;
   },
 });
@@ -866,8 +956,8 @@ export const getUserChats = query({
       // because the cursor advances past all fetched items)
       const result = await ctx.db
         .query("chats")
-        .withIndex("by_user_and_updated", (q) =>
-          q.eq("user_id", identity.subject),
+        .withIndex("by_user_project_and_updated", (q) =>
+          q.eq("user_id", identity.subject).eq("project_id", undefined),
         )
         .order("desc")
         .paginate(args.paginationOpts);
@@ -912,7 +1002,11 @@ export const getUserChats = query({
           );
           return {
             ...chat,
-            branched_from_title: branchedFromChat?.title,
+            branched_from_title: resolveBranchedFromTitle(
+              chat,
+              branchedFromChat,
+              identity.subject,
+            ),
           };
         }
         return chat;
@@ -1153,6 +1247,79 @@ export const deleteChatForBackendBatch = internalMutation({
 
     await deleteChatDocument(ctx, chat);
     return null;
+  },
+});
+
+/**
+ * Move a chat into a project.
+ */
+export const moveChatToProject = mutation({
+  args: {
+    chatId: v.string(),
+    projectId: v.union(v.id("projects"), v.null()),
+  },
+  returns: v.boolean(),
+  handler: async (ctx, args) => {
+    const user = await ctx.auth.getUserIdentity();
+    if (!user) {
+      throw new ConvexError({
+        code: "UNAUTHORIZED",
+        message: "Unauthorized: User not authenticated",
+      });
+    }
+    await assertUserCanAccessChatHistory(ctx, user.subject);
+
+    const chat = await ctx.db
+      .query("chats")
+      .withIndex("by_chat_id", (q) => q.eq("id", args.chatId))
+      .first();
+
+    if (!chat) {
+      throw new ConvexError({
+        code: "CHAT_NOT_FOUND",
+        message: "Chat not found",
+      });
+    }
+    if (chat.user_id !== user.subject) {
+      throw new ConvexError({
+        code: "ACCESS_DENIED",
+        message: "Unauthorized: Chat does not belong to user",
+      });
+    }
+
+    if (args.projectId === null) {
+      if (chat.project_id === undefined) return false;
+      await ctx.db.patch(chat._id, {
+        project_id: undefined,
+        agent_approval_grants: undefined,
+        update_time: Date.now(),
+      });
+      return true;
+    }
+
+    const project = await ctx.db.get(args.projectId);
+    if (
+      !project ||
+      project.user_id !== user.subject ||
+      project.deletion_started_at !== undefined
+    ) {
+      throw new ConvexError({
+        code: "PROJECT_ACCESS_DENIED",
+        message: "Project does not belong to user",
+      });
+    }
+    if (chat.project_id === args.projectId) return false;
+
+    const now = Date.now();
+    await Promise.all([
+      ctx.db.patch(chat._id, {
+        project_id: args.projectId,
+        agent_approval_grants: undefined,
+        update_time: now,
+      }),
+      ctx.db.patch(args.projectId, { updated_at: now }),
+    ]);
+    return true;
   },
 });
 

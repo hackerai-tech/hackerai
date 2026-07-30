@@ -92,8 +92,6 @@ export type FileProcessingResult = {
   processedCount: number;
 };
 
-export type FileSource = "upload" | "paste" | "drop";
-
 // File processing chunk interface
 export interface FileItemChunk {
   content: string;

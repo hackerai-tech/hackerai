@@ -7,12 +7,14 @@ import { getSuspensionMessage } from "@/lib/suspensionMessage";
 import { phLogger } from "@/lib/posthog/server";
 import {
   PAID_FUNNEL_EVENTS,
+  checkoutStartedInsertId,
   createCheckoutAttemptId,
   normalizeCheckoutAttemptId,
   normalizePaidFunnelLabel,
   paidFunnelProperties,
   planLookupKeyToTier,
 } from "@/lib/analytics/paid-funnel";
+import { checkoutStartedEventUuid } from "@/lib/analytics/paid-funnel-server";
 
 const MAX_TEAM_SEATS = 999;
 
@@ -184,7 +186,6 @@ export const POST = async (req: NextRequest) => {
     let additionalCredit = 0; // credit left over to be added to customer balance
     let paymentMethodInfo = "";
     let planType: SubscriptionTier = "free";
-    let interval: "monthly" | "yearly" = "monthly";
     let currentPeriodStart: number | null = null; // unix seconds
     let currentPeriodEnd: number | null = null; // unix seconds
     let nextInvoiceAmountEstimate = targetAmount * quantity; // will be adjusted below
@@ -228,10 +229,6 @@ export const POST = async (req: NextRequest) => {
             planType = "pro";
         } catch {}
       }
-
-      if (currentPrice?.recurring?.interval === "year") interval = "yearly";
-      else if (currentPrice?.recurring?.interval === "month")
-        interval = "monthly";
 
       // Load payment method like in GET
       const defaultPaymentMethod = subscription.default_payment_method as any;
@@ -330,6 +327,7 @@ export const POST = async (req: NextRequest) => {
             PAID_FUNNEL_EVENTS.checkoutStarted,
             paidFunnelProperties({
               userId,
+              eventUuid: checkoutStartedEventUuid(checkoutAttemptId),
               org_id: organization.id,
               checkout_attempt_id: checkoutAttemptId,
               checkout_type: "subscription_change",
@@ -349,7 +347,7 @@ export const POST = async (req: NextRequest) => {
               stripe_subscription_id: subscription.id,
               stripe_price_id: targetPrice.id,
               $session_id: posthogSessionId ?? undefined,
-              $insert_id: `${PAID_FUNNEL_EVENTS.checkoutStarted}:${checkoutAttemptId}`,
+              $insert_id: checkoutStartedInsertId(checkoutAttemptId),
               $set: {
                 last_checkout_started_at: new Date().toISOString(),
               },

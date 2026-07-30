@@ -1,5 +1,6 @@
 import PostHogClient from "@/app/posthog";
 import { emitPostHogLog, flushPostHogLogs } from "@/lib/posthog/logs";
+import { redactSensitiveErrorMessage } from "@/lib/utils/error-redaction";
 import type { PostHog } from "posthog-node";
 
 let cachedClient: PostHog | null | undefined;
@@ -18,6 +19,7 @@ type LogFields = Record<string, unknown> & {
 
 type EventFields = Record<string, unknown> & {
   userId?: string;
+  eventUuid?: string;
   $set?: Record<string, unknown>;
 };
 
@@ -66,14 +68,24 @@ function serializeError(error: unknown): Record<string, unknown> {
   if (error instanceof Error) {
     return {
       error_name: error.name,
-      error_message: truncate(error.message),
-      ...(error.stack && { error_stack: truncate(error.stack, 4_000) }),
+      error_message: truncate(redactSensitiveErrorMessage(error.message)),
+      ...(error.stack && {
+        error_stack: truncate(redactSensitiveErrorMessage(error.stack), 4_000),
+      }),
       ...("cause" in error &&
         (error as { cause?: unknown }).cause !== undefined && {
           error_cause:
             (error as { cause?: unknown }).cause instanceof Error
-              ? truncate((error as { cause: Error }).cause.message)
-              : truncate(String((error as { cause?: unknown }).cause)),
+              ? truncate(
+                  redactSensitiveErrorMessage(
+                    (error as { cause: Error }).cause.message,
+                  ),
+                )
+              : truncate(
+                  redactSensitiveErrorMessage(
+                    String((error as { cause?: unknown }).cause),
+                  ),
+                ),
         }),
     };
   }
@@ -82,8 +94,57 @@ function serializeError(error: unknown): Record<string, unknown> {
 
   return {
     error_name: "UnknownError",
-    error_message: truncate(stringifyUnknown(error)),
+    error_message: truncate(
+      redactSensitiveErrorMessage(stringifyUnknown(error)),
+    ),
   };
+}
+
+function sanitizeExceptionForCapture(error: Error): Error {
+  const serialized = serializeError(error);
+  const message =
+    typeof serialized.error_message === "string"
+      ? serialized.error_message
+      : "Unknown error";
+  const sanitized = new Error(message);
+  sanitized.name =
+    typeof serialized.error_name === "string"
+      ? serialized.error_name
+      : error.name;
+  if (typeof serialized.error_stack === "string") {
+    sanitized.stack = serialized.error_stack;
+  }
+  // PostHog traverses Error.cause. Keep the diagnostic fields above, but do
+  // not retain a raw cause that could reintroduce a presigned URL or object key.
+  return sanitized;
+}
+
+function sanitizeErrorForConsole(error: unknown): unknown {
+  if (error instanceof Error) {
+    const serialized = [
+      error.message,
+      error.stack ?? "",
+      stringifyUnknown(error),
+    ].join("\n");
+    return redactSensitiveErrorMessage(serialized) === serialized
+      ? error
+      : sanitizeExceptionForCapture(error);
+  }
+  if (error === undefined) return undefined;
+  return redactSensitiveErrorMessage(stringifyUnknown(error));
+}
+
+function sanitizeFieldsForConsole(fields: LogFields): LogFields {
+  return Object.fromEntries(
+    Object.entries(fields).map(([key, value]) => [
+      key,
+      key === "error"
+        ? sanitizeErrorForConsole(value)
+        : typeof value === "string"
+          ? redactSensitiveErrorMessage(value)
+          : value,
+    ]),
+  );
 }
 
 function commonLogFields({
@@ -125,8 +186,8 @@ function emitStructuredLog(
       event,
       body: message,
       attributes: {
-        ...commonLogFields({ level, event, message, userId }),
         ...rest,
+        ...commonLogFields({ level, event, message, userId }),
         ...serializeError(error),
       },
     });
@@ -137,92 +198,61 @@ function emitStructuredLog(
 
 export const phLogger = {
   error(message: string, fields: LogFields = {}) {
-    const wroteLog = emitStructuredLog("error", message, fields);
+    const redactedMessage = redactSensitiveErrorMessage(message);
+    const wroteLog = emitStructuredLog("error", redactedMessage, fields);
+    const safeFields = sanitizeFieldsForConsole(fields);
     const client = getClient();
     if (!client) {
-      if (!wroteLog) console.error(message, fields);
+      if (!wroteLog) console.error(redactedMessage, safeFields);
       return;
     }
     try {
       const { userId, error, ...rest } = fields;
-      const exception = error instanceof Error ? error : new Error(message);
+      const exception = sanitizeExceptionForCapture(
+        error instanceof Error ? error : new Error(redactedMessage),
+      );
       const event =
         typeof fields.event === "string" && fields.event.length > 0
           ? fields.event
-          : eventNameFor(message);
+          : eventNameFor(redactedMessage);
       client.captureException(exception, distinctIdFor(userId), {
-        ...commonLogFields({ level: "error", event, message, userId }),
-        ...serializeError(exception),
-        message,
         ...rest,
+        ...commonLogFields({
+          level: "error",
+          event,
+          message: redactedMessage,
+          userId,
+        }),
+        ...serializeError(exception),
+        message: redactedMessage,
       });
     } catch (telemetryError) {
-      console.error(message, { ...fields, telemetryError });
+      console.error(redactedMessage, {
+        ...safeFields,
+        telemetryError: sanitizeErrorForConsole(telemetryError),
+      });
     }
   },
 
   warn(message: string, fields: LogFields = {}) {
     const wroteLog = emitStructuredLog("warn", message, fields);
-    const client = getClient();
-    if (!client) {
-      if (!wroteLog) console.warn(message, fields);
-      return;
-    }
-    try {
-      const { userId, error, ...rest } = fields;
-      const event =
-        typeof fields.event === "string" && fields.event.length > 0
-          ? fields.event
-          : eventNameFor(message);
-      client.capture({
-        distinctId: distinctIdFor(userId),
-        event: "log_warn",
-        properties: {
-          ...commonLogFields({ level: "warn", event, message, userId }),
-          ...rest,
-          ...serializeError(error),
-        },
-      });
-    } catch (telemetryError) {
-      console.warn(message, { ...fields, telemetryError });
-    }
+    if (!wroteLog) console.warn(message, fields);
   },
 
   info(message: string, fields: LogFields = {}) {
     const wroteLog = emitStructuredLog("info", message, fields);
-    const client = getClient();
-    if (!client) {
-      if (!wroteLog) console.log(message, fields);
-      return;
-    }
-    try {
-      const { userId, error, ...rest } = fields;
-      const event =
-        typeof fields.event === "string" && fields.event.length > 0
-          ? fields.event
-          : eventNameFor(message);
-      client.capture({
-        distinctId: distinctIdFor(userId),
-        event: "log_info",
-        properties: {
-          ...commonLogFields({ level: "info", event, message, userId }),
-          ...rest,
-          ...serializeError(error),
-        },
-      });
-    } catch (telemetryError) {
-      console.log(message, { ...fields, telemetryError });
-    }
+    if (!wroteLog) console.log(message, fields);
   },
 
   event(name: string, fields: EventFields = {}) {
     const client = getClient();
     if (!client) return;
     try {
-      const { userId, $set, ...rest } = fields;
+      const { userId, eventUuid, $set, ...rest } = fields;
       client.capture({
         distinctId: distinctIdFor(userId),
         event: name,
+        ...(eventUuid && { uuid: eventUuid }),
         properties: { ...rest, ...($set && { $set }) },
       });
     } catch {

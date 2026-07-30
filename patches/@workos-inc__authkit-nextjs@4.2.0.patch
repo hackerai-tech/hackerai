@@ -1,0 +1,248 @@
+diff --git a/dist/esm/actions.js b/dist/esm/actions.js
+index 48babd8e1868c58577252b8a27660fcb73e7ef98..bb6fefe1447ffed2e06833f3882ab6471aec4a05 100644
+--- a/dist/esm/actions.js
++++ b/dist/esm/actions.js
+@@ -13,6 +13,56 @@ function sanitize(value) {
+     const { accessToken, ...sanitized } = value;
+     return sanitized;
+ }
++const getStringValue = (value, key) => {
++    const fieldValue = value[key];
++    return typeof fieldValue === 'string' ? fieldValue : null;
++};
++const collectAuthErrorText = (value, seen = new Set(), depth = 0) => {
++    if (typeof value === 'string') {
++        return value;
++    }
++    if (!value || typeof value !== 'object' || depth > 4 || seen.has(value)) {
++        return '';
++    }
++    seen.add(value);
++    const record = value;
++    const rawData = record.rawData && typeof record.rawData === 'object'
++        ? record.rawData
++        : {};
++    return [
++        getStringValue(record, 'name'),
++        getStringValue(record, 'message'),
++        getStringValue(record, 'error'),
++        getStringValue(record, 'errorDescription'),
++        getStringValue(record, 'error_description'),
++        getStringValue(rawData, 'error'),
++        getStringValue(rawData, 'errorDescription'),
++        getStringValue(rawData, 'error_description'),
++        collectAuthErrorText(record.cause, seen, depth + 1),
++    ].filter((text) => Boolean(text)).join('\n');
++};
++const isEndedSessionRefreshError = (value) => {
++    const errorText = collectAuthErrorText(value).toLowerCase();
++    return errorText.includes('invalid_grant') && (errorText.includes('session has already ended') ||
++        errorText.includes('session ended due to inactivity'));
++};
++/**
++ * Client-triggered server actions run after middleware, so a session can end
++ * between the middleware check and the action's refresh. Treat only WorkOS's
++ * exact ended-session response as signed out; all other auth errors still fail
++ * visibly so configuration, provider, and authorization defects are not hidden.
++ */
++async function recoverEndedSession(loadAuth, fallback) {
++    try {
++        return await loadAuth();
++    }
++    catch (error) {
++        if (!isEndedSessionRefreshError(error)) {
++            throw error;
++        }
++        return fallback;
++    }
++}
+ /**
+  * This action is only accessible to authenticated users,
+  * there is no need to check the session here as the middleware will
+@@ -29,7 +79,7 @@ export const getOrganizationAction = async (organizationId) => {
+     // authenticated within. The WorkOS client uses the app's API key, which can
+     // read any organization in the environment, so without this check any caller
+     // could fetch arbitrary organizations by ID (authorization bypass / IDOR).
+-    const { user, organizationId: sessionOrganizationId } = await withAuth();
++    const { user, organizationId: sessionOrganizationId } = await recoverEndedSession(() => withAuth(), { user: null });
+     if (!user || sessionOrganizationId !== organizationId) {
+         return null;
+     }
+@@ -43,7 +93,7 @@ export const getAuthAction = async (options) => {
+     // would call redirect() to an external URL, which causes CORS errors when
+     // invoked via a client-side fetch. Instead, return the sign-in URL so the
+     // client can redirect via window.location.href.
+-    const auth = await withAuth();
++    const auth = await recoverEndedSession(() => withAuth(), { user: null });
+     const sanitized = sanitize(auth);
+     if (options?.ensureSignedIn && !auth.user) {
+         const signInUrl = await getSignInUrl();
+@@ -54,7 +104,7 @@ export const getAuthAction = async (options) => {
+ export const refreshAuthAction = async ({ ensureSignedIn, organizationId, }) => {
+     // Never pass ensureSignedIn to refreshSession from a server action for the
+     // same CORS reason as getAuthAction above.
+-    const auth = await refreshSession({ organizationId });
++    const auth = await recoverEndedSession(() => refreshSession({ organizationId }), { user: null });
+     const sanitized = sanitize(auth);
+     if (ensureSignedIn && !auth.user) {
+         const signInUrl = await getSignInUrl();
+@@ -63,14 +113,14 @@ export const refreshAuthAction = async ({ ensureSignedIn, organizationId, }) =>
+     return sanitized;
+ };
+ export const switchToOrganizationAction = async (organizationId, options) => {
+-    return sanitize(await switchToOrganization(organizationId, options));
++    return sanitize(await recoverEndedSession(() => switchToOrganization(organizationId, options), { user: null }));
+ };
+ /**
+  * This action is used to get the access token from the auth object.
+  * It is used to fetch the access token from the server.
+  */
+ export async function getAccessTokenAction() {
+-    const auth = await withAuth();
++    const auth = await recoverEndedSession(() => withAuth(), { user: null });
+     return auth.accessToken;
+ }
+ /**
+@@ -86,6 +136,9 @@ export async function refreshAccessTokenAction() {
+         return { accessToken: auth.accessToken };
+     }
+     catch (error) {
++        if (isEndedSessionRefreshError(error)) {
++            return { accessToken: undefined };
++        }
+         console.warn('Failed to refresh access token:', error instanceof Error ? error.message : String(error));
+         return {
+             accessToken: undefined,
+diff --git a/src/actions.ts b/src/actions.ts
+index dbc84f49ce8960ac2c88d31e6f98d60af4deab90..f1d7a65274daffcfa5716f253460e4b9affc0e1c 100644
+--- a/src/actions.ts
++++ b/src/actions.ts
+@@ -22,6 +22,64 @@ function sanitize<T extends UserInfo | NoUserInfo>(value: T) {
+   return sanitized;
+ }
+ 
++const getStringValue = (value: Record<string, unknown>, key: string): string | null => {
++  const fieldValue = value[key];
++  return typeof fieldValue === 'string' ? fieldValue : null;
++};
++
++const collectAuthErrorText = (value: unknown, seen = new Set<unknown>(), depth = 0): string => {
++  if (typeof value === 'string') {
++    return value;
++  }
++
++  if (!value || typeof value !== 'object' || depth > 4 || seen.has(value)) {
++    return '';
++  }
++  seen.add(value);
++
++  const record = value as Record<string, unknown>;
++  const rawData = record.rawData && typeof record.rawData === 'object'
++    ? record.rawData as Record<string, unknown>
++    : {};
++
++  return [
++    getStringValue(record, 'name'),
++    getStringValue(record, 'message'),
++    getStringValue(record, 'error'),
++    getStringValue(record, 'errorDescription'),
++    getStringValue(record, 'error_description'),
++    getStringValue(rawData, 'error'),
++    getStringValue(rawData, 'errorDescription'),
++    getStringValue(rawData, 'error_description'),
++    collectAuthErrorText(record.cause, seen, depth + 1),
++  ].filter((text): text is string => Boolean(text)).join('\n');
++};
++
++const isEndedSessionRefreshError = (value: unknown): boolean => {
++  const errorText = collectAuthErrorText(value).toLowerCase();
++  return errorText.includes('invalid_grant') && (
++    errorText.includes('session has already ended') ||
++    errorText.includes('session ended due to inactivity')
++  );
++};
++
++/**
++ * Client-triggered server actions run after middleware, so a session can end
++ * between the middleware check and the action's refresh. Treat only WorkOS's
++ * exact ended-session response as signed out; all other auth errors still fail
++ * visibly so configuration, provider, and authorization defects are not hidden.
++ */
++async function recoverEndedSession<T>(loadAuth: () => Promise<T>, fallback: T): Promise<T> {
++  try {
++    return await loadAuth();
++  } catch (error) {
++    if (!isEndedSessionRefreshError(error)) {
++      throw error;
++    }
++    return fallback;
++  }
++}
++
+ /**
+  * This action is only accessible to authenticated users,
+  * there is no need to check the session here as the middleware will
+@@ -40,7 +98,10 @@ export const getOrganizationAction = async (organizationId: string) => {
+   // authenticated within. The WorkOS client uses the app's API key, which can
+   // read any organization in the environment, so without this check any caller
+   // could fetch arbitrary organizations by ID (authorization bypass / IDOR).
+-  const { user, organizationId: sessionOrganizationId } = await withAuth();
++  const { user, organizationId: sessionOrganizationId } = await recoverEndedSession(
++    () => withAuth(),
++    { user: null } as NoUserInfo,
++  );
+   if (!user || sessionOrganizationId !== organizationId) {
+     return null;
+   }
+@@ -56,7 +117,7 @@ export const getAuthAction = async (options?: { ensureSignedIn?: boolean }) => {
+   // would call redirect() to an external URL, which causes CORS errors when
+   // invoked via a client-side fetch. Instead, return the sign-in URL so the
+   // client can redirect via window.location.href.
+-  const auth = await withAuth();
++  const auth = await recoverEndedSession(() => withAuth(), { user: null } as NoUserInfo);
+   const sanitized = sanitize(auth);
+ 
+   if (options?.ensureSignedIn && !auth.user) {
+@@ -76,7 +137,10 @@ export const refreshAuthAction = async ({
+ }) => {
+   // Never pass ensureSignedIn to refreshSession from a server action for the
+   // same CORS reason as getAuthAction above.
+-  const auth = await refreshSession({ organizationId });
++  const auth = await recoverEndedSession(
++    () => refreshSession({ organizationId }),
++    { user: null } as NoUserInfo,
++  );
+   const sanitized = sanitize(auth);
+ 
+   if (ensureSignedIn && !auth.user) {
+@@ -88,7 +152,10 @@ export const refreshAuthAction = async ({
+ };
+ 
+ export const switchToOrganizationAction = async (organizationId: string, options?: SwitchToOrganizationOptions) => {
+-  return sanitize(await switchToOrganization(organizationId, options));
++  return sanitize(await recoverEndedSession(
++    () => switchToOrganization(organizationId, options),
++    { user: null } as NoUserInfo,
++  ));
+ };
+ 
+ /**
+@@ -96,7 +163,7 @@ export const switchToOrganizationAction = async (organizationId: string, options
+  * It is used to fetch the access token from the server.
+  */
+ export async function getAccessTokenAction() {
+-  const auth = await withAuth();
++  const auth = await recoverEndedSession(() => withAuth(), { user: null } as NoUserInfo);
+   return auth.accessToken;
+ }
+ 
+@@ -112,6 +179,9 @@ export async function refreshAccessTokenAction(): Promise<RefreshAccessTokenActi
+     const auth = await refreshSession();
+     return { accessToken: auth.accessToken };
+   } catch (error) {
++    if (isEndedSessionRefreshError(error)) {
++      return { accessToken: undefined };
++    }
+     console.warn('Failed to refresh access token:', error instanceof Error ? error.message : String(error));
+     return {
+       accessToken: undefined,

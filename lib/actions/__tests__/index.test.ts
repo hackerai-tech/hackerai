@@ -33,13 +33,29 @@ const makeMessage = (text: string): UIMessage[] =>
     },
   ] as UIMessage[];
 
+const makeImageOnlyMessage = (): UIMessage[] =>
+  [
+    {
+      id: "message-1",
+      role: "user",
+      parts: [
+        {
+          type: "file",
+          mediaType: "image/png",
+          filename: "screenshot.png",
+          url: "https://example.com/screenshot.png",
+        },
+      ],
+    },
+  ] as UIMessage[];
+
 describe("generateTitleFromUserMessage", () => {
   beforeEach(() => {
     mockGenerateText.mockReset();
     mockLanguageModel.mockClear();
   });
 
-  it("uses the title generator model with a small but safe output budget", async () => {
+  it("uses the title generator model without reasoning and with a small output budget", async () => {
     mockGenerateText.mockResolvedValue({
       output: { title: "Web Recon Tips" },
     });
@@ -55,9 +71,23 @@ describe("generateTitleFromUserMessage", () => {
       expect.objectContaining({
         maxOutputTokens: 64,
         maxRetries: 1,
+        providerOptions: {
+          openrouter: {
+            reasoning: { enabled: false },
+          },
+        },
         temperature: 0,
       }),
     );
+  });
+
+  it("keeps the default title without calling the title model for an image-only message", async () => {
+    await expect(
+      generateTitleFromUserMessage(makeImageOnlyMessage()),
+    ).resolves.toBe("New chat");
+
+    expect(mockLanguageModel).not.toHaveBeenCalled();
+    expect(mockGenerateText).not.toHaveBeenCalled();
   });
 
   it("constrains generated titles to non-empty strings under the chat title limit", async () => {
@@ -119,5 +149,66 @@ describe("generateTitleFromUserMessage", () => {
     expect(consoleErrorSpy).not.toHaveBeenCalled();
 
     consoleErrorSpy.mockRestore();
+  });
+
+  it("persists the generated title after streaming it to the header", async () => {
+    mockGenerateText.mockResolvedValue({
+      output: { title: "Sidebar Title Update" },
+    });
+    const callOrder: string[] = [];
+    const writer = {
+      write: jest.fn(() => callOrder.push("stream")),
+    } as unknown as UIMessageStreamWriter;
+    const onTitleGenerated = jest.fn(async () => {
+      callOrder.push("persist");
+    });
+
+    await expect(
+      generateTitleFromUserMessageWithWriter(
+        makeMessage("update this title everywhere"),
+        writer,
+        onTitleGenerated,
+      ),
+    ).resolves.toBe("Sidebar Title Update");
+
+    expect(onTitleGenerated).toHaveBeenCalledWith("Sidebar Title Update");
+    expect(callOrder).toEqual(["stream", "persist"]);
+  });
+
+  it("keeps the generated title when early sidebar persistence fails", async () => {
+    mockGenerateText.mockResolvedValue({
+      output: { title: "Resilient Generated Title" },
+    });
+    const writer = {
+      write: jest.fn(),
+    } as unknown as UIMessageStreamWriter;
+    const persistenceError = new Error("database unavailable");
+    const consoleErrorSpy = jest
+      .spyOn(console, "error")
+      .mockImplementation(() => undefined);
+
+    try {
+      await expect(
+        generateTitleFromUserMessageWithWriter(
+          makeMessage("do not lose this title"),
+          writer,
+          async () => {
+            throw persistenceError;
+          },
+        ),
+      ).resolves.toBe("Resilient Generated Title");
+
+      expect(writer.write).toHaveBeenCalledWith({
+        type: "data-title",
+        data: { chatTitle: "Resilient Generated Title" },
+        transient: true,
+      });
+      expect(consoleErrorSpy).toHaveBeenCalledWith(
+        "Failed to persist generated chat title:",
+        persistenceError,
+      );
+    } finally {
+      consoleErrorSpy.mockRestore();
+    }
   });
 });

@@ -117,17 +117,29 @@ GitHub Actions workflow (`.github/workflows/desktop-build.yml`) builds for:
 | Windows  | `x86_64-pc-windows-msvc`   | `.msi`, `.exe`      |
 | Linux    | `x86_64-unknown-linux-gnu` | `.AppImage`, `.deb` |
 
-### Triggering builds
+### Building and releasing
 
-**Via tag:**
+Desktop-related merges to `main` build a release candidate using the next
+desktop patch version. After the `Build Desktop App` run succeeds (including
+approval of the `trusted-signing` Windows job), promote those exact artifacts:
+
+1. Copy the numeric run ID from the successful build URL.
+2. Go to Actions → **Promote Desktop Build** → **Run workflow**.
+3. Enter the source run ID and start the workflow within the seven-day artifact
+   retention window.
+4. Review the generated draft release and publish it.
+
+Promotion verifies the source run, embedded version, required platform assets,
+and updater signatures. It creates the release tag with `GITHUB_TOKEN`, so the
+tag does not trigger another set of platform builds.
+
+Pushing a `desktop-v*` tag remains a fallback when no valid candidate artifacts
+are available, but it performs a fresh release build:
 
 ```bash
-git tag desktop-v0.1.0
+git tag desktop-v0.1.0 <commit>
 git push origin desktop-v0.1.0
 ```
-
-**Via workflow dispatch:**
-Go to Actions → "Build Desktop App" → Run workflow
 
 ## Code Signing
 

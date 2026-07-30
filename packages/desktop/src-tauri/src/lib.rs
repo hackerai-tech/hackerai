@@ -385,7 +385,7 @@ async fn wait_with_output_or_kill_on_timeout(
         Ok(output) => output,
         Err(_) => {
             if let Some(pid) = child_pid {
-                platform::cancel_process_tree(pid).await;
+                let _ = platform::cancel_process_tree(pid).await;
             }
             stdout_abort.abort();
             stderr_abort.abort();
@@ -1254,8 +1254,7 @@ async fn cancel_stream_command(
         .copied();
 
     if let Some(pid) = pid {
-        platform::cancel_process_tree(pid).await;
-        Ok(true)
+        Ok(platform::cancel_process_tree(pid).await)
     } else {
         Ok(false)
     }

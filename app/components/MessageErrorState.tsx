@@ -25,6 +25,7 @@ import {
   shouldShowUpgradeCta,
 } from "@/lib/limit-pressure";
 import type { RetryOptions } from "../hooks/useChatHandlers";
+import { formatTaskUiCopy } from "@/app/utils/task-ui-copy";
 
 interface MessageErrorStateProps {
   error: Error;
@@ -86,14 +87,16 @@ export const MessageErrorState = ({
   }, [resetTimestamp]);
 
   // Extract error message - check for cause first, then message
-  const errorMessage = (() => {
-    if (displayError instanceof ChatSDKError) {
-      return typeof displayError.cause === "string"
-        ? displayError.cause
-        : displayError.message;
-    }
-    return displayError.message || "An error occurred.";
-  })();
+  const errorMessage = formatTaskUiCopy(
+    (() => {
+      if (displayError instanceof ChatSDKError) {
+        return typeof displayError.cause === "string"
+          ? displayError.cause
+          : displayError.message;
+      }
+      return displayError.message || "An error occurred.";
+    })(),
+  );
   const isProviderContentBlocked =
     metadata?.providerErrorCategory === "content_blocked" ||
     /provider blocked this request|flagged by its safety system|PROHIBITED_CONTENT|content[_ -]?filter|content[_ -]?policy/i.test(
@@ -348,7 +351,7 @@ export const MessageErrorState = ({
           </>
         ) : isProviderContentBlocked ? (
           <Button variant="outline" size="sm" onClick={initializeNewChat}>
-            New Chat
+            New Task
           </Button>
         ) : (
           <>

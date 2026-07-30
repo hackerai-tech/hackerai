@@ -11,6 +11,7 @@ import { retryWithBackoff } from "./utils/retry-with-backoff";
 import {
   waitForSandboxReady,
   getSandboxDiagnostics,
+  observeSandboxResourceFailure,
 } from "./utils/sandbox-health";
 import { isE2BSandbox, isCentrifugoSandbox } from "./utils/sandbox-types";
 import {
@@ -44,6 +45,7 @@ import {
   RUN_TERMINAL_MAX_TIMEOUT_SECONDS,
   createRunTerminalCmdToolSchema,
 } from "./schemas";
+import { withE2BSandboxLeaseHeartbeat } from "./utils/sandbox";
 
 const DEFAULT_STREAM_TIMEOUT_SECONDS =
   RUN_TERMINAL_DEFAULT_STREAM_TIMEOUT_SECONDS;
@@ -91,6 +93,16 @@ export const createRunTerminalCmd = (context: ToolContext) => {
     ptySessionManager,
     chatId,
   } = context;
+  const measureTerminalWait = <T>(operation: () => Promise<T>): Promise<T> =>
+    context.measureAgentActiveTime
+      ? context.measureAgentActiveTime("terminal_wait", operation)
+      : operation();
+  const measureSandboxRecovery = <T>(
+    operation: () => Promise<T>,
+  ): Promise<T> =>
+    context.measureAgentActiveTime
+      ? context.measureAgentActiveTime("sandbox_recovery", operation)
+      : operation();
   const runTerminalCmdTool = createRunTerminalCmdToolSchema({
     approvalGated: !!context.requestToolApproval,
     // The conditional schema adds approval-only fields, but both branches
@@ -183,13 +195,19 @@ export const createRunTerminalCmd = (context: ToolContext) => {
           },
         };
       }
+      const approvedSandboxIdentity = approval?.approved
+        ? approval.sandboxIdentity
+        : undefined;
+      const getApprovedExecutionSandbox = () =>
+        getSandboxWithFallbackGuard({
+          sandboxManager,
+          expectedSandboxIdentity: approvedSandboxIdentity,
+        });
 
       // ─── Interactive PTY exec branch ─────────────────────────────────
       if (interactive) {
         try {
-          const { sandbox } = await getSandboxWithFallbackGuard({
-            sandboxManager,
-          });
+          const { sandbox } = await getApprovedExecutionSandbox();
           const isCentrifugo = isCentrifugoSandbox(sandbox);
           const isE2B = isE2BSandbox(sandbox);
 
@@ -242,6 +260,7 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                   command,
                   cols,
                   rows,
+                  cwd: sandbox.getWorkingDirectory(),
                 });
               }
               return createE2BPtyHandle(sandbox, {
@@ -268,14 +287,20 @@ export const createRunTerminalCmd = (context: ToolContext) => {
           // Stream output chunks as they arrive. Resolve early on a brief
           // quiet window so launching a REPL/shell returns when its prompt
           // finishes drawing rather than blocking the full timeout ceiling.
-          const delta = await waitForOutput(
-            session,
-            effectiveStreamTimeout * 1000,
-            abortSignal,
-            emitTerminal,
-            (s) => ptySessionManager.consumeDelta(s),
-            { quietMs: INTERACTIVE_QUIET_WINDOW_MS },
-          );
+          const waitForInitialOutput = () =>
+            measureTerminalWait(() =>
+              waitForOutput(
+                session,
+                effectiveStreamTimeout * 1000,
+                abortSignal,
+                emitTerminal,
+                (s) => ptySessionManager.consumeDelta(s),
+                { quietMs: INTERACTIVE_QUIET_WINDOW_MS },
+              ),
+            );
+          const delta = await (isE2B
+            ? withE2BSandboxLeaseHeartbeat(sandbox, waitForInitialOutput)
+            : waitForInitialOutput());
           await drainEmitQueue();
           const snapshots = await getSessionSnapshots(
             ptySessionManager,
@@ -309,9 +334,7 @@ export const createRunTerminalCmd = (context: ToolContext) => {
 
       try {
         // Get fresh sandbox and verify it's ready
-        const { sandbox } = await getSandboxWithFallbackGuard({
-          sandboxManager,
-        });
+        const { sandbox } = await getApprovedExecutionSandbox();
 
         // Bail early if sandbox was already marked unavailable by any tool
         if (sandboxManager.isSandboxUnavailable()) {
@@ -329,7 +352,12 @@ export const createRunTerminalCmd = (context: ToolContext) => {
         // (they relay commands through Convex and have their own connectivity)
         if (isE2BSandbox(sandbox)) {
           try {
-            await waitForSandboxReady(sandbox, 5, abortSignal);
+            await waitForSandboxReady(
+              sandbox,
+              5,
+              abortSignal,
+              context.onSandboxResourceMetrics,
+            );
             sandboxManager.resetHealthFailures();
           } catch (healthError) {
             // If aborted, don't retry - propagate the abort
@@ -355,50 +383,69 @@ export const createRunTerminalCmd = (context: ToolContext) => {
               };
             }
 
-            // Sandbox health check failed - log diagnostics and wait briefly before recreating
-            const diagnostics = await getSandboxDiagnostics(sandbox).catch(
-              () => "diagnostics unavailable",
-            );
-            console.warn(
-              `[Terminal Command] Sandbox health check failed (${diagnostics}), waiting before recreating sandbox`,
-            );
-            await new Promise((resolve) => setTimeout(resolve, 2000));
+            const recovery = await measureSandboxRecovery(async () => {
+              // Discard this worker's connection and reconnect the shared
+              // sandbox. Never kill it: another Agent run may own commands.
+              const diagnostics = await getSandboxDiagnostics(sandbox).catch(
+                () => "diagnostics unavailable",
+              );
+              console.warn(
+                `[Terminal Command] Sandbox health check failed (${diagnostics}), waiting before reconnecting sandbox`,
+              );
+              await new Promise((resolve) => setTimeout(resolve, 2000));
 
-            // Reset cached instance to force ensureSandboxConnection to create a fresh one
-            sandboxManager.setSandbox(null as any);
-            const { sandbox: freshSandbox } = await getSandboxWithFallbackGuard(
-              {
-                sandboxManager,
-              },
-            );
+              // Reset only the cached SDK instance.
+              await sandboxManager.resetSandbox?.(
+                "terminal_health_check_failed",
+              );
+              const { sandbox: reconnectedSandbox } =
+                await getApprovedExecutionSandbox();
 
-            // Verify the fresh sandbox is ready
-            try {
-              await waitForSandboxReady(freshSandbox, 5, abortSignal);
-              sandboxManager.resetHealthFailures();
-            } catch (freshHealthError) {
-              if (
-                freshHealthError instanceof DOMException &&
-                freshHealthError.name === "AbortError"
-              ) {
-                throw freshHealthError;
+              // Verify the reconnected sandbox is ready
+              try {
+                await waitForSandboxReady(
+                  reconnectedSandbox,
+                  5,
+                  abortSignal,
+                  context.onSandboxResourceMetrics,
+                );
+                sandboxManager.resetHealthFailures();
+              } catch (reconnectedHealthError) {
+                if (
+                  reconnectedHealthError instanceof DOMException &&
+                  reconnectedHealthError.name === "AbortError"
+                ) {
+                  throw reconnectedHealthError;
+                }
+                sandboxManager.recordHealthFailure();
+                return {
+                  ok: false as const,
+                  response: {
+                    result: {
+                      output: "",
+                      exitCode: 1,
+                      error:
+                        "Sandbox reconnection failed. The sandbox environment is not responding. Another attempt may be made but the sandbox will be marked unavailable after repeated failures.",
+                    },
+                  },
+                };
               }
-              sandboxManager.recordHealthFailure();
-              return {
-                result: {
-                  output: "",
-                  exitCode: 1,
-                  error:
-                    "Sandbox recreation failed. The sandbox environment is not responding. Another attempt may be made but the sandbox will be marked unavailable after repeated failures.",
-                },
-              };
-            }
 
-            return executeCommand(freshSandbox);
+              return { ok: true as const, sandbox: reconnectedSandbox };
+            });
+
+            if (!recovery.ok) return recovery.response;
+            return isE2BSandbox(recovery.sandbox) && !is_background
+              ? withE2BSandboxLeaseHeartbeat(recovery.sandbox, () =>
+                  executeCommand(recovery.sandbox),
+                )
+              : executeCommand(recovery.sandbox);
           }
         }
 
-        return executeCommand(sandbox);
+        return isE2BSandbox(sandbox) && !is_background
+          ? withE2BSandboxLeaseHeartbeat(sandbox, () => executeCommand(sandbox))
+          : executeCommand(sandbox);
 
         async function executeCommand(sandboxInstance: typeof sandbox) {
           captureAgentBrowserUsage({
@@ -432,6 +479,13 @@ export const createRunTerminalCmd = (context: ToolContext) => {
             let commandHandle: CommandSessionHandle | null = null;
             let commandSessionExposed = false;
             const commandAbortController = new AbortController();
+            let cancelCentrifugoCommand: (() => Promise<boolean>) | null = null;
+            let runPromise: Promise<{
+              stdout: string;
+              stderr: string;
+              exitCode: number;
+              pid?: number;
+            }> | null = null;
 
             const forgetUnexposedCommandSession = () => {
               if (!commandSession || commandSessionExposed) return;
@@ -440,10 +494,19 @@ export const createRunTerminalCmd = (context: ToolContext) => {
 
             const terminateManagedCommand = async (): Promise<boolean> => {
               if (isCentrifugoSandbox(sandboxInstance)) {
+                if (cancelCentrifugoCommand) {
+                  return cancelCentrifugoCommand();
+                }
                 if (!commandAbortController.signal.aborted) {
                   commandAbortController.abort();
                 }
-                return true;
+                if (!runPromise) return false;
+                try {
+                  const result = await runPromise;
+                  return result.exitCode === 130;
+                } catch {
+                  return false;
+                }
               }
 
               if (!processId && execution?.pid) {
@@ -513,10 +576,15 @@ export const createRunTerminalCmd = (context: ToolContext) => {
               // This must happen before we kill the process, otherwise the error
               // from the killed process might trigger retries
               resolved = true;
+              // Keep the session addressable until termination is confirmed.
+              // runPromise may settle before this async handler resumes.
+              commandSessionExposed = true;
+
+              let terminated = false;
 
               if (commandHandle) {
                 try {
-                  const terminated = await terminateManagedCommand();
+                  terminated = await terminateManagedCommand();
                   if (!terminated) {
                     console.warn(
                       "[Terminal Command] Managed command could not be terminated during abort",
@@ -528,19 +596,13 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                     error,
                   );
                 }
-              } else if (isCentrifugoSandbox(sandboxInstance)) {
-                const result = handler ? handler.getResult() : { output: "" };
-                if (handler) {
-                  handler.cleanup();
+              } else if (isCentrifugoSandbox(sandboxInstance) && runPromise) {
+                try {
+                  const executionResult = await runPromise;
+                  terminated = executionResult.exitCode === 130;
+                } catch {
+                  terminated = false;
                 }
-                resolve({
-                  result: {
-                    output: result.output,
-                    exitCode: 130,
-                    error: "Command execution aborted by user",
-                  },
-                });
-                return;
               } else {
                 // Try to get PID from execution object first (cheap, no shell call)
                 if (!processId && execution && (execution as any)?.pid) {
@@ -550,7 +612,7 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                 // Terminate the current process
                 try {
                   if ((execution && execution.kill) || processId) {
-                    await terminateProcessReliably(
+                    terminated = await terminateProcessReliably(
                       sandboxInstance,
                       execution,
                       processId,
@@ -576,11 +638,21 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                 handler.cleanup();
               }
 
+              if (terminated) {
+                commandSessionExposed = false;
+                forgetUnexposedCommandSession();
+              }
+
               resolve({
                 result: {
                   output: result.output,
-                  exitCode: 130, // Standard SIGINT exit code
-                  error: "Command execution aborted by user",
+                  exitCode: terminated ? 130 : null,
+                  error: terminated
+                    ? "Command execution aborted by user"
+                    : "Command cancellation could not be confirmed. The local session was retained so termination can be retried.",
+                  ...(!terminated && commandSession
+                    ? { session: commandSession.sessionId }
+                    : {}),
                 },
               });
             };
@@ -609,6 +681,17 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                   // race and unregister the session we are about to return.
                   resolved = true;
                   if (commandSession) commandSessionExposed = true;
+
+                  const resourceFailureObservation = isE2BSandbox(
+                    sandboxInstance,
+                  )
+                    ? observeSandboxResourceFailure(
+                        sandboxInstance,
+                        context.onSandboxResourceMetrics,
+                        "terminal_command_timeout",
+                        "terminal_command_timed_out",
+                      )
+                    : Promise.resolve();
 
                   // Try to get PID from execution object first (if available)
                   if (!processId && execution && (execution as any)?.pid) {
@@ -670,6 +753,9 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                         resumableSession,
                       );
 
+                  await resourceFailureObservation.catch(() => {
+                    // Analytics must never delay or mask terminal timeout handling
+                  });
                   await createTerminalWriter(timeoutMessage);
 
                   abortSignal?.removeEventListener("abort", onAbort);
@@ -740,6 +826,9 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                   signal: is_background
                     ? abortSignal
                     : commandAbortController.signal,
+                  onCancelReady: (cancel: () => Promise<boolean>) => {
+                    cancelCentrifugoCommand = cancel;
+                  },
                 }
               : isE2BSandbox(sandboxInstance)
                 ? { ...commonOptions, signal: abortSignal }
@@ -793,12 +882,7 @@ export const createRunTerminalCmd = (context: ToolContext) => {
             // Execute command with retry logic for transient failures
             // Sandbox readiness already checked, so these retries handle race conditions
             // Retries: 6 attempts with exponential backoff (500ms, 1s, 2s, 4s, 8s, 16s) + jitter (±50ms)
-            const runPromise: Promise<{
-              stdout: string;
-              stderr: string;
-              exitCode: number;
-              pid?: number;
-            }> = commandSessionReady.then(async () => {
+            runPromise = commandSessionReady.then(async () => {
               if (resolved || abortSignal?.aborted) {
                 return { stdout: "", stderr: "", exitCode: 130 };
               }
@@ -838,14 +922,16 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                 execution = started;
                 processId = started.pid;
                 commandHandle?.setPid(started.pid);
-                const result = await started.wait();
+                const result = await measureTerminalWait(() => started.wait());
                 return { ...result, pid: started.pid };
               }
 
-              return retryWithBackoff(
-                () =>
-                  sandboxInstance.commands.run(effectiveCommand, runOptions),
-                retryOptions,
+              return measureTerminalWait(() =>
+                retryWithBackoff(
+                  () =>
+                    sandboxInstance.commands.run(effectiveCommand, runOptions),
+                  retryOptions,
+                ),
               );
             });
 
@@ -896,6 +982,7 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                       handler,
                       sandbox: sandboxInstance,
                       terminalWriter: createTerminalWriter,
+                      scopeId: chatId,
                     });
                     if (saveMsg) {
                       outputWithSaveInfo = saveMsg + "\n" + outputWithSaveInfo;
@@ -950,6 +1037,7 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                         handler,
                         sandbox: sandboxInstance,
                         terminalWriter: createTerminalWriter,
+                        scopeId: chatId,
                       });
                       if (saveMsg) {
                         outputWithSaveInfo =

@@ -68,6 +68,47 @@ describe("ChatSDKError stream serialization", () => {
     });
   });
 
+  it("keeps log-only diagnostics and metadata out of client streams", () => {
+    const original = new ChatSDKError(
+      "offline:database",
+      "SECRET database diagnostic",
+      {
+        operation: "saveMessage",
+        requestId: "request-secret",
+        failureStage: "database-write",
+        chatId: "chat-secret",
+        userId: "user-secret",
+      },
+    );
+
+    const serialized = serializeChatSDKErrorForStream(original);
+    const parsed = deserializeChatSDKErrorFromStream(new Error(serialized));
+
+    expect(serialized).not.toContain("SECRET database diagnostic");
+    expect(serialized).not.toContain("request-secret");
+    expect(serialized).not.toContain("chat-secret");
+    expect(serialized).not.toContain("user-secret");
+    expect(parsed).toMatchObject({
+      type: "bad_request",
+      surface: "stream",
+      cause: "Something went wrong. Please try again later.",
+      metadata: undefined,
+    });
+
+    // Serialization is client-only; the original remains available to bounded
+    // server logging with its diagnostic context intact.
+    expect(original).toMatchObject({
+      cause: "SECRET database diagnostic",
+      metadata: {
+        operation: "saveMessage",
+        requestId: "request-secret",
+        failureStage: "database-write",
+        chatId: "chat-secret",
+        userId: "user-secret",
+      },
+    });
+  });
+
   it.each([
     "__HACKERAI_CHAT_SDK_ERROR__:{",
     '__HACKERAI_CHAT_SDK_ERROR__:{"code":"future:surface"}',

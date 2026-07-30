@@ -126,9 +126,8 @@ export class SidebarComponent {
   }
 
   /**
-   * Wait for the sidebar chat list to finish loading after expand.
-   * Use after expandIfCollapsed() when the list was previously collapsed (unmounted),
-   * so the list has time to mount and load before e.g. getChatCount().
+   * Wait for the sidebar task list to become visible after expand.
+   * The list stays mounted while collapsed and fades in after the width animation.
    */
   async waitForChatListReady(timeout: number = TIMEOUTS.MEDIUM): Promise<void> {
     await Promise.race([

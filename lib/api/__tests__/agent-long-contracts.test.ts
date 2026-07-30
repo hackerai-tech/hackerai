@@ -228,7 +228,7 @@ describe("agent tool schemas — Head Start bundle boundary", () => {
       /get_terminal_files:\s*getTerminalFilesTool/,
     );
     expect(toolSchemasSrc).toMatch(
-      /file:\s*createFileToolSchema\(\{\s*supportsView:\s*supportsFileView/,
+      /file:\s*createFileToolSchema\(\{\s*supportsView:\s*true/,
     );
     expect(toolSchemasSrc).toMatch(/todo_write:\s*todoWriteTool/);
     expect(toolSchemasSrc).toMatch(/create_note:\s*createNoteTool/);
@@ -436,7 +436,9 @@ describe("agent-long chat UI — completion reconciliation", () => {
       /getLatestAgentLongAssistantMessageForPartialSave/,
     );
     expect(chatComponentSrc).toMatch(/stop\(\)/);
-    expect(chatComponentSrc).toMatch(/window\.history\.replaceState/);
+    expect(chatComponentSrc).toMatch(
+      /const finishLocally = \(\) => \{[\s\S]*finalizeNewChatRoute/,
+    );
     expect(chatComponentSrc).toMatch(/setIsExistingChat\(true\)/);
   });
 
@@ -458,6 +460,15 @@ describe("agent-long chat UI — completion reconciliation", () => {
     expect(agentPartialSaveRouteSrc).toMatch(/hasVisibleAssistantContent/);
     expect(agentPartialSaveRouteSrc).toMatch(/saveMessage\(\{/);
     expect(agentPartialSaveRouteSrc).toMatch(
+      /verifyAgentRunCorrelationToken\(\{/,
+    );
+    expect(agentPartialSaveRouteSrc).toMatch(
+      /triggerRunId:\s*body\.triggerRunId/,
+    );
+    expect(chatComponentSrc).toMatch(/data-agent-run-correlation/);
+    expect(chatComponentSrc).toMatch(/runCorrelationToken/);
+    expect(convexMessagesSrc).toMatch(/trigger_run_id:\s*args\.triggerRunId/);
+    expect(agentPartialSaveRouteSrc).toMatch(
       /finishReason:\s*CLIENT_SAVED_FINISH_REASON/,
     );
     expect(agentPartialSaveRouteSrc).toMatch(/updateChat\(\{/);
@@ -467,7 +478,7 @@ describe("agent-long chat UI — completion reconciliation", () => {
     expect(chatComponentSrc).toMatch(/const stopRef = useRef\(stop\)/);
     expect(chatComponentSrc).toMatch(/stopActiveBrowserStream/);
     expect(chatComponentSrc).toMatch(
-      /cancelAgentLongRealtimeStreams\(activeChatIdRef\.current\)/,
+      /const activeChatId = activeChatIdRef\.current;[\s\S]*cancelAgentLongRealtimeStreams\(activeChatId\)/,
     );
     expect(chatComponentSrc).toMatch(
       /statusRef\.current\s*===\s*"streaming"[\s\S]*statusRef\.current\s*===\s*"submitted"[\s\S]*stopRef\.current\(\)/,
@@ -475,6 +486,42 @@ describe("agent-long chat UI — completion reconciliation", () => {
     expect(chatComponentSrc).toMatch(
       /return\s*\(\)\s*=>\s*\{\s*stopActiveBrowserStream\(\);[\s\S]*\}/,
     );
+  });
+
+  test("new-task reset invalidates stale terminal callbacks before aborting", () => {
+    const stopHelperIdx = chatComponentSrc.indexOf(
+      "const stopActiveBrowserStream = useCallback(",
+    );
+    const cancelIdx = chatComponentSrc.indexOf(
+      "cancelAgentLongRealtimeStreams(activeChatId)",
+      stopHelperIdx,
+    );
+    const invalidateIdx = chatComponentSrc.indexOf(
+      "activeChatIdRef.current = nextChatId",
+      stopHelperIdx,
+    );
+    const abortIdx = chatComponentSrc.indexOf("stopRef.current()", cancelIdx);
+    const resetIdx = chatComponentSrc.indexOf("const reset = () => {");
+    const nextChatIdIdx = chatComponentSrc.indexOf(
+      "const nextChatId = uuidv4()",
+      resetIdx,
+    );
+    const guardedStopIdx = chatComponentSrc.indexOf(
+      "stopActiveBrowserStream(nextChatId)",
+      nextChatIdIdx,
+    );
+
+    expect(stopHelperIdx).toBeGreaterThan(-1);
+    expect(invalidateIdx).toBeGreaterThan(stopHelperIdx);
+    expect(cancelIdx).toBeGreaterThan(invalidateIdx);
+    expect(abortIdx).toBeGreaterThan(cancelIdx);
+    expect(nextChatIdIdx).toBeGreaterThan(resetIdx);
+    expect(guardedStopIdx).toBeGreaterThan(nextChatIdIdx);
+    expect(
+      chatComponentSrc.match(
+        /!isChatMountedRef\.current \|\| activeChatIdRef\.current !== chatId/g,
+      ),
+    ).toHaveLength(3);
   });
 
   test("sidebar navigation cancels stale agent-long realtime before route commit", () => {
@@ -582,7 +629,7 @@ describe("agent-long resume route — 204 on terminal + self-heal on 404", () =>
 
   test("returns chat id with the public run handle", () => {
     expect(resumeSrc).toMatch(
-      /NextResponse\.json\(\{[\s\S]*runId,[\s\S]*publicAccessToken,[\s\S]*chatId,[\s\S]*approvalSessionPublicAccessToken/,
+      /NextResponse\.json\(\{[\s\S]*runId,[\s\S]*runCorrelationToken:[\s\S]*publicAccessToken,[\s\S]*chatId,[\s\S]*approvalSessionPublicAccessToken/,
     );
   });
 });
@@ -635,10 +682,34 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
 
   test("runs are triggered with filterable queued metadata and tags", () => {
     expect(routeSrc).toMatch(/tags:\s*triggerTags/);
+    expect(routeSrc).toMatch(
+      /triggerTags\.push\(`permission_\$\{agentPermissionMode\}`\)/,
+    );
     expect(routeSrc).toMatch(/const triggerMetadata\s*=\s*{/);
     expect(routeSrc).toMatch(/metadata:\s*triggerMetadata/);
     expect(routeSrc).toMatch(/status:\s*"queued"/);
     expect(routeSrc).toMatch(/loginRequired:\s*false/);
+  });
+
+  test("captures Trigger usage and active-time attribution on Agent completion", () => {
+    expect(taskSrc).toMatch(/triggerUsage\.getCurrent\(\)/);
+    expect(taskSrc).toMatch(
+      /triggerUsageDurationMs:\s*currentUsage\.compute\.total\.durationMs/,
+    );
+    expect(taskSrc).toMatch(
+      /triggerTotalCostUsd:\s*currentUsage\.totalCostInCents\s*\/\s*100/,
+    );
+    expect(taskSrc).toMatch(
+      /onApprovalWait:\s*runTimingTracker\.recordApprovalWait/,
+    );
+    expect(taskSrc).toMatch(
+      /onModelStreamStart:\s*runTimingTracker\.startModelStream/,
+    );
+    expect(taskSrc).toMatch(
+      /onModelStreamFinish:\s*runTimingTracker\.finishModelStream/,
+    );
+    expect(agentStreamRunnerSrc).toMatch(/experimental_onStepStart/);
+    expect(agentStreamRunnerSrc).toMatch(/experimental_onToolCallStart/);
   });
 
   test("validates agent trigger request bodies before auth and Trigger work", () => {
@@ -700,7 +771,7 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
   test("agent approval denial resolves as rejected without aborting the run", () => {
     expect(taskSrc).toMatch(/next\.output\.decision\s*===\s*"approve"/);
     expect(taskSrc).toMatch(
-      /next\.output\.decision\s*===\s*"approve"[\s\S]*return\s*\{\s*approved:\s*true,\s*approvalId\s*\}/,
+      /next\.output\.decision\s*===\s*"approve"[\s\S]*return\s*\{\s*approved:\s*true,\s*approvalId,\s*sandboxIdentity\s*\}/,
     );
     expect(taskSrc).toMatch(
       /tool approval denied[\s\S]*return\s*\{\s*approved:\s*false,[\s\S]*reason:\s*buildDeniedApprovalReason\(next\.output\.message\)/,
@@ -728,6 +799,12 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(taskSrc).toMatch(/persistTargetGrant/);
     expect(taskSrc).toMatch(/persistAgentApprovalGrant/);
     expect(taskSrc).toMatch(/agent_approval_grants/);
+    expect(taskSrc).toMatch(
+      /scopedGrant\.workingDirectory === workingDirectory/,
+    );
+    expect(taskSrc).toMatch(
+      /workingDirectory:\s*projectContext\.workingDirectory/,
+    );
     expect(taskSrc).toMatch(
       /approvedTargetGrant\.kind !== "terminal_interaction"/,
     );
@@ -826,6 +903,69 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     );
   });
 
+  test("approval telemetry keeps correlation context without raw targets", () => {
+    const expectedKeysByMessage = {
+      "[agent-long] tool approval reused": [
+        "event",
+        "service",
+        "runId",
+        "approvalId",
+        "tool_call_id",
+        "tool_name",
+        "operation",
+        "target_kind",
+      ],
+      "[agent-long] waiting for tool approval": [
+        "event",
+        "service",
+        "runId",
+        "approvalId",
+        "tool_call_id",
+        "tool_name",
+        "operation",
+      ],
+      "[agent-long] tool approval granted": [
+        "event",
+        "service",
+        "runId",
+        "approvalId",
+        "tool_call_id",
+        "tool_name",
+        "operation",
+        "requested_grant",
+        "grant",
+        "target_kind",
+      ],
+      "[agent-long] tool approval denied": [
+        "event",
+        "service",
+        "runId",
+        "approvalId",
+        "tool_call_id",
+        "tool_name",
+        "operation",
+      ],
+    } as const;
+
+    for (const [message, expectedKeys] of Object.entries(
+      expectedKeysByMessage,
+    )) {
+      const escapedMessage = message.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const payload = new RegExp(
+        `triggerLogger\\.info\\("${escapedMessage}",\\s*\\{([\\s\\S]*?)\\n\\s*\\}\\);`,
+      ).exec(taskSrc)?.[1];
+      expect(payload).toBeDefined();
+      const keys = Array.from(
+        payload?.matchAll(/^\s*([A-Za-z_][A-Za-z0-9_]*)(?:\s*:|\s*,\s*$)/gm) ??
+          [],
+        (match) => match[1],
+      );
+      expect(keys.sort()).toEqual([...expectedKeys].sort());
+    }
+
+    expect(taskSrc).not.toContain('.set("approvalTargetPrefix"');
+  });
+
   test("terminal approval cleanup compare-clears stale composer state", () => {
     expect(taskSrc).toMatch(
       /expectedRunId:\s*ctx\.run\.id,[\s\S]*clearApprovalPending:\s*true/,
@@ -859,7 +999,9 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
       /await\s+recordAgentLongHandledToolFailureForDashboard/,
     );
     expect(taskSrc).toMatch(/handled tool failure dashboard update failed/);
-    expect(taskSrc).toMatch(/onToolFailure,\s*requestToolApproval,\s*\)/);
+    expect(taskSrc).toMatch(
+      /onToolFailure,\s*requestToolApproval,\s*runTimingTracker\.measureActiveTime,\s*projectContext\.workingDirectory,\s*\)/,
+    );
   });
 
   test("direct runs use small subscription-aware Trigger.dev priority offsets", () => {
@@ -950,6 +1092,27 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(heartbeatWrapperIdx).toBeGreaterThan(-1);
     expect(immediateModelHeartbeatIdx).toBeGreaterThan(heartbeatWrapperIdx);
     expect(readerLoopIdx).toBeGreaterThan(immediateModelHeartbeatIdx);
+  });
+
+  test("sanitizes every model stream chunk before the final Trigger realtime pipe", () => {
+    const wrapperIdx = taskSrc.indexOf("const withAgentLongStreamHeartbeat");
+    const sanitizerIdx = taskSrc.indexOf(
+      "sanitizeAgentLongRealtimeChunk(",
+      wrapperIdx,
+    );
+    const mergeIdx = taskSrc.indexOf(
+      "writer.merge(\n              withAgentLongStreamHeartbeat(",
+      sanitizerIdx,
+    );
+    const finalPipeIdx = taskSrc.indexOf(
+      "agentUiStream.pipe(uiStream)",
+      mergeIdx,
+    );
+
+    expect(wrapperIdx).toBeGreaterThan(-1);
+    expect(sanitizerIdx).toBeGreaterThan(wrapperIdx);
+    expect(mergeIdx).toBeGreaterThan(sanitizerIdx);
+    expect(finalPipeIdx).toBeGreaterThan(mergeIdx);
   });
 
   test("both Agent backends route provider finishes through the shared auto-continue helper", () => {
@@ -1080,6 +1243,26 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(fallbackIdx).toBeGreaterThan(retryModelIdx);
   });
 
+  test("/api/chat attributes fallback usage to the persisted retry message", () => {
+    expect(chatHandlerSrc).toMatch(
+      /const deductAccumulatedUsage = async \(\s*assistantMessageIdForUsage = assistantMessageId,\s*\)/,
+    );
+    expect(
+      chatHandlerSrc.match(/assistantMessageId: assistantMessageIdForUsage/g),
+    ).toHaveLength(2);
+
+    const retryMessageIdIdx = chatHandlerSrc.indexOf(
+      "const retryMessageId = generateId()",
+    );
+    const retryUsageIdx = chatHandlerSrc.indexOf(
+      "await deductAccumulatedUsage(retryMessageId)",
+      retryMessageIdIdx,
+    );
+
+    expect(retryMessageIdIdx).toBeGreaterThan(-1);
+    expect(retryUsageIdx).toBeGreaterThan(retryMessageIdIdx);
+  });
+
   test("retry streams reset served-model telemetry and distinguish same-model recovery", () => {
     for (const source of [taskSrc, chatHandlerSrc]) {
       expect(
@@ -1144,7 +1327,7 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
 
   test("agent stream applies per-step OpenRouter metadata cost before budget checks", () => {
     const onStepFinishIdx = agentStreamRunnerSrc.indexOf(
-      "onStepFinish: async ({ usage, response, providerMetadata }) => {",
+      "onStepFinish: async ({ usage, response, providerMetadata, content }) => {",
     );
     const accumulateIdx = agentStreamRunnerSrc.indexOf(
       "stepUsageCostIndex = ctx.usageTracker.accumulateStep",
@@ -1337,6 +1520,58 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(handledReturnGuardIdx).toBeGreaterThan(syntheticFlushIdx);
     expect(returnIdx).toBeGreaterThan(handledReturnGuardIdx);
     expect(throwIdx).toBeGreaterThan(returnIdx);
+  });
+
+  test("invalid provider image URLs are handled as user-correctable input", () => {
+    expect(taskSrc).toMatch(/isInvalidImageInputError/);
+    expect(taskSrc).toMatch(/"invalid_image_input"/);
+    expect(taskSrc).toMatch(
+      /USER_CORRECTABLE_AGENT_LONG_ERROR_CATEGORIES[\s\S]*"invalid_image_input"/,
+    );
+    expect(taskSrc).toMatch(
+      /isProviderApiError\(error\)\s*&&\s*!isInvalidImageInputError\(error\)/,
+    );
+  });
+
+  test("recognizes every observed Trigger S2 terminal signature", () => {
+    expect(taskSrc).toMatch(/Connection timeout after \\d\+ms/);
+    expect(taskSrc).toMatch(/cs:\[a-z0-9\]\+/);
+    expect(taskSrc).toMatch(/Request timeout after \\d\+ms/);
+  });
+
+  test("chat metadata failure cannot discard main or fallback generations", () => {
+    const finalizationBlockIndexes = [
+      ...taskSrc.matchAll(/const generatedTitle = await titlePromise/g),
+    ].map((match) => match.index);
+
+    expect(finalizationBlockIndexes).toHaveLength(2);
+    for (const finalizationBlockIdx of finalizationBlockIndexes) {
+      const updateIdx = taskSrc.indexOf(
+        "await updateChat({",
+        finalizationBlockIdx,
+      );
+      const guardedFailureIdx = taskSrc.indexOf(
+        "recordAgentLongChatMetadataUpdateFailure(",
+        updateIdx,
+      );
+      const saveMessageIdx = taskSrc.indexOf("await saveMessage({", updateIdx);
+
+      expect(updateIdx).toBeGreaterThan(finalizationBlockIdx);
+      expect(guardedFailureIdx).toBeGreaterThan(updateIdx);
+      expect(saveMessageIdx).toBeGreaterThan(guardedFailureIdx);
+    }
+    expect(taskSrc).toMatch(/chatFinalizationStatus/);
+  });
+
+  test("generated titles update reactive sidebar data before finalization", () => {
+    expect(dbActionsSrc).toMatch(/export async function updateChatTitle/);
+    expect(dbActionsSrc).toMatch(/api\.chats\.updateChatTitle/);
+    expect(chatHandlerSrc).toMatch(
+      /generateTitleFromUserMessageWithWriter\([\s\S]*?\(title\) => updateChatTitle\(\{ chatId, title \}\)/,
+    );
+    expect(taskSrc).toMatch(
+      /generateTitleFromUserMessageWithWriter\([\s\S]*?\(title\) => updateChatTitle\(\{ chatId, title \}\)/,
+    );
   });
 
   test("empty rehydrated history is classified separately from oversized input", () => {

@@ -1,9 +1,7 @@
 import {
-  convertToModelMessages,
   createUIMessageStream,
   createUIMessageStreamResponse,
   generateId,
-  UIMessage,
 } from "ai";
 import { systemPrompt } from "@/lib/system-prompt";
 import { getResumeSection } from "@/lib/system-prompt/resume";
@@ -31,6 +29,7 @@ import {
   isLimitRescueRequest,
   normalizeMaxModelForSubscription,
   normalizeSelectedModelOverrideForSubscription,
+  withExtraUsageBillingForModel,
 } from "@/types";
 import { getBaseTodosForRequest } from "@/lib/utils/todo-utils";
 import {
@@ -98,6 +97,7 @@ import {
   handleInitialChatAndUserMessage,
   saveMessage,
   updateChat,
+  updateChatTitle,
   getMessagesByChatId,
   getUserCustomization,
   prepareForNewStream,
@@ -137,9 +137,14 @@ import {
   writeAutoContinue,
 } from "@/lib/utils/stream-writer-utils";
 import { Id } from "@/convex/_generated/dataModel";
-import { getMaxStepsForUser } from "@/lib/chat/chat-processor";
 import { phLogger } from "@/lib/posthog/server";
 import { PAID_FUNNEL_EVENTS } from "@/lib/analytics/paid-funnel";
+import { readAnalyticsRequestContext } from "@/lib/analytics/request-context";
+import {
+  buildAgentCompletionSignals,
+  createAgentCompletionSignalTracker,
+  recordHandledToolFailure,
+} from "@/lib/analytics/agent-completion-signals";
 import {
   capturePaidDailyFreeAllowanceServerEvent,
   createPaidDailyFreeAllowanceBudgetSnapshot,
@@ -157,7 +162,9 @@ import {
 import {
   requireBooleanFlag,
   requireChatMessagesArray,
+  requireOptionalIdentifier,
 } from "@/lib/api/chat-request-validation";
+import { resolveProjectExecutionContext } from "@/lib/chat/project-context";
 import { isAgentMode } from "@/lib/utils/mode-helpers";
 import {
   createAgentStream,
@@ -227,6 +234,7 @@ export const createChatHandler = () => {
         isAutoContinue,
         useClientMessagesForRegenerate,
         limitRescue: rawLimitRescue,
+        projectId: rawProjectId,
       }: {
         messages: unknown;
         mode: ChatMode;
@@ -239,8 +247,14 @@ export const createChatHandler = () => {
         isAutoContinue?: boolean;
         useClientMessagesForRegenerate?: boolean;
         limitRescue?: unknown;
+        projectId?: unknown;
       } = await req.json();
+      const analyticsRequestContext = readAnalyticsRequestContext(req.headers);
       const temporary = requireBooleanFlag("temporary", rawTemporary);
+      const requestedProjectId = requireOptionalIdentifier(
+        "projectId",
+        rawProjectId,
+      );
       outerChatId = chatId;
 
       const limitRescue: LimitRescueRequest | undefined = isLimitRescueRequest(
@@ -319,6 +333,15 @@ export const createChatHandler = () => {
         useClientMessagesForRegenerate,
       });
       const { chat, isNewChat, fileTokens } = fetched;
+      const projectContext = temporary
+        ? {}
+        : await resolveProjectExecutionContext({
+            chat,
+            requestedProjectId,
+            userId,
+            mode,
+            sandboxPreference,
+          });
       const truncatedMessages =
         subscription === "free"
           ? stripImageAttachments(fetched.truncatedMessages)
@@ -330,17 +353,22 @@ export const createChatHandler = () => {
         { isTemporary: temporary, regenerate },
       );
 
-      const extraUsageConfig = await buildExtraUsageConfig({
+      const baseExtraUsageConfig = await buildExtraUsageConfig({
         userId,
         subscription,
         userCustomization,
         organizationId,
       });
-      const extraUsageAvailable = canUseExtraUsage(extraUsageConfig);
+      const extraUsageAvailable = canUseExtraUsage(baseExtraUsageConfig);
       selectedModelOverride =
         normalizeMaxModelForSubscription(selectedModelOverride, subscription, {
           extraUsageAvailable,
         }) ?? undefined;
+      const extraUsageConfig = withExtraUsageBillingForModel(
+        baseExtraUsageConfig,
+        selectedModelOverride,
+        subscription,
+      );
 
       if (!temporary) {
         await handleInitialChatAndUserMessage({
@@ -350,6 +378,7 @@ export const createChatHandler = () => {
           regenerate,
           chat,
           isHidden: isAutoContinue ? true : undefined,
+          projectId: projectContext.projectId,
         });
       }
 
@@ -372,18 +401,22 @@ export const createChatHandler = () => {
         ? getUploadBasePath(sandboxPreference)
         : undefined;
 
-      let { processedMessages, selectedModel, sandboxFiles } =
-        await processChatMessages({
-          messages: truncatedMessages,
-          mode,
-          userId,
-          subscription,
-          uploadBasePath,
-          modelOverride: selectedModelOverride,
-          extraUsageAvailable,
-          allowLocalDesktopFiles:
-            isAgentMode(mode) && sandboxPreference === "desktop",
-        });
+      let {
+        processedMessages,
+        selectedModel,
+        sandboxFiles,
+        platformAuthorized,
+      } = await processChatMessages({
+        messages: truncatedMessages,
+        mode,
+        userId,
+        subscription,
+        uploadBasePath,
+        modelOverride: selectedModelOverride,
+        extraUsageAvailable,
+        allowLocalDesktopFiles:
+          isAgentMode(mode) && sandboxPreference === "desktop",
+      });
 
       // Empty after processing → providers reject the request before the route can stream.
       if (!processedMessages || processedMessages.length === 0) {
@@ -606,9 +639,12 @@ export const createChatHandler = () => {
               }),
             });
 
+            const completionSignalTracker =
+              createAgentCompletionSignalTracker();
+            const onToolFailure = () =>
+              recordHandledToolFailure(completionSignalTracker);
             const {
               tools,
-              getSandbox,
               ensureSandbox,
               getTodoManager,
               getFileAccumulator,
@@ -639,6 +675,10 @@ export const createChatHandler = () => {
                 chatLogger?.setSandboxBoot(info);
               },
               selectedModel,
+              onToolFailure,
+              undefined,
+              undefined,
+              projectContext.workingDirectory,
             );
 
             // Helper to send file metadata via stream for resumable stream clients
@@ -754,6 +794,7 @@ export const createChatHandler = () => {
                 ? generateTitleFromUserMessageWithWriter(
                     processedMessages,
                     writer,
+                    (title) => updateChatTitle({ chatId, title }),
                   )
                 : Promise.resolve(undefined);
 
@@ -882,7 +923,9 @@ export const createChatHandler = () => {
                 : createUsageSettlementState(rateLimitInfo);
             let usageSettlementSequence = 0;
 
-            const deductAccumulatedUsage = async () => {
+            const deductAccumulatedUsage = async (
+              assistantMessageIdForUsage = assistantMessageId,
+            ) => {
               try {
                 if (hasRecordedUsage) return;
                 // Add E2B sandbox session cost (duration-based)
@@ -913,13 +956,10 @@ export const createChatHandler = () => {
                 let usageCostRecord =
                   usageTracker.createUsageCostRecord(usageRecordArgs);
 
-                // Trust accumulated provider cost only when every model step has
-                // an authoritative cost. providerCost also includes tool/sandbox
-                // spend; if any model step is missing cost, keep token fallback
-                // for the model portion and add nonModelCost separately.
-                const providerCost = usageTracker.hasAuthoritativeModelCost
-                  ? usageTracker.providerCost
-                  : undefined;
+                // Use the same resolved provider/hybrid total that powers
+                // mid-run settlement. This preserves authoritative step costs
+                // and estimates only the individual steps missing provider cost.
+                const settledCostDollars = usageCostRecord.costDollars;
 
                 if (paidDailyFreeAllowanceReservation) {
                   const allowanceCostRecord =
@@ -947,6 +987,7 @@ export const createChatHandler = () => {
                     userId,
                     organizationId,
                     chatId,
+                    assistantMessageId: assistantMessageIdForUsage,
                     endpoint,
                     mode,
                     subscription,
@@ -1001,7 +1042,7 @@ export const createChatHandler = () => {
                     usageTracker.inputTokens,
                     usageTracker.outputTokens,
                     extraUsageConfig,
-                    providerCost,
+                    settledCostDollars,
                     selectedModel,
                     usageTracker.nonModelCost,
                     organizationId,
@@ -1058,6 +1099,7 @@ export const createChatHandler = () => {
                     userId,
                     organizationId,
                     chatId,
+                    assistantMessageId: assistantMessageIdForUsage,
                     endpoint,
                     mode,
                     subscription,
@@ -1080,6 +1122,13 @@ export const createChatHandler = () => {
                   mode,
                   usage: usageCostRecord,
                   responseModel: state.responseModel,
+                  analyticsRequestContext,
+                  ...(usageSettlementState && {
+                    usageSettlement: {
+                      id: usageTracker.usageSettlementId,
+                      midRunCount: usageSettlementSequence,
+                    },
+                  }),
                   ...(paidDailyFreeAllowanceReservation && {
                     paidDailyFreeAllowance:
                       createPaidDailyFreeAllowanceUsageLogContext(
@@ -1222,6 +1271,7 @@ export const createChatHandler = () => {
               streamStartTime,
               contextUsageOn,
               isReasoningModel,
+              platformAuthorized,
               maxDurationMs: AGENT_MAX_STREAM_DURATION_MS,
               writer,
               abortController: userStopSignal,
@@ -1233,6 +1283,7 @@ export const createChatHandler = () => {
               ensureSandbox,
               chatLogger,
               usageRefundTracker,
+              completionSignalTracker,
               settleUsageAfterStep,
               onBudgetAbort: (details) =>
                 captureAgentBudgetAbort({
@@ -1554,7 +1605,7 @@ export const createChatHandler = () => {
                                 // Final reconciliation can change the finish
                                 // reason to budget-exhausted; do it before
                                 // analytics and persistence consume state.
-                                await deductAccumulatedUsage();
+                                await deductAccumulatedUsage(retryMessageId);
                                 const outcome = retryAborted
                                   ? "aborted"
                                   : "success";
@@ -1578,6 +1629,14 @@ export const createChatHandler = () => {
                                       : state.fallbackServed,
                                   finishReason: state.streamFinishReason,
                                   budgetAbortDetails: state.budgetAbortDetails,
+                                  isAutoContinue,
+                                  completionSignals:
+                                    buildAgentCompletionSignals({
+                                      outcome,
+                                      finishReason: state.streamFinishReason,
+                                      todos: getTodoManager().getAllTodos(),
+                                      tracker: completionSignalTracker,
+                                    }),
                                 });
                                 chatLogger!.emitSuccess({
                                   finishReason: state.streamFinishReason,
@@ -1869,6 +1928,13 @@ export const createChatHandler = () => {
                           : state.fallbackServed,
                       finishReason: state.streamFinishReason,
                       budgetAbortDetails: state.budgetAbortDetails,
+                      isAutoContinue,
+                      completionSignals: buildAgentCompletionSignals({
+                        outcome,
+                        finishReason: state.streamFinishReason,
+                        todos: getTodoManager().getAllTodos(),
+                        tracker: completionSignalTracker,
+                      }),
                     });
                     chatLogger!.emitSuccess({
                       finishReason: state.streamFinishReason,

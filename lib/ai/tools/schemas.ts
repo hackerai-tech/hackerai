@@ -253,6 +253,7 @@ export const createFileToolSchema = ({
     ...(supportsView
       ? [
           "Use 'view' only for raster image files such as PNG, JPEG, GIF, and WebP.",
+          "When the current Agent model is not vision-capable, calling 'view' automatically routes subsequent Agent steps to a vision-capable model.",
           "Do not use 'view' for PDFs. Use 'read' for extractable text, or use the shell tool to convert PDF pages to images first if visual inspection is required.",
           "Use 'read' for text-based or line-oriented formats.",
         ]
@@ -473,8 +474,6 @@ When in doubt, use this tool. Systematic task management ensures comprehensive s
   inputSchema: todoWriteToolInputSchema,
 });
 
-export type TodoWriteToolInput = z.infer<typeof todoWriteToolInputSchema>;
-
 export const PERPLEXITY_QUERY_MAX_LENGTH = 8192;
 const webSearchQuerySchema = z
   .string()
@@ -543,7 +542,6 @@ export const NOTE_CATEGORIES = [
   "questions",
   "plan",
 ] as const;
-export type ToolNoteCategory = (typeof NOTE_CATEGORIES)[number];
 const noteCategorySchema = z.enum(NOTE_CATEGORIES);
 
 export const createNoteToolInputSchema = z.object({
@@ -739,14 +737,12 @@ export const createAgentToolSchemaSet = ({
   isTemporary = false,
   hasPerplexityApiKey = false,
   hasJinaApiKey = false,
-  supportsFileView = false,
 }: {
   mode?: AgentToolSchemaMode;
   notesEnabled?: boolean;
   isTemporary?: boolean;
   hasPerplexityApiKey?: boolean;
   hasJinaApiKey?: boolean;
-  supportsFileView?: boolean;
 } = {}) => {
   const notes =
     !isTemporary && notesEnabled
@@ -773,7 +769,7 @@ export const createAgentToolSchemaSet = ({
     run_terminal_cmd: runTerminalCmdTool,
     interact_terminal_session: interactTerminalSessionTool,
     get_terminal_files: getTerminalFilesTool,
-    file: createFileToolSchema({ supportsView: supportsFileView }),
+    file: createFileToolSchema({ supportsView: true }),
     todo_write: todoWriteTool,
     ...notes,
     ...networkTools,

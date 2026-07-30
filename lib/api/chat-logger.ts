@@ -29,6 +29,9 @@ import {
   PAID_FUNNEL_EVENTS,
   paidFunnelProperties,
 } from "@/lib/analytics/paid-funnel";
+import type { AgentCompletionSignals } from "@/lib/analytics/agent-completion-signals";
+import type { AnalyticsRequestContext } from "@/lib/analytics/request-context";
+import { extraUsagePointsToDollars } from "@/convex/lib/extraUsagePricing";
 import type { UsageCostRecord } from "@/lib/usage-tracker";
 import type { UsageDeductionResult } from "@/lib/rate-limit";
 import type { BudgetAbortDetails } from "@/lib/chat/budget-monitor";
@@ -43,9 +46,25 @@ import {
 import {
   getLimitPressureContext,
   getLimitTypeForCapReason,
-  isPaidMonthlyCapHitReason,
   type LimitCapReason,
 } from "@/lib/limit-pressure";
+
+export const USAGE_SETTLEMENT_SUCCESS_SAMPLE_RATE = 0.005;
+
+const usageSettlementSampleBucket = (usageSettlementId: string): number => {
+  let hash = 2166136261;
+  for (let index = 0; index < usageSettlementId.length; index += 1) {
+    hash ^= usageSettlementId.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0) % 10_000;
+};
+
+export const isUsageSettlementSuccessSampled = (
+  usageSettlementId: string,
+): boolean =>
+  usageSettlementSampleBucket(usageSettlementId) <
+  USAGE_SETTLEMENT_SUCCESS_SAMPLE_RATE * 10_000;
 
 export interface ChatLoggerConfig {
   chatId: string;
@@ -493,8 +512,8 @@ export function createChatLogger(config: ChatLoggerConfig) {
   const builder = createWideEventBuilder(config.chatId, config.endpoint);
 
   // Cache identity/context fields so emitChatError can fire discrete PostHog
-  // events (e.g. monthly_cap_hit) without forcing the call site to thread
-  // them through. Populated by the corresponding setX methods below.
+  // events without forcing the call site to thread them through. Populated by
+  // the corresponding setX methods below.
   let userId: string | undefined;
   let subscription: string | undefined;
   let mode: ChatMode | undefined;
@@ -944,41 +963,6 @@ export function createChatLogger(config: ChatLoggerConfig) {
           });
         }
       }
-
-      // Fire a discrete PostHog event when a paid user is blocked at the
-      // monthly cap. Used to size the cap-hit cohort and correlate against
-      // subscription_changed / subscription_cancelled events.
-      if (
-        error.type === "rate_limit" &&
-        subscription &&
-        isSubscriptionTier(subscription) &&
-        subscription !== "free"
-      ) {
-        const capReason =
-          (error.metadata?.capReason as LimitCapReason | undefined) ??
-          "unknown";
-        if (!isPaidMonthlyCapHitReason(capReason)) return;
-        const pressure = getLimitPressureContext({
-          subscription,
-          capReason,
-        });
-        phLogger.event("monthly_cap_hit", {
-          userId,
-          subscription,
-          mode,
-          cap_reason: capReason,
-          monthly_remaining_percent: monthlyRemainingPercent,
-          cost_guardrail: pressure.costGuardrail,
-          primary_cta: pressure.primaryCta,
-          eligible_ctas: pressure.eligibleCtas,
-          chat_id: config.chatId,
-          endpoint: config.endpoint,
-          $set: {
-            subscription_tier: subscription,
-            last_cap_hit_at: new Date().toISOString(),
-          },
-        });
-      }
     },
 
     /**
@@ -1161,7 +1145,6 @@ export function captureToolCalls({
         mode,
         toolName: tool.name,
         count: tool.count,
-        toolCallCount: tool.count,
       },
     });
   }
@@ -1186,6 +1169,16 @@ type AgentCompletionAnalyticsArgs = {
   finishReason?: string;
   budgetAbortDetails?: BudgetAbortDetails;
   agentPermissionMode?: AgentPermissionMode;
+  triggerRunId?: string;
+  triggerUsageDurationMs?: number;
+  triggerTotalCostUsd?: number;
+  approvalWaitCount?: number;
+  approvalWaitDurationMs?: number;
+  activeModelStreamDurationMs?: number;
+  activeTerminalWaitDurationMs?: number;
+  activeSandboxRecoveryDurationMs?: number;
+  isAutoContinue?: boolean;
+  completionSignals?: AgentCompletionSignals;
 };
 
 export function captureAgentRun({
@@ -1202,6 +1195,16 @@ export function captureAgentRun({
   finishReason,
   budgetAbortDetails,
   agentPermissionMode,
+  triggerRunId,
+  triggerUsageDurationMs,
+  triggerTotalCostUsd,
+  approvalWaitCount,
+  approvalWaitDurationMs,
+  activeModelStreamDurationMs,
+  activeTerminalWaitDurationMs,
+  activeSandboxRecoveryDurationMs,
+  isAutoContinue,
+  completionSignals,
 }: {
   posthog: PostHog | null;
   userId: string;
@@ -1216,6 +1219,16 @@ export function captureAgentRun({
   finishReason?: string;
   budgetAbortDetails?: BudgetAbortDetails;
   agentPermissionMode?: AgentPermissionMode;
+  triggerRunId?: string;
+  triggerUsageDurationMs?: number;
+  triggerTotalCostUsd?: number;
+  approvalWaitCount?: number;
+  approvalWaitDurationMs?: number;
+  activeModelStreamDurationMs?: number;
+  activeTerminalWaitDurationMs?: number;
+  activeSandboxRecoveryDurationMs?: number;
+  isAutoContinue?: boolean;
+  completionSignals?: AgentCompletionSignals;
 }) {
   if (!posthog || mode !== "agent") return;
   posthog.capture({
@@ -1231,71 +1244,60 @@ export function captureAgentRun({
       ...(agentPermissionMode && {
         agent_permission_mode: agentPermissionMode,
       }),
+      ...(triggerRunId && { trigger_run_id: triggerRunId }),
+      ...(triggerUsageDurationMs !== undefined && {
+        trigger_usage_duration_ms: triggerUsageDurationMs,
+      }),
+      ...(triggerTotalCostUsd !== undefined && {
+        trigger_total_cost_usd: triggerTotalCostUsd,
+      }),
+      ...(approvalWaitCount !== undefined && {
+        approval_wait_count: approvalWaitCount,
+      }),
+      ...(approvalWaitDurationMs !== undefined && {
+        approval_wait_duration_ms: approvalWaitDurationMs,
+      }),
+      ...(activeModelStreamDurationMs !== undefined && {
+        active_model_stream_duration_ms: activeModelStreamDurationMs,
+      }),
+      ...(activeTerminalWaitDurationMs !== undefined && {
+        active_terminal_wait_duration_ms: activeTerminalWaitDurationMs,
+      }),
+      ...(activeSandboxRecoveryDurationMs !== undefined && {
+        active_sandbox_recovery_duration_ms: activeSandboxRecoveryDurationMs,
+      }),
+      ...(isAutoContinue !== undefined && {
+        is_auto_continue: isAutoContinue,
+      }),
       ...(responseModel && { response_model: responseModel }),
       ...(responseModel &&
         fallbackServed !== undefined && { fallback_served: fallbackServed }),
       ...(sandboxInfo?.type && {
-        sandboxType: sandboxInfo.type,
         sandbox_type: sandboxInfo.type,
       }),
       ...(finishReason && { finish_reason: finishReason }),
+      ...(completionSignals && {
+        completion_signal_version: completionSignals.version,
+        natural_stop: completionSignals.naturalStop,
+        agent_step_count: completionSignals.stepCount,
+        todo_total_count: completionSignals.todoTotalCount,
+        todo_pending_count: completionSignals.todoPendingCount,
+        todo_in_progress_count: completionSignals.todoInProgressCount,
+        has_unfinished_todos: completionSignals.hasUnfinishedTodos,
+        handled_tool_failure_count: completionSignals.handledToolFailureCount,
+        sdk_tool_error_count: completionSignals.sdkToolErrorCount,
+        has_tool_failure: completionSignals.hasToolFailure,
+        recent_tool_failure: completionSignals.recentToolFailure,
+        ...(completionSignals.stepsSinceLastToolFailure !== undefined && {
+          steps_since_last_tool_failure:
+            completionSignals.stepsSinceLastToolFailure,
+        }),
+      }),
       ...(budgetAbortDetails && {
         budget_abort_cap_reason: budgetAbortDetails.capReason,
         budget_abort_billing_stop_reason: budgetAbortDetails.billingStopReason,
         budget_abort_mid_stream: budgetAbortDetails.midStream,
       }),
-    },
-  });
-}
-
-export function captureFreeAgentValueReached({
-  posthog,
-  userId,
-  chatId,
-  endpoint,
-  mode,
-  subscription,
-  sandboxInfo,
-  outcome,
-  chatLogger,
-}: {
-  posthog: PostHog | null;
-  userId: string;
-  chatId: string;
-  endpoint: ChatApiEndpoint;
-  mode: ChatMode;
-  subscription: string;
-  sandboxInfo: SandboxInfo | null;
-  outcome: AgentRunOutcome;
-  chatLogger: ChatLogger | undefined;
-}) {
-  if (!posthog || mode !== "agent" || subscription !== "free") return;
-  if (outcome !== "success") return;
-
-  const now = new Date().toISOString();
-  const toolCallCount = chatLogger?.getToolCalls().length ?? 0;
-
-  posthog.capture({
-    distinctId: userId,
-    event: "hackerai-free_agent_value_reached",
-    properties: {
-      user_id: userId,
-      chat_id: chatId,
-      endpoint,
-      mode,
-      subscription,
-      subscription_tier: subscription,
-      outcome,
-      tool_call_count: toolCallCount,
-      agent_value_event_version: 1,
-      ...(sandboxInfo?.type && { sandbox_type: sandboxInfo.type }),
-      $set_once: {
-        first_free_agent_value_reached_at: now,
-      },
-      $set: {
-        subscription_tier: subscription,
-        last_free_agent_value_reached_at: now,
-      },
     },
   });
 }
@@ -1318,14 +1320,26 @@ export function captureAgentCompletionAnalytics(
     finishReason: args.finishReason,
     budgetAbortDetails: args.budgetAbortDetails,
     agentPermissionMode: args.agentPermissionMode,
+    triggerRunId: args.triggerRunId,
+    triggerUsageDurationMs: args.triggerUsageDurationMs,
+    triggerTotalCostUsd: args.triggerTotalCostUsd,
+    approvalWaitCount: args.approvalWaitCount,
+    approvalWaitDurationMs: args.approvalWaitDurationMs,
+    activeModelStreamDurationMs: args.activeModelStreamDurationMs,
+    activeTerminalWaitDurationMs: args.activeTerminalWaitDurationMs,
+    activeSandboxRecoveryDurationMs: args.activeSandboxRecoveryDurationMs,
+    isAutoContinue: args.isAutoContinue,
+    completionSignals: args.completionSignals,
   });
-  captureFreeAgentValueReached(args);
 }
 
 /**
  * Capture one cost event per request with usage. In PostHog, answer
  * "how much does each user cost you?" by summing cost_dollars on
- * hackerai-usage_cost grouped by distinct_id (or user_id).
+ * hackerai-usage_cost grouped by distinct_id (or user_id). Sum
+ * consumption_contribution_dollars for extra-usage value consumed minus
+ * provider/tool cost; subscription revenue is intentionally reported
+ * separately.
  */
 export function captureUsageCost({
   posthog,
@@ -1339,6 +1353,8 @@ export function captureUsageCost({
   usage,
   responseModel,
   paidDailyFreeAllowance,
+  usageSettlement,
+  analyticsRequestContext,
 }: {
   posthog: PostHog | null;
   userId: string;
@@ -1357,8 +1373,16 @@ export function captureUsageCost({
     costLimitDollars?: number;
     resetTimestamp?: number;
   };
+  usageSettlement?: {
+    id: string;
+    midRunCount: number;
+  };
+  analyticsRequestContext?: AnalyticsRequestContext;
 }) {
   if (!posthog) return;
+  const extraUsageChargeDollars = extraUsagePointsToDollars(
+    usage.extraUsagePointsDeducted,
+  );
   posthog.capture({
     distinctId: userId,
     event: "hackerai-usage_cost",
@@ -1382,6 +1406,10 @@ export function captureUsageCost({
       uncovered_cost_dollars: usage.uncoveredCostDollars,
       included_points_deducted: usage.includedPointsDeducted,
       extra_usage_points_deducted: usage.extraUsagePointsDeducted,
+      usage_economics_version: 1,
+      extra_usage_charge_dollars: extraUsageChargeDollars,
+      consumption_contribution_dollars:
+        extraUsageChargeDollars - usage.costDollars,
       uncovered_points: usage.uncoveredPoints,
       usage_deduction_failed: usage.usageDeductionFailed,
       usage_deduction_failure_reason: usage.usageDeductionFailureReason,
@@ -1393,6 +1421,19 @@ export function captureUsageCost({
       cache_read_tokens: usage.cacheReadTokens ?? 0,
       cache_write_tokens: usage.cacheWriteTokens ?? 0,
       cost_source: usage.costSource,
+      ...(analyticsRequestContext?.posthogSessionId && {
+        $session_id: analyticsRequestContext.posthogSessionId,
+      }),
+      ...(usageSettlement && {
+        usage_settlement_id: usageSettlement.id,
+        mid_run_usage_settlement_count: usageSettlement.midRunCount,
+        usage_settlement_step_events_sampled: isUsageSettlementSuccessSampled(
+          usageSettlement.id,
+        ),
+        usage_settlement_success_sample_rate:
+          USAGE_SETTLEMENT_SUCCESS_SAMPLE_RATE,
+        usage_settlement_summary_version: 1,
+      }),
       ...(paidDailyFreeAllowance?.active && {
         limit_rescue_type: "paid_daily_free_allowance",
         paid_daily_free_allowance_active: true,
@@ -1405,18 +1446,14 @@ export function captureUsageCost({
         paid_daily_free_allowance_reset_timestamp:
           paidDailyFreeAllowance.resetTimestamp,
       }),
-      $set: {
-        subscription_tier: subscription,
-        last_usage_cost_at: new Date().toISOString(),
-      },
     },
   });
 }
 
 /**
- * Capture one event for each positive provider-step settlement attempt. This
- * complements the request-level hackerai-usage_cost aggregate with the exact
- * wallet outcome that determined whether the next provider step could start.
+ * Capture every anomalous provider-step settlement and a deterministic sample
+ * of routine successful runs. Sampling by settlement ID keeps complete step
+ * sequences for sampled runs instead of producing random gaps within a run.
  */
 export function captureUsageSettlement({
   posthog,
@@ -1452,6 +1489,14 @@ export function captureUsageSettlement({
   forced: boolean;
 }) {
   if (!posthog) return;
+  const runSampled = isUsageSettlementSuccessSampled(usageSettlementId);
+  const anomalous =
+    forced ||
+    deduction.uncoveredPoints > 0 ||
+    deduction.usageDeductionFailed ||
+    deduction.usageDeductionFailureReason !== undefined;
+  if (!anomalous && !runSampled) return;
+
   posthog.capture({
     distinctId: userId,
     event: "hackerai-usage_settlement",
@@ -1475,7 +1520,10 @@ export function captureUsageSettlement({
       usage_deduction_failed: deduction.usageDeductionFailed,
       usage_deduction_failure_reason: deduction.usageDeductionFailureReason,
       forced,
-      settlement_event_version: 1,
+      settlement_capture_reason: anomalous ? "anomaly" : "sampled_success",
+      settlement_run_sampled: runSampled,
+      settlement_success_sample_rate: USAGE_SETTLEMENT_SUCCESS_SAMPLE_RATE,
+      settlement_event_version: 2,
     },
   });
 }

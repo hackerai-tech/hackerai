@@ -1,4 +1,5 @@
 import {
+  createAgentToolSchemaSet,
   createFileToolSchema,
   createRunTerminalCmdToolSchema,
   runTerminalCmdTool,
@@ -72,6 +73,22 @@ describe("agent tool schema descriptions", () => {
     expect(getDescription(fullAccessTool)).not.toContain("approval-gated");
     expect(getDescription(approvalGatedTool)).toContain(
       "Write, append, and edit actions are approval-gated.",
+    );
+    expect(getDescription(fullAccessTool)).toContain(
+      "automatically routes subsequent Agent steps to a vision-capable model",
+    );
+  });
+
+  test("always exposes image view in the Agent schema catalog", () => {
+    const agentTools = createAgentToolSchemaSet();
+    const fileInputShape = getInputShape(agentTools.file);
+    const actionSchema = fileInputShape.action as {
+      safeParse: (input: unknown) => { success: boolean };
+    };
+
+    expect(actionSchema.safeParse("view").success).toBe(true);
+    expect(createAgentToolSchemaSet({ mode: "ask" })).not.toHaveProperty(
+      "file",
     );
   });
 });

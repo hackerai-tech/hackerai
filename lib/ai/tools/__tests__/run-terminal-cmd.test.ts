@@ -119,6 +119,7 @@ function makeFakeHandle(pid = 4242): FakeHandle {
 function makeFakeE2BSandbox() {
   return {
     jupyterUrl: "http://fake",
+    setTimeout: jest.fn(async () => undefined),
     commands: { run: jest.fn() },
   };
 }
@@ -130,6 +131,7 @@ function makeContext(opts: {
   ptySessionManager?: PtySessionManager;
   chatId?: string;
   requestToolApproval?: import("@/types").AgentToolApprovalRequester;
+  onSandboxResourceMetrics?: import("@/types").SandboxResourceMetricsObserver;
 }) {
   const writerWrites: unknown[] = [];
   const writer = {
@@ -173,6 +175,7 @@ function makeContext(opts: {
     getCurrentModelName: () => "active-model",
     subscription: "pro",
     requestToolApproval: opts.requestToolApproval,
+    onSandboxResourceMetrics: opts.onSandboxResourceMetrics,
     isE2BSandbox: (s: unknown) => {
       if (!s || typeof s !== "object") return false;
       if ((s as { sandboxKind?: unknown }).sandboxKind === "centrifugo")
@@ -193,6 +196,7 @@ const mockPhEvent = phLogger.event as jest.MockedFunction<
 async function runTool(
   tool: ReturnType<typeof createRunTerminalCmd>,
   input: Record<string, unknown>,
+  abortSignal?: AbortSignal,
 ) {
   const execute = (
     tool as unknown as {
@@ -201,7 +205,7 @@ async function runTool(
   ).execute;
   return execute(input, {
     toolCallId: "call-1",
-    abortSignal: undefined,
+    abortSignal,
     messages: [],
   });
 }
@@ -216,6 +220,7 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
   test("forwards the user-facing justification and reusable argv prefix", async () => {
     const nonE2B = {
       sandboxKind: "centrifugo" as const,
+      getConnectionId: () => "desktop-a",
       isWindows: () => false,
       commands: {
         run: jest.fn(
@@ -229,6 +234,7 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
     const requestToolApproval = jest.fn(async () => ({
       approved: true as const,
       approvalId: "approval-1",
+      sandboxIdentity: "connection:desktop-a" as const,
     }));
     const { context } = makeContext({
       sandbox: nonE2B,
@@ -254,6 +260,104 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
       justification: "Check whether the target host is reachable.",
       prefixRule: ["ping", "-c", "4"],
     });
+  });
+
+  test("does not execute a command on a replacement Desktop connection", async () => {
+    const run = jest.fn(async () => ({
+      stdout: "wrong host\n",
+      stderr: "",
+      exitCode: 0,
+    }));
+    const replacementDesktop = {
+      sandboxKind: "centrifugo" as const,
+      getConnectionId: () => "desktop-b",
+      isWindows: () => false,
+      commands: { run },
+    };
+    const requestToolApproval = jest.fn(async () => ({
+      approved: true as const,
+      approvalId: "approval-1",
+      sandboxIdentity: "connection:desktop-a" as const,
+    }));
+    const { context } = makeContext({
+      sandbox: replacementDesktop,
+      requestToolApproval,
+    });
+
+    const result = (await runTool(createRunTerminalCmd(context), {
+      command: "echo approved-on-a",
+      brief: "test connection binding",
+      is_background: false,
+      timeout: 5,
+      interactive: false,
+    })) as { result: { error?: string; exitCode: number | null } };
+
+    expect(result.result.error).toContain(
+      "selected sandbox changed after approval",
+    );
+    expect(run).not.toHaveBeenCalled();
+  });
+
+  test("does not create an interactive PTY on a replacement Desktop connection", async () => {
+    const fakeHandle = makeFakeHandle();
+    mockCreateCentrifugoPtyHandle.mockResolvedValue(fakeHandle);
+    const replacementDesktop = {
+      sandboxKind: "centrifugo" as const,
+      getConnectionId: () => "desktop-b",
+      getUserId: () => "user-1",
+      getConfig: () => ({ wsUrl: "ws://fake", tokenSecret: "secret" }),
+      isWindows: () => false,
+      commands: { run: jest.fn() },
+    };
+    const requestToolApproval = jest.fn(async () => ({
+      approved: true as const,
+      approvalId: "approval-1",
+      sandboxIdentity: "connection:desktop-a" as const,
+    }));
+    const { context } = makeContext({
+      sandbox: replacementDesktop,
+      requestToolApproval,
+    });
+
+    setTimeout(() => {
+      fakeHandle.emit(new TextEncoder().encode("wrong host\n"));
+      fakeHandle.resolveExit(0);
+    }, 10);
+    const result = (await runTool(createRunTerminalCmd(context), {
+      command: "sh",
+      brief: "test connection binding",
+      is_background: false,
+      timeout: 0.1,
+      interactive: true,
+    })) as { result: { error?: string; exitCode: number | null } };
+
+    expect(result.result.error).toContain(
+      "selected sandbox changed after approval",
+    );
+    expect(mockCreateCentrifugoPtyHandle).not.toHaveBeenCalled();
+  });
+
+  test("does not duplicate the acquisition lease for a short foreground command", async () => {
+    const fakeHandle = makeFakeHandle();
+    const e2b = makeFakeE2BSandbox();
+    mockCreateE2BPtyHandle.mockResolvedValue(fakeHandle);
+    const { context } = makeContext({ sandbox: e2b });
+    await e2b.setTimeout(7 * 60 * 1000, { requestTimeoutMs: 5 * 1000 });
+
+    setTimeout(() => {
+      fakeHandle.emit(new TextEncoder().encode("done\n"));
+      fakeHandle.resolveExit(0);
+    }, 10);
+
+    await runTool(createRunTerminalCmd(context), {
+      command: "sleep 500",
+      brief: "run a long command",
+      is_background: false,
+      timeout: 600,
+      interactive: true,
+    });
+
+    expect(e2b.setTimeout).toHaveBeenCalledTimes(1);
   });
 
   test("detectAgentBrowserUsage extracts sanitized actions", () => {
@@ -447,12 +551,25 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
     );
     const e2b = {
       jupyterUrl: "http://fake",
+      setTimeout: jest.fn(async () => undefined),
       commands: { run },
       isRunning: jest.fn(async () => true),
-      getMetrics: jest.fn(async () => []),
+      getMetrics: jest.fn(async () => [
+        {
+          cpuUsedPct: 100,
+          memUsed: 1945,
+          memTotal: 2048,
+          diskUsed: 400,
+          diskTotal: 1000,
+        },
+      ]),
     };
+    const onSandboxResourceMetrics = jest.fn();
 
-    const { context } = makeContext({ sandbox: e2b });
+    const { context } = makeContext({
+      sandbox: e2b,
+      onSandboxResourceMetrics,
+    });
     const result = (await runTool(createRunTerminalCmd(context), {
       command: "yes",
       brief: "run noisy command",
@@ -476,6 +593,16 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
         String(calledCommand).includes("pgrep"),
       ),
     ).toBe(false);
+    expect(onSandboxResourceMetrics).toHaveBeenCalledWith({
+      kind: "failure",
+      source: "terminal_command_timeout",
+      failureType: "terminal_command_timed_out",
+      metrics: {
+        cpuPct: 100,
+        memPct: expect.closeTo(94.9707, 3),
+        diskPct: 40,
+      },
+    });
   });
 
   test("marks detached background PIDs as non-resumable", async () => {
@@ -628,6 +755,63 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
     } finally {
       warnSpy.mockRestore();
     }
+  });
+
+  test("retains local command tracking when cancellation is not confirmed", async () => {
+    const abortController = new AbortController();
+    let commandStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      commandStarted = resolve;
+    });
+    const nonE2B = {
+      sandboxKind: "centrifugo" as const,
+      isWindows: () => false,
+      commands: {
+        run: jest.fn(
+          async (
+            _command: string,
+            opts?: {
+              signal?: AbortSignal;
+              onCancelReady?: (cancel: () => Promise<boolean>) => void;
+            },
+          ): Promise<{ stdout: string; stderr: string; exitCode: number }> => {
+            commandStarted();
+            opts?.onCancelReady?.(async () => false);
+            return new Promise(() => {});
+          },
+        ),
+      },
+    };
+    const { context, ptySessionManager } = makeContext({ sandbox: nonE2B });
+    const resultPromise = runTool(
+      createRunTerminalCmd(context),
+      {
+        action: "exec",
+        command: "sleep 999",
+        brief: "wait",
+        is_background: false,
+        interactive: false,
+        timeout: 30,
+      },
+      abortController.signal,
+    ) as Promise<{
+      result: { error?: string; exitCode?: number | null; session?: string };
+    }>;
+
+    await started;
+    abortController.abort();
+    const result = await resultPromise;
+
+    expect(result.result.exitCode).toBeNull();
+    expect(result.result.error).toContain(
+      "Command cancellation could not be confirmed",
+    );
+    expect(result.result.session).toBeDefined();
+    expect(
+      ptySessionManager.get("chat-1", result.result.session!),
+    ).toBeDefined();
+
+    ptySessionManager.forget("chat-1", result.result.session!);
   });
 
   test("does not retry a foreground command after its tool timeout resolves", async () => {
@@ -811,6 +995,7 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
       getUserId: () => "user-1",
       getConnectionId: () => "conn-1",
       getConfig: () => ({ wsUrl: "ws://fake", tokenSecret: "secret" }),
+      getWorkingDirectory: () => "/tmp/project",
       isWindows: () => false,
     };
     const { context } = makeContext({ sandbox: centrifugoSandbox });
@@ -832,6 +1017,10 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
     })) as { result: { output?: string; session?: string; pid?: number } };
 
     expect(mockCreateCentrifugoPtyHandle).toHaveBeenCalledTimes(1);
+    expect(mockCreateCentrifugoPtyHandle).toHaveBeenCalledWith(
+      centrifugoSandbox,
+      expect.objectContaining({ cwd: "/tmp/project" }),
+    );
     expect(result.result.session).toBeDefined();
     expect(result.result.pid).toBe(fakeHandle.pid);
   });
@@ -846,6 +1035,7 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
       getUserId: () => "user-1",
       getConnectionId: () => "conn-1",
       getConfig: () => ({ wsUrl: "ws://fake", tokenSecret: "secret" }),
+      getWorkingDirectory: () => "/tmp/project",
       isWindows: () => false,
     };
     const { context } = makeContext({ sandbox: centrifugoSandbox });

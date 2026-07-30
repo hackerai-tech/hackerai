@@ -50,6 +50,19 @@ const agentApprovalTargetGrantValidator = v.union(
 );
 
 export default defineSchema({
+  projects: defineTable({
+    user_id: v.string(),
+    name: v.string(),
+    folder_path: v.optional(v.string()),
+    pinned_at: v.optional(v.number()),
+    deletion_started_at: v.optional(v.number()),
+    created_at: v.number(),
+    updated_at: v.number(),
+  })
+    .index("by_user_and_created", ["user_id", "created_at"])
+    .index("by_user_and_updated", ["user_id", "updated_at"])
+    .index("by_user_and_pinned", ["user_id", "pinned_at"]),
+
   chats: defineTable({
     id: v.string(),
     title: v.string(),
@@ -86,6 +99,9 @@ export default defineSchema({
       ),
     ),
     branched_from_chat_id: v.optional(v.string()),
+    // Snapshot the source title when another user's shared chat is forked.
+    // This avoids reading later source-title changes after sharing is revoked.
+    branched_from_title: v.optional(v.string()),
     latest_summary_id: v.optional(v.id("chat_summaries")),
     update_time: v.number(),
     // Sharing fields
@@ -94,6 +110,7 @@ export default defineSchema({
     pinned_at: v.optional(v.number()),
     sandbox_type: v.optional(v.string()),
     selected_model: v.optional(v.string()),
+    project_id: v.optional(v.id("projects")),
     // Legacy field retained on historical rows. The local-provider feature
     // was removed and nothing reads or writes this anymore — kept in the
     // schema so old rows still pass validation.
@@ -101,6 +118,11 @@ export default defineSchema({
   })
     .index("by_chat_id", ["id"])
     .index("by_user_and_updated", ["user_id", "update_time"])
+    .index("by_user_project_and_updated", [
+      "user_id",
+      "project_id",
+      "update_time",
+    ])
     .index("by_user_and_active_trigger_run", [
       "user_id",
       "active_trigger_run_id",
@@ -162,6 +184,7 @@ export default defineSchema({
     generation_started_at: v.optional(v.number()),
     generation_time_ms: v.optional(v.number()),
     finish_reason: v.optional(v.string()),
+    trigger_run_id: v.optional(v.string()),
     usage: v.optional(v.any()),
     is_hidden: v.optional(v.boolean()),
   })
@@ -662,6 +685,7 @@ export default defineSchema({
     user_id: v.string(),
     organization_id: v.optional(v.string()),
     chat_id: v.optional(v.string()),
+    assistant_message_id: v.optional(v.string()),
     endpoint: v.optional(
       v.union(
         v.literal("/api/chat"),
@@ -681,7 +705,6 @@ export default defineSchema({
     output_tokens: v.number(),
     cache_read_tokens: v.optional(v.number()),
     cache_write_tokens: v.optional(v.number()),
-    total_tokens: v.number(),
     cost_dollars: v.number(),
     included_cost_dollars: v.optional(v.number()),
     extra_usage_cost_dollars: v.optional(v.number()),
@@ -689,7 +712,6 @@ export default defineSchema({
     included_points_deducted: v.optional(v.number()),
     extra_usage_points_deducted: v.optional(v.number()),
     uncovered_points: v.optional(v.number()),
-    usage_deduction_failed: v.optional(v.boolean()),
     usage_deduction_failure_reason: v.optional(
       usageDeductionFailureReasonValidator,
     ),
@@ -698,18 +720,11 @@ export default defineSchema({
     cost_source: v.optional(
       v.union(
         v.literal("provider"),
+        v.literal("hybrid"),
         v.literal("token_estimate"),
         v.literal("raw_token_estimate"),
       ),
     ),
-    // Legacy MAX Mode flag retained on historical rows. The feature was
-    // removed and nothing reads or writes this anymore — kept in the schema
-    // so old rows still pass validation.
-    max_mode: v.optional(v.boolean()),
-    // Legacy BYOK flag retained on historical rows. The feature was removed
-    // and nothing reads or writes this anymore — kept in the schema so old
-    // rows still pass validation.
-    byok: v.optional(v.boolean()),
   })
     .index("by_usage_settlement_id", ["usage_settlement_id"])
     .index("by_user", ["user_id"])

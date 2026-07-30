@@ -19,8 +19,12 @@ describe("token-bucket async functions", () => {
   const mockCreateRedisClient = jest.fn();
   const mockLimitFn = jest.fn();
   const mockHincrbyFn = jest.fn();
+  const mockHgetFn = jest.fn();
   const mockHsetFn = jest.fn();
+  const mockExistsFn = jest.fn();
+  const mockEvalFn = jest.fn();
   const mockDelFn = jest.fn();
+  const mockSetFn = jest.fn();
   const mockExpireFn = jest.fn();
   const mockScanFn = jest.fn();
   const mockDeductFromBalance = jest.fn();
@@ -41,8 +45,12 @@ describe("token-bucket async functions", () => {
       limit: 10000,
     });
     mockHincrbyFn.mockResolvedValue(5000);
+    mockHgetFn.mockResolvedValue(null);
     mockHsetFn.mockResolvedValue(1);
+    mockExistsFn.mockResolvedValue(1);
+    mockEvalFn.mockResolvedValue([-1, -1, 0]);
     mockDelFn.mockResolvedValue(1);
+    mockSetFn.mockResolvedValue("OK");
     mockExpireFn.mockResolvedValue(1);
     mockScanFn.mockResolvedValue(["0", []]);
     mockDeductFromBalance.mockResolvedValue({
@@ -67,8 +75,12 @@ describe("token-bucket async functions", () => {
     });
     mockCreateRedisClient.mockReturnValue({
       hincrby: mockHincrbyFn,
+      hget: mockHgetFn,
       hset: mockHsetFn,
+      exists: mockExistsFn,
+      eval: mockEvalFn,
       del: mockDelFn,
+      set: mockSetFn,
       expire: mockExpireFn,
       scan: mockScanFn,
     });
@@ -100,8 +112,12 @@ describe("token-bucket async functions", () => {
       jest.doMock("@upstash/redis", () => ({
         Redis: jest.fn().mockImplementation(() => ({
           hincrby: mockHincrbyFn,
+          hget: mockHgetFn,
           hset: mockHsetFn,
+          exists: mockExistsFn,
+          eval: mockEvalFn,
           del: mockDelFn,
+          set: mockSetFn,
           expire: mockExpireFn,
           scan: mockScanFn,
         })),
@@ -144,6 +160,214 @@ describe("token-bucket async functions", () => {
       await expect(deleteUserRateLimitKeys("user-123")).resolves.toBe(1);
 
       expect(mockDelFn).toHaveBeenCalledWith("usage:monthly:user-123:pro");
+    });
+  });
+
+  describe("tier-change bucket migration", () => {
+    const identity = {
+      subscriptionId: "sub_upgrade",
+      targetTier: "pro-plus" as const,
+      transitionId: "in_upgrade",
+    };
+
+    const tierChangeState = (overrides: Record<string, unknown> = {}) =>
+      JSON.stringify({
+        version: 3,
+        oldTier: "pro",
+        targetTier: "pro-plus",
+        subscriptionId: "sub_upgrade",
+        transitionId: "in_upgrade",
+        remaining: 0,
+        cycleAllocation: 250_000,
+        resetAtMs: Date.now() + 12 * 24 * 60 * 60 * 1000,
+        ...overrides,
+      });
+
+    it("atomically stashes the real cycle state and deletes the old bucket", async () => {
+      const resetAtMs = Date.now() + 12 * 24 * 60 * 60 * 1000;
+      const state = tierChangeState({ resetAtMs });
+      mockLimitFn.mockResolvedValueOnce({
+        success: true,
+        remaining: 0,
+        reset: resetAtMs,
+        limit: 250_000,
+      });
+      mockEvalFn.mockResolvedValueOnce(state);
+      const { stashTierChangeBucketState } = getIsolatedModule();
+
+      await expect(
+        stashTierChangeBucketState("user-123", "pro", { identity }),
+      ).resolves.toEqual(JSON.parse(state));
+
+      expect(mockLimitFn).toHaveBeenCalledWith("user-123:pro", { rate: 0 });
+      expect(mockEvalFn).toHaveBeenCalledWith(
+        expect.stringContaining('redis.call("SET", stashKey'),
+        [
+          "usage:monthly:user-123:pro",
+          "upgrade:carryover:user-123:in_upgrade",
+          "upgrade:carryover:user-123:in_upgrade:completed",
+        ],
+        [
+          250_000,
+          resetAtMs,
+          "pro",
+          86_400,
+          "sub_upgrade",
+          "pro-plus",
+          "in_upgrade",
+        ],
+      );
+    });
+
+    it("uses a price-specific old-cycle allocation when metadata is absent", async () => {
+      const resetAtMs = Date.now() + 12 * 24 * 60 * 60 * 1000;
+      mockLimitFn.mockResolvedValueOnce({
+        success: true,
+        remaining: 50_000,
+        reset: resetAtMs,
+        limit: 250_000,
+      });
+      mockEvalFn.mockResolvedValueOnce(
+        tierChangeState({
+          remaining: 50_000,
+          cycleAllocation: 200_000,
+          resetAtMs,
+        }),
+      );
+      const { stashTierChangeBucketState } = getIsolatedModule();
+
+      await stashTierChangeBucketState("user-123", "pro", {
+        identity,
+        oldCycleAllocationPoints: 200_000,
+      });
+
+      expect(mockEvalFn).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.any(Array),
+        [
+          200_000,
+          resetAtMs,
+          "pro",
+          86_400,
+          "sub_upgrade",
+          "pro-plus",
+          "in_upgrade",
+        ],
+      );
+    });
+
+    it("applies only the prorated Pro→Pro+ difference and preserves reset", async () => {
+      const resetAtMs = Date.now() + 12 * 24 * 60 * 60 * 1000;
+      const periodEndSeconds = Math.ceil(resetAtMs / 1000);
+      mockEvalFn
+        .mockResolvedValueOnce(tierChangeState({ resetAtMs }))
+        .mockResolvedValueOnce([1, 145_535]);
+      const { applyProratedTierChangeBucket } = getIsolatedModule();
+
+      const result = await applyProratedTierChangeBucket(
+        "user-123",
+        "pro-plus",
+        {
+          identity,
+          proratedRatio: 0.41581478,
+          periodEndSeconds,
+        },
+      );
+
+      expect(result).toMatchObject({
+        consumedCredits: 250_000,
+        incrementalCredits: 145_535,
+        cycleAllocation: 395_535,
+        remainingCredits: 145_535,
+        proratedRatio: 0.41581478,
+      });
+      expect(mockEvalFn).toHaveBeenNthCalledWith(
+        2,
+        expect.stringContaining('redis.call("DEL", stashKey, claimKey)'),
+        [
+          "usage:monthly:user-123:pro-plus",
+          "upgrade:carryover:user-123:in_upgrade",
+          "upgrade:carryover:user-123:in_upgrade:claim",
+          "upgrade:carryover:user-123:in_upgrade:completed",
+        ],
+        expect.arrayContaining([
+          tierChangeState({ resetAtMs }),
+          145_535,
+          395_535,
+          600_000,
+        ]),
+      );
+      expect(mockLimitFn).not.toHaveBeenCalled();
+      expect(mockHsetFn).not.toHaveBeenCalled();
+    });
+
+    it("does not create credits when no tier-change state exists", async () => {
+      mockEvalFn.mockResolvedValueOnce(null);
+      const { applyProratedTierChangeBucket } = getIsolatedModule();
+
+      await expect(
+        applyProratedTierChangeBucket("user-123", "pro-plus", {
+          identity,
+          proratedRatio: 0.5,
+        }),
+      ).resolves.toBeNull();
+
+      expect(mockDelFn).not.toHaveBeenCalled();
+      expect(mockLimitFn).not.toHaveBeenCalled();
+    });
+
+    it("does not let a delayed proration overwrite a newer cycle", async () => {
+      mockEvalFn.mockResolvedValueOnce(
+        tierChangeState({
+          resetAtMs: Date.now() - 1_000,
+        }),
+      );
+      const { applyProratedTierChangeBucket } = getIsolatedModule();
+
+      await expect(
+        applyProratedTierChangeBucket("user-123", "pro-plus", {
+          identity,
+          periodEndSeconds: Math.floor(Date.now() / 1000) + 12 * 24 * 60 * 60,
+        }),
+      ).resolves.toBeNull();
+
+      expect(mockDelFn).not.toHaveBeenCalled();
+      expect(mockLimitFn).not.toHaveBeenCalled();
+    });
+
+    it("retains the stash and claim when the atomic replacement fails", async () => {
+      const state = tierChangeState({
+        remaining: 80_000,
+      });
+      mockEvalFn
+        .mockResolvedValueOnce(state)
+        .mockRejectedValueOnce(new Error("redis write failed"));
+      const { applyProratedTierChangeBucket } = getIsolatedModule();
+
+      await expect(
+        applyProratedTierChangeBucket("user-123", "pro-plus", {
+          identity,
+          proratedRatio: 1 / 3,
+        }),
+      ).rejects.toThrow("redis write failed");
+
+      expect(mockSetFn).not.toHaveBeenCalled();
+      expect(mockDelFn).not.toHaveBeenCalled();
+    });
+
+    it("does not let a different Stripe transition consume the stash", async () => {
+      mockEvalFn.mockResolvedValueOnce(tierChangeState());
+      const { applyProratedTierChangeBucket } = getIsolatedModule();
+
+      await expect(
+        applyProratedTierChangeBucket("user-123", "pro-plus", {
+          identity: { ...identity, subscriptionId: "sub_other" },
+          proratedRatio: 0.5,
+        }),
+      ).resolves.toBeNull();
+
+      expect(mockEvalFn).toHaveBeenCalledTimes(1);
+      expect(mockLimitFn).not.toHaveBeenCalled();
     });
   });
 
@@ -242,6 +466,37 @@ describe("token-bucket async functions", () => {
       expect(result.extraUsagePointsDeducted).toBeGreaterThan(0);
     });
 
+    it("charges the full request to extra usage without consuming included credits", async () => {
+      const { checkTokenBucketLimit } = getIsolatedModule();
+
+      mockLimitFn.mockResolvedValue({
+        success: true,
+        remaining: 10000,
+        reset: Date.now() + 3600000,
+        limit: 250000,
+      });
+
+      const result = await checkTokenBucketLimit("user-123", "pro", 1000, {
+        enabled: true,
+        hasBalance: true,
+        autoReloadEnabled: false,
+        chargeAllUsage: true,
+      });
+
+      expect(mockDeductFromBalance).toHaveBeenCalledWith(
+        "user-123",
+        expect.any(Number),
+      );
+      expect(result.pointsDeducted).toBe(0);
+      expect(result.extraUsagePointsDeducted).toBeGreaterThan(0);
+      expect(result.remaining).toBe(10000);
+      expect(mockLimitFn).toHaveBeenCalledTimes(1);
+      expect(mockLimitFn).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.objectContaining({ rate: 0 }),
+      );
+    });
+
     it("should return monthly nested field matching top-level fields", async () => {
       const { checkTokenBucketLimit } = getIsolatedModule();
 
@@ -251,6 +506,35 @@ describe("token-bucket async functions", () => {
       expect(result.monthly!.remaining).toBe(result.remaining);
       expect(result.monthly!.limit).toBe(result.limit);
       expect(result.monthly!.resetTime).toEqual(result.resetTime);
+    });
+
+    it("enforces a stored price-specific cycle allocation", async () => {
+      const { checkTokenBucketLimit } = getIsolatedModule();
+      mockEvalFn.mockResolvedValue([200_000, 200_000, 50_000]);
+      mockLimitFn
+        .mockResolvedValueOnce({
+          success: true,
+          remaining: 250_000,
+          reset: Date.now() + 3600000,
+          limit: 250_000,
+        })
+        .mockResolvedValueOnce({
+          success: true,
+          remaining: 199_993,
+          reset: Date.now() + 3600000,
+          limit: 250_000,
+        });
+
+      const result = await checkTokenBucketLimit("user-123", "pro", 1000);
+
+      expect(mockEvalFn).toHaveBeenCalledWith(
+        expect.any(String),
+        ["usage:monthly:user-123:pro"],
+        [],
+      );
+      expect(mockLimitFn).toHaveBeenCalledTimes(2);
+      expect(result.limit).toBe(200_000);
+      expect(result.monthly?.limit).toBe(200_000);
     });
 
     it("should throw when the final monthly deduction fails after a successful peek", async () => {
@@ -642,10 +926,10 @@ describe("token-bucket async functions", () => {
       const { deductUsage, calculateTokenCost } = getIsolatedModule();
 
       const estimatedInputTokens = 1_000_000;
-      const actualInputTokens = 1_000_000;
-      const actualOutputTokens = 1_000_000;
+      const actualInputTokens = 300_000;
+      const actualOutputTokens = 300_000;
       const selectedModel = "agent-model-free";
-      const servedModel = "model-kimi-k2.7-code";
+      const servedModel = "model-kimi-k3";
       const initialDeduction = calculateTokenCost(
         estimatedInputTokens,
         "input",
@@ -685,7 +969,7 @@ describe("token-bucket async functions", () => {
         servedModel,
       );
 
-      expect(expectedAdditional).toBe(68_040);
+      expect(expectedAdditional).toBe(74_340);
       expect(mockLimitFn).toHaveBeenCalledWith(
         expect.any(String),
         expect.objectContaining({ rate: expectedAdditional }),
@@ -704,7 +988,7 @@ describe("token-bucket async functions", () => {
 
       const estimatedInputTokens = 1_000_000;
       const selectedModel = "agent-model-free";
-      const servedModel = "model-kimi-k2.7-code";
+      const servedModel = "model-kimi-k3";
       const providerCostDollars = 0.42;
       const initialDeduction = calculateTokenCost(
         estimatedInputTokens,
@@ -798,27 +1082,37 @@ describe("token-bucket async functions", () => {
 
       expect(mockHsetFn).toHaveBeenCalled();
     });
+
+    it("caps refunds at the stored cycle allocation", async () => {
+      const { refundUsage } = getIsolatedModule();
+      mockHgetFn.mockResolvedValue(200_000);
+      mockHincrbyFn.mockResolvedValue(210_000);
+
+      await refundUsage("user-123", "pro", 50_000, 0);
+
+      expect(mockHsetFn).toHaveBeenCalledWith("usage:monthly:user-123:pro", {
+        tokens: 200_000,
+      });
+    });
   });
 
   describe("resetRateLimitBuckets", () => {
-    it("should delete the monthly Redis key and set explicit TTL", async () => {
+    it("atomically replaces the monthly bucket with an explicit TTL", async () => {
       const { resetRateLimitBuckets } = getIsolatedModule();
 
       await resetRateLimitBuckets("user-123", "pro");
 
-      expect(mockDelFn).toHaveBeenCalledWith("usage:monthly:user-123:pro");
-      expect(mockHsetFn).toHaveBeenCalledWith(
-        "usage:monthly:user-123:pro",
-        expect.objectContaining({
-          cycleAllocation: 250_000,
-          cycleTierMax: 250_000,
-          cycleStartedAt: expect.any(Number),
-        }),
-      );
-      // Verify explicit 30-day TTL is set
-      expect(mockExpireFn).toHaveBeenCalledWith(
-        "usage:monthly:user-123:pro",
-        30 * 24 * 60 * 60,
+      expect(mockEvalFn).toHaveBeenCalledWith(
+        expect.stringContaining('redis.call("EXPIRE", bucketKey'),
+        ["usage:monthly:user-123:pro"],
+        [
+          250_000,
+          250_000,
+          250_000,
+          expect.any(Number),
+          expect.any(Number),
+          30 * 24 * 60 * 60,
+        ],
       );
     });
 
@@ -832,20 +1126,40 @@ describe("token-bucket async functions", () => {
 
         await resetRateLimitBuckets("user-123", "pro", periodEndSeconds);
 
-        expect(mockHsetFn).toHaveBeenCalledWith(
-          "usage:monthly:user-123:pro",
-          expect.objectContaining({
-            refilledAt: (periodEndSeconds - 30 * 24 * 60 * 60) * 1000,
-            cycleAllocation: 250_000,
-          }),
-        );
-        expect(mockExpireFn).toHaveBeenCalledWith(
-          "usage:monthly:user-123:pro",
-          32 * 24 * 60 * 60,
+        expect(mockEvalFn).toHaveBeenCalledWith(
+          expect.any(String),
+          ["usage:monthly:user-123:pro"],
+          [
+            250_000,
+            250_000,
+            250_000,
+            nowSeconds * 1000,
+            (periodEndSeconds - 30 * 24 * 60 * 60) * 1000,
+            32 * 24 * 60 * 60,
+          ],
         );
       } finally {
         nowSpy.mockRestore();
       }
+    });
+
+    it("initializes a price-specific cycle allocation", async () => {
+      const { resetRateLimitBuckets } = getIsolatedModule();
+
+      await resetRateLimitBuckets("user-123", "pro", undefined, 200_000);
+
+      expect(mockEvalFn).toHaveBeenCalledWith(
+        expect.any(String),
+        ["usage:monthly:user-123:pro"],
+        [
+          200_000,
+          200_000,
+          250_000,
+          expect.any(Number),
+          expect.any(Number),
+          30 * 24 * 60 * 60,
+        ],
+      );
     });
 
     it("does not backdate reset metadata for a stale Stripe period end", async () => {
@@ -858,30 +1172,27 @@ describe("token-bucket async functions", () => {
 
         await resetRateLimitBuckets("user-123", "pro", stalePeriodEndSeconds);
 
-        const metadata = mockHsetFn.mock.calls.find(
-          ([key]) => key === "usage:monthly:user-123:pro",
-        )?.[1] as Record<string, number> | undefined;
-
-        expect(metadata).toEqual(
-          expect.objectContaining({
-            cycleAllocation: 250_000,
-            cycleTierMax: 250_000,
-          }),
-        );
-        expect(metadata).not.toHaveProperty("refilledAt");
-        expect(mockExpireFn).toHaveBeenCalledWith(
-          "usage:monthly:user-123:pro",
-          30 * 24 * 60 * 60,
+        expect(mockEvalFn).toHaveBeenCalledWith(
+          expect.any(String),
+          ["usage:monthly:user-123:pro"],
+          [
+            250_000,
+            250_000,
+            250_000,
+            nowSeconds * 1000,
+            nowSeconds * 1000,
+            30 * 24 * 60 * 60,
+          ],
         );
       } finally {
         nowSpy.mockRestore();
       }
     });
 
-    it("should not throw when Redis delete fails", async () => {
+    it("should not throw when the atomic Redis write fails", async () => {
       const { resetRateLimitBuckets } = getIsolatedModule();
 
-      mockDelFn.mockRejectedValue(new Error("Redis down"));
+      mockEvalFn.mockRejectedValue(new Error("Redis down"));
       const consoleSpy = jest
         .spyOn(console, "error")
         .mockImplementation(() => {});
@@ -894,7 +1205,278 @@ describe("token-bucket async functions", () => {
     });
   });
 
+  describe("delinquency credit holds", () => {
+    const transition = {
+      subscriptionId: "sub_past_due",
+      invoiceId: "in_past_due",
+      occurredAtMs: 1_782_000_100_000,
+    };
+
+    it("atomically freezes the current remaining credits beyond the recovery window", async () => {
+      const nowMs = 1_782_000_200_000;
+      const nowSpy = jest.spyOn(Date, "now").mockReturnValue(nowMs);
+      mockEvalFn.mockResolvedValueOnce([1, 120_000, 250_000]);
+
+      try {
+        const { freezeRateLimitBucketForDelinquency } = getIsolatedModule();
+
+        await expect(
+          freezeRateLimitBucketForDelinquency(
+            "user-past-due",
+            "pro",
+            transition,
+          ),
+        ).resolves.toEqual({
+          outcome: "applied",
+          remainingPoints: 120_000,
+          previousAllocationPoints: 250_000,
+        });
+
+        expect(mockLimitFn).not.toHaveBeenCalled();
+        expect(mockEvalFn).toHaveBeenCalledWith(
+          expect.stringContaining('"billingTransitionType", "payment_failed"'),
+          ["usage:monthly:user-past-due:pro"],
+          [
+            250_000,
+            transition.occurredAtMs,
+            nowMs,
+            35 * 24 * 60 * 60,
+            transition.subscriptionId,
+            transition.invoiceId,
+          ],
+        );
+      } finally {
+        nowSpy.mockRestore();
+      }
+    });
+
+    it.each([
+      {
+        outcomeCode: 2,
+        expectedOutcome: "already_applied",
+      },
+      {
+        outcomeCode: 0,
+        expectedOutcome: "stale",
+      },
+    ] as const)(
+      "maps Redis outcome $outcomeCode to $expectedOutcome without changing credits",
+      async ({ outcomeCode, expectedOutcome }) => {
+        mockEvalFn.mockResolvedValueOnce([outcomeCode, 90_000, 120_000]);
+        const { freezeRateLimitBucketForDelinquency } = getIsolatedModule();
+
+        await expect(
+          freezeRateLimitBucketForDelinquency(
+            "user-past-due",
+            "pro",
+            transition,
+          ),
+        ).resolves.toEqual({
+          outcome: expectedOutcome,
+          remainingPoints: 90_000,
+          previousAllocationPoints: 120_000,
+        });
+      },
+    );
+
+    it("throws when Redis cannot persist the hold so Stripe can retry", async () => {
+      mockEvalFn.mockRejectedValueOnce(new Error("Redis down"));
+      const { freezeRateLimitBucketForDelinquency } = getIsolatedModule();
+
+      await expect(
+        freezeRateLimitBucketForDelinquency("user-past-due", "pro", transition),
+      ).rejects.toThrow("Redis down");
+    });
+  });
+
+  describe("paid credit resets", () => {
+    const transition = {
+      subscriptionId: "sub_recovered",
+      invoiceId: "in_recovered",
+      occurredAtMs: 1_782_100_100_000,
+    };
+
+    it("atomically replaces a delinquent bucket with the paid cycle", async () => {
+      const nowSeconds = 1_782_100_200;
+      const periodEndSeconds = nowSeconds + 30 * 24 * 60 * 60;
+      const nowSpy = jest.spyOn(Date, "now").mockReturnValue(nowSeconds * 1000);
+      mockEvalFn.mockResolvedValueOnce(1);
+
+      try {
+        const { resetRateLimitBucketAfterPayment } = getIsolatedModule();
+
+        await expect(
+          resetRateLimitBucketAfterPayment(
+            "user-recovered",
+            "pro",
+            transition,
+            periodEndSeconds,
+            200_000,
+          ),
+        ).resolves.toEqual({ outcome: "applied" });
+
+        expect(mockEvalFn).toHaveBeenCalledWith(
+          expect.stringContaining('"billingTransitionType", "paid"'),
+          ["usage:monthly:user-recovered:pro"],
+          [
+            200_000,
+            200_000,
+            250_000,
+            nowSeconds * 1000,
+            (periodEndSeconds - 30 * 24 * 60 * 60) * 1000,
+            31 * 24 * 60 * 60,
+            transition.occurredAtMs,
+            transition.subscriptionId,
+            transition.invoiceId,
+          ],
+        );
+      } finally {
+        nowSpy.mockRestore();
+      }
+    });
+
+    it.each([
+      {
+        outcomeCode: 2,
+        expectedOutcome: "already_applied",
+      },
+      {
+        outcomeCode: 0,
+        expectedOutcome: "stale",
+      },
+    ] as const)(
+      "maps Redis outcome $outcomeCode to $expectedOutcome without refilling",
+      async ({ outcomeCode, expectedOutcome }) => {
+        mockEvalFn.mockResolvedValueOnce(outcomeCode);
+        const { resetRateLimitBucketAfterPayment } = getIsolatedModule();
+
+        await expect(
+          resetRateLimitBucketAfterPayment("user-recovered", "pro", transition),
+        ).resolves.toEqual({ outcome: expectedOutcome });
+      },
+    );
+
+    it("throws when Redis cannot persist the paid reset so Stripe can retry", async () => {
+      mockEvalFn.mockRejectedValueOnce(new Error("Redis down"));
+      const { resetRateLimitBucketAfterPayment } = getIsolatedModule();
+
+      await expect(
+        resetRateLimitBucketAfterPayment("user-recovered", "pro", transition),
+      ).rejects.toThrow("Redis down");
+    });
+  });
+
+  describe("capCurrentCycleAllocation", () => {
+    it("initializes a missing bucket at the requested allocation", async () => {
+      const { capCurrentCycleAllocation } = getIsolatedModule();
+      mockExistsFn.mockResolvedValue(0);
+      mockHgetFn.mockResolvedValue(200_000);
+
+      const result = await capCurrentCycleAllocation(
+        "user-123",
+        "pro",
+        200_000,
+      );
+
+      expect(result).toEqual({
+        created: true,
+        previousAllocation: 250_000,
+        previousRemaining: 250_000,
+        targetAllocation: 200_000,
+        targetRemaining: 200_000,
+        pointsRemoved: 0,
+      });
+      expect(mockEvalFn).toHaveBeenCalledWith(
+        expect.stringContaining('"HSET"'),
+        ["usage:monthly:user-123:pro"],
+        expect.arrayContaining([200_000, 200_000, 250_000]),
+      );
+    });
+
+    it("lowers the current cycle without restoring consumed usage", async () => {
+      const { capCurrentCycleAllocation } = getIsolatedModule();
+      mockEvalFn.mockResolvedValue([
+        250_000, 150_000, 200_000, 100_000, 50_000,
+      ]);
+
+      const result = await capCurrentCycleAllocation(
+        "user-123",
+        "pro",
+        200_000,
+      );
+
+      expect(mockLimitFn).toHaveBeenCalledTimes(1);
+      expect(result).toEqual({
+        created: false,
+        previousAllocation: 250_000,
+        previousRemaining: 150_000,
+        targetAllocation: 200_000,
+        targetRemaining: 100_000,
+        pointsRemoved: 50_000,
+      });
+      expect(mockEvalFn).toHaveBeenCalledWith(
+        expect.any(String),
+        ["usage:monthly:user-123:pro"],
+        [200_000, 250_000, -1],
+      );
+    });
+
+    it("does not increase an already-lower prorated allocation", async () => {
+      const { capCurrentCycleAllocation } = getIsolatedModule();
+      mockEvalFn.mockResolvedValue([150_000, 100_000, 150_000, 100_000, 0]);
+
+      const result = await capCurrentCycleAllocation(
+        "user-123",
+        "pro",
+        200_000,
+      );
+
+      expect(result.targetAllocation).toBe(150_000);
+      expect(result.targetRemaining).toBe(100_000);
+      expect(result.pointsRemoved).toBe(0);
+    });
+  });
+
   describe("deductUsage - split deduction (peek-then-deduct)", () => {
+    it("keeps final reconciliation entirely on extra usage when required", async () => {
+      const { deductUsage } = getIsolatedModule();
+
+      const result = await deductUsage(
+        "user-123",
+        "pro",
+        1000,
+        5000,
+        1000,
+        {
+          enabled: true,
+          hasBalance: true,
+          autoReloadEnabled: false,
+          chargeAllUsage: true,
+        },
+        0.005,
+        undefined,
+        0,
+        undefined,
+        {
+          pointsDeducted: 0,
+          extraUsagePointsDeducted: 7,
+        },
+      );
+
+      expect(mockLimitFn).not.toHaveBeenCalled();
+      expect(mockDeductFromBalance).toHaveBeenCalledWith(
+        "user-123",
+        63,
+        undefined,
+      );
+      expect(result).toEqual({
+        includedPointsDeducted: 0,
+        extraUsagePointsDeducted: 70,
+        uncoveredPoints: 0,
+        usageDeductionFailed: false,
+      });
+    });
+
     it("should deduct overflow from extra usage when bucket has insufficient balance", async () => {
       const { deductUsage } = getIsolatedModule();
 
@@ -1207,6 +1789,30 @@ describe("token-bucket async functions", () => {
       expect(result).toEqual({
         includedPointsDeducted: 10,
         extraUsagePointsDeducted: 33,
+        uncoveredPoints: 0,
+        usageDeductionFailed: false,
+      });
+    });
+
+    it("charges a full mid-run delta to extra usage when required", async () => {
+      const { deductUsageDelta } = getIsolatedModule();
+
+      const result = await deductUsageDelta("user-123", "pro", 43, {
+        enabled: true,
+        hasBalance: true,
+        autoReloadEnabled: false,
+        chargeAllUsage: true,
+      });
+
+      expect(mockLimitFn).not.toHaveBeenCalled();
+      expect(mockDeductFromBalance).toHaveBeenCalledWith(
+        "user-123",
+        43,
+        undefined,
+      );
+      expect(result).toEqual({
+        includedPointsDeducted: 0,
+        extraUsagePointsDeducted: 43,
         uncoveredPoints: 0,
         usageDeductionFailed: false,
       });

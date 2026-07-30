@@ -9,10 +9,10 @@ const {
   createChatLogger,
   captureAgentCompletionAnalytics,
   captureAgentRun,
-  captureFreeAgentValueReached,
   captureToolCalls,
   captureUsageCost,
   captureUsageSettlement,
+  isUsageSettlementSuccessSampled,
 } = require("../chat-logger");
 const { ChatSDKError } = require("../../errors");
 const { phLogger } = require("../../posthog/server");
@@ -44,7 +44,6 @@ describe("captureToolCalls", () => {
         mode: "agent",
         toolName: "run_terminal_cmd",
         count: 3,
-        toolCallCount: 3,
       },
     });
     expect(capture).toHaveBeenCalledWith({
@@ -54,7 +53,6 @@ describe("captureToolCalls", () => {
         mode: "agent",
         toolName: "open_url",
         count: 1,
-        toolCallCount: 1,
       },
     });
   });
@@ -89,6 +87,14 @@ describe("captureAgentRun", () => {
       agentPermissionMode: "ask_approval",
       responseModel: "deepseek/deepseek-v4-pro",
       fallbackServed: false,
+      triggerRunId: "run_123",
+      triggerUsageDurationMs: 42_000,
+      triggerTotalCostUsd: 0.00714,
+      approvalWaitCount: 1,
+      approvalWaitDurationMs: 90_000,
+      activeModelStreamDurationMs: 30_000,
+      activeTerminalWaitDurationMs: 10_000,
+      activeSandboxRecoveryDurationMs: 2_000,
     });
 
     expect(capture).toHaveBeenCalledWith({
@@ -102,12 +108,105 @@ describe("captureAgentRun", () => {
         selected_model: "agent-model",
         configured_model: "deepseek/deepseek-v4-pro",
         agent_permission_mode: "ask_approval",
+        trigger_run_id: "run_123",
+        trigger_usage_duration_ms: 42_000,
+        trigger_total_cost_usd: 0.00714,
+        approval_wait_count: 1,
+        approval_wait_duration_ms: 90_000,
+        active_model_stream_duration_ms: 30_000,
+        active_terminal_wait_duration_ms: 10_000,
+        active_sandbox_recovery_duration_ms: 2_000,
         response_model: "deepseek/deepseek-v4-pro",
         fallback_served: false,
-        sandboxType: "remote-connection",
         sandbox_type: "remote-connection",
       },
     });
+  });
+
+  it("preserves zero-valued Trigger timing fields", () => {
+    const capture = jest.fn();
+
+    captureAgentRun({
+      posthog: { capture } as any,
+      userId: "user_123",
+      mode: "agent",
+      subscription: "pro",
+      sandboxInfo: null,
+      outcome: "success",
+      selectedModel: "agent-model",
+      configuredModelId: "x-ai/grok-4.5",
+      triggerRunId: "run_zero",
+      triggerUsageDurationMs: 0,
+      triggerTotalCostUsd: 0,
+      approvalWaitCount: 0,
+      approvalWaitDurationMs: 0,
+      activeModelStreamDurationMs: 0,
+      activeTerminalWaitDurationMs: 0,
+      activeSandboxRecoveryDurationMs: 0,
+    });
+
+    expect(capture.mock.calls[0][0].properties).toEqual(
+      expect.objectContaining({
+        trigger_run_id: "run_zero",
+        trigger_usage_duration_ms: 0,
+        trigger_total_cost_usd: 0,
+        approval_wait_count: 0,
+        approval_wait_duration_ms: 0,
+        active_model_stream_duration_ms: 0,
+        active_terminal_wait_duration_ms: 0,
+        active_sandbox_recovery_duration_ms: 0,
+      }),
+    );
+  });
+
+  it("adds content-free completion signals to the existing run event", () => {
+    const capture = jest.fn();
+
+    captureAgentRun({
+      posthog: { capture } as any,
+      userId: "user_123",
+      mode: "agent",
+      subscription: "pro",
+      sandboxInfo: null,
+      outcome: "success",
+      selectedModel: "agent-model",
+      configuredModelId: "x-ai/grok-4.5",
+      finishReason: "stop",
+      isAutoContinue: false,
+      completionSignals: {
+        version: 1,
+        naturalStop: true,
+        stepCount: 12,
+        todoTotalCount: 3,
+        todoPendingCount: 1,
+        todoInProgressCount: 1,
+        hasUnfinishedTodos: true,
+        handledToolFailureCount: 1,
+        sdkToolErrorCount: 0,
+        hasToolFailure: true,
+        recentToolFailure: true,
+        stepsSinceLastToolFailure: 1,
+      },
+    });
+
+    expect(capture.mock.calls[0][0].properties).toEqual(
+      expect.objectContaining({
+        finish_reason: "stop",
+        is_auto_continue: false,
+        completion_signal_version: 1,
+        natural_stop: true,
+        agent_step_count: 12,
+        todo_total_count: 3,
+        todo_pending_count: 1,
+        todo_in_progress_count: 1,
+        has_unfinished_todos: true,
+        handled_tool_failure_count: 1,
+        sdk_tool_error_count: 0,
+        has_tool_failure: true,
+        recent_tool_failure: true,
+        steps_since_last_tool_failure: 1,
+      }),
+    );
   });
 
   it("attributes a served fallback without inferring it from model names", () => {
@@ -122,7 +221,7 @@ describe("captureAgentRun", () => {
       outcome: "success",
       selectedModel: "agent-model-free",
       configuredModelId: "deepseek/deepseek-v4-flash",
-      responseModel: "minimax/minimax-m3",
+      responseModel: "x-ai/grok-4.5",
       fallbackServed: true,
     });
 
@@ -132,7 +231,7 @@ describe("captureAgentRun", () => {
       properties: expect.objectContaining({
         selected_model: "agent-model-free",
         configured_model: "deepseek/deepseek-v4-flash",
-        response_model: "minimax/minimax-m3",
+        response_model: "x-ai/grok-4.5",
         fallback_served: true,
       }),
     });
@@ -243,86 +342,8 @@ describe("captureAgentBudgetAbort", () => {
   });
 });
 
-describe("captureFreeAgentValueReached", () => {
-  it("captures a free successful agent value event with user properties", () => {
-    const capture = jest.fn();
-
-    captureFreeAgentValueReached({
-      posthog: { capture } as any,
-      userId: "user_123",
-      chatId: "chat_123",
-      endpoint: "/api/agent-long",
-      mode: "agent",
-      subscription: "free",
-      sandboxInfo: { type: "e2b" },
-      outcome: "success",
-      chatLogger: {
-        getToolCalls: () => [{ name: "web_search" }, { name: "open_url" }],
-      } as any,
-    });
-
-    expect(capture).toHaveBeenCalledWith({
-      distinctId: "user_123",
-      event: "hackerai-free_agent_value_reached",
-      properties: expect.objectContaining({
-        user_id: "user_123",
-        chat_id: "chat_123",
-        endpoint: "/api/agent-long",
-        mode: "agent",
-        subscription: "free",
-        subscription_tier: "free",
-        outcome: "success",
-        tool_call_count: 2,
-        agent_value_event_version: 1,
-        sandbox_type: "e2b",
-        $set_once: expect.objectContaining({
-          first_free_agent_value_reached_at: expect.any(String),
-        }),
-        $set: expect.objectContaining({
-          subscription_tier: "free",
-          last_free_agent_value_reached_at: expect.any(String),
-        }),
-      }),
-    });
-  });
-
-  it("does not capture for paid, ask mode, or unsuccessful runs", () => {
-    const capture = jest.fn();
-    const baseArgs = {
-      posthog: { capture } as any,
-      userId: "user_123",
-      chatId: "chat_123",
-      endpoint: "/api/agent-long" as const,
-      mode: "agent" as const,
-      subscription: "free",
-      sandboxInfo: { type: "e2b" },
-      outcome: "success" as const,
-      chatLogger: { getToolCalls: () => [] } as any,
-    };
-
-    captureFreeAgentValueReached({
-      ...baseArgs,
-      subscription: "pro",
-    });
-    captureFreeAgentValueReached({
-      ...baseArgs,
-      mode: "ask",
-    });
-    captureFreeAgentValueReached({
-      ...baseArgs,
-      outcome: "aborted",
-    });
-    captureFreeAgentValueReached({
-      ...baseArgs,
-      outcome: "error",
-    });
-
-    expect(capture).not.toHaveBeenCalled();
-  });
-});
-
 describe("captureAgentCompletionAnalytics", () => {
-  it("captures both agent completion and free value events for successful free agent runs", () => {
+  it("uses the existing agent completion event for successful free Agent activation", () => {
     const capture = jest.fn();
 
     captureAgentCompletionAnalytics({
@@ -341,7 +362,7 @@ describe("captureAgentCompletionAnalytics", () => {
       fallbackServed: false,
     });
 
-    expect(capture).toHaveBeenCalledTimes(2);
+    expect(capture).toHaveBeenCalledTimes(1);
     expect(capture).toHaveBeenCalledWith({
       distinctId: "user_123",
       event: "hackerai-agent_run",
@@ -354,21 +375,8 @@ describe("captureAgentCompletionAnalytics", () => {
         configured_model: "deepseek/deepseek-v4-flash",
         response_model: "deepseek/deepseek-v4-flash",
         fallback_served: false,
-        sandboxType: "e2b",
         sandbox_type: "e2b",
       },
-    });
-    expect(capture).toHaveBeenCalledWith({
-      distinctId: "user_123",
-      event: "hackerai-free_agent_value_reached",
-      properties: expect.objectContaining({
-        user_id: "user_123",
-        chat_id: "chat_123",
-        endpoint: "/api/agent-long",
-        subscription_tier: "free",
-        outcome: "success",
-        tool_call_count: 1,
-      }),
     });
   });
 
@@ -389,6 +397,14 @@ describe("captureAgentCompletionAnalytics", () => {
       configuredModelId: "deepseek/deepseek-v4-pro",
       responseModel: "deepseek/deepseek-v4-pro",
       fallbackServed: false,
+      triggerRunId: "run_completion",
+      triggerUsageDurationMs: 12_345,
+      triggerTotalCostUsd: 0.0021,
+      approvalWaitCount: 0,
+      approvalWaitDurationMs: 0,
+      activeModelStreamDurationMs: 8_000,
+      activeTerminalWaitDurationMs: 4_000,
+      activeSandboxRecoveryDurationMs: 0,
     });
 
     expect(capture).toHaveBeenCalledTimes(1);
@@ -402,9 +418,16 @@ describe("captureAgentCompletionAnalytics", () => {
         outcome: "success",
         selected_model: "agent-model",
         configured_model: "deepseek/deepseek-v4-pro",
+        trigger_run_id: "run_completion",
+        trigger_usage_duration_ms: 12_345,
+        trigger_total_cost_usd: 0.0021,
+        approval_wait_count: 0,
+        approval_wait_duration_ms: 0,
+        active_model_stream_duration_ms: 8_000,
+        active_terminal_wait_duration_ms: 4_000,
+        active_sandbox_recovery_duration_ms: 0,
         response_model: "deepseek/deepseek-v4-pro",
         fallback_served: false,
-        sandboxType: "e2b",
         sandbox_type: "e2b",
       },
     });
@@ -452,6 +475,13 @@ describe("captureUsageCost", () => {
         costLimitDollars: 0.25,
         resetTimestamp: 1_800_000_000_000,
       },
+      usageSettlement: {
+        id: "settlement_123",
+        midRunCount: 7,
+      },
+      analyticsRequestContext: {
+        posthogSessionId: "session_123",
+      },
     });
 
     expect(capture).toHaveBeenCalledWith({
@@ -474,6 +504,9 @@ describe("captureUsageCost", () => {
         extra_usage_cost_dollars: 0.32,
         included_points_deducted: 1000,
         extra_usage_points_deducted: 3200,
+        usage_economics_version: 1,
+        extra_usage_charge_dollars: 0.384,
+        consumption_contribution_dollars: -0.035999999999999976,
         model_cost_dollars: 0.3,
         non_model_cost_dollars: 0.12,
         input_tokens: 1000,
@@ -482,21 +515,22 @@ describe("captureUsageCost", () => {
         cache_read_tokens: 200,
         cache_write_tokens: 0,
         cost_source: "provider",
+        $session_id: "session_123",
+        usage_settlement_id: "settlement_123",
+        mid_run_usage_settlement_count: 7,
+        usage_settlement_step_events_sampled:
+          isUsageSettlementSuccessSampled("settlement_123"),
+        usage_settlement_success_sample_rate: 0.005,
+        usage_settlement_summary_version: 1,
         limit_rescue_type: "paid_daily_free_allowance",
         paid_daily_free_allowance_active: true,
         paid_daily_free_allowance_cut_off: false,
         paid_daily_free_allowance_request_limit: 1,
         paid_daily_free_allowance_cost_limit_dollars: 0.25,
         paid_daily_free_allowance_reset_timestamp: 1_800_000_000_000,
-        $set: expect.objectContaining({
-          subscription_tier: "pro",
-          last_usage_cost_at: expect.any(String),
-        }),
       }),
     });
-    expect(capture.mock.calls[0][0].properties.$set).not.toHaveProperty(
-      "agent_permission_mode",
-    );
+    expect(capture.mock.calls[0][0].properties).not.toHaveProperty("$set");
   });
 
   it("omits response_model when served-model metadata is unavailable", () => {
@@ -536,7 +570,7 @@ describe("captureUsageCost", () => {
 });
 
 describe("captureUsageSettlement", () => {
-  it("captures one queryable event for an actual provider-step settlement", () => {
+  it("always captures an anomalous provider-step settlement", () => {
     const capture = jest.fn();
 
     captureUsageSettlement({
@@ -586,9 +620,70 @@ describe("captureUsageSettlement", () => {
         usage_deduction_failed: true,
         usage_deduction_failure_reason: "monthly_cap_exceeded",
         forced: false,
-        settlement_event_version: 1,
+        settlement_capture_reason: "anomaly",
+        settlement_run_sampled:
+          isUsageSettlementSuccessSampled("settlement_123"),
+        settlement_success_sample_rate: 0.005,
+        settlement_event_version: 2,
       },
     });
+  });
+
+  it("keeps or drops every routine step in a run consistently", () => {
+    const sampledId = Array.from(
+      { length: 1_000 },
+      (_, index) => `sampled_${index}`,
+    ).find(isUsageSettlementSuccessSampled);
+    const unsampledId = Array.from(
+      { length: 1_000 },
+      (_, index) => `unsampled_${index}`,
+    ).find((id) => !isUsageSettlementSuccessSampled(id));
+
+    expect(sampledId).toBeDefined();
+    expect(unsampledId).toBeDefined();
+
+    for (const [usageSettlementId, expectedCaptureCount] of [
+      [sampledId, 2],
+      [unsampledId, 0],
+    ] as const) {
+      const capture = jest.fn();
+      for (const settlementSequence of [1, 2]) {
+        captureUsageSettlement({
+          posthog: { capture } as any,
+          userId: "user_123",
+          subscription: "pro",
+          chatId: "chat_123",
+          endpoint: "/api/chat",
+          mode: "agent",
+          model: "agent-model",
+          usageSettlementId: usageSettlementId!,
+          settlementSequence,
+          currentCostDollars: settlementSequence / 10,
+          requestedDeltaPoints: 1_400,
+          deduction: {
+            includedPointsDeducted: 1_400,
+            extraUsagePointsDeducted: 0,
+            uncoveredPoints: 0,
+            usageDeductionFailed: false,
+          },
+          forced: false,
+        });
+      }
+
+      expect(capture).toHaveBeenCalledTimes(expectedCaptureCount);
+      for (const call of capture.mock.calls) {
+        expect(call[0]).toEqual(
+          expect.objectContaining({
+            properties: expect.objectContaining({
+              settlement_capture_reason: "sampled_success",
+              settlement_run_sampled: true,
+              settlement_success_sample_rate: 0.005,
+              settlement_event_version: 2,
+            }),
+          }),
+        );
+      }
+    }
   });
 
   it("does nothing without a PostHog client", () => {
@@ -721,7 +816,7 @@ describe("createChatLogger provider stream termination", () => {
       chatLogger.recordProviderError(err, {
         mode: "agent",
         model: "agent-model",
-        requestedModelSlug: "minimax/minimax-m3",
+        requestedModelSlug: "x-ai/grok-4.5",
       });
       chatLogger.emitUnexpectedError(err);
 
@@ -1250,14 +1345,9 @@ describe("createChatLogger ChatSDKError metadata", () => {
           chat_id: "chat_limit",
         }),
       );
-      expect(eventSpy).toHaveBeenCalledWith(
+      expect(eventSpy).not.toHaveBeenCalledWith(
         "monthly_cap_hit",
-        expect.objectContaining({
-          subscription: "pro",
-          cap_reason: "monthly_exhausted",
-          primary_cta: "add_credits",
-          eligible_ctas: ["add_credits", "upgrade_plan"],
-        }),
+        expect.anything(),
       );
       expect(eventSpy).toHaveBeenCalledWith(
         "agent_billing_stop",
@@ -1326,7 +1416,7 @@ describe("createChatLogger ChatSDKError metadata", () => {
     }
   });
 
-  it("does not emit monthly_cap_hit for paid billing service outages", () => {
+  it("keeps billing outage analytics on limit_hit and agent_billing_stop", () => {
     const logSpy = jest.spyOn(console, "log").mockImplementation(() => {});
     const eventSpy = jest.spyOn(phLogger, "event").mockImplementation(() => {});
 
@@ -1508,7 +1598,7 @@ describe("createChatLogger provider stream timeout", () => {
       chatLogger.recordProviderError(err, {
         mode: "agent",
         model: "agent-model",
-        requestedModelSlug: "minimax/minimax-m3",
+        requestedModelSlug: "x-ai/grok-4.5",
       });
       chatLogger.emitUnexpectedError(err);
 

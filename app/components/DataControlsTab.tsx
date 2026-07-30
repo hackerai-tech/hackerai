@@ -15,6 +15,7 @@ import {
 import { toast } from "sonner";
 import { useGlobalState } from "@/app/contexts/GlobalState";
 import { ManageSharedChatsDialog } from "./ManageSharedChatsDialog";
+import { formatTaskUiCopy } from "@/app/utils/task-ui-copy";
 
 const DataControlsTab = () => {
   const { subscription } = useGlobalState();
@@ -34,7 +35,7 @@ const DataControlsTab = () => {
 
       if (!response.ok) {
         const errorMessage = await response.text();
-        throw new Error(errorMessage || "Failed to delete all chats");
+        throw new Error(errorMessage || "Failed to delete all tasks");
       }
 
       setShowDeleteChats(false);
@@ -42,8 +43,8 @@ const DataControlsTab = () => {
     } catch (error) {
       console.error("Failed to delete all chats:", error);
       const errorMessage =
-        error instanceof Error ? error.message : "Failed to delete all chats";
-      toast.error(errorMessage);
+        error instanceof Error ? error.message : "Failed to delete all tasks";
+      toast.error(formatTaskUiCopy(errorMessage));
       setShowDeleteChats(false);
     } finally {
       setIsDeletingChats(false);
@@ -79,7 +80,7 @@ const DataControlsTab = () => {
       <div>
         <div className="flex items-center justify-between py-3">
           <div>
-            <div className="font-medium">Shared chats</div>
+            <div className="font-medium">Shared tasks</div>
             <div className="text-sm text-muted-foreground mt-1">
               Manage your publicly shared conversations
             </div>
@@ -88,7 +89,7 @@ const DataControlsTab = () => {
             variant="outline"
             size="sm"
             onClick={() => setShowManageSharedChats(true)}
-            aria-label="Manage shared chats"
+            aria-label="Manage shared tasks"
           >
             Manage
           </Button>
@@ -102,13 +103,13 @@ const DataControlsTab = () => {
       <div>
         <div className="flex items-center justify-between py-3">
           <div>
-            <div className="font-medium">Delete all chats</div>
+            <div className="font-medium">Delete all tasks</div>
           </div>
           <Button
             variant="destructive"
             size="sm"
             onClick={() => setShowDeleteChats(true)}
-            aria-label="Delete all chats"
+            aria-label="Delete all tasks"
           >
             Delete all
           </Button>
@@ -161,11 +162,11 @@ const DataControlsTab = () => {
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>
-              Clear your chat history - are you sure?
+              Clear your task history - are you sure?
             </AlertDialogTitle>
             <AlertDialogDescription>
               This action cannot be undone. This will permanently delete all
-              your chats and remove all associated data from our servers.
+              your tasks and remove all associated data from our servers.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

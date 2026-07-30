@@ -21,6 +21,7 @@ import { validateDownloadUrl } from "./path-validation";
 const VALID_MESSAGE_TYPES = new Set([
   "command",
   "command_cancel",
+  "command_cancel_result",
   "stdout",
   "stderr",
   "exit",
@@ -53,17 +54,64 @@ const FILE_DOWNLOAD_TIMEOUT_MS = 120000;
 const SETUP_COMMAND_TIMEOUT_MS = 30000;
 const SETUP_COMMAND_MAX_ATTEMPTS = 2;
 const SETUP_COMMAND_RETRY_DELAY_MS = 500;
+const COMMAND_CANCEL_ACK_TIMEOUT_MS = 5000;
 const TRANSIENT_COMMAND_TIMEOUT_ERROR_PATTERN =
   /\b(?:deadline_exceeded|operation timed out:.*\btimeoutMs\b|exceeding ['"]?timeoutMs['"]?|Command timeout after \d+ms)\b/i;
 
 const getErrorMessage = (error: unknown): string =>
   error instanceof Error ? error.message : String(error);
 
+const getPathBasename = (path: string): string | undefined => {
+  const parts = path.split(/[\\/]/).filter(Boolean);
+  return parts[parts.length - 1];
+};
+
+const redactTransferDetails = (
+  value: string,
+  url: string,
+  paths: string[],
+): string => {
+  let redacted = value;
+  const urlVariants = [url];
+  let urlPathname: string | undefined;
+  try {
+    const parsed = new URL(url);
+    urlVariants.push(`${parsed.origin}${parsed.pathname}`);
+    if (parsed.pathname && parsed.pathname !== "/") {
+      urlPathname = parsed.pathname;
+      urlVariants.push(parsed.pathname);
+    }
+  } catch {
+    urlVariants.push(url.split("?")[0]);
+  }
+  for (const urlVariant of new Set(
+    urlVariants.sort((left, right) => right.length - left.length),
+  )) {
+    redacted = redacted.split(urlVariant).join("[redacted-url]");
+  }
+  const pathVariants = paths.flatMap((path) => [path, getPathBasename(path)]);
+  for (const path of new Set(
+    pathVariants
+      .filter((value): value is string => Boolean(value))
+      .sort((left, right) => right.length - left.length),
+  )) {
+    redacted = redacted.split(path).join("[redacted-destination-path]");
+  }
+  const sourceBasename = urlPathname ? getPathBasename(urlPathname) : undefined;
+  if (sourceBasename) {
+    redacted = redacted.split(sourceBasename).join("[redacted-url]");
+  }
+  return redacted;
+};
+
 const isTransientCommandTimeoutError = (error: unknown): boolean =>
   TRANSIENT_COMMAND_TIMEOUT_ERROR_PATTERN.test(getErrorMessage(error));
 
 const delay = (ms: number): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, ms));
+
+export const serializePromptText = (value: string): string =>
+  JSON.stringify(value).replaceAll("<", "\\u003c").replaceAll(">", "\\u003e");
 
 export function parseSandboxMessage(
   data: unknown,
@@ -116,6 +164,15 @@ export function parseSandboxMessage(
       }
       break;
     case "command_cancel":
+      break;
+    case "command_cancel_result":
+      if (typeof msg.canceled !== "boolean") {
+        console.warn(
+          "Invalid command_cancel_result message: missing canceled",
+          msg,
+        );
+        return null;
+      }
       break;
   }
 
@@ -201,6 +258,7 @@ export class CentrifugoSandbox extends EventEmitter {
     private userId: string,
     private connectionInfo: ConnectionInfo,
     private config: CentrifugoConfig,
+    private workingDirectory?: string,
   ) {
     super();
   }
@@ -211,6 +269,10 @@ export class CentrifugoSandbox extends EventEmitter {
 
   getConnectionName(): string {
     return this.connectionInfo.name;
+  }
+
+  getWorkingDirectory(): string | undefined {
+    return this.workingDirectory;
   }
 
   supportsPty(): boolean {
@@ -258,12 +320,15 @@ export class CentrifugoSandbox extends EventEmitter {
         platform === "win32"
           ? "where agent-browser && agent-browser --version"
           : "command -v agent-browser && agent-browser --version";
+      const projectContext = this.workingDirectory
+        ? `\nActive project folder: ${serializePromptText(this.workingDirectory)}\nRun commands from this folder by default and resolve relative file paths from it.`
+        : "";
       return `You are executing commands on ${platformName} ${release} (${arch}) in DANGEROUS MODE.
 ${shellInfo}
 Commands run directly on the host OS "${hostname}" without Docker isolation. Be careful with:
 - File system operations (no sandbox protection)
 - Network operations (direct access to host network)
-- Process management (can affect host system)
+- Process management (can affect host system)${projectContext}
 
 Browser automation is host-dependent on this connection. Chromium and agent-browser are preinstalled only in the Cloud sandbox. If browser automation is needed, first check with \`${agentBrowserProbe}\`. Use agent-browser only if it is already installed, and do not install browser automation packages on the host unless the user explicitly asks.${capabilities?.pty === false ? "\n\nInteractive PTY sessions are not available on this connection. Use non-interactive terminal commands only." : ""}`;
     }
@@ -404,6 +469,7 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
           if (settled || !subscription) return;
           const request = {
             ...input,
+            path: this.resolveWorkingPath(input.path),
             requestId,
             targetConnectionId: this.connectionInfo.connectionId,
           } as FileRequestMessage;
@@ -439,6 +505,7 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
         onStderr?: (data: string) => void;
         displayName?: string;
         signal?: AbortSignal;
+        onCancelReady?: (cancel: () => Promise<boolean>) => void;
       },
     ): Promise<{
       stdout: string;
@@ -468,11 +535,15 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
         let stderr = "";
         let settled = false;
         let timeoutId: NodeJS.Timeout | undefined;
+        let cancelAckTimeoutId: NodeJS.Timeout | undefined;
         let subscription: Subscription | undefined;
         let publishedCommand = false;
         let commandPublishInFlight = false;
         let cancelRequested = false;
         let cancelPublishStarted = false;
+        let cancelTriggeredBySignal = false;
+        let cancelAttemptPromise: Promise<boolean> | null = null;
+        let resolveCancelAttempt: ((confirmed: boolean) => void) | null = null;
 
         const maxWaitTime = timeout + 5000; // Add 5s buffer for network
 
@@ -487,6 +558,10 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
           if (timeoutId) {
             clearTimeout(timeoutId);
             timeoutId = undefined;
+          }
+          if (cancelAckTimeoutId) {
+            clearTimeout(cancelAckTimeoutId);
+            cancelAckTimeoutId = undefined;
           }
           if (subscription) {
             try {
@@ -510,6 +585,9 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
 
         const resolveCanceled = () => {
           if (settled) return;
+          resolveCancelAttempt?.(true);
+          resolveCancelAttempt = null;
+          cancelAttemptPromise = null;
           settled = true;
           cleanup();
           resolve({
@@ -517,6 +595,24 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
             stderr,
             exitCode: 130,
           });
+        };
+
+        const failCancellation = (message: string) => {
+          if (cancelAckTimeoutId) {
+            clearTimeout(cancelAckTimeoutId);
+            cancelAckTimeoutId = undefined;
+          }
+          resolveCancelAttempt?.(false);
+          resolveCancelAttempt = null;
+          cancelAttemptPromise = null;
+          cancelRequested = false;
+          cancelPublishStarted = false;
+
+          if (cancelTriggeredBySignal && !settled) {
+            settled = true;
+            cleanup();
+            reject(new Error(message));
+          }
         };
 
         const publishCancel = () => {
@@ -529,6 +625,14 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
           }
           if (cancelPublishStarted) return;
           cancelPublishStarted = true;
+          const attempt = cancelAttemptPromise;
+          cancelAckTimeoutId = setTimeout(() => {
+            if (cancelAttemptPromise === attempt) {
+              failCancellation(
+                "Local command cancellation was not acknowledged.",
+              );
+            }
+          }, COMMAND_CANCEL_ACK_TIMEOUT_MS);
 
           subscription
             .publish({
@@ -537,15 +641,33 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
               targetConnectionId: this.connectionInfo.connectionId,
             })
             .catch(() => {
-              // The run is being aborted already; resolve locally even if the
-              // remote relay disappeared before it accepted the cancel message.
-            })
-            .finally(resolveCanceled);
+              if (cancelAttemptPromise === attempt) {
+                failCancellation(
+                  "Failed to publish local command cancellation.",
+                );
+              }
+            });
+        };
+
+        const requestCancellation = (
+          triggeredBySignal = false,
+        ): Promise<boolean> => {
+          cancelTriggeredBySignal ||= triggeredBySignal;
+          if (settled) return Promise.resolve(true);
+          if (cancelAttemptPromise) return cancelAttemptPromise;
+
+          cancelAttemptPromise = new Promise<boolean>((resolveAttempt) => {
+            resolveCancelAttempt = resolveAttempt;
+          });
+          publishCancel();
+          return cancelAttemptPromise;
         };
 
         const handleAbort = () => {
-          publishCancel();
+          void requestCancellation(true);
         };
+
+        opts?.onCancelReady?.(() => requestCancellation(false));
 
         if (opts?.signal?.aborted) {
           resolveCanceled();
@@ -597,6 +719,10 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
               opts?.onStderr?.(message.data);
               break;
             case "exit":
+              if (cancelRequested) {
+                resolveCanceled();
+                break;
+              }
               settled = true;
               cleanup();
               resolve({
@@ -606,7 +732,21 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
                 pid: message.pid,
               });
               break;
+            case "command_cancel_result":
+              if (!cancelRequested) break;
+              if (message.canceled) {
+                resolveCanceled();
+              } else {
+                failCancellation(
+                  "Local command cancellation was not confirmed.",
+                );
+              }
+              break;
             case "error":
+              if (cancelRequested) {
+                resolveCanceled();
+                break;
+              }
               console.warn(
                 "[local-command]",
                 JSON.stringify({
@@ -690,7 +830,7 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
               commandId,
               command,
               env: opts?.envVars,
-              cwd: opts?.cwd,
+              cwd: opts?.cwd ?? this.workingDirectory,
               timeout,
               background: opts?.background,
               displayName: opts?.displayName,
@@ -711,8 +851,9 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
               .catch((err: unknown) => {
                 commandPublishInFlight = false;
                 if (cancelRequested || opts?.signal?.aborted) {
-                  resolveCanceled();
-                  return;
+                  failCancellation(
+                    "Command publication failed while cancellation was pending.",
+                  );
                 }
                 if (!settled) {
                   settled = true;
@@ -776,6 +917,20 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
   // Escape paths for shell using single quotes (prevents $(), backticks, etc.)
   private static escapePath(path: string): string {
     return `'${path.replace(/'/g, "'\\''")}'`;
+  }
+
+  private resolveWorkingPath(path: string): string {
+    if (!this.workingDirectory) return path;
+    const isAbsolute =
+      path.startsWith("/") ||
+      (this.isWindows() && path.startsWith("\\")) ||
+      /^[A-Za-z]:[\\/]/.test(path);
+    if (isAbsolute) return path;
+
+    const separator = this.workingDirectory.includes("\\") ? "\\" : "/";
+    const base = this.workingDirectory.replace(/[\\/]+$/, "");
+    const relative = path.replace(/^[\\/]+/, "");
+    return `${base}${separator}${relative}`;
   }
 
   // Max chunk size ~500KB base64 to stay under size limits (bash path)
@@ -906,7 +1061,7 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
   }> {
     const shell = await this.detectShell();
     const useBash = shell === "bash";
-    const nativePath = this.toNativePath(rawPath);
+    const nativePath = this.toNativePath(this.resolveWorkingPath(rawPath));
     const path = useBash
       ? CentrifugoSandbox.toBashPath(nativePath)
       : nativePath;
@@ -943,6 +1098,7 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
 
   // Cache for detected HTTP client (curl or wget)
   private httpClient: "curl" | "wget" | null = null;
+  private snapCurlFallbackSelected = false;
 
   // Cache for detected curl capabilities (probed once per sandbox).
   // --retry-all-errors requires curl >= 7.71.0
@@ -999,7 +1155,11 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
     const curlCheck = await this.runSetupCommand("command -v curl || true", {
       displayName: "",
     });
-    if (curlCheck.stdout.includes("curl")) {
+    const curlPath = curlCheck.stdout.trim().split(/\s+/)[0] ?? "";
+    // Strict Snap packages use a private /tmp mount namespace. A shell probe
+    // can report the destination writable while Snap curl still cannot open
+    // that same host path, so prefer the already-supported wget when present.
+    if (curlPath && !curlPath.endsWith("/snap/bin/curl")) {
       this.httpClient = "curl";
       return "curl";
     }
@@ -1008,8 +1168,34 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
       displayName: "",
     });
     if (wgetCheck.stdout.includes("wget")) {
+      if (curlPath.endsWith("/snap/bin/curl")) {
+        this.snapCurlFallbackSelected = true;
+        console.warn(
+          "[centrifugo-http]",
+          JSON.stringify({
+            level: "warn",
+            event: "centrifugo_http_client_fallback_selected",
+            service: "web",
+            environment:
+              process.env.VERCEL_ENV ?? process.env.NODE_ENV ?? "unknown",
+            timestamp: new Date().toISOString(),
+            trace_id: this.connectionInfo.connectionId,
+            user_id: this.userId,
+            connection_id: this.connectionInfo.connectionId,
+            from_client: "curl",
+            from_package: "snap",
+            to_client: "wget",
+            reason: "snap_filesystem_confinement",
+          }),
+        );
+      }
       this.httpClient = "wget";
       return "wget";
+    }
+
+    if (curlPath) {
+      this.httpClient = "curl";
+      return "curl";
     }
 
     this.httpClient = "curl";
@@ -1457,7 +1643,10 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
       //   56 = failure receiving network data
       //   92 = HTTP/2 stream error
       //   124 = local command wrapper timeout
-      const TRANSIENT_EXIT_CODES = new Set([7, 18, 23, 28, 35, 56, 92, 124]);
+      const transientExitCodes =
+        httpClient === "curl"
+          ? new Set([7, 18, 23, 28, 35, 56, 92, 124])
+          : new Set([4, 124]);
       const MAX_ATTEMPTS = 3;
 
       let result: Awaited<ReturnType<typeof this.commands.run>> | null = null;
@@ -1478,7 +1667,7 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
             throw error;
           }
           console.warn(
-            `[centrifugo-download] command timeout on attempt ${attempt}/${MAX_ATTEMPTS} for ${path}, retrying: ${getErrorMessage(error)}`,
+            `[centrifugo-download] command timeout on attempt ${attempt}/${MAX_ATTEMPTS}, retrying: ${redactTransferDetails(getErrorMessage(error), url, [rawPath, path])}`,
           );
           await new Promise((r) => setTimeout(r, 500 * attempt));
           continue;
@@ -1487,12 +1676,12 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
         if (result.exitCode === 0) break;
         if (
           attempt === MAX_ATTEMPTS ||
-          !TRANSIENT_EXIT_CODES.has(result.exitCode)
+          !transientExitCodes.has(result.exitCode)
         ) {
           break;
         }
         console.warn(
-          `[centrifugo-download] ${httpClient} exit ${result.exitCode} on attempt ${attempt}/${MAX_ATTEMPTS} for ${path}, retrying`,
+          `[centrifugo-download] ${httpClient} exit ${result.exitCode} on attempt ${attempt}/${MAX_ATTEMPTS}, retrying`,
         );
         await new Promise((r) => setTimeout(r, 500 * attempt));
         continue;
@@ -1510,10 +1699,14 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
           ? `test -d ${diagDir} && echo target_dir_exists=true || echo target_dir_exists=false; test -w ${diagDir} && echo target_dir_writable=true || echo target_dir_writable=false; df -h /tmp 2>&1 | sed -n '1,2p'`
           : `if exist ${diagDir} (echo target_dir_exists=true) else (echo target_dir_exists=false) & (pushd ${diagDir} >nul 2>nul && (copy /Y NUL .hackerai_write_probe.tmp >nul 2>nul && del /q .hackerai_write_probe.tmp >nul 2>nul && echo target_dir_writable=true || echo target_dir_writable=false) & popd >nul 2>nul) || echo target_dir_writable=false`;
         const diag = await this.commands.run(diagCmd, { displayName: "" });
+        const safeStderr = redactTransferDetails(result.stderr, url, [
+          rawPath,
+          path,
+        ]);
         throw new Error(
-          `Failed to download file: ${result.stderr}\n` +
-            `  url: ${url.substring(0, 120)}${url.length > 120 ? "..." : ""}\n` +
-            `  path: ${path}\n` +
+          `Failed to download file: ${safeStderr}\n` +
+            `  source: [redacted-url]\n` +
+            `  destination: [redacted-destination-path]\n` +
             `  command: ${httpClient}\n` +
             `  exitCode: ${result.exitCode}\n` +
             `  diagnostics: ${diag.stdout}`,
@@ -1535,6 +1728,11 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
           displayName: "",
         });
         if (versionCheck.stdout.toLowerCase().includes("busybox")) {
+          if (this.snapCurlFallbackSelected) {
+            throw new Error(
+              "File upload failed: Snap curl cannot safely access sandbox file paths, and BusyBox wget does not support PUT requests. Install GNU wget or a native curl package to enable file uploads.",
+            );
+          }
           throw new Error(
             "File upload failed: curl is not available and BusyBox wget does not support PUT requests. " +
               "Install curl to enable file uploads (e.g., 'apk add curl' on Alpine or 'apt install curl' on Debian).",

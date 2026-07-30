@@ -15,8 +15,10 @@ import {
   useSidebar,
 } from "@/components/ui/sidebar";
 import SidebarUserNav from "./SidebarUserNav";
-import SidebarHistory from "./SidebarHistory";
 import SidebarHeaderContent from "./SidebarHeader";
+import { SidebarChatSections } from "./SidebarChatSections";
+import { useProjects } from "../hooks/useProjects";
+import { SidebarProjectListProvider } from "../contexts/SidebarProjectList";
 
 /** Chat list data lifted from parent so the subscription stays active when sidebar closes. */
 export type ChatListData = ReturnType<typeof useChats>;
@@ -26,6 +28,7 @@ const ChatListContent: FC<{ chatListData: ChatListData }> = ({
   chatListData,
 }) => {
   const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const projectListData = useProjects();
 
   return (
     <div
@@ -33,12 +36,21 @@ const ChatListContent: FC<{ chatListData: ChatListData }> = ({
       ref={scrollContainerRef}
       data-testid="sidebar-chat-list-scroll-container"
     >
-      <SidebarHistory
-        chats={chatListData.results || []}
-        paginationStatus={chatListData.status}
-        loadMore={chatListData.loadMore}
-        containerRef={scrollContainerRef}
-      />
+      <SidebarProjectListProvider
+        projects={projectListData.results}
+        paginationStatus={projectListData.status}
+        loadMoreProjects={projectListData.loadMore}
+      >
+        <SidebarChatSections
+          chats={chatListData.results || []}
+          projects={projectListData.results}
+          projectPaginationStatus={projectListData.status}
+          loadMoreProjects={projectListData.loadMore}
+          paginationStatus={chatListData.status}
+          loadMore={chatListData.loadMore}
+          containerRef={scrollContainerRef}
+        />
+      </SidebarProjectListProvider>
     </div>
   );
 };
@@ -68,8 +80,19 @@ const DesktopSidebarContent: FC<{
       <SidebarContent>
         <SidebarGroup>
           <SidebarGroupContent>
-            {/* Subscription stays active in MainSidebar; only render list when expanded */}
-            {!isCollapsed && <ChatListContent chatListData={chatListData} />}
+            <div
+              className={`h-full transition-opacity duration-100 ease-out motion-reduce:transition-none ${
+                isCollapsed
+                  ? "pointer-events-none invisible opacity-0"
+                  : "visible opacity-100 delay-200 motion-reduce:delay-0"
+              }`}
+              aria-hidden={isCollapsed}
+              inert={isCollapsed}
+              data-testid="sidebar-chat-list-visibility"
+            >
+              {/* Keep project subscriptions and section state alive across collapse. */}
+              <ChatListContent chatListData={chatListData} />
+            </div>
           </SidebarGroupContent>
         </SidebarGroup>
       </SidebarContent>
@@ -90,7 +113,7 @@ const MainSidebar: FC<{
   const isMobile = useIsMobile();
   const { setChatSidebarOpen } = useGlobalState();
   // Use lifted data when provided; otherwise subscribe here (e.g. SharedChatView)
-  const chatListDataFromHook = useChats();
+  const chatListDataFromHook = useChats(chatListDataProp === undefined);
   const chatListData = chatListDataProp ?? chatListDataFromHook;
 
   const handleCloseSidebar = () => {

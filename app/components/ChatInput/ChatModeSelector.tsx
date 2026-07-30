@@ -7,7 +7,7 @@ import { useGlobalState } from "@/app/contexts/GlobalState";
 import { useAuth } from "@workos-inc/authkit-nextjs/components";
 import { toast } from "sonner";
 import { AgentUpgradeDialog } from "./AgentUpgradeDialog";
-import { navigateToAuth } from "@/app/hooks/useTauri";
+import { navigateToAuth, useTauri } from "@/app/hooks/useTauri";
 
 export interface ChatModeSelectorProps {
   className?: string;
@@ -20,6 +20,8 @@ export function ChatModeSelector({ className }: ChatModeSelectorProps) {
     subscription,
     temporaryChatsEnabled,
     hasLocalSandbox,
+    desktopBridgeStatus,
+    retryDesktopBridge,
     defaultLocalSandboxPreference,
     sandboxPreference,
     setSandboxPreference,
@@ -27,7 +29,22 @@ export function ChatModeSelector({ className }: ChatModeSelectorProps) {
     setSelectedModel,
   } = useGlobalState();
   const { user } = useAuth();
+  const { isTauri } = useTauri();
   const [agentUpgradeDialogOpen, setAgentUpgradeDialogOpen] = useState(false);
+
+  const enableLocalAgentMode = () => {
+    setChatMode("agent");
+    if (
+      (sandboxPreference === "e2b" || !sandboxPreference) &&
+      defaultLocalSandboxPreference
+    ) {
+      setSandboxPreference(defaultLocalSandboxPreference);
+    }
+    if (selectedModel !== "auto") {
+      setSelectedModel("auto");
+    }
+    setAgentUpgradeDialogOpen(false);
+  };
 
   const handleAgentModeClick = () => {
     if (!user) {
@@ -35,23 +52,15 @@ export function ChatModeSelector({ className }: ChatModeSelectorProps) {
       return;
     }
     if (temporaryChatsEnabled) {
-      toast.info("Agent mode requires chat history", {
-        description: "Turn off temporary chat to use Agent mode.",
+      toast.info("Agent mode requires task history", {
+        description: "Turn off temporary task to use Agent mode.",
       });
       return;
     }
     if (subscription !== "free") {
       setChatMode("agent");
     } else if (hasLocalSandbox) {
-      setChatMode("agent");
-      if (sandboxPreference === "e2b" || !sandboxPreference) {
-        if (defaultLocalSandboxPreference) {
-          setSandboxPreference(defaultLocalSandboxPreference);
-        }
-      }
-      if (selectedModel !== "auto") {
-        setSelectedModel("auto");
-      }
+      enableLocalAgentMode();
     } else {
       setAgentUpgradeDialogOpen(true);
     }
@@ -63,7 +72,10 @@ export function ChatModeSelector({ className }: ChatModeSelectorProps) {
         className={`flex items-center gap-1.5 min-w-0 overflow-hidden ${className ?? ""}`}
       >
         <DropdownMenu>
-          <ModeSelectorTrigger chatMode={chatMode} />
+          <ModeSelectorTrigger
+            chatMode={chatMode}
+            isPaid={subscription !== "free"}
+          />
           <ModeSelectorContent
             setChatMode={setChatMode}
             onAgentModeClick={handleAgentModeClick}
@@ -75,6 +87,10 @@ export function ChatModeSelector({ className }: ChatModeSelectorProps) {
       <AgentUpgradeDialog
         open={agentUpgradeDialogOpen}
         onOpenChange={setAgentUpgradeDialogOpen}
+        isDesktopEnvironment={isTauri}
+        desktopBridgeStatus={desktopBridgeStatus}
+        onRetryDesktopBridge={retryDesktopBridge}
+        onUseConnectedDesktop={enableLocalAgentMode}
       />
     </>
   );

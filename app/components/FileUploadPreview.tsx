@@ -19,7 +19,6 @@ import {
 import { ImageViewer } from "./ImageViewer";
 import { FileContentViewer } from "./FileContentViewer";
 import {
-  UploadedFileState,
   FileUploadPreviewProps,
   FilePreview,
   LocalDesktopFile,

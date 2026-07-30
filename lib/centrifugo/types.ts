@@ -16,6 +16,12 @@ export interface CommandCancelMessage {
   targetConnectionId: string;
 }
 
+export interface CommandCancelResultMessage {
+  type: "command_cancel_result";
+  commandId: string;
+  canceled: boolean;
+}
+
 export interface StdoutMessage {
   type: "stdout";
   commandId: string;
@@ -195,6 +201,7 @@ export interface PtyErrorMessage {
 export type CommandResponseMessage =
   | CommandMessage
   | CommandCancelMessage
+  | CommandCancelResultMessage
   | StdoutMessage
   | StderrMessage
   | ExitMessage

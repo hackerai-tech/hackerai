@@ -273,6 +273,67 @@ export function getShellOutput(
   );
 }
 
+// Terminal tool results sometimes append recovery instructions for the model.
+// Keep those instructions in the persisted/model-facing result, but remove them
+// from the user-facing Computer sidebar. These patterns intentionally match only
+// platform-authored suffixes so command output containing similar prose is left
+// untouched.
+const AGENT_ONLY_TERMINAL_GUIDANCE_SUFFIXES = [
+  /\s+Use interact_terminal_session with this exact session ID to wait, view, or kill it\.(?=\s*$)/,
+  /\s+Do not derive a session ID from the PID or call interact_terminal_session for this command\.(?=\s*$)/,
+  /\s+Only use the exact session ID returned by run_terminal_cmd; a PID is not a session ID and must never be converted into one\.(?=\s*$)/,
+  /\s+Use action=view to read final output, or start a new session via run_terminal_cmd\.(?=\s*$)/,
+  /\s+Use action=wait, view, or kill\.(?=\s*$)/,
+  /\s+Use non-interactive terminal commands instead\.(?=\s*$)/,
+  /\s+The session was retained so cleanup can be retried\.(?=\s*$)/,
+  /\s+The bounded cleanup limit was reached, so local session tracking was removed\.(?=\s*$)/,
+  /\s+Another attempt may be made but the sandbox will be marked unavailable after repeated failures\.(?=\s*$)/,
+] as const;
+
+const AGENT_ONLY_TERMINAL_MESSAGE_REPLACEMENTS = new Map([
+  [
+    'action=send requires `input`. To submit just Enter (e.g. to terminate a Python multi-line block or accept a default prompt), pass input="Enter" or input="\\n".',
+    "Terminal input was missing.",
+  ],
+  [
+    "Sandbox is unavailable after repeated health check failures. Do NOT retry any terminal or sandbox commands. Inform the user that the sandbox could not be reached and suggest they wait a moment and try again, or delete the sandbox in Settings > Data Controls. If the issue persists, contact HackerAI support.",
+    "Sandbox is unavailable after repeated health check failures. Try again in a moment, or delete the sandbox in Settings > Data Controls. If the issue persists, contact HackerAI support.",
+  ],
+]);
+
+/**
+ * Removes platform-authored recovery guidance before terminal output is shown
+ * in the Computer sidebar. The persisted/model-facing tool result is unchanged.
+ */
+export function stripAgentOnlyTerminalGuidance(output: string): string {
+  const trimmedOutput = output.trimEnd();
+  const trailingWhitespace = output.slice(trimmedOutput.length);
+  const replacement =
+    AGENT_ONLY_TERMINAL_MESSAGE_REPLACEMENTS.get(trimmedOutput);
+  let userFacingOutput = replacement
+    ? replacement + trailingWhitespace
+    : output
+        .replace(
+          /^action=(?:send|wait|view|kill) requires `session`\.(?=\s*$)/,
+          "Terminal session was not specified.",
+        )
+        .replace(
+          /^Input exceeds MAX_INPUT_BYTES_PER_SEND=\d+ \(got \d+\)\.(?=\s*$)/,
+          "Terminal input is too large.",
+        );
+
+  userFacingOutput = userFacingOutput.replace(
+    /; do not pass this PID to interact_terminal_session\.(?=\s*$)/,
+    ".",
+  );
+
+  for (const suffix of AGENT_ONLY_TERMINAL_GUIDANCE_SUFFIXES) {
+    userFacingOutput = userFacingOutput.replace(suffix, "");
+  }
+
+  return userFacingOutput;
+}
+
 // ---------------------------------------------------------------------------
 // Unified ToolBlock + sidebar computation
 //
@@ -397,7 +458,7 @@ export function computeShellTerminalBlock(
       ? null
       : {
           command: isInteractiveAction ? displayTarget : displayCommand,
-          output: finalOutput,
+          output: stripAgentOnlyTerminalGuidance(finalOutput),
           isExecuting,
           isBackground: !isShellTool ? legacyIsBackground : undefined,
           isInteractive: !isShellTool ? legacyInteractive : undefined,

@@ -17,7 +17,10 @@ import { getMaxFileTokens } from "../token-utils";
 import type { SubscriptionTier } from "@/types";
 import { logger } from "@/lib/logger";
 import { validateDownloadUrl } from "@/lib/ai/tools/utils/path-validation";
-import { stringifyRedactedError } from "@/lib/utils/error-redaction";
+import {
+  redactSensitiveErrorMessage,
+  stringifyRedactedError,
+} from "@/lib/utils/error-redaction";
 import {
   normalizeImageMediaType,
   validateImageBytes,
@@ -51,6 +54,9 @@ type SizeProbeResult = {
 const providerUnsafeImageParts = new WeakSet<object>();
 
 const redactUrlForLog = (url: string): string => {
+  const redacted = redactSensitiveErrorMessage(url);
+  if (redacted !== url) return redacted;
+
   try {
     const parsed = new URL(url);
     return `${parsed.origin}${parsed.pathname}`;
@@ -133,7 +139,9 @@ const convertUrlToBase64DataUrl = async (
   try {
     const response = await fetch(url, { signal: controller.signal });
     if (!response.ok) {
-      console.error(`Failed to fetch file (${response.status}): ${url}`);
+      console.error(
+        `Failed to fetch file (${response.status}): ${redactUrlForLog(url)}`,
+      );
       return url;
     }
 
@@ -141,8 +149,8 @@ const convertUrlToBase64DataUrl = async (
     return `data:${mediaType};base64,${buffer.toString("base64")}`;
   } catch (error) {
     console.error("Failed to convert file to base64:", {
-      url,
-      error: error instanceof Error ? error.message : String(error),
+      url: redactUrlForLog(url),
+      error: stringifyRedactedError(error),
     });
     return url;
   } finally {

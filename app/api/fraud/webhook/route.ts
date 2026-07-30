@@ -8,7 +8,7 @@ import {
   logStripeWebhookMissingSignature,
   logStripeWebhookSignatureVerificationFailed,
 } from "@/lib/billing/stripe-webhook-logging";
-import { getRemainingRefundAmountCents } from "@/lib/billing/fraud-refund";
+import { refundChargeForEFW } from "@/lib/billing/fraud-refund";
 import {
   isTerminalPaymentMethodDetachError,
   isTerminalStripeResourceError,
@@ -136,67 +136,6 @@ async function reportChargeFraudulent(chargeId: string): Promise<void> {
   }
 }
 
-/**
- * Refund a charge for an early fraud warning.
- *
- * Uses an idempotency key derived from the EFW ID so that webhook retries
- * (or TOCTOU duplicate deliveries) collapse onto a single refund instead
- * of erroring with `charge_already_refunded`.
- *
- * Terminal failures (`charge_already_refunded`, `charge_disputed`,
- * `charge_pending`) are logged and treated as success: there is nothing
- * to retry. All other errors bubble so the webhook returns 500 and Stripe
- * retries the delivery — silently swallowing transient errors here would
- * defeat the entire point of the EFW path (refund proactively to avoid
- * the dispute fee + ratio impact).
- */
-async function refundChargeForEFW(
-  charge: Stripe.Charge,
-  efwId: string,
-): Promise<void> {
-  const remainingAmount = getRemainingRefundAmountCents(charge);
-  if (remainingAmount === 0) {
-    console.log(
-      `[Fraud Webhook] Refund skipped for ${charge.id} (EFW ${efwId}): charge has no refundable balance`,
-    );
-    return;
-  }
-
-  try {
-    await stripe.refunds.create(
-      {
-        charge: charge.id,
-        reason: "fraudulent",
-        amount: remainingAmount,
-      },
-      { idempotencyKey: `efw-refund:${efwId}` },
-    );
-    console.log(
-      `[Fraud Webhook] Refunded ${remainingAmount} cents from charge ${charge.id} (early fraud warning ${efwId})`,
-    );
-  } catch (err) {
-    if (err instanceof Stripe.errors.StripeError) {
-      const code = err.code;
-      if (
-        code === "charge_already_refunded" ||
-        code === "charge_disputed" ||
-        code === "charge_pending"
-      ) {
-        console.log(
-          `[Fraud Webhook] Refund skipped for ${charge.id} (EFW ${efwId}): ${code}`,
-        );
-        return;
-      }
-    }
-    // Transient or unexpected — bubble so Stripe retries the webhook.
-    console.error(
-      `[Fraud Webhook] Refund failed for ${charge.id} (EFW ${efwId}):`,
-      err,
-    );
-    throw err;
-  }
-}
-
 /** Resolve Stripe customer ID from a charge. */
 function getCustomerIdFromCharge(charge: Stripe.Charge): string | null {
   return typeof charge.customer === "string"
@@ -316,7 +255,7 @@ async function handleEarlyFraudWarning(
   const customerId = getCustomerIdFromCharge(charge);
 
   // Refund first. Throws on transient errors so Stripe retries the webhook.
-  await refundChargeForEFW(charge, warning.id);
+  await refundChargeForEFW(stripe, charge, warning.id);
 
   // Block the user
   if (customerId) {

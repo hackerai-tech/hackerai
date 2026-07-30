@@ -68,7 +68,7 @@ describe("MessageErrorState", () => {
     ).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /^retry$/i })).toBeNull();
     expect(
-      screen.getByRole("button", { name: /new chat/i }),
+      screen.getByRole("button", { name: /new task/i }),
     ).toBeInTheDocument();
   });
 

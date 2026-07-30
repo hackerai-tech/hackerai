@@ -40,12 +40,12 @@ describe("ModelSelector tier ↔ provider drift", () => {
     );
   });
 
-  it("HackerAI Pro resolves to GLM in both modes", () => {
+  it("HackerAI Pro resolves to its dedicated Grok route in both modes", () => {
     expect(resolveTierToProviderKey("hackerai-pro", "ask")).toBe(
-      "model-glm-5.2",
+      "model-grok-4.5-pro",
     );
     expect(resolveTierToProviderKey("hackerai-pro", "agent")).toBe(
-      "model-glm-5.2",
+      "model-grok-4.5-pro",
     );
   });
 
@@ -72,21 +72,21 @@ describe("ModelSelector tier ↔ provider drift", () => {
     }
   });
 
-  it("discloses the text and vision providers for Agent Standard", () => {
+  it("discloses the text and Grok vision providers for Agent Standard", () => {
     expect(
       AGENT_MODEL_OPTIONS.find((option) => option.id === "hackerai-standard")
         ?.poweredBy,
-    ).toBe("DeepSeek V4 Pro · MiniMax M3 for vision");
+    ).toBe("DeepSeek V4 Pro · xAI Grok 4.5 for vision");
   });
 
-  it("discloses the mode-specific vision provider for HackerAI Pro", () => {
+  it("discloses Grok 4.5 for HackerAI Pro", () => {
     expect(
       ASK_MODEL_OPTIONS.find((option) => option.id === "hackerai-pro")
         ?.poweredBy,
-    ).toBe("Z.ai GLM 5.2 · Kimi K2.7 for vision");
+    ).toBe("xAI Grok 4.5");
     expect(
       AGENT_MODEL_OPTIONS.find((option) => option.id === "hackerai-pro")
         ?.poweredBy,
-    ).toBe("Z.ai GLM 5.2 · Grok 4.5 for vision");
+    ).toBe("xAI Grok 4.5");
   });
 });

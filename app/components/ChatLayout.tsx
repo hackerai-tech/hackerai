@@ -1,13 +1,32 @@
 "use client";
 
 import { useEffect, useRef, useState, useCallback } from "react";
+import dynamic from "next/dynamic";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { useGlobalState } from "../contexts/GlobalState";
 import { useChats } from "../hooks/useChats";
 import { SidebarProvider } from "@/components/ui/sidebar";
+import Loading from "@/components/ui/loading";
 import MainSidebar from "./Sidebar";
-import { SettingsDialog } from "./SettingsDialog";
 import { onOpenSettingsDialog } from "@/lib/utils/settings-dialog";
+
+const SettingsDialog = dynamic(
+  () => import("./SettingsDialog").then((module) => module.SettingsDialog),
+  {
+    ssr: false,
+    loading: () => (
+      <div
+        className="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
+        role="status"
+        aria-label="Loading settings"
+      >
+        <div className="rounded-xl border bg-background p-6 shadow-lg">
+          <Loading size={6} />
+        </div>
+      </div>
+    ),
+  },
+);
 
 /**
  * Shared layout for chat routes: Chat Sidebar (left) + main content slot.
@@ -24,11 +43,13 @@ export function ChatLayout({ children }: { children: React.ReactNode }) {
 
   // Settings dialog — local state, opened via custom event from anywhere
   const [settingsDialogOpen, setSettingsDialogOpen] = useState(false);
+  const [hasOpenedSettingsDialog, setHasOpenedSettingsDialog] = useState(false);
   const [settingsDialogTab, setSettingsDialogTab] = useState<string | null>(
     null,
   );
 
   const handleOpenSettings = useCallback((tab?: string) => {
+    setHasOpenedSettingsDialog(true);
     setSettingsDialogTab(null);
     // Force a fresh state change even if the same tab is requested again
     queueMicrotask(() => {
@@ -154,6 +175,7 @@ export function ChatLayout({ children }: { children: React.ReactNode }) {
             ref={panelRef}
             role="dialog"
             aria-modal="true"
+            aria-label="Task sidebar"
             tabIndex={-1}
             className="w-full max-w-80 h-full bg-background shadow-lg transform transition-transform duration-300 ease-in-out"
             onClick={(e) => e.stopPropagation()}
@@ -162,12 +184,14 @@ export function ChatLayout({ children }: { children: React.ReactNode }) {
           </div>
         </div>
       )}
-      {/* Settings Dialog - rendered here so it's always mounted (including mobile) */}
-      <SettingsDialog
-        open={settingsDialogOpen}
-        onOpenChange={setSettingsDialogOpen}
-        initialTab={settingsDialogTab}
-      />
+      {/* Load settings on first use, then keep it mounted for close animations. */}
+      {hasOpenedSettingsDialog && (
+        <SettingsDialog
+          open={settingsDialogOpen}
+          onOpenChange={setSettingsDialogOpen}
+          initialTab={settingsDialogTab}
+        />
+      )}
     </div>
   );
 }

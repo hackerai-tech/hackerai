@@ -6,7 +6,6 @@ import { RateLimitWarning } from "../RateLimitWarning";
 jest.mock("@/lib/analytics/client", () => ({
   captureAddCreditCtaClick: jest.fn(),
   captureAddCreditCtaImpression: jest.fn(),
-  captureAgentRunSpendCapImpression: jest.fn(),
   captureUpgradeCtaImpression: jest.fn(),
 }));
 

@@ -4,12 +4,16 @@ const postHogSourceMapApiKey = process.env.POSTHOG_CLI_API_KEY?.trim();
 const postHogSourceMapProjectId = process.env.POSTHOG_CLI_PROJECT_ID?.trim();
 const hasPostHogSourceMapApiKey = Boolean(postHogSourceMapApiKey);
 const hasPostHogSourceMapProjectId = Boolean(postHogSourceMapProjectId);
-const posthogSourceMapsEnabled =
+const hasPostHogSourceMapConfig =
   hasPostHogSourceMapApiKey && hasPostHogSourceMapProjectId;
+const isVercelPreview = process.env.VERCEL_ENV === "preview";
+const isVercelProduction = process.env.VERCEL_ENV === "production";
+const posthogSourceMapsEnabled =
+  isVercelProduction && hasPostHogSourceMapConfig;
 
 if (
   (hasPostHogSourceMapApiKey || hasPostHogSourceMapProjectId) &&
-  !posthogSourceMapsEnabled
+  !hasPostHogSourceMapConfig
 ) {
   console.warn(
     "[PostHog] Source maps are disabled. Set both POSTHOG_CLI_API_KEY and POSTHOG_CLI_PROJECT_ID to enable upload.",
@@ -19,6 +23,10 @@ if (
 const nextConfig: NextConfig = {
   devIndicators: false,
   productionBrowserSourceMaps: posthogSourceMapsEnabled,
+  typescript: {
+    // Pull request CI runs pnpm typecheck while the preview builds in parallel.
+    ignoreBuildErrors: isVercelPreview,
+  },
   async headers() {
     const iconCacheHeaders = [
       {

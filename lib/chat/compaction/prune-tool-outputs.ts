@@ -42,10 +42,7 @@ export interface PruneResult {
   toolOutputCount: number;
   /** Why pruning was skipped (null if pruning occurred) */
   skipReason:
-    | "no-tool-outputs"
-    | "within-budget"
-    | "below-minimum-savings"
-    | null;
+    "no-tool-outputs" | "within-budget" | "below-minimum-savings" | null;
 }
 
 export interface StorageCompactionResult<T extends UIMessage = UIMessage> {
@@ -63,7 +60,11 @@ const STORAGE_REASONING_CHAR_BUDGET = 32_000;
 const STORAGE_REASONING_PART_CHAR_LIMIT = 8_000;
 const STORAGE_TOOL_INPUT_STRING_LIMIT = 512;
 const STORAGE_TOOL_INPUT_ARRAY_LIMIT = 20;
+const STORAGE_TOOL_INPUT_OBJECT_KEY_LIMIT = 20;
 const STORAGE_TOOL_INPUT_DEPTH_LIMIT = 3;
+const STORAGE_NOTE_CONTENT_PREVIEW_LIMIT = 512;
+const STORAGE_NOTE_TITLE_LIMIT = 200;
+const STORAGE_NOTE_TAG_LIMIT = 20;
 const STORAGE_COMPACTED_STRING_SUFFIX = "... [truncated for storage]";
 const STORAGE_COMPACTED_REASONING_PREFIX =
   "[Earlier reasoning compacted for storage]\n\n";
@@ -179,6 +180,11 @@ const isCompletedPrunableToolPart = (part: ToolPart): boolean =>
   (part.state === "output-available" || part.state === "output-error") &&
   part.output != null;
 
+const isCompletedToolPart = (part: ToolPart): boolean =>
+  part.type?.startsWith(TOOL_TYPE_PREFIX) &&
+  (part.state === "output-available" || part.state === "output-error") &&
+  part.output != null;
+
 const truncateStorageString = (
   value: string,
   maxLength = STORAGE_TOOL_INPUT_STRING_LIMIT,
@@ -236,25 +242,99 @@ const compactToolInputForStorage = (value: unknown, depth = 0): unknown => {
     return compacted;
   }
 
+  const entries = Object.entries(value as Record<string, unknown>);
   const compacted: Record<string, unknown> = {};
-  for (const [key, childValue] of Object.entries(
-    value as Record<string, unknown>,
+  for (const [key, childValue] of entries.slice(
+    0,
+    STORAGE_TOOL_INPUT_OBJECT_KEY_LIMIT,
   )) {
     compacted[key] = compactToolInputForStorage(childValue, depth + 1);
+  }
+  if (entries.length > STORAGE_TOOL_INPUT_OBJECT_KEY_LIMIT) {
+    compacted.__hackeraiStorageTruncatedFields =
+      entries.length - STORAGE_TOOL_INPUT_OBJECT_KEY_LIMIT;
   }
 
   return compacted;
 };
 
-const compactToolPartForStorage = (part: ToolPart): ToolPart => {
-  if (!isPrunableToolPart(part)) return part;
+const compactNoteForStorage = (value: unknown): unknown => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return compactToolInputForStorage(value);
+  }
+
+  const note = value as Record<string, unknown>;
+  return {
+    note_id: note.note_id,
+    title:
+      typeof note.title === "string"
+        ? truncateStorageString(note.title, STORAGE_NOTE_TITLE_LIMIT)
+        : note.title,
+    content:
+      typeof note.content === "string"
+        ? truncateStorageString(
+            note.content,
+            STORAGE_NOTE_CONTENT_PREVIEW_LIMIT,
+          )
+        : note.content,
+    category: note.category,
+    tags: Array.isArray(note.tags)
+      ? note.tags
+          .slice(0, STORAGE_NOTE_TAG_LIMIT)
+          .map((tag) =>
+            typeof tag === "string" ? truncateStorageString(tag, 100) : tag,
+          )
+      : note.tags,
+    _creationTime: note._creationTime,
+    updated_at: note.updated_at,
+  };
+};
+
+const compactProtectedToolOutputForStorage = (
+  toolName: string,
+  output: unknown,
+): unknown => {
+  if (
+    toolName !== "list_notes" ||
+    !output ||
+    typeof output !== "object" ||
+    Array.isArray(output)
+  ) {
+    return compactToolInputForStorage(output);
+  }
+
+  const listOutput = output as Record<string, unknown>;
+  return {
+    success: listOutput.success,
+    notes: Array.isArray(listOutput.notes)
+      ? listOutput.notes.map(compactNoteForStorage)
+      : listOutput.notes,
+    total_count: listOutput.total_count,
+    message: listOutput.message,
+    error: listOutput.error,
+    __hackeraiStorageCompacted: true,
+  };
+};
+
+const compactToolPartForStorage = (
+  part: ToolPart,
+  { includeProtectedTools = false }: { includeProtectedTools?: boolean } = {},
+): ToolPart => {
+  const toolName = part.type?.startsWith(TOOL_TYPE_PREFIX)
+    ? part.type.slice(TOOL_TYPE_PREFIX.length)
+    : null;
+  if (!toolName || (!includeProtectedTools && PROTECTED_TOOLS.has(toolName))) {
+    return part;
+  }
 
   return {
     ...part,
     input: compactToolInputForStorage(part.input),
-    output: isCompactPlaceholderOutput(part.output)
-      ? part.output
-      : buildPlaceholder(part),
+    output: PROTECTED_TOOLS.has(toolName)
+      ? compactProtectedToolOutputForStorage(toolName, part.output)
+      : isCompactPlaceholderOutput(part.output)
+        ? part.output
+        : buildPlaceholder(part),
   };
 };
 
@@ -364,6 +444,7 @@ const stripStorageOnlyParts = (parts: UIMessage["parts"]): UIMessage["parts"] =>
 const compactToolPartsToByteLimit = (
   parts: UIMessage["parts"],
   softLimitBytes: number,
+  { includeProtectedTools = false }: { includeProtectedTools?: boolean } = {},
 ): {
   parts: UIMessage["parts"];
   compactedCount: number;
@@ -383,9 +464,17 @@ const compactToolPartsToByteLimit = (
     index++
   ) {
     const part = compactedParts[index] as ToolPart;
-    if (!isCompletedPrunableToolPart(part)) continue;
+    if (
+      !(includeProtectedTools
+        ? isCompletedToolPart(part)
+        : isCompletedPrunableToolPart(part))
+    ) {
+      continue;
+    }
 
-    const compactedPart = compactToolPartForStorage(part);
+    const compactedPart = compactToolPartForStorage(part, {
+      includeProtectedTools,
+    });
     if (
       estimateSerializedSizeBytes(compactedPart) >=
       estimateSerializedSizeBytes(part)
@@ -407,6 +496,137 @@ const compactToolPartsToByteLimit = (
     compactedCount,
     afterSizeBytes,
   };
+};
+
+const compactNonCompletedPartForStorage = (
+  part: UIMessage["parts"][number],
+): UIMessage["parts"][number] => {
+  const toolPart = part as ToolPart;
+  if (toolPart.type?.startsWith(TOOL_TYPE_PREFIX)) {
+    return {
+      ...toolPart,
+      input: compactToolInputForStorage(toolPart.input),
+    } as UIMessage["parts"][number];
+  }
+
+  if ("data" in part) {
+    return {
+      ...part,
+      data: compactToolInputForStorage(part.data),
+    } as UIMessage["parts"][number];
+  }
+
+  return part;
+};
+
+const fitSinglePartToByteLimit = (
+  part: UIMessage["parts"][number],
+  byteLimit: number,
+): UIMessage["parts"][number] | null => {
+  if (
+    (part.type === "text" || part.type === "reasoning") &&
+    typeof part.text === "string"
+  ) {
+    let low = 0;
+    let high = part.text.length;
+    let best: UIMessage["parts"][number] | null = null;
+
+    while (low <= high) {
+      const midpoint = Math.floor((low + high) / 2);
+      const candidate = {
+        ...part,
+        text: truncateStorageString(part.text, midpoint),
+      } as UIMessage["parts"][number];
+      if (estimateSerializedSizeBytes([candidate]) <= byteLimit) {
+        best = candidate;
+        low = midpoint + 1;
+      } else {
+        high = midpoint - 1;
+      }
+    }
+
+    return best;
+  }
+
+  const toolPart = part as ToolPart;
+  if (toolPart.type?.startsWith(TOOL_TYPE_PREFIX)) {
+    const minimalToolPart = {
+      type: toolPart.type,
+      toolCallId: toolPart.toolCallId,
+      state: toolPart.state,
+      input: { __hackeraiStorageTruncated: true },
+      ...(isCompletedToolPart(toolPart)
+        ? {
+            output: compactProtectedToolOutputForStorage(
+              toolPart.type.slice(TOOL_TYPE_PREFIX.length),
+              toolPart.output,
+            ),
+          }
+        : {}),
+    } as UIMessage["parts"][number];
+    if (estimateSerializedSizeBytes([minimalToolPart]) <= byteLimit) {
+      return minimalToolPart;
+    }
+
+    return null;
+  }
+
+  const minimalPart = { type: part.type } as UIMessage["parts"][number];
+  return estimateSerializedSizeBytes([minimalPart]) <= byteLimit
+    ? minimalPart
+    : null;
+};
+
+const enforceStorageByteLimit = (
+  parts: UIMessage["parts"],
+  byteLimit: number,
+): {
+  parts: UIMessage["parts"];
+  compactedCount: number;
+  afterSizeBytes: number;
+} => {
+  const protectedCompaction = compactToolPartsToByteLimit(parts, byteLimit, {
+    includeProtectedTools: true,
+  });
+  let compactedParts = protectedCompaction.parts;
+  let compactedCount = protectedCompaction.compactedCount;
+  let afterSizeBytes = protectedCompaction.afterSizeBytes;
+
+  for (
+    let index = 0;
+    index < compactedParts.length && afterSizeBytes > byteLimit;
+    index++
+  ) {
+    const currentPart = compactedParts[index];
+    const compactedPart = compactNonCompletedPartForStorage(currentPart);
+    if (
+      estimateSerializedSizeBytes(compactedPart) >=
+      estimateSerializedSizeBytes(currentPart)
+    ) {
+      continue;
+    }
+
+    compactedParts = compactedParts.map((part, partIndex) =>
+      partIndex === index ? compactedPart : part,
+    );
+    compactedCount++;
+    afterSizeBytes = estimateSerializedSizeBytes(compactedParts);
+  }
+
+  while (compactedParts.length > 1 && afterSizeBytes > byteLimit) {
+    compactedParts = compactedParts.slice(1);
+    compactedCount++;
+    afterSizeBytes = estimateSerializedSizeBytes(compactedParts);
+  }
+
+  if (compactedParts.length === 1 && afterSizeBytes > byteLimit) {
+    const fittedPart = fitSinglePartToByteLimit(compactedParts[0], byteLimit);
+    compactedParts = fittedPart ? [fittedPart] : [];
+    compactedCount++;
+    afterSizeBytes = estimateSerializedSizeBytes(compactedParts);
+  }
+
+  return { parts: compactedParts, compactedCount, afterSizeBytes };
 };
 
 /**
@@ -486,6 +706,13 @@ export function compactMessageForStorage<T extends UIMessage>(
     parts = byteCompactionResult.parts;
     prunedCount += byteCompactionResult.compactedCount;
     afterSizeBytes = byteCompactionResult.afterSizeBytes;
+  }
+
+  if (afterSizeBytes > softLimitBytes) {
+    const hardLimitResult = enforceStorageByteLimit(parts, softLimitBytes);
+    parts = hardLimitResult.parts;
+    prunedCount += hardLimitResult.compactedCount;
+    afterSizeBytes = hardLimitResult.afterSizeBytes;
   }
 
   const compacted =
@@ -667,6 +894,119 @@ const toTextModelToolOutput = (value: string) => ({
   value,
 });
 
+export const MODEL_IMAGE_TOOL_RESULT_LIMIT = 3;
+export const ELIDED_IMAGE_TOOL_RESULT_MESSAGE =
+  "[Older image tool result omitted to bound Agent context. Re-run the view action if visual inspection is still needed.]";
+
+export interface ModelImageToolResultLimit {
+  messages: Array<Record<string, unknown>>;
+  totalImageCount: number;
+  elidedImageCount: number;
+}
+
+/** Identifies image blocks supported by AI SDK model tool-result content. */
+const isModelImageOutputPart = (part: unknown): boolean =>
+  typeof part === "object" &&
+  part !== null &&
+  ((part as { type?: unknown }).type === "image-data" ||
+    (part as { type?: unknown }).type === "image" ||
+    (part as { type?: unknown }).type === "image-url");
+
+/** Preserves an AI SDK output wrapper while replacing its underlying value. */
+const replaceModelToolOutputValue = (
+  output: unknown,
+  value: unknown,
+): unknown =>
+  isModelToolOutput(output) && Object.hasOwn(output, "value")
+    ? { ...output, value }
+    : value;
+
+/**
+ * Keeps only the newest image blocks returned by tools during an agentic loop.
+ *
+ * Image payloads are much heavier than their token estimate suggests and can
+ * otherwise accumulate across consecutive file view calls. Text blocks in the
+ * same result are preserved so paths, dimensions, and other evidence remain
+ * available to the model.
+ */
+export function limitModelImageToolResults(
+  messages: Array<Record<string, unknown>>,
+  maxImages: number = MODEL_IMAGE_TOOL_RESULT_LIMIT,
+): ModelImageToolResultLimit {
+  const normalizedMaxImages = Math.max(0, Math.floor(maxImages));
+  let totalImageCount = 0;
+  const imagePartsToElide = new Set<string>();
+
+  for (let mi = messages.length - 1; mi >= 0; mi--) {
+    const message = messages[mi];
+    if (message.role !== "tool" || !Array.isArray(message.content)) continue;
+
+    for (let pi = message.content.length - 1; pi >= 0; pi--) {
+      const part = message.content[pi] as ToolResultPart;
+      if (part.type !== "tool-result") continue;
+
+      const outputValue = unwrapModelToolOutput(part.output);
+      if (!Array.isArray(outputValue)) continue;
+
+      for (let oi = outputValue.length - 1; oi >= 0; oi--) {
+        if (!isModelImageOutputPart(outputValue[oi])) continue;
+        totalImageCount++;
+        if (totalImageCount > normalizedMaxImages) {
+          imagePartsToElide.add(`${mi}:${pi}:${oi}`);
+        }
+      }
+    }
+  }
+
+  if (imagePartsToElide.size === 0) {
+    return {
+      messages,
+      totalImageCount,
+      elidedImageCount: 0,
+    };
+  }
+
+  const limitedMessages = messages.map((message, mi) => {
+    if (message.role !== "tool" || !Array.isArray(message.content)) {
+      return message;
+    }
+
+    let messageChanged = false;
+    const content = message.content.map((rawPart, pi) => {
+      const part = rawPart as ToolResultPart;
+      if (part.type !== "tool-result") return rawPart;
+
+      const outputValue = unwrapModelToolOutput(part.output);
+      if (!Array.isArray(outputValue)) return rawPart;
+
+      let outputChanged = false;
+      const limitedOutput = outputValue.map((outputPart, oi) => {
+        if (!imagePartsToElide.has(`${mi}:${pi}:${oi}`)) return outputPart;
+        outputChanged = true;
+        return {
+          type: "text" as const,
+          text: ELIDED_IMAGE_TOOL_RESULT_MESSAGE,
+        };
+      });
+
+      if (!outputChanged) return rawPart;
+      messageChanged = true;
+      return {
+        ...part,
+        output: replaceModelToolOutputValue(part.output, limitedOutput),
+      };
+    });
+
+    return messageChanged ? { ...message, content } : message;
+  });
+
+  return {
+    messages: limitedMessages,
+    totalImageCount,
+    elidedImageCount: imagePartsToElide.size,
+  };
+}
+
 export interface ModelPruneResult {
   messages: Array<Record<string, unknown>>;
   prunedCount: number;
@@ -674,10 +1014,7 @@ export interface ModelPruneResult {
   totalToolOutputTokens: number;
   toolOutputCount: number;
   skipReason:
-    | "no-tool-outputs"
-    | "within-budget"
-    | "below-minimum-savings"
-    | null;
+    "no-tool-outputs" | "within-budget" | "below-minimum-savings" | null;
 }
 
 /**
@@ -884,9 +1221,7 @@ export type PromptMessage = Record<string, unknown> & {
 };
 
 export type AnthropicPromptRepairAction =
-  | "none"
-  | "appended_continue"
-  | "trimmed";
+  "none" | "appended_continue" | "trimmed";
 
 export type AnthropicPromptRepairReason =
   | "not_trailing_assistant"
@@ -913,8 +1248,7 @@ export interface NoAnthropicPromptRepair {
 }
 
 export type AnthropicPromptRepairTelemetry =
-  | AppliedAnthropicPromptRepair
-  | NoAnthropicPromptRepair;
+  AppliedAnthropicPromptRepair | NoAnthropicPromptRepair;
 
 const getContentTypes = (content: unknown): string[] | undefined => {
   if (typeof content === "string") return ["text"];
@@ -945,8 +1279,8 @@ const hasUsefulAssistantContent = (content: unknown): boolean => {
 
 /**
  * Anthropic treats a final assistant message in the prompt as an assistant
- * prefill. Claude Opus 4.6 / Sonnet 4.6 reject prefill, so before calling an
- * Anthropic model we ensure the prompt does not end with assistant content.
+ * prefill. Claude Opus 4.6 rejects prefill, so before calling an Anthropic model
+ * we ensure the prompt does not end with assistant content.
  *
  * When the trailing assistant message has useful non-tool context, preserve it
  * and append a provider-only user continuation. If it is empty/reasoning-only

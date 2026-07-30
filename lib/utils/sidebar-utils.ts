@@ -8,6 +8,7 @@ import {
 import {
   formatSendInput,
   isInteractiveShellAction,
+  stripAgentOnlyTerminalGuidance,
 } from "@/app/components/tools/shell-tool-utils";
 
 interface MessagePart {
@@ -157,7 +158,7 @@ export function extractSidebarContentFromMessage(
 
       contentList.push({
         command,
-        output: finalOutput,
+        output: stripAgentOnlyTerminalGuidance(finalOutput),
         isExecuting:
           part.state === "input-available" || part.state === "running",
         isBackground: part.input.is_background,
@@ -205,7 +206,7 @@ export function extractSidebarContentFromMessage(
 
       contentList.push({
         command,
-        output: finalOutput,
+        output: stripAgentOnlyTerminalGuidance(finalOutput),
         isExecuting:
           part.state === "input-available" || part.state === "running",
         isBackground: false,

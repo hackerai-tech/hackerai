@@ -22,6 +22,9 @@ process.env.NEXT_PUBLIC_POSTHOG_HOST = "https://us.i.posthog.com";
 const { useAuth } = jest.requireMock<
   typeof import("@workos-inc/authkit-nextjs/components")
 >("@workos-inc/authkit-nextjs/components");
+const { useGlobalState } = jest.requireMock<
+  typeof import("../contexts/GlobalState")
+>("../contexts/GlobalState");
 const { loadPostHogClient } = jest.requireMock<
   typeof import("@/lib/analytics/client")
 >("@/lib/analytics/client");
@@ -29,6 +32,7 @@ const { PostHogProvider } =
   require("../providers") as typeof import("../providers");
 
 const mockUseAuth = useAuth as jest.Mock;
+const mockUseGlobalState = useGlobalState as jest.Mock;
 const mockLoadPostHogClient = loadPostHogClient as jest.Mock;
 
 describe("PostHogProvider", () => {
@@ -36,6 +40,11 @@ describe("PostHogProvider", () => {
     jest.clearAllMocks();
     process.env.NEXT_PUBLIC_POSTHOG_KEY = "phc_test";
     process.env.NEXT_PUBLIC_POSTHOG_HOST = "https://us.i.posthog.com";
+    window.localStorage.clear();
+
+    mockUseGlobalState.mockReturnValue({
+      subscription: "pro",
+    });
 
     mockUseAuth.mockReturnValue({
       user: {
@@ -53,6 +62,7 @@ describe("PostHogProvider", () => {
       init: jest.fn(),
       set_config: jest.fn(),
       opt_in_capturing: jest.fn(),
+      has_opted_out_capturing: jest.fn(() => true),
       identify: jest.fn(),
       sessionRecordingStarted: jest.fn(() => false),
       startSessionRecording: jest.fn(),
@@ -83,6 +93,35 @@ describe("PostHogProvider", () => {
       }),
     );
     expect(posthog.set_config).not.toHaveBeenCalled();
+    expect(posthog.opt_in_capturing).toHaveBeenCalledWith({
+      captureEventName: false,
+    });
+
+    const [, config] = posthog.init.mock.calls[0] as unknown as [
+      string,
+      {
+        before_send: (event: {
+          event: string;
+          properties: Record<string, unknown>;
+        }) => {
+          event?: string;
+          properties?: Record<string, unknown>;
+        } | null;
+      },
+    ];
+    const retainedException = config.before_send({
+      event: "$exception",
+      properties: {
+        $current_url: "https://hackerai.co/auth-error?state=secret",
+        $referrer: "https://idp.example/callback?code=secret",
+        $exception_values: ["Unexpected application error"],
+      },
+    });
+
+    expect(retainedException?.properties).toMatchObject({
+      $current_url: "https://hackerai.co/auth-error",
+      $referrer: "https://idp.example/callback",
+    });
   });
 
   it("applies exception hooks when the shared client is already initialized", async () => {
@@ -91,6 +130,7 @@ describe("PostHogProvider", () => {
       init: jest.fn(),
       set_config: jest.fn(),
       opt_in_capturing: jest.fn(),
+      has_opted_out_capturing: jest.fn(() => false),
       identify: jest.fn(),
       sessionRecordingStarted: jest.fn(() => false),
       startSessionRecording: jest.fn(),

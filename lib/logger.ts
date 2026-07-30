@@ -3,14 +3,13 @@
  *
  * Implements the wide event logging pattern for comprehensive request observability.
  * One event per request with all context, emitted at the end of the request lifecycle.
- *
- * @see docs/logging-best-practices.md
  */
 
 import type { ChatMode, ExtraUsageConfig } from "@/types";
 import type { ChatApiEndpoint } from "@/lib/api/agent-endpoints";
 import type { OpenRouterModelMetadata } from "@/lib/api/openrouter-metadata";
 import { getProviderUsageRawModelCost } from "@/lib/provider-usage-cost";
+import { redactSensitiveErrorMessage } from "@/lib/utils/error-redaction";
 
 export interface ProviderRequestDiagnostics {
   model: string;
@@ -39,6 +38,15 @@ export interface ProviderRequestDiagnostics {
   fallback_model_slugs?: string[];
   has_user_attribution: boolean;
   has_multimodal_tool_results: boolean;
+}
+
+export interface ProviderRequestRetentionDiagnostics {
+  raw_message_count: number;
+  rolling_message_count: number;
+  final_ui_message_count: number;
+  transcript_source_message_count: number;
+  summarization_count: number;
+  compaction_attempt_count: number;
 }
 
 /**
@@ -721,17 +729,20 @@ export const logger = {
   ): void {
     console.error(
       JSON.stringify({
+        ...context,
         level: "error",
-        message,
+        message: redactSensitiveErrorMessage(message),
         timestamp: new Date().toISOString(),
         error: error
           ? {
               name: error.name,
-              message: error.message,
-              stack: error.stack,
+              message: redactSensitiveErrorMessage(error.message),
+              stack:
+                typeof error.stack === "string"
+                  ? redactSensitiveErrorMessage(error.stack)
+                  : error.stack,
             }
           : undefined,
-        ...context,
       }),
     );
   },

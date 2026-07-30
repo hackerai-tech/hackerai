@@ -30,8 +30,7 @@ let TerminalCtor:
           getLine: (
             i: number,
           ) =>
-            | { translateToString: (trimRight: boolean) => string }
-            | undefined;
+            { translateToString: (trimRight: boolean) => string } | undefined;
         };
       };
       dispose: () => void;
@@ -104,27 +103,8 @@ export async function cleanPtyForUI(text: string): Promise<string> {
   return fallbackClean(text);
 }
 
-/** Return last N lines of a PTY snapshot as raw bytes (for streaming context). */
-export async function lastNLinesBytes(
-  bytes: Uint8Array,
-  n: number,
-): Promise<Uint8Array> {
-  const text = await cleanPtyForUI(new TextDecoder().decode(bytes));
-  const lines = text.split("\n");
-  if (lines.length <= n) return new TextEncoder().encode(text);
-  return new TextEncoder().encode(lines.slice(-n).join("\n"));
-}
-
 interface SnapshotSource {
   snapshot(session: { sessionId: string; chatId: string }): Uint8Array;
-}
-
-export async function getSessionSnapshot(
-  mgr: SnapshotSource,
-  session: { sessionId: string; chatId: string },
-): Promise<string> {
-  const bytes = mgr.snapshot(session);
-  return cleanPtyForUI(new TextDecoder().decode(bytes));
 }
 
 /** Returns both raw and cleaned snapshots for persistence. */

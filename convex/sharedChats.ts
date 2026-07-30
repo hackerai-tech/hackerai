@@ -6,6 +6,14 @@ import {
   isUserBlockedByActiveFraudDispute,
 } from "./lib/suspensionGuards";
 import { stripOpenRouterReasoningMetadataFromParts } from "../lib/chat/provider-metadata-sanitizer";
+import {
+  getVisibleSharedChatByShareId,
+  listVisibleSharedMessages,
+  serializeSharedChat,
+  sharedChatValidator,
+  sharedMessageValidator,
+  type VisibleSharedChat,
+} from "./lib/sharedChatSnapshot";
 
 /**
  * Share a chat by creating a public share link.
@@ -212,38 +220,51 @@ export const unshareChat = mutation({
  */
 export const getSharedChat = query({
   args: { shareId: v.string() },
+  returns: v.union(sharedChatValidator, v.null()),
+  handler: async (ctx, args) => {
+    const chat = await getVisibleSharedChatByShareId(ctx, args.shareId);
+    return chat ? serializeSharedChat(chat) : null;
+  },
+});
+
+/**
+ * Get a complete public shared-chat snapshot in one client round trip.
+ * Returns the same anonymous chat metadata and frozen messages as the legacy
+ * getSharedChat + getSharedMessages sequence.
+ */
+export const getSharedSnapshot = query({
+  args: { shareId: v.string() },
   returns: v.union(
     v.object({
-      _id: v.id("chats"),
-      id: v.string(),
-      title: v.string(),
-      share_id: v.string(),
-      share_date: v.number(),
-      update_time: v.number(),
+      chat: sharedChatValidator,
+      messages: v.array(sharedMessageValidator),
     }),
     v.null(),
   ),
   handler: async (ctx, args) => {
-    const chat = await ctx.db
-      .query("chats")
-      .withIndex("by_share_id", (q) => q.eq("share_id", args.shareId))
-      .first();
-
-    if (!chat || !chat.share_id || !chat.share_date) {
-      return null;
-    }
-    if (await isUserBlockedByActiveFraudDispute(ctx, chat.user_id)) {
+    let chat: VisibleSharedChat | null;
+    try {
+      chat = await getVisibleSharedChatByShareId(ctx, args.shareId);
+    } catch (error) {
+      console.error("Failed to get shared snapshot:", error);
       return null;
     }
 
-    // Return chat without user_id for anonymity
+    if (!chat) {
+      return null;
+    }
+
+    let messages: Awaited<ReturnType<typeof listVisibleSharedMessages>>;
+    try {
+      messages = await listVisibleSharedMessages(ctx, chat);
+    } catch (error) {
+      console.error("Failed to get shared messages:", error);
+      messages = [];
+    }
+
     return {
-      _id: chat._id,
-      id: chat.id,
-      title: chat.title,
-      share_id: chat.share_id,
-      share_date: chat.share_date,
-      update_time: chat.update_time,
+      chat: serializeSharedChat(chat),
+      messages,
     };
   },
 });
@@ -357,6 +378,7 @@ export const forkSharedChat = mutation({
       title: chat.title,
       user_id: identity.subject,
       branched_from_chat_id: chat.id,
+      branched_from_title: chat.title,
       update_time: Date.now(),
     });
 

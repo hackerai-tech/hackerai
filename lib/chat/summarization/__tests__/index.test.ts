@@ -40,7 +40,7 @@ jest.doMock("@/lib/db/actions", () => ({
 }));
 jest.doMock("@/lib/ai/providers", () => ({
   GROK_4_5_SLUG: "x-ai/grok-4.5",
-  KIMI_K2_7_CODE_SLUG: "moonshotai/kimi-k2.7-code:exacto",
+  KIMI_K3_SLUG: "moonshotai/kimi-k3",
   myProvider: {
     languageModel: mockProviderLanguageModel,
   },
@@ -55,7 +55,10 @@ const {
   boundModelMessagesForSummarization,
   compactModelMessagesForSummarization,
   estimateSummaryInputTokens,
+  getRecentCompleteModelTail,
 } = require("../helpers") as typeof import("../helpers");
+const { AGENT_SUMMARIZATION_PROMPT } =
+  require("../prompts") as typeof import("../prompts");
 
 const THRESHOLD = Math.floor(getSummarizationThresholdTokens(MAX_TOKENS_PAID));
 
@@ -95,6 +98,91 @@ const createMockWriter = (): UIMessageStreamWriter =>
   ({ write: jest.fn() }) as unknown as UIMessageStreamWriter;
 
 const mockLanguageModel = { modelId: "test-model" } as unknown as LanguageModel;
+
+describe("agent compaction state preservation", () => {
+  it("requires runtime and resumable process state in the checkpoint", () => {
+    expect(AGENT_SUMMARIZATION_PROMPT).toContain(
+      "## Runtime & Execution State",
+    );
+    expect(AGENT_SUMMARIZATION_PROMPT).toContain(
+      "opaque session/tool-call IDs",
+    );
+    expect(AGENT_SUMMARIZATION_PROMPT).toContain(
+      "Never mark an operation completed unless a matching tool result",
+    );
+  });
+
+  it("retains a recent complete tool transaction without its oversized prefix", () => {
+    const messages: ModelMessage[] = [
+      { role: "user", content: "old ".repeat(10_000) },
+      {
+        role: "assistant",
+        content: [
+          {
+            type: "tool-call",
+            toolCallId: "call-recent",
+            toolName: "run_terminal_cmd",
+            input: { command: "nmap example.test" },
+          },
+        ],
+      },
+      {
+        role: "tool",
+        content: [
+          {
+            type: "tool-result",
+            toolCallId: "call-recent",
+            toolName: "run_terminal_cmd",
+            output: { type: "text", value: "scan complete" },
+          },
+        ],
+      },
+      { role: "assistant", content: "The targeted scan completed." },
+    ];
+    const recentBudget = estimateSummaryInputTokens(messages.slice(1)) + 10;
+
+    const tail = getRecentCompleteModelTail(messages, recentBudget);
+
+    expect(tail).toHaveLength(3);
+    expect(tail[0]).toEqual(messages[1]);
+    expect(tail[1]).toEqual(messages[2]);
+    expect(tail[2]).toEqual(messages[3]);
+  });
+
+  it("never retains an orphan tool result when its call exceeds the tail budget", () => {
+    const messages: ModelMessage[] = [
+      {
+        role: "assistant",
+        content: [
+          {
+            type: "tool-call",
+            toolCallId: "call-large",
+            toolName: "run_terminal_cmd",
+            input: { command: "x ".repeat(10_000) },
+          },
+        ],
+      },
+      {
+        role: "tool",
+        content: [
+          {
+            type: "tool-result",
+            toolCallId: "call-large",
+            toolName: "run_terminal_cmd",
+            output: { type: "text", value: "done" },
+          },
+        ],
+      },
+      { role: "assistant", content: "Result interpreted." },
+    ];
+    const resultAndTextBudget =
+      estimateSummaryInputTokens(messages.slice(1)) + 10;
+
+    const tail = getRecentCompleteModelTail(messages, resultAndTextBudget);
+
+    expect(tail).toEqual([messages[2]]);
+  });
+});
 
 const checkAndSummarizeForTest = (
   uiMessages: UIMessage[],
@@ -948,7 +1036,7 @@ describe("checkAndSummarizeIfNeeded", () => {
         openrouter: {
           user: "user_123",
           reasoning: { enabled: false },
-          models: ["minimax/minimax-m3"],
+          models: ["x-ai/grok-4.5", "moonshotai/kimi-k3"],
         },
       },
     );
@@ -966,8 +1054,8 @@ describe("checkAndSummarizeIfNeeded", () => {
     expect(retryCall.providerOptions).toEqual({
       openrouter: {
         user: "user_123",
-        reasoning: { enabled: false },
-        models: ["moonshotai/kimi-k2.7-code:exacto", "x-ai/grok-4.5"],
+        reasoning: { enabled: true, effort: "high" },
+        models: ["moonshotai/kimi-k3"],
       },
     });
 

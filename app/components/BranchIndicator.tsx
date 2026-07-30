@@ -4,6 +4,7 @@ import { memo, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { useGlobalState } from "../contexts/GlobalState";
 import { useIsMobile } from "@/hooks/use-mobile";
+import { formatTaskTitle } from "@/app/utils/task-ui-copy";
 
 interface BranchIndicatorProps {
   branchedFromChatId: string;
@@ -19,6 +20,7 @@ export const BranchIndicator = memo(function BranchIndicator({
   const router = useRouter();
   const { initializeChat, closeSidebar, setChatSidebarOpen } = useGlobalState();
   const isMobile = useIsMobile();
+  const taskTitle = formatTaskTitle(branchedFromChatTitle);
 
   const handleClick = useCallback(() => {
     if (onNavigate) {
@@ -58,9 +60,9 @@ export const BranchIndicator = memo(function BranchIndicator({
             onClick={handleClick}
             className="font-medium underline hover:text-foreground/50 transition-colors cursor-pointer"
             type="button"
-            aria-label={`Open branched-from chat ${branchedFromChatTitle}`}
+            aria-label={`Open branched-from task ${taskTitle}`}
           >
-            {branchedFromChatTitle}
+            {taskTitle}
           </button>
         </span>
       </div>

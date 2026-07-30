@@ -114,11 +114,12 @@ function makeSandbox(
   };
 }
 
-function makeNativeDesktopSandbox() {
+function makeNativeDesktopSandbox(connectionId = "desktop-a") {
   const commandRun = jest.fn<Promise<FakeCommandResult>, [string, any?]>();
   return {
     sandbox: {
       sandboxKind: "centrifugo" as const,
+      getConnectionId: () => connectionId,
       isWindows: () => true,
       supportsNativeFileRelay: () => true,
       commands: { run: commandRun },
@@ -148,6 +149,50 @@ function makeNativeDesktopSandbox() {
 }
 
 describe("file tool large text safety", () => {
+  test("does not write on a replacement Desktop connection after approval", async () => {
+    const { sandbox } = makeNativeDesktopSandbox("desktop-b");
+    const requestToolApproval = jest.fn(async () => ({
+      approved: true as const,
+      approvalId: "approval-1",
+      sandboxIdentity: "connection:desktop-a" as const,
+    }));
+    const tool = createFile(makeContext(sandbox, { requestToolApproval }));
+
+    const result = (await runTool(tool, {
+      action: "write",
+      path: "C:\\repo\\approved-on-a.txt",
+      brief: "test connection binding",
+      text: "must not reach desktop B",
+    })) as { error: string };
+
+    expect(result.error).toContain("selected sandbox changed after approval");
+    expect(sandbox.files.write).not.toHaveBeenCalled();
+  });
+
+  test("preserves an approved write on the same Desktop connection", async () => {
+    const { sandbox } = makeNativeDesktopSandbox("desktop-a");
+    const requestToolApproval = jest.fn(async () => ({
+      approved: true as const,
+      approvalId: "approval-1",
+      sandboxIdentity: "connection:desktop-a" as const,
+    }));
+    const tool = createFile(makeContext(sandbox, { requestToolApproval }));
+
+    await expect(
+      runTool(tool, {
+        action: "write",
+        path: "C:\\repo\\approved-on-a.txt",
+        brief: "test connection binding",
+        text: "allowed on desktop A",
+      }),
+    ).resolves.toBe("File written: C:\\repo\\approved-on-a.txt");
+    expect(sandbox.files.write).toHaveBeenCalledWith(
+      "C:\\repo\\approved-on-a.txt",
+      "allowed on desktop A",
+      { user: "user" },
+    );
+  });
+
   test("blocks file operations when a selected local sandbox falls back", async () => {
     const commandRun = jest.fn(async () => ({
       stdout: "",
@@ -537,7 +582,7 @@ describe("file tool image view", () => {
       });
     const sandbox = makeSandbox(commandRun);
     const tool = createFile(
-      makeContext(sandbox, { modelName: "model-kimi-k2.7-code" }),
+      makeContext(sandbox, { modelName: "model-kimi-k3" }),
     );
 
     const result = await runTool(tool, {
@@ -588,6 +633,160 @@ describe("file tool image view", () => {
       }),
     );
     expect(mockPhEvent.mock.calls[0][1]).not.toHaveProperty("path");
+  });
+
+  test("allows a non-vision Agent model to initiate a vision handoff", async () => {
+    mockUploadSandboxFileToConvex.mockResolvedValue({
+      fileId: "file-1" as never,
+      name: "screenshot.png",
+      mediaType: "image/png",
+    });
+
+    const commandRun = jest
+      .fn<Promise<FakeCommandResult>, [string, any?]>()
+      .mockImplementationOnce(async (_command, opts) => {
+        expect(opts.envVars.HACKERAI_FILE_VIEW_INCLUDE_DATA).toBe("0");
+        return {
+          stdout: JSON.stringify({
+            path: "/tmp/screenshot.png",
+            mediaType: "image/png",
+            sizeBytes: 68,
+            kind: "image",
+          }),
+          stderr: "",
+          exitCode: 0,
+        };
+      })
+      .mockImplementationOnce(async (_command, opts) => {
+        expect(opts.envVars.HACKERAI_FILE_VIEW_INCLUDE_DATA).toBe("1");
+        return {
+          stdout: JSON.stringify({
+            path: "/tmp/screenshot.png",
+            mediaType: "image/png",
+            sizeBytes: 68,
+            kind: "image",
+            data: VALID_PNG_BASE64,
+          }),
+          stderr: "",
+          exitCode: 0,
+        };
+      });
+    const sandbox = makeSandbox(commandRun);
+    const tool = createFile(
+      makeContext(sandbox, { modelName: "model-deepseek-v4-pro" }),
+    );
+    const inputSchema = (
+      tool as unknown as {
+        inputSchema: {
+          safeParse: (input: unknown) => { success: boolean };
+        };
+      }
+    ).inputSchema;
+
+    expect(
+      inputSchema.safeParse({
+        action: "view",
+        path: "/tmp/screenshot.png",
+        brief: "Inspect the screenshot",
+      }).success,
+    ).toBe(true);
+
+    const result = await runTool(tool, {
+      action: "view",
+      path: "/tmp/screenshot.png",
+      brief: "Inspect the screenshot",
+    });
+
+    await expect(runToModelOutput(tool, result)).resolves.toEqual({
+      type: "content",
+      value: [
+        {
+          type: "text",
+          text: "Viewing image file: screenshot.png (image/png, 68 bytes).",
+        },
+        {
+          type: "image-data",
+          data: VALID_PNG_BASE64,
+          mediaType: "image/png",
+        },
+      ],
+    });
+  });
+
+  test("redirects raster image reads to the view action", async () => {
+    const commandRun = jest.fn<Promise<FakeCommandResult>, [string, any?]>();
+    const sandbox = makeSandbox(commandRun);
+    const tool = createFile(
+      makeContext(sandbox, { modelName: "model-deepseek-v4-pro" }),
+    );
+
+    await expect(
+      runTool(tool, {
+        action: "read",
+        path: "/tmp/screenshot.png",
+        brief: "Inspect the screenshot",
+      }),
+    ).resolves.toEqual({
+      error:
+        "Raster image files cannot be read as text. Use the view action instead; Agent will automatically route image inspection to a vision-capable model when necessary.",
+    });
+    expect(commandRun).not.toHaveBeenCalled();
+  });
+
+  test.each([
+    ["extensionless PNG", "/tmp/screenshot", "image/png"],
+    ["renamed JPEG", "/tmp/screenshot.data", "image/jpeg"],
+  ])(
+    "redirects %s reads after bounded content inspection",
+    async (_label, path, imageMediaType) => {
+      const commandRun = jest.fn(async () => ({
+        stdout: JSON.stringify({
+          path,
+          sizeBytes: 68,
+          totalLines: 0,
+          imageMediaType,
+        }),
+        stderr: "",
+        exitCode: 0,
+      }));
+      const sandbox = makeSandbox(commandRun);
+      const tool = createFile(
+        makeContext(sandbox, { modelName: "model-deepseek-v4-pro" }),
+      );
+
+      await expect(
+        runTool(tool, {
+          action: "read",
+          path,
+          brief: "Inspect the screenshot",
+        }),
+      ).resolves.toEqual({
+        error:
+          "Raster image files cannot be read as text. Use the view action instead; Agent will automatically route image inspection to a vision-capable model when necessary.",
+      });
+      expect(commandRun).toHaveBeenCalledTimes(1);
+      expect(sandbox.files.read).not.toHaveBeenCalled();
+    },
+  );
+
+  test("redirects JPEG alias extensions without sandbox inspection", async () => {
+    const commandRun = jest.fn<Promise<FakeCommandResult>, [string, any?]>();
+    const sandbox = makeSandbox(commandRun);
+    const tool = createFile(
+      makeContext(sandbox, { modelName: "model-deepseek-v4-pro" }),
+    );
+
+    await expect(
+      runTool(tool, {
+        action: "read",
+        path: "/tmp/screenshot.jfif",
+        brief: "Inspect the screenshot",
+      }),
+    ).resolves.toEqual({
+      error:
+        "Raster image files cannot be read as text. Use the view action instead; Agent will automatically route image inspection to a vision-capable model when necessary.",
+    });
+    expect(commandRun).not.toHaveBeenCalled();
   });
 
   test("logs initial inspection failures with safe path diagnostics", async () => {
@@ -689,7 +888,7 @@ describe("file tool image view", () => {
     });
     const sandbox = makeSandbox(commandRun);
     const tool = createFile(
-      makeContext(sandbox, { modelName: "model-kimi-k2.7-code" }),
+      makeContext(sandbox, { modelName: "model-kimi-k3" }),
     );
 
     await expect(
@@ -735,7 +934,7 @@ describe("file tool image view", () => {
     });
     const sandbox = makeSandbox(commandRun);
     const tool = createFile(
-      makeContext(sandbox, { modelName: "model-kimi-k2.7-code" }),
+      makeContext(sandbox, { modelName: "model-kimi-k3" }),
     );
 
     await expect(

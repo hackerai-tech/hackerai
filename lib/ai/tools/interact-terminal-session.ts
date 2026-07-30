@@ -34,6 +34,10 @@ const WAIT_QUIET_WINDOW_MS = 500;
 
 export const createInteractTerminalSession = (context: ToolContext) => {
   const { writer, chatId, ptySessionManager } = context;
+  const measureTerminalWait = <T>(operation: () => Promise<T>): Promise<T> =>
+    context.measureAgentActiveTime
+      ? context.measureAgentActiveTime("terminal_wait", operation)
+      : operation();
 
   return tool({
     ...interactTerminalSessionTool,
@@ -221,12 +225,14 @@ export const createInteractTerminalSession = (context: ToolContext) => {
         // Capture the immediate response chunk — prompts that echo a reply
         // ("Hello, X!") show up here. Use action=wait for processes that
         // take longer to respond.
-        const delta = await waitForOutput(
-          session,
-          SEND_IMMEDIATE_OUTPUT_WINDOW_MS,
-          abortSignal,
-          emitTerminal,
-          (s) => ptySessionManager.consumeDelta(s),
+        const delta = await measureTerminalWait(() =>
+          waitForOutput(
+            session,
+            SEND_IMMEDIATE_OUTPUT_WINDOW_MS,
+            abortSignal,
+            emitTerminal,
+            (s) => ptySessionManager.consumeDelta(s),
+          ),
         );
         await drainEmitQueue();
         const snapshots = await getSessionSnapshots(ptySessionManager, session);
@@ -249,13 +255,15 @@ export const createInteractTerminalSession = (context: ToolContext) => {
         emitPriorContext(session);
 
         const alreadyExited = await peekExited(session);
-        const delta = await waitForOutput(
-          session,
-          timeoutMs,
-          abortSignal,
-          emitTerminal,
-          (s) => ptySessionManager.consumeDelta(s),
-          { quietMs: WAIT_QUIET_WINDOW_MS },
+        const delta = await measureTerminalWait(() =>
+          waitForOutput(
+            session,
+            timeoutMs,
+            abortSignal,
+            emitTerminal,
+            (s) => ptySessionManager.consumeDelta(s),
+            { quietMs: WAIT_QUIET_WINDOW_MS },
+          ),
         );
         await drainEmitQueue();
         const snapshots = await getSessionSnapshots(ptySessionManager, session);

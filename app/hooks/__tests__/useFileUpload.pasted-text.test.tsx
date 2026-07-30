@@ -139,6 +139,29 @@ describe("useFileUpload generated pasted text attachments", () => {
     });
   });
 
+  it("uses Agent mode alone to convert large pastes", async () => {
+    globalState.subscription = "free";
+    const event = createTextPasteEvent("A".repeat(4100));
+    const { result } = renderHook(() => useFileUpload("agent"));
+
+    let handled = false;
+    await act(async () => {
+      handled = await result.current.handlePasteEvent(event);
+    });
+
+    expect(handled).toBe(true);
+    expect(event.preventDefault).toHaveBeenCalledTimes(1);
+    expect(addUploadedFile).toHaveBeenCalledWith(
+      expect.objectContaining({
+        generatedSource: "pasted-text",
+        generatedTextAttachment: expect.any(Object),
+      }),
+    );
+    expect(toast.error).not.toHaveBeenCalledWith(
+      "Upgrade plan to upload files.",
+    );
+  });
+
   it("keeps large plain-text paste payloads inline in Ask mode", async () => {
     const event = createTextPasteEvent("A".repeat(4100));
     const { result } = renderHook(() => useFileUpload("ask"));

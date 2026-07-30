@@ -42,9 +42,9 @@ test.describe("Free Tier Simple Chat Tests", () => {
       await sidebar.expectChatWithId(chatId);
       const sidebarTitle = await sidebar.getChatTitleById(chatId);
 
-      // Verify title is set and not empty or "New Chat"
+      // Verify title is set and not empty or "New Task"
       expect(sidebarTitle).toBeTruthy();
-      expect(sidebarTitle).not.toBe("New Chat");
+      expect(sidebarTitle).not.toBe("New Task");
 
       // Get the chat title from the header
       const headerTitle = await chat.getChatHeaderTitle();

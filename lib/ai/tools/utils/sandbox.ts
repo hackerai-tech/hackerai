@@ -6,11 +6,105 @@ import { isExpectedAlreadyGoneCleanupError } from "@/lib/utils/cleanup-errors";
 type SandboxReadyPath = SandboxBootInfo["path"];
 
 const SANDBOX_TEMPLATE = process.env.E2B_TEMPLATE || "terminal-agent-sandbox";
-const BASH_SANDBOX_RESUME_TIMEOUT = 5 * 60 * 1000; // 5 minutes for resuming paused sandbox
-const BASH_SANDBOX_AUTOPAUSE_TIMEOUT = 7 * 60 * 1000; // 7 minutes auto-pause inactivity timeout
+export const BASH_SANDBOX_AUTOPAUSE_TIMEOUT = 7 * 60 * 1000;
+export const E2B_SANDBOX_LEASE_HEARTBEAT_INTERVAL_MS = 60 * 1000;
+export const E2B_SANDBOX_LEASE_REQUEST_TIMEOUT_MS = 5 * 1000;
 // Retry config for E2B 429 rate limits
 const RATE_LIMIT_COOLDOWN_MS = 1_000;
 const MAX_CREATE_RETRIES = 3;
+
+export const refreshE2BSandboxLease = async (
+  sandbox: Sandbox,
+): Promise<number> => {
+  await sandbox.setTimeout(BASH_SANDBOX_AUTOPAUSE_TIMEOUT, {
+    requestTimeoutMs: E2B_SANDBOX_LEASE_REQUEST_TIMEOUT_MS,
+  });
+  return BASH_SANDBOX_AUTOPAUSE_TIMEOUT;
+};
+
+type E2BSandboxLeaseRefreshSource =
+  "foreground_heartbeat" | "default_manager_cache" | "hybrid_manager_cache";
+
+const logLeaseRefreshFailure = (
+  sandbox: Sandbox,
+  source: E2BSandboxLeaseRefreshSource,
+  error: unknown,
+): void => {
+  console.warn(
+    JSON.stringify({
+      timestamp: new Date().toISOString(),
+      level: "warn",
+      event: "e2b_sandbox_lease_refresh_failed",
+      service: "chat-handler",
+      environment: process.env.VERCEL_ENV ?? process.env.NODE_ENV ?? "unknown",
+      request_id: process.env.VERCEL_REQUEST_ID ?? null,
+      sandbox_id: sandbox.sandboxId,
+      source,
+      error: error instanceof Error ? error.message : String(error),
+    }),
+  );
+};
+
+export const refreshE2BSandboxLeaseBestEffort = async (
+  sandbox: Sandbox,
+  options: {
+    source: E2BSandboxLeaseRefreshSource;
+    logFailure?: boolean;
+  },
+): Promise<boolean> => {
+  try {
+    await refreshE2BSandboxLease(sandbox);
+    return true;
+  } catch (error) {
+    if (options.logFailure !== false) {
+      logLeaseRefreshFailure(sandbox, options.source, error);
+    }
+    return false;
+  }
+};
+
+/**
+ * Keeps the fixed per-user sandbox lease alive only while the caller is
+ * actively waiting for foreground work. Every Trigger worker writes the same
+ * seven-minute lease, so independently connected workers cannot shorten a
+ * longer operation owned by another run.
+ */
+export const withE2BSandboxLeaseHeartbeat = async <T>(
+  sandbox: Sandbox,
+  operation: () => Promise<T>,
+): Promise<T> => {
+  let refreshInFlight = false;
+  let heartbeatFailureLogged = false;
+  const refresh = async (): Promise<void> => {
+    if (refreshInFlight) return;
+    refreshInFlight = true;
+    try {
+      const refreshed = await refreshE2BSandboxLeaseBestEffort(sandbox, {
+        source: "foreground_heartbeat",
+        logFailure: !heartbeatFailureLogged,
+      });
+      heartbeatFailureLogged = !refreshed;
+    } finally {
+      refreshInFlight = false;
+    }
+  };
+
+  // Acquisition already creates, connects, or refreshes the seven-minute
+  // lease. Delay the first heartbeat so foreground startup does not make a
+  // duplicate E2B API request.
+  const heartbeat = setInterval(() => {
+    void refresh();
+  }, E2B_SANDBOX_LEASE_HEARTBEAT_INTERVAL_MS);
+  (
+    heartbeat as ReturnType<typeof setInterval> & { unref?: () => void }
+  ).unref?.();
+
+  try {
+    return await operation();
+  } finally {
+    clearInterval(heartbeat);
+  }
+};
 
 const logSandboxKillFailure = (
   userID: string,
@@ -48,10 +142,10 @@ const SANDBOX_VERSION = "v11";
  * Flow:
  * 1. Returns existing sandbox if already initialized
  * 2. Lists existing sandboxes for the user
- * 3. Validates sandbox version metadata (auto-kills old versions)
+ * 3. Replaces old sandbox versions only after they have auto-paused
  * 4. If found: connect to existing sandbox (works for both running and paused states)
- * 5. If not found or connection fails: creates new sandbox with auto-pause enabled
- * 6. Auto-pause automatically pauses sandbox after inactivity timeout (15 minutes)
+ * 5. If not found: creates a new sandbox with auto-pause enabled
+ * 6. Auto-pause automatically pauses sandbox after the configured lease expires
  * 7. Returns active sandbox ready for use
  */
 export const ensureSandboxConnection = async (
@@ -88,11 +182,15 @@ export const ensureSandboxConnection = async (
     });
     const existingSandbox = (await paginator.nextItems())[0];
 
-    // Step 2: Always check version and auto-kill old sandboxes
-    if (
+    const hasVersionMismatch =
       existingSandbox &&
-      existingSandbox.metadata?.sandboxVersion !== SANDBOX_VERSION
-    ) {
+      existingSandbox.metadata?.sandboxVersion !== SANDBOX_VERSION;
+    const canReplaceExistingSandbox =
+      hasVersionMismatch && existingSandbox.state === "paused";
+
+    // Step 2: Migrate only an idle, paused sandbox. A running sandbox may
+    // contain commands owned by another Agent run for the same user.
+    if (canReplaceExistingSandbox) {
       console.log(
         `[${userID}] Sandbox version mismatch (expected ${SANDBOX_VERSION}), deleting old sandbox`,
       );
@@ -104,12 +202,32 @@ export const ensureSandboxConnection = async (
       createPath = "create_after_version_mismatch";
       // Skip to creating new sandbox
     } else if (existingSandbox?.sandboxId) {
+      if (hasVersionMismatch) {
+        console.warn(
+          JSON.stringify({
+            timestamp: new Date().toISOString(),
+            level: "warn",
+            event: "e2b_sandbox_version_migration_deferred",
+            service: "chat-handler",
+            environment:
+              process.env.VERCEL_ENV ?? process.env.NODE_ENV ?? "unknown",
+            request_id: process.env.VERCEL_REQUEST_ID ?? null,
+            user_id: userID,
+            sandbox_id: existingSandbox.sandboxId,
+            sandbox_state: existingSandbox.state,
+            current_version:
+              existingSandbox.metadata?.sandboxVersion ?? "missing",
+            expected_version: SANDBOX_VERSION,
+          }),
+        );
+      }
+
       // Step 3: Try to reuse existing sandbox (works for both running and paused states)
       // With auto-pause, we don't need to manually pause before resuming
       // Sandbox.connect() handles both running and paused sandboxes automatically
       try {
         const sandbox = await Sandbox.connect(existingSandbox.sandboxId, {
-          timeoutMs: BASH_SANDBOX_RESUME_TIMEOUT,
+          timeoutMs: BASH_SANDBOX_AUTOPAUSE_TIMEOUT,
         });
         setSandbox(sandbox);
         reportBoot("reuse_existing", 0);
@@ -124,32 +242,14 @@ export const ensureSandboxConnection = async (
             `[${userID}] Sandbox ${existingSandbox.sandboxId} expired/deleted, creating new one`,
           );
           createPath = "create_after_expired";
-          // Clean up expired sandbox reference
-          try {
-            await Sandbox.kill(existingSandbox.sandboxId);
-          } catch (killError) {
-            logSandboxKillFailure(
-              userID,
-              "Failed to clean up expired sandbox",
-              killError,
-            );
-          }
         } else {
           console.error(
             `[${userID}] Unexpected error resuming sandbox ${existingSandbox.sandboxId}:`,
             e,
           );
-          createPath = "create_after_broken";
-          // Kill the broken sandbox so Sandbox.list() doesn't keep finding it
-          try {
-            await Sandbox.kill(existingSandbox.sandboxId);
-          } catch (killError) {
-            logSandboxKillFailure(
-              userID,
-              "Failed to clean up broken sandbox",
-              killError,
-            );
-          }
+          // Never destroy a shared user sandbox for a transient connection
+          // error. Another Agent run may still own active commands inside it.
+          throw e;
         }
       }
     }

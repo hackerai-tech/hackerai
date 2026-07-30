@@ -1,6 +1,7 @@
 import "@testing-library/jest-dom";
 import { beforeEach, describe, expect, it, jest } from "@jest/globals";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 
 const mockSendToolApproval = jest.fn(() => Promise.resolve());
 const mockOnRetryConnection = jest.fn();
@@ -75,10 +76,13 @@ describe("AgentApprovalPrompt", () => {
     expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
   });
 
-  it("approves once when Enter is pressed", async () => {
+  it("approves once when Enter activates the focused primary action", async () => {
+    const user = userEvent.setup();
     renderPrompt();
+    const allowButton = screen.getByRole("button", { name: "Allow once" });
+    allowButton.focus();
 
-    fireEvent.keyDown(document.body, { key: "Enter", code: "Enter" });
+    await user.keyboard("{Enter}");
 
     await waitFor(() =>
       expect(mockSendToolApproval).toHaveBeenCalledWith({
@@ -87,6 +91,15 @@ describe("AgentApprovalPrompt", () => {
         decision: "approve",
       }),
     );
+    expect(allowButton).toHaveFocus();
+  });
+
+  it("does not approve when Enter is pressed on the page body", () => {
+    renderPrompt();
+
+    fireEvent.keyDown(document.body, { key: "Enter", code: "Enter" });
+
+    expect(mockSendToolApproval).not.toHaveBeenCalled();
   });
 
   it("approves once from the primary action", async () => {
@@ -237,7 +250,7 @@ describe("AgentApprovalPrompt", () => {
     expect(mockSendToolApproval).not.toHaveBeenCalled();
   });
 
-  it("still approves from a safe noninteractive page target", async () => {
+  it("does not approve from an unrelated noninteractive page target", () => {
     render(
       <>
         <div data-testid="outside-copy">Outside copy</div>
@@ -254,7 +267,35 @@ describe("AgentApprovalPrompt", () => {
       code: "Enter",
     });
 
-    await waitFor(() => expect(mockSendToolApproval).toHaveBeenCalledTimes(1));
+    expect(mockSendToolApproval).not.toHaveBeenCalled();
+  });
+
+  it("requires one-time approval for file changes", async () => {
+    render(
+      <AgentApprovalPrompt
+        request={{
+          ...request,
+          kind: "file",
+          operation: "file_write",
+          target: "/workspace/report.txt",
+        }}
+        onRetryConnection={mockOnRetryConnection}
+        onStop={mockOnStop}
+      />,
+    );
+
+    expect(
+      screen.queryByRole("button", { name: "More approval options" }),
+    ).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Allow once" }));
+
+    await waitFor(() =>
+      expect(mockSendToolApproval).toHaveBeenCalledWith({
+        approvalId: "approval-1",
+        toolCallId: "tool-1",
+        decision: "approve",
+      }),
+    );
   });
 
   it("shows reconnecting and stop controls without session credentials", () => {

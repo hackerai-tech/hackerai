@@ -48,6 +48,10 @@ import {
   resumeAgentLongStream,
 } from "@/lib/chat/agent-long-transport";
 import {
+  areMessagesEquivalentForConvexSync,
+  arePersistedMessagesAtLeastAsComplete,
+} from "@/lib/chat/message-reconciliation";
+import {
   LEGACY_DESKTOP_AGENT_UPDATE_MESSAGE,
   isLegacyDesktopAgentClient,
   shouldUseAgentLongForAgent,
@@ -62,14 +66,17 @@ import {
   stripAgentLongHeartbeatParts,
   stripAgentLongHeartbeatPartsFromMessages,
 } from "@/lib/chat/agent-long-heartbeat";
+import { getAgentLongMessageProgressFingerprint } from "@/lib/chat/agent-long-message-progress";
 import { hasVisibleAssistantContent } from "@/lib/chat/abort-persistence";
 import { toast } from "sonner";
-import { addAuthenticatedExceptionStep } from "@/lib/analytics/client";
+import {
+  addAuthenticatedExceptionStep,
+  getPostHogRequestHeaders,
+} from "@/lib/analytics/client";
 import {
   normalizeSelectedModelForSubscription,
   type Todo,
   type ChatMessage,
-  type ChatMode,
 } from "@/types";
 import {
   getAgentToolApprovalPromptDetail,
@@ -89,6 +96,8 @@ import { useDataStreamDispatch } from "./DataStreamProvider";
 import { removeDraft } from "@/lib/utils/client-storage";
 import { parseRateLimitWarning } from "@/lib/utils/parse-rate-limit-warning";
 import Loading from "@/components/ui/loading";
+import { formatTaskUiCopy } from "@/app/utils/task-ui-copy";
+import { finalizeNewChatRoute } from "./chat-route";
 
 import { HackingSuggestions } from "./HackingSuggestions";
 
@@ -256,40 +265,6 @@ const getLatestAgentLongAssistantMessageForPartialSave = (
   };
 };
 
-const getAgentLongPartFingerprint = (part: unknown): string => {
-  if (typeof part !== "object" || part === null) return String(part);
-  const typedPart = part as {
-    type?: unknown;
-    text?: unknown;
-    delta?: unknown;
-    state?: unknown;
-  };
-  const type = typeof typedPart.type === "string" ? typedPart.type : "unknown";
-  const textLength =
-    typeof typedPart.text === "string" ? typedPart.text.length : undefined;
-  const deltaLength =
-    typeof typedPart.delta === "string" ? typedPart.delta.length : undefined;
-  if (textLength !== undefined || deltaLength !== undefined) {
-    return `${type}:${textLength ?? 0}:${deltaLength ?? 0}:${typedPart.state ?? ""}`;
-  }
-
-  try {
-    return `${type}:${JSON.stringify(part).length}`;
-  } catch {
-    return type;
-  }
-};
-
-const getAgentLongMessageFingerprint = (messages: ChatMessage[]): string =>
-  messages
-    .map(
-      (message) =>
-        `${message.id}:${message.role}:${(message.parts ?? [])
-          .map(getAgentLongPartFingerprint)
-          .join(",")}`,
-    )
-    .join("|");
-
 const ComputerSidebar = dynamic(
   () => import("./ComputerSidebar").then((m) => m.ComputerSidebar),
   { ssr: false },
@@ -443,6 +418,7 @@ function StreamEffects({
     initialMessages: serverMessages,
     resumeStream,
     setMessages,
+    status,
     hasActiveStream,
   });
 
@@ -490,7 +466,6 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     setChatMode,
     sidebarOpen,
     chatSidebarOpen,
-    setChatSidebarOpen,
     initializeChat,
     setTodos,
     temporaryChatsEnabled,
@@ -498,9 +473,9 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     hasUserDismissedRateLimitWarning,
     setHasUserDismissedRateLimitWarning,
     messageQueue,
+    editingQueuedMessageId,
     removeQueuedMessage,
     clearQueue,
-    queueBehavior,
     todos,
     sandboxPreference,
     setSandboxPreference,
@@ -509,6 +484,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     setSelectedModel,
     subscription,
     localConnections,
+    activeProjectId,
   } = useGlobalState();
   const { setAgentApprovalSession, clearAgentApprovalSession } =
     useAgentApproval();
@@ -553,6 +529,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   const todosRef = useLatestRef(todos);
   // Use ref for sandbox preference to avoid stale closures in auto-send
   const sandboxPreferenceRef = useLatestRef(sandboxPreference);
+  const activeProjectIdRef = useLatestRef(activeProjectId);
   const agentPermissionModeRef = useLatestRef(agentPermissionMode);
   const requestSelectedModel = normalizeSelectedModelForSubscription(
     selectedModel,
@@ -656,6 +633,10 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   const browserStreamFinishedRef = useRef(false);
   const activeChatIdRef = useRef(chatId);
   const agentLongPartialSaveKeysRef = useRef<Set<string>>(new Set());
+  const agentLongRunCorrelationRef = useRef<{
+    runId: string;
+    token: string;
+  } | null>(null);
   activeChatIdRef.current = chatId;
 
   useEffect(() => {
@@ -770,10 +751,14 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
         const messagesWithoutUrls = stripUrlsFromMessages(messagesToSend);
 
         return {
+          headers: getPostHogRequestHeaders(),
           body: {
             chatId: id,
             messages: messagesWithoutUrls,
             ...body,
+            ...(activeProjectIdRef.current
+              ? { projectId: activeProjectIdRef.current }
+              : {}),
           },
         };
       },
@@ -799,6 +784,25 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
 
     onData: (dataPart) => {
       if (!isChatMountedRef.current || activeChatIdRef.current !== chatId) {
+        return;
+      }
+      if (dataPart.type === "data-agent-run-correlation") {
+        const correlationData = dataPart.data as {
+          chatId?: unknown;
+          runId?: unknown;
+          token?: unknown;
+        };
+        if (
+          typeof correlationData.runId === "string" &&
+          typeof correlationData.token === "string" &&
+          (correlationData.chatId === undefined ||
+            correlationData.chatId === chatId)
+        ) {
+          agentLongRunCorrelationRef.current = {
+            runId: correlationData.runId,
+            token: correlationData.token,
+          };
+        }
         return;
       }
       setDataStream((ds) => [...ds, { ...dataPart, __chatId: chatId }]);
@@ -916,7 +920,10 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
         }
       }
     },
-    onFinish: () => {
+    onFinish: ({ isAbort }) => {
+      if (!isChatMountedRef.current || activeChatIdRef.current !== chatId) {
+        return;
+      }
       browserStreamFinishedRef.current = true;
       setIsAutoResuming(false);
       setAwaitingServerChat(false);
@@ -924,15 +931,22 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
 
       const isTemporaryChat =
         !isExistingChatRef.current && temporaryChatsEnabledRef.current;
-      if (!isExistingChatRef.current && !isTemporaryChat) {
-        // Update URL without full navigation so this Chat stays mounted and
-        // status can transition to "ready" (stop button → send button).
-        window.history.replaceState({}, "", `/c/${chatId}`);
+      if (
+        finalizeNewChatRoute({
+          chatId,
+          isAbort,
+          isExistingChat: isExistingChatRef.current,
+          isTemporaryChat,
+        })
+      ) {
         removeDraft("new");
         setIsExistingChat(true);
       }
     },
     onError: (error) => {
+      if (!isChatMountedRef.current || activeChatIdRef.current !== chatId) {
+        return;
+      }
       browserStreamFinishedRef.current = true;
       setIsAutoResuming(false);
       setAwaitingServerChat(false);
@@ -945,10 +959,12 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
             ? displayError.cause
             : displayError.message;
         if (displayError.type !== "rate_limit") {
-          toast.error(errorMessage);
+          toast.error(formatTaskUiCopy(errorMessage));
         }
       } else if (isMobile && displayError.name !== "AbortError") {
-        toast.error(displayError.message || "An error occurred.");
+        toast.error(
+          formatTaskUiCopy(displayError.message || "An error occurred."),
+        );
       }
     },
   });
@@ -1000,8 +1016,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     setTodos(latestTodoOutput.todos);
   }, [messages, setTodos, shouldFetchMessages, status]);
 
-  // Ref (not state) so the Convex sync effect only fires when paginatedMessages.results
-  // changes, not on status transitions — avoiding the stale-data overwrite on stream stop.
+  // Ref keeps asynchronous completion and cancellation callbacks on the latest status.
   const statusRef = useRef(status);
   statusRef.current = status;
   const stopRef = useRef(stop);
@@ -1019,20 +1034,29 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   );
   shouldUseAgentLongForCurrentChatRef.current =
     shouldUseAgentLongForCurrentChat;
-  const stopActiveBrowserStream = useCallback(() => {
-    cancelAgentLongRealtimeStreams(activeChatIdRef.current);
-    const streamAlreadyFinished =
-      shouldUseAgentLongForCurrentChatRef.current &&
-      browserStreamFinishedRef.current;
-    if (
-      !streamAlreadyFinished &&
-      (statusRef.current === "streaming" || statusRef.current === "submitted")
-    ) {
-      stopRef.current();
-    }
-    setDataStream([]);
-    setIsAutoResuming(false);
-  }, [setDataStream, setIsAutoResuming]);
+  const stopActiveBrowserStream = useCallback(
+    (nextChatId?: string) => {
+      const activeChatId = activeChatIdRef.current;
+      if (nextChatId) {
+        // Invalidate terminal callbacks before either cancellation path can
+        // finish synchronously.
+        activeChatIdRef.current = nextChatId;
+      }
+      cancelAgentLongRealtimeStreams(activeChatId);
+      const streamAlreadyFinished =
+        shouldUseAgentLongForCurrentChatRef.current &&
+        browserStreamFinishedRef.current;
+      if (
+        !streamAlreadyFinished &&
+        (statusRef.current === "streaming" || statusRef.current === "submitted")
+      ) {
+        stopRef.current();
+      }
+      setDataStream([]);
+      setIsAutoResuming(false);
+    },
+    [setDataStream, setIsAutoResuming],
+  );
 
   const saveAgentLongPartialSnapshot = useCallback(
     (clientReason: string) => {
@@ -1044,6 +1068,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
       const saveKey = `${chatId}:${partialMessage.id}`;
       if (agentLongPartialSaveKeysRef.current.has(saveKey)) return;
       agentLongPartialSaveKeysRef.current.add(saveKey);
+      const runCorrelation = agentLongRunCorrelationRef.current;
 
       void fetch(AGENT_PARTIAL_SAVE_ENDPOINT, {
         method: "POST",
@@ -1054,6 +1079,12 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
           generationStartedAt: partialMessage.generationStartedAt,
           generationTimeMs: partialMessage.generationTimeMs,
           clientReason,
+          ...(runCorrelation
+            ? {
+                triggerRunId: runCorrelation.runId,
+                runCorrelationToken: runCorrelation.token,
+              }
+            : {}),
         }),
       })
         .then((response) => {
@@ -1069,6 +1100,9 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   );
 
   useEffect(() => {
+    if (status === "submitted") {
+      agentLongRunCorrelationRef.current = null;
+    }
     if (
       shouldUseAgentLongForCurrentChat &&
       (status === "streaming" || status === "submitted")
@@ -1128,6 +1162,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   }, []);
 
   useEffect(() => {
+    agentLongRunCorrelationRef.current = null;
     setDataStream([]);
     setIsAutoResuming(false);
     dispatchStreaming({ type: "RESET_ON_CHAT_CHANGE" });
@@ -1139,7 +1174,8 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     };
   }, [stopActiveBrowserStream]);
 
-  const agentLongMessageFingerprint = getAgentLongMessageFingerprint(messages);
+  const agentLongMessageFingerprint =
+    getAgentLongMessageProgressFingerprint(messages);
   const agentLongMessageFingerprintRef = useRef(agentLongMessageFingerprint);
   const agentLongLastMessageChangeAtRef = useRef(Date.now());
 
@@ -1172,15 +1208,21 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     const abortController = new AbortController();
 
     const finishLocally = () => {
-      if (stopped) return;
+      if (stopped || activeChatIdRef.current !== chatId) return;
       stopped = true;
       stop();
       setIsAutoResuming(false);
       setAwaitingServerChat(false);
       dispatchStreaming({ type: "RESET_ON_FINISH" });
 
-      if (!isExistingChatRef.current) {
-        window.history.replaceState({}, "", `/c/${chatId}`);
+      if (
+        finalizeNewChatRoute({
+          chatId,
+          isAbort: false,
+          isExistingChat: isExistingChatRef.current,
+          isTemporaryChat: temporaryChatsEnabled,
+        })
+      ) {
         removeDraft("new");
         setIsExistingChat(true);
       }
@@ -1266,9 +1308,10 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   // Register a reset function with global state so initializeNewChat can call it
   useEffect(() => {
     const reset = () => {
-      stopActiveBrowserStream();
+      const nextChatId = uuidv4();
+      stopActiveBrowserStream(nextChatId);
       setMessages([]);
-      setChatId(uuidv4());
+      setChatId(nextChatId);
       setIsExistingChat(false);
       wasNewChatRef.current = true;
       setTodos([]);
@@ -1324,12 +1367,6 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
           (t: Todo) => !t.sourceMessageId,
         );
 
-        const prevManual: Todo[] = [];
-        // We can't access previous value directly here without functional setter.
-        // Fallback: since server is source of truth, treat incoming manual todos as updates only for ids we already have.
-        // The actual merge of manual todos will be handled elsewhere when tool updates come in.
-
-        // Build manual map from previous
         // Replace assistant todos entirely with incoming assistant todos and keep incoming manual ones as-is
         return [...incomingAssistant, ...incomingManual] as Todo[];
       })();
@@ -1484,19 +1521,16 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   ]);
 
   // Sync Convex real-time data with useChat messages.
-  // Uses statusRef (not status state) so this effect only fires when
-  // paginatedMessages.results actually changes — not on status transitions.
   // Guards against BOTH "streaming" and "submitted" statuses to prevent
-  // Convex real-time updates from overwriting useChat's in-flight state.
+  // Convex real-time updates from overwriting useChat's in-flight state, then
+  // reruns when the status settles so a completion persisted during streaming
+  // is not left unapplied.
   // Without the "submitted" guard, a race condition occurs in production:
   // Convex receives the user message (via handleInitialChatAndUserMessage)
   // and pushes a subscription update before the first streaming chunk arrives,
   // resetting useChat's messages and causing an empty AI response.
   useEffect(() => {
-    if (
-      statusRef.current === "streaming" ||
-      statusRef.current === "submitted"
-    ) {
+    if (status === "streaming" || status === "submitted") {
       return;
     }
     if (!paginatedMessageResults || paginatedMessageResults.length === 0) {
@@ -1507,11 +1541,12 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
       [...paginatedMessageResults].reverse(),
     );
 
-    // Skip if useChat already has the same messages (same IDs, same part count).
+    // Skip if useChat already has the same rendered message content.
     // This prevents redundant setMessages calls — e.g. after a local provider
     // save, Convex echoes the same data back via reactive query, which would
     // otherwise cause a visible flicker from new object references.
-    // Comparing parts.length catches content updates where the ID stays the same.
+    // Content comparison is required because a partial and completed text part can
+    // share the same message ID and part count.
     const current = messagesRef.current;
 
     // Don't overwrite with fewer messages — the backend (e.g. agent-long Trigger.dev
@@ -1521,14 +1556,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
       return;
     }
 
-    if (
-      current.length === uiMessages.length &&
-      current.every(
-        (m, i) =>
-          m.id === uiMessages[i].id &&
-          (m.parts?.length ?? 0) === (uiMessages[i].parts?.length ?? 0),
-      )
-    ) {
+    if (areMessagesEquivalentForConvexSync(current, uiMessages)) {
       return;
     }
 
@@ -1551,10 +1579,17 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
       return;
     }
 
+    // A status transition can rerun this effect before Convex has published the
+    // final save. Never replace more complete local text or tool progress with a
+    // stale persisted snapshot; the later Convex update will rerun the effect.
+    if (!arePersistedMessagesAtLeastAsComplete(current, uiMessages)) {
+      return;
+    }
+
     if (isExistingChat) {
       setMessages(uiMessages);
     }
-  }, [paginatedMessageResults, setMessages, isExistingChat, chatId]);
+  }, [paginatedMessageResults, setMessages, isExistingChat, chatId, status]);
 
   const { scrollRef, contentRef, scrollToBottom, isAtBottom } =
     useMessageScroll();
@@ -1631,10 +1666,10 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     if (
       status === "ready" &&
       messageQueue.length > 0 &&
+      editingQueuedMessageId === null &&
       !isProcessingQueue &&
       !isSendingNowRef.current &&
-      !hasManuallyStoppedRef.current &&
-      queueBehavior === "queue"
+      !hasManuallyStoppedRef.current
     ) {
       setIsProcessingQueue(true);
       const nextMessage = messageQueue[0];
@@ -1672,10 +1707,10 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   }, [
     status,
     messageQueue,
+    editingQueuedMessageId,
     isProcessingQueue,
     removeQueuedMessage,
     sendMessage,
-    queueBehavior,
     chatModeRef,
     todosRef,
     temporaryChatsEnabledRef,
@@ -1736,7 +1771,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
         router.push(`/c/${newChatId}`);
       } catch (error) {
         console.error("Failed to branch chat:", error);
-        toast.error("Failed to branch chat. Please try again.");
+        toast.error("Failed to branch task. Please try again.");
       }
     },
     [branchChatMutation, initializeChat, router],
@@ -1845,10 +1880,10 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
                   <div className="w-full max-w-full sm:max-w-[768px] sm:min-w-[390px] flex flex-col items-center space-y-8">
                     <div className="text-center">
                       <h1 className="text-2xl font-bold text-foreground mb-2">
-                        Chat Not Found
+                        Task Not Found
                       </h1>
                       <p className="text-muted-foreground">
-                        This chat doesn&apos;t exist or you don&apos;t have
+                        This task doesn&apos;t exist or you don&apos;t have
                         permission to view it.
                       </p>
                     </div>
@@ -1856,8 +1891,8 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
                 </div>
               ) : showChatLayout ? (
                 <Messages
-                  scrollRef={scrollRef as RefObject<HTMLDivElement | null>}
-                  contentRef={contentRef as RefObject<HTMLDivElement | null>}
+                  scrollRef={scrollRef}
+                  contentRef={contentRef}
                   messages={messages}
                   setMessages={setMessages}
                   onRegenerate={handleRegenerate}
@@ -1893,12 +1928,12 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
                         {temporaryChatsEnabled ? (
                           <>
                             <h1 className="text-3xl font-bold text-foreground mb-2">
-                              Temporary Chat
+                              Temporary Task
                             </h1>
                             <p className="text-muted-foreground max-w-md mx-auto px-4 py-3">
-                              This chat won&apos;t appear in history, use or
+                              This task won&apos;t appear in history, use or
                               update HackerAI&apos;s memory, or be used to train
-                              models. This chat will be deleted when you refresh
+                              models. This task will be deleted when you refresh
                               the page.
                             </p>
                           </>

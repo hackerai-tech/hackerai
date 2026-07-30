@@ -1,0 +1,279 @@
+import "@testing-library/jest-dom";
+import { beforeEach, describe, expect, it, jest } from "@jest/globals";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import type { Doc } from "@/convex/_generated/dataModel";
+
+Object.defineProperty(globalThis, "ResizeObserver", {
+  configurable: true,
+  value: class ResizeObserverMock {
+    observe() {
+      return undefined;
+    }
+
+    unobserve() {
+      return undefined;
+    }
+
+    disconnect() {
+      return undefined;
+    }
+  },
+});
+
+jest.mock("sonner", () => ({
+  toast: { success: jest.fn(), info: jest.fn(), error: jest.fn() },
+}));
+jest.mock("@/app/contexts/GlobalState", () => ({
+  useGlobalState: () => ({ desktopBridgeActive: true }),
+}));
+jest.mock("@/app/hooks/useStartNewChat", () => ({
+  useStartNewChat: () => jest.fn(),
+}));
+jest.mock("@/app/hooks/useProjects", () => ({
+  useMoveChatToProject: jest.fn(),
+}));
+jest.mock("../ProjectCreateDialog", () => ({
+  ProjectCreateDialog: ({ open }: { open: boolean }) => (
+    <div data-testid="project-create-dialog" data-open={String(open)} />
+  ),
+}));
+jest.mock("../SidebarProjectItem", () => ({
+  SidebarProjectItem: ({
+    project,
+    open,
+    onDropChat,
+    onOpenChange,
+  }: {
+    project: Doc<"projects">;
+    open: boolean;
+    onDropChat: (chatId: string, previousProjectId?: string) => Promise<void>;
+    onOpenChange: (open: boolean) => void;
+  }) => (
+    <div data-testid={`project-${project._id}`} data-open={String(open)}>
+      {project.name}
+      <button
+        type="button"
+        onClick={() => onOpenChange(!open)}
+        aria-label={`Toggle ${project.name}`}
+      />
+      <button
+        type="button"
+        onClick={() => void onDropChat("chat-1", "project-previous")}
+        aria-label={`Drop chat in ${project.name}`}
+      />
+    </div>
+  ),
+}));
+
+const { useMoveChatToProject: mockUseMoveChatToProject } = jest.requireMock<{
+  useMoveChatToProject: jest.Mock;
+}>("@/app/hooks/useProjects");
+const { toast: mockToast } = jest.requireMock<{
+  toast: { success: jest.Mock; info: jest.Mock; error: jest.Mock };
+}>("sonner");
+
+const { SidebarProjects } =
+  require("../SidebarProjects") as typeof import("../SidebarProjects");
+
+const projects = ["Acme", "Example"].map(
+  (name, index) =>
+    ({
+      _id: `project-${index + 1}`,
+      _creationTime: index + 1,
+      user_id: "user-1",
+      name,
+      created_at: index + 1,
+      updated_at: index + 1,
+    }) as unknown as Doc<"projects">,
+);
+
+describe("SidebarProjects", () => {
+  const moveChatToProject = jest.fn<any>().mockResolvedValue(true);
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockUseMoveChatToProject.mockReturnValue(moveChatToProject);
+  });
+
+  it("only shows collapse-all while an individual project is open", () => {
+    render(<SidebarProjects projects={projects} />);
+
+    expect(
+      screen.queryByRole("button", { name: "Collapse all projects" }),
+    ).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Toggle Acme" }));
+    expect(screen.getByTestId("project-project-1")).toHaveAttribute(
+      "data-open",
+      "true",
+    );
+    expect(
+      screen.getByRole("button", { name: "Collapse all projects" }),
+    ).toBeInTheDocument();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Collapse all projects" }),
+    );
+    expect(screen.getByTestId("project-project-1")).toHaveAttribute(
+      "data-open",
+      "false",
+    );
+    expect(
+      screen.queryByRole("button", { name: "Collapse all projects" }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByTestId("project-project-2")).toHaveAttribute(
+      "data-open",
+      "false",
+    );
+  });
+
+  it("shows the create-project label on hover", async () => {
+    const user = userEvent.setup();
+    render(<SidebarProjects projects={projects} />);
+
+    const createButton = screen.getByRole("button", {
+      name: "Create project",
+    });
+    await user.hover(createButton);
+    expect(await screen.findByRole("tooltip")).toHaveTextContent(
+      "Create project",
+    );
+  });
+
+  it("shows the collapse-all label on hover", async () => {
+    const user = userEvent.setup();
+    render(<SidebarProjects projects={projects} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Toggle Acme" }));
+    await user.hover(
+      screen.getByRole("button", { name: "Collapse all projects" }),
+    );
+    expect(await screen.findByRole("tooltip")).toHaveTextContent(
+      "Collapse all",
+    );
+  });
+
+  it("shows a new-project row when there are no projects", () => {
+    render(<SidebarProjects projects={[]} />);
+
+    expect(
+      screen.getByRole("button", { name: "New project" }),
+    ).toBeInTheDocument();
+    expect(screen.getByTestId("project-create-dialog")).toHaveAttribute(
+      "data-open",
+      "false",
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "New project" }));
+
+    expect(screen.getByTestId("project-create-dialog")).toHaveAttribute(
+      "data-open",
+      "true",
+    );
+  });
+
+  it("does not show the new-project row when projects exist", () => {
+    render(<SidebarProjects projects={projects} />);
+
+    expect(
+      screen.queryByRole("button", { name: "New project" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("loads ten more projects", () => {
+    const loadMore = jest.fn();
+    render(
+      <SidebarProjects
+        projects={projects}
+        paginationStatus="CanLoadMore"
+        loadMore={loadMore}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Show more projects" }));
+    expect(loadMore).toHaveBeenCalledWith(10);
+  });
+
+  it("renders pinned projects without a nested Projects heading or pagination", () => {
+    const loadMore = jest.fn();
+    render(
+      <SidebarProjects
+        projects={projects}
+        variant="pinned-list"
+        paginationStatus="CanLoadMore"
+        loadMore={loadMore}
+      />,
+    );
+
+    expect(screen.getByTestId("sidebar-pinned-project-list")).toHaveTextContent(
+      "Acme",
+    );
+    expect(
+      screen.queryByRole("button", { name: "Projects" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Show more projects" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId("project-create-dialog"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("collapses the entire projects section from its heading", () => {
+    render(<SidebarProjects projects={projects} />);
+
+    expect(screen.getByTestId("projects-section-chevron")).toHaveClass(
+      "rotate-90",
+      "opacity-0",
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Projects" }));
+
+    expect(screen.getByTestId("projects-section-chevron")).not.toHaveClass(
+      "rotate-90",
+    );
+    expect(screen.getByTestId("projects-section-chevron")).toHaveClass(
+      "opacity-100",
+    );
+    expect(screen.queryByTestId("project-project-1")).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Collapse all projects" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Create project" }),
+    ).toBeInTheDocument();
+  });
+
+  it("moves a dropped chat and opens the target project", async () => {
+    render(<SidebarProjects projects={projects} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Drop chat in Acme" }));
+
+    await waitFor(() => {
+      expect(moveChatToProject).toHaveBeenCalledWith({
+        chatId: "chat-1",
+        projectId: "project-1",
+      });
+    });
+    expect(screen.getByTestId("project-project-1")).toHaveAttribute(
+      "data-open",
+      "true",
+    );
+    expect(mockToast.success).toHaveBeenCalledWith(
+      "Task moved into Acme.",
+      expect.objectContaining({
+        action: expect.objectContaining({ label: "Undo" }),
+      }),
+    );
+
+    const successOptions = mockToast.success.mock.calls[0]?.[1] as
+      { action?: { onClick?: () => void } } | undefined;
+    successOptions?.action?.onClick?.();
+    await waitFor(() => {
+      expect(moveChatToProject).toHaveBeenCalledWith({
+        chatId: "chat-1",
+        projectId: "project-previous",
+      });
+    });
+  });
+});

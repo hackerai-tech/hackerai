@@ -12,10 +12,9 @@ import {
   isImageFile,
   RateLimitInfo,
 } from "@/lib/utils/file-utils";
-import { getMaxFileTokens } from "@/lib/token-utils";
+import { getMaxFileTokens } from "@/lib/token-limits";
 import {
   FileProcessingResult,
-  FileSource,
   LocalDesktopFile,
   UploadedFileState,
 } from "@/types/file";
@@ -92,6 +91,12 @@ const getGeneratedPasteFileName = (
   return `${PASTED_TEXT_ATTACHMENT_BASE_NAME}_${suffix}${PASTED_TEXT_ATTACHMENT_EXTENSION}`;
 };
 
+const hasFileDragData = (dataTransfer: DataTransfer | null): boolean => {
+  if (!dataTransfer) return false;
+  if (Array.from(dataTransfer.types).includes("Files")) return true;
+  return Array.from(dataTransfer.items).some((item) => item.kind === "file");
+};
+
 const logLocalAttachmentDebug = (
   event: string,
   data: Record<string, unknown>,
@@ -164,6 +169,7 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
   const [isDragOver, setIsDragOver] = useState(false);
   const [showDragOverlay, setShowDragOverlay] = useState(false);
   const dragCounterRef = useRef(0);
+  const fileDragActiveRef = useRef(false);
 
   // Track last shown rate limit warning to avoid spamming (show once per minute max)
   const lastRateLimitWarningRef = useRef<number>(0);
@@ -280,11 +286,7 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
 
   // Helper function to show feedback messages
   const showProcessingFeedback = useCallback(
-    (
-      result: FileProcessingResult,
-      source: FileSource,
-      hasRemainingSlots: boolean = true,
-    ) => {
+    (result: FileProcessingResult, hasRemainingSlots: boolean = true) => {
       const messages: string[] = [];
 
       // Handle case where no slots are available
@@ -564,11 +566,6 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
 
   const processGeneratedPastedText = useCallback(
     async (content: string): Promise<boolean> => {
-      if (subscription === "free") {
-        toast.error("Upgrade plan to upload files.");
-        return false;
-      }
-
       const existingUploadedCount = uploadedFiles.length;
       const remainingSlots = maxFilesLimit - existingUploadedCount;
       const hasRemainingSlots = remainingSlots > 0;
@@ -584,7 +581,7 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
       const file = createGeneratedTextFile(content, fileName);
       const result = await validateAndFilterFiles([file]);
 
-      showProcessingFeedback(result, "paste", hasRemainingSlots);
+      showProcessingFeedback(result, hasRemainingSlots);
 
       const validFile = result.validFiles[0];
       if (!validFile) {
@@ -663,7 +660,6 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
       addUploadedFile,
       maxFilesLimit,
       showProcessingFeedback,
-      subscription,
       uploadFileToS3,
       uploadedFiles,
       validateAndFilterFiles,
@@ -858,7 +854,6 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
   const processFiles = useCallback(
     async (
       files: File[],
-      source: FileSource,
       options: {
         generatedSource?: "pasted-text";
       } = {},
@@ -877,7 +872,7 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
       const hasRemainingSlots = remainingSlots > 0;
 
       // Show feedback messages
-      showProcessingFeedback(result, source, hasRemainingSlots);
+      showProcessingFeedback(result, hasRemainingSlots);
 
       // Start uploads for valid files
       if (result.validFiles.length > 0 && hasRemainingSlots) {
@@ -903,7 +898,7 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
     const selectedFiles = event.target.files;
     if (!selectedFiles || selectedFiles.length === 0) return;
 
-    await processFiles(Array.from(selectedFiles), "upload");
+    await processFiles(Array.from(selectedFiles));
 
     // Clear the input
     if (fileInputRef.current) {
@@ -1161,10 +1156,6 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
       pastedText.length >= PASTED_TEXT_ATTACHMENT_MIN_CHARS &&
       (!items || Array.from(items).every((item) => item.kind !== "file"))
     ) {
-      if (subscription === "free") {
-        return false;
-      }
-
       event.preventDefault();
       await handlePastedTextAttachment(pastedText);
       return true;
@@ -1190,7 +1181,7 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
     // Prevent default paste behavior to avoid pasting file names as text
     event.preventDefault();
 
-    await processFiles(files, "paste");
+    await processFiles(files);
     return true;
   };
 
@@ -1216,29 +1207,35 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
 
   // Drag and drop event handlers
   const handleDragEnter = useCallback((e: DragEvent) => {
+    if (!hasFileDragData(e.dataTransfer)) return;
+
     e.preventDefault();
     e.stopPropagation();
 
+    fileDragActiveRef.current = true;
     dragCounterRef.current++;
 
-    if (e.dataTransfer?.items && e.dataTransfer.items.length > 0) {
-      setShowDragOverlay(true);
-    }
+    setShowDragOverlay(true);
   }, []);
 
   const handleDragLeave = useCallback((e: DragEvent) => {
+    if (!fileDragActiveRef.current && !hasFileDragData(e.dataTransfer)) return;
+
     e.preventDefault();
     e.stopPropagation();
 
-    dragCounterRef.current--;
+    dragCounterRef.current = Math.max(0, dragCounterRef.current - 1);
 
     if (dragCounterRef.current === 0) {
+      fileDragActiveRef.current = false;
       setShowDragOverlay(false);
       setIsDragOver(false);
     }
   }, []);
 
   const handleDragOver = useCallback((e: DragEvent) => {
+    if (!fileDragActiveRef.current && !hasFileDragData(e.dataTransfer)) return;
+
     e.preventDefault();
     e.stopPropagation();
 
@@ -1251,10 +1248,15 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
 
   const handleDrop = useCallback(
     async (e: DragEvent) => {
+      if (!fileDragActiveRef.current && !hasFileDragData(e.dataTransfer)) {
+        return;
+      }
+
       e.preventDefault();
       e.stopPropagation();
 
       // Reset drag state
+      fileDragActiveRef.current = false;
       setShowDragOverlay(false);
       setIsDragOver(false);
       dragCounterRef.current = 0;
@@ -1262,7 +1264,7 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
       const files = e.dataTransfer?.files;
       if (!files || files.length === 0) return;
 
-      await processFiles(Array.from(files), "drop");
+      await processFiles(Array.from(files));
     },
     [processFiles],
   );

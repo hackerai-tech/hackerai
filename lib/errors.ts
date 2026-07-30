@@ -89,6 +89,8 @@ export class ChatSDKError extends Error {
 }
 
 const STREAM_ERROR_PREFIX = "__HACKERAI_CHAT_SDK_ERROR__:";
+const GENERIC_STREAM_ERROR_MESSAGE =
+  "Something went wrong. Please try again later.";
 const MALFORMED_STREAM_ERROR_MESSAGE =
   "Something went wrong while receiving the response. Please try again.";
 
@@ -113,8 +115,15 @@ function createMalformedStreamError(): ChatSDKError {
  */
 export function serializeChatSDKErrorForStream(error: ChatSDKError): string {
   const code: ErrorCode = `${error.type}:${error.surface}`;
+  const visibility = visibilityBySurface[error.surface];
 
   try {
+    if (visibility !== "response") {
+      return `${STREAM_ERROR_PREFIX}${JSON.stringify({
+        code: "bad_request:stream" satisfies ErrorCode,
+        cause: GENERIC_STREAM_ERROR_MESSAGE,
+      })}`;
+    }
     return `${STREAM_ERROR_PREFIX}${JSON.stringify({
       code,
       cause: typeof error.cause === "string" ? error.cause : undefined,

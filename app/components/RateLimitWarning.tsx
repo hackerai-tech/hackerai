@@ -5,10 +5,7 @@ import { redirectToPricing } from "../hooks/usePricingDialog";
 import { openSettingsDialog } from "@/lib/utils/settings-dialog";
 import type { ChatMode, SubscriptionTier } from "@/types";
 import type { LimitCapReason } from "@/lib/limit-pressure";
-import {
-  AGENT_RUN_SPEND_CAP_REASON,
-  type AgentRunSpendCapBasis,
-} from "@/lib/chat/agent-run-spend-cap";
+import type { AgentRunSpendCapBasis } from "@/lib/chat/agent-run-spend-cap";
 import {
   getExtraUsageLimitCta,
   getLimitTypeForCapReason,
@@ -17,7 +14,6 @@ import {
 import {
   captureAddCreditCtaClick,
   captureAddCreditCtaImpression,
-  captureAgentRunSpendCapImpression,
   captureUpgradeCtaImpression,
 } from "@/lib/analytics/client";
 
@@ -182,7 +178,6 @@ export const RateLimitWarning = ({
 }: RateLimitWarningProps) => {
   const capturedUpgradeImpressionRef = useRef(false);
   const capturedAddCreditImpressionRef = useRef(false);
-  const capturedAgentRunCapImpressionRef = useRef(false);
   const timeString = formatTimeUntil(data.resetTime);
   const message = getMessage(data, timeString);
   const capReason =
@@ -224,24 +219,6 @@ export const RateLimitWarning = ({
       ? "hit"
       : "warning";
   const upgradeCtaText = getUpgradeCtaText(data, limitType);
-
-  useEffect(() => {
-    if (data.warningType !== "agent-run-spend-cap") return;
-    if (capturedAgentRunCapImpressionRef.current) return;
-    capturedAgentRunCapImpressionRef.current = true;
-    captureAgentRunSpendCapImpression({
-      surface: "rate_limit_warning",
-      source: AGENT_RUN_SPEND_CAP_REASON,
-      subscription_tier: data.subscription,
-      mode: data.mode,
-      cap_reason: AGENT_RUN_SPEND_CAP_REASON,
-      run_cost_dollars: data.runCostDollars,
-      run_cap_dollars: data.runCapDollars,
-      monthly_remaining_dollars: data.monthlyRemainingDollars,
-      cap_basis: data.capBasis,
-      premium_continuation_allowed: data.premiumContinuationAllowed,
-    });
-  }, [data]);
 
   useEffect(() => {
     if (!showUpgrade || capturedUpgradeImpressionRef.current) return;

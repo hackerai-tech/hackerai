@@ -2,9 +2,6 @@ import { customProvider } from "ai";
 import { createOpenRouter } from "@openrouter/ai-sdk-provider";
 import type { ChatMode, SelectedModel } from "@/types/chat";
 import { openrouterAttributionHeaders } from "@/lib/ai/openrouter-attribution";
-// import { withTracing } from "@posthog/ai";
-// import PostHogClient from "@/app/posthog";
-// import type { SubscriptionTier } from "@/types";
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null;
@@ -177,36 +174,29 @@ const openrouter = createOpenRouter({
 
 type OpenRouterInstance = typeof openrouter;
 
-export const KIMI_K2_7_CODE_SLUG = "moonshotai/kimi-k2.7-code:exacto";
+export const KIMI_K3_SLUG = "moonshotai/kimi-k3";
 export const GLM_5_2_SLUG = "z-ai/glm-5.2";
-export const MINIMAX_M3_SLUG = "minimax/minimax-m3";
 export const GROK_4_5_SLUG = "x-ai/grok-4.5";
 export const DEEPSEEK_V4_FLASH_SLUG = "deepseek/deepseek-v4-flash";
 
 const buildProviderMap = (or: OpenRouterInstance) =>
   ({
-    "ask-model": or(MINIMAX_M3_SLUG),
+    "ask-model": or(GROK_4_5_SLUG),
     "ask-model-free": or(DEEPSEEK_V4_FLASH_SLUG),
-    "agent-model": or(MINIMAX_M3_SLUG),
+    "agent-model": or(GROK_4_5_SLUG),
     "agent-model-free": or(DEEPSEEK_V4_FLASH_SLUG),
-    "model-sonnet-4.6": or("anthropic/claude-sonnet-4-6"),
     "model-grok-4.5": or(GROK_4_5_SLUG),
-    // Compatibility alias for stale internal references persisted before the
-    // paid Ask PDF route settled on Grok 4.5.
-    "model-gemini-3-flash": or(GROK_4_5_SLUG),
-    "model-deepseek-v4-flash": or(DEEPSEEK_V4_FLASH_SLUG),
+    // Dedicated HackerAI Pro alias so its GLM fallback can evolve without
+    // changing Standard media fallback behavior.
+    "model-grok-4.5-pro": or(GROK_4_5_SLUG),
     "model-deepseek-v4-pro": or("deepseek/deepseek-v4-pro"),
     "model-opus-4.6": or("anthropic/claude-opus-4.6"),
     "model-glm-5.2": or(GLM_5_2_SLUG),
-    "model-minimax-m3": or(MINIMAX_M3_SLUG),
-    "model-kimi-k2.7-code": or(KIMI_K2_7_CODE_SLUG),
-    // Compatibility alias for stale internal references persisted before the
-    // Kimi 2.7 Code rollout. New Agent Standard selections use model-minimax-m3.
-    "model-kimi-k2.6": or(KIMI_K2_7_CODE_SLUG),
-    "fallback-agent-model": or(MINIMAX_M3_SLUG),
-    "fallback-ask-model": or(MINIMAX_M3_SLUG),
-    "fallback-grok-4.5": or(GROK_4_5_SLUG),
-    "title-generator-model": or(GROK_4_5_SLUG),
+    "model-kimi-k3": or(KIMI_K3_SLUG),
+    "fallback-agent-model": or(GROK_4_5_SLUG),
+    "fallback-ask-model": or(GROK_4_5_SLUG),
+    // Titles are a short structured-output task and should never use reasoning.
+    "title-generator-model": or(DEEPSEEK_V4_FLASH_SLUG),
   }) as Record<string, any>;
 
 const baseProviders = buildProviderMap(openrouter);
@@ -215,24 +205,18 @@ export type ModelName = keyof typeof baseProviders;
 
 export const modelCutoffDates: Record<ModelName, string> &
   Record<string, string> = {
-  "ask-model": "May 2026",
+  "ask-model": "July 2026",
   "ask-model-free": "May 2025",
-  "agent-model": "May 2026",
+  "agent-model": "July 2026",
   "agent-model-free": "May 2025",
-  "model-sonnet-4.6": "May 2025",
   "model-grok-4.5": "July 2026",
-  "model-gemini-3-flash": "July 2026",
-  "model-deepseek-v4-flash": "May 2025",
+  "model-grok-4.5-pro": "July 2026",
   "model-deepseek-v4-pro": "May 2025",
   "model-opus-4.6": "May 2025",
   "model-glm-5.2": "June 2026",
-  "model-minimax-m3": "May 2026",
-  "model-kimi-k2.7-code": "June 2025",
-  "model-kimi-k2.6": "June 2025",
-  "fallback-agent-model": "May 2026",
-  "fallback-ask-model": "May 2026",
-  "fallback-grok-4.5": "July 2026",
-  "title-generator-model": "July 2026",
+  "fallback-agent-model": "July 2026",
+  "fallback-ask-model": "July 2026",
+  "title-generator-model": "May 2025",
 };
 
 export const modelDisplayNames: Record<ModelName, string> &
@@ -241,20 +225,15 @@ export const modelDisplayNames: Record<ModelName, string> &
   "ask-model-free": "Auto, an intelligent model router built by HackerAI",
   "agent-model": "Auto, an intelligent model router built by HackerAI",
   "agent-model-free": "Auto, an intelligent model router built by HackerAI",
-  "model-sonnet-4.6": "Anthropic Claude Sonnet 4.6",
   "model-grok-4.5": "xAI Grok 4.5",
-  "model-gemini-3-flash": "xAI Grok 4.5",
-  "model-deepseek-v4-flash": "DeepSeek V4 Flash",
+  "model-grok-4.5-pro": "xAI Grok 4.5",
   "model-deepseek-v4-pro": "DeepSeek V4 Pro",
   "model-opus-4.6": "Anthropic Claude Opus 4.6",
   "model-glm-5.2": "Z.ai GLM 5.2",
-  "model-minimax-m3": "MiniMax M3",
-  "model-kimi-k2.7-code": "Moonshot Kimi K2.7 Code",
-  "model-kimi-k2.6": "Moonshot Kimi K2.7 Code",
+  "model-kimi-k3": "Moonshot Kimi K3",
   "fallback-agent-model": "Auto, an intelligent model router built by HackerAI",
   "fallback-ask-model": "Auto, an intelligent model router built by HackerAI",
-  "fallback-grok-4.5": "Auto, an intelligent model router built by HackerAI",
-  "title-generator-model": "xAI Grok 4.5",
+  "title-generator-model": "DeepSeek V4 Flash",
 };
 
 export const getModelDisplayName = (modelName: ModelName): string => {
@@ -266,14 +245,13 @@ export const getModelCutoffDate = (modelName: ModelName): string => {
 };
 
 export function isAnthropicModel(modelName: string): boolean {
-  return modelName.includes("sonnet") || modelName.includes("opus");
+  return modelName.includes("opus");
 }
 
 export function isDeepSeekModel(modelName: string): boolean {
   return (
     modelName === "ask-model-free" ||
     modelName === "agent-model-free" ||
-    modelName === "model-deepseek-v4-flash" ||
     modelName === "model-deepseek-v4-pro"
   );
 }
@@ -281,20 +259,21 @@ export function isDeepSeekModel(modelName: string): boolean {
 export function isKimiModel(modelName: string): boolean {
   const normalized = modelName.toLowerCase();
   return (
-    normalized === "model-kimi-k2.7-code" ||
-    normalized === "model-kimi-k2.6" ||
-    normalized.includes("moonshotai/kimi") ||
-    normalized.includes("kimi-")
+    normalized === "model-kimi-k3" || normalized.includes("moonshotai/kimi")
   );
 }
 
-export function isMiniMaxModel(modelName: string): boolean {
+function isGrokModel(modelName: string): boolean {
   const normalized = modelName.toLowerCase();
   return (
     normalized === "agent-model" ||
     normalized === "ask-model" ||
-    normalized === "model-minimax-m3" ||
-    normalized.includes("minimax/minimax-m3")
+    normalized === "fallback-agent-model" ||
+    normalized === "fallback-ask-model" ||
+    normalized === "model-grok-4.5" ||
+    normalized === "model-grok-4.5-pro" ||
+    normalized.includes("x-ai/") ||
+    normalized === "grok-4.5"
   );
 }
 
@@ -304,9 +283,8 @@ export function supportsMultimodalToolResults(modelName?: string): boolean {
   const normalized = modelName.toLowerCase();
 
   return (
-    normalized === "model-gemini-3-flash" ||
     isKimiModel(normalized) ||
-    isMiniMaxModel(normalized) ||
+    isGrokModel(normalized) ||
     isAnthropicModel(normalized) ||
     normalized.includes("anthropic/") ||
     normalized.includes("claude") ||
@@ -314,16 +292,14 @@ export function supportsMultimodalToolResults(modelName?: string): boolean {
     normalized.includes("gpt-") ||
     normalized.includes("o1") ||
     normalized.includes("o3") ||
-    normalized.includes("o4") ||
-    normalized.includes("x-ai/") ||
-    normalized.includes("grok")
+    normalized.includes("o4")
   );
 }
 
 /**
  * Map a HackerAI tier id to the underlying provider key for a given mode.
  * Returns `null` for `"auto"` (the caller routes to the auto-router model
- * key instead). Standard maps to DeepSeek, Pro to GLM, and Max to Opus in
+ * key instead). Standard maps to DeepSeek, Pro to Grok, and Max to Opus in
  * both modes; media-aware promotion happens in `selectModel`.
  */
 export function resolveTierToProviderKey(
@@ -335,7 +311,7 @@ export function resolveTierToProviderKey(
     case "hackerai-standard":
       return "model-deepseek-v4-pro";
     case "hackerai-pro":
-      return "model-glm-5.2";
+      return "model-grok-4.5-pro";
     case "hackerai-max":
       return "model-opus-4.6";
   }
@@ -345,34 +321,4 @@ export const myProvider = customProvider({
   languageModels: baseProviders,
 });
 
-export const createTrackedProvider = () =>
-  // userId?: string,
-  // conversationId?: string,
-  // subscription?: SubscriptionTier,
-  // phClient?: ReturnType<typeof PostHogClient> | null,
-  {
-    // PostHog provider tracking disabled
-    // if (!phClient || subscription === "free") {
-    //   return myProvider;
-    // }
-    //
-    // const trackedModels: Record<string, any> = {};
-    //
-    // Object.entries(baseProviders).forEach(([modelName, model]) => {
-    //   trackedModels[modelName] = withTracing(model, phClient, {
-    //     ...(userId && { posthogDistinctId: userId }),
-    //     posthogProperties: {
-    //       modelType: modelName,
-    //       ...(conversationId && { conversationId }),
-    //       subscriptionTier: subscription,
-    //     },
-    //     posthogPrivacyMode: true,
-    //   });
-    // });
-    //
-    // return customProvider({
-    //   languageModels: trackedModels,
-    // });
-
-    return myProvider;
-  };
+export const createTrackedProvider = () => myProvider;

@@ -6,23 +6,23 @@ import {
 } from "@/lib/ai/providers";
 
 describe("provider registry", () => {
-  it("keeps active routes and stale compatibility keys pointed at their provider slugs", () => {
+  it("keeps active routes pointed at their provider slugs", () => {
     expect(
       (myProvider.languageModel("ask-model") as { modelId: string }).modelId,
-    ).toBe("minimax/minimax-m3");
+    ).toBe("x-ai/grok-4.5");
     expect(
       (myProvider.languageModel("agent-model") as { modelId: string }).modelId,
-    ).toBe("minimax/minimax-m3");
+    ).toBe("x-ai/grok-4.5");
     expect(
       (myProvider.languageModel("agent-model-free") as { modelId: string })
         .modelId,
     ).toBe("deepseek/deepseek-v4-flash");
     expect(
-      (myProvider.languageModel("model-minimax-m3") as { modelId: string })
-        .modelId,
-    ).toBe("minimax/minimax-m3");
-    expect(
       (myProvider.languageModel("model-grok-4.5") as { modelId: string })
+        .modelId,
+    ).toBe("x-ai/grok-4.5");
+    expect(
+      (myProvider.languageModel("model-grok-4.5-pro") as { modelId: string })
         .modelId,
     ).toBe("x-ai/grok-4.5");
     expect(
@@ -30,43 +30,47 @@ describe("provider registry", () => {
         .modelId,
     ).toBe("z-ai/glm-5.2");
     expect(
-      (
-        myProvider.languageModel("model-gemini-3-flash") as {
-          modelId: string;
-        }
-      ).modelId,
-    ).toBe("x-ai/grok-4.5");
-    expect(
-      (
-        myProvider.languageModel("model-kimi-k2.6") as {
-          modelId: string;
-        }
-      ).modelId,
-    ).toBe("moonshotai/kimi-k2.7-code:exacto");
+      (myProvider.languageModel("model-kimi-k3") as { modelId: string })
+        .modelId,
+    ).toBe("moonshotai/kimi-k3");
     expect(
       (myProvider.languageModel("fallback-agent-model") as { modelId: string })
         .modelId,
-    ).toBe("minimax/minimax-m3");
+    ).toBe("x-ai/grok-4.5");
     expect(
       (myProvider.languageModel("fallback-ask-model") as { modelId: string })
         .modelId,
-    ).toBe("minimax/minimax-m3");
+    ).toBe("x-ai/grok-4.5");
     expect(
       (myProvider.languageModel("title-generator-model") as { modelId: string })
         .modelId,
-    ).toBe("x-ai/grok-4.5");
-    expect(getModelDisplayName("model-minimax-m3")).toBe("MiniMax M3");
+    ).toBe("deepseek/deepseek-v4-flash");
     expect(getModelDisplayName("model-grok-4.5")).toBe("xAI Grok 4.5");
+    expect(getModelDisplayName("model-grok-4.5-pro")).toBe("xAI Grok 4.5");
     expect(getModelDisplayName("model-glm-5.2")).toBe("Z.ai GLM 5.2");
-    expect(getModelDisplayName("model-gemini-3-flash")).toBe("xAI Grok 4.5");
-    expect(getModelDisplayName("title-generator-model")).toBe("xAI Grok 4.5");
+    expect(getModelDisplayName("model-kimi-k3")).toBe("Moonshot Kimi K3");
+    expect(getModelDisplayName("title-generator-model")).toBe(
+      "DeepSeek V4 Flash",
+    );
+  });
+
+  it.each([
+    "model-sonnet-4.6",
+    "model-gemini-3-flash",
+    "model-minimax-m3",
+    "model-kimi-k2.6",
+    "model-kimi-k2.7-code",
+    "model-deepseek-v4-flash",
+    "fallback-grok-4.5",
+  ])("does not register retired route %s", (modelName) => {
+    expect(() => myProvider.languageModel(modelName)).toThrow();
   });
 });
 
 describe("sanitizeOpenRouterRequestForXai", () => {
   it("strips encrypted reasoning details when an OpenRouter fallback can route to xAI", () => {
     const body = {
-      model: "minimax/minimax-m3",
+      model: "moonshotai/kimi-k3",
       models: ["x-ai/grok-4.5"],
       messages: [
         {
@@ -130,7 +134,7 @@ describe("sanitizeOpenRouterRequestForXai", () => {
 
   it("leaves non-xAI routes unchanged", () => {
     const body = {
-      model: "minimax/minimax-m3",
+      model: "moonshotai/kimi-k3",
       messages: [
         {
           role: "assistant",
@@ -193,29 +197,34 @@ describe("sanitizeOpenRouterRequestForXai", () => {
 });
 
 describe("supportsMultimodalToolResults", () => {
-  it("allows MiniMax and Kimi registry keys and OpenRouter slugs for image tool result experiments", () => {
+  it("allows active Grok and Kimi routes for image tool results", () => {
     expect(supportsMultimodalToolResults("agent-model")).toBe(true);
     expect(supportsMultimodalToolResults("ask-model")).toBe(true);
-    expect(supportsMultimodalToolResults("model-minimax-m3")).toBe(true);
-    expect(supportsMultimodalToolResults("minimax/minimax-m3")).toBe(true);
-    expect(supportsMultimodalToolResults("model-kimi-k2.7-code")).toBe(true);
-    expect(
-      supportsMultimodalToolResults("moonshotai/kimi-k2.7-code:exacto"),
-    ).toBe(true);
+    expect(supportsMultimodalToolResults("fallback-agent-model")).toBe(true);
+    expect(supportsMultimodalToolResults("fallback-ask-model")).toBe(true);
+    expect(supportsMultimodalToolResults("model-kimi-k3")).toBe(true);
+    expect(supportsMultimodalToolResults("moonshotai/kimi-k3")).toBe(true);
   });
 
-  it("allows multimodal fallback keys and slugs used after image tool results", () => {
+  it("allows active multimodal keys and slugs used after image tool results", () => {
     expect(supportsMultimodalToolResults("model-grok-4.5")).toBe(true);
-    expect(supportsMultimodalToolResults("model-gemini-3-flash")).toBe(true);
-    expect(supportsMultimodalToolResults("fallback-grok-4.5")).toBe(true);
+    expect(supportsMultimodalToolResults("model-grok-4.5-pro")).toBe(true);
     expect(supportsMultimodalToolResults("x-ai/grok-4.5")).toBe(true);
   });
 
-  it("still rejects text-only DeepSeek model keys", () => {
+  it("rejects text-only DeepSeek model keys", () => {
     expect(supportsMultimodalToolResults("agent-model-free")).toBe(false);
-    expect(supportsMultimodalToolResults("model-deepseek-v4-flash")).toBe(
-      false,
-    );
     expect(supportsMultimodalToolResults("model-deepseek-v4-pro")).toBe(false);
+  });
+
+  it.each([
+    "model-gemini-3-flash",
+    "model-minimax-m3",
+    "model-kimi-k2.6",
+    "model-kimi-k2.7-code",
+    "model-deepseek-v4-flash",
+    "fallback-grok-4.5",
+  ])("does not classify retired route %s as multimodal", (modelName) => {
+    expect(supportsMultimodalToolResults(modelName)).toBe(false);
   });
 });

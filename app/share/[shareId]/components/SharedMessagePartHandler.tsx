@@ -427,12 +427,8 @@ function renderFileTool(
   let action = "Read";
   let icon = <FileText aria-hidden="true" />;
   let sidebarAction:
-    | "reading"
-    | "viewing"
-    | "creating"
-    | "editing"
-    | "writing"
-    | "appending" = "reading";
+    "reading" | "viewing" | "creating" | "editing" | "writing" | "appending" =
+    "reading";
 
   if (fileAction === "view") {
     action = "Viewed";
@@ -687,13 +683,7 @@ function renderTodoTool(part: MessagePart, idx: number) {
     };
 
     if (todoOutput?.currentTodos && todoOutput.currentTodos.length > 0) {
-      return (
-        <SharedTodoBlock
-          key={idx}
-          todos={todoOutput.currentTodos}
-          blockId={part.toolCallId || `todo-${idx}`}
-        />
-      );
+      return <SharedTodoBlock key={idx} todos={todoOutput.currentTodos} />;
     }
 
     return (
@@ -955,11 +945,7 @@ function renderNotesTool(
     search?: string;
   };
   type NoteCategory =
-    | "general"
-    | "findings"
-    | "methodology"
-    | "questions"
-    | "plan";
+    "general" | "findings" | "methodology" | "questions" | "plan";
 
   const notesOutput = part.output as {
     success?: boolean;

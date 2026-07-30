@@ -31,6 +31,7 @@ import type {
   SandboxBootInfo,
   ToolFailureLogger,
   AgentToolApprovalRequester,
+  AgentActiveTimeMeasurer,
 } from "@/types";
 import { isAgentMode } from "@/lib/utils/mode-helpers";
 import type { Geo } from "@vercel/functions";
@@ -39,6 +40,7 @@ import { BackgroundProcessTracker } from "./utils/background-process-tracker";
 import { ptySessionManager } from "./utils/pty-session-manager";
 import { isE2BSandbox } from "./utils/sandbox-types";
 import { getSandboxWithFallbackGuard } from "./utils/sandbox-fallback";
+import { createE2BResourcePressureObserver } from "@/lib/analytics/sandbox-resource-pressure";
 
 export { isE2BSandbox };
 
@@ -62,6 +64,8 @@ export const createTools = (
   modelName?: string,
   onToolFailure?: ToolFailureLogger,
   requestToolApproval?: AgentToolApprovalRequester,
+  measureAgentActiveTime?: AgentActiveTimeMeasurer,
+  workingDirectory?: string,
 ) => {
   let sandbox: AnySandbox | null = null;
   let sandboxFirstUsedAt: number | null = null;
@@ -97,6 +101,7 @@ export const createTools = (
           isE2BSandbox(sandbox) ? sandbox : null,
           subscription,
           onSandboxBoot,
+          workingDirectory,
         )
       : new DefaultSandboxManager(
           userID,
@@ -108,6 +113,12 @@ export const createTools = (
   const todoManager = new TodoManager(initialTodos);
   const fileAccumulator = new FileAccumulator();
   const backgroundProcessTracker = new BackgroundProcessTracker();
+  const onSandboxResourceMetrics = createE2BResourcePressureObserver({
+    userId: userID,
+    chatId,
+    mode,
+    subscription,
+  });
 
   const context: ToolContext = {
     sandboxManager,
@@ -129,6 +140,8 @@ export const createTools = (
     onToolCost,
     onToolFailure,
     requestToolApproval,
+    measureAgentActiveTime,
+    onSandboxResourceMetrics,
   };
 
   const buildTools = (): ToolSet => {

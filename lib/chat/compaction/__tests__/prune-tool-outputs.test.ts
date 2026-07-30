@@ -7,6 +7,9 @@ import {
   repairAnthropicModelMessages,
   compactMessageForStorage,
   estimateSerializedSizeBytes,
+  ELIDED_IMAGE_TOOL_RESULT_MESSAGE,
+  limitModelImageToolResults,
+  MODEL_IMAGE_TOOL_RESULT_LIMIT,
 } from "../prune-tool-outputs";
 
 // Helper to create a UIMessage with tool parts
@@ -877,7 +880,7 @@ describe("compactMessageForStorage", () => {
     expect(newestSavedCommand).toBe(newestCommand);
   });
 
-  it("does not byte-compact unfinished tool calls", () => {
+  it("compacts oversized unfinished tool inputs without changing their state", () => {
     const command = "python -c \"print('still streaming')\" ".repeat(200);
     const message = makeAssistantMessage([
       {
@@ -889,16 +892,89 @@ describe("compactMessageForStorage", () => {
     ]);
 
     const result = compactMessageForStorage(message, {
-      softLimitBytes: 100,
+      softLimitBytes: 180,
       toolOutputTokenBudget: 0,
     });
     const part = result.message.parts[0] as any;
 
-    expect(result.compacted).toBe(false);
-    expect(result.afterSizeBytes).toBe(result.beforeSizeBytes);
+    expect(result.compacted).toBe(true);
+    expect(result.afterSizeBytes).toBeLessThanOrEqual(180);
     expect(part.state).toBe("input-streaming");
-    expect(part.input.command).toBe(command);
+    expect(part.input).toEqual({ __hackeraiStorageTruncated: true });
     expect(part.output).toBeUndefined();
+  });
+
+  it("drops an oversized tool part instead of storing an invalid type-only part", () => {
+    const message = makeAssistantMessage([
+      {
+        type: "tool-run_terminal_cmd",
+        toolCallId: "call-streaming",
+        state: "input-streaming",
+        input: { command: "x".repeat(5_000) },
+      } as any,
+    ]);
+
+    const result = compactMessageForStorage(message, {
+      softLimitBytes: 10,
+      toolOutputTokenBudget: 0,
+    });
+
+    expect(result.afterSizeBytes).toBeLessThanOrEqual(10);
+    expect(result.message.parts).toEqual([]);
+  });
+
+  it("compacts protected list_notes output only when required by the hard byte cap", () => {
+    const notes = Array.from({ length: 30 }, (_, index) => ({
+      note_id: `note-${index}`,
+      title: `Finding ${index}`,
+      content: `Detailed finding ${index}: ${"evidence ".repeat(500)}`,
+      category: "findings",
+      tags: ["confirmed", "critical"],
+      _creationTime: index,
+      updated_at: index,
+    }));
+    const message = makeAssistantMessage([
+      makeToolPart(
+        "list_notes",
+        { success: true, notes, total_count: notes.length },
+        { category: "findings" },
+      ),
+      { type: "text", text: "I reviewed the saved findings." },
+    ]);
+
+    const result = compactMessageForStorage(message, {
+      softLimitBytes: 40_000,
+      toolOutputTokenBudget: 0,
+    });
+    const listNotesPart = result.message.parts[0] as any;
+
+    expect(result.compacted).toBe(true);
+    expect(result.afterSizeBytes).toBeLessThanOrEqual(40_000);
+    expect(listNotesPart.output.__hackeraiStorageCompacted).toBe(true);
+    expect(listNotesPart.output.notes[0]).toMatchObject({
+      note_id: "note-0",
+      title: "Finding 0",
+      category: "findings",
+    });
+    expect(listNotesPart.output.notes[0].content).toContain(
+      "[truncated for storage]",
+    );
+  });
+
+  it("enforces the byte cap for a single oversized assistant text part", () => {
+    const message = makeAssistantMessage([
+      { type: "text", text: "analysis ".repeat(50_000) },
+    ]);
+
+    const result = compactMessageForStorage(message, {
+      softLimitBytes: 10_000,
+    });
+
+    expect(result.compacted).toBe(true);
+    expect(result.afterSizeBytes).toBeLessThanOrEqual(10_000);
+    expect((result.message.parts[0] as any).text).toContain(
+      "[truncated for storage]",
+    );
   });
 
   it("compacts oversized reasoning and storage-only status parts", () => {
@@ -976,6 +1052,100 @@ function makeToolModelMsg(
     })),
   };
 }
+
+describe("limitModelImageToolResults", () => {
+  const makeImageOutput = (label: string) => ({
+    type: "content",
+    value: [
+      { type: "text", text: `Viewed ${label}` },
+      {
+        type: "image-data",
+        data: Buffer.from(label).toString("base64"),
+        mediaType: "image/png",
+      },
+    ],
+  });
+
+  it("keeps the newest image tool results and elides older image blocks", () => {
+    const messages = Array.from(
+      { length: MODEL_IMAGE_TOOL_RESULT_LIMIT + 1 },
+      (_, index) =>
+        makeToolModelMsg([
+          {
+            toolCallId: `view-${index}`,
+            toolName: "file",
+            output: makeImageOutput(`image-${index}`),
+          },
+        ]),
+    );
+
+    const result = limitModelImageToolResults(messages);
+
+    expect(result.totalImageCount).toBe(MODEL_IMAGE_TOOL_RESULT_LIMIT + 1);
+    expect(result.elidedImageCount).toBe(1);
+    expect((messages[0] as any).content[0].output.value[1].type).toBe(
+      "image-data",
+    );
+    expect((result.messages[0] as any).content[0].output).toEqual({
+      type: "content",
+      value: [
+        { type: "text", text: "Viewed image-0" },
+        { type: "text", text: ELIDED_IMAGE_TOOL_RESULT_MESSAGE },
+      ],
+    });
+    expect(
+      (result.messages.at(-1) as any).content[0].output.value[1].type,
+    ).toBe("image-data");
+  });
+
+  it("preserves sibling text and image ordering within one tool result", () => {
+    const messages = [
+      makeToolModelMsg([
+        {
+          toolCallId: "multi-view",
+          toolName: "file",
+          output: {
+            type: "content",
+            value: [
+              { type: "text", text: "before" },
+              { type: "image-data", data: "old", mediaType: "image/png" },
+              { type: "text", text: "between" },
+              { type: "image-data", data: "new", mediaType: "image/png" },
+            ],
+          },
+        },
+      ]),
+    ];
+
+    const result = limitModelImageToolResults(messages, 1);
+    const value = (result.messages[0] as any).content[0].output.value;
+
+    expect(value).toEqual([
+      { type: "text", text: "before" },
+      { type: "text", text: ELIDED_IMAGE_TOOL_RESULT_MESSAGE },
+      { type: "text", text: "between" },
+      { type: "image-data", data: "new", mediaType: "image/png" },
+    ]);
+  });
+
+  it("returns the original messages when the image count is within the limit", () => {
+    const messages = [
+      makeToolModelMsg([
+        {
+          toolCallId: "view-1",
+          toolName: "file",
+          output: makeImageOutput("image-1"),
+        },
+      ]),
+    ];
+
+    const result = limitModelImageToolResults(messages);
+
+    expect(result.messages).toBe(messages);
+    expect(result.totalImageCount).toBe(1);
+    expect(result.elidedImageCount).toBe(0);
+  });
+});
 
 describe("pruneModelMessages", () => {
   it("returns messages unchanged when within budget", () => {

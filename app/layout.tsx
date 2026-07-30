@@ -1,5 +1,7 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
+import { headers } from "next/headers";
+import { withAuth } from "@workos-inc/authkit-nextjs";
 import "./globals.css";
 
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -11,6 +13,7 @@ import { AgentApprovalProvider } from "./contexts/AgentApprovalContext";
 import { PostHogProvider } from "./providers";
 import { DataStreamProvider } from "./components/DataStreamProvider";
 import { ChunkLoadRecovery } from "./components/ChunkLoadRecovery";
+import { resolveClientInitialAuth } from "@/lib/auth/initial-auth";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -90,11 +93,29 @@ export const metadata: Metadata = {
   },
 };
 
-export default function RootLayout({
+async function getInitialAuth() {
+  const requestHeaders = await headers();
+
+  // Static public pages are prerendered without proxy-injected AuthKit headers.
+  if (!requestHeaders.has("x-workos-middleware")) {
+    return { user: null } as const;
+  }
+
+  // Never serialize the server-only access token into the client provider.
+  // An ended refresh session is equivalent to being signed out; hydrating that
+  // state keeps the root layout available so the user can sign in again.
+  return resolveClientInitialAuth(withAuth);
+}
+
+export default async function RootLayout({
   children,
 }: Readonly<{
   children: React.ReactNode;
 }>) {
+  // Supplying server-resolved auth prevents AuthKitProvider from invoking its
+  // getAuth Server Action on every mount.
+  const initialAuth = await getInitialAuth();
+
   const content = (
     <GlobalStateProvider>
       <PostHogProvider>
@@ -127,7 +148,9 @@ export default function RootLayout({
         <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
       </head>
       <body className="antialiased h-full">
-        <ConvexClientProvider>{content}</ConvexClientProvider>
+        <ConvexClientProvider initialAuth={initialAuth}>
+          {content}
+        </ConvexClientProvider>
       </body>
     </html>
   );

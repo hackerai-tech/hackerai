@@ -9,8 +9,12 @@ const mockRedirectToBillingPortal = jest.fn();
 const mockSetMigrateFromPentestgptDialogOpen = jest.fn();
 const mockToastSuccess = jest.fn();
 const mockToastError = jest.fn();
-let mockOnCancellationScheduled:
-  ((result: { currentPeriodEnd?: number }) => void) | undefined;
+let mockOnCancellationCompleted:
+  | ((result: {
+      cancelAtPeriodEnd: boolean;
+      currentPeriodEnd?: number;
+    }) => void)
+  | undefined;
 
 jest.mock("@/app/contexts/GlobalState", () => ({
   useGlobalState: () => ({
@@ -48,9 +52,12 @@ jest.mock("../DeleteAccountDialog", () => ({
 jest.mock("../CancelSubscriptionDialog", () => ({
   __esModule: true,
   default: (props: {
-    onCancellationScheduled?: (result: { currentPeriodEnd?: number }) => void;
+    onCancellationCompleted?: (result: {
+      cancelAtPeriodEnd: boolean;
+      currentPeriodEnd?: number;
+    }) => void;
   }) => {
-    mockOnCancellationScheduled = props.onCancellationScheduled;
+    mockOnCancellationCompleted = props.onCancellationCompleted;
     return null;
   },
 }));
@@ -61,7 +68,7 @@ const AccountTab = require("../AccountTab")
 describe("AccountTab", () => {
   beforeEach(() => {
     jest.clearAllMocks();
-    mockOnCancellationScheduled = undefined;
+    mockOnCancellationCompleted = undefined;
     window.history.replaceState(null, "", "/");
   });
 
@@ -159,7 +166,10 @@ describe("AccountTab", () => {
     });
 
     act(() => {
-      mockOnCancellationScheduled?.({ currentPeriodEnd });
+      mockOnCancellationCompleted?.({
+        cancelAtPeriodEnd: true,
+        currentPeriodEnd,
+      });
     });
 
     expect(await screen.findByText("Cancellation scheduled.")).toBeVisible();
@@ -172,6 +182,30 @@ describe("AccountTab", () => {
 
     expect(screen.getByText("Cancellation scheduled")).toBeVisible();
     expect(screen.getByText("Keep plan")).toBeVisible();
+    expect(screen.queryByText("Cancel subscription")).not.toBeInTheDocument();
+  });
+
+  it("shows no active subscription after an overdue subscription is canceled", async () => {
+    mockGetSubscriptionCancellationStatus.mockResolvedValue({
+      hasActiveSubscription: true,
+      cancelAtPeriodEnd: false,
+    } as never);
+
+    render(<AccountTab />);
+
+    await waitFor(() => {
+      expect(mockGetSubscriptionCancellationStatus).toHaveBeenCalledTimes(1);
+    });
+
+    act(() => {
+      mockOnCancellationCompleted?.({ cancelAtPeriodEnd: false });
+    });
+
+    const user = userEvent.setup();
+    await user.click(screen.getAllByRole("button", { name: /manage/i })[0]);
+
+    expect(screen.getByText("No active subscription")).toBeVisible();
+    expect(screen.queryByText("Keep plan")).not.toBeInTheDocument();
     expect(screen.queryByText("Cancel subscription")).not.toBeInTheDocument();
   });
 

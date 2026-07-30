@@ -18,6 +18,7 @@ import {
 } from "@/lib/referrals/config";
 import {
   PAID_FUNNEL_EVENTS,
+  checkoutStartedInsertId,
   createCheckoutAttemptId,
   normalizePaidFunnelLabel,
   normalizeCheckoutAttemptId,
@@ -25,6 +26,7 @@ import {
   paidFunnelProperties,
   planLookupKeyToTier,
 } from "@/lib/analytics/paid-funnel";
+import { checkoutStartedEventUuid } from "@/lib/analytics/paid-funnel-server";
 
 function canManageOrganizationBilling(
   membership: Awaited<
@@ -80,6 +82,8 @@ function getEnvironment(): string {
 const CHECKOUT_SESSION_PAGE_SIZE = 100;
 const MAX_CHECKOUT_SESSION_PAGES = 5;
 const WORKOS_UPDATE_RETRY_DELAY_MS = process.env.NODE_ENV === "test" ? 0 : 250;
+const STRIPE_LOCK_TIMEOUT_RETRY_DELAY_MS =
+  process.env.NODE_ENV === "test" ? 0 : 500;
 
 function isWorkOSRequestTimeout(error: unknown): boolean {
   return error instanceof Error && /request timeout/i.test(error.message);
@@ -125,6 +129,48 @@ async function attachStripeCustomerToOrganization({
       );
     }
   }
+}
+
+async function retrieveStripeCustomer({
+  customerId,
+  organizationId,
+  userId,
+  requestId,
+}: {
+  customerId: string;
+  organizationId: string;
+  userId: string;
+  requestId: string;
+}): Promise<Stripe.Customer | Stripe.DeletedCustomer> {
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
+    try {
+      return await stripe.customers.retrieve(customerId);
+    } catch (error) {
+      const stripeErrorCode = getErrorString(error, "code");
+      if (stripeErrorCode !== "lock_timeout" || attempt === 2) throw error;
+
+      logger.warn("Retrying Stripe customer retrieval after lock timeout", {
+        event: "billing.stripe_customer_retrieve_retry_scheduled",
+        request_id: requestId,
+        service: "hackerai-web",
+        environment: getEnvironment(),
+        route: "/api/subscribe",
+        user_id: userId,
+        organization_id: organizationId,
+        stripe_customer_id: customerId,
+        stripe_error_code: stripeErrorCode,
+        stripe_request_id: getErrorString(error, "requestId"),
+        attempt,
+        next_attempt: attempt + 1,
+        retry_delay_ms: STRIPE_LOCK_TIMEOUT_RETRY_DELAY_MS,
+      });
+      await new Promise((resolve) =>
+        setTimeout(resolve, STRIPE_LOCK_TIMEOUT_RETRY_DELAY_MS),
+      );
+    }
+  }
+
+  throw new Error("Stripe customer retrieval exhausted without a result");
 }
 
 async function findReusableCheckoutSession({
@@ -352,9 +398,12 @@ export const POST = async (req: NextRequest) => {
     let shouldAttachCustomerToOrganization = false;
 
     if (organization.stripeCustomerId) {
-      const existingCustomer = await stripe.customers.retrieve(
-        organization.stripeCustomerId,
-      );
+      const existingCustomer = await retrieveStripeCustomer({
+        customerId: organization.stripeCustomerId,
+        organizationId: organization.id,
+        userId,
+        requestId,
+      });
 
       if ("deleted" in existingCustomer && existingCustomer.deleted) {
         return json(
@@ -590,6 +639,7 @@ export const POST = async (req: NextRequest) => {
       PAID_FUNNEL_EVENTS.checkoutStarted,
       paidFunnelProperties({
         userId,
+        eventUuid: checkoutStartedEventUuid(checkoutAttemptId),
         org_id: organization.id,
         checkout_attempt_id: checkoutAttemptId,
         checkout_type: "new_subscription",
@@ -613,7 +663,7 @@ export const POST = async (req: NextRequest) => {
         stripe_checkout_session_reused: reusedCheckoutSession,
         stripe_price_id: selectedPrice.id,
         $session_id: posthogSessionId ?? undefined,
-        $insert_id: `${PAID_FUNNEL_EVENTS.checkoutStarted}:${checkoutAttemptId}`,
+        $insert_id: checkoutStartedInsertId(checkoutAttemptId),
         $set: {
           last_checkout_started_at: new Date().toISOString(),
         },

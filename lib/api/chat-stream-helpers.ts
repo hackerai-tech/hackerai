@@ -22,7 +22,11 @@ import type {
   Todo,
   UserCustomization,
 } from "@/types";
-import { isAnthropicModel, myProvider } from "@/lib/ai/providers";
+import {
+  GROK_4_5_SLUG,
+  isAnthropicModel,
+  myProvider,
+} from "@/lib/ai/providers";
 import type { ModelName } from "@/lib/ai/providers";
 import type { Id } from "@/convex/_generated/dataModel";
 import type { UIMessagePart } from "ai";
@@ -471,20 +475,7 @@ export class SummarizationTracker {
     usageTracker: UsageTracker,
   ): void {
     if (usage) {
-      usageTracker.inputTokens += usage.inputTokens;
-      usageTracker.summarizationInputTokens += usage.inputTokens;
-      usageTracker.outputTokens += usage.outputTokens;
-      usageTracker.summarizationOutputTokens += usage.outputTokens;
-      usageTracker.totalTokens += usage.inputTokens + usage.outputTokens;
-      const cacheReadTokens = usage.cacheReadTokens || 0;
-      const cacheWriteTokens = usage.cacheWriteTokens || 0;
-      usageTracker.cacheReadTokens += cacheReadTokens;
-      usageTracker.summarizationCacheReadTokens += cacheReadTokens;
-      usageTracker.cacheWriteTokens += cacheWriteTokens;
-      usageTracker.summarizationCacheWriteTokens += cacheWriteTokens;
-      if (usage.cost) {
-        usageTracker.providerCost += usage.cost;
-      }
+      usageTracker.accumulateSummarization(usage);
     }
   }
 
@@ -529,45 +520,46 @@ export class SummarizationTracker {
  * model's rate (response.modelId reflects what actually ran).
  *
  * Claude chats are repaired for Anthropic-compatible message shapes before
- * this fallback can fire. Claude agent calls use the cheaper MiniMax and Kimi
- * fallback chain while the run is text-only, then switch to multimodal-capable
- * fallbacks once image tool results enter the context.
+ * this fallback can fire. Opus 4.6 uses Kimi K3 then Grok 4.5 in every mode.
  *
  * Keys and values are registry names (see lib/ai/providers.ts) — the actual
  * OpenRouter slugs are resolved at request-build time so this stays in sync
  * with the registry.
  */
-const MINIMAX_M3_FALLBACK_CHAIN = [
-  "model-kimi-k2.7-code",
-  "fallback-grok-4.5",
+const KIMI_K3_THEN_GROK_FALLBACK_CHAIN = [
+  "model-kimi-k3",
+  "model-grok-4.5",
+] as const satisfies readonly ModelName[];
+
+const GROK_4_5_FALLBACK_CHAIN = [
+  "model-kimi-k3",
 ] as const satisfies readonly ModelName[];
 
 const AGENT_TEXT_FALLBACK_CHAIN = [
-  "model-minimax-m3",
-  ...MINIMAX_M3_FALLBACK_CHAIN,
+  "model-grok-4.5",
+  "model-kimi-k3",
 ] as const satisfies readonly ModelName[];
 
-// Agent Pro promotes vision steps to Grok 4.5. Keep Kimi as its direct
-// multimodal fallback without routing back through the cheaper Agent chain.
-const AGENT_PRO_VISION_FALLBACK_CHAIN = [
-  "model-kimi-k2.7-code",
+// HackerAI Pro uses Grok 4.5 for every request. GLM 5.2 remains its first
+// fallback, followed by Kimi K3 so media requests still have a multimodal final
+// recovery path if both primary providers are unavailable.
+const HACKERAI_PRO_FALLBACK_CHAIN = [
+  "model-glm-5.2",
+  "model-kimi-k3",
 ] as const satisfies readonly ModelName[];
 
 const MODEL_FALLBACK_CHAIN: Partial<Record<ModelName, readonly ModelName[]>> = {
   "ask-model-free": AGENT_TEXT_FALLBACK_CHAIN,
   "agent-model-free": AGENT_TEXT_FALLBACK_CHAIN,
-  "model-deepseek-v4-flash": AGENT_TEXT_FALLBACK_CHAIN,
   "model-deepseek-v4-pro": AGENT_TEXT_FALLBACK_CHAIN,
-  "ask-model": MINIMAX_M3_FALLBACK_CHAIN,
-  "agent-model": MINIMAX_M3_FALLBACK_CHAIN,
-  "model-grok-4.5": AGENT_TEXT_FALLBACK_CHAIN,
-  "model-gemini-3-flash": AGENT_TEXT_FALLBACK_CHAIN,
-  "model-glm-5.2": MINIMAX_M3_FALLBACK_CHAIN,
-  "model-minimax-m3": MINIMAX_M3_FALLBACK_CHAIN,
-  "fallback-agent-model": MINIMAX_M3_FALLBACK_CHAIN,
-  "fallback-ask-model": MINIMAX_M3_FALLBACK_CHAIN,
-  "model-kimi-k2.7-code": ["fallback-grok-4.5"],
-  "model-kimi-k2.6": ["fallback-grok-4.5"],
+  "ask-model": GROK_4_5_FALLBACK_CHAIN,
+  "agent-model": GROK_4_5_FALLBACK_CHAIN,
+  "model-grok-4.5": GROK_4_5_FALLBACK_CHAIN,
+  "model-grok-4.5-pro": HACKERAI_PRO_FALLBACK_CHAIN,
+  "model-glm-5.2": KIMI_K3_THEN_GROK_FALLBACK_CHAIN,
+  "fallback-agent-model": GROK_4_5_FALLBACK_CHAIN,
+  "fallback-ask-model": GROK_4_5_FALLBACK_CHAIN,
+  "model-kimi-k3": ["model-grok-4.5"],
 };
 
 const AUTO_MODEL_KEYS = new Set<string>([
@@ -591,53 +583,15 @@ export function isAutoModelSelectionForRetry({
   );
 }
 
-const ANTHROPIC_FALLBACK_CHAIN_BY_MODE: Record<ChatMode, readonly ModelName[]> =
-  {
-    agent: AGENT_TEXT_FALLBACK_CHAIN,
-    ask: ["model-grok-4.5"],
-  };
-
-const ANTHROPIC_MULTIMODAL_AGENT_FALLBACK_CHAIN = MINIMAX_M3_FALLBACK_CHAIN;
-
-// Standard Ask can route text-only prompts to DeepSeek, image prompts to
-// MiniMax, and PDF prompts to Grok. Keep those route keys and their persisted
-// Grok aliases, including the app-side retry key, on one effort level so they
-// do not drift. Grok 4.5 rejects requests that explicitly disable reasoning.
-const ASK_STANDARD_REASONING_MODELS = [
-  "model-deepseek-v4-pro",
-  "ask-model",
-  "model-minimax-m3",
-  "model-grok-4.5",
-  "model-gemini-3-flash",
-  "fallback-grok-4.5",
-] as const satisfies readonly ModelName[];
-
-const ASK_MEDIUM_REASONING_MODELS = [
-  ...ASK_STANDARD_REASONING_MODELS,
-] as const satisfies readonly ModelName[];
-
-const isAskMediumReasoningModel = (modelName?: string): boolean =>
-  typeof modelName === "string" &&
-  (ASK_MEDIUM_REASONING_MODELS as readonly string[]).includes(modelName);
-
 const HIGH_REASONING_MODELS = [
+  "model-grok-4.5-pro",
   "model-glm-5.2",
-  "model-sonnet-4.6",
   "model-opus-4.6",
 ] as const satisfies readonly ModelName[];
 
 const isHighReasoningModel = (modelName?: string): boolean =>
   typeof modelName === "string" &&
   (HIGH_REASONING_MODELS as readonly string[]).includes(modelName);
-
-const ASK_KIMI_REASONING_MODELS = [
-  "model-kimi-k2.7-code",
-  "model-kimi-k2.6",
-] as const satisfies readonly ModelName[];
-
-const isAskKimiReasoningModel = (modelName?: string): boolean =>
-  typeof modelName === "string" &&
-  (ASK_KIMI_REASONING_MODELS as readonly string[]).includes(modelName);
 
 type FallbackOptions = {
   hasMultimodalToolResults?: boolean;
@@ -652,40 +606,41 @@ export type ProviderReasoningOverride = {
 
 const getFallbackKeys = (
   modelName?: string,
-  mode?: ChatMode,
-  options: FallbackOptions = {},
 ): readonly ModelName[] | undefined => {
   if (!modelName) return undefined;
-  if (modelName === "model-grok-4.5" && mode === "agent") {
-    return AGENT_PRO_VISION_FALLBACK_CHAIN;
-  }
-  if (modelName === "model-opus-4.6" || modelName === "model-sonnet-4.6") {
-    if (mode === "agent" && options.hasMultimodalToolResults) {
-      return ANTHROPIC_MULTIMODAL_AGENT_FALLBACK_CHAIN;
-    }
-    return ANTHROPIC_FALLBACK_CHAIN_BY_MODE[mode ?? "agent"];
+  if (modelName === "model-opus-4.6") {
+    return KIMI_K3_THEN_GROK_FALLBACK_CHAIN;
   }
   return MODEL_FALLBACK_CHAIN[modelName as ModelName];
 };
 
 export function getRetryFallbackModel(
   modelName: ModelName,
-  mode: ChatMode,
+  _mode: ChatMode,
 ): ModelName {
-  if (modelName === "model-grok-4.5" && mode === "agent") {
-    return "model-kimi-k2.7-code";
+  if (modelName === "model-grok-4.5-pro") {
+    return "model-glm-5.2";
+  }
+  if (modelName === "model-opus-4.6") {
+    return "model-kimi-k3";
   }
   if (
     modelName === "ask-model-free" ||
     modelName === "agent-model-free" ||
-    modelName === "model-deepseek-v4-flash" ||
-    modelName === "model-deepseek-v4-pro" ||
-    modelName === "model-grok-4.5" ||
-    modelName === "model-gemini-3-flash"
+    modelName === "model-deepseek-v4-pro"
   ) {
-    return "model-minimax-m3";
+    return "model-grok-4.5";
   }
-  return "fallback-grok-4.5";
+  if (
+    modelName === "ask-model" ||
+    modelName === "agent-model" ||
+    modelName === "model-grok-4.5" ||
+    modelName === "fallback-agent-model" ||
+    modelName === "fallback-ask-model"
+  ) {
+    return "model-kimi-k3";
+  }
+  return "model-grok-4.5";
 }
 
 const resolveSlug = (modelName: string): string | undefined => {
@@ -708,10 +663,10 @@ const resolveSlug = (modelName: string): string | undefined => {
  */
 export function getFallbackSlugs(
   modelName?: string,
-  mode?: ChatMode,
-  options: FallbackOptions = {},
+  _mode?: ChatMode,
+  _options: FallbackOptions = {},
 ): string[] {
-  const fallbackKeys = getFallbackKeys(modelName, mode, options);
+  const fallbackKeys = getFallbackKeys(modelName);
   return (
     fallbackKeys
       ?.map((key) => resolveSlug(key))
@@ -721,13 +676,11 @@ export function getFallbackSlugs(
 
 const OPENROUTER_RESPONSE_MODEL_COST_KEYS: Record<string, ModelName> = {
   "anthropic/claude-opus-4.6": "model-opus-4.6",
-  "anthropic/claude-sonnet-4-6": "model-sonnet-4.6",
-  "anthropic/claude-sonnet-4.6": "model-sonnet-4.6",
   "x-ai/grok-4.5": "model-grok-4.5",
   "z-ai/glm-5.2": "model-glm-5.2",
   "z-ai/glm-5.2-20260616": "model-glm-5.2",
-  "moonshotai/kimi-k2.7-code": "model-kimi-k2.7-code",
-  "moonshotai/kimi-k2.7-code:exacto": "model-kimi-k2.7-code",
+  "moonshotai/kimi-k3": "model-kimi-k3",
+  "moonshotai/kimi-k3-20260715": "model-kimi-k3",
 };
 
 function resolveOpenRouterResponseModelCostKey(
@@ -735,13 +688,10 @@ function resolveOpenRouterResponseModelCostKey(
 ): ModelName | undefined {
   const exactKey = OPENROUTER_RESPONSE_MODEL_COST_KEYS[responseModel];
   if (exactKey) return exactKey;
-  // Scope Claude response aliases to the priced generation. Families like
-  // Opus, Sonnet, and Haiku do not share one stable rate across versions.
+  // Scope Opus response aliases to the priced generation rather than matching
+  // every Claude family or version.
   if (/^anthropic\/claude-4\.6-opus-\d{8}$/.test(responseModel)) {
     return "model-opus-4.6";
-  }
-  if (/^anthropic\/claude-4\.6-sonnet-\d{8}$/.test(responseModel)) {
-    return "model-sonnet-4.6";
   }
   return undefined;
 }
@@ -749,8 +699,6 @@ function resolveOpenRouterResponseModelCostKey(
 export function resolveServedModelForCostAccounting({
   modelName,
   responseModel,
-  mode,
-  options = {},
 }: {
   modelName: string;
   responseModel?: string;
@@ -761,7 +709,7 @@ export function resolveServedModelForCostAccounting({
 
   const candidateKeys = [
     modelName as ModelName,
-    ...(getFallbackKeys(modelName, mode, options) ?? []),
+    ...(getFallbackKeys(modelName) ?? []),
   ];
   const matchedKey = candidateKeys.find(
     (key) => resolveSlug(key) === responseModel,
@@ -786,29 +734,32 @@ export function buildProviderOptions(
 ) {
   const modelId = modelName ? resolveSlug(modelName) : undefined;
   const isDeepSeekV4 = modelId?.startsWith("deepseek/deepseek-v4") ?? false;
+  const isGrok45 = modelId === GROK_4_5_SLUG;
+  // Agent routes use high for both DeepSeek V4 Flash and Pro. Keep this
+  // mode-scoped for any future route that does not also include Grok.
+  const isAgentDeepSeekV4 = mode === "agent" && isDeepSeekV4;
   const fallbackSlugs = getFallbackSlugs(modelName, mode, options);
-  const reasoning =
-    options.reasoningOverride ??
-    (isHighReasoningModel(modelName)
-      ? {
-          enabled: true,
-          effort: "high",
-        }
-      : isReasoningModel
+  // OpenRouter applies one reasoning configuration to both the primary model
+  // and every provider fallback. Force high whenever this request can resolve
+  // to Grok 4.5 so fallback execution cannot inherit a lower effort.
+  const routesThroughGrok45 = isGrok45 || fallbackSlugs.includes(GROK_4_5_SLUG);
+  const reasoning = routesThroughGrok45
+    ? {
+        enabled: true,
+        effort: "high",
+      }
+    : (options.reasoningOverride ??
+      (isHighReasoningModel(modelName) || isAgentDeepSeekV4
         ? {
             enabled: true,
-            ...(isDeepSeekV4 ? { effort: "xhigh" } : {}),
+            effort: "high",
           }
-        : mode === "ask" && isAskKimiReasoningModel(modelName)
+        : isReasoningModel
           ? {
               enabled: true,
+              ...(isDeepSeekV4 ? { effort: "xhigh" } : {}),
             }
-          : mode === "ask" && isAskMediumReasoningModel(modelName)
-            ? {
-                enabled: true,
-                effort: "medium",
-              }
-            : { enabled: false });
+          : { enabled: false }));
 
   return {
     openrouter: {

@@ -12,14 +12,13 @@ import type { Todo } from "@/types";
 
 interface SharedTodoBlockProps {
   todos: Todo[];
-  blockId: string;
 }
 
 /**
  * Simplified TodoBlock for shared messages (no context dependency).
  * Mirrors the functionality of the main TodoBlock but works standalone.
  */
-export const SharedTodoBlock = ({ todos, blockId }: SharedTodoBlockProps) => {
+export const SharedTodoBlock = ({ todos }: SharedTodoBlockProps) => {
   const [isExpanded, setIsExpanded] = useState(false);
   const [showAllTodos, setShowAllTodos] = useState(false);
 

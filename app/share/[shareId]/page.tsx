@@ -9,7 +9,7 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
   const { shareId } = await params;
 
   return {
-    title: "Shared Chat | HackerAI",
+    title: "Shared Task | HackerAI",
     description: "View a shared conversation from HackerAI",
     robots: "noindex, nofollow", // Don't index shared chats
   };

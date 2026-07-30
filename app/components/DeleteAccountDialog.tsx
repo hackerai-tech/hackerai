@@ -114,7 +114,7 @@ export const DeleteAccountDialog = ({
           data-testid="delete-account-description"
           className="pt-2 text-sm text-foreground"
         >
-          Deleting your account will remove all your data, including chats,
+          Deleting your account will remove all your data, including tasks,
           settings, and personal information. Deleting and recreating an account
           does not reset usage limits or referral eligibility. This action
           cannot be undone.

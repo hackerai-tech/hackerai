@@ -18,24 +18,21 @@ import {
   type ModelName,
 } from "@/lib/ai/providers";
 import {
-  AUTH_DISCLAIMER,
-  type SupportedLang,
-} from "@/lib/chat/auth-disclaimer";
-import {
   ABORTED_TOOL_ERROR_TEXT,
+  getIncompleteToolErrorText,
   hasMeaningfulToolInput,
 } from "@/lib/chat/tool-abort-utils";
 import { stripOpenRouterReasoningMetadataFromMessages } from "@/lib/chat/provider-metadata-sanitizer";
 /**
  * Get maximum steps allowed for a user based on mode and subscription.
- * Agent mode: 100 steps (all tiers).
+ * Agent mode: 300 steps (all tiers).
  * Ask mode: Free 15, Paid 100.
  */
 export const getMaxStepsForUser = (
   mode: ChatMode,
   subscription: SubscriptionTier,
 ): number => {
-  if (isAgentMode(mode)) return 100;
+  if (isAgentMode(mode)) return 300;
   return subscription === "free" ? 15 : 100;
 };
 
@@ -45,12 +42,10 @@ export const getMaxStepsForUser = (
  * @param hasImageAttachment - Whether any message has an image attachment.
  * @param hasPdfAttachment - Whether any message has a PDF attachment.
  *   Paid ASK on the Standard/auto route normally uses DeepSeek V4 Pro
- *   (text-only); image-only prompts promote to MiniMax M3, while PDF prompts
- *   stay on Grok 4.5 for native document support. Paid Agent Auto/Standard
- *   routes use DeepSeek V4 Pro for text-only prompts and MiniMax M3 when
- *   provider-visible media is attached. HackerAI Pro uses GLM 5.2 for
- *   text-only prompts, Grok 4.5 for Agent vision, and Kimi K2.7 Code for Ask
- *   media prompts.
+ *   (text-only); image and PDF prompts promote to Grok 4.5. Paid Agent
+ *   Auto/Standard routes use DeepSeek V4 Pro for text-only prompts and Grok
+ *   4.5 when provider-visible media is attached. HackerAI Pro uses Grok 4.5
+ *   for both text and vision; its GLM 5.2 fallback is configured downstream.
  * @returns Model name to use
  */
 export function selectModel(
@@ -69,8 +64,7 @@ export function selectModel(
   );
   // DeepSeek routes are text-only, so image/PDF prompts promote to a
   // media-capable route unless the selected tier intentionally uses a
-  // multimodal/file-capable model such as Kimi or Opus. PDFs take precedence
-  // when mixed with images because the MiniMax ask route is image-scoped.
+  // multimodal/file-capable model such as Grok, Kimi, or Opus.
   const isFreeAsk = !isAgent && subscription === "free";
   const hasAskImage = !isAgent && !!hasImageAttachment;
   const hasAskPdf = !isAgent && !!hasPdfAttachment;
@@ -106,18 +100,15 @@ export function selectModel(
   // the auto-router label.
   if (allowedSelectedModel === "hackerai-standard") {
     if (isAgent) {
-      return hasProviderMedia ? "model-minimax-m3" : "model-deepseek-v4-pro";
+      return hasProviderMedia ? "model-grok-4.5" : "model-deepseek-v4-pro";
     }
-    return hasAskPdf
+    return hasAskImage || hasAskPdf
       ? "model-grok-4.5"
-      : hasAskImage
-        ? "model-minimax-m3"
-        : "model-deepseek-v4-pro";
+      : "model-deepseek-v4-pro";
   }
 
   if (allowedSelectedModel === "hackerai-pro") {
-    if (!hasProviderMedia) return "model-glm-5.2";
-    return isAgent ? "model-grok-4.5" : "model-kimi-k2.7-code";
+    return "model-grok-4.5-pro";
   }
 
   const providerKey = resolveTierToProviderKey(allowedSelectedModel, mode);
@@ -145,40 +136,6 @@ function getMediaAttachmentRouting(messages: UIMessage[]): {
   });
 
   return { hasImage, hasPdf };
-}
-
-/**
- * Adds authorization message to the last user message.
- * Language is detected by moderation from the same combined text it scored,
- * since a short reply like "yes its mine" doesn't carry enough signal.
- */
-export function addAuthMessage(
-  messages: UIMessage[],
-  moderationLanguage: SupportedLang,
-) {
-  for (let i = messages.length - 1; i >= 0; i--) {
-    if (messages[i].role === "user") {
-      const message = messages[i];
-
-      if (!message.parts) {
-        message.parts = [];
-      }
-
-      const textParts = message.parts.filter(
-        (part: any) => part.type === "text",
-      ) as Array<{ type: "text"; text: string }>;
-
-      const disclaimer = AUTH_DISCLAIMER[moderationLanguage];
-
-      const firstTextPart = textParts[0];
-      if (firstTextPart) {
-        firstTextPart.text = `${firstTextPart.text} ${disclaimer}`;
-      } else {
-        message.parts.push({ type: "text", text: disclaimer });
-      }
-      break;
-    }
-  }
 }
 
 const ABORT_RENDERABLE_TOOL_TYPES = new Set([
@@ -260,7 +217,10 @@ function logIncompleteToolPartHandled({
   );
 }
 
-function createAbortedToolPart(part: any): any | null {
+function createAbortedToolPart(
+  part: any,
+  errorText = ABORTED_TOOL_ERROR_TEXT,
+): any | null {
   if (
     !ABORT_RENDERABLE_TOOL_TYPES.has(part.type) ||
     !part.toolCallId ||
@@ -273,7 +233,7 @@ function createAbortedToolPart(part: any): any | null {
   return {
     ...restPart,
     state: "output-error",
-    errorText: ABORTED_TOOL_ERROR_TEXT,
+    errorText,
   };
 }
 
@@ -312,7 +272,10 @@ export function fixIncompleteMessageParts(
 
     if (isIncomplete || hasWrongFormat) {
       if (isIncomplete && part.output == null && part.result == null) {
-        const abortedPart = createAbortedToolPart(part);
+        const abortedPart = createAbortedToolPart(
+          part,
+          getIncompleteToolErrorText(options?.logContext?.finishReason),
+        );
         if (abortedPart) {
           logIncompleteToolPartHandled({
             action: "converted_to_output_error",
@@ -614,8 +577,7 @@ export function limitImageParts(
   });
 }
 
-// isAnthropicModel is imported from @/lib/ai/providers
-// (covers both Sonnet and Opus)
+// isAnthropicModel is imported from @/lib/ai/providers.
 
 /**
  * Strips providerMetadata from all parts in all messages.
@@ -791,14 +753,10 @@ export async function processChatMessages({
     subscription !== "free",
   );
 
-  // If moderation allows, add authorization message
-  if (moderationResult.shouldUncensorResponse) {
-    addAuthMessage(cleanedMessages, moderationResult.language);
-  }
-
   return {
     processedMessages: cleanedMessages,
     selectedModel,
     sandboxFiles,
+    platformAuthorized: moderationResult.shouldUncensorResponse,
   };
 }

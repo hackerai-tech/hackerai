@@ -5,7 +5,6 @@ import {
   selectModel,
   getMaxStepsForUser,
   fixIncompleteMessageParts,
-  addAuthMessage,
 } from "../chat-processor";
 
 function makeFilePart(id: string, mediaType = "image/png") {
@@ -179,13 +178,13 @@ describe("selectModel", () => {
       },
     );
 
-    it("should return agent-model (MiniMax) for paid agent with an image", () => {
+    it("should return the Grok-backed agent model for paid agent with an image", () => {
       expect(selectModel("agent", "pro", undefined, true, false)).toBe(
         "agent-model",
       );
     });
 
-    it("should return agent-model (MiniMax) for paid agent with a PDF", () => {
+    it("should return the Grok-backed agent model for paid agent with a PDF", () => {
       expect(selectModel("agent", "pro", undefined, false, true)).toBe(
         "agent-model",
       );
@@ -195,7 +194,7 @@ describe("selectModel", () => {
       expect(selectModel("ask", "pro")).toBe("model-deepseek-v4-pro");
     });
 
-    it("should return ask-model (MiniMax) for paid ask when an image is attached", () => {
+    it("should return the Grok-backed ask model when an image is attached", () => {
       expect(selectModel("ask", "pro", undefined, true, false)).toBe(
         "ask-model",
       );
@@ -228,23 +227,27 @@ describe("selectModel", () => {
 
   // Tier override — Standard is content-aware in ask mode; Max maps to Opus in both modes
   describe("tier override for ask mode (paid users)", () => {
-    it("should map HackerAI Pro to GLM 5.2 for text-only ask mode", () => {
-      expect(selectModel("ask", "ultra", "hackerai-pro")).toBe("model-glm-5.2");
-    });
-
-    it("should map HackerAI Pro to GLM 5.2 for team users", () => {
-      expect(selectModel("ask", "team", "hackerai-pro")).toBe("model-glm-5.2");
-    });
-
-    it("should route HackerAI Pro to Kimi K2.7 when an image is attached", () => {
-      expect(selectModel("ask", "pro", "hackerai-pro", true, false)).toBe(
-        "model-kimi-k2.7-code",
+    it("should map HackerAI Pro to Grok 4.5 for text-only ask mode", () => {
+      expect(selectModel("ask", "ultra", "hackerai-pro")).toBe(
+        "model-grok-4.5-pro",
       );
     });
 
-    it("should route HackerAI Pro to Kimi K2.7 when a PDF is attached", () => {
+    it("should map HackerAI Pro to Grok 4.5 for team users", () => {
+      expect(selectModel("ask", "team", "hackerai-pro")).toBe(
+        "model-grok-4.5-pro",
+      );
+    });
+
+    it("should keep HackerAI Pro on Grok 4.5 when an image is attached", () => {
+      expect(selectModel("ask", "pro", "hackerai-pro", true, false)).toBe(
+        "model-grok-4.5-pro",
+      );
+    });
+
+    it("should keep HackerAI Pro on Grok 4.5 when a PDF is attached", () => {
       expect(selectModel("ask", "pro", "hackerai-pro", false, true)).toBe(
-        "model-kimi-k2.7-code",
+        "model-grok-4.5-pro",
       );
     });
 
@@ -254,9 +257,9 @@ describe("selectModel", () => {
       );
     });
 
-    it("should promote HackerAI Standard to MiniMax M3 when an image is attached", () => {
+    it("should promote HackerAI Standard to Grok 4.5 when an image is attached", () => {
       expect(selectModel("ask", "pro", "hackerai-standard", true, false)).toBe(
-        "model-minimax-m3",
+        "model-grok-4.5",
       );
     });
 
@@ -279,11 +282,15 @@ describe("selectModel", () => {
     });
 
     it("should downgrade HackerAI Max to Pro outside Ultra", () => {
-      expect(selectModel("ask", "pro", "hackerai-max")).toBe("model-glm-5.2");
-      expect(selectModel("ask", "pro-plus", "hackerai-max")).toBe(
-        "model-glm-5.2",
+      expect(selectModel("ask", "pro", "hackerai-max")).toBe(
+        "model-grok-4.5-pro",
       );
-      expect(selectModel("ask", "team", "hackerai-max")).toBe("model-glm-5.2");
+      expect(selectModel("ask", "pro-plus", "hackerai-max")).toBe(
+        "model-grok-4.5-pro",
+      );
+      expect(selectModel("ask", "team", "hackerai-max")).toBe(
+        "model-grok-4.5-pro",
+      );
     });
 
     it("should map HackerAI Max to Opus 4.6 for paid users with extra usage", () => {
@@ -303,31 +310,33 @@ describe("selectModel", () => {
       );
     });
 
-    it("should route HackerAI Standard to MiniMax M3 when an image is attached", () => {
+    it("should route HackerAI Standard to Grok 4.5 when an image is attached", () => {
       expect(
         selectModel("agent", "pro", "hackerai-standard", true, false),
-      ).toBe("model-minimax-m3");
+      ).toBe("model-grok-4.5");
     });
 
-    it("should route HackerAI Standard to MiniMax M3 when a PDF is attached", () => {
+    it("should route HackerAI Standard to Grok 4.5 when a PDF is attached", () => {
       expect(
         selectModel("agent", "pro", "hackerai-standard", false, true),
-      ).toBe("model-minimax-m3");
+      ).toBe("model-grok-4.5");
     });
 
-    it("should keep HackerAI Pro on GLM 5.2 in text-only agent mode", () => {
-      expect(selectModel("agent", "pro", "hackerai-pro")).toBe("model-glm-5.2");
+    it("should map HackerAI Pro to Grok 4.5 in text-only agent mode", () => {
+      expect(selectModel("agent", "pro", "hackerai-pro")).toBe(
+        "model-grok-4.5-pro",
+      );
     });
 
     it("should route HackerAI Pro to Grok 4.5 in agent mode when an image is attached", () => {
       expect(selectModel("agent", "pro", "hackerai-pro", true, false)).toBe(
-        "model-grok-4.5",
+        "model-grok-4.5-pro",
       );
     });
 
     it("should route HackerAI Pro to Grok 4.5 in agent mode when a PDF is attached", () => {
       expect(selectModel("agent", "pro", "hackerai-pro", false, true)).toBe(
-        "model-grok-4.5",
+        "model-grok-4.5-pro",
       );
     });
 
@@ -338,12 +347,14 @@ describe("selectModel", () => {
     });
 
     it("should downgrade HackerAI Max to Pro in agent mode outside Ultra", () => {
-      expect(selectModel("agent", "pro", "hackerai-max")).toBe("model-glm-5.2");
+      expect(selectModel("agent", "pro", "hackerai-max")).toBe(
+        "model-grok-4.5-pro",
+      );
       expect(selectModel("agent", "pro-plus", "hackerai-max")).toBe(
-        "model-glm-5.2",
+        "model-grok-4.5-pro",
       );
       expect(selectModel("agent", "team", "hackerai-max")).toBe(
-        "model-glm-5.2",
+        "model-grok-4.5-pro",
       );
     });
 
@@ -386,7 +397,7 @@ describe("selectModel", () => {
       expect(selectModel("agent", "pro", "auto")).toBe("model-deepseek-v4-pro");
     });
 
-    it("should route paid agent Auto media to agent-model (MiniMax)", () => {
+    it("should route paid agent Auto media to the Grok-backed agent model", () => {
       expect(selectModel("agent", "pro", "auto", true, false)).toBe(
         "agent-model",
       );
@@ -399,7 +410,7 @@ describe("selectModel", () => {
       expect(selectModel("ask", "pro", "auto")).toBe("model-deepseek-v4-pro");
     });
 
-    it("should treat 'auto' as no override in ask mode with image -> MiniMax", () => {
+    it("should treat 'auto' as no override in ask mode with image -> Grok", () => {
       expect(selectModel("ask", "pro", "auto", true, false)).toBe("ask-model");
     });
 
@@ -433,11 +444,11 @@ describe("selectModel", () => {
 // getMaxStepsForUser - Step limits by mode and subscription
 // ==========================================================================
 describe("getMaxStepsForUser", () => {
-  it("should return 100 steps for agent mode (all tiers)", () => {
-    expect(getMaxStepsForUser("agent", "free")).toBe(100);
-    expect(getMaxStepsForUser("agent", "pro")).toBe(100);
-    expect(getMaxStepsForUser("agent", "ultra")).toBe(100);
-    expect(getMaxStepsForUser("agent", "team")).toBe(100);
+  it("should return 300 steps for agent mode (all tiers)", () => {
+    expect(getMaxStepsForUser("agent", "free")).toBe(300);
+    expect(getMaxStepsForUser("agent", "pro")).toBe(300);
+    expect(getMaxStepsForUser("agent", "ultra")).toBe(300);
+    expect(getMaxStepsForUser("agent", "team")).toBe(300);
   });
 
   it("should return 15 steps for free ask mode", () => {
@@ -448,20 +459,6 @@ describe("getMaxStepsForUser", () => {
     expect(getMaxStepsForUser("ask", "pro")).toBe(100);
     expect(getMaxStepsForUser("ask", "ultra")).toBe(100);
     expect(getMaxStepsForUser("ask", "team")).toBe(100);
-  });
-});
-
-describe("addAuthMessage", () => {
-  it("uses the moderation-detected language for the authorization text", () => {
-    const messages = [
-      makeMessage("m1", "user", [{ type: "text", text: "Escanea mi API" }]),
-    ];
-
-    addAuthMessage(messages, "es");
-
-    expect((messages[0].parts[0] as any).text).toContain(
-      "Tengo permiso y estoy autorizado",
-    );
   });
 });
 
@@ -503,6 +500,29 @@ describe("fixIncompleteMessageParts", () => {
       state: "output-error",
       input: { title: "Test", content: "Content" },
       errorText: "Stopped by user before the tool completed.",
+    });
+  });
+
+  it("should identify output-limited tools without blaming the user", () => {
+    const parts = [
+      { type: "step-start" },
+      {
+        type: "tool-file",
+        toolCallId: "call_1",
+        state: "input-streaming",
+        input: { action: "write", path: "/tmp/result.py" },
+      },
+    ];
+
+    const result = fixIncompleteMessageParts(parts, {
+      logContext: { finishReason: "length" },
+    });
+
+    expect(result[1]).toMatchObject({
+      type: "tool-file",
+      state: "output-error",
+      errorText:
+        "The response reached its output limit before the tool completed.",
     });
   });
 

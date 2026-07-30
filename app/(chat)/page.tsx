@@ -83,7 +83,7 @@ const UnauthenticatedContent = () => {
               What will you hack today?
             </h1>
             <p className="text-muted-foreground text-lg leading-tight md:text-xl">
-              Find and fix vulnerabilities by chatting with AI.
+              Find and fix vulnerabilities by working with AI.
             </p>
           </div>
 
@@ -154,8 +154,7 @@ export default function Page() {
     }
 
     const plan = (urlPlan === "yearly" ? "yearly" : "monthly") as
-      | "monthly"
-      | "yearly";
+      "monthly" | "yearly";
 
     return { initialSeats: seats, initialPlan: plan };
   }, [searchParams]);

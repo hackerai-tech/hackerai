@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useAuth } from "@workos-inc/authkit-nextjs/components";
 import { toast } from "sonner";
 import {
@@ -15,6 +15,7 @@ import {
 export const useUpgrade = () => {
   const { user } = useAuth();
   const [upgradeLoading, setUpgradeLoading] = useState(false);
+  const upgradeInFlightRef = useRef(false);
 
   const handleUpgrade = async (
     planKey?: PaidFunnelPlan,
@@ -31,7 +32,7 @@ export const useUpgrade = () => {
     e?.preventDefault();
 
     // Prevent duplicate submits
-    if (upgradeLoading) {
+    if (upgradeInFlightRef.current) {
       return;
     }
 
@@ -40,7 +41,10 @@ export const useUpgrade = () => {
       return;
     }
 
+    upgradeInFlightRef.current = true;
     setUpgradeLoading(true);
+
+    let navigationStarted = false;
 
     try {
       const selectedPlan = planKey || "pro-monthly-plan";
@@ -122,6 +126,7 @@ export const useUpgrade = () => {
             checkout_type: "new_subscription",
           });
           window.location.href = url;
+          navigationStarted = true;
           return;
         }
 
@@ -181,9 +186,11 @@ export const useUpgrade = () => {
           url.searchParams.set("refresh", "entitlements");
           url.hash = ""; // Remove #pricing hash if present
           window.location.href = url.toString();
+          navigationStarted = true;
         } else if (result.invoiceUrl) {
           // Payment failed, redirect to invoice payment page
           window.location.href = result.invoiceUrl;
+          navigationStarted = true;
         } else if (result.error) {
           toast.error(`Error: ${result.error}`);
         } else {
@@ -198,7 +205,10 @@ export const useUpgrade = () => {
         toast.error("An unexpected error occurred");
       }
     } finally {
-      setUpgradeLoading(false);
+      if (!navigationStarted) {
+        upgradeInFlightRef.current = false;
+        setUpgradeLoading(false);
+      }
     }
   };
 
