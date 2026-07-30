@@ -8,6 +8,13 @@ import {
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, jest } from "@jest/globals";
+import {
+  DndContext,
+  KeyboardSensor,
+  useSensor,
+  useSensors,
+} from "@dnd-kit/core";
+import type { ReactNode } from "react";
 
 const mockMoveChatToProject = jest.fn<any>();
 const mockRouterPush = jest.fn();
@@ -88,6 +95,11 @@ jest.mock("../MoveChatToProjectDialog", () => ({
 
 const ChatItem = require("../ChatItem")
   .default as typeof import("../ChatItem").default;
+
+function KeyboardDragHarness({ children }: { children: ReactNode }) {
+  const sensors = useSensors(useSensor(KeyboardSensor));
+  return <DndContext sensors={sensors}>{children}</DndContext>;
+}
 
 describe("ChatItem project actions", () => {
   beforeEach(() => {
@@ -321,48 +333,93 @@ describe("ChatItem project actions", () => {
     expect(screen.getByTestId("chat-item-chat-2")).not.toHaveClass("p-2");
   });
 
-  it("keeps the task row clickable while limiting drag initiation to a handle", () => {
+  it("keeps the entire task row clickable and removes the dedicated drag handle", () => {
     render(<ChatItem id="chat-1" title="Target notes" />);
 
     const row = screen.getByRole("button", { name: /Open task:/ });
     expect(row).not.toHaveAttribute("draggable");
     expect(row).toHaveClass("cursor-pointer");
-
-    fireEvent.mouseEnter(row);
-    const dragHandle = screen.getByTestId("chat-drag-handle-chat-1");
-    expect(dragHandle).toHaveAttribute("draggable", "true");
+    expect(row).toHaveAttribute("aria-roledescription", "draggable task");
+    expect(
+      screen.queryByTestId("chat-drag-handle-chat-1"),
+    ).not.toBeInTheDocument();
 
     fireEvent.click(row);
 
     expect(mockRouterPush).toHaveBeenCalledWith("/c/chat-1");
   });
 
-  it("does not open the task when the dedicated drag handle is used", () => {
+  it("does not start row navigation from the task options control", () => {
     render(<ChatItem id="chat-1" title="Target notes" />);
 
     const row = screen.getByRole("button", { name: /Open task:/ });
     fireEvent.mouseEnter(row);
-    const dragHandle = screen.getByTestId("chat-drag-handle-chat-1");
-    const dataTransfer = {
-      effectAllowed: "none",
-      setData: jest.fn(),
-    };
+    const options = screen.getByRole("button", {
+      name: "Open task options",
+    });
 
-    fireEvent.dragStart(dragHandle, { dataTransfer });
-    fireEvent.mouseLeave(row);
-    expect(dragHandle).toBeInTheDocument();
-    fireEvent.click(dragHandle);
-    fireEvent.dragEnd(dragHandle);
+    fireEvent.mouseDown(options, { button: 0, clientX: 0, clientY: 0 });
+    fireEvent.mouseMove(options, { clientX: 20, clientY: 0 });
+    fireEvent.mouseUp(options, { button: 0, clientX: 20, clientY: 0 });
+    fireEvent.click(options);
 
-    expect(dataTransfer.effectAllowed).toBe("move");
-    expect(dataTransfer.setData).toHaveBeenCalledWith(
-      "application/x-hackerai-chat-id",
-      "chat-1",
-    );
     expect(mockRouterPush).not.toHaveBeenCalled();
+  });
+
+  it("uses Enter to open while reserving Space for keyboard dragging", () => {
+    render(<ChatItem id="chat-1" title="Target notes" />);
+
+    const row = screen.getByRole("button", { name: /Open task:/ });
+    fireEvent.keyDown(row, { key: " " });
+    expect(mockRouterPush).not.toHaveBeenCalled();
+
+    fireEvent.keyDown(row, { key: "Enter" });
+    expect(mockRouterPush).toHaveBeenCalledWith("/c/chat-1");
+  });
+
+  it("does not open the task when Enter completes a keyboard drag", async () => {
+    render(
+      <KeyboardDragHarness>
+        <ChatItem id="chat-1" title="Target notes" />
+      </KeyboardDragHarness>,
+    );
+
+    const row = screen.getByRole("button", { name: /Open task:/ });
+    fireEvent.keyDown(row, { code: "Space", key: " " });
+    await waitFor(() => expect(row).toHaveClass("opacity-50"));
+
+    fireEvent.keyDown(row, { code: "Enter", key: "Enter" });
+    await waitFor(() => expect(row).not.toHaveClass("opacity-50"));
+    expect(mockRouterPush).not.toHaveBeenCalled();
+  });
+
+  it("does not expose desktop drag semantics on mobile", () => {
+    mockUseIsMobile.mockReturnValue(true);
+    render(<ChatItem id="chat-1" title="Target notes" />);
+
+    const row = screen.getByRole("button", { name: /Open task:/ });
+    expect(row).not.toHaveAttribute("aria-roledescription");
+    expect(row).not.toHaveAttribute("draggable");
+  });
+
+  it("keeps compact action padding after removing the drag icon", () => {
+    render(<ChatItem id="chat-1" title="Target notes" />);
+
+    const row = screen.getByRole("button", { name: /Open task:/ });
+    fireEvent.mouseEnter(row);
+    expect(
+      screen.getByText("Target notes").parentElement?.parentElement,
+    ).toHaveClass("pr-9");
+    expect(
+      screen.getByText("Target notes").parentElement?.parentElement,
+    ).not.toHaveClass("pr-[4.5rem]", "pr-[6.5rem]");
     expect(
       screen.queryByTestId("chat-drag-handle-chat-1"),
     ).not.toBeInTheDocument();
+    expect(row).not.toHaveAttribute("draggable");
+    expect(
+      screen.getByRole("button", { name: "Open task options" }),
+    ).toBeVisible();
   });
 
   it("centers the streaming indicator in the task action slot", () => {

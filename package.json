@@ -60,6 +60,7 @@
     "@aws-sdk/s3-request-presigner": "3.1096.0",
     "@convex-dev/aggregate": "^0.2.2",
     "@convex-dev/workos": "^0.0.3",
+    "@dnd-kit/core": "6.3.1",
     "@e2b/code-interpreter": "2.7.0",
     "@langchain/community": "^1.1.29",
     "@legendapp/list": "3.2.0",

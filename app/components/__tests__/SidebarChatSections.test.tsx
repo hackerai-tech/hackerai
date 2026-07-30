@@ -1,11 +1,66 @@
 import "@testing-library/jest-dom";
 import { beforeEach, describe, expect, it, jest } from "@jest/globals";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
+import {
+  SIDEBAR_PINNED_DROP_ID,
+  SIDEBAR_TASKS_DROP_ID,
+  type SidebarChatDragData,
+  type SidebarChatDropData,
+} from "../sidebar-chat-drag";
 
 const mockPinChat = jest.fn();
 const mockUnpinChat = jest.fn();
 const mockToastSuccess = jest.fn();
 const mockToastError = jest.fn();
+let mockDndContextProps: {
+  collisionDetection: unknown;
+  onDragCancel: (event: unknown) => void;
+  onDragEnd: (event: unknown) => void;
+  onDragStart: (event: unknown) => void;
+  sensors: unknown[];
+};
+let mockOverDropId: string | undefined;
+const mockDroppableData = new Map<string, SidebarChatDropData>();
+const mockPointerWithin = jest.fn();
+const mockRectIntersection = jest.fn();
+
+jest.mock("@dnd-kit/core", () => ({
+  DndContext: ({
+    children,
+    ...props
+  }: {
+    children: React.ReactNode;
+    collisionDetection: unknown;
+    onDragCancel: (event: unknown) => void;
+    onDragEnd: (event: unknown) => void;
+    onDragStart: (event: unknown) => void;
+    sensors: unknown[];
+  }) => {
+    mockDndContextProps = props;
+    return children;
+  },
+  DragOverlay: ({ children }: { children: React.ReactNode }) => children,
+  KeyboardSensor: class KeyboardSensor {},
+  MouseSensor: class MouseSensor {},
+  pointerWithin: mockPointerWithin,
+  rectIntersection: mockRectIntersection,
+  TouchSensor: class TouchSensor {},
+  useDroppable: ({ data, id }: { data: SidebarChatDropData; id: string }) => {
+    mockDroppableData.set(id, data);
+    return {
+      isOver: mockOverDropId === id,
+      setNodeRef: jest.fn(),
+    };
+  },
+  useSensor: (sensor: unknown, options?: unknown) => ({ sensor, options }),
+  useSensors: (...sensors: unknown[]) => sensors,
+}));
 
 jest.mock("@/app/hooks/useChats", () => ({
   usePinChat: () => mockPinChat,
@@ -90,6 +145,10 @@ const projects = [
 describe("SidebarChatSections", () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockDroppableData.clear();
+    mockOverDropId = undefined;
+    mockPointerWithin.mockReturnValue([]);
+    mockRectIntersection.mockReturnValue([]);
     mockPinChat.mockResolvedValue(null);
     mockUnpinChat.mockResolvedValue(null);
   });
@@ -147,6 +206,10 @@ describe("SidebarChatSections", () => {
     expect(screen.getByTestId("sidebar-chat-list")).not.toHaveTextContent(
       "Pinned target",
     );
+    expect(mockDndContextProps.collisionDetection).toEqual(
+      expect.any(Function),
+    );
+    expect(mockDndContextProps.sensors).toHaveLength(3);
   });
 
   it("collapses pinned chats and tasks independently", () => {
@@ -185,34 +248,42 @@ describe("SidebarChatSections", () => {
   });
 
   it("pins a dropped task and shows the requested toast", async () => {
-    render(
-      <SidebarChatSections
-        chats={[chats[1]]}
-        projects={[]}
-        paginationStatus="Exhausted"
-      />,
-    );
+    const props = {
+      chats: [chats[1]],
+      projects: [],
+      paginationStatus: "Exhausted" as const,
+    };
+    const { rerender } = render(<SidebarChatSections {...props} />);
 
     expect(
       screen.queryByTestId("sidebar-pinned-section"),
     ).not.toBeInTheDocument();
 
-    const values = new Map([["application/x-hackerai-chat-id", "task-chat"]]);
-    const dataTransfer = {
-      types: ["application/x-hackerai-chat-id"],
-      dropEffect: "none",
-      getData: (type: string) => values.get(type) ?? "",
-    } as DataTransfer;
-
-    fireEvent.dragStart(screen.getByTestId("sidebar-chat-sections"), {
-      dataTransfer,
+    const dragData: SidebarChatDragData = {
+      type: "sidebar-chat",
+      chatId: "task-chat",
+      isPinned: false,
+      title: "Regular target",
+    };
+    act(() => {
+      mockDndContextProps.onDragStart({
+        active: { data: { current: dragData } },
+      });
     });
 
     const pinnedDropTarget = screen.getByTestId("sidebar-pinned-section");
-    fireEvent.dragOver(pinnedDropTarget, { dataTransfer });
+    mockOverDropId = SIDEBAR_PINNED_DROP_ID;
+    rerender(<SidebarChatSections {...props} />);
     expect(pinnedDropTarget).toHaveAttribute("data-drop-active", "true");
 
-    fireEvent.drop(pinnedDropTarget, { dataTransfer });
+    act(() => {
+      mockDndContextProps.onDragEnd({
+        active: { data: { current: dragData } },
+        over: {
+          data: { current: mockDroppableData.get(SIDEBAR_PINNED_DROP_ID) },
+        },
+      });
+    });
 
     await waitFor(() => {
       expect(mockPinChat).toHaveBeenCalledWith({ chatId: "task-chat" });
@@ -221,7 +292,7 @@ describe("SidebarChatSections", () => {
     expect(mockToastError).not.toHaveBeenCalled();
   });
 
-  it("accepts a drop on an existing task anywhere inside Pinned", async () => {
+  it("accepts the sensor drop target covering existing Pinned content", async () => {
     render(
       <SidebarChatSections
         chats={chats}
@@ -230,19 +301,24 @@ describe("SidebarChatSections", () => {
       />,
     );
 
-    const values = new Map([["application/x-hackerai-chat-id", "task-chat"]]);
-    const dataTransfer = {
-      types: ["application/x-hackerai-chat-id"],
-      dropEffect: "none",
-      getData: (type: string) => values.get(type) ?? "",
-    } as DataTransfer;
+    const dragData: SidebarChatDragData = {
+      type: "sidebar-chat",
+      chatId: "task-chat",
+      isPinned: false,
+      title: "Regular target",
+    };
     const pinnedSection = screen.getByTestId("sidebar-pinned-section");
     const existingPinnedTask = screen.getByTestId("section-chat-pinned-chat");
+    expect(pinnedSection).toContainElement(existingPinnedTask);
 
-    fireEvent.dragOver(existingPinnedTask, { dataTransfer });
-    expect(pinnedSection).toHaveAttribute("data-drop-active", "true");
-
-    fireEvent.drop(existingPinnedTask, { dataTransfer });
+    act(() => {
+      mockDndContextProps.onDragEnd({
+        active: { data: { current: dragData } },
+        over: {
+          data: { current: mockDroppableData.get(SIDEBAR_PINNED_DROP_ID) },
+        },
+      });
+    });
     await waitFor(() => {
       expect(mockPinChat).toHaveBeenCalledWith({ chatId: "task-chat" });
       expect(mockToastSuccess).toHaveBeenCalledWith("Task pinned");
@@ -258,22 +334,26 @@ describe("SidebarChatSections", () => {
       />,
     );
 
-    const values = new Map([["application/x-hackerai-chat-id", "pinned-chat"]]);
-    const dataTransfer = {
-      types: ["application/x-hackerai-chat-id"],
-      dropEffect: "none",
-      getData: (type: string) => values.get(type) ?? "",
-    } as DataTransfer;
-
-    fireEvent.drop(screen.getByRole("button", { name: "Pinned" }), {
-      dataTransfer,
+    const dragData: SidebarChatDragData = {
+      type: "sidebar-chat",
+      chatId: "pinned-chat",
+      isPinned: true,
+      title: "Pinned target",
+    };
+    act(() => {
+      mockDndContextProps.onDragEnd({
+        active: { data: { current: dragData } },
+        over: {
+          data: { current: mockDroppableData.get(SIDEBAR_PINNED_DROP_ID) },
+        },
+      });
     });
 
     expect(mockPinChat).not.toHaveBeenCalled();
     expect(mockToastSuccess).not.toHaveBeenCalled();
   });
 
-  it("unpins a task dropped anywhere inside Tasks", async () => {
+  it("unpins a task dropped on the Tasks sensor target", async () => {
     render(
       <SidebarChatSections
         chats={chats}
@@ -282,24 +362,69 @@ describe("SidebarChatSections", () => {
       />,
     );
 
-    const values = new Map([["application/x-hackerai-chat-id", "pinned-chat"]]);
-    const dataTransfer = {
-      types: ["application/x-hackerai-chat-id"],
-      dropEffect: "none",
-      getData: (type: string) => values.get(type) ?? "",
-    } as DataTransfer;
+    const dragData: SidebarChatDragData = {
+      type: "sidebar-chat",
+      chatId: "pinned-chat",
+      isPinned: true,
+      title: "Pinned target",
+    };
     const tasksSection = screen.getByTestId("sidebar-tasks-section");
     const existingTask = screen.getByTestId("section-chat-task-chat");
+    expect(tasksSection).toContainElement(existingTask);
 
-    fireEvent.dragOver(existingTask, { dataTransfer });
-    expect(tasksSection).toHaveAttribute("data-drop-active", "true");
-
-    fireEvent.drop(existingTask, { dataTransfer });
+    act(() => {
+      mockDndContextProps.onDragEnd({
+        active: { data: { current: dragData } },
+        over: {
+          data: { current: mockDroppableData.get(SIDEBAR_TASKS_DROP_ID) },
+        },
+      });
+    });
     await waitFor(() => {
       expect(mockUnpinChat).toHaveBeenCalledWith({ chatId: "pinned-chat" });
       expect(mockToastSuccess).toHaveBeenCalledWith("Task unpinned");
     });
     expect(mockPinChat).not.toHaveBeenCalled();
     expect(mockToastError).not.toHaveBeenCalled();
+  });
+
+  it("falls back to rectangle collisions and completes a keyboard drop", async () => {
+    render(
+      <SidebarChatSections
+        chats={chats}
+        projects={projects}
+        paginationStatus="Exhausted"
+      />,
+    );
+
+    const collisionArgs = { pointerCoordinates: null };
+    const keyboardCollisions = [{ id: SIDEBAR_TASKS_DROP_ID }];
+    mockRectIntersection.mockReturnValue(keyboardCollisions);
+
+    const detectCollisions =
+      mockDndContextProps.collisionDetection as typeof mockPointerWithin;
+    expect(detectCollisions(collisionArgs)).toEqual(keyboardCollisions);
+    expect(mockPointerWithin).toHaveBeenCalledWith(collisionArgs);
+    expect(mockRectIntersection).toHaveBeenCalledWith(collisionArgs);
+
+    const dragData: SidebarChatDragData = {
+      type: "sidebar-chat",
+      chatId: "pinned-chat",
+      isPinned: true,
+      title: "Pinned target",
+    };
+    act(() => {
+      mockDndContextProps.onDragEnd({
+        active: { data: { current: dragData } },
+        over: {
+          data: { current: mockDroppableData.get(keyboardCollisions[0].id) },
+        },
+      });
+    });
+
+    await waitFor(() => {
+      expect(mockUnpinChat).toHaveBeenCalledWith({ chatId: "pinned-chat" });
+      expect(mockToastSuccess).toHaveBeenCalledWith("Task unpinned");
+    });
   });
 });
