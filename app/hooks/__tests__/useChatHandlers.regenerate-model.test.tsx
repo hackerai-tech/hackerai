@@ -279,6 +279,54 @@ describe("useChatHandlers regenerate model", () => {
     );
   });
 
+  it("rejects editing an older user message before cancelling or regenerating", async () => {
+    mockTemporaryChatsEnabled = false;
+    const fetchMock = jest.fn(
+      async () => ({ ok: true, status: 200 }) as Response,
+    );
+    Object.defineProperty(globalThis, "fetch", {
+      configurable: true,
+      value: fetchMock,
+    });
+    const multiTurnMessages = [
+      messages[0],
+      messages[1],
+      {
+        id: "user-2",
+        role: "user",
+        parts: [{ type: "text", text: "Follow-up question" }],
+      },
+      {
+        id: "assistant-2",
+        role: "assistant",
+        parts: [{ type: "text", text: "Follow-up answer" }],
+      },
+    ] as ChatMessage[];
+    const { result } = renderHook(() =>
+      useChatHandlers({
+        chatId: "chat-1",
+        messages: multiTurnMessages,
+        sendMessage: mockSendMessage,
+        stop: jest.fn(),
+        regenerate: mockRegenerate,
+        setMessages: mockSetMessages,
+        isExistingChat: true,
+        status: "streaming",
+        isSendingNowRef: { current: false },
+        hasManuallyStoppedRef: { current: false },
+        activeTriggerRunRef: { current: "run-1" },
+      }),
+    );
+
+    await act(async () => {
+      await result.current.handleEditMessage("user-1", "Edited question");
+    });
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(mockRegenerate).not.toHaveBeenCalled();
+    expect(mockSetMessages).not.toHaveBeenCalled();
+  });
+
   it("cancels a restored Trigger run even when the current mode is ask", async () => {
     mockTemporaryChatsEnabled = false;
     const fetchMock = jest.fn(

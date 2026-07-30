@@ -100,6 +100,7 @@ const renderMessageItem = ({
       messagesLength={1}
       lastAssistantMessageIndex={0}
       status={status}
+      canEdit={message.role === "user"}
       isHovered={false}
       isEditing={false}
       feedbackInputMessageId={null}
@@ -405,6 +406,7 @@ describe("MessageItem WorkedFor rendering", () => {
         messagesLength={1}
         lastAssistantMessageIndex={0}
         status="ready"
+        canEdit={false}
         isHovered={false}
         isEditing={false}
         feedbackInputMessageId={null}

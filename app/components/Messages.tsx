@@ -22,7 +22,10 @@ import Loading from "@/components/ui/loading";
 import { useFeedback } from "../hooks/useFeedback";
 import { useFileUrlCache } from "../hooks/useFileUrlCache";
 import { FileUrlCacheProvider } from "../contexts/FileUrlCacheContext";
-import { findLastAssistantMessageIndex } from "@/lib/utils/message-utils";
+import {
+  findLastAssistantMessageIndex,
+  findLastUserMessageIndex,
+} from "@/lib/utils/message-utils";
 import type { ChatStatus, ChatMessage } from "@/types";
 import type { FileDetails } from "@/types/file";
 import type { RetryOptions } from "../hooks/useChatHandlers";
@@ -153,6 +156,14 @@ export const Messages = ({
     return findLastAssistantMessageIndex(visibleMessages);
   }, [visibleMessages]);
 
+  const lastUserMessageIndex = useMemo(() => {
+    return findLastUserMessageIndex(visibleMessages);
+  }, [visibleMessages]);
+  const lastUserMessageId =
+    lastUserMessageIndex === undefined
+      ? undefined
+      : visibleMessages[lastUserMessageIndex]?.id;
+
   // Check if last assistant message has any content (text or files)
   const lastAssistantHasContent = useMemo(() => {
     if (lastAssistantMessageIndex === undefined) return false;
@@ -249,13 +260,18 @@ export const Messages = ({
   // Sidebar auto-open removed - sidebar only opens via manual clicks
 
   // Memoized edit handlers to prevent unnecessary re-renders
-  const handleStartEdit = useCallback((messageId: string) => {
-    setEditingMessageId(messageId);
-  }, []);
+  const handleStartEdit = useCallback(
+    (messageId: string) => {
+      if (messageId === lastUserMessageId) {
+        setEditingMessageId(messageId);
+      }
+    },
+    [lastUserMessageId],
+  );
 
   const handleSaveEdit = useCallback(
     async (newContent: string, remainingFileIds: string[]) => {
-      if (editingMessageId) {
+      if (editingMessageId && editingMessageId === lastUserMessageId) {
         try {
           await onEditMessage(editingMessageId, newContent, remainingFileIds);
         } catch (error) {
@@ -266,7 +282,7 @@ export const Messages = ({
         }
       }
     },
-    [editingMessageId, onEditMessage],
+    [editingMessageId, lastUserMessageId, onEditMessage],
   );
 
   const handleCancelEdit = useCallback(() => {
@@ -458,7 +474,11 @@ export const Messages = ({
             messagesLength={visibleMessages.length}
             lastAssistantMessageIndex={lastAssistantMessageIndex}
             status={status}
-            isEditing={editingMessageId === row.message.id}
+            canEdit={row.messageIndex === lastUserMessageIndex}
+            isEditing={
+              editingMessageId === lastUserMessageId &&
+              editingMessageId === row.message.id
+            }
             isMobile={isMobile}
             feedbackInputMessageId={feedbackInputMessageId}
             tempChatFileDetails={tempChatFileDetails}
@@ -518,6 +538,8 @@ export const Messages = ({
       isMobile,
       isTemporaryChat,
       lastAssistantMessageIndex,
+      lastUserMessageId,
+      lastUserMessageIndex,
       mode,
       onBranchMessage,
       onContinue,
@@ -580,6 +602,7 @@ export const Messages = ({
         <LegendList<ChatTimelineRow>
           ref={setTimelineInstance}
           data={timelineRows}
+          extraData={editingMessageId}
           keyExtractor={getTimelineRowKey}
           getItemType={getChatTimelineRowType}
           renderItem={renderTimelineRow}

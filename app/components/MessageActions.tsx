@@ -23,6 +23,7 @@ interface MessageActionsProps {
   canRegenerate: boolean;
   onRegenerate: () => void | Promise<void>;
   onEdit: () => void;
+  canEdit: boolean;
   onBranch?: () => void;
   isHovered: boolean;
   isEditing: boolean;
@@ -129,6 +130,7 @@ export const MessageActions = ({
   canRegenerate,
   onRegenerate,
   onEdit,
+  canEdit,
   onBranch,
   isHovered,
   isEditing,
@@ -249,8 +251,8 @@ export const MessageActions = ({
               delayDuration={300}
             />
 
-            {/* Show edit only for user messages */}
-            {isUser && (
+            {/* Only the latest user-authored message can be edited. */}
+            {isUser && canEdit && (
               <WithTooltip
                 display={"Edit message"}
                 trigger={

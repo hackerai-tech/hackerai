@@ -1975,6 +1975,28 @@ export const regenerateWithNewContent = mutation({
         }
       }
 
+      const messages = await ctx.db
+        .query("messages")
+        .withIndex("by_chat_id", (q) =>
+          q
+            .eq("chat_id", message.chat_id)
+            .gt("_creationTime", message._creationTime),
+        )
+        .collect();
+
+      if (
+        message.role !== "user" ||
+        message.is_hidden ||
+        messages.some((laterMessage) => {
+          return laterMessage.role === "user" && !laterMessage.is_hidden;
+        })
+      ) {
+        throw new ConvexError({
+          code: "MESSAGE_NOT_EDITABLE",
+          message: "Only the latest user message can be edited",
+        });
+      }
+
       // Determine which files to keep
       const currentFileIds = message.file_ids || [];
       let newFileIds: Id<"files">[] | undefined = undefined;
@@ -2040,15 +2062,6 @@ export const regenerateWithNewContent = mutation({
         update_time: Date.now(),
       });
 
-      const messages = await ctx.db
-        .query("messages")
-        .withIndex("by_chat_id", (q) =>
-          q
-            .eq("chat_id", message.chat_id)
-            .gt("_creationTime", message._creationTime),
-        )
-        .collect();
-
       // Check summary invalidation before deleting messages
       await checkAndInvalidateSummary(ctx, message.chat_id, [
         { id: message.id, creationTime: message._creationTime },
@@ -2099,7 +2112,8 @@ export const regenerateWithNewContent = mutation({
         error instanceof Error &&
         (error.message.includes("Message not found") ||
           error.message.includes("CHAT_NOT_FOUND") ||
-          error.message.includes("CHAT_UNAUTHORIZED"))
+          error.message.includes("CHAT_UNAUTHORIZED") ||
+          error.message.includes("Only the latest user message can be edited"))
       )) {
         console.error("Failed to regenerate with new content:", error);
       }
