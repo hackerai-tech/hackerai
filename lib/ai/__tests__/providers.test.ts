@@ -79,9 +79,10 @@ describe("sanitizeOpenRouterRequestForXai", () => {
           reasoning_details: [
             { type: "text", text: "plain reasoning detail" },
             {
-              type: "encrypted",
-              encrypted_content: "provider-private-reasoning-blob",
+              type: "reasoning.encrypted",
+              data: "provider-private-reasoning-blob",
             },
+            { type: "encrypted", encrypted_content: "legacy-provider-blob" },
           ],
         },
       ],
@@ -100,8 +101,12 @@ describe("sanitizeOpenRouterRequestForXai", () => {
         },
       ],
     });
-    expect(JSON.stringify(result.body)).not.toContain("encrypted_content");
-    expect(JSON.stringify(body)).toContain("encrypted_content");
+    expect(JSON.stringify(result.body)).not.toContain(
+      "provider-private-reasoning-blob",
+    );
+    expect(JSON.stringify(result.body)).not.toContain("legacy-provider-blob");
+    expect(JSON.stringify(body)).toContain("provider-private-reasoning-blob");
+    expect(JSON.stringify(body)).toContain("legacy-provider-blob");
   });
 
   it("removes reasoning_details when every detail is encrypted", () => {
@@ -112,7 +117,7 @@ describe("sanitizeOpenRouterRequestForXai", () => {
           role: "assistant",
           content: "Visible text stays.",
           reasoning_details: [
-            { type: "encrypted", encrypted_content: "x-provider-blob" },
+            { type: "reasoning.encrypted", data: "x-provider-blob" },
           ],
         },
       ],
@@ -167,6 +172,10 @@ describe("sanitizeOpenRouterRequestForXai", () => {
               type: "input_json",
               encrypted_content: "user-owned-data",
             },
+            {
+              type: "reasoning.encrypted",
+              data: "user-owned-reasoning-shaped-data",
+            },
           ],
         },
         {
@@ -192,6 +201,9 @@ describe("sanitizeOpenRouterRequestForXai", () => {
     expect(result.changed).toBe(false);
     expect(result.body).toBe(body);
     expect(JSON.stringify(result.body)).toContain("user-owned-data");
+    expect(JSON.stringify(result.body)).toContain(
+      "user-owned-reasoning-shaped-data",
+    );
     expect(JSON.stringify(result.body)).toContain("tool-owned-data");
   });
 });
