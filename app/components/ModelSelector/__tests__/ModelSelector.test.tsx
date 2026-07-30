@@ -161,7 +161,7 @@ describe("ModelSelector", () => {
     expect(onChange).toHaveBeenCalledWith("hackerai-pro");
   });
 
-  it("reveals Max access choices when a Pro Plus user clicks the locked row", () => {
+  it("opens the Max access dialog when a Pro Plus user clicks the locked desktop row", () => {
     mockMaxEntitlement = {
       extraUsageAvailable: false,
       reason: "disabled",
@@ -182,21 +182,20 @@ describe("ModelSelector", () => {
 
     expect(onChange).not.toHaveBeenCalled();
     expect(
-      screen.getByRole("group", {
-        name: "Choose how to access HackerAI Max",
-      }),
+      screen.getByRole("dialog", { name: "Unlock HackerAI Max" }),
     ).toBeVisible();
-    expect(screen.getByText("Pay for Max as you use it")).toBeVisible();
-    expect(screen.getByText("Max included")).toBeVisible();
+    expect(
+      screen.getByText(/pay for Max as you go, or upgrade to Ultra/i),
+    ).toBeVisible();
     expect(mockOpenSettingsDialog).not.toHaveBeenCalled();
     expect(mockRedirectToPricing).not.toHaveBeenCalled();
 
-    fireEvent.click(screen.getByRole("button", { name: /^Use Extra Usage/i }));
+    fireEvent.click(screen.getByRole("button", { name: "Use Extra Usage" }));
 
     expect(mockOpenSettingsDialog).toHaveBeenCalledWith("Extra Usage");
   });
 
-  it("offers compact Extra Usage and Ultra actions inside the model menu", async () => {
+  it("does not reveal inline Max access actions on desktop hover", async () => {
     mockMaxEntitlement = {
       extraUsageAvailable: false,
       reason: "disabled",
@@ -210,15 +209,24 @@ describe("ModelSelector", () => {
     await user.hover(screen.getByRole("button", { name: /HackerAI Max/i }));
 
     expect(
-      await screen.findByRole("group", {
+      screen.queryByRole("group", {
         name: "Choose how to access HackerAI Max",
       }),
-    ).toBeVisible();
-    expect(
-      screen.getByRole("button", { name: /HackerAI Max/i }),
-    ).toHaveAttribute("aria-expanded", "true");
+    ).not.toBeInTheDocument();
+  });
 
-    fireEvent.click(screen.getByRole("button", { name: /^Upgrade to Ultra/i }));
+  it("can upgrade to Ultra from the locked Max desktop dialog", () => {
+    mockMaxEntitlement = {
+      extraUsageAvailable: false,
+      reason: "disabled",
+      hasBalance: false,
+      autoReloadEnabled: false,
+    };
+    render(<ModelSelector value="auto" onChange={jest.fn()} mode="agent" />);
+
+    fireEvent.click(screen.getByRole("button", { name: /^Auto$/i }));
+    fireEvent.click(screen.getByRole("button", { name: /HackerAI Max/i }));
+    fireEvent.click(screen.getByRole("button", { name: "Upgrade to Ultra" }));
 
     expect(mockRedirectToPricing).toHaveBeenCalledWith({
       surface: "model_selector",
@@ -246,7 +254,9 @@ describe("ModelSelector", () => {
     expect(
       screen.getByRole("dialog", { name: "Unlock HackerAI Max" }),
     ).toBeVisible();
-    expect(screen.getByText(/Max is paid through Extra Usage/i)).toBeVisible();
+    expect(
+      screen.getByText(/pay for Max as you go, or upgrade to Ultra/i),
+    ).toBeVisible();
     expect(onChange).not.toHaveBeenCalled();
     expect(mockOpenSettingsDialog).not.toHaveBeenCalled();
     expect(mockRedirectToPricing).not.toHaveBeenCalled();
