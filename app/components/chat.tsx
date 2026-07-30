@@ -66,6 +66,7 @@ import {
   stripAgentLongHeartbeatParts,
   stripAgentLongHeartbeatPartsFromMessages,
 } from "@/lib/chat/agent-long-heartbeat";
+import { getAgentLongMessageProgressFingerprint } from "@/lib/chat/agent-long-message-progress";
 import { hasVisibleAssistantContent } from "@/lib/chat/abort-persistence";
 import { toast } from "sonner";
 import {
@@ -263,40 +264,6 @@ const getLatestAgentLongAssistantMessageForPartialSave = (
         : undefined,
   };
 };
-
-const getAgentLongPartFingerprint = (part: unknown): string => {
-  if (typeof part !== "object" || part === null) return String(part);
-  const typedPart = part as {
-    type?: unknown;
-    text?: unknown;
-    delta?: unknown;
-    state?: unknown;
-  };
-  const type = typeof typedPart.type === "string" ? typedPart.type : "unknown";
-  const textLength =
-    typeof typedPart.text === "string" ? typedPart.text.length : undefined;
-  const deltaLength =
-    typeof typedPart.delta === "string" ? typedPart.delta.length : undefined;
-  if (textLength !== undefined || deltaLength !== undefined) {
-    return `${type}:${textLength ?? 0}:${deltaLength ?? 0}:${typedPart.state ?? ""}`;
-  }
-
-  try {
-    return `${type}:${JSON.stringify(part).length}`;
-  } catch {
-    return type;
-  }
-};
-
-const getAgentLongMessageFingerprint = (messages: ChatMessage[]): string =>
-  messages
-    .map(
-      (message) =>
-        `${message.id}:${message.role}:${(message.parts ?? [])
-          .map(getAgentLongPartFingerprint)
-          .join(",")}`,
-    )
-    .join("|");
 
 const ComputerSidebar = dynamic(
   () => import("./ComputerSidebar").then((m) => m.ComputerSidebar),
@@ -1207,7 +1174,8 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     };
   }, [stopActiveBrowserStream]);
 
-  const agentLongMessageFingerprint = getAgentLongMessageFingerprint(messages);
+  const agentLongMessageFingerprint =
+    getAgentLongMessageProgressFingerprint(messages);
   const agentLongMessageFingerprintRef = useRef(agentLongMessageFingerprint);
   const agentLongLastMessageChangeAtRef = useRef(Date.now());
 
@@ -1923,8 +1891,8 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
                 </div>
               ) : showChatLayout ? (
                 <Messages
-                  scrollRef={scrollRef as RefObject<HTMLDivElement | null>}
-                  contentRef={contentRef as RefObject<HTMLDivElement | null>}
+                  scrollRef={scrollRef}
+                  contentRef={contentRef}
                   messages={messages}
                   setMessages={setMessages}
                   onRegenerate={handleRegenerate}

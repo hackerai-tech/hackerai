@@ -25,6 +25,7 @@ const customJestConfig = {
     "^shiki/langs$": "<rootDir>/__mocks__/shiki.ts",
     "^shiki$": "<rootDir>/__mocks__/shiki.ts",
     "^use-stick-to-bottom$": "<rootDir>/__mocks__/use-stick-to-bottom.ts",
+    "^@legendapp/list/react$": "<rootDir>/__mocks__/@legendapp/list-react.tsx",
     "^@aws-sdk/client-s3$": "<rootDir>/__mocks__/@aws-sdk/client-s3.ts",
     "^@aws-sdk/s3-request-presigner$":
       "<rootDir>/__mocks__/@aws-sdk/s3-request-presigner.ts",

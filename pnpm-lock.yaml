@@ -98,6 +98,9 @@ importers:
       '@langchain/community':
         specifier: ^1.1.29
         version: 1.1.29(ec0fa2fbdcf06ea0405634861d9596f2)
+      '@legendapp/list':
+        specifier: 3.2.0
+        version: 3.2.0(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
       '@monaco-editor/react':
         specifier: ^4.7.0
         version: 4.7.0(monaco-editor@0.55.1)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
@@ -2152,6 +2155,18 @@ packages:
     engines: {node: '>=20'}
     peerDependencies:
       '@langchain/core': ^1.0.0
+
+  '@legendapp/list@3.2.0':
+    resolution: {integrity: sha512-bN+g/oQYjFz+UAyuBN4cmYJAwdJS1TdNcZZOVlh3+VwCQUWrsg0PH46Mvm76gdZSCYMfoFanPY4dKnILcYEzeg==}
+    peerDependencies:
+      react: '*'
+      react-dom: '*'
+      react-native: '*'
+    peerDependenciesMeta:
+      react-dom:
+        optional: true
+      react-native:
+        optional: true
 
   '@mermaid-js/parser@1.1.1':
     resolution: {integrity: sha512-VuHdsYMK1bT6X2JbcAaWAhugTRvRBRyuZgd+c22swUeI9g/ntaxF7CY7dYarhZovofCbUNO0G7JesfmNtjYOCw==}
@@ -9974,6 +9989,13 @@ snapshots:
     dependencies:
       '@langchain/core': 1.1.46(@opentelemetry/api@1.9.1)(@opentelemetry/sdk-trace-base@2.7.1(@opentelemetry/api@1.9.1))(openai@6.49.0(@aws-sdk/credential-provider-node@3.972.73)(@smithy/signature-v4@5.6.11)(ws@8.21.0)(zod@4.4.3))(ws@8.21.0)
       js-tiktoken: 1.0.21
+
+  '@legendapp/list@3.2.0(react-dom@19.2.8(react@19.2.8))(react@19.2.8)':
+    dependencies:
+      react: 19.2.8
+      use-sync-external-store: 1.5.0(react@19.2.8)
+    optionalDependencies:
+      react-dom: 19.2.8(react@19.2.8)
 
   '@mermaid-js/parser@1.1.1':
     dependencies:
