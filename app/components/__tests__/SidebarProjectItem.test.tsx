@@ -1,11 +1,11 @@
 import "@testing-library/jest-dom";
-import { describe, expect, it, jest } from "@jest/globals";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { beforeEach, describe, expect, it, jest } from "@jest/globals";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { Doc } from "@/convex/_generated/dataModel";
 import {
-  SIDEBAR_CHAT_DRAG_PROJECT_TYPE,
-  SIDEBAR_CHAT_DRAG_TYPE,
+  type SidebarChatDragData,
+  type SidebarChatDropData,
 } from "../sidebar-chat-drag";
 
 const mockProjectThreads = jest.fn(() => (
@@ -17,6 +17,18 @@ const mockProjectThreads = jest.fn(() => (
 ));
 const mockPinProject = jest.fn<any>().mockResolvedValue(null);
 const mockUnpinProject = jest.fn<any>().mockResolvedValue(null);
+let mockProjectDropData: SidebarChatDropData;
+let mockProjectIsOver = false;
+
+jest.mock("@dnd-kit/core", () => ({
+  useDroppable: ({ data }: { data: SidebarChatDropData }) => {
+    mockProjectDropData = data;
+    return {
+      isOver: mockProjectIsOver,
+      setNodeRef: jest.fn(),
+    };
+  },
+}));
 
 jest.mock("@/app/hooks/useProjects", () => ({
   usePinProject: () => mockPinProject,
@@ -50,6 +62,11 @@ const project = {
 } as unknown as Doc<"projects">;
 
 describe("SidebarProjectItem", () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockProjectIsOver = false;
+  });
+
   it("unmounts the thread list when collapsed so pagination resets", () => {
     const props = {
       project,
@@ -78,21 +95,19 @@ describe("SidebarProjectItem", () => {
     expect(mockProjectThreads).toHaveBeenCalledTimes(2);
   });
 
-  it("accepts a dragged sidebar chat", () => {
+  it("accepts a sidebar task from the project sensor target", () => {
     const onDropChat = jest
       .fn<() => Promise<void>>()
       .mockResolvedValue(undefined);
-    const values = new Map([
-      [SIDEBAR_CHAT_DRAG_TYPE, "chat-1"],
-      [SIDEBAR_CHAT_DRAG_PROJECT_TYPE, "project-previous"],
-    ]);
-    const dataTransfer = {
-      types: [SIDEBAR_CHAT_DRAG_TYPE, SIDEBAR_CHAT_DRAG_PROJECT_TYPE],
-      dropEffect: "none",
-      getData: (type: string) => values.get(type) ?? "",
-    } as DataTransfer;
+    const dragData: SidebarChatDragData = {
+      type: "sidebar-chat",
+      chatId: "chat-1",
+      isPinned: false,
+      projectId: "project-previous",
+      title: "Target notes",
+    };
 
-    render(
+    const { rerender } = render(
       <SidebarProjectItem
         project={project}
         open={false}
@@ -103,31 +118,40 @@ describe("SidebarProjectItem", () => {
     );
 
     const dropTarget = screen.getByTestId("project-project-1-drop-target");
-    fireEvent.dragEnter(dropTarget, { dataTransfer });
+    expect(dropTarget).not.toHaveClass("ring-1");
+
+    mockProjectIsOver = true;
+    rerender(
+      <SidebarProjectItem
+        project={project}
+        open={false}
+        onOpenChange={jest.fn()}
+        onNewThread={jest.fn()}
+        onDropChat={onDropChat}
+      />,
+    );
     expect(dropTarget).toHaveClass("ring-1");
 
-    fireEvent.drop(dropTarget, { dataTransfer });
+    act(() => {
+      void mockProjectDropData.onDrop(dragData);
+    });
     expect(onDropChat).toHaveBeenCalledWith("chat-1", "project-previous");
-    expect(dropTarget).not.toHaveClass("ring-1");
   });
 
-  it("accepts a drop on an existing task anywhere inside an open project", () => {
+  it("covers existing tasks inside an open project drop target", () => {
     const onDropChat = jest
       .fn<() => Promise<void>>()
       .mockResolvedValue(undefined);
-    const values = new Map([
-      [SIDEBAR_CHAT_DRAG_TYPE, "chat-1"],
-      [SIDEBAR_CHAT_DRAG_PROJECT_TYPE, "project-previous"],
-    ]);
-    const dataTransfer = {
-      types: [SIDEBAR_CHAT_DRAG_TYPE, SIDEBAR_CHAT_DRAG_PROJECT_TYPE],
-      dropEffect: "none",
-      getData: (type: string) => values.get(type) ?? "",
-    } as DataTransfer;
+    const dragData: SidebarChatDragData = {
+      type: "sidebar-chat",
+      chatId: "chat-1",
+      isPinned: false,
+      projectId: "project-previous",
+      title: "Target notes",
+    };
 
-    const outerDrop = jest.fn();
     render(
-      <div onDrop={outerDrop}>
+      <div>
         <SidebarProjectItem
           project={project}
           open
@@ -142,14 +166,12 @@ describe("SidebarProjectItem", () => {
       "project-project-1-drop-target",
     );
     const nestedTask = screen.getByTestId("nested-project-task");
+    expect(projectDropTarget).toContainElement(nestedTask);
 
-    fireEvent.dragOver(nestedTask, { dataTransfer });
-    expect(projectDropTarget).toHaveClass("ring-1");
-
-    fireEvent.drop(nestedTask, { dataTransfer });
+    act(() => {
+      void mockProjectDropData.onDrop(dragData);
+    });
     expect(onDropChat).toHaveBeenCalledWith("chat-1", "project-previous");
-    expect(outerDrop).not.toHaveBeenCalled();
-    expect(projectDropTarget).not.toHaveClass("ring-1");
   });
 
   it("shows the linked Desktop folder in the project menu", async () => {
