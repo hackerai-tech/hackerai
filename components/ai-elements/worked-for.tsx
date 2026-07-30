@@ -98,32 +98,9 @@ const escapeStickyBottom = (snapshot: ScrollSnapshot) => {
   );
 };
 
-export function WorkedFor({
-  className,
-  hasWork,
-  isTiming = false,
-  open,
-  defaultOpen = false,
-  onOpenChange,
-  children,
-  ...props
-}: WorkedForProps) {
-  const [isOpen, setIsOpen] = useControllableState({
-    prop: open,
-    defaultProp: defaultOpen,
-    onChange: onOpenChange,
-  });
+export const useScrollPreservation = () => {
   const scrollSnapshotRef = useRef<ScrollSnapshot | null>(null);
   const restoreTokenRef = useRef(0);
-  const wasTimingRef = useRef(isTiming);
-  const autoCollapseTimeoutRef = useRef<number | null>(null);
-
-  const clearAutoCollapseTimeout = useCallback(() => {
-    if (autoCollapseTimeoutRef.current === null) return;
-
-    window.clearTimeout(autoCollapseTimeoutRef.current);
-    autoCollapseTimeoutRef.current = null;
-  }, []);
 
   const captureScrollPosition = useCallback((target: EventTarget | null) => {
     if (!(target instanceof HTMLElement)) return;
@@ -188,17 +165,57 @@ export function WorkedFor({
     requestAnimationFrame(restore);
   }, []);
 
-  const handleOpenChange = useCallback(
-    (nextOpen: boolean) => {
+  const preserveScrollPosition = useCallback(
+    (change: () => void, isOpening: boolean) => {
       const snapshot = scrollSnapshotRef.current;
-      clearAutoCollapseTimeout();
-      if (nextOpen && snapshot) {
+      if (isOpening && snapshot) {
         escapeStickyBottom(snapshot);
       }
-      setIsOpen(nextOpen);
+      change();
       restoreCapturedScrollPosition();
     },
-    [clearAutoCollapseTimeout, restoreCapturedScrollPosition, setIsOpen],
+    [restoreCapturedScrollPosition],
+  );
+
+  return {
+    captureScrollPosition,
+    preserveScrollPosition,
+  };
+};
+
+export function WorkedFor({
+  className,
+  hasWork,
+  isTiming = false,
+  open,
+  defaultOpen = false,
+  onOpenChange,
+  children,
+  ...props
+}: WorkedForProps) {
+  const [isOpen, setIsOpen] = useControllableState({
+    prop: open,
+    defaultProp: defaultOpen,
+    onChange: onOpenChange,
+  });
+  const { captureScrollPosition, preserveScrollPosition } =
+    useScrollPreservation();
+  const wasTimingRef = useRef(isTiming);
+  const autoCollapseTimeoutRef = useRef<number | null>(null);
+
+  const clearAutoCollapseTimeout = useCallback(() => {
+    if (autoCollapseTimeoutRef.current === null) return;
+
+    window.clearTimeout(autoCollapseTimeoutRef.current);
+    autoCollapseTimeoutRef.current = null;
+  }, []);
+
+  const handleOpenChange = useCallback(
+    (nextOpen: boolean) => {
+      clearAutoCollapseTimeout();
+      preserveScrollPosition(() => setIsOpen(nextOpen), nextOpen);
+    },
+    [clearAutoCollapseTimeout, preserveScrollPosition, setIsOpen],
   );
 
   useEffect(() => {

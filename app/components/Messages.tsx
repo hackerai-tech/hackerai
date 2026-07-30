@@ -4,7 +4,6 @@ import {
   useLayoutEffect,
   useMemo,
   useCallback,
-  startTransition,
   Dispatch,
   MutableRefObject,
   RefCallback,
@@ -18,6 +17,7 @@ import { AgentWorkHeader } from "./AgentWorkHeader";
 import { MessageErrorState } from "./MessageErrorState";
 import { SummarizationStatusDivider } from "./SummarizationStatusDivider";
 import { Shimmer } from "@/components/ai-elements/shimmer";
+import { useScrollPreservation } from "@/components/ai-elements/worked-for";
 import Loading from "@/components/ui/loading";
 import { useFeedback } from "../hooks/useFeedback";
 import { useFileUrlCache } from "../hooks/useFileUrlCache";
@@ -224,20 +224,6 @@ export const Messages = ({
       visibleMessages,
     ],
   );
-  const handleToggleAgentWork = useCallback((messageId: string) => {
-    startTransition(() => {
-      setExpandedAgentMessageIds((current) => {
-        const next = new Set(current);
-        if (next.has(messageId)) {
-          next.delete(messageId);
-        } else {
-          next.add(messageId);
-        }
-        return next;
-      });
-    });
-  }, []);
-
   // Track edit state for messages
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
 
@@ -337,6 +323,24 @@ export const Messages = ({
     content: HTMLElement | null;
     scroll: HTMLElement | null;
   }>({ content: null, scroll: null });
+  const { captureScrollPosition, preserveScrollPosition } =
+    useScrollPreservation();
+  const handleToggleAgentWork = useCallback(
+    (messageId: string, nextExpanded: boolean) => {
+      preserveScrollPosition(() => {
+        setExpandedAgentMessageIds((current) => {
+          const next = new Set(current);
+          if (nextExpanded) {
+            next.add(messageId);
+          } else {
+            next.delete(messageId);
+          }
+          return next;
+        });
+      }, nextExpanded);
+    },
+    [preserveScrollPosition],
+  );
 
   // Keep the established bottom-follow hook connected to LegendList's actual
   // scroll and content elements. LegendList owns row virtualization and
@@ -413,6 +417,7 @@ export const Messages = ({
             expanded={row.expanded}
             isTiming={row.isTiming}
             messageId={row.message.id}
+            onCaptureScroll={captureScrollPosition}
             onToggle={handleToggleAgentWork}
             startedAt={row.startedAt}
           />
@@ -499,6 +504,7 @@ export const Messages = ({
       editingMessageId,
       feedbackInputMessageId,
       finishReason,
+      captureScrollPosition,
       getCachedUrl,
       handleBranchMessage,
       handleCancelEdit,
