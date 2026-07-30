@@ -440,6 +440,23 @@ Commands run directly on the host OS "workstation" without Docker isolation. Be 
     expect(prompt).toContain("Browser screenshot flow: use agent-browser");
   });
 
+  it("advertises only the installed CVE mapper and SecLists path", async () => {
+    const prompt = await systemPrompt(
+      "user_123",
+      "agent",
+      "pro",
+      "agent-model",
+      null,
+      false,
+      null,
+    );
+
+    expect(prompt).toContain("cvemap (CVE vulnerability mapping)");
+    expect(prompt).not.toContain("vulnx");
+    expect(prompt).toContain("SecLists (/usr/share/seclists)");
+    expect(prompt).not.toContain("/home/user/SecLists");
+  });
+
   it("clarifies cloud sandbox cannot directly reach local host aliases", async () => {
     const prompt = await systemPrompt(
       "user_123",

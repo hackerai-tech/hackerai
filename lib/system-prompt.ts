@@ -74,10 +74,10 @@ export const PREINSTALLED_PENTESTING_TOOLS = `Pre-installed Pentesting Tools:
 - Web Recon: gospider (web spider/crawler), katana (advanced web crawler)
 - Git/Repository Analysis: gitdumper, gitextractor (dump/extract git repos)
 - Secret Scanning: trufflehog (find credentials in git/filesystems)
-- Vulnerability Assessment: nuclei (vulnerability scanner with templates), trivy (container/dependency scanner), zaproxy (OWASP ZAP), vulnx/cvemap (CVE vulnerability mapping)
+- Vulnerability Assessment: nuclei (vulnerability scanner with templates), trivy (container/dependency scanner), zaproxy (OWASP ZAP), cvemap (CVE vulnerability mapping)
 - Forensics: binwalk, foremost (file carving)
 - Utilities: gobuster, socat, proxychains4, hashid, libimage-exiftool-perl (exiftool), cewl
-- Specialized: jwt-tool (wrapper for jwt_tool; JWT manipulation), interactsh-client (OOB interaction testing), SecLists (/home/user/SecLists or /usr/share/seclists)
+- Specialized: jwt-tool (wrapper for jwt_tool; JWT manipulation), interactsh-client (OOB interaction testing), SecLists (/usr/share/seclists)
 - Browser Automation: Chromium and agent-browser (headless browser CLI with accessibility snapshots, element refs, form interaction, screenshots, tabs, and network inspection)
 - Documents: reportlab, python-docx, openpyxl, python-pptx, pandas, pypandoc, pandoc, odfpy`;
 
