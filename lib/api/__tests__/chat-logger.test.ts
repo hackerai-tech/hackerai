@@ -17,7 +17,7 @@ const {
 const { ChatSDKError } = require("../../errors");
 const { phLogger } = require("../../posthog/server");
 describe("captureToolCalls", () => {
-  it("aggregates repeated tool calls by tool before sending PostHog events", () => {
+  it("aggregates all tool calls into one anonymous PostHog event", () => {
     const capture = jest.fn();
     const posthog = { capture };
     const chatLogger = {
@@ -36,23 +36,17 @@ describe("captureToolCalls", () => {
       mode: "agent",
     });
 
-    expect(capture).toHaveBeenCalledTimes(2);
+    expect(capture).toHaveBeenCalledTimes(1);
     expect(capture).toHaveBeenCalledWith({
       distinctId: "user_123",
       event: "hackerai-tool_usage",
       properties: {
         mode: "agent",
-        toolName: "run_terminal_cmd",
-        count: 3,
-      },
-    });
-    expect(capture).toHaveBeenCalledWith({
-      distinctId: "user_123",
-      event: "hackerai-tool_usage",
-      properties: {
-        mode: "agent",
-        toolName: "open_url",
-        count: 1,
+        toolCountsByName: JSON.stringify({ run_terminal_cmd: 3, open_url: 1 }),
+        totalCount: 4,
+        distinctToolCount: 2,
+        tool_usage_event_version: 2,
+        $process_person_profile: false,
       },
     });
   });

@@ -1105,8 +1105,8 @@ export function captureAgentBudgetAbort({
 
 /**
  * Capture aggregated tool usage to PostHog at end of request.
- * One event is emitted per tool to keep analytics useful while
- * avoiding the cost of one PostHog event per individual tool call.
+ * One event is emitted per request with a JSON tool-count map so exact tool
+ * totals remain queryable without one billable event per tool.
  */
 export function captureToolCalls({
   posthog,
@@ -1137,17 +1137,21 @@ export function captureToolCalls({
     aggregatedToolCalls.set(tool.name, { name: tool.name, count: 1 });
   }
 
-  for (const tool of aggregatedToolCalls.values()) {
-    posthog.capture({
-      distinctId: userId,
-      event: "hackerai-tool_usage",
-      properties: {
-        mode,
-        toolName: tool.name,
-        count: tool.count,
-      },
-    });
-  }
+  const tools = Array.from(aggregatedToolCalls.values());
+  posthog.capture({
+    distinctId: userId,
+    event: "hackerai-tool_usage",
+    properties: {
+      mode,
+      toolCountsByName: JSON.stringify(
+        Object.fromEntries(tools.map((tool) => [tool.name, tool.count])),
+      ),
+      totalCount: toolCalls.length,
+      distinctToolCount: tools.length,
+      tool_usage_event_version: 2,
+      $process_person_profile: false,
+    },
+  });
 }
 
 export type AgentRunOutcome = "success" | "aborted" | "error";
