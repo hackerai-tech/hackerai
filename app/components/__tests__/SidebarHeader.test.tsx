@@ -162,7 +162,12 @@ describe("SidebarHeaderContent", () => {
       "Task search",
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "Close sidebar" }));
+    const closeButton = screen.getByRole("button", { name: "Close sidebar" });
+
+    expect(closeButton).not.toHaveClass("cursor-pointer");
+    expect(closeButton).not.toHaveClass("cursor-w-resize");
+
+    fireEvent.click(closeButton);
     expect(handleCloseSidebar).toHaveBeenCalledTimes(1);
   });
 });

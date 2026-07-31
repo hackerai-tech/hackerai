@@ -2,7 +2,12 @@ import "@testing-library/jest-dom";
 import React from "react";
 import { act, fireEvent, render } from "@testing-library/react";
 import { describe, expect, it, jest } from "@jest/globals";
-import { SidebarProvider } from "../sidebar";
+import {
+  Sidebar,
+  SidebarContent,
+  SidebarProvider,
+  SidebarRail,
+} from "../sidebar";
 
 jest.mock("@/hooks/use-mobile", () => ({
   useIsMobile: () => false,
@@ -63,5 +68,40 @@ describe("SidebarProvider", () => {
     fireEvent.keyDown(window, { key: "b", ctrlKey: true });
 
     expect(onOpenChange).not.toHaveBeenCalled();
+  });
+
+  it("uses the default cursor instead of a resize cursor on the sidebar rail", () => {
+    const onOpenChange = jest.fn();
+    const { container } = render(
+      <SidebarProvider open={true} onOpenChange={onOpenChange}>
+        <Sidebar>
+          <SidebarRail />
+        </Sidebar>
+      </SidebarProvider>,
+    );
+
+    const rail = container.querySelector('[data-sidebar="rail"]');
+
+    expect(rail).toHaveClass("cursor-default");
+    expect(rail?.className).not.toContain("cursor-w-resize");
+    expect(rail?.className).not.toContain("cursor-e-resize");
+
+    fireEvent.click(rail!);
+    expect(onOpenChange).toHaveBeenCalledWith(false);
+  });
+
+  it("uses the default cursor on the collapsed expand area", () => {
+    const { container } = render(
+      <SidebarProvider open={false} onOpenChange={jest.fn()}>
+        <Sidebar>
+          <SidebarContent />
+        </Sidebar>
+      </SidebarProvider>,
+    );
+
+    const expandArea = container.querySelector('[data-sidebar="expand-area"]');
+
+    expect(expandArea).toHaveClass("cursor-default");
+    expect(expandArea?.className).not.toContain("cursor-e-resize");
   });
 });

@@ -256,7 +256,7 @@ const SidebarHeaderContentImpl: FC<SidebarHeaderContentImplProps> = ({
                 data-testid="sidebar-toggle"
                 variant="ghost"
                 size="icon-sm"
-                className="size-9 cursor-w-resize text-sidebar-foreground/65 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground"
+                className="size-9 text-sidebar-foreground/65 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground"
                 onClick={handleCloseSidebar}
                 aria-label="Close sidebar"
               >
