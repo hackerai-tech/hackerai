@@ -452,7 +452,7 @@ Commands run directly on the host OS "workstation" without Docker isolation. Be 
       "Do not use host.docker.internal as a shortcut to the user's host from the cloud sandbox",
     );
     expect(prompt).toContain(
-      "use the HackerAI Desktop App, Remote Connection, or a user-provided reachable tunnel URL",
+      "use the HackerAI Desktop App, Remote Control, or a user-provided reachable tunnel URL",
     );
     expect(prompt).toContain(
       "Do not invent host aliases or imply the cloud sandbox can directly reach private/internal assets",
@@ -490,7 +490,7 @@ Commands run directly on the host OS "workstation" without Docker isolation. Be 
     expect(prompt).toContain("<current_mode>");
     expect(prompt).toContain("You are in ASK MODE with limited tools.");
     expect(prompt).toContain(
-      "AGENT MODE runs commands in the selected execution environment. Cloud Agent cannot access the user's computer; local execution requires an explicitly connected Desktop App or Remote Connection.",
+      "AGENT MODE runs commands in the selected execution environment. Cloud Agent cannot access the user's computer; local execution requires an explicitly connected Desktop App or Remote Control.",
     );
     expect(prompt).not.toContain("switch to AGENT MODE for full access");
   });
@@ -508,19 +508,43 @@ Commands run directly on the host OS "workstation" without Docker isolation. Be 
     expect(prompt).toContain("<current_mode>");
     expect(prompt).toContain("You are in ASK MODE with limited tools.");
     expect(prompt).toContain(
-      "AGENT MODE requires a connected local machine on the free plan, or Pro for isolated cloud Agent access. Switching modes alone does not connect the user's computer.",
+      "AGENT MODE requires a connected local machine on the free plan, or a paid plan for isolated cloud Agent access. Switching modes alone does not connect the user's computer.",
     );
     expect(prompt).not.toContain("switch to AGENT MODE for full access");
   });
 
   it.each([
-    ["free Ask", "ask", "free", null],
-    ["paid Ask", "ask", "pro", null],
-    ["cloud Agent", "agent", "pro", null],
-    ["local Agent", "agent", "pro", "Local sandbox context"],
+    [
+      "free Ask",
+      "ask",
+      "free",
+      null,
+      "requires a connected local machine on the free plan, or a paid plan for isolated cloud Agent access",
+    ],
+    [
+      "paid Ask",
+      "ask",
+      "pro",
+      null,
+      "Cloud Agent cannot access the user's computer; local execution requires an explicitly connected Desktop App or Remote Control.",
+    ],
+    [
+      "cloud Agent",
+      "agent",
+      "pro",
+      null,
+      "For the default cloud sandbox, commands run in an isolated container",
+    ],
+    [
+      "local Agent",
+      "agent",
+      "pro",
+      "Local sandbox context",
+      "Local sandbox context",
+    ],
   ] as const)(
     "adds local-machine connection guidance once for %s",
-    async (_label, mode, subscription, sandboxContext) => {
+    async (_label, mode, subscription, sandboxContext, expectedVariant) => {
       const prompt = await systemPrompt(
         "user_123",
         mode,
@@ -537,12 +561,13 @@ Commands run directly on the host OS "workstation" without Docker isolation. Be 
         "Switching to Agent Mode or upgrading does not automatically connect HackerAI to the user's computer.",
       );
       expect(prompt).toContain(
-        "connect it through the HackerAI Desktop App or a Remote Connection",
+        "connect it through the HackerAI Desktop App or Remote Control",
       );
       expect(prompt).toContain(
         "Local Agent access is available on every plan, including Free.",
       );
       expect(prompt.split(setupUrl)).toHaveLength(2);
+      expect(prompt).toContain(expectedVariant);
     },
   );
 

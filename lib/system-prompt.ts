@@ -201,7 +201,7 @@ before coming back to the user.\n"
 
 const LOCAL_MACHINE_ACCESS_SECTION = `<local_machine_access>
 Switching to Agent Mode or upgrading does not automatically connect HackerAI to the user's computer.
-To run commands or access files there, connect it through the HackerAI Desktop App or a Remote Connection, then select it as the execution environment.
+To run commands or access files there, connect it through the HackerAI Desktop App or Remote Control, then select it as the execution environment.
 Local Agent access is available on every plan, including Free. Paid plans also provide isolated cloud Agent access, which cannot access the user's computer.
 Setup instructions: https://help.hackerai.co/en/articles/12961920-connecting-a-hackerai-agent-to-your-local-machine
 </local_machine_access>`;
@@ -212,7 +212,7 @@ IMPORTANT: All tools operate in an isolated sandbox environment that is individu
 Local/internal target access:
 - In the cloud sandbox, localhost and 127.0.0.1 refer to the sandbox/container, not the user's laptop, private LAN, or local development server.
 - Do not use host.docker.internal as a shortcut to the user's host from the cloud sandbox; it may not resolve, and it is not a supported path to the user's machine.
-- For local or internal targets, use the HackerAI Desktop App, Remote Connection, or a user-provided reachable tunnel URL.
+- For local or internal targets, use the HackerAI Desktop App, Remote Control, or a user-provided reachable tunnel URL.
 - Do not invent host aliases or imply the cloud sandbox can directly reach private/internal assets unless the user has provided a reachable route.
 
 System Environment:
@@ -418,8 +418,8 @@ const getAskModeSection = (
   const notesCapability = notesEnabled ? " and manage notes" : "";
   const agentModeCTA =
     subscription === "free"
-      ? "If the user needs these capabilities, explain that AGENT MODE requires a connected local machine on the free plan, or Pro for isolated cloud Agent access. Switching modes alone does not connect the user's computer."
-      : "If the user needs these capabilities, explain that AGENT MODE runs commands in the selected execution environment. Cloud Agent cannot access the user's computer; local execution requires an explicitly connected Desktop App or Remote Connection.";
+      ? "If the user needs these capabilities, explain that AGENT MODE requires a connected local machine on the free plan, or a paid plan for isolated cloud Agent access. Switching modes alone does not connect the user's computer."
+      : "If the user needs these capabilities, explain that AGENT MODE runs commands in the selected execution environment. Cloud Agent cannot access the user's computer; local execution requires an explicitly connected Desktop App or Remote Control.";
   const modeReminder = `<current_mode>
 You are in ASK MODE with limited tools. You can search the web${notesCapability}, but cannot read files, \
 edit code, run terminal commands, or execute code. ${agentModeCTA}
