@@ -306,6 +306,7 @@ function SidebarRail({ className, ...props }: React.ComponentProps<"button">) {
       title="Toggle Sidebar"
       className={cn(
         "absolute inset-y-0 z-20 hidden w-4 -translate-x-1/2 cursor-default transition-all ease-linear group-data-[side=left]:-right-4 group-data-[side=right]:left-0 sm:flex",
+        "[[data-side=left][data-state=collapsed]_&]:cursor-e-resize [[data-side=right][data-state=collapsed]_&]:cursor-w-resize",
         "hover:group-data-[collapsible=offcanvas]:bg-sidebar group-data-[collapsible=offcanvas]:translate-x-0",
         "[[data-side=left][data-collapsible=offcanvas]_&]:-right-2",
         "[[data-side=right][data-collapsible=offcanvas]_&]:-left-2",
@@ -332,7 +333,7 @@ function SidebarExpandArea({
       data-sidebar="expand-area"
       data-slot="sidebar-expand-area"
       className={cn(
-        "absolute inset-0 z-10 cursor-default hover:bg-sidebar-accent/5 transition-colors",
+        "absolute inset-0 z-10 cursor-e-resize hover:bg-sidebar-accent/5 transition-colors",
         className,
       )}
       onClick={toggleSidebar}

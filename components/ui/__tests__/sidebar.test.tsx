@@ -83,14 +83,18 @@ describe("SidebarProvider", () => {
     const rail = container.querySelector('[data-sidebar="rail"]');
 
     expect(rail).toHaveClass("cursor-default");
-    expect(rail?.className).not.toContain("cursor-w-resize");
-    expect(rail?.className).not.toContain("cursor-e-resize");
+    expect(rail?.className).toContain(
+      "[[data-side=left][data-state=collapsed]_&]:cursor-e-resize",
+    );
+    expect(rail?.className).toContain(
+      "[[data-side=right][data-state=collapsed]_&]:cursor-w-resize",
+    );
 
     fireEvent.click(rail!);
     expect(onOpenChange).toHaveBeenCalledWith(false);
   });
 
-  it("uses the default cursor on the collapsed expand area", () => {
+  it("shows the expand cursor on the collapsed expand area", () => {
     const { container } = render(
       <SidebarProvider open={false} onOpenChange={jest.fn()}>
         <Sidebar>
@@ -101,7 +105,6 @@ describe("SidebarProvider", () => {
 
     const expandArea = container.querySelector('[data-sidebar="expand-area"]');
 
-    expect(expandArea).toHaveClass("cursor-default");
-    expect(expandArea?.className).not.toContain("cursor-e-resize");
+    expect(expandArea).toHaveClass("cursor-e-resize");
   });
 });
