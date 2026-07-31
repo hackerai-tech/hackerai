@@ -60,6 +60,8 @@ import {
   normalizeAgentFirstSandboxType,
 } from "@/lib/activation/agent-first-default";
 
+const DESKTOP_ENTITLEMENT_REFRESH_TIMEOUT_MS = 5_000;
+
 interface GlobalStateType {
   // Input state
   input: string;
@@ -715,22 +717,32 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
       desktopEntitlementRefreshUserRef.current = user.id;
 
       setIsCheckingProPlan(true);
+      const controller = new AbortController();
+      const timeoutId = setTimeout(
+        () => controller.abort(),
+        DESKTOP_ENTITLEMENT_REFRESH_TIMEOUT_MS,
+      );
       try {
         const response = await fetch("/api/entitlements", {
           credentials: "include",
+          signal: controller.signal,
         });
         if (!response.ok) return;
 
         const data = await response.json();
-        await refreshAuthTokenAfterEntitlementRefresh();
         setSubscriptionWithNormalize(
           resolveSubscriptionTier(
             Array.isArray(data.entitlements) ? data.entitlements : [],
           ),
         );
+        // The API response is authoritative for the UI. Refresh AuthKit and the
+        // shared access token in the background so a slow token refresh cannot
+        // keep the free Ask/Agent selector hidden.
+        void refreshAuthTokenAfterEntitlementRefresh();
       } catch {
         // Keep the token-derived tier; this is only a best-effort desktop heal.
       } finally {
+        clearTimeout(timeoutId);
         setIsCheckingProPlan(false);
       }
     };

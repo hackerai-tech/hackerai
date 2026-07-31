@@ -2,8 +2,25 @@ import "@testing-library/jest-dom";
 import { act, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, jest } from "@jest/globals";
 import { useAccessToken, useAuth } from "@workos-inc/authkit-nextjs/components";
-import { GlobalStateProvider, useGlobalState } from "../GlobalState";
 import { SHARED_TOKEN_KEY } from "@/lib/auth/shared-token";
+
+jest.mock("@/app/hooks/useSandboxPreference", () => {
+  const setSandboxPreference = jest.fn();
+  const retryDesktopBridge = jest.fn();
+
+  return {
+    useSandboxPreference: () => ({
+      sandboxPreference: "e2b",
+      setSandboxPreference,
+      desktopBridgeActive: false,
+      desktopBridgeStatus: "idle",
+      retryDesktopBridge,
+    }),
+  };
+});
+
+const { GlobalStateProvider, useGlobalState } =
+  jest.requireActual<typeof import("../GlobalState")>("../GlobalState");
 
 const mockAuthUser = (
   entitlements: string[],
@@ -59,6 +76,8 @@ function ActiveProjectProbe() {
 describe("GlobalStateProvider agent defaults", () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    jest.useRealTimers();
+    delete window.__TAURI_INTERNALS__;
     window.history.pushState({}, "", "/");
     window.localStorage.clear();
     jest.mocked(useAccessToken).mockReturnValue({
@@ -70,6 +89,110 @@ describe("GlobalStateProvider agent defaults", () => {
       Promise.resolve({ ok: false }),
     ) as unknown as typeof fetch;
     mockAuthUser([]);
+  });
+
+  it("reveals free desktop mode access before token refresh finishes", async () => {
+    window.__TAURI_INTERNALS__ = {};
+    const refreshAuth = jest.fn(() => new Promise<void>(() => {}));
+    mockAuthUser([], { refreshAuth });
+    global.fetch = jest.fn((input) => {
+      if (String(input) === "/api/entitlements") {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({ entitlements: [] }),
+        });
+      }
+
+      return Promise.resolve({ ok: false });
+    }) as unknown as typeof fetch;
+
+    render(
+      <GlobalStateProvider>
+        <GlobalStateProbe />
+      </GlobalStateProvider>,
+    );
+
+    await waitFor(() => {
+      expect(refreshAuth).toHaveBeenCalledTimes(1);
+      expect(screen.getByTestId("chat-mode-access-resolved")).toHaveTextContent(
+        "true",
+      );
+      expect(screen.getByTestId("checking-pro-plan")).toHaveTextContent(
+        "false",
+      );
+    });
+    expect(screen.getByTestId("subscription")).toHaveTextContent("free");
+    expect(screen.getByTestId("paid-agent-only")).toHaveTextContent("false");
+  });
+
+  it("resolves paid desktop users to Agent-only before token refresh finishes", async () => {
+    window.__TAURI_INTERNALS__ = {};
+    const refreshAuth = jest.fn(() => new Promise<void>(() => {}));
+    mockAuthUser([], { refreshAuth });
+    global.fetch = jest.fn((input) => {
+      if (String(input) === "/api/entitlements") {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({ entitlements: ["pro-plan"] }),
+        });
+      }
+
+      return Promise.resolve({ ok: false });
+    }) as unknown as typeof fetch;
+
+    render(
+      <GlobalStateProvider>
+        <GlobalStateProbe />
+      </GlobalStateProvider>,
+    );
+
+    await waitFor(() => {
+      expect(refreshAuth).toHaveBeenCalledTimes(1);
+      expect(screen.getByTestId("subscription")).toHaveTextContent("pro");
+      expect(screen.getByTestId("chat-mode-access-resolved")).toHaveTextContent(
+        "true",
+      );
+      expect(screen.getByTestId("paid-agent-only")).toHaveTextContent("true");
+      expect(screen.getByTestId("chat-mode")).toHaveTextContent("agent");
+    });
+  });
+
+  it("releases free desktop mode access when entitlement refresh times out", async () => {
+    jest.useFakeTimers();
+    window.__TAURI_INTERNALS__ = {};
+    let requestAborted = false;
+    global.fetch = jest.fn((input, init) => {
+      if (String(input) === "/api/entitlements") {
+        return new Promise((_, reject) => {
+          init?.signal?.addEventListener("abort", () => {
+            requestAborted = true;
+            reject(new DOMException("Aborted", "AbortError"));
+          });
+        });
+      }
+
+      return Promise.resolve({ ok: false });
+    }) as unknown as typeof fetch;
+
+    render(
+      <GlobalStateProvider>
+        <GlobalStateProbe />
+      </GlobalStateProvider>,
+    );
+
+    expect(screen.getByTestId("chat-mode-access-resolved")).toHaveTextContent(
+      "false",
+    );
+
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(5_000);
+    });
+
+    expect(requestAborted).toBe(true);
+    expect(screen.getByTestId("chat-mode-access-resolved")).toHaveTextContent(
+      "true",
+    );
+    expect(screen.getByTestId("checking-pro-plan")).toHaveTextContent("false");
   });
 
   it("keeps chat mode access unresolved while authentication is loading", () => {
