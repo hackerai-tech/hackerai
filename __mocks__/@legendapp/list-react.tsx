@@ -1,7 +1,7 @@
 import {
-  Fragment,
   forwardRef,
   isValidElement,
+  memo,
   useImperativeHandle,
   useRef,
   type ComponentType,
@@ -20,11 +20,42 @@ const renderOptionalComponent = (component: OptionalComponent) => {
   return isValidElement(component) ? component : null;
 };
 
+type MockLegendListItemProps = {
+  data: readonly unknown[];
+  extraData: unknown;
+  index: number;
+  item: unknown;
+  renderItem: (info: {
+    data: readonly unknown[];
+    extraData: unknown;
+    index: number;
+    item: unknown;
+  }) => ReactNode;
+};
+
+const MockLegendListItem = memo(
+  function MockLegendListItem({
+    data,
+    extraData,
+    index,
+    item,
+    renderItem,
+  }: MockLegendListItemProps) {
+    return renderItem({ data, extraData, index, item });
+  },
+  (previous, next) =>
+    previous.data === next.data &&
+    previous.extraData === next.extraData &&
+    previous.index === next.index &&
+    previous.item === next.item,
+);
+
 export const LegendList = forwardRef(function MockLegendList<
   Item extends unknown,
 >(
   {
     data,
+    extraData,
     renderItem,
     keyExtractor,
     ListHeaderComponent,
@@ -34,7 +65,13 @@ export const LegendList = forwardRef(function MockLegendList<
     "data-testid": dataTestId,
   }: {
     data: Item[];
-    renderItem: (info: { item: Item; index: number }) => ReactNode;
+    extraData?: unknown;
+    renderItem: (info: {
+      data: readonly Item[];
+      extraData: unknown;
+      item: Item;
+      index: number;
+    }) => ReactNode;
     keyExtractor?: (item: Item, index: number) => string;
     ListHeaderComponent?: OptionalComponent;
     ListFooterComponent?: OptionalComponent;
@@ -66,9 +103,14 @@ export const LegendList = forwardRef(function MockLegendList<
       <div className="legend-list-content-container">
         {renderOptionalComponent(ListHeaderComponent)}
         {data.map((item, index) => (
-          <Fragment key={keyExtractor?.(item, index) ?? index}>
-            {renderItem({ item, index })}
-          </Fragment>
+          <MockLegendListItem
+            key={keyExtractor?.(item, index) ?? index}
+            data={data}
+            extraData={extraData}
+            index={index}
+            item={item}
+            renderItem={renderItem as MockLegendListItemProps["renderItem"]}
+          />
         ))}
         {renderOptionalComponent(ListFooterComponent)}
       </div>

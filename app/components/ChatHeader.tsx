@@ -3,14 +3,7 @@
 import React, { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { useAuth } from "@workos-inc/authkit-nextjs/components";
-import {
-  PanelLeft,
-  Sparkle,
-  SquarePen,
-  HatGlasses,
-  Split,
-  Share,
-} from "lucide-react";
+import { PanelLeft, Sparkle, SquarePen, Split, Share } from "lucide-react";
 import { useGlobalState } from "../contexts/GlobalState";
 import { redirectToPricing } from "../hooks/usePricingDialog";
 import { useRouter } from "next/navigation";
@@ -64,8 +57,6 @@ const ChatHeader: React.FC<ChatHeaderProps> = ({
     initializeNewChat,
     closeSidebar,
     setChatSidebarOpen,
-    temporaryChatsEnabled,
-    setTemporaryChatsEnabled,
   } = useGlobalState();
   const router = useRouter();
   const isMobile = useIsMobile();
@@ -85,8 +76,6 @@ const ChatHeader: React.FC<ChatHeaderProps> = ({
     !loading && user && !isCheckingProPlan && subscription === "free",
   );
   const showVisibleUpgradeCta = showEmptyStateHeader && showUpgradeCta;
-  const canUseTemporaryChats =
-    !loading && Boolean(user) && !isCheckingProPlan && subscription !== "free";
 
   React.useEffect(() => {
     if (!showVisibleUpgradeCta) return;
@@ -120,7 +109,6 @@ const ChatHeader: React.FC<ChatHeaderProps> = ({
 
     // Reset chat state while current Chat is still mounted (so chatResetRef is set)
     initializeNewChat();
-    setTemporaryChatsEnabled(false);
     router.push("/");
   };
 
@@ -148,34 +136,6 @@ const ChatHeader: React.FC<ChatHeaderProps> = ({
             <div className="flex flex-1 gap-2 justify-between items-center">
               <div className="flex gap-[40px]"></div>
               <div className="flex gap-2 items-center">
-                {/* Temporary Chat Toggle - Desktop */}
-                {canUseTemporaryChats && (
-                  <TooltipProvider>
-                    <Tooltip>
-                      <TooltipTrigger asChild>
-                        <Button
-                          variant={temporaryChatsEnabled ? "default" : "ghost"}
-                          size="sm"
-                          aria-label="Toggle temporary tasks for new tasks"
-                          aria-pressed={temporaryChatsEnabled}
-                          onClick={() =>
-                            setTemporaryChatsEnabled(!temporaryChatsEnabled)
-                          }
-                          className="flex items-center gap-2 rounded-full px-3"
-                        >
-                          <HatGlasses className="size-5" />
-                        </Button>
-                      </TooltipTrigger>
-                      <TooltipContent>
-                        <p>
-                          {temporaryChatsEnabled
-                            ? "Turn off temporary task"
-                            : "Turn on temporary task"}
-                        </p>
-                      </TooltipContent>
-                    </Tooltip>
-                  </TooltipProvider>
-                )}
                 {/* Show sign in/up buttons for non-logged-in users */}
                 {!loading && !user && (
                   <>
@@ -228,34 +188,6 @@ const ChatHeader: React.FC<ChatHeaderProps> = ({
               )}
             </div>
             <div className="flex items-center gap-2">
-              {/* Temporary Chat Toggle - Mobile */}
-              {canUseTemporaryChats && (
-                <TooltipProvider>
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <Button
-                        variant={temporaryChatsEnabled ? "default" : "ghost"}
-                        size="icon"
-                        aria-label="Toggle temporary tasks for new tasks"
-                        aria-pressed={temporaryChatsEnabled}
-                        onClick={() =>
-                          setTemporaryChatsEnabled(!temporaryChatsEnabled)
-                        }
-                        className="h-7 w-7 rounded-full"
-                      >
-                        <HatGlasses className="size-5" />
-                      </Button>
-                    </TooltipTrigger>
-                    <TooltipContent>
-                      <p>
-                        {temporaryChatsEnabled
-                          ? "Turn off temporary task"
-                          : "Turn on temporary task"}
-                      </p>
-                    </TooltipContent>
-                  </Tooltip>
-                </TooltipProvider>
-              )}
               {/* Show sign in/up buttons for non-logged-in users */}
               {!loading && !user && (
                 <>
@@ -314,11 +246,6 @@ const ChatHeader: React.FC<ChatHeaderProps> = ({
                 <span className="whitespace-nowrap text-ellipsis overflow-hidden flex items-center gap-2">
                   {isChatNotFound ? (
                     ""
-                  ) : !isExistingChat && temporaryChatsEnabled ? (
-                    <>
-                      Temporary Task
-                      <HatGlasses className="size-5" />
-                    </>
                   ) : (
                     <>
                       {isBranchedChat && branchedFromChatTitle && (
@@ -342,39 +269,33 @@ const ChatHeader: React.FC<ChatHeaderProps> = ({
               </div>
             </div>
             <div className="flex items-center gap-2 flex-shrink-0">
-              {/* Share button - always in layout for non-temporary chats (desktop only) so its
-                  size is reserved from the start and doesn't shift the header when title loads */}
-              {!temporaryChatsEnabled && (
-                <button
-                  aria-label="Share"
-                  data-testid="share-chat-button"
-                  onClick={() => setShowShareDialog(true)}
-                  className={`relative flex-shrink-0 rounded-full h-[34px] px-3 py-0 text-sm font-medium transition-colors hover:bg-[#ffffff1a] max-md:hidden ${
-                    isExistingChat && id && taskTitle
-                      ? ""
-                      : "invisible pointer-events-none"
-                  }`}
+              {/* Share button stays in the desktop layout so title loading does not shift it. */}
+              <button
+                aria-label="Share"
+                data-testid="share-chat-button"
+                onClick={() => setShowShareDialog(true)}
+                className={`relative flex-shrink-0 rounded-full h-[34px] px-3 py-0 text-sm font-medium transition-colors hover:bg-[#ffffff1a] max-md:hidden ${
+                  isExistingChat && id && taskTitle
+                    ? ""
+                    : "invisible pointer-events-none"
+                }`}
+              >
+                <div className="flex w-full items-center justify-center gap-1.5">
+                  <Share className="h-4 w-4 -ms-0.5" />
+                  Share
+                </div>
+              </button>
+              {isMobile && isInChat && showSidebarToggle && (
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  aria-label="Start new task"
+                  onClick={handleNewChat}
+                  className="h-7 w-7"
                 >
-                  <div className="flex w-full items-center justify-center gap-1.5">
-                    <Share className="h-4 w-4 -ms-0.5" />
-                    Share
-                  </div>
-                </button>
+                  <SquarePen className="size-5" />
+                </Button>
               )}
-              {/* New Chat Button - Show on mobile when in a chat or when temporary chat is active */}
-              {isMobile &&
-                (isInChat || (!isExistingChat && temporaryChatsEnabled)) &&
-                showSidebarToggle && (
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    aria-label="Start new task"
-                    onClick={handleNewChat}
-                    className="h-7 w-7"
-                  >
-                    <SquarePen className="size-5" />
-                  </Button>
-                )}
             </div>
           </div>
         </div>

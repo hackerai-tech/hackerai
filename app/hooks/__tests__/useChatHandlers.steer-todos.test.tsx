@@ -3,7 +3,6 @@ import { beforeEach, describe, expect, it, jest } from "@jest/globals";
 import type { ChatMessage, Todo } from "@/types";
 
 const mockCancelStream = jest.fn(async () => null);
-const mockCancelTempStream = jest.fn(async () => null);
 const mockSaveAssistantMessage = jest.fn(async () => null);
 const mockDeleteLastAssistantMessage = jest.fn(async () => null);
 const mockRegenerateWithNewContent = jest.fn(async () => null);
@@ -12,6 +11,7 @@ const mockQueueMessage = jest.fn();
 const mockSendMessage = jest.fn(async () => undefined);
 const mockStop = jest.fn();
 const mockSetMessages = jest.fn();
+const mockSetTodos = jest.fn();
 let mockInput = "";
 
 const todos: Todo[] = [
@@ -31,7 +31,6 @@ jest.mock("@/convex/_generated/api", () => ({
       regenerateWithNewContent: "regenerateWithNewContent",
       saveAssistantMessage: "saveAssistantMessage",
     },
-    tempStreams: { cancelTempStreamFromClient: "cancelTempStreamFromClient" },
   },
 }));
 
@@ -40,8 +39,6 @@ jest.mock("convex/react", () => ({
     switch (mutation) {
       case "cancelStreamFromClient":
         return mockCancelStream;
-      case "cancelTempStreamFromClient":
-        return mockCancelTempStream;
       case "saveAssistantMessage":
         return mockSaveAssistantMessage;
       case "deleteLastAssistantMessage":
@@ -62,10 +59,9 @@ jest.mock("@/app/contexts/GlobalState", () => ({
     clearInput: jest.fn(),
     clearUploadedFiles: jest.fn(),
     todos,
-    setTodos: jest.fn(),
+    setTodos: mockSetTodos,
     isUploadingFiles: false,
     subscription: "pro",
-    temporaryChatsEnabled: false,
     queueMessage: mockQueueMessage,
     messageQueue: [
       {
@@ -178,6 +174,45 @@ describe("useChatHandlers steer todo handoff", () => {
     );
   });
 
+  it("deletes a persisted trailing response before retrying it", async () => {
+    const regenerate = jest.fn();
+    const { result } = renderHook(() =>
+      useChatHandlers({
+        chatId: "chat-1",
+        messages,
+        sendMessage: mockSendMessage,
+        stop: mockStop,
+        regenerate,
+        setMessages: mockSetMessages,
+        isExistingChat: true,
+        status: "ready",
+        isSendingNowRef: { current: false },
+        hasManuallyStoppedRef: { current: false },
+      }),
+    );
+
+    await act(async () => {
+      await result.current.handleRetry();
+    });
+
+    expect(mockDeleteLastAssistantMessage).toHaveBeenCalledWith({
+      chatId: "chat-1",
+      resetSummary: true,
+      todos: [],
+    });
+    expect(
+      mockDeleteLastAssistantMessage.mock.invocationCallOrder[0],
+    ).toBeLessThan(regenerate.mock.invocationCallOrder[0]);
+    expect(regenerate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        body: expect.objectContaining({
+          messages: [],
+          regenerate: true,
+        }),
+      }),
+    );
+  });
+
   it("queues a manual message while an automatic continuation is submitted", async () => {
     mockInput = "Use the latest result";
     const { result } = renderHook(() =>
@@ -267,5 +302,71 @@ describe("useChatHandlers steer todo handoff", () => {
     expect(globalThis.fetch).not.toHaveBeenCalled();
     expect(mockRemoveQueuedMessage).not.toHaveBeenCalled();
     expect(mockSendMessage).not.toHaveBeenCalled();
+  });
+
+  it("does not clean local state or regenerate when the server rejects a stale edit", async () => {
+    mockRegenerateWithNewContent.mockRejectedValueOnce({
+      data: {
+        code: "MESSAGE_NOT_EDITABLE",
+        message: "Only the latest user message can be edited",
+      },
+    });
+    const regenerate = jest.fn();
+    const { result } = renderHook(() =>
+      useChatHandlers({
+        chatId: "chat-1",
+        messages,
+        sendMessage: mockSendMessage,
+        stop: mockStop,
+        regenerate,
+        setMessages: mockSetMessages,
+        isExistingChat: true,
+        status: "ready",
+        isSendingNowRef: { current: false },
+        hasManuallyStoppedRef: { current: false },
+        activeTriggerRunRef: { current: undefined },
+      }),
+    );
+
+    await act(async () => {
+      await result.current.handleEditMessage("user-1", "Edited task");
+    });
+
+    expect(mockRegenerateWithNewContent).toHaveBeenCalledTimes(1);
+    expect(mockSetTodos).not.toHaveBeenCalled();
+    expect(mockSetMessages).not.toHaveBeenCalled();
+    expect(regenerate).not.toHaveBeenCalled();
+  });
+
+  it("does not clean local state or regenerate when the persisted edit fails", async () => {
+    mockRegenerateWithNewContent.mockRejectedValueOnce(
+      new Error("write failed"),
+    );
+    const regenerate = jest.fn();
+    const { result } = renderHook(() =>
+      useChatHandlers({
+        chatId: "chat-1",
+        messages,
+        sendMessage: mockSendMessage,
+        stop: mockStop,
+        regenerate,
+        setMessages: mockSetMessages,
+        isExistingChat: true,
+        status: "ready",
+        isSendingNowRef: { current: false },
+        hasManuallyStoppedRef: { current: false },
+        activeTriggerRunRef: { current: undefined },
+      }),
+    );
+
+    await act(async () => {
+      await expect(
+        result.current.handleEditMessage("user-1", "Edited task"),
+      ).rejects.toThrow("write failed");
+    });
+
+    expect(mockSetTodos).not.toHaveBeenCalled();
+    expect(mockSetMessages).not.toHaveBeenCalled();
+    expect(regenerate).not.toHaveBeenCalled();
   });
 });

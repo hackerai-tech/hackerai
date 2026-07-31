@@ -11,7 +11,10 @@ import {
 } from "./sandbox";
 import { SANDBOX_ENVIRONMENT_TOOLS } from "./sandbox-tools";
 
-const MAX_SANDBOX_HEALTH_FAILURES = 5;
+// One failed initial readiness check plus one failed reconnect is enough to
+// stop terminal retries in this Agent run. The manager only forgets its local
+// SDK client; it never kills the shared per-user sandbox or another run's work.
+const MAX_SANDBOX_HEALTH_FAILURES = 2;
 
 export class DefaultSandboxManager implements SandboxManager {
   private sandbox: Sandbox | null = null;

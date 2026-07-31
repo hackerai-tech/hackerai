@@ -13,7 +13,6 @@ describe("finalizeNewChatRoute", () => {
         chatId: "replacement-chat",
         isAbort: true,
         isExistingChat: false,
-        isTemporaryChat: false,
       }),
     ).toBe(false);
 
@@ -32,7 +31,6 @@ describe("finalizeNewChatRoute", () => {
         chatId: "current-chat",
         isAbort: true,
         isExistingChat: false,
-        isTemporaryChat: false,
       }),
     ).toBe(true);
 
@@ -45,7 +43,6 @@ describe("finalizeNewChatRoute", () => {
         chatId: "completed-chat",
         isAbort: false,
         isExistingChat: false,
-        isTemporaryChat: false,
       }),
     ).toBe(true);
 
@@ -60,7 +57,6 @@ describe("finalizeNewChatRoute", () => {
         chatId: "stale-chat",
         isAbort: false,
         isExistingChat: false,
-        isTemporaryChat: false,
       }),
     ).toBe(false);
 

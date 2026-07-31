@@ -1,5 +1,9 @@
 import { describe, expect, it, jest, beforeEach } from "@jest/globals";
 import { render, waitFor } from "@testing-library/react";
+import {
+  createPostHogIdentitySignature,
+  POSTHOG_IDENTITY_SIGNATURE_STORAGE_KEY,
+} from "@/lib/analytics/identity";
 
 jest.mock("@workos-inc/authkit-nextjs/components", () => ({
   useAuth: jest.fn(),
@@ -90,11 +94,17 @@ describe("PostHogProvider", () => {
         },
         capture_pageview: false,
         autocapture: false,
+        advanced_disable_feature_flags: true,
       }),
     );
     expect(posthog.set_config).not.toHaveBeenCalled();
     expect(posthog.opt_in_capturing).toHaveBeenCalledWith({
       captureEventName: false,
+    });
+    expect(posthog.identify).toHaveBeenCalledWith("user-123", {
+      email: "user@example.com",
+      name: "Test User",
+      subscription: "pro",
     });
 
     const [, config] = posthog.init.mock.calls[0] as unknown as [
@@ -122,6 +132,50 @@ describe("PostHogProvider", () => {
       $current_url: "https://hackerai.co/auth-error",
       $referrer: "https://idp.example/callback",
     });
+  });
+
+  it("does not resend unchanged person properties across app loads", async () => {
+    const posthog = {
+      __loaded: false,
+      init: jest.fn(),
+      set_config: jest.fn(),
+      opt_in_capturing: jest.fn(),
+      has_opted_out_capturing: jest.fn(() => false),
+      identify: jest.fn(),
+      sessionRecordingStarted: jest.fn(() => false),
+      startSessionRecording: jest.fn(),
+      stopSessionRecording: jest.fn(),
+      reset: jest.fn(),
+      opt_out_capturing: jest.fn(),
+    };
+    mockUseAuth.mockReturnValue({
+      user: {
+        id: "user-deduped",
+        email: "deduped@example.com",
+        firstName: "Deduped",
+        lastName: "User",
+      },
+    });
+    const signature = createPostHogIdentitySignature({
+      userId: "user-deduped",
+      email: "deduped@example.com",
+      name: "Deduped User",
+      subscription: "pro",
+    });
+    window.localStorage.setItem(
+      POSTHOG_IDENTITY_SIGNATURE_STORAGE_KEY,
+      signature,
+    );
+    mockLoadPostHogClient.mockResolvedValue(posthog);
+
+    render(
+      <PostHogProvider>
+        <div>child</div>
+      </PostHogProvider>,
+    );
+
+    await waitFor(() => expect(posthog.identify).toHaveBeenCalledTimes(1));
+    expect(posthog.identify).toHaveBeenCalledWith("user-deduped", undefined);
   });
 
   it("applies exception hooks when the shared client is already initialized", async () => {

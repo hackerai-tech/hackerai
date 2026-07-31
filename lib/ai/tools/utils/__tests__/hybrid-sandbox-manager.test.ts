@@ -605,6 +605,21 @@ describe("HybridSandboxManager reset cleanup", () => {
     }
   });
 
+  it("marks E2B unavailable after the initial check and reconnect both fail", () => {
+    const manager = new HybridSandboxManager(
+      "user-1",
+      jest.fn(),
+      "e2b",
+      "service-key",
+      null,
+      "pro",
+    );
+
+    expect(manager.recordHealthFailure()).toBe(false);
+    expect(manager.recordHealthFailure()).toBe(true);
+    expect(manager.isSandboxUnavailable()).toBe(true);
+  });
+
   it("forgets an E2B connection without killing the shared user sandbox", async () => {
     const manager = new HybridSandboxManager(
       "user-1",

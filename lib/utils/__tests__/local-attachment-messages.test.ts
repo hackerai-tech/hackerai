@@ -102,7 +102,6 @@ describe("local attachment message helpers", () => {
         {
           regenerate: true,
           isAutoContinue: false,
-          isTemporary: true,
           sandboxPreference: "desktop",
         },
       ),
@@ -132,7 +131,6 @@ describe("local attachment message helpers", () => {
       processing_input_other_part_count: 0,
       processing_input_regenerate: true,
       processing_input_auto_continue: false,
-      processing_input_temporary: true,
       processing_input_sandbox_preference: "desktop",
     });
   });

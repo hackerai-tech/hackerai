@@ -10,6 +10,10 @@ import {
   shouldDropExpectedFrontendException,
 } from "@/lib/posthog/expected-frontend-exceptions";
 import { getPostHogClient, loadPostHogClient } from "@/lib/analytics/client";
+import {
+  createPostHogIdentitySignature,
+  POSTHOG_IDENTITY_SIGNATURE_STORAGE_KEY,
+} from "@/lib/analytics/identity";
 
 let lastIdentifiedSignature: string | null = null;
 
@@ -49,6 +53,7 @@ export function PostHogProvider({ children }: { children: React.ReactNode }) {
             process.env.NEXT_PUBLIC_POSTHOG_HOST ?? "https://us.i.posthog.com",
           capture_pageview: false,
           autocapture: false,
+          advanced_disable_feature_flags: true,
           capture_exceptions: {
             capture_unhandled_errors: true,
             capture_unhandled_rejections: true,
@@ -85,19 +90,46 @@ export function PostHogProvider({ children }: { children: React.ReactNode }) {
 
         const name =
           [userFirstName, userLastName].filter(Boolean).join(" ") || userEmail;
-        const identitySignature = JSON.stringify([
-          userId,
-          userEmail,
+        const identitySignature = createPostHogIdentitySignature({
+          userId: userId!,
+          email: userEmail,
           name,
           subscription,
-        ]);
+        });
         if (lastIdentifiedSignature !== identitySignature) {
-          posthog.identify(userId!, {
-            email: userEmail,
-            name,
-            subscription,
-          });
+          let persistedIdentitySignature: string | null = null;
+          try {
+            persistedIdentitySignature = window.localStorage.getItem(
+              POSTHOG_IDENTITY_SIGNATURE_STORAGE_KEY,
+            );
+          } catch {
+            // Storage can be unavailable in privacy-restricted browsers.
+          }
+
+          const shouldUpdatePersonProperties =
+            persistedIdentitySignature !== identitySignature;
+          posthog.identify(
+            userId!,
+            shouldUpdatePersonProperties
+              ? {
+                  email: userEmail,
+                  name,
+                  subscription,
+                }
+              : undefined,
+          );
           lastIdentifiedSignature = identitySignature;
+
+          if (shouldUpdatePersonProperties) {
+            try {
+              window.localStorage.setItem(
+                POSTHOG_IDENTITY_SIGNATURE_STORAGE_KEY,
+                identitySignature,
+              );
+            } catch {
+              // Best-effort cross-load deduplication only.
+            }
+          }
         }
 
         if (subscription !== "free") {

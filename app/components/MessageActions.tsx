@@ -23,6 +23,7 @@ interface MessageActionsProps {
   canRegenerate: boolean;
   onRegenerate: () => void | Promise<void>;
   onEdit: () => void;
+  canEdit: boolean;
   onBranch?: () => void;
   isHovered: boolean;
   isEditing: boolean;
@@ -32,7 +33,6 @@ interface MessageActionsProps {
   onFeedback?: (type: "positive" | "negative") => void;
   existingFeedback?: "positive" | "negative" | null;
   isAwaitingFeedbackDetails?: boolean;
-  isTemporaryChat?: boolean;
   sources?: Array<{
     title?: string;
     url: string;
@@ -129,6 +129,7 @@ export const MessageActions = ({
   canRegenerate,
   onRegenerate,
   onEdit,
+  canEdit,
   onBranch,
   isHovered,
   isEditing,
@@ -138,7 +139,6 @@ export const MessageActions = ({
   onFeedback,
   existingFeedback,
   isAwaitingFeedbackDetails = false,
-  isTemporaryChat = false,
   sources = [],
 }: MessageActionsProps) => {
   const [copied, setCopied] = useState(false);
@@ -249,8 +249,8 @@ export const MessageActions = ({
               delayDuration={300}
             />
 
-            {/* Show edit only for user messages */}
-            {isUser && (
+            {/* Only the latest user-authored message can be edited. */}
+            {isUser && canEdit && (
               <WithTooltip
                 display={"Edit message"}
                 trigger={
@@ -267,8 +267,8 @@ export const MessageActions = ({
               />
             )}
 
-            {/* Show feedback buttons only for assistant messages and not in temporary chats */}
-            {!isUser && onFeedback && !isTemporaryChat && (
+            {/* Show feedback buttons only for assistant messages. */}
+            {!isUser && onFeedback && (
               <>
                 {/* Hide positive feedback button when awaiting negative feedback details */}
                 {!isAwaitingFeedbackDetails && (
@@ -350,8 +350,8 @@ export const MessageActions = ({
               />
             )}
 
-            {/* Show branch only for assistant messages and not in temporary chats */}
-            {!isUser && onBranch && !isTemporaryChat && (
+            {/* Show branch only for assistant messages. */}
+            {!isUser && onBranch && (
               <WithTooltip
                 display={"Branch in new task"}
                 trigger={

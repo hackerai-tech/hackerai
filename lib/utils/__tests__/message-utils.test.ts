@@ -1,5 +1,6 @@
 import { describe, it, expect } from "@jest/globals";
 import {
+  findLastUserMessageIndex,
   getAutoContinueChainAssistantIds,
   getMessagesUpToLastRealUser,
 } from "../message-utils";
@@ -18,6 +19,39 @@ const msg = (
 });
 
 describe("message-utils", () => {
+  describe("findLastUserMessageIndex", () => {
+    it("returns the latest user-authored message before an assistant response", () => {
+      expect(
+        findLastUserMessageIndex([
+          msg("u1", "user"),
+          msg("a1", "assistant"),
+          msg("u2", "user"),
+          msg("a2", "assistant"),
+        ]),
+      ).toBe(2);
+    });
+
+    it("ignores auto-continue prompts after the latest user message", () => {
+      expect(
+        findLastUserMessageIndex([
+          msg("u1", "user"),
+          msg("a1", "assistant"),
+          msg("ac1", "user", true),
+          msg("a2", "assistant"),
+        ]),
+      ).toBe(0);
+    });
+
+    it("returns undefined when no user-authored message exists", () => {
+      expect(
+        findLastUserMessageIndex([
+          msg("a1", "assistant"),
+          msg("sys1", "system"),
+        ]),
+      ).toBeUndefined();
+    });
+  });
+
   describe("getAutoContinueChainAssistantIds", () => {
     it.each([
       {

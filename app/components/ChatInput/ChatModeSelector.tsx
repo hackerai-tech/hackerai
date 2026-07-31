@@ -5,7 +5,6 @@ import { DropdownMenu } from "@/components/ui/dropdown-menu";
 import { ModeSelectorTrigger, ModeSelectorContent } from "./ModeSelectorMenu";
 import { useGlobalState } from "@/app/contexts/GlobalState";
 import { useAuth } from "@workos-inc/authkit-nextjs/components";
-import { toast } from "sonner";
 import { AgentUpgradeDialog } from "./AgentUpgradeDialog";
 import { navigateToAuth, useTauri } from "@/app/hooks/useTauri";
 
@@ -18,7 +17,6 @@ export function ChatModeSelector({ className }: ChatModeSelectorProps) {
     chatMode,
     setChatMode,
     subscription,
-    temporaryChatsEnabled,
     hasLocalSandbox,
     desktopBridgeStatus,
     retryDesktopBridge,
@@ -51,12 +49,6 @@ export function ChatModeSelector({ className }: ChatModeSelectorProps) {
       navigateToAuth("/signup", { preferSignInForReturningUser: true });
       return;
     }
-    if (temporaryChatsEnabled) {
-      toast.info("Agent mode requires task history", {
-        description: "Turn off temporary task to use Agent mode.",
-      });
-      return;
-    }
     if (subscription !== "free") {
       setChatMode("agent");
     } else if (hasLocalSandbox) {
@@ -79,7 +71,6 @@ export function ChatModeSelector({ className }: ChatModeSelectorProps) {
           <ModeSelectorContent
             setChatMode={setChatMode}
             onAgentModeClick={handleAgentModeClick}
-            temporaryChatsEnabled={temporaryChatsEnabled}
           />
         </DropdownMenu>
       </div>

@@ -20,7 +20,6 @@ let mockChatMode: "ask" | "agent";
 let mockSubscription: "free" | "pro";
 let mockSandboxPreference: string;
 let mockSelectedModel: "auto" | "hackerai-standard" | "hackerai-pro";
-let mockTemporaryChatsEnabled: boolean;
 
 const mockGetToken = jest.fn<() => Promise<{ token: string }>>();
 const mockRegenerateToken = jest.fn<() => Promise<{ token: string }>>();
@@ -61,7 +60,6 @@ jest.mock("@/app/contexts/GlobalState", () => ({
     setSandboxPreference: mockSetSandboxPreference,
     selectedModel: mockSelectedModel,
     setSelectedModel: mockSetSelectedModel,
-    temporaryChatsEnabled: mockTemporaryChatsEnabled,
     localConnections: mockConnections,
   }),
 }));
@@ -100,7 +98,6 @@ describe("RemoteControlTab", () => {
     mockSubscription = "free";
     mockSandboxPreference = "e2b";
     mockSelectedModel = "hackerai-pro";
-    mockTemporaryChatsEnabled = false;
     mockGetToken.mockResolvedValue({ token: "test-token" });
     mockRegenerateToken.mockResolvedValue({ token: "regenerated-token" });
     mockWriteText.mockResolvedValue(undefined);

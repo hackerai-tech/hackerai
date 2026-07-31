@@ -1,5 +1,6 @@
 import "@testing-library/jest-dom";
 import { beforeEach, describe, expect, it, jest } from "@jest/globals";
+import { useState, type ComponentProps } from "react";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { Doc } from "@/convex/_generated/dataModel";
@@ -76,6 +77,39 @@ const { toast: mockToast } = jest.requireMock<{
 const { SidebarProjects } =
   require("../SidebarProjects") as typeof import("../SidebarProjects");
 
+type SidebarProjectsHarnessProps = Omit<
+  ComponentProps<typeof SidebarProjects>,
+  "openProjectIds" | "onProjectOpenChange" | "onCollapseProjects"
+>;
+
+function SidebarProjectsHarness(props: SidebarProjectsHarnessProps) {
+  const [openProjectIds, setOpenProjectIds] = useState<Set<string>>(
+    () => new Set(),
+  );
+
+  return (
+    <SidebarProjects
+      {...props}
+      openProjectIds={openProjectIds}
+      onProjectOpenChange={(projectId, open) => {
+        setOpenProjectIds((current) => {
+          const next = new Set(current);
+          if (open) next.add(projectId);
+          else next.delete(projectId);
+          return next;
+        });
+      }}
+      onCollapseProjects={(projectIds) => {
+        setOpenProjectIds((current) => {
+          const next = new Set(current);
+          projectIds.forEach((projectId) => next.delete(projectId));
+          return next;
+        });
+      }}
+    />
+  );
+}
+
 const projects = ["Acme", "Example"].map(
   (name, index) =>
     ({
@@ -97,7 +131,7 @@ describe("SidebarProjects", () => {
   });
 
   it("only shows collapse-all while an individual project is open", () => {
-    render(<SidebarProjects projects={projects} />);
+    render(<SidebarProjectsHarness projects={projects} />);
 
     expect(
       screen.queryByRole("button", { name: "Collapse all projects" }),
@@ -130,7 +164,7 @@ describe("SidebarProjects", () => {
 
   it("shows the create-project label on hover", async () => {
     const user = userEvent.setup();
-    render(<SidebarProjects projects={projects} />);
+    render(<SidebarProjectsHarness projects={projects} />);
 
     const createButton = screen.getByRole("button", {
       name: "Create project",
@@ -143,7 +177,7 @@ describe("SidebarProjects", () => {
 
   it("shows the collapse-all label on hover", async () => {
     const user = userEvent.setup();
-    render(<SidebarProjects projects={projects} />);
+    render(<SidebarProjectsHarness projects={projects} />);
 
     fireEvent.click(screen.getByRole("button", { name: "Toggle Acme" }));
     await user.hover(
@@ -155,7 +189,7 @@ describe("SidebarProjects", () => {
   });
 
   it("shows a new-project row when there are no projects", () => {
-    render(<SidebarProjects projects={[]} />);
+    render(<SidebarProjectsHarness projects={[]} />);
 
     expect(
       screen.getByRole("button", { name: "New project" }),
@@ -174,7 +208,7 @@ describe("SidebarProjects", () => {
   });
 
   it("does not show the new-project row when projects exist", () => {
-    render(<SidebarProjects projects={projects} />);
+    render(<SidebarProjectsHarness projects={projects} />);
 
     expect(
       screen.queryByRole("button", { name: "New project" }),
@@ -184,7 +218,7 @@ describe("SidebarProjects", () => {
   it("loads ten more projects", () => {
     const loadMore = jest.fn();
     render(
-      <SidebarProjects
+      <SidebarProjectsHarness
         projects={projects}
         paginationStatus="CanLoadMore"
         loadMore={loadMore}
@@ -198,7 +232,7 @@ describe("SidebarProjects", () => {
   it("renders pinned projects without a nested Projects heading or pagination", () => {
     const loadMore = jest.fn();
     render(
-      <SidebarProjects
+      <SidebarProjectsHarness
         projects={projects}
         variant="pinned-list"
         paginationStatus="CanLoadMore"
@@ -221,7 +255,7 @@ describe("SidebarProjects", () => {
   });
 
   it("collapses the entire projects section from its heading", () => {
-    render(<SidebarProjects projects={projects} />);
+    render(<SidebarProjectsHarness projects={projects} />);
 
     expect(screen.getByTestId("projects-section-chevron")).toHaveClass(
       "rotate-90",
@@ -245,7 +279,7 @@ describe("SidebarProjects", () => {
   });
 
   it("moves a dropped chat and opens the target project", async () => {
-    render(<SidebarProjects projects={projects} />);
+    render(<SidebarProjectsHarness projects={projects} />);
 
     fireEvent.click(screen.getByRole("button", { name: "Drop chat in Acme" }));
 

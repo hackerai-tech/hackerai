@@ -24,7 +24,6 @@ jest.mock("@/app/contexts/GlobalState", () => ({
     setTodos: jest.fn(),
     isUploadingFiles: false,
     subscription: "pro",
-    temporaryChatsEnabled: true,
     queueMessage: jest.fn(),
     messageQueue: [],
     removeQueuedMessage: jest.fn(),

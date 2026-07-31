@@ -70,7 +70,6 @@ export const getEmptyProcessedMessagesMetadata = (
   options: {
     regenerate?: boolean;
     isAutoContinue?: boolean;
-    isTemporary?: boolean;
     sandboxPreference?: unknown;
   } = {},
 ): Record<string, boolean | number | string> => {
@@ -188,9 +187,6 @@ export const getEmptyProcessedMessagesMetadata = (
   }
   if (typeof options.isAutoContinue === "boolean") {
     metadata.processing_input_auto_continue = options.isAutoContinue;
-  }
-  if (typeof options.isTemporary === "boolean") {
-    metadata.processing_input_temporary = options.isTemporary;
   }
   if (typeof options.sandboxPreference === "string") {
     metadata.processing_input_sandbox_preference = options.sandboxPreference;

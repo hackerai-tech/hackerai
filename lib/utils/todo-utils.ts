@@ -244,19 +244,15 @@ export const computeReplaceAssistantTodos = (
 };
 
 /**
- * Compute base todos for a request given existing stored todos and incoming todos.
- * - Non-temporary: use stored todos; on regenerate keep only manual todos.
- * - Temporary: rely on incoming todos.
+ * Compute base todos for a request from stored todos. On regeneration, keep
+ * only manual todos.
  */
 export const getBaseTodosForRequest = (
   existingTodos: Todo[] | undefined,
-  incomingTodos: Todo[] | undefined,
-  opts: { isTemporary: boolean; regenerate?: boolean },
+  opts: { regenerate?: boolean },
 ): Todo[] => {
   const existing: Todo[] = Array.isArray(existingTodos) ? existingTodos : [];
-  const incoming: Todo[] = Array.isArray(incomingTodos) ? incomingTodos : [];
 
-  if (opts.isTemporary) return incoming;
   if (opts.regenerate) return existing.filter((t) => !t.sourceMessageId);
   return existing;
 };

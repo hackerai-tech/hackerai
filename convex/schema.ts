@@ -618,13 +618,6 @@ export default defineSchema({
       filterFields: ["user_id", "category"],
     }),
 
-  temp_streams: defineTable({
-    chat_id: v.string(),
-    user_id: v.string(),
-  })
-    .index("by_chat_id", ["chat_id"])
-    .index("by_user_id", ["user_id"]),
-
   // Local Sandbox Tables
   local_sandbox_tokens: defineTable({
     user_id: v.string(),

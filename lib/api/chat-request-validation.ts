@@ -25,21 +25,6 @@ const invalidMessagesError = (
     },
   );
 
-export const requireBooleanFlag = (field: string, value: unknown): boolean => {
-  if (value === undefined) return false;
-  if (typeof value === "boolean") return value;
-
-  throw new ChatSDKError(
-    "bad_request:api",
-    `Invalid chat request: ${field} must be a boolean.`,
-    {
-      invalid_request_field: field,
-      invalid_request_field_type: getValueKind(value),
-      invalid_request_field_reason: "not_boolean",
-    },
-  );
-};
-
 export const requireOptionalIdentifier = (
   field: string,
   value: unknown,

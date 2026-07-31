@@ -35,12 +35,99 @@ export type ConversationDraftStore = {
 export const CONVERSATION_DRAFTS_STORAGE_KEY = "conversation_drafts";
 export const NULL_THREAD_DRAFT_ID = "null_thread";
 export const CHAT_MODE_STORAGE_KEY = "chat_mode";
+export const SIDEBAR_OPEN_PROJECT_IDS_STORAGE_KEY =
+  "hackerai:sidebar:open-projects:v1";
 const DRAFT_ATTACHMENT_RESTORE_TTL_MS = 24 * 60 * 60 * 1000;
 const HAS_AUTHENTICATED_BEFORE_STORAGE_KEY = "hackerai_has_authed_before";
 const SELECTED_MODEL_STORAGE_KEY = "selected_model";
 const AGENT_PERMISSION_MODE_STORAGE_KEY = "agent_permission_mode";
+const EMPTY_SIDEBAR_OPEN_PROJECT_IDS_SNAPSHOT = "[]";
+const openSidebarProjectIdsListeners = new Set<() => void>();
+let openSidebarProjectIdsMemorySnapshot =
+  EMPTY_SIDEBAR_OPEN_PROJECT_IDS_SNAPSHOT;
 
 const isBrowser = (): boolean => typeof window !== "undefined";
+
+export const parseOpenSidebarProjectIdsSnapshot = (raw: string): string[] => {
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+
+    return Array.from(
+      new Set(
+        parsed.filter(
+          (projectId): projectId is string =>
+            typeof projectId === "string" && projectId.length > 0,
+        ),
+      ),
+    );
+  } catch {
+    return [];
+  }
+};
+
+export const getOpenSidebarProjectIdsSnapshot = (): string => {
+  if (!isBrowser()) return EMPTY_SIDEBAR_OPEN_PROJECT_IDS_SNAPSHOT;
+  try {
+    return (
+      window.localStorage.getItem(SIDEBAR_OPEN_PROJECT_IDS_STORAGE_KEY) ??
+      EMPTY_SIDEBAR_OPEN_PROJECT_IDS_SNAPSHOT
+    );
+  } catch {
+    return openSidebarProjectIdsMemorySnapshot;
+  }
+};
+
+export const getServerOpenSidebarProjectIdsSnapshot = (): string =>
+  EMPTY_SIDEBAR_OPEN_PROJECT_IDS_SNAPSHOT;
+
+export const subscribeOpenSidebarProjectIds = (
+  onStoreChange: () => void,
+): (() => void) => {
+  if (!isBrowser()) return () => undefined;
+
+  const handleStorage = (event: StorageEvent) => {
+    if (event.key === SIDEBAR_OPEN_PROJECT_IDS_STORAGE_KEY) onStoreChange();
+  };
+
+  openSidebarProjectIdsListeners.add(onStoreChange);
+  window.addEventListener("storage", handleStorage);
+
+  return () => {
+    openSidebarProjectIdsListeners.delete(onStoreChange);
+    window.removeEventListener("storage", handleStorage);
+  };
+};
+
+export const readOpenSidebarProjectIds = (): string[] =>
+  parseOpenSidebarProjectIdsSnapshot(getOpenSidebarProjectIdsSnapshot());
+
+export const writeOpenSidebarProjectIds = (
+  projectIds: Iterable<string>,
+): void => {
+  if (!isBrowser()) return;
+  try {
+    const uniqueProjectIds = Array.from(
+      new Set(
+        Array.from(projectIds).filter((projectId) => projectId.length > 0),
+      ),
+    );
+    openSidebarProjectIdsMemorySnapshot = JSON.stringify(uniqueProjectIds);
+
+    if (uniqueProjectIds.length === 0) {
+      window.localStorage.removeItem(SIDEBAR_OPEN_PROJECT_IDS_STORAGE_KEY);
+    } else {
+      window.localStorage.setItem(
+        SIDEBAR_OPEN_PROJECT_IDS_STORAGE_KEY,
+        openSidebarProjectIdsMemorySnapshot,
+      );
+    }
+  } catch {
+    // Browser storage can be disabled or unavailable.
+  }
+
+  openSidebarProjectIdsListeners.forEach((listener) => listener());
+};
 
 export const readDraftStore = (): ConversationDraftStore => {
   if (!isBrowser()) return { drafts: [] };

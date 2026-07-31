@@ -906,7 +906,6 @@ const EMPTY_AFTER_PROCESSING_TRIGGER_METADATA_KEYS = [
   ["processing_input_other_part_count", "processingInputOtherPartCount"],
   ["processing_input_regenerate", "processingInputRegenerate"],
   ["processing_input_auto_continue", "processingInputAutoContinue"],
-  ["processing_input_temporary", "processingInputTemporary"],
   ["processing_input_sandbox_preference", "processingInputSandboxPreference"],
 ] as const;
 
@@ -985,6 +984,7 @@ type AgentLongErrorSummary = {
   uploadFailureKind?: string;
   uploadFailureCause?: string;
   uploadFailureTransientSandboxCommand?: boolean;
+  uploadFailureSandboxReadinessReason?: string;
   uploadFailureProtocol?: string;
   uploadFailureUrlLength?: number;
   uploadRetriedWithFreshSandbox?: boolean;
@@ -1176,6 +1176,10 @@ const classifyAgentLongError = (error: unknown): AgentLongErrorSummary => {
         errorMetadata,
         "upload_failure_transient_sandbox_command",
       ),
+      uploadFailureSandboxReadinessReason: getStringMetadata(
+        errorMetadata,
+        "upload_failure_sandbox_readiness_reason",
+      ),
       uploadFailureProtocol: getStringMetadata(
         errorMetadata,
         "upload_failure_protocol",
@@ -1344,6 +1348,12 @@ const recordAgentLongFailureForDashboard = async (
     metadata.set(
       "uploadFailureTransientSandboxCommand",
       summary.uploadFailureTransientSandboxCommand,
+    );
+  }
+  if (summary.uploadFailureSandboxReadinessReason) {
+    metadata.set(
+      "uploadFailureSandboxReadinessReason",
+      summary.uploadFailureSandboxReadinessReason,
     );
   }
   if (summary.uploadFailureProtocol)
@@ -1583,7 +1593,6 @@ export type AgentLongPayload = {
   approvalProtocolVersion?: number;
   selectedModel?: SelectedModel;
   userLocation: Geo;
-  temporary?: boolean;
   isAutoContinue?: boolean;
   regenerate?: boolean;
   isNewChat?: boolean;
@@ -1650,7 +1659,6 @@ export const agentLongTask = task({
       approvalProtocolVersion,
       selectedModel: rawSelectedModelOverride,
       userLocation,
-      temporary,
       isAutoContinue,
       regenerate,
       isNewChat,
@@ -1743,7 +1751,6 @@ export const agentLongTask = task({
     });
     chatLogger.setRequestDetails({
       mode,
-      isTemporary: !!temporary,
       isRegenerate: !!regenerate,
     });
     chatLogger.setUser({
@@ -1779,19 +1786,16 @@ export const agentLongTask = task({
           subscription,
           newMessages: [],
           regenerate,
-          isTemporary: temporary,
           mode,
         }),
       ]);
       const { chat, fileTokens } = fetched;
-      const projectContext = temporary
-        ? {}
-        : await resolveProjectExecutionContext({
-            chat,
-            userId,
-            mode,
-            sandboxPreference,
-          });
+      const projectContext = await resolveProjectExecutionContext({
+        chat,
+        userId,
+        mode,
+        sandboxPreference,
+      });
       const truncatedMessages = fetched.truncatedMessages;
       const baseExtraUsageConfig = await buildExtraUsageConfig({
         userId,
@@ -1812,8 +1816,7 @@ export const agentLongTask = task({
 
       const baseTodos: Todo[] = getBaseTodosForRequest(
         (chat?.todos as unknown as Todo[]) || [],
-        Array.isArray(payload.baseTodos) ? payload.baseTodos : [],
-        { isTemporary: !!temporary, regenerate },
+        { regenerate },
       );
 
       const uploadBasePath = getUploadBasePath(sandboxPreference);
@@ -1848,7 +1851,6 @@ export const agentLongTask = task({
           getEmptyProcessedMessagesMetadata(messagesForProcessing, {
             regenerate: !!regenerate,
             isAutoContinue: !!isAutoContinue,
-            isTemporary: !!temporary,
             sandboxPreference,
           }),
         );
@@ -1862,7 +1864,6 @@ export const agentLongTask = task({
         userId,
         selectedModel,
         userCustomization,
-        temporary,
         truncatedMessages: messagesForAccounting,
       });
 
@@ -2121,24 +2122,21 @@ export const agentLongTask = task({
 
               await assertUserCanMakeCostIncurringRequest(userId);
 
-              if (!temporary) {
-                const currentChat = await getChatById({ id: chatId });
-                const pendingRequest =
-                  currentChat?.active_agent_approval_request;
-                if (
-                  !currentChat ||
-                  currentChat.user_id !== userId ||
-                  currentChat.active_trigger_run_id !== ctx.run.id ||
-                  currentChat.active_agent_approval_session_id !==
-                    approvalSessionId ||
-                  pendingRequest?.approvalId !== input.approvalId ||
-                  pendingRequest?.toolCallId !== input.toolCallId
-                ) {
-                  throw new AgentApprovalAuthorizationError(
-                    "authorization_mismatch",
-                    "The chat is no longer waiting for this approval.",
-                  );
-                }
+              const currentChat = await getChatById({ id: chatId });
+              const pendingRequest = currentChat?.active_agent_approval_request;
+              if (
+                !currentChat ||
+                currentChat.user_id !== userId ||
+                currentChat.active_trigger_run_id !== ctx.run.id ||
+                currentChat.active_agent_approval_session_id !==
+                  approvalSessionId ||
+                pendingRequest?.approvalId !== input.approvalId ||
+                pendingRequest?.toolCallId !== input.toolCallId
+              ) {
+                throw new AgentApprovalAuthorizationError(
+                  "authorization_mismatch",
+                  "The chat is no longer waiting for this approval.",
+                );
               }
 
               const currentUserCustomization = await getUserCustomization({
@@ -2214,18 +2212,16 @@ export const agentLongTask = task({
               initialTargetGrants:
                 (chat?.agent_approval_grants as PersistedAgentApprovalTargetGrant[]) ??
                 [],
-              persistTargetGrant: temporary
-                ? undefined
-                : (grant, sandboxIdentity) =>
-                    persistAgentApprovalGrant({
-                      chatId,
-                      userId,
-                      grant: scopePersistedAgentApprovalTargetGrant(
-                        grant,
-                        sandboxIdentity,
-                        projectContext.workingDirectory,
-                      ),
-                    }),
+              persistTargetGrant: (grant, sandboxIdentity) =>
+                persistAgentApprovalGrant({
+                  chatId,
+                  userId,
+                  grant: scopePersistedAgentApprovalTargetGrant(
+                    grant,
+                    sandboxIdentity,
+                    projectContext.workingDirectory,
+                  ),
+                }),
               resolveSandboxIdentity: resolveApprovalSandboxIdentity,
               workingDirectory: projectContext.workingDirectory,
               beforeSuspend:
@@ -2251,7 +2247,6 @@ export const agentLongTask = task({
               userLocation,
               baseTodos,
               notesEnabled,
-              !!temporary,
               assistantMessageId,
               sandboxPreference,
               process.env.CONVEX_SERVICE_ROLE_KEY,
@@ -2270,6 +2265,7 @@ export const agentLongTask = task({
               requestToolApproval,
               runTimingTracker.measureActiveTime,
               projectContext.workingDirectory,
+              ctx.run.id,
             );
             approvalSandboxManager = sandboxManager;
 
@@ -2343,7 +2339,15 @@ export const agentLongTask = task({
                 uploadResult = await uploadSandboxFiles(
                   sandboxFiles,
                   ensureSandbox,
-                  { retryWithFreshSandboxOnTransientFailure: true },
+                  {
+                    retryWithFreshSandboxOnTransientFailure: true,
+                    logContext: {
+                      service: "agent-long",
+                      requestId: ctx.run.id,
+                      userId,
+                      chatId,
+                    },
+                  },
                 );
               } finally {
                 writeUploadCompleteStatus(writer);
@@ -2366,14 +2370,13 @@ export const agentLongTask = task({
               );
             }
 
-            const titlePromise =
-              isNewChat && !temporary
-                ? generateTitleFromUserMessageWithWriter(
-                    processedMessages,
-                    writer,
-                    (title) => updateChatTitle({ chatId, title }),
-                  )
-                : Promise.resolve(undefined);
+            const titlePromise = isNewChat
+              ? generateTitleFromUserMessageWithWriter(
+                  processedMessages,
+                  writer,
+                  (title) => updateChatTitle({ chatId, title }),
+                )
+              : Promise.resolve(undefined);
 
             const trackedProvider = createTrackedProvider();
             const currentSystemPrompt = await systemPrompt(
@@ -2382,7 +2385,6 @@ export const agentLongTask = task({
               subscription,
               selectedModel,
               userCustomization,
-              temporary,
               sandboxContext,
               agentPermissionMode,
             );
@@ -2425,7 +2427,6 @@ export const agentLongTask = task({
               userId,
               subscription,
               shouldIncludeNotes: userCustomization?.include_notes ?? true,
-              isTemporary: !!temporary as boolean | undefined,
             };
             finalMessages = await injectNotesIntoMessages(
               finalMessages,
@@ -2825,7 +2826,6 @@ export const agentLongTask = task({
               userId,
               subscription,
               chatId,
-              temporary,
               fileTokens,
               noteInjectionOpts,
               systemPromptTokens,
@@ -3218,7 +3218,7 @@ export const agentLongTask = task({
                                   }
 
                                   const generatedTitle = await titlePromise;
-                                  if (!temporary) {
+                                  {
                                     const mergedTodos =
                                       getTodoManager().mergeWith(
                                         baseTodos,
@@ -3377,7 +3377,7 @@ export const agentLongTask = task({
 
                       const generatedTitle = await titlePromise;
 
-                      if (!temporary) {
+                      {
                         const mergedTodos = getTodoManager().mergeWith(
                           baseTodos,
                           assistantMessageId,
@@ -3578,7 +3578,7 @@ export const agentLongTask = task({
                           stoppedDueToPostSummarizationIncomplete:
                             state.stoppedDueToPostSummarizationIncomplete,
                         });
-                      if (autoContinueStopSource && !temporary) {
+                      if (autoContinueStopSource) {
                         writeAutoContinue(writer);
                         phLogger.info("Agent auto-continue signaled", {
                           event: "agent_auto_continue_signaled",
@@ -3785,21 +3785,19 @@ export const agentLongTask = task({
           );
         }
       }
-      if (!payload.temporary) {
-        try {
-          await setActiveTriggerRun({
-            chatId,
-            triggerRunId: null,
-            approvalSessionId: null,
-            expectedRunId: ctx.run.id,
-            clearApprovalPending: true,
-          });
-        } catch (error) {
-          console.error(
-            "[agent-long] failed to clear active_trigger_run_id:",
-            error,
-          );
-        }
+      try {
+        await setActiveTriggerRun({
+          chatId,
+          triggerRunId: null,
+          approvalSessionId: null,
+          expectedRunId: ctx.run.id,
+          clearApprovalPending: true,
+        });
+      } catch (error) {
+        console.error(
+          "[agent-long] failed to clear active_trigger_run_id:",
+          error,
+        );
       }
     }
 

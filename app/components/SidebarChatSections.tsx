@@ -1,6 +1,13 @@
 "use client";
 
-import { useId, useState, type ReactNode, type RefObject } from "react";
+import {
+  useId,
+  useMemo,
+  useState,
+  useSyncExternalStore,
+  type ReactNode,
+  type RefObject,
+} from "react";
 import { ChevronRight } from "lucide-react";
 import { toast } from "sonner";
 import {
@@ -21,6 +28,13 @@ import {
 } from "@dnd-kit/core";
 import type { Doc } from "@/convex/_generated/dataModel";
 import { usePinChat, useUnpinChat } from "@/app/hooks/useChats";
+import {
+  getOpenSidebarProjectIdsSnapshot,
+  getServerOpenSidebarProjectIdsSnapshot,
+  parseOpenSidebarProjectIdsSnapshot,
+  subscribeOpenSidebarProjectIds,
+  writeOpenSidebarProjectIds,
+} from "@/lib/utils/client-storage";
 import SidebarHistory, { type SidebarPaginationStatus } from "./SidebarHistory";
 import { SidebarProjects } from "./SidebarProjects";
 import {
@@ -140,6 +154,15 @@ export function SidebarChatSections({
 }: SidebarChatSectionsProps) {
   const [isPinnedOpen, setIsPinnedOpen] = useState(true);
   const [isTasksOpen, setIsTasksOpen] = useState(true);
+  const openProjectIdsSnapshot = useSyncExternalStore(
+    subscribeOpenSidebarProjectIds,
+    getOpenSidebarProjectIdsSnapshot,
+    getServerOpenSidebarProjectIdsSnapshot,
+  );
+  const openProjectIds = useMemo(
+    () => new Set(parseOpenSidebarProjectIdsSnapshot(openProjectIdsSnapshot)),
+    [openProjectIdsSnapshot],
+  );
   const [activeTask, setActiveTask] = useState<SidebarChatDragData>();
   const pinChat = usePinChat();
   const unpinChat = useUnpinChat();
@@ -153,6 +176,19 @@ export function SidebarChatSections({
   );
   const hasPinnedItems =
     pinnedChats.length > 0 || (pinnedProjects?.length ?? 0) > 0;
+
+  const handleProjectOpenChange = (projectId: string, open: boolean) => {
+    const next = new Set(openProjectIds);
+    if (open) next.add(projectId);
+    else next.delete(projectId);
+    writeOpenSidebarProjectIds(next);
+  };
+
+  const handleCollapseProjects = (projectIds: readonly string[]) => {
+    const next = new Set(openProjectIds);
+    projectIds.forEach((projectId) => next.delete(projectId));
+    writeOpenSidebarProjectIds(next);
+  };
 
   const handlePinnedDrop = async (chat: SidebarChatDragData) => {
     if (chat.isPinned) return;
@@ -234,12 +270,21 @@ export function SidebarChatSections({
               showEmptyState={false}
               testId="sidebar-pinned-chat-list"
             />
-            <SidebarProjects projects={pinnedProjects} variant="pinned-list" />
+            <SidebarProjects
+              projects={pinnedProjects}
+              openProjectIds={openProjectIds}
+              onProjectOpenChange={handleProjectOpenChange}
+              onCollapseProjects={handleCollapseProjects}
+              variant="pinned-list"
+            />
           </CollapsibleChatSection>
         ) : null}
 
         <SidebarProjects
           projects={unpinnedProjects}
+          openProjectIds={openProjectIds}
+          onProjectOpenChange={handleProjectOpenChange}
+          onCollapseProjects={handleCollapseProjects}
           paginationStatus={projectPaginationStatus}
           loadMore={loadMoreProjects}
         />

@@ -24,7 +24,6 @@ export interface UseAutoContinueParams {
   ) => void;
   hasManuallyStoppedRef: React.RefObject<boolean>;
   todos: Todo[];
-  temporaryChatsEnabled: boolean;
   sandboxPreference: string;
   agentPermissionMode: string;
   selectedModel: string;
@@ -37,7 +36,6 @@ export function useAutoContinue({
   sendMessage,
   hasManuallyStoppedRef,
   todos,
-  temporaryChatsEnabled,
   sandboxPreference,
   agentPermissionMode,
   selectedModel,
@@ -56,7 +54,6 @@ export function useAutoContinue({
 
   const todosRef = useLatestRef(todos);
   const sendMessageRef = useLatestRef(sendMessage);
-  const temporaryChatsEnabledRef = useLatestRef(temporaryChatsEnabled);
   const sandboxPreferenceRef = useLatestRef(sandboxPreference);
   const agentPermissionModeRef = useLatestRef(agentPermissionMode);
   const selectedModelRef = useLatestRef(selectedModel);
@@ -137,7 +134,6 @@ export function useAutoContinue({
             mode: chatMode,
             isAutoContinue: true,
             todos: todosRef.current,
-            temporary: temporaryChatsEnabledRef.current,
             sandboxPreference: sandboxPreferenceRef.current,
             agentPermissionMode: agentPermissionModeRef.current,
             selectedModel: selectedModelRef.current,
@@ -158,7 +154,6 @@ export function useAutoContinue({
     setIsAutoResuming,
     sendMessageRef,
     todosRef,
-    temporaryChatsEnabledRef,
     sandboxPreferenceRef,
     agentPermissionModeRef,
     selectedModelRef,

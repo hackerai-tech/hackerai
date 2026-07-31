@@ -53,7 +53,6 @@ export const createTools = (
   userLocation: Geo,
   initialTodos?: Todo[],
   notesEnabled: boolean = true,
-  isTemporary: boolean = false,
   assistantMessageId?: string,
   sandboxPreference?: SandboxPreference,
   serviceKey?: string,
@@ -66,6 +65,7 @@ export const createTools = (
   requestToolApproval?: AgentToolApprovalRequester,
   measureAgentActiveTime?: AgentActiveTimeMeasurer,
   workingDirectory?: string,
+  triggerRunId?: string,
 ) => {
   let sandbox: AnySandbox | null = null;
   let sandboxFirstUsedAt: number | null = null;
@@ -118,6 +118,7 @@ export const createTools = (
     chatId,
     mode,
     subscription,
+    triggerRunId,
   });
 
   const context: ToolContext = {
@@ -128,6 +129,7 @@ export const createTools = (
     userID,
     chatId,
     assistantMessageId,
+    triggerRunId,
     fileAccumulator,
     backgroundProcessTracker,
     ptySessionManager,
@@ -154,13 +156,12 @@ export const createTools = (
       get_terminal_files: createGetTerminalFiles(context),
       file: createFile(context),
       todo_write: createTodoWrite(context),
-      ...(!isTemporary &&
-        notesEnabled && {
-          create_note: createCreateNote(context),
-          list_notes: createListNotes(context),
-          update_note: createUpdateNote(context),
-          delete_note: createDeleteNote(context),
-        }),
+      ...(notesEnabled && {
+        create_note: createCreateNote(context),
+        list_notes: createListNotes(context),
+        update_note: createUpdateNote(context),
+        delete_note: createDeleteNote(context),
+      }),
       ...(process.env.PERPLEXITY_API_KEY && {
         web_search: createWebSearch(context),
       }),
@@ -172,13 +173,12 @@ export const createTools = (
     // Filter tools based on mode
     return mode === "ask"
       ? {
-          ...(!isTemporary &&
-            notesEnabled && {
-              create_note: allTools.create_note,
-              list_notes: allTools.list_notes,
-              update_note: allTools.update_note,
-              delete_note: allTools.delete_note,
-            }),
+          ...(notesEnabled && {
+            create_note: allTools.create_note,
+            list_notes: allTools.list_notes,
+            update_note: allTools.update_note,
+            delete_note: allTools.delete_note,
+          }),
           ...(process.env.PERPLEXITY_API_KEY && {
             web_search: createWebSearch(context),
           }),

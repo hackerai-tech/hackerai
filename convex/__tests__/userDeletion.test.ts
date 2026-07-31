@@ -291,10 +291,6 @@ function seedTables(userId = "user_123", otherUserId = "user_other"): Tables {
         updated_at: 1,
       },
     ],
-    temp_streams: [
-      { _id: "stream-user", chat_id: "chat-1", user_id: userId },
-      { _id: "stream-other", chat_id: "chat-other-id", user_id: otherUserId },
-    ],
     local_sandbox_tokens: [
       { _id: "token-user", user_id: userId, token: "secret" },
       { _id: "token-other", user_id: otherUserId, token: "keep" },

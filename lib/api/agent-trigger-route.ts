@@ -15,7 +15,6 @@ import {
 } from "@/lib/db/actions";
 import {
   assertFreeAgentGates,
-  assertTemporaryChatAccess,
   buildExtraUsageConfig,
 } from "@/lib/api/chat-stream-helpers";
 import {
@@ -61,7 +60,6 @@ import {
   AGENT_APPROVAL_TOKEN_EXPIRATION,
   cancelAgentTriggerRun,
   closeAgentApprovalSession,
-  setTemporaryAgentApprovalRefreshCookie,
 } from "@/lib/api/agent-approval-session";
 import { createAgentRunCorrelationToken } from "@/lib/api/agent-run-correlation";
 
@@ -94,7 +92,6 @@ type AgentTriggerRequestBody = {
   chatId: string;
   todos?: Todo[];
   regenerate?: boolean;
-  temporary?: boolean;
   sandboxPreference?: SandboxPreference;
   agentPermissionMode?: AgentPermissionMode;
   selectedModel?: string;
@@ -161,7 +158,6 @@ const parseAgentTriggerRequestBody = async (
       chatId: body.chatId,
       todos: Array.isArray(body.todos) ? (body.todos as Todo[]) : undefined,
       regenerate: body.regenerate === true,
-      temporary: body.temporary === true,
       sandboxPreference:
         typeof body.sandboxPreference === "string"
           ? (body.sandboxPreference as SandboxPreference)
@@ -265,12 +261,10 @@ export const finalizeStartedAgentRun = async ({
   chatId,
   runId,
   approvalSessionId,
-  temporary,
 }: {
   chatId: string;
   runId: string;
   approvalSessionId: string | undefined;
-  temporary: boolean;
 }): Promise<StartedAgentRunAccess> => {
   try {
     const [publicAccessToken, approvalSessionPublicAccessToken, association] =
@@ -288,13 +282,11 @@ export const finalizeStartedAgentRun = async ({
               expirationTime: AGENT_APPROVAL_TOKEN_EXPIRATION,
             })
           : Promise.resolve(undefined),
-        temporary
-          ? Promise.resolve("updated" as const)
-          : setActiveTriggerRun({
-              chatId,
-              triggerRunId: runId,
-              approvalSessionId: approvalSessionId ?? null,
-            }),
+        setActiveTriggerRun({
+          chatId,
+          triggerRunId: runId,
+          approvalSessionId: approvalSessionId ?? null,
+        }),
       ]);
 
     if (association !== "updated") {
@@ -321,15 +313,13 @@ export const finalizeStartedAgentRun = async ({
         "agent-run-association-failed",
       ),
       cancelAgentTriggerRun(runId),
-      temporary
-        ? Promise.resolve()
-        : setActiveTriggerRun({
-            chatId,
-            triggerRunId: null,
-            approvalSessionId: null,
-            expectedRunId: runId,
-            clearApprovalPending: true,
-          }),
+      setActiveTriggerRun({
+        chatId,
+        triggerRunId: null,
+        approvalSessionId: null,
+        expectedRunId: runId,
+        clearApprovalPending: true,
+      }),
     ]);
     for (const cleanupResult of cleanupResults) {
       if (cleanupResult.status === "rejected") {
@@ -358,7 +348,6 @@ export const createAgentTriggerPost =
         chatId,
         todos,
         regenerate,
-        temporary,
         sandboxPreference,
         agentPermissionMode = "full_access",
         selectedModel: rawSelectedModel,
@@ -375,10 +364,6 @@ export const createAgentTriggerPost =
           coerceSelectedModel(rawSelectedModel ?? null),
           subscription,
         );
-      assertTemporaryChatAccess({
-        isTemporary: temporary === true,
-        subscription,
-      });
       await assertUserCanMakeCostIncurringRequest(userId);
       const userLocation = geolocation(req);
       const triggerRegion = getTriggerRegionForVercelRequest(req, userLocation);
@@ -400,7 +385,6 @@ export const createAgentTriggerPost =
             timestamp: new Date().toISOString(),
             chat_id: chatId,
             user_id: userId,
-            temporary: !!temporary,
             subscription,
           }),
         );
@@ -417,18 +401,15 @@ export const createAgentTriggerPost =
       // Fetch existing chat to: (a) detect isNewChat for title generation,
       // (b) pass to handleInitialChatAndUserMessage so it skips saveChat on
       //     regenerate/auto-continue and does the ownership check instead.
-      const existingChat = temporary ? null : await getChatById({ id: chatId });
-      const projectContext = temporary
-        ? {}
-        : await resolveProjectExecutionContext({
-            chat: existingChat,
-            requestedProjectId,
-            userId,
-            mode: "agent",
-            sandboxPreference,
-          });
-      const isNewChat =
-        !temporary && !existingChat && !regenerate && !isAutoContinue;
+      const existingChat = await getChatById({ id: chatId });
+      const projectContext = await resolveProjectExecutionContext({
+        chat: existingChat,
+        requestedProjectId,
+        userId,
+        mode: "agent",
+        sandboxPreference,
+      });
+      const isNewChat = !existingChat && !regenerate && !isAutoContinue;
       const userCustomization = await getUserCustomization({ userId });
       const extraUsageConfig = await buildExtraUsageConfig({
         userId,
@@ -509,17 +490,15 @@ export const createAgentTriggerPost =
         localDesktopAttachmentsPrepared = true;
       }
 
-      if (!temporary) {
-        await handleInitialChatAndUserMessage({
-          chatId,
-          userId,
-          messages: messagesForPersistence,
-          regenerate,
-          chat: existingChat ?? null,
-          isHidden: isAutoContinue ? true : undefined,
-          projectId: projectContext.projectId,
-        });
-      }
+      await handleInitialChatAndUserMessage({
+        chatId,
+        userId,
+        messages: messagesForPersistence,
+        regenerate,
+        chat: existingChat ?? null,
+        isHidden: isAutoContinue ? true : undefined,
+        projectId: projectContext.projectId,
+      });
 
       const triggerTags = [`user_${userId}`, `chat_${chatId}`];
       if (subscription !== "free") triggerTags.push(`sub_${subscription}`);
@@ -529,8 +508,9 @@ export const createAgentTriggerPost =
       // route saves the latest user message. Avoid sending the same history
       // through Trigger unless the task cannot rehydrate it, or the route has
       // prepared desktop-local attachment tags that only exist in this payload.
-      const messagesForPayload =
-        temporary || localDesktopAttachmentsPrepared ? messagesForTrigger : [];
+      const messagesForPayload = localDesktopAttachmentsPrepared
+        ? messagesForTrigger
+        : [];
 
       const triggerRequestedAt = Date.now();
       const triggerPriority = getAgentTriggerPriority(subscription);
@@ -588,7 +568,6 @@ export const createAgentTriggerPost =
         approvalProtocolVersion: AGENT_APPROVAL_PROTOCOL_VERSION,
         selectedModel: selectedModelOverride,
         userLocation,
-        temporary,
         isAutoContinue,
         regenerate,
         limitRescue,
@@ -663,7 +642,6 @@ export const createAgentTriggerPost =
           chatId,
           runId,
           approvalSessionId,
-          temporary: temporary === true,
         });
 
       console.info(`[${endpoint}] started trigger run`, {
@@ -673,7 +651,6 @@ export const createAgentTriggerPost =
         triggerDurationMs: triggerCompletedAt - triggerRequestedAt,
         triggerPayloadMessageCount: messagesForPayload.length,
         persistedMessageCount: messagesForPersistence.length,
-        temporary: !!temporary,
         localDesktopAttachmentsPrepared,
         agentPermissionMode,
       });
@@ -695,15 +672,6 @@ export const createAgentTriggerPost =
             }
           : {}),
       });
-      if (temporary && approvalSessionId) {
-        setTemporaryAgentApprovalRefreshCookie(response, {
-          req,
-          userId,
-          chatId,
-          runId,
-          approvalSessionId,
-        });
-      }
       return response;
     } catch (error) {
       return handleAgentRouteError({

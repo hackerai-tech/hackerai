@@ -1557,6 +1557,121 @@ describe("regenerateWithNewContent feedback cleanup", () => {
     );
   });
 
+  it("should reject editing a user message when a newer visible user message exists", async () => {
+    const editedUserMessage = {
+      _id: "user-doc-1" as Id<"messages">,
+      id: "user-msg-1",
+      chat_id: CHAT_ID,
+      user_id: USER_ID,
+      role: "user",
+      parts: [{ type: "text", text: "old prompt" }],
+      content: "old prompt",
+      _creationTime: 1000,
+      file_ids: undefined,
+    };
+    const laterUserMessage = {
+      _id: "user-doc-2" as Id<"messages">,
+      id: "user-msg-2",
+      chat_id: CHAT_ID,
+      user_id: USER_ID,
+      role: "user",
+      parts: [{ type: "text", text: "newer prompt" }],
+      content: "newer prompt",
+      _creationTime: 3000,
+      file_ids: undefined,
+      is_hidden: undefined,
+    };
+
+    mockCtx.db.query.mockImplementation((table: string) => {
+      if (table !== "messages") {
+        throw new Error(`Unexpected table ${table}`);
+      }
+
+      return {
+        withIndex: jest.fn((indexName: string) => {
+          if (indexName === "by_message_id") {
+            return {
+              first: jest.fn<any>().mockResolvedValue(editedUserMessage),
+            };
+          }
+          if (indexName === "by_chat_id") {
+            return {
+              collect: jest.fn<any>().mockResolvedValue([laterUserMessage]),
+            };
+          }
+          throw new Error(`Unexpected messages index ${indexName}`);
+        }),
+      };
+    });
+
+    const { regenerateWithNewContent } = await import("../messages");
+
+    await expect(
+      regenerateWithNewContent.handler(mockCtx, {
+        messageId: editedUserMessage.id,
+        newContent: "edited prompt",
+      }),
+    ).rejects.toMatchObject({
+      data: expect.objectContaining({
+        code: "MESSAGE_NOT_EDITABLE",
+      }),
+    });
+    expect(mockCtx.db.patch).not.toHaveBeenCalled();
+    expect(mockCtx.db.delete).not.toHaveBeenCalled();
+  });
+
+  it("should reject editing a hidden auto-continue user message", async () => {
+    const hiddenUserMessage = {
+      _id: "hidden-user-doc" as Id<"messages">,
+      id: "hidden-user-msg",
+      chat_id: CHAT_ID,
+      user_id: USER_ID,
+      role: "user",
+      parts: [{ type: "text", text: "Continue from where you left off." }],
+      content: "Continue from where you left off.",
+      _creationTime: 3000,
+      file_ids: undefined,
+      is_hidden: true,
+    };
+
+    mockCtx.db.query.mockImplementation((table: string) => {
+      if (table !== "messages") {
+        throw new Error(`Unexpected table ${table}`);
+      }
+
+      return {
+        withIndex: jest.fn((indexName: string) => {
+          if (indexName === "by_message_id") {
+            return {
+              first: jest.fn<any>().mockResolvedValue(hiddenUserMessage),
+            };
+          }
+          if (indexName === "by_chat_id") {
+            return {
+              collect: jest.fn<any>().mockResolvedValue([]),
+            };
+          }
+          throw new Error(`Unexpected messages index ${indexName}`);
+        }),
+      };
+    });
+
+    const { regenerateWithNewContent } = await import("../messages");
+
+    await expect(
+      regenerateWithNewContent.handler(mockCtx, {
+        messageId: hiddenUserMessage.id,
+        newContent: "edited hidden prompt",
+      }),
+    ).rejects.toMatchObject({
+      data: expect.objectContaining({
+        code: "MESSAGE_NOT_EDITABLE",
+      }),
+    });
+    expect(mockCtx.db.patch).not.toHaveBeenCalled();
+    expect(mockCtx.db.delete).not.toHaveBeenCalled();
+  });
+
   it("should clear stale summaries when the edited message is covered by the latest summary", async () => {
     const editedUserMessage = {
       _id: "user-doc-1" as Id<"messages">,

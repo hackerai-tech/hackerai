@@ -2,8 +2,25 @@ import "@testing-library/jest-dom";
 import { act, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, jest } from "@jest/globals";
 import { useAccessToken, useAuth } from "@workos-inc/authkit-nextjs/components";
-import { GlobalStateProvider, useGlobalState } from "../GlobalState";
 import { SHARED_TOKEN_KEY } from "@/lib/auth/shared-token";
+
+jest.mock("@/app/hooks/useSandboxPreference", () => {
+  const setSandboxPreference = jest.fn();
+  const retryDesktopBridge = jest.fn();
+
+  return {
+    useSandboxPreference: () => ({
+      sandboxPreference: "e2b",
+      setSandboxPreference,
+      desktopBridgeActive: false,
+      desktopBridgeStatus: "idle",
+      retryDesktopBridge,
+    }),
+  };
+});
+
+const { GlobalStateProvider, useGlobalState } =
+  jest.requireActual<typeof import("../GlobalState")>("../GlobalState");
 
 const mockAuthUser = (
   entitlements: string[],
@@ -32,7 +49,6 @@ function GlobalStateProbe() {
     sandboxPreference,
     selectedModel,
     subscription,
-    temporaryChatsEnabled,
   } = useGlobalState();
 
   return (
@@ -47,18 +63,7 @@ function GlobalStateProbe() {
       <div data-testid="sandbox-preference">{sandboxPreference}</div>
       <div data-testid="selected-model">{selectedModel}</div>
       <div data-testid="subscription">{subscription}</div>
-      <div data-testid="temporary-chat">{String(temporaryChatsEnabled)}</div>
     </>
-  );
-}
-
-function TemporaryChatProbe() {
-  const { temporaryChatsEnabled } = useGlobalState();
-
-  return (
-    <div data-testid="temporary-chat-enabled">
-      {String(temporaryChatsEnabled)}
-    </div>
   );
 }
 
@@ -71,6 +76,8 @@ function ActiveProjectProbe() {
 describe("GlobalStateProvider agent defaults", () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    jest.useRealTimers();
+    delete window.__TAURI_INTERNALS__;
     window.history.pushState({}, "", "/");
     window.localStorage.clear();
     jest.mocked(useAccessToken).mockReturnValue({
@@ -84,21 +91,151 @@ describe("GlobalStateProvider agent defaults", () => {
     mockAuthUser([]);
   });
 
-  it("clears a temporary chat URL request for free users", async () => {
-    window.history.pushState({}, "", "/?temporary-chat=true");
+  it("reveals free desktop mode access before token refresh finishes", async () => {
+    window.__TAURI_INTERNALS__ = {};
+    const refreshAuth = jest.fn(() => new Promise<void>(() => {}));
+    mockAuthUser([], { refreshAuth });
+    global.fetch = jest.fn((input) => {
+      if (String(input) === "/api/entitlements") {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({ entitlements: [] }),
+        });
+      }
+
+      return Promise.resolve({ ok: false });
+    }) as unknown as typeof fetch;
 
     render(
       <GlobalStateProvider>
-        <TemporaryChatProbe />
+        <GlobalStateProbe />
       </GlobalStateProvider>,
     );
 
     await waitFor(() => {
-      expect(screen.getByTestId("temporary-chat-enabled")).toHaveTextContent(
+      expect(refreshAuth).toHaveBeenCalledTimes(1);
+      expect(screen.getByTestId("chat-mode-access-resolved")).toHaveTextContent(
+        "true",
+      );
+      expect(screen.getByTestId("checking-pro-plan")).toHaveTextContent(
         "false",
       );
     });
-    expect(window.location.search).toBe("");
+    expect(screen.getByTestId("subscription")).toHaveTextContent("free");
+    expect(screen.getByTestId("paid-agent-only")).toHaveTextContent("false");
+  });
+
+  it("resolves paid desktop users to Agent-only before token refresh finishes", async () => {
+    window.__TAURI_INTERNALS__ = {};
+    const refreshAuth = jest.fn(() => new Promise<void>(() => {}));
+    mockAuthUser([], { refreshAuth });
+    global.fetch = jest.fn((input) => {
+      if (String(input) === "/api/entitlements") {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({ entitlements: ["pro-plan"] }),
+        });
+      }
+
+      return Promise.resolve({ ok: false });
+    }) as unknown as typeof fetch;
+
+    render(
+      <GlobalStateProvider>
+        <GlobalStateProbe />
+      </GlobalStateProvider>,
+    );
+
+    await waitFor(() => {
+      expect(refreshAuth).toHaveBeenCalledTimes(1);
+      expect(screen.getByTestId("subscription")).toHaveTextContent("pro");
+      expect(screen.getByTestId("chat-mode-access-resolved")).toHaveTextContent(
+        "true",
+      );
+      expect(screen.getByTestId("paid-agent-only")).toHaveTextContent("true");
+      expect(screen.getByTestId("chat-mode")).toHaveTextContent("agent");
+    });
+  });
+
+  it("releases free desktop mode access when entitlement refresh times out", async () => {
+    jest.useFakeTimers();
+    window.__TAURI_INTERNALS__ = {};
+    let requestAborted = false;
+    global.fetch = jest.fn((input, init) => {
+      if (String(input) === "/api/entitlements") {
+        return new Promise((_, reject) => {
+          init?.signal?.addEventListener("abort", () => {
+            requestAborted = true;
+            reject(new DOMException("Aborted", "AbortError"));
+          });
+        });
+      }
+
+      return Promise.resolve({ ok: false });
+    }) as unknown as typeof fetch;
+
+    render(
+      <GlobalStateProvider>
+        <GlobalStateProbe />
+      </GlobalStateProvider>,
+    );
+
+    expect(screen.getByTestId("chat-mode-access-resolved")).toHaveTextContent(
+      "false",
+    );
+
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(5_000);
+    });
+
+    expect(requestAborted).toBe(true);
+    expect(screen.getByTestId("chat-mode-access-resolved")).toHaveTextContent(
+      "true",
+    );
+    expect(screen.getByTestId("checking-pro-plan")).toHaveTextContent("false");
+  });
+
+  it("aborts a stale desktop entitlement refresh when the account changes", async () => {
+    window.__TAURI_INTERNALS__ = {};
+    let requestSignal: AbortSignal | undefined;
+    global.fetch = jest.fn((input, init) => {
+      if (String(input) === "/api/entitlements") {
+        requestSignal = init?.signal ?? undefined;
+        return new Promise((_, reject) => {
+          requestSignal?.addEventListener("abort", () => {
+            reject(new DOMException("Aborted", "AbortError"));
+          });
+        });
+      }
+
+      return Promise.resolve({ ok: false });
+    }) as unknown as typeof fetch;
+
+    const { rerender } = render(
+      <GlobalStateProvider>
+        <GlobalStateProbe />
+      </GlobalStateProvider>,
+    );
+
+    await waitFor(() => {
+      expect(requestSignal).toBeDefined();
+    });
+
+    mockAuthUser(["pro-plan"], { user: { id: "user_paid" } });
+    rerender(
+      <GlobalStateProvider>
+        <GlobalStateProbe />
+      </GlobalStateProvider>,
+    );
+
+    expect(requestSignal?.aborted).toBe(true);
+    await waitFor(() => {
+      expect(screen.getByTestId("subscription")).toHaveTextContent("pro");
+      expect(screen.getByTestId("checking-pro-plan")).toHaveTextContent(
+        "false",
+      );
+      expect(screen.getByTestId("paid-agent-only")).toHaveTextContent("true");
+    });
   });
 
   it("keeps chat mode access unresolved while authentication is loading", () => {
@@ -113,47 +250,6 @@ describe("GlobalStateProvider agent defaults", () => {
     expect(screen.getByTestId("chat-mode-access-resolved")).toHaveTextContent(
       "false",
     );
-  });
-
-  it("clears a temporary chat URL request after unauthenticated auth resolves", async () => {
-    mockAuthUser([], {
-      user: null,
-      loading: false,
-      isAuthenticated: false,
-      organizationId: undefined,
-    });
-    window.history.pushState({}, "", "/?temporary-chat=true");
-
-    render(
-      <GlobalStateProvider>
-        <TemporaryChatProbe />
-      </GlobalStateProvider>,
-    );
-
-    await waitFor(() => {
-      expect(screen.getByTestId("temporary-chat-enabled")).toHaveTextContent(
-        "false",
-      );
-    });
-    expect(window.location.search).toBe("");
-  });
-
-  it("preserves a temporary chat URL request for paid users", async () => {
-    mockAuthUser(["pro-plan"]);
-    window.history.pushState({}, "", "/?temporary-chat=true");
-
-    render(
-      <GlobalStateProvider>
-        <TemporaryChatProbe />
-      </GlobalStateProvider>,
-    );
-
-    await waitFor(() => {
-      expect(screen.getByTestId("temporary-chat-enabled")).toHaveTextContent(
-        "true",
-      );
-    });
-    expect(window.location.search).toBe("?temporary-chat=true");
   });
 
   it("syncs the active project when browser history changes", async () => {
@@ -236,25 +332,6 @@ describe("GlobalStateProvider agent defaults", () => {
     expect(screen.getByTestId("agent-permission-mode")).toHaveTextContent(
       "ask_approval",
     );
-  });
-
-  it("forces paid temporary chats from saved Agent back to Ask", async () => {
-    window.localStorage.setItem("chat_mode", "agent");
-    window.history.pushState({}, "", "/?temporary-chat=true");
-    mockAuthUser(["pro-plan"]);
-
-    render(
-      <GlobalStateProvider>
-        <GlobalStateProbe />
-      </GlobalStateProvider>,
-    );
-
-    await waitFor(() => {
-      expect(screen.getByTestId("subscription")).toHaveTextContent("pro");
-      expect(screen.getByTestId("temporary-chat")).toHaveTextContent("true");
-    });
-    expect(screen.getByTestId("chat-mode")).toHaveTextContent("ask");
-    expect(screen.getByTestId("paid-agent-only")).toHaveTextContent("false");
   });
 
   it("refreshes AuthKit access token after checkout entitlement refresh before showing paid state", async () => {

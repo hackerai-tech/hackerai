@@ -385,7 +385,6 @@ function StreamEffects({
   sendMessage,
   hasManuallyStoppedRef,
   todos,
-  temporaryChatsEnabled,
   sandboxPreference,
   agentPermissionMode,
   selectedModel,
@@ -405,7 +404,6 @@ function StreamEffects({
   ) => void;
   hasManuallyStoppedRef: RefObject<boolean>;
   todos: Todo[];
-  temporaryChatsEnabled: boolean;
   sandboxPreference: string;
   agentPermissionMode: string;
   selectedModel: string;
@@ -429,7 +427,6 @@ function StreamEffects({
     sendMessage,
     hasManuallyStoppedRef,
     todos,
-    temporaryChatsEnabled,
     sandboxPreference,
     agentPermissionMode,
     selectedModel,
@@ -468,7 +465,6 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     chatSidebarOpen,
     initializeChat,
     setTodos,
-    temporaryChatsEnabled,
     setChatReset,
     hasUserDismissedRateLimitWarning,
     setHasUserDismissedRateLimitWarning,
@@ -512,7 +508,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   // Suppress transient "Chat Not Found" while server creates the chat
   const [awaitingServerChat, setAwaitingServerChat] = useState<boolean>(false);
 
-  // Store file metadata separately from AI SDK message state (for temporary chats)
+  // Store streamed file metadata separately from AI SDK message state.
   const [tempChatFileDetails, setTempChatFileDetails] = useState<
     Map<string, FileDetails[]>
   >(new Map());
@@ -520,7 +516,6 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   // Title streamed mid-response so the header updates before Convex persists it
   const [streamedTitle, setStreamedTitle] = useState<string | null>(null);
 
-  const temporaryChatsEnabledRef = useLatestRef(temporaryChatsEnabled);
   // Use global state ref so streaming callback reads latest value
   const hasUserDismissedWarningRef = useLatestRef(
     hasUserDismissedRateLimitWarning,
@@ -723,9 +718,6 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
           setMessagesRef.current(normalizedMessages);
         }
 
-        const isTemporaryChat =
-          !isExistingChatRef.current && temporaryChatsEnabledRef.current;
-
         const stripUrlsFromMessages = (msgs: ChatMessage[]): ChatMessage[] => {
           const messagesWithoutHeartbeats =
             stripAgentLongHeartbeatPartsFromMessages(msgs);
@@ -745,10 +737,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
           });
         };
 
-        const messagesToSend = isTemporaryChat
-          ? normalizedMessages
-          : lastMessage;
-        const messagesWithoutUrls = stripUrlsFromMessages(messagesToSend);
+        const messagesWithoutUrls = stripUrlsFromMessages(lastMessage);
 
         return {
           headers: getPostHogRequestHeaders(),
@@ -929,14 +918,11 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
       setAwaitingServerChat(false);
       dispatchStreaming({ type: "RESET_ON_FINISH" });
 
-      const isTemporaryChat =
-        !isExistingChatRef.current && temporaryChatsEnabledRef.current;
       if (
         finalizeNewChatRoute({
           chatId,
           isAbort,
           isExistingChat: isExistingChatRef.current,
-          isTemporaryChat,
         })
       ) {
         removeDraft("new");
@@ -984,7 +970,6 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
       subscription: subscriptionRef.current,
       transport: shouldUseAgentLong ? "trigger" : "browser",
       existing_chat: isExistingChatRef.current,
-      temporary_chat: temporaryChatsEnabledRef.current,
       message_count: messagesRef.current.length,
     });
     previousChatStatusRef.current = status;
@@ -994,7 +979,6 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     shouldUseAgentLong,
     status,
     subscriptionRef,
-    temporaryChatsEnabledRef,
   ]);
 
   // Keep refs in sync so closures read latest values
@@ -1194,11 +1178,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   // the app's authenticated resume endpoint so the first message in a new
   // chat can leave "Working..." even before chatData is subscribed.
   useEffect(() => {
-    if (
-      status !== "streaming" ||
-      !shouldUseAgentLongForCurrentChat ||
-      temporaryChatsEnabled
-    ) {
+    if (status !== "streaming" || !shouldUseAgentLongForCurrentChat) {
       return;
     }
 
@@ -1220,7 +1200,6 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
           chatId,
           isAbort: false,
           isExistingChat: isExistingChatRef.current,
-          isTemporaryChat: temporaryChatsEnabled,
         })
       ) {
         removeDraft("new");
@@ -1296,7 +1275,6 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     shouldUseAgentLongForCurrentChat,
     status,
     stop,
-    temporaryChatsEnabled,
   ]);
 
   // Ref bridge: StreamEffects exposes resetAutoContinueCount here
@@ -1686,7 +1664,6 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
               body: {
                 mode: chatModeRef.current,
                 todos: todosRef.current,
-                temporary: temporaryChatsEnabledRef.current,
                 sandboxPreference: sandboxPreferenceRef.current,
                 agentPermissionMode: agentPermissionModeRef.current,
                 selectedModel: requestSelectedModelRef.current,
@@ -1713,7 +1690,6 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     sendMessage,
     chatModeRef,
     todosRef,
-    temporaryChatsEnabledRef,
     sandboxPreferenceRef,
     agentPermissionModeRef,
     requestSelectedModelRef,
@@ -1817,9 +1793,6 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
       ? rateLimitWarning
       : undefined;
 
-  // UI-level temporary chat flag
-  const isTempChat = !isExistingChat && temporaryChatsEnabled;
-
   // Get branched chat info directly from chatData (no additional query needed)
   const branchedFromChatId = chatDataForCurrentChat?.branched_from_chat_id;
   const branchedFromChatTitle = (chatDataForCurrentChat as any)
@@ -1839,7 +1812,6 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
         sendMessage={sendMessage}
         hasManuallyStoppedRef={hasManuallyStoppedRef}
         todos={todos}
-        temporaryChatsEnabled={temporaryChatsEnabled}
         sandboxPreference={sandboxPreference}
         agentPermissionMode={agentPermissionMode}
         selectedModel={requestSelectedModel}
@@ -1905,7 +1877,6 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
                   error={error || null}
                   paginationStatus={paginatedMessages.status}
                   loadMore={paginatedMessages.loadMore}
-                  isTemporaryChat={isTempChat}
                   isMobile={isMobile}
                   tempChatFileDetails={tempChatFileDetails}
                   finishReason={chatDataForCurrentChat?.finish_reason}
@@ -1925,21 +1896,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
                   <div className="flex-1 flex flex-col items-center justify-center px-4 min-h-0">
                     <div className="w-full max-w-full sm:max-w-[768px] sm:min-w-[390px] flex flex-col items-center">
                       <div className="text-center">
-                        {temporaryChatsEnabled ? (
-                          <>
-                            <h1 className="text-3xl font-bold text-foreground mb-2">
-                              Temporary Task
-                            </h1>
-                            <p className="text-muted-foreground max-w-md mx-auto px-4 py-3">
-                              This task won&apos;t appear in history, use or
-                              update HackerAI&apos;s memory, or be used to train
-                              models. This task will be deleted when you refresh
-                              the page.
-                            </p>
-                          </>
-                        ) : (
-                          <HackingSuggestions />
-                        )}
+                        <HackingSuggestions />
                       </div>
 
                       {/* Centered input (desktop only) */}

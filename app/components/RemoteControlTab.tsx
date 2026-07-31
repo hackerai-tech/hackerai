@@ -96,7 +96,6 @@ interface UseAutoSelectNewRemoteConnectionArgs {
   setSandboxPreference: (preference: SandboxPreference) => void;
   selectedModel: SelectedModel;
   setSelectedModel: (model: SelectedModel) => void;
-  temporaryChatsEnabled: boolean;
 }
 
 function useAutoSelectNewRemoteConnection({
@@ -108,7 +107,6 @@ function useAutoSelectNewRemoteConnection({
   setSandboxPreference,
   selectedModel,
   setSelectedModel,
-  temporaryChatsEnabled,
 }: UseAutoSelectNewRemoteConnectionArgs) {
   const previousRemoteConnectionIdsRef = useRef<Set<string> | null>(null);
 
@@ -135,13 +133,6 @@ function useAutoSelectNewRemoteConnection({
       setSandboxPreference(newConnection.connectionId);
     }
 
-    if (temporaryChatsEnabled) {
-      toast.info("Local sandbox connected", {
-        description: "Turn off temporary task to use Agent mode.",
-      });
-      return;
-    }
-
     if (subscription === "free" && selectedModel !== "auto") {
       setSelectedModel("auto");
     }
@@ -161,7 +152,6 @@ function useAutoSelectNewRemoteConnection({
     setSandboxPreference,
     setSelectedModel,
     subscription,
-    temporaryChatsEnabled,
   ]);
 }
 
@@ -178,7 +168,6 @@ const RemoteControlTab = () => {
     setSandboxPreference,
     selectedModel,
     setSelectedModel,
-    temporaryChatsEnabled,
     localConnections: connections,
   } = useGlobalState();
 
@@ -194,7 +183,6 @@ const RemoteControlTab = () => {
     setSandboxPreference,
     setSelectedModel,
     subscription,
-    temporaryChatsEnabled,
   });
 
   const handleGetToken = async () => {

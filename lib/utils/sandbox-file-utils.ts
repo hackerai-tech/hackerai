@@ -2,8 +2,9 @@ import "server-only";
 
 import { createHash, randomUUID } from "node:crypto";
 import { UIMessage } from "ai";
-import type { SandboxPreference } from "@/types";
+import type { SandboxPreference, SandboxReadinessFailureReason } from "@/types";
 import { validateDownloadUrl } from "@/lib/ai/tools/utils/path-validation";
+import { classifySandboxReadinessFailureSignal } from "@/lib/ai/tools/utils/sandbox-readiness-failure";
 
 export type SandboxFile = {
   localPath: string;
@@ -41,6 +42,7 @@ type SandboxUploadFailureDetail = {
   kind: SandboxFile["kind"];
   error: string;
   transientSandboxCommand: boolean;
+  sandboxReadinessReason: SandboxReadinessFailureReason;
   urlLength?: number;
   protocol?: string;
 };
@@ -54,6 +56,12 @@ type EnsureSandboxForUpload = (options?: SandboxRefreshOptions) => Promise<any>;
 
 type UploadSandboxFilesOptions = {
   retryWithFreshSandboxOnTransientFailure?: boolean | (() => boolean);
+  logContext?: {
+    service: "agent-long" | "chat-handler";
+    requestId?: string;
+    userId: string;
+    chatId: string;
+  };
 };
 
 type SandboxAttachmentTagKind = "attachment" | "inline-image";
@@ -113,6 +121,11 @@ const WRAPPED_FILE_TRANSFER_ERROR_PATTERN =
   /\bfailed to (?:download|copy) file:|curl:\s*\(|\bexitCode:\s*\d+\b/i;
 const SANDBOX_COMMAND_MAX_ATTEMPTS = 3;
 const SANDBOX_COMMAND_RETRY_BASE_DELAY_MS = 750;
+const RETRYABLE_SANDBOX_ACQUISITION_FAILURES =
+  new Set<SandboxReadinessFailureReason>([
+    "operation_timeout",
+    "placement_failure",
+  ]);
 
 const errorMessage = (error: unknown): string =>
   error instanceof Error ? error.message : String(error);
@@ -121,6 +134,44 @@ const isTransientSandboxCommandError = (error: unknown): boolean => {
   const message = errorMessage(error);
   if (WRAPPED_FILE_TRANSFER_ERROR_PATTERN.test(message)) return false;
   return TRANSIENT_SANDBOX_COMMAND_ERROR_PATTERN.test(message);
+};
+
+const classifySandboxUploadReadinessFailure = (
+  error: unknown,
+): SandboxReadinessFailureReason =>
+  classifySandboxReadinessFailureSignal(error) ?? "unknown";
+
+const logSandboxAcquisitionRecovery = (
+  options: UploadSandboxFilesOptions | undefined,
+  event:
+    | "sandbox_attachment_acquisition_retry_scheduled"
+    | "sandbox_attachment_acquisition_recovered"
+    | "sandbox_attachment_acquisition_retry_failed",
+  level: "info" | "warn" | "error",
+  initialFailureReason: SandboxReadinessFailureReason,
+  finalFailureReason?: SandboxReadinessFailureReason,
+): void => {
+  const payload = JSON.stringify({
+    timestamp: new Date().toISOString(),
+    level,
+    event,
+    service: options?.logContext?.service ?? "chat-handler",
+    environment:
+      process.env.TRIGGER_ENV ??
+      process.env.VERCEL_ENV ??
+      process.env.NODE_ENV ??
+      "unknown",
+    request_id:
+      options?.logContext?.requestId ?? process.env.VERCEL_REQUEST_ID ?? null,
+    user_id: options?.logContext?.userId ?? null,
+    chat_id: options?.logContext?.chatId ?? null,
+    initial_failure_reason: initialFailureReason,
+    final_failure_reason: finalFailureReason ?? null,
+  });
+
+  if (level === "error") console.error(payload);
+  else if (level === "warn") console.warn(payload);
+  else console.info(payload);
 };
 
 const delay = (ms: number): Promise<void> =>
@@ -680,10 +731,16 @@ const summarizeSandboxUploadFailure = (
   file: SandboxFile,
   error: unknown,
 ): SandboxUploadFailureDetail => {
+  const message = error instanceof Error ? error.message : String(error);
+  const wrappedFileTransferFailure =
+    file.kind === "url" && message.includes("Failed to download file:");
   const summary: SandboxUploadFailureDetail = {
     kind: file.kind,
     error: redactSandboxUploadError(file, error),
     transientSandboxCommand: isTransientSandboxCommandError(error),
+    sandboxReadinessReason: wrappedFileTransferFailure
+      ? "unknown"
+      : classifySandboxUploadReadinessFailure(error),
   };
 
   if (file.kind === "url") {
@@ -772,6 +829,12 @@ export const getSandboxUploadFailureMetadata = (
             failure.transientSandboxCommand,
         }
       : {}),
+    ...(failure?.sandboxReadinessReason
+      ? {
+          upload_failure_sandbox_readiness_reason:
+            failure.sandboxReadinessReason,
+        }
+      : {}),
     ...(failure?.protocol ? { upload_failure_protocol: failure.protocol } : {}),
     ...(typeof failure?.urlLength === "number"
       ? { upload_failure_url_length: failure.urlLength }
@@ -846,17 +909,63 @@ export const uploadSandboxFiles = async (
   });
 
   let sandbox: any;
+  let retriedWithFreshSandbox = false;
   try {
     sandbox = await ensureSandbox();
-  } catch (e) {
-    console.error("Failed to acquire sandbox for upload:", e);
-    return {
-      failedCount: sandboxFiles.length,
-      pathRewrites: [],
-      failureDetails: sandboxFiles.map((file) =>
-        summarizeSandboxUploadFailure(file, e),
-      ),
-    };
+  } catch (error) {
+    const initialFailureReason = classifySandboxUploadReadinessFailure(error);
+    const shouldRetryAcquisition =
+      RETRYABLE_SANDBOX_ACQUISITION_FAILURES.has(initialFailureReason) &&
+      shouldRetryWithFreshSandbox(options);
+
+    if (!shouldRetryAcquisition) {
+      console.error("Failed to acquire sandbox for upload:", error);
+      return {
+        failedCount: sandboxFiles.length,
+        pathRewrites: [],
+        failureDetails: sandboxFiles.map((file) =>
+          summarizeSandboxUploadFailure(file, error),
+        ),
+      };
+    }
+
+    retriedWithFreshSandbox = true;
+    logSandboxAcquisitionRecovery(
+      options,
+      "sandbox_attachment_acquisition_retry_scheduled",
+      "warn",
+      initialFailureReason,
+    );
+    try {
+      sandbox = await ensureSandbox({
+        refresh: true,
+        reason: "attachment_staging_sandbox_acquisition_failure",
+      });
+      logSandboxAcquisitionRecovery(
+        options,
+        "sandbox_attachment_acquisition_recovered",
+        "info",
+        initialFailureReason,
+      );
+    } catch (retryError) {
+      const finalFailureReason =
+        classifySandboxUploadReadinessFailure(retryError);
+      logSandboxAcquisitionRecovery(
+        options,
+        "sandbox_attachment_acquisition_retry_failed",
+        "error",
+        initialFailureReason,
+        finalFailureReason,
+      );
+      return {
+        failedCount: sandboxFiles.length,
+        pathRewrites: [],
+        failureDetails: sandboxFiles.map((file) =>
+          summarizeSandboxUploadFailure(file, retryError),
+        ),
+        retriedWithFreshSandbox: true,
+      };
+    }
   }
 
   const firstResult = await uploadSandboxFilesOnce(sandboxFiles, sandbox);
@@ -864,6 +973,7 @@ export const uploadSandboxFiles = async (
   if (
     firstResult.failedCount > 0 &&
     hasTransientSandboxCommandFailure(firstResult) &&
+    !retriedWithFreshSandbox &&
     shouldRetryWithFreshSandbox(options)
   ) {
     console.warn(
@@ -892,5 +1002,7 @@ export const uploadSandboxFiles = async (
     }
   }
 
-  return firstResult;
+  return retriedWithFreshSandbox
+    ? { ...firstResult, retriedWithFreshSandbox: true }
+    : firstResult;
 };

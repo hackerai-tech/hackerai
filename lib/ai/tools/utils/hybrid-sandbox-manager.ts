@@ -50,7 +50,10 @@ export interface SandboxFallbackInfo {
  * - Automatic fallback to E2B when local unavailable
  * - Dangerous mode (no Docker) with OS context for AI
  */
-const MAX_SANDBOX_HEALTH_FAILURES = 5;
+// Match DefaultSandboxManager: stop retries in this Agent run after the
+// initial readiness check and one reconnect both fail. E2B reset remains
+// connection-only and never kills the shared per-user sandbox.
+const MAX_SANDBOX_HEALTH_FAILURES = 2;
 export const LOCAL_SANDBOX_PRESENCE_GRACE_MS = 30_000;
 const LOCAL_SANDBOX_PRESENCE_TIMEOUT_MS = 2_000;
 

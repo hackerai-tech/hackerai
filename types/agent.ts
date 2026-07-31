@@ -61,6 +61,38 @@ export interface SandboxResourceMetrics {
   diskPct: number;
 }
 
+export type SandboxReadinessFailureReason =
+  | "sandbox_not_running"
+  | "sandbox_not_found"
+  | "permission_denied"
+  | "authentication"
+  | "template"
+  | "invalid_argument"
+  | "rate_limit"
+  | "disk_space"
+  | "command_exit"
+  | "operation_timeout"
+  | "connection_error"
+  | "placement_failure"
+  | "unknown";
+
+export type SandboxReadinessStage = "initial" | "reconnect";
+
+export type SandboxLifecycleState =
+  "running_not_ready" | "not_running" | "missing" | "unknown";
+
+export type TerminalTimeoutOutcome =
+  "command_terminated" | "session_resumable" | "wait_expired_untracked";
+
+export type TerminalTimeoutRecoveryOutcome =
+  "completed_success" | "completed_nonzero" | "execution_failed";
+
+export type SandboxRecoveryOutcome =
+  | "reconnected"
+  | "failed_retryable"
+  | "failed_unavailable"
+  | "skipped_unavailable";
+
 export type SandboxResourceObservation =
   | {
       kind: "health_sample";
@@ -72,6 +104,27 @@ export type SandboxResourceObservation =
       source: "readiness_check_failure" | "terminal_command_timeout";
       failureType: "readiness_check_failed" | "terminal_command_timed_out";
       metrics: SandboxResourceMetrics | null;
+      failureReason?: SandboxReadinessFailureReason;
+      readinessStage?: SandboxReadinessStage;
+      lifecycleState?: SandboxLifecycleState;
+      timeoutSeconds?: number;
+      terminalTimeoutOutcome?: TerminalTimeoutOutcome;
+      terminationAttempted?: boolean;
+      terminationSucceeded?: boolean;
+      sessionReturned?: boolean;
+      isBackground?: boolean;
+    }
+  | {
+      kind: "recovery";
+      source: "readiness_reconnect";
+      outcome: SandboxRecoveryOutcome;
+      initialFailureReason: SandboxReadinessFailureReason;
+      finalFailureReason?: SandboxReadinessFailureReason;
+    }
+  | {
+      kind: "timeout_recovery";
+      source: "terminal_command_timeout";
+      outcome: TerminalTimeoutRecoveryOutcome;
     };
 
 export type SandboxResourceMetricsObserver = (
@@ -401,6 +454,8 @@ export interface ToolContext {
   userID: string;
   chatId: string;
   assistantMessageId?: string;
+  /** Trigger.dev run ID when tools execute inside a durable Agent task. */
+  triggerRunId?: string;
   fileAccumulator: FileAccumulator;
   backgroundProcessTracker: BackgroundProcessTracker;
   /** Manages interactive PTY sessions for `run_terminal_cmd` interactive actions. */
