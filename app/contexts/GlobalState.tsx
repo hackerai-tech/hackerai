@@ -694,8 +694,14 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
   // desktop sessions may be unscoped, so refresh once to pull WorkOS
   // entitlements from the user's organization before showing them as free.
   useEffect(() => {
+    let cancelled = false;
+    let requestSettled = false;
+    let controller: AbortController | null = null;
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
+
     const refreshDesktopEntitlements = async () => {
       if (!user || typeof window === "undefined" || !isTauriEnvironment()) {
+        setIsCheckingProPlan(false);
         return;
       }
 
@@ -703,6 +709,7 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
         ? entitlements
         : [];
       if (resolveSubscriptionTier(currentEntitlements) !== "free") {
+        setIsCheckingProPlan(false);
         return;
       }
 
@@ -717,9 +724,9 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
       desktopEntitlementRefreshUserRef.current = user.id;
 
       setIsCheckingProPlan(true);
-      const controller = new AbortController();
-      const timeoutId = setTimeout(
-        () => controller.abort(),
+      controller = new AbortController();
+      timeoutId = setTimeout(
+        () => controller?.abort(),
         DESKTOP_ENTITLEMENT_REFRESH_TIMEOUT_MS,
       );
       try {
@@ -730,6 +737,7 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
         if (!response.ok) return;
 
         const data = await response.json();
+        if (cancelled) return;
         setSubscriptionWithNormalize(
           resolveSubscriptionTier(
             Array.isArray(data.entitlements) ? data.entitlements : [],
@@ -742,12 +750,26 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
       } catch {
         // Keep the token-derived tier; this is only a best-effort desktop heal.
       } finally {
-        clearTimeout(timeoutId);
-        setIsCheckingProPlan(false);
+        requestSettled = true;
+        if (timeoutId !== null) clearTimeout(timeoutId);
+        if (!cancelled) setIsCheckingProPlan(false);
       }
     };
 
     refreshDesktopEntitlements();
+
+    return () => {
+      cancelled = true;
+      if (
+        controller !== null &&
+        !requestSettled &&
+        desktopEntitlementRefreshUserRef.current === user?.id
+      ) {
+        desktopEntitlementRefreshUserRef.current = null;
+      }
+      controller?.abort();
+      if (timeoutId !== null) clearTimeout(timeoutId);
+    };
   }, [
     user,
     entitlements,

@@ -195,6 +195,49 @@ describe("GlobalStateProvider agent defaults", () => {
     expect(screen.getByTestId("checking-pro-plan")).toHaveTextContent("false");
   });
 
+  it("aborts a stale desktop entitlement refresh when the account changes", async () => {
+    window.__TAURI_INTERNALS__ = {};
+    let requestSignal: AbortSignal | undefined;
+    global.fetch = jest.fn((input, init) => {
+      if (String(input) === "/api/entitlements") {
+        requestSignal = init?.signal ?? undefined;
+        return new Promise((_, reject) => {
+          requestSignal?.addEventListener("abort", () => {
+            reject(new DOMException("Aborted", "AbortError"));
+          });
+        });
+      }
+
+      return Promise.resolve({ ok: false });
+    }) as unknown as typeof fetch;
+
+    const { rerender } = render(
+      <GlobalStateProvider>
+        <GlobalStateProbe />
+      </GlobalStateProvider>,
+    );
+
+    await waitFor(() => {
+      expect(requestSignal).toBeDefined();
+    });
+
+    mockAuthUser(["pro-plan"], { user: { id: "user_paid" } });
+    rerender(
+      <GlobalStateProvider>
+        <GlobalStateProbe />
+      </GlobalStateProvider>,
+    );
+
+    expect(requestSignal?.aborted).toBe(true);
+    await waitFor(() => {
+      expect(screen.getByTestId("subscription")).toHaveTextContent("pro");
+      expect(screen.getByTestId("checking-pro-plan")).toHaveTextContent(
+        "false",
+      );
+      expect(screen.getByTestId("paid-agent-only")).toHaveTextContent("true");
+    });
+  });
+
   it("keeps chat mode access unresolved while authentication is loading", () => {
     mockAuthUser([], { loading: true });
 
