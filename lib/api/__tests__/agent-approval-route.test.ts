@@ -2,9 +2,6 @@ import { beforeEach, describe, expect, it, jest } from "@jest/globals";
 
 const mockGetUserIDAndPro = jest.fn();
 const mockGetChatById = jest.fn();
-const mockGetTemporaryRefreshHandle = jest.fn();
-const mockSetTemporaryRefreshCookie = jest.fn();
-const mockClearTemporaryRefreshCookie = jest.fn();
 const mockRunsRetrieve = jest.fn();
 const mockSessionsRetrieve = jest.fn();
 const mockSessionSend = jest.fn();
@@ -71,9 +68,6 @@ jest.mock("@/lib/chat/agent-approval-authorization", () => ({
 
 jest.mock("@/lib/api/agent-approval-session", () => ({
   AGENT_APPROVAL_PROTOCOL_VERSION: 2,
-  clearTemporaryAgentApprovalRefreshCookie: mockClearTemporaryRefreshCookie,
-  getTemporaryAgentApprovalRefreshHandle: mockGetTemporaryRefreshHandle,
-  setTemporaryAgentApprovalRefreshCookie: mockSetTemporaryRefreshCookie,
 }));
 
 jest.mock("@/lib/api/agent-route-errors", () => ({
@@ -186,60 +180,37 @@ describe("agent approval route", () => {
     expect(mockSessionSend).not.toHaveBeenCalled();
   });
 
-  it("uses bounded current metadata after arbitrarily long temporary output", async () => {
+  it("rejects approvals when the persisted task is missing", async () => {
     const { createAgentApprovalPost } = await import("../agent-approval-route");
     mockGetChatById.mockResolvedValue(null as never);
-    mockGetTemporaryRefreshHandle.mockReturnValue({
-      userId: "user-1",
-      chatId: "chat-1",
-      runId: "run-1",
-      approvalSessionId: "approval-session-1",
-    });
-    const req = request();
     const response = await createAgentApprovalPost({ endpoint: "/api/agent" })(
-      req,
+      request(),
     );
 
-    expect(response.status).toBe(200);
-    expect(mockSessionSend).toHaveBeenCalledTimes(1);
-    expect(mockSetTemporaryRefreshCookie).toHaveBeenCalledWith(response, {
-      req,
-      userId: "user-1",
-      chatId: "chat-1",
-      runId: "run-1",
-      approvalSessionId: "approval-session-1",
-    });
+    expect(response.status).toBe(403);
+    expect(mockSignApprovalInput).not.toHaveBeenCalled();
+    expect(mockSessionSend).not.toHaveBeenCalled();
   });
 
-  it("rejects a temporary approval that is no longer the current pending request", async () => {
+  it("rejects approvals for another user's persisted task as forbidden", async () => {
     const { createAgentApprovalPost } = await import("../agent-approval-route");
-    mockGetChatById.mockResolvedValue(null as never);
-    mockGetTemporaryRefreshHandle.mockReturnValue({
-      userId: "user-1",
-      chatId: "chat-1",
-      runId: "run-1",
-      approvalSessionId: "approval-session-1",
-    });
-    mockRunsRetrieve.mockResolvedValue(
-      run({
-        metadata: {
-          ...run().metadata,
-          approvalStatus: "approve",
-        },
-      }) as never,
-    );
+    mockGetChatById.mockResolvedValue({
+      id: "chat-1",
+      user_id: "user-2",
+      active_trigger_run_id: "run-1",
+      active_agent_approval_session_id: "approval-session-1",
+      active_agent_approval_request: {
+        approvalId: "approval-1",
+        toolCallId: "tool-call-1",
+      },
+    } as never);
 
-    const req = request();
     const response = await createAgentApprovalPost({ endpoint: "/api/agent" })(
-      req,
+      request(),
     );
 
-    expect(response.status).toBe(409);
-    expect(mockClearTemporaryRefreshCookie).toHaveBeenCalledWith(response, {
-      req,
-      userId: "user-1",
-      chatId: "chat-1",
-    });
+    expect(response.status).toBe(403);
+    expect(mockRunsRetrieve).not.toHaveBeenCalled();
     expect(mockSignApprovalInput).not.toHaveBeenCalled();
     expect(mockSessionSend).not.toHaveBeenCalled();
   });

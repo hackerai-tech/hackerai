@@ -43,7 +43,6 @@ function buildParams(
     sendMessage: jest.fn(),
     hasManuallyStoppedRef: { current: false },
     todos: [],
-    temporaryChatsEnabled: false,
     sandboxPreference: "e2b",
     agentPermissionMode: "full_access",
     selectedModel: "auto",
@@ -118,7 +117,6 @@ describe("useAutoContinue", () => {
       status: "streaming",
       sendMessage,
       todos,
-      temporaryChatsEnabled: true,
       sandboxPreference: "local-123",
       selectedModel: "hackerai-pro",
     });
@@ -148,7 +146,6 @@ describe("useAutoContinue", () => {
           mode: "agent",
           isAutoContinue: true,
           todos,
-          temporary: true,
           sandboxPreference: "local-123",
           agentPermissionMode: "full_access",
           selectedModel: "hackerai-pro",

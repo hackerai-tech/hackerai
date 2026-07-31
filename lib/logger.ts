@@ -67,7 +67,6 @@ export interface ChatWideEvent {
 
   // Request details
   mode: ChatMode;
-  is_temporary: boolean;
   is_regenerate: boolean;
 
   // User context
@@ -253,13 +252,8 @@ export class WideEventBuilder {
   /**
    * Set request details
    */
-  setRequestDetails(details: {
-    mode: ChatMode;
-    isTemporary: boolean;
-    isRegenerate: boolean;
-  }): this {
+  setRequestDetails(details: { mode: ChatMode; isRegenerate: boolean }): this {
     this.event.mode = details.mode;
-    this.event.is_temporary = details.isTemporary;
     this.event.is_regenerate = details.isRegenerate;
     return this;
   }
@@ -665,11 +659,6 @@ export class WideEventBuilder {
     if (this.additionalToolCost > 0 && this.event.usage) {
       this.event.usage.total_cost =
         (this.event.usage.total_cost || 0) + this.additionalToolCost;
-    }
-
-    // Don't include assistant_id for temporary chats
-    if (this.event.is_temporary) {
-      delete this.event.assistant_id;
     }
 
     // Strip zero/undefined values from usage to reduce noise

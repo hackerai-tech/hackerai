@@ -153,7 +153,6 @@ export const ChatInput = ({
     setSelectedModel,
     subscription,
     isCheckingProPlan,
-    temporaryChatsEnabled,
     hasLocalSandbox,
     defaultLocalSandboxPreference,
   } = useGlobalState();
@@ -190,9 +189,7 @@ export const ChatInput = ({
   };
 
   const draftId =
-    isNewChat && (!hasMessages || temporaryChatsEnabled)
-      ? "new"
-      : chatId || NULL_THREAD_DRAFT_ID;
+    isNewChat && !hasMessages ? "new" : chatId || NULL_THREAD_DRAFT_ID;
   const skipNextAttachmentPersistRef = useRef(false);
   const hasPersistedDraftAttachmentsRef = useRef(false);
   const uploadedFilesRef = useRef(uploadedFiles);
@@ -305,13 +302,6 @@ export const ChatInput = ({
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isFreeAgent]);
-
-  // Fallback to 'ask' mode when temporary chats are enabled (agent modes not allowed)
-  useEffect(() => {
-    if (temporaryChatsEnabled && isAgentMode(chatMode)) {
-      setChatMode("ask");
-    }
-  }, [temporaryChatsEnabled, chatMode, setChatMode]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();

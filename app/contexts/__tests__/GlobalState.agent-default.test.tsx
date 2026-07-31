@@ -32,7 +32,6 @@ function GlobalStateProbe() {
     sandboxPreference,
     selectedModel,
     subscription,
-    temporaryChatsEnabled,
   } = useGlobalState();
 
   return (
@@ -47,18 +46,7 @@ function GlobalStateProbe() {
       <div data-testid="sandbox-preference">{sandboxPreference}</div>
       <div data-testid="selected-model">{selectedModel}</div>
       <div data-testid="subscription">{subscription}</div>
-      <div data-testid="temporary-chat">{String(temporaryChatsEnabled)}</div>
     </>
-  );
-}
-
-function TemporaryChatProbe() {
-  const { temporaryChatsEnabled } = useGlobalState();
-
-  return (
-    <div data-testid="temporary-chat-enabled">
-      {String(temporaryChatsEnabled)}
-    </div>
   );
 }
 
@@ -84,23 +72,6 @@ describe("GlobalStateProvider agent defaults", () => {
     mockAuthUser([]);
   });
 
-  it("clears a temporary chat URL request for free users", async () => {
-    window.history.pushState({}, "", "/?temporary-chat=true");
-
-    render(
-      <GlobalStateProvider>
-        <TemporaryChatProbe />
-      </GlobalStateProvider>,
-    );
-
-    await waitFor(() => {
-      expect(screen.getByTestId("temporary-chat-enabled")).toHaveTextContent(
-        "false",
-      );
-    });
-    expect(window.location.search).toBe("");
-  });
-
   it("keeps chat mode access unresolved while authentication is loading", () => {
     mockAuthUser([], { loading: true });
 
@@ -113,47 +84,6 @@ describe("GlobalStateProvider agent defaults", () => {
     expect(screen.getByTestId("chat-mode-access-resolved")).toHaveTextContent(
       "false",
     );
-  });
-
-  it("clears a temporary chat URL request after unauthenticated auth resolves", async () => {
-    mockAuthUser([], {
-      user: null,
-      loading: false,
-      isAuthenticated: false,
-      organizationId: undefined,
-    });
-    window.history.pushState({}, "", "/?temporary-chat=true");
-
-    render(
-      <GlobalStateProvider>
-        <TemporaryChatProbe />
-      </GlobalStateProvider>,
-    );
-
-    await waitFor(() => {
-      expect(screen.getByTestId("temporary-chat-enabled")).toHaveTextContent(
-        "false",
-      );
-    });
-    expect(window.location.search).toBe("");
-  });
-
-  it("preserves a temporary chat URL request for paid users", async () => {
-    mockAuthUser(["pro-plan"]);
-    window.history.pushState({}, "", "/?temporary-chat=true");
-
-    render(
-      <GlobalStateProvider>
-        <TemporaryChatProbe />
-      </GlobalStateProvider>,
-    );
-
-    await waitFor(() => {
-      expect(screen.getByTestId("temporary-chat-enabled")).toHaveTextContent(
-        "true",
-      );
-    });
-    expect(window.location.search).toBe("?temporary-chat=true");
   });
 
   it("syncs the active project when browser history changes", async () => {
@@ -236,25 +166,6 @@ describe("GlobalStateProvider agent defaults", () => {
     expect(screen.getByTestId("agent-permission-mode")).toHaveTextContent(
       "ask_approval",
     );
-  });
-
-  it("forces paid temporary chats from saved Agent back to Ask", async () => {
-    window.localStorage.setItem("chat_mode", "agent");
-    window.history.pushState({}, "", "/?temporary-chat=true");
-    mockAuthUser(["pro-plan"]);
-
-    render(
-      <GlobalStateProvider>
-        <GlobalStateProbe />
-      </GlobalStateProvider>,
-    );
-
-    await waitFor(() => {
-      expect(screen.getByTestId("subscription")).toHaveTextContent("pro");
-      expect(screen.getByTestId("temporary-chat")).toHaveTextContent("true");
-    });
-    expect(screen.getByTestId("chat-mode")).toHaveTextContent("ask");
-    expect(screen.getByTestId("paid-agent-only")).toHaveTextContent("false");
   });
 
   it("refreshes AuthKit access token after checkout entitlement refresh before showing paid state", async () => {

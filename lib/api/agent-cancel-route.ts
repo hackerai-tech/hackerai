@@ -6,14 +6,11 @@ import { handleAgentRouteError } from "@/lib/api/agent-route-errors";
 import type { AgentApiEndpoint } from "@/lib/api/agent-endpoints";
 import {
   cancelAgentTriggerRun,
-  clearTemporaryAgentApprovalRefreshCookie,
   closeAgentApprovalSession,
-  getTemporaryAgentApprovalRefreshHandle,
 } from "@/lib/api/agent-approval-session";
 import { logger } from "@/lib/logger";
 
-type AgentCancelRejectionReason =
-  "chat_owner_mismatch" | "temporary_refresh_missing";
+type AgentCancelRejectionReason = "chat_owner_mismatch" | "chat_missing";
 
 function logAgentCancelRejection({
   req,
@@ -81,24 +78,19 @@ export const createAgentCancelPost =
         return new NextResponse("Forbidden", { status: 403 });
       }
 
-      const temporaryRefresh = chat
-        ? null
-        : getTemporaryAgentApprovalRefreshHandle({ req, userId, chatId });
-      if (!chat && !temporaryRefresh) {
+      if (!chat) {
         logAgentCancelRejection({
           req,
           endpoint,
           userId,
           chatId,
-          reason: "temporary_refresh_missing",
+          reason: "chat_missing",
         });
         return new NextResponse("Forbidden", { status: 403 });
       }
 
-      const approvalSessionId = chat
-        ? chat.active_agent_approval_session_id
-        : temporaryRefresh?.approvalSessionId;
-      const runId = chat ? chat.active_trigger_run_id : temporaryRefresh?.runId;
+      const approvalSessionId = chat.active_agent_approval_session_id;
+      const runId = chat.active_trigger_run_id;
       if (expectedTriggerRunId && runId !== expectedTriggerRunId) {
         return NextResponse.json(
           { canceled: false, reason: "stale_run" },
@@ -121,28 +113,18 @@ export const createAgentCancelPost =
       }
 
       await cancelAgentTriggerRun(runId);
-      if (chat) {
-        await setActiveTriggerRun({
-          chatId,
-          triggerRunId: null,
-          approvalSessionId: null,
-          expectedRunId: runId,
-          ...(approvalSessionId
-            ? { expectedApprovalSessionId: approvalSessionId }
-            : {}),
-          clearApprovalPending: true,
-        });
-      }
+      await setActiveTriggerRun({
+        chatId,
+        triggerRunId: null,
+        approvalSessionId: null,
+        expectedRunId: runId,
+        ...(approvalSessionId
+          ? { expectedApprovalSessionId: approvalSessionId }
+          : {}),
+        clearApprovalPending: true,
+      });
 
-      const response = NextResponse.json({ canceled: true, runId });
-      if (temporaryRefresh) {
-        clearTemporaryAgentApprovalRefreshCookie(response, {
-          req,
-          userId,
-          chatId,
-        });
-      }
-      return response;
+      return NextResponse.json({ canceled: true, runId });
     } catch (error) {
       return handleAgentRouteError({
         error,

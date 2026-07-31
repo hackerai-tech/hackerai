@@ -76,7 +76,6 @@ describe("Agent trigger route lifecycle", () => {
         chatId: "chat-1",
         runId: "run-1",
         approvalSessionId: "approval-session-1",
-        temporary: false,
       }),
     ).rejects.toMatchObject({
       type: "not_found",
@@ -102,7 +101,6 @@ describe("Agent trigger route lifecycle", () => {
         chatId: "chat-1",
         runId: "run-1",
         approvalSessionId: "approval-session-1",
-        temporary: false,
       }),
     ).rejects.toBe(associationError);
 
@@ -118,7 +116,6 @@ describe("Agent trigger route lifecycle", () => {
         chatId: "chat-1",
         runId: "run-1",
         approvalSessionId: "approval-session-1",
-        temporary: false,
       }),
     ).resolves.toEqual({
       publicAccessToken: "run-token",
@@ -141,7 +138,6 @@ describe("Agent trigger route lifecycle", () => {
         chatId: "chat-1",
         runId: "run-1",
         approvalSessionId: "approval-session-1",
-        temporary: false,
       }),
     ).rejects.toThrow("Token service unavailable");
 

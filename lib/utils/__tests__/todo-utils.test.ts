@@ -243,22 +243,7 @@ describe("todo-utils", () => {
   });
 
   describe("getBaseTodosForRequest", () => {
-    it("should return incoming todos for temporary chats", () => {
-      const existing: Todo[] = [
-        { id: "1", content: "Existing", status: "pending" },
-      ];
-      const incoming: Todo[] = [
-        { id: "2", content: "Incoming", status: "pending" },
-      ];
-
-      const result = getBaseTodosForRequest(existing, incoming, {
-        isTemporary: true,
-      });
-
-      expect(result).toBe(incoming);
-    });
-
-    it("should return only manual todos on regenerate for non-temporary", () => {
+    it("should return only manual todos on regenerate", () => {
       const existing: Todo[] = [
         { id: "1", content: "Manual", status: "pending" },
         {
@@ -269,8 +254,7 @@ describe("todo-utils", () => {
         },
       ];
 
-      const result = getBaseTodosForRequest(existing, [], {
-        isTemporary: false,
+      const result = getBaseTodosForRequest(existing, {
         regenerate: true,
       });
 
@@ -278,14 +262,12 @@ describe("todo-utils", () => {
       expect(result[0].id).toBe("1");
     });
 
-    it("should return existing todos for non-temporary non-regenerate", () => {
+    it("should return existing todos for non-regenerate", () => {
       const existing: Todo[] = [
         { id: "1", content: "Task", status: "pending" },
       ];
 
-      const result = getBaseTodosForRequest(existing, [], {
-        isTemporary: false,
-      });
+      const result = getBaseTodosForRequest(existing, {});
 
       expect(result).toBe(existing);
     });

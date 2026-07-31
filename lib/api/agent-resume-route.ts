@@ -8,10 +8,7 @@ import type { AgentApiEndpoint } from "@/lib/api/agent-endpoints";
 import {
   AGENT_APPROVAL_PROTOCOL_VERSION,
   AGENT_APPROVAL_TOKEN_EXPIRATION,
-  clearTemporaryAgentApprovalRefreshCookie,
   closeAgentApprovalSession,
-  getTemporaryAgentApprovalRefreshHandle,
-  setTemporaryAgentApprovalRefreshCookie,
 } from "@/lib/api/agent-approval-session";
 import { createAgentRunCorrelationToken } from "@/lib/api/agent-run-correlation";
 
@@ -33,7 +30,6 @@ export const createAgentResumeGet =
     let chatId: string | undefined;
     let runId: string | undefined;
     let approvalSessionId: string | undefined;
-    let isTemporaryRefresh = false;
     const requestId =
       req.headers.get("x-request-id") ??
       req.headers.get("x-vercel-id") ??
@@ -71,35 +67,27 @@ export const createAgentResumeGet =
 
       stage = "get_chat";
       const chat = await getChatById({ id: chatId });
-      if (chat && chat.user_id !== userId) {
+      if (!chat || chat.user_id !== userId) {
         return new NextResponse("Forbidden", { status: 403 });
       }
-      if (chat) {
-        runId = chat.active_trigger_run_id;
-        approvalSessionId = chat.active_agent_approval_session_id;
-      } else {
-        const temporaryRefresh = getTemporaryAgentApprovalRefreshHandle({
-          req,
-          userId,
-          chatId,
-        });
-        if (!temporaryRefresh) {
-          return new NextResponse("Forbidden", { status: 403 });
-        }
-        runId = temporaryRefresh.runId;
-        approvalSessionId = temporaryRefresh.approvalSessionId;
-        isTemporaryRefresh = true;
-      }
+      runId = chat.active_trigger_run_id;
+      approvalSessionId = chat.active_agent_approval_session_id;
       if (!runId) {
-        const response = new NextResponse(null, { status: 204 });
-        if (isTemporaryRefresh) {
-          clearTemporaryAgentApprovalRefreshCookie(response, {
-            req,
-            userId,
+        if (approvalSessionId) {
+          stage = "clear_orphaned_approval_session";
+          await closeAgentApprovalSession(
+            approvalSessionId,
+            "agent-run-missing",
+          );
+          await setActiveTriggerRun({
             chatId,
+            triggerRunId: null,
+            approvalSessionId: null,
+            expectedApprovalSessionId: approvalSessionId,
+            clearApprovalPending: true,
           });
         }
-        return response;
+        return new NextResponse(null, { status: 204 });
       }
 
       let runStatus: string | undefined;
@@ -123,24 +111,14 @@ export const createAgentResumeGet =
           approvalSessionId,
           "agent-run-terminal",
         );
-        if (chat) {
-          await setActiveTriggerRun({
-            chatId,
-            triggerRunId: null,
-            approvalSessionId: null,
-            expectedRunId: runId,
-            clearApprovalPending: true,
-          });
-        }
-        const response = new NextResponse(null, { status: 204 });
-        if (isTemporaryRefresh) {
-          clearTemporaryAgentApprovalRefreshCookie(response, {
-            req,
-            userId,
-            chatId,
-          });
-        }
-        return response;
+        await setActiveTriggerRun({
+          chatId,
+          triggerRunId: null,
+          approvalSessionId: null,
+          expectedRunId: runId,
+          clearApprovalPending: true,
+        });
+        return new NextResponse(null, { status: 204 });
       }
 
       stage = "create_public_token";
@@ -177,15 +155,6 @@ export const createAgentResumeGet =
             }
           : {}),
       });
-      if (isTemporaryRefresh && approvalSessionId) {
-        setTemporaryAgentApprovalRefreshCookie(response, {
-          req,
-          userId,
-          chatId,
-          runId,
-          approvalSessionId,
-        });
-      }
       return response;
     } catch (error) {
       return handleAgentRouteError({

@@ -596,7 +596,6 @@ const getMessagesPageForBackendWithRetry = async ({
   userId,
   paginationOpts,
   mode,
-  isTemporary,
   regenerate,
   newMessagesCount,
 }: {
@@ -604,7 +603,6 @@ const getMessagesPageForBackendWithRetry = async ({
   userId: string;
   paginationOpts: { numItems: number; cursor: string | null };
   mode?: ChatMode;
-  isTemporary: boolean;
   regenerate: boolean;
   newMessagesCount: number;
 }): Promise<MessagesPageForBackendResult> => {
@@ -642,7 +640,6 @@ const getMessagesPageForBackendWithRetry = async ({
           chat_id: chatId,
           user_id: userId,
           mode,
-          is_temporary: isTemporary,
           regenerate,
           new_messages_count: newMessagesCount,
           page_size: paginationOpts.numItems,
@@ -1284,7 +1281,6 @@ export async function getMessagesByChatId({
   newMessages,
   regenerate,
   subscription,
-  isTemporary,
   mode,
   useClientMessagesForRegenerate,
 }: {
@@ -1293,16 +1289,14 @@ export async function getMessagesByChatId({
   subscription: SubscriptionTier;
   newMessages: UIMessage[];
   regenerate?: boolean;
-  isTemporary?: boolean;
   mode?: import("@/types").ChatMode;
   useClientMessagesForRegenerate?: boolean;
 }) {
-  // For temporary chats, skip database operations
   let chat = undefined;
   let isNewChat = true;
   let existingMessages: UIMessage[] = [];
 
-  if (!isTemporary) {
+  {
     // Check if chat exists first to avoid unnecessary Convex query
     chat = await getChatById({ id: chatId });
     isNewChat = !chat;
@@ -1355,7 +1349,6 @@ export async function getMessagesByChatId({
             userId,
             paginationOpts: { numItems: PAGE_SIZE, cursor },
             mode,
-            isTemporary: !!isTemporary,
             regenerate: !!regenerate,
             newMessagesCount: newMessages.length,
           });
@@ -1376,10 +1369,9 @@ export async function getMessagesByChatId({
           }
 
           const existingChrono = [...fetchedDesc].reverse();
-          const candidate =
-            regenerate && !isTemporary
-              ? existingChrono
-              : [...existingChrono, ...newMessages];
+          const candidate = regenerate
+            ? existingChrono
+            : [...existingChrono, ...newMessages];
 
           // Incrementally fetch file tokens only for new file IDs not yet cached
           if (!skipFileTokens) {
@@ -1423,7 +1415,7 @@ export async function getMessagesByChatId({
         // calling regenerate, but if that hasn't propagated yet we must
         // strip it here so all return paths below (summary early-return,
         // no-summary early-return, and the fallthrough) stay consistent.
-        if (regenerate && !isTemporary && truncatedFromLoop) {
+        if (regenerate && truncatedFromLoop) {
           while (
             truncatedFromLoop.length > 0 &&
             truncatedFromLoop[truncatedFromLoop.length - 1].role === "assistant"
@@ -1542,7 +1534,6 @@ export async function getMessagesByChatId({
           chat_id: chatId,
           user_id: userId,
           mode,
-          is_temporary: !!isTemporary,
           regenerate: !!regenerate,
           new_messages_count: newMessages.length,
           error_name: error instanceof Error ? error.name : typeof error,
@@ -1556,7 +1547,6 @@ export async function getMessagesByChatId({
             chat_id: chatId,
             user_id: userId,
             mode,
-            is_temporary: !!isTemporary,
             regenerate: !!regenerate,
             new_messages_count: newMessages.length,
           });
@@ -1568,7 +1558,7 @@ export async function getMessagesByChatId({
   // Handle message merging based on regeneration flag
   let allMessages: UIMessage[];
 
-  if (regenerate && !isTemporary) {
+  if (regenerate) {
     // Don't append new messages — use existing history up to the last user message
     allMessages = existingMessages;
     // Defensively strip trailing assistant messages.
@@ -1611,7 +1601,6 @@ export async function getMessagesByChatId({
       emptyPromptMetadata = {
         chat_id: chatId,
         user_id: userId,
-        is_temporary: !!isTemporary,
         regenerate: !!regenerate,
         subscription,
         mode,
@@ -1818,61 +1807,6 @@ export async function getCancellationStatus({ chatId }: { chatId: string }) {
   } catch (error) {
     // Silently return null on error for cancellation checks
     return null;
-  }
-}
-
-// Temporary chat stream coordination
-export async function startTempStream({
-  chatId,
-  userId,
-}: {
-  chatId: string;
-  userId: string;
-}) {
-  try {
-    await getConvexClient().mutation(api.tempStreams.startTempStream, {
-      serviceKey,
-      chatId,
-      userId,
-    });
-  } catch (error) {
-    // Do not throw; temp coordination best-effort
-  }
-}
-
-export async function getTempCancellationStatus({
-  chatId,
-}: {
-  chatId: string;
-}) {
-  try {
-    return await getConvexClient().query(
-      api.tempStreams.getTempCancellationStatus,
-      {
-        serviceKey,
-        chatId,
-      },
-    );
-  } catch (error) {
-    return null;
-  }
-}
-
-export async function deleteTempStreamForBackend({
-  chatId,
-}: {
-  chatId: string;
-}) {
-  try {
-    await getConvexClient().mutation(
-      api.tempStreams.deleteTempStreamForBackend,
-      {
-        serviceKey,
-        chatId,
-      },
-    );
-  } catch (error) {
-    // Best-effort cleanup
   }
 }
 

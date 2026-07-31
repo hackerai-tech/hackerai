@@ -3,7 +3,6 @@ import { beforeEach, describe, expect, it, jest } from "@jest/globals";
 import type { ChatMessage, Todo } from "@/types";
 
 const mockCancelStream = jest.fn(async () => null);
-const mockCancelTempStream = jest.fn(async () => null);
 const mockSaveAssistantMessage = jest.fn(async () => null);
 const mockDeleteLastAssistantMessage = jest.fn(async () => null);
 const mockRegenerateWithNewContent = jest.fn(async () => null);
@@ -32,7 +31,6 @@ jest.mock("@/convex/_generated/api", () => ({
       regenerateWithNewContent: "regenerateWithNewContent",
       saveAssistantMessage: "saveAssistantMessage",
     },
-    tempStreams: { cancelTempStreamFromClient: "cancelTempStreamFromClient" },
   },
 }));
 
@@ -41,8 +39,6 @@ jest.mock("convex/react", () => ({
     switch (mutation) {
       case "cancelStreamFromClient":
         return mockCancelStream;
-      case "cancelTempStreamFromClient":
-        return mockCancelTempStream;
       case "saveAssistantMessage":
         return mockSaveAssistantMessage;
       case "deleteLastAssistantMessage":
@@ -66,7 +62,6 @@ jest.mock("@/app/contexts/GlobalState", () => ({
     setTodos: mockSetTodos,
     isUploadingFiles: false,
     subscription: "pro",
-    temporaryChatsEnabled: false,
     queueMessage: mockQueueMessage,
     messageQueue: [
       {
@@ -176,6 +171,45 @@ describe("useChatHandlers steer todo handoff", () => {
     expect(mockSendMessage).toHaveBeenCalledWith(
       expect.objectContaining({ text: "Change direction" }),
       expect.objectContaining({ body: expect.objectContaining({ todos }) }),
+    );
+  });
+
+  it("deletes a persisted trailing response before retrying it", async () => {
+    const regenerate = jest.fn();
+    const { result } = renderHook(() =>
+      useChatHandlers({
+        chatId: "chat-1",
+        messages,
+        sendMessage: mockSendMessage,
+        stop: mockStop,
+        regenerate,
+        setMessages: mockSetMessages,
+        isExistingChat: true,
+        status: "ready",
+        isSendingNowRef: { current: false },
+        hasManuallyStoppedRef: { current: false },
+      }),
+    );
+
+    await act(async () => {
+      await result.current.handleRetry();
+    });
+
+    expect(mockDeleteLastAssistantMessage).toHaveBeenCalledWith({
+      chatId: "chat-1",
+      resetSummary: true,
+      todos: [],
+    });
+    expect(
+      mockDeleteLastAssistantMessage.mock.invocationCallOrder[0],
+    ).toBeLessThan(regenerate.mock.invocationCallOrder[0]);
+    expect(regenerate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        body: expect.objectContaining({
+          messages: [],
+          regenerate: true,
+        }),
+      }),
     );
   });
 

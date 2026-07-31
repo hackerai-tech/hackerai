@@ -168,10 +168,6 @@ interface GlobalStateType {
   initializeChat: (chatId: string, fromRoute?: boolean) => void;
   initializeNewChat: () => void;
 
-  // Temporary chats preference
-  temporaryChatsEnabled: boolean;
-  setTemporaryChatsEnabled: (enabled: boolean) => void;
-
   // Team pricing dialog state
   teamPricingDialogOpen: boolean;
   setTeamPricingDialogOpen: (open: boolean) => void;
@@ -530,49 +526,15 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     setSelectedModelRaw(model);
   }, []);
 
-  // Initialize temporary chats from URL parameter
-  const [temporaryChatsEnabled, setTemporaryChatsEnabled] = useState(() => {
-    if (typeof window === "undefined") return false;
-    const urlParams = new URLSearchParams(window.location.search);
-    return urlParams.get("temporary-chat") === "true";
-  });
-  const temporaryChatSubscription =
+  const paidAgentSubscription =
     subscriptionFromEntitlements !== null &&
     subscriptionFromEntitlements !== "free"
       ? subscriptionFromEntitlements
       : subscription;
-  const temporaryChatAccessResolved =
-    subscriptionResolved || (!authLoading && !user);
-
-  // Remove stale or manually forged temporary-chat state once the user's
-  // subscription has been resolved. The API independently enforces this gate.
-  useEffect(() => {
-    if (
-      !temporaryChatAccessResolved ||
-      temporaryChatSubscription !== "free" ||
-      !temporaryChatsEnabled
-    ) {
-      return;
-    }
-
-    setTemporaryChatsEnabled(false);
-    const url = new URL(window.location.href);
-    url.searchParams.delete("temporary-chat");
-    window.history.replaceState({}, "", url.toString());
-  }, [
-    temporaryChatAccessResolved,
-    temporaryChatsEnabled,
-    temporaryChatSubscription,
-  ]);
 
   useEffect(() => {
     if (agentFirstDefaultAppliedRef.current) return;
 
-    const selectedSubscription =
-      subscriptionFromEntitlements === null ||
-      subscriptionFromEntitlements === "free"
-        ? subscription
-        : subscriptionFromEntitlements;
     const savedModePresent = initialSavedChatModeRef.current !== null;
     const userSelectedModeThisSession =
       hasUserSelectedModeThisSessionRef.current;
@@ -584,9 +546,8 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
       hasUserSelectedModeThisSession: userSelectedModeThisSession,
       isCheckingProPlan,
       isMobile,
-      subscription: selectedSubscription,
+      subscription: paidAgentSubscription,
       subscriptionResolved,
-      temporaryChatsEnabled,
       userPresent: Boolean(user),
     });
 
@@ -625,9 +586,9 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
       experiment_key: agentDefaultDecision.experimentKey,
       first_experience_event_version: 2,
       variant: "agent_first",
-      subscription: selectedSubscription,
+      subscription: paidAgentSubscription,
       eligible_subscription_tier: agentDefaultDecision.eligibleSubscriptionTier,
-      selected_subscription_tier: selectedSubscription,
+      selected_subscription_tier: paidAgentSubscription,
       selection_reason: agentDefaultDecision.selectionReason,
       default_applied: true,
       has_local_sandbox: hasLocalSandbox,
@@ -654,13 +615,11 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     hasLocalSandbox,
     isCheckingProPlan,
     isMobile,
+    paidAgentSubscription,
     sandboxPreference,
     selectedModel,
     setSandboxPreference,
-    subscription,
-    subscriptionFromEntitlements,
     subscriptionResolved,
-    temporaryChatsEnabled,
     user,
   ]);
 
@@ -670,17 +629,12 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     Boolean(user) &&
     subscriptionResolved &&
     !isCheckingProPlan &&
-    temporaryChatSubscription !== "free" &&
-    !temporaryChatsEnabled;
+    paidAgentSubscription !== "free";
 
   useEffect(() => {
-    if (temporaryChatsEnabled) {
-      if (chatMode !== "ask") setChatModeState("ask");
-      return;
-    }
     if (!paidAgentOnlyActive || chatMode === "agent") return;
     setChatModeState("agent");
-  }, [chatMode, paidAgentOnlyActive, temporaryChatsEnabled]);
+  }, [chatMode, paidAgentOnlyActive]);
 
   // Initialize team pricing dialog from URL hash
   const [teamPricingDialogOpen, setTeamPricingDialogOpen] = useState(() => {
@@ -855,27 +809,6 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     setSubscriptionWithNormalize,
   ]);
 
-  // Listen for URL changes to sync temporary chat state
-  useEffect(() => {
-    const handleUrlChange = () => {
-      if (typeof window === "undefined") return;
-      const urlParams = new URLSearchParams(window.location.search);
-      const urlTemporaryEnabled = urlParams.get("temporary-chat") === "true";
-
-      // Only update state if it differs from URL to avoid infinite loops
-      if (temporaryChatsEnabled !== urlTemporaryEnabled) {
-        setTemporaryChatsEnabled(urlTemporaryEnabled);
-      }
-    };
-
-    // Listen for popstate events (browser back/forward)
-    window.addEventListener("popstate", handleUrlChange);
-
-    return () => {
-      window.removeEventListener("popstate", handleUrlChange);
-    };
-  }, [temporaryChatsEnabled]);
-
   // Listen for hash changes to sync team pricing dialog state
   useEffect(() => {
     const handleHashChange = () => {
@@ -1026,8 +959,6 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     // setInput("");  // Removed - ChatInput will handle draft restoration
     setTodos([]);
     setIsTodoPanelExpanded(false);
-    // Navigating to an existing chat means we're no longer in temporary chat mode
-    setTemporaryChatsEnabled(false);
     setActiveProjectId(null);
   }, []);
 
@@ -1070,31 +1001,6 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
   const toggleChatSidebar = () => {
     setChatSidebarOpen((prev: boolean) => !prev);
   };
-
-  // Custom setter for temporary chats that also updates URL
-  const setTemporaryChatsEnabledWithUrl = useCallback(
-    (enabled: boolean) => {
-      if (
-        enabled &&
-        (!subscriptionResolved || temporaryChatSubscription === "free")
-      ) {
-        return;
-      }
-
-      setTemporaryChatsEnabled(enabled);
-
-      if (typeof window !== "undefined") {
-        const url = new URL(window.location.href);
-        if (enabled) {
-          url.searchParams.set("temporary-chat", "true");
-        } else {
-          url.searchParams.delete("temporary-chat");
-        }
-        window.history.replaceState({}, "", url.toString());
-      }
-    },
-    [subscriptionResolved, temporaryChatSubscription],
-  );
 
   // Custom setter for team welcome dialog that also updates URL
   const setTeamWelcomeDialogOpenWithUrl = useCallback((open: boolean) => {
@@ -1171,9 +1077,6 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     toggleChatSidebar,
     initializeChat,
     initializeNewChat,
-
-    temporaryChatsEnabled,
-    setTemporaryChatsEnabled: setTemporaryChatsEnabledWithUrl,
 
     teamPricingDialogOpen,
     setTeamPricingDialogOpen,

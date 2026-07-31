@@ -19,7 +19,6 @@ export function useStartNewChat() {
     setActiveProjectId,
     setChatSidebarOpen,
     setSandboxPreference,
-    setTemporaryChatsEnabled,
   } = useGlobalState();
 
   return useCallback(
@@ -29,7 +28,6 @@ export function useStartNewChat() {
 
       initializeNewChat();
       setActiveProjectId(projectId ?? null);
-      setTemporaryChatsEnabled(false);
       if (useDesktop) setSandboxPreference("desktop");
 
       router.push(
@@ -44,7 +42,6 @@ export function useStartNewChat() {
       setActiveProjectId,
       setChatSidebarOpen,
       setSandboxPreference,
-      setTemporaryChatsEnabled,
     ],
   );
 }

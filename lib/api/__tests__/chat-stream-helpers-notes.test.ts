@@ -116,7 +116,6 @@ describe("refreshNotesInModelMessages", () => {
     userId: "user_1",
     subscription: "pro" as const,
     shouldIncludeNotes: true,
-    isTemporary: false,
   };
 
   const oldNotesBlock = buildNotesReminder("Old Note");
@@ -233,17 +232,6 @@ describe("refreshNotesInModelMessages", () => {
     });
 
     expect(result).toBe(messages); // same reference, not modified
-    expect(mockGetNotes).not.toHaveBeenCalled();
-  });
-
-  it("returns messages unchanged when isTemporary is true", async () => {
-    const messages = buildConversationMessages(`text\n\n${oldNotesBlock}`);
-    const result = await refreshNotesInModelMessages(messages, {
-      ...baseOpts,
-      isTemporary: true,
-    });
-
-    expect(result).toBe(messages);
     expect(mockGetNotes).not.toHaveBeenCalled();
   });
 
