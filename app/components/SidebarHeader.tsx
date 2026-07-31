@@ -147,7 +147,7 @@ const SidebarHeaderContentImpl: FC<SidebarHeaderContentImplProps> = ({
             data-testid="sidebar-toggle"
             variant="ghost"
             size="sm"
-            className="h-8 w-8 p-0"
+            className="-ms-1 h-8 w-8 p-0"
             onClick={handleCloseSidebar}
           >
             <PanelLeft className="size-5" />
@@ -158,7 +158,7 @@ const SidebarHeaderContentImpl: FC<SidebarHeaderContentImplProps> = ({
       {/* Sidebar Actions - Expanded */}
       <div className="flex flex-col">
         {/* New Chat Button styled like a chat item */}
-        <div className="px-2 py-1">
+        <div className="py-1">
           <Button
             variant="ghost"
             className="group relative flex w-full justify-start items-center rounded-lg p-2 h-auto hover:bg-sidebar-accent/50 text-left"
@@ -173,7 +173,7 @@ const SidebarHeaderContentImpl: FC<SidebarHeaderContentImplProps> = ({
         </div>
 
         {/* Search Button styled like a chat item */}
-        <div className="px-2 py-1">
+        <div className="py-1">
           <Button
             variant="ghost"
             className="relative flex w-full justify-start items-center rounded-lg p-2 h-auto hover:bg-sidebar-accent/50 text-left"
