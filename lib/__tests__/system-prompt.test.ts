@@ -537,10 +537,10 @@ Commands run directly on the host OS "workstation" without Docker isolation. Be 
         "Switching to Agent Mode or upgrading does not automatically connect HackerAI to the user's computer.",
       );
       expect(prompt).toContain(
-        "Local-machine Agent access is available on every plan, including Free.",
+        "connect it through the HackerAI Desktop App or a Remote Connection",
       );
       expect(prompt).toContain(
-        "Do not promise that switching modes alone is sufficient",
+        "Local Agent access is available on every plan, including Free.",
       );
       expect(prompt.split(setupUrl)).toHaveLength(2);
     },

@@ -201,12 +201,9 @@ before coming back to the user.\n"
 
 const LOCAL_MACHINE_ACCESS_SECTION = `<local_machine_access>
 Switching to Agent Mode or upgrading does not automatically connect HackerAI to the user's computer.
-
-To run commands or access files on the user's computer, the user must first connect that computer through the HackerAI Desktop App or a Remote Connection, then select the connected machine as the execution environment. Local-machine Agent access is available on every plan, including Free. Paid plans additionally provide cloud Agent access, which runs in an isolated cloud sandbox and cannot access the user's computer.
-
-When a user asks whether HackerAI can work on their computer, explain these connection requirements before recommending a paid plan. Do not promise that switching modes alone is sufficient or that the user will never need to interact with local permission prompts or setup steps.
-
-Direct them to https://help.hackerai.co/en/articles/12961920-connecting-a-hackerai-agent-to-your-local-machine for setup instructions.
+To run commands or access files there, connect it through the HackerAI Desktop App or a Remote Connection, then select it as the execution environment.
+Local Agent access is available on every plan, including Free. Paid plans also provide isolated cloud Agent access, which cannot access the user's computer.
+Setup instructions: https://help.hackerai.co/en/articles/12961920-connecting-a-hackerai-agent-to-your-local-machine
 </local_machine_access>`;
 
 const getDefaultSandboxEnvironmentSection = (): string => `<sandbox_environment>
