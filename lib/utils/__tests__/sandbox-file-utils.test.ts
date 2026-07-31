@@ -523,6 +523,253 @@ describe("desktop-local sandbox file helpers", () => {
     }
   });
 
+  it.each([
+    [
+      "Sandbox operation timed out. The sandbox may be overloaded. Please try again.",
+      "operation_timeout",
+    ],
+    [
+      "Failed creating persistent sandbox: 500: Failed to place sandbox",
+      "placement_failure",
+    ],
+  ])(
+    "refreshes once after retryable sandbox acquisition failure %s",
+    async (errorMessage, failureReason) => {
+      const consoleWarnSpy = jest
+        .spyOn(console, "warn")
+        .mockImplementation(() => {});
+      const consoleInfoSpy = jest
+        .spyOn(console, "info")
+        .mockImplementation(() => {});
+      const downloadFromUrl = jest.fn().mockResolvedValue(undefined);
+      const ensureSandbox = jest
+        .fn()
+        .mockRejectedValueOnce(new Error(errorMessage))
+        .mockResolvedValueOnce({ files: { downloadFromUrl } });
+
+      try {
+        const result = await uploadSandboxFiles(
+          [
+            {
+              kind: "url",
+              url: "https://example.com/screenshot.png",
+              localPath: "/home/user/upload/screenshot.png",
+            },
+          ],
+          ensureSandbox,
+          {
+            retryWithFreshSandboxOnTransientFailure: true,
+            logContext: {
+              service: "agent-long",
+              requestId: "run-123",
+              userId: "user-123",
+              chatId: "chat-123",
+            },
+          },
+        );
+
+        expect(result).toEqual({
+          failedCount: 0,
+          pathRewrites: [],
+          retriedWithFreshSandbox: true,
+        });
+        expect(ensureSandbox).toHaveBeenCalledTimes(2);
+        expect(ensureSandbox.mock.calls[1][0]).toEqual({
+          refresh: true,
+          reason: "attachment_staging_sandbox_acquisition_failure",
+        });
+        expect(downloadFromUrl).toHaveBeenCalledTimes(1);
+
+        const scheduledLog = JSON.parse(
+          String(
+            consoleWarnSpy.mock.calls.find(([value]) =>
+              String(value).includes(
+                "sandbox_attachment_acquisition_retry_scheduled",
+              ),
+            )?.[0],
+          ),
+        );
+        expect(scheduledLog).toMatchObject({
+          level: "warn",
+          event: "sandbox_attachment_acquisition_retry_scheduled",
+          service: "agent-long",
+          request_id: "run-123",
+          user_id: "user-123",
+          chat_id: "chat-123",
+          initial_failure_reason: failureReason,
+          final_failure_reason: null,
+        });
+        expect(
+          consoleInfoSpy.mock.calls.some(([value]) =>
+            String(value).includes("sandbox_attachment_acquisition_recovered"),
+          ),
+        ).toBe(true);
+        expect(JSON.stringify(scheduledLog)).not.toContain(errorMessage);
+      } finally {
+        consoleWarnSpy.mockRestore();
+        consoleInfoSpy.mockRestore();
+      }
+    },
+  );
+
+  it("does not refresh non-retryable sandbox acquisition failures", async () => {
+    const consoleErrorSpy = jest
+      .spyOn(console, "error")
+      .mockImplementation(() => {});
+    const ensureSandbox = jest
+      .fn()
+      .mockRejectedValue(new Error("Sandbox authentication failed"));
+
+    try {
+      const result = await uploadSandboxFiles(
+        [
+          {
+            kind: "url",
+            url: "https://example.com/screenshot.png",
+            localPath: "/home/user/upload/screenshot.png",
+          },
+        ],
+        ensureSandbox,
+        { retryWithFreshSandboxOnTransientFailure: true },
+      );
+
+      expect(result.failedCount).toBe(1);
+      expect(result.retriedWithFreshSandbox).toBeUndefined();
+      expect(ensureSandbox).toHaveBeenCalledTimes(1);
+      expect(getSandboxUploadFailureMetadata(result)).toMatchObject({
+        upload_failure_sandbox_readiness_reason: "unknown",
+      });
+    } finally {
+      consoleErrorSpy.mockRestore();
+    }
+  });
+
+  it("keeps sandbox acquisition recovery opt-in for alternate callers", async () => {
+    const consoleErrorSpy = jest
+      .spyOn(console, "error")
+      .mockImplementation(() => {});
+    const ensureSandbox = jest
+      .fn()
+      .mockRejectedValue(new Error("Sandbox operation timed out"));
+
+    try {
+      const result = await uploadSandboxFiles(
+        [
+          {
+            kind: "url",
+            url: "https://example.com/screenshot.png",
+            localPath: "/home/user/upload/screenshot.png",
+          },
+        ],
+        ensureSandbox,
+      );
+
+      expect(result.failedCount).toBe(1);
+      expect(result.retriedWithFreshSandbox).toBeUndefined();
+      expect(ensureSandbox).toHaveBeenCalledTimes(1);
+    } finally {
+      consoleErrorSpy.mockRestore();
+    }
+  });
+
+  it("records the bounded final reason when sandbox acquisition retry fails", async () => {
+    const consoleWarnSpy = jest
+      .spyOn(console, "warn")
+      .mockImplementation(() => {});
+    const consoleErrorSpy = jest
+      .spyOn(console, "error")
+      .mockImplementation(() => {});
+    const ensureSandbox = jest
+      .fn()
+      .mockRejectedValueOnce(new Error("Sandbox operation timed out"))
+      .mockRejectedValueOnce(new Error("500: Failed to place sandbox"));
+
+    try {
+      const result = await uploadSandboxFiles(
+        [
+          {
+            kind: "url",
+            url: "https://example.com/screenshot.png",
+            localPath: "/home/user/upload/screenshot.png",
+          },
+        ],
+        ensureSandbox,
+        { retryWithFreshSandboxOnTransientFailure: true },
+      );
+
+      expect(result.failedCount).toBe(1);
+      expect(ensureSandbox).toHaveBeenCalledTimes(2);
+      expect(getSandboxUploadFailureMetadata(result)).toMatchObject({
+        upload_failure_sandbox_readiness_reason: "placement_failure",
+        upload_retried_with_fresh_sandbox: true,
+      });
+      const retryFailedLog = JSON.parse(
+        String(
+          consoleErrorSpy.mock.calls.find(([value]) =>
+            String(value).includes(
+              "sandbox_attachment_acquisition_retry_failed",
+            ),
+          )?.[0],
+        ),
+      );
+      expect(retryFailedLog).toMatchObject({
+        initial_failure_reason: "operation_timeout",
+        final_failure_reason: "placement_failure",
+      });
+    } finally {
+      consoleWarnSpy.mockRestore();
+      consoleErrorSpy.mockRestore();
+    }
+  });
+
+  it("uses one operation-wide refresh across acquisition and staging", async () => {
+    jest.useFakeTimers();
+    const consoleWarnSpy = jest
+      .spyOn(console, "warn")
+      .mockImplementation(() => {});
+    const consoleErrorSpy = jest
+      .spyOn(console, "error")
+      .mockImplementation(() => {});
+    const run = jest
+      .fn()
+      .mockRejectedValue(
+        new Error("2: [unknown] Request handshake timed out after 60000ms"),
+      );
+    const ensureSandbox = jest
+      .fn()
+      .mockRejectedValueOnce(new Error("Sandbox operation timed out"))
+      .mockResolvedValue({ commands: { run } });
+
+    try {
+      const pendingResult = uploadSandboxFiles(
+        [
+          {
+            kind: "url",
+            url: "https://example.com/screenshot.png",
+            localPath: "/home/user/upload/screenshot.png",
+          },
+        ],
+        ensureSandbox,
+        { retryWithFreshSandboxOnTransientFailure: true },
+      );
+      await jest.advanceTimersByTimeAsync(5_000);
+      const result = await pendingResult;
+
+      expect(result.failedCount).toBe(1);
+      expect(result.retriedWithFreshSandbox).toBe(true);
+      expect(ensureSandbox).toHaveBeenCalledTimes(2);
+      expect(run).toHaveBeenCalledTimes(3);
+      expect(getSandboxUploadFailureMetadata(result)).toMatchObject({
+        upload_failure_transient_sandbox_command: true,
+        upload_retried_with_fresh_sandbox: true,
+      });
+    } finally {
+      jest.useRealTimers();
+      consoleWarnSpy.mockRestore();
+      consoleErrorSpy.mockRestore();
+    }
+  });
+
   it("returns redacted metadata for transient upload command failures", async () => {
     jest.useFakeTimers();
     const consoleWarnSpy = jest
@@ -613,48 +860,54 @@ describe("desktop-local sandbox file helpers", () => {
     }
   });
 
-  it("does not refresh the sandbox for wrapped curl download timeouts", async () => {
-    const consoleErrorSpy = jest
-      .spyOn(console, "error")
-      .mockImplementation(() => {});
-    const run = jest.fn(async (command: string) => {
-      if (command.includes("df -h /home/user")) {
-        return {
-          exitCode: 0,
-          stdout: "Filesystem Size Used Avail Use% Mounted on\n",
-          stderr: "",
-        };
-      }
+  it.each([
+    [28, "curl: (28) ETIMEDOUT"],
+    [35, "curl: (35) SSL connect error: Connection reset by peer"],
+  ])(
+    "does not refresh the sandbox for wrapped curl exit %i",
+    async (exitCode, stderr) => {
+      const consoleErrorSpy = jest
+        .spyOn(console, "error")
+        .mockImplementation(() => {});
+      const run = jest.fn(async (command: string) => {
+        if (command.includes("df -h /home/user")) {
+          return {
+            exitCode: 0,
+            stdout: "Filesystem Size Used Avail Use% Mounted on\n",
+            stderr: "",
+          };
+        }
 
-      return { exitCode: 28, stdout: "", stderr: "curl: (28) ETIMEDOUT" };
-    });
-    const ensureSandbox = jest.fn(async () => ({
-      commands: { run },
-    }));
-
-    try {
-      const result = await uploadSandboxFiles(
-        [
-          {
-            kind: "url",
-            url: "https://example.com/screenshot.png",
-            localPath: "/home/user/upload/screenshot.png",
-          },
-        ],
-        ensureSandbox,
-        { retryWithFreshSandboxOnTransientFailure: true },
-      );
-
-      expect(result.failedCount).toBe(1);
-      expect(ensureSandbox).toHaveBeenCalledTimes(1);
-      expect(getSandboxUploadFailureMetadata(result)).toMatchObject({
-        upload_failure_kind: "url",
-        upload_failure_transient_sandbox_command: false,
+        return { exitCode, stdout: "", stderr };
       });
-    } finally {
-      consoleErrorSpy.mockRestore();
-    }
-  });
+      const ensureSandbox = jest.fn(async () => ({
+        commands: { run },
+      }));
+
+      try {
+        const result = await uploadSandboxFiles(
+          [
+            {
+              kind: "url",
+              url: "https://example.com/screenshot.png",
+              localPath: "/home/user/upload/screenshot.png",
+            },
+          ],
+          ensureSandbox,
+          { retryWithFreshSandboxOnTransientFailure: true },
+        );
+
+        expect(result.failedCount).toBe(1);
+        expect(ensureSandbox).toHaveBeenCalledTimes(1);
+        expect(getSandboxUploadFailureMetadata(result)).toMatchObject({
+          upload_failure_kind: "url",
+          upload_failure_transient_sandbox_command: false,
+        });
+      } finally {
+        consoleErrorSpy.mockRestore();
+      }
+    },
+  );
 
   it("blocks internal URL downloads before invoking the sandbox", async () => {
     const consoleErrorSpy = jest

@@ -113,6 +113,7 @@ describe("sandbox health resource observations", () => {
     ],
     [new Error("fetch failed: ECONNRESET"), "connection_error"],
     [new Error("operation timed out"), "operation_timeout"],
+    [new Error("500: Failed to place sandbox"), "placement_failure"],
   ])(
     "classifies readiness failures without exposing raw errors",
     (error, expected) => {

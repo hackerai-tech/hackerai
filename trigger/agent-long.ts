@@ -984,6 +984,7 @@ type AgentLongErrorSummary = {
   uploadFailureKind?: string;
   uploadFailureCause?: string;
   uploadFailureTransientSandboxCommand?: boolean;
+  uploadFailureSandboxReadinessReason?: string;
   uploadFailureProtocol?: string;
   uploadFailureUrlLength?: number;
   uploadRetriedWithFreshSandbox?: boolean;
@@ -1175,6 +1176,10 @@ const classifyAgentLongError = (error: unknown): AgentLongErrorSummary => {
         errorMetadata,
         "upload_failure_transient_sandbox_command",
       ),
+      uploadFailureSandboxReadinessReason: getStringMetadata(
+        errorMetadata,
+        "upload_failure_sandbox_readiness_reason",
+      ),
       uploadFailureProtocol: getStringMetadata(
         errorMetadata,
         "upload_failure_protocol",
@@ -1343,6 +1348,12 @@ const recordAgentLongFailureForDashboard = async (
     metadata.set(
       "uploadFailureTransientSandboxCommand",
       summary.uploadFailureTransientSandboxCommand,
+    );
+  }
+  if (summary.uploadFailureSandboxReadinessReason) {
+    metadata.set(
+      "uploadFailureSandboxReadinessReason",
+      summary.uploadFailureSandboxReadinessReason,
     );
   }
   if (summary.uploadFailureProtocol)
@@ -2328,7 +2339,15 @@ export const agentLongTask = task({
                 uploadResult = await uploadSandboxFiles(
                   sandboxFiles,
                   ensureSandbox,
-                  { retryWithFreshSandboxOnTransientFailure: true },
+                  {
+                    retryWithFreshSandboxOnTransientFailure: true,
+                    logContext: {
+                      service: "agent-long",
+                      requestId: ctx.run.id,
+                      userId,
+                      chatId,
+                    },
+                  },
                 );
               } finally {
                 writeUploadCompleteStatus(writer);
