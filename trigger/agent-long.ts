@@ -2270,6 +2270,7 @@ export const agentLongTask = task({
               requestToolApproval,
               runTimingTracker.measureActiveTime,
               projectContext.workingDirectory,
+              ctx.run.id,
             );
             approvalSandboxManager = sandboxManager;
 

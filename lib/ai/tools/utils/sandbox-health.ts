@@ -1,16 +1,27 @@
 import type {
   AnySandbox,
+  SandboxLifecycleState,
+  SandboxReadinessFailureReason,
+  SandboxReadinessStage,
+  SandboxRecoveryOutcome,
   SandboxResourceMetrics,
   SandboxResourceMetricsObserver,
   SandboxResourceObservation,
+  TerminalTimeoutOutcome,
+  TerminalTimeoutRecoveryOutcome,
 } from "@/types";
 import { createRetryLogger } from "@/lib/posthog/worker";
 import { isE2BSandbox } from "./sandbox-types";
 import { retryWithBackoff } from "./retry-with-backoff";
 import {
   AuthenticationError,
+  CommandExitError,
   TemplateError,
   InvalidArgumentError,
+  NotEnoughSpaceError,
+  NotFoundError,
+  RateLimitError,
+  TimeoutError,
 } from "./e2b-errors";
 
 const sandboxHealthLogger = createRetryLogger("sandbox-health");
@@ -90,6 +101,17 @@ export async function observeSandboxResourceFailure(
   observer: SandboxResourceMetricsObserver | undefined,
   source: "readiness_check_failure" | "terminal_command_timeout",
   failureType: "readiness_check_failed" | "terminal_command_timed_out",
+  details: {
+    failureReason?: SandboxReadinessFailureReason;
+    readinessStage?: SandboxReadinessStage;
+    lifecycleState?: SandboxLifecycleState;
+    timeoutSeconds?: number;
+    terminalTimeoutOutcome?: TerminalTimeoutOutcome;
+    terminationAttempted?: boolean;
+    terminationSucceeded?: boolean;
+    sessionReturned?: boolean;
+    isBackground?: boolean;
+  } = {},
 ): Promise<void> {
   if (!observer || !isE2BSandbox(sandbox)) return;
 
@@ -107,7 +129,101 @@ export async function observeSandboxResourceFailure(
     source,
     failureType,
     metrics: stripWarning(metrics),
+    ...details,
   });
+}
+
+export function observeSandboxRecovery(
+  observer: SandboxResourceMetricsObserver | undefined,
+  details: {
+    outcome: SandboxRecoveryOutcome;
+    initialFailureReason: SandboxReadinessFailureReason;
+    finalFailureReason?: SandboxReadinessFailureReason;
+  },
+): void {
+  notifyResourceObserver(observer, {
+    kind: "recovery",
+    source: "readiness_reconnect",
+    ...details,
+  });
+}
+
+export function observeTerminalTimeoutRecovery(
+  observer: SandboxResourceMetricsObserver | undefined,
+  outcome: TerminalTimeoutRecoveryOutcome,
+): void {
+  notifyResourceObserver(observer, {
+    kind: "timeout_recovery",
+    source: "terminal_command_timeout",
+    outcome,
+  });
+}
+
+/**
+ * Reduce E2B/OS errors to privacy-safe, low-cardinality readiness categories.
+ * Never include raw messages because command/runtime errors may contain user data.
+ */
+export function classifySandboxReadinessFailureReason(
+  error: unknown,
+): SandboxReadinessFailureReason {
+  if (!(error instanceof Error)) return "unknown";
+
+  const name = error.name.toLowerCase();
+  const message = error.message.toLowerCase();
+
+  // Check message-level OS failures before SDK classes. E2B can wrap a failed
+  // fork/exec in InvalidArgumentError even though the actionable cause is the
+  // sandbox process subsystem rather than caller input.
+  if (message.includes("permission denied")) return "permission_denied";
+  if (
+    name.includes("sandboxnotfound") ||
+    message.includes("not running anymore") ||
+    message.includes("sandbox not found") ||
+    message.includes("sandbox was not found")
+  ) {
+    return "sandbox_not_found";
+  }
+  if (message.includes("sandbox is not running")) return "sandbox_not_running";
+  if (
+    message.includes("econnreset") ||
+    message.includes("econnrefused") ||
+    message.includes("connection reset") ||
+    message.includes("connection refused") ||
+    message.includes("fetch failed") ||
+    message.includes("network connection") ||
+    message.includes("socket hang up")
+  ) {
+    return "connection_error";
+  }
+
+  if (error instanceof AuthenticationError) return "authentication";
+  if (error instanceof TemplateError) return "template";
+  if (error instanceof RateLimitError) return "rate_limit";
+  if (error instanceof NotEnoughSpaceError) return "disk_space";
+  if (error instanceof NotFoundError) return "sandbox_not_found";
+  if (error instanceof TimeoutError) return "operation_timeout";
+  if (error instanceof CommandExitError) return "command_exit";
+  if (error instanceof InvalidArgumentError) return "invalid_argument";
+
+  if (name.includes("timeout") || message.includes("timed out")) {
+    return "operation_timeout";
+  }
+  return "unknown";
+}
+
+export function inferSandboxLifecycleState(
+  failureReason: SandboxReadinessFailureReason,
+): SandboxLifecycleState {
+  if (failureReason === "sandbox_not_running") return "not_running";
+  if (failureReason === "sandbox_not_found") return "missing";
+  if (
+    failureReason === "permission_denied" ||
+    failureReason === "invalid_argument" ||
+    failureReason === "command_exit"
+  ) {
+    return "running_not_ready";
+  }
+  return "unknown";
 }
 
 /**
@@ -138,6 +254,7 @@ export async function waitForSandboxReady(
   maxRetries: number = 5,
   signal?: AbortSignal,
   onResourceMetrics?: SandboxResourceMetricsObserver,
+  readinessStage: SandboxReadinessStage = "initial",
 ): Promise<void> {
   try {
     await retryWithBackoff(
@@ -217,11 +334,17 @@ export async function waitForSandboxReady(
       signal?.aborted ||
       (error instanceof DOMException && error.name === "AbortError");
     if (!wasAborted) {
+      const failureReason = classifySandboxReadinessFailureReason(error);
       await observeSandboxResourceFailure(
         sandbox,
         onResourceMetrics,
         "readiness_check_failure",
         "readiness_check_failed",
+        {
+          failureReason,
+          readinessStage,
+          lifecycleState: inferSandboxLifecycleState(failureReason),
+        },
       ).catch(() => {
         // Analytics must never mask the readiness failure
       });

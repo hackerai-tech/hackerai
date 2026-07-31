@@ -16,16 +16,27 @@
 // Stub out @e2b/code-interpreter — its ESM `chalk` dependency trips Jest's
 // default transformer. We only need the named exports that appear in
 // `run-terminal-cmd.ts` to be importable.
-jest.mock("@e2b/code-interpreter", () => ({
-  CommandExitError: class CommandExitError extends Error {
-    exitCode: number;
-    constructor(msg = "exit", exitCode = 1) {
-      super(msg);
-      this.exitCode = exitCode;
-    }
-  },
-  Sandbox: class {},
-}));
+jest.mock("@e2b/code-interpreter", () => {
+  class MockE2BError extends Error {}
+  return {
+    AuthenticationError: class AuthenticationError extends MockE2BError {},
+    InvalidArgumentError: class InvalidArgumentError extends MockE2BError {},
+    NotEnoughSpaceError: class NotEnoughSpaceError extends MockE2BError {},
+    NotFoundError: class NotFoundError extends MockE2BError {},
+    RateLimitError: class RateLimitError extends MockE2BError {},
+    SandboxError: class SandboxError extends MockE2BError {},
+    TemplateError: class TemplateError extends MockE2BError {},
+    TimeoutError: class TimeoutError extends MockE2BError {},
+    CommandExitError: class CommandExitError extends MockE2BError {
+      exitCode: number;
+      constructor(msg = "exit", exitCode = 1) {
+        super(msg);
+        this.exitCode = exitCode;
+      }
+    },
+    Sandbox: class {},
+  };
+});
 
 jest.mock("@/lib/posthog/server", () => ({
   phLogger: {
@@ -38,6 +49,7 @@ jest.mock("@/lib/posthog/server", () => ({
 }));
 
 import { phLogger } from "@/lib/posthog/server";
+import { InvalidArgumentError } from "@e2b/code-interpreter";
 import { createRunTerminalCmd } from "../run-terminal-cmd";
 import { detectAgentBrowserUsage } from "../utils/agent-browser-usage";
 import type { PtyHandle } from "../utils/e2b-pty-adapter";
@@ -132,6 +144,7 @@ function makeContext(opts: {
   chatId?: string;
   requestToolApproval?: import("@/types").AgentToolApprovalRequester;
   onSandboxResourceMetrics?: import("@/types").SandboxResourceMetricsObserver;
+  recordHealthFailure?: jest.MockedFunction<() => boolean>;
 }) {
   const writerWrites: unknown[] = [];
   const writer = {
@@ -146,8 +159,10 @@ function makeContext(opts: {
     getSandboxType: jest.fn(),
     getSandboxInfo: jest.fn(() => null),
     getEffectivePreference: jest.fn(() => "e2b"),
-    recordHealthFailure: jest.fn(() => false),
+    recordHealthFailure:
+      opts.recordHealthFailure ?? jest.fn<() => boolean>(() => false),
     resetHealthFailures: jest.fn(),
+    resetSandbox: jest.fn(async () => undefined),
     isSandboxUnavailable: jest.fn(() => false),
     consumeFallbackInfo: jest.fn(() => null),
   };
@@ -165,6 +180,7 @@ function makeContext(opts: {
     todoManager: {} as never,
     userID: "u1",
     chatId: opts.chatId ?? "chat-1",
+    triggerRunId: "run-test",
     fileAccumulator: {} as never,
     backgroundProcessTracker: {
       addProcess: jest.fn(),
@@ -514,6 +530,165 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
     ptySessionManager.forget("chat-1", result.result.session!);
   });
 
+  test("classifies an E2B wait expiry with a returned session as resumable", async () => {
+    let finishCommand!: (result: {
+      stdout: string;
+      stderr: string;
+      exitCode: number;
+    }) => void;
+    const pendingCommand = new Promise<{
+      stdout: string;
+      stderr: string;
+      exitCode: number;
+    }>((resolve) => {
+      finishCommand = resolve;
+    });
+    const started = {
+      pid: 4321,
+      stdout: "",
+      stderr: "",
+      wait: jest.fn(() => pendingCommand),
+      kill: jest.fn(async () => true),
+    };
+    const e2b = {
+      jupyterUrl: "http://fake",
+      sandboxId: "sandbox-1",
+      setTimeout: jest.fn(async () => undefined),
+      isRunning: jest.fn(async () => true),
+      getMetrics: jest.fn(async () => [
+        {
+          cpuUsedPct: 10,
+          memUsed: 512,
+          memTotal: 2048,
+          diskUsed: 200,
+          diskTotal: 1000,
+        },
+      ]),
+      commands: {
+        run: jest.fn(async (command: string) =>
+          command === "echo ready"
+            ? { stdout: "ready\n", stderr: "", exitCode: 0 }
+            : started,
+        ),
+      },
+    };
+    const onSandboxResourceMetrics = jest.fn();
+    const { context, ptySessionManager } = makeContext({
+      sandbox: e2b,
+      onSandboxResourceMetrics,
+    });
+
+    const result = (await runTool(createRunTerminalCmd(context), {
+      command: "sleep 30",
+      brief: "wait for job",
+      is_background: false,
+      timeout: 0.01,
+      interactive: false,
+    })) as { result: { session?: string } };
+
+    expect(result.result.session).toBeDefined();
+    expect(onSandboxResourceMetrics).toHaveBeenLastCalledWith({
+      kind: "failure",
+      source: "terminal_command_timeout",
+      failureType: "terminal_command_timed_out",
+      timeoutSeconds: 0.01,
+      terminalTimeoutOutcome: "session_resumable",
+      terminationAttempted: false,
+      terminationSucceeded: false,
+      sessionReturned: true,
+      isBackground: false,
+      metrics: {
+        cpuPct: 10,
+        memPct: 25,
+        diskPct: 20,
+      },
+    });
+
+    finishCommand({ stdout: "done\n", stderr: "", exitCode: 0 });
+    const session = ptySessionManager.get("chat-1", result.result.session!);
+    await session?.handle.exited;
+    expect(onSandboxResourceMetrics).toHaveBeenLastCalledWith({
+      kind: "timeout_recovery",
+      source: "terminal_command_timeout",
+      outcome: "completed_success",
+    });
+    ptySessionManager.forget("chat-1", result.result.session!);
+  });
+
+  test("stops terminal retries when the initial check and reconnect both fail", async () => {
+    jest.useFakeTimers();
+    const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+    const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const readinessError = new InvalidArgumentError(
+        "fork/exec /bin/sh: permission denied",
+      );
+      const e2b = {
+        jupyterUrl: "http://fake",
+        sandboxId: "sandbox-broken",
+        setTimeout: jest.fn(async () => undefined),
+        isRunning: jest.fn(async () => true),
+        getMetrics: jest.fn(async () => [
+          {
+            cpuUsedPct: 10,
+            memUsed: 512,
+            memTotal: 2048,
+            diskUsed: 200,
+            diskTotal: 1000,
+          },
+        ]),
+        commands: { run: jest.fn(async () => Promise.reject(readinessError)) },
+      };
+      const recordHealthFailure = jest
+        .fn<() => boolean>()
+        .mockReturnValueOnce(false)
+        .mockReturnValueOnce(true);
+      const onSandboxResourceMetrics = jest.fn();
+      const { context, sandboxManager } = makeContext({
+        sandbox: e2b,
+        recordHealthFailure,
+        onSandboxResourceMetrics,
+      });
+
+      const resultPromise = runTool(createRunTerminalCmd(context), {
+        command: "echo should-not-run",
+        brief: "verify sandbox",
+        is_background: false,
+        timeout: 5,
+        interactive: false,
+      }) as Promise<{ result: { error?: string } }>;
+      await jest.advanceTimersByTimeAsync(2_000);
+      const result = await resultPromise;
+
+      expect(result.result.error).toContain(
+        "initial health check and reconnect both failed",
+      );
+      expect(recordHealthFailure).toHaveBeenCalledTimes(2);
+      expect(sandboxManager.resetSandbox).toHaveBeenCalledWith(
+        "terminal_health_check_failed",
+      );
+      expect(onSandboxResourceMetrics).toHaveBeenCalledWith(
+        expect.objectContaining({
+          kind: "failure",
+          failureReason: "permission_denied",
+          readinessStage: "initial",
+          lifecycleState: "running_not_ready",
+        }),
+      );
+      expect(onSandboxResourceMetrics).toHaveBeenCalledWith({
+        kind: "recovery",
+        source: "readiness_reconnect",
+        outcome: "failed_unavailable",
+        initialFailureReason: "permission_denied",
+        finalFailureReason: "permission_denied",
+      });
+    } finally {
+      warnSpy.mockRestore();
+      errorSpy.mockRestore();
+      jest.useRealTimers();
+    }
+  });
+
   test("uses the exact E2B command handle to terminate noisy foreground work", async () => {
     const noisyOutput = "line with repeated output\n".repeat(20_000);
     let rejectWait!: (error: Error) => void;
@@ -597,6 +772,12 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
       kind: "failure",
       source: "terminal_command_timeout",
       failureType: "terminal_command_timed_out",
+      timeoutSeconds: 0.01,
+      terminalTimeoutOutcome: "command_terminated",
+      terminationAttempted: true,
+      terminationSucceeded: true,
+      sessionReturned: false,
+      isBackground: false,
       metrics: {
         cpuPct: 100,
         memPct: expect.closeTo(94.9707, 3),

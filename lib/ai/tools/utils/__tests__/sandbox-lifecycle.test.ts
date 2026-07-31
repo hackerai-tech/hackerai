@@ -330,6 +330,17 @@ describe("E2B sandbox lease lifecycle", () => {
     expect(sandbox.kill).not.toHaveBeenCalled();
   });
 
+  it("marks the sandbox unavailable after the initial check and reconnect both fail", () => {
+    const manager = new DefaultSandboxManager("user-1", jest.fn());
+
+    expect(manager.recordHealthFailure()).toBe(false);
+    expect(manager.recordHealthFailure()).toBe(true);
+    expect(manager.isSandboxUnavailable()).toBe(true);
+
+    manager.resetHealthFailures();
+    expect(manager.isSandboxUnavailable()).toBe(false);
+  });
+
   it("manager returns a cached sandbox after a transient lease refresh failure", async () => {
     const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
     try {

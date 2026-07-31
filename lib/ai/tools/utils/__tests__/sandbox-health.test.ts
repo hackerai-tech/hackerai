@@ -18,7 +18,10 @@ jest.mock("@/lib/posthog/worker", () => ({
 }));
 
 import type { AnySandbox } from "@/types";
-import { waitForSandboxReady } from "../sandbox-health";
+import {
+  classifySandboxReadinessFailureReason,
+  waitForSandboxReady,
+} from "../sandbox-health";
 
 const makeE2BSandbox = () =>
   ({
@@ -74,6 +77,9 @@ describe("sandbox health resource observations", () => {
       kind: "failure",
       source: "readiness_check_failure",
       failureType: "readiness_check_failed",
+      failureReason: "unknown",
+      readinessStage: "initial",
+      lifecycleState: "unknown",
       metrics: {
         cpuPct: 100,
         memPct: 75,
@@ -90,5 +96,54 @@ describe("sandbox health resource observations", () => {
         throw new Error("analytics unavailable");
       }),
     ).resolves.toBeUndefined();
+  });
+
+  test.each([
+    [
+      Object.assign(new Error("fork/exec /bin/sh: permission denied"), {
+        name: "InvalidArgumentError",
+      }),
+      "permission_denied",
+    ],
+    [
+      Object.assign(new Error("Sandbox is probably not running anymore"), {
+        name: "SandboxNotFoundError",
+      }),
+      "sandbox_not_found",
+    ],
+    [new Error("fetch failed: ECONNRESET"), "connection_error"],
+    [new Error("operation timed out"), "operation_timeout"],
+  ])(
+    "classifies readiness failures without exposing raw errors",
+    (error, expected) => {
+      expect(classifySandboxReadinessFailureReason(error)).toBe(expected);
+    },
+  );
+
+  test("labels failures from the reconnect health-check stage", async () => {
+    const sandbox = makeE2BSandbox();
+    (sandbox.commands.run as jest.Mock).mockRejectedValue(
+      new Error("fetch failed: connection reset"),
+    );
+    const onResourceMetrics = jest.fn();
+
+    await expect(
+      waitForSandboxReady(
+        sandbox,
+        1,
+        undefined,
+        onResourceMetrics,
+        "reconnect",
+      ),
+    ).rejects.toThrow();
+
+    expect(onResourceMetrics).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        kind: "failure",
+        failureReason: "connection_error",
+        readinessStage: "reconnect",
+        lifecycleState: "unknown",
+      }),
+    );
   });
 });
