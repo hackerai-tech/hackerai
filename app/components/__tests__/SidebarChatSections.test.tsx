@@ -13,6 +13,7 @@ import {
   type SidebarChatDragData,
   type SidebarChatDropData,
 } from "../sidebar-chat-drag";
+import { SIDEBAR_OPEN_PROJECT_IDS_STORAGE_KEY } from "@/lib/utils/client-storage";
 
 const mockPinChat = jest.fn();
 const mockUnpinChat = jest.fn();
@@ -75,9 +76,13 @@ jest.mock("sonner", () => ({
 
 jest.mock("../SidebarProjects", () => ({
   SidebarProjects: ({
+    openProjectIds,
+    onProjectOpenChange,
     projects,
     variant = "section",
   }: {
+    openProjectIds: ReadonlySet<string>;
+    onProjectOpenChange: (projectId: string, open: boolean) => void;
     projects: Array<{ _id: string; name: string }>;
     variant?: "section" | "pinned-list";
   }) => (
@@ -89,7 +94,17 @@ jest.mock("../SidebarProjects", () => ({
       }
     >
       {projects.map((project) => (
-        <span key={project._id}>{project.name}</span>
+        <button
+          key={project._id}
+          type="button"
+          data-open={String(openProjectIds.has(project._id))}
+          onClick={() =>
+            onProjectOpenChange(project._id, !openProjectIds.has(project._id))
+          }
+          aria-label={`Toggle ${project.name}`}
+        >
+          {project.name}
+        </button>
       ))}
     </section>
   ),
@@ -151,6 +166,7 @@ describe("SidebarChatSections", () => {
     mockRectIntersection.mockReturnValue([]);
     mockPinChat.mockResolvedValue(null);
     mockUnpinChat.mockResolvedValue(null);
+    window.localStorage.clear();
   });
 
   it("moves pinned projects under Pinned and keeps unpinned projects in Projects", () => {
@@ -210,6 +226,57 @@ describe("SidebarChatSections", () => {
       expect.any(Function),
     );
     expect(mockDndContextProps.sensors).toHaveLength(3);
+  });
+
+  it("restores expanded projects across pinned and regular lists", async () => {
+    const props = {
+      chats,
+      projects,
+      paginationStatus: "Exhausted" as const,
+    };
+    const firstRender = render(<SidebarChatSections {...props} />);
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Toggle Pinned project" }),
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: "Toggle Regular project" }),
+    );
+    await waitFor(() => {
+      expect(
+        window.localStorage.getItem(SIDEBAR_OPEN_PROJECT_IDS_STORAGE_KEY),
+      ).toBe(JSON.stringify(["pinned-project", "regular-project"]));
+    });
+
+    firstRender.unmount();
+    render(<SidebarChatSections {...props} />);
+
+    await waitFor(() => {
+      expect(
+        screen.getByRole("button", { name: "Toggle Pinned project" }),
+      ).toHaveAttribute("data-open", "true");
+      expect(
+        screen.getByRole("button", { name: "Toggle Regular project" }),
+      ).toHaveAttribute("data-open", "true");
+    });
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Toggle Regular project" }),
+    );
+    await waitFor(() => {
+      expect(
+        window.localStorage.getItem(SIDEBAR_OPEN_PROJECT_IDS_STORAGE_KEY),
+      ).toBe(JSON.stringify(["pinned-project"]));
+    });
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Toggle Pinned project" }),
+    );
+    await waitFor(() => {
+      expect(
+        window.localStorage.getItem(SIDEBAR_OPEN_PROJECT_IDS_STORAGE_KEY),
+      ).toBeNull();
+    });
   });
 
   it("collapses pinned chats and tasks independently", () => {

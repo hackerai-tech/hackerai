@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach } from "@jest/globals";
 import {
   getDraftAttachmentsById,
+  readOpenSidebarProjectIds,
   readSelectedModel,
   removeDraftAttachments,
   writeSelectedModel,
@@ -10,6 +11,8 @@ import {
   markHasAuthenticatedBefore,
   upsertDraft,
   upsertDraftAttachments,
+  writeOpenSidebarProjectIds,
+  SIDEBAR_OPEN_PROJECT_IDS_STORAGE_KEY,
 } from "../client-storage";
 
 const STORAGE_KEY = "selected_model";
@@ -155,6 +158,42 @@ describe("client-storage auth marker", () => {
   it("persists that this browser has authenticated before", () => {
     markHasAuthenticatedBefore();
     expect(hasAuthenticatedBefore()).toBe(true);
+  });
+});
+
+describe("client-storage sidebar open projects", () => {
+  beforeEach(() => {
+    window.localStorage.clear();
+  });
+
+  it("stores only unique, non-empty project ids", () => {
+    writeOpenSidebarProjectIds(["project-1", "", "project-2", "project-1"]);
+
+    expect(readOpenSidebarProjectIds()).toEqual(["project-1", "project-2"]);
+  });
+
+  it("ignores malformed saved values", () => {
+    window.localStorage.setItem(
+      SIDEBAR_OPEN_PROJECT_IDS_STORAGE_KEY,
+      JSON.stringify(["project-1", null, 2, {}, "project-1"]),
+    );
+
+    expect(readOpenSidebarProjectIds()).toEqual(["project-1"]);
+
+    window.localStorage.setItem(
+      SIDEBAR_OPEN_PROJECT_IDS_STORAGE_KEY,
+      "not-json",
+    );
+    expect(readOpenSidebarProjectIds()).toEqual([]);
+  });
+
+  it("removes storage when every project is closed", () => {
+    writeOpenSidebarProjectIds(["project-1"]);
+    writeOpenSidebarProjectIds([]);
+
+    expect(
+      window.localStorage.getItem(SIDEBAR_OPEN_PROJECT_IDS_STORAGE_KEY),
+    ).toBeNull();
   });
 });
 
