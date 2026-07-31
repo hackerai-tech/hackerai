@@ -734,25 +734,22 @@ export type AgentToolSchemaMode = "agent" | "ask";
 export const createAgentToolSchemaSet = ({
   mode = "agent",
   notesEnabled = true,
-  isTemporary = false,
   hasPerplexityApiKey = false,
   hasJinaApiKey = false,
 }: {
   mode?: AgentToolSchemaMode;
   notesEnabled?: boolean;
-  isTemporary?: boolean;
   hasPerplexityApiKey?: boolean;
   hasJinaApiKey?: boolean;
 } = {}) => {
-  const notes =
-    !isTemporary && notesEnabled
-      ? {
-          create_note: createNoteTool,
-          list_notes: listNotesTool,
-          update_note: updateNoteTool,
-          delete_note: deleteNoteTool,
-        }
-      : {};
+  const notes = notesEnabled
+    ? {
+        create_note: createNoteTool,
+        list_notes: listNotesTool,
+        update_note: updateNoteTool,
+        delete_note: deleteNoteTool,
+      }
+    : {};
   const networkTools = {
     ...(hasPerplexityApiKey ? { web_search: webSearchTool } : {}),
     ...(hasJinaApiKey ? { open_url: openUrlTool } : {}),

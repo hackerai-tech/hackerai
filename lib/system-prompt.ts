@@ -433,7 +433,6 @@ export const systemPrompt = async (
   subscription: SubscriptionTier,
   modelName: ModelName,
   userCustomization?: UserCustomization | null,
-  isTemporary?: boolean,
   sandboxContext?: string | null,
   agentPermissionMode: AgentPermissionMode = "full_access",
 ): Promise<string> => {
@@ -453,7 +452,6 @@ HackerAI helps with penetration testing, vulnerability assessment, ethical hacki
 You are currently powered by ${modelDisplayName}.
 ${agentInstructions}
 Your main goal is to follow the USER's instructions at each message.\
-${isTemporary ? "\n\nNote: You are currently in a private and temporary chat. It won't be saved and will be deleted when user refreshes the page. You do not have access to notes tools in this mode." : ""}
 
 The current date is ${currentDateTime}.`;
 

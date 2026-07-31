@@ -64,7 +64,6 @@ interface MessageItemProps {
   tempChatFileDetails?: Map<string, FileDetails[]>;
   finishReason?: string;
   mode?: ChatMode;
-  isTemporaryChat?: boolean;
   branchedFromChatId?: string;
   branchedFromChatTitle?: string;
   branchBoundaryIndex: number | undefined;
@@ -164,7 +163,6 @@ export const MessageItem = memo(function MessageItem({
   tempChatFileDetails,
   finishReason,
   mode,
-  isTemporaryChat,
   branchedFromChatId,
   branchedFromChatTitle,
   branchBoundaryIndex,
@@ -680,7 +678,6 @@ export const MessageItem = memo(function MessageItem({
           onFeedback={handleFeedbackClick}
           existingFeedback={message.metadata?.feedbackType || null}
           isAwaitingFeedbackDetails={feedbackInputMessageId === message.id}
-          isTemporaryChat={Boolean(isTemporaryChat)}
           sources={webSources}
         />
 

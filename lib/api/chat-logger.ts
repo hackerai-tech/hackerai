@@ -73,7 +73,6 @@ export interface ChatLoggerConfig {
 
 export interface RequestDetails {
   mode: ChatMode;
-  isTemporary: boolean;
   isRegenerate: boolean;
 }
 
@@ -194,7 +193,6 @@ const COMPACT_CHAT_ERROR_METADATA_KEYS = [
   "processing_input_other_part_count",
   "processing_input_regenerate",
   "processing_input_auto_continue",
-  "processing_input_temporary",
   "processing_input_sandbox_preference",
   "capReason",
   "limitType",
@@ -701,7 +699,6 @@ export function createChatLogger(config: ChatLoggerConfig) {
         fallbackModelSlugs?: string[];
         userId?: string;
         subscription?: string;
-        isTemporary?: boolean;
         providerRequest?: ProviderRequestDiagnostics;
       },
     ) {

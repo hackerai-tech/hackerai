@@ -8,13 +8,11 @@ import { ModeOptionItem } from "./ModeOptionItem";
 export interface ModeSelectorContentProps {
   setChatMode: (mode: ChatMode) => void;
   onAgentModeClick: () => void;
-  temporaryChatsEnabled: boolean;
 }
 
 export function ModeSelectorContent({
   setChatMode,
   onAgentModeClick,
-  temporaryChatsEnabled,
 }: ModeSelectorContentProps) {
   return (
     <DropdownMenuContent align="start" className="w-54">
@@ -31,7 +29,6 @@ export function ModeSelectorContent({
         description="Hack, test, secure anything"
         onClick={onAgentModeClick}
         data-testid="mode-agent"
-        showLock={temporaryChatsEnabled}
       />
     </DropdownMenuContent>
   );

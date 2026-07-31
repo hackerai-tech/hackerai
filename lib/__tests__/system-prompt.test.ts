@@ -9,7 +9,6 @@ describe("systemPrompt security instructions", () => {
       "pro",
       "ask-model",
       null,
-      false,
       null,
     );
 
@@ -29,7 +28,6 @@ describe("systemPrompt security instructions", () => {
       "pro",
       "ask-model",
       null,
-      false,
       null,
     );
     const agentPrompt = await systemPrompt(
@@ -38,7 +36,6 @@ describe("systemPrompt security instructions", () => {
       "pro",
       "agent-model",
       null,
-      false,
       null,
     );
 
@@ -58,7 +55,6 @@ describe("systemPrompt security instructions", () => {
       "pro",
       "ask-model",
       null,
-      false,
       null,
     );
     const agentPrompt = await systemPrompt(
@@ -67,7 +63,6 @@ describe("systemPrompt security instructions", () => {
       "pro",
       "agent-model",
       null,
-      false,
       null,
     );
 
@@ -120,7 +115,6 @@ Commands run directly on the host OS "workstation" without Docker isolation. Be 
       "pro",
       "agent-model",
       null,
-      false,
       localHostContext,
     );
 
@@ -144,7 +138,6 @@ Commands run directly on the host OS "workstation" without Docker isolation. Be 
       "pro",
       "ask-model",
       null,
-      false,
       null,
     );
 
@@ -175,7 +168,6 @@ Commands run directly on the host OS "workstation" without Docker isolation. Be 
       "pro",
       "agent-model",
       null,
-      false,
       null,
     );
     const localPrompt = await systemPrompt(
@@ -184,7 +176,6 @@ Commands run directly on the host OS "workstation" without Docker isolation. Be 
       "pro",
       "agent-model",
       null,
-      false,
       "Local sandbox context",
     );
 
@@ -227,7 +218,6 @@ Commands run directly on the host OS "workstation" without Docker isolation. Be 
       "pro",
       "ask-model",
       null,
-      false,
       null,
     );
 
@@ -241,7 +231,6 @@ Commands run directly on the host OS "workstation" without Docker isolation. Be 
       "pro",
       "agent-model",
       null,
-      false,
       null,
     );
     const localPrompt = await systemPrompt(
@@ -250,7 +239,6 @@ Commands run directly on the host OS "workstation" without Docker isolation. Be 
       "pro",
       "agent-model",
       null,
-      false,
       "Local sandbox context",
     );
 
@@ -279,7 +267,6 @@ Commands run directly on the host OS "workstation" without Docker isolation. Be 
       "pro",
       "ask-model",
       null,
-      false,
       null,
     );
 
@@ -293,7 +280,6 @@ Commands run directly on the host OS "workstation" without Docker isolation. Be 
       "pro",
       "agent-model",
       null,
-      false,
       null,
     );
 
@@ -312,7 +298,6 @@ Commands run directly on the host OS "workstation" without Docker isolation. Be 
       "pro",
       "agent-model",
       null,
-      false,
       null,
     );
     const localPrompt = await systemPrompt(
@@ -321,7 +306,6 @@ Commands run directly on the host OS "workstation" without Docker isolation. Be 
       "pro",
       "agent-model",
       null,
-      false,
       "Local sandbox context",
     );
 
@@ -343,7 +327,6 @@ Commands run directly on the host OS "workstation" without Docker isolation. Be 
       "pro",
       "agent-model",
       null,
-      false,
       null,
     );
 
@@ -364,7 +347,6 @@ Commands run directly on the host OS "workstation" without Docker isolation. Be 
       "pro",
       "agent-model",
       null,
-      false,
       null,
     );
     const localPrompt = await systemPrompt(
@@ -373,7 +355,6 @@ Commands run directly on the host OS "workstation" without Docker isolation. Be 
       "pro",
       "agent-model",
       null,
-      false,
       "Local sandbox context",
     );
     const askPrompt = await systemPrompt(
@@ -382,7 +363,6 @@ Commands run directly on the host OS "workstation" without Docker isolation. Be 
       "pro",
       "ask-model",
       null,
-      false,
       null,
     );
 
@@ -423,7 +403,6 @@ Commands run directly on the host OS "workstation" without Docker isolation. Be 
       "pro",
       "agent-model",
       null,
-      false,
       null,
     );
 
@@ -447,7 +426,6 @@ Commands run directly on the host OS "workstation" without Docker isolation. Be 
       "pro",
       "agent-model",
       null,
-      false,
       null,
     );
 
@@ -464,7 +442,6 @@ Commands run directly on the host OS "workstation" without Docker isolation. Be 
       "pro",
       "agent-model",
       null,
-      false,
       null,
     );
 
@@ -489,7 +466,6 @@ Commands run directly on the host OS "workstation" without Docker isolation. Be 
       "pro",
       "ask-model",
       null,
-      false,
       null,
     );
 
@@ -508,7 +484,6 @@ Commands run directly on the host OS "workstation" without Docker isolation. Be 
       "pro",
       "ask-model",
       null,
-      false,
       null,
     );
 
@@ -526,7 +501,6 @@ Commands run directly on the host OS "workstation" without Docker isolation. Be 
       "free",
       "ask-model",
       null,
-      false,
       null,
     );
 
@@ -547,7 +521,6 @@ Commands run directly on the host OS "workstation" without Docker isolation. Be 
       "pro",
       "agent-model",
       null,
-      false,
       null,
     );
 
@@ -567,7 +540,6 @@ Commands run directly on the host OS "workstation" without Docker isolation. Be 
       "pro",
       "agent-model",
       null,
-      false,
       null,
       "ask_approval",
     );
@@ -591,7 +563,6 @@ Commands run directly on the host OS "workstation" without Docker isolation. Be 
       "pro",
       "agent-model",
       null,
-      false,
       null,
       "full_access",
     );
@@ -611,7 +582,6 @@ Commands run directly on the host OS "labbox" without Docker isolation.`;
       "pro",
       "agent-model",
       null,
-      false,
       localHostContext,
     );
 

@@ -69,7 +69,6 @@ describe("createCancellationSubscriber", () => {
 
     const subscriber = await createCancellationSubscriber({
       chatId: "chat-123",
-      isTemporary: false,
       abortController,
       onStop,
       pollIntervalMs: 10,
@@ -91,7 +90,6 @@ describe("createCancellationSubscriber", () => {
       expect.objectContaining({
         event: "redis.pubsub_unavailable",
         chatId: "chat-123",
-        isTemporary: false,
       }),
     );
     expect(redisSubscriber.unsubscribe).toHaveBeenCalledWith(

@@ -939,7 +939,7 @@ describe("checkAndSummarizeIfNeeded", () => {
     expect(persistedMetadata?.estimatedCompactedInputTokens).toBeUndefined();
   });
 
-  it("should skip database persistence for temporary chats", async () => {
+  it("should skip database persistence when chatId is absent", async () => {
     mockGenerateText.mockResolvedValue({ text: "Summary" });
 
     await checkAndSummarizeForTest(

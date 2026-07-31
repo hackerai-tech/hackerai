@@ -24,16 +24,12 @@ import {
 } from "@/lib/chat/tool-abort-utils";
 import { stripOpenRouterReasoningMetadataFromMessages } from "@/lib/chat/provider-metadata-sanitizer";
 /**
- * Get maximum steps allowed for a user based on mode and subscription.
- * Agent mode: 300 steps (all tiers).
- * Ask mode: Free 15, Paid 100.
+ * Get maximum steps allowed for a request.
+ * Agent mode: 300 steps. Ask mode: 15 steps (free users only).
  */
-export const getMaxStepsForUser = (
-  mode: ChatMode,
-  subscription: SubscriptionTier,
-): number => {
+export const getMaxStepsForUser = (mode: ChatMode): number => {
   if (isAgentMode(mode)) return 300;
-  return subscription === "free" ? 15 : 100;
+  return 15;
 };
 
 /**

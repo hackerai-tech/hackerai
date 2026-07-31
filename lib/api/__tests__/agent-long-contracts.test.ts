@@ -576,11 +576,9 @@ describe("agent-long chat UI — completion reconciliation", () => {
 describe("agent-long cancel route — compare-and-clear idempotency", () => {
   test("uses the authorized chat snapshot for run and approval session IDs", () => {
     expect(cancelSrc).toMatch(
-      /const approvalSessionId\s*=\s*chat\s*\?\s*chat\.active_agent_approval_session_id\s*:\s*temporaryRefresh\?\.approvalSessionId;/,
+      /const approvalSessionId\s*=\s*chat\.active_agent_approval_session_id;/,
     );
-    expect(cancelSrc).toMatch(
-      /const runId\s*=\s*chat\s*\?\s*chat\.active_trigger_run_id\s*:\s*temporaryRefresh\?\.runId/,
-    );
+    expect(cancelSrc).toMatch(/const runId\s*=\s*chat\.active_trigger_run_id/);
     expect(cancelSrc).not.toMatch(/getActiveTriggerRun/);
     expect(cancelSrc).toMatch(/expectedApprovalSessionId:\s*approvalSessionId/);
   });
@@ -857,13 +855,12 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(transportSrc).toMatch(/resumeUrl:\s*getAgentResumeUrl\(chatId\)/);
   });
 
-  test("temporary approval refresh is signed, user-bound, and content-free", () => {
-    expect(agentApprovalSessionSrc).toMatch(/createHmac\("sha256"/);
-    expect(agentApprovalSessionSrc).toMatch(/httpOnly:\s*true/);
-    expect(agentApprovalSessionSrc).toMatch(/sameSite:\s*"strict"/);
-    expect(resumeSrc).toMatch(/getTemporaryAgentApprovalRefreshHandle/);
-    expect(routeSrc).toMatch(/setTemporaryAgentApprovalRefreshCookie/);
-    expect(agentApprovalSessionSrc).not.toMatch(/messages|prompt|content/);
+  test("approval refresh relies on the persisted task owner and active run", () => {
+    expect(resumeSrc).toMatch(/getChatById\(\{ id: chatId \}\)/);
+    expect(resumeSrc).toMatch(/chat\.user_id\s*!==\s*userId/);
+    expect(resumeSrc).toMatch(/chat\.active_trigger_run_id/);
+    expect(resumeSrc).toMatch(/chat\.active_agent_approval_session_id/);
+    expect(agentApprovalSessionSrc).not.toMatch(/cookie|createHmac/);
   });
 
   test("approval protocol v2 is explicit and requires route-last deployment", () => {
@@ -882,13 +879,9 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(agentApprovalClientSrc).not.toMatch(/sendTriggerSessionInput/);
     expect(agentApprovalRouteSrc).toMatch(/getUserIDAndPro\(req\)/);
     expect(agentApprovalRouteSrc).toMatch(/active_agent_approval_request/);
-    expect(agentApprovalRouteSrc).toMatch(
-      /getTemporaryAgentApprovalRefreshHandle/,
-    );
-    expect(agentApprovalRouteSrc).toMatch(
-      /metadata\.approvalStatus\s*!==\s*"pending"/,
-    );
-    expect(agentApprovalRouteSrc).toMatch(/metadata\.approvalToolCallId/);
+    expect(agentApprovalRouteSrc).toMatch(/chat\.user_id\s*!==\s*userId/);
+    expect(agentApprovalRouteSrc).toMatch(/pending\?\.approvalId/);
+    expect(agentApprovalRouteSrc).toMatch(/pending\?\.toolCallId/);
     expect(agentApprovalRouteSrc).not.toMatch(/streams\.read/);
     expect(taskSrc).toMatch(/\.set\("approvalToolCallId"/);
     expect(taskSrc).toContain('.set("userId", userId)');
@@ -1028,7 +1021,7 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
 
   test("persisted chats send a trimmed Trigger payload and retain attachment exceptions", () => {
     expect(routeSrc).toMatch(
-      /const messagesForPayload\s*=\s*temporary\s*\|\|\s*localDesktopAttachmentsPrepared\s*\?\s*messagesForTrigger\s*:\s*\[\]/s,
+      /const messagesForPayload\s*=\s*localDesktopAttachmentsPrepared\s*\?\s*messagesForTrigger\s*:\s*\[\]/s,
     );
     expect(routeSrc).toMatch(/messages:\s*messagesForPayload/);
   });

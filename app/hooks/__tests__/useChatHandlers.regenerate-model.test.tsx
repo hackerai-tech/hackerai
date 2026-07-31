@@ -6,7 +6,6 @@ const mockRegenerate = jest.fn();
 const mockSendMessage = jest.fn();
 const mockSetMessages = jest.fn();
 let mockSelectedModel: SelectedModel = "hackerai-standard";
-let mockTemporaryChatsEnabled = true;
 const originalFetch = globalThis.fetch;
 
 jest.mock("convex/react", () => ({
@@ -24,7 +23,6 @@ jest.mock("@/app/contexts/GlobalState", () => ({
     setTodos: jest.fn(),
     isUploadingFiles: false,
     subscription: "pro",
-    temporaryChatsEnabled: mockTemporaryChatsEnabled,
     queueMessage: jest.fn(),
     messageQueue: [],
     removeQueuedMessage: jest.fn(),
@@ -62,7 +60,6 @@ describe("useChatHandlers regenerate model", () => {
   beforeEach(() => {
     jest.clearAllMocks();
     mockSelectedModel = "hackerai-standard";
-    mockTemporaryChatsEnabled = true;
   });
 
   afterEach(() => {
@@ -76,43 +73,36 @@ describe("useChatHandlers regenerate model", () => {
     }
   });
 
-  it.each([
-    ["temporary", true],
-    ["persisted", false],
-  ])(
-    "uses the latest chat input model for %s chats from a previously rendered regenerate callback",
-    async (_chatType, temporaryChatsEnabled) => {
-      mockTemporaryChatsEnabled = temporaryChatsEnabled;
-      const { result, rerender } = renderHook(() =>
-        useChatHandlers({
-          chatId: "chat-1",
-          messages,
-          sendMessage: mockSendMessage,
-          stop: jest.fn(),
-          regenerate: mockRegenerate,
-          setMessages: mockSetMessages,
-          isExistingChat: false,
-          status: "ready",
-          isSendingNowRef: { current: false },
-          hasManuallyStoppedRef: { current: false },
-        }),
-      );
-      const regenerateFromRenderedMessage = result.current.handleRegenerate;
+  it("uses the latest chat input model from a previously rendered regenerate callback", async () => {
+    const { result, rerender } = renderHook(() =>
+      useChatHandlers({
+        chatId: "chat-1",
+        messages,
+        sendMessage: mockSendMessage,
+        stop: jest.fn(),
+        regenerate: mockRegenerate,
+        setMessages: mockSetMessages,
+        isExistingChat: false,
+        status: "ready",
+        isSendingNowRef: { current: false },
+        hasManuallyStoppedRef: { current: false },
+      }),
+    );
+    const regenerateFromRenderedMessage = result.current.handleRegenerate;
 
-      mockSelectedModel = "hackerai-max";
-      rerender();
+    mockSelectedModel = "hackerai-max";
+    rerender();
 
-      await act(async () => {
-        await regenerateFromRenderedMessage();
-      });
+    await act(async () => {
+      await regenerateFromRenderedMessage();
+    });
 
-      expect(mockRegenerate).toHaveBeenCalledWith(
-        expect.objectContaining({
-          body: expect.objectContaining({ selectedModel: "hackerai-max" }),
-        }),
-      );
-    },
-  );
+    expect(mockRegenerate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        body: expect.objectContaining({ selectedModel: "hackerai-max" }),
+      }),
+    );
+  });
 
   it("uses the latest chat input model from a previously rendered continue callback", () => {
     const { result, rerender } = renderHook(() =>
@@ -177,7 +167,6 @@ describe("useChatHandlers regenerate model", () => {
   });
 
   it("cancels the active Trigger session before regenerating", async () => {
-    mockTemporaryChatsEnabled = false;
     const fetchMock = jest.fn(
       async () => ({ ok: true, status: 200 }) as Response,
     );
@@ -228,7 +217,6 @@ describe("useChatHandlers regenerate model", () => {
   });
 
   it("cancels the active Trigger session before regenerating an edited message", async () => {
-    mockTemporaryChatsEnabled = false;
     const fetchMock = jest.fn(
       async () => ({ ok: true, status: 200 }) as Response,
     );
@@ -280,7 +268,6 @@ describe("useChatHandlers regenerate model", () => {
   });
 
   it("rejects editing an older user message before cancelling or regenerating", async () => {
-    mockTemporaryChatsEnabled = false;
     const fetchMock = jest.fn(
       async () => ({ ok: true, status: 200 }) as Response,
     );
@@ -328,7 +315,6 @@ describe("useChatHandlers regenerate model", () => {
   });
 
   it("cancels a restored Trigger run even when the current mode is ask", async () => {
-    mockTemporaryChatsEnabled = false;
     const fetchMock = jest.fn(
       async () => ({ ok: true, status: 204 }) as Response,
     );
@@ -373,7 +359,6 @@ describe("useChatHandlers regenerate model", () => {
   });
 
   it("reports a failed Trigger cancellation to approval UI callers", async () => {
-    mockTemporaryChatsEnabled = false;
     const fetchMock = jest.fn(
       async () => ({ ok: false, status: 500 }) as Response,
     );

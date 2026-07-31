@@ -3,7 +3,6 @@ import { beforeEach, describe, expect, it, jest } from "@jest/globals";
 import type { ChatMessage, Todo } from "@/types";
 
 const mockCancelStream = jest.fn(async () => null);
-const mockCancelTempStream = jest.fn(async () => null);
 const mockSaveAssistantMessage = jest.fn(async () => null);
 const mockDeleteLastAssistantMessage = jest.fn(async () => null);
 const mockRegenerateWithNewContent = jest.fn(async () => null);
@@ -32,7 +31,6 @@ jest.mock("@/convex/_generated/api", () => ({
       regenerateWithNewContent: "regenerateWithNewContent",
       saveAssistantMessage: "saveAssistantMessage",
     },
-    tempStreams: { cancelTempStreamFromClient: "cancelTempStreamFromClient" },
   },
 }));
 
@@ -41,8 +39,6 @@ jest.mock("convex/react", () => ({
     switch (mutation) {
       case "cancelStreamFromClient":
         return mockCancelStream;
-      case "cancelTempStreamFromClient":
-        return mockCancelTempStream;
       case "saveAssistantMessage":
         return mockSaveAssistantMessage;
       case "deleteLastAssistantMessage":
@@ -66,7 +62,6 @@ jest.mock("@/app/contexts/GlobalState", () => ({
     setTodos: mockSetTodos,
     isUploadingFiles: false,
     subscription: "pro",
-    temporaryChatsEnabled: false,
     queueMessage: mockQueueMessage,
     messageQueue: [
       {

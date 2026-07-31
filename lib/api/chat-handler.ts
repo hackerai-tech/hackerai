@@ -84,7 +84,7 @@ import {
   appendSystemReminderToLastUserMessage,
   injectNotesIntoMessages,
   assertFreeAgentGates,
-  assertTemporaryChatAccess,
+  assertChatModeAccess,
   buildExtraUsageConfig,
   estimatePreflightInputTokens,
   getRetryFallbackModel,
@@ -102,8 +102,6 @@ import {
   getUserCustomization,
   prepareForNewStream,
   startStream,
-  startTempStream,
-  deleteTempStreamForBackend,
 } from "@/lib/db/actions";
 import {
   createCancellationSubscriber,
@@ -160,7 +158,6 @@ import {
   getUserFriendlyProviderError,
 } from "@/lib/utils/error-utils";
 import {
-  requireBooleanFlag,
   requireChatMessagesArray,
   requireOptionalIdentifier,
 } from "@/lib/api/chat-request-validation";
@@ -228,7 +225,6 @@ export const createChatHandler = () => {
         todos,
         chatId,
         regenerate,
-        temporary: rawTemporary,
         sandboxPreference,
         selectedModel: rawSelectedModel,
         isAutoContinue,
@@ -241,7 +237,6 @@ export const createChatHandler = () => {
         chatId: string;
         todos?: Todo[];
         regenerate?: boolean;
-        temporary?: unknown;
         sandboxPreference?: SandboxPreference;
         selectedModel?: string;
         isAutoContinue?: boolean;
@@ -250,7 +245,6 @@ export const createChatHandler = () => {
         projectId?: unknown;
       } = await req.json();
       const analyticsRequestContext = readAnalyticsRequestContext(req.headers);
-      const temporary = requireBooleanFlag("temporary", rawTemporary);
       const requestedProjectId = requireOptionalIdentifier(
         "projectId",
         rawProjectId,
@@ -266,7 +260,6 @@ export const createChatHandler = () => {
       chatLogger = createChatLogger({ chatId, endpoint });
       chatLogger.setRequestDetails({
         mode,
-        isTemporary: temporary,
         isRegenerate: !!regenerate,
       });
       const requestMessages = requireChatMessagesArray(messages);
@@ -281,10 +274,7 @@ export const createChatHandler = () => {
         );
       await assertUserCanMakeCostIncurringRequest(userId);
       usageRefundTracker.setUser(userId, subscription, organizationId);
-      assertTemporaryChatAccess({
-        isTemporary: temporary,
-        subscription,
-      });
+      assertChatModeAccess({ mode, subscription });
       if (subscription === "free") {
         const lock = await acquireFreeRunConcurrencyLock(
           freeUsageSubject,
@@ -328,20 +318,17 @@ export const createChatHandler = () => {
         subscription,
         newMessages: requestMessages,
         regenerate,
-        isTemporary: temporary,
         mode,
         useClientMessagesForRegenerate,
       });
       const { chat, isNewChat, fileTokens } = fetched;
-      const projectContext = temporary
-        ? {}
-        : await resolveProjectExecutionContext({
-            chat,
-            requestedProjectId,
-            userId,
-            mode,
-            sandboxPreference,
-          });
+      const projectContext = await resolveProjectExecutionContext({
+        chat,
+        requestedProjectId,
+        userId,
+        mode,
+        sandboxPreference,
+      });
       const truncatedMessages =
         subscription === "free"
           ? stripImageAttachments(fetched.truncatedMessages)
@@ -349,8 +336,7 @@ export const createChatHandler = () => {
 
       const baseTodos: Todo[] = getBaseTodosForRequest(
         (chat?.todos as unknown as Todo[]) || [],
-        Array.isArray(todos) ? todos : [],
-        { isTemporary: temporary, regenerate },
+        { regenerate },
       );
 
       const baseExtraUsageConfig = await buildExtraUsageConfig({
@@ -370,17 +356,15 @@ export const createChatHandler = () => {
         subscription,
       );
 
-      if (!temporary) {
-        await handleInitialChatAndUserMessage({
-          chatId,
-          userId,
-          messages: stripLocalDesktopSourcePaths(truncatedMessages),
-          regenerate,
-          chat,
-          isHidden: isAutoContinue ? true : undefined,
-          projectId: projectContext.projectId,
-        });
-      }
+      await handleInitialChatAndUserMessage({
+        chatId,
+        userId,
+        messages: stripLocalDesktopSourcePaths(truncatedMessages),
+        regenerate,
+        chat,
+        isHidden: isAutoContinue ? true : undefined,
+        projectId: projectContext.projectId,
+      });
 
       // Free ask: pre-flight rate-limit before any token counting/model work.
       const freeAskRateLimitInfo =
@@ -426,7 +410,6 @@ export const createChatHandler = () => {
           getEmptyProcessedMessagesMetadata(truncatedMessages, {
             regenerate: !!regenerate,
             isAutoContinue: !!isAutoContinue,
-            isTemporary: temporary,
             sandboxPreference,
           }),
         );
@@ -442,7 +425,6 @@ export const createChatHandler = () => {
         userId,
         selectedModel,
         userCustomization,
-        temporary,
         truncatedMessages,
       });
 
@@ -589,19 +571,10 @@ export const createChatHandler = () => {
       const assistantMessageId = uuidv4();
       chatLogger.getBuilder().setAssistantId(assistantMessageId);
 
-      if (temporary) {
-        try {
-          await startTempStream({ chatId, userId });
-        } catch {
-          // Best-effort; temp coordination must not block the request.
-        }
-      }
-
       // Start cancellation subscriber (Redis pub/sub with fallback to polling)
       let subscriberStopped = false;
       const cancellationSubscriber = await createCancellationSubscriber({
         chatId,
-        isTemporary: temporary,
         abortController: userStopSignal,
         onStop: () => {
           subscriberStopped = true;
@@ -660,7 +633,6 @@ export const createChatHandler = () => {
               userLocation,
               baseTodos,
               notesEnabled,
-              temporary,
               assistantMessageId,
               sandboxPreference,
               process.env.CONVEX_SERVICE_ROLE_KEY,
@@ -788,15 +760,14 @@ export const createChatHandler = () => {
               );
             }
 
-            // Generate title in parallel only for non-temporary new chats
-            const titlePromise =
-              isNewChat && !temporary
-                ? generateTitleFromUserMessageWithWriter(
-                    processedMessages,
-                    writer,
-                    (title) => updateChatTitle({ chatId, title }),
-                  )
-                : Promise.resolve(undefined);
+            // Generate the title in parallel for new tasks.
+            const titlePromise = isNewChat
+              ? generateTitleFromUserMessageWithWriter(
+                  processedMessages,
+                  writer,
+                  (title) => updateChatTitle({ chatId, title }),
+                )
+              : Promise.resolve(undefined);
 
             const trackedProvider = createTrackedProvider();
 
@@ -806,7 +777,6 @@ export const createChatHandler = () => {
               subscription,
               selectedModel,
               userCustomization,
-              temporary,
               sandboxContext,
             );
 
@@ -846,7 +816,6 @@ export const createChatHandler = () => {
               userId,
               subscription,
               shouldIncludeNotes,
-              isTemporary: temporary,
             };
             finalMessages = await injectNotesIntoMessages(
               finalMessages,
@@ -1262,7 +1231,6 @@ export const createChatHandler = () => {
               userId,
               subscription,
               chatId,
-              temporary,
               fileTokens,
               noteInjectionOpts,
               systemPromptTokens,
@@ -1332,7 +1300,6 @@ export const createChatHandler = () => {
                   fallbackModelSlug: fallbackModelId,
                   userId,
                   subscription,
-                  isTemporary: temporary,
                   preFallbackCacheReadTokens: usageTracker.cacheReadTokens,
                   preFallbackCacheWriteTokens: usageTracker.cacheWriteTokens,
                   ...extractErrorDetails(error),
@@ -1469,7 +1436,6 @@ export const createChatHandler = () => {
                           model: selectedModel,
                           userId,
                           subscription,
-                          isTemporary: temporary,
                           messageCount: messages.length,
                           parts: lastAssistantMessage?.parts,
                           isRetryWithFallback,
@@ -1648,7 +1614,7 @@ export const createChatHandler = () => {
 
                                 const generatedTitle = await titlePromise;
 
-                                if (!temporary) {
+                                {
                                   const mergedTodos =
                                     getTodoManager().mergeWith(
                                       baseTodos,
@@ -1706,14 +1672,6 @@ export const createChatHandler = () => {
 
                                   // Send file metadata via stream for resumable stream clients
                                   sendFileMetadataToStream(accumulatedFiles);
-                                } else {
-                                  // For temporary chats, send file metadata via stream before cleanup
-                                  const tempFiles =
-                                    getFileAccumulator().getAll();
-                                  sendFileMetadataToStream(tempFiles);
-
-                                  // Ensure temp stream row is removed backend-side
-                                  await deleteTempStreamForBackend({ chatId });
                                 }
 
                                 // Verify fallback produced valid content
@@ -1760,9 +1718,6 @@ export const createChatHandler = () => {
                                       : null,
                                   userId,
                                   subscription,
-                                  isTemporary: temporary,
-                                  paidAskMode:
-                                    mode === "ask" && subscription !== "free",
                                   retryReason,
                                   imageToolResultsOmitted:
                                     imageRecovery.omittedCount,
@@ -1868,7 +1823,6 @@ export const createChatHandler = () => {
                           ? onFinishStartTime - triggerTime
                           : null,
                         messageCount: messages.length,
-                        isTemporary: temporary,
                       });
                     }
 
@@ -1953,7 +1907,7 @@ export const createChatHandler = () => {
                     const generatedTitle = await titlePromise;
                     logStep("wait_title_generation", stepStart);
 
-                    if (!temporary) {
+                    {
                       stepStart = beginStep("merge_todos");
                       const mergedTodos = getTodoManager().mergeWith(
                         baseTodos,
@@ -2195,17 +2149,6 @@ export const createChatHandler = () => {
                       stepStart = beginStep("send_file_metadata");
                       sendFileMetadataToStream(accumulatedFiles);
                       logStep("send_file_metadata", stepStart);
-                    } else {
-                      // For temporary chats, send file metadata via stream before cleanup
-                      stepStart = beginStep("send_temp_file_metadata");
-                      const tempFiles = getFileAccumulator().getAll();
-                      sendFileMetadataToStream(tempFiles);
-                      logStep("send_temp_file_metadata", stepStart);
-
-                      // Ensure temp stream row is removed backend-side
-                      stepStart = beginStep("delete_temp_stream");
-                      await deleteTempStreamForBackend({ chatId });
-                      logStep("delete_temp_stream", stepStart);
                     }
 
                     if (isPreemptiveAbort) {
@@ -2233,11 +2176,7 @@ export const createChatHandler = () => {
                         stoppedDueToPostSummarizationIncomplete:
                           state.stoppedDueToPostSummarizationIncomplete,
                       });
-                    if (
-                      autoContinueStopSource &&
-                      isAgentMode(mode) &&
-                      !temporary
-                    ) {
+                    if (autoContinueStopSource && isAgentMode(mode)) {
                       writeAutoContinue(writer);
                       phLogger.info("Agent auto-continue signaled", {
                         event: "agent_auto_continue_signaled",
@@ -2272,11 +2211,6 @@ export const createChatHandler = () => {
           "Transfer-Encoding": "chunked",
         },
         async consumeSseStream({ stream: sseStream }) {
-          // Temporary chats do not support resumption
-          if (temporary) {
-            return;
-          }
-
           try {
             const streamContext = getStreamContext();
             if (streamContext) {

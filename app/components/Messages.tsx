@@ -95,7 +95,6 @@ interface MessagesProps {
   paginationStatus?:
     "LoadingFirstPage" | "CanLoadMore" | "LoadingMore" | "Exhausted";
   loadMore?: (numItems: number) => void;
-  isTemporaryChat?: boolean;
   isMobile?: boolean;
   tempChatFileDetails?: Map<string, FileDetails[]>;
   finishReason?: string;
@@ -129,7 +128,6 @@ export const Messages = ({
   contentRef,
   paginationStatus,
   loadMore,
-  isTemporaryChat,
   isMobile,
   tempChatFileDetails,
   finishReason,
@@ -485,7 +483,6 @@ export const Messages = ({
             finishReason={finishReason}
             mode={mode}
             agentRunSpendCapWarning={agentRunSpendCapWarning}
-            isTemporaryChat={isTemporaryChat}
             branchedFromChatId={branchedFromChatId}
             branchedFromChatTitle={branchedFromChatTitle}
             branchBoundaryIndex={branchBoundaryIndex}
@@ -536,7 +533,6 @@ export const Messages = ({
       handleStartEdit,
       handleToggleAgentWork,
       isMobile,
-      isTemporaryChat,
       lastAssistantMessageIndex,
       lastUserMessageId,
       lastUserMessageIndex,

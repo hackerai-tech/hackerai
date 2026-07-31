@@ -1009,7 +1009,6 @@ describe("getMessagesByChatId", () => {
           subscription: "free",
           newMessages: [],
           regenerate: true,
-          isTemporary: true,
           mode: "ask",
         }),
       ).rejects.toMatchObject({
@@ -1069,7 +1068,6 @@ describe("getMessagesByChatId", () => {
           subscription: "free",
           newMessages: [],
           regenerate: true,
-          isTemporary: false,
           mode: "ask",
         }),
       ).rejects.toMatchObject({
@@ -1129,7 +1127,6 @@ describe("getMessagesByChatId", () => {
         userId: "user-1",
         subscription: "free",
         newMessages: [newMessage],
-        isTemporary: false,
         mode: "ask",
       });
 
@@ -1182,7 +1179,6 @@ describe("getMessagesByChatId", () => {
       userId: "user-1",
       subscription: "pro",
       newMessages: [],
-      isTemporary: false,
       mode: "ask",
     });
 
@@ -1214,7 +1210,6 @@ describe("getMessagesByChatId", () => {
       userId: "user-1",
       subscription: "pro",
       newMessages: [],
-      isTemporary: false,
       mode: "agent",
     });
 
@@ -1249,7 +1244,6 @@ describe("getMessagesByChatId", () => {
       subscription: "pro",
       newMessages: [],
       regenerate: true,
-      isTemporary: false,
       mode: "agent",
     });
 

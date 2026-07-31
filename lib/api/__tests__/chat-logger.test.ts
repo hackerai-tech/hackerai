@@ -1292,7 +1292,6 @@ describe("createChatLogger ChatSDKError metadata", () => {
       });
       chatLogger.setRequestDetails({
         mode: "agent",
-        isTemporary: false,
         isRegenerate: false,
       });
       chatLogger.setUser({ id: "user_123", subscription: "pro" });
@@ -1371,7 +1370,6 @@ describe("createChatLogger ChatSDKError metadata", () => {
       });
       chatLogger.setRequestDetails({
         mode: "agent",
-        isTemporary: false,
         isRegenerate: false,
       });
       chatLogger.setUser({ id: "user_123", subscription: "ultra" });
@@ -1421,7 +1419,6 @@ describe("createChatLogger ChatSDKError metadata", () => {
       });
       chatLogger.setRequestDetails({
         mode: "agent",
-        isTemporary: false,
         isRegenerate: false,
       });
       chatLogger.setUser({ id: "user_123", subscription: "pro" });
@@ -1470,7 +1467,6 @@ describe("createChatLogger OpenRouter metadata", () => {
       });
       chatLogger.setRequestDetails({
         mode: "agent",
-        isTemporary: false,
         isRegenerate: false,
       });
       chatLogger.setUser({ id: "user_123", subscription: "ultra" });
@@ -1527,7 +1523,6 @@ describe("createChatLogger OpenRouter metadata", () => {
       });
       chatLogger.setRequestDetails({
         mode: "ask",
-        isTemporary: false,
         isRegenerate: false,
       });
       chatLogger.setUser({ id: "user_123", subscription: "pro" });

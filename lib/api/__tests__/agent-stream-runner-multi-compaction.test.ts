@@ -125,13 +125,11 @@ const createTestStreamContext = (
   userId: "user",
   subscription: "pro",
   chatId: "chat",
-  temporary: false,
   fileTokens: {},
   noteInjectionOpts: {
     userId: "user",
     subscription: "pro",
     shouldIncludeNotes: false,
-    isTemporary: false,
   },
   systemPromptTokens: 100,
   ctxSystemTokens: 100,

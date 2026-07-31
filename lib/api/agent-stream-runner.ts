@@ -441,13 +441,11 @@ export type AgentStreamContext = {
   userId: string;
   subscription: SubscriptionTier;
   chatId: string;
-  temporary: boolean | undefined;
   fileTokens: Record<string, number>;
   noteInjectionOpts: {
     userId: string;
     subscription: SubscriptionTier;
     shouldIncludeNotes: boolean;
-    isTemporary: boolean | undefined;
   };
   systemPromptTokens: number;
   ctxSystemTokens: number;
@@ -561,7 +559,6 @@ export async function createAgentStream(
   let compactionAttemptCount = 0;
   let lastCompactionRawMessageCount = -1;
   const canSummarizeAgain = () =>
-    !ctx.temporary &&
     compactionAttemptCount < MAX_CONTEXT_COMPACTION_ATTEMPTS_PER_AGENT_STREAM;
   const getNamespacedLanguageModel = (
     languageModel: LanguageModel,
@@ -1184,7 +1181,7 @@ export async function createAgentStream(
     },
 
     stopWhen: [
-      stepCountIs(getMaxStepsForUser(ctx.mode, ctx.subscription)),
+      stepCountIs(getMaxStepsForUser(ctx.mode)),
       tokenExhaustedAfterSummarization({
         threshold: summarizationThreshold,
         getLastStepInputTokens: () => state.lastStepInputTokens,
@@ -1465,7 +1462,6 @@ export async function createAgentStream(
             fallbackSlugs.length > 0 ? fallbackSlugs : undefined,
           userId: ctx.userId,
           subscription: ctx.subscription,
-          isTemporary: ctx.temporary,
           providerRequest: latestProviderRequestDiagnostics,
         });
       }
