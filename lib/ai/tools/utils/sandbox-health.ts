@@ -23,6 +23,7 @@ import {
   RateLimitError,
   TimeoutError,
 } from "./e2b-errors";
+import { classifySandboxReadinessFailureSignal } from "./sandbox-readiness-failure";
 
 const sandboxHealthLogger = createRetryLogger("sandbox-health");
 
@@ -168,33 +169,10 @@ export function classifySandboxReadinessFailureReason(
 ): SandboxReadinessFailureReason {
   if (!(error instanceof Error)) return "unknown";
 
-  const name = error.name.toLowerCase();
-  const message = error.message.toLowerCase();
-
-  // Check message-level OS failures before SDK classes. E2B can wrap a failed
-  // fork/exec in InvalidArgumentError even though the actionable cause is the
-  // sandbox process subsystem rather than caller input.
-  if (message.includes("permission denied")) return "permission_denied";
-  if (
-    name.includes("sandboxnotfound") ||
-    message.includes("not running anymore") ||
-    message.includes("sandbox not found") ||
-    message.includes("sandbox was not found")
-  ) {
-    return "sandbox_not_found";
-  }
-  if (message.includes("sandbox is not running")) return "sandbox_not_running";
-  if (
-    message.includes("econnreset") ||
-    message.includes("econnrefused") ||
-    message.includes("connection reset") ||
-    message.includes("connection refused") ||
-    message.includes("fetch failed") ||
-    message.includes("network connection") ||
-    message.includes("socket hang up")
-  ) {
-    return "connection_error";
-  }
+  // Check wrapped message/name signals before SDK classes. E2B can wrap a
+  // failed fork/exec in InvalidArgumentError even when caller input is valid.
+  const signal = classifySandboxReadinessFailureSignal(error);
+  if (signal) return signal;
 
   if (error instanceof AuthenticationError) return "authentication";
   if (error instanceof TemplateError) return "template";
@@ -205,9 +183,6 @@ export function classifySandboxReadinessFailureReason(
   if (error instanceof CommandExitError) return "command_exit";
   if (error instanceof InvalidArgumentError) return "invalid_argument";
 
-  if (name.includes("timeout") || message.includes("timed out")) {
-    return "operation_timeout";
-  }
   return "unknown";
 }
 

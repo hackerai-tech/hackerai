@@ -733,7 +733,15 @@ export const createChatHandler = () => {
                 uploadResult = await uploadSandboxFiles(
                   sandboxFiles,
                   ensureSandbox,
-                  { retryWithFreshSandboxOnTransientFailure: true },
+                  {
+                    retryWithFreshSandboxOnTransientFailure: true,
+                    logContext: {
+                      service: "chat-handler",
+                      requestId: req.headers.get("x-vercel-id") ?? undefined,
+                      userId,
+                      chatId,
+                    },
+                  },
                 );
               } finally {
                 writeUploadCompleteStatus(writer);

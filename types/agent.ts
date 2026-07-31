@@ -73,6 +73,7 @@ export type SandboxReadinessFailureReason =
   | "command_exit"
   | "operation_timeout"
   | "connection_error"
+  | "placement_failure"
   | "unknown";
 
 export type SandboxReadinessStage = "initial" | "reconnect";

@@ -1643,10 +1643,13 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(chatHandlerSrc).toMatch(
       /retryWithFreshSandboxOnTransientFailure:\s*true/,
     );
+    expect(taskSrc).toMatch(/service:\s*"agent-long"/);
+    expect(chatHandlerSrc).toMatch(/service:\s*"chat-handler"/);
     expect(taskSrc).toMatch(/"bad_request:sandbox"/);
     expect(chatHandlerSrc).toMatch(/"bad_request:sandbox"/);
     expect(taskSrc).toMatch(/"sandbox_upload_failure"/);
     expect(taskSrc).toMatch(/upload_failure_kind/);
+    expect(taskSrc).toMatch(/upload_failure_sandbox_readiness_reason/);
     expect(taskSrc).toMatch(/isSandboxUploadError/);
     expect(taskSrc).toMatch(/alreadyEmittedFromStream/);
   });
