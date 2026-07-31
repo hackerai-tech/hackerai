@@ -26,14 +26,32 @@ jest.mock("@/lib/utils/sidebar-storage", () => ({
 describe("SidebarProvider", () => {
   it("uses a 52px collapsed sidebar width", () => {
     const { container } = render(
-      <SidebarProvider>
-        <div>content</div>
+      <SidebarProvider open={false} onOpenChange={jest.fn()}>
+        <Sidebar collapsible="icon">
+          <SidebarContent />
+        </Sidebar>
       </SidebarProvider>,
     );
 
-    expect(container.firstElementChild).toHaveStyle({
+    const wrapper = container.querySelector('[data-slot="sidebar-wrapper"]');
+    const sidebar = container.querySelector(
+      '[data-slot="sidebar"][data-state="collapsed"]',
+    );
+    const sidebarGap = sidebar?.querySelector('[data-slot="sidebar-gap"]');
+    const sidebarContainer = sidebar?.querySelector(
+      '[data-slot="sidebar-container"]',
+    );
+
+    expect(sidebar).toHaveAttribute("data-collapsible", "icon");
+    expect(wrapper).toHaveStyle({
       "--sidebar-width-icon": "3.25rem",
     });
+    expect(sidebarGap).toHaveClass(
+      "group-data-[collapsible=icon]:w-(--sidebar-width-icon)",
+    );
+    expect(sidebarContainer).toHaveClass(
+      "group-data-[collapsible=icon]:w-(--sidebar-width-icon)",
+    );
   });
 
   it("ignores keydown events without a string key", () => {
