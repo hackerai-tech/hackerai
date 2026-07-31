@@ -60,6 +60,8 @@ import {
   normalizeAgentFirstSandboxType,
 } from "@/lib/activation/agent-first-default";
 
+const DESKTOP_ENTITLEMENT_REFRESH_TIMEOUT_MS = 5_000;
+
 interface GlobalStateType {
   // Input state
   input: string;
@@ -692,8 +694,14 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
   // desktop sessions may be unscoped, so refresh once to pull WorkOS
   // entitlements from the user's organization before showing them as free.
   useEffect(() => {
+    let cancelled = false;
+    let requestSettled = false;
+    let controller: AbortController | null = null;
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
+
     const refreshDesktopEntitlements = async () => {
       if (!user || typeof window === "undefined" || !isTauriEnvironment()) {
+        setIsCheckingProPlan(false);
         return;
       }
 
@@ -701,6 +709,7 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
         ? entitlements
         : [];
       if (resolveSubscriptionTier(currentEntitlements) !== "free") {
+        setIsCheckingProPlan(false);
         return;
       }
 
@@ -715,27 +724,52 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
       desktopEntitlementRefreshUserRef.current = user.id;
 
       setIsCheckingProPlan(true);
+      controller = new AbortController();
+      timeoutId = setTimeout(
+        () => controller?.abort(),
+        DESKTOP_ENTITLEMENT_REFRESH_TIMEOUT_MS,
+      );
       try {
         const response = await fetch("/api/entitlements", {
           credentials: "include",
+          signal: controller.signal,
         });
         if (!response.ok) return;
 
         const data = await response.json();
-        await refreshAuthTokenAfterEntitlementRefresh();
+        if (cancelled) return;
         setSubscriptionWithNormalize(
           resolveSubscriptionTier(
             Array.isArray(data.entitlements) ? data.entitlements : [],
           ),
         );
+        // The API response is authoritative for the UI. Refresh AuthKit and the
+        // shared access token in the background so a slow token refresh cannot
+        // keep the free Ask/Agent selector hidden.
+        void refreshAuthTokenAfterEntitlementRefresh();
       } catch {
         // Keep the token-derived tier; this is only a best-effort desktop heal.
       } finally {
-        setIsCheckingProPlan(false);
+        requestSettled = true;
+        if (timeoutId !== null) clearTimeout(timeoutId);
+        if (!cancelled) setIsCheckingProPlan(false);
       }
     };
 
     refreshDesktopEntitlements();
+
+    return () => {
+      cancelled = true;
+      if (
+        controller !== null &&
+        !requestSettled &&
+        desktopEntitlementRefreshUserRef.current === user?.id
+      ) {
+        desktopEntitlementRefreshUserRef.current = null;
+      }
+      controller?.abort();
+      if (timeoutId !== null) clearTimeout(timeoutId);
+    };
   }, [
     user,
     entitlements,
