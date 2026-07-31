@@ -731,11 +731,16 @@ const summarizeSandboxUploadFailure = (
   file: SandboxFile,
   error: unknown,
 ): SandboxUploadFailureDetail => {
+  const message = error instanceof Error ? error.message : String(error);
+  const wrappedFileTransferFailure =
+    file.kind === "url" && message.includes("Failed to download file:");
   const summary: SandboxUploadFailureDetail = {
     kind: file.kind,
     error: redactSandboxUploadError(file, error),
     transientSandboxCommand: isTransientSandboxCommandError(error),
-    sandboxReadinessReason: classifySandboxUploadReadinessFailure(error),
+    sandboxReadinessReason: wrappedFileTransferFailure
+      ? "unknown"
+      : classifySandboxUploadReadinessFailure(error),
   };
 
   if (file.kind === "url") {

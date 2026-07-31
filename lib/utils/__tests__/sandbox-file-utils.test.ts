@@ -902,6 +902,7 @@ describe("desktop-local sandbox file helpers", () => {
         expect(getSandboxUploadFailureMetadata(result)).toMatchObject({
           upload_failure_kind: "url",
           upload_failure_transient_sandbox_command: false,
+          upload_failure_sandbox_readiness_reason: "unknown",
         });
       } finally {
         consoleErrorSpy.mockRestore();
