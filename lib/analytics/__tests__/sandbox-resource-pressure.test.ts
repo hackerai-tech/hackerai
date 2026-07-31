@@ -27,6 +27,7 @@ describe("E2B resource pressure telemetry", () => {
       chatId: "chat-1",
       mode: "agent",
       subscription: "pro-plus",
+      triggerRunId: "run-123",
     });
 
   const observeHealth = (
@@ -54,6 +55,7 @@ describe("E2B resource pressure telemetry", () => {
         mode: "agent",
         subscription_tier: "pro-plus",
         sandbox_type: "e2b",
+        trigger_run_id: "run-123",
         cpu_used_pct: 99.88,
         memory_used_pct: 72.35,
         disk_used_pct: 41.23,
@@ -140,6 +142,12 @@ describe("E2B resource pressure telemetry", () => {
       source: "terminal_command_timeout",
       failureType: "terminal_command_timed_out",
       metrics: { cpuPct: 100, memPct: 95, diskPct: 40 },
+      timeoutSeconds: 60,
+      terminalTimeoutOutcome: "session_resumable",
+      terminationAttempted: false,
+      terminationSucceeded: false,
+      sessionReturned: true,
+      isBackground: false,
     });
 
     expect(mockPhEvent).toHaveBeenCalledWith(
@@ -151,6 +159,12 @@ describe("E2B resource pressure telemetry", () => {
         metrics_available: true,
         cpu_used_pct: 100,
         memory_used_pct: 95,
+        timeout_seconds: 60,
+        terminal_timeout_outcome: "session_resumable",
+        termination_attempted: false,
+        termination_succeeded: false,
+        session_returned: true,
+        is_background: false,
       }),
     );
   });
@@ -163,6 +177,9 @@ describe("E2B resource pressure telemetry", () => {
       source: "readiness_check_failure",
       failureType: "readiness_check_failed",
       metrics: null,
+      failureReason: "permission_denied",
+      readinessStage: "reconnect",
+      lifecycleState: "running_not_ready",
     });
 
     expect(mockPhEvent).toHaveBeenCalledWith(
@@ -171,11 +188,58 @@ describe("E2B resource pressure telemetry", () => {
         pressure_type: "unknown",
         failure_type: "readiness_check_failed",
         metrics_available: false,
+        failure_reason: "permission_denied",
+        readiness_stage: "reconnect",
+        sandbox_lifecycle_state: "running_not_ready",
       }),
     );
     expect(mockPhEvent.mock.calls[0]?.[1]).not.toHaveProperty("cpu_used_pct");
     expect(mockPhEvent.mock.calls[0]?.[1]).not.toHaveProperty(
       "memory_used_pct",
+    );
+  });
+
+  test("records reconnect outcomes separately from failure observations", () => {
+    const observe = createObserver();
+
+    observe({
+      kind: "recovery",
+      source: "readiness_reconnect",
+      outcome: "failed_unavailable",
+      initialFailureReason: "connection_error",
+      finalFailureReason: "permission_denied",
+    });
+
+    expect(mockPhEvent).toHaveBeenCalledWith(
+      "e2b_sandbox_recovery_observed",
+      expect.objectContaining({
+        trigger_run_id: "run-123",
+        recovery_source: "readiness_reconnect",
+        recovery_outcome: "failed_unavailable",
+        initial_failure_reason: "connection_error",
+        final_failure_reason: "permission_denied",
+        recovery_event_version: 1,
+      }),
+    );
+  });
+
+  test("records the eventual outcome of a resumable timeout", () => {
+    const observe = createObserver();
+
+    observe({
+      kind: "timeout_recovery",
+      source: "terminal_command_timeout",
+      outcome: "completed_success",
+    });
+
+    expect(mockPhEvent).toHaveBeenCalledWith(
+      "e2b_terminal_timeout_recovery_observed",
+      expect.objectContaining({
+        trigger_run_id: "run-123",
+        recovery_source: "terminal_command_timeout",
+        recovery_outcome: "completed_success",
+        recovery_event_version: 1,
+      }),
     );
   });
 });

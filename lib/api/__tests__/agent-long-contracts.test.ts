@@ -1000,7 +1000,7 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     );
     expect(taskSrc).toMatch(/handled tool failure dashboard update failed/);
     expect(taskSrc).toMatch(
-      /onToolFailure,\s*requestToolApproval,\s*runTimingTracker\.measureActiveTime,\s*projectContext\.workingDirectory,\s*\)/,
+      /onToolFailure,\s*requestToolApproval,\s*runTimingTracker\.measureActiveTime,\s*projectContext\.workingDirectory,\s*ctx\.run\.id,\s*\)/,
     );
   });
 

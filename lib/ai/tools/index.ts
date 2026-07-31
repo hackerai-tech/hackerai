@@ -66,6 +66,7 @@ export const createTools = (
   requestToolApproval?: AgentToolApprovalRequester,
   measureAgentActiveTime?: AgentActiveTimeMeasurer,
   workingDirectory?: string,
+  triggerRunId?: string,
 ) => {
   let sandbox: AnySandbox | null = null;
   let sandboxFirstUsedAt: number | null = null;
@@ -118,6 +119,7 @@ export const createTools = (
     chatId,
     mode,
     subscription,
+    triggerRunId,
   });
 
   const context: ToolContext = {
@@ -128,6 +130,7 @@ export const createTools = (
     userID,
     chatId,
     assistantMessageId,
+    triggerRunId,
     fileAccumulator,
     backgroundProcessTracker,
     ptySessionManager,
