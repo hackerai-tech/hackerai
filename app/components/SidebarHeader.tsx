@@ -98,7 +98,7 @@ const SidebarHeaderContentImpl: FC<SidebarHeaderContentImplProps> = ({
   const planLabel = isCheckingProPlan
     ? null
     : SIDEBAR_PLAN_LABELS[subscription];
-  const showPlanWordmark = planLabel !== null && !isMobileOverlay;
+  const showPlanWordmark = Boolean(planLabel) && !isMobileOverlay;
 
   // Add keyboard shortcut for search (Cmd/Ctrl + K)
   useEffect(() => {
