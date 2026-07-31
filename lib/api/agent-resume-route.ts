@@ -73,6 +73,20 @@ export const createAgentResumeGet =
       runId = chat.active_trigger_run_id;
       approvalSessionId = chat.active_agent_approval_session_id;
       if (!runId) {
+        if (approvalSessionId) {
+          stage = "clear_orphaned_approval_session";
+          await closeAgentApprovalSession(
+            approvalSessionId,
+            "agent-run-missing",
+          );
+          await setActiveTriggerRun({
+            chatId,
+            triggerRunId: null,
+            approvalSessionId: null,
+            expectedApprovalSessionId: approvalSessionId,
+            clearApprovalPending: true,
+          });
+        }
         return new NextResponse(null, { status: 204 });
       }
 

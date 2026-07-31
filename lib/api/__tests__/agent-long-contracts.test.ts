@@ -860,7 +860,7 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(resumeSrc).toMatch(/chat\.user_id\s*!==\s*userId/);
     expect(resumeSrc).toMatch(/chat\.active_trigger_run_id/);
     expect(resumeSrc).toMatch(/chat\.active_agent_approval_session_id/);
-    expect(agentApprovalSessionSrc).not.toMatch(/cookie|createHmac/);
+    expect(agentApprovalSessionSrc).not.toMatch(/cookie|createHmac/i);
   });
 
   test("approval protocol v2 is explicit and requires route-last deployment", () => {

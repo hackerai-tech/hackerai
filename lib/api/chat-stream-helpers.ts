@@ -1082,9 +1082,13 @@ export function assertFreeAgentGates(args: {
  * and direct requests cannot restore the removed paid Ask path.
  */
 export function assertChatModeAccess(args: {
-  mode: ChatMode;
+  mode: unknown;
   subscription: SubscriptionTier;
 }): void {
+  if (args.mode !== "ask" && args.mode !== "agent") {
+    throw new ChatSDKError("bad_request:api", "Invalid chat mode.");
+  }
+
   if (args.mode !== "ask" || args.subscription === "free") return;
 
   throw new ChatSDKError(

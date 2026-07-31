@@ -535,11 +535,6 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
   useEffect(() => {
     if (agentFirstDefaultAppliedRef.current) return;
 
-    const selectedSubscription =
-      subscriptionFromEntitlements === null ||
-      subscriptionFromEntitlements === "free"
-        ? subscription
-        : subscriptionFromEntitlements;
     const savedModePresent = initialSavedChatModeRef.current !== null;
     const userSelectedModeThisSession =
       hasUserSelectedModeThisSessionRef.current;
@@ -551,7 +546,7 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
       hasUserSelectedModeThisSession: userSelectedModeThisSession,
       isCheckingProPlan,
       isMobile,
-      subscription: selectedSubscription,
+      subscription: paidAgentSubscription,
       subscriptionResolved,
       userPresent: Boolean(user),
     });
@@ -591,9 +586,9 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
       experiment_key: agentDefaultDecision.experimentKey,
       first_experience_event_version: 2,
       variant: "agent_first",
-      subscription: selectedSubscription,
+      subscription: paidAgentSubscription,
       eligible_subscription_tier: agentDefaultDecision.eligibleSubscriptionTier,
-      selected_subscription_tier: selectedSubscription,
+      selected_subscription_tier: paidAgentSubscription,
       selection_reason: agentDefaultDecision.selectionReason,
       default_applied: true,
       has_local_sandbox: hasLocalSandbox,
@@ -620,11 +615,10 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     hasLocalSandbox,
     isCheckingProPlan,
     isMobile,
+    paidAgentSubscription,
     sandboxPreference,
     selectedModel,
     setSandboxPreference,
-    subscription,
-    subscriptionFromEntitlements,
     subscriptionResolved,
     user,
   ]);

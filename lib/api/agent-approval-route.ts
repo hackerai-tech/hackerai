@@ -170,10 +170,11 @@ export const createAgentApprovalPost =
 
       stage = "authorize_chat";
       const chat = await getChatById({ id: chatId });
-      if (!chat) return new NextResponse("Forbidden", { status: 403 });
+      if (!chat || chat.user_id !== userId) {
+        return new NextResponse("Forbidden", { status: 403 });
+      }
       const pending = chat.active_agent_approval_request;
       if (
-        chat.user_id !== userId ||
         chat.active_agent_approval_session_id !== approvalSessionId ||
         !chat.active_trigger_run_id ||
         pending?.approvalId !== decision.approvalId ||

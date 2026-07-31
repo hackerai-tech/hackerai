@@ -583,6 +583,7 @@ export const useChatHandlers = ({
     }
     const agentRunRequestId = uuidv4();
 
+    const chainAssistantIds = getAutoContinueChainAssistantIds(messages);
     const cleanedTodos = removeTodosBySourceMessages(
       todos,
       todos
@@ -600,8 +601,17 @@ export const useChatHandlers = ({
       ? messagesToLastUser
       : [];
 
-    // The backend fetches persisted history unless local desktop attachments
-    // must be restaged from the client.
+    // Delete any persisted partial/error response before retrying. The backend
+    // otherwise fetches that stale trailing chain when client messages are not
+    // needed to restage local desktop attachments.
+    if (chainAssistantIds.length > 0) {
+      await deleteLastAssistantMessage({
+        chatId,
+        resetSummary: true,
+        todos: cleanedTodos,
+      });
+    }
+
     runChatAction("retry response", () =>
       regenerate({
         body: {

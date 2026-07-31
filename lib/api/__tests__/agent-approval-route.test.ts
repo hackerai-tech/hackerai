@@ -192,6 +192,29 @@ describe("agent approval route", () => {
     expect(mockSessionSend).not.toHaveBeenCalled();
   });
 
+  it("rejects approvals for another user's persisted task as forbidden", async () => {
+    const { createAgentApprovalPost } = await import("../agent-approval-route");
+    mockGetChatById.mockResolvedValue({
+      id: "chat-1",
+      user_id: "user-2",
+      active_trigger_run_id: "run-1",
+      active_agent_approval_session_id: "approval-session-1",
+      active_agent_approval_request: {
+        approvalId: "approval-1",
+        toolCallId: "tool-call-1",
+      },
+    } as never);
+
+    const response = await createAgentApprovalPost({ endpoint: "/api/agent" })(
+      request(),
+    );
+
+    expect(response.status).toBe(403);
+    expect(mockRunsRetrieve).not.toHaveBeenCalled();
+    expect(mockSignApprovalInput).not.toHaveBeenCalled();
+    expect(mockSessionSend).not.toHaveBeenCalled();
+  });
+
   it("fails closed on protocol metadata or active org membership mismatch", async () => {
     const { createAgentApprovalPost } = await import("../agent-approval-route");
     mockGetUserIDAndPro.mockResolvedValue({

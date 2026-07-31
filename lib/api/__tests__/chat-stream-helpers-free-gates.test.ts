@@ -37,6 +37,15 @@ describe("assertFreeAgentGates", () => {
 });
 
 describe("assertChatModeAccess", () => {
+  it.each([undefined, null, "temporary", "Agent", 1])(
+    "rejects invalid chat mode %p",
+    (mode) => {
+      expect(() =>
+        assertChatModeAccess({ mode, subscription: "free" }),
+      ).toThrow(ChatSDKError);
+    },
+  );
+
   it.each(["pro", "pro-plus", "ultra", "team"] as const)(
     "rejects Ask mode for %s users",
     (subscription) => {
