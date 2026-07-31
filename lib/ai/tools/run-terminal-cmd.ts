@@ -105,6 +105,16 @@ export const createRunTerminalCmd = (context: ToolContext) => {
     context.measureAgentActiveTime
       ? context.measureAgentActiveTime("sandbox_recovery", operation)
       : operation();
+  const buildTerminalLogContext = () => ({
+    service: context.triggerRunId ? "agent-long" : "chat-handler",
+    environment:
+      process.env.TRIGGER_ENV ??
+      process.env.VERCEL_ENV ??
+      process.env.NODE_ENV ??
+      "unknown",
+    request_id: context.triggerRunId ?? process.env.VERCEL_REQUEST_ID ?? null,
+    trigger_run_id: context.triggerRunId ?? null,
+  });
   const logSandboxReadinessRecovery = (args: {
     level: "info" | "warn" | "error";
     outcome: "started" | "reconnected" | "failed" | "skipped_unavailable";
@@ -116,14 +126,7 @@ export const createRunTerminalCmd = (context: ToolContext) => {
       timestamp: new Date().toISOString(),
       level: args.level,
       event: "e2b_sandbox_readiness_recovery",
-      service: context.triggerRunId ? "agent-long" : "chat-handler",
-      environment:
-        process.env.TRIGGER_ENV ??
-        process.env.VERCEL_ENV ??
-        process.env.NODE_ENV ??
-        "unknown",
-      request_id: context.triggerRunId ?? process.env.VERCEL_REQUEST_ID ?? null,
-      trigger_run_id: context.triggerRunId ?? null,
+      ...buildTerminalLogContext(),
       chat_id: context.chatId,
       user_id: context.userID,
       subscription: context.subscription ?? "unknown",
@@ -618,17 +621,7 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                   timestamp: new Date().toISOString(),
                   level: "warn",
                   event: "agent_terminal_noisy_timeout",
-                  service: context.triggerRunId ? "agent-long" : "chat-handler",
-                  environment:
-                    process.env.TRIGGER_ENV ??
-                    process.env.VERCEL_ENV ??
-                    process.env.NODE_ENV ??
-                    "unknown",
-                  request_id:
-                    context.triggerRunId ??
-                    process.env.VERCEL_REQUEST_ID ??
-                    null,
-                  trigger_run_id: context.triggerRunId ?? null,
+                  ...buildTerminalLogContext(),
                   chat_id: chatId,
                   user_id: context.userID,
                   mode: context.mode,
