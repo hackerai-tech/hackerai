@@ -1,6 +1,6 @@
 import "@testing-library/jest-dom";
 import React from "react";
-import { act, render } from "@testing-library/react";
+import { act, fireEvent, render } from "@testing-library/react";
 import { describe, expect, it, jest } from "@jest/globals";
 import { SidebarProvider } from "../sidebar";
 
@@ -33,6 +33,35 @@ describe("SidebarProvider", () => {
         window.dispatchEvent(new Event("keydown"));
       });
     }).not.toThrow();
+    expect(onOpenChange).not.toHaveBeenCalled();
+  });
+
+  it("keeps the existing Cmd/Ctrl+Shift+S shortcut", () => {
+    const onOpenChange = jest.fn();
+
+    render(
+      <SidebarProvider open={true} onOpenChange={onOpenChange}>
+        <div>content</div>
+      </SidebarProvider>,
+    );
+
+    fireEvent.keyDown(window, { key: "s", metaKey: true, shiftKey: true });
+
+    expect(onOpenChange).toHaveBeenCalledWith(false);
+  });
+
+  it("does not replace the sidebar shortcut with Cmd/Ctrl+B", () => {
+    const onOpenChange = jest.fn();
+
+    render(
+      <SidebarProvider open={true} onOpenChange={onOpenChange}>
+        <div>content</div>
+      </SidebarProvider>,
+    );
+
+    fireEvent.keyDown(window, { key: "b", metaKey: true });
+    fireEvent.keyDown(window, { key: "b", ctrlKey: true });
+
     expect(onOpenChange).not.toHaveBeenCalled();
   });
 });

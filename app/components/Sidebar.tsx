@@ -133,7 +133,10 @@ const MainSidebar: FC<{
           />
 
           {/* Chat List */}
-          <div className="flex-1 overflow-hidden">
+          <div
+            className="flex-1 overflow-hidden px-2"
+            data-testid="mobile-sidebar-chat-content"
+          >
             <ChatListContent chatListData={chatListData} />
           </div>
 

@@ -42,7 +42,11 @@ jest.mock("@/app/hooks/useProjects", () => ({
 }));
 jest.mock("../SidebarHeader", () => ({
   __esModule: true,
-  default: () => <div>Header</div>,
+  default: ({ isMobileOverlay }: { isMobileOverlay?: boolean }) => (
+    <div data-testid="sidebar-header" data-mobile={isMobileOverlay}>
+      Header
+    </div>
+  ),
 }));
 jest.mock("../SidebarUserNav", () => ({
   __esModule: true,
@@ -85,5 +89,17 @@ describe("MainSidebar", () => {
     expect(collapsedContent).toHaveAttribute("aria-hidden", "true");
     expect(collapsedContent).toHaveAttribute("inert");
     expect(screen.getByTestId("sidebar-chat-sections")).toBeInTheDocument();
+  });
+
+  it("adds consistent side gutters to the mobile sidebar", () => {
+    render(<MainSidebar isMobileOverlay={true} chatListData={chatListData} />);
+
+    expect(screen.getByTestId("sidebar-header")).toHaveAttribute(
+      "data-mobile",
+      "true",
+    );
+    expect(screen.getByTestId("mobile-sidebar-chat-content")).toHaveClass(
+      "px-2",
+    );
   });
 });

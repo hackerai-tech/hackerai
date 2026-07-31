@@ -1,6 +1,7 @@
 "use client";
 
-import { useState, useEffect, useMemo, FC } from "react";
+import Link from "next/link";
+import { useEffect, useMemo, useState, type FC } from "react";
 import { Button } from "@/components/ui/button";
 import {
   PanelLeft,
@@ -9,9 +10,50 @@ import {
   Search,
 } from "lucide-react";
 import { useSidebar } from "@/components/ui/sidebar";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
+import { HackerAISVG } from "@/components/icons/hackerai-svg";
+import { useGlobalState } from "../contexts/GlobalState";
 import { useChats } from "../hooks/useChats";
 import { useStartNewChat } from "../hooks/useStartNewChat";
 import { MessageSearchDialog } from "./MessageSearchDialog";
+import type { SubscriptionTier } from "@/types";
+
+const SIDEBAR_PLAN_LABELS: Record<SubscriptionTier, string | null> = {
+  free: null,
+  pro: "Pro",
+  "pro-plus": "Pro+",
+  ultra: "Ultra",
+  team: "Team",
+};
+
+interface SidebarActionTooltipProps {
+  label: string;
+  shortcut?: string;
+  side?: "bottom" | "right";
+}
+
+const SidebarActionTooltip: FC<SidebarActionTooltipProps> = ({
+  label,
+  shortcut,
+  side = "bottom",
+}) => (
+  <TooltipContent
+    side={side}
+    sideOffset={6}
+    className="flex items-center gap-3 rounded-lg px-3 py-2 text-sm"
+  >
+    <span>{label}</span>
+    {shortcut ? (
+      <kbd className="text-primary-foreground/70 font-sans text-xs">
+        {shortcut}
+      </kbd>
+    ) : null}
+  </TooltipContent>
+);
 
 interface SidebarHeaderContentProps {
   /** Function to handle closing the sidebar */
@@ -26,21 +68,21 @@ interface SidebarHeaderContentProps {
 interface SidebarHeaderContentImplProps {
   handleCloseSidebar: () => void;
   isCollapsed: boolean;
+  isMobileOverlay: boolean;
   toggleSidebar: () => void;
 }
 
 const SidebarHeaderContentImpl: FC<SidebarHeaderContentImplProps> = ({
   handleCloseSidebar,
   isCollapsed,
+  isMobileOverlay,
   toggleSidebar,
 }) => {
   const startNewChat = useStartNewChat();
+  const { subscription, isCheckingProPlan } = useGlobalState();
 
   // Search dialog state
   const [isSearchOpen, setIsSearchOpen] = useState(false);
-
-  // Hover state for search button
-  const [isSearchHovered, setIsSearchHovered] = useState(false);
 
   // Fetch chats when search dialog is opened to ensure data is available
   // This handles the case where user opens search without opening sidebar first
@@ -52,8 +94,11 @@ const SidebarHeaderContentImpl: FC<SidebarHeaderContentImplProps> = ({
     [],
   );
 
-  // Platform-specific modifier key
-  const modifierKey = isMac ? "⌘" : "Ctrl+";
+  const searchShortcutLabel = isMac ? "⌘K" : "Ctrl+K";
+  const planLabel = isCheckingProPlan
+    ? null
+    : SIDEBAR_PLAN_LABELS[subscription];
+  const showPlanWordmark = planLabel !== null && !isMobileOverlay;
 
   // Add keyboard shortcut for search (Cmd/Ctrl + K)
   useEffect(() => {
@@ -86,45 +131,62 @@ const SidebarHeaderContentImpl: FC<SidebarHeaderContentImplProps> = ({
     return (
       <>
         <div className="flex flex-col items-center p-2">
-          <Button
-            data-testid="sidebar-toggle"
-            variant="ghost"
-            size="sm"
-            className="mb-2 h-8 w-8 p-0 hover:bg-sidebar-accent/50"
-            onClick={toggleSidebar}
-            aria-label="Expand sidebar"
-          >
-            <SidebarIcon className="size-5" />
-          </Button>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                data-testid="sidebar-toggle"
+                variant="ghost"
+                size="sm"
+                className="mb-2 h-8 w-8 p-0 hover:bg-sidebar-accent/50"
+                onClick={toggleSidebar}
+                aria-label="Open sidebar"
+              >
+                <SidebarIcon className="size-5" />
+              </Button>
+            </TooltipTrigger>
+            <SidebarActionTooltip label="Toggle sidebar" side="right" />
+          </Tooltip>
 
           {/* Sidebar Actions - Collapsed */}
           <div className="flex flex-col items-center">
             {/* New Chat Button - Collapsed */}
             <div className="p-1">
-              <Button
-                variant="ghost"
-                size="sm"
-                className="h-8 w-8 p-0 hover:bg-sidebar-accent/50"
-                onClick={handleNewChat}
-                aria-label="Start new task"
-              >
-                <SquarePen className="w-4 h-4" />
-              </Button>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="h-8 w-8 p-0 hover:bg-sidebar-accent/50"
+                    onClick={handleNewChat}
+                    aria-label="Start new task"
+                  >
+                    <SquarePen className="size-4" />
+                  </Button>
+                </TooltipTrigger>
+                <SidebarActionTooltip label="New task" side="right" />
+              </Tooltip>
             </div>
 
             {/* Search Button - Collapsed */}
             <div className="p-1">
-              <Button
-                variant="ghost"
-                size="sm"
-                className="h-8 w-8 p-0 hover:bg-sidebar-accent/50"
-                onClick={handleSearchOpen}
-                aria-label="Search tasks"
-                onMouseEnter={() => setIsSearchHovered(true)}
-                onMouseLeave={() => setIsSearchHovered(false)}
-              >
-                <Search className="w-4 h-4" />
-              </Button>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="h-8 w-8 p-0 hover:bg-sidebar-accent/50"
+                    onClick={handleSearchOpen}
+                    aria-label="Search"
+                  >
+                    <Search className="size-4" />
+                  </Button>
+                </TooltipTrigger>
+                <SidebarActionTooltip
+                  label="Search"
+                  shortcut={searchShortcutLabel}
+                  side="right"
+                />
+              </Tooltip>
             </div>
           </div>
         </div>
@@ -140,23 +202,74 @@ const SidebarHeaderContentImpl: FC<SidebarHeaderContentImplProps> = ({
 
   return (
     <>
-      <div className="flex items-center justify-between p-2">
-        <div className="flex items-center gap-2">
-          {/* Show close button on mobile or desktop when expanded */}
-          <Button
-            data-testid="sidebar-toggle"
-            variant="ghost"
-            size="sm"
-            className="-ms-1 h-8 w-8 p-0"
-            onClick={handleCloseSidebar}
-          >
-            <PanelLeft className="size-5" />
-          </Button>
+      <div
+        data-testid="sidebar-top-header"
+        className={`sticky top-0 z-30 flex items-center justify-between bg-sidebar ${
+          isMobileOverlay ? "h-14 ps-3 pe-2.5" : "h-10"
+        }`}
+      >
+        <Link
+          href="/"
+          data-testid="sidebar-home"
+          onClick={isMobileOverlay ? handleCloseSidebar : undefined}
+          aria-label={
+            planLabel ? `HackerAI ${planLabel} home` : "HackerAI home"
+          }
+          className={`flex h-9 items-center rounded-lg text-sidebar-foreground no-underline outline-none hover:bg-transparent hover:no-underline focus-visible:underline focus-visible:underline-offset-4 ${
+            showPlanWordmark ? "px-2.5" : "w-9 justify-center"
+          }`}
+        >
+          {showPlanWordmark ? (
+            <span className="flex min-w-0 items-baseline gap-1 whitespace-nowrap text-[18px] leading-6 font-semibold">
+              <span>HackerAI</span>
+              <span className="font-medium text-sidebar-foreground/55">
+                {planLabel}
+              </span>
+            </span>
+          ) : (
+            <HackerAISVG theme="dark" scale={isMobileOverlay ? 0.11 : 0.1} />
+          )}
+        </Link>
+
+        <div className="flex items-center gap-0">
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                className="size-9 text-sidebar-foreground/65 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground"
+                onClick={handleSearchOpen}
+                aria-label="Search"
+              >
+                <Search className="size-[18px]" />
+              </Button>
+            </TooltipTrigger>
+            <SidebarActionTooltip
+              label="Search"
+              shortcut={searchShortcutLabel}
+            />
+          </Tooltip>
+
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                data-testid="sidebar-toggle"
+                variant="ghost"
+                size="icon-sm"
+                className="size-9 cursor-w-resize text-sidebar-foreground/65 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground"
+                onClick={handleCloseSidebar}
+                aria-label="Close sidebar"
+              >
+                <PanelLeft className="size-[18px]" />
+              </Button>
+            </TooltipTrigger>
+            <SidebarActionTooltip label="Toggle sidebar" />
+          </Tooltip>
         </div>
       </div>
 
       {/* Sidebar Actions - Expanded */}
-      <div className="flex flex-col">
+      <div className={`flex flex-col ${isMobileOverlay ? "px-2" : ""}`}>
         {/* New Chat Button styled like a chat item */}
         <div className="py-1">
           <Button
@@ -165,34 +278,9 @@ const SidebarHeaderContentImpl: FC<SidebarHeaderContentImplProps> = ({
             onClick={handleNewChat}
             aria-label="Start new task"
           >
-            <SquarePen className="w-4 h-4" />
+            <SquarePen className="size-4" />
             <div className="mr-2 flex-1 overflow-hidden text-clip whitespace-nowrap text-sm font-medium text-left">
               New task
-            </div>
-          </Button>
-        </div>
-
-        {/* Search Button styled like a chat item */}
-        <div className="py-1">
-          <Button
-            variant="ghost"
-            className="relative flex w-full justify-start items-center rounded-lg p-2 h-auto hover:bg-sidebar-accent/50 text-left"
-            onClick={handleSearchOpen}
-            aria-label="Search tasks"
-            onMouseEnter={() => setIsSearchHovered(true)}
-            onMouseLeave={() => setIsSearchHovered(false)}
-          >
-            <Search className="w-4 h-4" />
-            <div className="mr-2 flex-1 overflow-hidden text-clip whitespace-nowrap text-sm font-medium text-left">
-              Search tasks
-            </div>
-            {/* Only show shortcut when hovering directly on the search button */}
-            <div
-              className={`text-xs transition-opacity ${
-                isSearchHovered ? "opacity-100" : "opacity-0"
-              }`}
-            >
-              {modifierKey}K
             </div>
           </Button>
         </div>
@@ -213,6 +301,7 @@ const DesktopSidebarHeaderContent: FC<
     <SidebarHeaderContentImpl
       handleCloseSidebar={handleCloseSidebar}
       isCollapsed={isCollapsed}
+      isMobileOverlay={false}
       toggleSidebar={toggleSidebar}
     />
   );
@@ -227,6 +316,7 @@ const MobileSidebarHeaderContent: FC<
     <SidebarHeaderContentImpl
       handleCloseSidebar={handleCloseSidebar}
       isCollapsed={isCollapsed}
+      isMobileOverlay={true}
       toggleSidebar={toggleSidebar}
     />
   );
