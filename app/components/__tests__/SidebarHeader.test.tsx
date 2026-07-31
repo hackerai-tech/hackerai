@@ -66,6 +66,18 @@ describe("SidebarHeaderContent", () => {
 
     expect(screen.queryByTestId("hackerai-svg")).not.toBeInTheDocument();
     expect(expandButton.querySelector("svg")).toBeInTheDocument();
+    expect(expandButton).toHaveClass("size-9");
+    expect(expandButton.querySelector("svg")).toHaveClass("size-[18px]");
+
+    const newTaskButton = screen.getByRole("button", {
+      name: "Start new task",
+    });
+    const searchButton = screen.getByRole("button", { name: "Search" });
+
+    expect(newTaskButton).toHaveClass("size-9");
+    expect(newTaskButton.querySelector("svg")).toHaveClass("size-[18px]");
+    expect(searchButton).toHaveClass("size-9");
+    expect(searchButton.querySelector("svg")).toHaveClass("size-[18px]");
 
     expect(mockToggleSidebar).not.toHaveBeenCalled();
     fireEvent.click(expandButton);

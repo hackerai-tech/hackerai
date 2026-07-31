@@ -137,30 +137,30 @@ const SidebarHeaderContentImpl: FC<SidebarHeaderContentImplProps> = ({
                 data-testid="sidebar-toggle"
                 variant="ghost"
                 size="sm"
-                className="mb-2 h-8 w-8 p-0 hover:bg-sidebar-accent/50"
+                className="mb-2 size-9 p-0 hover:bg-sidebar-accent/50"
                 onClick={toggleSidebar}
                 aria-label="Open sidebar"
               >
-                <SidebarIcon className="size-5" />
+                <SidebarIcon className="size-[18px]" />
               </Button>
             </TooltipTrigger>
             <SidebarActionTooltip label="Toggle sidebar" side="right" />
           </Tooltip>
 
           {/* Sidebar Actions - Collapsed */}
-          <div className="flex flex-col items-center">
+          <div className="flex flex-col items-center gap-px">
             {/* New Chat Button - Collapsed */}
-            <div className="p-1">
+            <div>
               <Tooltip>
                 <TooltipTrigger asChild>
                   <Button
                     variant="ghost"
                     size="sm"
-                    className="h-8 w-8 p-0 hover:bg-sidebar-accent/50"
+                    className="size-9 p-0 hover:bg-sidebar-accent/50"
                     onClick={handleNewChat}
                     aria-label="Start new task"
                   >
-                    <SquarePen className="size-4" />
+                    <SquarePen className="size-[18px]" />
                   </Button>
                 </TooltipTrigger>
                 <SidebarActionTooltip label="New task" side="right" />
@@ -168,17 +168,17 @@ const SidebarHeaderContentImpl: FC<SidebarHeaderContentImplProps> = ({
             </div>
 
             {/* Search Button - Collapsed */}
-            <div className="p-1">
+            <div>
               <Tooltip>
                 <TooltipTrigger asChild>
                   <Button
                     variant="ghost"
                     size="sm"
-                    className="h-8 w-8 p-0 hover:bg-sidebar-accent/50"
+                    className="size-9 p-0 hover:bg-sidebar-accent/50"
                     onClick={handleSearchOpen}
                     aria-label="Search"
                   >
-                    <Search className="size-4" />
+                    <Search className="size-[18px]" />
                   </Button>
                 </TooltipTrigger>
                 <SidebarActionTooltip

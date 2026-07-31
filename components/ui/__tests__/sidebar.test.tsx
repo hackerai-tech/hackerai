@@ -24,6 +24,18 @@ jest.mock("@/lib/utils/sidebar-storage", () => ({
 }));
 
 describe("SidebarProvider", () => {
+  it("uses a 52px collapsed sidebar width", () => {
+    const { container } = render(
+      <SidebarProvider>
+        <div>content</div>
+      </SidebarProvider>,
+    );
+
+    expect(container.firstElementChild).toHaveStyle({
+      "--sidebar-width-icon": "3.25rem",
+    });
+  });
+
   it("ignores keydown events without a string key", () => {
     const onOpenChange = jest.fn();
 
