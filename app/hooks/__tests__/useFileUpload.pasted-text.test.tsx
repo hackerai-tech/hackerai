@@ -139,27 +139,21 @@ describe("useFileUpload generated pasted text attachments", () => {
     });
   });
 
-  it("uses Agent mode alone to convert large pastes", async () => {
+  it("keeps large pastes inline for free Agent users", async () => {
     globalState.subscription = "free";
     const event = createTextPasteEvent("A".repeat(5000));
     const { result } = renderHook(() => useFileUpload("agent"));
 
-    let handled = false;
+    let handled = true;
     await act(async () => {
       handled = await result.current.handlePasteEvent(event);
     });
 
-    expect(handled).toBe(true);
-    expect(event.preventDefault).toHaveBeenCalledTimes(1);
-    expect(addUploadedFile).toHaveBeenCalledWith(
-      expect.objectContaining({
-        generatedSource: "pasted-text",
-        generatedTextAttachment: expect.any(Object),
-      }),
-    );
-    expect(toast.error).not.toHaveBeenCalledWith(
-      "Upgrade plan to upload files.",
-    );
+    expect(handled).toBe(false);
+    expect(event.preventDefault).not.toHaveBeenCalled();
+    expect(addUploadedFile).not.toHaveBeenCalled();
+    expect(generateS3UploadUrlAction).not.toHaveBeenCalled();
+    expect(toast.error).not.toHaveBeenCalled();
   });
 
   it("keeps large plain-text paste payloads inline in Ask mode", async () => {

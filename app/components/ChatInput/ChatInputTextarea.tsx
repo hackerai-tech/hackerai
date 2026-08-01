@@ -119,7 +119,7 @@ export function ChatInputTextarea({
         maxTokens,
       );
       if (tokenLimitStatus.exceedsLimit) {
-        if (isAgentMode(chatMode)) {
+        if (subscription !== "free" && isAgentMode(chatMode)) {
           await handlePastedTextAttachment(pastedText);
           return;
         }

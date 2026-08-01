@@ -1127,7 +1127,9 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
 
   const handlePastedTextAttachment = useCallback(
     async (text: string): Promise<boolean> => {
-      if (!isAgentMode(mode) || !text.trim()) return false;
+      if (subscription === "free" || !isAgentMode(mode) || !text.trim()) {
+        return false;
+      }
 
       const started = await processGeneratedPastedText(text);
       if (started) {
@@ -1135,7 +1137,7 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
       }
       return started;
     },
-    [mode, processGeneratedPastedText],
+    [mode, processGeneratedPastedText, subscription],
   );
 
   const handlePasteEvent = async (event: ClipboardEvent): Promise<boolean> => {
@@ -1152,6 +1154,7 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
     }
 
     if (
+      subscription !== "free" &&
       isAgentMode(mode) &&
       pastedText.length >= PASTED_TEXT_ATTACHMENT_MIN_CHARS &&
       (!items || Array.from(items).every((item) => item.kind !== "file"))
