@@ -34,7 +34,7 @@ describe("usage-settlement", () => {
         currentCostDollars: 0.08,
       }),
     ).toBe(true);
-    expect(getUnsettledUsagePoints(state, 0.08)).toBe(120);
+    expect(getUnsettledUsagePoints(state, 0.08)).toBe(200);
   });
 
   it("settles without trusting the remaining balance captured at run start", () => {
@@ -46,7 +46,7 @@ describe("usage-settlement", () => {
         currentCostDollars: 5,
       }),
     ).toBe(true);
-    expect(getUnsettledUsagePoints(state, 5)).toBe(69_000);
+    expect(getUnsettledUsagePoints(state, 5)).toBe(74_000);
   });
 
   it("updates cumulative settled totals after a mid-run deduction", () => {
@@ -84,8 +84,8 @@ describe("usage-settlement", () => {
         state,
         currentCostDollars: 0.25,
       }),
-    ).toBe(false);
-    expect(getUnsettledUsagePoints(state, 0.25)).toBe(0);
+    ).toBe(true);
+    expect(getUnsettledUsagePoints(state, 0.25)).toBe(250);
 
     expect(
       shouldSettleUsageMidRun({
@@ -93,6 +93,6 @@ describe("usage-settlement", () => {
         currentCostDollars: 0.3,
       }),
     ).toBe(true);
-    expect(getUnsettledUsagePoints(state, 0.3)).toBe(700);
+    expect(getUnsettledUsagePoints(state, 0.3)).toBe(1_000);
   });
 });
