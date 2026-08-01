@@ -969,7 +969,7 @@ describe("token-bucket async functions", () => {
         servedModel,
       );
 
-      expect(expectedAdditional).toBe(73_639);
+      expect(expectedAdditional).toBe(73_640);
       expect(mockLimitFn).toHaveBeenCalledWith(
         expect.any(String),
         expect.objectContaining({ rate: expectedAdditional }),
@@ -1028,7 +1028,7 @@ describe("token-bucket async functions", () => {
         servedModel,
       );
 
-      expect(expectedAdditional).toBe(3_919);
+      expect(expectedAdditional).toBe(3_920);
       expect(mockLimitFn).toHaveBeenCalledWith(
         expect.any(String),
         expect.objectContaining({ rate: expectedAdditional }),

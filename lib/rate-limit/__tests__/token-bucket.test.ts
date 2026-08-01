@@ -122,9 +122,10 @@ describe("token-bucket", () => {
           inputTokens: 1_000_000,
           outputTokens: 100_000,
           cacheReadTokens: 800_000,
+          cacheWriteTokens: 100_000,
           modelName: "deepseek/deepseek-v4-flash-20260731",
         }),
-      ).toBeCloseTo(0.05824);
+      ).toBeCloseTo(0.05824, 5);
     });
 
     it("recognizes dated Anthropic response model IDs", () => {
@@ -497,8 +498,8 @@ describe("token-bucket", () => {
     ])(
       "should use DeepSeek V4 Flash 0731 pricing for %s ($0.14/$0.28)",
       (modelName) => {
-        expect(calculateTokenCost(1_000_000, "input", modelName)).toBe(1961);
-        expect(calculateTokenCost(1_000_000, "output", modelName)).toBe(3921);
+        expect(calculateTokenCost(1_000_000, "input", modelName)).toBe(1960);
+        expect(calculateTokenCost(1_000_000, "output", modelName)).toBe(3920);
       },
     );
 

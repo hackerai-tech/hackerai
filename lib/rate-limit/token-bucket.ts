@@ -396,9 +396,9 @@ export const calculateTokenCost = (
   if (tokens <= 0) return 0;
   const pricing = getModelPricing(modelName);
   const price = type === "input" ? pricing.input : pricing.output;
-  return Math.ceil(
-    (tokens / 1_000_000) * price * POINTS_PER_DOLLAR * NORMAL_USAGE_MULTIPLIER,
-  );
+  const costPoints =
+    (tokens / 1_000_000) * price * POINTS_PER_DOLLAR * NORMAL_USAGE_MULTIPLIER;
+  return Math.ceil(Number(costPoints.toFixed(6)));
 };
 
 /**
