@@ -23,7 +23,7 @@ const { GlobalStateProvider, useGlobalState } =
   jest.requireActual<typeof import("../GlobalState")>("../GlobalState");
 
 const mockAuthUser = (
-  entitlements: string[],
+  entitlements: string[] | undefined,
   overrides: Partial<ReturnType<typeof useAuth>> = {},
 ) => {
   jest.mocked(useAuth).mockReturnValue({
@@ -94,7 +94,7 @@ describe("GlobalStateProvider agent defaults", () => {
   it("reveals free desktop mode access before token refresh finishes", async () => {
     window.__TAURI_INTERNALS__ = {};
     const refreshAuth = jest.fn(() => new Promise<void>(() => {}));
-    mockAuthUser([], { refreshAuth });
+    mockAuthUser(undefined, { refreshAuth });
     global.fetch = jest.fn((input) => {
       if (String(input) === "/api/entitlements") {
         return Promise.resolve({
@@ -122,6 +122,102 @@ describe("GlobalStateProvider agent defaults", () => {
       );
     });
     expect(screen.getByTestId("subscription")).toHaveTextContent("free");
+    expect(screen.getByTestId("paid-agent-only")).toHaveTextContent("false");
+  });
+
+  it("reveals free web mode access when AuthKit omits entitlements", async () => {
+    const refreshAuth = jest.fn(() => new Promise<void>(() => {}));
+    mockAuthUser(undefined, { refreshAuth });
+    global.fetch = jest.fn((input) => {
+      if (String(input) === "/api/entitlements") {
+        return Promise.resolve({
+          ok: true,
+          json: () =>
+            Promise.resolve({ entitlements: [], subscription: "free" }),
+        });
+      }
+
+      return Promise.resolve({ ok: false });
+    }) as unknown as typeof fetch;
+
+    render(
+      <GlobalStateProvider>
+        <GlobalStateProbe />
+      </GlobalStateProvider>,
+    );
+
+    expect(screen.getByTestId("chat-mode-access-resolved")).toHaveTextContent(
+      "false",
+    );
+
+    await waitFor(() => {
+      expect(refreshAuth).toHaveBeenCalledTimes(1);
+      expect(screen.getByTestId("chat-mode-access-resolved")).toHaveTextContent(
+        "true",
+      );
+    });
+    expect(screen.getByTestId("subscription")).toHaveTextContent("free");
+    expect(screen.getByTestId("paid-agent-only")).toHaveTextContent("false");
+  });
+
+  it("keeps paid web users Agent-only when AuthKit omits entitlements", async () => {
+    const refreshAuth = jest.fn(() => new Promise<void>(() => {}));
+    mockAuthUser(undefined, { refreshAuth });
+    global.fetch = jest.fn((input) => {
+      if (String(input) === "/api/entitlements") {
+        return Promise.resolve({
+          ok: true,
+          json: () =>
+            Promise.resolve({
+              entitlements: ["pro-plan"],
+              subscription: "pro",
+            }),
+        });
+      }
+
+      return Promise.resolve({ ok: false });
+    }) as unknown as typeof fetch;
+
+    render(
+      <GlobalStateProvider>
+        <GlobalStateProbe />
+      </GlobalStateProvider>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId("subscription")).toHaveTextContent("pro");
+      expect(screen.getByTestId("chat-mode-access-resolved")).toHaveTextContent(
+        "true",
+      );
+      expect(screen.getByTestId("paid-agent-only")).toHaveTextContent("true");
+      expect(screen.getByTestId("chat-mode")).toHaveTextContent("agent");
+    });
+  });
+
+  it("keeps web mode access unresolved when missing entitlements cannot be verified", async () => {
+    mockAuthUser(undefined);
+    global.fetch = jest.fn((input) =>
+      Promise.resolve({ ok: String(input) !== "/api/entitlements" }),
+    ) as unknown as typeof fetch;
+
+    render(
+      <GlobalStateProvider>
+        <GlobalStateProbe />
+      </GlobalStateProvider>,
+    );
+
+    await waitFor(() => {
+      expect(global.fetch).toHaveBeenCalledWith(
+        "/api/entitlements",
+        expect.objectContaining({ credentials: "include" }),
+      );
+      expect(screen.getByTestId("checking-pro-plan")).toHaveTextContent(
+        "false",
+      );
+    });
+    expect(screen.getByTestId("chat-mode-access-resolved")).toHaveTextContent(
+      "false",
+    );
     expect(screen.getByTestId("paid-agent-only")).toHaveTextContent("false");
   });
 
