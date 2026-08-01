@@ -1320,7 +1320,7 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
 
   test("agent stream applies per-step OpenRouter metadata cost before budget checks", () => {
     const onStepFinishIdx = agentStreamRunnerSrc.indexOf(
-      "onStepFinish: async ({ usage, response, providerMetadata, content }) => {",
+      "onStepFinish: async ({ usage, response, providerMetadata }) => {",
     );
     const accumulateIdx = agentStreamRunnerSrc.indexOf(
       "stepUsageCostIndex = ctx.usageTracker.accumulateStep",
