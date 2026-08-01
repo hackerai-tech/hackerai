@@ -138,6 +138,7 @@ import { Id } from "@/convex/_generated/dataModel";
 import { phLogger } from "@/lib/posthog/server";
 import { PAID_FUNNEL_EVENTS } from "@/lib/analytics/paid-funnel";
 import { readAnalyticsRequestContext } from "@/lib/analytics/request-context";
+import { buildAgentStepLimitTelemetry } from "@/lib/analytics/agent-step-limit-telemetry";
 import {
   capturePaidDailyFreeAllowanceServerEvent,
   createPaidDailyFreeAllowanceBudgetSnapshot,
@@ -1310,6 +1311,7 @@ export const createChatHandler = () => {
                 );
                 resetServedModelTelemetryForRetry(state);
                 state.lastStepInputTokens = 0;
+                state.stoppedDueToStepLimit = false;
                 state.stoppedDueToTokenExhaustion = false;
                 state.stoppedDueToElapsedTimeout = false;
                 state.stoppedDueToDoomLoop = false;
@@ -1463,6 +1465,7 @@ export const createChatHandler = () => {
                       ) {
                         isRetryWithFallback = true;
                         state.lastStepInputTokens = 0;
+                        state.stoppedDueToStepLimit = false;
                         state.streamFinishReason = undefined;
                         state.providerError = undefined;
                         state.providerRejectedMultimodalToolResults = false;
@@ -1593,6 +1596,17 @@ export const createChatHandler = () => {
                                       : state.fallbackServed,
                                   finishReason: state.streamFinishReason,
                                   budgetAbortDetails: state.budgetAbortDetails,
+                                  isAutoContinue: !!isAutoContinue,
+                                  stepLimitTelemetry:
+                                    buildAgentStepLimitTelemetry({
+                                      configuredMaxSteps:
+                                        state.configuredMaxSteps,
+                                      stepCount: state.agentStepCount,
+                                      stepLimitReached:
+                                        state.stoppedDueToStepLimit,
+                                      todoRunMetrics:
+                                        getTodoManager().getRunMetrics(),
+                                    }),
                                 });
                                 chatLogger!.emitSuccess({
                                   finishReason: state.streamFinishReason,
@@ -1872,6 +1886,13 @@ export const createChatHandler = () => {
                           : state.fallbackServed,
                       finishReason: state.streamFinishReason,
                       budgetAbortDetails: state.budgetAbortDetails,
+                      isAutoContinue: !!isAutoContinue,
+                      stepLimitTelemetry: buildAgentStepLimitTelemetry({
+                        configuredMaxSteps: state.configuredMaxSteps,
+                        stepCount: state.agentStepCount,
+                        stepLimitReached: state.stoppedDueToStepLimit,
+                        todoRunMetrics: getTodoManager().getRunMetrics(),
+                      }),
                     });
                     chatLogger!.emitSuccess({
                       finishReason: state.streamFinishReason,

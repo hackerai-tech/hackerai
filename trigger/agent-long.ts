@@ -119,6 +119,7 @@ import {
 import { phLogger } from "@/lib/posthog/server";
 import { PAID_FUNNEL_EVENTS } from "@/lib/analytics/paid-funnel";
 import type { AnalyticsRequestContext } from "@/lib/analytics/request-context";
+import { buildAgentStepLimitTelemetry } from "@/lib/analytics/agent-step-limit-telemetry";
 import {
   capturePaidDailyFreeAllowanceServerEvent,
   createPaidDailyFreeAllowanceBudgetSnapshot,
@@ -2914,6 +2915,7 @@ export const agentLongTask = task({
                 );
                 resetServedModelTelemetryForRetry(state);
                 state.lastStepInputTokens = 0;
+                state.stoppedDueToStepLimit = false;
                 state.stoppedDueToTokenExhaustion = false;
                 state.stoppedDueToElapsedTimeout = false;
                 state.stoppedDueToDoomLoop = false;
@@ -3055,6 +3057,7 @@ export const agentLongTask = task({
                         );
                         isRetryWithFallback = true;
                         state.lastStepInputTokens = 0;
+                        state.stoppedDueToStepLimit = false;
                         state.streamFinishReason = undefined;
                         state.providerError = undefined;
                         state.providerRejectedMultimodalToolResults = false;
@@ -3188,6 +3191,17 @@ export const agentLongTask = task({
                                     budgetAbortDetails:
                                       state.budgetAbortDetails,
                                     agentPermissionMode,
+                                    isAutoContinue: !!isAutoContinue,
+                                    stepLimitTelemetry:
+                                      buildAgentStepLimitTelemetry({
+                                        configuredMaxSteps:
+                                          state.configuredMaxSteps,
+                                        stepCount: state.agentStepCount,
+                                        stepLimitReached:
+                                          state.stoppedDueToStepLimit,
+                                        todoRunMetrics:
+                                          getTodoManager().getRunMetrics(),
+                                      }),
                                     ...getTriggerRunTelemetry(),
                                   });
                                   if (!isTerminalProviderStreamError(state)) {
@@ -3339,6 +3353,13 @@ export const agentLongTask = task({
                         finishReason: state.streamFinishReason,
                         budgetAbortDetails: state.budgetAbortDetails,
                         agentPermissionMode,
+                        isAutoContinue: !!isAutoContinue,
+                        stepLimitTelemetry: buildAgentStepLimitTelemetry({
+                          configuredMaxSteps: state.configuredMaxSteps,
+                          stepCount: state.agentStepCount,
+                          stepLimitReached: state.stoppedDueToStepLimit,
+                          todoRunMetrics: getTodoManager().getRunMetrics(),
+                        }),
                         ...getTriggerRunTelemetry(),
                       });
                       if (!isTerminalProviderStreamError(state)) {

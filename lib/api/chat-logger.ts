@@ -30,6 +30,7 @@ import {
   paidFunnelProperties,
 } from "@/lib/analytics/paid-funnel";
 import type { AnalyticsRequestContext } from "@/lib/analytics/request-context";
+import type { AgentStepLimitTelemetry } from "@/lib/analytics/agent-step-limit-telemetry";
 import { extraUsagePointsToDollars } from "@/convex/lib/extraUsagePricing";
 import type { UsageCostRecord } from "@/lib/usage-tracker";
 import type { UsageDeductionResult } from "@/lib/rate-limit";
@@ -1177,11 +1178,14 @@ type AgentCompletionAnalyticsArgs = {
   activeModelStreamDurationMs?: number;
   activeTerminalWaitDurationMs?: number;
   activeSandboxRecoveryDurationMs?: number;
+  isAutoContinue?: boolean;
+  stepLimitTelemetry?: AgentStepLimitTelemetry;
 };
 
 export function captureAgentRun({
   posthog,
   userId,
+  chatId,
   mode,
   subscription,
   sandboxInfo,
@@ -1201,9 +1205,12 @@ export function captureAgentRun({
   activeModelStreamDurationMs,
   activeTerminalWaitDurationMs,
   activeSandboxRecoveryDurationMs,
+  isAutoContinue,
+  stepLimitTelemetry,
 }: {
   posthog: PostHog | null;
   userId: string;
+  chatId: string;
   mode: ChatMode;
   subscription: string;
   sandboxInfo: SandboxInfo | null;
@@ -1223,6 +1230,8 @@ export function captureAgentRun({
   activeModelStreamDurationMs?: number;
   activeTerminalWaitDurationMs?: number;
   activeSandboxRecoveryDurationMs?: number;
+  isAutoContinue?: boolean;
+  stepLimitTelemetry?: AgentStepLimitTelemetry;
 }) {
   if (!posthog || mode !== "agent") return;
   posthog.capture({
@@ -1232,6 +1241,7 @@ export function captureAgentRun({
       mode,
       subscription,
       subscription_tier: subscription,
+      chat_id: chatId,
       outcome,
       selected_model: selectedModel,
       configured_model: configuredModelId,
@@ -1260,6 +1270,9 @@ export function captureAgentRun({
       ...(activeSandboxRecoveryDurationMs !== undefined && {
         active_sandbox_recovery_duration_ms: activeSandboxRecoveryDurationMs,
       }),
+      ...(isAutoContinue !== undefined && {
+        is_auto_continue: isAutoContinue,
+      }),
       ...(responseModel && { response_model: responseModel }),
       ...(responseModel &&
         fallbackServed !== undefined && { fallback_served: fallbackServed }),
@@ -1267,6 +1280,25 @@ export function captureAgentRun({
         sandbox_type: sandboxInfo.type,
       }),
       ...(finishReason && { finish_reason: finishReason }),
+      ...(stepLimitTelemetry && {
+        step_limit_telemetry_version: stepLimitTelemetry.version,
+        configured_max_steps: stepLimitTelemetry.configuredMaxSteps,
+        agent_step_count: stepLimitTelemetry.stepCount,
+        step_limit_reached: stepLimitTelemetry.stepLimitReached,
+        initial_todo_count: stepLimitTelemetry.initialTodoCount,
+        initial_unfinished_todo_count:
+          stepLimitTelemetry.initialUnfinishedTodoCount,
+        final_todo_count: stepLimitTelemetry.finalTodoCount,
+        final_unfinished_todo_count:
+          stepLimitTelemetry.finalUnfinishedTodoCount,
+        todo_write_count: stepLimitTelemetry.todoWriteCount,
+        todo_created_this_run_count: stepLimitTelemetry.todoCreatedThisRunCount,
+        todo_updated_this_run_count: stepLimitTelemetry.todoUpdatedThisRunCount,
+        todo_removed_this_run_count: stepLimitTelemetry.todoRemovedThisRunCount,
+        current_run_todo_count: stepLimitTelemetry.currentRunTodoCount,
+        current_run_unfinished_todo_count:
+          stepLimitTelemetry.currentRunUnfinishedTodoCount,
+      }),
       ...(budgetAbortDetails && {
         budget_abort_cap_reason: budgetAbortDetails.capReason,
         budget_abort_billing_stop_reason: budgetAbortDetails.billingStopReason,
@@ -1283,6 +1315,7 @@ export function captureAgentCompletionAnalytics(
   captureAgentRun({
     posthog,
     userId,
+    chatId: args.chatId,
     mode,
     subscription,
     sandboxInfo,
@@ -1302,6 +1335,8 @@ export function captureAgentCompletionAnalytics(
     activeModelStreamDurationMs: args.activeModelStreamDurationMs,
     activeTerminalWaitDurationMs: args.activeTerminalWaitDurationMs,
     activeSandboxRecoveryDurationMs: args.activeSandboxRecoveryDurationMs,
+    isAutoContinue: args.isAutoContinue,
+    stepLimitTelemetry: args.stepLimitTelemetry,
   });
 }
 

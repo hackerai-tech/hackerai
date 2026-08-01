@@ -30,7 +30,8 @@ async function runTool(
 
 describe("todo_write", () => {
   it("creates a full todo list and returns currentTodos", async () => {
-    const result = await runTool(createTodoWrite(makeContext()), {
+    const context = makeContext();
+    const result = await runTool(createTodoWrite(context), {
       merge: false,
       todos: [
         { id: "1", content: "Plan test", status: "in_progress" },
@@ -55,22 +56,106 @@ describe("todo_write", () => {
         },
       ],
     });
+    expect(context.todoManager.getRunMetrics()).toEqual({
+      initialTodoCount: 0,
+      initialUnfinishedTodoCount: 0,
+      finalTodoCount: 2,
+      finalUnfinishedTodoCount: 2,
+      todoWriteCount: 1,
+      todoCreatedThisRunCount: 2,
+      todoUpdatedThisRunCount: 0,
+      todoRemovedThisRunCount: 0,
+      currentRunTodoCount: 2,
+      currentRunUnfinishedTodoCount: 2,
+    });
   });
 
   it("allows partial merge updates for existing todos", async () => {
-    const result = await runTool(
-      createTodoWrite(
-        makeContext([{ id: "1", content: "Plan test", status: "in_progress" }]),
-      ),
-      {
-        merge: true,
-        todos: [{ id: "1", status: "completed" }],
-      },
-    );
+    const context = makeContext([
+      { id: "1", content: "Plan test", status: "in_progress" },
+    ]);
+    const result = await runTool(createTodoWrite(context), {
+      merge: true,
+      todos: [{ id: "1", status: "completed" }],
+    });
 
     expect(result).toMatchObject({
       counts: { completed: 1, total: 1 },
       currentTodos: [{ id: "1", content: "Plan test", status: "completed" }],
+    });
+    expect(context.todoManager.getRunMetrics()).toEqual({
+      initialTodoCount: 1,
+      initialUnfinishedTodoCount: 1,
+      finalTodoCount: 1,
+      finalUnfinishedTodoCount: 0,
+      todoWriteCount: 1,
+      todoCreatedThisRunCount: 0,
+      todoUpdatedThisRunCount: 1,
+      todoRemovedThisRunCount: 0,
+      currentRunTodoCount: 1,
+      currentRunUnfinishedTodoCount: 0,
+    });
+  });
+
+  it("tracks unique todo changes without treating inherited todos as current-run work", async () => {
+    const context = makeContext([
+      { id: "stale", content: "Old work", status: "pending" },
+      { id: "active", content: "Current work", status: "in_progress" },
+    ]);
+    const tool = createTodoWrite(context);
+
+    await runTool(tool, {
+      merge: true,
+      todos: [
+        { id: "active", status: "completed" },
+        { id: "new", content: "New work", status: "pending" },
+      ],
+    });
+    await runTool(tool, {
+      merge: true,
+      todos: [{ id: "new", status: "in_progress" }],
+    });
+
+    expect(context.todoManager.getRunMetrics()).toEqual({
+      initialTodoCount: 2,
+      initialUnfinishedTodoCount: 2,
+      finalTodoCount: 3,
+      finalUnfinishedTodoCount: 2,
+      todoWriteCount: 2,
+      todoCreatedThisRunCount: 1,
+      todoUpdatedThisRunCount: 2,
+      todoRemovedThisRunCount: 0,
+      currentRunTodoCount: 2,
+      currentRunUnfinishedTodoCount: 1,
+    });
+  });
+
+  it("tracks assistant todos removed by a replacement plan", async () => {
+    const context = makeContext([
+      {
+        id: "old",
+        content: "Old plan",
+        status: "pending",
+        sourceMessageId: "assistant-old",
+      },
+    ]);
+
+    await runTool(createTodoWrite(context), {
+      merge: false,
+      todos: [{ id: "new", content: "New plan", status: "in_progress" }],
+    });
+
+    expect(context.todoManager.getRunMetrics()).toEqual({
+      initialTodoCount: 1,
+      initialUnfinishedTodoCount: 1,
+      finalTodoCount: 1,
+      finalUnfinishedTodoCount: 1,
+      todoWriteCount: 1,
+      todoCreatedThisRunCount: 1,
+      todoUpdatedThisRunCount: 0,
+      todoRemovedThisRunCount: 1,
+      currentRunTodoCount: 1,
+      currentRunUnfinishedTodoCount: 1,
     });
   });
 
