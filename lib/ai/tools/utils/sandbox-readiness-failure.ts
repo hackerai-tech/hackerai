@@ -34,7 +34,11 @@ export function classifySandboxReadinessFailureSignal(
   ) {
     return "connection_error";
   }
-  if (name.includes("timeout") || message.includes("timed out")) {
+  if (
+    name.includes("timeout") ||
+    message.includes("timed out") ||
+    message.includes("aborted due to timeout")
+  ) {
     return "operation_timeout";
   }
 
