@@ -61,6 +61,7 @@ import {
 } from "@/lib/activation/agent-first-default";
 
 const ENTITLEMENT_REFRESH_TIMEOUT_MS = 5_000;
+const ENTITLEMENT_REFRESH_RETRY_DELAYS_MS = [1_000, 3_000] as const;
 
 interface GlobalStateType {
   // Input state
@@ -252,6 +253,8 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
   const [isCheckingProPlan, setIsCheckingProPlan] = useState(false);
   const [entitlementApiResolvedUserId, setEntitlementApiResolvedUserId] =
     useState<string | null>(null);
+  const [entitlementRefreshRetryNonce, setEntitlementRefreshRetryNonce] =
+    useState(0);
   const subscriptionFromEntitlements = useMemo<SubscriptionTier | null>(() => {
     if (!Array.isArray(entitlements)) return null;
     return resolveSubscriptionTier(entitlements);
@@ -419,6 +422,10 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
   );
   const chatResetRef = useRef<(() => void) | null>(null);
   const entitlementRefreshUserRef = useRef<string | null>(null);
+  const entitlementRefreshFailureRef = useRef<{
+    userId: string;
+    count: number;
+  } | null>(null);
 
   // Rate limit warning dismissal state (persists across chat switches)
   const [
@@ -490,6 +497,7 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     !entitlementRefreshRequested;
   const automaticEntitlementRefreshPending =
     automaticEntitlementRefreshNeeded &&
+    subscriptionFromEntitlements === null &&
     entitlementApiResolvedUserId !== user?.id &&
     entitlementRefreshUserRef.current !== user?.id;
   const subscriptionResolved =
@@ -688,6 +696,7 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     if (!user) {
       setSubscription("free");
       entitlementRefreshUserRef.current = null;
+      entitlementRefreshFailureRef.current = null;
       setEntitlementApiResolvedUserId(null);
       return;
     }
@@ -706,6 +715,7 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     let requestSettled = false;
     let controller: AbortController | null = null;
     let timeoutId: ReturnType<typeof setTimeout> | null = null;
+    let retryTimeoutId: ReturnType<typeof setTimeout> | null = null;
 
     const refreshEntitlements = async () => {
       if (!user || typeof window === "undefined") {
@@ -713,18 +723,11 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
         return;
       }
 
-      const tokenTier = Array.isArray(entitlements)
-        ? resolveSubscriptionTier(entitlements)
-        : null;
-      const refreshNeeded =
-        tokenTier === null || (tokenTier === "free" && isTauriEnvironment());
-      if (!refreshNeeded || entitlementApiResolvedUserId === user.id) {
+      if (
+        !automaticEntitlementRefreshNeeded ||
+        entitlementApiResolvedUserId === user.id
+      ) {
         setIsCheckingProPlan(false);
-        return;
-      }
-
-      const url = new URL(window.location.href);
-      if (url.searchParams.get("refresh") === "entitlements") {
         return;
       }
 
@@ -744,7 +747,9 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
           credentials: "include",
           signal: controller.signal,
         });
-        if (!response.ok) return;
+        if (!response.ok) {
+          throw new Error("Entitlement refresh failed");
+        }
 
         const data = await response.json();
         if (cancelled) return;
@@ -753,6 +758,7 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
         );
         setSubscriptionWithNormalize(tier);
         setEntitlementApiResolvedUserId(user.id);
+        entitlementRefreshFailureRef.current = null;
         // The API response is authoritative for the UI. Refresh AuthKit and the
         // shared access token in the background so a slow token refresh cannot
         // keep the free Ask/Agent selector hidden.
@@ -760,6 +766,28 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
       } catch {
         // Keep access unresolved when AuthKit omitted entitlements. A token-free
         // desktop session can still safely fall back to its token-derived tier.
+        if (!cancelled) {
+          if (entitlementRefreshUserRef.current === user.id) {
+            entitlementRefreshUserRef.current = null;
+          }
+          const previousFailureCount =
+            entitlementRefreshFailureRef.current?.userId === user.id
+              ? entitlementRefreshFailureRef.current.count
+              : 0;
+          const failureCount = previousFailureCount + 1;
+          entitlementRefreshFailureRef.current = {
+            userId: user.id,
+            count: failureCount,
+          };
+          const retryDelay =
+            ENTITLEMENT_REFRESH_RETRY_DELAYS_MS[failureCount - 1];
+          if (retryDelay !== undefined) {
+            retryTimeoutId = setTimeout(
+              () => setEntitlementRefreshRetryNonce((nonce) => nonce + 1),
+              retryDelay,
+            );
+          }
+        }
       } finally {
         requestSettled = true;
         if (timeoutId !== null) clearTimeout(timeoutId);
@@ -780,11 +808,15 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
       }
       controller?.abort();
       if (timeoutId !== null) clearTimeout(timeoutId);
+      if (retryTimeoutId !== null) clearTimeout(retryTimeoutId);
     };
   }, [
     user,
-    entitlements,
+    authLoading,
+    entitlementRefreshRequested,
+    automaticEntitlementRefreshNeeded,
     entitlementApiResolvedUserId,
+    entitlementRefreshRetryNonce,
     refreshAuthTokenAfterEntitlementRefresh,
     setSubscriptionWithNormalize,
   ]);

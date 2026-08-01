@@ -195,6 +195,7 @@ describe("GlobalStateProvider agent defaults", () => {
   });
 
   it("keeps web mode access unresolved when missing entitlements cannot be verified", async () => {
+    jest.useFakeTimers();
     mockAuthUser(undefined);
     global.fetch = jest.fn((input) =>
       Promise.resolve({ ok: String(input) !== "/api/entitlements" }),
@@ -219,6 +220,52 @@ describe("GlobalStateProvider agent defaults", () => {
       "false",
     );
     expect(screen.getByTestId("paid-agent-only")).toHaveTextContent("false");
+  });
+
+  it("retries missing web entitlements after a transient verification failure", async () => {
+    jest.useFakeTimers();
+    mockAuthUser(undefined);
+    let entitlementAttempts = 0;
+    global.fetch = jest.fn((input) => {
+      if (String(input) === "/api/entitlements") {
+        entitlementAttempts += 1;
+        if (entitlementAttempts === 1) {
+          return Promise.resolve({ ok: false });
+        }
+        return Promise.resolve({
+          ok: true,
+          json: () =>
+            Promise.resolve({ entitlements: [], subscription: "free" }),
+        });
+      }
+
+      return Promise.resolve({ ok: false });
+    }) as unknown as typeof fetch;
+
+    render(
+      <GlobalStateProvider>
+        <GlobalStateProbe />
+      </GlobalStateProvider>,
+    );
+
+    await waitFor(() => {
+      expect(entitlementAttempts).toBe(1);
+      expect(screen.getByTestId("chat-mode-access-resolved")).toHaveTextContent(
+        "false",
+      );
+    });
+
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(1_000);
+    });
+
+    await waitFor(() => {
+      expect(entitlementAttempts).toBe(2);
+      expect(screen.getByTestId("chat-mode-access-resolved")).toHaveTextContent(
+        "true",
+      );
+    });
+    expect(screen.getByTestId("subscription")).toHaveTextContent("free");
   });
 
   it("resolves paid desktop users to Agent-only before token refresh finishes", async () => {
