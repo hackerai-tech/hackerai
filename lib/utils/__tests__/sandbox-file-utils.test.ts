@@ -529,6 +529,10 @@ describe("desktop-local sandbox file helpers", () => {
       "operation_timeout",
     ],
     [
+      "Failed creating persistent sandbox: The operation was aborted due to timeout",
+      "operation_timeout",
+    ],
+    [
       "Failed creating persistent sandbox: 500: Failed to place sandbox",
       "placement_failure",
     ],
