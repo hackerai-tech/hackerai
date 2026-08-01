@@ -51,6 +51,12 @@ const DEEPSEEK_V4_FLASH_PRICING: ModelPricing = {
   cacheRead: 0.018,
   cacheWrite: 0.09,
 };
+const DEEPSEEK_V4_FLASH_0731_PRICING: ModelPricing = {
+  input: 0.14,
+  output: 0.28,
+  cacheRead: 0.0028,
+  cacheWrite: 0.14,
+};
 const DEEPSEEK_V4_PRO_PRICING: ModelPricing = {
   input: 0.435,
   output: 0.87,
@@ -87,9 +93,9 @@ const MODEL_PRICING_MAP: Record<string, ModelPricing> = {
   "agent-model": GROK_4_5_PRICING,
   "fallback-agent-model": GROK_4_5_PRICING,
   "fallback-ask-model": GROK_4_5_PRICING,
-  // Rates from OpenRouter: $0.09 in / $0.18 out per 1M tokens.
-  "ask-model-free": DEEPSEEK_V4_FLASH_PRICING,
-  "agent-model-free": DEEPSEEK_V4_FLASH_PRICING,
+  // DeepSeek V4 Flash 0731 rates from OpenRouter: $0.14 in / $0.28 out per 1M tokens.
+  "ask-model-free": DEEPSEEK_V4_FLASH_0731_PRICING,
+  "agent-model-free": DEEPSEEK_V4_FLASH_0731_PRICING,
   "model-deepseek-v4-pro": DEEPSEEK_V4_PRO_PRICING,
   "model-opus-4.6": OPUS_4_6_PRICING,
   // Baseline OpenRouter rates: $0.76 in / $2.42 out per 1M tokens.
@@ -99,6 +105,8 @@ const MODEL_PRICING_MAP: Record<string, ModelPricing> = {
   // Provider response ids can reach accounting before local-key normalization.
   "x-ai/grok-4.5": GROK_4_5_PRICING,
   "deepseek/deepseek-v4-flash": DEEPSEEK_V4_FLASH_PRICING,
+  "deepseek/deepseek-v4-flash-0731": DEEPSEEK_V4_FLASH_0731_PRICING,
+  "deepseek/deepseek-v4-flash-20260731": DEEPSEEK_V4_FLASH_0731_PRICING,
   "deepseek/deepseek-v4-pro": DEEPSEEK_V4_PRO_PRICING,
   "anthropic/claude-opus-4.6": OPUS_4_6_PRICING,
   "z-ai/glm-5.2": GLM_5_2_PRICING,

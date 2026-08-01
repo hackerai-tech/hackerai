@@ -214,7 +214,7 @@ describe("captureAgentRun", () => {
       sandboxInfo: { type: "e2b" },
       outcome: "success",
       selectedModel: "agent-model-free",
-      configuredModelId: "deepseek/deepseek-v4-flash",
+      configuredModelId: "deepseek/deepseek-v4-flash-0731",
       responseModel: "x-ai/grok-4.5",
       fallbackServed: true,
     });
@@ -224,7 +224,7 @@ describe("captureAgentRun", () => {
       event: "hackerai-agent_run",
       properties: expect.objectContaining({
         selected_model: "agent-model-free",
-        configured_model: "deepseek/deepseek-v4-flash",
+        configured_model: "deepseek/deepseek-v4-flash-0731",
         response_model: "x-ai/grok-4.5",
         fallback_served: true,
       }),
@@ -351,8 +351,8 @@ describe("captureAgentCompletionAnalytics", () => {
       outcome: "success",
       chatLogger: { getToolCalls: () => [{ name: "web_search" }] } as any,
       selectedModel: "agent-model-free",
-      configuredModelId: "deepseek/deepseek-v4-flash",
-      responseModel: "deepseek/deepseek-v4-flash",
+      configuredModelId: "deepseek/deepseek-v4-flash-0731",
+      responseModel: "deepseek/deepseek-v4-flash-0731",
       fallbackServed: false,
     });
 
@@ -366,8 +366,8 @@ describe("captureAgentCompletionAnalytics", () => {
         subscription_tier: "free",
         outcome: "success",
         selected_model: "agent-model-free",
-        configured_model: "deepseek/deepseek-v4-flash",
-        response_model: "deepseek/deepseek-v4-flash",
+        configured_model: "deepseek/deepseek-v4-flash-0731",
+        response_model: "deepseek/deepseek-v4-flash-0731",
         fallback_served: false,
         sandbox_type: "e2b",
       },
@@ -741,7 +741,7 @@ describe("createChatLogger provider stream termination", () => {
       chatLogger.recordProviderError(err, {
         mode: "ask",
         model: "ask-model-free",
-        requestedModelSlug: "deepseek/deepseek-v4-flash",
+        requestedModelSlug: "deepseek/deepseek-v4-flash-0731",
       });
       chatLogger.emitUnexpectedError(err);
 
@@ -755,7 +755,7 @@ describe("createChatLogger provider stream termination", () => {
       expect(errorOutput).toContain('"provider_name":"Anthropic Vertex"');
       expect(errorOutput).toContain('"configured_model":"ask-model-free"');
       expect(errorOutput).toContain(
-        '"requested_model_slug":"deepseek/deepseek-v4-flash"',
+        '"requested_model_slug":"deepseek/deepseek-v4-flash-0731"',
       );
       expect(phErrorSpy).toHaveBeenCalledWith(
         "Provider content blocked",
@@ -765,7 +765,7 @@ describe("createChatLogger provider stream termination", () => {
           provider_name: "Anthropic Vertex",
           provider_name_source: "openrouter_error_metadata",
           configured_model: "ask-model-free",
-          requested_model_slug: "deepseek/deepseek-v4-flash",
+          requested_model_slug: "deepseek/deepseek-v4-flash-0731",
           model_provider_slug: "deepseek",
           openrouter_generation_id: "gen-content-blocked",
         }),
@@ -781,7 +781,7 @@ describe("createChatLogger provider stream termination", () => {
         provider_name: "Anthropic Vertex",
         provider_name_source: "openrouter_error_metadata",
         configured_model: "ask-model-free",
-        requested_model_slug: "deepseek/deepseek-v4-flash",
+        requested_model_slug: "deepseek/deepseek-v4-flash-0731",
         model_provider_slug: "deepseek",
         openrouter_generation_id: "gen-content-blocked",
       });
@@ -1057,12 +1057,12 @@ describe("createChatLogger provider stream termination", () => {
       chatLogger.recordProviderError(err, {
         mode: "ask",
         model: "ask-model-free",
-        requestedModelSlug: "deepseek/deepseek-v4-flash",
+        requestedModelSlug: "deepseek/deepseek-v4-flash-0731",
       });
       chatLogger.emitUnexpectedError(err);
 
       const expectedFingerprint =
-        "provider_error|provider_5xx|status_502|provider_fireworks|model_deepseek/deepseek-v4-flash";
+        "provider_error|provider_5xx|status_502|provider_fireworks|model_deepseek/deepseek-v4-flash-0731";
       const structuredErrorLog = errorSpy.mock.calls
         .map((call) => call[0])
         .find(

@@ -676,6 +676,8 @@ export function getFallbackSlugs(
 
 const OPENROUTER_RESPONSE_MODEL_COST_KEYS: Record<string, ModelName> = {
   "anthropic/claude-opus-4.6": "model-opus-4.6",
+  "deepseek/deepseek-v4-flash-0731": "agent-model-free",
+  "deepseek/deepseek-v4-flash-20260731": "agent-model-free",
   "x-ai/grok-4.5": "model-grok-4.5",
   "z-ai/glm-5.2": "model-glm-5.2",
   "z-ai/glm-5.2-20260616": "model-glm-5.2",

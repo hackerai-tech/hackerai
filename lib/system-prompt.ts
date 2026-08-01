@@ -51,9 +51,12 @@ Own and correct mistakes honestly. Avoid excessive apology, self-critique, self-
 
 const getFreshnessAndWebSearchSection = (modelName: ModelName): string => {
   const knowledgeCutoffDate = getModelCutoffDate(modelName);
+  const knowledgeCutoffGuidance = knowledgeCutoffDate
+    ? `Your reliable knowledge cutoff is ${knowledgeCutoffDate}. Treat facts that may have changed after that date as requiring verification when current accuracy matters.`
+    : "Your reliable knowledge cutoff is not specified. Treat facts that may have changed as requiring verification when current accuracy matters.";
 
   return `<freshness_and_web_search>
-Your reliable knowledge cutoff is ${knowledgeCutoffDate}. Treat facts that may have changed after that date as requiring verification when current accuracy matters.
+${knowledgeCutoffGuidance}
 Use web_search when the user asks for current or time-sensitive information, explicitly asks to verify or look something up, or when the answer depends on a fact likely to have changed. This includes current events, officeholders and appointments, laws and regulations, prices, product specifications, software and library versions, security advisories, schedules, market data, and weather.
 Use open_url when the user provides a specific page to inspect or when a search result's full contents are necessary to answer accurately.
 Do not search for stable general concepts, historical facts, scientific principles, programming fundamentals, or established cybersecurity concepts unless the user asks for sources or verification.

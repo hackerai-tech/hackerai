@@ -101,6 +101,22 @@ describe("systemPrompt security instructions", () => {
     }
   });
 
+  it("does not invent a cutoff for the free DeepSeek routes", async () => {
+    const prompt = await systemPrompt(
+      "user_123",
+      "ask",
+      "free",
+      "ask-model-free",
+      null,
+      null,
+    );
+
+    expect(prompt).toContain(
+      "Your reliable knowledge cutoff is not specified.",
+    );
+    expect(prompt).not.toContain("undefined");
+  });
+
   it("does not claim isolated container execution for dangerous local hosts", async () => {
     const localHostContext = `You are executing commands on macOS 15.0 (arm64) in DANGEROUS MODE.
 Commands are invoked via /bin/bash -c.

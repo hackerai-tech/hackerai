@@ -116,6 +116,17 @@ describe("token-bucket", () => {
       ).toBeCloseTo(2.34);
     });
 
+    it("prices DeepSeek V4 Flash 0731 cached input at OpenRouter's $0.0028/M rate", () => {
+      expect(
+        calculateRawModelUsageCostDollars({
+          inputTokens: 1_000_000,
+          outputTokens: 100_000,
+          cacheReadTokens: 800_000,
+          modelName: "deepseek/deepseek-v4-flash-20260731",
+        }),
+      ).toBeCloseTo(0.05824);
+    });
+
     it("recognizes dated Anthropic response model IDs", () => {
       expect(
         calculateRawModelUsageCostDollars({
@@ -478,14 +489,18 @@ describe("token-bucket", () => {
       );
     });
 
-    it("should use DeepSeek V4 Flash pricing for free Agent ($0.09/$0.18)", () => {
-      expect(calculateTokenCost(1_000_000, "input", "agent-model-free")).toBe(
-        1260,
-      );
-      expect(calculateTokenCost(1_000_000, "output", "agent-model-free")).toBe(
-        2520,
-      );
-    });
+    it.each([
+      "ask-model-free",
+      "agent-model-free",
+      "deepseek/deepseek-v4-flash-0731",
+      "deepseek/deepseek-v4-flash-20260731",
+    ])(
+      "should use DeepSeek V4 Flash 0731 pricing for %s ($0.14/$0.28)",
+      (modelName) => {
+        expect(calculateTokenCost(1_000_000, "input", modelName)).toBe(1961);
+        expect(calculateTokenCost(1_000_000, "output", modelName)).toBe(3921);
+      },
+    );
 
     it.each([
       "model-grok-4.5",
