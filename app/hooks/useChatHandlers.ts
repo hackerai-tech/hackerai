@@ -35,6 +35,7 @@ import {
   getMaxFilesLimitForMode,
 } from "@/lib/utils/file-utils";
 import { hasRestageableLocalDesktopAttachments } from "@/lib/utils/local-attachment-messages";
+import { isPastedTextAttachmentAvailableInMode } from "@/lib/utils/pasted-text-attachments";
 import { sanitizeForConvexValue } from "@/lib/db/convex-value-sanitizer";
 import { reconcileSidebarContentAfterRegeneration } from "@/lib/utils/sidebar-utils";
 import { v4 as uuidv4 } from "uuid";
@@ -328,6 +329,29 @@ export const useChatHandlers = ({
     if (isUploadingFiles) {
       return false;
     }
+    const currentChatMode = chatModeRef.current;
+    const hasUnavailableLocalFiles = uploadedFiles.some(
+      (file) =>
+        file.storage === "local-desktop" &&
+        (file.unavailable || !file.localAttachmentId || !file.localPath),
+    );
+    if (hasUnavailableLocalFiles) {
+      toast.error("Local attachment is unavailable", {
+        description:
+          "Open this draft on the Desktop device where the file was created, or remove the attachment before sending.",
+      });
+      return false;
+    }
+    const hasUnavailablePastedText = uploadedFiles.some(
+      (file) => !isPastedTextAttachmentAvailableInMode(file, currentChatMode),
+    );
+    if (hasUnavailablePastedText) {
+      toast.error("Pasted text is unavailable in Ask", {
+        description:
+          "Switch to Agent mode, show it in the text field, or remove the attachment.",
+      });
+      return false;
+    }
     // Allow submission if there's text input or uploaded files
     const hasValidFiles = uploadedFiles.some(isSendableUploadedFile);
     if (!input.trim() && !hasValidFiles) {
@@ -342,7 +366,6 @@ export const useChatHandlers = ({
       return false;
     }
 
-    const currentChatMode = chatModeRef.current;
     const hasLocalDesktopFiles = uploadedFiles.some(
       (file) => file.storage === "local-desktop",
     );
