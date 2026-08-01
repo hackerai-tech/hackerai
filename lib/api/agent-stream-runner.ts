@@ -25,10 +25,6 @@ import {
 } from "ai";
 import { randomUUID } from "crypto";
 import {
-  recordAgentStepCompletion,
-  type AgentCompletionSignalTracker,
-} from "@/lib/analytics/agent-completion-signals";
-import {
   buildProviderOptions,
   buildSystemPrompt,
   addCacheBreakpointToLastUserMessage,
@@ -476,7 +472,6 @@ export type AgentStreamContext = {
   ensureSandbox: import("@/lib/chat/summarization").EnsureSandbox;
   chatLogger: ChatLogger | undefined;
   usageRefundTracker: UsageRefundTracker;
-  completionSignalTracker: AgentCompletionSignalTracker;
   onBudgetAbort?: (details: BudgetAbortDetails & { model: string }) => void;
   onModelStreamStart?: () => void;
   onModelStreamFinish?: () => void;
@@ -1252,9 +1247,8 @@ export async function createAgentStream(
       }
     },
 
-    onStepFinish: async ({ usage, response, providerMetadata, content }) => {
+    onStepFinish: async ({ usage, response, providerMetadata }) => {
       ctx.onModelStreamFinish?.();
-      recordAgentStepCompletion(ctx.completionSignalTracker, content);
       let stepUsageCostIndex: number | undefined;
       if (usage) {
         const stepAccountingModel = resolveServedModelForCostAccounting({

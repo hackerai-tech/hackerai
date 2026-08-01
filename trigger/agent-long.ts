@@ -120,11 +120,6 @@ import { phLogger } from "@/lib/posthog/server";
 import { PAID_FUNNEL_EVENTS } from "@/lib/analytics/paid-funnel";
 import type { AnalyticsRequestContext } from "@/lib/analytics/request-context";
 import {
-  buildAgentCompletionSignals,
-  createAgentCompletionSignalTracker,
-  recordHandledToolFailure,
-} from "@/lib/analytics/agent-completion-signals";
-import {
   capturePaidDailyFreeAllowanceServerEvent,
   createPaidDailyFreeAllowanceBudgetSnapshot,
   createPaidDailyFreeAllowanceRateLimitInfo,
@@ -2067,11 +2062,8 @@ export const agentLongTask = task({
               }),
             });
 
-            const completionSignalTracker =
-              createAgentCompletionSignalTracker();
             let handledToolFailureCount = 0;
             const onToolFailure = (failure: ToolFailureLogEvent) => {
-              recordHandledToolFailure(completionSignalTracker);
               handledToolFailureCount += 1;
               void recordAgentLongHandledToolFailureForDashboard(failure, {
                 chatId,
@@ -2847,7 +2839,6 @@ export const agentLongTask = task({
               ensureSandbox,
               chatLogger,
               usageRefundTracker,
-              completionSignalTracker,
               onModelStreamStart: runTimingTracker.startModelStream,
               onModelStreamFinish: runTimingTracker.finishModelStream,
               onProviderRequestDiagnostics: (providerRequest, retention) => {
@@ -3197,14 +3188,6 @@ export const agentLongTask = task({
                                     budgetAbortDetails:
                                       state.budgetAbortDetails,
                                     agentPermissionMode,
-                                    isAutoContinue,
-                                    completionSignals:
-                                      buildAgentCompletionSignals({
-                                        outcome,
-                                        finishReason: state.streamFinishReason,
-                                        todos: getTodoManager().getAllTodos(),
-                                        tracker: completionSignalTracker,
-                                      }),
                                     ...getTriggerRunTelemetry(),
                                   });
                                   if (!isTerminalProviderStreamError(state)) {
@@ -3356,13 +3339,6 @@ export const agentLongTask = task({
                         finishReason: state.streamFinishReason,
                         budgetAbortDetails: state.budgetAbortDetails,
                         agentPermissionMode,
-                        isAutoContinue,
-                        completionSignals: buildAgentCompletionSignals({
-                          outcome,
-                          finishReason: state.streamFinishReason,
-                          todos: getTodoManager().getAllTodos(),
-                          tracker: completionSignalTracker,
-                        }),
                         ...getTriggerRunTelemetry(),
                       });
                       if (!isTerminalProviderStreamError(state)) {
