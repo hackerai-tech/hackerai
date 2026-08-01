@@ -12,7 +12,7 @@ describe("checkRateLimit", () => {
   const mockCheckTokenBucketLimit = jest.fn();
   const mockCreateRedisClient = jest.fn();
   const mockPointsPerDollar = 10_000;
-  const mockUsageMultiplier = 1.4;
+  const mockUsageMultiplier = 1.5;
 
   beforeEach(() => {
     jest.resetModules();
