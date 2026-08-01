@@ -182,7 +182,8 @@ type OpenRouterInstance = typeof openrouter;
 export const KIMI_K3_SLUG = "moonshotai/kimi-k3";
 export const GLM_5_2_SLUG = "z-ai/glm-5.2";
 export const GROK_4_5_SLUG = "x-ai/grok-4.5";
-export const DEEPSEEK_V4_FLASH_SLUG = "deepseek/deepseek-v4-flash";
+export const DEEPSEEK_V4_FLASH_SLUG = "deepseek/deepseek-v4-flash-0731";
+const TITLE_GENERATOR_DEEPSEEK_SLUG = "deepseek/deepseek-v4-flash";
 
 const buildProviderMap = (or: OpenRouterInstance) =>
   ({
@@ -201,19 +202,17 @@ const buildProviderMap = (or: OpenRouterInstance) =>
     "fallback-agent-model": or(GROK_4_5_SLUG),
     "fallback-ask-model": or(GROK_4_5_SLUG),
     // Titles are a short structured-output task and should never use reasoning.
-    "title-generator-model": or(DEEPSEEK_V4_FLASH_SLUG),
+    "title-generator-model": or(TITLE_GENERATOR_DEEPSEEK_SLUG),
   }) as Record<string, any>;
 
 const baseProviders = buildProviderMap(openrouter);
 
 export type ModelName = keyof typeof baseProviders;
 
-export const modelCutoffDates: Record<ModelName, string> &
-  Record<string, string> = {
+export const modelCutoffDates: Partial<Record<ModelName, string>> &
+  Record<string, string | undefined> = {
   "ask-model": "July 2026",
-  "ask-model-free": "May 2025",
   "agent-model": "July 2026",
-  "agent-model-free": "May 2025",
   "model-grok-4.5": "July 2026",
   "model-grok-4.5-pro": "July 2026",
   "model-deepseek-v4-pro": "May 2025",
@@ -245,7 +244,9 @@ export const getModelDisplayName = (modelName: ModelName): string => {
   return modelDisplayNames[modelName];
 };
 
-export const getModelCutoffDate = (modelName: ModelName): string => {
+export const getModelCutoffDate = (
+  modelName: ModelName,
+): string | undefined => {
   return modelCutoffDates[modelName];
 };
 

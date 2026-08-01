@@ -1,4 +1,5 @@
 import {
+  getModelCutoffDate,
   getModelDisplayName,
   myProvider,
   sanitizeOpenRouterRequestForXai,
@@ -14,9 +15,13 @@ describe("provider registry", () => {
       (myProvider.languageModel("agent-model") as { modelId: string }).modelId,
     ).toBe("x-ai/grok-4.5");
     expect(
+      (myProvider.languageModel("ask-model-free") as { modelId: string })
+        .modelId,
+    ).toBe("deepseek/deepseek-v4-flash-0731");
+    expect(
       (myProvider.languageModel("agent-model-free") as { modelId: string })
         .modelId,
-    ).toBe("deepseek/deepseek-v4-flash");
+    ).toBe("deepseek/deepseek-v4-flash-0731");
     expect(
       (myProvider.languageModel("model-grok-4.5") as { modelId: string })
         .modelId,
@@ -45,6 +50,8 @@ describe("provider registry", () => {
       (myProvider.languageModel("title-generator-model") as { modelId: string })
         .modelId,
     ).toBe("deepseek/deepseek-v4-flash");
+    expect(getModelCutoffDate("ask-model-free")).toBeUndefined();
+    expect(getModelCutoffDate("agent-model-free")).toBeUndefined();
     expect(getModelDisplayName("model-grok-4.5")).toBe("xAI Grok 4.5");
     expect(getModelDisplayName("model-grok-4.5-pro")).toBe("xAI Grok 4.5");
     expect(getModelDisplayName("model-glm-5.2")).toBe("Z.ai GLM 5.2");

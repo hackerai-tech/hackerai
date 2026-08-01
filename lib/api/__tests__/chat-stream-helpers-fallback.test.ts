@@ -26,7 +26,8 @@ jest.mock("@/lib/logger", () => ({
 const GROK_SLUG = "x-ai/grok-4.5";
 const KIMI_K3_SLUG = "moonshotai/kimi-k3";
 const GLM_SLUG = "z-ai/glm-5.2";
-const DEEPSEEK_FLASH_SLUG = "deepseek/deepseek-v4-flash";
+const DEEPSEEK_FLASH_SLUG = "deepseek/deepseek-v4-flash-0731";
+const DEEPSEEK_FLASH_CANONICAL_SLUG = "deepseek/deepseek-v4-flash-20260731";
 const GROK_PRIMARY_OR_FALLBACK_MODELS = [
   "ask-model",
   "ask-model-free",
@@ -475,6 +476,16 @@ describe("resolveServedModelForCostAccounting", () => {
       resolveServedModelForCostAccounting({
         modelName: "agent-model-free",
         responseModel: DEEPSEEK_FLASH_SLUG,
+        mode: "agent",
+      }),
+    ).toBe("agent-model-free");
+  });
+
+  it("maps OpenRouter's canonical DeepSeek Flash 0731 slug to its cost key", () => {
+    expect(
+      resolveServedModelForCostAccounting({
+        modelName: "agent-model-free",
+        responseModel: DEEPSEEK_FLASH_CANONICAL_SLUG,
         mode: "agent",
       }),
     ).toBe("agent-model-free");
