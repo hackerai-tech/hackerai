@@ -65,6 +65,7 @@ import {
   closeAgentApprovalSession,
 } from "@/lib/api/agent-approval-session";
 import { createAgentRunCorrelationToken } from "@/lib/api/agent-run-correlation";
+import { resolveSecurityValidationSubagentsEnabled } from "@/lib/posthog/subagent-feature";
 
 const AGENT_TRIGGER_PRIORITY_BY_SUBSCRIPTION: Record<SubscriptionTier, number> =
   {
@@ -372,6 +373,9 @@ export const createAgentTriggerPost =
       await assertUserCanMakeCostIncurringRequest(userId);
       const userLocation = geolocation(req);
       const triggerRegion = getTriggerRegionForVercelRequest(req, userLocation);
+      const securityValidationSubagentsEnabled =
+        agentPermissionMode === "full_access" &&
+        (await resolveSecurityValidationSubagentsEnabled(userId));
 
       assertFreeAgentGates({
         mode: "agent",
@@ -579,6 +583,7 @@ export const createAgentTriggerPost =
         isNewChat,
         endpoint,
         analyticsRequestContext,
+        securityValidationSubagentsEnabled,
         convexUrl: process.env.NEXT_PUBLIC_CONVEX_URL,
         requestTiming: {
           routeStartedAt,
@@ -597,6 +602,7 @@ export const createAgentTriggerPost =
         triggerPriority,
         triggerPayloadMessageCount: messagesForPayload.length,
         agentPermissionMode,
+        securityValidationSubagentsEnabled,
         approvalProtocolVersion: AGENT_APPROVAL_PROTOCOL_VERSION,
         ...(approvalWorkerVersion ? { approvalWorkerVersion } : {}),
         ...(approvalSessionId ? { approvalSessionId } : {}),

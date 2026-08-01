@@ -1,6 +1,27 @@
 import { extractSidebarContentFromMessage } from "../sidebar-utils";
 
 describe("terminal sidebar output", () => {
+  it("links a delegation block to its stable parent message", () => {
+    const [subagents] = extractSidebarContentFromMessage({
+      id: "parent-message",
+      role: "assistant",
+      parts: [
+        {
+          type: "tool-delegate_task",
+          toolCallId: "delegate-1",
+          state: "input-available",
+          input: {},
+        },
+      ],
+    });
+
+    expect(subagents).toEqual({
+      kind: "subagents",
+      parentMessageId: "parent-message",
+      toolCallId: "delegate-1",
+    });
+  });
+
   it("hides agent-only timeout guidance in fallback sidebar extraction", () => {
     const [terminal] = extractSidebarContentFromMessage({
       role: "assistant",

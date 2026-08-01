@@ -32,6 +32,7 @@ import {
   isSidebarWebSearch,
   isSidebarNotes,
   isSidebarSharedFiles,
+  isSidebarSubagents,
   type SidebarContent,
   type ChatStatus,
   type NoteCategory,
@@ -50,6 +51,11 @@ import {
   getToolName,
   getDisplayTarget,
 } from "./computer-sidebar-utils";
+
+const SubagentsSidebar = dynamic(
+  () => import("./SubagentsSidebar").then((module) => module.SubagentsSidebar),
+  { ssr: false },
+);
 
 interface ComputerSidebarProps {
   sidebarOpen: boolean;
@@ -750,8 +756,7 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
                                   key={file.fileId || `file-${index}`}
                                   part={{
                                     fileId: file.fileId as
-                                      | Id<"files">
-                                      | undefined,
+                                      Id<"files"> | undefined,
                                     s3Key: file.s3Key,
                                     name: file.name,
                                     filename: file.name,
@@ -1029,6 +1034,12 @@ export const ComputerSidebar: React.FC<{
 }> = ({ messages, status }) => {
   const { sidebarOpen, sidebarContent, closeSidebar, openSidebar } =
     useGlobalState();
+
+  if (sidebarOpen && sidebarContent && isSidebarSubagents(sidebarContent)) {
+    return (
+      <SubagentsSidebar content={sidebarContent} closeSidebar={closeSidebar} />
+    );
+  }
 
   return (
     <ComputerSidebarBase

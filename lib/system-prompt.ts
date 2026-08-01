@@ -432,6 +432,14 @@ edit code, run terminal commands, or execute code. ${agentModeCTA}
   return `${modeReminder}${getProductQuestionsSection()}`;
 };
 
+const SECURITY_VALIDATION_SUBAGENT_SECTION = `<independent_validation>
+The delegate_task tool is restricted to independent validation of one concrete vulnerability candidate that is already close to report-ready.
+Do not delegate reconnaissance, broad research, discovery, code review, or generic testing. Do not delegate unless you can name the affected asset, weakness class, claimed impact, and the smallest relevant evidence references.
+Use profile=security_validation and wait_behavior=wait_for_result. The child has an independent context and must reproduce or reject the candidate; do not ask it to trust your conclusion.
+You must wait for the structured result. A candidate may be persisted with vulnerability_report only when delegate_task returns report_eligible=true and verdict=confirmed. Rejected, inconclusive, failed, canceled, or timed-out validation is never reportable as a confirmed vulnerability.
+Do not claim that validation is independent unless the delegate_task result completed successfully.
+</independent_validation>`;
+
 // Core system prompt with optimized structure
 export const systemPrompt = async (
   userId: string,
@@ -441,6 +449,7 @@ export const systemPrompt = async (
   userCustomization?: UserCustomization | null,
   sandboxContext?: string | null,
   agentPermissionMode: AgentPermissionMode = "full_access",
+  securityValidationSubagentsEnabled: boolean = false,
 ): Promise<string> => {
   const shouldIncludeNotes =
     (subscription !== "free" || mode === "agent") &&
@@ -478,6 +487,9 @@ The current date is ${currentDateTime}.`;
     sections.push(
       getAgentModeSection(mode, sandboxContext, agentPermissionMode),
     );
+    if (securityValidationSubagentsEnabled) {
+      sections.push(SECURITY_VALIDATION_SUBAGENT_SECTION);
+    }
   }
 
   if (isDeepSeekModel(modelName)) {

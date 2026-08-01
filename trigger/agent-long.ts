@@ -227,6 +227,13 @@ import { FREE_AGENT_LONG_RUN_LOCK_TTL_SECONDS } from "@/lib/rate-limit/free-conf
 import { isCentrifugoSandbox } from "@/lib/ai/tools/utils/sandbox-types";
 import { AgentRunTimingTracker } from "@/lib/chat/agent-run-timing";
 import { AgentLongMemoryTelemetry } from "@/lib/chat/agent-long-memory-telemetry";
+import { createDelegateTask } from "@/lib/ai/tools/delegate-task";
+import { createVulnerabilityReport } from "@/lib/ai/tools/vulnerability-report";
+import {
+  cancelSubagentsForParent,
+  listActiveSubagentsForParent,
+} from "@/lib/db/subagents";
+import { cancelAgentTriggerRun } from "@/lib/api/agent-approval-session";
 
 const AGENT_LONG_FREE_MAX_DURATION_SECONDS = 60 * 60;
 const AGENT_LONG_PAID_MAX_DURATION_SECONDS = 2 * 60 * 60;
@@ -1652,6 +1659,7 @@ export type AgentLongPayload = {
   limitRescue?: LimitRescueRequest;
   endpoint?: AgentApiEndpoint;
   analyticsRequestContext?: AnalyticsRequestContext;
+  securityValidationSubagentsEnabled?: boolean;
   convexUrl?: string;
   requestTiming?: {
     routeStartedAt: number;
@@ -1685,6 +1693,29 @@ export const agentLongTask = task({
     if (!cleanup.hasObservedUsage()) {
       await cleanup.usageRefundTracker.refund().catch(() => {});
     }
+    const activeChildren = await listActiveSubagentsForParent(ctx.run.id).catch(
+      () => [],
+    );
+    const childCancellations = await Promise.allSettled(
+      activeChildren.map(async (child) => {
+        if (!child.trigger_run_id) return;
+        await cancelAgentTriggerRun(child.trigger_run_id);
+      }),
+    );
+    const failedChildCancellations = childCancellations.filter(
+      (result) => result.status === "rejected",
+    ).length;
+    if (failedChildCancellations > 0) {
+      triggerLogger.warn("[agent-long] child cancellation propagation failed", {
+        parentTriggerRunId: ctx.run.id,
+        failedChildCancellations,
+      });
+    }
+    await cancelSubagentsForParent(ctx.run.id, "parent_canceled").catch(() =>
+      triggerLogger.warn("[agent-long] child cancellation persistence failed", {
+        parentTriggerRunId: ctx.run.id,
+      }),
+    );
     await ptySessionManager.closeAll(cleanup.chatId).catch(() => {});
     await phLogger.flush().catch(() => {});
     runCleanupMap.delete(ctx.run.id);
@@ -1718,6 +1749,7 @@ export const agentLongTask = task({
       limitRescue,
       endpoint: payloadEndpoint,
       analyticsRequestContext,
+      securityValidationSubagentsEnabled = false,
     } = payload;
     let selectedModelOverride = rawSelectedModelOverride;
     const endpoint = payloadEndpoint ?? LEGACY_AGENT_API_ENDPOINT;
@@ -2333,6 +2365,21 @@ export const agentLongTask = task({
               runTimingTracker.measureActiveTime,
               projectContext.workingDirectory,
               ctx.run.id,
+              securityValidationSubagentsEnabled
+                ? {
+                    additionalTools: (toolContext) => ({
+                      delegate_task: createDelegateTask(toolContext, {
+                        organizationId,
+                        sandboxPreference,
+                        permissionMode: agentPermissionMode,
+                        subscription,
+                        freeQuotaSubject,
+                      }),
+                      vulnerability_report:
+                        createVulnerabilityReport(toolContext),
+                    }),
+                  }
+                : undefined,
             );
             approvalSandboxManager = sandboxManager;
 
@@ -2452,6 +2499,7 @@ export const agentLongTask = task({
               userCustomization,
               sandboxContext,
               agentPermissionMode,
+              securityValidationSubagentsEnabled,
             );
             const systemPromptTokens = safeCountTokens(currentSystemPrompt);
 

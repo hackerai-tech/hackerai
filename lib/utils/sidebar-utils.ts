@@ -81,6 +81,19 @@ export function extractSidebarContentFromMessage(
       return;
     }
 
+    if (
+      part.type === "tool-delegate_task" &&
+      part.toolCallId &&
+      typeof message.id === "string"
+    ) {
+      contentList.push({
+        kind: "subagents",
+        parentMessageId: message.id,
+        toolCallId: part.toolCallId,
+      });
+      return;
+    }
+
     // Terminal
     if (
       (part.type === "tool-run_terminal_cmd" ||

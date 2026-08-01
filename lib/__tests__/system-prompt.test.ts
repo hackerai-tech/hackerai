@@ -2,6 +2,35 @@ import { describe, expect, it } from "@jest/globals";
 import { systemPrompt } from "@/lib/system-prompt";
 
 describe("systemPrompt security instructions", () => {
+  it("exposes only the independent validation subagent policy when enabled", async () => {
+    const disabled = await systemPrompt(
+      "user_123",
+      "agent",
+      "pro",
+      "agent-model",
+      null,
+      null,
+      "full_access",
+      false,
+    );
+    const enabled = await systemPrompt(
+      "user_123",
+      "agent",
+      "pro",
+      "agent-model",
+      null,
+      null,
+      "full_access",
+      true,
+    );
+
+    expect(disabled).not.toContain("<independent_validation>");
+    expect(enabled).toContain("<independent_validation>");
+    expect(enabled).toContain("Do not delegate reconnaissance");
+    expect(enabled).toContain("report_eligible=true");
+    expect(enabled).toContain("verdict=confirmed");
+  });
+
   it("answers general questions directly without cybersecurity scope disclaimers", async () => {
     const prompt = await systemPrompt(
       "user_123",

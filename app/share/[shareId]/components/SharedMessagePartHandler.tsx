@@ -16,6 +16,8 @@ import {
   FileDown,
   ExternalLink,
   Globe,
+  ShieldCheck,
+  Users,
 } from "lucide-react";
 import {
   getNotesIcon,
@@ -147,6 +149,41 @@ export const SharedMessagePartHandler = ({
   // Get terminal files
   if (part.type === "tool-get_terminal_files") {
     return renderGetTerminalFilesTool(part, idx);
+  }
+
+  if (part.type === "tool-delegate_task") {
+    const verdict = part.output?.verdict;
+    return (
+      <ToolBlock
+        key={idx}
+        icon={<Users aria-hidden="true" />}
+        action={
+          verdict === "confirmed"
+            ? "Confirmed independently"
+            : verdict === "rejected"
+              ? "Rejected independently"
+              : verdict === "inconclusive"
+                ? "Validation inconclusive"
+                : "Independent validation"
+        }
+        target={part.input?.profile_input?.candidate?.title}
+      />
+    );
+  }
+
+  if (part.type === "tool-vulnerability_report") {
+    return (
+      <ToolBlock
+        key={idx}
+        icon={<ShieldCheck aria-hidden="true" />}
+        action={
+          part.output?.success
+            ? "Saved validated report"
+            : "Report promotion blocked"
+        }
+        target={part.output?.reportId ?? part.input?.title}
+      />
+    );
   }
 
   // Todo operations

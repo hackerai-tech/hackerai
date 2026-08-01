@@ -376,13 +376,26 @@ export interface SidebarSharedFiles {
   toolCallId: string;
 }
 
+export interface SidebarSubagents {
+  kind: "subagents";
+  parentMessageId: string;
+  toolCallId: string;
+  selectedSubagentId?: string;
+}
+
 export type SidebarContent =
   | SidebarFile
   | SidebarTerminal
   | SidebarProxy
   | SidebarWebSearch
   | SidebarNotes
-  | SidebarSharedFiles;
+  | SidebarSharedFiles
+  | SidebarSubagents;
+
+export const isSidebarSubagents = (
+  content: SidebarContent,
+): content is SidebarSubagents =>
+  "kind" in content && content.kind === "subagents";
 
 export const isSidebarFile = (
   content: SidebarContent,

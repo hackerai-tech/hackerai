@@ -41,6 +41,7 @@ import type * as s3Cleanup from "../s3Cleanup.js";
 import type * as s3Utils from "../s3Utils.js";
 import type * as sharedChats from "../sharedChats.js";
 import type * as supportFraudActions from "../supportFraudActions.js";
+import type * as subagents from "../subagents.js";
 import type * as teamExtraUsage from "../teamExtraUsage.js";
 import type * as teamExtraUsageActions from "../teamExtraUsageActions.js";
 import type * as tempStreams from "../tempStreams.js";
@@ -50,6 +51,7 @@ import type * as usageLogs from "../usageLogs.js";
 import type * as userCustomization from "../userCustomization.js";
 import type * as userDeletion from "../userDeletion.js";
 import type * as userSuspensions from "../userSuspensions.js";
+import type * as vulnerabilityReports from "../vulnerabilityReports.js";
 
 import type {
   ApiFromModules,
@@ -91,6 +93,7 @@ declare const fullApi: ApiFromModules<{
   s3Utils: typeof s3Utils;
   sharedChats: typeof sharedChats;
   supportFraudActions: typeof supportFraudActions;
+  subagents: typeof subagents;
   teamExtraUsage: typeof teamExtraUsage;
   teamExtraUsageActions: typeof teamExtraUsageActions;
   tempStreams: typeof tempStreams;
@@ -100,6 +103,7 @@ declare const fullApi: ApiFromModules<{
   userCustomization: typeof userCustomization;
   userDeletion: typeof userDeletion;
   userSuspensions: typeof userSuspensions;
+  vulnerabilityReports: typeof vulnerabilityReports;
 }>;
 
 /**

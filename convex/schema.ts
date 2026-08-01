@@ -49,6 +49,36 @@ const agentApprovalTargetGrantValidator = v.union(
   }),
 );
 
+const subagentStatusValidator = v.union(
+  v.literal("queued"),
+  v.literal("running"),
+  v.literal("finalizing"),
+  v.literal("completed"),
+  v.literal("failed"),
+  v.literal("canceled"),
+  v.literal("timed_out"),
+);
+
+const subagentVerdictValidator = v.union(
+  v.literal("confirmed"),
+  v.literal("rejected"),
+  v.literal("inconclusive"),
+);
+
+const validationConfidenceValidator = v.union(
+  v.literal("low"),
+  v.literal("medium"),
+  v.literal("high"),
+);
+
+const vulnerabilitySeverityValidator = v.union(
+  v.literal("info"),
+  v.literal("low"),
+  v.literal("medium"),
+  v.literal("high"),
+  v.literal("critical"),
+);
+
 export default defineSchema({
   projects: defineTable({
     user_id: v.string(),
@@ -892,6 +922,124 @@ export default defineSchema({
     .index("by_type_day", ["entity_type", "day"])
     .index("by_user_day", ["user_id", "day"])
     .index("by_org_day", ["organization_id", "day"]),
+
+  // Durable child-agent state. Sensitive objectives and validation artifacts
+  // stay here instead of Trigger metadata or analytics properties.
+  subagent_runs: defineTable({
+    subagent_id: v.string(),
+    user_id: v.string(),
+    organization_id: v.optional(v.string()),
+    chat_id: v.string(),
+    parent_message_id: v.string(),
+    parent_tool_call_id: v.string(),
+    parent_trigger_run_id: v.string(),
+    trigger_run_id: v.optional(v.string()),
+    profile: v.literal("security_validation"),
+    depth: v.number(),
+    status: subagentStatusValidator,
+    objective: v.string(),
+    candidate: v.object({
+      title: v.string(),
+      affected_asset: v.string(),
+      weakness_class: v.string(),
+      claimed_impact: v.string(),
+      reproduction_hint: v.optional(v.string()),
+    }),
+    candidate_fingerprint: v.string(),
+    context_refs: v.array(v.any()),
+    sandbox_preference: v.optional(v.string()),
+    sandbox_identity: v.optional(v.string()),
+    permission_mode: v.optional(v.string()),
+    selected_model: v.optional(v.string()),
+    subscription: v.union(
+      v.literal("free"),
+      v.literal("pro"),
+      v.literal("pro-plus"),
+      v.literal("ultra"),
+      v.literal("team"),
+    ),
+    free_quota_subject: v.optional(v.string()),
+    user_location: v.optional(v.any()),
+    summary: v.optional(v.string()),
+    verdict: v.optional(subagentVerdictValidator),
+    confidence: v.optional(validationConfidenceValidator),
+    structured_result: v.optional(v.any()),
+    failure_code: v.optional(v.string()),
+    failure_reason: v.optional(v.string()),
+    cancel_reason: v.optional(v.string()),
+    acknowledged_by_parent_run_id: v.optional(v.string()),
+    report_id: v.optional(v.string()),
+    cost_limit_dollars: v.number(),
+    cost_dollars: v.optional(v.number()),
+    step_count: v.optional(v.number()),
+    created_at: v.number(),
+    started_at: v.optional(v.number()),
+    completed_at: v.optional(v.number()),
+    updated_at: v.number(),
+  })
+    .index("by_subagent_id", ["subagent_id"])
+    .index("by_chat_id", ["chat_id"])
+    .index("by_user_id", ["user_id"])
+    .index("by_trigger_run_id", ["trigger_run_id"])
+    .index("by_parent_run_and_tool_call", [
+      "parent_trigger_run_id",
+      "parent_tool_call_id",
+    ])
+    .index("by_user_chat_and_parent_run", [
+      "user_id",
+      "chat_id",
+      "parent_trigger_run_id",
+    ])
+    .index("by_user_and_parent_run", ["user_id", "parent_trigger_run_id"])
+    .index("by_parent_run", ["parent_trigger_run_id"])
+    .index("by_user_and_parent_message", ["user_id", "parent_message_id"])
+    .index("by_user_chat_and_candidate", [
+      "user_id",
+      "chat_id",
+      "candidate_fingerprint",
+    ]),
+
+  subagent_messages: defineTable({
+    subagent_id: v.string(),
+    user_id: v.string(),
+    sequence: v.number(),
+    role: v.union(
+      v.literal("user"),
+      v.literal("assistant"),
+      v.literal("system"),
+    ),
+    parts: v.array(v.any()),
+    created_at: v.number(),
+    updated_at: v.number(),
+  })
+    .index("by_subagent_and_sequence", ["subagent_id", "sequence"])
+    .index("by_user_id", ["user_id"]),
+
+  vulnerability_reports: defineTable({
+    report_id: v.string(),
+    validation_id: v.string(),
+    user_id: v.string(),
+    chat_id: v.string(),
+    parent_trigger_run_id: v.string(),
+    title: v.string(),
+    affected_asset: v.string(),
+    weakness_class: v.string(),
+    severity: vulnerabilitySeverityValidator,
+    description: v.string(),
+    technical_analysis: v.string(),
+    reproduction_steps: v.array(v.string()),
+    impact: v.string(),
+    remediation: v.string(),
+    evidence_refs: v.array(v.string()),
+    confidence: validationConfidenceValidator,
+    validation_snapshot: v.any(),
+    created_at: v.number(),
+  })
+    .index("by_report_id", ["report_id"])
+    .index("by_validation_id", ["validation_id"])
+    .index("by_chat_id", ["chat_id"])
+    .index("by_user_id", ["user_id"])
+    .index("by_user_chat_and_created", ["user_id", "chat_id", "created_at"]),
 
   // Webhook idempotency (prevents double-crediting on Stripe retries)
   processed_webhooks: defineTable({

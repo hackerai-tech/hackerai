@@ -23,6 +23,9 @@ export const USER_DELETION_TABLE_POLICY = {
     "local_sandbox_tokens",
     "local_sandbox_connections",
     "cancellation_reason_details",
+    "subagent_messages",
+    "subagent_runs",
+    "vulnerability_reports",
   ],
   anonymize: [
     "usage_logs",
@@ -413,6 +416,23 @@ async function cleanupUserDataForUser(
     "by_user_id_and_created_at",
     (q) => q.eq("user_id", userId),
   );
+  const subagentMessagesBatch = await collectByIndexBatch<
+    Doc<"subagent_messages">
+  >(ctx, budget, "subagent_messages", "by_user_id", (q) =>
+    q.eq("user_id", userId),
+  );
+  const subagentRunsBatch = await collectByIndexBatch<Doc<"subagent_runs">>(
+    ctx,
+    budget,
+    "subagent_runs",
+    "by_user_id",
+    (q) => q.eq("user_id", userId),
+  );
+  const vulnerabilityReportsBatch = await collectByIndexBatch<
+    Doc<"vulnerability_reports">
+  >(ctx, budget, "vulnerability_reports", "by_user_id", (q) =>
+    q.eq("user_id", userId),
+  );
 
   const deletionBatches = [
     projectsBatch,
@@ -427,6 +447,9 @@ async function cleanupUserDataForUser(
     extraUsageBatch,
     teamMemberUsageBatch,
     cancellationReasonDetailsBatch,
+    subagentMessagesBatch,
+    subagentRunsBatch,
+    vulnerabilityReportsBatch,
   ];
   stats.hasMore ||= deletionBatches.some((batch) => batch.hasMore);
 
@@ -440,10 +463,17 @@ async function cleanupUserDataForUser(
   const extraUsage = extraUsageBatch.docs;
   const teamMemberUsage = teamMemberUsageBatch.docs;
   const cancellationReasonDetails = cancellationReasonDetailsBatch.docs;
+  const subagentMessages = subagentMessagesBatch.docs;
+  const subagentRuns = subagentRunsBatch.docs;
+  const vulnerabilityReports = vulnerabilityReportsBatch.docs;
 
-  const chatsReadyToDelete = messagesBatch.hasMore
-    ? []
-    : chats.filter((chat) => !incompleteChatIds.has(chat.id));
+  const chatsReadyToDelete =
+    messagesBatch.hasMore ||
+    subagentMessagesBatch.hasMore ||
+    subagentRunsBatch.hasMore ||
+    vulnerabilityReportsBatch.hasMore
+      ? []
+      : chats.filter((chat) => !incompleteChatIds.has(chat.id));
   if (chatsReadyToDelete.length < chats.length) {
     stats.hasMore = true;
   }
@@ -451,6 +481,15 @@ async function cleanupUserDataForUser(
   await deleteDocs(ctx, stats, "feedback", feedback, mode);
   await deleteDocs(ctx, stats, "messages", messages, mode);
   await deleteDocs(ctx, stats, "chat_summaries", chatSummaries, mode);
+  await deleteDocs(ctx, stats, "subagent_messages", subagentMessages, mode);
+  await deleteDocs(
+    ctx,
+    stats,
+    "vulnerability_reports",
+    vulnerabilityReports,
+    mode,
+  );
+  await deleteDocs(ctx, stats, "subagent_runs", subagentRuns, mode);
   await deleteDocs(ctx, stats, "chats", chatsReadyToDelete, mode);
   await deleteDocs(ctx, stats, "projects", projects, mode);
   await deleteFiles(ctx, stats, files, mode);
