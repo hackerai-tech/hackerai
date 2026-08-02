@@ -50,6 +50,7 @@ describe("security validation subagent runtime contracts", () => {
     expect(child).toContain("onError: (error) =>");
     expect(child).toContain("const terminalFailure = activeTimedOut");
     expect(child).toContain(": spendCapExceeded");
+    expect(child).toContain("captureSubagentTerminalOutcome");
     expect(parent).toContain(
       "const childCancellationCompleted = await Promise.race",
     );

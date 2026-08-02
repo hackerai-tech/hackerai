@@ -45,4 +45,23 @@ describe("serializeSubagentWaitForParent", () => {
     await expect(first).rejects.toThrow("failed");
     await expect(second).resolves.toBe("continued");
   });
+
+  it("runs waits for different parents concurrently", async () => {
+    let releaseFirst!: () => void;
+    const firstGate = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    const first = serializeSubagentWaitForParent("parent-3", async () => {
+      await firstGate;
+      return "first";
+    });
+    const second = serializeSubagentWaitForParent(
+      "parent-4",
+      async () => "second",
+    );
+
+    await expect(second).resolves.toBe("second");
+    releaseFirst();
+    await expect(first).resolves.toBe("first");
+  });
 });

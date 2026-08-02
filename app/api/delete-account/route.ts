@@ -200,14 +200,19 @@ export const POST = async (req: NextRequest) => {
     }
 
     stage = "close_active_agent_resources";
-    const childTriggerRunIds = await cancelSubagentsForUserDeletion(
+    const childCancellation = await cancelSubagentsForUserDeletion(
       userId,
       "account_deleted",
     );
+    if (childCancellation.hasMore) {
+      throw new Error(
+        "Too many validation runs to delete safely. Please stop active validation runs and retry.",
+      );
+    }
     await closeAndCancelAgentResources(
       [
         ...activeAgentResources.resources,
-        ...childTriggerRunIds.map((triggerRunId) => ({
+        ...childCancellation.triggerRunIds.map((triggerRunId) => ({
           chatId: "subagent",
           triggerRunId,
         })),

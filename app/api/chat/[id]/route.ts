@@ -44,15 +44,20 @@ export async function DELETE(
 
       const triggerRunId = chat.active_trigger_run_id;
       const approvalSessionId = chat.active_agent_approval_session_id;
-      const childTriggerRunIds = await cancelSubagentsForChatDeletion(
+      const childCancellation = await cancelSubagentsForChatDeletion(
         chatId,
         userId,
         "chat_deleted",
       );
+      if (childCancellation.hasMore) {
+        return new NextResponse("Too many validation runs to delete safely", {
+          status: 409,
+        });
+      }
       const [closed, canceled, ...childCancellations] = await Promise.all([
         closeAgentApprovalSession(approvalSessionId, "chat-deleted"),
         cancelAgentTriggerRun(triggerRunId),
-        ...childTriggerRunIds.map((childRunId) =>
+        ...childCancellation.triggerRunIds.map((childRunId) =>
           cancelAgentTriggerRun(childRunId),
         ),
       ]);

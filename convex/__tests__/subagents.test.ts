@@ -354,7 +354,10 @@ describe("subagent deletion cancellation", () => {
         userId: "user-1",
         reason: "chat_deleted",
       }),
-    ).resolves.toEqual(["child-run-active", "child-run-retry"]);
+    ).resolves.toEqual({
+      triggerRunIds: ["child-run-active", "child-run-retry"],
+      hasMore: false,
+    });
     expect(patch).toHaveBeenCalledTimes(1);
     expect(patch).toHaveBeenCalledWith(
       "active-child",
@@ -363,5 +366,47 @@ describe("subagent deletion cancellation", () => {
         cancel_reason: "chat_deleted",
       }),
     );
+  });
+
+  it("fails closed without patching when a status batch is truncated", async () => {
+    const patch = jest.fn<any>().mockResolvedValue(undefined);
+    const runningRows = Array.from({ length: 101 }, (_, index) => ({
+      _id: `active-child-${index}`,
+      user_id: "user-1",
+      status: "running",
+      trigger_run_id: `child-run-${index}`,
+    }));
+    const ctx = {
+      db: {
+        query: jest.fn(() => ({
+          withIndex: jest.fn((_name: string, callback: (q: any) => void) => {
+            let status = "";
+            const q = {
+              eq: jest.fn((field: string, value: string) => {
+                if (field === "status") status = value;
+                return q;
+              }),
+            };
+            callback(q);
+            return {
+              take: jest
+                .fn<any>()
+                .mockResolvedValue(status === "running" ? runningRows : []),
+            };
+          }),
+        })),
+        patch,
+      },
+    } as any;
+
+    await expect(
+      cancelForChatDeletionBackend.handler(ctx, {
+        serviceKey: "service-key",
+        chatId: "chat-1",
+        userId: "user-1",
+        reason: "chat_deleted",
+      }),
+    ).resolves.toEqual({ triggerRunIds: [], hasMore: true });
+    expect(patch).not.toHaveBeenCalled();
   });
 });

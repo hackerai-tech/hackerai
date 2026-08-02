@@ -148,7 +148,10 @@ describe("POST /api/delete-account", () => {
       canceledTriggerRuns: 0,
       closedApprovalSessions: 0,
     } as never);
-    mockCancelSubagentsForUserDeletion.mockResolvedValue([] as never);
+    mockCancelSubagentsForUserDeletion.mockResolvedValue({
+      triggerRunIds: [],
+      hasMore: false,
+    } as never);
     mockConvexMutation.mockImplementation(async (functionReference) =>
       functionReference === "userDeletion.deleteAllUserDataByService"
         ? { hasMore: false }
@@ -162,9 +165,10 @@ describe("POST /api/delete-account", () => {
   });
 
   it("removes only the caller's membership for shared organizations", async () => {
-    mockCancelSubagentsForUserDeletion.mockResolvedValue([
-      "child-run-1",
-    ] as never);
+    mockCancelSubagentsForUserDeletion.mockResolvedValue({
+      triggerRunIds: ["child-run-1"],
+      hasMore: false,
+    } as never);
     const callerMembership = {
       id: "membership_user",
       organizationId: "org_team",

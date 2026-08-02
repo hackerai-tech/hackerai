@@ -55,3 +55,20 @@ export const captureSubagentLifecycleEvent = (
 
 export const subagentExposureEventUuid = (parentTriggerRunId: string): string =>
   uuidv5(`subagent-feature-exposed:${parentTriggerRunId}`, uuidv5.URL);
+
+export const subagentOutcomeEventUuid = (subagentId: string): string =>
+  uuidv5(`subagent-terminal-outcome:${subagentId}`, uuidv5.URL);
+
+export const captureSubagentTerminalOutcome = (
+  fields: SubagentLifecycleEvent & {
+    subagentId: string;
+    status: "failed" | "canceled" | "timed_out";
+  },
+) =>
+  captureSubagentLifecycleEvent(
+    fields.status === "canceled" ? "subagent_canceled" : "subagent_completed",
+    {
+      ...fields,
+      eventUuid: subagentOutcomeEventUuid(fields.subagentId),
+    },
+  );

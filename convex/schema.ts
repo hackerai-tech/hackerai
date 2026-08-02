@@ -982,6 +982,16 @@ export default defineSchema({
     .index("by_user_id", ["user_id"])
     .index("by_chat_and_status", ["chat_id", "status"])
     .index("by_user_and_status", ["user_id", "status"])
+    .index("by_chat_status_and_cancel_reason", [
+      "chat_id",
+      "status",
+      "cancel_reason",
+    ])
+    .index("by_user_status_and_cancel_reason", [
+      "user_id",
+      "status",
+      "cancel_reason",
+    ])
     .index("by_parent_run_and_tool_call", [
       "parent_trigger_run_id",
       "parent_tool_call_id",

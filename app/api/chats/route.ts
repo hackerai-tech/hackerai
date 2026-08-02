@@ -27,14 +27,19 @@ export async function DELETE(req: NextRequest) {
       );
     }
 
-    const childTriggerRunIds = await cancelSubagentsForUserDeletion(
+    const childCancellation = await cancelSubagentsForUserDeletion(
       userId,
       "all_chats_deleted",
     );
+    if (childCancellation.hasMore) {
+      return new NextResponse("Too many validation runs to delete safely", {
+        status: 409,
+      });
+    }
     const cleanup = await closeAndCancelAgentResources(
       [
         ...activeAgentResources.resources,
-        ...childTriggerRunIds.map((triggerRunId) => ({
+        ...childCancellation.triggerRunIds.map((triggerRunId) => ({
           chatId: "subagent",
           triggerRunId,
         })),

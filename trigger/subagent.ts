@@ -50,7 +50,11 @@ import {
 import { buildExtraUsageConfig } from "@/lib/api/chat-stream-helpers";
 import { getUserCustomization } from "@/lib/db/actions";
 import { extractOpenRouterMetadata } from "@/lib/api/openrouter-metadata";
-import { captureSubagentLifecycleEvent } from "@/lib/analytics/subagents";
+import {
+  captureSubagentLifecycleEvent,
+  captureSubagentTerminalOutcome,
+  subagentOutcomeEventUuid,
+} from "@/lib/analytics/subagents";
 import { phLogger } from "@/lib/posthog/server";
 import { ptySessionManager } from "@/lib/ai/tools/utils/pty-session-manager";
 import {
@@ -129,7 +133,10 @@ const captureCompletion = (
     stepCount,
     costDollars,
   };
-  captureSubagentLifecycleEvent("subagent_completed", base);
+  captureSubagentLifecycleEvent("subagent_completed", {
+    ...base,
+    eventUuid: subagentOutcomeEventUuid(row.subagent_id),
+  });
   captureSubagentLifecycleEvent(
     result.verdict === "confirmed"
       ? "subagent_validation_confirmed"
@@ -169,7 +176,7 @@ export const subagentTask = task({
       cancelReason: "parent_or_user_canceled",
     }).catch(() => undefined);
     await ptySessionManager.closeAll(cleanup.subagentId).catch(() => undefined);
-    captureSubagentLifecycleEvent("subagent_canceled", {
+    captureSubagentTerminalOutcome({
       userId: cleanup.userId,
       subagentId: cleanup.subagentId,
       parentTriggerRunId: cleanup.parentTriggerRunId,
@@ -563,7 +570,7 @@ export const subagentTask = task({
           costDollars,
           stepCount,
         });
-        captureSubagentLifecycleEvent("subagent_completed", {
+        captureSubagentTerminalOutcome({
           userId: row.user_id,
           subagentId: row.subagent_id,
           parentTriggerRunId: row.parent_trigger_run_id,
@@ -574,19 +581,6 @@ export const subagentTask = task({
           costDollars,
           errorCategory: terminalFailure.code,
         });
-        if (terminalFailure.status === "canceled") {
-          captureSubagentLifecycleEvent("subagent_canceled", {
-            userId: row.user_id,
-            subagentId: row.subagent_id,
-            parentTriggerRunId: row.parent_trigger_run_id,
-            profile: "security_validation",
-            status: "canceled",
-            durationMs: Date.now() - startedAt,
-            stepCount,
-            costDollars,
-            errorCategory: terminalFailure.code,
-          });
-        }
         metadata.set("status", terminalFailure.status);
         return { subagentId: row.subagent_id, status: terminalFailure.status };
       }
@@ -662,6 +656,17 @@ export const subagentTask = task({
         costDollars: settlement.costDollars,
         stepCount,
       }).catch(() => undefined);
+      captureSubagentTerminalOutcome({
+        userId: row.user_id,
+        subagentId: row.subagent_id,
+        parentTriggerRunId: row.parent_trigger_run_id,
+        profile: "security_validation",
+        status: terminalFailure.status,
+        durationMs: Date.now() - startedAt,
+        stepCount,
+        costDollars: settlement.costDollars,
+        errorCategory: terminalFailure.code,
+      });
       triggerLogger.error("[security-validation-subagent] run failed", {
         subagentId: row.subagent_id,
         parentTriggerRunId: row.parent_trigger_run_id,

@@ -71,6 +71,7 @@ const subagentSummaryValidator = v.object({
 });
 
 const ACTIVE_SUBAGENT_STATUSES = ["queued", "running", "finalizing"] as const;
+const SUBAGENT_DELETION_CANCELLATION_BATCH_SIZE = 100;
 const DELETION_CANCELLATION_REASONS = new Set([
   "chat_deleted",
   "all_chats_deleted",
@@ -85,6 +86,10 @@ const isPendingDeletionCancellation = (row: {
   row.status === "canceled" &&
   typeof row.cancel_reason === "string" &&
   DELETION_CANCELLATION_REASONS.has(row.cancel_reason);
+const deletionCancellationResultValidator = v.object({
+  triggerRunIds: v.array(v.string()),
+  hasMore: v.boolean(),
+});
 
 const toSummary = (row: {
   subagent_id: string;
@@ -491,21 +496,36 @@ export const cancelForChatDeletionBackend = mutation({
     userId: v.string(),
     reason: v.string(),
   },
-  returns: v.array(v.string()),
+  returns: deletionCancellationResultValidator,
   handler: async (ctx, args) => {
     validateServiceKey(args.serviceKey);
-    const candidateRows = (
-      await Promise.all(
-        [...ACTIVE_SUBAGENT_STATUSES, "canceled" as const].map((status) =>
-          ctx.db
-            .query("subagent_runs")
-            .withIndex("by_chat_and_status", (q) =>
-              q.eq("chat_id", args.chatId).eq("status", status),
-            )
-            .take(101),
-        ),
+    const batches = await Promise.all([
+      ...ACTIVE_SUBAGENT_STATUSES.map((status) =>
+        ctx.db
+          .query("subagent_runs")
+          .withIndex("by_chat_and_status", (q) =>
+            q.eq("chat_id", args.chatId).eq("status", status),
+          )
+          .take(SUBAGENT_DELETION_CANCELLATION_BATCH_SIZE + 1),
+      ),
+      ctx.db
+        .query("subagent_runs")
+        .withIndex("by_chat_status_and_cancel_reason", (q) =>
+          q
+            .eq("chat_id", args.chatId)
+            .eq("status", "canceled")
+            .eq("cancel_reason", args.reason),
+        )
+        .take(SUBAGENT_DELETION_CANCELLATION_BATCH_SIZE + 1),
+    ]);
+    if (
+      batches.some(
+        (batch) => batch.length > SUBAGENT_DELETION_CANCELLATION_BATCH_SIZE,
       )
-    )
+    ) {
+      return { triggerRunIds: [], hasMore: true };
+    }
+    const candidateRows = batches
       .flat()
       .filter((row) => row.user_id === args.userId);
     const activeRows = candidateRows.filter((row) =>
@@ -528,29 +548,47 @@ export const cancelForChatDeletionBackend = mutation({
         }),
       ),
     );
-    return cancellationRows.flatMap((row) =>
-      row.trigger_run_id ? [row.trigger_run_id] : [],
-    );
+    return {
+      triggerRunIds: cancellationRows.flatMap((row) =>
+        row.trigger_run_id ? [row.trigger_run_id] : [],
+      ),
+      hasMore: false,
+    };
   },
 });
 
 export const cancelForUserDeletionBackend = mutation({
   args: { serviceKey: v.string(), userId: v.string(), reason: v.string() },
-  returns: v.array(v.string()),
+  returns: deletionCancellationResultValidator,
   handler: async (ctx, args) => {
     validateServiceKey(args.serviceKey);
-    const candidateRows = (
-      await Promise.all(
-        [...ACTIVE_SUBAGENT_STATUSES, "canceled" as const].map((status) =>
-          ctx.db
-            .query("subagent_runs")
-            .withIndex("by_user_and_status", (q) =>
-              q.eq("user_id", args.userId).eq("status", status),
-            )
-            .take(101),
-        ),
+    const batches = await Promise.all([
+      ...ACTIVE_SUBAGENT_STATUSES.map((status) =>
+        ctx.db
+          .query("subagent_runs")
+          .withIndex("by_user_and_status", (q) =>
+            q.eq("user_id", args.userId).eq("status", status),
+          )
+          .take(SUBAGENT_DELETION_CANCELLATION_BATCH_SIZE + 1),
+      ),
+      ctx.db
+        .query("subagent_runs")
+        .withIndex("by_user_status_and_cancel_reason", (q) =>
+          q
+            .eq("user_id", args.userId)
+            .eq("status", "canceled")
+            .eq("cancel_reason", args.reason),
+        )
+        .take(SUBAGENT_DELETION_CANCELLATION_BATCH_SIZE + 1),
+    ]);
+    if (
+      batches.some(
+        (batch) => batch.length > SUBAGENT_DELETION_CANCELLATION_BATCH_SIZE,
       )
-    ).flat();
+    ) {
+      return { triggerRunIds: [], hasMore: true };
+    }
+    const candidateRows = batches.flat();
     const activeRows = candidateRows.filter((row) =>
       isActiveStatus(row.status),
     );
@@ -570,9 +608,12 @@ export const cancelForUserDeletionBackend = mutation({
         }),
       ),
     );
-    return cancellationRows.flatMap((row) =>
-      row.trigger_run_id ? [row.trigger_run_id] : [],
-    );
+    return {
+      triggerRunIds: cancellationRows.flatMap((row) =>
+        row.trigger_run_id ? [row.trigger_run_id] : [],
+      ),
+      hasMore: false,
+    };
   },
 });
 
