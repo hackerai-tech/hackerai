@@ -2,6 +2,10 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useGlobalState } from "@/app/contexts/GlobalState";
+import {
+  useComposerActions,
+  useComposerInput,
+} from "@/app/contexts/ComposerState";
 import { TodoPanel } from "../TodoPanel";
 import type { ChatStatus } from "@/types";
 import { FileUploadPreview } from "../FileUploadPreview";
@@ -192,8 +196,6 @@ export const ChatInput = ({
   storedApprovalRequest,
 }: ChatInputProps) => {
   const {
-    input,
-    setInput,
     chatMode,
     setChatMode,
     uploadedFiles,
@@ -214,6 +216,8 @@ export const ChatInput = ({
     hasLocalSandbox,
     defaultLocalSandboxPreference,
   } = useGlobalState();
+  const input = useComposerInput();
+  const { setInput } = useComposerActions();
   const {
     fileInputRef,
     handleFileUploadEvent,

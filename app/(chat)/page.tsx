@@ -13,6 +13,7 @@ import MigratePentestgptDialog from "../components/MigratePentestgptDialog";
 import { ExtraUsagePurchaseToast } from "../components/extra-usage";
 import { usePricingDialog } from "../hooks/usePricingDialog";
 import { useGlobalState } from "../contexts/GlobalState";
+import { useComposerInput } from "../contexts/ComposerState";
 import { usePentestgptMigration } from "../hooks/usePentestgptMigration";
 import { navigateToAuth } from "../hooks/useTauri";
 import { useTypingAnimation } from "../hooks/useTypingAnimation";
@@ -32,7 +33,7 @@ const LOGIN_TYPING_TAILS = [
 
 // Simple unauthenticated content that redirects to signup on message send
 const UnauthenticatedContent = () => {
-  const { input } = useGlobalState();
+  const input = useComposerInput();
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();

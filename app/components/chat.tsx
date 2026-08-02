@@ -28,6 +28,7 @@ import Footer from "./Footer";
 import { useMessageScroll } from "../hooks/useMessageScroll";
 import { useChatHandlers } from "../hooks/useChatHandlers";
 import { useGlobalState } from "../contexts/GlobalState";
+import { useComposerInput } from "../contexts/ComposerState";
 import {
   type ActiveAgentToolApprovalRequest,
   useAgentApproval,
@@ -440,6 +441,44 @@ function StreamEffects({
   return null;
 }
 
+// Keep the live composer subscription below Chat. This effect needs to react
+// when a shared-task draft is restored, but the rest of the chat shell does
+// not need to rerender for every character the user types.
+function ForkAutoSendEffect({
+  chatId,
+  status,
+  isExistingChat,
+  messageCount,
+  onSubmit,
+}: {
+  chatId: string;
+  status: UseChatHelpers<ChatMessage>["status"];
+  isExistingChat: boolean;
+  messageCount: number;
+  onSubmit: (event: React.FormEvent) => void | Promise<boolean>;
+}) {
+  const input = useComposerInput();
+  const autoSendFiredRef = useRef(false);
+
+  useEffect(() => {
+    if (autoSendFiredRef.current) return;
+    try {
+      const pendingChatId = sessionStorage.getItem("autoSendChatId");
+      if (pendingChatId !== chatId) return;
+    } catch {
+      return;
+    }
+    if (status !== "ready" || !input.trim()) return;
+    if (!isExistingChat || messageCount === 0) return;
+
+    autoSendFiredRef.current = true;
+    sessionStorage.removeItem("autoSendChatId");
+    void onSubmit(new Event("submit") as unknown as React.FormEvent);
+  }, [chatId, input, isExistingChat, messageCount, onSubmit, status]);
+
+  return null;
+}
+
 export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   const params = useParams();
   const routeChatId = params?.id as string | undefined;
@@ -458,7 +497,6 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     streamingState;
 
   const {
-    input,
     chatMode,
     setChatMode,
     sidebarOpen,
@@ -1753,27 +1791,6 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     [branchChatMutation, initializeChat, router],
   );
 
-  // Auto-send message after forking a shared chat
-  const autoSendFiredRef = useRef(false);
-  useEffect(() => {
-    if (autoSendFiredRef.current) return;
-    try {
-      const pendingChatId = sessionStorage.getItem("autoSendChatId");
-      if (pendingChatId !== chatId) return;
-    } catch {
-      return;
-    }
-    // Wait for chat to be ready with draft input loaded
-    if (status !== "ready" || !input.trim()) return;
-    // Wait for server messages to be loaded (forked chat has messages)
-    if (!isExistingChat || messages.length === 0) return;
-
-    autoSendFiredRef.current = true;
-    sessionStorage.removeItem("autoSendChatId");
-    // Trigger submit with a synthetic event
-    handleSubmit(new Event("submit") as unknown as React.FormEvent);
-  }, [chatId, status, input, isExistingChat, messages.length, handleSubmit]);
-
   const hasMessages = messages.length > 0;
   const showChatLayout = hasMessages || isExistingChat;
   const { isInitialExistingChatLoad, isChatNotFound } =
@@ -1822,6 +1839,14 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
             : !!chatDataForCurrentChat?.active_stream_id ||
               !!chatDataForCurrentChat?.active_trigger_run_id
         }
+      />
+      <ForkAutoSendEffect
+        key={`fork-auto-send:${chatId}`}
+        chatId={chatId}
+        status={status}
+        isExistingChat={isExistingChat}
+        messageCount={messages.length}
+        onSubmit={handleSubmit}
       />
       <div className="flex min-h-0 flex-1 w-full flex-col bg-background overflow-hidden">
         <div className="flex min-h-0 flex-1 min-w-0 relative">

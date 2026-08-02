@@ -96,7 +96,7 @@ export const useChatHandlers = ({
 }: UseChatHandlersProps) => {
   const { setIsAutoResuming } = useDataStreamDispatch();
   const {
-    input,
+    getInput,
     uploadedFiles,
     chatMode,
     clearInput,
@@ -318,6 +318,10 @@ export const useChatHandlers = ({
 
   const handleSubmit = async (e: React.FormEvent): Promise<boolean> => {
     e.preventDefault();
+
+    // Read the prompt only when the user submits. Keeping the live composer
+    // value out of this hook prevents each keystroke from rerendering Chat.
+    const input = getInput();
 
     setIsAutoResuming(false);
 
