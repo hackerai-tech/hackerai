@@ -10,7 +10,21 @@ import {
   tokenExhaustedAfterSummarization,
   elapsedTimeExceeds,
   getAgentAutoContinueStopSource,
+  stepLimitReached,
 } from "../stop-conditions";
+
+describe("stepLimitReached", () => {
+  it("fires only when the configured step limit is reached", () => {
+    const onFired = jest.fn();
+    const condition = stepLimitReached({ maxSteps: 3, onFired });
+
+    expect(condition({ steps: [{}, {}] } as never)).toBe(false);
+    expect(onFired).not.toHaveBeenCalled();
+
+    expect(condition({ steps: [{}, {}, {}] } as never)).toBe(true);
+    expect(onFired).toHaveBeenCalledTimes(1);
+  });
+});
 
 function makeState(overrides: {
   threshold: number;

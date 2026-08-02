@@ -72,6 +72,7 @@ describe("captureAgentRun", () => {
     captureAgentRun({
       posthog: { capture } as any,
       userId: "user_123",
+      chatId: "chat_123",
       mode: "agent",
       subscription: "pro",
       sandboxInfo: { type: "remote-connection", name: "Work laptop" },
@@ -98,6 +99,7 @@ describe("captureAgentRun", () => {
         mode: "agent",
         subscription: "pro",
         subscription_tier: "pro",
+        chat_id: "chat_123",
         outcome: "success",
         selected_model: "agent-model",
         configured_model: "deepseek/deepseek-v4-pro",
@@ -123,6 +125,7 @@ describe("captureAgentRun", () => {
     captureAgentRun({
       posthog: { capture } as any,
       userId: "user_123",
+      chatId: "chat_123",
       mode: "agent",
       subscription: "pro",
       sandboxInfo: null,
@@ -153,12 +156,69 @@ describe("captureAgentRun", () => {
     );
   });
 
+  it("captures explicit step-limit and current-run todo measurements", () => {
+    const capture = jest.fn();
+
+    captureAgentRun({
+      posthog: { capture } as any,
+      userId: "user_123",
+      chatId: "chat_123",
+      mode: "agent",
+      subscription: "pro",
+      sandboxInfo: null,
+      outcome: "success",
+      selectedModel: "agent-model",
+      configuredModelId: "deepseek/deepseek-v4-pro",
+      finishReason: "tool-calls",
+      isAutoContinue: true,
+      stepLimitTelemetry: {
+        version: 1,
+        configuredMaxSteps: 300,
+        stepCount: 300,
+        stepLimitReached: true,
+        initialTodoCount: 8,
+        initialUnfinishedTodoCount: 5,
+        finalTodoCount: 9,
+        finalUnfinishedTodoCount: 4,
+        todoWriteCount: 3,
+        todoCreatedThisRunCount: 2,
+        todoUpdatedThisRunCount: 3,
+        todoRemovedThisRunCount: 1,
+        currentRunTodoCount: 4,
+        currentRunUnfinishedTodoCount: 2,
+      },
+    });
+
+    expect(capture.mock.calls[0][0].properties).toEqual(
+      expect.objectContaining({
+        chat_id: "chat_123",
+        finish_reason: "tool-calls",
+        is_auto_continue: true,
+        step_limit_telemetry_version: 1,
+        configured_max_steps: 300,
+        agent_step_count: 300,
+        step_limit_reached: true,
+        initial_todo_count: 8,
+        initial_unfinished_todo_count: 5,
+        final_todo_count: 9,
+        final_unfinished_todo_count: 4,
+        todo_write_count: 3,
+        todo_created_this_run_count: 2,
+        todo_updated_this_run_count: 3,
+        todo_removed_this_run_count: 1,
+        current_run_todo_count: 4,
+        current_run_unfinished_todo_count: 2,
+      }),
+    );
+  });
+
   it("attributes a served fallback without inferring it from model names", () => {
     const capture = jest.fn();
 
     captureAgentRun({
       posthog: { capture } as any,
       userId: "user_123",
+      chatId: "chat_123",
       mode: "agent",
       subscription: "free",
       sandboxInfo: { type: "e2b" },
@@ -187,6 +247,7 @@ describe("captureAgentRun", () => {
     captureAgentRun({
       posthog: { capture } as any,
       userId: "user_123",
+      chatId: "chat_123",
       mode: "agent",
       subscription: "pro",
       sandboxInfo: null,
@@ -211,6 +272,7 @@ describe("captureAgentRun", () => {
     captureAgentRun({
       posthog: { capture } as any,
       userId: "user_123",
+      chatId: "chat_123",
       mode: "ask",
       subscription: "pro",
       sandboxInfo: { type: "e2b" },
@@ -314,6 +376,7 @@ describe("captureAgentCompletionAnalytics", () => {
         mode: "agent",
         subscription: "free",
         subscription_tier: "free",
+        chat_id: "chat_123",
         outcome: "success",
         selected_model: "agent-model-free",
         configured_model: "deepseek/deepseek-v4-flash-0731",
@@ -359,6 +422,7 @@ describe("captureAgentCompletionAnalytics", () => {
         mode: "agent",
         subscription: "pro",
         subscription_tier: "pro",
+        chat_id: "chat_123",
         outcome: "success",
         selected_model: "agent-model",
         configured_model: "deepseek/deepseek-v4-pro",

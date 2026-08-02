@@ -11,6 +11,17 @@ export const OUTPUT_LIMIT_FINISH_REASON = "length";
 
 export const BUDGET_EXHAUSTION_FINISH_REASON = "budget-exhausted";
 
+export function stepLimitReached(state: {
+  maxSteps: number;
+  onFired: () => void;
+}): StopCondition<any> {
+  return ({ steps }) => {
+    const shouldStop = steps.length >= state.maxSteps;
+    if (shouldStop) state.onFired();
+    return shouldStop;
+  };
+}
+
 export type AgentAutoContinueStopSource =
   | "post_summarization_token_exhaustion"
   | "elapsed_timeout"

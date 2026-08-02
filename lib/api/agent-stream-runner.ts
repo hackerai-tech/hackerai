@@ -15,7 +15,6 @@
 
 import {
   convertToModelMessages,
-  stepCountIs,
   streamText,
   type LanguageModel,
   type ModelMessage,
@@ -38,6 +37,7 @@ import {
   elapsedTimeExceeds,
   tokenExhaustedAfterSummarization,
   doomLoopDetected,
+  stepLimitReached,
   PREEMPTIVE_TIMEOUT_FINISH_REASON,
   TOKEN_EXHAUSTION_FINISH_REASON,
   DOOM_LOOP_FINISH_REASON,
@@ -200,6 +200,11 @@ export type AgentStreamState = {
   /** True when a provider rejected an image-bearing tool result. */
   providerRejectedMultimodalToolResults: boolean;
   /** Stop-condition flags set by the respective onFired callbacks. */
+  configuredMaxSteps: number;
+  /** Total completed model steps across provider attempts in this request. */
+  agentStepCount: number;
+  /** True only when the final provider attempt stopped at the step condition. */
+  stoppedDueToStepLimit: boolean;
   stoppedDueToTokenExhaustion: boolean;
   /** Maps to stoppedDueToPreemptiveTimeout in chat-handler, stoppedDueToElapsedTimeout in agent-long. */
   stoppedDueToElapsedTimeout: boolean;
@@ -229,6 +234,9 @@ export function initAgentStreamState(
     fallbackServed: undefined,
     providerError: undefined,
     providerRejectedMultimodalToolResults: false,
+    configuredMaxSteps: 0,
+    agentStepCount: 0,
+    stoppedDueToStepLimit: false,
     stoppedDueToTokenExhaustion: false,
     stoppedDueToElapsedTimeout: false,
     stoppedDueToDoomLoop: false,
@@ -502,6 +510,8 @@ export async function createAgentStream(
   ctx: AgentStreamContext,
   state: AgentStreamState,
 ) {
+  const configuredMaxSteps = getMaxStepsForUser(ctx.mode);
+  state.configuredMaxSteps = configuredMaxSteps;
   const toolCallRunNamespace = randomUUID().replaceAll("-", "").slice(0, 8);
   const stepUsageCostIndexes: Array<number | undefined> = [];
   const getActiveToolsWithExclusions = async (
@@ -1176,7 +1186,12 @@ export async function createAgentStream(
     },
 
     stopWhen: [
-      stepCountIs(getMaxStepsForUser(ctx.mode)),
+      stepLimitReached({
+        maxSteps: configuredMaxSteps,
+        onFired: () => {
+          state.stoppedDueToStepLimit = true;
+        },
+      }),
       tokenExhaustedAfterSummarization({
         threshold: summarizationThreshold,
         getLastStepInputTokens: () => state.lastStepInputTokens,
@@ -1249,6 +1264,7 @@ export async function createAgentStream(
 
     onStepFinish: async ({ usage, response, providerMetadata }) => {
       ctx.onModelStreamFinish?.();
+      state.agentStepCount += 1;
       let stepUsageCostIndex: number | undefined;
       if (usage) {
         const stepAccountingModel = resolveServedModelForCostAccounting({
