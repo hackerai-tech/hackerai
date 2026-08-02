@@ -71,6 +71,60 @@ describe("Centrifugo transport fragmentation", () => {
     );
   });
 
+  it("rejects messages that exceed the fragment-count limit", () => {
+    expect(() =>
+      fragmentCentrifugoMessage({
+        type: "stdout",
+        commandId: "command-too-large",
+        data: "x".repeat(2_400_000),
+      }),
+    ).toThrow("maximum is 128");
+  });
+
+  it("drops new transfers after the active-transfer limit is reached", () => {
+    const reassembler = new CentrifugoMessageReassembler();
+    const firstFragments = Array.from({ length: 16 }, (_, index) => ({
+      type: "transport_fragment" as const,
+      transferId: `transfer-${index}`,
+      index: 0,
+      total: 2,
+      data: "e3",
+    }));
+
+    for (const fragment of firstFragments) {
+      expect(reassembler.accept(fragment)).toBeNull();
+    }
+
+    expect(
+      reassembler.accept({
+        type: "transport_fragment",
+        transferId: "transfer-over-limit",
+        index: 0,
+        total: 2,
+        data: "e3",
+      }),
+    ).toBeNull();
+    expect(
+      reassembler.accept({
+        type: "transport_fragment",
+        transferId: "transfer-over-limit",
+        index: 1,
+        total: 2,
+        data: "0=",
+      }),
+    ).toBeNull();
+
+    expect(
+      reassembler.accept({
+        type: "transport_fragment",
+        transferId: "transfer-0",
+        index: 1,
+        total: 2,
+        data: "0=",
+      }),
+    ).toEqual({});
+  });
+
   it("serializes fragments and later messages in FIFO order", async () => {
     let activePublishes = 0;
     let maxActivePublishes = 0;

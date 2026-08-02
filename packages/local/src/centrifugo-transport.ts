@@ -37,10 +37,6 @@ interface PendingTransfer {
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
-function serializedByteLength(value: unknown): number {
-  return encoder.encode(JSON.stringify(value)).byteLength;
-}
-
 function bytesToBase64(bytes: Uint8Array): string {
   let binary = "";
   const batchSize = 0x8000;
@@ -123,7 +119,7 @@ export function fragmentCentrifugoMessage(
   message: Record<string, unknown>,
 ): Array<Record<string, unknown> | CentrifugoTransportFragment> {
   const serialized = JSON.stringify(message);
-  if (serializedByteLength(message) <= MAX_DIRECT_MESSAGE_BYTES) {
+  if (encoder.encode(serialized).byteLength <= MAX_DIRECT_MESSAGE_BYTES) {
     return [message];
   }
 
