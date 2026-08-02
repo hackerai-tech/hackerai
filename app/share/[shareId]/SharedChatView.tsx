@@ -13,6 +13,7 @@ import ChatHeader from "@/app/components/ChatHeader";
 import MainSidebar from "@/app/components/Sidebar";
 import { SidebarProvider } from "@/components/ui/sidebar";
 import { useGlobalState } from "@/app/contexts/GlobalState";
+import { useComposerInput } from "@/app/contexts/ComposerState";
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { ChatInput } from "@/app/components/ChatInput";
@@ -98,7 +99,8 @@ type SharedSnapshot = {
 export function SharedChatView({ shareId }: SharedChatViewProps) {
   const isMobile = useIsMobile();
   const { user, loading: authLoading } = useAuth();
-  const { chatSidebarOpen, setChatSidebarOpen, input } = useGlobalState();
+  const { chatSidebarOpen, setChatSidebarOpen } = useGlobalState();
+  const input = useComposerInput();
   const router = useRouter();
   const convex = useConvex();
   const forkSharedChatMutation = useMutation(api.sharedChats.forkSharedChat);

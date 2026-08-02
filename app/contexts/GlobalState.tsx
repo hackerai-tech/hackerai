@@ -59,15 +59,15 @@ import {
   getAgentFirstDefaultDecision,
   normalizeAgentFirstSandboxType,
 } from "@/lib/activation/agent-first-default";
+import {
+  ComposerStateProvider,
+  useComposerActions,
+} from "@/app/contexts/ComposerState";
 
 const ENTITLEMENT_REFRESH_TIMEOUT_MS = 5_000;
 const ENTITLEMENT_REFRESH_RETRY_DELAYS_MS = [1_000, 3_000] as const;
 
 interface GlobalStateType {
-  // Input state
-  input: string;
-  setInput: (value: string) => void;
-
   // File upload state
   uploadedFiles: UploadedFileState[];
   setUploadedFiles: (files: UploadedFileState[]) => void;
@@ -162,6 +162,7 @@ interface GlobalStateType {
   setSelectedModel: (model: SelectedModel) => void;
 
   // Utility methods
+  getInput: () => string;
   clearInput: () => void;
   clearUploadedFiles: () => void;
   openSidebar: (content: SidebarContent) => void;
@@ -213,9 +214,10 @@ interface LocalSandboxConnection {
   };
 }
 
-export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
+const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
   children,
 }) => {
+  const { clearInput, getInput } = useComposerActions();
   const {
     user,
     entitlements,
@@ -230,7 +232,6 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
   const initialSavedChatModeRef = useRef<ChatMode | null>(null);
   const hasUserSelectedModeThisSessionRef = useRef(false);
   const agentFirstDefaultAppliedRef = useRef(false);
-  const [input, setInput] = useState("");
   const [uploadedFiles, setUploadedFiles] = useState<UploadedFileState[]>([]);
   const [chatMode, setChatModeState] = useState<ChatMode>(() => {
     const saved = readChatMode();
@@ -951,10 +952,6 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     };
   }, [migrateFromPentestgptDialogOpen]);
 
-  const clearInput = () => {
-    setInput("");
-  };
-
   const clearUploadedFiles = () => {
     setUploadedFiles([]);
   };
@@ -1114,8 +1111,6 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
   );
 
   const value: GlobalStateType = {
-    input,
-    setInput,
     uploadedFiles,
     setUploadedFiles,
     addUploadedFile,
@@ -1148,6 +1143,7 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     subscription,
     isCheckingProPlan,
 
+    getInput,
     clearInput,
     clearUploadedFiles,
     openSidebar,
@@ -1204,6 +1200,14 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     </GlobalStateContext.Provider>
   );
 };
+
+export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
+  children,
+}) => (
+  <ComposerStateProvider>
+    <GlobalStateProviderInner>{children}</GlobalStateProviderInner>
+  </ComposerStateProvider>
+);
 
 export const useGlobalState = (): GlobalStateType => {
   const context = useContext(GlobalStateContext);

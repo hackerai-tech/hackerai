@@ -3,6 +3,10 @@
 import { useEffect, useRef } from "react";
 import TextareaAutosize from "react-textarea-autosize";
 import { useGlobalState } from "@/app/contexts/GlobalState";
+import {
+  useComposerActions,
+  useComposerInput,
+} from "@/app/contexts/ComposerState";
 import { useFileUpload } from "@/app/hooks/useFileUpload";
 import {
   getDraftContentById,
@@ -38,7 +42,9 @@ export function ChatInputTextarea({
   placeholder,
   autoFocus = true,
 }: ChatInputTextareaProps) {
-  const { input, setInput, subscription } = useGlobalState();
+  const input = useComposerInput();
+  const { setInput } = useComposerActions();
+  const { subscription } = useGlobalState();
   const { handlePasteEvent, handlePastedTextAttachment } =
     useFileUpload(chatMode);
   const textareaRef = useRef<HTMLTextAreaElement>(null);

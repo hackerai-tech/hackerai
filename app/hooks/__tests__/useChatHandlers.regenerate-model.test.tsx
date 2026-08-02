@@ -14,7 +14,7 @@ jest.mock("convex/react", () => ({
 
 jest.mock("@/app/contexts/GlobalState", () => ({
   useGlobalState: () => ({
-    input: "",
+    getInput: () => "",
     uploadedFiles: [],
     chatMode: "ask",
     clearInput: jest.fn(),

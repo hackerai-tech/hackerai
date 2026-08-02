@@ -4,6 +4,7 @@ import {
   useLayoutEffect,
   useMemo,
   useCallback,
+  useRef,
   Dispatch,
   MutableRefObject,
   RefCallback,
@@ -36,9 +37,12 @@ import { useDataStreamState } from "./DataStreamProvider";
 import type { RateLimitWarningData } from "./RateLimitWarning";
 import type { SelectedModel } from "@/types";
 import {
+  createStableChatTimelineRowsState,
   deriveChatTimelineRows,
   getChatTimelineRowType,
+  stabilizeChatTimelineRows,
   type ChatTimelineRow,
+  type StableChatTimelineRowsState,
 } from "./message-timeline-rows";
 
 const AllFilesDialog = dynamic(
@@ -218,7 +222,7 @@ export const Messages = ({
   const [expandedAgentMessageIds, setExpandedAgentMessageIds] = useState<
     ReadonlySet<string>
   >(() => new Set());
-  const timelineRows = useMemo(
+  const rawTimelineRows = useMemo(
     () =>
       deriveChatTimelineRows({
         messages: visibleMessages,
@@ -233,6 +237,21 @@ export const Messages = ({
       visibleMessages,
     ],
   );
+  const stableTimelineRowsRef = useRef<StableChatTimelineRowsState | null>(
+    null,
+  );
+  const stableTimelineRowsState = useMemo(
+    () =>
+      stabilizeChatTimelineRows(
+        rawTimelineRows,
+        stableTimelineRowsRef.current ?? createStableChatTimelineRowsState(),
+      ),
+    [rawTimelineRows],
+  );
+  useLayoutEffect(() => {
+    stableTimelineRowsRef.current = stableTimelineRowsState;
+  }, [stableTimelineRowsState]);
+  const timelineRows = stableTimelineRowsState.result;
   // Track edit state for messages
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
 

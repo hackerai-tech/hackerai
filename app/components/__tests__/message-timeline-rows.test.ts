@@ -1,5 +1,7 @@
 import {
+  createStableChatTimelineRowsState,
   deriveChatTimelineRows,
+  stabilizeChatTimelineRows,
   type AgentActivityTimelineRow,
 } from "../message-timeline-rows";
 import type { ChatMessage } from "@/types";
@@ -190,5 +192,65 @@ describe("deriveChatTimelineRows", () => {
     });
 
     expect(rows.filter((row) => row.kind === "agent-activity")).toHaveLength(2);
+  });
+
+  it("reuses every row when derivation produces equivalent data", () => {
+    const message = agentMessage([
+      {
+        type: "tool-shell",
+        toolCallId: "tool-1",
+        input: { command: "pwd" },
+        state: "output-available",
+      },
+    ] as ChatMessage["parts"]);
+    const options = {
+      messages: [message],
+      status: "ready" as const,
+      lastAssistantMessageIndex: 0,
+      expandedAgentMessageIds: new Set<string>(),
+    };
+
+    const first = stabilizeChatTimelineRows(
+      deriveChatTimelineRows(options),
+      createStableChatTimelineRowsState(),
+    );
+    const second = stabilizeChatTimelineRows(
+      deriveChatTimelineRows(options),
+      first,
+    );
+
+    expect(second).toBe(first);
+    expect(second.result).toBe(first.result);
+  });
+
+  it("keeps settled rows stable while the active message changes", () => {
+    const userMessage = {
+      id: "user-1",
+      role: "user",
+      parts: [{ type: "text", text: "question" }],
+    } as ChatMessage;
+    const firstAssistant = agentMessage([
+      { type: "text", text: "first chunk" },
+    ] as ChatMessage["parts"]);
+    const nextAssistant = {
+      ...firstAssistant,
+      parts: [{ type: "text", text: "first chunk plus more" }],
+    } as ChatMessage;
+    const derive = (assistant: ChatMessage) =>
+      deriveChatTimelineRows({
+        messages: [userMessage, assistant],
+        status: "streaming",
+        lastAssistantMessageIndex: 1,
+        expandedAgentMessageIds: new Set(),
+      });
+
+    const first = stabilizeChatTimelineRows(
+      derive(firstAssistant),
+      createStableChatTimelineRowsState(),
+    );
+    const second = stabilizeChatTimelineRows(derive(nextAssistant), first);
+
+    expect(second.result[0]).toBe(first.result[0]);
+    expect(second.result.at(-1)).not.toBe(first.result.at(-1));
   });
 });
