@@ -252,14 +252,14 @@ export class DesktopSandboxBridge {
 
     const userId = this.extractUserIdFromToken(centrifugoToken);
     const channel = sandboxConnectionChannel(userId, connectionId);
-    this.subscription = this.client.newSubscription(channel);
+    const subscription = this.client.newSubscription(channel);
+    this.subscription = subscription;
     this.publishQueue = new CentrifugoPublishQueue(async (message) => {
-      if (this.isStoppingOrStopped || !this.subscription) {
-        throw new Error(
-          "[DesktopSandboxBridge] Cannot publish result: subscription is null",
-        );
-      }
-      await this.subscription.publish(message);
+      // Queued work can outlive stop() or a reconnect; never publish it on a
+      // replacement subscription.
+      if (this.isStoppingOrStopped || this.subscription !== subscription)
+        return;
+      await subscription.publish(message);
     });
 
     this.subscription.on("publication", (ctx) => {

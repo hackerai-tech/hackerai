@@ -775,6 +775,65 @@ describe("forwardChunk", () => {
       publishCountAfterStop,
     );
   });
+
+  it("drops a queued stream chunk when the bridge stops before publishing it", async () => {
+    let releaseFirstPublish!: () => void;
+    const firstPublishBlocked = new Promise<void>((resolve) => {
+      releaseFirstPublish = resolve;
+    });
+    let firstPublishStarted!: () => void;
+    const firstPublishStartedPromise = new Promise<void>((resolve) => {
+      firstPublishStarted = resolve;
+    });
+    mockSubscription.publish.mockImplementationOnce(async () => {
+      firstPublishStarted();
+      await firstPublishBlocked;
+    });
+
+    const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const bridge = new DesktopSandboxBridge(buildConfig());
+      await bridge.start();
+      const handler = getPublicationHandler();
+
+      mockInvokeHandler = async () => undefined;
+      handler({
+        data: {
+          type: "command",
+          commandId: "cmd-queued-stop",
+          command: "test",
+          targetConnectionId: "conn-123",
+        },
+      });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      const firstChunk = capturedChannel!.onmessage!({
+        type: "stdout",
+        data: "first",
+      }) as unknown as Promise<void>;
+      await firstPublishStartedPromise;
+      const queuedChunk = capturedChannel!.onmessage!({
+        type: "stderr",
+        data: "queued",
+      }) as unknown as Promise<void>;
+
+      await bridge.stop();
+      releaseFirstPublish();
+
+      await expect(Promise.all([firstChunk, queuedChunk])).resolves.toEqual([
+        undefined,
+        undefined,
+      ]);
+      expect(mockSubscription.publish).toHaveBeenCalledTimes(1);
+      expect(errorSpy).not.toHaveBeenCalledWith(
+        "[DesktopSandboxBridge] Failed to publish result:",
+        expect.anything(),
+      );
+    } finally {
+      releaseFirstPublish();
+      errorSpy.mockRestore();
+    }
+  });
 });
 
 // ── pty_data publish ordering ─────────────────────────────────────────
