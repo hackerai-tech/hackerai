@@ -21,6 +21,7 @@ import {
   DEFAULT_PTY_COLS,
   DEFAULT_PTY_ROWS,
 } from "@/lib/ai/tools/utils/pty-session-manager";
+import { CentrifugoPublishQueue } from "@/packages/local/src/centrifugo-transport";
 
 type RefreshTokenResult =
   | { ok: true; centrifugoToken: string }
@@ -138,6 +139,7 @@ export class DesktopSandboxBridge {
   private activeCommands = new Set<string>();
   private isStoppingOrStopped = true;
   private config: DesktopBridgeConfig;
+  private publishQueue: CentrifugoPublishQueue | null = null;
 
   constructor(config: DesktopBridgeConfig) {
     this.config = config;
@@ -154,6 +156,7 @@ export class DesktopSandboxBridge {
     const subscription = this.subscription;
     this.client = null;
     this.subscription = null;
+    this.publishQueue = null;
     this.connectionId = null;
     try {
       subscription?.unsubscribe();
@@ -250,6 +253,14 @@ export class DesktopSandboxBridge {
     const userId = this.extractUserIdFromToken(centrifugoToken);
     const channel = sandboxConnectionChannel(userId, connectionId);
     this.subscription = this.client.newSubscription(channel);
+    this.publishQueue = new CentrifugoPublishQueue(async (message) => {
+      if (this.isStoppingOrStopped || !this.subscription) {
+        throw new Error(
+          "[DesktopSandboxBridge] Cannot publish result: subscription is null",
+        );
+      }
+      await this.subscription.publish(message);
+    });
 
     this.subscription.on("publication", (ctx) => {
       const message = ctx.data;
@@ -790,13 +801,15 @@ export class DesktopSandboxBridge {
 
   private async publishResult(message: SandboxMessage): Promise<void> {
     if (this.isStoppingOrStopped) return;
-    if (!this.subscription) {
+    if (!this.publishQueue) {
       throw new Error(
         "[DesktopSandboxBridge] Cannot publish result: subscription is null",
       );
     }
     try {
-      await this.subscription.publish(message);
+      await this.publishQueue.publish(
+        message as unknown as Record<string, unknown>,
+      );
     } catch (error) {
       console.error("[DesktopSandboxBridge] Failed to publish result:", error);
       throw error;
@@ -985,6 +998,7 @@ export class DesktopSandboxBridge {
 
   async stop(): Promise<void> {
     this.isStoppingOrStopped = true;
+    this.publishQueue = null;
     if (this.connectionId) {
       try {
         await this.config.disconnectDesktop({

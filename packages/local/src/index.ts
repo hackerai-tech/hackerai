@@ -33,6 +33,7 @@ import {
   confirmProcessTermination,
   isProcessTreeTerminationConfirmed,
 } from "./command-cancellation";
+import { CentrifugoPublishQueue } from "./centrifugo-transport";
 
 const DEFAULT_SHELL = getDefaultShell(os.platform());
 
@@ -285,6 +286,7 @@ class LocalSandboxClient {
   private idleCheckInterval?: NodeJS.Timeout;
   private processRunner: ProcessRunner;
   private activeStreamCommands: Map<string, ChildProcess> = new Map();
+  private publishQueue?: CentrifugoPublishQueue;
 
   constructor(private config: Config) {
     this.convexHttp = new ConvexHttpClient(config.convexUrl);
@@ -491,6 +493,12 @@ class LocalSandboxClient {
 
     const channel = `sandbox:connection:${this.connectionId}#${this.userId}`;
     this.subscription = this.centrifuge.newSubscription(channel);
+    this.publishQueue = new CentrifugoPublishQueue(async (message) => {
+      if (!this.subscription) {
+        throw new Error("Cannot publish: no active subscription");
+      }
+      await this.subscription.publish(message);
+    });
 
     this.subscription.on("publication", (ctx: PublicationContext) => {
       if (this.isShuttingDown) return;
@@ -592,12 +600,14 @@ class LocalSandboxClient {
   private async publishToChannel(
     data: CentrifugoOutgoingMessage,
   ): Promise<void> {
-    if (!this.subscription) {
+    if (!this.publishQueue) {
       console.error(chalk.red("Cannot publish: no active subscription"));
       return;
     }
     try {
-      await this.subscription.publish(data);
+      await this.publishQueue.publish(
+        data as unknown as Record<string, unknown>,
+      );
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : JSON.stringify(err);
       console.error(chalk.red(`Publish failed: ${msg}`));
@@ -819,7 +829,7 @@ class LocalSandboxClient {
         });
       });
 
-      proc.on("close", (code) => {
+      proc.on("close", async (code) => {
         if (timeoutId) clearTimeout(timeoutId);
         this.activeStreamCommands.delete(commandId);
 
@@ -840,7 +850,7 @@ class LocalSandboxClient {
           });
         }
 
-        this.publishToChannel({
+        await this.publishToChannel({
           type: "exit",
           commandId,
           exitCode,
@@ -877,7 +887,7 @@ class LocalSandboxClient {
         resolve();
       });
 
-      proc.on("error", (error) => {
+      proc.on("error", async (error) => {
         if (timeoutId) clearTimeout(timeoutId);
         this.activeStreamCommands.delete(commandId);
         this.publishToChannel({
@@ -891,7 +901,7 @@ class LocalSandboxClient {
             ),
           );
         });
-        this.publishToChannel({
+        await this.publishToChannel({
           type: "exit",
           commandId,
           exitCode: 1,
@@ -1033,6 +1043,7 @@ class LocalSandboxClient {
       this.subscription.unsubscribe();
       this.subscription = undefined;
     }
+    this.publishQueue = undefined;
     if (this.centrifuge) {
       this.centrifuge.disconnect();
       this.centrifuge = undefined;

@@ -14,6 +14,10 @@ import {
   type FileListResultMessage,
 } from "@/lib/centrifugo/types";
 import { presenceHasConnectionId } from "@/lib/centrifugo/presence";
+import {
+  CentrifugoMessageReassembler,
+  fragmentMatchesCorrelation,
+} from "@/packages/local/src/centrifugo-transport";
 import { getPlatformDisplayName, escapeShellValue } from "./platform-utils";
 import type { ConnectionInfo } from "./sandbox-types";
 import { validateDownloadUrl } from "./path-validation";
@@ -366,6 +370,7 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
       let settled = false;
       let timeoutId: NodeJS.Timeout | undefined;
       let subscription: Subscription | undefined;
+      const reassembler = new CentrifugoMessageReassembler();
 
       const cleanup = () => {
         if (timeoutId) {
@@ -409,8 +414,13 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
       subscription = client.newSubscription(channel);
       subscription.on("publication", (ctx) => {
         if (settled) return;
+        if (!fragmentMatchesCorrelation(ctx.data, "requestId", requestId)) {
+          return;
+        }
 
-        const message = parseFileResponseMessage(ctx.data);
+        const reassembled = reassembler.accept(ctx.data);
+        if (!reassembled) return;
+        const message = parseFileResponseMessage(reassembled);
         if (!message || message.requestId !== requestId) return;
 
         if (message.type === "file_error") {
@@ -544,6 +554,7 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
         let cancelTriggeredBySignal = false;
         let cancelAttemptPromise: Promise<boolean> | null = null;
         let resolveCancelAttempt: ((confirmed: boolean) => void) | null = null;
+        const reassembler = new CentrifugoMessageReassembler();
 
         const maxWaitTime = timeout + 5000; // Add 5s buffer for network
 
@@ -700,8 +711,13 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
 
         subscription.on("publication", (ctx) => {
           if (settled) return;
+          if (!fragmentMatchesCorrelation(ctx.data, "commandId", commandId)) {
+            return;
+          }
 
-          const message = parseSandboxMessage(ctx.data);
+          const reassembled = reassembler.accept(ctx.data);
+          if (!reassembled) return;
+          const message = parseSandboxMessage(reassembled);
           if (!message) return;
           if (message.commandId !== commandId) return;
           if (message.type === "command" || message.type === "command_cancel") {
