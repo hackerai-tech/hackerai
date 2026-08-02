@@ -1,11 +1,12 @@
 import { ConvexError, v } from "convex/values";
 import { mutation, query } from "./_generated/server";
 import { validateServiceKey } from "./lib/utils";
-
-const MAX_SUBAGENTS_PER_PARENT_RUN = 3;
-const MAX_ACTIVE_SUBAGENTS_PER_PARENT_RUN = 1;
-const MAX_SUBAGENT_COST_DOLLARS = 1;
-const MAX_PARENT_SUBAGENT_COST_DOLLARS = 3;
+import {
+  MAX_ACTIVE_SUBAGENTS_PER_PARENT_RUN,
+  MAX_SUBAGENTS_PER_PARENT_RUN,
+  SUBAGENT_MAX_COST_DOLLARS,
+  SUBAGENT_MAX_PARENT_COST_DOLLARS,
+} from "../lib/ai/subagents/contracts";
 
 const statusValidator = v.union(
   v.literal("queued"),
@@ -69,8 +70,21 @@ const subagentSummaryValidator = v.object({
   updated_at: v.number(),
 });
 
+const ACTIVE_SUBAGENT_STATUSES = ["queued", "running", "finalizing"] as const;
+const DELETION_CANCELLATION_REASONS = new Set([
+  "chat_deleted",
+  "all_chats_deleted",
+  "account_deleted",
+]);
 const isActiveStatus = (status: string): boolean =>
-  status === "queued" || status === "running" || status === "finalizing";
+  ACTIVE_SUBAGENT_STATUSES.some((activeStatus) => activeStatus === status);
+const isPendingDeletionCancellation = (row: {
+  status: string;
+  cancel_reason?: string;
+}): boolean =>
+  row.status === "canceled" &&
+  typeof row.cancel_reason === "string" &&
+  DELETION_CANCELLATION_REASONS.has(row.cancel_reason);
 
 const toSummary = (row: {
   subagent_id: string;
@@ -239,12 +253,12 @@ export const reserveForBackend = mutation({
       (total, row) => total + (row.cost_dollars ?? 0),
       0,
     );
-    if (parentCostDollars >= MAX_PARENT_SUBAGENT_COST_DOLLARS) {
+    if (parentCostDollars >= SUBAGENT_MAX_PARENT_COST_DOLLARS) {
       return { outcome: "spend_limit" as const };
     }
     const childCostLimitDollars = Math.min(
-      MAX_SUBAGENT_COST_DOLLARS,
-      MAX_PARENT_SUBAGENT_COST_DOLLARS - parentCostDollars,
+      SUBAGENT_MAX_COST_DOLLARS,
+      SUBAGENT_MAX_PARENT_COST_DOLLARS - parentCostDollars,
     );
     if (
       parentRuns.filter((row) => isActiveStatus(row.status)).length >=
@@ -316,6 +330,31 @@ export const listActiveForParentBackend = query({
   },
 });
 
+export const listActiveForUserBackend = query({
+  args: { serviceKey: v.string(), userId: v.string(), limit: v.number() },
+  returns: v.object({ runs: v.array(v.any()), hasMore: v.boolean() }),
+  handler: async (ctx, args) => {
+    validateServiceKey(args.serviceKey);
+    const limit = Math.min(Math.max(Math.floor(args.limit), 1), 100);
+    const activeRows = (
+      await Promise.all(
+        ACTIVE_SUBAGENT_STATUSES.map((status) =>
+          ctx.db
+            .query("subagent_runs")
+            .withIndex("by_user_and_status", (q) =>
+              q.eq("user_id", args.userId).eq("status", status),
+            )
+            .take(limit + 1),
+        ),
+      )
+    ).flat();
+    return {
+      runs: activeRows.slice(0, limit),
+      hasMore: activeRows.length > limit,
+    };
+  },
+});
+
 export const attachTriggerRunForBackend = mutation({
   args: {
     serviceKey: v.string(),
@@ -324,6 +363,7 @@ export const attachTriggerRunForBackend = mutation({
   },
   returns: v.union(
     v.literal("updated"),
+    v.literal("terminal"),
     v.literal("stale"),
     v.literal("not_found"),
   ),
@@ -337,13 +377,14 @@ export const attachTriggerRunForBackend = mutation({
     if (row.trigger_run_id && row.trigger_run_id !== args.triggerRunId) {
       return "stale" as const;
     }
+    const terminal = !isActiveStatus(row.status);
     await ctx.db.patch(row._id, {
       trigger_run_id: args.triggerRunId,
       status: row.status === "queued" ? "running" : row.status,
-      started_at: row.started_at ?? Date.now(),
+      started_at: terminal ? row.started_at : (row.started_at ?? Date.now()),
       updated_at: Date.now(),
     });
-    return "updated" as const;
+    return terminal ? ("terminal" as const) : ("updated" as const);
   },
 });
 
@@ -443,6 +484,98 @@ export const cancelForParentBackend = mutation({
   },
 });
 
+export const cancelForChatDeletionBackend = mutation({
+  args: {
+    serviceKey: v.string(),
+    chatId: v.string(),
+    userId: v.string(),
+    reason: v.string(),
+  },
+  returns: v.array(v.string()),
+  handler: async (ctx, args) => {
+    validateServiceKey(args.serviceKey);
+    const candidateRows = (
+      await Promise.all(
+        [...ACTIVE_SUBAGENT_STATUSES, "canceled" as const].map((status) =>
+          ctx.db
+            .query("subagent_runs")
+            .withIndex("by_chat_and_status", (q) =>
+              q.eq("chat_id", args.chatId).eq("status", status),
+            )
+            .take(101),
+        ),
+      )
+    )
+      .flat()
+      .filter((row) => row.user_id === args.userId);
+    const activeRows = candidateRows.filter((row) =>
+      isActiveStatus(row.status),
+    );
+    const cancellationRows = candidateRows.filter(
+      (row) => isActiveStatus(row.status) || isPendingDeletionCancellation(row),
+    );
+    const now = Date.now();
+    await Promise.all(
+      activeRows.map((row) =>
+        ctx.db.patch(row._id, {
+          status: "canceled",
+          summary:
+            "Independent validation was canceled because its chat was deleted.",
+          cancel_reason: args.reason,
+          failure_code: args.reason,
+          completed_at: now,
+          updated_at: now,
+        }),
+      ),
+    );
+    return cancellationRows.flatMap((row) =>
+      row.trigger_run_id ? [row.trigger_run_id] : [],
+    );
+  },
+});
+
+export const cancelForUserDeletionBackend = mutation({
+  args: { serviceKey: v.string(), userId: v.string(), reason: v.string() },
+  returns: v.array(v.string()),
+  handler: async (ctx, args) => {
+    validateServiceKey(args.serviceKey);
+    const candidateRows = (
+      await Promise.all(
+        [...ACTIVE_SUBAGENT_STATUSES, "canceled" as const].map((status) =>
+          ctx.db
+            .query("subagent_runs")
+            .withIndex("by_user_and_status", (q) =>
+              q.eq("user_id", args.userId).eq("status", status),
+            )
+            .take(101),
+        ),
+      )
+    ).flat();
+    const activeRows = candidateRows.filter((row) =>
+      isActiveStatus(row.status),
+    );
+    const cancellationRows = candidateRows.filter(
+      (row) => isActiveStatus(row.status) || isPendingDeletionCancellation(row),
+    );
+    const now = Date.now();
+    await Promise.all(
+      activeRows.map((row) =>
+        ctx.db.patch(row._id, {
+          status: "canceled",
+          summary: "Independent validation was canceled during data deletion.",
+          cancel_reason: args.reason,
+          failure_code: args.reason,
+          completed_at: now,
+          updated_at: now,
+        }),
+      ),
+    );
+    return cancellationRows.flatMap((row) =>
+      row.trigger_run_id ? [row.trigger_run_id] : [],
+    );
+  },
+});
+
 export const finishForBackend = mutation({
   args: {
     serviceKey: v.string(),
@@ -491,19 +624,27 @@ export const finishForBackend = mutation({
       summary: isCanceledUsageFinalization
         ? (row.summary ?? args.summary)
         : args.summary,
-      verdict: args.verdict,
-      confidence: args.confidence,
-      structured_result: args.structuredResult,
+      verdict: isCanceledUsageFinalization ? row.verdict : args.verdict,
+      confidence: isCanceledUsageFinalization
+        ? row.confidence
+        : args.confidence,
+      structured_result: isCanceledUsageFinalization
+        ? row.structured_result
+        : args.structuredResult,
       failure_code: isCanceledUsageFinalization
         ? (row.failure_code ?? args.failureCode)
         : args.failureCode,
-      failure_reason: args.failureReason,
+      failure_reason: isCanceledUsageFinalization
+        ? (row.failure_reason ?? args.failureReason)
+        : args.failureReason,
       cancel_reason: isCanceledUsageFinalization
         ? (row.cancel_reason ?? args.cancelReason)
         : args.cancelReason,
       cost_dollars: args.costDollars ?? row.cost_dollars,
       step_count: args.stepCount ?? row.step_count,
-      completed_at: Date.now(),
+      completed_at: isCanceledUsageFinalization
+        ? (row.completed_at ?? Date.now())
+        : Date.now(),
       updated_at: Date.now(),
     });
     return "updated" as const;

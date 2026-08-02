@@ -21,6 +21,7 @@ import {
   SUBAGENT_MAX_ACTIVE_SECONDS,
   SUBAGENT_MAX_DURATION_SECONDS,
   SUBAGENT_MAX_STEPS,
+  SUBAGENT_TERMINAL_STATUSES,
   type SecurityValidationResult,
 } from "@/lib/ai/subagents/contracts";
 import { getSubagentProfileDefinition } from "@/lib/ai/subagents/profiles";
@@ -52,6 +53,11 @@ import { extractOpenRouterMetadata } from "@/lib/api/openrouter-metadata";
 import { captureSubagentLifecycleEvent } from "@/lib/analytics/subagents";
 import { phLogger } from "@/lib/posthog/server";
 import { ptySessionManager } from "@/lib/ai/tools/utils/pty-session-manager";
+import {
+  extractErrorDetails,
+  getUserFriendlyProviderError,
+} from "@/lib/utils/error-utils";
+import { ChatSDKError, serializeChatSDKErrorForStream } from "@/lib/errors";
 
 type SubagentTaskOutput = {
   subagentId: string;
@@ -182,37 +188,78 @@ export const subagentTask = task({
     const startedAt = Date.now();
     const row = await getSubagent(payload.subagentId);
     if (!row) throw new Error("Subagent reservation not found");
-    if (row.status === "canceled") {
-      return { subagentId: row.subagent_id, status: "canceled" };
+    if (SUBAGENT_TERMINAL_STATUSES.has(row.status)) {
+      return {
+        subagentId: row.subagent_id,
+        status: row.status as SubagentTaskOutput["status"],
+      };
     }
-    if (
-      row.depth !== 1 ||
-      (row.status !== "queued" && row.status !== "running") ||
-      row.permission_mode !== "full_access"
-    ) {
-      throw new Error("Unsupported subagent profile or depth");
-    }
-    const profile = getSubagentProfileDefinition(row.profile);
     const costLimitDollars = row.cost_limit_dollars;
+    let profile!: ReturnType<typeof getSubagentProfileDefinition>;
 
     cancellationCleanup.set(ctx.run.id, {
       subagentId: row.subagent_id,
       userId: row.user_id,
       parentTriggerRunId: row.parent_trigger_run_id,
     });
-    await attachSubagentTriggerRun(row.subagent_id, ctx.run.id);
-    await tags.add([
-      `subagent_${row.subagent_id}`,
-      `parent_${row.parent_trigger_run_id}`,
-      `user_${row.user_id}`,
-      "profile_security_validation",
-    ]);
-    metadata
-      .set("status", "running")
-      .set("subagentId", row.subagent_id)
-      .set("parentTriggerRunId", row.parent_trigger_run_id)
-      .set("parentToolCallId", row.parent_tool_call_id)
-      .set("profile", row.profile);
+    try {
+      const attachOutcome = await attachSubagentTriggerRun(
+        row.subagent_id,
+        ctx.run.id,
+      );
+      if (attachOutcome === "terminal") {
+        const terminalRow = await getSubagent(row.subagent_id);
+        if (
+          !terminalRow ||
+          !SUBAGENT_TERMINAL_STATUSES.has(terminalRow.status)
+        ) {
+          throw new Error("Subagent became unavailable during attachment");
+        }
+        cancellationCleanup.delete(ctx.run.id);
+        return {
+          subagentId: terminalRow.subagent_id,
+          status: terminalRow.status as SubagentTaskOutput["status"],
+        };
+      }
+      if (attachOutcome !== "updated") {
+        throw new Error(`Subagent attachment failed: ${attachOutcome}`);
+      }
+      if (
+        row.depth !== 1 ||
+        (row.status !== "queued" && row.status !== "running") ||
+        row.permission_mode !== "full_access"
+      ) {
+        throw new Error("Unsupported subagent profile or depth");
+      }
+      profile = getSubagentProfileDefinition(row.profile);
+      await tags.add([
+        `subagent_${row.subagent_id}`,
+        `parent_${row.parent_trigger_run_id}`,
+        `user_${row.user_id}`,
+        "profile_security_validation",
+      ]);
+      metadata
+        .set("status", "running")
+        .set("subagentId", row.subagent_id)
+        .set("parentTriggerRunId", row.parent_trigger_run_id)
+        .set("parentToolCallId", row.parent_tool_call_id)
+        .set("profile", row.profile);
+    } catch (error) {
+      const setupError = extractErrorDetails(error);
+      await finishSubagent({
+        subagentId: row.subagent_id,
+        triggerRunId: ctx.run.id,
+        status: "failed",
+        summary: "Independent validation failed during setup.",
+        failureCode: "setup_failed",
+        failureReason:
+          typeof setupError.errorMessage === "string"
+            ? setupError.errorMessage
+            : undefined,
+      }).catch(() => undefined);
+      cancellationCleanup.delete(ctx.run.id);
+      throw error;
+    }
 
     const activeAbort = new AbortController();
     let activeTimedOut = false;
@@ -332,6 +379,12 @@ export const subagentTask = task({
       });
 
       const uiStream = createUIMessageStream({
+        onError: (error) => {
+          if (error instanceof ChatSDKError) {
+            return serializeChatSDKErrorForStream(error);
+          }
+          return getUserFriendlyProviderError(error);
+        },
         execute: async ({ writer }) => {
           const submitResult = tool({
             description: profile.finalResultTool.description,
@@ -564,10 +617,31 @@ export const subagentTask = task({
       );
       return { subagentId: row.subagent_id, status: "completed" };
     } catch (error) {
-      const status = triggerSignal.aborted ? "canceled" : "failed";
-      const failureCode = triggerSignal.aborted
-        ? "parent_or_user_canceled"
-        : "runtime_error";
+      const terminalFailure = activeTimedOut
+        ? {
+            status: "timed_out" as const,
+            code: "active_time_limit",
+            summary:
+              "Independent validation reached its 15-minute active limit.",
+          }
+        : triggerSignal.aborted
+          ? {
+              status: "canceled" as const,
+              code: "parent_or_user_canceled",
+              summary: "Independent validation was canceled.",
+            }
+          : spendCapExceeded
+            ? {
+                status: "failed" as const,
+                code: "spend_cap",
+                summary: `Independent validation reached its $${costLimitDollars.toFixed(2)} spend limit.`,
+              }
+            : {
+                status: "failed" as const,
+                code: "runtime_error",
+                summary:
+                  "Independent validation failed before producing a verdict.",
+              };
       const fallbackCostDollars = usageTracker.computeCostDollars(
         selectedModel,
         responseModel,
@@ -579,13 +653,12 @@ export const subagentTask = task({
       await finishSubagent({
         subagentId: row.subagent_id,
         triggerRunId: ctx.run.id,
-        status,
-        summary:
-          status === "canceled"
-            ? "Independent validation was canceled."
-            : "Independent validation failed before producing a verdict.",
-        failureCode,
-        ...(status === "canceled" ? { cancelReason: failureCode } : {}),
+        status: terminalFailure.status,
+        summary: terminalFailure.summary,
+        failureCode: terminalFailure.code,
+        ...(terminalFailure.status === "canceled"
+          ? { cancelReason: terminalFailure.code }
+          : {}),
         costDollars: settlement.costDollars,
         stepCount,
       }).catch(() => undefined);
@@ -593,7 +666,7 @@ export const subagentTask = task({
         subagentId: row.subagent_id,
         parentTriggerRunId: row.parent_trigger_run_id,
         errorName: error instanceof Error ? error.name : "UnknownError",
-        failureCode,
+        failureCode: terminalFailure.code,
       });
       throw error;
     } finally {

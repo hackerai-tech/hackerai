@@ -76,4 +76,34 @@ describe("subagent cancel route", () => {
     expect(response.status).toBe(409);
     expect(cancelAgentTriggerRun).not.toHaveBeenCalled();
   });
+
+  it("returns a server error without changing persistence when Trigger cancellation fails", async () => {
+    cancelAgentTriggerRun.mockRejectedValue(new Error("Trigger unavailable"));
+    const response = await POST({} as any, {
+      params: Promise.resolve({ subagentId: "sa_1" }),
+    });
+
+    expect(response.status).toBe(502);
+    expect(cancelSubagentForUser).not.toHaveBeenCalled();
+  });
+
+  it("surfaces persistence failure after Trigger cancellation", async () => {
+    cancelSubagentForUser.mockRejectedValue(new Error("Convex unavailable"));
+    const response = await POST({} as any, {
+      params: Promise.resolve({ subagentId: "sa_1" }),
+    });
+
+    expect(response.status).toBe(502);
+    expect(cancelAgentTriggerRun).toHaveBeenCalledWith("child-run-1");
+  });
+
+  it("returns 401 when authentication fails", async () => {
+    getUserID.mockRejectedValue(new Error("unauthenticated"));
+    const response = await POST({} as any, {
+      params: Promise.resolve({ subagentId: "sa_1" }),
+    });
+
+    expect(response.status).toBe(401);
+    expect(getOwnedSubagent).not.toHaveBeenCalled();
+  });
 });

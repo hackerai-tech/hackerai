@@ -9,6 +9,7 @@ import { api } from "@/convex/_generated/api";
 import { logger } from "@/lib/logger";
 import { fenceAndGetActiveAgentResourcesForUser } from "@/lib/db/actions";
 import { closeAndCancelAgentResources } from "@/lib/api/agent-deletion-cleanup";
+import { cancelSubagentsForUserDeletion } from "@/lib/db/subagents";
 
 type OrganizationMembership = Awaited<
   ReturnType<typeof workos.userManagement.listOrganizationMemberships>
@@ -199,8 +200,18 @@ export const POST = async (req: NextRequest) => {
     }
 
     stage = "close_active_agent_resources";
+    const childTriggerRunIds = await cancelSubagentsForUserDeletion(
+      userId,
+      "account_deleted",
+    );
     await closeAndCancelAgentResources(
-      activeAgentResources.resources,
+      [
+        ...activeAgentResources.resources,
+        ...childTriggerRunIds.map((triggerRunId) => ({
+          chatId: "subagent",
+          triggerRunId,
+        })),
+      ],
       "account-deleted",
     );
 

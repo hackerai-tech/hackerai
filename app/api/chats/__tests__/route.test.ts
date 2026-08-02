@@ -6,6 +6,7 @@ const mockFenceAndGetActiveAgentResourcesForUser = jest.fn();
 const mockDeleteAllChatsForBackend = jest.fn();
 const mockCloseAndCancelAgentResources = jest.fn();
 const mockAssertUserCanAccessChatHistory = jest.fn();
+const mockCancelSubagentsForUserDeletion = jest.fn();
 
 jest.mock("next/server", () => ({
   NextResponse: class MockNextResponse {
@@ -45,6 +46,10 @@ jest.mock("@/lib/db/actions", () => ({
   fenceAndGetActiveAgentResourcesForUser:
     mockFenceAndGetActiveAgentResourcesForUser,
   deleteAllChatsForBackend: mockDeleteAllChatsForBackend,
+}));
+
+jest.mock("@/lib/db/subagents", () => ({
+  cancelSubagentsForUserDeletion: mockCancelSubagentsForUserDeletion,
 }));
 
 jest.mock("@/lib/suspensions", () => ({
@@ -90,6 +95,7 @@ describe("DELETE /api/chats", () => {
       closedApprovalSessions: 2,
     } as never);
     mockDeleteAllChatsForBackend.mockResolvedValue(undefined as never);
+    mockCancelSubagentsForUserDeletion.mockResolvedValue([] as never);
   });
 
   afterEach(() => {
@@ -99,6 +105,9 @@ describe("DELETE /api/chats", () => {
   it("cancels active Trigger runs before deleting chats", async () => {
     const { DELETE } = await import("../route");
     const calls: string[] = [];
+    mockCancelSubagentsForUserDeletion.mockResolvedValue([
+      "child-run-1",
+    ] as never);
     mockCloseAndCancelAgentResources.mockImplementation(async () => {
       calls.push("cleanup");
       return { canceledTriggerRuns: 2, closedApprovalSessions: 2 };
@@ -120,12 +129,19 @@ describe("DELETE /api/chats", () => {
       userId: "user-1",
     });
     expect(mockCloseAndCancelAgentResources).toHaveBeenCalledWith(
-      activeResources("run-1", "run-2").resources,
+      [
+        ...activeResources("run-1", "run-2").resources,
+        { chatId: "subagent", triggerRunId: "child-run-1" },
+      ],
       "chat-deleted",
     );
     expect(mockDeleteAllChatsForBackend).toHaveBeenCalledWith({
       userId: "user-1",
     });
+    expect(mockCancelSubagentsForUserDeletion).toHaveBeenCalledWith(
+      "user-1",
+      "all_chats_deleted",
+    );
     expect(calls).toEqual(["cleanup", "delete"]);
   });
 

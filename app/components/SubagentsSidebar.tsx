@@ -21,22 +21,17 @@ import type { SidebarSubagents } from "@/types/chat";
 import { MessagePartHandler } from "./MessagePartHandler";
 import { useSubagentRealtime } from "@/app/hooks/useSubagentRealtime";
 import { captureAuthenticatedEvent } from "@/lib/analytics/client";
-
-type ChildStatus =
-  | "queued"
-  | "running"
-  | "finalizing"
-  | "completed"
-  | "failed"
-  | "canceled"
-  | "timed_out";
+import {
+  SUBAGENT_ACTIVE_STATUSES,
+  type SubagentStatus,
+} from "@/lib/ai/subagents/contracts";
 
 type ChildSummary = {
   subagent_id: string;
   parent_trigger_run_id: string;
   parent_tool_call_id: string;
   trigger_run_id?: string;
-  status: ChildStatus;
+  status: SubagentStatus;
   candidate: { title: string; affected_asset: string };
   summary?: string;
   verdict?: "confirmed" | "rejected" | "inconclusive";
@@ -52,13 +47,8 @@ type ChildSummary = {
   completed_at?: number;
 };
 
-const ACTIVE_STATUSES = new Set<ChildStatus>([
-  "queued",
-  "running",
-  "finalizing",
-]);
-
-const isActive = (status: ChildStatus) => ACTIVE_STATUSES.has(status);
+const isActive = (status: SubagentStatus) =>
+  SUBAGENT_ACTIVE_STATUSES.has(status);
 
 const formatElapsed = (start: number, end: number): string => {
   const seconds = Math.max(0, Math.floor((end - start) / 1_000));
@@ -268,9 +258,12 @@ export const SubagentsSidebar = ({
 
   const selected =
     runs?.find((child) => child.subagent_id === selectedId) ?? null;
-  selectedForCleanup.current = selected;
   const active = runs?.filter((child) => isActive(child.status)) ?? [];
   const done = runs?.filter((child) => !isActive(child.status)) ?? [];
+
+  useEffect(() => {
+    selectedForCleanup.current = selected;
+  }, [selected]);
 
   useEffect(() => {
     captureAuthenticatedEvent("subagent_sidebar_opened", {
@@ -299,7 +292,9 @@ export const SubagentsSidebar = ({
 
   useEffect(() => {
     if (!selected) return;
-    selectedOpenedAt.current = { id: selected.subagent_id, at: Date.now() };
+    if (selectedOpenedAt.current?.id !== selected.subagent_id) {
+      selectedOpenedAt.current = { id: selected.subagent_id, at: Date.now() };
+    }
     if (openedChildren.current.has(selected.subagent_id)) return;
     openedChildren.current.add(selected.subagent_id);
     captureAuthenticatedEvent("subagent_opened", {
@@ -334,15 +329,18 @@ export const SubagentsSidebar = ({
     if (!selected || !isActive(selected.status)) return;
     setCanceling(true);
     setCancelError(null);
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), 30_000);
     try {
       const response = await fetch(
         `/api/subagents/${encodeURIComponent(selected.subagent_id)}/cancel`,
-        { method: "POST" },
+        { method: "POST", signal: controller.signal },
       );
       if (!response.ok) throw new Error("Cancel failed");
     } catch {
       setCancelError("Could not cancel this validation. Try again.");
     } finally {
+      window.clearTimeout(timeout);
       setCanceling(false);
     }
   };
@@ -400,8 +398,7 @@ export const SubagentsSidebar = ({
                     />
                     <p className="text-sm font-medium">Preparing validation</p>
                     <p className="mt-1 text-xs text-muted-foreground">
-                      The child will appear here when its durable run is
-                      reserved.
+                      This validation will appear here once it starts.
                     </p>
                   </div>
                 ) : (

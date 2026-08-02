@@ -155,6 +155,28 @@ export const cancelSubagentsForParent = async (
     reason,
   });
 
+export const cancelSubagentsForChatDeletion = async (
+  chatId: string,
+  userId: string,
+  reason: string,
+) =>
+  await getConvexClient().mutation(api.subagents.cancelForChatDeletionBackend, {
+    serviceKey,
+    chatId,
+    userId,
+    reason,
+  });
+
+export const cancelSubagentsForUserDeletion = async (
+  userId: string,
+  reason: string,
+) =>
+  await getConvexClient().mutation(api.subagents.cancelForUserDeletionBackend, {
+    serviceKey,
+    userId,
+    reason,
+  });
+
 export const finishSubagent = async (args: {
   subagentId: string;
   triggerRunId: string;

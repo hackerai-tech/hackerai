@@ -19,6 +19,7 @@ import {
   createSubagentId,
 } from "@/lib/ai/subagents/fingerprint";
 import { getSubagentSandboxIdentity } from "@/lib/ai/subagents/sandbox-identity";
+import { serializeSubagentWaitForParent } from "@/lib/ai/subagents/parent-wait-lock";
 import { getSandboxWithFallbackGuard } from "@/lib/ai/tools/utils/sandbox-fallback";
 import {
   acknowledgeSubagentResult,
@@ -26,7 +27,10 @@ import {
   reserveSubagent,
   type PersistedSubagent,
 } from "@/lib/db/subagents";
-import { captureSubagentLifecycleEvent } from "@/lib/analytics/subagents";
+import {
+  captureSubagentLifecycleEvent,
+  subagentExposureEventUuid,
+} from "@/lib/analytics/subagents";
 import { subagentTask } from "@/trigger/subagent";
 
 export type DelegateTaskRuntimeConfig = {
@@ -122,6 +126,7 @@ export const createDelegateTask = (
       }
       captureSubagentLifecycleEvent("subagent_feature_exposed", {
         userId: context.userID,
+        eventUuid: subagentExposureEventUuid(parentTriggerRunId),
         parentTriggerRunId,
         profile: "security_validation",
       });
@@ -217,36 +222,54 @@ export const createDelegateTask = (
         return output;
       }
 
-      const key = await idempotencyKeys.create(
-        ["security-validation", subagentId],
-        { scope: "global" },
-      );
-      const childResult = await subagentTask.triggerAndWait(
-        { subagentId },
-        {
-          idempotencyKey: key,
-          idempotencyKeyTTL: "6h",
-          tags: [
-            `subagent_${subagentId}`,
-            `parent_${parentTriggerRunId}`,
-            `user_${context.userID}`,
-            "profile_security_validation",
-          ],
-          metadata: {
-            subagentId,
-            parentTriggerRunId,
-            parentToolCallId: execution.toolCallId,
-            profile: "security_validation",
-          },
+      const { childResult, record } = await serializeSubagentWaitForParent(
+        parentTriggerRunId,
+        async () => {
+          const beforeWait = await getSubagent(subagentId);
+          if (
+            !beforeWait ||
+            SUBAGENT_TERMINAL_STATUSES.has(beforeWait.status)
+          ) {
+            return { childResult: null, record: beforeWait };
+          }
+
+          const key = await idempotencyKeys.create(
+            ["security-validation", subagentId],
+            { scope: "global" },
+          );
+          const result = await subagentTask.triggerAndWait(
+            { subagentId },
+            {
+              idempotencyKey: key,
+              idempotencyKeyTTL: "6h",
+              tags: [
+                `subagent_${subagentId}`,
+                `parent_${parentTriggerRunId}`,
+                `user_${context.userID}`,
+                "profile_security_validation",
+              ],
+              metadata: {
+                subagentId,
+                parentTriggerRunId,
+                parentToolCallId: execution.toolCallId,
+                profile: "security_validation",
+              },
+            },
+          );
+
+          return {
+            childResult: result,
+            record: await getSubagent(subagentId),
+          };
         },
       );
-
-      const record = await getSubagent(subagentId);
       if (!record) {
         return fallbackFailure(
           subagentId,
-          childResult.id ?? initialRecord.trigger_run_id ?? null,
-          childResult.ok ? "result_persistence_missing" : "child_run_failed",
+          childResult?.id ?? initialRecord.trigger_run_id ?? null,
+          childResult?.ok === false
+            ? "child_run_failed"
+            : "result_persistence_missing",
         );
       }
 
@@ -258,7 +281,7 @@ export const createDelegateTask = (
         subagent_id: subagentId,
         parent_trigger_run_id: parentTriggerRunId,
         parent_tool_call_id: execution.toolCallId,
-        trigger_run_id: record.trigger_run_id ?? childResult.id ?? null,
+        trigger_run_id: record.trigger_run_id ?? childResult?.id ?? null,
         profile: "security_validation",
         status: record.status,
         title: record.candidate.title,

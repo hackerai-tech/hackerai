@@ -22,6 +22,7 @@ describe("security validation subagent runtime contracts", () => {
     const delegate = read("lib/ai/tools/delegate-task.ts");
     const tokenRoute = read("app/api/subagents/[subagentId]/token/route.ts");
     expect(delegate).toContain("triggerAndWait");
+    expect(delegate).toContain("serializeSubagentWaitForParent");
     expect(delegate).toContain('scope: "global"');
     expect(delegate).toContain("acknowledgeSubagentResult");
     expect(delegate.indexOf("SUBAGENT_TERMINAL_STATUSES.has")).toBeLessThan(
@@ -29,7 +30,10 @@ describe("security validation subagent runtime contracts", () => {
     );
     expect(tokenRoute).toContain("getOwnedSubagent");
     expect(tokenRoute).toContain("runs: [child.trigger_run_id]");
-    expect(tokenRoute).toContain('expirationTime: "10m"');
+    expect(tokenRoute).toContain("SUBAGENT_TOKEN_TTL_SECONDS = 10 * 60");
+    expect(tokenRoute).toContain(
+      "expirationTime: `${SUBAGENT_TOKEN_TTL_SECONDS}s`",
+    );
   });
 
   it("propagates parent cancellation and refuses a canceled queued child", () => {
@@ -38,8 +42,16 @@ describe("security validation subagent runtime contracts", () => {
     expect(parent).toContain("listActiveSubagentsForParent");
     expect(parent).toContain("cancelAgentTriggerRun(child.trigger_run_id)");
     expect(parent).toContain("cancelSubagentsForParent");
-    expect(child.indexOf('row.status === "canceled"')).toBeLessThan(
-      child.indexOf("await attachSubagentTriggerRun"),
+    expect(
+      child.indexOf("SUBAGENT_TERMINAL_STATUSES.has(row.status)"),
+    ).toBeLessThan(child.indexOf("await attachSubagentTriggerRun"));
+    expect(child).toContain('attachOutcome === "terminal"');
+    expect(child).toContain('failureCode: "setup_failed"');
+    expect(child).toContain("onError: (error) =>");
+    expect(child).toContain("const terminalFailure = activeTimedOut");
+    expect(child).toContain(": spendCapExceeded");
+    expect(parent).toContain(
+      "const childCancellationCompleted = await Promise.race",
     );
   });
 

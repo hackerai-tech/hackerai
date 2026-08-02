@@ -8,6 +8,7 @@ import {
   cancelAgentTriggerRun,
   closeAgentApprovalSession,
 } from "@/lib/api/agent-approval-session";
+import { cancelSubagentsForChatDeletion } from "@/lib/db/subagents";
 
 export const maxDuration = 30;
 const MAX_DELETE_SNAPSHOT_ATTEMPTS = 3;
@@ -43,13 +44,21 @@ export async function DELETE(
 
       const triggerRunId = chat.active_trigger_run_id;
       const approvalSessionId = chat.active_agent_approval_session_id;
-      const [closed, canceled] = await Promise.all([
+      const childTriggerRunIds = await cancelSubagentsForChatDeletion(
+        chatId,
+        userId,
+        "chat_deleted",
+      );
+      const [closed, canceled, ...childCancellations] = await Promise.all([
         closeAgentApprovalSession(approvalSessionId, "chat-deleted"),
         cancelAgentTriggerRun(triggerRunId),
+        ...childTriggerRunIds.map((childRunId) =>
+          cancelAgentTriggerRun(childRunId),
+        ),
       ]);
       closedApprovalSession ||= closed;
-      canceledTriggerRun ||= canceled;
-
+      canceledTriggerRun ||=
+        canceled || childCancellations.some((childCanceled) => childCanceled);
       const deleteResult = await deleteChatForBackend({
         chatId,
         userId,

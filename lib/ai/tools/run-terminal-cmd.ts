@@ -1107,7 +1107,7 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                       handler,
                       sandbox: sandboxInstance,
                       terminalWriter: createTerminalWriter,
-                      scopeId: ptyScopeId,
+                      scopeId: chatId,
                     });
                     if (saveMsg) {
                       outputWithSaveInfo = saveMsg + "\n" + outputWithSaveInfo;
@@ -1172,7 +1172,7 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                         handler,
                         sandbox: sandboxInstance,
                         terminalWriter: createTerminalWriter,
-                        scopeId: ptyScopeId,
+                        scopeId: chatId,
                       });
                       if (saveMsg) {
                         outputWithSaveInfo =

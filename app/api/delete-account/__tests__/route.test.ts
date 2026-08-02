@@ -5,6 +5,7 @@ import { stripe } from "../../stripe";
 import { workos } from "../../workos";
 import { fenceAndGetActiveAgentResourcesForUser } from "@/lib/db/actions";
 import { closeAndCancelAgentResources } from "@/lib/api/agent-deletion-cleanup";
+import { cancelSubagentsForUserDeletion } from "@/lib/db/subagents";
 
 const mockConvexMutation = jest.fn();
 
@@ -37,6 +38,10 @@ jest.mock("@/lib/db/actions", () => ({
 
 jest.mock("@/lib/api/agent-deletion-cleanup", () => ({
   closeAndCancelAgentResources: jest.fn(),
+}));
+
+jest.mock("@/lib/db/subagents", () => ({
+  cancelSubagentsForUserDeletion: jest.fn(),
 }));
 
 jest.mock("@/convex/_generated/api", () => ({
@@ -119,6 +124,10 @@ const mockCloseAndCancelAgentResources =
   closeAndCancelAgentResources as jest.MockedFunction<
     typeof closeAndCancelAgentResources
   >;
+const mockCancelSubagentsForUserDeletion =
+  cancelSubagentsForUserDeletion as jest.MockedFunction<
+    typeof cancelSubagentsForUserDeletion
+  >;
 
 const request = () => ({ url: "https://hackerai.test/api/delete-account" });
 
@@ -139,6 +148,7 @@ describe("POST /api/delete-account", () => {
       canceledTriggerRuns: 0,
       closedApprovalSessions: 0,
     } as never);
+    mockCancelSubagentsForUserDeletion.mockResolvedValue([] as never);
     mockConvexMutation.mockImplementation(async (functionReference) =>
       functionReference === "userDeletion.deleteAllUserDataByService"
         ? { hasMore: false }
@@ -152,6 +162,9 @@ describe("POST /api/delete-account", () => {
   });
 
   it("removes only the caller's membership for shared organizations", async () => {
+    mockCancelSubagentsForUserDeletion.mockResolvedValue([
+      "child-run-1",
+    ] as never);
     const callerMembership = {
       id: "membership_user",
       organizationId: "org_team",
@@ -200,11 +213,20 @@ describe("POST /api/delete-account", () => {
     expect(mockDeleteCustomer).not.toHaveBeenCalled();
     expect(mockDeleteOrganization).not.toHaveBeenCalled();
     expect(mockDeleteUser).toHaveBeenCalledWith("user_123");
+    expect(mockCloseAndCancelAgentResources).toHaveBeenCalledWith(
+      [{ chatId: "subagent", triggerRunId: "child-run-1" }],
+      "account-deleted",
+    );
     expect(mockConvexMutation.mock.invocationCallOrder[0]).toBeLessThan(
       mockFenceAndGetActiveAgentResourcesForUser.mock.invocationCallOrder[0],
     );
     expect(
       mockFenceAndGetActiveAgentResourcesForUser.mock.invocationCallOrder[0],
+    ).toBeLessThan(
+      mockCancelSubagentsForUserDeletion.mock.invocationCallOrder[0],
+    );
+    expect(
+      mockCancelSubagentsForUserDeletion.mock.invocationCallOrder[0],
     ).toBeLessThan(
       mockCloseAndCancelAgentResources.mock.invocationCallOrder[0],
     );

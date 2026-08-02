@@ -1,5 +1,6 @@
 import "server-only";
 
+import { v5 as uuidv5 } from "uuid";
 import { phLogger } from "@/lib/posthog/server";
 import type {
   SubagentStatus,
@@ -8,6 +9,7 @@ import type {
 
 type BaseSubagentEvent = {
   userId: string;
+  eventUuid?: string;
   subagentId?: string;
   parentTriggerRunId: string;
   profile: "security_validation";
@@ -38,6 +40,7 @@ export const captureSubagentLifecycleEvent = (
 ) => {
   phLogger.event(event, {
     userId: fields.userId,
+    eventUuid: fields.eventUuid,
     subagent_id: fields.subagentId,
     parent_trigger_run_id: fields.parentTriggerRunId,
     profile: fields.profile,
@@ -49,3 +52,6 @@ export const captureSubagentLifecycleEvent = (
     error_category: boundedCategory(fields.errorCategory),
   });
 };
+
+export const subagentExposureEventUuid = (parentTriggerRunId: string): string =>
+  uuidv5(`subagent-feature-exposed:${parentTriggerRunId}`, uuidv5.URL);

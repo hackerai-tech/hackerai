@@ -260,6 +260,13 @@ async function deleteSubagentDataForChat(
     .take(DELETE_CHAT_SUBAGENT_BATCH_SIZE + 1);
 
   for (const child of children.slice(0, DELETE_CHAT_SUBAGENT_BATCH_SIZE)) {
+    if (
+      child.status === "queued" ||
+      child.status === "running" ||
+      child.status === "finalizing"
+    ) {
+      return true;
+    }
     const transcript = await ctx.db
       .query("subagent_messages")
       .withIndex("by_subagent_and_sequence", (q) =>

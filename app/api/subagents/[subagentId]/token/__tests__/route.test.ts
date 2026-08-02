@@ -53,7 +53,7 @@ describe("subagent realtime token route", () => {
     expect(getOwnedSubagent).toHaveBeenCalledWith("sa_1", "user-1");
     expect(createPublicToken).toHaveBeenCalledWith({
       scopes: { read: { runs: ["child-run-1"] } },
-      expirationTime: "10m",
+      expirationTime: "600s",
     });
   });
 
@@ -65,5 +65,34 @@ describe("subagent realtime token route", () => {
 
     expect(response.status).toBe(404);
     expect(createPublicToken).not.toHaveBeenCalled();
+  });
+
+  it("does not mint a token before the Trigger run is attached", async () => {
+    getOwnedSubagent.mockResolvedValue({});
+    const response = await POST({} as any, {
+      params: Promise.resolve({ subagentId: "sa_queued" }),
+    });
+
+    expect(response.status).toBe(409);
+    expect(createPublicToken).not.toHaveBeenCalled();
+  });
+
+  it("returns 401 when authentication fails", async () => {
+    getUserID.mockRejectedValue(new Error("unauthenticated"));
+    const response = await POST({} as any, {
+      params: Promise.resolve({ subagentId: "sa_1" }),
+    });
+
+    expect(response.status).toBe(401);
+    expect(getOwnedSubagent).not.toHaveBeenCalled();
+  });
+
+  it("returns a server error when token creation fails", async () => {
+    createPublicToken.mockRejectedValue(new Error("Trigger unavailable"));
+    const response = await POST({} as any, {
+      params: Promise.resolve({ subagentId: "sa_1" }),
+    });
+
+    expect(response.status).toBe(502);
   });
 });

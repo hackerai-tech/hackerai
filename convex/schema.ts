@@ -980,7 +980,8 @@ export default defineSchema({
     .index("by_subagent_id", ["subagent_id"])
     .index("by_chat_id", ["chat_id"])
     .index("by_user_id", ["user_id"])
-    .index("by_trigger_run_id", ["trigger_run_id"])
+    .index("by_chat_and_status", ["chat_id", "status"])
+    .index("by_user_and_status", ["user_id", "status"])
     .index("by_parent_run_and_tool_call", [
       "parent_trigger_run_id",
       "parent_tool_call_id",
@@ -990,7 +991,6 @@ export default defineSchema({
       "chat_id",
       "parent_trigger_run_id",
     ])
-    .index("by_user_and_parent_run", ["user_id", "parent_trigger_run_id"])
     .index("by_parent_run", ["parent_trigger_run_id"])
     .index("by_user_and_parent_message", ["user_id", "parent_message_id"])
     .index("by_user_chat_and_candidate", [

@@ -153,18 +153,24 @@ export const SharedMessagePartHandler = ({
 
   if (part.type === "tool-delegate_task") {
     const verdict = part.output?.verdict;
+    const validationFailed =
+      (typeof part.output?.status === "string" &&
+        part.output.status !== "completed") ||
+      Boolean(part.errorText);
     return (
       <ToolBlock
         key={idx}
         icon={<Users aria-hidden="true" />}
         action={
-          verdict === "confirmed"
-            ? "Confirmed independently"
-            : verdict === "rejected"
-              ? "Rejected independently"
-              : verdict === "inconclusive"
-                ? "Validation inconclusive"
-                : "Independent validation"
+          validationFailed
+            ? "Validation failed"
+            : verdict === "confirmed"
+              ? "Confirmed independently"
+              : verdict === "rejected"
+                ? "Rejected independently"
+                : verdict === "inconclusive"
+                  ? "Validation inconclusive"
+                  : "Independent validation"
         }
         target={part.input?.profile_input?.candidate?.title}
       />

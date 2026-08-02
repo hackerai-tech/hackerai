@@ -1,6 +1,6 @@
 import "@testing-library/jest-dom";
 import React from "react";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, jest } from "@jest/globals";
 
 const mockUseQuery = jest.fn<any>();
@@ -71,8 +71,8 @@ const doneChild = {
 describe("SubagentsSidebar", () => {
   beforeEach(() => {
     jest.clearAllMocks();
-    mockUseQuery.mockImplementation((_query, args) => {
-      if ("parentMessageId" in args) return [activeChild, doneChild];
+    mockUseQuery.mockImplementation((query) => {
+      if (query === "listForParentMessage") return [activeChild, doneChild];
       return [
         {
           sequence: 0,
@@ -125,5 +125,48 @@ describe("SubagentsSidebar", () => {
 
     fireEvent.keyDown(window, { key: "Escape" });
     expect(closeSidebar).toHaveBeenCalledTimes(1);
+  });
+
+  it("allows a failed cancellation request to be retried", async () => {
+    let resolveFetch!: (value: { ok: boolean }) => void;
+    const fetchMock = jest.fn<any>().mockReturnValue(
+      new Promise((resolve) => {
+        resolveFetch = resolve;
+      }) as Promise<Response>,
+    );
+    Object.defineProperty(globalThis, "fetch", {
+      configurable: true,
+      value: fetchMock,
+    });
+    render(
+      <SubagentsSidebar
+        content={{
+          kind: "subagents",
+          parentMessageId: "parent-message",
+          toolCallId: "tool-1",
+          selectedSubagentId: "sa_active",
+        }}
+        closeSidebar={jest.fn()}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(screen.getByRole("button", { name: "Canceling…" })).toBeDisabled();
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/subagents/sa_active/cancel",
+      expect.objectContaining({
+        method: "POST",
+        signal: expect.any(AbortSignal),
+      }),
+    );
+
+    resolveFetch({ ok: false });
+    expect(
+      await screen.findByText("Could not cancel this validation. Try again."),
+    ).toBeVisible();
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Cancel" })).toBeEnabled(),
+    );
+    delete (globalThis as { fetch?: typeof fetch }).fetch;
   });
 });

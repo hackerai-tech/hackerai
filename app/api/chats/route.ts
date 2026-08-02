@@ -8,6 +8,7 @@ import {
 import { ChatSDKError } from "@/lib/errors";
 import { assertUserCanAccessChatHistory } from "@/lib/suspensions";
 import { closeAndCancelAgentResources } from "@/lib/api/agent-deletion-cleanup";
+import { cancelSubagentsForUserDeletion } from "@/lib/db/subagents";
 
 export const maxDuration = 30;
 
@@ -26,8 +27,18 @@ export async function DELETE(req: NextRequest) {
       );
     }
 
+    const childTriggerRunIds = await cancelSubagentsForUserDeletion(
+      userId,
+      "all_chats_deleted",
+    );
     const cleanup = await closeAndCancelAgentResources(
-      activeAgentResources.resources,
+      [
+        ...activeAgentResources.resources,
+        ...childTriggerRunIds.map((triggerRunId) => ({
+          chatId: "subagent",
+          triggerRunId,
+        })),
+      ],
       "chat-deleted",
     );
     await deleteAllChatsForBackend({ userId });

@@ -26,8 +26,12 @@ jest.mock("../lib/utils", () => ({
   validateServiceKey: (...args: unknown[]) => validateServiceKey(...args),
 }));
 
-const { finishForBackend, reserveForBackend } =
-  require("../subagents") as typeof import("../subagents");
+const {
+  attachTriggerRunForBackend,
+  cancelForChatDeletionBackend,
+  finishForBackend,
+  reserveForBackend,
+} = require("../subagents") as typeof import("../subagents");
 
 const args = {
   serviceKey: "service-key",
@@ -109,6 +113,7 @@ describe("subagent reservation", () => {
       status: "running",
       triggerRunId: "child-run",
     });
+    expect(validateServiceKey).toHaveBeenCalledWith("service-key");
     expect(insert).not.toHaveBeenCalled();
   });
 
@@ -196,6 +201,45 @@ describe("subagent reservation", () => {
 });
 
 describe("subagent finalization", () => {
+  it("attaches the Trigger id without reviving a terminal child", async () => {
+    const patch = jest.fn<any>().mockResolvedValue(undefined);
+    const ctx = {
+      db: {
+        query: jest.fn(() => ({
+          withIndex: jest.fn((_name: string, callback: (q: any) => void) => {
+            const q = { eq: jest.fn<any>() };
+            q.eq.mockReturnValue(q);
+            callback(q);
+            return {
+              first: jest.fn<any>().mockResolvedValue({
+                _id: "subagent-doc",
+                status: "canceled",
+                completed_at: 1234,
+              }),
+            };
+          }),
+        })),
+        patch,
+      },
+    } as any;
+
+    await expect(
+      attachTriggerRunForBackend.handler(ctx, {
+        serviceKey: "service-key",
+        subagentId: "sa_1",
+        triggerRunId: "child-run",
+      }),
+    ).resolves.toBe("terminal");
+    expect(patch).toHaveBeenCalledWith(
+      "subagent-doc",
+      expect.objectContaining({
+        trigger_run_id: "child-run",
+        status: "canceled",
+        started_at: undefined,
+      }),
+    );
+  });
+
   it("persists partial usage after cancellation without losing its reason", async () => {
     const patch = jest.fn<any>().mockResolvedValue(undefined);
     const row = {
@@ -205,6 +249,11 @@ describe("subagent finalization", () => {
       summary: "Independent validation was canceled.",
       failure_code: "user_canceled_child",
       cancel_reason: "user_canceled_child",
+      failure_reason: "Canceled from the sidebar",
+      verdict: "inconclusive",
+      confidence: "low",
+      structured_result: { verdict: "inconclusive" },
+      completed_at: 1234,
     };
     const ctx = {
       db: {
@@ -240,8 +289,78 @@ describe("subagent finalization", () => {
         summary: "Independent validation was canceled.",
         failure_code: "user_canceled_child",
         cancel_reason: "user_canceled_child",
+        failure_reason: "Canceled from the sidebar",
+        verdict: "inconclusive",
+        confidence: "low",
+        structured_result: { verdict: "inconclusive" },
+        completed_at: 1234,
         cost_dollars: 0.12,
         step_count: 3,
+      }),
+    );
+    expect(validateServiceKey).toHaveBeenCalledWith("service-key");
+  });
+});
+
+describe("subagent deletion cancellation", () => {
+  it("returns active and retryable canceled Trigger ids before chat deletion", async () => {
+    const patch = jest.fn<any>().mockResolvedValue(undefined);
+    const rowsByStatus: Record<string, Array<Record<string, unknown>>> = {
+      running: [
+        {
+          _id: "active-child",
+          user_id: "user-1",
+          status: "running",
+          trigger_run_id: "child-run-active",
+        },
+      ],
+      canceled: [
+        {
+          _id: "retry-child",
+          user_id: "user-1",
+          status: "canceled",
+          trigger_run_id: "child-run-retry",
+          cancel_reason: "chat_deleted",
+        },
+      ],
+    };
+    const ctx = {
+      db: {
+        query: jest.fn(() => ({
+          withIndex: jest.fn((_name: string, callback: (q: any) => void) => {
+            let status = "";
+            const q = {
+              eq: jest.fn((field: string, value: string) => {
+                if (field === "status") status = value;
+                return q;
+              }),
+            };
+            callback(q);
+            return {
+              take: jest
+                .fn<any>()
+                .mockResolvedValue(rowsByStatus[status] ?? []),
+            };
+          }),
+        })),
+        patch,
+      },
+    } as any;
+
+    await expect(
+      cancelForChatDeletionBackend.handler(ctx, {
+        serviceKey: "service-key",
+        chatId: "chat-1",
+        userId: "user-1",
+        reason: "chat_deleted",
+      }),
+    ).resolves.toEqual(["child-run-active", "child-run-retry"]);
+    expect(patch).toHaveBeenCalledTimes(1);
+    expect(patch).toHaveBeenCalledWith(
+      "active-child",
+      expect.objectContaining({
+        status: "canceled",
+        cancel_reason: "chat_deleted",
       }),
     );
   });

@@ -11,25 +11,39 @@ export async function POST(
   req: NextRequest,
   { params }: { params: Promise<{ subagentId: string }> },
 ) {
+  const { subagentId } = await params;
+  if (!subagentId) {
+    return NextResponse.json(
+      { error: "Subagent ID required" },
+      { status: 400 },
+    );
+  }
+
+  let userId: string;
   try {
-    const { subagentId } = await params;
-    if (!subagentId) {
-      return NextResponse.json(
-        { error: "Subagent ID required" },
-        { status: 400 },
-      );
-    }
-    const userId = await getUserID(req);
-    const child = await getOwnedSubagent(subagentId, userId);
-    if (!SUBAGENT_ACTIVE_STATUSES.has(child.status)) {
-      return NextResponse.json({ canceled: false, status: child.status });
-    }
-    if (!child.trigger_run_id) {
-      return NextResponse.json(
-        { canceled: false, status: child.status },
-        { status: 409 },
-      );
-    }
+    userId = await getUserID(req);
+  } catch {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  let child: Awaited<ReturnType<typeof getOwnedSubagent>>;
+  try {
+    child = await getOwnedSubagent(subagentId, userId);
+  } catch {
+    return NextResponse.json({ error: "Subagent not found" }, { status: 404 });
+  }
+
+  if (!SUBAGENT_ACTIVE_STATUSES.has(child.status)) {
+    return NextResponse.json({ canceled: false, status: child.status });
+  }
+  if (!child.trigger_run_id) {
+    return NextResponse.json(
+      { canceled: false, status: child.status },
+      { status: 409 },
+    );
+  }
+
+  try {
     const canceled = await cancelAgentTriggerRun(child.trigger_run_id);
     if (canceled) {
       await cancelSubagentForUser({
@@ -41,6 +55,9 @@ export async function POST(
     }
     return NextResponse.json({ canceled, status: child.status });
   } catch {
-    return NextResponse.json({ error: "Subagent not found" }, { status: 404 });
+    return NextResponse.json(
+      { error: "Could not cancel validation" },
+      { status: 502 },
+    );
   }
 }
