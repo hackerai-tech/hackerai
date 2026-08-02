@@ -19,6 +19,10 @@
 import { Centrifuge, type Subscription } from "centrifuge";
 
 import { sandboxConnectionChannel } from "@/lib/centrifugo/types";
+import {
+  CentrifugoMessageReassembler,
+  fragmentMatchesCorrelation,
+} from "@/packages/local/src/centrifugo-transport";
 import type { PtyHandle, CreatePtyOptions } from "./e2b-pty-adapter";
 import type { CentrifugoSandbox } from "./centrifugo-sandbox";
 import { createResolvableExited } from "./pty-exited-promise";
@@ -65,10 +69,7 @@ interface PtyKillPayload {
 }
 
 type PtyOutgoingPayload =
-  | PtyCreatePayload
-  | PtyInputPayload
-  | PtyResizePayload
-  | PtyKillPayload;
+  PtyCreatePayload | PtyInputPayload | PtyResizePayload | PtyKillPayload;
 
 // ── Incoming message shapes from the local runner ──────────────────────
 
@@ -173,6 +174,7 @@ export async function createCentrifugoPtyHandle(
   let subscription: Subscription | undefined;
   let settled = false;
   let cleanedUp = false;
+  const reassembler = new CentrifugoMessageReassembler();
 
   const { exited, resolveOnce: resolveExitedOnce } = createResolvableExited();
 
@@ -309,7 +311,12 @@ export async function createCentrifugoPtyHandle(
     subscription = client.newSubscription(channel);
 
     subscription.on("publication", (ctx) => {
-      const msg = parsePtyMessage(ctx.data);
+      if (!fragmentMatchesCorrelation(ctx.data, "sessionId", sessionId)) {
+        return;
+      }
+      const reassembled = reassembler.accept(ctx.data);
+      if (!reassembled) return;
+      const msg = parsePtyMessage(reassembled);
       if (!msg || msg.sessionId !== sessionId) return;
 
       switch (msg.type) {

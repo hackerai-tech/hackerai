@@ -1,4 +1,8 @@
 import { DesktopSandboxBridge } from "../desktop-sandbox-bridge";
+import {
+  CentrifugoMessageReassembler,
+  isCentrifugoTransportFragment,
+} from "@/packages/local/src/centrifugo-transport";
 
 // ── Mocks ─────────────────────────────────────────────────────────────
 
@@ -433,6 +437,71 @@ describe("native desktop file relay", () => {
       sizeBytes: 12,
       totalLines: 1,
       content: "hello world\n",
+      startLine: 1,
+    });
+  });
+
+  it("fragments oversized file_read responses below the relay limit", async () => {
+    mockSubscription.publish.mockResolvedValue(undefined);
+    const bridge = new DesktopSandboxBridge(buildConfig());
+    await bridge.start();
+    const handler = getPublicationHandler();
+    const content = "large file line\n".repeat(6_000);
+
+    mockInvokeHandler = async (cmd: string) => {
+      if (cmd === "get_cmd_server_info") {
+        return { port: 49152, token: "file-token" };
+      }
+      throw new Error(`Unexpected command: ${cmd}`);
+    };
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        path: "C:\\repo\\large.txt",
+        sizeBytes: content.length,
+        totalLines: 6_000,
+        content,
+        startLine: 1,
+        truncated: false,
+      }),
+    } as Response);
+
+    handler({
+      data: {
+        type: "file_read",
+        requestId: "file-req-large",
+        path: "C:\\repo\\large.txt",
+        maxFullBytes: 1024 * 1024,
+        maxResultBytes: 1024 * 1024,
+        targetConnectionId: "conn-123",
+      },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    const fragments = mockSubscription.publish.mock.calls
+      .map(([message]: [unknown]) => message)
+      .filter(isCentrifugoTransportFragment);
+    expect(fragments.length).toBeGreaterThan(1);
+    expect(
+      fragments.every(
+        (fragment) =>
+          new TextEncoder().encode(JSON.stringify(fragment)).byteLength <
+          64 * 1024,
+      ),
+    ).toBe(true);
+
+    const reassembler = new CentrifugoMessageReassembler();
+    let reassembled: unknown = null;
+    for (const fragment of fragments) {
+      reassembled = reassembler.accept(fragment) ?? reassembled;
+    }
+    expect(reassembled).toEqual({
+      type: "file_read_result",
+      requestId: "file-req-large",
+      path: "C:\\repo\\large.txt",
+      sizeBytes: content.length,
+      totalLines: 6_000,
+      content,
       startLine: 1,
     });
   });

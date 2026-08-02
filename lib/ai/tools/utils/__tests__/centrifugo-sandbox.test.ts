@@ -10,6 +10,7 @@
 import { EventEmitter } from "events";
 import { CentrifugoSandbox, parseSandboxMessage } from "../centrifugo-sandbox";
 import type { CentrifugoConfig } from "../centrifugo-sandbox";
+import { fragmentCentrifugoMessage } from "@/packages/local/src/centrifugo-transport";
 
 // Track all created mock subscriptions and clients for assertions
 let mockSubscriptions: MockSubscription[];
@@ -252,6 +253,38 @@ describe("CentrifugoSandbox", () => {
       });
       expect(onStdout).toHaveBeenCalledWith("hello\n");
       expect(onStderr).toHaveBeenCalledWith("warn\n");
+    });
+
+    it("reassembles oversized stdout before completing the command", async () => {
+      const sandbox = createSandbox();
+      const { promise } = startCommand(sandbox, "generate output", {
+        timeoutMs: 5000,
+      });
+      const stdout = "🙂\u0000".repeat(20_000);
+
+      await jest.advanceTimersByTimeAsync(0);
+      const sub = mockSubscriptions[0];
+      sub.emit("subscribed");
+      await jest.advanceTimersByTimeAsync(0);
+
+      const fragments = fragmentCentrifugoMessage({
+        type: "stdout",
+        commandId: FIXED_UUID,
+        data: stdout,
+      });
+      expect(fragments.length).toBeGreaterThan(1);
+      for (const fragment of fragments) {
+        sub.emit("publication", { data: fragment });
+      }
+      sub.emit("publication", {
+        data: { type: "exit", commandId: FIXED_UUID, exitCode: 0 },
+      });
+
+      await expect(promise).resolves.toEqual({
+        stdout,
+        stderr: "",
+        exitCode: 0,
+      });
     });
   });
 
@@ -858,6 +891,36 @@ describe("CentrifugoSandbox", () => {
       });
 
       await expect(promise).resolves.toBe("hello world\n");
+    });
+
+    it("reassembles oversized native file read responses", async () => {
+      const sandbox = createDesktopSandbox();
+      const promise = sandbox.files.read("C:\\repo\\large.txt");
+      const content = "large file line\n".repeat(6_000);
+
+      await jest.advanceTimersByTimeAsync(0);
+      const sub = mockSubscriptions[0];
+      sub.emit("subscribed");
+      await jest.advanceTimersByTimeAsync(0);
+
+      const request = (sub.publish as jest.Mock).mock.calls[0][0] as {
+        requestId: string;
+      };
+      const fragments = fragmentCentrifugoMessage({
+        type: "file_read_result",
+        requestId: request.requestId,
+        path: "C:\\repo\\large.txt",
+        sizeBytes: content.length,
+        totalLines: 6_000,
+        content,
+        startLine: 1,
+      });
+      expect(fragments.length).toBeGreaterThan(1);
+      for (const fragment of fragments) {
+        sub.emit("publication", { data: fragment });
+      }
+
+      await expect(promise).resolves.toBe(content);
     });
 
     it("files.write publishes file_write instead of shell heredoc for desktop connections", async () => {
