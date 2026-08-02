@@ -253,7 +253,7 @@ export const subagentTask = task({
         .set("profile", row.profile);
     } catch (error) {
       const setupError = extractErrorDetails(error);
-      await finishSubagent({
+      const finishOutcome = await finishSubagent({
         subagentId: row.subagent_id,
         triggerRunId: ctx.run.id,
         status: "failed",
@@ -263,8 +263,20 @@ export const subagentTask = task({
           typeof setupError.errorMessage === "string"
             ? setupError.errorMessage
             : undefined,
-      }).catch(() => undefined);
+      }).catch(() => null);
+      if (finishOutcome === "updated") {
+        captureSubagentTerminalOutcome({
+          userId: row.user_id,
+          subagentId: row.subagent_id,
+          parentTriggerRunId: row.parent_trigger_run_id,
+          profile: "security_validation",
+          status: "failed",
+          durationMs: Date.now() - startedAt,
+          errorCategory: "setup_failed",
+        });
+      }
       cancellationCleanup.delete(ctx.run.id);
+      await phLogger.flush().catch(() => undefined);
       throw error;
     }
 

@@ -47,6 +47,7 @@ describe("security validation subagent runtime contracts", () => {
     ).toBeLessThan(child.indexOf("await attachSubagentTriggerRun"));
     expect(child).toContain('attachOutcome === "terminal"');
     expect(child).toContain('failureCode: "setup_failed"');
+    expect(child).toContain('errorCategory: "setup_failed"');
     expect(child).toContain("onError: (error) =>");
     expect(child).toContain("const terminalFailure = activeTimedOut");
     expect(child).toContain(": spendCapExceeded");
