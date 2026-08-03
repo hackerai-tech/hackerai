@@ -620,6 +620,67 @@ describe("HybridSandboxManager reset cleanup", () => {
     expect(manager.isSandboxUnavailable()).toBe(true);
   });
 
+  it("persists and excludes an unresponsive local connection", async () => {
+    const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+    const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+    const unresponsive = makeConnection({
+      connectionId: "conn-unresponsive",
+      name: "Unresponsive",
+    });
+    const healthy = makeConnection({
+      connectionId: "conn-healthy",
+      name: "Healthy",
+    });
+    mockConvexQuery.mockResolvedValue([unresponsive, healthy]);
+    mockConvexMutation.mockResolvedValue({ success: true });
+
+    try {
+      const manager = new HybridSandboxManager(
+        "user-1",
+        jest.fn(),
+        "conn-unresponsive",
+        "service-key",
+        null,
+        "pro",
+        undefined,
+        undefined,
+        "run-123",
+      );
+
+      await manager.quarantineLocalConnection(
+        "conn-unresponsive",
+        "command_unresponsive",
+      );
+
+      expect(mockConvexMutation).toHaveBeenCalledWith(expect.anything(), {
+        serviceKey: "service-key",
+        connectionId: "conn-unresponsive",
+        reason: "command_unresponsive",
+      });
+      await expect(manager.listConnections()).resolves.toEqual([healthy]);
+
+      const quarantineLog = JSON.parse(
+        String(
+          warnSpy.mock.calls.find(([value]) =>
+            String(value).includes("local_sandbox_connection_quarantined"),
+          )?.[0],
+        ),
+      );
+      expect(quarantineLog).toMatchObject({
+        level: "warn",
+        event: "local_sandbox_connection_quarantined",
+        service: "agent-long",
+        request_id: "run-123",
+        user_id: "user-1",
+        connection_id: "conn-unresponsive",
+        reason: "command_unresponsive",
+      });
+    } finally {
+      warnSpy.mockRestore();
+      errorSpy.mockRestore();
+    }
+  });
+
   it("forgets an E2B connection without killing the shared user sandbox", async () => {
     const manager = new HybridSandboxManager(
       "user-1",

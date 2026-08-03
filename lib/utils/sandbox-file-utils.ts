@@ -24,12 +24,23 @@ export type SandboxFilePathRewrite = {
   to: string;
 };
 
-type SandboxUploadResult = {
+export type SandboxUploadResult = {
   failedCount: number;
   pathRewrites: SandboxFilePathRewrite[];
   failureDetails?: SandboxUploadFailureDetail[];
   retriedWithFreshSandbox?: boolean;
 };
+
+export type SandboxUploadFailureReason =
+  | "local_command_no_response"
+  | "local_command_unavailable"
+  | "windows_command_syntax"
+  | "sandbox_placement_failure"
+  | "sandbox_operation_timeout"
+  | "attachment_download_timeout"
+  | "attachment_transfer_failed"
+  | "command_channel_failure"
+  | "unknown";
 
 type SandboxCommandResult = {
   stdout: string;
@@ -41,6 +52,7 @@ type SandboxCommandResult = {
 type SandboxUploadFailureDetail = {
   kind: SandboxFile["kind"];
   error: string;
+  reason: SandboxUploadFailureReason;
   transientSandboxCommand: boolean;
   sandboxReadinessReason: SandboxReadinessFailureReason;
   urlLength?: number;
@@ -50,6 +62,7 @@ type SandboxUploadFailureDetail = {
 type SandboxRefreshOptions = {
   refresh?: boolean;
   reason?: string;
+  excludeConnectionId?: string;
 };
 
 type EnsureSandboxForUpload = (options?: SandboxRefreshOptions) => Promise<any>;
@@ -119,6 +132,14 @@ const TRANSIENT_SANDBOX_COMMAND_ERROR_PATTERN =
   /\b(?:request handshake timed out(?: after \d+ms)?|sandbox command(?: request| channel| transport)? timed out|command (?:channel|transport) timed out|deadline_exceeded|operation timed out:.*\btimeoutMs\b|exceeding ['"]?timeoutMs['"]?|Command timeout after \d+ms|is not subscribed to the command relay)\b/i;
 const WRAPPED_FILE_TRANSFER_ERROR_PATTERN =
   /\bfailed to (?:download|copy) file:|curl:\s*\(|\bexitCode:\s*\d+\b/i;
+const LOCAL_COMMAND_NO_RESPONSE_PATTERN =
+  /\bCommand timeout after \d+ms\b[^\n]*\bpublished:\s*\d+ms\b[^\n]*\bfirstMsg:\s*no\b[^\n]*\bconnectionId=/i;
+const LOCAL_COMMAND_UNAVAILABLE_PATTERN =
+  /\blocal sandbox connection\b.*\bis not subscribed to the command relay\b/i;
+const WINDOWS_COMMAND_SYNTAX_PATTERN =
+  /\bthe syntax of the command is incorrect\b|\bis not recognized as an internal or external command\b/i;
+const FILE_TRANSFER_TIMEOUT_PATTERN =
+  /\bcommand timed out\b|\bwas terminated\b|\bcurl exit (?:28|124)\b|\bcurl:\s*\((?:28|124)\)|\boperation timed out\b/i;
 const SANDBOX_COMMAND_MAX_ATTEMPTS = 3;
 const SANDBOX_COMMAND_RETRY_BASE_DELAY_MS = 750;
 const RETRYABLE_SANDBOX_ACQUISITION_FAILURES =
@@ -140,6 +161,47 @@ const classifySandboxUploadReadinessFailure = (
   error: unknown,
 ): SandboxReadinessFailureReason =>
   classifySandboxReadinessFailureSignal(error) ?? "unknown";
+
+const classifySandboxUploadFailureReason = (
+  file: SandboxFile,
+  error: unknown,
+  sandboxReadinessReason: SandboxReadinessFailureReason,
+): SandboxUploadFailureReason => {
+  const message = errorMessage(error);
+
+  if (LOCAL_COMMAND_NO_RESPONSE_PATTERN.test(message)) {
+    return "local_command_no_response";
+  }
+  if (LOCAL_COMMAND_UNAVAILABLE_PATTERN.test(message)) {
+    return "local_command_unavailable";
+  }
+  if (WINDOWS_COMMAND_SYNTAX_PATTERN.test(message)) {
+    return "windows_command_syntax";
+  }
+  if (sandboxReadinessReason === "placement_failure") {
+    return "sandbox_placement_failure";
+  }
+  if (sandboxReadinessReason === "operation_timeout") {
+    return "sandbox_operation_timeout";
+  }
+  if (
+    file.kind === "url" &&
+    WRAPPED_FILE_TRANSFER_ERROR_PATTERN.test(message) &&
+    FILE_TRANSFER_TIMEOUT_PATTERN.test(message)
+  ) {
+    return "attachment_download_timeout";
+  }
+  if (
+    file.kind === "url" &&
+    WRAPPED_FILE_TRANSFER_ERROR_PATTERN.test(message)
+  ) {
+    return "attachment_transfer_failed";
+  }
+  if (isTransientSandboxCommandError(error)) {
+    return "command_channel_failure";
+  }
+  return "unknown";
+};
 
 const logSandboxAcquisitionRecovery = (
   options: UploadSandboxFilesOptions | undefined,
@@ -730,17 +792,22 @@ const describeSandboxFileForLog = (file: SandboxFile) => {
 const summarizeSandboxUploadFailure = (
   file: SandboxFile,
   error: unknown,
+  phase: "acquisition" | "transfer" = "transfer",
 ): SandboxUploadFailureDetail => {
-  const message = error instanceof Error ? error.message : String(error);
-  const wrappedFileTransferFailure =
-    file.kind === "url" && message.includes("Failed to download file:");
+  const sandboxReadinessReason =
+    phase === "acquisition"
+      ? classifySandboxUploadReadinessFailure(error)
+      : "unknown";
   const summary: SandboxUploadFailureDetail = {
     kind: file.kind,
     error: redactSandboxUploadError(file, error),
+    reason: classifySandboxUploadFailureReason(
+      file,
+      error,
+      sandboxReadinessReason,
+    ),
     transientSandboxCommand: isTransientSandboxCommandError(error),
-    sandboxReadinessReason: wrappedFileTransferFailure
-      ? "unknown"
-      : classifySandboxUploadReadinessFailure(error),
+    sandboxReadinessReason,
   };
 
   if (file.kind === "url") {
@@ -822,6 +889,7 @@ export const getSandboxUploadFailureMetadata = (
 
   return {
     ...(failure?.kind ? { upload_failure_kind: failure.kind } : {}),
+    ...(failure?.reason ? { upload_failure_reason: failure.reason } : {}),
     ...(cause ? { upload_failure_cause: cause } : {}),
     ...(failure?.transientSandboxCommand !== undefined
       ? {
@@ -845,6 +913,39 @@ export const getSandboxUploadFailureMetadata = (
         }
       : {}),
   };
+};
+
+export const getSandboxUploadUserMessage = (
+  result: SandboxUploadResult,
+): string => {
+  const reason = result.failureDetails?.[0]?.reason;
+
+  switch (reason) {
+    case "local_command_no_response":
+      return "The selected computer stopped responding while preparing the attachment. Reconnect it in Remote Control, then try again.";
+    case "local_command_unavailable":
+      return "The selected computer disconnected while preparing the attachment. Reconnect it in Remote Control, then try again.";
+    case "windows_command_syntax":
+      return "The selected Windows computer could not prepare the attachment. Reconnect it and try again.";
+    case "sandbox_placement_failure":
+      return "The Cloud sandbox could not start to receive the attachment. Please try again.";
+    case "sandbox_operation_timeout":
+      return "The computer took too long to become ready for the attachment. Please try again.";
+    case "attachment_download_timeout":
+      return "The attachment download timed out on the selected computer. Check its network connection and try again.";
+    default: {
+      const noun = result.failedCount === 1 ? "attachment" : "attachments";
+      return `Failed to upload ${result.failedCount} ${noun} to the computer. Please try again.`;
+    }
+  }
+};
+
+const getSandboxConnectionId = (sandbox: any): string | undefined => {
+  if (typeof sandbox?.getConnectionId !== "function") return undefined;
+  const connectionId = sandbox.getConnectionId();
+  return typeof connectionId === "string" && connectionId
+    ? connectionId
+    : undefined;
 };
 
 const redactSandboxUploadError = (
@@ -924,7 +1025,7 @@ export const uploadSandboxFiles = async (
         failedCount: sandboxFiles.length,
         pathRewrites: [],
         failureDetails: sandboxFiles.map((file) =>
-          summarizeSandboxUploadFailure(file, error),
+          summarizeSandboxUploadFailure(file, error, "acquisition"),
         ),
       };
     }
@@ -961,7 +1062,7 @@ export const uploadSandboxFiles = async (
         failedCount: sandboxFiles.length,
         pathRewrites: [],
         failureDetails: sandboxFiles.map((file) =>
-          summarizeSandboxUploadFailure(file, retryError),
+          summarizeSandboxUploadFailure(file, retryError, "acquisition"),
         ),
         retriedWithFreshSandbox: true,
       };
@@ -976,6 +1077,12 @@ export const uploadSandboxFiles = async (
     !retriedWithFreshSandbox &&
     shouldRetryWithFreshSandbox(options)
   ) {
+    const shouldQuarantineConnection = firstResult.failureDetails?.some(
+      (failure) => failure.reason === "local_command_no_response",
+    );
+    const excludeConnectionId = shouldQuarantineConnection
+      ? getSandboxConnectionId(sandbox)
+      : undefined;
     console.warn(
       "[sandbox-upload] transient command channel failure while staging attachments; refreshing sandbox and retrying all attachments",
     );
@@ -983,6 +1090,7 @@ export const uploadSandboxFiles = async (
       const refreshedSandbox = await ensureSandbox({
         refresh: true,
         reason: "attachment_staging_transient_command_failure",
+        ...(excludeConnectionId ? { excludeConnectionId } : {}),
       });
       const retryResult = await uploadSandboxFilesOnce(
         sandboxFiles,
@@ -991,14 +1099,7 @@ export const uploadSandboxFiles = async (
       return { ...retryResult, retriedWithFreshSandbox: true };
     } catch (error) {
       console.error("Failed to refresh sandbox for upload retry:", error);
-      return {
-        failedCount: sandboxFiles.length,
-        pathRewrites: [],
-        failureDetails: sandboxFiles.map((file) =>
-          summarizeSandboxUploadFailure(file, error),
-        ),
-        retriedWithFreshSandbox: true,
-      };
+      return { ...firstResult, retriedWithFreshSandbox: true };
     }
   }
 

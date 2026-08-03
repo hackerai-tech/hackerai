@@ -1262,9 +1262,10 @@ describe("createChatLogger ChatSDKError metadata", () => {
       chatLogger.emitChatError(
         new ChatSDKError(
           "bad_request:sandbox",
-          "Failed to upload 1 attachment to the computer. Please try again.",
+          "The selected computer stopped responding while preparing the attachment. Reconnect it in Remote Control, then try again.",
           {
             upload_failure_kind: "url",
+            upload_failure_reason: "local_command_no_response",
             upload_failure_cause:
               "Command timeout after 35000ms [firstMsg: no]",
             upload_failure_transient_sandbox_command: true,
@@ -1280,11 +1281,12 @@ describe("createChatLogger ChatSDKError metadata", () => {
         code: "bad_request:sandbox",
         message: "The computer attachment upload failed.",
         cause:
-          "Failed to upload 1 attachment to the computer. Please try again.",
+          "The selected computer stopped responding while preparing the attachment. Reconnect it in Remote Control, then try again.",
         retriable: true,
       });
       expect(wideEvent.error.metadata).toEqual({
         upload_failure_kind: "url",
+        upload_failure_reason: "local_command_no_response",
         upload_failure_cause: "Command timeout after 35000ms [firstMsg: no]",
         upload_failure_transient_sandbox_command: true,
         upload_failure_protocol: "https",

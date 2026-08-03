@@ -3,6 +3,7 @@ jest.mock("server-only", () => ({}), { virtual: true });
 import type { UIMessage } from "ai";
 import {
   getSandboxUploadFailureMetadata,
+  getSandboxUploadUserMessage,
   prepareLocalDesktopAttachmentsForTrigger,
   rewriteSandboxFilePathsInMessages,
   stripLocalDesktopSourcePaths,
@@ -11,6 +12,8 @@ import {
 
 const PRODUCTION_COMMAND_TIMEOUT_MESSAGE =
   "[deadline_exceeded] the operation timed out: This error is likely due to exceeding 'timeoutMs' - the total time a long running request (like command execution or directory watch) can be active.";
+const LOCAL_COMMAND_NO_RESPONSE_MESSAGE =
+  "Command timeout after 35000ms [connected: 417ms, subscribed: 417ms, published: 613ms, firstMsg: no] connectionId=conn-unresponsive";
 
 const makeLocalMessage = (): UIMessage =>
   ({
@@ -475,6 +478,104 @@ describe("desktop-local sandbox file helpers", () => {
     }
   });
 
+  it("quarantines an unresponsive local connection before reacquiring the sandbox", async () => {
+    jest.useFakeTimers();
+    const consoleWarnSpy = jest
+      .spyOn(console, "warn")
+      .mockImplementation(() => {});
+    const consoleErrorSpy = jest
+      .spyOn(console, "error")
+      .mockImplementation(() => {});
+    const firstRun = jest
+      .fn()
+      .mockRejectedValue(new Error(LOCAL_COMMAND_NO_RESPONSE_MESSAGE));
+    const refreshedRun = jest
+      .fn()
+      .mockResolvedValue({ exitCode: 0, stdout: "", stderr: "" });
+    const ensureSandbox = jest.fn(async (options?: { refresh?: boolean }) => ({
+      commands: { run: options?.refresh ? refreshedRun : firstRun },
+      getConnectionId: () => "conn-unresponsive",
+    }));
+
+    try {
+      const pendingResult = uploadSandboxFiles(
+        [
+          {
+            kind: "url",
+            url: "https://example.com/screenshot.png",
+            localPath: "/home/user/upload/screenshot.png",
+          },
+        ],
+        ensureSandbox,
+        { retryWithFreshSandboxOnTransientFailure: true },
+      );
+      await jest.advanceTimersByTimeAsync(5_000);
+      const result = await pendingResult;
+
+      expect(result.failedCount).toBe(0);
+      expect(ensureSandbox).toHaveBeenCalledTimes(2);
+      expect(ensureSandbox.mock.calls[1][0]).toEqual({
+        refresh: true,
+        reason: "attachment_staging_transient_command_failure",
+        excludeConnectionId: "conn-unresponsive",
+      });
+    } finally {
+      jest.useRealTimers();
+      consoleWarnSpy.mockRestore();
+      consoleErrorSpy.mockRestore();
+    }
+  });
+
+  it("preserves the no-response cause when connection quarantine blocks reacquisition", async () => {
+    jest.useFakeTimers();
+    const consoleWarnSpy = jest
+      .spyOn(console, "warn")
+      .mockImplementation(() => {});
+    const consoleErrorSpy = jest
+      .spyOn(console, "error")
+      .mockImplementation(() => {});
+    const run = jest
+      .fn()
+      .mockRejectedValue(new Error(LOCAL_COMMAND_NO_RESPONSE_MESSAGE));
+    const ensureSandbox = jest
+      .fn()
+      .mockResolvedValueOnce({
+        commands: { run },
+        getConnectionId: () => "conn-unresponsive",
+      })
+      .mockRejectedValueOnce(new Error("Selected connection is unavailable"));
+
+    try {
+      const pendingResult = uploadSandboxFiles(
+        [
+          {
+            kind: "url",
+            url: "https://example.com/screenshot.png",
+            localPath: "/home/user/upload/screenshot.png",
+          },
+        ],
+        ensureSandbox,
+        { retryWithFreshSandboxOnTransientFailure: true },
+      );
+      await jest.advanceTimersByTimeAsync(5_000);
+      const result = await pendingResult;
+
+      expect(result.failedCount).toBe(1);
+      expect(getSandboxUploadFailureMetadata(result)).toMatchObject({
+        upload_failure_reason: "local_command_no_response",
+        upload_failure_transient_sandbox_command: true,
+        upload_retried_with_fresh_sandbox: true,
+      });
+      expect(getSandboxUploadUserMessage(result)).toContain(
+        "Reconnect it in Remote Control",
+      );
+    } finally {
+      jest.useRealTimers();
+      consoleWarnSpy.mockRestore();
+      consoleErrorSpy.mockRestore();
+    }
+  });
+
   it("refreshes the sandbox after production deadline_exceeded upload command timeouts", async () => {
     jest.useFakeTimers();
     const consoleWarnSpy = jest
@@ -704,6 +805,7 @@ describe("desktop-local sandbox file helpers", () => {
       expect(result.failedCount).toBe(1);
       expect(ensureSandbox).toHaveBeenCalledTimes(2);
       expect(getSandboxUploadFailureMetadata(result)).toMatchObject({
+        upload_failure_reason: "sandbox_placement_failure",
         upload_failure_sandbox_readiness_reason: "placement_failure",
         upload_retried_with_fresh_sandbox: true,
       });
@@ -807,6 +909,7 @@ describe("desktop-local sandbox file helpers", () => {
       expect(result.failedCount).toBe(1);
       expect(getSandboxUploadFailureMetadata(result)).toMatchObject({
         upload_failure_kind: "url",
+        upload_failure_reason: "command_channel_failure",
         upload_failure_transient_sandbox_command: true,
         upload_failure_protocol: "https",
       });
@@ -851,6 +954,7 @@ describe("desktop-local sandbox file helpers", () => {
       expect(result.failedCount).toBe(1);
       expect(getSandboxUploadFailureMetadata(result)).toMatchObject({
         upload_failure_kind: "url",
+        upload_failure_reason: "command_channel_failure",
         upload_failure_transient_sandbox_command: true,
         upload_failure_protocol: "https",
       });
@@ -865,11 +969,15 @@ describe("desktop-local sandbox file helpers", () => {
   });
 
   it.each([
-    [28, "curl: (28) ETIMEDOUT"],
-    [35, "curl: (35) SSL connect error: Connection reset by peer"],
+    [28, "curl: (28) ETIMEDOUT", "attachment_download_timeout"],
+    [
+      35,
+      "curl: (35) SSL connect error: Connection reset by peer",
+      "attachment_transfer_failed",
+    ],
   ])(
     "does not refresh the sandbox for wrapped curl exit %i",
-    async (exitCode, stderr) => {
+    async (exitCode, stderr, failureReason) => {
       const consoleErrorSpy = jest
         .spyOn(console, "error")
         .mockImplementation(() => {});
@@ -905,6 +1013,7 @@ describe("desktop-local sandbox file helpers", () => {
         expect(ensureSandbox).toHaveBeenCalledTimes(1);
         expect(getSandboxUploadFailureMetadata(result)).toMatchObject({
           upload_failure_kind: "url",
+          upload_failure_reason: failureReason,
           upload_failure_transient_sandbox_command: false,
           upload_failure_sandbox_readiness_reason: "unknown",
         });
@@ -913,6 +1022,42 @@ describe("desktop-local sandbox file helpers", () => {
       }
     },
   );
+
+  it("classifies Windows command parsing failures separately", async () => {
+    const consoleErrorSpy = jest
+      .spyOn(console, "error")
+      .mockImplementation(() => {});
+    const downloadFromUrl = jest
+      .fn()
+      .mockRejectedValue(
+        new Error(
+          "Failed to download file: The syntax of the command is incorrect. 'X-Amz-Signature' is not recognized as an internal or external command.",
+        ),
+      );
+
+    try {
+      const result = await uploadSandboxFiles(
+        [
+          {
+            kind: "url",
+            url: "https://example.com/screenshot.png?X-Amz-Signature=secret",
+            localPath: "C:\\temp\\hackerai-upload\\screenshot.png",
+          },
+        ],
+        async () => ({ files: { downloadFromUrl } }),
+      );
+
+      expect(getSandboxUploadFailureMetadata(result)).toMatchObject({
+        upload_failure_reason: "windows_command_syntax",
+        upload_failure_transient_sandbox_command: false,
+      });
+      expect(getSandboxUploadUserMessage(result)).toContain(
+        "selected Windows computer",
+      );
+    } finally {
+      consoleErrorSpy.mockRestore();
+    }
+  });
 
   it("blocks internal URL downloads before invoking the sandbox", async () => {
     const consoleErrorSpy = jest

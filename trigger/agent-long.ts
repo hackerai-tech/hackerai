@@ -95,6 +95,7 @@ import {
 } from "@/lib/utils/stream-writer-utils";
 import {
   getSandboxUploadFailureMetadata,
+  getSandboxUploadUserMessage,
   uploadSandboxFiles,
   getUploadBasePath,
   rewriteSandboxFilePathsInMessages,
@@ -978,6 +979,7 @@ type AgentLongErrorSummary = {
   requestedPreference?: string;
   actualSandbox?: string;
   uploadFailureKind?: string;
+  uploadFailureReason?: string;
   uploadFailureCause?: string;
   uploadFailureTransientSandboxCommand?: boolean;
   uploadFailureSandboxReadinessReason?: string;
@@ -1164,6 +1166,10 @@ const classifyAgentLongError = (error: unknown): AgentLongErrorSummary => {
         errorMetadata,
         "upload_failure_kind",
       ),
+      uploadFailureReason: getStringMetadata(
+        errorMetadata,
+        "upload_failure_reason",
+      ),
       uploadFailureCause: getStringMetadata(
         errorMetadata,
         "upload_failure_cause",
@@ -1338,6 +1344,8 @@ const recordAgentLongFailureForDashboard = async (
     metadata.set("actualSandbox", summary.actualSandbox);
   if (summary.uploadFailureKind)
     metadata.set("uploadFailureKind", summary.uploadFailureKind);
+  if (summary.uploadFailureReason)
+    metadata.set("uploadFailureReason", summary.uploadFailureReason);
   if (summary.uploadFailureCause)
     metadata.set("uploadFailureCause", summary.uploadFailureCause);
   if (summary.uploadFailureTransientSandboxCommand != null) {
@@ -1373,6 +1381,11 @@ const recordAgentLongFailureForDashboard = async (
       isExpectedUserCorrectableError
         ? buildTriggerTag("user_correctable_code_", summary.code)
         : buildTriggerTag("error_code_", summary.code),
+    );
+  }
+  if (summary.uploadFailureReason) {
+    terminalTags.push(
+      buildTriggerTag("error_sandbox_upload_", summary.uploadFailureReason),
     );
   }
   await tags.add(terminalTags);
@@ -2346,11 +2359,9 @@ export const agentLongTask = task({
                 writeUploadCompleteStatus(writer);
               }
               if (uploadResult.failedCount > 0) {
-                const noun =
-                  uploadResult.failedCount === 1 ? "attachment" : "attachments";
                 const uploadError = new ChatSDKError(
                   "bad_request:sandbox",
-                  `Failed to upload ${uploadResult.failedCount} ${noun} to the computer. Please try again.`,
+                  getSandboxUploadUserMessage(uploadResult),
                   getSandboxUploadFailureMetadata(uploadResult),
                 );
                 await usageRefundTracker.refund();

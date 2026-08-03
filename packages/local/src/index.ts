@@ -259,6 +259,7 @@ type RefreshTokenResult =
         | "desktop_kicked_by_new_session"
         | "token_regenerated"
         | "presence_sweep"
+        | "command_unresponsive"
         | null;
       msSinceDisconnected: number | null;
       msSinceLastHeartbeat: number | null;
@@ -464,12 +465,14 @@ class LocalSandboxClient {
             ? "Your token was regenerated; rerun with the new token."
             : result.disconnectReason === "presence_sweep"
               ? "Server presence sweep marked this connection stale."
-              : result.disconnectReason === "desktop_kicked_by_new_session"
-                ? "A new desktop session took over."
-                : result.disconnectReason === "client_disconnect" ||
-                    result.disconnectReason === "desktop_disconnect"
-                  ? "This connection was explicitly disconnected."
-                  : "Likely causes: token regenerated, or disconnected from another session.";
+              : result.disconnectReason === "command_unresponsive"
+                ? "Server stopped this connection after repeated commands received no response. Restart HackerAI Local and try again."
+                : result.disconnectReason === "desktop_kicked_by_new_session"
+                  ? "A new desktop session took over."
+                  : result.disconnectReason === "client_disconnect" ||
+                      result.disconnectReason === "desktop_disconnect"
+                    ? "This connection was explicitly disconnected."
+                    : "Likely causes: token regenerated, or disconnected from another session.";
         console.error(chalk.yellow(reasonHint));
         console.error(
           chalk.gray(

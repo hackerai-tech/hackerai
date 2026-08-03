@@ -79,7 +79,11 @@ const logStructured = (
     level,
     event,
     service: "chat-handler",
-    environment: process.env.VERCEL_ENV ?? process.env.NODE_ENV ?? "unknown",
+    environment:
+      process.env.TRIGGER_ENV ??
+      process.env.VERCEL_ENV ??
+      process.env.NODE_ENV ??
+      "unknown",
     request_id: process.env.VERCEL_REQUEST_ID ?? null,
     ...fields,
   };
@@ -227,6 +231,7 @@ export class HybridSandboxManager implements SandboxManager {
   private currentConnectionName: string | null = null;
   private pendingFallbackInfo: SandboxFallbackInfo | null = null;
   private reportedFallbackKeys = new Set<string>();
+  private quarantinedConnectionIds = new Set<string>();
   private healthFailureCount = 0;
   private sandboxUnavailable = false;
 
@@ -239,6 +244,7 @@ export class HybridSandboxManager implements SandboxManager {
     private subscription?: SubscriptionTier,
     private onBoot?: (info: SandboxBootInfo) => void,
     private workingDirectory?: string,
+    private requestId?: string,
   ) {
     this.sandbox = initialSandbox || null;
   }
@@ -267,6 +273,39 @@ export class HybridSandboxManager implements SandboxManager {
 
   isSandboxUnavailable(): boolean {
     return this.sandboxUnavailable;
+  }
+
+  async quarantineLocalConnection(
+    connectionId: string,
+    reason: "command_unresponsive",
+  ): Promise<void> {
+    if (this.quarantinedConnectionIds.has(connectionId)) return;
+
+    this.quarantinedConnectionIds.add(connectionId);
+    logStructured("warn", "local_sandbox_connection_quarantined", {
+      service: this.requestId ? "agent-long" : "chat-handler",
+      request_id: this.requestId ?? process.env.VERCEL_REQUEST_ID ?? null,
+      user_id: this.userID,
+      connection_id: connectionId,
+      reason,
+    });
+
+    try {
+      await getConvexClient().mutation(api.localSandbox.disconnectByBackend, {
+        serviceKey: this.serviceKey,
+        connectionId,
+        reason,
+      });
+    } catch (error) {
+      logStructured("error", "local_sandbox_connection_quarantine_failed", {
+        service: this.requestId ? "agent-long" : "chat-handler",
+        request_id: this.requestId ?? process.env.VERCEL_REQUEST_ID ?? null,
+        user_id: this.userID,
+        connection_id: connectionId,
+        reason,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
 
   /**
@@ -407,12 +446,16 @@ export class HybridSandboxManager implements SandboxManager {
    */
   async listConnections(): Promise<ConnectionInfo[]> {
     try {
-      const connections = await getConvexClient().query(
+      const storedConnections = await getConvexClient().query(
         api.localSandbox.listConnectionsForBackend,
         {
           serviceKey: this.serviceKey,
           userId: this.userID,
         },
+      );
+      const connections = storedConnections.filter(
+        (connection) =>
+          !this.quarantinedConnectionIds.has(connection.connectionId),
       );
       if (connections.length === 0) {
         return connections;
