@@ -73,6 +73,9 @@ interface ComputerSidebarProps {
     label: string;
     onBack: () => void;
   };
+  realtimeRecovery?: {
+    onRetry: () => void;
+  };
 }
 
 const DiffView = dynamic(() => import("./DiffView").then((m) => m.DiffView), {
@@ -306,6 +309,7 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
   onNavigate,
   status,
   backNavigation,
+  realtimeRecovery,
 }) => {
   const [isWrapped, setIsWrapped] = useState(true);
   const previousToolCountRef = useRef<number>(0);
@@ -549,6 +553,22 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
                 </div>
               </div>
             </div>
+
+            {realtimeRecovery && (
+              <div
+                role="alert"
+                className="mt-3 flex items-center justify-between gap-3 rounded-lg border border-border/60 bg-muted/30 px-3 py-2 text-xs text-muted-foreground"
+              >
+                <span>Live updates disconnected.</span>
+                <button
+                  type="button"
+                  onClick={realtimeRecovery.onRetry}
+                  className="shrink-0 font-medium text-foreground underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                >
+                  Reconnect
+                </button>
+              </div>
+            )}
 
             {/* Content Container */}
             <div className="flex flex-col rounded-lg overflow-hidden bg-muted/20 border border-border/30 dark:border-black/30 shadow-[0px_4px_32px_0px_rgba(0,0,0,0.04)] flex-1 min-h-0 mt-[16px]">
@@ -1073,7 +1093,11 @@ const SubagentComputerSidebar = ({
   const hasPersistedAssistant = persisted?.some(
     (message) => message.role === "assistant",
   );
-  const { message: liveMessage } = useSubagentRealtime({
+  const {
+    message: liveMessage,
+    state: realtimeState,
+    retry: retryRealtime,
+  } = useSubagentRealtime({
     subagentId: origin.subagentId,
     enabled:
       !!run?.trigger_run_id &&
@@ -1116,6 +1140,11 @@ const SubagentComputerSidebar = ({
         label: "Back to subagent",
         onBack: returnToSubagent,
       }}
+      realtimeRecovery={
+        realtimeState === "error" && active && !hasPersistedAssistant
+          ? { onRetry: retryRealtime }
+          : undefined
+      }
     />
   );
 };

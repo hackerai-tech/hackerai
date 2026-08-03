@@ -1,5 +1,10 @@
 import { beforeEach, describe, expect, it, jest } from "@jest/globals";
 
+import {
+  SUBAGENT_MAX_DURATION_SECONDS,
+  SUBAGENT_WATCHDOG_GRACE_SECONDS,
+} from "../../lib/ai/subagents/contracts";
+
 jest.mock("../_generated/server", () => ({
   internalMutation: jest.fn((config: unknown) => config),
   mutation: jest.fn((config: unknown) => config),
@@ -406,6 +411,51 @@ describe("subagent finalization", () => {
         status: "canceled",
         started_at: undefined,
       }),
+    );
+  });
+
+  it("schedules a bounded watchdog when attaching an active child", async () => {
+    const patch = jest.fn<any>().mockResolvedValue(undefined);
+    const runAfter = jest.fn<any>().mockResolvedValue(undefined);
+    const ctx = {
+      db: {
+        query: jest.fn(() => ({
+          withIndex: jest.fn((_name: string, callback: (q: any) => void) => {
+            const q = { eq: jest.fn<any>() };
+            q.eq.mockReturnValue(q);
+            callback(q);
+            return {
+              first: jest.fn<any>().mockResolvedValue({
+                _id: "subagent-doc",
+                status: "queued",
+              }),
+            };
+          }),
+        })),
+        patch,
+      },
+      scheduler: { runAfter },
+    } as any;
+
+    await expect(
+      attachTriggerRunForBackend.handler(ctx, {
+        serviceKey: "service-key",
+        subagentId: "sa_1",
+        triggerRunId: "child-run",
+      }),
+    ).resolves.toBe("updated");
+    expect(patch).toHaveBeenCalledWith(
+      "subagent-doc",
+      expect.objectContaining({
+        trigger_run_id: "child-run",
+        status: "running",
+        started_at: expect.any(Number),
+      }),
+    );
+    expect(runAfter).toHaveBeenCalledWith(
+      (SUBAGENT_MAX_DURATION_SECONDS + SUBAGENT_WATCHDOG_GRACE_SECONDS) * 1_000,
+      expect.anything(),
+      { subagentId: "sa_1", triggerRunId: "child-run" },
     );
   });
 

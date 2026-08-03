@@ -15,6 +15,10 @@ const TRANSIENT_PROVIDER_CATEGORIES = new Set<ProviderErrorCategory>([
   "timeout",
 ]);
 
+export const isTransientProviderCategory = (
+  category: ProviderErrorCategory,
+): boolean => TRANSIENT_PROVIDER_CATEGORIES.has(category);
+
 export type SubagentProviderRetryDecision = {
   category: ProviderErrorCategory;
   shouldRetry: boolean;
@@ -36,12 +40,16 @@ export const getSubagentProviderRetryDecision = (
     !options.spendCapExceeded &&
     options.hasStepsRemaining &&
     retriesUsed < SUBAGENT_MAX_TRANSIENT_RETRIES &&
-    TRANSIENT_PROVIDER_CATEGORIES.has(category);
+    isTransientProviderCategory(category);
+
+  const baseDelayMs = 750 * 2 ** retriesUsed;
 
   return {
     category,
     shouldRetry,
-    delayMs: shouldRetry ? 750 * 2 ** retriesUsed : 0,
+    delayMs: shouldRetry
+      ? Math.round(baseDelayMs * (1 + Math.random() * 0.25))
+      : 0,
   };
 };
 

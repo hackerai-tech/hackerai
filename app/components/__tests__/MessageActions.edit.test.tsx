@@ -95,7 +95,10 @@ describe("MessageActions editing", () => {
     fireEvent.click(screen.getByRole("button", { name: "Copy message" }));
     await act(async () => Promise.resolve());
     expect(writeText).toHaveBeenCalledWith("Answer");
+    const pendingTimersAfterCopy = jest.getTimerCount();
+    expect(pendingTimersAfterCopy).toBeGreaterThan(0);
     unmount();
+    expect(jest.getTimerCount()).toBe(pendingTimersAfterCopy - 1);
     act(() => jest.runOnlyPendingTimers());
 
     expect(consoleError).not.toHaveBeenCalled();

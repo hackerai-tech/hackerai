@@ -14,6 +14,12 @@ import type { SidebarContent } from "@/types/chat";
 const mockUseQuery = jest.fn<any>();
 const mockOpenSidebar = jest.fn();
 const mockCloseSidebar = jest.fn();
+const mockRetrySubagentRealtime = jest.fn();
+let mockSubagentRealtime = {
+  message: null,
+  state: "idle",
+  retry: mockRetrySubagentRealtime,
+};
 let mockSidebarContent: SidebarContent | null = null;
 
 jest.mock("next/dynamic", () => ({
@@ -47,7 +53,7 @@ jest.mock("@/convex/_generated/api", () => ({
 }));
 
 jest.mock("@/app/hooks/useSubagentRealtime", () => ({
-  useSubagentRealtime: () => ({ message: null }),
+  useSubagentRealtime: () => mockSubagentRealtime,
 }));
 
 jest.mock("@/app/contexts/GlobalState", () => ({
@@ -117,6 +123,13 @@ describe("ComputerSidebar reconnect behavior", () => {
   beforeEach(() => {
     jest.useFakeTimers();
     jest.clearAllMocks();
+    mockUseQuery.mockReset();
+    mockUseQuery.mockReturnValue(undefined);
+    mockSubagentRealtime = {
+      message: null,
+      state: "idle",
+      retry: mockRetrySubagentRealtime,
+    };
     mockSidebarContent = null;
   });
 
@@ -314,5 +327,47 @@ describe("ComputerSidebar reconnect behavior", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Back to subagent" }));
     expect(mockOpenSidebar).toHaveBeenCalledWith(origin.returnContent);
+  });
+
+  it("offers reconnect when an active child stream fails before persistence", () => {
+    const origin = {
+      kind: "subagent" as const,
+      subagentId: "sa_child",
+      returnContent: {
+        kind: "subagents" as const,
+        parentMessageId: "parent-message",
+        toolCallId: "delegate-tool",
+        selectedSubagentId: "sa_child",
+      },
+    };
+    mockSidebarContent = {
+      command: "npm test",
+      output: "",
+      isExecuting: true,
+      toolCallId: "child-tool-1",
+      origin,
+    };
+    mockUseQuery.mockImplementation((query) =>
+      query === "getOwned"
+        ? {
+            subagent_id: "sa_child",
+            status: "running",
+            trigger_run_id: "run-child",
+          }
+        : [],
+    );
+    mockSubagentRealtime = {
+      message: null,
+      state: "error",
+      retry: mockRetrySubagentRealtime,
+    };
+
+    render(<ComputerSidebar messages={[]} status="streaming" />);
+
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "Live updates disconnected.",
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Reconnect" }));
+    expect(mockRetrySubagentRealtime).toHaveBeenCalledTimes(1);
   });
 });

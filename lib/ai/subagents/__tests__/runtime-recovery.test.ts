@@ -4,6 +4,7 @@ import {
   buildMissingSubagentResultRecoveryMessage,
   canRecoverMissingSubagentResult,
   getSubagentProviderRetryDecision,
+  isTransientProviderCategory,
 } from "../runtime-recovery";
 
 describe("subagent runtime recovery", () => {
@@ -18,11 +19,15 @@ describe("subagent runtime recovery", () => {
       statusCode: 503,
     });
 
-    expect(getSubagentProviderRetryDecision(error, 0, healthyRuntime)).toEqual({
+    const decision = getSubagentProviderRetryDecision(error, 0, healthyRuntime);
+    expect(decision).toMatchObject({
       category: "provider_5xx",
       shouldRetry: true,
-      delayMs: 750,
     });
+    expect(decision.delayMs).toBeGreaterThanOrEqual(750);
+    expect(decision.delayMs).toBeLessThanOrEqual(938);
+    expect(isTransientProviderCategory(decision.category)).toBe(true);
+    expect(isTransientProviderCategory("provider_4xx")).toBe(false);
     expect(
       getSubagentProviderRetryDecision(error, 2, healthyRuntime).shouldRetry,
     ).toBe(false);

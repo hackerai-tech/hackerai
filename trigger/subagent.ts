@@ -30,6 +30,7 @@ import {
   buildMissingSubagentResultRecoveryMessage,
   canRecoverMissingSubagentResult,
   getSubagentProviderRetryDecision,
+  isTransientProviderCategory,
 } from "@/lib/ai/subagents/runtime-recovery";
 import { getSubagentProfileDefinition } from "@/lib/ai/subagents/profiles";
 import { assertSubagentSandboxIdentity } from "@/lib/ai/subagents/sandbox-identity";
@@ -651,12 +652,7 @@ export const subagentTask = task({
                   continue;
                 }
                 runtimeFailure = attemptError;
-                runtimeFailureCode = [
-                  "rate_limited",
-                  "provider_5xx",
-                  "stream_terminated",
-                  "timeout",
-                ].includes(retry.category)
+                runtimeFailureCode = isTransientProviderCategory(retry.category)
                   ? "provider_retry_exhausted"
                   : retry.category === "unknown"
                     ? "runtime_error"
