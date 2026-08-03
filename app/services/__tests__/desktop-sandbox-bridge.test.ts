@@ -3,6 +3,7 @@ import {
   CentrifugoMessageReassembler,
   isCentrifugoTransportFragment,
 } from "@/packages/local/src/centrifugo-transport";
+import { captureAuthenticatedEvent } from "@/lib/analytics/client";
 
 // ── Mocks ─────────────────────────────────────────────────────────────
 
@@ -27,6 +28,14 @@ jest.mock("centrifuge", () => ({
     mockClientOptions = options;
     return mockClient;
   }),
+  errorCodes: {
+    timeout: 1,
+    connectionClosed: 11,
+  },
+}));
+
+jest.mock("@/lib/analytics/client", () => ({
+  captureAuthenticatedEvent: jest.fn(),
 }));
 
 // Mock Tauri IPC
@@ -832,6 +841,180 @@ describe("forwardChunk", () => {
     } finally {
       releaseFirstPublish();
       errorSpy.mockRestore();
+    }
+  });
+
+  it.each([
+    {
+      label: "structured connection closed",
+      publishError: { code: 11, message: "connection closed" },
+      directForwardFailure: undefined,
+      reason: "connection_closed",
+    },
+    {
+      label: "JSON-encoded Error timeout",
+      publishError: new Error(JSON.stringify({ code: 1, message: "timeout" })),
+      directForwardFailure: undefined,
+      reason: "timeout",
+    },
+    {
+      label: "plain connection closed message",
+      publishError: undefined,
+      directForwardFailure: "connection closed",
+      reason: "connection_closed",
+    },
+  ])(
+    "handles $label stream publish rejections and reports them once per command",
+    async ({ publishError, directForwardFailure, reason }) => {
+      let finishCommand!: () => void;
+      const commandFinished = new Promise<void>((resolve) => {
+        finishCommand = resolve;
+      });
+      mockInvokeHandler = async (cmd: string) => {
+        if (cmd === "execute_stream_command") {
+          await commandFinished;
+          return undefined;
+        }
+        return undefined;
+      };
+      if (publishError !== undefined) {
+        mockSubscription.publish.mockRejectedValue(publishError);
+      }
+      const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+      let forwardChunkSpy: jest.SpyInstance | null = null;
+
+      try {
+        const bridge = new DesktopSandboxBridge(buildConfig());
+        await bridge.start();
+        if (directForwardFailure !== undefined) {
+          forwardChunkSpy = jest
+            .spyOn(
+              bridge as unknown as {
+                forwardChunk: (
+                  commandId: string,
+                  chunk: unknown,
+                ) => Promise<void>;
+              },
+              "forwardChunk",
+            )
+            .mockRejectedValue(directForwardFailure);
+        }
+        const handler = getPublicationHandler();
+        handler({
+          data: {
+            type: "command",
+            commandId: "cmd-publish-failure",
+            command: "test",
+            targetConnectionId: "conn-123",
+          },
+        });
+        await new Promise((resolve) => setTimeout(resolve, 0));
+
+        const firstChunk = capturedChannel!.onmessage!({
+          type: "stdout",
+          data: "first",
+        }) as unknown as Promise<void>;
+        const secondChunk = capturedChannel!.onmessage!({
+          type: "stderr",
+          data: "second",
+        }) as unknown as Promise<void>;
+
+        await expect(Promise.all([firstChunk, secondChunk])).resolves.toEqual([
+          undefined,
+          undefined,
+        ]);
+        expect(captureAuthenticatedEvent).toHaveBeenCalledTimes(1);
+        expect(captureAuthenticatedEvent).toHaveBeenCalledWith(
+          "desktop_stream_publish_failed",
+          {
+            connectionId: "conn-123",
+            commandId: "cmd-publish-failure",
+            chunkType: "stdout",
+            reason,
+          },
+        );
+
+        const structuredLog = warnSpy.mock.calls
+          .map(([value]) => {
+            try {
+              return JSON.parse(String(value)) as Record<string, unknown>;
+            } catch {
+              return null;
+            }
+          })
+          .find((value) => value?.event === "desktop_stream_publish_failed");
+        expect(structuredLog).toEqual(
+          expect.objectContaining({
+            timestamp: expect.any(String),
+            level: "warn",
+            event: "desktop_stream_publish_failed",
+            service: "desktop_bridge",
+            environment: "test",
+            request_id: "cmd-publish-failure",
+            connection_id: "conn-123",
+            command_id: "cmd-publish-failure",
+            chunk_type: "stdout",
+            reason,
+          }),
+        );
+      } finally {
+        finishCommand();
+        forwardChunkSpy?.mockRestore();
+        mockSubscription.publish.mockResolvedValue(undefined);
+        warnSpy.mockRestore();
+      }
+    },
+  );
+
+  it("preserves unexpected publish rejections for error tracking", async () => {
+    let finishCommand!: () => void;
+    const commandFinished = new Promise<void>((resolve) => {
+      finishCommand = resolve;
+    });
+    mockInvokeHandler = async (cmd: string) => {
+      if (cmd === "execute_stream_command") {
+        await commandFinished;
+      }
+      return undefined;
+    };
+    mockSubscription.publish.mockRejectedValue({
+      code: 999,
+      message: "unexpected publish failure",
+    });
+    const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+
+    try {
+      const bridge = new DesktopSandboxBridge(buildConfig());
+      await bridge.start();
+      const handler = getPublicationHandler();
+      handler({
+        data: {
+          type: "command",
+          commandId: "cmd-unknown-publish-failure",
+          command: "test",
+          targetConnectionId: "conn-123",
+        },
+      });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      const firstChunk = capturedChannel!.onmessage!({
+        type: "stdout",
+        data: "first",
+      }) as unknown as Promise<void>;
+      const secondChunk = capturedChannel!.onmessage!({
+        type: "stderr",
+        data: "second",
+      }) as unknown as Promise<void>;
+      await expect(firstChunk).rejects.toThrow("unexpected publish failure");
+      await expect(secondChunk).rejects.toThrow("unexpected publish failure");
+      expect(captureAuthenticatedEvent).not.toHaveBeenCalled();
+      expect(warnSpy.mock.calls).not.toContainEqual([
+        expect.stringContaining("desktop_stream_publish_failed"),
+      ]);
+    } finally {
+      finishCommand();
+      mockSubscription.publish.mockResolvedValue(undefined);
+      warnSpy.mockRestore();
     }
   });
 });
