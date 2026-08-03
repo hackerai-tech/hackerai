@@ -1,11 +1,15 @@
 import { ConvexError, v } from "convex/values";
-import { mutation, query } from "./_generated/server";
+import { internal } from "./_generated/api";
+import { internalMutation, mutation, query } from "./_generated/server";
 import { validateServiceKey } from "./lib/utils";
 import {
   MAX_ACTIVE_SUBAGENTS_PER_PARENT_RUN,
   MAX_SUBAGENTS_PER_PARENT_RUN,
   SUBAGENT_MAX_COST_DOLLARS,
+  SUBAGENT_MAX_DURATION_SECONDS,
   SUBAGENT_MAX_PARENT_COST_DOLLARS,
+  SUBAGENT_MAX_QUEUE_SECONDS,
+  SUBAGENT_WATCHDOG_GRACE_SECONDS,
 } from "../lib/ai/subagents/contracts";
 
 const statusValidator = v.union(
@@ -28,6 +32,11 @@ const confidenceValidator = v.union(
   v.literal("low"),
   v.literal("medium"),
   v.literal("high"),
+);
+
+const messageFeedbackValidator = v.union(
+  v.literal("positive"),
+  v.literal("negative"),
 );
 
 const subscriptionValidator = v.union(
@@ -54,6 +63,9 @@ const subagentSummaryValidator = v.object({
   trigger_run_id: v.optional(v.string()),
   profile: v.literal("security_validation"),
   status: statusValidator,
+  objective: v.string(),
+  title: v.string(),
+  subtitle: v.optional(v.string()),
   candidate: candidateValidator,
   summary: v.optional(v.string()),
   verdict: v.optional(verdictValidator),
@@ -98,6 +110,7 @@ const toSummary = (row: {
   parent_tool_call_id: string;
   trigger_run_id?: string;
   profile: "security_validation";
+  objective: string;
   status:
     | "queued"
     | "running"
@@ -134,6 +147,9 @@ const toSummary = (row: {
   trigger_run_id: row.trigger_run_id,
   profile: row.profile,
   status: row.status,
+  objective: row.objective,
+  title: row.candidate.title,
+  subtitle: row.candidate.affected_asset,
   candidate: row.candidate,
   summary: row.summary,
   verdict: row.verdict,
@@ -299,6 +315,14 @@ export const reserveForBackend = mutation({
       created_at: now,
       updated_at: now,
     });
+    await ctx.scheduler.runAfter(
+      SUBAGENT_MAX_QUEUE_SECONDS * 1_000,
+      internal.subagents.reconcileQueuedReservation,
+      {
+        subagentId: args.subagentId,
+        expectedCreatedAt: now,
+      },
+    );
 
     return {
       outcome: "created" as const,
@@ -383,12 +407,24 @@ export const attachTriggerRunForBackend = mutation({
       return "stale" as const;
     }
     const terminal = !isActiveStatus(row.status);
+    const now = Date.now();
     await ctx.db.patch(row._id, {
       trigger_run_id: args.triggerRunId,
       status: row.status === "queued" ? "running" : row.status,
-      started_at: terminal ? row.started_at : (row.started_at ?? Date.now()),
-      updated_at: Date.now(),
+      started_at: terminal ? row.started_at : (row.started_at ?? now),
+      updated_at: now,
     });
+    if (!terminal) {
+      await ctx.scheduler.runAfter(
+        (SUBAGENT_MAX_DURATION_SECONDS + SUBAGENT_WATCHDOG_GRACE_SECONDS) *
+          1_000,
+        internal.subagents.reconcileAttachedRun,
+        {
+          subagentId: args.subagentId,
+          triggerRunId: args.triggerRunId,
+        },
+      );
+    }
     return terminal ? ("terminal" as const) : ("updated" as const);
   },
 });
@@ -426,7 +462,7 @@ export const cancelForBackend = mutation({
     serviceKey: v.string(),
     subagentId: v.string(),
     userId: v.string(),
-    triggerRunId: v.string(),
+    triggerRunId: v.optional(v.string()),
     reason: v.string(),
   },
   returns: v.boolean(),
@@ -453,6 +489,133 @@ export const cancelForBackend = mutation({
       updated_at: Date.now(),
     });
     return true;
+  },
+});
+
+export const failUnattachedForBackend = mutation({
+  args: {
+    serviceKey: v.string(),
+    subagentId: v.string(),
+    parentTriggerRunId: v.string(),
+    failureCode: v.string(),
+    summary: v.string(),
+  },
+  returns: v.boolean(),
+  handler: async (ctx, args) => {
+    validateServiceKey(args.serviceKey);
+    const row = await ctx.db
+      .query("subagent_runs")
+      .withIndex("by_subagent_id", (q) => q.eq("subagent_id", args.subagentId))
+      .first();
+    if (
+      !row ||
+      row.parent_trigger_run_id !== args.parentTriggerRunId ||
+      row.trigger_run_id !== undefined ||
+      row.status !== "queued"
+    ) {
+      return false;
+    }
+    const now = Date.now();
+    await ctx.db.patch(row._id, {
+      status: "failed",
+      summary: args.summary,
+      failure_code: args.failureCode,
+      completed_at: now,
+      updated_at: now,
+    });
+    return true;
+  },
+});
+
+export const recordRecoveryForBackend = mutation({
+  args: {
+    serviceKey: v.string(),
+    subagentId: v.string(),
+    triggerRunId: v.string(),
+    kind: v.union(v.literal("provider_retry"), v.literal("result_recovery")),
+  },
+  returns: v.boolean(),
+  handler: async (ctx, args) => {
+    validateServiceKey(args.serviceKey);
+    const row = await ctx.db
+      .query("subagent_runs")
+      .withIndex("by_subagent_id", (q) => q.eq("subagent_id", args.subagentId))
+      .first();
+    if (
+      !row ||
+      row.trigger_run_id !== args.triggerRunId ||
+      !isActiveStatus(row.status)
+    ) {
+      return false;
+    }
+    await ctx.db.patch(row._id, {
+      ...(args.kind === "provider_retry"
+        ? { provider_retry_count: (row.provider_retry_count ?? 0) + 1 }
+        : { result_recovery_count: (row.result_recovery_count ?? 0) + 1 }),
+      updated_at: Date.now(),
+    });
+    return true;
+  },
+});
+
+export const reconcileQueuedReservation = internalMutation({
+  args: {
+    subagentId: v.string(),
+    expectedCreatedAt: v.number(),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const row = await ctx.db
+      .query("subagent_runs")
+      .withIndex("by_subagent_id", (q) => q.eq("subagent_id", args.subagentId))
+      .first();
+    if (
+      !row ||
+      row.created_at !== args.expectedCreatedAt ||
+      row.trigger_run_id !== undefined ||
+      row.status !== "queued"
+    ) {
+      return null;
+    }
+    const now = Date.now();
+    await ctx.db.patch(row._id, {
+      status: "failed",
+      summary: "Subagent could not start within the queue limit.",
+      failure_code: "queue_timeout",
+      completed_at: now,
+      updated_at: now,
+    });
+    return null;
+  },
+});
+
+export const reconcileAttachedRun = internalMutation({
+  args: {
+    subagentId: v.string(),
+    triggerRunId: v.string(),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const row = await ctx.db
+      .query("subagent_runs")
+      .withIndex("by_subagent_id", (q) => q.eq("subagent_id", args.subagentId))
+      .first();
+    if (
+      !row ||
+      row.trigger_run_id !== args.triggerRunId ||
+      !isActiveStatus(row.status)
+    ) {
+      return null;
+    }
+    const now = Date.now();
+    await ctx.db.patch(row._id, {
+      status: "timed_out",
+      summary: "Subagent exceeded its maximum runtime.",
+      failure_code: "runtime_watchdog_timeout",
+      completed_at: now,
+      updated_at: now,
+    });
+    return null;
   },
 });
 
@@ -807,6 +970,7 @@ export const getMessagesOwned = query({
   args: { subagentId: v.string() },
   returns: v.array(
     v.object({
+      message_id: v.id("subagent_messages"),
       sequence: v.number(),
       role: v.union(
         v.literal("user"),
@@ -814,6 +978,7 @@ export const getMessagesOwned = query({
         v.literal("system"),
       ),
       parts: v.array(v.any()),
+      feedback_type: v.optional(messageFeedbackValidator),
       created_at: v.number(),
       updated_at: v.number(),
     }),
@@ -834,12 +999,54 @@ export const getMessagesOwned = query({
       .order("asc")
       .take(200);
     return rows.map((row) => ({
+      message_id: row._id,
       sequence: row.sequence,
       role: row.role,
       parts: row.parts,
+      feedback_type: row.feedback_type,
       created_at: row.created_at,
       updated_at: row.updated_at,
     }));
+  },
+});
+
+export const setMessageFeedback = mutation({
+  args: {
+    messageId: v.id("subagent_messages"),
+    feedbackType: messageFeedbackValidator,
+    feedbackDetails: v.optional(v.string()),
+  },
+  returns: v.union(v.literal("updated"), v.literal("not_found")),
+  handler: async (ctx, args) => {
+    const identity = await ctx.auth.getUserIdentity();
+    if (!identity) {
+      throw new ConvexError({
+        code: "UNAUTHORIZED",
+        message: "Unauthorized: User not authenticated",
+      });
+    }
+
+    const message = await ctx.db.get(args.messageId);
+    if (!message) return "not_found" as const;
+    if (message.user_id !== identity.subject) {
+      throw new ConvexError({
+        code: "ACCESS_DENIED",
+        message: "Unauthorized: User cannot rate this subagent message",
+      });
+    }
+    if (message.role !== "assistant") {
+      throw new ConvexError({
+        code: "INVALID_MESSAGE",
+        message: "Only subagent responses can be rated",
+      });
+    }
+
+    await ctx.db.patch(message._id, {
+      feedback_type: args.feedbackType,
+      feedback_details: args.feedbackDetails,
+      updated_at: Date.now(),
+    });
+    return "updated" as const;
   },
 });
 

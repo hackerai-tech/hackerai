@@ -737,6 +737,10 @@ export default defineSchema({
     ),
     input_tokens: v.number(),
     output_tokens: v.number(),
+    // Long-lived development deployments can still contain rows written
+    // before the redundant usage fields were removed. Keep read
+    // compatibility so current functions can deploy; new writes omit them.
+    total_tokens: v.optional(v.number()),
     cache_read_tokens: v.optional(v.number()),
     cache_write_tokens: v.optional(v.number()),
     cost_dollars: v.number(),
@@ -746,6 +750,7 @@ export default defineSchema({
     included_points_deducted: v.optional(v.number()),
     extra_usage_points_deducted: v.optional(v.number()),
     uncovered_points: v.optional(v.number()),
+    usage_deduction_failed: v.optional(v.boolean()),
     usage_deduction_failure_reason: v.optional(
       usageDeductionFailureReasonValidator,
     ),
@@ -759,6 +764,8 @@ export default defineSchema({
         v.literal("raw_token_estimate"),
       ),
     ),
+    max_mode: v.optional(v.boolean()),
+    byok: v.optional(v.boolean()),
   })
     .index("by_usage_settlement_id", ["usage_settlement_id"])
     .index("by_user", ["user_id"])
@@ -972,6 +979,8 @@ export default defineSchema({
     cost_limit_dollars: v.number(),
     cost_dollars: v.optional(v.number()),
     step_count: v.optional(v.number()),
+    provider_retry_count: v.optional(v.number()),
+    result_recovery_count: v.optional(v.number()),
     created_at: v.number(),
     started_at: v.optional(v.number()),
     completed_at: v.optional(v.number()),
@@ -1019,6 +1028,10 @@ export default defineSchema({
       v.literal("system"),
     ),
     parts: v.array(v.any()),
+    feedback_type: v.optional(
+      v.union(v.literal("positive"), v.literal("negative")),
+    ),
+    feedback_details: v.optional(v.string()),
     created_at: v.number(),
     updated_at: v.number(),
   })

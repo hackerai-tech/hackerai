@@ -383,7 +383,13 @@ export interface SidebarSubagents {
   selectedSubagentId?: string;
 }
 
-export type SidebarContent =
+export interface SidebarSubagentOrigin {
+  kind: "subagent";
+  subagentId: string;
+  returnContent: SidebarSubagents;
+}
+
+type SidebarContentValue =
   | SidebarFile
   | SidebarTerminal
   | SidebarProxy
@@ -391,6 +397,10 @@ export type SidebarContent =
   | SidebarNotes
   | SidebarSharedFiles
   | SidebarSubagents;
+
+export type SidebarContent = SidebarContentValue & {
+  origin?: SidebarSubagentOrigin;
+};
 
 export const isSidebarSubagents = (
   content: SidebarContent,

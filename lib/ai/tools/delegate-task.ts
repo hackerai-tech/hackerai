@@ -9,6 +9,7 @@ import type {
 } from "@/types/chat";
 import {
   delegateTaskInputSchema,
+  SUBAGENT_ACTIVE_STATUSES,
   SUBAGENT_TERMINAL_STATUSES,
   type DelegateTaskResult,
   type SecurityValidationResult,
@@ -23,15 +24,19 @@ import { serializeSubagentWaitForParent } from "@/lib/ai/subagents/parent-wait-l
 import { getSandboxWithFallbackGuard } from "@/lib/ai/tools/utils/sandbox-fallback";
 import {
   acknowledgeSubagentResult,
+  failUnattachedSubagent,
+  finishSubagent,
   getSubagent,
   reserveSubagent,
   type PersistedSubagent,
 } from "@/lib/db/subagents";
 import {
   captureSubagentLifecycleEvent,
+  captureSubagentTerminalOutcome,
   subagentExposureEventUuid,
 } from "@/lib/analytics/subagents";
 import { subagentTask } from "@/trigger/subagent";
+import { cancelAgentTriggerRun } from "@/lib/api/agent-approval-session";
 
 export type DelegateTaskRuntimeConfig = {
   organizationId?: string;
@@ -106,6 +111,50 @@ const fallbackFailure = (
   report_eligible: false,
   failure_code: failureCode,
 });
+
+const reconcileFailedChildWait = async (args: {
+  subagentId: string;
+  parentTriggerRunId: string;
+  userId: string;
+  failureCode: "child_run_failed" | "child_wait_failed";
+}): Promise<PersistedSubagent | null> => {
+  const current = await getSubagent(args.subagentId);
+  if (!current || !SUBAGENT_ACTIVE_STATUSES.has(current.status)) {
+    return current;
+  }
+
+  let updated = false;
+  if (current.trigger_run_id) {
+    await cancelAgentTriggerRun(current.trigger_run_id).catch(() => false);
+    updated =
+      (await finishSubagent({
+        subagentId: current.subagent_id,
+        triggerRunId: current.trigger_run_id,
+        status: "failed",
+        summary: "Subagent stopped before returning a result.",
+        failureCode: args.failureCode,
+      }).catch(() => null)) === "updated";
+  } else {
+    updated = await failUnattachedSubagent({
+      subagentId: current.subagent_id,
+      parentTriggerRunId: args.parentTriggerRunId,
+      failureCode: args.failureCode,
+      summary: "Subagent stopped before returning a result.",
+    }).catch(() => false);
+  }
+
+  if (updated) {
+    captureSubagentTerminalOutcome({
+      userId: args.userId,
+      subagentId: current.subagent_id,
+      parentTriggerRunId: args.parentTriggerRunId,
+      profile: "security_validation",
+      status: "failed",
+      errorCategory: args.failureCode,
+    });
+  }
+  return await getSubagent(args.subagentId);
+};
 
 export const createDelegateTask = (
   context: ToolContext,
@@ -222,47 +271,74 @@ export const createDelegateTask = (
         return output;
       }
 
-      const { childResult, record } = await serializeSubagentWaitForParent(
-        parentTriggerRunId,
-        async () => {
-          const beforeWait = await getSubagent(subagentId);
-          if (
-            !beforeWait ||
-            SUBAGENT_TERMINAL_STATUSES.has(beforeWait.status)
-          ) {
-            return { childResult: null, record: beforeWait };
-          }
+      const waitOutcome = await (async () => {
+        try {
+          return await serializeSubagentWaitForParent(
+            parentTriggerRunId,
+            async () => {
+              const beforeWait = await getSubagent(subagentId);
+              if (
+                !beforeWait ||
+                SUBAGENT_TERMINAL_STATUSES.has(beforeWait.status)
+              ) {
+                return { childResult: null, record: beforeWait };
+              }
 
-          const key = await idempotencyKeys.create(
-            ["security-validation", subagentId],
-            { scope: "global" },
-          );
-          const result = await subagentTask.triggerAndWait(
-            { subagentId },
-            {
-              idempotencyKey: key,
-              idempotencyKeyTTL: "6h",
-              tags: [
-                `subagent_${subagentId}`,
-                `parent_${parentTriggerRunId}`,
-                `user_${context.userID}`,
-                "profile_security_validation",
-              ],
-              metadata: {
-                subagentId,
-                parentTriggerRunId,
-                parentToolCallId: execution.toolCallId,
-                profile: "security_validation",
-              },
+              const key = await idempotencyKeys.create(
+                ["security-validation", subagentId],
+                { scope: "global" },
+              );
+              const result = await subagentTask.triggerAndWait(
+                { subagentId },
+                {
+                  idempotencyKey: key,
+                  idempotencyKeyTTL: "6h",
+                  tags: [
+                    `subagent_${subagentId}`,
+                    `parent_${parentTriggerRunId}`,
+                    `user_${context.userID}`,
+                    "profile_security_validation",
+                  ],
+                  metadata: {
+                    subagentId,
+                    parentTriggerRunId,
+                    parentToolCallId: execution.toolCallId,
+                    profile: "security_validation",
+                  },
+                },
+              );
+
+              return {
+                childResult: result,
+                record: await getSubagent(subagentId),
+              };
             },
           );
-
+        } catch {
           return {
-            childResult: result,
-            record: await getSubagent(subagentId),
+            childResult: null,
+            record: await reconcileFailedChildWait({
+              subagentId,
+              parentTriggerRunId,
+              userId: context.userID,
+              failureCode: "child_wait_failed",
+            }),
           };
-        },
-      );
+        }
+      })();
+      let { childResult, record } = waitOutcome;
+      if (
+        childResult?.ok === false &&
+        record &&
+        SUBAGENT_ACTIVE_STATUSES.has(record.status)
+      ) {
+        record = await reconcileFailedChildWait({
+          subagentId,
+          parentTriggerRunId,
+          userId: context.userID,
+          failureCode: "child_run_failed",
+        });
+      }
       if (!record) {
         return fallbackFailure(
           subagentId,

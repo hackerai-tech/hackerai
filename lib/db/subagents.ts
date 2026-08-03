@@ -49,6 +49,8 @@ export type PersistedSubagent = {
   cost_limit_dollars: number;
   cost_dollars?: number;
   step_count?: number;
+  provider_retry_count?: number;
+  result_recovery_count?: number;
   created_at: number;
   started_at?: number;
   completed_at?: number;
@@ -137,10 +139,31 @@ export const markSubagentFinalizing = async (
 export const cancelSubagentForUser = async (args: {
   subagentId: string;
   userId: string;
-  triggerRunId: string;
+  triggerRunId?: string;
   reason: string;
 }) =>
   await getConvexClient().mutation(api.subagents.cancelForBackend, {
+    serviceKey,
+    ...args,
+  });
+
+export const failUnattachedSubagent = async (args: {
+  subagentId: string;
+  parentTriggerRunId: string;
+  failureCode: string;
+  summary: string;
+}) =>
+  await getConvexClient().mutation(api.subagents.failUnattachedForBackend, {
+    serviceKey,
+    ...args,
+  });
+
+export const recordSubagentRecovery = async (args: {
+  subagentId: string;
+  triggerRunId: string;
+  kind: "provider_retry" | "result_recovery";
+}) =>
+  await getConvexClient().mutation(api.subagents.recordRecoveryForBackend, {
     serviceKey,
     ...args,
   });

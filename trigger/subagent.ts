@@ -5,7 +5,9 @@ import {
   task,
 } from "@trigger.dev/sdk";
 import {
+  convertToModelMessages,
   createUIMessageStream,
+  hasToolCall,
   stepCountIs,
   streamText,
   tool,
@@ -24,6 +26,11 @@ import {
   SUBAGENT_TERMINAL_STATUSES,
   type SecurityValidationResult,
 } from "@/lib/ai/subagents/contracts";
+import {
+  buildMissingSubagentResultRecoveryMessage,
+  canRecoverMissingSubagentResult,
+  getSubagentProviderRetryDecision,
+} from "@/lib/ai/subagents/runtime-recovery";
 import { getSubagentProfileDefinition } from "@/lib/ai/subagents/profiles";
 import { assertSubagentSandboxIdentity } from "@/lib/ai/subagents/sandbox-identity";
 import {
@@ -31,6 +38,7 @@ import {
   finishSubagent,
   getSubagent,
   markSubagentFinalizing,
+  recordSubagentRecovery,
   resolveSubagentContext,
   saveSubagentMessage,
 } from "@/lib/db/subagents";
@@ -93,10 +101,11 @@ const persistAssistantMessages = async (
   subagentId: string,
   userId: string,
   messages: UIMessage[],
+  sequenceBase: number,
 ): Promise<void> => {
-  let sequence = 1;
+  let sequence = sequenceBase;
   for (const message of messages) {
-    if (message.role !== "assistant") continue;
+    if (message.role !== "assistant" || message.parts.length === 0) continue;
     const convexSafe = sanitizeForConvexValue(
       message.parts,
     ) as UIMessage["parts"];
@@ -113,6 +122,38 @@ const persistAssistantMessages = async (
     });
     sequence += 1;
   }
+};
+
+const pipeUiMessageStream = async (
+  stream: ReadableStream<UIMessageChunk>,
+  write: (chunk: UIMessageChunk) => void,
+): Promise<void> => {
+  const reader = stream.getReader();
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) return;
+      write(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+};
+
+const waitForRetryDelay = async (
+  delayMs: number,
+  signal: AbortSignal,
+): Promise<void> => {
+  if (signal.aborted || delayMs <= 0) return;
+  await new Promise<void>((resolve) => {
+    const timeout = setTimeout(finish, delayMs);
+    function finish() {
+      clearTimeout(timeout);
+      signal.removeEventListener("abort", finish);
+      resolve();
+    }
+    signal.addEventListener("abort", finish, { once: true });
+  });
 };
 
 const captureCompletion = (
@@ -294,6 +335,10 @@ export const subagentTask = task({
     let resultValue: SecurityValidationResult | undefined;
     let stepCount = 0;
     let responseModel: string | undefined;
+    let runtimeFailure: unknown;
+    let runtimeFailureCode: string | undefined;
+    let providerRetriesUsed = 0;
+    let resultRecoveriesUsed = 0;
     let extraUsageConfig:
       Awaited<ReturnType<typeof buildExtraUsageConfig>> | undefined;
     let rateLimitInfo:
@@ -405,124 +450,247 @@ export const subagentTask = task({
           return getUserFriendlyProviderError(error);
         },
         execute: async ({ writer }) => {
-          const submitResult = tool({
-            description: profile.finalResultTool.description,
-            inputSchema: profile.finalResultTool.schema,
-            execute: async (input) => {
-              const parsed = profile.finalResultTool.schema.parse(input);
-              if (
-                Buffer.byteLength(JSON.stringify(parsed), "utf8") >
-                profile.finalResultTool.maxBytes
-              ) {
-                return {
-                  accepted: false,
-                  error: `Result exceeds ${profile.finalResultTool.maxBytes} bytes; shorten it and submit again.`,
-                };
-              }
-              if (resultValue) {
-                return {
-                  accepted: false,
-                  error: "A validation result was already accepted.",
-                };
-              }
-              resultValue = parsed;
-              return { accepted: true, verdict: parsed.verdict };
-            },
-          });
-
-          const { tools, ensureSandbox } = createTools(
-            row.user_id,
-            row.chat_id,
-            writer,
-            "agent",
-            (row.user_location ?? {}) as Parameters<typeof createTools>[4],
-            [],
-            false,
-            row.subagent_id,
-            row.sandbox_preference,
-            process.env.CONVEX_SERVICE_ROLE_KEY,
-            undefined,
-            (costDollars) => {
-              usageTracker.providerCost += costDollars;
-              usageTracker.nonModelCost += costDollars;
-            },
-            row.subscription,
-            undefined,
-            selectedModel,
-            undefined,
-            undefined,
-            undefined,
-            undefined,
-            ctx.run.id,
-            {
-              allowedToolNames: [
-                ...profile.allowedToolNames,
-                profile.finalResultTool.name,
-              ],
-              additionalTools: () => ({
-                [profile.finalResultTool.name]: submitResult,
-              }),
-              ptyScopeId: row.subagent_id,
-              chargeSandboxRuntime: false,
-            },
-          );
-          const sandbox = await ensureSandbox();
-          assertSubagentSandboxIdentity(sandbox, row.sandbox_identity);
-
-          const provider = createTrackedProvider();
-          const generation = streamText({
-            model: provider.languageModel(selectedModel),
-            system: profile.systemPrompt,
-            prompt,
-            tools,
-            stopWhen: stepCountIs(SUBAGENT_MAX_STEPS),
-            maxOutputTokens: profile.maxOutputTokens,
-            abortSignal: activeAbort.signal,
-            prepareStep: async ({ messages }) => {
-              const compacted = pruneModelMessages(
-                messages as Array<Record<string, unknown>>,
-                12_000,
-                2_000,
-              );
-              return { messages: compacted.messages as ModelMessage[] };
-            },
-            onStepFinish: async ({ usage, response, providerMetadata }) => {
-              stepCount += 1;
-              responseModel = response?.modelId ?? responseModel;
-              const index = usage
-                ? usageTracker.accumulateStep(usage, response?.modelId)
-                : undefined;
-              const openRouter = extractOpenRouterMetadata({
-                response,
-                providerMetadata,
-              });
-              usageTracker.setAuthoritativeModelCostForStep(
-                index,
-                openRouter.openrouter_upstream_inference_cost,
-              );
-              if (
-                usageTracker.computeCostDollars(selectedModel, responseModel) >=
-                costLimitDollars
-              ) {
-                spendCapExceeded = true;
-                activeAbort.abort();
-              }
-            },
-          });
-
-          writer.merge(
-            generation.toUIMessageStream({
-              generateMessageId: () => row.subagent_id,
-              sendReasoning: true,
-              onFinish: async ({ messages }) => {
-                await persistAssistantMessages(
-                  row.subagent_id,
-                  row.user_id,
-                  messages,
-                );
+          try {
+            const submitResult = tool({
+              description: profile.finalResultTool.description,
+              inputSchema: profile.finalResultTool.schema,
+              execute: async (input) => {
+                const parsed = profile.finalResultTool.schema.parse(input);
+                if (
+                  Buffer.byteLength(JSON.stringify(parsed), "utf8") >
+                  profile.finalResultTool.maxBytes
+                ) {
+                  return {
+                    accepted: false,
+                    error: `Result exceeds ${profile.finalResultTool.maxBytes} bytes; shorten it and submit again.`,
+                  };
+                }
+                if (resultValue) {
+                  return {
+                    accepted: false,
+                    error: "A validation result was already accepted.",
+                  };
+                }
+                resultValue = parsed;
+                return { accepted: true, verdict: parsed.verdict };
               },
-            }),
-          );
+            });
+
+            const { tools, ensureSandbox } = createTools(
+              row.user_id,
+              row.chat_id,
+              writer,
+              "agent",
+              (row.user_location ?? {}) as Parameters<typeof createTools>[4],
+              [],
+              false,
+              row.subagent_id,
+              row.sandbox_preference,
+              process.env.CONVEX_SERVICE_ROLE_KEY,
+              undefined,
+              (costDollars) => {
+                usageTracker.providerCost += costDollars;
+                usageTracker.nonModelCost += costDollars;
+              },
+              row.subscription,
+              undefined,
+              selectedModel,
+              undefined,
+              undefined,
+              undefined,
+              undefined,
+              ctx.run.id,
+              {
+                allowedToolNames: [
+                  ...profile.allowedToolNames,
+                  profile.finalResultTool.name,
+                ],
+                additionalTools: () => ({
+                  [profile.finalResultTool.name]: submitResult,
+                }),
+                ptyScopeId: row.subagent_id,
+                chargeSandboxRuntime: false,
+              },
+            );
+            const sandbox = await ensureSandbox();
+            assertSubagentSandboxIdentity(sandbox, row.sandbox_identity);
+
+            const provider = createTrackedProvider();
+            const conversationMessages: ModelMessage[] = [
+              { role: "user", content: prompt },
+            ];
+            let generationAttempt = 0;
+
+            while (
+              !resultValue &&
+              stepCount < SUBAGENT_MAX_STEPS &&
+              !activeAbort.signal.aborted
+            ) {
+              generationAttempt += 1;
+              let attemptError: unknown;
+              let attemptUiMessages: UIMessage[] = [];
+              const remainingSteps = SUBAGENT_MAX_STEPS - stepCount;
+              const generation = streamText({
+                model: provider.languageModel(selectedModel),
+                system: profile.systemPrompt,
+                messages: conversationMessages,
+                tools,
+                stopWhen: [
+                  hasToolCall(profile.finalResultTool.name),
+                  stepCountIs(remainingSteps),
+                ],
+                maxOutputTokens: profile.maxOutputTokens,
+                abortSignal: activeAbort.signal,
+                prepareStep: async ({ messages }) => {
+                  const compacted = pruneModelMessages(
+                    messages as Array<Record<string, unknown>>,
+                    12_000,
+                    2_000,
+                  );
+                  return { messages: compacted.messages as ModelMessage[] };
+                },
+                onError: ({ error }) => {
+                  attemptError = error;
+                },
+                onStepFinish: async ({ usage, response, providerMetadata }) => {
+                  stepCount += 1;
+                  responseModel = response?.modelId ?? responseModel;
+                  const index = usage
+                    ? usageTracker.accumulateStep(usage, response?.modelId)
+                    : undefined;
+                  const openRouter = extractOpenRouterMetadata({
+                    response,
+                    providerMetadata,
+                  });
+                  usageTracker.setAuthoritativeModelCostForStep(
+                    index,
+                    openRouter.openrouter_upstream_inference_cost,
+                  );
+                  if (
+                    usageTracker.computeCostDollars(
+                      selectedModel,
+                      responseModel,
+                    ) >= costLimitDollars
+                  ) {
+                    spendCapExceeded = true;
+                    activeAbort.abort();
+                  }
+                },
+              });
+
+              const attemptStream = generation.toUIMessageStream({
+                generateMessageId: () =>
+                  `${row.subagent_id}-attempt-${generationAttempt}`,
+                sendReasoning: true,
+                onFinish: async ({ messages }) => {
+                  attemptUiMessages = messages;
+                  await persistAssistantMessages(
+                    row.subagent_id,
+                    row.user_id,
+                    messages,
+                    generationAttempt * 100,
+                  );
+                },
+              });
+              try {
+                await pipeUiMessageStream(attemptStream, (chunk) =>
+                  writer.write(chunk),
+                );
+              } catch (error) {
+                attemptError ??= error;
+              }
+
+              try {
+                const response = await generation.response;
+                conversationMessages.push(
+                  ...(response.messages as ModelMessage[]),
+                );
+              } catch (error) {
+                attemptError ??= error;
+                const partialMessages = await convertToModelMessages(
+                  attemptUiMessages,
+                  {
+                    tools,
+                    ignoreIncompleteToolCalls: true,
+                  },
+                ).catch(() => []);
+                conversationMessages.push(...partialMessages);
+              }
+
+              if (resultValue) break;
+              if (attemptError) {
+                const retry = getSubagentProviderRetryDecision(
+                  attemptError,
+                  providerRetriesUsed,
+                  {
+                    aborted: activeAbort.signal.aborted,
+                    spendCapExceeded,
+                    hasStepsRemaining: stepCount < SUBAGENT_MAX_STEPS,
+                  },
+                );
+                if (retry.shouldRetry) {
+                  providerRetriesUsed += 1;
+                  await recordSubagentRecovery({
+                    subagentId: row.subagent_id,
+                    triggerRunId: ctx.run.id,
+                    kind: "provider_retry",
+                  }).catch(() => false);
+                  metadata.set("providerRetryCount", providerRetriesUsed);
+                  triggerLogger.warn(
+                    "[security-validation-subagent] retrying transient provider failure",
+                    {
+                      subagentId: row.subagent_id,
+                      parentTriggerRunId: row.parent_trigger_run_id,
+                      triggerRunId: ctx.run.id,
+                      attempt: providerRetriesUsed,
+                      errorCategory: retry.category,
+                      delayMs: retry.delayMs,
+                    },
+                  );
+                  await waitForRetryDelay(retry.delayMs, activeAbort.signal);
+                  continue;
+                }
+                runtimeFailure = attemptError;
+                runtimeFailureCode = [
+                  "rate_limited",
+                  "provider_5xx",
+                  "stream_terminated",
+                  "timeout",
+                ].includes(retry.category)
+                  ? "provider_retry_exhausted"
+                  : retry.category === "unknown"
+                    ? "runtime_error"
+                    : "provider_error";
+                break;
+              }
+
+              const canRecover = canRecoverMissingSubagentResult(
+                resultRecoveriesUsed,
+                {
+                  aborted: activeAbort.signal.aborted,
+                  spendCapExceeded,
+                  hasStepsRemaining: stepCount < SUBAGENT_MAX_STEPS,
+                },
+              );
+              if (!canRecover) break;
+
+              resultRecoveriesUsed += 1;
+              conversationMessages.push({
+                role: "user",
+                content: buildMissingSubagentResultRecoveryMessage(),
+              });
+              await recordSubagentRecovery({
+                subagentId: row.subagent_id,
+                triggerRunId: ctx.run.id,
+                kind: "result_recovery",
+              }).catch(() => false);
+              metadata.set("resultRecoveryCount", resultRecoveriesUsed);
+            }
+          } catch (error) {
+            runtimeFailure = error;
+            runtimeFailureCode ??= "runtime_error";
+            throw error;
+          }
         },
       });
 
@@ -560,14 +728,25 @@ export const subagentTask = task({
                   summary:
                     "Independent validation could not settle within the available usage budget.",
                 }
-              : !resultValue
+              : runtimeFailure
                 ? {
                     status: "failed" as const,
-                    code: "structured_result_missing",
+                    code: runtimeFailureCode ?? "runtime_error",
                     summary:
-                      "Independent validation ended without a structured verdict.",
+                      runtimeFailureCode === "provider_retry_exhausted"
+                        ? "Subagent could not recover from a temporary model provider error."
+                        : runtimeFailureCode === "provider_error"
+                          ? "Subagent stopped because the model provider rejected the request."
+                          : "Subagent failed before returning a result.",
                   }
-                : null;
+                : !resultValue
+                  ? {
+                      status: "failed" as const,
+                      code: "structured_result_missing",
+                      summary:
+                        "Independent validation ended without a structured verdict.",
+                    }
+                  : null;
 
       if (terminalFailure) {
         await finishSubagent({
@@ -593,6 +772,19 @@ export const subagentTask = task({
           costDollars,
           errorCategory: terminalFailure.code,
         });
+        if (runtimeFailure) {
+          triggerLogger.error(
+            "[security-validation-subagent] bounded recovery exhausted",
+            {
+              subagentId: row.subagent_id,
+              parentTriggerRunId: row.parent_trigger_run_id,
+              triggerRunId: ctx.run.id,
+              failureCode: terminalFailure.code,
+              providerRetryCount: providerRetriesUsed,
+              resultRecoveryCount: resultRecoveriesUsed,
+            },
+          );
+        }
         metadata.set("status", terminalFailure.status);
         return { subagentId: row.subagent_id, status: terminalFailure.status };
       }

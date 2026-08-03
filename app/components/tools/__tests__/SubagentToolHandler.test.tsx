@@ -51,4 +51,37 @@ describe("SubagentToolHandler", () => {
       toolCallId: "tool-delegate-1",
     });
   });
+
+  it("does not open the sidebar when delegation failed before creating a child", () => {
+    render(
+      <SubagentToolHandler
+        message={
+          {
+            id: "parent-run",
+            role: "assistant",
+            parts: [],
+          } as any
+        }
+        status="ready"
+        part={{
+          type: "tool-delegate_task",
+          toolCallId: "tool-delegate-1",
+          state: "output-error",
+          input: {
+            profile_input: { candidate: { title: "Stored XSS" } },
+          },
+          errorText:
+            "Could not find public function for 'subagents:reserveForBackend'",
+        }}
+      />,
+    );
+
+    fireEvent.click(
+      screen.getByRole("button", { name: /Subagent failed Stored XSS/i }),
+    );
+    expect(openSidebar).not.toHaveBeenCalled();
+    expect(
+      screen.queryByRole("button", { name: "Open Stored XSS in sidebar" }),
+    ).not.toBeInTheDocument();
+  });
 });

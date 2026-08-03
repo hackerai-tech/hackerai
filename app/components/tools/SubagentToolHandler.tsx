@@ -1,7 +1,7 @@
 "use client";
 
 import { memo, useMemo } from "react";
-import { ShieldCheck, Users } from "lucide-react";
+import { Bot, ShieldCheck } from "lucide-react";
 import type { UIMessage } from "@ai-sdk/react";
 
 import ToolBlock from "@/components/ui/tool-block";
@@ -12,8 +12,6 @@ import { useToolSidebar } from "@/app/hooks/useToolSidebar";
 type DelegateOutput = {
   subagent_id?: string;
   status?: string;
-  verdict?: "confirmed" | "rejected" | "inconclusive" | null;
-  summary?: string;
 };
 
 export const SubagentToolHandler = memo(function SubagentToolHandler({
@@ -26,14 +24,18 @@ export const SubagentToolHandler = memo(function SubagentToolHandler({
   status: ChatStatus;
 }) {
   const { toolCallId, state, input, output, errorText } = part;
-  const title = input?.profile_input?.candidate?.title ?? "candidate";
+  const title =
+    input?.profile_input?.candidate?.title ??
+    input?.objective ??
+    "Delegated task";
   const sidebarContent = useMemo<SidebarSubagents>(
     () => ({
       kind: "subagents",
       parentMessageId: message.id,
       toolCallId,
+      selectedSubagentId: output?.subagent_id,
     }),
-    [message.id, toolCallId],
+    [message.id, output?.subagent_id, toolCallId],
   );
   const { handleOpenInSidebar, handleKeyDown } = useToolSidebar({
     toolCallId,
@@ -42,33 +44,31 @@ export const SubagentToolHandler = memo(function SubagentToolHandler({
   });
 
   const result = output as DelegateOutput | undefined;
+  const canOpenSidebar =
+    state !== "input-streaming" && (!errorText || !!result?.subagent_id);
   const action =
     result?.status && result.status !== "completed"
-      ? "Validation failed"
-      : result?.verdict === "confirmed"
-        ? "Confirmed independently"
-        : result?.verdict === "rejected"
-          ? "Rejected independently"
-          : result?.verdict === "inconclusive"
-            ? "Validation inconclusive"
-            : state === "input-streaming"
-              ? "Preparing independent validation"
-              : status === "streaming"
-                ? "Validating independently"
-                : errorText
-                  ? "Validation failed"
-                  : "Independent validation";
+      ? "Subagent failed"
+      : result?.status === "completed"
+        ? "Subagent completed"
+        : state === "input-streaming"
+          ? "Starting subagent"
+          : status === "streaming"
+            ? "Subagent working"
+            : errorText
+              ? "Subagent failed"
+              : "Delegated task";
 
   return (
     <ToolBlock
-      icon={<Users />}
+      icon={<Bot />}
       action={action}
       target={title}
       isShimmer={
         state === "input-streaming" ||
         (state === "input-available" && status === "streaming")
       }
-      isClickable={state !== "input-streaming"}
+      isClickable={canOpenSidebar}
       onClick={handleOpenInSidebar}
       onKeyDown={handleKeyDown}
     />

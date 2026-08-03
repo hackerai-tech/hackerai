@@ -67,14 +67,49 @@ describe("subagent cancel route", () => {
     expect(cancelSubagentForUser).not.toHaveBeenCalled();
   });
 
-  it("waits for a queued child to receive a Trigger run id", async () => {
+  it("cancels a queued child before it receives a Trigger run id", async () => {
     getOwnedSubagent.mockResolvedValue({ status: "queued" });
     const response = await POST({} as any, {
       params: Promise.resolve({ subagentId: "sa_queued" }),
     });
 
-    expect(response.status).toBe(409);
+    expect(response.status).toBe(200);
     expect(cancelAgentTriggerRun).not.toHaveBeenCalled();
+    expect(cancelSubagentForUser).toHaveBeenCalledWith({
+      subagentId: "sa_queued",
+      userId: "user-1",
+      triggerRunId: undefined,
+      reason: "user_canceled_child",
+    });
+    await expect(response.json()).resolves.toEqual({
+      canceled: true,
+      status: "queued",
+    });
+  });
+
+  it("follows an attach race and cancels the newly linked Trigger run", async () => {
+    getOwnedSubagent
+      .mockResolvedValueOnce({ status: "queued" })
+      .mockResolvedValueOnce({
+        status: "running",
+        trigger_run_id: "child-run-late",
+      });
+    cancelSubagentForUser
+      .mockResolvedValueOnce(false)
+      .mockResolvedValueOnce(true);
+
+    const response = await POST({} as any, {
+      params: Promise.resolve({ subagentId: "sa_queued" }),
+    });
+
+    expect(response.status).toBe(200);
+    expect(cancelAgentTriggerRun).toHaveBeenCalledWith("child-run-late");
+    expect(cancelSubagentForUser).toHaveBeenLastCalledWith({
+      subagentId: "sa_queued",
+      userId: "user-1",
+      triggerRunId: "child-run-late",
+      reason: "user_canceled_child",
+    });
   });
 
   it("returns a server error without changing persistence when Trigger cancellation fails", async () => {

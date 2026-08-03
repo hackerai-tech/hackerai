@@ -37,10 +37,32 @@ export async function POST(
     return NextResponse.json({ canceled: false, status: child.status });
   }
   if (!child.trigger_run_id) {
-    return NextResponse.json(
-      { canceled: false, status: child.status },
-      { status: 409 },
-    );
+    try {
+      const canceled = await cancelSubagentForUser({
+        subagentId,
+        userId,
+        triggerRunId: undefined,
+        reason: "user_canceled_child",
+      });
+      if (canceled) {
+        return NextResponse.json({ canceled: true, status: child.status });
+      }
+      child = await getOwnedSubagent(subagentId, userId);
+      if (!SUBAGENT_ACTIVE_STATUSES.has(child.status)) {
+        return NextResponse.json({ canceled: false, status: child.status });
+      }
+      if (!child.trigger_run_id) {
+        return NextResponse.json(
+          { canceled: false, status: child.status },
+          { status: 409 },
+        );
+      }
+    } catch {
+      return NextResponse.json(
+        { error: "Could not cancel subagent" },
+        { status: 502 },
+      );
+    }
   }
 
   try {
@@ -56,7 +78,7 @@ export async function POST(
     return NextResponse.json({ canceled, status: child.status });
   } catch {
     return NextResponse.json(
-      { error: "Could not cancel validation" },
+      { error: "Could not cancel subagent" },
       { status: 502 },
     );
   }

@@ -39,6 +39,7 @@ describe("security validation subagent runtime contracts", () => {
   it("propagates parent cancellation and refuses a canceled queued child", () => {
     const parent = read("trigger/agent-long.ts");
     const child = read("trigger/subagent.ts");
+    const delegate = read("lib/ai/tools/delegate-task.ts");
     expect(parent).toContain("listActiveSubagentsForParent");
     expect(parent).toContain("cancelAgentTriggerRun(child.trigger_run_id)");
     expect(parent).toContain("cancelSubagentsForParent");
@@ -52,6 +53,14 @@ describe("security validation subagent runtime contracts", () => {
     expect(child).toContain("const terminalFailure = activeTimedOut");
     expect(child).toContain(": spendCapExceeded");
     expect(child).toContain("captureSubagentTerminalOutcome");
+    expect(child).toContain("getSubagentProviderRetryDecision");
+    expect(child).toContain("canRecoverMissingSubagentResult");
+    expect(child).toContain("persistAssistantMessages");
+    expect(child).toContain("recordSubagentRecovery");
+    expect(child).toContain("hasToolCall(profile.finalResultTool.name)");
+    expect(parent).toContain("cancelSubagentsForParent");
+    expect(delegate).toContain("reconcileFailedChildWait");
+    expect(delegate).toContain("failUnattachedSubagent");
     expect(parent).toContain(
       "const childCancellationCompleted = await Promise.race",
     );

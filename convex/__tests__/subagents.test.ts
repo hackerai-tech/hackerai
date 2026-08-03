@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, jest } from "@jest/globals";
 
 jest.mock("../_generated/server", () => ({
+  internalMutation: jest.fn((config: unknown) => config),
   mutation: jest.fn((config: unknown) => config),
   query: jest.fn((config: unknown) => config),
 }));
@@ -15,6 +16,7 @@ jest.mock("convex/values", () => ({
     union: jest.fn(() => "union"),
     array: jest.fn(() => "array"),
     literal: jest.fn(() => "literal"),
+    id: jest.fn(() => "id"),
     any: jest.fn(() => "any"),
     null: jest.fn(() => "null"),
   },
@@ -28,9 +30,15 @@ jest.mock("../lib/utils", () => ({
 
 const {
   attachTriggerRunForBackend,
+  cancelForBackend,
   cancelForChatDeletionBackend,
+  failUnattachedForBackend,
   finishForBackend,
+  listForParentMessage,
+  reconcileAttachedRun,
+  reconcileQueuedReservation,
   reserveForBackend,
+  setMessageFeedback,
 } = require("../subagents") as typeof import("../subagents");
 
 const args = {
@@ -65,6 +73,7 @@ const makeCtx = ({
   sameCandidate?: Array<Record<string, any>>;
 }) => {
   const insert = jest.fn<any>().mockResolvedValue("subagent-doc");
+  const runAfter = jest.fn<any>().mockResolvedValue(undefined);
   const chain = {
     eq: jest.fn<any>(),
   };
@@ -93,7 +102,11 @@ const makeCtx = ({
       };
     }),
   }));
-  return { ctx: { db: { query, insert } } as any, insert };
+  return {
+    ctx: { db: { query, insert }, scheduler: { runAfter } } as any,
+    insert,
+    runAfter,
+  };
 };
 
 describe("subagent reservation", () => {
@@ -181,7 +194,7 @@ describe("subagent reservation", () => {
   });
 
   it("creates a depth-one queued validation child", async () => {
-    const { ctx, insert } = makeCtx({});
+    const { ctx, insert, runAfter } = makeCtx({});
     await expect(reserveForBackend.handler(ctx, args)).resolves.toEqual({
       outcome: "created",
       subagentId: "sa_new",
@@ -197,10 +210,166 @@ describe("subagent reservation", () => {
         cost_limit_dollars: 1,
       }),
     );
+    expect(runAfter).toHaveBeenCalledWith(5 * 60 * 1_000, expect.anything(), {
+      subagentId: "sa_new",
+      expectedCreatedAt: expect.any(Number),
+    });
+  });
+});
+
+describe("subagent presentation", () => {
+  it("projects generic task fields for the sidebar", async () => {
+    const row = {
+      subagent_id: "sa_1",
+      parent_trigger_run_id: "parent-run",
+      parent_message_id: "parent-message",
+      parent_tool_call_id: "tool-1",
+      profile: "security_validation" as const,
+      status: "running" as const,
+      objective: "Inspect profile rendering for script injection.",
+      candidate: args.candidate,
+      created_at: 1,
+      updated_at: 2,
+    };
+    const ctx = {
+      auth: {
+        getUserIdentity: jest
+          .fn<any>()
+          .mockResolvedValue({ subject: "user-1" }),
+      },
+      db: {
+        query: jest.fn(() => ({
+          withIndex: jest.fn((_name: string, callback: (q: any) => void) => {
+            const q = { eq: jest.fn<any>() };
+            q.eq.mockReturnValue(q);
+            callback(q);
+            return {
+              order: jest.fn(() => ({
+                take: jest.fn<any>().mockResolvedValue([row]),
+              })),
+            };
+          }),
+        })),
+      },
+    } as any;
+
+    await expect(
+      listForParentMessage.handler(ctx, { parentMessageId: "parent-message" }),
+    ).resolves.toEqual([
+      expect.objectContaining({
+        profile: "security_validation",
+        objective: "Inspect profile rendering for script injection.",
+        title: "Stored XSS",
+        subtitle: "https://example.test/profile",
+      }),
+    ]);
+  });
+});
+
+describe("subagent message feedback", () => {
+  it("persists feedback for an owned subagent response", async () => {
+    const patch = jest.fn<any>().mockResolvedValue(undefined);
+    const ctx = {
+      auth: {
+        getUserIdentity: jest.fn<any>().mockResolvedValue({
+          subject: "user-1",
+        }),
+      },
+      db: {
+        get: jest.fn<any>().mockResolvedValue({
+          _id: "subagent-message-1",
+          user_id: "user-1",
+          role: "assistant",
+        }),
+        patch,
+      },
+    } as any;
+
+    await expect(
+      setMessageFeedback.handler(ctx, {
+        messageId: "subagent-message-1" as any,
+        feedbackType: "negative",
+        feedbackDetails: "Needs stronger reproduction evidence.",
+      }),
+    ).resolves.toBe("updated");
+    expect(patch).toHaveBeenCalledWith(
+      "subagent-message-1",
+      expect.objectContaining({
+        feedback_type: "negative",
+        feedback_details: "Needs stronger reproduction evidence.",
+        updated_at: expect.any(Number),
+      }),
+    );
+  });
+
+  it("rejects feedback for another user's subagent response", async () => {
+    const ctx = {
+      auth: {
+        getUserIdentity: jest.fn<any>().mockResolvedValue({
+          subject: "user-2",
+        }),
+      },
+      db: {
+        get: jest.fn<any>().mockResolvedValue({
+          _id: "subagent-message-1",
+          user_id: "user-1",
+          role: "assistant",
+        }),
+        patch: jest.fn<any>(),
+      },
+    } as any;
+
+    await expect(
+      setMessageFeedback.handler(ctx, {
+        messageId: "subagent-message-1" as any,
+        feedbackType: "positive",
+      }),
+    ).rejects.toBeInstanceOf(Error);
+    expect(ctx.db.patch).not.toHaveBeenCalled();
   });
 });
 
 describe("subagent finalization", () => {
+  it("cancels a queued child without requiring a Trigger run id", async () => {
+    const patch = jest.fn<any>().mockResolvedValue(undefined);
+    const ctx = {
+      db: {
+        query: jest.fn(() => ({
+          withIndex: jest.fn((_name: string, callback: (q: any) => void) => {
+            const q = { eq: jest.fn<any>() };
+            q.eq.mockReturnValue(q);
+            callback(q);
+            return {
+              first: jest.fn<any>().mockResolvedValue({
+                _id: "subagent-doc",
+                user_id: "user-1",
+                status: "queued",
+              }),
+            };
+          }),
+        })),
+        patch,
+      },
+    } as any;
+
+    await expect(
+      cancelForBackend.handler(ctx, {
+        serviceKey: "service-key",
+        subagentId: "sa_1",
+        userId: "user-1",
+        triggerRunId: undefined,
+        reason: "user_canceled_child",
+      }),
+    ).resolves.toBe(true);
+    expect(patch).toHaveBeenCalledWith(
+      "subagent-doc",
+      expect.objectContaining({
+        status: "canceled",
+        cancel_reason: "user_canceled_child",
+      }),
+    );
+  });
+
   it("attaches the Trigger id without reviving a terminal child", async () => {
     const patch = jest.fn<any>().mockResolvedValue(undefined);
     const ctx = {
@@ -299,6 +468,152 @@ describe("subagent finalization", () => {
       }),
     );
     expect(validateServiceKey).toHaveBeenCalledWith("service-key");
+  });
+
+  it("fails a queued reservation that never attaches", async () => {
+    const patch = jest.fn<any>().mockResolvedValue(undefined);
+    const ctx = {
+      db: {
+        query: jest.fn(() => ({
+          withIndex: jest.fn((_name: string, callback: (q: any) => void) => {
+            const q = { eq: jest.fn<any>() };
+            q.eq.mockReturnValue(q);
+            callback(q);
+            return {
+              first: jest.fn<any>().mockResolvedValue({
+                _id: "subagent-doc",
+                subagent_id: "sa_1",
+                status: "queued",
+                created_at: 1234,
+              }),
+            };
+          }),
+        })),
+        patch,
+      },
+    } as any;
+
+    await expect(
+      reconcileQueuedReservation.handler(ctx, {
+        subagentId: "sa_1",
+        expectedCreatedAt: 1234,
+      }),
+    ).resolves.toBeNull();
+    expect(patch).toHaveBeenCalledWith(
+      "subagent-doc",
+      expect.objectContaining({
+        status: "failed",
+        failure_code: "queue_timeout",
+      }),
+    );
+  });
+
+  it("records a parent wait failure only while the child is unattached", async () => {
+    const patch = jest.fn<any>().mockResolvedValue(undefined);
+    const ctx = {
+      db: {
+        query: jest.fn(() => ({
+          withIndex: jest.fn((_name: string, callback: (q: any) => void) => {
+            const q = { eq: jest.fn<any>() };
+            q.eq.mockReturnValue(q);
+            callback(q);
+            return {
+              first: jest.fn<any>().mockResolvedValue({
+                _id: "subagent-doc",
+                parent_trigger_run_id: "parent-run",
+                status: "queued",
+              }),
+            };
+          }),
+        })),
+        patch,
+      },
+    } as any;
+
+    await expect(
+      failUnattachedForBackend.handler(ctx, {
+        serviceKey: "service-key",
+        subagentId: "sa_1",
+        parentTriggerRunId: "parent-run",
+        failureCode: "child_wait_failed",
+        summary: "Subagent stopped before returning a result.",
+      }),
+    ).resolves.toBe(true);
+    expect(patch).toHaveBeenCalledWith(
+      "subagent-doc",
+      expect.objectContaining({
+        status: "failed",
+        failure_code: "child_wait_failed",
+      }),
+    );
+  });
+
+  it("times out an attached child that never records a terminal result", async () => {
+    const patch = jest.fn<any>().mockResolvedValue(undefined);
+    const ctx = {
+      db: {
+        query: jest.fn(() => ({
+          withIndex: jest.fn((_name: string, callback: (q: any) => void) => {
+            const q = { eq: jest.fn<any>() };
+            q.eq.mockReturnValue(q);
+            callback(q);
+            return {
+              first: jest.fn<any>().mockResolvedValue({
+                _id: "subagent-doc",
+                status: "finalizing",
+                trigger_run_id: "child-run",
+              }),
+            };
+          }),
+        })),
+        patch,
+      },
+    } as any;
+
+    await expect(
+      reconcileAttachedRun.handler(ctx, {
+        subagentId: "sa_1",
+        triggerRunId: "child-run",
+      }),
+    ).resolves.toBeNull();
+    expect(patch).toHaveBeenCalledWith(
+      "subagent-doc",
+      expect.objectContaining({
+        status: "timed_out",
+        failure_code: "runtime_watchdog_timeout",
+      }),
+    );
+  });
+
+  it("leaves an already completed child unchanged when its watchdog fires", async () => {
+    const patch = jest.fn<any>().mockResolvedValue(undefined);
+    const ctx = {
+      db: {
+        query: jest.fn(() => ({
+          withIndex: jest.fn((_name: string, callback: (q: any) => void) => {
+            const q = { eq: jest.fn<any>() };
+            q.eq.mockReturnValue(q);
+            callback(q);
+            return {
+              first: jest.fn<any>().mockResolvedValue({
+                _id: "subagent-doc",
+                status: "completed",
+                trigger_run_id: "child-run",
+              }),
+            };
+          }),
+        })),
+        patch,
+      },
+    } as any;
+
+    await expect(
+      reconcileAttachedRun.handler(ctx, {
+        subagentId: "sa_1",
+        triggerRunId: "child-run",
+      }),
+    ).resolves.toBeNull();
+    expect(patch).not.toHaveBeenCalled();
   });
 });
 
