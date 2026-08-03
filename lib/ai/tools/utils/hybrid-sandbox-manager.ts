@@ -312,6 +312,7 @@ export class HybridSandboxManager implements SandboxManager {
       } catch (error) {
         lastError = error;
         if (attempt < maxAttempts) {
+          const retryDelayMs = attempt * 500;
           logStructured("warn", "local_sandbox_connection_quarantine_retry", {
             service: this.requestId ? "agent-long" : "chat-handler",
             request_id: this.requestId ?? process.env.VERCEL_REQUEST_ID ?? null,
@@ -320,8 +321,10 @@ export class HybridSandboxManager implements SandboxManager {
             reason,
             attempt,
             max_attempts: maxAttempts,
+            retry_delay_ms: retryDelayMs,
             error: error instanceof Error ? error.message : String(error),
           });
+          await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
         }
       }
     }

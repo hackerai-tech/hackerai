@@ -769,6 +769,9 @@ describe("HybridSandboxManager reset cleanup", () => {
         ),
       ).rejects.toThrow("Convex unavailable");
       expect(mockConvexMutation).toHaveBeenCalledTimes(3);
+      await expect(manager.getSandbox()).rejects.toThrow(
+        "The selected local sandbox stopped responding",
+      );
 
       await expect(
         manager.quarantineLocalConnection(
