@@ -51,7 +51,7 @@ const listSandbox = (
       {
         sandboxId: "sandbox-1",
         state: "running",
-        metadata: { sandboxVersion: "v11" },
+        metadata: { sandboxVersion: "v12" },
         ...overrides,
       },
     ]),
