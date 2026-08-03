@@ -49,7 +49,6 @@ type ChildSummary = {
   failure_code?: string;
   failure_reason?: string;
   cancel_reason?: string;
-  report_id?: string;
   cost_dollars?: number;
   step_count?: number;
   created_at: number;
@@ -761,11 +760,6 @@ export const SubagentsSidebar = ({
                       </button>
                     )}
                   </div>
-                  {selected.report_id && (
-                    <p className="mt-2 text-xs text-emerald-600 dark:text-emerald-400">
-                      Report saved as {selected.report_id}
-                    </p>
-                  )}
                   {(selected.failure_reason || selected.cancel_reason) && (
                     <p className="mt-2 text-xs text-destructive">
                       {selected.failure_reason ?? selected.cancel_reason}

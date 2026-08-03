@@ -24,7 +24,6 @@ import { serializeSubagentWaitForParent } from "@/lib/ai/subagents/parent-wait-l
 import { SUBAGENT_TEXT_MODEL } from "@/lib/ai/subagents/model-routing";
 import { getSandboxWithFallbackGuard } from "@/lib/ai/tools/utils/sandbox-fallback";
 import {
-  acknowledgeSubagentResult,
   failUnattachedSubagent,
   finishSubagent,
   getSubagent,
@@ -69,9 +68,6 @@ const resultFromRecord = (row: PersistedSubagent): DelegateTaskResult => {
       : "failed";
 
   return {
-    schema_version: 1,
-    subagent_id: row.subagent_id,
-    trigger_run_id: row.trigger_run_id ?? null,
     status: terminalStatus,
     verdict: result?.verdict ?? row.verdict ?? null,
     confidence: result?.confidence ?? row.confidence ?? null,
@@ -88,20 +84,10 @@ const resultFromRecord = (row: PersistedSubagent): DelegateTaskResult => {
     evidence_refs: result?.evidence_refs ?? [],
     limitations: result?.limitations ?? [],
     recommended_severity: result?.recommended_severity ?? null,
-    report_eligible:
-      terminalStatus === "completed" && result?.verdict === "confirmed",
-    ...(row.failure_code ? { failure_code: row.failure_code } : {}),
   };
 };
 
-const fallbackFailure = (
-  subagentId: string,
-  triggerRunId: string | null,
-  failureCode: string,
-): DelegateTaskResult => ({
-  schema_version: 1,
-  subagent_id: subagentId,
-  trigger_run_id: triggerRunId,
+const fallbackFailure = (): DelegateTaskResult => ({
   status: "failed",
   verdict: null,
   confidence: null,
@@ -109,8 +95,6 @@ const fallbackFailure = (
   evidence_refs: [],
   limitations: [],
   recommended_severity: null,
-  report_eligible: false,
-  failure_code: failureCode,
 });
 
 const reconcileFailedChildWait = async (args: {
@@ -162,17 +146,17 @@ export const createDelegateTask = (
   config: DelegateTaskRuntimeConfig,
 ) =>
   tool({
-    description: `Delegate one concrete, report-ready vulnerability candidate to an independent validation child and wait for its structured verdict. In this release profile must be security_validation. Do not use this for discovery, reconnaissance, broad research, code review, or parallel work. Pass only stable references to the minimum relevant parent evidence; never paste the full conversation into objective. A vulnerability_report is eligible only when this returns report_eligible=true.`,
+    description: `Delegate one concrete vulnerability candidate with sufficient evidence to an independent validation child and wait for its structured verdict. In this release profile must be security_validation. Do not use this for discovery, reconnaissance, broad research, code review, or parallel work. Pass only stable references to the minimum relevant parent evidence; never paste the full conversation into objective.`,
     inputSchema: delegateTaskInputSchema,
     execute: async (input, execution) => {
       const parsed = delegateTaskInputSchema.parse(input);
       const parentTriggerRunId = context.triggerRunId;
       const parentMessageId = context.assistantMessageId;
       if (!parentTriggerRunId || !parentMessageId) {
-        return fallbackFailure("unavailable", null, "parent_linkage_missing");
+        return fallbackFailure();
       }
       if (config.permissionMode !== "full_access") {
-        return fallbackFailure("unavailable", null, "full_access_required");
+        return fallbackFailure();
       }
       captureSubagentLifecycleEvent("subagent_feature_exposed", {
         userId: context.userID,
@@ -217,13 +201,13 @@ export const createDelegateTask = (
         reservation.outcome === "spend_limit" ||
         reservation.outcome === "chat_missing"
       ) {
-        return fallbackFailure(proposedSubagentId, null, reservation.outcome);
+        return fallbackFailure();
       }
 
       const subagentId = reservation.subagentId ?? proposedSubagentId;
       const initialRecord = await getSubagent(subagentId);
       if (!initialRecord) {
-        return fallbackFailure(subagentId, null, "persistence_missing");
+        return fallbackFailure();
       }
 
       writeLifecycle(context.writer, {
@@ -247,9 +231,6 @@ export const createDelegateTask = (
       }
 
       if (SUBAGENT_TERMINAL_STATUSES.has(initialRecord.status)) {
-        if (initialRecord.status === "completed") {
-          await acknowledgeSubagentResult(subagentId, parentTriggerRunId);
-        }
         const output = resultFromRecord(initialRecord);
         writeLifecycle(context.writer, {
           subagent_id: subagentId,
@@ -341,17 +322,7 @@ export const createDelegateTask = (
         });
       }
       if (!record) {
-        return fallbackFailure(
-          subagentId,
-          childResult?.id ?? initialRecord.trigger_run_id ?? null,
-          childResult?.ok === false
-            ? "child_run_failed"
-            : "result_persistence_missing",
-        );
-      }
-
-      if (record.status === "completed") {
-        await acknowledgeSubagentResult(subagentId, parentTriggerRunId);
+        return fallbackFailure();
       }
       const output = resultFromRecord(record);
       writeLifecycle(context.writer, {

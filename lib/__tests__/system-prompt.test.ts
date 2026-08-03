@@ -27,7 +27,8 @@ describe("systemPrompt security instructions", () => {
     expect(disabled).not.toContain("<independent_validation>");
     expect(enabled).toContain("<independent_validation>");
     expect(enabled).toContain("Do not delegate reconnaissance");
-    expect(enabled).toContain("report_eligible=true");
+    expect(enabled).not.toContain("vulnerability_report");
+    expect(enabled).not.toContain("report_eligible");
     expect(enabled).toContain("verdict=confirmed");
   });
 

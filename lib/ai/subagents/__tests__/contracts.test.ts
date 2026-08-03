@@ -2,8 +2,8 @@ import { describe, expect, it } from "@jest/globals";
 
 import {
   MAX_SUBAGENT_CONTEXT_REFS,
+  delegateTaskResultSchema,
   delegateTaskInputSchema,
-  isSeverityAtMost,
   securityValidationResultSchema,
 } from "../contracts";
 
@@ -69,9 +69,25 @@ describe("subagent contracts", () => {
     ).toThrow(/requires at least one reproduction step/i);
   });
 
-  it("prevents report severity from exceeding the child recommendation", () => {
-    expect(isSeverityAtMost("high", "high")).toBe(true);
-    expect(isSeverityAtMost("medium", "high")).toBe(true);
-    expect(isSeverityAtMost("critical", "high")).toBe(false);
+  it("keeps runtime identifiers out of the parent model result", () => {
+    const result = delegateTaskResultSchema.parse({
+      subagent_id: "sa_internal",
+      trigger_run_id: "run_internal",
+      report_eligible: true,
+      failure_code: "internal_failure",
+      status: "completed",
+      verdict: "confirmed",
+      confidence: "high",
+      summary: "Confirmed independently.",
+      reproduction_steps: ["Reproduce the issue"],
+      evidence_refs: ["artifact:proof"],
+      limitations: [],
+      recommended_severity: "high",
+    });
+
+    expect(result).not.toHaveProperty("subagent_id");
+    expect(result).not.toHaveProperty("trigger_run_id");
+    expect(result).not.toHaveProperty("report_eligible");
+    expect(result).not.toHaveProperty("failure_code");
   });
 });

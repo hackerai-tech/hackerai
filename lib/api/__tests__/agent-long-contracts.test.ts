@@ -999,8 +999,9 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     );
     expect(taskSrc).toMatch(/handled tool failure dashboard update failed/);
     expect(taskSrc).toMatch(
-      /onToolFailure,\s*requestToolApproval,\s*runTimingTracker\.measureActiveTime,\s*projectContext\.workingDirectory,\s*ctx\.run\.id,\s*securityValidationSubagentsEnabled[\s\S]*additionalTools:[\s\S]*delegate_task:[\s\S]*vulnerability_report:/,
+      /onToolFailure,\s*requestToolApproval,\s*runTimingTracker\.measureActiveTime,\s*projectContext\.workingDirectory,\s*ctx\.run\.id,\s*securityValidationSubagentsEnabled[\s\S]*additionalTools:[\s\S]*delegate_task:/,
     );
+    expect(taskSrc).not.toContain("vulnerability_report");
   });
 
   test("direct runs use small subscription-aware Trigger.dev priority offsets", () => {

@@ -8,7 +8,6 @@ import type {
   SubagentContextRef,
   SubagentStatus,
   ValidationConfidence,
-  VulnerabilityReportInput,
 } from "@/lib/ai/subagents/contracts";
 import type { SubscriptionTier } from "@/types/chat";
 
@@ -44,8 +43,6 @@ export type PersistedSubagent = {
   failure_code?: string;
   failure_reason?: string;
   cancel_reason?: string;
-  acknowledged_by_parent_run_id?: string;
-  report_id?: string;
   cost_limit_dollars: number;
   cost_dollars?: number;
   step_count?: number;
@@ -219,16 +216,6 @@ export const finishSubagent = async (args: {
     ...args,
   });
 
-export const acknowledgeSubagentResult = async (
-  subagentId: string,
-  parentTriggerRunId: string,
-) =>
-  await getConvexClient().mutation(api.subagents.acknowledgeForBackend, {
-    serviceKey,
-    subagentId,
-    parentTriggerRunId,
-  });
-
 export const saveSubagentMessage = async (args: {
   subagentId: string;
   userId: string;
@@ -239,29 +226,4 @@ export const saveSubagentMessage = async (args: {
   await getConvexClient().mutation(api.subagents.saveMessageForBackend, {
     serviceKey,
     ...args,
-  });
-
-export const promoteVulnerabilityReport = async (args: {
-  userId: string;
-  chatId: string;
-  parentTriggerRunId: string;
-  input: VulnerabilityReportInput;
-}) =>
-  await getConvexClient().mutation(api.vulnerabilityReports.promoteForBackend, {
-    serviceKey,
-    userId: args.userId,
-    chatId: args.chatId,
-    parentTriggerRunId: args.parentTriggerRunId,
-    validationId: args.input.validation_id,
-    title: args.input.title,
-    affectedAsset: args.input.affected_asset,
-    weaknessClass: args.input.weakness_class,
-    severity: args.input.severity,
-    description: args.input.description,
-    technicalAnalysis: args.input.technical_analysis,
-    reproductionSteps: args.input.reproduction_steps,
-    impact: args.input.impact,
-    remediation: args.input.remediation,
-    evidenceRefs: args.input.evidence_refs,
-    confidence: args.input.confidence,
   });

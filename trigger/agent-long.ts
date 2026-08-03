@@ -228,7 +228,6 @@ import { isCentrifugoSandbox } from "@/lib/ai/tools/utils/sandbox-types";
 import { AgentRunTimingTracker } from "@/lib/chat/agent-run-timing";
 import { AgentLongMemoryTelemetry } from "@/lib/chat/agent-long-memory-telemetry";
 import { createDelegateTask } from "@/lib/ai/tools/delegate-task";
-import { createVulnerabilityReport } from "@/lib/ai/tools/vulnerability-report";
 import {
   cancelSubagentsForParent,
   listActiveSubagentsForParent,
@@ -2390,8 +2389,6 @@ export const agentLongTask = task({
                         subscription,
                         freeQuotaSubject,
                       }),
-                      vulnerability_report:
-                        createVulnerabilityReport(toolContext),
                     }),
                   }
                 : undefined,

@@ -73,7 +73,6 @@ const subagentSummaryValidator = v.object({
   failure_code: v.optional(v.string()),
   failure_reason: v.optional(v.string()),
   cancel_reason: v.optional(v.string()),
-  report_id: v.optional(v.string()),
   cost_dollars: v.optional(v.number()),
   step_count: v.optional(v.number()),
   created_at: v.number(),
@@ -132,7 +131,6 @@ const toSummary = (row: {
   failure_code?: string;
   failure_reason?: string;
   cancel_reason?: string;
-  report_id?: string;
   cost_dollars?: number;
   step_count?: number;
   created_at: number;
@@ -157,7 +155,6 @@ const toSummary = (row: {
   failure_code: row.failure_code,
   failure_reason: row.failure_reason,
   cancel_reason: row.cancel_reason,
-  report_id: row.report_id,
   cost_dollars: row.cost_dollars,
   step_count: row.step_count,
   created_at: row.created_at,
@@ -852,34 +849,6 @@ export const finishForBackend = mutation({
       updated_at: Date.now(),
     });
     return "updated" as const;
-  },
-});
-
-export const acknowledgeForBackend = mutation({
-  args: {
-    serviceKey: v.string(),
-    subagentId: v.string(),
-    parentTriggerRunId: v.string(),
-  },
-  returns: v.boolean(),
-  handler: async (ctx, args) => {
-    validateServiceKey(args.serviceKey);
-    const row = await ctx.db
-      .query("subagent_runs")
-      .withIndex("by_subagent_id", (q) => q.eq("subagent_id", args.subagentId))
-      .first();
-    if (
-      !row ||
-      row.parent_trigger_run_id !== args.parentTriggerRunId ||
-      row.status !== "completed"
-    ) {
-      return false;
-    }
-    await ctx.db.patch(row._id, {
-      acknowledged_by_parent_run_id: args.parentTriggerRunId,
-      updated_at: Date.now(),
-    });
-    return true;
   },
 });
 

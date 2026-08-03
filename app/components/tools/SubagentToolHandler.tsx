@@ -1,7 +1,7 @@
 "use client";
 
 import { memo, useMemo } from "react";
-import { Bot, ShieldCheck } from "lucide-react";
+import { Bot } from "lucide-react";
 import type { UIMessage } from "@ai-sdk/react";
 
 import ToolBlock from "@/components/ui/tool-block";
@@ -10,7 +10,6 @@ import { isSidebarSubagents } from "@/types/chat";
 import { useToolSidebar } from "@/app/hooks/useToolSidebar";
 
 type DelegateOutput = {
-  subagent_id?: string;
   status?: string;
 };
 
@@ -28,14 +27,18 @@ export const SubagentToolHandler = memo(function SubagentToolHandler({
     input?.profile_input?.candidate?.title ??
     input?.objective ??
     "Delegated task";
+  const hasChildLifecycle = message.parts.some(
+    (candidate: any) =>
+      candidate?.type === "data-subagent-lifecycle" &&
+      candidate?.data?.parent_tool_call_id === toolCallId,
+  );
   const sidebarContent = useMemo<SidebarSubagents>(
     () => ({
       kind: "subagents",
       parentMessageId: message.id,
       toolCallId,
-      selectedSubagentId: output?.subagent_id,
     }),
-    [message.id, output?.subagent_id, toolCallId],
+    [message.id, toolCallId],
   );
   const { handleOpenInSidebar, handleKeyDown } = useToolSidebar({
     toolCallId,
@@ -45,7 +48,9 @@ export const SubagentToolHandler = memo(function SubagentToolHandler({
 
   const result = output as DelegateOutput | undefined;
   const canOpenSidebar =
-    state !== "input-streaming" && (!errorText || !!result?.subagent_id);
+    state !== "input-streaming" &&
+    !errorText &&
+    (result?.status !== "failed" || hasChildLifecycle);
   const action =
     result?.status && result.status !== "completed"
       ? "Subagent failed"
@@ -74,27 +79,3 @@ export const SubagentToolHandler = memo(function SubagentToolHandler({
     />
   );
 });
-
-export const VulnerabilityReportToolHandler = memo(
-  function VulnerabilityReportToolHandler({ part }: { part: any }) {
-    const output = part.output as
-      { success?: boolean; reportId?: string; reason?: string } | undefined;
-    return (
-      <ToolBlock
-        icon={<ShieldCheck />}
-        action={
-          output?.success
-            ? "Saved validated report"
-            : part.state === "input-streaming" ||
-                part.state === "input-available"
-              ? "Promoting validated report"
-              : "Report promotion blocked"
-        }
-        target={output?.reportId ?? part.input?.title}
-        isShimmer={
-          part.state === "input-streaming" || part.state === "input-available"
-        }
-      />
-    );
-  },
-);

@@ -16,7 +16,6 @@ import {
   FileDown,
   ExternalLink,
   Globe,
-  ShieldCheck,
   Users,
 } from "lucide-react";
 import {
@@ -173,21 +172,6 @@ export const SharedMessagePartHandler = ({
                   : "Independent validation"
         }
         target={part.input?.profile_input?.candidate?.title}
-      />
-    );
-  }
-
-  if (part.type === "tool-vulnerability_report") {
-    return (
-      <ToolBlock
-        key={idx}
-        icon={<ShieldCheck aria-hidden="true" />}
-        action={
-          part.output?.success
-            ? "Saved validated report"
-            : "Report promotion blocked"
-        }
-        target={part.output?.reportId ?? part.input?.title}
       />
     );
   }

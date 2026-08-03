@@ -71,14 +71,6 @@ const validationConfidenceValidator = v.union(
   v.literal("high"),
 );
 
-const vulnerabilitySeverityValidator = v.union(
-  v.literal("info"),
-  v.literal("low"),
-  v.literal("medium"),
-  v.literal("high"),
-  v.literal("critical"),
-);
-
 export default defineSchema({
   projects: defineTable({
     user_id: v.string(),
@@ -974,8 +966,6 @@ export default defineSchema({
     failure_code: v.optional(v.string()),
     failure_reason: v.optional(v.string()),
     cancel_reason: v.optional(v.string()),
-    acknowledged_by_parent_run_id: v.optional(v.string()),
-    report_id: v.optional(v.string()),
     cost_limit_dollars: v.number(),
     cost_dollars: v.optional(v.number()),
     step_count: v.optional(v.number()),
@@ -1037,32 +1027,6 @@ export default defineSchema({
   })
     .index("by_subagent_and_sequence", ["subagent_id", "sequence"])
     .index("by_user_id", ["user_id"]),
-
-  vulnerability_reports: defineTable({
-    report_id: v.string(),
-    validation_id: v.string(),
-    user_id: v.string(),
-    chat_id: v.string(),
-    parent_trigger_run_id: v.string(),
-    title: v.string(),
-    affected_asset: v.string(),
-    weakness_class: v.string(),
-    severity: vulnerabilitySeverityValidator,
-    description: v.string(),
-    technical_analysis: v.string(),
-    reproduction_steps: v.array(v.string()),
-    impact: v.string(),
-    remediation: v.string(),
-    evidence_refs: v.array(v.string()),
-    confidence: validationConfidenceValidator,
-    validation_snapshot: v.any(),
-    created_at: v.number(),
-  })
-    .index("by_report_id", ["report_id"])
-    .index("by_validation_id", ["validation_id"])
-    .index("by_chat_id", ["chat_id"])
-    .index("by_user_id", ["user_id"])
-    .index("by_user_chat_and_created", ["user_id", "chat_id", "created_at"]),
 
   // Webhook idempotency (prevents double-crediting on Stripe retries)
   processed_webhooks: defineTable({

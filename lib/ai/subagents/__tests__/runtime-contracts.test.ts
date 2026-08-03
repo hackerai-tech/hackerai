@@ -24,7 +24,6 @@ describe("security validation subagent runtime contracts", () => {
     expect(delegate).toContain("triggerAndWait");
     expect(delegate).toContain("serializeSubagentWaitForParent");
     expect(delegate).toContain('scope: "global"');
-    expect(delegate).toContain("acknowledgeSubagentResult");
     expect(delegate.indexOf("SUBAGENT_TERMINAL_STATUSES.has")).toBeLessThan(
       delegate.indexOf("triggerAndWait"),
     );
@@ -84,13 +83,12 @@ describe("security validation subagent runtime contracts", () => {
     );
   });
 
-  it("keeps report promotion behind the independent validation gate", () => {
-    const report = read("convex/vulnerabilityReports.ts");
-    expect(report).toContain('validation.status !== "completed"');
-    expect(report).toContain('validation.verdict !== "confirmed"');
-    expect(report).toContain("acknowledged_by_parent_run_id");
-    expect(report).toContain('reason: "evidence_mismatch"');
-    expect(report).toContain('reason: "reproduction_mismatch"');
-    expect(report).toContain('reason: "severity_exceeds_validation"');
+  it("keeps reporting out of the validation-only runtime", () => {
+    const contracts = read("lib/ai/subagents/contracts.ts");
+    const parent = read("trigger/agent-long.ts");
+    expect(contracts).not.toContain("vulnerabilityReportInputSchema");
+    expect(contracts).not.toContain("report_eligible");
+    expect(parent).not.toContain("createVulnerabilityReport");
+    expect(parent).not.toContain("vulnerability_report");
   });
 });

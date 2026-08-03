@@ -25,7 +25,6 @@ export const USER_DELETION_TABLE_POLICY = {
     "cancellation_reason_details",
     "subagent_messages",
     "subagent_runs",
-    "vulnerability_reports",
   ],
   anonymize: [
     "usage_logs",
@@ -428,12 +427,6 @@ async function cleanupUserDataForUser(
     "by_user_id",
     (q) => q.eq("user_id", userId),
   );
-  const vulnerabilityReportsBatch = await collectByIndexBatch<
-    Doc<"vulnerability_reports">
-  >(ctx, budget, "vulnerability_reports", "by_user_id", (q) =>
-    q.eq("user_id", userId),
-  );
-
   const deletionBatches = [
     projectsBatch,
     chatsBatch,
@@ -449,7 +442,6 @@ async function cleanupUserDataForUser(
     cancellationReasonDetailsBatch,
     subagentMessagesBatch,
     subagentRunsBatch,
-    vulnerabilityReportsBatch,
   ];
   stats.hasMore ||= deletionBatches.some((batch) => batch.hasMore);
 
@@ -465,13 +457,11 @@ async function cleanupUserDataForUser(
   const cancellationReasonDetails = cancellationReasonDetailsBatch.docs;
   const subagentMessages = subagentMessagesBatch.docs;
   const subagentRuns = subagentRunsBatch.docs;
-  const vulnerabilityReports = vulnerabilityReportsBatch.docs;
 
   const chatsReadyToDelete =
     messagesBatch.hasMore ||
     subagentMessagesBatch.hasMore ||
-    subagentRunsBatch.hasMore ||
-    vulnerabilityReportsBatch.hasMore
+    subagentRunsBatch.hasMore
       ? []
       : chats.filter((chat) => !incompleteChatIds.has(chat.id));
   if (chatsReadyToDelete.length < chats.length) {
@@ -482,13 +472,6 @@ async function cleanupUserDataForUser(
   await deleteDocs(ctx, stats, "messages", messages, mode);
   await deleteDocs(ctx, stats, "chat_summaries", chatSummaries, mode);
   await deleteDocs(ctx, stats, "subagent_messages", subagentMessages, mode);
-  await deleteDocs(
-    ctx,
-    stats,
-    "vulnerability_reports",
-    vulnerabilityReports,
-    mode,
-  );
   await deleteDocs(ctx, stats, "subagent_runs", subagentRuns, mode);
   await deleteDocs(ctx, stats, "chats", chatsReadyToDelete, mode);
   await deleteDocs(ctx, stats, "projects", projects, mode);

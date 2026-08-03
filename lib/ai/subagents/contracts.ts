@@ -137,9 +137,6 @@ export type SecurityValidationResult = z.infer<
 >;
 
 export const delegateTaskResultSchema = z.object({
-  schema_version: z.literal(1),
-  subagent_id: z.string(),
-  trigger_run_id: z.string().nullable(),
   status: z.enum(["completed", "failed", "canceled", "timed_out"]),
   verdict: subagentVerdictSchema.nullable(),
   confidence: validationConfidenceSchema.nullable(),
@@ -149,8 +146,6 @@ export const delegateTaskResultSchema = z.object({
   evidence_refs: z.array(z.string().max(500)).max(8),
   limitations: z.array(z.string().max(500)).max(8),
   recommended_severity: vulnerabilitySeveritySchema.nullable(),
-  report_eligible: z.boolean(),
-  failure_code: z.string().max(120).optional(),
 });
 
 export type DelegateTaskResult = z.infer<typeof delegateTaskResultSchema>;
@@ -170,28 +165,6 @@ export const subagentLifecycleDataSchema = z.object({
 
 export type SubagentLifecycleData = z.infer<typeof subagentLifecycleDataSchema>;
 
-export const vulnerabilityReportInputSchema = z.object({
-  validation_id: z.string().trim().min(1).max(100),
-  title: z.string().trim().min(1).max(200),
-  affected_asset: z.string().trim().min(1).max(1_000),
-  weakness_class: z.string().trim().min(1).max(160),
-  severity: vulnerabilitySeveritySchema,
-  description: z.string().trim().min(1).max(4_000),
-  technical_analysis: z.string().trim().min(1).max(8_000),
-  reproduction_steps: z
-    .array(z.string().trim().min(1).max(1_000))
-    .min(1)
-    .max(20),
-  impact: z.string().trim().min(1).max(4_000),
-  remediation: z.string().trim().min(1).max(4_000),
-  evidence_refs: z.array(z.string().trim().min(1).max(500)).min(1).max(12),
-  confidence: validationConfidenceSchema,
-});
-
-export type VulnerabilityReportInput = z.infer<
-  typeof vulnerabilityReportInputSchema
->;
-
 export const SUBAGENT_TERMINAL_STATUSES: ReadonlySet<SubagentStatus> = new Set([
   "completed",
   "failed",
@@ -204,16 +177,3 @@ export const SUBAGENT_ACTIVE_STATUSES: ReadonlySet<SubagentStatus> = new Set([
   "running",
   "finalizing",
 ]);
-
-const severityRank: Record<VulnerabilitySeverity, number> = {
-  info: 0,
-  low: 1,
-  medium: 2,
-  high: 3,
-  critical: 4,
-};
-
-export const isSeverityAtMost = (
-  severity: VulnerabilitySeverity,
-  maximum: VulnerabilitySeverity,
-): boolean => severityRank[severity] <= severityRank[maximum];

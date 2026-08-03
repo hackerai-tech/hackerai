@@ -51,7 +51,6 @@ import type * as usageLogs from "../usageLogs.js";
 import type * as userCustomization from "../userCustomization.js";
 import type * as userDeletion from "../userDeletion.js";
 import type * as userSuspensions from "../userSuspensions.js";
-import type * as vulnerabilityReports from "../vulnerabilityReports.js";
 
 import type {
   ApiFromModules,
@@ -103,7 +102,6 @@ declare const fullApi: ApiFromModules<{
   userCustomization: typeof userCustomization;
   userDeletion: typeof userDeletion;
   userSuspensions: typeof userSuspensions;
-  vulnerabilityReports: typeof vulnerabilityReports;
 }>;
 
 /**

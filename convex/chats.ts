@@ -277,15 +277,7 @@ async function deleteSubagentDataForChat(
     await ctx.db.delete(child._id);
   }
   if (children.length > DELETE_CHAT_SUBAGENT_BATCH_SIZE) return true;
-
-  const reports = await ctx.db
-    .query("vulnerability_reports")
-    .withIndex("by_chat_id", (q) => q.eq("chat_id", chatId))
-    .take(DELETE_ALL_CHATS_SUMMARY_BATCH_SIZE + 1);
-  for (const report of reports.slice(0, DELETE_ALL_CHATS_SUMMARY_BATCH_SIZE)) {
-    await ctx.db.delete(report._id);
-  }
-  return reports.length > DELETE_ALL_CHATS_SUMMARY_BATCH_SIZE;
+  return false;
 }
 
 async function deleteChatDocument(ctx: MutationCtx, chat: Doc<"chats">) {

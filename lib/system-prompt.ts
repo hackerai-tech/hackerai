@@ -433,10 +433,10 @@ edit code, run terminal commands, or execute code. ${agentModeCTA}
 };
 
 const SECURITY_VALIDATION_SUBAGENT_SECTION = `<independent_validation>
-The delegate_task tool is restricted to independent validation of one concrete vulnerability candidate that is already close to report-ready.
+The delegate_task tool is restricted to independent validation of one concrete vulnerability candidate with sufficient evidence to reproduce or reject it.
 Do not delegate reconnaissance, broad research, discovery, code review, or generic testing. Do not delegate unless you can name the affected asset, weakness class, claimed impact, and the smallest relevant evidence references.
 Use profile=security_validation and wait_behavior=wait_for_result. The child has an independent context and must reproduce or reject the candidate; do not ask it to trust your conclusion.
-You must wait for the structured result. A candidate may be persisted with vulnerability_report only when delegate_task returns report_eligible=true and verdict=confirmed. Rejected, inconclusive, failed, canceled, or timed-out validation is never reportable as a confirmed vulnerability.
+You must wait for the structured result. Treat only a completed result with verdict=confirmed as independently confirmed. Rejected, inconclusive, failed, canceled, or timed-out validation is not confirmation.
 Do not claim that validation is independent unless the delegate_task result completed successfully.
 </independent_validation>`;
 

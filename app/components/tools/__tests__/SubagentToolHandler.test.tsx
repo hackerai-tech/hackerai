@@ -84,4 +84,106 @@ describe("SubagentToolHandler", () => {
       screen.queryByRole("button", { name: "Open Stored XSS in sidebar" }),
     ).not.toBeInTheDocument();
   });
+
+  it("opens completed delegation without model-visible runtime identifiers", () => {
+    render(
+      <SubagentToolHandler
+        message={
+          {
+            id: "parent-run",
+            role: "assistant",
+            parts: [],
+          } as any
+        }
+        status="ready"
+        part={{
+          type: "tool-delegate_task",
+          toolCallId: "tool-delegate-1",
+          state: "output-available",
+          input: {
+            profile_input: { candidate: { title: "Stored XSS" } },
+          },
+          output: { status: "completed", verdict: "confirmed" },
+        }}
+      />,
+    );
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Open Stored XSS in sidebar" }),
+    );
+    expect(openSidebar).toHaveBeenCalledWith({
+      kind: "subagents",
+      parentMessageId: "parent-run",
+      toolCallId: "tool-delegate-1",
+    });
+  });
+
+  it("does not open a failed delegation that never created a child", () => {
+    render(
+      <SubagentToolHandler
+        message={
+          {
+            id: "parent-run",
+            role: "assistant",
+            parts: [],
+          } as any
+        }
+        status="ready"
+        part={{
+          type: "tool-delegate_task",
+          toolCallId: "tool-delegate-1",
+          state: "output-available",
+          input: {
+            profile_input: { candidate: { title: "Stored XSS" } },
+          },
+          output: { status: "failed" },
+        }}
+      />,
+    );
+
+    expect(
+      screen.queryByRole("button", { name: "Open Stored XSS in sidebar" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("keeps a failed child inspectable through UI-only lifecycle linkage", () => {
+    render(
+      <SubagentToolHandler
+        message={
+          {
+            id: "parent-run",
+            role: "assistant",
+            parts: [
+              {
+                type: "data-subagent-lifecycle",
+                data: {
+                  subagent_id: "sa_internal",
+                  parent_tool_call_id: "tool-delegate-1",
+                },
+              },
+            ],
+          } as any
+        }
+        status="ready"
+        part={{
+          type: "tool-delegate_task",
+          toolCallId: "tool-delegate-1",
+          state: "output-available",
+          input: {
+            profile_input: { candidate: { title: "Stored XSS" } },
+          },
+          output: { status: "failed" },
+        }}
+      />,
+    );
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Open Stored XSS in sidebar" }),
+    );
+    expect(openSidebar).toHaveBeenCalledWith({
+      kind: "subagents",
+      parentMessageId: "parent-run",
+      toolCallId: "tool-delegate-1",
+    });
+  });
 });
