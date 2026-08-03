@@ -74,7 +74,11 @@ describe("security validation subagent runtime contracts", () => {
     expect(child).toContain("hasToolCall(profile.finalResultTool.name)");
     expect(parent).toContain("cancelSubagentsForParent");
     expect(delegate).toContain("reconcileFailedChildWait");
+    expect(
+      delegate.match(/getSubagent\(args\.subagentId\)\.catch\(\(\) => null\)/g),
+    ).toHaveLength(2);
     expect(delegate).toContain("failUnattachedSubagent");
+    expect(child).toContain("pipeSubagentUiMessageStream");
     expect(parent).toContain(
       "const childCancellationCompleted = await Promise.race",
     );

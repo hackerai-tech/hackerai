@@ -31,6 +31,7 @@ import {
   canRecoverMissingSubagentResult,
   getSubagentProviderRetryDecision,
   isTransientProviderCategory,
+  pipeSubagentUiMessageStream,
 } from "@/lib/ai/subagents/runtime-recovery";
 import { getSubagentProfileDefinition } from "@/lib/ai/subagents/profiles";
 import {
@@ -128,22 +129,6 @@ const persistAssistantMessages = async (
       parts: compacted.parts,
     });
     sequence += 1;
-  }
-};
-
-const pipeUiMessageStream = async (
-  stream: ReadableStream<UIMessageChunk>,
-  write: (chunk: UIMessageChunk) => void,
-): Promise<void> => {
-  const reader = stream.getReader();
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) return;
-      write(value);
-    }
-  } finally {
-    reader.releaseLock();
   }
 };
 
@@ -651,7 +636,7 @@ export const subagentTask = task({
                 },
               });
               try {
-                await pipeUiMessageStream(attemptStream, (chunk) =>
+                await pipeSubagentUiMessageStream(attemptStream, (chunk) =>
                   writer.write(chunk),
                 );
               } catch (error) {

@@ -5,6 +5,7 @@ import {
   canRecoverMissingSubagentResult,
   getSubagentProviderRetryDecision,
   isTransientProviderCategory,
+  pipeSubagentUiMessageStream,
 } from "../runtime-recovery";
 
 describe("subagent runtime recovery", () => {
@@ -69,5 +70,40 @@ describe("subagent runtime recovery", () => {
     expect(buildMissingSubagentResultRecoveryMessage()).toContain(
       "Do not repeat completed checks",
     );
+  });
+
+  it("cancels an unfinished source when writing a streamed chunk fails", async () => {
+    const cancel = jest.fn();
+    const stream = new ReadableStream<string>({
+      start(controller) {
+        controller.enqueue("first");
+      },
+      cancel,
+    });
+    const writeFailure = new Error("writer disconnected");
+
+    await expect(
+      pipeSubagentUiMessageStream(stream, () => {
+        throw writeFailure;
+      }),
+    ).rejects.toBe(writeFailure);
+    expect(cancel).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not cancel a normally completed streamed source", async () => {
+    const cancel = jest.fn();
+    const stream = new ReadableStream<string>({
+      start(controller) {
+        controller.enqueue("first");
+        controller.close();
+      },
+      cancel,
+    });
+    const chunks: string[] = [];
+
+    await pipeSubagentUiMessageStream(stream, (chunk) => chunks.push(chunk));
+
+    expect(chunks).toEqual(["first"]);
+    expect(cancel).not.toHaveBeenCalled();
   });
 });

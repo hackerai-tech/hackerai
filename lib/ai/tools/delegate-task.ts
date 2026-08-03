@@ -119,7 +119,7 @@ const reconcileFailedChildWait = async (args: {
   userId: string;
   failureCode: "child_run_failed" | "child_wait_failed";
 }): Promise<PersistedSubagent | null> => {
-  const current = await getSubagent(args.subagentId);
+  const current = await getSubagent(args.subagentId).catch(() => null);
   if (!current || !SUBAGENT_ACTIVE_STATUSES.has(current.status)) {
     return current;
   }
@@ -154,7 +154,7 @@ const reconcileFailedChildWait = async (args: {
       errorCategory: args.failureCode,
     });
   }
-  return await getSubagent(args.subagentId);
+  return await getSubagent(args.subagentId).catch(() => null);
 };
 
 export const createDelegateTask = (
