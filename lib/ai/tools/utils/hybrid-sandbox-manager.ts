@@ -232,6 +232,7 @@ export class HybridSandboxManager implements SandboxManager {
   private pendingFallbackInfo: SandboxFallbackInfo | null = null;
   private reportedFallbackKeys = new Set<string>();
   private quarantinedConnectionIds = new Set<string>();
+  private persistedQuarantinedConnectionIds = new Set<string>();
   private requiredConnectionIdAfterQuarantine: string | null = null;
   private healthFailureCount = 0;
   private sandboxUnavailable = false;
@@ -284,33 +285,57 @@ export class HybridSandboxManager implements SandboxManager {
     // Keep this requirement across resetSandbox() so reacquisition fails before
     // another local connection or E2B can be instantiated.
     this.requiredConnectionIdAfterQuarantine = connectionId;
-    if (this.quarantinedConnectionIds.has(connectionId)) return;
+    if (this.persistedQuarantinedConnectionIds.has(connectionId)) return;
 
-    this.quarantinedConnectionIds.add(connectionId);
-    logStructured("warn", "local_sandbox_connection_quarantined", {
-      service: this.requestId ? "agent-long" : "chat-handler",
-      request_id: this.requestId ?? process.env.VERCEL_REQUEST_ID ?? null,
-      user_id: this.userID,
-      connection_id: connectionId,
-      reason,
-    });
-
-    try {
-      await getConvexClient().mutation(api.localSandbox.disconnectByBackend, {
-        serviceKey: this.serviceKey,
-        connectionId,
-        reason,
-      });
-    } catch (error) {
-      logStructured("error", "local_sandbox_connection_quarantine_failed", {
+    if (!this.quarantinedConnectionIds.has(connectionId)) {
+      this.quarantinedConnectionIds.add(connectionId);
+      logStructured("warn", "local_sandbox_connection_quarantined", {
         service: this.requestId ? "agent-long" : "chat-handler",
         request_id: this.requestId ?? process.env.VERCEL_REQUEST_ID ?? null,
         user_id: this.userID,
         connection_id: connectionId,
         reason,
-        error: error instanceof Error ? error.message : String(error),
       });
     }
+
+    const maxAttempts = 3;
+    let lastError: unknown;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        await getConvexClient().mutation(api.localSandbox.disconnectByBackend, {
+          serviceKey: this.serviceKey,
+          connectionId,
+          reason,
+        });
+        this.persistedQuarantinedConnectionIds.add(connectionId);
+        return;
+      } catch (error) {
+        lastError = error;
+        if (attempt < maxAttempts) {
+          logStructured("warn", "local_sandbox_connection_quarantine_retry", {
+            service: this.requestId ? "agent-long" : "chat-handler",
+            request_id: this.requestId ?? process.env.VERCEL_REQUEST_ID ?? null,
+            user_id: this.userID,
+            connection_id: connectionId,
+            reason,
+            attempt,
+            max_attempts: maxAttempts,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
+    }
+
+    logStructured("error", "local_sandbox_connection_quarantine_failed", {
+      service: this.requestId ? "agent-long" : "chat-handler",
+      request_id: this.requestId ?? process.env.VERCEL_REQUEST_ID ?? null,
+      user_id: this.userID,
+      connection_id: connectionId,
+      reason,
+      attempts: maxAttempts,
+      error: lastError instanceof Error ? lastError.message : String(lastError),
+    });
+    throw lastError;
   }
 
   /**

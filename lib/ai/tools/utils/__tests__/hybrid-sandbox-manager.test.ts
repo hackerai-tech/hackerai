@@ -575,6 +575,8 @@ describe("HybridSandboxManager reset cleanup", () => {
   beforeEach(() => {
     sandboxApi.list.mockReset();
     sandboxApi.connect.mockReset();
+    mockConvexQuery.mockReset();
+    mockConvexMutation.mockReset();
   });
 
   it("returns a cached E2B sandbox after a transient lease refresh failure", async () => {
@@ -686,6 +688,95 @@ describe("HybridSandboxManager reset cleanup", () => {
         connection_id: "conn-unresponsive",
         reason: "command_unresponsive",
       });
+    } finally {
+      warnSpy.mockRestore();
+      errorSpy.mockRestore();
+    }
+  });
+
+  it("retries quarantine persistence before a fresh manager lists connections", async () => {
+    const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+    const unresponsive = makeConnection({
+      connectionId: "conn-unresponsive",
+      name: "Unresponsive",
+    });
+    const healthy = makeConnection({
+      connectionId: "conn-healthy",
+      name: "Healthy",
+    });
+    let persisted = false;
+    mockConvexMutation
+      .mockRejectedValueOnce(new Error("temporary Convex failure"))
+      .mockRejectedValueOnce(new Error("temporary Convex failure"))
+      .mockImplementationOnce(async () => {
+        persisted = true;
+        return { success: true };
+      });
+    mockConvexQuery.mockImplementation(async () =>
+      persisted ? [healthy] : [unresponsive, healthy],
+    );
+
+    try {
+      const manager = new HybridSandboxManager(
+        "user-1",
+        jest.fn(),
+        "conn-unresponsive",
+        "service-key",
+        null,
+        "pro",
+      );
+
+      await expect(
+        manager.quarantineLocalConnection(
+          "conn-unresponsive",
+          "command_unresponsive",
+        ),
+      ).resolves.toBeUndefined();
+      expect(mockConvexMutation).toHaveBeenCalledTimes(3);
+
+      const freshManager = new HybridSandboxManager(
+        "user-1",
+        jest.fn(),
+        "conn-unresponsive",
+        "service-key",
+        null,
+        "pro",
+      );
+      await expect(freshManager.listConnections()).resolves.toEqual([healthy]);
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it("surfaces quarantine persistence failure and retries on a later call", async () => {
+    const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+    const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+    mockConvexMutation.mockRejectedValue(new Error("Convex unavailable"));
+    const manager = new HybridSandboxManager(
+      "user-1",
+      jest.fn(),
+      "conn-unresponsive",
+      "service-key",
+      null,
+      "pro",
+    );
+
+    try {
+      await expect(
+        manager.quarantineLocalConnection(
+          "conn-unresponsive",
+          "command_unresponsive",
+        ),
+      ).rejects.toThrow("Convex unavailable");
+      expect(mockConvexMutation).toHaveBeenCalledTimes(3);
+
+      await expect(
+        manager.quarantineLocalConnection(
+          "conn-unresponsive",
+          "command_unresponsive",
+        ),
+      ).rejects.toThrow("Convex unavailable");
+      expect(mockConvexMutation).toHaveBeenCalledTimes(6);
     } finally {
       warnSpy.mockRestore();
       errorSpy.mockRestore();
