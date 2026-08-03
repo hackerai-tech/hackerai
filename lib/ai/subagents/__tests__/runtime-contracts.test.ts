@@ -91,4 +91,17 @@ describe("security validation subagent runtime contracts", () => {
     expect(parent).not.toContain("createVulnerabilityReport");
     expect(parent).not.toContain("vulnerability_report");
   });
+
+  it("deletes child transcripts in bounded batches before deleting the child", () => {
+    const chats = read("convex/chats.ts");
+    const cleanup = chats.slice(
+      chats.indexOf("async function deleteSubagentDataForChat"),
+      chats.indexOf("async function deleteChatDocument"),
+    );
+    expect(cleanup).toContain(".take(DELETE_CHAT_SUBAGENT_BATCH_SIZE + 1)");
+    expect(cleanup).not.toContain(".collect()");
+    expect(cleanup).toContain(
+      "if (transcript.length > DELETE_CHAT_SUBAGENT_BATCH_SIZE) return true",
+    );
+  });
 });

@@ -85,6 +85,16 @@ describe("subagent contracts", () => {
       recommended_severity: "high",
     });
 
+    expect(result).toEqual({
+      status: "completed",
+      verdict: "confirmed",
+      confidence: "high",
+      summary: "Confirmed independently.",
+      reproduction_steps: ["Reproduce the issue"],
+      evidence_refs: ["artifact:proof"],
+      limitations: [],
+      recommended_severity: "high",
+    });
     expect(result).not.toHaveProperty("subagent_id");
     expect(result).not.toHaveProperty("trigger_run_id");
     expect(result).not.toHaveProperty("report_eligible");

@@ -272,8 +272,14 @@ async function deleteSubagentDataForChat(
       .withIndex("by_subagent_and_sequence", (q) =>
         q.eq("subagent_id", child.subagent_id),
       )
-      .collect();
-    for (const message of transcript) await ctx.db.delete(message._id);
+      .take(DELETE_CHAT_SUBAGENT_BATCH_SIZE + 1);
+    for (const message of transcript.slice(
+      0,
+      DELETE_CHAT_SUBAGENT_BATCH_SIZE,
+    )) {
+      await ctx.db.delete(message._id);
+    }
+    if (transcript.length > DELETE_CHAT_SUBAGENT_BATCH_SIZE) return true;
     await ctx.db.delete(child._id);
   }
   if (children.length > DELETE_CHAT_SUBAGENT_BATCH_SIZE) return true;
