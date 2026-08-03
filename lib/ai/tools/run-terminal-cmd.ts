@@ -59,6 +59,28 @@ const NOISY_TIMEOUT_MIN_BUFFERED_CHARS = 256 * 1024;
 // ceiling. The agent can follow up with action=wait/send.
 const INTERACTIVE_QUIET_WINDOW_MS = 500;
 
+const getTerminalProcessStatus = (
+  result: Record<string, unknown>,
+): string | undefined => {
+  if (result.processStarted === true && typeof result.exitCode === "number") {
+    return `Process exited with code ${result.exitCode}`;
+  }
+
+  if (
+    typeof result.exited === "object" &&
+    result.exited !== null &&
+    typeof (result.exited as { exitCode?: unknown }).exitCode === "number"
+  ) {
+    return `Process exited with code ${(result.exited as { exitCode: number }).exitCode}`;
+  }
+
+  if (typeof result.session === "string" && result.session) {
+    return `Process running with session ID ${result.session}`;
+  }
+
+  return undefined;
+};
+
 type RunTerminalCmdInput = {
   command: string;
   brief?: string;
@@ -726,6 +748,7 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                 result: {
                   output: result.output,
                   exitCode: terminated ? 130 : null,
+                  ...(terminated ? { processStarted: true } : {}),
                   error: terminated
                     ? "Command execution aborted by user"
                     : "Command cancellation could not be confirmed. The local session was retained so termination can be retried.",
@@ -862,6 +885,7 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                     result: {
                       output: result.output,
                       exitCode: commandTerminated ? 124 : null,
+                      ...(commandTerminated ? { processStarted: true } : {}),
                       timedOut: true,
                       ...(resumableSession && {
                         session: resumableSession,
@@ -1097,6 +1121,7 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                           output: `Detached background process started with PID: ${processId ?? "unknown"}. No reusable terminal session was created; do not pass this PID to interact_terminal_session.\n`,
                         }
                       : {
+                          processStarted: true,
                           exitCode: exec.exitCode ?? 0,
                           output: outputWithSaveInfo,
                           error:
@@ -1156,6 +1181,7 @@ export const createRunTerminalCmd = (context: ToolContext) => {
 
                     resolve({
                       result: {
+                        processStarted: true,
                         exitCode: error.exitCode,
                         output: outputWithSaveInfo,
                         error: error.message,
@@ -1185,6 +1211,10 @@ export const createRunTerminalCmd = (context: ToolContext) => {
     // fields. rawSnapshot stays in the persisted tool result so the
     // sidebar's xterm renderer can replay it. No-op for non-interactive
     // results, which never include rawSnapshot.
+    //
+    // Prepend a plain-language process state so partial stdout cannot be
+    // mistaken for a successful command when the structural result explicitly
+    // marks a completed process or a still-running session.
     toModelOutput({ output }) {
       if (typeof output !== "object" || output === null) {
         return { type: "text", value: String(output ?? "") };
@@ -1197,7 +1227,15 @@ export const createRunTerminalCmd = (context: ToolContext) => {
         string,
         unknown
       >;
-      return { type: "text", value: JSON.stringify({ result: rest }) };
+      const processStatus = getTerminalProcessStatus(rest);
+      const serializedResult = JSON.stringify({ result: rest });
+
+      return {
+        type: "text",
+        value: processStatus
+          ? `${processStatus}\n${serializedResult}`
+          : serializedResult,
+      };
     },
   });
 };
