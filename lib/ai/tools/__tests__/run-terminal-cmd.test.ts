@@ -252,13 +252,61 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
 
     await expect(
       getModelOutput(tool, {
-        result: { exitCode: 1, output: "compile passed\n", error: "killed" },
+        result: {
+          processStarted: true,
+          exitCode: 1,
+          output: "compile passed\n",
+          error: "killed",
+        },
       }),
     ).resolves.toEqual({
       type: "text",
       value:
-        'Process exited with code 1\n{"result":{"exitCode":1,"output":"compile passed\\n","error":"killed"}}',
+        'Process exited with code 1\n{"result":{"processStarted":true,"exitCode":1,"output":"compile passed\\n","error":"killed"}}',
     });
+  });
+
+  test("does not report approval denial as a process exit", async () => {
+    const requestToolApproval = jest.fn(async () => ({
+      approved: false as const,
+      reason: "User denied this command",
+    }));
+    const { context } = makeContext({ sandbox: null, requestToolApproval });
+    const tool = createRunTerminalCmd(context);
+    const result = await runTool(tool, {
+      command: "echo should-not-run",
+      is_background: false,
+      interactive: false,
+    });
+
+    const modelOutput = (await getModelOutput(tool, result)) as {
+      value: string;
+    };
+    expect(modelOutput.value).not.toContain("Process exited with code");
+    expect(modelOutput.value).toContain("User denied this command");
+  });
+
+  test("does not report unsupported PTY setup as a process exit", async () => {
+    const unsupportedPtySandbox = {
+      sandboxKind: "centrifugo" as const,
+      supportsPty: () => false,
+      commands: { run: jest.fn() },
+    };
+    const { context } = makeContext({ sandbox: unsupportedPtySandbox });
+    const tool = createRunTerminalCmd(context);
+    const result = await runTool(tool, {
+      command: "python3",
+      is_background: false,
+      interactive: true,
+    });
+
+    const modelOutput = (await getModelOutput(tool, result)) as {
+      value: string;
+    };
+    expect(modelOutput.value).not.toContain("Process exited with code");
+    expect(modelOutput.value).toContain(
+      "Interactive terminal sessions are unavailable",
+    );
   });
 
   test("makes running session status explicit in model output", async () => {
@@ -505,6 +553,7 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
     })) as {
       result: {
         output: string;
+        processStarted?: boolean;
         exitCode: number | null;
         session?: string;
         pid?: number;
@@ -514,6 +563,7 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
     expect(result).toHaveProperty("result");
     expect(typeof result.result.output).toBe("string");
     expect(result.result.output).toContain("hi");
+    expect(result.result.processStarted).toBe(true);
     // Foreground non-background returns an exitCode (may be null on timeout paths,
     // but here the mock resolves with 0).
     expect(result.result.exitCode).toBe(0);
@@ -717,7 +767,8 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
         onSandboxResourceMetrics,
       });
 
-      const resultPromise = runTool(createRunTerminalCmd(context), {
+      const tool = createRunTerminalCmd(context);
+      const resultPromise = runTool(tool, {
         command: "echo should-not-run",
         brief: "verify sandbox",
         is_background: false,
@@ -728,6 +779,13 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
       const result = await resultPromise;
 
       expect(result.result.error).toContain(
+        "initial health check and reconnect both failed",
+      );
+      const modelOutput = (await getModelOutput(tool, result)) as {
+        value: string;
+      };
+      expect(modelOutput.value).not.toContain("Process exited with code");
+      expect(modelOutput.value).toContain(
         "initial health check and reconnect both failed",
       );
       expect(recordHealthFailure).toHaveBeenCalledTimes(2);

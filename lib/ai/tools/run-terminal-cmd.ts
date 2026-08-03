@@ -62,7 +62,7 @@ const INTERACTIVE_QUIET_WINDOW_MS = 500;
 const getTerminalProcessStatus = (
   result: Record<string, unknown>,
 ): string | undefined => {
-  if (typeof result.exitCode === "number") {
+  if (result.processStarted === true && typeof result.exitCode === "number") {
     return `Process exited with code ${result.exitCode}`;
   }
 
@@ -748,6 +748,7 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                 result: {
                   output: result.output,
                   exitCode: terminated ? 130 : null,
+                  ...(terminated ? { processStarted: true } : {}),
                   error: terminated
                     ? "Command execution aborted by user"
                     : "Command cancellation could not be confirmed. The local session was retained so termination can be retried.",
@@ -884,6 +885,7 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                     result: {
                       output: result.output,
                       exitCode: commandTerminated ? 124 : null,
+                      ...(commandTerminated ? { processStarted: true } : {}),
                       timedOut: true,
                       ...(resumableSession && {
                         session: resumableSession,
@@ -1119,6 +1121,7 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                           output: `Detached background process started with PID: ${processId ?? "unknown"}. No reusable terminal session was created; do not pass this PID to interact_terminal_session.\n`,
                         }
                       : {
+                          processStarted: true,
                           exitCode: exec.exitCode ?? 0,
                           output: outputWithSaveInfo,
                           error:
@@ -1178,6 +1181,7 @@ export const createRunTerminalCmd = (context: ToolContext) => {
 
                     resolve({
                       result: {
+                        processStarted: true,
                         exitCode: error.exitCode,
                         output: outputWithSaveInfo,
                         error: error.message,
@@ -1209,8 +1213,8 @@ export const createRunTerminalCmd = (context: ToolContext) => {
     // results, which never include rawSnapshot.
     //
     // Prepend a plain-language process state so partial stdout cannot be
-    // mistaken for a successful command when the structural result contains
-    // a non-zero exit code or a still-running session.
+    // mistaken for a successful command when the structural result explicitly
+    // marks a completed process or a still-running session.
     toModelOutput({ output }) {
       if (typeof output !== "object" || output === null) {
         return { type: "text", value: String(output ?? "") };
