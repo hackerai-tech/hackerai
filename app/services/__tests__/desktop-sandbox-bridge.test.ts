@@ -28,6 +28,10 @@ jest.mock("centrifuge", () => ({
     mockClientOptions = options;
     return mockClient;
   }),
+  errorCodes: {
+    timeout: 1,
+    connectionClosed: 11,
+  },
 }));
 
 jest.mock("@/lib/analytics/client", () => ({
@@ -842,14 +846,26 @@ describe("forwardChunk", () => {
 
   it.each([
     {
-      code: 11,
-      message: "connection closed",
+      label: "structured connection closed",
+      publishError: { code: 11, message: "connection closed" },
+      directForwardFailure: undefined,
       reason: "connection_closed",
     },
-    { code: 1, message: "timeout", reason: "timeout" },
+    {
+      label: "JSON-encoded Error timeout",
+      publishError: new Error(JSON.stringify({ code: 1, message: "timeout" })),
+      directForwardFailure: undefined,
+      reason: "timeout",
+    },
+    {
+      label: "plain connection closed message",
+      publishError: undefined,
+      directForwardFailure: "connection closed",
+      reason: "connection_closed",
+    },
   ])(
-    "handles $message stream publish rejections and reports them once per command",
-    async ({ code, message, reason }) => {
+    "handles $label stream publish rejections and reports them once per command",
+    async ({ publishError, directForwardFailure, reason }) => {
       let finishCommand!: () => void;
       const commandFinished = new Promise<void>((resolve) => {
         finishCommand = resolve;
@@ -861,12 +877,28 @@ describe("forwardChunk", () => {
         }
         return undefined;
       };
-      mockSubscription.publish.mockRejectedValue({ code, message });
+      if (publishError !== undefined) {
+        mockSubscription.publish.mockRejectedValue(publishError);
+      }
       const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+      let forwardChunkSpy: jest.SpyInstance | null = null;
 
       try {
         const bridge = new DesktopSandboxBridge(buildConfig());
         await bridge.start();
+        if (directForwardFailure !== undefined) {
+          forwardChunkSpy = jest
+            .spyOn(
+              bridge as unknown as {
+                forwardChunk: (
+                  commandId: string,
+                  chunk: unknown,
+                ) => Promise<void>;
+              },
+              "forwardChunk",
+            )
+            .mockRejectedValue(directForwardFailure);
+        }
         const handler = getPublicationHandler();
         handler({
           data: {
@@ -927,6 +959,7 @@ describe("forwardChunk", () => {
         );
       } finally {
         finishCommand();
+        forwardChunkSpy?.mockRestore();
         mockSubscription.publish.mockResolvedValue(undefined);
         warnSpy.mockRestore();
       }

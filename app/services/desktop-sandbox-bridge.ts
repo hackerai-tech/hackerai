@@ -1,4 +1,4 @@
-import { Centrifuge, type Subscription } from "centrifuge";
+import { Centrifuge, errorCodes, type Subscription } from "centrifuge";
 import { captureAuthenticatedEvent } from "@/lib/analytics/client";
 import {
   sandboxConnectionChannel,
@@ -85,10 +85,10 @@ function classifyDesktopStreamPublishFailure(
     message = error;
   }
 
-  if (code === 11 || message === "connection closed") {
+  if (code === errorCodes.connectionClosed || message === "connection closed") {
     return "connection_closed";
   }
-  if (code === 1 || message === "timeout") {
+  if (code === errorCodes.timeout || message === "timeout") {
     return "timeout";
   }
   return null;
