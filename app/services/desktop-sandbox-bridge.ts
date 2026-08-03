@@ -52,11 +52,46 @@ type DesktopBridgeTerminationReason =
   | "ownership_mismatch"
   | "connection_inactive";
 
+type DesktopStreamPublishFailureReason = "connection_closed" | "timeout";
+
 interface StreamChunk {
   type: "stdout" | "stderr" | "exit" | "error";
   data?: string;
   exitCode?: number;
   message?: string;
+}
+
+function classifyDesktopStreamPublishFailure(
+  error: unknown,
+): DesktopStreamPublishFailureReason | null {
+  let code: unknown;
+  let message: unknown;
+
+  if (error instanceof Error) {
+    message = error.message;
+    try {
+      const parsed = JSON.parse(error.message) as unknown;
+      if (typeof parsed === "object" && parsed !== null) {
+        code = (parsed as { code?: unknown }).code;
+        message = (parsed as { message?: unknown }).message;
+      }
+    } catch {
+      // Centrifuge can also reject with a normal Error message.
+    }
+  } else if (typeof error === "object" && error !== null) {
+    code = (error as { code?: unknown }).code;
+    message = (error as { message?: unknown }).message;
+  } else {
+    message = error;
+  }
+
+  if (code === 11 || message === "connection closed") {
+    return "connection_closed";
+  }
+  if (code === 1 || message === "timeout") {
+    return "timeout";
+  }
+  return null;
 }
 
 type TargetedIncomingMessage =
@@ -451,8 +486,42 @@ export class DesktopSandboxBridge {
       const { invoke, Channel } = await import("@tauri-apps/api/core");
 
       const channel = new Channel<StreamChunk>();
+      let publishFailureReported = false;
       channel.onmessage = async (chunk) => {
-        await this.forwardChunk(commandId, chunk);
+        try {
+          await this.forwardChunk(commandId, chunk);
+        } catch (error) {
+          // Tauri does not await Channel callbacks. Handle the rejection here
+          // so one disconnected command cannot emit an unhandled exception for
+          // every subsequent stream chunk.
+          const reason = classifyDesktopStreamPublishFailure(error);
+          // Unknown failures are still actionable exceptions and must remain
+          // visible to the global error tracker.
+          if (!reason) throw error;
+          if (publishFailureReported) return;
+          publishFailureReported = true;
+
+          console.warn(
+            JSON.stringify({
+              timestamp: new Date().toISOString(),
+              level: "warn",
+              event: "desktop_stream_publish_failed",
+              service: "desktop_bridge",
+              environment: process.env.NODE_ENV ?? "unknown",
+              request_id: commandId,
+              connection_id: this.connectionId,
+              command_id: commandId,
+              chunk_type: chunk.type,
+              reason,
+            }),
+          );
+          captureAuthenticatedEvent("desktop_stream_publish_failed", {
+            connectionId: this.connectionId,
+            commandId,
+            chunkType: chunk.type,
+            reason,
+          });
+        }
       };
 
       await invoke("execute_stream_command", {
