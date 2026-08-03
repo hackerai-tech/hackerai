@@ -118,6 +118,7 @@ import {
 import { createTrackedProvider } from "@/lib/ai/providers";
 import {
   getSandboxUploadFailureMetadata,
+  getSandboxUploadUserMessage,
   uploadSandboxFiles,
   getUploadBasePath,
   rewriteSandboxFilePathsInMessages,
@@ -739,11 +740,9 @@ export const createChatHandler = () => {
                 writeUploadCompleteStatus(writer);
               }
               if (uploadResult.failedCount > 0) {
-                const noun =
-                  uploadResult.failedCount === 1 ? "attachment" : "attachments";
                 const uploadError = new ChatSDKError(
                   "bad_request:sandbox",
-                  `Failed to upload ${uploadResult.failedCount} ${noun} to the computer. Please try again.`,
+                  getSandboxUploadUserMessage(uploadResult),
                   getSandboxUploadFailureMetadata(uploadResult),
                 );
                 // Errors thrown from execute are caught by createUIMessageStream's

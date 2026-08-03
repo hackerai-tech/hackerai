@@ -26,6 +26,11 @@ export interface SandboxManager {
   getSandbox(): Promise<{ sandbox: AnySandbox }>;
   setSandbox(sandbox: AnySandbox): void;
   resetSandbox?(reason?: string): Promise<void>;
+  /** Quarantine an unresponsive local connection and keep retry acquisition bound to that explicit selection. */
+  quarantineLocalConnection?(
+    connectionId: string,
+    reason: "command_unresponsive",
+  ): Promise<void>;
   getSandboxType(toolName: string): SandboxType | undefined;
   getSandboxInfo(): SandboxInfo | null;
   // Optional: only HybridSandboxManager implements this

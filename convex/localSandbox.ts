@@ -289,6 +289,7 @@ const refreshCentrifugoTokenReturns = v.union(
       v.literal("desktop_kicked_by_new_session"),
       v.literal("token_regenerated"),
       v.literal("presence_sweep"),
+      v.literal("command_unresponsive"),
       v.null(),
     ),
     msSinceDisconnected: v.union(v.number(), v.null()),
@@ -306,7 +307,8 @@ type ConnectionRow = {
     | "desktop_disconnect"
     | "desktop_kicked_by_new_session"
     | "token_regenerated"
-    | "presence_sweep";
+    | "presence_sweep"
+    | "command_unresponsive";
   disconnected_at?: number;
   last_heartbeat: number;
   created_at: number;
@@ -579,11 +581,14 @@ export const disconnectByBackend = mutation({
   args: {
     serviceKey: v.string(),
     connectionId: v.string(),
+    reason: v.optional(
+      v.union(v.literal("presence_sweep"), v.literal("command_unresponsive")),
+    ),
   },
   returns: v.object({
     success: v.boolean(),
   }),
-  handler: async (ctx, { serviceKey, connectionId }) => {
+  handler: async (ctx, { serviceKey, connectionId, reason }) => {
     validateServiceKey(serviceKey);
 
     const connection = await ctx.db
@@ -595,7 +600,7 @@ export const disconnectByBackend = mutation({
       await ctx.db.patch(connection._id, {
         status: "disconnected",
         disconnected_at: Date.now(),
-        disconnect_reason: "presence_sweep",
+        disconnect_reason: reason ?? "presence_sweep",
       });
     }
 

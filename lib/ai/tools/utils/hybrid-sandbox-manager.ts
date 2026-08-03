@@ -79,7 +79,11 @@ const logStructured = (
     level,
     event,
     service: "chat-handler",
-    environment: process.env.VERCEL_ENV ?? process.env.NODE_ENV ?? "unknown",
+    environment:
+      process.env.TRIGGER_ENV ??
+      process.env.VERCEL_ENV ??
+      process.env.NODE_ENV ??
+      "unknown",
     request_id: process.env.VERCEL_REQUEST_ID ?? null,
     ...fields,
   };
@@ -227,6 +231,9 @@ export class HybridSandboxManager implements SandboxManager {
   private currentConnectionName: string | null = null;
   private pendingFallbackInfo: SandboxFallbackInfo | null = null;
   private reportedFallbackKeys = new Set<string>();
+  private quarantinedConnectionIds = new Set<string>();
+  private persistedQuarantinedConnectionIds = new Set<string>();
+  private requiredConnectionIdAfterQuarantine: string | null = null;
   private healthFailureCount = 0;
   private sandboxUnavailable = false;
 
@@ -239,6 +246,7 @@ export class HybridSandboxManager implements SandboxManager {
     private subscription?: SubscriptionTier,
     private onBoot?: (info: SandboxBootInfo) => void,
     private workingDirectory?: string,
+    private requestId?: string,
   ) {
     this.sandbox = initialSandbox || null;
   }
@@ -267,6 +275,70 @@ export class HybridSandboxManager implements SandboxManager {
 
   isSandboxUnavailable(): boolean {
     return this.sandboxUnavailable;
+  }
+
+  async quarantineLocalConnection(
+    connectionId: string,
+    reason: "command_unresponsive",
+  ): Promise<void> {
+    // Upload recovery must remain bound to the computer the user selected.
+    // Keep this requirement across resetSandbox() so reacquisition fails before
+    // another local connection or E2B can be instantiated.
+    this.requiredConnectionIdAfterQuarantine = connectionId;
+    if (this.persistedQuarantinedConnectionIds.has(connectionId)) return;
+
+    if (!this.quarantinedConnectionIds.has(connectionId)) {
+      this.quarantinedConnectionIds.add(connectionId);
+      logStructured("warn", "local_sandbox_connection_quarantined", {
+        service: this.requestId ? "agent-long" : "chat-handler",
+        request_id: this.requestId ?? process.env.VERCEL_REQUEST_ID ?? null,
+        user_id: this.userID,
+        connection_id: connectionId,
+        reason,
+      });
+    }
+
+    const maxAttempts = 3;
+    let lastError: unknown;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        await getConvexClient().mutation(api.localSandbox.disconnectByBackend, {
+          serviceKey: this.serviceKey,
+          connectionId,
+          reason,
+        });
+        this.persistedQuarantinedConnectionIds.add(connectionId);
+        return;
+      } catch (error) {
+        lastError = error;
+        if (attempt < maxAttempts) {
+          const retryDelayMs = attempt * 500;
+          logStructured("warn", "local_sandbox_connection_quarantine_retry", {
+            service: this.requestId ? "agent-long" : "chat-handler",
+            request_id: this.requestId ?? process.env.VERCEL_REQUEST_ID ?? null,
+            user_id: this.userID,
+            connection_id: connectionId,
+            reason,
+            attempt,
+            max_attempts: maxAttempts,
+            retry_delay_ms: retryDelayMs,
+            error: error instanceof Error ? error.message : String(error),
+          });
+          await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
+        }
+      }
+    }
+
+    logStructured("error", "local_sandbox_connection_quarantine_failed", {
+      service: this.requestId ? "agent-long" : "chat-handler",
+      request_id: this.requestId ?? process.env.VERCEL_REQUEST_ID ?? null,
+      user_id: this.userID,
+      connection_id: connectionId,
+      reason,
+      attempts: maxAttempts,
+      error: lastError instanceof Error ? lastError.message : String(lastError),
+    });
+    throw lastError;
   }
 
   /**
@@ -407,12 +479,16 @@ export class HybridSandboxManager implements SandboxManager {
    */
   async listConnections(): Promise<ConnectionInfo[]> {
     try {
-      const connections = await getConvexClient().query(
+      const storedConnections = await getConvexClient().query(
         api.localSandbox.listConnectionsForBackend,
         {
           serviceKey: this.serviceKey,
           userId: this.userID,
         },
+      );
+      const connections = storedConnections.filter(
+        (connection) =>
+          !this.quarantinedConnectionIds.has(connection.connectionId),
       );
       if (connections.length === 0) {
         return connections;
@@ -489,6 +565,12 @@ export class HybridSandboxManager implements SandboxManager {
   }
 
   async getSandbox(): Promise<{ sandbox: SandboxInstance }> {
+    if (this.requiredConnectionIdAfterQuarantine) {
+      throw new Error(
+        "The selected local sandbox stopped responding. Reconnect it in Remote Control, then try again.",
+      );
+    }
+
     // If preference is E2B, always use E2B (but block for free users)
     if (this.sandboxPreference === "e2b") {
       if (this.subscription === "free") {

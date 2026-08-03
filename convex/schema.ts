@@ -664,6 +664,7 @@ export default defineSchema({
         v.literal("desktop_kicked_by_new_session"),
         v.literal("token_regenerated"),
         v.literal("presence_sweep"),
+        v.literal("command_unresponsive"),
       ),
     ),
   })

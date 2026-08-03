@@ -1649,6 +1649,8 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(chatHandlerSrc).toMatch(/"bad_request:sandbox"/);
     expect(taskSrc).toMatch(/"sandbox_upload_failure"/);
     expect(taskSrc).toMatch(/upload_failure_kind/);
+    expect(taskSrc).toMatch(/upload_failure_reason/);
+    expect(taskSrc).toMatch(/error_sandbox_upload_/);
     expect(taskSrc).toMatch(/upload_failure_sandbox_readiness_reason/);
     expect(taskSrc).toMatch(/isSandboxUploadError/);
     expect(taskSrc).toMatch(/alreadyEmittedFromStream/);

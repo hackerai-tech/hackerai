@@ -39,6 +39,7 @@ type RefreshTokenResult =
         | "desktop_kicked_by_new_session"
         | "token_regenerated"
         | "presence_sweep"
+        | "command_unresponsive"
         | null;
       msSinceDisconnected: number | null;
       msSinceLastHeartbeat: number | null;

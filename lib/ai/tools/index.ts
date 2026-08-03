@@ -32,6 +32,7 @@ import type {
   ToolFailureLogger,
   AgentToolApprovalRequester,
   AgentActiveTimeMeasurer,
+  SandboxManager,
 } from "@/types";
 import { isAgentMode } from "@/lib/utils/mode-helpers";
 import type { Geo } from "@vercel/functions";
@@ -91,7 +92,7 @@ export const createTools = (
   }
 
   // Use HybridSandboxManager if sandboxPreference and serviceKey are provided
-  const sandboxManager =
+  const sandboxManager: SandboxManager =
     sandboxPreference && serviceKey
       ? new HybridSandboxManager(
           userID,
@@ -102,6 +103,7 @@ export const createTools = (
           subscription,
           onSandboxBoot,
           workingDirectory,
+          triggerRunId,
         )
       : new DefaultSandboxManager(
           userID,
@@ -195,7 +197,16 @@ export const createTools = (
   const ensureSandbox = async (options?: {
     refresh?: boolean;
     reason?: string;
+    excludeConnectionId?: string;
   }) => {
+    if (options?.excludeConnectionId) {
+      // HybridSandboxManager treats this as a strict retry: quarantine the
+      // selected computer and reject acquisition before choosing another host.
+      await sandboxManager.quarantineLocalConnection?.(
+        options.excludeConnectionId,
+        "command_unresponsive",
+      );
+    }
     if (options?.refresh) {
       await sandboxManager.resetSandbox?.(options.reason);
     }
