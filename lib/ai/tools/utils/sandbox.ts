@@ -129,7 +129,8 @@ const logSandboxKillFailure = (
 // v9: added temporary HTTP interception support
 // v10: added whois, Chromium, and agent-browser browser automation
 // v11: removed preinstalled interception CLI from the sandbox image
-const SANDBOX_VERSION = "v11";
+// v12: increased sandbox memory from 2GB to 4GB
+const SANDBOX_VERSION = "v12";
 
 /**
  * Ensures a sandbox connection is established and maintained

@@ -806,7 +806,7 @@ describe("HybridSandboxManager reset cleanup", () => {
         {
           sandboxId: "sandbox-2",
           state: "running",
-          metadata: { sandboxVersion: "v11" },
+          metadata: { sandboxVersion: "v12" },
         },
       ]),
     });
