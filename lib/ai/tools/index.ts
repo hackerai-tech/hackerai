@@ -200,6 +200,8 @@ export const createTools = (
     excludeConnectionId?: string;
   }) => {
     if (options?.excludeConnectionId) {
+      // HybridSandboxManager treats this as a strict retry: quarantine the
+      // selected computer and reject acquisition before choosing another host.
       await sandboxManager.quarantineLocalConnection?.(
         options.excludeConnectionId,
         "command_unresponsive",

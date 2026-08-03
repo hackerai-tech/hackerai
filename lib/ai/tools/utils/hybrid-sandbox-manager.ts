@@ -232,6 +232,7 @@ export class HybridSandboxManager implements SandboxManager {
   private pendingFallbackInfo: SandboxFallbackInfo | null = null;
   private reportedFallbackKeys = new Set<string>();
   private quarantinedConnectionIds = new Set<string>();
+  private requiredConnectionIdAfterQuarantine: string | null = null;
   private healthFailureCount = 0;
   private sandboxUnavailable = false;
 
@@ -279,6 +280,10 @@ export class HybridSandboxManager implements SandboxManager {
     connectionId: string,
     reason: "command_unresponsive",
   ): Promise<void> {
+    // Upload recovery must remain bound to the computer the user selected.
+    // Keep this requirement across resetSandbox() so reacquisition fails before
+    // another local connection or E2B can be instantiated.
+    this.requiredConnectionIdAfterQuarantine = connectionId;
     if (this.quarantinedConnectionIds.has(connectionId)) return;
 
     this.quarantinedConnectionIds.add(connectionId);
@@ -532,6 +537,12 @@ export class HybridSandboxManager implements SandboxManager {
   }
 
   async getSandbox(): Promise<{ sandbox: SandboxInstance }> {
+    if (this.requiredConnectionIdAfterQuarantine) {
+      throw new Error(
+        "The selected local sandbox stopped responding. Reconnect it in Remote Control, then try again.",
+      );
+    }
+
     // If preference is E2B, always use E2B (but block for free users)
     if (this.sandboxPreference === "e2b") {
       if (this.subscription === "free") {

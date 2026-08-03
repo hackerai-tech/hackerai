@@ -623,6 +623,7 @@ describe("HybridSandboxManager reset cleanup", () => {
   it("persists and excludes an unresponsive local connection", async () => {
     const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
     const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+    const setSandbox = jest.fn();
     const unresponsive = makeConnection({
       connectionId: "conn-unresponsive",
       name: "Unresponsive",
@@ -637,7 +638,7 @@ describe("HybridSandboxManager reset cleanup", () => {
     try {
       const manager = new HybridSandboxManager(
         "user-1",
-        jest.fn(),
+        setSandbox,
         "conn-unresponsive",
         "service-key",
         null,
@@ -658,6 +659,16 @@ describe("HybridSandboxManager reset cleanup", () => {
         reason: "command_unresponsive",
       });
       await expect(manager.listConnections()).resolves.toEqual([healthy]);
+      const queryCallsBeforeStrictRetry = mockConvexQuery.mock.calls.length;
+      await manager.resetSandbox("attachment_retry");
+      await expect(manager.getSandbox()).rejects.toThrow(
+        "The selected local sandbox stopped responding",
+      );
+      expect(mockConvexQuery).toHaveBeenCalledTimes(
+        queryCallsBeforeStrictRetry,
+      );
+      expect(setSandbox).not.toHaveBeenCalled();
+      expect(sandboxApi.list).not.toHaveBeenCalled();
 
       const quarantineLog = JSON.parse(
         String(
