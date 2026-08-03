@@ -19,6 +19,12 @@ describe("agent tool schema descriptions", () => {
     expect(fullAccessDescription).toContain(
       "Use command chaining and pipes for efficiency",
     );
+    expect(fullAccessDescription).toContain(
+      "Process running with session ID X",
+    );
+    expect(fullAccessDescription).toContain(
+      "a detached PID is not a reusable terminal session",
+    );
     expect(fullAccessDescription).toContain("append ` | cat` to the command");
 
     const approvalGatedTool = createRunTerminalCmdToolSchema({

@@ -226,11 +226,78 @@ async function runTool(
   });
 }
 
+async function getModelOutput(
+  tool: ReturnType<typeof createRunTerminalCmd>,
+  output: unknown,
+) {
+  const toModelOutput = (
+    tool as unknown as {
+      toModelOutput: (args: { output: unknown }) => unknown | Promise<unknown>;
+    }
+  ).toModelOutput;
+
+  return toModelOutput({ output });
+}
+
 describe("run_terminal_cmd — PTY action dispatch", () => {
   beforeEach(() => {
     mockCreateE2BPtyHandle.mockReset();
     mockCreateCentrifugoPtyHandle.mockReset();
     mockPhEvent.mockClear();
+  });
+
+  test("makes completed process status explicit in model output", async () => {
+    const { context } = makeContext({ sandbox: null });
+    const tool = createRunTerminalCmd(context);
+
+    await expect(
+      getModelOutput(tool, {
+        result: { exitCode: 1, output: "compile passed\n", error: "killed" },
+      }),
+    ).resolves.toEqual({
+      type: "text",
+      value:
+        'Process exited with code 1\n{"result":{"exitCode":1,"output":"compile passed\\n","error":"killed"}}',
+    });
+  });
+
+  test("makes running session status explicit in model output", async () => {
+    const { context } = makeContext({ sandbox: null });
+    const tool = createRunTerminalCmd(context);
+
+    await expect(
+      getModelOutput(tool, {
+        result: {
+          session: "session-abc",
+          pid: 4321,
+          output: "server starting\n",
+          rawSnapshot: "raw terminal bytes",
+        },
+      }),
+    ).resolves.toEqual({
+      type: "text",
+      value:
+        'Process running with session ID session-abc\n{"result":{"session":"session-abc","pid":4321,"output":"server starting\\n"}}',
+    });
+  });
+
+  test("reports an exited interactive process before its reusable session", async () => {
+    const { context } = makeContext({ sandbox: null });
+    const tool = createRunTerminalCmd(context);
+
+    await expect(
+      getModelOutput(tool, {
+        result: {
+          session: "session-finished",
+          output: "done\n",
+          exited: { exitCode: 0 },
+        },
+      }),
+    ).resolves.toEqual({
+      type: "text",
+      value:
+        'Process exited with code 0\n{"result":{"session":"session-finished","output":"done\\n","exited":{"exitCode":0}}}',
+    });
   });
 
   test("forwards the user-facing justification and reusable argv prefix", async () => {
