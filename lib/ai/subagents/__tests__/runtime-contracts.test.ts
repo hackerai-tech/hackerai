@@ -36,6 +36,20 @@ describe("security validation subagent runtime contracts", () => {
     );
   });
 
+  it("uses the cheap text model and promotes one-way for image results", () => {
+    const delegate = read("lib/ai/tools/delegate-task.ts");
+    const child = read("trigger/subagent.ts");
+    expect(delegate).toContain("selectedModel: SUBAGENT_TEXT_MODEL");
+    expect(delegate).not.toContain(
+      "selectedModel: context.getCurrentModelName?.() ?? context.modelName",
+    );
+    expect(child).toContain("toolResultsContainImageViewResult");
+    expect(child).toContain("resolveSubagentModelForImageToolResults");
+    expect(child).toContain("model: provider.languageModel(activeModelName)");
+    expect(child).toContain('"subagent_model_promoted"');
+    expect(child).toContain("setCurrentModelName(activeModelName)");
+  });
+
   it("propagates parent cancellation and refuses a canceled queued child", () => {
     const parent = read("trigger/agent-long.ts");
     const child = read("trigger/subagent.ts");

@@ -22,6 +22,9 @@ type SubagentLifecycleEvent = BaseSubagentEvent & {
   stepCount?: number;
   costDollars?: number;
   errorCategory?: string;
+  modelFrom?: string;
+  modelTo?: string;
+  modelPromotionReason?: string;
 };
 
 const boundedCategory = (value: string | undefined): string | undefined =>
@@ -35,6 +38,7 @@ export const captureSubagentLifecycleEvent = (
     | "subagent_validation_confirmed"
     | "subagent_validation_rejected"
     | "subagent_validation_inconclusive"
+    | "subagent_model_promoted"
     | "subagent_canceled",
   fields: SubagentLifecycleEvent,
 ) => {
@@ -50,6 +54,9 @@ export const captureSubagentLifecycleEvent = (
     step_count: fields.stepCount,
     cost_dollars: fields.costDollars,
     error_category: boundedCategory(fields.errorCategory),
+    model_from: boundedCategory(fields.modelFrom),
+    model_to: boundedCategory(fields.modelTo),
+    model_promotion_reason: boundedCategory(fields.modelPromotionReason),
   });
 };
 
@@ -58,6 +65,9 @@ export const subagentExposureEventUuid = (parentTriggerRunId: string): string =>
 
 export const subagentOutcomeEventUuid = (subagentId: string): string =>
   uuidv5(`subagent-terminal-outcome:${subagentId}`, uuidv5.URL);
+
+export const subagentModelPromotionEventUuid = (subagentId: string): string =>
+  uuidv5(`subagent-model-promoted:${subagentId}`, uuidv5.URL);
 
 export const captureSubagentTerminalOutcome = (
   fields: SubagentLifecycleEvent & {

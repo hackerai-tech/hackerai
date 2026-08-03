@@ -21,6 +21,7 @@ import {
 } from "@/lib/ai/subagents/fingerprint";
 import { getSubagentSandboxIdentity } from "@/lib/ai/subagents/sandbox-identity";
 import { serializeSubagentWaitForParent } from "@/lib/ai/subagents/parent-wait-lock";
+import { SUBAGENT_TEXT_MODEL } from "@/lib/ai/subagents/model-routing";
 import { getSandboxWithFallbackGuard } from "@/lib/ai/tools/utils/sandbox-fallback";
 import {
   acknowledgeSubagentResult,
@@ -204,7 +205,7 @@ export const createDelegateTask = (
         sandboxPreference: config.sandboxPreference,
         sandboxIdentity,
         permissionMode: config.permissionMode,
-        selectedModel: context.getCurrentModelName?.() ?? context.modelName,
+        selectedModel: SUBAGENT_TEXT_MODEL,
         subscription: config.subscription,
         freeQuotaSubject: config.freeQuotaSubject,
         userLocation: context.userLocation,

@@ -33,6 +33,10 @@ import {
   isTransientProviderCategory,
 } from "@/lib/ai/subagents/runtime-recovery";
 import { getSubagentProfileDefinition } from "@/lib/ai/subagents/profiles";
+import {
+  resolveSubagentModelForImageToolResults,
+  SUBAGENT_TEXT_MODEL,
+} from "@/lib/ai/subagents/model-routing";
 import { assertSubagentSandboxIdentity } from "@/lib/ai/subagents/sandbox-identity";
 import {
   attachSubagentTriggerRun,
@@ -49,6 +53,7 @@ import {
   pruneModelMessages,
 } from "@/lib/chat/compaction/prune-tool-outputs";
 import { sanitizeAgentLongRealtimeChunk } from "@/lib/chat/agent-long-realtime-sanitizer";
+import { toolResultsContainImageViewResult } from "@/lib/chat/multimodal-tool-result-recovery";
 import { UsageTracker } from "@/lib/usage-tracker";
 import {
   checkFreeMonthlyCostLimit,
@@ -62,6 +67,7 @@ import { extractOpenRouterMetadata } from "@/lib/api/openrouter-metadata";
 import {
   captureSubagentLifecycleEvent,
   captureSubagentTerminalOutcome,
+  subagentModelPromotionEventUuid,
   subagentOutcomeEventUuid,
 } from "@/lib/analytics/subagents";
 import { phLogger } from "@/lib/posthog/server";
@@ -345,9 +351,11 @@ export const subagentTask = task({
     let rateLimitInfo:
       Awaited<ReturnType<typeof checkRateLimitCapacity>> | undefined;
     let usageSettled = false;
-    const selectedModel =
-      row.selected_model ??
-      (row.subscription === "free" ? "agent-model-free" : "agent-model");
+    const selectedModel = row.selected_model ?? SUBAGENT_TEXT_MODEL;
+    let activeModelName = selectedModel;
+    metadata
+      .set("selectedModel", selectedModel)
+      .set("activeModel", activeModelName);
 
     const settleUsage = async (): Promise<{
       costDollars: number;
@@ -477,7 +485,7 @@ export const subagentTask = task({
               },
             });
 
-            const { tools, ensureSandbox } = createTools(
+            const { tools, ensureSandbox, setCurrentModelName } = createTools(
               row.user_id,
               row.chat_id,
               writer,
@@ -532,7 +540,7 @@ export const subagentTask = task({
               let attemptUiMessages: UIMessage[] = [];
               const remainingSteps = SUBAGENT_MAX_STEPS - stepCount;
               const generation = streamText({
-                model: provider.languageModel(selectedModel),
+                model: provider.languageModel(activeModelName),
                 system: profile.systemPrompt,
                 messages: conversationMessages,
                 tools,
@@ -542,22 +550,71 @@ export const subagentTask = task({
                 ],
                 maxOutputTokens: profile.maxOutputTokens,
                 abortSignal: activeAbort.signal,
-                prepareStep: async ({ messages }) => {
+                prepareStep: async ({ messages, steps }) => {
+                  const lastStep = Array.isArray(steps)
+                    ? steps.at(-1)
+                    : undefined;
+                  const toolResults =
+                    (lastStep as { toolResults?: unknown[] } | undefined)
+                      ?.toolResults ?? [];
+                  const nextModelName = resolveSubagentModelForImageToolResults(
+                    activeModelName,
+                    toolResultsContainImageViewResult(toolResults),
+                  );
+                  if (nextModelName !== activeModelName) {
+                    const previousModelName = activeModelName;
+                    activeModelName = nextModelName;
+                    setCurrentModelName(activeModelName);
+                    metadata
+                      .set("activeModel", activeModelName)
+                      .set("visionPromoted", true);
+                    captureSubagentLifecycleEvent("subagent_model_promoted", {
+                      userId: row.user_id,
+                      eventUuid: subagentModelPromotionEventUuid(
+                        row.subagent_id,
+                      ),
+                      subagentId: row.subagent_id,
+                      parentTriggerRunId: row.parent_trigger_run_id,
+                      profile: "security_validation",
+                      modelFrom: previousModelName,
+                      modelTo: activeModelName,
+                      modelPromotionReason: "image_tool_result",
+                    });
+                    triggerLogger.info(
+                      "Subagent model promoted for image tool result",
+                      {
+                        event: "subagent_model_promoted",
+                        service: "hackerai-subagent",
+                        user_id: row.user_id,
+                        subagent_id: row.subagent_id,
+                        parent_trigger_run_id: row.parent_trigger_run_id,
+                        trigger_run_id: ctx.run.id,
+                        model_from: previousModelName,
+                        model_to: activeModelName,
+                      },
+                    );
+                  }
                   const compacted = pruneModelMessages(
                     messages as Array<Record<string, unknown>>,
                     12_000,
                     2_000,
                   );
-                  return { messages: compacted.messages as ModelMessage[] };
+                  return {
+                    model: provider.languageModel(activeModelName),
+                    messages: compacted.messages as ModelMessage[],
+                  };
                 },
                 onError: ({ error }) => {
                   attemptError = error;
                 },
                 onStepFinish: async ({ usage, response, providerMetadata }) => {
                   stepCount += 1;
-                  responseModel = response?.modelId ?? responseModel;
+                  responseModel = response?.modelId ?? activeModelName;
                   const index = usage
-                    ? usageTracker.accumulateStep(usage, response?.modelId)
+                    ? usageTracker.accumulateStep(
+                        usage,
+                        response?.modelId ?? activeModelName,
+                      )
                     : undefined;
                   const openRouter = extractOpenRouterMetadata({
                     response,

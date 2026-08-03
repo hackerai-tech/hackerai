@@ -5,8 +5,12 @@ jest.mock("server-only", () => ({}));
 const mockEvent = jest.fn();
 jest.mock("@/lib/posthog/server", () => ({ phLogger: { event: mockEvent } }));
 
-const { captureSubagentTerminalOutcome, subagentOutcomeEventUuid } =
-  require("../subagents") as typeof import("../subagents");
+const {
+  captureSubagentLifecycleEvent,
+  captureSubagentTerminalOutcome,
+  subagentModelPromotionEventUuid,
+  subagentOutcomeEventUuid,
+} = require("../subagents") as typeof import("../subagents");
 
 describe("subagent lifecycle analytics", () => {
   beforeEach(() => jest.clearAllMocks());
@@ -45,6 +49,29 @@ describe("subagent lifecycle analytics", () => {
     expect(mockEvent).toHaveBeenCalledWith(
       "subagent_completed",
       expect.objectContaining({ status: "failed" }),
+    );
+  });
+
+  it("records privacy-safe one-way model promotion metadata", () => {
+    captureSubagentLifecycleEvent("subagent_model_promoted", {
+      userId: "user-1",
+      eventUuid: subagentModelPromotionEventUuid("sa_3"),
+      subagentId: "sa_3",
+      parentTriggerRunId: "parent-1",
+      profile: "security_validation",
+      modelFrom: "agent-model-free",
+      modelTo: "model-grok-4.5",
+      modelPromotionReason: "image_tool_result",
+    });
+
+    expect(mockEvent).toHaveBeenCalledWith(
+      "subagent_model_promoted",
+      expect.objectContaining({
+        eventUuid: subagentModelPromotionEventUuid("sa_3"),
+        model_from: "agent-model-free",
+        model_to: "model-grok-4_5",
+        model_promotion_reason: "image_tool_result",
+      }),
     );
   });
 });
