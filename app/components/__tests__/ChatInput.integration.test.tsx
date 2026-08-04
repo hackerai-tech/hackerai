@@ -243,6 +243,7 @@ describe("ChatInput - Integration Tests", () => {
         method: "HEAD",
         cache: "no-store",
         credentials: "same-origin",
+        signal: expect.any(AbortSignal),
       });
       expect(mockOnReconnect).toHaveBeenCalledTimes(1);
       expect(mockOnSubmit).not.toHaveBeenCalled();

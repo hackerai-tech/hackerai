@@ -25,6 +25,7 @@ describe("useOnlineStatus", () => {
   });
 
   afterEach(() => {
+    jest.useRealTimers();
     act(() => {
       setNavigatorOnline(true);
       window.dispatchEvent(new Event("online"));
@@ -76,6 +77,7 @@ describe("useOnlineStatus", () => {
       method: "HEAD",
       cache: "no-store",
       credentials: "same-origin",
+      signal: expect.any(AbortSignal),
     });
   });
 
@@ -93,5 +95,40 @@ describe("useOnlineStatus", () => {
 
     expect(reconnected).toBe(false);
     expect(result.current).toBe(false);
+  });
+
+  it("times out a hung probe and allows a later reconnect", async () => {
+    jest.useFakeTimers();
+    setNavigatorOnline(false);
+    (globalThis.fetch as jest.Mock).mockImplementationOnce(
+      (_url: string, init: RequestInit) =>
+        new Promise((_resolve, reject) => {
+          init.signal?.addEventListener("abort", () => {
+            reject(new DOMException("Aborted", "AbortError"));
+          });
+        }),
+    );
+    const { result } = renderHook(() => useOnlineStatus());
+
+    let timedOutReconnect: Promise<boolean>;
+    act(() => {
+      timedOutReconnect = reconnectOnlineStatus();
+    });
+    await act(async () => {
+      jest.advanceTimersByTime(5_000);
+      expect(await timedOutReconnect).toBe(false);
+    });
+
+    expect(result.current).toBe(false);
+    expect(
+      (globalThis.fetch as jest.Mock).mock.calls[0]?.[1]?.signal.aborted,
+    ).toBe(true);
+
+    (globalThis.fetch as jest.Mock).mockResolvedValueOnce({ ok: true });
+    await act(async () => {
+      await expect(reconnectOnlineStatus()).resolves.toBe(true);
+    });
+
+    expect(result.current).toBe(true);
   });
 });
