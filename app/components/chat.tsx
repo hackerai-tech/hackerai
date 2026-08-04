@@ -43,6 +43,7 @@ import {
   convertToUIMessages,
   type MessageRecord,
 } from "@/lib/utils";
+import { getSafeErrorEventMessage } from "@/lib/utils/error-event";
 import {
   cancelAgentLongRealtimeStreams,
   fetchAgentLongStream,
@@ -1144,7 +1145,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
         message.includes("Cannot close a stream that is already closed"));
 
     const suppressAgentLongDoubleCloseNoise = (event: ErrorEvent) => {
-      if (isAgentLongDoubleCloseNoise(event.message)) {
+      if (isAgentLongDoubleCloseNoise(getSafeErrorEventMessage(event))) {
         event.preventDefault();
         event.stopImmediatePropagation();
       }
