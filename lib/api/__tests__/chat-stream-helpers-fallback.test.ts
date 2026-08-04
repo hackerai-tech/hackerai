@@ -76,15 +76,15 @@ describe("buildProviderOptions fallback chain", () => {
     },
   );
 
-  it("resolves Opus 4.6 ask chain to Kimi K3 then Grok", () => {
+  it("resolves the Max Kimi K3 ask route to Grok fallback", () => {
     const opts = buildProviderOptions(false, "user-1", "model-opus-4.6", "ask");
     expect(opts.openrouter).toMatchObject({
-      models: [KIMI_K3_SLUG, GROK_SLUG],
+      models: [GROK_SLUG],
       user: "user-1",
     });
   });
 
-  it("resolves Opus 4.6 text-only agent chain to Kimi K3 then Grok", () => {
+  it("resolves the Max Kimi K3 text-only agent route to Grok fallback", () => {
     const opts = buildProviderOptions(
       false,
       "user-1",
@@ -92,12 +92,12 @@ describe("buildProviderOptions fallback chain", () => {
       "agent",
     );
     expect(opts.openrouter).toMatchObject({
-      models: [KIMI_K3_SLUG, GROK_SLUG],
+      models: [GROK_SLUG],
       user: "user-1",
     });
   });
 
-  it("resolves Opus 4.6 multimodal agent chain to Kimi K3 then Grok", () => {
+  it("resolves the Max Kimi K3 multimodal agent route to Grok fallback", () => {
     const opts = buildProviderOptions(
       false,
       "user-1",
@@ -106,7 +106,7 @@ describe("buildProviderOptions fallback chain", () => {
       { hasMultimodalToolResults: true },
     );
     expect(opts.openrouter).toMatchObject({
-      models: [KIMI_K3_SLUG, GROK_SLUG],
+      models: [GROK_SLUG],
       user: "user-1",
     });
   });
@@ -339,7 +339,7 @@ describe("buildProviderOptions fallback chain", () => {
     );
     expect(reasoning.openrouter).toMatchObject({
       reasoning: { enabled: true, effort: "high" },
-      models: [KIMI_K3_SLUG, GROK_SLUG],
+      models: [GROK_SLUG],
     });
 
     const grokReasoning = buildProviderOptions(
@@ -362,7 +362,7 @@ describe("buildProviderOptions fallback chain", () => {
     );
     expect(multimodal.openrouter).toMatchObject({
       reasoning: { enabled: true, effort: "high" },
-      models: [KIMI_K3_SLUG, GROK_SLUG],
+      models: [GROK_SLUG],
     });
   });
 });
@@ -428,10 +428,10 @@ describe("getRetryFallbackModel", () => {
   });
 
   it.each(["ask", "agent"] as const)(
-    "retries Opus 4.6 with Kimi K3 in %s mode",
+    "retries the Max Kimi K3 route with Grok in %s mode",
     (mode) => {
       expect(getRetryFallbackModel("model-opus-4.6", mode)).toBe(
-        "model-kimi-k3",
+        "model-grok-4.5",
       );
     },
   );
@@ -587,6 +587,16 @@ describe("resolveServedModelForCostAccounting", () => {
       resolveServedModelForCostAccounting({
         modelName: "model-opus-4.6",
         responseModel: "anthropic/claude-4.6-opus-20261231",
+        mode: "agent",
+      }),
+    ).toBe("model-opus-4.6");
+  });
+
+  it("maps the Max Kimi K3 primary response to the persisted Max cost key", () => {
+    expect(
+      resolveServedModelForCostAccounting({
+        modelName: "model-opus-4.6",
+        responseModel: KIMI_K3_SLUG,
         mode: "agent",
       }),
     ).toBe("model-opus-4.6");

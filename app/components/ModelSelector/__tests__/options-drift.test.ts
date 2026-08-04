@@ -89,4 +89,15 @@ describe("ModelSelector tier ↔ provider drift", () => {
         ?.poweredBy,
     ).toBe("xAI Grok 4.5");
   });
+
+  it("discloses Kimi K3 for HackerAI Max", () => {
+    expect(
+      ASK_MODEL_OPTIONS.find((option) => option.id === "hackerai-max")
+        ?.poweredBy,
+    ).toBe("Moonshot Kimi K3");
+    expect(
+      AGENT_MODEL_OPTIONS.find((option) => option.id === "hackerai-max")
+        ?.poweredBy,
+    ).toBe("Moonshot Kimi K3");
+  });
 });

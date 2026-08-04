@@ -28,7 +28,7 @@ export const ASK_MODEL_OPTIONS: ModelOption[] = [
     id: "hackerai-max",
     label: "HackerAI Max",
     description: "Maximum intelligence for complex work",
-    poweredBy: "Claude Opus 4.6",
+    poweredBy: "Moonshot Kimi K3",
   },
 ];
 
@@ -51,7 +51,7 @@ export const AGENT_MODEL_OPTIONS: ModelOption[] = [
     id: "hackerai-max",
     label: "HackerAI Max",
     description: "Maximum intelligence for complex work",
-    poweredBy: "Claude Opus 4.6",
+    poweredBy: "Moonshot Kimi K3",
     thinking: true,
   },
 ];

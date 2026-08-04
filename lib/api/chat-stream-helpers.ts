@@ -519,8 +519,8 @@ export class SummarizationTracker {
  * stream, OpenRouter rolls forward through this list and bills at the served
  * model's rate (response.modelId reflects what actually ran).
  *
- * Claude chats are repaired for Anthropic-compatible message shapes before
- * this fallback can fire. Opus 4.6 uses Kimi K3 then Grok 4.5 in every mode.
+ * The persisted Max key now resolves to Kimi K3 and falls back to Grok 4.5 in
+ * every mode. Historical Opus response ids remain recognized for accounting.
  *
  * Keys and values are registry names (see lib/ai/providers.ts) — the actual
  * OpenRouter slugs are resolved at request-build time so this stays in sync
@@ -556,6 +556,7 @@ const MODEL_FALLBACK_CHAIN: Partial<Record<ModelName, readonly ModelName[]>> = {
   "agent-model": GROK_4_5_FALLBACK_CHAIN,
   "model-grok-4.5": GROK_4_5_FALLBACK_CHAIN,
   "model-grok-4.5-pro": HACKERAI_PRO_FALLBACK_CHAIN,
+  "model-opus-4.6": ["model-grok-4.5"],
   "model-glm-5.2": KIMI_K3_THEN_GROK_FALLBACK_CHAIN,
   "fallback-agent-model": GROK_4_5_FALLBACK_CHAIN,
   "fallback-ask-model": GROK_4_5_FALLBACK_CHAIN,
@@ -608,9 +609,6 @@ const getFallbackKeys = (
   modelName?: string,
 ): readonly ModelName[] | undefined => {
   if (!modelName) return undefined;
-  if (modelName === "model-opus-4.6") {
-    return KIMI_K3_THEN_GROK_FALLBACK_CHAIN;
-  }
   return MODEL_FALLBACK_CHAIN[modelName as ModelName];
 };
 
@@ -622,7 +620,7 @@ export function getRetryFallbackModel(
     return "model-glm-5.2";
   }
   if (modelName === "model-opus-4.6") {
-    return "model-kimi-k3";
+    return "model-grok-4.5";
   }
   if (
     modelName === "ask-model-free" ||
