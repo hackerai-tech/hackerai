@@ -323,6 +323,15 @@ export const useChatHandlers = ({
     // value out of this hook prevents each keystroke from rerendering Chat.
     const input = getInput();
 
+    // The visible composer normally blocks this path while offline. Check the
+    // browser snapshot again here so a connectivity race cannot clear a draft.
+    if (typeof navigator !== "undefined" && !navigator.onLine) {
+      toast.info("You're offline", {
+        description: "Your draft is saved. Reconnect before sending.",
+      });
+      return false;
+    }
+
     setIsAutoResuming(false);
 
     // Reset manual stop flag when user submits a new message

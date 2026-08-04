@@ -41,6 +41,8 @@ import {
   useAgentApproval,
 } from "@/app/contexts/AgentApprovalContext";
 import { PASTED_TEXT_INLINE_RESTORE_MAX_CHARS } from "@/lib/utils/pasted-text-attachments";
+import { useOnlineStatus } from "@/app/hooks/useOnlineStatus";
+import { WifiOff } from "lucide-react";
 
 interface ChatInputProps {
   onSubmit: (e: React.FormEvent) => void | boolean | Promise<void | boolean>;
@@ -218,6 +220,7 @@ export const ChatInput = ({
   } = useGlobalState();
   const input = useComposerInput();
   const { setInput } = useComposerActions();
+  const isOnline = useOnlineStatus();
   const {
     fileInputRef,
     handleFileUploadEvent,
@@ -565,6 +568,8 @@ export const ChatInput = ({
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!isOnline) return;
+
     const canSubmit =
       (status === "ready" || status === "streaming") &&
       !isUploadingFiles &&
@@ -599,6 +604,24 @@ export const ChatInput = ({
   return (
     <div className={`relative px-4 min-w-0 ${isCentered ? "" : "pb-3"}`}>
       <div className="mx-auto w-full max-w-full min-w-0 sm:max-w-[768px] sm:min-w-[390px] flex flex-col flex-1">
+        {!isOnline && (
+          <div
+            role="status"
+            aria-live="polite"
+            data-testid="offline-status"
+            className="mb-2 flex items-start gap-2 rounded-lg border border-amber-500/25 bg-amber-500/10 px-3 py-2 text-sm text-foreground"
+          >
+            <WifiOff
+              aria-hidden="true"
+              className="mt-0.5 h-4 w-4 shrink-0 text-amber-600 dark:text-amber-400"
+            />
+            <p>
+              You&apos;re offline. Keep typing—this draft will stay on this
+              device, and Send will be available when you reconnect.
+            </p>
+          </div>
+        )}
+
         {rateLimitWarning && onDismissRateLimitWarning && (
           <RateLimitWarning
             data={rateLimitWarning}
@@ -673,6 +696,7 @@ export const ChatInput = ({
               input={input}
               uploadedFiles={uploadedFiles}
               chatMode={chatMode}
+              isOnline={isOnline}
             />
           </div>
         )}

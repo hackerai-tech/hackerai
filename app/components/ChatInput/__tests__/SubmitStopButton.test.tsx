@@ -36,6 +36,16 @@ function renderButton(
 }
 
 describe("SubmitStopButton paid mode colors", () => {
+  it("disables sending while offline without hiding the composer action", () => {
+    render(
+      <TooltipProvider>
+        <SubmitStopButton {...defaultProps} chatMode="ask" isOnline={false} />
+      </TooltipProvider>,
+    );
+
+    expect(screen.getByLabelText("Send message")).toBeDisabled();
+  });
+
   it("uses the default submit treatment for paid Agent mode", () => {
     const button = renderButton("agent", true);
 
