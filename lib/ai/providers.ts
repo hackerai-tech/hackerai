@@ -196,7 +196,9 @@ const buildProviderMap = (or: OpenRouterInstance) =>
     // changing Standard media fallback behavior.
     "model-grok-4.5-pro": or(GROK_4_5_SLUG),
     "model-deepseek-v4-pro": or("deepseek/deepseek-v4-pro"),
-    "model-opus-4.6": or("anthropic/claude-opus-4.6"),
+    // Keep the persisted Max compatibility key while routing new requests to
+    // Kimi K3. Renaming the key would invalidate existing stored selections.
+    "model-opus-4.6": or(KIMI_K3_SLUG),
     "model-glm-5.2": or(GLM_5_2_SLUG),
     "model-kimi-k3": or(KIMI_K3_SLUG),
     "fallback-agent-model": or(GROK_4_5_SLUG),
@@ -216,7 +218,7 @@ export const modelCutoffDates: Partial<Record<ModelName, string>> &
   "model-grok-4.5": "July 2026",
   "model-grok-4.5-pro": "July 2026",
   "model-deepseek-v4-pro": "May 2025",
-  "model-opus-4.6": "May 2025",
+  "model-opus-4.6": "July 2026",
   "model-glm-5.2": "June 2026",
   "fallback-agent-model": "July 2026",
   "fallback-ask-model": "July 2026",
@@ -232,7 +234,7 @@ export const modelDisplayNames: Record<ModelName, string> &
   "model-grok-4.5": "xAI Grok 4.5",
   "model-grok-4.5-pro": "xAI Grok 4.5",
   "model-deepseek-v4-pro": "DeepSeek V4 Pro",
-  "model-opus-4.6": "Anthropic Claude Opus 4.6",
+  "model-opus-4.6": "Moonshot Kimi K3",
   "model-glm-5.2": "Z.ai GLM 5.2",
   "model-kimi-k3": "Moonshot Kimi K3",
   "fallback-agent-model": "Auto, an intelligent model router built by HackerAI",
@@ -251,7 +253,8 @@ export const getModelCutoffDate = (
 };
 
 export function isAnthropicModel(modelName: string): boolean {
-  return modelName.includes("opus");
+  const normalized = modelName.toLowerCase();
+  return normalized.startsWith("anthropic/") || normalized.includes("claude");
 }
 
 export function isDeepSeekModel(modelName: string): boolean {
@@ -265,7 +268,9 @@ export function isDeepSeekModel(modelName: string): boolean {
 export function isKimiModel(modelName: string): boolean {
   const normalized = modelName.toLowerCase();
   return (
-    normalized === "model-kimi-k3" || normalized.includes("moonshotai/kimi")
+    normalized === "model-kimi-k3" ||
+    normalized === "model-opus-4.6" ||
+    normalized.includes("moonshotai/kimi")
   );
 }
 
@@ -305,7 +310,7 @@ export function supportsMultimodalToolResults(modelName?: string): boolean {
 /**
  * Map a HackerAI tier id to the underlying provider key for a given mode.
  * Returns `null` for `"auto"` (the caller routes to the auto-router model
- * key instead). Standard maps to DeepSeek, Pro to Grok, and Max to Opus in
+ * key instead). Standard maps to DeepSeek, Pro to Grok, and Max to Kimi K3 in
  * both modes; media-aware promotion happens in `selectModel`.
  */
 export function resolveTierToProviderKey(

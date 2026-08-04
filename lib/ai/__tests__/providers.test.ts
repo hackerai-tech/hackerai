@@ -1,6 +1,8 @@
 import {
   getModelCutoffDate,
   getModelDisplayName,
+  isAnthropicModel,
+  isKimiModel,
   myProvider,
   sanitizeOpenRouterRequestForXai,
   supportsMultimodalToolResults,
@@ -39,6 +41,10 @@ describe("provider registry", () => {
         .modelId,
     ).toBe("moonshotai/kimi-k3");
     expect(
+      (myProvider.languageModel("model-opus-4.6") as { modelId: string })
+        .modelId,
+    ).toBe("moonshotai/kimi-k3");
+    expect(
       (myProvider.languageModel("fallback-agent-model") as { modelId: string })
         .modelId,
     ).toBe("x-ai/grok-4.5");
@@ -56,9 +62,17 @@ describe("provider registry", () => {
     expect(getModelDisplayName("model-grok-4.5-pro")).toBe("xAI Grok 4.5");
     expect(getModelDisplayName("model-glm-5.2")).toBe("Z.ai GLM 5.2");
     expect(getModelDisplayName("model-kimi-k3")).toBe("Moonshot Kimi K3");
+    expect(getModelCutoffDate("model-opus-4.6")).toBe("July 2026");
+    expect(getModelDisplayName("model-opus-4.6")).toBe("Moonshot Kimi K3");
     expect(getModelDisplayName("title-generator-model")).toBe(
       "DeepSeek V4 Flash",
     );
+  });
+
+  it("applies Kimi rather than Anthropic provider behavior to HackerAI Max", () => {
+    expect(isKimiModel("model-opus-4.6")).toBe(true);
+    expect(isAnthropicModel("model-opus-4.6")).toBe(false);
+    expect(isAnthropicModel("anthropic/claude-opus-4.6")).toBe(true);
   });
 
   it.each([

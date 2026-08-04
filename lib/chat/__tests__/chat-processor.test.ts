@@ -275,7 +275,7 @@ describe("selectModel", () => {
       );
     });
 
-    it("should map HackerAI Max to Opus 4.6 for Ultra", () => {
+    it("should map HackerAI Max to its Kimi K3 compatibility route for Ultra", () => {
       expect(selectModel("ask", "ultra", "hackerai-max")).toBe(
         "model-opus-4.6",
       );
@@ -293,7 +293,7 @@ describe("selectModel", () => {
       );
     });
 
-    it("should map HackerAI Max to Opus 4.6 for paid users with extra usage", () => {
+    it("should map HackerAI Max to its Kimi K3 compatibility route for paid users with extra usage", () => {
       expect(
         selectModel("ask", "pro", "hackerai-max", false, false, {
           extraUsageAvailable: true,
@@ -340,7 +340,7 @@ describe("selectModel", () => {
       );
     });
 
-    it("should map HackerAI Max to Opus 4.6 in agent mode for Ultra", () => {
+    it("should map HackerAI Max to its Kimi K3 compatibility route in agent mode for Ultra", () => {
       expect(selectModel("agent", "ultra", "hackerai-max")).toBe(
         "model-opus-4.6",
       );
@@ -358,7 +358,7 @@ describe("selectModel", () => {
       );
     });
 
-    it("should map HackerAI Max to Opus 4.6 in agent mode for paid users with extra usage", () => {
+    it("should map HackerAI Max to its Kimi K3 compatibility route in agent mode for paid users with extra usage", () => {
       expect(
         selectModel("agent", "pro-plus", "hackerai-max", false, false, {
           extraUsageAvailable: true,

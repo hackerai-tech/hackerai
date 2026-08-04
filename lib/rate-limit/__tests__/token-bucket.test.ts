@@ -481,14 +481,13 @@ describe("token-bucket", () => {
       );
     });
 
-    it("should use Kimi K3 pricing ($3.00/$15.00)", () => {
-      expect(calculateTokenCost(1_000_000, "input", "model-kimi-k3")).toBe(
-        45000,
-      );
-      expect(calculateTokenCost(1_000_000, "output", "model-kimi-k3")).toBe(
-        225000,
-      );
-    });
+    it.each(["model-kimi-k3", "model-opus-4.6"])(
+      "should use Kimi K3 pricing for %s ($3.00/$15.00)",
+      (modelName) => {
+        expect(calculateTokenCost(1_000_000, "input", modelName)).toBe(45000);
+        expect(calculateTokenCost(1_000_000, "output", modelName)).toBe(225000);
+      },
+    );
 
     it.each([
       "ask-model-free",
