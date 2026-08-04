@@ -9,7 +9,19 @@ function finitePositive(value: number | undefined): value is number {
 export function priceBillingInterval(
   price: Stripe.Price | undefined,
 ): BillingInterval | undefined {
-  return price?.recurring?.interval ?? undefined;
+  const interval = price?.recurring?.interval;
+  switch (interval) {
+    case "day":
+      return "day";
+    case "week":
+      return "week";
+    case "month":
+      return "month";
+    case "year":
+      return "year";
+    default:
+      return undefined;
+  }
 }
 
 function priceAmountDollars(

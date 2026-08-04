@@ -1,7 +1,7 @@
 diff --git a/dist/commonjs/index.js b/dist/commonjs/index.js
 --- a/dist/commonjs/index.js
 +++ b/dist/commonjs/index.js
-@@ -259,5 +259,9 @@ function expand_(str, max, maxLength, isTop) {
+@@ -285,5 +285,9 @@ function expand_(str, max, maxLength, isTop) {
          str = m.post;
      }
      return acc;
