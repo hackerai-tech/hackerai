@@ -23,6 +23,7 @@ import { getInputTokenLimitStatus } from "@/lib/utils/client-token-validation";
 import { toast } from "sonner";
 import { removeTodosBySourceMessages } from "@/lib/utils/todo-utils";
 import { useDataStreamDispatch } from "@/app/components/DataStreamProvider";
+import { getOnlineStatusSnapshot } from "@/app/hooks/useOnlineStatus";
 import { AUTO_CONTINUE_PROMPT } from "@/app/hooks/useAutoContinue";
 import { normalizeMessages } from "@/lib/utils/message-processor";
 import {
@@ -322,6 +323,15 @@ export const useChatHandlers = ({
     // Read the prompt only when the user submits. Keeping the live composer
     // value out of this hook prevents each keystroke from rerendering Chat.
     const input = getInput();
+
+    // The visible composer normally blocks this path while offline. Check the
+    // browser snapshot again here so a connectivity race cannot clear a draft.
+    if (!getOnlineStatusSnapshot()) {
+      toast.info("You're offline", {
+        description: "Your draft is saved. Reconnect before sending.",
+      });
+      return false;
+    }
 
     setIsAutoResuming(false);
 

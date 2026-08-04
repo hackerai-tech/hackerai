@@ -41,11 +41,17 @@ import {
   useAgentApproval,
 } from "@/app/contexts/AgentApprovalContext";
 import { PASTED_TEXT_INLINE_RESTORE_MAX_CHARS } from "@/lib/utils/pasted-text-attachments";
+import {
+  reconnectOnlineStatus,
+  useOnlineStatus,
+} from "@/app/hooks/useOnlineStatus";
+import { WifiOff } from "lucide-react";
+import { Button } from "@/components/ui/button";
 
 interface ChatInputProps {
   onSubmit: (e: React.FormEvent) => void | boolean | Promise<void | boolean>;
   onStop: () => void | boolean | Promise<void | boolean>;
-  onReconnect?: () => void;
+  onReconnect?: () => void | Promise<void>;
   onSendNow: (messageId: string) => void;
   status: ChatStatus;
   isCentered?: boolean;
@@ -62,6 +68,7 @@ interface ChatInputProps {
   autoFocus?: boolean;
   restoreDraftAttachments?: boolean;
   storedApprovalRequest?: ActiveAgentToolApprovalRequest | null;
+  offlineProtection?: boolean;
 }
 
 const isBrowserFile = (file: UploadedFileState["file"]): file is File =>
@@ -194,6 +201,7 @@ export const ChatInput = ({
   autoFocus,
   restoreDraftAttachments = true,
   storedApprovalRequest,
+  offlineProtection = true,
 }: ChatInputProps) => {
   const {
     chatMode,
@@ -218,6 +226,8 @@ export const ChatInput = ({
   } = useGlobalState();
   const input = useComposerInput();
   const { setInput } = useComposerActions();
+  const isOnline = useOnlineStatus();
+  const isOffline = offlineProtection && !isOnline;
   const {
     fileInputRef,
     handleFileUploadEvent,
@@ -231,6 +241,7 @@ export const ChatInput = ({
   const isAgent = isAgentMode(chatMode);
   const approvalRequest = activeToolApprovalRequest ?? storedApprovalRequest;
   const [isStoppingAgent, setIsStoppingAgent] = useState(false);
+  const [isReconnecting, setIsReconnecting] = useState(false);
   const showAgentApprovalPrompt = !!approvalRequest && !isStoppingAgent;
 
   useEffect(() => {
@@ -565,6 +576,8 @@ export const ChatInput = ({
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isOffline) return;
+
     const canSubmit =
       (status === "ready" || status === "streaming") &&
       !isUploadingFiles &&
@@ -576,6 +589,28 @@ export const ChatInput = ({
         removeDraft(draftId);
         setTimeout(() => setInput(""), 0);
       }
+    }
+  };
+
+  const handleOfflineReconnect = async () => {
+    if (isReconnecting) return;
+
+    setIsReconnecting(true);
+    try {
+      const reconnected = await reconnectOnlineStatus();
+      if (!reconnected) {
+        toast.info("Still offline", {
+          description: "Check your connection, then try reconnecting again.",
+        });
+        return;
+      }
+      await onReconnect?.();
+    } catch {
+      toast.error("Could not reconnect the chat", {
+        description: "Your draft is still saved. Please try again.",
+      });
+    } finally {
+      setIsReconnecting(false);
     }
   };
 
@@ -599,6 +634,36 @@ export const ChatInput = ({
   return (
     <div className={`relative px-4 min-w-0 ${isCentered ? "" : "pb-3"}`}>
       <div className="mx-auto w-full max-w-full min-w-0 sm:max-w-[768px] sm:min-w-[390px] flex flex-col flex-1">
+        {isOffline && (
+          <div
+            role="status"
+            aria-live="polite"
+            data-testid="offline-status"
+            className="mb-2 flex flex-col gap-2 rounded-lg border border-amber-500/25 bg-amber-500/10 px-3 py-2 text-sm text-foreground sm:flex-row sm:items-center"
+          >
+            <div className="flex min-w-0 flex-1 items-start gap-2">
+              <WifiOff
+                aria-hidden="true"
+                className="mt-0.5 h-4 w-4 shrink-0 text-amber-600 dark:text-amber-400"
+              />
+              <p>
+                You&apos;re offline. Keep typing—this draft will stay on this
+                device.
+              </p>
+            </div>
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              className="w-full shrink-0 sm:w-auto"
+              disabled={isReconnecting}
+              onClick={() => void handleOfflineReconnect()}
+            >
+              {isReconnecting ? "Reconnecting..." : "Reconnect"}
+            </Button>
+          </div>
+        )}
+
         {rateLimitWarning && onDismissRateLimitWarning && (
           <RateLimitWarning
             data={rateLimitWarning}
@@ -673,6 +738,7 @@ export const ChatInput = ({
               input={input}
               uploadedFiles={uploadedFiles}
               chatMode={chatMode}
+              isOnline={!isOffline}
             />
           </div>
         )}

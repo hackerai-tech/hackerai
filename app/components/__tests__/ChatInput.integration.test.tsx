@@ -9,12 +9,24 @@ import {
 } from "@testing-library/react";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { ReactNode, useEffect } from "react";
-import { CONVERSATION_DRAFTS_STORAGE_KEY } from "@/lib/utils/client-storage";
+import {
+  CONVERSATION_DRAFTS_STORAGE_KEY,
+  getDraftAttachmentsById,
+  getDraftContentById,
+} from "@/lib/utils/client-storage";
 import type { UploadedFileState } from "@/types/file";
 
 const mockUseQuery = jest.fn(() => undefined);
 const mockReadGeneratedTextAttachment = jest.fn();
 const mockHandleRemoveFile = jest.fn();
+const mockFetch = jest.fn();
+
+const setNavigatorOnline = (isOnline: boolean) => {
+  Object.defineProperty(navigator, "onLine", {
+    configurable: true,
+    value: isOnline,
+  });
+};
 
 // Mock only external dependencies, not contexts
 jest.mock("react-hotkeys-hook", () => ({
@@ -132,7 +144,15 @@ describe("ChatInput - Integration Tests", () => {
     mockUseQuery.mockReset();
     mockUseQuery.mockReturnValue(undefined);
     mockReadGeneratedTextAttachment.mockReset();
+    mockFetch.mockReset();
+    mockFetch.mockResolvedValue({ ok: true });
+    Object.defineProperty(globalThis, "fetch", {
+      configurable: true,
+      writable: true,
+      value: mockFetch,
+    });
     window.localStorage.clear();
+    setNavigatorOnline(true);
   });
 
   describe("Ask Mode Integration", () => {
@@ -168,6 +188,119 @@ describe("ChatInput - Integration Tests", () => {
       expect(
         screen.queryByLabelText("Stop generation"),
       ).not.toBeInTheDocument();
+    });
+
+    it("keeps the draft and attachments while offline, then enables send after reconnect", async () => {
+      const uploadedFile: UploadedFileState = {
+        file: new File(["evidence"], "evidence.txt", { type: "text/plain" }),
+        uploading: false,
+        uploaded: true,
+        storage: "s3",
+        fileId: "file_evidence",
+      };
+      setNavigatorOnline(false);
+
+      render(
+        <TestWrapper>
+          <UploadedFilesSetter files={[uploadedFile]} label="Add evidence" />
+          <ChatInput
+            onSubmit={mockOnSubmit}
+            onStop={mockOnStop}
+            onReconnect={mockOnReconnect}
+            status="ready"
+            isNewChat
+          />
+        </TestWrapper>,
+      );
+
+      fireEvent.click(screen.getByText("Add evidence"));
+      const input = screen.getByPlaceholderText("Ask, learn, brainstorm");
+      fireEvent.change(input, { target: { value: "Preserve this draft" } });
+
+      expect(screen.getByTestId("offline-status")).toHaveTextContent(
+        "You're offline",
+      );
+      expect(screen.getByLabelText("Send message")).toBeDisabled();
+      expect(screen.getByText("evidence.txt")).toBeInTheDocument();
+
+      fireEvent.keyDown(input, { key: "Enter" });
+      expect(mockOnSubmit).not.toHaveBeenCalled();
+      expect(input).toHaveValue("Preserve this draft");
+      expect(screen.getByText("evidence.txt")).toBeInTheDocument();
+
+      await waitFor(() => {
+        expect(getDraftContentById("new")).toBe("Preserve this draft");
+        expect(getDraftAttachmentsById("new")).toHaveLength(1);
+      });
+
+      fireEvent.click(screen.getByRole("button", { name: "Reconnect" }));
+
+      await waitFor(() => {
+        expect(screen.queryByTestId("offline-status")).not.toBeInTheDocument();
+        expect(screen.getByLabelText("Send message")).toBeEnabled();
+      });
+      expect(mockFetch).toHaveBeenCalledWith("/api/health/connectivity", {
+        method: "HEAD",
+        cache: "no-store",
+        credentials: "same-origin",
+        signal: expect.any(AbortSignal),
+      });
+      expect(mockOnReconnect).toHaveBeenCalledTimes(1);
+      expect(mockOnSubmit).not.toHaveBeenCalled();
+      expect(input).toHaveValue("Preserve this draft");
+    });
+
+    it("keeps the draft blocked when reconnect cannot reach HackerAI", async () => {
+      setNavigatorOnline(false);
+      mockFetch.mockRejectedValueOnce(new TypeError("Failed to fetch"));
+
+      render(
+        <TestWrapper>
+          <ChatInput
+            onSubmit={mockOnSubmit}
+            onStop={mockOnStop}
+            onReconnect={mockOnReconnect}
+            status="ready"
+            isNewChat
+          />
+        </TestWrapper>,
+      );
+
+      const input = screen.getByPlaceholderText("Ask, learn, brainstorm");
+      fireEvent.change(input, { target: { value: "Keep this safe" } });
+      fireEvent.click(screen.getByRole("button", { name: "Reconnect" }));
+
+      await waitFor(() => {
+        expect(screen.getByTestId("offline-status")).toBeInTheDocument();
+        expect(screen.getByRole("button", { name: "Reconnect" })).toBeEnabled();
+      });
+      expect(screen.getByLabelText("Send message")).toBeDisabled();
+      expect(input).toHaveValue("Keep this safe");
+      expect(mockOnReconnect).not.toHaveBeenCalled();
+    });
+
+    it("does not show authenticated-chat offline UI when protection is disabled", () => {
+      setNavigatorOnline(false);
+
+      render(
+        <TestWrapper>
+          <ChatInput
+            onSubmit={mockOnSubmit}
+            onStop={mockOnStop}
+            status="ready"
+            offlineProtection={false}
+          />
+        </TestWrapper>,
+      );
+
+      const input = screen.getByPlaceholderText("Ask, learn, brainstorm");
+      fireEvent.change(input, { target: { value: "Start from landing page" } });
+
+      expect(screen.queryByTestId("offline-status")).not.toBeInTheDocument();
+      expect(screen.getByLabelText("Send message")).toBeEnabled();
+
+      fireEvent.click(screen.getByLabelText("Send message"));
+      expect(mockOnSubmit).toHaveBeenCalledTimes(1);
     });
 
     it("restores an unavailable pasted-text attachment into the Ask field", async () => {

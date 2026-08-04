@@ -12,6 +12,8 @@ const mockSendMessage = jest.fn(async () => undefined);
 const mockStop = jest.fn();
 const mockSetMessages = jest.fn();
 const mockSetTodos = jest.fn();
+const mockClearInput = jest.fn();
+const mockClearUploadedFiles = jest.fn();
 let mockInput = "";
 
 const todos: Todo[] = [
@@ -56,8 +58,8 @@ jest.mock("@/app/contexts/GlobalState", () => ({
     getInput: () => mockInput,
     uploadedFiles: [],
     chatMode: "agent",
-    clearInput: jest.fn(),
-    clearUploadedFiles: jest.fn(),
+    clearInput: mockClearInput,
+    clearUploadedFiles: mockClearUploadedFiles,
     todos,
     setTodos: mockSetTodos,
     isUploadingFiles: false,
@@ -119,6 +121,10 @@ describe("useChatHandlers steer todo handoff", () => {
   beforeEach(() => {
     jest.clearAllMocks();
     mockInput = "";
+    Object.defineProperty(navigator, "onLine", {
+      configurable: true,
+      value: true,
+    });
     Object.defineProperty(globalThis, "fetch", {
       configurable: true,
       value: jest.fn(async () => ({ ok: true, status: 200 }) as Response),
@@ -240,6 +246,40 @@ describe("useChatHandlers steer todo handoff", () => {
     expect(mockQueueMessage).toHaveBeenCalledWith("Use the latest result", []);
     expect(globalThis.fetch).not.toHaveBeenCalled();
     expect(mockSendMessage).not.toHaveBeenCalled();
+  });
+
+  it("does not send or clear the composer when connectivity drops before submission", async () => {
+    mockInput = "Keep this unsent draft";
+    Object.defineProperty(navigator, "onLine", {
+      configurable: true,
+      value: false,
+    });
+    const { result } = renderHook(() =>
+      useChatHandlers({
+        chatId: "chat-1",
+        messages,
+        sendMessage: mockSendMessage,
+        stop: mockStop,
+        regenerate: jest.fn(),
+        setMessages: mockSetMessages,
+        isExistingChat: true,
+        status: "ready",
+        isSendingNowRef: { current: false },
+        hasManuallyStoppedRef: { current: false },
+      }),
+    );
+
+    let accepted: boolean | undefined;
+    await act(async () => {
+      accepted = await result.current.handleSubmit({
+        preventDefault: jest.fn(),
+      } as unknown as React.FormEvent);
+    });
+
+    expect(accepted).toBe(false);
+    expect(mockSendMessage).not.toHaveBeenCalled();
+    expect(mockClearInput).not.toHaveBeenCalled();
+    expect(mockClearUploadedFiles).not.toHaveBeenCalled();
   });
 
   it("sends a queued message after the stream has already stopped", async () => {

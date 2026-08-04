@@ -19,6 +19,7 @@ export interface ChatInputToolbarProps extends SubmitStopButtonProps {
 export function ChatInputToolbar({
   onAttachClick,
   chatMode,
+  isOnline = true,
   ...submitStopProps
 }: ChatInputToolbarProps) {
   const {
@@ -33,7 +34,7 @@ export function ChatInputToolbar({
   return (
     <div className="px-3 flex gap-2 items-center min-w-0">
       <div className="shrink-0">
-        <AttachmentButton onAttachClick={onAttachClick} />
+        <AttachmentButton onAttachClick={onAttachClick} disabled={!isOnline} />
       </div>
       {chatModeAccessResolved && !paidAgentOnlyActive ? (
         <ChatModeSelector />
@@ -55,6 +56,7 @@ export function ChatInputToolbar({
           {...submitStopProps}
           chatMode={chatMode}
           isPaid={subscription !== "free"}
+          isOnline={isOnline}
         />
       </div>
     </div>

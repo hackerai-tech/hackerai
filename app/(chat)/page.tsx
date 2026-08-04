@@ -101,6 +101,7 @@ const UnauthenticatedContent = () => {
               placeholder={animatedPlaceholder}
               autoFocus={false}
               restoreDraftAttachments={false}
+              offlineProtection={false}
             />
           </div>
         </div>

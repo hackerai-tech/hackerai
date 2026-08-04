@@ -43,9 +43,11 @@ function getSubmitButtonVariantClasses(
 }
 
 function getSendButtonTooltip(
+  isOnline: boolean,
   hasFileErrors: boolean,
   isUploading: boolean,
 ): string {
+  if (!isOnline) return "Reconnect to send";
   if (hasFileErrors) return "Remove failed files to send";
   if (isUploading) return "File upload pending";
   return "Send (⏎)";
@@ -62,6 +64,7 @@ export interface SubmitStopButtonProps {
   uploadedFiles: UploadedFileState[];
   chatMode: ChatMode;
   isPaid?: boolean;
+  isOnline?: boolean;
 }
 
 export function SubmitStopButton({
@@ -75,6 +78,7 @@ export function SubmitStopButton({
   uploadedFiles,
   chatMode,
   isPaid = false,
+  isOnline = true,
 }: SubmitStopButtonProps) {
   useHotkeys(
     "ctrl+c",
@@ -126,6 +130,7 @@ export function SubmitStopButton({
               <Button
                 type="submit"
                 disabled={
+                  !isOnline ||
                   status !== "ready" ||
                   isUploadingFiles ||
                   (!input.trim() && uploadedFiles.length === 0)
@@ -142,6 +147,7 @@ export function SubmitStopButton({
           <TooltipContent>
             <p>
               {getSendButtonTooltip(
+                isOnline,
                 uploadedFiles.some((f) => f.error),
                 isUploadingFiles,
               )}
