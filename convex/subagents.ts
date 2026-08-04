@@ -39,6 +39,19 @@ const messageFeedbackValidator = v.union(
   v.literal("negative"),
 );
 
+const subagentMessageTypeValidator = v.union(
+  v.literal("query"),
+  v.literal("instruction"),
+  v.literal("information"),
+);
+
+const subagentMessagePriorityValidator = v.union(
+  v.literal("low"),
+  v.literal("normal"),
+  v.literal("high"),
+  v.literal("urgent"),
+);
+
 const subscriptionValidator = v.union(
   v.literal("free"),
   v.literal("pro"),
@@ -63,10 +76,11 @@ const subagentSummaryValidator = v.object({
   trigger_run_id: v.optional(v.string()),
   profile: v.literal("security_validation"),
   status: statusValidator,
+  name: v.string(),
   objective: v.string(),
   title: v.string(),
   subtitle: v.optional(v.string()),
-  candidate: candidateValidator,
+  candidate: v.optional(candidateValidator),
   summary: v.optional(v.string()),
   verdict: v.optional(verdictValidator),
   confidence: v.optional(confidenceValidator),
@@ -109,6 +123,7 @@ const toSummary = (row: {
   parent_tool_call_id: string;
   trigger_run_id?: string;
   profile: "security_validation";
+  name?: string;
   objective: string;
   status:
     | "queued"
@@ -118,7 +133,7 @@ const toSummary = (row: {
     | "failed"
     | "canceled"
     | "timed_out";
-  candidate: {
+  candidate?: {
     title: string;
     affected_asset: string;
     weakness_class: string;
@@ -145,9 +160,10 @@ const toSummary = (row: {
   trigger_run_id: row.trigger_run_id,
   profile: row.profile,
   status: row.status,
+  name: row.name ?? row.candidate?.title ?? "Subagent",
   objective: row.objective,
-  title: row.candidate.title,
-  subtitle: row.candidate.affected_asset,
+  title: row.name ?? row.candidate?.title ?? "Subagent",
+  subtitle: row.candidate?.affected_asset,
   candidate: row.candidate,
   summary: row.summary,
   verdict: row.verdict,
@@ -173,10 +189,13 @@ export const reserveForBackend = mutation({
     parentMessageId: v.string(),
     parentToolCallId: v.string(),
     parentTriggerRunId: v.string(),
+    name: v.optional(v.string()),
     objective: v.string(),
-    candidate: candidateValidator,
+    inheritContext: v.optional(v.boolean()),
+    skills: v.optional(v.array(v.string())),
+    candidate: v.optional(candidateValidator),
     candidateFingerprint: v.string(),
-    contextRefs: v.array(v.any()),
+    contextRefs: v.optional(v.array(v.any())),
     sandboxPreference: v.optional(v.string()),
     sandboxIdentity: v.optional(v.string()),
     permissionMode: v.optional(v.string()),
@@ -285,6 +304,27 @@ export const reserveForBackend = mutation({
       return { outcome: "active_limit" as const };
     }
 
+    const contextRefs = [...(args.contextRefs ?? [])];
+    if (args.inheritContext && contextRefs.length === 0) {
+      const recentMessages = await ctx.db
+        .query("messages")
+        .withIndex("by_chat_id", (q) => q.eq("chat_id", args.chatId))
+        .order("desc")
+        .take(12);
+      const latestUserMessage = recentMessages.find(
+        (message) => message.user_id === args.userId && message.role === "user",
+      );
+      if (latestUserMessage) {
+        latestUserMessage.parts.slice(0, 2).forEach((_, partIndex) => {
+          contextRefs.push({
+            kind: "message_part",
+            message_id: latestUserMessage.id,
+            part_index: partIndex,
+          });
+        });
+      }
+    }
+
     const now = Date.now();
     await ctx.db.insert("subagent_runs", {
       subagent_id: args.subagentId,
@@ -297,10 +337,13 @@ export const reserveForBackend = mutation({
       profile: "security_validation",
       depth: 1,
       status: "queued",
+      name: args.name,
       objective: args.objective,
+      inherit_context: args.inheritContext,
+      skills: args.skills,
       candidate: args.candidate,
       candidate_fingerprint: args.candidateFingerprint,
-      context_refs: args.contextRefs,
+      context_refs: contextRefs,
       sandbox_preference: args.sandboxPreference,
       sandbox_identity: args.sandboxIdentity,
       permission_mode: args.permissionMode,
@@ -381,6 +424,187 @@ export const listActiveForUserBackend = query({
   },
 });
 
+export const sendMessageForBackend = mutation({
+  args: {
+    serviceKey: v.string(),
+    targetAgentId: v.string(),
+    userId: v.string(),
+    chatId: v.string(),
+    parentToolCallId: v.string(),
+    messageId: v.string(),
+    message: v.string(),
+    messageType: subagentMessageTypeValidator,
+    priority: subagentMessagePriorityValidator,
+  },
+  returns: v.any(),
+  handler: async (ctx, args) => {
+    validateServiceKey(args.serviceKey);
+    const run = await ctx.db
+      .query("subagent_runs")
+      .withIndex("by_subagent_id", (q) =>
+        q.eq("subagent_id", args.targetAgentId),
+      )
+      .first();
+    if (!run || run.user_id !== args.userId || run.chat_id !== args.chatId) {
+      return { outcome: "not_found" as const };
+    }
+
+    const agentName = run.name ?? run.candidate?.title ?? "Subagent";
+    if (run.status !== "queued" && run.status !== "running") {
+      return {
+        outcome: "not_active" as const,
+        agentName,
+        status: run.status,
+        parentMessageId: run.parent_message_id,
+      };
+    }
+
+    const existing = await ctx.db
+      .query("subagent_messages")
+      .withIndex("by_subagent_and_external_message_id", (q) =>
+        q
+          .eq("subagent_id", args.targetAgentId)
+          .eq("external_message_id", args.messageId),
+      )
+      .first();
+    if (!existing) {
+      const now = Date.now();
+      await ctx.db.insert("subagent_messages", {
+        subagent_id: run.subagent_id,
+        user_id: run.user_id,
+        sequence: now,
+        role: "user",
+        parts: [{ type: "text", text: args.message }],
+        message_source: "parent_update",
+        external_message_id: args.messageId,
+        parent_tool_call_id: args.parentToolCallId,
+        message_type: args.messageType,
+        priority: args.priority,
+        delivery_status: "pending",
+        created_at: now,
+        updated_at: now,
+      });
+    }
+
+    return {
+      outcome: "delivered" as const,
+      messageId: existing?.external_message_id ?? args.messageId,
+      agentName,
+      status: run.status,
+      parentMessageId: run.parent_message_id,
+    };
+  },
+});
+
+export const consumePendingMessagesForBackend = mutation({
+  args: {
+    serviceKey: v.string(),
+    subagentId: v.string(),
+    triggerRunId: v.string(),
+  },
+  returns: v.array(
+    v.object({
+      messageId: v.string(),
+      content: v.string(),
+      messageType: subagentMessageTypeValidator,
+      priority: subagentMessagePriorityValidator,
+    }),
+  ),
+  handler: async (ctx, args) => {
+    validateServiceKey(args.serviceKey);
+    const run = await ctx.db
+      .query("subagent_runs")
+      .withIndex("by_subagent_id", (q) => q.eq("subagent_id", args.subagentId))
+      .first();
+    if (
+      !run ||
+      run.trigger_run_id !== args.triggerRunId ||
+      run.status !== "running"
+    ) {
+      return [];
+    }
+
+    const pending = await ctx.db
+      .query("subagent_messages")
+      .withIndex("by_subagent_and_delivery_status", (q) =>
+        q.eq("subagent_id", args.subagentId).eq("delivery_status", "pending"),
+      )
+      .order("asc")
+      .take(8);
+    const now = Date.now();
+    await Promise.all(
+      pending.map((message) =>
+        ctx.db.patch(message._id, {
+          delivery_status: "consumed",
+          consumed_at: now,
+          updated_at: now,
+        }),
+      ),
+    );
+    return pending.flatMap((message) => {
+      const textPart = message.parts.find(
+        (part) =>
+          part &&
+          typeof part === "object" &&
+          (part as { type?: unknown }).type === "text" &&
+          typeof (part as { text?: unknown }).text === "string",
+      ) as { text: string } | undefined;
+      if (!textPart || !message.external_message_id) return [];
+      return [
+        {
+          messageId: message.external_message_id,
+          content: textPart.text,
+          messageType: message.message_type ?? ("information" as const),
+          priority: message.priority ?? ("normal" as const),
+        },
+      ];
+    });
+  },
+});
+
+export const claimNextTerminalForParentBackend = mutation({
+  args: {
+    serviceKey: v.string(),
+    userId: v.string(),
+    chatId: v.string(),
+  },
+  returns: v.any(),
+  handler: async (ctx, args) => {
+    validateServiceKey(args.serviceKey);
+    const rows = await ctx.db
+      .query("subagent_runs")
+      .withIndex("by_user_and_chat", (q) =>
+        q.eq("user_id", args.userId).eq("chat_id", args.chatId),
+      )
+      .order("desc")
+      .take(50);
+    const terminal = rows
+      .filter(
+        (row) =>
+          row.name !== undefined &&
+          !isActiveStatus(row.status) &&
+          !row.parent_notified_at,
+      )
+      .sort((a, b) => a.created_at - b.created_at)[0];
+    if (terminal) {
+      await ctx.db.patch(terminal._id, {
+        parent_notified_at: Date.now(),
+        updated_at: Date.now(),
+      });
+    }
+    return {
+      terminal: terminal
+        ? {
+            ...terminal,
+          }
+        : null,
+      active: rows.filter(
+        (row) => row.name !== undefined && isActiveStatus(row.status),
+      ),
+    };
+  },
+});
+
 export const attachTriggerRunForBackend = mutation({
   args: {
     serviceKey: v.string(),
@@ -432,7 +656,11 @@ export const markFinalizingForBackend = mutation({
     subagentId: v.string(),
     triggerRunId: v.string(),
   },
-  returns: v.boolean(),
+  returns: v.union(
+    v.literal("updated"),
+    v.literal("pending_messages"),
+    v.literal("stale"),
+  ),
   handler: async (ctx, args) => {
     validateServiceKey(args.serviceKey);
     const row = await ctx.db
@@ -444,13 +672,20 @@ export const markFinalizingForBackend = mutation({
       row.trigger_run_id !== args.triggerRunId ||
       row.status !== "running"
     ) {
-      return false;
+      return "stale" as const;
     }
+    const pendingMessage = await ctx.db
+      .query("subagent_messages")
+      .withIndex("by_subagent_and_delivery_status", (q) =>
+        q.eq("subagent_id", args.subagentId).eq("delivery_status", "pending"),
+      )
+      .first();
+    if (pendingMessage) return "pending_messages" as const;
     await ctx.db.patch(row._id, {
       status: "finalizing",
       updated_at: Date.now(),
     });
-    return true;
+    return "updated" as const;
   },
 });
 
@@ -948,6 +1183,9 @@ export const getMessagesOwned = query({
       ),
       parts: v.array(v.any()),
       feedback_type: v.optional(messageFeedbackValidator),
+      message_source: v.optional(v.literal("parent_update")),
+      message_type: v.optional(subagentMessageTypeValidator),
+      priority: v.optional(subagentMessagePriorityValidator),
       created_at: v.number(),
       updated_at: v.number(),
     }),
@@ -962,7 +1200,7 @@ export const getMessagesOwned = query({
     if (!run || run.user_id !== identity.subject) return [];
     const rows = await ctx.db
       .query("subagent_messages")
-      .withIndex("by_subagent_and_sequence", (q) =>
+      .withIndex("by_subagent_and_created_at", (q) =>
         q.eq("subagent_id", args.subagentId),
       )
       .order("asc")
@@ -973,6 +1211,9 @@ export const getMessagesOwned = query({
       role: row.role,
       parts: row.parts,
       feedback_type: row.feedback_type,
+      message_source: row.message_source,
+      message_type: row.message_type,
+      priority: row.priority,
       created_at: row.created_at,
       updated_at: row.updated_at,
     }));

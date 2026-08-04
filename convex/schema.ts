@@ -936,14 +936,19 @@ export default defineSchema({
     profile: v.literal("security_validation"),
     depth: v.number(),
     status: subagentStatusValidator,
+    name: v.optional(v.string()),
     objective: v.string(),
-    candidate: v.object({
-      title: v.string(),
-      affected_asset: v.string(),
-      weakness_class: v.string(),
-      claimed_impact: v.string(),
-      reproduction_hint: v.optional(v.string()),
-    }),
+    inherit_context: v.optional(v.boolean()),
+    skills: v.optional(v.array(v.string())),
+    candidate: v.optional(
+      v.object({
+        title: v.string(),
+        affected_asset: v.string(),
+        weakness_class: v.string(),
+        claimed_impact: v.string(),
+        reproduction_hint: v.optional(v.string()),
+      }),
+    ),
     candidate_fingerprint: v.string(),
     context_refs: v.array(v.any()),
     sandbox_preference: v.optional(v.string()),
@@ -971,6 +976,7 @@ export default defineSchema({
     step_count: v.optional(v.number()),
     provider_retry_count: v.optional(v.number()),
     result_recovery_count: v.optional(v.number()),
+    parent_notified_at: v.optional(v.number()),
     created_at: v.number(),
     started_at: v.optional(v.number()),
     completed_at: v.optional(v.number()),
@@ -1000,6 +1006,7 @@ export default defineSchema({
       "chat_id",
       "parent_trigger_run_id",
     ])
+    .index("by_user_and_chat", ["user_id", "chat_id"])
     .index("by_parent_run", ["parent_trigger_run_id"])
     .index("by_user_and_parent_message", ["user_id", "parent_message_id"])
     .index("by_user_chat_and_candidate", [
@@ -1022,10 +1029,41 @@ export default defineSchema({
       v.union(v.literal("positive"), v.literal("negative")),
     ),
     feedback_details: v.optional(v.string()),
+    message_source: v.optional(v.literal("parent_update")),
+    external_message_id: v.optional(v.string()),
+    parent_tool_call_id: v.optional(v.string()),
+    message_type: v.optional(
+      v.union(
+        v.literal("query"),
+        v.literal("instruction"),
+        v.literal("information"),
+      ),
+    ),
+    priority: v.optional(
+      v.union(
+        v.literal("low"),
+        v.literal("normal"),
+        v.literal("high"),
+        v.literal("urgent"),
+      ),
+    ),
+    delivery_status: v.optional(
+      v.union(v.literal("pending"), v.literal("consumed")),
+    ),
+    consumed_at: v.optional(v.number()),
     created_at: v.number(),
     updated_at: v.number(),
   })
     .index("by_subagent_and_sequence", ["subagent_id", "sequence"])
+    .index("by_subagent_and_created_at", ["subagent_id", "created_at"])
+    .index("by_subagent_and_delivery_status", [
+      "subagent_id",
+      "delivery_status",
+    ])
+    .index("by_subagent_and_external_message_id", [
+      "subagent_id",
+      "external_message_id",
+    ])
     .index("by_user_id", ["user_id"]),
 
   // Webhook idempotency (prevents double-crediting on Stripe retries)

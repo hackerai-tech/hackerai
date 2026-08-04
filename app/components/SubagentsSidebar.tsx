@@ -34,11 +34,13 @@ import { extractMessageText } from "@/lib/utils/message-utils";
 
 type ChildSummary = {
   subagent_id: string;
+  parent_message_id: string;
   parent_trigger_run_id: string;
   parent_tool_call_id: string;
   trigger_run_id?: string;
   profile?: string;
   status: SubagentStatus;
+  name?: string;
   objective?: string;
   title?: string;
   subtitle?: string;
@@ -60,6 +62,9 @@ type TranscriptMessage = UIMessage & {
   persistedMessageId?: Id<"subagent_messages">;
   feedbackType?: "positive" | "negative";
   createdAt?: number;
+  messageSource?: "parent_update";
+  messageType?: "query" | "instruction" | "information";
+  priority?: "low" | "normal" | "high" | "urgent";
 };
 
 const isActive = (status: SubagentStatus) =>
@@ -92,7 +97,7 @@ const childRowStatusLabel = (child: ChildSummary): string =>
   outcomeLabel(child) ?? statusLabel(child);
 
 const childTitle = (child: ChildSummary): string =>
-  child.title ?? child.candidate?.title ?? "Delegated task";
+  child.name ?? child.title ?? child.candidate?.title ?? "Subagent";
 
 const childSubtitle = (child: ChildSummary): string | undefined =>
   child.subtitle ?? child.candidate?.affected_asset;
@@ -362,13 +367,22 @@ const Transcript = memo(function Transcript({
       persistedMessageId: message.message_id,
       feedbackType: message.feedback_type,
       createdAt: message.created_at,
+      messageSource: message.message_source,
+      messageType: message.message_type,
+      priority: message.priority,
     }));
     return liveMessage && !hasPersistedAssistant
       ? [...saved, liveMessage as TranscriptMessage]
       : saved;
   }, [child.subagent_id, hasPersistedAssistant, liveMessage, persisted]);
-  const assistantMessages = useMemo(
-    () => messages.filter((message) => message.role === "assistant"),
+  const visibleMessages = useMemo(
+    () =>
+      messages.filter(
+        (message) =>
+          message.role === "assistant" ||
+          (message.role === "user" &&
+            message.messageSource === "parent_update"),
+      ),
     [messages],
   );
   const toolSidebarOrigin = useMemo<SidebarSubagentOrigin>(
@@ -399,7 +413,7 @@ const Transcript = memo(function Transcript({
         aria-live={active ? "polite" : "off"}
         aria-label="Subagent transcript and tool activity"
       >
-        {assistantMessages.length === 0 && state !== "error" && (
+        {visibleMessages.length === 0 && state !== "error" && (
           <div className="flex items-center gap-2 rounded-lg border border-border/40 bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
             {(active || state === "connecting") && (
               <LoaderCircle
@@ -427,7 +441,7 @@ const Transcript = memo(function Transcript({
             </button>
           </div>
         )}
-        {state === "error" && !active && assistantMessages.length === 0 && (
+        {state === "error" && !active && visibleMessages.length === 0 && (
           <div className="mb-3 rounded-lg border border-border/50 bg-muted/20 p-3 text-sm text-muted-foreground">
             Transcript activity is unavailable. The final status above is still
             authoritative.
@@ -444,11 +458,14 @@ const Transcript = memo(function Transcript({
               />
             </div>
           </section>
-          {assistantMessages.map((message) => {
-            const visibleParts = getVisibleAssistantParts(
-              message.parts,
-              child.status === "completed",
-            );
+          {visibleMessages.map((message) => {
+            const isParentUpdate = message.messageSource === "parent_update";
+            const visibleParts = isParentUpdate
+              ? message.parts
+              : getVisibleAssistantParts(
+                  message.parts,
+                  child.status === "completed",
+                );
             const messageText = extractMessageText(visibleParts);
             return (
               <section
@@ -462,7 +479,9 @@ const Transcript = memo(function Transcript({
                 }
               >
                 <div className="mb-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-                  Subagent
+                  {isParentUpdate
+                    ? `Parent update${message.priority && message.priority !== "normal" ? ` · ${message.priority}` : ""}`
+                    : "Subagent"}
                 </div>
                 <div className="min-w-0 space-y-2 overflow-hidden text-sm text-foreground">
                   {visibleParts.map((part, partIndex) => (
@@ -473,13 +492,13 @@ const Transcript = memo(function Transcript({
                       partIndex={partIndex}
                       status={active ? "streaming" : "ready"}
                       isLastMessage={
-                        message ===
-                        assistantMessages[assistantMessages.length - 1]
+                        message === visibleMessages[visibleMessages.length - 1]
                       }
                     />
                   ))}
                 </div>
-                {message.persistedMessageId &&
+                {!isParentUpdate &&
+                  message.persistedMessageId &&
                   messageText.trim().length > 0 && (
                     <SubagentMessageActions
                       messageId={message.persistedMessageId}
@@ -505,12 +524,23 @@ export const SubagentsSidebar = ({
   content: SidebarSubagents;
   closeSidebar: () => void;
 }) => {
-  const runs = useQuery(api.subagents.listForParentMessage, {
-    parentMessageId: content.parentMessageId,
-  }) as ChildSummary[] | undefined;
   const [selectedId, setSelectedId] = useState<string | null>(
     content.selectedSubagentId ?? null,
   );
+  const [resolvedParentMessageId, setResolvedParentMessageId] = useState(
+    content.parentMessageId,
+  );
+  const selectedById = useQuery(
+    api.subagents.getOwned,
+    selectedId ? { subagentId: selectedId } : "skip",
+  ) as ChildSummary | null | undefined;
+  const persistedSelected = selectedId ? selectedById : null;
+  const effectiveParentMessageId =
+    persistedSelected?.parent_message_id ?? resolvedParentMessageId;
+  const selectedOriginResolved = !selectedId || selectedById !== undefined;
+  const runs = useQuery(api.subagents.listForParentMessage, {
+    parentMessageId: effectiveParentMessageId,
+  }) as ChildSummary[] | undefined;
   const [now, setNow] = useState(Date.now());
   const [canceling, setCanceling] = useState(false);
   const [cancelError, setCancelError] = useState<string | null>(null);
@@ -518,8 +548,16 @@ export const SubagentsSidebar = ({
   const selectedForCleanup = useRef<ChildSummary | null>(null);
   const selectedOpenedAt = useRef<{ id: string; at: number } | null>(null);
 
+  useEffect(() => {
+    if (selectedById?.parent_message_id) {
+      setResolvedParentMessageId(selectedById.parent_message_id);
+    }
+  }, [selectedById?.parent_message_id]);
+
   const selected =
-    runs?.find((child) => child.subagent_id === selectedId) ?? null;
+    runs?.find((child) => child.subagent_id === selectedId) ??
+    persistedSelected ??
+    null;
   const active = runs?.filter((child) => isActive(child.status)) ?? [];
   const done = runs?.filter((child) => !isActive(child.status)) ?? [];
 
@@ -528,8 +566,9 @@ export const SubagentsSidebar = ({
   }, [selected]);
 
   useEffect(() => {
+    if (!selectedOriginResolved) return;
     captureAuthenticatedEvent("subagent_sidebar_opened", {
-      parent_message_id: content.parentMessageId,
+      parent_message_id: effectiveParentMessageId,
       profile: "security_validation",
       view: "list",
     });
@@ -550,7 +589,7 @@ export const SubagentsSidebar = ({
         });
       }
     };
-  }, [content.parentMessageId]);
+  }, [effectiveParentMessageId, selectedOriginResolved]);
 
   useEffect(() => {
     if (!selected) return;
@@ -572,6 +611,9 @@ export const SubagentsSidebar = ({
     const handleEscape = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
       if (selectedId) {
+        if (selected?.parent_message_id) {
+          setResolvedParentMessageId(selected.parent_message_id);
+        }
         setSelectedId(null);
       } else {
         closeSidebar();
@@ -579,7 +621,7 @@ export const SubagentsSidebar = ({
     };
     window.addEventListener("keydown", handleEscape);
     return () => window.removeEventListener("keydown", handleEscape);
-  }, [closeSidebar, selectedId]);
+  }, [closeSidebar, selected, selectedId]);
 
   useEffect(() => {
     if (!runs?.some((child) => isActive(child.status))) return;
@@ -619,7 +661,12 @@ export const SubagentsSidebar = ({
               {selected && (
                 <button
                   type="button"
-                  onClick={() => setSelectedId(null)}
+                  onClick={() => {
+                    if (selected.parent_message_id) {
+                      setResolvedParentMessageId(selected.parent_message_id);
+                    }
+                    setSelectedId(null);
+                  }}
                   className="inline-flex h-8 w-8 items-center justify-center rounded-md hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                   aria-label="Back to subagent list"
                 >

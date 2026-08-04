@@ -1,61 +1,57 @@
 import { describe, expect, it } from "@jest/globals";
 
 import {
-  MAX_SUBAGENT_CONTEXT_REFS,
-  delegateTaskResultSchema,
-  delegateTaskInputSchema,
+  agentValidationResultSchema,
+  createAgentInputSchema,
   securityValidationResultSchema,
+  sendMessageToAgentInputSchema,
+  waitForAgentsInputSchema,
 } from "../contracts";
 
-const candidate = {
-  title: "Stored XSS in profile name",
-  affected_asset: "https://example.test/profile",
-  weakness_class: "CWE-79",
-  claimed_impact: "Arbitrary JavaScript executes in another user's session.",
-};
-
 describe("subagent contracts", () => {
-  it("accepts only the v1 security validation profile and wait behavior", () => {
-    const valid = delegateTaskInputSchema.parse({
-      objective: "Independently reproduce the candidate.",
-      profile: "security_validation",
-      profile_input: { candidate },
-      context_refs: [],
-      wait_behavior: "wait_for_result",
-    });
-    expect(valid.profile).toBe("security_validation");
-
-    expect(() =>
-      delegateTaskInputSchema.parse({
-        ...valid,
-        profile: "recon",
+  it("matches the create_agent parameter contract", () => {
+    expect(
+      createAgentInputSchema.parse({
+        name: "Stored XSS validator",
+        task: "Validate stored XSS on the profile page.",
       }),
-    ).toThrow();
+    ).toEqual({
+      name: "Stored XSS validator",
+      task: "Validate stored XSS on the profile page.",
+      inherit_context: true,
+      skills: null,
+    });
     expect(() =>
-      delegateTaskInputSchema.parse({
-        ...valid,
-        wait_behavior: "fire_and_forget",
+      createAgentInputSchema.parse({
+        name: "Validator",
+        task: "Validate",
+        profile: "security_validation",
       }),
     ).toThrow();
   });
 
-  it("caps context references and requires evidence for confirmed verdicts", () => {
-    expect(() =>
-      delegateTaskInputSchema.parse({
-        objective: "Validate",
-        profile: "security_validation",
-        profile_input: { candidate },
-        context_refs: Array.from(
-          { length: MAX_SUBAGENT_CONTEXT_REFS + 1 },
-          (_, index) => ({
-            kind: "sandbox_file",
-            path: `/tmp/evidence-${index}.txt`,
-          }),
-        ),
-        wait_behavior: "wait_for_result",
+  it("matches the send_message_to_agent and wait_for_agents contracts", () => {
+    expect(
+      sendMessageToAgentInputSchema.parse({
+        target_agent_id: "sa_123",
+        message: "Use the newly captured response as evidence.",
       }),
+    ).toEqual({
+      target_agent_id: "sa_123",
+      message: "Use the newly captured response as evidence.",
+      message_type: "information",
+      priority: "normal",
+    });
+    expect(waitForAgentsInputSchema.parse({})).toEqual({
+      reason: "Waiting for messages from other agents",
+      timeout_seconds: 300,
+    });
+    expect(() =>
+      waitForAgentsInputSchema.parse({ timeout_seconds: 301 }),
     ).toThrow();
+  });
 
+  it("requires evidence for confirmed verdicts", () => {
     expect(() =>
       securityValidationResultSchema.parse({
         verdict: "confirmed",
@@ -69,11 +65,9 @@ describe("subagent contracts", () => {
     ).toThrow(/requires at least one reproduction step/i);
   });
 
-  it("keeps runtime identifiers out of the parent model result", () => {
-    const result = delegateTaskResultSchema.parse({
-      subagent_id: "sa_internal",
+  it("keeps Trigger and failure internals out of the parent validation result", () => {
+    const result = agentValidationResultSchema.parse({
       trigger_run_id: "run_internal",
-      report_eligible: true,
       failure_code: "internal_failure",
       status: "completed",
       verdict: "confirmed",
@@ -85,19 +79,7 @@ describe("subagent contracts", () => {
       recommended_severity: "high",
     });
 
-    expect(result).toEqual({
-      status: "completed",
-      verdict: "confirmed",
-      confidence: "high",
-      summary: "Confirmed independently.",
-      reproduction_steps: ["Reproduce the issue"],
-      evidence_refs: ["artifact:proof"],
-      limitations: [],
-      recommended_severity: "high",
-    });
-    expect(result).not.toHaveProperty("subagent_id");
     expect(result).not.toHaveProperty("trigger_run_id");
-    expect(result).not.toHaveProperty("report_eligible");
     expect(result).not.toHaveProperty("failure_code");
   });
 });

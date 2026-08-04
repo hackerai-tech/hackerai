@@ -239,6 +239,9 @@ export const MessagePartHandler = memo(function MessagePartHandler({
       return <TodoToolHandler message={message} part={part} status={status} />;
 
     case "tool-delegate_task":
+    case "tool-create_agent":
+    case "tool-send_message_to_agent":
+    case "tool-wait_for_agents":
       return (
         <SubagentToolHandler message={message} part={part} status={status} />
       );

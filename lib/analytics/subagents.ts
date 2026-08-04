@@ -34,6 +34,7 @@ export const captureSubagentLifecycleEvent = (
   event:
     | "subagent_feature_exposed"
     | "subagent_spawned"
+    | "subagent_updated"
     | "subagent_completed"
     | "subagent_validation_confirmed"
     | "subagent_validation_rejected"

@@ -37,12 +37,15 @@ const {
   attachTriggerRunForBackend,
   cancelForBackend,
   cancelForChatDeletionBackend,
+  claimNextTerminalForParentBackend,
+  consumePendingMessagesForBackend,
   failUnattachedForBackend,
   finishForBackend,
   listForParentMessage,
   reconcileAttachedRun,
   reconcileQueuedReservation,
   reserveForBackend,
+  sendMessageForBackend,
   setMessageFeedback,
 } = require("../subagents") as typeof import("../subagents");
 
@@ -331,6 +334,224 @@ describe("subagent message feedback", () => {
       }),
     ).rejects.toBeInstanceOf(Error);
     expect(ctx.db.patch).not.toHaveBeenCalled();
+  });
+});
+
+describe("subagent coordination messages", () => {
+  it("delivers a named update only to an active child owned by the same chat", async () => {
+    const insert = jest.fn<any>().mockResolvedValue("message-doc");
+    const run = {
+      _id: "subagent-doc",
+      subagent_id: "sa_1",
+      user_id: "user-1",
+      chat_id: "chat-1",
+      parent_message_id: "parent-message",
+      name: "Stored XSS validator",
+      status: "running",
+    };
+    const ctx = {
+      db: {
+        query: jest.fn((table: string) => ({
+          withIndex: jest.fn((_name: string, callback: (q: any) => void) => {
+            const q = { eq: jest.fn<any>() };
+            q.eq.mockReturnValue(q);
+            callback(q);
+            return {
+              first: jest
+                .fn<any>()
+                .mockResolvedValue(table === "subagent_runs" ? run : null),
+            };
+          }),
+        })),
+        insert,
+      },
+    } as any;
+
+    await expect(
+      sendMessageForBackend.handler(ctx, {
+        serviceKey: "service-key",
+        targetAgentId: "sa_1",
+        userId: "user-1",
+        chatId: "chat-1",
+        parentToolCallId: "tool-send-1",
+        messageId: "msg_123",
+        message: "Use the newly captured response.",
+        messageType: "information",
+        priority: "high",
+      }),
+    ).resolves.toEqual({
+      outcome: "delivered",
+      messageId: "msg_123",
+      agentName: "Stored XSS validator",
+      status: "running",
+      parentMessageId: "parent-message",
+    });
+    expect(insert).toHaveBeenCalledWith(
+      "subagent_messages",
+      expect.objectContaining({
+        subagent_id: "sa_1",
+        message_source: "parent_update",
+        delivery_status: "pending",
+        message_type: "information",
+        priority: "high",
+      }),
+    );
+  });
+
+  it("does not reveal or update another user's child", async () => {
+    const insert = jest.fn<any>();
+    const ctx = {
+      db: {
+        query: jest.fn(() => ({
+          withIndex: jest.fn((_name: string, callback: (q: any) => void) => {
+            const q = { eq: jest.fn<any>() };
+            q.eq.mockReturnValue(q);
+            callback(q);
+            return {
+              first: jest.fn<any>().mockResolvedValue({
+                subagent_id: "sa_1",
+                user_id: "user-2",
+                chat_id: "chat-1",
+                status: "running",
+              }),
+            };
+          }),
+        })),
+        insert,
+      },
+    } as any;
+
+    await expect(
+      sendMessageForBackend.handler(ctx, {
+        serviceKey: "service-key",
+        targetAgentId: "sa_1",
+        userId: "user-1",
+        chatId: "chat-1",
+        parentToolCallId: "tool-send-1",
+        messageId: "msg_123",
+        message: "Update",
+        messageType: "information",
+        priority: "normal",
+      }),
+    ).resolves.toEqual({ outcome: "not_found" });
+    expect(insert).not.toHaveBeenCalled();
+  });
+
+  it("consumes queued parent updates once the owned child is running", async () => {
+    const patch = jest.fn<any>().mockResolvedValue(undefined);
+    const ctx = {
+      db: {
+        query: jest.fn((table: string) => ({
+          withIndex: jest.fn((_name: string, callback: (q: any) => void) => {
+            const q = { eq: jest.fn<any>() };
+            q.eq.mockReturnValue(q);
+            callback(q);
+            if (table === "subagent_runs") {
+              return {
+                first: jest.fn<any>().mockResolvedValue({
+                  trigger_run_id: "child-run",
+                  status: "running",
+                }),
+              };
+            }
+            return {
+              order: jest.fn(() => ({
+                take: jest.fn<any>().mockResolvedValue([
+                  {
+                    _id: "message-doc",
+                    external_message_id: "msg_123",
+                    parts: [{ type: "text", text: "Use new evidence" }],
+                    message_type: "instruction",
+                    priority: "high",
+                  },
+                ]),
+              })),
+            };
+          }),
+        })),
+        patch,
+      },
+    } as any;
+
+    await expect(
+      consumePendingMessagesForBackend.handler(ctx, {
+        serviceKey: "service-key",
+        subagentId: "sa_1",
+        triggerRunId: "child-run",
+      }),
+    ).resolves.toEqual([
+      {
+        messageId: "msg_123",
+        content: "Use new evidence",
+        messageType: "instruction",
+        priority: "high",
+      },
+    ]);
+    expect(patch).toHaveBeenCalledWith(
+      "message-doc",
+      expect.objectContaining({ delivery_status: "consumed" }),
+    );
+  });
+
+  it("claims a terminal child completion exactly once", async () => {
+    const row: Record<string, any> = {
+      _id: "subagent-doc",
+      subagent_id: "sa_1",
+      user_id: "user-1",
+      chat_id: "chat-1",
+      parent_message_id: "parent-message",
+      name: "Stored XSS validator",
+      profile: "security_validation",
+      status: "completed",
+      objective: "Validate XSS",
+      context_refs: [],
+      candidate_fingerprint: "fingerprint",
+      depth: 1,
+      subscription: "pro",
+      cost_limit_dollars: 1,
+      created_at: 1,
+      updated_at: 2,
+    };
+    const patch = jest
+      .fn<any>()
+      .mockImplementation(
+        async (_id: string, value: Record<string, unknown>) => {
+          Object.assign(row, value);
+        },
+      );
+    const ctx = {
+      db: {
+        query: jest.fn(() => ({
+          withIndex: jest.fn((_name: string, callback: (q: any) => void) => {
+            const q = { eq: jest.fn<any>() };
+            q.eq.mockReturnValue(q);
+            callback(q);
+            return {
+              order: jest.fn(() => ({
+                take: jest.fn<any>().mockResolvedValue([row]),
+              })),
+            };
+          }),
+        })),
+        patch,
+      },
+    } as any;
+    const claimArgs = {
+      serviceKey: "service-key",
+      userId: "user-1",
+      chatId: "chat-1",
+    };
+
+    await expect(
+      claimNextTerminalForParentBackend.handler(ctx, claimArgs),
+    ).resolves.toEqual({
+      terminal: expect.objectContaining({ name: "Stored XSS validator" }),
+      active: [],
+    });
+    await expect(
+      claimNextTerminalForParentBackend.handler(ctx, claimArgs),
+    ).resolves.toEqual({ terminal: null, active: [] });
+    expect(patch).toHaveBeenCalledTimes(1);
   });
 });
 

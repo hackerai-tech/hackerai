@@ -35,5 +35,18 @@ export const createCandidateFingerprint = (
   return createHash("sha256").update(canonical).digest("hex");
 };
 
+export const createAgentFingerprint = (
+  name: string,
+  task: string,
+  skills: string[],
+): string => {
+  const canonical = JSON.stringify({
+    name: normalize(name),
+    task: normalize(task),
+    skills: skills.map(normalize).sort(),
+  });
+  return createHash("sha256").update(canonical).digest("hex");
+};
+
 export const createSubagentId = (): string =>
   `sa_${randomUUID().replaceAll("-", "")}`;

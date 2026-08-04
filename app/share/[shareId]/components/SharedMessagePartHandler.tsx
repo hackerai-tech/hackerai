@@ -150,7 +150,50 @@ export const SharedMessagePartHandler = ({
     return renderGetTerminalFilesTool(part, idx);
   }
 
-  if (part.type === "tool-delegate_task") {
+  if (
+    part.type === "tool-delegate_task" ||
+    part.type === "tool-create_agent" ||
+    part.type === "tool-send_message_to_agent" ||
+    part.type === "tool-wait_for_agents"
+  ) {
+    const agentName =
+      part.output?.name ??
+      part.output?.target_agent_name ??
+      part.output?.agent_name ??
+      part.input?.name ??
+      part.input?.profile_input?.candidate?.title ??
+      "Subagent";
+    if (part.type === "tool-create_agent") {
+      return (
+        <ToolBlock
+          key={idx}
+          icon={<Users aria-hidden="true" />}
+          action={`${agentName} ${part.output?.success === false ? "failed to start" : "started working"}`}
+        />
+      );
+    }
+    if (part.type === "tool-send_message_to_agent") {
+      return (
+        <ToolBlock
+          key={idx}
+          icon={<Users aria-hidden="true" />}
+          action={`${agentName} ${part.output?.success === false ? "update failed" : "updated"}`}
+        />
+      );
+    }
+    if (part.type === "tool-wait_for_agents") {
+      return (
+        <ToolBlock
+          key={idx}
+          icon={<Users aria-hidden="true" />}
+          action={
+            part.output?.wait_outcome === "agent_finished"
+              ? `${agentName} finished`
+              : "Waited for subagents"
+          }
+        />
+      );
+    }
     const verdict = part.output?.verdict;
     const validationFailed =
       (typeof part.output?.status === "string" &&

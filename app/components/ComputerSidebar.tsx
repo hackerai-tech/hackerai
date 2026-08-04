@@ -1159,7 +1159,11 @@ export const ComputerSidebar: React.FC<{
 
   if (sidebarOpen && sidebarContent && isSidebarSubagents(sidebarContent)) {
     return (
-      <SubagentsSidebar content={sidebarContent} closeSidebar={closeSidebar} />
+      <SubagentsSidebar
+        key={sidebarContent.toolCallId}
+        content={sidebarContent}
+        closeSidebar={closeSidebar}
+      />
     );
   }
 

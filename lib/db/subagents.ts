@@ -5,6 +5,8 @@ import { getConvexClient } from "./convex-client";
 import type {
   SecurityValidationCandidate,
   SecurityValidationResult,
+  SubagentMessagePriority,
+  SubagentMessageType,
   SubagentContextRef,
   SubagentStatus,
   ValidationConfidence,
@@ -25,8 +27,11 @@ export type PersistedSubagent = {
   profile: "security_validation";
   depth: number;
   status: SubagentStatus;
+  name?: string;
   objective: string;
-  candidate: SecurityValidationCandidate;
+  inherit_context?: boolean;
+  skills?: string[];
+  candidate?: SecurityValidationCandidate;
   candidate_fingerprint: string;
   context_refs: SubagentContextRef[];
   sandbox_preference?: string;
@@ -48,6 +53,7 @@ export type PersistedSubagent = {
   step_count?: number;
   provider_retry_count?: number;
   result_recovery_count?: number;
+  parent_notified_at?: number;
   created_at: number;
   started_at?: number;
   completed_at?: number;
@@ -62,10 +68,13 @@ export const reserveSubagent = async (args: {
   parentMessageId: string;
   parentToolCallId: string;
   parentTriggerRunId: string;
+  name?: string;
   objective: string;
-  candidate: SecurityValidationCandidate;
+  inheritContext?: boolean;
+  skills?: string[];
+  candidate?: SecurityValidationCandidate;
   candidateFingerprint: string;
-  contextRefs: SubagentContextRef[];
+  contextRefs?: SubagentContextRef[];
   sandboxPreference?: string;
   sandboxIdentity?: string;
   permissionMode?: string;
@@ -227,3 +236,53 @@ export const saveSubagentMessage = async (args: {
     serviceKey,
     ...args,
   });
+
+export const sendMessageToSubagent = async (args: {
+  targetAgentId: string;
+  userId: string;
+  chatId: string;
+  parentToolCallId: string;
+  messageId: string;
+  message: string;
+  messageType: SubagentMessageType;
+  priority: SubagentMessagePriority;
+}) =>
+  await getConvexClient().mutation(api.subagents.sendMessageForBackend, {
+    serviceKey,
+    ...args,
+  });
+
+export const consumePendingSubagentMessages = async (args: {
+  subagentId: string;
+  triggerRunId: string;
+}): Promise<
+  Array<{
+    messageId: string;
+    content: string;
+    messageType: SubagentMessageType;
+    priority: SubagentMessagePriority;
+  }>
+> =>
+  (await getConvexClient().mutation(
+    api.subagents.consumePendingMessagesForBackend,
+    { serviceKey, ...args },
+  )) as Array<{
+    messageId: string;
+    content: string;
+    messageType: SubagentMessageType;
+    priority: SubagentMessagePriority;
+  }>;
+
+export type ParentSubagentState = {
+  terminal: (PersistedSubagent & { title?: string }) | null;
+  active: Array<PersistedSubagent & { title?: string }>;
+};
+
+export const claimNextTerminalSubagentForParent = async (args: {
+  userId: string;
+  chatId: string;
+}): Promise<ParentSubagentState> =>
+  (await getConvexClient().mutation(
+    api.subagents.claimNextTerminalForParentBackend,
+    { serviceKey, ...args },
+  )) as ParentSubagentState;

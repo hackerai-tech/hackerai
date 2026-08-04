@@ -76,13 +76,131 @@ describe("SubagentToolHandler", () => {
       />,
     );
 
-    fireEvent.click(
-      screen.getByRole("button", { name: /Subagent failed Stored XSS/i }),
-    );
+    fireEvent.click(screen.getByRole("button", { name: /Stored XSS failed/i }));
     expect(openSidebar).not.toHaveBeenCalled();
     expect(
       screen.queryByRole("button", { name: "Open Stored XSS in sidebar" }),
     ).not.toBeInTheDocument();
+  });
+
+  it("names the exact agent when it starts", () => {
+    render(
+      <SubagentToolHandler
+        message={{ id: "parent-run", role: "assistant", parts: [] } as any}
+        status="ready"
+        part={{
+          type: "tool-create_agent",
+          toolCallId: "tool-create-1",
+          state: "output-available",
+          input: { name: "Stored XSS validator", task: "Validate XSS" },
+          output: {
+            success: true,
+            agent_id: "sa_xss",
+            name: "Stored XSS validator",
+            status: "queued",
+          },
+        }}
+      />,
+    );
+
+    expect(
+      screen.getByText("Stored XSS validator started working"),
+    ).toBeInTheDocument();
+  });
+
+  it("names and opens the exact agent when it is updated", () => {
+    render(
+      <SubagentToolHandler
+        message={
+          {
+            id: "update-message",
+            role: "assistant",
+            parts: [
+              {
+                type: "data-subagent-lifecycle",
+                data: {
+                  subagent_id: "sa_xss",
+                  parent_message_id: "create-message",
+                  parent_tool_call_id: "tool-send-1",
+                  agent_name: "Stored XSS validator",
+                  status: "running",
+                },
+              },
+            ],
+          } as any
+        }
+        status="ready"
+        part={{
+          type: "tool-send_message_to_agent",
+          toolCallId: "tool-send-1",
+          state: "output-available",
+          input: { target_agent_id: "sa_xss", message: "Use new evidence" },
+          output: {
+            success: true,
+            target_agent_id: "sa_xss",
+            target_agent_name: "Stored XSS validator",
+          },
+        }}
+      />,
+    );
+
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: "Open Stored XSS validator in sidebar",
+      }),
+    );
+    expect(
+      screen.getByText("Stored XSS validator updated"),
+    ).toBeInTheDocument();
+    expect(openSidebar).toHaveBeenCalledWith({
+      kind: "subagents",
+      parentMessageId: "create-message",
+      toolCallId: "tool-send-1",
+      selectedSubagentId: "sa_xss",
+    });
+  });
+
+  it("names the exact agent when waiting receives its completion", () => {
+    render(
+      <SubagentToolHandler
+        message={
+          {
+            id: "wait-message",
+            role: "assistant",
+            parts: [
+              {
+                type: "data-subagent-lifecycle",
+                data: {
+                  subagent_id: "sa_xss",
+                  parent_message_id: "create-message",
+                  parent_tool_call_id: "tool-wait-1",
+                  agent_name: "Stored XSS validator",
+                  status: "completed",
+                },
+              },
+            ],
+          } as any
+        }
+        status="ready"
+        part={{
+          type: "tool-wait_for_agents",
+          toolCallId: "tool-wait-1",
+          state: "output-available",
+          input: { reason: "Waiting for XSS validation" },
+          output: {
+            success: true,
+            wait_outcome: "agent_finished",
+            agent_id: "sa_xss",
+            agent_name: "Stored XSS validator",
+            result: { status: "completed", verdict: "confirmed" },
+          },
+        }}
+      />,
+    );
+
+    expect(
+      screen.getByText("Stored XSS validator finished"),
+    ).toBeInTheDocument();
   });
 
   it("opens completed delegation without model-visible runtime identifiers", () => {

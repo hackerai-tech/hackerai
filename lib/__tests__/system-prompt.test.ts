@@ -26,10 +26,10 @@ describe("systemPrompt security instructions", () => {
 
     expect(disabled).not.toContain("<independent_validation>");
     expect(enabled).toContain("<independent_validation>");
-    expect(enabled).toContain("Do not delegate reconnaissance");
+    expect(enabled).toContain("Do not create an agent for reconnaissance");
     expect(enabled).not.toContain("vulnerability_report");
     expect(enabled).not.toContain("report_eligible");
-    expect(enabled).toContain("verdict=confirmed");
+    expect(enabled).toContain("result.verdict=confirmed");
   });
 
   it("answers general questions directly without cybersecurity scope disclaimers", async () => {

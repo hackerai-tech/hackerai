@@ -227,7 +227,11 @@ import { FREE_AGENT_LONG_RUN_LOCK_TTL_SECONDS } from "@/lib/rate-limit/free-conf
 import { isCentrifugoSandbox } from "@/lib/ai/tools/utils/sandbox-types";
 import { AgentRunTimingTracker } from "@/lib/chat/agent-run-timing";
 import { AgentLongMemoryTelemetry } from "@/lib/chat/agent-long-memory-telemetry";
-import { createDelegateTask } from "@/lib/ai/tools/delegate-task";
+import {
+  createCreateAgentTool,
+  createSendMessageToAgentTool,
+  createWaitForAgentsTool,
+} from "@/lib/ai/tools/subagent-tools";
 import {
   cancelSubagentsForParent,
   listActiveSubagentsForParent,
@@ -2382,13 +2386,16 @@ export const agentLongTask = task({
               securityValidationSubagentsEnabled
                 ? {
                     additionalTools: (toolContext) => ({
-                      delegate_task: createDelegateTask(toolContext, {
+                      create_agent: createCreateAgentTool(toolContext, {
                         organizationId,
                         sandboxPreference,
                         permissionMode: agentPermissionMode,
                         subscription,
                         freeQuotaSubject,
                       }),
+                      send_message_to_agent:
+                        createSendMessageToAgentTool(toolContext),
+                      wait_for_agents: createWaitForAgentsTool(toolContext),
                     }),
                   }
                 : undefined,

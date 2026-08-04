@@ -82,14 +82,32 @@ export function extractSidebarContentFromMessage(
     }
 
     if (
-      part.type === "tool-delegate_task" &&
+      (part.type === "tool-delegate_task" ||
+        part.type === "tool-create_agent" ||
+        part.type === "tool-send_message_to_agent" ||
+        part.type === "tool-wait_for_agents") &&
       part.toolCallId &&
       typeof message.id === "string"
     ) {
+      const lifecycle = message.parts?.find(
+        (candidate: any) =>
+          candidate?.type === "data-subagent-lifecycle" &&
+          candidate?.data?.parent_tool_call_id === part.toolCallId,
+      ) as any;
+      const selectedSubagentId =
+        lifecycle?.data?.subagent_id ??
+        part.output?.agent_id ??
+        part.output?.target_agent_id ??
+        part.input?.target_agent_id;
       contentList.push({
         kind: "subagents",
-        parentMessageId: message.id,
+        parentMessageId: lifecycle?.data?.parent_message_id ?? message.id,
         toolCallId: part.toolCallId,
+        ...(part.type !== "tool-create_agent" &&
+        part.type !== "tool-delegate_task" &&
+        selectedSubagentId
+          ? { selectedSubagentId }
+          : {}),
       });
       return;
     }

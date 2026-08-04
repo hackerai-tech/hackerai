@@ -2,6 +2,8 @@ import { z } from "zod";
 
 export const SUBAGENT_PROFILE = "security_validation" as const;
 export const MAX_SUBAGENT_CONTEXT_REFS = 8;
+export const MAX_SUBAGENT_SKILLS = 5;
+export const MAX_SUBAGENT_WAIT_SECONDS = 300;
 export const MAX_SUBAGENTS_PER_PARENT_RUN = 3;
 export const MAX_ACTIVE_SUBAGENTS_PER_PARENT_RUN = 1;
 export const SUBAGENT_MAX_ACTIVE_SECONDS = 15 * 60;
@@ -92,20 +94,69 @@ export const subagentContextRefSchema = z.discriminatedUnion("kind", [
 
 export type SubagentContextRef = z.infer<typeof subagentContextRefSchema>;
 
-export const delegateTaskInputSchema = z.object({
-  objective: z.string().trim().min(1).max(1_200),
-  profile: z.literal(SUBAGENT_PROFILE),
-  profile_input: z.object({
-    candidate: securityValidationCandidateSchema,
-  }),
-  context_refs: z
-    .array(subagentContextRefSchema)
-    .max(MAX_SUBAGENT_CONTEXT_REFS)
-    .default([]),
-  wait_behavior: z.literal("wait_for_result"),
-});
+export const createAgentInputSchema = z
+  .object({
+    name: z.string().trim().min(1).max(120),
+    task: z.string().trim().min(1).max(4_000),
+    inherit_context: z.boolean().default(true),
+    skills: z
+      .array(z.string().trim().min(1).max(80))
+      .max(MAX_SUBAGENT_SKILLS)
+      .nullable()
+      .default(null),
+  })
+  .strict();
 
-export type DelegateTaskInput = z.infer<typeof delegateTaskInputSchema>;
+export type CreateAgentInput = z.infer<typeof createAgentInputSchema>;
+
+export const subagentMessageTypeSchema = z.enum([
+  "query",
+  "instruction",
+  "information",
+]);
+export type SubagentMessageType = z.infer<typeof subagentMessageTypeSchema>;
+
+export const subagentMessagePrioritySchema = z.enum([
+  "low",
+  "normal",
+  "high",
+  "urgent",
+]);
+export type SubagentMessagePriority = z.infer<
+  typeof subagentMessagePrioritySchema
+>;
+
+export const sendMessageToAgentInputSchema = z
+  .object({
+    target_agent_id: z.string().trim().min(1).max(100),
+    message: z.string().trim().min(1).max(4_000),
+    message_type: subagentMessageTypeSchema.default("information"),
+    priority: subagentMessagePrioritySchema.default("normal"),
+  })
+  .strict();
+
+export type SendMessageToAgentInput = z.infer<
+  typeof sendMessageToAgentInputSchema
+>;
+
+export const waitForAgentsInputSchema = z
+  .object({
+    reason: z
+      .string()
+      .trim()
+      .min(1)
+      .max(500)
+      .default("Waiting for messages from other agents"),
+    timeout_seconds: z
+      .number()
+      .int()
+      .min(1)
+      .max(MAX_SUBAGENT_WAIT_SECONDS)
+      .default(300),
+  })
+  .strict();
+
+export type WaitForAgentsInput = z.infer<typeof waitForAgentsInputSchema>;
 
 export const securityValidationResultSchema = z
   .object({
@@ -136,7 +187,7 @@ export type SecurityValidationResult = z.infer<
   typeof securityValidationResultSchema
 >;
 
-export const delegateTaskResultSchema = z.object({
+export const agentValidationResultSchema = z.object({
   status: z.enum(["completed", "failed", "canceled", "timed_out"]),
   verdict: subagentVerdictSchema.nullable(),
   confidence: validationConfidenceSchema.nullable(),
@@ -148,16 +199,50 @@ export const delegateTaskResultSchema = z.object({
   recommended_severity: vulnerabilitySeveritySchema.nullable(),
 });
 
-export type DelegateTaskResult = z.infer<typeof delegateTaskResultSchema>;
+export type AgentValidationResult = z.infer<typeof agentValidationResultSchema>;
+
+export const createAgentResultSchema = z.object({
+  success: z.boolean(),
+  agent_id: z.string().optional(),
+  name: z.string().optional(),
+  status: subagentStatusSchema.optional(),
+  message: z.string().optional(),
+  error: z.string().optional(),
+});
+
+export const sendMessageToAgentResultSchema = z.object({
+  success: z.boolean(),
+  target_agent_id: z.string().optional(),
+  target_agent_name: z.string().optional(),
+  delivery_status: z.literal("delivered").optional(),
+  error: z.string().optional(),
+});
+
+export const waitForAgentsResultSchema = z.object({
+  success: z.boolean(),
+  wait_outcome: z.enum(["agent_finished", "timeout", "no_active_agents"]),
+  reason: z.string(),
+  agent_id: z.string().optional(),
+  agent_name: z.string().optional(),
+  result: agentValidationResultSchema.optional(),
+  active_agents: z
+    .array(
+      z.object({
+        agent_id: z.string(),
+        name: z.string(),
+        status: subagentStatusSchema,
+      }),
+    )
+    .optional(),
+});
 
 export const subagentLifecycleDataSchema = z.object({
   subagent_id: z.string(),
-  parent_trigger_run_id: z.string(),
+  parent_message_id: z.string(),
   parent_tool_call_id: z.string(),
-  trigger_run_id: z.string().nullable(),
-  profile: z.literal(SUBAGENT_PROFILE),
+  agent_name: z.string().max(120),
+  event: z.enum(["started", "updated", "finished"]),
   status: subagentStatusSchema,
-  title: z.string().max(200),
   summary: z.string().max(2_000).optional(),
   verdict: subagentVerdictSchema.optional(),
   elapsed_ms: z.number().nonnegative().optional(),

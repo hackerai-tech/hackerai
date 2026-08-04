@@ -14,6 +14,7 @@ jest.mock("@/convex/_generated/api", () => ({
   api: {
     subagents: {
       listForParentMessage: "listForParentMessage",
+      getOwned: "getOwned",
       getMessagesOwned: "getMessagesOwned",
       setMessageFeedback: "setMessageFeedback",
     },
@@ -52,6 +53,7 @@ const { SubagentsSidebar } =
 
 const activeChild = {
   subagent_id: "sa_active",
+  parent_message_id: "parent-message",
   parent_trigger_run_id: "parent-run",
   parent_tool_call_id: "tool-1",
   trigger_run_id: "child-run",
@@ -91,8 +93,15 @@ describe("SubagentsSidebar", () => {
   beforeEach(() => {
     jest.clearAllMocks();
     mockSetMessageFeedback.mockResolvedValue("updated");
-    mockUseQuery.mockImplementation((query) => {
+    mockUseQuery.mockImplementation((query, args) => {
       if (query === "listForParentMessage") return [activeChild, doneChild];
+      if (query === "getOwned") {
+        return args === "skip"
+          ? undefined
+          : ([activeChild, doneChild].find(
+              (child) => child.subagent_id === args?.subagentId,
+            ) ?? null);
+      }
       return [
         {
           message_id: "subagent-message-0",
@@ -203,8 +212,11 @@ describe("SubagentsSidebar", () => {
   });
 
   it("shows a generic waiting state before the subagent emits activity", () => {
-    mockUseQuery.mockImplementation((query) => {
+    mockUseQuery.mockImplementation((query, args) => {
       if (query === "listForParentMessage") return [activeChild];
+      if (query === "getOwned") {
+        return args === "skip" ? undefined : activeChild;
+      }
       return [
         {
           message_id: "subagent-message-0",
@@ -236,6 +248,40 @@ describe("SubagentsSidebar", () => {
     expect(
       screen.queryByText("Internal worker prompt"),
     ).not.toBeInTheDocument();
+  });
+
+  it("resolves a later update back to the child creation group", () => {
+    mockUseQuery.mockImplementation((query, args) => {
+      if (query === "getOwned") return doneChild;
+      if (query === "listForParentMessage") {
+        return args?.parentMessageId === "parent-message" ? [doneChild] : [];
+      }
+      return [];
+    });
+
+    render(
+      <SubagentsSidebar
+        content={{
+          kind: "subagents",
+          parentMessageId: "later-parent-message",
+          toolCallId: "tool-update",
+          selectedSubagentId: "sa_done",
+        }}
+        closeSidebar={jest.fn()}
+      />,
+    );
+
+    expect(
+      screen.getByRole("heading", { name: "Rejected candidate" }),
+    ).toBeVisible();
+    expect(mockUseQuery).toHaveBeenCalledWith("listForParentMessage", {
+      parentMessageId: "parent-message",
+    });
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Back to subagent list" }),
+    );
+    expect(screen.getByRole("heading", { name: "Done · 1" })).toBeVisible();
   });
 
   it("shows the timestamp on hover, then copies and rates the subagent result", async () => {
