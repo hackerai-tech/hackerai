@@ -1,5 +1,6 @@
 import { act, renderHook } from "@testing-library/react";
-import { useOnlineStatus } from "../useOnlineStatus";
+import { afterEach, beforeEach, jest } from "@jest/globals";
+import { reconnectOnlineStatus, useOnlineStatus } from "../useOnlineStatus";
 
 const setNavigatorOnline = (isOnline: boolean) => {
   Object.defineProperty(navigator, "onLine", {
@@ -13,13 +14,31 @@ describe("useOnlineStatus", () => {
     navigator,
     "onLine",
   );
+  const originalFetch = globalThis.fetch;
+
+  beforeEach(() => {
+    Object.defineProperty(globalThis, "fetch", {
+      configurable: true,
+      writable: true,
+      value: jest.fn(),
+    });
+  });
 
   afterEach(() => {
+    act(() => {
+      setNavigatorOnline(true);
+      window.dispatchEvent(new Event("online"));
+    });
     if (originalOnlineDescriptor) {
       Object.defineProperty(navigator, "onLine", originalOnlineDescriptor);
     } else {
       Reflect.deleteProperty(navigator, "onLine");
     }
+    Object.defineProperty(globalThis, "fetch", {
+      configurable: true,
+      writable: true,
+      value: originalFetch,
+    });
   });
 
   it("tracks browser offline and online events", () => {
@@ -39,5 +58,40 @@ describe("useOnlineStatus", () => {
       window.dispatchEvent(new Event("online"));
     });
     expect(result.current).toBe(true);
+  });
+
+  it("marks the browser online after the reconnect probe succeeds", async () => {
+    setNavigatorOnline(false);
+    (globalThis.fetch as jest.Mock).mockResolvedValue({ ok: true });
+    const { result } = renderHook(() => useOnlineStatus());
+
+    let reconnected = false;
+    await act(async () => {
+      reconnected = await reconnectOnlineStatus();
+    });
+
+    expect(reconnected).toBe(true);
+    expect(result.current).toBe(true);
+    expect(globalThis.fetch).toHaveBeenCalledWith("/api/health/connectivity", {
+      method: "HEAD",
+      cache: "no-store",
+      credentials: "same-origin",
+    });
+  });
+
+  it("stays offline when the reconnect probe fails", async () => {
+    setNavigatorOnline(false);
+    (globalThis.fetch as jest.Mock).mockRejectedValue(
+      new TypeError("Failed to fetch"),
+    );
+    const { result } = renderHook(() => useOnlineStatus());
+
+    let reconnected = true;
+    await act(async () => {
+      reconnected = await reconnectOnlineStatus();
+    });
+
+    expect(reconnected).toBe(false);
+    expect(result.current).toBe(false);
   });
 });

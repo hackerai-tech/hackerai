@@ -23,6 +23,7 @@ import { getInputTokenLimitStatus } from "@/lib/utils/client-token-validation";
 import { toast } from "sonner";
 import { removeTodosBySourceMessages } from "@/lib/utils/todo-utils";
 import { useDataStreamDispatch } from "@/app/components/DataStreamProvider";
+import { getOnlineStatusSnapshot } from "@/app/hooks/useOnlineStatus";
 import { AUTO_CONTINUE_PROMPT } from "@/app/hooks/useAutoContinue";
 import { normalizeMessages } from "@/lib/utils/message-processor";
 import {
@@ -325,7 +326,7 @@ export const useChatHandlers = ({
 
     // The visible composer normally blocks this path while offline. Check the
     // browser snapshot again here so a connectivity race cannot clear a draft.
-    if (typeof navigator !== "undefined" && !navigator.onLine) {
+    if (!getOnlineStatusSnapshot()) {
       toast.info("You're offline", {
         description: "Your draft is saved. Reconnect before sending.",
       });
