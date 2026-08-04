@@ -50,3 +50,19 @@ export const createAgentFingerprint = (
 
 export const createSubagentId = (): string =>
   `sa_${randomUUID().replaceAll("-", "")}`;
+
+export const createSubagentUpdateMessageId = (
+  parentTriggerRunId: string,
+  targetAgentId: string,
+  parentToolCallId: string,
+): string =>
+  `msg_${createHash("sha256")
+    .update(
+      JSON.stringify({
+        parentTriggerRunId,
+        targetAgentId,
+        parentToolCallId,
+      }),
+    )
+    .digest("hex")
+    .slice(0, 16)}`;

@@ -345,6 +345,7 @@ describe("subagent coordination messages", () => {
       subagent_id: "sa_1",
       user_id: "user-1",
       chat_id: "chat-1",
+      parent_trigger_run_id: "parent-run",
       parent_message_id: "parent-message",
       name: "Stored XSS validator",
       status: "running",
@@ -373,6 +374,7 @@ describe("subagent coordination messages", () => {
         targetAgentId: "sa_1",
         userId: "user-1",
         chatId: "chat-1",
+        parentTriggerRunId: "parent-run",
         parentToolCallId: "tool-send-1",
         messageId: "msg_123",
         message: "Use the newly captured response.",
@@ -412,6 +414,7 @@ describe("subagent coordination messages", () => {
                 subagent_id: "sa_1",
                 user_id: "user-2",
                 chat_id: "chat-1",
+                parent_trigger_run_id: "parent-run",
                 status: "running",
               }),
             };
@@ -427,6 +430,48 @@ describe("subagent coordination messages", () => {
         targetAgentId: "sa_1",
         userId: "user-1",
         chatId: "chat-1",
+        parentTriggerRunId: "parent-run",
+        parentToolCallId: "tool-send-1",
+        messageId: "msg_123",
+        message: "Update",
+        messageType: "information",
+        priority: "normal",
+      }),
+    ).resolves.toEqual({ outcome: "not_found" });
+    expect(insert).not.toHaveBeenCalled();
+  });
+
+  it("does not steer a child created by another parent run in the same chat", async () => {
+    const insert = jest.fn<any>();
+    const ctx = {
+      db: {
+        query: jest.fn(() => ({
+          withIndex: jest.fn((_name: string, callback: (q: any) => void) => {
+            const q = { eq: jest.fn<any>() };
+            q.eq.mockReturnValue(q);
+            callback(q);
+            return {
+              first: jest.fn<any>().mockResolvedValue({
+                subagent_id: "sa_1",
+                user_id: "user-1",
+                chat_id: "chat-1",
+                parent_trigger_run_id: "different-parent-run",
+                status: "running",
+              }),
+            };
+          }),
+        })),
+        insert,
+      },
+    } as any;
+
+    await expect(
+      sendMessageForBackend.handler(ctx, {
+        serviceKey: "service-key",
+        targetAgentId: "sa_1",
+        userId: "user-1",
+        chatId: "chat-1",
+        parentTriggerRunId: "parent-run",
         parentToolCallId: "tool-send-1",
         messageId: "msg_123",
         message: "Update",
@@ -499,6 +544,7 @@ describe("subagent coordination messages", () => {
       subagent_id: "sa_1",
       user_id: "user-1",
       chat_id: "chat-1",
+      parent_trigger_run_id: "parent-run",
       parent_message_id: "parent-message",
       name: "Stored XSS validator",
       profile: "security_validation",
@@ -519,19 +565,25 @@ describe("subagent coordination messages", () => {
           Object.assign(row, value);
         },
       );
+    const withIndex = jest.fn((_name: string, callback: (q: any) => void) => {
+      const q = { eq: jest.fn<any>() };
+      q.eq.mockReturnValue(q);
+      callback(q);
+      expect(q.eq.mock.calls).toEqual([
+        ["user_id", "user-1"],
+        ["chat_id", "chat-1"],
+        ["parent_trigger_run_id", "parent-run"],
+      ]);
+      return {
+        order: jest.fn(() => ({
+          take: jest.fn<any>().mockResolvedValue([row]),
+        })),
+      };
+    });
     const ctx = {
       db: {
         query: jest.fn(() => ({
-          withIndex: jest.fn((_name: string, callback: (q: any) => void) => {
-            const q = { eq: jest.fn<any>() };
-            q.eq.mockReturnValue(q);
-            callback(q);
-            return {
-              order: jest.fn(() => ({
-                take: jest.fn<any>().mockResolvedValue([row]),
-              })),
-            };
-          }),
+          withIndex,
         })),
         patch,
       },
@@ -540,6 +592,7 @@ describe("subagent coordination messages", () => {
       serviceKey: "service-key",
       userId: "user-1",
       chatId: "chat-1",
+      parentTriggerRunId: "parent-run",
     };
 
     await expect(
@@ -552,6 +605,10 @@ describe("subagent coordination messages", () => {
       claimNextTerminalForParentBackend.handler(ctx, claimArgs),
     ).resolves.toEqual({ terminal: null, active: [] });
     expect(patch).toHaveBeenCalledTimes(1);
+    expect(withIndex).toHaveBeenCalledWith(
+      "by_user_chat_and_parent_run",
+      expect.any(Function),
+    );
   });
 });
 

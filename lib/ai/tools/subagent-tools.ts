@@ -1,5 +1,3 @@
-import { createHash } from "node:crypto";
-
 import { idempotencyKeys, wait } from "@trigger.dev/sdk";
 import { tool, type UIMessageStreamWriter } from "ai";
 
@@ -21,6 +19,7 @@ import {
 import {
   createAgentFingerprint,
   createSubagentId,
+  createSubagentUpdateMessageId,
 } from "@/lib/ai/subagents/fingerprint";
 import { getSubagentSandboxIdentity } from "@/lib/ai/subagents/sandbox-identity";
 import { SUBAGENT_TEXT_MODEL } from "@/lib/ai/subagents/model-routing";
@@ -279,22 +278,16 @@ export const createSendMessageToAgentTool = (context: ToolContext) =>
             "send_message_to_agent is only available inside a durable Agent run.",
         };
       }
-      const messageId = `msg_${createHash("sha256")
-        .update(
-          JSON.stringify({
-            parentTriggerRunId,
-            targetAgentId: parsed.target_agent_id,
-            message: parsed.message,
-            messageType: parsed.message_type,
-            priority: parsed.priority,
-          }),
-        )
-        .digest("hex")
-        .slice(0, 16)}`;
+      const messageId = createSubagentUpdateMessageId(
+        parentTriggerRunId,
+        parsed.target_agent_id,
+        execution.toolCallId,
+      );
       const delivery = (await sendMessageToSubagent({
         targetAgentId: parsed.target_agent_id,
         userId: context.userID,
         chatId: context.chatId,
+        parentTriggerRunId,
         parentToolCallId: execution.toolCallId,
         messageId,
         message: parsed.message,
@@ -381,6 +374,7 @@ export const createWaitForAgentsTool = (context: ToolContext) =>
         const state = await claimNextTerminalSubagentForParent({
           userId: context.userID,
           chatId: context.chatId,
+          parentTriggerRunId: context.triggerRunId,
         });
         if (state.terminal) {
           const name = agentName(state.terminal);

@@ -241,6 +241,7 @@ export const sendMessageToSubagent = async (args: {
   targetAgentId: string;
   userId: string;
   chatId: string;
+  parentTriggerRunId: string;
   parentToolCallId: string;
   messageId: string;
   message: string;
@@ -281,6 +282,7 @@ export type ParentSubagentState = {
 export const claimNextTerminalSubagentForParent = async (args: {
   userId: string;
   chatId: string;
+  parentTriggerRunId: string;
 }): Promise<ParentSubagentState> =>
   (await getConvexClient().mutation(
     api.subagents.claimNextTerminalForParentBackend,

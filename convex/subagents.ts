@@ -430,6 +430,7 @@ export const sendMessageForBackend = mutation({
     targetAgentId: v.string(),
     userId: v.string(),
     chatId: v.string(),
+    parentTriggerRunId: v.string(),
     parentToolCallId: v.string(),
     messageId: v.string(),
     message: v.string(),
@@ -445,7 +446,12 @@ export const sendMessageForBackend = mutation({
         q.eq("subagent_id", args.targetAgentId),
       )
       .first();
-    if (!run || run.user_id !== args.userId || run.chat_id !== args.chatId) {
+    if (
+      !run ||
+      run.user_id !== args.userId ||
+      run.chat_id !== args.chatId ||
+      run.parent_trigger_run_id !== args.parentTriggerRunId
+    ) {
       return { outcome: "not_found" as const };
     }
 
@@ -567,17 +573,21 @@ export const claimNextTerminalForParentBackend = mutation({
     serviceKey: v.string(),
     userId: v.string(),
     chatId: v.string(),
+    parentTriggerRunId: v.string(),
   },
   returns: v.any(),
   handler: async (ctx, args) => {
     validateServiceKey(args.serviceKey);
     const rows = await ctx.db
       .query("subagent_runs")
-      .withIndex("by_user_and_chat", (q) =>
-        q.eq("user_id", args.userId).eq("chat_id", args.chatId),
+      .withIndex("by_user_chat_and_parent_run", (q) =>
+        q
+          .eq("user_id", args.userId)
+          .eq("chat_id", args.chatId)
+          .eq("parent_trigger_run_id", args.parentTriggerRunId),
       )
       .order("desc")
-      .take(50);
+      .take(MAX_SUBAGENTS_PER_PARENT_RUN);
     const terminal = rows
       .filter(
         (row) =>
