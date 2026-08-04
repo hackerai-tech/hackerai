@@ -233,6 +233,27 @@ describe("ChatInput - Integration Tests", () => {
       expect(screen.getByLabelText("Send message")).toBeEnabled();
     });
 
+    it("does not show authenticated-chat offline UI when protection is disabled", () => {
+      setNavigatorOnline(false);
+
+      render(
+        <TestWrapper>
+          <ChatInput
+            onSubmit={mockOnSubmit}
+            onStop={mockOnStop}
+            status="ready"
+            offlineProtection={false}
+          />
+        </TestWrapper>,
+      );
+
+      const input = screen.getByPlaceholderText("Ask, learn, brainstorm");
+      fireEvent.change(input, { target: { value: "Start from landing page" } });
+
+      expect(screen.queryByTestId("offline-status")).not.toBeInTheDocument();
+      expect(screen.getByLabelText("Send message")).toBeEnabled();
+    });
+
     it("restores an unavailable pasted-text attachment into the Ask field", async () => {
       const pastedContent = "Source material restored from the attachment";
       const uploadedFile: UploadedFileState = {

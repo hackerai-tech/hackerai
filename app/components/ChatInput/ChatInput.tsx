@@ -64,6 +64,7 @@ interface ChatInputProps {
   autoFocus?: boolean;
   restoreDraftAttachments?: boolean;
   storedApprovalRequest?: ActiveAgentToolApprovalRequest | null;
+  offlineProtection?: boolean;
 }
 
 const isBrowserFile = (file: UploadedFileState["file"]): file is File =>
@@ -196,6 +197,7 @@ export const ChatInput = ({
   autoFocus,
   restoreDraftAttachments = true,
   storedApprovalRequest,
+  offlineProtection = true,
 }: ChatInputProps) => {
   const {
     chatMode,
@@ -221,6 +223,7 @@ export const ChatInput = ({
   const input = useComposerInput();
   const { setInput } = useComposerActions();
   const isOnline = useOnlineStatus();
+  const isOffline = offlineProtection && !isOnline;
   const {
     fileInputRef,
     handleFileUploadEvent,
@@ -568,7 +571,7 @@ export const ChatInput = ({
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!isOnline) return;
+    if (isOffline) return;
 
     const canSubmit =
       (status === "ready" || status === "streaming") &&
@@ -604,7 +607,7 @@ export const ChatInput = ({
   return (
     <div className={`relative px-4 min-w-0 ${isCentered ? "" : "pb-3"}`}>
       <div className="mx-auto w-full max-w-full min-w-0 sm:max-w-[768px] sm:min-w-[390px] flex flex-col flex-1">
-        {!isOnline && (
+        {isOffline && (
           <div
             role="status"
             aria-live="polite"
@@ -696,7 +699,7 @@ export const ChatInput = ({
               input={input}
               uploadedFiles={uploadedFiles}
               chatMode={chatMode}
-              isOnline={isOnline}
+              isOnline={!isOffline}
             />
           </div>
         )}
