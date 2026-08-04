@@ -252,6 +252,9 @@ describe("ChatInput - Integration Tests", () => {
 
       expect(screen.queryByTestId("offline-status")).not.toBeInTheDocument();
       expect(screen.getByLabelText("Send message")).toBeEnabled();
+
+      fireEvent.click(screen.getByLabelText("Send message"));
+      expect(mockOnSubmit).toHaveBeenCalledTimes(1);
     });
 
     it("restores an unavailable pasted-text attachment into the Ask field", async () => {
