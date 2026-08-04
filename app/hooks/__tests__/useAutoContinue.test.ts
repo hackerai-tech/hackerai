@@ -221,6 +221,36 @@ describe("useAutoContinue", () => {
     expect(sendMessage).not.toHaveBeenCalled();
   });
 
+  it("suppresses a delayed auto-continue signal after manual stop", () => {
+    const sendMessage = jest.fn();
+    const hasManuallyStoppedRef = { current: false };
+    let params = buildParams({
+      status: "streaming",
+      sendMessage,
+      hasManuallyStoppedRef,
+    });
+
+    const { result, rerender } = renderHook(
+      (p: UseAutoContinueParams) => useTestHarness(p),
+      { initialProps: params, wrapper: createWrapper() },
+    );
+
+    act(() => {
+      hasManuallyStoppedRef.current = true;
+    });
+    pushAutoContinue(result);
+
+    params = { ...params, status: "ready" };
+    rerender(params);
+    act(() => {
+      jest.advanceTimersByTime(500);
+    });
+
+    expect(sendMessage).not.toHaveBeenCalled();
+    expect(result.current.isAutoResuming).toBe(false);
+    expect(result.current.isAutoContinuing).toBe(false);
+  });
+
   it("stops firing after MAX_AUTO_CONTINUES and resets isAutoResuming", () => {
     const sendMessage = jest.fn();
     let params = buildParams({ status: "streaming", sendMessage });
@@ -342,6 +372,27 @@ describe("useAutoContinue", () => {
 
     expect(sendMessage).not.toHaveBeenCalled();
     expect(result.current.isAutoContinuing).toBe(false);
+  });
+
+  it("cancels a scheduled continuation when the chat unmounts", () => {
+    const sendMessage = jest.fn();
+    let params = buildParams({ status: "streaming", sendMessage });
+
+    const { result, rerender, unmount } = renderHook(
+      (p: UseAutoContinueParams) => useTestHarness(p),
+      { initialProps: params, wrapper: createWrapper() },
+    );
+
+    pushAutoContinue(result);
+    params = { ...params, status: "ready" };
+    rerender(params);
+    unmount();
+
+    act(() => {
+      jest.advanceTimersByTime(500);
+    });
+
+    expect(sendMessage).not.toHaveBeenCalled();
   });
 
   it("keeps automatic continuation active until the follow-up run settles", () => {
