@@ -251,11 +251,11 @@ export const MessageNavigator = memo(function MessageNavigator({
                 className={cn(
                   "pointer-events-none absolute left-0 h-0.5 -translate-y-1/2 rounded-full bg-muted-foreground/35 transition-[background-color,width] duration-150 data-[in-view=true]:bg-foreground/90",
                   activeDistance === 0
-                    ? "w-6 bg-muted-foreground/75"
+                    ? "w-7 bg-muted-foreground/75"
                     : activeDistance === 1
-                      ? "w-4"
+                      ? "w-[22px]"
                       : activeDistance === 2
-                        ? "w-2.5"
+                        ? "w-3.5"
                         : "w-2",
                 )}
                 data-in-view="false"

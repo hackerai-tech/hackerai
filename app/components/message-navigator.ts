@@ -3,7 +3,7 @@ import { extractMessageText } from "@/lib/utils/message-utils";
 import type { ChatTimelineRow } from "./message-timeline-rows";
 
 export const MESSAGE_NAVIGATOR_MIN_ITEMS = 2;
-export const MESSAGE_NAVIGATOR_ITEM_SPACING = 8;
+export const MESSAGE_NAVIGATOR_ITEM_SPACING = 11;
 export const MESSAGE_NAVIGATOR_MAX_HEIGHT_CSS = "calc(100vh - 18rem)";
 export const MESSAGE_NAVIGATOR_CONTENT_MAX_WIDTH = 768;
 export const MESSAGE_NAVIGATOR_PERSISTENT_GUTTER = 48;

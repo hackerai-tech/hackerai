@@ -82,7 +82,7 @@ describe("message navigator logic", () => {
 
   it("resolves rail geometry and bounded pointer destinations", () => {
     expect(resolveMessageNavigatorHeightStyle(5)).toBe(
-      "min(32px, calc(100vh - 18rem))",
+      "min(44px, calc(100vh - 18rem))",
     );
     expect(resolveMessageNavigatorTopPercent(2, 5)).toBe(50);
     expect(

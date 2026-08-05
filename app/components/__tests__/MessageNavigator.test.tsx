@@ -63,11 +63,18 @@ describe("MessageNavigator", () => {
     expect(screen.getByTestId("message-navigator-preview")).toHaveTextContent(
       "First question",
     );
+    const strips = document.querySelectorAll("[data-message-navigator-strip]");
+    expect(strips[0]).toHaveClass("w-7");
+    expect(strips[1]).toHaveClass("w-[22px]");
+    expect(strips[2]).toHaveClass("w-3.5");
 
     fireEvent.keyDown(button, { key: "ArrowDown" });
     expect(screen.getByTestId("message-navigator-preview")).toHaveTextContent(
       "Second question",
     );
+    expect(strips[0]).toHaveClass("w-[22px]");
+    expect(strips[1]).toHaveClass("w-7");
+    expect(strips[2]).toHaveClass("w-[22px]");
 
     fireEvent.keyDown(button, { key: "Enter" });
     expect(onSelect).toHaveBeenCalledWith(items[1]);
