@@ -42,6 +42,7 @@ import { ptySessionManager } from "./utils/pty-session-manager";
 import { isE2BSandbox } from "./utils/sandbox-types";
 import { getSandboxWithFallbackGuard } from "./utils/sandbox-fallback";
 import { createE2BResourcePressureObserver } from "@/lib/analytics/sandbox-resource-pressure";
+import { E2B_COST_PER_MS } from "./utils/e2b-cost";
 
 export { isE2BSandbox };
 
@@ -71,9 +72,6 @@ export const createTools = (
   let sandbox: AnySandbox | null = null;
   let sandboxFirstUsedAt: number | null = null;
   let currentModelName = modelName;
-
-  // E2B sandbox cost: ~$0.05/hour for 4-core 2GB
-  const E2B_COST_PER_MS = 0.05 / (60 * 60 * 1000);
 
   const trackSandboxUsage = (newSandbox: AnySandbox) => {
     sandbox = newSandbox;

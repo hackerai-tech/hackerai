@@ -325,12 +325,13 @@ Commands run directly on the host OS "workstation" without Docker isolation. Be 
       "Local sandbox context",
     );
 
-    expect(cloudPrompt).toContain("Compute: 4 vCPU, 2 GiB RAM");
+    expect(cloudPrompt).toContain("Compute: 4 vCPU, 4 GiB RAM");
+    expect(cloudPrompt).not.toContain("2 GiB RAM");
     expect(cloudPrompt).toContain(
       "Avoid running multiple CPU-intensive cracking, fuzzing, or scanning jobs concurrently",
     );
     expect(localPrompt).not.toContain("4 vCPU");
-    expect(localPrompt).not.toContain("2 GiB RAM");
+    expect(localPrompt).not.toContain("GiB RAM");
     expect(localPrompt).not.toContain(
       "Avoid running multiple CPU-intensive cracking, fuzzing, or scanning jobs concurrently",
     );
