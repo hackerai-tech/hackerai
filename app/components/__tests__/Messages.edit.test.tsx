@@ -74,6 +74,7 @@ describe("Messages editing", () => {
     render(
       <DataStreamProvider>
         <Messages
+          chatId="chat-1"
           messages={messages}
           setMessages={jest.fn()}
           onRegenerate={jest.fn()}
@@ -94,6 +95,42 @@ describe("Messages editing", () => {
 
     expect(screen.getByTestId("message-editor")).toHaveTextContent(
       "Editing user-1",
+    );
+  });
+
+  it("updates the virtualized dataset identity when the task changes", () => {
+    const props = {
+      messages,
+      setMessages: jest.fn(),
+      onRegenerate: jest.fn(),
+      onRetry: jest.fn(),
+      onEditMessage: jest.fn(),
+      status: "ready" as const,
+      error: null,
+      scrollRef: createRef<HTMLElement>(),
+      contentRef: createRef<HTMLElement>(),
+      isMobile: true,
+    };
+    const { rerender } = render(
+      <DataStreamProvider>
+        <Messages chatId="chat-1" {...props} />
+      </DataStreamProvider>,
+    );
+
+    expect(screen.getByTestId("messages-container")).toHaveAttribute(
+      "data-list-key",
+      "chat-1",
+    );
+
+    rerender(
+      <DataStreamProvider>
+        <Messages chatId="chat-2" {...props} />
+      </DataStreamProvider>,
+    );
+
+    expect(screen.getByTestId("messages-container")).toHaveAttribute(
+      "data-list-key",
+      "chat-2",
     );
   });
 });

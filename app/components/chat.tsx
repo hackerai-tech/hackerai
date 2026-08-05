@@ -1889,6 +1889,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
                 </div>
               ) : showChatLayout ? (
                 <Messages
+                  chatId={chatId}
                   scrollRef={scrollRef}
                   contentRef={contentRef}
                   messages={messages}

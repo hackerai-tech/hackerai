@@ -55,6 +55,7 @@ export const LegendList = forwardRef(function MockLegendList<
 >(
   {
     data,
+    dataKey,
     extraData,
     renderItem,
     keyExtractor,
@@ -65,6 +66,7 @@ export const LegendList = forwardRef(function MockLegendList<
     "data-testid": dataTestId,
   }: {
     data: Item[];
+    dataKey?: string | number;
     extraData?: unknown;
     renderItem: (info: {
       data: readonly Item[];
@@ -99,6 +101,7 @@ export const LegendList = forwardRef(function MockLegendList<
       className={className}
       style={style}
       data-testid={dataTestId}
+      data-list-key={dataKey}
     >
       <div className="legend-list-content-container">
         {renderOptionalComponent(ListHeaderComponent)}

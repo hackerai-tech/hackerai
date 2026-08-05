@@ -83,6 +83,7 @@ const setElementRef = (ref: StickyElementRef, element: HTMLElement | null) => {
 };
 
 interface MessagesProps {
+  chatId: string;
   messages: ChatMessage[];
   setMessages: Dispatch<SetStateAction<ChatMessage[]>>;
   onRegenerate: () => void | Promise<void>;
@@ -121,6 +122,7 @@ interface MessagesProps {
 }
 
 export const Messages = ({
+  chatId,
   messages,
   setMessages,
   onRegenerate,
@@ -640,6 +642,7 @@ export const Messages = ({
         <LegendList<ChatTimelineRow>
           ref={setTimelineInstance}
           data={timelineRows}
+          dataKey={chatId}
           extraData={editingMessageId}
           keyExtractor={getTimelineRowKey}
           getItemType={getChatTimelineRowType}
