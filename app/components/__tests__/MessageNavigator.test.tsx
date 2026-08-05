@@ -120,7 +120,10 @@ describe("MessageNavigator", () => {
   });
 
   it("refreshes visible destinations after resize without a scroll event", () => {
-    const originalResizeObserver = globalThis.ResizeObserver;
+    const originalResizeObserverDescriptor = Object.getOwnPropertyDescriptor(
+      globalThis,
+      "ResizeObserver",
+    );
     let resizeCallback: ResizeObserverCallback | null = null;
     let observerInstance!: ResizeObserver;
 
@@ -137,6 +140,7 @@ describe("MessageNavigator", () => {
 
     Object.defineProperty(globalThis, "ResizeObserver", {
       configurable: true,
+      writable: true,
       value: ResizeObserverMock,
     });
 
@@ -192,10 +196,15 @@ describe("MessageNavigator", () => {
 
       expect(strips[1]).toHaveAttribute("data-in-view", "true");
     } finally {
-      Object.defineProperty(globalThis, "ResizeObserver", {
-        configurable: true,
-        value: originalResizeObserver,
-      });
+      if (originalResizeObserverDescriptor) {
+        Object.defineProperty(
+          globalThis,
+          "ResizeObserver",
+          originalResizeObserverDescriptor,
+        );
+      } else {
+        Reflect.deleteProperty(globalThis, "ResizeObserver");
+      }
     }
   });
 });
