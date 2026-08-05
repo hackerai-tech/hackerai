@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, jest } from "@jest/globals";
 
 jest.mock("@/components/ui/with-tooltip", () => ({
@@ -27,6 +27,28 @@ const renderUserActions = (canEdit: boolean, onEdit = jest.fn()) => {
   return onEdit;
 };
 
+const renderAssistantActions = (
+  canRegenerate: boolean,
+  onRegenerate = jest.fn(),
+) => {
+  render(
+    <MessageActions
+      messageText="Answer"
+      isUser={false}
+      isLastAssistantMessage
+      canRegenerate={canRegenerate}
+      onRegenerate={onRegenerate}
+      onEdit={jest.fn()}
+      canEdit={false}
+      isHovered
+      isEditing={false}
+      status="ready"
+    />,
+  );
+
+  return onRegenerate;
+};
+
 describe("MessageActions editing", () => {
   it("does not offer editing for an older user message", () => {
     renderUserActions(false);
@@ -42,5 +64,25 @@ describe("MessageActions editing", () => {
     fireEvent.click(screen.getByRole("button", { name: "Edit message" }));
 
     expect(onEdit).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("MessageActions regeneration", () => {
+  it("does not show regeneration when it is unavailable", () => {
+    renderAssistantActions(false);
+
+    expect(
+      screen.queryByRole("button", { name: "Regenerate response" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("shows regeneration when it is available", async () => {
+    const onRegenerate = renderAssistantActions(true);
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Regenerate response" }),
+    );
+
+    await waitFor(() => expect(onRegenerate).toHaveBeenCalledTimes(1));
   });
 });

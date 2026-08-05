@@ -189,7 +189,9 @@ export const MessageItem = memo(function MessageItem({
     message.role === "assistant" &&
     lastAssistantMessageIndex !== undefined &&
     index === lastAssistantMessageIndex;
-  const canRegenerate = status === "ready" || status === "error";
+  const canRegenerate =
+    message.metadata?.mode !== "agent" &&
+    (status === "ready" || status === "error");
   const isLastMessage = index === messagesLength - 1;
 
   // Only the last assistant message should propagate "streaming" status to its
