@@ -30,7 +30,6 @@ const DEEPSEEK_FLASH_SLUG = "deepseek/deepseek-v4-flash-0731";
 const DEEPSEEK_FLASH_CANONICAL_SLUG = "deepseek/deepseek-v4-flash-20260731";
 const GROK_PRIMARY_OR_FALLBACK_MODELS = [
   "ask-model",
-  "ask-model-free",
   "agent-model",
   "agent-model-free",
   "model-grok-4.5",
@@ -240,19 +239,38 @@ describe("buildProviderOptions fallback chain", () => {
     expect(opts.openrouter).not.toHaveProperty("models");
   });
 
-  it("uses high reasoning when free Ask can fall back to Grok", () => {
+  it("uses low reasoning for free Ask across its fallback chain", () => {
     const opts = buildProviderOptions(false, "user-1", "ask-model-free", "ask");
     expect(opts.openrouter.reasoning).toEqual({
       enabled: true,
-      effort: "high",
+      effort: "low",
     });
+    expect(opts.openrouter.models).toEqual([GROK_SLUG, KIMI_K3_SLUG]);
+  });
+
+  it("keeps free Ask reasoning low over a scoped override", () => {
+    const opts = buildProviderOptions(
+      false,
+      "user-1",
+      "ask-model-free",
+      "ask",
+      {
+        reasoningOverride: { enabled: true, effort: "medium" },
+      },
+    );
+
+    expect(opts.openrouter.reasoning).toEqual({
+      enabled: true,
+      effort: "low",
+    });
+    expect(opts.openrouter.models).toEqual([GROK_SLUG, KIMI_K3_SLUG]);
   });
 
   it("keeps Grok fallback reasoning high over a lower scoped override", () => {
     const opts = buildProviderOptions(
       false,
       "user-1",
-      "ask-model-free",
+      "model-deepseek-v4-pro",
       "ask",
       {
         reasoningOverride: { enabled: true, effort: "medium" },
