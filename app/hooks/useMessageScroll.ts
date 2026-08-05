@@ -1,5 +1,5 @@
 import { useStickToBottom } from "use-stick-to-bottom";
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef } from "react";
 import { STICKY_BOTTOM_ESCAPE_EVENT } from "@/lib/utils/scroll-events";
 
 export const CHAT_TIMELINE_ANCHOR_OFFSET = 16;
@@ -46,7 +46,9 @@ export const useMessageScroll = (anchorMessageId: string | null = null) => {
   // use-stick-to-bottom retains the target callback created on mount, so the
   // callback must read the current turn rather than close over its first ID.
   const anchorMessageIdRef = useRef(anchorMessageId);
-  anchorMessageIdRef.current = anchorMessageId;
+  useLayoutEffect(() => {
+    anchorMessageIdRef.current = anchorMessageId;
+  }, [anchorMessageId]);
 
   const stickToBottom = useStickToBottom({
     resize: "smooth",
