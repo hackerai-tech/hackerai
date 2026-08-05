@@ -189,7 +189,7 @@ export const MessageNavigator = memo(function MessageNavigator({
   return (
     <div
       className={cn(
-        "group/message-navigator pointer-events-none absolute inset-y-0 left-0 z-30 hidden w-[72px] [@media(pointer:fine)]:block",
+        "group/message-navigator pointer-events-none absolute inset-y-0 left-0 z-40 hidden w-[72px] [@media(pointer:fine)]:block",
         hasPersistentGutter
           ? "opacity-100"
           : "opacity-0 transition-opacity duration-150 hover:opacity-100 focus-within:opacity-100",
@@ -238,7 +238,7 @@ export const MessageNavigator = memo(function MessageNavigator({
             ),
           }}
         >
-          <span className="absolute top-0 left-3 h-full w-px bg-border/20" />
+          <span className="absolute top-0 left-3 h-full w-px bg-border/15" />
           {items.map((item, index) => {
             const activeDistance =
               resolvedActiveIndex === null
@@ -286,7 +286,7 @@ export const MessageNavigator = memo(function MessageNavigator({
                 transform: `translateY(${activePreviewTranslate})`,
               }}
             >
-              <span className="block rounded-xl border border-border/60 bg-popover/95 p-3 text-left text-popover-foreground shadow-xl shadow-black/25 backdrop-blur-md">
+              <span className="message-navigator-preview-glass block rounded-xl p-3 text-left text-popover-foreground">
                 <span className="block max-w-full overflow-hidden text-ellipsis whitespace-nowrap text-sm font-medium leading-5">
                   {activeItem.userText ?? "User message"}
                 </span>
