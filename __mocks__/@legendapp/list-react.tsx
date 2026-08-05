@@ -11,6 +11,8 @@ import {
 
 type OptionalComponent = ReactNode | ComponentType;
 
+export const mockLegendListScrollToIndex = jest.fn(async () => {});
+
 const renderOptionalComponent = (component: OptionalComponent) => {
   if (typeof component === "function") {
     const Component = component;
@@ -55,6 +57,7 @@ export const LegendList = forwardRef(function MockLegendList<
 >(
   {
     data,
+    dataKey,
     extraData,
     renderItem,
     keyExtractor,
@@ -65,6 +68,7 @@ export const LegendList = forwardRef(function MockLegendList<
     "data-testid": dataTestId,
   }: {
     data: Item[];
+    dataKey?: string | number;
     extraData?: unknown;
     renderItem: (info: {
       data: readonly Item[];
@@ -81,6 +85,7 @@ export const LegendList = forwardRef(function MockLegendList<
   },
   forwardedRef: ForwardedRef<{
     getScrollableNode: () => HTMLDivElement | null;
+    scrollToIndex: typeof mockLegendListScrollToIndex;
   }>,
 ) {
   const scrollElementRef = useRef<HTMLDivElement>(null);
@@ -89,6 +94,7 @@ export const LegendList = forwardRef(function MockLegendList<
     forwardedRef,
     () => ({
       getScrollableNode: () => scrollElementRef.current,
+      scrollToIndex: mockLegendListScrollToIndex,
     }),
     [],
   );
@@ -99,6 +105,7 @@ export const LegendList = forwardRef(function MockLegendList<
       className={className}
       style={style}
       data-testid={dataTestId}
+      data-list-key={dataKey}
     >
       <div className="legend-list-content-container">
         {renderOptionalComponent(ListHeaderComponent)}

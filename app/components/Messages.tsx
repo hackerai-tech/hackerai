@@ -85,6 +85,7 @@ const setElementRef = (ref: StickyElementRef, element: HTMLElement | null) => {
 };
 
 interface MessagesProps {
+  chatId: string;
   messages: ChatMessage[];
   setMessages: Dispatch<SetStateAction<ChatMessage[]>>;
   onRegenerate: () => void | Promise<void>;
@@ -124,6 +125,7 @@ interface MessagesProps {
 }
 
 export const Messages = ({
+  chatId,
   messages,
   setMessages,
   onRegenerate,
@@ -529,7 +531,7 @@ export const Messages = ({
       window.dispatchEvent(new Event(STICKY_BOTTOM_ESCAPE_EVENT));
       void timelineInstance?.scrollToIndex({
         index: item.rowIndex,
-        animated: true,
+        animated: false,
         viewOffset: 24,
       });
     },
@@ -740,6 +742,7 @@ export const Messages = ({
         <LegendList<ChatTimelineRow>
           ref={handleTimelineRef}
           data={timelineRows}
+          dataKey={chatId}
           extraData={timelineExtraData}
           keyExtractor={getTimelineRowKey}
           getItemType={getChatTimelineRowType}
