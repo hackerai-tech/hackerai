@@ -36,6 +36,9 @@ import { hasTextContent } from "@/lib/utils/message-utils";
 import { useDataStreamState } from "./DataStreamProvider";
 import type { RateLimitWarningData } from "./RateLimitWarning";
 import type { SelectedModel } from "@/types";
+import { STICKY_BOTTOM_ESCAPE_EVENT } from "@/lib/utils/scroll-events";
+import { MessageNavigator } from "./MessageNavigator";
+import { deriveMessageNavigatorItems } from "./message-navigator";
 import {
   createStableChatTimelineRowsState,
   deriveChatTimelineRows,
@@ -256,6 +259,10 @@ export const Messages = ({
     stableTimelineRowsRef.current = stableTimelineRowsState;
   }, [stableTimelineRowsState]);
   const timelineRows = stableTimelineRowsState.result;
+  const navigatorItems = useMemo(
+    () => deriveMessageNavigatorItems(visibleMessages, timelineRows),
+    [timelineRows, visibleMessages],
+  );
   // Track edit state for messages
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
 
@@ -517,10 +524,26 @@ export const Messages = ({
     timelineRows,
   ]);
 
+  const handleNavigatorSelect = useCallback(
+    (item: (typeof navigatorItems)[number]) => {
+      window.dispatchEvent(new Event(STICKY_BOTTOM_ESCAPE_EVENT));
+      void timelineInstance?.scrollToIndex({
+        index: item.rowIndex,
+        animated: true,
+        viewOffset: 24,
+      });
+    },
+    [timelineInstance],
+  );
+
   const showingLoadingIndicator =
     summarizationStatus?.status === "started" ||
     uploadStatus?.isUploading ||
     shouldShowLoadingDots;
+  const timelineExtraData = useMemo(
+    () => ({ editingMessageId, status }),
+    [editingMessageId, status],
+  );
 
   const renderTimelineRow = useCallback(
     ({ item: row }: { item: ChatTimelineRow }) => {
@@ -616,6 +639,10 @@ export const Messages = ({
       return (
         <div
           className={`mx-auto w-full max-w-full sm:max-w-[768px] sm:min-w-[390px] ${rowClassName}`}
+          data-message-id={row.kind === "message" ? row.message.id : undefined}
+          data-message-role={
+            row.kind === "message" ? row.message.role : undefined
+          }
           data-timeline-row-kind={row.kind}
           data-timeline-message-id={
             row.kind === "message" ? row.message.id : undefined
@@ -672,7 +699,10 @@ export const Messages = ({
     uploadStatus?.isUploading ||
     shouldShowLoadingDots ||
     (error && finishReason !== "timeout") ? (
-      <div className="mx-auto flex w-full max-w-full flex-col items-start pb-20 sm:max-w-[768px] sm:min-w-[390px]">
+      <div
+        className="mx-auto flex min-h-20 w-full max-w-full flex-col items-start sm:max-w-[768px] sm:min-w-[390px]"
+        data-testid="messages-timeline-footer"
+      >
         {showSummarizationSeparately && (
           <SummarizationStatusDivider
             status={summarizationStatus?.status}
@@ -698,7 +728,7 @@ export const Messages = ({
         )}
       </div>
     ) : (
-      <div className="h-20" />
+      <div className="min-h-20" data-testid="messages-timeline-footer" />
     );
 
   return (
@@ -707,12 +737,10 @@ export const Messages = ({
       setCachedUrl={setCachedUrl}
     >
       <div className="relative flex-1 min-h-0">
-        {/* The anchor spacer and bottom-follow hook already account for live
-            row growth; size anchoring would apply the loading-row delta again. */}
         <LegendList<ChatTimelineRow>
           ref={handleTimelineRef}
           data={timelineRows}
-          extraData={editingMessageId}
+          extraData={timelineExtraData}
           keyExtractor={getTimelineRowKey}
           getItemType={getChatTimelineRowType}
           renderItem={renderTimelineRow}
@@ -720,7 +748,7 @@ export const Messages = ({
           recycleItems={false}
           initialScrollAtEnd
           {...(anchoredEndSpace ? { anchoredEndSpace } : {})}
-          maintainVisibleContentPosition={{ data: true, size: false }}
+          maintainVisibleContentPosition={{ data: true, size: true }}
           style={{ height: "100%", minHeight: 0 }}
           className="h-full min-h-0 overflow-x-hidden"
           contentContainerStyle={{
@@ -733,6 +761,14 @@ export const Messages = ({
           ListFooterComponent={timelineFooter}
           data-testid="messages-container"
         />
+
+        {!isMobile ? (
+          <MessageNavigator
+            items={navigatorItems}
+            scrollElement={timelineElements.scroll}
+            onSelect={handleNavigatorSelect}
+          />
+        ) : null}
 
         {/* All Files Dialog */}
         {hasOpenedAllFilesDialog && (

@@ -10,13 +10,15 @@ jest.mock("../MessageItem", () => ({
     isEditing,
     message,
     onStartEdit,
+    status,
   }: {
     canEdit: boolean;
     isEditing: boolean;
     message: ChatMessage;
     onStartEdit: (messageId: string) => void;
+    status: string;
   }) => (
-    <div data-testid={`message-${message.id}`}>
+    <div data-testid={`message-${message.id}`} data-status={status}>
       {isEditing ? (
         <div data-testid="message-editor">Editing {message.id}</div>
       ) : canEdit ? (
@@ -69,7 +71,7 @@ const messages = [
   },
 ] as ChatMessage[];
 
-describe("Messages editing", () => {
+describe("Messages virtualized row invalidation", () => {
   it("invalidates the virtualized row when editing starts", () => {
     render(
       <DataStreamProvider>
@@ -94,6 +96,78 @@ describe("Messages editing", () => {
 
     expect(screen.getByTestId("message-editor")).toHaveTextContent(
       "Editing user-1",
+    );
+  });
+
+  it("invalidates the final assistant row when streaming stops", () => {
+    const sharedProps = {
+      messages,
+      setMessages: jest.fn(),
+      onRegenerate: jest.fn(),
+      onRetry: jest.fn(),
+      onEditMessage: jest.fn(),
+      error: null,
+      scrollRef: createRef<HTMLElement>(),
+      contentRef: createRef<HTMLElement>(),
+      isMobile: true,
+    };
+    const { rerender } = render(
+      <DataStreamProvider>
+        <Messages {...sharedProps} status="streaming" />
+      </DataStreamProvider>,
+    );
+
+    expect(screen.getByTestId("message-assistant-1")).toHaveAttribute(
+      "data-status",
+      "streaming",
+    );
+
+    rerender(
+      <DataStreamProvider>
+        <Messages {...sharedProps} status="ready" />
+      </DataStreamProvider>,
+    );
+
+    expect(screen.getByTestId("message-assistant-1")).toHaveAttribute(
+      "data-status",
+      "ready",
+    );
+  });
+
+  it("keeps the timeline footer height stable when loading starts", () => {
+    const sharedProps = {
+      messages: messages.slice(0, 1),
+      setMessages: jest.fn(),
+      onRegenerate: jest.fn(),
+      onRetry: jest.fn(),
+      onEditMessage: jest.fn(),
+      error: null,
+      scrollRef: createRef<HTMLElement>(),
+      contentRef: createRef<HTMLElement>(),
+      isMobile: true,
+    };
+    const { rerender } = render(
+      <DataStreamProvider>
+        <Messages {...sharedProps} status="ready" />
+      </DataStreamProvider>,
+    );
+
+    expect(screen.getByTestId("messages-timeline-footer")).toHaveClass(
+      "min-h-20",
+    );
+
+    rerender(
+      <DataStreamProvider>
+        <Messages {...sharedProps} status="submitted" />
+      </DataStreamProvider>,
+    );
+
+    expect(screen.getByRole("status", { name: "Loading" })).toBeInTheDocument();
+    expect(screen.getByTestId("messages-timeline-footer")).toHaveClass(
+      "min-h-20",
+    );
+    expect(screen.getByTestId("messages-timeline-footer")).not.toHaveClass(
+      "pb-20",
     );
   });
 });
