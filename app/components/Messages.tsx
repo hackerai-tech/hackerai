@@ -439,11 +439,34 @@ export const Messages = ({
   const handleNavigatorSelect = useCallback(
     (item: (typeof navigatorItems)[number]) => {
       window.dispatchEvent(new Event(STICKY_BOTTOM_ESCAPE_EVENT));
-      void timelineInstance?.scrollToIndex({
+      const instance = timelineInstance;
+      if (!instance) {
+        return;
+      }
+
+      const scrollOptions = {
         index: item.rowIndex,
         animated: true,
         viewOffset: 24,
-      });
+      } as const;
+      const scrollToTarget = async () => {
+        await instance.scrollToIndex(scrollOptions);
+
+        const state = instance.getState();
+        const currentTarget = state.data[item.rowIndex] as
+          ChatTimelineRow | undefined;
+        const targetStillCurrent =
+          currentTarget?.kind === "message" &&
+          currentTarget.message.id === item.id;
+        const targetIsOutsideVisibleRange =
+          item.rowIndex < state.start || item.rowIndex > state.end;
+
+        if (targetStillCurrent && targetIsOutsideVisibleRange) {
+          await instance.scrollToIndex(scrollOptions);
+        }
+      };
+
+      void scrollToTarget();
     },
     [timelineInstance],
   );

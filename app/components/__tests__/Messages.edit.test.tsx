@@ -1,8 +1,12 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { createRef } from "react";
 import { DataStreamProvider } from "../DataStreamProvider";
 import { Messages } from "../Messages";
 import type { ChatMessage } from "@/types";
+import {
+  mockLegendListGetState,
+  mockLegendListScrollToIndex,
+} from "../../../__mocks__/@legendapp/list-react";
 
 jest.mock("../MessageItem", () => ({
   MessageItem: ({
@@ -69,7 +73,28 @@ const messages = [
   },
 ] as ChatMessage[];
 
+const navigatorMessages = [
+  ...messages,
+  {
+    id: "user-2",
+    role: "user",
+    parts: [{ type: "text", text: "Follow-up question" }],
+  },
+  {
+    id: "assistant-2",
+    role: "assistant",
+    parts: [{ type: "text", text: "Follow-up answer" }],
+  },
+] as ChatMessage[];
+
 describe("Messages editing", () => {
+  beforeEach(() => {
+    mockLegendListGetState.mockReset();
+    mockLegendListGetState.mockReturnValue({ data: [], end: -1, start: 0 });
+    mockLegendListScrollToIndex.mockReset();
+    mockLegendListScrollToIndex.mockResolvedValue(undefined);
+  });
+
   it("invalidates the virtualized row when editing starts", () => {
     render(
       <DataStreamProvider>
@@ -132,5 +157,56 @@ describe("Messages editing", () => {
       "data-list-key",
       "chat-2",
     );
+  });
+
+  it("retries once when the first navigator scroll misses its target", async () => {
+    mockLegendListGetState.mockReturnValue({
+      data: [
+        {
+          kind: "message",
+          message: navigatorMessages[0],
+        },
+      ],
+      start: 2,
+      end: 3,
+    });
+
+    render(
+      <DataStreamProvider>
+        <Messages
+          chatId="chat-1"
+          messages={navigatorMessages}
+          setMessages={jest.fn()}
+          onRegenerate={jest.fn()}
+          onRetry={jest.fn()}
+          onEditMessage={jest.fn()}
+          status="ready"
+          error={null}
+          scrollRef={createRef<HTMLElement>()}
+          contentRef={createRef<HTMLElement>()}
+          isMobile={false}
+        />
+      </DataStreamProvider>,
+    );
+
+    const navigator = screen.getByRole("button", {
+      name: "Jump to message: User message",
+    });
+    fireEvent.focus(navigator);
+    fireEvent.keyDown(navigator, { key: "Enter" });
+
+    await waitFor(() => {
+      expect(mockLegendListScrollToIndex).toHaveBeenCalledTimes(2);
+    });
+    expect(mockLegendListScrollToIndex).toHaveBeenNthCalledWith(1, {
+      animated: true,
+      index: 0,
+      viewOffset: 24,
+    });
+    expect(mockLegendListScrollToIndex).toHaveBeenNthCalledWith(2, {
+      animated: true,
+      index: 0,
+      viewOffset: 24,
+    });
   });
 });
