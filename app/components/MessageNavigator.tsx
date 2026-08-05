@@ -238,7 +238,6 @@ export const MessageNavigator = memo(function MessageNavigator({
             ),
           }}
         >
-          <span className="absolute top-0 left-3 h-full w-px bg-border/15" />
           {items.map((item, index) => {
             const activeDistance =
               resolvedActiveIndex === null
