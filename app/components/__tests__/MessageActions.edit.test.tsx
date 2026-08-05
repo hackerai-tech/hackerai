@@ -86,3 +86,29 @@ describe("MessageActions regeneration", () => {
     await waitFor(() => expect(onRegenerate).toHaveBeenCalledTimes(1));
   });
 });
+
+describe("MessageActions branching", () => {
+  it("shows the branch icon horizontally", () => {
+    render(
+      <MessageActions
+        messageText="Answer"
+        isUser={false}
+        isLastAssistantMessage
+        canRegenerate={false}
+        onRegenerate={jest.fn()}
+        onEdit={jest.fn()}
+        canEdit={false}
+        onBranch={jest.fn()}
+        isHovered
+        isEditing={false}
+        status="ready"
+      />,
+    );
+
+    expect(
+      screen
+        .getByRole("button", { name: "Branch in new task" })
+        .querySelector("svg"),
+    ).toHaveClass("rotate-90");
+  });
+});

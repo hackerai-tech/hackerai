@@ -361,7 +361,7 @@ export const MessageActions = ({
                     className="p-1.5 opacity-70 hover:opacity-100 transition-opacity rounded hover:bg-secondary text-muted-foreground"
                     aria-label="Branch in new task"
                   >
-                    <Split size={16} />
+                    <Split className="rotate-90" size={16} />
                   </button>
                 }
                 side="bottom"
