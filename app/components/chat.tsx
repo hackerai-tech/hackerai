@@ -93,6 +93,7 @@ import { useParams, useRouter } from "next/navigation";
 import { ConvexErrorBoundary } from "./ConvexErrorBoundary";
 import { useAutoResume } from "../hooks/useAutoResume";
 import { useAutoContinue } from "../hooks/useAutoContinue";
+import { findLatestTimelineAnchorMessageId } from "./message-timeline-rows";
 import { useLatestRef } from "../hooks/useLatestRef";
 import { useDataStreamDispatch } from "./DataStreamProvider";
 import { removeDraft } from "@/lib/utils/client-storage";
@@ -1608,8 +1609,15 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     }
   }, [paginatedMessageResults, setMessages, isExistingChat, chatId, status]);
 
+  // Keep the latest visible user turn anchored while its response streams.
+  // Auto-continue prompts are hidden from the timeline and must not replace
+  // the user-visible anchor.
+  const timelineAnchorMessageId = useMemo(
+    () => findLatestTimelineAnchorMessageId(messages),
+    [messages],
+  );
   const { scrollRef, contentRef, scrollToBottom, isAtBottom } =
-    useMessageScroll();
+    useMessageScroll(timelineAnchorMessageId);
 
   // File upload with drag and drop support
   const {
@@ -1638,23 +1646,6 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
       scrollToBottom({ instant: true, force: true });
     }
   }, [messages.length, scrollToBottom, isExistingChat]);
-
-  // Re-arm sticky scroll whenever a new user message is appended at the tail.
-  // Stop+send flows (Send Now, stop-and-send) mutate the DOM mid-stream which
-  // knocks use-stick-to-bottom out of "at bottom" state, so we force-scroll on
-  // the new user message to resume following the next generation. Keyed on
-  // tail-id (not length) so pagination prepends don't trigger a scroll jump.
-  const lastMessage = messages[messages.length - 1];
-  const lastId = lastMessage?.id;
-  const lastRole = lastMessage?.role;
-  const prevLastIdRef = useRef<string | undefined>(lastId);
-  useEffect(() => {
-    const prevLastId = prevLastIdRef.current;
-    prevLastIdRef.current = lastId;
-    if (lastId && lastId !== prevLastId && lastRole === "user") {
-      scrollToBottom({ force: true });
-    }
-  }, [lastId, lastRole, scrollToBottom]);
 
   // Keep a ref to the latest messageQueue to avoid stale closures
   const messageQueueRef = useLatestRef(messageQueue);
@@ -1916,6 +1907,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
                   chatTitle={chatTitle}
                   branchedFromChatId={branchedFromChatId}
                   branchedFromChatTitle={branchedFromChatTitle}
+                  anchorMessageId={timelineAnchorMessageId}
                 />
               ) : (
                 <div className="flex-1 flex flex-col min-h-0">

@@ -49,6 +49,35 @@ export type DeriveChatTimelineRowsOptions = {
   expandedAgentMessageIds: ReadonlySet<string>;
 };
 
+export function findLatestTimelineAnchorMessageId(
+  messages: readonly ChatMessage[],
+): string | null {
+  for (let index = messages.length - 1; index >= 0; index--) {
+    const message = messages[index];
+    if (message?.role === "user" && !message.metadata?.isAutoContinue) {
+      return message.id;
+    }
+  }
+
+  return null;
+}
+
+export function findMessageTimelineAnchorIndex(
+  rows: readonly ChatTimelineRow[],
+  messageId: string | null,
+): number | undefined {
+  if (!messageId) return undefined;
+
+  for (let index = rows.length - 1; index >= 0; index--) {
+    const row = rows[index];
+    if (row?.kind === "message" && row.message.id === messageId) {
+      return index;
+    }
+  }
+
+  return undefined;
+}
+
 export function deriveChatTimelineRows({
   messages,
   status,

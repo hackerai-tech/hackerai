@@ -1,6 +1,8 @@
 import {
   createStableChatTimelineRowsState,
   deriveChatTimelineRows,
+  findLatestTimelineAnchorMessageId,
+  findMessageTimelineAnchorIndex,
   stabilizeChatTimelineRows,
   type AgentActivityTimelineRow,
 } from "../message-timeline-rows";
@@ -22,6 +24,57 @@ const agentMessage = (
   }) as unknown as ChatMessage;
 
 describe("deriveChatTimelineRows", () => {
+  it("keeps hidden auto-continue prompts from replacing the visible turn anchor", () => {
+    const messages = [
+      {
+        id: "user-1",
+        role: "user",
+        parts: [{ type: "text", text: "Question" }],
+      },
+      {
+        id: "assistant-1",
+        role: "assistant",
+        parts: [{ type: "text", text: "Partial answer" }],
+      },
+      {
+        id: "auto-continue-1",
+        role: "user",
+        parts: [{ type: "text", text: "Continue" }],
+        metadata: { isAutoContinue: true },
+      },
+    ] as ChatMessage[];
+
+    expect(findLatestTimelineAnchorMessageId(messages)).toBe("user-1");
+    expect(findLatestTimelineAnchorMessageId([])).toBeNull();
+  });
+
+  it("finds the sent message row used to anchor a new turn", () => {
+    const userMessage = {
+      id: "user-1",
+      role: "user",
+      parts: [{ type: "text", text: "Question" }],
+    } as ChatMessage;
+    const assistantMessage = agentMessage([
+      {
+        type: "tool-shell",
+        toolCallId: "tool-1",
+        input: { command: "pwd" },
+        state: "output-available",
+      },
+      { type: "text", text: "Answer" },
+    ] as ChatMessage["parts"]);
+    const rows = deriveChatTimelineRows({
+      messages: [userMessage, assistantMessage],
+      status: "streaming",
+      lastAssistantMessageIndex: 1,
+      expandedAgentMessageIds: new Set(),
+    });
+
+    expect(findMessageTimelineAnchorIndex(rows, userMessage.id)).toBe(0);
+    expect(findMessageTimelineAnchorIndex(rows, "missing")).toBeUndefined();
+    expect(findMessageTimelineAnchorIndex(rows, null)).toBeUndefined();
+  });
+
   it("creates independently virtualizable rows for every live activity", () => {
     const tools = Array.from({ length: 100 }, (_, index) => ({
       type: "tool-shell",
