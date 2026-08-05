@@ -1,12 +1,15 @@
 import {
   task,
-  tags,
   metadata,
   logger as triggerLogger,
   usage as triggerUsage,
 } from "@trigger.dev/sdk";
 import * as triggerSdk from "@trigger.dev/sdk";
 import { agentUiStream } from "./streams";
+import {
+  addAgentLongTags,
+  getMissingAgentLongTags,
+} from "./agent-long-tag-updates";
 import {
   createUIMessageStream,
   generateId,
@@ -1388,7 +1391,12 @@ const recordAgentLongFailureForDashboard = async (
       buildTriggerTag("error_sandbox_upload_", summary.uploadFailureReason),
     );
   }
-  await tags.add(terminalTags);
+  await addAgentLongTags(terminalTags, {
+    runId: context.runId,
+    chatId: context.chatId,
+    userId: context.userId,
+    stage: "terminal_error",
+  });
 
   const { emptyAfterProcessingMetadata, ...summaryLogFields } = summary;
   const logFields = {
@@ -1438,10 +1446,18 @@ const recordAgentLongHandledRateLimitForDashboard = async (
 
   if (summary.statusCode) metadata.set("blockedStatusCode", summary.statusCode);
 
-  await tags.add([
-    "rate_limited",
-    buildTriggerTag("blocked_code_", summary.code ?? "rate_limit_chat"),
-  ]);
+  await addAgentLongTags(
+    [
+      "rate_limited",
+      buildTriggerTag("blocked_code_", summary.code ?? "rate_limit_chat"),
+    ],
+    {
+      runId: context.runId,
+      chatId: context.chatId,
+      userId: context.userId,
+      stage: "handled_rate_limit",
+    },
+  );
 
   triggerLogger.info("[agent-long] run rate limited", {
     chatId: context.chatId,
@@ -1473,14 +1489,22 @@ const recordAgentLongHandledToolFailureForDashboard = async (
     metadata.set("lastHandledToolFailureStatus", failure.status);
   }
 
-  await tags.add([
-    "handled_tool_failure",
-    buildTriggerTag("tool_", failure.tool_name),
-    buildTriggerTag("tool_provider_", failure.provider),
-    ...(failure.status != null
-      ? [buildTriggerTag("tool_status_", String(failure.status))]
-      : []),
-  ]);
+  await addAgentLongTags(
+    [
+      "handled_tool_failure",
+      buildTriggerTag("tool_", failure.tool_name),
+      buildTriggerTag("tool_provider_", failure.provider),
+      ...(failure.status != null
+        ? [buildTriggerTag("tool_status_", String(failure.status))]
+        : []),
+    ],
+    {
+      runId: context.runId,
+      chatId: context.chatId,
+      userId: context.userId,
+      stage: "handled_tool_failure",
+    },
+  );
 
   triggerLogger.warn("[agent-long] handled tool failure", {
     chatId: context.chatId,
@@ -1718,9 +1742,26 @@ export const agentLongTask = task({
       };
     };
 
-    // Tag for dashboard filtering; add subscription tier for paid-only queries.
-    await tags.add([`user_${userId}`, `chat_${chatId}`]);
-    if (subscription !== "free") await tags.add(`sub_${subscription}`);
+    // The Vercel trigger route normally supplies these tags atomically with
+    // run creation. Preserve direct/admin triggers without spending another
+    // Trigger API request when the run already has the desired tags.
+    const desiredTaskStartTags = [
+      `user_${userId}`,
+      `chat_${chatId}`,
+      ...(subscription !== "free" ? [`sub_${subscription}`] : []),
+    ];
+    const missingTaskStartTags = getMissingAgentLongTags(
+      ctx.run.tags,
+      desiredTaskStartTags,
+    );
+    if (missingTaskStartTags.length > 0) {
+      await addAgentLongTags(missingTaskStartTags, {
+        runId: ctx.run.id,
+        chatId,
+        userId,
+        stage: "task_start_missing",
+      });
+    }
 
     // Lifecycle metadata so the dashboard shows progress for long runs.
     metadata
@@ -3640,7 +3681,12 @@ export const agentLongTask = task({
           .set("realtimeStreamStatus", "transport_error")
           .set("realtimeStreamErrorMessage", errorMessage)
           .set("realtimeStreamFailedAt", new Date().toISOString());
-        await tags.add("trigger_realtime_transport_error");
+        await addAgentLongTags("trigger_realtime_transport_error", {
+          runId: ctx.run.id,
+          chatId,
+          userId,
+          stage: "realtime_transport_error",
+        });
         triggerLogger.warn("[agent-long] realtime stream transport failed", {
           chatId,
           userId,
