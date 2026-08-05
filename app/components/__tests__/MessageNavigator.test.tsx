@@ -80,6 +80,42 @@ describe("MessageNavigator", () => {
     expect(onSelect).toHaveBeenCalledWith(items[1]);
   });
 
+  it("keeps the preview open while the pointer moves onto it", () => {
+    render(
+      <MessageNavigator
+        items={items}
+        scrollElement={null}
+        onSelect={jest.fn()}
+      />,
+    );
+
+    const button = screen.getByRole("button", {
+      name: "Jump to message: User message",
+    });
+    button.getBoundingClientRect = () =>
+      ({
+        top: 100,
+        right: 40,
+        bottom: 122,
+        left: 0,
+        width: 40,
+        height: 22,
+        x: 0,
+        y: 100,
+        toJSON: () => ({}),
+      }) as DOMRect;
+
+    fireEvent.mouseMove(button, { clientY: 111 });
+    const preview = screen.getByTestId("message-navigator-preview");
+    expect(preview).toHaveTextContent("Second question");
+    expect(button).toHaveStyle({ width: "22rem" });
+
+    fireEvent.mouseMove(preview);
+    expect(screen.getByTestId("message-navigator-preview")).toHaveTextContent(
+      "Second question",
+    );
+  });
+
   it("marks destinations whose user rows are in the viewport", () => {
     const scrollElement = document.createElement("div");
     const visibleRow = document.createElement("div");
