@@ -36,6 +36,9 @@ import { hasTextContent } from "@/lib/utils/message-utils";
 import { useDataStreamState } from "./DataStreamProvider";
 import type { RateLimitWarningData } from "./RateLimitWarning";
 import type { SelectedModel } from "@/types";
+import { STICKY_BOTTOM_ESCAPE_EVENT } from "@/lib/utils/scroll-events";
+import { MessageNavigator } from "./MessageNavigator";
+import { deriveMessageNavigatorItems } from "./message-navigator";
 import {
   createStableChatTimelineRowsState,
   deriveChatTimelineRows,
@@ -252,6 +255,10 @@ export const Messages = ({
     stableTimelineRowsRef.current = stableTimelineRowsState;
   }, [stableTimelineRowsState]);
   const timelineRows = stableTimelineRowsState.result;
+  const navigatorItems = useMemo(
+    () => deriveMessageNavigatorItems(visibleMessages, timelineRows),
+    [timelineRows, visibleMessages],
+  );
   // Track edit state for messages
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
 
@@ -427,6 +434,18 @@ export const Messages = ({
     return () => scrollElement.removeEventListener("scroll", handleScroll);
   }, [handleScroll, timelineElements.scroll]);
 
+  const handleNavigatorSelect = useCallback(
+    (item: (typeof navigatorItems)[number]) => {
+      window.dispatchEvent(new Event(STICKY_BOTTOM_ESCAPE_EVENT));
+      void timelineInstance?.scrollToIndex({
+        index: item.rowIndex,
+        animated: true,
+        viewOffset: 24,
+      });
+    },
+    [timelineInstance],
+  );
+
   const showingLoadingIndicator =
     summarizationStatus?.status === "started" ||
     uploadStatus?.isUploading ||
@@ -526,6 +545,10 @@ export const Messages = ({
       return (
         <div
           className={`mx-auto w-full max-w-full sm:max-w-[768px] sm:min-w-[390px] ${rowClassName}`}
+          data-message-id={row.kind === "message" ? row.message.id : undefined}
+          data-message-role={
+            row.kind === "message" ? row.message.role : undefined
+          }
           data-timeline-row-kind={row.kind}
         >
           {content}
@@ -637,6 +660,14 @@ export const Messages = ({
           ListFooterComponent={timelineFooter}
           data-testid="messages-container"
         />
+
+        {!isMobile ? (
+          <MessageNavigator
+            items={navigatorItems}
+            scrollElement={timelineElements.scroll}
+            onSelect={handleNavigatorSelect}
+          />
+        ) : null}
 
         {/* All Files Dialog */}
         {hasOpenedAllFilesDialog && (
