@@ -478,7 +478,7 @@ const ChatItem: React.FC<ChatItemProps> = ({
             <TooltipProvider delayDuration={300}>
               <Tooltip>
                 <TooltipTrigger asChild>
-                  <Split className="size-3 flex-shrink-0 text-muted-foreground" />
+                  <Split className="size-3 rotate-90 flex-shrink-0 text-muted-foreground" />
                 </TooltipTrigger>
                 <TooltipContent side="right">
                   <p className="text-xs">

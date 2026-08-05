@@ -252,7 +252,7 @@ const ChatHeader: React.FC<ChatHeaderProps> = ({
                         <TooltipProvider delayDuration={300}>
                           <Tooltip>
                             <TooltipTrigger asChild>
-                              <Split className="size-4 flex-shrink-0 text-muted-foreground" />
+                              <Split className="size-4 rotate-90 flex-shrink-0 text-muted-foreground" />
                             </TooltipTrigger>
                             <TooltipContent>
                               <p className="text-xs">
