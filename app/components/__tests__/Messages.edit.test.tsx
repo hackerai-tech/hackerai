@@ -3,10 +3,7 @@ import { createRef } from "react";
 import { DataStreamProvider } from "../DataStreamProvider";
 import { Messages } from "../Messages";
 import type { ChatMessage } from "@/types";
-import {
-  mockLegendListGetState,
-  mockLegendListScrollToIndex,
-} from "../../../__mocks__/@legendapp/list-react";
+import { mockLegendListScrollToIndex } from "../../../__mocks__/@legendapp/list-react";
 
 jest.mock("../MessageItem", () => ({
   MessageItem: ({
@@ -91,8 +88,6 @@ const navigatorMessages = [
 
 describe("Messages virtualized row invalidation", () => {
   beforeEach(() => {
-    mockLegendListGetState.mockReset();
-    mockLegendListGetState.mockReturnValue({ data: [], end: -1, start: 0 });
     mockLegendListScrollToIndex.mockReset();
     mockLegendListScrollToIndex.mockResolvedValue(undefined);
   });
@@ -196,18 +191,7 @@ describe("Messages virtualized row invalidation", () => {
     );
   });
 
-  it("retries once when the first navigator scroll misses its target", async () => {
-    mockLegendListGetState.mockReturnValue({
-      data: [
-        {
-          kind: "message",
-          message: navigatorMessages[0],
-        },
-      ],
-      start: 2,
-      end: 3,
-    });
-
+  it("jumps to a navigator target without animation", async () => {
     render(
       <DataStreamProvider>
         <Messages
@@ -233,15 +217,10 @@ describe("Messages virtualized row invalidation", () => {
     fireEvent.keyDown(navigator, { key: "Enter" });
 
     await waitFor(() => {
-      expect(mockLegendListScrollToIndex).toHaveBeenCalledTimes(2);
+      expect(mockLegendListScrollToIndex).toHaveBeenCalledTimes(1);
     });
-    expect(mockLegendListScrollToIndex).toHaveBeenNthCalledWith(1, {
-      animated: true,
-      index: 0,
-      viewOffset: 24,
-    });
-    expect(mockLegendListScrollToIndex).toHaveBeenNthCalledWith(2, {
-      animated: true,
+    expect(mockLegendListScrollToIndex).toHaveBeenCalledWith({
+      animated: false,
       index: 0,
       viewOffset: 24,
     });

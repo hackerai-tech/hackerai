@@ -11,11 +11,6 @@ import {
 
 type OptionalComponent = ReactNode | ComponentType;
 
-export const mockLegendListGetState = jest.fn(() => ({
-  data: [] as unknown[],
-  end: -1,
-  start: 0,
-}));
 export const mockLegendListScrollToIndex = jest.fn(async () => {});
 
 const renderOptionalComponent = (component: OptionalComponent) => {
@@ -89,7 +84,6 @@ export const LegendList = forwardRef(function MockLegendList<
     "data-testid"?: string;
   },
   forwardedRef: ForwardedRef<{
-    getState: typeof mockLegendListGetState;
     getScrollableNode: () => HTMLDivElement | null;
     scrollToIndex: typeof mockLegendListScrollToIndex;
   }>,
@@ -99,7 +93,6 @@ export const LegendList = forwardRef(function MockLegendList<
   useImperativeHandle(
     forwardedRef,
     () => ({
-      getState: mockLegendListGetState,
       getScrollableNode: () => scrollElementRef.current,
       scrollToIndex: mockLegendListScrollToIndex,
     }),
