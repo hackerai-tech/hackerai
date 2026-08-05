@@ -161,6 +161,24 @@
   }
 }
 
+.message-navigator-preview-glass {
+  background: color-mix(
+    in srgb,
+    var(--popover) 18%,
+    color-mix(in srgb, var(--popover) 80%, transparent)
+  );
+  -webkit-backdrop-filter: blur(12px);
+  backdrop-filter: blur(12px);
+  border: 1px solid color-mix(in srgb, var(--foreground) 10%, transparent);
+  box-shadow: 0 16px 40px -18px rgb(0 0 0 / 55%);
+}
+
+.dark .message-navigator-preview-glass {
+  -webkit-backdrop-filter: blur(16px);
+  backdrop-filter: blur(16px);
+  box-shadow: 0 18px 44px -18px rgb(0 0 0 / 80%);
+}
+
 @keyframes shimmer {
   0% {
     background-position: 200% 0;
