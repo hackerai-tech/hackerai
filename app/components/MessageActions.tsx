@@ -330,8 +330,8 @@ export const MessageActions = ({
               </>
             )}
 
-            {/* Show regenerate only for the last assistant message */}
-            {!isUser && isLastAssistantMessage && (
+            {/* Show regenerate only for eligible last assistant messages. */}
+            {!isUser && isLastAssistantMessage && canRegenerate && (
               <WithTooltip
                 display={"Regenerate response"}
                 trigger={

@@ -27,7 +27,12 @@ jest.mock("../MessagePartHandler", () => ({
 }));
 
 jest.mock("../MessageActions", () => ({
-  MessageActions: () => <div data-testid="message-actions" />,
+  MessageActions: ({ canRegenerate }: { canRegenerate: boolean }) => (
+    <div
+      data-testid="message-actions"
+      data-can-regenerate={String(canRegenerate)}
+    />
+  ),
 }));
 
 jest.mock("../FilePartRenderer", () => ({
@@ -122,6 +127,33 @@ const renderMessageItem = ({
   );
 
 describe("MessageItem WorkedFor rendering", () => {
+  it("disables regeneration for an Agent response after switching to Ask", () => {
+    renderMessageItem({ mode: "ask" });
+
+    expect(screen.getByTestId("message-actions")).toHaveAttribute(
+      "data-can-regenerate",
+      "false",
+    );
+  });
+
+  it("allows regeneration for an Ask response after switching to Agent", () => {
+    renderMessageItem({
+      mode: "agent",
+      message: {
+        ...assistantMessage,
+        metadata: {
+          mode: "ask",
+          generationTimeMs: 1_500,
+        },
+      } as ChatMessage,
+    });
+
+    expect(screen.getByTestId("message-actions")).toHaveAttribute(
+      "data-can-regenerate",
+      "true",
+    );
+  });
+
   it("renders work inline for messages generated in ask mode", () => {
     renderMessageItem({
       mode: "agent",
