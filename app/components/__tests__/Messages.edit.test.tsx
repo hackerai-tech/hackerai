@@ -191,6 +191,44 @@ describe("Messages virtualized row invalidation", () => {
     );
   });
 
+  it("keeps the timeline footer height stable when loading starts", () => {
+    const sharedProps = {
+      chatId: "chat-1",
+      messages: messages.slice(0, 1),
+      setMessages: jest.fn(),
+      onRegenerate: jest.fn(),
+      onRetry: jest.fn(),
+      onEditMessage: jest.fn(),
+      error: null,
+      scrollRef: createRef<HTMLElement>(),
+      contentRef: createRef<HTMLElement>(),
+      isMobile: true,
+    };
+    const { rerender } = render(
+      <DataStreamProvider>
+        <Messages {...sharedProps} status="ready" />
+      </DataStreamProvider>,
+    );
+
+    expect(screen.getByTestId("messages-timeline-footer")).toHaveClass(
+      "min-h-20",
+    );
+
+    rerender(
+      <DataStreamProvider>
+        <Messages {...sharedProps} status="submitted" />
+      </DataStreamProvider>,
+    );
+
+    expect(screen.getByRole("status", { name: "Loading" })).toBeInTheDocument();
+    expect(screen.getByTestId("messages-timeline-footer")).toHaveClass(
+      "min-h-20",
+    );
+    expect(screen.getByTestId("messages-timeline-footer")).not.toHaveClass(
+      "pb-20",
+    );
+  });
+
   it("jumps to a navigator target without animation", async () => {
     render(
       <DataStreamProvider>

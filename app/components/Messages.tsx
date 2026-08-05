@@ -42,11 +42,13 @@ import { deriveMessageNavigatorItems } from "./message-navigator";
 import {
   createStableChatTimelineRowsState,
   deriveChatTimelineRows,
+  findMessageTimelineAnchorIndex,
   getChatTimelineRowType,
   stabilizeChatTimelineRows,
   type ChatTimelineRow,
   type StableChatTimelineRowsState,
 } from "./message-timeline-rows";
+import { CHAT_TIMELINE_ANCHOR_OFFSET } from "../hooks/useMessageScroll";
 
 const AllFilesDialog = dynamic(
   () => import("./AllFilesDialog").then((module) => module.AllFilesDialog),
@@ -119,6 +121,7 @@ interface MessagesProps {
   chatTitle?: string | null;
   branchedFromChatId?: string;
   branchedFromChatTitle?: string;
+  anchorMessageId?: string | null;
 }
 
 export const Messages = ({
@@ -147,6 +150,7 @@ export const Messages = ({
   chatTitle,
   branchedFromChatId,
   branchedFromChatTitle,
+  anchorMessageId = null,
 }: MessagesProps) => {
   const { isAutoResuming } = useDataStreamState();
   // Prefetch and cache image URLs for better performance
@@ -361,6 +365,13 @@ export const Messages = ({
 
   const [timelineInstance, setTimelineInstance] =
     useState<LegendListRef | null>(null);
+  const timelineInstanceRef = useRef<LegendListRef | null>(null);
+  const positionedAnchorMessageIdRef = useRef<string | null>(null);
+  const anchorPositionFrameRef = useRef<number | null>(null);
+  const handleTimelineRef = useCallback((instance: LegendListRef | null) => {
+    timelineInstanceRef.current = instance;
+    setTimelineInstance(instance);
+  }, []);
   const [timelineElements, setTimelineElements] = useState<{
     content: HTMLElement | null;
     scroll: HTMLElement | null;
@@ -435,6 +446,85 @@ export const Messages = ({
     scrollElement.addEventListener("scroll", handleScroll, { passive: true });
     return () => scrollElement.removeEventListener("scroll", handleScroll);
   }, [handleScroll, timelineElements.scroll]);
+
+  useEffect(() => {
+    if (!anchorMessageId) {
+      const scrollElement = timelineInstanceRef.current?.getScrollableNode();
+      if (scrollElement) {
+        scrollElement.dataset.timelineAnchoredEndSpace = "false";
+      }
+      positionedAnchorMessageIdRef.current = null;
+    }
+
+    return () => {
+      if (anchorPositionFrameRef.current !== null) {
+        cancelAnimationFrame(anchorPositionFrameRef.current);
+        anchorPositionFrameRef.current = null;
+      }
+    };
+  }, [anchorMessageId]);
+
+  const handleAnchorSizeChanged = useCallback((size: number) => {
+    const scrollElement = timelineInstanceRef.current?.getScrollableNode();
+    if (scrollElement) {
+      scrollElement.dataset.timelineAnchoredEndSpace = String(size > 0);
+    }
+  }, []);
+
+  const handleAnchorReady = useCallback(
+    ({
+      anchorIndex,
+      size,
+    }: {
+      anchorIndex: number | undefined;
+      size: number;
+    }) => {
+      const scrollElement = timelineInstanceRef.current?.getScrollableNode();
+      if (scrollElement) {
+        scrollElement.dataset.timelineAnchoredEndSpace = String(size > 0);
+      }
+
+      if (
+        !anchorMessageId ||
+        anchorIndex === undefined ||
+        positionedAnchorMessageIdRef.current === anchorMessageId
+      ) {
+        return;
+      }
+
+      positionedAnchorMessageIdRef.current = anchorMessageId;
+      anchorPositionFrameRef.current = requestAnimationFrame(() => {
+        anchorPositionFrameRef.current = null;
+        void timelineInstanceRef.current?.scrollToIndex({
+          index: anchorIndex,
+          animated: true,
+          viewPosition: 0,
+          viewOffset: CHAT_TIMELINE_ANCHOR_OFFSET,
+        });
+      });
+    },
+    [anchorMessageId],
+  );
+
+  const anchoredEndSpace = useMemo(() => {
+    const anchorIndex = findMessageTimelineAnchorIndex(
+      timelineRows,
+      anchorMessageId,
+    );
+    return anchorIndex === undefined
+      ? undefined
+      : {
+          anchorIndex,
+          anchorOffset: CHAT_TIMELINE_ANCHOR_OFFSET,
+          onReady: handleAnchorReady,
+          onSizeChanged: handleAnchorSizeChanged,
+        };
+  }, [
+    anchorMessageId,
+    handleAnchorReady,
+    handleAnchorSizeChanged,
+    timelineRows,
+  ]);
 
   const handleNavigatorSelect = useCallback(
     (item: (typeof navigatorItems)[number]) => {
@@ -556,6 +646,9 @@ export const Messages = ({
             row.kind === "message" ? row.message.role : undefined
           }
           data-timeline-row-kind={row.kind}
+          data-timeline-message-id={
+            row.kind === "message" ? row.message.id : undefined
+          }
         >
           {content}
         </div>
@@ -608,7 +701,10 @@ export const Messages = ({
     uploadStatus?.isUploading ||
     shouldShowLoadingDots ||
     (error && finishReason !== "timeout") ? (
-      <div className="mx-auto flex w-full max-w-full flex-col items-start pb-20 sm:max-w-[768px] sm:min-w-[390px]">
+      <div
+        className="mx-auto flex min-h-20 w-full max-w-full flex-col items-start sm:max-w-[768px] sm:min-w-[390px]"
+        data-testid="messages-timeline-footer"
+      >
         {showSummarizationSeparately && (
           <SummarizationStatusDivider
             status={summarizationStatus?.status}
@@ -634,7 +730,7 @@ export const Messages = ({
         )}
       </div>
     ) : (
-      <div className="h-20" />
+      <div className="min-h-20" data-testid="messages-timeline-footer" />
     );
 
   return (
@@ -644,7 +740,7 @@ export const Messages = ({
     >
       <div className="relative flex-1 min-h-0">
         <LegendList<ChatTimelineRow>
-          ref={setTimelineInstance}
+          ref={handleTimelineRef}
           data={timelineRows}
           dataKey={chatId}
           extraData={timelineExtraData}
@@ -654,6 +750,7 @@ export const Messages = ({
           estimatedItemSize={48}
           recycleItems={false}
           initialScrollAtEnd
+          {...(anchoredEndSpace ? { anchoredEndSpace } : {})}
           maintainVisibleContentPosition={{ data: true, size: true }}
           style={{ height: "100%", minHeight: 0 }}
           className="h-full min-h-0 overflow-x-hidden"
