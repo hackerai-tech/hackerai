@@ -450,6 +450,10 @@ export const Messages = ({
     summarizationStatus?.status === "started" ||
     uploadStatus?.isUploading ||
     shouldShowLoadingDots;
+  const timelineExtraData = useMemo(
+    () => ({ editingMessageId, status }),
+    [editingMessageId, status],
+  );
 
   const renderTimelineRow = useCallback(
     ({ item: row }: { item: ChatTimelineRow }) => {
@@ -640,7 +644,7 @@ export const Messages = ({
         <LegendList<ChatTimelineRow>
           ref={setTimelineInstance}
           data={timelineRows}
-          extraData={editingMessageId}
+          extraData={timelineExtraData}
           keyExtractor={getTimelineRowKey}
           getItemType={getChatTimelineRowType}
           renderItem={renderTimelineRow}
