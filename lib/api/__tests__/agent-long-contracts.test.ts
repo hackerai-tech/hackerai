@@ -687,6 +687,12 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(routeSrc).toMatch(/metadata:\s*triggerMetadata/);
     expect(routeSrc).toMatch(/status:\s*"queued"/);
     expect(routeSrc).toMatch(/loginRequired:\s*false/);
+    expect(taskSrc).toMatch(
+      /getMissingAgentLongTags\(\s*ctx\.run\.tags,\s*desiredTaskStartTags,?\s*\)/,
+    );
+    expect(taskSrc).toMatch(
+      /if\s*\(missingTaskStartTags\.length\s*>\s*0\)[\s\S]*addAgentLongTags\(missingTaskStartTags/,
+    );
   });
 
   test("captures Trigger usage and active-time attribution on Agent completion", () => {
