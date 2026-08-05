@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import { MessageNavigator } from "../MessageNavigator";
 import type { MessageNavigatorItem } from "../message-navigator";
 
@@ -117,5 +117,85 @@ describe("MessageNavigator", () => {
     expect(strips[0]).toHaveAttribute("data-in-view", "false");
     expect(strips[1]).toHaveAttribute("data-in-view", "true");
     expect(strips[2]).toHaveAttribute("data-in-view", "false");
+  });
+
+  it("refreshes visible destinations after resize without a scroll event", () => {
+    const originalResizeObserver = globalThis.ResizeObserver;
+    let resizeCallback: ResizeObserverCallback | null = null;
+    let observerInstance!: ResizeObserver;
+
+    class ResizeObserverMock implements ResizeObserver {
+      constructor(callback: ResizeObserverCallback) {
+        resizeCallback = callback;
+        observerInstance = this;
+      }
+
+      observe = jest.fn();
+      unobserve = jest.fn();
+      disconnect = jest.fn();
+    }
+
+    Object.defineProperty(globalThis, "ResizeObserver", {
+      configurable: true,
+      value: ResizeObserverMock,
+    });
+
+    try {
+      const scrollElement = document.createElement("div");
+      const resizedRow = document.createElement("div");
+      resizedRow.dataset.messageId = "user-2";
+      scrollElement.append(resizedRow);
+      let rowTop = 700;
+
+      scrollElement.getBoundingClientRect = () =>
+        ({
+          top: 0,
+          right: 900,
+          bottom: 600,
+          left: 0,
+          width: 900,
+          height: 600,
+          x: 0,
+          y: 0,
+          toJSON: () => ({}),
+        }) as DOMRect;
+      resizedRow.getBoundingClientRect = () =>
+        ({
+          top: rowTop,
+          right: 700,
+          bottom: rowTop + 80,
+          left: 100,
+          width: 600,
+          height: 80,
+          x: 100,
+          y: rowTop,
+          toJSON: () => ({}),
+        }) as DOMRect;
+
+      render(
+        <MessageNavigator
+          items={items}
+          scrollElement={scrollElement}
+          onSelect={jest.fn()}
+        />,
+      );
+
+      const strips = document.querySelectorAll(
+        "[data-message-navigator-strip]",
+      );
+      expect(strips[1]).toHaveAttribute("data-in-view", "false");
+
+      rowTop = 100;
+      act(() => {
+        resizeCallback?.([], observerInstance);
+      });
+
+      expect(strips[1]).toHaveAttribute("data-in-view", "true");
+    } finally {
+      Object.defineProperty(globalThis, "ResizeObserver", {
+        configurable: true,
+        value: originalResizeObserver,
+      });
+    }
   });
 });

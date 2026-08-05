@@ -50,31 +50,6 @@ export const MessageNavigator = memo(function MessageNavigator({
     resolveMessageNavigatorHasPersistentGutter(viewportWidth);
   const hitStripWidth = resolveMessageNavigatorHitStripWidth(viewportWidth);
 
-  useEffect(() => {
-    if (!scrollElement) {
-      return;
-    }
-
-    const measure = () => {
-      const nextWidth = scrollElement.getBoundingClientRect().width;
-      setViewportWidth((current) =>
-        current === nextWidth ? current : nextWidth,
-      );
-    };
-
-    const frame = requestAnimationFrame(measure);
-    if (typeof ResizeObserver === "undefined") {
-      return () => cancelAnimationFrame(frame);
-    }
-
-    const observer = new ResizeObserver(measure);
-    observer.observe(scrollElement);
-    return () => {
-      cancelAnimationFrame(frame);
-      observer.disconnect();
-    };
-  }, [scrollElement]);
-
   const updateInViewMarkers = useCallback(() => {
     if (!scrollElement) {
       return;
@@ -107,6 +82,32 @@ export const MessageNavigator = memo(function MessageNavigator({
       }
     }
   }, [itemIds, items, scrollElement]);
+
+  useEffect(() => {
+    if (!scrollElement) {
+      return;
+    }
+
+    const measure = () => {
+      const nextWidth = scrollElement.getBoundingClientRect().width;
+      setViewportWidth((current) =>
+        current === nextWidth ? current : nextWidth,
+      );
+      updateInViewMarkers();
+    };
+
+    const frame = requestAnimationFrame(measure);
+    if (typeof ResizeObserver === "undefined") {
+      return () => cancelAnimationFrame(frame);
+    }
+
+    const observer = new ResizeObserver(measure);
+    observer.observe(scrollElement);
+    return () => {
+      cancelAnimationFrame(frame);
+      observer.disconnect();
+    };
+  }, [scrollElement, updateInViewMarkers]);
 
   useEffect(() => {
     if (!scrollElement) {
