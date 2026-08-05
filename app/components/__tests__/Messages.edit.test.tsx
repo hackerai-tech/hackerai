@@ -14,13 +14,15 @@ jest.mock("../MessageItem", () => ({
     isEditing,
     message,
     onStartEdit,
+    status,
   }: {
     canEdit: boolean;
     isEditing: boolean;
     message: ChatMessage;
     onStartEdit: (messageId: string) => void;
+    status: string;
   }) => (
-    <div data-testid={`message-${message.id}`}>
+    <div data-testid={`message-${message.id}`} data-status={status}>
       {isEditing ? (
         <div data-testid="message-editor">Editing {message.id}</div>
       ) : canEdit ? (
@@ -87,14 +89,13 @@ const navigatorMessages = [
   },
 ] as ChatMessage[];
 
-describe("Messages editing", () => {
+describe("Messages virtualized row invalidation", () => {
   beforeEach(() => {
     mockLegendListGetState.mockReset();
     mockLegendListGetState.mockReturnValue({ data: [], end: -1, start: 0 });
     mockLegendListScrollToIndex.mockReset();
     mockLegendListScrollToIndex.mockResolvedValue(undefined);
   });
-
   it("invalidates the virtualized row when editing starts", () => {
     render(
       <DataStreamProvider>
@@ -156,6 +157,42 @@ describe("Messages editing", () => {
     expect(screen.getByTestId("messages-container")).toHaveAttribute(
       "data-list-key",
       "chat-2",
+    );
+  });
+
+  it("invalidates the final assistant row when streaming stops", () => {
+    const sharedProps = {
+      chatId: "chat-1",
+      messages,
+      setMessages: jest.fn(),
+      onRegenerate: jest.fn(),
+      onRetry: jest.fn(),
+      onEditMessage: jest.fn(),
+      error: null,
+      scrollRef: createRef<HTMLElement>(),
+      contentRef: createRef<HTMLElement>(),
+      isMobile: true,
+    };
+    const { rerender } = render(
+      <DataStreamProvider>
+        <Messages {...sharedProps} status="streaming" />
+      </DataStreamProvider>,
+    );
+
+    expect(screen.getByTestId("message-assistant-1")).toHaveAttribute(
+      "data-status",
+      "streaming",
+    );
+
+    rerender(
+      <DataStreamProvider>
+        <Messages {...sharedProps} status="ready" />
+      </DataStreamProvider>,
+    );
+
+    expect(screen.getByTestId("message-assistant-1")).toHaveAttribute(
+      "data-status",
+      "ready",
     );
   });
 
