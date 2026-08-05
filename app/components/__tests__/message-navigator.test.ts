@@ -9,7 +9,6 @@ import {
   resolveMessageNavigatorHeightStyle,
   resolveMessageNavigatorHitStripWidth,
   resolveMessageNavigatorIndexFromPointer,
-  resolveMessageNavigatorInteractiveWidth,
   resolveMessageNavigatorTopPercent,
 } from "../message-navigator";
 
@@ -106,7 +105,5 @@ describe("message navigator logic", () => {
     expect(resolveMessageNavigatorHitStripWidth(768)).toBe(0);
     expect(resolveMessageNavigatorHitStripWidth(820)).toBe(14);
     expect(resolveMessageNavigatorHitStripWidth(872)).toBe(40);
-    expect(resolveMessageNavigatorInteractiveWidth(14, false)).toBe(14);
-    expect(resolveMessageNavigatorInteractiveWidth(14, true)).toBe("22rem");
   });
 });

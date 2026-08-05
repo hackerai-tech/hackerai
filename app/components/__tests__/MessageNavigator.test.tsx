@@ -80,7 +80,7 @@ describe("MessageNavigator", () => {
     expect(onSelect).toHaveBeenCalledWith(items[1]);
   });
 
-  it("keeps the preview open while the pointer moves onto it", () => {
+  it("dismisses the preview when the pointer leaves the marker strip", () => {
     render(
       <MessageNavigator
         items={items}
@@ -108,12 +108,12 @@ describe("MessageNavigator", () => {
     fireEvent.mouseMove(button, { clientY: 111 });
     const preview = screen.getByTestId("message-navigator-preview");
     expect(preview).toHaveTextContent("Second question");
-    expect(button).toHaveStyle({ width: "22rem" });
+    expect(preview).toHaveClass("pointer-events-none");
 
-    fireEvent.mouseMove(preview);
-    expect(screen.getByTestId("message-navigator-preview")).toHaveTextContent(
-      "Second question",
-    );
+    fireEvent.mouseLeave(button);
+    expect(
+      screen.queryByTestId("message-navigator-preview"),
+    ).not.toBeInTheDocument();
   });
 
   it("marks destinations whose user rows are in the viewport", () => {

@@ -17,7 +17,6 @@ import {
   resolveMessageNavigatorHeightStyle,
   resolveMessageNavigatorHitStripWidth,
   resolveMessageNavigatorIndexFromPointer,
-  resolveMessageNavigatorInteractiveWidth,
   resolveMessageNavigatorTopPercent,
   type MessageNavigatorItem,
 } from "./message-navigator";
@@ -27,10 +26,6 @@ interface MessageNavigatorProps {
   scrollElement: HTMLElement | null;
   onSelect: (item: MessageNavigatorItem) => void;
 }
-
-const eventTargetsPreview = (target: EventTarget) =>
-  target instanceof Element &&
-  target.closest("[data-message-navigator-preview]") !== null;
 
 export const MessageNavigator = memo(function MessageNavigator({
   items,
@@ -207,10 +202,6 @@ export const MessageNavigator = memo(function MessageNavigator({
           )}
           onBlur={() => setActiveIndex(null)}
           onClick={(event) => {
-            if (eventTargetsPreview(event.target)) {
-              return;
-            }
-
             const nextIndex = resolveActiveIndexFromPointer(event);
             const nextItem =
               nextIndex === null ? null : (items[nextIndex] ?? null);
@@ -222,9 +213,7 @@ export const MessageNavigator = memo(function MessageNavigator({
           onFocus={() => setActiveIndex((current) => current ?? 0)}
           onKeyDown={handleKeyDown}
           onMouseDown={(event) => {
-            if (!eventTargetsPreview(event.target)) {
-              event.preventDefault();
-            }
+            event.preventDefault();
           }}
           onMouseLeave={() => setActiveIndex(null)}
           onMouseMove={(event) => {
@@ -232,10 +221,7 @@ export const MessageNavigator = memo(function MessageNavigator({
           }}
           style={{
             height: resolveMessageNavigatorHeightStyle(items.length),
-            width: resolveMessageNavigatorInteractiveWidth(
-              hitStripWidth,
-              activeItem !== null,
-            ),
+            width: hitStripWidth,
           }}
         >
           {items.map((item, index) => {
@@ -276,10 +262,9 @@ export const MessageNavigator = memo(function MessageNavigator({
 
           {activeItem ? (
             <span
-              className="pointer-events-auto absolute left-8 w-80 cursor-text select-text"
+              className="pointer-events-none absolute left-8 w-80"
               data-message-navigator-preview
               data-testid="message-navigator-preview"
-              onMouseMove={(event) => event.stopPropagation()}
               style={{
                 top: `${activeTopPercent}%`,
                 transform: `translateY(${activePreviewTranslate})`,

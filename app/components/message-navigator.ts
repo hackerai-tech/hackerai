@@ -9,7 +9,6 @@ export const MESSAGE_NAVIGATOR_CONTENT_MAX_WIDTH = 768;
 export const MESSAGE_NAVIGATOR_PERSISTENT_GUTTER = 48;
 export const MESSAGE_NAVIGATOR_HIT_STRIP_LEFT = 12;
 export const MESSAGE_NAVIGATOR_HIT_STRIP_MAX_WIDTH = 40;
-export const MESSAGE_NAVIGATOR_EXPANDED_WIDTH = "22rem";
 
 export interface MessageNavigatorItem {
   id: string;
@@ -154,11 +153,4 @@ export function resolveMessageNavigatorHitStripWidth(
       Math.floor(sideGutter) - MESSAGE_NAVIGATOR_HIT_STRIP_LEFT,
     ),
   );
-}
-
-export function resolveMessageNavigatorInteractiveWidth(
-  collapsedWidth: number,
-  expanded: boolean,
-): number | string {
-  return expanded ? MESSAGE_NAVIGATOR_EXPANDED_WIDTH : collapsedWidth;
 }
