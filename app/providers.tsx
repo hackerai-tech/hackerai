@@ -9,7 +9,11 @@ import {
   sanitizeFrontendExceptionUrlProperties,
   shouldDropExpectedFrontendException,
 } from "@/lib/posthog/expected-frontend-exceptions";
-import { getPostHogClient, loadPostHogClient } from "@/lib/analytics/client";
+import {
+  flushPendingAuthenticatedEvents,
+  getPostHogClient,
+  loadPostHogClient,
+} from "@/lib/analytics/client";
 import {
   createPostHogIdentitySignature,
   POSTHOG_IDENTITY_SIGNATURE_STORAGE_KEY,
@@ -131,6 +135,8 @@ export function PostHogProvider({ children }: { children: React.ReactNode }) {
             }
           }
         }
+
+        flushPendingAuthenticatedEvents();
 
         if (subscription !== "free") {
           if (!posthog.sessionRecordingStarted()) {

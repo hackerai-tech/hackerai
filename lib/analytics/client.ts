@@ -18,8 +18,16 @@ type PostHogClient = typeof posthogJs & {
 };
 type PostHogCaptureOptions = Parameters<PostHogClient["capture"]>[2];
 
+type PendingAuthenticatedEvent = {
+  event: string;
+  properties: ClientAnalyticsProperties;
+  options?: PostHogCaptureOptions;
+};
+
 let posthogClient: PostHogClient | null = null;
 let posthogImportPromise: Promise<PostHogClient> | null = null;
+const pendingAuthenticatedEvents: PendingAuthenticatedEvent[] = [];
+const MAX_PENDING_AUTHENTICATED_EVENTS = 100;
 const UPGRADE_IMPRESSION_STORAGE_KEY =
   "hackerai:analytics:upgrade-impressions:v1";
 
@@ -52,6 +60,61 @@ function getReadyPostHogClient() {
   return posthogClient?.__loaded ? posthogClient : null;
 }
 
+function captureWithPostHogClient(
+  posthog: PostHogClient,
+  event: string,
+  properties: ClientAnalyticsProperties,
+  options?: PostHogCaptureOptions,
+) {
+  try {
+    if (options) {
+      posthog.capture(event, properties, options);
+    } else {
+      posthog.capture(event, properties);
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function queueAuthenticatedEvent(event: PendingAuthenticatedEvent) {
+  const uuid = event.options?.uuid;
+  if (
+    uuid &&
+    pendingAuthenticatedEvents.some(
+      (pendingEvent) => pendingEvent.options?.uuid === uuid,
+    )
+  ) {
+    return;
+  }
+
+  pendingAuthenticatedEvents.push(event);
+  if (pendingAuthenticatedEvents.length > MAX_PENDING_AUTHENTICATED_EVENTS) {
+    pendingAuthenticatedEvents.shift();
+  }
+}
+
+export function flushPendingAuthenticatedEvents() {
+  const posthog = getReadyPostHogClient();
+  if (!posthog || pendingAuthenticatedEvents.length === 0) return false;
+
+  const pendingEvents = pendingAuthenticatedEvents.splice(0);
+  for (const pendingEvent of pendingEvents) {
+    if (
+      !captureWithPostHogClient(
+        posthog,
+        pendingEvent.event,
+        pendingEvent.properties,
+        pendingEvent.options,
+      )
+    ) {
+      queueAuthenticatedEvent(pendingEvent);
+    }
+  }
+  return pendingAuthenticatedEvents.length === 0;
+}
+
 export function captureAuthenticatedEvent(
   event: string,
   properties: ClientAnalyticsProperties = {},
@@ -65,16 +128,8 @@ export function captureAuthenticatedEvent(
     return false;
   }
 
-  try {
-    if (options) {
-      posthog.capture(event, properties, options);
-    } else {
-      posthog.capture(event, properties);
-    }
-    return true;
-  } catch {
-    return false;
-  }
+  flushPendingAuthenticatedEvents();
+  return captureWithPostHogClient(posthog, event, properties, options);
 }
 
 export function captureMessageFeedback({
@@ -86,29 +141,33 @@ export function captureMessageFeedback({
   feedbackType: "positive" | "negative";
   previousFeedbackType?: "positive" | "negative";
 }) {
-  return captureAuthenticatedEvent(
-    "message_feedback_submitted",
-    {
-      message_id: messageId,
-      feedback_type: feedbackType,
-      is_initial_feedback: previousFeedbackType === undefined,
-      ...(previousFeedbackType && {
-        previous_feedback_type: previousFeedbackType,
-      }),
-      feedback_event_version: 1,
-    },
-    {
-      uuid: uuidv5(
-        [
-          "message_feedback_submitted",
-          messageId,
-          previousFeedbackType ?? "none",
-          feedbackType,
-        ].join(":"),
-        uuidv5.URL,
+  const event = "message_feedback_submitted";
+  const properties = {
+    message_id: messageId,
+    feedback_type: feedbackType,
+    is_initial_feedback: previousFeedbackType === undefined,
+    ...(previousFeedbackType && {
+      previous_feedback_type: previousFeedbackType,
+    }),
+    feedback_event_version: 1,
+  };
+  const options = {
+    uuid: uuidv5(
+      [event, messageId, previousFeedbackType ?? "none", feedbackType].join(
+        ":",
       ),
-    },
-  );
+      uuidv5.URL,
+    ),
+  };
+
+  if (captureAuthenticatedEvent(event, properties, options)) return true;
+  if (!process.env.NEXT_PUBLIC_POSTHOG_KEY) return false;
+
+  queueAuthenticatedEvent({ event, properties, options });
+  void loadPostHogClient()
+    .then(() => flushPendingAuthenticatedEvents())
+    .catch(() => {});
+  return true;
 }
 
 export function addAuthenticatedExceptionStep(

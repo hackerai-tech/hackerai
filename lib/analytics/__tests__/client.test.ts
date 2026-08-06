@@ -23,6 +23,7 @@ jest.mock("posthog-js", () => ({
 const {
   captureMessageFeedback,
   captureUpgradeCtaImpression,
+  flushPendingAuthenticatedEvents,
   getPostHogRequestHeaders,
   loadPostHogClient,
 } = require("../client") as typeof import("../client");
@@ -35,6 +36,8 @@ describe("client analytics", () => {
 
   beforeEach(() => {
     window.localStorage.clear();
+    mockPostHog.__loaded = true;
+    flushPendingAuthenticatedEvents();
     mockCapture.mockClear();
     mockPostHog.get_distinct_id.mockClear();
     mockPostHog.get_distinct_id.mockReturnValue("user_123");
@@ -124,6 +127,43 @@ describe("client analytics", () => {
         is_initial_feedback: true,
         feedback_event_version: 1,
       },
+      { uuid: expect.stringMatching(/^[0-9a-f-]{36}$/i) },
+    );
+
+    const firstUuid = mockCapture.mock.calls[0]?.[2]?.uuid;
+    captureMessageFeedback({
+      messageId: "message_123",
+      feedbackType: "positive",
+    });
+    expect(mockCapture.mock.calls[1]?.[2]?.uuid).toBe(firstUuid);
+
+    captureMessageFeedback({
+      messageId: "message_123",
+      feedbackType: "negative",
+      previousFeedbackType: "positive",
+    });
+    expect(mockCapture.mock.calls[2]?.[2]?.uuid).not.toBe(firstUuid);
+  });
+
+  it("queues message feedback until the identified PostHog client is ready", () => {
+    mockPostHog.__loaded = false;
+
+    expect(
+      captureMessageFeedback({
+        messageId: "message_queued",
+        feedbackType: "negative",
+      }),
+    ).toBe(true);
+    expect(mockCapture).not.toHaveBeenCalled();
+
+    mockPostHog.__loaded = true;
+    expect(flushPendingAuthenticatedEvents()).toBe(true);
+    expect(mockCapture).toHaveBeenCalledWith(
+      "message_feedback_submitted",
+      expect.objectContaining({
+        message_id: "message_queued",
+        feedback_type: "negative",
+      }),
       { uuid: expect.stringMatching(/^[0-9a-f-]{36}$/i) },
     );
   });
