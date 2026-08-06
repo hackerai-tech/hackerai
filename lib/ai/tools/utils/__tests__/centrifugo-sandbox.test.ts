@@ -177,6 +177,27 @@ describe("CentrifugoSandbox", () => {
         warnSpy.mockRestore();
       }
     });
+
+    it("rejects invalid command stream sequence numbers", () => {
+      const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+
+      try {
+        expect(
+          parseSandboxMessage({
+            type: "stdout",
+            commandId: FIXED_UUID,
+            data: "hello",
+            sequence: -1,
+          }),
+        ).toBeNull();
+        expect(warnSpy).toHaveBeenCalledWith(
+          "Invalid sandbox message: sequence is not a non-negative integer",
+          expect.objectContaining({ sequence: -1 }),
+        );
+      } finally {
+        warnSpy.mockRestore();
+      }
+    });
   });
 
   describe("commands.run happy path", () => {
@@ -253,6 +274,101 @@ describe("CentrifugoSandbox", () => {
       });
       expect(onStdout).toHaveBeenCalledWith("hello\n");
       expect(onStderr).toHaveBeenCalledWith("warn\n");
+    });
+
+    it("deduplicates retried desktop stream chunks by sequence", async () => {
+      const sandbox = createDesktopSandbox();
+      const onStdout = jest.fn();
+      const { promise } = startCommand(sandbox, "echo hello", {
+        timeoutMs: 5000,
+        onStdout,
+      });
+
+      await jest.advanceTimersByTimeAsync(0);
+      const sub = mockSubscriptions[0];
+      sub.emit("subscribed");
+      await jest.advanceTimersByTimeAsync(0);
+
+      const stdout = {
+        type: "stdout",
+        commandId: FIXED_UUID,
+        data: "hello\n",
+        sequence: 0,
+      };
+      sub.emit("publication", { data: stdout });
+      sub.emit("publication", { data: stdout });
+      sub.emit("publication", {
+        data: {
+          type: "exit",
+          commandId: FIXED_UUID,
+          exitCode: 0,
+          sequence: 1,
+        },
+      });
+
+      await expect(promise).resolves.toEqual({
+        stdout: "hello\n",
+        stderr: "",
+        exitCode: 0,
+      });
+      expect(onStdout).toHaveBeenCalledTimes(1);
+    });
+
+    it("rejects a sequenced desktop stream with a missing chunk", async () => {
+      const sandbox = createDesktopSandbox();
+      const { promise } = startCommand(sandbox, "echo incomplete", {
+        timeoutMs: 5000,
+      });
+      const errorSpy = jest
+        .spyOn(console, "error")
+        .mockImplementation(() => {});
+
+      try {
+        await jest.advanceTimersByTimeAsync(0);
+        const sub = mockSubscriptions[0];
+        sub.emit("subscribed");
+        await jest.advanceTimersByTimeAsync(0);
+
+        sub.emit("publication", {
+          data: {
+            type: "stdout",
+            commandId: FIXED_UUID,
+            data: "late",
+            sequence: 1,
+          },
+        });
+
+        await expect(promise).rejects.toThrow(
+          "Local sandbox output stream lost a chunk (expected sequence 0, received 1)",
+        );
+        const structuredLog = errorSpy.mock.calls
+          .map(([value]) => {
+            try {
+              return JSON.parse(String(value)) as Record<string, unknown>;
+            } catch {
+              return null;
+            }
+          })
+          .find(
+            (value) => value?.event === "local_command_stream_sequence_gap",
+          );
+        expect(structuredLog).toEqual(
+          expect.objectContaining({
+            timestamp: expect.any(String),
+            level: "error",
+            event: "local_command_stream_sequence_gap",
+            service: "web",
+            environment: "test",
+            request_id: FIXED_UUID,
+            command_id: FIXED_UUID,
+            connection_id: "conn-1",
+            expected_sequence: 0,
+            received_sequence: 1,
+          }),
+        );
+      } finally {
+        errorSpy.mockRestore();
+      }
     });
 
     it("reassembles oversized stdout before completing the command", async () => {
