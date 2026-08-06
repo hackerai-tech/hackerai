@@ -17,6 +17,12 @@ links outside the checkout, repair that checkout with
 `corepack pnpm install --force --frozen-lockfile` before running development
 commands.
 
+Do not pre-create a Convex deployment for worktrees that may only need static
+checks or PR publication. `pnpm run dev:local` owns lazy local Convex setup: it
+selects an existing local deployment and creates one for the current worktree
+only when the Convex CLI reports that none exists. Never copy `.convex` state
+between worktrees.
+
 ## HackerAI Product Direction
 
 HackerAI is primarily built for individual security practitioners: bug bounty

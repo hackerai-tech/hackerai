@@ -7,7 +7,7 @@
     "check:local-dependencies": "node scripts/verify-local-dependencies.mjs",
     "predev": "pnpm run check:local-dependencies",
     "dev": "concurrently \"next dev --turbopack\" \"npx convex dev\"",
-    "predev:local": "pnpm run check:local-dependencies",
+    "predev:local": "pnpm run check:local-dependencies && node scripts/ensure-local-convex.mjs",
     "dev:local": "concurrently \"next dev --turbopack\" \"pnpm exec convex dev\"",
     "predev:next": "pnpm run check:local-dependencies",
     "dev:next": "next dev --turbopack",
