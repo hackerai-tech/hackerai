@@ -3,6 +3,7 @@ import {
   getModelDisplayName,
   isAnthropicModel,
   isKimiModel,
+  createTrackedProvider,
   myProvider,
   sanitizeOpenRouterRequestForXai,
   supportsMultimodalToolResults,
@@ -73,6 +74,24 @@ describe("provider registry", () => {
     expect(isKimiModel("model-opus-4.6")).toBe(true);
     expect(isAnthropicModel("model-opus-4.6")).toBe(false);
     expect(isAnthropicModel("anthropic/claude-opus-4.6")).toBe(true);
+  });
+
+  it("can restore the previous free DeepSeek route for a scoped request", () => {
+    const provider = createTrackedProvider({
+      freeDeepSeekSlug: "deepseek/deepseek-v4-flash",
+    });
+
+    expect(
+      (provider.languageModel("ask-model-free") as { modelId: string }).modelId,
+    ).toBe("deepseek/deepseek-v4-flash");
+    expect(
+      (provider.languageModel("agent-model-free") as { modelId: string })
+        .modelId,
+    ).toBe("deepseek/deepseek-v4-flash");
+    expect(
+      (myProvider.languageModel("ask-model-free") as { modelId: string })
+        .modelId,
+    ).toBe("deepseek/deepseek-v4-flash-0731");
   });
 
   it.each([

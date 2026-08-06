@@ -74,6 +74,7 @@ import {
   type ChatLogger,
 } from "@/lib/api/chat-logger";
 import { evaluateKimiReasoningExperiment } from "@/lib/experiments/kimi-reasoning";
+import { evaluateFreeDeepSeekRouteExperiment } from "@/lib/experiments/free-deepseek-route";
 import {
   countFileAttachments,
   stripImageAttachments,
@@ -773,7 +774,17 @@ export const createChatHandler = () => {
                 )
               : Promise.resolve(undefined);
 
-            const trackedProvider = createTrackedProvider();
+            const freeDeepSeekRouteExperiment =
+              await evaluateFreeDeepSeekRouteExperiment({
+                posthog,
+                userId,
+                subscription,
+                mode,
+                selectedModel,
+              });
+            const trackedProvider = createTrackedProvider({
+              freeDeepSeekSlug: freeDeepSeekRouteExperiment?.modelSlug,
+            });
 
             let currentSystemPrompt = await systemPrompt(
               userId,
@@ -1106,6 +1117,11 @@ export const createChatHandler = () => {
                   responseModel: state.responseModel,
                   analyticsRequestContext,
                   kimiReasoningExperiment,
+                  freeDeepSeekRouteExperiment,
+                  fallbackServed:
+                    state.responseModel && retryUsedFallbackModel
+                      ? true
+                      : state.fallbackServed,
                   ...(usageSettlementState && {
                     usageSettlement: {
                       id: usageTracker.usageSettlementId,
@@ -1266,12 +1282,14 @@ export const createChatHandler = () => {
               chatLogger,
               usageRefundTracker,
               settleUsageAfterStep,
-              ...(kimiReasoningExperiment && {
+              ...((kimiReasoningExperiment || freeDeepSeekRouteExperiment) && {
                 providerReasoningOverride: {
                   modelName: selectedModel,
                   reasoning: {
                     enabled: true,
-                    effort: kimiReasoningExperiment.reasoningEffort,
+                    effort:
+                      kimiReasoningExperiment?.reasoningEffort ??
+                      freeDeepSeekRouteExperiment?.reasoningEffort,
                   },
                 },
               }),
@@ -1621,6 +1639,7 @@ export const createChatHandler = () => {
                                   budgetAbortDetails: state.budgetAbortDetails,
                                   isAutoContinue: !!isAutoContinue,
                                   kimiReasoningExperiment,
+                                  freeDeepSeekRouteExperiment,
                                   stepLimitTelemetry:
                                     buildAgentStepLimitTelemetry({
                                       configuredMaxSteps:
@@ -1912,6 +1931,7 @@ export const createChatHandler = () => {
                       budgetAbortDetails: state.budgetAbortDetails,
                       isAutoContinue: !!isAutoContinue,
                       kimiReasoningExperiment,
+                      freeDeepSeekRouteExperiment,
                       stepLimitTelemetry: buildAgentStepLimitTelemetry({
                         configuredMaxSteps: state.configuredMaxSteps,
                         stepCount: state.agentStepCount,

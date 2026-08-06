@@ -28,6 +28,9 @@ const KIMI_K3_SLUG = "moonshotai/kimi-k3";
 const GLM_SLUG = "z-ai/glm-5.2";
 const DEEPSEEK_FLASH_SLUG = "deepseek/deepseek-v4-flash-0731";
 const DEEPSEEK_FLASH_CANONICAL_SLUG = "deepseek/deepseek-v4-flash-20260731";
+const DEEPSEEK_FLASH_PREVIOUS_SLUG = "deepseek/deepseek-v4-flash";
+const DEEPSEEK_FLASH_PREVIOUS_CANONICAL_SLUG =
+  "deepseek/deepseek-v4-flash-20260423";
 const GROK_PRIMARY_OR_FALLBACK_MODELS = [
   "ask-model",
   "agent-model",
@@ -264,6 +267,23 @@ describe("buildProviderOptions fallback chain", () => {
       effort: "low",
     });
     expect(opts.openrouter.models).toEqual([GROK_SLUG, KIMI_K3_SLUG]);
+  });
+
+  it("restores free Ask high reasoning for the previous-route experiment", () => {
+    const opts = buildProviderOptions(
+      false,
+      "user-1",
+      "ask-model-free",
+      "ask",
+      {
+        reasoningOverride: { enabled: true, effort: "high" },
+      },
+    );
+
+    expect(opts.openrouter.reasoning).toEqual({
+      enabled: true,
+      effort: "high",
+    });
   });
 
   it("keeps Grok fallback reasoning high over a lower scoped override", () => {
@@ -530,6 +550,26 @@ describe("getRetryFallbackModel", () => {
 });
 
 describe("resolveServedModelForCostAccounting", () => {
+  it("preserves the previous DeepSeek Flash slug for legacy route pricing", () => {
+    expect(
+      resolveServedModelForCostAccounting({
+        modelName: "agent-model-free",
+        responseModel: DEEPSEEK_FLASH_PREVIOUS_SLUG,
+        mode: "agent",
+      }),
+    ).toBe(DEEPSEEK_FLASH_PREVIOUS_SLUG);
+  });
+
+  it("maps the previous canonical DeepSeek Flash ID to legacy route pricing", () => {
+    expect(
+      resolveServedModelForCostAccounting({
+        modelName: "agent-model-free",
+        responseModel: DEEPSEEK_FLASH_PREVIOUS_CANONICAL_SLUG,
+        mode: "agent",
+      }),
+    ).toBe(DEEPSEEK_FLASH_PREVIOUS_SLUG);
+  });
+
   it("maps the primary free Agent DeepSeek slug back to its local cost key", () => {
     expect(
       resolveServedModelForCostAccounting({
