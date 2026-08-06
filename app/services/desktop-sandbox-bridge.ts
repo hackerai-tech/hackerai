@@ -54,11 +54,28 @@ type DesktopBridgeTerminationReason =
 
 type DesktopStreamPublishFailureReason = "connection_closed" | "timeout";
 
+const DESKTOP_STREAM_PUBLISH_MAX_ATTEMPTS = 3;
+const DESKTOP_STREAM_PUBLISH_RETRY_BASE_DELAY_MS = 250;
+const DESKTOP_STREAM_RECONNECT_WAIT_MS = 5_000;
+
 interface StreamChunk {
   type: "stdout" | "stderr" | "exit" | "error";
   data?: string;
   exitCode?: number;
   message?: string;
+}
+
+interface DesktopStreamPublishRecoveryState {
+  failureReported: boolean;
+  recoveryReported: boolean;
+  exhaustionReported: boolean;
+}
+
+function shouldForwardStreamChunk(chunk: StreamChunk): boolean {
+  if (chunk.type === "stdout" || chunk.type === "stderr") {
+    return Boolean(chunk.data);
+  }
+  return true;
 }
 
 function classifyDesktopStreamPublishFailure(
@@ -486,42 +503,36 @@ export class DesktopSandboxBridge {
       const { invoke, Channel } = await import("@tauri-apps/api/core");
 
       const channel = new Channel<StreamChunk>();
-      let publishFailureReported = false;
-      channel.onmessage = async (chunk) => {
-        try {
-          await this.forwardChunk(commandId, chunk);
-        } catch (error) {
-          // Tauri does not await Channel callbacks. Handle the rejection here
-          // so one disconnected command cannot emit an unhandled exception for
-          // every subsequent stream chunk.
-          const reason = classifyDesktopStreamPublishFailure(error);
-          // Unknown failures are still actionable exceptions and must remain
-          // visible to the global error tracker.
-          if (!reason) throw error;
-          if (publishFailureReported) return;
-          publishFailureReported = true;
+      const recoveryState: DesktopStreamPublishRecoveryState = {
+        failureReported: false,
+        recoveryReported: false,
+        exhaustionReported: false,
+      };
+      let nextSequence = 0;
+      let streamPublishTail: Promise<void> = Promise.resolve();
 
-          console.warn(
-            JSON.stringify({
-              timestamp: new Date().toISOString(),
-              level: "warn",
-              event: "desktop_stream_publish_failed",
-              service: "desktop_bridge",
-              environment: process.env.NODE_ENV ?? "unknown",
-              request_id: commandId,
-              connection_id: this.connectionId,
-              command_id: commandId,
-              chunk_type: chunk.type,
-              reason,
-            }),
-          );
-          captureAuthenticatedEvent("desktop_stream_publish_failed", {
-            connectionId: this.connectionId,
-            commandId,
-            chunkType: chunk.type,
-            reason,
-          });
-        }
+      channel.onmessage = (chunk) => {
+        if (!shouldForwardStreamChunk(chunk)) return;
+
+        const sequence = nextSequence++;
+        const operation = streamPublishTail.then(async () => {
+          try {
+            await this.forwardChunkWithRetry(
+              commandId,
+              chunk,
+              sequence,
+              recoveryState,
+            );
+          } catch (error) {
+            // Tauri does not await Channel callbacks. Exhausted known
+            // transients are already reported above, so keep them from
+            // becoming one unhandled rejection per subsequent stream chunk.
+            // Unknown failures remain rejected for the global error tracker.
+            if (!classifyDesktopStreamPublishFailure(error)) throw error;
+          }
+        });
+        streamPublishTail = operation.catch(() => undefined);
+        return operation;
       };
 
       await invoke("execute_stream_command", {
@@ -532,6 +543,7 @@ export class DesktopSandboxBridge {
         timeoutMs: command.timeout ?? 30000,
         onEvent: channel,
       });
+      await streamPublishTail;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       console.error(
@@ -813,7 +825,9 @@ export class DesktopSandboxBridge {
   private async forwardChunk(
     commandId: string,
     chunk: StreamChunk,
+    sequence?: number,
   ): Promise<void> {
+    const sequenceField = sequence === undefined ? {} : { sequence };
     switch (chunk.type) {
       case "stdout":
         if (chunk.data) {
@@ -821,6 +835,7 @@ export class DesktopSandboxBridge {
             type: "stdout",
             commandId,
             data: chunk.data,
+            ...sequenceField,
           });
         }
         break;
@@ -830,6 +845,7 @@ export class DesktopSandboxBridge {
             type: "stderr",
             commandId,
             data: chunk.data,
+            ...sequenceField,
           });
         }
         break;
@@ -848,6 +864,7 @@ export class DesktopSandboxBridge {
           type: "exit",
           commandId,
           exitCode: chunk.exitCode ?? -1,
+          ...sequenceField,
         });
         break;
       case "error":
@@ -864,9 +881,149 @@ export class DesktopSandboxBridge {
           type: "error",
           commandId,
           message: chunk.message || "Unknown error",
+          ...sequenceField,
         });
         break;
     }
+  }
+
+  private async forwardChunkWithRetry(
+    commandId: string,
+    chunk: StreamChunk,
+    sequence: number,
+    recoveryState: DesktopStreamPublishRecoveryState,
+  ): Promise<void> {
+    let firstFailureAt: number | null = null;
+    let firstFailureReason: DesktopStreamPublishFailureReason | null = null;
+
+    for (
+      let attempt = 1;
+      attempt <= DESKTOP_STREAM_PUBLISH_MAX_ATTEMPTS;
+      attempt++
+    ) {
+      if (this.isStoppingOrStopped) return;
+
+      try {
+        await this.forwardChunk(commandId, chunk, sequence);
+        if (
+          firstFailureAt !== null &&
+          firstFailureReason !== null &&
+          !recoveryState.recoveryReported
+        ) {
+          recoveryState.recoveryReported = true;
+          const recoveryLatencyMs = Date.now() - firstFailureAt;
+          console.info(
+            JSON.stringify({
+              timestamp: new Date().toISOString(),
+              level: "info",
+              event: "desktop_stream_publish_recovered",
+              service: "desktop_bridge",
+              environment: process.env.NODE_ENV ?? "unknown",
+              request_id: commandId,
+              connection_id: this.connectionId,
+              command_id: commandId,
+              chunk_type: chunk.type,
+              reason: firstFailureReason,
+              attempts: attempt,
+              recovery_latency_ms: recoveryLatencyMs,
+            }),
+          );
+          captureAuthenticatedEvent("desktop_stream_publish_recovered", {
+            connectionId: this.connectionId,
+            commandId,
+            chunkType: chunk.type,
+            reason: firstFailureReason,
+            attempts: attempt,
+            recoveryLatencyMs,
+          });
+        }
+        return;
+      } catch (error) {
+        const reason = classifyDesktopStreamPublishFailure(error);
+        if (!reason) throw error;
+
+        firstFailureAt ??= Date.now();
+        firstFailureReason ??= reason;
+
+        if (!recoveryState.failureReported) {
+          recoveryState.failureReported = true;
+          console.warn(
+            JSON.stringify({
+              timestamp: new Date().toISOString(),
+              level: "warn",
+              event: "desktop_stream_publish_failed",
+              service: "desktop_bridge",
+              environment: process.env.NODE_ENV ?? "unknown",
+              request_id: commandId,
+              connection_id: this.connectionId,
+              command_id: commandId,
+              chunk_type: chunk.type,
+              reason,
+              attempt,
+              max_attempts: DESKTOP_STREAM_PUBLISH_MAX_ATTEMPTS,
+            }),
+          );
+          captureAuthenticatedEvent("desktop_stream_publish_failed", {
+            connectionId: this.connectionId,
+            commandId,
+            chunkType: chunk.type,
+            reason,
+            attempt,
+            maxAttempts: DESKTOP_STREAM_PUBLISH_MAX_ATTEMPTS,
+          });
+        }
+
+        if (attempt === DESKTOP_STREAM_PUBLISH_MAX_ATTEMPTS) {
+          if (!recoveryState.exhaustionReported) {
+            recoveryState.exhaustionReported = true;
+            const recoveryLatencyMs = Date.now() - firstFailureAt;
+            console.error(
+              JSON.stringify({
+                timestamp: new Date().toISOString(),
+                level: "error",
+                event: "desktop_stream_publish_recovery_exhausted",
+                service: "desktop_bridge",
+                environment: process.env.NODE_ENV ?? "unknown",
+                request_id: commandId,
+                connection_id: this.connectionId,
+                command_id: commandId,
+                chunk_type: chunk.type,
+                reason: firstFailureReason,
+                attempts: attempt,
+                recovery_latency_ms: recoveryLatencyMs,
+              }),
+            );
+            captureAuthenticatedEvent(
+              "desktop_stream_publish_recovery_exhausted",
+              {
+                connectionId: this.connectionId,
+                commandId,
+                chunkType: chunk.type,
+                reason: firstFailureReason,
+                attempts: attempt,
+                recoveryLatencyMs,
+              },
+            );
+          }
+          throw error;
+        }
+
+        await this.waitForRelayReady(attempt);
+      }
+    }
+  }
+
+  private async waitForRelayReady(attempt: number): Promise<void> {
+    const backoffMs =
+      DESKTOP_STREAM_PUBLISH_RETRY_BASE_DELAY_MS * 2 ** (attempt - 1);
+    await new Promise((resolve) => setTimeout(resolve, backoffMs));
+    if (this.isStoppingOrStopped) return;
+
+    const readyChecks = [
+      this.client?.ready(DESKTOP_STREAM_RECONNECT_WAIT_MS),
+      this.subscription?.ready(DESKTOP_STREAM_RECONNECT_WAIT_MS),
+    ].filter((promise): promise is Promise<void> => Boolean(promise));
+    await Promise.allSettled(readyChecks);
   }
 
   private async publishResult(message: SandboxMessage): Promise<void> {
@@ -881,7 +1038,12 @@ export class DesktopSandboxBridge {
         message as unknown as Record<string, unknown>,
       );
     } catch (error) {
-      console.error("[DesktopSandboxBridge] Failed to publish result:", error);
+      if (!classifyDesktopStreamPublishFailure(error)) {
+        console.error(
+          "[DesktopSandboxBridge] Failed to publish result:",
+          error,
+        );
+      }
       throw error;
     }
   }

@@ -141,6 +141,19 @@ export function parseSandboxMessage(
     return null;
   }
 
+  if (
+    msg.sequence !== undefined &&
+    (typeof msg.sequence !== "number" ||
+      !Number.isSafeInteger(msg.sequence) ||
+      msg.sequence < 0)
+  ) {
+    console.warn(
+      "Invalid sandbox message: sequence is not a non-negative integer",
+      msg,
+    );
+    return null;
+  }
+
   switch (msg.type) {
     case "exit":
       if (typeof msg.exitCode !== "number") {
@@ -552,6 +565,7 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
         let cancelRequested = false;
         let cancelPublishStarted = false;
         let cancelTriggeredBySignal = false;
+        let lastStreamSequence = -1;
         let cancelAttemptPromise: Promise<boolean> | null = null;
         let resolveCancelAttempt: ((confirmed: boolean) => void) | null = null;
         const reassembler = new CentrifugoMessageReassembler();
@@ -722,6 +736,36 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
           if (message.commandId !== commandId) return;
           if (message.type === "command" || message.type === "command_cancel") {
             return;
+          }
+
+          const sequence = "sequence" in message ? message.sequence : undefined;
+          if (sequence !== undefined) {
+            if (sequence <= lastStreamSequence) return;
+            if (sequence !== lastStreamSequence + 1) {
+              settled = true;
+              cleanup();
+              console.error(
+                JSON.stringify({
+                  timestamp: new Date().toISOString(),
+                  level: "error",
+                  event: "local_command_stream_sequence_gap",
+                  service: "web",
+                  environment: process.env.NODE_ENV ?? "unknown",
+                  request_id: commandId,
+                  command_id: commandId,
+                  connection_id: this.connectionInfo.connectionId,
+                  expected_sequence: lastStreamSequence + 1,
+                  received_sequence: sequence,
+                }),
+              );
+              reject(
+                new Error(
+                  `Local sandbox output stream lost a chunk (expected sequence ${lastStreamSequence + 1}, received ${sequence}). Reconnect the local runner or Desktop app, then try again.`,
+                ),
+              );
+              return;
+            }
+            lastStreamSequence = sequence;
           }
           if (!tFirstMessage) tFirstMessage = Date.now();
 
