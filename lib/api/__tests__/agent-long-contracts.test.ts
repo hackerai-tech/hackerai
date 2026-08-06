@@ -1170,7 +1170,7 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(throwIdx).toBeGreaterThan(terminalErrorIdx);
   });
 
-  test("content-filter finishes are terminal, non-replayable, and share the provider error path", () => {
+  test("content-filter finishes retry once on a different model and remain terminal on fallback", () => {
     expect(agentStreamRunnerSrc).toMatch(
       /guardLanguageModelProviderResponse\(languageModel/,
     );
@@ -1180,12 +1180,24 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(agentStreamRunnerSrc).toMatch(
       /refundProviderContentBlockedIfSettled\(\{[\s\S]*finishReason,[\s\S]*settled: true/,
     );
+    expect(agentStreamRunnerSrc).toMatch(
+      /const requestedModelSlug =[\s\S]{0,150}ctx\.trackedProvider\.languageModel\(effectiveModelName\)\.modelId;[\s\S]{0,300}requestedModelSlug,/,
+    );
 
     for (const source of [taskSrc, chatHandlerSrc]) {
       expect(source).toMatch(/const providerContentBlocked\s*=/);
       expect(source).toMatch(/providerContentBlocked,/);
+      expect(source).toMatch(/providerContentBlocked \|\|/);
+      expect(source).toMatch(/\? "content_filter"/);
+      expect(source).toMatch(/!isRetryWithFallback/);
       expect(source).toMatch(
-        /!providerContentBlocked\s*&&\s*\(shouldRetryWithFallback/,
+        /const blockedProviderModel = providerContentBlocked[\s\S]{0,100}state\.responseModel/,
+      );
+      expect(source).toMatch(
+        /getContentFilterRetryModel\([\s\S]{0,150}blockedProviderModel/,
+      );
+      expect(source).toMatch(
+        /createStream\([\s\S]{0,150}\[blockedProviderModel\]/,
       );
     }
     expect([
@@ -1237,7 +1249,7 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
       terminalProviderErrorIdx,
     );
     const fallbackIdx = taskSrc.indexOf(
-      "const retryResult = await createStream(retryModel)",
+      "const retryResult = await createStream(",
       terminalProviderErrorIdx,
     );
 
@@ -1270,7 +1282,7 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
       terminalProviderErrorIdx,
     );
     const fallbackIdx = chatHandlerSrc.indexOf(
-      "const retryResult = await createStream(retryModel)",
+      "const retryResult = await createStream(",
       terminalProviderErrorIdx,
     );
 
@@ -1328,17 +1340,14 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
         "const retryModel = shouldRetryWithoutImageToolResults",
       );
       const modelSwitchIdx = source.indexOf(
-        "retryUsedFallbackModel = retryUsesDifferentModel(",
+        "retryUsedFallbackModel =",
         retryModelIdx,
       );
       const resetIdx = source.indexOf(
         "resetServedModelTelemetryForRetry(state)",
         modelSwitchIdx,
       );
-      const retryStreamIdx = source.indexOf(
-        "createStream(retryModel)",
-        resetIdx,
-      );
+      const retryStreamIdx = source.indexOf("createStream(", resetIdx);
 
       expect(modelSwitchIdx).toBeGreaterThan(retryModelIdx);
       expect(resetIdx).toBeGreaterThan(modelSwitchIdx);

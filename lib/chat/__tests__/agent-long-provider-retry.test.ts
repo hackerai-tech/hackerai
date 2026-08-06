@@ -257,13 +257,13 @@ describe("shouldRetryAgentLongWithFallback", () => {
         },
       ],
     },
-  ])("never replays provider content blocks with $label", ({ parts }) => {
+  ])("retries provider content blocks with $label", ({ parts }) => {
     expect(
       shouldRetryAgentLongWithFallback(parts, {
         hasTerminalProviderStreamError: true,
         providerContentBlocked: true,
       }),
-    ).toBe(false);
+    ).toBe(true);
   });
 
   it("does not treat a user abort as a provider retry", () => {

@@ -42,6 +42,7 @@ import {
   isContextUsageEnabled,
   isProviderApiError,
   injectNotesIntoMessages,
+  getContentFilterRetryModel,
   getRetryFallbackModel,
   resolveServedModelForCostAccounting,
 } from "@/lib/api/chat-stream-helpers";
@@ -2962,9 +2963,13 @@ export const agentLongTask = task({
                   : null,
             };
 
-            const createStream = (modelName: string) => {
+            const createStream = (
+              modelName: string,
+              excludedProviderModelSlugs?: readonly string[],
+            ) => {
               activeModelName = modelName;
               streamCtx.tools = getToolsForModel(modelName);
+              streamCtx.excludedProviderModelSlugs = excludedProviderModelSlugs;
               setCurrentModelName(modelName);
               return createAgentStream(modelName, streamCtx, state);
             };
@@ -3053,8 +3058,9 @@ export const agentLongTask = task({
                   }) => {
                     let retryScheduled = false;
                     try {
-                      // Retry with fallback if the primary stream failed before
-                      // producing text, tool calls, or tool output worth saving.
+                      // Retry once with a different model for content filters,
+                      // or when the primary stream fails before producing
+                      // output worth saving.
                       const lastAssistantMessage = finishedMessages
                         .slice()
                         .reverse()
@@ -3106,12 +3112,12 @@ export const agentLongTask = task({
                         imageRecovery.omittedCount > 0 && !isAborted;
 
                       if (
-                        !providerContentBlocked &&
                         (shouldRetryWithFallback ||
                           shouldRetryWithoutImageToolResults) &&
                         !isRetryWithFallback &&
                         (!isAborted || stoppedDueToAssistantContentLoop) &&
                         (isAutoModel ||
+                          providerContentBlocked ||
                           shouldRetryWithoutImageToolResults ||
                           stoppedDueToAssistantContentLoop ||
                           state.stoppedDueToDoomLoop ||
@@ -3119,13 +3125,29 @@ export const agentLongTask = task({
                       ) {
                         const retryReason = shouldRetryWithoutImageToolResults
                           ? "image_tool_result_rejection"
-                          : stoppedDueToAssistantContentLoop
-                            ? "assistant_content_loop"
-                            : state.stoppedDueToDoomLoop
-                              ? "doom_loop"
-                              : shouldRetryInterruptedToolInput
-                                ? "interrupted_tool_input"
-                                : "incomplete_stream";
+                          : providerContentBlocked
+                            ? "content_filter"
+                            : stoppedDueToAssistantContentLoop
+                              ? "assistant_content_loop"
+                              : state.stoppedDueToDoomLoop
+                                ? "doom_loop"
+                                : shouldRetryInterruptedToolInput
+                                  ? "interrupted_tool_input"
+                                  : "incomplete_stream";
+                        const blockedProviderModel = providerContentBlocked
+                          ? state.responseModel
+                          : undefined;
+                        const retryModel = shouldRetryWithoutImageToolResults
+                          ? selectedModel
+                          : providerContentBlocked
+                            ? getContentFilterRetryModel(
+                                selectedModel,
+                                mode,
+                                blockedProviderModel,
+                              )
+                            : fallbackModel;
+                        const retryModelSlug =
+                          trackedProvider.languageModel(retryModel).modelId;
                         phLogger.warn(
                           "[agent-long] Provider output triggered fallback retry",
                           {
@@ -3133,8 +3155,9 @@ export const agentLongTask = task({
                             mode,
                             originalModel: selectedModel,
                             requestedModelSlug: configuredModelId,
-                            fallbackModel,
-                            fallbackModelSlug: fallbackModelId,
+                            blockedProviderModel,
+                            fallbackModel: retryModel,
+                            fallbackModelSlug: retryModelSlug,
                             userId,
                             subscription,
                             retryReason,
@@ -3169,13 +3192,9 @@ export const agentLongTask = task({
                         const fallbackStartTime = Date.now();
                         preFallbackCacheRead = usageTracker.cacheReadTokens;
                         preFallbackCacheWrite = usageTracker.cacheWriteTokens;
-                        const retryModel = shouldRetryWithoutImageToolResults
-                          ? selectedModel
-                          : fallbackModel;
-                        retryUsedFallbackModel = retryUsesDifferentModel(
-                          selectedModel,
-                          retryModel,
-                        );
+                        retryUsedFallbackModel =
+                          retryUsesDifferentModel(selectedModel, retryModel) ||
+                          providerContentBlocked;
                         resetServedModelTelemetryForRetry(state);
                         if (shouldRetryWithoutImageToolResults) {
                           const normalizedRetryMessages = imageRecovery.messages
@@ -3196,7 +3215,12 @@ export const agentLongTask = task({
                         } else {
                           usageTracker.resetModelLeg();
                         }
-                        const retryResult = await createStream(retryModel);
+                        const retryResult = await createStream(
+                          retryModel,
+                          blockedProviderModel
+                            ? [blockedProviderModel]
+                            : undefined,
+                        );
                         const retryMessageId = generateId();
 
                         writer.merge(

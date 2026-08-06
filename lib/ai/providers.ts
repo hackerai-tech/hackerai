@@ -186,6 +186,13 @@ export const DEEPSEEK_V4_FLASH_SLUG = "deepseek/deepseek-v4-flash-0731";
 export const DEEPSEEK_V4_FLASH_PREVIOUS_SLUG = "deepseek/deepseek-v4-flash";
 const TITLE_GENERATOR_DEEPSEEK_SLUG = "deepseek/deepseek-v4-flash";
 
+export const getOpenRouterProviderRoutingForModel = (
+  modelSlug: string,
+): { ignore: string[] } | undefined =>
+  modelSlug === DEEPSEEK_V4_FLASH_PREVIOUS_SLUG
+    ? { ignore: ["novita"] }
+    : undefined;
+
 const buildProviderMap = (
   or: OpenRouterInstance,
   freeDeepSeekSlug = DEEPSEEK_V4_FLASH_SLUG,

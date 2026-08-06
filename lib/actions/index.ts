@@ -1,5 +1,9 @@
 import { generateText, Output, UIMessage, UIMessageStreamWriter } from "ai";
-import { myProvider } from "@/lib/ai/providers";
+import {
+  DEEPSEEK_V4_FLASH_PREVIOUS_SLUG,
+  getOpenRouterProviderRoutingForModel,
+  myProvider,
+} from "@/lib/ai/providers";
 import { z } from "zod";
 import { isXaiSafetyError } from "@/lib/api/chat-stream-helpers";
 
@@ -76,6 +80,9 @@ export const generateTitleFromUserMessage = async (
       providerOptions: {
         openrouter: {
           reasoning: { enabled: false },
+          provider: getOpenRouterProviderRoutingForModel(
+            DEEPSEEK_V4_FLASH_PREVIOUS_SLUG,
+          ),
         },
       },
       output: Output.object({

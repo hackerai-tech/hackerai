@@ -89,6 +89,7 @@ import {
   assertChatModeAccess,
   buildExtraUsageConfig,
   estimatePreflightInputTokens,
+  getContentFilterRetryModel,
   getRetryFallbackModel,
   isAutoModelSelectionForRetry,
   resolveServedModelForCostAccounting,
@@ -1314,9 +1315,13 @@ export const createChatHandler = () => {
                 preemptiveTimeout?.isPreemptive() ? "timeout" : null,
             };
 
-            const createStream = (modelName: string) => {
+            const createStream = (
+              modelName: string,
+              excludedProviderModelSlugs?: readonly string[],
+            ) => {
               activeModelName = modelName;
               streamCtx.tools = getToolsForModel(modelName);
+              streamCtx.excludedProviderModelSlugs = excludedProviderModelSlugs;
               setCurrentModelName(modelName);
               return createAgentStream(modelName, streamCtx, state);
             };
@@ -1451,34 +1456,52 @@ export const createChatHandler = () => {
                       imageRecovery.omittedCount > 0 && !isAborted;
 
                     if (
-                      !providerContentBlocked &&
                       (shouldRetryWithFallback ||
-                        shouldRetryWithoutImageToolResults)
+                        shouldRetryWithoutImageToolResults) &&
+                      !isRetryWithFallback
                     ) {
                       const loopTriggeredRetry =
                         stoppedDueToAssistantContentLoop ||
                         state.stoppedDueToDoomLoop;
                       const retryReason = shouldRetryWithoutImageToolResults
                         ? "image_tool_result_rejection"
-                        : stoppedDueToAssistantContentLoop
-                          ? "assistant_content_loop"
-                          : state.stoppedDueToDoomLoop
-                            ? "doom_loop"
-                            : shouldRetryInterruptedToolInput
-                              ? "interrupted_tool_input"
-                              : "incomplete_stream";
+                        : providerContentBlocked
+                          ? "content_filter"
+                          : stoppedDueToAssistantContentLoop
+                            ? "assistant_content_loop"
+                            : state.stoppedDueToDoomLoop
+                              ? "doom_loop"
+                              : shouldRetryInterruptedToolInput
+                                ? "interrupted_tool_input"
+                                : "incomplete_stream";
+                      const blockedProviderModel = providerContentBlocked
+                        ? state.responseModel
+                        : undefined;
+                      const retryModel = shouldRetryWithoutImageToolResults
+                        ? selectedModel
+                        : providerContentBlocked
+                          ? getContentFilterRetryModel(
+                              selectedModel,
+                              mode,
+                              blockedProviderModel,
+                            )
+                          : fallbackModel;
+                      const retryModelSlug =
+                        trackedProvider.languageModel(retryModel).modelId;
                       phLogger.warn(
                         shouldRetryWithoutImageToolResults
                           ? "Provider rejected image tool output - retrying without images"
-                          : retryReason === "assistant_content_loop"
-                            ? "Assistant content loop detected - triggering fallback"
-                            : retryReason === "doom_loop"
-                              ? "Agent doom loop detected - triggering fallback"
-                              : retryReason === "interrupted_tool_input"
-                                ? "Provider stream errored during tool input - triggering bounded fallback"
-                                : hasTerminalProviderStreamError
-                                  ? "Provider stream errored before useful output - triggering fallback"
-                                  : "Stream finished incomplete - triggering fallback",
+                          : retryReason === "content_filter"
+                            ? "Provider content filter triggered fallback model retry"
+                            : retryReason === "assistant_content_loop"
+                              ? "Assistant content loop detected - triggering fallback"
+                              : retryReason === "doom_loop"
+                                ? "Agent doom loop detected - triggering fallback"
+                                : retryReason === "interrupted_tool_input"
+                                  ? "Provider stream errored during tool input - triggering bounded fallback"
+                                  : hasTerminalProviderStreamError
+                                    ? "Provider stream errored before useful output - triggering fallback"
+                                    : "Stream finished incomplete - triggering fallback",
                         {
                           chatId,
                           endpoint,
@@ -1491,6 +1514,9 @@ export const createChatHandler = () => {
                           isRetryWithFallback,
                           assistantMessageId,
                           retryReason,
+                          blockedProviderModel,
+                          retryModel,
+                          retryModelSlug,
                           stoppedDueToDoomLoop: state.stoppedDueToDoomLoop,
                           assistantContentLoop:
                             assistantContentLoopDetection.detected
@@ -1501,14 +1527,14 @@ export const createChatHandler = () => {
                         },
                       );
 
-                      // Retry with fallback model for incomplete or reasoning-only
-                      // terminal provider streams. For image-tool rejection, retry
-                      // the same selected model after replacing image outputs with
-                      // text placeholders.
+                      // Retry with the fallback model for content-filter,
+                      // incomplete, or reasoning-only terminal provider streams.
+                      // For image-tool rejection, retry the same selected model
+                      // after replacing image outputs with text placeholders.
                       if (
-                        !isRetryWithFallback &&
                         (!isAborted || stoppedDueToAssistantContentLoop) &&
                         (isAutoModel ||
+                          providerContentBlocked ||
                           shouldRetryWithoutImageToolResults ||
                           loopTriggeredRetry ||
                           shouldRetryInterruptedToolInput)
@@ -1535,13 +1561,9 @@ export const createChatHandler = () => {
                         preFallbackCacheRead = usageTracker.cacheReadTokens;
                         preFallbackCacheWrite = usageTracker.cacheWriteTokens;
 
-                        const retryModel = shouldRetryWithoutImageToolResults
-                          ? selectedModel
-                          : fallbackModel;
-                        retryUsedFallbackModel = retryUsesDifferentModel(
-                          selectedModel,
-                          retryModel,
-                        );
+                        retryUsedFallbackModel =
+                          retryUsesDifferentModel(selectedModel, retryModel) ||
+                          providerContentBlocked;
                         resetServedModelTelemetryForRetry(state);
                         if (shouldRetryWithoutImageToolResults) {
                           state.finalMessages =
@@ -1555,7 +1577,12 @@ export const createChatHandler = () => {
                           usageTracker.resetModelLeg();
                         }
 
-                        const retryResult = await createStream(retryModel);
+                        const retryResult = await createStream(
+                          retryModel,
+                          blockedProviderModel
+                            ? [blockedProviderModel]
+                            : undefined,
+                        );
                         const retryMessageId = generateId();
 
                         writer.merge(

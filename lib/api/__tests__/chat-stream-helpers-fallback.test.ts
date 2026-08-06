@@ -8,6 +8,7 @@
 
 import {
   buildProviderOptions,
+  getContentFilterRetryModel,
   getRetryFallbackModel,
   isAutoModelSelectionForRetry,
   resolveServedModelForCostAccounting,
@@ -56,8 +57,31 @@ describe("buildProviderOptions fallback chain", () => {
 
     expect(opts.openrouter).toEqual({
       reasoning: { enabled: false },
+      provider: { ignore: ["novita"] },
       user: "user-1",
     });
+  });
+
+  it("ignores Novita only for the previous DeepSeek Flash route", () => {
+    const previousRoute = buildProviderOptions(
+      false,
+      "user-1",
+      "ask-model-free",
+      "ask",
+      { requestedModelSlug: DEEPSEEK_FLASH_PREVIOUS_SLUG },
+    );
+    const currentRoute = buildProviderOptions(
+      false,
+      "user-1",
+      "ask-model-free",
+      "ask",
+      { requestedModelSlug: DEEPSEEK_FLASH_SLUG },
+    );
+
+    expect(previousRoute.openrouter.provider).toEqual({
+      ignore: ["novita"],
+    });
+    expect(currentRoute.openrouter).not.toHaveProperty("provider");
   });
 
   it.each(GROK_PRIMARY_OR_FALLBACK_MODELS)(
@@ -135,6 +159,21 @@ describe("buildProviderOptions fallback chain", () => {
     );
     expect(opts.openrouter).toMatchObject({
       models: [GROK_SLUG],
+      user: "user-1",
+    });
+  });
+
+  it("excludes the model that actually returned content-filter from retry fallbacks", () => {
+    const opts = buildProviderOptions(
+      true,
+      "user-1",
+      "model-grok-4.5-pro",
+      "agent",
+      { excludedModelSlugs: ["z-ai/glm-5.2-20260616"] },
+    );
+
+    expect(opts.openrouter).toMatchObject({
+      models: [KIMI_K3_SLUG],
       user: "user-1",
     });
   });
@@ -546,6 +585,34 @@ describe("getRetryFallbackModel", () => {
     expect(getRetryFallbackModel("model-grok-4.5", "ask")).toBe(
       "model-kimi-k3",
     );
+  });
+});
+
+describe("getContentFilterRetryModel", () => {
+  it("uses the normal fallback when the configured primary was served", () => {
+    expect(
+      getContentFilterRetryModel(
+        "agent-model-free",
+        "agent",
+        DEEPSEEK_FLASH_CANONICAL_SLUG,
+      ),
+    ).toBe("model-grok-4.5");
+  });
+
+  it("skips the normal fallback when OpenRouter already served it", () => {
+    expect(
+      getContentFilterRetryModel("agent-model-free", "agent", GROK_SLUG),
+    ).toBe("model-kimi-k3");
+  });
+
+  it("recognizes canonical served-model aliases", () => {
+    expect(
+      getContentFilterRetryModel(
+        "model-grok-4.5",
+        "agent",
+        "moonshotai/kimi-k3-20260715",
+      ),
+    ).toBe("model-grok-4.5");
   });
 });
 

@@ -470,6 +470,8 @@ export type AgentStreamContext = {
     modelName: string;
     reasoning: ProviderReasoningOverride;
   };
+  /** Provider model IDs that must not be used by an OpenRouter fallback. */
+  excludedProviderModelSlugs?: readonly string[];
   /** elapsedTimeExceeds threshold; callers supply their platform ceiling. */
   maxDurationMs: number;
   getActiveElapsedTimeMs?: () => number;
@@ -713,19 +715,24 @@ export async function createAgentStream(
   };
   const getStepProviderOptions = (
     effectiveModelName = getEffectiveModelName(),
-  ) =>
-    buildProviderOptions(
+  ) => {
+    const requestedModelSlug =
+      ctx.trackedProvider.languageModel(effectiveModelName).modelId;
+    return buildProviderOptions(
       ctx.isReasoningModel,
       ctx.userId,
       effectiveModelName,
       ctx.mode,
       {
         hasMultimodalToolResults: streamHasImageViewResults,
+        excludedModelSlugs: ctx.excludedProviderModelSlugs,
+        requestedModelSlug,
         ...(ctx.providerReasoningOverride?.modelName === effectiveModelName && {
           reasoningOverride: ctx.providerReasoningOverride.reasoning,
         }),
       },
     );
+  };
   const prepareProviderMessages = (
     messages: ModelMessage[],
     effectiveModelName = getEffectiveModelName(),
