@@ -318,7 +318,7 @@ describe("SidebarChatSections", () => {
     );
   });
 
-  it("shows a hover-revealed new-task action when Tasks is collapsed", () => {
+  it("shows a project-sized new-task action in both Tasks states", () => {
     render(
       <SidebarChatSections
         chats={chats}
@@ -327,22 +327,28 @@ describe("SidebarChatSections", () => {
       />,
     );
 
-    expect(
-      screen.queryByRole("button", { name: "Start new task" }),
-    ).not.toBeInTheDocument();
-
-    fireEvent.click(screen.getByRole("button", { name: "Tasks" }));
-
     const newTaskButton = screen.getByRole("button", {
       name: "Start new task",
     });
     expect(newTaskButton).toHaveClass(
+      "size-8",
       "opacity-0",
       "group-hover/chat-section:opacity-100",
       "group-focus-within/chat-section:opacity-100",
       "focus-visible:opacity-100",
       "touch-device:!opacity-100",
     );
+    expect(newTaskButton.querySelector("svg")).toHaveClass("size-[18px]");
+    expect(screen.getByRole("button", { name: "Tasks" })).toHaveAttribute(
+      "aria-expanded",
+      "true",
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Tasks" }));
+
+    expect(
+      screen.getByRole("button", { name: "Start new task" }),
+    ).toBeInTheDocument();
 
     fireEvent.click(newTaskButton);
 

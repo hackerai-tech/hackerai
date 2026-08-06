@@ -312,29 +312,27 @@ export function SidebarChatSections({
           onOpenChange={setIsTasksOpen}
           testId="sidebar-tasks-section"
           action={
-            !isTasksOpen ? (
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="icon"
-                    className="size-8 rounded-lg text-sidebar-foreground/45 opacity-0 transition-opacity hover:bg-sidebar-accent hover:text-sidebar-foreground group-hover/chat-section:opacity-100 group-focus-within/chat-section:opacity-100 focus-visible:opacity-100 touch-device:!opacity-100"
-                    onClick={() => startNewChat()}
-                    aria-label="Start new task"
-                  >
-                    <SquarePen className="size-[18px]" />
-                  </Button>
-                </TooltipTrigger>
-                <TooltipContent
-                  side="top"
-                  sideOffset={8}
-                  className="border-0 bg-black px-3 py-1.5 text-sm text-white shadow-md [&_svg]:bg-black [&_svg]:fill-black"
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  className="size-8 rounded-lg text-sidebar-foreground/45 opacity-0 transition-opacity hover:bg-sidebar-accent hover:text-sidebar-foreground group-hover/chat-section:opacity-100 group-focus-within/chat-section:opacity-100 focus-visible:opacity-100 touch-device:!opacity-100"
+                  onClick={() => startNewChat()}
+                  aria-label="Start new task"
                 >
-                  New task
-                </TooltipContent>
-              </Tooltip>
-            ) : null
+                  <SquarePen className="size-[18px]" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent
+                side="top"
+                sideOffset={8}
+                className="border-0 bg-black px-3 py-1.5 text-sm text-white shadow-md [&_svg]:bg-black [&_svg]:fill-black"
+              >
+                New task
+              </TooltipContent>
+            </Tooltip>
           }
         >
           <SidebarHistory
