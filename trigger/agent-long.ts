@@ -116,6 +116,7 @@ import {
   createChatLogger,
   type ChatLogger,
 } from "@/lib/api/chat-logger";
+import { evaluateKimiReasoningExperiment } from "@/lib/experiments/kimi-reasoning";
 import {
   LEGACY_AGENT_API_ENDPOINT,
   type AgentApiEndpoint,
@@ -2505,6 +2506,15 @@ export const agentLongTask = task({
             const streamStartTime = taskStartTime;
             const configuredModelId =
               trackedProvider.languageModel(selectedModel).modelId;
+            const kimiReasoningExperiment =
+              await evaluateKimiReasoningExperiment({
+                posthog,
+                userId,
+                subscription,
+                mode,
+                selectedModel,
+                configuredModelId,
+              });
             const budgetMonitor = effectiveBudgetSnapshot
               ? new BudgetMonitor(
                   effectiveBudgetSnapshot,
@@ -2732,6 +2742,7 @@ export const agentLongTask = task({
                   analyticsRequestContext,
                   usage: usageCostRecord,
                   responseModel: state.responseModel,
+                  kimiReasoningExperiment,
                   ...(usageSettlementState && {
                     usageSettlement: {
                       id: usageTracker.usageSettlementId,
@@ -2906,6 +2917,15 @@ export const agentLongTask = task({
                 }
               },
               settleUsageAfterStep,
+              ...(kimiReasoningExperiment && {
+                providerReasoningOverride: {
+                  modelName: selectedModel,
+                  reasoning: {
+                    enabled: true,
+                    effort: kimiReasoningExperiment.reasoningEffort,
+                  },
+                },
+              }),
               onBudgetAbort: (details) =>
                 captureAgentBudgetAbort({
                   posthog,
@@ -3244,6 +3264,7 @@ export const agentLongTask = task({
                                       state.budgetAbortDetails,
                                     agentPermissionMode,
                                     isAutoContinue: !!isAutoContinue,
+                                    kimiReasoningExperiment,
                                     stepLimitTelemetry:
                                       buildAgentStepLimitTelemetry({
                                         configuredMaxSteps:
@@ -3406,6 +3427,7 @@ export const agentLongTask = task({
                         budgetAbortDetails: state.budgetAbortDetails,
                         agentPermissionMode,
                         isAutoContinue: !!isAutoContinue,
+                        kimiReasoningExperiment,
                         stepLimitTelemetry: buildAgentStepLimitTelemetry({
                           configuredMaxSteps: state.configuredMaxSteps,
                           stepCount: state.agentStepCount,

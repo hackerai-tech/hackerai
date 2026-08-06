@@ -77,6 +77,40 @@ export function captureAuthenticatedEvent(
   }
 }
 
+export function captureMessageFeedback({
+  messageId,
+  feedbackType,
+  previousFeedbackType,
+}: {
+  messageId: string;
+  feedbackType: "positive" | "negative";
+  previousFeedbackType?: "positive" | "negative";
+}) {
+  return captureAuthenticatedEvent(
+    "message_feedback_submitted",
+    {
+      message_id: messageId,
+      feedback_type: feedbackType,
+      is_initial_feedback: previousFeedbackType === undefined,
+      ...(previousFeedbackType && {
+        previous_feedback_type: previousFeedbackType,
+      }),
+      feedback_event_version: 1,
+    },
+    {
+      uuid: uuidv5(
+        [
+          "message_feedback_submitted",
+          messageId,
+          previousFeedbackType ?? "none",
+          feedbackType,
+        ].join(":"),
+        uuidv5.URL,
+      ),
+    },
+  );
+}
+
 export function addAuthenticatedExceptionStep(
   message: string,
   properties: ClientAnalyticsProperties = {},

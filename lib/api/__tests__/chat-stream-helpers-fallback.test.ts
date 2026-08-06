@@ -302,6 +302,47 @@ describe("buildProviderOptions fallback chain", () => {
     expect(opts.openrouter).not.toHaveProperty("models");
   });
 
+  it("allows the Kimi Max experiment to raise a Grok-backed route to max", () => {
+    const opts = buildProviderOptions(
+      true,
+      "user-1",
+      "model-opus-4.6",
+      "agent",
+      {
+        reasoningOverride: { enabled: true, effort: "max" },
+      },
+    );
+
+    expect(opts.openrouter.reasoning).toEqual({
+      enabled: true,
+      effort: "max",
+    });
+    expect(opts.openrouter.models).toEqual([GROK_SLUG]);
+  });
+
+  it.each([
+    { enabled: true, effort: "low" },
+    { enabled: true },
+    { enabled: false, effort: "max" },
+    { enabled: true, effort: "max", exclude: true },
+  ])(
+    "does not let $p weaken or exclude Grok reasoning",
+    (reasoningOverride) => {
+      const opts = buildProviderOptions(
+        true,
+        "user-1",
+        "model-opus-4.6",
+        "agent",
+        { reasoningOverride },
+      );
+
+      expect(opts.openrouter.reasoning).toEqual({
+        enabled: true,
+        effort: "high",
+      });
+    },
+  );
+
   it.each(["model-deepseek-v4-pro", "ask-model", "model-grok-4.5"])(
     "enables high reasoning for Grok-backed ask mode model %s",
     (modelName) => {

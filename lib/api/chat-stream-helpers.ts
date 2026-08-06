@@ -605,6 +605,16 @@ export type ProviderReasoningOverride = {
   exclude?: boolean;
 };
 
+const HIGH_OR_GREATER_REASONING_EFFORTS = new Set(["high", "xhigh", "max"]);
+
+const isHighOrGreaterReasoningOverride = (
+  reasoningOverride: ProviderReasoningOverride | undefined,
+): reasoningOverride is ProviderReasoningOverride & { effort: string } =>
+  reasoningOverride?.enabled === true &&
+  reasoningOverride.exclude !== true &&
+  typeof reasoningOverride.effort === "string" &&
+  HIGH_OR_GREATER_REASONING_EFFORTS.has(reasoningOverride.effort);
+
 const getFallbackKeys = (
   modelName?: string,
 ): readonly ModelName[] | undefined => {
@@ -746,6 +756,7 @@ export function buildProviderOptions(
   // OpenRouter applies one reasoning configuration to both the primary model
   // and every provider fallback. Aside from the explicit free Ask policy,
   // force high whenever Grok 4.5 is reachable so it cannot inherit less effort.
+  // Explicit high-or-greater overrides are safe for scoped experiments.
   const routesThroughGrok45 = isGrok45 || fallbackSlugs.includes(GROK_4_5_SLUG);
   const reasoning = isFreeAskDeepSeekV4
     ? {
@@ -753,10 +764,12 @@ export function buildProviderOptions(
         effort: "low",
       }
     : routesThroughGrok45
-      ? {
-          enabled: true,
-          effort: "high",
-        }
+      ? isHighOrGreaterReasoningOverride(options.reasoningOverride)
+        ? options.reasoningOverride
+        : {
+            enabled: true,
+            effort: "high",
+          }
       : (options.reasoningOverride ??
         (isHighReasoningModel(modelName) || isAgentDeepSeekV4
           ? {

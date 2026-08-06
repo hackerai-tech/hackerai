@@ -21,6 +21,7 @@ jest.mock("posthog-js", () => ({
 }));
 
 const {
+  captureMessageFeedback,
   captureUpgradeCtaImpression,
   getPostHogRequestHeaders,
   loadPostHogClient,
@@ -105,5 +106,43 @@ describe("client analytics", () => {
       "x-posthog-session-id": "session_123",
     });
     expect(mockPostHog.get_distinct_id).not.toHaveBeenCalled();
+  });
+
+  it("captures content-free initial message feedback with a stable UUID", () => {
+    expect(
+      captureMessageFeedback({
+        messageId: "message_123",
+        feedbackType: "positive",
+      }),
+    ).toBe(true);
+
+    expect(mockCapture).toHaveBeenCalledWith(
+      "message_feedback_submitted",
+      {
+        message_id: "message_123",
+        feedback_type: "positive",
+        is_initial_feedback: true,
+        feedback_event_version: 1,
+      },
+      { uuid: expect.stringMatching(/^[0-9a-f-]{36}$/i) },
+    );
+  });
+
+  it("marks feedback changes without sending feedback details", () => {
+    captureMessageFeedback({
+      messageId: "message_123",
+      feedbackType: "negative",
+      previousFeedbackType: "positive",
+    });
+
+    const [, properties] = mockCapture.mock.calls[0];
+    expect(properties).toEqual({
+      message_id: "message_123",
+      feedback_type: "negative",
+      is_initial_feedback: false,
+      previous_feedback_type: "positive",
+      feedback_event_version: 1,
+    });
+    expect(properties).not.toHaveProperty("feedback_details");
   });
 });
