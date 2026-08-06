@@ -26,6 +26,7 @@ const {
   flushPendingAuthenticatedEvents,
   getPostHogRequestHeaders,
   loadPostHogClient,
+  setAuthenticatedAnalyticsUserId,
 } = require("../client") as typeof import("../client");
 
 describe("client analytics", () => {
@@ -37,7 +38,8 @@ describe("client analytics", () => {
   beforeEach(() => {
     window.localStorage.clear();
     mockPostHog.__loaded = true;
-    flushPendingAuthenticatedEvents();
+    setAuthenticatedAnalyticsUserId("user_123");
+    flushPendingAuthenticatedEvents("user_123");
     mockCapture.mockClear();
     mockPostHog.get_distinct_id.mockClear();
     mockPostHog.get_distinct_id.mockReturnValue("user_123");
@@ -157,7 +159,7 @@ describe("client analytics", () => {
     expect(mockCapture).not.toHaveBeenCalled();
 
     mockPostHog.__loaded = true;
-    expect(flushPendingAuthenticatedEvents()).toBe(true);
+    expect(flushPendingAuthenticatedEvents("user_123")).toBe(true);
     expect(mockCapture).toHaveBeenCalledWith(
       "message_feedback_submitted",
       expect.objectContaining({
@@ -165,6 +167,33 @@ describe("client analytics", () => {
         feedback_type: "negative",
       }),
       { uuid: expect.stringMatching(/^[0-9a-f-]{36}$/i) },
+    );
+  });
+
+  it("discards queued feedback across logout and identity changes", () => {
+    mockPostHog.__loaded = false;
+    setAuthenticatedAnalyticsUserId("user_a");
+    captureMessageFeedback({
+      messageId: "message_user_a",
+      feedbackType: "positive",
+    });
+
+    setAuthenticatedAnalyticsUserId(null);
+    setAuthenticatedAnalyticsUserId("user_b");
+    mockPostHog.__loaded = true;
+
+    expect(flushPendingAuthenticatedEvents("user_b")).toBe(false);
+    expect(mockCapture).not.toHaveBeenCalled();
+
+    captureMessageFeedback({
+      messageId: "message_user_b",
+      feedbackType: "negative",
+    });
+    expect(mockCapture).toHaveBeenCalledTimes(1);
+    expect(mockCapture).toHaveBeenCalledWith(
+      "message_feedback_submitted",
+      expect.objectContaining({ message_id: "message_user_b" }),
+      expect.any(Object),
     );
   });
 

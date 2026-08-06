@@ -19,6 +19,7 @@ jest.mock("@/lib/analytics/client", () => ({
   flushPendingAuthenticatedEvents: jest.fn(),
   getPostHogClient: jest.fn(() => null),
   loadPostHogClient: jest.fn(),
+  setAuthenticatedAnalyticsUserId: jest.fn(),
 }));
 
 process.env.NEXT_PUBLIC_POSTHOG_KEY = "phc_test";
@@ -30,9 +31,13 @@ const { useAuth } = jest.requireMock<
 const { useGlobalState } = jest.requireMock<
   typeof import("../contexts/GlobalState")
 >("../contexts/GlobalState");
-const { flushPendingAuthenticatedEvents, loadPostHogClient } = jest.requireMock<
-  typeof import("@/lib/analytics/client")
->("@/lib/analytics/client");
+const {
+  flushPendingAuthenticatedEvents,
+  loadPostHogClient,
+  setAuthenticatedAnalyticsUserId,
+} = jest.requireMock<typeof import("@/lib/analytics/client")>(
+  "@/lib/analytics/client",
+);
 const { PostHogProvider } =
   require("../providers") as typeof import("../providers");
 
@@ -41,6 +46,8 @@ const mockUseGlobalState = useGlobalState as jest.Mock;
 const mockFlushPendingAuthenticatedEvents =
   flushPendingAuthenticatedEvents as jest.Mock;
 const mockLoadPostHogClient = loadPostHogClient as jest.Mock;
+const mockSetAuthenticatedAnalyticsUserId =
+  setAuthenticatedAnalyticsUserId as jest.Mock;
 
 describe("PostHogProvider", () => {
   beforeEach(() => {
@@ -109,7 +116,12 @@ describe("PostHogProvider", () => {
       name: "Test User",
       subscription: "pro",
     });
-    expect(mockFlushPendingAuthenticatedEvents).toHaveBeenCalledTimes(1);
+    expect(mockSetAuthenticatedAnalyticsUserId).toHaveBeenCalledWith(
+      "user-123",
+    );
+    expect(mockFlushPendingAuthenticatedEvents).toHaveBeenCalledWith(
+      "user-123",
+    );
 
     const [, config] = posthog.init.mock.calls[0] as unknown as [
       string,
@@ -136,6 +148,19 @@ describe("PostHogProvider", () => {
       $current_url: "https://hackerai.co/auth-error",
       $referrer: "https://idp.example/callback",
     });
+  });
+
+  it("clears the queued analytics identity when the user signs out", () => {
+    mockUseAuth.mockReturnValue({ user: null });
+
+    render(
+      <PostHogProvider>
+        <div>child</div>
+      </PostHogProvider>,
+    );
+
+    expect(mockSetAuthenticatedAnalyticsUserId).toHaveBeenCalledWith(null);
+    expect(mockLoadPostHogClient).not.toHaveBeenCalled();
   });
 
   it("does not resend unchanged person properties across app loads", async () => {

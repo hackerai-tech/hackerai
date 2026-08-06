@@ -13,6 +13,7 @@ import {
   flushPendingAuthenticatedEvents,
   getPostHogClient,
   loadPostHogClient,
+  setAuthenticatedAnalyticsUserId,
 } from "@/lib/analytics/client";
 import {
   createPostHogIdentitySignature,
@@ -34,6 +35,7 @@ export function PostHogProvider({ children }: { children: React.ReactNode }) {
     if (!posthogKey) return;
 
     const shouldTrack = Boolean(userId);
+    setAuthenticatedAnalyticsUserId(userId ?? null);
 
     if (!shouldTrack) {
       lastIdentifiedSignature = null;
@@ -136,7 +138,7 @@ export function PostHogProvider({ children }: { children: React.ReactNode }) {
           }
         }
 
-        flushPendingAuthenticatedEvents();
+        flushPendingAuthenticatedEvents(userId!);
 
         if (subscription !== "free") {
           if (!posthog.sessionRecordingStarted()) {

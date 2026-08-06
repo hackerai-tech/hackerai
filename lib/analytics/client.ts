@@ -19,6 +19,7 @@ type PostHogClient = typeof posthogJs & {
 type PostHogCaptureOptions = Parameters<PostHogClient["capture"]>[2];
 
 type PendingAuthenticatedEvent = {
+  userId: string;
   event: string;
   properties: ClientAnalyticsProperties;
   options?: PostHogCaptureOptions;
@@ -26,6 +27,7 @@ type PendingAuthenticatedEvent = {
 
 let posthogClient: PostHogClient | null = null;
 let posthogImportPromise: Promise<PostHogClient> | null = null;
+let authenticatedAnalyticsUserId: string | null = null;
 const pendingAuthenticatedEvents: PendingAuthenticatedEvent[] = [];
 const MAX_PENDING_AUTHENTICATED_EVENTS = 100;
 const UPGRADE_IMPRESSION_STORAGE_KEY =
@@ -83,7 +85,9 @@ function queueAuthenticatedEvent(event: PendingAuthenticatedEvent) {
   if (
     uuid &&
     pendingAuthenticatedEvents.some(
-      (pendingEvent) => pendingEvent.options?.uuid === uuid,
+      (pendingEvent) =>
+        pendingEvent.userId === event.userId &&
+        pendingEvent.options?.uuid === uuid,
     )
   ) {
     return;
@@ -95,12 +99,21 @@ function queueAuthenticatedEvent(event: PendingAuthenticatedEvent) {
   }
 }
 
-export function flushPendingAuthenticatedEvents() {
+export function setAuthenticatedAnalyticsUserId(userId: string | null) {
+  if (authenticatedAnalyticsUserId === userId) return;
+  authenticatedAnalyticsUserId = userId;
+  pendingAuthenticatedEvents.splice(0);
+}
+
+export function flushPendingAuthenticatedEvents(userId: string) {
+  if (authenticatedAnalyticsUserId !== userId) return false;
+
   const posthog = getReadyPostHogClient();
   if (!posthog || pendingAuthenticatedEvents.length === 0) return false;
 
   const pendingEvents = pendingAuthenticatedEvents.splice(0);
   for (const pendingEvent of pendingEvents) {
+    if (pendingEvent.userId !== userId) continue;
     if (
       !captureWithPostHogClient(
         posthog,
@@ -128,7 +141,6 @@ export function captureAuthenticatedEvent(
     return false;
   }
 
-  flushPendingAuthenticatedEvents();
   return captureWithPostHogClient(posthog, event, properties, options);
 }
 
@@ -160,12 +172,15 @@ export function captureMessageFeedback({
     ),
   };
 
+  const userId = authenticatedAnalyticsUserId;
+  if (!userId) return false;
+
   if (captureAuthenticatedEvent(event, properties, options)) return true;
   if (!process.env.NEXT_PUBLIC_POSTHOG_KEY) return false;
 
-  queueAuthenticatedEvent({ event, properties, options });
+  queueAuthenticatedEvent({ userId, event, properties, options });
   void loadPostHogClient()
-    .then(() => flushPendingAuthenticatedEvents())
+    .then(() => flushPendingAuthenticatedEvents(userId))
     .catch(() => {});
   return true;
 }
