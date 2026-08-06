@@ -57,6 +57,7 @@ type DesktopStreamPublishFailureReason = "connection_closed" | "timeout";
 const DESKTOP_STREAM_PUBLISH_MAX_ATTEMPTS = 3;
 const DESKTOP_STREAM_PUBLISH_RETRY_BASE_DELAY_MS = 250;
 const DESKTOP_STREAM_RECONNECT_WAIT_MS = 5_000;
+const DESKTOP_STREAM_RECOVERY_DEADLINE_BUFFER_MS = 3_000;
 
 interface StreamChunk {
   type: "stdout" | "stderr" | "exit" | "error";
@@ -508,6 +509,10 @@ export class DesktopSandboxBridge {
         recoveryReported: false,
         exhaustionReported: false,
       };
+      const recoveryDeadlineAt =
+        Date.now() +
+        (command.timeout ?? 30_000) +
+        DESKTOP_STREAM_RECOVERY_DEADLINE_BUFFER_MS;
       let nextSequence = 0;
       let streamPublishTail: Promise<void> = Promise.resolve();
 
@@ -522,6 +527,7 @@ export class DesktopSandboxBridge {
               chunk,
               sequence,
               recoveryState,
+              recoveryDeadlineAt,
             );
           } catch (error) {
             // Tauri does not await Channel callbacks. Exhausted known
@@ -892,6 +898,7 @@ export class DesktopSandboxBridge {
     chunk: StreamChunk,
     sequence: number,
     recoveryState: DesktopStreamPublishRecoveryState,
+    recoveryDeadlineAt: number,
   ): Promise<void> {
     let firstFailureAt: number | null = null;
     let firstFailureReason: DesktopStreamPublishFailureReason | null = null;
@@ -973,55 +980,81 @@ export class DesktopSandboxBridge {
           });
         }
 
-        if (attempt === DESKTOP_STREAM_PUBLISH_MAX_ATTEMPTS) {
-          if (!recoveryState.exhaustionReported) {
-            recoveryState.exhaustionReported = true;
-            const recoveryLatencyMs = Date.now() - firstFailureAt;
-            console.error(
-              JSON.stringify({
-                timestamp: new Date().toISOString(),
-                level: "error",
-                event: "desktop_stream_publish_recovery_exhausted",
-                service: "desktop_bridge",
-                environment: process.env.NODE_ENV ?? "unknown",
-                request_id: commandId,
-                connection_id: this.connectionId,
-                command_id: commandId,
-                chunk_type: chunk.type,
-                reason: firstFailureReason,
-                attempts: attempt,
-                recovery_latency_ms: recoveryLatencyMs,
-              }),
-            );
-            captureAuthenticatedEvent(
-              "desktop_stream_publish_recovery_exhausted",
-              {
-                connectionId: this.connectionId,
-                commandId,
-                chunkType: chunk.type,
-                reason: firstFailureReason,
-                attempts: attempt,
-                recoveryLatencyMs,
-              },
-            );
-          }
-          throw error;
+        if (
+          attempt < DESKTOP_STREAM_PUBLISH_MAX_ATTEMPTS &&
+          Date.now() < recoveryDeadlineAt
+        ) {
+          await this.waitForRelayReady(attempt, recoveryDeadlineAt);
+          if (this.isStoppingOrStopped) return;
+          if (Date.now() < recoveryDeadlineAt) continue;
         }
 
-        await this.waitForRelayReady(attempt);
+        if (!recoveryState.exhaustionReported) {
+          recoveryState.exhaustionReported = true;
+          const recoveryLatencyMs = Date.now() - firstFailureAt;
+          const exhaustionReason =
+            Date.now() >= recoveryDeadlineAt ? "deadline" : "attempts";
+          console.error(
+            JSON.stringify({
+              timestamp: new Date().toISOString(),
+              level: "error",
+              event: "desktop_stream_publish_recovery_exhausted",
+              service: "desktop_bridge",
+              environment: process.env.NODE_ENV ?? "unknown",
+              request_id: commandId,
+              connection_id: this.connectionId,
+              command_id: commandId,
+              chunk_type: chunk.type,
+              reason: firstFailureReason,
+              attempts: attempt,
+              exhaustion_reason: exhaustionReason,
+              recovery_latency_ms: recoveryLatencyMs,
+            }),
+          );
+          captureAuthenticatedEvent(
+            "desktop_stream_publish_recovery_exhausted",
+            {
+              connectionId: this.connectionId,
+              commandId,
+              chunkType: chunk.type,
+              reason: firstFailureReason,
+              attempts: attempt,
+              exhaustionReason,
+              recoveryLatencyMs,
+            },
+          );
+        }
+        throw error;
       }
     }
   }
 
-  private async waitForRelayReady(attempt: number): Promise<void> {
-    const backoffMs =
-      DESKTOP_STREAM_PUBLISH_RETRY_BASE_DELAY_MS * 2 ** (attempt - 1);
-    await new Promise((resolve) => setTimeout(resolve, backoffMs));
+  private async waitForRelayReady(
+    attempt: number,
+    recoveryDeadlineAt: number,
+  ): Promise<void> {
+    const remainingBeforeBackoffMs = Math.max(
+      0,
+      recoveryDeadlineAt - Date.now(),
+    );
+    const backoffMs = Math.min(
+      DESKTOP_STREAM_PUBLISH_RETRY_BASE_DELAY_MS * 2 ** (attempt - 1),
+      remainingBeforeBackoffMs,
+    );
+    if (backoffMs > 0) {
+      await new Promise((resolve) => setTimeout(resolve, backoffMs));
+    }
     if (this.isStoppingOrStopped) return;
 
+    const readyTimeoutMs = Math.min(
+      DESKTOP_STREAM_RECONNECT_WAIT_MS,
+      Math.max(0, recoveryDeadlineAt - Date.now()),
+    );
+    if (readyTimeoutMs <= 0) return;
+
     const readyChecks = [
-      this.client?.ready(DESKTOP_STREAM_RECONNECT_WAIT_MS),
-      this.subscription?.ready(DESKTOP_STREAM_RECONNECT_WAIT_MS),
+      this.client?.ready(readyTimeoutMs),
+      this.subscription?.ready(readyTimeoutMs),
     ].filter((promise): promise is Promise<void> => Boolean(promise));
     await Promise.allSettled(readyChecks);
   }

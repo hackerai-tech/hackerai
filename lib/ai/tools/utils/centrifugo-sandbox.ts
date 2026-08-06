@@ -149,7 +149,7 @@ export function parseSandboxMessage(
   ) {
     console.warn(
       "Invalid sandbox message: sequence is not a non-negative integer",
-      msg,
+      { commandId: msg.commandId, sequence: msg.sequence },
     );
     return null;
   }

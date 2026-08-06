@@ -950,6 +950,7 @@ describe("forwardChunk", () => {
             chunkType: "stdout",
             reason,
             attempts: 3,
+            exhaustionReason: "attempts",
             recoveryLatencyMs: 750,
           },
         );
@@ -1068,6 +1069,78 @@ describe("forwardChunk", () => {
       mockSubscription.publish.mockResolvedValue(undefined);
       warnSpy.mockRestore();
       infoSpy.mockRestore();
+      jest.useRealTimers();
+    }
+  });
+
+  it("stops retrying when the command recovery deadline is reached", async () => {
+    jest.useFakeTimers();
+    let finishCommand!: () => void;
+    const commandFinished = new Promise<void>((resolve) => {
+      finishCommand = resolve;
+    });
+    mockInvokeHandler = async (cmd: string) => {
+      if (cmd === "execute_stream_command") {
+        await commandFinished;
+      }
+      return undefined;
+    };
+    mockSubscription.publish.mockRejectedValue({
+      code: 11,
+      message: "connection closed",
+    });
+    const rejectAtTimeout = (timeoutMs: number) =>
+      new Promise<void>((_, reject) => {
+        setTimeout(() => reject(new Error("ready timeout")), timeoutMs);
+      });
+    mockClient.ready.mockImplementationOnce(rejectAtTimeout);
+    mockSubscription.ready.mockImplementationOnce(rejectAtTimeout);
+    const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+    const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+
+    try {
+      const bridge = new DesktopSandboxBridge(buildConfig());
+      await bridge.start();
+      const handler = getPublicationHandler();
+      handler({
+        data: {
+          type: "command",
+          commandId: "cmd-publish-deadline",
+          command: "test",
+          timeout: 1_000,
+          targetConnectionId: "conn-123",
+        },
+      });
+      await jest.advanceTimersByTimeAsync(0);
+
+      const chunk = capturedChannel!.onmessage!({
+        type: "stdout",
+        data: "late",
+      }) as unknown as Promise<void>;
+      await jest.advanceTimersByTimeAsync(250);
+      await jest.advanceTimersByTimeAsync(3_750);
+      await expect(chunk).resolves.toBeUndefined();
+
+      expect(mockSubscription.publish).toHaveBeenCalledTimes(1);
+      expect(mockClient.ready).toHaveBeenCalledWith(3_750);
+      expect(mockSubscription.ready).toHaveBeenCalledWith(3_750);
+      expect(captureAuthenticatedEvent).toHaveBeenNthCalledWith(
+        2,
+        "desktop_stream_publish_recovery_exhausted",
+        expect.objectContaining({
+          commandId: "cmd-publish-deadline",
+          attempts: 1,
+          exhaustionReason: "deadline",
+          recoveryLatencyMs: 4_000,
+        }),
+      );
+    } finally {
+      finishCommand();
+      mockSubscription.publish.mockResolvedValue(undefined);
+      mockClient.ready.mockResolvedValue(undefined);
+      mockSubscription.ready.mockResolvedValue(undefined);
+      warnSpy.mockRestore();
+      errorSpy.mockRestore();
       jest.useRealTimers();
     }
   });
