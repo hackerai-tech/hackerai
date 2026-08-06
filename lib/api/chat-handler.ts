@@ -73,6 +73,7 @@ import {
   shutdownPostHog,
   type ChatLogger,
 } from "@/lib/api/chat-logger";
+import { evaluateKimiReasoningExperiment } from "@/lib/experiments/kimi-reasoning";
 import {
   countFileAttachments,
   stripImageAttachments,
@@ -859,9 +860,18 @@ export const createChatHandler = () => {
                 : freeMonthlyBudgetSnapshot);
             const isReasoningModel = isAgentMode(mode);
 
-            const streamStartTime = Date.now();
             const configuredModelId =
               trackedProvider.languageModel(selectedModel).modelId;
+            const kimiReasoningExperiment =
+              await evaluateKimiReasoningExperiment({
+                posthog,
+                userId,
+                subscription,
+                mode,
+                selectedModel,
+                configuredModelId,
+              });
+            const streamStartTime = Date.now();
             const budgetMonitor = effectiveBudgetSnapshot
               ? new BudgetMonitor(
                   effectiveBudgetSnapshot,
@@ -1095,6 +1105,7 @@ export const createChatHandler = () => {
                   usage: usageCostRecord,
                   responseModel: state.responseModel,
                   analyticsRequestContext,
+                  kimiReasoningExperiment,
                   ...(usageSettlementState && {
                     usageSettlement: {
                       id: usageTracker.usageSettlementId,
@@ -1255,6 +1266,15 @@ export const createChatHandler = () => {
               chatLogger,
               usageRefundTracker,
               settleUsageAfterStep,
+              ...(kimiReasoningExperiment && {
+                providerReasoningOverride: {
+                  modelName: selectedModel,
+                  reasoning: {
+                    enabled: true,
+                    effort: kimiReasoningExperiment.reasoningEffort,
+                  },
+                },
+              }),
               onBudgetAbort: (details) =>
                 captureAgentBudgetAbort({
                   posthog,
@@ -1600,6 +1620,7 @@ export const createChatHandler = () => {
                                   finishReason: state.streamFinishReason,
                                   budgetAbortDetails: state.budgetAbortDetails,
                                   isAutoContinue: !!isAutoContinue,
+                                  kimiReasoningExperiment,
                                   stepLimitTelemetry:
                                     buildAgentStepLimitTelemetry({
                                       configuredMaxSteps:
@@ -1890,6 +1911,7 @@ export const createChatHandler = () => {
                       finishReason: state.streamFinishReason,
                       budgetAbortDetails: state.budgetAbortDetails,
                       isAutoContinue: !!isAutoContinue,
+                      kimiReasoningExperiment,
                       stepLimitTelemetry: buildAgentStepLimitTelemetry({
                         configuredMaxSteps: state.configuredMaxSteps,
                         stepCount: state.agentStepCount,

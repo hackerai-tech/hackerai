@@ -285,6 +285,35 @@ describe("captureAgentRun", () => {
 
     expect(capture).not.toHaveBeenCalled();
   });
+
+  it("attaches content-free Kimi reasoning experiment context", () => {
+    const capture = jest.fn();
+
+    captureAgentRun({
+      posthog: { capture } as any,
+      userId: "user_123",
+      chatId: "chat_123",
+      mode: "agent",
+      subscription: "pro",
+      sandboxInfo: null,
+      outcome: "success",
+      selectedModel: "model-opus-4.6",
+      configuredModelId: "moonshotai/kimi-k3",
+      kimiReasoningExperiment: {
+        key: "agent_max_kimi_k3_reasoning_effort_v1",
+        variant: "max",
+        reasoningEffort: "max",
+      },
+    });
+
+    expect(capture.mock.calls[0][0].properties).toEqual(
+      expect.objectContaining({
+        experiment_key: "agent_max_kimi_k3_reasoning_effort_v1",
+        experiment_variant: "max",
+        reasoning_effort: "max",
+      }),
+    );
+  });
 });
 
 describe("captureAgentBudgetAbort", () => {
@@ -573,6 +602,50 @@ describe("captureUsageCost", () => {
 
     expect(capture.mock.calls[0][0].properties).not.toHaveProperty(
       "response_model",
+    );
+  });
+
+  it("attributes usage cost to the exposed Kimi reasoning variant", () => {
+    const capture = jest.fn();
+
+    captureUsageCost({
+      posthog: { capture } as any,
+      userId: "user_123",
+      subscription: "pro",
+      chatId: "chat_123",
+      endpoint: "/api/agent-long",
+      mode: "agent",
+      usage: {
+        model: "model-opus-4.6",
+        type: "included",
+        inputTokens: 100,
+        outputTokens: 50,
+        totalTokens: 150,
+        costDollars: 0.01,
+        includedCostDollars: 0.01,
+        extraUsageCostDollars: 0,
+        uncoveredCostDollars: 0,
+        includedPointsDeducted: 100,
+        extraUsagePointsDeducted: 0,
+        uncoveredPoints: 0,
+        usageDeductionFailed: false,
+        modelCostDollars: 0.01,
+        nonModelCostDollars: 0,
+        costSource: "provider",
+      },
+      kimiReasoningExperiment: {
+        key: "agent_max_kimi_k3_reasoning_effort_v1",
+        variant: "control",
+        reasoningEffort: "high",
+      },
+    });
+
+    expect(capture.mock.calls[0][0].properties).toEqual(
+      expect.objectContaining({
+        experiment_key: "agent_max_kimi_k3_reasoning_effort_v1",
+        experiment_variant: "control",
+        reasoning_effort: "high",
+      }),
     );
   });
 });

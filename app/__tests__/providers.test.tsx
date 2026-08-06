@@ -16,8 +16,10 @@ jest.mock("../contexts/GlobalState", () => ({
 }));
 
 jest.mock("@/lib/analytics/client", () => ({
+  confirmAuthenticatedAnalyticsUserId: jest.fn(),
   getPostHogClient: jest.fn(() => null),
   loadPostHogClient: jest.fn(),
+  setAuthenticatedAnalyticsUserId: jest.fn(),
 }));
 
 process.env.NEXT_PUBLIC_POSTHOG_KEY = "phc_test";
@@ -29,15 +31,23 @@ const { useAuth } = jest.requireMock<
 const { useGlobalState } = jest.requireMock<
   typeof import("../contexts/GlobalState")
 >("../contexts/GlobalState");
-const { loadPostHogClient } = jest.requireMock<
-  typeof import("@/lib/analytics/client")
->("@/lib/analytics/client");
+const {
+  confirmAuthenticatedAnalyticsUserId,
+  loadPostHogClient,
+  setAuthenticatedAnalyticsUserId,
+} = jest.requireMock<typeof import("@/lib/analytics/client")>(
+  "@/lib/analytics/client",
+);
 const { PostHogProvider } =
   require("../providers") as typeof import("../providers");
 
 const mockUseAuth = useAuth as jest.Mock;
 const mockUseGlobalState = useGlobalState as jest.Mock;
+const mockConfirmAuthenticatedAnalyticsUserId =
+  confirmAuthenticatedAnalyticsUserId as jest.Mock;
 const mockLoadPostHogClient = loadPostHogClient as jest.Mock;
+const mockSetAuthenticatedAnalyticsUserId =
+  setAuthenticatedAnalyticsUserId as jest.Mock;
 
 describe("PostHogProvider", () => {
   beforeEach(() => {
@@ -106,6 +116,15 @@ describe("PostHogProvider", () => {
       name: "Test User",
       subscription: "pro",
     });
+    expect(mockSetAuthenticatedAnalyticsUserId).toHaveBeenCalledWith(
+      "user-123",
+    );
+    expect(mockConfirmAuthenticatedAnalyticsUserId).toHaveBeenCalledWith(
+      "user-123",
+    );
+    expect(posthog.identify.mock.invocationCallOrder[0]).toBeLessThan(
+      mockConfirmAuthenticatedAnalyticsUserId.mock.invocationCallOrder[0]!,
+    );
 
     const [, config] = posthog.init.mock.calls[0] as unknown as [
       string,
@@ -132,6 +151,19 @@ describe("PostHogProvider", () => {
       $current_url: "https://hackerai.co/auth-error",
       $referrer: "https://idp.example/callback",
     });
+  });
+
+  it("clears the queued analytics identity when the user signs out", () => {
+    mockUseAuth.mockReturnValue({ user: null });
+
+    render(
+      <PostHogProvider>
+        <div>child</div>
+      </PostHogProvider>,
+    );
+
+    expect(mockSetAuthenticatedAnalyticsUserId).toHaveBeenCalledWith(null);
+    expect(mockLoadPostHogClient).not.toHaveBeenCalled();
   });
 
   it("does not resend unchanged person properties across app loads", async () => {

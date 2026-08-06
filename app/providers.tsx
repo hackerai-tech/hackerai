@@ -9,7 +9,12 @@ import {
   sanitizeFrontendExceptionUrlProperties,
   shouldDropExpectedFrontendException,
 } from "@/lib/posthog/expected-frontend-exceptions";
-import { getPostHogClient, loadPostHogClient } from "@/lib/analytics/client";
+import {
+  confirmAuthenticatedAnalyticsUserId,
+  getPostHogClient,
+  loadPostHogClient,
+  setAuthenticatedAnalyticsUserId,
+} from "@/lib/analytics/client";
 import {
   createPostHogIdentitySignature,
   POSTHOG_IDENTITY_SIGNATURE_STORAGE_KEY,
@@ -30,6 +35,7 @@ export function PostHogProvider({ children }: { children: React.ReactNode }) {
     if (!posthogKey) return;
 
     const shouldTrack = Boolean(userId);
+    setAuthenticatedAnalyticsUserId(userId ?? null);
 
     if (!shouldTrack) {
       lastIdentifiedSignature = null;
@@ -131,6 +137,8 @@ export function PostHogProvider({ children }: { children: React.ReactNode }) {
             }
           }
         }
+
+        confirmAuthenticatedAnalyticsUserId(userId!);
 
         if (subscription !== "free") {
           if (!posthog.sessionRecordingStarted()) {
