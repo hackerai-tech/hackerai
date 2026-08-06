@@ -28,6 +28,7 @@ type PendingAuthenticatedEvent = {
 let posthogClient: PostHogClient | null = null;
 let posthogImportPromise: Promise<PostHogClient> | null = null;
 let authenticatedAnalyticsUserId: string | null = null;
+let identifiedAnalyticsUserId: string | null = null;
 const pendingAuthenticatedEvents: PendingAuthenticatedEvent[] = [];
 const MAX_PENDING_AUTHENTICATED_EVENTS = 100;
 const UPGRADE_IMPRESSION_STORAGE_KEY =
@@ -102,11 +103,17 @@ function queueAuthenticatedEvent(event: PendingAuthenticatedEvent) {
 export function setAuthenticatedAnalyticsUserId(userId: string | null) {
   if (authenticatedAnalyticsUserId === userId) return;
   authenticatedAnalyticsUserId = userId;
+  identifiedAnalyticsUserId = null;
   pendingAuthenticatedEvents.splice(0);
 }
 
 export function flushPendingAuthenticatedEvents(userId: string) {
-  if (authenticatedAnalyticsUserId !== userId) return false;
+  if (
+    authenticatedAnalyticsUserId !== userId ||
+    identifiedAnalyticsUserId !== userId
+  ) {
+    return false;
+  }
 
   const posthog = getReadyPostHogClient();
   if (!posthog || pendingAuthenticatedEvents.length === 0) return false;
@@ -126,6 +133,12 @@ export function flushPendingAuthenticatedEvents(userId: string) {
     }
   }
   return pendingAuthenticatedEvents.length === 0;
+}
+
+export function confirmAuthenticatedAnalyticsUserId(userId: string) {
+  if (authenticatedAnalyticsUserId !== userId) return false;
+  identifiedAnalyticsUserId = userId;
+  return flushPendingAuthenticatedEvents(userId);
 }
 
 export function captureAuthenticatedEvent(
@@ -175,7 +188,12 @@ export function captureMessageFeedback({
   const userId = authenticatedAnalyticsUserId;
   if (!userId) return false;
 
-  if (captureAuthenticatedEvent(event, properties, options)) return true;
+  if (
+    identifiedAnalyticsUserId === userId &&
+    captureAuthenticatedEvent(event, properties, options)
+  ) {
+    return true;
+  }
   if (!process.env.NEXT_PUBLIC_POSTHOG_KEY) return false;
 
   queueAuthenticatedEvent({ userId, event, properties, options });

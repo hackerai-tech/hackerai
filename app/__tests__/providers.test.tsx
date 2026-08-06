@@ -16,7 +16,7 @@ jest.mock("../contexts/GlobalState", () => ({
 }));
 
 jest.mock("@/lib/analytics/client", () => ({
-  flushPendingAuthenticatedEvents: jest.fn(),
+  confirmAuthenticatedAnalyticsUserId: jest.fn(),
   getPostHogClient: jest.fn(() => null),
   loadPostHogClient: jest.fn(),
   setAuthenticatedAnalyticsUserId: jest.fn(),
@@ -32,7 +32,7 @@ const { useGlobalState } = jest.requireMock<
   typeof import("../contexts/GlobalState")
 >("../contexts/GlobalState");
 const {
-  flushPendingAuthenticatedEvents,
+  confirmAuthenticatedAnalyticsUserId,
   loadPostHogClient,
   setAuthenticatedAnalyticsUserId,
 } = jest.requireMock<typeof import("@/lib/analytics/client")>(
@@ -43,8 +43,8 @@ const { PostHogProvider } =
 
 const mockUseAuth = useAuth as jest.Mock;
 const mockUseGlobalState = useGlobalState as jest.Mock;
-const mockFlushPendingAuthenticatedEvents =
-  flushPendingAuthenticatedEvents as jest.Mock;
+const mockConfirmAuthenticatedAnalyticsUserId =
+  confirmAuthenticatedAnalyticsUserId as jest.Mock;
 const mockLoadPostHogClient = loadPostHogClient as jest.Mock;
 const mockSetAuthenticatedAnalyticsUserId =
   setAuthenticatedAnalyticsUserId as jest.Mock;
@@ -119,8 +119,11 @@ describe("PostHogProvider", () => {
     expect(mockSetAuthenticatedAnalyticsUserId).toHaveBeenCalledWith(
       "user-123",
     );
-    expect(mockFlushPendingAuthenticatedEvents).toHaveBeenCalledWith(
+    expect(mockConfirmAuthenticatedAnalyticsUserId).toHaveBeenCalledWith(
       "user-123",
+    );
+    expect(posthog.identify.mock.invocationCallOrder[0]).toBeLessThan(
+      mockConfirmAuthenticatedAnalyticsUserId.mock.invocationCallOrder[0]!,
     );
 
     const [, config] = posthog.init.mock.calls[0] as unknown as [

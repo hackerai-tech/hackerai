@@ -10,7 +10,7 @@ import {
   shouldDropExpectedFrontendException,
 } from "@/lib/posthog/expected-frontend-exceptions";
 import {
-  flushPendingAuthenticatedEvents,
+  confirmAuthenticatedAnalyticsUserId,
   getPostHogClient,
   loadPostHogClient,
   setAuthenticatedAnalyticsUserId,
@@ -138,7 +138,7 @@ export function PostHogProvider({ children }: { children: React.ReactNode }) {
           }
         }
 
-        flushPendingAuthenticatedEvents(userId!);
+        confirmAuthenticatedAnalyticsUserId(userId!);
 
         if (subscription !== "free") {
           if (!posthog.sessionRecordingStarted()) {

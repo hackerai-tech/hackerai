@@ -23,6 +23,7 @@ jest.mock("posthog-js", () => ({
 const {
   captureMessageFeedback,
   captureUpgradeCtaImpression,
+  confirmAuthenticatedAnalyticsUserId,
   flushPendingAuthenticatedEvents,
   getPostHogRequestHeaders,
   loadPostHogClient,
@@ -39,6 +40,7 @@ describe("client analytics", () => {
     window.localStorage.clear();
     mockPostHog.__loaded = true;
     setAuthenticatedAnalyticsUserId("user_123");
+    confirmAuthenticatedAnalyticsUserId("user_123");
     flushPendingAuthenticatedEvents("user_123");
     mockCapture.mockClear();
     mockPostHog.get_distinct_id.mockClear();
@@ -189,10 +191,35 @@ describe("client analytics", () => {
       messageId: "message_user_b",
       feedbackType: "negative",
     });
+    expect(mockCapture).not.toHaveBeenCalled();
+
+    expect(confirmAuthenticatedAnalyticsUserId("user_b")).toBe(true);
     expect(mockCapture).toHaveBeenCalledTimes(1);
     expect(mockCapture).toHaveBeenCalledWith(
       "message_feedback_submitted",
       expect.objectContaining({ message_id: "message_user_b" }),
+      expect.any(Object),
+    );
+  });
+
+  it("queues feedback while PostHog transitions to a new identity", () => {
+    setAuthenticatedAnalyticsUserId("user_b");
+
+    expect(
+      captureMessageFeedback({
+        messageId: "message_during_identity_transition",
+        feedbackType: "positive",
+      }),
+    ).toBe(true);
+    expect(mockCapture).not.toHaveBeenCalled();
+    expect(flushPendingAuthenticatedEvents("user_b")).toBe(false);
+
+    expect(confirmAuthenticatedAnalyticsUserId("user_b")).toBe(true);
+    expect(mockCapture).toHaveBeenCalledWith(
+      "message_feedback_submitted",
+      expect.objectContaining({
+        message_id: "message_during_identity_transition",
+      }),
       expect.any(Object),
     );
   });
