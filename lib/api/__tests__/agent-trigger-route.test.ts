@@ -1,7 +1,31 @@
 import { beforeEach, describe, expect, it, jest } from "@jest/globals";
 
+class MockResponse {
+  readonly status: number;
+  private readonly body: unknown;
+
+  constructor(body: unknown, init?: { status?: number }) {
+    this.body = body;
+    this.status = init?.status ?? 200;
+  }
+
+  static json(body: unknown, init?: { status?: number }) {
+    return new MockResponse(body, init);
+  }
+
+  async json() {
+    return this.body;
+  }
+}
+
+Object.defineProperty(globalThis, "Response", {
+  configurable: true,
+  value: MockResponse,
+});
+
 const mockCreatePublicToken = jest.fn<any>();
 const mockSetActiveTriggerRun = jest.fn<any>();
+const mockHandleInitialChatAndUserMessage = jest.fn<any>();
 const mockCancelAgentTriggerRun = jest.fn<any>();
 const mockCloseAgentApprovalSession = jest.fn<any>();
 
@@ -20,7 +44,7 @@ jest.mock("@trigger.dev/sdk", () => ({
 jest.mock("@/lib/db/actions", () => ({
   getChatById: jest.fn(),
   getUserCustomization: jest.fn(),
-  handleInitialChatAndUserMessage: jest.fn(),
+  handleInitialChatAndUserMessage: mockHandleInitialChatAndUserMessage,
   setActiveTriggerRun: mockSetActiveTriggerRun,
 }));
 
@@ -53,6 +77,7 @@ jest.mock("@/lib/utils/sandbox-file-utils", () => ({
 const {
   buildAgentApprovalSessionId,
   buildAgentRunDedupeKeyParts,
+  createAgentTriggerPost,
   finalizeStartedAgentRun,
   shouldRequireAgentApprovalWorkerVersion,
 } =
@@ -67,6 +92,32 @@ describe("Agent trigger route lifecycle", () => {
     mockCancelAgentTriggerRun.mockResolvedValue(true);
     mockCloseAgentApprovalSession.mockResolvedValue(true);
   });
+
+  it.each([true, false])(
+    "rejects retired temporary=%s before persistence",
+    async (temporary) => {
+      const post = createAgentTriggerPost({ endpoint: "/api/agent" });
+      const response = await post({
+        headers: new Headers(),
+        json: jest.fn().mockResolvedValue({
+          chatId: "chat-1",
+          messages: [],
+          temporary,
+        }),
+      } as any);
+
+      expect(response.status).toBe(400);
+      await expect(response.json()).resolves.toMatchObject({
+        code: "bad_request:api",
+        cause: "Invalid chat request: temporary is no longer supported.",
+        metadata: {
+          invalid_request_field: "temporary",
+          invalid_request_field_reason: "retired_field",
+        },
+      });
+      expect(mockHandleInitialChatAndUserMessage).not.toHaveBeenCalled();
+    },
+  );
 
   it("closes and cancels a run that cannot be associated after deletion", async () => {
     mockSetActiveTriggerRun.mockResolvedValue("deleting");

@@ -157,6 +157,7 @@ import {
 import {
   requireChatMessagesArray,
   requireOptionalIdentifier,
+  requireRetiredTemporaryFieldAbsent,
 } from "@/lib/api/chat-request-validation";
 import { resolveProjectExecutionContext } from "@/lib/chat/project-context";
 import { isAgentMode } from "@/lib/utils/mode-helpers";
@@ -216,6 +217,9 @@ export const createChatHandler = () => {
     };
 
     try {
+      const rawRequestBody: unknown = await req.json();
+      requireRetiredTemporaryFieldAbsent(rawRequestBody);
+
       const {
         messages,
         mode,
@@ -228,7 +232,7 @@ export const createChatHandler = () => {
         useClientMessagesForRegenerate,
         limitRescue: rawLimitRescue,
         projectId: rawProjectId,
-      }: {
+      } = rawRequestBody as {
         messages: unknown;
         mode: ChatMode;
         chatId: string;
@@ -240,7 +244,7 @@ export const createChatHandler = () => {
         useClientMessagesForRegenerate?: boolean;
         limitRescue?: unknown;
         projectId?: unknown;
-      } = await req.json();
+      };
       const analyticsRequestContext = readAnalyticsRequestContext(req.headers);
       const requestedProjectId = requireOptionalIdentifier(
         "projectId",

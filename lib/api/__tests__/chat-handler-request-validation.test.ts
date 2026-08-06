@@ -1,6 +1,41 @@
-import { requireChatMessagesArray } from "@/lib/api/chat-request-validation";
+import {
+  requireChatMessagesArray,
+  requireRetiredTemporaryFieldAbsent,
+} from "@/lib/api/chat-request-validation";
 
 describe("chat-handler request validation", () => {
+  it.each([true, false])(
+    "rejects retired temporary=%s before persistence",
+    (temporary) => {
+      const persist = jest.fn();
+
+      expect(() => {
+        const body = { messages: [], temporary };
+        requireRetiredTemporaryFieldAbsent(body);
+        persist(body);
+      }).toThrow(
+        expect.objectContaining({
+          type: "bad_request",
+          surface: "api",
+          statusCode: 400,
+          cause: "Invalid chat request: temporary is no longer supported.",
+          metadata: expect.objectContaining({
+            invalid_request_field: "temporary",
+            invalid_request_field_reason: "retired_field",
+          }),
+        }),
+      );
+
+      expect(persist).not.toHaveBeenCalled();
+    },
+  );
+
+  it("accepts requests that omit the retired temporary field", () => {
+    expect(() =>
+      requireRetiredTemporaryFieldAbsent({ messages: [] }),
+    ).not.toThrow();
+  });
+
   it("rejects non-array messages as a bad request", () => {
     expect(() => requireChatMessagesArray({ id: "not-array" })).toThrow(
       expect.objectContaining({
