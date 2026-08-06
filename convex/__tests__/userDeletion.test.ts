@@ -263,6 +263,14 @@ function seedTables(userId = "user_123", otherUserId = "user_other"): Tables {
       { _id: "custom-user", user_id: userId, updated_at: 1 },
       { _id: "custom-other", user_id: otherUserId, updated_at: 1 },
     ],
+    temp_streams: [
+      { _id: "temp-stream-user", chat_id: "chat-1", user_id: userId },
+      {
+        _id: "temp-stream-other",
+        chat_id: "chat-other-id",
+        user_id: otherUserId,
+      },
+    ],
     extra_usage: [
       {
         _id: "extra-user",
@@ -545,6 +553,8 @@ describe("userDeletion", () => {
     expect(row(tables, "chats", "chat-other")).toBeTruthy();
     expect(row(tables, "feedback", "feedback-other")).toBeTruthy();
     expect(row(tables, "files", "file-other")).toBeTruthy();
+    expect(row(tables, "temp_streams", "temp-stream-user")).toBeUndefined();
+    expect(row(tables, "temp_streams", "temp-stream-other")).toBeTruthy();
 
     expect(row(tables, "cancellation_reasons", "cancel-user")).toMatchObject({
       user_id: DELETED_USER_ID,

@@ -9,6 +9,24 @@ const getValueKind = (value: unknown): string =>
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
+export const requireRetiredTemporaryFieldAbsent = (
+  requestBody: unknown,
+): void => {
+  if (
+    isRecord(requestBody) &&
+    Object.prototype.hasOwnProperty.call(requestBody, "temporary")
+  ) {
+    throw new ChatSDKError(
+      "bad_request:api",
+      "Invalid chat request: temporary is no longer supported.",
+      {
+        invalid_request_field: "temporary",
+        invalid_request_field_reason: "retired_field",
+      },
+    );
+  }
+};
+
 const invalidMessagesError = (
   field: string,
   value: unknown,

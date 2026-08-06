@@ -19,6 +19,7 @@ export const USER_DELETION_TABLE_POLICY = {
     "user_customization",
     "extra_usage",
     "team_member_usage",
+    "temp_streams",
     "local_sandbox_tokens",
     "local_sandbox_connections",
     "cancellation_reason_details",
@@ -374,6 +375,13 @@ async function cleanupUserDataForUser(
   >(ctx, budget, "user_customization", "by_user_id", (q) =>
     q.eq("user_id", userId),
   );
+  const tempStreamsBatch = await collectByIndexBatch<Doc<"temp_streams">>(
+    ctx,
+    budget,
+    "temp_streams",
+    "by_user_id",
+    (q) => q.eq("user_id", userId),
+  );
   const localSandboxTokensBatch = await collectByIndexBatch<
     Doc<"local_sandbox_tokens">
   >(ctx, budget, "local_sandbox_tokens", "by_user_id", (q) =>
@@ -413,6 +421,7 @@ async function cleanupUserDataForUser(
     notesBatch,
     customizationBatch,
     messagesBatch,
+    tempStreamsBatch,
     localSandboxTokensBatch,
     localSandboxConnectionsBatch,
     extraUsageBatch,
@@ -425,6 +434,7 @@ async function cleanupUserDataForUser(
   const files = filesBatch.docs;
   const notes = notesBatch.docs;
   const customization = customizationBatch.docs;
+  const tempStreams = tempStreamsBatch.docs;
   const localSandboxTokens = localSandboxTokensBatch.docs;
   const localSandboxConnections = localSandboxConnectionsBatch.docs;
   const extraUsage = extraUsageBatch.docs;
@@ -446,6 +456,7 @@ async function cleanupUserDataForUser(
   await deleteFiles(ctx, stats, files, mode);
   await deleteDocs(ctx, stats, "notes", notes, mode);
   await deleteDocs(ctx, stats, "user_customization", customization, mode);
+  await deleteDocs(ctx, stats, "temp_streams", tempStreams, mode);
   await deleteDocs(
     ctx,
     stats,

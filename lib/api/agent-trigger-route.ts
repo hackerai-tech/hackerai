@@ -29,7 +29,10 @@ import {
   normalizeSelectedModelOverrideForSubscription,
 } from "@/types";
 import { ChatSDKError } from "@/lib/errors";
-import { requireOptionalIdentifier } from "@/lib/api/chat-request-validation";
+import {
+  requireOptionalIdentifier,
+  requireRetiredTemporaryFieldAbsent,
+} from "@/lib/api/chat-request-validation";
 import { readAnalyticsRequestContext } from "@/lib/analytics/request-context";
 import { resolveProjectExecutionContext } from "@/lib/chat/project-context";
 import type {
@@ -124,6 +127,8 @@ const parseAgentTriggerRequestBody = async (
       response: new NextResponse("Invalid JSON body", { status: 400 }),
     };
   }
+
+  requireRetiredTemporaryFieldAbsent(rawBody);
 
   const body = rawBody as Record<string, unknown>;
   if (typeof body.chatId !== "string" || body.chatId.length === 0) {
