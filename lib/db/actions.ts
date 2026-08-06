@@ -353,7 +353,27 @@ const getRetryableDatabaseErrorReason = (
   return undefined;
 };
 
-const getRetryableSaveMessageErrorReason = getRetryableDatabaseErrorReason;
+const getRetryableSaveMessageErrorReason = (
+  error: unknown,
+): string | undefined => {
+  const retryReason = getRetryableDatabaseErrorReason(error);
+  if (retryReason) return retryReason;
+
+  const dbErrorData = getErrorData(error);
+  const errorText = [
+    stringifyError(error),
+    getObjectString(dbErrorData, "causeName"),
+    getObjectString(dbErrorData, "causeMessage"),
+    getObjectString(dbErrorData, "message"),
+  ]
+    .filter(Boolean)
+    .join(" ");
+  if (/Too many writes per second/i.test(errorText)) {
+    return "convex_write_rate_limited";
+  }
+
+  return undefined;
+};
 const getRetryableGetChatErrorReason = getRetryableDatabaseErrorReason;
 
 const getRetryableChatDeletionErrorReason = (
@@ -388,6 +408,9 @@ const getRetryableReasonForDatabaseOperation = (
   operation: string,
   error: unknown,
 ): string | undefined => {
+  if (operation === "messages.saveMessage") {
+    return getRetryableSaveMessageErrorReason(error);
+  }
   if (operation === "chats.saveChat") {
     return getRetryableSaveChatErrorReason(error);
   }
