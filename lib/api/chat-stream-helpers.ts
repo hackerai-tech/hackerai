@@ -682,8 +682,10 @@ export function getFallbackSlugs(
   );
 }
 
-const OPENROUTER_RESPONSE_MODEL_COST_KEYS: Record<string, ModelName> = {
+const OPENROUTER_RESPONSE_MODEL_COST_KEYS: Record<string, string> = {
   "anthropic/claude-opus-4.6": "model-opus-4.6",
+  "deepseek/deepseek-v4-flash": "deepseek/deepseek-v4-flash",
+  "deepseek/deepseek-v4-flash-20260423": "deepseek/deepseek-v4-flash",
   "deepseek/deepseek-v4-flash-0731": "agent-model-free",
   "deepseek/deepseek-v4-flash-20260731": "agent-model-free",
   "x-ai/grok-4.5": "model-grok-4.5",
@@ -695,7 +697,7 @@ const OPENROUTER_RESPONSE_MODEL_COST_KEYS: Record<string, ModelName> = {
 
 function resolveOpenRouterResponseModelCostKey(
   responseModel: string,
-): ModelName | undefined {
+): string | undefined {
   const exactKey = OPENROUTER_RESPONSE_MODEL_COST_KEYS[responseModel];
   if (exactKey) return exactKey;
   // Scope Opus response aliases to the priced generation rather than matching
@@ -759,10 +761,12 @@ export function buildProviderOptions(
   // Explicit high-or-greater overrides are safe for scoped experiments.
   const routesThroughGrok45 = isGrok45 || fallbackSlugs.includes(GROK_4_5_SLUG);
   const reasoning = isFreeAskDeepSeekV4
-    ? {
-        enabled: true,
-        effort: "low",
-      }
+    ? isHighOrGreaterReasoningOverride(options.reasoningOverride)
+      ? options.reasoningOverride
+      : {
+          enabled: true,
+          effort: "low",
+        }
     : routesThroughGrok45
       ? isHighOrGreaterReasoningOverride(options.reasoningOverride)
         ? options.reasoningOverride
