@@ -80,4 +80,26 @@ describe("chat-handler — PTY closeAll wired to streamText onFinish", () => {
     );
     expect(closeAllCallIdx).toBeGreaterThan(onFinishIdx);
   });
+
+  test("wires blocked-content refunds to finish and abort settlement", () => {
+    expect(runnerSrc).toMatch(
+      /createProviderContentBlockedRefundLifecycle\(\{/,
+    );
+
+    const onErrorIdx = runnerSrc.indexOf("onError:");
+    const onAbortIdx = runnerSrc.indexOf("onAbort:");
+    const onFinishIdx = runnerSrc.indexOf("onFinish: async (finishResult)");
+    const refundCalls = [onErrorIdx, onAbortIdx, onFinishIdx].map((start) =>
+      runnerSrc.indexOf("refundProviderContentBlockedIfSettled({", start),
+    );
+
+    expect(refundCalls.every((index) => index > -1)).toBe(true);
+    expect(runnerSrc.substring(refundCalls[0], onAbortIdx)).toMatch(
+      /settled: false/,
+    );
+    expect(runnerSrc.substring(refundCalls[1])).toMatch(/settled: true/);
+    expect(runnerSrc.substring(refundCalls[2], onErrorIdx)).toMatch(
+      /settled: true/,
+    );
+  });
 });

@@ -151,10 +151,12 @@ import {
   getRateLimitErrorCapReason,
 } from "@/lib/api/paid-daily-free-allowance-rescue";
 import {
+  createProviderContentBlockedFinishReasonError,
   extractErrorDetails,
   getProviderErrorCategory,
   getProviderStatusCode,
   getUserFriendlyProviderError,
+  isProviderContentFilterFinishReason,
 } from "@/lib/utils/error-utils";
 import {
   requireChatMessagesArray,
@@ -1417,8 +1419,13 @@ export const createChatHandler = () => {
                     const stoppedDueToAssistantContentLoop =
                       state.stoppedDueToAssistantContentLoop ||
                       (!isAborted && assistantContentLoopDetection.detected);
+                    const providerContentBlocked =
+                      isProviderContentFilterFinishReason(
+                        state.streamFinishReason,
+                      );
                     const hasTerminalProviderStreamError =
-                      state.streamFinishReason === "error";
+                      state.streamFinishReason === "error" ||
+                      providerContentBlocked;
                     const shouldRetryInterruptedToolInput =
                       shouldRetryProviderStreamAfterInterruptedToolInput(
                         lastAssistantMessageParts,
@@ -1430,6 +1437,7 @@ export const createChatHandler = () => {
                         {
                           hasTerminalProviderStreamError:
                             hasTerminalProviderStreamError,
+                          providerContentBlocked,
                           stoppedDueToDoomLoop: state.stoppedDueToDoomLoop,
                           stoppedDueToAssistantContentLoop,
                           detectAssistantContentLoop: !isAborted,
@@ -1443,8 +1451,9 @@ export const createChatHandler = () => {
                       imageRecovery.omittedCount > 0 && !isAborted;
 
                     if (
-                      shouldRetryWithFallback ||
-                      shouldRetryWithoutImageToolResults
+                      !providerContentBlocked &&
+                      (shouldRetryWithFallback ||
+                        shouldRetryWithoutImageToolResults)
                     ) {
                       const loopTriggeredRetry =
                         stoppedDueToAssistantContentLoop ||
@@ -1614,9 +1623,15 @@ export const createChatHandler = () => {
                                 // reason to budget-exhausted; do it before
                                 // analytics and persistence consume state.
                                 await deductAccumulatedUsage(retryMessageId);
+                                const providerContentBlocked =
+                                  isProviderContentFilterFinishReason(
+                                    state.streamFinishReason,
+                                  );
                                 const outcome = retryAborted
                                   ? "aborted"
-                                  : "success";
+                                  : providerContentBlocked
+                                    ? "error"
+                                    : "success";
                                 captureAgentCompletionAnalytics({
                                   posthog,
                                   userId,
@@ -1651,13 +1666,20 @@ export const createChatHandler = () => {
                                         getTodoManager().getRunMetrics(),
                                     }),
                                 });
-                                chatLogger!.emitSuccess({
-                                  finishReason: state.streamFinishReason,
-                                  wasAborted: retryAborted,
-                                  wasPreemptiveTimeout: false,
-                                  hadSummarization:
-                                    summarizationTracker.hasSummarized,
-                                });
+                                if (providerContentBlocked) {
+                                  chatLogger!.emitUnexpectedError(
+                                    state.providerError ??
+                                      createProviderContentBlockedFinishReasonError(),
+                                  );
+                                } else {
+                                  chatLogger!.emitSuccess({
+                                    finishReason: state.streamFinishReason,
+                                    wasAborted: retryAborted,
+                                    wasPreemptiveTimeout: false,
+                                    hadSummarization:
+                                      summarizationTracker.hasSummarized,
+                                  });
+                                }
 
                                 const generatedTitle = await titlePromise;
 
@@ -1909,7 +1931,15 @@ export const createChatHandler = () => {
                     // budget-exhausted; do it before analytics and persistence
                     // consume state.
                     await deductAccumulatedUsage();
-                    const outcome = isAborted ? "aborted" : "success";
+                    const finalProviderContentBlocked =
+                      isProviderContentFilterFinishReason(
+                        state.streamFinishReason,
+                      );
+                    const outcome = isAborted
+                      ? "aborted"
+                      : finalProviderContentBlocked
+                        ? "error"
+                        : "success";
                     captureAgentCompletionAnalytics({
                       posthog,
                       userId,
@@ -1939,12 +1969,19 @@ export const createChatHandler = () => {
                         todoRunMetrics: getTodoManager().getRunMetrics(),
                       }),
                     });
-                    chatLogger!.emitSuccess({
-                      finishReason: state.streamFinishReason,
-                      wasAborted: isAborted,
-                      wasPreemptiveTimeout: isPreemptiveAbort,
-                      hadSummarization: summarizationTracker.hasSummarized,
-                    });
+                    if (finalProviderContentBlocked) {
+                      chatLogger!.emitUnexpectedError(
+                        state.providerError ??
+                          createProviderContentBlockedFinishReasonError(),
+                      );
+                    } else {
+                      chatLogger!.emitSuccess({
+                        finishReason: state.streamFinishReason,
+                        wasAborted: isAborted,
+                        wasPreemptiveTimeout: isPreemptiveAbort,
+                        hadSummarization: summarizationTracker.hasSummarized,
+                      });
+                    }
                     logStep("settle_usage_and_emit_success", stepStart);
 
                     // Sandbox cleanup is automatic with auto-pause

@@ -135,9 +135,11 @@ import {
 } from "@/lib/api/paid-daily-free-allowance-rescue";
 import {
   extractErrorDetails,
+  createProviderContentBlockedFinishReasonError,
   getProviderErrorCategory,
   getUserFriendlyProviderError,
   isInvalidImageInputError,
+  isProviderContentFilterFinishReason,
 } from "@/lib/utils/error-utils";
 import { ChatSDKError, serializeChatSDKErrorForStream } from "@/lib/errors";
 import type { Id } from "@/convex/_generated/dataModel";
@@ -1022,6 +1024,7 @@ const USER_CORRECTABLE_AGENT_LONG_ERROR_CATEGORIES = new Set([
   "empty_after_processing",
   "local_sandbox_fallback_blocked",
   "invalid_image_input",
+  "content_blocked",
 ]);
 
 const isUserCorrectableAgentLongErrorCategory = (category: string): boolean =>
@@ -1076,6 +1079,7 @@ const classifyProviderDashboardCategory = (
 ): string => {
   if (isInvalidImageInputError(error)) return "invalid_image_input";
   const category = getProviderErrorCategory(details);
+  if (category === "content_blocked") return category;
   if (category === "stream_terminated") return "provider_stream_terminated";
   if (category === "timeout") return "provider_timeout";
   if (category !== "unknown" || isProviderApiError(error)) {
@@ -1243,8 +1247,17 @@ const getTerminalProviderStreamError = (
     Pick<AgentStreamState, "streamFinishReason" | "providerError"> | undefined,
 ): unknown | undefined => {
   if (!state) return undefined;
-  if (state.streamFinishReason !== "error") return undefined;
+  if (
+    state.streamFinishReason !== "error" &&
+    !isProviderContentFilterFinishReason(state.streamFinishReason)
+  ) {
+    return undefined;
+  }
   if (state.providerError) return state.providerError;
+
+  if (isProviderContentFilterFinishReason(state.streamFinishReason)) {
+    return createProviderContentBlockedFinishReasonError();
+  }
 
   return Object.assign(
     new Error("Provider stream finished with error finish reason"),
@@ -1258,7 +1271,9 @@ const getTerminalProviderStreamError = (
 const isTerminalProviderStreamError = (
   state:
     Pick<AgentStreamState, "streamFinishReason" | "providerError"> | undefined,
-): boolean => state?.streamFinishReason === "error";
+): boolean =>
+  state?.streamFinishReason === "error" ||
+  isProviderContentFilterFinishReason(state?.streamFinishReason);
 
 type RecordedAgentLongFailure = {
   userCorrectable: boolean;
@@ -3058,6 +3073,10 @@ export const agentLongTask = task({
                       const stoppedDueToAssistantContentLoop =
                         state.stoppedDueToAssistantContentLoop ||
                         (!isAborted && assistantContentLoopDetection.detected);
+                      const providerContentBlocked =
+                        isProviderContentFilterFinishReason(
+                          state.streamFinishReason,
+                        );
                       const hasTerminalProviderStreamError =
                         isTerminalProviderStreamError(state);
                       const shouldRetryInterruptedToolInput =
@@ -3071,6 +3090,7 @@ export const agentLongTask = task({
                           {
                             hasTerminalProviderStreamError:
                               hasTerminalProviderStreamError,
+                            providerContentBlocked,
                             stoppedDueToDoomLoop: state.stoppedDueToDoomLoop,
                             stoppedDueToAssistantContentLoop,
                             detectAssistantContentLoop: !isAborted,
@@ -3086,6 +3106,7 @@ export const agentLongTask = task({
                         imageRecovery.omittedCount > 0 && !isAborted;
 
                       if (
+                        !providerContentBlocked &&
                         (shouldRetryWithFallback ||
                           shouldRetryWithoutImageToolResults) &&
                         !isRetryWithFallback &&
