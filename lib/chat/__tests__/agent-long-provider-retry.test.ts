@@ -235,6 +235,51 @@ describe("shouldRetryAgentLongWithFallback", () => {
       }),
     ).toBe(false);
   });
+
+  it.each([
+    {
+      label: "no output",
+      parts: [{ type: "step-start" }],
+    },
+    {
+      label: "partial text",
+      parts: [{ type: "step-start" }, { type: "text", text: "partial answer" }],
+    },
+    {
+      label: "completed tool call",
+      parts: [
+        { type: "step-start" },
+        {
+          type: "tool-run_terminal_cmd",
+          toolCallId: "call-1",
+          state: "output-available",
+          output: { result: { exitCode: 0 } },
+        },
+      ],
+    },
+  ])("never replays provider content blocks with $label", ({ parts }) => {
+    expect(
+      shouldRetryAgentLongWithFallback(parts, {
+        hasTerminalProviderStreamError: true,
+        providerContentBlocked: true,
+      }),
+    ).toBe(false);
+  });
+
+  it("does not treat a user abort as a provider retry", () => {
+    expect(
+      shouldRetryAgentLongWithFallback(
+        [
+          { type: "step-start" },
+          { type: "reasoning", text: "thinking", state: "streaming" },
+        ],
+        {
+          hasTerminalProviderStreamError: false,
+          detectAssistantContentLoop: false,
+        },
+      ),
+    ).toBe(false);
+  });
 });
 
 describe("assistant content loop detection", () => {

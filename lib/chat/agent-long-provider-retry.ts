@@ -12,6 +12,7 @@ type MessagePartLike = {
 
 type RetryDecisionOptions = {
   hasTerminalProviderStreamError: boolean;
+  providerContentBlocked?: boolean;
   stoppedDueToDoomLoop?: boolean;
   stoppedDueToAssistantContentLoop?: boolean;
   detectAssistantContentLoop?: boolean;
@@ -244,6 +245,10 @@ export const shouldRetryProviderStreamWithFallback = (
   parts: unknown[],
   options: RetryDecisionOptions,
 ): boolean => {
+  // A provider content-policy decision is terminal. Replaying it on another
+  // provider can bypass the decision and can duplicate already-visible output.
+  if (options.providerContentBlocked) return false;
+
   // Preserve the older guard for streams that never got past the first step.
   if (isOnlyStepStart(parts)) return true;
 
