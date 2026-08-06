@@ -17,6 +17,7 @@ import { SIDEBAR_OPEN_PROJECT_IDS_STORAGE_KEY } from "@/lib/utils/client-storage
 
 const mockPinChat = jest.fn();
 const mockUnpinChat = jest.fn();
+const mockStartNewChat = jest.fn();
 const mockToastSuccess = jest.fn();
 const mockToastError = jest.fn();
 let mockDndContextProps: {
@@ -66,6 +67,9 @@ jest.mock("@dnd-kit/core", () => ({
 jest.mock("@/app/hooks/useChats", () => ({
   usePinChat: () => mockPinChat,
   useUnpinChat: () => mockUnpinChat,
+}));
+jest.mock("@/app/hooks/useStartNewChat", () => ({
+  useStartNewChat: () => mockStartNewChat,
 }));
 jest.mock("sonner", () => ({
   toast: {
@@ -311,6 +315,42 @@ describe("SidebarChatSections", () => {
     expect(screen.getByTestId("sidebar-projects-section")).toBeInTheDocument();
     expect(screen.getByTestId("sidebar-tasks-section-chevron")).toHaveClass(
       "opacity-100",
+    );
+  });
+
+  it("shows a hover-revealed new-task action when Tasks is collapsed", () => {
+    render(
+      <SidebarChatSections
+        chats={chats}
+        projects={projects}
+        paginationStatus="Exhausted"
+      />,
+    );
+
+    expect(
+      screen.queryByRole("button", { name: "Start new task" }),
+    ).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Tasks" }));
+
+    const newTaskButton = screen.getByRole("button", {
+      name: "Start new task",
+    });
+    expect(newTaskButton).toHaveClass(
+      "opacity-0",
+      "group-hover/chat-section:opacity-100",
+      "group-focus-within/chat-section:opacity-100",
+      "focus-visible:opacity-100",
+      "touch-device:!opacity-100",
+    );
+
+    fireEvent.click(newTaskButton);
+
+    expect(mockStartNewChat).toHaveBeenCalledTimes(1);
+    expect(screen.queryByTestId("sidebar-chat-list")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Tasks" })).toHaveAttribute(
+      "aria-expanded",
+      "false",
     );
   });
 

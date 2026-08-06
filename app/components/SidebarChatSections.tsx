@@ -8,7 +8,7 @@ import {
   type ReactNode,
   type RefObject,
 } from "react";
-import { ChevronRight } from "lucide-react";
+import { ChevronRight, SquarePen } from "lucide-react";
 import { toast } from "sonner";
 import {
   DndContext,
@@ -27,7 +27,14 @@ import {
   type DragStartEvent,
 } from "@dnd-kit/core";
 import type { Doc } from "@/convex/_generated/dataModel";
+import { Button } from "@/components/ui/button";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { usePinChat, useUnpinChat } from "@/app/hooks/useChats";
+import { useStartNewChat } from "@/app/hooks/useStartNewChat";
 import {
   getOpenSidebarProjectIdsSnapshot,
   getServerOpenSidebarProjectIdsSnapshot,
@@ -68,6 +75,7 @@ interface SidebarChatSectionsProps {
 }
 
 interface CollapsibleChatSectionProps {
+  action?: ReactNode;
   children: ReactNode;
   dropId: string;
   onDrop: SidebarChatDropData["onDrop"];
@@ -86,6 +94,7 @@ const sidebarChatCollisionDetection: CollisionDetection = (args) => {
 };
 
 function CollapsibleChatSection({
+  action,
   children,
   dropId,
   onDrop,
@@ -113,30 +122,35 @@ function CollapsibleChatSection({
       data-testid={testId}
       data-drop-active={isOver ? "true" : undefined}
     >
-      <button
-        type="button"
-        className={`group/chat-section sticky top-0 z-[3] flex h-9 w-full items-center gap-0.5 bg-sidebar py-0.5 ps-2.5 pe-0.5 text-left hover:rounded-[10px] hover:bg-sidebar-accent/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring ${
+      <div
+        className={`group/chat-section sticky top-0 z-[3] flex h-9 w-full items-center bg-sidebar py-0.5 ps-2.5 pe-0.5 hover:rounded-[10px] hover:bg-sidebar-accent/40 ${
           isOver
             ? "rounded-[10px] bg-sidebar-accent/70 ring-1 ring-sidebar-ring"
             : ""
         }`}
-        onClick={() => onOpenChange(!open)}
-        aria-expanded={open}
-        aria-controls={contentId}
       >
-        <span className="min-w-0 truncate text-[13px] font-medium leading-[18px] tracking-[-0.091px] text-sidebar-foreground/50">
-          {title}
-        </span>
-        <ChevronRight
-          className={`size-3.5 shrink-0 text-sidebar-foreground/45 transition-[transform,opacity] ${
-            open
-              ? "rotate-90 opacity-0 group-hover/chat-section:opacity-100"
-              : "opacity-100"
-          }`}
-          data-testid={`${testId}-chevron`}
-          aria-hidden="true"
-        />
-      </button>
+        <button
+          type="button"
+          className="flex min-w-0 flex-1 items-center gap-0.5 self-stretch rounded-md text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring"
+          onClick={() => onOpenChange(!open)}
+          aria-expanded={open}
+          aria-controls={contentId}
+        >
+          <span className="min-w-0 truncate text-[13px] font-medium leading-[18px] tracking-[-0.091px] text-sidebar-foreground/50">
+            {title}
+          </span>
+          <ChevronRight
+            className={`size-3.5 shrink-0 text-sidebar-foreground/45 transition-[transform,opacity] ${
+              open
+                ? "rotate-90 opacity-0 group-hover/chat-section:opacity-100"
+                : "opacity-100"
+            }`}
+            data-testid={`${testId}-chevron`}
+            aria-hidden="true"
+          />
+        </button>
+        {action}
+      </div>
 
       {open ? <div id={contentId}>{children}</div> : null}
     </section>
@@ -164,6 +178,7 @@ export function SidebarChatSections({
     [openProjectIdsSnapshot],
   );
   const [activeTask, setActiveTask] = useState<SidebarChatDragData>();
+  const startNewChat = useStartNewChat();
   const pinChat = usePinChat();
   const unpinChat = useUnpinChat();
   const pinnedChats = chats.filter((chat) => chat.pinned_at != null);
@@ -296,6 +311,31 @@ export function SidebarChatSections({
           open={isTasksOpen}
           onOpenChange={setIsTasksOpen}
           testId="sidebar-tasks-section"
+          action={
+            !isTasksOpen ? (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    className="size-8 rounded-lg text-sidebar-foreground/45 opacity-0 transition-opacity hover:bg-sidebar-accent hover:text-sidebar-foreground group-hover/chat-section:opacity-100 group-focus-within/chat-section:opacity-100 focus-visible:opacity-100 touch-device:!opacity-100"
+                    onClick={() => startNewChat()}
+                    aria-label="Start new task"
+                  >
+                    <SquarePen className="size-[18px]" />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent
+                  side="top"
+                  sideOffset={8}
+                  className="border-0 bg-black px-3 py-1.5 text-sm text-white shadow-md [&_svg]:bg-black [&_svg]:fill-black"
+                >
+                  New task
+                </TooltipContent>
+              </Tooltip>
+            ) : null
+          }
         >
           <SidebarHistory
             chats={taskChats}
