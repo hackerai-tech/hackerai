@@ -533,7 +533,8 @@ export class DesktopSandboxBridge {
             // Tauri does not await Channel callbacks. Exhausted known
             // transients are already reported above, so keep them from
             // becoming one unhandled rejection per subsequent stream chunk.
-            // Unknown failures remain rejected for the global error tracker.
+            // Unknown failures are logged before reaching this catch and
+            // remain rejected for callers that directly await this operation.
             if (!classifyDesktopStreamPublishFailure(error)) throw error;
           }
         });

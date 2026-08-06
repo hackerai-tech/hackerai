@@ -991,6 +991,72 @@ describe("forwardChunk", () => {
     },
   );
 
+  it("preserves sequence continuity after a chunk exhausts its retries", async () => {
+    jest.useFakeTimers();
+    let finishCommand!: () => void;
+    const commandFinished = new Promise<void>((resolve) => {
+      finishCommand = resolve;
+    });
+    mockInvokeHandler = async (cmd: string) => {
+      if (cmd === "execute_stream_command") {
+        await commandFinished;
+      }
+      return undefined;
+    };
+    const publishError = { code: 11, message: "connection closed" };
+    mockSubscription.publish
+      .mockRejectedValueOnce(publishError)
+      .mockRejectedValueOnce(publishError)
+      .mockRejectedValueOnce(publishError)
+      .mockResolvedValue(undefined);
+    const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+    const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+
+    try {
+      const bridge = new DesktopSandboxBridge(buildConfig());
+      await bridge.start();
+      const handler = getPublicationHandler();
+      handler({
+        data: {
+          type: "command",
+          commandId: "cmd-sequence-after-exhaustion",
+          command: "test",
+          targetConnectionId: "conn-123",
+        },
+      });
+      await jest.advanceTimersByTimeAsync(0);
+
+      const firstChunk = capturedChannel!.onmessage!({
+        type: "stdout",
+        data: "dropped",
+      }) as unknown as Promise<void>;
+      const secondChunk = capturedChannel!.onmessage!({
+        type: "stdout",
+        data: "delivered",
+      }) as unknown as Promise<void>;
+
+      await jest.advanceTimersByTimeAsync(250);
+      await jest.advanceTimersByTimeAsync(500);
+      await Promise.all([
+        expect(firstChunk).resolves.toBeUndefined(),
+        expect(secondChunk).resolves.toBeUndefined(),
+      ]);
+
+      expect(mockSubscription.publish).toHaveBeenNthCalledWith(4, {
+        type: "stdout",
+        commandId: "cmd-sequence-after-exhaustion",
+        data: "delivered",
+        sequence: 1,
+      });
+    } finally {
+      finishCommand();
+      mockSubscription.publish.mockResolvedValue(undefined);
+      warnSpy.mockRestore();
+      errorSpy.mockRestore();
+      jest.useRealTimers();
+    }
+  });
+
   it("retries a transient publish after reconnect and reports recovery", async () => {
     jest.useFakeTimers();
     let finishCommand!: () => void;
