@@ -4,6 +4,19 @@ These instructions apply to Codex and other coding agents working in this
 repository. Keep them durable, repo-scoped, and free of volatile business
 metrics.
 
+## Worktree Dependencies
+
+Each checkout or worktree must have its own `node_modules` links. Never copy,
+move, or manually link an installed `node_modules` tree between the main
+checkout and another worktree. Sharing pnpm's global content-addressable store
+is safe; sharing the installed dependency tree is not.
+
+After creating a worktree, install its dependencies with
+`corepack pnpm install --frozen-lockfile`. If the local dependency guard reports
+links outside the checkout, repair that checkout with
+`corepack pnpm install --force --frozen-lockfile` before running development
+commands.
+
 ## HackerAI Product Direction
 
 HackerAI is primarily built for individual security practitioners: bug bounty
