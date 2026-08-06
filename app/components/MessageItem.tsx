@@ -142,6 +142,11 @@ function areMessageItemPropsEqual(
       next.message.metadata?.generationTimeMs
     )
       return false;
+    if (
+      prev.message.metadata?.feedbackType !==
+      next.message.metadata?.feedbackType
+    )
+      return false;
     if (prev.message.createdAt !== next.message.createdAt) return false;
     if (prev.message.metadata?.createdAt !== next.message.metadata?.createdAt)
       return false;

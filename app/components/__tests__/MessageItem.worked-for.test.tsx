@@ -27,10 +27,17 @@ jest.mock("../MessagePartHandler", () => ({
 }));
 
 jest.mock("../MessageActions", () => ({
-  MessageActions: ({ canRegenerate }: { canRegenerate: boolean }) => (
+  MessageActions: ({
+    canRegenerate,
+    existingFeedback,
+  }: {
+    canRegenerate: boolean;
+    existingFeedback?: "positive" | "negative" | null;
+  }) => (
     <div
       data-testid="message-actions"
       data-can-regenerate={String(canRegenerate)}
+      data-existing-feedback={existingFeedback ?? "none"}
     />
   ),
 }));
@@ -127,6 +134,60 @@ const renderMessageItem = ({
   );
 
 describe("MessageItem WorkedFor rendering", () => {
+  it("re-renders message actions when positive feedback is saved", () => {
+    const props = {
+      index: 0,
+      messagesLength: 1,
+      lastAssistantMessageIndex: 0,
+      status: "ready" as const,
+      canEdit: false,
+      isHovered: false,
+      isEditing: false,
+      feedbackInputMessageId: null,
+      mode: "agent" as const,
+      branchBoundaryIndex: undefined,
+      onMouseEnter: jest.fn(),
+      onMouseLeave: jest.fn(),
+      onStartEdit: jest.fn(),
+      onSaveEdit: jest.fn(async () => {}),
+      onCancelEdit: jest.fn(),
+      onRegenerate: jest.fn(),
+      onFeedback: jest.fn(),
+      onFeedbackSubmit: jest.fn(async () => {}),
+      onFeedbackCancel: jest.fn(),
+      onShowAllFiles: jest.fn(),
+      getCachedUrl: jest.fn(),
+    };
+    const { rerender } = render(
+      <MessageItem {...props} message={assistantMessage} />,
+    );
+
+    expect(screen.getByTestId("message-actions")).toHaveAttribute(
+      "data-existing-feedback",
+      "none",
+    );
+
+    rerender(
+      <MessageItem
+        {...props}
+        message={
+          {
+            ...assistantMessage,
+            metadata: {
+              ...assistantMessage.metadata,
+              feedbackType: "positive",
+            },
+          } as ChatMessage
+        }
+      />,
+    );
+
+    expect(screen.getByTestId("message-actions")).toHaveAttribute(
+      "data-existing-feedback",
+      "positive",
+    );
+  });
+
   it("disables regeneration for an Agent response after switching to Ask", () => {
     renderMessageItem({ mode: "ask" });
 

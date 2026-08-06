@@ -87,6 +87,33 @@ describe("MessageActions regeneration", () => {
   });
 });
 
+describe("MessageActions feedback", () => {
+  it("renders saved positive feedback as a filled thumbs-up icon", () => {
+    render(
+      <MessageActions
+        messageText="Answer"
+        isUser={false}
+        isLastAssistantMessage
+        canRegenerate={false}
+        onRegenerate={jest.fn()}
+        onEdit={jest.fn()}
+        canEdit={false}
+        isHovered
+        isEditing={false}
+        status="ready"
+        onFeedback={jest.fn()}
+        existingFeedback="positive"
+      />,
+    );
+
+    expect(
+      screen
+        .getByRole("button", { name: "Good response" })
+        .querySelector("svg"),
+    ).toHaveAttribute("fill", "currentColor");
+  });
+});
+
 describe("MessageActions branching", () => {
   it("shows the branch icon horizontally", () => {
     render(
