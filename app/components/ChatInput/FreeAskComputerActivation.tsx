@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { ChevronDown, Cloud, Monitor } from "lucide-react";
+import { Cloud, Monitor } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   Popover,
@@ -101,7 +101,6 @@ export function FreeAskComputerActivation() {
         >
           <Monitor className="size-4" aria-hidden="true" />
           <span className="hidden md:inline">Connect Computer</span>
-          <ChevronDown className="hidden size-3 md:block" aria-hidden="true" />
         </Button>
       </PopoverTrigger>
 
@@ -139,8 +138,8 @@ export function FreeAskComputerActivation() {
           </Button>
 
           <p className="text-xs text-muted-foreground md:hidden">
-            Open <span translate="no">HackerAI</span> on macOS, Windows, or
-            Linux to install the Desktop app.
+            Open <span translate="no">HackerAI</span> on a desktop computer to
+            download the app for macOS, Windows, or Linux.
           </p>
         </div>
 

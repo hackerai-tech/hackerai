@@ -55,12 +55,10 @@ describe("FreeAskComputerActivation", () => {
       "size-4",
       "lucide-monitor",
     );
+    expect(trigger.querySelectorAll("svg")).toHaveLength(1);
     const label = screen.getByText("Connect Computer");
     expect(label).toHaveClass("hidden", "md:inline");
     expect(label).not.toHaveClass("text-muted-foreground");
-    expect(trigger.querySelectorAll("svg")[1]).not.toHaveClass(
-      "text-muted-foreground",
-    );
 
     await waitFor(() => {
       expect(mockCaptureAuthenticatedEvent).toHaveBeenCalledWith(
@@ -87,6 +85,14 @@ describe("FreeAskComputerActivation", () => {
     expect(
       screen.getByTestId("free-ask-computer-activation-popover"),
     ).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        (_, element) =>
+          element?.tagName === "P" &&
+          element.textContent ===
+            "Open HackerAI on a desktop computer to download the app for macOS, Windows, or Linux.",
+      ),
+    ).toHaveClass("md:hidden");
     expect(
       screen.getByText(
         "Let Agent work with files and terminal tools on your computer.",
