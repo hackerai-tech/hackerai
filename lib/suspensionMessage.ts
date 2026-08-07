@@ -6,6 +6,7 @@
  *   - early_fraud_warning:<fraud_type>
  *   - dispute_fraudulent:<dispute_id>
  *   - dispute_billing_hold:<dispute_id>
+ *   - support_confirmed_fraud:support_case:<case_id>
  *
  * Specific fraud signals are intentionally not exposed to avoid tipping
  * off bad actors about how detection works.
@@ -27,6 +28,8 @@ function mapBlockedReasonToLabel(blockedReason?: string | null): string {
       return "a fraudulent payment dispute (chargeback)";
     case "dispute_billing_hold":
       return "a payment dispute under review";
+    case "support_confirmed_fraud":
+      return "confirmed fraudulent payment activity";
     default:
       return "suspicious activity";
   }

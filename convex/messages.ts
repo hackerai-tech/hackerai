@@ -12,10 +12,7 @@ import { validateServiceKey, copyChatSummary } from "./lib/utils";
 import { fileCountAggregate } from "./fileAggregate";
 import { convexLogger } from "./lib/logger";
 import type { RetainedTailDoc } from "./lib/retainedTail";
-import {
-  assertUserCanAccessChatHistory,
-  isUserBlockedByActiveFraudDispute,
-} from "./lib/suspensionGuards";
+import { assertUserCanAccessChatHistory } from "./lib/suspensionGuards";
 import {
   getVisibleSharedChatByChatId,
   listVisibleSharedMessages,
