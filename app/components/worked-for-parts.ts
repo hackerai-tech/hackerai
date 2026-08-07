@@ -222,6 +222,7 @@ const joinSummaryPhrases = (phrases: readonly string[]) => {
   return `${phrases.slice(0, -1).join(", ")}, and ${phrases.at(-1)}`;
 };
 
+/** Builds the compact, deterministic label shown for a completed tool step. */
 export function summarizeCompletedToolActivities(
   activities: readonly AgentWorkActivity[],
 ): string {

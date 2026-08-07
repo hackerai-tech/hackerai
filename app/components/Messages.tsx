@@ -571,7 +571,10 @@ export const Messages = ({
             startedAt={row.startedAt}
           />
         );
-      } else if (row.kind === "agent-activity") {
+      } else if (
+        row.kind === "agent-activity" ||
+        row.kind === "agent-tool-group"
+      ) {
         const effectiveStatus: ChatStatus =
           status === "streaming" &&
           row.messageIndex !== lastAssistantMessageIndex
@@ -582,46 +585,35 @@ export const Messages = ({
           tempChatFileDetails?.get(row.message.id) ||
           undefined;
 
-        content = (
-          <AgentActivityRow
-            deferReasoningCollapseUntilParent={
-              row.deferReasoningCollapseUntilParent
-            }
-            isLastMessage={row.isLastMessage}
-            keepLatestReasoningOpenDuringStreaming={
-              row.keepLatestReasoningOpenDuringStreaming
-            }
-            message={row.message}
-            part={row.part}
-            partIndex={row.partIndex}
-            sharedFileDetails={sharedFileDetails}
-            status={effectiveStatus}
-            terminalChunksByToolCallId={row.terminalChunksByToolCallId}
-          />
-        );
-      } else if (row.kind === "agent-tool-group") {
-        const effectiveStatus: ChatStatus =
-          status === "streaming" &&
-          row.messageIndex !== lastAssistantMessageIndex
-            ? "ready"
-            : status;
-        const sharedFileDetails =
-          row.message.fileDetails ||
-          tempChatFileDetails?.get(row.message.id) ||
-          undefined;
-
-        content = (
-          <AgentToolGroupRow
-            activities={row.activities}
-            animateOnMount={row.animateOnMount}
-            isLastMessage={row.isLastMessage}
-            message={row.message}
-            sharedFileDetails={sharedFileDetails}
-            status={effectiveStatus}
-            summary={row.summary}
-            terminalChunksByToolCallId={row.terminalChunksByToolCallId}
-          />
-        );
+        content =
+          row.kind === "agent-activity" ? (
+            <AgentActivityRow
+              deferReasoningCollapseUntilParent={
+                row.deferReasoningCollapseUntilParent
+              }
+              isLastMessage={row.isLastMessage}
+              keepLatestReasoningOpenDuringStreaming={
+                row.keepLatestReasoningOpenDuringStreaming
+              }
+              message={row.message}
+              part={row.part}
+              partIndex={row.partIndex}
+              sharedFileDetails={sharedFileDetails}
+              status={effectiveStatus}
+              terminalChunksByToolCallId={row.terminalChunksByToolCallId}
+            />
+          ) : (
+            <AgentToolGroupRow
+              activities={row.activities}
+              animateOnMount={row.animateOnMount}
+              isLastMessage={row.isLastMessage}
+              message={row.message}
+              sharedFileDetails={sharedFileDetails}
+              status={effectiveStatus}
+              summary={row.summary}
+              terminalChunksByToolCallId={row.terminalChunksByToolCallId}
+            />
+          );
       } else {
         content = (
           <MessageItem

@@ -35,18 +35,19 @@ const activities = [
   },
 ];
 
-const renderGroup = (animateOnMount: boolean) =>
-  render(
-    <AgentToolGroupRow
-      activities={activities}
-      animateOnMount={animateOnMount}
-      isLastMessage
-      message={message}
-      status="streaming"
-      summary="Read a file and ran a command"
-      terminalChunksByToolCallId={new Map()}
-    />,
-  );
+const group = (animateOnMount: boolean) => (
+  <AgentToolGroupRow
+    activities={activities}
+    animateOnMount={animateOnMount}
+    isLastMessage
+    message={message}
+    status="streaming"
+    summary="Read a file and ran a command"
+    terminalChunksByToolCallId={new Map()}
+  />
+);
+
+const renderGroup = (animateOnMount: boolean) => render(group(animateOnMount));
 
 describe("AgentToolGroupRow", () => {
   afterEach(() => {
@@ -90,5 +91,36 @@ describe("AgentToolGroupRow", () => {
 
     expect(trigger).toHaveAttribute("aria-expanded", "true");
     expect(screen.getAllByTestId("grouped-tool-detail")).toHaveLength(2);
+  });
+
+  it("closes if streaming ends before the auto-collapse timeout", () => {
+    jest.useFakeTimers();
+    const { rerender } = renderGroup(true);
+
+    expect(
+      screen.getByRole("button", { name: /hide tool details/i }),
+    ).toHaveAttribute("aria-expanded", "true");
+
+    rerender(group(false));
+    act(() => {
+      jest.advanceTimersByTime(0);
+    });
+
+    expect(
+      screen.getByRole("button", { name: /show tool details/i }),
+    ).toHaveAttribute("aria-expanded", "false");
+  });
+
+  it("preserves a user's choice when streaming ends", () => {
+    const { rerender } = renderGroup(true);
+    const trigger = screen.getByRole("button", { name: /hide tool details/i });
+
+    fireEvent.click(trigger);
+    fireEvent.click(screen.getByRole("button", { name: /show tool details/i }));
+    rerender(group(false));
+
+    expect(
+      screen.getByRole("button", { name: /hide tool details/i }),
+    ).toHaveAttribute("aria-expanded", "true");
   });
 });

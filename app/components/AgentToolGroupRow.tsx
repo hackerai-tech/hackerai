@@ -32,6 +32,7 @@ type AgentToolGroupRowProps = {
   terminalChunksByToolCallId: Map<string, readonly string[]>;
 };
 
+/** Renders a completed tool step as an expandable summary row. */
 export const AgentToolGroupRow = memo(function AgentToolGroupRow({
   activities,
   animateOnMount,
@@ -44,6 +45,7 @@ export const AgentToolGroupRow = memo(function AgentToolGroupRow({
 }: AgentToolGroupRowProps) {
   const [open, setOpen] = useState(animateOnMount);
   const autoCollapseTimeoutRef = useRef<number | null>(null);
+  const userToggledRef = useRef(false);
   const { captureScrollPosition, preserveScrollPosition } =
     useScrollPreservation();
 
@@ -55,19 +57,26 @@ export const AgentToolGroupRow = memo(function AgentToolGroupRow({
   }, []);
 
   useEffect(() => {
-    if (!animateOnMount) return;
+    if (!animateOnMount && userToggledRef.current) {
+      clearAutoCollapseTimeout();
+      return;
+    }
 
     clearAutoCollapseTimeout();
-    autoCollapseTimeoutRef.current = window.setTimeout(() => {
-      autoCollapseTimeoutRef.current = null;
-      setOpen(false);
-    }, AUTO_COLLAPSE_DELAY_MS);
+    autoCollapseTimeoutRef.current = window.setTimeout(
+      () => {
+        autoCollapseTimeoutRef.current = null;
+        setOpen(false);
+      },
+      animateOnMount ? AUTO_COLLAPSE_DELAY_MS : 0,
+    );
 
     return clearAutoCollapseTimeout;
   }, [animateOnMount, clearAutoCollapseTimeout]);
 
   const handleOpenChange = useCallback(
     (nextOpen: boolean) => {
+      userToggledRef.current = true;
       clearAutoCollapseTimeout();
       preserveScrollPosition(() => setOpen(nextOpen), nextOpen);
     },

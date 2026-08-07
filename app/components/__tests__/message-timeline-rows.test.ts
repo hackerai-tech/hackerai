@@ -352,6 +352,84 @@ describe("deriveChatTimelineRows", () => {
     expect(second.result).toBe(first.result);
   });
 
+  it("stabilizes an unchanged completed tool group", () => {
+    const message = agentMessage([
+      {
+        type: "tool-read_file",
+        toolCallId: "read-1",
+        state: "output-available",
+      },
+      {
+        type: "tool-shell",
+        toolCallId: "shell-1",
+        state: "output-available",
+      },
+    ] as ChatMessage["parts"]);
+    const derive = (nextMessage: ChatMessage) =>
+      deriveChatTimelineRows({
+        messages: [nextMessage],
+        status: "ready",
+        lastAssistantMessageIndex: 0,
+        expandedAgentMessageIds: new Set(),
+      });
+
+    const first = stabilizeChatTimelineRows(
+      derive(message),
+      createStableChatTimelineRowsState(),
+    );
+    const second = stabilizeChatTimelineRows(derive(message), first);
+    const firstGroup = first.result.find(
+      (row) => row.kind === "agent-tool-group",
+    );
+    const secondGroup = second.result.find(
+      (row) => row.kind === "agent-tool-group",
+    );
+
+    expect(firstGroup).toBeDefined();
+    expect(secondGroup).toBe(firstGroup);
+  });
+
+  it("replaces a stabilized tool group when an activity changes", () => {
+    const message = agentMessage([
+      {
+        type: "tool-read_file",
+        toolCallId: "read-1",
+        output: "first",
+        state: "output-available",
+      },
+      {
+        type: "tool-shell",
+        toolCallId: "shell-1",
+        state: "output-available",
+      },
+    ] as ChatMessage["parts"]);
+    const changedMessage = {
+      ...message,
+      parts: message.parts.map((part) =>
+        (part as { toolCallId?: string }).toolCallId === "read-1"
+          ? { ...part, output: "changed" }
+          : part,
+      ),
+    } as ChatMessage;
+    const derive = (nextMessage: ChatMessage) =>
+      deriveChatTimelineRows({
+        messages: [nextMessage],
+        status: "ready",
+        lastAssistantMessageIndex: 0,
+        expandedAgentMessageIds: new Set(),
+      });
+
+    const first = stabilizeChatTimelineRows(
+      derive(message),
+      createStableChatTimelineRowsState(),
+    );
+    const second = stabilizeChatTimelineRows(derive(changedMessage), first);
+
+    expect(
+      second.result.find((row) => row.kind === "agent-tool-group"),
+    ).not.toBe(first.result.find((row) => row.kind === "agent-tool-group"));
+  });
+
   it("keeps settled rows stable while the active message changes", () => {
     const userMessage = {
       id: "user-1",
