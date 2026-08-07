@@ -94,7 +94,7 @@ export function FreeAskComputerActivation() {
           type="button"
           variant="outline"
           size="sm"
-          className="h-7 w-7 rounded-full p-0 text-foreground shadow-none md:w-auto md:px-2"
+          className="h-7 w-7 rounded-md p-0 text-foreground shadow-none md:w-auto md:px-2"
           aria-label="Connect computer for Agent mode"
           title="Connect computer"
           data-testid="free-ask-computer-activation-trigger"
