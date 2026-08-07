@@ -51,7 +51,10 @@ describe("FreeAskComputerActivation", () => {
     });
     expect(trigger).toBeInTheDocument();
     expect(trigger).toHaveClass("text-foreground");
-    expect(trigger.querySelector("svg")).toHaveClass("size-4");
+    expect(trigger.querySelector("svg")).toHaveClass(
+      "size-4",
+      "lucide-monitor",
+    );
     const label = screen.getByText("Connect Computer");
     expect(label).toHaveClass("hidden", "md:inline");
     expect(label).not.toHaveClass("text-muted-foreground");

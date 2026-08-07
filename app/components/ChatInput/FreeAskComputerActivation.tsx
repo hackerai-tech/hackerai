@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { ChevronDown, Cloud, Laptop, Monitor } from "lucide-react";
+import { ChevronDown, Cloud, Monitor } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   Popover,
@@ -99,7 +99,7 @@ export function FreeAskComputerActivation() {
           title="Connect computer"
           data-testid="free-ask-computer-activation-trigger"
         >
-          <Laptop className="size-4" aria-hidden="true" />
+          <Monitor className="size-4" aria-hidden="true" />
           <span className="hidden md:inline">Connect Computer</span>
           <ChevronDown className="hidden size-3 md:block" aria-hidden="true" />
         </Button>
