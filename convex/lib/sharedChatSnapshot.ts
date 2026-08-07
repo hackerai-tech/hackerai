@@ -3,7 +3,7 @@ import { v } from "convex/values";
 
 import type { DataModel, Doc } from "../_generated/dataModel";
 import { stripOpenRouterReasoningMetadataFromParts } from "../../lib/chat/provider-metadata-sanitizer";
-import { isUserBlockedByActiveFraudDispute } from "./suspensionGuards";
+import { isUserBlockedFromChatHistory } from "./suspensionGuards";
 
 type SharedChatReaderCtx = {
   db: GenericDatabaseReader<DataModel>;
@@ -42,7 +42,7 @@ const resolveVisibleSharedChat = async (
     return null;
   }
 
-  if (await isUserBlockedByActiveFraudDispute(ctx, chat.user_id)) {
+  if (await isUserBlockedFromChatHistory(ctx, chat.user_id)) {
     return null;
   }
 
