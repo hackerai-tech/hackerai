@@ -14,6 +14,7 @@ import dynamic from "next/dynamic";
 import { LegendList, type LegendListRef } from "@legendapp/list/react";
 import { MessageItem } from "./MessageItem";
 import { AgentActivityRow } from "./AgentActivityRow";
+import { AgentToolGroupRow } from "./AgentToolGroupRow";
 import { AgentWorkHeader } from "./AgentWorkHeader";
 import { MessageErrorState } from "./MessageErrorState";
 import { SummarizationStatusDivider } from "./SummarizationStatusDivider";
@@ -552,7 +553,7 @@ export const Messages = ({
       const rowClassName =
         row.kind === "agent-work-header"
           ? "pb-2"
-          : row.kind === "agent-activity"
+          : row.kind === "agent-activity" || row.kind === "agent-tool-group"
             ? "pb-3"
             : "pb-4";
 
@@ -595,6 +596,29 @@ export const Messages = ({
             partIndex={row.partIndex}
             sharedFileDetails={sharedFileDetails}
             status={effectiveStatus}
+            terminalChunksByToolCallId={row.terminalChunksByToolCallId}
+          />
+        );
+      } else if (row.kind === "agent-tool-group") {
+        const effectiveStatus: ChatStatus =
+          status === "streaming" &&
+          row.messageIndex !== lastAssistantMessageIndex
+            ? "ready"
+            : status;
+        const sharedFileDetails =
+          row.message.fileDetails ||
+          tempChatFileDetails?.get(row.message.id) ||
+          undefined;
+
+        content = (
+          <AgentToolGroupRow
+            activities={row.activities}
+            animateOnMount={row.animateOnMount}
+            isLastMessage={row.isLastMessage}
+            message={row.message}
+            sharedFileDetails={sharedFileDetails}
+            status={effectiveStatus}
+            summary={row.summary}
             terminalChunksByToolCallId={row.terminalChunksByToolCallId}
           />
         );

@@ -1,6 +1,9 @@
 import {
   isExpandableWorkedForPart,
+  projectAgentWorkParts,
+  projectAgentWorkTimelineItems,
   splitWorkedForParts,
+  summarizeCompletedToolActivities,
 } from "../worked-for-parts";
 import type { ChatMessage } from "@/types";
 
@@ -89,5 +92,144 @@ describe("isExpandableWorkedForPart", () => {
     expect(isExpandableWorkedForPart(part("data-context-usage"))).toBe(false);
     expect(isExpandableWorkedForPart(part("data-summarization"))).toBe(false);
     expect(isExpandableWorkedForPart(part("reasoning"))).toBe(false);
+  });
+});
+
+describe("projectAgentWorkTimelineItems", () => {
+  it("summarizes a closed successful step in execution order", () => {
+    const parts = [
+      part("step-start"),
+      part("tool-read_file", {
+        toolCallId: "read-1",
+        state: "output-available",
+        output: "file contents",
+      }),
+      part("tool-shell", {
+        toolCallId: "shell-1",
+        state: "output-available",
+        output: "done",
+      }),
+      part("step-start"),
+      part("reasoning", { text: "next step" }),
+    ];
+    const { workPartIndexes } = splitWorkedForParts(parts);
+    const projection = projectAgentWorkParts(parts, workPartIndexes);
+
+    const items = projectAgentWorkTimelineItems({
+      activities: projection.activities,
+      messageSettled: false,
+      parts,
+      workPartIndexes,
+    });
+
+    expect(items).toHaveLength(2);
+    expect(items[0]).toMatchObject({
+      kind: "tool-group",
+      summary: "Read a file and ran a command",
+    });
+    expect(items[1]).toMatchObject({ kind: "activity" });
+  });
+
+  it("keeps the current step as separate activities while streaming", () => {
+    const parts = [
+      part("step-start"),
+      part("tool-read_file", {
+        toolCallId: "read-1",
+        state: "output-available",
+      }),
+      part("tool-shell", {
+        toolCallId: "shell-1",
+        state: "output-available",
+      }),
+    ];
+    const { workPartIndexes } = splitWorkedForParts(parts);
+    const projection = projectAgentWorkParts(parts, workPartIndexes);
+
+    const items = projectAgentWorkTimelineItems({
+      activities: projection.activities,
+      messageSettled: false,
+      parts,
+      workPartIndexes,
+    });
+
+    expect(items.map((item) => item.kind)).toEqual(["activity", "activity"]);
+  });
+
+  it("keeps every tool visible when one tool fails", () => {
+    const parts = [
+      part("tool-read_file", {
+        toolCallId: "read-1",
+        state: "output-available",
+      }),
+      part("tool-shell", {
+        toolCallId: "shell-1",
+        state: "output-error",
+        errorText: "command failed",
+      }),
+    ];
+    const { workPartIndexes } = splitWorkedForParts(parts);
+    const projection = projectAgentWorkParts(parts, workPartIndexes);
+
+    const items = projectAgentWorkTimelineItems({
+      activities: projection.activities,
+      messageSettled: true,
+      parts,
+      workPartIndexes,
+    });
+
+    expect(items.map((item) => item.kind)).toEqual(["activity", "activity"]);
+  });
+
+  it.each([
+    { exitCode: 1 },
+    { failedFiles: [{ path: "missing.txt", reason: "not found" }] },
+    { result: { error: "stopped" } },
+  ])("keeps structural tool failures visible for output %j", (output) => {
+    const parts = [
+      part("tool-read_file", {
+        toolCallId: "read-1",
+        state: "output-available",
+      }),
+      part("tool-shell", {
+        toolCallId: "shell-1",
+        state: "output-available",
+        output,
+      }),
+    ];
+    const { workPartIndexes } = splitWorkedForParts(parts);
+    const projection = projectAgentWorkParts(parts, workPartIndexes);
+
+    expect(
+      projectAgentWorkTimelineItems({
+        activities: projection.activities,
+        messageSettled: true,
+        parts,
+        workPartIndexes,
+      }).map((item) => item.kind),
+    ).toEqual(["activity", "activity"]);
+  });
+
+  it("uses concise plural summaries for repeated tool categories", () => {
+    expect(
+      summarizeCompletedToolActivities([
+        { id: "one", part: part("tool-read_file"), partIndex: 0 },
+        { id: "two", part: part("tool-read_file"), partIndex: 1 },
+        { id: "three", part: part("tool-shell"), partIndex: 2 },
+      ]),
+    ).toBe("Read files and ran a command");
+  });
+
+  it("does not merge reasoning across explicit step boundaries", () => {
+    const parts = [
+      part("step-start"),
+      part("reasoning", { text: "first step" }),
+      part("step-start"),
+      part("reasoning", { text: "second step" }),
+    ];
+    const { workPartIndexes } = splitWorkedForParts(parts);
+
+    expect(
+      projectAgentWorkParts(parts, workPartIndexes).activities,
+    ).toHaveLength(2);
   });
 });

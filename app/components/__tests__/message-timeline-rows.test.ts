@@ -5,6 +5,7 @@ import {
   findMessageTimelineAnchorIndex,
   stabilizeChatTimelineRows,
   type AgentActivityTimelineRow,
+  type AgentToolGroupTimelineRow,
 } from "../message-timeline-rows";
 import type { ChatMessage } from "@/types";
 
@@ -142,6 +143,81 @@ describe("deriveChatTimelineRows", () => {
     ]);
     expect(expandedRows.map((row) => row.kind)).toEqual([
       "agent-work-header",
+      "agent-activity",
+      "message",
+    ]);
+  });
+
+  it("replaces a completed prior tool step with one animated group", () => {
+    const message = agentMessage([
+      { type: "step-start" },
+      {
+        type: "tool-read_file",
+        toolCallId: "read-1",
+        input: { path: "one.ts" },
+        output: "contents",
+        state: "output-available",
+      },
+      {
+        type: "tool-shell",
+        toolCallId: "shell-1",
+        input: { command: "pwd" },
+        output: "done",
+        state: "output-available",
+      },
+      { type: "step-start" },
+      { type: "reasoning", text: "Starting the next step" },
+    ] as ChatMessage["parts"]);
+
+    const rows = deriveChatTimelineRows({
+      messages: [message],
+      status: "streaming",
+      lastAssistantMessageIndex: 0,
+      expandedAgentMessageIds: new Set(),
+    });
+    const group = rows.find(
+      (row): row is AgentToolGroupTimelineRow =>
+        row.kind === "agent-tool-group",
+    );
+
+    expect(rows.map((row) => row.kind)).toEqual([
+      "agent-work-header",
+      "agent-tool-group",
+      "agent-activity",
+      "message",
+    ]);
+    expect(group).toMatchObject({
+      animateOnMount: true,
+      summary: "Read a file and ran a command",
+    });
+    expect(group?.activities).toHaveLength(2);
+  });
+
+  it("does not group a settled run containing a failed tool", () => {
+    const message = agentMessage([
+      {
+        type: "tool-read_file",
+        toolCallId: "read-1",
+        state: "output-available",
+      },
+      {
+        type: "tool-shell",
+        toolCallId: "shell-1",
+        state: "output-error",
+        errorText: "command failed",
+      },
+    ] as ChatMessage["parts"]);
+
+    const rows = deriveChatTimelineRows({
+      messages: [message],
+      status: "ready",
+      lastAssistantMessageIndex: 0,
+      expandedAgentMessageIds: new Set(),
+    });
+
+    expect(rows.map((row) => row.kind)).toEqual([
+      "agent-work-header",
+      "agent-activity",
       "agent-activity",
       "message",
     ]);
