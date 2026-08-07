@@ -5,6 +5,7 @@ import { internal } from "./_generated/api";
 import { ConvexError, v } from "convex/values";
 import { isIP } from "node:net";
 import { validateServiceKey } from "./lib/utils";
+import { hasPaidEntitlement } from "../lib/auth/entitlements";
 import {
   decryptProxyConfig,
   encryptProxyConfig,
@@ -36,6 +37,30 @@ type RuntimeProxyConfig = StoredProxyConfig & {
 };
 
 const proxyProtocolValidator = v.union(v.literal("http"), v.literal("socks5"));
+
+function getIdentityEntitlements(identity: unknown): string[] {
+  if (
+    !identity ||
+    typeof identity !== "object" ||
+    !("entitlements" in identity) ||
+    !Array.isArray(identity.entitlements)
+  ) {
+    return [];
+  }
+
+  return identity.entitlements.filter(
+    (entitlement): entitlement is string => typeof entitlement === "string",
+  );
+}
+
+function requirePaidProxyAccess(identity: unknown): void {
+  if (!hasPaidEntitlement(getIdentityEntitlements(identity))) {
+    throw new ConvexError({
+      code: "PAID_PLAN_REQUIRED",
+      message: "A paid Cloud Agent plan is required",
+    });
+  }
+}
 
 const publicProxyConfigValidator = v.object({
   enabled: v.boolean(),
@@ -243,6 +268,7 @@ export const saveProxyConfig = action({
     if (!identity) {
       throw new ConvexError({ code: "UNAUTHORIZED", message: "Unauthorized" });
     }
+    requirePaidProxyAccess(identity);
 
     const encryptionKey = getEncryptionKey();
     const existing: EncryptedProxyConfig | null = await ctx.runQuery(

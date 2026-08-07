@@ -24,8 +24,16 @@ function createCtx(existing: unknown = null) {
   return {
     auth: {
       getUserIdentity: jest
-        .fn<() => Promise<{ subject: string } | null>>()
-        .mockResolvedValue({ subject: "user_123" }),
+        .fn<
+          () => Promise<{
+            subject: string;
+            entitlements: string[];
+          } | null>
+        >()
+        .mockResolvedValue({
+          subject: "user_123",
+          entitlements: ["pro-plan"],
+        }),
     },
     runQuery: jest.fn<() => Promise<unknown>>().mockResolvedValue(existing),
     runMutation: jest.fn<() => Promise<null>>().mockResolvedValue(null),
@@ -110,6 +118,30 @@ describe("proxy config actions", () => {
       host: "new.example.com",
       password: "existing-secret",
     });
+  });
+
+  it("rejects free users before reading or saving proxy configuration", async () => {
+    const { saveProxyConfig } = await import("../proxyConfigActions");
+    const ctx = createCtx();
+    ctx.auth.getUserIdentity.mockResolvedValue({
+      subject: "user_123",
+      entitlements: [],
+    });
+
+    await expect(
+      saveProxyConfig.handler(ctx as any, {
+        enabled: true,
+        protocol: "http",
+        host: "proxy.example.com",
+        port: 8443,
+        proxyDns: true,
+        bypassHosts: [],
+      }),
+    ).rejects.toMatchObject({
+      data: expect.objectContaining({ code: "PAID_PLAN_REQUIRED" }),
+    });
+    expect(ctx.runQuery).not.toHaveBeenCalled();
+    expect(ctx.runMutation).not.toHaveBeenCalled();
   });
 
   it("returns decrypted credentials only through the service-key backend action", async () => {

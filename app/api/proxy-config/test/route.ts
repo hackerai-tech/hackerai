@@ -40,7 +40,13 @@ export async function POST(req: NextRequest) {
       cwd: "/home/user",
       user: "root",
       timeoutMs: 25_000,
-      envs: envs ? { ...envs } : undefined,
+      envs: {
+        ...envs,
+        // The diagnostic must always traverse the proxy, even when the user
+        // has added api.ipify.org to their normal bypass list.
+        NO_PROXY: "",
+        no_proxy: "",
+      },
     });
     const exitIp = result.stdout.trim();
 

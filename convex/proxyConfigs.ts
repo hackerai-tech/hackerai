@@ -18,7 +18,7 @@ async function getProxyConfigByUserId(ctx: MutationCtx, userId: string) {
   return ctx.db
     .query("user_proxy_configs")
     .withIndex("by_user_id", (q) => q.eq("user_id", userId))
-    .first();
+    .unique();
 }
 
 export const getEncryptedForUser = internalQuery({
@@ -28,7 +28,7 @@ export const getEncryptedForUser = internalQuery({
     const config = await ctx.db
       .query("user_proxy_configs")
       .withIndex("by_user_id", (q) => q.eq("user_id", args.userId))
-      .first();
+      .unique();
 
     if (!config) return null;
 

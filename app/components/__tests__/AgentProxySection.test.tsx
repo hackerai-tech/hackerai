@@ -70,4 +70,28 @@ describe("AgentProxySection", () => {
       expect.not.objectContaining({ password: expect.anything() }),
     );
   });
+
+  it("prevents edits while a save is pending", async () => {
+    let resolveSave: (config: typeof savedConfig) => void = () => undefined;
+    saveProxyConfig.mockImplementationOnce(
+      () =>
+        new Promise<typeof savedConfig>((resolve) => {
+          resolveSave = resolve;
+        }),
+    );
+    const user = userEvent.setup();
+    render(<AgentProxySection />);
+
+    const hostInput = await screen.findByLabelText("Host");
+    await user.click(screen.getByRole("button", { name: "Save proxy" }));
+
+    expect(hostInput).toBeDisabled();
+    expect(screen.getByLabelText("Enable Cloud Agent proxy")).toBeDisabled();
+    expect(screen.getByLabelText("Protocol")).toBeDisabled();
+    expect(hostInput).toHaveValue("proxy.example.com");
+
+    resolveSave(savedConfig);
+    await waitFor(() => expect(hostInput).toBeEnabled());
+    expect(hostInput).toHaveValue("proxy.example.com");
+  });
 });

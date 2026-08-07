@@ -91,6 +91,25 @@ describe("POST /api/proxy-config/test", () => {
     expect(getSandbox).not.toHaveBeenCalled();
   });
 
+  it("does not bypass the proxy for the diagnostic host", async () => {
+    (getUserProxyConfigForBackend as jest.Mock).mockResolvedValue({
+      ...proxyConfig,
+      bypassHosts: ["api.ipify.org"],
+    });
+
+    await POST({} as NextRequest);
+
+    expect(runCommand).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({
+        envs: expect.objectContaining({
+          NO_PROXY: "",
+          no_proxy: "",
+        }),
+      }),
+    );
+  });
+
   it("does not return arbitrary command output as an exit IP", async () => {
     runCommand.mockResolvedValue({
       stdout: "proxy provider diagnostic with credentials",

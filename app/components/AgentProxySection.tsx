@@ -70,6 +70,7 @@ export function AgentProxySection() {
     durationMs: number;
   } | null>(null);
   const capturedExposureRef = useRef(false);
+  const isBusy = isSaving || isTesting;
 
   useEffect(() => {
     if (!capturedExposureRef.current) {
@@ -256,6 +257,7 @@ export function AgentProxySection() {
         <Switch
           checked={form.enabled}
           onCheckedChange={(checked) => updateForm("enabled", checked)}
+          disabled={isBusy}
           aria-label="Enable Cloud Agent proxy"
         />
       </div>
@@ -265,6 +267,7 @@ export function AgentProxySection() {
           <Label htmlFor="agent-proxy-protocol">Protocol</Label>
           <Select
             value={form.protocol}
+            disabled={isBusy}
             onValueChange={(value) =>
               updateForm("protocol", value as AgentProxyProtocol)
             }
@@ -285,6 +288,7 @@ export function AgentProxySection() {
               id="agent-proxy-host"
               value={form.host}
               onChange={(event) => updateForm("host", event.target.value)}
+              disabled={isBusy}
               placeholder="proxy.example.com"
               autoComplete="off"
             />
@@ -298,6 +302,7 @@ export function AgentProxySection() {
               max={65_535}
               value={form.port}
               onChange={(event) => updateForm("port", event.target.value)}
+              disabled={isBusy}
               inputMode="numeric"
             />
           </div>
@@ -308,6 +313,7 @@ export function AgentProxySection() {
             id="agent-proxy-username"
             value={form.username}
             onChange={(event) => updateForm("username", event.target.value)}
+            disabled={isBusy}
             autoComplete="off"
           />
         </div>
@@ -317,6 +323,7 @@ export function AgentProxySection() {
             id="agent-proxy-password"
             type="password"
             value={form.password}
+            disabled={isBusy}
             onChange={(event) => {
               updateForm("password", event.target.value);
               if (event.target.value) setClearPassword(false);
@@ -332,6 +339,7 @@ export function AgentProxySection() {
               variant="link"
               size="sm"
               className="h-auto px-0 text-xs"
+              disabled={isBusy}
               onClick={() => {
                 setClearPassword((current) => !current);
                 setForm((current) => ({ ...current, password: "" }));
@@ -355,6 +363,7 @@ export function AgentProxySection() {
             id="agent-proxy-dns"
             checked={form.proxyDns}
             onCheckedChange={(checked) => updateForm("proxyDns", checked)}
+            disabled={isBusy}
           />
         </div>
       )}
@@ -365,6 +374,7 @@ export function AgentProxySection() {
           id="agent-proxy-bypass"
           value={form.bypassHosts}
           onChange={(event) => updateForm("bypassHosts", event.target.value)}
+          disabled={isBusy}
           placeholder="internal.example.com, *.corp.example.com"
           autoComplete="off"
         />
@@ -380,14 +390,14 @@ export function AgentProxySection() {
       )}
 
       <div className="flex flex-wrap items-center gap-2">
-        <Button onClick={handleSave} disabled={isSaving || isTesting}>
+        <Button onClick={handleSave} disabled={isBusy}>
           {isSaving && <Loader2 className="mr-2 size-4 animate-spin" />}
           Save proxy
         </Button>
         <Button
           variant="outline"
           onClick={handleTest}
-          disabled={isSaving || isTesting || !form.enabled}
+          disabled={isBusy || !form.enabled}
         >
           {isTesting && <Loader2 className="mr-2 size-4 animate-spin" />}
           Test connection
@@ -398,7 +408,7 @@ export function AgentProxySection() {
             size="sm"
             className="text-muted-foreground"
             onClick={handleDelete}
-            disabled={isSaving || isTesting}
+            disabled={isBusy}
           >
             <Trash2 className="mr-2 size-4" />
             Remove
