@@ -50,7 +50,13 @@ describe("FreeAskComputerActivation", () => {
       name: "Connect computer for Agent mode",
     });
     expect(trigger).toBeInTheDocument();
-    expect(trigger).toHaveClass("rounded-md", "text-foreground");
+    expect(trigger).toHaveClass(
+      "rounded-md",
+      "bg-muted",
+      "text-foreground",
+      "hover:bg-muted/50",
+    );
+    expect(trigger).not.toHaveClass("border");
     expect(trigger).not.toHaveClass("rounded-full");
     expect(trigger.querySelector("svg")).toHaveClass(
       "size-4",

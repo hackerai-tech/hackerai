@@ -92,9 +92,9 @@ export function FreeAskComputerActivation() {
       <PopoverTrigger asChild>
         <Button
           type="button"
-          variant="outline"
+          variant="ghost"
           size="sm"
-          className="h-7 w-7 rounded-md p-0 text-foreground shadow-none md:w-auto md:px-2"
+          className="h-7 w-7 rounded-md bg-muted p-0 text-foreground shadow-none hover:bg-muted/50 md:w-auto md:px-2"
           aria-label="Connect computer for Agent mode"
           title="Connect computer"
           data-testid="free-ask-computer-activation-trigger"
