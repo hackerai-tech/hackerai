@@ -99,7 +99,7 @@ export function FreeAskComputerActivation() {
           title="Connect computer"
           data-testid="free-ask-computer-activation-trigger"
         >
-          <Laptop className="size-3.5" aria-hidden="true" />
+          <Laptop className="size-3.5 text-foreground" aria-hidden="true" />
           <span className="hidden md:inline">Connect Computer</span>
           <ChevronDown className="hidden size-3 md:block" aria-hidden="true" />
         </Button>
