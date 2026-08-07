@@ -103,6 +103,7 @@ import {
   updateChatTitle,
   getMessagesByChatId,
   getUserCustomization,
+  getUserProxyConfigForBackend,
   prepareForNewStream,
   startStream,
 } from "@/lib/db/actions";
@@ -316,7 +317,16 @@ export const createChatHandler = () => {
         });
       }
 
-      const userCustomization = await getUserCustomization({ userId });
+      const shouldLoadAgentProxy =
+        isAgentMode(mode) &&
+        subscription !== "free" &&
+        sandboxPreference !== "desktop";
+      const [userCustomization, agentProxyConfig] = await Promise.all([
+        getUserCustomization({ userId }),
+        shouldLoadAgentProxy
+          ? getUserProxyConfigForBackend({ userId })
+          : Promise.resolve(null),
+      ]);
 
       const fetched = await getMessagesByChatId({
         chatId,
@@ -653,6 +663,8 @@ export const createChatHandler = () => {
               undefined,
               undefined,
               projectContext.workingDirectory,
+              undefined,
+              agentProxyConfig,
             );
 
             // Helper to send file metadata via stream for resumable stream clients

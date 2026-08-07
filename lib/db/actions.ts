@@ -19,6 +19,7 @@ import { fixIncompleteMessageParts } from "@/lib/chat/chat-processor";
 import { compactMessageForStorage } from "@/lib/chat/compaction/prune-tool-outputs";
 import type {
   AgentToolApprovalPendingRequest,
+  AgentProxyRuntimeConfig,
   SubscriptionTier,
   NoteCategory,
 } from "@/types";
@@ -1685,6 +1686,20 @@ export async function getUserCustomization({ userId }: { userId: string }) {
     // If no customization found or error, return null
     return null;
   }
+}
+
+export async function getUserProxyConfigForBackend({
+  userId,
+}: {
+  userId: string;
+}): Promise<AgentProxyRuntimeConfig | null> {
+  return await getConvexClient().action(
+    api.proxyConfigActions.getProxyConfigForBackend,
+    {
+      serviceKey,
+      userId,
+    },
+  );
 }
 
 export async function setActiveTriggerRun({

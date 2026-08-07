@@ -11,6 +11,7 @@ import { useGlobalState } from "@/app/contexts/GlobalState";
 import type { QueueBehavior } from "@/types/chat";
 import { SandboxSelector } from "@/app/components/SandboxSelector";
 import { AgentPermissionSelector } from "@/app/components/AgentPermissionSelector";
+import { AgentProxySection } from "@/app/components/AgentProxySection";
 
 const AgentsTab = () => {
   const {
@@ -73,34 +74,37 @@ const AgentsTab = () => {
 
       {/* Queue Messages - Only show for Pro/Ultra/Team users */}
       {subscription !== "free" && (
-        <div className="space-y-4">
-          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between py-3 border-b gap-3">
-            <div className="flex-1">
-              <div className="font-medium">Queue Messages</div>
-              <div className="text-sm text-muted-foreground">
-                Adjust the default behavior of sending a message while Agent is
-                streaming
+        <>
+          <AgentProxySection />
+          <div className="space-y-4">
+            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between py-3 border-b gap-3">
+              <div className="flex-1">
+                <div className="font-medium">Queue Messages</div>
+                <div className="text-sm text-muted-foreground">
+                  Adjust the default behavior of sending a message while Agent
+                  is streaming
+                </div>
               </div>
+              <Select
+                value={queueBehavior}
+                onValueChange={(value) =>
+                  setQueueBehavior(value as QueueBehavior)
+                }
+              >
+                <SelectTrigger className="w-full sm:w-auto">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {queueBehaviorOptions.map((option) => (
+                    <SelectItem key={option.value} value={option.value}>
+                      {option.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </div>
-            <Select
-              value={queueBehavior}
-              onValueChange={(value) =>
-                setQueueBehavior(value as QueueBehavior)
-              }
-            >
-              <SelectTrigger className="w-full sm:w-auto">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {queueBehaviorOptions.map((option) => (
-                  <SelectItem key={option.value} value={option.value}>
-                    {option.label}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
           </div>
-        </div>
+        </>
       )}
     </div>
   );

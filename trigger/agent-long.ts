@@ -78,6 +78,7 @@ import {
   updateChat,
   updateChatTitle,
   getUserCustomization,
+  getUserProxyConfigForBackend,
   setActiveTriggerRun,
   setActiveAgentApprovalPending,
   persistAgentApprovalGrant,
@@ -1845,7 +1846,7 @@ export const agentLongTask = task({
     try {
       // Re-fetch from DB so we have fileTokens for summarization.
       // The route already saved the user message; newMessages:[] avoids duplicates.
-      const [userCustomization, fetched] = await Promise.all([
+      const [userCustomization, fetched, agentProxyConfig] = await Promise.all([
         getUserCustomization({ userId }),
         getMessagesByChatId({
           chatId,
@@ -1855,6 +1856,9 @@ export const agentLongTask = task({
           regenerate,
           mode,
         }),
+        subscription !== "free" && sandboxPreference !== "desktop"
+          ? getUserProxyConfigForBackend({ userId })
+          : Promise.resolve(null),
       ]);
       const { chat, fileTokens } = fetched;
       const projectContext = await resolveProjectExecutionContext({
@@ -2330,6 +2334,7 @@ export const agentLongTask = task({
               runTimingTracker.measureActiveTime,
               projectContext.workingDirectory,
               ctx.run.id,
+              agentProxyConfig,
             );
             approvalSandboxManager = sandboxManager;
 

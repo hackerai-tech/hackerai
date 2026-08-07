@@ -472,6 +472,8 @@ export interface ToolContext {
   getCurrentModelName?: () => string | undefined;
   subscription?: SubscriptionTier;
   isE2BSandbox: IsE2BSandboxFn;
+  /** Proxy environment applied only to E2B command and PTY processes. */
+  sandboxProxyEnv?: Readonly<Record<string, string>>;
   /** When set, run_terminal_cmd awaits this for each terminal chunk so the run yields and metadata delivery can happen in real time. */
   appendMetadataStream?: AppendMetadataStreamFn;
   /** Callback to report additional tool costs (in dollars) that should be added to the request's total cost. */

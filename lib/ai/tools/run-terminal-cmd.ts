@@ -324,6 +324,9 @@ export const createRunTerminalCmd = (context: ToolContext) => {
               return createE2BPtyHandle(sandbox, {
                 cols,
                 rows,
+                envs: context.sandboxProxyEnv
+                  ? { ...context.sandboxProxyEnv }
+                  : undefined,
               });
             },
           });
@@ -934,6 +937,9 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                     onStdout: forwardCommandOutput,
                     onStderr: forwardCommandOutput,
                   },
+              isE2BSandbox(sandboxInstance) && context.sandboxProxyEnv
+                ? { ...context.sandboxProxyEnv }
+                : undefined,
             );
             const runOptions = isCentrifugoSandbox(sandboxInstance)
               ? {

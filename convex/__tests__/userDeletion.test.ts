@@ -263,6 +263,24 @@ function seedTables(userId = "user_123", otherUserId = "user_other"): Tables {
       { _id: "custom-user", user_id: userId, updated_at: 1 },
       { _id: "custom-other", user_id: otherUserId, updated_at: 1 },
     ],
+    user_proxy_configs: [
+      {
+        _id: "proxy-user",
+        user_id: userId,
+        enabled: true,
+        protocol: "http",
+        encrypted_config: "encrypted-user-proxy",
+        updated_at: 1,
+      },
+      {
+        _id: "proxy-other",
+        user_id: otherUserId,
+        enabled: true,
+        protocol: "socks5",
+        encrypted_config: "encrypted-other-proxy",
+        updated_at: 1,
+      },
+    ],
     temp_streams: [
       { _id: "temp-stream-user", chat_id: "chat-1", user_id: userId },
       {

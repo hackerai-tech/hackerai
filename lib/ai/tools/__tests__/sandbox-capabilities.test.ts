@@ -65,6 +65,20 @@ describe("Sandbox Capabilities for Network Tools", () => {
       expect(options.onStdout).toBe(onStdout);
       expect(options.onStderr).toBe(onStderr);
     });
+
+    it("maps environment variables to both sandbox SDK option names", () => {
+      const e2bSandbox = createMockE2BSandbox();
+      const env = { HTTPS_PROXY: "http://proxy.example.com:8080" };
+
+      const options = buildSandboxCommandOptions(
+        e2bSandbox as any,
+        undefined,
+        env,
+      );
+
+      expect(options.envs).toEqual(env);
+      expect(options.envVars).toEqual(env);
+    });
   });
 
   describe("Sandbox Type Detection", () => {

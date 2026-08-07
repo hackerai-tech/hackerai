@@ -55,6 +55,7 @@ export function buildSandboxCommandOptions(
   user?: "root";
   cwd?: string;
   envVars?: Record<string, string>;
+  envs?: Record<string, string>;
   onStdout?: (data: string) => void;
   onStderr?: (data: string) => void;
 } {
@@ -66,7 +67,11 @@ export function buildSandboxCommandOptions(
       user: "root" as const,
       cwd: "/home/user",
     }),
-    ...(extraEnvVars && { envVars: extraEnvVars }),
+    ...(extraEnvVars && {
+      // CentrifugoSandbox expects envVars; the E2B SDK expects envs.
+      envVars: extraEnvVars,
+      envs: extraEnvVars,
+    }),
     ...(handlers && {
       onStdout: handlers.onStdout,
       onStderr: handlers.onStderr,

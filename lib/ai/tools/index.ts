@@ -43,6 +43,8 @@ import { isE2BSandbox } from "./utils/sandbox-types";
 import { getSandboxWithFallbackGuard } from "./utils/sandbox-fallback";
 import { createE2BResourcePressureObserver } from "@/lib/analytics/sandbox-resource-pressure";
 import { E2B_COST_PER_MS } from "./utils/e2b-cost";
+import type { AgentProxyRuntimeConfig } from "@/types";
+import { buildAgentProxyEnvironment } from "./utils/proxy-config";
 
 export { isE2BSandbox };
 
@@ -68,6 +70,7 @@ export const createTools = (
   measureAgentActiveTime?: AgentActiveTimeMeasurer,
   workingDirectory?: string,
   triggerRunId?: string,
+  agentProxyConfig?: AgentProxyRuntimeConfig | null,
 ) => {
   let sandbox: AnySandbox | null = null;
   let sandboxFirstUsedAt: number | null = null;
@@ -120,6 +123,7 @@ export const createTools = (
     subscription,
     triggerRunId,
   });
+  const sandboxProxyEnv = buildAgentProxyEnvironment(agentProxyConfig);
 
   const context: ToolContext = {
     sandboxManager,
@@ -138,6 +142,7 @@ export const createTools = (
     getCurrentModelName: () => currentModelName,
     subscription,
     isE2BSandbox,
+    sandboxProxyEnv,
     appendMetadataStream,
     onToolCost,
     onToolFailure,
