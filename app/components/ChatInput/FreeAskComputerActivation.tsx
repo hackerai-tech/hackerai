@@ -94,14 +94,19 @@ export function FreeAskComputerActivation() {
           type="button"
           variant="outline"
           size="sm"
-          className="h-7 w-7 rounded-full p-0 text-muted-foreground shadow-none md:w-auto md:px-2"
+          className="h-7 w-7 rounded-full p-0 text-foreground shadow-none md:w-auto md:px-2"
           aria-label="Connect computer for Agent mode"
           title="Connect computer"
           data-testid="free-ask-computer-activation-trigger"
         >
-          <Laptop className="size-3.5 text-foreground" aria-hidden="true" />
-          <span className="hidden md:inline">Connect Computer</span>
-          <ChevronDown className="hidden size-3 md:block" aria-hidden="true" />
+          <Laptop className="size-4" aria-hidden="true" />
+          <span className="hidden text-muted-foreground md:inline">
+            Connect Computer
+          </span>
+          <ChevronDown
+            className="hidden size-3 text-muted-foreground md:block"
+            aria-hidden="true"
+          />
         </Button>
       </PopoverTrigger>
 
