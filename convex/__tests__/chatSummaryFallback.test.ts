@@ -50,7 +50,7 @@ jest.mock("../chats", () => ({
 }));
 jest.mock("../lib/suspensionGuards", () => ({
   assertUserCanAccessChatHistory: jest.fn<any>().mockResolvedValue(undefined),
-  isUserBlockedByActiveFraudDispute: jest.fn<any>().mockResolvedValue(false),
+  isUserBlockedFromChatHistory: jest.fn<any>().mockResolvedValue(false),
   CHAT_ACCESS_SUSPENDED_CODE: "CHAT_ACCESS_SUSPENDED",
 }));
 
