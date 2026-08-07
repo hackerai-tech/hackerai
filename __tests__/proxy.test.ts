@@ -175,6 +175,96 @@ describe("proxy", () => {
     expect(mockNextResponseJson).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ["fetch action", { "next-action": "action-id" }],
+    ["multipart action", { "content-type": "multipart/form-data; boundary=x" }],
+  ])(
+    "rejects malformed %s origins before AuthKit without logging them",
+    async (_kind, actionHeaders) => {
+      const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+      const requestId = `iad1::${"r".repeat(200)}`;
+      try {
+        const { default: proxy } = await import("../proxy");
+
+        const response = await proxy(
+          createRequest({
+            pathname: "/c/chat_123",
+            method: "POST",
+            hasSession: true,
+            headers: {
+              ...actionHeaders,
+              origin: "https://hackerai.co, foo.example.org",
+              "x-vercel-id": requestId,
+            },
+          }),
+        );
+
+        expect(response).toMatchObject({ kind: "json" });
+        expect(mockAuthkit).not.toHaveBeenCalled();
+        expect(mockNextResponseJson).toHaveBeenCalledWith(
+          {
+            code: "bad_request:request",
+            message: "The request origin is invalid.",
+          },
+          { status: 400 },
+        );
+
+        const warning = String(warnSpy.mock.calls[0][0]);
+        expect(JSON.parse(warning)).toMatchObject({
+          level: "warn",
+          event: "server_action_request_rejected",
+          request_id: requestId.slice(0, 128),
+          pathname: "/c/chat_123",
+          reason: "malformed_origin",
+        });
+        expect(warning).not.toContain("foo.example.org");
+        expect(warning).not.toContain(requestId);
+      } finally {
+        warnSpy.mockRestore();
+      }
+    },
+  );
+
+  it.each([
+    ["missing fetch-action", { "next-action": "action-id" }, undefined],
+    ["null fetch-action", { "next-action": "action-id" }, "null"],
+    [
+      "cross-origin fetch-action",
+      { "next-action": "action-id" },
+      "https://cross-origin.example",
+    ],
+    [
+      "cross-origin multipart-action",
+      { "content-type": "multipart/form-data; boundary=x" },
+      "https://cross-origin.example",
+    ],
+  ])(
+    "leaves the %s origin to Next CSRF validation",
+    async (_kind, actionHeaders, origin) => {
+      mockAuthkit.mockResolvedValue({
+        session: { user: { id: "user_123" } },
+        headers: new Headers(),
+        authorizationUrl: undefined,
+      });
+      const { default: proxy } = await import("../proxy");
+
+      const headers: Record<string, string> = { ...actionHeaders };
+      if (origin !== undefined) headers.origin = origin;
+
+      const response = await proxy(
+        createRequest({
+          pathname: "/c/chat_123",
+          method: "POST",
+          hasSession: true,
+          headers,
+        }),
+      );
+
+      expect(response).toMatchObject({ kind: "next" });
+      expect(mockAuthkit).toHaveBeenCalledTimes(1);
+    },
+  );
+
   it("treats callback-only ended-session refresh errors as logged-out requests", async () => {
     const infoSpy = jest.spyOn(console, "info").mockImplementation(() => {});
     const endedSessionError = Object.assign(

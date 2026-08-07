@@ -86,6 +86,30 @@ function isNextActionRequest(request: NextRequest): boolean {
   return request.method === "POST" && request.headers.has(NEXT_ACTION_HEADER);
 }
 
+function isOriginParsedServerActionRequest(request: NextRequest): boolean {
+  if (request.method !== "POST") return false;
+  if (request.headers.has(NEXT_ACTION_HEADER)) return true;
+
+  return (
+    request.headers.get("content-type")?.startsWith("multipart/form-data") ??
+    false
+  );
+}
+
+function hasMalformedNextActionOrigin(request: NextRequest): boolean {
+  if (!isOriginParsedServerActionRequest(request)) return false;
+
+  const origin = request.headers.get("origin");
+  if (!origin || origin === "null") return false;
+
+  try {
+    new URL(origin);
+    return false;
+  } catch {
+    return true;
+  }
+}
+
 function isBrowserRequest(request: NextRequest): boolean {
   const accept = request.headers.get("accept") ?? "";
   return accept.includes("text/html");
@@ -195,6 +219,34 @@ export default async function proxy(request: NextRequest) {
           Allow: request.method === "POST" ? "GET, HEAD" : "GET, HEAD, POST",
         },
       },
+    );
+  }
+
+  // Next parses the Origin header before its Server Action CSRF comparison.
+  // Reject malformed values here so an invalid client header cannot turn into
+  // an unhandled URL-construction error. Well-formed cross-origin requests are
+  // still left to Next's existing CSRF validation.
+  if (hasMalformedNextActionOrigin(request)) {
+    const requestId = request.headers.get("x-vercel-id");
+    console.warn(
+      JSON.stringify({
+        timestamp: new Date().toISOString(),
+        level: "warn",
+        event: "server_action_request_rejected",
+        service: "hackerai-web",
+        environment:
+          process.env.VERCEL_ENV ?? process.env.NODE_ENV ?? "unknown",
+        request_id: requestId?.slice(0, 128),
+        pathname,
+        reason: "malformed_origin",
+      }),
+    );
+    return NextResponse.json(
+      {
+        code: "bad_request:request",
+        message: "The request origin is invalid.",
+      },
+      { status: 400 },
     );
   }
 
