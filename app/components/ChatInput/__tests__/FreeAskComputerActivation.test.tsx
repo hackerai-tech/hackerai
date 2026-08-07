@@ -81,6 +81,11 @@ describe("FreeAskComputerActivation", () => {
     expect(
       screen.getByTestId("free-ask-computer-activation-popover"),
     ).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "Let Agent work with files and terminal tools on your computer.",
+      ),
+    ).toBeInTheDocument();
     expect(mockCaptureAuthenticatedEvent).toHaveBeenCalledWith(
       "computer_activation_cta_clicked",
       {

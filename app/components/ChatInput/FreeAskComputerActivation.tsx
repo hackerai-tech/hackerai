@@ -121,7 +121,7 @@ export function FreeAskComputerActivation() {
             <div className="min-w-0 space-y-1">
               <p className="text-sm font-medium">Use Your Computer</p>
               <p className="text-xs text-muted-foreground">
-                Let Agent work with files and apps on your computer.
+                Let Agent work with files and terminal tools on your computer.
               </p>
             </div>
           </div>
