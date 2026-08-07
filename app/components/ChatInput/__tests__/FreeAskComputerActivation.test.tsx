@@ -80,6 +80,15 @@ describe("FreeAskComputerActivation", () => {
     expect(
       screen.getByTestId("free-ask-computer-activation-popover"),
     ).toBeInTheDocument();
+    expect(mockCaptureAuthenticatedEvent).toHaveBeenCalledWith(
+      "computer_activation_cta_clicked",
+      {
+        surface: "chat_input_computer_activation",
+        source: "free_ask_computer_activation",
+        subscription_tier: "free",
+        chat_mode: "ask",
+      },
+    );
     expect(mockCaptureUpgradeCtaImpression).toHaveBeenCalledWith(
       expect.objectContaining({
         surface: "chat_input_computer_activation",
@@ -95,6 +104,23 @@ describe("FreeAskComputerActivation", () => {
     );
     expect(download).toHaveAttribute("target", "_blank");
 
+    await user.click(download);
+    expect(mockCaptureAuthenticatedEvent).toHaveBeenCalledWith(
+      "computer_activation_download_clicked",
+      {
+        surface: "chat_input_computer_activation",
+        source: "free_ask_computer_activation",
+        subscription_tier: "free",
+        chat_mode: "ask",
+        platform: "macos",
+      },
+    );
+
+    await user.click(
+      screen.getByRole("button", {
+        name: "Connect computer for Agent mode",
+      }),
+    );
     await user.click(screen.getByTestId("free-ask-cloud-upgrade"));
     expect(mockRedirectToPricing).toHaveBeenCalledWith({
       surface: "chat_input_computer_activation",
