@@ -100,13 +100,8 @@ export function FreeAskComputerActivation() {
           data-testid="free-ask-computer-activation-trigger"
         >
           <Laptop className="size-4" aria-hidden="true" />
-          <span className="hidden text-muted-foreground md:inline">
-            Connect Computer
-          </span>
-          <ChevronDown
-            className="hidden size-3 text-muted-foreground md:block"
-            aria-hidden="true"
-          />
+          <span className="hidden md:inline">Connect Computer</span>
+          <ChevronDown className="hidden size-3 md:block" aria-hidden="true" />
         </Button>
       </PopoverTrigger>
 

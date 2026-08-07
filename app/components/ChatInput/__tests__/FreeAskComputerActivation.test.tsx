@@ -52,10 +52,11 @@ describe("FreeAskComputerActivation", () => {
     expect(trigger).toBeInTheDocument();
     expect(trigger).toHaveClass("text-foreground");
     expect(trigger.querySelector("svg")).toHaveClass("size-4");
-    expect(screen.getByText("Connect Computer")).toHaveClass(
-      "hidden",
+    const label = screen.getByText("Connect Computer");
+    expect(label).toHaveClass("hidden", "md:inline");
+    expect(label).not.toHaveClass("text-muted-foreground");
+    expect(trigger.querySelectorAll("svg")[1]).not.toHaveClass(
       "text-muted-foreground",
-      "md:inline",
     );
 
     await waitFor(() => {
