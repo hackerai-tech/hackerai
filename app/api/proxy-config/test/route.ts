@@ -6,6 +6,7 @@ import { getUserProxyConfigForBackend } from "@/lib/db/actions";
 import { DefaultSandboxManager } from "@/lib/ai/tools/utils/sandbox-manager";
 import { buildAgentProxyEnvironment } from "@/lib/ai/tools/utils/proxy-config";
 import { ChatSDKError } from "@/lib/errors";
+import { assertUserCanMakeCostIncurringRequest } from "@/lib/suspensions";
 
 export const maxDuration = 60;
 
@@ -21,6 +22,7 @@ export async function POST(req: NextRequest) {
         { status: 403 },
       );
     }
+    await assertUserCanMakeCostIncurringRequest(userId);
 
     const config = await getUserProxyConfigForBackend({ userId });
     if (!config) {

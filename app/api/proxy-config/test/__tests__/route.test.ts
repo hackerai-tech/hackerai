@@ -2,6 +2,7 @@ import type { NextRequest } from "next/server";
 import { POST } from "../route";
 import { getUserIDAndPro } from "@/lib/auth/get-user-id";
 import { getUserProxyConfigForBackend } from "@/lib/db/actions";
+import { assertUserCanMakeCostIncurringRequest } from "@/lib/suspensions";
 
 const runCommand = jest.fn();
 const getSandbox = jest.fn(async () => ({
@@ -21,6 +22,9 @@ jest.mock("next/server", () => ({
 }));
 jest.mock("@/lib/db/actions", () => ({
   getUserProxyConfigForBackend: jest.fn(),
+}));
+jest.mock("@/lib/suspensions", () => ({
+  assertUserCanMakeCostIncurringRequest: jest.fn(),
 }));
 jest.mock("@/lib/ai/tools/utils/sandbox-manager", () => ({
   DefaultSandboxManager: jest.fn().mockImplementation(() => ({ getSandbox })),
@@ -69,6 +73,9 @@ describe("POST /api/proxy-config/test", () => {
         }),
       }),
     );
+    expect(assertUserCanMakeCostIncurringRequest).toHaveBeenCalledWith(
+      "user_123",
+    );
   });
 
   it("rejects free plans before creating a sandbox", async () => {
@@ -80,6 +87,7 @@ describe("POST /api/proxy-config/test", () => {
     const response = await POST({} as NextRequest);
 
     expect(response.status).toBe(403);
+    expect(assertUserCanMakeCostIncurringRequest).not.toHaveBeenCalled();
     expect(getSandbox).not.toHaveBeenCalled();
   });
 
