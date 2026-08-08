@@ -4,6 +4,7 @@ import type { PtySession } from "./utils/pty-session-manager";
 import {
   cleanPtyForUI,
   getSessionSnapshots,
+  type PtyParserLogContext,
 } from "./utils/pty-output-formatter";
 import {
   waitForOutput,
@@ -38,6 +39,22 @@ export const createInteractTerminalSession = (context: ToolContext) => {
     context.measureAgentActiveTime
       ? context.measureAgentActiveTime("terminal_wait", operation)
       : operation();
+  const buildPtyParserLogContext = (
+    sessionId: string,
+  ): PtyParserLogContext => ({
+    service: context.triggerRunId ? "agent-long" : "chat-handler",
+    environment:
+      process.env.TRIGGER_ENV ??
+      process.env.VERCEL_ENV ??
+      process.env.NODE_ENV ??
+      "unknown",
+    request_id: context.triggerRunId ?? process.env.VERCEL_REQUEST_ID ?? null,
+    trigger_run_id: context.triggerRunId ?? null,
+    chat_id: context.chatId,
+    user_id: context.userID,
+    session_id: sessionId,
+    log_budget: context.ptyParserLogBudget,
+  });
 
   return tool({
     ...interactTerminalSessionTool,
@@ -235,7 +252,11 @@ export const createInteractTerminalSession = (context: ToolContext) => {
           ),
         );
         await drainEmitQueue();
-        const snapshots = await getSessionSnapshots(ptySessionManager, session);
+        const snapshots = await getSessionSnapshots(
+          ptySessionManager,
+          session,
+          buildPtyParserLogContext(session.sessionId),
+        );
         return {
           result: {
             output: capOutput(stripAnsi(new TextDecoder().decode(delta))),
@@ -266,7 +287,11 @@ export const createInteractTerminalSession = (context: ToolContext) => {
           ),
         );
         await drainEmitQueue();
-        const snapshots = await getSessionSnapshots(ptySessionManager, session);
+        const snapshots = await getSessionSnapshots(
+          ptySessionManager,
+          session,
+          buildPtyParserLogContext(session.sessionId),
+        );
         const exited = alreadyExited ?? (await peekExited(session));
         const out: Record<string, unknown> = {
           output: capOutput(stripAnsi(new TextDecoder().decode(delta))),
@@ -294,7 +319,10 @@ export const createInteractTerminalSession = (context: ToolContext) => {
         return {
           result: {
             output: capOutput(stripAnsi(rawText)),
-            sessionSnapshot: await cleanPtyForUI(rawText),
+            sessionSnapshot: await cleanPtyForUI(
+              rawText,
+              buildPtyParserLogContext(session.sessionId),
+            ),
             rawSnapshot: rawText,
             ...(session.bufferTruncated ? { bufferTruncated: true } : {}),
             ...(internal.exitedNaturally

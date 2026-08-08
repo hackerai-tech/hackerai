@@ -39,6 +39,7 @@ import type { Geo } from "@vercel/functions";
 import { FileAccumulator } from "./utils/file-accumulator";
 import { BackgroundProcessTracker } from "./utils/background-process-tracker";
 import { ptySessionManager } from "./utils/pty-session-manager";
+import { createPtyParserLogBudget } from "./utils/pty-output-formatter";
 import { isE2BSandbox } from "./utils/sandbox-types";
 import { getSandboxWithFallbackGuard } from "./utils/sandbox-fallback";
 import { createE2BResourcePressureObserver } from "@/lib/analytics/sandbox-resource-pressure";
@@ -133,6 +134,7 @@ export const createTools = (
     fileAccumulator,
     backgroundProcessTracker,
     ptySessionManager,
+    ptyParserLogBudget: createPtyParserLogBudget(),
     mode,
     modelName,
     getCurrentModelName: () => currentModelName,

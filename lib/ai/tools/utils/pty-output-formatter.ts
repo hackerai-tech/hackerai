@@ -15,6 +15,32 @@ import { DEFAULT_PTY_COLS } from "./pty-session-manager";
 // in-memory scrollback replay, not the live terminal.
 const PARSER_ROWS = 500;
 const PARSER_SCROLLBACK = 5000;
+const MAX_REPORTED_XTERM_DIAGNOSTICS = 10_000;
+
+export type PtyParserLogBudget = { remaining_logs: number };
+
+export const createPtyParserLogBudget = (): PtyParserLogBudget => ({
+  remaining_logs: 1,
+});
+
+type XtermLogger = {
+  trace: (message: string, ...args: unknown[]) => void;
+  debug: (message: string, ...args: unknown[]) => void;
+  info: (message: string, ...args: unknown[]) => void;
+  warn: (message: string, ...args: unknown[]) => void;
+  error: (message: string | Error, ...args: unknown[]) => void;
+};
+
+export type PtyParserLogContext = {
+  service: "agent-long" | "chat-handler";
+  environment: string;
+  request_id: string | null;
+  trigger_run_id: string | null;
+  chat_id: string;
+  user_id: string;
+  session_id: string;
+  log_budget?: PtyParserLogBudget;
+};
 
 let TerminalCtor:
   | (new (opts: {
@@ -22,6 +48,8 @@ let TerminalCtor:
       rows: number;
       scrollback: number;
       allowProposedApi?: boolean;
+      logLevel?: "error";
+      logger?: XtermLogger;
     }) => {
       write: (data: string, callback?: () => void) => void;
       buffer: {
@@ -67,13 +95,106 @@ function fallbackClean(text: string): string {
     .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, ""); // Other control chars
 }
 
-export async function cleanPtyForUI(text: string): Promise<string> {
+function createXtermDiagnosticTracker(): {
+  logger: XtermLogger;
+  snapshot: () => {
+    parserErrorCount: number;
+    otherErrorCount: number;
+    countCapped: boolean;
+  };
+} {
+  let parserErrorCount = 0;
+  let otherErrorCount = 0;
+  let countCapped = false;
+  const increment = (kind: "parser" | "other"): void => {
+    const current = kind === "parser" ? parserErrorCount : otherErrorCount;
+    if (current >= MAX_REPORTED_XTERM_DIAGNOSTICS) {
+      countCapped = true;
+      return;
+    }
+    if (kind === "parser") parserErrorCount += 1;
+    else otherErrorCount += 1;
+  };
+  const noop = (): void => {};
+
+  return {
+    logger: {
+      trace: noop,
+      debug: noop,
+      info: noop,
+      warn: noop,
+      error: (message) =>
+        increment(
+          typeof message === "string" && message.startsWith("Parsing error")
+            ? "parser"
+            : "other",
+        ),
+    },
+    snapshot: () => ({ parserErrorCount, otherErrorCount, countCapped }),
+  };
+}
+
+function logAggregatedXtermDiagnostics(
+  text: string,
+  cleaned: string,
+  context: PtyParserLogContext | undefined,
+  diagnostics: ReturnType<
+    ReturnType<typeof createXtermDiagnosticTracker>["snapshot"]
+  >,
+): void {
+  if (diagnostics.parserErrorCount === 0 && diagnostics.otherErrorCount === 0) {
+    return;
+  }
+  if (context?.log_budget && context.log_budget.remaining_logs <= 0) return;
+  if (context?.log_budget) context.log_budget.remaining_logs -= 1;
+
+  console.warn(
+    JSON.stringify({
+      timestamp: new Date().toISOString(),
+      level: "warn",
+      event: "pty_xterm_diagnostics_aggregated",
+      service: context?.service ?? "terminal-tools",
+      environment:
+        context?.environment ??
+        process.env.TRIGGER_ENV ??
+        process.env.VERCEL_ENV ??
+        process.env.NODE_ENV ??
+        "unknown",
+      request_id: context?.request_id ?? null,
+      trigger_run_id: context?.trigger_run_id ?? null,
+      chat_id: context?.chat_id ?? null,
+      user_id: context?.user_id ?? null,
+      session_id: context?.session_id ?? null,
+      reason:
+        diagnostics.otherErrorCount > 0
+          ? diagnostics.parserErrorCount > 0
+            ? "mixed_xterm_errors"
+            : "xterm_error"
+          : "xterm_parser_error",
+      parser_error_count: diagnostics.parserErrorCount,
+      other_error_count: diagnostics.otherErrorCount,
+      diagnostic_count_capped: diagnostics.countCapped,
+      diagnostic_log_scope: context?.trigger_run_id ? "task_run" : "request",
+      diagnostic_log_limit: context?.log_budget ? 1 : null,
+      input_bytes: Buffer.byteLength(text, "utf8"),
+      cleaned_output_chars: cleaned.length,
+    }),
+  );
+}
+
+export async function cleanPtyForUI(
+  text: string,
+  logContext?: PtyParserLogContext,
+): Promise<string> {
   if (TerminalCtor) {
+    const diagnostics = createXtermDiagnosticTracker();
     const term = new TerminalCtor({
       cols: DEFAULT_PTY_COLS,
       rows: PARSER_ROWS,
       scrollback: PARSER_SCROLLBACK,
       allowProposedApi: true,
+      logLevel: "error",
+      logger: diagnostics.logger,
     });
     try {
       // `@xterm/headless` Terminal.write is asynchronous — it enqueues into a
@@ -90,7 +211,14 @@ export async function cleanPtyForUI(text: string): Promise<string> {
         lines.push(str);
         if (str.trim()) lastNonEmpty = i;
       }
-      return lines.slice(0, lastNonEmpty + 1).join("\n");
+      const cleaned = lines.slice(0, lastNonEmpty + 1).join("\n");
+      logAggregatedXtermDiagnostics(
+        text,
+        cleaned,
+        logContext,
+        diagnostics.snapshot(),
+      );
+      return cleaned;
     } catch (err) {
       console.warn(
         "[pty-output-formatter] xterm parsing failed, using fallback:",
@@ -111,9 +239,10 @@ interface SnapshotSource {
 export async function getSessionSnapshots(
   mgr: SnapshotSource,
   session: { sessionId: string; chatId: string },
+  logContext?: PtyParserLogContext,
 ): Promise<{ raw: string; cleaned: string }> {
   const bytes = mgr.snapshot(session);
   const raw = new TextDecoder().decode(bytes);
-  const cleaned = await cleanPtyForUI(raw);
+  const cleaned = await cleanPtyForUI(raw, logContext);
   return { raw, cleaned };
 }
