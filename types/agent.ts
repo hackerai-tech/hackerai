@@ -6,6 +6,7 @@ import type { FileAccumulator } from "@/lib/ai/tools/utils/file-accumulator";
 import type { BackgroundProcessTracker } from "@/lib/ai/tools/utils/background-process-tracker";
 import type { PtySessionManager } from "@/lib/ai/tools/utils/pty-session-manager";
 import type { ChatMode, SubscriptionTier } from "./chat";
+import type { AgentNetworkConfig } from "./agent-network";
 import type { CentrifugoSandbox } from "@/lib/ai/tools/utils/centrifugo-sandbox";
 import type { SandboxFallbackInfo } from "@/lib/ai/tools/utils/hybrid-sandbox-manager";
 
@@ -53,6 +54,7 @@ export interface SandboxBootInfo {
   path:
     | "reuse_existing"
     | "create_fresh"
+    | "create_after_network_change"
     | "create_after_version_mismatch"
     | "create_after_expired"
     | "create_after_broken";
@@ -139,6 +141,7 @@ export type SandboxResourceMetricsObserver = (
 export interface SandboxContext {
   userID: string;
   setSandbox: (sandbox: Sandbox) => void;
+  networkConfig?: AgentNetworkConfig | null;
   /** Called once when ensureSandboxConnection actually does work (creates or reconnects). */
   onBoot?: (info: SandboxBootInfo) => void;
 }

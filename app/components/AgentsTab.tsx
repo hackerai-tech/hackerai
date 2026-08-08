@@ -11,6 +11,7 @@ import { useGlobalState } from "@/app/contexts/GlobalState";
 import type { QueueBehavior } from "@/types/chat";
 import { SandboxSelector } from "@/app/components/SandboxSelector";
 import { AgentPermissionSelector } from "@/app/components/AgentPermissionSelector";
+import { AgentNetworkSection } from "@/app/components/AgentNetworkSection";
 
 const AgentsTab = () => {
   const {
@@ -70,6 +71,8 @@ const AgentsTab = () => {
           </div>
         </div>
       </div>
+
+      {subscription !== "free" ? <AgentNetworkSection /> : null}
 
       {/* Queue Messages - Only show for Pro/Ultra/Team users */}
       {subscription !== "free" && (

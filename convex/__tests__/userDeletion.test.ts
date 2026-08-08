@@ -263,6 +263,24 @@ function seedTables(userId = "user_123", otherUserId = "user_other"): Tables {
       { _id: "custom-user", user_id: userId, updated_at: 1 },
       { _id: "custom-other", user_id: otherUserId, updated_at: 1 },
     ],
+    e2b_network_configs: [
+      {
+        _id: "network-user",
+        user_id: userId,
+        inbound_mode: "token_required",
+        outbound_mode: "allow_only",
+        destinations: ["api.example.com"],
+        updated_at: 1,
+      },
+      {
+        _id: "network-other",
+        user_id: otherUserId,
+        inbound_mode: "public",
+        outbound_mode: "unrestricted",
+        destinations: [],
+        updated_at: 1,
+      },
+    ],
     temp_streams: [
       { _id: "temp-stream-user", chat_id: "chat-1", user_id: userId },
       {
