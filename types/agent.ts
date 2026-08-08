@@ -458,6 +458,8 @@ export interface ToolContext {
   todoManager: TodoManager;
   userID: string;
   chatId: string;
+  /** Isolates child-agent PTYs without changing chat ownership/billing scope. */
+  ptyScopeId?: string;
   assistantMessageId?: string;
   /** Trigger.dev run ID when tools execute inside a durable Agent task. */
   triggerRunId?: string;

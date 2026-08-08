@@ -9,6 +9,7 @@ import { api } from "@/convex/_generated/api";
 import { logger } from "@/lib/logger";
 import { fenceAndGetActiveAgentResourcesForUser } from "@/lib/db/actions";
 import { closeAndCancelAgentResources } from "@/lib/api/agent-deletion-cleanup";
+import { cancelSubagentsForUserDeletion } from "@/lib/db/subagents";
 
 type OrganizationMembership = Awaited<
   ReturnType<typeof workos.userManagement.listOrganizationMemberships>
@@ -199,8 +200,23 @@ export const POST = async (req: NextRequest) => {
     }
 
     stage = "close_active_agent_resources";
+    const childCancellation = await cancelSubagentsForUserDeletion(
+      userId,
+      "account_deleted",
+    );
+    if (childCancellation.hasMore) {
+      throw new Error(
+        "Too many validation runs to delete safely. Please stop active validation runs and retry.",
+      );
+    }
     await closeAndCancelAgentResources(
-      activeAgentResources.resources,
+      [
+        ...activeAgentResources.resources,
+        ...childCancellation.triggerRunIds.map((triggerRunId) => ({
+          chatId: "subagent",
+          triggerRunId,
+        })),
+      ],
       "account-deleted",
     );
 

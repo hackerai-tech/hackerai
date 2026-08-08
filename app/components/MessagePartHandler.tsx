@@ -14,6 +14,7 @@ import { SummarizationHandler } from "./tools/SummarizationHandler";
 import type { ChatStatus } from "@/types";
 import type { FileDetails } from "@/types/file";
 import { ReasoningHandler } from "./ReasoningHandler";
+import { SubagentToolHandler } from "./tools/SubagentToolHandler";
 
 interface MessagePartHandlerProps {
   message: UIMessage;
@@ -236,6 +237,14 @@ export const MessagePartHandler = memo(function MessagePartHandler({
 
     case "tool-todo_write":
       return <TodoToolHandler message={message} part={part} status={status} />;
+
+    case "tool-delegate_task":
+    case "tool-create_agent":
+    case "tool-send_message_to_agent":
+    case "tool-wait_for_agents":
+      return (
+        <SubagentToolHandler message={message} part={part} status={status} />
+      );
 
     case "tool-create_note":
       return (

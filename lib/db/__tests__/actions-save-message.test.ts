@@ -75,6 +75,10 @@ describe("fenceAndGetActiveAgentResourcesForUser", () => {
     const { fenceAndGetActiveAgentResourcesForUser, mockMutation, mockQuery } =
       await loadSaveMessageWithMocks();
     const calls: string[] = [];
+    mockQuery.mockResolvedValue({
+      runs: [{ chat_id: "chat-1", trigger_run_id: "child-validation-run-1" }],
+      hasMore: false,
+    });
     mockMutation
       .mockImplementationOnce(async () => {
         calls.push("fence-1");
@@ -103,6 +107,7 @@ describe("fenceAndGetActiveAgentResourcesForUser", () => {
       resources: [
         { chatId: "chat-1", triggerRunId: "run-1" },
         { chatId: "chat-2", approvalSessionId: "approval-session-2" },
+        { chatId: "chat-1", triggerRunId: "child-validation-run-1" },
       ],
       hasMore: false,
     });
@@ -117,7 +122,12 @@ describe("fenceAndGetActiveAgentResourcesForUser", () => {
       expect.anything(),
       expect.objectContaining({ cursor: "cursor-1" }),
     );
-    expect(mockQuery).not.toHaveBeenCalled();
+    expect(mockQuery).toHaveBeenCalledTimes(1);
+    expect(mockQuery.mock.calls[0]?.[1]).toEqual({
+      serviceKey: undefined,
+      userId: "user-1",
+      limit: 100,
+    });
   });
 });
 

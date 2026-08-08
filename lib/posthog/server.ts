@@ -12,6 +12,19 @@ function getClient(): PostHog | null {
   return cachedClient;
 }
 
+export async function getPostHogFeatureFlagForUser(
+  flagKey: string,
+  userId: string,
+): Promise<boolean> {
+  const client = getClient();
+  if (!client) return false;
+  try {
+    return (await client.getFeatureFlag(flagKey, userId)) === true;
+  } catch {
+    return false;
+  }
+}
+
 type LogFields = Record<string, unknown> & {
   userId?: string;
   error?: unknown;

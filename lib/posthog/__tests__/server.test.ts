@@ -2,9 +2,11 @@ import { beforeEach, describe, expect, it, jest } from "@jest/globals";
 
 const mockCapture = jest.fn();
 const mockCaptureException = jest.fn();
+const mockGetFeatureFlag = jest.fn();
 const mockPostHogClient = jest.fn(() => ({
   capture: mockCapture,
   captureException: mockCaptureException,
+  getFeatureFlag: mockGetFeatureFlag,
 }));
 const mockEmitPostHogLog = jest.fn(() => true);
 
@@ -18,14 +20,32 @@ jest.mock("@/lib/posthog/logs", () => ({
   flushPostHogLogs: jest.fn(),
 }));
 
-const { phLogger } = require("../server") as typeof import("../server");
+const { getPostHogFeatureFlagForUser, phLogger } =
+  require("../server") as typeof import("../server");
 
 describe("phLogger", () => {
   beforeEach(() => {
     mockCapture.mockClear();
     mockCaptureException.mockClear();
+    mockGetFeatureFlag.mockReset();
     mockPostHogClient.mockClear();
     mockEmitPostHogLog.mockClear();
+  });
+
+  it("evaluates boolean flags for the authenticated distinct id and fails closed", async () => {
+    mockGetFeatureFlag.mockResolvedValueOnce(true);
+    await expect(
+      getPostHogFeatureFlagForUser("agent-subagents", "user_123"),
+    ).resolves.toBe(true);
+    expect(mockGetFeatureFlag).toHaveBeenCalledWith(
+      "agent-subagents",
+      "user_123",
+    );
+
+    mockGetFeatureFlag.mockRejectedValueOnce(new Error("unavailable"));
+    await expect(
+      getPostHogFeatureFlagForUser("agent-subagents", "user_123"),
+    ).resolves.toBe(false);
   });
 
   it("keeps info and warning records in Logs without duplicating product events", () => {

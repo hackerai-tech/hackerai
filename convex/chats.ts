@@ -29,6 +29,7 @@ import { resolveBranchedFromTitle } from "./lib/branchedChatTitle";
 
 const DELETE_ALL_CHATS_MESSAGE_BATCH_SIZE = 10;
 const DELETE_ALL_CHATS_SUMMARY_BATCH_SIZE = 25;
+const DELETE_CHAT_SUBAGENT_BATCH_SIZE = 10;
 const CHAT_DELETION_FENCE_BATCH_SIZE = 100;
 const MAX_ACTIVE_TRIGGER_RUNS_TO_RETURN = 100;
 const CHAT_SUMMARY_TELEMETRY_CLEANUP_DEFAULT_BATCH_SIZE = 500;
@@ -249,6 +250,42 @@ async function deleteMessageForChatDeletion(
   await ctx.db.delete(message._id);
 }
 
+async function deleteSubagentDataForChat(
+  ctx: MutationCtx,
+  chatId: string,
+): Promise<boolean> {
+  const children = await ctx.db
+    .query("subagent_runs")
+    .withIndex("by_chat_id", (q) => q.eq("chat_id", chatId))
+    .take(DELETE_CHAT_SUBAGENT_BATCH_SIZE + 1);
+
+  for (const child of children.slice(0, DELETE_CHAT_SUBAGENT_BATCH_SIZE)) {
+    if (
+      child.status === "queued" ||
+      child.status === "running" ||
+      child.status === "finalizing"
+    ) {
+      return true;
+    }
+    const transcript = await ctx.db
+      .query("subagent_messages")
+      .withIndex("by_subagent_and_sequence", (q) =>
+        q.eq("subagent_id", child.subagent_id),
+      )
+      .take(DELETE_CHAT_SUBAGENT_BATCH_SIZE + 1);
+    for (const message of transcript.slice(
+      0,
+      DELETE_CHAT_SUBAGENT_BATCH_SIZE,
+    )) {
+      await ctx.db.delete(message._id);
+    }
+    if (transcript.length > DELETE_CHAT_SUBAGENT_BATCH_SIZE) return true;
+    await ctx.db.delete(child._id);
+  }
+  if (children.length > DELETE_CHAT_SUBAGENT_BATCH_SIZE) return true;
+  return false;
+}
+
 async function deleteChatDocument(ctx: MutationCtx, chat: Doc<"chats">) {
   await prepareChatForDeletion(ctx, chat);
 
@@ -269,6 +306,11 @@ async function deleteChatDocument(ctx: MutationCtx, chat: Doc<"chats">) {
       await scheduleDeleteChatDocumentBatch(ctx, chat.id, chat.user_id);
       return;
     }
+  }
+
+  if (await deleteSubagentDataForChat(ctx, chat.id)) {
+    await scheduleDeleteChatDocumentBatch(ctx, chat.id, chat.user_id);
+    return;
   }
 
   if (chat.latest_summary_id) {
@@ -350,6 +392,11 @@ async function deleteNextUserChatBatch(ctx: MutationCtx, userId: string) {
       }
     }
 
+    await scheduleDeleteAllChatsBatch(ctx, userId);
+    return true;
+  }
+
+  if (await deleteSubagentDataForChat(ctx, chat.id)) {
     await scheduleDeleteAllChatsBatch(ctx, userId);
     return true;
   }
@@ -1818,6 +1865,9 @@ export const deleteAllChatsForUser = mutation({
         }
       }
 
+      while (await deleteSubagentDataForChat(ctx, chat.id)) {
+        // Test-hygiene helper intentionally drains the whole chat in one call.
+      }
       await ctx.db.delete(chat._id);
     }
 

@@ -2,7 +2,12 @@ import "@testing-library/jest-dom";
 import React from "react";
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, jest, beforeEach } from "@jest/globals";
-import { isSidebarTerminal, type SidebarContent } from "@/types/chat";
+import {
+  isSidebarTerminal,
+  type SidebarContent,
+  type SidebarSubagentOrigin,
+} from "@/types/chat";
+import { ToolSidebarOriginProvider } from "@/app/contexts/ToolSidebarOriginContext";
 
 let mockSidebarOpen = false;
 let mockSidebarContent: SidebarContent | null = null;
@@ -36,7 +41,7 @@ const terminalContent = {
   toolCallId: "tool-1",
 };
 
-function ToolSidebarHarness() {
+function ToolSidebarButton() {
   const { handleOpenInSidebar, handleKeyDown, isSidebarActive } =
     useToolSidebar({
       toolCallId: "tool-1",
@@ -53,6 +58,16 @@ function ToolSidebarHarness() {
     >
       Open terminal
     </button>
+  );
+}
+
+function ToolSidebarHarness({ origin }: { origin?: SidebarSubagentOrigin }) {
+  return origin ? (
+    <ToolSidebarOriginProvider origin={origin}>
+      <ToolSidebarButton />
+    </ToolSidebarOriginProvider>
+  ) : (
+    <ToolSidebarButton />
   );
 }
 
@@ -84,5 +99,26 @@ describe("useToolSidebar", () => {
     });
 
     expect(mockCloseSidebar).not.toHaveBeenCalled();
+  });
+
+  it("preserves the subagent return destination when opening a child tool", () => {
+    const origin: SidebarSubagentOrigin = {
+      kind: "subagent",
+      subagentId: "sa_child",
+      returnContent: {
+        kind: "subagents",
+        parentMessageId: "parent-message",
+        toolCallId: "delegate-tool",
+        selectedSubagentId: "sa_child",
+      },
+    };
+
+    render(<ToolSidebarHarness origin={origin} />);
+    fireEvent.click(screen.getByRole("button", { name: "Open terminal" }));
+
+    expect(mockOpenSidebar).toHaveBeenCalledWith({
+      ...terminalContent,
+      origin,
+    });
   });
 });
