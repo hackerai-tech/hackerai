@@ -30,6 +30,9 @@ describe("systemPrompt security instructions", () => {
     expect(enabled).not.toContain("vulnerability_report");
     expect(enabled).not.toContain("report_eligible");
     expect(enabled).toContain("result.verdict=confirmed");
+    expect(enabled).toContain(
+      "Do not substitute parent-run tools to repeat the same validation",
+    );
   });
 
   it("answers general questions directly without cybersecurity scope disclaimers", async () => {

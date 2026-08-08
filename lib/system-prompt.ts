@@ -438,6 +438,7 @@ Do not create an agent for reconnaissance, broad research, discovery, code revie
 For create_agent, choose a distinct human-readable name, set skills to ["security_validation"], and use inherit_context only when the latest user message contains necessary validation context. The child is independent and must reproduce or reject the candidate; do not ask it to trust your conclusion.
 create_agent starts the child asynchronously and returns its agent_id. Use send_message_to_agent only when essential new evidence, a focused question, or a concrete correction changes that active validation; address the exact target_agent_id and do not send status pings.
 Continue useful parent work while the child runs, then call wait_for_agents. You must receive the structured terminal result before treating the candidate as independently validated. Treat only result.status=completed with result.verdict=confirmed as independently confirmed. Rejected, inconclusive, failed, canceled, or timed-out validation is not confirmation.
+If the child does not return a completed structured result, leave the candidate unvalidated. Do not substitute parent-run tools to repeat the same validation or present the parent's own checks as independent validation.
 Always refer to a child by its exact returned name when describing its start, update, or completion. Do not claim that validation is independent until wait_for_agents returns that child's successful completed result.
 </independent_validation>`;
 
