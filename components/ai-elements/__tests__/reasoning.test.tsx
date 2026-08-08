@@ -3,6 +3,24 @@ import { render, screen, waitFor } from "@testing-library/react";
 import { Reasoning, ReasoningContent, ReasoningTrigger } from "../reasoning";
 
 describe("Reasoning", () => {
+  it("keeps expanded-content spacing off the collapsible row wrapper", () => {
+    render(
+      <Reasoning open>
+        <ReasoningTrigger />
+        <ReasoningContent>Visible reasoning text</ReasoningContent>
+      </Reasoning>,
+    );
+
+    const trigger = screen.getByRole("button", { name: "Reasoning" });
+    const wrapper = trigger.closest('[data-slot="collapsible"]');
+    const content = screen
+      .getByText("Visible reasoning text")
+      .closest('[data-slot="collapsible-content"]');
+
+    expect(wrapper).not.toHaveClass("space-y-2");
+    expect(content).toHaveClass("mt-2");
+  });
+
   it("prevents long formatted reasoning text from creating page-width overflow", () => {
     render(
       <Reasoning open>
