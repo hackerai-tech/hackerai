@@ -75,6 +75,13 @@ describe("security validation subagent runtime contracts", () => {
     );
   });
 
+  it("settles paid included usage when on-demand usage is disabled", () => {
+    const child = read("trigger/subagent.ts");
+    expect(child).toContain("if (!rateLimitInfo)");
+    expect(child).not.toContain("if (!extraUsageConfig || !rateLimitInfo)");
+    expect(child).toMatch(/deductUsage\([\s\S]*?extraUsageConfig,/);
+  });
+
   it("propagates parent cancellation and refuses a canceled queued child", () => {
     const parent = read("trigger/agent-long.ts");
     const child = read("trigger/subagent.ts");

@@ -386,7 +386,7 @@ export const subagentTask = task({
         usageSettled = true;
         return { costDollars, billingFailure: false };
       }
-      if (!extraUsageConfig || !rateLimitInfo) {
+      if (!rateLimitInfo) {
         return { costDollars, billingFailure: true };
       }
 
