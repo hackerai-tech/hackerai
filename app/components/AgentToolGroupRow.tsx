@@ -126,7 +126,7 @@ export const AgentToolGroupRow = memo(function AgentToolGroupRow({
           )}
         </button>
       </CollapsibleTrigger>
-      <CollapsibleContent className="worked-for-content mt-2 space-y-3">
+      <CollapsibleContent className="agent-tool-group-content worked-for-content mt-2 space-y-3">
         {activities.map((activity) => (
           <AgentActivityRow
             key={activity.id}

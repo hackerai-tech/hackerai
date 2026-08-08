@@ -64,6 +64,7 @@ describe("AgentToolGroupRow", () => {
     const content = document.querySelector('[data-slot="collapsible-content"]');
 
     expect(trigger).toHaveAttribute("aria-expanded", "true");
+    expect(content).toHaveClass("agent-tool-group-content");
     expect(content).toHaveClass("worked-for-content");
     expect(screen.getAllByTestId("grouped-tool-detail")).toHaveLength(2);
 
