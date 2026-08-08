@@ -6,6 +6,7 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
+import { Shimmer } from "@/components/ai-elements/shimmer";
 import { cn } from "@/lib/utils";
 import { BrainIcon, ChevronDownIcon, ChevronRightIcon } from "lucide-react";
 import { createContext, useContext, useEffect, useMemo, useRef } from "react";
@@ -15,6 +16,7 @@ type ReasoningContextValue = {
   isOpen: boolean;
   setIsOpen: (open: boolean) => void;
   isStreaming: boolean;
+  isActive: boolean;
 };
 
 const ReasoningContext = createContext<ReasoningContextValue | null>(null);
@@ -29,12 +31,14 @@ export const useReasoning = () => {
 
 export type ReasoningProps = ComponentProps<typeof Collapsible> & {
   isStreaming?: boolean;
+  isActive?: boolean;
   collapseWhenInactive?: boolean;
 };
 
 export function Reasoning({
   className,
   isStreaming = false,
+  isActive = isStreaming,
   collapseWhenInactive = true,
   open,
   defaultOpen = false,
@@ -57,8 +61,8 @@ export function Reasoning({
   }, [collapseWhenInactive, isStreaming, setIsOpen]);
 
   const contextValue = useMemo(
-    () => ({ isOpen: !!isOpen, setIsOpen, isStreaming }),
-    [isOpen, setIsOpen, isStreaming],
+    () => ({ isOpen: !!isOpen, setIsOpen, isStreaming, isActive }),
+    [isOpen, setIsOpen, isStreaming, isActive],
   );
 
   return (
@@ -78,19 +82,20 @@ export function Reasoning({
 export type ReasoningTriggerProps = ComponentProps<
   typeof CollapsibleTrigger
 > & {
-  getThinkingMessage?: (isStreaming: boolean) => ReactNode;
+  getThinkingMessage?: (isActive: boolean) => ReactNode;
 };
 
-const defaultGetThinkingMessage = (isStreaming: boolean): ReactNode =>
-  isStreaming ? "Thinking..." : "Reasoning";
+const defaultGetThinkingMessage = (isActive: boolean): ReactNode =>
+  isActive ? "Thinking..." : "Reasoning";
 
 export function ReasoningTrigger({
   className,
   getThinkingMessage = defaultGetThinkingMessage,
   ...props
 }: ReasoningTriggerProps) {
-  const { isOpen, isStreaming } = useReasoning();
+  const { isOpen, isActive } = useReasoning();
   const ChevronIcon = isOpen ? ChevronDownIcon : ChevronRightIcon;
+  const thinkingMessage = getThinkingMessage(isActive);
 
   return (
     <CollapsibleTrigger
@@ -101,10 +106,17 @@ export function ReasoningTrigger({
       {...props}
     >
       <BrainIcon className="size-4 shrink-0" />
-      <span className="min-w-0 truncate text-left">
-        {getThinkingMessage(isStreaming)}
-      </span>
-      {isStreaming && (
+      {isActive && typeof thinkingMessage === "string" ? (
+        <Shimmer
+          as="span"
+          className="min-w-0 truncate text-left text-sm leading-5"
+        >
+          {thinkingMessage}
+        </Shimmer>
+      ) : (
+        <span className="min-w-0 truncate text-left">{thinkingMessage}</span>
+      )}
+      {isActive && (
         <span
           className="size-2 shrink-0 rounded-full bg-foreground"
           aria-hidden="true"
@@ -126,14 +138,14 @@ export function ReasoningContent({
   children,
   ...props
 }: ReasoningContentProps) {
-  const { isStreaming } = useReasoning();
+  const { isActive } = useReasoning();
   const contentRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    if (isStreaming && contentRef.current) {
+    if (isActive && contentRef.current) {
       contentRef.current.scrollTop = contentRef.current.scrollHeight;
     }
-  }, [children, isStreaming]);
+  }, [children, isActive]);
 
   return (
     <CollapsibleContent

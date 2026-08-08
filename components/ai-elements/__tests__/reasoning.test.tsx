@@ -43,7 +43,7 @@ describe("Reasoning", () => {
     expect(chevron).toHaveClass("touch-device:!opacity-100");
   });
 
-  it("uses a quiet static streaming indicator without a ping animation", () => {
+  it("shimmers the label with a quiet static indicator while reasoning is active", () => {
     render(
       <Reasoning isStreaming>
         <ReasoningTrigger />
@@ -53,7 +53,27 @@ describe("Reasoning", () => {
     expect(screen.getByTestId("reasoning-streaming-indicator")).not.toHaveClass(
       "animate-ping",
     );
+    expect(screen.getByText("Thinking...")).toHaveClass("animate-text-shimmer");
     expect(document.querySelector(".animate-ping")).not.toBeInTheDocument();
+  });
+
+  it("can stay open without shimmering after reasoning activity stops", async () => {
+    render(
+      <Reasoning isStreaming isActive={false}>
+        <ReasoningTrigger />
+        <ReasoningContent>Visible reasoning text</ReasoningContent>
+      </Reasoning>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText("Visible reasoning text")).toBeVisible();
+    });
+    expect(screen.getByText("Reasoning")).not.toHaveClass(
+      "animate-text-shimmer",
+    );
+    expect(
+      screen.queryByTestId("reasoning-streaming-indicator"),
+    ).not.toBeInTheDocument();
   });
 
   it("points right when closed and down when expanded", () => {
