@@ -66,10 +66,7 @@ export function Reasoning({
       <Collapsible
         open={isOpen}
         onOpenChange={setIsOpen}
-        className={cn(
-          "not-prose w-full min-w-0 max-w-full space-y-2",
-          className,
-        )}
+        className={cn("not-prose w-full min-w-0 max-w-full", className)}
         {...props}
       >
         {children}
@@ -97,26 +94,27 @@ export function ReasoningTrigger({
   return (
     <CollapsibleTrigger
       className={cn(
-        "flex w-full items-center gap-2 text-muted-foreground text-sm transition-colors hover:text-foreground",
+        "group flex w-full max-w-full items-center gap-2 text-muted-foreground text-sm transition-colors hover:text-foreground desktop:w-fit",
         className,
       )}
       {...props}
     >
-      <BrainIcon className="size-4" />
-      <span className="flex-1 text-left">
+      <BrainIcon className="size-4 shrink-0" />
+      <span className="min-w-0 truncate text-left">
         {getThinkingMessage(isStreaming)}
       </span>
       {isStreaming && (
-        <span className="relative flex items-center">
+        <span className="relative flex shrink-0 items-center">
           <span className="absolute inline-flex h-2 w-2 animate-ping rounded-full bg-foreground/50 opacity-75" />
           <span className="relative inline-flex h-2 w-2 rounded-full bg-foreground" />
         </span>
       )}
       <ChevronDownIcon
         className={cn(
-          "size-4 transition-transform",
+          "size-4 shrink-0 opacity-100 transition-[transform,opacity] desktop:opacity-0 desktop:group-hover:opacity-100 desktop:group-focus-visible:opacity-100 touch-device:!opacity-100",
           isOpen ? "rotate-180" : "rotate-0",
         )}
+        data-testid="reasoning-chevron"
       />
     </CollapsibleTrigger>
   );

@@ -5,6 +5,7 @@ import {
   findMessageTimelineAnchorIndex,
   stabilizeChatTimelineRows,
   type AgentActivityTimelineRow,
+  type AgentToolGroupTimelineRow,
 } from "../message-timeline-rows";
 import type { ChatMessage } from "@/types";
 
@@ -147,6 +148,81 @@ describe("deriveChatTimelineRows", () => {
     ]);
   });
 
+  it("replaces a completed prior tool step with one animated group", () => {
+    const message = agentMessage([
+      { type: "step-start" },
+      {
+        type: "tool-read_file",
+        toolCallId: "read-1",
+        input: { path: "one.ts" },
+        output: "contents",
+        state: "output-available",
+      },
+      {
+        type: "tool-shell",
+        toolCallId: "shell-1",
+        input: { command: "pwd" },
+        output: "done",
+        state: "output-available",
+      },
+      { type: "step-start" },
+      { type: "reasoning", text: "Starting the next step" },
+    ] as ChatMessage["parts"]);
+
+    const rows = deriveChatTimelineRows({
+      messages: [message],
+      status: "streaming",
+      lastAssistantMessageIndex: 0,
+      expandedAgentMessageIds: new Set(),
+    });
+    const group = rows.find(
+      (row): row is AgentToolGroupTimelineRow =>
+        row.kind === "agent-tool-group",
+    );
+
+    expect(rows.map((row) => row.kind)).toEqual([
+      "agent-work-header",
+      "agent-tool-group",
+      "agent-activity",
+      "message",
+    ]);
+    expect(group).toMatchObject({
+      animateOnMount: true,
+      summary: "Read a file, ran a command",
+    });
+    expect(group?.activities).toHaveLength(2);
+  });
+
+  it("does not group a settled run containing a failed tool", () => {
+    const message = agentMessage([
+      {
+        type: "tool-read_file",
+        toolCallId: "read-1",
+        state: "output-available",
+      },
+      {
+        type: "tool-shell",
+        toolCallId: "shell-1",
+        state: "output-error",
+        errorText: "command failed",
+      },
+    ] as ChatMessage["parts"]);
+
+    const rows = deriveChatTimelineRows({
+      messages: [message],
+      status: "ready",
+      lastAssistantMessageIndex: 0,
+      expandedAgentMessageIds: new Set(),
+    });
+
+    expect(rows.map((row) => row.kind)).toEqual([
+      "agent-work-header",
+      "agent-activity",
+      "agent-activity",
+      "message",
+    ]);
+  });
+
   it("keeps reasoning-only activity reachable from the settled header", () => {
     const message = agentMessage([
       { type: "reasoning", text: "analysis" },
@@ -274,6 +350,84 @@ describe("deriveChatTimelineRows", () => {
 
     expect(second).toBe(first);
     expect(second.result).toBe(first.result);
+  });
+
+  it("stabilizes an unchanged completed tool group", () => {
+    const message = agentMessage([
+      {
+        type: "tool-read_file",
+        toolCallId: "read-1",
+        state: "output-available",
+      },
+      {
+        type: "tool-shell",
+        toolCallId: "shell-1",
+        state: "output-available",
+      },
+    ] as ChatMessage["parts"]);
+    const derive = (nextMessage: ChatMessage) =>
+      deriveChatTimelineRows({
+        messages: [nextMessage],
+        status: "ready",
+        lastAssistantMessageIndex: 0,
+        expandedAgentMessageIds: new Set(),
+      });
+
+    const first = stabilizeChatTimelineRows(
+      derive(message),
+      createStableChatTimelineRowsState(),
+    );
+    const second = stabilizeChatTimelineRows(derive(message), first);
+    const firstGroup = first.result.find(
+      (row) => row.kind === "agent-tool-group",
+    );
+    const secondGroup = second.result.find(
+      (row) => row.kind === "agent-tool-group",
+    );
+
+    expect(firstGroup).toBeDefined();
+    expect(secondGroup).toBe(firstGroup);
+  });
+
+  it("replaces a stabilized tool group when an activity changes", () => {
+    const message = agentMessage([
+      {
+        type: "tool-read_file",
+        toolCallId: "read-1",
+        output: "first",
+        state: "output-available",
+      },
+      {
+        type: "tool-shell",
+        toolCallId: "shell-1",
+        state: "output-available",
+      },
+    ] as ChatMessage["parts"]);
+    const changedMessage = {
+      ...message,
+      parts: message.parts.map((part) =>
+        (part as { toolCallId?: string }).toolCallId === "read-1"
+          ? { ...part, output: "changed" }
+          : part,
+      ),
+    } as ChatMessage;
+    const derive = (nextMessage: ChatMessage) =>
+      deriveChatTimelineRows({
+        messages: [nextMessage],
+        status: "ready",
+        lastAssistantMessageIndex: 0,
+        expandedAgentMessageIds: new Set(),
+      });
+
+    const first = stabilizeChatTimelineRows(
+      derive(message),
+      createStableChatTimelineRowsState(),
+    );
+    const second = stabilizeChatTimelineRows(derive(changedMessage), first);
+
+    expect(
+      second.result.find((row) => row.kind === "agent-tool-group"),
+    ).not.toBe(first.result.find((row) => row.kind === "agent-tool-group"));
   });
 
   it("keeps settled rows stable while the active message changes", () => {

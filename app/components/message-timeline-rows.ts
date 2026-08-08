@@ -1,6 +1,7 @@
 import type { ChatMessage, ChatStatus } from "@/types";
 import {
   projectAgentWorkParts,
+  projectAgentWorkTimelineItems,
   splitWorkedForParts,
   type AgentWorkActivity,
 } from "./worked-for-parts";
@@ -34,8 +35,20 @@ export type AgentActivityTimelineRow = BaseTimelineRow &
     terminalChunksByToolCallId: Map<string, readonly string[]>;
   };
 
+export type AgentToolGroupTimelineRow = BaseTimelineRow & {
+  kind: "agent-tool-group";
+  activities: AgentWorkActivity[];
+  animateOnMount: boolean;
+  isLastMessage: boolean;
+  summary: string;
+  terminalChunksByToolCallId: Map<string, readonly string[]>;
+};
+
 export type ChatTimelineRow =
-  MessageTimelineRow | AgentWorkHeaderTimelineRow | AgentActivityTimelineRow;
+  | MessageTimelineRow
+  | AgentWorkHeaderTimelineRow
+  | AgentActivityTimelineRow
+  | AgentToolGroupTimelineRow;
 
 export type StableChatTimelineRowsState = {
   byId: ReadonlyMap<string, ChatTimelineRow>;
@@ -126,6 +139,12 @@ export function deriveChatTimelineRows({
     const canToggle = !isTiming && hasFinalAnswer;
     const expanded =
       isTiming || !hasFinalAnswer || expandedAgentMessageIds.has(message.id);
+    const timelineItems = projectAgentWorkTimelineItems({
+      activities: projection.activities,
+      messageSettled: !isTiming,
+      parts: message.parts,
+      workPartIndexes,
+    });
 
     rows.push({
       kind: "agent-work-header",
@@ -146,7 +165,23 @@ export function deriveChatTimelineRows({
     });
 
     if (expanded) {
-      for (const activity of projection.activities) {
+      for (const item of timelineItems) {
+        if (item.kind === "tool-group") {
+          rows.push({
+            kind: "agent-tool-group",
+            id: `work:${message.id}:${item.id}`,
+            message,
+            messageIndex,
+            activities: item.activities,
+            animateOnMount: isTiming,
+            isLastMessage: messageIndex === messages.length - 1,
+            summary: item.summary,
+            terminalChunksByToolCallId: projection.terminalChunksByToolCallId,
+          });
+          continue;
+        }
+
+        const { kind: _kind, ...activity } = item;
         rows.push({
           kind: "agent-activity",
           message,
@@ -251,6 +286,27 @@ function isChatTimelineRowUnchanged(
         next.keepLatestReasoningOpenDuringStreaming &&
       previous.deferReasoningCollapseUntilParent ===
         next.deferReasoningCollapseUntilParent
+    );
+  }
+
+  if (
+    previous.kind === "agent-tool-group" &&
+    next.kind === "agent-tool-group"
+  ) {
+    return (
+      previous.message === next.message &&
+      previous.animateOnMount === next.animateOnMount &&
+      previous.isLastMessage === next.isLastMessage &&
+      previous.summary === next.summary &&
+      previous.activities.length === next.activities.length &&
+      previous.activities.every((activity, index) => {
+        const nextActivity = next.activities[index];
+        return (
+          activity.id === nextActivity?.id &&
+          activity.part === nextActivity.part &&
+          activity.partIndex === nextActivity.partIndex
+        );
+      })
     );
   }
 
