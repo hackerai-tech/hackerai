@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useAction } from "convex/react";
 import { AgentProxySection } from "../AgentProxySection";
@@ -44,9 +44,27 @@ describe("AgentProxySection", () => {
     expect(await screen.findByDisplayValue("proxy.example.com")).toBeVisible();
     expect(screen.getByPlaceholderText(/Saved securely/)).toHaveValue("");
     expect(
-      screen.getByText(/Web search and URL-reading tools are not included/),
+      screen.getByText(/Web Search and URL Reader stay direct/),
     ).toBeVisible();
     expect(screen.queryByText("secret-value")).not.toBeInTheDocument();
+  });
+
+  it("keeps a new proxy compact until the user enables and configures it", async () => {
+    getProxyConfig.mockResolvedValueOnce(null);
+    const user = userEvent.setup();
+    render(<AgentProxySection />);
+
+    expect(await screen.findByText("Cloud Agent Proxy")).toBeVisible();
+    expect(screen.queryByLabelText("Proxy Server")).not.toBeInTheDocument();
+
+    await user.click(screen.getByLabelText("Enable Cloud Agent proxy"));
+
+    expect(screen.getByLabelText("Proxy Server")).toBeVisible();
+    expect(screen.queryByLabelText(/Username/)).not.toBeInTheDocument();
+    await user.click(
+      screen.getByRole("button", { name: "Authentication & Advanced" }),
+    );
+    expect(screen.getByLabelText(/Username/)).toBeVisible();
   });
 
   it("saves before testing and displays only the returned exit IP", async () => {
@@ -59,13 +77,15 @@ describe("AgentProxySection", () => {
     render(<AgentProxySection />);
 
     await screen.findByDisplayValue("proxy.example.com");
-    await user.click(screen.getByRole("button", { name: "Test connection" }));
+    await user.click(screen.getByRole("button", { name: "Save & Test" }));
 
     await waitFor(() => expect(saveProxyConfig).toHaveBeenCalledTimes(1));
     expect(fetchMock).toHaveBeenCalledWith("/api/proxy-config/test", {
       method: "POST",
     });
-    expect(await screen.findByText(/Exit IP 203\.0\.113\.42/)).toBeVisible();
+    expect(
+      await screen.findByText(/Connected through 203\.0\.113\.42/),
+    ).toBeVisible();
     expect(saveProxyConfig).toHaveBeenCalledWith(
       expect.not.objectContaining({ password: expect.anything() }),
     );
@@ -82,8 +102,8 @@ describe("AgentProxySection", () => {
     const user = userEvent.setup();
     render(<AgentProxySection />);
 
-    const hostInput = await screen.findByLabelText("Host");
-    await user.click(screen.getByRole("button", { name: "Save proxy" }));
+    const hostInput = await screen.findByLabelText("Proxy Server");
+    await user.click(screen.getByRole("button", { name: "Save & Test" }));
 
     expect(hostInput).toBeDisabled();
     expect(screen.getByLabelText("Enable Cloud Agent proxy")).toBeDisabled();
@@ -93,5 +113,25 @@ describe("AgentProxySection", () => {
     resolveSave(savedConfig);
     await waitFor(() => expect(hostInput).toBeEnabled());
     expect(hostInput).toHaveValue("proxy.example.com");
+  });
+
+  it("confirms before removing saved proxy credentials", async () => {
+    const user = userEvent.setup();
+    render(<AgentProxySection />);
+
+    await screen.findByDisplayValue("proxy.example.com");
+    await user.click(screen.getByRole("button", { name: "Remove Proxy" }));
+
+    expect(deleteProxyConfig).not.toHaveBeenCalled();
+    const dialog = screen.getByRole("alertdialog");
+    expect(
+      within(dialog).getByText(/deletes the saved proxy address/),
+    ).toBeVisible();
+    await user.click(
+      within(dialog).getByRole("button", { name: "Remove Proxy" }),
+    );
+
+    await waitFor(() => expect(deleteProxyConfig).toHaveBeenCalledTimes(1));
+    expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
   });
 });

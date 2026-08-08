@@ -16,15 +16,21 @@ test("paid users can open Cloud Agent proxy settings", async ({ page }) => {
   await page.getByTestId("settings-tab-agents").click();
 
   await expect(
-    page.getByRole("heading", { name: "Cloud Agent proxy" }),
+    page.getByRole("heading", { name: "Cloud Agent Proxy" }),
   ).toBeVisible();
-  await expect(page.getByLabel("Host", { exact: true })).toBeVisible();
-  await expect(page.getByRole("button", { name: "Save proxy" })).toBeVisible();
+  const proxyServer = page.getByLabel("Proxy Server", { exact: true });
+  if (!(await proxyServer.isVisible())) {
+    await page.getByLabel("Enable Cloud Agent proxy").click();
+  }
+  await expect(proxyServer).toBeVisible();
+  await expect(page.getByLabel("Port", { exact: true })).toBeVisible();
   await expect(
-    page.getByRole("button", { name: "Test connection" }),
-  ).toBeDisabled();
+    page.getByRole("button", { name: /Save & Test|Save Changes/ }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "Authentication & Advanced" }).click();
+  await expect(page.getByLabel(/Username/)).toBeVisible();
   await expect(
-    page.getByText(/Web search and URL-reading tools are not included/),
+    page.getByText(/Web Search and URL Reader stay direct/),
   ).toBeVisible();
   await expect(
     page.getByText(/Build Error|Unhandled Runtime Error|Application error/),

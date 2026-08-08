@@ -2,10 +2,25 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useAction } from "convex/react";
-import { Loader2, Network, Trash2 } from "lucide-react";
+import { ChevronDown, Loader2, Network, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "@/convex/_generated/api";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@/components/ui/collapsible";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
@@ -17,6 +32,7 @@ import {
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { captureAuthenticatedEvent } from "@/lib/analytics/client";
+import { cn } from "@/lib/utils";
 import type { AgentProxyProtocol, AgentProxyPublicConfig } from "@/types";
 
 type ProxyFormState = {
@@ -65,6 +81,8 @@ export function AgentProxySection() {
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const [isTesting, setIsTesting] = useState(false);
+  const [isAdvancedOpen, setIsAdvancedOpen] = useState(false);
+  const [isRemoveDialogOpen, setIsRemoveDialogOpen] = useState(false);
   const [testResult, setTestResult] = useState<{
     exitIp: string;
     durationMs: number;
@@ -87,6 +105,14 @@ export function AgentProxySection() {
         setForm(formFromConfig(config));
         setHasSavedConfig(true);
         setHasSavedPassword(config.hasPassword);
+        setIsAdvancedOpen(
+          Boolean(
+            config.username ||
+            config.hasPassword ||
+            config.bypassHosts.length > 0 ||
+            (config.protocol === "socks5" && !config.proxyDns),
+          ),
+        );
       })
       .catch(() => {
         if (!cancelled) toast.error("Could not load proxy settings");
@@ -208,6 +234,8 @@ export function AgentProxySection() {
       setHasSavedPassword(false);
       setClearPassword(false);
       setTestResult(null);
+      setIsAdvancedOpen(false);
+      setIsRemoveDialogOpen(false);
       captureAuthenticatedEvent("agent_proxy_settings_deleted", {
         surface: "agents_tab",
       });
@@ -222,11 +250,13 @@ export function AgentProxySection() {
   if (isLoading) {
     return (
       <div className="flex items-center gap-2 py-6 text-sm text-muted-foreground">
-        <Loader2 className="size-4 animate-spin" />
+        <Loader2 className="size-4 animate-spin" aria-hidden="true" />
         Loading proxy settings…
       </div>
     );
   }
+
+  const showConfiguration = form.enabled || hasSavedConfig;
 
   return (
     <section
@@ -241,17 +271,12 @@ export function AgentProxySection() {
               aria-hidden="true"
             />
             <h3 id="agent-proxy-heading" className="font-medium">
-              Cloud Agent proxy
+              Cloud Agent Proxy
             </h3>
           </div>
           <p className="max-w-xl text-sm text-muted-foreground">
-            Route Cloud Agent terminal and browser traffic through your own HTTP
-            or SOCKS5 proxy. Web search and URL-reading tools are not included.
-          </p>
-          <p className="max-w-xl text-xs text-muted-foreground">
-            Credentials are encrypted before storage, but proxy environment
-            variables remain visible to processes inside your Cloud Agent
-            sandbox.
+            Use your own HTTP or SOCKS5 proxy for Cloud Agent terminal and
+            browser traffic.
           </p>
         </div>
         <Switch
@@ -262,159 +287,261 @@ export function AgentProxySection() {
         />
       </div>
 
-      <div className="grid gap-4 sm:grid-cols-2">
-        <div className="space-y-2">
-          <Label htmlFor="agent-proxy-protocol">Protocol</Label>
-          <Select
-            value={form.protocol}
-            disabled={isBusy}
-            onValueChange={(value) =>
-              updateForm("protocol", value as AgentProxyProtocol)
-            }
-          >
-            <SelectTrigger id="agent-proxy-protocol">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="http">HTTP / HTTPS</SelectItem>
-              <SelectItem value="socks5">SOCKS5</SelectItem>
-            </SelectContent>
-          </Select>
-        </div>
-        <div className="grid grid-cols-[minmax(0,1fr)_7rem] gap-3">
+      {showConfiguration ? (
+        <div className="space-y-4 rounded-lg border bg-muted/20 p-4">
           <div className="space-y-2">
-            <Label htmlFor="agent-proxy-host">Host</Label>
-            <Input
-              id="agent-proxy-host"
-              value={form.host}
-              onChange={(event) => updateForm("host", event.target.value)}
-              disabled={isBusy}
-              placeholder="proxy.example.com"
-              autoComplete="off"
-            />
+            <Label htmlFor="agent-proxy-host">Proxy Server</Label>
+            <div className="grid grid-cols-[minmax(0,1fr)_6rem] gap-2 sm:grid-cols-[8rem_minmax(0,1fr)_6rem]">
+              <Select
+                value={form.protocol}
+                disabled={isBusy}
+                onValueChange={(value) =>
+                  updateForm("protocol", value as AgentProxyProtocol)
+                }
+              >
+                <SelectTrigger
+                  id="agent-proxy-protocol"
+                  aria-label="Protocol"
+                  className="col-span-2 sm:col-span-1"
+                >
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="http">HTTP(S)</SelectItem>
+                  <SelectItem value="socks5">SOCKS5</SelectItem>
+                </SelectContent>
+              </Select>
+              <Input
+                id="agent-proxy-host"
+                name="agent-proxy-host"
+                value={form.host}
+                onChange={(event) => updateForm("host", event.target.value)}
+                disabled={isBusy}
+                placeholder="e.g. proxy.example.com…"
+                autoComplete="off"
+                spellCheck={false}
+              />
+              <Input
+                id="agent-proxy-port"
+                name="agent-proxy-port"
+                aria-label="Port"
+                type="number"
+                min={1}
+                max={65_535}
+                value={form.port}
+                onChange={(event) => updateForm("port", event.target.value)}
+                disabled={isBusy}
+                inputMode="numeric"
+                autoComplete="off"
+              />
+            </div>
           </div>
-          <div className="space-y-2">
-            <Label htmlFor="agent-proxy-port">Port</Label>
-            <Input
-              id="agent-proxy-port"
-              type="number"
-              min={1}
-              max={65_535}
-              value={form.port}
-              onChange={(event) => updateForm("port", event.target.value)}
-              disabled={isBusy}
-              inputMode="numeric"
-            />
-          </div>
-        </div>
-        <div className="space-y-2">
-          <Label htmlFor="agent-proxy-username">Username (optional)</Label>
-          <Input
-            id="agent-proxy-username"
-            value={form.username}
-            onChange={(event) => updateForm("username", event.target.value)}
-            disabled={isBusy}
-            autoComplete="off"
-          />
-        </div>
-        <div className="space-y-2">
-          <Label htmlFor="agent-proxy-password">Password (optional)</Label>
-          <Input
-            id="agent-proxy-password"
-            type="password"
-            value={form.password}
-            disabled={isBusy}
-            onChange={(event) => {
-              updateForm("password", event.target.value);
-              if (event.target.value) setClearPassword(false);
-            }}
-            placeholder={
-              hasSavedPassword ? "Saved securely — enter to replace" : ""
-            }
-            autoComplete="new-password"
-          />
-          {hasSavedPassword && (
-            <Button
-              type="button"
-              variant="link"
-              size="sm"
-              className="h-auto px-0 text-xs"
-              disabled={isBusy}
-              onClick={() => {
-                setClearPassword((current) => !current);
-                setForm((current) => ({ ...current, password: "" }));
-              }}
-            >
-              {clearPassword ? "Keep saved password" : "Remove saved password"}
-            </Button>
-          )}
-        </div>
-      </div>
 
-      {form.protocol === "socks5" && (
-        <div className="flex items-center justify-between gap-4 rounded-lg bg-muted/50 p-3">
-          <div>
-            <Label htmlFor="agent-proxy-dns">Proxy DNS lookups</Label>
-            <p className="text-xs text-muted-foreground">
-              Resolve destination hostnames through the SOCKS5 proxy.
-            </p>
-          </div>
-          <Switch
-            id="agent-proxy-dns"
-            checked={form.proxyDns}
-            onCheckedChange={(checked) => updateForm("proxyDns", checked)}
-            disabled={isBusy}
-          />
+          <Collapsible open={isAdvancedOpen} onOpenChange={setIsAdvancedOpen}>
+            <CollapsibleTrigger asChild>
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className="-ml-2 text-muted-foreground"
+                disabled={isBusy}
+              >
+                Authentication & Advanced
+                <ChevronDown
+                  className={cn(
+                    "ml-2 size-4 transition-transform",
+                    isAdvancedOpen && "rotate-180",
+                  )}
+                  aria-hidden="true"
+                />
+              </Button>
+            </CollapsibleTrigger>
+            <CollapsibleContent className="space-y-4 pt-2">
+              <div className="grid gap-4 sm:grid-cols-2">
+                <div className="space-y-2">
+                  <Label htmlFor="agent-proxy-username">
+                    Username{" "}
+                    <span className="text-muted-foreground">(Optional)</span>
+                  </Label>
+                  <Input
+                    id="agent-proxy-username"
+                    name="agent-proxy-username"
+                    value={form.username}
+                    onChange={(event) =>
+                      updateForm("username", event.target.value)
+                    }
+                    disabled={isBusy}
+                    autoComplete="off"
+                    spellCheck={false}
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="agent-proxy-password">
+                    Password{" "}
+                    <span className="text-muted-foreground">(Optional)</span>
+                  </Label>
+                  <Input
+                    id="agent-proxy-password"
+                    name="agent-proxy-password"
+                    type="password"
+                    value={form.password}
+                    disabled={isBusy}
+                    onChange={(event) => {
+                      updateForm("password", event.target.value);
+                      if (event.target.value) setClearPassword(false);
+                    }}
+                    placeholder={
+                      hasSavedPassword
+                        ? "Saved securely — enter to replace…"
+                        : undefined
+                    }
+                    autoComplete="new-password"
+                  />
+                  {hasSavedPassword ? (
+                    <Button
+                      type="button"
+                      variant="link"
+                      size="sm"
+                      className="h-auto px-0 text-xs"
+                      disabled={isBusy}
+                      onClick={() => {
+                        setClearPassword((current) => !current);
+                        setForm((current) => ({ ...current, password: "" }));
+                      }}
+                    >
+                      {clearPassword
+                        ? "Keep Saved Password"
+                        : "Remove Saved Password"}
+                    </Button>
+                  ) : null}
+                </div>
+              </div>
+
+              {form.protocol === "socks5" ? (
+                <div className="flex items-center justify-between gap-4 rounded-lg bg-muted/50 p-3">
+                  <div>
+                    <Label htmlFor="agent-proxy-dns">Proxy DNS Lookups</Label>
+                    <p className="text-xs text-muted-foreground">
+                      Resolve destination hostnames through the SOCKS5 proxy.
+                    </p>
+                  </div>
+                  <Switch
+                    id="agent-proxy-dns"
+                    checked={form.proxyDns}
+                    onCheckedChange={(checked) =>
+                      updateForm("proxyDns", checked)
+                    }
+                    disabled={isBusy}
+                  />
+                </div>
+              ) : null}
+
+              <div className="space-y-2">
+                <Label htmlFor="agent-proxy-bypass">
+                  Bypass Hosts{" "}
+                  <span className="text-muted-foreground">(Optional)</span>
+                </Label>
+                <Input
+                  id="agent-proxy-bypass"
+                  name="agent-proxy-bypass"
+                  value={form.bypassHosts}
+                  onChange={(event) =>
+                    updateForm("bypassHosts", event.target.value)
+                  }
+                  disabled={isBusy}
+                  placeholder="e.g. internal.example.com, *.corp.example.com…"
+                  autoComplete="off"
+                  spellCheck={false}
+                />
+                <p className="text-xs text-muted-foreground">
+                  Separate hostnames with commas. Localhost always stays direct.
+                </p>
+              </div>
+
+              <p className="text-xs text-muted-foreground">
+                Credentials are stored in WorkOS Vault and exposed only inside
+                your Cloud Agent sandbox.
+              </p>
+            </CollapsibleContent>
+          </Collapsible>
+
+          <p className="text-xs text-muted-foreground">
+            Applies to terminal and browser traffic. Web Search and URL Reader
+            stay direct.
+          </p>
         </div>
-      )}
+      ) : null}
 
-      <div className="space-y-2">
-        <Label htmlFor="agent-proxy-bypass">Bypass hosts (optional)</Label>
-        <Input
-          id="agent-proxy-bypass"
-          value={form.bypassHosts}
-          onChange={(event) => updateForm("bypassHosts", event.target.value)}
-          disabled={isBusy}
-          placeholder="internal.example.com, *.corp.example.com"
-          autoComplete="off"
-        />
-        <p className="text-xs text-muted-foreground">
-          Comma-separated hostnames. Localhost is always bypassed.
-        </p>
-      </div>
-
-      {testResult && (
-        <div className="rounded-lg border border-green-500/30 bg-green-500/10 px-3 py-2 text-sm text-green-800 dark:text-green-200">
-          Connected · Exit IP {testResult.exitIp} · {testResult.durationMs} ms
-        </div>
-      )}
-
-      <div className="flex flex-wrap items-center gap-2">
-        <Button onClick={handleSave} disabled={isBusy}>
-          {isSaving && <Loader2 className="mr-2 size-4 animate-spin" />}
-          Save proxy
-        </Button>
-        <Button
-          variant="outline"
-          onClick={handleTest}
-          disabled={isBusy || !form.enabled}
+      {testResult ? (
+        <div
+          className="rounded-lg border border-green-500/30 bg-green-500/10 px-3 py-2 text-sm text-green-800 dark:text-green-200"
+          aria-live="polite"
         >
-          {isTesting && <Loader2 className="mr-2 size-4 animate-spin" />}
-          Test connection
-        </Button>
-        {hasSavedConfig && (
+          Connected through {testResult.exitIp} · {testResult.durationMs} ms
+        </div>
+      ) : null}
+
+      {showConfiguration ? (
+        <div className="flex flex-wrap items-center gap-2">
           <Button
-            variant="ghost"
-            size="sm"
-            className="text-muted-foreground"
-            onClick={handleDelete}
+            onClick={form.enabled ? handleTest : handleSave}
             disabled={isBusy}
           >
-            <Trash2 className="mr-2 size-4" />
-            Remove
+            {isBusy ? (
+              <Loader2
+                className="mr-2 size-4 animate-spin"
+                aria-hidden="true"
+              />
+            ) : null}
+            {isTesting
+              ? "Testing…"
+              : isSaving
+                ? "Saving…"
+                : form.enabled
+                  ? "Save & Test"
+                  : "Save Changes"}
           </Button>
-        )}
-      </div>
+          {hasSavedConfig ? (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="text-muted-foreground"
+              onClick={() => setIsRemoveDialogOpen(true)}
+              disabled={isBusy}
+            >
+              <Trash2 className="mr-2 size-4" aria-hidden="true" />
+              Remove Proxy
+            </Button>
+          ) : null}
+        </div>
+      ) : null}
+
+      <AlertDialog
+        open={isRemoveDialogOpen}
+        onOpenChange={(open) => {
+          if (!isBusy) setIsRemoveDialogOpen(open);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Remove Cloud Agent Proxy?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This deletes the saved proxy address and credentials. Cloud Agent
+              traffic will connect directly.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={isBusy}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={handleDelete}
+              disabled={isBusy}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              {isSaving ? "Removing…" : "Remove Proxy"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </section>
   );
 }
