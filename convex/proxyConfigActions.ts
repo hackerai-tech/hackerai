@@ -4,7 +4,8 @@ import { WorkOS } from "@workos-inc/node";
 import { ConvexError, v } from "convex/values";
 import { isIP } from "node:net";
 
-import { action } from "./_generated/server";
+import { internal } from "./_generated/api";
+import { action, type ActionCtx } from "./_generated/server";
 import { validateServiceKey } from "./lib/utils";
 import { hasPaidEntitlement } from "../lib/auth/entitlements";
 import {
@@ -88,6 +89,24 @@ function requirePaidProxyAccess(identity: unknown): void {
       message: "A paid Cloud Agent plan is required",
     });
   }
+}
+
+function accountDeletionInProgress(): ConvexError<{
+  code: string;
+  message: string;
+}> {
+  return new ConvexError({
+    code: "ACCOUNT_DELETION_IN_PROGRESS",
+    message:
+      "Proxy settings cannot be changed while account deletion is in progress",
+  });
+}
+
+async function isAccountDeletionFenced(
+  ctx: Pick<ActionCtx, "runQuery">,
+  userId: string,
+): Promise<boolean> {
+  return ctx.runQuery(internal.accountDeletionFences.isSet, { userId });
 }
 
 const publicProxyConfigValidator = v.object({
@@ -335,6 +354,10 @@ export const saveProxyConfig = action({
     }
     requirePaidProxyAccess(identity);
 
+    if (await isAccountDeletionFenced(ctx, identity.subject)) {
+      throw accountDeletionInProgress();
+    }
+
     const existing = await readVaultProxyConfig(identity.subject);
     const password = args.clearPassword
       ? undefined
@@ -358,6 +381,10 @@ export const saveProxyConfig = action({
     const value = JSON.stringify(config);
     const workos = getWorkOS();
 
+    if (await isAccountDeletionFenced(ctx, identity.subject)) {
+      throw accountDeletionInProgress();
+    }
+
     if (existing) {
       await workos.vault.updateObject({
         id: existing.object.id,
@@ -375,6 +402,11 @@ export const saveProxyConfig = action({
           data_type: "agent_proxy",
         },
       });
+    }
+
+    if (await isAccountDeletionFenced(ctx, identity.subject)) {
+      await deleteProxyConfigVaultObject(workos, identity.subject);
+      throw accountDeletionInProgress();
     }
 
     return toPublicConfig(config);

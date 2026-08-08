@@ -125,6 +125,13 @@ async function markAccountIdentityDeleted(
   });
 }
 
+async function fenceAccountDeletionWrites(userId: string, serviceKey: string) {
+  await getConvexClient().mutation(api.accountDeletionFences.startByService, {
+    serviceKey,
+    userId,
+  });
+}
+
 async function deleteConvexUserData(userId: string, serviceKey: string) {
   const convex = getConvexClient();
 
@@ -186,6 +193,9 @@ export const POST = async (req: NextRequest) => {
     }
 
     const serviceKey = getConvexServiceKey();
+    stage = "fence_account_deletion_writes";
+    await fenceAccountDeletionWrites(userId, serviceKey);
+
     stage = "mark_account_identity_deleted";
     await markAccountIdentityDeleted(userId, freeQuotaSubject, serviceKey);
 

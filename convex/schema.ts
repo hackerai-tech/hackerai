@@ -558,6 +558,13 @@ export default defineSchema({
     .index("by_identity_hash", ["identity_hash"])
     .index("by_latest_user_id", ["latest_user_id"]),
 
+  // Retained tombstones prevent stale authenticated sessions from recreating
+  // external resources after account deletion has started.
+  account_deletion_fences: defineTable({
+    user_id: v.string(),
+    deletion_started_at: v.number(),
+  }).index("by_user_id", ["user_id"]),
+
   user_suspensions: defineTable({
     user_id: v.string(),
     status: v.union(v.literal("active"), v.literal("resolved")),

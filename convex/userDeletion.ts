@@ -37,6 +37,7 @@ export const USER_DELETION_TABLE_POLICY = {
     "user_suspensions",
   ],
   retain: [
+    "account_deletion_fences",
     "team_extra_usage",
     "paid_start_mix_daily",
     "processed_webhooks",

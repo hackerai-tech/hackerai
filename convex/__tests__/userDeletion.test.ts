@@ -507,6 +507,13 @@ function seedTables(userId = "user_123", otherUserId = "user_other"): Tables {
         updated_at: 1,
       },
     ],
+    account_deletion_fences: [
+      {
+        _id: "account-deletion-fence",
+        user_id: userId,
+        deletion_started_at: 1,
+      },
+    ],
     team_extra_usage: [
       { _id: "team-extra", organization_id: "org_team", balance_points: 1 },
     ],

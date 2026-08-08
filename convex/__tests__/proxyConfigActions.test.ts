@@ -9,6 +9,12 @@ jest.mock("../_generated/server", () => ({
   action: jest.fn((config) => config),
 }));
 
+jest.mock("../_generated/api", () => ({
+  internal: {
+    accountDeletionFences: { isSet: "accountDeletionFences.isSet" },
+  },
+}));
+
 jest.mock("@workos-inc/node", () => ({
   WorkOS: jest.fn().mockImplementation(() => ({
     vault: {
@@ -75,6 +81,7 @@ function createCtx() {
           entitlements: ["pro-plan"],
         }),
     },
+    runQuery: jest.fn().mockResolvedValue(false),
   };
 }
 
@@ -182,6 +189,61 @@ describe("proxy config actions", () => {
     expect(mockReadObjectByName).not.toHaveBeenCalled();
     expect(mockCreateObject).not.toHaveBeenCalled();
     expect(mockUpdateObject).not.toHaveBeenCalled();
+  });
+
+  it("rejects saves after account deletion is fenced", async () => {
+    const { saveProxyConfig } = await import("../proxyConfigActions");
+    const ctx = createCtx();
+    ctx.runQuery.mockResolvedValue(true);
+
+    await expect(
+      saveProxyConfig.handler(ctx as any, {
+        enabled: true,
+        protocol: "http",
+        host: "proxy.example.com",
+        port: 8443,
+        proxyDns: true,
+        bypassHosts: [],
+      }),
+    ).rejects.toMatchObject({
+      data: expect.objectContaining({
+        code: "ACCOUNT_DELETION_IN_PROGRESS",
+      }),
+    });
+    expect(mockReadObjectByName).not.toHaveBeenCalled();
+    expect(mockCreateObject).not.toHaveBeenCalled();
+  });
+
+  it("removes a Vault object created while account deletion starts", async () => {
+    const { saveProxyConfig } = await import("../proxyConfigActions");
+    const ctx = createCtx();
+    ctx.runQuery
+      .mockResolvedValueOnce(false)
+      .mockResolvedValueOnce(false)
+      .mockResolvedValueOnce(true);
+    mockReadObjectByName
+      .mockRejectedValueOnce(missingVaultObjectError())
+      .mockResolvedValueOnce(vaultObject());
+
+    await expect(
+      saveProxyConfig.handler(ctx as any, {
+        enabled: true,
+        protocol: "http",
+        host: "proxy.example.com",
+        port: 8443,
+        proxyDns: true,
+        bypassHosts: [],
+      }),
+    ).rejects.toMatchObject({
+      data: expect.objectContaining({
+        code: "ACCOUNT_DELETION_IN_PROGRESS",
+      }),
+    });
+    expect(mockCreateObject).toHaveBeenCalledTimes(1);
+    expect(mockDeleteObject).toHaveBeenCalledWith({
+      id: "secret_proxy_123",
+      versionCheck: "version_1",
+    });
   });
 
   it("returns Vault credentials only through the service-key backend action", async () => {

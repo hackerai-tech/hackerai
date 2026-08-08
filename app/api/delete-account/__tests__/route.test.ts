@@ -41,6 +41,9 @@ jest.mock("@/lib/api/agent-deletion-cleanup", () => ({
 
 jest.mock("@/convex/_generated/api", () => ({
   api: {
+    accountDeletionFences: {
+      startByService: "accountDeletionFences.startByService",
+    },
     accountIdentities: {
       markDeleted: "accountIdentities.markDeleted",
     },
@@ -132,6 +135,15 @@ const mockCloseAndCancelAgentResources =
   >;
 
 const request = () => ({ url: "https://hackerai.test/api/delete-account" });
+
+function convexMutationCallOrder(functionReference: string): number {
+  const callIndex = mockConvexMutation.mock.calls.findIndex(
+    ([reference]) => reference === functionReference,
+  );
+  if (callIndex < 0)
+    throw new Error(`Missing mutation call: ${functionReference}`);
+  return mockConvexMutation.mock.invocationCallOrder[callIndex];
+}
 
 describe("POST /api/delete-account", () => {
   beforeEach(() => {
@@ -225,13 +237,17 @@ describe("POST /api/delete-account", () => {
     );
     expect(
       mockCloseAndCancelAgentResources.mock.invocationCallOrder[0],
-    ).toBeLessThan(mockConvexMutation.mock.invocationCallOrder[1]);
-    expect(mockConvexMutation.mock.invocationCallOrder[1]).toBeLessThan(
+    ).toBeLessThan(
+      convexMutationCallOrder("userDeletion.deleteAllUserDataByService"),
+    );
+    expect(
+      convexMutationCallOrder("userDeletion.deleteAllUserDataByService"),
+    ).toBeLessThan(
       mockDeleteOrganizationMembership.mock.invocationCallOrder[0],
     );
-    expect(mockConvexMutation.mock.invocationCallOrder[1]).toBeLessThan(
-      mockDeleteUser.mock.invocationCallOrder[0],
-    );
+    expect(
+      convexMutationCallOrder("userDeletion.deleteAllUserDataByService"),
+    ).toBeLessThan(mockDeleteUser.mock.invocationCallOrder[0]);
   });
 
   it("deletes billing and organization resources for a solo admin organization", async () => {
@@ -292,8 +308,7 @@ describe("POST /api/delete-account", () => {
     const response = await POST(request() as any);
 
     expect(response.status).toBe(200);
-    expect(mockConvexMutation).toHaveBeenNthCalledWith(
-      1,
+    expect(mockConvexMutation).toHaveBeenCalledWith(
       "accountIdentities.markDeleted",
       {
         serviceKey: "service_key",
@@ -301,17 +316,16 @@ describe("POST /api/delete-account", () => {
         userId: "user_123",
       },
     );
-    expect(mockConvexMutation).toHaveBeenNthCalledWith(
-      2,
+    expect(mockConvexMutation).toHaveBeenCalledWith(
       "userDeletion.deleteAllUserDataByService",
       {
         serviceKey: "service_key",
         userId: "user_123",
       },
     );
-    expect(mockConvexMutation.mock.invocationCallOrder[1]).toBeLessThan(
-      mockDeleteUser.mock.invocationCallOrder[0],
-    );
+    expect(
+      convexMutationCallOrder("userDeletion.deleteAllUserDataByService"),
+    ).toBeLessThan(mockDeleteUser.mock.invocationCallOrder[0]);
   });
 
   it("deletes the proxy Vault object before deleting Convex user data", async () => {
@@ -328,6 +342,13 @@ describe("POST /api/delete-account", () => {
     const response = await POST(request() as any);
 
     expect(response.status).toBe(200);
+    expect(mockConvexMutation).toHaveBeenCalledWith(
+      "accountDeletionFences.startByService",
+      {
+        serviceKey: "service_key",
+        userId: "user_123",
+      },
+    );
     expect(mockReadVaultObject).toHaveBeenCalledWith(
       "hackerai-agent-proxy:user_123",
     );
@@ -335,8 +356,12 @@ describe("POST /api/delete-account", () => {
       id: "secret_proxy_123",
       versionCheck: "version_1",
     });
+    const fenceCall = mockConvexMutation.mock.invocationCallOrder[0];
+    expect(fenceCall).toBeLessThan(
+      mockReadVaultObject.mock.invocationCallOrder[0],
+    );
     expect(mockDeleteVaultObject.mock.invocationCallOrder[0]).toBeLessThan(
-      mockConvexMutation.mock.invocationCallOrder[1],
+      mockConvexMutation.mock.invocationCallOrder[2],
     );
   });
 
@@ -353,7 +378,7 @@ describe("POST /api/delete-account", () => {
 
     expect(response.status).toBe(500);
     expect(body.error).toBe("WorkOS Vault temporarily unavailable");
-    expect(mockConvexMutation).toHaveBeenCalledTimes(1);
+    expect(mockConvexMutation).toHaveBeenCalledTimes(2);
     expect(mockDeleteUser).not.toHaveBeenCalled();
   });
 
@@ -408,9 +433,12 @@ describe("POST /api/delete-account", () => {
     mockListOrganizationMemberships.mockResolvedValueOnce({
       data: [],
     } as never);
-    mockConvexMutation
-      .mockResolvedValueOnce(null)
-      .mockRejectedValueOnce(new Error("Convex cleanup failed"));
+    mockConvexMutation.mockImplementation(async (functionReference) => {
+      if (functionReference === "userDeletion.deleteAllUserDataByService") {
+        throw new Error("Convex cleanup failed");
+      }
+      return null;
+    });
 
     const response = await POST(request() as any);
     const body = await response.json();
@@ -450,10 +478,12 @@ describe("POST /api/delete-account", () => {
     );
     expect(
       mockCloseAndCancelAgentResources.mock.invocationCallOrder[0],
-    ).toBeLessThan(mockConvexMutation.mock.invocationCallOrder[1]);
-    expect(mockConvexMutation.mock.invocationCallOrder[1]).toBeLessThan(
-      mockDeleteUser.mock.invocationCallOrder[0],
+    ).toBeLessThan(
+      convexMutationCallOrder("userDeletion.deleteAllUserDataByService"),
     );
+    expect(
+      convexMutationCallOrder("userDeletion.deleteAllUserDataByService"),
+    ).toBeLessThan(mockDeleteUser.mock.invocationCallOrder[0]);
   });
 
   it("keeps Convex records and WorkOS identity when active resource cleanup fails", async () => {
@@ -473,7 +503,7 @@ describe("POST /api/delete-account", () => {
 
     expect(response.status).toBe(500);
     expect(body.error).toBe("Trigger cleanup failed");
-    expect(mockConvexMutation).toHaveBeenCalledTimes(1);
+    expect(mockConvexMutation).toHaveBeenCalledTimes(2);
     expect(mockDeleteOrganizationMembership).not.toHaveBeenCalled();
     expect(mockDeleteUserRateLimitKeys).not.toHaveBeenCalled();
     expect(mockDeleteUser).not.toHaveBeenCalled();
@@ -483,16 +513,19 @@ describe("POST /api/delete-account", () => {
     mockListOrganizationMemberships.mockResolvedValueOnce({
       data: [],
     } as never);
-    mockConvexMutation
-      .mockResolvedValueOnce(null)
-      .mockResolvedValueOnce({ hasMore: true })
-      .mockResolvedValueOnce({ hasMore: false });
+    let cleanupCalls = 0;
+    mockConvexMutation.mockImplementation(async (functionReference) => {
+      if (functionReference !== "userDeletion.deleteAllUserDataByService") {
+        return null;
+      }
+      cleanupCalls += 1;
+      return { hasMore: cleanupCalls === 1 };
+    });
 
     const response = await POST(request() as any);
 
     expect(response.status).toBe(200);
-    expect(mockConvexMutation).toHaveBeenNthCalledWith(
-      1,
+    expect(mockConvexMutation).toHaveBeenCalledWith(
       "accountIdentities.markDeleted",
       {
         serviceKey: "service_key",
@@ -500,25 +533,22 @@ describe("POST /api/delete-account", () => {
         userId: "user_123",
       },
     );
-    expect(mockConvexMutation).toHaveBeenNthCalledWith(
-      2,
+    expect(mockConvexMutation).toHaveBeenCalledWith(
       "userDeletion.deleteAllUserDataByService",
       {
         serviceKey: "service_key",
         userId: "user_123",
       },
     );
-    expect(mockConvexMutation).toHaveBeenNthCalledWith(
-      3,
-      "userDeletion.deleteAllUserDataByService",
-      {
-        serviceKey: "service_key",
-        userId: "user_123",
-      },
-    );
-    expect(mockConvexMutation.mock.invocationCallOrder[2]).toBeLessThan(
-      mockDeleteUser.mock.invocationCallOrder[0],
-    );
+    expect(
+      mockConvexMutation.mock.calls.filter(
+        ([reference]) =>
+          reference === "userDeletion.deleteAllUserDataByService",
+      ),
+    ).toHaveLength(2);
+    expect(
+      convexMutationCallOrder("userDeletion.deleteAllUserDataByService"),
+    ).toBeLessThan(mockDeleteUser.mock.invocationCallOrder[0]);
     expect(mockDeleteUser).toHaveBeenCalledWith("user_123");
   });
 
@@ -526,7 +556,7 @@ describe("POST /api/delete-account", () => {
     mockListOrganizationMemberships.mockResolvedValueOnce({
       data: [],
     } as never);
-    mockConvexMutation.mockResolvedValueOnce(null).mockResolvedValueOnce(null);
+    mockConvexMutation.mockResolvedValue(null);
 
     const response = await POST(request() as any);
     const body = await response.json();

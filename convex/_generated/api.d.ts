@@ -9,6 +9,7 @@
  */
 
 import type * as accountIdentities from "../accountIdentities.js";
+import type * as accountDeletionFences from "../accountDeletionFences.js";
 import type * as cancellationReasons from "../cancellationReasons.js";
 import type * as chatStreams from "../chatStreams.js";
 import type * as chats from "../chats.js";
@@ -59,6 +60,7 @@ import type {
 } from "convex/server";
 
 declare const fullApi: ApiFromModules<{
+  accountDeletionFences: typeof accountDeletionFences;
   accountIdentities: typeof accountIdentities;
   cancellationReasons: typeof cancellationReasons;
   chatStreams: typeof chatStreams;
