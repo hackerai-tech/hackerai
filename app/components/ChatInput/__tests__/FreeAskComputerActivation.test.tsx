@@ -7,6 +7,11 @@ const mockCaptureAuthenticatedEvent = jest.fn();
 const mockCaptureUpgradeCtaImpression = jest.fn();
 const mockRedirectToPricing = jest.fn();
 let mockIsTauri = false;
+let mockDetectedPlatform = {
+  platform: "macos",
+  displayName: "macOS",
+  downloadUrl: "https://example.com/HackerAI.dmg",
+};
 
 jest.mock("@/lib/analytics/client", () => ({
   captureAuthenticatedEvent: (...args: unknown[]) =>
@@ -24,11 +29,7 @@ jest.mock("@/app/hooks/useTauri", () => ({
 }));
 
 jest.mock("@/app/download/DownloadSection", () => ({
-  useDetectedPlatform: () => ({
-    platform: "macos",
-    displayName: "macOS",
-    downloadUrl: "https://example.com/HackerAI.dmg",
-  }),
+  useDetectedPlatform: () => mockDetectedPlatform,
 }));
 
 const { FreeAskComputerActivation } = jest.requireActual<
@@ -38,6 +39,11 @@ const { FreeAskComputerActivation } = jest.requireActual<
 describe("FreeAskComputerActivation", () => {
   beforeEach(() => {
     mockIsTauri = false;
+    mockDetectedPlatform = {
+      platform: "macos",
+      displayName: "macOS",
+      downloadUrl: "https://example.com/HackerAI.dmg",
+    };
     mockCaptureAuthenticatedEvent.mockClear();
     mockCaptureUpgradeCtaImpression.mockClear();
     mockRedirectToPricing.mockClear();
@@ -66,6 +72,7 @@ describe("FreeAskComputerActivation", () => {
     const label = trigger.querySelector("span");
     expect(label).toHaveTextContent("HackerAI Desktop");
     expect(label).toHaveClass("hidden", "md:inline");
+    expect(label).toHaveAttribute("translate", "no");
     expect(label).not.toHaveClass("text-muted-foreground");
 
     await waitFor(() => {
@@ -94,13 +101,10 @@ describe("FreeAskComputerActivation", () => {
       screen.getByTestId("free-ask-computer-activation-popover"),
     ).toBeInTheDocument();
     expect(
-      screen.getByText(
-        (_, element) =>
-          element?.tagName === "P" &&
-          element.textContent ===
-            "Use a desktop computer to download HackerAI Desktop for macOS, Windows, or Linux.",
+      screen.queryByText(
+        "Use a desktop computer to download HackerAI Desktop for macOS, Windows, or Linux.",
       ),
-    ).toHaveClass("md:hidden");
+    ).not.toBeInTheDocument();
     expect(
       screen.getByText(
         "Let Agent work with files and terminal tools on your computer.",
@@ -130,6 +134,7 @@ describe("FreeAskComputerActivation", () => {
     );
     expect(download).toHaveAttribute("target", "_blank");
     expect(download).toHaveTextContent("Download HackerAI Desktop");
+    expect(download).not.toHaveClass("hidden");
 
     await user.click(download);
     expect(mockCaptureAuthenticatedEvent).toHaveBeenCalledWith(
@@ -155,6 +160,34 @@ describe("FreeAskComputerActivation", () => {
       from_tier: "free",
       cta_text: "Upgrade for Cloud Agent",
     });
+  });
+
+  it("replaces the download action with desktop guidance on mobile platforms", async () => {
+    mockDetectedPlatform = {
+      platform: "ios",
+      displayName: "iOS",
+      downloadUrl: "",
+    };
+    const user = userEvent.setup();
+    render(<FreeAskComputerActivation />);
+
+    await user.click(
+      screen.getByRole("button", {
+        name: "Set up HackerAI Desktop for Agent mode",
+      }),
+    );
+
+    expect(
+      screen.getByText(
+        (_, element) =>
+          element?.tagName === "P" &&
+          element.textContent ===
+            "Use a desktop computer to download HackerAI Desktop for macOS, Windows, or Linux.",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByTestId("free-ask-computer-download"),
+    ).not.toBeInTheDocument();
   });
 
   it("does not render inside HackerAI Desktop", () => {

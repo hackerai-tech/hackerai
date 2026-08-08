@@ -52,6 +52,9 @@ export function FreeAskComputerActivation() {
 
   if (isTauri) return null;
 
+  const isMobilePlatform =
+    detectedPlatform?.platform === "ios" ||
+    detectedPlatform?.platform === "android";
   const downloadHref = detectedPlatform?.downloadUrl || "/download";
 
   const handleOpenChange = (nextOpen: boolean) => {
@@ -100,7 +103,9 @@ export function FreeAskComputerActivation() {
           data-testid="free-ask-computer-activation-trigger"
         >
           <Monitor className="size-4" aria-hidden="true" />
-          <span className="hidden md:inline">HackerAI Desktop</span>
+          <span className="hidden md:inline" translate="no">
+            HackerAI Desktop
+          </span>
         </Button>
       </PopoverTrigger>
 
@@ -125,23 +130,25 @@ export function FreeAskComputerActivation() {
             </div>
           </div>
 
-          <Button asChild size="sm" className="hidden w-full md:inline-flex">
-            <a
-              href={downloadHref}
-              target="_blank"
-              rel="noopener noreferrer"
-              onClick={handleDesktopDownload}
-              data-testid="free-ask-computer-download"
-            >
-              Download <span translate="no">HackerAI Desktop</span>
-            </a>
-          </Button>
-
-          <p className="text-xs text-muted-foreground md:hidden">
-            Use a desktop computer to download{" "}
-            <span translate="no">HackerAI Desktop</span> for macOS, Windows, or
-            Linux.
-          </p>
+          {isMobilePlatform ? (
+            <p className="text-xs text-muted-foreground">
+              Use a desktop computer to download{" "}
+              <span translate="no">HackerAI Desktop</span> for macOS, Windows,
+              or Linux.
+            </p>
+          ) : (
+            <Button asChild size="sm" className="w-full">
+              <a
+                href={downloadHref}
+                target="_blank"
+                rel="noopener noreferrer"
+                onClick={handleDesktopDownload}
+                data-testid="free-ask-computer-download"
+              >
+                Download <span translate="no">HackerAI Desktop</span>
+              </a>
+            </Button>
+          )}
         </div>
 
         <div className="border-t p-3">
