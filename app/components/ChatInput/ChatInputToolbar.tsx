@@ -11,6 +11,7 @@ import {
 import { useGlobalState } from "@/app/contexts/GlobalState";
 import { useAuth } from "@workos-inc/authkit-nextjs/components";
 import { isAgentMode } from "@/lib/utils/mode-helpers";
+import { FreeAskComputerActivation } from "./FreeAskComputerActivation";
 
 export interface ChatInputToolbarProps extends SubmitStopButtonProps {
   onAttachClick: () => void;
@@ -24,12 +25,20 @@ export function ChatInputToolbar({
 }: ChatInputToolbarProps) {
   const {
     chatModeAccessResolved,
+    hasLocalSandbox,
     paidAgentOnlyActive,
     selectedModel,
     setSelectedModel,
     subscription,
   } = useGlobalState();
   const { user } = useAuth();
+  const showFreeAskComputerActivation = Boolean(
+    chatModeAccessResolved &&
+    user &&
+    subscription === "free" &&
+    chatMode === "ask" &&
+    !hasLocalSandbox,
+  );
 
   return (
     <div className="px-3 flex gap-2 items-center min-w-0">
@@ -39,6 +48,7 @@ export function ChatInputToolbar({
       {chatModeAccessResolved && !paidAgentOnlyActive ? (
         <ChatModeSelector />
       ) : null}
+      {showFreeAskComputerActivation ? <FreeAskComputerActivation /> : null}
       {isAgentMode(chatMode) ? (
         <div className="hidden md:block">
           <AgentPermissionSelector analyticsSurface="chat_input" />

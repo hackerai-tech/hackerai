@@ -7,6 +7,7 @@ import type { SubscriptionTier } from "@/types";
 let mockSubscription: SubscriptionTier = "free";
 let mockChatModeAccessResolved = true;
 let mockPaidAgentOnlyActive = false;
+let mockHasLocalSandbox = false;
 
 jest.mock("@/app/components/AttachmentButton", () => ({
   AttachmentButton: () => <button type="button">Attach</button>,
@@ -14,6 +15,12 @@ jest.mock("@/app/components/AttachmentButton", () => ({
 
 jest.mock("../ChatModeSelector", () => ({
   ChatModeSelector: () => <div data-testid="chat-mode-selector" />,
+}));
+
+jest.mock("../FreeAskComputerActivation", () => ({
+  FreeAskComputerActivation: () => (
+    <div data-testid="free-ask-computer-activation" />
+  ),
 }));
 
 jest.mock("@/app/components/ModelSelector", () => ({
@@ -40,6 +47,7 @@ jest.mock("@/app/contexts/GlobalState", () => ({
     setSelectedModel: jest.fn(),
     subscription: mockSubscription,
     chatModeAccessResolved: mockChatModeAccessResolved,
+    hasLocalSandbox: mockHasLocalSandbox,
     paidAgentOnlyActive: mockPaidAgentOnlyActive,
   }),
 }));
@@ -76,6 +84,7 @@ describe("ChatInputToolbar", () => {
     mockSubscription = "free";
     mockChatModeAccessResolved = true;
     mockPaidAgentOnlyActive = false;
+    mockHasLocalSandbox = false;
     mockAuthUser(null);
   });
 
@@ -92,6 +101,47 @@ describe("ChatInputToolbar", () => {
     render(<ChatInputToolbar {...defaultProps} />);
 
     expect(screen.getByTestId("model-selector")).toBeInTheDocument();
+  });
+
+  it("shows computer activation only for logged-in free Ask users without a local sandbox", () => {
+    mockAuthUser({ id: "user_123" });
+
+    const { rerender } = render(<ChatInputToolbar {...defaultProps} />);
+    expect(
+      screen.getByTestId("free-ask-computer-activation"),
+    ).toBeInTheDocument();
+
+    mockHasLocalSandbox = true;
+    rerender(<ChatInputToolbar {...defaultProps} />);
+    expect(
+      screen.queryByTestId("free-ask-computer-activation"),
+    ).not.toBeInTheDocument();
+
+    mockHasLocalSandbox = false;
+    rerender(<ChatInputToolbar {...defaultProps} chatMode="agent" />);
+    expect(
+      screen.queryByTestId("free-ask-computer-activation"),
+    ).not.toBeInTheDocument();
+
+    mockSubscription = "pro";
+    rerender(<ChatInputToolbar {...defaultProps} />);
+    expect(
+      screen.queryByTestId("free-ask-computer-activation"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("hides computer activation for logged-out users and while access resolves", () => {
+    const { rerender } = render(<ChatInputToolbar {...defaultProps} />);
+    expect(
+      screen.queryByTestId("free-ask-computer-activation"),
+    ).not.toBeInTheDocument();
+
+    mockAuthUser({ id: "user_123" });
+    mockChatModeAccessResolved = false;
+    rerender(<ChatInputToolbar {...defaultProps} />);
+    expect(
+      screen.queryByTestId("free-ask-computer-activation"),
+    ).not.toBeInTheDocument();
   });
 
   it("shows the permission selector only in agent mode", () => {
