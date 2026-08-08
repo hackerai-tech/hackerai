@@ -42,6 +42,7 @@ import {
   isContextUsageEnabled,
   isProviderApiError,
   injectNotesIntoMessages,
+  getContentFilterRetryModel,
   getRetryFallbackModel,
   resolveServedModelForCostAccounting,
 } from "@/lib/api/chat-stream-helpers";
@@ -116,7 +117,10 @@ import {
   createChatLogger,
   type ChatLogger,
 } from "@/lib/api/chat-logger";
-import { evaluateKimiReasoningExperiment } from "@/lib/experiments/kimi-reasoning";
+import {
+  KIMI_MAX_REASONING_EFFORT,
+  shouldUseMaxKimiReasoning,
+} from "@/lib/ai/kimi-reasoning";
 import {
   LEGACY_AGENT_API_ENDPOINT,
   type AgentApiEndpoint,
@@ -135,9 +139,11 @@ import {
 } from "@/lib/api/paid-daily-free-allowance-rescue";
 import {
   extractErrorDetails,
+  createProviderContentBlockedFinishReasonError,
   getProviderErrorCategory,
   getUserFriendlyProviderError,
   isInvalidImageInputError,
+  isProviderContentFilterFinishReason,
 } from "@/lib/utils/error-utils";
 import { ChatSDKError, serializeChatSDKErrorForStream } from "@/lib/errors";
 import type { Id } from "@/convex/_generated/dataModel";
@@ -1022,6 +1028,7 @@ const USER_CORRECTABLE_AGENT_LONG_ERROR_CATEGORIES = new Set([
   "empty_after_processing",
   "local_sandbox_fallback_blocked",
   "invalid_image_input",
+  "content_blocked",
 ]);
 
 const isUserCorrectableAgentLongErrorCategory = (category: string): boolean =>
@@ -1076,6 +1083,7 @@ const classifyProviderDashboardCategory = (
 ): string => {
   if (isInvalidImageInputError(error)) return "invalid_image_input";
   const category = getProviderErrorCategory(details);
+  if (category === "content_blocked") return category;
   if (category === "stream_terminated") return "provider_stream_terminated";
   if (category === "timeout") return "provider_timeout";
   if (category !== "unknown" || isProviderApiError(error)) {
@@ -1243,8 +1251,17 @@ const getTerminalProviderStreamError = (
     Pick<AgentStreamState, "streamFinishReason" | "providerError"> | undefined,
 ): unknown | undefined => {
   if (!state) return undefined;
-  if (state.streamFinishReason !== "error") return undefined;
+  if (
+    state.streamFinishReason !== "error" &&
+    !isProviderContentFilterFinishReason(state.streamFinishReason)
+  ) {
+    return undefined;
+  }
   if (state.providerError) return state.providerError;
+
+  if (isProviderContentFilterFinishReason(state.streamFinishReason)) {
+    return createProviderContentBlockedFinishReasonError();
+  }
 
   return Object.assign(
     new Error("Provider stream finished with error finish reason"),
@@ -1258,7 +1275,9 @@ const getTerminalProviderStreamError = (
 const isTerminalProviderStreamError = (
   state:
     Pick<AgentStreamState, "streamFinishReason" | "providerError"> | undefined,
-): boolean => state?.streamFinishReason === "error";
+): boolean =>
+  state?.streamFinishReason === "error" ||
+  isProviderContentFilterFinishReason(state?.streamFinishReason);
 
 type RecordedAgentLongFailure = {
   userCorrectable: boolean;
@@ -2506,15 +2525,12 @@ export const agentLongTask = task({
             const streamStartTime = taskStartTime;
             const configuredModelId =
               trackedProvider.languageModel(selectedModel).modelId;
-            const kimiReasoningExperiment =
-              await evaluateKimiReasoningExperiment({
-                posthog,
-                userId,
-                subscription,
-                mode,
-                selectedModel,
-                configuredModelId,
-              });
+            const useMaxKimiReasoning = shouldUseMaxKimiReasoning({
+              subscription,
+              mode,
+              selectedModel,
+              configuredModelId,
+            });
             const budgetMonitor = effectiveBudgetSnapshot
               ? new BudgetMonitor(
                   effectiveBudgetSnapshot,
@@ -2742,7 +2758,6 @@ export const agentLongTask = task({
                   analyticsRequestContext,
                   usage: usageCostRecord,
                   responseModel: state.responseModel,
-                  kimiReasoningExperiment,
                   ...(usageSettlementState && {
                     usageSettlement: {
                       id: usageTracker.usageSettlementId,
@@ -2917,12 +2932,12 @@ export const agentLongTask = task({
                 }
               },
               settleUsageAfterStep,
-              ...(kimiReasoningExperiment && {
+              ...(useMaxKimiReasoning && {
                 providerReasoningOverride: {
                   modelName: selectedModel,
                   reasoning: {
                     enabled: true,
-                    effort: kimiReasoningExperiment.reasoningEffort,
+                    effort: KIMI_MAX_REASONING_EFFORT,
                   },
                 },
               }),
@@ -2947,9 +2962,13 @@ export const agentLongTask = task({
                   : null,
             };
 
-            const createStream = (modelName: string) => {
+            const createStream = (
+              modelName: string,
+              excludedProviderModelSlugs?: readonly string[],
+            ) => {
               activeModelName = modelName;
               streamCtx.tools = getToolsForModel(modelName);
+              streamCtx.excludedProviderModelSlugs = excludedProviderModelSlugs;
               setCurrentModelName(modelName);
               return createAgentStream(modelName, streamCtx, state);
             };
@@ -3038,8 +3057,9 @@ export const agentLongTask = task({
                   }) => {
                     let retryScheduled = false;
                     try {
-                      // Retry with fallback if the primary stream failed before
-                      // producing text, tool calls, or tool output worth saving.
+                      // Retry once with a different model for content filters,
+                      // or when the primary stream fails before producing
+                      // output worth saving.
                       const lastAssistantMessage = finishedMessages
                         .slice()
                         .reverse()
@@ -3058,6 +3078,10 @@ export const agentLongTask = task({
                       const stoppedDueToAssistantContentLoop =
                         state.stoppedDueToAssistantContentLoop ||
                         (!isAborted && assistantContentLoopDetection.detected);
+                      const providerContentBlocked =
+                        isProviderContentFilterFinishReason(
+                          state.streamFinishReason,
+                        );
                       const hasTerminalProviderStreamError =
                         isTerminalProviderStreamError(state);
                       const shouldRetryInterruptedToolInput =
@@ -3071,6 +3095,7 @@ export const agentLongTask = task({
                           {
                             hasTerminalProviderStreamError:
                               hasTerminalProviderStreamError,
+                            providerContentBlocked,
                             stoppedDueToDoomLoop: state.stoppedDueToDoomLoop,
                             stoppedDueToAssistantContentLoop,
                             detectAssistantContentLoop: !isAborted,
@@ -3091,6 +3116,7 @@ export const agentLongTask = task({
                         !isRetryWithFallback &&
                         (!isAborted || stoppedDueToAssistantContentLoop) &&
                         (isAutoModel ||
+                          providerContentBlocked ||
                           shouldRetryWithoutImageToolResults ||
                           stoppedDueToAssistantContentLoop ||
                           state.stoppedDueToDoomLoop ||
@@ -3098,13 +3124,29 @@ export const agentLongTask = task({
                       ) {
                         const retryReason = shouldRetryWithoutImageToolResults
                           ? "image_tool_result_rejection"
-                          : stoppedDueToAssistantContentLoop
-                            ? "assistant_content_loop"
-                            : state.stoppedDueToDoomLoop
-                              ? "doom_loop"
-                              : shouldRetryInterruptedToolInput
-                                ? "interrupted_tool_input"
-                                : "incomplete_stream";
+                          : providerContentBlocked
+                            ? "content_filter"
+                            : stoppedDueToAssistantContentLoop
+                              ? "assistant_content_loop"
+                              : state.stoppedDueToDoomLoop
+                                ? "doom_loop"
+                                : shouldRetryInterruptedToolInput
+                                  ? "interrupted_tool_input"
+                                  : "incomplete_stream";
+                        const blockedProviderModel = providerContentBlocked
+                          ? state.responseModel
+                          : undefined;
+                        const retryModel = shouldRetryWithoutImageToolResults
+                          ? selectedModel
+                          : providerContentBlocked
+                            ? getContentFilterRetryModel(
+                                selectedModel,
+                                mode,
+                                blockedProviderModel,
+                              )
+                            : fallbackModel;
+                        const retryModelSlug =
+                          trackedProvider.languageModel(retryModel).modelId;
                         phLogger.warn(
                           "[agent-long] Provider output triggered fallback retry",
                           {
@@ -3112,8 +3154,9 @@ export const agentLongTask = task({
                             mode,
                             originalModel: selectedModel,
                             requestedModelSlug: configuredModelId,
-                            fallbackModel,
-                            fallbackModelSlug: fallbackModelId,
+                            blockedProviderModel,
+                            fallbackModel: retryModel,
+                            fallbackModelSlug: retryModelSlug,
                             userId,
                             subscription,
                             retryReason,
@@ -3148,13 +3191,9 @@ export const agentLongTask = task({
                         const fallbackStartTime = Date.now();
                         preFallbackCacheRead = usageTracker.cacheReadTokens;
                         preFallbackCacheWrite = usageTracker.cacheWriteTokens;
-                        const retryModel = shouldRetryWithoutImageToolResults
-                          ? selectedModel
-                          : fallbackModel;
-                        retryUsedFallbackModel = retryUsesDifferentModel(
-                          selectedModel,
-                          retryModel,
-                        );
+                        retryUsedFallbackModel =
+                          retryUsesDifferentModel(selectedModel, retryModel) ||
+                          providerContentBlocked;
                         resetServedModelTelemetryForRetry(state);
                         if (shouldRetryWithoutImageToolResults) {
                           const normalizedRetryMessages = imageRecovery.messages
@@ -3175,7 +3214,12 @@ export const agentLongTask = task({
                         } else {
                           usageTracker.resetModelLeg();
                         }
-                        const retryResult = await createStream(retryModel);
+                        const retryResult = await createStream(
+                          retryModel,
+                          blockedProviderModel
+                            ? [blockedProviderModel]
+                            : undefined,
+                        );
                         const retryMessageId = generateId();
 
                         writer.merge(
@@ -3264,7 +3308,6 @@ export const agentLongTask = task({
                                       state.budgetAbortDetails,
                                     agentPermissionMode,
                                     isAutoContinue: !!isAutoContinue,
-                                    kimiReasoningExperiment,
                                     stepLimitTelemetry:
                                       buildAgentStepLimitTelemetry({
                                         configuredMaxSteps:
@@ -3427,7 +3470,6 @@ export const agentLongTask = task({
                         budgetAbortDetails: state.budgetAbortDetails,
                         agentPermissionMode,
                         isAutoContinue: !!isAutoContinue,
-                        kimiReasoningExperiment,
                         stepLimitTelemetry: buildAgentStepLimitTelemetry({
                           configuredMaxSteps: state.configuredMaxSteps,
                           stepCount: state.agentStepCount,

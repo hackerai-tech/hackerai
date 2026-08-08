@@ -1,6 +1,7 @@
 import { describe, it, expect } from "@jest/globals";
 import {
   classifyProviderOverflowError,
+  createProviderContentBlockedFinishReasonError,
   extractErrorDetails,
   extractRetryAttempts,
   getUserFriendlyProviderError,
@@ -8,6 +9,8 @@ import {
   getProviderStatusCode,
   isInvalidImageInputError,
   isProviderContentBlockedError,
+  isProviderContentBlockedFinishReasonError,
+  isProviderContentFilterFinishReason,
   isProviderStreamTerminatedError,
 } from "../error-utils";
 
@@ -279,6 +282,19 @@ describe("extractErrorDetails -> wrapped provider errors", () => {
 });
 
 describe("provider error classification", () => {
+  it("maps content-filter finish reasons to the existing content-blocked classification and copy", () => {
+    const err = createProviderContentBlockedFinishReasonError();
+
+    expect(isProviderContentFilterFinishReason(err.finishReason)).toBe(true);
+    expect(isProviderContentBlockedFinishReasonError(err)).toBe(true);
+    expect(getProviderErrorCategory(extractErrorDetails(err))).toBe(
+      "content_blocked",
+    );
+    expect(getUserFriendlyProviderError(err)).toBe(
+      "The model provider blocked this request because the conversation content was flagged by its safety system. Edit your last message or remove sensitive or raw tool output, then try again.",
+    );
+  });
+
   it("classifies undici terminated errors as provider stream termination", () => {
     const cause = Object.assign(new Error("other side closed"), {
       code: "UND_ERR_SOCKET",

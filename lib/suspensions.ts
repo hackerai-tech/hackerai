@@ -14,9 +14,9 @@ export async function getActiveSuspensionForUser(userId: string) {
   });
 }
 
-export async function getActiveFraudDisputeSuspensionForUser(userId: string) {
+export async function getActiveChatAccessBlockForUser(userId: string) {
   return await getConvexClient().query(
-    api.userSuspensions.getActiveFraudDisputeByUser,
+    api.userSuspensions.getActiveChatAccessBlockByUser,
     {
       serviceKey,
       userId,
@@ -39,7 +39,7 @@ export async function assertUserCanMakeCostIncurringRequest(userId: string) {
 }
 
 export async function assertUserCanAccessChatHistory(userId: string) {
-  const suspension = await getActiveFraudDisputeSuspensionForUser(userId);
+  const suspension = await getActiveChatAccessBlockForUser(userId);
   if (!suspension) return;
 
   throw new ChatSDKError(

@@ -24,6 +24,7 @@ import type {
 } from "@/types";
 import {
   GROK_4_5_SLUG,
+  getOpenRouterProviderRoutingForModel,
   isAnthropicModel,
   myProvider,
 } from "@/lib/ai/providers";
@@ -597,6 +598,8 @@ const isHighReasoningModel = (modelName?: string): boolean =>
 type FallbackOptions = {
   hasMultimodalToolResults?: boolean;
   reasoningOverride?: ProviderReasoningOverride;
+  excludedModelSlugs?: readonly string[];
+  requestedModelSlug?: string;
 };
 
 export type ProviderReasoningOverride = {
@@ -651,6 +654,41 @@ export function getRetryFallbackModel(
   return "model-grok-4.5";
 }
 
+const CONTENT_FILTER_RETRY_CANDIDATES = [
+  "model-grok-4.5",
+  "model-kimi-k3",
+  "model-glm-5.2",
+] as const satisfies readonly ModelName[];
+
+/**
+ * Pick a retry model that differs from the model OpenRouter actually served.
+ * The served model can itself be an internal fallback, so the configured
+ * primary model is not sufficient for this decision.
+ */
+export function getContentFilterRetryModel(
+  modelName: ModelName,
+  mode: ChatMode,
+  servedModel?: string,
+): ModelName {
+  const preferredFallback = getRetryFallbackModel(modelName, mode);
+  if (!servedModel) return preferredFallback;
+
+  const candidates = [preferredFallback, ...CONTENT_FILTER_RETRY_CANDIDATES];
+  const retryModel = candidates.find((candidate) => {
+    const candidateSlug = resolveSlug(candidate);
+    return (
+      candidateSlug !== undefined &&
+      !areEquivalentProviderModelIds(candidateSlug, servedModel)
+    );
+  });
+  if (!retryModel) {
+    throw new Error(
+      `No content-filter retry model differs from served model ${servedModel}`,
+    );
+  }
+  return retryModel;
+}
+
 const resolveSlug = (modelName: string): string | undefined => {
   try {
     const lm = myProvider.languageModel(modelName) as { modelId?: unknown };
@@ -672,18 +710,27 @@ const resolveSlug = (modelName: string): string | undefined => {
 export function getFallbackSlugs(
   modelName?: string,
   _mode?: ChatMode,
-  _options: FallbackOptions = {},
+  options: FallbackOptions = {},
 ): string[] {
   const fallbackKeys = getFallbackKeys(modelName);
+  const excludedModelSlugs = options.excludedModelSlugs ?? [];
   return (
     fallbackKeys
       ?.map((key) => resolveSlug(key))
-      .filter((s): s is string => typeof s === "string" && s.length > 0) ?? []
+      .filter((s): s is string => typeof s === "string" && s.length > 0)
+      .filter(
+        (slug) =>
+          !excludedModelSlugs.some((excludedSlug) =>
+            areEquivalentProviderModelIds(slug, excludedSlug),
+          ),
+      ) ?? []
   );
 }
 
-const OPENROUTER_RESPONSE_MODEL_COST_KEYS: Record<string, ModelName> = {
+const OPENROUTER_RESPONSE_MODEL_COST_KEYS: Record<string, string> = {
   "anthropic/claude-opus-4.6": "model-opus-4.6",
+  "deepseek/deepseek-v4-flash": "deepseek/deepseek-v4-flash",
+  "deepseek/deepseek-v4-flash-20260423": "deepseek/deepseek-v4-flash",
   "deepseek/deepseek-v4-flash-0731": "agent-model-free",
   "deepseek/deepseek-v4-flash-20260731": "agent-model-free",
   "x-ai/grok-4.5": "model-grok-4.5",
@@ -695,7 +742,7 @@ const OPENROUTER_RESPONSE_MODEL_COST_KEYS: Record<string, ModelName> = {
 
 function resolveOpenRouterResponseModelCostKey(
   responseModel: string,
-): ModelName | undefined {
+): string | undefined {
   const exactKey = OPENROUTER_RESPONSE_MODEL_COST_KEYS[responseModel];
   if (exactKey) return exactKey;
   // Scope Opus response aliases to the priced generation rather than matching
@@ -704,6 +751,16 @@ function resolveOpenRouterResponseModelCostKey(
     return "model-opus-4.6";
   }
   return undefined;
+}
+
+function areEquivalentProviderModelIds(
+  firstModelId: string,
+  secondModelId: string,
+): boolean {
+  if (firstModelId === secondModelId) return true;
+  const firstKey = resolveOpenRouterResponseModelCostKey(firstModelId);
+  const secondKey = resolveOpenRouterResponseModelCostKey(secondModelId);
+  return firstKey !== undefined && firstKey === secondKey;
 }
 
 export function resolveServedModelForCostAccounting({
@@ -742,51 +799,54 @@ export function buildProviderOptions(
   mode?: ChatMode,
   options: FallbackOptions = {},
 ) {
-  const modelId = modelName ? resolveSlug(modelName) : undefined;
+  const modelId =
+    options.requestedModelSlug ??
+    (modelName ? resolveSlug(modelName) : undefined);
   const isDeepSeekV4 = modelId?.startsWith("deepseek/deepseek-v4") ?? false;
   const isGrok45 = modelId === GROK_4_5_SLUG;
-  // Free Ask uses low reasoning across the entire OpenRouter request, including
-  // its Grok/Kimi fallbacks. OpenRouter does not support per-fallback effort.
-  const isFreeAskDeepSeekV4 =
-    mode === "ask" && modelName === "ask-model-free" && isDeepSeekV4;
   // Agent routes use high for both DeepSeek V4 Flash and Pro. Keep this
   // mode-scoped for any future route that does not also include Grok.
   const isAgentDeepSeekV4 = mode === "agent" && isDeepSeekV4;
   const fallbackSlugs = getFallbackSlugs(modelName, mode, options);
+  const reasoningFallbackSlugs = options.excludedModelSlugs?.length
+    ? getFallbackSlugs(modelName, mode, {
+        ...options,
+        excludedModelSlugs: undefined,
+      })
+    : fallbackSlugs;
   // OpenRouter applies one reasoning configuration to both the primary model
-  // and every provider fallback. Aside from the explicit free Ask policy,
-  // force high whenever Grok 4.5 is reachable so it cannot inherit less effort.
-  // Explicit high-or-greater overrides are safe for scoped experiments.
-  const routesThroughGrok45 = isGrok45 || fallbackSlugs.includes(GROK_4_5_SLUG);
-  const reasoning = isFreeAskDeepSeekV4
-    ? {
-        enabled: true,
-        effort: "low",
-      }
-    : routesThroughGrok45
-      ? isHighOrGreaterReasoningOverride(options.reasoningOverride)
-        ? options.reasoningOverride
-        : {
+  // and every provider fallback. Force high whenever Grok 4.5 is reachable so
+  // it cannot inherit less effort.
+  const routesThroughGrok45 =
+    isGrok45 || reasoningFallbackSlugs.includes(GROK_4_5_SLUG);
+  const providerRouting = modelId
+    ? getOpenRouterProviderRoutingForModel(modelId)
+    : undefined;
+  const reasoning = routesThroughGrok45
+    ? isHighOrGreaterReasoningOverride(options.reasoningOverride)
+      ? options.reasoningOverride
+      : {
+          enabled: true,
+          effort: "high",
+        }
+    : (options.reasoningOverride ??
+      (isHighReasoningModel(modelName) || isAgentDeepSeekV4
+        ? {
             enabled: true,
             effort: "high",
           }
-      : (options.reasoningOverride ??
-        (isHighReasoningModel(modelName) || isAgentDeepSeekV4
+        : isReasoningModel
           ? {
               enabled: true,
-              effort: "high",
+              ...(isDeepSeekV4 ? { effort: "xhigh" } : {}),
             }
-          : isReasoningModel
-            ? {
-                enabled: true,
-                ...(isDeepSeekV4 ? { effort: "xhigh" } : {}),
-              }
-            : { enabled: false }));
+          : { enabled: false }));
 
   return {
     openrouter: {
       reasoning,
       ...(userId && { user: userId }),
+      ...(providerRouting && { provider: providerRouting }),
       ...(fallbackSlugs.length > 0 && { models: fallbackSlugs }),
     },
   } as const;

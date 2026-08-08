@@ -3,7 +3,7 @@ import { v } from "convex/values";
 import { convexLogger } from "./lib/logger";
 import {
   assertUserCanAccessChatHistory,
-  isUserBlockedByActiveFraudDispute,
+  isUserBlockedFromChatHistory,
 } from "./lib/suspensionGuards";
 import { stripOpenRouterReasoningMetadataFromParts } from "../lib/chat/provider-metadata-sanitizer";
 import {
@@ -349,7 +349,7 @@ export const forkSharedChat = mutation({
     if (!chat || !chat.share_id || !chat.share_date) {
       throw new Error("Shared chat not found");
     }
-    if (await isUserBlockedByActiveFraudDispute(ctx, chat.user_id)) {
+    if (await isUserBlockedFromChatHistory(ctx, chat.user_id)) {
       throw new Error("Shared chat not found");
     }
 

@@ -93,7 +93,11 @@ import {
   mergeOpenRouterMetadata,
 } from "@/lib/api/openrouter-metadata";
 import { getOpenRouterUpstreamInferenceCostFromUsageRaw } from "@/lib/provider-usage-cost";
-import { classifyProviderOverflowError } from "@/lib/utils/error-utils";
+import {
+  classifyProviderOverflowError,
+  isProviderContentBlockedFinishReasonError,
+} from "@/lib/utils/error-utils";
+import { createProviderContentBlockedRefundLifecycle } from "@/lib/api/provider-content-blocked-refund";
 import type { UsageTracker } from "@/lib/usage-tracker";
 import type {
   BudgetAbortDetails,
@@ -113,6 +117,10 @@ import type {
 } from "@/lib/logger";
 import type { ChatMode, SubscriptionTier } from "@/types";
 import { namespaceLanguageModelToolCalls } from "@/lib/ai/tool-call-id-namespace";
+import {
+  guardLanguageModelProviderResponse,
+  MAX_PROVIDER_TOOL_CALLS_PER_RESPONSE,
+} from "@/lib/ai/provider-response-guard";
 
 const AGENT_VISION_MODEL = "model-grok-4.5";
 
@@ -462,6 +470,8 @@ export type AgentStreamContext = {
     modelName: string;
     reasoning: ProviderReasoningOverride;
   };
+  /** Provider model IDs that must not be used by an OpenRouter fallback. */
+  excludedProviderModelSlugs?: readonly string[];
   /** elapsedTimeExceeds threshold; callers supply their platform ceiling. */
   maxDurationMs: number;
   getActiveElapsedTimeMs?: () => number;
@@ -570,7 +580,21 @@ export async function createAgentStream(
     stepIndex: number,
   ): LanguageModel =>
     namespaceLanguageModelToolCalls(
-      languageModel,
+      guardLanguageModelProviderResponse(languageModel, {
+        onToolCallsDropped: ({ droppedToolCallCount, maxToolCalls }) => {
+          console.warn("[agent-stream] provider tool calls bounded", {
+            event: "provider_tool_call_guard_applied",
+            model:
+              typeof languageModel === "string"
+                ? languageModel
+                : languageModel.modelId,
+            step: stepIndex + 1,
+            droppedToolCallCount,
+            maxToolCalls,
+          });
+        },
+        maxToolCalls: MAX_PROVIDER_TOOL_CALLS_PER_RESPONSE,
+      }),
       `r${toolCallRunNamespace}c${ctx.summarizationTracker.summarizationCount}s${stepIndex}`,
     );
   type AbortStepLike = {
@@ -691,19 +715,24 @@ export async function createAgentStream(
   };
   const getStepProviderOptions = (
     effectiveModelName = getEffectiveModelName(),
-  ) =>
-    buildProviderOptions(
+  ) => {
+    const requestedModelSlug =
+      ctx.trackedProvider.languageModel(effectiveModelName).modelId;
+    return buildProviderOptions(
       ctx.isReasoningModel,
       ctx.userId,
       effectiveModelName,
       ctx.mode,
       {
         hasMultimodalToolResults: streamHasImageViewResults,
+        excludedModelSlugs: ctx.excludedProviderModelSlugs,
+        requestedModelSlug,
         ...(ctx.providerReasoningOverride?.modelName === effectiveModelName && {
           reasoningOverride: ctx.providerReasoningOverride.reasoning,
         }),
       },
     );
+  };
   const prepareProviderMessages = (
     messages: ModelMessage[],
     effectiveModelName = getEffectiveModelName(),
@@ -793,6 +822,12 @@ export async function createAgentStream(
     providerOptions: initialProviderOptions,
     activeTools: initialActiveTools,
   });
+
+  const refundProviderContentBlockedIfSettled =
+    createProviderContentBlockedRefundLifecycle({
+      hasUsage: () => ctx.usageTracker.hasUsage,
+      refund: () => ctx.usageRefundTracker.refund(),
+    });
 
   return streamText({
     model: getNamespacedLanguageModel(initialModelInfo.languageModel, 0),
@@ -1434,6 +1469,11 @@ export async function createAgentStream(
         openRouterMetadata,
       );
 
+      await refundProviderContentBlockedIfSettled({
+        finishReason,
+        settled: true,
+      });
+
       await ptySessionManager
         .closeAll(ctx.chatId)
         .catch((err) =>
@@ -1443,6 +1483,10 @@ export async function createAgentStream(
 
     onError: async ({ error }) => {
       state.providerError = error;
+      await refundProviderContentBlockedIfSettled({
+        error,
+        settled: false,
+      });
       if (
         streamHasImageViewResults &&
         isProviderMultimodalToolResultRejectionError(error)
@@ -1475,7 +1519,10 @@ export async function createAgentStream(
           providerRequest: latestProviderRequestDiagnostics,
         });
       }
-      if (!ctx.usageTracker.hasUsage) {
+      if (
+        !isProviderContentBlockedFinishReasonError(error) &&
+        !ctx.usageTracker.hasUsage
+      ) {
         await ctx.usageRefundTracker.refund();
       }
       await ptySessionManager
@@ -1487,6 +1534,11 @@ export async function createAgentStream(
 
     onAbort: async ({ steps }) => {
       recordAssistantContentLoopAbortState(steps);
+      await refundProviderContentBlockedIfSettled({
+        error: state.providerError,
+        finishReason: state.streamFinishReason,
+        settled: true,
+      });
       await ptySessionManager
         .closeAll(ctx.chatId)
         .catch((err) =>

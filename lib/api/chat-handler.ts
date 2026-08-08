@@ -73,7 +73,10 @@ import {
   shutdownPostHog,
   type ChatLogger,
 } from "@/lib/api/chat-logger";
-import { evaluateKimiReasoningExperiment } from "@/lib/experiments/kimi-reasoning";
+import {
+  KIMI_MAX_REASONING_EFFORT,
+  shouldUseMaxKimiReasoning,
+} from "@/lib/ai/kimi-reasoning";
 import {
   countFileAttachments,
   stripImageAttachments,
@@ -88,6 +91,7 @@ import {
   assertChatModeAccess,
   buildExtraUsageConfig,
   estimatePreflightInputTokens,
+  getContentFilterRetryModel,
   getRetryFallbackModel,
   isAutoModelSelectionForRetry,
   resolveServedModelForCostAccounting,
@@ -150,10 +154,12 @@ import {
   getRateLimitErrorCapReason,
 } from "@/lib/api/paid-daily-free-allowance-rescue";
 import {
+  createProviderContentBlockedFinishReasonError,
   extractErrorDetails,
   getProviderErrorCategory,
   getProviderStatusCode,
   getUserFriendlyProviderError,
+  isProviderContentFilterFinishReason,
 } from "@/lib/utils/error-utils";
 import {
   requireChatMessagesArray,
@@ -862,15 +868,12 @@ export const createChatHandler = () => {
 
             const configuredModelId =
               trackedProvider.languageModel(selectedModel).modelId;
-            const kimiReasoningExperiment =
-              await evaluateKimiReasoningExperiment({
-                posthog,
-                userId,
-                subscription,
-                mode,
-                selectedModel,
-                configuredModelId,
-              });
+            const useMaxKimiReasoning = shouldUseMaxKimiReasoning({
+              subscription,
+              mode,
+              selectedModel,
+              configuredModelId,
+            });
             const streamStartTime = Date.now();
             const budgetMonitor = effectiveBudgetSnapshot
               ? new BudgetMonitor(
@@ -1105,7 +1108,10 @@ export const createChatHandler = () => {
                   usage: usageCostRecord,
                   responseModel: state.responseModel,
                   analyticsRequestContext,
-                  kimiReasoningExperiment,
+                  fallbackServed:
+                    state.responseModel && retryUsedFallbackModel
+                      ? true
+                      : state.fallbackServed,
                   ...(usageSettlementState && {
                     usageSettlement: {
                       id: usageTracker.usageSettlementId,
@@ -1266,12 +1272,12 @@ export const createChatHandler = () => {
               chatLogger,
               usageRefundTracker,
               settleUsageAfterStep,
-              ...(kimiReasoningExperiment && {
+              ...(useMaxKimiReasoning && {
                 providerReasoningOverride: {
                   modelName: selectedModel,
                   reasoning: {
                     enabled: true,
-                    effort: kimiReasoningExperiment.reasoningEffort,
+                    effort: KIMI_MAX_REASONING_EFFORT,
                   },
                 },
               }),
@@ -1294,9 +1300,13 @@ export const createChatHandler = () => {
                 preemptiveTimeout?.isPreemptive() ? "timeout" : null,
             };
 
-            const createStream = (modelName: string) => {
+            const createStream = (
+              modelName: string,
+              excludedProviderModelSlugs?: readonly string[],
+            ) => {
               activeModelName = modelName;
               streamCtx.tools = getToolsForModel(modelName);
+              streamCtx.excludedProviderModelSlugs = excludedProviderModelSlugs;
               setCurrentModelName(modelName);
               return createAgentStream(modelName, streamCtx, state);
             };
@@ -1399,8 +1409,13 @@ export const createChatHandler = () => {
                     const stoppedDueToAssistantContentLoop =
                       state.stoppedDueToAssistantContentLoop ||
                       (!isAborted && assistantContentLoopDetection.detected);
+                    const providerContentBlocked =
+                      isProviderContentFilterFinishReason(
+                        state.streamFinishReason,
+                      );
                     const hasTerminalProviderStreamError =
-                      state.streamFinishReason === "error";
+                      state.streamFinishReason === "error" ||
+                      providerContentBlocked;
                     const shouldRetryInterruptedToolInput =
                       shouldRetryProviderStreamAfterInterruptedToolInput(
                         lastAssistantMessageParts,
@@ -1412,6 +1427,7 @@ export const createChatHandler = () => {
                         {
                           hasTerminalProviderStreamError:
                             hasTerminalProviderStreamError,
+                          providerContentBlocked,
                           stoppedDueToDoomLoop: state.stoppedDueToDoomLoop,
                           stoppedDueToAssistantContentLoop,
                           detectAssistantContentLoop: !isAborted,
@@ -1425,33 +1441,52 @@ export const createChatHandler = () => {
                       imageRecovery.omittedCount > 0 && !isAborted;
 
                     if (
-                      shouldRetryWithFallback ||
-                      shouldRetryWithoutImageToolResults
+                      (shouldRetryWithFallback ||
+                        shouldRetryWithoutImageToolResults) &&
+                      !isRetryWithFallback
                     ) {
                       const loopTriggeredRetry =
                         stoppedDueToAssistantContentLoop ||
                         state.stoppedDueToDoomLoop;
                       const retryReason = shouldRetryWithoutImageToolResults
                         ? "image_tool_result_rejection"
-                        : stoppedDueToAssistantContentLoop
-                          ? "assistant_content_loop"
-                          : state.stoppedDueToDoomLoop
-                            ? "doom_loop"
-                            : shouldRetryInterruptedToolInput
-                              ? "interrupted_tool_input"
-                              : "incomplete_stream";
+                        : providerContentBlocked
+                          ? "content_filter"
+                          : stoppedDueToAssistantContentLoop
+                            ? "assistant_content_loop"
+                            : state.stoppedDueToDoomLoop
+                              ? "doom_loop"
+                              : shouldRetryInterruptedToolInput
+                                ? "interrupted_tool_input"
+                                : "incomplete_stream";
+                      const blockedProviderModel = providerContentBlocked
+                        ? state.responseModel
+                        : undefined;
+                      const retryModel = shouldRetryWithoutImageToolResults
+                        ? selectedModel
+                        : providerContentBlocked
+                          ? getContentFilterRetryModel(
+                              selectedModel,
+                              mode,
+                              blockedProviderModel,
+                            )
+                          : fallbackModel;
+                      const retryModelSlug =
+                        trackedProvider.languageModel(retryModel).modelId;
                       phLogger.warn(
                         shouldRetryWithoutImageToolResults
                           ? "Provider rejected image tool output - retrying without images"
-                          : retryReason === "assistant_content_loop"
-                            ? "Assistant content loop detected - triggering fallback"
-                            : retryReason === "doom_loop"
-                              ? "Agent doom loop detected - triggering fallback"
-                              : retryReason === "interrupted_tool_input"
-                                ? "Provider stream errored during tool input - triggering bounded fallback"
-                                : hasTerminalProviderStreamError
-                                  ? "Provider stream errored before useful output - triggering fallback"
-                                  : "Stream finished incomplete - triggering fallback",
+                          : retryReason === "content_filter"
+                            ? "Provider content filter triggered fallback model retry"
+                            : retryReason === "assistant_content_loop"
+                              ? "Assistant content loop detected - triggering fallback"
+                              : retryReason === "doom_loop"
+                                ? "Agent doom loop detected - triggering fallback"
+                                : retryReason === "interrupted_tool_input"
+                                  ? "Provider stream errored during tool input - triggering bounded fallback"
+                                  : hasTerminalProviderStreamError
+                                    ? "Provider stream errored before useful output - triggering fallback"
+                                    : "Stream finished incomplete - triggering fallback",
                         {
                           chatId,
                           endpoint,
@@ -1464,6 +1499,9 @@ export const createChatHandler = () => {
                           isRetryWithFallback,
                           assistantMessageId,
                           retryReason,
+                          blockedProviderModel,
+                          retryModel,
+                          retryModelSlug,
                           stoppedDueToDoomLoop: state.stoppedDueToDoomLoop,
                           assistantContentLoop:
                             assistantContentLoopDetection.detected
@@ -1474,14 +1512,14 @@ export const createChatHandler = () => {
                         },
                       );
 
-                      // Retry with fallback model for incomplete or reasoning-only
-                      // terminal provider streams. For image-tool rejection, retry
-                      // the same selected model after replacing image outputs with
-                      // text placeholders.
+                      // Retry with the fallback model for content-filter,
+                      // incomplete, or reasoning-only terminal provider streams.
+                      // For image-tool rejection, retry the same selected model
+                      // after replacing image outputs with text placeholders.
                       if (
-                        !isRetryWithFallback &&
                         (!isAborted || stoppedDueToAssistantContentLoop) &&
                         (isAutoModel ||
+                          providerContentBlocked ||
                           shouldRetryWithoutImageToolResults ||
                           loopTriggeredRetry ||
                           shouldRetryInterruptedToolInput)
@@ -1508,13 +1546,9 @@ export const createChatHandler = () => {
                         preFallbackCacheRead = usageTracker.cacheReadTokens;
                         preFallbackCacheWrite = usageTracker.cacheWriteTokens;
 
-                        const retryModel = shouldRetryWithoutImageToolResults
-                          ? selectedModel
-                          : fallbackModel;
-                        retryUsedFallbackModel = retryUsesDifferentModel(
-                          selectedModel,
-                          retryModel,
-                        );
+                        retryUsedFallbackModel =
+                          retryUsesDifferentModel(selectedModel, retryModel) ||
+                          providerContentBlocked;
                         resetServedModelTelemetryForRetry(state);
                         if (shouldRetryWithoutImageToolResults) {
                           state.finalMessages =
@@ -1528,7 +1562,12 @@ export const createChatHandler = () => {
                           usageTracker.resetModelLeg();
                         }
 
-                        const retryResult = await createStream(retryModel);
+                        const retryResult = await createStream(
+                          retryModel,
+                          blockedProviderModel
+                            ? [blockedProviderModel]
+                            : undefined,
+                        );
                         const retryMessageId = generateId();
 
                         writer.merge(
@@ -1596,9 +1635,15 @@ export const createChatHandler = () => {
                                 // reason to budget-exhausted; do it before
                                 // analytics and persistence consume state.
                                 await deductAccumulatedUsage(retryMessageId);
+                                const providerContentBlocked =
+                                  isProviderContentFilterFinishReason(
+                                    state.streamFinishReason,
+                                  );
                                 const outcome = retryAborted
                                   ? "aborted"
-                                  : "success";
+                                  : providerContentBlocked
+                                    ? "error"
+                                    : "success";
                                 captureAgentCompletionAnalytics({
                                   posthog,
                                   userId,
@@ -1620,7 +1665,6 @@ export const createChatHandler = () => {
                                   finishReason: state.streamFinishReason,
                                   budgetAbortDetails: state.budgetAbortDetails,
                                   isAutoContinue: !!isAutoContinue,
-                                  kimiReasoningExperiment,
                                   stepLimitTelemetry:
                                     buildAgentStepLimitTelemetry({
                                       configuredMaxSteps:
@@ -1632,13 +1676,20 @@ export const createChatHandler = () => {
                                         getTodoManager().getRunMetrics(),
                                     }),
                                 });
-                                chatLogger!.emitSuccess({
-                                  finishReason: state.streamFinishReason,
-                                  wasAborted: retryAborted,
-                                  wasPreemptiveTimeout: false,
-                                  hadSummarization:
-                                    summarizationTracker.hasSummarized,
-                                });
+                                if (providerContentBlocked) {
+                                  chatLogger!.emitUnexpectedError(
+                                    state.providerError ??
+                                      createProviderContentBlockedFinishReasonError(),
+                                  );
+                                } else {
+                                  chatLogger!.emitSuccess({
+                                    finishReason: state.streamFinishReason,
+                                    wasAborted: retryAborted,
+                                    wasPreemptiveTimeout: false,
+                                    hadSummarization:
+                                      summarizationTracker.hasSummarized,
+                                  });
+                                }
 
                                 const generatedTitle = await titlePromise;
 
@@ -1890,7 +1941,15 @@ export const createChatHandler = () => {
                     // budget-exhausted; do it before analytics and persistence
                     // consume state.
                     await deductAccumulatedUsage();
-                    const outcome = isAborted ? "aborted" : "success";
+                    const finalProviderContentBlocked =
+                      isProviderContentFilterFinishReason(
+                        state.streamFinishReason,
+                      );
+                    const outcome = isAborted
+                      ? "aborted"
+                      : finalProviderContentBlocked
+                        ? "error"
+                        : "success";
                     captureAgentCompletionAnalytics({
                       posthog,
                       userId,
@@ -1911,7 +1970,6 @@ export const createChatHandler = () => {
                       finishReason: state.streamFinishReason,
                       budgetAbortDetails: state.budgetAbortDetails,
                       isAutoContinue: !!isAutoContinue,
-                      kimiReasoningExperiment,
                       stepLimitTelemetry: buildAgentStepLimitTelemetry({
                         configuredMaxSteps: state.configuredMaxSteps,
                         stepCount: state.agentStepCount,
@@ -1919,12 +1977,19 @@ export const createChatHandler = () => {
                         todoRunMetrics: getTodoManager().getRunMetrics(),
                       }),
                     });
-                    chatLogger!.emitSuccess({
-                      finishReason: state.streamFinishReason,
-                      wasAborted: isAborted,
-                      wasPreemptiveTimeout: isPreemptiveAbort,
-                      hadSummarization: summarizationTracker.hasSummarized,
-                    });
+                    if (finalProviderContentBlocked) {
+                      chatLogger!.emitUnexpectedError(
+                        state.providerError ??
+                          createProviderContentBlockedFinishReasonError(),
+                      );
+                    } else {
+                      chatLogger!.emitSuccess({
+                        finishReason: state.streamFinishReason,
+                        wasAborted: isAborted,
+                        wasPreemptiveTimeout: isPreemptiveAbort,
+                        hadSummarization: summarizationTracker.hasSummarized,
+                      });
+                    }
                     logStep("settle_usage_and_emit_success", stepStart);
 
                     // Sandbox cleanup is automatic with auto-pause

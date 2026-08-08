@@ -804,6 +804,76 @@ describe("saveMessage", () => {
     }
   });
 
+  it("retries and classifies exhausted Convex write-rate limits as unavailable", async () => {
+    const { saveMessage, mockMutation, mockPhEvent } =
+      await loadSaveMessageWithMocks();
+    const writeRateError = new Error(
+      "[Request ID: abc] Server Error",
+    ) as Error & {
+      data?: unknown;
+    };
+    writeRateError.name = "ConvexError";
+    writeRateError.data = {
+      code: "MESSAGE_SAVE_FAILED",
+      message: "Failed to save message",
+      failureStage: "insert_message",
+      causeName: "TooManyWrites",
+      causeMessage:
+        "Too many writes per second. Your deployment is limited to 8 MiB bytes written per 1 second.",
+    };
+    mockMutation.mockRejectedValue(writeRateError as never);
+
+    const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+    const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+
+    try {
+      const thrown = await saveMessage({
+        chatId: "chat-1",
+        userId: "user-1",
+        message: {
+          id: "message-1",
+          role: "user",
+          parts: [{ type: "text", text: "hello" }],
+        },
+      }).catch((error) => error);
+
+      expect(thrown).toMatchObject({
+        type: "offline",
+        surface: "database",
+        statusCode: 503,
+        metadata: expect.objectContaining({
+          db_operation: "messages.saveMessage",
+          db_retry_reason: "convex_write_rate_limited",
+        }),
+      });
+      expect(mockMutation).toHaveBeenCalledTimes(3);
+
+      const retryEvents = warnSpy.mock.calls
+        .map(([line]) => JSON.parse(String(line)))
+        .filter((payload) => payload.event === "message_save_retry_scheduled");
+      expect(retryEvents).toHaveLength(2);
+      expect(retryEvents[0]).toMatchObject({
+        retry_reason: "convex_write_rate_limited",
+        attempt: 1,
+        next_attempt: 2,
+        retry_delay_ms: 0,
+        chat_id: "chat-1",
+        message_id: "message-1",
+      });
+      expect(mockPhEvent).toHaveBeenCalledWith(
+        "database_operation_failed",
+        expect.objectContaining({
+          db_operation: "messages.saveMessage",
+          db_retry_reason: "convex_write_rate_limited",
+        }),
+      );
+      expect(errorSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      warnSpy.mockRestore();
+      errorSpy.mockRestore();
+    }
+  });
+
   it("maps Convex message-size rejections to a user-facing bad request", async () => {
     const { saveMessage, mockMutation } = await loadSaveMessageWithMocks();
     const convexError = new Error("[Request ID: abc] Server Error") as Error & {

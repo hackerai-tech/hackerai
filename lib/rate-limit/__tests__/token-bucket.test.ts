@@ -128,6 +128,18 @@ describe("token-bucket", () => {
       ).toBeCloseTo(0.05824, 5);
     });
 
+    it("prices the previous canonical DeepSeek V4 Flash response ID", () => {
+      expect(
+        calculateRawModelUsageCostDollars({
+          inputTokens: 1_000_000,
+          outputTokens: 100_000,
+          cacheReadTokens: 800_000,
+          cacheWriteTokens: 100_000,
+          modelName: "deepseek/deepseek-v4-flash-20260423",
+        }),
+      ).toBeCloseTo(0.0504, 5);
+    });
+
     it("recognizes dated Anthropic response model IDs", () => {
       expect(
         calculateRawModelUsageCostDollars({
@@ -486,6 +498,17 @@ describe("token-bucket", () => {
       (modelName) => {
         expect(calculateTokenCost(1_000_000, "input", modelName)).toBe(45000);
         expect(calculateTokenCost(1_000_000, "output", modelName)).toBe(225000);
+      },
+    );
+
+    it.each([
+      "deepseek/deepseek-v4-flash",
+      "deepseek/deepseek-v4-flash-20260423",
+    ])(
+      "should use previous DeepSeek V4 Flash pricing for %s ($0.09/$0.18)",
+      (modelName) => {
+        expect(calculateTokenCost(1_000_000, "input", modelName)).toBe(1350);
+        expect(calculateTokenCost(1_000_000, "output", modelName)).toBe(2700);
       },
     );
 

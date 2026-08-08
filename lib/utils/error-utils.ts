@@ -382,6 +382,39 @@ export const isInvalidImageInputError = (error: unknown): boolean =>
 const PROVIDER_CONTENT_BLOCK_PATTERN =
   /\bPROHIBITED_CONTENT\b|\b(?:content[_ -]?(?:filter(?:ing)?|policy)|safety policy|moderation policy|safety system|moderation system)\b.{0,80}\b(?:block(?:ed)?|flag(?:ged)?|reject(?:ed)?|prohibit(?:ed)?|violate(?:s|d|ion)?|unsafe|harmful)\b|\b(?:block(?:ed)?|flag(?:ged)?|reject(?:ed)?|prohibit(?:ed)?|violate(?:s|d|ion)?|unsafe|harmful)\b.{0,80}\b(?:content[_ -]?(?:filter(?:ing)?|policy)|safety policy|moderation policy|safety system|moderation system)\b|\bblocked by (?:the )?(?:provider )?(?:safety|moderation)(?: system| filter)?\b|\b(?:unsafe|harmful) content\b/i;
 
+export const PROVIDER_CONTENT_BLOCKED_USER_MESSAGE =
+  "The model provider blocked this request because the conversation content was flagged by its safety system. Edit your last message or remove sensitive or raw tool output, then try again.";
+
+export const isProviderContentFilterFinishReason = (
+  finishReason: unknown,
+): finishReason is "content-filter" => finishReason === "content-filter";
+
+export const createProviderContentBlockedFinishReasonError = (): Error & {
+  statusCode: 403;
+  finishReason: "content-filter";
+} =>
+  Object.assign(
+    new Error(
+      "PROHIBITED_CONTENT: provider returned content-filter finish reason",
+    ),
+    {
+      name: "ProviderContentBlockedFinishReasonError",
+      statusCode: 403 as const,
+      finishReason: "content-filter" as const,
+    },
+  );
+
+export const isProviderContentBlockedFinishReasonError = (
+  error: unknown,
+): boolean =>
+  Boolean(
+    error &&
+    typeof error === "object" &&
+    ((error as { finishReason?: unknown }).finishReason === "content-filter" ||
+      (error as { name?: unknown }).name ===
+        "ProviderContentBlockedFinishReasonError"),
+  );
+
 export const isProviderContentBlockedDetails = (
   details: Record<string, unknown>,
 ): boolean => {
@@ -570,7 +603,7 @@ export const getUserFriendlyProviderError = (error: unknown): string => {
   }
 
   if (isProviderContentBlockedError(error)) {
-    return "The model provider blocked this request because the conversation content was flagged by its safety system. Edit your last message or remove sensitive or raw tool output, then try again.";
+    return PROVIDER_CONTENT_BLOCKED_USER_MESSAGE;
   }
 
   if (overflowKind === "media") {

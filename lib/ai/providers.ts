@@ -183,14 +183,26 @@ export const KIMI_K3_SLUG = "moonshotai/kimi-k3";
 export const GLM_5_2_SLUG = "z-ai/glm-5.2";
 export const GROK_4_5_SLUG = "x-ai/grok-4.5";
 export const DEEPSEEK_V4_FLASH_SLUG = "deepseek/deepseek-v4-flash-0731";
+export const DEEPSEEK_V4_FLASH_PREVIOUS_SLUG = "deepseek/deepseek-v4-flash";
 const TITLE_GENERATOR_DEEPSEEK_SLUG = "deepseek/deepseek-v4-flash";
 
-const buildProviderMap = (or: OpenRouterInstance) =>
+export const getOpenRouterProviderRoutingForModel = (
+  modelSlug: string,
+): { ignore: string[] } | undefined =>
+  modelSlug === DEEPSEEK_V4_FLASH_PREVIOUS_SLUG
+    ? { ignore: ["novita"] }
+    : undefined;
+
+const buildProviderMap = (
+  or: OpenRouterInstance,
+  freeAskDeepSeekSlug = DEEPSEEK_V4_FLASH_PREVIOUS_SLUG,
+  freeAgentDeepSeekSlug = DEEPSEEK_V4_FLASH_SLUG,
+) =>
   ({
     "ask-model": or(GROK_4_5_SLUG),
-    "ask-model-free": or(DEEPSEEK_V4_FLASH_SLUG),
+    "ask-model-free": or(freeAskDeepSeekSlug),
     "agent-model": or(GROK_4_5_SLUG),
-    "agent-model-free": or(DEEPSEEK_V4_FLASH_SLUG),
+    "agent-model-free": or(freeAgentDeepSeekSlug),
     "model-grok-4.5": or(GROK_4_5_SLUG),
     // Dedicated HackerAI Pro alias so its GLM fallback can evolve without
     // changing Standard media fallback behavior.

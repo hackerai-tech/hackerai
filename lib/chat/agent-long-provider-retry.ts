@@ -12,6 +12,7 @@ type MessagePartLike = {
 
 type RetryDecisionOptions = {
   hasTerminalProviderStreamError: boolean;
+  providerContentBlocked?: boolean;
   stoppedDueToDoomLoop?: boolean;
   stoppedDueToAssistantContentLoop?: boolean;
   detectAssistantContentLoop?: boolean;
@@ -244,6 +245,11 @@ export const shouldRetryProviderStreamWithFallback = (
   parts: unknown[],
   options: RetryDecisionOptions,
 ): boolean => {
+  // Provider content filters are model-specific. Retry the run once with the
+  // configured fallback model; the caller's bounded retry guard keeps a second
+  // content-filter finish terminal.
+  if (options.providerContentBlocked) return true;
+
   // Preserve the older guard for streams that never got past the first step.
   if (isOnlyStepStart(parts)) return true;
 

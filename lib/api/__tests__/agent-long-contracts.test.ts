@@ -1170,6 +1170,58 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(throwIdx).toBeGreaterThan(terminalErrorIdx);
   });
 
+  test("content-filter finishes retry once on a different model and remain terminal on fallback", () => {
+    expect(agentStreamRunnerSrc).toMatch(
+      /guardLanguageModelProviderResponse\(languageModel/,
+    );
+    expect(agentStreamRunnerSrc).toMatch(
+      /isProviderContentBlockedFinishReasonError\(error\)/,
+    );
+    expect(agentStreamRunnerSrc).toMatch(
+      /refundProviderContentBlockedIfSettled\(\{[\s\S]*finishReason,[\s\S]*settled: true/,
+    );
+    expect(agentStreamRunnerSrc).toMatch(
+      /const requestedModelSlug =[\s\S]{0,150}ctx\.trackedProvider\.languageModel\(effectiveModelName\)\.modelId;[\s\S]{0,300}requestedModelSlug,/,
+    );
+
+    for (const source of [taskSrc, chatHandlerSrc]) {
+      expect(source).toMatch(/const providerContentBlocked\s*=/);
+      expect(source).toMatch(/providerContentBlocked,/);
+      expect(source).toMatch(/providerContentBlocked \|\|/);
+      expect(source).toMatch(/\? "content_filter"/);
+      expect(source).toMatch(/!isRetryWithFallback/);
+      expect(source).toMatch(
+        /const blockedProviderModel = providerContentBlocked[\s\S]{0,100}state\.responseModel/,
+      );
+      expect(source).toMatch(
+        /getContentFilterRetryModel\([\s\S]{0,150}blockedProviderModel/,
+      );
+      expect(source).toMatch(
+        /createStream\([\s\S]{0,150}\[blockedProviderModel\]/,
+      );
+    }
+    expect([
+      ...chatHandlerSrc.matchAll(
+        /state\.providerError \?\?[\s\S]{0,100}createProviderContentBlockedFinishReasonError\(\)/g,
+      ),
+    ]).toHaveLength(2);
+
+    const terminalHelperIdx = taskSrc.indexOf(
+      "const getTerminalProviderStreamError",
+    );
+    const contentFilterIdx = taskSrc.indexOf(
+      "isProviderContentFilterFinishReason(state.streamFinishReason)",
+      terminalHelperIdx,
+    );
+    const terminalCheckIdx = taskSrc.indexOf(
+      "getTerminalProviderStreamError(terminalAgentState)",
+      contentFilterIdx,
+    );
+    expect(terminalHelperIdx).toBeGreaterThan(-1);
+    expect(contentFilterIdx).toBeGreaterThan(terminalHelperIdx);
+    expect(terminalCheckIdx).toBeGreaterThan(contentFilterIdx);
+  });
+
   test("direct context-limit finish reasons trigger auto-continue in both agent paths", () => {
     for (const source of [taskSrc, chatHandlerSrc]) {
       expect(source).toMatch(/getAgentAutoContinueStopSource\(\{/);
@@ -1197,7 +1249,7 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
       terminalProviderErrorIdx,
     );
     const fallbackIdx = taskSrc.indexOf(
-      "const retryResult = await createStream(retryModel)",
+      "const retryResult = await createStream(",
       terminalProviderErrorIdx,
     );
 
@@ -1230,7 +1282,7 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
       terminalProviderErrorIdx,
     );
     const fallbackIdx = chatHandlerSrc.indexOf(
-      "const retryResult = await createStream(retryModel)",
+      "const retryResult = await createStream(",
       terminalProviderErrorIdx,
     );
 
@@ -1288,17 +1340,14 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
         "const retryModel = shouldRetryWithoutImageToolResults",
       );
       const modelSwitchIdx = source.indexOf(
-        "retryUsedFallbackModel = retryUsesDifferentModel(",
+        "retryUsedFallbackModel =",
         retryModelIdx,
       );
       const resetIdx = source.indexOf(
         "resetServedModelTelemetryForRetry(state)",
         modelSwitchIdx,
       );
-      const retryStreamIdx = source.indexOf(
-        "createStream(retryModel)",
-        resetIdx,
-      );
+      const retryStreamIdx = source.indexOf("createStream(", resetIdx);
 
       expect(modelSwitchIdx).toBeGreaterThan(retryModelIdx);
       expect(resetIdx).toBeGreaterThan(modelSwitchIdx);
@@ -1529,6 +1578,18 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     );
     expect(taskSrc).toMatch(
       /isProviderApiError\(error\)\s*&&\s*!isInvalidImageInputError\(error\)/,
+    );
+  });
+
+  test("provider content blocks preserve their classification and complete after the error stream", () => {
+    expect(taskSrc).toMatch(
+      /USER_CORRECTABLE_AGENT_LONG_ERROR_CATEGORIES[\s\S]*"content_blocked"/,
+    );
+    expect(taskSrc).toMatch(
+      /if \(category === "content_blocked"\) return category/,
+    );
+    expect(taskSrc).toMatch(
+      /recordedFailure\.userCorrectable === true[\s\S]*return \{ chatId, assistantMessageId \}/,
     );
   });
 

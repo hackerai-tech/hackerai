@@ -12,6 +12,10 @@ jest.mock("ai", () => ({
 }));
 
 jest.mock("@/lib/ai/providers", () => ({
+  DEEPSEEK_V4_FLASH_PREVIOUS_SLUG: "deepseek/deepseek-v4-flash",
+  getOpenRouterProviderRoutingForModel: jest.fn(() => ({
+    ignore: ["novita"],
+  })),
   myProvider: {
     languageModel: (modelName: string) => mockLanguageModel(modelName),
   },
@@ -74,6 +78,7 @@ describe("generateTitleFromUserMessage", () => {
         providerOptions: {
           openrouter: {
             reasoning: { enabled: false },
+            provider: { ignore: ["novita"] },
           },
         },
         temperature: 0,

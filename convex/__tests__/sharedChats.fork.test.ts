@@ -25,7 +25,7 @@ jest.mock("../lib/logger", () => ({
 }));
 jest.mock("../lib/suspensionGuards", () => ({
   assertUserCanAccessChatHistory: jest.fn<any>().mockResolvedValue(undefined),
-  isUserBlockedByActiveFraudDispute: jest.fn<any>().mockResolvedValue(false),
+  isUserBlockedFromChatHistory: jest.fn<any>().mockResolvedValue(false),
 }));
 
 const { forkSharedChat, getSharedSnapshot } =
@@ -165,10 +165,10 @@ describe("getSharedSnapshot", () => {
   });
 
   it("returns null without reading messages when the chat owner is blocked", async () => {
-    const { isUserBlockedByActiveFraudDispute } = jest.requireMock(
+    const { isUserBlockedFromChatHistory } = jest.requireMock(
       "../lib/suspensionGuards",
-    ) as { isUserBlockedByActiveFraudDispute: jest.Mock };
-    isUserBlockedByActiveFraudDispute.mockResolvedValueOnce(true);
+    ) as { isUserBlockedFromChatHistory: jest.Mock };
+    isUserBlockedFromChatHistory.mockResolvedValueOnce(true);
 
     const sharedChat = {
       _id: "source-doc",
@@ -195,7 +195,7 @@ describe("getSharedSnapshot", () => {
 
     expect(query).toHaveBeenCalledTimes(1);
     expect(query).toHaveBeenCalledWith("chats");
-    expect(isUserBlockedByActiveFraudDispute).toHaveBeenCalledWith(
+    expect(isUserBlockedFromChatHistory).toHaveBeenCalledWith(
       ctx,
       sharedChat.user_id,
     );
