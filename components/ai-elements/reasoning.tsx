@@ -104,10 +104,11 @@ export function ReasoningTrigger({
         {getThinkingMessage(isStreaming)}
       </span>
       {isStreaming && (
-        <span className="relative flex shrink-0 items-center">
-          <span className="absolute inline-flex h-2 w-2 animate-ping rounded-full bg-foreground/50 opacity-75" />
-          <span className="relative inline-flex h-2 w-2 rounded-full bg-foreground" />
-        </span>
+        <span
+          className="size-2 shrink-0 rounded-full bg-foreground"
+          aria-hidden="true"
+          data-testid="reasoning-streaming-indicator"
+        />
       )}
       <ChevronDownIcon
         className={cn(

@@ -43,6 +43,19 @@ describe("Reasoning", () => {
     expect(chevron).toHaveClass("touch-device:!opacity-100");
   });
 
+  it("uses a quiet static streaming indicator without a ping animation", () => {
+    render(
+      <Reasoning isStreaming>
+        <ReasoningTrigger />
+      </Reasoning>,
+    );
+
+    expect(screen.getByTestId("reasoning-streaming-indicator")).not.toHaveClass(
+      "animate-ping",
+    );
+    expect(document.querySelector(".animate-ping")).not.toBeInTheDocument();
+  });
+
   it("prevents long formatted reasoning text from creating page-width overflow", () => {
     render(
       <Reasoning open>
