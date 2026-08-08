@@ -36,7 +36,6 @@ import type { UsageCostRecord } from "@/lib/usage-tracker";
 import type { UsageDeductionResult } from "@/lib/rate-limit";
 import type { BudgetAbortDetails } from "@/lib/chat/budget-monitor";
 import type { OpenRouterModelMetadata } from "@/lib/api/openrouter-metadata";
-import type { KimiReasoningExperimentAssignment } from "@/lib/experiments/kimi-reasoning";
 import {
   extractErrorDetails,
   extractRetryAttempts,
@@ -1183,7 +1182,6 @@ type AgentCompletionAnalyticsArgs = {
   activeSandboxRecoveryDurationMs?: number;
   isAutoContinue?: boolean;
   stepLimitTelemetry?: AgentStepLimitTelemetry;
-  kimiReasoningExperiment?: KimiReasoningExperimentAssignment;
 };
 
 export function captureAgentRun({
@@ -1211,7 +1209,6 @@ export function captureAgentRun({
   activeSandboxRecoveryDurationMs,
   isAutoContinue,
   stepLimitTelemetry,
-  kimiReasoningExperiment,
 }: {
   posthog: PostHog | null;
   userId: string;
@@ -1237,7 +1234,6 @@ export function captureAgentRun({
   activeSandboxRecoveryDurationMs?: number;
   isAutoContinue?: boolean;
   stepLimitTelemetry?: AgentStepLimitTelemetry;
-  kimiReasoningExperiment?: KimiReasoningExperimentAssignment;
 }) {
   if (!posthog || mode !== "agent") return;
   posthog.capture({
@@ -1278,11 +1274,6 @@ export function captureAgentRun({
       }),
       ...(isAutoContinue !== undefined && {
         is_auto_continue: isAutoContinue,
-      }),
-      ...(kimiReasoningExperiment && {
-        experiment_key: kimiReasoningExperiment.key,
-        experiment_variant: kimiReasoningExperiment.variant,
-        reasoning_effort: kimiReasoningExperiment.reasoningEffort,
       }),
       ...(responseModel && { response_model: responseModel }),
       ...(responseModel &&
@@ -1348,7 +1339,6 @@ export function captureAgentCompletionAnalytics(
     activeSandboxRecoveryDurationMs: args.activeSandboxRecoveryDurationMs,
     isAutoContinue: args.isAutoContinue,
     stepLimitTelemetry: args.stepLimitTelemetry,
-    kimiReasoningExperiment: args.kimiReasoningExperiment,
   });
 }
 
@@ -1374,7 +1364,6 @@ export function captureUsageCost({
   paidDailyFreeAllowance,
   usageSettlement,
   analyticsRequestContext,
-  kimiReasoningExperiment,
   fallbackServed,
 }: {
   posthog: PostHog | null;
@@ -1399,7 +1388,6 @@ export function captureUsageCost({
     midRunCount: number;
   };
   analyticsRequestContext?: AnalyticsRequestContext;
-  kimiReasoningExperiment?: KimiReasoningExperimentAssignment;
   fallbackServed?: boolean;
 }) {
   if (!posthog) return;
@@ -1419,11 +1407,6 @@ export function captureUsageCost({
       mode,
       ...(agentPermissionMode && {
         agent_permission_mode: agentPermissionMode,
-      }),
-      ...(kimiReasoningExperiment && {
-        experiment_key: kimiReasoningExperiment.key,
-        experiment_variant: kimiReasoningExperiment.variant,
-        reasoning_effort: kimiReasoningExperiment.reasoningEffort,
       }),
       model: usage.model,
       ...(responseModel && { response_model: responseModel }),
