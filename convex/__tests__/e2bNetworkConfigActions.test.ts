@@ -9,6 +9,8 @@ jest.mock("../_generated/api", () => ({
     e2bNetworkConfigs: {
       getForUser: "e2bNetworkConfigs.getForUser",
       upsertForUser: "e2bNetworkConfigs.upsertForUser",
+      tryAcquireMigrationLease: "e2bNetworkConfigs.tryAcquireMigrationLease",
+      releaseMigrationLease: "e2bNetworkConfigs.releaseMigrationLease",
     },
   },
 }));
@@ -165,5 +167,41 @@ describe("E2B network config actions", () => {
         subscription: "pro",
       }),
     ).rejects.toThrow("Unauthorized: Invalid service key");
+  });
+
+  it("acquires and releases an expiring backend migration lease", async () => {
+    const { acquireE2BNetworkMigrationLease, releaseE2BNetworkMigrationLease } =
+      await import("../e2bNetworkConfigActions");
+    const ctx = createCtx();
+    ctx.runMutation.mockResolvedValueOnce(true);
+
+    await expect(
+      acquireE2BNetworkMigrationLease.handler(ctx as any, {
+        serviceKey: "service_key",
+        userId: "user_123",
+        leaseId: "lease_123",
+      }),
+    ).resolves.toBe(true);
+    expect(ctx.runMutation).toHaveBeenCalledWith(
+      "e2bNetworkConfigs.tryAcquireMigrationLease",
+      expect.objectContaining({
+        userId: "user_123",
+        leaseId: "lease_123",
+        now: expect.any(Number),
+        expiresAt: expect.any(Number),
+      }),
+    );
+
+    await expect(
+      releaseE2BNetworkMigrationLease.handler(ctx as any, {
+        serviceKey: "service_key",
+        userId: "user_123",
+        leaseId: "lease_123",
+      }),
+    ).resolves.toBeNull();
+    expect(ctx.runMutation).toHaveBeenLastCalledWith(
+      "e2bNetworkConfigs.releaseMigrationLease",
+      { userId: "user_123", leaseId: "lease_123" },
+    );
   });
 });

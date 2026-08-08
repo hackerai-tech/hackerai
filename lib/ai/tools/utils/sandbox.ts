@@ -167,10 +167,17 @@ export const ensureSandboxConnection = async (
     initialSandbox?: Sandbox | null;
   } = {},
 ): Promise<{ sandbox: Sandbox }> => {
-  const { userID, setSandbox, onBoot, networkConfig } = context;
+  const {
+    userID,
+    setSandbox,
+    onBoot,
+    networkConfig,
+    acquireNetworkMigrationLease,
+  } = context;
   const { initialSandbox } = options;
   const effectiveNetworkConfig = networkConfig ?? DEFAULT_AGENT_NETWORK_CONFIG;
   const networkPolicy = composeE2BNetworkPolicy(effectiveNetworkConfig);
+  let releaseNetworkMigrationLease: (() => Promise<void>) | undefined;
 
   // Return existing sandbox if already connected
   if (initialSandbox) {
@@ -235,6 +242,18 @@ export const ensureSandboxConnection = async (
       createPath = "create_after_version_mismatch";
       // Skip to creating new sandbox
     } else if (canMigrateInboundPolicy) {
+      if (!acquireNetworkMigrationLease) {
+        throw new Error(
+          "Cloud Agent inbound access cannot change because the migration coordinator is unavailable. Try again shortly.",
+        );
+      }
+      releaseNetworkMigrationLease =
+        (await acquireNetworkMigrationLease()) ?? undefined;
+      if (!releaseNetworkMigrationLease) {
+        throw new Error(
+          "Cloud Agent inbound access is already being applied by another Agent run. Try again shortly.",
+        );
+      }
       if (!supportsE2BSnapshots(existingSandbox.envdVersion)) {
         throw new Error(
           "Cloud Agent inbound access cannot change without resetting this older sandbox. Delete the sandbox in Settings > Data Controls, then try again.",
@@ -414,5 +433,7 @@ export const ensureSandboxConnection = async (
     throw new Error(
       `Failed creating persistent sandbox: ${error instanceof Error ? error.message : "Unknown error"}`,
     );
+  } finally {
+    await releaseNetworkMigrationLease?.();
   }
 };

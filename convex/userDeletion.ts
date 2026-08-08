@@ -18,6 +18,7 @@ export const USER_DELETION_TABLE_POLICY = {
     "notes",
     "user_customization",
     "e2b_network_configs",
+    "e2b_network_migration_leases",
     "extra_usage",
     "team_member_usage",
     "temp_streams",
@@ -381,6 +382,11 @@ async function cleanupUserDataForUser(
   >(ctx, budget, "e2b_network_configs", "by_user_id", (q) =>
     q.eq("user_id", userId),
   );
+  const e2bNetworkMigrationLeasesBatch = await collectByIndexBatch<
+    Doc<"e2b_network_migration_leases">
+  >(ctx, budget, "e2b_network_migration_leases", "by_user_id", (q) =>
+    q.eq("user_id", userId),
+  );
   const tempStreamsBatch = await collectByIndexBatch<Doc<"temp_streams">>(
     ctx,
     budget,
@@ -427,6 +433,7 @@ async function cleanupUserDataForUser(
     notesBatch,
     customizationBatch,
     e2bNetworkConfigsBatch,
+    e2bNetworkMigrationLeasesBatch,
     messagesBatch,
     tempStreamsBatch,
     localSandboxTokensBatch,
@@ -442,6 +449,7 @@ async function cleanupUserDataForUser(
   const notes = notesBatch.docs;
   const customization = customizationBatch.docs;
   const e2bNetworkConfigs = e2bNetworkConfigsBatch.docs;
+  const e2bNetworkMigrationLeases = e2bNetworkMigrationLeasesBatch.docs;
   const tempStreams = tempStreamsBatch.docs;
   const localSandboxTokens = localSandboxTokensBatch.docs;
   const localSandboxConnections = localSandboxConnectionsBatch.docs;
@@ -465,6 +473,13 @@ async function cleanupUserDataForUser(
   await deleteDocs(ctx, stats, "notes", notes, mode);
   await deleteDocs(ctx, stats, "user_customization", customization, mode);
   await deleteDocs(ctx, stats, "e2b_network_configs", e2bNetworkConfigs, mode);
+  await deleteDocs(
+    ctx,
+    stats,
+    "e2b_network_migration_leases",
+    e2bNetworkMigrationLeases,
+    mode,
+  );
   await deleteDocs(ctx, stats, "temp_streams", tempStreams, mode);
   await deleteDocs(
     ctx,

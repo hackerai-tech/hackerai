@@ -9,6 +9,7 @@ import { hasPaidEntitlement } from "../lib/auth/entitlements";
 
 const MAX_DESTINATIONS = 50;
 const MAX_DESTINATION_LENGTH = 253;
+const MIGRATION_LEASE_DURATION_MS = 10 * 60 * 1000;
 
 const inboundModeValidator = v.union(
   v.literal("public"),
@@ -233,5 +234,44 @@ export const getE2BNetworkConfigForBackend = action({
       { userId: args.userId },
     );
     return stored ? toPublicConfig(stored) : null;
+  },
+});
+
+export const acquireE2BNetworkMigrationLease = action({
+  args: {
+    serviceKey: v.string(),
+    userId: v.string(),
+    leaseId: v.string(),
+  },
+  returns: v.boolean(),
+  handler: async (ctx, args): Promise<boolean> => {
+    validateServiceKey(args.serviceKey);
+    const now = Date.now();
+    return ctx.runMutation(
+      internal.e2bNetworkConfigs.tryAcquireMigrationLease,
+      {
+        userId: args.userId,
+        leaseId: args.leaseId,
+        now,
+        expiresAt: now + MIGRATION_LEASE_DURATION_MS,
+      },
+    );
+  },
+});
+
+export const releaseE2BNetworkMigrationLease = action({
+  args: {
+    serviceKey: v.string(),
+    userId: v.string(),
+    leaseId: v.string(),
+  },
+  returns: v.null(),
+  handler: async (ctx, args): Promise<null> => {
+    validateServiceKey(args.serviceKey);
+    await ctx.runMutation(internal.e2bNetworkConfigs.releaseMigrationLease, {
+      userId: args.userId,
+      leaseId: args.leaseId,
+    });
+    return null;
   },
 });

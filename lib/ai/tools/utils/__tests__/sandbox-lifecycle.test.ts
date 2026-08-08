@@ -259,6 +259,7 @@ describe("E2B sandbox lease lifecycle", () => {
   });
 
   it("preserves idle sandbox state through a snapshot when inbound access changes", async () => {
+    const releaseMigrationLease = jest.fn(async () => undefined);
     const createSnapshot = jest.fn(async () => ({
       snapshotId: "snapshot-1",
       names: [],
@@ -283,6 +284,7 @@ describe("E2B sandbox lease lifecycle", () => {
         destinations: [],
         updatedAt: 2,
       },
+      acquireNetworkMigrationLease: jest.fn(async () => releaseMigrationLease),
     });
 
     expect(result.sandbox).toBe(createdSandbox);
@@ -298,6 +300,69 @@ describe("E2B sandbox lease lifecycle", () => {
     );
     expect(sandboxApi.kill).toHaveBeenCalledWith("sandbox-1");
     expect(sandboxApi.deleteSnapshot).toHaveBeenCalledWith("snapshot-1");
+    expect(releaseMigrationLease).toHaveBeenCalledTimes(1);
+    expect(releaseMigrationLease.mock.invocationCallOrder[0]).toBeGreaterThan(
+      sandboxApi.kill.mock.invocationCallOrder[0],
+    );
+  });
+
+  it("allows only one concurrent inbound migration for a user", async () => {
+    let leaseHeld = false;
+    let finishSnapshot!: () => void;
+    const snapshotStarted = new Promise<void>((resolve) => {
+      finishSnapshot = resolve;
+    });
+    let releaseSnapshot!: () => void;
+    const snapshotGate = new Promise<void>((resolve) => {
+      releaseSnapshot = resolve;
+    });
+    const acquireNetworkMigrationLease = jest.fn(async () => {
+      if (leaseHeld) return null;
+      leaseHeld = true;
+      return async () => {
+        leaseHeld = false;
+      };
+    });
+    const createSnapshot = jest.fn(async () => {
+      finishSnapshot();
+      await snapshotGate;
+      return { snapshotId: "snapshot-1", names: [] };
+    });
+    listSandbox({ state: "paused" });
+    sandboxApi.connect.mockResolvedValue({
+      sandboxId: "sandbox-1",
+      createSnapshot,
+    } as unknown as Sandbox);
+    sandboxApi.create.mockResolvedValue({
+      sandboxId: "sandbox-2",
+    } as unknown as Sandbox);
+    sandboxApi.kill.mockResolvedValue(true);
+    sandboxApi.deleteSnapshot.mockResolvedValue(true);
+    const context = {
+      userID: "user-1",
+      setSandbox: jest.fn(),
+      networkConfig: {
+        inboundMode: "token_required" as const,
+        outboundMode: "unrestricted" as const,
+        destinations: [],
+        updatedAt: 2,
+      },
+      acquireNetworkMigrationLease,
+    };
+
+    const firstMigration = ensureSandboxConnection(context);
+    await snapshotStarted;
+    await expect(ensureSandboxConnection(context)).rejects.toThrow(
+      "already being applied by another Agent run",
+    );
+    expect(sandboxApi.kill).not.toHaveBeenCalled();
+
+    releaseSnapshot();
+    await expect(firstMigration).resolves.toMatchObject({
+      sandbox: { sandboxId: "sandbox-2" },
+    });
+    expect(leaseHeld).toBe(false);
+    expect(acquireNetworkMigrationLease).toHaveBeenCalledTimes(2);
   });
 
   it("does not interrupt a running sandbox for an inbound change", async () => {

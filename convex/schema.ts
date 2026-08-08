@@ -324,6 +324,12 @@ export default defineSchema({
     updated_at: v.number(),
   }).index("by_user_id", ["user_id"]),
 
+  e2b_network_migration_leases: defineTable({
+    user_id: v.string(),
+    lease_id: v.string(),
+    expires_at: v.number(),
+  }).index("by_user_id", ["user_id"]),
+
   // Extra usage (created when user enables extra usage)
   // Note: Most monetary values stored in POINTS for precision (1 point = $0.0001, matching rate limiting)
   // This avoids precision loss when deducting sub-cent amounts from balance.

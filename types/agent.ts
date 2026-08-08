@@ -142,6 +142,7 @@ export interface SandboxContext {
   userID: string;
   setSandbox: (sandbox: Sandbox) => void;
   networkConfig?: AgentNetworkConfig | null;
+  acquireNetworkMigrationLease?: () => Promise<(() => Promise<void>) | null>;
   /** Called once when ensureSandboxConnection actually does work (creates or reconnects). */
   onBoot?: (info: SandboxBootInfo) => void;
 }

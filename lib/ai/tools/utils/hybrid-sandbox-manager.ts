@@ -24,7 +24,10 @@ import { generateCentrifugoToken } from "@/lib/centrifugo/jwt";
 import { sandboxConnectionChannel } from "@/lib/centrifugo/types";
 import { presenceHasConnectionId } from "@/lib/centrifugo/presence";
 import { isExpectedAlreadyGoneCleanupError } from "@/lib/utils/cleanup-errors";
-import { loadE2BNetworkConfig } from "./e2b-network-config";
+import {
+  acquireE2BNetworkMigrationLease,
+  loadE2BNetworkConfig,
+} from "./e2b-network-config";
 
 type SandboxInstance = Sandbox | CentrifugoSandbox;
 
@@ -701,6 +704,14 @@ export class HybridSandboxManager implements SandboxManager {
         },
         onBoot: this.onBoot,
         networkConfig,
+        acquireNetworkMigrationLease:
+          this.serviceKey && networkConfig
+            ? () =>
+                acquireE2BNetworkMigrationLease({
+                  userId: this.userID,
+                  serviceKey: this.serviceKey,
+                })
+            : undefined,
       },
       {
         initialSandbox: this.isLocal ? null : (this.sandbox as Sandbox | null),

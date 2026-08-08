@@ -11,7 +11,10 @@ import {
   refreshE2BSandboxLeaseBestEffort,
 } from "./sandbox";
 import { SANDBOX_ENVIRONMENT_TOOLS } from "./sandbox-tools";
-import { loadE2BNetworkConfig } from "./e2b-network-config";
+import {
+  acquireE2BNetworkMigrationLease,
+  loadE2BNetworkConfig,
+} from "./e2b-network-config";
 
 // One failed initial readiness check plus one failed reconnect is enough to
 // stop terminal retries in this Agent run. The manager only forgets its local
@@ -87,6 +90,14 @@ export class DefaultSandboxManager implements SandboxManager {
         setSandbox: this.setSandboxCallback,
         onBoot: this.onBoot,
         networkConfig,
+        acquireNetworkMigrationLease:
+          this.serviceKey && networkConfig
+            ? () =>
+                acquireE2BNetworkMigrationLease({
+                  userId: this.userID,
+                  serviceKey: this.serviceKey!,
+                })
+            : undefined,
       },
       {
         initialSandbox: this.sandbox,

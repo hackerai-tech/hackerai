@@ -281,6 +281,20 @@ function seedTables(userId = "user_123", otherUserId = "user_other"): Tables {
         updated_at: 1,
       },
     ],
+    e2b_network_migration_leases: [
+      {
+        _id: "network-lease-user",
+        user_id: userId,
+        lease_id: "lease-user",
+        expires_at: Date.now() + 60_000,
+      },
+      {
+        _id: "network-lease-other",
+        user_id: otherUserId,
+        lease_id: "lease-other",
+        expires_at: Date.now() + 60_000,
+      },
+    ],
     temp_streams: [
       { _id: "temp-stream-user", chat_id: "chat-1", user_id: userId },
       {

@@ -52,3 +52,50 @@ export const upsertForUser = internalMutation({
     return null;
   },
 });
+
+export const tryAcquireMigrationLease = internalMutation({
+  args: {
+    userId: v.string(),
+    leaseId: v.string(),
+    now: v.number(),
+    expiresAt: v.number(),
+  },
+  returns: v.boolean(),
+  handler: async (ctx, args) => {
+    const existing = await ctx.db
+      .query("e2b_network_migration_leases")
+      .withIndex("by_user_id", (q) => q.eq("user_id", args.userId))
+      .unique();
+
+    if (existing && existing.expires_at > args.now) return false;
+
+    const value = {
+      lease_id: args.leaseId,
+      expires_at: args.expiresAt,
+    };
+    if (existing) {
+      await ctx.db.patch(existing._id, value);
+    } else {
+      await ctx.db.insert("e2b_network_migration_leases", {
+        user_id: args.userId,
+        ...value,
+      });
+    }
+    return true;
+  },
+});
+
+export const releaseMigrationLease = internalMutation({
+  args: { userId: v.string(), leaseId: v.string() },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const existing = await ctx.db
+      .query("e2b_network_migration_leases")
+      .withIndex("by_user_id", (q) => q.eq("user_id", args.userId))
+      .unique();
+    if (existing?.lease_id === args.leaseId) {
+      await ctx.db.delete(existing._id);
+    }
+    return null;
+  },
+});
