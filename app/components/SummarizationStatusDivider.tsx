@@ -1,6 +1,6 @@
 "use client";
 
-import { ScrollText } from "lucide-react";
+import { NotebookText } from "lucide-react";
 import { Shimmer } from "@/components/ai-elements/shimmer";
 import { cn } from "@/lib/utils";
 
@@ -43,25 +43,26 @@ export function SummarizationStatusDivider({
   return (
     <div
       className={cn(
-        "not-prose my-4 flex w-full items-center gap-3 text-muted-foreground",
+        "not-prose my-4 flex w-full min-w-0 items-center gap-2 text-sm leading-6 text-muted-foreground",
         className,
       )}
       aria-live={isStarted ? "polite" : undefined}
+      data-testid="summarization-status"
     >
-      <span className="h-px min-w-8 flex-1 bg-border" aria-hidden="true" />
-      <span className="inline-flex min-w-0 shrink items-center gap-2 px-1 text-sm leading-6 text-muted-foreground">
-        {!isStarted && (
-          <ScrollText className="size-4 shrink-0" aria-hidden="true" />
-        )}
-        {isStarted ? (
-          <Shimmer as="span" className="truncate text-sm leading-6">
-            {label}
-          </Shimmer>
-        ) : (
-          <span className="truncate">{label}</span>
-        )}
-      </span>
-      <span className="h-px min-w-8 flex-1 bg-border" aria-hidden="true" />
+      {!isStarted && (
+        <NotebookText
+          className="size-4 shrink-0"
+          aria-hidden="true"
+          data-testid="summarization-status-icon"
+        />
+      )}
+      {isStarted ? (
+        <Shimmer as="span" className="min-w-0 truncate text-sm leading-6">
+          {label}
+        </Shimmer>
+      ) : (
+        <span className="min-w-0 truncate">{label}</span>
+      )}
     </div>
   );
 }
