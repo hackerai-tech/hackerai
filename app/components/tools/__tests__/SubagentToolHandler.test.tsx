@@ -14,7 +14,7 @@ jest.mock("@/app/contexts/GlobalState", () => ({
   }),
 }));
 
-const { SubagentToolHandler } =
+const { SubagentToolGroup, SubagentToolHandler } =
   require("../SubagentToolHandler") as typeof import("../SubagentToolHandler");
 
 describe("SubagentToolHandler", () => {
@@ -104,7 +104,9 @@ describe("SubagentToolHandler", () => {
     );
 
     expect(
-      screen.getByText("Stored XSS validator started working"),
+      screen.getByRole("group", {
+        name: "Stored XSS validator started working",
+      }),
     ).toBeInTheDocument();
   });
 
@@ -150,7 +152,7 @@ describe("SubagentToolHandler", () => {
       }),
     );
     expect(
-      screen.getByText("Stored XSS validator updated"),
+      screen.getByRole("group", { name: "Stored XSS validator updated" }),
     ).toBeInTheDocument();
     expect(openSidebar).toHaveBeenCalledWith({
       kind: "subagents",
@@ -199,8 +201,81 @@ describe("SubagentToolHandler", () => {
     );
 
     expect(
-      screen.getByText("Stored XSS validator finished"),
+      screen.getByRole("group", { name: "Stored XSS validator finished" }),
     ).toBeInTheDocument();
+  });
+
+  it("shows adjacent child starts as one row with distinct visual identities", () => {
+    const parts = [
+      {
+        type: "tool-create_agent",
+        toolCallId: "tool-create-vercel",
+        state: "output-available",
+        input: { name: "Collect vercel", task: "Collect Vercel evidence" },
+        output: {
+          success: true,
+          agent_id: "sa_vercel",
+          name: "Collect vercel",
+          status: "queued",
+        },
+      },
+      {
+        type: "tool-create_agent",
+        toolCallId: "tool-create-posthog",
+        state: "output-available",
+        input: { name: "Collect posthog", task: "Collect PostHog evidence" },
+        output: {
+          success: true,
+          agent_id: "sa_posthog",
+          name: "Collect posthog",
+          status: "queued",
+        },
+      },
+      {
+        type: "tool-create_agent",
+        toolCallId: "tool-create-trigger",
+        state: "output-available",
+        input: { name: "Collect trigger", task: "Collect Trigger evidence" },
+        output: {
+          success: true,
+          agent_id: "sa_trigger",
+          name: "Collect trigger",
+          status: "queued",
+        },
+      },
+    ];
+
+    render(
+      <SubagentToolGroup
+        message={{ id: "parent-run", role: "assistant", parts } as any}
+        parts={parts}
+        status="ready"
+      />,
+    );
+
+    expect(screen.getAllByText("started working")).toHaveLength(1);
+    const buttons = [
+      screen.getByRole("button", {
+        name: "Open Collect vercel in sidebar",
+      }),
+      screen.getByRole("button", {
+        name: "Open Collect posthog in sidebar",
+      }),
+      screen.getByRole("button", {
+        name: "Open Collect trigger in sidebar",
+      }),
+    ];
+    expect(
+      new Set(buttons.map((button) => button.dataset.subagentVisual)).size,
+    ).toBe(3);
+
+    fireEvent.click(buttons[1]);
+    expect(openSidebar).toHaveBeenCalledWith({
+      kind: "subagents",
+      parentMessageId: "parent-run",
+      toolCallId: "tool-create-posthog",
+      selectedSubagentId: "sa_posthog",
+    });
   });
 
   it("opens completed delegation without model-visible runtime identifiers", () => {

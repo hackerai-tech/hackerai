@@ -2,6 +2,8 @@
 
 import { memo, useMemo } from "react";
 import { MessagePartHandler } from "./MessagePartHandler";
+import { SubagentToolGroup } from "./tools/SubagentToolHandler";
+import type { AgentWorkActivityPart } from "./worked-for-parts";
 import type { ChatMessage, ChatStatus } from "@/types";
 import type { FileDetails } from "@/types/file";
 
@@ -12,6 +14,7 @@ type AgentActivityRowProps = {
   message: ChatMessage;
   part: ChatMessage["parts"][number];
   partIndex: number;
+  groupedParts?: AgentWorkActivityPart[];
   sharedFileDetails?: FileDetails[];
   status: ChatStatus;
   terminalChunksByToolCallId: Map<string, readonly string[]>;
@@ -24,6 +27,7 @@ export const AgentActivityRow = memo(function AgentActivityRow({
   message,
   part,
   partIndex,
+  groupedParts,
   sharedFileDetails,
   status,
   terminalChunksByToolCallId,
@@ -45,19 +49,29 @@ export const AgentActivityRow = memo(function AgentActivityRow({
       data-testid="agent-activity-row"
     >
       <div className="prose max-w-none min-w-0 overflow-hidden dark:prose-invert">
-        <MessagePartHandler
-          message={message}
-          part={part}
-          partIndex={partIndex}
-          status={status}
-          isLastMessage={isLastMessage}
-          keepLatestReasoningOpenDuringStreaming={
-            keepLatestReasoningOpenDuringStreaming
-          }
-          deferReasoningCollapseUntilParent={deferReasoningCollapseUntilParent}
-          terminalOutputByToolCallId={terminalOutputByToolCallId}
-          sharedFileDetails={sharedFileDetails}
-        />
+        {groupedParts ? (
+          <SubagentToolGroup
+            message={message}
+            parts={groupedParts.map(({ part: groupedPart }) => groupedPart)}
+            status={status}
+          />
+        ) : (
+          <MessagePartHandler
+            message={message}
+            part={part}
+            partIndex={partIndex}
+            status={status}
+            isLastMessage={isLastMessage}
+            keepLatestReasoningOpenDuringStreaming={
+              keepLatestReasoningOpenDuringStreaming
+            }
+            deferReasoningCollapseUntilParent={
+              deferReasoningCollapseUntilParent
+            }
+            terminalOutputByToolCallId={terminalOutputByToolCallId}
+            sharedFileDetails={sharedFileDetails}
+          />
+        )}
       </div>
     </div>
   );
