@@ -43,9 +43,27 @@ describe("security validation subagent runtime contracts", () => {
     );
     expect(child).toContain("toolResultsContainImageViewResult");
     expect(child).toContain("resolveSubagentModelForImageToolResults");
-    expect(child).toContain("model: provider.languageModel(activeModelName)");
+    expect(child).toContain("getGuardedLanguageModel(");
     expect(child).toContain('"subagent_model_promoted"');
     expect(child).toContain("setCurrentModelName(activeModelName)");
+  });
+
+  it("bounds and namespaces every child provider response and retries content filtering on another model", () => {
+    const child = read("trigger/subagent.ts");
+    expect(child).toContain("guardLanguageModelProviderResponse(languageModel");
+    expect(child).toContain("MAX_PROVIDER_TOOL_CALLS_PER_RESPONSE");
+    expect(child).toContain("[profile.finalResultTool.name]: 1");
+    expect(child).toContain("namespaceLanguageModelToolCalls(");
+    expect(child).toContain(
+      "`sa${row.subagent_id}a${generationAttempt}s${stepIndex}`",
+    );
+    expect(child).toContain("steps.length");
+    expect(child).toContain("getContentFilterRetryModel(");
+    expect(child).toContain('retry.category === "content_blocked"');
+    expect(child).toContain('"content_filter_retry_exhausted"');
+    expect(child).not.toContain(
+      "model: provider.languageModel(activeModelName)",
+    );
   });
 
   it("propagates parent cancellation and refuses a canceled queued child", () => {

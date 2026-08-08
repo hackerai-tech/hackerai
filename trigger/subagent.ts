@@ -11,6 +11,7 @@ import {
   stepCountIs,
   streamText,
   tool,
+  type LanguageModel,
   type ModelMessage,
   type UIMessage,
   type UIMessageChunk,
@@ -19,6 +20,12 @@ import {
 import { agentUiStream } from "./streams";
 import { createTools } from "@/lib/ai/tools";
 import { createTrackedProvider } from "@/lib/ai/providers";
+import type { ModelName } from "@/lib/ai/providers";
+import {
+  guardLanguageModelProviderResponse,
+  MAX_PROVIDER_TOOL_CALLS_PER_RESPONSE,
+} from "@/lib/ai/provider-response-guard";
+import { namespaceLanguageModelToolCalls } from "@/lib/ai/tool-call-id-namespace";
 import {
   SUBAGENT_MAX_ACTIVE_SECONDS,
   SUBAGENT_MAX_DURATION_SECONDS,
@@ -63,7 +70,10 @@ import {
   deductUsage,
   recordFreeMonthlyCost,
 } from "@/lib/rate-limit";
-import { buildExtraUsageConfig } from "@/lib/api/chat-stream-helpers";
+import {
+  buildExtraUsageConfig,
+  getContentFilterRetryModel,
+} from "@/lib/api/chat-stream-helpers";
 import { getUserCustomization } from "@/lib/db/actions";
 import { extractOpenRouterMetadata } from "@/lib/api/openrouter-metadata";
 import {
@@ -530,6 +540,42 @@ export const subagentTask = task({
             assertSubagentSandboxIdentity(sandbox, row.sandbox_identity);
 
             const provider = createTrackedProvider();
+            const getGuardedLanguageModel = (
+              modelName: string,
+              generationAttempt: number,
+              stepIndex: number,
+            ): LanguageModel => {
+              const languageModel = provider.languageModel(modelName);
+              return namespaceLanguageModelToolCalls(
+                guardLanguageModelProviderResponse(languageModel, {
+                  maxToolCalls: MAX_PROVIDER_TOOL_CALLS_PER_RESPONSE,
+                  perToolCallLimits: {
+                    [profile.finalResultTool.name]: 1,
+                  },
+                  onToolCallsDropped: ({
+                    droppedToolCallCount,
+                    maxToolCalls,
+                  }) => {
+                    triggerLogger.warn(
+                      "[security-validation-subagent] provider tool calls bounded",
+                      {
+                        event: "provider_tool_call_guard_applied",
+                        service: "hackerai-subagent",
+                        subagent_id: row.subagent_id,
+                        parent_trigger_run_id: row.parent_trigger_run_id,
+                        trigger_run_id: ctx.run.id,
+                        model: modelName,
+                        generation_attempt: generationAttempt,
+                        step: stepIndex + 1,
+                        dropped_tool_call_count: droppedToolCallCount,
+                        max_tool_calls: maxToolCalls,
+                      },
+                    );
+                  },
+                }),
+                `sa${row.subagent_id}a${generationAttempt}s${stepIndex}`,
+              );
+            };
             const conversationMessages: ModelMessage[] = [
               { role: "user", content: prompt },
             ];
@@ -543,10 +589,15 @@ export const subagentTask = task({
             ) {
               generationAttempt += 1;
               let attemptError: unknown;
+              let attemptResponseModel: string | undefined;
               let attemptUiMessages: UIMessage[] = [];
               const remainingSteps = SUBAGENT_MAX_STEPS - stepCount;
               const generation = streamText({
-                model: provider.languageModel(activeModelName),
+                model: getGuardedLanguageModel(
+                  activeModelName,
+                  generationAttempt,
+                  0,
+                ),
                 system: profile.systemPrompt,
                 messages: conversationMessages,
                 tools,
@@ -635,7 +686,11 @@ export const subagentTask = task({
                     2_000,
                   );
                   return {
-                    model: provider.languageModel(activeModelName),
+                    model: getGuardedLanguageModel(
+                      activeModelName,
+                      generationAttempt,
+                      steps.length,
+                    ),
                     messages: compacted.messages as ModelMessage[],
                   };
                 },
@@ -644,7 +699,8 @@ export const subagentTask = task({
                 },
                 onStepFinish: async ({ usage, response, providerMetadata }) => {
                   stepCount += 1;
-                  responseModel = response?.modelId ?? activeModelName;
+                  attemptResponseModel = response?.modelId ?? activeModelName;
+                  responseModel = attemptResponseModel;
                   const index = usage
                     ? usageTracker.accumulateStep(
                         usage,
@@ -722,6 +778,18 @@ export const subagentTask = task({
                   },
                 );
                 if (retry.shouldRetry) {
+                  const previousModelName = activeModelName;
+                  if (retry.category === "content_blocked") {
+                    activeModelName = getContentFilterRetryModel(
+                      activeModelName as ModelName,
+                      "agent",
+                      attemptResponseModel,
+                    );
+                    setCurrentModelName(activeModelName);
+                    metadata
+                      .set("activeModel", activeModelName)
+                      .set("contentFilterRetryModel", activeModelName);
+                  }
                   providerRetriesUsed += 1;
                   await recordSubagentRecovery({
                     subagentId: row.subagent_id,
@@ -730,13 +798,15 @@ export const subagentTask = task({
                   }).catch(() => false);
                   metadata.set("providerRetryCount", providerRetriesUsed);
                   triggerLogger.warn(
-                    "[security-validation-subagent] retrying transient provider failure",
+                    "[security-validation-subagent] retrying recoverable provider failure",
                     {
                       subagentId: row.subagent_id,
                       parentTriggerRunId: row.parent_trigger_run_id,
                       triggerRunId: ctx.run.id,
                       attempt: providerRetriesUsed,
                       errorCategory: retry.category,
+                      modelFrom: previousModelName,
+                      modelTo: activeModelName,
                       delayMs: retry.delayMs,
                     },
                   );
@@ -744,11 +814,14 @@ export const subagentTask = task({
                   continue;
                 }
                 runtimeFailure = attemptError;
-                runtimeFailureCode = isTransientProviderCategory(retry.category)
-                  ? "provider_retry_exhausted"
-                  : retry.category === "unknown"
-                    ? "runtime_error"
-                    : "provider_error";
+                runtimeFailureCode =
+                  retry.category === "content_blocked"
+                    ? "content_filter_retry_exhausted"
+                    : isTransientProviderCategory(retry.category)
+                      ? "provider_retry_exhausted"
+                      : retry.category === "unknown"
+                        ? "runtime_error"
+                        : "provider_error";
                 break;
               }
 
@@ -828,9 +901,12 @@ export const subagentTask = task({
                     summary:
                       runtimeFailureCode === "provider_retry_exhausted"
                         ? "Subagent could not recover from a temporary model provider error."
-                        : runtimeFailureCode === "provider_error"
-                          ? "Subagent stopped because the model provider rejected the request."
-                          : "Subagent failed before returning a result.",
+                        : runtimeFailureCode ===
+                            "content_filter_retry_exhausted"
+                          ? "Subagent could not complete because the available model providers blocked the validation content."
+                          : runtimeFailureCode === "provider_error"
+                            ? "Subagent stopped because the model provider rejected the request."
+                            : "Subagent failed before returning a result.",
                   }
                 : !resultValue
                   ? {

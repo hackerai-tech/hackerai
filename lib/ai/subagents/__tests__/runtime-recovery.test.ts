@@ -4,6 +4,7 @@ import {
   buildMissingSubagentResultRecoveryMessage,
   canRecoverMissingSubagentResult,
   getSubagentProviderRetryDecision,
+  isRecoverableProviderCategory,
   isTransientProviderCategory,
   pipeSubagentUiMessageStream,
 } from "../runtime-recovery";
@@ -31,6 +32,29 @@ describe("subagent runtime recovery", () => {
     expect(isTransientProviderCategory("provider_4xx")).toBe(false);
     expect(
       getSubagentProviderRetryDecision(error, 2, healthyRuntime).shouldRetry,
+    ).toBe(false);
+  });
+
+  it("retries content-filter failures within the same bounded retry budget", () => {
+    const contentBlocked = Object.assign(
+      new Error(
+        "PROHIBITED_CONTENT: provider returned content-filter finish reason",
+      ),
+      {
+        name: "ProviderContentBlockedFinishReasonError",
+        statusCode: 403,
+        finishReason: "content-filter",
+      },
+    );
+
+    expect(
+      getSubagentProviderRetryDecision(contentBlocked, 0, healthyRuntime),
+    ).toMatchObject({ category: "content_blocked", shouldRetry: true });
+    expect(isRecoverableProviderCategory("content_blocked")).toBe(true);
+    expect(isTransientProviderCategory("content_blocked")).toBe(false);
+    expect(
+      getSubagentProviderRetryDecision(contentBlocked, 2, healthyRuntime)
+        .shouldRetry,
     ).toBe(false);
   });
 

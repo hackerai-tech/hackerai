@@ -1,6 +1,6 @@
 import {
   SUBAGENT_MAX_RESULT_RECOVERIES,
-  SUBAGENT_MAX_TRANSIENT_RETRIES,
+  SUBAGENT_MAX_PROVIDER_RECOVERY_RETRIES,
 } from "./contracts";
 import {
   extractErrorDetails,
@@ -15,9 +15,18 @@ const TRANSIENT_PROVIDER_CATEGORIES = new Set<ProviderErrorCategory>([
   "timeout",
 ]);
 
+const RECOVERABLE_PROVIDER_CATEGORIES = new Set<ProviderErrorCategory>([
+  ...TRANSIENT_PROVIDER_CATEGORIES,
+  "content_blocked",
+]);
+
 export const isTransientProviderCategory = (
   category: ProviderErrorCategory,
 ): boolean => TRANSIENT_PROVIDER_CATEGORIES.has(category);
+
+export const isRecoverableProviderCategory = (
+  category: ProviderErrorCategory,
+): boolean => RECOVERABLE_PROVIDER_CATEGORIES.has(category);
 
 export type SubagentProviderRetryDecision = {
   category: ProviderErrorCategory;
@@ -39,8 +48,8 @@ export const getSubagentProviderRetryDecision = (
     !options.aborted &&
     !options.spendCapExceeded &&
     options.hasStepsRemaining &&
-    retriesUsed < SUBAGENT_MAX_TRANSIENT_RETRIES &&
-    isTransientProviderCategory(category);
+    retriesUsed < SUBAGENT_MAX_PROVIDER_RECOVERY_RETRIES &&
+    isRecoverableProviderCategory(category);
 
   const baseDelayMs = 750 * 2 ** retriesUsed;
 
