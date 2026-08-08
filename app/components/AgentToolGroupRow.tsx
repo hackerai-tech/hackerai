@@ -155,7 +155,7 @@ export const AgentToolGroupRow = memo(function AgentToolGroupRow({
           onKeyDown={handleKeyDown}
           onPointerDown={handlePointerDown}
           onTouchStart={handleTouchStart}
-          className="group flex w-full max-w-full items-center gap-2 text-left text-sm text-muted-foreground transition-colors hover:text-foreground desktop:w-fit"
+          className="group flex w-full max-w-full items-center gap-2 text-left text-sm text-muted-foreground transition-colors hover:text-foreground"
         >
           <SummaryIcon
             className="size-4 shrink-0"

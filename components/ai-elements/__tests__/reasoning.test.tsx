@@ -21,7 +21,7 @@ describe("Reasoning", () => {
     expect(content).toHaveClass("mt-2");
   });
 
-  it("uses a full mobile row and a precise desktop disclosure affordance", () => {
+  it("uses the full disclosure row on mobile and desktop", () => {
     render(
       <Reasoning>
         <ReasoningTrigger />
@@ -34,7 +34,7 @@ describe("Reasoning", () => {
     const chevron = screen.getByTestId("reasoning-chevron");
 
     expect(trigger).toHaveClass("w-full");
-    expect(trigger).toHaveClass("desktop:w-fit");
+    expect(trigger).not.toHaveClass("desktop:w-fit");
     expect(label).not.toHaveClass("flex-1");
     expect(chevron).toHaveClass("opacity-100");
     expect(chevron).toHaveClass("desktop:opacity-0");
