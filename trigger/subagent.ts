@@ -604,6 +604,7 @@ export const subagentTask = task({
               let attemptResponseModel: string | undefined;
               let attemptUiMessages: UIMessage[] = [];
               const remainingSteps = SUBAGENT_MAX_STEPS - stepCount;
+              const forceFinalResultTool = resultRecoveriesUsed > 0;
               const generation = streamText({
                 model: getGuardedLanguageModel(
                   activeModelName,
@@ -613,6 +614,12 @@ export const subagentTask = task({
                 system: profile.systemPrompt,
                 messages: conversationMessages,
                 tools,
+                toolChoice: forceFinalResultTool
+                  ? {
+                      type: "tool",
+                      toolName: profile.finalResultTool.name,
+                    }
+                  : "auto",
                 stopWhen: [
                   hasToolCall(profile.finalResultTool.name),
                   stepCountIs(remainingSteps),
