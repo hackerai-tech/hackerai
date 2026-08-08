@@ -26,6 +26,7 @@ test.describe("Settings dialog loading layout", () => {
 
     const dialog = page.getByTestId("settings-dialog");
     await expect(dialog).toBeVisible();
+    await expect(loadingShell).toBeHidden();
     const dialogBox = await dialog.boundingBox();
     expect(dialogBox).not.toBeNull();
 
