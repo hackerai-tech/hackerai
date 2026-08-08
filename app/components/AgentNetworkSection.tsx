@@ -194,8 +194,8 @@ export function AgentNetworkSection() {
             Cloud Agent network
           </h3>
           <p className="text-sm text-muted-foreground">
-            Control public URLs and outbound destinations for E2B Cloud Agent.
-            Local and desktop environments are unchanged.
+            Control public URLs and outbound destinations for Cloud Agent. Local
+            and desktop environments are unchanged.
           </p>
         </div>
       </div>
@@ -281,7 +281,7 @@ export function AgentNetworkSection() {
             One per line or comma-separated.{" "}
             {form.outboundMode === "allow_only"
               ? "Domains, IP addresses, and CIDR blocks are supported."
-              : "E2B deny lists support IP addresses and CIDR blocks, not domains."}
+              : "Block lists support IP addresses and CIDR blocks, not domains."}
           </p>
         </div>
       ) : null}

@@ -31,7 +31,7 @@ describe("AgentNetworkSection", () => {
     );
   });
 
-  it("loads saved controls and explains E2B's actual boundaries", async () => {
+  it("loads saved controls and explains filtering boundaries", async () => {
     render(<AgentNetworkSection />);
 
     expect(screen.getByText("Loading network controls…")).toBeInTheDocument();
@@ -40,6 +40,7 @@ describe("AgentNetworkSection", () => {
       "Token required",
     );
     expect(screen.getByText(/Local and desktop environments/)).toBeVisible();
+    expect(screen.queryByText(/E2B/i)).not.toBeInTheDocument();
 
     await userEvent.click(
       screen.getByRole("button", { name: "How filtering works" }),
