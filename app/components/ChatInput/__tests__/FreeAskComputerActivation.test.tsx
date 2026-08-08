@@ -47,7 +47,7 @@ describe("FreeAskComputerActivation", () => {
     render(<FreeAskComputerActivation />);
 
     const trigger = screen.getByRole("button", {
-      name: "Connect computer for Agent mode",
+      name: "Set up HackerAI Desktop for Agent mode",
     });
     expect(trigger).toBeInTheDocument();
     expect(trigger).toHaveClass(
@@ -63,7 +63,8 @@ describe("FreeAskComputerActivation", () => {
       "lucide-monitor",
     );
     expect(trigger.querySelectorAll("svg")).toHaveLength(1);
-    const label = screen.getByText("Connect Computer");
+    const label = trigger.querySelector("span");
+    expect(label).toHaveTextContent("HackerAI Desktop");
     expect(label).toHaveClass("hidden", "md:inline");
     expect(label).not.toHaveClass("text-muted-foreground");
 
@@ -85,7 +86,7 @@ describe("FreeAskComputerActivation", () => {
 
     await user.click(
       screen.getByRole("button", {
-        name: "Connect computer for Agent mode",
+        name: "Set up HackerAI Desktop for Agent mode",
       }),
     );
 
@@ -97,7 +98,7 @@ describe("FreeAskComputerActivation", () => {
         (_, element) =>
           element?.tagName === "P" &&
           element.textContent ===
-            "Open HackerAI on a desktop computer to download the app for macOS, Windows, or Linux.",
+            "Use a desktop computer to download HackerAI Desktop for macOS, Windows, or Linux.",
       ),
     ).toHaveClass("md:hidden");
     expect(
@@ -128,6 +129,7 @@ describe("FreeAskComputerActivation", () => {
       "https://example.com/HackerAI.dmg",
     );
     expect(download).toHaveAttribute("target", "_blank");
+    expect(download).toHaveTextContent("Download HackerAI Desktop");
 
     await user.click(download);
     expect(mockCaptureAuthenticatedEvent).toHaveBeenCalledWith(
@@ -143,7 +145,7 @@ describe("FreeAskComputerActivation", () => {
 
     await user.click(
       screen.getByRole("button", {
-        name: "Connect computer for Agent mode",
+        name: "Set up HackerAI Desktop for Agent mode",
       }),
     );
     await user.click(screen.getByTestId("free-ask-cloud-upgrade"));
@@ -162,7 +164,7 @@ describe("FreeAskComputerActivation", () => {
 
     expect(
       screen.queryByRole("button", {
-        name: "Connect computer for Agent mode",
+        name: "Set up HackerAI Desktop for Agent mode",
       }),
     ).not.toBeInTheDocument();
     expect(mockCaptureAuthenticatedEvent).not.toHaveBeenCalled();
