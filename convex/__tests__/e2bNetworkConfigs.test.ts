@@ -33,6 +33,24 @@ function createCtx(
 }
 
 describe("E2B network migration leases", () => {
+  it("acquires a first lease for a user", async () => {
+    const { ctx } = createCtx(null);
+
+    await expect(
+      tryAcquireMigrationLease.handler(ctx as any, {
+        userId: "user-1",
+        leaseId: "lease-new",
+        now: 1_000,
+        expiresAt: 11_000,
+      }),
+    ).resolves.toBe(true);
+    expect(ctx.db.insert).toHaveBeenCalledWith("e2b_network_migration_leases", {
+      user_id: "user-1",
+      lease_id: "lease-new",
+      expires_at: 11_000,
+    });
+  });
+
   it("rejects acquisition while an unexpired lease is held", async () => {
     const { ctx } = createCtx({
       _id: "lease-doc",

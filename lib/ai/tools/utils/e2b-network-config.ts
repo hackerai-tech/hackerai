@@ -36,12 +36,12 @@ export async function acquireE2BNetworkMigrationLease(args: {
   let released = false;
   return async () => {
     if (released) return;
-    released = true;
     try {
       await client.action(
         api.e2bNetworkConfigActions.releaseE2BNetworkMigrationLease,
         { ...args, leaseId },
       );
+      released = true;
     } catch (error) {
       console.warn(
         JSON.stringify({

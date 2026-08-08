@@ -191,6 +191,8 @@ describe("E2B network config actions", () => {
         expiresAt: expect.any(Number),
       }),
     );
+    const leaseArgs = ctx.runMutation.mock.calls[0][1];
+    expect(leaseArgs.expiresAt).toBe(leaseArgs.now + 10 * 60 * 1000);
 
     await expect(
       releaseE2BNetworkMigrationLease.handler(ctx as any, {
