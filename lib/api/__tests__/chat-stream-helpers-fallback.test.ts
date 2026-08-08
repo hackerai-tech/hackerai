@@ -281,16 +281,16 @@ describe("buildProviderOptions fallback chain", () => {
     expect(opts.openrouter).not.toHaveProperty("models");
   });
 
-  it("uses low reasoning for free Ask across its fallback chain", () => {
+  it("uses high reasoning for free Ask across its fallback chain", () => {
     const opts = buildProviderOptions(false, "user-1", "ask-model-free", "ask");
     expect(opts.openrouter.reasoning).toEqual({
       enabled: true,
-      effort: "low",
+      effort: "high",
     });
     expect(opts.openrouter.models).toEqual([GROK_SLUG, KIMI_K3_SLUG]);
   });
 
-  it("keeps free Ask reasoning low over a scoped override", () => {
+  it("keeps free Ask reasoning high over a lower scoped override", () => {
     const opts = buildProviderOptions(
       false,
       "user-1",
@@ -303,12 +303,12 @@ describe("buildProviderOptions fallback chain", () => {
 
     expect(opts.openrouter.reasoning).toEqual({
       enabled: true,
-      effort: "low",
+      effort: "high",
     });
     expect(opts.openrouter.models).toEqual([GROK_SLUG, KIMI_K3_SLUG]);
   });
 
-  it("restores free Ask high reasoning for the previous-route experiment", () => {
+  it("keeps free Ask high reasoning for an explicit high override", () => {
     const opts = buildProviderOptions(
       false,
       "user-1",
