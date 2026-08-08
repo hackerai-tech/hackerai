@@ -66,8 +66,10 @@ describe("security validation subagent runtime contracts", () => {
     expect(child).toContain("getContentFilterRetryModel(");
     expect(child).toContain('retry.category === "content_blocked"');
     expect(child).toContain('"content_filter_retry_exhausted"');
-    expect(child).toContain("const forceFinalResultTool =");
-    expect(child).toContain("toolName: profile.finalResultTool.name");
+    expect(child).toContain("const structuredResultRecovery =");
+    expect(child).toContain("Output.object({");
+    expect(child).toContain("await generation.consumeStream()");
+    expect(child).toContain("await acceptValidationResult(recoveredResult)");
     expect(child).not.toContain(
       "model: provider.languageModel(activeModelName)",
     );

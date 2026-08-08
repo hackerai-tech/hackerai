@@ -7,6 +7,7 @@ import {
 import {
   convertToModelMessages,
   createUIMessageStream,
+  Output,
   hasToolCall,
   stepCountIs,
   streamText,
@@ -469,47 +470,48 @@ export const subagentTask = task({
         },
         execute: async ({ writer }) => {
           try {
+            const acceptValidationResult = async (input: unknown) => {
+              const parsed = profile.finalResultTool.schema.parse(input);
+              if (
+                Buffer.byteLength(JSON.stringify(parsed), "utf8") >
+                profile.finalResultTool.maxBytes
+              ) {
+                return {
+                  accepted: false,
+                  error: `Result exceeds ${profile.finalResultTool.maxBytes} bytes; shorten it and submit again.`,
+                };
+              }
+              if (resultValue) {
+                return {
+                  accepted: false,
+                  error: "A validation result was already accepted.",
+                };
+              }
+              const finalizing = await markSubagentFinalizing(
+                row.subagent_id,
+                ctx.run.id,
+              );
+              if (finalizing === "pending_messages") {
+                deferredForParentUpdate = true;
+                return {
+                  accepted: false,
+                  error:
+                    "A parent update arrived before completion. Read it, account for it, and then submit the final result again.",
+                };
+              }
+              if (finalizing !== "updated") {
+                return {
+                  accepted: false,
+                  error: "This validation is no longer accepting results.",
+                };
+              }
+              resultValue = parsed;
+              return { accepted: true, verdict: parsed.verdict };
+            };
             const submitResult = tool({
               description: profile.finalResultTool.description,
               inputSchema: profile.finalResultTool.schema,
-              execute: async (input) => {
-                const parsed = profile.finalResultTool.schema.parse(input);
-                if (
-                  Buffer.byteLength(JSON.stringify(parsed), "utf8") >
-                  profile.finalResultTool.maxBytes
-                ) {
-                  return {
-                    accepted: false,
-                    error: `Result exceeds ${profile.finalResultTool.maxBytes} bytes; shorten it and submit again.`,
-                  };
-                }
-                if (resultValue) {
-                  return {
-                    accepted: false,
-                    error: "A validation result was already accepted.",
-                  };
-                }
-                const finalizing = await markSubagentFinalizing(
-                  row.subagent_id,
-                  ctx.run.id,
-                );
-                if (finalizing === "pending_messages") {
-                  deferredForParentUpdate = true;
-                  return {
-                    accepted: false,
-                    error:
-                      "A parent update arrived before completion. Read it, account for it, and then submit the final result again.",
-                  };
-                }
-                if (finalizing !== "updated") {
-                  return {
-                    accepted: false,
-                    error: "This validation is no longer accepting results.",
-                  };
-                }
-                resultValue = parsed;
-                return { accepted: true, verdict: parsed.verdict };
-              },
+              execute: acceptValidationResult,
             });
 
             const { tools, ensureSandbox, setCurrentModelName } = createTools(
@@ -604,7 +606,7 @@ export const subagentTask = task({
               let attemptResponseModel: string | undefined;
               let attemptUiMessages: UIMessage[] = [];
               const remainingSteps = SUBAGENT_MAX_STEPS - stepCount;
-              const forceFinalResultTool = resultRecoveriesUsed > 0;
+              const structuredResultRecovery = resultRecoveriesUsed > 0;
               const generation = streamText({
                 model: getGuardedLanguageModel(
                   activeModelName,
@@ -613,13 +615,13 @@ export const subagentTask = task({
                 ),
                 system: profile.systemPrompt,
                 messages: conversationMessages,
-                tools,
-                toolChoice: forceFinalResultTool
-                  ? {
-                      type: "tool",
-                      toolName: profile.finalResultTool.name,
-                    }
-                  : "auto",
+                tools: structuredResultRecovery ? undefined : tools,
+                output: structuredResultRecovery
+                  ? Output.object({
+                      schema: profile.finalResultTool.schema,
+                      description: profile.finalResultTool.description,
+                    })
+                  : undefined,
                 stopWhen: [
                   hasToolCall(profile.finalResultTool.name),
                   stepCountIs(remainingSteps),
@@ -746,26 +748,38 @@ export const subagentTask = task({
                 },
               });
 
-              const attemptStream = generation.toUIMessageStream({
-                generateMessageId: () =>
-                  `${row.subagent_id}-attempt-${generationAttempt}`,
-                sendReasoning: true,
-                onFinish: async ({ messages }) => {
-                  attemptUiMessages = messages;
-                  await persistAssistantMessages(
-                    row.subagent_id,
-                    row.user_id,
-                    messages,
-                    generationAttempt * 100,
+              if (structuredResultRecovery) {
+                try {
+                  await generation.consumeStream();
+                  const recoveredResult = await generation.output;
+                  if (recoveredResult) {
+                    await acceptValidationResult(recoveredResult);
+                  }
+                } catch (error) {
+                  attemptError ??= error;
+                }
+              } else {
+                const attemptStream = generation.toUIMessageStream({
+                  generateMessageId: () =>
+                    `${row.subagent_id}-attempt-${generationAttempt}`,
+                  sendReasoning: true,
+                  onFinish: async ({ messages }) => {
+                    attemptUiMessages = messages;
+                    await persistAssistantMessages(
+                      row.subagent_id,
+                      row.user_id,
+                      messages,
+                      generationAttempt * 100,
+                    );
+                  },
+                });
+                try {
+                  await pipeSubagentUiMessageStream(attemptStream, (chunk) =>
+                    writer.write(chunk),
                   );
-                },
-              });
-              try {
-                await pipeSubagentUiMessageStream(attemptStream, (chunk) =>
-                  writer.write(chunk),
-                );
-              } catch (error) {
-                attemptError ??= error;
+                } catch (error) {
+                  attemptError ??= error;
+                }
               }
 
               try {
