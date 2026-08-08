@@ -54,7 +54,6 @@ export interface SandboxBootInfo {
   path:
     | "reuse_existing"
     | "create_fresh"
-    | "create_after_network_change"
     | "create_after_version_mismatch"
     | "create_after_expired"
     | "create_after_broken";
@@ -142,7 +141,6 @@ export interface SandboxContext {
   userID: string;
   setSandbox: (sandbox: Sandbox) => void;
   networkConfig?: AgentNetworkConfig | null;
-  acquireNetworkMigrationLease?: () => Promise<(() => Promise<void>) | null>;
   /** Called once when ensureSandboxConnection actually does work (creates or reconnects). */
   onBoot?: (info: SandboxBootInfo) => void;
 }

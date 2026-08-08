@@ -167,7 +167,6 @@ export interface ChatWideEvent {
     path:
       | "reuse_existing"
       | "create_fresh"
-      | "create_after_network_change"
       | "create_after_version_mismatch"
       | "create_after_expired"
       | "create_after_broken";

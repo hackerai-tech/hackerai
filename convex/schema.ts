@@ -314,7 +314,6 @@ export default defineSchema({
 
   e2b_network_configs: defineTable({
     user_id: v.string(),
-    inbound_mode: v.union(v.literal("public"), v.literal("token_required")),
     outbound_mode: v.union(
       v.literal("unrestricted"),
       v.literal("allow_only"),
@@ -322,12 +321,6 @@ export default defineSchema({
     ),
     destinations: v.array(v.string()),
     updated_at: v.number(),
-  }).index("by_user_id", ["user_id"]),
-
-  e2b_network_migration_leases: defineTable({
-    user_id: v.string(),
-    lease_id: v.string(),
-    expires_at: v.number(),
   }).index("by_user_id", ["user_id"]),
 
   // Extra usage (created when user enables extra usage)

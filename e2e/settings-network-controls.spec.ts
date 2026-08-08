@@ -6,16 +6,14 @@ import { HomePage } from "./page-objects";
 test.describe("Cloud Agent network settings", () => {
   test.use({ storageState: AUTH_STORAGE_PATHS.pro });
 
-  test("shows simple inbound and outbound controls for paid users", async ({
-    page,
-  }) => {
+  test("shows simple outbound controls for paid users", async ({ page }) => {
     await setupChat(page);
     await new HomePage(page).navigateToSettingsTab("agents");
 
     await expect(
       page.getByRole("heading", { name: "Cloud Agent network" }),
     ).toBeVisible();
-    await expect(page.getByLabel("Inbound access")).toBeVisible();
+    await expect(page.getByText("Inbound access")).toHaveCount(0);
     await expect(page.getByLabel("Outbound access")).toContainText(
       /Unrestricted|Allow only listed destinations|Block listed destinations/,
     );

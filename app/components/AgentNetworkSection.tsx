@@ -22,27 +22,20 @@ import {
 import { Textarea } from "@/components/ui/textarea";
 import { captureAuthenticatedEvent } from "@/lib/analytics/client";
 import { cn } from "@/lib/utils";
-import type {
-  AgentNetworkConfig,
-  AgentNetworkInboundMode,
-  AgentNetworkOutboundMode,
-} from "@/types";
+import type { AgentNetworkConfig, AgentNetworkOutboundMode } from "@/types";
 
 type NetworkForm = {
-  inboundMode: AgentNetworkInboundMode;
   outboundMode: AgentNetworkOutboundMode;
   destinations: string;
 };
 
 const DEFAULT_FORM: NetworkForm = {
-  inboundMode: "public",
   outboundMode: "unrestricted",
   destinations: "",
 };
 
 function formFromConfig(config: AgentNetworkConfig): NetworkForm {
   return {
-    inboundMode: config.inboundMode,
     outboundMode: config.outboundMode,
     destinations: config.destinations.join("\n"),
   };
@@ -67,8 +60,6 @@ export function AgentNetworkSection() {
     api.e2bNetworkConfigActions.saveE2BNetworkConfig,
   );
   const [form, setForm] = useState<NetworkForm>(DEFAULT_FORM);
-  const [savedInboundMode, setSavedInboundMode] =
-    useState<AgentNetworkInboundMode>("public");
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const [isDetailsOpen, setIsDetailsOpen] = useState(false);
@@ -87,7 +78,6 @@ export function AgentNetworkSection() {
       .then((config) => {
         if (cancelled || !config) return;
         setForm(formFromConfig(config));
-        setSavedInboundMode(config.inboundMode);
       })
       .catch(() => {
         if (!cancelled) toast.error("Could not load network controls");
@@ -110,24 +100,16 @@ export function AgentNetworkSection() {
     setIsSaving(true);
     try {
       const config = await saveConfig({
-        inboundMode: form.inboundMode,
         outboundMode: form.outboundMode,
         destinations: parseDestinations(form.destinations),
       });
-      const inboundChanged = savedInboundMode !== config.inboundMode;
       setForm(formFromConfig(config));
-      setSavedInboundMode(config.inboundMode);
       captureAuthenticatedEvent("agent_network_settings_saved", {
         surface: "agents_tab",
-        inbound_mode: config.inboundMode,
         outbound_mode: config.outboundMode,
         destination_count: config.destinations.length,
       });
-      toast.success(
-        inboundChanged
-          ? "Saved. Inbound access changes when Cloud Agent next starts."
-          : "Network controls saved",
-      );
+      toast.success("Network controls saved");
     } catch (error) {
       toast.error(getErrorMessage(error));
     } finally {
@@ -138,26 +120,18 @@ export function AgentNetworkSection() {
   const handleRestoreDefaults = async () => {
     setIsSaving(true);
     try {
-      const inboundChanged = savedInboundMode !== "public";
       const config = await saveConfig({
-        inboundMode: "public",
         outboundMode: "unrestricted",
         destinations: [],
       });
       setForm(formFromConfig(config));
-      setSavedInboundMode(config.inboundMode);
       captureAuthenticatedEvent("agent_network_settings_saved", {
         surface: "agents_tab",
-        inbound_mode: "public",
         outbound_mode: "unrestricted",
         destination_count: 0,
         restored_defaults: true,
       });
-      toast.success(
-        inboundChanged
-          ? "Defaults restored. Inbound access changes when Cloud Agent next starts."
-          : "Network defaults restored",
-      );
+      toast.success("Network defaults restored");
     } catch (error) {
       toast.error(getErrorMessage(error));
     } finally {
@@ -176,9 +150,7 @@ export function AgentNetworkSection() {
 
   const showDestinations = form.outboundMode !== "unrestricted";
   const isDefault =
-    form.inboundMode === "public" &&
-    form.outboundMode === "unrestricted" &&
-    form.destinations.trim() === "";
+    form.outboundMode === "unrestricted" && form.destinations.trim() === "";
 
   return (
     <section
@@ -194,67 +166,41 @@ export function AgentNetworkSection() {
             Cloud Agent network
           </h3>
           <p className="text-sm text-muted-foreground">
-            Control public URLs and outbound destinations for Cloud Agent. Local
-            and desktop environments are unchanged.
+            Control outbound destinations for Cloud Agent. Local and desktop
+            environments are unchanged.
           </p>
         </div>
       </div>
 
-      <div className="grid gap-4 sm:grid-cols-2">
-        <div className="space-y-2">
-          <Label htmlFor="agent-network-inbound">Inbound access</Label>
-          <Select
-            value={form.inboundMode}
-            onValueChange={(value) =>
-              updateForm("inboundMode", value as AgentNetworkInboundMode)
-            }
-            disabled={isSaving}
-          >
-            <SelectTrigger id="agent-network-inbound" className="w-full">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="public">Public URL</SelectItem>
-              <SelectItem value="token_required">Token required</SelectItem>
-            </SelectContent>
-          </Select>
-          <p className="text-xs text-muted-foreground">
-            {form.inboundMode === "public"
-              ? "Anyone who knows a sandbox service URL can reach it."
-              : "Public URL requests must include the sandbox access token."}
-          </p>
-        </div>
-
-        <div className="space-y-2">
-          <Label htmlFor="agent-network-outbound">Outbound access</Label>
-          <Select
-            value={form.outboundMode}
-            onValueChange={(value) =>
-              updateForm("outboundMode", value as AgentNetworkOutboundMode)
-            }
-            disabled={isSaving}
-          >
-            <SelectTrigger id="agent-network-outbound" className="w-full">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="unrestricted">Unrestricted</SelectItem>
-              <SelectItem value="allow_only">
-                Allow only listed destinations
-              </SelectItem>
-              <SelectItem value="block_list">
-                Block listed destinations
-              </SelectItem>
-            </SelectContent>
-          </Select>
-          <p className="text-xs text-muted-foreground">
-            {form.outboundMode === "unrestricted"
-              ? "Cloud Agent can connect to any destination."
-              : form.outboundMode === "allow_only"
-                ? "Everything is blocked except the destinations below."
-                : "All traffic is allowed except the IPs and CIDRs below."}
-          </p>
-        </div>
+      <div className="space-y-2">
+        <Label htmlFor="agent-network-outbound">Outbound access</Label>
+        <Select
+          value={form.outboundMode}
+          onValueChange={(value) =>
+            updateForm("outboundMode", value as AgentNetworkOutboundMode)
+          }
+          disabled={isSaving}
+        >
+          <SelectTrigger id="agent-network-outbound" className="w-full">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="unrestricted">Unrestricted</SelectItem>
+            <SelectItem value="allow_only">
+              Allow only listed destinations
+            </SelectItem>
+            <SelectItem value="block_list">
+              Block listed destinations
+            </SelectItem>
+          </SelectContent>
+        </Select>
+        <p className="text-xs text-muted-foreground">
+          {form.outboundMode === "unrestricted"
+            ? "Cloud Agent can connect to any destination."
+            : form.outboundMode === "allow_only"
+              ? "Everything is blocked except the destinations below."
+              : "All traffic is allowed except the IPs and CIDRs below."}
+        </p>
       </div>
 
       {showDestinations ? (
@@ -298,11 +244,7 @@ export function AgentNetworkSection() {
           />
         </CollapsibleTrigger>
         <CollapsibleContent className="mt-2 space-y-1 text-xs text-muted-foreground">
-          <p>
-            Outbound changes apply live without restarting Cloud Agent. Inbound
-            changes apply when Cloud Agent next starts; idle sandbox state is
-            preserved during the switch.
-          </p>
+          <p>Outbound changes apply live without restarting Cloud Agent.</p>
           <p>
             Domain filtering covers HTTP on port 80 and TLS on port 443. Use an
             IP or CIDR for other ports. These controls filter destinations and

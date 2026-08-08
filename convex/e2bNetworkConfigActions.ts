@@ -9,12 +9,6 @@ import { hasPaidEntitlement } from "../lib/auth/entitlements";
 
 const MAX_DESTINATIONS = 50;
 const MAX_DESTINATION_LENGTH = 253;
-const MIGRATION_LEASE_DURATION_MS = 10 * 60 * 1000;
-
-const inboundModeValidator = v.union(
-  v.literal("public"),
-  v.literal("token_required"),
-);
 const outboundModeValidator = v.union(
   v.literal("unrestricted"),
   v.literal("allow_only"),
@@ -27,22 +21,18 @@ const subscriptionValidator = v.union(
   v.literal("team"),
 );
 const configValidator = v.object({
-  inboundMode: inboundModeValidator,
   outboundMode: outboundModeValidator,
   destinations: v.array(v.string()),
   updatedAt: v.number(),
 });
 
 type OutboundMode = "unrestricted" | "allow_only" | "block_list";
-type InboundMode = "public" | "token_required";
 type StoredNetworkConfig = {
-  inbound_mode: InboundMode;
   outbound_mode: OutboundMode;
   destinations: string[];
   updated_at: number;
 };
 type PublicNetworkConfig = {
-  inboundMode: InboundMode;
   outboundMode: OutboundMode;
   destinations: string[];
   updatedAt: number;
@@ -145,7 +135,7 @@ function normalizeDestination(value: string, mode: OutboundMode): string {
   if (!domain) invalid(`Invalid domain or IP address: ${value}`);
   if (mode === "block_list") {
     invalid(
-      "E2B deny lists support IP addresses and CIDR blocks, but not domains",
+      "Block lists support IP addresses and CIDR blocks, but not domains",
     );
   }
   return domain;
@@ -167,7 +157,6 @@ function normalizeDestinations(values: string[], mode: OutboundMode): string[] {
 
 function toPublicConfig(stored: StoredNetworkConfig): PublicNetworkConfig {
   return {
-    inboundMode: stored.inbound_mode,
     outboundMode: stored.outbound_mode,
     destinations: stored.destinations,
     updatedAt: stored.updated_at,
@@ -193,7 +182,6 @@ export const getE2BNetworkConfig = action({
 
 export const saveE2BNetworkConfig = action({
   args: {
-    inboundMode: inboundModeValidator,
     outboundMode: outboundModeValidator,
     destinations: v.array(v.string()),
   },
@@ -211,7 +199,6 @@ export const saveE2BNetworkConfig = action({
     const updatedAt = Date.now();
     await ctx.runMutation(internal.e2bNetworkConfigs.upsertForUser, {
       userId: identity.subject,
-      inboundMode: args.inboundMode,
       outboundMode: args.outboundMode,
       destinations,
       updatedAt,
@@ -234,44 +221,5 @@ export const getE2BNetworkConfigForBackend = action({
       { userId: args.userId },
     );
     return stored ? toPublicConfig(stored) : null;
-  },
-});
-
-export const acquireE2BNetworkMigrationLease = action({
-  args: {
-    serviceKey: v.string(),
-    userId: v.string(),
-    leaseId: v.string(),
-  },
-  returns: v.boolean(),
-  handler: async (ctx, args): Promise<boolean> => {
-    validateServiceKey(args.serviceKey);
-    const now = Date.now();
-    return ctx.runMutation(
-      internal.e2bNetworkConfigs.tryAcquireMigrationLease,
-      {
-        userId: args.userId,
-        leaseId: args.leaseId,
-        now,
-        expiresAt: now + MIGRATION_LEASE_DURATION_MS,
-      },
-    );
-  },
-});
-
-export const releaseE2BNetworkMigrationLease = action({
-  args: {
-    serviceKey: v.string(),
-    userId: v.string(),
-    leaseId: v.string(),
-  },
-  returns: v.null(),
-  handler: async (ctx, args): Promise<null> => {
-    validateServiceKey(args.serviceKey);
-    await ctx.runMutation(internal.e2bNetworkConfigs.releaseMigrationLease, {
-      userId: args.userId,
-      leaseId: args.leaseId,
-    });
-    return null;
   },
 });

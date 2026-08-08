@@ -267,7 +267,6 @@ function seedTables(userId = "user_123", otherUserId = "user_other"): Tables {
       {
         _id: "network-user",
         user_id: userId,
-        inbound_mode: "token_required",
         outbound_mode: "allow_only",
         destinations: ["api.example.com"],
         updated_at: 1,
@@ -275,24 +274,9 @@ function seedTables(userId = "user_123", otherUserId = "user_other"): Tables {
       {
         _id: "network-other",
         user_id: otherUserId,
-        inbound_mode: "public",
         outbound_mode: "unrestricted",
         destinations: [],
         updated_at: 1,
-      },
-    ],
-    e2b_network_migration_leases: [
-      {
-        _id: "network-lease-user",
-        user_id: userId,
-        lease_id: "lease-user",
-        expires_at: Date.now() + 60_000,
-      },
-      {
-        _id: "network-lease-other",
-        user_id: otherUserId,
-        lease_id: "lease-other",
-        expires_at: Date.now() + 60_000,
       },
     ],
     temp_streams: [

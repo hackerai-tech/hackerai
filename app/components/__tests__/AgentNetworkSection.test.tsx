@@ -13,7 +13,6 @@ jest.mock("sonner", () => ({
 }));
 
 const savedConfig = {
-  inboundMode: "token_required" as const,
   outboundMode: "allow_only" as const,
   destinations: ["api.example.com", "203.0.113.0/24"],
   updatedAt: 123,
@@ -36,9 +35,7 @@ describe("AgentNetworkSection", () => {
 
     expect(screen.getByText("Loading network controls…")).toBeInTheDocument();
     expect(await screen.findByDisplayValue(/api\.example\.com/)).toBeVisible();
-    expect(screen.getByLabelText("Inbound access")).toHaveTextContent(
-      "Token required",
-    );
+    expect(screen.queryByText("Inbound access")).not.toBeInTheDocument();
     expect(screen.getByText(/Local and desktop environments/)).toBeVisible();
     expect(screen.queryByText(/E2B/i)).not.toBeInTheDocument();
 
@@ -46,7 +43,7 @@ describe("AgentNetworkSection", () => {
       screen.getByRole("button", { name: "How filtering works" }),
     );
     expect(screen.getByText(/do not change the sandbox exit IP/)).toBeVisible();
-    expect(screen.getByText(/idle sandbox state is preserved/)).toBeVisible();
+    expect(screen.getByText(/apply live without restarting/)).toBeVisible();
   });
 
   it("saves destinations without sending their values to analytics", async () => {
@@ -62,7 +59,6 @@ describe("AgentNetworkSection", () => {
 
     await waitFor(() => expect(saveConfig).toHaveBeenCalledTimes(1));
     expect(saveConfig).toHaveBeenCalledWith({
-      inboundMode: "token_required",
       outboundMode: "allow_only",
       destinations: ["API.Example.com", "198.51.100.0/24"],
     });
@@ -96,7 +92,6 @@ describe("AgentNetworkSection", () => {
     );
 
     expect(destinations).toBeDisabled();
-    expect(screen.getByLabelText("Inbound access")).toBeDisabled();
     expect(screen.getByLabelText("Outbound access")).toBeDisabled();
     expect(
       screen.getByRole("button", { name: "Save network controls" }),

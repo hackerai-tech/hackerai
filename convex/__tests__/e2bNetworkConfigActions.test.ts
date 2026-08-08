@@ -9,8 +9,6 @@ jest.mock("../_generated/api", () => ({
     e2bNetworkConfigs: {
       getForUser: "e2bNetworkConfigs.getForUser",
       upsertForUser: "e2bNetworkConfigs.upsertForUser",
-      tryAcquireMigrationLease: "e2bNetworkConfigs.tryAcquireMigrationLease",
-      releaseMigrationLease: "e2bNetworkConfigs.releaseMigrationLease",
     },
   },
 }));
@@ -39,7 +37,6 @@ describe("E2B network config actions", () => {
     const ctx = createCtx();
 
     const result = await saveE2BNetworkConfig.handler(ctx as any, {
-      inboundMode: "token_required",
       outboundMode: "allow_only",
       destinations: [
         "API.Example.com.",
@@ -51,7 +48,6 @@ describe("E2B network config actions", () => {
     });
 
     expect(result).toMatchObject({
-      inboundMode: "token_required",
       outboundMode: "allow_only",
       destinations: [
         "api.example.com",
@@ -69,12 +65,11 @@ describe("E2B network config actions", () => {
     );
   });
 
-  it("rejects domains in E2B deny lists", async () => {
+  it("rejects domains in block lists", async () => {
     const { saveE2BNetworkConfig } = await import("../e2bNetworkConfigActions");
 
     await expect(
       saveE2BNetworkConfig.handler(createCtx() as any, {
-        inboundMode: "public",
         outboundMode: "block_list",
         destinations: ["example.com"],
       }),
@@ -94,7 +89,6 @@ describe("E2B network config actions", () => {
 
     await expect(
       saveE2BNetworkConfig.handler(createCtx() as any, {
-        inboundMode: "public",
         outboundMode: "allow_only",
         destinations: [destination],
       }),
@@ -108,7 +102,6 @@ describe("E2B network config actions", () => {
 
     await expect(
       saveE2BNetworkConfig.handler(createCtx() as any, {
-        inboundMode: "public",
         outboundMode: "allow_only",
         destinations: Array.from(
           { length: 51 },
@@ -145,7 +138,6 @@ describe("E2B network config actions", () => {
     });
     await expect(
       saveE2BNetworkConfig.handler(ctx as any, {
-        inboundMode: "public",
         outboundMode: "unrestricted",
         destinations: [],
       }),
@@ -167,43 +159,5 @@ describe("E2B network config actions", () => {
         subscription: "pro",
       }),
     ).rejects.toThrow("Unauthorized: Invalid service key");
-  });
-
-  it("acquires and releases an expiring backend migration lease", async () => {
-    const { acquireE2BNetworkMigrationLease, releaseE2BNetworkMigrationLease } =
-      await import("../e2bNetworkConfigActions");
-    const ctx = createCtx();
-    ctx.runMutation.mockResolvedValueOnce(true);
-
-    await expect(
-      acquireE2BNetworkMigrationLease.handler(ctx as any, {
-        serviceKey: "service_key",
-        userId: "user_123",
-        leaseId: "lease_123",
-      }),
-    ).resolves.toBe(true);
-    expect(ctx.runMutation).toHaveBeenCalledWith(
-      "e2bNetworkConfigs.tryAcquireMigrationLease",
-      expect.objectContaining({
-        userId: "user_123",
-        leaseId: "lease_123",
-        now: expect.any(Number),
-        expiresAt: expect.any(Number),
-      }),
-    );
-    const leaseArgs = ctx.runMutation.mock.calls[0][1];
-    expect(leaseArgs.expiresAt).toBe(leaseArgs.now + 10 * 60 * 1000);
-
-    await expect(
-      releaseE2BNetworkMigrationLease.handler(ctx as any, {
-        serviceKey: "service_key",
-        userId: "user_123",
-        leaseId: "lease_123",
-      }),
-    ).resolves.toBeNull();
-    expect(ctx.runMutation).toHaveBeenLastCalledWith(
-      "e2bNetworkConfigs.releaseMigrationLease",
-      { userId: "user_123", leaseId: "lease_123" },
-    );
   });
 });
