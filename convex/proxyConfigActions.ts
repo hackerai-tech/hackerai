@@ -1,28 +1,38 @@
 "use node";
 
-import { action } from "./_generated/server";
-import { internal } from "./_generated/api";
+import { WorkOS } from "@workos-inc/node";
 import { ConvexError, v } from "convex/values";
 import { isIP } from "node:net";
+
+import { action } from "./_generated/server";
 import { validateServiceKey } from "./lib/utils";
 import { hasPaidEntitlement } from "../lib/auth/entitlements";
 import {
-  decryptProxyConfig,
-  encryptProxyConfig,
-  type StoredProxyConfig,
-} from "./lib/proxyConfigCrypto";
+  deleteProxyConfigVaultObject,
+  getProxyConfigVaultObjectName,
+  readProxyConfigVaultObject,
+} from "../lib/workos/proxy-vault";
 
 const MAX_HOST_LENGTH = 253;
 const MAX_USERNAME_LENGTH = 256;
 const MAX_PASSWORD_LENGTH = 1024;
 const MAX_BYPASS_HOSTS = 25;
 const MAX_BYPASS_HOST_LENGTH = 253;
+const PROXY_CONFIG_SCHEMA_VERSION = 1;
 
 type ProxyProtocol = "http" | "socks5";
-type EncryptedProxyConfig = {
+type StoredProxyConfig = {
+  host: string;
+  port: number;
+  username?: string;
+  password?: string;
+  proxyDns: boolean;
+  bypassHosts: string[];
+};
+type VaultProxyConfig = StoredProxyConfig & {
+  schemaVersion: typeof PROXY_CONFIG_SCHEMA_VERSION;
   enabled: boolean;
   protocol: ProxyProtocol;
-  encryptedConfig: string;
   updatedAt: number;
 };
 type PublicProxyConfig = Omit<StoredProxyConfig, "password"> & {
@@ -36,7 +46,25 @@ type RuntimeProxyConfig = StoredProxyConfig & {
   updatedAt: number;
 };
 
+let workosInstance: WorkOS | null = null;
+
 const proxyProtocolValidator = v.union(v.literal("http"), v.literal("socks5"));
+
+function getWorkOS(): WorkOS {
+  if (!workosInstance) {
+    const apiKey = process.env.WORKOS_API_KEY;
+    if (!apiKey) {
+      throw new ConvexError({
+        code: "PROXY_CONFIG_UNAVAILABLE",
+        message: "WorkOS Vault is not configured",
+      });
+    }
+    workosInstance = new WorkOS(apiKey, {
+      clientId: process.env.WORKOS_CLIENT_ID,
+    });
+  }
+  return workosInstance;
+}
 
 function getIdentityEntitlements(identity: unknown): string[] {
   if (
@@ -84,17 +112,6 @@ const runtimeProxyConfigValidator = v.object({
   bypassHosts: v.array(v.string()),
   updatedAt: v.number(),
 });
-
-function getEncryptionKey(): string {
-  const key = process.env.USER_PROXY_CONFIG_ENCRYPTION_KEY;
-  if (!key) {
-    throw new ConvexError({
-      code: "PROXY_CONFIG_UNAVAILABLE",
-      message: "Proxy configuration encryption is not configured",
-    });
-  }
-  return key;
-}
 
 function normalizeHost(value: string): string {
   const host = value
@@ -205,24 +222,82 @@ function normalizeStoredConfig(args: {
   };
 }
 
-function toPublicConfig(
-  stored: StoredProxyConfig,
-  metadata: {
-    enabled: boolean;
-    protocol: ProxyProtocol;
-    updatedAt: number;
-  },
-): PublicProxyConfig {
+function invalidStoredConfig(): ConvexError<{ code: string; message: string }> {
+  return new ConvexError({
+    code: "PROXY_CONFIG_UNAVAILABLE",
+    message: "The stored proxy configuration is invalid",
+  });
+}
+
+function parseVaultProxyConfig(value: string | undefined): VaultProxyConfig {
+  if (!value) throw invalidStoredConfig();
+
+  try {
+    const parsed = JSON.parse(value) as Record<string, unknown>;
+    if (
+      !parsed ||
+      typeof parsed !== "object" ||
+      parsed.schemaVersion !== PROXY_CONFIG_SCHEMA_VERSION ||
+      typeof parsed.enabled !== "boolean" ||
+      (parsed.protocol !== "http" && parsed.protocol !== "socks5") ||
+      typeof parsed.host !== "string" ||
+      typeof parsed.port !== "number" ||
+      (parsed.username !== undefined && typeof parsed.username !== "string") ||
+      (parsed.password !== undefined && typeof parsed.password !== "string") ||
+      typeof parsed.proxyDns !== "boolean" ||
+      !Array.isArray(parsed.bypassHosts) ||
+      !parsed.bypassHosts.every((host) => typeof host === "string") ||
+      typeof parsed.updatedAt !== "number" ||
+      !Number.isFinite(parsed.updatedAt)
+    ) {
+      throw invalidStoredConfig();
+    }
+
+    return {
+      schemaVersion: PROXY_CONFIG_SCHEMA_VERSION,
+      enabled: parsed.enabled,
+      protocol: parsed.protocol,
+      ...normalizeStoredConfig({
+        host: parsed.host,
+        port: parsed.port,
+        ...(parsed.username !== undefined ? { username: parsed.username } : {}),
+        ...(parsed.password !== undefined ? { password: parsed.password } : {}),
+        proxyDns: parsed.proxyDns,
+        bypassHosts: parsed.bypassHosts,
+      }),
+      updatedAt: parsed.updatedAt,
+    };
+  } catch (error) {
+    if (
+      error instanceof ConvexError &&
+      typeof error.data === "object" &&
+      error.data !== null &&
+      "code" in error.data &&
+      error.data.code === "PROXY_CONFIG_UNAVAILABLE"
+    ) {
+      throw error;
+    }
+    throw invalidStoredConfig();
+  }
+}
+
+async function readVaultProxyConfig(userId: string) {
+  const object = await readProxyConfigVaultObject(getWorkOS(), userId);
+  if (!object) return null;
+  return { object, config: parseVaultProxyConfig(object.value) };
+}
+
+function toPublicConfig(config: VaultProxyConfig): PublicProxyConfig {
   return {
-    enabled: metadata.enabled,
-    protocol: metadata.protocol,
-    host: stored.host,
-    port: stored.port,
-    ...(stored.username ? { username: stored.username } : {}),
-    hasPassword: stored.password !== undefined,
-    proxyDns: stored.proxyDns,
-    bypassHosts: stored.bypassHosts,
-    updatedAt: metadata.updatedAt,
+    enabled: config.enabled,
+    protocol: config.protocol,
+    host: config.host,
+    port: config.port,
+    ...(config.username ? { username: config.username } : {}),
+    hasPassword: config.password !== undefined,
+    proxyDns: config.proxyDns,
+    bypassHosts: config.bypassHosts,
+    updatedAt: config.updatedAt,
   };
 }
 
@@ -235,18 +310,8 @@ export const getProxyConfig = action({
       throw new ConvexError({ code: "UNAUTHORIZED", message: "Unauthorized" });
     }
 
-    const encrypted: EncryptedProxyConfig | null = await ctx.runQuery(
-      internal.proxyConfigs.getEncryptedForUser,
-      { userId: identity.subject },
-    );
-    if (!encrypted) return null;
-
-    const stored = decryptProxyConfig(
-      encrypted.encryptedConfig,
-      identity.subject,
-      getEncryptionKey(),
-    );
-    return toPublicConfig(stored, encrypted);
+    const stored = await readVaultProxyConfig(identity.subject);
+    return stored ? toPublicConfig(stored.config) : null;
   },
 });
 
@@ -270,50 +335,49 @@ export const saveProxyConfig = action({
     }
     requirePaidProxyAccess(identity);
 
-    const encryptionKey = getEncryptionKey();
-    const existing: EncryptedProxyConfig | null = await ctx.runQuery(
-      internal.proxyConfigs.getEncryptedForUser,
-      { userId: identity.subject },
-    );
-    const existingStored = existing
-      ? decryptProxyConfig(
-          existing.encryptedConfig,
-          identity.subject,
-          encryptionKey,
-        )
-      : null;
+    const existing = await readVaultProxyConfig(identity.subject);
     const password = args.clearPassword
       ? undefined
       : args.password !== undefined
         ? args.password
-        : existingStored?.password;
-    const stored = normalizeStoredConfig({
-      host: args.host,
-      port: args.port,
-      username: args.username,
-      ...(password !== undefined ? { password } : {}),
-      proxyDns: args.proxyDns,
-      bypassHosts: args.bypassHosts,
-    });
-    const updatedAt = Date.now();
-
-    await ctx.runMutation(internal.proxyConfigs.upsertEncryptedForUser, {
-      userId: identity.subject,
+        : existing?.config.password;
+    const config: VaultProxyConfig = {
+      schemaVersion: PROXY_CONFIG_SCHEMA_VERSION,
       enabled: args.enabled,
       protocol: args.protocol,
-      encryptedConfig: encryptProxyConfig(
-        stored,
-        identity.subject,
-        encryptionKey,
-      ),
-      updatedAt,
-    });
+      ...normalizeStoredConfig({
+        host: args.host,
+        port: args.port,
+        username: args.username,
+        ...(password !== undefined ? { password } : {}),
+        proxyDns: args.proxyDns,
+        bypassHosts: args.bypassHosts,
+      }),
+      updatedAt: Date.now(),
+    };
+    const value = JSON.stringify(config);
+    const workos = getWorkOS();
 
-    return toPublicConfig(stored, {
-      enabled: args.enabled,
-      protocol: args.protocol,
-      updatedAt,
-    });
+    if (existing) {
+      await workos.vault.updateObject({
+        id: existing.object.id,
+        value,
+        ...(existing.object.metadata.versionId
+          ? { versionCheck: existing.object.metadata.versionId }
+          : {}),
+      });
+    } else {
+      await workos.vault.createObject({
+        name: getProxyConfigVaultObjectName(identity.subject),
+        value,
+        context: {
+          user_id: identity.subject,
+          data_type: "agent_proxy",
+        },
+      });
+    }
+
+    return toPublicConfig(config);
   },
 });
 
@@ -325,9 +389,7 @@ export const deleteProxyConfig = action({
     if (!identity) {
       throw new ConvexError({ code: "UNAUTHORIZED", message: "Unauthorized" });
     }
-    await ctx.runMutation(internal.proxyConfigs.deleteForUser, {
-      userId: identity.subject,
-    });
+    await deleteProxyConfigVaultObject(getWorkOS(), identity.subject);
     return null;
   },
 });
@@ -337,21 +399,20 @@ export const getProxyConfigForBackend = action({
   returns: v.union(v.null(), runtimeProxyConfigValidator),
   handler: async (ctx, args): Promise<RuntimeProxyConfig | null> => {
     validateServiceKey(args.serviceKey);
-    const encrypted: EncryptedProxyConfig | null = await ctx.runQuery(
-      internal.proxyConfigs.getEncryptedForUser,
-      { userId: args.userId },
-    );
-    if (!encrypted?.enabled) return null;
+    const stored = await readVaultProxyConfig(args.userId);
+    if (!stored?.config.enabled) return null;
 
-    const stored = decryptProxyConfig(
-      encrypted.encryptedConfig,
-      args.userId,
-      getEncryptionKey(),
-    );
     return {
-      protocol: encrypted.protocol,
-      ...stored,
-      updatedAt: encrypted.updatedAt,
+      protocol: stored.config.protocol,
+      host: stored.config.host,
+      port: stored.config.port,
+      ...(stored.config.username ? { username: stored.config.username } : {}),
+      ...(stored.config.password !== undefined
+        ? { password: stored.config.password }
+        : {}),
+      proxyDns: stored.config.proxyDns,
+      bypassHosts: stored.config.bypassHosts,
+      updatedAt: stored.config.updatedAt,
     };
   },
 });

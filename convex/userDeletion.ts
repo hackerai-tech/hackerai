@@ -17,7 +17,6 @@ export const USER_DELETION_TABLE_POLICY = {
     "feedback",
     "notes",
     "user_customization",
-    "user_proxy_configs",
     "extra_usage",
     "team_member_usage",
     "temp_streams",
@@ -376,11 +375,6 @@ async function cleanupUserDataForUser(
   >(ctx, budget, "user_customization", "by_user_id", (q) =>
     q.eq("user_id", userId),
   );
-  const proxyConfigsBatch = await collectByIndexBatch<
-    Doc<"user_proxy_configs">
-  >(ctx, budget, "user_proxy_configs", "by_user_id", (q) =>
-    q.eq("user_id", userId),
-  );
   const tempStreamsBatch = await collectByIndexBatch<Doc<"temp_streams">>(
     ctx,
     budget,
@@ -426,7 +420,6 @@ async function cleanupUserDataForUser(
     filesBatch,
     notesBatch,
     customizationBatch,
-    proxyConfigsBatch,
     messagesBatch,
     tempStreamsBatch,
     localSandboxTokensBatch,
@@ -441,7 +434,6 @@ async function cleanupUserDataForUser(
   const files = filesBatch.docs;
   const notes = notesBatch.docs;
   const customization = customizationBatch.docs;
-  const proxyConfigs = proxyConfigsBatch.docs;
   const tempStreams = tempStreamsBatch.docs;
   const localSandboxTokens = localSandboxTokensBatch.docs;
   const localSandboxConnections = localSandboxConnectionsBatch.docs;
@@ -464,7 +456,6 @@ async function cleanupUserDataForUser(
   await deleteFiles(ctx, stats, files, mode);
   await deleteDocs(ctx, stats, "notes", notes, mode);
   await deleteDocs(ctx, stats, "user_customization", customization, mode);
-  await deleteDocs(ctx, stats, "user_proxy_configs", proxyConfigs, mode);
   await deleteDocs(ctx, stats, "temp_streams", tempStreams, mode);
   await deleteDocs(
     ctx,

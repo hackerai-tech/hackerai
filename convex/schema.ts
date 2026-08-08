@@ -312,14 +312,6 @@ export default defineSchema({
     max_mode_enabled: v.optional(v.boolean()),
   }).index("by_user_id", ["user_id"]),
 
-  user_proxy_configs: defineTable({
-    user_id: v.string(),
-    enabled: v.boolean(),
-    protocol: v.union(v.literal("http"), v.literal("socks5")),
-    encrypted_config: v.string(),
-    updated_at: v.number(),
-  }).index("by_user_id", ["user_id"]),
-
   // Extra usage (created when user enables extra usage)
   // Note: Most monetary values stored in POINTS for precision (1 point = $0.0001, matching rate limiting)
   // This avoids precision loss when deducting sub-cent amounts from balance.

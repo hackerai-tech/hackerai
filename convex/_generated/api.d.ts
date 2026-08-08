@@ -25,7 +25,6 @@ import type * as lib_chatAccessSuspensions from "../lib/chatAccessSuspensions.js
 import type * as lib_extraUsagePricing from "../lib/extraUsagePricing.js";
 import type * as lib_extraUsageValidation from "../lib/extraUsageValidation.js";
 import type * as lib_logger from "../lib/logger.js";
-import type * as lib_proxyConfigCrypto from "../lib/proxyConfigCrypto.js";
 import type * as lib_retainedTail from "../lib/retainedTail.js";
 import type * as lib_sharedChatSnapshot from "../lib/sharedChatSnapshot.js";
 import type * as lib_suspensionGuards from "../lib/suspensionGuards.js";
@@ -35,7 +34,6 @@ import type * as messages from "../messages.js";
 import type * as notes from "../notes.js";
 import type * as projects from "../projects.js";
 import type * as proxyConfigActions from "../proxyConfigActions.js";
-import type * as proxyConfigs from "../proxyConfigs.js";
 import type * as rateLimitStatus from "../rateLimitStatus.js";
 import type * as redisPubsub from "../redisPubsub.js";
 import type * as referrals from "../referrals.js";
@@ -78,7 +76,6 @@ declare const fullApi: ApiFromModules<{
   "lib/extraUsagePricing": typeof lib_extraUsagePricing;
   "lib/extraUsageValidation": typeof lib_extraUsageValidation;
   "lib/logger": typeof lib_logger;
-  "lib/proxyConfigCrypto": typeof lib_proxyConfigCrypto;
   "lib/retainedTail": typeof lib_retainedTail;
   "lib/sharedChatSnapshot": typeof lib_sharedChatSnapshot;
   "lib/suspensionGuards": typeof lib_suspensionGuards;
@@ -88,7 +85,6 @@ declare const fullApi: ApiFromModules<{
   notes: typeof notes;
   projects: typeof projects;
   proxyConfigActions: typeof proxyConfigActions;
-  proxyConfigs: typeof proxyConfigs;
   rateLimitStatus: typeof rateLimitStatus;
   redisPubsub: typeof redisPubsub;
   referrals: typeof referrals;

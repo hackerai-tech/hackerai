@@ -73,6 +73,10 @@ jest.mock("../../workos", () => ({
       getOrganization: jest.fn(),
       deleteOrganization: jest.fn(),
     },
+    vault: {
+      readObjectByName: jest.fn(),
+      deleteObject: jest.fn(),
+    },
   },
 }));
 
@@ -102,6 +106,13 @@ const mockGetOrganization = workos.organizations
 const mockDeleteOrganization = workos.organizations
   .deleteOrganization as jest.MockedFunction<
   typeof workos.organizations.deleteOrganization
+>;
+const mockReadVaultObject = workos.vault
+  .readObjectByName as jest.MockedFunction<
+  typeof workos.vault.readObjectByName
+>;
+const mockDeleteVaultObject = workos.vault.deleteObject as jest.MockedFunction<
+  typeof workos.vault.deleteObject
 >;
 const mockListSubscriptions = stripe.subscriptions.list as jest.MockedFunction<
   typeof stripe.subscriptions.list
@@ -147,6 +158,10 @@ describe("POST /api/delete-account", () => {
     mockDeleteOrganizationMembership.mockResolvedValue(undefined as never);
     mockDeleteUser.mockResolvedValue(undefined as never);
     mockDeleteOrganization.mockResolvedValue(undefined as never);
+    const missingVaultObject = new Error("Vault object not found");
+    missingVaultObject.name = "NotFoundException";
+    mockReadVaultObject.mockReset().mockRejectedValue(missingVaultObject);
+    mockDeleteVaultObject.mockReset().mockResolvedValue(undefined);
     mockCancelSubscription.mockResolvedValue({} as never);
     mockDeleteCustomer.mockResolvedValue({} as never);
   });
@@ -297,6 +312,49 @@ describe("POST /api/delete-account", () => {
     expect(mockConvexMutation.mock.invocationCallOrder[1]).toBeLessThan(
       mockDeleteUser.mock.invocationCallOrder[0],
     );
+  });
+
+  it("deletes the proxy Vault object before deleting Convex user data", async () => {
+    mockListOrganizationMemberships.mockResolvedValueOnce({
+      data: [],
+    } as never);
+    mockReadVaultObject.mockResolvedValueOnce({
+      id: "secret_proxy_123",
+      name: "hackerai-agent-proxy:user_123",
+      value: "secret",
+      metadata: { versionId: "version_1" },
+    } as never);
+
+    const response = await POST(request() as any);
+
+    expect(response.status).toBe(200);
+    expect(mockReadVaultObject).toHaveBeenCalledWith(
+      "hackerai-agent-proxy:user_123",
+    );
+    expect(mockDeleteVaultObject).toHaveBeenCalledWith({
+      id: "secret_proxy_123",
+      versionCheck: "version_1",
+    });
+    expect(mockDeleteVaultObject.mock.invocationCallOrder[0]).toBeLessThan(
+      mockConvexMutation.mock.invocationCallOrder[1],
+    );
+  });
+
+  it("does not delete app data when proxy Vault cleanup fails", async () => {
+    mockListOrganizationMemberships.mockResolvedValueOnce({
+      data: [],
+    } as never);
+    mockReadVaultObject.mockRejectedValueOnce(
+      new Error("WorkOS Vault temporarily unavailable"),
+    );
+
+    const response = await POST(request() as any);
+    const body = await response.json();
+
+    expect(response.status).toBe(500);
+    expect(body.error).toBe("WorkOS Vault temporarily unavailable");
+    expect(mockConvexMutation).toHaveBeenCalledTimes(1);
+    expect(mockDeleteUser).not.toHaveBeenCalled();
   });
 
   it("treats an already-missing WorkOS user as a completed deletion", async () => {

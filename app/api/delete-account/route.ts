@@ -9,6 +9,7 @@ import { api } from "@/convex/_generated/api";
 import { logger } from "@/lib/logger";
 import { fenceAndGetActiveAgentResourcesForUser } from "@/lib/db/actions";
 import { closeAndCancelAgentResources } from "@/lib/api/agent-deletion-cleanup";
+import { deleteProxyConfigVaultObject } from "@/lib/workos/proxy-vault";
 
 type OrganizationMembership = Awaited<
   ReturnType<typeof workos.userManagement.listOrganizationMemberships>
@@ -203,6 +204,9 @@ export const POST = async (req: NextRequest) => {
       activeAgentResources.resources,
       "account-deleted",
     );
+
+    stage = "delete_proxy_config_vault_object";
+    await deleteProxyConfigVaultObject(workos, userId);
 
     // Own app-data cleanup on the server so account deletion does not depend
     // on the browser successfully running a Convex mutation before this route.
