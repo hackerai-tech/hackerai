@@ -159,6 +159,7 @@ const SettingsDialog = ({
           data-testid="settings-dialog"
           className="w-[380px] max-w-[98%] md:w-[95vw] md:max-w-[920px] max-h-[95%] md:h-[672px] p-0 overflow-hidden rounded-[20px]"
           showCloseButton={!isMobile}
+          disableScaleAnimation
         >
           {/* Accessibility: Always include DialogTitle */}
           <DialogTitle className="sr-only">Settings</DialogTitle>
