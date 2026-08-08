@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { createHash } from "crypto";
 import { tasks, auth, idempotencyKeys, sessions } from "@trigger.dev/sdk";
 import type { agentLongTask } from "@/trigger/agent-long";
+import PostHogClient from "@/app/posthog";
 import { geolocation } from "@vercel/functions";
 import type { UIMessage } from "ai";
 
@@ -25,6 +26,7 @@ import { handleAgentRouteError } from "@/lib/api/agent-route-errors";
 import { getTriggerRegionForVercelRequest } from "@/lib/api/trigger-region";
 import {
   coerceAgentPermissionMode,
+  canUseExtraUsage,
   coerceSelectedModel,
   normalizeSelectedModelOverrideForSubscription,
 } from "@/types";
@@ -65,6 +67,7 @@ import {
   closeAgentApprovalSession,
 } from "@/lib/api/agent-approval-session";
 import { createAgentRunCorrelationToken } from "@/lib/api/agent-run-correlation";
+import { evaluateProPlusMaxAccessExperiment } from "@/lib/experiments/pro-plus-max-access";
 
 const AGENT_TRIGGER_PRIORITY_BY_SUBSCRIPTION: Record<SubscriptionTier, number> =
   {
@@ -422,6 +425,21 @@ export const createAgentTriggerPost =
         userCustomization,
         organizationId,
       });
+      const extraUsageAvailable = canUseExtraUsage(extraUsageConfig);
+      const maxAccessPosthog =
+        subscription === "pro-plus" &&
+        selectedModelOverride === "hackerai-max" &&
+        !extraUsageAvailable
+          ? PostHogClient()
+          : null;
+      const maxAccessExperiment = await evaluateProPlusMaxAccessExperiment({
+        posthog: maxAccessPosthog,
+        userId,
+        subscription,
+        mode: "agent",
+        extraUsageAvailable,
+      });
+      await maxAccessPosthog?.shutdown().catch(() => undefined);
       selectedModelOverride = resolveAgentRunSpendCapContinuationModel({
         finishReason: existingChat?.finish_reason,
         isAutoContinue,
@@ -429,6 +447,7 @@ export const createAgentTriggerPost =
         subscription,
         selectedModelOverride,
         extraUsageConfig,
+        includedMaxAccess: maxAccessExperiment?.includedMaxAccess,
       });
 
       let messagesForPersistence =
@@ -572,6 +591,7 @@ export const createAgentTriggerPost =
         approvalSessionId,
         approvalProtocolVersion: AGENT_APPROVAL_PROTOCOL_VERSION,
         selectedModel: selectedModelOverride,
+        maxAccessExperiment,
         userLocation,
         isAutoContinue,
         regenerate,
@@ -600,6 +620,9 @@ export const createAgentTriggerPost =
         approvalProtocolVersion: AGENT_APPROVAL_PROTOCOL_VERSION,
         ...(approvalWorkerVersion ? { approvalWorkerVersion } : {}),
         ...(approvalSessionId ? { approvalSessionId } : {}),
+        ...(maxAccessExperiment && {
+          maxAccessExperimentVariant: maxAccessExperiment.variant,
+        }),
       };
       const triggerOptions = {
         ...(triggerPriority > 0 ? { priority: triggerPriority } : {}),
