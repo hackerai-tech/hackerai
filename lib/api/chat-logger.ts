@@ -38,12 +38,6 @@ import type { BudgetAbortDetails } from "@/lib/chat/budget-monitor";
 import type { OpenRouterModelMetadata } from "@/lib/api/openrouter-metadata";
 import type { KimiReasoningExperimentAssignment } from "@/lib/experiments/kimi-reasoning";
 import {
-  FREE_DEEPSEEK_ROUTE_FEATURE_PROPERTY,
-  captureFreeDeepSeekRouteExperimentExposure,
-  getFreeDeepSeekRoutePackage,
-  type FreeDeepSeekRouteExperimentAssignment,
-} from "@/lib/experiments/free-deepseek-route";
-import {
   extractErrorDetails,
   extractRetryAttempts,
   getProviderErrorCategory,
@@ -1190,7 +1184,6 @@ type AgentCompletionAnalyticsArgs = {
   isAutoContinue?: boolean;
   stepLimitTelemetry?: AgentStepLimitTelemetry;
   kimiReasoningExperiment?: KimiReasoningExperimentAssignment;
-  freeDeepSeekRouteExperiment?: FreeDeepSeekRouteExperimentAssignment;
 };
 
 export function captureAgentRun({
@@ -1219,7 +1212,6 @@ export function captureAgentRun({
   isAutoContinue,
   stepLimitTelemetry,
   kimiReasoningExperiment,
-  freeDeepSeekRouteExperiment,
 }: {
   posthog: PostHog | null;
   userId: string;
@@ -1246,7 +1238,6 @@ export function captureAgentRun({
   isAutoContinue?: boolean;
   stepLimitTelemetry?: AgentStepLimitTelemetry;
   kimiReasoningExperiment?: KimiReasoningExperimentAssignment;
-  freeDeepSeekRouteExperiment?: FreeDeepSeekRouteExperimentAssignment;
 }) {
   if (!posthog || mode !== "agent") return;
   posthog.capture({
@@ -1292,16 +1283,6 @@ export function captureAgentRun({
         experiment_key: kimiReasoningExperiment.key,
         experiment_variant: kimiReasoningExperiment.variant,
         reasoning_effort: kimiReasoningExperiment.reasoningEffort,
-      }),
-      ...(freeDeepSeekRouteExperiment && {
-        experiment_key: freeDeepSeekRouteExperiment.key,
-        experiment_variant: freeDeepSeekRouteExperiment.variant,
-        reasoning_effort: freeDeepSeekRouteExperiment.reasoningEffort,
-        [FREE_DEEPSEEK_ROUTE_FEATURE_PROPERTY]:
-          freeDeepSeekRouteExperiment.variant,
-        assigned_variant: getFreeDeepSeekRoutePackage(
-          freeDeepSeekRouteExperiment,
-        ),
       }),
       ...(responseModel && { response_model: responseModel }),
       ...(responseModel &&
@@ -1368,7 +1349,6 @@ export function captureAgentCompletionAnalytics(
     isAutoContinue: args.isAutoContinue,
     stepLimitTelemetry: args.stepLimitTelemetry,
     kimiReasoningExperiment: args.kimiReasoningExperiment,
-    freeDeepSeekRouteExperiment: args.freeDeepSeekRouteExperiment,
   });
 }
 
@@ -1395,7 +1375,6 @@ export function captureUsageCost({
   usageSettlement,
   analyticsRequestContext,
   kimiReasoningExperiment,
-  freeDeepSeekRouteExperiment,
   fallbackServed,
 }: {
   posthog: PostHog | null;
@@ -1421,7 +1400,6 @@ export function captureUsageCost({
   };
   analyticsRequestContext?: AnalyticsRequestContext;
   kimiReasoningExperiment?: KimiReasoningExperimentAssignment;
-  freeDeepSeekRouteExperiment?: FreeDeepSeekRouteExperimentAssignment;
   fallbackServed?: boolean;
 }) {
   if (!posthog) return;
@@ -1446,16 +1424,6 @@ export function captureUsageCost({
         experiment_key: kimiReasoningExperiment.key,
         experiment_variant: kimiReasoningExperiment.variant,
         reasoning_effort: kimiReasoningExperiment.reasoningEffort,
-      }),
-      ...(freeDeepSeekRouteExperiment && {
-        experiment_key: freeDeepSeekRouteExperiment.key,
-        experiment_variant: freeDeepSeekRouteExperiment.variant,
-        reasoning_effort: freeDeepSeekRouteExperiment.reasoningEffort,
-        [FREE_DEEPSEEK_ROUTE_FEATURE_PROPERTY]:
-          freeDeepSeekRouteExperiment.variant,
-        assigned_variant: getFreeDeepSeekRoutePackage(
-          freeDeepSeekRouteExperiment,
-        ),
       }),
       model: usage.model,
       ...(responseModel && { response_model: responseModel }),
@@ -1507,14 +1475,6 @@ export function captureUsageCost({
           paidDailyFreeAllowance.resetTimestamp,
       }),
     },
-  });
-  captureFreeDeepSeekRouteExperimentExposure({
-    posthog,
-    userId,
-    mode,
-    assignment: freeDeepSeekRouteExperiment,
-    responseModel,
-    fallbackServed,
   });
 }
 

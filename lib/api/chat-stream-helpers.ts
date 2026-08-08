@@ -804,10 +804,6 @@ export function buildProviderOptions(
     (modelName ? resolveSlug(modelName) : undefined);
   const isDeepSeekV4 = modelId?.startsWith("deepseek/deepseek-v4") ?? false;
   const isGrok45 = modelId === GROK_4_5_SLUG;
-  // Free Ask uses low reasoning across the entire OpenRouter request, including
-  // its Grok/Kimi fallbacks. OpenRouter does not support per-fallback effort.
-  const isFreeAskDeepSeekV4 =
-    mode === "ask" && modelName === "ask-model-free" && isDeepSeekV4;
   // Agent routes use high for both DeepSeek V4 Flash and Pro. Keep this
   // mode-scoped for any future route that does not also include Grok.
   const isAgentDeepSeekV4 = mode === "agent" && isDeepSeekV4;
@@ -819,40 +815,32 @@ export function buildProviderOptions(
       })
     : fallbackSlugs;
   // OpenRouter applies one reasoning configuration to both the primary model
-  // and every provider fallback. Aside from the explicit free Ask policy,
-  // force high whenever Grok 4.5 is reachable so it cannot inherit less effort.
-  // Explicit high-or-greater overrides are safe for scoped experiments.
+  // and every provider fallback. Force high whenever Grok 4.5 is reachable so
+  // it cannot inherit less effort.
   const routesThroughGrok45 =
     isGrok45 || reasoningFallbackSlugs.includes(GROK_4_5_SLUG);
   const providerRouting = modelId
     ? getOpenRouterProviderRoutingForModel(modelId)
     : undefined;
-  const reasoning = isFreeAskDeepSeekV4
+  const reasoning = routesThroughGrok45
     ? isHighOrGreaterReasoningOverride(options.reasoningOverride)
       ? options.reasoningOverride
       : {
           enabled: true,
-          effort: "low",
+          effort: "high",
         }
-    : routesThroughGrok45
-      ? isHighOrGreaterReasoningOverride(options.reasoningOverride)
-        ? options.reasoningOverride
-        : {
+    : (options.reasoningOverride ??
+      (isHighReasoningModel(modelName) || isAgentDeepSeekV4
+        ? {
             enabled: true,
             effort: "high",
           }
-      : (options.reasoningOverride ??
-        (isHighReasoningModel(modelName) || isAgentDeepSeekV4
+        : isReasoningModel
           ? {
               enabled: true,
-              effort: "high",
+              ...(isDeepSeekV4 ? { effort: "xhigh" } : {}),
             }
-          : isReasoningModel
-            ? {
-                enabled: true,
-                ...(isDeepSeekV4 ? { effort: "xhigh" } : {}),
-              }
-            : { enabled: false }));
+          : { enabled: false }));
 
   return {
     openrouter: {

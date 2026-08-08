@@ -195,13 +195,14 @@ export const getOpenRouterProviderRoutingForModel = (
 
 const buildProviderMap = (
   or: OpenRouterInstance,
-  freeDeepSeekSlug = DEEPSEEK_V4_FLASH_SLUG,
+  freeAskDeepSeekSlug = DEEPSEEK_V4_FLASH_PREVIOUS_SLUG,
+  freeAgentDeepSeekSlug = DEEPSEEK_V4_FLASH_SLUG,
 ) =>
   ({
     "ask-model": or(GROK_4_5_SLUG),
-    "ask-model-free": or(freeDeepSeekSlug),
+    "ask-model-free": or(freeAskDeepSeekSlug),
     "agent-model": or(GROK_4_5_SLUG),
-    "agent-model-free": or(freeDeepSeekSlug),
+    "agent-model-free": or(freeAgentDeepSeekSlug),
     "model-grok-4.5": or(GROK_4_5_SLUG),
     // Dedicated HackerAI Pro alias so its GLM fallback can evolve without
     // changing Standard media fallback behavior.
@@ -343,14 +344,4 @@ export const myProvider = customProvider({
   languageModels: baseProviders,
 });
 
-export const createTrackedProvider = ({
-  freeDeepSeekSlug = DEEPSEEK_V4_FLASH_SLUG,
-}: {
-  freeDeepSeekSlug?:
-    typeof DEEPSEEK_V4_FLASH_SLUG | typeof DEEPSEEK_V4_FLASH_PREVIOUS_SLUG;
-} = {}) =>
-  freeDeepSeekSlug === DEEPSEEK_V4_FLASH_SLUG
-    ? myProvider
-    : customProvider({
-        languageModels: buildProviderMap(openrouter, freeDeepSeekSlug),
-      });
+export const createTrackedProvider = () => myProvider;

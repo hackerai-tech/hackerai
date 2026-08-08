@@ -20,7 +20,7 @@ describe("provider registry", () => {
     expect(
       (myProvider.languageModel("ask-model-free") as { modelId: string })
         .modelId,
-    ).toBe("deepseek/deepseek-v4-flash-0731");
+    ).toBe("deepseek/deepseek-v4-flash");
     expect(
       (myProvider.languageModel("agent-model-free") as { modelId: string })
         .modelId,
@@ -76,20 +76,13 @@ describe("provider registry", () => {
     expect(isAnthropicModel("anthropic/claude-opus-4.6")).toBe(true);
   });
 
-  it("can restore the previous free DeepSeek route for a scoped request", () => {
-    const provider = createTrackedProvider({
-      freeDeepSeekSlug: "deepseek/deepseek-v4-flash",
-    });
-
+  it("keeps tracked free routes split by mode", () => {
+    const provider = createTrackedProvider();
     expect(
       (provider.languageModel("ask-model-free") as { modelId: string }).modelId,
     ).toBe("deepseek/deepseek-v4-flash");
     expect(
       (provider.languageModel("agent-model-free") as { modelId: string })
-        .modelId,
-    ).toBe("deepseek/deepseek-v4-flash");
-    expect(
-      (myProvider.languageModel("ask-model-free") as { modelId: string })
         .modelId,
     ).toBe("deepseek/deepseek-v4-flash-0731");
   });

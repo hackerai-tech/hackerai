@@ -74,7 +74,6 @@ import {
   type ChatLogger,
 } from "@/lib/api/chat-logger";
 import { evaluateKimiReasoningExperiment } from "@/lib/experiments/kimi-reasoning";
-import { evaluateFreeDeepSeekRouteExperiment } from "@/lib/experiments/free-deepseek-route";
 import {
   countFileAttachments,
   stripImageAttachments,
@@ -777,17 +776,7 @@ export const createChatHandler = () => {
                 )
               : Promise.resolve(undefined);
 
-            const freeDeepSeekRouteExperiment =
-              await evaluateFreeDeepSeekRouteExperiment({
-                posthog,
-                userId,
-                subscription,
-                mode,
-                selectedModel,
-              });
-            const trackedProvider = createTrackedProvider({
-              freeDeepSeekSlug: freeDeepSeekRouteExperiment?.modelSlug,
-            });
+            const trackedProvider = createTrackedProvider();
 
             let currentSystemPrompt = await systemPrompt(
               userId,
@@ -1120,7 +1109,6 @@ export const createChatHandler = () => {
                   responseModel: state.responseModel,
                   analyticsRequestContext,
                   kimiReasoningExperiment,
-                  freeDeepSeekRouteExperiment,
                   fallbackServed:
                     state.responseModel && retryUsedFallbackModel
                       ? true
@@ -1285,14 +1273,12 @@ export const createChatHandler = () => {
               chatLogger,
               usageRefundTracker,
               settleUsageAfterStep,
-              ...((kimiReasoningExperiment || freeDeepSeekRouteExperiment) && {
+              ...(kimiReasoningExperiment && {
                 providerReasoningOverride: {
                   modelName: selectedModel,
                   reasoning: {
                     enabled: true,
-                    effort:
-                      kimiReasoningExperiment?.reasoningEffort ??
-                      freeDeepSeekRouteExperiment?.reasoningEffort,
+                    effort: kimiReasoningExperiment.reasoningEffort,
                   },
                 },
               }),
@@ -1681,7 +1667,6 @@ export const createChatHandler = () => {
                                   budgetAbortDetails: state.budgetAbortDetails,
                                   isAutoContinue: !!isAutoContinue,
                                   kimiReasoningExperiment,
-                                  freeDeepSeekRouteExperiment,
                                   stepLimitTelemetry:
                                     buildAgentStepLimitTelemetry({
                                       configuredMaxSteps:
@@ -1988,7 +1973,6 @@ export const createChatHandler = () => {
                       budgetAbortDetails: state.budgetAbortDetails,
                       isAutoContinue: !!isAutoContinue,
                       kimiReasoningExperiment,
-                      freeDeepSeekRouteExperiment,
                       stepLimitTelemetry: buildAgentStepLimitTelemetry({
                         configuredMaxSteps: state.configuredMaxSteps,
                         stepCount: state.agentStepCount,
