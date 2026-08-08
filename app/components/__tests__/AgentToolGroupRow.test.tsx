@@ -168,7 +168,10 @@ describe("AgentToolGroupRow", () => {
   it("keeps the chevron visible on touch devices and hover-only on desktop", () => {
     renderGroup(false);
 
+    const trigger = screen.getByRole("button", { name: /show tool details/i });
     const chevron = screen.getByTestId("agent-tool-group-chevron");
+    expect(trigger).toHaveClass("w-full");
+    expect(trigger).toHaveClass("desktop:w-fit");
     expect(chevron).toHaveClass("opacity-0");
     expect(chevron).toHaveClass("group-hover:opacity-100");
     expect(chevron).toHaveClass("group-focus-visible:opacity-100");

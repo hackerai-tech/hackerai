@@ -21,6 +21,28 @@ describe("Reasoning", () => {
     expect(content).toHaveClass("mt-2");
   });
 
+  it("uses a full mobile row and a precise desktop disclosure affordance", () => {
+    render(
+      <Reasoning>
+        <ReasoningTrigger />
+        <ReasoningContent>Visible reasoning text</ReasoningContent>
+      </Reasoning>,
+    );
+
+    const trigger = screen.getByRole("button", { name: "Reasoning" });
+    const label = screen.getByText("Reasoning");
+    const chevron = screen.getByTestId("reasoning-chevron");
+
+    expect(trigger).toHaveClass("w-full");
+    expect(trigger).toHaveClass("desktop:w-fit");
+    expect(label).not.toHaveClass("flex-1");
+    expect(chevron).toHaveClass("opacity-100");
+    expect(chevron).toHaveClass("desktop:opacity-0");
+    expect(chevron).toHaveClass("desktop:group-hover:opacity-100");
+    expect(chevron).toHaveClass("desktop:group-focus-visible:opacity-100");
+    expect(chevron).toHaveClass("touch-device:!opacity-100");
+  });
+
   it("prevents long formatted reasoning text from creating page-width overflow", () => {
     render(
       <Reasoning open>
