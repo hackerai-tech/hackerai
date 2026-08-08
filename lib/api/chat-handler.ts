@@ -73,7 +73,10 @@ import {
   shutdownPostHog,
   type ChatLogger,
 } from "@/lib/api/chat-logger";
-import { evaluateKimiReasoningExperiment } from "@/lib/experiments/kimi-reasoning";
+import {
+  KIMI_MAX_REASONING_EFFORT,
+  shouldUseMaxKimiReasoning,
+} from "@/lib/ai/kimi-reasoning";
 import {
   countFileAttachments,
   stripImageAttachments,
@@ -865,15 +868,12 @@ export const createChatHandler = () => {
 
             const configuredModelId =
               trackedProvider.languageModel(selectedModel).modelId;
-            const kimiReasoningExperiment =
-              await evaluateKimiReasoningExperiment({
-                posthog,
-                userId,
-                subscription,
-                mode,
-                selectedModel,
-                configuredModelId,
-              });
+            const useMaxKimiReasoning = shouldUseMaxKimiReasoning({
+              subscription,
+              mode,
+              selectedModel,
+              configuredModelId,
+            });
             const streamStartTime = Date.now();
             const budgetMonitor = effectiveBudgetSnapshot
               ? new BudgetMonitor(
@@ -1108,7 +1108,6 @@ export const createChatHandler = () => {
                   usage: usageCostRecord,
                   responseModel: state.responseModel,
                   analyticsRequestContext,
-                  kimiReasoningExperiment,
                   fallbackServed:
                     state.responseModel && retryUsedFallbackModel
                       ? true
@@ -1273,12 +1272,12 @@ export const createChatHandler = () => {
               chatLogger,
               usageRefundTracker,
               settleUsageAfterStep,
-              ...(kimiReasoningExperiment && {
+              ...(useMaxKimiReasoning && {
                 providerReasoningOverride: {
                   modelName: selectedModel,
                   reasoning: {
                     enabled: true,
-                    effort: kimiReasoningExperiment.reasoningEffort,
+                    effort: KIMI_MAX_REASONING_EFFORT,
                   },
                 },
               }),
@@ -1666,7 +1665,6 @@ export const createChatHandler = () => {
                                   finishReason: state.streamFinishReason,
                                   budgetAbortDetails: state.budgetAbortDetails,
                                   isAutoContinue: !!isAutoContinue,
-                                  kimiReasoningExperiment,
                                   stepLimitTelemetry:
                                     buildAgentStepLimitTelemetry({
                                       configuredMaxSteps:
@@ -1972,7 +1970,6 @@ export const createChatHandler = () => {
                       finishReason: state.streamFinishReason,
                       budgetAbortDetails: state.budgetAbortDetails,
                       isAutoContinue: !!isAutoContinue,
-                      kimiReasoningExperiment,
                       stepLimitTelemetry: buildAgentStepLimitTelemetry({
                         configuredMaxSteps: state.configuredMaxSteps,
                         stepCount: state.agentStepCount,
