@@ -356,12 +356,14 @@ describe("POST /api/delete-account", () => {
       id: "secret_proxy_123",
       versionCheck: "version_1",
     });
-    const fenceCall = mockConvexMutation.mock.invocationCallOrder[0];
+    const fenceCall = convexMutationCallOrder(
+      "accountDeletionFences.startByService",
+    );
     expect(fenceCall).toBeLessThan(
       mockReadVaultObject.mock.invocationCallOrder[0],
     );
     expect(mockDeleteVaultObject.mock.invocationCallOrder[0]).toBeLessThan(
-      mockConvexMutation.mock.invocationCallOrder[2],
+      convexMutationCallOrder("userDeletion.deleteAllUserDataByService"),
     );
   });
 
