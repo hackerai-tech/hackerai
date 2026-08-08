@@ -36,7 +36,7 @@ jest.mock("@/lib/utils/settings-dialog", () => ({
   onOpenSettingsDialog: () => () => undefined,
 }));
 
-const { ChatLayout, SettingsDialogLoadingFallback } =
+const { ChatLayout } =
   require("../ChatLayout") as typeof import("../ChatLayout");
 
 describe("ChatLayout mobile accessibility", () => {
@@ -50,22 +50,5 @@ describe("ChatLayout mobile accessibility", () => {
     expect(
       screen.getByRole("dialog", { name: "Task sidebar" }),
     ).toHaveAttribute("aria-modal", "true");
-  });
-
-  it("reserves the full settings dialog footprint while its bundle loads", () => {
-    render(<SettingsDialogLoadingFallback />);
-
-    expect(
-      screen.getByRole("status", { name: "Loading settings" }),
-    ).toBeVisible();
-    expect(screen.getByTestId("settings-dialog-loading-shell")).toHaveClass(
-      "w-[380px]",
-      "md:h-[672px]",
-      "md:max-w-[920px]",
-    );
-    expect(screen.getByTestId("settings-dialog-loading-content")).toHaveClass(
-      "h-[80dvh]",
-      "md:h-full",
-    );
   });
 });

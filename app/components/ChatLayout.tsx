@@ -6,42 +6,25 @@ import { useIsMobile } from "@/hooks/use-mobile";
 import { useGlobalState } from "../contexts/GlobalState";
 import { useChats } from "../hooks/useChats";
 import { SidebarProvider } from "@/components/ui/sidebar";
-import Loading from "@/components/ui/loading";
 import MainSidebar from "./Sidebar";
 import { onOpenSettingsDialog } from "@/lib/utils/settings-dialog";
 
-export function SettingsDialogLoadingFallback() {
-  return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
-      role="status"
-      aria-label="Loading settings"
-    >
-      <div
-        data-testid="settings-dialog-loading-shell"
-        className="max-h-[95%] w-[380px] max-w-[98%] overflow-hidden rounded-[20px] border bg-background shadow-lg md:h-[672px] md:w-[95vw] md:max-w-[920px]"
-      >
-        <div className="border-b px-4 py-3 md:hidden">
-          <h3 className="text-lg font-semibold">Settings</h3>
-        </div>
-        <div
-          data-testid="settings-dialog-loading-content"
-          className="flex h-[80dvh] max-h-[90vh] items-center justify-center md:h-full"
-        >
-          <Loading size={6} />
-        </div>
-      </div>
-    </div>
-  );
+type SettingsDialogComponent =
+  (typeof import("./SettingsDialog"))["SettingsDialog"];
+
+let settingsDialogPromise: Promise<SettingsDialogComponent> | null = null;
+
+function loadSettingsDialog(): Promise<SettingsDialogComponent> {
+  settingsDialogPromise ??= import("./SettingsDialog")
+    .then((module) => module.SettingsDialog)
+    .catch((error) => {
+      settingsDialogPromise = null;
+      throw error;
+    });
+  return settingsDialogPromise;
 }
 
-const SettingsDialog = dynamic(
-  () => import("./SettingsDialog").then((module) => module.SettingsDialog),
-  {
-    ssr: false,
-    loading: SettingsDialogLoadingFallback,
-  },
-);
+const SettingsDialog = dynamic(loadSettingsDialog, { ssr: false });
 
 /**
  * Shared layout for chat routes: Chat Sidebar (left) + main content slot.
@@ -63,7 +46,8 @@ export function ChatLayout({ children }: { children: React.ReactNode }) {
     null,
   );
 
-  const handleOpenSettings = useCallback((tab?: string) => {
+  const handleOpenSettings = useCallback(async (tab?: string) => {
+    await loadSettingsDialog();
     setHasOpenedSettingsDialog(true);
     setSettingsDialogTab(null);
     // Force a fresh state change even if the same tab is requested again
@@ -71,6 +55,20 @@ export function ChatLayout({ children }: { children: React.ReactNode }) {
       setSettingsDialogTab(tab ?? null);
       setSettingsDialogOpen(true);
     });
+  }, []);
+
+  useEffect(() => {
+    const preload = () => void loadSettingsDialog();
+    const idleWindow = window as unknown as {
+      requestIdleCallback?: (callback: IdleRequestCallback) => number;
+      cancelIdleCallback?: (id: number) => void;
+    };
+    if (idleWindow.requestIdleCallback) {
+      const idleId = idleWindow.requestIdleCallback(preload);
+      return () => idleWindow.cancelIdleCallback?.(idleId);
+    }
+    const timeoutId = window.setTimeout(preload, 0);
+    return () => window.clearTimeout(timeoutId);
   }, []);
 
   useEffect(
@@ -199,7 +197,7 @@ export function ChatLayout({ children }: { children: React.ReactNode }) {
           </div>
         </div>
       )}
-      {/* Load settings on first use, then keep it mounted for close animations. */}
+      {/* Open only after the lazy bundle is ready, then keep it mounted. */}
       {hasOpenedSettingsDialog && (
         <SettingsDialog
           open={settingsDialogOpen}
