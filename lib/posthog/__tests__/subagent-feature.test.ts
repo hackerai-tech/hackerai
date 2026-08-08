@@ -29,23 +29,17 @@ describe("security validation subagent feature", () => {
     expect(mockGetPostHogFeatureFlagForUser).not.toHaveBeenCalled();
   });
 
-  it("keeps preview deployments behind the PostHog flag", async () => {
+  it("enables preview deployments without evaluating PostHog", async () => {
     const environment = {
-      NODE_ENV: "development",
+      NODE_ENV: "production",
       VERCEL_ENV: "preview",
     };
-    mockGetPostHogFeatureFlagForUser.mockResolvedValueOnce(true);
 
-    expect(shouldBypassSecurityValidationSubagentsFlag(environment)).toBe(
-      false,
-    );
+    expect(shouldBypassSecurityValidationSubagentsFlag(environment)).toBe(true);
     await expect(
       resolveSecurityValidationSubagentsEnabled("user_123", environment),
     ).resolves.toBe(true);
-    expect(mockGetPostHogFeatureFlagForUser).toHaveBeenCalledWith(
-      SECURITY_VALIDATION_SUBAGENTS_FLAG,
-      "user_123",
-    );
+    expect(mockGetPostHogFeatureFlagForUser).not.toHaveBeenCalled();
   });
 
   it("keeps production behind the PostHog flag and fails closed", async () => {

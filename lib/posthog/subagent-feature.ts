@@ -13,9 +13,9 @@ type SubagentFeatureEnvironment = {
 export const shouldBypassSecurityValidationSubagentsFlag = (
   environment: SubagentFeatureEnvironment = process.env,
 ): boolean =>
-  environment.NODE_ENV === "development" &&
-  environment.VERCEL_ENV !== "preview" &&
-  environment.VERCEL_ENV !== "production";
+  environment.VERCEL_ENV === "preview" ||
+  (environment.NODE_ENV === "development" &&
+    environment.VERCEL_ENV !== "production");
 
 export const resolveSecurityValidationSubagentsEnabled = async (
   userId: string,
