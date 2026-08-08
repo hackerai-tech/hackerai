@@ -56,6 +56,7 @@ import {
   resolveSubagentContext,
   saveSubagentMessage,
 } from "@/lib/db/subagents";
+import { setConvexUrl } from "@/lib/db/convex-client";
 import { sanitizeForConvexValue } from "@/lib/db/convex-value-sanitizer";
 import {
   compactMessageForStorage,
@@ -93,6 +94,11 @@ import { ChatSDKError, serializeChatSDKErrorForStream } from "@/lib/errors";
 type SubagentTaskOutput = {
   subagentId: string;
   status: "completed" | "failed" | "canceled" | "timed_out";
+};
+
+type SubagentTaskPayload = {
+  subagentId: string;
+  convexUrl?: string;
 };
 
 type CancellationCleanup = {
@@ -233,10 +239,16 @@ export const subagentTask = task({
   },
 
   run: async (
-    payload: { subagentId: string },
+    payload: SubagentTaskPayload,
     { ctx, signal: triggerSignal },
   ): Promise<SubagentTaskOutput> => {
     const startedAt = Date.now();
+    // The parent Agent run may be using a branch-specific Convex deployment.
+    // Trigger preview workers otherwise inherit the dashboard's main URL and
+    // cannot see the reservation that the parent just created.
+    if (payload.convexUrl) {
+      setConvexUrl(payload.convexUrl);
+    }
     const row = await getSubagent(payload.subagentId);
     if (!row) throw new Error("Subagent reservation not found");
     if (SUBAGENT_TERMINAL_STATUSES.has(row.status)) {

@@ -32,6 +32,7 @@ import {
   sendMessageToSubagent,
   type PersistedSubagent,
 } from "@/lib/db/subagents";
+import { getConvexUrl } from "@/lib/db/convex-client";
 import {
   captureSubagentLifecycleEvent,
   captureSubagentTerminalOutcome,
@@ -198,7 +199,7 @@ export const createCreateAgentTool = (
             { scope: "global" },
           );
           await subagentTask.trigger(
-            { subagentId },
+            { subagentId, convexUrl: getConvexUrl() },
             {
               idempotencyKey: key,
               idempotencyKeyTTL: "6h",
