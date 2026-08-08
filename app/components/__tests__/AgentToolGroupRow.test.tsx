@@ -35,14 +35,18 @@ const activities = [
   },
 ];
 
-const group = (animateOnMount: boolean) => (
+const group = (
+  animateOnMount: boolean,
+  groupActivities = activities,
+  summary = "Read a file, ran a command",
+) => (
   <AgentToolGroupRow
-    activities={activities}
+    activities={groupActivities}
     animateOnMount={animateOnMount}
     isLastMessage
     message={message}
     status="streaming"
-    summary="Read a file and ran a command"
+    summary={summary}
     terminalChunksByToolCallId={new Map()}
   />
 );
@@ -59,7 +63,7 @@ describe("AgentToolGroupRow", () => {
     renderGroup(true);
 
     const trigger = screen.getByRole("button", {
-      name: /read a file and ran a command\. hide tool details/i,
+      name: /read a file, ran a command\. hide tool details/i,
     });
     const content = document.querySelector('[data-slot="collapsible-content"]');
 
@@ -75,7 +79,7 @@ describe("AgentToolGroupRow", () => {
     expect(trigger).toHaveAttribute("aria-expanded", "false");
     expect(
       screen.getByRole("button", {
-        name: /read a file and ran a command\. show tool details/i,
+        name: /read a file, ran a command\. show tool details/i,
       }),
     ).toBeInTheDocument();
   });
@@ -84,7 +88,7 @@ describe("AgentToolGroupRow", () => {
     renderGroup(false);
 
     const trigger = screen.getByRole("button", {
-      name: /read a file and ran a command\. show tool details/i,
+      name: /read a file, ran a command\. show tool details/i,
     });
     expect(trigger).toHaveAttribute("aria-expanded", "false");
 
@@ -123,5 +127,51 @@ describe("AgentToolGroupRow", () => {
     expect(
       screen.getByRole("button", { name: /hide tool details/i }),
     ).toHaveAttribute("aria-expanded", "true");
+  });
+
+  it("uses the category icon for homogeneous work and the tool icon for a mix", () => {
+    const { rerender } = renderGroup(false);
+
+    expect(document.querySelector('[data-summary-icon="mixed"]')).toBeTruthy();
+
+    rerender(
+      group(
+        false,
+        [
+          {
+            id: "tool:write-1",
+            part: {
+              type: "tool-file",
+              input: { action: "write", path: "/tmp/one.ts" },
+              state: "output-available",
+            } as ChatMessage["parts"][number],
+            partIndex: 0,
+          },
+          {
+            id: "tool:edit-1",
+            part: {
+              type: "tool-file",
+              input: { action: "edit", path: "/tmp/two.ts" },
+              state: "output-available",
+            } as ChatMessage["parts"][number],
+            partIndex: 1,
+          },
+        ],
+        "Edited files",
+      ),
+    );
+
+    expect(screen.getByRole("button", { name: /edited files/i })).toBeVisible();
+    expect(document.querySelector('[data-summary-icon="edit"]')).toBeTruthy();
+  });
+
+  it("keeps the chevron visible on touch devices and hover-only on desktop", () => {
+    renderGroup(false);
+
+    const chevron = screen.getByTestId("agent-tool-group-chevron");
+    expect(chevron).toHaveClass("opacity-0");
+    expect(chevron).toHaveClass("group-hover:opacity-100");
+    expect(chevron).toHaveClass("group-focus-visible:opacity-100");
+    expect(chevron).toHaveClass("touch-device:!opacity-100");
   });
 });

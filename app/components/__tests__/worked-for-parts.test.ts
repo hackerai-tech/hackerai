@@ -1,4 +1,5 @@
 import {
+  getCompletedToolSummaryIconCategory,
   isExpandableWorkedForPart,
   projectAgentWorkParts,
   projectAgentWorkTimelineItems,
@@ -125,7 +126,7 @@ describe("projectAgentWorkTimelineItems", () => {
     expect(items).toHaveLength(2);
     expect(items[0]).toMatchObject({
       kind: "tool-group",
-      summary: "Read a file and ran a command",
+      summary: "Read a file, ran a command",
     });
     expect(items[1]).toMatchObject({ kind: "activity" });
   });
@@ -216,7 +217,75 @@ describe("projectAgentWorkTimelineItems", () => {
         { id: "two", part: part("tool-read_file"), partIndex: 1 },
         { id: "three", part: part("tool-shell"), partIndex: 2 },
       ]),
-    ).toBe("Read files and ran a command");
+    ).toBe("Read files, ran a command");
+  });
+
+  it("classifies every rendered tool family without the generic fallback", () => {
+    const cases = [
+      ["tool-shell", {}, "command"],
+      ["tool-run_terminal_cmd", {}, "command"],
+      ["tool-interact_terminal_session", {}, "command"],
+      ["tool-read_file", {}, "read"],
+      ["tool-file", { input: { action: "view" } }, "view"],
+      ["tool-file", { input: { action: "read" } }, "read"],
+      ["tool-file", { input: { action: "write" } }, "edit"],
+      ["tool-file", { input: { action: "append" } }, "edit"],
+      ["tool-file", { input: { action: "edit" } }, "edit"],
+      ["tool-write_file", {}, "edit"],
+      ["tool-search_replace", {}, "edit"],
+      ["tool-multi_edit", {}, "edit"],
+      ["tool-delete_file", {}, "delete"],
+      ["tool-get_terminal_files", {}, "download"],
+      ["tool-web_search", {}, "search"],
+      ["tool-web", {}, "search"],
+      ["tool-open_url", {}, "browse"],
+      ["tool-http_request", {}, "request"],
+      ["tool-send_request", {}, "request"],
+      ["tool-todo_write", {}, "tasks"],
+      ["tool-create_note", {}, "notes"],
+      ["tool-list_notes", {}, "notes"],
+      ["tool-update_note", {}, "notes"],
+      ["tool-delete_note", {}, "notes"],
+      ["tool-list_requests", {}, "proxy"],
+      ["tool-view_request", {}, "proxy"],
+      ["tool-scope_rules", {}, "proxy"],
+      ["tool-list_sitemap", {}, "proxy"],
+      ["tool-view_sitemap_entry", {}, "proxy"],
+    ] as const;
+
+    for (const [type, extra, expected] of cases) {
+      expect(
+        getCompletedToolSummaryIconCategory([
+          { id: type, part: part(type, extra), partIndex: 0 },
+        ]),
+      ).toBe(expected);
+    }
+  });
+
+  it("uses a file-edit icon for file updates and the tool icon for mixed work", () => {
+    const editActivities = [
+      {
+        id: "write",
+        part: part("tool-file", { input: { action: "write" } }),
+        partIndex: 0,
+      },
+      {
+        id: "edit",
+        part: part("tool-file", { input: { action: "edit" } }),
+        partIndex: 1,
+      },
+    ];
+
+    expect(summarizeCompletedToolActivities(editActivities)).toBe(
+      "Edited files",
+    );
+    expect(getCompletedToolSummaryIconCategory(editActivities)).toBe("edit");
+    expect(
+      getCompletedToolSummaryIconCategory([
+        ...editActivities,
+        { id: "shell", part: part("tool-shell"), partIndex: 2 },
+      ]),
+    ).toBe("mixed");
   });
 
   it("does not merge reasoning across explicit step boundaries", () => {

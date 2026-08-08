@@ -142,8 +142,11 @@ const isSuccessfullyCompletedToolPart = (part: MessagePart) => {
   return state === "output-available" && !hasKnownToolFailure(part);
 };
 
-type ToolSummaryCategory =
+export type CompletedToolSummaryCategory =
+  | "browse"
   | "command"
+  | "delete"
+  | "download"
   | "edit"
   | "notes"
   | "proxy"
@@ -151,26 +154,44 @@ type ToolSummaryCategory =
   | "request"
   | "search"
   | "tasks"
-  | "tool";
+  | "tool"
+  | "view";
 
-const toolSummaryCategory = (part: MessagePart): ToolSummaryCategory => {
+export type CompletedToolSummaryIconCategory =
+  CompletedToolSummaryCategory | "mixed";
+
+const toolSummaryCategory = (
+  part: MessagePart,
+): CompletedToolSummaryCategory => {
   switch (getPartType(part)) {
     case "tool-shell":
     case "tool-run_terminal_cmd":
     case "tool-interact_terminal_session":
       return "command";
     case "tool-read_file":
-    case "tool-get_terminal_files":
       return "read";
+    case "tool-file": {
+      const action = (part as { input?: { action?: unknown } }).input?.action;
+      if (action === "view") return "view";
+      if (action === "read") return "read";
+      if (action === "write" || action === "append" || action === "edit") {
+        return "edit";
+      }
+      return "tool";
+    }
     case "tool-write_file":
-    case "tool-delete_file":
     case "tool-search_replace":
     case "tool-multi_edit":
       return "edit";
+    case "tool-delete_file":
+      return "delete";
+    case "tool-get_terminal_files":
+      return "download";
     case "tool-web_search":
-    case "tool-open_url":
     case "tool-web":
       return "search";
+    case "tool-open_url":
+      return "browse";
     case "tool-http_request":
     case "tool-send_request":
       return "request";
@@ -192,11 +213,20 @@ const toolSummaryCategory = (part: MessagePart): ToolSummaryCategory => {
   }
 };
 
-const toolSummaryPhrase = (category: ToolSummaryCategory, count: number) => {
+const toolSummaryPhrase = (
+  category: CompletedToolSummaryCategory,
+  count: number,
+) => {
   const plural = count > 1;
   switch (category) {
+    case "browse":
+      return plural ? "opened pages" : "opened a page";
     case "command":
       return plural ? "ran commands" : "ran a command";
+    case "delete":
+      return plural ? "deleted files" : "deleted a file";
+    case "download":
+      return "downloaded files";
     case "read":
       return plural ? "read files" : "read a file";
     case "edit":
@@ -213,20 +243,37 @@ const toolSummaryPhrase = (category: ToolSummaryCategory, count: number) => {
       return "inspected proxy data";
     case "tool":
       return plural ? "used tools" : "used a tool";
+    case "view":
+      return plural ? "viewed files" : "viewed a file";
   }
 };
 
 const joinSummaryPhrases = (phrases: readonly string[]) => {
   if (phrases.length === 1) return phrases[0] ?? "used tools";
-  if (phrases.length === 2) return `${phrases[0]} and ${phrases[1]}`;
-  return `${phrases.slice(0, -1).join(", ")}, and ${phrases.at(-1)}`;
+  return phrases.join(", ");
 };
+
+/** Selects the category icon for a homogeneous group or the tool icon for a mix. */
+export function getCompletedToolSummaryIconCategory(
+  activities: readonly AgentWorkActivity[],
+): CompletedToolSummaryIconCategory {
+  let firstCategory: CompletedToolSummaryCategory | undefined;
+  for (const activity of activities) {
+    const category = toolSummaryCategory(activity.part);
+    if (firstCategory === undefined) {
+      firstCategory = category;
+    } else if (category !== firstCategory) {
+      return "mixed";
+    }
+  }
+  return firstCategory ?? "tool";
+}
 
 /** Builds the compact, deterministic label shown for a completed tool step. */
 export function summarizeCompletedToolActivities(
   activities: readonly AgentWorkActivity[],
 ): string {
-  const counts = new Map<ToolSummaryCategory, number>();
+  const counts = new Map<CompletedToolSummaryCategory, number>();
   for (const activity of activities) {
     const category = toolSummaryCategory(activity.part);
     counts.set(category, (counts.get(category) ?? 0) + 1);

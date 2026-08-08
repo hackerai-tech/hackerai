@@ -188,7 +188,7 @@ describe("deriveChatTimelineRows", () => {
     ]);
     expect(group).toMatchObject({
       animateOnMount: true,
-      summary: "Read a file and ran a command",
+      summary: "Read a file, ran a command",
     });
     expect(group?.activities).toHaveLength(2);
   });

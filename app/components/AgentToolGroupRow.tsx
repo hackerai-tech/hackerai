@@ -7,7 +7,23 @@ import type {
   PointerEventHandler,
   TouchEventHandler,
 } from "react";
-import { ChevronDownIcon, ChevronRightIcon, WrenchIcon } from "lucide-react";
+import {
+  ChevronDownIcon,
+  ChevronRightIcon,
+  Eye,
+  FileDown,
+  FilePen,
+  FileText,
+  Globe,
+  ListTodo,
+  Radar,
+  Search,
+  StickyNote,
+  Terminal,
+  Trash2,
+  Wrench,
+} from "lucide-react";
+import type { LucideIcon } from "lucide-react";
 import {
   Collapsible,
   CollapsibleContent,
@@ -17,9 +33,30 @@ import { useScrollPreservation } from "@/components/ai-elements/worked-for";
 import type { ChatMessage, ChatStatus } from "@/types";
 import type { FileDetails } from "@/types/file";
 import { AgentActivityRow } from "./AgentActivityRow";
-import type { AgentWorkActivity } from "./worked-for-parts";
+import {
+  getCompletedToolSummaryIconCategory,
+  type AgentWorkActivity,
+  type CompletedToolSummaryIconCategory,
+} from "./worked-for-parts";
 
 const AUTO_COLLAPSE_DELAY_MS = 500;
+
+const SUMMARY_ICONS: Record<CompletedToolSummaryIconCategory, LucideIcon> = {
+  browse: Globe,
+  command: Terminal,
+  delete: Trash2,
+  download: FileDown,
+  edit: FilePen,
+  mixed: Wrench,
+  notes: StickyNote,
+  proxy: Radar,
+  read: FileText,
+  request: Globe,
+  search: Search,
+  tasks: ListTodo,
+  tool: Wrench,
+  view: Eye,
+};
 
 type AgentToolGroupRowProps = {
   activities: AgentWorkActivity[];
@@ -46,6 +83,9 @@ export const AgentToolGroupRow = memo(function AgentToolGroupRow({
   const [open, setOpen] = useState(animateOnMount);
   const autoCollapseTimeoutRef = useRef<number | null>(null);
   const userToggledRef = useRef(false);
+  const summaryIcon = getCompletedToolSummaryIconCategory(activities);
+  const SummaryIcon = SUMMARY_ICONS[summaryIcon];
+  const ChevronIcon = open ? ChevronDownIcon : ChevronRightIcon;
   const { captureScrollPosition, preserveScrollPosition } =
     useScrollPreservation();
 
@@ -115,15 +155,19 @@ export const AgentToolGroupRow = memo(function AgentToolGroupRow({
           onKeyDown={handleKeyDown}
           onPointerDown={handlePointerDown}
           onTouchStart={handleTouchStart}
-          className="flex w-full items-center gap-2 text-left text-sm text-muted-foreground transition-colors hover:text-foreground"
+          className="group flex w-full items-center gap-2 text-left text-sm text-muted-foreground transition-colors hover:text-foreground"
         >
-          <WrenchIcon className="size-4 shrink-0" aria-hidden="true" />
+          <SummaryIcon
+            className="size-4 shrink-0"
+            aria-hidden="true"
+            data-summary-icon={summaryIcon}
+          />
           <span className="min-w-0 truncate">{summary}</span>
-          {open ? (
-            <ChevronDownIcon className="size-4 shrink-0" aria-hidden="true" />
-          ) : (
-            <ChevronRightIcon className="size-4 shrink-0" aria-hidden="true" />
-          )}
+          <ChevronIcon
+            className="size-4 shrink-0 opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100 touch-device:!opacity-100"
+            aria-hidden="true"
+            data-testid="agent-tool-group-chevron"
+          />
         </button>
       </CollapsibleTrigger>
       <CollapsibleContent className="agent-tool-group-content worked-for-content mt-2 space-y-3">
