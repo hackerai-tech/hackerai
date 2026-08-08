@@ -1,5 +1,5 @@
 import "@testing-library/jest-dom";
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { Reasoning, ReasoningContent, ReasoningTrigger } from "../reasoning";
 
 describe("Reasoning", () => {
@@ -54,6 +54,26 @@ describe("Reasoning", () => {
       "animate-ping",
     );
     expect(document.querySelector(".animate-ping")).not.toBeInTheDocument();
+  });
+
+  it("points right when closed and down when expanded", () => {
+    render(
+      <Reasoning>
+        <ReasoningTrigger />
+        <ReasoningContent>Visible reasoning text</ReasoningContent>
+      </Reasoning>,
+    );
+
+    const trigger = screen.getByRole("button", { name: "Reasoning" });
+    expect(screen.getByTestId("reasoning-chevron")).toHaveClass(
+      "lucide-chevron-right",
+    );
+
+    fireEvent.click(trigger);
+
+    expect(screen.getByTestId("reasoning-chevron")).toHaveClass(
+      "lucide-chevron-down",
+    );
   });
 
   it("prevents long formatted reasoning text from creating page-width overflow", () => {

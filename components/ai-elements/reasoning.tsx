@@ -7,7 +7,7 @@ import {
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
 import { cn } from "@/lib/utils";
-import { BrainIcon, ChevronDownIcon } from "lucide-react";
+import { BrainIcon, ChevronDownIcon, ChevronRightIcon } from "lucide-react";
 import { createContext, useContext, useEffect, useMemo, useRef } from "react";
 import type { ComponentProps, ReactNode } from "react";
 
@@ -90,6 +90,7 @@ export function ReasoningTrigger({
   ...props
 }: ReasoningTriggerProps) {
   const { isOpen, isStreaming } = useReasoning();
+  const ChevronIcon = isOpen ? ChevronDownIcon : ChevronRightIcon;
 
   return (
     <CollapsibleTrigger
@@ -110,11 +111,8 @@ export function ReasoningTrigger({
           data-testid="reasoning-streaming-indicator"
         />
       )}
-      <ChevronDownIcon
-        className={cn(
-          "size-4 shrink-0 opacity-100 transition-[transform,opacity] desktop:opacity-0 desktop:group-hover:opacity-100 desktop:group-focus-visible:opacity-100 touch-device:!opacity-100",
-          isOpen ? "rotate-180" : "rotate-0",
-        )}
+      <ChevronIcon
+        className="size-4 shrink-0 opacity-100 transition-opacity desktop:opacity-0 desktop:group-hover:opacity-100 desktop:group-focus-visible:opacity-100 touch-device:!opacity-100"
         data-testid="reasoning-chevron"
       />
     </CollapsibleTrigger>
