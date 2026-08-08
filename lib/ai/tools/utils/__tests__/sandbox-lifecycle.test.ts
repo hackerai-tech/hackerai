@@ -6,6 +6,7 @@ jest.mock("@e2b/code-interpreter", () => {
       static connect = jest.fn();
       static create = jest.fn();
       static kill = jest.fn();
+      static deleteSnapshot = jest.fn();
     },
     SandboxError: E2BError,
     TimeoutError: class extends E2BError {},
@@ -35,6 +36,7 @@ type MockSandboxApi = {
   connect: jest.Mock;
   create: jest.Mock;
   kill: jest.Mock;
+  deleteSnapshot: jest.Mock;
 };
 
 const sandboxApi = Sandbox as unknown as MockSandboxApi;
@@ -44,6 +46,7 @@ const listSandbox = (
     sandboxId: string;
     state: "running" | "paused";
     metadata: Record<string, string>;
+    envdVersion: string;
   }> = {},
 ) => {
   sandboxApi.list.mockReturnValue({
@@ -52,6 +55,7 @@ const listSandbox = (
         sandboxId: "sandbox-1",
         state: "running",
         metadata: { sandboxVersion: "v12" },
+        envdVersion: "0.6.13",
         ...overrides,
       },
     ]),
@@ -223,6 +227,162 @@ describe("E2B sandbox lease lifecycle", () => {
       timeoutMs: BASH_SANDBOX_AUTOPAUSE_TIMEOUT,
     });
     expect(setSandbox).toHaveBeenCalledWith(connectedSandbox);
+  });
+
+  it("updates the complete outbound policy without recreating the sandbox", async () => {
+    const updateNetwork = jest.fn(async () => undefined);
+    const connectedSandbox = {
+      sandboxId: "sandbox-1",
+      updateNetwork,
+    } as unknown as Sandbox;
+    listSandbox();
+    sandboxApi.connect.mockResolvedValue(connectedSandbox);
+
+    await ensureSandboxConnection({
+      userID: "user-1",
+      setSandbox: jest.fn(),
+      networkConfig: {
+        inboundMode: "public",
+        outboundMode: "allow_only",
+        destinations: ["api.example.com"],
+        updatedAt: 1,
+      },
+    });
+
+    expect(sandboxApi.create).not.toHaveBeenCalled();
+    expect(updateNetwork).toHaveBeenCalledTimes(1);
+    const update = updateNetwork.mock.calls[0][0];
+    expect(update.allowOut).toEqual(["api.example.com"]);
+    expect(
+      update.denyOut({ allTraffic: "0.0.0.0/0", rules: new Map() }),
+    ).toEqual(["0.0.0.0/0"]);
+  });
+
+  it("preserves idle sandbox state through a snapshot when inbound access changes", async () => {
+    const releaseMigrationLease = jest.fn(async () => undefined);
+    const createSnapshot = jest.fn(async () => ({
+      snapshotId: "snapshot-1",
+      names: [],
+    }));
+    const sandboxToMigrate = {
+      sandboxId: "sandbox-1",
+      createSnapshot,
+    } as unknown as Sandbox;
+    const createdSandbox = { sandboxId: "sandbox-2" } as unknown as Sandbox;
+    listSandbox({ state: "paused" });
+    sandboxApi.connect.mockResolvedValue(sandboxToMigrate);
+    sandboxApi.create.mockResolvedValue(createdSandbox);
+    sandboxApi.kill.mockResolvedValue(true);
+    sandboxApi.deleteSnapshot.mockResolvedValue(true);
+
+    const result = await ensureSandboxConnection({
+      userID: "user-1",
+      setSandbox: jest.fn(),
+      networkConfig: {
+        inboundMode: "token_required",
+        outboundMode: "unrestricted",
+        destinations: [],
+        updatedAt: 2,
+      },
+      acquireNetworkMigrationLease: jest.fn(async () => releaseMigrationLease),
+    });
+
+    expect(result.sandbox).toBe(createdSandbox);
+    expect(createSnapshot).toHaveBeenCalledTimes(1);
+    expect(sandboxApi.create).toHaveBeenCalledWith(
+      "snapshot-1",
+      expect.objectContaining({
+        network: { allowPublicTraffic: false },
+        metadata: expect.objectContaining({
+          networkInboundMode: "token_required",
+        }),
+      }),
+    );
+    expect(sandboxApi.kill).toHaveBeenCalledWith("sandbox-1");
+    expect(sandboxApi.deleteSnapshot).toHaveBeenCalledWith("snapshot-1");
+    expect(releaseMigrationLease).toHaveBeenCalledTimes(1);
+    expect(releaseMigrationLease.mock.invocationCallOrder[0]).toBeGreaterThan(
+      sandboxApi.kill.mock.invocationCallOrder[0],
+    );
+  });
+
+  it("allows only one concurrent inbound migration for a user", async () => {
+    let leaseHeld = false;
+    let finishSnapshot!: () => void;
+    const snapshotStarted = new Promise<void>((resolve) => {
+      finishSnapshot = resolve;
+    });
+    let releaseSnapshot!: () => void;
+    const snapshotGate = new Promise<void>((resolve) => {
+      releaseSnapshot = resolve;
+    });
+    const acquireNetworkMigrationLease = jest.fn(async () => {
+      if (leaseHeld) return null;
+      leaseHeld = true;
+      return async () => {
+        leaseHeld = false;
+      };
+    });
+    const createSnapshot = jest.fn(async () => {
+      finishSnapshot();
+      await snapshotGate;
+      return { snapshotId: "snapshot-1", names: [] };
+    });
+    listSandbox({ state: "paused" });
+    sandboxApi.connect.mockResolvedValue({
+      sandboxId: "sandbox-1",
+      createSnapshot,
+    } as unknown as Sandbox);
+    sandboxApi.create.mockResolvedValue({
+      sandboxId: "sandbox-2",
+    } as unknown as Sandbox);
+    sandboxApi.kill.mockResolvedValue(true);
+    sandboxApi.deleteSnapshot.mockResolvedValue(true);
+    const context = {
+      userID: "user-1",
+      setSandbox: jest.fn(),
+      networkConfig: {
+        inboundMode: "token_required" as const,
+        outboundMode: "unrestricted" as const,
+        destinations: [],
+        updatedAt: 2,
+      },
+      acquireNetworkMigrationLease,
+    };
+
+    const firstMigration = ensureSandboxConnection(context);
+    await snapshotStarted;
+    await expect(ensureSandboxConnection(context)).rejects.toThrow(
+      "already being applied by another Agent run",
+    );
+    expect(sandboxApi.kill).not.toHaveBeenCalled();
+
+    releaseSnapshot();
+    await expect(firstMigration).resolves.toMatchObject({
+      sandbox: { sandboxId: "sandbox-2" },
+    });
+    expect(leaseHeld).toBe(false);
+    expect(acquireNetworkMigrationLease).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not interrupt a running sandbox for an inbound change", async () => {
+    listSandbox({ state: "running" });
+
+    await expect(
+      ensureSandboxConnection({
+        userID: "user-1",
+        setSandbox: jest.fn(),
+        networkConfig: {
+          inboundMode: "token_required",
+          outboundMode: "unrestricted",
+          destinations: [],
+          updatedAt: 3,
+        },
+      }),
+    ).rejects.toThrow("running sandbox will not be interrupted");
+    expect(sandboxApi.connect).not.toHaveBeenCalled();
+    expect(sandboxApi.kill).not.toHaveBeenCalled();
+    expect(sandboxApi.create).not.toHaveBeenCalled();
   });
 
   it("defers version replacement while the shared sandbox is running", async () => {

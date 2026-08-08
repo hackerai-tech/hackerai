@@ -13,11 +13,13 @@ const sandboxApi = Sandbox as unknown as {
 };
 const mockConvexQuery = jest.fn();
 const mockConvexMutation = jest.fn();
+const mockConvexAction = jest.fn().mockResolvedValue(null);
 
 jest.mock("@/lib/db/convex-client", () => ({
   getConvexClient: () => ({
     query: mockConvexQuery,
     mutation: mockConvexMutation,
+    action: mockConvexAction,
   }),
 }));
 

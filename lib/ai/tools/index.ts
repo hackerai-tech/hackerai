@@ -108,6 +108,8 @@ export const createTools = (
           trackSandboxUsage,
           isE2BSandbox(sandbox) ? sandbox : null,
           onSandboxBoot,
+          serviceKey,
+          subscription,
         );
 
   const todoManager = new TodoManager(initialTodos);

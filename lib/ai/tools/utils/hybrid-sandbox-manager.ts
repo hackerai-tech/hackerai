@@ -24,6 +24,10 @@ import { generateCentrifugoToken } from "@/lib/centrifugo/jwt";
 import { sandboxConnectionChannel } from "@/lib/centrifugo/types";
 import { presenceHasConnectionId } from "@/lib/centrifugo/presence";
 import { isExpectedAlreadyGoneCleanupError } from "@/lib/utils/cleanup-errors";
+import {
+  acquireE2BNetworkMigrationLease,
+  loadE2BNetworkConfig,
+} from "./e2b-network-config";
 
 type SandboxInstance = Sandbox | CentrifugoSandbox;
 
@@ -686,6 +690,11 @@ export class HybridSandboxManager implements SandboxManager {
     }
 
     await this.closeCurrentSandbox();
+    const networkConfig = await loadE2BNetworkConfig({
+      userId: this.userID,
+      serviceKey: this.serviceKey,
+      subscription: this.subscription,
+    });
     const result = await ensureSandboxConnection(
       {
         userID: this.userID,
@@ -694,6 +703,15 @@ export class HybridSandboxManager implements SandboxManager {
           this.setSandboxCallback(sandbox);
         },
         onBoot: this.onBoot,
+        networkConfig,
+        acquireNetworkMigrationLease:
+          this.serviceKey && networkConfig
+            ? () =>
+                acquireE2BNetworkMigrationLease({
+                  userId: this.userID,
+                  serviceKey: this.serviceKey,
+                })
+            : undefined,
       },
       {
         initialSandbox: this.isLocal ? null : (this.sandbox as Sandbox | null),

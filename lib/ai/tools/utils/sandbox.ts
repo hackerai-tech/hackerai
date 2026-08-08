@@ -2,6 +2,12 @@ import { Sandbox } from "@e2b/code-interpreter";
 import type { SandboxBootInfo, SandboxContext } from "@/types";
 import { NotFoundError, getUserFacingE2BErrorMessage } from "./e2b-errors";
 import { isExpectedAlreadyGoneCleanupError } from "@/lib/utils/cleanup-errors";
+import {
+  composeE2BNetworkPolicy,
+  DEFAULT_AGENT_NETWORK_CONFIG,
+  E2B_INBOUND_MODE_METADATA_KEY,
+  getExistingE2BInboundMode,
+} from "./e2b-network-policy";
 
 type SandboxReadyPath = SandboxBootInfo["path"];
 
@@ -12,6 +18,12 @@ export const E2B_SANDBOX_LEASE_REQUEST_TIMEOUT_MS = 5 * 1000;
 // Retry config for E2B 429 rate limits
 const RATE_LIMIT_COOLDOWN_MS = 1_000;
 const MAX_CREATE_RETRIES = 3;
+
+function supportsE2BSnapshots(version: string | undefined): boolean {
+  if (!version) return false;
+  const [major = 0, minor = 0] = version.split(".").map(Number);
+  return major > 0 || minor >= 5;
+}
 
 export const refreshE2BSandboxLease = async (
   sandbox: Sandbox,
@@ -155,8 +167,17 @@ export const ensureSandboxConnection = async (
     initialSandbox?: Sandbox | null;
   } = {},
 ): Promise<{ sandbox: Sandbox }> => {
-  const { userID, setSandbox, onBoot } = context;
+  const {
+    userID,
+    setSandbox,
+    onBoot,
+    networkConfig,
+    acquireNetworkMigrationLease,
+  } = context;
   const { initialSandbox } = options;
+  const effectiveNetworkConfig = networkConfig ?? DEFAULT_AGENT_NETWORK_CONFIG;
+  const networkPolicy = composeE2BNetworkPolicy(effectiveNetworkConfig);
+  let releaseNetworkMigrationLease: (() => Promise<void>) | undefined;
 
   // Return existing sandbox if already connected
   if (initialSandbox) {
@@ -181,13 +202,31 @@ export const ensureSandboxConnection = async (
         },
       },
     });
-    const existingSandbox = (await paginator.nextItems())[0];
+    const existingSandboxes = await paginator.nextItems();
+    const existingSandbox =
+      existingSandboxes.find(
+        (candidate) =>
+          candidate.metadata?.sandboxVersion === SANDBOX_VERSION &&
+          getExistingE2BInboundMode(candidate.metadata) ===
+            effectiveNetworkConfig.inboundMode,
+      ) ?? existingSandboxes[0];
 
     const hasVersionMismatch =
       existingSandbox &&
       existingSandbox.metadata?.sandboxVersion !== SANDBOX_VERSION;
+    const hasInboundModeMismatch =
+      existingSandbox &&
+      getExistingE2BInboundMode(existingSandbox.metadata) !==
+        effectiveNetworkConfig.inboundMode;
     const canReplaceExistingSandbox =
       hasVersionMismatch && existingSandbox.state === "paused";
+    const canMigrateInboundPolicy =
+      !hasVersionMismatch &&
+      hasInboundModeMismatch &&
+      existingSandbox.state === "paused";
+    let createTemplate = SANDBOX_TEMPLATE;
+    let inboundMigration:
+      { oldSandboxId: string; snapshotId: string } | undefined;
 
     // Step 2: Migrate only an idle, paused sandbox. A running sandbox may
     // contain commands owned by another Agent run for the same user.
@@ -202,6 +241,45 @@ export const ensureSandboxConnection = async (
       }
       createPath = "create_after_version_mismatch";
       // Skip to creating new sandbox
+    } else if (canMigrateInboundPolicy) {
+      if (!acquireNetworkMigrationLease) {
+        throw new Error(
+          "Cloud Agent inbound access cannot change because the migration coordinator is unavailable. Try again shortly.",
+        );
+      }
+      releaseNetworkMigrationLease =
+        (await acquireNetworkMigrationLease()) ?? undefined;
+      if (!releaseNetworkMigrationLease) {
+        throw new Error(
+          "Cloud Agent inbound access is already being applied by another Agent run. Try again shortly.",
+        );
+      }
+      if (!supportsE2BSnapshots(existingSandbox.envdVersion)) {
+        throw new Error(
+          "Cloud Agent inbound access cannot change without resetting this older sandbox. Delete the sandbox in Settings > Data Controls, then try again.",
+        );
+      }
+
+      // E2B inbound access is create-only. Snapshot an idle sandbox and use
+      // that snapshot as the new template so files and memory survive the
+      // replacement. The old sandbox remains intact until creation succeeds.
+      const sandboxToMigrate = await Sandbox.connect(
+        existingSandbox.sandboxId,
+        {
+          timeoutMs: BASH_SANDBOX_AUTOPAUSE_TIMEOUT,
+        },
+      );
+      const snapshot = await sandboxToMigrate.createSnapshot();
+      createTemplate = snapshot.snapshotId;
+      inboundMigration = {
+        oldSandboxId: existingSandbox.sandboxId,
+        snapshotId: snapshot.snapshotId,
+      };
+      createPath = "create_after_network_change";
+    } else if (hasInboundModeMismatch) {
+      throw new Error(
+        "Cloud Agent inbound access is changing. Wait for current Agent work to finish, then try again; the running sandbox will not be interrupted.",
+      );
     } else if (existingSandbox?.sandboxId) {
       if (hasVersionMismatch) {
         console.warn(
@@ -230,6 +308,9 @@ export const ensureSandboxConnection = async (
         const sandbox = await Sandbox.connect(existingSandbox.sandboxId, {
           timeoutMs: BASH_SANDBOX_AUTOPAUSE_TIMEOUT,
         });
+        if (networkConfig) {
+          await sandbox.updateNetwork(networkPolicy.update);
+        }
         setSandbox(sandbox);
         reportBoot("reuse_existing", 0);
         return { sandbox };
@@ -266,17 +347,44 @@ export const ensureSandboxConnection = async (
       }
 
       try {
-        const sandbox = await Sandbox.create(SANDBOX_TEMPLATE, {
+        const sandbox = await Sandbox.create(createTemplate, {
           timeoutMs: BASH_SANDBOX_AUTOPAUSE_TIMEOUT,
           lifecycle: { onTimeout: "pause" },
           secure: true,
+          ...(networkConfig ? { network: networkPolicy.create } : {}),
           metadata: {
             userID,
             template: SANDBOX_TEMPLATE,
             secure: "true",
             sandboxVersion: SANDBOX_VERSION,
+            ...(networkConfig
+              ? {
+                  [E2B_INBOUND_MODE_METADATA_KEY]:
+                    effectiveNetworkConfig.inboundMode,
+                }
+              : {}),
           },
         });
+
+        if (inboundMigration) {
+          try {
+            await Sandbox.kill(inboundMigration.oldSandboxId);
+          } catch (killError) {
+            logSandboxKillFailure(
+              userID,
+              "Failed to kill sandbox after network migration",
+              killError,
+            );
+          }
+          try {
+            await Sandbox.deleteSnapshot(inboundMigration.snapshotId);
+          } catch (snapshotError) {
+            console.warn(
+              `[${userID}] Failed to delete temporary network migration snapshot:`,
+              snapshotError,
+            );
+          }
+        }
 
         setSandbox(sandbox);
         reportBoot(createPath, attempt + 1);
@@ -287,7 +395,29 @@ export const ensureSandboxConnection = async (
           createError instanceof Error &&
           (createError.message?.includes("429") ||
             createError.message?.includes("Rate limit"));
-        if (!isRateLimit) throw createError;
+        if (!isRateLimit) {
+          if (inboundMigration) {
+            try {
+              await Sandbox.deleteSnapshot(inboundMigration.snapshotId);
+            } catch (snapshotError) {
+              console.warn(
+                `[${userID}] Failed to delete temporary network migration snapshot after create failure:`,
+                snapshotError,
+              );
+            }
+          }
+          throw createError;
+        }
+      }
+    }
+    if (inboundMigration) {
+      try {
+        await Sandbox.deleteSnapshot(inboundMigration.snapshotId);
+      } catch (snapshotError) {
+        console.warn(
+          `[${userID}] Failed to delete temporary network migration snapshot after create failure:`,
+          snapshotError,
+        );
       }
     }
     throw lastError;
@@ -303,5 +433,7 @@ export const ensureSandboxConnection = async (
     throw new Error(
       `Failed creating persistent sandbox: ${error instanceof Error ? error.message : "Unknown error"}`,
     );
+  } finally {
+    await releaseNetworkMigrationLease?.();
   }
 };
