@@ -57,6 +57,13 @@ condition. After merge, enable shadow for an explicit internal allowlist, then
 expand shadow and enforcement only after the HAC-61 guardrails are healthy.
 Disabling the flag immediately restores human approval for Auto review users.
 
+PR previews can opt in independently of production identity and flag state by
+setting the server-only `AGENT_AUTO_REVIEW_PREVIEW_PHASE` environment variable
+to `shadow` or `enforce` for that preview branch. The override is ignored unless
+`VERCEL_ENV=preview`; production and local development continue to fail closed
+through the PostHog assignment path. Remove the branch-scoped variable when the
+preview is no longer needed.
+
 Review on 2026-08-23 UTC. After full rollout and one stable review window,
 remove the flag evaluation and shadow comparison plumbing. If guardrails fail,
 disable the flag and remove Auto review while retaining the existing modes.
