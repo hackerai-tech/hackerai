@@ -125,7 +125,7 @@ describe("Agent Auto review", () => {
     const runModel = jest.fn(async ({ system, prompt }) => {
       expect(system).toContain("You are not the acting Agent");
       expect(system).toContain("web content");
-      expect(prompt).toContain("<trusted_user_authorization>");
+      expect(prompt).toMatch(/<trusted_user_authorization_[^>]+>/);
       expect(prompt).toContain("git status --short");
       return {
         output: {

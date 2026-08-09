@@ -190,12 +190,14 @@ const buildReviewPrompt = ({
   request: AgentToolApprovalRequest;
   trustedAuthorization: string;
 }): string => {
-  const evidenceBoundary = `untrusted_action_evidence_${randomUUID()}`;
+  const boundaryNonce = randomUUID();
+  const trustedBoundary = `trusted_user_authorization_${boundaryNonce}`;
+  const evidenceBoundary = `untrusted_action_evidence_${boundaryNonce}`;
   return `Review the exact proposed action below.
 
-<trusted_user_authorization>
+<${trustedBoundary}>
 ${trustedAuthorization}
-</trusted_user_authorization>
+</${trustedBoundary}>
 
 <${evidenceBoundary}>
 ${escapeUntrustedPromptEvidence({

@@ -18,7 +18,6 @@ import {
 } from "ai";
 import type { Geo } from "@vercel/functions";
 import PostHogClient from "@/app/posthog";
-import { workos } from "@/app/api/workos";
 
 import { systemPrompt } from "@/lib/system-prompt";
 import { getResumeSection } from "@/lib/system-prompt/resume";
@@ -74,6 +73,7 @@ import {
   UsageRefundTracker,
 } from "@/lib/rate-limit";
 import { assertUserCanMakeCostIncurringRequest } from "@/lib/suspensions";
+import { getCurrentAgentEntitlementContext } from "@/lib/auth/agent-auto-review-entitlements";
 import {
   saveMessage,
   updateChat,
@@ -2465,19 +2465,19 @@ export const agentLongTask = task({
             }) => {
               await assertUserCanMakeCostIncurringRequest(userId);
 
-              if (organizationId) {
-                const activeMemberships =
-                  await workos.userManagement.listOrganizationMemberships({
-                    userId,
-                    organizationId,
-                    statuses: ["active"],
-                  });
-                if (activeMemberships.data.length === 0) {
-                  throw new AgentApprovalAuthorizationError(
-                    "authorization_mismatch",
-                    "The run-start organization membership is no longer active.",
-                  );
-                }
+              const currentEntitlement =
+                await getCurrentAgentEntitlementContext({
+                  userId,
+                  organizationId,
+                });
+              if (
+                currentEntitlement.subscription !== subscription ||
+                currentEntitlement.organizationId !== organizationId
+              ) {
+                throw new AgentApprovalAuthorizationError(
+                  "authorization_mismatch",
+                  "The current entitlement context differs from the run start.",
+                );
               }
 
               const currentChat = await getChatById({ id: chatId });
@@ -2499,14 +2499,14 @@ export const agentLongTask = task({
               });
               const currentExtraUsageConfig = await buildExtraUsageConfig({
                 userId,
-                subscription,
+                subscription: currentEntitlement.subscription,
                 userCustomization: currentUserCustomization,
-                organizationId,
+                organizationId: currentEntitlement.organizationId,
                 failClosedOnLookupError: true,
               });
               const currentlyAllowedModel = normalizeMaxModelForSubscription(
                 selectedModelOverride,
-                subscription,
+                currentEntitlement.subscription,
                 {
                   extraUsageConfig: currentExtraUsageConfig,
                   includedMaxAccess,
@@ -2522,19 +2522,19 @@ export const agentLongTask = task({
                 withExtraUsageBillingForModel(
                   currentExtraUsageConfig,
                   currentlyAllowedModel,
-                  subscription,
+                  currentEntitlement.subscription,
                   { includedMaxAccess },
                 );
               await checkRateLimitCapacity(
                 userId,
                 mode,
-                subscription,
+                currentEntitlement.subscription,
                 currentModelExtraUsageConfig,
                 selectedModel,
-                organizationId,
+                currentEntitlement.organizationId,
                 freeQuotaSubject,
               );
-              if (subscription === "free") {
+              if (currentEntitlement.subscription === "free") {
                 await checkFreeMonthlyCostLimit(freeUsageSubject);
               }
             };

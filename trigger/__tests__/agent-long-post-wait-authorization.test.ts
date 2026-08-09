@@ -151,7 +151,7 @@ describe("agent-long post-wait authorization contract", () => {
     );
     expect(taskSource).toMatch(/await checkRateLimitCapacity\(/);
     expect(taskSource).toMatch(
-      /listOrganizationMemberships\([\s\S]*statuses: \["active"\][\s\S]*activeMemberships\.data\.length === 0/,
+      /getCurrentAgentEntitlementContext\([\s\S]*currentEntitlement\.subscription !== subscription[\s\S]*currentEntitlement\.organizationId !== organizationId/,
     );
     expect(taskSource).toMatch(
       /onPostWaitAuthorizationDenied: \(\) => userStopSignal\.abort\(\)/,
