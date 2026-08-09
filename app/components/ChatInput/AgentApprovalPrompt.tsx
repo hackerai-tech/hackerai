@@ -171,7 +171,7 @@ export function AgentApprovalPrompt({
         </div>
       ) : null}
 
-      {request.autoReview ? (
+      {request.autoReview?.rolloutPhase === "enforce" ? (
         <div
           className="rounded-lg border border-black/8 bg-black/[0.025] px-3 py-2.5 dark:border-white/10 dark:bg-white/[0.03]"
           data-testid="agent-auto-review-summary"
@@ -179,11 +179,9 @@ export function AgentApprovalPrompt({
           <div className="flex items-center gap-2 text-sm font-medium text-foreground">
             <ShieldCheck className="size-4 shrink-0" aria-hidden="true" />
             <span>
-              {request.autoReview.rolloutPhase === "shadow"
-                ? `Shadow review: ${request.autoReview.verdict.replace("_", " ")}`
-                : request.autoReview.failureClass
-                  ? "Auto review could not decide"
-                  : "Auto review needs your decision"}
+              {request.autoReview.failureClass
+                ? "Auto review could not decide"
+                : "Auto review needs your decision"}
             </span>
           </div>
           <p className="mt-1 text-sm leading-5 text-muted-foreground">

@@ -102,6 +102,28 @@ describe("AgentApprovalPrompt", () => {
     expect(screen.getByRole("button", { name: "Allow once" })).toBeEnabled();
   });
 
+  it("does not reveal a shadow verdict before the human decides", () => {
+    render(
+      <AgentApprovalPrompt
+        request={{
+          ...request,
+          autoReview: {
+            verdict: "approve",
+            riskCategory: "routine",
+            rationale: "The action appears routine.",
+            rolloutPhase: "shadow",
+          },
+        }}
+        onRetryConnection={mockOnRetryConnection}
+        onStop={mockOnStop}
+      />,
+    );
+
+    expect(
+      screen.queryByTestId("agent-auto-review-summary"),
+    ).not.toBeInTheDocument();
+  });
+
   it("approves once when Enter activates the focused primary action", async () => {
     const user = userEvent.setup();
     renderPrompt();

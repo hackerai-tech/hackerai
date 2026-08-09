@@ -146,6 +146,17 @@ function makeContext(opts: {
   onSandboxResourceMetrics?: import("@/types").SandboxResourceMetricsObserver;
   recordHealthFailure?: jest.MockedFunction<() => boolean>;
 }) {
+  if (
+    opts.sandbox &&
+    typeof opts.sandbox === "object" &&
+    (opts.sandbox as { sandboxKind?: unknown }).sandboxKind === "centrifugo" &&
+    typeof (opts.sandbox as { getConnectionId?: unknown }).getConnectionId !==
+      "function"
+  ) {
+    Object.assign(opts.sandbox, {
+      getConnectionId: () => "test-connection",
+    });
+  }
   const writerWrites: unknown[] = [];
   const writer = {
     write: (p: unknown) => {

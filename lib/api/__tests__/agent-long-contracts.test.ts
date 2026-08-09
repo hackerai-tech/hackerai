@@ -792,7 +792,7 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
       /next\.output\.decision\s*===\s*"approve"[\s\S]*return\s*\{\s*approved:\s*true,\s*approvalId,\s*sandboxIdentity\s*\}/,
     );
     expect(taskSrc).toMatch(
-      /tool approval denied[\s\S]*return\s*\{\s*approved:\s*false,[\s\S]*reason:\s*buildDeniedApprovalReason\(next\.output\.message\)/,
+      /tool approval denied[\s\S]*return\s*\{\s*approved:\s*false,[\s\S]*reason:\s*humanDenialTrippedCircuitBreaker[\s\S]*buildDeniedApprovalReason\(next\.output\.message\)/,
     );
     expect(taskSrc).toMatch(/record\.message === undefined/);
     expect(taskSrc).toMatch(

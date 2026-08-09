@@ -336,6 +336,70 @@ export type AgentAutoReviewSummary = {
   failureClass?: AgentAutoReviewFailureClass;
 };
 
+const AGENT_AUTO_REVIEW_VERDICTS = [
+  "approve",
+  "ask_user",
+  "deny",
+] as const satisfies readonly AgentAutoReviewVerdict[];
+const AGENT_AUTO_REVIEW_RISK_CATEGORIES = [
+  "routine",
+  "destructive",
+  "credential_access",
+  "data_egress",
+  "security_weakening",
+  "scope_expansion",
+  "prompt_injection",
+  "unknown",
+] as const satisfies readonly AgentAutoReviewRiskCategory[];
+const AGENT_AUTO_REVIEW_FAILURE_CLASSES = [
+  "timeout",
+  "provider_error",
+  "parse_error",
+  "missing_context",
+  "context_truncated",
+] as const satisfies readonly AgentAutoReviewFailureClass[];
+const AGENT_AUTO_REVIEW_ROLLOUT_PHASES = [
+  "shadow",
+  "enforce",
+] as const satisfies readonly AgentAutoReviewRolloutPhase[];
+
+export const parseAgentAutoReviewSummary = (
+  value: unknown,
+): AgentAutoReviewSummary | undefined => {
+  if (!value || typeof value !== "object") return undefined;
+  const record = value as Record<string, unknown>;
+  const verdict = AGENT_AUTO_REVIEW_VERDICTS.find(
+    (candidate) => candidate === record.verdict,
+  );
+  const riskCategory = AGENT_AUTO_REVIEW_RISK_CATEGORIES.find(
+    (candidate) => candidate === record.riskCategory,
+  );
+  const rolloutPhase = AGENT_AUTO_REVIEW_ROLLOUT_PHASES.find(
+    (candidate) => candidate === record.rolloutPhase,
+  );
+  if (
+    !verdict ||
+    !riskCategory ||
+    !rolloutPhase ||
+    typeof record.rationale !== "string" ||
+    !record.rationale.trim() ||
+    record.rationale.length > 240
+  ) {
+    return undefined;
+  }
+  const failureClass = AGENT_AUTO_REVIEW_FAILURE_CLASSES.find(
+    (candidate) => candidate === record.failureClass,
+  );
+  if (record.failureClass !== undefined && !failureClass) return undefined;
+  return {
+    verdict,
+    riskCategory,
+    rolloutPhase,
+    rationale: record.rationale,
+    ...(failureClass ? { failureClass } : {}),
+  };
+};
+
 export type AgentToolApprovalOperation =
   | "terminal_execute"
   | "terminal_interact"

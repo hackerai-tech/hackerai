@@ -4,6 +4,7 @@ import {
   AgentAutoReviewDenialTracker,
   extractAgentAutoReviewAuthorizationContext,
   reviewAgentToolAction,
+  shouldAutoReviewAgentToolAction,
 } from "@/lib/chat/agent-auto-review";
 import type { AgentToolApprovalRequest } from "@/types";
 
@@ -29,6 +30,27 @@ const authorizationContext = {
 };
 
 describe("Agent Auto review", () => {
+  it.each([
+    ["auto_review", "enforce", "terminal_execute", true],
+    ["auto_review", "shadow", "file_edit", true],
+    ["auto_review", undefined, "terminal_execute", false],
+    ["ask_approval", "enforce", "terminal_execute", false],
+    ["full_access", "enforce", "terminal_execute", false],
+    ["auto_review", "enforce", "terminal_interact", false],
+    ["auto_review", "shadow", "terminal_interact", false],
+  ] as const)(
+    "routes %s/%s %s review eligibility to %s",
+    (permissionMode, rolloutPhase, operation, expected) => {
+      expect(
+        shouldAutoReviewAgentToolAction({
+          permissionMode,
+          rolloutPhase,
+          operation,
+        }),
+      ).toBe(expected);
+    },
+  );
+
   it("uses only user-authored text as trusted authorization", () => {
     const context = extractAgentAutoReviewAuthorizationContext([
       userMessage("user-1", "Audit the current repository."),

@@ -382,6 +382,12 @@ describe("Chat Component Integration", () => {
             justification: "Check whether the target host is reachable.",
             prefixRule: ["ping", "-c", "4"],
             createdAt: 123,
+            autoReview: {
+              verdict: "ask_user",
+              riskCategory: "scope_expansion",
+              rationale: "The referenced script contents are not visible.",
+              rolloutPhase: "enforce",
+            },
           },
         }),
       ).toEqual({
@@ -395,7 +401,32 @@ describe("Chat Component Integration", () => {
         detail: "Approve to continue, or deny to stop this command.",
         kind: "terminal",
         createdAt: 123,
+        autoReview: {
+          verdict: "ask_user",
+          riskCategory: "scope_expansion",
+          rationale: "The referenced script contents are not visible.",
+          rolloutPhase: "enforce",
+        },
       });
+    });
+
+    it("drops a malformed stored Auto review summary", () => {
+      expect(
+        getStoredAgentApprovalRequest({
+          active_agent_approval_pending: true,
+          active_agent_approval_request: {
+            approvalId: "approval-1",
+            toolCallId: "tool-1",
+            operation: "terminal_execute",
+            autoReview: {
+              verdict: "approve_everything",
+              riskCategory: "routine",
+              rationale: "Invalid verdict.",
+              rolloutPhase: "enforce",
+            },
+          },
+        })?.autoReview,
+      ).toBeUndefined();
     });
   });
 

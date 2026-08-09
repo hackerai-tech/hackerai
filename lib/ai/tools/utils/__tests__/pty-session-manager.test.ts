@@ -71,6 +71,7 @@ describe("PtySessionManager", () => {
     it("returns a session with sessionId, pid, cols, rows and handle", async () => {
       const handle = makeFakeHandle({ pid: 4242 });
       const session = await manager.create("chat-1", {
+        sandboxIdentity: "e2b",
         createHandle: makeCreateHandleFactory(handle),
         cols: 120,
         rows: 30,
@@ -79,6 +80,7 @@ describe("PtySessionManager", () => {
       expect(typeof session.sessionId).toBe("string");
       expect(session.sessionId.length).toBeGreaterThan(0);
       expect(session.chatId).toBe("chat-1");
+      expect(session.sandboxIdentity).toBe("e2b");
       expect(session.pid).toBe(4242);
       expect(session.cols).toBe(120);
       expect(session.rows).toBe(30);

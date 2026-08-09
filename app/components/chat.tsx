@@ -79,6 +79,7 @@ import {
 } from "@/lib/analytics/client";
 import {
   normalizeSelectedModelForSubscription,
+  parseAgentAutoReviewSummary,
   type Todo,
   type ChatMessage,
 } from "@/types";
@@ -154,6 +155,7 @@ export const getStoredAgentApprovalRequest = (
     operation,
     fallback: fallbackDetail,
   });
+  const autoReview = parseAgentAutoReviewSummary(approvalRequest.autoReview);
 
   return {
     approvalId,
@@ -175,6 +177,7 @@ export const getStoredAgentApprovalRequest = (
     ...(typeof approvalRequest.createdAt === "number"
       ? { createdAt: approvalRequest.createdAt }
       : {}),
+    ...(autoReview ? { autoReview } : {}),
   };
 };
 

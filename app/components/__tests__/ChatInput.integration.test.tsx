@@ -475,6 +475,38 @@ describe("ChatInput - Integration Tests", () => {
       expect(screen.queryByTestId("chat-input")).not.toBeInTheDocument();
     });
 
+    it("merges the stored reviewer summary into the matching live approval", async () => {
+      render(
+        <TestWrapper>
+          <AgentApprovalSetter />
+          <ChatInput
+            onSubmit={mockOnSubmit}
+            onStop={mockOnStop}
+            status="streaming"
+            chatId="approval-chat"
+            hasMessages
+            storedApprovalRequest={{
+              approvalId: "approval-1",
+              toolCallId: "tool-1",
+              title: "Allow HackerAI to run this terminal command?",
+              operation: "terminal_execute",
+              autoReview: {
+                verdict: "ask_user",
+                riskCategory: "scope_expansion",
+                rationale: "The referenced script contents are not visible.",
+                rolloutPhase: "enforce",
+              },
+            }}
+          />
+        </TestWrapper>,
+      );
+
+      expect(
+        await screen.findByTestId("agent-auto-review-summary"),
+      ).toHaveTextContent("Auto review needs your decision");
+      expect(screen.getByText("ping -c 4 hackerone.com")).toBeInTheDocument();
+    });
+
     it("renders recovery controls while a stored approval reconnects", () => {
       render(
         <TestWrapper>

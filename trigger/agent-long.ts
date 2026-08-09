@@ -239,6 +239,7 @@ import {
   AgentAutoReviewDenialTracker,
   extractAgentAutoReviewAuthorizationContext,
   reviewAgentToolAction,
+  shouldAutoReviewAgentToolAction,
   type AgentAutoReviewDecision,
 } from "@/lib/chat/agent-auto-review";
 
@@ -360,7 +361,7 @@ const buildPendingApprovalRequest = ({
     target: request.target,
     ...(request.justification ? { justification: request.justification } : {}),
     ...(request.prefixRule ? { prefixRule: request.prefixRule } : {}),
-    ...(autoReview
+    ...(autoReview?.rolloutPhase === "enforce"
       ? {
           autoReview: {
             verdict: autoReview.verdict,
@@ -582,7 +583,15 @@ const buildAgentToolApprovalRequester = ({
         return { approved: true, approvalId, sandboxIdentity };
       }
 
-      if (agentPermissionMode === "auto_review" && autoReviewAssignment) {
+      const autoReviewRolloutPhase = autoReviewAssignment?.phase;
+      if (
+        autoReviewRolloutPhase &&
+        shouldAutoReviewAgentToolAction({
+          permissionMode: agentPermissionMode,
+          rolloutPhase: autoReviewRolloutPhase,
+          operation: request.operation,
+        })
+      ) {
         activeRuntimeBudget.pause();
         let decision: AgentAutoReviewDecision;
         try {
@@ -596,7 +605,7 @@ const buildAgentToolApprovalRequester = ({
         }
         autoReviewDecision = {
           ...decision,
-          rolloutPhase: autoReviewAssignment.phase,
+          rolloutPhase: autoReviewRolloutPhase,
         };
         if (decision.modelCostDollars) {
           onAutoReviewCost?.(decision.modelCostDollars);
@@ -605,20 +614,19 @@ const buildAgentToolApprovalRequester = ({
           getAgentToolApprovalPromptKind(request.operation) ?? "file";
         phLogger.event("agent_auto_review_decision", {
           userId,
-          rollout_phase: autoReviewAssignment.phase,
+          rollout_phase: autoReviewRolloutPhase,
           verdict: decision.verdict,
           risk_category: decision.riskCategory,
           latency_ms: decision.latencyMs,
           failure_class: decision.failureClass ?? "none",
           outcome:
-            autoReviewAssignment.phase === "shadow"
+            autoReviewRolloutPhase === "shadow"
               ? "human_authoritative"
               : decision.verdict,
           surface: reviewSurface,
         });
 
-        if (autoReviewAssignment.phase === "enforce") {
-          const { tripped } = denialTracker.record(decision.verdict);
+        if (autoReviewRolloutPhase === "enforce") {
           if (decision.verdict === "approve") {
             try {
               await revalidateAfterAutoReview({
@@ -659,9 +667,11 @@ const buildAgentToolApprovalRequester = ({
               .set("approvalStatus", "auto_review_approved")
               .set("approvalToolName", request.toolName)
               .set("approvalOperation", request.operation);
+            denialTracker.record("approve");
             return { approved: true, approvalId, sandboxIdentity };
           }
           if (decision.verdict === "deny") {
+            const { tripped } = denialTracker.record("deny");
             metadata.set(
               "approvalStatus",
               tripped ? "auto_review_circuit_breaker" : "auto_review_denied",
@@ -669,7 +679,7 @@ const buildAgentToolApprovalRequester = ({
             if (tripped) {
               phLogger.event("agent_auto_review_circuit_breaker", {
                 userId,
-                rollout_phase: autoReviewAssignment.phase,
+                rollout_phase: autoReviewRolloutPhase,
                 verdict: decision.verdict,
                 risk_category: decision.riskCategory,
                 outcome: "require_user",
@@ -951,6 +961,9 @@ const buildAgentToolApprovalRequester = ({
                 getAgentToolApprovalPromptKind(request.operation) ?? "file",
             });
           }
+          if (autoReviewDecision?.rolloutPhase === "enforce") {
+            denialTracker.record("approve");
+          }
           return { approved: true, approvalId, sandboxIdentity };
         }
 
@@ -976,10 +989,28 @@ const buildAgentToolApprovalRequester = ({
               getAgentToolApprovalPromptKind(request.operation) ?? "file",
           });
         }
+        const humanDenialTrippedCircuitBreaker =
+          autoReviewDecision?.rolloutPhase === "enforce" &&
+          denialTracker.record("deny").tripped;
+        if (humanDenialTrippedCircuitBreaker && autoReviewDecision) {
+          metadata.set("approvalStatus", "auto_review_circuit_breaker");
+          phLogger.event("agent_auto_review_circuit_breaker", {
+            userId,
+            rollout_phase: autoReviewDecision.rolloutPhase,
+            verdict: autoReviewDecision.verdict,
+            risk_category: autoReviewDecision.riskCategory,
+            outcome: "require_user",
+            surface:
+              getAgentToolApprovalPromptKind(request.operation) ?? "file",
+          });
+          onAutoReviewCircuitBreaker();
+        }
         return {
           approved: false,
           approvalId,
-          reason: buildDeniedApprovalReason(next.output.message),
+          reason: humanDenialTrippedCircuitBreaker
+            ? `${buildDeniedApprovalReason(next.output.message)} The denial circuit breaker stopped further approval attempts in this run.`
+            : buildDeniedApprovalReason(next.output.message),
         };
       }
 

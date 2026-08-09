@@ -36,6 +36,7 @@ import {
 } from "./utils/pty-output-formatter";
 import {
   getSandboxWithFallbackGuard,
+  getAgentApprovalSandboxIdentity,
   resolveToolErrorMessage,
 } from "./utils/sandbox-fallback";
 import {
@@ -329,6 +330,7 @@ export const createRunTerminalCmd = (context: ToolContext) => {
           const session = await ptySessionManager.create(chatId, {
             cols,
             rows,
+            sandboxIdentity: getAgentApprovalSandboxIdentity(sandbox),
             createHandle: async () => {
               if (isCentrifugo) {
                 const { createCentrifugoPtyHandle } =
@@ -934,6 +936,8 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                       cols,
                       rows,
                       kind: "command",
+                      sandboxIdentity:
+                        getAgentApprovalSandboxIdentity(sandboxInstance),
                       createHandle: async () => commandHandle!,
                     })
                     .then((session) => {

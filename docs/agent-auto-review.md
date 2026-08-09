@@ -10,9 +10,10 @@ PostHog flag: [`agent_auto_review_v1`](https://us.posthog.com/project/144137/fea
    `full_access` as the default and preserving stored Ask for approval and Full
    access values.
 2. Keep the current terminal and file approval gates as the only execution
-   boundary. Add the exact command, terminal interaction, or file mutation to
-   the in-memory review request without persisting it or sending it to
-   analytics.
+   boundary. Add the exact command or file mutation to the in-memory review
+   request without persisting it or sending it to analytics. Live terminal
+   interactions remain human-only in v1 because their effect depends on PTY
+   state the reviewer cannot fully reconstruct.
 3. Add a dedicated reviewer module that:
    - extracts only user-authored messages as trusted authorization context;
    - labels assistant rationale, tool output, web content, and referenced file
@@ -24,7 +25,8 @@ PostHog flag: [`agent_auto_review_v1`](https://us.posthog.com/project/144137/fea
    - routes timeout, provider, parse, truncation, and missing-context failures
      to `ask_user`.
 4. Integrate review before the existing durable human wait:
-   - `shadow`: record the reviewer verdict, then keep the human authoritative;
+   - `shadow`: record the reviewer verdict without showing it, then keep the
+     human authoritative;
    - `enforce/approve`: revalidate current authorization, entitlements, and
      sandbox identity, then approve that exact action once;
    - `enforce/ask_user`: reuse the existing signed Trigger Session input path;
@@ -32,8 +34,9 @@ PostHog flag: [`agent_auto_review_v1`](https://us.posthog.com/project/144137/fea
      materially safer alternative or user input.
 5. Keep reusable target/prefix grants human-only. Existing human-created grants
    may continue to match, but Auto review never creates or broadens a grant.
-6. Track consecutive and rolling denials per Agent turn and abort review loops
-   after 3 consecutive denials or 10 denials in the last 50 reviews.
+6. Track consecutive and rolling automatic denials plus human denials after an
+   enforced `ask_user`, and abort review loops after 3 consecutive denials or
+   10 denials in the last 50 reviews.
 7. Add a server-evaluated selector endpoint for the inactive multivariate
    PostHog flag. If the flag is off, unavailable, or malformed, hide Auto review
    and route any stale stored selection through human approval.

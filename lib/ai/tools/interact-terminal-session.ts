@@ -18,6 +18,11 @@ import {
   INTERACT_TERMINAL_MAX_WAIT_TIMEOUT_SECONDS,
   interactTerminalSessionTool,
 } from "./schemas";
+import {
+  getAgentApprovalSandboxIdentity,
+  getSandboxWithFallbackGuard,
+  resolveToolErrorMessage,
+} from "./utils/sandbox-fallback";
 
 // ─── Interactive PTY constants ──────────────────────────────────────────
 const MAX_INPUT_BYTES_PER_SEND = 8 * 1024;
@@ -193,6 +198,26 @@ export const createInteractTerminalSession = (context: ToolContext) => {
         };
       };
 
+      const verifySessionSandboxIdentity = async (
+        session: PtySession,
+      ): Promise<ActionResult | null> => {
+        try {
+          const { sandbox } = await getSandboxWithFallbackGuard({
+            sandboxManager: context.sandboxManager,
+          });
+          if (
+            getAgentApprovalSandboxIdentity(sandbox) !== session.sandboxIdentity
+          ) {
+            return errorResult(
+              "The selected sandbox no longer matches the sandbox that created this terminal session. The action was not run. Return to the original sandbox or start a new terminal session in the current sandbox.",
+            );
+          }
+          return null;
+        } catch (error) {
+          return errorResult(resolveToolErrorMessage(error));
+        }
+      };
+
       // ─── Handler: send ─────────────────────────────────────────────────────
       const handleSend = async (): Promise<ActionResult> => {
         if (input === undefined || input.length === 0) {
@@ -215,10 +240,17 @@ export const createInteractTerminalSession = (context: ToolContext) => {
         const priorExit = peekSessionExit(session);
         if (priorExit) return exitedSendError(sessionId, priorExit, false);
 
+        const sandboxMismatch = await verifySessionSandboxIdentity(session);
+        if (sandboxMismatch) return sandboxMismatch;
+
         const approvalDenied = await requestTerminalInteractionApproval(
           `send to ${sessionId}: ${input}`,
         );
         if (approvalDenied) return approvalDenied;
+
+        const postApprovalSandboxMismatch =
+          await verifySessionSandboxIdentity(session);
+        if (postApprovalSandboxMismatch) return postApprovalSandboxMismatch;
 
         emitPriorContext(session);
 
@@ -342,10 +374,17 @@ export const createInteractTerminalSession = (context: ToolContext) => {
         if ("error" in lookup) return lookup.error;
         const { session } = lookup;
 
+        const sandboxMismatch = await verifySessionSandboxIdentity(session);
+        if (sandboxMismatch) return sandboxMismatch;
+
         const approvalDenied = await requestTerminalInteractionApproval(
           `kill ${sessionId}`,
         );
         if (approvalDenied) return approvalDenied;
+
+        const postApprovalSandboxMismatch =
+          await verifySessionSandboxIdentity(session);
+        if (postApprovalSandboxMismatch) return postApprovalSandboxMismatch;
 
         // Skip the snapshot dump — the user already saw the final state via
         // prior view/wait/send blocks; a one-line confirmation reads cleaner

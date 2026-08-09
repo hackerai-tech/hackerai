@@ -91,7 +91,9 @@ describe("agent-long post-wait authorization contract", () => {
 
   it("fails closed on denial loops and keeps analytics free of action content", () => {
     expect(taskSource).toMatch(/new AgentAutoReviewDenialTracker\(\)/);
-    expect(taskSource).toMatch(/denialTracker\.record\(decision\.verdict\)/);
+    expect(taskSource).toMatch(/denialTracker\.record\("deny"\)/);
+    expect(taskSource).toMatch(/denialTracker\.record\("approve"\)/);
+    expect(taskSource).toMatch(/denialTracker\.record\("deny"\)\.tripped/);
     expect(taskSource).toMatch(/onAutoReviewCircuitBreaker\(\)/);
     expect(taskSource).toMatch(/agent_auto_review_circuit_breaker/);
     expect(taskSource).toMatch(
@@ -105,6 +107,12 @@ describe("agent-long post-wait authorization contract", () => {
     const eventSource = taskSource.slice(eventStart, eventEnd);
     expect(eventSource).not.toMatch(
       /command|target|path|prompt|rationale|credential/,
+    );
+  });
+
+  it("keeps shadow outcomes private and persists only enforce summaries", () => {
+    expect(taskSource).toMatch(
+      /autoReview\?\.rolloutPhase === "enforce"[\s\S]*autoReview:/,
     );
   });
 

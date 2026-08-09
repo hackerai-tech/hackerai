@@ -5,11 +5,13 @@ import { z } from "zod";
 import { myProvider } from "@/lib/ai/providers";
 import { getProviderUsageRawModelCost } from "@/lib/provider-usage-cost";
 import type {
+  AgentPermissionMode,
   AgentAutoReviewActionContext,
   AgentAutoReviewFailureClass,
   AgentAutoReviewRiskCategory,
   AgentAutoReviewVerdict,
   AgentToolApprovalRequest,
+  AgentToolApprovalOperation,
 } from "@/types";
 
 const MAX_TRUSTED_CONTEXT_CHARS = 12_000;
@@ -41,6 +43,25 @@ export type AgentAutoReviewDecision = z.infer<
   failureClass?: AgentAutoReviewFailureClass;
   modelCostDollars?: number;
 };
+
+/**
+ * Auto review v1 deliberately leaves terminal-session interaction with the
+ * human approval flow. Inputs sent to a live PTY can depend on state that is
+ * not fully represented by the approval request, so the reviewer cannot
+ * reliably reconstruct the exact effect.
+ */
+export const shouldAutoReviewAgentToolAction = ({
+  permissionMode,
+  rolloutPhase,
+  operation,
+}: {
+  permissionMode: AgentPermissionMode;
+  rolloutPhase?: "shadow" | "enforce";
+  operation: AgentToolApprovalOperation;
+}): boolean =>
+  permissionMode === "auto_review" &&
+  rolloutPhase !== undefined &&
+  operation !== "terminal_interact";
 
 type AutoReviewModelRunner = (args: {
   system: string;
