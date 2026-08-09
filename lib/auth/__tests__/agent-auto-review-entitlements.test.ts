@@ -12,6 +12,7 @@ const createClients = ({
   memberships?: unknown[];
   stripeCustomerId?: string | null;
   subscriptions?: Array<{
+    id?: string;
     status: string;
     items: { data: Array<{ price?: { lookup_key?: string | null } }> };
   }>;
@@ -29,7 +30,13 @@ const createClients = ({
     },
     stripe: {
       subscriptions: {
-        list: jest.fn(async () => ({ data: subscriptions })),
+        list: jest.fn(async () => ({
+          data: subscriptions.map((subscription, index) => ({
+            id: subscription.id ?? `sub_${index}`,
+            ...subscription,
+          })),
+          has_more: false,
+        })),
       },
     },
   }) satisfies Clients;
@@ -106,5 +113,49 @@ describe("getCurrentAgentEntitlementContext", () => {
         clients,
       ),
     ).rejects.toThrow("WorkOS unavailable");
+  });
+
+  it("checks later Stripe pages before resolving the current tier", async () => {
+    const clients = createClients();
+    clients.stripe.subscriptions.list = jest
+      .fn()
+      .mockResolvedValueOnce({
+        data: [
+          {
+            id: "sub_page_1",
+            status: "canceled",
+            items: { data: [] },
+          },
+        ],
+        has_more: true,
+      })
+      .mockResolvedValueOnce({
+        data: [
+          {
+            id: "sub_page_2",
+            status: "active",
+            items: {
+              data: [{ price: { lookup_key: "pro-plus-monthly-plan" } }],
+            },
+          },
+        ],
+        has_more: false,
+      });
+
+    await expect(
+      getCurrentAgentEntitlementContext(
+        { userId: "user_1", organizationId: "org_1" },
+        clients,
+      ),
+    ).resolves.toEqual({
+      subscription: "pro-plus",
+      organizationId: "org_1",
+    });
+    expect(clients.stripe.subscriptions.list).toHaveBeenNthCalledWith(2, {
+      customer: "cus_1",
+      status: "all",
+      limit: 100,
+      starting_after: "sub_page_1",
+    });
   });
 });

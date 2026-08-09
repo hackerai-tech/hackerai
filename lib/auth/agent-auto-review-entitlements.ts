@@ -34,8 +34,15 @@ type EntitlementClients = {
   };
   stripe: {
     subscriptions: {
-      list(input: { customer: string; status: "all"; limit: number }): Promise<{
+      list(input: {
+        customer: string;
+        status: "all";
+        limit: number;
+        starting_after?: string;
+      }): Promise<{
+        has_more: boolean;
         data: Array<{
+          id: string;
           status: string;
           items: {
             data: Array<{
@@ -82,21 +89,31 @@ export async function getCurrentAgentEntitlementContext(
     return { subscription: "free", organizationId };
   }
 
-  const subscriptions = await clients.stripe.subscriptions.list({
-    customer: organization.stripeCustomerId,
-    status: "all",
-    limit: 100,
-  });
   let subscription: SubscriptionTier = "free";
-  for (const candidate of subscriptions.data) {
-    if (!ELIGIBLE_SUBSCRIPTION_STATUSES.has(candidate.status)) continue;
-    for (const item of candidate.items.data) {
-      const tier = planLookupKeyToTier(item.price?.lookup_key ?? undefined);
-      if (tier && TIER_RANK[tier] > TIER_RANK[subscription]) {
-        subscription = tier;
+  let startingAfter: string | undefined;
+  do {
+    const page = await clients.stripe.subscriptions.list({
+      customer: organization.stripeCustomerId,
+      status: "all",
+      limit: 100,
+      ...(startingAfter ? { starting_after: startingAfter } : {}),
+    });
+    for (const candidate of page.data) {
+      if (!ELIGIBLE_SUBSCRIPTION_STATUSES.has(candidate.status)) continue;
+      for (const item of candidate.items.data) {
+        const tier = planLookupKeyToTier(item.price?.lookup_key ?? undefined);
+        if (tier && TIER_RANK[tier] > TIER_RANK[subscription]) {
+          subscription = tier;
+        }
       }
     }
-  }
+    if (!page.has_more) break;
+    const lastSubscriptionId = page.data.at(-1)?.id;
+    if (!lastSubscriptionId || lastSubscriptionId === startingAfter) {
+      throw new Error("Stripe subscription pagination did not advance");
+    }
+    startingAfter = lastSubscriptionId;
+  } while (true);
 
   return { subscription, organizationId };
 }
