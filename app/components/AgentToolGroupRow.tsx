@@ -39,7 +39,6 @@ import {
   type AgentWorkActivity,
   type CompletedToolSummaryIconCategory,
 } from "./worked-for-parts";
-import { cn } from "@/lib/utils";
 
 const AUTO_COLLAPSE_DELAY_MS = 500;
 
@@ -171,7 +170,7 @@ export const AgentToolGroupRow = memo(function AgentToolGroupRow({
           className="group flex w-full max-w-full items-center gap-2 text-left text-sm text-muted-foreground transition-colors hover:text-foreground"
         >
           <SummaryIcon
-            className={cn("size-4 shrink-0", hasFailure && "text-destructive")}
+            className="size-4 shrink-0"
             aria-hidden="true"
             data-summary-icon={summaryIcon}
           />

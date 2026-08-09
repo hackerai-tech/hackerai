@@ -197,7 +197,7 @@ describe("AgentToolGroupRow", () => {
     expect(document.querySelector('[data-summary-icon="edit"]')).toBeTruthy();
   });
 
-  it("marks a mixed-outcome group as failed while keeping details accessible", () => {
+  it("keeps a failed group summary neutral while preserving accessible details", () => {
     render(
       group(false, [
         activities[0],
@@ -217,9 +217,9 @@ describe("AgentToolGroupRow", () => {
       name: /some tools failed\. show tool details/i,
     });
     expect(row).toHaveAttribute("data-outcome", "error");
-    expect(document.querySelector('[data-summary-icon="mixed"]')).toHaveClass(
-      "text-destructive",
-    );
+    expect(
+      document.querySelector('[data-summary-icon="mixed"]'),
+    ).not.toHaveClass("text-destructive");
 
     fireEvent.click(trigger);
     expect(screen.getAllByTestId("grouped-tool-detail")).toHaveLength(2);
