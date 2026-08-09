@@ -2,6 +2,18 @@ import { act, fireEvent, render, screen } from "@testing-library/react";
 import { AgentToolGroupRow } from "../AgentToolGroupRow";
 import type { ChatMessage } from "@/types";
 
+const mockCaptureScrollPosition = jest.fn();
+const mockPreserveScrollPosition = jest.fn(
+  (change: () => void, _isOpening: boolean) => change(),
+);
+
+jest.mock("@/components/ai-elements/worked-for", () => ({
+  useScrollPreservation: () => ({
+    captureScrollPosition: mockCaptureScrollPosition,
+    preserveScrollPosition: mockPreserveScrollPosition,
+  }),
+}));
+
 jest.mock("../AgentActivityRow", () => ({
   AgentActivityRow: ({ part }: { part: { type: string } }) => (
     <div data-testid="grouped-tool-detail">{part.type}</div>
@@ -56,6 +68,11 @@ const group = (
 const renderGroup = (animateOnMount: boolean) => render(group(animateOnMount));
 
 describe("AgentToolGroupRow", () => {
+  beforeEach(() => {
+    mockCaptureScrollPosition.mockClear();
+    mockPreserveScrollPosition.mockClear();
+  });
+
   afterEach(() => {
     jest.useRealTimers();
   });
@@ -78,6 +95,11 @@ describe("AgentToolGroupRow", () => {
       jest.advanceTimersByTime(500);
     });
 
+    expect(mockCaptureScrollPosition).toHaveBeenCalledWith(trigger);
+    expect(mockPreserveScrollPosition).toHaveBeenCalledWith(
+      expect.any(Function),
+      false,
+    );
     expect(trigger).toHaveAttribute("aria-expanded", "false");
     expect(
       screen.getByRole("button", {

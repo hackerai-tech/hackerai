@@ -87,6 +87,7 @@ export const AgentToolGroupRow = memo(function AgentToolGroupRow({
   const [open, setOpen] = useState(animateOnMount);
   const autoCollapseTimeoutRef = useRef<number | null>(null);
   const shouldAnimateMountRef = useRef(animateOnMount);
+  const triggerRef = useRef<HTMLButtonElement | null>(null);
   const summaryIcon = getCompletedToolSummaryIconCategory(activities);
   const SummaryIcon = SUMMARY_ICONS[summaryIcon];
   const ChevronIcon = open ? ChevronDownIcon : ChevronRightIcon;
@@ -107,11 +108,18 @@ export const AgentToolGroupRow = memo(function AgentToolGroupRow({
     clearAutoCollapseTimeout();
     autoCollapseTimeoutRef.current = window.setTimeout(() => {
       autoCollapseTimeoutRef.current = null;
-      setOpen(false);
+      captureScrollPosition(triggerRef.current);
+      preserveScrollPosition(() => setOpen(false), false);
     }, AUTO_COLLAPSE_DELAY_MS);
 
     return clearAutoCollapseTimeout;
-  }, [clearAutoCollapseTimeout, groupId, onMount]);
+  }, [
+    captureScrollPosition,
+    clearAutoCollapseTimeout,
+    groupId,
+    onMount,
+    preserveScrollPosition,
+  ]);
 
   const handleOpenChange = useCallback(
     (nextOpen: boolean) => {
@@ -147,6 +155,7 @@ export const AgentToolGroupRow = memo(function AgentToolGroupRow({
     >
       <CollapsibleTrigger asChild>
         <button
+          ref={triggerRef}
           type="button"
           aria-label={`${summary}. ${open ? "Hide" : "Show"} tool details`}
           onClick={handleClick}
