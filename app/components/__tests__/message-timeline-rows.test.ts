@@ -236,6 +236,45 @@ describe("deriveChatTimelineRows", () => {
     expect(group?.activities).toHaveLength(2);
   });
 
+  it("animates only tool groups introduced after the initial timeline commit", () => {
+    const message = agentMessage([
+      { type: "step-start" },
+      {
+        type: "tool-read_file",
+        toolCallId: "read-1",
+        state: "output-available",
+      },
+      {
+        type: "tool-shell",
+        toolCallId: "shell-1",
+        state: "output-available",
+      },
+      { type: "step-start" },
+      { type: "reasoning", text: "Next step" },
+    ] as ChatMessage["parts"]);
+    const deriveGroup = (
+      animateNewToolGroups: boolean,
+      seenToolGroupIds = new Set<string>(),
+    ) =>
+      deriveChatTimelineRows({
+        messages: [message],
+        status: "streaming",
+        lastAssistantMessageIndex: 0,
+        expandedAgentMessageIds: new Set(),
+        animateNewToolGroups,
+        seenToolGroupIds,
+      }).find((row) => row.kind === "agent-tool-group");
+
+    const initialGroup = deriveGroup(false);
+    expect(initialGroup).toMatchObject({ animateOnMount: false });
+
+    const liveGroup = deriveGroup(true);
+    expect(liveGroup).toMatchObject({ animateOnMount: true });
+
+    const seenGroup = deriveGroup(true, new Set([liveGroup?.id ?? ""]));
+    expect(seenGroup).toMatchObject({ animateOnMount: false });
+  });
+
   it("does not group a settled run containing a failed tool", () => {
     const message = agentMessage([
       {

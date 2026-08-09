@@ -98,7 +98,7 @@ describe("AgentToolGroupRow", () => {
     expect(screen.getAllByTestId("grouped-tool-detail")).toHaveLength(2);
   });
 
-  it("closes if streaming ends before the auto-collapse timeout", () => {
+  it("finishes its mount animation if streaming ends before the timeout", () => {
     jest.useFakeTimers();
     const { rerender } = renderGroup(true);
 
@@ -108,7 +108,15 @@ describe("AgentToolGroupRow", () => {
 
     rerender(group(false));
     act(() => {
-      jest.advanceTimersByTime(0);
+      jest.advanceTimersByTime(499);
+    });
+
+    expect(
+      screen.getByRole("button", { name: /hide tool details/i }),
+    ).toHaveAttribute("aria-expanded", "true");
+
+    act(() => {
+      jest.advanceTimersByTime(1);
     });
 
     expect(

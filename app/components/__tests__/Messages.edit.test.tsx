@@ -86,6 +86,30 @@ const navigatorMessages = [
   },
 ] as ChatMessage[];
 
+const messagesWithHistoricalToolGroup = [
+  messages[0],
+  {
+    id: "assistant-agent-1",
+    role: "assistant",
+    metadata: { mode: "agent", generationStartedAt: Date.now() },
+    parts: [
+      { type: "step-start" },
+      {
+        type: "tool-read_file",
+        toolCallId: "read-1",
+        state: "output-available",
+      },
+      {
+        type: "tool-shell",
+        toolCallId: "shell-1",
+        state: "output-available",
+      },
+      { type: "step-start" },
+      { type: "reasoning", text: "Continuing" },
+    ],
+  },
+] as ChatMessage[];
+
 describe("Messages virtualized row invalidation", () => {
   beforeEach(() => {
     mockLegendListScrollToIndex.mockReset();
@@ -227,6 +251,32 @@ describe("Messages virtualized row invalidation", () => {
     expect(screen.getByTestId("messages-timeline-footer")).not.toHaveClass(
       "pb-20",
     );
+  });
+
+  it("starts tool groups already present on page load collapsed", () => {
+    render(
+      <DataStreamProvider>
+        <Messages
+          chatId="chat-with-history"
+          messages={messagesWithHistoricalToolGroup}
+          setMessages={jest.fn()}
+          onRegenerate={jest.fn()}
+          onRetry={jest.fn()}
+          onEditMessage={jest.fn()}
+          status="streaming"
+          error={null}
+          scrollRef={createRef<HTMLElement>()}
+          contentRef={createRef<HTMLElement>()}
+          isMobile
+        />
+      </DataStreamProvider>,
+    );
+
+    expect(
+      screen.getByRole("button", {
+        name: /read a file, ran a command\. show tool details/i,
+      }),
+    ).toHaveAttribute("aria-expanded", "false");
   });
 
   it("jumps to a navigator target without animation", async () => {

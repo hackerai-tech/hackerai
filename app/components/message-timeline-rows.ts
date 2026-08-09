@@ -60,7 +60,11 @@ export type DeriveChatTimelineRowsOptions = {
   status: ChatStatus;
   lastAssistantMessageIndex: number | undefined;
   expandedAgentMessageIds: ReadonlySet<string>;
+  animateNewToolGroups?: boolean;
+  seenToolGroupIds?: ReadonlySet<string>;
 };
+
+const EMPTY_TOOL_GROUP_IDS: ReadonlySet<string> = new Set();
 
 export function findLatestTimelineAnchorMessageId(
   messages: readonly ChatMessage[],
@@ -96,6 +100,8 @@ export function deriveChatTimelineRows({
   status,
   lastAssistantMessageIndex,
   expandedAgentMessageIds,
+  animateNewToolGroups = true,
+  seenToolGroupIds = EMPTY_TOOL_GROUP_IDS,
 }: DeriveChatTimelineRowsOptions): ChatTimelineRow[] {
   const rows: ChatTimelineRow[] = [];
 
@@ -182,13 +188,15 @@ export function deriveChatTimelineRows({
     if (expanded) {
       for (const item of timelineItems) {
         if (item.kind === "tool-group") {
+          const rowId = `work:${message.id}:${item.id}`;
           rows.push({
             kind: "agent-tool-group",
-            id: `work:${message.id}:${item.id}`,
+            id: rowId,
             message,
             messageIndex,
             activities: item.activities,
-            animateOnMount: isTiming,
+            animateOnMount:
+              isTiming && animateNewToolGroups && !seenToolGroupIds.has(rowId),
             isLastMessage: messageIndex === messages.length - 1,
             summary: item.summary,
             terminalChunksByToolCallId: projection.terminalChunksByToolCallId,

@@ -82,7 +82,7 @@ export const AgentToolGroupRow = memo(function AgentToolGroupRow({
 }: AgentToolGroupRowProps) {
   const [open, setOpen] = useState(animateOnMount);
   const autoCollapseTimeoutRef = useRef<number | null>(null);
-  const userToggledRef = useRef(false);
+  const shouldAnimateMountRef = useRef(animateOnMount);
   const summaryIcon = getCompletedToolSummaryIconCategory(activities);
   const SummaryIcon = SUMMARY_ICONS[summaryIcon];
   const ChevronIcon = open ? ChevronDownIcon : ChevronRightIcon;
@@ -97,26 +97,19 @@ export const AgentToolGroupRow = memo(function AgentToolGroupRow({
   }, []);
 
   useEffect(() => {
-    if (!animateOnMount && userToggledRef.current) {
-      clearAutoCollapseTimeout();
-      return;
-    }
+    if (!shouldAnimateMountRef.current) return;
 
     clearAutoCollapseTimeout();
-    autoCollapseTimeoutRef.current = window.setTimeout(
-      () => {
-        autoCollapseTimeoutRef.current = null;
-        setOpen(false);
-      },
-      animateOnMount ? AUTO_COLLAPSE_DELAY_MS : 0,
-    );
+    autoCollapseTimeoutRef.current = window.setTimeout(() => {
+      autoCollapseTimeoutRef.current = null;
+      setOpen(false);
+    }, AUTO_COLLAPSE_DELAY_MS);
 
     return clearAutoCollapseTimeout;
-  }, [animateOnMount, clearAutoCollapseTimeout]);
+  }, [clearAutoCollapseTimeout]);
 
   const handleOpenChange = useCallback(
     (nextOpen: boolean) => {
-      userToggledRef.current = true;
       clearAutoCollapseTimeout();
       preserveScrollPosition(() => setOpen(nextOpen), nextOpen);
     },

@@ -232,21 +232,39 @@ export const Messages = ({
   const [expandedAgentMessageIds, setExpandedAgentMessageIds] = useState<
     ReadonlySet<string>
   >(() => new Set());
-  const rawTimelineRows = useMemo(
-    () =>
-      deriveChatTimelineRows({
-        messages: visibleMessages,
-        status,
-        lastAssistantMessageIndex,
-        expandedAgentMessageIds,
-      }),
-    [
-      expandedAgentMessageIds,
-      lastAssistantMessageIndex,
+  const toolGroupMountStateRef = useRef<{
+    chatId: string;
+    hasCommittedTimeline: boolean;
+    seenToolGroupIds: ReadonlySet<string>;
+  }>({
+    chatId,
+    hasCommittedTimeline: false,
+    seenToolGroupIds: new Set(),
+  });
+  const rawTimelineRows = useMemo(() => {
+    const toolGroupMountState =
+      toolGroupMountStateRef.current.chatId === chatId
+        ? toolGroupMountStateRef.current
+        : {
+            hasCommittedTimeline: false,
+            seenToolGroupIds: new Set<string>(),
+          };
+
+    return deriveChatTimelineRows({
+      messages: visibleMessages,
       status,
-      visibleMessages,
-    ],
-  );
+      lastAssistantMessageIndex,
+      expandedAgentMessageIds,
+      animateNewToolGroups: toolGroupMountState.hasCommittedTimeline,
+      seenToolGroupIds: toolGroupMountState.seenToolGroupIds,
+    });
+  }, [
+    chatId,
+    expandedAgentMessageIds,
+    lastAssistantMessageIndex,
+    status,
+    visibleMessages,
+  ]);
   const stableTimelineRowsRef = useRef<StableChatTimelineRowsState | null>(
     null,
   );
@@ -260,7 +278,23 @@ export const Messages = ({
   );
   useLayoutEffect(() => {
     stableTimelineRowsRef.current = stableTimelineRowsState;
-  }, [stableTimelineRowsState]);
+
+    const previous = toolGroupMountStateRef.current;
+    const seenToolGroupIds =
+      previous.chatId === chatId
+        ? new Set(previous.seenToolGroupIds)
+        : new Set<string>();
+    for (const row of stableTimelineRowsState.result) {
+      if (row.kind === "agent-tool-group") seenToolGroupIds.add(row.id);
+    }
+    toolGroupMountStateRef.current = {
+      chatId,
+      hasCommittedTimeline:
+        (previous.chatId === chatId && previous.hasCommittedTimeline) ||
+        stableTimelineRowsState.result.length > 0,
+      seenToolGroupIds,
+    };
+  }, [chatId, stableTimelineRowsState]);
   const timelineRows = stableTimelineRowsState.result;
   const navigatorItems = useMemo(
     () => deriveMessageNavigatorItems(visibleMessages, timelineRows),
