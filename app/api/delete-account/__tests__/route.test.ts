@@ -5,6 +5,7 @@ import { stripe } from "../../stripe";
 import { workos } from "../../workos";
 import { fenceAndGetActiveAgentResourcesForUser } from "@/lib/db/actions";
 import { closeAndCancelAgentResources } from "@/lib/api/agent-deletion-cleanup";
+import { logger } from "@/lib/logger";
 
 const mockConvexMutation = jest.fn();
 
@@ -37,6 +38,14 @@ jest.mock("@/lib/db/actions", () => ({
 
 jest.mock("@/lib/api/agent-deletion-cleanup", () => ({
   closeAndCancelAgentResources: jest.fn(),
+}));
+
+jest.mock("@/lib/logger", () => ({
+  logger: {
+    error: jest.fn(),
+    info: jest.fn(),
+    warn: jest.fn(),
+  },
 }));
 
 jest.mock("@/convex/_generated/api", () => ({
@@ -119,8 +128,17 @@ const mockCloseAndCancelAgentResources =
   closeAndCancelAgentResources as jest.MockedFunction<
     typeof closeAndCancelAgentResources
   >;
+const mockLoggerError = logger.error as jest.MockedFunction<
+  typeof logger.error
+>;
 
-const request = () => ({ url: "https://hackerai.test/api/delete-account" });
+const request = () => ({
+  url: "https://hackerai.test/api/delete-account",
+  headers: {
+    get: (name: string) =>
+      name === "x-vercel-id" ? "iad1::opaque-request" : null,
+  },
+});
 
 describe("POST /api/delete-account", () => {
   beforeEach(() => {
@@ -462,6 +480,55 @@ describe("POST /api/delete-account", () => {
       mockDeleteUser.mock.invocationCallOrder[0],
     );
     expect(mockDeleteUser).toHaveBeenCalledWith("user_123");
+    expect(mockLoggerError).not.toHaveBeenCalled();
+  });
+
+  it("logs bounded aggregate progress when the request cleanup limit is exhausted", async () => {
+    mockListOrganizationMemberships.mockResolvedValueOnce({
+      data: [],
+    } as never);
+    mockConvexMutation
+      .mockResolvedValueOnce(null)
+      // Older Convex deployments returned only the completion marker. Keep
+      // that deploy-skew shape compatible while collecting newer progress.
+      .mockResolvedValueOnce({ hasMore: true })
+      .mockResolvedValue({
+        hasMore: true,
+        deleted: { feedback: 40, messages: 40 },
+        anonymized: { usage_logs: 10 },
+        s3ObjectsQueued: 2,
+      });
+
+    const response = await POST(request() as any);
+    const body = await response.json();
+
+    expect(response.status).toBe(500);
+    expect(body.error).toContain("taking longer than expected");
+    expect(mockConvexMutation).toHaveBeenCalledTimes(51);
+    expect(mockLoggerError).toHaveBeenCalledWith(
+      "account_cleanup_batch_limit_exhausted",
+      undefined,
+      {
+        event: "account_cleanup_batch_limit_exhausted",
+        service: "hackerai-web",
+        environment: process.env.VERCEL_ENV ?? process.env.NODE_ENV,
+        request_id: "iad1::opaque-request",
+        user_id: "user_123",
+        reason: "cleanup_batch_limit_exhausted",
+        batch_limit: 50,
+        progress_stats_batches: 49,
+        batches_with_progress: 49,
+        deleted_documents: 3920,
+        anonymized_documents: 490,
+        s3_objects_queued: 98,
+        last_batch_deleted_documents: 80,
+        last_batch_anonymized_documents: 10,
+        last_batch_s3_objects_queued: 2,
+      },
+    );
+    expect(mockDeleteOrganizationMembership).not.toHaveBeenCalled();
+    expect(mockDeleteUserRateLimitKeys).not.toHaveBeenCalled();
+    expect(mockDeleteUser).not.toHaveBeenCalled();
   });
 
   it("does not delete external identity resources when Convex cleanup returns an unexpected shape", async () => {
