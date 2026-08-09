@@ -23,6 +23,7 @@ import {
   parseSidebarTaskLastVisitedAt,
   readSidebarTaskLastVisitedAt,
   subscribeSidebarTaskLastVisitedAt,
+  AGENT_PERMISSION_MODE_STORAGE_KEY,
 } from "../client-storage";
 
 const STORAGE_KEY = "selected_model";
@@ -170,7 +171,10 @@ describe("client-storage Agent permission mode", () => {
   );
 
   it("keeps Full access as the fallback for unknown stored values", () => {
-    window.localStorage.setItem("agent_permission_mode", "approve_for_me");
+    window.localStorage.setItem(
+      AGENT_PERMISSION_MODE_STORAGE_KEY,
+      "approve_for_me",
+    );
     expect(readAgentPermissionMode()).toBe("full_access");
   });
 });

@@ -1,7 +1,9 @@
 import { generateText, Output, type UIMessage } from "ai";
+import { randomUUID } from "node:crypto";
 import { z } from "zod";
 
 import { myProvider } from "@/lib/ai/providers";
+import { getProviderUsageRawModelCost } from "@/lib/provider-usage-cost";
 import type {
   AgentAutoReviewActionContext,
   AgentAutoReviewFailureClass,
@@ -69,12 +71,18 @@ const defaultModelRunner: AutoReviewModelRunner = async ({
     system,
     messages: [{ role: "user", content: prompt }],
     output: Output.object({ schema: agentAutoReviewOutputSchema }),
+    providerOptions: {
+      openrouter: {
+        reasoning: { effort: "minimal" },
+        usage: { include: true },
+      },
+    },
     temperature: 0,
-    maxOutputTokens: 300,
+    maxOutputTokens: 1_000,
     maxRetries: 0,
     abortSignal,
   });
-  const rawCost = (result.usage as { raw?: { cost?: unknown } })?.raw?.cost;
+  const rawCost = getProviderUsageRawModelCost(result.usage.raw);
   return {
     output: result.output,
     ...(typeof rawCost === "number" && Number.isFinite(rawCost) && rawCost > 0
@@ -143,11 +151,9 @@ const reviewByRule = (
         source: "rule",
       };
     }
-    if (
-      /(?:^|\s)rm\s+(?:-[^\s]*r[^\s]*f|-[^\s]*f[^\s]*r)\s+(?:\/\*?|~\/?\*?|\$HOME|\$\{HOME\})(?:\s|$)/i.test(
-        command,
-      )
-    ) {
+    const recursiveForcedRemoval =
+      /(?:^|[;&|]\s*|\s)rm\b(?=[^;&|\n]*(?:-[a-z]*r[a-z]*f|-[a-z]*f[a-z]*r)\b)(?=[^;&|\n]*\s["']?(?:\/(?:\*)?|~(?:\/\*)?|\$HOME|\$\{HOME\})["']?(?=\s|$))/i;
+    if (recursiveForcedRemoval.test(command)) {
       return {
         verdict: "deny",
         riskCategory: "destructive",
@@ -174,20 +180,25 @@ const reviewByRule = (
   return null;
 };
 
+const escapeUntrustedPromptEvidence = (value: unknown): string =>
+  JSON.stringify(value).replaceAll("<", "\\u003c");
+
 const buildReviewPrompt = ({
   request,
   trustedAuthorization,
 }: {
   request: AgentToolApprovalRequest;
   trustedAuthorization: string;
-}): string => `Review the exact proposed action below.
+}): string => {
+  const evidenceBoundary = `untrusted_action_evidence_${randomUUID()}`;
+  return `Review the exact proposed action below.
 
 <trusted_user_authorization>
 ${trustedAuthorization}
 </trusted_user_authorization>
 
-<untrusted_action_evidence>
-${JSON.stringify({
+<${evidenceBoundary}>
+${escapeUntrustedPromptEvidence({
   toolName: request.toolName,
   operation: request.operation,
   target: request.target,
@@ -195,7 +206,8 @@ ${JSON.stringify({
   justification: request.justification,
   exactAction: request.autoReviewContext,
 })}
-</untrusted_action_evidence>`;
+</${evidenceBoundary}>`;
+};
 
 const failureDecision = ({
   failureClass,

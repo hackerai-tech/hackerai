@@ -72,10 +72,28 @@ describe("agent-long post-wait authorization contract", () => {
     expect(grantDerivation).toBeGreaterThan(approvedReturn);
   });
 
+  it("excludes separate reviewer latency from active runtime", () => {
+    const autoReview = taskSource.indexOf("await reviewAgentToolAction({");
+    const pause = taskSource.lastIndexOf(
+      "activeRuntimeBudget.pause()",
+      autoReview,
+    );
+    const resume = taskSource.indexOf(
+      "activeRuntimeBudget.resume()",
+      autoReview,
+    );
+
+    expect(autoReview).toBeGreaterThan(-1);
+    expect(pause).toBeGreaterThan(-1);
+    expect(pause).toBeLessThan(autoReview);
+    expect(resume).toBeGreaterThan(autoReview);
+  });
+
   it("fails closed on denial loops and keeps analytics free of action content", () => {
     expect(taskSource).toMatch(/new AgentAutoReviewDenialTracker\(\)/);
     expect(taskSource).toMatch(/denialTracker\.record\(decision\.verdict\)/);
     expect(taskSource).toMatch(/onAutoReviewCircuitBreaker\(\)/);
+    expect(taskSource).toMatch(/agent_auto_review_circuit_breaker/);
     expect(taskSource).toMatch(
       /Do not retry through a workaround; ask the user/,
     );
@@ -132,6 +150,9 @@ describe("agent-long post-wait authorization contract", () => {
       /normalizeMaxModelForSubscription\([\s\S]*currentlyAllowedModel !== selectedModelOverride/,
     );
     expect(taskSource).toMatch(/await checkRateLimitCapacity\(/);
+    expect(taskSource).toMatch(
+      /listOrganizationMemberships\([\s\S]*statuses: \["active"\][\s\S]*activeMemberships\.data\.length === 0/,
+    );
     expect(taskSource).toMatch(
       /onPostWaitAuthorizationDenied: \(\) => userStopSignal\.abort\(\)/,
     );

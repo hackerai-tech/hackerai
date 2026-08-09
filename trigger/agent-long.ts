@@ -18,6 +18,7 @@ import {
 } from "ai";
 import type { Geo } from "@vercel/functions";
 import PostHogClient from "@/app/posthog";
+import { workos } from "@/app/api/workos";
 
 import { systemPrompt } from "@/lib/system-prompt";
 import { getResumeSection } from "@/lib/system-prompt/resume";
@@ -173,6 +174,7 @@ import {
   AGENT_TOOL_APPROVAL_PROTOCOL_VERSION,
   canUseExtraUsage,
   getAgentApprovalConnectionSandboxIdentity,
+  getAgentToolApprovalPromptKind,
   getAgentApprovalTargetPrefixForSandbox,
   normalizeMaxModelForSubscription,
   serializeSandboxScopedAgentApprovalTargetPrefix,
@@ -581,11 +583,17 @@ const buildAgentToolApprovalRequester = ({
       }
 
       if (agentPermissionMode === "auto_review" && autoReviewAssignment) {
-        const decision = await reviewAgentToolAction({
-          request,
-          authorizationContext: autoReviewAuthorizationContext,
-          signal,
-        });
+        activeRuntimeBudget.pause();
+        let decision: AgentAutoReviewDecision;
+        try {
+          decision = await reviewAgentToolAction({
+            request,
+            authorizationContext: autoReviewAuthorizationContext,
+            signal,
+          });
+        } finally {
+          activeRuntimeBudget.resume();
+        }
         autoReviewDecision = {
           ...decision,
           rolloutPhase: autoReviewAssignment.phase,
@@ -594,10 +602,7 @@ const buildAgentToolApprovalRequester = ({
           onAutoReviewCost?.(decision.modelCostDollars);
         }
         const reviewSurface =
-          request.operation === "terminal_execute" ||
-          request.operation === "terminal_interact"
-            ? "terminal"
-            : "file";
+          getAgentToolApprovalPromptKind(request.operation) ?? "file";
         phLogger.event("agent_auto_review_decision", {
           userId,
           rollout_phase: autoReviewAssignment.phase,
@@ -661,7 +666,17 @@ const buildAgentToolApprovalRequester = ({
               "approvalStatus",
               tripped ? "auto_review_circuit_breaker" : "auto_review_denied",
             );
-            if (tripped) onAutoReviewCircuitBreaker();
+            if (tripped) {
+              phLogger.event("agent_auto_review_circuit_breaker", {
+                userId,
+                rollout_phase: autoReviewAssignment.phase,
+                verdict: decision.verdict,
+                risk_category: decision.riskCategory,
+                outcome: "require_user",
+                surface: reviewSurface,
+              });
+              onAutoReviewCircuitBreaker();
+            }
             return {
               approved: false,
               approvalId,
@@ -933,10 +948,7 @@ const buildAgentToolApprovalRequester = ({
               outcome: "approve",
               override: autoReviewDecision.verdict === "deny",
               surface:
-                request.operation === "terminal_execute" ||
-                request.operation === "terminal_interact"
-                  ? "terminal"
-                  : "file",
+                getAgentToolApprovalPromptKind(request.operation) ?? "file",
             });
           }
           return { approved: true, approvalId, sandboxIdentity };
@@ -961,10 +973,7 @@ const buildAgentToolApprovalRequester = ({
             outcome: "deny",
             override: autoReviewDecision.verdict === "approve",
             surface:
-              request.operation === "terminal_execute" ||
-              request.operation === "terminal_interact"
-                ? "terminal"
-                : "file",
+              getAgentToolApprovalPromptKind(request.operation) ?? "file",
           });
         }
         return {
@@ -2455,6 +2464,21 @@ export const agentLongTask = task({
               toolCallId: string;
             }) => {
               await assertUserCanMakeCostIncurringRequest(userId);
+
+              if (organizationId) {
+                const activeMemberships =
+                  await workos.userManagement.listOrganizationMemberships({
+                    userId,
+                    organizationId,
+                    statuses: ["active"],
+                  });
+                if (activeMemberships.data.length === 0) {
+                  throw new AgentApprovalAuthorizationError(
+                    "authorization_mismatch",
+                    "The run-start organization membership is no longer active.",
+                  );
+                }
+              }
 
               const currentChat = await getChatById({ id: chatId });
               if (
