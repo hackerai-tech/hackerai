@@ -115,6 +115,7 @@ import {
   captureUsageCost,
   captureUsageSettlement,
   createChatLogger,
+  resolveAgentAbortSource,
   type ChatLogger,
 } from "@/lib/api/chat-logger";
 import {
@@ -3311,6 +3312,16 @@ export const agentLongTask = task({
                                     subscription,
                                     sandboxInfo,
                                     outcome,
+                                    abortSource: resolveAgentAbortSource({
+                                      outcome,
+                                      stoppedDueToBudgetExhaustion:
+                                        state.stoppedDueToBudgetExhaustion,
+                                      stoppedDueToAgentRunSpendCap:
+                                        state.stoppedDueToAgentRunSpendCap,
+                                      stoppedDueToElapsedTimeout:
+                                        state.stoppedDueToElapsedTimeout,
+                                      requestCancelled: triggerSignal.aborted,
+                                    }),
                                     chatLogger,
                                     selectedModel,
                                     configuredModelId,
@@ -3476,6 +3487,16 @@ export const agentLongTask = task({
                         subscription,
                         sandboxInfo,
                         outcome,
+                        abortSource: resolveAgentAbortSource({
+                          outcome,
+                          stoppedDueToBudgetExhaustion:
+                            state.stoppedDueToBudgetExhaustion,
+                          stoppedDueToAgentRunSpendCap:
+                            state.stoppedDueToAgentRunSpendCap,
+                          stoppedDueToElapsedTimeout:
+                            state.stoppedDueToElapsedTimeout,
+                          requestCancelled: triggerSignal.aborted,
+                        }),
                         chatLogger,
                         selectedModel,
                         configuredModelId,
