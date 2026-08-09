@@ -44,26 +44,26 @@ export async function evaluateAgentAutoReviewFlag({
   captureExposure?: boolean;
   surface?: "agent_permission_selector" | "agent_run";
 }): Promise<AgentAutoReviewAssignment | undefined> {
-  const previewAssignment = resolveAgentAutoReviewPreviewAssignment();
-  if (previewAssignment) {
-    if (captureExposure && posthog) {
-      posthog.capture({
-        distinctId: userId,
-        event: AGENT_AUTO_REVIEW_EXPOSURE_EVENT,
-        properties: {
-          rollout_phase: previewAssignment.phase,
-          surface,
-          [AGENT_AUTO_REVIEW_FEATURE_PROPERTY]: previewAssignment.phase,
-          $process_person_profile: false,
-        },
-      });
-    }
-    return previewAssignment;
-  }
-
-  if (!posthog) return undefined;
-
   try {
+    const previewAssignment = resolveAgentAutoReviewPreviewAssignment();
+    if (previewAssignment) {
+      if (captureExposure && posthog) {
+        posthog.capture({
+          distinctId: userId,
+          event: AGENT_AUTO_REVIEW_EXPOSURE_EVENT,
+          properties: {
+            rollout_phase: previewAssignment.phase,
+            surface,
+            [AGENT_AUTO_REVIEW_FEATURE_PROPERTY]: previewAssignment.phase,
+            $process_person_profile: false,
+          },
+        });
+      }
+      return previewAssignment;
+    }
+
+    if (!posthog) return undefined;
+
     const flags = await posthog.evaluateFlags(userId, {
       flagKeys: [AGENT_AUTO_REVIEW_FLAG_KEY],
     });

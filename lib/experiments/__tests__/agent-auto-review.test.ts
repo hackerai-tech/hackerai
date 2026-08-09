@@ -67,6 +67,41 @@ describe("Agent Auto review flag", () => {
         }
       }
     });
+
+    it("fails closed when preview exposure capture throws", async () => {
+      const previousVercelEnv = process.env.VERCEL_ENV;
+      const previousPreviewPhase = process.env.AGENT_AUTO_REVIEW_PREVIEW_PHASE;
+      process.env.VERCEL_ENV = "preview";
+      process.env.AGENT_AUTO_REVIEW_PREVIEW_PHASE = "enforce";
+      const posthog = {
+        evaluateFlags: jest.fn(),
+        capture: jest.fn(() => {
+          throw new Error("capture unavailable");
+        }),
+      };
+
+      try {
+        await expect(
+          evaluateAgentAutoReviewFlag({
+            posthog: posthog as never,
+            userId: "development-user",
+            captureExposure: true,
+          }),
+        ).resolves.toBeUndefined();
+        expect(posthog.evaluateFlags).not.toHaveBeenCalled();
+      } finally {
+        if (previousVercelEnv === undefined) {
+          delete process.env.VERCEL_ENV;
+        } else {
+          process.env.VERCEL_ENV = previousVercelEnv;
+        }
+        if (previousPreviewPhase === undefined) {
+          delete process.env.AGENT_AUTO_REVIEW_PREVIEW_PHASE;
+        } else {
+          process.env.AGENT_AUTO_REVIEW_PREVIEW_PHASE = previousPreviewPhase;
+        }
+      }
+    });
   });
 
   it.each(["shadow", "enforce"] as const)(
