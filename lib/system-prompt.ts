@@ -374,18 +374,30 @@ Answer the user's request using the relevant tool(s), if they are available. Che
 
 const getAgentToolApprovalSection = (
   agentPermissionMode: AgentPermissionMode,
-): string =>
-  agentPermissionMode === "ask_approval"
-    ? `<agent_tool_approval>
+): string => {
+  if (agentPermissionMode === "ask_approval") {
+    return `<agent_tool_approval>
 Agent tool approval mode: Ask for approval. Mutating tools and command-executing tools are approval-gated by the platform.
 
 - Do not ask the user for permission in chat before using an approval-gated tool. If the task requires action, call the appropriate tool with a clear brief; the platform will pause that tool call and ask the user to approve or deny it.
 - A text-only response without the needed tool call can end the Agent run before the approval prompt appears. While work remains and action is needed, keep execution moving by calling the appropriate tool.
 - After the user approves, continue from the tool result. If the user denies, cancels, or approval times out, treat that result as the user's decision and continue with a safe alternative or concise explanation.
-</agent_tool_approval>`
-    : `<agent_tool_approval>
+</agent_tool_approval>`;
+  }
+  if (agentPermissionMode === "auto_review") {
+    return `<agent_tool_approval>
+Agent tool approval mode: Auto review. Mutating tools and command-executing tools are approval-gated by the platform and reviewed by a separate reviewer.
+
+- Call the needed tool directly with a clear brief. Do not approve your own action or ask for permission in chat before the tool call.
+- An automatic approval applies only to the exact action once and never creates a reusable grant.
+- If review asks for the user, wait for the existing approval prompt. If review denies the action, do not retry the same outcome through indirection, a workaround, or policy circumvention. Continue only with a materially safer alternative; otherwise ask the user.
+- Auto review is probabilistic and does not expand the sandbox, network access, filesystem scope, or target authorization.
+</agent_tool_approval>`;
+  }
+  return `<agent_tool_approval>
 Agent tool approval mode: Full access. Tool calls can run without per-action approval. Use tools directly when the task requires commands or file changes; only ask for confirmation when the environment safety instructions require it.
 </agent_tool_approval>`;
+};
 
 const getProductQuestionsSection = (): string =>
   `For local-machine access questions, follow the requirements in <local_machine_access>. \

@@ -191,6 +191,46 @@ describe("file tool large text safety", () => {
       "allowed on desktop A",
       { user: "user" },
     );
+    expect(requestToolApproval).toHaveBeenCalledWith(
+      expect.objectContaining({
+        toolCallId: "call-1",
+        operation: "file_write",
+        target: "C:\\repo\\approved-on-a.txt",
+        autoReviewContext: {
+          type: "file_change",
+          action: "write",
+          path: "C:\\repo\\approved-on-a.txt",
+          text: "allowed on desktop A",
+          complete: true,
+        },
+      }),
+    );
+  });
+
+  test("marks oversized file changes incomplete for human fallback", async () => {
+    const { sandbox } = makeNativeDesktopSandbox("desktop-a");
+    const requestToolApproval = jest.fn(async () => ({
+      approved: false as const,
+      approvalId: "approval-1",
+      reason: "human approval required",
+    }));
+    const tool = createFile(makeContext(sandbox, { requestToolApproval }));
+
+    await runTool(tool, {
+      action: "write",
+      path: "C:\\repo\\large.txt",
+      text: "x".repeat(24 * 1024 + 1),
+    });
+
+    expect(requestToolApproval).toHaveBeenCalledWith(
+      expect.objectContaining({
+        autoReviewContext: expect.objectContaining({
+          type: "file_change",
+          complete: false,
+        }),
+      }),
+    );
+    expect(sandbox.files.write).not.toHaveBeenCalled();
   });
 
   test("blocks file operations when a selected local sandbox falls back", async () => {

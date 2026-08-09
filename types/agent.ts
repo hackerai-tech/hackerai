@@ -292,6 +292,50 @@ export const getAgentApprovalTargetPrefixForSandbox = ({
 
 export type AgentToolApprovalDecision = "approve" | "deny";
 
+export type AgentAutoReviewVerdict = "approve" | "ask_user" | "deny";
+export type AgentAutoReviewRiskCategory =
+  | "routine"
+  | "destructive"
+  | "credential_access"
+  | "data_egress"
+  | "security_weakening"
+  | "scope_expansion"
+  | "prompt_injection"
+  | "unknown";
+export type AgentAutoReviewFailureClass =
+  | "timeout"
+  | "provider_error"
+  | "parse_error"
+  | "missing_context"
+  | "context_truncated";
+export type AgentAutoReviewRolloutPhase = "shadow" | "enforce";
+
+export type AgentAutoReviewActionContext =
+  | {
+      type: "terminal_command";
+      command: string;
+    }
+  | {
+      type: "terminal_interaction";
+      interaction: string;
+    }
+  | {
+      type: "file_change";
+      action: "write" | "append" | "edit";
+      path: string;
+      text?: string;
+      edits?: Array<{ find: string; replace: string; all?: boolean }>;
+      complete: boolean;
+    };
+
+export type AgentAutoReviewSummary = {
+  verdict: AgentAutoReviewVerdict;
+  riskCategory: AgentAutoReviewRiskCategory;
+  rationale: string;
+  rolloutPhase: AgentAutoReviewRolloutPhase;
+  failureClass?: AgentAutoReviewFailureClass;
+};
+
 export type AgentToolApprovalOperation =
   | "terminal_execute"
   | "terminal_interact"
@@ -375,6 +419,8 @@ export type AgentToolApprovalRequest = {
   brief?: string;
   justification?: string;
   prefixRule?: string[];
+  /** Exact in-memory action context for the separate Auto review call. */
+  autoReviewContext?: AgentAutoReviewActionContext;
 };
 
 export type AgentToolApprovalPendingRequest = {
@@ -388,6 +434,7 @@ export type AgentToolApprovalPendingRequest = {
   detail?: string;
   kind?: AgentToolApprovalPromptKind;
   createdAt?: number;
+  autoReview?: AgentAutoReviewSummary;
 };
 
 export type AgentToolApprovalPromptRequest = AgentToolApprovalPendingRequest & {

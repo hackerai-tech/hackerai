@@ -1,7 +1,13 @@
 "use client";
 
-import { useState } from "react";
-import { Check, ChevronDown, Hand, ShieldAlert } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  Check,
+  ChevronDown,
+  Hand,
+  ShieldAlert,
+  ShieldCheck,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   Popover,
@@ -25,18 +31,26 @@ type PermissionOption = {
   icon: typeof ShieldAlert;
 };
 
-const options: PermissionOption[] = [
+const baseOptions: PermissionOption[] = [
   {
     id: "ask_approval",
     label: "Ask for approval",
-    description: "Always ask before running commands and editing files",
+    description: "You approve commands and file changes.",
     shortLabel: "Ask for approval",
     icon: Hand,
   },
   {
+    id: "auto_review",
+    label: "Auto review",
+    description:
+      "HackerAI reviews actions automatically and asks you when the risk is unclear.",
+    shortLabel: "Auto review",
+    icon: ShieldCheck,
+  },
+  {
     id: "full_access",
     label: "Full access",
-    description: "Run commands and edit files without asking",
+    description: "Run commands and edit files without review.",
     shortLabel: "Full access",
     icon: ShieldAlert,
   },
@@ -47,7 +61,41 @@ export function AgentPermissionSelector({
   analyticsSurface,
 }: AgentPermissionSelectorProps) {
   const [open, setOpen] = useState(false);
+  const [autoReviewAvailable, setAutoReviewAvailable] = useState(false);
   const { agentPermissionMode, setAgentPermissionMode } = useGlobalState();
+  const initialAgentPermissionMode = useRef(agentPermissionMode);
+  useEffect(() => {
+    const controller = new AbortController();
+    const applyAvailability = (available: boolean) => {
+      setAutoReviewAvailable(available);
+      if (!available && initialAgentPermissionMode.current === "auto_review") {
+        setAgentPermissionMode("ask_approval");
+      }
+    };
+    void fetch("/api/experiments/agent-auto-review", {
+      credentials: "same-origin",
+      cache: "no-store",
+      signal: controller.signal,
+    })
+      .then(async (response) => {
+        if (!response.ok) return false;
+        const data = (await response.json()) as { available?: unknown };
+        return data.available === true;
+      })
+      .then(applyAvailability)
+      .catch(() => {
+        if (!controller.signal.aborted) applyAvailability(false);
+      });
+    return () => controller.abort();
+  }, [setAgentPermissionMode]);
+
+  const options = useMemo(
+    () =>
+      autoReviewAvailable
+        ? baseOptions
+        : baseOptions.filter((option) => option.id !== "auto_review"),
+    [autoReviewAvailable],
+  );
   const selectedOption =
     options.find((option) => option.id === agentPermissionMode) ?? options[0];
   const Icon = selectedOption.icon;
@@ -67,9 +115,10 @@ export function AgentPermissionSelector({
           size={size === "md" ? "default" : "sm"}
           className={buttonClassName}
         >
-          <Icon className={iconClassName} />
+          <Icon className={iconClassName} aria-hidden="true" />
           <span className="truncate">{selectedOption.shortLabel}</span>
           <ChevronDown
+            aria-hidden="true"
             className={
               size === "md"
                 ? "h-4 w-4 ml-1 shrink-0"
@@ -118,7 +167,7 @@ export function AgentPermissionSelector({
                     : "hover:bg-muted"
                 }`}
               >
-                <OptionIcon className="h-4 w-4 shrink-0" />
+                <OptionIcon className="h-4 w-4 shrink-0" aria-hidden="true" />
                 <div className="flex-1 min-w-0">
                   <div className="truncate text-sm font-medium">
                     {option.label}
@@ -133,7 +182,9 @@ export function AgentPermissionSelector({
                     {option.description}
                   </div>
                 </div>
-                {selected && <Check className="h-4 w-4 shrink-0" />}
+                {selected && (
+                  <Check className="h-4 w-4 shrink-0" aria-hidden="true" />
+                )}
               </button>
             );
           })}

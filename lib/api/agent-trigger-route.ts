@@ -68,6 +68,10 @@ import {
 } from "@/lib/api/agent-approval-session";
 import { createAgentRunCorrelationToken } from "@/lib/api/agent-run-correlation";
 import { evaluateProPlusMaxAccessExperiment } from "@/lib/experiments/pro-plus-max-access";
+import {
+  evaluateAgentAutoReviewFlag,
+  type AgentAutoReviewAssignment,
+} from "@/lib/experiments/agent-auto-review";
 
 const AGENT_TRIGGER_PRIORITY_BY_SUBSCRIPTION: Record<SubscriptionTier, number> =
   {
@@ -440,6 +444,17 @@ export const createAgentTriggerPost =
         extraUsageAvailable,
       });
       await maxAccessPosthog?.shutdown().catch(() => undefined);
+      const autoReviewPosthog =
+        agentPermissionMode === "auto_review" ? PostHogClient() : null;
+      const autoReviewAssignment: AgentAutoReviewAssignment | undefined =
+        agentPermissionMode === "auto_review"
+          ? await evaluateAgentAutoReviewFlag({
+              posthog: autoReviewPosthog,
+              userId,
+              surface: "agent_run",
+            })
+          : undefined;
+      await autoReviewPosthog?.shutdown().catch(() => undefined);
       selectedModelOverride = resolveAgentRunSpendCapContinuationModel({
         finishReason: existingChat?.finish_reason,
         isAutoContinue,
@@ -556,7 +571,8 @@ export const createAgentTriggerPost =
         triggerDedupeKeyParts,
       );
       const approvalSessionId =
-        agentPermissionMode === "ask_approval"
+        agentPermissionMode === "ask_approval" ||
+        agentPermissionMode === "auto_review"
           ? buildAgentApprovalSessionId({
               chatId,
               keyParts: triggerDedupeKeyParts,
@@ -592,6 +608,7 @@ export const createAgentTriggerPost =
         approvalProtocolVersion: AGENT_APPROVAL_PROTOCOL_VERSION,
         selectedModel: selectedModelOverride,
         maxAccessExperiment,
+        autoReviewAssignment,
         userLocation,
         isAutoContinue,
         regenerate,
@@ -622,6 +639,9 @@ export const createAgentTriggerPost =
         ...(approvalSessionId ? { approvalSessionId } : {}),
         ...(maxAccessExperiment && {
           maxAccessExperimentVariant: maxAccessExperiment.variant,
+        }),
+        ...(autoReviewAssignment && {
+          autoReviewRolloutPhase: autoReviewAssignment.phase,
         }),
       };
       const triggerOptions = {

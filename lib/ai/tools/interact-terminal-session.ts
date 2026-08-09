@@ -178,6 +178,10 @@ export const createInteractTerminalSession = (context: ToolContext) => {
           operation: "terminal_interact",
           target,
           brief,
+          autoReviewContext: {
+            type: "terminal_interaction",
+            interaction: target,
+          },
         });
         if (!approval || approval.approved) return null;
         return {

@@ -217,6 +217,8 @@ const buildProviderMap = (
     "fallback-ask-model": or(GROK_4_5_SLUG),
     // Titles are a short structured-output task and should never use reasoning.
     "title-generator-model": or(TITLE_GENERATOR_DEEPSEEK_SLUG),
+    // Separate tool-less call used only to review one approval-gated action.
+    "agent-auto-review-model": or(GROK_4_5_SLUG),
   }) as Record<string, any>;
 
 const baseProviders = buildProviderMap(openrouter);
@@ -235,6 +237,7 @@ export const modelCutoffDates: Partial<Record<ModelName, string>> &
   "fallback-agent-model": "July 2026",
   "fallback-ask-model": "July 2026",
   "title-generator-model": "May 2025",
+  "agent-auto-review-model": "July 2026",
 };
 
 export const modelDisplayNames: Record<ModelName, string> &
@@ -252,6 +255,7 @@ export const modelDisplayNames: Record<ModelName, string> &
   "fallback-agent-model": "Auto, an intelligent model router built by HackerAI",
   "fallback-ask-model": "Auto, an intelligent model router built by HackerAI",
   "title-generator-model": "DeepSeek V4 Flash",
+  "agent-auto-review-model": "xAI Grok 4.5",
 };
 
 export const getModelDisplayName = (modelName: ModelName): string => {

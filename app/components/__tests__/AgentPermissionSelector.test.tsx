@@ -1,13 +1,15 @@
 import "@testing-library/jest-dom";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, jest } from "@jest/globals";
 
 const setAgentPermissionMode = jest.fn();
 const captureAuthenticatedEvent = jest.fn();
+let agentPermissionMode = "full_access";
+const fetchMock = jest.fn();
 
 jest.mock("@/app/contexts/GlobalState", () => ({
   useGlobalState: () => ({
-    agentPermissionMode: "full_access",
+    agentPermissionMode,
     setAgentPermissionMode,
   }),
 }));
@@ -22,17 +24,26 @@ const { AgentPermissionSelector } = jest.requireActual<
 
 describe("AgentPermissionSelector", () => {
   beforeEach(() => {
+    agentPermissionMode = "full_access";
     setAgentPermissionMode.mockClear();
     captureAuthenticatedEvent.mockClear();
+    fetchMock.mockReset();
+    fetchMock.mockResolvedValue({
+      ok: true,
+      json: async () => ({ available: true, phase: "shadow" }),
+    });
+    global.fetch = fetchMock as typeof fetch;
   });
 
-  it("captures permission mode changes before updating the selection", () => {
+  it("captures permission mode changes before updating the selection", async () => {
     render(<AgentPermissionSelector analyticsSurface="chat_input" />);
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
 
     fireEvent.click(screen.getByRole("button", { name: /full access/i }));
     fireEvent.click(
       screen.getByRole("button", {
-        name: /ask for approval always ask before/i,
+        name: /ask for approval you approve commands and file changes/i,
       }),
     );
 
@@ -53,11 +64,52 @@ describe("AgentPermissionSelector", () => {
     expect(setAgentPermissionMode).toHaveBeenCalledWith("ask_approval");
   });
 
-  it("keeps the permission choice available in Agent-only experiences", () => {
+  it("offers Auto review only for a server flag assignment", async () => {
     render(<AgentPermissionSelector analyticsSurface="chat_input" />);
 
+    fireEvent.click(screen.getByRole("button", { name: /full access/i }));
     expect(
-      screen.getByRole("button", { name: /full access/i }),
+      await screen.findByRole("button", {
+        name: /auto review hackerai reviews actions automatically/i,
+      }),
     ).toBeInTheDocument();
+  });
+
+  it("fails closed and hides Auto review when the flag is unavailable", async () => {
+    fetchMock.mockResolvedValue({
+      ok: true,
+      json: async () => ({ available: false }),
+    });
+    render(<AgentPermissionSelector analyticsSurface="chat_input" />);
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    fireEvent.click(screen.getByRole("button", { name: /full access/i }));
+    expect(screen.queryByText("Auto review")).not.toBeInTheDocument();
+    expect(screen.getAllByText("Full access")).not.toHaveLength(0);
+  });
+
+  it("moves a stale Auto review selection back to Ask for approval", async () => {
+    agentPermissionMode = "auto_review";
+    fetchMock.mockResolvedValue({
+      ok: true,
+      json: async () => ({ available: false }),
+    });
+
+    render(<AgentPermissionSelector analyticsSurface="chat_input" />);
+
+    await waitFor(() =>
+      expect(setAgentPermissionMode).toHaveBeenCalledWith("ask_approval"),
+    );
+  });
+
+  it("moves a stale Auto review selection back when flag lookup fails", async () => {
+    agentPermissionMode = "auto_review";
+    fetchMock.mockRejectedValue(new Error("network unavailable"));
+
+    render(<AgentPermissionSelector analyticsSurface="chat_input" />);
+
+    await waitFor(() =>
+      expect(setAgentPermissionMode).toHaveBeenCalledWith("ask_approval"),
+    );
   });
 });

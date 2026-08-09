@@ -14,6 +14,8 @@ import {
   upsertDraft,
   upsertDraftAttachments,
   writeOpenSidebarProjectIds,
+  readAgentPermissionMode,
+  writeAgentPermissionMode,
   SIDEBAR_OPEN_PROJECT_IDS_STORAGE_KEY,
   SIDEBAR_TASK_LAST_VISITED_AT_STORAGE_PREFIX,
   getSidebarTaskLastVisitedAtStorageKey,
@@ -151,6 +153,25 @@ describe("client-storage selected model", () => {
       expect(window.localStorage.getItem(LEGACY_ASK_KEY)).toBeNull();
       expect(window.localStorage.getItem(LEGACY_AGENT_KEY)).toBeNull();
     });
+  });
+});
+
+describe("client-storage Agent permission mode", () => {
+  beforeEach(() => {
+    window.localStorage.clear();
+  });
+
+  it.each(["ask_approval", "auto_review", "full_access"] as const)(
+    "round trips %s",
+    (mode) => {
+      writeAgentPermissionMode(mode);
+      expect(readAgentPermissionMode()).toBe(mode);
+    },
+  );
+
+  it("keeps Full access as the fallback for unknown stored values", () => {
+    window.localStorage.setItem("agent_permission_mode", "approve_for_me");
+    expect(readAgentPermissionMode()).toBe("full_access");
   });
 });
 

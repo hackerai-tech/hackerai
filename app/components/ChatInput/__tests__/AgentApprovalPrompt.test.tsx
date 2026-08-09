@@ -76,6 +76,32 @@ describe("AgentApprovalPrompt", () => {
     expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
   });
 
+  it("shows the privacy-safe Auto review summary before human approval", () => {
+    render(
+      <AgentApprovalPrompt
+        request={{
+          ...request,
+          autoReview: {
+            verdict: "ask_user",
+            riskCategory: "scope_expansion",
+            rationale: "The referenced script contents are not visible.",
+            rolloutPhase: "enforce",
+          },
+        }}
+        onRetryConnection={mockOnRetryConnection}
+        onStop={mockOnStop}
+      />,
+    );
+
+    expect(screen.getByTestId("agent-auto-review-summary")).toHaveTextContent(
+      "Auto review needs your decision",
+    );
+    expect(screen.getByTestId("agent-auto-review-summary")).toHaveTextContent(
+      "Risk: scope expansion",
+    );
+    expect(screen.getByRole("button", { name: "Allow once" })).toBeEnabled();
+  });
+
   it("approves once when Enter activates the focused primary action", async () => {
     const user = userEvent.setup();
     renderPrompt();

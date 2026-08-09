@@ -7,9 +7,9 @@ const taskSource = fs.readFileSync(
 );
 
 describe("agent-long post-wait authorization contract", () => {
-  it("fails closed when an ask-approval payload uses another protocol", () => {
+  it("fails closed when a gated payload uses another protocol", () => {
     expect(taskSource).toMatch(
-      /agentPermissionMode === "ask_approval"[\s\S]*approvalProtocolVersion !==[\s\S]*AGENT_TOOL_APPROVAL_PROTOCOL_VERSION[\s\S]*unsupported protocol version/,
+      /agentPermissionMode === "ask_approval"[\s\S]*agentPermissionMode === "auto_review"[\s\S]*approvalProtocolVersion !==[\s\S]*AGENT_TOOL_APPROVAL_PROTOCOL_VERSION[\s\S]*unsupported protocol version/,
     );
   });
 
@@ -41,7 +41,53 @@ describe("agent-long post-wait authorization contract", () => {
       taskSource.match(
         /return \{ approved: true, approvalId, sandboxIdentity \};/g,
       ),
-    ).toHaveLength(2);
+    ).toHaveLength(3);
+  });
+
+  it("revalidates Auto review approval and sandbox identity without deriving a grant", () => {
+    const autoBranch = taskSource.indexOf(
+      'if (decision.verdict === "approve")',
+    );
+    const revalidate = taskSource.indexOf(
+      "await revalidateAfterAutoReview",
+      autoBranch,
+    );
+    const sandboxCheck = taskSource.indexOf(
+      "await resolveSandboxIdentity()",
+      revalidate,
+    );
+    const approvedReturn = taskSource.indexOf(
+      "return { approved: true, approvalId, sandboxIdentity }",
+      sandboxCheck,
+    );
+    const grantDerivation = taskSource.indexOf(
+      "deriveApprovedAgentTargetGrant",
+      autoBranch,
+    );
+
+    expect(autoBranch).toBeGreaterThan(-1);
+    expect(revalidate).toBeGreaterThan(autoBranch);
+    expect(sandboxCheck).toBeGreaterThan(revalidate);
+    expect(approvedReturn).toBeGreaterThan(sandboxCheck);
+    expect(grantDerivation).toBeGreaterThan(approvedReturn);
+  });
+
+  it("fails closed on denial loops and keeps analytics free of action content", () => {
+    expect(taskSource).toMatch(/new AgentAutoReviewDenialTracker\(\)/);
+    expect(taskSource).toMatch(/denialTracker\.record\(decision\.verdict\)/);
+    expect(taskSource).toMatch(/onAutoReviewCircuitBreaker\(\)/);
+    expect(taskSource).toMatch(
+      /Do not retry through a workaround; ask the user/,
+    );
+
+    const eventStart = taskSource.indexOf(
+      'phLogger.event("agent_auto_review_decision"',
+    );
+    const eventEnd = taskSource.indexOf("});", eventStart);
+    const eventSource = taskSource.slice(eventStart, eventEnd);
+    expect(eventSource).not.toMatch(
+      /command|target|path|prompt|rationale|credential/,
+    );
   });
 
   it("excludes suspension time and reacquires free concurrency after checks", () => {

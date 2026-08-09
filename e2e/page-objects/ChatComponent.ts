@@ -50,7 +50,7 @@ export class ChatComponent {
 
   private get agentPermissionSelector(): Locator {
     return this.page.getByRole("button", {
-      name: /^(Ask for approval|Full access)$/,
+      name: /^(Ask for approval|Auto review|Full access)$/,
     });
   }
 

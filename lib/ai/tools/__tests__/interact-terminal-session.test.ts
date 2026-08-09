@@ -139,6 +139,7 @@ function makeContext(opts: {
   sandbox: unknown | null;
   ptySessionManager?: PtySessionManager;
   chatId?: string;
+  requestToolApproval?: import("@/types").AgentToolApprovalRequester;
 }) {
   const writerWrites: unknown[] = [];
   const writer = {
@@ -172,6 +173,7 @@ function makeContext(opts: {
     backgroundProcessTracker: {} as never,
     ptySessionManager,
     mode: "agent",
+    requestToolApproval: opts.requestToolApproval,
     isE2BSandbox: (s: unknown) => {
       if (!s || typeof s !== "object") return false;
       if ((s as { sandboxKind?: unknown }).sandboxKind === "centrifugo")
@@ -408,6 +410,39 @@ describe("interact_terminal_session — PTY action dispatch", () => {
     expect(result.result.error).toBeUndefined();
     expect(new TextDecoder().decode(handle.sendInputCalls[before])).toBe(
       "rm -rf /\r",
+    );
+  });
+
+  test("passes the exact terminal interaction through the approval gate", async () => {
+    const e2b = makeFakeE2BSandbox();
+    const handle = makeFakeHandle();
+    const requestToolApproval = jest.fn(async () => ({
+      approved: true as const,
+      approvalId: "approval-1",
+      sandboxIdentity: "e2b" as const,
+    }));
+    const { context } = makeContext({
+      sandbox: e2b,
+      requestToolApproval,
+    });
+    const sessionId = await createSession(context, handle);
+    requestToolApproval.mockClear();
+
+    await runTool(createInteractTerminalSession(context), {
+      action: "send",
+      session: sessionId,
+      input: "rm -rf /\n",
+    });
+
+    expect(requestToolApproval).toHaveBeenCalledWith(
+      expect.objectContaining({
+        operation: "terminal_interact",
+        target: `send to ${sessionId}: rm -rf /\n`,
+        autoReviewContext: {
+          type: "terminal_interaction",
+          interaction: `send to ${sessionId}: rm -rf /\n`,
+        },
+      }),
     );
   });
 

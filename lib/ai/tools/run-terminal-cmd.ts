@@ -257,6 +257,10 @@ export const createRunTerminalCmd = (context: ToolContext) => {
         brief,
         justification,
         prefixRule: prefix_rule,
+        autoReviewContext: {
+          type: "terminal_command",
+          command,
+        },
       });
       if (approval && !approval.approved) {
         return {

@@ -390,6 +390,10 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
       brief: "check reachability",
       justification: "Check whether the target host is reachable.",
       prefixRule: ["ping", "-c", "4"],
+      autoReviewContext: {
+        type: "terminal_command",
+        command: "ping -c 4 hackerone.com",
+      },
     });
   });
 
