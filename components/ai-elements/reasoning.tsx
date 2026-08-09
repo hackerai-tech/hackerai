@@ -116,13 +116,6 @@ export function ReasoningTrigger({
       ) : (
         <span className="min-w-0 truncate text-left">{thinkingMessage}</span>
       )}
-      {isActive && (
-        <span
-          className="size-2 shrink-0 rounded-full bg-foreground"
-          aria-hidden="true"
-          data-testid="reasoning-streaming-indicator"
-        />
-      )}
       <ChevronIcon
         className="size-4 shrink-0 opacity-100 transition-opacity desktop:opacity-0 desktop:group-hover:opacity-100 desktop:group-focus-visible:opacity-100 touch-device:!opacity-100"
         data-testid="reasoning-chevron"

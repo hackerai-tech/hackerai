@@ -43,17 +43,18 @@ describe("Reasoning", () => {
     expect(chevron).toHaveClass("touch-device:!opacity-100");
   });
 
-  it("shimmers the label with a quiet static indicator while reasoning is active", () => {
+  it("uses only shimmer text while reasoning is active", () => {
     render(
       <Reasoning isStreaming>
         <ReasoningTrigger />
       </Reasoning>,
     );
 
-    expect(screen.getByTestId("reasoning-streaming-indicator")).not.toHaveClass(
-      "animate-ping",
-    );
     expect(screen.getByText("Thinking...")).toHaveClass("animate-text-shimmer");
+    expect(
+      screen.queryByTestId("reasoning-streaming-indicator"),
+    ).not.toBeInTheDocument();
+    expect(document.querySelector(".animate-pulse")).not.toBeInTheDocument();
     expect(document.querySelector(".animate-ping")).not.toBeInTheDocument();
   });
 
