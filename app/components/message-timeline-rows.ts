@@ -115,10 +115,25 @@ export function deriveChatTimelineRows({
       continue;
     }
 
-    const { trailingTextParts, workPartIndexes } = splitWorkedForParts(
-      message.parts,
-    );
+    const { fileParts, trailingTextParts, workPartIndexes } =
+      splitWorkedForParts(message.parts);
     const projection = projectAgentWorkParts(message.parts, workPartIndexes);
+    const isPendingEmptyAgentMessage =
+      messageIndex === lastAssistantMessageIndex &&
+      (status === "submitted" || status === "streaming") &&
+      fileParts.length === 0 &&
+      projection.activities.length === 0 &&
+      !trailingTextParts.some(
+        (part) =>
+          part.type === "text" &&
+          typeof part.text === "string" &&
+          part.text.trim().length > 0,
+      );
+
+    // The loading indicator already represents this state in the fixed-height
+    // timeline footer. Keeping an empty virtualized row here adds its own
+    // spacing before any Trigger activity arrives, visibly moving the loader.
+    if (isPendingEmptyAgentMessage) continue;
 
     if (projection.activities.length === 0) {
       rows.push({

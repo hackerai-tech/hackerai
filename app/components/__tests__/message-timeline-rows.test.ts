@@ -76,6 +76,49 @@ describe("deriveChatTimelineRows", () => {
     expect(findMessageTimelineAnchorIndex(rows, null)).toBeUndefined();
   });
 
+  it("omits the pending empty Agent row until visible work arrives", () => {
+    const userMessage = {
+      id: "user-1",
+      role: "user",
+      parts: [{ type: "text", text: "Question" }],
+    } as ChatMessage;
+    const emptyAssistantMessage = agentMessage([]);
+
+    const pendingStatuses = ["submitted", "streaming"] as const;
+    const pendingRowsByStatus = pendingStatuses.map((status) =>
+      deriveChatTimelineRows({
+        messages: [userMessage, emptyAssistantMessage],
+        status,
+        lastAssistantMessageIndex: 1,
+        expandedAgentMessageIds: new Set(),
+      }),
+    );
+    const activeRows = deriveChatTimelineRows({
+      messages: [
+        userMessage,
+        {
+          ...emptyAssistantMessage,
+          parts: [{ type: "reasoning", text: "Starting" }],
+        } as ChatMessage,
+      ],
+      status: "streaming",
+      lastAssistantMessageIndex: 1,
+      expandedAgentMessageIds: new Set(),
+    });
+
+    for (const pendingRows of pendingRowsByStatus) {
+      expect(pendingRows.map((row) => row.id)).toEqual([
+        `message:${userMessage.id}`,
+      ]);
+    }
+    expect(activeRows.map((row) => row.kind)).toEqual([
+      "message",
+      "agent-work-header",
+      "agent-activity",
+      "message",
+    ]);
+  });
+
   it("creates independently virtualizable rows for every live activity", () => {
     const tools = Array.from({ length: 100 }, (_, index) => ({
       type: "tool-shell",
