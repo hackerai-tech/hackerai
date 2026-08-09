@@ -5,6 +5,7 @@ import {
   useMemo,
   useCallback,
   useRef,
+  useSyncExternalStore,
   Dispatch,
   MutableRefObject,
   RefCallback,
@@ -76,6 +77,59 @@ type StickyElementRef =
     });
 
 const getTimelineRowKey = (row: ChatTimelineRow) => row.id;
+
+type ToolGroupMountSnapshot = {
+  chatId: string;
+  hasCommittedTimeline: boolean;
+  seenToolGroupIds: ReadonlySet<string>;
+};
+
+type ToolGroupMountStore = {
+  commit: (chatId: string, rows: readonly ChatTimelineRow[]) => void;
+  getSnapshot: () => ToolGroupMountSnapshot;
+  subscribe: (listener: () => void) => () => void;
+};
+
+function createToolGroupMountStore(initialChatId: string): ToolGroupMountStore {
+  let snapshot: ToolGroupMountSnapshot = {
+    chatId: initialChatId,
+    hasCommittedTimeline: false,
+    seenToolGroupIds: new Set(),
+  };
+  const listeners = new Set<() => void>();
+
+  return {
+    commit(chatId, rows) {
+      const isCurrentChat = snapshot.chatId === chatId;
+      const seenToolGroupIds = isCurrentChat
+        ? new Set(snapshot.seenToolGroupIds)
+        : new Set<string>();
+      let changed = !isCurrentChat;
+
+      for (const row of rows) {
+        if (row.kind === "agent-tool-group" && !seenToolGroupIds.has(row.id)) {
+          seenToolGroupIds.add(row.id);
+          changed = true;
+        }
+      }
+
+      const hasCommittedTimeline =
+        (isCurrentChat && snapshot.hasCommittedTimeline) || rows.length > 0;
+      if (hasCommittedTimeline !== snapshot.hasCommittedTimeline) {
+        changed = true;
+      }
+      if (!changed) return;
+
+      snapshot = { chatId, hasCommittedTimeline, seenToolGroupIds };
+      listeners.forEach((listener) => listener());
+    },
+    getSnapshot: () => snapshot,
+    subscribe(listener) {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+  };
+}
 
 const setElementRef = (ref: StickyElementRef, element: HTMLElement | null) => {
   if (typeof ref === "function") {
@@ -232,15 +286,14 @@ export const Messages = ({
   const [expandedAgentMessageIds, setExpandedAgentMessageIds] = useState<
     ReadonlySet<string>
   >(() => new Set());
-  const [toolGroupMountState, setToolGroupMountState] = useState<{
-    chatId: string;
-    hasCommittedTimeline: boolean;
-    seenToolGroupIds: ReadonlySet<string>;
-  }>(() => ({
-    chatId,
-    hasCommittedTimeline: false,
-    seenToolGroupIds: new Set(),
-  }));
+  const [toolGroupMountStore] = useState(() =>
+    createToolGroupMountStore(chatId),
+  );
+  const toolGroupMountState = useSyncExternalStore(
+    toolGroupMountStore.subscribe,
+    toolGroupMountStore.getSnapshot,
+    toolGroupMountStore.getSnapshot,
+  );
   const rawTimelineRows = useMemo(() => {
     const isCurrentChat = toolGroupMountState.chatId === chatId;
 
@@ -276,33 +329,8 @@ export const Messages = ({
   );
   useLayoutEffect(() => {
     stableTimelineRowsRef.current = stableTimelineRowsState;
-
-    setToolGroupMountState((previous) => {
-      const isCurrentChat = previous.chatId === chatId;
-      const seenToolGroupIds = isCurrentChat
-        ? new Set(previous.seenToolGroupIds)
-        : new Set<string>();
-      let changed = !isCurrentChat;
-
-      for (const row of stableTimelineRowsState.result) {
-        if (row.kind === "agent-tool-group" && !seenToolGroupIds.has(row.id)) {
-          seenToolGroupIds.add(row.id);
-          changed = true;
-        }
-      }
-
-      const hasCommittedTimeline =
-        (isCurrentChat && previous.hasCommittedTimeline) ||
-        stableTimelineRowsState.result.length > 0;
-      if (hasCommittedTimeline !== previous.hasCommittedTimeline) {
-        changed = true;
-      }
-
-      return changed
-        ? { chatId, hasCommittedTimeline, seenToolGroupIds }
-        : previous;
-    });
-  }, [chatId, stableTimelineRowsState]);
+    toolGroupMountStore.commit(chatId, stableTimelineRowsState.result);
+  }, [chatId, stableTimelineRowsState, toolGroupMountStore]);
   const timelineRows = stableTimelineRowsState.result;
   const navigatorItems = useMemo(
     () => deriveMessageNavigatorItems(visibleMessages, timelineRows),
