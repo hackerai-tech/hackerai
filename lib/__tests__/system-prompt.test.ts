@@ -476,6 +476,41 @@ Commands run directly on the host OS "workstation" without Docker isolation. Be 
     );
   });
 
+  it("warns about false-positive port scans only in the cloud sandbox", async () => {
+    const cloudPrompt = await systemPrompt(
+      "user_123",
+      "agent",
+      "pro",
+      "agent-model",
+      null,
+      null,
+    );
+    const localPrompt = await systemPrompt(
+      "user_123",
+      "agent",
+      "pro",
+      "agent-model",
+      null,
+      "Local sandbox context",
+    );
+
+    expect(cloudPrompt).toContain("<sandbox_environment>");
+    expect(cloudPrompt).toContain(
+      "Cloud Agent networking can produce false-positive TCP port results where many or all ports appear open",
+    );
+    expect(cloudPrompt).toContain(
+      "Treat implausible Cloud Agent port-scan output as invalid or unverified",
+    );
+    expect(cloudPrompt).toContain(
+      "recommend selecting the HackerAI Desktop App or a Remote Control connection",
+    );
+    expect(cloudPrompt).toContain("normal TCP, UDP, or raw-socket behavior");
+    expect(localPrompt).not.toContain("Port-scanning limitation:");
+    expect(localPrompt).not.toContain(
+      "Cloud Agent networking can produce false-positive TCP port results",
+    );
+  });
+
   it("does not describe a command sandbox in ask mode", async () => {
     const prompt = await systemPrompt(
       "user_123",
