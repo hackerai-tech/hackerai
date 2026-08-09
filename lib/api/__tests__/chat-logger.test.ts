@@ -13,6 +13,7 @@ const {
   captureUsageCost,
   captureUsageSettlement,
   isUsageSettlementSuccessSampled,
+  resolveAgentAbortSource,
 } = require("../chat-logger");
 const { ChatSDKError } = require("../../errors");
 const { phLogger } = require("../../posthog/server");
@@ -266,6 +267,31 @@ describe("captureAgentRun", () => {
     expect(properties).not.toHaveProperty("fallback_served");
   });
 
+  it("adds a bounded abort source only to aborted runs", () => {
+    const capture = jest.fn();
+
+    captureAgentRun({
+      posthog: { capture } as any,
+      userId: "user_123",
+      chatId: "chat_123",
+      mode: "agent",
+      subscription: "free",
+      sandboxInfo: null,
+      outcome: "aborted",
+      abortSource: "user_stop",
+      selectedModel: "agent-model-free",
+      configuredModelId: "deepseek/deepseek-v4-flash-0731",
+    });
+
+    expect(capture).toHaveBeenCalledTimes(1);
+    expect(capture.mock.calls[0][0].properties).toEqual(
+      expect.objectContaining({
+        outcome: "aborted",
+        abort_source: "user_stop",
+      }),
+    );
+  });
+
   it("does not capture agent run events for ask mode", () => {
     const capture = jest.fn();
 
@@ -284,6 +310,37 @@ describe("captureAgentRun", () => {
     });
 
     expect(capture).not.toHaveBeenCalled();
+  });
+});
+
+describe("resolveAgentAbortSource", () => {
+  it.each([
+    [
+      "budget_exhausted",
+      {
+        stoppedDueToBudgetExhaustion: true,
+        stoppedDueToAgentRunSpendCap: true,
+        userStopRequested: true,
+      },
+    ],
+    ["agent_spend_cap", { stoppedDueToAgentRunSpendCap: true }],
+    ["elapsed_timeout", { stoppedDueToElapsedTimeout: true }],
+    ["user_stop", { userStopRequested: true }],
+    ["request_cancel", { requestCancelled: true }],
+    ["unknown", {}],
+  ])("resolves %s without user-content fields", (expected, flags) => {
+    expect(resolveAgentAbortSource({ outcome: "aborted", ...flags })).toBe(
+      expected,
+    );
+  });
+
+  it("omits abort attribution for completed runs", () => {
+    expect(
+      resolveAgentAbortSource({
+        outcome: "success",
+        userStopRequested: true,
+      }),
+    ).toBeUndefined();
   });
 });
 
