@@ -83,7 +83,7 @@ const getPartType = (part: MessagePart) => (part as { type?: string }).type;
 const isToolPart = (part: MessagePart) =>
   getPartType(part)?.startsWith("tool-") ?? false;
 
-const hasKnownToolFailure = (part: MessagePart) => {
+export const toolPartHasKnownFailure = (part: MessagePart) => {
   const candidate = part as {
     errorText?: unknown;
     output?: unknown;
@@ -137,9 +137,13 @@ const hasKnownToolFailure = (part: MessagePart) => {
   );
 };
 
-const isSuccessfullyCompletedToolPart = (part: MessagePart) => {
+const isTerminalToolPart = (part: MessagePart) => {
   const state = (part as { state?: unknown }).state;
-  return state === "output-available" && !hasKnownToolFailure(part);
+  return (
+    state === "output-available" ||
+    state === "output-error" ||
+    state === "output-denied"
+  );
 };
 
 export type CompletedToolSummaryCategory =
@@ -315,10 +319,11 @@ function firstSeenExplicitStepByActivityId(
 }
 
 /**
- * Collapses only closed, fully successful multi-tool runs. In-flight, failed,
- * denied, and stopped tools remain independent rows so their state is never
- * hidden. `step-start` is the preferred boundary; consecutive tools are the
- * compatibility fallback for older messages without step markers.
+ * Collapses closed multi-tool runs once every tool is terminal. Failed,
+ * denied, and stopped details remain available inside the expandable group;
+ * in-flight tools remain independent rows. `step-start` is the preferred
+ * boundary; consecutive tools are the compatibility fallback for older
+ * messages without step markers.
  */
 export function projectAgentWorkTimelineItems({
   activities,
@@ -369,7 +374,7 @@ export function projectAgentWorkTimelineItems({
     const canCollapse =
       run.length > 1 &&
       (messageSettled || hasLaterBoundary) &&
-      run.every(({ part }) => isSuccessfullyCompletedToolPart(part));
+      run.every(({ part }) => isTerminalToolPart(part));
 
     if (canCollapse) {
       items.push({

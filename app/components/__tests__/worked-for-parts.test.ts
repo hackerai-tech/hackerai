@@ -156,7 +156,7 @@ describe("projectAgentWorkTimelineItems", () => {
     expect(items.map((item) => item.kind)).toEqual(["activity", "activity"]);
   });
 
-  it("keeps every tool visible when one tool fails", () => {
+  it("summarizes a closed mixed-outcome step", () => {
     const parts = [
       part("tool-read_file", {
         toolCallId: "read-1",
@@ -178,14 +178,21 @@ describe("projectAgentWorkTimelineItems", () => {
       workPartIndexes,
     });
 
-    expect(items.map((item) => item.kind)).toEqual(["activity", "activity"]);
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({
+      kind: "tool-group",
+      summary: "Read a file, ran a command",
+    });
+    expect(items[0]?.kind === "tool-group" && items[0].activities).toHaveLength(
+      2,
+    );
   });
 
   it.each([
     { exitCode: 1 },
     { failedFiles: [{ path: "missing.txt", reason: "not found" }] },
     { result: { error: "stopped" } },
-  ])("keeps structural tool failures visible for output %j", (output) => {
+  ])("groups structural tool failures for output %j", (output) => {
     const parts = [
       part("tool-read_file", {
         toolCallId: "read-1",
@@ -195,6 +202,30 @@ describe("projectAgentWorkTimelineItems", () => {
         toolCallId: "shell-1",
         state: "output-available",
         output,
+      }),
+    ];
+    const { workPartIndexes } = splitWorkedForParts(parts);
+    const projection = projectAgentWorkParts(parts, workPartIndexes);
+
+    expect(
+      projectAgentWorkTimelineItems({
+        activities: projection.activities,
+        messageSettled: true,
+        parts,
+        workPartIndexes,
+      }).map((item) => item.kind),
+    ).toEqual(["tool-group"]);
+  });
+
+  it("keeps a closed run separate while any tool is still in flight", () => {
+    const parts = [
+      part("tool-read_file", {
+        toolCallId: "read-1",
+        state: "output-available",
+      }),
+      part("tool-shell", {
+        toolCallId: "shell-1",
+        state: "input-available",
       }),
     ];
     const { workPartIndexes } = splitWorkedForParts(parts);

@@ -35,9 +35,11 @@ import type { FileDetails } from "@/types/file";
 import { AgentActivityRow } from "./AgentActivityRow";
 import {
   getCompletedToolSummaryIconCategory,
+  toolPartHasKnownFailure,
   type AgentWorkActivity,
   type CompletedToolSummaryIconCategory,
 } from "./worked-for-parts";
+import { cn } from "@/lib/utils";
 
 const AUTO_COLLAPSE_DELAY_MS = 500;
 
@@ -89,6 +91,9 @@ export const AgentToolGroupRow = memo(function AgentToolGroupRow({
   const shouldAnimateMountRef = useRef(animateOnMount);
   const triggerRef = useRef<HTMLButtonElement | null>(null);
   const summaryIcon = getCompletedToolSummaryIconCategory(activities);
+  const hasFailure = activities.some(({ part }) =>
+    toolPartHasKnownFailure(part),
+  );
   const SummaryIcon = SUMMARY_ICONS[summaryIcon];
   const ChevronIcon = open ? ChevronDownIcon : ChevronRightIcon;
   const { captureScrollPosition, preserveScrollPosition } =
@@ -151,13 +156,14 @@ export const AgentToolGroupRow = memo(function AgentToolGroupRow({
       open={open}
       onOpenChange={handleOpenChange}
       className="w-full"
+      data-outcome={hasFailure ? "error" : "success"}
       data-testid="agent-tool-group-row"
     >
       <CollapsibleTrigger asChild>
         <button
           ref={triggerRef}
           type="button"
-          aria-label={`${summary}. ${open ? "Hide" : "Show"} tool details`}
+          aria-label={`${summary}. ${hasFailure ? "Some tools failed. " : ""}${open ? "Hide" : "Show"} tool details`}
           onClick={handleClick}
           onKeyDown={handleKeyDown}
           onPointerDown={handlePointerDown}
@@ -165,7 +171,7 @@ export const AgentToolGroupRow = memo(function AgentToolGroupRow({
           className="group flex w-full max-w-full items-center gap-2 text-left text-sm text-muted-foreground transition-colors hover:text-foreground"
         >
           <SummaryIcon
-            className="size-4 shrink-0"
+            className={cn("size-4 shrink-0", hasFailure && "text-destructive")}
             aria-hidden="true"
             data-summary-icon={summaryIcon}
           />

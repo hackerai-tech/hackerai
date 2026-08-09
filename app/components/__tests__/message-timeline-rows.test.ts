@@ -284,7 +284,7 @@ describe("deriveChatTimelineRows", () => {
     expect(seenGroup).toMatchObject({ animateOnMount: false });
   });
 
-  it("does not group a settled run containing a failed tool", () => {
+  it("groups a settled run containing a failed tool", () => {
     const message = agentMessage([
       {
         type: "tool-read_file",
@@ -308,10 +308,15 @@ describe("deriveChatTimelineRows", () => {
 
     expect(rows.map((row) => row.kind)).toEqual([
       "agent-work-header",
-      "agent-activity",
-      "agent-activity",
+      "agent-tool-group",
       "message",
     ]);
+    expect(rows.find((row) => row.kind === "agent-tool-group")).toMatchObject({
+      summary: "Read a file, ran a command",
+      activities: expect.arrayContaining([
+        expect.objectContaining({ id: "tool:shell-1" }),
+      ]),
+    });
   });
 
   it("keeps reasoning-only activity reachable from the settled header", () => {

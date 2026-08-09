@@ -197,6 +197,34 @@ describe("AgentToolGroupRow", () => {
     expect(document.querySelector('[data-summary-icon="edit"]')).toBeTruthy();
   });
 
+  it("marks a mixed-outcome group as failed while keeping details accessible", () => {
+    render(
+      group(false, [
+        activities[0],
+        {
+          ...activities[1],
+          part: {
+            ...activities[1].part,
+            state: "output-available",
+            output: { result: { exitCode: 124, timedOut: true } },
+          } as ChatMessage["parts"][number],
+        },
+      ]),
+    );
+
+    const row = screen.getByTestId("agent-tool-group-row");
+    const trigger = screen.getByRole("button", {
+      name: /some tools failed\. show tool details/i,
+    });
+    expect(row).toHaveAttribute("data-outcome", "error");
+    expect(document.querySelector('[data-summary-icon="mixed"]')).toHaveClass(
+      "text-destructive",
+    );
+
+    fireEvent.click(trigger);
+    expect(screen.getAllByTestId("grouped-tool-detail")).toHaveLength(2);
+  });
+
   it("uses the full row while keeping the chevron touch-visible and hover-only on desktop", () => {
     renderGroup(false);
 
