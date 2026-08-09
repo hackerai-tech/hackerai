@@ -81,12 +81,14 @@ const getTimelineRowKey = (row: ChatTimelineRow) => row.id;
 type ToolGroupMountSnapshot = {
   chatId: string;
   hasCommittedTimeline: boolean;
+  seenAgentMessageIds: ReadonlySet<string>;
   seenToolGroupIds: ReadonlySet<string>;
 };
 
 type ToolGroupMountStore = {
   commit: (chatId: string, rows: readonly ChatTimelineRow[]) => void;
   getSnapshot: () => ToolGroupMountSnapshot;
+  markToolGroupMounted: (chatId: string, rowId: string) => void;
   subscribe: (listener: () => void) => () => void;
 };
 
@@ -94,6 +96,7 @@ function createToolGroupMountStore(initialChatId: string): ToolGroupMountStore {
   let snapshot: ToolGroupMountSnapshot = {
     chatId: initialChatId,
     hasCommittedTimeline: false,
+    seenAgentMessageIds: new Set(),
     seenToolGroupIds: new Set(),
   };
   const listeners = new Set<() => void>();
@@ -101,13 +104,33 @@ function createToolGroupMountStore(initialChatId: string): ToolGroupMountStore {
   return {
     commit(chatId, rows) {
       const isCurrentChat = snapshot.chatId === chatId;
+      const previouslySeenAgentMessageIds = isCurrentChat
+        ? snapshot.seenAgentMessageIds
+        : new Set<string>();
+      const seenAgentMessageIds = isCurrentChat
+        ? new Set(snapshot.seenAgentMessageIds)
+        : new Set<string>();
       const seenToolGroupIds = isCurrentChat
         ? new Set(snapshot.seenToolGroupIds)
         : new Set<string>();
       let changed = !isCurrentChat;
 
       for (const row of rows) {
-        if (row.kind === "agent-tool-group" && !seenToolGroupIds.has(row.id)) {
+        const isAgentMessage =
+          row.message.role === "assistant" &&
+          row.message.metadata?.mode === "agent";
+        const wasAgentMessageSeen =
+          isAgentMessage && previouslySeenAgentMessageIds.has(row.message.id);
+
+        if (isAgentMessage && !seenAgentMessageIds.has(row.message.id)) {
+          seenAgentMessageIds.add(row.message.id);
+          changed = true;
+        }
+        if (
+          row.kind === "agent-tool-group" &&
+          !wasAgentMessageSeen &&
+          !seenToolGroupIds.has(row.id)
+        ) {
           seenToolGroupIds.add(row.id);
           changed = true;
         }
@@ -120,10 +143,26 @@ function createToolGroupMountStore(initialChatId: string): ToolGroupMountStore {
       }
       if (!changed) return;
 
-      snapshot = { chatId, hasCommittedTimeline, seenToolGroupIds };
+      snapshot = {
+        chatId,
+        hasCommittedTimeline,
+        seenAgentMessageIds,
+        seenToolGroupIds,
+      };
       listeners.forEach((listener) => listener());
     },
     getSnapshot: () => snapshot,
+    markToolGroupMounted(chatId, rowId) {
+      if (snapshot.chatId !== chatId || snapshot.seenToolGroupIds.has(rowId)) {
+        return;
+      }
+
+      snapshot = {
+        ...snapshot,
+        seenToolGroupIds: new Set(snapshot.seenToolGroupIds).add(rowId),
+      };
+      listeners.forEach((listener) => listener());
+    },
     subscribe(listener) {
       listeners.add(listener);
       return () => listeners.delete(listener);
@@ -306,6 +345,9 @@ export const Messages = ({
         isCurrentChat && toolGroupMountState.hasCommittedTimeline,
       seenToolGroupIds: isCurrentChat
         ? toolGroupMountState.seenToolGroupIds
+        : new Set(),
+      seenAgentMessageIds: isCurrentChat
+        ? toolGroupMountState.seenAgentMessageIds
         : new Set(),
     });
   }, [
@@ -617,6 +659,10 @@ export const Messages = ({
     () => ({ editingMessageId, status }),
     [editingMessageId, status],
   );
+  const handleToolGroupMount = useCallback(
+    (rowId: string) => toolGroupMountStore.markToolGroupMounted(chatId, rowId),
+    [chatId, toolGroupMountStore],
+  );
 
   const renderTimelineRow = useCallback(
     ({ item: row }: { item: ChatTimelineRow }) => {
@@ -676,8 +722,10 @@ export const Messages = ({
             <AgentToolGroupRow
               activities={row.activities}
               animateOnMount={row.animateOnMount}
+              groupId={row.id}
               isLastMessage={row.isLastMessage}
               message={row.message}
+              onMount={handleToolGroupMount}
               sharedFileDetails={sharedFileDetails}
               status={effectiveStatus}
               summary={row.summary}
@@ -759,6 +807,7 @@ export const Messages = ({
       handleShowAllFiles,
       handleStartEdit,
       handleToggleAgentWork,
+      handleToolGroupMount,
       isMobile,
       lastAssistantMessageIndex,
       lastUserMessageId,

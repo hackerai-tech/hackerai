@@ -279,6 +279,74 @@ describe("Messages virtualized row invalidation", () => {
     ).toHaveAttribute("aria-expanded", "false");
   });
 
+  it("keeps a reconnect snapshot collapsed when it arrives after the user row", () => {
+    const sharedProps = {
+      chatId: "chat-with-reconnect",
+      setMessages: jest.fn(),
+      onRegenerate: jest.fn(),
+      onRetry: jest.fn(),
+      onEditMessage: jest.fn(),
+      status: "streaming" as const,
+      error: null,
+      scrollRef: createRef<HTMLElement>(),
+      contentRef: createRef<HTMLElement>(),
+      isMobile: true,
+    };
+    const { rerender } = render(
+      <DataStreamProvider>
+        <Messages messages={[messages[0]]} {...sharedProps} />
+      </DataStreamProvider>,
+    );
+
+    rerender(
+      <DataStreamProvider>
+        <Messages messages={messagesWithHistoricalToolGroup} {...sharedProps} />
+      </DataStreamProvider>,
+    );
+
+    expect(
+      screen.getByRole("button", {
+        name: /read a file, ran a command\. show tool details/i,
+      }),
+    ).toHaveAttribute("aria-expanded", "false");
+  });
+
+  it("still animates a new group appended to an observed live agent message", () => {
+    const liveAgentStart = {
+      ...messagesWithHistoricalToolGroup[1],
+      parts: [{ type: "reasoning", text: "Starting" }],
+    } as ChatMessage;
+    const sharedProps = {
+      chatId: "chat-with-live-group",
+      setMessages: jest.fn(),
+      onRegenerate: jest.fn(),
+      onRetry: jest.fn(),
+      onEditMessage: jest.fn(),
+      status: "streaming" as const,
+      error: null,
+      scrollRef: createRef<HTMLElement>(),
+      contentRef: createRef<HTMLElement>(),
+      isMobile: true,
+    };
+    const { rerender } = render(
+      <DataStreamProvider>
+        <Messages messages={[messages[0], liveAgentStart]} {...sharedProps} />
+      </DataStreamProvider>,
+    );
+
+    rerender(
+      <DataStreamProvider>
+        <Messages messages={messagesWithHistoricalToolGroup} {...sharedProps} />
+      </DataStreamProvider>,
+    );
+
+    expect(
+      screen.getByRole("button", {
+        name: /read a file, ran a command\. hide tool details/i,
+      }),
+    ).toHaveAttribute("aria-expanded", "true");
+  });
+
   it("jumps to a navigator target without animation", async () => {
     render(
       <DataStreamProvider>

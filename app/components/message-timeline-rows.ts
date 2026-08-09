@@ -61,6 +61,7 @@ export type DeriveChatTimelineRowsOptions = {
   lastAssistantMessageIndex: number | undefined;
   expandedAgentMessageIds: ReadonlySet<string>;
   animateNewToolGroups?: boolean;
+  seenAgentMessageIds?: ReadonlySet<string>;
   seenToolGroupIds?: ReadonlySet<string>;
 };
 
@@ -101,6 +102,7 @@ export function deriveChatTimelineRows({
   lastAssistantMessageIndex,
   expandedAgentMessageIds,
   animateNewToolGroups = true,
+  seenAgentMessageIds,
   seenToolGroupIds = EMPTY_TOOL_GROUP_IDS,
 }: DeriveChatTimelineRowsOptions): ChatTimelineRow[] {
   const rows: ChatTimelineRow[] = [];
@@ -156,6 +158,10 @@ export function deriveChatTimelineRows({
       lastAssistantMessageIndex !== undefined &&
       messageIndex === lastAssistantMessageIndex;
     const isTiming = status === "streaming" && isLastAssistantMessage;
+    const canAnimateNewToolGroups =
+      animateNewToolGroups &&
+      (seenAgentMessageIds === undefined ||
+        seenAgentMessageIds.has(message.id));
     const hasFinalAnswer = trailingTextParts.length > 0;
     const canToggle = !isTiming && hasFinalAnswer;
     const expanded =
@@ -196,7 +202,9 @@ export function deriveChatTimelineRows({
             messageIndex,
             activities: item.activities,
             animateOnMount:
-              isTiming && animateNewToolGroups && !seenToolGroupIds.has(rowId),
+              isTiming &&
+              canAnimateNewToolGroups &&
+              !seenToolGroupIds.has(rowId),
             isLastMessage: messageIndex === messages.length - 1,
             summary: item.summary,
             terminalChunksByToolCallId: projection.terminalChunksByToolCallId,

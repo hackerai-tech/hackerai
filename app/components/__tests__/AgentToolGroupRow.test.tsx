@@ -43,8 +43,10 @@ const group = (
   <AgentToolGroupRow
     activities={groupActivities}
     animateOnMount={animateOnMount}
+    groupId="group-1"
     isLastMessage
     message={message}
+    onMount={jest.fn()}
     status="streaming"
     summary={summary}
     terminalChunksByToolCallId={new Map()}

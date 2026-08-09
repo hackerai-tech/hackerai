@@ -61,8 +61,10 @@ const SUMMARY_ICONS: Record<CompletedToolSummaryIconCategory, LucideIcon> = {
 type AgentToolGroupRowProps = {
   activities: AgentWorkActivity[];
   animateOnMount: boolean;
+  groupId: string;
   isLastMessage: boolean;
   message: ChatMessage;
+  onMount: (groupId: string) => void;
   sharedFileDetails?: FileDetails[];
   status: ChatStatus;
   summary: string;
@@ -73,8 +75,10 @@ type AgentToolGroupRowProps = {
 export const AgentToolGroupRow = memo(function AgentToolGroupRow({
   activities,
   animateOnMount,
+  groupId,
   isLastMessage,
   message,
+  onMount,
   sharedFileDetails,
   status,
   summary,
@@ -97,6 +101,7 @@ export const AgentToolGroupRow = memo(function AgentToolGroupRow({
   }, []);
 
   useEffect(() => {
+    onMount(groupId);
     if (!shouldAnimateMountRef.current) return;
 
     clearAutoCollapseTimeout();
@@ -106,7 +111,7 @@ export const AgentToolGroupRow = memo(function AgentToolGroupRow({
     }, AUTO_COLLAPSE_DELAY_MS);
 
     return clearAutoCollapseTimeout;
-  }, [clearAutoCollapseTimeout]);
+  }, [clearAutoCollapseTimeout, groupId, onMount]);
 
   const handleOpenChange = useCallback(
     (nextOpen: boolean) => {

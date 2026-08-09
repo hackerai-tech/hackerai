@@ -255,6 +255,7 @@ describe("deriveChatTimelineRows", () => {
     const deriveGroup = (
       animateNewToolGroups: boolean,
       seenToolGroupIds = new Set<string>(),
+      seenAgentMessageIds: ReadonlySet<string> | undefined = undefined,
     ) =>
       deriveChatTimelineRows({
         messages: [message],
@@ -262,16 +263,24 @@ describe("deriveChatTimelineRows", () => {
         lastAssistantMessageIndex: 0,
         expandedAgentMessageIds: new Set(),
         animateNewToolGroups,
+        seenAgentMessageIds,
         seenToolGroupIds,
       }).find((row) => row.kind === "agent-tool-group");
 
     const initialGroup = deriveGroup(false);
     expect(initialGroup).toMatchObject({ animateOnMount: false });
 
-    const liveGroup = deriveGroup(true);
+    const hydratedGroup = deriveGroup(true, new Set(), new Set());
+    expect(hydratedGroup).toMatchObject({ animateOnMount: false });
+
+    const liveGroup = deriveGroup(true, new Set(), new Set([message.id]));
     expect(liveGroup).toMatchObject({ animateOnMount: true });
 
-    const seenGroup = deriveGroup(true, new Set([liveGroup?.id ?? ""]));
+    const seenGroup = deriveGroup(
+      true,
+      new Set([liveGroup?.id ?? ""]),
+      new Set([message.id]),
+    );
     expect(seenGroup).toMatchObject({ animateOnMount: false });
   });
 
