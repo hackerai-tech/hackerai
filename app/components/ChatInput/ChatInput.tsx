@@ -544,16 +544,19 @@ export const ChatInput = ({
   // 3. Force auto model selection
   const isFreeAgent =
     !isCheckingProPlan && subscription === "free" && isAgentMode(chatMode);
+  const freeAgentSandboxAvailable = freeDesktopAgentOnlyActive
+    ? desktopBridgeStatus === "connected"
+    : hasLocalSandbox;
 
-  const prevHasLocalSandboxRef = useRef(hasLocalSandbox);
+  const prevFreeAgentSandboxAvailableRef = useRef(freeAgentSandboxAvailable);
   useEffect(() => {
-    const wasConnected = prevHasLocalSandboxRef.current;
-    prevHasLocalSandboxRef.current = hasLocalSandbox;
+    const wasConnected = prevFreeAgentSandboxAvailableRef.current;
+    prevFreeAgentSandboxAvailableRef.current = freeAgentSandboxAvailable;
 
     if (!isFreeAgent) return;
     // Only show toast on actual disconnect (true → false), not on
-    // initial mount or logout where hasLocalSandbox starts as false.
-    if (!hasLocalSandbox) {
+    // initial mount or logout where sandbox availability starts as false.
+    if (!freeAgentSandboxAvailable) {
       if (freeDesktopAgentOnlyActive) {
         if (wasConnected) {
           toast.info("Desktop sandbox disconnected.", {
@@ -572,7 +575,12 @@ export const ChatInput = ({
         });
       }
     }
-  }, [freeDesktopAgentOnlyActive, isFreeAgent, hasLocalSandbox, setChatMode]);
+  }, [
+    freeAgentSandboxAvailable,
+    freeDesktopAgentOnlyActive,
+    isFreeAgent,
+    setChatMode,
+  ]);
 
   useEffect(() => {
     if (!isFreeAgent) return;
@@ -589,7 +597,7 @@ export const ChatInput = ({
   }, [isFreeAgent]);
 
   const desktopSandboxUnavailableReason =
-    freeDesktopAgentOnlyActive && !hasLocalSandbox
+    freeDesktopAgentOnlyActive && desktopBridgeStatus !== "connected"
       ? desktopBridgeStatus === "connecting"
         ? "Desktop sandbox is connecting"
         : "Reconnect the Desktop sandbox to use Agent"

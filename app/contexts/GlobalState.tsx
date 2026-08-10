@@ -656,6 +656,7 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
     paidAgentSubscription === "free" &&
     isTauriEnvironment();
   const agentOnlyActive = paidAgentOnlyActive || freeDesktopAgentOnlyActive;
+  const accessibleChatMode: ChatMode = agentOnlyActive ? "agent" : chatMode;
 
   const setChatMode = useCallback(
     (mode: ChatMode) => {
@@ -668,9 +669,6 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
 
   useEffect(() => {
     if (!agentOnlyActive) return;
-    if (chatMode !== "agent") {
-      setChatModeState("agent");
-    }
     if (freeDesktopAgentOnlyActive && sandboxPreference !== "desktop") {
       setSandboxPreference("desktop");
     }
@@ -679,7 +677,6 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
     }
   }, [
     agentOnlyActive,
-    chatMode,
     freeDesktopAgentOnlyActive,
     sandboxPreference,
     selectedModel,
@@ -1159,7 +1156,7 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
     updateUploadedFile,
     getTotalTokens,
     isUploadingFiles,
-    chatMode,
+    chatMode: accessibleChatMode,
     setChatMode,
     chatModeAccessResolved,
     paidAgentOnlyActive,
