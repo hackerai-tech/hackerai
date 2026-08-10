@@ -89,6 +89,7 @@ interface GlobalStateType {
   setChatMode: (mode: ChatMode) => void;
   chatModeAccessResolved: boolean;
   paidAgentOnlyActive: boolean;
+  freeDesktopAgentOnlyActive: boolean;
 
   // Computer sidebar state (right side)
   sidebarOpen: boolean;
@@ -241,10 +242,6 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
     initialSavedChatModeRef.current = saved;
     return saved;
   });
-  const setChatMode = useCallback((mode: ChatMode) => {
-    hasUserSelectedModeThisSessionRef.current = true;
-    setChatModeState(mode);
-  }, []);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [sidebarContent, setSidebarContent] = useState<SidebarContent | null>(
     null,
@@ -652,11 +649,42 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
     subscriptionResolved &&
     !isCheckingProPlan &&
     paidAgentSubscription !== "free";
+  const freeDesktopAgentOnlyActive =
+    Boolean(user) &&
+    subscriptionResolved &&
+    !isCheckingProPlan &&
+    paidAgentSubscription === "free" &&
+    isTauriEnvironment();
+  const agentOnlyActive = paidAgentOnlyActive || freeDesktopAgentOnlyActive;
+
+  const setChatMode = useCallback(
+    (mode: ChatMode) => {
+      if (agentOnlyActive && mode !== "agent") return;
+      hasUserSelectedModeThisSessionRef.current = true;
+      setChatModeState(mode);
+    },
+    [agentOnlyActive],
+  );
 
   useEffect(() => {
-    if (!paidAgentOnlyActive || chatMode === "agent") return;
-    setChatModeState("agent");
-  }, [chatMode, paidAgentOnlyActive]);
+    if (!agentOnlyActive) return;
+    if (chatMode !== "agent") {
+      setChatModeState("agent");
+    }
+    if (freeDesktopAgentOnlyActive && sandboxPreference !== "desktop") {
+      setSandboxPreference("desktop");
+    }
+    if (freeDesktopAgentOnlyActive && selectedModel !== "auto") {
+      setSelectedModelRaw("auto");
+    }
+  }, [
+    agentOnlyActive,
+    chatMode,
+    freeDesktopAgentOnlyActive,
+    sandboxPreference,
+    selectedModel,
+    setSandboxPreference,
+  ]);
 
   // Initialize team pricing dialog from URL hash
   const [teamPricingDialogOpen, setTeamPricingDialogOpen] = useState(() => {
@@ -1135,6 +1163,7 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
     setChatMode,
     chatModeAccessResolved,
     paidAgentOnlyActive,
+    freeDesktopAgentOnlyActive,
     sidebarOpen,
     setSidebarOpen,
     sidebarContent,

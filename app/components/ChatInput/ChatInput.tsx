@@ -224,6 +224,8 @@ export const ChatInput = ({
     subscription,
     isCheckingProPlan,
     hasLocalSandbox,
+    freeDesktopAgentOnlyActive,
+    desktopBridgeStatus,
     defaultLocalSandboxPreference,
   } = useGlobalState();
   const input = useComposerInput();
@@ -536,7 +538,8 @@ export const ChatInput = ({
   }, [draftId, restoreDraftAttachments, uploadedFiles]);
 
   // Free agent mode constraints:
-  // 1. Requires local sandbox — fall back to ask mode if disconnected
+  // 1. Requires local sandbox — web users fall back to Ask if disconnected,
+  //    while Desktop stays Agent-only and waits for its bridge to reconnect
   // 2. Force local sandbox preference (not e2b)
   // 3. Force auto model selection
   const isFreeAgent =
@@ -551,6 +554,16 @@ export const ChatInput = ({
     // Only show toast on actual disconnect (true → false), not on
     // initial mount or logout where hasLocalSandbox starts as false.
     if (!hasLocalSandbox) {
+      if (freeDesktopAgentOnlyActive) {
+        if (wasConnected) {
+          toast.info("Desktop sandbox disconnected.", {
+            description: "Reconnect the Desktop sandbox to keep using Agent.",
+            duration: 5000,
+          });
+        }
+        return;
+      }
+
       setChatMode("ask");
       if (wasConnected) {
         toast.info("Local sandbox disconnected. Switched to Ask mode.", {
@@ -559,8 +572,7 @@ export const ChatInput = ({
         });
       }
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isFreeAgent, hasLocalSandbox]);
+  }, [freeDesktopAgentOnlyActive, isFreeAgent, hasLocalSandbox, setChatMode]);
 
   useEffect(() => {
     if (!isFreeAgent) return;
@@ -576,9 +588,18 @@ export const ChatInput = ({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isFreeAgent]);
 
+  const desktopSandboxUnavailableReason =
+    freeDesktopAgentOnlyActive && !hasLocalSandbox
+      ? desktopBridgeStatus === "connecting"
+        ? "Desktop sandbox is connecting"
+        : "Reconnect the Desktop sandbox to use Agent"
+      : undefined;
+  const effectiveSendDisabledReason =
+    sendDisabledReason ?? desktopSandboxUnavailableReason;
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (isOffline || sendDisabledReason) return;
+    if (isOffline || effectiveSendDisabledReason) return;
 
     const canSubmit =
       (status === "ready" || status === "streaming") &&
@@ -741,7 +762,7 @@ export const ChatInput = ({
               uploadedFiles={uploadedFiles}
               chatMode={chatMode}
               isOnline={!isOffline}
-              sendDisabledReason={sendDisabledReason}
+              sendDisabledReason={effectiveSendDisabledReason}
             />
           </div>
         )}
