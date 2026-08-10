@@ -9,7 +9,6 @@ import { SidebarProvider } from "@/components/ui/sidebar";
 import Loading from "@/components/ui/loading";
 import MainSidebar from "./Sidebar";
 import { onOpenSettingsDialog } from "@/lib/utils/settings-dialog";
-import { PastDueBillingNotice } from "./PastDueBillingBanner";
 
 const SettingsDialog = dynamic(
   () => import("./SettingsDialog").then((module) => module.SettingsDialog),
@@ -163,7 +162,8 @@ export function ChatLayout({ children }: { children: React.ReactNode }) {
 
       {/* Main content slot - pages render here */}
       <div className="flex min-h-0 flex-1 min-w-0 flex-col relative">
-        <PastDueBillingNotice />
+        {/* Billing status is checked on demand in Account settings. Keep the
+            global layout free of billing/Stripe status requests. */}
         {children}
       </div>
 
