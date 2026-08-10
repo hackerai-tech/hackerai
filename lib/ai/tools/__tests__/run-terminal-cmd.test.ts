@@ -1432,6 +1432,8 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
         createHandle: async () => h,
         cols: 80,
         rows: 24,
+        sandboxIdentity: "e2b",
+        originalCommand: "sh",
       });
     }
 

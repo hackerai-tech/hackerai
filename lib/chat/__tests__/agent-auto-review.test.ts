@@ -24,6 +24,34 @@ const terminalRequest = (command: string): AgentToolApprovalRequest => ({
   autoReviewContext: { type: "terminal_command", command },
 });
 
+const terminalInteractionRequest = ({
+  input = "y\n",
+  recentOutput = "Proceed with installation? [y/N]",
+  outputComplete = true,
+}: {
+  input?: string;
+  recentOutput?: string;
+  outputComplete?: boolean;
+} = {}): AgentToolApprovalRequest => ({
+  toolCallId: "tool-interact-1",
+  toolName: "interact_terminal_session",
+  operation: "terminal_interact",
+  target: `send to ab12cd34: ${input}`,
+  brief: "Confirm the installer prompt",
+  autoReviewContext: {
+    type: "terminal_interaction",
+    interaction: `send to ab12cd34: ${input}`,
+    action: "send",
+    sessionId: "ab12cd34",
+    input,
+    translatedInput: input.replace(/\n$/, "\r"),
+    originalCommand: "pnpm install",
+    workingDirectory: "/workspace/project",
+    recentOutput,
+    outputComplete,
+  },
+});
+
 const authorizationContext = {
   text: "Inspect this repository and run the relevant tests.",
   complete: true,
@@ -36,8 +64,8 @@ describe("Agent Auto review", () => {
     ["auto_review", undefined, "terminal_execute", false],
     ["ask_approval", "enforce", "terminal_execute", false],
     ["full_access", "enforce", "terminal_execute", false],
-    ["auto_review", "enforce", "terminal_interact", false],
-    ["auto_review", "shadow", "terminal_interact", false],
+    ["auto_review", "enforce", "terminal_interact", true],
+    ["auto_review", "shadow", "terminal_interact", true],
   ] as const)(
     "routes %s/%s %s review eligibility to %s",
     (permissionMode, rolloutPhase, operation, expected) => {
@@ -171,6 +199,80 @@ describe("Agent Auto review", () => {
       modelCostDollars: 0.001,
     });
     expect(runModel).toHaveBeenCalledTimes(1);
+  });
+
+  it("reviews live terminal input with the originating command and recent state", async () => {
+    const runModel = jest.fn(async ({ system, prompt }) => {
+      expect(system).toContain("live terminal input");
+      expect(prompt).toContain("pnpm install");
+      expect(prompt).toContain("Proceed with installation? [y/N]");
+      expect(prompt).toContain('"input":"y\\n"');
+      return {
+        output: {
+          verdict: "approve",
+          riskCategory: "routine",
+          rationale: "The exact confirmation is authorized and routine.",
+        },
+      };
+    });
+
+    await expect(
+      reviewAgentToolAction({
+        request: terminalInteractionRequest(),
+        authorizationContext,
+        runModel,
+      }),
+    ).resolves.toMatchObject({ verdict: "approve", source: "model" });
+    expect(runModel).toHaveBeenCalledTimes(1);
+  });
+
+  it("routes credential prompts directly to the user without a model call", async () => {
+    const runModel = jest.fn();
+
+    await expect(
+      reviewAgentToolAction({
+        request: terminalInteractionRequest({
+          input: "hunter2\n",
+          recentOutput: "Enter deployment passphrase:",
+        }),
+        authorizationContext,
+        runModel,
+      }),
+    ).resolves.toMatchObject({
+      verdict: "ask_user",
+      riskCategory: "credential_access",
+      source: "rule",
+    });
+    expect(runModel).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when live terminal state is truncated or missing", async () => {
+    const runModel = jest.fn();
+
+    await expect(
+      reviewAgentToolAction({
+        request: terminalInteractionRequest({ outputComplete: false }),
+        authorizationContext,
+        runModel,
+      }),
+    ).resolves.toMatchObject({
+      verdict: "ask_user",
+      failureClass: "context_truncated",
+      source: "failure",
+    });
+
+    await expect(
+      reviewAgentToolAction({
+        request: terminalInteractionRequest({ recentOutput: "" }),
+        authorizationContext,
+        runModel,
+      }),
+    ).resolves.toMatchObject({
+      verdict: "ask_user",
+      failureClass: "missing_context",
+      source: "failure",
+    });
+    expect(runModel).not.toHaveBeenCalled();
   });
 
   it.each([

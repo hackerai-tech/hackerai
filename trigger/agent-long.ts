@@ -727,34 +727,17 @@ const buildAgentToolApprovalRequester = ({
                 .set("approvalToolName", request.toolName)
                 .set("approvalOperation", request.operation);
               denialTracker.record("approve");
-              return { approved: true, approvalId, sandboxIdentity };
+              return {
+                approved: true,
+                approvalId,
+                sandboxIdentity,
+                approvalSource: "auto_review",
+              };
             }
           }
-          if (decision.verdict === "deny") {
-            const { tripped } = denialTracker.record("deny");
-            metadata.set(
-              "approvalStatus",
-              tripped ? "auto_review_circuit_breaker" : "auto_review_denied",
-            );
-            if (tripped) {
-              phLogger.event("agent_auto_review_circuit_breaker", {
-                userId,
-                rollout_phase: autoReviewRolloutPhase,
-                verdict: decision.verdict,
-                risk_category: decision.riskCategory,
-                outcome: "require_user",
-                surface: reviewSurface,
-              });
-              onAutoReviewCircuitBreaker();
-            }
-            return {
-              approved: false,
-              approvalId,
-              reason: tripped
-                ? `Automatic review denied this action: ${decision.rationale} The denial circuit breaker stopped further approval attempts. Do not retry through a workaround; ask the user.`
-                : `Automatic review denied this action: ${decision.rationale} Do not pursue the same outcome through indirection or a workaround. Use a materially safer alternative or ask the user.`,
-            };
-          }
+          // A reviewer denial means the action is not safe to approve
+          // automatically. It never substitutes for the user's decision;
+          // continue into the durable human approval flow below.
         }
       }
 

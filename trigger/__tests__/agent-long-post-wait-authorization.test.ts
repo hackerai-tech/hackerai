@@ -49,7 +49,10 @@ describe("agent-long post-wait authorization contract", () => {
       taskSource.match(
         /return \{ approved: true, approvalId, sandboxIdentity \};/g,
       ),
-    ).toHaveLength(3);
+    ).toHaveLength(2);
+    expect(taskSource).toMatch(
+      /return \{[\s\S]*?approved: true,[\s\S]*?approvalId,[\s\S]*?sandboxIdentity,[\s\S]*?approvalSource: "auto_review",[\s\S]*?\};/,
+    );
   });
 
   it("revalidates Auto review approval and sandbox identity without deriving a grant", () => {
@@ -65,7 +68,7 @@ describe("agent-long post-wait authorization contract", () => {
       revalidate,
     );
     const approvedReturn = taskSource.indexOf(
-      "return { approved: true, approvalId, sandboxIdentity }",
+      'approvalSource: "auto_review"',
       sandboxCheck,
     );
     const grantDerivation = taskSource.indexOf(
@@ -97,16 +100,16 @@ describe("agent-long post-wait authorization contract", () => {
     expect(resume).toBeGreaterThan(autoReview);
   });
 
-  it("fails closed on denial loops and keeps analytics free of action content", () => {
+  it("routes reviewer denials to the human and keeps analytics free of action content", () => {
     expect(taskSource).toMatch(/new AgentAutoReviewDenialTracker\(\)/);
-    expect(taskSource).toMatch(/denialTracker\.record\("deny"\)/);
     expect(taskSource).toMatch(/denialTracker\.record\("approve"\)/);
     expect(taskSource).toMatch(/denialTracker\.record\("deny"\)\.tripped/);
     expect(taskSource).toMatch(/onAutoReviewCircuitBreaker\(\)/);
     expect(taskSource).toMatch(/agent_auto_review_circuit_breaker/);
     expect(taskSource).toMatch(
-      /Do not retry through a workaround; ask the user/,
+      /A reviewer denial means the action is not safe to approve[\s\S]*continue into the durable human approval flow/,
     );
+    expect(taskSource).not.toMatch(/Automatic review denied this action/);
 
     const eventStart = taskSource.indexOf(
       'phLogger.event("agent_auto_review_decision"',

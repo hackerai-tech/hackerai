@@ -82,9 +82,9 @@ describe("AgentApprovalPrompt", () => {
         request={{
           ...request,
           autoReview: {
-            verdict: "ask_user",
+            verdict: "deny",
             riskCategory: "scope_expansion",
-            rationale: "The referenced script contents are not visible.",
+            rationale: "The requested scan exceeds the authorized scope.",
             rolloutPhase: "enforce",
           },
         }}
@@ -98,6 +98,9 @@ describe("AgentApprovalPrompt", () => {
     );
     expect(screen.getByTestId("agent-auto-review-summary")).toHaveTextContent(
       "Risk: scope expansion",
+    );
+    expect(screen.getByTestId("agent-auto-review-summary")).toHaveTextContent(
+      "The requested scan exceeds the authorized scope.",
     );
     expect(screen.getByRole("button", { name: "Allow once" })).toBeEnabled();
   });

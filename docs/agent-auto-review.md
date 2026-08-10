@@ -11,9 +11,12 @@ PostHog flag: [`agent_auto_review_v1`](https://us.posthog.com/project/144137/fea
    access values.
 2. Keep the current terminal and file approval gates as the only execution
    boundary. Add the exact command or file mutation to the in-memory review
-   request without persisting it or sending it to analytics. Live terminal
-   interactions remain human-only in v1 because their effect depends on PTY
-   state the reviewer cannot fully reconstruct.
+   request without persisting it or sending it to analytics. For live terminal
+   input and kill actions, include the originating command, working directory,
+   exact translated input, and bounded recent terminal output. Missing or
+   truncated terminal state routes to the human, and an automatic approval is
+   invalidated if the session changes while review is running. Read-only
+   `wait` and `view` interactions continue without review.
 3. Add a dedicated reviewer module that:
    - extracts only user-authored messages as trusted authorization context;
    - labels assistant rationale, tool output, web content, and referenced file
@@ -29,14 +32,15 @@ PostHog flag: [`agent_auto_review_v1`](https://us.posthog.com/project/144137/fea
      human authoritative;
    - `enforce/approve`: revalidate current authorization, entitlements, and
      sandbox identity, then approve that exact action once;
-   - `enforce/ask_user`: reuse the existing signed Trigger Session input path;
-   - `enforce/deny`: return the rationale to the acting Agent and require a
-     materially safer alternative or user input.
+   - `enforce/ask_user` or `enforce/deny`: reuse the existing signed Trigger
+     Session input path and let the human make the final decision. A reviewer
+     denial means only that the action cannot be approved automatically.
 5. Keep reusable target/prefix grants human-only. Existing human-created grants
    may continue to match, but Auto review never creates or broadens a grant.
-6. Track consecutive and rolling automatic denials plus human denials after an
-   enforced `ask_user`, and abort review loops after 3 consecutive denials or
-   10 denials in the last 50 reviews.
+6. Track consecutive and rolling human denials after an enforced review, and
+   abort retry loops after 3 consecutive denials or 10 denials in the last 50
+   reviews. Automatic reviewer denials never abort the action before the user
+   can decide.
 7. Add a server-evaluated selector endpoint for the inactive multivariate
    PostHog flag. If the flag is off, unavailable, or malformed, hide Auto review
    and route any stale stored selection through human approval.
@@ -45,10 +49,11 @@ PostHog flag: [`agent_auto_review_v1`](https://us.posthog.com/project/144137/fea
    and surface. Never emit commands, targets, paths, prompts, credentials, file
    contents, or reviewer rationale.
 9. Cover parsing, deterministic rules, prompt-injection boundaries, exact-action
-   behavior, failure modes, denial limits, shadow/enforce paths, authorization
-   and sandbox changes, all sandbox types, UI selection, and existing-mode
-   regressions. Run focused tests, the full suite, typecheck, lint, formatting,
-   production build, and responsive browser verification.
+   behavior, terminal-state mutation and credential prompts, failure modes,
+   denial limits, shadow/enforce paths, authorization and sandbox changes, all
+   sandbox types, UI selection, and existing-mode regressions. Run focused
+   tests, the full suite, typecheck, lint, formatting, production build, and
+   responsive browser verification.
 
 ## Rollout and cleanup
 

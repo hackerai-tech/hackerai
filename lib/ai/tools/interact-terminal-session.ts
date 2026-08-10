@@ -37,6 +37,7 @@ const SEND_IMMEDIATE_OUTPUT_WINDOW_MS = 500;
 // as "process settled" — typically a redrawn prompt or completed command.
 // `timeout` remains the hard ceiling for processes that never settle.
 const WAIT_QUIET_WINDOW_MS = 500;
+const MAX_AUTO_REVIEW_TERMINAL_OUTPUT_CHARS = 6_000;
 
 export const createInteractTerminalSession = (context: ToolContext) => {
   const { writer, chatId, ptySessionManager } = context;
@@ -174,9 +175,66 @@ export const createInteractTerminalSession = (context: ToolContext) => {
         },
       });
 
-      const requestTerminalInteractionApproval = async (
-        target: string,
-      ): Promise<ActionResult | null> => {
+      type TerminalReviewState = {
+        session: PtySession;
+        lastActivityAt: number;
+        snapshotByteLength: number;
+        bufferTruncated: boolean;
+        exited: { exitCode: number | null } | null;
+      };
+
+      const captureTerminalReviewState = (session: PtySession) => {
+        const snapshot = ptySessionManager.snapshot(session);
+        const cleanedOutput = stripAnsi(new TextDecoder().decode(snapshot));
+        const outputComplete =
+          !session.bufferTruncated &&
+          cleanedOutput.length <= MAX_AUTO_REVIEW_TERMINAL_OUTPUT_CHARS;
+        return {
+          state: {
+            session,
+            lastActivityAt: session.lastActivityAt,
+            snapshotByteLength: snapshot.byteLength,
+            bufferTruncated: session.bufferTruncated,
+            exited: peekSessionExit(session),
+          } satisfies TerminalReviewState,
+          recentOutput: cleanedOutput.slice(
+            -MAX_AUTO_REVIEW_TERMINAL_OUTPUT_CHARS,
+          ),
+          outputComplete,
+        };
+      };
+
+      const terminalStateChanged = (
+        sessionIdToCheck: string,
+        expected: TerminalReviewState,
+      ): boolean => {
+        const current = ptySessionManager.get(chatId, sessionIdToCheck);
+        if (!current || current !== expected.session) return true;
+        const currentExit = peekSessionExit(current);
+        return (
+          current.lastActivityAt !== expected.lastActivityAt ||
+          ptySessionManager.snapshot(current).byteLength !==
+            expected.snapshotByteLength ||
+          current.bufferTruncated !== expected.bufferTruncated ||
+          currentExit?.exitCode !== expected.exited?.exitCode
+        );
+      };
+
+      const requestTerminalInteractionApproval = async ({
+        target,
+        session,
+        action,
+        inputToSend,
+        translatedInput,
+        reviewState,
+      }: {
+        target: string;
+        session: PtySession;
+        action: "send" | "kill";
+        inputToSend?: string;
+        translatedInput?: string;
+        reviewState: ReturnType<typeof captureTerminalReviewState>;
+      }): Promise<{ denied: ActionResult } | { autoReviewed: boolean }> => {
         const approval = await context.requestToolApproval?.({
           toolCallId,
           toolName: "interact_terminal_session",
@@ -186,17 +244,40 @@ export const createInteractTerminalSession = (context: ToolContext) => {
           autoReviewContext: {
             type: "terminal_interaction",
             interaction: target,
+            action,
+            sessionId: session.sessionId,
+            ...(inputToSend === undefined ? {} : { input: inputToSend }),
+            ...(translatedInput === undefined ? {} : { translatedInput }),
+            originalCommand: session.originalCommand,
+            ...(session.workingDirectory
+              ? { workingDirectory: session.workingDirectory }
+              : {}),
+            recentOutput: reviewState.recentOutput,
+            outputComplete: reviewState.outputComplete,
           },
         });
-        if (!approval || approval.approved) return null;
+        if (!approval || approval.approved) {
+          return {
+            autoReviewed:
+              approval?.approved === true &&
+              approval.approvalSource === "auto_review",
+          };
+        }
         return {
-          result: {
-            output: "",
-            error: approval.reason,
-            approvalDenied: true,
+          denied: {
+            result: {
+              output: "",
+              error: approval.reason,
+              approvalDenied: true,
+            },
           },
         };
       };
+
+      const changedDuringAutoReviewError = (sid: string): ActionResult =>
+        errorResult(
+          `Session ${sid} changed while Auto review was evaluating the action. The input was not sent. Use action=view to refresh the terminal state, then retry the exact interaction.`,
+        );
 
       const verifySessionSandboxIdentity = async (
         session: PtySession,
@@ -243,26 +324,40 @@ export const createInteractTerminalSession = (context: ToolContext) => {
         const sandboxMismatch = await verifySessionSandboxIdentity(session);
         if (sandboxMismatch) return sandboxMismatch;
 
-        const approvalDenied = await requestTerminalInteractionApproval(
-          `send to ${sessionId}: ${input}`,
-        );
-        if (approvalDenied) return approvalDenied;
-
-        const postApprovalSandboxMismatch =
-          await verifySessionSandboxIdentity(session);
-        if (postApprovalSandboxMismatch) return postApprovalSandboxMismatch;
-
-        emitPriorContext(session);
-
-        // Translate tmux key names (C-c, Up, Enter, ...) to escape sequences;
-        // raw text passes through unchanged with trailing newline normalized
-        // to CR so "echo hi\n" submits the line as a real Enter.
+        // Translate and size-check before approval so the exact bounded action
+        // reaching the reviewer is the action that can subsequently execute.
         const bytes = translateInput(input);
         if (bytes.byteLength > MAX_INPUT_BYTES_PER_SEND) {
           return errorResult(
             `Input exceeds MAX_INPUT_BYTES_PER_SEND=${MAX_INPUT_BYTES_PER_SEND} (got ${bytes.byteLength}).`,
           );
         }
+
+        const reviewState = captureTerminalReviewState(session);
+        const approvalResult = await requestTerminalInteractionApproval({
+          target: `send to ${sessionId}: ${input}`,
+          session,
+          action: "send",
+          inputToSend: input,
+          translatedInput: new TextDecoder().decode(bytes),
+          reviewState,
+        });
+        if ("denied" in approvalResult) return approvalResult.denied;
+
+        const postApprovalSandboxMismatch =
+          await verifySessionSandboxIdentity(session);
+        if (postApprovalSandboxMismatch) return postApprovalSandboxMismatch;
+        if (
+          approvalResult.autoReviewed &&
+          terminalStateChanged(sessionId, reviewState.state)
+        ) {
+          return changedDuringAutoReviewError(sessionId);
+        }
+
+        emitPriorContext(session);
+
+        // Tmux key names (C-c, Up, Enter, ...) were translated before review;
+        // raw text has a trailing newline normalized to CR for submission.
         try {
           await session.handle.sendInput(bytes);
         } catch (err) {
@@ -377,14 +472,24 @@ export const createInteractTerminalSession = (context: ToolContext) => {
         const sandboxMismatch = await verifySessionSandboxIdentity(session);
         if (sandboxMismatch) return sandboxMismatch;
 
-        const approvalDenied = await requestTerminalInteractionApproval(
-          `kill ${sessionId}`,
-        );
-        if (approvalDenied) return approvalDenied;
+        const reviewState = captureTerminalReviewState(session);
+        const approvalResult = await requestTerminalInteractionApproval({
+          target: `kill ${sessionId}`,
+          session,
+          action: "kill",
+          reviewState,
+        });
+        if ("denied" in approvalResult) return approvalResult.denied;
 
         const postApprovalSandboxMismatch =
           await verifySessionSandboxIdentity(session);
         if (postApprovalSandboxMismatch) return postApprovalSandboxMismatch;
+        if (
+          approvalResult.autoReviewed &&
+          terminalStateChanged(sessionId, reviewState.state)
+        ) {
+          return changedDuringAutoReviewError(sessionId);
+        }
 
         // Skip the snapshot dump — the user already saw the final state via
         // prior view/wait/send blocks; a one-line confirmation reads cleaner

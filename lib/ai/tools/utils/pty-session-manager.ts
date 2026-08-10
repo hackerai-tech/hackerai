@@ -42,6 +42,10 @@ export interface PtySession {
   readonly chatId: string;
   readonly kind: "pty" | "command";
   readonly sandboxIdentity: AgentApprovalSandboxIdentity;
+  /** Exact command that created the process represented by this session. */
+  readonly originalCommand: string;
+  /** Working directory used when the originating command was started. */
+  readonly workingDirectory?: string;
   readonly pid: number;
   cols: number;
   rows: number;
@@ -72,6 +76,10 @@ export interface CreateSessionOpts {
   kind?: "pty" | "command";
   /** Sandbox/connection that owns the underlying process. */
   sandboxIdentity: AgentApprovalSandboxIdentity;
+  /** Exact command that created the process represented by this session. */
+  originalCommand: string;
+  /** Working directory used when the originating command was started. */
+  workingDirectory?: string;
 }
 
 interface InternalSession extends PtySession {
@@ -141,6 +149,10 @@ export class PtySessionManager {
         // Keep a defensive Cloud default for untyped legacy callers while
         // requiring all current typed call sites to provide the identity.
         sandboxIdentity: opts.sandboxIdentity ?? "e2b",
+        originalCommand: opts.originalCommand,
+        ...(opts.workingDirectory
+          ? { workingDirectory: opts.workingDirectory }
+          : {}),
         get pid() {
           return handle.pid;
         },

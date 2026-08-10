@@ -318,6 +318,14 @@ export type AgentAutoReviewActionContext =
   | {
       type: "terminal_interaction";
       interaction: string;
+      action: "send" | "kill";
+      sessionId: string;
+      input?: string;
+      translatedInput?: string;
+      originalCommand: string;
+      workingDirectory?: string;
+      recentOutput: string;
+      outputComplete: boolean;
     }
   | {
       type: "file_change";
@@ -510,6 +518,8 @@ export type AgentToolApprovalResult =
       approved: true;
       approvalId: string;
       sandboxIdentity: AgentApprovalSandboxIdentity;
+      /** Present only when a separate reviewer approved this exact action. */
+      approvalSource?: "auto_review";
     }
   | {
       approved: false;

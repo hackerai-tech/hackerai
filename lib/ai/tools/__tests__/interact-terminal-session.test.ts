@@ -269,6 +269,8 @@ describe("interact_terminal_session — PTY action dispatch", () => {
       cols: 120,
       rows: 30,
       kind: "command",
+      sandboxIdentity: "e2b",
+      originalCommand: "whois example.com",
       createHandle: async () => handle,
     });
     const tool = createInteractTerminalSession(context);
@@ -315,6 +317,8 @@ describe("interact_terminal_session — PTY action dispatch", () => {
       cols: 120,
       rows: 30,
       kind: "command",
+      sandboxIdentity: "e2b",
+      originalCommand: "whois example.com",
       createHandle: async () => handle,
     });
     const tool = createInteractTerminalSession(context);
@@ -352,6 +356,8 @@ describe("interact_terminal_session — PTY action dispatch", () => {
       cols: 120,
       rows: 30,
       kind: "command",
+      sandboxIdentity: "e2b",
+      originalCommand: "whois example.com",
       createHandle: async () => handle,
     });
     const tool = createInteractTerminalSession(context);
@@ -427,6 +433,7 @@ describe("interact_terminal_session — PTY action dispatch", () => {
     });
     const sessionId = await createSession(context, handle);
     requestToolApproval.mockClear();
+    handle.emit(new TextEncoder().encode("root@box:/workspace# "));
 
     await runTool(createInteractTerminalSession(context), {
       action: "send",
@@ -438,12 +445,86 @@ describe("interact_terminal_session — PTY action dispatch", () => {
       expect.objectContaining({
         operation: "terminal_interact",
         target: `send to ${sessionId}: rm -rf /\n`,
-        autoReviewContext: {
+        autoReviewContext: expect.objectContaining({
           type: "terminal_interaction",
           interaction: `send to ${sessionId}: rm -rf /\n`,
-        },
+          action: "send",
+          sessionId,
+          input: "rm -rf /\n",
+          translatedInput: "rm -rf /\r",
+          originalCommand: "sh",
+          recentOutput: "root@box:/workspace# ",
+          outputComplete: true,
+        }),
       }),
     );
+  });
+
+  test("does not send automatically reviewed input if terminal state changes during review", async () => {
+    const e2b = makeFakeE2BSandbox();
+    const handle = makeFakeHandle();
+    const requestToolApproval = jest.fn(async () => ({
+      approved: true as const,
+      approvalId: "human-setup",
+      sandboxIdentity: "e2b" as const,
+    }));
+    const { context } = makeContext({ sandbox: e2b, requestToolApproval });
+    const sessionId = await createSession(context, handle);
+    const callsBeforeSend = handle.sendInputCalls.length;
+    handle.emit(new TextEncoder().encode("Proceed? [y/N] "));
+    requestToolApproval.mockImplementation(async () => {
+      handle.emit(new TextEncoder().encode("\nProcess advanced\n"));
+      return {
+        approved: true as const,
+        approvalId: "auto-review-1",
+        sandboxIdentity: "e2b" as const,
+        approvalSource: "auto_review" as const,
+      };
+    });
+
+    const result = (await runTool(createInteractTerminalSession(context), {
+      action: "send",
+      session: sessionId,
+      input: "y\n",
+    })) as { result: { error?: string } };
+
+    expect(result.result.error).toContain(
+      "changed while Auto review was evaluating",
+    );
+    expect(handle.sendInputCalls).toHaveLength(callsBeforeSend);
+  });
+
+  test("preserves human approval behavior when terminal output changes while waiting", async () => {
+    const e2b = makeFakeE2BSandbox();
+    const handle = makeFakeHandle();
+    const requestToolApproval = jest.fn(async () => ({
+      approved: true as const,
+      approvalId: "human-setup",
+      sandboxIdentity: "e2b" as const,
+    }));
+    const { context } = makeContext({ sandbox: e2b, requestToolApproval });
+    const sessionId = await createSession(context, handle);
+    const callsBeforeSend = handle.sendInputCalls.length;
+    handle.emit(new TextEncoder().encode("Proceed? [y/N] "));
+    requestToolApproval.mockImplementation(async () => {
+      handle.emit(new TextEncoder().encode("\nStill waiting\n"));
+      return {
+        approved: true as const,
+        approvalId: "human-1",
+        sandboxIdentity: "e2b" as const,
+      };
+    });
+
+    const result = (await runTool(createInteractTerminalSession(context), {
+      action: "send",
+      session: sessionId,
+      input: "y\n",
+    })) as { result: { error?: string } };
+
+    expect(result.result.error).toBeUndefined();
+    expect(
+      new TextDecoder().decode(handle.sendInputCalls[callsBeforeSend]),
+    ).toBe("y\r");
   });
 
   test("does not send input after the selected sandbox changes", async () => {
