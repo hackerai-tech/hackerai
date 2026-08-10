@@ -21,7 +21,7 @@ export const PAID_FUNNEL_EVENTS = {
   cancellationReversed: "cancellation_reversed",
   billingPaymentFailed: "billing_payment_failed",
   billingPaymentRecovered: "billing_payment_recovered",
-  billingPastDueBannerImpressed: "recovery_prompt_impressed",
+  recoveryPromptImpressed: "recovery_prompt_impressed",
   billingPastDuePaymentUpdateClicked: "billing_past_due_payment_update_clicked",
   paymentUpdateOpened: "payment_update_opened",
   paymentMethodUpdated: "payment_method_updated",

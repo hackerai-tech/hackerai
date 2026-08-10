@@ -180,4 +180,69 @@ describe("involuntary churn lifecycle records", () => {
       recovery_result: "recovered",
     });
   });
+
+  it.each([
+    ["customer.subscription.deleted", "churned", false],
+    ["payment_method.attached", "payment_method_updated", true],
+    ["invoice.paid", "ineligible_payment", true],
+  ] as const)(
+    "records %s as %s",
+    async (stripeEventType, recoveryResult, needsPriorFailure) => {
+      const initialRows = needsPriorFailure
+        ? [
+            {
+              _id: "failed-row",
+              idempotency_key: "evt-failed-1:user-1",
+              stripe_event_id: "evt-failed-1",
+              stripe_event_type: "invoice.payment_failed",
+              user_id: "user-1",
+              stripe_invoice_id: "in-1",
+              recovery_result: "pending",
+              occurred_at: 100,
+            },
+          ]
+        : [];
+      const { rows, ctx } = createContext(initialRows);
+      const { recordEvent } = await import("../involuntaryChurn");
+
+      const result = await (recordEvent as any).handler(ctx, {
+        ...baseArgs,
+        stripeEventId: `evt-${recoveryResult}`,
+        stripeEventType,
+        invoicePaidEligible:
+          stripeEventType === "invoice.paid" ? false : undefined,
+        occurredAt: 200,
+      });
+
+      expect(result).toMatchObject({ inserted: true, recoveryResult });
+      expect(rows.at(-1)).toMatchObject({
+        stripe_event_type: stripeEventType,
+        recovery_result: recoveryResult,
+      });
+    },
+  );
+
+  it("returns the stored outcome without inserting on Stripe replay", async () => {
+    const existing = {
+      _id: "failed-row",
+      idempotency_key: "evt-failed-1:user-1",
+      stripe_event_id: "evt-failed-1",
+      stripe_event_type: "invoice.payment_failed",
+      user_id: "user-1",
+      stripe_invoice_id: "in-1",
+      recovery_result: "pending",
+      occurred_at: 100,
+    };
+    const { rows, ctx } = createContext([existing]);
+    const { recordEvent } = await import("../involuntaryChurn");
+
+    const result = await (recordEvent as any).handler(ctx, baseArgs);
+
+    expect(result).toEqual({
+      inserted: false,
+      priorFailureSeen: true,
+      recoveryResult: "pending",
+    });
+    expect(rows).toEqual([existing]);
+  });
 });

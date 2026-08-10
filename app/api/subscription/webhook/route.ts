@@ -790,8 +790,8 @@ async function recordInvoluntaryChurnEvent(args: {
     recoveredUserIds: args.userIds.filter(
       (_, index) => results[index]?.recoveryResult === "recovered",
     ),
-    paymentMethodUpdated: results.some(
-      (result) => result.recoveryResult === "payment_method_updated",
+    paymentMethodUpdatedUserIds: args.userIds.filter(
+      (_, index) => results[index]?.recoveryResult === "payment_method_updated",
     ),
   };
 }
@@ -1006,16 +1006,17 @@ async function handleInvoicePaid(
   }
 
   const recoveryPrice = subscription.items?.data[0]?.price;
-  const recoveredUserIds = userIds.filter((_, index) => {
-    const result = resetResults[index];
-    return (
-      result?.recoveredFromPaymentFailure === true ||
-      (invoice.billing_reason === "subscription_cycle" &&
-        result?.outcome === "applied" &&
-        typeof invoice.attempt_count === "number" &&
-        invoice.attempt_count > 1)
-    );
-  });
+  const isRecoveredReset = (
+    result: (typeof resetResults)[number] | undefined,
+  ): boolean =>
+    result?.recoveredFromPaymentFailure === true ||
+    (invoice.billing_reason === "subscription_cycle" &&
+      result?.outcome === "applied" &&
+      typeof invoice.attempt_count === "number" &&
+      invoice.attempt_count > 1);
+  const recoveredUserIds = userIds.filter((_, index) =>
+    isRecoveredReset(resetResults[index]),
+  );
   if (recoveredUserIds.length > 0) {
     const structuredRecovery = await recordInvoluntaryChurnEvent({
       stripeEventId,
@@ -1055,14 +1056,7 @@ async function handleInvoicePaid(
   }
 
   for (const [index, result] of resetResults.entries()) {
-    const recoveredFromRetryAttempt =
-      invoice.billing_reason === "subscription_cycle" &&
-      result.outcome === "applied" &&
-      typeof invoice.attempt_count === "number" &&
-      invoice.attempt_count > 1;
-    if (!result.recoveredFromPaymentFailure && !recoveredFromRetryAttempt) {
-      continue;
-    }
+    if (!isRecoveredReset(result)) continue;
 
     const uid = userIds[index];
     if (!uid) continue;
@@ -1400,7 +1394,7 @@ async function handlePaymentMethodUpdated(args: {
     limit: 10,
   });
   const currentSubscription = subscriptions.data.find((subscription) =>
-    ["active", "trialing", "past_due", "unpaid"].includes(subscription.status),
+    ["past_due", "unpaid"].includes(subscription.status),
   );
   if (!currentSubscription) return;
 
@@ -1433,9 +1427,7 @@ async function handlePaymentMethodUpdated(args: {
     price,
     failureProperties,
   });
-  if (!recorded.paymentMethodUpdated) return;
-
-  for (const uid of userIds) {
+  for (const uid of recorded.paymentMethodUpdatedUserIds) {
     phLogger.event(
       PAID_FUNNEL_EVENTS.paymentMethodUpdated,
       paidFunnelProperties({
@@ -1891,47 +1883,6 @@ async function handleSubscriptionDeleted(
   }
 
   const cancellationReason = subscription.cancellation_details?.reason ?? null;
-  const latestInvoiceId = stripeObjectId(subscription.latest_invoice);
-  if (cancellationReason === "payment_failed" && !latestInvoiceId) {
-    throw new Error(
-      `Payment-failed subscription ${subscription.id} is missing its latest invoice`,
-    );
-  }
-  const failureContext =
-    cancellationReason === "payment_failed" && latestInvoiceId
-      ? await retrieveInvoiceForFailureAnalytics(latestInvoiceId)
-      : null;
-  if (cancellationReason === "payment_failed" && !failureContext) {
-    // Preserve the event for Stripe retry until its stable invoice/attempt
-    // identity can be recorded durably.
-    throw new Error(
-      `Failed to hydrate payment-failed invoice ${latestInvoiceId}`,
-    );
-  }
-  const failureProperties = failureContext
-    ? subscriptionPaymentFailureProperties({
-        invoice: failureContext.invoice,
-        lifecycle: "subscription_deleted",
-        paymentIntent: failureContext.paymentIntent,
-      })
-    : undefined;
-
-  if (failureContext && failureProperties) {
-    await recordInvoluntaryChurnEvent({
-      stripeEventId,
-      stripeEventType: "customer.subscription.deleted",
-      occurredAt: eventOccurredAtMs,
-      invoice: failureContext.invoice,
-      customerId,
-      userIds,
-      orgId: orgId ?? undefined,
-      stripeSubscriptionId: subscription.id,
-      tier,
-      price,
-      failureProperties,
-    });
-  }
-
   console.log(
     `[Subscription Webhook] subscription.deleted: tier ${tier ?? "unknown"} cancelled for ${userIds.length} user(s) (reason: ${cancellationReason ?? "none"})`,
   );
@@ -1952,7 +1903,6 @@ async function handleSubscriptionDeleted(
       tier,
       org_id: orgId,
       cancellation_reason: cancellationReason,
-      ...(failureProperties ?? {}),
       stripe_event_id: stripeEventId,
       stripe_event_type: "customer.subscription.deleted",
       $insert_id: `subscription_cancelled:${stripeEventId}:${uid}`,
@@ -1960,24 +1910,59 @@ async function handleSubscriptionDeleted(
     });
   }
 
-  if (failureContext) {
-    await emitBillingPaymentFailed({
-      stripeEventId,
-      stripeEventType: "customer.subscription.deleted",
-      invoice: failureContext.invoice,
-      paymentIntent: failureContext.paymentIntent,
-      customerId,
-      userIds,
-      orgId: orgId ?? undefined,
-      tier,
-      price,
-      lifecycle: "subscription_deleted",
-    });
-  }
-
   await setReferralCodesPaidEligibility({
     userIds,
     active: false,
+  });
+
+  if (cancellationReason !== "payment_failed") return;
+
+  const latestInvoiceId = stripeObjectId(subscription.latest_invoice);
+  if (!latestInvoiceId) {
+    throw new Error(
+      `Payment-failed subscription ${subscription.id} is missing its latest invoice`,
+    );
+  }
+  const failureContext =
+    await retrieveInvoiceForFailureAnalytics(latestInvoiceId);
+  if (!failureContext) {
+    // Terminal cancellation state above is durable. Preserve the Stripe event
+    // for retry until its stable invoice/attempt identity is also recorded.
+    throw new Error(
+      `Failed to hydrate payment-failed invoice ${latestInvoiceId}`,
+    );
+  }
+  const failureProperties = subscriptionPaymentFailureProperties({
+    invoice: failureContext.invoice,
+    lifecycle: "subscription_deleted",
+    paymentIntent: failureContext.paymentIntent,
+  });
+
+  await recordInvoluntaryChurnEvent({
+    stripeEventId,
+    stripeEventType: "customer.subscription.deleted",
+    occurredAt: eventOccurredAtMs,
+    invoice: failureContext.invoice,
+    customerId,
+    userIds,
+    orgId: orgId ?? undefined,
+    stripeSubscriptionId: subscription.id,
+    tier,
+    price,
+    failureProperties,
+  });
+
+  await emitBillingPaymentFailed({
+    stripeEventId,
+    stripeEventType: "customer.subscription.deleted",
+    invoice: failureContext.invoice,
+    paymentIntent: failureContext.paymentIntent,
+    customerId,
+    userIds,
+    orgId: orgId ?? undefined,
+    tier,
+    price,
+    lifecycle: "subscription_deleted",
   });
 }
 

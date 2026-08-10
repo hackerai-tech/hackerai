@@ -81,6 +81,8 @@ describe("redirectToBillingPortal", () => {
         org_id: "org_123",
         stripe_customer_id: "cus_123",
         stripe_billing_portal_session_id: "bps_recovery",
+        surface: "account_settings",
+        paid_funnel_event_version: 1,
         $insert_id: "payment_update_opened:bps_recovery:user_123",
       }),
     );

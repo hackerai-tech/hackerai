@@ -88,7 +88,9 @@ export const recordEvent = mutation({
     if (existing) {
       return {
         inserted: false,
-        priorFailureSeen: existing.stripe_event_type === "invoice.paid",
+        // Every row in this table is either a failure or an outcome gated on a
+        // known failure, so replaying an existing event proves prior failure.
+        priorFailureSeen: true,
         recoveryResult: existing.recovery_result,
       };
     }

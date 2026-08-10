@@ -30,7 +30,7 @@ export function PastDueBillingBanner({
 }: PastDueBillingBannerProps) {
   useEffect(() => {
     captureAuthenticatedEvent(
-      PAID_FUNNEL_EVENTS.billingPastDueBannerImpressed,
+      PAID_FUNNEL_EVENTS.recoveryPromptImpressed,
       paidFunnelProperties({
         surface,
         subscription_tier: subscription,
