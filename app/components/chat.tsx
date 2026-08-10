@@ -6,6 +6,7 @@ import dynamic from "next/dynamic";
 import {
   useRef,
   useEffect,
+  useLayoutEffect,
   useState,
   useReducer,
   useCallback,
@@ -506,6 +507,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     initializeChat,
     setTodos,
     setChatReset,
+    setChatNavigationHandler,
     hasUserDismissedRateLimitWarning,
     setHasUserDismissedRateLimitWarning,
     messageQueue,
@@ -667,12 +669,17 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   const isChatMountedRef = useRef(false);
   const browserStreamFinishedRef = useRef(false);
   const activeChatIdRef = useRef(chatId);
+  const streamChatIdRef = useRef(chatId);
   const agentLongPartialSaveKeysRef = useRef<Set<string>>(new Set());
   const agentLongRunCorrelationRef = useRef<{
     runId: string;
     token: string;
   } | null>(null);
-  activeChatIdRef.current = chatId;
+
+  useLayoutEffect(() => {
+    activeChatIdRef.current = chatId;
+    streamChatIdRef.current = chatId;
+  }, [chatId]);
 
   useEffect(() => {
     isChatMountedRef.current = true;
@@ -1060,13 +1067,13 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     shouldUseAgentLongForCurrentChat;
   const stopActiveBrowserStream = useCallback(
     (nextChatId?: string) => {
-      const activeChatId = activeChatIdRef.current;
+      const streamChatId = streamChatIdRef.current;
       if (nextChatId) {
         // Invalidate terminal callbacks before either cancellation path can
         // finish synchronously.
         activeChatIdRef.current = nextChatId;
       }
-      cancelAgentLongRealtimeStreams(activeChatId);
+      cancelAgentLongRealtimeStreams(streamChatId);
       const streamAlreadyFinished =
         shouldUseAgentLongForCurrentChatRef.current &&
         browserStreamFinishedRef.current;
@@ -1081,6 +1088,11 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     },
     [setDataStream, setIsAutoResuming],
   );
+
+  useEffect(() => {
+    setChatNavigationHandler(stopActiveBrowserStream);
+    return () => setChatNavigationHandler(null);
+  }, [setChatNavigationHandler, stopActiveBrowserStream]);
 
   const saveAgentLongPartialSnapshot = useCallback(
     (clientReason: string) => {

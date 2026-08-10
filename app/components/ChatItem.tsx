@@ -64,7 +64,6 @@ import { useMutation } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import { removeDraft } from "@/lib/utils/client-storage";
 import { openSettingsDialog } from "@/lib/utils/settings-dialog";
-import { cancelAgentLongRealtimeStreams } from "@/lib/chat/agent-long-transport";
 import { ShareDialog } from "./ShareDialog";
 import { MoveChatToProjectDialog } from "./MoveChatToProjectDialog";
 import { ProjectCreateDialog } from "./ProjectCreateDialog";
@@ -231,9 +230,6 @@ const ChatItem: React.FC<ChatItemProps> = ({
     // Clear input and transient state only when switching to a different chat
     if (!isCurrentlyActive) {
       setOptimisticChatId(id);
-      if (routeChatId && routeChatId !== id) {
-        cancelAgentLongRealtimeStreams(routeChatId);
-      }
       initializeChat(id);
     }
 
