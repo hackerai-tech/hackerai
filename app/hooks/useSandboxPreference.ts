@@ -5,7 +5,7 @@ import { useMutation } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import type { SandboxPreference } from "@/types/chat";
 import { toast } from "sonner";
-import { DesktopSandboxBridge } from "@/app/services/desktop-sandbox-bridge";
+import type { DesktopSandboxBridge } from "@/app/services/desktop-sandbox-bridge";
 import { isTauriEnvironment } from "@/app/hooks/useTauri";
 
 export type DesktopBridgeStatus =
@@ -110,34 +110,39 @@ export function useSandboxPreference(
       try {
         if (!bridgeStartPromise) {
           const generation = bridgeGeneration;
-          let bridge: DesktopSandboxBridge;
-          bridge = new DesktopSandboxBridge({
-            connectDesktop: (args) => connectDesktopRef.current(args),
-            refreshCentrifugoTokenDesktop: (args) =>
-              refreshTokenRef.current(args),
-            disconnectDesktop: (args) => disconnectRef.current(args),
-            onTerminated: (reason) => {
-              if (generation !== bridgeGeneration) return;
-              if (activeBridge === bridge) activeBridge = null;
-              bridgeStateListener?.(false, "failed");
-            },
-          });
-
           let startPromise: Promise<DesktopSandboxBridge | null>;
-          startPromise = bridge
-            .start()
-            .then(async () => {
-              if (generation !== bridgeGeneration) {
-                await bridge.stop();
-                return null;
-              }
-              activeBridge = bridge;
-              return bridge;
-            })
-            .catch(async (error) => {
-              await bridge.stop();
-              throw error;
-            })
+          startPromise = import("@/app/services/desktop-sandbox-bridge")
+            .then(
+              async ({ DesktopSandboxBridge: DesktopSandboxBridgeClass }) => {
+                if (generation !== bridgeGeneration) return null;
+
+                const bridge = new DesktopSandboxBridgeClass({
+                  connectDesktop: (args) => connectDesktopRef.current(args),
+                  refreshCentrifugoTokenDesktop: (args) =>
+                    refreshTokenRef.current(args),
+                  disconnectDesktop: (args) => disconnectRef.current(args),
+                  onTerminated: () => {
+                    if (generation !== bridgeGeneration) return;
+                    if (activeBridge === bridge) activeBridge = null;
+                    bridgeStateListener?.(false, "failed");
+                  },
+                });
+
+                try {
+                  await bridge.start();
+                } catch (error) {
+                  await bridge.stop();
+                  throw error;
+                }
+
+                if (generation !== bridgeGeneration) {
+                  await bridge.stop();
+                  return null;
+                }
+                activeBridge = bridge;
+                return bridge;
+              },
+            )
             .finally(() => {
               if (bridgeStartPromise === startPromise) {
                 bridgeStartPromise = null;
