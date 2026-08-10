@@ -22,7 +22,7 @@ import {
   isThisMonth,
 } from "date-fns";
 import type { Doc } from "@/convex/_generated/dataModel";
-import { useGlobalState } from "../contexts/GlobalState";
+import { useGlobalStateActions } from "../contexts/GlobalState";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { useChats } from "../hooks/useChats";
 import {
@@ -62,7 +62,7 @@ export const MessageSearchDialog: React.FC<MessageSearchDialogProps> = ({
   const { user } = useAuth();
   const router = useRouter();
   const convex = useConvex();
-  const { setChatSidebarOpen, closeSidebar } = useGlobalState();
+  const { setChatSidebarOpen, closeSidebar } = useGlobalStateActions();
   const isMobile = useIsMobile();
   const [searchQuery, setSearchQuery] = useState("");
   const [debouncedQuery, setDebouncedQuery] = useState("");

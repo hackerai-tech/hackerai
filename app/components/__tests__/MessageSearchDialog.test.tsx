@@ -28,6 +28,10 @@ jest.mock("@/app/contexts/GlobalState", () => ({
     setChatSidebarOpen: jest.fn(),
     closeSidebar: jest.fn(),
   }),
+  useGlobalStateActions: () => ({
+    setChatSidebarOpen: jest.fn(),
+    closeSidebar: jest.fn(),
+  }),
 }));
 
 jest.mock("@/hooks/use-mobile", () => ({
