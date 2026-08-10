@@ -8,12 +8,49 @@ jest.mock("@/lib/posthog/server", () => ({ phLogger: { event: mockEvent } }));
 const {
   captureSubagentLifecycleEvent,
   captureSubagentTerminalOutcome,
+  subagentAvailabilityEventUuid,
+  subagentCreateAttemptEventUuid,
   subagentModelPromotionEventUuid,
   subagentOutcomeEventUuid,
 } = require("../subagents") as typeof import("../subagents");
 
 describe("subagent lifecycle analytics", () => {
   beforeEach(() => jest.clearAllMocks());
+
+  it("records availability once per parent run without user content", () => {
+    captureSubagentLifecycleEvent("subagent_available", {
+      userId: "user-1",
+      eventUuid: subagentAvailabilityEventUuid("parent-1"),
+      parentTriggerRunId: "parent-1",
+      profile: "security_validation",
+    });
+
+    expect(mockEvent).toHaveBeenCalledWith("subagent_available", {
+      userId: "user-1",
+      eventUuid: subagentAvailabilityEventUuid("parent-1"),
+      subagent_id: undefined,
+      parent_trigger_run_id: "parent-1",
+      profile: "security_validation",
+      status: undefined,
+      verdict: undefined,
+      duration_ms: undefined,
+      step_count: undefined,
+      cost_dollars: undefined,
+      error_category: undefined,
+      model_from: undefined,
+      model_to: undefined,
+      model_promotion_reason: undefined,
+    });
+  });
+
+  it("uses one stable create-attempt id per parent tool call", () => {
+    expect(subagentCreateAttemptEventUuid("parent-1", "tool-1")).toBe(
+      subagentCreateAttemptEventUuid("parent-1", "tool-1"),
+    );
+    expect(subagentCreateAttemptEventUuid("parent-1", "tool-1")).not.toBe(
+      subagentCreateAttemptEventUuid("parent-1", "tool-2"),
+    );
+  });
 
   it("emits exactly one canceled outcome with a stable event id", () => {
     captureSubagentTerminalOutcome({

@@ -237,6 +237,10 @@ import {
   listActiveSubagentsForParent,
 } from "@/lib/db/subagents";
 import { cancelAgentTriggerRun } from "@/lib/api/agent-approval-session";
+import {
+  captureSubagentLifecycleEvent,
+  subagentAvailabilityEventUuid,
+} from "@/lib/analytics/subagents";
 
 const AGENT_LONG_FREE_MAX_DURATION_SECONDS = 60 * 60;
 const AGENT_LONG_PAID_MAX_DURATION_SECONDS = 2 * 60 * 60;
@@ -2400,6 +2404,14 @@ export const agentLongTask = task({
                   }
                 : undefined,
             );
+            if (securityValidationSubagentsEnabled) {
+              captureSubagentLifecycleEvent("subagent_available", {
+                userId,
+                eventUuid: subagentAvailabilityEventUuid(ctx.run.id),
+                parentTriggerRunId: ctx.run.id,
+                profile: "security_validation",
+              });
+            }
             approvalSandboxManager = sandboxManager;
 
             const sendFileMetadataToStream = (

@@ -36,7 +36,7 @@ import { getConvexUrl } from "@/lib/db/convex-client";
 import {
   captureSubagentLifecycleEvent,
   captureSubagentTerminalOutcome,
-  subagentExposureEventUuid,
+  subagentCreateAttemptEventUuid,
 } from "@/lib/analytics/subagents";
 import { subagentTask } from "@/trigger/subagent";
 
@@ -120,9 +120,12 @@ export const createCreateAgentTool = (
         };
       }
 
-      captureSubagentLifecycleEvent("subagent_feature_exposed", {
+      captureSubagentLifecycleEvent("subagent_create_attempted", {
         userId: context.userID,
-        eventUuid: subagentExposureEventUuid(parentTriggerRunId),
+        eventUuid: subagentCreateAttemptEventUuid(
+          parentTriggerRunId,
+          execution.toolCallId,
+        ),
         parentTriggerRunId,
         profile: "security_validation",
       });

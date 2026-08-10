@@ -32,7 +32,8 @@ const boundedCategory = (value: string | undefined): string | undefined =>
 
 export const captureSubagentLifecycleEvent = (
   event:
-    | "subagent_feature_exposed"
+    | "subagent_available"
+    | "subagent_create_attempted"
     | "subagent_spawned"
     | "subagent_updated"
     | "subagent_completed"
@@ -61,8 +62,18 @@ export const captureSubagentLifecycleEvent = (
   });
 };
 
-export const subagentExposureEventUuid = (parentTriggerRunId: string): string =>
-  uuidv5(`subagent-feature-exposed:${parentTriggerRunId}`, uuidv5.URL);
+export const subagentAvailabilityEventUuid = (
+  parentTriggerRunId: string,
+): string => uuidv5(`subagent-available:${parentTriggerRunId}`, uuidv5.URL);
+
+export const subagentCreateAttemptEventUuid = (
+  parentTriggerRunId: string,
+  parentToolCallId: string,
+): string =>
+  uuidv5(
+    `subagent-create-attempted:${parentTriggerRunId}:${parentToolCallId}`,
+    uuidv5.URL,
+  );
 
 export const subagentOutcomeEventUuid = (subagentId: string): string =>
   uuidv5(`subagent-terminal-outcome:${subagentId}`, uuidv5.URL);
