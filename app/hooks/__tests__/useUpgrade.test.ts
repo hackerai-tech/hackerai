@@ -134,6 +134,82 @@ describe("useUpgrade checkout attempts", () => {
     });
   });
 
+  it("blocks duplicate sidebar checkout across pricing dialog remounts", async () => {
+    let resolveFetch: ((value: Response) => void) | undefined;
+    global.fetch = jest
+      .fn()
+      .mockImplementationOnce(
+        () =>
+          new Promise<Response>((resolve) => {
+            resolveFetch = resolve;
+          }),
+      )
+      .mockResolvedValueOnce(
+        response({ ok: true, status: 200, body: { error: "cancelled" } }),
+      );
+    mockNewCheckoutAttemptId
+      .mockReturnValueOnce("ca_sidebar_123")
+      .mockReturnValueOnce("ca_sidebar_retry_456");
+    const firstDialog = renderHook(() => useUpgrade());
+
+    let firstRequest!: Promise<void>;
+    act(() => {
+      firstRequest = firstDialog.result.current.handleUpgrade(
+        "pro-monthly-plan",
+        undefined,
+        undefined,
+        "free",
+        { source: "sidebar", surface: "pricing_dialog" },
+      );
+    });
+    firstDialog.unmount();
+
+    const remountedDialog = renderHook(() => useUpgrade());
+    await act(async () => {
+      await remountedDialog.result.current.handleUpgrade(
+        "pro-monthly-plan",
+        undefined,
+        undefined,
+        "free",
+        { source: "sidebar", surface: "pricing_dialog" },
+      );
+    });
+
+    expect(global.fetch).toHaveBeenCalledTimes(1);
+    expect(mockNewCheckoutAttemptId).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      resolveFetch?.(
+        response({
+          ok: false,
+          status: 503,
+          body: { error: "Checkout temporarily unavailable" },
+        }),
+      );
+      await firstRequest;
+    });
+
+    await act(async () => {
+      await remountedDialog.result.current.handleUpgrade(
+        "pro-monthly-plan",
+        undefined,
+        undefined,
+        "free",
+        { source: "sidebar", surface: "pricing_dialog" },
+      );
+    });
+
+    expect(global.fetch).toHaveBeenCalledTimes(2);
+    expect(mockNewCheckoutAttemptId).toHaveBeenCalledTimes(2);
+    const requestBodies = (global.fetch as jest.Mock).mock.calls.map(
+      ([, init]) => JSON.parse(String(init?.body)),
+    );
+    expect(requestBodies.map((body) => body.checkoutAttemptId)).toEqual([
+      "ca_sidebar_123",
+      "ca_sidebar_retry_456",
+    ]);
+  });
+
   it("creates a distinct attempt ID for a valid retry after failure", async () => {
     global.fetch = jest
       .fn()

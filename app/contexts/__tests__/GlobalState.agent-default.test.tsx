@@ -1,5 +1,11 @@
 import "@testing-library/jest-dom";
-import { act, render, screen, waitFor } from "@testing-library/react";
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import { beforeEach, describe, expect, it, jest } from "@jest/globals";
 import { useAccessToken, useAuth } from "@workos-inc/authkit-nextjs/components";
 import { SHARED_TOKEN_KEY } from "@/lib/auth/shared-token";
@@ -73,6 +79,28 @@ function ActiveProjectProbe() {
   return <div data-testid="active-project-id">{activeProjectId ?? "none"}</div>;
 }
 
+function ChatNavigationProbe({
+  onNavigate,
+}: {
+  onNavigate: (nextChatId: string) => void;
+}) {
+  const { initializeChat, setChatNavigationHandler } = useGlobalState();
+
+  return (
+    <>
+      <button
+        type="button"
+        onClick={() => setChatNavigationHandler(onNavigate)}
+      >
+        Register navigation
+      </button>
+      <button type="button" onClick={() => initializeChat("destination-chat")}>
+        Open destination
+      </button>
+    </>
+  );
+}
+
 describe("GlobalStateProvider agent defaults", () => {
   beforeEach(() => {
     jest.clearAllMocks();
@@ -89,6 +117,22 @@ describe("GlobalStateProvider agent defaults", () => {
       Promise.resolve({ ok: false }),
     ) as unknown as typeof fetch;
     mockAuthUser([]);
+  });
+
+  it("runs registered stream cleanup before initializing another chat", () => {
+    const onNavigate = jest.fn();
+    render(
+      <GlobalStateProvider>
+        <ChatNavigationProbe onNavigate={onNavigate} />
+      </GlobalStateProvider>,
+    );
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Register navigation" }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Open destination" }));
+
+    expect(onNavigate).toHaveBeenCalledWith("destination-chat");
   });
 
   it("reveals free desktop mode access before token refresh finishes", async () => {

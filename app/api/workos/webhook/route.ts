@@ -3,7 +3,10 @@ import { getConvexClient } from "@/lib/db/convex-client";
 import type { Event } from "@workos-inc/node";
 import { api } from "@/convex/_generated/api";
 import { workos } from "@/app/api/workos";
-import { captureUserSignedUp } from "@/lib/analytics/user-signup";
+import {
+  captureUserEmailVerified,
+  captureUserSignedUp,
+} from "@/lib/analytics/user-signup";
 import { phLogger } from "@/lib/posthog/server";
 import { createFreeQuotaSubject } from "@/lib/auth/free-quota-subject";
 import { logger } from "@/lib/logger";
@@ -16,7 +19,7 @@ export const runtime = "nodejs";
  *
  * Configure in WorkOS Dashboard:
  * - Endpoint URL: https://your-domain.com/api/workos/webhook
- * - Events: user.created
+ * - Events: user.created, authentication.email_verification_succeeded
  */
 export async function POST(req: NextRequest) {
   const signature = req.headers.get("workos-signature");
@@ -108,6 +111,21 @@ export async function POST(req: NextRequest) {
         workosEventId: event.id,
         workosEventCreatedAt: event.createdAt,
       });
+    } else if (event.event === "authentication.email_verification_succeeded") {
+      if (!event.data.userId) {
+        logger.warn("Ignored WorkOS email verification without a user ID", {
+          event: "workos.email_verification_missing_user_id",
+          workos_event_id: event.id,
+          service: "hackerai-web",
+          route: "/api/workos/webhook",
+        });
+      } else {
+        captureUserEmailVerified({
+          userId: event.data.userId,
+          workosEventId: event.id,
+          workosEventCreatedAt: event.createdAt,
+        });
+      }
     }
   } catch (error) {
     console.error(

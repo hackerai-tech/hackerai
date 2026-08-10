@@ -1,6 +1,7 @@
 import type { ChatMessage, ChatStatus } from "@/types";
 import {
   projectAgentWorkParts,
+  projectAgentWorkTimelineItems,
   splitWorkedForParts,
   type AgentWorkActivity,
 } from "./worked-for-parts";
@@ -34,8 +35,20 @@ export type AgentActivityTimelineRow = BaseTimelineRow &
     terminalChunksByToolCallId: Map<string, readonly string[]>;
   };
 
+export type AgentToolGroupTimelineRow = BaseTimelineRow & {
+  kind: "agent-tool-group";
+  activities: AgentWorkActivity[];
+  animateOnMount: boolean;
+  isLastMessage: boolean;
+  summary: string;
+  terminalChunksByToolCallId: Map<string, readonly string[]>;
+};
+
 export type ChatTimelineRow =
-  MessageTimelineRow | AgentWorkHeaderTimelineRow | AgentActivityTimelineRow;
+  | MessageTimelineRow
+  | AgentWorkHeaderTimelineRow
+  | AgentActivityTimelineRow
+  | AgentToolGroupTimelineRow;
 
 export type StableChatTimelineRowsState = {
   byId: ReadonlyMap<string, ChatTimelineRow>;
@@ -47,7 +60,12 @@ export type DeriveChatTimelineRowsOptions = {
   status: ChatStatus;
   lastAssistantMessageIndex: number | undefined;
   expandedAgentMessageIds: ReadonlySet<string>;
+  animateNewToolGroups?: boolean;
+  seenAgentMessageIds?: ReadonlySet<string>;
+  seenToolGroupIds?: ReadonlySet<string>;
 };
+
+const EMPTY_TOOL_GROUP_IDS: ReadonlySet<string> = new Set();
 
 export function findLatestTimelineAnchorMessageId(
   messages: readonly ChatMessage[],
@@ -83,6 +101,9 @@ export function deriveChatTimelineRows({
   status,
   lastAssistantMessageIndex,
   expandedAgentMessageIds,
+  animateNewToolGroups = true,
+  seenAgentMessageIds,
+  seenToolGroupIds = EMPTY_TOOL_GROUP_IDS,
 }: DeriveChatTimelineRowsOptions): ChatTimelineRow[] {
   const rows: ChatTimelineRow[] = [];
 
@@ -102,10 +123,25 @@ export function deriveChatTimelineRows({
       continue;
     }
 
-    const { trailingTextParts, workPartIndexes } = splitWorkedForParts(
-      message.parts,
-    );
+    const { fileParts, trailingTextParts, workPartIndexes } =
+      splitWorkedForParts(message.parts);
     const projection = projectAgentWorkParts(message.parts, workPartIndexes);
+    const isPendingEmptyAgentMessage =
+      messageIndex === lastAssistantMessageIndex &&
+      (status === "submitted" || status === "streaming") &&
+      fileParts.length === 0 &&
+      projection.activities.length === 0 &&
+      !trailingTextParts.some(
+        (part) =>
+          part.type === "text" &&
+          typeof part.text === "string" &&
+          part.text.trim().length > 0,
+      );
+
+    // The loading indicator already represents this state in the fixed-height
+    // timeline footer. Keeping an empty virtualized row here adds its own
+    // spacing before any Trigger activity arrives, visibly moving the loader.
+    if (isPendingEmptyAgentMessage) continue;
 
     if (projection.activities.length === 0) {
       rows.push({
@@ -122,10 +158,20 @@ export function deriveChatTimelineRows({
       lastAssistantMessageIndex !== undefined &&
       messageIndex === lastAssistantMessageIndex;
     const isTiming = status === "streaming" && isLastAssistantMessage;
+    const canAnimateNewToolGroups =
+      animateNewToolGroups &&
+      (seenAgentMessageIds === undefined ||
+        seenAgentMessageIds.has(message.id));
     const hasFinalAnswer = trailingTextParts.length > 0;
     const canToggle = !isTiming && hasFinalAnswer;
     const expanded =
       isTiming || !hasFinalAnswer || expandedAgentMessageIds.has(message.id);
+    const timelineItems = projectAgentWorkTimelineItems({
+      activities: projection.activities,
+      messageSettled: !isTiming,
+      parts: message.parts,
+      workPartIndexes,
+    });
 
     rows.push({
       kind: "agent-work-header",
@@ -146,7 +192,27 @@ export function deriveChatTimelineRows({
     });
 
     if (expanded) {
-      for (const activity of projection.activities) {
+      for (const item of timelineItems) {
+        if (item.kind === "tool-group") {
+          const rowId = `work:${message.id}:${item.id}`;
+          rows.push({
+            kind: "agent-tool-group",
+            id: rowId,
+            message,
+            messageIndex,
+            activities: item.activities,
+            animateOnMount:
+              isTiming &&
+              canAnimateNewToolGroups &&
+              !seenToolGroupIds.has(rowId),
+            isLastMessage: messageIndex === messages.length - 1,
+            summary: item.summary,
+            terminalChunksByToolCallId: projection.terminalChunksByToolCallId,
+          });
+          continue;
+        }
+
+        const { kind: _kind, ...activity } = item;
         rows.push({
           kind: "agent-activity",
           message,
@@ -251,6 +317,27 @@ function isChatTimelineRowUnchanged(
         next.keepLatestReasoningOpenDuringStreaming &&
       previous.deferReasoningCollapseUntilParent ===
         next.deferReasoningCollapseUntilParent
+    );
+  }
+
+  if (
+    previous.kind === "agent-tool-group" &&
+    next.kind === "agent-tool-group"
+  ) {
+    return (
+      previous.message === next.message &&
+      previous.animateOnMount === next.animateOnMount &&
+      previous.isLastMessage === next.isLastMessage &&
+      previous.summary === next.summary &&
+      previous.activities.length === next.activities.length &&
+      previous.activities.every((activity, index) => {
+        const nextActivity = next.activities[index];
+        return (
+          activity.id === nextActivity?.id &&
+          activity.part === nextActivity.part &&
+          activity.partIndex === nextActivity.partIndex
+        );
+      })
     );
   }
 

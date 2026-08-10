@@ -30,7 +30,10 @@ import {
   DEFAULT_PTY_ROWS,
   type PtySession,
 } from "./utils/pty-session-manager";
-import { getSessionSnapshots } from "./utils/pty-output-formatter";
+import {
+  getSessionSnapshots,
+  type PtyParserLogContext,
+} from "./utils/pty-output-formatter";
 import {
   getSandboxWithFallbackGuard,
   resolveToolErrorMessage,
@@ -128,7 +131,10 @@ export const createRunTerminalCmd = (context: ToolContext) => {
     context.measureAgentActiveTime
       ? context.measureAgentActiveTime("sandbox_recovery", operation)
       : operation();
-  const buildTerminalLogContext = () => ({
+  const buildTerminalLogContext = (): Pick<
+    PtyParserLogContext,
+    "service" | "environment" | "request_id" | "trigger_run_id"
+  > => ({
     service: context.triggerRunId ? "agent-long" : "chat-handler",
     environment:
       process.env.TRIGGER_ENV ??
@@ -137,6 +143,15 @@ export const createRunTerminalCmd = (context: ToolContext) => {
       "unknown",
     request_id: context.triggerRunId ?? process.env.VERCEL_REQUEST_ID ?? null,
     trigger_run_id: context.triggerRunId ?? null,
+  });
+  const buildPtyParserLogContext = (
+    sessionId: string,
+  ): PtyParserLogContext => ({
+    ...buildTerminalLogContext(),
+    chat_id: context.chatId,
+    user_id: context.userID,
+    session_id: sessionId,
+    log_budget: context.ptyParserLogBudget,
   });
   const logSandboxReadinessRecovery = (args: {
     level: "info" | "warn" | "error";
@@ -364,6 +379,7 @@ export const createRunTerminalCmd = (context: ToolContext) => {
           const snapshots = await getSessionSnapshots(
             ptySessionManager,
             session,
+            buildPtyParserLogContext(session.sessionId),
           );
           // If the command finished during the quiet window (e.g. a one-shot
           // `echo … && whoami`), surface that so the agent doesn't try to

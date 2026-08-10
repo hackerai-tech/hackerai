@@ -23,6 +23,17 @@ type MembershipDeletionPlan = {
 
 const MAX_CONVEX_ACCOUNT_CLEANUP_BATCHES = 50;
 
+type ConvexCleanupProgress = {
+  deletedDocuments: number;
+  anonymizedDocuments: number;
+  s3ObjectsQueued: number;
+};
+
+type ParsedConvexCleanupResult = {
+  hasMore: boolean;
+  progress?: ConvexCleanupProgress;
+};
+
 function isMissingWorkosUserError(error: unknown): boolean {
   return (
     error instanceof Error &&
@@ -31,13 +42,43 @@ function isMissingWorkosUserError(error: unknown): boolean {
   );
 }
 
-function parseConvexCleanupResult(result: unknown): { hasMore: boolean } {
+function sumCleanupCounts(value: unknown): number | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+
+  let total = 0;
+  for (const count of Object.values(value)) {
+    if (typeof count !== "number" || !Number.isFinite(count) || count < 0) {
+      return undefined;
+    }
+    total += count;
+  }
+  return total;
+}
+
+function parseConvexCleanupResult(result: unknown): ParsedConvexCleanupResult {
   if (
     result &&
     typeof result === "object" &&
     typeof (result as { hasMore?: unknown }).hasMore === "boolean"
   ) {
-    return { hasMore: (result as { hasMore: boolean }).hasMore };
+    const cleanupResult = result as Record<string, unknown> & {
+      hasMore: boolean;
+    };
+    const deletedDocuments = sumCleanupCounts(cleanupResult.deleted);
+    const anonymizedDocuments = sumCleanupCounts(cleanupResult.anonymized);
+    const s3ObjectsQueued = cleanupResult.s3ObjectsQueued;
+    const progress =
+      deletedDocuments !== undefined &&
+      anonymizedDocuments !== undefined &&
+      typeof s3ObjectsQueued === "number" &&
+      Number.isFinite(s3ObjectsQueued) &&
+      s3ObjectsQueued >= 0
+        ? { deletedDocuments, anonymizedDocuments, s3ObjectsQueued }
+        : undefined;
+
+    return { hasMore: cleanupResult.hasMore, progress };
   }
 
   throw new Error(
@@ -125,8 +166,18 @@ async function markAccountIdentityDeleted(
   });
 }
 
-async function deleteConvexUserData(userId: string, serviceKey: string) {
+async function deleteConvexUserData(
+  userId: string,
+  serviceKey: string,
+  requestId: string,
+) {
   const convex = getConvexClient();
+  let progressStatsBatches = 0;
+  let batchesWithProgress = 0;
+  let deletedDocuments = 0;
+  let anonymizedDocuments = 0;
+  let s3ObjectsQueued = 0;
+  let lastProgress: ConvexCleanupProgress | undefined;
 
   for (let batch = 0; batch < MAX_CONVEX_ACCOUNT_CLEANUP_BATCHES; batch++) {
     const result = await convex.mutation(
@@ -137,10 +188,43 @@ async function deleteConvexUserData(userId: string, serviceKey: string) {
       },
     );
 
-    if (!parseConvexCleanupResult(result).hasMore) {
+    const parsedResult = parseConvexCleanupResult(result);
+    if (parsedResult.progress) {
+      progressStatsBatches += 1;
+      deletedDocuments += parsedResult.progress.deletedDocuments;
+      anonymizedDocuments += parsedResult.progress.anonymizedDocuments;
+      s3ObjectsQueued += parsedResult.progress.s3ObjectsQueued;
+      if (
+        parsedResult.progress.deletedDocuments > 0 ||
+        parsedResult.progress.anonymizedDocuments > 0
+      ) {
+        batchesWithProgress += 1;
+      }
+      lastProgress = parsedResult.progress;
+    }
+
+    if (!parsedResult.hasMore) {
       return;
     }
   }
+
+  logger.error("account_cleanup_batch_limit_exhausted", undefined, {
+    event: "account_cleanup_batch_limit_exhausted",
+    service: "hackerai-web",
+    environment: process.env.VERCEL_ENV ?? process.env.NODE_ENV,
+    request_id: requestId,
+    user_id: userId,
+    reason: "cleanup_batch_limit_exhausted",
+    batch_limit: MAX_CONVEX_ACCOUNT_CLEANUP_BATCHES,
+    progress_stats_batches: progressStatsBatches,
+    batches_with_progress: batchesWithProgress,
+    deleted_documents: deletedDocuments,
+    anonymized_documents: anonymizedDocuments,
+    s3_objects_queued: s3ObjectsQueued,
+    last_batch_deleted_documents: lastProgress?.deletedDocuments,
+    last_batch_anonymized_documents: lastProgress?.anonymizedDocuments,
+    last_batch_s3_objects_queued: lastProgress?.s3ObjectsQueued,
+  });
 
   throw new Error(
     "Account cleanup is taking longer than expected. Please contact support so we can finish deleting this account.",
@@ -152,6 +236,7 @@ export const POST = async (req: NextRequest) => {
   let userIdForLog: string | undefined;
   let membershipCount: number | undefined;
   let freeQuotaSubjectPresent: boolean | undefined;
+  const requestId = req.headers.get("x-vercel-id") ?? "unknown";
 
   try {
     // Enforce recent login (10-minute window) before any destructive action
@@ -223,7 +308,7 @@ export const POST = async (req: NextRequest) => {
     // Own app-data cleanup on the server so account deletion does not depend
     // on the browser successfully running a Convex mutation before this route.
     stage = "delete_convex_user_data";
-    await deleteConvexUserData(userId, serviceKey);
+    await deleteConvexUserData(userId, serviceKey, requestId);
 
     // Process each organization from memberships. Only delete org-level billing
     // and identity resources after proving this user is the sole active admin.
@@ -334,6 +419,7 @@ export const POST = async (req: NextRequest) => {
         event: "account_deletion_failed",
         service: "hackerai-web",
         environment: process.env.VERCEL_ENV ?? process.env.NODE_ENV,
+        request_id: requestId,
         stage,
         user_id: userIdForLog,
         membership_count: membershipCount,

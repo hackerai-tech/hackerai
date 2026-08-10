@@ -51,10 +51,11 @@ describe("ReasoningHandler", () => {
     );
 
     expect(screen.getByText("Thinking...")).toBeInTheDocument();
+    expect(screen.getByText("Thinking...")).toHaveClass("animate-text-shimmer");
     expect(screen.getByText("Visible reasoning text")).toBeInTheDocument();
   });
 
-  it("keeps the latest reasoning open while its tool is running", async () => {
+  it("keeps the latest reasoning open without shimmer while its tool is running", async () => {
     const message = {
       id: "assistant-1",
       role: "assistant",
@@ -83,7 +84,13 @@ describe("ReasoningHandler", () => {
     await waitFor(() => {
       expect(screen.getByText("Planning the tool")).toBeVisible();
     });
-    expect(screen.getByText("Thinking...")).toBeInTheDocument();
+    expect(screen.getByText("Reasoning")).not.toHaveClass(
+      "animate-text-shimmer",
+    );
+    expect(screen.queryByText("Thinking...")).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId("reasoning-streaming-indicator"),
+    ).not.toBeInTheDocument();
   });
 
   it("preserves last-part auto-collapse outside the Agent work panel", async () => {

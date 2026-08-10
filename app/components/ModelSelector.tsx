@@ -33,7 +33,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { Button } from "@/components/ui/button";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import {
@@ -81,10 +81,24 @@ const canChoosePersonalMaxAccessPath = (
 const isModelLockedForSubscription = (
   subscription: SubscriptionTier,
   model: SelectedModel,
-  extraUsageAvailable = false,
+  maxAccessAvailable = false,
 ): boolean =>
   subscription === "free" ||
-  (isMaxModel(model) && !canUseMaxModel(subscription, { extraUsageAvailable }));
+  (isMaxModel(model) &&
+    !canUseMaxModel(subscription, {
+      extraUsageAvailable: maxAccessAvailable,
+    }));
+
+type ProPlusMaxAccessExperimentResponse = {
+  eligible?: boolean;
+  variant?: "control" | "included_max";
+  includedMaxAccess?: boolean;
+};
+
+type ProPlusMaxAccessExperimentState = {
+  contextKey: string;
+  assignment: ProPlusMaxAccessExperimentResponse | null;
+};
 
 const getLockedModelCta = (
   model: SelectedModel,
@@ -441,6 +455,8 @@ const ModelOptionList = ({
 export function ModelSelector({ value, onChange, mode }: ModelSelectorProps) {
   const [open, setOpen] = useState(false);
   const [maxAccessDialogOpen, setMaxAccessDialogOpen] = useState(false);
+  const [maxAccessExperimentState, setMaxAccessExperimentState] =
+    useState<ProPlusMaxAccessExperimentState>();
   const { subscription } = useGlobalState();
   const isMobile = Boolean(useIsMobile());
 
@@ -452,10 +468,62 @@ export function ModelSelector({ value, onChange, mode }: ModelSelectorProps) {
     api.extraUsage.getMaxModelExtraUsageEntitlement,
     shouldCheckPersonalMaxExtraUsage ? {} : "skip",
   );
-  const maxModelEntitlementLoading =
+  const maxModelExtraUsageLoading =
     shouldCheckPersonalMaxExtraUsage && maxModelEntitlement === undefined;
   const maxModelExtraUsageAvailable =
     maxModelEntitlement?.extraUsageAvailable ?? false;
+  const maxAccessExperimentContextKey = `${subscription}:${mode}`;
+  const maxAccessExperiment =
+    maxAccessExperimentState?.contextKey === maxAccessExperimentContextKey
+      ? maxAccessExperimentState.assignment
+      : undefined;
+  const shouldCheckMaxAccessExperiment =
+    subscription === "pro-plus" &&
+    isAgentMode(mode) &&
+    open &&
+    maxModelEntitlement !== undefined &&
+    !maxModelExtraUsageAvailable &&
+    maxAccessExperiment === undefined;
+  const maxAccessExperimentLoading = shouldCheckMaxAccessExperiment;
+  const includedMaxAccess =
+    maxAccessExperiment?.includedMaxAccess === true &&
+    maxAccessExperiment.variant === "included_max";
+  const maxAccessAvailable = maxModelExtraUsageAvailable || includedMaxAccess;
+  const maxModelEntitlementLoading =
+    maxModelExtraUsageLoading || maxAccessExperimentLoading;
+
+  useEffect(() => {
+    if (!shouldCheckMaxAccessExperiment) return;
+
+    const abortController = new AbortController();
+    void fetch("/api/experiments/pro-plus-max-access", {
+      method: "GET",
+      cache: "no-store",
+      signal: abortController.signal,
+    })
+      .then(async (response) => {
+        if (!response.ok) return null;
+        return (await response.json()) as ProPlusMaxAccessExperimentResponse;
+      })
+      .then((assignment) => {
+        if (!abortController.signal.aborted) {
+          setMaxAccessExperimentState({
+            contextKey: maxAccessExperimentContextKey,
+            assignment,
+          });
+        }
+      })
+      .catch(() => {
+        if (!abortController.signal.aborted) {
+          setMaxAccessExperimentState({
+            contextKey: maxAccessExperimentContextKey,
+            assignment: null,
+          });
+        }
+      });
+
+    return () => abortController.abort();
+  }, [maxAccessExperimentContextKey, shouldCheckMaxAccessExperiment]);
   const subscriptionValue = normalizeSelectedModelForSubscription(
     value,
     subscription,
@@ -464,7 +532,7 @@ export function ModelSelector({ value, onChange, mode }: ModelSelectorProps) {
     value === "hackerai-max" && maxModelEntitlementLoading
       ? subscriptionValue
       : (normalizeMaxModelForSubscription(subscriptionValue, subscription, {
-          extraUsageAvailable: maxModelExtraUsageAvailable,
+          extraUsageAvailable: maxAccessAvailable,
         }) ?? "auto");
   const isAuto = displayValue === "auto";
 
@@ -499,11 +567,7 @@ export function ModelSelector({ value, onChange, mode }: ModelSelectorProps) {
     }
 
     if (
-      isModelLockedForSubscription(
-        subscription,
-        option.id,
-        maxModelExtraUsageAvailable,
-      )
+      isModelLockedForSubscription(subscription, option.id, maxAccessAvailable)
     ) {
       setOpen(false);
       if (

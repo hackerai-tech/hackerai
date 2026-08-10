@@ -5,6 +5,7 @@ import {
   useMemo,
   useCallback,
   useRef,
+  useSyncExternalStore,
   Dispatch,
   MutableRefObject,
   RefCallback,
@@ -14,6 +15,7 @@ import dynamic from "next/dynamic";
 import { LegendList, type LegendListRef } from "@legendapp/list/react";
 import { MessageItem } from "./MessageItem";
 import { AgentActivityRow } from "./AgentActivityRow";
+import { AgentToolGroupRow } from "./AgentToolGroupRow";
 import { AgentWorkHeader } from "./AgentWorkHeader";
 import { MessageErrorState } from "./MessageErrorState";
 import { SummarizationStatusDivider } from "./SummarizationStatusDivider";
@@ -75,6 +77,98 @@ type StickyElementRef =
     });
 
 const getTimelineRowKey = (row: ChatTimelineRow) => row.id;
+
+type ToolGroupMountSnapshot = {
+  chatId: string;
+  hasCommittedTimeline: boolean;
+  seenAgentMessageIds: ReadonlySet<string>;
+  seenToolGroupIds: ReadonlySet<string>;
+};
+
+type ToolGroupMountStore = {
+  commit: (chatId: string, rows: readonly ChatTimelineRow[]) => void;
+  getSnapshot: () => ToolGroupMountSnapshot;
+  markToolGroupMounted: (chatId: string, rowId: string) => void;
+  subscribe: (listener: () => void) => () => void;
+};
+
+function createToolGroupMountStore(initialChatId: string): ToolGroupMountStore {
+  let snapshot: ToolGroupMountSnapshot = {
+    chatId: initialChatId,
+    hasCommittedTimeline: false,
+    seenAgentMessageIds: new Set(),
+    seenToolGroupIds: new Set(),
+  };
+  const listeners = new Set<() => void>();
+
+  return {
+    commit(chatId, rows) {
+      const isCurrentChat = snapshot.chatId === chatId;
+      const previouslySeenAgentMessageIds = isCurrentChat
+        ? snapshot.seenAgentMessageIds
+        : new Set<string>();
+      const seenAgentMessageIds = isCurrentChat
+        ? new Set(snapshot.seenAgentMessageIds)
+        : new Set<string>();
+      const seenToolGroupIds = isCurrentChat
+        ? new Set(snapshot.seenToolGroupIds)
+        : new Set<string>();
+      let changed = !isCurrentChat;
+
+      for (const row of rows) {
+        const isAgentMessage =
+          row.message.role === "assistant" &&
+          row.message.metadata?.mode === "agent";
+        const wasAgentMessageSeen =
+          isAgentMessage && previouslySeenAgentMessageIds.has(row.message.id);
+
+        if (isAgentMessage && !seenAgentMessageIds.has(row.message.id)) {
+          seenAgentMessageIds.add(row.message.id);
+          changed = true;
+        }
+        if (
+          row.kind === "agent-tool-group" &&
+          !wasAgentMessageSeen &&
+          !seenToolGroupIds.has(row.id)
+        ) {
+          seenToolGroupIds.add(row.id);
+          changed = true;
+        }
+      }
+
+      const hasCommittedTimeline =
+        (isCurrentChat && snapshot.hasCommittedTimeline) || rows.length > 0;
+      if (hasCommittedTimeline !== snapshot.hasCommittedTimeline) {
+        changed = true;
+      }
+      if (!changed) return;
+
+      snapshot = {
+        chatId,
+        hasCommittedTimeline,
+        seenAgentMessageIds,
+        seenToolGroupIds,
+      };
+      listeners.forEach((listener) => listener());
+    },
+    getSnapshot: () => snapshot,
+    markToolGroupMounted(chatId, rowId) {
+      if (snapshot.chatId !== chatId || snapshot.seenToolGroupIds.has(rowId)) {
+        return;
+      }
+
+      snapshot = {
+        ...snapshot,
+        seenToolGroupIds: new Set(snapshot.seenToolGroupIds).add(rowId),
+      };
+      listeners.forEach((listener) => listener());
+    },
+    subscribe(listener) {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+  };
+}
 
 const setElementRef = (ref: StickyElementRef, element: HTMLElement | null) => {
   if (typeof ref === "function") {
@@ -231,21 +325,39 @@ export const Messages = ({
   const [expandedAgentMessageIds, setExpandedAgentMessageIds] = useState<
     ReadonlySet<string>
   >(() => new Set());
-  const rawTimelineRows = useMemo(
-    () =>
-      deriveChatTimelineRows({
-        messages: visibleMessages,
-        status,
-        lastAssistantMessageIndex,
-        expandedAgentMessageIds,
-      }),
-    [
-      expandedAgentMessageIds,
-      lastAssistantMessageIndex,
-      status,
-      visibleMessages,
-    ],
+  const [toolGroupMountStore] = useState(() =>
+    createToolGroupMountStore(chatId),
   );
+  const toolGroupMountState = useSyncExternalStore(
+    toolGroupMountStore.subscribe,
+    toolGroupMountStore.getSnapshot,
+    toolGroupMountStore.getSnapshot,
+  );
+  const rawTimelineRows = useMemo(() => {
+    const isCurrentChat = toolGroupMountState.chatId === chatId;
+
+    return deriveChatTimelineRows({
+      messages: visibleMessages,
+      status,
+      lastAssistantMessageIndex,
+      expandedAgentMessageIds,
+      animateNewToolGroups:
+        isCurrentChat && toolGroupMountState.hasCommittedTimeline,
+      seenToolGroupIds: isCurrentChat
+        ? toolGroupMountState.seenToolGroupIds
+        : new Set(),
+      seenAgentMessageIds: isCurrentChat
+        ? toolGroupMountState.seenAgentMessageIds
+        : new Set(),
+    });
+  }, [
+    chatId,
+    expandedAgentMessageIds,
+    lastAssistantMessageIndex,
+    status,
+    toolGroupMountState,
+    visibleMessages,
+  ]);
   const stableTimelineRowsRef = useRef<StableChatTimelineRowsState | null>(
     null,
   );
@@ -259,7 +371,8 @@ export const Messages = ({
   );
   useLayoutEffect(() => {
     stableTimelineRowsRef.current = stableTimelineRowsState;
-  }, [stableTimelineRowsState]);
+    toolGroupMountStore.commit(chatId, stableTimelineRowsState.result);
+  }, [chatId, stableTimelineRowsState, toolGroupMountStore]);
   const timelineRows = stableTimelineRowsState.result;
   const navigatorItems = useMemo(
     () => deriveMessageNavigatorItems(visibleMessages, timelineRows),
@@ -546,13 +659,17 @@ export const Messages = ({
     () => ({ editingMessageId, status }),
     [editingMessageId, status],
   );
+  const handleToolGroupMount = useCallback(
+    (rowId: string) => toolGroupMountStore.markToolGroupMounted(chatId, rowId),
+    [chatId, toolGroupMountStore],
+  );
 
   const renderTimelineRow = useCallback(
     ({ item: row }: { item: ChatTimelineRow }) => {
       const rowClassName =
         row.kind === "agent-work-header"
           ? "pb-2"
-          : row.kind === "agent-activity"
+          : row.kind === "agent-activity" || row.kind === "agent-tool-group"
             ? "pb-3"
             : "pb-4";
 
@@ -570,7 +687,10 @@ export const Messages = ({
             startedAt={row.startedAt}
           />
         );
-      } else if (row.kind === "agent-activity") {
+      } else if (
+        row.kind === "agent-activity" ||
+        row.kind === "agent-tool-group"
+      ) {
         const effectiveStatus: ChatStatus =
           status === "streaming" &&
           row.messageIndex !== lastAssistantMessageIndex
@@ -581,24 +701,38 @@ export const Messages = ({
           tempChatFileDetails?.get(row.message.id) ||
           undefined;
 
-        content = (
-          <AgentActivityRow
-            deferReasoningCollapseUntilParent={
-              row.deferReasoningCollapseUntilParent
-            }
-            isLastMessage={row.isLastMessage}
-            keepLatestReasoningOpenDuringStreaming={
-              row.keepLatestReasoningOpenDuringStreaming
-            }
-            message={row.message}
-            part={row.part}
-            partIndex={row.partIndex}
-            groupedParts={row.groupedParts}
-            sharedFileDetails={sharedFileDetails}
-            status={effectiveStatus}
-            terminalChunksByToolCallId={row.terminalChunksByToolCallId}
-          />
-        );
+        content =
+          row.kind === "agent-activity" ? (
+            <AgentActivityRow
+              deferReasoningCollapseUntilParent={
+                row.deferReasoningCollapseUntilParent
+              }
+              isLastMessage={row.isLastMessage}
+              keepLatestReasoningOpenDuringStreaming={
+                row.keepLatestReasoningOpenDuringStreaming
+              }
+              message={row.message}
+              part={row.part}
+              partIndex={row.partIndex}
+              groupedParts={row.groupedParts}
+              sharedFileDetails={sharedFileDetails}
+              status={effectiveStatus}
+              terminalChunksByToolCallId={row.terminalChunksByToolCallId}
+            />
+          ) : (
+            <AgentToolGroupRow
+              activities={row.activities}
+              animateOnMount={row.animateOnMount}
+              groupId={row.id}
+              isLastMessage={row.isLastMessage}
+              message={row.message}
+              onMount={handleToolGroupMount}
+              sharedFileDetails={sharedFileDetails}
+              status={effectiveStatus}
+              summary={row.summary}
+              terminalChunksByToolCallId={row.terminalChunksByToolCallId}
+            />
+          );
       } else {
         content = (
           <MessageItem
@@ -674,6 +808,7 @@ export const Messages = ({
       handleShowAllFiles,
       handleStartEdit,
       handleToggleAgentWork,
+      handleToolGroupMount,
       isMobile,
       lastAssistantMessageIndex,
       lastUserMessageId,

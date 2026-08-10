@@ -35,6 +35,22 @@ const collectReasoningText = (
   return collected.join("");
 };
 
+const findReasoningBlockEnd = (
+  parts: UIMessage["parts"],
+  startIndex: number,
+): number => {
+  let endIndex = startIndex;
+  while (parts[endIndex + 1]?.type === "reasoning") {
+    endIndex++;
+  }
+  return endIndex;
+};
+
+const isReasoningBlockAtMessageTail = (
+  parts: UIMessage["parts"],
+  startIndex: number,
+): boolean => findReasoningBlockEnd(parts, startIndex) === parts.length - 1;
+
 // Hoist regex outside component to avoid recreation
 const REDACTED_PATTERN = /^(\[REDACTED\])+$/;
 
@@ -83,7 +99,9 @@ function areReasoningPropsEqual(
       collectReasoningText(prev.message.parts, prev.partIndex) ===
         collectReasoningText(next.message.parts, next.partIndex) &&
       findLatestVisibleReasoningBlockStart(prev.message.parts) ===
-        findLatestVisibleReasoningBlockStart(next.message.parts)
+        findLatestVisibleReasoningBlockStart(next.message.parts) &&
+      isReasoningBlockAtMessageTail(prev.message.parts, prev.partIndex) ===
+        isReasoningBlockAtMessageTail(next.message.parts, next.partIndex)
     );
   }
   return true;
@@ -125,18 +143,26 @@ export const ReasoningHandler = memo(function ReasoningHandler({
   const isStreamingMessage = status === "streaming" && Boolean(isLastMessage);
   const isLatestVisibleReasoningBlock =
     partIndex === findLatestVisibleReasoningBlockStart(parts);
-  const isLastPart = partIndex === parts.length - 1;
+  const isReasoningBlockAtTail = isReasoningBlockAtMessageTail(
+    parts,
+    partIndex,
+  );
+  const isActivelyReasoning =
+    isStreamingMessage &&
+    isLatestVisibleReasoningBlock &&
+    isReasoningBlockAtTail;
   const autoOpen =
     isStreamingMessage &&
     (keepLatestOpenDuringStreaming
       ? isLatestVisibleReasoningBlock
-      : isLastPart);
+      : isReasoningBlockAtTail);
   const collapseWhenInactive = isStreamingMessage || !deferCollapseUntilParent;
 
   return (
     <Reasoning
       className="w-full"
       isStreaming={autoOpen}
+      isActive={isActivelyReasoning}
       collapseWhenInactive={collapseWhenInactive}
     >
       <ReasoningTrigger />

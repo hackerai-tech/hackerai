@@ -6,6 +6,7 @@ import dynamic from "next/dynamic";
 import {
   useRef,
   useEffect,
+  useLayoutEffect,
   useState,
   useReducer,
   useCallback,
@@ -22,6 +23,7 @@ import { api } from "@/convex/_generated/api";
 import type { FileDetails } from "@/types/file";
 import { Messages } from "./Messages";
 import { ChatInput } from "./ChatInput";
+import { ChatLoadingStatusPill } from "./ChatLoadingStatusPill";
 import type { RateLimitWarningData } from "./RateLimitWarning";
 import ChatHeader from "./ChatHeader";
 import Footer from "./Footer";
@@ -98,7 +100,6 @@ import { useLatestRef } from "../hooks/useLatestRef";
 import { useDataStreamDispatch } from "./DataStreamProvider";
 import { removeDraft } from "@/lib/utils/client-storage";
 import { parseRateLimitWarning } from "@/lib/utils/parse-rate-limit-warning";
-import Loading from "@/components/ui/loading";
 import { formatTaskUiCopy } from "@/app/utils/task-ui-copy";
 import { finalizeNewChatRoute } from "./chat-route";
 
@@ -506,6 +507,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     initializeChat,
     setTodos,
     setChatReset,
+    setChatNavigationHandler,
     hasUserDismissedRateLimitWarning,
     setHasUserDismissedRateLimitWarning,
     messageQueue,
@@ -667,12 +669,17 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   const isChatMountedRef = useRef(false);
   const browserStreamFinishedRef = useRef(false);
   const activeChatIdRef = useRef(chatId);
+  const streamChatIdRef = useRef(chatId);
   const agentLongPartialSaveKeysRef = useRef<Set<string>>(new Set());
   const agentLongRunCorrelationRef = useRef<{
     runId: string;
     token: string;
   } | null>(null);
-  activeChatIdRef.current = chatId;
+
+  useLayoutEffect(() => {
+    activeChatIdRef.current = chatId;
+    streamChatIdRef.current = chatId;
+  }, [chatId]);
 
   useEffect(() => {
     isChatMountedRef.current = true;
@@ -1060,13 +1067,13 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     shouldUseAgentLongForCurrentChat;
   const stopActiveBrowserStream = useCallback(
     (nextChatId?: string) => {
-      const activeChatId = activeChatIdRef.current;
+      const streamChatId = streamChatIdRef.current;
       if (nextChatId) {
         // Invalidate terminal callbacks before either cancellation path can
         // finish synchronously.
         activeChatIdRef.current = nextChatId;
       }
-      cancelAgentLongRealtimeStreams(activeChatId);
+      cancelAgentLongRealtimeStreams(streamChatId);
       const streamAlreadyFinished =
         shouldUseAgentLongForCurrentChatRef.current &&
         browserStreamFinishedRef.current;
@@ -1081,6 +1088,11 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     },
     [setDataStream, setIsAutoResuming],
   );
+
+  useEffect(() => {
+    setChatNavigationHandler(stopActiveBrowserStream);
+    return () => setChatNavigationHandler(null);
+  }, [setChatNavigationHandler, stopActiveBrowserStream]);
 
   const saveAgentLongPartialSnapshot = useCallback(
     (clientReason: string) => {
@@ -1797,6 +1809,8 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
       hasPaginatedMessageResults: !!paginatedMessageResults,
       awaitingServerChat,
     });
+  const showBottomChatInput =
+    (hasMessages || isExistingChat || isMobile) && !isChatNotFound;
   const agentRunSpendCapWarning =
     rateLimitWarning?.warningType === "agent-run-spend-cap"
       ? rateLimitWarning
@@ -1860,11 +1874,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
             {/* Chat interface */}
             <div className="bg-background flex flex-col flex-1 relative min-h-0">
               {/* Messages area */}
-              {isInitialExistingChatLoad ? (
-                <div className="flex-1 flex items-center justify-center min-h-0">
-                  <Loading />
-                </div>
-              ) : isChatNotFound ? (
+              {isChatNotFound ? (
                 <div className="flex-1 flex flex-col items-center justify-center px-4 py-8 min-h-0">
                   <div className="w-full max-w-full sm:max-w-[768px] sm:min-w-[390px] flex flex-col items-center space-y-8">
                     <div className="text-center">
@@ -1879,37 +1889,45 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
                   </div>
                 </div>
               ) : showChatLayout ? (
-                <Messages
-                  chatId={chatId}
-                  scrollRef={scrollRef}
-                  contentRef={contentRef}
-                  messages={messages}
-                  setMessages={setMessages}
-                  onRegenerate={handleRegenerate}
-                  onRetry={handleRetry}
-                  onContinue={handleContinue}
-                  onReconnect={resumeStream}
-                  onEditMessage={handleEditMessage}
-                  onBranchMessage={handleBranchMessage}
-                  status={status}
-                  error={error || null}
-                  paginationStatus={paginatedMessages.status}
-                  loadMore={paginatedMessages.loadMore}
-                  isMobile={isMobile}
-                  tempChatFileDetails={tempChatFileDetails}
-                  finishReason={chatDataForCurrentChat?.finish_reason}
-                  agentRunSpendCapWarning={agentRunSpendCapWarning}
-                  uploadStatus={uploadStatus}
-                  summarizationStatus={summarizationStatus}
-                  mode={
-                    chatMode ??
-                    (chatDataForCurrentChat as any)?.default_model_slug
-                  }
-                  chatTitle={chatTitle}
-                  branchedFromChatId={branchedFromChatId}
-                  branchedFromChatTitle={branchedFromChatTitle}
-                  anchorMessageId={timelineAnchorMessageId}
-                />
+                <div
+                  className={`flex min-h-0 flex-1 transition-opacity duration-150 motion-reduce:transition-none ${
+                    isInitialExistingChatLoad ? "opacity-0" : "opacity-100"
+                  }`}
+                  aria-busy={isInitialExistingChatLoad}
+                  data-testid="chat-timeline-shell"
+                >
+                  <Messages
+                    chatId={chatId}
+                    scrollRef={scrollRef}
+                    contentRef={contentRef}
+                    messages={messages}
+                    setMessages={setMessages}
+                    onRegenerate={handleRegenerate}
+                    onRetry={handleRetry}
+                    onContinue={handleContinue}
+                    onReconnect={resumeStream}
+                    onEditMessage={handleEditMessage}
+                    onBranchMessage={handleBranchMessage}
+                    status={status}
+                    error={error || null}
+                    paginationStatus={paginatedMessages.status}
+                    loadMore={paginatedMessages.loadMore}
+                    isMobile={isMobile}
+                    tempChatFileDetails={tempChatFileDetails}
+                    finishReason={chatDataForCurrentChat?.finish_reason}
+                    agentRunSpendCapWarning={agentRunSpendCapWarning}
+                    uploadStatus={uploadStatus}
+                    summarizationStatus={summarizationStatus}
+                    mode={
+                      chatMode ??
+                      (chatDataForCurrentChat as any)?.default_model_slug
+                    }
+                    chatTitle={chatTitle}
+                    branchedFromChatId={branchedFromChatId}
+                    branchedFromChatTitle={branchedFromChatTitle}
+                    anchorMessageId={timelineAnchorMessageId}
+                  />
+                </div>
               ) : (
                 <div className="flex-1 flex flex-col min-h-0">
                   <div className="flex-1 flex flex-col items-center justify-center px-4 min-h-0">
@@ -1954,9 +1972,9 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
               )}
 
               {/* Chat Input - Bottom placement (also for mobile new chats) */}
-              {(hasMessages || isExistingChat || isMobile) &&
-                !isInitialExistingChatLoad &&
-                !isChatNotFound && (
+              {showBottomChatInput ? (
+                <div className="flex-shrink-0">
+                  {isInitialExistingChatLoad ? <ChatLoadingStatusPill /> : null}
                   <ChatInput
                     onSubmit={handleSubmit}
                     onStop={handleStop}
@@ -1968,13 +1986,17 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
                     onScrollToBottom={handleScrollToBottom}
                     isNewChat={!isExistingChat}
                     chatId={chatId}
+                    sendDisabledReason={
+                      isInitialExistingChatLoad ? "Messages loading" : undefined
+                    }
                     rateLimitWarning={
                       rateLimitWarning ? rateLimitWarning : undefined
                     }
                     onDismissRateLimitWarning={handleDismissRateLimitWarning}
                     storedApprovalRequest={storedAgentApprovalRequest}
                   />
-                )}
+                </div>
+              ) : null}
             </div>
           </div>
 

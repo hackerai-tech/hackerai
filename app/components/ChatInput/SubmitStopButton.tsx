@@ -46,7 +46,9 @@ function getSendButtonTooltip(
   isOnline: boolean,
   hasFileErrors: boolean,
   isUploading: boolean,
+  sendDisabledReason?: string,
 ): string {
+  if (sendDisabledReason) return sendDisabledReason;
   if (!isOnline) return "Reconnect to send";
   if (hasFileErrors) return "Remove failed files to send";
   if (isUploading) return "File upload pending";
@@ -65,6 +67,7 @@ export interface SubmitStopButtonProps {
   chatMode: ChatMode;
   isPaid?: boolean;
   isOnline?: boolean;
+  sendDisabledReason?: string;
 }
 
 export function SubmitStopButton({
@@ -79,6 +82,7 @@ export function SubmitStopButton({
   chatMode,
   isPaid = false,
   isOnline = true,
+  sendDisabledReason,
 }: SubmitStopButtonProps) {
   useHotkeys(
     "ctrl+c",
@@ -130,6 +134,7 @@ export function SubmitStopButton({
               <Button
                 type="submit"
                 disabled={
+                  !!sendDisabledReason ||
                   !isOnline ||
                   status !== "ready" ||
                   isUploadingFiles ||
@@ -150,6 +155,7 @@ export function SubmitStopButton({
                 isOnline,
                 uploadedFiles.some((f) => f.error),
                 isUploadingFiles,
+                sendDisabledReason,
               )}
             </p>
           </TooltipContent>

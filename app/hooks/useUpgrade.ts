@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useState } from "react";
 import { useAuth } from "@workos-inc/authkit-nextjs/components";
 import { toast } from "sonner";
 import {
@@ -12,10 +12,13 @@ import {
   type PaidFunnelPlan,
 } from "@/lib/analytics/paid-funnel";
 
+// Keep a tab's upgrade ownership across pricing dialog remounts. Server routes
+// remain authoritative across page loads and tabs, including open-session reuse.
+let upgradeInFlight = false;
+
 export const useUpgrade = () => {
   const { user } = useAuth();
   const [upgradeLoading, setUpgradeLoading] = useState(false);
-  const upgradeInFlightRef = useRef(false);
 
   const handleUpgrade = async (
     planKey?: PaidFunnelPlan,
@@ -32,7 +35,7 @@ export const useUpgrade = () => {
     e?.preventDefault();
 
     // Prevent duplicate submits
-    if (upgradeInFlightRef.current) {
+    if (upgradeInFlight) {
       return;
     }
 
@@ -41,7 +44,7 @@ export const useUpgrade = () => {
       return;
     }
 
-    upgradeInFlightRef.current = true;
+    upgradeInFlight = true;
     setUpgradeLoading(true);
 
     let navigationStarted = false;
@@ -206,7 +209,7 @@ export const useUpgrade = () => {
       }
     } finally {
       if (!navigationStarted) {
-        upgradeInFlightRef.current = false;
+        upgradeInFlight = false;
         setUpgradeLoading(false);
       }
     }

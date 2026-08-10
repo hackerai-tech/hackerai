@@ -364,6 +364,16 @@ describe("selectModel", () => {
           extraUsageAvailable: true,
         }),
       ).toBe("model-opus-4.6");
+      expect(
+        selectModel("agent", "pro-plus", "hackerai-max", false, false, {
+          includedMaxAccess: true,
+        }),
+      ).toBe("model-opus-4.6");
+      expect(
+        selectModel("agent", "pro", "hackerai-max", false, false, {
+          includedMaxAccess: true,
+        }),
+      ).toBe("model-grok-4.5-pro");
     });
 
     it("should default to DeepSeek V4 Pro when no model is selected", () => {
