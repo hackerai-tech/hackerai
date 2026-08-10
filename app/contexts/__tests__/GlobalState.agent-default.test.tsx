@@ -25,7 +25,7 @@ jest.mock("@/app/hooks/useSandboxPreference", () => {
   };
 });
 
-const { GlobalStateProvider, useGlobalState } =
+const { GlobalStateProvider, useGlobalState, useGlobalStateActions } =
   jest.requireActual<typeof import("../GlobalState")>("../GlobalState");
 
 const mockAuthUser = (
@@ -105,6 +105,27 @@ function ChatNavigationProbe({
   );
 }
 
+function NavigationActionRenderProbe({ onRender }: { onRender: () => void }) {
+  const { setChatSidebarOpen } = useGlobalStateActions();
+  onRender();
+
+  return (
+    <button type="button" onClick={() => setChatSidebarOpen(false)}>
+      Close task sidebar
+    </button>
+  );
+}
+
+function UnrelatedGlobalStateUpdater() {
+  const { setIsTodoPanelExpanded } = useGlobalState();
+
+  return (
+    <button type="button" onClick={() => setIsTodoPanelExpanded(true)}>
+      Expand todo panel
+    </button>
+  );
+}
+
 describe("GlobalStateProvider agent defaults", () => {
   beforeEach(() => {
     jest.clearAllMocks();
@@ -121,6 +142,21 @@ describe("GlobalStateProvider agent defaults", () => {
       Promise.resolve({ ok: false }),
     ) as unknown as typeof fetch;
     mockAuthUser([]);
+  });
+
+  it("does not rerender an action-only consumer for unrelated state", () => {
+    const onRender = jest.fn();
+    render(
+      <GlobalStateProvider>
+        <NavigationActionRenderProbe onRender={onRender} />
+        <UnrelatedGlobalStateUpdater />
+      </GlobalStateProvider>,
+    );
+
+    expect(onRender).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByRole("button", { name: "Expand todo panel" }));
+
+    expect(onRender).toHaveBeenCalledTimes(1);
   });
 
   it("runs registered stream cleanup before initializing another chat", () => {

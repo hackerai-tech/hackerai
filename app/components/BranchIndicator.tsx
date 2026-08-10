@@ -2,7 +2,7 @@
 
 import { memo, useCallback } from "react";
 import { useRouter } from "next/navigation";
-import { useGlobalState } from "../contexts/GlobalState";
+import { useGlobalStateActions } from "../contexts/GlobalState";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { formatTaskTitle } from "@/app/utils/task-ui-copy";
 
@@ -18,7 +18,8 @@ export const BranchIndicator = memo(function BranchIndicator({
   onNavigate,
 }: BranchIndicatorProps) {
   const router = useRouter();
-  const { initializeChat, closeSidebar, setChatSidebarOpen } = useGlobalState();
+  const { initializeChat, closeSidebar, setChatSidebarOpen } =
+    useGlobalStateActions();
   const isMobile = useIsMobile();
   const taskTitle = formatTaskTitle(branchedFromChatTitle);
 
