@@ -341,6 +341,101 @@ describe("proxy", () => {
     );
   });
 
+  it("preserves session cookies when an API refresh is rate-limited", async () => {
+    const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+    const authkitHeaders = new Headers({
+      "cache-control": "no-store",
+      "set-cookie":
+        "wos-session=; Expires=Thu, 01 Jan 1970 00:00:00 GMT; Path=/; HttpOnly",
+      "x-workos-session": "internal-session-value",
+    });
+    authkitHeaders.append(
+      "set-cookie",
+      "wos-auth-verifier-state=sealed-state; Path=/; HttpOnly",
+    );
+
+    try {
+      mockAuthkit.mockImplementation((_request, options: any) => {
+        options.onSessionRefreshError({
+          error: Object.assign(new Error("Rate limit exceeded"), {
+            status: 429,
+          }),
+        });
+        return Promise.resolve({
+          session: { user: null },
+          headers: authkitHeaders,
+          authorizationUrl: "https://auth.hackerai.co/login",
+        });
+      });
+      const { default: proxy } = await import("../proxy");
+
+      await proxy(
+        createRequest({
+          pathname: "/api/agent/resume",
+          hasSession: true,
+        }),
+      );
+
+      expect(mockNextResponseJson).toHaveBeenCalledWith(
+        { code: "rate_limited", message: "Please retry shortly." },
+        expect.objectContaining({ status: 503 }),
+      );
+      const responseInit = mockNextResponseJson.mock.calls[0][1] as {
+        headers: Headers;
+      };
+      expect(responseInit.headers.get("retry-after")).toBe("5");
+      expect(responseInit.headers.get("cache-control")).toBe("no-store");
+      expect(responseInit.headers.get("set-cookie")).toBeNull();
+      expect(responseInit.headers.get("x-workos-session")).toBeNull();
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it("preserves session cookies when a browser refresh is rate-limited", async () => {
+    const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+    const authkitHeaders = new Headers({
+      "set-cookie":
+        "wos-session=; Expires=Thu, 01 Jan 1970 00:00:00 GMT; Path=/; HttpOnly",
+      "x-workos-session": "internal-session-value",
+    });
+
+    try {
+      mockAuthkit.mockImplementation((_request, options: any) => {
+        options.onSessionRefreshError({
+          error: Object.assign(new Error("Too many requests"), {
+            status: 429,
+          }),
+        });
+        return Promise.resolve({
+          session: { user: null },
+          headers: authkitHeaders,
+          authorizationUrl: "https://auth.hackerai.co/login",
+        });
+      });
+      const { default: proxy } = await import("../proxy");
+
+      await proxy(
+        createRequest({
+          pathname: "/dashboard",
+          accept: "text/html",
+          hasSession: true,
+          userAgent: "Mozilla/5.0",
+        }),
+      );
+
+      expect(mockNextResponseNext).toHaveBeenCalledTimes(1);
+      const responseInit = mockNextResponseNext.mock.calls[0][0] as {
+        headers: Headers;
+      };
+      expect(responseInit.headers.get("set-cookie")).toBeNull();
+      expect(responseInit.headers.get("x-workos-session")).toBeNull();
+      expect(mockNextResponseRedirect).not.toHaveBeenCalled();
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
   it("treats thrown ended-session refresh errors as unauthenticated home requests", async () => {
     const endedSessionError = Object.assign(
       new Error("Failed to refresh session: Error: invalid_grant"),
