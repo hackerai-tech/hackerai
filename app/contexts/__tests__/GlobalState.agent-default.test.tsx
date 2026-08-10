@@ -50,6 +50,7 @@ function GlobalStateProbe() {
     agentPermissionMode,
     chatModeAccessResolved,
     chatMode,
+    freeDesktopAgentOnlyActive,
     isCheckingProPlan,
     paidAgentOnlyActive,
     sandboxPreference,
@@ -64,6 +65,9 @@ function GlobalStateProbe() {
         {String(chatModeAccessResolved)}
       </div>
       <div data-testid="chat-mode">{chatMode}</div>
+      <div data-testid="free-desktop-agent-only">
+        {String(freeDesktopAgentOnlyActive)}
+      </div>
       <div data-testid="checking-pro-plan">{String(isCheckingProPlan)}</div>
       <div data-testid="paid-agent-only">{String(paidAgentOnlyActive)}</div>
       <div data-testid="sandbox-preference">{sandboxPreference}</div>
@@ -135,7 +139,7 @@ describe("GlobalStateProvider agent defaults", () => {
     expect(onNavigate).toHaveBeenCalledWith("destination-chat");
   });
 
-  it("reveals free desktop mode access before token refresh finishes", async () => {
+  it("makes free Desktop users Agent-only before token refresh finishes", async () => {
     window.__TAURI_INTERNALS__ = {};
     const refreshAuth = jest.fn(() => new Promise<void>(() => {}));
     mockAuthUser(undefined, { refreshAuth });
@@ -165,8 +169,46 @@ describe("GlobalStateProvider agent defaults", () => {
         "false",
       );
     });
-    expect(screen.getByTestId("subscription")).toHaveTextContent("free");
-    expect(screen.getByTestId("paid-agent-only")).toHaveTextContent("false");
+    await waitFor(() => {
+      expect(screen.getByTestId("subscription")).toHaveTextContent("free");
+      expect(screen.getByTestId("paid-agent-only")).toHaveTextContent("false");
+      expect(screen.getByTestId("free-desktop-agent-only")).toHaveTextContent(
+        "true",
+      );
+      expect(screen.getByTestId("chat-mode")).toHaveTextContent("agent");
+    });
+  });
+
+  it("forces returning free Desktop users out of saved Ask mode", async () => {
+    window.__TAURI_INTERNALS__ = {};
+    window.localStorage.setItem("chat_mode", "ask");
+    window.localStorage.setItem("agent_permission_mode", "full_access");
+    mockAuthUser([]);
+    global.fetch = jest.fn((input) => {
+      if (String(input) === "/api/entitlements") {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({ entitlements: [] }),
+        });
+      }
+      return Promise.resolve({ ok: false });
+    }) as unknown as typeof fetch;
+
+    render(
+      <GlobalStateProvider>
+        <GlobalStateProbe />
+      </GlobalStateProvider>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId("free-desktop-agent-only")).toHaveTextContent(
+        "true",
+      );
+      expect(screen.getByTestId("chat-mode")).toHaveTextContent("agent");
+    });
+    expect(screen.getByTestId("agent-permission-mode")).toHaveTextContent(
+      "full_access",
+    );
   });
 
   it("reveals free web mode access when AuthKit omits entitlements", async () => {

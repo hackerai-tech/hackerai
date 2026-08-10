@@ -25,6 +25,7 @@ export function ChatInputToolbar({
 }: ChatInputToolbarProps) {
   const {
     chatModeAccessResolved,
+    freeDesktopAgentOnlyActive,
     hasLocalSandbox,
     paidAgentOnlyActive,
     selectedModel,
@@ -45,7 +46,9 @@ export function ChatInputToolbar({
       <div className="shrink-0">
         <AttachmentButton onAttachClick={onAttachClick} disabled={!isOnline} />
       </div>
-      {chatModeAccessResolved && !paidAgentOnlyActive ? (
+      {chatModeAccessResolved &&
+      !paidAgentOnlyActive &&
+      !freeDesktopAgentOnlyActive ? (
         <ChatModeSelector />
       ) : null}
       {showFreeAskComputerActivation ? <FreeAskComputerActivation /> : null}
