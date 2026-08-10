@@ -207,6 +207,8 @@ const pruneSidebarTaskLastVisitedAt = (): void => {
 };
 
 const handleSidebarTaskLastVisitedAtStorage = (event: StorageEvent): void => {
+  if (event.storageArea !== window.localStorage) return;
+
   if (event.key === null) {
     const taskIds = Object.keys(sidebarTaskLastVisitedAtMemory);
     sidebarTaskLastVisitedAtMemory = {};

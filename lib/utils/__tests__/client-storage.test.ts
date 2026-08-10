@@ -20,6 +20,7 @@ import {
   markSidebarTaskVisited,
   parseSidebarTaskLastVisitedAt,
   readSidebarTaskLastVisitedAt,
+  subscribeSidebarTaskLastVisitedAt,
 } from "../client-storage";
 
 const STORAGE_KEY = "selected_model";
@@ -251,6 +252,32 @@ describe("client-storage sidebar task last-visited times", () => {
 
     expect(readSidebarTaskLastVisitedAt("chat-1")).toBe(200);
     expect(window.localStorage.getItem(taskKey)).toBe("200");
+  });
+
+  it("ignores sessionStorage clear events", () => {
+    markSidebarTaskVisited("chat-1", 100);
+    const listener = jest.fn();
+    const unsubscribe = subscribeSidebarTaskLastVisitedAt("chat-1", listener);
+
+    window.dispatchEvent(
+      new StorageEvent("storage", {
+        key: null,
+        storageArea: window.sessionStorage,
+      }),
+    );
+
+    const getItemSpy = jest
+      .spyOn(Storage.prototype, "getItem")
+      .mockImplementation(() => {
+        throw new Error("storage unavailable");
+      });
+    try {
+      expect(readSidebarTaskLastVisitedAt("chat-1")).toBe(100);
+    } finally {
+      getItemSpy.mockRestore();
+      unsubscribe();
+    }
+    expect(listener).not.toHaveBeenCalled();
   });
 
   it("keeps only the 100 most recently visited task keys", () => {
