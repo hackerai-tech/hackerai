@@ -3,6 +3,7 @@ import { describe, expect, it, jest, beforeEach } from "@jest/globals";
 const mockCreateBillingPortalSession = jest.fn();
 const mockGetBillingActionContext = jest.fn();
 const mockPostHogError = jest.fn();
+const mockPostHogEvent = jest.fn();
 
 jest.mock("@/app/api/stripe", () => ({
   stripe: {
@@ -21,6 +22,7 @@ jest.mock("@/lib/actions/billing-context", () => ({
 jest.mock("@/lib/posthog/server", () => ({
   phLogger: {
     error: mockPostHogError,
+    event: mockPostHogEvent,
   },
 }));
 
@@ -56,6 +58,7 @@ describe("redirectToBillingPortal", () => {
 
   it("opens the portal directly in payment method update mode", async () => {
     mockCreateBillingPortalSession.mockResolvedValue({
+      id: "bps_recovery",
       url: "https://billing.stripe.com/payment-method",
     } as never);
 
@@ -71,6 +74,16 @@ describe("redirectToBillingPortal", () => {
       return_url: "https://hackerai.co",
       flow_data: { type: "payment_method_update" },
     });
+    expect(mockPostHogEvent).toHaveBeenCalledWith(
+      "payment_update_opened",
+      expect.objectContaining({
+        userId: "user_123",
+        org_id: "org_123",
+        stripe_customer_id: "cus_123",
+        stripe_billing_portal_session_id: "bps_recovery",
+        $insert_id: "payment_update_opened:bps_recovery:user_123",
+      }),
+    );
   });
 
   it("logs the action stage when Stripe session creation fails", async () => {

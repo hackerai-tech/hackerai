@@ -186,7 +186,7 @@ describe("AccountTab", () => {
       "Your renewal payment failed—update your payment method to keep your plan.",
     );
     expect(mockCaptureAuthenticatedEvent).toHaveBeenCalledWith(
-      "billing_past_due_banner_impressed",
+      "recovery_prompt_impressed",
       expect.objectContaining({
         surface: "account_settings",
         subscription_tier: "pro",

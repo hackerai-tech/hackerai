@@ -671,6 +671,8 @@ async function recordPaidStartMix({
 }
 
 async function emitBillingPaymentFailed(args: {
+  stripeEventId: string;
+  stripeEventType: "invoice.payment_failed" | "customer.subscription.deleted";
   invoice: Stripe.Invoice;
   paymentIntent?: Stripe.PaymentIntent;
   customerId: string;
@@ -709,11 +711,89 @@ async function emitBillingPaymentFailed(args: {
             ).subscription,
           ),
         stripe_price_id: args.price?.id,
+        stripe_event_id: args.stripeEventId,
+        stripe_event_type: args.stripeEventType,
         ...failureProperties,
-        $insert_id: `${PAID_FUNNEL_EVENTS.billingPaymentFailed}:${args.lifecycle}:${args.invoice.id}:${uid}`,
+        $insert_id: `${PAID_FUNNEL_EVENTS.billingPaymentFailed}:${args.stripeEventId}:${uid}`,
       }),
     );
   }
+}
+
+type InvoluntaryChurnStripeEventType =
+  | "invoice.payment_failed"
+  | "invoice.paid"
+  | "customer.subscription.deleted"
+  | "payment_method.attached"
+  | "customer.updated";
+
+async function recordInvoluntaryChurnEvent(args: {
+  stripeEventId: string;
+  stripeEventType: InvoluntaryChurnStripeEventType;
+  occurredAt: number;
+  invoice: Stripe.Invoice;
+  customerId: string;
+  userIds: string[];
+  orgId?: string;
+  stripeSubscriptionId: string;
+  tier?: SubscriptionTier | null;
+  price?: Stripe.Price;
+  failureProperties?: BillingFailureProperties;
+  invoicePaidEligible?: boolean;
+  priorFailureKnown?: boolean;
+}) {
+  const failure = args.failureProperties;
+  const results = await Promise.all(
+    args.userIds.map((userId) =>
+      getConvexClient().mutation(api.involuntaryChurn.recordEvent, {
+        serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
+        stripeEventId: args.stripeEventId,
+        stripeEventType: args.stripeEventType,
+        userId,
+        organizationId: args.orgId,
+        stripeCustomerId: args.customerId,
+        stripeSubscriptionId: args.stripeSubscriptionId,
+        stripeInvoiceId: args.invoice.id,
+        stripePaymentIntentId: failure?.stripe_payment_intent_id,
+        stripeChargeId: failure?.stripe_charge_id,
+        stripePriceId: args.price?.id,
+        plan: args.price?.lookup_key ?? undefined,
+        subscriptionTier: args.tier ?? undefined,
+        billingFailureLifecycle: failure?.billing_failure_lifecycle,
+        billingFailureStage: failure?.billing_failure_stage,
+        billingFailureGroup: failure?.billing_failure_group,
+        billingReason:
+          failure?.billing_reason ?? args.invoice.billing_reason ?? undefined,
+        invoiceStatus:
+          failure?.invoice_status ?? args.invoice.status ?? undefined,
+        attemptCount: failure?.attempt_count ?? args.invoice.attempt_count,
+        outcomeType: failure?.outcome_type ?? undefined,
+        outcomeReason: failure?.outcome_reason ?? undefined,
+        riskLevel: failure?.risk_level ?? undefined,
+        amountDueDollars:
+          failure?.amount_due_dollars ??
+          centsToDollars(args.invoice.amount_due),
+        amountRemainingDollars:
+          failure?.amount_remaining_dollars ??
+          centsToDollars(args.invoice.amount_remaining),
+        currency: failure?.currency ?? args.invoice.currency,
+        invoicePaidEligible: args.invoicePaidEligible,
+        priorFailureKnown: args.priorFailureKnown,
+        occurredAt: args.occurredAt,
+      }),
+    ),
+  );
+
+  return {
+    priorFailureSeen: results.some((result) => result.priorFailureSeen),
+    recovered: results.some((result) => result.recoveryResult === "recovered"),
+    recoveredUserIds: args.userIds.filter(
+      (_, index) => results[index]?.recoveryResult === "recovered",
+    ),
+    paymentMethodUpdated: results.some(
+      (result) => result.recoveryResult === "payment_method_updated",
+    ),
+  };
 }
 
 // =============================================================================
@@ -723,6 +803,7 @@ async function emitBillingPaymentFailed(args: {
 /** Handle invoice.paid — reset rate limit buckets on subscription payment. */
 async function handleInvoicePaid(
   invoice: Stripe.Invoice,
+  stripeEventId: string,
   eventOccurredAtMs: number,
 ): Promise<void> {
   // In Stripe API 2026-03-25, subscription lives under invoice.parent.subscription_details
@@ -791,6 +872,19 @@ async function handleInvoicePaid(
   );
   const isCurrentInvoice = latestInvoiceId === invoice.id;
   if (!isEntitledSubscription || !isCurrentInvoice) {
+    await recordInvoluntaryChurnEvent({
+      stripeEventId,
+      stripeEventType: "invoice.paid",
+      occurredAt: eventOccurredAtMs,
+      invoice,
+      customerId,
+      userIds,
+      orgId: orgId ?? undefined,
+      stripeSubscriptionId: subscription.id,
+      tier,
+      price: subscription.items?.data[0]?.price,
+      invoicePaidEligible: false,
+    });
     phLogger.warn("billing_invoice_paid_ineligible_subscription_skipped", {
       event: "billing_invoice_paid_ineligible_subscription_skipped",
       userId: userIds[0],
@@ -912,6 +1006,54 @@ async function handleInvoicePaid(
   }
 
   const recoveryPrice = subscription.items?.data[0]?.price;
+  const recoveredUserIds = userIds.filter((_, index) => {
+    const result = resetResults[index];
+    return (
+      result?.recoveredFromPaymentFailure === true ||
+      (invoice.billing_reason === "subscription_cycle" &&
+        result?.outcome === "applied" &&
+        typeof invoice.attempt_count === "number" &&
+        invoice.attempt_count > 1)
+    );
+  });
+  if (recoveredUserIds.length > 0) {
+    const structuredRecovery = await recordInvoluntaryChurnEvent({
+      stripeEventId,
+      stripeEventType: "invoice.paid",
+      occurredAt: eventOccurredAtMs,
+      invoice,
+      customerId,
+      userIds: recoveredUserIds,
+      orgId: orgId ?? undefined,
+      stripeSubscriptionId: subscription.id,
+      tier,
+      price: recoveryPrice,
+      invoicePaidEligible: true,
+      priorFailureKnown: true,
+    });
+    for (const uid of structuredRecovery.recoveredUserIds) {
+      phLogger.event(
+        PAID_FUNNEL_EVENTS.invoicePaid,
+        paidFunnelProperties({
+          userId: uid,
+          org_id: orgId,
+          subscription_tier: tier,
+          plan: recoveryPrice?.lookup_key,
+          stripe_event_id: stripeEventId,
+          stripe_event_type: "invoice.paid",
+          stripe_customer_id: customerId,
+          stripe_subscription_id: subscription.id,
+          stripe_invoice_id: invoice.id,
+          attempt_count: invoice.attempt_count ?? undefined,
+          amount_paid_dollars: centsToDollars(invoice.amount_paid),
+          currency: invoice.currency,
+          recovery_result: "recovered",
+          $insert_id: `${PAID_FUNNEL_EVENTS.invoicePaid}:${stripeEventId}:${uid}`,
+        }),
+      );
+    }
+  }
+
   for (const [index, result] of resetResults.entries()) {
     const recoveredFromRetryAttempt =
       invoice.billing_reason === "subscription_cycle" &&
@@ -953,7 +1095,9 @@ async function handleInvoicePaid(
         stripe_subscription_id: subscriptionId,
         stripe_invoice_id: invoice.id,
         stripe_price_id: recoveryPrice?.id,
-        $insert_id: billingPaymentRecoveryInsertId(invoice.id, uid),
+        stripe_event_id: stripeEventId,
+        stripe_event_type: "invoice.paid",
+        $insert_id: billingPaymentRecoveryInsertId(stripeEventId, uid),
       }),
     );
   }
@@ -1081,6 +1225,7 @@ async function handleInvoicePaid(
 
 async function handleInvoicePaymentFailed(
   invoice: Stripe.Invoice,
+  stripeEventId: string,
   eventOccurredAtMs: number,
 ): Promise<void> {
   const subscriptionId = invoiceSubscriptionId(invoice);
@@ -1129,6 +1274,11 @@ async function handleInvoicePaymentFailed(
   const subscription =
     resolved?.kind === "resolved" ? resolved.subscription : undefined;
   const price = subscription?.items?.data[0]?.price;
+  const failureProperties = subscriptionPaymentFailureProperties({
+    invoice: failureInvoice,
+    lifecycle: "invoice_payment_failed",
+    paymentIntent: failureContext?.paymentIntent,
+  });
 
   if (
     resolved?.kind === "resolved" &&
@@ -1185,7 +1335,23 @@ async function handleInvoicePaymentFailed(
     }
   }
 
+  await recordInvoluntaryChurnEvent({
+    stripeEventId,
+    stripeEventType: "invoice.payment_failed",
+    occurredAt: eventOccurredAtMs,
+    invoice: failureInvoice,
+    customerId,
+    userIds,
+    orgId: orgId ?? undefined,
+    stripeSubscriptionId: subscriptionId,
+    tier: resolved?.kind === "resolved" ? resolved.tier : undefined,
+    price,
+    failureProperties,
+  });
+
   await emitBillingPaymentFailed({
+    stripeEventId,
+    stripeEventType: "invoice.payment_failed",
     invoice: failureInvoice,
     paymentIntent: failureContext?.paymentIntent,
     customerId,
@@ -1195,6 +1361,100 @@ async function handleInvoicePaymentFailed(
     price,
     lifecycle: "invoice_payment_failed",
   });
+}
+
+function customerPaymentMethodChanged(
+  previousAttributes: Partial<Stripe.Customer> | undefined,
+): boolean {
+  if (!previousAttributes) return false;
+  const previousInvoiceSettings = previousAttributes.invoice_settings;
+  return (
+    (previousInvoiceSettings !== undefined &&
+      previousInvoiceSettings !== null &&
+      Object.prototype.hasOwnProperty.call(
+        previousInvoiceSettings,
+        "default_payment_method",
+      )) ||
+    Object.prototype.hasOwnProperty.call(previousAttributes, "default_source")
+  );
+}
+
+async function handlePaymentMethodUpdated(args: {
+  customerId: string;
+  stripeEventId: string;
+  stripeEventType: "payment_method.attached" | "customer.updated";
+  eventOccurredAtMs: number;
+}): Promise<void> {
+  const customerResult = await resolveUserIdsFromCustomer(args.customerId);
+  const { userIds, orgId } = customerResult;
+  if (
+    customerResult.reason === "legacy_user_metadata" ||
+    userIds.length === 0
+  ) {
+    return;
+  }
+
+  const subscriptions = await stripe.subscriptions.list({
+    customer: args.customerId,
+    status: "all",
+    limit: 10,
+  });
+  const currentSubscription = subscriptions.data.find((subscription) =>
+    ["active", "trialing", "past_due", "unpaid"].includes(subscription.status),
+  );
+  if (!currentSubscription) return;
+
+  const resolved = await resolveSubscription(currentSubscription.id);
+  if (!resolved || resolved.kind === "legacy_pentestgpt") return;
+
+  const { subscription, tier } = resolved;
+  const invoiceId = stripeObjectId(subscription.latest_invoice);
+  if (!invoiceId) return;
+
+  const failureContext = await retrieveInvoiceForFailureAnalytics(invoiceId);
+  if (!failureContext) return;
+
+  const price = subscription.items?.data[0]?.price;
+  const failureProperties = subscriptionPaymentFailureProperties({
+    invoice: failureContext.invoice,
+    lifecycle: "invoice_payment_failed",
+    paymentIntent: failureContext.paymentIntent,
+  });
+  const recorded = await recordInvoluntaryChurnEvent({
+    stripeEventId: args.stripeEventId,
+    stripeEventType: args.stripeEventType,
+    occurredAt: args.eventOccurredAtMs,
+    invoice: failureContext.invoice,
+    customerId: args.customerId,
+    userIds,
+    orgId: orgId ?? undefined,
+    stripeSubscriptionId: subscription.id,
+    tier,
+    price,
+    failureProperties,
+  });
+  if (!recorded.paymentMethodUpdated) return;
+
+  for (const uid of userIds) {
+    phLogger.event(
+      PAID_FUNNEL_EVENTS.paymentMethodUpdated,
+      paidFunnelProperties({
+        userId: uid,
+        org_id: orgId,
+        subscription_tier: tier,
+        plan: price?.lookup_key,
+        stripe_event_id: args.stripeEventId,
+        stripe_event_type: args.stripeEventType,
+        stripe_customer_id: args.customerId,
+        stripe_subscription_id: subscription.id,
+        stripe_invoice_id: failureContext.invoice.id,
+        attempt_count: failureContext.invoice.attempt_count ?? undefined,
+        billing_failure_group: failureProperties.billing_failure_group,
+        recovery_result: "payment_method_updated",
+        $insert_id: `${PAID_FUNNEL_EVENTS.paymentMethodUpdated}:${args.stripeEventId}:${uid}`,
+      }),
+    );
+  }
 }
 
 /** Handle checkout.session.completed — attach Checkout Session IDs to saved referral attribution. */
@@ -1577,6 +1837,8 @@ async function recordCancellationCompleted(args: {
 /** Handle customer.subscription.deleted — emit churn analytics for the lapsed paid users. */
 async function handleSubscriptionDeleted(
   subscription: Stripe.Subscription,
+  stripeEventId: string,
+  eventOccurredAtMs: number,
 ): Promise<void> {
   const customerId =
     typeof subscription.customer === "string"
@@ -1630,10 +1892,22 @@ async function handleSubscriptionDeleted(
 
   const cancellationReason = subscription.cancellation_details?.reason ?? null;
   const latestInvoiceId = stripeObjectId(subscription.latest_invoice);
+  if (cancellationReason === "payment_failed" && !latestInvoiceId) {
+    throw new Error(
+      `Payment-failed subscription ${subscription.id} is missing its latest invoice`,
+    );
+  }
   const failureContext =
     cancellationReason === "payment_failed" && latestInvoiceId
       ? await retrieveInvoiceForFailureAnalytics(latestInvoiceId)
       : null;
+  if (cancellationReason === "payment_failed" && !failureContext) {
+    // Preserve the event for Stripe retry until its stable invoice/attempt
+    // identity can be recorded durably.
+    throw new Error(
+      `Failed to hydrate payment-failed invoice ${latestInvoiceId}`,
+    );
+  }
   const failureProperties = failureContext
     ? subscriptionPaymentFailureProperties({
         invoice: failureContext.invoice,
@@ -1641,6 +1915,22 @@ async function handleSubscriptionDeleted(
         paymentIntent: failureContext.paymentIntent,
       })
     : undefined;
+
+  if (failureContext && failureProperties) {
+    await recordInvoluntaryChurnEvent({
+      stripeEventId,
+      stripeEventType: "customer.subscription.deleted",
+      occurredAt: eventOccurredAtMs,
+      invoice: failureContext.invoice,
+      customerId,
+      userIds,
+      orgId: orgId ?? undefined,
+      stripeSubscriptionId: subscription.id,
+      tier,
+      price,
+      failureProperties,
+    });
+  }
 
   console.log(
     `[Subscription Webhook] subscription.deleted: tier ${tier ?? "unknown"} cancelled for ${userIds.length} user(s) (reason: ${cancellationReason ?? "none"})`,
@@ -1663,12 +1953,17 @@ async function handleSubscriptionDeleted(
       org_id: orgId,
       cancellation_reason: cancellationReason,
       ...(failureProperties ?? {}),
+      stripe_event_id: stripeEventId,
+      stripe_event_type: "customer.subscription.deleted",
+      $insert_id: `subscription_cancelled:${stripeEventId}:${uid}`,
       $set: { subscription_tier: "free" },
     });
   }
 
   if (failureContext) {
     await emitBillingPaymentFailed({
+      stripeEventId,
+      stripeEventType: "customer.subscription.deleted",
       invoice: failureContext.invoice,
       paymentIntent: failureContext.paymentIntent,
       customerId,
@@ -1698,7 +1993,7 @@ async function handleSubscriptionDeleted(
  * - Endpoint URL: https://your-domain.com/api/subscription/webhook
  * - Events: checkout.session.completed, invoice.paid,
  *   invoice.payment_failed, customer.subscription.updated,
- *   customer.subscription.deleted
+ *   customer.subscription.deleted, payment_method.attached, customer.updated
  */
 export async function POST(req: NextRequest) {
   const body = await req.text();
@@ -1794,6 +2089,7 @@ export async function POST(req: NextRequest) {
     case "invoice.paid": {
       await handleInvoicePaid(
         event.data.object as Stripe.Invoice,
+        event.id,
         stripeEventOccurredAtMs(event),
       );
       break;
@@ -1801,6 +2097,7 @@ export async function POST(req: NextRequest) {
     case "invoice.payment_failed": {
       await handleInvoicePaymentFailed(
         event.data.object as Stripe.Invoice,
+        event.id,
         stripeEventOccurredAtMs(event),
       );
       break;
@@ -1814,7 +2111,40 @@ export async function POST(req: NextRequest) {
       break;
     }
     case "customer.subscription.deleted": {
-      await handleSubscriptionDeleted(event.data.object as Stripe.Subscription);
+      await handleSubscriptionDeleted(
+        event.data.object as Stripe.Subscription,
+        event.id,
+        stripeEventOccurredAtMs(event),
+      );
+      break;
+    }
+    case "payment_method.attached": {
+      const paymentMethod = event.data.object as Stripe.PaymentMethod;
+      const customerId = stripeObjectId(paymentMethod.customer);
+      if (customerId) {
+        await handlePaymentMethodUpdated({
+          customerId,
+          stripeEventId: event.id,
+          stripeEventType: "payment_method.attached",
+          eventOccurredAtMs: stripeEventOccurredAtMs(event),
+        });
+      }
+      break;
+    }
+    case "customer.updated": {
+      if (
+        customerPaymentMethodChanged(
+          event.data.previous_attributes as
+            Partial<Stripe.Customer> | undefined,
+        )
+      ) {
+        await handlePaymentMethodUpdated({
+          customerId: (event.data.object as Stripe.Customer).id,
+          stripeEventId: event.id,
+          stripeEventType: "customer.updated",
+          eventOccurredAtMs: stripeEventOccurredAtMs(event),
+        });
+      }
       break;
     }
   }

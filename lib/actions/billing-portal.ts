@@ -5,6 +5,10 @@ import { isExpectedBillingContextError } from "@/lib/actions/billing-action-erro
 import { getBillingActionContext } from "@/lib/actions/billing-context";
 import { phLogger } from "@/lib/posthog/server";
 import type { BillingPortalFlow } from "@/lib/billing/api-types";
+import {
+  PAID_FUNNEL_EVENTS,
+  paidFunnelProperties,
+} from "@/lib/analytics/paid-funnel";
 
 export default async function redirectToBillingPortal(
   flow?: BillingPortalFlow,
@@ -64,5 +68,18 @@ export default async function redirectToBillingPortal(
     });
     throw error;
   }
+
+  if (flow === "payment_method") {
+    phLogger.event(
+      PAID_FUNNEL_EVENTS.paymentUpdateOpened,
+      paidFunnelProperties({
+        ...billingFields,
+        surface: "account_settings",
+        stripe_billing_portal_session_id: billingPortalSession.id,
+        $insert_id: `${PAID_FUNNEL_EVENTS.paymentUpdateOpened}:${billingPortalSession.id}:${context.user.id}`,
+      }),
+    );
+  }
+
   return billingPortalSession.url;
 }
