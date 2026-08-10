@@ -1,8 +1,22 @@
 import { LoaderCircle } from "lucide-react";
+import { useEffect, useState } from "react";
 
 const LOADING_MESSAGES_LABEL = "Loading messages...";
+const LOADING_STATUS_DELAY_MS = 300;
 
 export function ChatLoadingStatusPill() {
+  const [isVisible, setIsVisible] = useState(false);
+
+  useEffect(() => {
+    const timeoutId = window.setTimeout(() => {
+      setIsVisible(true);
+    }, LOADING_STATUS_DELAY_MS);
+
+    return () => window.clearTimeout(timeoutId);
+  }, []);
+
+  if (!isVisible) return null;
+
   return (
     <div
       aria-label={LOADING_MESSAGES_LABEL}
