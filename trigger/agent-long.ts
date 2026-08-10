@@ -73,7 +73,6 @@ import {
   UsageRefundTracker,
 } from "@/lib/rate-limit";
 import { assertUserCanMakeCostIncurringRequest } from "@/lib/suspensions";
-import { getCurrentAgentEntitlementContext } from "@/lib/auth/agent-auto-review-entitlements";
 import {
   saveMessage,
   updateChat,
@@ -84,6 +83,7 @@ import {
   persistAgentApprovalGrant,
   getMessagesByChatId,
   getChatById,
+  getCurrentAgentEntitlementContext,
   prepareForNewStream,
   setConvexUrl,
 } from "@/lib/db/actions";
@@ -336,6 +336,13 @@ const APPROVAL_PROTOCOL_DENIED_REASON =
   "This approval response is incompatible with the current Agent worker. The operation was not run. Refresh HackerAI and start a new Agent request.";
 const APPROVAL_AUTHORIZATION_DENIED_REASON =
   "Your authorization or billing access changed while this approval was pending. The operation was not run. Start a new Agent request and try again.";
+
+class AgentAutoReviewEntitlementRevalidationUnavailableError extends Error {
+  constructor() {
+    super("The current entitlement context could not be verified.");
+    this.name = "AgentAutoReviewEntitlementRevalidationUnavailableError";
+  }
+}
 
 const buildDeniedApprovalReason = (message: string | undefined): string => {
   const trimmed = message?.trim();
@@ -634,41 +641,94 @@ const buildAgentToolApprovalRequester = ({
                 toolCallId: request.toolCallId,
               });
             } catch (error) {
-              metadata.set("approvalStatus", "authorization_denied");
-              triggerLogger.warn(
-                "[agent-long] post-review approval authorization denied",
-                {
-                  chatId,
+              if (
+                error instanceof
+                AgentAutoReviewEntitlementRevalidationUnavailableError
+              ) {
+                autoReviewDecision = {
+                  ...decision,
+                  verdict: "ask_user",
+                  riskCategory: "unknown",
+                  rationale:
+                    "HackerAI could not verify the current authorization context automatically.",
+                  source: "failure",
+                  failureClass: "provider_error",
+                  rolloutPhase: autoReviewRolloutPhase,
+                };
+                metadata.set(
+                  "approvalStatus",
+                  "auto_review_revalidation_unavailable",
+                );
+                phLogger.event("agent_auto_review_revalidation", {
                   userId,
-                  runId,
+                  rollout_phase: autoReviewRolloutPhase,
+                  verdict: "ask_user",
+                  risk_category: "unknown",
+                  failure_class: "provider_error",
+                  outcome: "require_user",
+                  surface: reviewSurface,
+                });
+                triggerLogger.warn(
+                  "[agent-long] Auto review authorization revalidation unavailable; requesting human approval",
+                  {
+                    event: "agent_auto_review_revalidation_unavailable",
+                    service: "agent-long",
+                    chat_id: chatId,
+                    user_id: userId,
+                    run_id: runId,
+                    approval_id: approvalId,
+                    error_name:
+                      error instanceof Error ? error.name : "UnknownError",
+                  },
+                );
+              } else {
+                const authorizationError =
+                  error instanceof AgentApprovalAuthorizationError
+                    ? error
+                    : null;
+                metadata
+                  .set("approvalStatus", "authorization_denied")
+                  .set(
+                    "approvalAuthorizationFailure",
+                    authorizationError?.code ?? "revalidation_failed",
+                  );
+                triggerLogger.warn(
+                  "[agent-long] post-review approval authorization denied",
+                  {
+                    chatId,
+                    userId,
+                    runId,
+                    approvalId,
+                    failure: authorizationError?.code ?? "revalidation_failed",
+                    error_name:
+                      error instanceof Error ? error.name : "UnknownError",
+                  },
+                );
+                return {
+                  approved: false,
                   approvalId,
-                  error_name:
-                    error instanceof Error ? error.name : "UnknownError",
-                },
-              );
-              onPostWaitAuthorizationDenied();
-              return {
-                approved: false,
-                approvalId,
-                reason: APPROVAL_AUTHORIZATION_DENIED_REASON,
-              };
+                  reason: APPROVAL_AUTHORIZATION_DENIED_REASON,
+                };
+              }
             }
-            const currentSandboxIdentity = await resolveSandboxIdentity();
-            if (currentSandboxIdentity !== sandboxIdentity) {
-              metadata.set("approvalStatus", "sandbox_changed");
-              return {
-                approved: false,
-                approvalId,
-                reason:
-                  "The selected sandbox changed during Auto review. The operation was not run. Retry it in the current sandbox.",
-              };
+            if (autoReviewDecision?.verdict === "approve") {
+              const currentSandboxIdentity = await resolveSandboxIdentity();
+              if (currentSandboxIdentity !== sandboxIdentity) {
+                metadata.set("approvalStatus", "sandbox_changed");
+                return {
+                  approved: false,
+                  approvalId,
+                  reason:
+                    "The selected sandbox changed during Auto review. The operation was not run. Retry it in the current sandbox.",
+                };
+              }
+              metadata
+                .set("approvalStatus", "auto_review_approved")
+                .set("approvalToolName", request.toolName)
+                .set("approvalOperation", request.operation);
+              denialTracker.record("approve");
+              return { approved: true, approvalId, sandboxIdentity };
             }
-            metadata
-              .set("approvalStatus", "auto_review_approved")
-              .set("approvalToolName", request.toolName)
-              .set("approvalOperation", request.operation);
-            denialTracker.record("approve");
-            return { approved: true, approvalId, sandboxIdentity };
           }
           if (decision.verdict === "deny") {
             const { tripped } = denialTracker.record("deny");
@@ -2496,11 +2556,15 @@ export const agentLongTask = task({
             }) => {
               await assertUserCanMakeCostIncurringRequest(userId);
 
-              const currentEntitlement =
-                await getCurrentAgentEntitlementContext({
+              let currentEntitlement;
+              try {
+                currentEntitlement = await getCurrentAgentEntitlementContext({
                   userId,
                   organizationId,
                 });
+              } catch {
+                throw new AgentAutoReviewEntitlementRevalidationUnavailableError();
+              }
               if (
                 currentEntitlement.subscription !== subscription ||
                 currentEntitlement.organizationId !== organizationId

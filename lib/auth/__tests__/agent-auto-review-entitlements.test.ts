@@ -1,7 +1,7 @@
-import { getCurrentAgentEntitlementContext } from "@/lib/auth/agent-auto-review-entitlements";
+import { resolveCurrentAgentEntitlementContext } from "@/lib/auth/agent-auto-review-entitlements";
 
 type Clients = NonNullable<
-  Parameters<typeof getCurrentAgentEntitlementContext>[1]
+  Parameters<typeof resolveCurrentAgentEntitlementContext>[1]
 >;
 
 const createClients = ({
@@ -46,7 +46,7 @@ describe("getCurrentAgentEntitlementContext", () => {
     const clients = createClients();
 
     await expect(
-      getCurrentAgentEntitlementContext({ userId: "user_1" }, clients),
+      resolveCurrentAgentEntitlementContext({ userId: "user_1" }, clients),
     ).resolves.toEqual({ subscription: "free" });
     expect(
       clients.workos.userManagement.listOrganizationMemberships,
@@ -57,7 +57,7 @@ describe("getCurrentAgentEntitlementContext", () => {
     const clients = createClients({ memberships: [] });
 
     await expect(
-      getCurrentAgentEntitlementContext(
+      resolveCurrentAgentEntitlementContext(
         { userId: "user_1", organizationId: "org_1" },
         clients,
       ),
@@ -89,7 +89,7 @@ describe("getCurrentAgentEntitlementContext", () => {
     });
 
     await expect(
-      getCurrentAgentEntitlementContext(
+      resolveCurrentAgentEntitlementContext(
         { userId: "user_1", organizationId: "org_1" },
         clients,
       ),
@@ -108,7 +108,7 @@ describe("getCurrentAgentEntitlementContext", () => {
     );
 
     await expect(
-      getCurrentAgentEntitlementContext(
+      resolveCurrentAgentEntitlementContext(
         { userId: "user_1", organizationId: "org_1" },
         clients,
       ),
@@ -143,7 +143,7 @@ describe("getCurrentAgentEntitlementContext", () => {
       });
 
     await expect(
-      getCurrentAgentEntitlementContext(
+      resolveCurrentAgentEntitlementContext(
         { userId: "user_1", organizationId: "org_1" },
         clients,
       ),

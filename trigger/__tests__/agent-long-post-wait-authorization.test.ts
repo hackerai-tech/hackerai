@@ -161,8 +161,46 @@ describe("agent-long post-wait authorization contract", () => {
     expect(taskSource).toMatch(
       /getCurrentAgentEntitlementContext\([\s\S]*currentEntitlement\.subscription !== subscription[\s\S]*currentEntitlement\.organizationId !== organizationId/,
     );
-    expect(taskSource).toMatch(
-      /onPostWaitAuthorizationDenied: \(\) => userStopSignal\.abort\(\)/,
+  });
+
+  it("routes an unavailable Auto review entitlement lookup to durable human approval", () => {
+    const autoApproveBranch = taskSource.indexOf(
+      'if (decision.verdict === "approve")',
     );
+    const unavailableCatch = taskSource.indexOf(
+      "AgentAutoReviewEntitlementRevalidationUnavailableError",
+      autoApproveBranch,
+    );
+    const markPending = taskSource.indexOf(
+      "await setApprovalPending(",
+      unavailableCatch,
+    );
+
+    expect(unavailableCatch).toBeGreaterThan(autoApproveBranch);
+    expect(taskSource.slice(unavailableCatch, markPending)).toMatch(
+      /verdict: "ask_user"[\s\S]*failureClass: "provider_error"/,
+    );
+    expect(markPending).toBeGreaterThan(unavailableCatch);
+    expect(taskSource.slice(autoApproveBranch, markPending)).not.toMatch(
+      /onPostWaitAuthorizationDenied\(\)/,
+    );
+  });
+
+  it("denies a changed Auto review authorization without aborting the Agent run", () => {
+    const autoApproveBranch = taskSource.indexOf(
+      'if (decision.verdict === "approve")',
+    );
+    const humanApprovalBranch = taskSource.indexOf(
+      "await setApprovalPending(",
+      autoApproveBranch,
+    );
+    const autoApproveSource = taskSource.slice(
+      autoApproveBranch,
+      humanApprovalBranch,
+    );
+
+    expect(autoApproveSource).toMatch(/authorization_denied/);
+    expect(autoApproveSource).toMatch(/approved: false/);
+    expect(autoApproveSource).not.toMatch(/onPostWaitAuthorizationDenied\(\)/);
   });
 });

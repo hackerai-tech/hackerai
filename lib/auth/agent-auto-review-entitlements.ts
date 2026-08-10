@@ -1,5 +1,3 @@
-import { stripe } from "@/app/api/stripe";
-import { workos } from "@/app/api/workos";
 import { planLookupKeyToTier } from "@/lib/analytics/paid-funnel";
 import type { SubscriptionTier } from "@/types";
 
@@ -17,7 +15,7 @@ const TIER_RANK: Record<SubscriptionTier, number> = {
   ultra: 4,
 };
 
-type EntitlementClients = {
+export type AgentEntitlementClients = {
   workos: {
     userManagement: {
       listOrganizationMemberships(input: {
@@ -55,8 +53,6 @@ type EntitlementClients = {
   };
 };
 
-const defaultClients = { workos, stripe } as EntitlementClients;
-
 export type CurrentAgentEntitlementContext = {
   subscription: SubscriptionTier;
   organizationId?: string;
@@ -67,9 +63,9 @@ export type CurrentAgentEntitlementContext = {
  * Auto review approval. Any lookup failure propagates so the caller fails
  * closed to the human approval path.
  */
-export async function getCurrentAgentEntitlementContext(
+export async function resolveCurrentAgentEntitlementContext(
   { userId, organizationId }: { userId: string; organizationId?: string },
-  clients: EntitlementClients = defaultClients,
+  clients: AgentEntitlementClients,
 ): Promise<CurrentAgentEntitlementContext> {
   if (!organizationId) return { subscription: "free" };
 
