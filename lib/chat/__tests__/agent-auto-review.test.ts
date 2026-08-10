@@ -152,6 +152,28 @@ describe("Agent Auto review", () => {
     },
   );
 
+  it.each([
+    "rm -rf /tmp/dangerous_test_dir",
+    "sudo rm -f /tmp/dangerous_test_file",
+    "printf done && unlink /tmp/dangerous_test_file",
+    "Remove-Item C:\\Temp\\dangerous-test.txt",
+  ])("routes explicit filesystem deletion to the user: %s", async (command) => {
+    const runModel = jest.fn();
+
+    await expect(
+      reviewAgentToolAction({
+        request: terminalRequest(command),
+        authorizationContext,
+        runModel,
+      }),
+    ).resolves.toMatchObject({
+      verdict: "ask_user",
+      riskCategory: "destructive",
+      source: "rule",
+    });
+    expect(runModel).not.toHaveBeenCalled();
+  });
+
   it("asks the user for referenced-script and package-task indirection", async () => {
     for (const command of [
       "./deploy.sh",
@@ -241,6 +263,26 @@ describe("Agent Auto review", () => {
     ).resolves.toMatchObject({
       verdict: "ask_user",
       riskCategory: "credential_access",
+      source: "rule",
+    });
+    expect(runModel).not.toHaveBeenCalled();
+  });
+
+  it("routes deletion entered at a returned shell prompt directly to the user", async () => {
+    const runModel = jest.fn();
+
+    await expect(
+      reviewAgentToolAction({
+        request: terminalInteractionRequest({
+          input: "rm -rf /tmp/dangerous_test_dir\n",
+          recentOutput: "user@host:/workspace/project$ ",
+        }),
+        authorizationContext,
+        runModel,
+      }),
+    ).resolves.toMatchObject({
+      verdict: "ask_user",
+      riskCategory: "destructive",
       source: "rule",
     });
     expect(runModel).not.toHaveBeenCalled();

@@ -180,6 +180,7 @@ Commands run directly on the host OS "workstation" without Docker isolation. Be 
     expect(auto).toContain("Agent tool approval mode: Auto review");
     expect(auto).toContain("Do not approve your own action");
     expect(auto).toContain("applies only to the exact action once");
+    expect(auto).toContain("Do not claim that the user personally approved");
     expect(auto).toContain("Auto review is probabilistic");
     expect(full).toContain("Agent tool approval mode: Full access");
     expect(full).not.toContain("reviewed by a separate reviewer");

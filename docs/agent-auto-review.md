@@ -25,6 +25,8 @@ PostHog flag: [`agent_auto_review_v1`](https://us.posthog.com/project/144137/fea
      forbidden actions;
    - otherwise calls a dedicated provider alias in a separate, tool-less
      `generateText` request with a typed `approve | ask_user | deny` schema;
+   - deterministically routes explicit filesystem deletion commands to the
+     human approval path, including deletion typed into a returned shell;
    - routes timeout, provider, parse, truncation, and missing-context failures
      to `ask_user`.
 4. Integrate review before the existing durable human wait:
