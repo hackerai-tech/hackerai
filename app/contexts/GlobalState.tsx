@@ -186,6 +186,8 @@ interface GlobalStateType {
 
   // Register a chat reset function that will be invoked on initializeNewChat
   setChatReset: (fn: (() => void) | null) => void;
+  // Register stream cleanup that runs before navigating to another chat
+  setChatNavigationHandler: (fn: ((nextChatId: string) => void) | null) => void;
 }
 
 const GlobalStateContext = createContext<GlobalStateType | undefined>(
@@ -422,6 +424,9 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
     [],
   );
   const chatResetRef = useRef<(() => void) | null>(null);
+  const chatNavigationHandlerRef = useRef<
+    ((nextChatId: string) => void) | null
+  >(null);
   const entitlementRefreshUserRef = useRef<string | null>(null);
   const entitlementRefreshFailureRef = useRef<{
     userId: string;
@@ -1031,6 +1036,7 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
   }, []);
 
   const initializeChat = useCallback((chatId: string, _fromRoute?: boolean) => {
+    chatNavigationHandlerRef.current?.(chatId);
     // Don't clear input here - let ChatInput restore draft automatically
     // setInput("");  // Removed - ChatInput will handle draft restoration
     setTodos([]);
@@ -1051,6 +1057,13 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
   const setChatReset = useCallback((fn: (() => void) | null) => {
     chatResetRef.current = fn;
   }, []);
+
+  const setChatNavigationHandler = useCallback(
+    (fn: ((nextChatId: string) => void) | null) => {
+      chatNavigationHandlerRef.current = fn;
+    },
+    [],
+  );
 
   const openSidebar = useCallback((content: SidebarContent) => {
     setSidebarContent(content);
@@ -1164,6 +1177,7 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
       setMigrateFromPentestgptDialogOpenWithUrl,
 
     setChatReset,
+    setChatNavigationHandler,
 
     hasUserDismissedRateLimitWarning,
     setHasUserDismissedRateLimitWarning,

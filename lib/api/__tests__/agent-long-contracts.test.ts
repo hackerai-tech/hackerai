@@ -478,7 +478,7 @@ describe("agent-long chat UI — completion reconciliation", () => {
     expect(chatComponentSrc).toMatch(/const stopRef = useRef\(stop\)/);
     expect(chatComponentSrc).toMatch(/stopActiveBrowserStream/);
     expect(chatComponentSrc).toMatch(
-      /const activeChatId = activeChatIdRef\.current;[\s\S]*cancelAgentLongRealtimeStreams\(activeChatId\)/,
+      /const streamChatId = streamChatIdRef\.current;[\s\S]*cancelAgentLongRealtimeStreams\(streamChatId\)/,
     );
     expect(chatComponentSrc).toMatch(
       /statusRef\.current\s*===\s*"streaming"[\s\S]*statusRef\.current\s*===\s*"submitted"[\s\S]*stopRef\.current\(\)/,
@@ -493,7 +493,7 @@ describe("agent-long chat UI — completion reconciliation", () => {
       "const stopActiveBrowserStream = useCallback(",
     );
     const cancelIdx = chatComponentSrc.indexOf(
-      "cancelAgentLongRealtimeStreams(activeChatId)",
+      "cancelAgentLongRealtimeStreams(streamChatId)",
       stopHelperIdx,
     );
     const invalidateIdx = chatComponentSrc.indexOf(
@@ -524,12 +524,26 @@ describe("agent-long chat UI — completion reconciliation", () => {
     ).toHaveLength(3);
   });
 
-  test("sidebar navigation cancels stale agent-long realtime before route commit", () => {
-    expect(chatItemSrc).toMatch(/cancelAgentLongRealtimeStreams/);
+  test("sidebar navigation invalidates stale callbacks before canceling realtime", () => {
+    expect(chatItemSrc).not.toMatch(/cancelAgentLongRealtimeStreams/);
     expect(chatItemSrc).toMatch(/setOptimisticChatId\(id\)/);
     expect(chatItemSrc).toMatch(/optimisticChatId\s*\?\?\s*routeChatId/);
-    expect(chatItemSrc).toMatch(
-      /routeChatId\s*&&\s*routeChatId\s*!==\s*id[\s\S]*cancelAgentLongRealtimeStreams\(routeChatId\)/,
+    expect(chatItemSrc).toMatch(/initializeChat\(id\)/);
+    expect(
+      chatComponentSrc.match(/activeChatIdRef\.current = chatId;/g),
+    ).toHaveLength(1);
+    expect(chatComponentSrc).toMatch(
+      /useLayoutEffect\(\(\) => \{[\s\S]*activeChatIdRef\.current = chatId;[\s\S]*streamChatIdRef\.current = chatId;[\s\S]*\}, \[chatId\]\)/,
+    );
+    expect(globalStateSrc).toMatch(/chatNavigationHandlerRef/);
+    expect(globalStateSrc).toMatch(
+      /chatNavigationHandlerRef\.current\?\.\(chatId\)/,
+    );
+    expect(chatComponentSrc).toMatch(
+      /setChatNavigationHandler\(stopActiveBrowserStream\)/,
+    );
+    expect(chatComponentSrc).toMatch(
+      /if \(nextChatId\) \{[\s\S]*activeChatIdRef\.current = nextChatId;[\s\S]*\}[\s\S]*cancelAgentLongRealtimeStreams\(streamChatId\)/,
     );
     expect(globalStateSrc).toMatch(/optimisticChatId:\s*string\s*\|\s*null/);
     expect(globalStateSrc).toMatch(/setOptimisticChatId/);
