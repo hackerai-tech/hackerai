@@ -161,6 +161,7 @@ import type {
   SelectedModel,
   AgentPermissionMode,
   AgentApprovalSandboxIdentity,
+  AgentAutoReviewSummary,
   AgentToolApprovalInputRecord,
   AgentToolApprovalPendingRequest,
   AgentToolApprovalRequest,
@@ -350,6 +351,20 @@ const buildDeniedApprovalReason = (message: string | undefined): string => {
   return `The user denied approval for this operation and said: ${trimmed}`;
 };
 
+type AgentAutoReviewDecisionWithPhase = AgentAutoReviewDecision & {
+  rolloutPhase: "shadow" | "enforce";
+};
+
+const buildAgentAutoReviewSummary = (
+  autoReview: AgentAutoReviewDecisionWithPhase,
+): AgentAutoReviewSummary => ({
+  verdict: autoReview.verdict,
+  riskCategory: autoReview.riskCategory,
+  rationale: autoReview.rationale,
+  rolloutPhase: autoReview.rolloutPhase,
+  ...(autoReview.failureClass ? { failureClass: autoReview.failureClass } : {}),
+});
+
 const buildPendingApprovalRequest = ({
   approvalId,
   request,
@@ -357,10 +372,13 @@ const buildPendingApprovalRequest = ({
 }: {
   approvalId: string;
   request: AgentToolApprovalRequest;
-  autoReview?: AgentAutoReviewDecision & {
-    rolloutPhase: "shadow" | "enforce";
-  };
+  autoReview?: AgentAutoReviewDecisionWithPhase;
 }): AgentToolApprovalPendingRequest => {
+  const autoReviewSummary: AgentAutoReviewSummary | undefined =
+    autoReview?.rolloutPhase === "enforce"
+      ? buildAgentAutoReviewSummary(autoReview)
+      : undefined;
+
   return {
     approvalId,
     toolCallId: request.toolCallId,
@@ -368,19 +386,7 @@ const buildPendingApprovalRequest = ({
     target: request.target,
     ...(request.justification ? { justification: request.justification } : {}),
     ...(request.prefixRule ? { prefixRule: request.prefixRule } : {}),
-    ...(autoReview?.rolloutPhase === "enforce"
-      ? {
-          autoReview: {
-            verdict: autoReview.verdict,
-            riskCategory: autoReview.riskCategory,
-            rationale: autoReview.rationale,
-            rolloutPhase: autoReview.rolloutPhase,
-            ...(autoReview.failureClass
-              ? { failureClass: autoReview.failureClass }
-              : {}),
-          },
-        }
-      : {}),
+    ...(autoReviewSummary ? { autoReview: autoReviewSummary } : {}),
     createdAt: Date.now(),
   };
 };
@@ -786,6 +792,18 @@ const buildAgentToolApprovalRequester = ({
         .set("approvalToolName", request.toolName)
         .set("approvalOperation", request.operation);
       await metadata.flush();
+
+      if (autoReviewDecision?.rolloutPhase === "enforce") {
+        const autoReview = buildAgentAutoReviewSummary(autoReviewDecision);
+        writer.write({
+          type: "data-agent-auto-review",
+          data: {
+            approvalId,
+            toolCallId: request.toolCallId,
+            autoReview,
+          },
+        } as AgentLongUiStreamPart);
+      }
 
       writer.write({
         type: "tool-approval-request",

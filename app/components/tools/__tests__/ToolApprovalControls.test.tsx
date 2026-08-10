@@ -26,9 +26,17 @@ import {
   useAgentApproval,
 } from "@/app/contexts/AgentApprovalContext";
 import {
+  getStreamedAgentAutoReviewSummary,
   getToolApprovalDisplayState,
   ToolApprovalControls,
 } from "../ToolApprovalControls";
+
+const autoReview = {
+  verdict: "ask_user" as const,
+  riskCategory: "destructive" as const,
+  rationale: "This action deletes filesystem data, so the user must decide.",
+  rolloutPhase: "enforce" as const,
+};
 
 function ApprovalStatusHarness() {
   const {
@@ -58,6 +66,7 @@ function ApprovalStatusHarness() {
           prefixRule={approvalPrefixRule}
           kind="terminal"
           operation="terminal_execute"
+          autoReview={autoReview}
         >
           {(sendState) => (
             <span data-testid="approval-row-state">{sendState}</span>
@@ -141,9 +150,48 @@ describe("ToolApprovalControls", () => {
           prefixRule: ["ping", "-c", "4"],
           kind: "terminal",
           operation: "terminal_execute",
+          autoReview,
         }),
       ),
     );
+  });
+
+  it("reads only the typed Auto review summary for the exact approval", () => {
+    const matchingPart = {
+      type: "data-agent-auto-review",
+      data: {
+        approvalId: "approval-1",
+        toolCallId: "tool-1",
+        autoReview,
+      },
+    };
+
+    expect(
+      getStreamedAgentAutoReviewSummary({
+        parts: [matchingPart],
+        approvalId: "approval-1",
+        toolCallId: "tool-1",
+      }),
+    ).toEqual(autoReview);
+    expect(
+      getStreamedAgentAutoReviewSummary({
+        parts: [matchingPart],
+        approvalId: "approval-2",
+        toolCallId: "tool-1",
+      }),
+    ).toBeUndefined();
+    expect(
+      getStreamedAgentAutoReviewSummary({
+        parts: [
+          {
+            ...matchingPart,
+            data: { ...matchingPart.data, autoReview: { verdict: "approve" } },
+          },
+        ],
+        approvalId: "approval-1",
+        toolCallId: "tool-1",
+      }),
+    ).toBeUndefined();
   });
 
   it("keeps a settled prompt mounted when its tool row is replaced", async () => {

@@ -125,6 +125,9 @@ describe("agent-long post-wait authorization contract", () => {
     expect(taskSource).toMatch(
       /autoReview\?\.rolloutPhase === "enforce"[\s\S]*autoReview:/,
     );
+    expect(taskSource).toMatch(
+      /type: "data-agent-auto-review"[\s\S]*approvalId,[\s\S]*toolCallId: request\.toolCallId,[\s\S]*autoReview,/,
+    );
   });
 
   it("excludes suspension time and reacquires free concurrency after checks", () => {

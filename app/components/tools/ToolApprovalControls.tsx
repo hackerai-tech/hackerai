@@ -5,7 +5,11 @@ import {
   useAgentApproval,
   type AgentApprovalSendState,
 } from "@/app/contexts/AgentApprovalContext";
-import type { AgentToolApprovalOperation } from "@/types";
+import {
+  parseAgentAutoReviewSummary,
+  type AgentAutoReviewSummary,
+  type AgentToolApprovalOperation,
+} from "@/types";
 
 type ToolApprovalControlsProps = {
   approvalId?: string;
@@ -17,7 +21,43 @@ type ToolApprovalControlsProps = {
   detail?: string;
   kind?: "terminal" | "file";
   operation?: AgentToolApprovalOperation;
+  autoReview?: AgentAutoReviewSummary;
   children?: (sendState: AgentApprovalSendState) => ReactNode;
+};
+
+type AgentAutoReviewDataPart = {
+  type?: unknown;
+  data?: {
+    approvalId?: unknown;
+    toolCallId?: unknown;
+    autoReview?: unknown;
+  };
+};
+
+export const getStreamedAgentAutoReviewSummary = ({
+  parts,
+  approvalId,
+  toolCallId,
+}: {
+  parts: readonly unknown[];
+  approvalId?: string;
+  toolCallId: string;
+}): AgentAutoReviewSummary | undefined => {
+  if (!approvalId) return undefined;
+
+  for (let index = parts.length - 1; index >= 0; index -= 1) {
+    const part = parts[index] as AgentAutoReviewDataPart;
+    if (
+      part.type !== "data-agent-auto-review" ||
+      part.data?.approvalId !== approvalId ||
+      part.data?.toolCallId !== toolCallId
+    ) {
+      continue;
+    }
+    return parseAgentAutoReviewSummary(part.data.autoReview);
+  }
+
+  return undefined;
 };
 
 export function getToolApprovalDisplayState({
@@ -51,6 +91,7 @@ export function ToolApprovalControls({
   detail,
   kind,
   operation,
+  autoReview,
   children,
 }: ToolApprovalControlsProps) {
   const {
@@ -88,9 +129,11 @@ export function ToolApprovalControls({
       detail,
       kind,
       operation,
+      autoReview,
     });
   }, [
     approvalId,
+    autoReview,
     clearActiveToolApprovalRequest,
     detail,
     isSettled,

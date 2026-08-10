@@ -15,7 +15,10 @@ const getPartFields = (part: unknown) =>
       })
     : undefined;
 
-const UI_ONLY_PART_TYPES = new Set(["data-summarization"]);
+const UI_ONLY_PART_TYPES = new Set([
+  "data-agent-auto-review",
+  "data-summarization",
+]);
 
 const isLocalDesktopFilePart = (part: unknown) => {
   const fields = getPartFields(part);

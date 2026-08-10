@@ -1,4 +1,5 @@
 import { memo, useMemo, type ReactNode } from "react";
+import type { UIMessage } from "@ai-sdk/react";
 import ToolBlock from "@/components/ui/tool-block";
 import { Eye, FileText, FilePlus, FilePen, FileOutput } from "lucide-react";
 import type { ChatStatus } from "@/types";
@@ -8,6 +9,7 @@ import type { FilePart } from "@/types/file";
 import { useToolSidebar } from "../../hooks/useToolSidebar";
 import { isUserStoppedToolError } from "@/lib/chat/tool-abort-utils";
 import {
+  getStreamedAgentAutoReviewSummary,
   getToolApprovalDisplayState,
   ToolApprovalControls,
 } from "./ToolApprovalControls";
@@ -22,6 +24,7 @@ interface FileInput {
 }
 
 interface FileHandlerProps {
+  message: UIMessage;
   part: any;
   status: ChatStatus;
 }
@@ -60,6 +63,7 @@ function areFilePropsEqual(
   next: FileHandlerProps,
 ): boolean {
   if (prev.status !== next.status) return false;
+  if (prev.message.parts.length !== next.message.parts.length) return false;
   if (prev.part.state !== next.part.state) return false;
   if (prev.part.toolCallId !== next.part.toolCallId) return false;
   if (prev.part.output !== next.part.output) return false;
@@ -70,6 +74,7 @@ function areFilePropsEqual(
 }
 
 export const FileHandler = memo(function FileHandler({
+  message,
   part,
   status,
 }: FileHandlerProps) {
@@ -286,6 +291,15 @@ export const FileHandler = memo(function FileHandler({
   });
 
   const isClickable = !!sidebarContent;
+  const autoReview = useMemo(
+    () =>
+      getStreamedAgentAutoReviewSummary({
+        parts: message.parts,
+        approvalId: part.approval?.id,
+        toolCallId: part.toolCallId,
+      }),
+    [message.parts, part.approval?.id, part.toolCallId],
+  );
   const renderApprovalRequest = ({
     icon,
     target,
@@ -306,6 +320,7 @@ export const FileHandler = memo(function FileHandler({
       target={target}
       detail="Approve to continue, or deny to stop this file change."
       kind="file"
+      autoReview={autoReview}
       operation={
         action === "write" || action === "append" || action === "edit"
           ? FILE_APPROVAL_OPERATIONS[action]

@@ -15,6 +15,7 @@ import {
 } from "./shell-tool-utils";
 import { isUserStoppedToolError } from "@/lib/chat/tool-abort-utils";
 import {
+  getStreamedAgentAutoReviewSummary,
   getToolApprovalDisplayState,
   ToolApprovalControls,
 } from "./ToolApprovalControls";
@@ -77,6 +78,15 @@ export const TerminalToolHandler = memo(function TerminalToolHandler({
       return precomputedStreamingOutput;
     return getStreamingTerminalOutput(message.parts, effectiveToolCallId);
   }, [precomputedStreamingOutput, message.parts, effectiveToolCallId]);
+  const autoReview = useMemo(
+    () =>
+      getStreamedAgentAutoReviewSummary({
+        parts: message.parts,
+        approvalId: part.approval?.id,
+        toolCallId,
+      }),
+    [message.parts, part.approval?.id, toolCallId],
+  );
 
   const isExecuting = state === "input-available" && status === "streaming";
   const hasResult = state === "output-available";
@@ -175,6 +185,7 @@ export const TerminalToolHandler = memo(function TerminalToolHandler({
           detail="Approve to continue, or deny to stop this command."
           kind="terminal"
           operation="terminal_execute"
+          autoReview={autoReview}
         >
           {(sendState) => {
             const display = getToolApprovalDisplayState({
