@@ -913,7 +913,14 @@ async function handleInvoicePaid(
 
   const recoveryPrice = subscription.items?.data[0]?.price;
   for (const [index, result] of resetResults.entries()) {
-    if (!result.recoveredFromPaymentFailure) continue;
+    const recoveredFromRetryAttempt =
+      invoice.billing_reason === "subscription_cycle" &&
+      result.outcome === "applied" &&
+      typeof invoice.attempt_count === "number" &&
+      invoice.attempt_count > 1;
+    if (!result.recoveredFromPaymentFailure && !recoveredFromRetryAttempt) {
+      continue;
+    }
 
     const uid = userIds[index];
     if (!uid) continue;
@@ -929,6 +936,9 @@ async function handleInvoicePaid(
         billing_interval: priceBillingInterval(recoveryPrice),
         billing_interval_count: recoveryPrice?.recurring?.interval_count,
         recovery_type: "invoice_paid_after_payment_failure",
+        recovery_detection: result.recoveredFromPaymentFailure
+          ? "stored_payment_failure_transition"
+          : "invoice_attempt_count",
         ...(paymentFailureAtMs && {
           payment_failure_at: new Date(paymentFailureAtMs).toISOString(),
           recovery_duration_ms: Math.max(

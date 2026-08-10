@@ -5,6 +5,7 @@ import { isExpectedBillingContextError } from "@/lib/actions/billing-action-erro
 import { getBillingActionContext } from "@/lib/actions/billing-context";
 import { phLogger } from "@/lib/posthog/server";
 import type { SubscriptionCancellationStatus } from "@/lib/billing/api-types";
+import { stripeObjectId } from "@/lib/billing/subscription-payment-failure";
 
 type CurrentSubscriptionStatus = NonNullable<
   SubscriptionCancellationStatus["subscriptionStatus"]
@@ -82,10 +83,12 @@ export default async function getSubscriptionCancellationStatusAction(): Promise
     };
   }
 
+  const latestInvoiceId = stripeObjectId(currentSubscription.latest_invoice);
   return {
     hasActiveSubscription: true,
     cancelAtPeriodEnd: currentSubscription.cancel_at_period_end === true,
     currentPeriodEnd: currentPeriodEndMs(currentSubscription),
     subscriptionStatus: currentSubscription.status,
+    ...(latestInvoiceId && { latestInvoiceId }),
   };
 }

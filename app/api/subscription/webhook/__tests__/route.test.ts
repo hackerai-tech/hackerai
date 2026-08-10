@@ -856,6 +856,7 @@ describe("POST /api/subscription/webhook", () => {
         billing_interval: "month",
         billing_interval_count: 1,
         recovery_type: "invoice_paid_after_payment_failure",
+        recovery_detection: "stored_payment_failure_transition",
         payment_failure_at: new Date(paymentFailureAtMs).toISOString(),
         recovery_duration_ms: 10_000_000,
         attempt_count: 3,
@@ -867,6 +868,79 @@ describe("POST /api/subscription/webhook", () => {
         stripe_price_id: HACKERAI_PRO_20_MONTHLY_PRICE_ID,
         paid_funnel_event_version: 1,
         $insert_id: billingPaymentRecoveryInsertId("in_pro_20", "user_pro_20"),
+      }),
+    );
+  });
+
+  it("emits recovery when invoice.paid arrives before the failure webhook", async () => {
+    const periodEnd = 1_785_000_000;
+    mockResetRateLimitBucketAfterPayment.mockResolvedValueOnce({
+      outcome: "applied",
+      recoveredFromPaymentFailure: false,
+    } as never);
+    mockConstructEvent.mockReturnValue({
+      id: "evt_invoice_paid_reordered",
+      type: "invoice.paid",
+      data: {
+        object: {
+          id: "in_reordered",
+          customer: "cus_reordered",
+          amount_paid: 2000,
+          currency: "usd",
+          billing_reason: "subscription_cycle",
+          attempt_count: 2,
+          parent: {
+            subscription_details: { subscription: "sub_reordered" },
+          },
+          status_transitions: { paid_at: 1_782_000_000 },
+        },
+      },
+    });
+    mockRetrieveCustomer.mockResolvedValue({
+      deleted: false,
+      id: "cus_reordered",
+      metadata: { workOSOrganizationId: "org_reordered" },
+    } as never);
+    mockListMemberships.mockResolvedValue({
+      autoPagination: jest
+        .fn()
+        .mockResolvedValue([{ userId: "user_reordered" }]),
+    } as never);
+    mockRetrieveSubscription.mockResolvedValue({
+      id: "sub_reordered",
+      status: "active",
+      latest_invoice: "in_reordered",
+      metadata: {},
+      items: {
+        data: [
+          {
+            quantity: 1,
+            current_period_end: periodEnd,
+            price: {
+              id: HACKERAI_PRO_20_MONTHLY_PRICE_ID,
+              lookup_key: "pro-monthly-plan",
+              recurring: { interval: "month", interval_count: 1 },
+            },
+          },
+        ],
+      },
+    } as never);
+
+    const { POST } = await import("../route");
+    const response = await POST(makeWebhookRequest());
+
+    expect(response.status).toBe(200);
+    expect(mockPostHogEvent).toHaveBeenCalledWith(
+      PAID_FUNNEL_EVENTS.billingPaymentRecovered,
+      expect.objectContaining({
+        userId: "user_reordered",
+        recovery_detection: "invoice_attempt_count",
+        attempt_count: 2,
+        stripe_invoice_id: "in_reordered",
+        $insert_id: billingPaymentRecoveryInsertId(
+          "in_reordered",
+          "user_reordered",
+        ),
       }),
     );
   });

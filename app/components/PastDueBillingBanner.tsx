@@ -11,12 +11,11 @@ import {
 import { captureAuthenticatedEvent } from "@/lib/analytics/client";
 import type { SubscriptionTier } from "@/types";
 
-type PastDueStatus = "past_due" | "unpaid";
-
 type PastDueBillingBannerProps = {
   surface: "account_settings";
   subscription: Exclude<SubscriptionTier, "free">;
-  subscriptionStatus: PastDueStatus;
+  subscriptionStatus: "past_due";
+  latestInvoiceId?: string;
   isOpening: boolean;
   onUpdatePayment: () => void;
 };
@@ -25,6 +24,7 @@ export function PastDueBillingBanner({
   surface,
   subscription,
   subscriptionStatus,
+  latestInvoiceId,
   isOpening,
   onUpdatePayment,
 }: PastDueBillingBannerProps) {
@@ -35,9 +35,10 @@ export function PastDueBillingBanner({
         surface,
         subscription_tier: subscription,
         subscription_status: subscriptionStatus,
+        ...(latestInvoiceId && { stripe_invoice_id: latestInvoiceId }),
       }),
     );
-  }, [subscription, subscriptionStatus, surface]);
+  }, [latestInvoiceId, subscription, subscriptionStatus, surface]);
 
   const handleUpdatePayment = () => {
     captureAuthenticatedEvent(
@@ -46,6 +47,7 @@ export function PastDueBillingBanner({
         surface,
         subscription_tier: subscription,
         subscription_status: subscriptionStatus,
+        ...(latestInvoiceId && { stripe_invoice_id: latestInvoiceId }),
       }),
     );
     onUpdatePayment();

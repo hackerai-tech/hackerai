@@ -156,6 +156,7 @@ describe("AccountTab", () => {
       hasActiveSubscription: true,
       cancelAtPeriodEnd: false,
       subscriptionStatus: "past_due",
+      latestInvoiceId: "in_past_due",
     } as never);
     mockRedirectToBillingPortal.mockResolvedValue("#payment-method" as never);
 
@@ -171,6 +172,7 @@ describe("AccountTab", () => {
         surface: "account_settings",
         subscription_tier: "pro",
         subscription_status: "past_due",
+        stripe_invoice_id: "in_past_due",
       }),
     );
 
@@ -186,9 +188,40 @@ describe("AccountTab", () => {
     });
     expect(mockCaptureAuthenticatedEvent).toHaveBeenCalledWith(
       "billing_past_due_payment_update_clicked",
-      expect.objectContaining({ surface: "account_settings" }),
+      expect.objectContaining({
+        surface: "account_settings",
+        stripe_invoice_id: "in_past_due",
+      }),
     );
     expect(window.location.hash).toBe("#payment-method");
+  });
+
+  it("does not offer the direct payment update flow after retries are exhausted", async () => {
+    mockGetSubscriptionCancellationStatus.mockResolvedValue({
+      hasActiveSubscription: true,
+      cancelAtPeriodEnd: false,
+      subscriptionStatus: "unpaid",
+      latestInvoiceId: "in_unpaid",
+    } as never);
+    mockRedirectToBillingPortal.mockResolvedValue("#billing" as never);
+
+    render(<AccountTab />);
+
+    await waitFor(() => {
+      expect(mockGetSubscriptionCancellationStatus).toHaveBeenCalledTimes(1);
+    });
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+
+    const user = userEvent.setup();
+    await user.click(screen.getAllByRole("button", { name: /^manage$/i })[1]);
+
+    await waitFor(() => {
+      expect(mockRedirectToBillingPortal).toHaveBeenCalledWith(undefined);
+    });
+    expect(mockCaptureAuthenticatedEvent).not.toHaveBeenCalledWith(
+      "billing_past_due_banner_impressed",
+      expect.anything(),
+    );
   });
 
   it("updates the tab when cancellation is scheduled from the dialog", async () => {

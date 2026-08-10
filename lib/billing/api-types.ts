@@ -5,6 +5,7 @@ export type SubscriptionCancellationStatus = {
   cancelAtPeriodEnd: boolean;
   currentPeriodEnd?: number;
   subscriptionStatus?: "active" | "trialing" | "past_due" | "unpaid";
+  latestInvoiceId?: string;
 };
 
 export type BillingPortalFlow = "payment_method";

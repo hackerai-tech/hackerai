@@ -103,9 +103,8 @@ const AccountTab = () => {
   const cancellationScheduled =
     currentCancellationStatus?.cancelAtPeriodEnd === true;
   const pastDueStatus =
-    currentCancellationStatus?.subscriptionStatus === "past_due" ||
-    currentCancellationStatus?.subscriptionStatus === "unpaid"
-      ? currentCancellationStatus.subscriptionStatus
+    currentCancellationStatus?.subscriptionStatus === "past_due"
+      ? "past_due"
       : null;
   const isCheckingCancellationStatus =
     canManageBilling && !hasCurrentCancellationStatus;
@@ -338,6 +337,7 @@ const AccountTab = () => {
               surface="account_settings"
               subscription={subscription}
               subscriptionStatus={pastDueStatus}
+              latestInvoiceId={currentCancellationStatus?.latestInvoiceId}
               isOpening={isOpeningBillingPortal}
               onUpdatePayment={() =>
                 void redirectToBillingPortal("payment_method")

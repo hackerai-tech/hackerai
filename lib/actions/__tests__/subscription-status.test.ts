@@ -68,6 +68,7 @@ describe("getSubscriptionCancellationStatusAction", () => {
           status: "past_due",
           cancel_at_period_end: false,
           current_period_end: 1_782_444_800,
+          latest_invoice: "in_past_due",
         },
       ],
     } as never);
@@ -80,6 +81,7 @@ describe("getSubscriptionCancellationStatusAction", () => {
       cancelAtPeriodEnd: false,
       currentPeriodEnd: 1_782_444_800_000,
       subscriptionStatus: "past_due",
+      latestInvoiceId: "in_past_due",
     });
   });
 
