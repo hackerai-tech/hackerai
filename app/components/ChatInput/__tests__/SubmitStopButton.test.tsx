@@ -46,6 +46,20 @@ describe("SubmitStopButton paid mode colors", () => {
     expect(screen.getByLabelText("Send message")).toBeDisabled();
   });
 
+  it("disables sending while the destination messages load", () => {
+    render(
+      <TooltipProvider>
+        <SubmitStopButton
+          {...defaultProps}
+          chatMode="ask"
+          sendDisabledReason="Messages loading"
+        />
+      </TooltipProvider>,
+    );
+
+    expect(screen.getByLabelText("Send message")).toBeDisabled();
+  });
+
   it("uses the default submit treatment for paid Agent mode", () => {
     const button = renderButton("agent", true);
 

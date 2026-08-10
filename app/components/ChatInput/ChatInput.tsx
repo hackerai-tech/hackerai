@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useGlobalState } from "@/app/contexts/GlobalState";
 import {
   useComposerActions,
@@ -69,6 +69,7 @@ interface ChatInputProps {
   restoreDraftAttachments?: boolean;
   storedApprovalRequest?: ActiveAgentToolApprovalRequest | null;
   offlineProtection?: boolean;
+  sendDisabledReason?: string;
 }
 
 const isBrowserFile = (file: UploadedFileState["file"]): file is File =>
@@ -202,6 +203,7 @@ export const ChatInput = ({
   restoreDraftAttachments = true,
   storedApprovalRequest,
   offlineProtection = true,
+  sendDisabledReason,
 }: ChatInputProps) => {
   const {
     chatMode,
@@ -470,7 +472,7 @@ export const ChatInput = ({
     };
   }, [localDraftTextFiles, setUploadedFiles]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const prevDraftId = prevDraftIdRef.current;
     prevDraftIdRef.current = draftId;
 
@@ -576,7 +578,7 @@ export const ChatInput = ({
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (isOffline) return;
+    if (isOffline || sendDisabledReason) return;
 
     const canSubmit =
       (status === "ready" || status === "streaming") &&
@@ -739,6 +741,7 @@ export const ChatInput = ({
               uploadedFiles={uploadedFiles}
               chatMode={chatMode}
               isOnline={!isOffline}
+              sendDisabledReason={sendDisabledReason}
             />
           </div>
         )}

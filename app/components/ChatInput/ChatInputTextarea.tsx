@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useLayoutEffect, useRef } from "react";
 import TextareaAutosize from "react-textarea-autosize";
 import { useGlobalState } from "@/app/contexts/GlobalState";
 import {
@@ -55,7 +55,7 @@ export function ChatInputTextarea({
   });
 
   // Load draft when draftId changes (chat switch or mount)
-  useEffect(() => {
+  useLayoutEffect(() => {
     const prevDraftId = prevDraftIdRef.current;
     prevDraftIdRef.current = draftId;
 
