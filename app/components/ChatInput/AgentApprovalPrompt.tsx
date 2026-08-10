@@ -52,6 +52,50 @@ const getReusableApprovalDescription = (
 const formatRiskCategory = (value: string): string =>
   value.replaceAll("_", " ");
 
+const normalizeApprovalText = (value: string): string =>
+  value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+
+const isGenericActionEcho = (purpose: string, target: string): boolean => {
+  const normalizedPurpose = normalizeApprovalText(purpose);
+  const normalizedTarget = normalizeApprovalText(target);
+  if (!normalizedPurpose || !normalizedTarget) return false;
+  if (normalizedPurpose === normalizedTarget) return true;
+
+  const targetPrefix = normalizedTarget.split(" ").slice(0, 2).join(" ");
+  const removableTargets = [normalizedTarget, targetPrefix].filter(
+    (value, index, values) =>
+      value.length >= 3 && values.indexOf(value) === index,
+  );
+  const genericWrapper =
+    /^(?:(?:the )?user (?:requested|asked for|asked to|wants to) )?(?:(?:the )?(?:execution|execution of|running|run|to run|to execute|execute) )?(?:the )?command$/;
+
+  return removableTargets.some((candidate) =>
+    genericWrapper.test(
+      normalizedPurpose.replace(candidate, " ").replace(/\s+/g, " ").trim(),
+    ),
+  );
+};
+
+export const getApprovalPurpose = (
+  request: Pick<
+    ActiveAgentToolApprovalRequest,
+    "detail" | "justification" | "target"
+  >,
+): string => {
+  const target = request.target?.trim() ?? "";
+  const purpose = request.justification?.trim() ?? "";
+
+  if (purpose) {
+    return target && isGenericActionEcho(purpose, target) ? "" : purpose;
+  }
+
+  // Generic fallback copy adds noise when the exact action is already visible.
+  return target ? "" : (request.detail?.trim() ?? "");
+};
+
 export function AgentApprovalPrompt({
   request,
   hasConnectionError = false,
@@ -78,8 +122,7 @@ export function AgentApprovalPrompt({
     ? getReusableApprovalDescription(targetGrant)
     : "";
   const approvalTarget = request.target?.trim() ?? "";
-  const justification =
-    request.justification?.trim() || request.detail?.trim() || "";
+  const purpose = getApprovalPurpose(request);
 
   const submitApproval = useCallback(
     async (reuseForConversation: boolean) => {
@@ -158,17 +201,19 @@ export function AgentApprovalPrompt({
         <div className="text-[15px] font-medium leading-5 text-foreground sm:text-base">
           {request.title}
         </div>
-        {justification ? (
-          <p className="text-sm leading-5 text-muted-foreground">
-            {justification}
-          </p>
+        {purpose ? (
+          <p className="text-sm leading-5 text-muted-foreground">{purpose}</p>
         ) : null}
       </div>
 
       {approvalTarget ? (
-        <div className="max-h-24 overflow-auto rounded-lg bg-black/5 px-3 py-2 font-mono text-sm leading-5 text-muted-foreground dark:bg-white/5">
-          {request.target}
-        </div>
+        <pre
+          aria-label="Exact action"
+          className="max-h-40 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-black/5 px-3 py-3 font-mono text-sm leading-6 text-foreground/80 dark:bg-white/5"
+          data-testid="agent-approval-target"
+        >
+          <code translate="no">{request.target}</code>
+        </pre>
       ) : null}
 
       {request.autoReview?.rolloutPhase === "enforce" ? (

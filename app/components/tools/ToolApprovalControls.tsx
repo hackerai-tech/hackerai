@@ -81,6 +81,18 @@ export function getToolApprovalDisplayState({
   }
 }
 
+export function getToolApprovalDisplayTarget({
+  sendState,
+  target,
+}: {
+  sendState: AgentApprovalSendState;
+  target?: string;
+}): string | undefined {
+  return sendState === "approved" || sendState === "denied"
+    ? target
+    : undefined;
+}
+
 export function ToolApprovalControls({
   approvalId,
   toolCallId,

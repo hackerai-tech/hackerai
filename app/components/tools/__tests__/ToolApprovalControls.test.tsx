@@ -28,6 +28,7 @@ import {
 import {
   getStreamedAgentAutoReviewSummary,
   getToolApprovalDisplayState,
+  getToolApprovalDisplayTarget,
   ToolApprovalControls,
 } from "../ToolApprovalControls";
 
@@ -254,5 +255,19 @@ describe("ToolApprovalControls", () => {
         deniedAction: "Command denied",
       }),
     ).toEqual({ action: "Command denied", isShimmer: false });
+  });
+
+  it("shows the target in the tool row only after the approval decision", () => {
+    for (const sendState of ["idle", "sending"] as const) {
+      expect(
+        getToolApprovalDisplayTarget({ sendState, target: "rm -rf /tmp/test" }),
+      ).toBeUndefined();
+    }
+
+    for (const sendState of ["approved", "denied"] as const) {
+      expect(
+        getToolApprovalDisplayTarget({ sendState, target: "rm -rf /tmp/test" }),
+      ).toBe("rm -rf /tmp/test");
+    }
   });
 });

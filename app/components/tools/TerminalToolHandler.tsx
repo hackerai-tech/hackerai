@@ -17,6 +17,7 @@ import { isUserStoppedToolError } from "@/lib/chat/tool-abort-utils";
 import {
   getStreamedAgentAutoReviewSummary,
   getToolApprovalDisplayState,
+  getToolApprovalDisplayTarget,
   ToolApprovalControls,
 } from "./ToolApprovalControls";
 
@@ -198,7 +199,10 @@ export const TerminalToolHandler = memo(function TerminalToolHandler({
               <ToolBlock
                 icon={<Terminal />}
                 action={display.action}
-                target={blockTarget}
+                target={getToolApprovalDisplayTarget({
+                  sendState,
+                  target: blockTarget,
+                })}
                 isShimmer={display.isShimmer}
                 isClickable={!!sidebarContent}
                 onClick={handleOpenInSidebar}

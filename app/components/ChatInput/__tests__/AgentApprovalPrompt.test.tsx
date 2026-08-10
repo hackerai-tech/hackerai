@@ -20,7 +20,7 @@ jest.mock("@/app/contexts/AgentApprovalContext", () => ({
   }),
 }));
 
-const { AgentApprovalPrompt } = jest.requireActual<
+const { AgentApprovalPrompt, getApprovalPurpose } = jest.requireActual<
   typeof import("../AgentApprovalPrompt")
 >("../AgentApprovalPrompt");
 
@@ -74,6 +74,56 @@ describe("AgentApprovalPrompt", () => {
     ).toBeInTheDocument();
     expect(screen.queryByRole("radio")).not.toBeInTheDocument();
     expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
+  });
+
+  it("shows the exact action in a readable code block", () => {
+    renderPrompt();
+
+    const target = screen.getByTestId("agent-approval-target");
+    expect(target.tagName).toBe("PRE");
+    expect(target).toHaveAccessibleName("Exact action");
+    expect(target).toHaveTextContent(request.target);
+    expect(target.querySelector("code")).toHaveAttribute("translate", "no");
+  });
+
+  it("omits generic purpose copy that only repeats the command", () => {
+    render(
+      <AgentApprovalPrompt
+        request={{
+          ...request,
+          target: "rm -rf /tmp/dangerous_test_dir",
+          justification: "User requested execution of rm -rf command",
+        }}
+        onRetryConnection={mockOnRetryConnection}
+        onStop={mockOnStop}
+      />,
+    );
+
+    expect(
+      screen.queryByText("User requested execution of rm -rf command"),
+    ).not.toBeInTheDocument();
+    expect(screen.getByTestId("agent-approval-target")).toHaveTextContent(
+      "rm -rf /tmp/dangerous_test_dir",
+    );
+  });
+
+  it("keeps purpose copy that explains why the action is needed", () => {
+    expect(
+      getApprovalPurpose({
+        target: "rm -rf /tmp/dangerous_test_dir",
+        justification:
+          "Remove the temporary test directory after verification.",
+      }),
+    ).toBe("Remove the temporary test directory after verification.");
+  });
+
+  it("does not show generic fallback instructions beside an exact action", () => {
+    expect(
+      getApprovalPurpose({
+        target: "pnpm test",
+        detail: "Approve to continue, or deny to stop this command.",
+      }),
+    ).toBe("");
   });
 
   it("shows the privacy-safe automatic review summary before human approval", () => {

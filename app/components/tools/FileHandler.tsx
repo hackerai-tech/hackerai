@@ -11,6 +11,7 @@ import { isUserStoppedToolError } from "@/lib/chat/tool-abort-utils";
 import {
   getStreamedAgentAutoReviewSummary,
   getToolApprovalDisplayState,
+  getToolApprovalDisplayTarget,
   ToolApprovalControls,
 } from "./ToolApprovalControls";
 
@@ -338,7 +339,7 @@ export const FileHandler = memo(function FileHandler({
           <ToolBlock
             icon={icon}
             action={display.action}
-            target={target}
+            target={getToolApprovalDisplayTarget({ sendState, target })}
             isShimmer={display.isShimmer}
             isClickable={isClickable}
             onClick={isClickable ? handleOpenInSidebar : undefined}
