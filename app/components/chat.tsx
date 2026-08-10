@@ -22,6 +22,7 @@ import { api } from "@/convex/_generated/api";
 import type { FileDetails } from "@/types/file";
 import { Messages } from "./Messages";
 import { ChatInput } from "./ChatInput";
+import { ChatLoadingStatusPill } from "./ChatLoadingStatusPill";
 import type { RateLimitWarningData } from "./RateLimitWarning";
 import ChatHeader from "./ChatHeader";
 import Footer from "./Footer";
@@ -1796,6 +1797,8 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
       hasPaginatedMessageResults: !!paginatedMessageResults,
       awaitingServerChat,
     });
+  const showBottomChatInput =
+    (hasMessages || isExistingChat || isMobile) && !isChatNotFound;
   const agentRunSpendCapWarning =
     rateLimitWarning?.warningType === "agent-run-spend-cap"
       ? rateLimitWarning
@@ -1957,8 +1960,9 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
               )}
 
               {/* Chat Input - Bottom placement (also for mobile new chats) */}
-              {(hasMessages || isExistingChat || isMobile) &&
-                !isChatNotFound && (
+              {showBottomChatInput ? (
+                <div className="flex-shrink-0">
+                  {isInitialExistingChatLoad ? <ChatLoadingStatusPill /> : null}
                   <ChatInput
                     onSubmit={handleSubmit}
                     onStop={handleStop}
@@ -1979,7 +1983,8 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
                     onDismissRateLimitWarning={handleDismissRateLimitWarning}
                     storedApprovalRequest={storedAgentApprovalRequest}
                   />
-                )}
+                </div>
+              ) : null}
             </div>
           </div>
 
