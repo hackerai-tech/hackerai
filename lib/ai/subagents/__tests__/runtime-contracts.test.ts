@@ -99,7 +99,7 @@ describe("security validation subagent runtime contracts", () => {
     expect(parent).toContain('"parent_canceled"');
     expect(parent).toContain('"parent_run_ended"');
     expect(parentSettlement).toContain(
-      "dependencies.cancelTriggerRun(child.trigger_run_id)",
+      "dependencies.cancelTriggerRun(triggerRunId)",
     );
     expect(parentSettlement).toContain(
       "dependencies.cancelPersistedSubagents(parentTriggerRunId, reason)",

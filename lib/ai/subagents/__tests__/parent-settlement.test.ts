@@ -122,6 +122,37 @@ describe("settleParentSubagents", () => {
     );
   });
 
+  it("contains synchronous dependency failures during parent teardown", async () => {
+    const dependencies = createDependencies();
+    dependencies.listActiveSubagents.mockResolvedValue([
+      { trigger_run_id: "child-run" },
+    ]);
+    dependencies.cancelPersistedSubagents.mockImplementation(() => {
+      throw new Error("synchronous convex failure");
+    });
+    dependencies.cancelTriggerRun.mockImplementation(() => {
+      throw new Error("synchronous trigger failure");
+    });
+
+    await expect(
+      settleParentSubagents(
+        {
+          parentTriggerRunId: "parent-run",
+          reason: "parent_run_ended",
+        },
+        dependencies,
+      ),
+    ).resolves.toBeUndefined();
+
+    expect(dependencies.warn).toHaveBeenCalledWith(
+      "[agent-long] child settlement partially failed",
+      expect.objectContaining({
+        persistenceFailed: true,
+        failedTriggerCancellations: 1,
+      }),
+    );
+  });
+
   it("bounds cleanup and reports a timeout", async () => {
     const dependencies = createDependencies();
     dependencies.cancelPersistedSubagents.mockImplementation(
