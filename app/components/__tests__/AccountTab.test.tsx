@@ -151,6 +151,25 @@ describe("AccountTab", () => {
     expect(window.location.hash).toBe("#billing");
   });
 
+  it("does not open the payment portal before billing status resolves", async () => {
+    mockGetSubscriptionCancellationStatus.mockReturnValue(
+      new Promise((resolve) => {
+        void resolve;
+      }) as never,
+    );
+
+    render(<AccountTab />);
+
+    const paymentButton = screen.getAllByRole("button", {
+      name: /^manage$/i,
+    })[1];
+    expect(paymentButton).toBeDisabled();
+
+    const user = userEvent.setup();
+    await user.click(paymentButton);
+    expect(mockRedirectToBillingPortal).not.toHaveBeenCalled();
+  });
+
   it("shows a past-due warning and opens payment method update directly", async () => {
     mockGetSubscriptionCancellationStatus.mockResolvedValue({
       hasActiveSubscription: true,

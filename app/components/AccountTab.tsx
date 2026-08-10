@@ -142,9 +142,7 @@ const AccountTab = () => {
     setIsOpeningBillingPortal(true);
     try {
       const url = await openBillingPortal(flow);
-      if (url) {
-        window.location.href = url;
-      }
+      window.location.href = url;
     } catch (error) {
       toast.error(
         error instanceof Error
@@ -407,7 +405,9 @@ const AccountTab = () => {
                 type="button"
                 variant="outline"
                 size="sm"
-                disabled={isOpeningBillingPortal}
+                disabled={
+                  isOpeningBillingPortal || isCheckingCancellationStatus
+                }
                 onClick={() =>
                   void redirectToBillingPortal(
                     pastDueStatus ? "payment_method" : undefined,
