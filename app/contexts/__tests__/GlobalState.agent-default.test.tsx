@@ -1,4 +1,5 @@
 import "@testing-library/jest-dom";
+import { useEffect } from "react";
 import {
   act,
   fireEvent,
@@ -107,7 +108,10 @@ function ChatNavigationProbe({
 
 function NavigationActionRenderProbe({ onRender }: { onRender: () => void }) {
   const { setChatSidebarOpen } = useGlobalStateActions();
-  onRender();
+
+  useEffect(() => {
+    onRender();
+  });
 
   return (
     <button type="button" onClick={() => setChatSidebarOpen(false)}>
@@ -153,10 +157,11 @@ describe("GlobalStateProvider agent defaults", () => {
       </GlobalStateProvider>,
     );
 
-    expect(onRender).toHaveBeenCalledTimes(1);
+    const initialCommittedRenderCount = onRender.mock.calls.length;
+    expect(initialCommittedRenderCount).toBe(1);
     fireEvent.click(screen.getByRole("button", { name: "Expand todo panel" }));
 
-    expect(onRender).toHaveBeenCalledTimes(1);
+    expect(onRender).toHaveBeenCalledTimes(initialCommittedRenderCount);
   });
 
   it("runs registered stream cleanup before initializing another chat", () => {
