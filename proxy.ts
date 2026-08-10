@@ -338,7 +338,9 @@ export default async function proxy(request: NextRequest) {
   }
 
   const requestHeaders = buildRequestHeaders(request, headers);
-  const responseHeaders = buildResponseHeaders(headers);
+  const responseHeaders = buildResponseHeaders(headers, {
+    preserveSessionCookies: hadSessionCookie && refreshHitRateLimit,
+  });
 
   if (session.user || isUnauthenticatedPath(pathname)) {
     return withReferralCookie(
@@ -419,9 +421,20 @@ function buildRequestHeaders(
   return merged;
 }
 
-function buildResponseHeaders(authkitHeaders: Headers): Headers {
+function buildResponseHeaders(
+  authkitHeaders: Headers,
+  { preserveSessionCookies = false } = {},
+): Headers {
   const responseHeaders = new Headers(authkitHeaders);
   responseHeaders.delete(SESSION_HEADER);
+
+  // AuthKit clears session cookies for every refresh exception. A provider
+  // rate limit is transient, so forwarding those deletions would turn a
+  // recoverable retry into a logged-out session.
+  if (preserveSessionCookies) {
+    responseHeaders.delete("set-cookie");
+  }
+
   return responseHeaders;
 }
 
