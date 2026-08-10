@@ -1,8 +1,26 @@
 import "@testing-library/jest-dom";
 import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { jest } from "@jest/globals";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { SubmitStopButton } from "../SubmitStopButton";
+
+Object.defineProperty(globalThis, "ResizeObserver", {
+  configurable: true,
+  value: class ResizeObserverMock {
+    observe() {
+      return undefined;
+    }
+
+    unobserve() {
+      return undefined;
+    }
+
+    disconnect() {
+      return undefined;
+    }
+  },
+});
 
 const defaultProps = {
   isGenerating: false,
@@ -46,18 +64,25 @@ describe("SubmitStopButton paid mode colors", () => {
     expect(screen.getByLabelText("Send message")).toBeDisabled();
   });
 
-  it("disables sending while the destination messages load", () => {
+  it("prioritizes the loading reason while destination messages load", async () => {
+    const user = userEvent.setup();
     render(
-      <TooltipProvider>
+      <TooltipProvider delayDuration={0}>
         <SubmitStopButton
           {...defaultProps}
           chatMode="ask"
+          isOnline={false}
           sendDisabledReason="Messages loading"
         />
       </TooltipProvider>,
     );
 
-    expect(screen.getByLabelText("Send message")).toBeDisabled();
+    const sendButton = screen.getByLabelText("Send message");
+    expect(sendButton).toBeDisabled();
+
+    await user.hover(sendButton.parentElement!);
+
+    expect(await screen.findByText("Messages loading")).toBeInTheDocument();
   });
 
   it("uses the default submit treatment for paid Agent mode", () => {
