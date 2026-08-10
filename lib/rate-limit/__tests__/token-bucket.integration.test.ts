@@ -1300,7 +1300,11 @@ describe("token-bucket async functions", () => {
       const nowSeconds = 1_782_100_200;
       const periodEndSeconds = nowSeconds + 30 * 24 * 60 * 60;
       const nowSpy = jest.spyOn(Date, "now").mockReturnValue(nowSeconds * 1000);
-      mockEvalFn.mockResolvedValueOnce(1);
+      mockEvalFn.mockResolvedValueOnce([
+        1,
+        1,
+        transition.occurredAtMs - 60_000,
+      ]);
 
       try {
         const { resetRateLimitBucketAfterPayment } = getIsolatedModule();
@@ -1313,7 +1317,11 @@ describe("token-bucket async functions", () => {
             periodEndSeconds,
             200_000,
           ),
-        ).resolves.toEqual({ outcome: "applied" });
+        ).resolves.toEqual({
+          outcome: "applied",
+          recoveredFromPaymentFailure: true,
+          paymentFailureAtMs: transition.occurredAtMs - 60_000,
+        });
 
         expect(mockEvalFn).toHaveBeenCalledWith(
           expect.stringContaining('"billingTransitionType", "paid"'),
@@ -1347,12 +1355,15 @@ describe("token-bucket async functions", () => {
     ] as const)(
       "maps Redis outcome $outcomeCode to $expectedOutcome without refilling",
       async ({ outcomeCode, expectedOutcome }) => {
-        mockEvalFn.mockResolvedValueOnce(outcomeCode);
+        mockEvalFn.mockResolvedValueOnce([outcomeCode, 0, 0]);
         const { resetRateLimitBucketAfterPayment } = getIsolatedModule();
 
         await expect(
           resetRateLimitBucketAfterPayment("user-recovered", "pro", transition),
-        ).resolves.toEqual({ outcome: expectedOutcome });
+        ).resolves.toEqual({
+          outcome: expectedOutcome,
+          recoveredFromPaymentFailure: false,
+        });
       },
     );
 

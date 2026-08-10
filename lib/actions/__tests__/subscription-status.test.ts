@@ -51,11 +51,37 @@ describe("getSubscriptionCancellationStatusAction", () => {
       hasActiveSubscription: true,
       cancelAtPeriodEnd: true,
       currentPeriodEnd: 1_782_444_800_000,
+      subscriptionStatus: "active",
     });
     expect(mockListSubscriptions).toHaveBeenCalledWith({
       customer: "cus_123",
       status: "all",
       limit: 10,
+    });
+  });
+
+  it("returns the Stripe status for a past-due subscription", async () => {
+    mockListSubscriptions.mockResolvedValue({
+      data: [
+        {
+          id: "sub_past_due",
+          status: "past_due",
+          cancel_at_period_end: false,
+          current_period_end: 1_782_444_800,
+          latest_invoice: "in_past_due",
+        },
+      ],
+    } as never);
+
+    const { default: getSubscriptionCancellationStatusAction } =
+      await import("../subscription-status");
+
+    await expect(getSubscriptionCancellationStatusAction()).resolves.toEqual({
+      hasActiveSubscription: true,
+      cancelAtPeriodEnd: false,
+      currentPeriodEnd: 1_782_444_800_000,
+      subscriptionStatus: "past_due",
+      latestInvoiceId: "in_past_due",
     });
   });
 

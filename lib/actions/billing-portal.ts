@@ -4,8 +4,15 @@ import { stripe } from "../../app/api/stripe";
 import { isExpectedBillingContextError } from "@/lib/actions/billing-action-errors";
 import { getBillingActionContext } from "@/lib/actions/billing-context";
 import { phLogger } from "@/lib/posthog/server";
+import type { BillingPortalFlow } from "@/lib/billing/api-types";
+import {
+  PAID_FUNNEL_EVENTS,
+  paidFunnelProperties,
+} from "@/lib/analytics/paid-funnel";
 
-export default async function redirectToBillingPortal() {
+export default async function redirectToBillingPortal(
+  flow?: BillingPortalFlow,
+) {
   const startedAt = Date.now();
   const context = await getBillingActionContext().catch((error) => {
     if (isExpectedBillingContextError(error)) {
@@ -35,6 +42,9 @@ export default async function redirectToBillingPortal() {
     billingPortalSession = await stripe.billingPortal.sessions.create({
       customer: stripeCustomerId,
       return_url: `${baseUrl}`,
+      ...(flow === "payment_method" && {
+        flow_data: { type: "payment_method_update" },
+      }),
     });
   } catch (error) {
     phLogger.error("billing_portal_action_failed", {
@@ -58,5 +68,18 @@ export default async function redirectToBillingPortal() {
     });
     throw error;
   }
+
+  if (flow === "payment_method") {
+    phLogger.event(
+      PAID_FUNNEL_EVENTS.paymentUpdateOpened,
+      paidFunnelProperties({
+        ...billingFields,
+        surface: "account_settings",
+        stripe_billing_portal_session_id: billingPortalSession.id,
+        $insert_id: `${PAID_FUNNEL_EVENTS.paymentUpdateOpened}:${billingPortalSession.id}:${context.user.id}`,
+      }),
+    );
+  }
+
   return billingPortalSession.url;
 }

@@ -205,6 +205,8 @@ export type DelinquencyCreditHoldResult = {
 
 export type PaidCreditResetResult = {
   outcome: "applied" | "already_applied" | "stale";
+  recoveredFromPaymentFailure: boolean;
+  paymentFailureAtMs?: number;
 };
 
 const emptyUsageDeductionResult = (): UsageDeductionResult => ({
@@ -650,17 +652,21 @@ local existingInvoiceId = redis.call("HGET", bucketKey, "billingInvoiceId")
 if existingTransitionType == "paid"
   and existingSubscriptionId == subscriptionId
   and existingInvoiceId == invoiceId then
-  return 2
+  return {2, 0, 0}
 end
 
 if existingTransitionAtMs and existingTransitionAtMs > transitionAtMs then
-  return 0
+  return {0, 0, 0}
 end
 if existingTransitionAtMs
   and existingTransitionAtMs == transitionAtMs
   and existingTransitionType ~= "payment_failed" then
-  return 0
+  return {0, 0, 0}
 end
+
+local recoveredFromPaymentFailure = existingTransitionType == "payment_failed"
+  and existingSubscriptionId == subscriptionId
+  and existingInvoiceId == invoiceId
 
 redis.call("DEL", bucketKey)
 redis.call(
@@ -677,7 +683,11 @@ redis.call(
   "billingInvoiceId", invoiceId
 )
 redis.call("EXPIRE", bucketKey, expireSeconds)
-return 1
+return {
+  1,
+  recoveredFromPaymentFailure and 1 or 0,
+  recoveredFromPaymentFailure and existingTransitionAtMs or 0
+}
 `;
 
 const enforceStoredCycleAllocation = async (
@@ -1479,9 +1489,9 @@ export const resetRateLimitBucketAfterPayment = async (
     Number.isFinite(transition.occurredAtMs) && transition.occurredAtMs > 0
       ? Math.floor(transition.occurredAtMs)
       : nowMs;
-  const outcomeCode = await redis.eval<
+  const [outcomeCode, recoveredCode, paymentFailureAtMsRaw] = await redis.eval<
     [number, number, number, number, number, number, number, string, string],
-    number
+    [number, number, number]
   >(
     APPLY_PAID_BUCKET_RESET_SCRIPT,
     [getMonthlyBucketKey(userId, subscription)],
@@ -1505,6 +1515,13 @@ export const resetRateLimitBucketAfterPayment = async (
         : outcomeCode === 2
           ? "already_applied"
           : "stale",
+    recoveredFromPaymentFailure: recoveredCode === 1,
+    ...(recoveredCode === 1 &&
+      typeof paymentFailureAtMsRaw === "number" &&
+      Number.isFinite(paymentFailureAtMsRaw) &&
+      paymentFailureAtMsRaw > 0 && {
+        paymentFailureAtMs: paymentFailureAtMsRaw,
+      }),
   };
 };
 

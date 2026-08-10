@@ -20,6 +20,7 @@ import type * as feedback from "../feedback.js";
 import type * as fileActions from "../fileActions.js";
 import type * as fileAggregate from "../fileAggregate.js";
 import type * as fileStorage from "../fileStorage.js";
+import type * as involuntaryChurn from "../involuntaryChurn.js";
 import type * as lib_branchedChatTitle from "../lib/branchedChatTitle.js";
 import type * as lib_chatAccessSuspensions from "../lib/chatAccessSuspensions.js";
 import type * as lib_extraUsagePricing from "../lib/extraUsagePricing.js";
@@ -70,6 +71,7 @@ declare const fullApi: ApiFromModules<{
   fileActions: typeof fileActions;
   fileAggregate: typeof fileAggregate;
   fileStorage: typeof fileStorage;
+  involuntaryChurn: typeof involuntaryChurn;
   "lib/branchedChatTitle": typeof lib_branchedChatTitle;
   "lib/chatAccessSuspensions": typeof lib_chatAccessSuspensions;
   "lib/extraUsagePricing": typeof lib_extraUsagePricing;

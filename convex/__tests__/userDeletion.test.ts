@@ -341,6 +341,26 @@ function seedTables(userId = "user_123", otherUserId = "user_other"): Tables {
         updated_at: 1,
       },
     ],
+    involuntary_churn_events: [
+      {
+        _id: "churn-user",
+        user_id: userId,
+        idempotency_key: `evt-user:${userId}`,
+        stripe_event_id: "evt-user",
+        stripe_invoice_id: "in-user",
+        recovery_result: "churned",
+        occurred_at: 1,
+      },
+      {
+        _id: "churn-other",
+        user_id: otherUserId,
+        idempotency_key: `evt-other:${otherUserId}`,
+        stripe_event_id: "evt-other",
+        stripe_invoice_id: "in-other",
+        recovery_result: "pending",
+        occurred_at: 1,
+      },
+    ],
     usage_logs: [
       {
         _id: "usage-user",
@@ -562,6 +582,17 @@ describe("userDeletion", () => {
     expect(
       row(tables, "cancellation_reasons", "cancel-user")?.reason_details_id,
     ).toBeUndefined();
+    expect(row(tables, "involuntary_churn_events", "churn-user")).toMatchObject(
+      {
+        user_id: DELETED_USER_ID,
+        idempotency_key: "evt-user:__deleted_user__:churn-user",
+        stripe_event_id: "evt-user",
+        stripe_invoice_id: "in-user",
+      },
+    );
+    expect(
+      row(tables, "involuntary_churn_events", "churn-other"),
+    ).toMatchObject({ user_id: "user_other" });
     expect(row(tables, "usage_logs", "usage-user")).toMatchObject({
       user_id: DELETED_USER_ID,
     });

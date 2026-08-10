@@ -9,6 +9,7 @@ import {
 import { HACKERAI_PRO_20_MONTHLY_PRICE_ID } from "@/lib/billing/included-usage";
 import {
   PAID_FUNNEL_EVENTS,
+  billingPaymentRecoveryInsertId,
   cancellationCompletionInsertId,
 } from "@/lib/analytics/paid-funnel";
 
@@ -16,6 +17,7 @@ const mockConstructEvent = jest.fn();
 const mockRetrieveCustomer = jest.fn();
 const mockRetrieveSubscription = jest.fn();
 const mockUpdateSubscription = jest.fn();
+const mockListSubscriptions = jest.fn();
 const mockRetrieveInvoice = jest.fn();
 const mockRetrievePaymentIntent = jest.fn();
 const mockListMemberships = jest.fn();
@@ -53,6 +55,7 @@ jest.mock("@/app/api/stripe", () => ({
     subscriptions: {
       retrieve: mockRetrieveSubscription,
       update: mockUpdateSubscription,
+      list: mockListSubscriptions,
     },
     invoices: {
       retrieve: mockRetrieveInvoice,
@@ -99,6 +102,9 @@ jest.mock("@/convex/_generated/api", () => ({
         "cancellationReasons.completeCancellationReason",
       markCancellationCompleted:
         "cancellationReasons.markCancellationCompleted",
+    },
+    involuntaryChurn: {
+      recordEvent: "involuntaryChurn.recordEvent",
     },
   },
 }));
@@ -306,7 +312,17 @@ describe("POST /api/subscription/webhook", () => {
     jest.spyOn(console, "warn").mockImplementation(() => {});
     jest.spyOn(console, "error").mockImplementation(() => {});
 
-    mockConvexMutation.mockResolvedValue({ alreadyProcessed: false } as never);
+    mockConvexMutation.mockImplementation((mutation) =>
+      Promise.resolve(
+        mutation === "involuntaryChurn.recordEvent"
+          ? {
+              inserted: false,
+              priorFailureSeen: false,
+              recoveryResult: undefined,
+            }
+          : { alreadyProcessed: false },
+      ),
+    );
     mockFreezeRateLimitBucketForDelinquency.mockResolvedValue({
       outcome: "applied",
       remainingPoints: 100_000,
@@ -314,6 +330,7 @@ describe("POST /api/subscription/webhook", () => {
     } as never);
     mockResetRateLimitBucketAfterPayment.mockResolvedValue({
       outcome: "applied",
+      recoveredFromPaymentFailure: false,
     } as never);
     mockStashTierChangeBucketState.mockResolvedValue({} as never);
     mockApplyProratedTierChangeBucket.mockResolvedValue(null as never);
@@ -526,7 +543,6 @@ describe("POST /api/subscription/webhook", () => {
         ],
       },
     } as never);
-
     const { POST } = await import("../route");
 
     const response = await POST(makeWebhookRequest());
@@ -656,8 +672,16 @@ describe("POST /api/subscription/webhook", () => {
         "unitEconomics.recordRevenueEvent",
         expect.anything(),
       );
-      expect(mockConvexMutation).toHaveBeenNthCalledWith(
-        2,
+      expect(mockConvexMutation).toHaveBeenCalledWith(
+        "involuntaryChurn.recordEvent",
+        expect.objectContaining({
+          stripeEventId: `evt_invoice_paid_${subscriptionStatus}`,
+          stripeEventType: "invoice.paid",
+          stripeInvoiceId: `in_${subscriptionStatus}`,
+          invoicePaidEligible: false,
+        }),
+      );
+      expect(mockConvexMutation).toHaveBeenCalledWith(
         "extraUsage.checkAndMarkWebhook",
         {
           serviceKey: "service_key",
@@ -763,8 +787,14 @@ describe("POST /api/subscription/webhook", () => {
     );
   });
 
-  it("resets the grandfathered $20 Pro price to $20 of included usage", async () => {
+  it("resets recovered credits and emits a payment recovery event", async () => {
     const periodEnd = 1_785_000_000;
+    const paymentFailureAtMs = 1_781_990_000_000;
+    mockResetRateLimitBucketAfterPayment.mockResolvedValueOnce({
+      outcome: "applied",
+      recoveredFromPaymentFailure: true,
+      paymentFailureAtMs,
+    } as never);
     mockConstructEvent.mockReturnValue({
       id: "evt_invoice_paid_pro_20",
       type: "invoice.paid",
@@ -775,6 +805,7 @@ describe("POST /api/subscription/webhook", () => {
           amount_paid: 2000,
           currency: "usd",
           billing_reason: "subscription_cycle",
+          attempt_count: 3,
           parent: {
             subscription_details: {
               subscription: "sub_pro_20",
@@ -820,6 +851,17 @@ describe("POST /api/subscription/webhook", () => {
         ],
       },
     } as never);
+    mockConvexMutation.mockImplementation((mutation) =>
+      Promise.resolve(
+        mutation === "involuntaryChurn.recordEvent"
+          ? {
+              inserted: true,
+              priorFailureSeen: true,
+              recoveryResult: "recovered",
+            }
+          : { alreadyProcessed: false },
+      ),
+    );
 
     const { POST } = await import("../route");
 
@@ -836,6 +878,120 @@ describe("POST /api/subscription/webhook", () => {
       },
       periodEnd,
       200_000,
+    );
+    expect(mockPostHogEvent).toHaveBeenCalledWith(
+      PAID_FUNNEL_EVENTS.billingPaymentRecovered,
+      expect.objectContaining({
+        userId: "user_pro_20",
+        org_id: "org_pro_20",
+        subscription_tier: "pro",
+        plan: "pro",
+        billing_interval: "month",
+        billing_interval_count: 1,
+        recovery_type: "invoice_paid_after_payment_failure",
+        recovery_detection: "stored_payment_failure_transition",
+        payment_failure_at: new Date(paymentFailureAtMs).toISOString(),
+        recovery_duration_ms: 10_000_000,
+        attempt_count: 3,
+        amount_paid_dollars: 20,
+        currency: "usd",
+        stripe_customer_id: "cus_pro_20",
+        stripe_subscription_id: "sub_pro_20",
+        stripe_invoice_id: "in_pro_20",
+        stripe_price_id: HACKERAI_PRO_20_MONTHLY_PRICE_ID,
+        paid_funnel_event_version: 1,
+        stripe_event_id: "evt_invoice_paid_pro_20",
+        stripe_event_type: "invoice.paid",
+        $insert_id: billingPaymentRecoveryInsertId(
+          "evt_invoice_paid_pro_20",
+          "user_pro_20",
+        ),
+      }),
+    );
+    expect(mockPostHogEvent).toHaveBeenCalledWith(
+      "invoice_paid",
+      expect.objectContaining({
+        userId: "user_pro_20",
+        stripe_event_id: "evt_invoice_paid_pro_20",
+        stripe_subscription_id: "sub_pro_20",
+        stripe_invoice_id: "in_pro_20",
+        attempt_count: 3,
+        recovery_result: "recovered",
+        $insert_id: "invoice_paid:evt_invoice_paid_pro_20:user_pro_20",
+      }),
+    );
+  });
+
+  it("emits recovery when invoice.paid arrives before the failure webhook", async () => {
+    const periodEnd = 1_785_000_000;
+    mockResetRateLimitBucketAfterPayment.mockResolvedValueOnce({
+      outcome: "applied",
+      recoveredFromPaymentFailure: false,
+    } as never);
+    mockConstructEvent.mockReturnValue({
+      id: "evt_invoice_paid_reordered",
+      type: "invoice.paid",
+      data: {
+        object: {
+          id: "in_reordered",
+          customer: "cus_reordered",
+          amount_paid: 2000,
+          currency: "usd",
+          billing_reason: "subscription_cycle",
+          attempt_count: 2,
+          parent: {
+            subscription_details: { subscription: "sub_reordered" },
+          },
+          status_transitions: { paid_at: 1_782_000_000 },
+        },
+      },
+    });
+    mockRetrieveCustomer.mockResolvedValue({
+      deleted: false,
+      id: "cus_reordered",
+      metadata: { workOSOrganizationId: "org_reordered" },
+    } as never);
+    mockListMemberships.mockResolvedValue({
+      autoPagination: jest
+        .fn()
+        .mockResolvedValue([{ userId: "user_reordered" }]),
+    } as never);
+    mockRetrieveSubscription.mockResolvedValue({
+      id: "sub_reordered",
+      status: "active",
+      latest_invoice: "in_reordered",
+      metadata: {},
+      items: {
+        data: [
+          {
+            quantity: 1,
+            current_period_end: periodEnd,
+            price: {
+              id: HACKERAI_PRO_20_MONTHLY_PRICE_ID,
+              lookup_key: "pro-monthly-plan",
+              recurring: { interval: "month", interval_count: 1 },
+            },
+          },
+        ],
+      },
+    } as never);
+
+    const { POST } = await import("../route");
+    const response = await POST(makeWebhookRequest());
+
+    expect(response.status).toBe(200);
+    expect(mockPostHogEvent).toHaveBeenCalledWith(
+      PAID_FUNNEL_EVENTS.billingPaymentRecovered,
+      expect.objectContaining({
+        userId: "user_reordered",
+        recovery_detection: "invoice_attempt_count",
+        attempt_count: 2,
+        stripe_invoice_id: "in_reordered",
+        $insert_id: billingPaymentRecoveryInsertId(
+          "evt_invoice_paid_reordered",
+          "user_reordered",
+        ),
+      }),
     );
   });
 
@@ -1177,7 +1333,25 @@ describe("POST /api/subscription/webhook", () => {
         card_brand: "visa",
         card_country: "US",
         card_funding: "debit",
+        stripe_event_id: "evt_invoice_payment_failed",
+        stripe_event_type: "invoice.payment_failed",
+        $insert_id:
+          "billing_payment_failed:evt_invoice_payment_failed:user_payment_failed",
         paid_funnel_event_version: 1,
+      }),
+    );
+    expect(mockConvexMutation).toHaveBeenCalledWith(
+      "involuntaryChurn.recordEvent",
+      expect.objectContaining({
+        stripeEventId: "evt_invoice_payment_failed",
+        stripeEventType: "invoice.payment_failed",
+        userId: "user_payment_failed",
+        stripeSubscriptionId: "sub_payment_failed",
+        stripeInvoiceId: "in_payment_failed",
+        subscriptionTier: "pro-plus",
+        billingFailureGroup: "insufficient_funds",
+        attemptCount: 2,
+        outcomeType: "issuer_declined",
       }),
     );
     expect(mockFreezeRateLimitBucketForDelinquency).not.toHaveBeenCalled();
@@ -1224,6 +1398,209 @@ describe("POST /api/subscription/webhook", () => {
         stale_user_count: 0,
         remaining_points: 100_000,
       }),
+    );
+  });
+
+  it("records a payment method update against the delinquent invoice", async () => {
+    mockInvoicePaymentFailedAnalytics({
+      billingReason: "subscription_cycle",
+      subscriptionStatus: "past_due",
+    });
+    mockConstructEvent.mockReturnValue({
+      id: "evt_payment_method_attached",
+      type: "payment_method.attached",
+      created: 1_782_000_200,
+      data: {
+        object: {
+          id: "pm_recovery",
+          customer: "cus_payment_failed",
+        },
+      },
+    });
+    mockListSubscriptions.mockResolvedValue({
+      data: [{ id: "sub_payment_failed", status: "past_due" }],
+    } as never);
+    mockRetrieveSubscription.mockResolvedValue({
+      id: "sub_payment_failed",
+      status: "past_due",
+      latest_invoice: "in_payment_failed",
+      metadata: {},
+      items: {
+        data: [
+          {
+            quantity: 1,
+            price: {
+              id: "price_pro_plus",
+              lookup_key: "pro-plus-monthly-plan",
+              recurring: { interval: "month", interval_count: 1 },
+              product: {
+                id: "prod_pro_plus",
+                name: "HackerAI Pro Plus",
+                metadata: {},
+              },
+            },
+          },
+        ],
+      },
+    } as never);
+    mockListMemberships.mockResolvedValue({
+      autoPagination: jest
+        .fn()
+        .mockResolvedValue([
+          { userId: "user_payment_failed" },
+          { userId: "user_without_failure" },
+        ]),
+    } as never);
+    mockConvexMutation.mockImplementation((mutation, args: any) =>
+      Promise.resolve(
+        mutation === "involuntaryChurn.recordEvent"
+          ? args.userId === "user_payment_failed"
+            ? {
+                inserted: true,
+                priorFailureSeen: true,
+                recoveryResult: "payment_method_updated",
+              }
+            : {
+                inserted: false,
+                priorFailureSeen: false,
+                recoveryResult: undefined,
+              }
+          : { alreadyProcessed: false },
+      ),
+    );
+
+    const { POST } = await import("../route");
+    const response = await POST(makeWebhookRequest());
+
+    expect(response.status).toBe(200);
+    expect(mockListSubscriptions).toHaveBeenCalledWith({
+      customer: "cus_payment_failed",
+      status: "all",
+      limit: 10,
+    });
+    expect(mockConvexMutation).toHaveBeenCalledWith(
+      "involuntaryChurn.recordEvent",
+      expect.objectContaining({
+        stripeEventId: "evt_payment_method_attached",
+        stripeEventType: "payment_method.attached",
+        stripeInvoiceId: "in_payment_failed",
+        stripeSubscriptionId: "sub_payment_failed",
+        attemptCount: 2,
+      }),
+    );
+    expect(mockPostHogEvent).toHaveBeenCalledWith(
+      "payment_method_updated",
+      expect.objectContaining({
+        userId: "user_payment_failed",
+        stripe_event_id: "evt_payment_method_attached",
+        stripe_event_type: "payment_method.attached",
+        stripe_invoice_id: "in_payment_failed",
+        attempt_count: 2,
+        recovery_result: "payment_method_updated",
+        $insert_id:
+          "payment_method_updated:evt_payment_method_attached:user_payment_failed",
+      }),
+    );
+    expect(mockPostHogEvent).not.toHaveBeenCalledWith(
+      "payment_method_updated",
+      expect.objectContaining({ userId: "user_without_failure" }),
+    );
+  });
+
+  it("records a default payment method change from customer.updated", async () => {
+    mockInvoicePaymentFailedAnalytics({
+      billingReason: "subscription_cycle",
+      subscriptionStatus: "past_due",
+    });
+    mockConstructEvent.mockReturnValue({
+      id: "evt_customer_updated",
+      type: "customer.updated",
+      created: 1_782_000_300,
+      data: {
+        object: { id: "cus_payment_failed" },
+        previous_attributes: {
+          invoice_settings: { default_payment_method: "pm_previous" },
+        },
+      },
+    });
+    mockListSubscriptions.mockResolvedValue({
+      data: [{ id: "sub_payment_failed", status: "past_due" }],
+    } as never);
+    mockRetrieveSubscription.mockResolvedValue({
+      id: "sub_payment_failed",
+      status: "past_due",
+      latest_invoice: "in_payment_failed",
+      metadata: {},
+      items: {
+        data: [
+          {
+            quantity: 1,
+            price: {
+              id: "price_pro_plus",
+              lookup_key: "pro-plus-monthly-plan",
+              recurring: { interval: "month", interval_count: 1 },
+              product: {
+                id: "prod_pro_plus",
+                name: "HackerAI Pro Plus",
+                metadata: {},
+              },
+            },
+          },
+        ],
+      },
+    } as never);
+    mockConvexMutation.mockImplementation((mutation) =>
+      Promise.resolve(
+        mutation === "involuntaryChurn.recordEvent"
+          ? {
+              inserted: true,
+              priorFailureSeen: true,
+              recoveryResult: "payment_method_updated",
+            }
+          : { alreadyProcessed: false },
+      ),
+    );
+
+    const { POST } = await import("../route");
+    const response = await POST(makeWebhookRequest());
+
+    expect(response.status).toBe(200);
+    expect(mockConvexMutation).toHaveBeenCalledWith(
+      "involuntaryChurn.recordEvent",
+      expect.objectContaining({
+        stripeEventId: "evt_customer_updated",
+        stripeEventType: "customer.updated",
+        stripeInvoiceId: "in_payment_failed",
+      }),
+    );
+    expect(mockPostHogEvent).toHaveBeenCalledWith(
+      "payment_method_updated",
+      expect.objectContaining({
+        stripe_event_id: "evt_customer_updated",
+        stripe_event_type: "customer.updated",
+      }),
+    );
+  });
+
+  it("ignores customer.updated events unrelated to payment methods", async () => {
+    mockConstructEvent.mockReturnValue({
+      id: "evt_customer_metadata_updated",
+      type: "customer.updated",
+      created: 1_782_000_400,
+      data: {
+        object: { id: "cus_payment_failed" },
+        previous_attributes: { metadata: { source: "old" } },
+      },
+    });
+
+    const { POST } = await import("../route");
+    const response = await POST(makeWebhookRequest());
+
+    expect(response.status).toBe(200);
+    expect(mockListSubscriptions).not.toHaveBeenCalled();
+    expect(mockConvexMutation).not.toHaveBeenCalledWith(
+      "involuntaryChurn.recordEvent",
+      expect.anything(),
     );
   });
 
@@ -1478,19 +1855,7 @@ describe("POST /api/subscription/webhook", () => {
         org_id: "org_deleted_payment_failed",
         tier: "ultra",
         cancellation_reason: "payment_failed",
-        billing_failure_lifecycle: "subscription_deleted",
-        billing_failure_stage: "renewal",
-        billing_failure_group: "transaction_not_allowed",
-        billing_reason: "subscription_cycle",
-        attempt_count: 4,
-        next_payment_attempt_present: false,
-        amount_due_dollars: 200,
-        stripe_invoice_id: "in_deleted_payment_failed",
-        stripe_payment_intent_id: "pi_deleted_payment_failed",
-        stripe_charge_id: "ch_deleted_payment_failed",
-        decline_code: "transaction_not_allowed",
-        network_decline_code: "57",
-        card_country: "MA",
+        stripe_event_id: "evt_subscription_deleted_payment_failed",
         $set: { subscription_tier: "free" },
       }),
     );
@@ -1507,7 +1872,96 @@ describe("POST /api/subscription/webhook", () => {
         stripe_customer_id: "cus_deleted_payment_failed",
         stripe_subscription_id: "sub_deleted_payment_failed",
         stripe_invoice_id: "in_deleted_payment_failed",
+        stripe_event_id: "evt_subscription_deleted_payment_failed",
+        $insert_id:
+          "billing_payment_failed:evt_subscription_deleted_payment_failed:user_deleted_payment_failed",
       }),
+    );
+    expect(mockConvexMutation).toHaveBeenCalledWith(
+      "involuntaryChurn.recordEvent",
+      expect.objectContaining({
+        stripeEventId: "evt_subscription_deleted_payment_failed",
+        stripeEventType: "customer.subscription.deleted",
+        userId: "user_deleted_payment_failed",
+        stripeSubscriptionId: "sub_deleted_payment_failed",
+        stripeInvoiceId: "in_deleted_payment_failed",
+        subscriptionTier: "ultra",
+        billingFailureGroup: "transaction_not_allowed",
+        attemptCount: 4,
+      }),
+    );
+  });
+
+  it("completes terminal cancellation bookkeeping before retrying failed hydration", async () => {
+    mockGetReferralRewardConfig.mockReturnValue({
+      enabled: true,
+      referrerRewardDollars: 10,
+    });
+    mockConstructEvent.mockReturnValue({
+      id: "evt_subscription_deleted_retry",
+      type: "customer.subscription.deleted",
+      created: 1_782_000_500,
+      data: {
+        object: {
+          id: "sub_deleted_retry",
+          customer: "cus_deleted_retry",
+          latest_invoice: "in_deleted_retry",
+          items: {
+            data: [
+              {
+                price: {
+                  id: "price_pro",
+                  lookup_key: "pro-monthly-plan",
+                  recurring: { interval: "month", interval_count: 1 },
+                },
+              },
+            ],
+          },
+          metadata: {},
+          cancellation_details: { reason: "payment_failed" },
+        },
+      },
+    });
+    mockRetrieveCustomer.mockResolvedValue({
+      deleted: false,
+      id: "cus_deleted_retry",
+      metadata: { workOSOrganizationId: "org_deleted_retry" },
+    } as never);
+    mockListMemberships.mockResolvedValue({
+      autoPagination: jest.fn().mockResolvedValue([{ userId: "user_retry" }]),
+    } as never);
+    mockRetrieveInvoice.mockRejectedValue(new Error("Stripe unavailable"));
+
+    const { POST } = await import("../route");
+
+    await expect(POST(makeWebhookRequest())).rejects.toThrow(
+      "Failed to hydrate payment-failed invoice in_deleted_retry",
+    );
+    expect(mockConvexMutation).toHaveBeenCalledWith(
+      "cancellationReasons.markCancellationCompleted",
+      expect.objectContaining({ stripeSubscriptionId: "sub_deleted_retry" }),
+    );
+    expect(mockPostHogEvent).toHaveBeenCalledWith(
+      "subscription_cancelled",
+      expect.objectContaining({
+        userId: "user_retry",
+        cancellation_reason: "payment_failed",
+        stripe_event_id: "evt_subscription_deleted_retry",
+      }),
+    );
+    expect(mockConvexMutation).toHaveBeenCalledWith(
+      "referrals.setReferralCodesPaidEligibility",
+      expect.objectContaining({
+        userIds: ["user_retry"],
+        active: false,
+      }),
+    );
+    expect(mockConvexMutation).not.toHaveBeenCalledWith(
+      "extraUsage.checkAndMarkWebhook",
+      {
+        serviceKey: "service_key",
+        eventId: "evt_subscription_deleted_retry",
+      },
     );
   });
 

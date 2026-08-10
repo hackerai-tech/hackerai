@@ -34,8 +34,12 @@ import {
   keepSubscription,
   redirectToBillingPortal as openBillingPortal,
 } from "@/lib/billing/client";
-import type { SubscriptionCancellationStatus } from "@/lib/billing/api-types";
+import type {
+  BillingPortalFlow,
+  SubscriptionCancellationStatus,
+} from "@/lib/billing/api-types";
 import type { SubscriptionTier } from "@/types";
+import { PastDueBillingBanner } from "./PastDueBillingBanner";
 
 type AccountCancellationStatus = SubscriptionCancellationStatus & {
   subscription: SubscriptionTier;
@@ -56,6 +60,7 @@ const AccountTab = () => {
   const [showDeleteAccount, setShowDeleteAccount] = useState(false);
   const [showCancelDialog, setShowCancelDialog] = useState(false);
   const [isKeepingPlan, setIsKeepingPlan] = useState(false);
+  const [isOpeningBillingPortal, setIsOpeningBillingPortal] = useState(false);
   const [isTeamAdmin, setIsTeamAdmin] = useState<boolean | null>(null);
   const [cancellationStatus, setCancellationStatus] =
     useState<AccountCancellationStatus | null>(null);
@@ -97,6 +102,10 @@ const AccountTab = () => {
     currentCancellationStatus?.hasActiveSubscription === false;
   const cancellationScheduled =
     currentCancellationStatus?.cancelAtPeriodEnd === true;
+  const pastDueStatus =
+    currentCancellationStatus?.subscriptionStatus === "past_due"
+      ? "past_due"
+      : null;
   const isCheckingCancellationStatus =
     canManageBilling && !hasCurrentCancellationStatus;
 
@@ -128,18 +137,19 @@ const AccountTab = () => {
     };
   }, [canManageBilling, hasCurrentCancellationStatus, subscription]);
 
-  const redirectToBillingPortal = async () => {
+  const redirectToBillingPortal = async (flow?: BillingPortalFlow) => {
+    if (isOpeningBillingPortal) return;
+    setIsOpeningBillingPortal(true);
     try {
-      const url = await openBillingPortal();
-      if (url) {
-        window.location.href = url;
-      }
+      const url = await openBillingPortal(flow);
+      window.location.href = url;
     } catch (error) {
       toast.error(
         error instanceof Error
           ? error.message
           : "Failed to open billing portal",
       );
+      setIsOpeningBillingPortal(false);
     }
   };
 
@@ -319,6 +329,21 @@ const AccountTab = () => {
           </div>
         )}
 
+        {pastDueStatus && subscription !== "free" && (
+          <div className="mt-3">
+            <PastDueBillingBanner
+              surface="account_settings"
+              subscription={subscription}
+              subscriptionStatus={pastDueStatus}
+              latestInvoiceId={currentCancellationStatus?.latestInvoiceId}
+              isOpening={isOpeningBillingPortal}
+              onUpdatePayment={() =>
+                void redirectToBillingPortal("payment_method")
+              }
+            />
+          </div>
+        )}
+
         <div className="mt-2 rounded-lg bg-transparent px-0">
           <span className="text-sm font-semibold inline-block pb-4">
             {subscription === "ultra"
@@ -380,9 +405,16 @@ const AccountTab = () => {
                 type="button"
                 variant="outline"
                 size="sm"
-                onClick={redirectToBillingPortal}
+                disabled={
+                  isOpeningBillingPortal || isCheckingCancellationStatus
+                }
+                onClick={() =>
+                  void redirectToBillingPortal(
+                    pastDueStatus ? "payment_method" : undefined,
+                  )
+                }
               >
-                Manage
+                {pastDueStatus ? "Update payment" : "Manage"}
               </Button>
             </div>
           </div>
