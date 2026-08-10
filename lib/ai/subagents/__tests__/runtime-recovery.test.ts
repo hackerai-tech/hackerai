@@ -94,6 +94,9 @@ describe("subagent runtime recovery", () => {
     expect(buildMissingSubagentResultRecoveryMessage()).toContain(
       "Do not repeat completed checks",
     );
+    expect(buildMissingSubagentResultRecoveryMessage()).toContain(
+      "confirmed result must include at least one reproduction step and one evidence reference",
+    );
   });
 
   it("cancels an unfinished source when writing a streamed chunk fails", async () => {

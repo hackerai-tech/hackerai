@@ -117,14 +117,31 @@ const hashString = (value: string) => {
 const assignVisualIndexes = (presentations: SubagentPresentation[]) => {
   const occupied = new Set<number>();
   return presentations.map(({ agentId, toolCallId }) => {
-    let visualIndex =
+    const preferredIndex =
       hashString(agentId ?? toolCallId) % SUBAGENT_VISUALS.length;
-    while (occupied.has(visualIndex)) {
-      visualIndex = (visualIndex + 1) % SUBAGENT_VISUALS.length;
+    for (let offset = 0; offset < SUBAGENT_VISUALS.length; offset += 1) {
+      const visualIndex = (preferredIndex + offset) % SUBAGENT_VISUALS.length;
+      if (occupied.has(visualIndex)) continue;
+      occupied.add(visualIndex);
+      return visualIndex;
     }
-    occupied.add(visualIndex);
-    return visualIndex;
+    return preferredIndex;
   });
+};
+
+const useStableSubagentSidebarContent = (
+  content: SidebarSubagents,
+): SidebarSubagents => {
+  const { parentMessageId, selectedSubagentId, toolCallId } = content;
+  return useMemo(
+    () => ({
+      kind: "subagents",
+      parentMessageId,
+      toolCallId,
+      ...(selectedSubagentId ? { selectedSubagentId } : {}),
+    }),
+    [parentMessageId, selectedSubagentId, toolCallId],
+  );
 };
 
 const presentationForPart = (
@@ -245,8 +262,10 @@ const SubagentChip = ({
   presentation: SubagentPresentation;
   visualIndex: number;
 }) => {
-  const { agentName, canOpenSidebar, sidebarContent, toolCallId, waiting } =
-    presentation;
+  const { agentName, canOpenSidebar, toolCallId, waiting } = presentation;
+  const sidebarContent = useStableSubagentSidebarContent(
+    presentation.sidebarContent,
+  );
   const { handleOpenInSidebar, handleKeyDown } = useToolSidebar({
     toolCallId,
     content: sidebarContent,
@@ -300,9 +319,8 @@ const SubagentFallback = ({
 }: {
   presentation: SubagentPresentation;
 }) => {
-  const sidebarContent = useMemo(
-    () => presentation.sidebarContent,
-    [presentation.sidebarContent],
+  const sidebarContent = useStableSubagentSidebarContent(
+    presentation.sidebarContent,
   );
   const { handleOpenInSidebar, handleKeyDown } = useToolSidebar({
     toolCallId: presentation.toolCallId,

@@ -76,7 +76,7 @@ export const canRecoverMissingSubagentResult = (
   recoveriesUsed < SUBAGENT_MAX_RESULT_RECOVERIES;
 
 export const buildMissingSubagentResultRecoveryMessage = (): string =>
-  "You ended the validation without submitting its structured result. Do not repeat completed checks. Use the evidence already gathered, resolve any remaining uncertainty briefly, and call submit_validation_result exactly once. Do not answer with a prose-only conclusion.";
+  "You ended the validation without submitting its structured result. Do not repeat completed checks. Use the evidence already gathered, resolve any remaining uncertainty briefly, and call submit_validation_result exactly once. A confirmed result must include at least one reproduction step and one evidence reference. Do not answer with a prose-only conclusion.";
 
 export const pipeSubagentUiMessageStream = async <T>(
   stream: ReadableStream<T>,

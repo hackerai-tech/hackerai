@@ -284,6 +284,56 @@ describe("SubagentsSidebar", () => {
     expect(screen.getByRole("heading", { name: "Done · 1" })).toBeVisible();
   });
 
+  it("does not record abandonment when the resolved parent id changes", () => {
+    let selectedChild = {
+      ...activeChild,
+      parent_message_id: "parent-message-a",
+    };
+    mockUseQuery.mockImplementation((query, args) => {
+      if (query === "getOwned") return selectedChild;
+      if (query === "listForParentMessage") return [selectedChild];
+      return [];
+    });
+
+    const { rerender, unmount } = render(
+      <SubagentsSidebar
+        content={{
+          kind: "subagents",
+          parentMessageId: "parent-message-a",
+          toolCallId: "tool-1",
+          selectedSubagentId: "sa_active",
+        }}
+        closeSidebar={jest.fn()}
+      />,
+    );
+
+    selectedChild = {
+      ...selectedChild,
+      parent_message_id: "parent-message-b",
+    };
+    rerender(
+      <SubagentsSidebar
+        content={{
+          kind: "subagents",
+          parentMessageId: "parent-message-a",
+          toolCallId: "tool-1",
+          selectedSubagentId: "sa_active",
+        }}
+        closeSidebar={jest.fn()}
+      />,
+    );
+
+    expect(captureAuthenticatedEvent).not.toHaveBeenCalledWith(
+      "subagent_abandoned",
+      expect.anything(),
+    );
+    unmount();
+    expect(captureAuthenticatedEvent).toHaveBeenCalledWith(
+      "subagent_abandoned",
+      expect.objectContaining({ subagent_id: "sa_active" }),
+    );
+  });
+
   it("shows the timestamp on hover, then copies and rates the subagent result", async () => {
     const writeText = jest.fn<any>().mockResolvedValue(undefined);
     Object.defineProperty(navigator, "clipboard", {

@@ -8,12 +8,9 @@ import type {
   SubscriptionTier,
 } from "@/types/chat";
 import {
-  agentValidationResultSchema,
   createAgentInputSchema,
   sendMessageToAgentInputSchema,
-  SUBAGENT_TERMINAL_STATUSES,
   waitForAgentsInputSchema,
-  type AgentValidationResult,
   type SubagentLifecycleData,
 } from "@/lib/ai/subagents/contracts";
 import {
@@ -39,6 +36,7 @@ import {
   subagentCreateAttemptEventUuid,
 } from "@/lib/analytics/subagents";
 import { subagentTask } from "@/trigger/subagent";
+import { resultFromPersistedSubagent } from "@/lib/ai/subagents/persisted-result";
 
 export type SubagentToolsRuntimeConfig = {
   organizationId?: string;
@@ -61,31 +59,6 @@ const writeLifecycle = (
 
 const agentName = (row: PersistedSubagent & { title?: string }): string =>
   row.name ?? row.title ?? row.candidate?.title ?? "Subagent";
-
-const resultFromRecord = (row: PersistedSubagent): AgentValidationResult => {
-  const result = row.structured_result;
-  const terminalStatus = SUBAGENT_TERMINAL_STATUSES.has(row.status)
-    ? row.status
-    : "failed";
-  return agentValidationResultSchema.parse({
-    status: terminalStatus,
-    verdict: result?.verdict ?? row.verdict ?? null,
-    confidence: result?.confidence ?? row.confidence ?? null,
-    summary:
-      result?.summary ??
-      row.summary ??
-      "Independent validation did not finish.",
-    ...(result?.observed_impact
-      ? { observed_impact: result.observed_impact }
-      : {}),
-    ...(result?.reproduction_steps
-      ? { reproduction_steps: result.reproduction_steps }
-      : {}),
-    evidence_refs: result?.evidence_refs ?? [],
-    limitations: result?.limitations ?? [],
-    recommended_severity: result?.recommended_severity ?? null,
-  });
-};
 
 const reservationError = (outcome: string): string =>
   ({
@@ -382,7 +355,7 @@ export const createWaitForAgentsTool = (context: ToolContext) =>
         });
         if (state.terminal) {
           const name = agentName(state.terminal);
-          const result = resultFromRecord(state.terminal);
+          const result = resultFromPersistedSubagent(state.terminal);
           writeLifecycle(context.writer, {
             subagent_id: state.terminal.subagent_id,
             parent_message_id: state.terminal.parent_message_id,

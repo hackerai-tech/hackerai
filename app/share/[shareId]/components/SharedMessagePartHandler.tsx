@@ -163,12 +163,14 @@ export const SharedMessagePartHandler = ({
       part.input?.name ??
       part.input?.profile_input?.candidate?.title ??
       "Subagent";
+    const toolFailed =
+      Boolean(part.errorText) || part.output?.success === false;
     if (part.type === "tool-create_agent") {
       return (
         <ToolBlock
           key={idx}
           icon={<Users aria-hidden="true" />}
-          action={`${agentName} ${part.output?.success === false ? "failed to start" : "started working"}`}
+          action={`${agentName} ${toolFailed ? "failed to start" : "started working"}`}
         />
       );
     }
@@ -177,7 +179,7 @@ export const SharedMessagePartHandler = ({
         <ToolBlock
           key={idx}
           icon={<Users aria-hidden="true" />}
-          action={`${agentName} ${part.output?.success === false ? "update failed" : "updated"}`}
+          action={`${agentName} ${toolFailed ? "update failed" : "updated"}`}
         />
       );
     }

@@ -541,7 +541,7 @@ export const SubagentsSidebar = ({
   const runs = useQuery(api.subagents.listForParentMessage, {
     parentMessageId: effectiveParentMessageId,
   }) as ChildSummary[] | undefined;
-  const [now, setNow] = useState(Date.now());
+  const [now, setNow] = useState(() => Date.now());
   const [canceling, setCanceling] = useState(false);
   const [cancelError, setCancelError] = useState<string | null>(null);
   const openedChildren = useRef(new Set<string>());
@@ -572,6 +572,9 @@ export const SubagentsSidebar = ({
       profile: "security_validation",
       view: "list",
     });
+  }, [effectiveParentMessageId, selectedOriginResolved]);
+
+  useEffect(() => {
     return () => {
       const child = selectedForCleanup.current;
       if (child && isActive(child.status)) {
@@ -589,7 +592,7 @@ export const SubagentsSidebar = ({
         });
       }
     };
-  }, [effectiveParentMessageId, selectedOriginResolved]);
+  }, []);
 
   useEffect(() => {
     if (!selected) return;

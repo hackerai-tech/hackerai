@@ -278,6 +278,34 @@ describe("SubagentToolHandler", () => {
     });
   });
 
+  it("renders more children than the unique visual palette without hanging", () => {
+    const parts = Array.from({ length: 7 }, (_, index) => ({
+      type: "tool-create_agent",
+      toolCallId: `tool-create-${index}`,
+      state: "output-available",
+      input: { name: `Validator ${index + 1}`, task: "Validate candidate" },
+      output: {
+        success: true,
+        agent_id: `sa_${index}`,
+        name: `Validator ${index + 1}`,
+        status: "queued",
+      },
+    }));
+
+    render(
+      <SubagentToolGroup
+        message={{ id: "parent-run", role: "assistant", parts } as any}
+        parts={parts}
+        status="ready"
+      />,
+    );
+
+    expect(
+      screen.getAllByRole("button", { name: /Open Validator \d in sidebar/ }),
+    ).toHaveLength(7);
+    expect(screen.getAllByText("started working")).toHaveLength(1);
+  });
+
   it("opens completed delegation without model-visible runtime identifiers", () => {
     render(
       <SubagentToolHandler

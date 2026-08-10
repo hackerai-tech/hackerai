@@ -4,6 +4,11 @@ import { describe, expect, it } from "@jest/globals";
 
 const root = process.cwd();
 const read = (path: string) => readFileSync(join(root, path), "utf8");
+const expectMarkerOrder = (source: string, before: string, after: string) => {
+  expect(source).toContain(before);
+  expect(source).toContain(after);
+  expect(source.indexOf(before)).toBeLessThan(source.indexOf(after));
+};
 
 describe("security validation subagent runtime contracts", () => {
   it("uses a durable bounded child task with its own stream and no recursion", () => {
@@ -34,8 +39,10 @@ describe("security validation subagent runtime contracts", () => {
       "expirationTime: `${SUBAGENT_TOKEN_TTL_SECONDS}s`",
     );
     const child = read("trigger/subagent.ts");
-    expect(child.indexOf("setConvexUrl(payload.convexUrl)")).toBeLessThan(
-      child.indexOf("getSubagent(payload.subagentId)"),
+    expectMarkerOrder(
+      child,
+      "setConvexUrl(payload.convexUrl)",
+      "getSubagent(payload.subagentId)",
     );
   });
 
@@ -89,9 +96,11 @@ describe("security validation subagent runtime contracts", () => {
     expect(parent).toContain("listActiveSubagentsForParent");
     expect(parent).toContain("cancelAgentTriggerRun(child.trigger_run_id)");
     expect(parent).toContain("cancelSubagentsForParent");
-    expect(
-      child.indexOf("SUBAGENT_TERMINAL_STATUSES.has(row.status)"),
-    ).toBeLessThan(child.indexOf("await attachSubagentTriggerRun"));
+    expectMarkerOrder(
+      child,
+      "SUBAGENT_TERMINAL_STATUSES.has(row.status)",
+      "await attachSubagentTriggerRun",
+    );
     expect(child).toContain('attachOutcome === "terminal"');
     expect(child).toContain('failureCode: "setup_failed"');
     expect(child).toContain('errorCategory: "setup_failed"');
@@ -143,6 +152,8 @@ describe("security validation subagent runtime contracts", () => {
 
   it("deletes child transcripts in bounded batches before deleting the child", () => {
     const chats = read("convex/chats.ts");
+    expect(chats).toContain("async function deleteSubagentDataForChat");
+    expect(chats).toContain("async function deleteChatDocument");
     const cleanup = chats.slice(
       chats.indexOf("async function deleteSubagentDataForChat"),
       chats.indexOf("async function deleteChatDocument"),

@@ -30,6 +30,37 @@ interface MessagePartHandlerProps {
   sharedFileDetails?: FileDetails[];
 }
 
+const SUBAGENT_TOOL_PART_TYPES = new Set([
+  "tool-delegate_task",
+  "tool-create_agent",
+  "tool-send_message_to_agent",
+  "tool-wait_for_agents",
+]);
+
+const subagentLifecycleSignature = (
+  message: UIMessage,
+  toolCallId: unknown,
+): string => {
+  if (typeof toolCallId !== "string") return "";
+  return (message.parts as any[])
+    .filter(
+      (candidate) =>
+        candidate?.type === "data-subagent-lifecycle" &&
+        candidate?.data?.parent_tool_call_id === toolCallId,
+    )
+    .map((candidate) => {
+      const data = candidate.data ?? {};
+      return [
+        data.subagent_id,
+        data.parent_message_id,
+        data.agent_name,
+        data.event,
+        data.status,
+      ].join(":");
+    })
+    .join("|");
+};
+
 // Memoized user text component - avoids re-renders for unchanged text
 const UserTextPart = memo(function UserTextPart({ text }: { text: string }) {
   return <div className="whitespace-pre-wrap">{text}</div>;
@@ -65,7 +96,7 @@ function deepEqual(a: any, b: any): boolean {
 }
 
 // Custom comparison for MessagePartHandler to minimize re-renders
-function arePropsEqual(
+export function areMessagePartHandlerPropsEqual(
   prevProps: MessagePartHandlerProps,
   nextProps: MessagePartHandlerProps,
 ): boolean {
@@ -93,6 +124,18 @@ function arePropsEqual(
     prevProps.sharedFileDetails !== nextProps.sharedFileDetails
   )
     return false;
+
+  if (SUBAGENT_TOOL_PART_TYPES.has(prevProps.part?.type)) {
+    const previousLifecycle = subagentLifecycleSignature(
+      prevProps.message,
+      prevProps.part?.toolCallId,
+    );
+    const nextLifecycle = subagentLifecycleSignature(
+      nextProps.message,
+      nextProps.part?.toolCallId,
+    );
+    if (previousLifecycle !== nextLifecycle) return false;
+  }
 
   // Check part reference - if same reference, no changes
   if (prevProps.part === nextProps.part) return true;
@@ -302,4 +345,4 @@ export const MessagePartHandler = memo(function MessagePartHandler({
     default:
       return null;
   }
-}, arePropsEqual);
+}, areMessagePartHandlerPropsEqual);
