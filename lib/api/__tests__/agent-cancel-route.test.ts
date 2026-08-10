@@ -165,6 +165,19 @@ describe("agent cancel route", () => {
       canceled: false,
       reason: "stale_run",
     });
+    expect(mockLoggerWarn).toHaveBeenCalledWith(
+      "Rejected Agent cancellation request",
+      expect.objectContaining({
+        event: "agent_cancel_rejected",
+        request_id: "req_agent_cancel",
+        endpoint: "/api/agent",
+        route: "/api/agent/cancel",
+        reason: "stale_run",
+        status_code: 409,
+        user_id: "user-1",
+        chat_id: "chat-1",
+      }),
+    );
     expect(mockCloseAgentApprovalSession).not.toHaveBeenCalled();
     expect(mockCancelAgentTriggerRun).not.toHaveBeenCalled();
     expect(mockSetActiveTriggerRun).not.toHaveBeenCalled();
