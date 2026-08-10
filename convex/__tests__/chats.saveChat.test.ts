@@ -337,6 +337,61 @@ describe("updateChatTitle", () => {
   });
 });
 
+describe("updateChat", () => {
+  it("records the finish time when clearing an active stream", async () => {
+    const { updateChat } = await import("../chats");
+    const { ctx, patch } = makeCtx({
+      existingChat: {
+        _id: "chat-doc-1",
+        id: "chat-1",
+        user_id: "user-1",
+        active_stream_id: "stream-1",
+      },
+    });
+
+    await expect(
+      updateChat.handler(ctx, {
+        serviceKey: SERVICE_KEY,
+        chatId: "chat-1",
+        finishReason: "stop",
+      }),
+    ).resolves.toBeNull();
+
+    expect(patch).toHaveBeenCalledWith(
+      "chat-doc-1",
+      expect.objectContaining({
+        active_stream_id: undefined,
+        canceled_at: undefined,
+        finish_reason: "stop",
+        last_run_finished_at: expect.any(Number),
+      }),
+    );
+  });
+
+  it("does not overwrite the finish time for a metadata-only cleanup", async () => {
+    const { updateChat } = await import("../chats");
+    const { ctx, patch } = makeCtx({
+      existingChat: {
+        _id: "chat-doc-1",
+        id: "chat-1",
+        user_id: "user-1",
+        last_run_finished_at: 123,
+      },
+    });
+
+    await expect(
+      updateChat.handler(ctx, {
+        serviceKey: SERVICE_KEY,
+        chatId: "chat-1",
+        todos: [],
+      }),
+    ).resolves.toBeNull();
+
+    const update = patch.mock.calls[0]?.[1] as Record<string, unknown>;
+    expect(update).not.toHaveProperty("last_run_finished_at");
+  });
+});
+
 describe("moveChatToProject", () => {
   it("moves an owned chat to an owned project", async () => {
     const { moveChatToProject } = await import("../chats");

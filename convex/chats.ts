@@ -372,6 +372,7 @@ export const getChatByIdFromClient = query({
       title: v.string(),
       user_id: v.string(),
       finish_reason: v.optional(v.string()),
+      last_run_finished_at: v.optional(v.number()),
       active_stream_id: v.optional(v.string()),
       canceled_at: v.optional(v.number()),
       deletion_started_at: v.optional(v.number()),
@@ -483,6 +484,7 @@ export const getChatById = query({
       title: v.string(),
       user_id: v.string(),
       finish_reason: v.optional(v.string()),
+      last_run_finished_at: v.optional(v.number()),
       active_stream_id: v.optional(v.string()),
       canceled_at: v.optional(v.number()),
       deletion_started_at: v.optional(v.number()),
@@ -780,7 +782,8 @@ export const updateChatTitle = mutation({
 
 /**
  * Update an existing chat with title and finish reason
- * Automatically clears active_stream_id and canceled_at for stream cleanup
+ * Automatically clears active_stream_id and canceled_at for stream cleanup.
+ * If a stream was active, records its finish time in the same write.
  */
 export const updateChat = mutation({
   args: {
@@ -835,6 +838,7 @@ export const updateChat = mutation({
       const updateData: {
         title?: string;
         finish_reason?: string;
+        last_run_finished_at?: number;
         default_model_slug?: "ask" | "agent" | "agent-long";
         todos?: Array<{
           id: string;
@@ -852,6 +856,10 @@ export const updateChat = mutation({
         active_stream_id: undefined,
         canceled_at: undefined,
       };
+
+      if (chat.active_stream_id !== undefined) {
+        updateData.last_run_finished_at = Date.now();
+      }
 
       if (args.title !== undefined) {
         updateData.title = args.title;
@@ -1551,9 +1559,12 @@ export const setActiveTriggerRun = mutation({
     }
     const shouldClearApprovalPending =
       args.clearApprovalPending === true || args.triggerRunId !== null;
+    const finishedActiveRun =
+      args.triggerRunId === null && chat.active_trigger_run_id !== undefined;
 
     await ctx.db.patch(chat._id, {
       active_trigger_run_id: args.triggerRunId ?? undefined,
+      ...(finishedActiveRun ? { last_run_finished_at: Date.now() } : {}),
       ...(args.triggerRunId !== null ? { canceled_at: undefined } : {}),
       ...(args.approvalSessionId !== undefined
         ? {

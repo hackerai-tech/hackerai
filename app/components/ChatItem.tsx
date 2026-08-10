@@ -62,7 +62,10 @@ import {
 import { useDraggable } from "@dnd-kit/core";
 import { useMutation } from "convex/react";
 import { api } from "@/convex/_generated/api";
-import { removeDraft } from "@/lib/utils/client-storage";
+import {
+  markSidebarTaskVisited,
+  removeDraft,
+} from "@/lib/utils/client-storage";
 import { openSettingsDialog } from "@/lib/utils/settings-dialog";
 import { ShareDialog } from "./ShareDialog";
 import { MoveChatToProjectDialog } from "./MoveChatToProjectDialog";
@@ -72,8 +75,7 @@ import { useMoveChatToProjectAction } from "../hooks/useMoveChatToProjectAction"
 import type { SidebarChatDragData } from "./sidebar-chat-drag";
 import { formatTaskTitle, formatTaskUiCopy } from "@/app/utils/task-ui-copy";
 import { useSidebarProjectList } from "@/app/contexts/SidebarProjectList";
-import { useSidebarTaskRunStatus } from "@/app/hooks/useSidebarTaskRunStatus";
-import { markSidebarTaskRunRead } from "@/lib/utils/client-storage";
+import { useSidebarTaskUnreadCompletion } from "@/app/hooks/useSidebarTaskUnreadCompletion";
 
 interface ChatItemProps {
   id: string;
@@ -86,6 +88,7 @@ interface ChatItemProps {
   isPinned?: boolean;
   isStreaming?: boolean;
   isAwaitingApproval?: boolean;
+  lastRunFinishedAt?: number;
 }
 
 const CHAT_OPTIONS_CONTENT_CLASS =
@@ -119,6 +122,7 @@ const ChatItem: React.FC<ChatItemProps> = ({
   isPinned = false,
   isStreaming = false,
   isAwaitingApproval = false,
+  lastRunFinishedAt,
 }) => {
   const taskTitle = formatTaskTitle(title);
   const router = useRouter();
@@ -167,12 +171,11 @@ const ChatItem: React.FC<ChatItemProps> = ({
   // During a route transition, prefer the clicked chat immediately so a busy
   // streaming chat does not keep the old row highlighted until navigation commits.
   const isCurrentlyActive = selectedChatId === id;
-  const taskRunStatus = useSidebarTaskRunStatus({
+  const hasUnreadCompletion = useSidebarTaskUnreadCompletion({
     taskId: id,
-    isRunning: isStreaming,
+    lastRunFinishedAt,
     isActive: isCurrentlyActive,
   });
-  const hasUnreadCompletion = taskRunStatus === "completed";
   const showActions = Boolean(
     isHovered || isFocusedWithin || isDropdownOpen || isMobile,
   );
@@ -242,7 +245,7 @@ const ChatItem: React.FC<ChatItemProps> = ({
       setChatSidebarOpen(false);
     }
 
-    markSidebarTaskRunRead(id);
+    markSidebarTaskVisited(id, Math.max(Date.now(), lastRunFinishedAt ?? 0));
 
     // Clear input and transient state only when switching to a different chat
     if (!isCurrentlyActive) {

@@ -98,7 +98,10 @@ import { useAutoContinue } from "../hooks/useAutoContinue";
 import { findLatestTimelineAnchorMessageId } from "./message-timeline-rows";
 import { useLatestRef } from "../hooks/useLatestRef";
 import { useDataStreamDispatch } from "./DataStreamProvider";
-import { removeDraft } from "@/lib/utils/client-storage";
+import {
+  markSidebarTaskVisited,
+  removeDraft,
+} from "@/lib/utils/client-storage";
 import { parseRateLimitWarning } from "@/lib/utils/parse-rate-limit-warning";
 import { formatTaskUiCopy } from "@/app/utils/task-ui-copy";
 import { finalizeNewChatRoute } from "./chat-route";
@@ -623,6 +626,17 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
 
   const chatDataForCurrentChat =
     chatData && (chatData as any).id === chatId ? chatData : undefined;
+  const loadedChatDocumentId = chatDataForCurrentChat?._id;
+  const lastRunFinishedAt = chatDataForCurrentChat?.last_run_finished_at;
+
+  useEffect(() => {
+    if (!loadedChatDocumentId) return;
+    markSidebarTaskVisited(
+      chatId,
+      Math.max(Date.now(), lastRunFinishedAt ?? 0),
+    );
+  }, [chatId, lastRunFinishedAt, loadedChatDocumentId]);
+
   const paginatedMessageResults =
     paginatedMessages.results &&
     paginatedMessages.results.length > 0 &&

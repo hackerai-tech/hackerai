@@ -16,8 +16,9 @@ import {
 } from "@dnd-kit/core";
 import type { ReactNode } from "react";
 import {
-  clearSidebarTaskRunStatuses,
-  SIDEBAR_TASK_RUN_STATUSES_STORAGE_KEY,
+  clearSidebarTaskLastVisitedAt,
+  markSidebarTaskVisited,
+  readSidebarTaskLastVisitedAt,
 } from "@/lib/utils/client-storage";
 
 const mockMoveChatToProject = jest.fn<any>();
@@ -113,7 +114,7 @@ describe("ChatItem project actions", () => {
     mockMoveChatToProject.mockResolvedValue(true);
     mockProjects = undefined;
     mockPathname = "/";
-    clearSidebarTaskRunStatuses();
+    clearSidebarTaskLastVisitedAt();
   });
 
   it("reveals an accessible move action when the row receives keyboard focus", async () => {
@@ -444,19 +445,26 @@ describe("ChatItem project actions", () => {
     ).toHaveClass("pr-9");
   });
 
-  it("shows a locally persisted completion dot until the task is opened", async () => {
+  it("shows a completion dot when the server finish time is newer than the local visit", async () => {
+    markSidebarTaskVisited("chat-1", 1_000);
     const view = render(
-      <ChatItem id="chat-1" title="Background task" isStreaming />,
+      <ChatItem
+        id="chat-1"
+        title="Background task"
+        isStreaming
+        lastRunFinishedAt={1_000}
+      />,
     );
 
     expect(screen.getByTestId("chat-item-streaming-icon")).toBeInTheDocument();
-    await waitFor(() => {
-      expect(
-        window.localStorage.getItem(SIDEBAR_TASK_RUN_STATUSES_STORAGE_KEY),
-      ).toContain('"chat-1":"running"');
-    });
 
-    view.rerender(<ChatItem id="chat-1" title="Background task" />);
+    view.rerender(
+      <ChatItem
+        id="chat-1"
+        title="Background task"
+        lastRunFinishedAt={2_000}
+      />,
+    );
 
     const completionIndicator = await screen.findByTestId(
       "chat-item-unread-completion-indicator",
@@ -477,24 +485,32 @@ describe("ChatItem project actions", () => {
         screen.queryByTestId("chat-item-unread-completion-indicator"),
       ).not.toBeInTheDocument();
     });
-    expect(
-      window.localStorage.getItem(SIDEBAR_TASK_RUN_STATUSES_STORAGE_KEY),
-    ).toBeNull();
+    expect(readSidebarTaskLastVisitedAt("chat-1")).toBeGreaterThanOrEqual(
+      2_000,
+    );
   });
 
-  it("does not mark a task completed while the user is viewing it", async () => {
+  it("does not show a completion dot while the user is viewing the task", () => {
+    markSidebarTaskVisited("chat-1", 1_000);
     mockPathname = "/c/chat-1";
-    const view = render(
-      <ChatItem id="chat-1" title="Visible task" isStreaming />,
+    render(
+      <ChatItem id="chat-1" title="Visible task" lastRunFinishedAt={2_000} />,
     );
 
-    view.rerender(<ChatItem id="chat-1" title="Visible task" />);
+    expect(
+      screen.queryByTestId("chat-item-unread-completion-indicator"),
+    ).not.toBeInTheDocument();
+  });
 
-    await waitFor(() => {
-      expect(
-        window.localStorage.getItem(SIDEBAR_TASK_RUN_STATUSES_STORAGE_KEY),
-      ).toBeNull();
-    });
+  it("treats a task with no local visit as already read", () => {
+    render(
+      <ChatItem
+        id="chat-1"
+        title="Historical task"
+        lastRunFinishedAt={2_000}
+      />,
+    );
+
     expect(
       screen.queryByTestId("chat-item-unread-completion-indicator"),
     ).not.toBeInTheDocument();

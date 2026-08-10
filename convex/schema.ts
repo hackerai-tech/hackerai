@@ -68,6 +68,7 @@ export default defineSchema({
     title: v.string(),
     user_id: v.string(),
     finish_reason: v.optional(v.string()),
+    last_run_finished_at: v.optional(v.number()),
     active_stream_id: v.optional(v.string()),
     active_trigger_run_id: v.optional(v.string()),
     active_agent_approval_session_id: v.optional(v.string()),

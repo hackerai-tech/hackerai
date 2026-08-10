@@ -7,7 +7,7 @@ import {
   removeDraftAttachments,
   writeSelectedModel,
   clearSelectedModelFromStorage,
-  clearSidebarTaskRunStatuses,
+  clearSidebarTaskLastVisitedAt,
   hasAuthenticatedBefore,
   hasDraftAttachmentsById,
   markHasAuthenticatedBefore,
@@ -15,9 +15,10 @@ import {
   upsertDraftAttachments,
   writeOpenSidebarProjectIds,
   SIDEBAR_OPEN_PROJECT_IDS_STORAGE_KEY,
-  SIDEBAR_TASK_RUN_STATUSES_STORAGE_KEY,
-  readSidebarTaskRunStatus,
-  reconcileSidebarTaskRunStatus,
+  SIDEBAR_TASK_LAST_VISITED_AT_STORAGE_KEY,
+  markSidebarTaskVisited,
+  parseSidebarTaskLastVisitedAt,
+  readSidebarTaskLastVisitedAt,
 } from "../client-storage";
 
 const STORAGE_KEY = "selected_model";
@@ -202,47 +203,44 @@ describe("client-storage sidebar open projects", () => {
   });
 });
 
-describe("client-storage sidebar task run statuses", () => {
+describe("client-storage sidebar task last-visited times", () => {
   beforeEach(() => {
     window.localStorage.clear();
-    clearSidebarTaskRunStatuses();
+    clearSidebarTaskLastVisitedAt();
   });
 
-  it("turns an observed background run into an unread completion", () => {
-    reconcileSidebarTaskRunStatus({
-      taskId: "chat-1",
-      isRunning: true,
-      isActive: false,
-    });
-    expect(readSidebarTaskRunStatus("chat-1")).toBe("running");
+  it("persists the latest visit time for a task", () => {
+    markSidebarTaskVisited("chat-1", 100);
+    markSidebarTaskVisited("chat-1", 90);
 
-    reconcileSidebarTaskRunStatus({
-      taskId: "chat-1",
-      isRunning: false,
-      isActive: false,
-    });
-
-    expect(readSidebarTaskRunStatus("chat-1")).toBe("completed");
+    expect(readSidebarTaskLastVisitedAt("chat-1")).toBe(100);
     expect(
-      window.localStorage.getItem(SIDEBAR_TASK_RUN_STATUSES_STORAGE_KEY),
-    ).toBe(JSON.stringify({ "chat-1": "completed" }));
+      window.localStorage.getItem(SIDEBAR_TASK_LAST_VISITED_AT_STORAGE_KEY),
+    ).toBe(JSON.stringify({ "chat-1": 100 }));
   });
 
-  it("clears run state while the task is active", () => {
-    reconcileSidebarTaskRunStatus({
-      taskId: "chat-1",
-      isRunning: true,
-      isActive: false,
-    });
-    reconcileSidebarTaskRunStatus({
-      taskId: "chat-1",
-      isRunning: true,
-      isActive: true,
-    });
-
-    expect(readSidebarTaskRunStatus("chat-1")).toBeUndefined();
+  it("rejects malformed, non-finite, and negative saved values", () => {
     expect(
-      window.localStorage.getItem(SIDEBAR_TASK_RUN_STATUSES_STORAGE_KEY),
+      parseSidebarTaskLastVisitedAt(
+        JSON.stringify({
+          "chat-1": 100,
+          "": 200,
+          negative: -1,
+          infinite: null,
+          string: "300",
+        }),
+      ),
+    ).toEqual({ "chat-1": 100 });
+    expect(parseSidebarTaskLastVisitedAt("not-json")).toEqual({});
+  });
+
+  it("clears all persisted visit times", () => {
+    markSidebarTaskVisited("chat-1", 100);
+    clearSidebarTaskLastVisitedAt();
+
+    expect(readSidebarTaskLastVisitedAt("chat-1")).toBeUndefined();
+    expect(
+      window.localStorage.getItem(SIDEBAR_TASK_LAST_VISITED_AT_STORAGE_KEY),
     ).toBeNull();
   });
 });

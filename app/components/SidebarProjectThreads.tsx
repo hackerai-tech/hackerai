@@ -55,6 +55,7 @@ export function SidebarProjectThreads({ project }: SidebarProjectThreadsProps) {
               !!chat.active_agent_approval_pending
             }
             isAwaitingApproval={!!chat.active_agent_approval_pending}
+            lastRunFinishedAt={chat.last_run_finished_at}
           />
         ))}
       </div>

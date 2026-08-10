@@ -103,6 +103,7 @@ describe("cancelStreamFromClient", () => {
         active_stream_id: undefined,
         canceled_at: expect.any(Number),
         finish_reason: undefined,
+        last_run_finished_at: expect.any(Number),
         todos,
       }),
     );
@@ -129,5 +130,34 @@ describe("cancelStreamFromClient", () => {
     });
 
     expect(patch).toHaveBeenCalledWith("chat-doc-1", { todos });
+    const update = patch.mock.calls[0]?.[1] as Record<string, unknown>;
+    expect(update).not.toHaveProperty("last_run_finished_at");
+  });
+});
+
+describe("prepareForNewStream", () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  it("records the finish time when terminal cleanup clears a stream", async () => {
+    const { prepareForNewStream } = await import("../chatStreams");
+    const { ctx, patch } = makeCtx({
+      _id: "chat-doc-1",
+      id: "chat-1",
+      user_id: "user-1",
+      active_stream_id: "stream-1",
+    });
+
+    await prepareForNewStream.handler(ctx, {
+      serviceKey: "service-key",
+      chatId: "chat-1",
+    });
+
+    expect(patch).toHaveBeenCalledWith("chat-doc-1", {
+      active_stream_id: undefined,
+      canceled_at: undefined,
+      last_run_finished_at: expect.any(Number),
+    });
   });
 });

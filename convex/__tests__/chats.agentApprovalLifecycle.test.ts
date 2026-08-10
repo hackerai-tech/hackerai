@@ -224,6 +224,52 @@ describe("Agent approval lifecycle guards", () => {
     );
   });
 
+  it("records the finish time when clearing an active Agent run", async () => {
+    const { ctx, patch } = makeCtx({
+      _id: "chat-doc-1",
+      id: "chat-1",
+      user_id: "user-1",
+      active_trigger_run_id: "run-1",
+    });
+
+    await expect(
+      setActiveTriggerRun.handler(ctx, {
+        serviceKey: "service-key",
+        chatId: "chat-1",
+        triggerRunId: null,
+        expectedRunId: "run-1",
+      }),
+    ).resolves.toBe("updated");
+    expect(patch).toHaveBeenCalledWith(
+      "chat-doc-1",
+      expect.objectContaining({
+        active_trigger_run_id: undefined,
+        last_run_finished_at: expect.any(Number),
+      }),
+    );
+  });
+
+  it("does not record a finish when only clearing an orphaned approval session", async () => {
+    const { ctx, patch } = makeCtx({
+      _id: "chat-doc-1",
+      id: "chat-1",
+      user_id: "user-1",
+      active_agent_approval_session_id: "approval-session-1",
+    });
+
+    await expect(
+      setActiveTriggerRun.handler(ctx, {
+        serviceKey: "service-key",
+        chatId: "chat-1",
+        triggerRunId: null,
+        approvalSessionId: null,
+        expectedApprovalSessionId: "approval-session-1",
+      }),
+    ).resolves.toBe("updated");
+    const update = patch.mock.calls[0]?.[1] as Record<string, unknown>;
+    expect(update).not.toHaveProperty("last_run_finished_at");
+  });
+
   it("returns the approval session paired with each active Trigger run", async () => {
     const take = jest.fn<any>().mockResolvedValue([
       {
