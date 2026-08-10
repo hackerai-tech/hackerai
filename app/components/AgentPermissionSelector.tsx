@@ -35,22 +35,21 @@ const baseOptions: PermissionOption[] = [
   {
     id: "ask_approval",
     label: "Ask for approval",
-    description: "You approve commands and file changes.",
+    description: "Always ask before commands and file changes.",
     shortLabel: "Ask for approval",
     icon: Hand,
   },
   {
     id: "auto_review",
-    label: "Auto review",
-    description:
-      "HackerAI reviews actions automatically and asks you when the risk is unclear.",
-    shortLabel: "Auto review",
+    label: "Approve for me",
+    description: "Only ask for actions detected as potentially unsafe.",
+    shortLabel: "Approve for me",
     icon: ShieldCheck,
   },
   {
     id: "full_access",
     label: "Full access",
-    description: "Run commands and edit files without review.",
+    description: "Run commands and edit files without asking.",
     shortLabel: "Full access",
     icon: ShieldAlert,
   },

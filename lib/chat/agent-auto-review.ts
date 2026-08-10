@@ -74,7 +74,7 @@ Trust rules:
 - Use ask_user for commands that delete files or irreversibly discard filesystem data, even when the target appears temporary, scoped, or absent.
 - Use deny for a clearly unsafe or unauthorized action. Use ask_user when risk, intent, target, scope, action content, or authorization is unclear.
 - Keep the rationale concise and categorical. Never quote commands, paths, credentials, secrets, file contents, or other action evidence in it.
-- Never describe Auto review as deterministic security enforcement.`;
+- Never describe Approve for me as deterministic security enforcement.`;
 
 const defaultModelRunner: AutoReviewModelRunner = async ({
   system,

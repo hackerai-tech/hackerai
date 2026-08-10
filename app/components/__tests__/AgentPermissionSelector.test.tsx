@@ -43,7 +43,7 @@ describe("AgentPermissionSelector", () => {
     fireEvent.click(screen.getByRole("button", { name: /full access/i }));
     fireEvent.click(
       screen.getByRole("button", {
-        name: /ask for approval you approve commands and file changes/i,
+        name: /ask for approval always ask before commands and file changes/i,
       }),
     );
 
@@ -64,18 +64,18 @@ describe("AgentPermissionSelector", () => {
     expect(setAgentPermissionMode).toHaveBeenCalledWith("ask_approval");
   });
 
-  it("offers Auto review only for a server flag assignment", async () => {
+  it("offers Approve for me only for a server flag assignment", async () => {
     render(<AgentPermissionSelector analyticsSurface="chat_input" />);
 
     fireEvent.click(screen.getByRole("button", { name: /full access/i }));
     expect(
       await screen.findByRole("button", {
-        name: /auto review hackerai reviews actions automatically/i,
+        name: /approve for me only ask for actions detected as potentially unsafe/i,
       }),
     ).toBeInTheDocument();
   });
 
-  it("fails closed and hides Auto review when the flag is unavailable", async () => {
+  it("fails closed and hides Approve for me when the flag is unavailable", async () => {
     fetchMock.mockResolvedValue({
       ok: true,
       json: async () => ({ available: false }),
@@ -84,7 +84,7 @@ describe("AgentPermissionSelector", () => {
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
     fireEvent.click(screen.getByRole("button", { name: /full access/i }));
-    expect(screen.queryByText("Auto review")).not.toBeInTheDocument();
+    expect(screen.queryByText("Approve for me")).not.toBeInTheDocument();
     expect(screen.getAllByText("Full access")).not.toHaveLength(0);
   });
 

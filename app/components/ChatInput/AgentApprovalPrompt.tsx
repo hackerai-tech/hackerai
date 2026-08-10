@@ -180,8 +180,8 @@ export function AgentApprovalPrompt({
             <ShieldCheck className="size-4 shrink-0" aria-hidden="true" />
             <span>
               {request.autoReview.failureClass
-                ? "Auto review could not decide"
-                : "Auto review needs your decision"}
+                ? "Couldn’t approve this automatically"
+                : "This action needs your approval"}
             </span>
           </div>
           <p className="mt-1 text-sm leading-5 text-muted-foreground">

@@ -503,7 +503,7 @@ describe("ChatInput - Integration Tests", () => {
 
       expect(
         await screen.findByTestId("agent-auto-review-summary"),
-      ).toHaveTextContent("Auto review needs your decision");
+      ).toHaveTextContent("This action needs your approval");
       expect(screen.getByText("ping -c 4 hackerone.com")).toBeInTheDocument();
     });
 

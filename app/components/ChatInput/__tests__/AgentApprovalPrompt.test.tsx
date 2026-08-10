@@ -76,7 +76,7 @@ describe("AgentApprovalPrompt", () => {
     expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
   });
 
-  it("shows the privacy-safe Auto review summary before human approval", () => {
+  it("shows the privacy-safe automatic review summary before human approval", () => {
     render(
       <AgentApprovalPrompt
         request={{
@@ -94,7 +94,7 @@ describe("AgentApprovalPrompt", () => {
     );
 
     expect(screen.getByTestId("agent-auto-review-summary")).toHaveTextContent(
-      "Auto review needs your decision",
+      "This action needs your approval",
     );
     expect(screen.getByTestId("agent-auto-review-summary")).toHaveTextContent(
       "Risk: scope expansion",
@@ -103,6 +103,29 @@ describe("AgentApprovalPrompt", () => {
       "The requested scan exceeds the authorized scope.",
     );
     expect(screen.getByRole("button", { name: "Allow once" })).toBeEnabled();
+  });
+
+  it("uses plain language when automatic review fails closed", () => {
+    render(
+      <AgentApprovalPrompt
+        request={{
+          ...request,
+          autoReview: {
+            verdict: "ask_user",
+            riskCategory: "unknown",
+            rationale: "HackerAI could not review this action in time.",
+            rolloutPhase: "enforce",
+            failureClass: "timeout",
+          },
+        }}
+        onRetryConnection={mockOnRetryConnection}
+        onStop={mockOnStop}
+      />,
+    );
+
+    expect(screen.getByTestId("agent-auto-review-summary")).toHaveTextContent(
+      "Couldn’t approve this automatically",
+    );
   });
 
   it("does not reveal a shadow verdict before the human decides", () => {

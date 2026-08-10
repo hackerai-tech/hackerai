@@ -1,4 +1,4 @@
-# Agent Auto review
+# Agent Approve for me
 
 Issue: [HAC-61](https://linear.app/hackerai/issue/HAC-61/add-auto-review-permission-mode-for-hackerai-agent)
 
@@ -38,13 +38,13 @@ PostHog flag: [`agent_auto_review_v1`](https://us.posthog.com/project/144137/fea
      Session input path and let the human make the final decision. A reviewer
      denial means only that the action cannot be approved automatically.
 5. Keep reusable target/prefix grants human-only. Existing human-created grants
-   may continue to match, but Auto review never creates or broadens a grant.
+   may continue to match, but Approve for me never creates or broadens a grant.
 6. Track consecutive and rolling human denials after an enforced review, and
    abort retry loops after 3 consecutive denials or 10 denials in the last 50
    reviews. Automatic reviewer denials never abort the action before the user
    can decide.
 7. Add a server-evaluated selector endpoint for the inactive multivariate
-   PostHog flag. If the flag is off, unavailable, or malformed, hide Auto review
+   PostHog flag. If the flag is off, unavailable, or malformed, hide Approve for me
    and route any stale stored selection through human approval.
 8. Emit privacy-safe exposure, decision, and human-comparison events containing
    only rollout phase, verdict, risk category, latency, failure class, outcome,
@@ -62,7 +62,7 @@ PostHog flag: [`agent_auto_review_v1`](https://us.posthog.com/project/144137/fea
 The flag is created inactive with `shadow=100%`, `enforce=0%`, and a 0% release
 condition. After merge, enable shadow for an explicit internal allowlist, then
 expand shadow and enforcement only after the HAC-61 guardrails are healthy.
-Disabling the flag immediately restores human approval for Auto review users.
+Disabling the flag immediately restores human approval for Approve for me users.
 
 PR previews can opt in independently of production identity and flag state by
 setting the server-only `AGENT_AUTO_REVIEW_PREVIEW_PHASE` environment variable
@@ -73,11 +73,11 @@ preview is no longer needed.
 
 Review on 2026-08-23 UTC. After full rollout and one stable review window,
 remove the flag evaluation and shadow comparison plumbing. If guardrails fail,
-disable the flag and remove Auto review while retaining the existing modes.
+disable the flag and remove Approve for me while retaining the existing modes.
 
 ## Explicit limits
 
-Auto review is probabilistic and can make mistakes. It does not expand sandbox
+Approve for me is probabilistic and can make mistakes. It does not expand sandbox
 permissions, enforce target scope, control network reachability, or provide a
 deterministic security guarantee. It reviews only actions that already cross
 HackerAI's current approval gate.

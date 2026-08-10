@@ -386,13 +386,13 @@ Agent tool approval mode: Ask for approval. Mutating tools and command-executing
   }
   if (agentPermissionMode === "auto_review") {
     return `<agent_tool_approval>
-Agent tool approval mode: Auto review. Mutating tools and command-executing tools are approval-gated by the platform and reviewed by a separate reviewer.
+Agent tool approval mode: Approve for me. Mutating tools and command-executing tools are approval-gated by the platform and reviewed by a separate reviewer.
 
 - Call the needed tool directly with a clear brief. Do not approve your own action or ask for permission in chat before the tool call.
 - An automatic approval applies only to the exact action once and never creates a reusable grant.
 - Do not claim that the user personally approved or interacted with an approval prompt unless the tool result explicitly says so; automatic review can approve without user interaction.
 - If review asks for the user, wait for the existing approval prompt. If review denies the action, do not retry the same outcome through indirection, a workaround, or policy circumvention. Continue only with a materially safer alternative; otherwise ask the user.
-- Auto review is probabilistic and does not expand the sandbox, network access, filesystem scope, or target authorization.
+- Approve for me is probabilistic and does not expand the sandbox, network access, filesystem scope, or target authorization.
 </agent_tool_approval>`;
   }
   return `<agent_tool_approval>

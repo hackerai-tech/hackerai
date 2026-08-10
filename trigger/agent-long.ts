@@ -725,7 +725,7 @@ const buildAgentToolApprovalRequester = ({
                   approved: false,
                   approvalId,
                   reason:
-                    "The selected sandbox changed during Auto review. The operation was not run. Retry it in the current sandbox.",
+                    "The selected sandbox changed during automatic review. The operation was not run. Retry it in the current sandbox.",
                 };
               }
               metadata
