@@ -15,7 +15,8 @@ import {
   upsertDraftAttachments,
   writeOpenSidebarProjectIds,
   SIDEBAR_OPEN_PROJECT_IDS_STORAGE_KEY,
-  SIDEBAR_TASK_LAST_VISITED_AT_STORAGE_KEY,
+  SIDEBAR_TASK_LAST_VISITED_AT_STORAGE_PREFIX,
+  getSidebarTaskLastVisitedAtStorageKey,
   markSidebarTaskVisited,
   parseSidebarTaskLastVisitedAt,
   readSidebarTaskLastVisitedAt,
@@ -215,23 +216,65 @@ describe("client-storage sidebar task last-visited times", () => {
 
     expect(readSidebarTaskLastVisitedAt("chat-1")).toBe(100);
     expect(
-      window.localStorage.getItem(SIDEBAR_TASK_LAST_VISITED_AT_STORAGE_KEY),
-    ).toBe(JSON.stringify({ "chat-1": 100 }));
+      window.localStorage.getItem(
+        getSidebarTaskLastVisitedAtStorageKey("chat-1"),
+      ),
+    ).toBe("100");
   });
 
   it("rejects malformed, non-finite, and negative saved values", () => {
+    expect(parseSidebarTaskLastVisitedAt("100")).toBe(100);
+    expect(parseSidebarTaskLastVisitedAt("-1")).toBeUndefined();
+    expect(parseSidebarTaskLastVisitedAt("Infinity")).toBeUndefined();
+    expect(parseSidebarTaskLastVisitedAt("not-a-number")).toBeUndefined();
+    expect(parseSidebarTaskLastVisitedAt(null)).toBeUndefined();
+  });
+
+  it("preserves another tab's task record before its storage event arrives", () => {
+    const otherTaskKey = getSidebarTaskLastVisitedAtStorageKey("chat-2");
+    window.localStorage.setItem(otherTaskKey, "200");
+
+    markSidebarTaskVisited("chat-1", 100);
+
+    expect(window.localStorage.getItem(otherTaskKey)).toBe("200");
     expect(
-      parseSidebarTaskLastVisitedAt(
-        JSON.stringify({
-          "chat-1": 100,
-          "": 200,
-          negative: -1,
-          infinite: null,
-          string: "300",
-        }),
+      window.localStorage.getItem(
+        getSidebarTaskLastVisitedAtStorageKey("chat-1"),
       ),
-    ).toEqual({ "chat-1": 100 });
-    expect(parseSidebarTaskLastVisitedAt("not-json")).toEqual({});
+    ).toBe("100");
+  });
+
+  it("restores the maximum timestamp when a stale same-task write appears", () => {
+    const taskKey = getSidebarTaskLastVisitedAtStorageKey("chat-1");
+    markSidebarTaskVisited("chat-1", 200);
+    window.localStorage.setItem(taskKey, "100");
+
+    expect(readSidebarTaskLastVisitedAt("chat-1")).toBe(200);
+    expect(window.localStorage.getItem(taskKey)).toBe("200");
+  });
+
+  it("keeps only the 100 most recently visited task keys", () => {
+    for (let index = 0; index <= 100; index += 1) {
+      markSidebarTaskVisited(`chat-${index}`, index);
+    }
+
+    const taskKeys = Array.from(
+      { length: window.localStorage.length },
+      (_, index) => window.localStorage.key(index),
+    ).filter((key) =>
+      key?.startsWith(SIDEBAR_TASK_LAST_VISITED_AT_STORAGE_PREFIX),
+    );
+    expect(taskKeys).toHaveLength(100);
+    expect(
+      window.localStorage.getItem(
+        getSidebarTaskLastVisitedAtStorageKey("chat-0"),
+      ),
+    ).toBeNull();
+    expect(
+      window.localStorage.getItem(
+        getSidebarTaskLastVisitedAtStorageKey("chat-100"),
+      ),
+    ).toBe("100");
   });
 
   it("clears all persisted visit times", () => {
@@ -240,7 +283,9 @@ describe("client-storage sidebar task last-visited times", () => {
 
     expect(readSidebarTaskLastVisitedAt("chat-1")).toBeUndefined();
     expect(
-      window.localStorage.getItem(SIDEBAR_TASK_LAST_VISITED_AT_STORAGE_KEY),
+      window.localStorage.getItem(
+        getSidebarTaskLastVisitedAtStorageKey("chat-1"),
+      ),
     ).toBeNull();
   });
 });

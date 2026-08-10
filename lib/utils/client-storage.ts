@@ -37,8 +37,8 @@ export const NULL_THREAD_DRAFT_ID = "null_thread";
 export const CHAT_MODE_STORAGE_KEY = "chat_mode";
 export const SIDEBAR_OPEN_PROJECT_IDS_STORAGE_KEY =
   "hackerai:sidebar:open-projects:v1";
-export const SIDEBAR_TASK_LAST_VISITED_AT_STORAGE_KEY =
-  "hackerai:sidebar:task-last-visited-at:v1";
+export const SIDEBAR_TASK_LAST_VISITED_AT_STORAGE_PREFIX =
+  "hackerai:sidebar:task-last-visited-at:v1:";
 const DRAFT_ATTACHMENT_RESTORE_TTL_MS = 24 * 60 * 60 * 1000;
 const HAS_AUTHENTICATED_BEFORE_STORAGE_KEY = "hackerai_has_authed_before";
 const SELECTED_MODEL_STORAGE_KEY = "selected_model";
@@ -49,7 +49,7 @@ const openSidebarProjectIdsListeners = new Set<() => void>();
 let openSidebarProjectIdsMemorySnapshot =
   EMPTY_SIDEBAR_OPEN_PROJECT_IDS_SNAPSHOT;
 const sidebarTaskLastVisitedAtListeners = new Map<string, Set<() => void>>();
-let sidebarTaskLastVisitedAtMemory: Record<string, number> | null = null;
+let sidebarTaskLastVisitedAtMemory: Record<string, number> = {};
 let sidebarTaskLastVisitedAtSubscriberCount = 0;
 
 const isBrowser = (): boolean => typeof window !== "undefined";
@@ -137,44 +137,30 @@ export const writeOpenSidebarProjectIds = (
 
 export const parseSidebarTaskLastVisitedAt = (
   raw: string | null,
-): Record<string, number> => {
-  if (!raw) return {};
-
-  try {
-    const parsed: unknown = JSON.parse(raw);
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-      return {};
-    }
-
-    return Object.fromEntries(
-      Object.entries(parsed)
-        .filter(
-          (entry): entry is [string, number] =>
-            entry[0].length > 0 &&
-            typeof entry[1] === "number" &&
-            Number.isFinite(entry[1]) &&
-            entry[1] >= 0,
-        )
-        .slice(-MAX_SIDEBAR_TASK_LAST_VISITED_AT_ENTRIES),
-    );
-  } catch {
-    return {};
-  }
+): number | undefined => {
+  if (raw === null || raw.trim().length === 0) return undefined;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : undefined;
 };
 
-const getSidebarTaskLastVisitedAt = (): Record<string, number> => {
-  if (sidebarTaskLastVisitedAtMemory) return sidebarTaskLastVisitedAtMemory;
-  if (!isBrowser()) return {};
+export const getSidebarTaskLastVisitedAtStorageKey = (taskId: string): string =>
+  `${SIDEBAR_TASK_LAST_VISITED_AT_STORAGE_PREFIX}${encodeURIComponent(taskId)}`;
 
-  try {
-    sidebarTaskLastVisitedAtMemory = parseSidebarTaskLastVisitedAt(
-      window.localStorage.getItem(SIDEBAR_TASK_LAST_VISITED_AT_STORAGE_KEY),
-    );
-  } catch {
-    sidebarTaskLastVisitedAtMemory = {};
+const getTaskIdFromSidebarTaskLastVisitedAtStorageKey = (
+  key: string,
+): string | undefined => {
+  if (!key.startsWith(SIDEBAR_TASK_LAST_VISITED_AT_STORAGE_PREFIX)) {
+    return undefined;
   }
 
-  return sidebarTaskLastVisitedAtMemory;
+  try {
+    const taskId = decodeURIComponent(
+      key.slice(SIDEBAR_TASK_LAST_VISITED_AT_STORAGE_PREFIX.length),
+    );
+    return taskId.length > 0 ? taskId : undefined;
+  } catch {
+    return undefined;
+  }
 };
 
 const notifySidebarTaskLastVisitedAt = (taskId: string): void => {
@@ -183,27 +169,102 @@ const notifySidebarTaskLastVisitedAt = (taskId: string): void => {
     ?.forEach((listener) => listener());
 };
 
-const handleSidebarTaskLastVisitedAtStorage = (event: StorageEvent): void => {
-  if (
-    event.key !== SIDEBAR_TASK_LAST_VISITED_AT_STORAGE_KEY &&
-    event.key !== null
-  ) {
-    return;
+const pruneSidebarTaskLastVisitedAt = (): void => {
+  const entries: Array<{ key: string; taskId: string; visitedAt: number }> = [];
+  const invalidKeys: string[] = [];
+
+  for (let index = 0; index < window.localStorage.length; index += 1) {
+    const key = window.localStorage.key(index);
+    if (!key?.startsWith(SIDEBAR_TASK_LAST_VISITED_AT_STORAGE_PREFIX)) {
+      continue;
+    }
+
+    const taskId = getTaskIdFromSidebarTaskLastVisitedAtStorageKey(key);
+    const visitedAt = parseSidebarTaskLastVisitedAt(
+      window.localStorage.getItem(key),
+    );
+    if (!taskId || visitedAt === undefined) {
+      invalidKeys.push(key);
+      continue;
+    }
+    entries.push({ key, taskId, visitedAt });
   }
 
-  const previous = getSidebarTaskLastVisitedAt();
-  const next = parseSidebarTaskLastVisitedAt(
-    event.key === null ? null : event.newValue,
-  );
-  sidebarTaskLastVisitedAtMemory = next;
+  const entriesToRemove = entries
+    .sort((left, right) => right.visitedAt - left.visitedAt)
+    .slice(MAX_SIDEBAR_TASK_LAST_VISITED_AT_ENTRIES);
 
-  new Set([...Object.keys(previous), ...Object.keys(next)]).forEach(
-    (taskId) => {
-      if (previous[taskId] !== next[taskId]) {
+  [...invalidKeys, ...entriesToRemove.map((entry) => entry.key)].forEach(
+    (key) => {
+      const taskId = getTaskIdFromSidebarTaskLastVisitedAtStorageKey(key);
+      window.localStorage.removeItem(key);
+      if (taskId) {
+        delete sidebarTaskLastVisitedAtMemory[taskId];
         notifySidebarTaskLastVisitedAt(taskId);
       }
     },
   );
+};
+
+const handleSidebarTaskLastVisitedAtStorage = (event: StorageEvent): void => {
+  if (event.key === null) {
+    const taskIds = Object.keys(sidebarTaskLastVisitedAtMemory);
+    sidebarTaskLastVisitedAtMemory = {};
+    taskIds.forEach(notifySidebarTaskLastVisitedAt);
+    return;
+  }
+
+  const taskId = getTaskIdFromSidebarTaskLastVisitedAtStorageKey(event.key);
+  if (!taskId) return;
+
+  const previous = sidebarTaskLastVisitedAtMemory[taskId];
+  const stored = parseSidebarTaskLastVisitedAt(event.newValue);
+  const next =
+    stored === undefined ? undefined : Math.max(previous ?? 0, stored);
+  if (next === undefined) {
+    delete sidebarTaskLastVisitedAtMemory[taskId];
+  } else {
+    sidebarTaskLastVisitedAtMemory[taskId] = next;
+    if (next !== stored) {
+      try {
+        window.localStorage.setItem(event.key, String(next));
+      } catch {
+        // Keep the maximum timestamp in memory if storage is unavailable.
+      }
+    }
+  }
+  if (previous !== next) notifySidebarTaskLastVisitedAt(taskId);
+};
+
+export const readSidebarTaskLastVisitedAt = (
+  taskId: string,
+): number | undefined => {
+  if (!isBrowser() || taskId.length === 0) return undefined;
+
+  try {
+    const memoryValue = sidebarTaskLastVisitedAtMemory[taskId];
+    const stored = parseSidebarTaskLastVisitedAt(
+      window.localStorage.getItem(
+        getSidebarTaskLastVisitedAtStorageKey(taskId),
+      ),
+    );
+    if (stored === undefined) {
+      delete sidebarTaskLastVisitedAtMemory[taskId];
+      return undefined;
+    }
+
+    const resolved = Math.max(memoryValue ?? 0, stored);
+    sidebarTaskLastVisitedAtMemory[taskId] = resolved;
+    if (resolved !== stored) {
+      window.localStorage.setItem(
+        getSidebarTaskLastVisitedAtStorageKey(taskId),
+        String(resolved),
+      );
+    }
+    return resolved;
+  } catch {
+    return sidebarTaskLastVisitedAtMemory[taskId];
+  }
 };
 
 export const markSidebarTaskVisited = (
@@ -219,31 +280,23 @@ export const markSidebarTaskVisited = (
     return;
   }
 
-  const current = getSidebarTaskLastVisitedAt();
-  const nextVisitedAt = Math.max(current[taskId] ?? 0, visitedAt);
-  if (current[taskId] === nextVisitedAt) return;
-
-  const nextEntries = Object.entries(current).filter(([id]) => id !== taskId);
-  nextEntries.push([taskId, nextVisitedAt]);
-  sidebarTaskLastVisitedAtMemory = Object.fromEntries(
-    nextEntries.slice(-MAX_SIDEBAR_TASK_LAST_VISITED_AT_ENTRIES),
-  );
+  const current = readSidebarTaskLastVisitedAt(taskId);
+  const nextVisitedAt = Math.max(current ?? 0, visitedAt);
+  if (current === nextVisitedAt) return;
+  sidebarTaskLastVisitedAtMemory[taskId] = nextVisitedAt;
 
   try {
     window.localStorage.setItem(
-      SIDEBAR_TASK_LAST_VISITED_AT_STORAGE_KEY,
-      JSON.stringify(sidebarTaskLastVisitedAtMemory),
+      getSidebarTaskLastVisitedAtStorageKey(taskId),
+      String(nextVisitedAt),
     );
+    pruneSidebarTaskLastVisitedAt();
   } catch {
     // Browser storage can be disabled or unavailable; keep the in-memory state.
   }
 
   notifySidebarTaskLastVisitedAt(taskId);
 };
-
-export const readSidebarTaskLastVisitedAt = (
-  taskId: string,
-): number | undefined => getSidebarTaskLastVisitedAt()[taskId];
 
 export const getServerSidebarTaskLastVisitedAt = (): undefined => undefined;
 
@@ -285,10 +338,20 @@ export const subscribeSidebarTaskLastVisitedAt = (
 export const clearSidebarTaskLastVisitedAt = (): void => {
   if (!isBrowser()) return;
 
-  const taskIds = Object.keys(getSidebarTaskLastVisitedAt());
+  const taskIds = new Set(Object.keys(sidebarTaskLastVisitedAtMemory));
   sidebarTaskLastVisitedAtMemory = {};
   try {
-    window.localStorage.removeItem(SIDEBAR_TASK_LAST_VISITED_AT_STORAGE_KEY);
+    const keysToRemove: string[] = [];
+    for (let index = 0; index < window.localStorage.length; index += 1) {
+      const key = window.localStorage.key(index);
+      if (!key?.startsWith(SIDEBAR_TASK_LAST_VISITED_AT_STORAGE_PREFIX)) {
+        continue;
+      }
+      keysToRemove.push(key);
+      const taskId = getTaskIdFromSidebarTaskLastVisitedAtStorageKey(key);
+      if (taskId) taskIds.add(taskId);
+    }
+    keysToRemove.forEach((key) => window.localStorage.removeItem(key));
   } catch {
     // Browser storage can be disabled or unavailable.
   }
