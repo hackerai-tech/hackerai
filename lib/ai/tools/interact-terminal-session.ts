@@ -274,9 +274,12 @@ export const createInteractTerminalSession = (context: ToolContext) => {
         };
       };
 
-      const changedDuringAutoReviewError = (sid: string): ActionResult =>
+      const changedDuringAutoReviewError = (
+        sid: string,
+        attemptedAction: "send" | "kill",
+      ): ActionResult =>
         errorResult(
-          `Session ${sid} changed while Auto review was evaluating the action. The input was not sent. Use action=view to refresh the terminal state, then retry the exact interaction.`,
+          `Session ${sid} changed while Auto review was evaluating the action. ${attemptedAction === "send" ? "The input was not sent." : "The session was not killed."} Use action=view to refresh the terminal state, then retry the exact interaction.`,
         );
 
       const verifySessionSandboxIdentity = async (
@@ -351,7 +354,7 @@ export const createInteractTerminalSession = (context: ToolContext) => {
           approvalResult.autoReviewed &&
           terminalStateChanged(sessionId, reviewState.state)
         ) {
-          return changedDuringAutoReviewError(sessionId);
+          return changedDuringAutoReviewError(sessionId, "send");
         }
 
         emitPriorContext(session);
@@ -488,7 +491,7 @@ export const createInteractTerminalSession = (context: ToolContext) => {
           approvalResult.autoReviewed &&
           terminalStateChanged(sessionId, reviewState.state)
         ) {
-          return changedDuringAutoReviewError(sessionId);
+          return changedDuringAutoReviewError(sessionId, "kill");
         }
 
         // Skip the snapshot dump — the user already saw the final state via

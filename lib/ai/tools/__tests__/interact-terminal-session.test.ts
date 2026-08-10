@@ -494,6 +494,36 @@ describe("interact_terminal_session — PTY action dispatch", () => {
     expect(handle.sendInputCalls).toHaveLength(callsBeforeSend);
   });
 
+  test("does not kill an automatically reviewed session if terminal state changes during review", async () => {
+    const e2b = makeFakeE2BSandbox();
+    const handle = makeFakeHandle();
+    const requestToolApproval = jest.fn(async () => ({
+      approved: true as const,
+      approvalId: "human-setup",
+      sandboxIdentity: "e2b" as const,
+    }));
+    const { context } = makeContext({ sandbox: e2b, requestToolApproval });
+    const sessionId = await createSession(context, handle);
+    handle.emit(new TextEncoder().encode("Process running\n"));
+    requestToolApproval.mockImplementation(async () => {
+      handle.emit(new TextEncoder().encode("Process produced more output\n"));
+      return {
+        approved: true as const,
+        approvalId: "auto-review-kill-1",
+        sandboxIdentity: "e2b" as const,
+        approvalSource: "auto_review" as const,
+      };
+    });
+
+    const result = (await runTool(createInteractTerminalSession(context), {
+      action: "kill",
+      session: sessionId,
+    })) as { result: { error?: string } };
+
+    expect(result.result.error).toContain("The session was not killed.");
+    expect(handle.killed).toBe(false);
+  });
+
   test("preserves human approval behavior when terminal output changes while waiting", async () => {
     const e2b = makeFakeE2BSandbox();
     const handle = makeFakeHandle();
