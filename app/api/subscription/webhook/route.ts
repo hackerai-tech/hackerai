@@ -925,7 +925,7 @@ async function handleInvoicePaid(
         userId: uid,
         org_id: orgId,
         subscription_tier: tier,
-        plan: recoveryPrice?.lookup_key,
+        plan: recoveryPrice?.lookup_key ?? tier,
         billing_interval: priceBillingInterval(recoveryPrice),
         billing_interval_count: recoveryPrice?.recurring?.interval_count,
         recovery_type: "invoice_paid_after_payment_failure",

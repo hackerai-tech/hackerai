@@ -99,18 +99,16 @@ export function PastDueBillingBanner({
   );
 }
 
-export function PastDueBillingNotice() {
-  const { subscription } = useGlobalState();
+function PaidPastDueBillingNotice({
+  subscription,
+}: {
+  subscription: Exclude<SubscriptionTier, "free">;
+}) {
   const [subscriptionStatus, setSubscriptionStatus] =
     useState<PastDueStatus | null>(null);
   const [isOpening, setIsOpening] = useState(false);
 
   useEffect(() => {
-    if (!isPaidSubscription(subscription)) {
-      setSubscriptionStatus(null);
-      return;
-    }
-
     let ignore = false;
     getSubscriptionCancellationStatus()
       .then((status) => {
@@ -131,7 +129,7 @@ export function PastDueBillingNotice() {
     };
   }, [subscription]);
 
-  if (!isPaidSubscription(subscription) || !subscriptionStatus) return null;
+  if (!subscriptionStatus) return null;
 
   const handleUpdatePayment = async () => {
     if (isOpening) return;
@@ -157,5 +155,14 @@ export function PastDueBillingNotice() {
       isOpening={isOpening}
       onUpdatePayment={() => void handleUpdatePayment()}
     />
+  );
+}
+
+export function PastDueBillingNotice() {
+  const { subscription } = useGlobalState();
+  if (!isPaidSubscription(subscription)) return null;
+
+  return (
+    <PaidPastDueBillingNotice key={subscription} subscription={subscription} />
   );
 }

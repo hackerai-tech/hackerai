@@ -1,6 +1,6 @@
 import "@testing-library/jest-dom";
 import { describe, expect, it, jest, beforeEach } from "@jest/globals";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 const mockGetSubscriptionCancellationStatus = jest.fn();
@@ -83,5 +83,58 @@ describe("PastDueBillingNotice", () => {
 
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
     expect(mockGetSubscriptionCancellationStatus).not.toHaveBeenCalled();
+  });
+
+  it("does not expose payment updates when billing access is denied", async () => {
+    mockSubscription = "team";
+    mockGetSubscriptionCancellationStatus.mockRejectedValue(
+      new Error("Only admins or owners can manage billing") as never,
+    );
+
+    render(<PastDueBillingNotice />);
+
+    await waitFor(() => {
+      expect(mockGetSubscriptionCancellationStatus).toHaveBeenCalledTimes(1);
+    });
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(mockRedirectToBillingPortal).not.toHaveBeenCalled();
+  });
+
+  it("does not reuse stale past-due status after a plan transition", async () => {
+    mockGetSubscriptionCancellationStatus.mockResolvedValueOnce({
+      hasActiveSubscription: true,
+      cancelAtPeriodEnd: false,
+      subscriptionStatus: "past_due",
+    } as never);
+
+    const { rerender } = render(<PastDueBillingNotice />);
+    expect(await screen.findByRole("alert")).toBeVisible();
+
+    mockSubscription = "free";
+    rerender(<PastDueBillingNotice />);
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+
+    let resolveStatus: (value: unknown) => void = () => {};
+    mockGetSubscriptionCancellationStatus.mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolveStatus = resolve;
+      }) as never,
+    );
+    mockSubscription = "pro";
+    rerender(<PastDueBillingNotice />);
+
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+
+    await act(async () => {
+      resolveStatus({
+        hasActiveSubscription: true,
+        cancelAtPeriodEnd: false,
+        subscriptionStatus: "active",
+      });
+    });
+    await waitFor(() => {
+      expect(mockGetSubscriptionCancellationStatus).toHaveBeenCalledTimes(2);
+    });
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
 });
