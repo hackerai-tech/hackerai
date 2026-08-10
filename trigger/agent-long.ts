@@ -242,6 +242,7 @@ import {
   listActiveSubagentsForParent,
 } from "@/lib/db/subagents";
 import { cancelAgentTriggerRun } from "@/lib/api/agent-approval-session";
+import { settleParentSubagents } from "@/lib/ai/subagents/parent-settlement";
 import {
   captureSubagentLifecycleEvent,
   subagentAvailabilityEventUuid,
@@ -1647,8 +1648,23 @@ type RunCleanupState = {
   hasObservedUsage: () => boolean;
   chatLogger: ChatLogger | undefined;
   chatId: string;
+  subagentsEnabled: boolean;
 };
 const runCleanupMap = new Map<string, RunCleanupState>();
+
+const settleSubagentsForParentRun = async (
+  parentTriggerRunId: string,
+  reason: string,
+) =>
+  await settleParentSubagents(
+    { parentTriggerRunId, reason },
+    {
+      listActiveSubagents: listActiveSubagentsForParent,
+      cancelPersistedSubagents: cancelSubagentsForParent,
+      cancelTriggerRun: cancelAgentTriggerRun,
+      warn: (message, details) => triggerLogger.warn(message, details),
+    },
+  );
 
 export type AgentLongPayload = {
   chatId: string;
@@ -1706,43 +1722,8 @@ export const agentLongTask = task({
     if (!cleanup.hasObservedUsage()) {
       await cleanup.usageRefundTracker.refund().catch(() => {});
     }
-    const propagateChildCancellation = async () => {
-      const activeChildren = await listActiveSubagentsForParent(
-        ctx.run.id,
-      ).catch(() => []);
-      const childCancellations = await Promise.allSettled(
-        activeChildren.map(async (child) => {
-          if (!child.trigger_run_id) return;
-          await cancelAgentTriggerRun(child.trigger_run_id);
-        }),
-      );
-      const failedChildCancellations = childCancellations.filter(
-        (result) => result.status === "rejected",
-      ).length;
-      if (failedChildCancellations > 0) {
-        triggerLogger.warn(
-          "[agent-long] child cancellation propagation failed",
-          {
-            parentTriggerRunId: ctx.run.id,
-            failedChildCancellations,
-          },
-        );
-      }
-      await cancelSubagentsForParent(ctx.run.id, "parent_canceled").catch(() =>
-        triggerLogger.warn(
-          "[agent-long] child cancellation persistence failed",
-          { parentTriggerRunId: ctx.run.id },
-        ),
-      );
-    };
-    const childCancellationCompleted = await Promise.race([
-      propagateChildCancellation().then(() => true),
-      new Promise<false>((resolve) => setTimeout(() => resolve(false), 2_000)),
-    ]);
-    if (!childCancellationCompleted) {
-      triggerLogger.warn("[agent-long] child cancellation timed out", {
-        parentTriggerRunId: ctx.run.id,
-      });
+    if (cleanup.subagentsEnabled) {
+      await settleSubagentsForParentRun(ctx.run.id, "parent_canceled");
     }
     await ptySessionManager.closeAll(cleanup.chatId).catch(() => {});
     await phLogger.flush().catch(() => {});
@@ -1905,6 +1886,7 @@ export const agentLongTask = task({
       hasObservedUsage,
       chatLogger,
       chatId,
+      subagentsEnabled: securityValidationSubagentsEnabled,
     });
 
     let activeRuntimeBudget: ActiveRuntimeBudget | undefined;
@@ -4009,6 +3991,9 @@ export const agentLongTask = task({
     } finally {
       memoryTelemetry.dispose();
       activeRuntimeBudget?.dispose();
+      if (securityValidationSubagentsEnabled) {
+        await settleSubagentsForParentRun(ctx.run.id, "parent_run_ended");
+      }
       runCleanupMap.delete(ctx.run.id);
       if (payload.approvalSessionId && triggerSessions) {
         try {

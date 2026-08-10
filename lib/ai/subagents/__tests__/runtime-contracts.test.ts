@@ -91,11 +91,20 @@ describe("security validation subagent runtime contracts", () => {
 
   it("propagates parent cancellation and refuses a canceled queued child", () => {
     const parent = read("trigger/agent-long.ts");
+    const parentSettlement = read("lib/ai/subagents/parent-settlement.ts");
     const child = read("trigger/subagent.ts");
     const tools = read("lib/ai/tools/subagent-tools.ts");
     expect(parent).toContain("listActiveSubagentsForParent");
-    expect(parent).toContain("cancelAgentTriggerRun(child.trigger_run_id)");
     expect(parent).toContain("cancelSubagentsForParent");
+    expect(parent).toContain('"parent_canceled"');
+    expect(parent).toContain('"parent_run_ended"');
+    expect(parentSettlement).toContain(
+      "dependencies.cancelTriggerRun(child.trigger_run_id)",
+    );
+    expect(parentSettlement).toContain(
+      "dependencies.cancelPersistedSubagents(parentTriggerRunId, reason)",
+    );
+    expect(parentSettlement).toContain("Promise.race");
     expectMarkerOrder(
       child,
       "SUBAGENT_TERMINAL_STATUSES.has(row.status)",
@@ -113,13 +122,9 @@ describe("security validation subagent runtime contracts", () => {
     expect(child).toContain("persistAssistantMessages");
     expect(child).toContain("recordSubagentRecovery");
     expect(child).toContain("hasToolCall(profile.finalResultTool.name)");
-    expect(parent).toContain("cancelSubagentsForParent");
     expect(tools).toContain("failUnattachedSubagent");
     expect(tools).toContain('failureCode: "child_trigger_failed"');
     expect(child).toContain("pipeSubagentUiMessageStream");
-    expect(parent).toContain(
-      "const childCancellationCompleted = await Promise.race",
-    );
   });
 
   it("delivers named parent updates through a durable child inbox", () => {

@@ -996,6 +996,15 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     );
   });
 
+  test("every parent wind-down settles active subagents before teardown", () => {
+    expect(taskSrc).toMatch(
+      /if \(cleanup\.subagentsEnabled\) \{\s*await settleSubagentsForParentRun\(ctx\.run\.id, "parent_canceled"\);\s*\}/,
+    );
+    expect(taskSrc).toMatch(
+      /finally \{[\s\S]*?if \(securityValidationSubagentsEnabled\) \{\s*await settleSubagentsForParentRun\(ctx\.run\.id, "parent_run_ended"\);\s*\}[\s\S]*?runCleanupMap\.delete\(ctx\.run\.id\)[\s\S]*?triggerSessions\.close/,
+    );
+  });
+
   test("handled tool failures are visible in Trigger logs and metadata", () => {
     expect(taskSrc).toMatch(/recordAgentLongHandledToolFailureForDashboard/);
     expect(taskSrc).toMatch(/lastHandledToolFailureStatus/);
