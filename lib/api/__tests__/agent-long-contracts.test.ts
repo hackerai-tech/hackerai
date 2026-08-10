@@ -695,8 +695,12 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
   test("runs are triggered with filterable queued metadata and tags", () => {
     expect(routeSrc).toMatch(/tags:\s*triggerTags/);
     expect(routeSrc).toMatch(
-      /triggerTags\.push\(`permission_\$\{agentPermissionMode\}`\)/,
+      /const permissionSnapshot\s*=\s*buildAgentPermissionRunSnapshot\(agentPermissionMode\)/,
     );
+    expect(routeSrc).toMatch(
+      /triggerTags\.push\(permissionSnapshot\.triggerTag\)/,
+    );
+    expect(routeSrc).toMatch(/agentPermissionMode:\s*permissionSnapshot\.mode/);
     expect(routeSrc).toMatch(/const triggerMetadata\s*=\s*{/);
     expect(routeSrc).toMatch(/metadata:\s*triggerMetadata/);
     expect(routeSrc).toMatch(/status:\s*"queued"/);

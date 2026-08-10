@@ -64,6 +64,47 @@ describe("AgentPermissionSelector", () => {
     expect(setAgentPermissionMode).toHaveBeenCalledWith("ask_approval");
   });
 
+  it("reports each permission-mode transition from the currently selected mode", async () => {
+    agentPermissionMode = "auto_review";
+    const { rerender } = render(
+      <AgentPermissionSelector analyticsSurface="chat_input" />,
+    );
+
+    fireEvent.click(
+      await screen.findByRole("button", { name: /approve for me/i }),
+    );
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: /ask for approval always ask before commands and file changes/i,
+      }),
+    );
+    expect(captureAuthenticatedEvent).toHaveBeenLastCalledWith(
+      "agent_permission_mode_changed",
+      expect.objectContaining({
+        previous_agent_permission_mode: "auto_review",
+        agent_permission_mode: "ask_approval",
+      }),
+    );
+
+    agentPermissionMode = "ask_approval";
+    rerender(<AgentPermissionSelector analyticsSurface="chat_input" />);
+    fireEvent.click(
+      screen.getByRole("button", { name: /^ask for approval$/i }),
+    );
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: /full access run commands and edit files without asking/i,
+      }),
+    );
+    expect(captureAuthenticatedEvent).toHaveBeenLastCalledWith(
+      "agent_permission_mode_changed",
+      expect.objectContaining({
+        previous_agent_permission_mode: "ask_approval",
+        agent_permission_mode: "full_access",
+      }),
+    );
+  });
+
   it("offers Approve for me only for a server flag assignment", async () => {
     render(<AgentPermissionSelector analyticsSurface="chat_input" />);
 

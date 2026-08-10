@@ -37,6 +37,10 @@ PostHog flag: [`agent_auto_review_v1`](https://us.posthog.com/project/144137/fea
    - `enforce/ask_user` or `enforce/deny`: reuse the existing signed Trigger
      Session input path and let the human make the final decision. A reviewer
      denial means only that the action cannot be approved automatically.
+     Stream a privacy-safe lifecycle containing only correlation IDs, timestamps,
+     and status. The tool row shows `Reviewing action` only after 450 ms to avoid
+     flicker, briefly shows an automatic approval, and otherwise hands off to the
+     existing human approval card.
 5. Keep reusable target/prefix grants human-only. Existing human-created grants
    may continue to match, but Approve for me never creates or broadens a grant.
 6. Track consecutive and rolling human denials after an enforced review, and
@@ -56,6 +60,9 @@ PostHog flag: [`agent_auto_review_v1`](https://us.posthog.com/project/144137/fea
    sandbox types, UI selection, and existing-mode regressions. Run focused
    tests, the full suite, typecheck, lint, formatting, production build, and
    responsive browser verification.
+10. Snapshot the selected permission mode into each Trigger run. Changes made
+    while a run is active apply to the next run; reconnecting resumes the stored
+    run and approval Session without re-reading the current selector value.
 
 ## Rollout and cleanup
 

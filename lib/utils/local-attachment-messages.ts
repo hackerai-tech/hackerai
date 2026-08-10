@@ -17,6 +17,7 @@ const getPartFields = (part: unknown) =>
 
 const UI_ONLY_PART_TYPES = new Set([
   "data-agent-auto-review",
+  "data-agent-auto-review-lifecycle",
   "data-summarization",
 ]);
 

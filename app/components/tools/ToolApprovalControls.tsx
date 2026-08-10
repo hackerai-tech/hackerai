@@ -1,12 +1,14 @@
 "use client";
 
-import { useEffect, useRef, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import {
   useAgentApproval,
   type AgentApprovalSendState,
 } from "@/app/contexts/AgentApprovalContext";
 import {
+  parseAgentAutoReviewLifecycle,
   parseAgentAutoReviewSummary,
+  type AgentAutoReviewLifecycle,
   type AgentAutoReviewSummary,
   type AgentToolApprovalOperation,
 } from "@/types";
@@ -23,6 +25,124 @@ type ToolApprovalControlsProps = {
   operation?: AgentToolApprovalOperation;
   autoReview?: AgentAutoReviewSummary;
   children?: (sendState: AgentApprovalSendState) => ReactNode;
+};
+
+type AgentAutoReviewLifecycleDataPart = {
+  type?: unknown;
+  data?: unknown;
+};
+
+export const AGENT_AUTO_REVIEW_DISPLAY_DELAY_MS = 450;
+export const AGENT_AUTO_REVIEW_APPROVED_DISPLAY_MS = 900;
+
+export type AgentAutoReviewLifecycleDisplay =
+  "reviewing" | "approved" | "needs_approval";
+
+export const getStreamedAgentAutoReviewLifecycle = ({
+  parts,
+  toolCallId,
+}: {
+  parts: readonly unknown[];
+  toolCallId: string;
+}): AgentAutoReviewLifecycle | undefined => {
+  for (let index = parts.length - 1; index >= 0; index -= 1) {
+    const part = parts[index] as AgentAutoReviewLifecycleDataPart;
+    if (part.type !== "data-agent-auto-review-lifecycle") continue;
+    const lifecycle = parseAgentAutoReviewLifecycle(part.data);
+    if (lifecycle?.toolCallId === toolCallId) return lifecycle;
+  }
+  return undefined;
+};
+
+export const useAgentAutoReviewLifecycleDisplay = ({
+  parts,
+  toolCallId,
+}: {
+  parts: readonly unknown[];
+  toolCallId: string;
+}): AgentAutoReviewLifecycleDisplay | undefined => {
+  const lifecycle = getStreamedAgentAutoReviewLifecycle({ parts, toolCallId });
+  const lifecycleApprovalId = lifecycle?.approvalId;
+  const lifecycleStartedAt = lifecycle?.startedAt;
+  const lifecycleStatus = lifecycle?.status;
+  const [display, setDisplay] = useState<{
+    approvalId: string;
+    status: AgentAutoReviewLifecycleDisplay;
+  }>();
+  const activeApprovalIdRef = useRef<string | undefined>(undefined);
+  const reviewWasVisibleRef = useRef(false);
+
+  useEffect(() => {
+    if (
+      !lifecycleApprovalId ||
+      lifecycleStartedAt === undefined ||
+      !lifecycleStatus
+    ) {
+      activeApprovalIdRef.current = undefined;
+      reviewWasVisibleRef.current = false;
+      return;
+    }
+
+    if (activeApprovalIdRef.current !== lifecycleApprovalId) {
+      activeApprovalIdRef.current = lifecycleApprovalId;
+      reviewWasVisibleRef.current = false;
+    }
+
+    if (lifecycleStatus === "reviewing") {
+      const timeout = setTimeout(() => {
+        reviewWasVisibleRef.current = true;
+        setDisplay({
+          approvalId: lifecycleApprovalId,
+          status: "reviewing",
+        });
+      }, AGENT_AUTO_REVIEW_DISPLAY_DELAY_MS);
+      return () => clearTimeout(timeout);
+    }
+
+    if (!reviewWasVisibleRef.current || lifecycleStatus === "dismissed") {
+      return;
+    }
+
+    let hideTimeout: ReturnType<typeof setTimeout> | undefined;
+    const showTimeout = setTimeout(() => {
+      setDisplay({
+        approvalId: lifecycleApprovalId,
+        status: lifecycleStatus,
+      });
+      if (lifecycleStatus === "approved") {
+        hideTimeout = setTimeout(
+          () => setDisplay(undefined),
+          AGENT_AUTO_REVIEW_APPROVED_DISPLAY_MS,
+        );
+      }
+    }, 0);
+    return () => {
+      clearTimeout(showTimeout);
+      if (hideTimeout) clearTimeout(hideTimeout);
+    };
+  }, [lifecycleApprovalId, lifecycleStartedAt, lifecycleStatus]);
+
+  return lifecycle &&
+    lifecycle.status !== "dismissed" &&
+    display?.approvalId === lifecycle.approvalId &&
+    display.status === lifecycle.status
+    ? display.status
+    : undefined;
+};
+
+export const getAgentAutoReviewDisplayState = (
+  display: AgentAutoReviewLifecycleDisplay | undefined,
+): { action: string; isShimmer: boolean } | undefined => {
+  switch (display) {
+    case "reviewing":
+      return { action: "Reviewing action", isShimmer: false };
+    case "approved":
+      return { action: "Approved automatically", isShimmer: false };
+    case "needs_approval":
+      return { action: "Needs your approval", isShimmer: false };
+    default:
+      return undefined;
+  }
 };
 
 type AgentAutoReviewDataPart = {

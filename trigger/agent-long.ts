@@ -162,6 +162,7 @@ import type {
   AgentPermissionMode,
   AgentApprovalSandboxIdentity,
   AgentAutoReviewSummary,
+  AgentAutoReviewLifecycleStatus,
   AgentToolApprovalInputRecord,
   AgentToolApprovalPendingRequest,
   AgentToolApprovalRequest,
@@ -365,6 +366,31 @@ const buildAgentAutoReviewSummary = (
   ...(autoReview.failureClass ? { failureClass: autoReview.failureClass } : {}),
 });
 
+const writeAgentAutoReviewLifecycle = ({
+  writer,
+  approvalId,
+  toolCallId,
+  status,
+  startedAt,
+}: {
+  writer: UIMessageStreamWriter;
+  approvalId: string;
+  toolCallId: string;
+  status: AgentAutoReviewLifecycleStatus;
+  startedAt: number;
+}): void => {
+  writer.write({
+    type: "data-agent-auto-review-lifecycle",
+    data: {
+      approvalId,
+      toolCallId,
+      status,
+      startedAt,
+      ...(status === "reviewing" ? {} : { completedAt: Date.now() }),
+    },
+  } as AgentLongUiStreamPart);
+};
+
 const buildPendingApprovalRequest = ({
   approvalId,
   request,
@@ -556,8 +582,25 @@ const buildAgentToolApprovalRequester = ({
     let autoReviewDecision:
       | (AgentAutoReviewDecision & { rolloutPhase: "shadow" | "enforce" })
       | undefined;
+    const approvalId = generateId();
+    let autoReviewStartedAt: number | undefined;
+    let autoReviewLifecycleCompleted = false;
+    const completeAutoReviewLifecycle = (
+      status: Exclude<AgentAutoReviewLifecycleStatus, "reviewing">,
+    ) => {
+      if (autoReviewStartedAt === undefined || autoReviewLifecycleCompleted) {
+        return;
+      }
+      autoReviewLifecycleCompleted = true;
+      writeAgentAutoReviewLifecycle({
+        writer,
+        approvalId,
+        toolCallId: request.toolCallId,
+        status,
+        startedAt: autoReviewStartedAt,
+      });
+    };
     try {
-      const approvalId = generateId();
       const sandboxIdentity = await resolveSandboxIdentity();
       const existingGrant =
         approvedTargetGrants.find(
@@ -605,6 +648,14 @@ const buildAgentToolApprovalRequester = ({
           operation: request.operation,
         })
       ) {
+        autoReviewStartedAt = Date.now();
+        writeAgentAutoReviewLifecycle({
+          writer,
+          approvalId,
+          toolCallId: request.toolCallId,
+          status: "reviewing",
+          startedAt: autoReviewStartedAt,
+        });
         activeRuntimeBudget.pause();
         let decision: AgentAutoReviewDecision;
         try {
@@ -733,6 +784,7 @@ const buildAgentToolApprovalRequester = ({
                 .set("approvalToolName", request.toolName)
                 .set("approvalOperation", request.operation);
               denialTracker.record("approve");
+              completeAutoReviewLifecycle("approved");
               return {
                 approved: true,
                 approvalId,
@@ -748,6 +800,7 @@ const buildAgentToolApprovalRequester = ({
       }
 
       if (!approvalSessionId) {
+        completeAutoReviewLifecycle("dismissed");
         return {
           approved: false,
           approvalId,
@@ -757,6 +810,7 @@ const buildAgentToolApprovalRequester = ({
       }
 
       if (signal.aborted) {
+        completeAutoReviewLifecycle("dismissed");
         metadata.set("approvalStatus", "aborted");
         return {
           approved: false,
@@ -766,6 +820,7 @@ const buildAgentToolApprovalRequester = ({
       }
 
       if (!triggerSessions) {
+        completeAutoReviewLifecycle("dismissed");
         metadata.set("approvalStatus", "sessions_unavailable");
         return {
           approved: false,
@@ -792,6 +847,8 @@ const buildAgentToolApprovalRequester = ({
         .set("approvalToolName", request.toolName)
         .set("approvalOperation", request.operation);
       await metadata.flush();
+
+      completeAutoReviewLifecycle("needs_approval");
 
       if (autoReviewDecision?.rolloutPhase === "enforce") {
         const autoReview = buildAgentAutoReviewSummary(autoReviewDecision);
@@ -1082,6 +1139,7 @@ const buildAgentToolApprovalRequester = ({
         reason: "The Agent run was stopped before approval was received.",
       };
     } finally {
+      completeAutoReviewLifecycle("dismissed");
       if (approvalPendingMarked && shouldClearApprovalPending) {
         await setApprovalPending(false);
       }

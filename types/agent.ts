@@ -344,6 +344,57 @@ export type AgentAutoReviewSummary = {
   failureClass?: AgentAutoReviewFailureClass;
 };
 
+export type AgentAutoReviewLifecycleStatus =
+  "reviewing" | "approved" | "needs_approval" | "dismissed";
+
+export type AgentAutoReviewLifecycle = {
+  approvalId: string;
+  toolCallId: string;
+  status: AgentAutoReviewLifecycleStatus;
+  startedAt: number;
+  completedAt?: number;
+};
+
+const AGENT_AUTO_REVIEW_LIFECYCLE_STATUSES = [
+  "reviewing",
+  "approved",
+  "needs_approval",
+  "dismissed",
+] as const satisfies readonly AgentAutoReviewLifecycleStatus[];
+
+export const parseAgentAutoReviewLifecycle = (
+  value: unknown,
+): AgentAutoReviewLifecycle | undefined => {
+  if (!value || typeof value !== "object") return undefined;
+  const record = value as Record<string, unknown>;
+  const status = AGENT_AUTO_REVIEW_LIFECYCLE_STATUSES.find(
+    (candidate) => candidate === record.status,
+  );
+  if (
+    !status ||
+    typeof record.approvalId !== "string" ||
+    !record.approvalId ||
+    typeof record.toolCallId !== "string" ||
+    !record.toolCallId ||
+    typeof record.startedAt !== "number" ||
+    !Number.isFinite(record.startedAt) ||
+    (record.completedAt !== undefined &&
+      (typeof record.completedAt !== "number" ||
+        !Number.isFinite(record.completedAt)))
+  ) {
+    return undefined;
+  }
+  return {
+    approvalId: record.approvalId,
+    toolCallId: record.toolCallId,
+    status,
+    startedAt: record.startedAt,
+    ...(typeof record.completedAt === "number"
+      ? { completedAt: record.completedAt }
+      : {}),
+  };
+};
+
 const AGENT_AUTO_REVIEW_VERDICTS = [
   "approve",
   "ask_user",

@@ -6,6 +6,7 @@ type MessagePart = ChatMessage["parts"][number];
 const TRAILING_METADATA_PART_TYPES = new Set([
   "data-agent-heartbeat",
   "data-agent-auto-review",
+  "data-agent-auto-review-lifecycle",
   "data-appendMessage",
   "data-auto-continue",
   "data-context-usage",

@@ -130,6 +130,36 @@ describe("agent-long post-wait authorization contract", () => {
     );
   });
 
+  it("streams a privacy-safe automatic review lifecycle around the reviewer", () => {
+    expect(taskSource).toMatch(
+      /status: "reviewing",[\s\S]*await reviewAgentToolAction\(/,
+    );
+    expect(taskSource).toMatch(
+      /completeAutoReviewLifecycle\("approved"\)[\s\S]*approvalSource: "auto_review"/,
+    );
+    expect(taskSource).toMatch(
+      /completeAutoReviewLifecycle\("needs_approval"\)[\s\S]*type: "tool-approval-request"/,
+    );
+    expect(taskSource).toMatch(
+      /finally \{[\s\S]*completeAutoReviewLifecycle\("dismissed"\)/,
+    );
+
+    const lifecycleWriterStart = taskSource.indexOf(
+      'type: "data-agent-auto-review-lifecycle"',
+    );
+    const lifecycleWriterEnd = taskSource.indexOf(
+      "} as AgentLongUiStreamPart",
+      lifecycleWriterStart,
+    );
+    const lifecycleWriterSource = taskSource.slice(
+      lifecycleWriterStart,
+      lifecycleWriterEnd,
+    );
+    expect(lifecycleWriterSource).not.toMatch(
+      /command|target|path|prompt|rationale|credential/,
+    );
+  });
+
   it("excludes suspension time and reacquires free concurrency after checks", () => {
     const beforeSuspend = taskSource.indexOf("await beforeSuspend()");
     const pause = taskSource.indexOf(

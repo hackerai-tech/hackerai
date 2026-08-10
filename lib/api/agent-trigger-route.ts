@@ -111,6 +111,12 @@ type AgentTriggerRequestBody = {
   projectId?: string;
 };
 
+export const buildAgentPermissionRunSnapshot = (mode: AgentPermissionMode) => ({
+  mode,
+  triggerTag: `permission_${mode}`,
+  requiresApprovalSession: mode === "ask_approval" || mode === "auto_review",
+});
+
 type AgentTriggerRequestParseResult =
   | { ok: true; body: AgentTriggerRequestBody }
   | { ok: false; response: NextResponse };
@@ -539,9 +545,13 @@ export const createAgentTriggerPost =
         projectId: projectContext.projectId,
       });
 
+      // Snapshot permission behavior once for this run. UI changes made while
+      // it is active apply to the next run and cannot mutate a resumed run.
+      const permissionSnapshot =
+        buildAgentPermissionRunSnapshot(agentPermissionMode);
       const triggerTags = [`user_${userId}`, `chat_${chatId}`];
       if (subscription !== "free") triggerTags.push(`sub_${subscription}`);
-      triggerTags.push(`permission_${agentPermissionMode}`);
+      triggerTags.push(permissionSnapshot.triggerTag);
 
       // Persisted chats are rehydrated from Convex inside the task after the
       // route saves the latest user message. Avoid sending the same history
@@ -570,16 +580,14 @@ export const createAgentTriggerPost =
       const triggerIdempotencyKey = await buildAgentRunIdempotencyKey(
         triggerDedupeKeyParts,
       );
-      const approvalSessionId =
-        agentPermissionMode === "ask_approval" ||
-        agentPermissionMode === "auto_review"
-          ? buildAgentApprovalSessionId({
-              chatId,
-              keyParts: triggerDedupeKeyParts,
-              approvalProtocolVersion: AGENT_APPROVAL_PROTOCOL_VERSION,
-              approvalWorkerVersion,
-            })
-          : undefined;
+      const approvalSessionId = permissionSnapshot.requiresApprovalSession
+        ? buildAgentApprovalSessionId({
+            chatId,
+            keyParts: triggerDedupeKeyParts,
+            approvalProtocolVersion: AGENT_APPROVAL_PROTOCOL_VERSION,
+            approvalWorkerVersion,
+          })
+        : undefined;
       if (
         approvalSessionId &&
         shouldRequireAgentApprovalWorkerVersion() &&
@@ -603,7 +611,7 @@ export const createAgentTriggerPost =
         localDesktopAttachmentsPrepared,
         baseTodos: Array.isArray(todos) ? todos : [],
         sandboxPreference,
-        agentPermissionMode,
+        agentPermissionMode: permissionSnapshot.mode,
         approvalSessionId,
         approvalProtocolVersion: AGENT_APPROVAL_PROTOCOL_VERSION,
         selectedModel: selectedModelOverride,
@@ -633,7 +641,7 @@ export const createAgentTriggerPost =
         triggerRequestedAt,
         triggerPriority,
         triggerPayloadMessageCount: messagesForPayload.length,
-        agentPermissionMode,
+        agentPermissionMode: permissionSnapshot.mode,
         approvalProtocolVersion: AGENT_APPROVAL_PROTOCOL_VERSION,
         ...(approvalWorkerVersion ? { approvalWorkerVersion } : {}),
         ...(approvalSessionId ? { approvalSessionId } : {}),
