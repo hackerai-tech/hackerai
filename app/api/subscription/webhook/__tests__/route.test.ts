@@ -9,6 +9,7 @@ import {
 import { HACKERAI_PRO_20_MONTHLY_PRICE_ID } from "@/lib/billing/included-usage";
 import {
   PAID_FUNNEL_EVENTS,
+  billingPaymentRecoveryInsertId,
   cancellationCompletionInsertId,
 } from "@/lib/analytics/paid-funnel";
 
@@ -314,6 +315,7 @@ describe("POST /api/subscription/webhook", () => {
     } as never);
     mockResetRateLimitBucketAfterPayment.mockResolvedValue({
       outcome: "applied",
+      recoveredFromPaymentFailure: false,
     } as never);
     mockStashTierChangeBucketState.mockResolvedValue({} as never);
     mockApplyProratedTierChangeBucket.mockResolvedValue(null as never);
@@ -763,8 +765,14 @@ describe("POST /api/subscription/webhook", () => {
     );
   });
 
-  it("resets the grandfathered $20 Pro price to $20 of included usage", async () => {
+  it("resets recovered credits and emits a payment recovery event", async () => {
     const periodEnd = 1_785_000_000;
+    const paymentFailureAtMs = 1_781_990_000_000;
+    mockResetRateLimitBucketAfterPayment.mockResolvedValueOnce({
+      outcome: "applied",
+      recoveredFromPaymentFailure: true,
+      paymentFailureAtMs,
+    } as never);
     mockConstructEvent.mockReturnValue({
       id: "evt_invoice_paid_pro_20",
       type: "invoice.paid",
@@ -775,6 +783,7 @@ describe("POST /api/subscription/webhook", () => {
           amount_paid: 2000,
           currency: "usd",
           billing_reason: "subscription_cycle",
+          attempt_count: 3,
           parent: {
             subscription_details: {
               subscription: "sub_pro_20",
@@ -836,6 +845,26 @@ describe("POST /api/subscription/webhook", () => {
       },
       periodEnd,
       200_000,
+    );
+    expect(mockPostHogEvent).toHaveBeenCalledWith(
+      PAID_FUNNEL_EVENTS.billingPaymentRecovered,
+      expect.objectContaining({
+        userId: "user_pro_20",
+        org_id: "org_pro_20",
+        subscription_tier: "pro",
+        recovery_type: "invoice_paid_after_payment_failure",
+        payment_failure_at: new Date(paymentFailureAtMs).toISOString(),
+        recovery_duration_ms: 10_000_000,
+        attempt_count: 3,
+        amount_paid_dollars: 20,
+        currency: "usd",
+        stripe_customer_id: "cus_pro_20",
+        stripe_subscription_id: "sub_pro_20",
+        stripe_invoice_id: "in_pro_20",
+        stripe_price_id: HACKERAI_PRO_20_MONTHLY_PRICE_ID,
+        paid_funnel_event_version: 1,
+        $insert_id: billingPaymentRecoveryInsertId("in_pro_20", "user_pro_20"),
+      }),
     );
   });
 

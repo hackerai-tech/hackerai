@@ -1,4 +1,5 @@
 import type {
+  BillingPortalFlow,
   CancelSubscriptionInput,
   CancelSubscriptionResult,
   KeepSubscriptionResult,
@@ -85,10 +86,15 @@ export async function getSubscriptionCancellationStatus(): Promise<SubscriptionC
   );
 }
 
-export async function redirectToBillingPortal(): Promise<string> {
+export async function redirectToBillingPortal(
+  flow?: BillingPortalFlow,
+): Promise<string> {
   const { url } = await billingFetchJson<{ url?: unknown }>(
     "/api/billing/portal",
-    { method: "POST" },
+    {
+      method: "POST",
+      ...(flow && { body: JSON.stringify({ flow }) }),
+    },
   );
 
   if (typeof url !== "string" || !url) {

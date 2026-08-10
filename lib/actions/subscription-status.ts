@@ -4,12 +4,23 @@ import { stripe } from "../../app/api/stripe";
 import { isExpectedBillingContextError } from "@/lib/actions/billing-action-errors";
 import { getBillingActionContext } from "@/lib/actions/billing-context";
 import { phLogger } from "@/lib/posthog/server";
+import type { SubscriptionCancellationStatus } from "@/lib/billing/api-types";
 
-export type SubscriptionCancellationStatus = {
-  hasActiveSubscription: boolean;
-  cancelAtPeriodEnd: boolean;
-  currentPeriodEnd?: number;
-};
+type CurrentSubscriptionStatus = NonNullable<
+  SubscriptionCancellationStatus["subscriptionStatus"]
+>;
+
+function isCurrentSubscriptionStatus(
+  status: string,
+): status is CurrentSubscriptionStatus {
+  return ["active", "trialing", "past_due", "unpaid"].includes(status);
+}
+
+function hasCurrentSubscriptionStatus<T extends { status: string }>(
+  subscription: T,
+): subscription is T & { status: CurrentSubscriptionStatus } {
+  return isCurrentSubscriptionStatus(subscription.status);
+}
 
 function currentPeriodEndMs(subscription: unknown): number | undefined {
   const currentPeriodEnd = (subscription as { current_period_end?: unknown })
@@ -60,8 +71,8 @@ export default async function getSubscriptionCancellationStatusAction(): Promise
     });
     throw error;
   }
-  const currentSubscription = subscriptions.data.find((subscription) =>
-    ["active", "trialing", "past_due", "unpaid"].includes(subscription.status),
+  const currentSubscription = subscriptions.data.find(
+    hasCurrentSubscriptionStatus,
   );
 
   if (!currentSubscription) {
@@ -75,5 +86,6 @@ export default async function getSubscriptionCancellationStatusAction(): Promise
     hasActiveSubscription: true,
     cancelAtPeriodEnd: currentSubscription.cancel_at_period_end === true,
     currentPeriodEnd: currentPeriodEndMs(currentSubscription),
+    subscriptionStatus: currentSubscription.status,
   };
 }

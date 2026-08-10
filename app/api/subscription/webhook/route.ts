@@ -21,6 +21,7 @@ import type { SubscriptionTier } from "@/types";
 import { getReferralRewardConfig } from "@/lib/referrals/config";
 import {
   PAID_FUNNEL_EVENTS,
+  billingPaymentRecoveryInsertId,
   cancellationCompletionInsertId,
   paidFunnelProperties,
 } from "@/lib/analytics/paid-funnel";
@@ -908,6 +909,43 @@ async function handleInvoicePaid(
       transition_at_ms: paidTransitionAtMs,
       stale_user_count: staleResetCount,
     });
+  }
+
+  const recoveryPrice = subscription.items?.data[0]?.price;
+  for (const [index, result] of resetResults.entries()) {
+    if (!result.recoveredFromPaymentFailure) continue;
+
+    const uid = userIds[index];
+    if (!uid) continue;
+
+    const paymentFailureAtMs = result.paymentFailureAtMs;
+    phLogger.event(
+      PAID_FUNNEL_EVENTS.billingPaymentRecovered,
+      paidFunnelProperties({
+        userId: uid,
+        org_id: orgId,
+        subscription_tier: tier,
+        plan: recoveryPrice?.lookup_key,
+        billing_interval: priceBillingInterval(recoveryPrice),
+        billing_interval_count: recoveryPrice?.recurring?.interval_count,
+        recovery_type: "invoice_paid_after_payment_failure",
+        ...(paymentFailureAtMs && {
+          payment_failure_at: new Date(paymentFailureAtMs).toISOString(),
+          recovery_duration_ms: Math.max(
+            0,
+            paidTransitionAtMs - paymentFailureAtMs,
+          ),
+        }),
+        attempt_count: invoice.attempt_count,
+        amount_paid_dollars: centsToDollars(invoice.amount_paid),
+        currency: invoice.currency,
+        stripe_customer_id: customerId,
+        stripe_subscription_id: subscriptionId,
+        stripe_invoice_id: invoice.id,
+        stripe_price_id: recoveryPrice?.id,
+        $insert_id: billingPaymentRecoveryInsertId(invoice.id, uid),
+      }),
+    );
   }
 
   if (resetMode.reason === "subscription_create") {

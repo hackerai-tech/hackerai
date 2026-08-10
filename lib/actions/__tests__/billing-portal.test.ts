@@ -54,6 +54,25 @@ describe("redirectToBillingPortal", () => {
     expect(mockPostHogError).not.toHaveBeenCalled();
   });
 
+  it("opens the portal directly in payment method update mode", async () => {
+    mockCreateBillingPortalSession.mockResolvedValue({
+      url: "https://billing.stripe.com/payment-method",
+    } as never);
+
+    const { default: redirectToBillingPortal } =
+      await import("../billing-portal");
+
+    await expect(redirectToBillingPortal("payment_method")).resolves.toBe(
+      "https://billing.stripe.com/payment-method",
+    );
+
+    expect(mockCreateBillingPortalSession).toHaveBeenCalledWith({
+      customer: "cus_123",
+      return_url: "https://hackerai.co",
+      flow_data: { type: "payment_method_update" },
+    });
+  });
+
   it("logs the action stage when Stripe session creation fails", async () => {
     const error = new Error("Stripe unavailable");
     mockCreateBillingPortalSession.mockRejectedValue(error as never);

@@ -1,6 +1,6 @@
 import "@testing-library/jest-dom";
 import { describe, expect, it, jest, beforeEach } from "@jest/globals";
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 const mockGetSubscriptionCancellationStatus = jest.fn();
@@ -9,6 +9,7 @@ const mockRedirectToBillingPortal = jest.fn();
 const mockSetMigrateFromPentestgptDialogOpen = jest.fn();
 const mockToastSuccess = jest.fn();
 const mockToastError = jest.fn();
+const mockCaptureAuthenticatedEvent = jest.fn();
 let mockOnCancellationCompleted:
   | ((result: {
       cancelAtPeriodEnd: boolean;
@@ -35,6 +36,10 @@ jest.mock("@/lib/billing/client", () => ({
   getSubscriptionCancellationStatus: mockGetSubscriptionCancellationStatus,
   keepSubscription: mockKeepSubscription,
   redirectToBillingPortal: mockRedirectToBillingPortal,
+}));
+
+jest.mock("@/lib/analytics/client", () => ({
+  captureAuthenticatedEvent: mockCaptureAuthenticatedEvent,
 }));
 
 jest.mock("sonner", () => ({
@@ -144,6 +149,46 @@ describe("AccountTab", () => {
       expect(mockRedirectToBillingPortal).toHaveBeenCalledTimes(1);
     });
     expect(window.location.hash).toBe("#billing");
+  });
+
+  it("shows a past-due warning and opens payment method update directly", async () => {
+    mockGetSubscriptionCancellationStatus.mockResolvedValue({
+      hasActiveSubscription: true,
+      cancelAtPeriodEnd: false,
+      subscriptionStatus: "past_due",
+    } as never);
+    mockRedirectToBillingPortal.mockResolvedValue("#payment-method" as never);
+
+    render(<AccountTab />);
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent(
+      "Your renewal payment failed—update your payment method to keep your plan.",
+    );
+    expect(mockCaptureAuthenticatedEvent).toHaveBeenCalledWith(
+      "billing_past_due_banner_impressed",
+      expect.objectContaining({
+        surface: "account_settings",
+        subscription_tier: "pro",
+        subscription_status: "past_due",
+      }),
+    );
+
+    const user = userEvent.setup();
+    await user.click(
+      within(alert).getByRole("button", { name: "Update payment" }),
+    );
+
+    await waitFor(() => {
+      expect(mockRedirectToBillingPortal).toHaveBeenCalledWith(
+        "payment_method",
+      );
+    });
+    expect(mockCaptureAuthenticatedEvent).toHaveBeenCalledWith(
+      "billing_past_due_payment_update_clicked",
+      expect.objectContaining({ surface: "account_settings" }),
+    );
+    expect(window.location.hash).toBe("#payment-method");
   });
 
   it("updates the tab when cancellation is scheduled from the dialog", async () => {

@@ -4,7 +4,10 @@ export type SubscriptionCancellationStatus = {
   hasActiveSubscription: boolean;
   cancelAtPeriodEnd: boolean;
   currentPeriodEnd?: number;
+  subscriptionStatus?: "active" | "trialing" | "past_due" | "unpaid";
 };
+
+export type BillingPortalFlow = "payment_method";
 
 export type KeepSubscriptionResult = {
   kept: true;
