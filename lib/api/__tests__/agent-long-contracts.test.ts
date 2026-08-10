@@ -542,6 +542,9 @@ describe("agent-long chat UI — completion reconciliation", () => {
     expect(chatComponentSrc).toMatch(
       /setChatNavigationHandler\(stopActiveBrowserStream\)/,
     );
+    expect(chatComponentSrc).toMatch(
+      /if \(nextChatId\) \{[\s\S]*activeChatIdRef\.current = nextChatId;[\s\S]*\}[\s\S]*cancelAgentLongRealtimeStreams\(streamChatId\)/,
+    );
     expect(globalStateSrc).toMatch(/optimisticChatId:\s*string\s*\|\s*null/);
     expect(globalStateSrc).toMatch(/setOptimisticChatId/);
   });
