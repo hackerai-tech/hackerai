@@ -7,6 +7,7 @@ import {
   removeDraftAttachments,
   writeSelectedModel,
   clearSelectedModelFromStorage,
+  clearSidebarTaskLastVisitedAt,
   hasAuthenticatedBefore,
   hasDraftAttachmentsById,
   markHasAuthenticatedBefore,
@@ -14,6 +15,12 @@ import {
   upsertDraftAttachments,
   writeOpenSidebarProjectIds,
   SIDEBAR_OPEN_PROJECT_IDS_STORAGE_KEY,
+  SIDEBAR_TASK_LAST_VISITED_AT_STORAGE_PREFIX,
+  getSidebarTaskLastVisitedAtStorageKey,
+  markSidebarTaskVisited,
+  parseSidebarTaskLastVisitedAt,
+  readSidebarTaskLastVisitedAt,
+  subscribeSidebarTaskLastVisitedAt,
 } from "../client-storage";
 
 const STORAGE_KEY = "selected_model";
@@ -194,6 +201,118 @@ describe("client-storage sidebar open projects", () => {
 
     expect(
       window.localStorage.getItem(SIDEBAR_OPEN_PROJECT_IDS_STORAGE_KEY),
+    ).toBeNull();
+  });
+});
+
+describe("client-storage sidebar task last-visited times", () => {
+  beforeEach(() => {
+    window.localStorage.clear();
+    clearSidebarTaskLastVisitedAt();
+  });
+
+  it("persists the latest visit time for a task", () => {
+    markSidebarTaskVisited("chat-1", 100);
+    markSidebarTaskVisited("chat-1", 90);
+
+    expect(readSidebarTaskLastVisitedAt("chat-1")).toBe(100);
+    expect(
+      window.localStorage.getItem(
+        getSidebarTaskLastVisitedAtStorageKey("chat-1"),
+      ),
+    ).toBe("100");
+  });
+
+  it("rejects malformed, non-finite, and negative saved values", () => {
+    expect(parseSidebarTaskLastVisitedAt("100")).toBe(100);
+    expect(parseSidebarTaskLastVisitedAt("-1")).toBeUndefined();
+    expect(parseSidebarTaskLastVisitedAt("Infinity")).toBeUndefined();
+    expect(parseSidebarTaskLastVisitedAt("not-a-number")).toBeUndefined();
+    expect(parseSidebarTaskLastVisitedAt(null)).toBeUndefined();
+  });
+
+  it("preserves another tab's task record before its storage event arrives", () => {
+    const otherTaskKey = getSidebarTaskLastVisitedAtStorageKey("chat-2");
+    window.localStorage.setItem(otherTaskKey, "200");
+
+    markSidebarTaskVisited("chat-1", 100);
+
+    expect(window.localStorage.getItem(otherTaskKey)).toBe("200");
+    expect(
+      window.localStorage.getItem(
+        getSidebarTaskLastVisitedAtStorageKey("chat-1"),
+      ),
+    ).toBe("100");
+  });
+
+  it("restores the maximum timestamp when a stale same-task write appears", () => {
+    const taskKey = getSidebarTaskLastVisitedAtStorageKey("chat-1");
+    markSidebarTaskVisited("chat-1", 200);
+    window.localStorage.setItem(taskKey, "100");
+
+    expect(readSidebarTaskLastVisitedAt("chat-1")).toBe(200);
+    expect(window.localStorage.getItem(taskKey)).toBe("200");
+  });
+
+  it("ignores sessionStorage clear events", () => {
+    markSidebarTaskVisited("chat-1", 100);
+    const listener = jest.fn();
+    const unsubscribe = subscribeSidebarTaskLastVisitedAt("chat-1", listener);
+
+    window.dispatchEvent(
+      new StorageEvent("storage", {
+        key: null,
+        storageArea: window.sessionStorage,
+      }),
+    );
+
+    const getItemSpy = jest
+      .spyOn(Storage.prototype, "getItem")
+      .mockImplementation(() => {
+        throw new Error("storage unavailable");
+      });
+    try {
+      expect(readSidebarTaskLastVisitedAt("chat-1")).toBe(100);
+    } finally {
+      getItemSpy.mockRestore();
+      unsubscribe();
+    }
+    expect(listener).not.toHaveBeenCalled();
+  });
+
+  it("keeps only the 100 most recently visited task keys", () => {
+    for (let index = 0; index <= 100; index += 1) {
+      markSidebarTaskVisited(`chat-${index}`, index);
+    }
+
+    const taskKeys = Array.from(
+      { length: window.localStorage.length },
+      (_, index) => window.localStorage.key(index),
+    ).filter((key) =>
+      key?.startsWith(SIDEBAR_TASK_LAST_VISITED_AT_STORAGE_PREFIX),
+    );
+    expect(taskKeys).toHaveLength(100);
+    expect(
+      window.localStorage.getItem(
+        getSidebarTaskLastVisitedAtStorageKey("chat-0"),
+      ),
+    ).toBeNull();
+    expect(
+      window.localStorage.getItem(
+        getSidebarTaskLastVisitedAtStorageKey("chat-100"),
+      ),
+    ).toBe("100");
+  });
+
+  it("clears all persisted visit times", () => {
+    markSidebarTaskVisited("chat-1", 100);
+    clearSidebarTaskLastVisitedAt();
+
+    expect(readSidebarTaskLastVisitedAt("chat-1")).toBeUndefined();
+    expect(
+      window.localStorage.getItem(
+        getSidebarTaskLastVisitedAtStorageKey("chat-1"),
+      ),
     ).toBeNull();
   });
 });

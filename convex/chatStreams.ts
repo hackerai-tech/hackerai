@@ -68,12 +68,16 @@ export const prepareForNewStream = mutation({
       return null;
     }
 
-    // Only patch if either field needs to be cleared.
-    // Cleanup only — don't bump update_time; startStream already did that.
+    // Only patch if either field needs to be cleared. If a stream was active,
+    // this is its terminal cleanup, so record the finish time in the same write.
+    // Don't bump update_time; startStream already did that.
     if (chat.active_stream_id !== undefined || chat.canceled_at !== undefined) {
       await ctx.db.patch(chat._id, {
         active_stream_id: undefined,
         canceled_at: undefined,
+        ...(chat.active_stream_id !== undefined
+          ? { last_run_finished_at: Date.now() }
+          : {}),
       });
     }
 
@@ -134,20 +138,22 @@ export const cancelStreamFromClient = mutation({
       });
     }
 
-    const shouldMarkCanceled =
-      chat.active_stream_id !== undefined || chat.canceled_at === undefined;
+    const wasRunning = chat.active_stream_id !== undefined;
+    const shouldMarkCanceled = wasRunning || chat.canceled_at === undefined;
 
     // Persist the client todo snapshot with the cancellation so an immediate
     // steer cannot reload the older stored list before the interrupted run
     // finishes its normal todo persistence path.
     if (shouldMarkCanceled || args.todos !== undefined) {
+      const canceledAt = Date.now();
       await ctx.db.patch(chat._id, {
         ...(shouldMarkCanceled
           ? {
               active_stream_id: undefined,
-              canceled_at: Date.now(),
+              canceled_at: canceledAt,
               finish_reason: undefined,
-              update_time: Date.now(),
+              update_time: canceledAt,
+              ...(wasRunning ? { last_run_finished_at: canceledAt } : {}),
             }
           : {}),
         ...(args.todos !== undefined ? { todos: args.todos } : {}),
