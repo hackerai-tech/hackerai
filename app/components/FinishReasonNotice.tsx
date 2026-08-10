@@ -70,7 +70,7 @@ export const FinishReasonNotice = ({
     }
 
     if (finishReason === BUDGET_EXHAUSTION_FINISH_REASON) {
-      return <>Stopped at a usage guardrail for this run.</>;
+      return <>You&apos;ve reached your usage limit, so this run stopped.</>;
     }
 
     return null;
