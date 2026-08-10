@@ -6,6 +6,14 @@ const taskSource = fs.readFileSync(
   "utf8",
 );
 
+const findRequiredSource = (needle: string, fromIndex = 0): number => {
+  const index = taskSource.indexOf(needle, fromIndex);
+  if (index < 0) {
+    throw new Error(`Expected agent-long source marker: ${needle}`);
+  }
+  return index;
+};
+
 describe("agent-long post-wait authorization contract", () => {
   it("fails closed when a gated payload uses another protocol", () => {
     expect(taskSource).toMatch(
@@ -164,43 +172,71 @@ describe("agent-long post-wait authorization contract", () => {
   });
 
   it("routes an unavailable Auto review entitlement lookup to durable human approval", () => {
-    const autoApproveBranch = taskSource.indexOf(
+    const autoApproveBranch = findRequiredSource(
       'if (decision.verdict === "approve")',
     );
-    const unavailableCatch = taskSource.indexOf(
-      "AgentAutoReviewEntitlementRevalidationUnavailableError",
+    const revalidateCall = findRequiredSource(
+      "await revalidateAfterAutoReview",
       autoApproveBranch,
     );
-    const markPending = taskSource.indexOf(
+    const catchStart = findRequiredSource("} catch (error) {", revalidateCall);
+    const unavailableBranch = findRequiredSource(
+      "AgentAutoReviewEntitlementRevalidationUnavailableError",
+      catchStart,
+    );
+    const denyBranch = findRequiredSource("} else {", unavailableBranch);
+    const postCatchApproveCheck = findRequiredSource(
+      'if (autoReviewDecision?.verdict === "approve")',
+      denyBranch,
+    );
+    const unavailableSource = taskSource.slice(unavailableBranch, denyBranch);
+    const catchSource = taskSource.slice(catchStart, postCatchApproveCheck);
+    const approvalSessionCheck = findRequiredSource(
+      "if (!approvalSessionId)",
+      postCatchApproveCheck,
+    );
+    const markPending = findRequiredSource(
       "await setApprovalPending(",
-      unavailableCatch,
+      approvalSessionCheck,
+    );
+    const waitForApproval = findRequiredSource(
+      "await waitForApprovalInput",
+      markPending,
     );
 
-    expect(unavailableCatch).toBeGreaterThan(autoApproveBranch);
-    expect(taskSource.slice(unavailableCatch, markPending)).toMatch(
+    expect(unavailableSource).toMatch(
       /verdict: "ask_user"[\s\S]*failureClass: "provider_error"/,
     );
-    expect(markPending).toBeGreaterThan(unavailableCatch);
-    expect(taskSource.slice(autoApproveBranch, markPending)).not.toMatch(
-      /onPostWaitAuthorizationDenied\(\)/,
-    );
+    expect(unavailableSource).not.toMatch(/return \{/);
+    expect(catchSource).not.toMatch(/onPostWaitAuthorizationDenied\(\)/);
+    expect(markPending).toBeGreaterThan(approvalSessionCheck);
+    expect(waitForApproval).toBeGreaterThan(markPending);
   });
 
   it("denies a changed Auto review authorization without aborting the Agent run", () => {
-    const autoApproveBranch = taskSource.indexOf(
+    const autoApproveBranch = findRequiredSource(
       'if (decision.verdict === "approve")',
     );
-    const humanApprovalBranch = taskSource.indexOf(
-      "await setApprovalPending(",
+    const revalidateCall = findRequiredSource(
+      "await revalidateAfterAutoReview",
       autoApproveBranch,
     );
-    const autoApproveSource = taskSource.slice(
-      autoApproveBranch,
-      humanApprovalBranch,
+    const catchStart = findRequiredSource("} catch (error) {", revalidateCall);
+    const unavailableBranch = findRequiredSource(
+      "AgentAutoReviewEntitlementRevalidationUnavailableError",
+      catchStart,
     );
+    const denyBranch = findRequiredSource("} else {", unavailableBranch);
+    const postCatchApproveCheck = findRequiredSource(
+      'if (autoReviewDecision?.verdict === "approve")',
+      denyBranch,
+    );
+    const denySource = taskSource.slice(denyBranch, postCatchApproveCheck);
 
-    expect(autoApproveSource).toMatch(/authorization_denied/);
-    expect(autoApproveSource).toMatch(/approved: false/);
-    expect(autoApproveSource).not.toMatch(/onPostWaitAuthorizationDenied\(\)/);
+    expect(denySource).toMatch(/authorization_denied/);
+    expect(denySource).toMatch(
+      /return \{[\s\S]*approved: false[\s\S]*APPROVAL_AUTHORIZATION_DENIED_REASON/,
+    );
+    expect(denySource).not.toMatch(/onPostWaitAuthorizationDenied\(\)/);
   });
 });
