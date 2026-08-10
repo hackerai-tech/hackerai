@@ -67,7 +67,7 @@ Two different strategies are used based on subscription tier:
 
 - 10 request units per day (configure via `FREE_RATE_LIMIT_REQUESTS`)
 - Ask mode costs 1 unit
-- Agent mode (local sandbox only) costs 2 units, so the default budget allows up to 5 agent requests
+- Agent mode (local sandbox only) costs 1 unit, so the default budget allows up to 10 agent requests
 
 **Paid tiers — Cost-based token bucket (monthly, shared across all modes):**
 
