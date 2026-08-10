@@ -15,16 +15,21 @@ import {
   useSensors,
 } from "@dnd-kit/core";
 import type { ReactNode } from "react";
+import {
+  clearSidebarTaskRunStatuses,
+  SIDEBAR_TASK_RUN_STATUSES_STORAGE_KEY,
+} from "@/lib/utils/client-storage";
 
 const mockMoveChatToProject = jest.fn<any>();
 const mockRouterPush = jest.fn();
 const mockToastSuccess = jest.fn();
 const mockToastInfo = jest.fn();
 let mockProjects: any[] | undefined;
+let mockPathname = "/";
 
 jest.mock("next/navigation", () => ({
   useRouter: () => ({ push: mockRouterPush }),
-  usePathname: () => "/",
+  usePathname: () => mockPathname,
 }));
 jest.mock("@/app/contexts/GlobalState", () => ({
   useGlobalState: () => ({
@@ -107,6 +112,8 @@ describe("ChatItem project actions", () => {
     mockUseIsMobile.mockReturnValue(false);
     mockMoveChatToProject.mockResolvedValue(true);
     mockProjects = undefined;
+    mockPathname = "/";
+    clearSidebarTaskRunStatuses();
   });
 
   it("reveals an accessible move action when the row receives keyboard focus", async () => {
@@ -435,6 +442,62 @@ describe("ChatItem project actions", () => {
     expect(
       screen.getByText("Running task").parentElement?.parentElement,
     ).toHaveClass("pr-9");
+  });
+
+  it("shows a locally persisted completion dot until the task is opened", async () => {
+    const view = render(
+      <ChatItem id="chat-1" title="Background task" isStreaming />,
+    );
+
+    expect(screen.getByTestId("chat-item-streaming-icon")).toBeInTheDocument();
+    await waitFor(() => {
+      expect(
+        window.localStorage.getItem(SIDEBAR_TASK_RUN_STATUSES_STORAGE_KEY),
+      ).toContain('"chat-1":"running"');
+    });
+
+    view.rerender(<ChatItem id="chat-1" title="Background task" />);
+
+    const completionIndicator = await screen.findByTestId(
+      "chat-item-unread-completion-indicator",
+    );
+    expect(completionIndicator).toHaveAttribute("aria-label", "Task finished");
+    expect(screen.queryByTestId("chat-item-streaming-icon")).toBeNull();
+    expect(screen.getByRole("button", { name: /with unread result/ })).toBe(
+      screen.getByTestId("chat-item-chat-1"),
+    );
+    expect(
+      screen.getByText("Background task").parentElement?.parentElement,
+    ).toHaveClass("pr-9");
+
+    fireEvent.click(screen.getByTestId("chat-item-chat-1"));
+
+    await waitFor(() => {
+      expect(
+        screen.queryByTestId("chat-item-unread-completion-indicator"),
+      ).not.toBeInTheDocument();
+    });
+    expect(
+      window.localStorage.getItem(SIDEBAR_TASK_RUN_STATUSES_STORAGE_KEY),
+    ).toBeNull();
+  });
+
+  it("does not mark a task completed while the user is viewing it", async () => {
+    mockPathname = "/c/chat-1";
+    const view = render(
+      <ChatItem id="chat-1" title="Visible task" isStreaming />,
+    );
+
+    view.rerender(<ChatItem id="chat-1" title="Visible task" />);
+
+    await waitFor(() => {
+      expect(
+        window.localStorage.getItem(SIDEBAR_TASK_RUN_STATUSES_STORAGE_KEY),
+      ).toBeNull();
+    });
+    expect(
+      screen.queryByTestId("chat-item-unread-completion-indicator"),
+    ).not.toBeInTheDocument();
   });
 
   it("reserves space for streaming and task actions on mobile", () => {

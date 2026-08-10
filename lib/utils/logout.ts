@@ -4,6 +4,7 @@ import { clearSharedToken } from "@/lib/auth/shared-token";
 import {
   clearAllDrafts,
   clearSelectedModelFromStorage,
+  clearSidebarTaskRunStatuses,
 } from "@/lib/utils/client-storage";
 
 export const clientLogout = (redirectPath: string = "/logout"): void => {
@@ -11,6 +12,7 @@ export const clientLogout = (redirectPath: string = "/logout"): void => {
   try {
     clearAllDrafts();
     clearSelectedModelFromStorage();
+    clearSidebarTaskRunStatuses();
     clearSharedToken();
   } catch {
     // ignore

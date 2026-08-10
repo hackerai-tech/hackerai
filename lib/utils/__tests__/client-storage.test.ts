@@ -7,6 +7,7 @@ import {
   removeDraftAttachments,
   writeSelectedModel,
   clearSelectedModelFromStorage,
+  clearSidebarTaskRunStatuses,
   hasAuthenticatedBefore,
   hasDraftAttachmentsById,
   markHasAuthenticatedBefore,
@@ -14,6 +15,9 @@ import {
   upsertDraftAttachments,
   writeOpenSidebarProjectIds,
   SIDEBAR_OPEN_PROJECT_IDS_STORAGE_KEY,
+  SIDEBAR_TASK_RUN_STATUSES_STORAGE_KEY,
+  readSidebarTaskRunStatus,
+  reconcileSidebarTaskRunStatus,
 } from "../client-storage";
 
 const STORAGE_KEY = "selected_model";
@@ -194,6 +198,51 @@ describe("client-storage sidebar open projects", () => {
 
     expect(
       window.localStorage.getItem(SIDEBAR_OPEN_PROJECT_IDS_STORAGE_KEY),
+    ).toBeNull();
+  });
+});
+
+describe("client-storage sidebar task run statuses", () => {
+  beforeEach(() => {
+    window.localStorage.clear();
+    clearSidebarTaskRunStatuses();
+  });
+
+  it("turns an observed background run into an unread completion", () => {
+    reconcileSidebarTaskRunStatus({
+      taskId: "chat-1",
+      isRunning: true,
+      isActive: false,
+    });
+    expect(readSidebarTaskRunStatus("chat-1")).toBe("running");
+
+    reconcileSidebarTaskRunStatus({
+      taskId: "chat-1",
+      isRunning: false,
+      isActive: false,
+    });
+
+    expect(readSidebarTaskRunStatus("chat-1")).toBe("completed");
+    expect(
+      window.localStorage.getItem(SIDEBAR_TASK_RUN_STATUSES_STORAGE_KEY),
+    ).toBe(JSON.stringify({ "chat-1": "completed" }));
+  });
+
+  it("clears run state while the task is active", () => {
+    reconcileSidebarTaskRunStatus({
+      taskId: "chat-1",
+      isRunning: true,
+      isActive: false,
+    });
+    reconcileSidebarTaskRunStatus({
+      taskId: "chat-1",
+      isRunning: true,
+      isActive: true,
+    });
+
+    expect(readSidebarTaskRunStatus("chat-1")).toBeUndefined();
+    expect(
+      window.localStorage.getItem(SIDEBAR_TASK_RUN_STATUSES_STORAGE_KEY),
     ).toBeNull();
   });
 });
