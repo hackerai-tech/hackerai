@@ -69,6 +69,7 @@ export function ChatInputToolbar({
           {...submitStopProps}
           chatMode={chatMode}
           isPaid={subscription !== "free"}
+          useNeutralAgentSubmitStyle={freeDesktopAgentOnlyActive}
           isOnline={isOnline}
         />
       </div>

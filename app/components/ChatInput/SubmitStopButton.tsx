@@ -32,8 +32,9 @@ function getStopButtonVariantClasses(mode: ChatMode, isPaid: boolean): string {
 function getSubmitButtonVariantClasses(
   mode: ChatMode,
   isPaid: boolean,
+  useNeutralAgentSubmitStyle: boolean,
 ): string {
-  if (!isPaid && mode === "agent") {
+  if (!isPaid && mode === "agent" && !useNeutralAgentSubmitStyle) {
     return "bg-red-500/10 hover:bg-red-500/20 text-red-700 dark:bg-red-400/10 dark:hover:bg-red-400/20 dark:text-red-400 focus-visible:ring-red-500";
   }
   if (isPaid && mode === "ask") {
@@ -66,6 +67,7 @@ export interface SubmitStopButtonProps {
   uploadedFiles: UploadedFileState[];
   chatMode: ChatMode;
   isPaid?: boolean;
+  useNeutralAgentSubmitStyle?: boolean;
   isOnline?: boolean;
   sendDisabledReason?: string;
 }
@@ -81,6 +83,7 @@ export function SubmitStopButton({
   uploadedFiles,
   chatMode,
   isPaid = false,
+  useNeutralAgentSubmitStyle = false,
   isOnline = true,
   sendDisabledReason,
 }: SubmitStopButtonProps) {
@@ -141,7 +144,7 @@ export function SubmitStopButton({
                   (!input.trim() && uploadedFiles.length === 0)
                 }
                 variant="default"
-                className={`${BASE_BUTTON_CLASSES} ${getSubmitButtonVariantClasses(chatMode, isPaid)}`}
+                className={`${BASE_BUTTON_CLASSES} ${getSubmitButtonVariantClasses(chatMode, isPaid, useNeutralAgentSubmitStyle)}`}
                 aria-label="Send message"
                 data-testid="send-button"
               >

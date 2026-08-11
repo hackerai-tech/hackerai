@@ -35,8 +35,18 @@ jest.mock("@/app/components/AgentPermissionSelector", () => ({
 }));
 
 jest.mock("../SubmitStopButton", () => ({
-  SubmitStopButton: ({ isPaid }: { isPaid?: boolean }) => (
-    <button type="button" data-is-paid={String(isPaid)}>
+  SubmitStopButton: ({
+    isPaid,
+    useNeutralAgentSubmitStyle,
+  }: {
+    isPaid?: boolean;
+    useNeutralAgentSubmitStyle?: boolean;
+  }) => (
+    <button
+      type="button"
+      data-is-paid={String(isPaid)}
+      data-neutral-agent-style={String(useNeutralAgentSubmitStyle)}
+    >
       Send
     </button>
   ),
@@ -181,6 +191,10 @@ describe("ChatInputToolbar", () => {
     expect(screen.queryByTestId("chat-mode-selector")).not.toBeInTheDocument();
     expect(screen.getByTestId("agent-permission-selector")).toBeInTheDocument();
     expect(screen.getByTestId("model-selector")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Send" })).toHaveAttribute(
+      "data-neutral-agent-style",
+      "true",
+    );
   });
 
   it("never flashes the mode selector while paid access resolves", () => {
