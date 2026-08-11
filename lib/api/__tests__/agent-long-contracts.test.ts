@@ -692,6 +692,41 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(taskSrc).toMatch(/maxDurationMs:\s*agentLongMaxDurationMs/);
   });
 
+  test("attributes runtime-budget settlement stalls inside the cleanup grace", () => {
+    expect(taskSrc).toMatch(
+      /AGENT_LONG_RUNTIME_SETTLEMENT_WATCHDOG_MS\s*=\s*30\s*\*\s*1000/,
+    );
+
+    const budgetIdx = taskSrc.indexOf("createActiveRuntimeBudget({");
+    const armIdx = taskSrc.indexOf(
+      "runtimeSettlementWatchdog?.arm()",
+      budgetIdx,
+    );
+    const abortIdx = taskSrc.indexOf("userStopSignal.abort()", armIdx);
+    const stalledEventIdx = taskSrc.indexOf(
+      'event: "agent_long_runtime_settlement_stalled"',
+      abortIdx,
+    );
+    const finallyIdx = taskSrc.indexOf("} finally {", stalledEventIdx);
+    const disposeIdx = taskSrc.indexOf(
+      "runtimeSettlementWatchdog?.dispose()",
+      finallyIdx,
+    );
+
+    expect(budgetIdx).toBeGreaterThan(-1);
+    expect(armIdx).toBeGreaterThan(budgetIdx);
+    expect(abortIdx).toBeGreaterThan(armIdx);
+    expect(stalledEventIdx).toBeGreaterThan(abortIdx);
+    expect(finallyIdx).toBeGreaterThan(stalledEventIdx);
+    expect(disposeIdx).toBeGreaterThan(finallyIdx);
+
+    const eventBlock = taskSrc.slice(stalledEventIdx, finallyIdx);
+    expect(eventBlock).toMatch(/request_id:\s*ctx\.run\.id/);
+    expect(eventBlock).toMatch(/provider_error_category/);
+    expect(eventBlock).toMatch(/active_terminal_wait_duration_ms/);
+    expect(eventBlock).not.toMatch(/prompt|target|tool_output|command_output/);
+  });
+
   test("runs are triggered with filterable queued metadata and tags", () => {
     expect(routeSrc).toMatch(/tags:\s*triggerTags/);
     expect(routeSrc).toMatch(

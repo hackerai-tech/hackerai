@@ -213,7 +213,9 @@ import {
 } from "@/lib/chat/agent-long-realtime-sanitizer";
 import {
   createActiveRuntimeBudget,
+  createRuntimeSettlementWatchdog,
   type ActiveRuntimeBudget,
+  type RuntimeSettlementWatchdog,
 } from "@/lib/chat/active-runtime-budget";
 import {
   AgentApprovalAuthorizationError,
@@ -248,6 +250,7 @@ import {
 const AGENT_LONG_FREE_MAX_DURATION_SECONDS = 60 * 60;
 const AGENT_LONG_PAID_MAX_DURATION_SECONDS = 2 * 60 * 60;
 const AGENT_LONG_CLEANUP_GRACE_MS = 2 * 60 * 1000;
+const AGENT_LONG_RUNTIME_SETTLEMENT_WATCHDOG_MS = 30 * 1000;
 const AGENT_LONG_TRIGGER_MAX_DURATION_SECONDS =
   AGENT_LONG_PAID_MAX_DURATION_SECONDS;
 
@@ -2191,6 +2194,7 @@ export const agentLongTask = task({
     });
 
     let activeRuntimeBudget: ActiveRuntimeBudget | undefined;
+    let runtimeSettlementWatchdog: RuntimeSettlementWatchdog | undefined;
 
     try {
       // Re-fetch from DB so we have fileTokens for summarization.
@@ -2324,10 +2328,65 @@ export const agentLongTask = task({
         initialElapsedMs: Date.now() - taskStartTime,
         onExceeded: () => {
           markAgentLongDurationExceeded();
+          runtimeSettlementWatchdog?.arm();
           userStopSignal.abort();
         },
       });
       activeRuntimeBudget = runtimeBudget;
+      runtimeSettlementWatchdog = createRuntimeSettlementWatchdog({
+        delayMs: AGENT_LONG_RUNTIME_SETTLEMENT_WATCHDOG_MS,
+        onStalled: ({ runtimeBudgetExceededAt, stalledForMs }) => {
+          const providerError =
+            getTerminalProviderStreamError(terminalAgentState);
+          const providerErrorSummary = providerError
+            ? classifyAgentLongError(providerError)
+            : undefined;
+          const triggerRunTelemetry = getTriggerRunTelemetry();
+          triggerLogger.error("[agent-long] runtime settlement stalled", {
+            timestamp: new Date().toISOString(),
+            level: "error",
+            event: "agent_long_runtime_settlement_stalled",
+            service: "agent-long",
+            environment:
+              process.env.TRIGGER_ENV ??
+              process.env.VERCEL_ENV ??
+              process.env.NODE_ENV ??
+              "unknown",
+            request_id: ctx.run.id,
+            run_id: ctx.run.id,
+            chat_id: chatId,
+            user_id: userId,
+            endpoint,
+            subscription,
+            runtime_budget_ms: agentLongMaxDurationMs,
+            cleanup_grace_ms: AGENT_LONG_CLEANUP_GRACE_MS,
+            runtime_budget_exceeded_at: new Date(
+              runtimeBudgetExceededAt,
+            ).toISOString(),
+            stalled_for_ms: stalledForMs,
+            stream_piped: streamPiped,
+            trigger_signal_aborted: triggerSignal.aborted,
+            stream_finish_reason:
+              terminalAgentState?.streamFinishReason ?? null,
+            provider_error_category: providerErrorSummary?.category ?? null,
+            provider_error_name: providerErrorSummary?.name ?? null,
+            provider_error_code: providerErrorSummary?.code ?? null,
+            agent_step_count: terminalAgentState?.agentStepCount ?? 0,
+            trigger_usage_duration_ms:
+              triggerRunTelemetry.triggerUsageDurationMs,
+            trigger_total_cost_usd: triggerRunTelemetry.triggerTotalCostUsd,
+            approval_wait_count: triggerRunTelemetry.approvalWaitCount,
+            approval_wait_duration_ms:
+              triggerRunTelemetry.approvalWaitDurationMs,
+            active_model_stream_duration_ms:
+              triggerRunTelemetry.activeModelStreamDurationMs,
+            active_terminal_wait_duration_ms:
+              triggerRunTelemetry.activeTerminalWaitDurationMs,
+            active_sandbox_recovery_duration_ms:
+              triggerRunTelemetry.activeSandboxRecoveryDurationMs,
+          });
+        },
+      });
 
       // Rate limit check happens inside execute so a thrown ChatSDKError
       // (e.g. "exceeded daily messages") flows through createUIMessageStream's
@@ -4363,6 +4422,7 @@ export const agentLongTask = task({
 
       throw error;
     } finally {
+      runtimeSettlementWatchdog?.dispose();
       memoryTelemetry.dispose();
       activeRuntimeBudget?.dispose();
       runCleanupMap.delete(ctx.run.id);
