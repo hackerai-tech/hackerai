@@ -113,4 +113,20 @@ describe("createRuntimeSettlementWatchdog", () => {
 
     expect(() => jest.advanceTimersByTime(30_000)).not.toThrow();
   });
+
+  it("does not fail the task when async diagnostic emission rejects", async () => {
+    const onStalled = jest
+      .fn<Promise<void>, []>()
+      .mockRejectedValue(new Error("async logger unavailable"));
+    const watchdog = createRuntimeSettlementWatchdog({
+      delayMs: 30_000,
+      onStalled,
+    });
+
+    watchdog.arm();
+    jest.advanceTimersByTime(30_000);
+    await Promise.resolve();
+
+    expect(onStalled).toHaveBeenCalledTimes(1);
+  });
 });

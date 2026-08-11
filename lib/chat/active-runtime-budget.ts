@@ -18,7 +18,7 @@ export function createRuntimeSettlementWatchdog({
   onStalled: (details: {
     runtimeBudgetExceededAt: number;
     stalledForMs: number;
-  }) => void;
+  }) => void | Promise<void>;
 }): RuntimeSettlementWatchdog {
   let armed = false;
   let disposed = false;
@@ -31,9 +31,13 @@ export function createRuntimeSettlementWatchdog({
       timeoutId = undefined;
       if (disposed) return;
       try {
-        onStalled({
-          runtimeBudgetExceededAt,
-          stalledForMs: Math.max(0, Date.now() - runtimeBudgetExceededAt),
+        void Promise.resolve(
+          onStalled({
+            runtimeBudgetExceededAt,
+            stalledForMs: Math.max(0, Date.now() - runtimeBudgetExceededAt),
+          }),
+        ).catch(() => {
+          // Diagnostic emission must never change task settlement behavior.
         });
       } catch {
         // Diagnostic emission must never change task settlement behavior.
