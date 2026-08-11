@@ -42,7 +42,7 @@ export const SIDEBAR_TASK_LAST_VISITED_AT_STORAGE_PREFIX =
 const DRAFT_ATTACHMENT_RESTORE_TTL_MS = 24 * 60 * 60 * 1000;
 const HAS_AUTHENTICATED_BEFORE_STORAGE_KEY = "hackerai_has_authed_before";
 const SELECTED_MODEL_STORAGE_KEY = "selected_model";
-const AGENT_PERMISSION_MODE_STORAGE_KEY = "agent_permission_mode";
+export const AGENT_PERMISSION_MODE_STORAGE_KEY = "agent_permission_mode";
 const EMPTY_SIDEBAR_OPEN_PROJECT_IDS_SNAPSHOT = "[]";
 const MAX_SIDEBAR_TASK_LAST_VISITED_AT_ENTRIES = 100;
 const openSidebarProjectIdsListeners = new Set<() => void>();

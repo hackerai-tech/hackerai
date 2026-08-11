@@ -15,8 +15,12 @@ import {
 } from "./shell-tool-utils";
 import { isUserStoppedToolError } from "@/lib/chat/tool-abort-utils";
 import {
+  getAgentAutoReviewDisplayState,
+  getStreamedAgentAutoReviewSummary,
   getToolApprovalDisplayState,
+  getToolApprovalDisplayTarget,
   ToolApprovalControls,
+  useAgentAutoReviewLifecycleDisplay,
 } from "./ToolApprovalControls";
 
 interface TerminalToolHandlerProps {
@@ -77,6 +81,20 @@ export const TerminalToolHandler = memo(function TerminalToolHandler({
       return precomputedStreamingOutput;
     return getStreamingTerminalOutput(message.parts, effectiveToolCallId);
   }, [precomputedStreamingOutput, message.parts, effectiveToolCallId]);
+  const autoReview = useMemo(
+    () =>
+      getStreamedAgentAutoReviewSummary({
+        parts: message.parts,
+        approvalId: part.approval?.id,
+        toolCallId,
+      }),
+    [message.parts, part.approval?.id, toolCallId],
+  );
+  const autoReviewLifecycle = useAgentAutoReviewLifecycleDisplay({
+    parts: message.parts,
+    toolCallId,
+  });
+  const autoReviewDisplay = getAgentAutoReviewDisplayState(autoReviewLifecycle);
 
   const isExecuting = state === "input-available" && status === "streaming";
   const hasResult = state === "output-available";
@@ -154,9 +172,11 @@ export const TerminalToolHandler = memo(function TerminalToolHandler({
         <ToolBlock
           key={toolCallId}
           icon={<Terminal />}
-          action={blockAction(status === "streaming")}
-          target={blockTarget}
-          isShimmer={status === "streaming"}
+          action={
+            autoReviewDisplay?.action ?? blockAction(status === "streaming")
+          }
+          target={autoReviewDisplay ? undefined : blockTarget}
+          isShimmer={autoReviewDisplay?.isShimmer ?? status === "streaming"}
           isClickable
           onClick={handleOpenInSidebar}
           onKeyDown={handleKeyDown}
@@ -175,6 +195,7 @@ export const TerminalToolHandler = memo(function TerminalToolHandler({
           detail="Approve to continue, or deny to stop this command."
           kind="terminal"
           operation="terminal_execute"
+          autoReview={autoReview}
         >
           {(sendState) => {
             const display = getToolApprovalDisplayState({
@@ -187,7 +208,10 @@ export const TerminalToolHandler = memo(function TerminalToolHandler({
               <ToolBlock
                 icon={<Terminal />}
                 action={display.action}
-                target={blockTarget}
+                target={getToolApprovalDisplayTarget({
+                  sendState,
+                  target: blockTarget,
+                })}
                 isShimmer={display.isShimmer}
                 isClickable={!!sidebarContent}
                 onClick={handleOpenInSidebar}

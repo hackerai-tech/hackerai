@@ -11,11 +11,13 @@ export function isChatMode(value: string | null): value is ChatMode {
   return value !== null && (CHAT_MODES as readonly string[]).includes(value);
 }
 
-export type AgentPermissionMode = "full_access" | "ask_approval";
+export type AgentPermissionMode =
+  "full_access" | "auto_review" | "ask_approval";
 
 export const AGENT_PERMISSION_MODES: readonly AgentPermissionMode[] = [
-  "full_access",
   "ask_approval",
+  "auto_review",
+  "full_access",
 ];
 
 export const DEFAULT_AGENT_PERMISSION_MODE: AgentPermissionMode = "full_access";

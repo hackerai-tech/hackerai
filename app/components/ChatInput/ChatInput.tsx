@@ -243,7 +243,23 @@ export const ChatInput = ({
 
   const isGenerating = status === "submitted" || status === "streaming";
   const isAgent = isAgentMode(chatMode);
-  const approvalRequest = activeToolApprovalRequest ?? storedApprovalRequest;
+  const approvalRequest = useMemo(
+    () =>
+      activeToolApprovalRequest &&
+      storedApprovalRequest &&
+      activeToolApprovalRequest.approvalId ===
+        storedApprovalRequest.approvalId &&
+      activeToolApprovalRequest.toolCallId === storedApprovalRequest.toolCallId
+        ? {
+            ...storedApprovalRequest,
+            ...activeToolApprovalRequest,
+            ...(storedApprovalRequest.autoReview
+              ? { autoReview: storedApprovalRequest.autoReview }
+              : {}),
+          }
+        : (activeToolApprovalRequest ?? storedApprovalRequest),
+    [activeToolApprovalRequest, storedApprovalRequest],
+  );
   const [isStoppingAgent, setIsStoppingAgent] = useState(false);
   const [isReconnecting, setIsReconnecting] = useState(false);
   const showAgentApprovalPrompt = !!approvalRequest && !isStoppingAgent;

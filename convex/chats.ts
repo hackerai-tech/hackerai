@@ -61,6 +61,36 @@ const activeAgentApprovalRequestValidator = v.object({
   detail: v.optional(v.string()),
   kind: v.optional(v.union(v.literal("terminal"), v.literal("file"))),
   createdAt: v.optional(v.number()),
+  autoReview: v.optional(
+    v.object({
+      verdict: v.union(
+        v.literal("approve"),
+        v.literal("ask_user"),
+        v.literal("deny"),
+      ),
+      riskCategory: v.union(
+        v.literal("routine"),
+        v.literal("destructive"),
+        v.literal("credential_access"),
+        v.literal("data_egress"),
+        v.literal("security_weakening"),
+        v.literal("scope_expansion"),
+        v.literal("prompt_injection"),
+        v.literal("unknown"),
+      ),
+      rationale: v.string(),
+      rolloutPhase: v.union(v.literal("shadow"), v.literal("enforce")),
+      failureClass: v.optional(
+        v.union(
+          v.literal("timeout"),
+          v.literal("provider_error"),
+          v.literal("parse_error"),
+          v.literal("missing_context"),
+          v.literal("context_truncated"),
+        ),
+      ),
+    }),
+  ),
 });
 
 const agentApprovalTargetGrantValidator = v.union(

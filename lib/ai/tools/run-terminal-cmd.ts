@@ -36,6 +36,7 @@ import {
 } from "./utils/pty-output-formatter";
 import {
   getSandboxWithFallbackGuard,
+  getAgentApprovalSandboxIdentity,
   resolveToolErrorMessage,
 } from "./utils/sandbox-fallback";
 import {
@@ -257,6 +258,10 @@ export const createRunTerminalCmd = (context: ToolContext) => {
         brief,
         justification,
         prefixRule: prefix_rule,
+        autoReviewContext: {
+          type: "terminal_command",
+          command,
+        },
       });
       if (approval && !approval.approved) {
         return {
@@ -325,6 +330,13 @@ export const createRunTerminalCmd = (context: ToolContext) => {
           const session = await ptySessionManager.create(chatId, {
             cols,
             rows,
+            sandboxIdentity: getAgentApprovalSandboxIdentity(sandbox),
+            originalCommand: command,
+            workingDirectory: isCentrifugo
+              ? typeof sandbox.getWorkingDirectory === "function"
+                ? sandbox.getWorkingDirectory()
+                : undefined
+              : buildSandboxCommandOptions(sandbox).cwd,
             createHandle: async () => {
               if (isCentrifugo) {
                 const { createCentrifugoPtyHandle } =
@@ -930,6 +942,15 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                       cols,
                       rows,
                       kind: "command",
+                      sandboxIdentity:
+                        getAgentApprovalSandboxIdentity(sandboxInstance),
+                      originalCommand: command,
+                      workingDirectory:
+                        isCentrifugoSandbox(sandboxInstance) &&
+                        typeof sandboxInstance.getWorkingDirectory ===
+                          "function"
+                          ? sandboxInstance.getWorkingDirectory()
+                          : buildSandboxCommandOptions(sandboxInstance).cwd,
                       createHandle: async () => commandHandle!,
                     })
                     .then((session) => {

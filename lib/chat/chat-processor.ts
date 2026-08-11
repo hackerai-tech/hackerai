@@ -616,7 +616,11 @@ function stripProviderMetadata(messages: UIMessage[]): UIMessage[] {
 }
 
 // UI-only part types that should not be sent to AI providers
-const UI_ONLY_PART_TYPES = new Set(["data-summarization"]);
+const UI_ONLY_PART_TYPES = new Set([
+  "data-agent-auto-review",
+  "data-agent-auto-review-lifecycle",
+  "data-summarization",
+]);
 
 /**
  * Filters out UI-only parts from a message that AI providers don't understand.

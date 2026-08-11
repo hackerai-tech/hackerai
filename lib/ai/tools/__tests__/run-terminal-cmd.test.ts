@@ -146,6 +146,17 @@ function makeContext(opts: {
   onSandboxResourceMetrics?: import("@/types").SandboxResourceMetricsObserver;
   recordHealthFailure?: jest.MockedFunction<() => boolean>;
 }) {
+  if (
+    opts.sandbox &&
+    typeof opts.sandbox === "object" &&
+    (opts.sandbox as { sandboxKind?: unknown }).sandboxKind === "centrifugo" &&
+    typeof (opts.sandbox as { getConnectionId?: unknown }).getConnectionId !==
+      "function"
+  ) {
+    Object.assign(opts.sandbox, {
+      getConnectionId: () => "test-connection",
+    });
+  }
   const writerWrites: unknown[] = [];
   const writer = {
     write: (p: unknown) => {
@@ -390,6 +401,10 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
       brief: "check reachability",
       justification: "Check whether the target host is reachable.",
       prefixRule: ["ping", "-c", "4"],
+      autoReviewContext: {
+        type: "terminal_command",
+        command: "ping -c 4 hackerone.com",
+      },
     });
   });
 
@@ -1417,6 +1432,8 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
         createHandle: async () => h,
         cols: 80,
         rows: 24,
+        sandboxIdentity: "e2b",
+        originalCommand: "sh",
       });
     }
 

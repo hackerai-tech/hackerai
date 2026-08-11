@@ -68,6 +68,10 @@ import {
 } from "@/lib/api/agent-approval-session";
 import { createAgentRunCorrelationToken } from "@/lib/api/agent-run-correlation";
 import { evaluateProPlusMaxAccessExperiment } from "@/lib/experiments/pro-plus-max-access";
+import {
+  evaluateAgentAutoReviewFlag,
+  type AgentAutoReviewAssignment,
+} from "@/lib/experiments/agent-auto-review";
 
 const AGENT_TRIGGER_PRIORITY_BY_SUBSCRIPTION: Record<SubscriptionTier, number> =
   {
@@ -106,6 +110,12 @@ type AgentTriggerRequestBody = {
   agentRunRequestId?: string;
   projectId?: string;
 };
+
+export const buildAgentPermissionRunSnapshot = (mode: AgentPermissionMode) => ({
+  mode,
+  triggerTag: `permission_${mode}`,
+  requiresApprovalSession: mode === "ask_approval" || mode === "auto_review",
+});
 
 type AgentTriggerRequestParseResult =
   | { ok: true; body: AgentTriggerRequestBody }
@@ -440,6 +450,17 @@ export const createAgentTriggerPost =
         extraUsageAvailable,
       });
       await maxAccessPosthog?.shutdown().catch(() => undefined);
+      const autoReviewPosthog =
+        agentPermissionMode === "auto_review" ? PostHogClient() : null;
+      const autoReviewAssignment: AgentAutoReviewAssignment | undefined =
+        agentPermissionMode === "auto_review"
+          ? await evaluateAgentAutoReviewFlag({
+              posthog: autoReviewPosthog,
+              userId,
+              surface: "agent_run",
+            })
+          : undefined;
+      await autoReviewPosthog?.shutdown().catch(() => undefined);
       selectedModelOverride = resolveAgentRunSpendCapContinuationModel({
         finishReason: existingChat?.finish_reason,
         isAutoContinue,
@@ -524,9 +545,13 @@ export const createAgentTriggerPost =
         projectId: projectContext.projectId,
       });
 
+      // Snapshot permission behavior once for this run. UI changes made while
+      // it is active apply to the next run and cannot mutate a resumed run.
+      const permissionSnapshot =
+        buildAgentPermissionRunSnapshot(agentPermissionMode);
       const triggerTags = [`user_${userId}`, `chat_${chatId}`];
       if (subscription !== "free") triggerTags.push(`sub_${subscription}`);
-      triggerTags.push(`permission_${agentPermissionMode}`);
+      triggerTags.push(permissionSnapshot.triggerTag);
 
       // Persisted chats are rehydrated from Convex inside the task after the
       // route saves the latest user message. Avoid sending the same history
@@ -555,15 +580,14 @@ export const createAgentTriggerPost =
       const triggerIdempotencyKey = await buildAgentRunIdempotencyKey(
         triggerDedupeKeyParts,
       );
-      const approvalSessionId =
-        agentPermissionMode === "ask_approval"
-          ? buildAgentApprovalSessionId({
-              chatId,
-              keyParts: triggerDedupeKeyParts,
-              approvalProtocolVersion: AGENT_APPROVAL_PROTOCOL_VERSION,
-              approvalWorkerVersion,
-            })
-          : undefined;
+      const approvalSessionId = permissionSnapshot.requiresApprovalSession
+        ? buildAgentApprovalSessionId({
+            chatId,
+            keyParts: triggerDedupeKeyParts,
+            approvalProtocolVersion: AGENT_APPROVAL_PROTOCOL_VERSION,
+            approvalWorkerVersion,
+          })
+        : undefined;
       if (
         approvalSessionId &&
         shouldRequireAgentApprovalWorkerVersion() &&
@@ -587,11 +611,12 @@ export const createAgentTriggerPost =
         localDesktopAttachmentsPrepared,
         baseTodos: Array.isArray(todos) ? todos : [],
         sandboxPreference,
-        agentPermissionMode,
+        agentPermissionMode: permissionSnapshot.mode,
         approvalSessionId,
         approvalProtocolVersion: AGENT_APPROVAL_PROTOCOL_VERSION,
         selectedModel: selectedModelOverride,
         maxAccessExperiment,
+        autoReviewAssignment,
         userLocation,
         isAutoContinue,
         regenerate,
@@ -616,12 +641,15 @@ export const createAgentTriggerPost =
         triggerRequestedAt,
         triggerPriority,
         triggerPayloadMessageCount: messagesForPayload.length,
-        agentPermissionMode,
+        agentPermissionMode: permissionSnapshot.mode,
         approvalProtocolVersion: AGENT_APPROVAL_PROTOCOL_VERSION,
         ...(approvalWorkerVersion ? { approvalWorkerVersion } : {}),
         ...(approvalSessionId ? { approvalSessionId } : {}),
         ...(maxAccessExperiment && {
           maxAccessExperimentVariant: maxAccessExperiment.variant,
+        }),
+        ...(autoReviewAssignment && {
+          autoReviewRolloutPhase: autoReviewAssignment.phase,
         }),
       };
       const triggerOptions = {

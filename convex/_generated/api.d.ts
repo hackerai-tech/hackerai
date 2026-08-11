@@ -9,6 +9,7 @@
  */
 
 import type * as accountIdentities from "../accountIdentities.js";
+import type * as agentAutoReviewActions from "../agentAutoReviewActions.js";
 import type * as cancellationReasons from "../cancellationReasons.js";
 import type * as chatStreams from "../chatStreams.js";
 import type * as chats from "../chats.js";
@@ -60,6 +61,7 @@ import type {
 
 declare const fullApi: ApiFromModules<{
   accountIdentities: typeof accountIdentities;
+  agentAutoReviewActions: typeof agentAutoReviewActions;
   cancellationReasons: typeof cancellationReasons;
   chatStreams: typeof chatStreams;
   chats: typeof chats;

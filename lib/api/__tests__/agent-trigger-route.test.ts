@@ -76,6 +76,7 @@ jest.mock("@/lib/utils/sandbox-file-utils", () => ({
 
 const {
   buildAgentApprovalSessionId,
+  buildAgentPermissionRunSnapshot,
   buildAgentRunDedupeKeyParts,
   createAgentTriggerPost,
   finalizeStartedAgentRun,
@@ -279,5 +280,28 @@ describe("Agent trigger route lifecycle", () => {
 
     expect(retryOfFirstAttempt).toEqual(firstAttempt);
     expect(secondAttempt).not.toEqual(firstAttempt);
+  });
+
+  it("snapshots each permission-mode transition for the next run", () => {
+    const autoReviewRun = buildAgentPermissionRunSnapshot("auto_review");
+    const askRun = buildAgentPermissionRunSnapshot("ask_approval");
+    const fullAccessRun = buildAgentPermissionRunSnapshot("full_access");
+
+    expect(autoReviewRun).toEqual({
+      mode: "auto_review",
+      triggerTag: "permission_auto_review",
+      requiresApprovalSession: true,
+    });
+    expect(askRun).toEqual({
+      mode: "ask_approval",
+      triggerTag: "permission_ask_approval",
+      requiresApprovalSession: true,
+    });
+    expect(fullAccessRun).toEqual({
+      mode: "full_access",
+      triggerTag: "permission_full_access",
+      requiresApprovalSession: false,
+    });
+    expect(autoReviewRun.mode).toBe("auto_review");
   });
 });

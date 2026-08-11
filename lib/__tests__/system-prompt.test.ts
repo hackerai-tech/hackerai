@@ -147,6 +147,45 @@ Commands run directly on the host OS "workstation" without Docker isolation. Be 
     );
   });
 
+  it("keeps all three Agent approval mode contracts distinct", async () => {
+    const ask = await systemPrompt(
+      "user_123",
+      "agent",
+      "pro",
+      "agent-model",
+      null,
+      null,
+      "ask_approval",
+    );
+    const auto = await systemPrompt(
+      "user_123",
+      "agent",
+      "pro",
+      "agent-model",
+      null,
+      null,
+      "auto_review",
+    );
+    const full = await systemPrompt(
+      "user_123",
+      "agent",
+      "pro",
+      "agent-model",
+      null,
+      null,
+      "full_access",
+    );
+
+    expect(ask).toContain("Agent tool approval mode: Ask for approval");
+    expect(auto).toContain("Agent tool approval mode: Approve for me");
+    expect(auto).toContain("Do not approve your own action");
+    expect(auto).toContain("applies only to the exact action once");
+    expect(auto).toContain("Do not claim that the user personally approved");
+    expect(auto).toContain("Approve for me is probabilistic");
+    expect(full).toContain("Agent tool approval mode: Full access");
+    expect(full).not.toContain("reviewed by a separate reviewer");
+  });
+
   it("treats user-provided targets as active authorized scope", async () => {
     const prompt = await systemPrompt(
       "user_123",

@@ -23,6 +23,7 @@ import { createFileToolSchema } from "./schemas";
 const MAX_VIEW_FILE_BYTES = 10 * 1024 * 1024;
 const MAX_TEXT_FILE_READ_BYTES = 1024 * 1024;
 const MAX_TEXT_READ_RESULT_BYTES = 1024 * 1024;
+const MAX_AUTO_REVIEW_FILE_CHANGE_CHARS = 24 * 1024;
 const RASTER_IMAGE_EXTENSIONS = new Set([
   "gif",
   "jpe",
@@ -1283,6 +1284,12 @@ export const createFile = (context: ToolContext) => {
       try {
         let approvedSandboxIdentity: AgentApprovalSandboxIdentity | undefined;
         if (action === "write" || action === "append" || action === "edit") {
+          const serializedEdits = edits ? JSON.stringify(edits) : undefined;
+          const exactContent =
+            action === "edit" ? serializedEdits : (text ?? undefined);
+          const autoReviewContentComplete =
+            exactContent !== undefined &&
+            exactContent.length <= MAX_AUTO_REVIEW_FILE_CHANGE_CHARS;
           const approval = await context.requestToolApproval?.({
             toolCallId,
             toolName: "file",
@@ -1294,6 +1301,24 @@ export const createFile = (context: ToolContext) => {
                   : "file_edit",
             target: path,
             brief,
+            autoReviewContext: {
+              type: "file_change",
+              action,
+              path,
+              ...(action === "edit"
+                ? autoReviewContentComplete
+                  ? { edits }
+                  : {}
+                : exactContent !== undefined
+                  ? {
+                      text: exactContent.slice(
+                        0,
+                        MAX_AUTO_REVIEW_FILE_CHANGE_CHARS,
+                      ),
+                    }
+                  : {}),
+              complete: autoReviewContentComplete,
+            },
           });
           if (approval && !approval.approved) {
             return {
