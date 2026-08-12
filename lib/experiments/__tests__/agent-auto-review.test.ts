@@ -8,41 +8,21 @@ import {
 
 describe("Agent Auto review flag", () => {
   describe("preview assignment", () => {
-    it.each(["shadow", "enforce"] as const)(
-      "accepts an explicit %s override only on Vercel previews",
-      (phase) => {
-        expect(
-          resolveAgentAutoReviewPreviewAssignment({
-            VERCEL_ENV: "preview",
-            AGENT_AUTO_REVIEW_PREVIEW_PHASE: phase,
-          }),
-        ).toEqual({ key: AGENT_AUTO_REVIEW_FLAG_KEY, phase });
-        expect(
-          resolveAgentAutoReviewPreviewAssignment({
-            VERCEL_ENV: "production",
-            AGENT_AUTO_REVIEW_PREVIEW_PHASE: phase,
-          }),
-        ).toBeUndefined();
-      },
-    );
+    it("enables enforcement on every Vercel preview", () => {
+      expect(
+        resolveAgentAutoReviewPreviewAssignment({ VERCEL_ENV: "preview" }),
+      ).toEqual({ key: AGENT_AUTO_REVIEW_FLAG_KEY, phase: "enforce" });
+      expect(
+        resolveAgentAutoReviewPreviewAssignment({ VERCEL_ENV: "production" }),
+      ).toBeUndefined();
+      expect(
+        resolveAgentAutoReviewPreviewAssignment({ VERCEL_ENV: "development" }),
+      ).toBeUndefined();
+    });
 
-    it.each([undefined, "", "approve", "true"])(
-      "fails closed for a malformed preview override: %p",
-      (phase) => {
-        expect(
-          resolveAgentAutoReviewPreviewAssignment({
-            VERCEL_ENV: "preview",
-            AGENT_AUTO_REVIEW_PREVIEW_PHASE: phase,
-          }),
-        ).toBeUndefined();
-      },
-    );
-
-    it("does not require PostHog for an explicit preview assignment", async () => {
+    it("does not require PostHog for a preview assignment", async () => {
       const previousVercelEnv = process.env.VERCEL_ENV;
-      const previousPreviewPhase = process.env.AGENT_AUTO_REVIEW_PREVIEW_PHASE;
       process.env.VERCEL_ENV = "preview";
-      process.env.AGENT_AUTO_REVIEW_PREVIEW_PHASE = "enforce";
 
       try {
         await expect(
@@ -60,19 +40,12 @@ describe("Agent Auto review flag", () => {
         } else {
           process.env.VERCEL_ENV = previousVercelEnv;
         }
-        if (previousPreviewPhase === undefined) {
-          delete process.env.AGENT_AUTO_REVIEW_PREVIEW_PHASE;
-        } else {
-          process.env.AGENT_AUTO_REVIEW_PREVIEW_PHASE = previousPreviewPhase;
-        }
       }
     });
 
-    it("fails closed when preview exposure capture throws", async () => {
+    it("does not call PostHog when resolving preview availability", async () => {
       const previousVercelEnv = process.env.VERCEL_ENV;
-      const previousPreviewPhase = process.env.AGENT_AUTO_REVIEW_PREVIEW_PHASE;
       process.env.VERCEL_ENV = "preview";
-      process.env.AGENT_AUTO_REVIEW_PREVIEW_PHASE = "enforce";
       const posthog = {
         evaluateFlags: jest.fn(),
         capture: jest.fn(() => {
@@ -87,18 +60,17 @@ describe("Agent Auto review flag", () => {
             userId: "development-user",
             captureExposure: true,
           }),
-        ).resolves.toBeUndefined();
+        ).resolves.toEqual({
+          key: AGENT_AUTO_REVIEW_FLAG_KEY,
+          phase: "enforce",
+        });
         expect(posthog.evaluateFlags).not.toHaveBeenCalled();
+        expect(posthog.capture).not.toHaveBeenCalled();
       } finally {
         if (previousVercelEnv === undefined) {
           delete process.env.VERCEL_ENV;
         } else {
           process.env.VERCEL_ENV = previousVercelEnv;
-        }
-        if (previousPreviewPhase === undefined) {
-          delete process.env.AGENT_AUTO_REVIEW_PREVIEW_PHASE;
-        } else {
-          process.env.AGENT_AUTO_REVIEW_PREVIEW_PHASE = previousPreviewPhase;
         }
       }
     });
