@@ -68,7 +68,7 @@
     "@dnd-kit/core": "6.3.1",
     "@e2b/code-interpreter": "2.7.0",
     "@langchain/community": "^1.1.29",
-    "@legendapp/list": "3.3.4",
+    "@legendapp/list": "3.3.3",
     "@monaco-editor/react": "^4.7.0",
     "@openrouter/ai-sdk-provider": "^2.10.0",
     "@posthog/ai": "8.7.1",
