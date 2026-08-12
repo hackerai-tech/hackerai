@@ -44,6 +44,7 @@ import {
   injectNotesIntoMessages,
   getContentFilterRetryModel,
   getRetryFallbackModel,
+  isAutoModelSelectionForRetry,
   resolveServedModelForCostAccounting,
 } from "@/lib/api/chat-stream-helpers";
 import {
@@ -130,6 +131,7 @@ import {
 import { phLogger } from "@/lib/posthog/server";
 import {
   captureProGrok46ExperimentExposure,
+  getActiveProGrok46ExperimentAssignment,
   getProGrok46ExperimentContext,
   type ProGrok46ExperimentAssignment,
 } from "@/lib/experiments/pro-grok-46";
@@ -2067,8 +2069,6 @@ export const agentLongTask = task({
       analyticsRequestContext,
     } = payload;
     let selectedModelOverride = rawSelectedModelOverride;
-    const routingExperimentContext =
-      getProGrok46ExperimentContext(proGrok46Experiment);
     const endpoint = payloadEndpoint ?? LEGACY_AGENT_API_ENDPOINT;
     const freeUsageSubject = freeQuotaSubject ?? userId;
 
@@ -2511,6 +2511,15 @@ export const agentLongTask = task({
                 extra: { selected_model: selectedModel },
               });
             }
+
+            const activeProGrok46Experiment =
+              getActiveProGrok46ExperimentAssignment(
+                proGrok46Experiment,
+                selectedModel,
+              );
+            const routingExperimentContext = getProGrok46ExperimentContext(
+              activeProGrok46Experiment,
+            );
 
             const freeMonthlyBudgetSnapshot =
               subscription === "free"
@@ -3045,12 +3054,10 @@ export const agentLongTask = task({
 
             let isRetryWithFallback = false;
             let retryUsedFallbackModel = false;
-            const isAutoModel = [
-              "ask-model",
-              "ask-model-free",
-              "agent-model",
-              "agent-model-free",
-            ].includes(selectedModel);
+            const isAutoModel = isAutoModelSelectionForRetry({
+              selectedModel,
+              selectedModelOverride,
+            });
             const fallbackModel = getRetryFallbackModel(selectedModel, mode);
             const fallbackModelId =
               trackedProvider.languageModel(fallbackModel).modelId;
@@ -3484,7 +3491,7 @@ export const agentLongTask = task({
                 mode,
                 selectedModel,
                 configuredModel: configuredModelId,
-                assignment: proGrok46Experiment,
+                assignment: activeProGrok46Experiment,
               });
               result = await createStream(selectedModel);
             } catch (error) {

@@ -579,6 +579,7 @@ const AUTO_MODEL_KEYS = new Set<string>([
   "agent-model",
   "agent-model-free",
 ]);
+const EXPLICIT_RETRY_MODEL_KEYS = new Set<string>(["model-grok-4.6-pro"]);
 
 export function isAutoModelSelectionForRetry({
   selectedModel,
@@ -590,7 +591,8 @@ export function isAutoModelSelectionForRetry({
   return (
     !selectedModelOverride ||
     selectedModelOverride === "auto" ||
-    AUTO_MODEL_KEYS.has(selectedModel)
+    AUTO_MODEL_KEYS.has(selectedModel) ||
+    EXPLICIT_RETRY_MODEL_KEYS.has(selectedModel)
   );
 }
 

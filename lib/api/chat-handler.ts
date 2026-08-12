@@ -149,6 +149,7 @@ import { buildAgentStepLimitTelemetry } from "@/lib/analytics/agent-step-limit-t
 import {
   captureProGrok46ExperimentExposure,
   evaluateProGrok46Experiment,
+  getActiveProGrok46ExperimentAssignment,
   getProGrok46ExperimentContext,
 } from "@/lib/experiments/pro-grok-46";
 import {
@@ -370,8 +371,6 @@ export const createChatHandler = () => {
               selectedModel: selectedModelOverride,
             })
           : undefined;
-      const routingExperimentContext =
-        getProGrok46ExperimentContext(proGrok46Experiment);
       selectedModelOverride =
         normalizeMaxModelForSubscription(selectedModelOverride, subscription, {
           extraUsageAvailable,
@@ -576,6 +575,14 @@ export const createChatHandler = () => {
           },
         });
       }
+
+      const activeProGrok46Experiment = getActiveProGrok46ExperimentAssignment(
+        proGrok46Experiment,
+        selectedModel,
+      );
+      const routingExperimentContext = getProGrok46ExperimentContext(
+        activeProGrok46Experiment,
+      );
 
       const freeMonthlyBudgetSnapshot =
         subscription === "free"
@@ -1340,7 +1347,7 @@ export const createChatHandler = () => {
                 mode,
                 selectedModel,
                 configuredModel: configuredModelId,
-                assignment: proGrok46Experiment,
+                assignment: activeProGrok46Experiment,
               });
               result = await createStream(selectedModel);
             } catch (error) {

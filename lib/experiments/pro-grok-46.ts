@@ -129,3 +129,10 @@ export function getProGrok46ExperimentContext(
   if (!assignment) return undefined;
   return { key: assignment.key, variant: assignment.variant };
 }
+
+export function getActiveProGrok46ExperimentAssignment(
+  assignment: ProGrok46ExperimentAssignment | undefined,
+  selectedModel: ModelName,
+): ProGrok46ExperimentAssignment | undefined {
+  return assignment?.modelKey === selectedModel ? assignment : undefined;
+}

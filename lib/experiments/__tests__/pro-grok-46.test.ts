@@ -1,6 +1,7 @@
 import {
   captureProGrok46ExperimentExposure,
   evaluateProGrok46Experiment,
+  getActiveProGrok46ExperimentAssignment,
   getProGrok46ExperimentContext,
   isEligibleForProGrok46Experiment,
   PRO_GROK_46_EXPERIMENT_KEY,
@@ -115,5 +116,11 @@ describe("Pro Grok 4.6 experiment", () => {
       key: PRO_GROK_46_EXPERIMENT_KEY,
       variant: "grok_4_6",
     });
+    expect(
+      getActiveProGrok46ExperimentAssignment(assignment, "model-grok-4.6-pro"),
+    ).toBe(assignment);
+    expect(
+      getActiveProGrok46ExperimentAssignment(assignment, "agent-model"),
+    ).toBeUndefined();
   });
 });

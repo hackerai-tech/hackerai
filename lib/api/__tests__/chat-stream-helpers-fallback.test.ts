@@ -537,6 +537,15 @@ describe("isAutoModelSelectionForRetry", () => {
     ).toBe(false);
   });
 
+  it("keeps the internal Grok 4.6 experiment route retryable", () => {
+    expect(
+      isAutoModelSelectionForRetry({
+        selectedModel: "model-grok-4.6-pro",
+        selectedModelOverride: "hackerai-pro",
+      }),
+    ).toBe(true);
+  });
+
   it("preserves retry behavior for legacy auto-router model keys", () => {
     expect(
       isAutoModelSelectionForRetry({
