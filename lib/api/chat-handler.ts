@@ -455,7 +455,7 @@ export const createChatHandler = () => {
       });
 
       // PostHog client for analytics.
-      posthog = PostHogClient();
+      posthog ??= PostHogClient();
 
       const fileCounts = countFileAttachments(truncatedMessages);
       const chatLogContext = {
