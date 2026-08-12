@@ -80,13 +80,6 @@ describe("Max model entitlement helpers", () => {
     expect(canUseMaxModel("ultra")).toBe(true);
   });
 
-  it("allows included Max only for Pro+ when explicitly authorized", () => {
-    expect(canUseMaxModel("pro-plus", { includedMaxAccess: true })).toBe(true);
-    expect(canUseMaxModel("pro", { includedMaxAccess: true })).toBe(false);
-    expect(canUseMaxModel("team", { includedMaxAccess: true })).toBe(false);
-    expect(canUseMaxModel("free", { includedMaxAccess: true })).toBe(false);
-  });
-
   it("allows Max for paid users with usable extra usage", () => {
     const extraUsageConfig = {
       enabled: true,
@@ -147,23 +140,6 @@ describe("Max model entitlement helpers", () => {
         extraUsageConfig,
         "hackerai-pro",
         "pro-plus",
-      ),
-    ).toBe(extraUsageConfig);
-  });
-
-  it("keeps experiment-authorized Pro+ Max usage on included billing", () => {
-    const extraUsageConfig = {
-      enabled: false,
-      hasBalance: false,
-      autoReloadEnabled: false,
-    };
-
-    expect(
-      withExtraUsageBillingForModel(
-        extraUsageConfig,
-        "hackerai-max",
-        "pro-plus",
-        { includedMaxAccess: true },
       ),
     ).toBe(extraUsageConfig);
   });

@@ -50,10 +50,7 @@ export function selectModel(
   selectedModel?: SelectedModel,
   hasImageAttachment?: boolean,
   hasPdfAttachment?: boolean,
-  options: {
-    extraUsageAvailable?: boolean;
-    includedMaxAccess?: boolean;
-  } = {},
+  options: { extraUsageAvailable?: boolean } = {},
 ): ModelName {
   const isAgent = isAgentMode(mode);
   const allowedSelectedModel = normalizeMaxModelForSubscription(
@@ -649,7 +646,6 @@ export async function processChatMessages({
   uploadBasePath,
   modelOverride,
   extraUsageAvailable = false,
-  includedMaxAccess = false,
   allowLocalDesktopFiles = false,
 }: {
   messages: UIMessage[];
@@ -659,7 +655,6 @@ export async function processChatMessages({
   uploadBasePath?: string;
   modelOverride?: SelectedModel;
   extraUsageAvailable?: boolean;
-  includedMaxAccess?: boolean;
   allowLocalDesktopFiles?: boolean;
 }) {
   const messagesWithoutOpenRouterReasoningMetadata =
@@ -737,7 +732,7 @@ export async function processChatMessages({
     modelOverride,
     mediaAttachmentRouting.hasImage,
     mediaAttachmentRouting.hasPdf,
-    { extraUsageAvailable, includedMaxAccess },
+    { extraUsageAvailable },
   );
 
   // Strip providerMetadata for Anthropic models to prevent cross-model signature errors.

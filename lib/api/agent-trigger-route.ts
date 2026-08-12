@@ -26,7 +26,6 @@ import { handleAgentRouteError } from "@/lib/api/agent-route-errors";
 import { getTriggerRegionForVercelRequest } from "@/lib/api/trigger-region";
 import {
   coerceAgentPermissionMode,
-  canUseExtraUsage,
   coerceSelectedModel,
   normalizeSelectedModelOverrideForSubscription,
 } from "@/types";
@@ -67,7 +66,6 @@ import {
   closeAgentApprovalSession,
 } from "@/lib/api/agent-approval-session";
 import { createAgentRunCorrelationToken } from "@/lib/api/agent-run-correlation";
-import { evaluateProPlusMaxAccessExperiment } from "@/lib/experiments/pro-plus-max-access";
 import {
   evaluateAgentAutoReviewFlag,
   type AgentAutoReviewAssignment,
@@ -435,21 +433,6 @@ export const createAgentTriggerPost =
         userCustomization,
         organizationId,
       });
-      const extraUsageAvailable = canUseExtraUsage(extraUsageConfig);
-      const maxAccessPosthog =
-        subscription === "pro-plus" &&
-        selectedModelOverride === "hackerai-max" &&
-        !extraUsageAvailable
-          ? PostHogClient()
-          : null;
-      const maxAccessExperiment = await evaluateProPlusMaxAccessExperiment({
-        posthog: maxAccessPosthog,
-        userId,
-        subscription,
-        mode: "agent",
-        extraUsageAvailable,
-      });
-      await maxAccessPosthog?.shutdown().catch(() => undefined);
       const autoReviewPosthog =
         agentPermissionMode === "auto_review" ? PostHogClient() : null;
       const autoReviewAssignment: AgentAutoReviewAssignment | undefined =
@@ -468,7 +451,6 @@ export const createAgentTriggerPost =
         subscription,
         selectedModelOverride,
         extraUsageConfig,
-        includedMaxAccess: maxAccessExperiment?.includedMaxAccess,
       });
 
       let messagesForPersistence =
@@ -615,7 +597,6 @@ export const createAgentTriggerPost =
         approvalSessionId,
         approvalProtocolVersion: AGENT_APPROVAL_PROTOCOL_VERSION,
         selectedModel: selectedModelOverride,
-        maxAccessExperiment,
         autoReviewAssignment,
         userLocation,
         isAutoContinue,
@@ -645,9 +626,6 @@ export const createAgentTriggerPost =
         approvalProtocolVersion: AGENT_APPROVAL_PROTOCOL_VERSION,
         ...(approvalWorkerVersion ? { approvalWorkerVersion } : {}),
         ...(approvalSessionId ? { approvalSessionId } : {}),
-        ...(maxAccessExperiment && {
-          maxAccessExperimentVariant: maxAccessExperiment.variant,
-        }),
         ...(autoReviewAssignment && {
           autoReviewRolloutPhase: autoReviewAssignment.phase,
         }),

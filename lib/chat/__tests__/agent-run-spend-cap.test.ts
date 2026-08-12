@@ -147,20 +147,6 @@ describe("resolveAgentRunSpendCapContinuationModel", () => {
     ).toBe("hackerai-max");
   });
 
-  it("keeps Max for an experiment-authorized Pro+ continuation", () => {
-    expect(
-      resolveAgentRunSpendCapContinuationModel({
-        finishReason: "agent-run-spend-cap",
-        isAutoContinue: true,
-        mode: "agent",
-        subscription: "pro-plus",
-        selectedModelOverride: "hackerai-max",
-        extraUsageConfig: undefined,
-        includedMaxAccess: true,
-      }),
-    ).toBe("hackerai-max");
-  });
-
   it("downgrades Max outside Ultra when extra usage is unavailable", () => {
     expect(
       resolveAgentRunSpendCapContinuationModel({

@@ -128,10 +128,6 @@ import {
   type AgentApiEndpoint,
 } from "@/lib/api/agent-endpoints";
 import { phLogger } from "@/lib/posthog/server";
-import {
-  getProPlusMaxAccessExperimentContext,
-  type ProPlusMaxAccessExperimentAssignment,
-} from "@/lib/experiments/pro-plus-max-access";
 import type { AgentAutoReviewAssignment } from "@/lib/experiments/agent-auto-review";
 import { PAID_FUNNEL_EVENTS } from "@/lib/analytics/paid-funnel";
 import type { AnalyticsRequestContext } from "@/lib/analytics/request-context";
@@ -1987,7 +1983,6 @@ export type AgentLongPayload = {
   approvalSessionId?: string;
   approvalProtocolVersion?: number;
   selectedModel?: SelectedModel;
-  maxAccessExperiment?: ProPlusMaxAccessExperimentAssignment;
   autoReviewAssignment?: AgentAutoReviewAssignment;
   userLocation: Geo;
   isAutoContinue?: boolean;
@@ -2055,7 +2050,6 @@ export const agentLongTask = task({
       approvalSessionId,
       approvalProtocolVersion,
       selectedModel: rawSelectedModelOverride,
-      maxAccessExperiment,
       autoReviewAssignment,
       userLocation,
       isAutoContinue,
@@ -2066,9 +2060,6 @@ export const agentLongTask = task({
       analyticsRequestContext,
     } = payload;
     let selectedModelOverride = rawSelectedModelOverride;
-    const includedMaxAccess = maxAccessExperiment?.includedMaxAccess === true;
-    const maxAccessExperimentContext =
-      getProPlusMaxAccessExperimentContext(maxAccessExperiment);
     const endpoint = payloadEndpoint ?? LEGACY_AGENT_API_ENDPOINT;
     const freeUsageSubject = freeQuotaSubject ?? userId;
 
@@ -2228,13 +2219,11 @@ export const agentLongTask = task({
       selectedModelOverride =
         normalizeMaxModelForSubscription(selectedModelOverride, subscription, {
           extraUsageAvailable,
-          includedMaxAccess,
         }) ?? undefined;
       const extraUsageConfig = withExtraUsageBillingForModel(
         baseExtraUsageConfig,
         selectedModelOverride,
         subscription,
-        { includedMaxAccess },
       );
 
       const baseTodos: Todo[] = getBaseTodosForRequest(
@@ -2264,7 +2253,6 @@ export const agentLongTask = task({
         uploadBasePath,
         modelOverride: selectedModelOverride,
         extraUsageAvailable,
-        includedMaxAccess,
         allowLocalDesktopFiles: sandboxPreference === "desktop",
       });
 
@@ -2628,10 +2616,7 @@ export const agentLongTask = task({
               const currentlyAllowedModel = normalizeMaxModelForSubscription(
                 selectedModelOverride,
                 authorization.subscription,
-                {
-                  extraUsageConfig: currentExtraUsageConfig,
-                  includedMaxAccess,
-                },
+                { extraUsageConfig: currentExtraUsageConfig },
               );
               if (currentlyAllowedModel !== selectedModelOverride) {
                 throw new AgentApprovalAuthorizationError(
@@ -2644,7 +2629,6 @@ export const agentLongTask = task({
                   currentExtraUsageConfig,
                   currentlyAllowedModel,
                   authorization.subscription,
-                  { includedMaxAccess },
                 );
 
               await checkRateLimitCapacity(
@@ -2720,10 +2704,7 @@ export const agentLongTask = task({
               const currentlyAllowedModel = normalizeMaxModelForSubscription(
                 selectedModelOverride,
                 currentEntitlement.subscription,
-                {
-                  extraUsageConfig: currentExtraUsageConfig,
-                  includedMaxAccess,
-                },
+                { extraUsageConfig: currentExtraUsageConfig },
               );
               if (currentlyAllowedModel !== selectedModelOverride) {
                 throw new AgentApprovalAuthorizationError(
@@ -2736,7 +2717,6 @@ export const agentLongTask = task({
                   currentExtraUsageConfig,
                   currentlyAllowedModel,
                   currentEntitlement.subscription,
-                  { includedMaxAccess },
                 );
               await checkRateLimitCapacity(
                 userId,
@@ -3267,7 +3247,6 @@ export const agentLongTask = task({
                   mode,
                   agentPermissionMode,
                   analyticsRequestContext,
-                  experiment: maxAccessExperimentContext,
                   usage: usageCostRecord,
                   responseModel: state.responseModel,
                   ...(usageSettlementState && {
@@ -3830,7 +3809,6 @@ export const agentLongTask = task({
                                       state.budgetAbortDetails,
                                     agentPermissionMode,
                                     isAutoContinue: !!isAutoContinue,
-                                    experiment: maxAccessExperimentContext,
                                     stepLimitTelemetry:
                                       buildAgentStepLimitTelemetry({
                                         configuredMaxSteps:
@@ -4003,7 +3981,6 @@ export const agentLongTask = task({
                         budgetAbortDetails: state.budgetAbortDetails,
                         agentPermissionMode,
                         isAutoContinue: !!isAutoContinue,
-                        experiment: maxAccessExperimentContext,
                         stepLimitTelemetry: buildAgentStepLimitTelemetry({
                           configuredMaxSteps: state.configuredMaxSteps,
                           stepCount: state.agentStepCount,

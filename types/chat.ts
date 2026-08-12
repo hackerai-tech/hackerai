@@ -171,7 +171,6 @@ export function canUseExtraUsage(
 type MaxModelEntitlementOptions = {
   extraUsageAvailable?: boolean;
   extraUsageConfig?: ExtraUsageAvailability | null;
-  includedMaxAccess?: boolean;
 };
 
 export function canUseMaxModel(
@@ -180,7 +179,6 @@ export function canUseMaxModel(
 ): boolean {
   if (subscription === "ultra") return true;
   if (subscription === "free") return false;
-  if (subscription === "pro-plus" && options.includedMaxAccess) return true;
   return (
     options.extraUsageAvailable ?? canUseExtraUsage(options.extraUsageConfig)
   );
@@ -190,13 +188,11 @@ export function withExtraUsageBillingForModel(
   extraUsageConfig: ExtraUsageConfig | undefined,
   model: SelectedModel | null | undefined,
   subscription: SubscriptionTier,
-  options: { includedMaxAccess?: boolean } = {},
 ): ExtraUsageConfig | undefined {
   if (
     !extraUsageConfig ||
     model !== "hackerai-max" ||
-    subscription === "ultra" ||
-    (subscription === "pro-plus" && options.includedMaxAccess)
+    subscription === "ultra"
   ) {
     return extraUsageConfig;
   }
