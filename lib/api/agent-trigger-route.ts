@@ -66,6 +66,7 @@ import {
   closeAgentApprovalSession,
 } from "@/lib/api/agent-approval-session";
 import { createAgentRunCorrelationToken } from "@/lib/api/agent-run-correlation";
+import { evaluateProGrok46Experiment } from "@/lib/experiments/pro-grok-46";
 import {
   evaluateAgentAutoReviewFlag,
   type AgentAutoReviewAssignment,
@@ -433,6 +434,16 @@ export const createAgentTriggerPost =
         userCustomization,
         organizationId,
       });
+      const proGrok46Posthog =
+        selectedModelOverride === "hackerai-pro" ? PostHogClient() : null;
+      let proGrok46Experiment = await evaluateProGrok46Experiment({
+        posthog: proGrok46Posthog,
+        userId,
+        subscription,
+        mode: "agent",
+        selectedModel: selectedModelOverride,
+      });
+      await proGrok46Posthog?.shutdown().catch(() => undefined);
       const autoReviewPosthog =
         agentPermissionMode === "auto_review" ? PostHogClient() : null;
       const autoReviewAssignment: AgentAutoReviewAssignment | undefined =
@@ -452,6 +463,9 @@ export const createAgentTriggerPost =
         selectedModelOverride,
         extraUsageConfig,
       });
+      if (selectedModelOverride !== "hackerai-pro") {
+        proGrok46Experiment = undefined;
+      }
 
       let messagesForPersistence =
         stripLocalDesktopSourcePaths(requestMessages);
@@ -597,6 +611,7 @@ export const createAgentTriggerPost =
         approvalSessionId,
         approvalProtocolVersion: AGENT_APPROVAL_PROTOCOL_VERSION,
         selectedModel: selectedModelOverride,
+        proGrok46Experiment,
         autoReviewAssignment,
         userLocation,
         isAutoContinue,
@@ -626,6 +641,9 @@ export const createAgentTriggerPost =
         approvalProtocolVersion: AGENT_APPROVAL_PROTOCOL_VERSION,
         ...(approvalWorkerVersion ? { approvalWorkerVersion } : {}),
         ...(approvalSessionId ? { approvalSessionId } : {}),
+        ...(proGrok46Experiment && {
+          proGrok46ExperimentVariant: proGrok46Experiment.variant,
+        }),
         ...(autoReviewAssignment && {
           autoReviewRolloutPhase: autoReviewAssignment.phase,
         }),

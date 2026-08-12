@@ -24,6 +24,7 @@ import type {
 } from "@/types";
 import {
   GROK_4_5_SLUG,
+  GROK_4_6_SLUG,
   getOpenRouterProviderRoutingForModel,
   isAnthropicModel,
   myProvider,
@@ -549,6 +550,13 @@ const HACKERAI_PRO_FALLBACK_CHAIN = [
   "model-kimi-k3",
 ] as const satisfies readonly ModelName[];
 
+// HAC-64 treatment falls back through today's complete Pro route before the
+// existing GLM/Kimi recovery chain.
+const HACKERAI_GROK_4_6_PRO_FALLBACK_CHAIN = [
+  "model-grok-4.5-pro",
+  ...HACKERAI_PRO_FALLBACK_CHAIN,
+] as const satisfies readonly ModelName[];
+
 const MODEL_FALLBACK_CHAIN: Partial<Record<ModelName, readonly ModelName[]>> = {
   "ask-model-free": AGENT_TEXT_FALLBACK_CHAIN,
   "agent-model-free": AGENT_TEXT_FALLBACK_CHAIN,
@@ -557,6 +565,7 @@ const MODEL_FALLBACK_CHAIN: Partial<Record<ModelName, readonly ModelName[]>> = {
   "agent-model": GROK_4_5_FALLBACK_CHAIN,
   "model-grok-4.5": GROK_4_5_FALLBACK_CHAIN,
   "model-grok-4.5-pro": HACKERAI_PRO_FALLBACK_CHAIN,
+  "model-grok-4.6-pro": HACKERAI_GROK_4_6_PRO_FALLBACK_CHAIN,
   "model-opus-4.6": ["model-grok-4.5"],
   "model-glm-5.2": KIMI_K3_THEN_GROK_FALLBACK_CHAIN,
   "fallback-agent-model": GROK_4_5_FALLBACK_CHAIN,
@@ -587,6 +596,7 @@ export function isAutoModelSelectionForRetry({
 
 const HIGH_REASONING_MODELS = [
   "model-grok-4.5-pro",
+  "model-grok-4.6-pro",
   "model-glm-5.2",
   "model-opus-4.6",
 ] as const satisfies readonly ModelName[];
@@ -629,6 +639,9 @@ export function getRetryFallbackModel(
   modelName: ModelName,
   _mode: ChatMode,
 ): ModelName {
+  if (modelName === "model-grok-4.6-pro") {
+    return "model-grok-4.5-pro";
+  }
   if (modelName === "model-grok-4.5-pro") {
     return "model-glm-5.2";
   }
@@ -734,6 +747,7 @@ const OPENROUTER_RESPONSE_MODEL_COST_KEYS: Record<string, string> = {
   "deepseek/deepseek-v4-flash-0731": "agent-model-free",
   "deepseek/deepseek-v4-flash-20260731": "agent-model-free",
   "x-ai/grok-4.5": "model-grok-4.5",
+  "x-ai/grok-4.6": "model-grok-4.6-pro",
   "z-ai/glm-5.2": "model-glm-5.2",
   "z-ai/glm-5.2-20260616": "model-glm-5.2",
   "moonshotai/kimi-k3": "model-kimi-k3",
@@ -804,6 +818,7 @@ export function buildProviderOptions(
     (modelName ? resolveSlug(modelName) : undefined);
   const isDeepSeekV4 = modelId?.startsWith("deepseek/deepseek-v4") ?? false;
   const isGrok45 = modelId === GROK_4_5_SLUG;
+  const isGrok46 = modelId === GROK_4_6_SLUG;
   // Agent routes use high for both DeepSeek V4 Flash and Pro. Keep this
   // mode-scoped for any future route that does not also include Grok.
   const isAgentDeepSeekV4 = mode === "agent" && isDeepSeekV4;
@@ -815,14 +830,17 @@ export function buildProviderOptions(
       })
     : fallbackSlugs;
   // OpenRouter applies one reasoning configuration to both the primary model
-  // and every provider fallback. Force high whenever Grok 4.5 is reachable so
-  // it cannot inherit less effort.
-  const routesThroughGrok45 =
-    isGrok45 || reasoningFallbackSlugs.includes(GROK_4_5_SLUG);
+  // and every provider fallback. Force high whenever Grok 4.5 or 4.6 is
+  // reachable so neither route can inherit less effort.
+  const routesThroughGrok =
+    isGrok45 ||
+    isGrok46 ||
+    reasoningFallbackSlugs.includes(GROK_4_5_SLUG) ||
+    reasoningFallbackSlugs.includes(GROK_4_6_SLUG);
   const providerRouting = modelId
     ? getOpenRouterProviderRoutingForModel(modelId)
     : undefined;
-  const reasoning = routesThroughGrok45
+  const reasoning = routesThroughGrok
     ? isHighOrGreaterReasoningOverride(options.reasoningOverride)
       ? options.reasoningOverride
       : {

@@ -34,6 +34,10 @@ describe("provider registry", () => {
         .modelId,
     ).toBe("x-ai/grok-4.5");
     expect(
+      (myProvider.languageModel("model-grok-4.6-pro") as { modelId: string })
+        .modelId,
+    ).toBe("x-ai/grok-4.6");
+    expect(
       (myProvider.languageModel("model-glm-5.2") as { modelId: string })
         .modelId,
     ).toBe("z-ai/glm-5.2");
@@ -61,6 +65,8 @@ describe("provider registry", () => {
     expect(getModelCutoffDate("agent-model-free")).toBeUndefined();
     expect(getModelDisplayName("model-grok-4.5")).toBe("xAI Grok 4.5");
     expect(getModelDisplayName("model-grok-4.5-pro")).toBe("xAI Grok 4.5");
+    expect(getModelDisplayName("model-grok-4.6-pro")).toBe("xAI Grok 4.6");
+    expect(getModelCutoffDate("model-grok-4.6-pro")).toBe("August 2026");
     expect(getModelDisplayName("model-glm-5.2")).toBe("Z.ai GLM 5.2");
     expect(getModelDisplayName("model-kimi-k3")).toBe("Moonshot Kimi K3");
     expect(getModelCutoffDate("model-opus-4.6")).toBe("July 2026");
@@ -254,7 +260,9 @@ describe("supportsMultimodalToolResults", () => {
   it("allows active multimodal keys and slugs used after image tool results", () => {
     expect(supportsMultimodalToolResults("model-grok-4.5")).toBe(true);
     expect(supportsMultimodalToolResults("model-grok-4.5-pro")).toBe(true);
+    expect(supportsMultimodalToolResults("model-grok-4.6-pro")).toBe(true);
     expect(supportsMultimodalToolResults("x-ai/grok-4.5")).toBe(true);
+    expect(supportsMultimodalToolResults("x-ai/grok-4.6")).toBe(true);
   });
 
   it("rejects text-only DeepSeek model keys", () => {

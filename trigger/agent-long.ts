@@ -128,6 +128,11 @@ import {
   type AgentApiEndpoint,
 } from "@/lib/api/agent-endpoints";
 import { phLogger } from "@/lib/posthog/server";
+import {
+  captureProGrok46ExperimentExposure,
+  getProGrok46ExperimentContext,
+  type ProGrok46ExperimentAssignment,
+} from "@/lib/experiments/pro-grok-46";
 import type { AgentAutoReviewAssignment } from "@/lib/experiments/agent-auto-review";
 import { PAID_FUNNEL_EVENTS } from "@/lib/analytics/paid-funnel";
 import type { AnalyticsRequestContext } from "@/lib/analytics/request-context";
@@ -1983,6 +1988,7 @@ export type AgentLongPayload = {
   approvalSessionId?: string;
   approvalProtocolVersion?: number;
   selectedModel?: SelectedModel;
+  proGrok46Experiment?: ProGrok46ExperimentAssignment;
   autoReviewAssignment?: AgentAutoReviewAssignment;
   userLocation: Geo;
   isAutoContinue?: boolean;
@@ -2050,6 +2056,7 @@ export const agentLongTask = task({
       approvalSessionId,
       approvalProtocolVersion,
       selectedModel: rawSelectedModelOverride,
+      proGrok46Experiment,
       autoReviewAssignment,
       userLocation,
       isAutoContinue,
@@ -2060,6 +2067,8 @@ export const agentLongTask = task({
       analyticsRequestContext,
     } = payload;
     let selectedModelOverride = rawSelectedModelOverride;
+    const routingExperimentContext =
+      getProGrok46ExperimentContext(proGrok46Experiment);
     const endpoint = payloadEndpoint ?? LEGACY_AGENT_API_ENDPOINT;
     const freeUsageSubject = freeQuotaSubject ?? userId;
 
@@ -2253,6 +2262,7 @@ export const agentLongTask = task({
         uploadBasePath,
         modelOverride: selectedModelOverride,
         extraUsageAvailable,
+        proModelKey: proGrok46Experiment?.modelKey,
         allowLocalDesktopFiles: sandboxPreference === "desktop",
       });
 
@@ -3247,6 +3257,7 @@ export const agentLongTask = task({
                   mode,
                   agentPermissionMode,
                   analyticsRequestContext,
+                  experiment: routingExperimentContext,
                   usage: usageCostRecord,
                   responseModel: state.responseModel,
                   ...(usageSettlementState && {
@@ -3466,6 +3477,15 @@ export const agentLongTask = task({
 
             let result;
             try {
+              captureProGrok46ExperimentExposure({
+                posthog,
+                userId,
+                subscription,
+                mode,
+                selectedModel,
+                configuredModel: configuredModelId,
+                assignment: proGrok46Experiment,
+              });
               result = await createStream(selectedModel);
             } catch (error) {
               if (
@@ -3809,6 +3829,7 @@ export const agentLongTask = task({
                                       state.budgetAbortDetails,
                                     agentPermissionMode,
                                     isAutoContinue: !!isAutoContinue,
+                                    experiment: routingExperimentContext,
                                     stepLimitTelemetry:
                                       buildAgentStepLimitTelemetry({
                                         configuredMaxSteps:
@@ -3981,6 +4002,7 @@ export const agentLongTask = task({
                         budgetAbortDetails: state.budgetAbortDetails,
                         agentPermissionMode,
                         isAutoContinue: !!isAutoContinue,
+                        experiment: routingExperimentContext,
                         stepLimitTelemetry: buildAgentStepLimitTelemetry({
                           configuredMaxSteps: state.configuredMaxSteps,
                           stepCount: state.agentStepCount,
