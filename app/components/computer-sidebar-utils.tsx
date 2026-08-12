@@ -131,6 +131,11 @@ export function getActionText(content: SidebarContent): string {
   }
 
   if (isSidebarTerminal(content)) {
+    if (content.executionPhase === "reviewing") return "Reviewing";
+    if (content.executionPhase === "awaiting_approval") {
+      return "Awaiting approval";
+    }
+    if (content.executionPhase === "failed") return "Command failed";
     return getShellActionLabel({
       isShellTool: !!content.shellAction,
       action: content.shellAction,

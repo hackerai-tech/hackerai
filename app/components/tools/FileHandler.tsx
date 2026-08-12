@@ -529,7 +529,7 @@ export const FileHandler = memo(function FileHandler({
             key={toolCallId}
             icon={<FilePlus />}
             action={autoReviewDisplay?.action ?? briefLabel("Writing to")}
-            target={autoReviewDisplay ? undefined : briefTarget(input?.path)}
+            target={briefTarget(input?.path)}
             isShimmer={autoReviewDisplay?.isShimmer ?? true}
             isClickable={isClickable}
             onClick={isClickable ? handleOpenInSidebar : undefined}
@@ -623,7 +623,7 @@ export const FileHandler = memo(function FileHandler({
             key={toolCallId}
             icon={<FileOutput />}
             action={autoReviewDisplay?.action ?? briefLabel("Appending to")}
-            target={autoReviewDisplay ? undefined : briefTarget(input?.path)}
+            target={briefTarget(input?.path)}
             isShimmer={autoReviewDisplay?.isShimmer ?? true}
             isClickable={isClickable}
             onClick={isClickable ? handleOpenInSidebar : undefined}
@@ -707,7 +707,7 @@ export const FileHandler = memo(function FileHandler({
                   : "Editing",
               )
             }
-            target={autoReviewDisplay ? undefined : briefTarget(input?.path)}
+            target={briefTarget(input?.path)}
             isShimmer={autoReviewDisplay?.isShimmer ?? true}
           />
         ) : null;

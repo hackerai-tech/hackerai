@@ -279,7 +279,7 @@ describe("ToolApprovalControls", () => {
     jest.useRealTimers();
   });
 
-  it("shows delayed review progress and a brief automatic approval", () => {
+  it("shows delayed review progress and removes it after automatic approval", () => {
     jest.useFakeTimers();
     jest.setSystemTime(new Date("2026-08-10T12:00:00.000Z"));
     const startedAt = Date.now();
@@ -315,9 +315,6 @@ describe("ToolApprovalControls", () => {
       ],
     });
     act(() => jest.advanceTimersByTime(0));
-    expect(result.current).toBe("approved");
-
-    act(() => jest.advanceTimersByTime(900));
     expect(result.current).toBeUndefined();
     jest.useRealTimers();
   });
@@ -386,27 +383,23 @@ describe("ToolApprovalControls", () => {
 
   it("keeps lifecycle labels lightweight and free of additional motion", () => {
     expect(getAgentAutoReviewDisplayState("reviewing")).toEqual({
-      action: "Reviewing action",
+      action: "Reviewing",
       isShimmer: false,
     });
-    expect(getAgentAutoReviewDisplayState("approved")).toEqual({
-      action: "Approved automatically",
-      isShimmer: false,
-    });
+    expect(getAgentAutoReviewDisplayState("approved")).toBeUndefined();
     expect(getAgentAutoReviewDisplayState("needs_approval")).toEqual({
       action: "Needs your approval",
       isShimmer: false,
     });
   });
 
-  it("shows the target in the tool row only after the approval decision", () => {
-    for (const sendState of ["idle", "sending"] as const) {
-      expect(
-        getToolApprovalDisplayTarget({ sendState, target: "rm -rf /tmp/test" }),
-      ).toBeUndefined();
-    }
-
-    for (const sendState of ["approved", "denied"] as const) {
+  it("keeps the exact target visible throughout approval", () => {
+    for (const sendState of [
+      "idle",
+      "sending",
+      "approved",
+      "denied",
+    ] as const) {
       expect(
         getToolApprovalDisplayTarget({ sendState, target: "rm -rf /tmp/test" }),
       ).toBe("rm -rf /tmp/test");

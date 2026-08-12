@@ -1,5 +1,6 @@
 import {
   computeShellTerminalBlock,
+  getTerminalExecutionPhase,
   getTerminalFailureAction,
   isToolInputValidationError,
   stripAgentOnlyTerminalGuidance,
@@ -8,6 +9,33 @@ import {
 describe("terminal shell tool display helpers", () => {
   const validationError =
     "Invalid input for tool run_terminal_cmd: Type validation failed: Value: {}.";
+
+  it("keeps review separate from process execution", () => {
+    expect(
+      getTerminalExecutionPhase({
+        toolState: "input-available",
+        autoReviewStatus: "reviewing",
+      }),
+    ).toBe("reviewing");
+    expect(
+      getTerminalExecutionPhase({
+        toolState: "input-available",
+        autoReviewStatus: "approved",
+      }),
+    ).toBe("executing");
+    expect(
+      getTerminalExecutionPhase({
+        toolState: "approval-requested",
+        autoReviewStatus: "needs_approval",
+      }),
+    ).toBe("awaiting_approval");
+    expect(
+      getTerminalExecutionPhase({
+        toolState: "output-available",
+        autoReviewStatus: "reviewing",
+      }),
+    ).toBe("completed");
+  });
 
   it("classifies tool input validation errors as invalid commands", () => {
     expect(isToolInputValidationError(validationError)).toBe(true);
@@ -31,6 +59,7 @@ describe("terminal shell tool display helpers", () => {
       hasResult: false,
       toolCallId: "call-empty",
       legacyCommand: undefined,
+      executionPhase: "failed",
     });
 
     expect(result.blockAction(false)).toBe("Invalid command");
@@ -40,6 +69,7 @@ describe("terminal shell tool display helpers", () => {
       command: "Invalid command",
       output: validationError,
       toolCallId: "call-empty",
+      executionPhase: "failed",
     });
   });
 
