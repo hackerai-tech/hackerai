@@ -285,6 +285,9 @@ export interface SidebarTerminal {
   command: string;
   output: string;
   isExecuting: boolean;
+  /** Distinguishes approval review from actual process execution. */
+  executionPhase?:
+    "reviewing" | "awaiting_approval" | "executing" | "completed" | "failed";
   isBackground?: boolean;
   /** Legacy run_terminal_cmd: input.interactive — true if PTY-backed session. */
   isInteractive?: boolean;

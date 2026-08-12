@@ -1,6 +1,39 @@
 import { extractSidebarContentFromMessage } from "../sidebar-utils";
 
 describe("terminal sidebar output", () => {
+  it("shows the generated command while automatic review is still pending", () => {
+    const startedAt = Date.now();
+    const [terminal] = extractSidebarContentFromMessage({
+      role: "assistant",
+      parts: [
+        {
+          type: "tool-shell",
+          toolCallId: "call-reviewing",
+          state: "input-available",
+          input: {
+            action: "exec",
+            command: "wafw00f https://hackerone.com",
+          },
+        },
+        {
+          type: "data-agent-auto-review-lifecycle",
+          data: {
+            approvalId: "approval-1",
+            toolCallId: "call-reviewing",
+            status: "reviewing",
+            startedAt,
+          },
+        },
+      ],
+    });
+
+    expect(terminal).toMatchObject({
+      command: "wafw00f https://hackerone.com",
+      executionPhase: "reviewing",
+      isExecuting: false,
+    });
+  });
+
   it("hides agent-only timeout guidance in fallback sidebar extraction", () => {
     const [terminal] = extractSidebarContentFromMessage({
       role: "assistant",

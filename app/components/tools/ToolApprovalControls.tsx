@@ -33,10 +33,8 @@ type AgentAutoReviewLifecycleDataPart = {
 };
 
 export const AGENT_AUTO_REVIEW_DISPLAY_DELAY_MS = 450;
-export const AGENT_AUTO_REVIEW_APPROVED_DISPLAY_MS = 900;
 
-export type AgentAutoReviewLifecycleDisplay =
-  "reviewing" | "approved" | "needs_approval";
+export type AgentAutoReviewLifecycleDisplay = "reviewing" | "needs_approval";
 
 export const getStreamedAgentAutoReviewLifecycle = ({
   parts,
@@ -99,27 +97,21 @@ export const useAgentAutoReviewLifecycleDisplay = ({
       return () => clearTimeout(timeout);
     }
 
-    if (!reviewWasVisibleRef.current || lifecycleStatus === "dismissed") {
+    if (lifecycleStatus === "approved" || lifecycleStatus === "dismissed") {
       return;
     }
 
-    let hideTimeout: ReturnType<typeof setTimeout> | undefined;
+    if (!reviewWasVisibleRef.current) {
+      return;
+    }
+
     const showTimeout = setTimeout(() => {
       setDisplay({
         approvalId: lifecycleApprovalId,
         status: lifecycleStatus,
       });
-      if (lifecycleStatus === "approved") {
-        hideTimeout = setTimeout(
-          () => setDisplay(undefined),
-          AGENT_AUTO_REVIEW_APPROVED_DISPLAY_MS,
-        );
-      }
     }, 0);
-    return () => {
-      clearTimeout(showTimeout);
-      if (hideTimeout) clearTimeout(hideTimeout);
-    };
+    return () => clearTimeout(showTimeout);
   }, [lifecycleApprovalId, lifecycleStartedAt, lifecycleStatus]);
 
   return lifecycle &&
@@ -131,13 +123,11 @@ export const useAgentAutoReviewLifecycleDisplay = ({
 };
 
 export const getAgentAutoReviewDisplayState = (
-  display: AgentAutoReviewLifecycleDisplay | undefined,
+  display: AgentAutoReviewLifecycle["status"] | undefined,
 ): { action: string; isShimmer: boolean } | undefined => {
   switch (display) {
     case "reviewing":
-      return { action: "Reviewing action", isShimmer: false };
-    case "approved":
-      return { action: "Approved automatically", isShimmer: false };
+      return { action: "Reviewing", isShimmer: false };
     case "needs_approval":
       return { action: "Needs your approval", isShimmer: false };
     default:
@@ -202,15 +192,12 @@ export function getToolApprovalDisplayState({
 }
 
 export function getToolApprovalDisplayTarget({
-  sendState,
   target,
 }: {
   sendState: AgentApprovalSendState;
   target?: string;
 }): string | undefined {
-  return sendState === "approved" || sendState === "denied"
-    ? target
-    : undefined;
+  return target;
 }
 
 export function ToolApprovalControls({
