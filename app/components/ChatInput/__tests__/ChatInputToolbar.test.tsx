@@ -37,15 +37,15 @@ jest.mock("@/app/components/AgentPermissionSelector", () => ({
 jest.mock("../SubmitStopButton", () => ({
   SubmitStopButton: ({
     isPaid,
-    useNeutralAgentSubmitStyle,
+    useNeutralAgentStyle,
   }: {
     isPaid?: boolean;
-    useNeutralAgentSubmitStyle?: boolean;
+    useNeutralAgentStyle?: boolean;
   }) => (
     <button
       type="button"
       data-is-paid={String(isPaid)}
-      data-neutral-agent-style={String(useNeutralAgentSubmitStyle)}
+      data-neutral-agent-style={String(useNeutralAgentStyle)}
     >
       Send
     </button>
