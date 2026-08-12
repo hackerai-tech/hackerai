@@ -342,7 +342,9 @@ export const Messages = ({
       lastAssistantMessageIndex,
       expandedAgentMessageIds,
       animateNewToolGroups:
-        isCurrentChat && toolGroupMountState.hasCommittedTimeline,
+        isCurrentChat &&
+        toolGroupMountState.hasCommittedTimeline &&
+        !isAutoResuming,
       seenToolGroupIds: isCurrentChat
         ? toolGroupMountState.seenToolGroupIds
         : new Set(),
@@ -353,6 +355,7 @@ export const Messages = ({
   }, [
     chatId,
     expandedAgentMessageIds,
+    isAutoResuming,
     lastAssistantMessageIndex,
     status,
     toolGroupMountState,

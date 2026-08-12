@@ -1,6 +1,10 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { createRef } from "react";
-import { DataStreamProvider } from "../DataStreamProvider";
+import { createRef, useLayoutEffect } from "react";
+import type { ReactNode } from "react";
+import {
+  DataStreamProvider,
+  useDataStreamDispatch,
+} from "../DataStreamProvider";
 import { Messages } from "../Messages";
 import type { ChatMessage } from "@/types";
 import { mockLegendListScrollToIndex } from "../../../__mocks__/@legendapp/list-react";
@@ -109,6 +113,16 @@ const messagesWithHistoricalToolGroup = [
     ],
   },
 ] as ChatMessage[];
+
+function AutoResumeState({ children }: { children: ReactNode }) {
+  const { setIsAutoResuming } = useDataStreamDispatch();
+
+  useLayoutEffect(() => {
+    setIsAutoResuming(true);
+  }, [setIsAutoResuming]);
+
+  return children;
+}
 
 describe("Messages virtualized row invalidation", () => {
   beforeEach(() => {
@@ -301,6 +315,49 @@ describe("Messages virtualized row invalidation", () => {
     rerender(
       <DataStreamProvider>
         <Messages messages={messagesWithHistoricalToolGroup} {...sharedProps} />
+      </DataStreamProvider>,
+    );
+
+    expect(
+      screen.getByRole("button", {
+        name: /read a file, ran a command\. show tool details/i,
+      }),
+    ).toHaveAttribute("aria-expanded", "false");
+  });
+
+  it("keeps replayed tool groups collapsed while an Agent stream reconnects", () => {
+    const liveAgentStart = {
+      ...messagesWithHistoricalToolGroup[1],
+      parts: [{ type: "reasoning", text: "Starting" }],
+    } as ChatMessage;
+    const sharedProps = {
+      chatId: "chat-with-active-reconnect",
+      setMessages: jest.fn(),
+      onRegenerate: jest.fn(),
+      onRetry: jest.fn(),
+      onEditMessage: jest.fn(),
+      status: "streaming" as const,
+      error: null,
+      scrollRef: createRef<HTMLElement>(),
+      contentRef: createRef<HTMLElement>(),
+      isMobile: true,
+    };
+    const { rerender } = render(
+      <DataStreamProvider>
+        <AutoResumeState>
+          <Messages messages={[messages[0], liveAgentStart]} {...sharedProps} />
+        </AutoResumeState>
+      </DataStreamProvider>,
+    );
+
+    rerender(
+      <DataStreamProvider>
+        <AutoResumeState>
+          <Messages
+            messages={messagesWithHistoricalToolGroup}
+            {...sharedProps}
+          />
+        </AutoResumeState>
       </DataStreamProvider>,
     );
 
