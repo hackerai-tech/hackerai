@@ -30,6 +30,10 @@ import {
   paidFunnelProperties,
 } from "@/lib/analytics/paid-funnel";
 import type { AnalyticsRequestContext } from "@/lib/analytics/request-context";
+import {
+  getExperimentAnalyticsProperties,
+  type ExperimentAnalyticsContext,
+} from "@/lib/analytics/experiment-context";
 import type { AgentStepLimitTelemetry } from "@/lib/analytics/agent-step-limit-telemetry";
 import { extraUsagePointsToDollars } from "@/convex/lib/extraUsagePricing";
 import type { UsageCostRecord } from "@/lib/usage-tracker";
@@ -1215,6 +1219,7 @@ type AgentCompletionAnalyticsArgs = {
   activeSandboxRecoveryDurationMs?: number;
   isAutoContinue?: boolean;
   stepLimitTelemetry?: AgentStepLimitTelemetry;
+  experiment?: ExperimentAnalyticsContext;
 };
 
 export function captureAgentRun({
@@ -1243,6 +1248,7 @@ export function captureAgentRun({
   activeSandboxRecoveryDurationMs,
   isAutoContinue,
   stepLimitTelemetry,
+  experiment,
 }: {
   posthog: PostHog | null;
   userId: string;
@@ -1269,6 +1275,7 @@ export function captureAgentRun({
   activeSandboxRecoveryDurationMs?: number;
   isAutoContinue?: boolean;
   stepLimitTelemetry?: AgentStepLimitTelemetry;
+  experiment?: ExperimentAnalyticsContext;
 }) {
   if (!posthog || mode !== "agent") return;
   posthog.capture({
@@ -1343,6 +1350,7 @@ export function captureAgentRun({
         budget_abort_billing_stop_reason: budgetAbortDetails.billingStopReason,
         budget_abort_mid_stream: budgetAbortDetails.midStream,
       }),
+      ...getExperimentAnalyticsProperties(experiment),
     },
   });
 }
@@ -1377,6 +1385,7 @@ export function captureAgentCompletionAnalytics(
     activeSandboxRecoveryDurationMs: args.activeSandboxRecoveryDurationMs,
     isAutoContinue: args.isAutoContinue,
     stepLimitTelemetry: args.stepLimitTelemetry,
+    experiment: args.experiment,
   });
 }
 
@@ -1403,6 +1412,7 @@ export function captureUsageCost({
   usageSettlement,
   analyticsRequestContext,
   fallbackServed,
+  experiment,
 }: {
   posthog: PostHog | null;
   userId: string;
@@ -1427,6 +1437,7 @@ export function captureUsageCost({
   };
   analyticsRequestContext?: AnalyticsRequestContext;
   fallbackServed?: boolean;
+  experiment?: ExperimentAnalyticsContext;
 }) {
   if (!posthog) return;
   const extraUsageChargeDollars = extraUsagePointsToDollars(
@@ -1495,6 +1506,7 @@ export function captureUsageCost({
         paid_daily_free_allowance_reset_timestamp:
           paidDailyFreeAllowance.resetTimestamp,
       }),
+      ...getExperimentAnalyticsProperties(experiment),
     },
   });
 }

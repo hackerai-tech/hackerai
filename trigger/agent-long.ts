@@ -44,6 +44,7 @@ import {
   injectNotesIntoMessages,
   getContentFilterRetryModel,
   getRetryFallbackModel,
+  isAutoModelSelectionForRetry,
   resolveServedModelForCostAccounting,
 } from "@/lib/api/chat-stream-helpers";
 import {
@@ -128,6 +129,12 @@ import {
   type AgentApiEndpoint,
 } from "@/lib/api/agent-endpoints";
 import { phLogger } from "@/lib/posthog/server";
+import {
+  captureProGrok46ExperimentExposure,
+  getActiveProGrok46ExperimentAssignment,
+  getProGrok46ExperimentContext,
+  type ProGrok46ExperimentAssignment,
+} from "@/lib/experiments/pro-grok-46";
 import type { AgentAutoReviewAssignment } from "@/lib/experiments/agent-auto-review";
 import { PAID_FUNNEL_EVENTS } from "@/lib/analytics/paid-funnel";
 import type { AnalyticsRequestContext } from "@/lib/analytics/request-context";
@@ -1983,6 +1990,7 @@ export type AgentLongPayload = {
   approvalSessionId?: string;
   approvalProtocolVersion?: number;
   selectedModel?: SelectedModel;
+  proGrok46Experiment?: ProGrok46ExperimentAssignment;
   autoReviewAssignment?: AgentAutoReviewAssignment;
   userLocation: Geo;
   isAutoContinue?: boolean;
@@ -2050,6 +2058,7 @@ export const agentLongTask = task({
       approvalSessionId,
       approvalProtocolVersion,
       selectedModel: rawSelectedModelOverride,
+      proGrok46Experiment,
       autoReviewAssignment,
       userLocation,
       isAutoContinue,
@@ -2253,6 +2262,7 @@ export const agentLongTask = task({
         uploadBasePath,
         modelOverride: selectedModelOverride,
         extraUsageAvailable,
+        proModelKey: proGrok46Experiment?.modelKey,
         allowLocalDesktopFiles: sandboxPreference === "desktop",
       });
 
@@ -2501,6 +2511,15 @@ export const agentLongTask = task({
                 extra: { selected_model: selectedModel },
               });
             }
+
+            const activeProGrok46Experiment =
+              getActiveProGrok46ExperimentAssignment(
+                proGrok46Experiment,
+                selectedModel,
+              );
+            const routingExperimentContext = getProGrok46ExperimentContext(
+              activeProGrok46Experiment,
+            );
 
             const freeMonthlyBudgetSnapshot =
               subscription === "free"
@@ -3035,12 +3054,10 @@ export const agentLongTask = task({
 
             let isRetryWithFallback = false;
             let retryUsedFallbackModel = false;
-            const isAutoModel = [
-              "ask-model",
-              "ask-model-free",
-              "agent-model",
-              "agent-model-free",
-            ].includes(selectedModel);
+            const isAutoModel = isAutoModelSelectionForRetry({
+              selectedModel,
+              selectedModelOverride,
+            });
             const fallbackModel = getRetryFallbackModel(selectedModel, mode);
             const fallbackModelId =
               trackedProvider.languageModel(fallbackModel).modelId;
@@ -3247,6 +3264,7 @@ export const agentLongTask = task({
                   mode,
                   agentPermissionMode,
                   analyticsRequestContext,
+                  experiment: routingExperimentContext,
                   usage: usageCostRecord,
                   responseModel: state.responseModel,
                   ...(usageSettlementState && {
@@ -3466,6 +3484,15 @@ export const agentLongTask = task({
 
             let result;
             try {
+              captureProGrok46ExperimentExposure({
+                posthog,
+                userId,
+                subscription,
+                mode,
+                selectedModel,
+                configuredModel: configuredModelId,
+                assignment: activeProGrok46Experiment,
+              });
               result = await createStream(selectedModel);
             } catch (error) {
               if (
@@ -3809,6 +3836,7 @@ export const agentLongTask = task({
                                       state.budgetAbortDetails,
                                     agentPermissionMode,
                                     isAutoContinue: !!isAutoContinue,
+                                    experiment: routingExperimentContext,
                                     stepLimitTelemetry:
                                       buildAgentStepLimitTelemetry({
                                         configuredMaxSteps:
@@ -3981,6 +4009,7 @@ export const agentLongTask = task({
                         budgetAbortDetails: state.budgetAbortDetails,
                         agentPermissionMode,
                         isAutoContinue: !!isAutoContinue,
+                        experiment: routingExperimentContext,
                         stepLimitTelemetry: buildAgentStepLimitTelemetry({
                           configuredMaxSteps: state.configuredMaxSteps,
                           stepCount: state.agentStepCount,

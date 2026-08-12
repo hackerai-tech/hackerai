@@ -38,6 +38,7 @@ const GROK_PRIMARY_OR_FALLBACK_MODELS = [
   "agent-model-free",
   "model-grok-4.5",
   "model-grok-4.5-pro",
+  "model-grok-4.6-pro",
   "model-deepseek-v4-pro",
   "model-opus-4.6",
   "model-glm-5.2",
@@ -202,6 +203,20 @@ describe("buildProviderOptions fallback chain", () => {
       });
     },
   );
+
+  it("falls back from the HAC-64 Grok 4.6 treatment through the complete current Pro route", () => {
+    const opts = buildProviderOptions(
+      true,
+      "user-1",
+      "model-grok-4.6-pro",
+      "agent",
+    );
+    expect(opts.openrouter).toMatchObject({
+      reasoning: { enabled: true, effort: "high" },
+      models: [GROK_SLUG, GLM_SLUG, KIMI_K3_SLUG],
+      user: "user-1",
+    });
+  });
 
   it("keeps the Standard Agent media route on its direct Kimi K3 fallback", () => {
     const opts = buildProviderOptions(
@@ -413,27 +428,31 @@ describe("buildProviderOptions fallback chain", () => {
     },
   );
 
-  it.each(["model-grok-4.5-pro", "model-glm-5.2", "model-opus-4.6"])(
-    "enables high reasoning for ask mode model %s",
-    (modelName) => {
-      const opts = buildProviderOptions(false, "user-1", modelName, "ask");
-      expect(opts.openrouter.reasoning).toEqual({
-        enabled: true,
-        effort: "high",
-      });
-    },
-  );
+  it.each([
+    "model-grok-4.5-pro",
+    "model-grok-4.6-pro",
+    "model-glm-5.2",
+    "model-opus-4.6",
+  ])("enables high reasoning for ask mode model %s", (modelName) => {
+    const opts = buildProviderOptions(false, "user-1", modelName, "ask");
+    expect(opts.openrouter.reasoning).toEqual({
+      enabled: true,
+      effort: "high",
+    });
+  });
 
-  it.each(["model-grok-4.5-pro", "model-glm-5.2", "model-opus-4.6"])(
-    "enables high reasoning for agent mode model %s",
-    (modelName) => {
-      const opts = buildProviderOptions(true, "user-1", modelName, "agent");
-      expect(opts.openrouter.reasoning).toEqual({
-        enabled: true,
-        effort: "high",
-      });
-    },
-  );
+  it.each([
+    "model-grok-4.5-pro",
+    "model-grok-4.6-pro",
+    "model-glm-5.2",
+    "model-opus-4.6",
+  ])("enables high reasoning for agent mode model %s", (modelName) => {
+    const opts = buildProviderOptions(true, "user-1", modelName, "agent");
+    expect(opts.openrouter.reasoning).toEqual({
+      enabled: true,
+      effort: "high",
+    });
+  });
 
   it("uses high reasoning for DeepSeek V4 Pro in agent mode", () => {
     const opts = buildProviderOptions(
@@ -518,6 +537,15 @@ describe("isAutoModelSelectionForRetry", () => {
     ).toBe(false);
   });
 
+  it("keeps the internal Grok 4.6 experiment route retryable", () => {
+    expect(
+      isAutoModelSelectionForRetry({
+        selectedModel: "model-grok-4.6-pro",
+        selectedModelOverride: "hackerai-pro",
+      }),
+    ).toBe(true);
+  });
+
   it("preserves retry behavior for legacy auto-router model keys", () => {
     expect(
       isAutoModelSelectionForRetry({
@@ -560,6 +588,12 @@ describe("getRetryFallbackModel", () => {
     );
     expect(getRetryFallbackModel("model-grok-4.5-pro", "ask")).toBe(
       "model-glm-5.2",
+    );
+  });
+
+  it("retries the Grok 4.6 treatment with the current Grok 4.5 Pro route", () => {
+    expect(getRetryFallbackModel("model-grok-4.6-pro", "agent")).toBe(
+      "model-grok-4.5-pro",
     );
   });
 

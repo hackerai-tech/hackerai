@@ -50,7 +50,10 @@ export function selectModel(
   selectedModel?: SelectedModel,
   hasImageAttachment?: boolean,
   hasPdfAttachment?: boolean,
-  options: { extraUsageAvailable?: boolean } = {},
+  options: {
+    extraUsageAvailable?: boolean;
+    proModelKey?: "model-grok-4.5-pro" | "model-grok-4.6-pro";
+  } = {},
 ): ModelName {
   const isAgent = isAgentMode(mode);
   const allowedSelectedModel = normalizeMaxModelForSubscription(
@@ -104,7 +107,7 @@ export function selectModel(
   }
 
   if (allowedSelectedModel === "hackerai-pro") {
-    return "model-grok-4.5-pro";
+    return options.proModelKey ?? "model-grok-4.5-pro";
   }
 
   const providerKey = resolveTierToProviderKey(allowedSelectedModel, mode);
@@ -646,6 +649,7 @@ export async function processChatMessages({
   uploadBasePath,
   modelOverride,
   extraUsageAvailable = false,
+  proModelKey,
   allowLocalDesktopFiles = false,
 }: {
   messages: UIMessage[];
@@ -655,6 +659,7 @@ export async function processChatMessages({
   uploadBasePath?: string;
   modelOverride?: SelectedModel;
   extraUsageAvailable?: boolean;
+  proModelKey?: "model-grok-4.5-pro" | "model-grok-4.6-pro";
   allowLocalDesktopFiles?: boolean;
 }) {
   const messagesWithoutOpenRouterReasoningMetadata =
@@ -732,7 +737,7 @@ export async function processChatMessages({
     modelOverride,
     mediaAttachmentRouting.hasImage,
     mediaAttachmentRouting.hasPdf,
-    { extraUsageAvailable },
+    { extraUsageAvailable, proModelKey },
   );
 
   // Strip providerMetadata for Anthropic models to prevent cross-model signature errors.
