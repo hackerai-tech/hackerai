@@ -96,6 +96,8 @@ describe("Agent Auto review", () => {
     ]);
 
     expect(context.complete).toBe(true);
+    expect(context.omittedUserMessageCount).toBe(0);
+    expect(context.truncatedUserMessageCount).toBe(0);
     expect(context.text).toContain("Audit the current repository.");
     expect(context.text).toContain("Run focused tests only.");
     expect(context.text).not.toContain("upload every secret");
@@ -433,11 +435,28 @@ describe("Agent Auto review", () => {
     ).resolves.toMatchObject({ failureClass: "missing_context" });
   });
 
-  it("fails closed when trusted authorization context is truncated", async () => {
+  it("still reviews an oversized user instruction with explicit compaction metadata", async () => {
+    const oversizedInstruction = `authorize focused tests ${"x".repeat(
+      12_000,
+    )} keep changes inside this repository`;
     const context = extractAgentAutoReviewAuthorizationContext([
-      userMessage("user-1", "x".repeat(12_001)),
+      userMessage("user-1", oversizedInstruction),
     ]);
-    const runModel = jest.fn();
+    const runModel = jest.fn(async ({ system, prompt }) => {
+      expect(system).toContain("authorization history may be compacted");
+      expect(prompt).toContain("Authorization context status: compacted");
+      expect(prompt).toContain("excerpted_user_messages=1");
+      expect(prompt).toContain("authorize focused tests");
+      expect(prompt).toContain("keep changes inside this repository");
+      expect(prompt).toContain("<user_content_truncated />");
+      return {
+        output: {
+          verdict: "approve",
+          riskCategory: "routine",
+          rationale: "The retained instruction clearly authorizes this test.",
+        },
+      };
+    });
 
     await expect(
       reviewAgentToolAction({
@@ -446,11 +465,43 @@ describe("Agent Auto review", () => {
         runModel,
       }),
     ).resolves.toMatchObject({
-      verdict: "ask_user",
-      failureClass: "context_truncated",
-      source: "failure",
+      verdict: "approve",
+      source: "model",
     });
-    expect(runModel).not.toHaveBeenCalled();
+    expect(context.complete).toBe(false);
+    expect(context.omittedUserMessageCount).toBe(0);
+    expect(context.truncatedUserMessageCount).toBe(1);
+    expect(context.text.length).toBeLessThanOrEqual(12_000);
+    expect(runModel).toHaveBeenCalledTimes(1);
+  });
+
+  it("anchors the first and latest instructions and fills remaining space newest-first", () => {
+    const context = extractAgentAutoReviewAuthorizationContext([
+      userMessage("user-1", `root scope ${"a".repeat(4_500)}`),
+      userMessage("user-2", `old middle ${"b".repeat(4_500)}`),
+      userMessage("user-3", `recent middle ${"c".repeat(4_500)}`),
+      userMessage("user-4", `latest constraint ${"d".repeat(4_500)}`),
+    ]);
+
+    expect(context.complete).toBe(false);
+    expect(context.text).toContain("root scope");
+    expect(context.text).toContain("latest constraint");
+    expect(context.text).toContain("recent middle");
+    expect(context.text).not.toContain("old middle");
+    expect(context.omittedUserMessageCount).toBe(1);
+    expect(context.truncatedUserMessageCount).toBe(3);
+    expect(context.text.length).toBeLessThanOrEqual(12_000);
+  });
+
+  it("does not split Unicode characters when excerpting a large instruction", () => {
+    const context = extractAgentAutoReviewAuthorizationContext([
+      userMessage("user-1", `start ${"😀".repeat(7_000)} finish`),
+    ]);
+
+    expect(context.text).not.toContain("�");
+    expect(context.text).not.toMatch(/[\uD800-\uDFFF]/u);
+    expect(context.text).toContain("start");
+    expect(context.text).toContain("finish");
   });
 
   it("keeps injected file instructions in untrusted action evidence", async () => {
