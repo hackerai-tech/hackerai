@@ -294,6 +294,32 @@ describe("SharedMessages", () => {
         screen.getByText("best practices for testing"),
       ).toBeInTheDocument();
     });
+
+    it("falls back to the legacy query when queries is not an array", () => {
+      const messages = [
+        {
+          id: "1",
+          role: "assistant" as const,
+          parts: [
+            {
+              type: "tool-web_search",
+              state: "output-available",
+              input: {
+                queries: { 0: "unexpected", length: 1 },
+                query: "fallback shared query",
+              },
+            },
+          ],
+          update_time: mockShareDate,
+        },
+      ];
+
+      renderWithContext(
+        <SharedMessages messages={messages} shareDate={mockShareDate} />,
+      );
+      expect(screen.getByText("Searched web")).toBeInTheDocument();
+      expect(screen.getByText("fallback shared query")).toBeInTheDocument();
+    });
   });
 
   describe("Tool Execution - Todo", () => {

@@ -147,6 +147,45 @@ describe("shouldDropExpectedFrontendException", () => {
     ).toBe(true);
   });
 
+  it("drops transport failures with mixed Next 16.3 server action frames", () => {
+    expect(
+      shouldDropExpectedFrontendException({
+        event: "$exception",
+        properties: {
+          $exception_values: ["Failed to fetch"],
+          $exception_list: [
+            {
+              stacktrace: {
+                frames: [
+                  {
+                    source:
+                      "turbopack:///[project]/node_modules/next/src/client/components/router-reducer/reducers/server-action-reducer.ts",
+                    junk_drawer: {
+                      raw_frame: {
+                        filename:
+                          "/_next/static/immutable/chunks/0ro0tl16w8mcs.js",
+                      },
+                    },
+                  },
+                  {
+                    source:
+                      "turbopack:///[project]/node_modules/next/src/client/components/segment-cache/fetch.ts",
+                    junk_drawer: {
+                      raw_frame: {
+                        filename:
+                          "/_next/static/immutable/chunks/0ro0tl16w8mcs.js",
+                      },
+                    },
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      }),
+    ).toBe(true);
+  });
+
   it("keeps generic network failures when a server action failure has app frames", () => {
     expect(
       shouldDropExpectedFrontendException({
@@ -157,6 +196,30 @@ describe("shouldDropExpectedFrontendException", () => {
             {
               stacktrace: {
                 frames: [
+                  {
+                    source: "turbopack:///[project]/app/actions/example.ts",
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      }),
+    ).toBe(false);
+
+    expect(
+      shouldDropExpectedFrontendException({
+        event: "$exception",
+        properties: {
+          $exception_values: ["Failed to fetch"],
+          $exception_list: [
+            {
+              stacktrace: {
+                frames: [
+                  {
+                    source:
+                      "turbopack:///[project]/node_modules/next/src/client/components/segment-cache/fetch.ts",
+                  },
                   {
                     source: "turbopack:///[project]/app/actions/example.ts",
                   },

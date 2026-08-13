@@ -622,7 +622,7 @@ function renderWebSearchTool(part: MessagePart, idx: number) {
   };
 
   let target: string | undefined;
-  if (webInput?.queries && webInput.queries.length > 0) {
+  if (Array.isArray(webInput?.queries) && webInput.queries.length > 0) {
     target = webInput.queries.join(", ");
   } else if (webInput?.query) {
     target = webInput.query;
