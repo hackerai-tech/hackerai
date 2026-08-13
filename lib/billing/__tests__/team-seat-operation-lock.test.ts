@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, jest } from "@jest/globals";
 
-describe("acquireTeamInvitationLock", () => {
+describe("acquireTeamSeatOperationLock", () => {
   const mockCreateRedisClient = jest.fn();
   const mockSet = jest.fn();
   const mockEval = jest.fn();
@@ -14,13 +14,13 @@ describe("acquireTeamInvitationLock", () => {
   });
 
   const getIsolatedModule = () => {
-    let isolatedModule: typeof import("../team-invitation-lock");
+    let isolatedModule: typeof import("../team-seat-operation-lock");
 
     jest.isolateModules(() => {
       jest.doMock("@/lib/rate-limit/redis", () => ({
         createRedisClient: mockCreateRedisClient,
       }));
-      isolatedModule = require("../team-invitation-lock");
+      isolatedModule = require("../team-seat-operation-lock");
     });
 
     return isolatedModule!;
@@ -28,13 +28,13 @@ describe("acquireTeamInvitationLock", () => {
 
   it("acquires an organization lock and releases only its own token", async () => {
     mockCreateRedisClient.mockReturnValue({ set: mockSet, eval: mockEval });
-    const { acquireTeamInvitationLock } = getIsolatedModule();
+    const { acquireTeamSeatOperationLock } = getIsolatedModule();
 
-    const lock = await acquireTeamInvitationLock("org-123");
+    const lock = await acquireTeamSeatOperationLock("org-123");
 
     expect(lock).not.toBeNull();
     expect(mockSet).toHaveBeenCalledWith(
-      "team_invitation_lock:org-123",
+      "team_seat_operation_lock:org-123",
       expect.any(String),
       { nx: true, ex: 60 },
     );
@@ -44,7 +44,7 @@ describe("acquireTeamInvitationLock", () => {
     expect(mockEval).toHaveBeenNthCalledWith(
       1,
       expect.stringContaining("EXPIRE"),
-      ["team_invitation_lock:org-123"],
+      ["team_seat_operation_lock:org-123"],
       [token, "60"],
     );
 
@@ -54,44 +54,46 @@ describe("acquireTeamInvitationLock", () => {
     expect(mockEval).toHaveBeenNthCalledWith(
       2,
       expect.stringContaining("DEL"),
-      ["team_invitation_lock:org-123"],
+      ["team_seat_operation_lock:org-123"],
       [token],
     );
   });
 
-  it("renews the lease while invitation processing is running", async () => {
+  it("renews the lease while a seat operation is running", async () => {
     mockCreateRedisClient.mockReturnValue({ set: mockSet, eval: mockEval });
-    const { acquireTeamInvitationLock } = getIsolatedModule();
-    const lock = await acquireTeamInvitationLock("org-123");
+    const { acquireTeamSeatOperationLock } = getIsolatedModule();
+    const lock = await acquireTeamSeatOperationLock("org-123");
     const token = mockSet.mock.calls[0][1];
 
     await jest.advanceTimersByTimeAsync(15_000);
 
     expect(mockEval).toHaveBeenCalledWith(
       expect.stringContaining("EXPIRE"),
-      ["team_invitation_lock:org-123"],
+      ["team_seat_operation_lock:org-123"],
       [token, "60"],
     );
     await lock!.release();
   });
 
-  it("returns null while another invitation holds the lock", async () => {
+  it("returns null while another seat operation holds the lock", async () => {
     mockCreateRedisClient.mockReturnValue({ set: mockSet, eval: mockEval });
     mockSet.mockResolvedValue(null);
-    const { acquireTeamInvitationLock } = getIsolatedModule();
+    const { acquireTeamSeatOperationLock } = getIsolatedModule();
 
-    await expect(acquireTeamInvitationLock("org-123")).resolves.toBeNull();
+    await expect(acquireTeamSeatOperationLock("org-123")).resolves.toBeNull();
     expect(mockEval).not.toHaveBeenCalled();
   });
 
   it("maps Redis acquisition errors to lock unavailability", async () => {
     mockCreateRedisClient.mockReturnValue({ set: mockSet, eval: mockEval });
     mockSet.mockRejectedValueOnce(new Error("Redis unavailable"));
-    const { acquireTeamInvitationLock, TeamInvitationLockUnavailableError } =
-      getIsolatedModule();
+    const {
+      acquireTeamSeatOperationLock,
+      TeamSeatOperationLockUnavailableError,
+    } = getIsolatedModule();
 
-    await expect(acquireTeamInvitationLock("org-123")).rejects.toBeInstanceOf(
-      TeamInvitationLockUnavailableError,
-    );
+    await expect(
+      acquireTeamSeatOperationLock("org-123"),
+    ).rejects.toBeInstanceOf(TeamSeatOperationLockUnavailableError);
   });
 });

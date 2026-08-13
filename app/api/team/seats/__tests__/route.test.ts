@@ -1,4 +1,4 @@
-import { POST } from "../route";
+import { PATCH } from "../route";
 import { workos } from "../../../workos";
 import { stripe } from "../../../stripe";
 import { requireAdminOrg } from "../../team-auth";
@@ -31,14 +31,15 @@ jest.mock("../../../workos", () => ({
     userManagement: {
       listOrganizationMemberships: jest.fn(),
       listInvitations: jest.fn(),
-      listUsers: jest.fn(),
-      sendInvitation: jest.fn(),
     },
   },
 }));
 
 jest.mock("../../../stripe", () => ({
-  stripe: { subscriptions: { list: jest.fn() } },
+  stripe: {
+    paymentMethods: { retrieve: jest.fn() },
+    subscriptions: { list: jest.fn(), update: jest.fn() },
+  },
 }));
 
 const mockRequireAdminOrg = requireAdminOrg as jest.MockedFunction<
@@ -51,9 +52,6 @@ const mockGetOrganization = workos.organizations
   .getOrganization as jest.MockedFunction<
   typeof workos.organizations.getOrganization
 >;
-const mockListSubscriptions = stripe.subscriptions.list as jest.MockedFunction<
-  typeof stripe.subscriptions.list
->;
 const mockListMemberships = workos.userManagement
   .listOrganizationMemberships as jest.MockedFunction<
   typeof workos.userManagement.listOrganizationMemberships
@@ -62,18 +60,16 @@ const mockListInvitations = workos.userManagement
   .listInvitations as jest.MockedFunction<
   typeof workos.userManagement.listInvitations
 >;
-const mockListUsers = workos.userManagement.listUsers as jest.MockedFunction<
-  typeof workos.userManagement.listUsers
+const mockListSubscriptions = stripe.subscriptions.list as jest.MockedFunction<
+  typeof stripe.subscriptions.list
 >;
-const mockSendInvitation = workos.userManagement
-  .sendInvitation as jest.MockedFunction<
-  typeof workos.userManagement.sendInvitation
->;
+const mockUpdateSubscription = stripe.subscriptions
+  .update as jest.MockedFunction<typeof stripe.subscriptions.update>;
 
-const request = (email = "invitee@example.com") =>
-  ({ json: async () => ({ email }) }) as never;
+const request = (quantity: number) =>
+  ({ json: async () => ({ quantity }) }) as never;
 
-describe("POST /api/team/invite", () => {
+describe("PATCH /api/team/seats", () => {
   const assertOwned = jest.fn();
   const release = jest.fn();
   const autoPaginateMemberships = jest.fn();
@@ -95,44 +91,56 @@ describe("POST /api/team/invite", () => {
       stripeCustomerId: "cus-123",
     } as never);
     mockListSubscriptions.mockResolvedValue({
-      data: [{ items: { data: [{ quantity: 2 }] } }],
+      data: [
+        {
+          id: "sub-123",
+          default_payment_method: null,
+          items: {
+            data: [
+              {
+                id: "si-123",
+                quantity: 3,
+                price: { id: "price-123" },
+              },
+            ],
+          },
+        },
+      ],
     } as never);
     autoPaginateMemberships.mockResolvedValue([{}]);
     autoPaginateInvitations.mockResolvedValue([]);
     mockListMemberships.mockResolvedValue({
-      data: [],
       autoPagination: autoPaginateMemberships,
     } as never);
     mockListInvitations.mockResolvedValue({
-      data: [],
       autoPagination: autoPaginateInvitations,
     } as never);
-    mockListUsers.mockResolvedValue({ data: [] } as never);
-    mockSendInvitation.mockResolvedValue({} as never);
+    mockUpdateSubscription.mockResolvedValue({} as never);
   });
 
-  it("holds the organization lock across the seat check and invitation", async () => {
-    const response = await POST(request());
+  it("holds the organization lock across the seat count and decrease", async () => {
+    const response = await PATCH(request(2));
 
     expect(response.status).toBe(200);
     expect(mockAcquireLock).toHaveBeenCalledWith("org-123");
-    expect(assertOwned).toHaveBeenCalledTimes(1);
-    expect(mockSendInvitation).toHaveBeenCalledWith({
-      email: "invitee@example.com",
-      organizationId: "org-123",
-      inviterUserId: "user-admin",
-      roleSlug: "member",
+    expect(mockAcquireLock.mock.invocationCallOrder[0]).toBeLessThan(
+      mockListMemberships.mock.invocationCallOrder[0],
+    );
+    expect(assertOwned.mock.invocationCallOrder[0]).toBeLessThan(
+      mockUpdateSubscription.mock.invocationCallOrder[0],
+    );
+    expect(mockUpdateSubscription).toHaveBeenCalledWith("sub-123", {
+      items: [{ id: "si-123", quantity: 2 }],
+      proration_behavior: "create_prorations",
+      proration_date: expect.any(Number),
     });
     expect(release).toHaveBeenCalledTimes(1);
-    expect(assertOwned.mock.invocationCallOrder[0]).toBeLessThan(
-      mockSendInvitation.mock.invocationCallOrder[0],
-    );
   });
 
-  it("rejects a concurrent invitation before reading seat state", async () => {
+  it("rejects contention before reading the seat state", async () => {
     mockAcquireLock.mockResolvedValueOnce(null);
 
-    const response = await POST(request());
+    const response = await PATCH(request(2));
 
     expect(response.status).toBe(409);
     await expect(response.json()).resolves.toEqual({
@@ -140,62 +148,63 @@ describe("POST /api/team/invite", () => {
       message: "Please retry after the current operation finishes.",
     });
     expect(mockGetOrganization).not.toHaveBeenCalled();
-    expect(mockSendInvitation).not.toHaveBeenCalled();
+    expect(mockUpdateSubscription).not.toHaveBeenCalled();
   });
 
-  it("fails closed when invitation locking is unavailable", async () => {
+  it("fails closed when seat operation locking is unavailable", async () => {
     mockAcquireLock.mockRejectedValueOnce(
       new TeamSeatOperationLockUnavailableError(),
     );
 
-    const response = await POST(request());
+    const response = await PATCH(request(2));
 
     expect(response.status).toBe(503);
     await expect(response.json()).resolves.toEqual({
       error: "Team seat service temporarily unavailable",
     });
     expect(mockGetOrganization).not.toHaveBeenCalled();
-    expect(mockSendInvitation).not.toHaveBeenCalled();
+    expect(mockUpdateSubscription).not.toHaveBeenCalled();
   });
 
-  it("fails closed when lock ownership is lost before sending", async () => {
+  it("fails closed when lock ownership is lost before updating Stripe", async () => {
     assertOwned.mockRejectedValueOnce(
       new TeamSeatOperationLockUnavailableError(),
     );
 
-    const response = await POST(request());
+    const response = await PATCH(request(2));
 
     expect(response.status).toBe(503);
-    expect(mockSendInvitation).not.toHaveBeenCalled();
+    expect(mockUpdateSubscription).not.toHaveBeenCalled();
     expect(release).toHaveBeenCalledTimes(1);
   });
 
-  it("releases the lock when the seat limit rejects the invitation", async () => {
-    autoPaginateMemberships.mockResolvedValueOnce([{}, {}]);
-
-    const response = await POST(request());
-
-    expect(response.status).toBe(400);
-    expect(mockSendInvitation).not.toHaveBeenCalled();
-    expect(release).toHaveBeenCalledTimes(1);
-  });
-
-  it("counts memberships and invitations across every WorkOS page", async () => {
+  it("uses every WorkOS page when validating a decrease", async () => {
     mockListSubscriptions.mockResolvedValueOnce({
-      data: [{ items: { data: [{ quantity: 4 }] } }],
+      data: [
+        {
+          id: "sub-123",
+          default_payment_method: null,
+          items: {
+            data: [
+              {
+                id: "si-123",
+                quantity: 5,
+                price: { id: "price-123" },
+              },
+            ],
+          },
+        },
+      ],
     } as never);
-    autoPaginateMemberships.mockResolvedValueOnce([{}, {}]);
-    autoPaginateInvitations.mockResolvedValueOnce([
-      { state: "pending" },
-      { state: "pending" },
-    ]);
+    autoPaginateMemberships.mockResolvedValueOnce([{}, {}, {}]);
+    autoPaginateInvitations.mockResolvedValueOnce([{ state: "pending" }]);
 
-    const response = await POST(request());
+    const response = await PATCH(request(3));
 
     expect(response.status).toBe(400);
     expect(autoPaginateMemberships).toHaveBeenCalledTimes(1);
     expect(autoPaginateInvitations).toHaveBeenCalledTimes(1);
-    expect(mockSendInvitation).not.toHaveBeenCalled();
+    expect(mockUpdateSubscription).not.toHaveBeenCalled();
     expect(release).toHaveBeenCalledTimes(1);
   });
 });

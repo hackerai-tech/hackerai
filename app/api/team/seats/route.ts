@@ -3,6 +3,11 @@ import Stripe from "stripe";
 import { workos } from "../../workos";
 import { stripe } from "../../stripe";
 import { requireAdminOrg } from "../team-auth";
+import {
+  acquireTeamSeatOperationLock,
+  TeamSeatOperationLockUnavailableError,
+  type TeamSeatOperationLock,
+} from "@/lib/billing/team-seat-operation-lock";
 
 const MAX_SEATS = 999;
 
@@ -48,23 +53,14 @@ interface SeatOperationSuccess {
 }
 
 type SeatOperationContext = SeatOperationError | SeatOperationSuccess;
+type AdminOrgGuard = Extract<
+  Awaited<ReturnType<typeof requireAdminOrg>>,
+  { ok: true }
+>;
 
-// Helper to get common data (user, org, subscription) for seat operations
-async function getSeatOperationContext(
-  req: NextRequest,
+async function getSeatOperationContextForAdmin(
+  guard: AdminOrgGuard,
 ): Promise<SeatOperationContext> {
-  const guard = await requireAdminOrg(req);
-  if (!guard.ok) {
-    // Re-derive {message, status} from the NextResponse so the existing
-    // SeatOperationError shape (and call sites) don't need to change.
-    const body = await guard.response.json();
-    return {
-      error: {
-        message: body.error ?? "Forbidden",
-        status: guard.response.status,
-      },
-    };
-  }
   const { userId, organizationId } = guard;
 
   const organization =
@@ -92,7 +88,7 @@ async function getSeatOperationContext(
   }
 
   // Get current members and pending invitations
-  const [allMembers, pendingInvitations] = await Promise.all([
+  const [membershipPage, invitationPage] = await Promise.all([
     workos.userManagement.listOrganizationMemberships({
       organizationId,
       statuses: ["active"],
@@ -101,9 +97,13 @@ async function getSeatOperationContext(
       organizationId,
     }),
   ]);
+  const [allMembers, pendingInvitations] = await Promise.all([
+    membershipPage.autoPagination(),
+    invitationPage.autoPagination(),
+  ]);
 
-  const currentMembers = allMembers.data.length;
-  const pendingInvites = pendingInvitations.data.filter(
+  const currentMembers = allMembers.length;
+  const pendingInvites = pendingInvitations.filter(
     (inv) => inv.state === "pending",
   ).length;
   const totalUsed = currentMembers + pendingInvites;
@@ -140,6 +140,26 @@ async function getSeatOperationContext(
     totalUsed,
     paymentMethodInfo,
   };
+}
+
+// Helper to get common data (user, org, subscription) for seat previews.
+async function getSeatOperationContext(
+  req: NextRequest,
+): Promise<SeatOperationContext> {
+  const guard = await requireAdminOrg(req);
+  if (!guard.ok) {
+    // Re-derive {message, status} from the NextResponse so the existing
+    // SeatOperationError shape (and call sites) don't need to change.
+    const body = await guard.response.json();
+    return {
+      error: {
+        message: body.error ?? "Forbidden",
+        status: guard.response.status,
+      },
+    };
+  }
+
+  return getSeatOperationContextForAdmin(guard);
 }
 
 // POST: Preview seat change (increase or decrease)
@@ -299,8 +319,25 @@ export const POST = async (req: NextRequest) => {
 
 // PATCH: Execute seat change (increase or decrease)
 export const PATCH = async (req: NextRequest) => {
+  let seatOperationLock: TeamSeatOperationLock | null = null;
   try {
-    const context = await getSeatOperationContext(req);
+    const guard = await requireAdminOrg(req);
+    if (!guard.ok) return guard.response;
+
+    seatOperationLock = await acquireTeamSeatOperationLock(
+      guard.organizationId,
+    );
+    if (!seatOperationLock) {
+      return NextResponse.json(
+        {
+          error: "Another team seat operation is being processed",
+          message: "Please retry after the current operation finishes.",
+        },
+        { status: 409 },
+      );
+    }
+
+    const context = await getSeatOperationContextForAdmin(guard);
 
     if ("error" in context) {
       return NextResponse.json(
@@ -365,6 +402,7 @@ export const PATCH = async (req: NextRequest) => {
 
     if (isIncrease) {
       // Seat INCREASE: Charge immediately with proration
+      await seatOperationLock.assertOwned();
       try {
         const updatedSubscription = await stripe.subscriptions.update(
           activeSubscription.id,
@@ -483,6 +521,7 @@ export const PATCH = async (req: NextRequest) => {
       }
     } else {
       // Seat DECREASE: Issue prorated credit
+      await seatOperationLock.assertOwned();
       try {
         await stripe.subscriptions.update(activeSubscription.id, {
           items: [
@@ -521,9 +560,23 @@ export const PATCH = async (req: NextRequest) => {
       }
     }
   } catch (error: unknown) {
+    if (error instanceof TeamSeatOperationLockUnavailableError) {
+      return NextResponse.json(
+        { error: "Team seat service temporarily unavailable" },
+        { status: 503 },
+      );
+    }
     const errorMessage =
       error instanceof Error ? error.message : "An error occurred";
     console.error("Failed to update seats:", error);
     return NextResponse.json({ error: errorMessage }, { status: 500 });
+  } finally {
+    if (seatOperationLock) {
+      try {
+        await seatOperationLock.release();
+      } catch (error) {
+        console.error("Failed to release team seat operation lock:", error);
+      }
+    }
   }
 };

@@ -3,13 +3,13 @@ import { workos } from "../../workos";
 import { stripe } from "../../stripe";
 import { requireAdminOrg } from "../team-auth";
 import {
-  acquireTeamInvitationLock,
-  TeamInvitationLockUnavailableError,
-  type TeamInvitationLock,
-} from "@/lib/billing/team-invitation-lock";
+  acquireTeamSeatOperationLock,
+  TeamSeatOperationLockUnavailableError,
+  type TeamSeatOperationLock,
+} from "@/lib/billing/team-seat-operation-lock";
 
 export const POST = async (req: NextRequest) => {
-  let invitationLock: TeamInvitationLock | null = null;
+  let seatOperationLock: TeamSeatOperationLock | null = null;
   try {
     const guard = await requireAdminOrg(req);
     if (!guard.ok) return guard.response;
@@ -22,12 +22,12 @@ export const POST = async (req: NextRequest) => {
       return NextResponse.json({ error: "Email is required" }, { status: 400 });
     }
 
-    invitationLock = await acquireTeamInvitationLock(organizationId);
-    if (!invitationLock) {
+    seatOperationLock = await acquireTeamSeatOperationLock(organizationId);
+    if (!seatOperationLock) {
       return NextResponse.json(
         {
-          error: "Another invitation is being processed",
-          message: "Please retry after the current invitation finishes.",
+          error: "Another team seat operation is being processed",
+          message: "Please retry after the current operation finishes.",
         },
         { status: 409 },
       );
@@ -50,27 +50,32 @@ export const POST = async (req: NextRequest) => {
         const quantity = subscription.items.data[0]?.quantity || 1;
 
         // Count current members and pending invitations
+        const [currentMembershipPage, pendingInvitationPage] =
+          await Promise.all([
+            workos.userManagement.listOrganizationMemberships({
+              organizationId,
+              statuses: ["active"],
+            }),
+            workos.userManagement.listInvitations({
+              organizationId,
+            }),
+          ]);
         const [currentMembers, pendingInvitations] = await Promise.all([
-          workos.userManagement.listOrganizationMemberships({
-            organizationId,
-          }),
-          workos.userManagement.listInvitations({
-            organizationId,
-          }),
+          currentMembershipPage.autoPagination(),
+          pendingInvitationPage.autoPagination(),
         ]);
 
-        const pendingInvitationsCount = pendingInvitations.data.filter(
+        const pendingInvitationsCount = pendingInvitations.filter(
           (invitation) => invitation.state === "pending",
         ).length;
 
-        const totalSeatsInUse =
-          currentMembers.data.length + pendingInvitationsCount;
+        const totalSeatsInUse = currentMembers.length + pendingInvitationsCount;
 
         if (totalSeatsInUse >= quantity) {
           return NextResponse.json(
             {
               error: "Seat limit reached",
-              details: `You have ${currentMembers.data.length} members and ${pendingInvitationsCount} pending invitations (${totalSeatsInUse} total) with ${quantity} seats. Please upgrade to add more members.`,
+              details: `You have ${currentMembers.length} members and ${pendingInvitationsCount} pending invitations (${totalSeatsInUse} total) with ${quantity} seats. Please upgrade to add more members.`,
             },
             { status: 400 },
           );
@@ -108,7 +113,7 @@ export const POST = async (req: NextRequest) => {
 
     // Always send an invitation for explicit consent
     // This works for both existing and new users
-    await invitationLock.assertOwned();
+    await seatOperationLock.assertOwned();
     await workos.userManagement.sendInvitation({
       email,
       organizationId,
@@ -121,9 +126,9 @@ export const POST = async (req: NextRequest) => {
       message: "Invitation sent successfully",
     });
   } catch (error: unknown) {
-    if (error instanceof TeamInvitationLockUnavailableError) {
+    if (error instanceof TeamSeatOperationLockUnavailableError) {
       return NextResponse.json(
-        { error: "Team invitation service temporarily unavailable" },
+        { error: "Team seat service temporarily unavailable" },
         { status: 503 },
       );
     }
@@ -132,11 +137,11 @@ export const POST = async (req: NextRequest) => {
     console.error("Failed to invite team member:", error);
     return NextResponse.json({ error: errorMessage }, { status: 500 });
   } finally {
-    if (invitationLock) {
+    if (seatOperationLock) {
       try {
-        await invitationLock.release();
+        await seatOperationLock.release();
       } catch (error) {
-        console.error("Failed to release team invitation lock:", error);
+        console.error("Failed to release team seat operation lock:", error);
       }
     }
   }
