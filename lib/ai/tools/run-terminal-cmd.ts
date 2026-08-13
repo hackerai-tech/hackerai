@@ -260,7 +260,10 @@ export const createRunTerminalCmd = (context: ToolContext) => {
       );
 
       let terminalInspection: AgentAutoReviewTerminalInspection | undefined;
-      if (context.autoReviewEvidenceEnabled) {
+      const inspectionKind = context.autoReviewEvidenceEnabled
+        ? getAgentAutoReviewInspectionKind(command)
+        : null;
+      if (inspectionKind) {
         try {
           const { sandbox } = await getSandboxWithFallbackGuard({
             sandboxManager,
@@ -269,15 +272,23 @@ export const createRunTerminalCmd = (context: ToolContext) => {
             command,
             sandbox,
           });
-        } catch {
-          const kind = getAgentAutoReviewInspectionKind(command);
-          if (kind) {
-            terminalInspection = {
-              kind,
-              status: "unresolved" as const,
-              reason: "inspection_failed" as const,
-            };
-          }
+        } catch (error) {
+          console.warn({
+            timestamp: new Date().toISOString(),
+            level: "warn",
+            event: "agent_auto_review_inspection_failed",
+            service: "agent",
+            environment:
+              process.env.VERCEL_ENV ?? process.env.NODE_ENV ?? "unknown",
+            tool_call_id: toolCallId,
+            inspection_kind: inspectionKind,
+            failure_class: error instanceof Error ? error.name : typeof error,
+          });
+          terminalInspection = {
+            kind: inspectionKind,
+            status: "unresolved" as const,
+            reason: "inspection_failed" as const,
+          };
         }
       }
 

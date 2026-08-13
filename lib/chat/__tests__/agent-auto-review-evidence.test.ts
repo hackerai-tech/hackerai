@@ -139,6 +139,9 @@ describe("Agent Auto review terminal evidence", () => {
     ["rm -rf .git", "sensitive_target"],
     ["rm -rf .", "too_broad"],
     ["rm -rf $TARGET", "dynamic_command"],
+    ["rm -rf ~/documents", "dynamic_command"],
+    ["rm -rf build/{a,b}", "dynamic_command"],
+    ["rm -rf build/[ab]*", "dynamic_command"],
     ["shred build/output.bin", "dynamic_command"],
   ] as const)("fails closed for %s", async (command, reason) => {
     await expect(

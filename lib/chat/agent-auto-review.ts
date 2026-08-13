@@ -4,7 +4,10 @@ import { z } from "zod";
 
 import { myProvider } from "@/lib/ai/providers";
 import { getProviderUsageRawModelCost } from "@/lib/provider-usage-cost";
-import { getAgentAutoReviewInspectionKind } from "@/lib/chat/agent-auto-review-evidence";
+import {
+  getAgentAutoReviewInspectionKind,
+  isAgentAutoReviewFilesystemDeletionCommand,
+} from "@/lib/chat/agent-auto-review-evidence";
 import type {
   AgentPermissionMode,
   AgentAutoReviewActionContext,
@@ -232,15 +235,6 @@ const actionHasCompleteContext = (
   return context.complete;
 };
 
-const isFilesystemDeletionCommand = (command: string): boolean =>
-  command
-    .split(/&&|\|\||[;|\n]/u)
-    .some((segment) =>
-      /^(?:(?:sudo|doas|command|builtin|nohup)\s+)*(?:rm|rmdir|unlink|shred|del|erase|rd|remove-item)\b/i.test(
-        segment.trim(),
-      ),
-    );
-
 const isInputAtShellPrompt = (recentOutput: string): boolean =>
   /(?:^|\n)[^\n]*[$#>%]\s*$/u.test(recentOutput);
 
@@ -277,7 +271,7 @@ const reviewByRule = (
     }
     const inspectionKind = getAgentAutoReviewInspectionKind(command);
     if (
-      isFilesystemDeletionCommand(command) &&
+      isAgentAutoReviewFilesystemDeletionCommand(command) &&
       !(
         context.inspection?.kind === "filesystem_delete" &&
         context.inspection.status === "resolved" &&
@@ -329,7 +323,7 @@ const reviewByRule = (
       context.action === "send" &&
       context.translatedInput &&
       isInputAtShellPrompt(context.recentOutput) &&
-      isFilesystemDeletionCommand(
+      isAgentAutoReviewFilesystemDeletionCommand(
         context.translatedInput.replace(/[\r\n]+$/u, ""),
       )
     ) {

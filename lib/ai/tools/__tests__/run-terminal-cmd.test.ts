@@ -479,6 +479,36 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
     expect(run).toHaveBeenCalledTimes(1);
   });
 
+  test("does not acquire a sandbox before reviewing commands without inspectable indirection", async () => {
+    let sandboxCallsAtApproval = -1;
+    let getSandboxCallCount = () => -1;
+    const requestToolApproval = jest.fn(async () => {
+      sandboxCallsAtApproval = getSandboxCallCount();
+      return {
+        approved: false as const,
+        approvalId: "approval-1",
+        reason: "User denied this action.",
+      };
+    });
+    const { context, sandboxManager } = makeContext({
+      sandbox: null,
+      requestToolApproval,
+      autoReviewEvidenceEnabled: true,
+    });
+    getSandboxCallCount = () => sandboxManager.getSandbox.mock.calls.length;
+
+    await runTool(createRunTerminalCmd(context), {
+      command: "echo ok",
+      brief: "print a status",
+      is_background: false,
+      timeout: 5,
+      interactive: false,
+    });
+
+    expect(sandboxCallsAtApproval).toBe(0);
+    expect(sandboxManager.getSandbox).not.toHaveBeenCalled();
+  });
+
   test("does not inspect files in Ask for approval mode", async () => {
     const readText = jest.fn(async () => {
       throw new Error("inspection should be disabled");

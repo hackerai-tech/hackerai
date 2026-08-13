@@ -170,7 +170,7 @@ export const tokenizeStaticTerminalCommand = (
       tokenStarted = true;
       continue;
     }
-    if (/[;&|<>\n\r]/u.test(char) || /[$`*?]/u.test(char)) return null;
+    if (/[;&|<>\n\r]/u.test(char) || "$`*?~{}[]".includes(char)) return null;
     if (char === "\\") {
       index += 1;
       if (index >= command.length) return null;
@@ -208,7 +208,9 @@ const stripCommandPrefixes = (tokens: string[]): string[] => {
   return tokens.slice(index);
 };
 
-const looksLikeDelete = (command: string): boolean =>
+export const isAgentAutoReviewFilesystemDeletionCommand = (
+  command: string,
+): boolean =>
   command
     .split(/&&|\|\||[;|\n]/u)
     .some((segment) =>
@@ -257,7 +259,9 @@ export const getAgentAutoReviewInspectionKind = (
 ): InspectionKind | null => {
   const tokens = tokenizeStaticTerminalCommand(command);
   if (tokens) return classifyStaticTokens(tokens)?.kind ?? null;
-  if (looksLikeDelete(command)) return "filesystem_delete";
+  if (isAgentAutoReviewFilesystemDeletionCommand(command)) {
+    return "filesystem_delete";
+  }
   if (
     /(?:^|[;&|]\s*)(?:\.\.?[\\/]|[\\/]|(?:bash|sh|zsh|fish|node|python\d*|ruby|perl)\s+[^-]|(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?[^\s]+)/iu.test(
       command,
@@ -650,7 +654,11 @@ const inspectScript = async ({
       status: "resolved",
       workingDirectory,
       scripts,
-      fingerprint: digest({ commandTokens: candidate.tokens, scripts }),
+      fingerprint: digest({
+        commandTokens: candidate.tokens,
+        workingDirectory,
+        scripts,
+      }),
     };
   } catch (error) {
     const marker = error instanceof Error ? error.message : "";
@@ -736,7 +744,11 @@ const inspectPackageTask = async ({
       status: "resolved",
       workingDirectory,
       scripts,
-      fingerprint: digest({ commandTokens: candidate.tokens, scripts }),
+      fingerprint: digest({
+        commandTokens: candidate.tokens,
+        workingDirectory,
+        scripts,
+      }),
     };
   } catch (error) {
     const marker = error instanceof Error ? error.message : "";
