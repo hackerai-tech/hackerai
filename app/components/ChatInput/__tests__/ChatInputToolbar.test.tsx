@@ -34,6 +34,12 @@ jest.mock("@/app/components/AgentPermissionSelector", () => ({
   ),
 }));
 
+jest.mock("@/app/components/SandboxSelector", () => ({
+  SandboxSelector: ({ size }: { size?: string }) => (
+    <div data-testid="sandbox-selector" data-size={size} />
+  ),
+}));
+
 jest.mock("../SubmitStopButton", () => ({
   SubmitStopButton: ({
     isPaid,
@@ -61,6 +67,8 @@ jest.mock("@/app/contexts/GlobalState", () => ({
     hasLocalSandbox: mockHasLocalSandbox,
     paidAgentOnlyActive: mockPaidAgentOnlyActive,
     freeDesktopAgentOnlyActive: mockFreeDesktopAgentOnlyActive,
+    sandboxPreference: "e2b",
+    setSandboxPreference: jest.fn(),
   }),
 }));
 
@@ -157,7 +165,7 @@ describe("ChatInputToolbar", () => {
     ).not.toBeInTheDocument();
   });
 
-  it("shows the permission selector only in agent mode", () => {
+  it("shows desktop permission and sandbox selectors only in agent mode", () => {
     mockAuthUser({ id: "user_123" });
 
     const { rerender } = render(
@@ -166,9 +174,23 @@ describe("ChatInputToolbar", () => {
     expect(
       screen.queryByTestId("agent-permission-selector"),
     ).not.toBeInTheDocument();
+    expect(screen.queryByTestId("sandbox-selector")).not.toBeInTheDocument();
 
     rerender(<ChatInputToolbar {...defaultProps} chatMode="agent" />);
     expect(screen.getByTestId("agent-permission-selector")).toBeInTheDocument();
+    expect(screen.getByTestId("sandbox-selector")).toBeInTheDocument();
+    expect(screen.getByTestId("sandbox-selector")).toHaveAttribute(
+      "data-size",
+      "toolbar",
+    );
+    expect(screen.getByTestId("chat-input-desktop-permission")).toHaveClass(
+      "hidden",
+      "md:block",
+    );
+    expect(screen.getByTestId("chat-input-desktop-sandbox")).toHaveClass(
+      "hidden",
+      "md:block",
+    );
   });
 
   it("removes only the mode selector for paid Agent-only mode", () => {

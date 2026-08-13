@@ -179,6 +179,35 @@
   box-shadow: 0 18px 44px -18px rgb(0 0 0 / 80%);
 }
 
+.chat-input-glass-surface {
+  background: color-mix(in srgb, var(--fill-input-chat) 86%, transparent);
+  -webkit-backdrop-filter: blur(18px) saturate(140%);
+  backdrop-filter: blur(18px) saturate(140%);
+}
+
+.chat-input-glass-context {
+  background: color-mix(in srgb, var(--fill-input-chat) 76%, transparent);
+  -webkit-backdrop-filter: blur(18px) saturate(140%);
+  backdrop-filter: blur(18px) saturate(140%);
+}
+
+.dark .chat-input-glass-surface {
+  background: color-mix(in srgb, var(--fill-input-chat) 90%, transparent);
+}
+
+.dark .chat-input-glass-context {
+  background: color-mix(in srgb, var(--fill-input-chat) 82%, transparent);
+}
+
+@supports not (
+  (-webkit-backdrop-filter: blur(1px)) or (backdrop-filter: blur(1px))
+) {
+  .chat-input-glass-surface,
+  .chat-input-glass-context {
+    background: var(--fill-input-chat);
+  }
+}
+
 @keyframes shimmer {
   0% {
     background-position: 200% 0;
