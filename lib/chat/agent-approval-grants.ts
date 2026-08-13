@@ -182,6 +182,14 @@ export const parseStaticCommandArgv = (command: string): string[] | null => {
     // unquoted and double-quoted shell text. Reject them everywhere.
     if (character === "`") return null;
 
+    // A reusable grant can execute under either Bash or the Windows cmd.exe
+    // fallback. Backslashes escape shell syntax in Bash but are ordinary
+    // characters in cmd.exe, so accepting them can make the authorization
+    // parser and the execution shell disagree about argv or command
+    // boundaries. Keep such commands eligible for one-time human approval,
+    // but never derive or reuse a persistent grant from them.
+    if (character === "\\") return null;
+
     if (quote === "single") {
       if (character === "'") {
         quote = null;
@@ -215,23 +223,6 @@ export const parseStaticCommandArgv = (command: string): string[] | null => {
       ) {
         return null;
       }
-      if (character === "\\") {
-        const nextCharacter = command[index + 1];
-        if (
-          !nextCharacter ||
-          nextCharacter === "\n" ||
-          nextCharacter === "\r"
-        ) {
-          return null;
-        }
-        if (["$", "`", '"', "\\"].includes(nextCharacter)) {
-          token += nextCharacter;
-          index += 1;
-        } else {
-          token += character;
-        }
-        continue;
-      }
       token += character;
       continue;
     }
@@ -244,16 +235,6 @@ export const parseStaticCommandArgv = (command: string): string[] | null => {
     if (character === '"') {
       quote = "double";
       tokenStarted = true;
-      continue;
-    }
-    if (character === "\\") {
-      const nextCharacter = command[index + 1];
-      if (!nextCharacter || nextCharacter === "\n" || nextCharacter === "\r") {
-        return null;
-      }
-      tokenStarted = true;
-      token += nextCharacter;
-      index += 1;
       continue;
     }
     if (isShellWhitespace(character)) {

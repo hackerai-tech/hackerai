@@ -179,6 +179,30 @@ describe("agent approval grants", () => {
   });
 
   it.each([
+    ["an escaped cmd control operator", String.raw`echo harmless\& whoami`],
+    [
+      "a quote interpreted differently by cmd.exe",
+      String.raw`echo "harmless\" & whoami & rem "`,
+    ],
+    ["an ambiguous Windows path", String.raw`type C:\safe.txt`],
+  ])("requires fresh approval for %s", (_description, target) => {
+    const safeGrant = deriveAgentApprovalTargetGrant(
+      request("terminal_execute", "echo harmless"),
+    );
+
+    expect(
+      deriveAgentApprovalTargetGrant(request("terminal_execute", target)),
+    ).toBeNull();
+    expect(
+      safeGrant &&
+        matchesAgentApprovalTargetGrant(
+          request("terminal_execute", target),
+          safeGrant,
+        ),
+    ).toBe(false);
+  });
+
+  it.each([
     ["shell", "bash -c 'npm test && npm publish'"],
     ["absolute shell", "/bin/bash -lc 'npm test'"],
     ["Windows shell", String.raw`"C:\Windows\System32\cmd.exe" /c dir`],
