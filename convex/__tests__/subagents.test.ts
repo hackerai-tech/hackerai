@@ -344,11 +344,26 @@ describe("subagent coordination messages", () => {
       db: {
         query: jest.fn((table: string) => ({
           withIndex: jest.fn((_name: string, callback: (q: any) => void) => {
-            const q = { eq: jest.fn<any>() };
-            q.eq.mockReturnValue(q);
+            const predicates: Array<[string, unknown]> = [];
+            const q = {
+              eq: jest.fn<any>((field: string, value: unknown) => {
+                predicates.push([field, value]);
+                return q;
+              }),
+            };
             callback(q);
             return table === "subagent_runs"
-              ? { take: jest.fn<any>().mockResolvedValue(runs) }
+              ? {
+                  take: jest
+                    .fn<any>()
+                    .mockResolvedValue(
+                      runs.filter((run) =>
+                        predicates.every(
+                          ([field, value]) => run[field] === value,
+                        ),
+                      ),
+                    ),
+                }
               : { first: jest.fn<any>().mockResolvedValue(null) };
           }),
         })),
@@ -416,6 +431,27 @@ describe("subagent coordination messages", () => {
         name: "Permission validator",
         status: "running",
       },
+      {
+        subagent_id: "sa_09041c08aaaaaaaaaaaaaaaaaaaaaaaa",
+        user_id: "user-2",
+        chat_id: "chat-1",
+        parent_trigger_run_id: "parent-run",
+        status: "running",
+      },
+      {
+        subagent_id: "sa_09041c08bbbbbbbbbbbbbbbbbbbbbbbb",
+        user_id: "user-1",
+        chat_id: "chat-1",
+        parent_trigger_run_id: "other-parent-run",
+        status: "running",
+      },
+      {
+        subagent_id: "sa_09041c08cccccccccccccccccccccccc",
+        user_id: "user-1",
+        chat_id: "other-chat",
+        parent_trigger_run_id: "parent-run",
+        status: "running",
+      },
     ]);
 
     await expect(
@@ -448,10 +484,16 @@ describe("subagent coordination messages", () => {
     const { ctx, insert } = makeSendContext([
       {
         subagent_id: "sa_09041c08000000000000000000000000",
+        user_id: "user-1",
+        chat_id: "chat-1",
+        parent_trigger_run_id: "parent-run",
         status: "running",
       },
       {
         subagent_id: "sa_09041c08ffffffffffffffffffffffff",
+        user_id: "user-1",
+        chat_id: "chat-1",
+        parent_trigger_run_id: "parent-run",
         status: "running",
       },
     ]);
@@ -474,7 +516,15 @@ describe("subagent coordination messages", () => {
   });
 
   it("does not reveal or update another user's child", async () => {
-    const { ctx, insert } = makeSendContext([]);
+    const { ctx, insert } = makeSendContext([
+      {
+        subagent_id: "sa_1",
+        user_id: "user-2",
+        chat_id: "chat-1",
+        parent_trigger_run_id: "parent-run",
+        status: "running",
+      },
+    ]);
 
     await expect(
       sendMessageForBackend.handler(ctx, {
@@ -494,7 +544,15 @@ describe("subagent coordination messages", () => {
   });
 
   it("does not steer a child created by another parent run in the same chat", async () => {
-    const { ctx, insert } = makeSendContext([]);
+    const { ctx, insert } = makeSendContext([
+      {
+        subagent_id: "sa_1",
+        user_id: "user-1",
+        chat_id: "chat-1",
+        parent_trigger_run_id: "other-parent-run",
+        status: "running",
+      },
+    ]);
 
     await expect(
       sendMessageForBackend.handler(ctx, {
