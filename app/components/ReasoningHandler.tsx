@@ -16,6 +16,7 @@ type ReasoningHandlerProps = {
   status: ChatStatus;
   isLastMessage?: boolean;
   keepLatestOpenDuringStreaming?: boolean;
+  suppressAutoOpenDuringStreaming?: boolean;
   deferCollapseUntilParent?: boolean;
 };
 
@@ -85,6 +86,11 @@ function areReasoningPropsEqual(
   if (prev.isLastMessage !== next.isLastMessage) return false;
   if (prev.keepLatestOpenDuringStreaming !== next.keepLatestOpenDuringStreaming)
     return false;
+  if (
+    prev.suppressAutoOpenDuringStreaming !==
+    next.suppressAutoOpenDuringStreaming
+  )
+    return false;
   if (prev.deferCollapseUntilParent !== next.deferCollapseUntilParent)
     return false;
   if (prev.partIndex !== next.partIndex) return false;
@@ -113,6 +119,7 @@ export const ReasoningHandler = memo(function ReasoningHandler({
   status,
   isLastMessage,
   keepLatestOpenDuringStreaming = false,
+  suppressAutoOpenDuringStreaming = false,
   deferCollapseUntilParent = false,
 }: ReasoningHandlerProps) {
   // Memoize parts array reference to avoid recreation
@@ -152,6 +159,7 @@ export const ReasoningHandler = memo(function ReasoningHandler({
     isLatestVisibleReasoningBlock &&
     isReasoningBlockAtTail;
   const autoOpen =
+    !suppressAutoOpenDuringStreaming &&
     isStreamingMessage &&
     (keepLatestOpenDuringStreaming
       ? isLatestVisibleReasoningBlock

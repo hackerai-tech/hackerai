@@ -189,6 +189,7 @@ export const AgentToolGroupRow = memo(function AgentToolGroupRow({
             deferReasoningCollapseUntilParent={false}
             isLastMessage={isLastMessage}
             keepLatestReasoningOpenDuringStreaming={false}
+            suppressReasoningAutoOpen={false}
             message={message}
             part={activity.part}
             partIndex={activity.partIndex}

@@ -79,14 +79,21 @@ type StickyElementRef =
 const getTimelineRowKey = (row: ChatTimelineRow) => row.id;
 
 type ToolGroupMountSnapshot = {
+  awaitingRestoredAgentMessage: boolean;
   chatId: string;
   hasCommittedTimeline: boolean;
+  isRestoringStream: boolean;
+  restoredAgentMessageIds: ReadonlySet<string>;
   seenAgentMessageIds: ReadonlySet<string>;
   seenToolGroupIds: ReadonlySet<string>;
 };
 
 type ToolGroupMountStore = {
-  commit: (chatId: string, rows: readonly ChatTimelineRow[]) => void;
+  commit: (
+    chatId: string,
+    rows: readonly ChatTimelineRow[],
+    isRestoringStream: boolean,
+  ) => void;
   getSnapshot: () => ToolGroupMountSnapshot;
   markToolGroupMounted: (chatId: string, rowId: string) => void;
   subscribe: (listener: () => void) => () => void;
@@ -94,18 +101,27 @@ type ToolGroupMountStore = {
 
 function createToolGroupMountStore(initialChatId: string): ToolGroupMountStore {
   let snapshot: ToolGroupMountSnapshot = {
+    awaitingRestoredAgentMessage: false,
     chatId: initialChatId,
     hasCommittedTimeline: false,
+    isRestoringStream: false,
+    restoredAgentMessageIds: new Set(),
     seenAgentMessageIds: new Set(),
     seenToolGroupIds: new Set(),
   };
   const listeners = new Set<() => void>();
 
   return {
-    commit(chatId, rows) {
+    commit(chatId, rows, isRestoringStream) {
       const isCurrentChat = snapshot.chatId === chatId;
+      let awaitingRestoredAgentMessage = isCurrentChat
+        ? snapshot.awaitingRestoredAgentMessage
+        : false;
       const previouslySeenAgentMessageIds = isCurrentChat
         ? snapshot.seenAgentMessageIds
+        : new Set<string>();
+      const restoredAgentMessageIds = isCurrentChat
+        ? new Set(snapshot.restoredAgentMessageIds)
         : new Set<string>();
       const seenAgentMessageIds = isCurrentChat
         ? new Set(snapshot.seenAgentMessageIds)
@@ -114,6 +130,29 @@ function createToolGroupMountStore(initialChatId: string): ToolGroupMountStore {
         ? new Set(snapshot.seenToolGroupIds)
         : new Set<string>();
       let changed = !isCurrentChat;
+
+      if (
+        isRestoringStream &&
+        (!isCurrentChat || !snapshot.isRestoringStream)
+      ) {
+        awaitingRestoredAgentMessage = true;
+        changed = true;
+      }
+      if (!isCurrentChat || snapshot.isRestoringStream !== isRestoringStream) {
+        changed = true;
+      }
+
+      const latestMessage = rows.at(-1)?.message;
+      const latestIsAgentMessage =
+        latestMessage?.role === "assistant" &&
+        latestMessage.metadata?.mode === "agent";
+      if (awaitingRestoredAgentMessage && latestIsAgentMessage) {
+        if (!restoredAgentMessageIds.has(latestMessage.id)) {
+          restoredAgentMessageIds.add(latestMessage.id);
+          changed = true;
+        }
+        awaitingRestoredAgentMessage = false;
+      }
 
       for (const row of rows) {
         const isAgentMessage =
@@ -144,8 +183,11 @@ function createToolGroupMountStore(initialChatId: string): ToolGroupMountStore {
       if (!changed) return;
 
       snapshot = {
+        awaitingRestoredAgentMessage,
         chatId,
         hasCommittedTimeline,
+        isRestoringStream,
+        restoredAgentMessageIds,
         seenAgentMessageIds,
         seenToolGroupIds,
       };
@@ -335,6 +377,21 @@ export const Messages = ({
   );
   const rawTimelineRows = useMemo(() => {
     const isCurrentChat = toolGroupMountState.chatId === chatId;
+    const restoredAgentMessageIds = isCurrentChat
+      ? new Set(toolGroupMountState.restoredAgentMessageIds)
+      : new Set<string>();
+    if (
+      isCurrentChat &&
+      (isAutoResuming || toolGroupMountState.awaitingRestoredAgentMessage)
+    ) {
+      const latestMessage = visibleMessages.at(-1);
+      if (
+        latestMessage?.role === "assistant" &&
+        latestMessage.metadata?.mode === "agent"
+      ) {
+        restoredAgentMessageIds.add(latestMessage.id);
+      }
+    }
 
     return deriveChatTimelineRows({
       messages: visibleMessages,
@@ -351,6 +408,7 @@ export const Messages = ({
       seenAgentMessageIds: isCurrentChat
         ? toolGroupMountState.seenAgentMessageIds
         : new Set(),
+      restoredAgentMessageIds,
     });
   }, [
     chatId,
@@ -374,8 +432,12 @@ export const Messages = ({
   );
   useLayoutEffect(() => {
     stableTimelineRowsRef.current = stableTimelineRowsState;
-    toolGroupMountStore.commit(chatId, stableTimelineRowsState.result);
-  }, [chatId, stableTimelineRowsState, toolGroupMountStore]);
+    toolGroupMountStore.commit(
+      chatId,
+      stableTimelineRowsState.result,
+      isAutoResuming,
+    );
+  }, [chatId, isAutoResuming, stableTimelineRowsState, toolGroupMountStore]);
   const timelineRows = stableTimelineRowsState.result;
   const navigatorItems = useMemo(
     () => deriveMessageNavigatorItems(visibleMessages, timelineRows),
@@ -714,6 +776,7 @@ export const Messages = ({
               keepLatestReasoningOpenDuringStreaming={
                 row.keepLatestReasoningOpenDuringStreaming
               }
+              suppressReasoningAutoOpen={row.suppressReasoningAutoOpen}
               message={row.message}
               part={row.part}
               partIndex={row.partIndex}

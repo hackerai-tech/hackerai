@@ -9,6 +9,7 @@ type AgentActivityRowProps = {
   deferReasoningCollapseUntilParent: boolean;
   isLastMessage: boolean;
   keepLatestReasoningOpenDuringStreaming: boolean;
+  suppressReasoningAutoOpen: boolean;
   message: ChatMessage;
   part: ChatMessage["parts"][number];
   partIndex: number;
@@ -21,6 +22,7 @@ export const AgentActivityRow = memo(function AgentActivityRow({
   deferReasoningCollapseUntilParent,
   isLastMessage,
   keepLatestReasoningOpenDuringStreaming,
+  suppressReasoningAutoOpen,
   message,
   part,
   partIndex,
@@ -54,6 +56,7 @@ export const AgentActivityRow = memo(function AgentActivityRow({
           keepLatestReasoningOpenDuringStreaming={
             keepLatestReasoningOpenDuringStreaming
           }
+          suppressReasoningAutoOpen={suppressReasoningAutoOpen}
           deferReasoningCollapseUntilParent={deferReasoningCollapseUntilParent}
           terminalOutputByToolCallId={terminalOutputByToolCallId}
           sharedFileDetails={sharedFileDetails}

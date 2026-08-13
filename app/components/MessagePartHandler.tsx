@@ -22,6 +22,7 @@ interface MessagePartHandlerProps {
   status: ChatStatus;
   isLastMessage?: boolean;
   keepLatestReasoningOpenDuringStreaming?: boolean;
+  suppressReasoningAutoOpen?: boolean;
   deferReasoningCollapseUntilParent?: boolean;
   /** Pre-computed terminal output by toolCallId (from message level) to avoid per-handler filtering */
   terminalOutputByToolCallId?: Map<string, string>;
@@ -76,6 +77,10 @@ function arePropsEqual(
   if (
     prevProps.keepLatestReasoningOpenDuringStreaming !==
     nextProps.keepLatestReasoningOpenDuringStreaming
+  )
+    return false;
+  if (
+    prevProps.suppressReasoningAutoOpen !== nextProps.suppressReasoningAutoOpen
   )
     return false;
   if (
@@ -152,6 +157,7 @@ export const MessagePartHandler = memo(function MessagePartHandler({
   status,
   isLastMessage,
   keepLatestReasoningOpenDuringStreaming,
+  suppressReasoningAutoOpen,
   deferReasoningCollapseUntilParent,
   terminalOutputByToolCallId,
   sharedFileDetails,
@@ -179,6 +185,7 @@ export const MessagePartHandler = memo(function MessagePartHandler({
           status={status}
           isLastMessage={isLastMessage}
           keepLatestOpenDuringStreaming={keepLatestReasoningOpenDuringStreaming}
+          suppressAutoOpenDuringStreaming={suppressReasoningAutoOpen}
           deferCollapseUntilParent={deferReasoningCollapseUntilParent}
         />
       );
