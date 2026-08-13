@@ -622,16 +622,21 @@ export const listActiveCloudSessionsForBackend = query({
   returns: v.array(cloudSessionForBackend),
   handler: async (ctx, args) => {
     validateServiceKey(args.serviceKey);
-    const sessions = await ctx.db
-      .query("cloud_sandbox_sessions")
-      .withIndex("by_user_id", (q) => q.eq("user_id", args.userId))
-      .collect();
-    return sessions
-      .filter(
-        (session) =>
-          session.status === "starting" || session.status === "running",
-      )
-      .map(serializeCloudSession);
+    const [starting, running] = await Promise.all([
+      ctx.db
+        .query("cloud_sandbox_sessions")
+        .withIndex("by_user_and_status", (q) =>
+          q.eq("user_id", args.userId).eq("status", "starting"),
+        )
+        .collect(),
+      ctx.db
+        .query("cloud_sandbox_sessions")
+        .withIndex("by_user_and_status", (q) =>
+          q.eq("user_id", args.userId).eq("status", "running"),
+        )
+        .collect(),
+    ]);
+    return [...starting, ...running].map(serializeCloudSession);
   },
 });
 

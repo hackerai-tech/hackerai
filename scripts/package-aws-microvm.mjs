@@ -14,14 +14,9 @@ const localPackage = JSON.parse(
   await readFile(join(root, "packages", "local", "package.json"), "utf8"),
 );
 
-// node-pty is optional for user-owned hosts, but it is required in the managed
-// cloud image because interactive terminal parity is part of the provider gate.
-localPackage.dependencies = {
-  ...localPackage.dependencies,
-  ...localPackage.optionalDependencies,
-};
-delete localPackage.optionalDependencies;
-delete localPackage.devDependencies;
+// Keep dependency categories identical to the package-specific lockfile so
+// frozen installs remain reproducible. `--prod` skips devDependencies while
+// retaining optional node-pty for managed-cloud PTY support.
 delete localPackage.scripts;
 
 const dockerfile = `${baseDockerfile.trim()}

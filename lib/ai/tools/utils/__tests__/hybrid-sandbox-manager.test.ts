@@ -608,6 +608,8 @@ describe("HybridSandboxManager reset cleanup", () => {
   });
 
   it("classifies an AWS relay sandbox as cloud rather than local", () => {
+    const originalProvider = process.env.CLOUD_SANDBOX_PROVIDER;
+    process.env.CLOUD_SANDBOX_PROVIDER = "aws-lambda-microvm";
     const manager = new HybridSandboxManager(
       "user-1",
       jest.fn(),
@@ -621,9 +623,19 @@ describe("HybridSandboxManager reset cleanup", () => {
       getCloudProvider: () => "aws-lambda-microvm",
     };
 
-    manager.setSandbox(sandbox as any);
-
-    expect(manager.getSandboxInfo()).toMatchObject({ type: "e2b" });
+    try {
+      manager.setSandbox(sandbox as any);
+      expect(manager.getSandboxInfo()).toEqual({
+        type: "e2b",
+        provider: "aws-lambda-microvm",
+      });
+    } finally {
+      if (originalProvider === undefined) {
+        delete process.env.CLOUD_SANDBOX_PROVIDER;
+      } else {
+        process.env.CLOUD_SANDBOX_PROVIDER = originalProvider;
+      }
+    }
   });
 
   it("marks E2B unavailable after the initial check and reconnect both fail", () => {
