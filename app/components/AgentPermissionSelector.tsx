@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   Check,
   ChevronDown,
@@ -63,8 +63,13 @@ export function AgentPermissionSelector({
   const {
     agentAutoReviewAvailable,
     agentPermissionMode,
+    resolveAgentAutoReviewAvailability,
     setAgentPermissionMode,
   } = useGlobalState();
+  useEffect(() => {
+    resolveAgentAutoReviewAvailability();
+  }, [resolveAgentAutoReviewAvailability]);
+
   const showAutoReview =
     agentAutoReviewAvailable === true ||
     (agentAutoReviewAvailable === null &&

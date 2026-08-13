@@ -3,6 +3,7 @@ import { fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, jest } from "@jest/globals";
 
 const setAgentPermissionMode = jest.fn();
+const resolveAgentAutoReviewAvailability = jest.fn();
 const captureAuthenticatedEvent = jest.fn();
 let agentPermissionMode = "full_access";
 let agentAutoReviewAvailable: boolean | null = true;
@@ -11,6 +12,7 @@ jest.mock("@/app/contexts/GlobalState", () => ({
   useGlobalState: () => ({
     agentAutoReviewAvailable,
     agentPermissionMode,
+    resolveAgentAutoReviewAvailability,
     setAgentPermissionMode,
   }),
 }));
@@ -28,7 +30,14 @@ describe("AgentPermissionSelector", () => {
     agentPermissionMode = "full_access";
     agentAutoReviewAvailable = true;
     setAgentPermissionMode.mockClear();
+    resolveAgentAutoReviewAvailability.mockClear();
     captureAuthenticatedEvent.mockClear();
+  });
+
+  it("resolves availability when the selector is encountered", () => {
+    render(<AgentPermissionSelector analyticsSurface="chat_input" />);
+
+    expect(resolveAgentAutoReviewAvailability).toHaveBeenCalledTimes(1);
   });
 
   it("captures permission mode changes before updating the selection", () => {

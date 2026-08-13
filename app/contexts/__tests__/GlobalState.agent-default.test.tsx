@@ -82,6 +82,16 @@ function GlobalStateProbe() {
   );
 }
 
+function AgentAutoReviewAvailabilityProbe() {
+  const { resolveAgentAutoReviewAvailability } = useGlobalState();
+
+  useEffect(() => {
+    resolveAgentAutoReviewAvailability();
+  }, [resolveAgentAutoReviewAvailability]);
+
+  return <GlobalStateProbe />;
+}
+
 function ActiveProjectProbe() {
   const { activeProjectId } = useGlobalState();
 
@@ -180,7 +190,7 @@ describe("GlobalStateProvider agent defaults", () => {
     }) as unknown as typeof fetch;
     const renderProbe = (chatId: string) => (
       <GlobalStateProvider>
-        <GlobalStateProbe key={chatId} />
+        <AgentAutoReviewAvailabilityProbe key={chatId} />
       </GlobalStateProvider>
     );
     const { rerender } = render(renderProbe("chat-a"));
@@ -205,6 +215,22 @@ describe("GlobalStateProvider agent defaults", () => {
     ).toHaveLength(1);
   });
 
+  it("does not resolve Auto review availability before a selector is encountered", () => {
+    render(
+      <GlobalStateProvider>
+        <GlobalStateProbe />
+      </GlobalStateProvider>,
+    );
+
+    expect(
+      jest
+        .mocked(global.fetch)
+        .mock.calls.some(
+          ([input]) => String(input) === "/api/experiments/agent-auto-review",
+        ),
+    ).toBe(false);
+  });
+
   it("fails closed and normalizes a stale Auto review preference", async () => {
     window.localStorage.setItem("agent_permission_mode", "auto_review");
     global.fetch = jest.fn((input) => {
@@ -219,7 +245,7 @@ describe("GlobalStateProvider agent defaults", () => {
 
     render(
       <GlobalStateProvider>
-        <GlobalStateProbe />
+        <AgentAutoReviewAvailabilityProbe />
       </GlobalStateProvider>,
     );
 
