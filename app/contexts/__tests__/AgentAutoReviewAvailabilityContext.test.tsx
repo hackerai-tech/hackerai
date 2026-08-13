@@ -47,10 +47,12 @@ function PassiveSidebarLikeConsumer({ onRender }: { onRender: () => void }) {
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
-  const promise = new Promise<T>((resolvePromise) => {
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
     resolve = resolvePromise;
+    reject = rejectPromise;
   });
-  return { promise, resolve };
+  return { promise, reject, resolve };
 }
 
 function availableResponse(available: boolean) {
@@ -123,6 +125,38 @@ describe("AgentAutoReviewAvailabilityProvider", () => {
     });
 
     expect(onSidebarRender).toHaveBeenCalledTimes(initialCommittedRenderCount);
+  });
+
+  it("leaves availability unresolved and permits a later request after fetch failure", async () => {
+    const failedResponse = deferred<Response>();
+    global.fetch = jest
+      .fn()
+      .mockReturnValueOnce(failedResponse.promise)
+      .mockResolvedValueOnce(availableResponse(true)) as jest.MockedFunction<
+      typeof fetch
+    >;
+    const renderProvider = (selectorKey: string) => (
+      <AgentAutoReviewAvailabilityProvider>
+        <AvailabilityProbe key={selectorKey} />
+      </AgentAutoReviewAvailabilityProvider>
+    );
+    const { rerender } = render(renderProvider("first-selector"));
+
+    await waitFor(() => expect(global.fetch).toHaveBeenCalledTimes(1));
+    await act(async () => {
+      failedResponse.reject(new Error("temporary network failure"));
+    });
+    expect(screen.getByTestId("agent-auto-review-available")).toHaveTextContent(
+      "null",
+    );
+
+    rerender(renderProvider("retry-selector"));
+    await waitFor(() => {
+      expect(global.fetch).toHaveBeenCalledTimes(2);
+      expect(
+        screen.getByTestId("agent-auto-review-available"),
+      ).toHaveTextContent("true");
+    });
   });
 
   it("exposes no stale value and ignores an older response after account switch", async () => {

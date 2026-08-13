@@ -32,7 +32,7 @@ export function AgentAutoReviewAvailabilityProvider({
   } | null>(null);
   const requestRef = useRef<{
     userId: string;
-    request: Promise<boolean>;
+    request: Promise<boolean | null>;
   } | null>(null);
 
   const agentAutoReviewAvailable =
@@ -49,16 +49,19 @@ export function AgentAutoReviewAvailabilityProvider({
       return;
     }
 
-    const request = fetch("/api/experiments/agent-auto-review", {
-      credentials: "same-origin",
-      cache: "no-store",
-    })
+    const request: Promise<boolean | null> = fetch(
+      "/api/experiments/agent-auto-review",
+      {
+        credentials: "same-origin",
+        cache: "no-store",
+      },
+    )
       .then(async (response) => {
-        if (!response.ok) return false;
+        if (!response.ok) return null;
         const data = (await response.json()) as { available?: unknown };
-        return data.available === true;
+        return typeof data.available === "boolean" ? data.available : null;
       })
-      .catch(() => false);
+      .catch(() => null);
 
     requestRef.current = { userId: authUserId, request };
     void request.then((available) => {
@@ -71,6 +74,7 @@ export function AgentAutoReviewAvailabilityProvider({
       }
 
       requestRef.current = null;
+      if (available === null) return;
       setAvailability({ userId: authUserId, available });
     });
   }, [authUserId, availability?.userId]);
