@@ -31,6 +31,7 @@ import { useMessageScroll } from "../hooks/useMessageScroll";
 import { useChatHandlers } from "../hooks/useChatHandlers";
 import { useGlobalState } from "../contexts/GlobalState";
 import { useComposerInput } from "../contexts/ComposerState";
+import { useChatRoutePresentation } from "../contexts/ChatRoutePresentationContext";
 import {
   type ActiveAgentToolApprovalRequest,
   useAgentApproval,
@@ -532,6 +533,8 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   } = useGlobalState();
   const { setAgentApprovalSession, clearAgentApprovalSession } =
     useAgentApproval();
+  const { hasResolvedInitialPresentation, markInitialPresentationResolved } =
+    useChatRoutePresentation();
 
   // Simple logic: use route chatId if provided, otherwise generate new one
   const [chatId, setChatId] = useState<string>(() => {
@@ -1838,24 +1841,22 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
       hasPaginatedMessageResults: !!paginatedMessageResults,
       awaitingServerChat,
     });
-  const [
-    resolvedApprovalPresentationChatId,
-    setResolvedApprovalPresentationChatId,
-  ] = useState<string | null>(null);
   const canResolveApprovalPresentation =
     !isInitialExistingChatLoad && chatDataForCurrentChat !== undefined;
-  const hasResolvedApprovalPresentation =
-    resolvedApprovalPresentationChatId === chatId;
 
-  useLayoutEffect(() => {
-    if (canResolveApprovalPresentation) {
-      setResolvedApprovalPresentationChatId(chatId);
+  useEffect(() => {
+    if (!isExistingChat || canResolveApprovalPresentation) {
+      markInitialPresentationResolved();
     }
-  }, [canResolveApprovalPresentation, chatId]);
+  }, [
+    canResolveApprovalPresentation,
+    isExistingChat,
+    markInitialPresentationResolved,
+  ]);
 
   const isApprovalPresentationLoading =
     isExistingChat &&
-    !hasResolvedApprovalPresentation &&
+    !hasResolvedInitialPresentation &&
     !canResolveApprovalPresentation;
   const showBottomChatInput =
     (hasMessages || isExistingChat || isMobile) && !isChatNotFound;
