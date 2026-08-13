@@ -76,6 +76,7 @@ export interface FileWriteMessage {
   path: string;
   content: string;
   isBase64?: boolean;
+  allowedRoot?: string;
   targetConnectionId: string;
 }
 
@@ -85,6 +86,7 @@ export interface FileAppendMessage {
   path: string;
   content: string;
   isBase64?: boolean;
+  allowedRoot?: string;
   targetConnectionId: string;
 }
 
