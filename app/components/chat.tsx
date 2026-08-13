@@ -222,6 +222,26 @@ export function getExistingChatLoadState({
   return { isInitialExistingChatLoad, isChatNotFound };
 }
 
+const shouldReleaseStreamedTitle = (
+  streamedTitle: string | null,
+  persistedTitle: string | null | undefined,
+): boolean => Boolean(streamedTitle && persistedTitle === streamedTitle);
+
+export function useStreamedChatTitle(
+  persistedTitle: string | null | undefined,
+) {
+  const [streamedTitle, setStreamedTitle] = useState<string | null>(null);
+
+  // The streamed title only bridges the gap until Convex receives the same
+  // generated title. This guarded adjustment restarts the current render
+  // before children commit with a stale title source.
+  if (shouldReleaseStreamedTitle(streamedTitle, persistedTitle)) {
+    setStreamedTitle(null);
+  }
+
+  return [streamedTitle ?? persistedTitle ?? null, setStreamedTitle] as const;
+}
+
 export function useServerMessages(
   paginatedMessageResults: MessageRecord[] | undefined,
 ): ChatMessage[] {
@@ -564,9 +584,6 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     Map<string, FileDetails[]>
   >(new Map());
 
-  // Title streamed mid-response so the header updates before Convex persists it
-  const [streamedTitle, setStreamedTitle] = useState<string | null>(null);
-
   // Use global state ref so streaming callback reads latest value
   const hasUserDismissedWarningRef = useLatestRef(
     hasUserDismissedRateLimitWarning,
@@ -602,21 +619,6 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     null,
   );
 
-  // Sync local chat state from URL (single source of truth)
-  useEffect(() => {
-    setStreamedTitle(null);
-    lastAppliedTodoOutputRef.current = null;
-    if (routeChatId) {
-      setChatId(routeChatId);
-      setIsExistingChat(true);
-    } else {
-      // Navigated to "/" (new chat) — reset to fresh state
-      setChatId(uuidv4());
-      setIsExistingChat(false);
-      wasNewChatRef.current = true;
-    }
-  }, [routeChatId]);
-
   // Use paginated query to load messages in batches of 14
   const paginatedMessages = usePaginatedQuery(
     api.messages.getMessagesByChatId,
@@ -632,8 +634,26 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
 
   const chatDataForCurrentChat =
     chatData && (chatData as any).id === chatId ? chatData : undefined;
+  const [chatTitle, setStreamedTitle] = useStreamedChatTitle(
+    chatDataForCurrentChat?.title,
+  );
   const loadedChatDocumentId = chatDataForCurrentChat?._id;
   const lastRunFinishedAt = chatDataForCurrentChat?.last_run_finished_at;
+
+  // Sync local chat state from URL (single source of truth)
+  useEffect(() => {
+    setStreamedTitle(null);
+    lastAppliedTodoOutputRef.current = null;
+    if (routeChatId) {
+      setChatId(routeChatId);
+      setIsExistingChat(true);
+    } else {
+      // Navigated to "/" (new chat) — reset to fresh state
+      setChatId(uuidv4());
+      setIsExistingChat(false);
+      wasNewChatRef.current = true;
+    }
+  }, [routeChatId, setStreamedTitle]);
 
   useEffect(() => {
     if (!loadedChatDocumentId) return;
@@ -656,10 +676,6 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   const storedSandboxType = (chatDataForCurrentChat as any)?.sandbox_type as
     string | undefined;
 
-  // Prefer the mid-stream title — the server seeds chatData.title with the
-  // user's first message before generation completes, which would otherwise
-  // flicker into the header on abort.
-  const chatTitle = streamedTitle ?? chatDataForCurrentChat?.title ?? null;
   const activeTriggerRunId = (chatDataForCurrentChat as any)
     ?.active_trigger_run_id as string | undefined;
   // The pending request is its own persisted lifecycle. Do not gate it on the
@@ -1388,6 +1404,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   }, [
     setChatReset,
     setMessages,
+    setStreamedTitle,
     setTodos,
     resetAutoContinueCount,
     stopActiveBrowserStream,
