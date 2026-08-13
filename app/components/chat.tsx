@@ -23,7 +23,6 @@ import { api } from "@/convex/_generated/api";
 import type { FileDetails } from "@/types/file";
 import { Messages } from "./Messages";
 import { ChatInput } from "./ChatInput";
-import { ChatLoadingStatusPill } from "./ChatLoadingStatusPill";
 import { ComposerOverlay } from "./ComposerOverlay";
 import type { RateLimitWarningData } from "./RateLimitWarning";
 import ChatHeader from "./ChatHeader";
@@ -32,6 +31,7 @@ import { useMessageScroll } from "../hooks/useMessageScroll";
 import { useChatHandlers } from "../hooks/useChatHandlers";
 import { useGlobalState } from "../contexts/GlobalState";
 import { useComposerInput } from "../contexts/ComposerState";
+import { useChatRoutePresentation } from "../contexts/ChatRoutePresentationContext";
 import {
   type ActiveAgentToolApprovalRequest,
   useAgentApproval,
@@ -533,6 +533,8 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   } = useGlobalState();
   const { setAgentApprovalSession, clearAgentApprovalSession } =
     useAgentApproval();
+  const { hasResolvedInitialPresentation, markInitialPresentationResolved } =
+    useChatRoutePresentation();
 
   // Simple logic: use route chatId if provided, otherwise generate new one
   const [chatId, setChatId] = useState<string>(() => {
@@ -660,18 +662,30 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   const chatTitle = streamedTitle ?? chatDataForCurrentChat?.title ?? null;
   const activeTriggerRunId = (chatDataForCurrentChat as any)
     ?.active_trigger_run_id as string | undefined;
-  const storedAgentApprovalRequest = activeTriggerRunId
-    ? getStoredAgentApprovalRequest(chatDataForCurrentChat)
-    : null;
+  // The pending request is its own persisted lifecycle. Do not gate it on the
+  // run id: Convex can publish those fields in separate snapshots during
+  // reload, and hiding an otherwise-pending request briefly shows the composer.
+  const storedAgentApprovalRequest = getStoredAgentApprovalRequest(
+    chatDataForCurrentChat,
+  );
   const activeTriggerRunRef = useLatestRef(activeTriggerRunId);
   const hasLoadedCurrentChat = chatDataForCurrentChat !== undefined;
 
   useEffect(() => {
-    if (!hasLoadedCurrentChat || activeTriggerRunId) {
+    if (
+      !hasLoadedCurrentChat ||
+      activeTriggerRunId ||
+      storedAgentApprovalRequest
+    ) {
       return;
     }
     clearAgentApprovalSession();
-  }, [activeTriggerRunId, clearAgentApprovalSession, hasLoadedCurrentChat]);
+  }, [
+    activeTriggerRunId,
+    clearAgentApprovalSession,
+    hasLoadedCurrentChat,
+    storedAgentApprovalRequest,
+  ]);
 
   // Convert paginated Convex messages to UI format for useChat and useAutoResume
   // Messages come from server in descending order (newest first from pagination); reverse for chronological order
@@ -1827,6 +1841,23 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
       hasPaginatedMessageResults: !!paginatedMessageResults,
       awaitingServerChat,
     });
+  const canResolveApprovalPresentation =
+    !isInitialExistingChatLoad && chatDataForCurrentChat !== undefined;
+
+  useEffect(() => {
+    if (!isExistingChat || canResolveApprovalPresentation) {
+      markInitialPresentationResolved();
+    }
+  }, [
+    canResolveApprovalPresentation,
+    isExistingChat,
+    markInitialPresentationResolved,
+  ]);
+
+  const isApprovalPresentationLoading =
+    isExistingChat &&
+    !hasResolvedInitialPresentation &&
+    !canResolveApprovalPresentation;
   const showBottomChatInput =
     (hasMessages || isExistingChat || isMobile) && !isChatNotFound;
   const [composerOverlayHeight, setComposerOverlayHeight] = useState(0);
@@ -1997,7 +2028,6 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
                   active={showChatLayout}
                   onHeightChange={setComposerOverlayHeight}
                 >
-                  {isInitialExistingChatLoad ? <ChatLoadingStatusPill /> : null}
                   <ChatInput
                     onSubmit={handleSubmit}
                     onStop={handleStop}
@@ -2009,9 +2039,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
                     onScrollToBottom={handleScrollToBottom}
                     isNewChat={!isExistingChat}
                     chatId={chatId}
-                    sendDisabledReason={
-                      isInitialExistingChatLoad ? "Messages loading" : undefined
-                    }
+                    isResolvingInitialState={isApprovalPresentationLoading}
                     rateLimitWarning={
                       rateLimitWarning ? rateLimitWarning : undefined
                     }

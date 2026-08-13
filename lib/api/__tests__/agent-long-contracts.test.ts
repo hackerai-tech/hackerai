@@ -1028,10 +1028,10 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(statusSrc).toMatch(/clearTerminalAgentRun/);
     expect(statusSrc).toMatch(/clearApprovalPending:\s*true/);
     expect(chatComponentSrc).toMatch(
-      /const storedAgentApprovalRequest\s*=\s*activeTriggerRunId\s*\?\s*getStoredAgentApprovalRequest\(chatDataForCurrentChat\)\s*:\s*null/,
+      /const storedAgentApprovalRequest\s*=\s*getStoredAgentApprovalRequest\(\s*chatDataForCurrentChat,?\s*\)/,
     );
     expect(chatComponentSrc).toMatch(
-      /if\s*\(\s*!hasLoadedCurrentChat\s*\|\|\s*activeTriggerRunId\s*\)\s*\{\s*return;\s*\}\s*clearAgentApprovalSession\(\)/,
+      /if\s*\(\s*!hasLoadedCurrentChat\s*\|\|\s*activeTriggerRunId\s*\|\|\s*storedAgentApprovalRequest\s*\)\s*\{\s*return;\s*\}\s*clearAgentApprovalSession\(\)/,
     );
   });
 

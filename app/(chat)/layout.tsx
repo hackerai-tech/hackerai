@@ -4,6 +4,7 @@ import { useConvexAuth } from "convex/react";
 import { ChatLayout } from "@/app/components/ChatLayout";
 import Loading from "@/components/ui/loading";
 import { useHasAuthenticatedBefore } from "@/app/hooks/useHasAuthenticatedBefore";
+import { ChatRoutePresentationProvider } from "@/app/contexts/ChatRoutePresentationContext";
 
 const fullWidthShell = (
   <div className="h-dvh min-h-0 flex flex-col bg-background overflow-hidden">
@@ -30,7 +31,9 @@ export default function ChatRouteLayout({
   if (isAuthenticated || (isLoading && hasAuthHint)) {
     return (
       <div className="h-dvh min-h-0 flex flex-col bg-background overflow-hidden">
-        <ChatLayout>{children}</ChatLayout>
+        <ChatRoutePresentationProvider>
+          <ChatLayout>{children}</ChatLayout>
+        </ChatRoutePresentationProvider>
       </div>
     );
   }

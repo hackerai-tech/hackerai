@@ -1,16 +1,24 @@
 import "@testing-library/jest-dom";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, jest } from "@jest/globals";
 
 const setAgentPermissionMode = jest.fn();
+const resolveAgentAutoReviewAvailability = jest.fn();
 const captureAuthenticatedEvent = jest.fn();
 let agentPermissionMode = "full_access";
-const fetchMock = jest.fn();
+let agentAutoReviewAvailable: boolean | null = true;
 
 jest.mock("@/app/contexts/GlobalState", () => ({
   useGlobalState: () => ({
     agentPermissionMode,
     setAgentPermissionMode,
+  }),
+}));
+
+jest.mock("@/app/contexts/AgentAutoReviewAvailabilityContext", () => ({
+  useAgentAutoReviewAvailability: () => ({
+    agentAutoReviewAvailable,
+    resolveAgentAutoReviewAvailability,
   }),
 }));
 
@@ -25,20 +33,20 @@ const { AgentPermissionSelector } = jest.requireActual<
 describe("AgentPermissionSelector", () => {
   beforeEach(() => {
     agentPermissionMode = "full_access";
+    agentAutoReviewAvailable = true;
     setAgentPermissionMode.mockClear();
+    resolveAgentAutoReviewAvailability.mockClear();
     captureAuthenticatedEvent.mockClear();
-    fetchMock.mockReset();
-    fetchMock.mockResolvedValue({
-      ok: true,
-      json: async () => ({ available: true, phase: "shadow" }),
-    });
-    global.fetch = fetchMock as typeof fetch;
   });
 
-  it("captures permission mode changes before updating the selection", async () => {
+  it("resolves availability when the selector is encountered", () => {
     render(<AgentPermissionSelector analyticsSurface="chat_input" />);
 
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    expect(resolveAgentAutoReviewAvailability).toHaveBeenCalledTimes(1);
+  });
+
+  it("captures permission mode changes before updating the selection", () => {
+    render(<AgentPermissionSelector analyticsSurface="chat_input" />);
 
     fireEvent.click(screen.getByRole("button", { name: /full access/i }));
     fireEvent.click(
@@ -116,41 +124,36 @@ describe("AgentPermissionSelector", () => {
     ).toBeInTheDocument();
   });
 
-  it("fails closed and hides Approve for me when the flag is unavailable", async () => {
-    fetchMock.mockResolvedValue({
-      ok: true,
-      json: async () => ({ available: false }),
-    });
+  it("fails closed and hides Approve for me when the flag is unavailable", () => {
+    agentAutoReviewAvailable = false;
     render(<AgentPermissionSelector analyticsSurface="chat_input" />);
 
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
     fireEvent.click(screen.getByRole("button", { name: /full access/i }));
     expect(screen.queryByText("Approve for me")).not.toBeInTheDocument();
     expect(screen.getAllByText("Full access")).not.toHaveLength(0);
   });
 
-  it("moves a stale Auto review selection back to Ask for approval", async () => {
+  it("keeps the selected Auto review label stable while availability resolves", () => {
     agentPermissionMode = "auto_review";
-    fetchMock.mockResolvedValue({
-      ok: true,
-      json: async () => ({ available: false }),
-    });
+    agentAutoReviewAvailable = null;
 
     render(<AgentPermissionSelector analyticsSurface="chat_input" />);
 
-    await waitFor(() =>
-      expect(setAgentPermissionMode).toHaveBeenCalledWith("ask_approval"),
-    );
+    expect(
+      screen.getByRole("button", { name: /^approve for me$/i }),
+    ).toBeInTheDocument();
+    expect(setAgentPermissionMode).not.toHaveBeenCalled();
   });
 
-  it("moves a stale Auto review selection back when flag lookup fails", async () => {
+  it("falls back to Ask for approval after availability resolves false", () => {
     agentPermissionMode = "auto_review";
-    fetchMock.mockRejectedValue(new Error("network unavailable"));
+    agentAutoReviewAvailable = false;
 
     render(<AgentPermissionSelector analyticsSurface="chat_input" />);
 
-    await waitFor(() =>
-      expect(setAgentPermissionMode).toHaveBeenCalledWith("ask_approval"),
-    );
+    expect(
+      screen.getByRole("button", { name: /^ask for approval$/i }),
+    ).toBeInTheDocument();
+    expect(setAgentPermissionMode).toHaveBeenCalledWith("ask_approval");
   });
 });
