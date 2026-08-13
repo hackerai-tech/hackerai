@@ -189,6 +189,7 @@ import {
   Chat,
   getExistingChatLoadState,
   getStoredAgentApprovalRequest,
+  shouldReleaseStreamedTitle,
   useServerMessages,
 } from "../chat";
 import { ChatLayout } from "../ChatLayout";
@@ -258,6 +259,16 @@ describe("Chat Component Integration", () => {
   });
 
   describe("Basic Rendering", () => {
+    it("releases a persisted streamed title so later manual renames stay visible", () => {
+      expect(
+        shouldReleaseStreamedTitle("Generated title", "Generated title"),
+      ).toBe(true);
+      expect(
+        shouldReleaseStreamedTitle("Generated title", "Original prompt"),
+      ).toBe(false);
+      expect(shouldReleaseStreamedTitle(null, "Renamed title")).toBe(false);
+    });
+
     it("should render new chat with welcome message", () => {
       render(
         <TestWrapper>

@@ -222,6 +222,11 @@ export function getExistingChatLoadState({
   return { isInitialExistingChatLoad, isChatNotFound };
 }
 
+export const shouldReleaseStreamedTitle = (
+  streamedTitle: string | null,
+  persistedTitle: string | null | undefined,
+): boolean => Boolean(streamedTitle && persistedTitle === streamedTitle);
+
 export function useServerMessages(
   paginatedMessageResults: MessageRecord[] | undefined,
 ): ChatMessage[] {
@@ -658,6 +663,16 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   // user's first message before generation completes, which would otherwise
   // flicker into the header on abort.
   const chatTitle = streamedTitle ?? chatDataForCurrentChat?.title ?? null;
+
+  // The streamed title only bridges the gap until Convex receives the same
+  // generated title. Keeping it afterwards would mask later manual renames.
+  useEffect(() => {
+    if (
+      shouldReleaseStreamedTitle(streamedTitle, chatDataForCurrentChat?.title)
+    ) {
+      setStreamedTitle(null);
+    }
+  }, [chatDataForCurrentChat?.title, streamedTitle]);
   const activeTriggerRunId = (chatDataForCurrentChat as any)
     ?.active_trigger_run_id as string | undefined;
   const storedAgentApprovalRequest = activeTriggerRunId
