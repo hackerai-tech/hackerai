@@ -1,7 +1,11 @@
 import { tool, type Tool } from "ai";
 import { CommandExitError } from "@e2b/code-interpreter";
 import { randomUUID } from "crypto";
-import type { SandboxReadinessFailureReason, ToolContext } from "@/types";
+import type {
+  AgentAutoReviewTerminalInspection,
+  SandboxReadinessFailureReason,
+  ToolContext,
+} from "@/types";
 import { createTerminalHandler } from "@/lib/utils/terminal-executor";
 import { TIMEOUT_MESSAGE } from "@/lib/token-utils";
 import { saveTruncatedOutput } from "./utils/terminal-output-saver";
@@ -52,6 +56,11 @@ import {
   createRunTerminalCmdToolSchema,
 } from "./schemas";
 import { withE2BSandboxLeaseHeartbeat } from "./utils/sandbox";
+import {
+  collectAgentAutoReviewTerminalInspection,
+  getAgentAutoReviewInspectionKind,
+  terminalInspectionMatches,
+} from "@/lib/chat/agent-auto-review-evidence";
 
 const DEFAULT_STREAM_TIMEOUT_SECONDS =
   RUN_TERMINAL_DEFAULT_STREAM_TIMEOUT_SECONDS;
@@ -250,6 +259,28 @@ export const createRunTerminalCmd = (context: ToolContext) => {
         MAX_TIMEOUT_SECONDS,
       );
 
+      let terminalInspection: AgentAutoReviewTerminalInspection | undefined;
+      if (context.autoReviewEvidenceEnabled) {
+        try {
+          const { sandbox } = await getSandboxWithFallbackGuard({
+            sandboxManager,
+          });
+          terminalInspection = await collectAgentAutoReviewTerminalInspection({
+            command,
+            sandbox,
+          });
+        } catch {
+          const kind = getAgentAutoReviewInspectionKind(command);
+          if (kind) {
+            terminalInspection = {
+              kind,
+              status: "unresolved" as const,
+              reason: "inspection_failed" as const,
+            };
+          }
+        }
+      }
+
       const approval = await context.requestToolApproval?.({
         toolCallId,
         toolName: "run_terminal_cmd",
@@ -261,6 +292,7 @@ export const createRunTerminalCmd = (context: ToolContext) => {
         autoReviewContext: {
           type: "terminal_command",
           command,
+          ...(terminalInspection ? { inspection: terminalInspection } : {}),
         },
       });
       if (approval && !approval.approved) {
@@ -276,11 +308,37 @@ export const createRunTerminalCmd = (context: ToolContext) => {
       const approvedSandboxIdentity = approval?.approved
         ? approval.sandboxIdentity
         : undefined;
-      const getApprovedExecutionSandbox = () =>
-        getSandboxWithFallbackGuard({
+      let terminalInspectionRevalidated = false;
+      const getApprovedExecutionSandbox = async () => {
+        const result = await getSandboxWithFallbackGuard({
           sandboxManager,
           expectedSandboxIdentity: approvedSandboxIdentity,
         });
+        if (
+          approval?.approved &&
+          approval.approvalSource === "auto_review" &&
+          terminalInspection?.status === "resolved" &&
+          !terminalInspectionRevalidated
+        ) {
+          const currentInspection =
+            await collectAgentAutoReviewTerminalInspection({
+              command,
+              sandbox: result.sandbox,
+            });
+          if (
+            !terminalInspectionMatches({
+              reviewed: terminalInspection,
+              current: currentInspection,
+            })
+          ) {
+            throw new Error(
+              "The command's inspected files changed after automatic review. The command was not run. Retry it so the current action can be reviewed.",
+            );
+          }
+          terminalInspectionRevalidated = true;
+        }
+        return result;
+      };
 
       // ─── Interactive PTY exec branch ─────────────────────────────────
       if (interactive) {

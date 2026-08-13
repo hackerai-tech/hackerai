@@ -680,6 +680,7 @@ export const createChatHandler = () => {
               undefined,
               undefined,
               undefined,
+              undefined,
               projectContext.workingDirectory,
             );
 

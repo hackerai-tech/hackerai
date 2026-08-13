@@ -6,7 +6,10 @@ import {
   reviewAgentToolAction,
   shouldAutoReviewAgentToolAction,
 } from "@/lib/chat/agent-auto-review";
-import type { AgentToolApprovalRequest } from "@/types";
+import type {
+  AgentAutoReviewTerminalInspection,
+  AgentToolApprovalRequest,
+} from "@/types";
 
 const userMessage = (id: string, text: string): UIMessage => ({
   id,
@@ -14,14 +17,21 @@ const userMessage = (id: string, text: string): UIMessage => ({
   parts: [{ type: "text", text }],
 });
 
-const terminalRequest = (command: string): AgentToolApprovalRequest => ({
+const terminalRequest = (
+  command: string,
+  inspection?: AgentAutoReviewTerminalInspection,
+): AgentToolApprovalRequest => ({
   toolCallId: "tool-1",
   toolName: "run_terminal_cmd",
   operation: "terminal_execute",
   target: command,
   brief: "Run a command",
   justification: "The Agent says this is necessary.",
-  autoReviewContext: { type: "terminal_command", command },
+  autoReviewContext: {
+    type: "terminal_command",
+    command,
+    ...(inspection ? { inspection } : {}),
+  },
 });
 
 const terminalInteractionRequest = ({
@@ -176,6 +186,46 @@ describe("Agent Auto review", () => {
     expect(runModel).not.toHaveBeenCalled();
   });
 
+  it("lets the separate reviewer decide a resolved narrow cleanup", async () => {
+    const runModel = jest.fn(async ({ system, prompt }) => {
+      expect(system).toContain("A deletion can be approved");
+      expect(prompt).toContain('"scope":"workspace"');
+      expect(prompt).toContain('"state":"file"');
+      return {
+        output: {
+          verdict: "approve",
+          riskCategory: "destructive",
+          rationale: "The exact in-scope cleanup is explicitly authorized.",
+        },
+      };
+    });
+
+    await expect(
+      reviewAgentToolAction({
+        request: terminalRequest("rm -f build/stale.txt", {
+          kind: "filesystem_delete",
+          status: "resolved",
+          fingerprint: "reviewed-digest",
+          workingDirectory: "/workspace/project",
+          targets: [
+            {
+              path: "/workspace/project/build/stale.txt",
+              scope: "workspace",
+              state: "file",
+              sizeBytes: 42,
+            },
+          ],
+        }),
+        authorizationContext: {
+          text: "Remove the stale build output from this repository.",
+          complete: true,
+        },
+        runModel,
+      }),
+    ).resolves.toMatchObject({ verdict: "approve", source: "model" });
+    expect(runModel).toHaveBeenCalledTimes(1);
+  });
+
   it("asks the user for referenced-script and package-task indirection", async () => {
     for (const command of [
       "./deploy.sh",
@@ -192,6 +242,70 @@ describe("Agent Auto review", () => {
         riskCategory: "scope_expansion",
         source: "rule",
       });
+    }
+  });
+
+  it("reviews resolved script contents as untrusted evidence", async () => {
+    const runModel = jest.fn(async ({ system, prompt }) => {
+      expect(system).toContain("bounded read-only inspection results");
+      expect(prompt).toContain("pnpm exec jest --runInBand");
+      return {
+        output: {
+          verdict: "approve",
+          riskCategory: "routine",
+          rationale: "The resolved test task matches the user request.",
+        },
+      };
+    });
+    await expect(
+      reviewAgentToolAction({
+        request: terminalRequest("pnpm run test:unit", {
+          kind: "package_task",
+          status: "resolved",
+          fingerprint: "package-digest",
+          workingDirectory: "/workspace/project",
+          scripts: [
+            {
+              source: "package_script",
+              name: "test:unit",
+              command: "pnpm exec jest --runInBand",
+            },
+          ],
+        }),
+        authorizationContext,
+        runModel,
+      }),
+    ).resolves.toMatchObject({ verdict: "approve", source: "model" });
+  });
+
+  it("keeps unresolved deletion and script evidence on the human path", async () => {
+    for (const [command, inspection] of [
+      [
+        "rm -rf build",
+        {
+          kind: "filesystem_delete",
+          status: "unresolved",
+          reason: "too_broad",
+        },
+      ],
+      [
+        "./scripts/release.sh",
+        {
+          kind: "script",
+          status: "unresolved",
+          reason: "too_large",
+        },
+      ],
+    ] as const) {
+      const runModel = jest.fn();
+      await expect(
+        reviewAgentToolAction({
+          request: terminalRequest(command, inspection),
+          authorizationContext,
+          runModel,
+        }),
+      ).resolves.toMatchObject({ verdict: "ask_user", source: "rule" });
+      expect(runModel).not.toHaveBeenCalled();
     }
   });
 

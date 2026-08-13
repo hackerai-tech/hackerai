@@ -143,6 +143,7 @@ function makeContext(opts: {
   ptySessionManager?: PtySessionManager;
   chatId?: string;
   requestToolApproval?: import("@/types").AgentToolApprovalRequester;
+  autoReviewEvidenceEnabled?: boolean;
   onSandboxResourceMetrics?: import("@/types").SandboxResourceMetricsObserver;
   recordHealthFailure?: jest.MockedFunction<() => boolean>;
 }) {
@@ -202,6 +203,7 @@ function makeContext(opts: {
     getCurrentModelName: () => "active-model",
     subscription: "pro",
     requestToolApproval: opts.requestToolApproval,
+    autoReviewEvidenceEnabled: opts.autoReviewEvidenceEnabled,
     onSandboxResourceMetrics: opts.onSandboxResourceMetrics,
     isE2BSandbox: (s: unknown) => {
       if (!s || typeof s !== "object") return false;
@@ -406,6 +408,172 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
         command: "ping -c 4 hackerone.com",
       },
     });
+  });
+
+  test("collects bounded script evidence only for automatic review", async () => {
+    const run = jest.fn(
+      async (_cmd: string, opts?: { onStdout?: (s: string) => void }) => {
+        opts?.onStdout?.("ok\n");
+        return { stdout: "ok\n", stderr: "", exitCode: 0 };
+      },
+    );
+    const sandbox = {
+      sandboxKind: "centrifugo" as const,
+      getConnectionId: () => "desktop-a",
+      getWorkingDirectory: () => "/workspace/project",
+      isWindows: () => false,
+      supportsNativeFileRelay: () => true,
+      files: {
+        readText: jest.fn(async () => ({
+          type: "file_read_result" as const,
+          requestId: "request-1",
+          path: "/workspace/project/scripts/test.sh",
+          sizeBytes: 18,
+          totalLines: 2,
+          content: "#!/bin/sh\necho ok\n",
+        })),
+      },
+      commands: { run },
+    };
+    const requestToolApproval = jest.fn(async (request) => {
+      expect(request.autoReviewContext).toMatchObject({
+        type: "terminal_command",
+        command: "bash scripts/test.sh",
+        inspection: {
+          kind: "script",
+          status: "resolved",
+          scripts: [
+            {
+              source: "file",
+              path: "/workspace/project/scripts/test.sh",
+              content: "#!/bin/sh\necho ok\n",
+            },
+          ],
+          fingerprint: expect.any(String),
+        },
+      });
+      return {
+        approved: true as const,
+        approvalId: "approval-1",
+        sandboxIdentity: "connection:desktop-a" as const,
+        approvalSource: "auto_review" as const,
+      };
+    });
+    const { context } = makeContext({
+      sandbox,
+      requestToolApproval,
+      autoReviewEvidenceEnabled: true,
+    });
+
+    const result = (await runTool(createRunTerminalCmd(context), {
+      command: "bash scripts/test.sh",
+      brief: "run focused tests",
+      is_background: false,
+      timeout: 5,
+      interactive: false,
+    })) as { result: { exitCode: number; output: string } };
+
+    expect(result.result.exitCode).toBe(0);
+    expect(result.result.output).toContain("ok");
+    expect(sandbox.files.readText).toHaveBeenCalledTimes(2);
+    expect(run).toHaveBeenCalledTimes(1);
+  });
+
+  test("does not inspect files in Ask for approval mode", async () => {
+    const readText = jest.fn(async () => {
+      throw new Error("inspection should be disabled");
+    });
+    const sandbox = {
+      sandboxKind: "centrifugo" as const,
+      getConnectionId: () => "desktop-a",
+      getWorkingDirectory: () => "/workspace/project",
+      isWindows: () => false,
+      supportsNativeFileRelay: () => true,
+      files: { readText },
+      commands: {
+        run: jest.fn(
+          async (_cmd: string, opts?: { onStdout?: (s: string) => void }) => {
+            opts?.onStdout?.("ok\n");
+            return { stdout: "ok\n", stderr: "", exitCode: 0 };
+          },
+        ),
+      },
+    };
+    const requestToolApproval = jest.fn(async (request) => {
+      expect(request.autoReviewContext).toEqual({
+        type: "terminal_command",
+        command: "bash scripts/test.sh",
+      });
+      return {
+        approved: true as const,
+        approvalId: "approval-1",
+        sandboxIdentity: "connection:desktop-a" as const,
+      };
+    });
+    const { context } = makeContext({ sandbox, requestToolApproval });
+    await runTool(createRunTerminalCmd(context), {
+      command: "bash scripts/test.sh",
+      brief: "run focused tests",
+      is_background: false,
+      timeout: 5,
+      interactive: false,
+    });
+    expect(readText).not.toHaveBeenCalled();
+  });
+
+  test("blocks execution when inspected script contents change after automatic review", async () => {
+    const readText = jest
+      .fn()
+      .mockResolvedValueOnce({
+        type: "file_read_result" as const,
+        requestId: "request-1",
+        path: "/workspace/project/scripts/test.sh",
+        sizeBytes: 8,
+        totalLines: 1,
+        content: "echo ok\n",
+      })
+      .mockResolvedValueOnce({
+        type: "file_read_result" as const,
+        requestId: "request-2",
+        path: "/workspace/project/scripts/test.sh",
+        sizeBytes: 9,
+        totalLines: 1,
+        content: "echo bad\n",
+      });
+    const run = jest.fn();
+    const sandbox = {
+      sandboxKind: "centrifugo" as const,
+      getConnectionId: () => "desktop-a",
+      getWorkingDirectory: () => "/workspace/project",
+      isWindows: () => false,
+      supportsNativeFileRelay: () => true,
+      files: { readText },
+      commands: { run },
+    };
+    const requestToolApproval = jest.fn(async () => ({
+      approved: true as const,
+      approvalId: "approval-1",
+      sandboxIdentity: "connection:desktop-a" as const,
+      approvalSource: "auto_review" as const,
+    }));
+    const { context } = makeContext({
+      sandbox,
+      requestToolApproval,
+      autoReviewEvidenceEnabled: true,
+    });
+
+    const result = (await runTool(createRunTerminalCmd(context), {
+      command: "bash scripts/test.sh",
+      brief: "run focused tests",
+      is_background: false,
+      timeout: 5,
+      interactive: false,
+    })) as { result: { error?: string } };
+
+    expect(result.result.error).toContain(
+      "inspected files changed after automatic review",
+    );
+    expect(run).not.toHaveBeenCalled();
   });
 
   test("does not execute a command on a replacement Desktop connection", async () => {

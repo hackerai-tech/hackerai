@@ -2840,6 +2840,8 @@ export const agentLongTask = task({
               selectedModel,
               onToolFailure,
               requestToolApproval,
+              agentPermissionMode === "auto_review" &&
+                autoReviewAssignment?.phase !== undefined,
               runTimingTracker.measureActiveTime,
               projectContext.workingDirectory,
               ctx.run.id,
