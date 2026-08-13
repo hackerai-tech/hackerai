@@ -248,14 +248,6 @@
   contain-intrinsic-size: auto 180px;
 }
 
-/* The timeline already virtualizes the parent group row. Keeping intrinsic
-   sizing on its nested activities makes Radix measure the collapsible content
-   as 180px per tool before their real heights are laid out. */
-.agent-tool-group-content > .message-row {
-  content-visibility: visible;
-  contain-intrinsic-size: none;
-}
-
 @media (prefers-reduced-motion: reduce) {
   .worked-for-content[data-state="open"],
   .worked-for-content[data-state="closed"] {

@@ -548,6 +548,47 @@ describe("ChatInput - Integration Tests", () => {
       expect(screen.getByTestId("chat-input")).toBeInTheDocument();
     });
 
+    it("keeps the approval prompt stable across a transient stored-state gap", () => {
+      jest.useFakeTimers();
+      const storedApprovalRequest = {
+        approvalId: "stored-approval-1",
+        toolCallId: "tool-1",
+        title: "Allow HackerAI to run this terminal command?",
+        target: "ping -c 4 hackerone.com",
+        detail: "Approve to continue, or deny to stop this command.",
+        kind: "terminal" as const,
+        operation: "terminal_execute" as const,
+      };
+      const renderInput = (request: typeof storedApprovalRequest | null) => (
+        <TestWrapper>
+          <AgentModeSetter />
+          <ChatInput
+            onSubmit={mockOnSubmit}
+            onStop={mockOnStop}
+            status="ready"
+            chatId="approval-chat"
+            hasMessages
+            storedApprovalRequest={request}
+          />
+        </TestWrapper>
+      );
+      const { rerender } = render(renderInput(storedApprovalRequest));
+
+      rerender(renderInput(null));
+
+      expect(screen.getByTestId("agent-approval-prompt")).toBeInTheDocument();
+      act(() => jest.advanceTimersByTime(249));
+      expect(screen.getByTestId("agent-approval-prompt")).toBeInTheDocument();
+
+      act(() => jest.advanceTimersByTime(1));
+      expect(
+        screen.queryByTestId("agent-approval-prompt"),
+      ).not.toBeInTheDocument();
+      expect(screen.getByTestId("chat-input")).toBeInTheDocument();
+
+      jest.useRealTimers();
+    });
+
     it("restores the approval prompt when stopping the Agent fails", async () => {
       const failedStop = jest.fn(async () => false);
 

@@ -72,6 +72,10 @@ interface ChatInputProps {
   sendDisabledReason?: string;
 }
 
+// Reconnect can briefly omit the stored request before the live approval
+// session arrives. Keep the prompt mounted across that reactive handoff.
+const STORED_APPROVAL_CLEAR_GRACE_MS = 250;
+
 const isBrowserFile = (file: UploadedFileState["file"]): file is File =>
   typeof globalThis.File !== "undefined" && file instanceof globalThis.File;
 
@@ -241,34 +245,68 @@ export const ChatInput = ({
   } = useFileUpload(chatMode);
   const { activeToolApprovalRequest } = useAgentApproval();
 
+  const [retainedStoredApproval, setRetainedStoredApproval] = useState<{
+    chatId: string | undefined;
+    request: ActiveAgentToolApprovalRequest | null;
+  }>(() => ({
+    chatId,
+    request: storedApprovalRequest ?? null,
+  }));
+  const retainedStoredApprovalRequest =
+    retainedStoredApproval.chatId === chatId
+      ? retainedStoredApproval.request
+      : null;
+
+  useEffect(() => {
+    if (storedApprovalRequest) {
+      setRetainedStoredApproval({
+        chatId,
+        request: storedApprovalRequest,
+      });
+      return;
+    }
+
+    const clearTimeoutId = window.setTimeout(() => {
+      setRetainedStoredApproval((current) =>
+        current.chatId === chatId ? { chatId, request: null } : current,
+      );
+    }, STORED_APPROVAL_CLEAR_GRACE_MS);
+
+    return () => window.clearTimeout(clearTimeoutId);
+  }, [chatId, storedApprovalRequest]);
+
+  const effectiveStoredApprovalRequest =
+    storedApprovalRequest ?? retainedStoredApprovalRequest;
+
   const isGenerating = status === "submitted" || status === "streaming";
   const isAgent = isAgentMode(chatMode);
   const approvalRequest = useMemo(
     () =>
       activeToolApprovalRequest &&
-      storedApprovalRequest &&
+      effectiveStoredApprovalRequest &&
       activeToolApprovalRequest.approvalId ===
-        storedApprovalRequest.approvalId &&
-      activeToolApprovalRequest.toolCallId === storedApprovalRequest.toolCallId
+        effectiveStoredApprovalRequest.approvalId &&
+      activeToolApprovalRequest.toolCallId ===
+        effectiveStoredApprovalRequest.toolCallId
         ? {
-            ...storedApprovalRequest,
+            ...effectiveStoredApprovalRequest,
             ...activeToolApprovalRequest,
-            ...(storedApprovalRequest.autoReview
-              ? { autoReview: storedApprovalRequest.autoReview }
+            ...(effectiveStoredApprovalRequest.autoReview
+              ? { autoReview: effectiveStoredApprovalRequest.autoReview }
               : {}),
           }
-        : (activeToolApprovalRequest ?? storedApprovalRequest),
-    [activeToolApprovalRequest, storedApprovalRequest],
+        : (activeToolApprovalRequest ?? effectiveStoredApprovalRequest),
+    [activeToolApprovalRequest, effectiveStoredApprovalRequest],
   );
   const [isStoppingAgent, setIsStoppingAgent] = useState(false);
   const [isReconnecting, setIsReconnecting] = useState(false);
   const showAgentApprovalPrompt = !!approvalRequest && !isStoppingAgent;
 
   useEffect(() => {
-    if (!isGenerating && !approvalRequest) {
+    if (!isGenerating && !activeToolApprovalRequest && !storedApprovalRequest) {
       setIsStoppingAgent(false);
     }
-  }, [approvalRequest, isGenerating]);
+  }, [activeToolApprovalRequest, isGenerating, storedApprovalRequest]);
 
   const handleAgentStop = async () => {
     setIsStoppingAgent(true);

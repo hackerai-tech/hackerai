@@ -43,7 +43,7 @@ export const AgentActivityRow = memo(function AgentActivityRow({
 
   return (
     <div
-      className="message-row w-full min-w-0 overflow-hidden text-foreground"
+      className="w-full min-w-0 overflow-hidden text-foreground"
       data-testid="agent-activity-row"
     >
       <div className="prose max-w-none min-w-0 overflow-hidden dark:prose-invert">
