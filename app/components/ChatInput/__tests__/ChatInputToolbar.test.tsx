@@ -1,5 +1,5 @@
 import "@testing-library/jest-dom";
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, it, expect, jest, beforeEach } from "@jest/globals";
 import { useAuth } from "@workos-inc/authkit-nextjs/components";
 import type { SubscriptionTier } from "@/types";
@@ -9,6 +9,7 @@ let mockChatModeAccessResolved = true;
 let mockPaidAgentOnlyActive = false;
 let mockFreeDesktopAgentOnlyActive = false;
 let mockHasLocalSandbox = false;
+const mockSetSandboxPreference = jest.fn();
 
 jest.mock("@/app/components/AttachmentButton", () => ({
   AttachmentButton: () => <button type="button">Attach</button>,
@@ -35,8 +36,22 @@ jest.mock("@/app/components/AgentPermissionSelector", () => ({
 }));
 
 jest.mock("@/app/components/SandboxSelector", () => ({
-  SandboxSelector: ({ size }: { size?: string }) => (
-    <div data-testid="sandbox-selector" data-size={size} />
+  SandboxSelector: ({
+    size,
+    value,
+    onChange,
+  }: {
+    size?: string;
+    value?: string;
+    onChange?: (value: string) => void;
+  }) => (
+    <button
+      type="button"
+      data-testid="sandbox-selector"
+      data-size={size}
+      data-value={value}
+      onClick={() => onChange?.("local")}
+    />
   ),
 }));
 
@@ -68,7 +83,7 @@ jest.mock("@/app/contexts/GlobalState", () => ({
     paidAgentOnlyActive: mockPaidAgentOnlyActive,
     freeDesktopAgentOnlyActive: mockFreeDesktopAgentOnlyActive,
     sandboxPreference: "e2b",
-    setSandboxPreference: jest.fn(),
+    setSandboxPreference: mockSetSandboxPreference,
   }),
 }));
 
@@ -106,6 +121,7 @@ describe("ChatInputToolbar", () => {
     mockPaidAgentOnlyActive = false;
     mockFreeDesktopAgentOnlyActive = false;
     mockHasLocalSandbox = false;
+    mockSetSandboxPreference.mockClear();
     mockAuthUser(null);
   });
 
@@ -183,6 +199,12 @@ describe("ChatInputToolbar", () => {
       "data-size",
       "toolbar",
     );
+    expect(screen.getByTestId("sandbox-selector")).toHaveAttribute(
+      "data-value",
+      "e2b",
+    );
+    fireEvent.click(screen.getByTestId("sandbox-selector"));
+    expect(mockSetSandboxPreference).toHaveBeenCalledWith("local");
     expect(screen.getByTestId("chat-input-desktop-permission")).toHaveClass(
       "hidden",
       "md:block",

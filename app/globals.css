@@ -180,22 +180,26 @@
 }
 
 .chat-input-glass-surface {
+  background: var(--fill-input-chat);
   background: color-mix(in srgb, var(--fill-input-chat) 86%, transparent);
   -webkit-backdrop-filter: blur(18px) saturate(140%);
   backdrop-filter: blur(18px) saturate(140%);
 }
 
 .chat-input-glass-context {
+  background: var(--fill-input-chat);
   background: color-mix(in srgb, var(--fill-input-chat) 76%, transparent);
   -webkit-backdrop-filter: blur(18px) saturate(140%);
   backdrop-filter: blur(18px) saturate(140%);
 }
 
 .dark .chat-input-glass-surface {
+  background: var(--fill-input-chat);
   background: color-mix(in srgb, var(--fill-input-chat) 90%, transparent);
 }
 
 .dark .chat-input-glass-context {
+  background: var(--fill-input-chat);
   background: color-mix(in srgb, var(--fill-input-chat) 82%, transparent);
 }
 
