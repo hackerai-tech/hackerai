@@ -10,7 +10,8 @@ import {
 } from "@/lib/api/agent-approval-session";
 import { logger } from "@/lib/logger";
 
-type AgentCancelRejectionReason = "chat_owner_mismatch" | "chat_missing";
+type AgentCancelRejectionReason =
+  "chat_owner_mismatch" | "chat_missing" | "stale_run";
 
 function logAgentCancelRejection({
   req,
@@ -34,7 +35,7 @@ function logAgentCancelRejection({
     endpoint,
     action: "cancel",
     reason,
-    status_code: 403,
+    status_code: reason === "stale_run" ? 409 : 403,
     user_id: userId,
     chat_id: chatId,
   });
@@ -92,6 +93,13 @@ export const createAgentCancelPost =
       const approvalSessionId = chat.active_agent_approval_session_id;
       const runId = chat.active_trigger_run_id;
       if (expectedTriggerRunId && runId !== expectedTriggerRunId) {
+        logAgentCancelRejection({
+          req,
+          endpoint,
+          userId,
+          chatId,
+          reason: "stale_run",
+        });
         return NextResponse.json(
           { canceled: false, reason: "stale_run" },
           { status: 409 },

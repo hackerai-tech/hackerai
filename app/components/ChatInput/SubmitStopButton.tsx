@@ -22,18 +22,24 @@ const PAID_STOP_BUTTON_VARIANT_CLASSES: Record<ChatMode, string> = {
   ask: "bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-700 dark:bg-emerald-400/10 dark:hover:bg-emerald-400/20 dark:text-emerald-400 focus-visible:ring-emerald-500",
 };
 
-function getStopButtonVariantClasses(mode: ChatMode, isPaid: boolean): string {
-  const modeVariantClasses = isPaid
-    ? PAID_STOP_BUTTON_VARIANT_CLASSES
-    : FREE_STOP_BUTTON_VARIANT_CLASSES;
+function getStopButtonVariantClasses(
+  mode: ChatMode,
+  isPaid: boolean,
+  useNeutralAgentStyle: boolean,
+): string {
+  const modeVariantClasses =
+    isPaid || (mode === "agent" && useNeutralAgentStyle)
+      ? PAID_STOP_BUTTON_VARIANT_CLASSES
+      : FREE_STOP_BUTTON_VARIANT_CLASSES;
   return modeVariantClasses[mode] ?? modeVariantClasses.ask;
 }
 
 function getSubmitButtonVariantClasses(
   mode: ChatMode,
   isPaid: boolean,
+  useNeutralAgentStyle: boolean,
 ): string {
-  if (!isPaid && mode === "agent") {
+  if (!isPaid && mode === "agent" && !useNeutralAgentStyle) {
     return "bg-red-500/10 hover:bg-red-500/20 text-red-700 dark:bg-red-400/10 dark:hover:bg-red-400/20 dark:text-red-400 focus-visible:ring-red-500";
   }
   if (isPaid && mode === "ask") {
@@ -66,6 +72,7 @@ export interface SubmitStopButtonProps {
   uploadedFiles: UploadedFileState[];
   chatMode: ChatMode;
   isPaid?: boolean;
+  useNeutralAgentStyle?: boolean;
   isOnline?: boolean;
   sendDisabledReason?: string;
 }
@@ -81,6 +88,7 @@ export function SubmitStopButton({
   uploadedFiles,
   chatMode,
   isPaid = false,
+  useNeutralAgentStyle = false,
   isOnline = true,
   sendDisabledReason,
 }: SubmitStopButtonProps) {
@@ -111,7 +119,7 @@ export function SubmitStopButton({
               type="button"
               onClick={onStop}
               variant="ghost"
-              className={`${BASE_BUTTON_CLASSES} ${getStopButtonVariantClasses(chatMode, isPaid)}`}
+              className={`${BASE_BUTTON_CLASSES} ${getStopButtonVariantClasses(chatMode, isPaid, useNeutralAgentStyle)}`}
               aria-label="Stop generation"
             >
               <Square className="w-[15px] h-[15px]" fill="currentColor" />
@@ -141,7 +149,7 @@ export function SubmitStopButton({
                   (!input.trim() && uploadedFiles.length === 0)
                 }
                 variant="default"
-                className={`${BASE_BUTTON_CLASSES} ${getSubmitButtonVariantClasses(chatMode, isPaid)}`}
+                className={`${BASE_BUTTON_CLASSES} ${getSubmitButtonVariantClasses(chatMode, isPaid, useNeutralAgentStyle)}`}
                 aria-label="Send message"
                 data-testid="send-button"
               >

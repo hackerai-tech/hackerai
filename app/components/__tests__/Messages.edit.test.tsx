@@ -1,6 +1,10 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { createRef } from "react";
-import { DataStreamProvider } from "../DataStreamProvider";
+import { createRef, useLayoutEffect } from "react";
+import type { ReactNode } from "react";
+import {
+  DataStreamProvider,
+  useDataStreamDispatch,
+} from "../DataStreamProvider";
 import { Messages } from "../Messages";
 import type { ChatMessage } from "@/types";
 import { mockLegendListScrollToIndex } from "../../../__mocks__/@legendapp/list-react";
@@ -36,7 +40,16 @@ jest.mock("../MessageItem", () => ({
 }));
 
 jest.mock("../AgentActivityRow", () => ({
-  AgentActivityRow: () => null,
+  AgentActivityRow: ({
+    suppressReasoningAutoOpen,
+  }: {
+    suppressReasoningAutoOpen: boolean;
+  }) => (
+    <div
+      data-testid="agent-activity-row"
+      data-suppress-reasoning-auto-open={suppressReasoningAutoOpen}
+    />
+  ),
 }));
 
 jest.mock("../AgentWorkHeader", () => ({
@@ -110,6 +123,44 @@ const messagesWithHistoricalToolGroup = [
   },
 ] as ChatMessage[];
 
+const messagesWithStaggeredHistoricalToolGroups = [
+  messages[0],
+  {
+    ...messagesWithHistoricalToolGroup[1],
+    parts: [
+      ...messagesWithHistoricalToolGroup[1].parts.slice(0, -1),
+      {
+        type: "tool-shell",
+        toolCallId: "shell-2",
+        state: "output-available",
+      },
+      {
+        type: "tool-shell",
+        toolCallId: "shell-3",
+        state: "output-available",
+      },
+      { type: "step-start" },
+      { type: "reasoning", text: "Continuing" },
+    ],
+  },
+] as ChatMessage[];
+
+function AutoResumeState({
+  active = true,
+  children,
+}: {
+  active?: boolean;
+  children: ReactNode;
+}) {
+  const { setIsAutoResuming } = useDataStreamDispatch();
+
+  useLayoutEffect(() => {
+    setIsAutoResuming(active);
+  }, [active, setIsAutoResuming]);
+
+  return children;
+}
+
 describe("Messages virtualized row invalidation", () => {
   beforeEach(() => {
     mockLegendListScrollToIndex.mockReset();
@@ -176,6 +227,32 @@ describe("Messages virtualized row invalidation", () => {
     expect(screen.getByTestId("messages-container")).toHaveAttribute(
       "data-list-key",
       "chat-2",
+    );
+  });
+
+  it("reserves the measured composer overlay height at the end", () => {
+    render(
+      <DataStreamProvider>
+        <Messages
+          chatId="chat-1"
+          messages={messages}
+          setMessages={jest.fn()}
+          onRegenerate={jest.fn()}
+          onRetry={jest.fn()}
+          onEditMessage={jest.fn()}
+          status="ready"
+          error={null}
+          scrollRef={createRef<HTMLElement>()}
+          contentRef={createRef<HTMLElement>()}
+          isMobile
+          contentInsetEndAdjustment={144}
+        />
+      </DataStreamProvider>,
+    );
+
+    expect(screen.getByTestId("messages-container")).toHaveAttribute(
+      "data-content-inset-end",
+      "144",
     );
   });
 
@@ -311,6 +388,79 @@ describe("Messages virtualized row invalidation", () => {
     ).toHaveAttribute("aria-expanded", "false");
   });
 
+  it("keeps replayed tool groups collapsed while an Agent stream reconnects", () => {
+    const liveAgentStart = {
+      ...messagesWithHistoricalToolGroup[1],
+      parts: [{ type: "reasoning", text: "Starting" }],
+    } as ChatMessage;
+    const sharedProps = {
+      chatId: "chat-with-active-reconnect",
+      setMessages: jest.fn(),
+      onRegenerate: jest.fn(),
+      onRetry: jest.fn(),
+      onEditMessage: jest.fn(),
+      status: "streaming" as const,
+      error: null,
+      scrollRef: createRef<HTMLElement>(),
+      contentRef: createRef<HTMLElement>(),
+      isMobile: true,
+    };
+    const { rerender } = render(
+      <DataStreamProvider>
+        <AutoResumeState>
+          <Messages messages={[messages[0], liveAgentStart]} {...sharedProps} />
+        </AutoResumeState>
+      </DataStreamProvider>,
+    );
+
+    rerender(
+      <DataStreamProvider>
+        <AutoResumeState active={false}>
+          <Messages messages={[messages[0], liveAgentStart]} {...sharedProps} />
+        </AutoResumeState>
+      </DataStreamProvider>,
+    );
+
+    expect(screen.getByTestId("agent-activity-row")).toHaveAttribute(
+      "data-suppress-reasoning-auto-open",
+      "true",
+    );
+
+    rerender(
+      <DataStreamProvider>
+        <AutoResumeState active={false}>
+          <Messages
+            messages={messagesWithHistoricalToolGroup}
+            {...sharedProps}
+          />
+        </AutoResumeState>
+      </DataStreamProvider>,
+    );
+
+    expect(
+      screen.getByRole("button", {
+        name: /read a file, ran a command\. show tool details/i,
+      }),
+    ).toHaveAttribute("aria-expanded", "false");
+
+    rerender(
+      <DataStreamProvider>
+        <AutoResumeState active={false}>
+          <Messages
+            messages={messagesWithStaggeredHistoricalToolGroups}
+            {...sharedProps}
+          />
+        </AutoResumeState>
+      </DataStreamProvider>,
+    );
+
+    const replayedGroups = screen.getAllByTestId("agent-tool-group-row");
+    expect(replayedGroups).toHaveLength(2);
+    for (const group of replayedGroups) {
+      expect(group).toHaveAttribute("data-state", "closed");
+    }
+  });
+
   it("still animates a new group appended to an observed live agent message", () => {
     const liveAgentStart = {
       ...messagesWithHistoricalToolGroup[1],
@@ -332,6 +482,11 @@ describe("Messages virtualized row invalidation", () => {
       <DataStreamProvider>
         <Messages messages={[messages[0], liveAgentStart]} {...sharedProps} />
       </DataStreamProvider>,
+    );
+
+    expect(screen.getByTestId("agent-activity-row")).toHaveAttribute(
+      "data-suppress-reasoning-auto-open",
+      "false",
     );
 
     rerender(

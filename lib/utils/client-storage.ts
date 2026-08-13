@@ -37,14 +37,20 @@ export const NULL_THREAD_DRAFT_ID = "null_thread";
 export const CHAT_MODE_STORAGE_KEY = "chat_mode";
 export const SIDEBAR_OPEN_PROJECT_IDS_STORAGE_KEY =
   "hackerai:sidebar:open-projects:v1";
+export const SIDEBAR_TASK_LAST_VISITED_AT_STORAGE_PREFIX =
+  "hackerai:sidebar:task-last-visited-at:v1:";
 const DRAFT_ATTACHMENT_RESTORE_TTL_MS = 24 * 60 * 60 * 1000;
 const HAS_AUTHENTICATED_BEFORE_STORAGE_KEY = "hackerai_has_authed_before";
 const SELECTED_MODEL_STORAGE_KEY = "selected_model";
-const AGENT_PERMISSION_MODE_STORAGE_KEY = "agent_permission_mode";
+export const AGENT_PERMISSION_MODE_STORAGE_KEY = "agent_permission_mode";
 const EMPTY_SIDEBAR_OPEN_PROJECT_IDS_SNAPSHOT = "[]";
+const MAX_SIDEBAR_TASK_LAST_VISITED_AT_ENTRIES = 100;
 const openSidebarProjectIdsListeners = new Set<() => void>();
 let openSidebarProjectIdsMemorySnapshot =
   EMPTY_SIDEBAR_OPEN_PROJECT_IDS_SNAPSHOT;
+const sidebarTaskLastVisitedAtListeners = new Map<string, Set<() => void>>();
+let sidebarTaskLastVisitedAtMemory: Record<string, number> = {};
+let sidebarTaskLastVisitedAtSubscriberCount = 0;
 
 const isBrowser = (): boolean => typeof window !== "undefined";
 
@@ -127,6 +133,231 @@ export const writeOpenSidebarProjectIds = (
   }
 
   openSidebarProjectIdsListeners.forEach((listener) => listener());
+};
+
+export const parseSidebarTaskLastVisitedAt = (
+  raw: string | null,
+): number | undefined => {
+  if (raw === null || raw.trim().length === 0) return undefined;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : undefined;
+};
+
+export const getSidebarTaskLastVisitedAtStorageKey = (taskId: string): string =>
+  `${SIDEBAR_TASK_LAST_VISITED_AT_STORAGE_PREFIX}${encodeURIComponent(taskId)}`;
+
+const getTaskIdFromSidebarTaskLastVisitedAtStorageKey = (
+  key: string,
+): string | undefined => {
+  if (!key.startsWith(SIDEBAR_TASK_LAST_VISITED_AT_STORAGE_PREFIX)) {
+    return undefined;
+  }
+
+  try {
+    const taskId = decodeURIComponent(
+      key.slice(SIDEBAR_TASK_LAST_VISITED_AT_STORAGE_PREFIX.length),
+    );
+    return taskId.length > 0 ? taskId : undefined;
+  } catch {
+    return undefined;
+  }
+};
+
+const notifySidebarTaskLastVisitedAt = (taskId: string): void => {
+  sidebarTaskLastVisitedAtListeners
+    .get(taskId)
+    ?.forEach((listener) => listener());
+};
+
+const pruneSidebarTaskLastVisitedAt = (): void => {
+  const entries: Array<{ key: string; taskId: string; visitedAt: number }> = [];
+  const invalidKeys: string[] = [];
+
+  for (let index = 0; index < window.localStorage.length; index += 1) {
+    const key = window.localStorage.key(index);
+    if (!key?.startsWith(SIDEBAR_TASK_LAST_VISITED_AT_STORAGE_PREFIX)) {
+      continue;
+    }
+
+    const taskId = getTaskIdFromSidebarTaskLastVisitedAtStorageKey(key);
+    const visitedAt = parseSidebarTaskLastVisitedAt(
+      window.localStorage.getItem(key),
+    );
+    if (!taskId || visitedAt === undefined) {
+      invalidKeys.push(key);
+      continue;
+    }
+    entries.push({ key, taskId, visitedAt });
+  }
+
+  const entriesToRemove = entries
+    .sort((left, right) => right.visitedAt - left.visitedAt)
+    .slice(MAX_SIDEBAR_TASK_LAST_VISITED_AT_ENTRIES);
+
+  [...invalidKeys, ...entriesToRemove.map((entry) => entry.key)].forEach(
+    (key) => {
+      const taskId = getTaskIdFromSidebarTaskLastVisitedAtStorageKey(key);
+      window.localStorage.removeItem(key);
+      if (taskId) {
+        delete sidebarTaskLastVisitedAtMemory[taskId];
+        notifySidebarTaskLastVisitedAt(taskId);
+      }
+    },
+  );
+};
+
+const handleSidebarTaskLastVisitedAtStorage = (event: StorageEvent): void => {
+  if (event.storageArea !== window.localStorage) return;
+
+  if (event.key === null) {
+    const taskIds = Object.keys(sidebarTaskLastVisitedAtMemory);
+    sidebarTaskLastVisitedAtMemory = {};
+    taskIds.forEach(notifySidebarTaskLastVisitedAt);
+    return;
+  }
+
+  const taskId = getTaskIdFromSidebarTaskLastVisitedAtStorageKey(event.key);
+  if (!taskId) return;
+
+  const previous = sidebarTaskLastVisitedAtMemory[taskId];
+  const stored = parseSidebarTaskLastVisitedAt(event.newValue);
+  const next =
+    stored === undefined ? undefined : Math.max(previous ?? 0, stored);
+  if (next === undefined) {
+    delete sidebarTaskLastVisitedAtMemory[taskId];
+  } else {
+    sidebarTaskLastVisitedAtMemory[taskId] = next;
+    if (next !== stored) {
+      try {
+        window.localStorage.setItem(event.key, String(next));
+      } catch {
+        // Keep the maximum timestamp in memory if storage is unavailable.
+      }
+    }
+  }
+  if (previous !== next) notifySidebarTaskLastVisitedAt(taskId);
+};
+
+export const readSidebarTaskLastVisitedAt = (
+  taskId: string,
+): number | undefined => {
+  if (!isBrowser() || taskId.length === 0) return undefined;
+
+  try {
+    const memoryValue = sidebarTaskLastVisitedAtMemory[taskId];
+    const stored = parseSidebarTaskLastVisitedAt(
+      window.localStorage.getItem(
+        getSidebarTaskLastVisitedAtStorageKey(taskId),
+      ),
+    );
+    if (stored === undefined) {
+      delete sidebarTaskLastVisitedAtMemory[taskId];
+      return undefined;
+    }
+
+    const resolved = Math.max(memoryValue ?? 0, stored);
+    sidebarTaskLastVisitedAtMemory[taskId] = resolved;
+    if (resolved !== stored) {
+      window.localStorage.setItem(
+        getSidebarTaskLastVisitedAtStorageKey(taskId),
+        String(resolved),
+      );
+    }
+    return resolved;
+  } catch {
+    return sidebarTaskLastVisitedAtMemory[taskId];
+  }
+};
+
+export const markSidebarTaskVisited = (
+  taskId: string,
+  visitedAt: number = Date.now(),
+): void => {
+  if (
+    !isBrowser() ||
+    taskId.length === 0 ||
+    !Number.isFinite(visitedAt) ||
+    visitedAt < 0
+  ) {
+    return;
+  }
+
+  const current = readSidebarTaskLastVisitedAt(taskId);
+  const nextVisitedAt = Math.max(current ?? 0, visitedAt);
+  if (current === nextVisitedAt) return;
+  sidebarTaskLastVisitedAtMemory[taskId] = nextVisitedAt;
+
+  try {
+    window.localStorage.setItem(
+      getSidebarTaskLastVisitedAtStorageKey(taskId),
+      String(nextVisitedAt),
+    );
+    pruneSidebarTaskLastVisitedAt();
+  } catch {
+    // Browser storage can be disabled or unavailable; keep the in-memory state.
+  }
+
+  notifySidebarTaskLastVisitedAt(taskId);
+};
+
+export const getServerSidebarTaskLastVisitedAt = (): undefined => undefined;
+
+export const subscribeSidebarTaskLastVisitedAt = (
+  taskId: string,
+  onStoreChange: () => void,
+): (() => void) => {
+  if (!isBrowser()) return () => undefined;
+
+  const listeners = sidebarTaskLastVisitedAtListeners.get(taskId) ?? new Set();
+  listeners.add(onStoreChange);
+  sidebarTaskLastVisitedAtListeners.set(taskId, listeners);
+
+  if (sidebarTaskLastVisitedAtSubscriberCount === 0) {
+    window.addEventListener("storage", handleSidebarTaskLastVisitedAtStorage);
+  }
+  sidebarTaskLastVisitedAtSubscriberCount += 1;
+
+  return () => {
+    const currentListeners = sidebarTaskLastVisitedAtListeners.get(taskId);
+    currentListeners?.delete(onStoreChange);
+    if (currentListeners?.size === 0) {
+      sidebarTaskLastVisitedAtListeners.delete(taskId);
+    }
+
+    sidebarTaskLastVisitedAtSubscriberCount = Math.max(
+      0,
+      sidebarTaskLastVisitedAtSubscriberCount - 1,
+    );
+    if (sidebarTaskLastVisitedAtSubscriberCount === 0) {
+      window.removeEventListener(
+        "storage",
+        handleSidebarTaskLastVisitedAtStorage,
+      );
+    }
+  };
+};
+
+export const clearSidebarTaskLastVisitedAt = (): void => {
+  if (!isBrowser()) return;
+
+  const taskIds = new Set(Object.keys(sidebarTaskLastVisitedAtMemory));
+  sidebarTaskLastVisitedAtMemory = {};
+  try {
+    const keysToRemove: string[] = [];
+    for (let index = 0; index < window.localStorage.length; index += 1) {
+      const key = window.localStorage.key(index);
+      if (!key?.startsWith(SIDEBAR_TASK_LAST_VISITED_AT_STORAGE_PREFIX)) {
+        continue;
+      }
+      keysToRemove.push(key);
+      const taskId = getTaskIdFromSidebarTaskLastVisitedAtStorageKey(key);
+      if (taskId) taskIds.add(taskId);
+    }
+    keysToRemove.forEach((key) => window.localStorage.removeItem(key));
+  } catch {
+    // Browser storage can be disabled or unavailable.
+  }
+  taskIds.forEach(notifySidebarTaskLastVisitedAt);
 };
 
 export const readDraftStore = (): ConversationDraftStore => {

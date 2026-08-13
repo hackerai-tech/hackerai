@@ -292,6 +292,212 @@ export const getAgentApprovalTargetPrefixForSandbox = ({
 
 export type AgentToolApprovalDecision = "approve" | "deny";
 
+export type AgentAutoReviewVerdict = "approve" | "ask_user" | "deny";
+export type AgentAutoReviewRiskCategory =
+  | "routine"
+  | "destructive"
+  | "credential_access"
+  | "data_egress"
+  | "security_weakening"
+  | "scope_expansion"
+  | "prompt_injection"
+  | "unknown";
+export type AgentAutoReviewFailureClass =
+  | "timeout"
+  | "provider_error"
+  | "parse_error"
+  | "missing_context"
+  | "context_truncated";
+export type AgentAutoReviewRolloutPhase = "shadow" | "enforce";
+
+export type AgentAutoReviewTerminalInspectionReason =
+  | "dynamic_command"
+  | "unsupported_platform"
+  | "missing_working_directory"
+  | "outside_scope"
+  | "sensitive_target"
+  | "too_broad"
+  | "too_large"
+  | "binary_content"
+  | "missing_target"
+  | "missing_package_task"
+  | "nested_indirection"
+  | "inspection_failed";
+
+export type AgentAutoReviewTerminalInspection = {
+  kind: "filesystem_delete" | "script" | "package_task";
+  status: "resolved" | "unresolved";
+  /** Stable digest used to detect action-context changes before execution. */
+  fingerprint?: string;
+  reason?: AgentAutoReviewTerminalInspectionReason;
+  workingDirectory?: string;
+  targets?: Array<{
+    path: string;
+    scope: "workspace" | "temporary" | "outside";
+    state: "missing" | "file" | "directory" | "symlink" | "other";
+    sizeBytes?: number;
+    entryCount?: number;
+  }>;
+  scripts?: Array<{
+    source: "file" | "package_script";
+    path?: string;
+    name?: string;
+    command?: string;
+    content?: string;
+  }>;
+};
+
+export type AgentAutoReviewActionContext =
+  | {
+      type: "terminal_command";
+      command: string;
+      /** Bounded, read-only, untrusted evidence for resolving indirection. */
+      inspection?: AgentAutoReviewTerminalInspection;
+    }
+  | {
+      type: "terminal_interaction";
+      interaction: string;
+      action: "send" | "kill";
+      sessionId: string;
+      input?: string;
+      translatedInput?: string;
+      originalCommand: string;
+      workingDirectory?: string;
+      recentOutput: string;
+      outputComplete: boolean;
+    }
+  | {
+      type: "file_change";
+      action: "write" | "append" | "edit";
+      path: string;
+      text?: string;
+      edits?: Array<{ find: string; replace: string; all?: boolean }>;
+      complete: boolean;
+    };
+
+export type AgentAutoReviewSummary = {
+  verdict: AgentAutoReviewVerdict;
+  riskCategory: AgentAutoReviewRiskCategory;
+  rationale: string;
+  rolloutPhase: AgentAutoReviewRolloutPhase;
+  failureClass?: AgentAutoReviewFailureClass;
+};
+
+export type AgentAutoReviewLifecycleStatus =
+  "reviewing" | "approved" | "needs_approval" | "dismissed";
+
+export type AgentAutoReviewLifecycle = {
+  approvalId: string;
+  toolCallId: string;
+  status: AgentAutoReviewLifecycleStatus;
+  startedAt: number;
+  completedAt?: number;
+};
+
+const AGENT_AUTO_REVIEW_LIFECYCLE_STATUSES = [
+  "reviewing",
+  "approved",
+  "needs_approval",
+  "dismissed",
+] as const satisfies readonly AgentAutoReviewLifecycleStatus[];
+
+export const parseAgentAutoReviewLifecycle = (
+  value: unknown,
+): AgentAutoReviewLifecycle | undefined => {
+  if (!value || typeof value !== "object") return undefined;
+  const record = value as Record<string, unknown>;
+  const status = AGENT_AUTO_REVIEW_LIFECYCLE_STATUSES.find(
+    (candidate) => candidate === record.status,
+  );
+  if (
+    !status ||
+    typeof record.approvalId !== "string" ||
+    !record.approvalId ||
+    typeof record.toolCallId !== "string" ||
+    !record.toolCallId ||
+    typeof record.startedAt !== "number" ||
+    !Number.isFinite(record.startedAt) ||
+    (record.completedAt !== undefined &&
+      (typeof record.completedAt !== "number" ||
+        !Number.isFinite(record.completedAt)))
+  ) {
+    return undefined;
+  }
+  return {
+    approvalId: record.approvalId,
+    toolCallId: record.toolCallId,
+    status,
+    startedAt: record.startedAt,
+    ...(typeof record.completedAt === "number"
+      ? { completedAt: record.completedAt }
+      : {}),
+  };
+};
+
+const AGENT_AUTO_REVIEW_VERDICTS = [
+  "approve",
+  "ask_user",
+  "deny",
+] as const satisfies readonly AgentAutoReviewVerdict[];
+const AGENT_AUTO_REVIEW_RISK_CATEGORIES = [
+  "routine",
+  "destructive",
+  "credential_access",
+  "data_egress",
+  "security_weakening",
+  "scope_expansion",
+  "prompt_injection",
+  "unknown",
+] as const satisfies readonly AgentAutoReviewRiskCategory[];
+const AGENT_AUTO_REVIEW_FAILURE_CLASSES = [
+  "timeout",
+  "provider_error",
+  "parse_error",
+  "missing_context",
+  "context_truncated",
+] as const satisfies readonly AgentAutoReviewFailureClass[];
+const AGENT_AUTO_REVIEW_ROLLOUT_PHASES = [
+  "shadow",
+  "enforce",
+] as const satisfies readonly AgentAutoReviewRolloutPhase[];
+
+export const parseAgentAutoReviewSummary = (
+  value: unknown,
+): AgentAutoReviewSummary | undefined => {
+  if (!value || typeof value !== "object") return undefined;
+  const record = value as Record<string, unknown>;
+  const verdict = AGENT_AUTO_REVIEW_VERDICTS.find(
+    (candidate) => candidate === record.verdict,
+  );
+  const riskCategory = AGENT_AUTO_REVIEW_RISK_CATEGORIES.find(
+    (candidate) => candidate === record.riskCategory,
+  );
+  const rolloutPhase = AGENT_AUTO_REVIEW_ROLLOUT_PHASES.find(
+    (candidate) => candidate === record.rolloutPhase,
+  );
+  if (
+    !verdict ||
+    !riskCategory ||
+    !rolloutPhase ||
+    typeof record.rationale !== "string" ||
+    !record.rationale.trim() ||
+    record.rationale.length > 240
+  ) {
+    return undefined;
+  }
+  const failureClass = AGENT_AUTO_REVIEW_FAILURE_CLASSES.find(
+    (candidate) => candidate === record.failureClass,
+  );
+  if (record.failureClass !== undefined && !failureClass) return undefined;
+  return {
+    verdict,
+    riskCategory,
+    rolloutPhase,
+    rationale: record.rationale,
+    ...(failureClass ? { failureClass } : {}),
+  };
+};
+
 export type AgentToolApprovalOperation =
   | "terminal_execute"
   | "terminal_interact"
@@ -375,6 +581,8 @@ export type AgentToolApprovalRequest = {
   brief?: string;
   justification?: string;
   prefixRule?: string[];
+  /** Exact in-memory action context for the separate Auto review call. */
+  autoReviewContext?: AgentAutoReviewActionContext;
 };
 
 export type AgentToolApprovalPendingRequest = {
@@ -388,6 +596,7 @@ export type AgentToolApprovalPendingRequest = {
   detail?: string;
   kind?: AgentToolApprovalPromptKind;
   createdAt?: number;
+  autoReview?: AgentAutoReviewSummary;
 };
 
 export type AgentToolApprovalPromptRequest = AgentToolApprovalPendingRequest & {
@@ -399,6 +608,8 @@ export type AgentToolApprovalResult =
       approved: true;
       approvalId: string;
       sandboxIdentity: AgentApprovalSandboxIdentity;
+      /** Present only when a separate reviewer approved this exact action. */
+      approvalSource?: "auto_review";
     }
   | {
       approved: false;
@@ -485,6 +696,8 @@ export interface ToolContext {
   onToolFailure?: ToolFailureLogger;
   /** Optional approval gate for mutating or command-executing agent tools. */
   requestToolApproval?: AgentToolApprovalRequester;
+  /** Collect bounded read-only evidence for the separate automatic reviewer. */
+  autoReviewEvidenceEnabled?: boolean;
   /** Aggregates active wall time for cost attribution in Trigger-hosted Agent runs. */
   measureAgentActiveTime?: AgentActiveTimeMeasurer;
   /** Observes resource metrics already fetched by E2B health checks. */

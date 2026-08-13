@@ -62,6 +62,36 @@ const activeAgentApprovalRequestValidator = v.object({
   detail: v.optional(v.string()),
   kind: v.optional(v.union(v.literal("terminal"), v.literal("file"))),
   createdAt: v.optional(v.number()),
+  autoReview: v.optional(
+    v.object({
+      verdict: v.union(
+        v.literal("approve"),
+        v.literal("ask_user"),
+        v.literal("deny"),
+      ),
+      riskCategory: v.union(
+        v.literal("routine"),
+        v.literal("destructive"),
+        v.literal("credential_access"),
+        v.literal("data_egress"),
+        v.literal("security_weakening"),
+        v.literal("scope_expansion"),
+        v.literal("prompt_injection"),
+        v.literal("unknown"),
+      ),
+      rationale: v.string(),
+      rolloutPhase: v.union(v.literal("shadow"), v.literal("enforce")),
+      failureClass: v.optional(
+        v.union(
+          v.literal("timeout"),
+          v.literal("provider_error"),
+          v.literal("parse_error"),
+          v.literal("missing_context"),
+          v.literal("context_truncated"),
+        ),
+      ),
+    }),
+  ),
 });
 
 const agentApprovalTargetGrantValidator = v.union(
@@ -419,6 +449,7 @@ export const getChatByIdFromClient = query({
       title: v.string(),
       user_id: v.string(),
       finish_reason: v.optional(v.string()),
+      last_run_finished_at: v.optional(v.number()),
       active_stream_id: v.optional(v.string()),
       canceled_at: v.optional(v.number()),
       deletion_started_at: v.optional(v.number()),
@@ -530,6 +561,7 @@ export const getChatById = query({
       title: v.string(),
       user_id: v.string(),
       finish_reason: v.optional(v.string()),
+      last_run_finished_at: v.optional(v.number()),
       active_stream_id: v.optional(v.string()),
       canceled_at: v.optional(v.number()),
       deletion_started_at: v.optional(v.number()),
@@ -827,7 +859,8 @@ export const updateChatTitle = mutation({
 
 /**
  * Update an existing chat with title and finish reason
- * Automatically clears active_stream_id and canceled_at for stream cleanup
+ * Automatically clears active_stream_id and canceled_at for stream cleanup.
+ * If a stream was active, records its finish time in the same write.
  */
 export const updateChat = mutation({
   args: {
@@ -882,6 +915,7 @@ export const updateChat = mutation({
       const updateData: {
         title?: string;
         finish_reason?: string;
+        last_run_finished_at?: number;
         default_model_slug?: "ask" | "agent" | "agent-long";
         todos?: Array<{
           id: string;
@@ -899,6 +933,10 @@ export const updateChat = mutation({
         active_stream_id: undefined,
         canceled_at: undefined,
       };
+
+      if (chat.active_stream_id !== undefined) {
+        updateData.last_run_finished_at = Date.now();
+      }
 
       if (args.title !== undefined) {
         updateData.title = args.title;
@@ -1598,9 +1636,12 @@ export const setActiveTriggerRun = mutation({
     }
     const shouldClearApprovalPending =
       args.clearApprovalPending === true || args.triggerRunId !== null;
+    const finishedActiveRun =
+      args.triggerRunId === null && chat.active_trigger_run_id !== undefined;
 
     await ctx.db.patch(chat._id, {
       active_trigger_run_id: args.triggerRunId ?? undefined,
+      ...(finishedActiveRun ? { last_run_finished_at: Date.now() } : {}),
       ...(args.triggerRunId !== null ? { canceled_at: undefined } : {}),
       ...(args.approvalSessionId !== undefined
         ? {

@@ -12,7 +12,7 @@
  * 2. Fixed Window (Free users):
  *    - Shared request-unit counting within a daily fixed window (resets at midnight UTC)
  *    - Ask mode costs 1 unit
- *    - Agent mode (local sandbox only) costs 2 units
+ *    - Agent mode (local sandbox only) costs 1 unit
  *    - Default free budget: 10 units/day (FREE_RATE_LIMIT_REQUESTS)
  */
 
@@ -147,7 +147,7 @@ export const checkRateLimit = async (
   if (subscription === "free") {
     const quotaSubject = freeQuotaSubject ?? userId;
     if (isAgentMode(mode)) {
-      // Free agent mode shares the daily free budget and consumes 2 units.
+      // Free agent mode shares the daily free budget and consumes 1 unit.
       return checkFreeAgentRateLimit(quotaSubject);
     }
     return checkFreeUserRateLimit(quotaSubject);

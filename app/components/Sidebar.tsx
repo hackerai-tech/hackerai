@@ -1,7 +1,7 @@
 "use client";
 
 import { FC, useRef } from "react";
-import { useGlobalState } from "../contexts/GlobalState";
+import { useGlobalStateActions } from "../contexts/GlobalState";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { useChats } from "../hooks/useChats";
 import {
@@ -111,7 +111,7 @@ const MainSidebar: FC<{
   chatListData?: ChatListData;
 }> = ({ isMobileOverlay = false, chatListData: chatListDataProp }) => {
   const isMobile = useIsMobile();
-  const { setChatSidebarOpen } = useGlobalState();
+  const { setChatSidebarOpen } = useGlobalStateActions();
   // Use lifted data when provided; otherwise subscribe here (e.g. SharedChatView)
   const chatListDataFromHook = useChats(chatListDataProp === undefined);
   const chatListData = chatListDataProp ?? chatListDataFromHook;

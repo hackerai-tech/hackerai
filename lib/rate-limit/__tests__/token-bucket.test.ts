@@ -537,6 +537,29 @@ describe("token-bucket", () => {
       expect(calculateTokenCost(1_000_000, "output", modelName)).toBe(90000);
     });
 
+    it("uses Grok 4.6 base pricing below 200k prompt tokens", () => {
+      expect(
+        calculateRawModelUsageCostDollars({
+          inputTokens: 199_999,
+          outputTokens: 10_000,
+          modelName: "model-grok-4.6-pro",
+        }),
+      ).toBeCloseTo(0.459998);
+    });
+
+    it("uses Grok 4.6 doubled pricing from 200k prompt tokens", () => {
+      expect(
+        calculateRawModelUsageCostDollars({
+          inputTokens: 200_000,
+          outputTokens: 10_000,
+          modelName: "x-ai/grok-4.6",
+        }),
+      ).toBeCloseTo(0.92);
+      expect(
+        calculateTokenCost(10_000, "output", "model-grok-4.6-pro", 200_000),
+      ).toBe(1800);
+    });
+
     it("higher-priced models should deplete budget faster", () => {
       const monthlyBudget = getBudgetLimits("pro").monthly;
       // Typical conversation: 2000 input + 500 output tokens

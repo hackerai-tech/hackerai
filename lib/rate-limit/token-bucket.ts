@@ -45,6 +45,13 @@ const GROK_4_5_PRICING: ModelPricing = {
   cacheRead: 0.5,
   cacheWrite: 2.0,
 };
+const GROK_4_6_LONG_CONTEXT_PRICING: ModelPricing = {
+  input: 4.0,
+  output: 12.0,
+  cacheRead: 1.0,
+  cacheWrite: 4.0,
+};
+const GROK_4_6_LONG_CONTEXT_PROMPT_TOKENS = 200_000;
 const DEEPSEEK_V4_FLASH_PRICING: ModelPricing = {
   input: 0.09,
   output: 0.18,
@@ -88,6 +95,9 @@ const MODEL_PRICING_MAP: Record<string, ModelPricing> = {
   // Grok 4.5 rates from OpenRouter: $2.00 in / $6.00 out per 1M tokens.
   "model-grok-4.5": GROK_4_5_PRICING,
   "model-grok-4.5-pro": GROK_4_5_PRICING,
+  // Grok 4.6 shares the $2/$6 base rate, with a 2x tier from 200k prompt
+  // tokens handled by getModelPricing when the input size is available.
+  "model-grok-4.6-pro": GROK_4_5_PRICING,
   // Auto and summarization aliases resolve to Grok 4.5.
   "ask-model": GROK_4_5_PRICING,
   "agent-model": GROK_4_5_PRICING,
@@ -105,6 +115,7 @@ const MODEL_PRICING_MAP: Record<string, ModelPricing> = {
   "model-kimi-k3": KIMI_K3_PRICING,
   // Provider response ids can reach accounting before local-key normalization.
   "x-ai/grok-4.5": GROK_4_5_PRICING,
+  "x-ai/grok-4.6": GROK_4_5_PRICING,
   "deepseek/deepseek-v4-flash": DEEPSEEK_V4_FLASH_PRICING,
   "deepseek/deepseek-v4-flash-20260423": DEEPSEEK_V4_FLASH_PRICING,
   "deepseek/deepseek-v4-flash-0731": DEEPSEEK_V4_FLASH_0731_PRICING,
@@ -117,8 +128,20 @@ const MODEL_PRICING_MAP: Record<string, ModelPricing> = {
   "moonshotai/kimi-k3-20260715": KIMI_K3_PRICING,
 };
 
-const getModelPricing = (modelName?: string): ModelPricing => {
+const GROK_4_6_MODEL_IDS = new Set(["model-grok-4.6-pro", "x-ai/grok-4.6"]);
+
+const getModelPricing = (
+  modelName?: string,
+  inputTokens?: number,
+): ModelPricing => {
   if (!modelName) return DEFAULT_PRICING;
+
+  if (
+    GROK_4_6_MODEL_IDS.has(modelName) &&
+    normalizeTokenCount(inputTokens ?? 0) >= GROK_4_6_LONG_CONTEXT_PROMPT_TOKENS
+  ) {
+    return GROK_4_6_LONG_CONTEXT_PRICING;
+  }
 
   const exactPricing = MODEL_PRICING_MAP[modelName];
   if (exactPricing) return exactPricing;
@@ -205,6 +228,8 @@ export type DelinquencyCreditHoldResult = {
 
 export type PaidCreditResetResult = {
   outcome: "applied" | "already_applied" | "stale";
+  recoveredFromPaymentFailure: boolean;
+  paymentFailureAtMs?: number;
 };
 
 const emptyUsageDeductionResult = (): UsageDeductionResult => ({
@@ -394,9 +419,13 @@ export const calculateTokenCost = (
   tokens: number,
   type: "input" | "output",
   modelName?: string,
+  promptTokens?: number,
 ): number => {
   if (tokens <= 0) return 0;
-  const pricing = getModelPricing(modelName);
+  const pricing = getModelPricing(
+    modelName,
+    type === "input" ? tokens : promptTokens,
+  );
   const price = type === "input" ? pricing.input : pricing.output;
   const costPoints =
     (tokens / 1_000_000) * price * POINTS_PER_DOLLAR * NORMAL_USAGE_MULTIPLIER;
@@ -414,7 +443,10 @@ export const calculateRawTokenCost = (
   modelName?: string,
 ): number => {
   if (tokens <= 0) return 0;
-  const pricing = getModelPricing(modelName);
+  const pricing = getModelPricing(
+    modelName,
+    type === "input" ? tokens : undefined,
+  );
   const price = type === "input" ? pricing.input : pricing.output;
   return Math.ceil((tokens / 1_000_000) * price * POINTS_PER_DOLLAR);
 };
@@ -451,7 +483,7 @@ export const calculateRawModelUsageCostDollars = ({
   );
   const uncachedInput =
     normalizedInput - normalizedCacheRead - normalizedCacheWrite;
-  const pricing = getModelPricing(modelName);
+  const pricing = getModelPricing(modelName, normalizedInput);
 
   return (
     (uncachedInput * pricing.input +
@@ -650,17 +682,21 @@ local existingInvoiceId = redis.call("HGET", bucketKey, "billingInvoiceId")
 if existingTransitionType == "paid"
   and existingSubscriptionId == subscriptionId
   and existingInvoiceId == invoiceId then
-  return 2
+  return {2, 0, 0}
 end
 
 if existingTransitionAtMs and existingTransitionAtMs > transitionAtMs then
-  return 0
+  return {0, 0, 0}
 end
 if existingTransitionAtMs
   and existingTransitionAtMs == transitionAtMs
   and existingTransitionType ~= "payment_failed" then
-  return 0
+  return {0, 0, 0}
 end
+
+local recoveredFromPaymentFailure = existingTransitionType == "payment_failed"
+  and existingSubscriptionId == subscriptionId
+  and existingInvoiceId == invoiceId
 
 redis.call("DEL", bucketKey)
 redis.call(
@@ -677,7 +713,11 @@ redis.call(
   "billingInvoiceId", invoiceId
 )
 redis.call("EXPIRE", bucketKey, expireSeconds)
-return 1
+return {
+  1,
+  recoveredFromPaymentFailure and 1 or 0,
+  recoveredFromPaymentFailure and existingTransitionAtMs or 0
+}
 `;
 
 const enforceStoredCycleAllocation = async (
@@ -1232,6 +1272,7 @@ export const deductUsage = async (
         actualOutputTokens,
         "output",
         modelForActualCost,
+        actualInputTokens,
       );
       const nonModelCostPoints =
         nonModelCostDollars > 0
@@ -1479,9 +1520,9 @@ export const resetRateLimitBucketAfterPayment = async (
     Number.isFinite(transition.occurredAtMs) && transition.occurredAtMs > 0
       ? Math.floor(transition.occurredAtMs)
       : nowMs;
-  const outcomeCode = await redis.eval<
+  const [outcomeCode, recoveredCode, paymentFailureAtMsRaw] = await redis.eval<
     [number, number, number, number, number, number, number, string, string],
-    number
+    [number, number, number]
   >(
     APPLY_PAID_BUCKET_RESET_SCRIPT,
     [getMonthlyBucketKey(userId, subscription)],
@@ -1505,6 +1546,13 @@ export const resetRateLimitBucketAfterPayment = async (
         : outcomeCode === 2
           ? "already_applied"
           : "stale",
+    recoveredFromPaymentFailure: recoveredCode === 1,
+    ...(recoveredCode === 1 &&
+      typeof paymentFailureAtMsRaw === "number" &&
+      Number.isFinite(paymentFailureAtMsRaw) &&
+      paymentFailureAtMsRaw > 0 && {
+        paymentFailureAtMs: paymentFailureAtMsRaw,
+      }),
   };
 };
 

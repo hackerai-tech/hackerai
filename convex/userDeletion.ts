@@ -29,6 +29,7 @@ export const USER_DELETION_TABLE_POLICY = {
   anonymize: [
     "usage_logs",
     "cancellation_reasons",
+    "involuntary_churn_events",
     "referral_codes",
     "referral_attributions",
     "referral_rewards",
@@ -515,6 +516,11 @@ async function cleanupUserDataForUser(
     "by_user",
     (q) => q.eq("user_id", userId),
   );
+  const involuntaryChurnEventsBatch = await collectByIndexBatch<
+    Doc<"involuntary_churn_events">
+  >(ctx, budget, "involuntary_churn_events", "by_user_and_occurred", (q) =>
+    q.eq("user_id", userId),
+  );
   const referralCodesBatch = await collectByIndexBatch<Doc<"referral_codes">>(
     ctx,
     budget,
@@ -595,6 +601,7 @@ async function cleanupUserDataForUser(
   const anonymizeBatches = [
     cancellationReasonsBatch,
     usageLogsBatch,
+    involuntaryChurnEventsBatch,
     referralCodesBatch,
     referredAttributionsBatch,
     referrerAttributionsBatch,
@@ -614,6 +621,7 @@ async function cleanupUserDataForUser(
 
   const cancellationReasons = cancellationReasonsBatch.docs;
   const usageLogs = usageLogsBatch.docs;
+  const involuntaryChurnEvents = involuntaryChurnEventsBatch.docs;
   const referralCodes = referralCodesBatch.docs;
   const referredAttributions = referredAttributionsBatch.docs;
   const referrerAttributions = referrerAttributionsBatch.docs;
@@ -650,6 +658,17 @@ async function cleanupUserDataForUser(
       user_id: DELETED_USER_ID,
       chat_id: undefined,
       assistant_message_id: undefined,
+    }),
+    mode,
+  );
+  await anonymizeDocs(
+    ctx,
+    stats,
+    "involuntary_churn_events",
+    involuntaryChurnEvents,
+    (event) => ({
+      user_id: DELETED_USER_ID,
+      idempotency_key: `${event.stripe_event_id}:${DELETED_USER_ID}:${event._id}`,
     }),
     mode,
   );

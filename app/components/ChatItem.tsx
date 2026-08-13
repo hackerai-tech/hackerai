@@ -62,7 +62,10 @@ import {
 import { useDraggable } from "@dnd-kit/core";
 import { useMutation } from "convex/react";
 import { api } from "@/convex/_generated/api";
-import { removeDraft } from "@/lib/utils/client-storage";
+import {
+  markSidebarTaskVisited,
+  removeDraft,
+} from "@/lib/utils/client-storage";
 import { openSettingsDialog } from "@/lib/utils/settings-dialog";
 import { ShareDialog } from "./ShareDialog";
 import { MoveChatToProjectDialog } from "./MoveChatToProjectDialog";
@@ -72,6 +75,7 @@ import { useMoveChatToProjectAction } from "../hooks/useMoveChatToProjectAction"
 import type { SidebarChatDragData } from "./sidebar-chat-drag";
 import { formatTaskTitle, formatTaskUiCopy } from "@/app/utils/task-ui-copy";
 import { useSidebarProjectList } from "@/app/contexts/SidebarProjectList";
+import { useSidebarTaskUnreadCompletion } from "@/app/hooks/useSidebarTaskUnreadCompletion";
 
 interface ChatItemProps {
   id: string;
@@ -84,6 +88,7 @@ interface ChatItemProps {
   isPinned?: boolean;
   isStreaming?: boolean;
   isAwaitingApproval?: boolean;
+  lastRunFinishedAt?: number;
 }
 
 const CHAT_OPTIONS_CONTENT_CLASS =
@@ -117,6 +122,7 @@ const ChatItem: React.FC<ChatItemProps> = ({
   isPinned = false,
   isStreaming = false,
   isAwaitingApproval = false,
+  lastRunFinishedAt,
 }) => {
   const taskTitle = formatTaskTitle(title);
   const router = useRouter();
@@ -165,13 +171,25 @@ const ChatItem: React.FC<ChatItemProps> = ({
   // During a route transition, prefer the clicked chat immediately so a busy
   // streaming chat does not keep the old row highlighted until navigation commits.
   const isCurrentlyActive = selectedChatId === id;
+  const hasUnreadCompletion = useSidebarTaskUnreadCompletion({
+    taskId: id,
+    lastRunFinishedAt,
+    isActive: isCurrentlyActive,
+  });
   const showActions = Boolean(
     isHovered || isFocusedWithin || isDropdownOpen || isMobile,
   );
   const showStreamingIndicator =
     isStreaming && (!isHovered || isMobile) && (!isDropdownOpen || isMobile);
+  const showUnreadCompletionIndicator =
+    hasUnreadCompletion &&
+    !isStreaming &&
+    (!isHovered || isMobile) &&
+    (!isDropdownOpen || isMobile);
+  const showRunStatusIndicator =
+    showStreamingIndicator || showUnreadCompletionIndicator;
   const visibleActionSlotCount =
-    Number(showStreamingIndicator) + Number(showActions);
+    Number(showRunStatusIndicator) + Number(showActions);
   const rightPaddingClass =
     visibleActionSlotCount === 2
       ? "pr-[4.5rem]"
@@ -226,6 +244,8 @@ const ChatItem: React.FC<ChatItemProps> = ({
     if (isMobile) {
       setChatSidebarOpen(false);
     }
+
+    markSidebarTaskVisited(id, Math.max(Date.now(), lastRunFinishedAt ?? 0));
 
     // Clear input and transient state only when switching to a different chat
     if (!isCurrentlyActive) {
@@ -371,7 +391,7 @@ const ChatItem: React.FC<ChatItemProps> = ({
     const trimmedTitle = editTitle.trim();
 
     // Don't save if title is empty or unchanged
-    if (!trimmedTitle || trimmedTitle === title) {
+    if (!trimmedTitle || trimmedTitle === taskTitle) {
       setShowRenameDialog(false);
       setEditTitle(taskTitle); // Reset to original title
       return;
@@ -462,7 +482,7 @@ const ChatItem: React.FC<ChatItemProps> = ({
       tabIndex={0}
       aria-label={`Open task: ${taskTitle}${
         isAwaitingApproval ? " awaiting approval" : ""
-      }`}
+      }${hasUnreadCompletion ? " with unread result" : ""}`}
       data-testid={`chat-item-${id}`}
     >
       <div
@@ -498,11 +518,11 @@ const ChatItem: React.FC<ChatItemProps> = ({
 
       <div
         className={`absolute right-0.5 flex items-center gap-1 transition-opacity ${
-          showActions || showStreamingIndicator
+          showActions || showRunStatusIndicator
             ? "opacity-100"
             : "pointer-events-none opacity-0"
         }`}
-        aria-hidden={!showActions && !showStreamingIndicator}
+        aria-hidden={!showActions && !showRunStatusIndicator}
         onMouseDown={(event) => event.stopPropagation()}
         onTouchStart={(event) => event.stopPropagation()}
       >
@@ -511,6 +531,20 @@ const ChatItem: React.FC<ChatItemProps> = ({
             <LoaderCircle
               className="size-4 animate-spin text-muted-foreground"
               data-testid="chat-item-streaming-icon"
+              aria-hidden="true"
+            />
+          </div>
+        ) : null}
+        {showUnreadCompletionIndicator ? (
+          <div
+            className="flex size-8 flex-shrink-0 items-center justify-center"
+            data-testid="chat-item-unread-completion-indicator"
+            role="status"
+            aria-label="Task finished"
+            title="Task finished"
+          >
+            <span
+              className="size-2 rounded-full bg-blue-400"
               aria-hidden="true"
             />
           </div>

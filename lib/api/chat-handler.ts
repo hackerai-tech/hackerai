@@ -147,9 +147,11 @@ import { PAID_FUNNEL_EVENTS } from "@/lib/analytics/paid-funnel";
 import { readAnalyticsRequestContext } from "@/lib/analytics/request-context";
 import { buildAgentStepLimitTelemetry } from "@/lib/analytics/agent-step-limit-telemetry";
 import {
-  evaluateProPlusMaxAccessExperiment,
-  getProPlusMaxAccessExperimentContext,
-} from "@/lib/experiments/pro-plus-max-access";
+  captureProGrok46ExperimentExposure,
+  evaluateProGrok46Experiment,
+  getActiveProGrok46ExperimentAssignment,
+  getProGrok46ExperimentContext,
+} from "@/lib/experiments/pro-grok-46";
 import {
   capturePaidDailyFreeAllowanceServerEvent,
   createPaidDailyFreeAllowanceBudgetSnapshot,
@@ -359,29 +361,24 @@ export const createChatHandler = () => {
         organizationId,
       });
       const extraUsageAvailable = canUseExtraUsage(baseExtraUsageConfig);
-      const maxAccessExperiment =
-        selectedModelOverride === "hackerai-max"
-          ? await evaluateProPlusMaxAccessExperiment({
+      const proGrok46Experiment =
+        isAgentMode(mode) && selectedModelOverride === "hackerai-pro"
+          ? await evaluateProGrok46Experiment({
               posthog: (posthog ??= PostHogClient()),
               userId,
               subscription,
               mode,
-              extraUsageAvailable,
+              selectedModel: selectedModelOverride,
             })
           : undefined;
-      const includedMaxAccess = maxAccessExperiment?.includedMaxAccess === true;
-      const maxAccessExperimentContext =
-        getProPlusMaxAccessExperimentContext(maxAccessExperiment);
       selectedModelOverride =
         normalizeMaxModelForSubscription(selectedModelOverride, subscription, {
           extraUsageAvailable,
-          includedMaxAccess,
         }) ?? undefined;
       const extraUsageConfig = withExtraUsageBillingForModel(
         baseExtraUsageConfig,
         selectedModelOverride,
         subscription,
-        { includedMaxAccess },
       );
 
       await handleInitialChatAndUserMessage({
@@ -426,7 +423,7 @@ export const createChatHandler = () => {
         uploadBasePath,
         modelOverride: selectedModelOverride,
         extraUsageAvailable,
-        includedMaxAccess,
+        proModelKey: proGrok46Experiment?.modelKey,
         allowLocalDesktopFiles:
           isAgentMode(mode) && sandboxPreference === "desktop",
       });
@@ -579,6 +576,14 @@ export const createChatHandler = () => {
         });
       }
 
+      const activeProGrok46Experiment = getActiveProGrok46ExperimentAssignment(
+        proGrok46Experiment,
+        selectedModel,
+      );
+      const routingExperimentContext = getProGrok46ExperimentContext(
+        activeProGrok46Experiment,
+      );
+
       const freeMonthlyBudgetSnapshot =
         subscription === "free"
           ? await checkFreeMonthlyCostLimit(freeUsageSubject)
@@ -672,6 +677,7 @@ export const createChatHandler = () => {
                 chatLogger?.setSandboxBoot(info);
               },
               selectedModel,
+              undefined,
               undefined,
               undefined,
               undefined,
@@ -1129,7 +1135,7 @@ export const createChatHandler = () => {
                   usage: usageCostRecord,
                   responseModel: state.responseModel,
                   analyticsRequestContext,
-                  experiment: maxAccessExperimentContext,
+                  experiment: routingExperimentContext,
                   fallbackServed:
                     state.responseModel && retryUsedFallbackModel
                       ? true
@@ -1335,6 +1341,15 @@ export const createChatHandler = () => {
 
             let result;
             try {
+              captureProGrok46ExperimentExposure({
+                posthog,
+                userId,
+                subscription,
+                mode,
+                selectedModel,
+                configuredModel: configuredModelId,
+                assignment: activeProGrok46Experiment,
+              });
               result = await createStream(selectedModel);
             } catch (error) {
               // If provider returns an API error before streaming, retry with fallback.
@@ -1698,7 +1713,7 @@ export const createChatHandler = () => {
                                   finishReason: state.streamFinishReason,
                                   budgetAbortDetails: state.budgetAbortDetails,
                                   isAutoContinue: !!isAutoContinue,
-                                  experiment: maxAccessExperimentContext,
+                                  experiment: routingExperimentContext,
                                   stepLimitTelemetry:
                                     buildAgentStepLimitTelemetry({
                                       configuredMaxSteps:
@@ -2014,7 +2029,7 @@ export const createChatHandler = () => {
                       finishReason: state.streamFinishReason,
                       budgetAbortDetails: state.budgetAbortDetails,
                       isAutoContinue: !!isAutoContinue,
-                      experiment: maxAccessExperimentContext,
+                      experiment: routingExperimentContext,
                       stepLimitTelemetry: buildAgentStepLimitTelemetry({
                         configuredMaxSteps: state.configuredMaxSteps,
                         stepCount: state.agentStepCount,

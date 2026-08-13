@@ -49,7 +49,6 @@ export function resolveAgentRunSpendCapContinuationModel(args: {
   subscription: SubscriptionTier;
   selectedModelOverride: SelectedModel | undefined;
   extraUsageConfig: ExtraUsageConfig | undefined;
-  includedMaxAccess?: boolean;
 }): SelectedModel | undefined {
   return (
     normalizeMaxModelForSubscription(
@@ -59,7 +58,6 @@ export function resolveAgentRunSpendCapContinuationModel(args: {
         extraUsageAvailable: canContinueProAgentRunWithPremium(
           args.extraUsageConfig,
         ),
-        includedMaxAccess: args.includedMaxAccess,
       },
     ) ?? undefined
   );

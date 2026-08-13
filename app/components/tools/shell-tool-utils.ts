@@ -5,13 +5,39 @@
  * SharedMessagePartHandler (shared/read-only view).
  */
 
-import type { SidebarTerminal } from "@/types/chat";
+import type { AgentAutoReviewLifecycleStatus, SidebarTerminal } from "@/types";
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
 export type ShellAction = "exec" | "view" | "wait" | "send" | "kill";
+
+export type TerminalExecutionPhase = NonNullable<
+  SidebarTerminal["executionPhase"]
+>;
+
+export function getTerminalExecutionPhase({
+  toolState,
+  autoReviewStatus,
+}: {
+  toolState?: string;
+  autoReviewStatus?: AgentAutoReviewLifecycleStatus;
+}): TerminalExecutionPhase | undefined {
+  if (toolState === "output-error") return "failed";
+  if (toolState === "output-available") return "completed";
+  if (
+    toolState === "approval-requested" ||
+    autoReviewStatus === "needs_approval"
+  ) {
+    return "awaiting_approval";
+  }
+  if (autoReviewStatus === "reviewing") return "reviewing";
+  if (toolState === "input-available" || toolState === "running") {
+    return "executing";
+  }
+  return undefined;
+}
 
 export interface ShellToolInput {
   command?: string;
@@ -360,6 +386,7 @@ export interface ComputeShellBlockArgs {
   legacyIsBackground?: boolean;
   /** Legacy run_terminal_cmd: input.command. */
   legacyCommand?: string;
+  executionPhase?: TerminalExecutionPhase;
 }
 
 export interface ShellBlockComputed {
@@ -386,6 +413,7 @@ export function computeShellTerminalBlock(
     legacyInteractive,
     legacyIsBackground,
     legacyCommand,
+    executionPhase,
   } = args;
 
   const shellAction = isShellTool ? shellInput?.action : undefined;
@@ -460,6 +488,7 @@ export function computeShellTerminalBlock(
           command: isInteractiveAction ? displayTarget : displayCommand,
           output: stripAgentOnlyTerminalGuidance(finalOutput),
           isExecuting,
+          executionPhase,
           isBackground: !isShellTool ? legacyIsBackground : undefined,
           isInteractive: !isShellTool ? legacyInteractive : undefined,
           toolCallId,

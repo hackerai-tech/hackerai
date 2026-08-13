@@ -154,6 +154,20 @@ describe("limitImageParts", () => {
 // selectModel - Model selection logic
 // ==========================================================================
 describe("selectModel", () => {
+  it("routes the HAC-64 treatment through the Grok 4.6 Pro alias", () => {
+    expect(
+      selectModel("agent", "pro", "hackerai-pro", false, false, {
+        proModelKey: "model-grok-4.6-pro",
+      }),
+    ).toBe("model-grok-4.6-pro");
+  });
+
+  it("keeps HackerAI Pro on Grok 4.5 without an experiment assignment", () => {
+    expect(selectModel("agent", "pro", "hackerai-pro")).toBe(
+      "model-grok-4.5-pro",
+    );
+  });
+
   it.each(["pro", "pro-plus", "ultra", "team"] as const)(
     "routes paid %s Auto/Standard text to DeepSeek V4 Pro in both modes",
     (subscription) => {
@@ -364,16 +378,6 @@ describe("selectModel", () => {
           extraUsageAvailable: true,
         }),
       ).toBe("model-opus-4.6");
-      expect(
-        selectModel("agent", "pro-plus", "hackerai-max", false, false, {
-          includedMaxAccess: true,
-        }),
-      ).toBe("model-opus-4.6");
-      expect(
-        selectModel("agent", "pro", "hackerai-max", false, false, {
-          includedMaxAccess: true,
-        }),
-      ).toBe("model-grok-4.5-pro");
     });
 
     it("should default to DeepSeek V4 Pro when no model is selected", () => {

@@ -14,7 +14,7 @@ import { convexLogger } from "./lib/logger";
 import type { RetainedTailDoc } from "./lib/retainedTail";
 import { assertUserCanAccessChatHistory } from "./lib/suspensionGuards";
 import {
-  getVisibleSharedChatByChatId,
+  getVisibleSharedChatByShareId,
   listVisibleSharedMessages,
   sharedMessageValidator,
 } from "./lib/sharedChatSnapshot";
@@ -2140,15 +2140,15 @@ export const regenerateWithNewContent = mutation({
  * the shared link only shows messages that existed at share time.
  * New messages added after sharing are NOT visible until user updates the share.
  *
- * @param chatId - The ID of the chat to get messages for
+ * @param shareId - The active public share ID
  * @returns Array of messages (up to share_date) with files/images as placeholders
  */
 export const getSharedMessages = query({
-  args: { chatId: v.string() },
+  args: { shareId: v.string() },
   returns: v.array(sharedMessageValidator),
   handler: async (ctx, args) => {
     try {
-      const chat = await getVisibleSharedChatByChatId(ctx, args.chatId);
+      const chat = await getVisibleSharedChatByShareId(ctx, args.shareId);
       return chat ? await listVisibleSharedMessages(ctx, chat) : [];
     } catch (error) {
       console.error("Failed to get shared messages:", error);

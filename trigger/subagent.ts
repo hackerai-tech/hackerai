@@ -537,6 +537,7 @@ export const subagentTask = task({
               undefined,
               undefined,
               undefined,
+              undefined,
               ctx.run.id,
               {
                 allowedToolNames: [

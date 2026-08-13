@@ -31,6 +31,7 @@ export type AgentActivityTimelineRow = BaseTimelineRow &
     kind: "agent-activity";
     isLastMessage: boolean;
     keepLatestReasoningOpenDuringStreaming: boolean;
+    suppressReasoningAutoOpen: boolean;
     deferReasoningCollapseUntilParent: boolean;
     terminalChunksByToolCallId: Map<string, readonly string[]>;
   };
@@ -63,9 +64,11 @@ export type DeriveChatTimelineRowsOptions = {
   animateNewToolGroups?: boolean;
   seenAgentMessageIds?: ReadonlySet<string>;
   seenToolGroupIds?: ReadonlySet<string>;
+  restoredAgentMessageIds?: ReadonlySet<string>;
 };
 
 const EMPTY_TOOL_GROUP_IDS: ReadonlySet<string> = new Set();
+const EMPTY_MESSAGE_IDS: ReadonlySet<string> = new Set();
 
 export function findLatestTimelineAnchorMessageId(
   messages: readonly ChatMessage[],
@@ -104,6 +107,7 @@ export function deriveChatTimelineRows({
   animateNewToolGroups = true,
   seenAgentMessageIds,
   seenToolGroupIds = EMPTY_TOOL_GROUP_IDS,
+  restoredAgentMessageIds = EMPTY_MESSAGE_IDS,
 }: DeriveChatTimelineRowsOptions): ChatTimelineRow[] {
   const rows: ChatTimelineRow[] = [];
 
@@ -160,6 +164,7 @@ export function deriveChatTimelineRows({
     const isTiming = status === "streaming" && isLastAssistantMessage;
     const canAnimateNewToolGroups =
       animateNewToolGroups &&
+      !restoredAgentMessageIds.has(message.id) &&
       (seenAgentMessageIds === undefined ||
         seenAgentMessageIds.has(message.id));
     const hasFinalAnswer = trailingTextParts.length > 0;
@@ -221,6 +226,7 @@ export function deriveChatTimelineRows({
           id: `work:${message.id}:${activity.id}`,
           isLastMessage: messageIndex === messages.length - 1,
           keepLatestReasoningOpenDuringStreaming: true,
+          suppressReasoningAutoOpen: restoredAgentMessageIds.has(message.id),
           deferReasoningCollapseUntilParent: hasFinalAnswer,
           terminalChunksByToolCallId: projection.terminalChunksByToolCallId,
         });
@@ -315,6 +321,7 @@ function isChatTimelineRowUnchanged(
       previous.isLastMessage === next.isLastMessage &&
       previous.keepLatestReasoningOpenDuringStreaming ===
         next.keepLatestReasoningOpenDuringStreaming &&
+      previous.suppressReasoningAutoOpen === next.suppressReasoningAutoOpen &&
       previous.deferReasoningCollapseUntilParent ===
         next.deferReasoningCollapseUntilParent
     );

@@ -139,6 +139,7 @@ function makeContext(opts: {
   sandbox: unknown | null;
   ptySessionManager?: PtySessionManager;
   chatId?: string;
+  requestToolApproval?: import("@/types").AgentToolApprovalRequester;
 }) {
   const writerWrites: unknown[] = [];
   const writer = {
@@ -172,6 +173,7 @@ function makeContext(opts: {
     backgroundProcessTracker: {} as never,
     ptySessionManager,
     mode: "agent",
+    requestToolApproval: opts.requestToolApproval,
     isE2BSandbox: (s: unknown) => {
       if (!s || typeof s !== "object") return false;
       if ((s as { sandboxKind?: unknown }).sandboxKind === "centrifugo")
@@ -267,6 +269,8 @@ describe("interact_terminal_session — PTY action dispatch", () => {
       cols: 120,
       rows: 30,
       kind: "command",
+      sandboxIdentity: "e2b",
+      originalCommand: "whois example.com",
       createHandle: async () => handle,
     });
     const tool = createInteractTerminalSession(context);
@@ -313,6 +317,8 @@ describe("interact_terminal_session — PTY action dispatch", () => {
       cols: 120,
       rows: 30,
       kind: "command",
+      sandboxIdentity: "e2b",
+      originalCommand: "whois example.com",
       createHandle: async () => handle,
     });
     const tool = createInteractTerminalSession(context);
@@ -350,6 +356,8 @@ describe("interact_terminal_session — PTY action dispatch", () => {
       cols: 120,
       rows: 30,
       kind: "command",
+      sandboxIdentity: "e2b",
+      originalCommand: "whois example.com",
       createHandle: async () => handle,
     });
     const tool = createInteractTerminalSession(context);
@@ -409,6 +417,251 @@ describe("interact_terminal_session — PTY action dispatch", () => {
     expect(new TextDecoder().decode(handle.sendInputCalls[before])).toBe(
       "rm -rf /\r",
     );
+  });
+
+  test("passes the exact terminal interaction through the approval gate", async () => {
+    const e2b = makeFakeE2BSandbox();
+    const handle = makeFakeHandle();
+    const requestToolApproval = jest.fn(async () => ({
+      approved: true as const,
+      approvalId: "approval-1",
+      sandboxIdentity: "e2b" as const,
+    }));
+    const { context } = makeContext({
+      sandbox: e2b,
+      requestToolApproval,
+    });
+    const sessionId = await createSession(context, handle);
+    requestToolApproval.mockClear();
+    handle.emit(new TextEncoder().encode("root@box:/workspace# "));
+
+    await runTool(createInteractTerminalSession(context), {
+      action: "send",
+      session: sessionId,
+      input: "rm -rf /\n",
+    });
+
+    expect(requestToolApproval).toHaveBeenCalledWith(
+      expect.objectContaining({
+        operation: "terminal_interact",
+        target: `send to ${sessionId}: rm -rf /\n`,
+        autoReviewContext: expect.objectContaining({
+          type: "terminal_interaction",
+          interaction: `send to ${sessionId}: rm -rf /\n`,
+          action: "send",
+          sessionId,
+          input: "rm -rf /\n",
+          translatedInput: "rm -rf /\r",
+          originalCommand: "sh",
+          recentOutput: "root@box:/workspace# ",
+          outputComplete: true,
+        }),
+      }),
+    );
+  });
+
+  test("does not send automatically reviewed input if terminal state changes during review", async () => {
+    const e2b = makeFakeE2BSandbox();
+    const handle = makeFakeHandle();
+    const requestToolApproval = jest.fn(async () => ({
+      approved: true as const,
+      approvalId: "human-setup",
+      sandboxIdentity: "e2b" as const,
+    }));
+    const { context } = makeContext({ sandbox: e2b, requestToolApproval });
+    const sessionId = await createSession(context, handle);
+    const callsBeforeSend = handle.sendInputCalls.length;
+    handle.emit(new TextEncoder().encode("Proceed? [y/N] "));
+    requestToolApproval.mockImplementation(async () => {
+      handle.emit(new TextEncoder().encode("\nProcess advanced\n"));
+      return {
+        approved: true as const,
+        approvalId: "auto-review-1",
+        sandboxIdentity: "e2b" as const,
+        approvalSource: "auto_review" as const,
+      };
+    });
+
+    const result = (await runTool(createInteractTerminalSession(context), {
+      action: "send",
+      session: sessionId,
+      input: "y\n",
+    })) as { result: { error?: string } };
+
+    expect(result.result.error).toContain(
+      "changed while HackerAI was reviewing",
+    );
+    expect(handle.sendInputCalls).toHaveLength(callsBeforeSend);
+  });
+
+  test("does not kill an automatically reviewed session if terminal state changes during review", async () => {
+    const e2b = makeFakeE2BSandbox();
+    const handle = makeFakeHandle();
+    const requestToolApproval = jest.fn(async () => ({
+      approved: true as const,
+      approvalId: "human-setup",
+      sandboxIdentity: "e2b" as const,
+    }));
+    const { context } = makeContext({ sandbox: e2b, requestToolApproval });
+    const sessionId = await createSession(context, handle);
+    handle.emit(new TextEncoder().encode("Process running\n"));
+    requestToolApproval.mockImplementation(async () => {
+      handle.emit(new TextEncoder().encode("Process produced more output\n"));
+      return {
+        approved: true as const,
+        approvalId: "auto-review-kill-1",
+        sandboxIdentity: "e2b" as const,
+        approvalSource: "auto_review" as const,
+      };
+    });
+
+    const result = (await runTool(createInteractTerminalSession(context), {
+      action: "kill",
+      session: sessionId,
+    })) as { result: { error?: string } };
+
+    expect(result.result.error).toContain("The session was not killed.");
+    expect(handle.killed).toBe(false);
+  });
+
+  test("preserves human approval behavior when terminal output changes while waiting", async () => {
+    const e2b = makeFakeE2BSandbox();
+    const handle = makeFakeHandle();
+    const requestToolApproval = jest.fn(async () => ({
+      approved: true as const,
+      approvalId: "human-setup",
+      sandboxIdentity: "e2b" as const,
+    }));
+    const { context } = makeContext({ sandbox: e2b, requestToolApproval });
+    const sessionId = await createSession(context, handle);
+    const callsBeforeSend = handle.sendInputCalls.length;
+    handle.emit(new TextEncoder().encode("Proceed? [y/N] "));
+    requestToolApproval.mockImplementation(async () => {
+      handle.emit(new TextEncoder().encode("\nStill waiting\n"));
+      return {
+        approved: true as const,
+        approvalId: "human-1",
+        sandboxIdentity: "e2b" as const,
+      };
+    });
+
+    const result = (await runTool(createInteractTerminalSession(context), {
+      action: "send",
+      session: sessionId,
+      input: "y\n",
+    })) as { result: { error?: string } };
+
+    expect(result.result.error).toBeUndefined();
+    expect(
+      new TextDecoder().decode(handle.sendInputCalls[callsBeforeSend]),
+    ).toBe("y\r");
+  });
+
+  test("does not send input after the selected sandbox changes", async () => {
+    const handle = makeFakeHandle();
+    const requestToolApproval = jest.fn(async () => ({
+      approved: true as const,
+      approvalId: "approval-1",
+      sandboxIdentity: "e2b" as const,
+    }));
+    const { context, sandboxManager, ptySessionManager } = makeContext({
+      sandbox: makeFakeE2BSandbox(),
+      requestToolApproval,
+    });
+    const sessionId = await createSession(context, handle);
+    requestToolApproval.mockClear();
+    const callsBeforeSend = handle.sendInputCalls.length;
+    sandboxManager.getSandbox.mockResolvedValue({
+      sandbox: {
+        sandboxKind: "centrifugo",
+        getConnectionId: () => "desktop-new",
+      },
+    });
+
+    const result = (await runTool(createInteractTerminalSession(context), {
+      action: "send",
+      session: sessionId,
+      input: "whoami\n",
+    })) as { result: { error?: string } };
+
+    expect(result.result.error).toContain(
+      "no longer matches the sandbox that created this terminal session",
+    );
+    expect(handle.sendInputCalls).toHaveLength(callsBeforeSend);
+    expect(requestToolApproval).not.toHaveBeenCalled();
+    await ptySessionManager.close("chat-1", sessionId);
+  });
+
+  test("rechecks the session sandbox after approval before sending", async () => {
+    const e2b = makeFakeE2BSandbox();
+    const handle = makeFakeHandle();
+    const requestToolApproval = jest.fn(async () => ({
+      approved: true as const,
+      approvalId: "approval-1",
+      sandboxIdentity: "e2b" as const,
+    }));
+    const { context, sandboxManager, ptySessionManager } = makeContext({
+      sandbox: e2b,
+      requestToolApproval,
+    });
+    const sessionId = await createSession(context, handle);
+    requestToolApproval.mockClear();
+    const callsBeforeSend = handle.sendInputCalls.length;
+    sandboxManager.getSandbox
+      .mockResolvedValueOnce({ sandbox: e2b })
+      .mockResolvedValueOnce({
+        sandbox: {
+          sandboxKind: "centrifugo",
+          getConnectionId: () => "desktop-after-approval",
+        },
+      });
+
+    const result = (await runTool(createInteractTerminalSession(context), {
+      action: "send",
+      session: sessionId,
+      input: "whoami\n",
+    })) as { result: { error?: string } };
+
+    expect(requestToolApproval).toHaveBeenCalledTimes(1);
+    expect(result.result.error).toContain(
+      "no longer matches the sandbox that created this terminal session",
+    );
+    expect(handle.sendInputCalls).toHaveLength(callsBeforeSend);
+    await ptySessionManager.close("chat-1", sessionId);
+  });
+
+  test("does not kill a session after the selected sandbox changes", async () => {
+    const handle = makeFakeHandle();
+    const requestToolApproval = jest.fn(async () => ({
+      approved: true as const,
+      approvalId: "approval-1",
+      sandboxIdentity: "e2b" as const,
+    }));
+    const { context, sandboxManager, ptySessionManager } = makeContext({
+      sandbox: makeFakeE2BSandbox(),
+      requestToolApproval,
+    });
+    const sessionId = await createSession(context, handle);
+    requestToolApproval.mockClear();
+    sandboxManager.getSandbox.mockResolvedValue({
+      sandbox: {
+        sandboxKind: "centrifugo",
+        getConnectionId: () => "remote-new",
+      },
+    });
+
+    const result = (await runTool(createInteractTerminalSession(context), {
+      action: "kill",
+      session: sessionId,
+    })) as { result: { error?: string } };
+
+    expect(result.result.error).toContain(
+      "no longer matches the sandbox that created this terminal session",
+    );
+    expect(handle.killed).toBe(false);
+    expect(requestToolApproval).not.toHaveBeenCalled();
+    expect(ptySessionManager.get("chat-1", sessionId)).toBeDefined();
+    await ptySessionManager.close("chat-1", sessionId);
   });
 
   test("send translates tmux key names and passes raw text verbatim", async () => {

@@ -7,9 +7,11 @@ import {
 } from "@/types/chat";
 import {
   formatSendInput,
+  getTerminalExecutionPhase,
   isInteractiveShellAction,
   stripAgentOnlyTerminalGuidance,
 } from "@/app/components/tools/shell-tool-utils";
+import { parseAgentAutoReviewLifecycle } from "@/types";
 
 interface MessagePart {
   type: string;
@@ -44,6 +46,10 @@ export function extractSidebarContentFromMessage(
 
   // Collect terminal output from data-terminal parts (for streaming)
   const terminalDataMap = new Map<string, string>();
+  const autoReviewStatusByToolCallId = new Map<
+    string,
+    NonNullable<ReturnType<typeof parseAgentAutoReviewLifecycle>>["status"]
+  >();
   // Collect diff data from data-diff parts (for search_replace UI-only diff display)
   const diffDataMap = new Map<
     string,
@@ -56,6 +62,15 @@ export function extractSidebarContentFromMessage(
       const terminalOutput = part.data?.terminal || "";
       const existing = terminalDataMap.get(toolCallId) || "";
       terminalDataMap.set(toolCallId, existing + terminalOutput);
+    }
+    if (part.type === "data-agent-auto-review-lifecycle") {
+      const lifecycle = parseAgentAutoReviewLifecycle(part.data);
+      if (lifecycle) {
+        autoReviewStatusByToolCallId.set(
+          lifecycle.toolCallId,
+          lifecycle.status,
+        );
+      }
     }
     if (part.type === "data-diff" && part.data?.toolCallId) {
       const toolCallId = part.data.toolCallId;
@@ -119,6 +134,12 @@ export function extractSidebarContentFromMessage(
       part.input
     ) {
       const action = part.input.action || "exec";
+      const executionPhase = getTerminalExecutionPhase({
+        toolState: part.state,
+        autoReviewStatus: autoReviewStatusByToolCallId.get(
+          part.toolCallId || "",
+        ),
+      });
       const isInteractive =
         isInteractiveShellAction(action) || !!part.input.interactive;
       // For action=send, format each token through formatSendInput (same
@@ -190,8 +211,8 @@ export function extractSidebarContentFromMessage(
       contentList.push({
         command,
         output: stripAgentOnlyTerminalGuidance(finalOutput),
-        isExecuting:
-          part.state === "input-available" || part.state === "running",
+        isExecuting: executionPhase === "executing",
+        executionPhase,
         isBackground: part.input.is_background,
         toolCallId: part.toolCallId || "",
         rawBytes: effectiveRawBytes,
@@ -209,6 +230,12 @@ export function extractSidebarContentFromMessage(
     // Shell tool (new interactive PTY-based shell)
     if (part.type === "tool-shell" && part.input) {
       const command = part.input.command || part.input.brief || "";
+      const executionPhase = getTerminalExecutionPhase({
+        toolState: part.state,
+        autoReviewStatus: autoReviewStatusByToolCallId.get(
+          part.toolCallId || "",
+        ),
+      });
 
       // Skip if no command/brief available yet
       if (!command) return;
@@ -238,8 +265,8 @@ export function extractSidebarContentFromMessage(
       contentList.push({
         command,
         output: stripAgentOnlyTerminalGuidance(finalOutput),
-        isExecuting:
-          part.state === "input-available" || part.state === "running",
+        isExecuting: executionPhase === "executing",
+        executionPhase,
         isBackground: false,
         toolCallId: part.toolCallId || "",
         shellAction: part.input.action,
@@ -266,12 +293,18 @@ export function extractSidebarContentFromMessage(
       }
 
       const finalOutput = output || streamingOutput || "";
+      const executionPhase = getTerminalExecutionPhase({
+        toolState: part.state,
+        autoReviewStatus: autoReviewStatusByToolCallId.get(
+          part.toolCallId || "",
+        ),
+      });
 
       contentList.push({
         command,
         output: finalOutput,
-        isExecuting:
-          part.state === "input-available" || part.state === "running",
+        isExecuting: executionPhase === "executing",
+        executionPhase,
         isBackground: false,
         toolCallId: part.toolCallId || "",
       });

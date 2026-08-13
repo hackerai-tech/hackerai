@@ -713,6 +713,31 @@ export async function getChatById({ id }: { id: string }) {
   }
 }
 
+export async function getCurrentAgentEntitlementContext({
+  userId,
+  organizationId,
+}: {
+  userId: string;
+  organizationId?: string;
+}) {
+  try {
+    return await getConvexClient().action(
+      api.agentAutoReviewActions.getCurrentEntitlementContext,
+      {
+        serviceKey,
+        userId,
+        ...(organizationId ? { organizationId } : {}),
+      },
+    );
+  } catch (error) {
+    throw databaseError(
+      "agentAutoReviewActions.getCurrentEntitlementContext",
+      error,
+      { user_id: userId, organization_id: organizationId },
+    );
+  }
+}
+
 export async function getProjectById({
   id,
   userId,

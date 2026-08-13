@@ -76,4 +76,25 @@ describe("billing client", () => {
       }),
     );
   });
+
+  it("requests the direct payment method update portal flow", async () => {
+    const fetchMock = installFetchMock().mockResolvedValue({
+      ok: true,
+      json: async () => ({ url: "https://billing.stripe.com/payment-method" }),
+    } as Response);
+
+    await redirectToBillingPortal("payment_method");
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/billing/portal",
+      expect.objectContaining({
+        method: "POST",
+        cache: "no-store",
+        body: JSON.stringify({ flow: "payment_method" }),
+        headers: expect.objectContaining({
+          "content-type": "application/json",
+        }),
+      }),
+    );
+  });
 });

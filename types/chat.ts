@@ -11,11 +11,13 @@ export function isChatMode(value: string | null): value is ChatMode {
   return value !== null && (CHAT_MODES as readonly string[]).includes(value);
 }
 
-export type AgentPermissionMode = "full_access" | "ask_approval";
+export type AgentPermissionMode =
+  "full_access" | "auto_review" | "ask_approval";
 
 export const AGENT_PERMISSION_MODES: readonly AgentPermissionMode[] = [
-  "full_access",
   "ask_approval",
+  "auto_review",
+  "full_access",
 ];
 
 export const DEFAULT_AGENT_PERMISSION_MODE: AgentPermissionMode = "full_access";
@@ -169,7 +171,6 @@ export function canUseExtraUsage(
 type MaxModelEntitlementOptions = {
   extraUsageAvailable?: boolean;
   extraUsageConfig?: ExtraUsageAvailability | null;
-  includedMaxAccess?: boolean;
 };
 
 export function canUseMaxModel(
@@ -178,7 +179,6 @@ export function canUseMaxModel(
 ): boolean {
   if (subscription === "ultra") return true;
   if (subscription === "free") return false;
-  if (subscription === "pro-plus" && options.includedMaxAccess) return true;
   return (
     options.extraUsageAvailable ?? canUseExtraUsage(options.extraUsageConfig)
   );
@@ -188,13 +188,11 @@ export function withExtraUsageBillingForModel(
   extraUsageConfig: ExtraUsageConfig | undefined,
   model: SelectedModel | null | undefined,
   subscription: SubscriptionTier,
-  options: { includedMaxAccess?: boolean } = {},
 ): ExtraUsageConfig | undefined {
   if (
     !extraUsageConfig ||
     model !== "hackerai-max" ||
-    subscription === "ultra" ||
-    (subscription === "pro-plus" && options.includedMaxAccess)
+    subscription === "ultra"
   ) {
     return extraUsageConfig;
   }
@@ -283,6 +281,9 @@ export interface SidebarTerminal {
   command: string;
   output: string;
   isExecuting: boolean;
+  /** Distinguishes approval review from actual process execution. */
+  executionPhase?:
+    "reviewing" | "awaiting_approval" | "executing" | "completed" | "failed";
   isBackground?: boolean;
   /** Legacy run_terminal_cmd: input.interactive — true if PTY-backed session. */
   isInteractive?: boolean;

@@ -31,9 +31,6 @@ export const sharedMessageValidator = v.object({
   update_time: v.number(),
 });
 
-const UUID_REGEX =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
 const resolveVisibleSharedChat = async (
   ctx: SharedChatReaderCtx,
   chat: Doc<"chats"> | null,
@@ -56,22 +53,6 @@ export const getVisibleSharedChatByShareId = async (
   const chat = await ctx.db
     .query("chats")
     .withIndex("by_share_id", (q) => q.eq("share_id", shareId))
-    .first();
-
-  return resolveVisibleSharedChat(ctx, chat);
-};
-
-export const getVisibleSharedChatByChatId = async (
-  ctx: SharedChatReaderCtx,
-  chatId: string,
-): Promise<VisibleSharedChat | null> => {
-  if (!UUID_REGEX.test(chatId)) {
-    return null;
-  }
-
-  const chat = await ctx.db
-    .query("chats")
-    .withIndex("by_chat_id", (q) => q.eq("id", chatId))
     .first();
 
   return resolveVisibleSharedChat(ctx, chat);

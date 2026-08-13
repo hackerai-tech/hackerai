@@ -20,6 +20,12 @@ export const PAID_FUNNEL_EVENTS = {
   cancellationCompleted: "cancellation_completed",
   cancellationReversed: "cancellation_reversed",
   billingPaymentFailed: "billing_payment_failed",
+  billingPaymentRecovered: "billing_payment_recovered",
+  recoveryPromptImpressed: "recovery_prompt_impressed",
+  billingPastDuePaymentUpdateClicked: "billing_past_due_payment_update_clicked",
+  paymentUpdateOpened: "payment_update_opened",
+  paymentMethodUpdated: "payment_method_updated",
+  invoicePaid: "invoice_paid",
   limitHit: "limit_hit",
   paidDailyFreeAllowanceImpressed: "paid_daily_free_allowance_impressed",
   paidDailyFreeAllowanceClicked: "paid_daily_free_allowance_clicked",
@@ -33,6 +39,13 @@ export function cancellationCompletionInsertId(
   stripeSubscriptionId: string,
 ): string {
   return `${PAID_FUNNEL_EVENTS.cancellationCompleted}:${stripeSubscriptionId}`;
+}
+
+export function billingPaymentRecoveryInsertId(
+  stripeEventId: string,
+  userId: string,
+): string {
+  return `${PAID_FUNNEL_EVENTS.billingPaymentRecovered}:${stripeEventId}:${userId}`;
 }
 
 export function checkoutStartedInsertId(checkoutAttemptId: string): string {

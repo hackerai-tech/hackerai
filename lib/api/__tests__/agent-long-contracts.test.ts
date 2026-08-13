@@ -692,11 +692,50 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(taskSrc).toMatch(/maxDurationMs:\s*agentLongMaxDurationMs/);
   });
 
+  test("attributes runtime-budget settlement stalls inside the cleanup grace", () => {
+    expect(taskSrc).toMatch(
+      /AGENT_LONG_RUNTIME_SETTLEMENT_WATCHDOG_MS\s*=\s*30\s*\*\s*1000/,
+    );
+
+    const budgetIdx = taskSrc.indexOf("createActiveRuntimeBudget({");
+    const armIdx = taskSrc.indexOf(
+      "runtimeSettlementWatchdog?.arm()",
+      budgetIdx,
+    );
+    const abortIdx = taskSrc.indexOf("userStopSignal.abort()", armIdx);
+    const stalledEventIdx = taskSrc.indexOf(
+      'event: "agent_long_runtime_settlement_stalled"',
+      abortIdx,
+    );
+    const finallyIdx = taskSrc.indexOf("} finally {", stalledEventIdx);
+    const disposeIdx = taskSrc.indexOf(
+      "runtimeSettlementWatchdog?.dispose()",
+      finallyIdx,
+    );
+
+    expect(budgetIdx).toBeGreaterThan(-1);
+    expect(armIdx).toBeGreaterThan(budgetIdx);
+    expect(abortIdx).toBeGreaterThan(armIdx);
+    expect(stalledEventIdx).toBeGreaterThan(abortIdx);
+    expect(finallyIdx).toBeGreaterThan(stalledEventIdx);
+    expect(disposeIdx).toBeGreaterThan(finallyIdx);
+
+    const eventBlock = taskSrc.slice(stalledEventIdx, finallyIdx);
+    expect(eventBlock).toMatch(/request_id:\s*ctx\.run\.id/);
+    expect(eventBlock).toMatch(/provider_error_category/);
+    expect(eventBlock).toMatch(/active_terminal_wait_duration_ms/);
+    expect(eventBlock).not.toMatch(/prompt|target|tool_output|command_output/);
+  });
+
   test("runs are triggered with filterable queued metadata and tags", () => {
     expect(routeSrc).toMatch(/tags:\s*triggerTags/);
     expect(routeSrc).toMatch(
-      /triggerTags\.push\(`permission_\$\{agentPermissionMode\}`\)/,
+      /const permissionSnapshot\s*=\s*buildAgentPermissionRunSnapshot\(agentPermissionMode\)/,
     );
+    expect(routeSrc).toMatch(
+      /triggerTags\.push\(permissionSnapshot\.triggerTag\)/,
+    );
+    expect(routeSrc).toMatch(/agentPermissionMode:\s*permissionSnapshot\.mode/);
     expect(routeSrc).toMatch(/const triggerMetadata\s*=\s*{/);
     expect(routeSrc).toMatch(/metadata:\s*triggerMetadata/);
     expect(routeSrc).toMatch(/status:\s*"queued"/);
@@ -792,7 +831,7 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
       /next\.output\.decision\s*===\s*"approve"[\s\S]*return\s*\{\s*approved:\s*true,\s*approvalId,\s*sandboxIdentity\s*\}/,
     );
     expect(taskSrc).toMatch(
-      /tool approval denied[\s\S]*return\s*\{\s*approved:\s*false,[\s\S]*reason:\s*buildDeniedApprovalReason\(next\.output\.message\)/,
+      /tool approval denied[\s\S]*return\s*\{\s*approved:\s*false,[\s\S]*reason:\s*humanDenialTrippedCircuitBreaker[\s\S]*buildDeniedApprovalReason\(next\.output\.message\)/,
     );
     expect(taskSrc).toMatch(/record\.message === undefined/);
     expect(taskSrc).toMatch(
@@ -989,10 +1028,10 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(statusSrc).toMatch(/clearTerminalAgentRun/);
     expect(statusSrc).toMatch(/clearApprovalPending:\s*true/);
     expect(chatComponentSrc).toMatch(
-      /const storedAgentApprovalRequest\s*=\s*activeTriggerRunId\s*\?\s*getStoredAgentApprovalRequest\(chatDataForCurrentChat\)\s*:\s*null/,
+      /const storedAgentApprovalRequest\s*=\s*getStoredAgentApprovalRequest\(\s*chatDataForCurrentChat,?\s*\)/,
     );
     expect(chatComponentSrc).toMatch(
-      /if\s*\(\s*!hasLoadedCurrentChat\s*\|\|\s*activeTriggerRunId\s*\)\s*\{\s*return;\s*\}\s*clearAgentApprovalSession\(\)/,
+      /if\s*\(\s*!hasLoadedCurrentChat\s*\|\|\s*activeTriggerRunId\s*\|\|\s*storedAgentApprovalRequest\s*\)\s*\{\s*return;\s*\}\s*clearAgentApprovalSession\(\)/,
     );
   });
 
@@ -1022,7 +1061,10 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     );
     expect(taskSrc).toMatch(/handled tool failure dashboard update failed/);
     expect(taskSrc).toMatch(
-      /onToolFailure,\s*requestToolApproval,\s*runTimingTracker\.measureActiveTime,\s*projectContext\.workingDirectory,\s*ctx\.run\.id,\s*securityValidationSubagentsEnabled[\s\S]*additionalTools:[\s\S]*create_agent:[\s\S]*send_message_to_agent:[\s\S]*wait_for_agents:/,
+      /onToolFailure,\s*requestToolApproval,\s*agentPermissionMode === "auto_review" &&\s*autoReviewAssignment\?\.phase !== undefined,\s*runTimingTracker\.measureActiveTime,\s*projectContext\.workingDirectory,\s*ctx\.run\.id,\s*securityValidationSubagentsEnabled/,
+    );
+    expect(taskSrc).toMatch(
+      /additionalTools:[\s\S]*create_agent:[\s\S]*send_message_to_agent:[\s\S]*wait_for_agents:/,
     );
     expect(taskSrc).not.toContain("vulnerability_report");
   });

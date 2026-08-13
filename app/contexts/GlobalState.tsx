@@ -89,6 +89,7 @@ interface GlobalStateType {
   setChatMode: (mode: ChatMode) => void;
   chatModeAccessResolved: boolean;
   paidAgentOnlyActive: boolean;
+  freeDesktopAgentOnlyActive: boolean;
 
   // Computer sidebar state (right side)
   sidebarOpen: boolean;
@@ -190,9 +191,22 @@ interface GlobalStateType {
   setChatNavigationHandler: (fn: ((nextChatId: string) => void) | null) => void;
 }
 
+type GlobalStateActionsType = Pick<
+  GlobalStateType,
+  | "closeSidebar"
+  | "initializeChat"
+  | "initializeNewChat"
+  | "setActiveProjectId"
+  | "setChatSidebarOpen"
+  | "setSandboxPreference"
+>;
+
 const GlobalStateContext = createContext<GlobalStateType | undefined>(
   undefined,
 );
+const GlobalStateActionsContext = createContext<
+  GlobalStateActionsType | undefined
+>(undefined);
 
 interface GlobalStateProviderProps {
   children: ReactNode;
@@ -241,10 +255,6 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
     initialSavedChatModeRef.current = saved;
     return saved;
   });
-  const setChatMode = useCallback((mode: ChatMode) => {
-    hasUserSelectedModeThisSessionRef.current = true;
-    setChatModeState(mode);
-  }, []);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [sidebarContent, setSidebarContent] = useState<SidebarContent | null>(
     null,
@@ -652,11 +662,39 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
     subscriptionResolved &&
     !isCheckingProPlan &&
     paidAgentSubscription !== "free";
+  const freeDesktopAgentOnlyActive =
+    Boolean(user) &&
+    subscriptionResolved &&
+    !isCheckingProPlan &&
+    paidAgentSubscription === "free" &&
+    isTauriEnvironment();
+  const agentOnlyActive = paidAgentOnlyActive || freeDesktopAgentOnlyActive;
+  const accessibleChatMode: ChatMode = agentOnlyActive ? "agent" : chatMode;
+
+  const setChatMode = useCallback(
+    (mode: ChatMode) => {
+      if (agentOnlyActive && mode !== "agent") return;
+      hasUserSelectedModeThisSessionRef.current = true;
+      setChatModeState(mode);
+    },
+    [agentOnlyActive],
+  );
 
   useEffect(() => {
-    if (!paidAgentOnlyActive || chatMode === "agent") return;
-    setChatModeState("agent");
-  }, [chatMode, paidAgentOnlyActive]);
+    if (!agentOnlyActive) return;
+    if (freeDesktopAgentOnlyActive && sandboxPreference !== "desktop") {
+      setSandboxPreference("desktop");
+    }
+    if (freeDesktopAgentOnlyActive && selectedModel !== "auto") {
+      setSelectedModelRaw("auto");
+    }
+  }, [
+    agentOnlyActive,
+    freeDesktopAgentOnlyActive,
+    sandboxPreference,
+    selectedModel,
+    setSandboxPreference,
+  ]);
 
   // Initialize team pricing dialog from URL hash
   const [teamPricingDialogOpen, setTeamPricingDialogOpen] = useState(() => {
@@ -1123,6 +1161,25 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
     [],
   );
 
+  const actionsValue = useMemo<GlobalStateActionsType>(
+    () => ({
+      closeSidebar,
+      initializeChat,
+      initializeNewChat,
+      setActiveProjectId,
+      setChatSidebarOpen,
+      setSandboxPreference,
+    }),
+    [
+      closeSidebar,
+      initializeChat,
+      initializeNewChat,
+      setActiveProjectId,
+      setChatSidebarOpen,
+      setSandboxPreference,
+    ],
+  );
+
   const value: GlobalStateType = {
     uploadedFiles,
     setUploadedFiles,
@@ -1131,10 +1188,11 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
     updateUploadedFile,
     getTotalTokens,
     isUploadingFiles,
-    chatMode,
+    chatMode: accessibleChatMode,
     setChatMode,
     chatModeAccessResolved,
     paidAgentOnlyActive,
+    freeDesktopAgentOnlyActive,
     sidebarOpen,
     setSidebarOpen,
     sidebarContent,
@@ -1209,9 +1267,11 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
   };
 
   return (
-    <GlobalStateContext.Provider value={value}>
-      {children}
-    </GlobalStateContext.Provider>
+    <GlobalStateActionsContext.Provider value={actionsValue}>
+      <GlobalStateContext.Provider value={value}>
+        {children}
+      </GlobalStateContext.Provider>
+    </GlobalStateActionsContext.Provider>
   );
 };
 
@@ -1227,6 +1287,16 @@ export const useGlobalState = (): GlobalStateType => {
   const context = useContext(GlobalStateContext);
   if (context === undefined) {
     throw new Error("useGlobalState must be used within a GlobalStateProvider");
+  }
+  return context;
+};
+
+export const useGlobalStateActions = (): GlobalStateActionsType => {
+  const context = useContext(GlobalStateActionsContext);
+  if (context === undefined) {
+    throw new Error(
+      "useGlobalStateActions must be used within a GlobalStateProvider",
+    );
   }
   return context;
 };

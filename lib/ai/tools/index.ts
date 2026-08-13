@@ -73,6 +73,7 @@ export const createTools = (
   modelName?: string,
   onToolFailure?: ToolFailureLogger,
   requestToolApproval?: AgentToolApprovalRequester,
+  autoReviewEvidenceEnabled?: boolean,
   measureAgentActiveTime?: AgentActiveTimeMeasurer,
   workingDirectory?: string,
   triggerRunId?: string,
@@ -154,6 +155,7 @@ export const createTools = (
     onToolCost,
     onToolFailure,
     requestToolApproval,
+    autoReviewEvidenceEnabled,
     measureAgentActiveTime,
     onSandboxResourceMetrics,
   };

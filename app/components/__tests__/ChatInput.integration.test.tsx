@@ -68,14 +68,19 @@ const { GlobalStateProvider, useGlobalState } = jest.requireActual<
 const { AgentApprovalProvider, useAgentApproval } = jest.requireActual<
   typeof import("../../contexts/AgentApprovalContext")
 >("../../contexts/AgentApprovalContext");
+const { AgentAutoReviewAvailabilityProvider } = jest.requireActual<
+  typeof import("../../contexts/AgentAutoReviewAvailabilityContext")
+>("../../contexts/AgentAutoReviewAvailabilityContext");
 
 // Wrapper with real providers
 const TestWrapper = ({ children }: { children: ReactNode }) => {
   return (
     <GlobalStateProvider>
-      <AgentApprovalProvider>
-        <TooltipProvider>{children}</TooltipProvider>
-      </AgentApprovalProvider>
+      <AgentAutoReviewAvailabilityProvider>
+        <AgentApprovalProvider>
+          <TooltipProvider>{children}</TooltipProvider>
+        </AgentApprovalProvider>
+      </AgentAutoReviewAvailabilityProvider>
     </GlobalStateProvider>
   );
 };
@@ -475,6 +480,38 @@ describe("ChatInput - Integration Tests", () => {
       expect(screen.queryByTestId("chat-input")).not.toBeInTheDocument();
     });
 
+    it("merges the stored reviewer summary into the matching live approval", async () => {
+      render(
+        <TestWrapper>
+          <AgentApprovalSetter />
+          <ChatInput
+            onSubmit={mockOnSubmit}
+            onStop={mockOnStop}
+            status="streaming"
+            chatId="approval-chat"
+            hasMessages
+            storedApprovalRequest={{
+              approvalId: "approval-1",
+              toolCallId: "tool-1",
+              title: "Allow HackerAI to run this terminal command?",
+              operation: "terminal_execute",
+              autoReview: {
+                verdict: "ask_user",
+                riskCategory: "scope_expansion",
+                rationale: "The referenced script contents are not visible.",
+                rolloutPhase: "enforce",
+              },
+            }}
+          />
+        </TestWrapper>,
+      );
+
+      expect(
+        await screen.findByTestId("agent-auto-review-summary"),
+      ).toHaveTextContent("This action needs your approval");
+      expect(screen.getByText("ping -c 4 hackerone.com")).toBeInTheDocument();
+    });
+
     it("renders recovery controls while a stored approval reconnects", () => {
       render(
         <TestWrapper>
@@ -514,6 +551,66 @@ describe("ChatInput - Integration Tests", () => {
         screen.queryByText("Reconnecting to the Agent approval session..."),
       ).not.toBeInTheDocument();
       expect(screen.getByTestId("chat-input")).toBeInTheDocument();
+    });
+
+    it("clears the approval prompt when the persisted lifecycle resolves", () => {
+      const storedApprovalRequest = {
+        approvalId: "stored-approval-1",
+        toolCallId: "tool-1",
+        title: "Allow HackerAI to run this terminal command?",
+        target: "ping -c 4 hackerone.com",
+        detail: "Approve to continue, or deny to stop this command.",
+        kind: "terminal" as const,
+        operation: "terminal_execute" as const,
+      };
+      const renderInput = (request: typeof storedApprovalRequest | null) => (
+        <TestWrapper>
+          <AgentModeSetter />
+          <ChatInput
+            onSubmit={mockOnSubmit}
+            onStop={mockOnStop}
+            status="ready"
+            chatId="approval-chat"
+            hasMessages
+            storedApprovalRequest={request}
+          />
+        </TestWrapper>
+      );
+      const { rerender } = render(renderInput(storedApprovalRequest));
+
+      rerender(renderInput(null));
+
+      expect(
+        screen.queryByTestId("agent-approval-prompt"),
+      ).not.toBeInTheDocument();
+      expect(screen.getByTestId("chat-input")).toBeInTheDocument();
+    });
+
+    it("shows a neutral input shell until the initial task state resolves", () => {
+      render(
+        <TestWrapper>
+          <AgentModeSetter />
+          <ChatInput
+            onSubmit={mockOnSubmit}
+            onStop={mockOnStop}
+            status="ready"
+            chatId="approval-chat"
+            hasMessages
+            isResolvingInitialState
+          />
+        </TestWrapper>,
+      );
+
+      expect(
+        screen.getByTestId("chat-input-loading-state"),
+      ).toBeInTheDocument();
+      expect(screen.getByTestId("chat-input-loading-surface")).toHaveClass(
+        "h-[98px]",
+      );
+      expect(screen.queryByTestId("chat-input")).not.toBeInTheDocument();
+      expect(
+        screen.queryByTestId("agent-approval-prompt"),
+      ).not.toBeInTheDocument();
     });
 
     it("restores the approval prompt when stopping the Agent fails", async () => {

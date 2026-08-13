@@ -43,6 +43,14 @@ const CLOUD_SANDBOX_TYPE = "e2b";
 const APPROVED_SANDBOX_CHANGED_MESSAGE =
   "The selected sandbox changed after approval. The operation was not run. Retry it to approve in the current sandbox.";
 
+export function getAgentApprovalSandboxIdentity(
+  sandbox: AnySandbox,
+): AgentApprovalSandboxIdentity {
+  return isCentrifugoSandbox(sandbox)
+    ? getAgentApprovalConnectionSandboxIdentity(sandbox.getConnectionId())
+    : "e2b";
+}
+
 export function assertAgentApprovalSandboxIdentity({
   sandbox,
   expectedSandboxIdentity,
@@ -52,9 +60,7 @@ export function assertAgentApprovalSandboxIdentity({
 }): void {
   if (!expectedSandboxIdentity) return;
 
-  const actualSandboxIdentity = isCentrifugoSandbox(sandbox)
-    ? getAgentApprovalConnectionSandboxIdentity(sandbox.getConnectionId())
-    : "e2b";
+  const actualSandboxIdentity = getAgentApprovalSandboxIdentity(sandbox);
   if (actualSandboxIdentity !== expectedSandboxIdentity) {
     throw new Error(APPROVED_SANDBOX_CHANGED_MESSAGE);
   }

@@ -7,6 +7,7 @@ import type { SubscriptionTier } from "@/types";
 let mockSubscription: SubscriptionTier = "free";
 let mockChatModeAccessResolved = true;
 let mockPaidAgentOnlyActive = false;
+let mockFreeDesktopAgentOnlyActive = false;
 let mockHasLocalSandbox = false;
 
 jest.mock("@/app/components/AttachmentButton", () => ({
@@ -34,8 +35,18 @@ jest.mock("@/app/components/AgentPermissionSelector", () => ({
 }));
 
 jest.mock("../SubmitStopButton", () => ({
-  SubmitStopButton: ({ isPaid }: { isPaid?: boolean }) => (
-    <button type="button" data-is-paid={String(isPaid)}>
+  SubmitStopButton: ({
+    isPaid,
+    useNeutralAgentStyle,
+  }: {
+    isPaid?: boolean;
+    useNeutralAgentStyle?: boolean;
+  }) => (
+    <button
+      type="button"
+      data-is-paid={String(isPaid)}
+      data-neutral-agent-style={String(useNeutralAgentStyle)}
+    >
       Send
     </button>
   ),
@@ -49,6 +60,7 @@ jest.mock("@/app/contexts/GlobalState", () => ({
     chatModeAccessResolved: mockChatModeAccessResolved,
     hasLocalSandbox: mockHasLocalSandbox,
     paidAgentOnlyActive: mockPaidAgentOnlyActive,
+    freeDesktopAgentOnlyActive: mockFreeDesktopAgentOnlyActive,
   }),
 }));
 
@@ -84,6 +96,7 @@ describe("ChatInputToolbar", () => {
     mockSubscription = "free";
     mockChatModeAccessResolved = true;
     mockPaidAgentOnlyActive = false;
+    mockFreeDesktopAgentOnlyActive = false;
     mockHasLocalSandbox = false;
     mockAuthUser(null);
   });
@@ -167,6 +180,21 @@ describe("ChatInputToolbar", () => {
 
     expect(screen.queryByTestId("chat-mode-selector")).not.toBeInTheDocument();
     expect(screen.getByTestId("agent-permission-selector")).toBeInTheDocument();
+  });
+
+  it("removes only the mode selector for free Desktop Agent-only mode", () => {
+    mockAuthUser({ id: "user_123" });
+    mockFreeDesktopAgentOnlyActive = true;
+
+    render(<ChatInputToolbar {...defaultProps} chatMode="agent" />);
+
+    expect(screen.queryByTestId("chat-mode-selector")).not.toBeInTheDocument();
+    expect(screen.getByTestId("agent-permission-selector")).toBeInTheDocument();
+    expect(screen.getByTestId("model-selector")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Send" })).toHaveAttribute(
+      "data-neutral-agent-style",
+      "true",
+    );
   });
 
   it("never flashes the mode selector while paid access resolves", () => {

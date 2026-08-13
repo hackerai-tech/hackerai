@@ -100,4 +100,41 @@ describe("agent resume route", () => {
     expect(mockRunsRetrieve).not.toHaveBeenCalled();
     expect(mockCreatePublicToken).not.toHaveBeenCalled();
   });
+
+  it("resumes the stored run and approval session without reselecting a permission mode", async () => {
+    const { createAgentResumeGet } = await import("../agent-resume-route");
+    mockGetChatById.mockResolvedValue({
+      id: "chat-1",
+      user_id: "user-1",
+      active_trigger_run_id: "run-auto-review-1",
+      active_agent_approval_session_id: "approval-session-auto-review-1",
+    } as never);
+    mockRunsRetrieve.mockResolvedValue({ status: "EXECUTING" } as never);
+    mockCreatePublicToken
+      .mockResolvedValueOnce("run-token")
+      .mockResolvedValueOnce("approval-session-token");
+
+    const response = await createAgentResumeGet({ endpoint: "/api/agent" })(
+      requestFor("chat-1"),
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      runId: "run-auto-review-1",
+      approvalSessionId: "approval-session-auto-review-1",
+      publicAccessToken: "run-token",
+      approvalSessionPublicAccessToken: "approval-session-token",
+    });
+    expect(mockRunsRetrieve).toHaveBeenCalledWith("run-auto-review-1");
+    expect(mockCreatePublicToken).toHaveBeenNthCalledWith(1, {
+      scopes: { read: { runs: ["run-auto-review-1"] } },
+      expirationTime: "6h",
+    });
+    expect(mockCreatePublicToken).toHaveBeenNthCalledWith(2, {
+      scopes: {
+        write: { sessions: "approval-session-auto-review-1" },
+      },
+      expirationTime: "1m",
+    });
+  });
 });

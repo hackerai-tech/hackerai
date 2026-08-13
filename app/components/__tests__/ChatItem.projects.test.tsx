@@ -15,16 +15,23 @@ import {
   useSensors,
 } from "@dnd-kit/core";
 import type { ReactNode } from "react";
+import {
+  clearSidebarTaskLastVisitedAt,
+  markSidebarTaskVisited,
+  readSidebarTaskLastVisitedAt,
+} from "@/lib/utils/client-storage";
 
 const mockMoveChatToProject = jest.fn<any>();
+const mockRenameChat = jest.fn<any>();
 const mockRouterPush = jest.fn();
 const mockToastSuccess = jest.fn();
 const mockToastInfo = jest.fn();
 let mockProjects: any[] | undefined;
+let mockPathname = "/";
 
 jest.mock("next/navigation", () => ({
   useRouter: () => ({ push: mockRouterPush }),
-  usePathname: () => "/",
+  usePathname: () => mockPathname,
 }));
 jest.mock("@/app/contexts/GlobalState", () => ({
   useGlobalState: () => ({
@@ -41,7 +48,7 @@ jest.mock("@/hooks/use-mobile", () => ({
   useIsMobile: () => mockUseIsMobile(),
 }));
 jest.mock("convex/react", () => ({
-  useMutation: () => jest.fn(),
+  useMutation: () => mockRenameChat,
 }));
 jest.mock("@/app/hooks/useChats", () => ({
   usePinChat: () => jest.fn(),
@@ -106,7 +113,10 @@ describe("ChatItem project actions", () => {
     jest.clearAllMocks();
     mockUseIsMobile.mockReturnValue(false);
     mockMoveChatToProject.mockResolvedValue(true);
+    mockRenameChat.mockResolvedValue(null);
     mockProjects = undefined;
+    mockPathname = "/";
+    clearSidebarTaskLastVisitedAt();
   });
 
   it("reveals an accessible move action when the row receives keyboard focus", async () => {
@@ -311,6 +321,23 @@ describe("ChatItem project actions", () => {
     expect(input).toHaveAttribute("placeholder", "Task name…");
   });
 
+  it("does not persist the display-only default title when rename is unchanged", async () => {
+    const user = userEvent.setup();
+    render(<ChatItem id="chat-1" title="New Chat" />);
+
+    fireEvent.focus(screen.getByRole("button", { name: /Open task:/ }));
+    await user.click(screen.getByRole("button", { name: "Open task options" }));
+    await user.click(await screen.findByRole("menuitem", { name: "Rename" }));
+
+    expect(await screen.findByLabelText("Task name")).toHaveValue("New Task");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+
+    expect(mockRenameChat).not.toHaveBeenCalled();
+    expect(
+      screen.queryByRole("dialog", { name: "Rename Task" }),
+    ).not.toBeInTheDocument();
+  });
+
   it("uses compact side padding for standard and project chat rows", () => {
     render(
       <>
@@ -435,6 +462,77 @@ describe("ChatItem project actions", () => {
     expect(
       screen.getByText("Running task").parentElement?.parentElement,
     ).toHaveClass("pr-9");
+  });
+
+  it("shows a completion dot when the server finish time is newer than the local visit", async () => {
+    markSidebarTaskVisited("chat-1", 1_000);
+    const view = render(
+      <ChatItem
+        id="chat-1"
+        title="Background task"
+        isStreaming
+        lastRunFinishedAt={1_000}
+      />,
+    );
+
+    expect(screen.getByTestId("chat-item-streaming-icon")).toBeInTheDocument();
+
+    view.rerender(
+      <ChatItem
+        id="chat-1"
+        title="Background task"
+        lastRunFinishedAt={2_000}
+      />,
+    );
+
+    const completionIndicator = await screen.findByTestId(
+      "chat-item-unread-completion-indicator",
+    );
+    expect(completionIndicator).toHaveAttribute("aria-label", "Task finished");
+    expect(screen.queryByTestId("chat-item-streaming-icon")).toBeNull();
+    expect(screen.getByRole("button", { name: /with unread result/ })).toBe(
+      screen.getByTestId("chat-item-chat-1"),
+    );
+    expect(
+      screen.getByText("Background task").parentElement?.parentElement,
+    ).toHaveClass("pr-9");
+
+    fireEvent.click(screen.getByTestId("chat-item-chat-1"));
+
+    await waitFor(() => {
+      expect(
+        screen.queryByTestId("chat-item-unread-completion-indicator"),
+      ).not.toBeInTheDocument();
+    });
+    expect(readSidebarTaskLastVisitedAt("chat-1")).toBeGreaterThanOrEqual(
+      2_000,
+    );
+  });
+
+  it("does not show a completion dot while the user is viewing the task", () => {
+    markSidebarTaskVisited("chat-1", 1_000);
+    mockPathname = "/c/chat-1";
+    render(
+      <ChatItem id="chat-1" title="Visible task" lastRunFinishedAt={2_000} />,
+    );
+
+    expect(
+      screen.queryByTestId("chat-item-unread-completion-indicator"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("treats a task with no local visit as already read", () => {
+    render(
+      <ChatItem
+        id="chat-1"
+        title="Historical task"
+        lastRunFinishedAt={2_000}
+      />,
+    );
+
+    expect(
+      screen.queryByTestId("chat-item-unread-completion-indicator"),
+    ).not.toBeInTheDocument();
   });
 
   it("reserves space for streaming and task actions on mobile", () => {

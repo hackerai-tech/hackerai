@@ -251,6 +251,7 @@ export default async function cancelSubscriptionAction(
   try {
     const cancellationDetails = {
       feedback: stripeCancellationFeedback(cancellationReason.reasonCategory),
+      comment: cancellationReason.reasonDetails,
     } as const;
 
     updatedSubscription = cancelImmediately

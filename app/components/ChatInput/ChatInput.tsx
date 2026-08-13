@@ -70,7 +70,39 @@ interface ChatInputProps {
   storedApprovalRequest?: ActiveAgentToolApprovalRequest | null;
   offlineProtection?: boolean;
   sendDisabledReason?: string;
+  isResolvingInitialState?: boolean;
 }
+
+const ChatInputLoadingState = ({
+  showAgentControls,
+}: {
+  showAgentControls: boolean;
+}) => (
+  <div
+    aria-label="Loading task input"
+    aria-live="polite"
+    className="relative min-w-0 px-4 pb-3"
+    data-testid="chat-input-loading-state"
+    role="status"
+  >
+    <div className="mx-auto w-full min-w-0 max-w-full sm:min-w-[390px] sm:max-w-[768px]">
+      <div
+        className="flex h-[98px] flex-col justify-center gap-2 rounded-[22px] border border-black/8 bg-input-chat px-4 shadow-[0px_12px_32px_0px_rgba(0,0,0,0.02)] dark:border-border"
+        data-testid="chat-input-loading-surface"
+      >
+        <div className="h-3 w-32 animate-pulse rounded-full bg-muted-foreground/15 motion-reduce:animate-none" />
+        <div className="h-3 w-20 animate-pulse rounded-full bg-muted-foreground/10 motion-reduce:animate-none" />
+      </div>
+      {showAgentControls ? (
+        <div
+          aria-hidden="true"
+          className="h-10 md:h-9"
+          data-testid="chat-input-loading-controls"
+        />
+      ) : null}
+    </div>
+  </div>
+);
 
 const isBrowserFile = (file: UploadedFileState["file"]): file is File =>
   typeof globalThis.File !== "undefined" && file instanceof globalThis.File;
@@ -204,6 +236,7 @@ export const ChatInput = ({
   storedApprovalRequest,
   offlineProtection = true,
   sendDisabledReason,
+  isResolvingInitialState = false,
 }: ChatInputProps) => {
   const {
     chatMode,
@@ -224,6 +257,8 @@ export const ChatInput = ({
     subscription,
     isCheckingProPlan,
     hasLocalSandbox,
+    freeDesktopAgentOnlyActive,
+    desktopBridgeStatus,
     defaultLocalSandboxPreference,
   } = useGlobalState();
   const input = useComposerInput();
@@ -241,16 +276,32 @@ export const ChatInput = ({
 
   const isGenerating = status === "submitted" || status === "streaming";
   const isAgent = isAgentMode(chatMode);
-  const approvalRequest = activeToolApprovalRequest ?? storedApprovalRequest;
+  const approvalRequest = useMemo(
+    () =>
+      activeToolApprovalRequest &&
+      storedApprovalRequest &&
+      activeToolApprovalRequest.approvalId ===
+        storedApprovalRequest.approvalId &&
+      activeToolApprovalRequest.toolCallId === storedApprovalRequest.toolCallId
+        ? {
+            ...storedApprovalRequest,
+            ...activeToolApprovalRequest,
+            ...(storedApprovalRequest.autoReview
+              ? { autoReview: storedApprovalRequest.autoReview }
+              : {}),
+          }
+        : (activeToolApprovalRequest ?? storedApprovalRequest),
+    [activeToolApprovalRequest, storedApprovalRequest],
+  );
   const [isStoppingAgent, setIsStoppingAgent] = useState(false);
   const [isReconnecting, setIsReconnecting] = useState(false);
   const showAgentApprovalPrompt = !!approvalRequest && !isStoppingAgent;
 
   useEffect(() => {
-    if (!isGenerating && !approvalRequest) {
+    if (!isGenerating && !activeToolApprovalRequest && !storedApprovalRequest) {
       setIsStoppingAgent(false);
     }
-  }, [approvalRequest, isGenerating]);
+  }, [activeToolApprovalRequest, isGenerating, storedApprovalRequest]);
 
   const handleAgentStop = async () => {
     setIsStoppingAgent(true);
@@ -536,21 +587,35 @@ export const ChatInput = ({
   }, [draftId, restoreDraftAttachments, uploadedFiles]);
 
   // Free agent mode constraints:
-  // 1. Requires local sandbox — fall back to ask mode if disconnected
+  // 1. Requires local sandbox — web users fall back to Ask if disconnected,
+  //    while Desktop stays Agent-only and waits for its bridge to reconnect
   // 2. Force local sandbox preference (not e2b)
   // 3. Force auto model selection
   const isFreeAgent =
     !isCheckingProPlan && subscription === "free" && isAgentMode(chatMode);
+  const freeAgentSandboxAvailable = freeDesktopAgentOnlyActive
+    ? desktopBridgeStatus === "connected"
+    : hasLocalSandbox;
 
-  const prevHasLocalSandboxRef = useRef(hasLocalSandbox);
+  const prevFreeAgentSandboxAvailableRef = useRef(freeAgentSandboxAvailable);
   useEffect(() => {
-    const wasConnected = prevHasLocalSandboxRef.current;
-    prevHasLocalSandboxRef.current = hasLocalSandbox;
+    const wasConnected = prevFreeAgentSandboxAvailableRef.current;
+    prevFreeAgentSandboxAvailableRef.current = freeAgentSandboxAvailable;
 
     if (!isFreeAgent) return;
     // Only show toast on actual disconnect (true → false), not on
-    // initial mount or logout where hasLocalSandbox starts as false.
-    if (!hasLocalSandbox) {
+    // initial mount or logout where sandbox availability starts as false.
+    if (!freeAgentSandboxAvailable) {
+      if (freeDesktopAgentOnlyActive) {
+        if (wasConnected) {
+          toast.info("Desktop sandbox disconnected.", {
+            description: "Reconnect the Desktop sandbox to keep using Agent.",
+            duration: 5000,
+          });
+        }
+        return;
+      }
+
       setChatMode("ask");
       if (wasConnected) {
         toast.info("Local sandbox disconnected. Switched to Ask mode.", {
@@ -559,8 +624,12 @@ export const ChatInput = ({
         });
       }
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isFreeAgent, hasLocalSandbox]);
+  }, [
+    freeAgentSandboxAvailable,
+    freeDesktopAgentOnlyActive,
+    isFreeAgent,
+    setChatMode,
+  ]);
 
   useEffect(() => {
     if (!isFreeAgent) return;
@@ -576,9 +645,18 @@ export const ChatInput = ({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isFreeAgent]);
 
+  const desktopSandboxUnavailableReason =
+    freeDesktopAgentOnlyActive && desktopBridgeStatus !== "connected"
+      ? desktopBridgeStatus === "connecting"
+        ? "Desktop sandbox is connecting"
+        : "Reconnect the Desktop sandbox to use Agent"
+      : undefined;
+  const effectiveSendDisabledReason =
+    sendDisabledReason ?? desktopSandboxUnavailableReason;
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (isOffline || sendDisabledReason) return;
+    if (isOffline || effectiveSendDisabledReason) return;
 
     const canSubmit =
       (status === "ready" || status === "streaming") &&
@@ -632,6 +710,10 @@ export const ChatInput = ({
     setInput(`${input}${separator}${content}`);
     await handleRemoveFile(index);
   };
+
+  if (isResolvingInitialState) {
+    return <ChatInputLoadingState showAgentControls={isAgent} />;
+  }
 
   return (
     <div className={`relative px-4 min-w-0 ${isCentered ? "" : "pb-3"}`}>
@@ -741,7 +823,7 @@ export const ChatInput = ({
               uploadedFiles={uploadedFiles}
               chatMode={chatMode}
               isOnline={!isOffline}
-              sendDisabledReason={sendDisabledReason}
+              sendDisabledReason={effectiveSendDisabledReason}
             />
           </div>
         )}

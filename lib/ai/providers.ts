@@ -182,6 +182,7 @@ type OpenRouterInstance = typeof openrouter;
 export const KIMI_K3_SLUG = "moonshotai/kimi-k3";
 export const GLM_5_2_SLUG = "z-ai/glm-5.2";
 export const GROK_4_5_SLUG = "x-ai/grok-4.5";
+export const GROK_4_6_SLUG = "x-ai/grok-4.6";
 export const DEEPSEEK_V4_FLASH_SLUG = "deepseek/deepseek-v4-flash-0731";
 export const DEEPSEEK_V4_FLASH_PREVIOUS_SLUG = "deepseek/deepseek-v4-flash";
 const TITLE_GENERATOR_DEEPSEEK_SLUG = "deepseek/deepseek-v4-flash";
@@ -207,6 +208,9 @@ const buildProviderMap = (
     // Dedicated HackerAI Pro alias so its GLM fallback can evolve without
     // changing Standard media fallback behavior.
     "model-grok-4.5-pro": or(GROK_4_5_SLUG),
+    // HAC-64 treatment alias. The persisted tier remains hackerai-pro while
+    // the server-side experiment chooses the provider route per user.
+    "model-grok-4.6-pro": or(GROK_4_6_SLUG),
     "model-deepseek-v4-pro": or("deepseek/deepseek-v4-pro"),
     // Keep the persisted Max compatibility key while routing new requests to
     // Kimi K3. Renaming the key would invalidate existing stored selections.
@@ -217,6 +221,8 @@ const buildProviderMap = (
     "fallback-ask-model": or(GROK_4_5_SLUG),
     // Titles are a short structured-output task and should never use reasoning.
     "title-generator-model": or(TITLE_GENERATOR_DEEPSEEK_SLUG),
+    // Separate tool-less call used only to review one approval-gated action.
+    "agent-auto-review-model": or(GROK_4_5_SLUG),
   }) as Record<string, any>;
 
 const baseProviders = buildProviderMap(openrouter);
@@ -229,12 +235,14 @@ export const modelCutoffDates: Partial<Record<ModelName, string>> &
   "agent-model": "July 2026",
   "model-grok-4.5": "July 2026",
   "model-grok-4.5-pro": "July 2026",
+  "model-grok-4.6-pro": "August 2026",
   "model-deepseek-v4-pro": "May 2025",
   "model-opus-4.6": "July 2026",
   "model-glm-5.2": "June 2026",
   "fallback-agent-model": "July 2026",
   "fallback-ask-model": "July 2026",
   "title-generator-model": "May 2025",
+  "agent-auto-review-model": "July 2026",
 };
 
 export const modelDisplayNames: Record<ModelName, string> &
@@ -245,6 +253,7 @@ export const modelDisplayNames: Record<ModelName, string> &
   "agent-model-free": "Auto, an intelligent model router built by HackerAI",
   "model-grok-4.5": "xAI Grok 4.5",
   "model-grok-4.5-pro": "xAI Grok 4.5",
+  "model-grok-4.6-pro": "xAI Grok 4.6",
   "model-deepseek-v4-pro": "DeepSeek V4 Pro",
   "model-opus-4.6": "Moonshot Kimi K3",
   "model-glm-5.2": "Z.ai GLM 5.2",
@@ -252,6 +261,7 @@ export const modelDisplayNames: Record<ModelName, string> &
   "fallback-agent-model": "Auto, an intelligent model router built by HackerAI",
   "fallback-ask-model": "Auto, an intelligent model router built by HackerAI",
   "title-generator-model": "DeepSeek V4 Flash",
+  "agent-auto-review-model": "xAI Grok 4.5",
 };
 
 export const getModelDisplayName = (modelName: ModelName): string => {
@@ -295,8 +305,10 @@ function isGrokModel(modelName: string): boolean {
     normalized === "fallback-ask-model" ||
     normalized === "model-grok-4.5" ||
     normalized === "model-grok-4.5-pro" ||
+    normalized === "model-grok-4.6-pro" ||
     normalized.includes("x-ai/") ||
-    normalized === "grok-4.5"
+    normalized === "grok-4.5" ||
+    normalized === "grok-4.6"
   );
 }
 

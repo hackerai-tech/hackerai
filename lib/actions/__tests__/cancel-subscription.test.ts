@@ -172,6 +172,7 @@ describe("cancelSubscriptionAction", () => {
       cancel_at_period_end: true,
       cancellation_details: {
         feedback: "other",
+        comment: "Done for now",
       },
     });
     expect(mockPostHogEvent).toHaveBeenNthCalledWith(
@@ -236,6 +237,7 @@ describe("cancelSubscriptionAction", () => {
     expect(mockCancelSubscription).toHaveBeenCalledWith("sub_past_due", {
       cancellation_details: {
         feedback: "too_expensive",
+        comment: "The renewal payment failed",
       },
       invoice_now: false,
       prorate: false,

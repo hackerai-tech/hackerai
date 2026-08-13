@@ -265,7 +265,7 @@ export const checkFreeUserRateLimit = async (
 /**
  * Check rate limit for free users in agent mode (local sandbox only).
  * Shares the free daily request-unit budget with ask mode. Agent requests cost
- * 2 units, so the default 10-unit budget still allows up to 5 agent requests.
+ * 1 unit, so the default 10-unit budget allows up to 10 agent requests.
  */
 export const checkFreeAgentRateLimit = async (
   userId: string,

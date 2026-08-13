@@ -37,6 +37,8 @@ uuid = { version = "1", features = ["v4"] }
 base64 = "0.22"
 reqwest = { version = "0.12", features = ["json"] }
 portable-pty = "0.8"
+cap-std = "3.4.5"
+cap-fs-ext = "3.4.5"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

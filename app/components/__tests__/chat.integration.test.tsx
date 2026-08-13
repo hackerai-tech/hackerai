@@ -189,6 +189,7 @@ import {
   Chat,
   getExistingChatLoadState,
   getStoredAgentApprovalRequest,
+  useStreamedChatTitle,
   useServerMessages,
 } from "../chat";
 import { ChatLayout } from "../ChatLayout";
@@ -233,6 +234,23 @@ const QueueEditingHarness = () => {
   );
 };
 
+const ChatTitleHandoffHarness = ({
+  persistedTitle,
+}: {
+  persistedTitle: string;
+}) => {
+  const [chatTitle, setStreamedTitle] = useStreamedChatTitle(persistedTitle);
+
+  return (
+    <>
+      <div data-testid="chat-title">{chatTitle}</div>
+      <button type="button" onClick={() => setStreamedTitle("Generated title")}>
+        Stream generated title
+      </button>
+    </>
+  );
+};
+
 describe("Chat Component Integration", () => {
   let mockUseChat: jest.Mock;
 
@@ -258,6 +276,29 @@ describe("Chat Component Integration", () => {
   });
 
   describe("Basic Rendering", () => {
+    it("releases a persisted streamed title so later manual renames stay visible", () => {
+      const { rerender } = render(
+        <ChatTitleHandoffHarness persistedTitle="Original prompt" />,
+      );
+
+      fireEvent.click(
+        screen.getByRole("button", { name: "Stream generated title" }),
+      );
+      expect(screen.getByTestId("chat-title")).toHaveTextContent(
+        "Generated title",
+      );
+
+      rerender(<ChatTitleHandoffHarness persistedTitle="Generated title" />);
+      expect(screen.getByTestId("chat-title")).toHaveTextContent(
+        "Generated title",
+      );
+
+      rerender(<ChatTitleHandoffHarness persistedTitle="Renamed title" />);
+      expect(screen.getByTestId("chat-title")).toHaveTextContent(
+        "Renamed title",
+      );
+    });
+
     it("should render new chat with welcome message", () => {
       render(
         <TestWrapper>
@@ -382,6 +423,12 @@ describe("Chat Component Integration", () => {
             justification: "Check whether the target host is reachable.",
             prefixRule: ["ping", "-c", "4"],
             createdAt: 123,
+            autoReview: {
+              verdict: "ask_user",
+              riskCategory: "scope_expansion",
+              rationale: "The referenced script contents are not visible.",
+              rolloutPhase: "enforce",
+            },
           },
         }),
       ).toEqual({
@@ -395,7 +442,32 @@ describe("Chat Component Integration", () => {
         detail: "Approve to continue, or deny to stop this command.",
         kind: "terminal",
         createdAt: 123,
+        autoReview: {
+          verdict: "ask_user",
+          riskCategory: "scope_expansion",
+          rationale: "The referenced script contents are not visible.",
+          rolloutPhase: "enforce",
+        },
       });
+    });
+
+    it("drops a malformed stored Auto review summary", () => {
+      expect(
+        getStoredAgentApprovalRequest({
+          active_agent_approval_pending: true,
+          active_agent_approval_request: {
+            approvalId: "approval-1",
+            toolCallId: "tool-1",
+            operation: "terminal_execute",
+            autoReview: {
+              verdict: "approve_everything",
+              riskCategory: "routine",
+              rationale: "Invalid verdict.",
+              rolloutPhase: "enforce",
+            },
+          },
+        })?.autoReview,
+      ).toBeUndefined();
     });
   });
 

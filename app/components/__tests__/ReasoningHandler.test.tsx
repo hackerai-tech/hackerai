@@ -93,6 +93,37 @@ describe("ReasoningHandler", () => {
     ).not.toBeInTheDocument();
   });
 
+  it("keeps restored streaming reasoning collapsed", async () => {
+    const message = {
+      id: "assistant-restored",
+      role: "assistant",
+      parts: [
+        {
+          type: "reasoning",
+          state: "streaming",
+          text: "Replayed reasoning",
+        },
+      ],
+    } as unknown as UIMessage;
+
+    render(
+      <ReasoningHandler
+        message={message}
+        partIndex={0}
+        status="streaming"
+        isLastMessage
+        keepLatestOpenDuringStreaming
+        suppressAutoOpenDuringStreaming
+      />,
+    );
+
+    const trigger = screen.getByRole("button", { name: "Thinking..." });
+    await waitFor(() => {
+      expect(trigger).toHaveAttribute("aria-expanded", "false");
+    });
+    expect(screen.queryByText("Replayed reasoning")).not.toBeInTheDocument();
+  });
+
   it("preserves last-part auto-collapse outside the Agent work panel", async () => {
     const message = {
       id: "assistant-1",

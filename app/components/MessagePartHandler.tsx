@@ -23,6 +23,7 @@ interface MessagePartHandlerProps {
   status: ChatStatus;
   isLastMessage?: boolean;
   keepLatestReasoningOpenDuringStreaming?: boolean;
+  suppressReasoningAutoOpen?: boolean;
   deferReasoningCollapseUntilParent?: boolean;
   /** Pre-computed terminal output by toolCallId (from message level) to avoid per-handler filtering */
   terminalOutputByToolCallId?: Map<string, string>;
@@ -111,6 +112,10 @@ export function areMessagePartHandlerPropsEqual(
   )
     return false;
   if (
+    prevProps.suppressReasoningAutoOpen !== nextProps.suppressReasoningAutoOpen
+  )
+    return false;
+  if (
     prevProps.deferReasoningCollapseUntilParent !==
     nextProps.deferReasoningCollapseUntilParent
   )
@@ -136,6 +141,14 @@ export function areMessagePartHandlerPropsEqual(
     );
     if (previousLifecycle !== nextLifecycle) return false;
   }
+
+  // Auto review metadata arrives immediately before the approval request. Keep
+  // approval rows responsive if React commits between those two stream parts.
+  if (
+    nextProps.part?.state === "approval-requested" &&
+    prevProps.message.parts.length !== nextProps.message.parts.length
+  )
+    return false;
 
   // Check part reference - if same reference, no changes
   if (prevProps.part === nextProps.part) return true;
@@ -188,6 +201,7 @@ export const MessagePartHandler = memo(function MessagePartHandler({
   status,
   isLastMessage,
   keepLatestReasoningOpenDuringStreaming,
+  suppressReasoningAutoOpen,
   deferReasoningCollapseUntilParent,
   terminalOutputByToolCallId,
   sharedFileDetails,
@@ -215,6 +229,7 @@ export const MessagePartHandler = memo(function MessagePartHandler({
           status={status}
           isLastMessage={isLastMessage}
           keepLatestOpenDuringStreaming={keepLatestReasoningOpenDuringStreaming}
+          suppressAutoOpenDuringStreaming={suppressReasoningAutoOpen}
           deferCollapseUntilParent={deferReasoningCollapseUntilParent}
         />
       );
@@ -237,7 +252,7 @@ export const MessagePartHandler = memo(function MessagePartHandler({
       return <FileToolsHandler message={message} part={part} status={status} />;
 
     case "tool-file":
-      return <FileHandler part={part} status={status} />;
+      return <FileHandler message={message} part={part} status={status} />;
 
     case "tool-web_search":
     case "tool-open_url":

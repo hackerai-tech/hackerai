@@ -30,8 +30,6 @@ jest.mock("../lib/suspensionGuards", () => ({
 
 const { forkSharedChat, getSharedSnapshot } =
   require("../sharedChats") as typeof import("../sharedChats");
-const { getVisibleSharedChatByChatId } =
-  require("../lib/sharedChatSnapshot") as typeof import("../lib/sharedChatSnapshot");
 
 describe("getSharedSnapshot", () => {
   it("returns frozen, anonymous chat data with one shared-chat lookup", async () => {
@@ -250,18 +248,6 @@ describe("getSharedSnapshot", () => {
       expect.any(Error),
     );
     consoleError.mockRestore();
-  });
-});
-
-describe("shared chat visibility helpers", () => {
-  it("rejects an invalid legacy chat ID without reading the database", async () => {
-    const query = jest.fn<any>();
-
-    await expect(
-      getVisibleSharedChatByChatId({ db: { query } } as any, "not-a-uuid"),
-    ).resolves.toBeNull();
-
-    expect(query).not.toHaveBeenCalled();
   });
 });
 

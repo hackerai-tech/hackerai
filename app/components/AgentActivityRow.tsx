@@ -11,6 +11,7 @@ type AgentActivityRowProps = {
   deferReasoningCollapseUntilParent: boolean;
   isLastMessage: boolean;
   keepLatestReasoningOpenDuringStreaming: boolean;
+  suppressReasoningAutoOpen: boolean;
   message: ChatMessage;
   part: ChatMessage["parts"][number];
   partIndex: number;
@@ -24,6 +25,7 @@ export const AgentActivityRow = memo(function AgentActivityRow({
   deferReasoningCollapseUntilParent,
   isLastMessage,
   keepLatestReasoningOpenDuringStreaming,
+  suppressReasoningAutoOpen,
   message,
   part,
   partIndex,
@@ -45,7 +47,7 @@ export const AgentActivityRow = memo(function AgentActivityRow({
 
   return (
     <div
-      className="message-row w-full min-w-0 overflow-hidden text-foreground"
+      className="w-full min-w-0 overflow-hidden text-foreground"
       data-testid="agent-activity-row"
     >
       <div className="prose max-w-none min-w-0 overflow-hidden dark:prose-invert">
@@ -65,6 +67,7 @@ export const AgentActivityRow = memo(function AgentActivityRow({
             keepLatestReasoningOpenDuringStreaming={
               keepLatestReasoningOpenDuringStreaming
             }
+            suppressReasoningAutoOpen={suppressReasoningAutoOpen}
             deferReasoningCollapseUntilParent={
               deferReasoningCollapseUntilParent
             }

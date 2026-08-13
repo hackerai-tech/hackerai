@@ -1,7 +1,11 @@
 import { tool, type Tool } from "ai";
 import { CommandExitError } from "@e2b/code-interpreter";
 import { randomUUID } from "crypto";
-import type { SandboxReadinessFailureReason, ToolContext } from "@/types";
+import type {
+  AgentAutoReviewTerminalInspection,
+  SandboxReadinessFailureReason,
+  ToolContext,
+} from "@/types";
 import { createTerminalHandler } from "@/lib/utils/terminal-executor";
 import { TIMEOUT_MESSAGE } from "@/lib/token-utils";
 import { saveTruncatedOutput } from "./utils/terminal-output-saver";
@@ -36,6 +40,7 @@ import {
 } from "./utils/pty-output-formatter";
 import {
   getSandboxWithFallbackGuard,
+  getAgentApprovalSandboxIdentity,
   resolveToolErrorMessage,
 } from "./utils/sandbox-fallback";
 import {
@@ -51,6 +56,11 @@ import {
   createRunTerminalCmdToolSchema,
 } from "./schemas";
 import { withE2BSandboxLeaseHeartbeat } from "./utils/sandbox";
+import {
+  collectAgentAutoReviewTerminalInspection,
+  getAgentAutoReviewInspectionKind,
+  terminalInspectionMatches,
+} from "@/lib/chat/agent-auto-review-evidence";
 
 const DEFAULT_STREAM_TIMEOUT_SECONDS =
   RUN_TERMINAL_DEFAULT_STREAM_TIMEOUT_SECONDS;
@@ -250,6 +260,39 @@ export const createRunTerminalCmd = (context: ToolContext) => {
         MAX_TIMEOUT_SECONDS,
       );
 
+      let terminalInspection: AgentAutoReviewTerminalInspection | undefined;
+      const inspectionKind = context.autoReviewEvidenceEnabled
+        ? getAgentAutoReviewInspectionKind(command)
+        : null;
+      if (inspectionKind) {
+        try {
+          const { sandbox } = await getSandboxWithFallbackGuard({
+            sandboxManager,
+          });
+          terminalInspection = await collectAgentAutoReviewTerminalInspection({
+            command,
+            sandbox,
+          });
+        } catch (error) {
+          console.warn({
+            timestamp: new Date().toISOString(),
+            level: "warn",
+            event: "agent_auto_review_inspection_failed",
+            service: "agent",
+            environment:
+              process.env.VERCEL_ENV ?? process.env.NODE_ENV ?? "unknown",
+            tool_call_id: toolCallId,
+            inspection_kind: inspectionKind,
+            failure_class: error instanceof Error ? error.name : typeof error,
+          });
+          terminalInspection = {
+            kind: inspectionKind,
+            status: "unresolved" as const,
+            reason: "inspection_failed" as const,
+          };
+        }
+      }
+
       const approval = await context.requestToolApproval?.({
         toolCallId,
         toolName: "run_terminal_cmd",
@@ -258,6 +301,11 @@ export const createRunTerminalCmd = (context: ToolContext) => {
         brief,
         justification,
         prefixRule: prefix_rule,
+        autoReviewContext: {
+          type: "terminal_command",
+          command,
+          ...(terminalInspection ? { inspection: terminalInspection } : {}),
+        },
       });
       if (approval && !approval.approved) {
         return {
@@ -272,11 +320,37 @@ export const createRunTerminalCmd = (context: ToolContext) => {
       const approvedSandboxIdentity = approval?.approved
         ? approval.sandboxIdentity
         : undefined;
-      const getApprovedExecutionSandbox = () =>
-        getSandboxWithFallbackGuard({
+      let terminalInspectionRevalidated = false;
+      const getApprovedExecutionSandbox = async () => {
+        const result = await getSandboxWithFallbackGuard({
           sandboxManager,
           expectedSandboxIdentity: approvedSandboxIdentity,
         });
+        if (
+          approval?.approved &&
+          approval.approvalSource === "auto_review" &&
+          terminalInspection?.status === "resolved" &&
+          !terminalInspectionRevalidated
+        ) {
+          const currentInspection =
+            await collectAgentAutoReviewTerminalInspection({
+              command,
+              sandbox: result.sandbox,
+            });
+          if (
+            !terminalInspectionMatches({
+              reviewed: terminalInspection,
+              current: currentInspection,
+            })
+          ) {
+            throw new Error(
+              "The command's inspected files changed after automatic review. The command was not run. Retry it so the current action can be reviewed.",
+            );
+          }
+          terminalInspectionRevalidated = true;
+        }
+        return result;
+      };
 
       // ─── Interactive PTY exec branch ─────────────────────────────────
       if (interactive) {
@@ -326,6 +400,13 @@ export const createRunTerminalCmd = (context: ToolContext) => {
           const session = await ptySessionManager.create(ptyScopeId, {
             cols,
             rows,
+            sandboxIdentity: getAgentApprovalSandboxIdentity(sandbox),
+            originalCommand: command,
+            workingDirectory: isCentrifugo
+              ? typeof sandbox.getWorkingDirectory === "function"
+                ? sandbox.getWorkingDirectory()
+                : undefined
+              : buildSandboxCommandOptions(sandbox).cwd,
             createHandle: async () => {
               if (isCentrifugo) {
                 const { createCentrifugoPtyHandle } =
@@ -931,6 +1012,15 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                       cols,
                       rows,
                       kind: "command",
+                      sandboxIdentity:
+                        getAgentApprovalSandboxIdentity(sandboxInstance),
+                      originalCommand: command,
+                      workingDirectory:
+                        isCentrifugoSandbox(sandboxInstance) &&
+                        typeof sandboxInstance.getWorkingDirectory ===
+                          "function"
+                          ? sandboxInstance.getWorkingDirectory()
+                          : buildSandboxCommandOptions(sandboxInstance).cwd,
                       createHandle: async () => commandHandle!,
                     })
                     .then((session) => {

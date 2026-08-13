@@ -44,6 +44,7 @@ import {
   injectNotesIntoMessages,
   getContentFilterRetryModel,
   getRetryFallbackModel,
+  isAutoModelSelectionForRetry,
   resolveServedModelForCostAccounting,
 } from "@/lib/api/chat-stream-helpers";
 import {
@@ -83,6 +84,7 @@ import {
   persistAgentApprovalGrant,
   getMessagesByChatId,
   getChatById,
+  getCurrentAgentEntitlementContext,
   prepareForNewStream,
   setConvexUrl,
 } from "@/lib/db/actions";
@@ -128,9 +130,12 @@ import {
 } from "@/lib/api/agent-endpoints";
 import { phLogger } from "@/lib/posthog/server";
 import {
-  getProPlusMaxAccessExperimentContext,
-  type ProPlusMaxAccessExperimentAssignment,
-} from "@/lib/experiments/pro-plus-max-access";
+  captureProGrok46ExperimentExposure,
+  getActiveProGrok46ExperimentAssignment,
+  getProGrok46ExperimentContext,
+  type ProGrok46ExperimentAssignment,
+} from "@/lib/experiments/pro-grok-46";
+import type { AgentAutoReviewAssignment } from "@/lib/experiments/agent-auto-review";
 import { PAID_FUNNEL_EVENTS } from "@/lib/analytics/paid-funnel";
 import type { AnalyticsRequestContext } from "@/lib/analytics/request-context";
 import { buildAgentStepLimitTelemetry } from "@/lib/analytics/agent-step-limit-telemetry";
@@ -159,6 +164,8 @@ import type {
   SelectedModel,
   AgentPermissionMode,
   AgentApprovalSandboxIdentity,
+  AgentAutoReviewSummary,
+  AgentAutoReviewLifecycleStatus,
   AgentToolApprovalInputRecord,
   AgentToolApprovalPendingRequest,
   AgentToolApprovalRequest,
@@ -172,6 +179,7 @@ import {
   AGENT_TOOL_APPROVAL_PROTOCOL_VERSION,
   canUseExtraUsage,
   getAgentApprovalConnectionSandboxIdentity,
+  getAgentToolApprovalPromptKind,
   getAgentApprovalTargetPrefixForSandbox,
   normalizeMaxModelForSubscription,
   serializeSandboxScopedAgentApprovalTargetPrefix,
@@ -208,7 +216,9 @@ import {
 } from "@/lib/chat/agent-long-realtime-sanitizer";
 import {
   createActiveRuntimeBudget,
+  createRuntimeSettlementWatchdog,
   type ActiveRuntimeBudget,
+  type RuntimeSettlementWatchdog,
 } from "@/lib/chat/active-runtime-budget";
 import {
   AgentApprovalAuthorizationError,
@@ -247,10 +257,19 @@ import {
   captureSubagentLifecycleEvent,
   subagentAvailabilityEventUuid,
 } from "@/lib/analytics/subagents";
+import {
+  AgentAutoReviewDenialTracker,
+  extractAgentAutoReviewAuthorizationContext,
+  extractAgentAutoReviewConversationContext,
+  reviewAgentToolAction,
+  shouldAutoReviewAgentToolAction,
+  type AgentAutoReviewDecision,
+} from "@/lib/chat/agent-auto-review";
 
 const AGENT_LONG_FREE_MAX_DURATION_SECONDS = 60 * 60;
 const AGENT_LONG_PAID_MAX_DURATION_SECONDS = 2 * 60 * 60;
 const AGENT_LONG_CLEANUP_GRACE_MS = 2 * 60 * 1000;
+const AGENT_LONG_RUNTIME_SETTLEMENT_WATCHDOG_MS = 30 * 1000;
 const AGENT_LONG_TRIGGER_MAX_DURATION_SECONDS =
   AGENT_LONG_PAID_MAX_DURATION_SECONDS;
 
@@ -342,19 +361,72 @@ const APPROVAL_PROTOCOL_DENIED_REASON =
 const APPROVAL_AUTHORIZATION_DENIED_REASON =
   "Your authorization or billing access changed while this approval was pending. The operation was not run. Start a new Agent request and try again.";
 
+class AgentAutoReviewEntitlementRevalidationUnavailableError extends Error {
+  constructor() {
+    super("The current entitlement context could not be verified.");
+    this.name = "AgentAutoReviewEntitlementRevalidationUnavailableError";
+  }
+}
+
 const buildDeniedApprovalReason = (message: string | undefined): string => {
   const trimmed = message?.trim();
   if (!trimmed) return "The user denied approval for this operation.";
   return `The user denied approval for this operation and said: ${trimmed}`;
 };
 
+type AgentAutoReviewDecisionWithPhase = AgentAutoReviewDecision & {
+  rolloutPhase: "shadow" | "enforce";
+};
+
+const buildAgentAutoReviewSummary = (
+  autoReview: AgentAutoReviewDecisionWithPhase,
+): AgentAutoReviewSummary => ({
+  verdict: autoReview.verdict,
+  riskCategory: autoReview.riskCategory,
+  rationale: autoReview.rationale,
+  rolloutPhase: autoReview.rolloutPhase,
+  ...(autoReview.failureClass ? { failureClass: autoReview.failureClass } : {}),
+});
+
+const writeAgentAutoReviewLifecycle = ({
+  writer,
+  approvalId,
+  toolCallId,
+  status,
+  startedAt,
+}: {
+  writer: UIMessageStreamWriter;
+  approvalId: string;
+  toolCallId: string;
+  status: AgentAutoReviewLifecycleStatus;
+  startedAt: number;
+}): void => {
+  writer.write({
+    type: "data-agent-auto-review-lifecycle",
+    data: {
+      approvalId,
+      toolCallId,
+      status,
+      startedAt,
+      ...(status === "reviewing" ? {} : { completedAt: Date.now() }),
+    },
+  } as AgentLongUiStreamPart);
+};
+
 const buildPendingApprovalRequest = ({
   approvalId,
   request,
+  autoReview,
 }: {
   approvalId: string;
   request: AgentToolApprovalRequest;
+  autoReview?: AgentAutoReviewDecisionWithPhase;
 }): AgentToolApprovalPendingRequest => {
+  const autoReviewSummary: AgentAutoReviewSummary | undefined =
+    autoReview?.rolloutPhase === "enforce"
+      ? buildAgentAutoReviewSummary(autoReview)
+      : undefined;
+
   return {
     approvalId,
     toolCallId: request.toolCallId,
@@ -362,6 +434,7 @@ const buildPendingApprovalRequest = ({
     target: request.target,
     ...(request.justification ? { justification: request.justification } : {}),
     ...(request.prefixRule ? { prefixRule: request.prefixRule } : {}),
+    ...(autoReviewSummary ? { autoReview: autoReviewSummary } : {}),
     createdAt: Date.now(),
   };
 };
@@ -447,6 +520,12 @@ const buildAgentToolApprovalRequester = ({
   workingDirectory,
   beforeSuspend,
   revalidateAfterSuspend,
+  revalidateAfterAutoReview,
+  autoReviewAssignment,
+  autoReviewAuthorizationContext,
+  autoReviewConversationContext,
+  onAutoReviewCost,
+  onAutoReviewCircuitBreaker,
   onPostWaitAuthorizationDenied,
   onApprovalWait,
 }: {
@@ -469,11 +548,26 @@ const buildAgentToolApprovalRequester = ({
   revalidateAfterSuspend: (
     input: AgentToolApprovalInputRecord,
   ) => Promise<void>;
+  revalidateAfterAutoReview: (input: {
+    approvalId: string;
+    toolCallId: string;
+  }) => Promise<void>;
+  autoReviewAssignment?: AgentAutoReviewAssignment;
+  autoReviewAuthorizationContext: { text: string; complete: boolean };
+  autoReviewConversationContext: { text: string; complete: boolean };
+  onAutoReviewCost?: (costDollars: number) => void;
+  onAutoReviewCircuitBreaker: () => void;
   onPostWaitAuthorizationDenied: () => void;
   onApprovalWait?: (durationMs: number, incrementCount: boolean) => void;
 }): AgentToolApprovalRequester | undefined => {
-  if (agentPermissionMode !== "ask_approval") return undefined;
+  if (
+    agentPermissionMode !== "ask_approval" &&
+    agentPermissionMode !== "auto_review"
+  ) {
+    return undefined;
+  }
   let approvalQueue: Promise<void> = Promise.resolve();
+  const denialTracker = new AgentAutoReviewDenialTracker();
   const approvedTargetGrants: SandboxScopedAgentApprovalTargetGrant[] = [];
   const setApprovalPending = async (
     pending: boolean,
@@ -509,8 +603,28 @@ const buildAgentToolApprovalRequester = ({
     await previousApproval;
     let approvalPendingMarked = false;
     let shouldClearApprovalPending = false;
+    let autoReviewDecision:
+      | (AgentAutoReviewDecision & { rolloutPhase: "shadow" | "enforce" })
+      | undefined;
+    const approvalId = generateId();
+    let autoReviewStartedAt: number | undefined;
+    let autoReviewLifecycleCompleted = false;
+    const completeAutoReviewLifecycle = (
+      status: Exclude<AgentAutoReviewLifecycleStatus, "reviewing">,
+    ) => {
+      if (autoReviewStartedAt === undefined || autoReviewLifecycleCompleted) {
+        return;
+      }
+      autoReviewLifecycleCompleted = true;
+      writeAgentAutoReviewLifecycle({
+        writer,
+        approvalId,
+        toolCallId: request.toolCallId,
+        status,
+        startedAt: autoReviewStartedAt,
+      });
+    };
     try {
-      const approvalId = generateId();
       const sandboxIdentity = await resolveSandboxIdentity();
       const existingGrant =
         approvedTargetGrants.find(
@@ -549,7 +663,169 @@ const buildAgentToolApprovalRequester = ({
         return { approved: true, approvalId, sandboxIdentity };
       }
 
+      const autoReviewRolloutPhase = autoReviewAssignment?.phase;
+      if (
+        autoReviewRolloutPhase &&
+        shouldAutoReviewAgentToolAction({
+          permissionMode: agentPermissionMode,
+          rolloutPhase: autoReviewRolloutPhase,
+          operation: request.operation,
+        })
+      ) {
+        autoReviewStartedAt = Date.now();
+        writeAgentAutoReviewLifecycle({
+          writer,
+          approvalId,
+          toolCallId: request.toolCallId,
+          status: "reviewing",
+          startedAt: autoReviewStartedAt,
+        });
+        activeRuntimeBudget.pause();
+        let decision: AgentAutoReviewDecision;
+        try {
+          decision = await reviewAgentToolAction({
+            request,
+            authorizationContext: autoReviewAuthorizationContext,
+            conversationContext: autoReviewConversationContext,
+            signal,
+          });
+        } finally {
+          activeRuntimeBudget.resume();
+        }
+        autoReviewDecision = {
+          ...decision,
+          rolloutPhase: autoReviewRolloutPhase,
+        };
+        if (decision.modelCostDollars) {
+          onAutoReviewCost?.(decision.modelCostDollars);
+        }
+        const reviewSurface =
+          getAgentToolApprovalPromptKind(request.operation) ?? "file";
+        phLogger.event("agent_auto_review_decision", {
+          userId,
+          rollout_phase: autoReviewRolloutPhase,
+          verdict: decision.verdict,
+          risk_category: decision.riskCategory,
+          latency_ms: decision.latencyMs,
+          failure_class: decision.failureClass ?? "none",
+          outcome:
+            autoReviewRolloutPhase === "shadow"
+              ? "human_authoritative"
+              : decision.verdict,
+          surface: reviewSurface,
+        });
+
+        if (autoReviewRolloutPhase === "enforce") {
+          if (decision.verdict === "approve") {
+            try {
+              await revalidateAfterAutoReview({
+                approvalId,
+                toolCallId: request.toolCallId,
+              });
+            } catch (error) {
+              if (
+                error instanceof
+                AgentAutoReviewEntitlementRevalidationUnavailableError
+              ) {
+                autoReviewDecision = {
+                  ...decision,
+                  verdict: "ask_user",
+                  riskCategory: "unknown",
+                  rationale:
+                    "HackerAI could not verify the current authorization context automatically.",
+                  source: "failure",
+                  failureClass: "provider_error",
+                  rolloutPhase: autoReviewRolloutPhase,
+                };
+                metadata.set(
+                  "approvalStatus",
+                  "auto_review_revalidation_unavailable",
+                );
+                phLogger.event("agent_auto_review_revalidation", {
+                  userId,
+                  rollout_phase: autoReviewRolloutPhase,
+                  verdict: "ask_user",
+                  risk_category: "unknown",
+                  failure_class: "provider_error",
+                  outcome: "require_user",
+                  surface: reviewSurface,
+                });
+                triggerLogger.warn(
+                  "[agent-long] Auto review authorization revalidation unavailable; requesting human approval",
+                  {
+                    event: "agent_auto_review_revalidation_unavailable",
+                    service: "agent-long",
+                    chat_id: chatId,
+                    user_id: userId,
+                    run_id: runId,
+                    approval_id: approvalId,
+                    error_name:
+                      error instanceof Error ? error.name : "UnknownError",
+                  },
+                );
+              } else {
+                const authorizationError =
+                  error instanceof AgentApprovalAuthorizationError
+                    ? error
+                    : null;
+                metadata
+                  .set("approvalStatus", "authorization_denied")
+                  .set(
+                    "approvalAuthorizationFailure",
+                    authorizationError?.code ?? "revalidation_failed",
+                  );
+                triggerLogger.warn(
+                  "[agent-long] post-review approval authorization denied",
+                  {
+                    chatId,
+                    userId,
+                    runId,
+                    approvalId,
+                    failure: authorizationError?.code ?? "revalidation_failed",
+                    error_name:
+                      error instanceof Error ? error.name : "UnknownError",
+                  },
+                );
+                return {
+                  approved: false,
+                  approvalId,
+                  reason: APPROVAL_AUTHORIZATION_DENIED_REASON,
+                };
+              }
+            }
+            if (autoReviewDecision?.verdict === "approve") {
+              const currentSandboxIdentity = await resolveSandboxIdentity();
+              if (currentSandboxIdentity !== sandboxIdentity) {
+                metadata.set("approvalStatus", "sandbox_changed");
+                return {
+                  approved: false,
+                  approvalId,
+                  reason:
+                    "The selected sandbox changed during automatic review. The operation was not run. Retry it in the current sandbox.",
+                };
+              }
+              metadata
+                .set("approvalStatus", "auto_review_approved")
+                .set("approvalToolName", request.toolName)
+                .set("approvalOperation", request.operation);
+              denialTracker.record("approve");
+              completeAutoReviewLifecycle("approved");
+              return {
+                approved: true,
+                approvalId,
+                sandboxIdentity,
+                approvalSource: "auto_review",
+              };
+            }
+          }
+          // A reviewer denial means the action is not safe to approve
+          // automatically. It never substitutes for the user's decision;
+          // continue into the durable human approval flow below.
+        }
+      }
+
       if (!approvalSessionId) {
+        completeAutoReviewLifecycle("dismissed");
         return {
           approved: false,
           approvalId,
@@ -559,6 +835,7 @@ const buildAgentToolApprovalRequester = ({
       }
 
       if (signal.aborted) {
+        completeAutoReviewLifecycle("dismissed");
         metadata.set("approvalStatus", "aborted");
         return {
           approved: false,
@@ -568,6 +845,7 @@ const buildAgentToolApprovalRequester = ({
       }
 
       if (!triggerSessions) {
+        completeAutoReviewLifecycle("dismissed");
         metadata.set("approvalStatus", "sessions_unavailable");
         return {
           approved: false,
@@ -579,7 +857,11 @@ const buildAgentToolApprovalRequester = ({
 
       await setApprovalPending(
         true,
-        buildPendingApprovalRequest({ approvalId, request }),
+        buildPendingApprovalRequest({
+          approvalId,
+          request,
+          autoReview: autoReviewDecision,
+        }),
       );
       approvalPendingMarked = true;
 
@@ -590,6 +872,20 @@ const buildAgentToolApprovalRequester = ({
         .set("approvalToolName", request.toolName)
         .set("approvalOperation", request.operation);
       await metadata.flush();
+
+      completeAutoReviewLifecycle("needs_approval");
+
+      if (autoReviewDecision?.rolloutPhase === "enforce") {
+        const autoReview = buildAgentAutoReviewSummary(autoReviewDecision);
+        writer.write({
+          type: "data-agent-auto-review",
+          data: {
+            approvalId,
+            toolCallId: request.toolCallId,
+            autoReview,
+          },
+        } as AgentLongUiStreamPart);
+      }
 
       writer.write({
         type: "tool-approval-request",
@@ -795,6 +1091,22 @@ const buildAgentToolApprovalRequester = ({
             grant: approvedTargetGrant ? "target_prefix" : "full_access",
             target_kind: approvedTargetGrant?.kind,
           });
+          if (autoReviewDecision) {
+            phLogger.event("agent_auto_review_human_outcome", {
+              userId,
+              rollout_phase: autoReviewDecision.rolloutPhase,
+              verdict: autoReviewDecision.verdict,
+              risk_category: autoReviewDecision.riskCategory,
+              failure_class: autoReviewDecision.failureClass ?? "none",
+              outcome: "approve",
+              override: autoReviewDecision.verdict === "deny",
+              surface:
+                getAgentToolApprovalPromptKind(request.operation) ?? "file",
+            });
+          }
+          if (autoReviewDecision?.rolloutPhase === "enforce") {
+            denialTracker.record("approve");
+          }
           return { approved: true, approvalId, sandboxIdentity };
         }
 
@@ -807,10 +1119,41 @@ const buildAgentToolApprovalRequester = ({
           tool_name: request.toolName,
           operation: request.operation,
         });
+        if (autoReviewDecision) {
+          phLogger.event("agent_auto_review_human_outcome", {
+            userId,
+            rollout_phase: autoReviewDecision.rolloutPhase,
+            verdict: autoReviewDecision.verdict,
+            risk_category: autoReviewDecision.riskCategory,
+            failure_class: autoReviewDecision.failureClass ?? "none",
+            outcome: "deny",
+            override: autoReviewDecision.verdict === "approve",
+            surface:
+              getAgentToolApprovalPromptKind(request.operation) ?? "file",
+          });
+        }
+        const humanDenialTrippedCircuitBreaker =
+          autoReviewDecision?.rolloutPhase === "enforce" &&
+          denialTracker.record("deny").tripped;
+        if (humanDenialTrippedCircuitBreaker && autoReviewDecision) {
+          metadata.set("approvalStatus", "auto_review_circuit_breaker");
+          phLogger.event("agent_auto_review_circuit_breaker", {
+            userId,
+            rollout_phase: autoReviewDecision.rolloutPhase,
+            verdict: autoReviewDecision.verdict,
+            risk_category: autoReviewDecision.riskCategory,
+            outcome: "require_user",
+            surface:
+              getAgentToolApprovalPromptKind(request.operation) ?? "file",
+          });
+          onAutoReviewCircuitBreaker();
+        }
         return {
           approved: false,
           approvalId,
-          reason: buildDeniedApprovalReason(next.output.message),
+          reason: humanDenialTrippedCircuitBreaker
+            ? `${buildDeniedApprovalReason(next.output.message)} The denial circuit breaker stopped further approval attempts in this run.`
+            : buildDeniedApprovalReason(next.output.message),
         };
       }
 
@@ -821,6 +1164,7 @@ const buildAgentToolApprovalRequester = ({
         reason: "The Agent run was stopped before approval was received.",
       };
     } finally {
+      completeAutoReviewLifecycle("dismissed");
       if (approvalPendingMarked && shouldClearApprovalPending) {
         await setApprovalPending(false);
       }
@@ -1680,7 +2024,8 @@ export type AgentLongPayload = {
   approvalSessionId?: string;
   approvalProtocolVersion?: number;
   selectedModel?: SelectedModel;
-  maxAccessExperiment?: ProPlusMaxAccessExperimentAssignment;
+  proGrok46Experiment?: ProGrok46ExperimentAssignment;
+  autoReviewAssignment?: AgentAutoReviewAssignment;
   userLocation: Geo;
   isAutoContinue?: boolean;
   regenerate?: boolean;
@@ -1751,7 +2096,8 @@ export const agentLongTask = task({
       approvalSessionId,
       approvalProtocolVersion,
       selectedModel: rawSelectedModelOverride,
-      maxAccessExperiment,
+      proGrok46Experiment,
+      autoReviewAssignment,
       userLocation,
       isAutoContinue,
       regenerate,
@@ -1762,14 +2108,12 @@ export const agentLongTask = task({
       securityValidationSubagentsEnabled = false,
     } = payload;
     let selectedModelOverride = rawSelectedModelOverride;
-    const includedMaxAccess = maxAccessExperiment?.includedMaxAccess === true;
-    const maxAccessExperimentContext =
-      getProPlusMaxAccessExperimentContext(maxAccessExperiment);
     const endpoint = payloadEndpoint ?? LEGACY_AGENT_API_ENDPOINT;
     const freeUsageSubject = freeQuotaSubject ?? userId;
 
     if (
-      agentPermissionMode === "ask_approval" &&
+      (agentPermissionMode === "ask_approval" ||
+        agentPermissionMode === "auto_review") &&
       approvalProtocolVersion !== AGENT_TOOL_APPROVAL_PROTOCOL_VERSION
     ) {
       throw new ChatSDKError(
@@ -1890,6 +2234,7 @@ export const agentLongTask = task({
     });
 
     let activeRuntimeBudget: ActiveRuntimeBudget | undefined;
+    let runtimeSettlementWatchdog: RuntimeSettlementWatchdog | undefined;
 
     try {
       // Re-fetch from DB so we have fileTokens for summarization.
@@ -1923,13 +2268,11 @@ export const agentLongTask = task({
       selectedModelOverride =
         normalizeMaxModelForSubscription(selectedModelOverride, subscription, {
           extraUsageAvailable,
-          includedMaxAccess,
         }) ?? undefined;
       const extraUsageConfig = withExtraUsageBillingForModel(
         baseExtraUsageConfig,
         selectedModelOverride,
         subscription,
-        { includedMaxAccess },
       );
 
       const baseTodos: Todo[] = getBaseTodosForRequest(
@@ -1959,7 +2302,7 @@ export const agentLongTask = task({
         uploadBasePath,
         modelOverride: selectedModelOverride,
         extraUsageAvailable,
-        includedMaxAccess,
+        proModelKey: proGrok46Experiment?.modelKey,
         allowLocalDesktopFiles: sandboxPreference === "desktop",
       });
 
@@ -2023,10 +2366,65 @@ export const agentLongTask = task({
         initialElapsedMs: Date.now() - taskStartTime,
         onExceeded: () => {
           markAgentLongDurationExceeded();
+          runtimeSettlementWatchdog?.arm();
           userStopSignal.abort();
         },
       });
       activeRuntimeBudget = runtimeBudget;
+      runtimeSettlementWatchdog = createRuntimeSettlementWatchdog({
+        delayMs: AGENT_LONG_RUNTIME_SETTLEMENT_WATCHDOG_MS,
+        onStalled: ({ runtimeBudgetExceededAt, stalledForMs }) => {
+          const providerError =
+            getTerminalProviderStreamError(terminalAgentState);
+          const providerErrorSummary = providerError
+            ? classifyAgentLongError(providerError)
+            : undefined;
+          const triggerRunTelemetry = getTriggerRunTelemetry();
+          triggerLogger.error("[agent-long] runtime settlement stalled", {
+            timestamp: new Date().toISOString(),
+            level: "error",
+            event: "agent_long_runtime_settlement_stalled",
+            service: "agent-long",
+            environment:
+              process.env.TRIGGER_ENV ??
+              process.env.VERCEL_ENV ??
+              process.env.NODE_ENV ??
+              "unknown",
+            request_id: ctx.run.id,
+            run_id: ctx.run.id,
+            chat_id: chatId,
+            user_id: userId,
+            endpoint,
+            subscription,
+            runtime_budget_ms: agentLongMaxDurationMs,
+            cleanup_grace_ms: AGENT_LONG_CLEANUP_GRACE_MS,
+            runtime_budget_exceeded_at: new Date(
+              runtimeBudgetExceededAt,
+            ).toISOString(),
+            stalled_for_ms: stalledForMs,
+            stream_piped: streamPiped,
+            trigger_signal_aborted: triggerSignal.aborted,
+            stream_finish_reason:
+              terminalAgentState?.streamFinishReason ?? null,
+            provider_error_category: providerErrorSummary?.category ?? null,
+            provider_error_name: providerErrorSummary?.name ?? null,
+            provider_error_code: providerErrorSummary?.code ?? null,
+            agent_step_count: terminalAgentState?.agentStepCount ?? 0,
+            trigger_usage_duration_ms:
+              triggerRunTelemetry.triggerUsageDurationMs,
+            trigger_total_cost_usd: triggerRunTelemetry.triggerTotalCostUsd,
+            approval_wait_count: triggerRunTelemetry.approvalWaitCount,
+            approval_wait_duration_ms:
+              triggerRunTelemetry.approvalWaitDurationMs,
+            active_model_stream_duration_ms:
+              triggerRunTelemetry.activeModelStreamDurationMs,
+            active_terminal_wait_duration_ms:
+              triggerRunTelemetry.activeTerminalWaitDurationMs,
+            active_sandbox_recovery_duration_ms:
+              triggerRunTelemetry.activeSandboxRecoveryDurationMs,
+          });
+        },
+      });
 
       // Rate limit check happens inside execute so a thrown ChatSDKError
       // (e.g. "exceeded daily messages") flows through createUIMessageStream's
@@ -2154,6 +2552,15 @@ export const agentLongTask = task({
               });
             }
 
+            const activeProGrok46Experiment =
+              getActiveProGrok46ExperimentAssignment(
+                proGrok46Experiment,
+                selectedModel,
+              );
+            const routingExperimentContext = getProGrok46ExperimentContext(
+              activeProGrok46Experiment,
+            );
+
             const freeMonthlyBudgetSnapshot =
               subscription === "free"
                 ? await checkFreeMonthlyCostLimit(freeUsageSubject)
@@ -2268,10 +2675,7 @@ export const agentLongTask = task({
               const currentlyAllowedModel = normalizeMaxModelForSubscription(
                 selectedModelOverride,
                 authorization.subscription,
-                {
-                  extraUsageConfig: currentExtraUsageConfig,
-                  includedMaxAccess,
-                },
+                { extraUsageConfig: currentExtraUsageConfig },
               );
               if (currentlyAllowedModel !== selectedModelOverride) {
                 throw new AgentApprovalAuthorizationError(
@@ -2284,7 +2688,6 @@ export const agentLongTask = task({
                   currentExtraUsageConfig,
                   currentlyAllowedModel,
                   authorization.subscription,
-                  { includedMaxAccess },
                 );
 
               await checkRateLimitCapacity(
@@ -2303,6 +2706,88 @@ export const agentLongTask = task({
                   FREE_AGENT_LONG_RUN_LOCK_TTL_SECONDS,
                 );
                 releaseFreeRunLock = lock.release;
+              }
+            };
+            const revalidateAfterAutoReview = async ({
+              approvalId: _approvalId,
+              toolCallId: _toolCallId,
+            }: {
+              approvalId: string;
+              toolCallId: string;
+            }) => {
+              await assertUserCanMakeCostIncurringRequest(userId);
+
+              let currentEntitlement;
+              try {
+                currentEntitlement = await getCurrentAgentEntitlementContext({
+                  userId,
+                  organizationId,
+                });
+              } catch {
+                throw new AgentAutoReviewEntitlementRevalidationUnavailableError();
+              }
+              if (
+                currentEntitlement.subscription !== subscription ||
+                currentEntitlement.organizationId !== organizationId
+              ) {
+                throw new AgentApprovalAuthorizationError(
+                  "authorization_mismatch",
+                  "The current entitlement context differs from the run start.",
+                );
+              }
+
+              const currentChat = await getChatById({ id: chatId });
+              if (
+                !currentChat ||
+                currentChat.user_id !== userId ||
+                currentChat.active_trigger_run_id !== ctx.run.id ||
+                currentChat.active_agent_approval_session_id !==
+                  approvalSessionId
+              ) {
+                throw new AgentApprovalAuthorizationError(
+                  "authorization_mismatch",
+                  "The chat is no longer associated with this Agent run.",
+                );
+              }
+
+              const currentUserCustomization = await getUserCustomization({
+                userId,
+              });
+              const currentExtraUsageConfig = await buildExtraUsageConfig({
+                userId,
+                subscription: currentEntitlement.subscription,
+                userCustomization: currentUserCustomization,
+                organizationId: currentEntitlement.organizationId,
+                failClosedOnLookupError: true,
+              });
+              const currentlyAllowedModel = normalizeMaxModelForSubscription(
+                selectedModelOverride,
+                currentEntitlement.subscription,
+                { extraUsageConfig: currentExtraUsageConfig },
+              );
+              if (currentlyAllowedModel !== selectedModelOverride) {
+                throw new AgentApprovalAuthorizationError(
+                  "authorization_mismatch",
+                  "The selected model is no longer authorized.",
+                );
+              }
+              const currentModelExtraUsageConfig =
+                withExtraUsageBillingForModel(
+                  currentExtraUsageConfig,
+                  currentlyAllowedModel,
+                  currentEntitlement.subscription,
+                );
+              await checkRateLimitCapacity(
+                userId,
+                mode,
+                currentEntitlement.subscription,
+                currentModelExtraUsageConfig,
+                selectedModel,
+                currentEntitlement.organizationId,
+                freeQuotaSubject,
+              );
+              if (currentEntitlement.subscription === "free") {
+                await checkFreeMonthlyCostLimit(freeUsageSubject);
               }
             };
             let approvalSandboxManager: SandboxManager | undefined;
@@ -2347,6 +2832,22 @@ export const agentLongTask = task({
               beforeSuspend:
                 subscription === "free" ? releaseFreeRunLockOnce : undefined,
               revalidateAfterSuspend: revalidateAfterApprovalSuspend,
+              revalidateAfterAutoReview,
+              autoReviewAssignment,
+              autoReviewAuthorizationContext:
+                extractAgentAutoReviewAuthorizationContext(
+                  messagesForProcessing,
+                ),
+              autoReviewConversationContext:
+                extractAgentAutoReviewConversationContext(
+                  messagesForProcessing,
+                ),
+              onAutoReviewCost: (costDollars) => {
+                usageTracker.providerCost += costDollars;
+                usageTracker.nonModelCost += costDollars;
+                chatLogger?.getBuilder().addToolCost(costDollars);
+              },
+              onAutoReviewCircuitBreaker: () => userStopSignal.abort(),
               onPostWaitAuthorizationDenied: () => userStopSignal.abort(),
               onApprovalWait: runTimingTracker.recordApprovalWait,
             });
@@ -2383,6 +2884,8 @@ export const agentLongTask = task({
               selectedModel,
               onToolFailure,
               requestToolApproval,
+              agentPermissionMode === "auto_review" &&
+                autoReviewAssignment?.phase !== undefined,
               runTimingTracker.measureActiveTime,
               projectContext.workingDirectory,
               ctx.run.id,
@@ -2622,12 +3125,10 @@ export const agentLongTask = task({
 
             let isRetryWithFallback = false;
             let retryUsedFallbackModel = false;
-            const isAutoModel = [
-              "ask-model",
-              "ask-model-free",
-              "agent-model",
-              "agent-model-free",
-            ].includes(selectedModel);
+            const isAutoModel = isAutoModelSelectionForRetry({
+              selectedModel,
+              selectedModelOverride,
+            });
             const fallbackModel = getRetryFallbackModel(selectedModel, mode);
             const fallbackModelId =
               trackedProvider.languageModel(fallbackModel).modelId;
@@ -2834,7 +3335,7 @@ export const agentLongTask = task({
                   mode,
                   agentPermissionMode,
                   analyticsRequestContext,
-                  experiment: maxAccessExperimentContext,
+                  experiment: routingExperimentContext,
                   usage: usageCostRecord,
                   responseModel: state.responseModel,
                   ...(usageSettlementState && {
@@ -3054,6 +3555,15 @@ export const agentLongTask = task({
 
             let result;
             try {
+              captureProGrok46ExperimentExposure({
+                posthog,
+                userId,
+                subscription,
+                mode,
+                selectedModel,
+                configuredModel: configuredModelId,
+                assignment: activeProGrok46Experiment,
+              });
               result = await createStream(selectedModel);
             } catch (error) {
               if (
@@ -3397,7 +3907,7 @@ export const agentLongTask = task({
                                       state.budgetAbortDetails,
                                     agentPermissionMode,
                                     isAutoContinue: !!isAutoContinue,
-                                    experiment: maxAccessExperimentContext,
+                                    experiment: routingExperimentContext,
                                     stepLimitTelemetry:
                                       buildAgentStepLimitTelemetry({
                                         configuredMaxSteps:
@@ -3570,7 +4080,7 @@ export const agentLongTask = task({
                         budgetAbortDetails: state.budgetAbortDetails,
                         agentPermissionMode,
                         isAutoContinue: !!isAutoContinue,
-                        experiment: maxAccessExperimentContext,
+                        experiment: routingExperimentContext,
                         stepLimitTelemetry: buildAgentStepLimitTelemetry({
                           configuredMaxSteps: state.configuredMaxSteps,
                           stepCount: state.agentStepCount,
@@ -3989,6 +4499,7 @@ export const agentLongTask = task({
 
       throw error;
     } finally {
+      runtimeSettlementWatchdog?.dispose();
       memoryTelemetry.dispose();
       activeRuntimeBudget?.dispose();
       if (securityValidationSubagentsEnabled) {

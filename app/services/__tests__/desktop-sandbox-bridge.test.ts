@@ -569,6 +569,50 @@ describe("native desktop file relay", () => {
     });
   });
 
+  it("forwards the allowed project root to the local file server", async () => {
+    const config = buildConfig();
+    const bridge = new DesktopSandboxBridge(config);
+    await bridge.start();
+
+    const handler = getPublicationHandler();
+
+    mockInvokeHandler = async (cmd: string) => {
+      if (cmd === "get_cmd_server_info") {
+        return { port: 49152, token: "file-token" };
+      }
+      throw new Error(`Unexpected command: ${cmd}`);
+    };
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ ok: true }),
+    } as Response);
+
+    handler({
+      data: {
+        type: "file_write",
+        requestId: "file-req-root",
+        path: "C:\\repo\\app.ts",
+        content: "updated",
+        allowedRoot: "C:\\repo",
+        targetConnectionId: "conn-123",
+      },
+    });
+
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(global.fetch).toHaveBeenCalledWith(
+      "http://127.0.0.1:49152/files/write",
+      expect.objectContaining({
+        body: JSON.stringify({
+          path: "C:\\repo\\app.ts",
+          content: "updated",
+          is_base64: false,
+          allowed_root: "C:\\repo",
+        }),
+      }),
+    );
+  });
+
   it("passes base64 append requests through to the local file server", async () => {
     const config = buildConfig();
     const bridge = new DesktopSandboxBridge(config);

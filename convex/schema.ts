@@ -32,6 +32,36 @@ const activeAgentApprovalRequestValidator = v.object({
   detail: v.optional(v.string()),
   kind: v.optional(v.union(v.literal("terminal"), v.literal("file"))),
   createdAt: v.optional(v.number()),
+  autoReview: v.optional(
+    v.object({
+      verdict: v.union(
+        v.literal("approve"),
+        v.literal("ask_user"),
+        v.literal("deny"),
+      ),
+      riskCategory: v.union(
+        v.literal("routine"),
+        v.literal("destructive"),
+        v.literal("credential_access"),
+        v.literal("data_egress"),
+        v.literal("security_weakening"),
+        v.literal("scope_expansion"),
+        v.literal("prompt_injection"),
+        v.literal("unknown"),
+      ),
+      rationale: v.string(),
+      rolloutPhase: v.union(v.literal("shadow"), v.literal("enforce")),
+      failureClass: v.optional(
+        v.union(
+          v.literal("timeout"),
+          v.literal("provider_error"),
+          v.literal("parse_error"),
+          v.literal("missing_context"),
+          v.literal("context_truncated"),
+        ),
+      ),
+    }),
+  ),
 });
 
 const agentApprovalTargetGrantValidator = v.union(
@@ -90,6 +120,7 @@ export default defineSchema({
     title: v.string(),
     user_id: v.string(),
     finish_reason: v.optional(v.string()),
+    last_run_finished_at: v.optional(v.number()),
     active_stream_id: v.optional(v.string()),
     active_trigger_run_id: v.optional(v.string()),
     active_agent_approval_session_id: v.optional(v.string()),
@@ -308,6 +339,82 @@ export default defineSchema({
     .index("by_stripe_subscription_id_and_created_at", [
       "stripe_subscription_id",
       "created_at",
+    ]),
+
+  // Privacy-safe Stripe lifecycle facts for involuntary churn and recovery.
+  // User-selected cancellation survey answers and free text intentionally stay
+  // in cancellation_reasons / cancellation_reason_details.
+  involuntary_churn_events: defineTable({
+    idempotency_key: v.string(),
+    stripe_event_id: v.string(),
+    stripe_event_type: v.union(
+      v.literal("invoice.payment_failed"),
+      v.literal("invoice.paid"),
+      v.literal("customer.subscription.deleted"),
+      v.literal("payment_method.attached"),
+      v.literal("customer.updated"),
+    ),
+    user_id: v.string(),
+    organization_id: v.optional(v.string()),
+    stripe_customer_id: v.string(),
+    stripe_subscription_id: v.string(),
+    stripe_invoice_id: v.optional(v.string()),
+    stripe_payment_intent_id: v.optional(v.string()),
+    stripe_charge_id: v.optional(v.string()),
+    stripe_price_id: v.optional(v.string()),
+    plan: v.optional(v.string()),
+    subscription_tier: v.optional(
+      v.union(
+        v.literal("free"),
+        v.literal("pro"),
+        v.literal("pro-plus"),
+        v.literal("ultra"),
+        v.literal("team"),
+      ),
+    ),
+    billing_failure_lifecycle: v.optional(
+      v.union(
+        v.literal("invoice_payment_failed"),
+        v.literal("subscription_deleted"),
+      ),
+    ),
+    billing_failure_stage: v.optional(v.string()),
+    billing_failure_group: v.optional(v.string()),
+    billing_reason: v.optional(v.string()),
+    invoice_status: v.optional(v.string()),
+    attempt_count: v.optional(v.number()),
+    outcome_type: v.optional(v.string()),
+    outcome_reason: v.optional(v.string()),
+    risk_level: v.optional(v.string()),
+    amount_due_dollars: v.optional(v.number()),
+    amount_remaining_dollars: v.optional(v.number()),
+    currency: v.optional(v.string()),
+    recovery_result: v.union(
+      v.literal("pending"),
+      v.literal("payment_method_updated"),
+      v.literal("recovered"),
+      v.literal("churned"),
+      v.literal("ineligible_payment"),
+    ),
+    occurred_at: v.number(),
+    recorded_at: v.number(),
+  })
+    .index("by_idempotency_key", ["idempotency_key"])
+    .index("by_stripe_event_id", ["stripe_event_id"])
+    .index("by_invoice_and_occurred", ["stripe_invoice_id", "occurred_at"])
+    .index("by_invoice_user_and_occurred", [
+      "stripe_invoice_id",
+      "user_id",
+      "occurred_at",
+    ])
+    .index("by_subscription_and_occurred", [
+      "stripe_subscription_id",
+      "occurred_at",
+    ])
+    .index("by_user_and_occurred", ["user_id", "occurred_at"])
+    .index("by_recovery_result_and_occurred", [
+      "recovery_result",
+      "occurred_at",
     ]),
 
   user_customization: defineTable({

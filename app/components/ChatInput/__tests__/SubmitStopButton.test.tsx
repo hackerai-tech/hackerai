@@ -37,6 +37,7 @@ function renderButton(
   chatMode: "ask" | "agent",
   isPaid: boolean,
   isGenerating = false,
+  useNeutralAgentStyle = false,
 ) {
   render(
     <TooltipProvider>
@@ -44,6 +45,7 @@ function renderButton(
         {...defaultProps}
         chatMode={chatMode}
         isPaid={isPaid}
+        useNeutralAgentStyle={useNeutralAgentStyle}
         isGenerating={isGenerating}
         status={isGenerating ? "streaming" : "ready"}
       />
@@ -128,5 +130,19 @@ describe("SubmitStopButton paid mode colors", () => {
 
   it("preserves the existing submit colors for free users", () => {
     expect(renderButton("agent", false)).toHaveClass("bg-red-500/10");
+  });
+
+  it("uses the neutral Agent submit treatment for free Desktop users", () => {
+    const submitButton = renderButton("agent", false, false, true);
+
+    expect(submitButton).toHaveClass("bg-primary-foreground");
+    expect(submitButton).not.toHaveClass("bg-red-500/10");
+  });
+
+  it("uses the neutral Agent stop treatment for free Desktop users", () => {
+    const stopButton = renderButton("agent", false, true, true);
+
+    expect(stopButton).toHaveClass("bg-muted");
+    expect(stopButton).not.toHaveClass("bg-red-500/10");
   });
 });

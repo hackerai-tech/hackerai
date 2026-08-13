@@ -162,6 +162,8 @@ export function ChatLayout({ children }: { children: React.ReactNode }) {
 
       {/* Main content slot - pages render here */}
       <div className="flex min-h-0 flex-1 min-w-0 flex-col relative">
+        {/* Billing status is checked on demand in Account settings. Keep the
+            global layout free of billing/Stripe status requests. */}
         {children}
       </div>
 

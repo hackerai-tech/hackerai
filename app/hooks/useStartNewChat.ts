@@ -3,7 +3,7 @@
 import { useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { useIsMobile } from "@/hooks/use-mobile";
-import { useGlobalState } from "@/app/contexts/GlobalState";
+import { useGlobalStateActions } from "@/app/contexts/GlobalState";
 
 type StartNewChatOptions = {
   projectId?: string;
@@ -19,7 +19,7 @@ export function useStartNewChat() {
     setActiveProjectId,
     setChatSidebarOpen,
     setSandboxPreference,
-  } = useGlobalState();
+  } = useGlobalStateActions();
 
   return useCallback(
     ({ projectId, useDesktop = false }: StartNewChatOptions = {}) => {

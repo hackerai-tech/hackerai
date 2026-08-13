@@ -23,7 +23,7 @@ import { api } from "@/convex/_generated/api";
 import type { FileDetails } from "@/types/file";
 import { Messages } from "./Messages";
 import { ChatInput } from "./ChatInput";
-import { ChatLoadingStatusPill } from "./ChatLoadingStatusPill";
+import { ComposerOverlay } from "./ComposerOverlay";
 import type { RateLimitWarningData } from "./RateLimitWarning";
 import ChatHeader from "./ChatHeader";
 import Footer from "./Footer";
@@ -31,6 +31,7 @@ import { useMessageScroll } from "../hooks/useMessageScroll";
 import { useChatHandlers } from "../hooks/useChatHandlers";
 import { useGlobalState } from "../contexts/GlobalState";
 import { useComposerInput } from "../contexts/ComposerState";
+import { useChatRoutePresentation } from "../contexts/ChatRoutePresentationContext";
 import {
   type ActiveAgentToolApprovalRequest,
   useAgentApproval,
@@ -79,6 +80,7 @@ import {
 } from "@/lib/analytics/client";
 import {
   normalizeSelectedModelForSubscription,
+  parseAgentAutoReviewSummary,
   type Todo,
   type ChatMessage,
 } from "@/types";
@@ -98,7 +100,10 @@ import { useAutoContinue } from "../hooks/useAutoContinue";
 import { findLatestTimelineAnchorMessageId } from "./message-timeline-rows";
 import { useLatestRef } from "../hooks/useLatestRef";
 import { useDataStreamDispatch } from "./DataStreamProvider";
-import { removeDraft } from "@/lib/utils/client-storage";
+import {
+  markSidebarTaskVisited,
+  removeDraft,
+} from "@/lib/utils/client-storage";
 import { parseRateLimitWarning } from "@/lib/utils/parse-rate-limit-warning";
 import { formatTaskUiCopy } from "@/app/utils/task-ui-copy";
 import { finalizeNewChatRoute } from "./chat-route";
@@ -151,6 +156,7 @@ export const getStoredAgentApprovalRequest = (
     operation,
     fallback: fallbackDetail,
   });
+  const autoReview = parseAgentAutoReviewSummary(approvalRequest.autoReview);
 
   return {
     approvalId,
@@ -172,6 +178,7 @@ export const getStoredAgentApprovalRequest = (
     ...(typeof approvalRequest.createdAt === "number"
       ? { createdAt: approvalRequest.createdAt }
       : {}),
+    ...(autoReview ? { autoReview } : {}),
   };
 };
 
@@ -213,6 +220,26 @@ export function getExistingChatLoadState({
     !hasPaginatedMessageResults;
 
   return { isInitialExistingChatLoad, isChatNotFound };
+}
+
+const shouldReleaseStreamedTitle = (
+  streamedTitle: string | null,
+  persistedTitle: string | null | undefined,
+): boolean => Boolean(streamedTitle && persistedTitle === streamedTitle);
+
+export function useStreamedChatTitle(
+  persistedTitle: string | null | undefined,
+) {
+  const [streamedTitle, setStreamedTitle] = useState<string | null>(null);
+
+  // The streamed title only bridges the gap until Convex receives the same
+  // generated title. This guarded adjustment restarts the current render
+  // before children commit with a stale title source.
+  if (shouldReleaseStreamedTitle(streamedTitle, persistedTitle)) {
+    setStreamedTitle(null);
+  }
+
+  return [streamedTitle ?? persistedTitle ?? null, setStreamedTitle] as const;
 }
 
 export function useServerMessages(
@@ -526,6 +553,8 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   } = useGlobalState();
   const { setAgentApprovalSession, clearAgentApprovalSession } =
     useAgentApproval();
+  const { hasResolvedInitialPresentation, markInitialPresentationResolved } =
+    useChatRoutePresentation();
 
   // Simple logic: use route chatId if provided, otherwise generate new one
   const [chatId, setChatId] = useState<string>(() => {
@@ -554,9 +583,6 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   const [tempChatFileDetails, setTempChatFileDetails] = useState<
     Map<string, FileDetails[]>
   >(new Map());
-
-  // Title streamed mid-response so the header updates before Convex persists it
-  const [streamedTitle, setStreamedTitle] = useState<string | null>(null);
 
   // Use global state ref so streaming callback reads latest value
   const hasUserDismissedWarningRef = useLatestRef(
@@ -593,21 +619,6 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     null,
   );
 
-  // Sync local chat state from URL (single source of truth)
-  useEffect(() => {
-    setStreamedTitle(null);
-    lastAppliedTodoOutputRef.current = null;
-    if (routeChatId) {
-      setChatId(routeChatId);
-      setIsExistingChat(true);
-    } else {
-      // Navigated to "/" (new chat) — reset to fresh state
-      setChatId(uuidv4());
-      setIsExistingChat(false);
-      wasNewChatRef.current = true;
-    }
-  }, [routeChatId]);
-
   // Use paginated query to load messages in batches of 14
   const paginatedMessages = usePaginatedQuery(
     api.messages.getMessagesByChatId,
@@ -623,6 +634,35 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
 
   const chatDataForCurrentChat =
     chatData && (chatData as any).id === chatId ? chatData : undefined;
+  const [chatTitle, setStreamedTitle] = useStreamedChatTitle(
+    chatDataForCurrentChat?.title,
+  );
+  const loadedChatDocumentId = chatDataForCurrentChat?._id;
+  const lastRunFinishedAt = chatDataForCurrentChat?.last_run_finished_at;
+
+  // Sync local chat state from URL (single source of truth)
+  useEffect(() => {
+    setStreamedTitle(null);
+    lastAppliedTodoOutputRef.current = null;
+    if (routeChatId) {
+      setChatId(routeChatId);
+      setIsExistingChat(true);
+    } else {
+      // Navigated to "/" (new chat) — reset to fresh state
+      setChatId(uuidv4());
+      setIsExistingChat(false);
+      wasNewChatRef.current = true;
+    }
+  }, [routeChatId, setStreamedTitle]);
+
+  useEffect(() => {
+    if (!loadedChatDocumentId) return;
+    markSidebarTaskVisited(
+      chatId,
+      Math.max(Date.now(), lastRunFinishedAt ?? 0),
+    );
+  }, [chatId, lastRunFinishedAt, loadedChatDocumentId]);
+
   const paginatedMessageResults =
     paginatedMessages.results &&
     paginatedMessages.results.length > 0 &&
@@ -636,24 +676,32 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   const storedSandboxType = (chatDataForCurrentChat as any)?.sandbox_type as
     string | undefined;
 
-  // Prefer the mid-stream title — the server seeds chatData.title with the
-  // user's first message before generation completes, which would otherwise
-  // flicker into the header on abort.
-  const chatTitle = streamedTitle ?? chatDataForCurrentChat?.title ?? null;
   const activeTriggerRunId = (chatDataForCurrentChat as any)
     ?.active_trigger_run_id as string | undefined;
-  const storedAgentApprovalRequest = activeTriggerRunId
-    ? getStoredAgentApprovalRequest(chatDataForCurrentChat)
-    : null;
+  // The pending request is its own persisted lifecycle. Do not gate it on the
+  // run id: Convex can publish those fields in separate snapshots during
+  // reload, and hiding an otherwise-pending request briefly shows the composer.
+  const storedAgentApprovalRequest = getStoredAgentApprovalRequest(
+    chatDataForCurrentChat,
+  );
   const activeTriggerRunRef = useLatestRef(activeTriggerRunId);
   const hasLoadedCurrentChat = chatDataForCurrentChat !== undefined;
 
   useEffect(() => {
-    if (!hasLoadedCurrentChat || activeTriggerRunId) {
+    if (
+      !hasLoadedCurrentChat ||
+      activeTriggerRunId ||
+      storedAgentApprovalRequest
+    ) {
       return;
     }
     clearAgentApprovalSession();
-  }, [activeTriggerRunId, clearAgentApprovalSession, hasLoadedCurrentChat]);
+  }, [
+    activeTriggerRunId,
+    clearAgentApprovalSession,
+    hasLoadedCurrentChat,
+    storedAgentApprovalRequest,
+  ]);
 
   // Convert paginated Convex messages to UI format for useChat and useAutoResume
   // Messages come from server in descending order (newest first from pagination); reverse for chronological order
@@ -1356,6 +1404,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   }, [
     setChatReset,
     setMessages,
+    setStreamedTitle,
     setTodos,
     resetAutoContinueCount,
     stopActiveBrowserStream,
@@ -1809,8 +1858,26 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
       hasPaginatedMessageResults: !!paginatedMessageResults,
       awaitingServerChat,
     });
+  const canResolveApprovalPresentation =
+    !isInitialExistingChatLoad && chatDataForCurrentChat !== undefined;
+
+  useEffect(() => {
+    if (!isExistingChat || canResolveApprovalPresentation) {
+      markInitialPresentationResolved();
+    }
+  }, [
+    canResolveApprovalPresentation,
+    isExistingChat,
+    markInitialPresentationResolved,
+  ]);
+
+  const isApprovalPresentationLoading =
+    isExistingChat &&
+    !hasResolvedInitialPresentation &&
+    !canResolveApprovalPresentation;
   const showBottomChatInput =
     (hasMessages || isExistingChat || isMobile) && !isChatNotFound;
+  const [composerOverlayHeight, setComposerOverlayHeight] = useState(0);
   const agentRunSpendCapWarning =
     rateLimitWarning?.warningType === "agent-run-spend-cap"
       ? rateLimitWarning
@@ -1926,6 +1993,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
                     branchedFromChatId={branchedFromChatId}
                     branchedFromChatTitle={branchedFromChatTitle}
                     anchorMessageId={timelineAnchorMessageId}
+                    contentInsetEndAdjustment={composerOverlayHeight}
                   />
                 </div>
               ) : (
@@ -1973,8 +2041,10 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
 
               {/* Chat Input - Bottom placement (also for mobile new chats) */}
               {showBottomChatInput ? (
-                <div className="flex-shrink-0">
-                  {isInitialExistingChatLoad ? <ChatLoadingStatusPill /> : null}
+                <ComposerOverlay
+                  active={showChatLayout}
+                  onHeightChange={setComposerOverlayHeight}
+                >
                   <ChatInput
                     onSubmit={handleSubmit}
                     onStop={handleStop}
@@ -1986,16 +2056,14 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
                     onScrollToBottom={handleScrollToBottom}
                     isNewChat={!isExistingChat}
                     chatId={chatId}
-                    sendDisabledReason={
-                      isInitialExistingChatLoad ? "Messages loading" : undefined
-                    }
+                    isResolvingInitialState={isApprovalPresentationLoading}
                     rateLimitWarning={
                       rateLimitWarning ? rateLimitWarning : undefined
                     }
                     onDismissRateLimitWarning={handleDismissRateLimitWarning}
                     storedApprovalRequest={storedAgentApprovalRequest}
                   />
-                </div>
+                </ComposerOverlay>
               ) : null}
             </div>
           </div>

@@ -6,8 +6,10 @@ jest.mock("convex/react", () => ({
   useMutation: () => jest.fn(),
 }));
 
+const mockIsTauriEnvironment = jest.fn(() => true);
+
 jest.mock("@/app/hooks/useTauri", () => ({
-  isTauriEnvironment: () => true,
+  isTauriEnvironment: mockIsTauriEnvironment,
 }));
 
 jest.mock("@/app/services/desktop-sandbox-bridge", () => ({
@@ -36,7 +38,19 @@ type BridgeConfig = {
 describe("useSandboxPreference", () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockIsTauriEnvironment.mockReturnValue(true);
     window.localStorage.clear();
+  });
+
+  it("does not initialize the desktop bridge in a web browser", async () => {
+    mockIsTauriEnvironment.mockReturnValue(false);
+
+    const { result } = renderHook(() => useSandboxPreference(true));
+
+    await waitFor(() => {
+      expect(result.current.desktopBridgeStatus).toBe("idle");
+    });
+    expect(DesktopSandboxBridge).not.toHaveBeenCalled();
   });
 
   it("invalidates bridge startup and connected state when authentication is lost", async () => {
@@ -81,6 +95,7 @@ describe("useSandboxPreference", () => {
 
     await waitFor(() => {
       expect(result.current.desktopBridgeStatus).toBe("connecting");
+      expect(bridgeInstances).toHaveLength(1);
     });
 
     rerender({ isAuthenticated: false });

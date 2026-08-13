@@ -745,12 +745,13 @@ export class DesktopSandboxBridge {
   }
 
   private async handleFileWrite(message: FileWriteMessage): Promise<void> {
-    const { requestId, path, content, isBase64 } = message;
+    const { requestId, path, content, isBase64, allowedRoot } = message;
     try {
       await this.callLocalFileServer("/files/write", {
         path,
         content,
         is_base64: Boolean(isBase64),
+        allowed_root: allowedRoot,
       });
       await this.publishResult({ type: "file_ok", requestId });
     } catch (error) {
@@ -759,12 +760,13 @@ export class DesktopSandboxBridge {
   }
 
   private async handleFileAppend(message: FileAppendMessage): Promise<void> {
-    const { requestId, path, content, isBase64 } = message;
+    const { requestId, path, content, isBase64, allowedRoot } = message;
     try {
       await this.callLocalFileServer("/files/append", {
         path,
         content,
         is_base64: Boolean(isBase64),
+        allowed_root: allowedRoot,
       });
       await this.publishResult({ type: "file_ok", requestId });
     } catch (error) {

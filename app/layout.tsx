@@ -7,6 +7,7 @@ import "./globals.css";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { Toaster } from "@/components/ui/sonner";
 import { GlobalStateProvider } from "./contexts/GlobalState";
+import { AgentAutoReviewAvailabilityProvider } from "./contexts/AgentAutoReviewAvailabilityContext";
 import { ConvexClientProvider } from "@/components/ConvexClientProvider";
 import { TodoBlockProvider } from "./contexts/TodoBlockContext";
 import { AgentApprovalProvider } from "./contexts/AgentApprovalContext";
@@ -118,19 +119,21 @@ export default async function RootLayout({
 
   const content = (
     <GlobalStateProvider>
-      <PostHogProvider>
-        <ChunkLoadRecovery />
-        <DataStreamProvider>
-          <TodoBlockProvider>
-            <AgentApprovalProvider>
-              <TooltipProvider>
-                {children}
-                <Toaster />
-              </TooltipProvider>
-            </AgentApprovalProvider>
-          </TodoBlockProvider>
-        </DataStreamProvider>
-      </PostHogProvider>
+      <AgentAutoReviewAvailabilityProvider>
+        <PostHogProvider>
+          <ChunkLoadRecovery />
+          <DataStreamProvider>
+            <TodoBlockProvider>
+              <AgentApprovalProvider>
+                <TooltipProvider>
+                  {children}
+                  <Toaster />
+                </TooltipProvider>
+              </AgentApprovalProvider>
+            </TodoBlockProvider>
+          </DataStreamProvider>
+        </PostHogProvider>
+      </AgentAutoReviewAvailabilityProvider>
     </GlobalStateProvider>
   );
 

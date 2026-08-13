@@ -52,7 +52,7 @@ export function selectModel(
   hasPdfAttachment?: boolean,
   options: {
     extraUsageAvailable?: boolean;
-    includedMaxAccess?: boolean;
+    proModelKey?: "model-grok-4.5-pro" | "model-grok-4.6-pro";
   } = {},
 ): ModelName {
   const isAgent = isAgentMode(mode);
@@ -107,7 +107,7 @@ export function selectModel(
   }
 
   if (allowedSelectedModel === "hackerai-pro") {
-    return "model-grok-4.5-pro";
+    return options.proModelKey ?? "model-grok-4.5-pro";
   }
 
   const providerKey = resolveTierToProviderKey(allowedSelectedModel, mode);
@@ -616,7 +616,11 @@ function stripProviderMetadata(messages: UIMessage[]): UIMessage[] {
 }
 
 // UI-only part types that should not be sent to AI providers
-const UI_ONLY_PART_TYPES = new Set(["data-summarization"]);
+const UI_ONLY_PART_TYPES = new Set([
+  "data-agent-auto-review",
+  "data-agent-auto-review-lifecycle",
+  "data-summarization",
+]);
 
 /**
  * Filters out UI-only parts from a message that AI providers don't understand.
@@ -645,7 +649,7 @@ export async function processChatMessages({
   uploadBasePath,
   modelOverride,
   extraUsageAvailable = false,
-  includedMaxAccess = false,
+  proModelKey,
   allowLocalDesktopFiles = false,
 }: {
   messages: UIMessage[];
@@ -655,7 +659,7 @@ export async function processChatMessages({
   uploadBasePath?: string;
   modelOverride?: SelectedModel;
   extraUsageAvailable?: boolean;
-  includedMaxAccess?: boolean;
+  proModelKey?: "model-grok-4.5-pro" | "model-grok-4.6-pro";
   allowLocalDesktopFiles?: boolean;
 }) {
   const messagesWithoutOpenRouterReasoningMetadata =
@@ -733,7 +737,7 @@ export async function processChatMessages({
     modelOverride,
     mediaAttachmentRouting.hasImage,
     mediaAttachmentRouting.hasPdf,
-    { extraUsageAvailable, includedMaxAccess },
+    { extraUsageAvailable, proModelKey },
   );
 
   // Strip providerMetadata for Anthropic models to prevent cross-model signature errors.
