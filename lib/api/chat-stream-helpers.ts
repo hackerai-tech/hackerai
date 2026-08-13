@@ -541,6 +541,13 @@ const AGENT_TEXT_FALLBACK_CHAIN = [
   "model-kimi-k3",
 ] as const satisfies readonly ModelName[];
 
+// HAC-68 treatment falls back through today's DeepSeek route before the
+// existing Grok/Kimi recovery chain.
+const DEEPSEEK_V4_PRO_0813_FALLBACK_CHAIN = [
+  "model-deepseek-v4-pro",
+  ...AGENT_TEXT_FALLBACK_CHAIN,
+] as const satisfies readonly ModelName[];
+
 // HackerAI Pro uses Grok 4.6 for every request. GLM 5.2 remains its first
 // fallback, followed by Kimi K3 so media requests still have a multimodal final
 // recovery path if both primary providers are unavailable.
@@ -553,6 +560,7 @@ const MODEL_FALLBACK_CHAIN: Partial<Record<ModelName, readonly ModelName[]>> = {
   "ask-model-free": AGENT_TEXT_FALLBACK_CHAIN,
   "agent-model-free": AGENT_TEXT_FALLBACK_CHAIN,
   "model-deepseek-v4-pro": AGENT_TEXT_FALLBACK_CHAIN,
+  "model-deepseek-v4-pro-0813": DEEPSEEK_V4_PRO_0813_FALLBACK_CHAIN,
   "ask-model": GROK_4_6_FALLBACK_CHAIN,
   "agent-model": GROK_4_6_FALLBACK_CHAIN,
   "model-grok-4.6": GROK_4_6_FALLBACK_CHAIN,
@@ -642,6 +650,9 @@ export function getRetryFallbackModel(
   modelName: ModelName,
   _mode: ChatMode,
 ): ModelName {
+  if (modelName === "model-deepseek-v4-pro-0813") {
+    return "model-deepseek-v4-pro";
+  }
   if (
     modelName === "model-grok-4.6-pro" ||
     modelName === "model-grok-4.5-pro"

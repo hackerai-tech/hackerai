@@ -147,6 +147,12 @@ import { PAID_FUNNEL_EVENTS } from "@/lib/analytics/paid-funnel";
 import { readAnalyticsRequestContext } from "@/lib/analytics/request-context";
 import { buildAgentStepLimitTelemetry } from "@/lib/analytics/agent-step-limit-telemetry";
 import {
+  captureDeepSeekV4Pro0813ExperimentExposure,
+  evaluateDeepSeekV4Pro0813Experiment,
+  getActiveDeepSeekV4Pro0813ExperimentAssignment,
+  getDeepSeekV4Pro0813ExperimentContext,
+} from "@/lib/experiments/deepseek-v4-pro-0813";
+import {
   capturePaidDailyFreeAllowanceServerEvent,
   createPaidDailyFreeAllowanceBudgetSnapshot,
   createPaidDailyFreeAllowanceRateLimitInfo,
@@ -424,6 +430,17 @@ export const createChatHandler = () => {
         );
       }
 
+      const deepSeekV4Pro0813Experiment =
+        await evaluateDeepSeekV4Pro0813Experiment({
+          posthog: (posthog ??= PostHogClient()),
+          userId,
+          selectedModel,
+          requestId: req.headers.get("x-vercel-id") ?? undefined,
+        });
+      if (deepSeekV4Pro0813Experiment) {
+        selectedModel = deepSeekV4Pro0813Experiment.modelKey;
+      }
+
       const notesEnabled =
         (subscription !== "free" || isAgentMode(mode)) &&
         (userCustomization?.include_notes ?? true);
@@ -558,6 +575,15 @@ export const createChatHandler = () => {
           },
         });
       }
+
+      const activeDeepSeekV4Pro0813Experiment =
+        getActiveDeepSeekV4Pro0813ExperimentAssignment(
+          deepSeekV4Pro0813Experiment,
+          selectedModel,
+        );
+      const routingExperimentContext = getDeepSeekV4Pro0813ExperimentContext(
+        activeDeepSeekV4Pro0813Experiment,
+      );
 
       const freeMonthlyBudgetSnapshot =
         subscription === "free"
@@ -1110,6 +1136,7 @@ export const createChatHandler = () => {
                   usage: usageCostRecord,
                   responseModel: state.responseModel,
                   analyticsRequestContext,
+                  experiment: routingExperimentContext,
                   fallbackServed:
                     state.responseModel && retryUsedFallbackModel
                       ? true
@@ -1315,6 +1342,16 @@ export const createChatHandler = () => {
 
             let result;
             try {
+              captureDeepSeekV4Pro0813ExperimentExposure({
+                posthog,
+                userId,
+                subscription,
+                mode,
+                selectedModelOverride,
+                selectedModel,
+                configuredModel: configuredModelId,
+                assignment: activeDeepSeekV4Pro0813Experiment,
+              });
               result = await createStream(selectedModel);
             } catch (error) {
               // If provider returns an API error before streaming, retry with fallback.
@@ -1678,6 +1715,7 @@ export const createChatHandler = () => {
                                   finishReason: state.streamFinishReason,
                                   budgetAbortDetails: state.budgetAbortDetails,
                                   isAutoContinue: !!isAutoContinue,
+                                  experiment: routingExperimentContext,
                                   stepLimitTelemetry:
                                     buildAgentStepLimitTelemetry({
                                       configuredMaxSteps:
@@ -1993,6 +2031,7 @@ export const createChatHandler = () => {
                       finishReason: state.streamFinishReason,
                       budgetAbortDetails: state.budgetAbortDetails,
                       isAutoContinue: !!isAutoContinue,
+                      experiment: routingExperimentContext,
                       stepLimitTelemetry: buildAgentStepLimitTelemetry({
                         configuredMaxSteps: state.configuredMaxSteps,
                         stepCount: state.agentStepCount,

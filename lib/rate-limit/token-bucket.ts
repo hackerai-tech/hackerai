@@ -107,6 +107,7 @@ const MODEL_PRICING_MAP: Record<string, ModelPricing> = {
   "ask-model-free": DEEPSEEK_V4_FLASH_0731_PRICING,
   "agent-model-free": DEEPSEEK_V4_FLASH_0731_PRICING,
   "model-deepseek-v4-pro": DEEPSEEK_V4_PRO_PRICING,
+  "model-deepseek-v4-pro-0813": DEEPSEEK_V4_PRO_PRICING,
   // Persisted Max compatibility key; the active provider route is Kimi K3.
   "model-opus-4.6": KIMI_K3_PRICING,
   // Baseline OpenRouter rates: $0.76 in / $2.42 out per 1M tokens.
@@ -122,6 +123,7 @@ const MODEL_PRICING_MAP: Record<string, ModelPricing> = {
   "deepseek/deepseek-v4-flash-0731": DEEPSEEK_V4_FLASH_0731_PRICING,
   "deepseek/deepseek-v4-flash-20260731": DEEPSEEK_V4_FLASH_0731_PRICING,
   "deepseek/deepseek-v4-pro": DEEPSEEK_V4_PRO_PRICING,
+  "deepseek/deepseek-v4-pro-0813": DEEPSEEK_V4_PRO_PRICING,
   "anthropic/claude-opus-4.6": OPUS_4_6_PRICING,
   "z-ai/glm-5.2": GLM_5_2_PRICING,
   "z-ai/glm-5.2-20260616": GLM_5_2_PRICING,

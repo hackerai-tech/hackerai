@@ -182,6 +182,8 @@ type OpenRouterInstance = typeof openrouter;
 export const KIMI_K3_SLUG = "moonshotai/kimi-k3";
 export const GLM_5_2_SLUG = "z-ai/glm-5.2";
 export const GROK_4_6_SLUG = "x-ai/grok-4.6";
+export const DEEPSEEK_V4_PRO_SLUG = "deepseek/deepseek-v4-pro";
+export const DEEPSEEK_V4_PRO_0813_SLUG = "deepseek/deepseek-v4-pro-0813";
 export const DEEPSEEK_V4_FLASH_SLUG = "deepseek/deepseek-v4-flash-0731";
 export const DEEPSEEK_V4_FLASH_PREVIOUS_SLUG = "deepseek/deepseek-v4-flash";
 const TITLE_GENERATOR_DEEPSEEK_SLUG = "deepseek/deepseek-v4-flash";
@@ -209,7 +211,10 @@ const buildProviderMap = (
     "model-grok-4.5": or(GROK_4_6_SLUG),
     "model-grok-4.5-pro": or(GROK_4_6_SLUG),
     "model-grok-4.6-pro": or(GROK_4_6_SLUG),
-    "model-deepseek-v4-pro": or("deepseek/deepseek-v4-pro"),
+    "model-deepseek-v4-pro": or(DEEPSEEK_V4_PRO_SLUG),
+    // HAC-68 treatment alias. Auto and Standard keep their persisted tier
+    // while the server-side experiment chooses the provider route per user.
+    "model-deepseek-v4-pro-0813": or(DEEPSEEK_V4_PRO_0813_SLUG),
     // Keep the persisted Max compatibility key while routing new requests to
     // Kimi K3. Renaming the key would invalidate existing stored selections.
     "model-opus-4.6": or(KIMI_K3_SLUG),
@@ -236,6 +241,7 @@ export const modelCutoffDates: Partial<Record<ModelName, string>> &
   "model-grok-4.5-pro": "August 2026",
   "model-grok-4.6-pro": "August 2026",
   "model-deepseek-v4-pro": "May 2025",
+  "model-deepseek-v4-pro-0813": "August 2026",
   "model-opus-4.6": "July 2026",
   "model-glm-5.2": "June 2026",
   "fallback-agent-model": "August 2026",
@@ -255,6 +261,7 @@ export const modelDisplayNames: Record<ModelName, string> &
   "model-grok-4.5-pro": "xAI Grok 4.6",
   "model-grok-4.6-pro": "xAI Grok 4.6",
   "model-deepseek-v4-pro": "DeepSeek V4 Pro",
+  "model-deepseek-v4-pro-0813": "DeepSeek V4 Pro 0813",
   "model-opus-4.6": "Moonshot Kimi K3",
   "model-glm-5.2": "Z.ai GLM 5.2",
   "model-kimi-k3": "Moonshot Kimi K3",
@@ -283,7 +290,8 @@ export function isDeepSeekModel(modelName: string): boolean {
   return (
     modelName === "ask-model-free" ||
     modelName === "agent-model-free" ||
-    modelName === "model-deepseek-v4-pro"
+    modelName === "model-deepseek-v4-pro" ||
+    modelName === "model-deepseek-v4-pro-0813"
   );
 }
 

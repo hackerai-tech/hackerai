@@ -2,6 +2,7 @@ import {
   getModelCutoffDate,
   getModelDisplayName,
   isAnthropicModel,
+  isDeepSeekModel,
   isKimiModel,
   createTrackedProvider,
   myProvider,
@@ -42,6 +43,13 @@ describe("provider registry", () => {
         .modelId,
     ).toBe("x-ai/grok-4.6");
     expect(
+      (
+        myProvider.languageModel("model-deepseek-v4-pro-0813") as {
+          modelId: string;
+        }
+      ).modelId,
+    ).toBe("deepseek/deepseek-v4-pro-0813");
+    expect(
       (myProvider.languageModel("model-glm-5.2") as { modelId: string })
         .modelId,
     ).toBe("z-ai/glm-5.2");
@@ -72,6 +80,12 @@ describe("provider registry", () => {
     expect(getModelDisplayName("model-grok-4.5-pro")).toBe("xAI Grok 4.6");
     expect(getModelDisplayName("model-grok-4.6-pro")).toBe("xAI Grok 4.6");
     expect(getModelCutoffDate("model-grok-4.6-pro")).toBe("August 2026");
+    expect(getModelDisplayName("model-deepseek-v4-pro-0813")).toBe(
+      "DeepSeek V4 Pro 0813",
+    );
+    expect(getModelCutoffDate("model-deepseek-v4-pro-0813")).toBe(
+      "August 2026",
+    );
     expect(getModelDisplayName("model-glm-5.2")).toBe("Z.ai GLM 5.2");
     expect(getModelDisplayName("model-kimi-k3")).toBe("Moonshot Kimi K3");
     expect(getModelCutoffDate("model-opus-4.6")).toBe("July 2026");
@@ -85,6 +99,11 @@ describe("provider registry", () => {
     expect(isKimiModel("model-opus-4.6")).toBe(true);
     expect(isAnthropicModel("model-opus-4.6")).toBe(false);
     expect(isAnthropicModel("anthropic/claude-opus-4.6")).toBe(true);
+  });
+
+  it("classifies both DeepSeek V4 Pro experiment routes as DeepSeek", () => {
+    expect(isDeepSeekModel("model-deepseek-v4-pro")).toBe(true);
+    expect(isDeepSeekModel("model-deepseek-v4-pro-0813")).toBe(true);
   });
 
   it("keeps tracked free routes split by mode", () => {
@@ -273,6 +292,9 @@ describe("supportsMultimodalToolResults", () => {
   it("rejects text-only DeepSeek model keys", () => {
     expect(supportsMultimodalToolResults("agent-model-free")).toBe(false);
     expect(supportsMultimodalToolResults("model-deepseek-v4-pro")).toBe(false);
+    expect(supportsMultimodalToolResults("model-deepseek-v4-pro-0813")).toBe(
+      false,
+    );
   });
 
   it.each([
