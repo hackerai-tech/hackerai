@@ -1,0 +1,102 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: HackerAI Lambda MicroVM image build and runtime prerequisites
+
+Resources:
+  ArtifactBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  MicrovmBuildRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+              - sts:TagSession
+      Policies:
+        - PolicyName: ReadArtifactsAndWriteBuildLogs
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: s3:GetObject
+                Resource: !Sub "${ArtifactBucket.Arn}/*"
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: "*"
+
+  MicrovmRuntimePolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      Description: Run and manage HackerAI Lambda MicroVM sessions
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - lambda:RunMicrovm
+              - lambda:GetMicrovm
+              - lambda:ListMicrovms
+              - lambda:ResumeMicrovm
+              - lambda:SuspendMicrovm
+              - lambda:TerminateMicrovm
+            Resource: "*"
+
+  MicrovmDeployerPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      Description: Build and publish HackerAI Lambda MicroVM images
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - s3:PutObject
+              - s3:GetObject
+            Resource: !Sub "${ArtifactBucket.Arn}/*"
+          - Effect: Allow
+            Action:
+              - lambda:CreateMicrovmImage
+              - lambda:UpdateMicrovmImage
+              - lambda:GetMicrovmImage
+              - lambda:GetMicrovmImageVersion
+              - lambda:ListMicrovmImages
+              - lambda:ListMicrovmImageVersions
+              - lambda:ListMicrovmImageBuilds
+              - lambda:ListManagedMicrovmImages
+              - lambda:ListManagedMicrovmImageVersions
+              - lambda:TagResource
+              - lambda:UntagResource
+            Resource: "*"
+          - Effect: Allow
+            Action: iam:PassRole
+            Resource: !GetAtt MicrovmBuildRole.Arn
+
+Outputs:
+  ArtifactBucketName:
+    Value: !Ref ArtifactBucket
+  BuildRoleArn:
+    Value: !GetAtt MicrovmBuildRole.Arn
+  RuntimePolicyArn:
+    Value: !Ref MicrovmRuntimePolicy
+  DeployerPolicyArn:
+    Value: !Ref MicrovmDeployerPolicy

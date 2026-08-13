@@ -1,7 +1,8 @@
-import { Sandbox } from "@e2b/code-interpreter";
 import { Centrifuge, type Subscription } from "centrifuge";
 import type {
+  AnySandbox,
   SandboxBootInfo,
+  SandboxInfo,
   SandboxManager,
   SandboxType,
   SubscriptionTier,
@@ -11,11 +12,13 @@ import {
   serializePromptText,
   type CentrifugoConfig,
 } from "./centrifugo-sandbox";
-import { isCentrifugoSandbox, type ConnectionInfo } from "./sandbox-types";
 import {
-  ensureSandboxConnection,
-  refreshE2BSandboxLeaseBestEffort,
-} from "./sandbox";
+  isAwsLambdaMicrovmSandbox,
+  isCentrifugoSandbox,
+  isE2BSandbox,
+  type ConnectionInfo,
+} from "./sandbox-types";
+import { refreshE2BSandboxLeaseBestEffort } from "./sandbox";
 import { getConvexClient } from "@/lib/db/convex-client";
 import { api } from "@/convex/_generated/api";
 import { SANDBOX_ENVIRONMENT_TOOLS } from "./sandbox-tools";
@@ -24,8 +27,10 @@ import { generateCentrifugoToken } from "@/lib/centrifugo/jwt";
 import { sandboxConnectionChannel } from "@/lib/centrifugo/types";
 import { presenceHasConnectionId } from "@/lib/centrifugo/presence";
 import { isExpectedAlreadyGoneCleanupError } from "@/lib/utils/cleanup-errors";
+import { ensureCloudSandboxConnection } from "./cloud-sandbox";
+import { getCloudSandboxProvider } from "./cloud-sandbox-provider";
 
-type SandboxInstance = Sandbox | CentrifugoSandbox;
+type SandboxInstance = AnySandbox;
 
 // "e2b" for cloud sandbox, "desktop" for Tauri desktop app, or a connectionId UUID for a specific local connection.
 // Uses `string & {}` to preserve autocomplete for well-known values while allowing arbitrary strings.
@@ -242,7 +247,7 @@ export class HybridSandboxManager implements SandboxManager {
     private setSandboxCallback: (sandbox: SandboxInstance) => void,
     private sandboxPreference: SandboxPreference = "e2b",
     private serviceKey: string,
-    initialSandbox?: Sandbox | null,
+    initialSandbox?: AnySandbox | null,
     private subscription?: SubscriptionTier,
     private onBoot?: (info: SandboxBootInfo) => void,
     private workingDirectory?: string,
@@ -440,9 +445,9 @@ export class HybridSandboxManager implements SandboxManager {
     this.pendingFallbackInfo = info;
   }
 
-  getSandboxInfo(): { type: SandboxType; name?: string } | null {
+  getSandboxInfo(): SandboxInfo | null {
     if (!this.isLocal) {
-      return { type: "e2b" };
+      return { type: "e2b", provider: getCloudSandboxProvider() };
     }
     const type: SandboxType =
       this.sandboxPreference === "desktop" ? "desktop" : "remote-connection";
@@ -576,7 +581,7 @@ export class HybridSandboxManager implements SandboxManager {
       if (this.subscription === "free") {
         throw new Error("Cloud sandbox requires a paid plan.");
       }
-      return this.getE2BSandbox();
+      return this.getCloudSandbox();
     }
 
     // Check if the preferred connection is available
@@ -634,7 +639,7 @@ export class HybridSandboxManager implements SandboxManager {
       actualSandboxName: "Cloud",
     });
 
-    return this.getE2BSandbox();
+    return this.getCloudSandbox();
   }
 
   private async getPreferredOrFallbackConnection(): Promise<ConnectionInfo | null> {
@@ -677,28 +682,26 @@ export class HybridSandboxManager implements SandboxManager {
     this.setSandboxCallback(this.sandbox);
   }
 
-  private async getE2BSandbox(): Promise<{ sandbox: Sandbox }> {
-    if (!this.isLocal && this.sandbox && this.sandbox instanceof Sandbox) {
-      await refreshE2BSandboxLeaseBestEffort(this.sandbox, {
-        source: "hybrid_manager_cache",
-      });
+  private async getCloudSandbox(): Promise<{ sandbox: AnySandbox }> {
+    if (!this.isLocal && this.sandbox) {
+      if (isE2BSandbox(this.sandbox)) {
+        await refreshE2BSandboxLeaseBestEffort(this.sandbox, {
+          source: "hybrid_manager_cache",
+        });
+      }
       return { sandbox: this.sandbox };
     }
 
     await this.closeCurrentSandbox();
-    const result = await ensureSandboxConnection(
-      {
-        userID: this.userID,
-        setSandbox: (sandbox) => {
-          this.sandbox = sandbox;
-          this.setSandboxCallback(sandbox);
-        },
-        onBoot: this.onBoot,
+    const result = await ensureCloudSandboxConnection({
+      userId: this.userID,
+      setSandbox: (sandbox) => {
+        this.sandbox = sandbox;
+        this.setSandboxCallback(sandbox);
       },
-      {
-        initialSandbox: this.isLocal ? null : (this.sandbox as Sandbox | null),
-      },
-    );
+      onBoot: this.onBoot,
+      initialSandbox: this.isLocal ? null : this.sandbox,
+    });
 
     this.sandbox = result.sandbox;
     this.isLocal = false;
@@ -711,8 +714,9 @@ export class HybridSandboxManager implements SandboxManager {
 
   setSandbox(sandbox: SandboxInstance): void {
     this.sandbox = sandbox;
-    this.isLocal = isCentrifugoSandbox(sandbox);
-    if (isCentrifugoSandbox(sandbox)) {
+    this.isLocal =
+      isCentrifugoSandbox(sandbox) && !isAwsLambdaMicrovmSandbox(sandbox);
+    if (this.isLocal && isCentrifugoSandbox(sandbox)) {
       this.currentConnectionId = sandbox.getConnectionId();
       this.currentConnectionName = sandbox.getConnectionName();
     } else {

@@ -1,15 +1,15 @@
-import type { Sandbox } from "@e2b/code-interpreter";
 import type {
+  AnySandbox,
   SandboxBootInfo,
   SandboxInfo,
   SandboxManager,
   SandboxType,
 } from "@/types";
-import {
-  ensureSandboxConnection,
-  refreshE2BSandboxLeaseBestEffort,
-} from "./sandbox";
+import { refreshE2BSandboxLeaseBestEffort } from "./sandbox";
 import { SANDBOX_ENVIRONMENT_TOOLS } from "./sandbox-tools";
+import { ensureCloudSandboxConnection } from "./cloud-sandbox";
+import { getCloudSandboxProvider } from "./cloud-sandbox-provider";
+import { isE2BSandbox } from "./sandbox-types";
 
 // One failed initial readiness check plus one failed reconnect is enough to
 // stop terminal retries in this Agent run. The manager only forgets its local
@@ -17,14 +17,14 @@ import { SANDBOX_ENVIRONMENT_TOOLS } from "./sandbox-tools";
 const MAX_SANDBOX_HEALTH_FAILURES = 2;
 
 export class DefaultSandboxManager implements SandboxManager {
-  private sandbox: Sandbox | null = null;
+  private sandbox: AnySandbox | null = null;
   private healthFailureCount = 0;
   private sandboxUnavailable = false;
 
   constructor(
     private userID: string,
-    private setSandboxCallback: (sandbox: Sandbox) => void,
-    initialSandbox?: Sandbox | null,
+    private setSandboxCallback: (sandbox: AnySandbox) => void,
+    initialSandbox?: AnySandbox | null,
     private onBoot?: (info: SandboxBootInfo) => void,
   ) {
     this.sandbox = initialSandbox || null;
@@ -48,7 +48,7 @@ export class DefaultSandboxManager implements SandboxManager {
   }
 
   getSandboxInfo(): SandboxInfo | null {
-    return { type: "e2b" };
+    return { type: "e2b", provider: getCloudSandboxProvider() };
   }
 
   getEffectivePreference(): string {
@@ -63,25 +63,23 @@ export class DefaultSandboxManager implements SandboxManager {
   }
 
   async getSandbox(): Promise<{
-    sandbox: Sandbox;
+    sandbox: AnySandbox;
   }> {
     if (this.sandbox) {
-      await refreshE2BSandboxLeaseBestEffort(this.sandbox, {
-        source: "default_manager_cache",
-      });
+      if (isE2BSandbox(this.sandbox)) {
+        await refreshE2BSandboxLeaseBestEffort(this.sandbox, {
+          source: "default_manager_cache",
+        });
+      }
       return { sandbox: this.sandbox };
     }
 
-    const result = await ensureSandboxConnection(
-      {
-        userID: this.userID,
-        setSandbox: this.setSandboxCallback,
-        onBoot: this.onBoot,
-      },
-      {
-        initialSandbox: this.sandbox,
-      },
-    );
+    const result = await ensureCloudSandboxConnection({
+      userId: this.userID,
+      setSandbox: this.setSandboxCallback,
+      onBoot: this.onBoot,
+      initialSandbox: this.sandbox,
+    });
     this.sandbox = result.sandbox;
 
     if (!this.sandbox) {
@@ -91,7 +89,7 @@ export class DefaultSandboxManager implements SandboxManager {
     return { sandbox: this.sandbox };
   }
 
-  setSandbox(sandbox: Sandbox): void {
+  setSandbox(sandbox: AnySandbox): void {
     this.sandbox = sandbox;
     this.setSandboxCallback(sandbox);
   }
@@ -100,6 +98,10 @@ export class DefaultSandboxManager implements SandboxManager {
     // This manager holds only a local SDK connection. The E2B sandbox itself
     // is shared per user and may contain commands from another Agent run, so
     // recovery must reconnect instead of globally killing it.
+    const sandbox = this.sandbox;
     this.sandbox = null;
+    if (sandbox && !isE2BSandbox(sandbox)) {
+      await sandbox.close().catch(() => undefined);
+    }
   }
 }

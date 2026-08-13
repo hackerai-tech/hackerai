@@ -550,6 +550,36 @@ Commands run directly on the host OS "workstation" without Docker isolation. Be 
     );
   });
 
+  it("uses the AWS MicroVM network guidance when that cloud provider is selected", async () => {
+    const originalProvider = process.env.CLOUD_SANDBOX_PROVIDER;
+    process.env.CLOUD_SANDBOX_PROVIDER = "aws-lambda-microvm";
+    try {
+      const prompt = await systemPrompt(
+        "user_123",
+        "agent",
+        "pro",
+        "agent-model",
+        null,
+        null,
+      );
+
+      expect(prompt).toContain("isolated AWS Lambda MicroVM");
+      expect(prompt).toContain("linux/arm64");
+      expect(prompt).toContain(
+        "can still depend on the configured AWS network connector",
+      );
+      expect(prompt).not.toContain(
+        "Cloud Agent networking can produce false-positive TCP port results",
+      );
+    } finally {
+      if (originalProvider === undefined) {
+        delete process.env.CLOUD_SANDBOX_PROVIDER;
+      } else {
+        process.env.CLOUD_SANDBOX_PROVIDER = originalProvider;
+      }
+    }
+  });
+
   it("does not describe a command sandbox in ask mode", async () => {
     const prompt = await systemPrompt(
       "user_123",

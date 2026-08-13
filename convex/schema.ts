@@ -751,7 +751,11 @@ export default defineSchema({
     connection_name: v.string(),
     container_id: v.optional(v.string()),
     client_version: v.string(),
-    mode: v.union(v.literal("docker"), v.literal("dangerous")),
+    mode: v.union(
+      v.literal("docker"),
+      v.literal("dangerous"),
+      v.literal("cloud"),
+    ),
     os_info: v.optional(
       v.object({
         platform: v.string(),
@@ -789,6 +793,37 @@ export default defineSchema({
     .index("by_connection_id", ["connection_id"])
     .index("by_user_and_status", ["user_id", "status"])
     .index("by_status_and_created_at", ["status", "created_at"]),
+
+  // Server-created, user-scoped AWS Lambda MicroVM sessions. The bootstrap
+  // credential is stored only as a SHA-256 digest and is valid solely for
+  // connecting the matching guest runner to its Centrifugo channel.
+  cloud_sandbox_sessions: defineTable({
+    user_id: v.string(),
+    session_id: v.string(),
+    provider: v.literal("aws-lambda-microvm"),
+    status: v.union(
+      v.literal("starting"),
+      v.literal("running"),
+      v.literal("failed"),
+      v.literal("terminated"),
+    ),
+    bootstrap_token_hash: v.string(),
+    bootstrap_expires_at: v.number(),
+    microvm_id: v.optional(v.string()),
+    connection_id: v.optional(v.string()),
+    region: v.string(),
+    image_identifier: v.string(),
+    image_version: v.optional(v.string()),
+    created_at: v.number(),
+    updated_at: v.number(),
+    last_connected_at: v.optional(v.number()),
+    ended_at: v.optional(v.number()),
+    failure_code: v.optional(v.string()),
+  })
+    .index("by_user_id", ["user_id"])
+    .index("by_user_and_status", ["user_id", "status"])
+    .index("by_session_id", ["session_id"])
+    .index("by_status_and_updated_at", ["status", "updated_at"]),
 
   // Per-request usage logs for the usage dashboard
   usage_logs: defineTable({

@@ -1325,6 +1325,9 @@ export function captureAgentRun({
       ...(sandboxInfo?.type && {
         sandbox_type: sandboxInfo.type,
       }),
+      ...(sandboxInfo?.provider && {
+        sandbox_provider: sandboxInfo.provider,
+      }),
       ...(finishReason && { finish_reason: finishReason }),
       ...(stepLimitTelemetry && {
         step_limit_telemetry_version: stepLimitTelemetry.version,

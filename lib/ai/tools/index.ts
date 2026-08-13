@@ -40,10 +40,12 @@ import { FileAccumulator } from "./utils/file-accumulator";
 import { BackgroundProcessTracker } from "./utils/background-process-tracker";
 import { ptySessionManager } from "./utils/pty-session-manager";
 import { createPtyParserLogBudget } from "./utils/pty-output-formatter";
-import { isE2BSandbox } from "./utils/sandbox-types";
+import { isAwsLambdaMicrovmSandbox, isE2BSandbox } from "./utils/sandbox-types";
 import { getSandboxWithFallbackGuard } from "./utils/sandbox-fallback";
 import { createE2BResourcePressureObserver } from "@/lib/analytics/sandbox-resource-pressure";
 import { E2B_COST_PER_MS } from "./utils/e2b-cost";
+import { AWS_LAMBDA_MICROVM_COST_PER_MS } from "./utils/aws-lambda-microvm-cost";
+import { phLogger } from "@/lib/posthog/server";
 
 export { isE2BSandbox };
 
@@ -72,20 +74,51 @@ export const createTools = (
 ) => {
   let sandbox: AnySandbox | null = null;
   let sandboxFirstUsedAt: number | null = null;
+  let sandboxCostPerMs = 0;
+  let providerExposureRecorded = false;
   let currentModelName = modelName;
 
   const trackSandboxUsage = (newSandbox: AnySandbox) => {
     sandbox = newSandbox;
-    if (!sandboxFirstUsedAt && isE2BSandbox(newSandbox)) {
+    const provider = isAwsLambdaMicrovmSandbox(newSandbox)
+      ? "aws-lambda-microvm"
+      : isE2BSandbox(newSandbox)
+        ? "e2b"
+        : null;
+    if (!sandboxFirstUsedAt && provider) {
       sandboxFirstUsedAt = Date.now();
+      sandboxCostPerMs =
+        provider === "aws-lambda-microvm"
+          ? AWS_LAMBDA_MICROVM_COST_PER_MS
+          : E2B_COST_PER_MS;
+    }
+    if (provider && !providerExposureRecorded) {
+      providerExposureRecorded = true;
+      phLogger.event("cloud_sandbox_provider_selected", {
+        userId: userID,
+        chat_id: chatId,
+        trigger_run_id: triggerRunId,
+        provider,
+        region:
+          provider === "aws-lambda-microvm"
+            ? (process.env.AWS_LAMBDA_MICROVM_REGION ??
+              process.env.AWS_REGION ??
+              "us-east-1")
+            : undefined,
+        image_version:
+          provider === "aws-lambda-microvm"
+            ? (process.env.AWS_LAMBDA_MICROVM_IMAGE_VERSION ?? "latest")
+            : (process.env.E2B_TEMPLATE ?? "terminal-agent-sandbox"),
+        cloud_sandbox_provider_event_version: 1,
+      });
     }
   };
 
-  // E2B protection: free agent users must never use DefaultSandboxManager (always E2B)
+  // Cloud protection: free agent users must use a user-owned execution host.
   if (subscription === "free" && isAgentMode(mode)) {
     if (!sandboxPreference || sandboxPreference === "e2b") {
       throw new Error(
-        "Free agent mode requires a local sandbox. E2B is not available on the free plan.",
+        "Free agent mode requires a local sandbox. Cloud sandboxes are not available on the free plan.",
       );
     }
   }
@@ -228,7 +261,7 @@ export const createTools = (
 
   const getSandboxSessionCost = (): number => {
     if (!sandboxFirstUsedAt) return 0;
-    return (Date.now() - sandboxFirstUsedAt) * E2B_COST_PER_MS;
+    return (Date.now() - sandboxFirstUsedAt) * sandboxCostPerMs;
   };
 
   return {

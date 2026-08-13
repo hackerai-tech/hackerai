@@ -86,6 +86,9 @@ importers:
       '@ai-sdk/react':
         specifier: 3.0.210
         version: 3.0.210(react@19.2.8)(zod@4.4.3)
+      '@aws-sdk/client-lambda-microvms':
+        specifier: 3.1107.0
+        version: 3.1107.0
       '@aws-sdk/client-s3':
         specifier: 3.1107.0
         version: 3.1107.0
@@ -561,6 +564,10 @@ packages:
 
   '@aws-sdk/checksums@3.1000.26':
     resolution: {integrity: sha512-CGznePoL+1oWCSzqmkvlYMpWQEZohPR3LntjKXXfVH+oh6Kd8d+yHLkjpiAGwPIHAxFe4OAq3aKfRnv/wqWIyA==}
+    engines: {node: '>=20.0.0'}
+
+  '@aws-sdk/client-lambda-microvms@3.1107.0':
+    resolution: {integrity: sha512-shjiDIVSIhPS+RUvRUg38f6mb1mBz+bHYCQT8QgRJi+czU2hhM4GJRByHcNz2YypMXRX6S3vmWBk3jzJQBIGCw==}
     engines: {node: '>=20.0.0'}
 
   '@aws-sdk/client-s3@3.1107.0':
@@ -8649,6 +8656,17 @@ snapshots:
       '@aws-sdk/core': 3.977.6
       '@aws-sdk/types': 3.974.2
       '@smithy/core': 3.31.1
+      '@smithy/types': 4.16.1
+      tslib: 2.8.1
+
+  '@aws-sdk/client-lambda-microvms@3.1107.0':
+    dependencies:
+      '@aws-sdk/core': 3.977.6
+      '@aws-sdk/credential-provider-node': 3.972.78
+      '@aws-sdk/types': 3.974.2
+      '@smithy/core': 3.31.1
+      '@smithy/fetch-http-handler': 5.6.13
+      '@smithy/node-http-handler': 4.9.13
       '@smithy/types': 4.16.1
       tslib: 2.8.1
 

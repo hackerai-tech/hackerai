@@ -15,7 +15,8 @@
 import { ConvexHttpClient } from "convex/browser";
 import { Centrifuge, Subscription, PublicationContext } from "centrifuge";
 import WebSocket from "ws";
-import { spawn, ChildProcess } from "child_process";
+import { fork, spawn, ChildProcess } from "child_process";
+import { createServer, type IncomingMessage, type ServerResponse } from "http";
 import os from "os";
 import {
   truncateOutput,
@@ -52,6 +53,10 @@ const api = {
     connect: "localSandbox:connect" as const,
     disconnect: "localSandbox:disconnect" as const,
     refreshCentrifugoToken: "localSandbox:refreshCentrifugoToken" as const,
+    connectCloud: "localSandbox:connectCloud" as const,
+    refreshCloudCentrifugoToken:
+      "localSandbox:refreshCloudCentrifugoToken" as const,
+    disconnectCloud: "localSandbox:disconnectCloud" as const,
   },
 };
 
@@ -70,6 +75,9 @@ interface Config {
   convexUrl: string;
   token: string;
   name: string;
+  authMode: "local" | "cloud";
+  cloudSessionId?: string;
+  microvmId?: string;
 }
 
 interface OsInfo {
@@ -347,12 +355,26 @@ class LocalSandboxClient {
   }
 
   async start(): Promise<void> {
-    console.log(chalk.blue("🚀 Starting HackerAI local sandbox..."));
-    console.log(
-      chalk.yellow(
-        "⚠️  Commands run directly on your OS without any isolation.",
-      ),
-    );
+    if (this.config.authMode === "cloud") {
+      console.log(
+        JSON.stringify({
+          timestamp: new Date().toISOString(),
+          level: "info",
+          event: "cloud_sandbox_guest_starting",
+          service: "hackerai-cloud-sandbox-agent",
+          environment: "aws-lambda-microvm",
+          request_id: this.config.cloudSessionId ?? null,
+          microvm_id: this.config.microvmId ?? null,
+        }),
+      );
+    } else {
+      console.log(chalk.blue("🚀 Starting HackerAI local sandbox..."));
+      console.log(
+        chalk.yellow(
+          "⚠️  Commands run directly on your OS without any isolation.",
+        ),
+      );
+    }
     await this.connect();
   }
 
@@ -373,18 +395,31 @@ class LocalSandboxClient {
   }
 
   private async connect(): Promise<void> {
-    console.log(chalk.blue("Connecting to HackerAI..."));
+    if (this.config.authMode === "local") {
+      console.log(chalk.blue("Connecting to HackerAI..."));
+    }
 
     try {
       const result = (await this.convexHttp.mutation(
-        api.localSandbox.connect as never,
-        {
-          token: this.config.token,
-          connectionName: this.config.name,
-          clientVersion: "1.0.0",
-          osInfo: this.getOsInfo(),
-          capabilities: this.getCapabilities(),
-        } as never,
+        (this.config.authMode === "cloud"
+          ? api.localSandbox.connectCloud
+          : api.localSandbox.connect) as never,
+        (this.config.authMode === "cloud"
+          ? {
+              sessionId: this.config.cloudSessionId,
+              bootstrapToken: this.config.token,
+              microvmId: this.config.microvmId,
+              clientVersion: "aws-lambda-microvm",
+              osInfo: this.getOsInfo(),
+              capabilities: this.getCapabilities(),
+            }
+          : {
+              token: this.config.token,
+              connectionName: this.config.name,
+              clientVersion: "1.0.0",
+              osInfo: this.getOsInfo(),
+              capabilities: this.getCapabilities(),
+            }) as never,
       )) as ConnectResult;
 
       if (
@@ -398,29 +433,43 @@ class LocalSandboxClient {
       this.userId = result.userId;
       this.connectionId = result.connectionId;
 
-      console.log(chalk.green("✓ Authenticated"));
-      console.log(chalk.bold(chalk.green("🎉 Local sandbox is ready!")));
-      console.log(chalk.gray(`Connection: ${this.connectionId}`));
+      if (this.config.authMode === "local") {
+        console.log(chalk.green("✓ Authenticated"));
+        console.log(chalk.bold(chalk.green("🎉 Local sandbox is ready!")));
+        console.log(chalk.gray(`Connection: ${this.connectionId}`));
+      }
 
-      this.setupCentrifugo(result.centrifugoWsUrl, result.centrifugoToken);
-      this.startIdleCheck();
+      await this.setupCentrifugo(
+        result.centrifugoWsUrl,
+        result.centrifugoToken,
+      );
+      if (this.config.authMode === "local") {
+        this.startIdleCheck();
+      }
     } catch (error: unknown) {
       const err = error as { data?: { message?: string }; message?: string };
       const errorMessage =
         err?.data?.message || err?.message || JSON.stringify(error);
       console.error(chalk.red("❌ Connection failed:"), errorMessage);
       if (
-        errorMessage.includes("Invalid token") ||
-        errorMessage.includes("token")
+        this.config.authMode === "local" &&
+        (errorMessage.includes("Invalid token") ||
+          errorMessage.includes("token"))
       ) {
         console.error(chalk.yellow("Please regenerate your token in Settings"));
       }
       await this.cleanup();
-      process.exit(1);
+      if (this.config.authMode === "local") {
+        process.exit(1);
+      }
+      throw error;
     }
   }
 
-  private setupCentrifugo(wsUrl: string, initialToken: string): void {
+  private async setupCentrifugo(
+    wsUrl: string,
+    initialToken: string,
+  ): Promise<void> {
     this.centrifuge = new Centrifuge(wsUrl, {
       websocket: WebSocket as unknown as typeof globalThis.WebSocket,
       token: initialToken,
@@ -431,18 +480,28 @@ class LocalSandboxClient {
         let result: RefreshTokenResult;
         try {
           result = (await this.convexHttp.mutation(
-            api.localSandbox.refreshCentrifugoToken as never,
-            {
-              token: this.config.token,
-              connectionId: this.connectionId,
-            } as never,
+            (this.config.authMode === "cloud"
+              ? api.localSandbox.refreshCloudCentrifugoToken
+              : api.localSandbox.refreshCentrifugoToken) as never,
+            (this.config.authMode === "cloud"
+              ? {
+                  sessionId: this.config.cloudSessionId,
+                  bootstrapToken: this.config.token,
+                  connectionId: this.connectionId,
+                }
+              : {
+                  token: this.config.token,
+                  connectionId: this.connectionId,
+                }) as never,
           )) as RefreshTokenResult;
         } catch (error) {
           if (isInvalidTokenError(error)) {
             console.error(chalk.red("\n❌ Token rejected by server."));
-            console.error(
-              chalk.yellow("Please regenerate your token in Settings."),
-            );
+            if (this.config.authMode === "local") {
+              console.error(
+                chalk.yellow("Please regenerate your token in Settings."),
+              );
+            }
             // cleanup() synchronously calls centrifuge.disconnect() before any
             // awaits, so by the time we re-throw below Centrifuge is in a
             // terminal state and won't invoke getToken again.
@@ -596,8 +655,28 @@ class LocalSandboxClient {
       console.log(chalk.green("✓ Connected to command relay"));
     });
 
+    const ready = new Promise<void>((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        reject(new Error("Timed out connecting to the command relay"));
+      }, 20_000);
+      const finish = (error?: Error) => {
+        clearTimeout(timeout);
+        if (error) reject(error);
+        else resolve();
+      };
+      this.subscription?.once("subscribed", () => finish());
+      this.subscription?.once("error", (ctx) =>
+        finish(
+          new Error(
+            `Command relay subscription failed: ${ctx.error?.message ?? "unknown"}`,
+          ),
+        ),
+      );
+    });
+
     this.subscription.subscribe();
     this.centrifuge.connect();
+    await ready;
   }
 
   private async publishToChannel(
@@ -1029,7 +1108,7 @@ class LocalSandboxClient {
     }
   }
 
-  async cleanup(): Promise<void> {
+  async cleanup(options: { terminated?: boolean } = {}): Promise<void> {
     console.log(chalk.blue("\n🧹 Cleaning up..."));
 
     this.isShuttingDown = true;
@@ -1062,11 +1141,20 @@ class LocalSandboxClient {
       if (this.connectionId) {
         try {
           await this.convexHttp.mutation(
-            api.localSandbox.disconnect as never,
-            {
-              token: this.config.token,
-              connectionId: this.connectionId,
-            } as never,
+            (this.config.authMode === "cloud"
+              ? api.localSandbox.disconnectCloud
+              : api.localSandbox.disconnect) as never,
+            (this.config.authMode === "cloud"
+              ? {
+                  sessionId: this.config.cloudSessionId,
+                  bootstrapToken: this.config.token,
+                  connectionId: this.connectionId,
+                  terminated: options.terminated === true,
+                }
+              : {
+                  token: this.config.token,
+                  connectionId: this.connectionId,
+                }) as never,
           );
           console.log(chalk.green("✓ Disconnected"));
         } catch (error: unknown) {
@@ -1091,6 +1179,244 @@ const getArg = (flag: string): string | undefined => {
 const hasFlag = (flag: string): boolean => {
   return args.includes(flag);
 };
+
+interface CloudLifecyclePayload {
+  convexUrl: string;
+  sessionId: string;
+  bootstrapToken: string;
+  connectionName?: string;
+}
+
+async function readJsonBody(request: IncomingMessage): Promise<unknown> {
+  let body = "";
+  for await (const chunk of request) {
+    body += chunk.toString();
+    if (body.length > 32 * 1024) {
+      throw new Error("Lifecycle payload exceeds 32 KiB");
+    }
+  }
+  return body ? JSON.parse(body) : {};
+}
+
+function writeLifecycleResponse(
+  response: ServerResponse,
+  statusCode: number,
+  body: Record<string, unknown>,
+): void {
+  response.writeHead(statusCode, { "content-type": "application/json" });
+  response.end(JSON.stringify(body));
+}
+
+function parseCloudLifecyclePayload(value: unknown): {
+  microvmId: string;
+  config: CloudLifecyclePayload;
+} {
+  if (!value || typeof value !== "object") {
+    throw new Error("Invalid lifecycle request");
+  }
+  const record = value as Record<string, unknown>;
+  const microvmId = record.microvmId;
+  const rawPayload = record.runHookPayload;
+  if (typeof microvmId !== "string" || typeof rawPayload !== "string") {
+    throw new Error("Lifecycle request is missing MicroVM bootstrap data");
+  }
+  const payload = JSON.parse(rawPayload) as Partial<CloudLifecyclePayload>;
+  if (
+    typeof payload.convexUrl !== "string" ||
+    typeof payload.sessionId !== "string" ||
+    typeof payload.bootstrapToken !== "string"
+  ) {
+    throw new Error("Invalid cloud bootstrap payload");
+  }
+  return {
+    microvmId,
+    config: {
+      convexUrl: payload.convexUrl,
+      sessionId: payload.sessionId,
+      bootstrapToken: payload.bootstrapToken,
+      connectionName: payload.connectionName,
+    },
+  };
+}
+
+async function startCloudLifecycleServer(): Promise<void> {
+  let lifecycleConfig: Config | null = null;
+  let agentProcess: ChildProcess | null = null;
+
+  const stopAgent = async (terminated = false): Promise<void> => {
+    const child = agentProcess;
+    agentProcess = null;
+    if (!child || child.exitCode !== null || child.killed) return;
+
+    await new Promise<void>((resolve) => {
+      const timeout = setTimeout(() => {
+        child.kill("SIGKILL");
+      }, 5_000);
+      child.once("exit", () => {
+        clearTimeout(timeout);
+        resolve();
+      });
+      child.send?.({ type: "shutdown", terminated });
+    });
+  };
+
+  const startAgent = async (): Promise<void> => {
+    if (!lifecycleConfig) throw new Error("Cloud sandbox is not bootstrapped");
+    const child = fork(process.argv[1], ["--cloud-agent"], {
+      env: {
+        ...process.env,
+        HACKERAI_CLOUD_BOOTSTRAP: JSON.stringify(lifecycleConfig),
+      },
+      stdio: ["ignore", "inherit", "inherit", "ipc"],
+    });
+    agentProcess = child;
+    await new Promise<void>((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        child.kill("SIGKILL");
+        reject(new Error("Timed out starting the cloud relay worker"));
+      }, 25_000);
+      const cleanup = () => {
+        clearTimeout(timeout);
+        child.off("error", onError);
+        child.off("exit", onExit);
+        child.off("message", onMessage);
+      };
+      const onError = (error: Error) => {
+        cleanup();
+        reject(error);
+      };
+      const onExit = (code: number | null) => {
+        cleanup();
+        reject(new Error(`Cloud relay worker exited before ready (${code})`));
+      };
+      const onMessage = (message: unknown) => {
+        if (
+          message &&
+          typeof message === "object" &&
+          (message as { type?: unknown }).type === "ready"
+        ) {
+          cleanup();
+          resolve();
+        }
+      };
+      child.once("error", onError);
+      child.once("exit", onExit);
+      child.on("message", onMessage);
+    });
+  };
+
+  const server = createServer(async (request, response) => {
+    const path = request.url?.split("?", 1)[0] ?? "/";
+    const requestId = lifecycleConfig?.cloudSessionId ?? "image-build";
+    try {
+      if (request.method === "GET" && path === "/health") {
+        writeLifecycleResponse(response, 200, {
+          ok: true,
+          connected:
+            agentProcess !== null &&
+            agentProcess.exitCode === null &&
+            !agentProcess.killed,
+        });
+        return;
+      }
+
+      if (
+        request.method === "POST" &&
+        (path === "/aws/lambda-microvms/runtime/v1/ready" ||
+          path === "/aws/lambda-microvms/runtime/v1/validate")
+      ) {
+        writeLifecycleResponse(response, 200, { ok: true });
+        return;
+      }
+
+      if (
+        request.method === "POST" &&
+        path === "/aws/lambda-microvms/runtime/v1/run"
+      ) {
+        const { microvmId, config } = parseCloudLifecyclePayload(
+          await readJsonBody(request),
+        );
+        lifecycleConfig = {
+          convexUrl: config.convexUrl,
+          token: config.bootstrapToken,
+          name: config.connectionName ?? "AWS Lambda MicroVM",
+          authMode: "cloud",
+          cloudSessionId: config.sessionId,
+          microvmId,
+        };
+        await stopAgent();
+        await startAgent();
+        writeLifecycleResponse(response, 200, { ok: true });
+        return;
+      }
+
+      if (
+        request.method === "POST" &&
+        path === "/aws/lambda-microvms/runtime/v1/suspend"
+      ) {
+        await stopAgent();
+        writeLifecycleResponse(response, 200, { ok: true });
+        return;
+      }
+
+      if (
+        request.method === "POST" &&
+        path === "/aws/lambda-microvms/runtime/v1/resume"
+      ) {
+        await stopAgent();
+        await startAgent();
+        writeLifecycleResponse(response, 200, { ok: true });
+        return;
+      }
+
+      if (
+        request.method === "POST" &&
+        path === "/aws/lambda-microvms/runtime/v1/terminate"
+      ) {
+        await stopAgent(true);
+        writeLifecycleResponse(response, 200, { ok: true });
+        return;
+      }
+
+      writeLifecycleResponse(response, 404, { error: "not_found" });
+    } catch (error) {
+      console.error(
+        JSON.stringify({
+          timestamp: new Date().toISOString(),
+          level: "error",
+          event: "cloud_sandbox_lifecycle_hook_failed",
+          service: "hackerai-cloud-sandbox-agent",
+          environment: "aws-lambda-microvm",
+          request_id: requestId,
+          hook: path,
+          error: error instanceof Error ? error.message : String(error),
+        }),
+      );
+      writeLifecycleResponse(response, 500, { error: "lifecycle_hook_failed" });
+    }
+  });
+
+  const shutdown = async (): Promise<void> => {
+    await stopAgent(true);
+    server.close(() => process.exit(0));
+  };
+  process.on("SIGINT", () => void shutdown());
+  process.on("SIGTERM", () => void shutdown());
+
+  server.listen(8080, "0.0.0.0", () => {
+    console.log(
+      JSON.stringify({
+        timestamp: new Date().toISOString(),
+        level: "info",
+        event: "cloud_sandbox_lifecycle_server_ready",
+        service: "hackerai-cloud-sandbox-agent",
+        environment: "aws-lambda-microvm",
+        request_id: "image-build",
+        port: 8080,
+      }),
+    );
+  });
+}
 
 // Show help
 if (hasFlag("--help") || hasFlag("-h")) {
@@ -1121,34 +1447,100 @@ ${chalk.cyan("Auto-termination:")}
   process.exit(0);
 }
 
-const config: Config = {
-  convexUrl: getArg("--convex-url") || PRODUCTION_CONVEX_URL,
-  token: getArg("--token") || "",
-  name: getArg("--name") || os.hostname(),
-};
+if (hasFlag("--cloud-lifecycle")) {
+  void startCloudLifecycleServer().catch((error: unknown) => {
+    console.error(
+      JSON.stringify({
+        timestamp: new Date().toISOString(),
+        level: "error",
+        event: "cloud_sandbox_lifecycle_server_failed",
+        service: "hackerai-cloud-sandbox-agent",
+        environment: "aws-lambda-microvm",
+        request_id: "startup",
+        error: error instanceof Error ? error.message : String(error),
+      }),
+    );
+    process.exit(1);
+  });
+} else if (hasFlag("--cloud-agent")) {
+  const rawConfig = process.env.HACKERAI_CLOUD_BOOTSTRAP;
+  delete process.env.HACKERAI_CLOUD_BOOTSTRAP;
+  if (!rawConfig) {
+    console.error("Cloud relay worker is missing bootstrap configuration");
+    process.exit(1);
+  }
+  const config = JSON.parse(rawConfig) as Config;
+  const client = new LocalSandboxClient(config);
+  let shuttingDown = false;
+  const shutdown = async (terminated = false): Promise<void> => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    await client.cleanup({ terminated });
+    process.exit(0);
+  };
+  process.on("message", (message: unknown) => {
+    if (
+      message &&
+      typeof message === "object" &&
+      (message as { type?: unknown }).type === "shutdown"
+    ) {
+      void shutdown((message as { terminated?: unknown }).terminated === true);
+    }
+  });
+  process.on("SIGINT", () => void shutdown());
+  process.on("SIGTERM", () => void shutdown());
+  client
+    .start()
+    .then(() => process.send?.({ type: "ready" }))
+    .catch((error: unknown) => {
+      console.error(
+        JSON.stringify({
+          timestamp: new Date().toISOString(),
+          level: "error",
+          event: "cloud_sandbox_relay_worker_failed",
+          service: "hackerai-cloud-sandbox-agent",
+          environment: "aws-lambda-microvm",
+          request_id: config.cloudSessionId ?? "startup",
+          error: error instanceof Error ? error.message : String(error),
+        }),
+      );
+      process.exit(1);
+    });
+} else {
+  const config: Config = {
+    convexUrl: getArg("--convex-url") || PRODUCTION_CONVEX_URL,
+    token: getArg("--token") || "",
+    name: getArg("--name") || os.hostname(),
+    authMode: "local",
+  };
 
-if (!config.token) {
-  console.error(chalk.red("❌ No authentication token provided"));
-  console.error(chalk.yellow("Usage: npx @hackerai/local --token YOUR_TOKEN"));
-  console.error(chalk.yellow("Get your token from HackerAI Settings > Agents"));
-  process.exit(1);
+  if (!config.token) {
+    console.error(chalk.red("❌ No authentication token provided"));
+    console.error(
+      chalk.yellow("Usage: npx @hackerai/local --token YOUR_TOKEN"),
+    );
+    console.error(
+      chalk.yellow("Get your token from HackerAI Settings > Agents"),
+    );
+    process.exit(1);
+  }
+
+  const client = new LocalSandboxClient(config);
+
+  process.on("SIGINT", async () => {
+    console.log(chalk.yellow("\n🛑 Shutting down..."));
+    await client.cleanup();
+    process.exit(0);
+  });
+
+  process.on("SIGTERM", async () => {
+    await client.cleanup();
+    process.exit(0);
+  });
+
+  client.start().catch((error: unknown) => {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(chalk.red("Fatal error:"), message);
+    process.exit(1);
+  });
 }
-
-const client = new LocalSandboxClient(config);
-
-process.on("SIGINT", async () => {
-  console.log(chalk.yellow("\n🛑 Shutting down..."));
-  await client.cleanup();
-  process.exit(0);
-});
-
-process.on("SIGTERM", async () => {
-  await client.cleanup();
-  process.exit(0);
-});
-
-client.start().catch((error: unknown) => {
-  const message = error instanceof Error ? error.message : String(error);
-  console.error(chalk.red("Fatal error:"), message);
-  process.exit(1);
-});
