@@ -143,8 +143,6 @@ interface GlobalStateType {
   // Agent tool approval behavior
   agentPermissionMode: AgentPermissionMode;
   setAgentPermissionMode: (mode: AgentPermissionMode) => void;
-  agentAutoReviewAvailable: boolean | null;
-  resolveAgentAutoReviewAvailability: () => void;
 
   // Desktop bridge active (Centrifugo-based desktop sandbox)
   desktopBridgeActive: boolean;
@@ -478,62 +476,10 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
 
   const [agentPermissionMode, setAgentPermissionMode] =
     useState<AgentPermissionMode>(() => readAgentPermissionMode());
-  const [agentAutoReviewAvailability, setAgentAutoReviewAvailability] =
-    useState<{ userId: string; available: boolean } | null>(null);
-  const agentAutoReviewRequestRef = useRef<{
-    userId: string;
-    request: Promise<boolean>;
-  } | null>(null);
 
   useEffect(() => {
     writeAgentPermissionMode(agentPermissionMode);
   }, [agentPermissionMode]);
-
-  const authUserId = user?.id;
-  const agentAutoReviewAvailable =
-    agentAutoReviewAvailability &&
-    agentAutoReviewAvailability.userId === authUserId
-      ? agentAutoReviewAvailability.available
-      : null;
-  const resolveAgentAutoReviewAvailability = useCallback(() => {
-    if (
-      !authUserId ||
-      agentAutoReviewAvailability?.userId === authUserId ||
-      agentAutoReviewRequestRef.current?.userId === authUserId
-    ) {
-      return;
-    }
-
-    const request = fetch("/api/experiments/agent-auto-review", {
-      credentials: "same-origin",
-      cache: "no-store",
-    })
-      .then(async (response) => {
-        if (!response.ok) return false;
-        const data = (await response.json()) as { available?: unknown };
-        return data.available === true;
-      })
-      .catch(() => false);
-
-    agentAutoReviewRequestRef.current = { userId: authUserId, request };
-    void request.then((available) => {
-      const activeRequest = agentAutoReviewRequestRef.current;
-      if (
-        activeRequest?.userId !== authUserId ||
-        activeRequest.request !== request
-      ) {
-        return;
-      }
-
-      agentAutoReviewRequestRef.current = null;
-      setAgentAutoReviewAvailability({ userId: authUserId, available });
-      if (!available) {
-        setAgentPermissionMode((current) =>
-          current === "auto_review" ? "ask_approval" : current,
-        );
-      }
-    });
-  }, [agentAutoReviewAvailability?.userId, authUserId]);
 
   // Check for available local sandbox connections
   const localConnections = useQuery(
@@ -1309,8 +1255,6 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
     setSandboxPreference,
     agentPermissionMode,
     setAgentPermissionMode,
-    agentAutoReviewAvailable,
-    resolveAgentAutoReviewAvailability,
     desktopBridgeActive,
     desktopBridgeStatus,
     retryDesktopBridge,

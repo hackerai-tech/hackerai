@@ -68,14 +68,19 @@ const { GlobalStateProvider, useGlobalState } = jest.requireActual<
 const { AgentApprovalProvider, useAgentApproval } = jest.requireActual<
   typeof import("../../contexts/AgentApprovalContext")
 >("../../contexts/AgentApprovalContext");
+const { AgentAutoReviewAvailabilityProvider } = jest.requireActual<
+  typeof import("../../contexts/AgentAutoReviewAvailabilityContext")
+>("../../contexts/AgentAutoReviewAvailabilityContext");
 
 // Wrapper with real providers
 const TestWrapper = ({ children }: { children: ReactNode }) => {
   return (
     <GlobalStateProvider>
-      <AgentApprovalProvider>
-        <TooltipProvider>{children}</TooltipProvider>
-      </AgentApprovalProvider>
+      <AgentAutoReviewAvailabilityProvider>
+        <AgentApprovalProvider>
+          <TooltipProvider>{children}</TooltipProvider>
+        </AgentApprovalProvider>
+      </AgentAutoReviewAvailabilityProvider>
     </GlobalStateProvider>
   );
 };

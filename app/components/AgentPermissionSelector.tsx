@@ -15,6 +15,7 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover";
 import { useGlobalState } from "@/app/contexts/GlobalState";
+import { useAgentAutoReviewAvailability } from "@/app/contexts/AgentAutoReviewAvailabilityContext";
 import { captureAuthenticatedEvent } from "@/lib/analytics/client";
 import type { AgentPermissionMode } from "@/types";
 
@@ -60,15 +61,21 @@ export function AgentPermissionSelector({
   analyticsSurface,
 }: AgentPermissionSelectorProps) {
   const [open, setOpen] = useState(false);
-  const {
-    agentAutoReviewAvailable,
-    agentPermissionMode,
-    resolveAgentAutoReviewAvailability,
-    setAgentPermissionMode,
-  } = useGlobalState();
+  const { agentPermissionMode, setAgentPermissionMode } = useGlobalState();
+  const { agentAutoReviewAvailable, resolveAgentAutoReviewAvailability } =
+    useAgentAutoReviewAvailability();
   useEffect(() => {
     resolveAgentAutoReviewAvailability();
   }, [resolveAgentAutoReviewAvailability]);
+
+  useEffect(() => {
+    if (
+      agentAutoReviewAvailable === false &&
+      agentPermissionMode === "auto_review"
+    ) {
+      setAgentPermissionMode("ask_approval");
+    }
+  }, [agentAutoReviewAvailable, agentPermissionMode, setAgentPermissionMode]);
 
   const showAutoReview =
     agentAutoReviewAvailable === true ||

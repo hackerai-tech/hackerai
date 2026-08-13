@@ -48,7 +48,6 @@ const mockAuthUser = (
 
 function GlobalStateProbe() {
   const {
-    agentAutoReviewAvailable,
     agentPermissionMode,
     chatModeAccessResolved,
     chatMode,
@@ -63,9 +62,6 @@ function GlobalStateProbe() {
   return (
     <>
       <div data-testid="agent-permission-mode">{agentPermissionMode}</div>
-      <div data-testid="agent-auto-review-available">
-        {String(agentAutoReviewAvailable)}
-      </div>
       <div data-testid="chat-mode-access-resolved">
         {String(chatModeAccessResolved)}
       </div>
@@ -80,16 +76,6 @@ function GlobalStateProbe() {
       <div data-testid="subscription">{subscription}</div>
     </>
   );
-}
-
-function AgentAutoReviewAvailabilityProbe() {
-  const { resolveAgentAutoReviewAvailability } = useGlobalState();
-
-  useEffect(() => {
-    resolveAgentAutoReviewAvailability();
-  }, [resolveAgentAutoReviewAvailability]);
-
-  return <GlobalStateProbe />;
 }
 
 function ActiveProjectProbe() {
@@ -176,87 +162,6 @@ describe("GlobalStateProvider agent defaults", () => {
     fireEvent.click(screen.getByRole("button", { name: "Expand todo panel" }));
 
     expect(onRender).toHaveBeenCalledTimes(initialCommittedRenderCount);
-  });
-
-  it("keeps Auto review availability resolved across child remounts", async () => {
-    global.fetch = jest.fn((input) => {
-      if (String(input) === "/api/experiments/agent-auto-review") {
-        return Promise.resolve({
-          ok: true,
-          json: () => Promise.resolve({ available: true }),
-        });
-      }
-      return Promise.resolve({ ok: false });
-    }) as unknown as typeof fetch;
-    const renderProbe = (chatId: string) => (
-      <GlobalStateProvider>
-        <AgentAutoReviewAvailabilityProbe key={chatId} />
-      </GlobalStateProvider>
-    );
-    const { rerender } = render(renderProbe("chat-a"));
-
-    await waitFor(() => {
-      expect(
-        screen.getByTestId("agent-auto-review-available"),
-      ).toHaveTextContent("true");
-    });
-
-    rerender(renderProbe("chat-b"));
-
-    expect(screen.getByTestId("agent-auto-review-available")).toHaveTextContent(
-      "true",
-    );
-    expect(
-      jest
-        .mocked(global.fetch)
-        .mock.calls.filter(
-          ([input]) => String(input) === "/api/experiments/agent-auto-review",
-        ),
-    ).toHaveLength(1);
-  });
-
-  it("does not resolve Auto review availability before a selector is encountered", () => {
-    render(
-      <GlobalStateProvider>
-        <GlobalStateProbe />
-      </GlobalStateProvider>,
-    );
-
-    expect(
-      jest
-        .mocked(global.fetch)
-        .mock.calls.some(
-          ([input]) => String(input) === "/api/experiments/agent-auto-review",
-        ),
-    ).toBe(false);
-  });
-
-  it("fails closed and normalizes a stale Auto review preference", async () => {
-    window.localStorage.setItem("agent_permission_mode", "auto_review");
-    global.fetch = jest.fn((input) => {
-      if (String(input) === "/api/experiments/agent-auto-review") {
-        return Promise.resolve({
-          ok: true,
-          json: () => Promise.resolve({ available: false }),
-        });
-      }
-      return Promise.resolve({ ok: false });
-    }) as unknown as typeof fetch;
-
-    render(
-      <GlobalStateProvider>
-        <AgentAutoReviewAvailabilityProbe />
-      </GlobalStateProvider>,
-    );
-
-    await waitFor(() => {
-      expect(
-        screen.getByTestId("agent-auto-review-available"),
-      ).toHaveTextContent("false");
-      expect(screen.getByTestId("agent-permission-mode")).toHaveTextContent(
-        "ask_approval",
-      );
-    });
   });
 
   it("runs registered stream cleanup before initializing another chat", () => {

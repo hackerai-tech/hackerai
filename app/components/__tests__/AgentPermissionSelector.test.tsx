@@ -10,10 +10,15 @@ let agentAutoReviewAvailable: boolean | null = true;
 
 jest.mock("@/app/contexts/GlobalState", () => ({
   useGlobalState: () => ({
-    agentAutoReviewAvailable,
     agentPermissionMode,
-    resolveAgentAutoReviewAvailability,
     setAgentPermissionMode,
+  }),
+}));
+
+jest.mock("@/app/contexts/AgentAutoReviewAvailabilityContext", () => ({
+  useAgentAutoReviewAvailability: () => ({
+    agentAutoReviewAvailable,
+    resolveAgentAutoReviewAvailability,
   }),
 }));
 
@@ -149,5 +154,6 @@ describe("AgentPermissionSelector", () => {
     expect(
       screen.getByRole("button", { name: /^ask for approval$/i }),
     ).toBeInTheDocument();
+    expect(setAgentPermissionMode).toHaveBeenCalledWith("ask_approval");
   });
 });
