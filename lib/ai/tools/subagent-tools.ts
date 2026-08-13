@@ -37,6 +37,7 @@ import {
 } from "@/lib/analytics/subagents";
 import { subagentTask } from "@/trigger/subagent";
 import { resultFromPersistedSubagent } from "@/lib/ai/subagents/persisted-result";
+import { toSubagentHandle } from "@/lib/ai/subagents/agent-handle";
 
 export type SubagentToolsRuntimeConfig = {
   organizationId?: string;
@@ -74,7 +75,7 @@ export const createCreateAgentTool = (
   config: SubagentToolsRuntimeConfig,
 ) =>
   tool({
-    description: `Spawn a named specialist child agent that runs asynchronously with name, task, inherit_context, and skills. In this release, use it only to independently validate one concrete vulnerability candidate that is ready to reproduce or reject. The task must state the affected asset, weakness class, claimed impact, minimum evidence, success criteria, and authorization boundaries. Do not use it for discovery, reconnaissance, broad research, code review, or generic testing. Use a distinct human-readable name. After creating the child, continue useful work or call wait_for_agents; use send_message_to_agent only for essential new evidence or a correction.`,
+    description: `Spawn a named specialist child agent that runs asynchronously with name, task, inherit_context, and skills. It returns a short, parent-scoped agent_id handle for later coordination. In this release, use it only to independently validate one concrete vulnerability candidate that is ready to reproduce or reject. The task must state the affected asset, weakness class, claimed impact, minimum evidence, success criteria, and authorization boundaries. Do not use it for discovery, reconnaissance, broad research, code review, or generic testing. Use a distinct human-readable name. After creating the child, continue useful work or call wait_for_agents; use send_message_to_agent only for essential new evidence or a correction.`,
     inputSchema: createAgentInputSchema,
     execute: async (input, execution) => {
       const parsed = createAgentInputSchema.parse(input);
@@ -144,6 +145,7 @@ export const createCreateAgentTool = (
       }
 
       const subagentId = reservation.subagentId;
+      const agentHandle = toSubagentHandle(subagentId);
       let record = await getSubagent(subagentId);
       if (!record) {
         return { success: false, error: "The subagent reservation was lost." };
@@ -222,7 +224,7 @@ export const createCreateAgentTool = (
           });
           return {
             success: false,
-            agent_id: subagentId,
+            agent_id: agentHandle,
             name: agentName(record),
             status: record.status,
             error: "The subagent run could not be started.",
@@ -232,17 +234,17 @@ export const createCreateAgentTool = (
 
       return {
         success: true,
-        agent_id: subagentId,
+        agent_id: agentHandle,
         name: agentName(record),
         status: record.status,
-        message: `Spawned '${agentName(record)}' (${subagentId}) running in parallel.`,
+        message: `Spawned '${agentName(record)}' (${agentHandle}) running in parallel.`,
       };
     },
   });
 
 export const createSendMessageToAgentTool = (context: ToolContext) =>
   tool({
-    description: `Send an essential update to a live subagent's inbox with target_agent_id, message, message_type, and priority. Use this only for new evidence, a focused question, or a concrete correction that changes an active independent validation. Do not send routine status pings or repeat context the child already has.`,
+    description: `Send an essential update to a live subagent's inbox with the short target_agent_id handle returned by create_agent, plus message, message_type, and priority. Use this only for new evidence, a focused question, or a concrete correction that changes an active independent validation. Do not send routine status pings or repeat context the child already has.`,
     inputSchema: sendMessageToAgentInputSchema,
     execute: async (input, execution) => {
       const parsed = sendMessageToAgentInputSchema.parse(input);
@@ -272,6 +274,7 @@ export const createSendMessageToAgentTool = (context: ToolContext) =>
         priority: parsed.priority,
       })) as {
         outcome: "delivered" | "not_found" | "not_active";
+        subagentId?: string;
         messageId?: string;
         agentName?: string;
         status?: PersistedSubagent["status"];
@@ -281,6 +284,7 @@ export const createSendMessageToAgentTool = (context: ToolContext) =>
       if (
         delivery.outcome !== "delivered" ||
         !delivery.agentName ||
+        !delivery.subagentId ||
         !delivery.parentMessageId ||
         !delivery.status
       ) {
@@ -298,7 +302,7 @@ export const createSendMessageToAgentTool = (context: ToolContext) =>
       }
 
       writeLifecycle(context.writer, {
-        subagent_id: parsed.target_agent_id,
+        subagent_id: delivery.subagentId,
         parent_message_id: delivery.parentMessageId,
         parent_tool_call_id: execution.toolCallId,
         agent_name: delivery.agentName,
@@ -307,7 +311,7 @@ export const createSendMessageToAgentTool = (context: ToolContext) =>
       });
       captureSubagentLifecycleEvent("subagent_updated", {
         userId: context.userID,
-        subagentId: parsed.target_agent_id,
+        subagentId: delivery.subagentId,
         parentTriggerRunId,
         profile: "security_validation",
         status: delivery.status,
@@ -325,7 +329,7 @@ const activeAgentOutput = (
   active: Array<PersistedSubagent & { title?: string }>,
 ) =>
   active.map((row) => ({
-    agent_id: row.subagent_id,
+    agent_id: toSubagentHandle(row.subagent_id),
     name: agentName(row),
     status: row.status,
   }));
@@ -377,7 +381,7 @@ export const createWaitForAgentsTool = (context: ToolContext) =>
             success: true,
             wait_outcome: "agent_finished" as const,
             reason: parsed.reason,
-            agent_id: state.terminal.subagent_id,
+            agent_id: toSubagentHandle(state.terminal.subagent_id),
             agent_name: name,
             result,
             active_agents: activeAgentOutput(state.active),

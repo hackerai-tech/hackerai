@@ -33,11 +33,11 @@ describe("subagent contracts", () => {
   it("matches the send_message_to_agent and wait_for_agents contracts", () => {
     expect(
       sendMessageToAgentInputSchema.parse({
-        target_agent_id: "sa_123",
+        target_agent_id: "sa_09041c08",
         message: "Use the newly captured response as evidence.",
       }),
     ).toEqual({
-      target_agent_id: "sa_123",
+      target_agent_id: "sa_09041c08",
       message: "Use the newly captured response as evidence.",
       message_type: "information",
       priority: "normal",

@@ -338,8 +338,27 @@ describe("subagent message feedback", () => {
 });
 
 describe("subagent coordination messages", () => {
-  it("delivers a named update only to an active child owned by the same chat", async () => {
+  const makeSendContext = (runs: Array<Record<string, any>>) => {
     const insert = jest.fn<any>().mockResolvedValue("message-doc");
+    const ctx = {
+      db: {
+        query: jest.fn((table: string) => ({
+          withIndex: jest.fn((_name: string, callback: (q: any) => void) => {
+            const q = { eq: jest.fn<any>() };
+            q.eq.mockReturnValue(q);
+            callback(q);
+            return table === "subagent_runs"
+              ? { take: jest.fn<any>().mockResolvedValue(runs) }
+              : { first: jest.fn<any>().mockResolvedValue(null) };
+          }),
+        })),
+        insert,
+      },
+    } as any;
+    return { ctx, insert };
+  };
+
+  it("delivers a named update only to an active child owned by the same chat", async () => {
     const run = {
       _id: "subagent-doc",
       subagent_id: "sa_1",
@@ -350,23 +369,7 @@ describe("subagent coordination messages", () => {
       name: "Stored XSS validator",
       status: "running",
     };
-    const ctx = {
-      db: {
-        query: jest.fn((table: string) => ({
-          withIndex: jest.fn((_name: string, callback: (q: any) => void) => {
-            const q = { eq: jest.fn<any>() };
-            q.eq.mockReturnValue(q);
-            callback(q);
-            return {
-              first: jest
-                .fn<any>()
-                .mockResolvedValue(table === "subagent_runs" ? run : null),
-            };
-          }),
-        })),
-        insert,
-      },
-    } as any;
+    const { ctx, insert } = makeSendContext([run]);
 
     await expect(
       sendMessageForBackend.handler(ctx, {
@@ -383,6 +386,7 @@ describe("subagent coordination messages", () => {
       }),
     ).resolves.toEqual({
       outcome: "delivered",
+      subagentId: "sa_1",
       messageId: "msg_123",
       agentName: "Stored XSS validator",
       status: "running",
@@ -400,29 +404,77 @@ describe("subagent coordination messages", () => {
     );
   });
 
-  it("does not reveal or update another user's child", async () => {
-    const insert = jest.fn<any>();
-    const ctx = {
-      db: {
-        query: jest.fn(() => ({
-          withIndex: jest.fn((_name: string, callback: (q: any) => void) => {
-            const q = { eq: jest.fn<any>() };
-            q.eq.mockReturnValue(q);
-            callback(q);
-            return {
-              first: jest.fn<any>().mockResolvedValue({
-                subagent_id: "sa_1",
-                user_id: "user-2",
-                chat_id: "chat-1",
-                parent_trigger_run_id: "parent-run",
-                status: "running",
-              }),
-            };
-          }),
-        })),
-        insert,
+  it("resolves a short handle within the authenticated parent run", async () => {
+    const fullId = "sa_09041c08070448b5a5cee3c7c5454b66";
+    const { ctx, insert } = makeSendContext([
+      {
+        subagent_id: fullId,
+        user_id: "user-1",
+        chat_id: "chat-1",
+        parent_trigger_run_id: "parent-run",
+        parent_message_id: "parent-message",
+        name: "Permission validator",
+        status: "running",
       },
-    } as any;
+    ]);
+
+    await expect(
+      sendMessageForBackend.handler(ctx, {
+        serviceKey: "service-key",
+        targetAgentId: "sa_09041c08",
+        userId: "user-1",
+        chatId: "chat-1",
+        parentTriggerRunId: "parent-run",
+        parentToolCallId: "tool-send-1",
+        messageId: "msg_short",
+        message: "Use the exact synthetic marker.",
+        messageType: "information",
+        priority: "normal",
+      }),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        outcome: "delivered",
+        subagentId: fullId,
+        agentName: "Permission validator",
+      }),
+    );
+    expect(insert).toHaveBeenCalledWith(
+      "subagent_messages",
+      expect.objectContaining({ subagent_id: fullId }),
+    );
+  });
+
+  it("fails closed when a parent-scoped short handle is ambiguous", async () => {
+    const { ctx, insert } = makeSendContext([
+      {
+        subagent_id: "sa_09041c08000000000000000000000000",
+        status: "running",
+      },
+      {
+        subagent_id: "sa_09041c08ffffffffffffffffffffffff",
+        status: "running",
+      },
+    ]);
+
+    await expect(
+      sendMessageForBackend.handler(ctx, {
+        serviceKey: "service-key",
+        targetAgentId: "sa_09041c08",
+        userId: "user-1",
+        chatId: "chat-1",
+        parentTriggerRunId: "parent-run",
+        parentToolCallId: "tool-send-1",
+        messageId: "msg_ambiguous",
+        message: "Update",
+        messageType: "information",
+        priority: "normal",
+      }),
+    ).resolves.toEqual({ outcome: "not_found" });
+    expect(insert).not.toHaveBeenCalled();
+  });
+
+  it("does not reveal or update another user's child", async () => {
+    const { ctx, insert } = makeSendContext([]);
 
     await expect(
       sendMessageForBackend.handler(ctx, {
@@ -442,28 +494,7 @@ describe("subagent coordination messages", () => {
   });
 
   it("does not steer a child created by another parent run in the same chat", async () => {
-    const insert = jest.fn<any>();
-    const ctx = {
-      db: {
-        query: jest.fn(() => ({
-          withIndex: jest.fn((_name: string, callback: (q: any) => void) => {
-            const q = { eq: jest.fn<any>() };
-            q.eq.mockReturnValue(q);
-            callback(q);
-            return {
-              first: jest.fn<any>().mockResolvedValue({
-                subagent_id: "sa_1",
-                user_id: "user-1",
-                chat_id: "chat-1",
-                parent_trigger_run_id: "different-parent-run",
-                status: "running",
-              }),
-            };
-          }),
-        })),
-        insert,
-      },
-    } as any;
+    const { ctx, insert } = makeSendContext([]);
 
     await expect(
       sendMessageForBackend.handler(ctx, {

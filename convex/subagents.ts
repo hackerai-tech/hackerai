@@ -11,6 +11,7 @@ import {
   SUBAGENT_MAX_QUEUE_SECONDS,
   SUBAGENT_WATCHDOG_GRACE_SECONDS,
 } from "../lib/ai/subagents/contracts";
+import { toSubagentHandle } from "../lib/ai/subagents/agent-handle";
 
 const statusValidator = v.union(
   v.literal("queued"),
@@ -440,18 +441,26 @@ export const sendMessageForBackend = mutation({
   returns: v.any(),
   handler: async (ctx, args) => {
     validateServiceKey(args.serviceKey);
-    const run = await ctx.db
+    const parentRuns = await ctx.db
       .query("subagent_runs")
-      .withIndex("by_subagent_id", (q) =>
-        q.eq("subagent_id", args.targetAgentId),
+      .withIndex("by_user_chat_and_parent_run", (q) =>
+        q
+          .eq("user_id", args.userId)
+          .eq("chat_id", args.chatId)
+          .eq("parent_trigger_run_id", args.parentTriggerRunId),
       )
-      .first();
-    if (
-      !run ||
-      run.user_id !== args.userId ||
-      run.chat_id !== args.chatId ||
-      run.parent_trigger_run_id !== args.parentTriggerRunId
-    ) {
+      .take(MAX_SUBAGENTS_PER_PARENT_RUN + 1);
+    const exact = parentRuns.find(
+      (candidate) => candidate.subagent_id === args.targetAgentId,
+    );
+    const handleMatches = exact
+      ? []
+      : parentRuns.filter(
+          (candidate) =>
+            toSubagentHandle(candidate.subagent_id) === args.targetAgentId,
+        );
+    const run = exact ?? (handleMatches.length === 1 ? handleMatches[0] : null);
+    if (!run) {
       return { outcome: "not_found" as const };
     }
 
@@ -459,6 +468,7 @@ export const sendMessageForBackend = mutation({
     if (run.status !== "queued" && run.status !== "running") {
       return {
         outcome: "not_active" as const,
+        subagentId: run.subagent_id,
         agentName,
         status: run.status,
         parentMessageId: run.parent_message_id,
@@ -469,7 +479,7 @@ export const sendMessageForBackend = mutation({
       .query("subagent_messages")
       .withIndex("by_subagent_and_external_message_id", (q) =>
         q
-          .eq("subagent_id", args.targetAgentId)
+          .eq("subagent_id", run.subagent_id)
           .eq("external_message_id", args.messageId),
       )
       .first();
@@ -494,6 +504,7 @@ export const sendMessageForBackend = mutation({
 
     return {
       outcome: "delivered" as const,
+      subagentId: run.subagent_id,
       messageId: existing?.external_message_id ?? args.messageId,
       agentName,
       status: run.status,
