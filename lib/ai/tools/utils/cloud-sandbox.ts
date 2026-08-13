@@ -1,7 +1,7 @@
 import type { AnySandbox, SandboxBootInfo } from "@/types";
 import { getCloudSandboxProvider } from "./cloud-sandbox-provider";
 import { ensureSandboxConnection } from "./sandbox";
-import { isE2BSandbox } from "./sandbox-types";
+import { isAwsLambdaMicrovmSandbox, isE2BSandbox } from "./sandbox-types";
 
 export async function ensureCloudSandboxConnection(options: {
   userId: string;
@@ -11,8 +11,8 @@ export async function ensureCloudSandboxConnection(options: {
 }): Promise<{ sandbox: AnySandbox }> {
   const provider = getCloudSandboxProvider();
   if (provider === "aws-lambda-microvm") {
-    if (options.initialSandbox && !isE2BSandbox(options.initialSandbox)) {
-      return { sandbox: options.initialSandbox };
+    if (isAwsLambdaMicrovmSandbox(options.initialSandbox ?? null)) {
+      return { sandbox: options.initialSandbox! };
     }
     const { ensureAwsLambdaMicrovmConnection } =
       await import("./aws-lambda-microvm");
@@ -44,12 +44,27 @@ export async function terminateCloudSandboxesForUser(userId: string): Promise<{
   killed: number;
   alreadyGone: number;
 }> {
-  if (getCloudSandboxProvider() === "aws-lambda-microvm") {
+  const provider = getCloudSandboxProvider();
+  const totals = { total: 0, killed: 0, alreadyGone: 0 };
+
+  // Cloud provider selection can change during a rollback. Clean up persisted
+  // AWS sessions independently of the provider currently selected.
+  if (process.env.CONVEX_SERVICE_ROLE_KEY) {
     const { terminateAwsLambdaMicrovmForUser } =
       await import("./aws-lambda-microvm");
-    return terminateAwsLambdaMicrovmForUser(userId);
+    const aws = await terminateAwsLambdaMicrovmForUser(userId);
+    totals.total += aws.total;
+    totals.killed += aws.killed;
+    totals.alreadyGone += aws.alreadyGone;
+  } else if (provider === "aws-lambda-microvm") {
+    throw new Error(
+      "CONVEX_SERVICE_ROLE_KEY is required to delete AWS Lambda MicroVMs",
+    );
   }
 
+  // E2B does not persist provider rows in Convex, so query it whenever its
+  // credentials remain configured (including during an AWS migration).
+  if (provider !== "e2b" && !process.env.E2B_API_KEY) return totals;
   const paginator = (await import("@e2b/code-interpreter")).Sandbox.list({
     query: { metadata: { userID: userId } },
   });
@@ -76,5 +91,8 @@ export async function terminateCloudSandboxesForUser(userId: string): Promise<{
       throw error;
     }
   }
-  return { total: sandboxes.length, killed, alreadyGone };
+  totals.total += sandboxes.length;
+  totals.killed += killed;
+  totals.alreadyGone += alreadyGone;
+  return totals;
 }

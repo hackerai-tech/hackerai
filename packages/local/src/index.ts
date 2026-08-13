@@ -665,13 +665,15 @@ class LocalSandboxClient {
         else resolve();
       };
       this.subscription?.once("subscribed", () => finish());
-      this.subscription?.once("error", (ctx) =>
-        finish(
-          new Error(
-            `Command relay subscription failed: ${ctx.error?.message ?? "unknown"}`,
+      this.subscription?.on("error", (ctx) => {
+        // Centrifuge retries recoverable subscription errors. Keep waiting for
+        // `subscribed` until the bounded startup timeout expires.
+        console.warn(
+          chalk.yellow(
+            `Command relay subscription error; retrying: ${ctx.error?.message ?? "unknown"}`,
           ),
-        ),
-      );
+        );
+      });
     });
 
     this.subscription.subscribe();
@@ -1302,6 +1304,36 @@ async function startCloudLifecycleServer(): Promise<void> {
       child.once("error", onError);
       child.once("exit", onExit);
       child.on("message", onMessage);
+    });
+    child.once("exit", (code) => {
+      // stopAgent clears agentProcess before intentionally terminating the
+      // worker, so only unexpected exits reach the restart path.
+      if (agentProcess !== child) return;
+      agentProcess = null;
+      console.error(
+        JSON.stringify({
+          timestamp: new Date().toISOString(),
+          level: "error",
+          event: "cloud_sandbox_relay_worker_exited",
+          service: "hackerai-cloud-sandbox-agent",
+          environment: "aws-lambda-microvm",
+          request_id: lifecycleConfig?.cloudSessionId ?? null,
+          exit_code: code,
+        }),
+      );
+      void startAgent().catch((error) => {
+        console.error(
+          JSON.stringify({
+            timestamp: new Date().toISOString(),
+            level: "error",
+            event: "cloud_sandbox_relay_worker_restart_failed",
+            service: "hackerai-cloud-sandbox-agent",
+            environment: "aws-lambda-microvm",
+            request_id: lifecycleConfig?.cloudSessionId ?? null,
+            error: error instanceof Error ? error.message : String(error),
+          }),
+        );
+      });
     });
   };
 

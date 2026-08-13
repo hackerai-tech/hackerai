@@ -57,7 +57,7 @@ const common = {
     `arn:aws:lambda:${region}:aws:network-connector:aws-network-connector:INTERNET_EGRESS`,
   ],
   cpuConfigurations: [{ architecture: "ARM_64" }],
-  resources: [{ minimumMemoryInMiB: 4096 }],
+  resources: [{ minimumMemoryInMiB: 2048 }],
   additionalOsCapabilities: ["ALL"],
   hooks: {
     port: 8080,

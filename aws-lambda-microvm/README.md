@@ -91,7 +91,8 @@ CENTRIFUGO_TOKEN_SECRET=<existing signing secret>
 Optional controls:
 
 - `AWS_LAMBDA_MICROVM_MAX_DURATION_SECONDS` defaults to 28,800 (8 hours).
-- `AWS_LAMBDA_MICROVM_INGRESS_CONNECTOR_ARN` defaults to `NO_INGRESS`.
+- Ingress is fixed to AWS's `NO_INGRESS` connector. The guest establishes the
+  HackerAI relay outbound, so lifecycle hooks are never exposed as a public API.
 - `AWS_LAMBDA_MICROVM_EGRESS_CONNECTOR_ARN` defaults to `INTERNET_EGRESS`.
 - `AWS_LAMBDA_MICROVM_IDLE_SECONDS` enables Lambda auto-suspend. It is disabled
   by default because the command relay is outbound/asynchronous and endpoint
@@ -148,7 +149,7 @@ the internal rollout.
 - The managed internet connector must be validated with the capability suite;
   guest raw-socket capability alone does not prove that every network path has
   native semantics.
-- At the 4 GiB / 2 vCPU baseline, current first-tier US pricing is roughly
-  $0.252/hour while running, before burst compute, snapshots, and data transfer.
+- At the 2 GiB / 1 vCPU baseline, current first-tier US pricing is roughly
+  $0.126/hour while running, before burst compute, snapshots, and data transfer.
 - AWS penetration-testing rules and the target owner's authorization still
   apply to traffic originating from the account.

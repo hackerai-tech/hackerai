@@ -543,6 +543,21 @@ export const beginCloudSession = mutation({
           ? "starting_timeout"
           : "image_configuration_changed",
       });
+      if (active.connection_id) {
+        const staleConnection = await ctx.db
+          .query("local_sandbox_connections")
+          .withIndex("by_connection_id", (q) =>
+            q.eq("connection_id", active.connection_id!),
+          )
+          .unique();
+        if (staleConnection?.status === "connected") {
+          await ctx.db.patch(staleConnection._id, {
+            status: "disconnected",
+            disconnected_at: now,
+            disconnect_reason: "client_disconnect",
+          });
+        }
+      }
       replacedMicrovmId = active.microvm_id;
     }
 
@@ -596,6 +611,27 @@ export const getCloudSessionForBackend = query({
 
     if (!session || session.user_id !== args.userId) return null;
     return serializeCloudSession(session);
+  },
+});
+
+export const listActiveCloudSessionsForBackend = query({
+  args: {
+    serviceKey: v.string(),
+    userId: v.string(),
+  },
+  returns: v.array(cloudSessionForBackend),
+  handler: async (ctx, args) => {
+    validateServiceKey(args.serviceKey);
+    const sessions = await ctx.db
+      .query("cloud_sandbox_sessions")
+      .withIndex("by_user_id", (q) => q.eq("user_id", args.userId))
+      .collect();
+    return sessions
+      .filter(
+        (session) =>
+          session.status === "starting" || session.status === "running",
+      )
+      .map(serializeCloudSession);
   },
 });
 
@@ -1151,7 +1187,7 @@ export const listConnections = query({
       .collect();
 
     return connections
-      .filter((conn) => conn.client_version !== "aws-lambda-microvm")
+      .filter((conn) => conn.mode !== "cloud")
       .map((conn) => ({
         connectionId: conn.connection_id,
         name: conn.connection_name,
@@ -1200,7 +1236,7 @@ export const listConnectionsForBackend = query({
       .collect();
 
     return connections
-      .filter((conn) => conn.client_version !== "aws-lambda-microvm")
+      .filter((conn) => conn.mode !== "cloud")
       .map((conn) => ({
         connectionId: conn.connection_id,
         name: conn.connection_name,

@@ -28,8 +28,13 @@ const dockerfile = `${baseDockerfile.trim()}
 
 # AWS Lambda MicroVM lifecycle and command relay agent
 COPY agent/package.json /opt/hackerai-cloud-agent/package.json
+COPY agent/pnpm-lock.yaml /opt/hackerai-cloud-agent/pnpm-lock.yaml
 COPY agent/dist /opt/hackerai-cloud-agent/dist
-RUN cd /opt/hackerai-cloud-agent && npm install --omit=dev --no-audit --no-fund && npm cache clean --force
+RUN npm install --global --no-audit --no-fund pnpm@10.32.1 && \\
+    cd /opt/hackerai-cloud-agent && \\
+    pnpm install --prod --frozen-lockfile && \\
+    npm cache clean --force && \\
+    pnpm store prune
 EXPOSE 8080
 ENTRYPOINT ["node", "/opt/hackerai-cloud-agent/dist/index.js", "--cloud-lifecycle"]
 `;
@@ -37,6 +42,10 @@ ENTRYPOINT ["node", "/opt/hackerai-cloud-agent/dist/index.js", "--cloud-lifecycl
 const zip = new JSZip();
 zip.file("Dockerfile", dockerfile);
 zip.file("agent/package.json", `${JSON.stringify(localPackage, null, 2)}\n`);
+zip.file(
+  "agent/pnpm-lock.yaml",
+  await readFile(join(root, "packages", "local", "pnpm-lock.yaml")),
+);
 
 async function addDirectory(directory) {
   const entries = await readdir(directory, { withFileTypes: true });

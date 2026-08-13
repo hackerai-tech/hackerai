@@ -22,6 +22,7 @@ export const USER_DELETION_TABLE_POLICY = {
     "temp_streams",
     "local_sandbox_tokens",
     "local_sandbox_connections",
+    "cloud_sandbox_sessions",
     "cancellation_reason_details",
   ],
   anonymize: [

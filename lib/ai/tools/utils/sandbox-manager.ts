@@ -10,6 +10,7 @@ import { SANDBOX_ENVIRONMENT_TOOLS } from "./sandbox-tools";
 import { ensureCloudSandboxConnection } from "./cloud-sandbox";
 import { getCloudSandboxProvider } from "./cloud-sandbox-provider";
 import { isE2BSandbox } from "./sandbox-types";
+import { isExpectedAlreadyGoneCleanupError } from "@/lib/utils/cleanup-errors";
 
 // One failed initial readiness check plus one failed reconnect is enough to
 // stop terminal retries in this Agent run. The manager only forgets its local
@@ -95,13 +96,22 @@ export class DefaultSandboxManager implements SandboxManager {
   }
 
   async resetSandbox(_reason?: string): Promise<void> {
-    // This manager holds only a local SDK connection. The E2B sandbox itself
-    // is shared per user and may contain commands from another Agent run, so
-    // recovery must reconnect instead of globally killing it.
+    // E2B is shared per user, so recovery only forgets its SDK connection.
+    // Relay sandboxes own a websocket client, which is safe to close while the
+    // underlying local host or MicroVM continues running.
     const sandbox = this.sandbox;
     this.sandbox = null;
     if (sandbox && !isE2BSandbox(sandbox)) {
-      await sandbox.close().catch(() => undefined);
+      await sandbox.close().catch((error) => {
+        if (isExpectedAlreadyGoneCleanupError(error)) {
+          console.debug(`[${this.userID}] Sandbox relay was already closed`);
+        } else {
+          console.warn(
+            `[${this.userID}] Failed to close sandbox relay during recovery:`,
+            error,
+          );
+        }
+      });
     }
   }
 }

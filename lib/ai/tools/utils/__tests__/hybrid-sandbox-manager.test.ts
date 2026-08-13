@@ -607,6 +607,25 @@ describe("HybridSandboxManager reset cleanup", () => {
     }
   });
 
+  it("classifies an AWS relay sandbox as cloud rather than local", () => {
+    const manager = new HybridSandboxManager(
+      "user-1",
+      jest.fn(),
+      "remote-connection",
+      "service-key",
+      null,
+      "pro",
+    );
+    const sandbox = {
+      sandboxKind: "centrifugo",
+      getCloudProvider: () => "aws-lambda-microvm",
+    };
+
+    manager.setSandbox(sandbox as any);
+
+    expect(manager.getSandboxInfo()).toMatchObject({ type: "e2b" });
+  });
+
   it("marks E2B unavailable after the initial check and reconnect both fail", () => {
     const manager = new HybridSandboxManager(
       "user-1",

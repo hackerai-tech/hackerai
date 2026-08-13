@@ -88,9 +88,9 @@ export function getAwsLambdaMicrovmConfig(): AwsLambdaMicrovmConfig {
     imageIdentifier: required("AWS_LAMBDA_MICROVM_IMAGE_ID"),
     imageVersion:
       process.env.AWS_LAMBDA_MICROVM_IMAGE_VERSION?.trim() || undefined,
-    ingressConnectorArn:
-      process.env.AWS_LAMBDA_MICROVM_INGRESS_CONNECTOR_ARN?.trim() ||
-      `arn:aws:lambda:${region}:aws:network-connector:aws-network-connector:NO_INGRESS`,
+    // The guest initiates its relay connection outbound. Keeping lifecycle
+    // hooks behind NO_INGRESS prevents them from becoming a public control API.
+    ingressConnectorArn: `arn:aws:lambda:${region}:aws:network-connector:aws-network-connector:NO_INGRESS`,
     egressConnectorArn:
       process.env.AWS_LAMBDA_MICROVM_EGRESS_CONNECTOR_ARN?.trim() ||
       `arn:aws:lambda:${region}:aws:network-connector:aws-network-connector:INTERNET_EGRESS`,
@@ -143,11 +143,13 @@ function log(
 }
 
 function isAwsNotFound(error: unknown): boolean {
-  return (
-    error instanceof Error &&
-    (error.name === "ResourceNotFoundException" ||
-      /not found/i.test(error.message))
-  );
+  if (error instanceof Error && error.name === "ResourceNotFoundException") {
+    return true;
+  }
+  if (!error || typeof error !== "object") return false;
+  const metadata = (error as { $metadata?: { httpStatusCode?: unknown } })
+    .$metadata;
+  return metadata?.httpStatusCode === 404;
 }
 
 function failureCode(error: unknown): string {
@@ -166,7 +168,7 @@ function failureCode(error: unknown): string {
 async function markEnded(
   userId: string,
   sessionId: string,
-  config: AwsLambdaMicrovmConfig,
+  config: Pick<AwsLambdaMicrovmConfig, "serviceKey">,
   status: "failed" | "terminated",
   code?: string,
 ): Promise<void> {
@@ -277,9 +279,16 @@ async function ensureExistingMicrovm(
   userId: string,
   session: CloudSession,
   config: AwsLambdaMicrovmConfig,
-): Promise<CloudSession | null> {
+): Promise<{ session: CloudSession; sandbox: CentrifugoSandbox } | null> {
   if (!session.microvmId) {
-    return waitForSessionConnection(userId, session.sessionId, config);
+    const connected = await waitForSessionConnection(
+      userId,
+      session.sessionId,
+      config,
+    );
+    const sandbox = createRelaySandbox(userId, connected, config);
+    await waitForRelayReady(sandbox);
+    return { session: connected, sandbox };
   }
   try {
     let state = await getClient(config.region).send(
@@ -322,10 +331,10 @@ async function ensureExistingMicrovm(
     );
     const sandbox = createRelaySandbox(userId, connected, config);
     await waitForRelayReady(sandbox);
-    await sandbox.close();
-    return connected;
+    return { session: connected, sandbox };
   } catch (error) {
     if (isAwsNotFound(error)) {
+      await terminateBestEffort(session.microvmId, config);
       await markEnded(
         userId,
         session.sessionId,
@@ -363,7 +372,10 @@ export async function ensureAwsLambdaMicrovmConnection(
   };
 
   if (!begin.created) {
-    let existing: CloudSession | null;
+    let existing: {
+      session: CloudSession;
+      sandbox: CentrifugoSandbox;
+    } | null;
     try {
       existing = await ensureExistingMicrovm(userId, begin.session, config);
     } catch (error) {
@@ -393,12 +405,12 @@ export async function ensureAwsLambdaMicrovmConnection(
     });
     log("info", "cloud_sandbox_reused", {
       user_id: userId,
-      session_id: existing.sessionId,
-      microvm_id: existing.microvmId,
+      session_id: existing.session.sessionId,
+      microvm_id: existing.session.microvmId,
       region: config.region,
-      image_version: existing.imageVersion ?? "latest",
+      image_version: existing.session.imageVersion ?? "latest",
     });
-    return createRelaySandbox(userId, existing, config);
+    return existing.sandbox;
   }
 
   if (!begin.bootstrapToken) {
@@ -485,55 +497,54 @@ export async function ensureAwsLambdaMicrovmConnection(
 export async function terminateAwsLambdaMicrovmForUser(
   userId: string,
 ): Promise<{ total: number; killed: number; alreadyGone: number }> {
-  const config = getAwsLambdaMicrovmConfig();
-  const session = (await getConvexClient().query(
-    api.localSandbox.getCloudSessionForBackend,
+  const serviceKey = required("CONVEX_SERVICE_ROLE_KEY");
+  const sessions = (await getConvexClient().query(
+    api.localSandbox.listActiveCloudSessionsForBackend,
     {
-      serviceKey: config.serviceKey,
+      serviceKey,
       userId,
     },
-  )) as CloudSession | null;
+  )) as CloudSession[];
+  let killed = 0;
+  let alreadyGone = 0;
 
-  if (
-    !session ||
-    session.status === "failed" ||
-    session.status === "terminated"
-  ) {
-    return { total: 0, killed: 0, alreadyGone: 0 };
+  for (const session of sessions) {
+    if (!session.microvmId) {
+      await markEnded(
+        userId,
+        session.sessionId,
+        { serviceKey },
+        "terminated",
+        "deleted_before_start",
+      );
+      alreadyGone++;
+      continue;
+    }
+
+    try {
+      await getClient(session.region).send(
+        new TerminateMicrovmCommand({ microvmIdentifier: session.microvmId }),
+      );
+      await markEnded(userId, session.sessionId, { serviceKey }, "terminated");
+      killed++;
+      log("info", "cloud_sandbox_deleted", {
+        user_id: userId,
+        session_id: session.sessionId,
+        microvm_id: session.microvmId,
+        region: session.region,
+      });
+    } catch (error) {
+      if (!isAwsNotFound(error)) throw error;
+      await markEnded(
+        userId,
+        session.sessionId,
+        { serviceKey },
+        "terminated",
+        "microvm_not_found",
+      );
+      alreadyGone++;
+    }
   }
 
-  if (!session.microvmId) {
-    await markEnded(
-      userId,
-      session.sessionId,
-      config,
-      "terminated",
-      "deleted_before_start",
-    );
-    return { total: 1, killed: 0, alreadyGone: 1 };
-  }
-
-  try {
-    await getClient(config.region).send(
-      new TerminateMicrovmCommand({ microvmIdentifier: session.microvmId }),
-    );
-    await markEnded(userId, session.sessionId, config, "terminated");
-    log("info", "cloud_sandbox_deleted", {
-      user_id: userId,
-      session_id: session.sessionId,
-      microvm_id: session.microvmId,
-      region: config.region,
-    });
-    return { total: 1, killed: 1, alreadyGone: 0 };
-  } catch (error) {
-    if (!isAwsNotFound(error)) throw error;
-    await markEnded(
-      userId,
-      session.sessionId,
-      config,
-      "terminated",
-      "microvm_not_found",
-    );
-    return { total: 1, killed: 0, alreadyGone: 1 };
-  }
+  return { total: sessions.length, killed, alreadyGone };
 }

@@ -54,6 +54,7 @@ Resources:
           - Effect: Allow
             Action:
               - lambda:RunMicrovm
+              - lambda:PassNetworkConnector
               - lambda:GetMicrovm
               - lambda:ListMicrovms
               - lambda:ResumeMicrovm
@@ -77,6 +78,7 @@ Resources:
             Action:
               - lambda:CreateMicrovmImage
               - lambda:UpdateMicrovmImage
+              - lambda:PassNetworkConnector
               - lambda:GetMicrovmImage
               - lambda:GetMicrovmImageVersion
               - lambda:ListMicrovmImages
