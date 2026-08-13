@@ -10,6 +10,7 @@ import {
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { ReactNode, useEffect } from "react";
 import {
+  CHAT_MODE_STORAGE_KEY,
   CONVERSATION_DRAFTS_STORAGE_KEY,
   getDraftAttachmentsById,
   getDraftContentById,
@@ -176,6 +177,21 @@ describe("ChatInput - Integration Tests", () => {
         screen.getByPlaceholderText("Ask, learn, brainstorm"),
       ).toBeInTheDocument();
       expect(screen.getByText("Ask")).toBeInTheDocument();
+      expect(
+        screen.getByTestId("attach-files-button").querySelector(".lucide-plus"),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByTestId("attach-files-button").querySelector(".size-5"),
+      ).toBeInTheDocument();
+      expect(screen.getByTestId("attach-files-button")).toHaveClass(
+        "h-8",
+        "w-8",
+        "rounded-md",
+        "hover:bg-muted/30",
+      );
+      expect(screen.getByTestId("attach-files-button")).not.toHaveClass(
+        "rounded-full",
+      );
     });
 
     it("should show only submit button when ready in ask mode", () => {
@@ -398,6 +414,45 @@ describe("ChatInput - Integration Tests", () => {
   });
 
   describe("Agent Mode Integration", () => {
+    it("renders a glass composer with a narrower sandbox context strip", () => {
+      window.localStorage.setItem(CHAT_MODE_STORAGE_KEY, "agent");
+      mockUseQuery.mockReturnValue([
+        {
+          connectionId: "local-sandbox",
+          name: "Local sandbox",
+          isDesktop: false,
+        },
+      ]);
+
+      render(
+        <TestWrapper>
+          <ChatInput
+            onSubmit={mockOnSubmit}
+            onStop={mockOnStop}
+            status="ready"
+            hasMessages
+          />
+        </TestWrapper>,
+      );
+
+      expect(screen.getByTestId("chat-input-surface")).toHaveClass(
+        "chat-input-glass-surface",
+        "z-10",
+      );
+      expect(screen.getByTestId("chat-input-agent-context")).toHaveClass(
+        "chat-input-glass-context",
+        "mx-6",
+        "-mt-2",
+        "h-10",
+        "rounded-b-[18px]",
+        "md:hidden",
+      );
+      expect(screen.getByTestId("chat-input-mobile-permission")).toHaveClass(
+        "ml-auto",
+        "md:hidden",
+      );
+    });
+
     it("does not show a late approval after the composer stop button is clicked", async () => {
       let resolveStop: ((stopped: boolean) => void) | undefined;
       const pendingStop = new Promise<boolean>((resolve) => {
