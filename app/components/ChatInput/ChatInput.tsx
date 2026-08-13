@@ -73,7 +73,11 @@ interface ChatInputProps {
   isResolvingInitialState?: boolean;
 }
 
-const ChatInputLoadingState = () => (
+const ChatInputLoadingState = ({
+  showAgentControls,
+}: {
+  showAgentControls: boolean;
+}) => (
   <div
     aria-label="Loading task input"
     aria-live="polite"
@@ -82,10 +86,20 @@ const ChatInputLoadingState = () => (
     role="status"
   >
     <div className="mx-auto w-full min-w-0 max-w-full sm:min-w-[390px] sm:max-w-[768px]">
-      <div className="flex h-[70px] flex-col justify-center gap-2 rounded-[22px] border border-black/8 bg-input-chat px-4 shadow-[0px_12px_32px_0px_rgba(0,0,0,0.02)] dark:border-border">
+      <div
+        className="flex h-[98px] flex-col justify-center gap-2 rounded-[22px] border border-black/8 bg-input-chat px-4 shadow-[0px_12px_32px_0px_rgba(0,0,0,0.02)] dark:border-border"
+        data-testid="chat-input-loading-surface"
+      >
         <div className="h-3 w-32 animate-pulse rounded-full bg-muted-foreground/15 motion-reduce:animate-none" />
         <div className="h-3 w-20 animate-pulse rounded-full bg-muted-foreground/10 motion-reduce:animate-none" />
       </div>
+      {showAgentControls ? (
+        <div
+          aria-hidden="true"
+          className="h-10 md:h-9"
+          data-testid="chat-input-loading-controls"
+        />
+      ) : null}
     </div>
   </div>
 );
@@ -698,7 +712,7 @@ export const ChatInput = ({
   };
 
   if (isResolvingInitialState) {
-    return <ChatInputLoadingState />;
+    return <ChatInputLoadingState showAgentControls={isAgent} />;
   }
 
   return (

@@ -599,6 +599,9 @@ describe("ChatInput - Integration Tests", () => {
       expect(
         screen.getByTestId("chat-input-loading-state"),
       ).toBeInTheDocument();
+      expect(screen.getByTestId("chat-input-loading-surface")).toHaveClass(
+        "h-[98px]",
+      );
       expect(screen.queryByTestId("chat-input")).not.toBeInTheDocument();
       expect(
         screen.queryByTestId("agent-approval-prompt"),
