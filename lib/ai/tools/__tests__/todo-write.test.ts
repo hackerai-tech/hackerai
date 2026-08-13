@@ -118,7 +118,7 @@ describe("todo_write", () => {
 
     expect(result).toMatchObject({
       result: expect.stringContaining(
-        "Skipped exact duplicate to-do IDs: duplicate.",
+        "Skipped new to-do IDs with exact duplicate normalized content matching an earlier item in this write or a preserved manual to-do: duplicate.",
       ),
       skippedTodoIds: ["duplicate"],
       counts: { completed: 0, total: 2 },

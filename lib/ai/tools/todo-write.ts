@@ -85,7 +85,7 @@ export const createTodoWrite = (context: ToolContext) => {
         return {
           result: `Successfully ${action} to-dos.${
             skippedTodoIds.length > 0
-              ? ` Skipped exact duplicate to-do IDs: ${skippedTodoIds.join(", ")}.`
+              ? ` Skipped new to-do IDs with exact duplicate normalized content matching an earlier item in this write or a preserved manual to-do: ${skippedTodoIds.join(", ")}.`
               : ""
           } Make sure to follow and update your to-do list as you make progress. Cancel and add new to-do tasks as needed when the user makes a correction or follow-up request.${
             stats.inProgress === 0

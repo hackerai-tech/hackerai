@@ -110,8 +110,8 @@ Useful reading commands:
 - Use semantic locators such as \`agent-browser find role button click --name "Submit"\` when a snapshot ref is unavailable.
 
 Session lifetime:
-- The cloud browser shuts down after 15 minutes without an agent-browser command. The next command starts a new browser, so reopen the URL and take a fresh snapshot instead of reusing old tabs or refs.
-- Before leaving a login-heavy flow idle, replace TASK_ID with a task-unique slug and save its cookies and local storage with \`agent-browser state save /home/user/agent-browser-state-TASK_ID.json\`. After a restart, reopen it with \`agent-browser --state /home/user/agent-browser-state-TASK_ID.json open <url>\`, then take a fresh snapshot. Treat the state file as sensitive sandbox data and delete it when it is no longer needed.
+- The cloud browser shuts down after 15 minutes without an agent-browser command. The next command starts a new browser, so assume open tabs, in-memory browser state, and element refs are lost; reopen the URL and take a fresh snapshot instead of reusing old tabs or refs.
+- If login state is lost after relaunch, authenticate again through the user-approved flow. Do not save cookies, local storage, or other authentication state to sandbox files for idle recovery because a user's cloud sandbox can be reused across Agent runs.
 
 Recovery:
 - For daemon, socket, connection, or browser-not-running failures, run \`agent-browser doctor\`; use \`agent-browser doctor --fix\` only when the diagnosis identifies a repairable problem, then reopen the page and retry.
