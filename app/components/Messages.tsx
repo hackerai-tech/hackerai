@@ -258,6 +258,7 @@ interface MessagesProps {
   branchedFromChatId?: string;
   branchedFromChatTitle?: string;
   anchorMessageId?: string | null;
+  contentInsetEndAdjustment?: number;
 }
 
 export const Messages = ({
@@ -287,6 +288,7 @@ export const Messages = ({
   branchedFromChatId,
   branchedFromChatTitle,
   anchorMessageId = null,
+  contentInsetEndAdjustment = 0,
 }: MessagesProps) => {
   const { isAutoResuming } = useDataStreamState();
   // Prefetch and cache image URLs for better performance
@@ -952,6 +954,7 @@ export const Messages = ({
           recycleItems={false}
           initialScrollAtEnd
           {...(anchoredEndSpace ? { anchoredEndSpace } : {})}
+          contentInsetEndAdjustment={contentInsetEndAdjustment}
           maintainVisibleContentPosition={{ data: true, size: true }}
           style={{ height: "100%", minHeight: 0 }}
           className="h-full min-h-0 overflow-x-hidden"

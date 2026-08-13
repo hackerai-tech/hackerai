@@ -230,6 +230,32 @@ describe("Messages virtualized row invalidation", () => {
     );
   });
 
+  it("reserves the measured composer overlay height at the end", () => {
+    render(
+      <DataStreamProvider>
+        <Messages
+          chatId="chat-1"
+          messages={messages}
+          setMessages={jest.fn()}
+          onRegenerate={jest.fn()}
+          onRetry={jest.fn()}
+          onEditMessage={jest.fn()}
+          status="ready"
+          error={null}
+          scrollRef={createRef<HTMLElement>()}
+          contentRef={createRef<HTMLElement>()}
+          isMobile
+          contentInsetEndAdjustment={144}
+        />
+      </DataStreamProvider>,
+    );
+
+    expect(screen.getByTestId("messages-container")).toHaveAttribute(
+      "data-content-inset-end",
+      "144",
+    );
+  });
+
   it("invalidates the final assistant row when streaming stops", () => {
     const sharedProps = {
       chatId: "chat-1",

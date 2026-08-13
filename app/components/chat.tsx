@@ -24,6 +24,7 @@ import type { FileDetails } from "@/types/file";
 import { Messages } from "./Messages";
 import { ChatInput } from "./ChatInput";
 import { ChatLoadingStatusPill } from "./ChatLoadingStatusPill";
+import { ComposerOverlay } from "./ComposerOverlay";
 import type { RateLimitWarningData } from "./RateLimitWarning";
 import ChatHeader from "./ChatHeader";
 import Footer from "./Footer";
@@ -1828,6 +1829,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     });
   const showBottomChatInput =
     (hasMessages || isExistingChat || isMobile) && !isChatNotFound;
+  const [composerOverlayHeight, setComposerOverlayHeight] = useState(0);
   const agentRunSpendCapWarning =
     rateLimitWarning?.warningType === "agent-run-spend-cap"
       ? rateLimitWarning
@@ -1943,6 +1945,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
                     branchedFromChatId={branchedFromChatId}
                     branchedFromChatTitle={branchedFromChatTitle}
                     anchorMessageId={timelineAnchorMessageId}
+                    contentInsetEndAdjustment={composerOverlayHeight}
                   />
                 </div>
               ) : (
@@ -1990,7 +1993,10 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
 
               {/* Chat Input - Bottom placement (also for mobile new chats) */}
               {showBottomChatInput ? (
-                <div className="flex-shrink-0">
+                <ComposerOverlay
+                  active={showChatLayout}
+                  onHeightChange={setComposerOverlayHeight}
+                >
                   {isInitialExistingChatLoad ? <ChatLoadingStatusPill /> : null}
                   <ChatInput
                     onSubmit={handleSubmit}
@@ -2012,7 +2018,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
                     onDismissRateLimitWarning={handleDismissRateLimitWarning}
                     storedApprovalRequest={storedAgentApprovalRequest}
                   />
-                </div>
+                </ComposerOverlay>
               ) : null}
             </div>
           </div>
