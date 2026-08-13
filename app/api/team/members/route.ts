@@ -4,6 +4,12 @@ import { stripe } from "../../stripe";
 import { getTeamMemberConsumed, addOrgRemovedUsage } from "@/lib/rate-limit";
 import { requireTeamOrg } from "../team-auth";
 
+function isNotFoundError(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const candidate = error as { status?: unknown; statusCode?: unknown };
+  return candidate.status === 404 || candidate.statusCode === 404;
+}
+
 export const GET = async (req: NextRequest) => {
   try {
     const guard = await requireTeamOrg(req);
@@ -206,7 +212,10 @@ export const DELETE = async (req: NextRequest) => {
         await addOrgRemovedUsage(organizationId, consumed);
       }
     } catch (error) {
-      // If membership not found, it might be an invitation
+      // Only a genuine not-found response can mean the supplied ID belongs to
+      // an invitation. Propagate timeouts, rate limits, and server errors so we
+      // do not mask a failed membership lookup as a missing invitation.
+      if (!isNotFoundError(error)) throw error;
       isInvitation = true;
     }
 
