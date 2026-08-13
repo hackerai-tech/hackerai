@@ -245,6 +245,7 @@ import { AgentLongMemoryTelemetry } from "@/lib/chat/agent-long-memory-telemetry
 import {
   AgentAutoReviewDenialTracker,
   extractAgentAutoReviewAuthorizationContext,
+  extractAgentAutoReviewConversationContext,
   reviewAgentToolAction,
   shouldAutoReviewAgentToolAction,
   type AgentAutoReviewDecision,
@@ -507,6 +508,7 @@ const buildAgentToolApprovalRequester = ({
   revalidateAfterAutoReview,
   autoReviewAssignment,
   autoReviewAuthorizationContext,
+  autoReviewConversationContext,
   onAutoReviewCost,
   onAutoReviewCircuitBreaker,
   onPostWaitAuthorizationDenied,
@@ -537,6 +539,7 @@ const buildAgentToolApprovalRequester = ({
   }) => Promise<void>;
   autoReviewAssignment?: AgentAutoReviewAssignment;
   autoReviewAuthorizationContext: { text: string; complete: boolean };
+  autoReviewConversationContext: { text: string; complete: boolean };
   onAutoReviewCost?: (costDollars: number) => void;
   onAutoReviewCircuitBreaker: () => void;
   onPostWaitAuthorizationDenied: () => void;
@@ -668,6 +671,7 @@ const buildAgentToolApprovalRequester = ({
           decision = await reviewAgentToolAction({
             request,
             authorizationContext: autoReviewAuthorizationContext,
+            conversationContext: autoReviewConversationContext,
             signal,
           });
         } finally {
@@ -2798,6 +2802,10 @@ export const agentLongTask = task({
                 extractAgentAutoReviewAuthorizationContext(
                   messagesForProcessing,
                 ),
+              autoReviewConversationContext:
+                extractAgentAutoReviewConversationContext(
+                  messagesForProcessing,
+                ),
               onAutoReviewCost: (costDollars) => {
                 usageTracker.providerCost += costDollars;
                 usageTracker.nonModelCost += costDollars;
@@ -2840,6 +2848,8 @@ export const agentLongTask = task({
               selectedModel,
               onToolFailure,
               requestToolApproval,
+              agentPermissionMode === "auto_review" &&
+                autoReviewAssignment?.phase !== undefined,
               runTimingTracker.measureActiveTime,
               projectContext.workingDirectory,
               ctx.run.id,
