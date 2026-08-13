@@ -130,7 +130,8 @@ const logSandboxKillFailure = (
 // v10: added whois, Chromium, and agent-browser browser automation
 // v11: removed preinstalled interception CLI from the sandbox image
 // v12: increased sandbox memory from 2GB to 4GB
-const SANDBOX_VERSION = "v12";
+// v13: reclaims abandoned agent-browser daemons after prolonged inactivity
+const SANDBOX_VERSION = "v13";
 
 /**
  * Ensures a sandbox connection is established and maintained

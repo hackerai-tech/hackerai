@@ -1,6 +1,10 @@
 import { tool } from "ai";
 import type { ToolContext, Todo } from "@/types";
 import { todoWriteTool } from "./schemas";
+import {
+  dedupeNewAssistantTodosByContent,
+  dedupeTodosById,
+} from "@/lib/utils/todo-utils";
 
 export const createTodoWrite = (context: ToolContext) => {
   const { todoManager, assistantMessageId } = context;
@@ -30,12 +34,17 @@ export const createTodoWrite = (context: ToolContext) => {
               t.status === null,
           );
 
-        const existingTodoIds = new Set(
-          todoManager.getAllTodos().map((todo) => todo.id),
-        );
+        const existingTodos = todoManager.getAllTodos();
+        const existingTodoIds = new Set(existingTodos.map((todo) => todo.id));
+        const uniqueTodos = dedupeTodosById(todos);
+        const { todos: contentDedupedTodos, skippedTodoIds } =
+          dedupeNewAssistantTodosByContent(uniqueTodos, {
+            existingTodoIds: shouldMerge ? existingTodoIds : new Set<string>(),
+            manualTodos: existingTodos.filter((todo) => !todo.sourceMessageId),
+          });
         const todosWithSourceMessageId: Array<Partial<Todo> & { id: string }> =
           assistantMessageId
-            ? todos.map((todo) => {
+            ? contentDedupedTodos.map((todo) => {
                 const isNewCompleteMergeTodo =
                   shouldMerge &&
                   !existingTodoIds.has(todo.id) &&
@@ -48,7 +57,7 @@ export const createTodoWrite = (context: ToolContext) => {
                   ? { ...todo, sourceMessageId: assistantMessageId }
                   : todo;
               })
-            : todos;
+            : contentDedupedTodos;
 
         // Update backend state first (TodoManager handles deduplication)
         const updatedTodos = todoManager.setTodos(
@@ -74,13 +83,18 @@ export const createTodoWrite = (context: ToolContext) => {
         }));
 
         return {
-          result: `Successfully ${action} to-dos. Make sure to follow and update your to-do list as you make progress. Cancel and add new to-do tasks as needed when the user makes a correction or follow-up request.${
+          result: `Successfully ${action} to-dos.${
+            skippedTodoIds.length > 0
+              ? ` Skipped exact duplicate to-do IDs: ${skippedTodoIds.join(", ")}.`
+              : ""
+          } Make sure to follow and update your to-do list as you make progress. Cancel and add new to-do tasks as needed when the user makes a correction or follow-up request.${
             stats.inProgress === 0
               ? " No to-dos are marked in-progress, make sure to mark them before starting the next."
               : ""
           }`,
           counts,
           currentTodos,
+          skippedTodoIds,
         };
       } catch (error) {
         return {

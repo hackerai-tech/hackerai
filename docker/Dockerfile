@@ -252,6 +252,9 @@ ENV AGENT_BROWSER_EXECUTABLE_PATH=/usr/bin/chromium
 ENV AGENT_BROWSER_USER_AGENT="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 ENV AGENT_BROWSER_ARGS="--disable-blink-features=AutomationControlled,--no-first-run,--no-default-browser-check,--disable-dev-shm-usage,--no-sandbox,--lang=en-US"
 ENV AGENT_BROWSER_SCREENSHOT_DIR=/home/user/agent-browser-screenshots
+# Preserve authenticated browser work across one maximum-length terminal command
+# plus a five-minute buffer, then reclaim abandoned Chromium processes.
+ENV AGENT_BROWSER_IDLE_TIMEOUT_MS=900000
 
 RUN npm install -g --cache /tmp/npm-cache agent-browser@0.26.0 && \
     rm -rf /tmp/npm-cache && \

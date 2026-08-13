@@ -342,7 +342,7 @@ export const todoWriteToolInputSchema = z.object({
     )
     .min(1)
     .describe(
-      "Array of todo items to write to the workspace. For merge=false, new items should include content and status and replace the assistant-generated plan while preserving manually created todos. Partial items are treated as merge-style updates. For merge=true, existing items may be patched with partial updates, but new items should include content and status.",
+      "Array of todo items to write to the workspace. For merge=false, new items should include content and status and replace the assistant-generated plan while preserving manually created todos. Partial items are treated as merge-style updates. For merge=true, existing items may be patched with partial updates, but new items should include content and status. New items with exact duplicate normalized content in one write are skipped and reported by ID.",
     ),
 });
 

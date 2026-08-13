@@ -51,7 +51,7 @@ const listSandbox = (
       {
         sandboxId: "sandbox-1",
         state: "running",
-        metadata: { sandboxVersion: "v12" },
+        metadata: { sandboxVersion: "v13" },
         ...overrides,
       },
     ]),
@@ -257,7 +257,7 @@ describe("E2B sandbox lease lifecycle", () => {
     const createdSandbox = { sandboxId: "sandbox-2" } as unknown as Sandbox;
     listSandbox({
       state: "paused",
-      metadata: { sandboxVersion: "v10" },
+      metadata: { sandboxVersion: "v12" },
     });
     sandboxApi.kill.mockResolvedValue(true);
     sandboxApi.create.mockResolvedValue(createdSandbox);

@@ -109,6 +109,10 @@ Useful reading commands:
 - \`agent-browser get text @e1\`, \`agent-browser get attr @e1 href\`, \`agent-browser get url\`, and \`agent-browser get title\` for targeted extraction.
 - Use semantic locators such as \`agent-browser find role button click --name "Submit"\` when a snapshot ref is unavailable.
 
+Session lifetime:
+- The cloud browser shuts down after 15 minutes without an agent-browser command. The next command starts a new browser, so reopen the URL and take a fresh snapshot instead of reusing old tabs or refs.
+- Before leaving a login-heavy flow idle, replace TASK_ID with a task-unique slug and save its cookies and local storage with \`agent-browser state save /home/user/agent-browser-state-TASK_ID.json\`. After a restart, reopen it with \`agent-browser --state /home/user/agent-browser-state-TASK_ID.json open <url>\`, then take a fresh snapshot. Treat the state file as sensitive sandbox data and delete it when it is no longer needed.
+
 Recovery:
 - For daemon, socket, connection, or browser-not-running failures, run \`agent-browser doctor\`; use \`agent-browser doctor --fix\` only when the diagnosis identifies a repairable problem, then reopen the page and retry.
 - For malformed command syntax, correct the command. For stale or invalid element refs, run a fresh \`agent-browser snapshot -i\`; do not blindly retry the same failing action.
