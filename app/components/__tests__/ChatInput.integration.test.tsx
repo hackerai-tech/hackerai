@@ -181,9 +181,7 @@ describe("ChatInput - Integration Tests", () => {
         screen.getByTestId("attach-files-button").querySelector(".lucide-plus"),
       ).toBeInTheDocument();
       expect(
-        screen
-          .getByTestId("attach-files-button")
-          .querySelector(".size-\\[18px\\]"),
+        screen.getByTestId("attach-files-button").querySelector(".size-5"),
       ).toBeInTheDocument();
       expect(screen.getByTestId("attach-files-button")).toHaveClass(
         "h-8",

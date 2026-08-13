@@ -72,7 +72,7 @@ export const AttachmentButton = ({
             data-testid="attach-files-button"
             disabled={disabled || isCheckingProPlan}
           >
-            <Plus className="size-[18px]" />
+            <Plus className="size-5" />
           </Button>
         </TooltipTrigger>
         <TooltipContent>
@@ -96,7 +96,7 @@ export const AttachmentButton = ({
           data-testid="attach-files-button"
           disabled={disabled}
         >
-          <Plus className="size-[18px]" />
+          <Plus className="size-5" />
         </Button>
       </PopoverTrigger>
       <PopoverContent
