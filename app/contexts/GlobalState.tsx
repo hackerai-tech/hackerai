@@ -143,6 +143,7 @@ interface GlobalStateType {
   // Agent tool approval behavior
   agentPermissionMode: AgentPermissionMode;
   setAgentPermissionMode: (mode: AgentPermissionMode) => void;
+  agentAutoReviewAvailable: boolean | null;
 
   // Desktop bridge active (Centrifugo-based desktop sandbox)
   desktopBridgeActive: boolean;
@@ -476,10 +477,48 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
 
   const [agentPermissionMode, setAgentPermissionMode] =
     useState<AgentPermissionMode>(() => readAgentPermissionMode());
+  const [agentAutoReviewAvailable, setAgentAutoReviewAvailable] = useState<
+    boolean | null
+  >(null);
 
   useEffect(() => {
     writeAgentPermissionMode(agentPermissionMode);
   }, [agentPermissionMode]);
+
+  const authUserId = user?.id;
+  useEffect(() => {
+    if (!authUserId) {
+      setAgentAutoReviewAvailable(null);
+      return;
+    }
+
+    const controller = new AbortController();
+    const applyAvailability = (available: boolean) => {
+      setAgentAutoReviewAvailable(available);
+      if (!available) {
+        setAgentPermissionMode((current) =>
+          current === "auto_review" ? "ask_approval" : current,
+        );
+      }
+    };
+
+    void fetch("/api/experiments/agent-auto-review", {
+      credentials: "same-origin",
+      cache: "no-store",
+      signal: controller.signal,
+    })
+      .then(async (response) => {
+        if (!response.ok) return false;
+        const data = (await response.json()) as { available?: unknown };
+        return data.available === true;
+      })
+      .then(applyAvailability)
+      .catch(() => {
+        if (!controller.signal.aborted) applyAvailability(false);
+      });
+
+    return () => controller.abort();
+  }, [authUserId]);
 
   // Check for available local sandbox connections
   const localConnections = useQuery(
@@ -1255,6 +1294,7 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
     setSandboxPreference,
     agentPermissionMode,
     setAgentPermissionMode,
+    agentAutoReviewAvailable,
     desktopBridgeActive,
     desktopBridgeStatus,
     retryDesktopBridge,
