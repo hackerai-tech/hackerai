@@ -190,6 +190,70 @@ describe("POST /api/subscribe", () => {
     expect(mockCreateCheckoutSession).not.toHaveBeenCalled();
   });
 
+  it("scopes checkout creation to the active organization", async () => {
+    mockGetUserIDAndPro.mockResolvedValueOnce({
+      userId: "user_123",
+      subscription: "free",
+      organizationId: "org_active",
+      freeQuotaSubject: "free_quota_subject",
+    } as never);
+    mockListOrganizationMemberships.mockResolvedValueOnce({
+      data: [
+        {
+          organizationId: "org_active",
+          role: { slug: "admin" },
+        },
+      ],
+    } as never);
+    mockGetOrganization.mockResolvedValueOnce({
+      id: "org_active",
+      stripeCustomerId: "cus_active",
+    } as never);
+    mockRetrieveCustomer.mockResolvedValueOnce({
+      id: "cus_active",
+      metadata: { workOSOrganizationId: "org_active" },
+    } as never);
+
+    const { POST } = await import("../route");
+    const response = await POST(makeRequest({ plan: "pro-monthly-plan" }));
+
+    expect(response.status).toBe(200);
+    expect(mockListOrganizationMemberships).toHaveBeenCalledWith({
+      userId: "user_123",
+      statuses: ["active"],
+      organizationId: "org_active",
+    });
+    expect(mockGetOrganization).toHaveBeenCalledWith("org_active");
+    expect(mockCreateCheckoutSession).toHaveBeenCalledWith(
+      expect.objectContaining({
+        customer: "cus_active",
+        metadata: expect.objectContaining({
+          workOSOrganizationId: "org_active",
+        }),
+      }),
+    );
+  });
+
+  it("rejects ambiguous multi-organization checkout without an active organization", async () => {
+    mockListOrganizationMemberships.mockResolvedValueOnce({
+      data: [
+        { organizationId: "org_a", role: { slug: "admin" } },
+        { organizationId: "org_b", role: { slug: "admin" } },
+      ],
+    } as never);
+
+    const { POST } = await import("../route");
+    const response = await POST(makeRequest({ plan: "pro-monthly-plan" }));
+    const body = await response.json();
+
+    expect(response.status).toBe(409);
+    expect(body).toEqual({
+      error: "Select an active organization before subscribing",
+    });
+    expect(mockGetOrganization).not.toHaveBeenCalled();
+    expect(mockCreateCheckoutSession).not.toHaveBeenCalled();
+  });
+
   it("returns unauthenticated requests as 401 responses", async () => {
     mockGetUserIDAndPro.mockRejectedValueOnce(
       new ChatSDKError("unauthorized:auth") as never,
