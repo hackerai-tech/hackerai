@@ -1068,6 +1068,35 @@ describe("CentrifugoSandbox", () => {
       await expect(promise).resolves.toBeUndefined();
     });
 
+    it("includes the project folder as the allowed root for native writes", async () => {
+      const sandbox = createDesktopSandbox("C:\\work\\hackerai");
+      const promise = sandbox.files.write("src\\app.ts", "updated");
+
+      await jest.advanceTimersByTimeAsync(0);
+      const sub = mockSubscriptions[0];
+      sub.emit("subscribed");
+      await jest.advanceTimersByTimeAsync(0);
+
+      expect(sub.publish).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: "file_write",
+          path: "C:\\work\\hackerai\\src\\app.ts",
+          allowedRoot: "C:\\work\\hackerai",
+          targetConnectionId: "conn-1",
+          requestId: expect.any(String),
+        }),
+      );
+
+      const request = (sub.publish as jest.Mock).mock.calls[0][0] as {
+        requestId: string;
+      };
+      sub.emit("publication", {
+        data: { type: "file_ok", requestId: request.requestId },
+      });
+
+      await expect(promise).resolves.toBeUndefined();
+    });
+
     it("chunks large native writes into file_write then file_append requests", async () => {
       const sandbox = createDesktopSandbox();
       const content = "x".repeat(70 * 1024);

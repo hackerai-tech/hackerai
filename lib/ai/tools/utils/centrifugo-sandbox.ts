@@ -494,6 +494,10 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
             ...input,
             path: this.resolveWorkingPath(input.path),
             requestId,
+            ...(this.workingDirectory &&
+            (input.type === "file_write" || input.type === "file_append")
+              ? { allowedRoot: this.workingDirectory }
+              : {}),
             targetConnectionId: this.connectionInfo.connectionId,
           } as FileRequestMessage;
 
