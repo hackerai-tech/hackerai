@@ -30,6 +30,7 @@ import {
   SUBAGENT_ACTIVE_STATUSES,
   type SubagentStatus,
 } from "@/lib/ai/subagents/contracts";
+import { toSubagentHandle } from "@/lib/ai/subagents/agent-handle";
 import { extractMessageText } from "@/lib/utils/message-utils";
 
 type ChildSummary = {
@@ -554,10 +555,16 @@ export const SubagentsSidebar = ({
     }
   }, [selectedById?.parent_message_id]);
 
-  const selected =
-    runs?.find((child) => child.subagent_id === selectedId) ??
-    persistedSelected ??
-    null;
+  const selectedFromRuns = useMemo(() => {
+    if (!runs || !selectedId) return null;
+    const exact = runs.find((child) => child.subagent_id === selectedId);
+    if (exact) return exact;
+    const handleMatches = runs.filter(
+      (child) => toSubagentHandle(child.subagent_id) === selectedId,
+    );
+    return handleMatches.length === 1 ? handleMatches[0] : null;
+  }, [runs, selectedId]);
+  const selected = selectedFromRuns ?? persistedSelected ?? null;
   const active = runs?.filter((child) => isActive(child.status)) ?? [];
   const done = runs?.filter((child) => !isActive(child.status)) ?? [];
 

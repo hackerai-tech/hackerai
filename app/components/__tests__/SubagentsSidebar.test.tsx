@@ -284,6 +284,38 @@ describe("SubagentsSidebar", () => {
     expect(screen.getByRole("heading", { name: "Done · 1" })).toBeVisible();
   });
 
+  it("resolves a model-facing short handle to the persisted child", () => {
+    const childWithLongId = {
+      ...doneChild,
+      subagent_id: "sa_09041c08070448b5a5cee3c7c5454b66",
+    };
+    mockUseQuery.mockImplementation((query, args) => {
+      if (query === "getOwned") return null;
+      if (query === "listForParentMessage") {
+        return args?.parentMessageId === "parent-message"
+          ? [childWithLongId]
+          : [];
+      }
+      return [];
+    });
+
+    render(
+      <SubagentsSidebar
+        content={{
+          kind: "subagents",
+          parentMessageId: "parent-message",
+          toolCallId: "tool-wait",
+          selectedSubagentId: "sa_09041c08",
+        }}
+        closeSidebar={jest.fn()}
+      />,
+    );
+
+    expect(
+      screen.getByRole("heading", { name: "Rejected candidate" }),
+    ).toBeVisible();
+  });
+
   it("does not record abandonment when the resolved parent id changes", () => {
     let selectedChild = {
       ...activeChild,
