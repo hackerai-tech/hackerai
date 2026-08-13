@@ -4,6 +4,7 @@ import React, { useCallback } from "react";
 import { useAccessToken } from "@workos-inc/authkit-nextjs/components";
 import { UserSecurity } from "@workos-inc/widgets/user-security";
 import { WorkOsWidgets } from "@workos-inc/widgets/workos-widgets";
+import { LogOut, Monitor } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
 
@@ -53,6 +54,7 @@ const SecurityTab = () => {
     <div className="space-y-6">
       <div data-testid="workos-user-security">
         <WorkOsWidgets
+          style={{ blockSize: "auto", minBlockSize: "auto" }}
           theme={{
             appearance: "dark",
             accentColor: "gray",
@@ -65,9 +67,20 @@ const SecurityTab = () => {
         </WorkOsWidgets>
       </div>
 
-      <div className="border-t">
-        <div className="flex items-center justify-between py-3 border-b">
-          <div className="font-medium text-base">Log out of this device</div>
+      <div
+        data-testid="security-session-actions"
+        className="overflow-hidden rounded-lg border bg-card text-card-foreground"
+      >
+        <div className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-4 border-b p-4">
+          <div
+            aria-hidden="true"
+            className="flex size-8 items-center justify-center rounded-md border bg-muted/50"
+          >
+            <Monitor className="size-4" />
+          </div>
+          <div className="min-w-0 text-sm font-semibold">
+            Log out of this device
+          </div>
           <Button
             data-testid="logout-button-device"
             variant="outline"
@@ -78,10 +91,16 @@ const SecurityTab = () => {
           </Button>
         </div>
 
-        <div className="flex items-start justify-between py-3">
-          <div className="flex-1 pr-4">
-            <div className="font-medium text-base">Log out of all devices</div>
-            <div className="text-sm text-muted-foreground mt-1">
+        <div className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-4 p-4">
+          <div
+            aria-hidden="true"
+            className="flex size-8 items-center justify-center rounded-md border bg-muted/50"
+          >
+            <LogOut className="size-4" />
+          </div>
+          <div className="min-w-0">
+            <div className="text-sm font-semibold">Log out of all devices</div>
+            <div className="mt-1 text-sm text-muted-foreground">
               Log out of all active sessions across all devices, including your
               current session. It may take up to 10 minutes for other devices to
               be logged out.
@@ -92,7 +111,7 @@ const SecurityTab = () => {
             variant="destructive"
             size="sm"
             onClick={handleLogoutAll}
-            className="bg-red-600 hover:bg-red-700 text-white shrink-0"
+            className="shrink-0 bg-red-600 text-white hover:bg-red-700"
           >
             Log out all
           </Button>
