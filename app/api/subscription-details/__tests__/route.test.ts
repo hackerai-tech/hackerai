@@ -1,6 +1,6 @@
 import { describe, it, expect, jest, beforeEach } from "@jest/globals";
 
-const mockGetUserID = jest.fn();
+const mockGetUserIDAndPro = jest.fn();
 const mockGetUser = jest.fn();
 const mockListOrganizationMemberships = jest.fn();
 const mockGetOrganization = jest.fn();
@@ -30,7 +30,7 @@ jest.mock("@/lib/posthog/server", () => ({
 }));
 
 jest.mock("@/lib/auth/get-user-id", () => ({
-  getUserID: mockGetUserID,
+  getUserIDAndPro: mockGetUserIDAndPro,
 }));
 
 jest.mock("../../workos", () => ({
@@ -76,7 +76,11 @@ describe("POST /api/subscription-details", () => {
   beforeEach(() => {
     jest.clearAllMocks();
 
-    mockGetUserID.mockResolvedValue("user_123" as never);
+    mockGetUserIDAndPro.mockResolvedValue({
+      userId: "user_123",
+      subscription: "team",
+      organizationId: "org_team",
+    } as never);
     mockGetUser.mockResolvedValue({
       id: "user_123",
       email: "billing@example.com",
@@ -145,6 +149,36 @@ describe("POST /api/subscription-details", () => {
     expect(mockListPrices).toHaveBeenCalledWith({
       lookup_keys: ["pro-monthly-plan"],
     });
+  });
+
+  it("scopes membership and billing lookup to the active organization", async () => {
+    const { POST } = await import("../route");
+
+    const response = await POST(makeRequest({ plan: "pro-monthly-plan" }));
+
+    expect(response.status).toBe(200);
+    expect(mockListOrganizationMemberships).toHaveBeenCalledWith({
+      userId: "user_123",
+      organizationId: "org_team",
+      statuses: ["active"],
+    });
+    expect(mockGetOrganization).toHaveBeenCalledWith("org_team");
+  });
+
+  it("rejects billing changes when there is no active organization", async () => {
+    mockGetUserIDAndPro.mockResolvedValueOnce({
+      userId: "user_123",
+      subscription: "free",
+    } as never);
+
+    const { POST } = await import("../route");
+    const response = await POST(makeRequest({ plan: "pro-monthly-plan" }));
+    const body = await response.json();
+
+    expect(response.status).toBe(403);
+    expect(body).toEqual({ error: "No active organization" });
+    expect(mockListOrganizationMemberships).not.toHaveBeenCalled();
+    expect(mockGetOrganization).not.toHaveBeenCalled();
   });
 
   it("rejects non-owner, non-admin members from managing billing", async () => {
