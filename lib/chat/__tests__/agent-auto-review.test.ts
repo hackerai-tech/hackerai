@@ -204,6 +204,65 @@ describe("Agent Auto review", () => {
     expect(context.truncatedEntryCount).toBeGreaterThan(0);
   });
 
+  it("bounds wide nested tool output before serialization", () => {
+    const wide = (depth: number): Record<string, unknown> =>
+      Object.fromEntries(
+        Array.from({ length: 30 }, (_, index) => [
+          `key-${depth}-${index}`,
+          depth > 0 ? wide(depth - 1) : `value-${index}`,
+        ]),
+      );
+    const context = extractAgentAutoReviewConversationContext([
+      {
+        id: "assistant-wide-tool",
+        role: "assistant",
+        parts: [
+          {
+            type: "tool-run_terminal_cmd",
+            toolCallId: "tool-wide",
+            state: "output-available",
+            input: { command: "test" },
+            output: wide(2),
+          },
+        ],
+      } as UIMessage,
+    ]);
+
+    expect(context.text).toContain("value_budget_exhausted");
+    expect(context.text.length).toBeLessThanOrEqual(4_000);
+  });
+
+  it("enforces the conversation budget after prompt escaping", async () => {
+    const conversationContext = extractAgentAutoReviewConversationContext([
+      {
+        id: "assistant-angle-brackets",
+        role: "assistant",
+        parts: [{ type: "text", text: "<".repeat(20_000) }],
+      },
+    ]);
+    const runModel = jest.fn(async ({ prompt }) => {
+      const contextMatch = prompt.match(
+        /<untrusted_conversation_context_[^>]+>\n([\s\S]*?)\n<\/untrusted_conversation_context_[^>]+>/u,
+      );
+      expect(contextMatch?.[1].length).toBeLessThanOrEqual(16_000);
+      return {
+        output: {
+          verdict: "approve",
+          riskCategory: "routine",
+          rationale: "The exact action is authorized and routine.",
+        },
+      };
+    });
+
+    await reviewAgentToolAction({
+      request: terminalRequest("pwd"),
+      authorizationContext,
+      conversationContext,
+      runModel,
+    });
+    expect(runModel).toHaveBeenCalledTimes(1);
+  });
+
   it("still checks user authorization for an otherwise safe command", async () => {
     const runModel = jest.fn(async () => ({
       output: {
