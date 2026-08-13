@@ -84,3 +84,28 @@ describe("terminal sidebar output", () => {
     });
   });
 });
+
+describe("web search sidebar output", () => {
+  it("falls back to the legacy query when queries has an invalid shape", () => {
+    const [webSearch] = extractSidebarContentFromMessage({
+      role: "assistant",
+      parts: [
+        {
+          type: "tool-web_search",
+          toolCallId: "call-search",
+          state: "input-available",
+          input: {
+            queries: { 0: "unexpected", length: 1 },
+            query: "fallback sidebar query",
+          },
+        },
+      ],
+    });
+
+    expect(webSearch).toMatchObject({
+      query: "fallback sidebar query",
+      isSearching: true,
+      toolCallId: "call-search",
+    });
+  });
+});

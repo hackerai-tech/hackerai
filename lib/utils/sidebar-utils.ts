@@ -34,6 +34,17 @@ export interface Message {
 // per-part forEach below.
 const STREAMS_DURING_INPUT = new Set<string>(["tool-file"]);
 
+const getWebSearchQuery = (input: unknown): string => {
+  if (!input || typeof input !== "object") return "";
+  const { queries, query } = input as {
+    queries?: unknown;
+    query?: unknown;
+  };
+  if (Array.isArray(queries)) return queries.join(", ");
+  if (typeof queries === "string") return queries;
+  return typeof query === "string" ? query : "";
+};
+
 /**
  * Extract sidebar content from a single message. Exported for incremental processing
  * (e.g. only reprocess the last message during streaming).
@@ -281,8 +292,7 @@ export function extractSidebarContentFromMessage(
 
     // Web Search - extract at input-available for auto-follow, and output-available for results
     if (part.type === "tool-web_search" && part.state === "input-available") {
-      const queries = part.input?.queries || [];
-      const query = Array.isArray(queries) ? queries.join(", ") : queries;
+      const query = getWebSearchQuery(part.input);
       if (query) {
         contentList.push({
           query,
@@ -294,8 +304,7 @@ export function extractSidebarContentFromMessage(
     }
 
     if (part.type === "tool-web_search" && part.state === "output-available") {
-      const queries = part.input?.queries || [];
-      const query = Array.isArray(queries) ? queries.join(", ") : queries;
+      const query = getWebSearchQuery(part.input);
 
       let results: WebSearchResult[] = [];
       if (part.output) {
