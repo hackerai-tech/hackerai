@@ -1838,15 +1838,18 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
       hasPaginatedMessageResults: !!paginatedMessageResults,
       awaitingServerChat,
     });
-  const resolvedApprovalPresentationChatIdRef = useRef<string | null>(null);
+  const [
+    resolvedApprovalPresentationChatId,
+    setResolvedApprovalPresentationChatId,
+  ] = useState<string | null>(null);
   const canResolveApprovalPresentation =
     !isInitialExistingChatLoad && chatDataForCurrentChat !== undefined;
   const hasResolvedApprovalPresentation =
-    resolvedApprovalPresentationChatIdRef.current === chatId;
+    resolvedApprovalPresentationChatId === chatId;
 
   useLayoutEffect(() => {
     if (canResolveApprovalPresentation) {
-      resolvedApprovalPresentationChatIdRef.current = chatId;
+      setResolvedApprovalPresentationChatId(chatId);
     }
   }, [canResolveApprovalPresentation, chatId]);
 
