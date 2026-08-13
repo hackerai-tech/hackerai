@@ -548,8 +548,7 @@ describe("ChatInput - Integration Tests", () => {
       expect(screen.getByTestId("chat-input")).toBeInTheDocument();
     });
 
-    it("keeps the approval prompt stable across a transient stored-state gap", () => {
-      jest.useFakeTimers();
+    it("clears the approval prompt when the persisted lifecycle resolves", () => {
       const storedApprovalRequest = {
         approvalId: "stored-approval-1",
         toolCallId: "tool-1",
@@ -576,17 +575,34 @@ describe("ChatInput - Integration Tests", () => {
 
       rerender(renderInput(null));
 
-      expect(screen.getByTestId("agent-approval-prompt")).toBeInTheDocument();
-      act(() => jest.advanceTimersByTime(249));
-      expect(screen.getByTestId("agent-approval-prompt")).toBeInTheDocument();
-
-      act(() => jest.advanceTimersByTime(1));
       expect(
         screen.queryByTestId("agent-approval-prompt"),
       ).not.toBeInTheDocument();
       expect(screen.getByTestId("chat-input")).toBeInTheDocument();
+    });
 
-      jest.useRealTimers();
+    it("shows a neutral input shell until the initial task state resolves", () => {
+      render(
+        <TestWrapper>
+          <AgentModeSetter />
+          <ChatInput
+            onSubmit={mockOnSubmit}
+            onStop={mockOnStop}
+            status="ready"
+            chatId="approval-chat"
+            hasMessages
+            isResolvingInitialState
+          />
+        </TestWrapper>,
+      );
+
+      expect(
+        screen.getByTestId("chat-input-loading-state"),
+      ).toBeInTheDocument();
+      expect(screen.queryByTestId("chat-input")).not.toBeInTheDocument();
+      expect(
+        screen.queryByTestId("agent-approval-prompt"),
+      ).not.toBeInTheDocument();
     });
 
     it("restores the approval prompt when stopping the Agent fails", async () => {

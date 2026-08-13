@@ -70,11 +70,25 @@ interface ChatInputProps {
   storedApprovalRequest?: ActiveAgentToolApprovalRequest | null;
   offlineProtection?: boolean;
   sendDisabledReason?: string;
+  isResolvingInitialState?: boolean;
 }
 
-// Reconnect can briefly omit the stored request before the live approval
-// session arrives. Keep the prompt mounted across that reactive handoff.
-const STORED_APPROVAL_CLEAR_GRACE_MS = 250;
+const ChatInputLoadingState = () => (
+  <div
+    aria-label="Loading task input"
+    aria-live="polite"
+    className="relative min-w-0 px-4 pb-3"
+    data-testid="chat-input-loading-state"
+    role="status"
+  >
+    <div className="mx-auto w-full min-w-0 max-w-full sm:min-w-[390px] sm:max-w-[768px]">
+      <div className="flex h-[70px] flex-col justify-center gap-2 rounded-[22px] border border-black/8 bg-input-chat px-4 shadow-[0px_12px_32px_0px_rgba(0,0,0,0.02)] dark:border-border">
+        <div className="h-3 w-32 animate-pulse rounded-full bg-muted-foreground/15 motion-reduce:animate-none" />
+        <div className="h-3 w-20 animate-pulse rounded-full bg-muted-foreground/10 motion-reduce:animate-none" />
+      </div>
+    </div>
+  </div>
+);
 
 const isBrowserFile = (file: UploadedFileState["file"]): file is File =>
   typeof globalThis.File !== "undefined" && file instanceof globalThis.File;
@@ -208,6 +222,7 @@ export const ChatInput = ({
   storedApprovalRequest,
   offlineProtection = true,
   sendDisabledReason,
+  isResolvingInitialState = false,
 }: ChatInputProps) => {
   const {
     chatMode,
@@ -245,58 +260,24 @@ export const ChatInput = ({
   } = useFileUpload(chatMode);
   const { activeToolApprovalRequest } = useAgentApproval();
 
-  const [retainedStoredApproval, setRetainedStoredApproval] = useState<{
-    chatId: string | undefined;
-    request: ActiveAgentToolApprovalRequest | null;
-  }>(() => ({
-    chatId,
-    request: storedApprovalRequest ?? null,
-  }));
-  const retainedStoredApprovalRequest =
-    retainedStoredApproval.chatId === chatId
-      ? retainedStoredApproval.request
-      : null;
-
-  useEffect(() => {
-    if (storedApprovalRequest) {
-      setRetainedStoredApproval({
-        chatId,
-        request: storedApprovalRequest,
-      });
-      return;
-    }
-
-    const clearTimeoutId = window.setTimeout(() => {
-      setRetainedStoredApproval((current) =>
-        current.chatId === chatId ? { chatId, request: null } : current,
-      );
-    }, STORED_APPROVAL_CLEAR_GRACE_MS);
-
-    return () => window.clearTimeout(clearTimeoutId);
-  }, [chatId, storedApprovalRequest]);
-
-  const effectiveStoredApprovalRequest =
-    storedApprovalRequest ?? retainedStoredApprovalRequest;
-
   const isGenerating = status === "submitted" || status === "streaming";
   const isAgent = isAgentMode(chatMode);
   const approvalRequest = useMemo(
     () =>
       activeToolApprovalRequest &&
-      effectiveStoredApprovalRequest &&
+      storedApprovalRequest &&
       activeToolApprovalRequest.approvalId ===
-        effectiveStoredApprovalRequest.approvalId &&
-      activeToolApprovalRequest.toolCallId ===
-        effectiveStoredApprovalRequest.toolCallId
+        storedApprovalRequest.approvalId &&
+      activeToolApprovalRequest.toolCallId === storedApprovalRequest.toolCallId
         ? {
-            ...effectiveStoredApprovalRequest,
+            ...storedApprovalRequest,
             ...activeToolApprovalRequest,
-            ...(effectiveStoredApprovalRequest.autoReview
-              ? { autoReview: effectiveStoredApprovalRequest.autoReview }
+            ...(storedApprovalRequest.autoReview
+              ? { autoReview: storedApprovalRequest.autoReview }
               : {}),
           }
-        : (activeToolApprovalRequest ?? effectiveStoredApprovalRequest),
-    [activeToolApprovalRequest, effectiveStoredApprovalRequest],
+        : (activeToolApprovalRequest ?? storedApprovalRequest),
+    [activeToolApprovalRequest, storedApprovalRequest],
   );
   const [isStoppingAgent, setIsStoppingAgent] = useState(false);
   const [isReconnecting, setIsReconnecting] = useState(false);
@@ -715,6 +696,10 @@ export const ChatInput = ({
     setInput(`${input}${separator}${content}`);
     await handleRemoveFile(index);
   };
+
+  if (isResolvingInitialState) {
+    return <ChatInputLoadingState />;
+  }
 
   return (
     <div className={`relative px-4 min-w-0 ${isCentered ? "" : "pb-3"}`}>
