@@ -8,6 +8,7 @@ export const USER_RESEARCH_PROVIDER_OPTIONS = {
   openrouter: {
     reasoning: { enabled: false },
     usage: { include: true },
+    provider: { zdr: true },
   },
 } as const;
 
@@ -115,6 +116,7 @@ export type ResearchCohortReport = ResearchCohortSynthesis & {
   coverage: {
     usersRequested: number;
     usersAnalyzed: number;
+    profilesFailed: number;
     chatsReviewed: number;
     messagesReviewed: number;
   };
@@ -238,15 +240,30 @@ export const normalizeCohortSynthesis = (
   const synthesis = cohortSynthesisSchema.parse(
     sanitizeStructuredResearchOutput(value),
   );
+  const avatars = synthesis.avatars.map((avatar) => ({
+    ...avatar,
+    evidenceUserCount: Math.max(
+      1,
+      Math.min(avatar.evidenceUserCount, usersAnalyzed),
+    ),
+  }));
+  const confidenceRank = { low: 0, medium: 1, high: 2 } as const;
+  const fallbackAvatar = [...avatars].sort(
+    (a, b) =>
+      confidenceRank[b.confidence] - confidenceRank[a.confidence] ||
+      b.evidenceUserCount - a.evidenceUserCount,
+  )[0];
+  const avatarNames = new Set(avatars.map((avatar) => avatar.name));
+  const primaryAvatar = avatarNames.has(synthesis.primaryAvatar)
+    ? synthesis.primaryAvatar
+    : fallbackAvatar.name;
   return {
     ...synthesis,
-    avatars: synthesis.avatars.map((avatar) => ({
-      ...avatar,
-      evidenceUserCount: Math.max(
-        1,
-        Math.min(avatar.evidenceUserCount, usersAnalyzed),
-      ),
-    })),
+    avatars,
+    primaryAvatar,
+    secondaryAvatars: Array.from(new Set(synthesis.secondaryAvatars)).filter(
+      (name) => avatarNames.has(name) && name !== primaryAvatar,
+    ),
   };
 };
 
@@ -349,15 +366,10 @@ export const buildCohortPrompt = (args: {
         Math.max(1, args.profiles.length),
     ),
   );
-  const compactProfiles = args.profiles.map((entry) => {
-    let factor = 1;
-    let profile = entry.profile;
-    while (JSON.stringify(profile).length > perProfileBudget && factor > 0.1) {
-      factor *= 0.75;
-      profile = shrinkResearchStrings(entry.profile, factor);
-    }
-    return { ...entry, profile };
-  });
+  const compactProfiles = args.profiles.map((entry) => ({
+    ...entry,
+    profile: compactResearchProfile(entry.profile, perProfileBudget),
+  }));
   const payload = JSON.stringify({
     researchQuestion: sanitizeResearchText(args.question),
     cohortLabel: sanitizeResearchText(args.cohortLabel),
@@ -366,22 +378,95 @@ export const buildCohortPrompt = (args: {
   return `${COHORT_SYSTEM_PROMPT}\n\nSynthesize this cohort:\n${payload}`;
 };
 
-const shrinkResearchStrings = <T>(value: T, factor: number): T => {
-  if (typeof value === "string") {
-    return value.slice(0, Math.max(32, Math.floor(value.length * factor))) as T;
+const shrinkText = (value: string, factor: number): string =>
+  value.slice(0, Math.max(24, Math.floor(value.length * factor)));
+
+const shrinkResearchProfileText = (
+  profile: ResearchUserProfile,
+  factor: number,
+): ResearchUserProfile => {
+  const shrinkPatterns = (patterns: ResearchUserProfile["recurringJobs"]) =>
+    patterns.map((pattern) => ({
+      ...pattern,
+      label: shrinkText(pattern.label, factor),
+      description: shrinkText(pattern.description, factor),
+    }));
+  return {
+    ...profile,
+    summary: shrinkText(profile.summary, factor),
+    declaredContext: profile.declaredContext
+      ? shrinkText(profile.declaredContext, factor)
+      : null,
+    recurringJobs: shrinkPatterns(profile.recurringJobs),
+    workflowPatterns: shrinkPatterns(profile.workflowPatterns),
+    toolsAndEnvironments: shrinkPatterns(profile.toolsAndEnvironments),
+    valueDrivers: shrinkPatterns(profile.valueDrivers),
+    frictionAndUnmetNeeds: shrinkPatterns(profile.frictionAndUnmetNeeds),
+    reasonsToPay: shrinkPatterns(profile.reasonsToPay),
+    uncertainty: profile.uncertainty.map((item) => shrinkText(item, factor)),
+  };
+};
+
+const patternFields = [
+  "recurringJobs",
+  "workflowPatterns",
+  "toolsAndEnvironments",
+  "valueDrivers",
+  "frictionAndUnmetNeeds",
+  "reasonsToPay",
+] as const;
+
+const removeLowestPriorityDetail = (
+  profile: ResearchUserProfile,
+): ResearchUserProfile | null => {
+  const field = patternFields
+    .filter((candidate) => profile[candidate].length > 0)
+    .sort(
+      (a, b) =>
+        JSON.stringify(profile[b].at(-1)).length -
+        JSON.stringify(profile[a].at(-1)).length,
+    )[0];
+  if (field) {
+    return { ...profile, [field]: profile[field].slice(0, -1) };
   }
-  if (Array.isArray(value)) {
-    return value.map((item) => shrinkResearchStrings(item, factor)) as T;
+  if (profile.uncertainty.length > 0) {
+    return { ...profile, uncertainty: profile.uncertainty.slice(0, -1) };
   }
-  if (value && typeof value === "object") {
-    return Object.fromEntries(
-      Object.entries(value).map(([key, item]) => [
-        key,
-        shrinkResearchStrings(item, factor),
-      ]),
-    ) as T;
+  if (profile.userTypes.length > 1) {
+    return { ...profile, userTypes: profile.userTypes.slice(0, -1) };
   }
-  return value;
+  return null;
+};
+
+const compactResearchProfile = (
+  profile: ResearchUserProfile,
+  budget: number,
+): ResearchUserProfile => {
+  let compacted = profile;
+  let factor = 1;
+  while (JSON.stringify(compacted).length > budget && factor > 0.1) {
+    factor *= 0.75;
+    compacted = shrinkResearchProfileText(profile, factor);
+  }
+  while (JSON.stringify(compacted).length > budget) {
+    const smaller = removeLowestPriorityDetail(compacted);
+    if (!smaller) break;
+    compacted = smaller;
+  }
+  if (JSON.stringify(compacted).length <= budget) return compacted;
+  return {
+    ...compacted,
+    summary: compacted.summary.slice(0, 256),
+    userTypes: compacted.userTypes.slice(0, 1),
+    declaredContext: compacted.declaredContext?.slice(0, 128) ?? null,
+    recurringJobs: [],
+    workflowPatterns: [],
+    toolsAndEnvironments: [],
+    valueDrivers: [],
+    frictionAndUnmetNeeds: [],
+    reasonsToPay: [],
+    uncertainty: [],
+  };
 };
 
 export { cohortSynthesisSchema };

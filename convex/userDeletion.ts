@@ -23,6 +23,7 @@ export const USER_DELETION_TABLE_POLICY = {
     "local_sandbox_tokens",
     "local_sandbox_connections",
     "cancellation_reason_details",
+    "research_run_members",
     "research_user_profiles",
   ],
   anonymize: [
@@ -424,6 +425,11 @@ async function cleanupUserDataForUser(
   >(ctx, budget, "research_user_profiles", "by_user_id", (q) =>
     q.eq("user_id", userId),
   );
+  const researchRunMembersBatch = await collectByIndexBatch<
+    Doc<"research_run_members">
+  >(ctx, budget, "research_run_members", "by_user_id", (q) =>
+    q.eq("user_id", userId),
+  );
 
   const deletionBatches = [
     projectsBatch,
@@ -438,6 +444,7 @@ async function cleanupUserDataForUser(
     extraUsageBatch,
     teamMemberUsageBatch,
     cancellationReasonDetailsBatch,
+    researchRunMembersBatch,
     researchUserProfilesBatch,
   ];
   stats.hasMore ||= deletionBatches.some((batch) => batch.hasMore);
@@ -452,6 +459,7 @@ async function cleanupUserDataForUser(
   const extraUsage = extraUsageBatch.docs;
   const teamMemberUsage = teamMemberUsageBatch.docs;
   const cancellationReasonDetails = cancellationReasonDetailsBatch.docs;
+  const researchRunMembers = researchRunMembersBatch.docs;
   const researchUserProfiles = researchUserProfilesBatch.docs;
 
   const chatsReadyToDelete = messagesBatch.hasMore
@@ -491,6 +499,13 @@ async function cleanupUserDataForUser(
     stats,
     "cancellation_reason_details",
     cancellationReasonDetails,
+    mode,
+  );
+  await deleteDocs(
+    ctx,
+    stats,
+    "research_run_members",
+    researchRunMembers,
     mode,
   );
   await deleteDocs(

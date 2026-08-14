@@ -25,7 +25,7 @@ const DEFAULT_MAX_CHATS_PER_USER = 12;
 const MAX_MESSAGES_PER_CHAT = 80;
 
 const workerPayloadSchema = z.object({
-  analysisId: z.string().uuid(),
+  analysisId: z.uuid(),
   userId: z.string().trim().min(1).max(200),
   pseudonym: z.string().regex(/^U\d{2}$/),
   question: z.string().trim().min(10).max(1_000),
@@ -96,6 +96,7 @@ export const analyzeUserResearchProfile = schemaTask({
     const { client, serviceKey } = getResearchClient();
     const chats = await client.query(api.userResearch.listRepresentativeChats, {
       serviceKey,
+      analysisId: payload.analysisId,
       userId: payload.userId,
       maxChats: payload.maxChatsPerUser,
     });
@@ -107,6 +108,7 @@ export const analyzeUserResearchProfile = schemaTask({
             api.userResearch.getMessageExcerpt,
             {
               serviceKey,
+              analysisId: payload.analysisId,
               userId: payload.userId,
               chatId: chat.chatId,
               maxMessages: MAX_MESSAGES_PER_CHAT,
@@ -186,6 +188,10 @@ export const pmUserResearch = schemaTask({
   run: async (payload) => {
     const { client, serviceKey } = getResearchClient();
     const analysisId = crypto.randomUUID();
+    const members = payload.userIds.map((userId, index) => ({
+      userId,
+      pseudonym: `U${String(index + 1).padStart(2, "0")}`,
+    }));
 
     await client.mutation(api.userResearch.createRun, {
       serviceKey,
@@ -194,7 +200,7 @@ export const pmUserResearch = schemaTask({
       question: payload.question,
       cohortLabel: payload.cohortLabel,
       requestedBy: payload.requestedBy,
-      cohortSize: payload.userIds.length,
+      members,
       maxChatsPerUser: payload.maxChatsPerUser,
       model: GROK_4_6_SLUG,
     });
@@ -203,17 +209,26 @@ export const pmUserResearch = schemaTask({
         serviceKey,
         analysisId,
       });
-      await analyzeUserResearchProfile.batchTriggerAndWait(
-        payload.userIds.map((userId, index) => ({
+      const batchResult = await analyzeUserResearchProfile.batchTriggerAndWait(
+        members.map(({ userId, pseudonym }) => ({
           payload: {
             analysisId,
             userId,
-            pseudonym: `U${String(index + 1).padStart(2, "0")}`,
+            pseudonym,
             question: payload.question,
             maxChatsPerUser: payload.maxChatsPerUser,
           },
         })),
       );
+      const failedPseudonyms = batchResult.runs.flatMap((run, index) =>
+        run.ok ? [] : [members[index]?.pseudonym ?? `U${index + 1}`],
+      );
+      if (failedPseudonyms.length > 0) {
+        console.warn("Some user research profiles failed", {
+          analysisId,
+          failedPseudonyms,
+        });
+      }
 
       const profiles = await client.query(api.userResearch.listProfiles, {
         serviceKey,
@@ -247,6 +262,7 @@ export const pmUserResearch = schemaTask({
         coverage: {
           usersRequested: payload.userIds.length,
           usersAnalyzed: profiles.length,
+          profilesFailed: failedPseudonyms.length,
           chatsReviewed: profiles.reduce(
             (count, profile) => count + profile.coverage.chatsReviewed,
             0,
@@ -270,12 +286,8 @@ export const pmUserResearch = schemaTask({
       return {
         analysisId,
         status: "completed" as const,
-        failedProfiles: payload.userIds.length - profiles.length,
-        profiles: profiles.map(({ pseudonym, profile, coverage }) => ({
-          pseudonym,
-          profile,
-          coverage,
-        })),
+        failedProfiles: failedPseudonyms.length,
+        usersAnalyzed: profiles.length,
         report,
       };
     } catch (error) {

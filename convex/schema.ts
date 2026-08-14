@@ -1020,6 +1020,7 @@ export default defineSchema({
     reasoning_enabled: v.boolean(),
     status: researchRunStatusValidator,
     profiles_completed: v.number(),
+    profiles_failed: v.number(),
     input_tokens: v.optional(v.number()),
     output_tokens: v.optional(v.number()),
     cost_dollars: v.optional(v.number()),
@@ -1030,6 +1031,15 @@ export default defineSchema({
   })
     .index("by_analysis_id", ["analysis_id"])
     .index("by_created_at", ["created_at"]),
+
+  research_run_members: defineTable({
+    analysis_id: v.string(),
+    user_id: v.string(),
+    pseudonym: v.string(),
+    created_at: v.number(),
+  })
+    .index("by_analysis_and_user", ["analysis_id", "user_id"])
+    .index("by_user_id", ["user_id"]),
 
   research_user_profiles: defineTable({
     analysis_id: v.string(),
@@ -1046,7 +1056,6 @@ export default defineSchema({
     updated_at: v.number(),
   })
     .index("by_analysis_and_user", ["analysis_id", "user_id"])
-    .index("by_analysis_id", ["analysis_id"])
     .index("by_user_id", ["user_id"]),
 
   research_reports: defineTable({

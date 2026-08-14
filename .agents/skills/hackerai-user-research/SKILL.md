@@ -15,28 +15,31 @@ Read [references/privacy-policy.md](references/privacy-policy.md) and
 ## Workflow
 
 1. Read the owning Linear issue. Extract the research question, cohort rule,
-   exclusions, requested output, and privacy constraints. If there is no approved
-   Linear issue, create or update one before analyzing customer messages.
+   exclusions, requested output, and privacy constraints. Confirm the responsible
+   owner explicitly approved customer-message research. If no approved issue
+   exists, create or update one and stop until approval is recorded; creating the
+   issue does not itself grant approval.
 2. Select the cohort in PostHog. Use Stripe-synced revenue in PostHog when its
    freshness and account mapping are sufficient. Check Stripe directly only for
    unmatched customers, refunds/disputes, payer-versus-user ambiguity, or other
    reconciliation gaps. Never use Google Drive.
 3. Resolve each cohort member to the internal user ID used by Convex. Exclude
    internal/test/fraud accounts and deduplicate payer or organization
-   relationships before triggering analysis.
+   relationships before triggering analysis. Stop unless 3-20 unique internal
+   user IDs remain after filtering.
 4. Discover the Trigger task `pm-user-research` and inspect its current schema.
    Trigger it in the intended environment with the Linear issue ID, exact
    question, descriptive cohort label, 3-20 unique user IDs, PM name/handle, and
    optional chat limit. Never call the worker task directly.
 5. Wait for the run to complete. Keep the returned `analysisId`; it is the audit
    and lookup key for the restricted Convex records.
-6. Present the restricted result with per-user pseudonyms, evidence coverage,
-   user type, recurring jobs, workflows, tools/environments, value drivers,
-   friction, reasons to pay, confidence, and uncertainty. Then present the
-   aggregate answer, avatars, primary/secondary target, and experiments.
+6. Present only the aggregate answer, evidence coverage, supported user types,
+   avatars, primary/secondary target, confidence, unknowns, and experiments.
+   Detailed pseudonym-level profiles remain in restricted Convex records and are
+   not returned through Trigger.
 7. Update Linear only when asked. Copy aggregate findings, coverage, confidence,
-   unknowns, and experiments. Never copy per-user profiles, raw messages,
-   direct identifiers, targets, findings, files, code, commands, or payloads.
+   unknowns, and experiments. Never copy cohort IDs, pseudonym-level profiles,
+   raw evidence, direct identifiers, or per-user findings or targeting decisions.
 
 ## Trigger payload
 
@@ -73,6 +76,6 @@ payload. `userIds` must be the internal Convex/WorkOS user IDs.
 
 ## Result boundary
 
-The Trigger result is restricted internal research. Per-user entries are
-pseudonymized but remain sensitive. The aggregate report is the only part that
-may be copied to Linear, and only under the owning issue's privacy rules.
+The Trigger result contains only aggregate internal research. Detailed profiles
+remain restricted and deletion-aware in Convex. The aggregate report is the only
+part that may be copied to Linear, under the owning issue's privacy rules.

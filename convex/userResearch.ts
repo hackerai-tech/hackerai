@@ -1,5 +1,10 @@
 import { ConvexError, v } from "convex/values";
-import { mutation, query } from "./_generated/server";
+import {
+  mutation,
+  query,
+  type MutationCtx,
+  type QueryCtx,
+} from "./_generated/server";
 import { validateServiceKey } from "./lib/utils";
 import {
   researchCohortReportValidator,
@@ -33,6 +38,8 @@ const usageFields = {
   outputTokens: v.optional(v.number()),
   costDollars: v.optional(v.number()),
 };
+
+type ResearchCtx = MutationCtx | QueryCtx;
 
 const assertIntegerInRange = (
   value: number,
@@ -73,6 +80,30 @@ const extractText = (parts: unknown[]): string =>
     .trim()
     .slice(0, MAX_MESSAGE_CHARS);
 
+const getRunningResearchMember = async (
+  ctx: ResearchCtx,
+  analysisId: string,
+  userId: string,
+) => {
+  const run = await ctx.db
+    .query("research_runs")
+    .withIndex("by_analysis_id", (q) => q.eq("analysis_id", analysisId))
+    .unique();
+  if (!run || run.status !== "running") {
+    throw new ConvexError("Research run is not active");
+  }
+  const member = await ctx.db
+    .query("research_run_members")
+    .withIndex("by_analysis_and_user", (q) =>
+      q.eq("analysis_id", analysisId).eq("user_id", userId),
+    )
+    .unique();
+  if (!member) {
+    throw new ConvexError("User is not part of this research run");
+  }
+  return { run, member };
+};
+
 export const createRun = mutation({
   args: {
     serviceKey: v.string(),
@@ -81,7 +112,12 @@ export const createRun = mutation({
     question: v.string(),
     cohortLabel: v.string(),
     requestedBy: v.string(),
-    cohortSize: v.number(),
+    members: v.array(
+      v.object({
+        userId: v.string(),
+        pseudonym: v.string(),
+      }),
+    ),
     maxChatsPerUser: v.number(),
     model: v.string(),
   },
@@ -89,7 +125,7 @@ export const createRun = mutation({
   handler: async (ctx, args) => {
     validateServiceKey(args.serviceKey);
     assertIntegerInRange(
-      args.cohortSize,
+      args.members.length,
       MIN_RESEARCH_COHORT_SIZE,
       MAX_RESEARCH_COHORT_SIZE,
       "cohortSize",
@@ -109,11 +145,20 @@ export const createRun = mutation({
       if (
         existing.linear_issue_id !== args.linearIssueId ||
         existing.question !== args.question ||
-        existing.cohort_size !== args.cohortSize
+        existing.cohort_size !== args.members.length
       ) {
         throw new ConvexError("analysisId already belongs to another run");
       }
       return null;
+    }
+
+    if (
+      new Set(args.members.map((member) => member.userId)).size !==
+        args.members.length ||
+      new Set(args.members.map((member) => member.pseudonym)).size !==
+        args.members.length
+    ) {
+      throw new ConvexError("Research run members must be unique");
     }
 
     const now = Date.now();
@@ -123,15 +168,26 @@ export const createRun = mutation({
       question: args.question,
       cohort_label: args.cohortLabel,
       requested_by: args.requestedBy,
-      cohort_size: args.cohortSize,
+      cohort_size: args.members.length,
       max_chats_per_user: args.maxChatsPerUser,
       model: args.model,
       reasoning_enabled: false,
       status: "queued",
       profiles_completed: 0,
+      profiles_failed: 0,
       created_at: now,
       updated_at: now,
     });
+    await Promise.all(
+      args.members.map((member) =>
+        ctx.db.insert("research_run_members", {
+          analysis_id: args.analysisId,
+          user_id: member.userId,
+          pseudonym: member.pseudonym,
+          created_at: now,
+        }),
+      ),
+    );
     return null;
   },
 });
@@ -145,7 +201,9 @@ export const markRunRunning = mutation({
       .query("research_runs")
       .withIndex("by_analysis_id", (q) => q.eq("analysis_id", args.analysisId))
       .unique();
-    if (!run) throw new ConvexError("Research run not found");
+    if (!run || run.status !== "queued") {
+      throw new ConvexError("Research run is not queued");
+    }
     await ctx.db.patch(run._id, {
       status: "running",
       error: undefined,
@@ -162,12 +220,14 @@ export const markRunRunning = mutation({
 export const listRepresentativeChats = query({
   args: {
     serviceKey: v.string(),
+    analysisId: v.string(),
     userId: v.string(),
     maxChats: v.number(),
   },
   returns: v.array(researchChatValidator),
   handler: async (ctx, args) => {
     validateServiceKey(args.serviceKey);
+    await getRunningResearchMember(ctx, args.analysisId, args.userId);
     assertIntegerInRange(
       args.maxChats,
       MIN_CHATS_PER_USER,
@@ -246,6 +306,7 @@ export const listRepresentativeChats = query({
 export const getMessageExcerpt = query({
   args: {
     serviceKey: v.string(),
+    analysisId: v.string(),
     userId: v.string(),
     chatId: v.string(),
     maxMessages: v.number(),
@@ -256,6 +317,7 @@ export const getMessageExcerpt = query({
   }),
   handler: async (ctx, args) => {
     validateServiceKey(args.serviceKey);
+    await getRunningResearchMember(ctx, args.analysisId, args.userId);
     assertIntegerInRange(
       args.maxMessages,
       MIN_MESSAGES_PER_CHAT,
@@ -284,10 +346,16 @@ export const getMessageExcerpt = query({
       .order("desc")
       .take(lastLimit + 1);
 
+    const selectedFirst = first.slice(0, firstLimit);
+    const selectedLast = last.slice(0, lastLimit);
     const byId = new Map(
-      [...first.slice(0, firstLimit), ...last.slice(0, lastLimit)].map(
-        (message) => [message._id, message],
-      ),
+      [...selectedFirst, ...selectedLast].map((message) => [
+        message._id,
+        message,
+      ]),
+    );
+    const lookaheads = [first[firstLimit], last[lastLimit]].filter(
+      (message) => message !== undefined,
     );
     const messages = Array.from(byId.values())
       .sort((a, b) => a._creationTime - b._creationTime)
@@ -304,7 +372,7 @@ export const getMessageExcerpt = query({
 
     return {
       messages,
-      truncated: first.length > firstLimit || last.length > lastLimit,
+      truncated: lookaheads.some((message) => !byId.has(message._id)),
     };
   },
 });
@@ -324,11 +392,14 @@ export const saveUserProfile = mutation({
   returns: v.null(),
   handler: async (ctx, args) => {
     validateServiceKey(args.serviceKey);
-    const run = await ctx.db
-      .query("research_runs")
-      .withIndex("by_analysis_id", (q) => q.eq("analysis_id", args.analysisId))
-      .unique();
-    if (!run) throw new ConvexError("Research run not found");
+    const { run, member } = await getRunningResearchMember(
+      ctx,
+      args.analysisId,
+      args.userId,
+    );
+    if (member.pseudonym !== args.pseudonym) {
+      throw new ConvexError("Pseudonym does not match the research run");
+    }
 
     const existing = await ctx.db
       .query("research_user_profiles")
@@ -361,7 +432,9 @@ export const saveUserProfile = mutation({
 
     const profiles = await ctx.db
       .query("research_user_profiles")
-      .withIndex("by_analysis_id", (q) => q.eq("analysis_id", args.analysisId))
+      .withIndex("by_analysis_and_user", (q) =>
+        q.eq("analysis_id", args.analysisId),
+      )
       .take(MAX_RESEARCH_COHORT_SIZE + 1);
     if (profiles.length > MAX_RESEARCH_COHORT_SIZE) {
       throw new ConvexError("Research run exceeds the cohort limit");
@@ -390,7 +463,9 @@ export const listProfiles = query({
     validateServiceKey(args.serviceKey);
     const profiles = await ctx.db
       .query("research_user_profiles")
-      .withIndex("by_analysis_id", (q) => q.eq("analysis_id", args.analysisId))
+      .withIndex("by_analysis_and_user", (q) =>
+        q.eq("analysis_id", args.analysisId),
+      )
       .take(MAX_RESEARCH_COHORT_SIZE + 1);
     if (profiles.length > MAX_RESEARCH_COHORT_SIZE) {
       throw new ConvexError("Research run exceeds the cohort limit");
@@ -422,11 +497,15 @@ export const completeRun = mutation({
       .query("research_runs")
       .withIndex("by_analysis_id", (q) => q.eq("analysis_id", args.analysisId))
       .unique();
-    if (!run) throw new ConvexError("Research run not found");
+    if (!run || run.status !== "running") {
+      throw new ConvexError("Research run is not active");
+    }
 
     const profiles = await ctx.db
       .query("research_user_profiles")
-      .withIndex("by_analysis_id", (q) => q.eq("analysis_id", args.analysisId))
+      .withIndex("by_analysis_and_user", (q) =>
+        q.eq("analysis_id", args.analysisId),
+      )
       .take(MAX_RESEARCH_COHORT_SIZE + 1);
     if (profiles.length > MAX_RESEARCH_COHORT_SIZE) {
       throw new ConvexError("Research run exceeds the cohort limit");
@@ -470,6 +549,7 @@ export const completeRun = mutation({
     await ctx.db.patch(run._id, {
       status: "completed",
       profiles_completed: profiles.length,
+      profiles_failed: args.report.coverage.profilesFailed,
       input_tokens: sum([
         ...profiles.map((profile) => profile.input_tokens),
         args.inputTokens,

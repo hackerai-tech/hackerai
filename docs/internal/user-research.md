@@ -18,7 +18,15 @@ called through the repo-owned Codex skill `$hackerai-user-research`.
    evidence coverage, token usage, and provider cost in Convex.
 
 Both stages use `x-ai/grok-4.6` through the existing OpenRouter provider with
-reasoning explicitly disabled.
+reasoning explicitly disabled and zero-data-retention routing required. The task
+fails closed if no ZDR-capable endpoint is available.
+
+## Retention and deletion
+
+Raw excerpts are not stored. Account deletion removes that user's
+`research_user_profiles` and `research_run_members` records. Cohort-only
+`research_runs` and `research_reports` remain retained; reports can be created
+only after at least three user profiles are available.
 
 ## Convex functions
 

@@ -1,6 +1,7 @@
 import {
   buildCohortPrompt,
   buildUserProfilePrompt,
+  normalizeCohortSynthesis,
   normalizeResearchUserProfile,
   sanitizeResearchText,
   USER_RESEARCH_MAX_COHORT_CONTEXT_CHARS,
@@ -43,6 +44,7 @@ describe("user research privacy controls", () => {
       openrouter: {
         reasoning: { enabled: false },
         usage: { include: true },
+        provider: { zdr: true },
       },
     });
   });
@@ -160,6 +162,8 @@ nmap -sV target.example.com`);
     expect(parsed.profiles).toHaveLength(20);
     expect(payload).toContain("profile-0");
     expect(payload).toContain("profile-19");
+    expect(payload).toContain("bug_bounty_hunter");
+    expect(payload).toContain('"confidence":"high"');
   });
 
   it("caps model evidence counts and lowers confidence for sparse users", () => {
@@ -180,5 +184,65 @@ nmap -sV target.example.com`);
     );
 
     expect(normalized.summary).toBe("Uses [url omitted] and [email omitted]");
+  });
+
+  it("normalizes cohort references, evidence counts, and identifiers", () => {
+    const normalized = normalizeCohortSynthesis(
+      {
+        answerToQuestion: "See https://private.example.com",
+        executiveSummary: "Aggregate summary",
+        avatars: [
+          {
+            name: "Independent Operator",
+            definition: "Uses sam@example.com for repeated work",
+            mainJob: "Validate security issues",
+            supportingUserTypes: ["bug_bounty_hunter"],
+            pains: [],
+            desiredOutcomes: [],
+            reasonsToPay: [],
+            productFeatures: [],
+            objectionsAndTrustNeeds: [],
+            acquisitionHypotheses: [],
+            messageHypotheses: [],
+            evidenceUserCount: 20,
+            confidence: "high",
+          },
+          {
+            name: "Security Learner",
+            definition: "Learns practical workflows",
+            mainJob: "Build skills",
+            supportingUserTypes: ["security_student"],
+            pains: [],
+            desiredOutcomes: [],
+            reasonsToPay: [],
+            productFeatures: [],
+            objectionsAndTrustNeeds: [],
+            acquisitionHypotheses: [],
+            messageHypotheses: [],
+            evidenceUserCount: 2,
+            confidence: "medium",
+          },
+        ],
+        primaryAvatar: "Missing avatar",
+        secondaryAvatars: [
+          "Security Learner",
+          "Missing avatar",
+          "Security Learner",
+        ],
+        crossCohortPatterns: [],
+        unknowns: [],
+        followUpExperiments: [],
+        privacyNote: "Aggregate only",
+      },
+      4,
+    );
+
+    expect(normalized.answerToQuestion).toBe("See [url omitted]");
+    expect(normalized.avatars[0].definition).toBe(
+      "Uses [email omitted] for repeated work",
+    );
+    expect(normalized.avatars[0].evidenceUserCount).toBe(4);
+    expect(normalized.primaryAvatar).toBe("Independent Operator");
+    expect(normalized.secondaryAvatars).toEqual(["Security Learner"]);
   });
 });

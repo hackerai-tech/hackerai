@@ -90,6 +90,7 @@ export const researchCohortReportValidator = v.object({
   coverage: v.object({
     usersRequested: v.number(),
     usersAnalyzed: v.number(),
+    profilesFailed: v.number(),
     chatsReviewed: v.number(),
     messagesReviewed: v.number(),
   }),

@@ -564,6 +564,20 @@ function seedTables(userId = "user_123", otherUserId = "user_other"): Tables {
         pseudonym: "U02",
       },
     ],
+    research_run_members: [
+      {
+        _id: "research-member-user",
+        analysis_id: "analysis-1",
+        user_id: userId,
+        pseudonym: "U01",
+      },
+      {
+        _id: "research-member-other",
+        analysis_id: "analysis-1",
+        user_id: otherUserId,
+        pseudonym: "U02",
+      },
+    ],
   };
 }
 
@@ -608,6 +622,14 @@ describe("userDeletion", () => {
     expect(
       row(tables, "research_user_profiles", "research-profile-other"),
     ).toBeTruthy();
+    expect(
+      row(tables, "research_run_members", "research-member-user"),
+    ).toBeUndefined();
+    expect(
+      row(tables, "research_run_members", "research-member-other"),
+    ).toBeTruthy();
+    expect(row(tables, "research_runs", "research-run")).toBeTruthy();
+    expect(row(tables, "research_reports", "research-report")).toBeTruthy();
     expect(row(tables, "temp_streams", "temp-stream-user")).toBeUndefined();
     expect(row(tables, "temp_streams", "temp-stream-other")).toBeTruthy();
 
