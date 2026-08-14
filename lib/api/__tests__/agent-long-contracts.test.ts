@@ -419,14 +419,33 @@ describe("agent stream runner — empty tool-input recovery", () => {
 });
 
 describe("agent-long chat UI — completion reconciliation", () => {
-  test("polls the resume endpoint and clears useChat state after backend completion", () => {
-    expect(chatComponentSrc).toMatch(/AGENT_LONG_COMPLETION_POLL_DELAY_MS/);
-    expect(chatComponentSrc).toMatch(/AGENT_LONG_COMPLETION_QUIET_MS/);
+  test("polls status without minting tokens and clears useChat state after backend completion", () => {
+    const reconciliationStart = chatComponentSrc.indexOf(
+      "// Trigger.dev can finish and persist an Agent answer",
+    );
+    const reconciliationEnd = chatComponentSrc.indexOf(
+      "// Ref bridge: StreamEffects exposes resetAutoContinueCount here",
+      reconciliationStart,
+    );
+    const reconciliationSrc = chatComponentSrc.slice(
+      reconciliationStart,
+      reconciliationEnd,
+    );
+
+    expect(reconciliationSrc).toMatch(/AGENT_LONG_COMPLETION_POLL_DELAY_MS/);
+    expect(reconciliationSrc).toMatch(/AGENT_LONG_COMPLETION_QUIET_MS/);
     expect(chatComponentSrc).toMatch(/AGENT_LONG_COMPLETION_STOP_GRACE_MS/);
-    expect(chatComponentSrc).toMatch(/AGENT_RESUME_ENDPOINT/);
-    expect(chatComponentSrc).toMatch(/response\.status\s*===\s*204/);
-    expect(chatComponentSrc).toMatch(/scheduleFinishLocally\(\)/);
-    expect(chatComponentSrc).toMatch(/finishLocally\(\)/);
+    expect(chatComponentSrc).toMatch(
+      /AGENT_LONG_COMPLETION_POLL_INTERVAL_MS\s*=\s*15_000/,
+    );
+    expect(reconciliationSrc).toMatch(/AGENT_STATUS_ENDPOINT/);
+    expect(reconciliationSrc).toMatch(/method:\s*"POST"/);
+    expect(reconciliationSrc).toMatch(/isCompletionCheckInFlight/);
+    expect(reconciliationSrc).toMatch(/response\.status\s*===\s*404/);
+    expect(reconciliationSrc).toMatch(/payload\.terminal\s*===\s*true/);
+    expect(reconciliationSrc).not.toMatch(/AGENT_RESUME_ENDPOINT/);
+    expect(reconciliationSrc).toMatch(/scheduleFinishLocally\(\)/);
+    expect(reconciliationSrc).toMatch(/finishLocally\(\)/);
     expect(chatComponentSrc).toMatch(/AGENT_PARTIAL_SAVE_ENDPOINT/);
     expect(chatComponentSrc).toMatch(/saveAgentLongPartialSnapshot/);
     expect(chatComponentSrc).toMatch(
@@ -440,6 +459,9 @@ describe("agent-long chat UI — completion reconciliation", () => {
       /const finishLocally = \(\) => \{[\s\S]*finalizeNewChatRoute/,
     );
     expect(chatComponentSrc).toMatch(/setIsExistingChat\(true\)/);
+    expect(statusSrc).toMatch(
+      /NextResponse\.json\(\{ status: run\.status, terminal \}\)/,
+    );
   });
 
   test("client partial-save endpoint is authenticated and assistant-only", () => {

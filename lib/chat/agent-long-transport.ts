@@ -164,8 +164,11 @@ const STREAM_TIMEOUT_MS = 5 * 60 * 1000;
 const STREAM_IDLE_TIMEOUT_SECONDS = STREAM_TIMEOUT_MS / 1000;
 const POST_FINISH_DRAIN_TIMEOUT_MS = 2_000;
 const COMPLETED_RUN_DRAIN_TIMEOUT_MS = 5_000;
-const QUIET_STREAM_STATUS_POLL_INTERVAL_MS = 2_000;
-const QUIET_STREAM_STATUS_POLL_AFTER_MS = 5_000;
+// The task emits a hidden heartbeat every 25 seconds. Poll at most once during
+// that quiet window so fallback status checks cannot exhaust Trigger's shared
+// API token bucket when many Agent runs are active at the same time.
+const QUIET_STREAM_STATUS_POLL_INTERVAL_MS = 10_000;
+const QUIET_STREAM_STATUS_POLL_AFTER_MS = 15_000;
 
 const getChatIdFromRequestInit = (
   init: RequestInit | undefined,
