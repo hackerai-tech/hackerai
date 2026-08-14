@@ -249,8 +249,39 @@ describe("POST /api/subscribe", () => {
     expect(response.status).toBe(409);
     expect(body).toEqual({
       error: "Select an active organization before subscribing",
+      code: "organization_selection_required",
     });
     expect(mockGetOrganization).not.toHaveBeenCalled();
+    expect(mockCreateCheckoutSession).not.toHaveBeenCalled();
+  });
+
+  it("rejects checkout when the active organization membership is stale", async () => {
+    mockGetUserIDAndPro.mockResolvedValueOnce({
+      userId: "user_123",
+      subscription: "free",
+      organizationId: "org_stale",
+      freeQuotaSubject: "free_quota_subject",
+    } as never);
+    mockListOrganizationMemberships.mockResolvedValueOnce({
+      data: [],
+    } as never);
+
+    const { POST } = await import("../route");
+    const response = await POST(makeRequest({ plan: "pro-monthly-plan" }));
+
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({
+      error: "Select an active organization before subscribing",
+      code: "organization_selection_required",
+    });
+    expect(mockListOrganizationMemberships).toHaveBeenCalledWith({
+      userId: "user_123",
+      statuses: ["active"],
+      organizationId: "org_stale",
+    });
+    expect(mockCreateOrganization).not.toHaveBeenCalled();
+    expect(mockCreateOrganizationMembership).not.toHaveBeenCalled();
+    expect(mockCreateCustomer).not.toHaveBeenCalled();
     expect(mockCreateCheckoutSession).not.toHaveBeenCalled();
   });
 

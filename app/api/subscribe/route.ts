@@ -335,12 +335,25 @@ export const POST = async (req: NextRequest) => {
 
     let organization;
 
+    if (organizationId && existingMemberships.data.length === 0) {
+      return json(
+        {
+          error: "Select an active organization before subscribing",
+          code: "organization_selection_required",
+        },
+        { status: 409 },
+      );
+    }
+
     if (existingMemberships.data && existingMemberships.data.length > 0) {
       // The authenticated active organization scopes multi-organization users.
       // Without one, only a single unambiguous membership is safe to select.
       if (!organizationId && existingMemberships.data.length > 1) {
         return json(
-          { error: "Select an active organization before subscribing" },
+          {
+            error: "Select an active organization before subscribing",
+            code: "organization_selection_required",
+          },
           { status: 409 },
         );
       }
