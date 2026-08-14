@@ -109,6 +109,10 @@ Useful reading commands:
 - \`agent-browser get text @e1\`, \`agent-browser get attr @e1 href\`, \`agent-browser get url\`, and \`agent-browser get title\` for targeted extraction.
 - Use semantic locators such as \`agent-browser find role button click --name "Submit"\` when a snapshot ref is unavailable.
 
+Session lifetime:
+- The cloud browser shuts down after 15 minutes without an agent-browser command. The next command starts a new browser, so assume open tabs, in-memory browser state, and element refs are lost; reopen the URL and take a fresh snapshot instead of reusing old tabs or refs.
+- If login state is lost after relaunch, authenticate again through the user-approved flow. Do not save cookies, local storage, or other authentication state to sandbox files for idle recovery because a user's cloud sandbox can be reused across Agent runs.
+
 Recovery:
 - For daemon, socket, connection, or browser-not-running failures, run \`agent-browser doctor\`; use \`agent-browser doctor --fix\` only when the diagnosis identifies a repairable problem, then reopen the page and retry.
 - For malformed command syntax, correct the command. For stale or invalid element refs, run a fresh \`agent-browser snapshot -i\`; do not blindly retry the same failing action.

@@ -442,10 +442,28 @@ Commands run directly on the host OS "workstation" without Docker isolation. Be 
     expect(cloudPrompt).toContain(
       "Invoke `agent-browser` directly through the terminal command tool",
     );
+    expect(cloudPrompt).toContain(
+      "shuts down after 15 minutes without an agent-browser command",
+    );
+    expect(cloudPrompt).toContain(
+      "assume open tabs, in-memory browser state, and element refs are lost",
+    );
+    expect(cloudPrompt).toContain(
+      "reopen the URL and take a fresh snapshot instead of reusing old tabs or refs",
+    );
+    expect(cloudPrompt).toContain(
+      "authenticate again through the user-approved flow",
+    );
+    expect(cloudPrompt).toContain(
+      "Do not save cookies, local storage, or other authentication state to sandbox files",
+    );
+    expect(cloudPrompt).not.toContain("agent-browser state save");
+    expect(cloudPrompt).not.toContain("agent-browser --state");
 
     for (const prompt of [localPrompt, askPrompt]) {
       expect(prompt).not.toContain("<agent_browser>");
       expect(prompt).not.toContain("agent-browser doctor --fix");
+      expect(prompt).not.toContain("authentication state to sandbox files");
       expect(prompt).not.toContain(
         "Invoke `agent-browser` directly through the terminal command tool",
       );
