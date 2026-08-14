@@ -32,6 +32,7 @@ const DEEPSEEK_FLASH_CANONICAL_SLUG = "deepseek/deepseek-v4-flash-20260731";
 const DEEPSEEK_FLASH_PREVIOUS_SLUG = "deepseek/deepseek-v4-flash";
 const DEEPSEEK_FLASH_PREVIOUS_CANONICAL_SLUG =
   "deepseek/deepseek-v4-flash-20260423";
+const DEEPSEEK_V4_PRO_SLUG = "deepseek/deepseek-v4-pro";
 const MEDIUM_GROK_PRIMARY_MODELS = [
   "ask-model",
   "agent-model",
@@ -43,6 +44,7 @@ const HIGH_GROK_PRIMARY_OR_FALLBACK_MODELS = [
   "model-grok-4.5-pro",
   "model-grok-4.6-pro",
   "model-deepseek-v4-pro",
+  "model-deepseek-v4-pro-0813",
   "model-opus-4.6",
   "model-glm-5.2",
   "model-kimi-k3",
@@ -284,6 +286,19 @@ describe("buildProviderOptions fallback chain", () => {
     );
     expect(opts.openrouter).toMatchObject({
       models: [GROK_SLUG, KIMI_K3_SLUG],
+      user: "user-1",
+    });
+  });
+
+  it("falls back from DeepSeek V4 Pro 0813 through the control route, Grok, then Kimi K3", () => {
+    const opts = buildProviderOptions(
+      false,
+      "user-1",
+      "model-deepseek-v4-pro-0813",
+      "ask",
+    );
+    expect(opts.openrouter).toMatchObject({
+      models: [DEEPSEEK_V4_PRO_SLUG, GROK_SLUG, KIMI_K3_SLUG],
       user: "user-1",
     });
   });
@@ -629,6 +644,12 @@ describe("getRetryFallbackModel", () => {
   it("retries paid DeepSeek Pro with Grok", () => {
     expect(getRetryFallbackModel("model-deepseek-v4-pro", "ask")).toBe(
       "model-grok-4.6",
+    );
+  });
+
+  it("retries the DeepSeek 0813 treatment with the current DeepSeek route", () => {
+    expect(getRetryFallbackModel("model-deepseek-v4-pro-0813", "ask")).toBe(
+      "model-deepseek-v4-pro",
     );
   });
 

@@ -482,6 +482,16 @@ describe("token-bucket", () => {
       expect(
         calculateTokenCost(1_000_000, "output", "model-deepseek-v4-pro"),
       ).toBe(13050);
+      expect(
+        calculateTokenCost(1_000_000, "input", "model-deepseek-v4-pro-0813"),
+      ).toBe(6525);
+      expect(
+        calculateTokenCost(
+          1_000_000,
+          "output",
+          "deepseek/deepseek-v4-pro-0813",
+        ),
+      ).toBe(13050);
     });
 
     it("should use GLM 5.2 baseline pricing ($0.76/$2.42)", () => {

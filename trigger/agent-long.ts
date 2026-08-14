@@ -129,6 +129,12 @@ import {
   type AgentApiEndpoint,
 } from "@/lib/api/agent-endpoints";
 import { phLogger } from "@/lib/posthog/server";
+import {
+  captureDeepSeekV4Pro0813ExperimentExposure,
+  evaluateDeepSeekV4Pro0813Experiment,
+  getActiveDeepSeekV4Pro0813ExperimentAssignment,
+  getDeepSeekV4Pro0813ExperimentContext,
+} from "@/lib/experiments/deepseek-v4-pro-0813";
 import type { AgentAutoReviewAssignment } from "@/lib/experiments/agent-auto-review";
 import { PAID_FUNNEL_EVENTS } from "@/lib/analytics/paid-funnel";
 import type { AnalyticsRequestContext } from "@/lib/analytics/request-context";
@@ -2273,6 +2279,18 @@ export const agentLongTask = task({
         );
       }
 
+      const posthog = PostHogClient();
+      const deepSeekV4Pro0813Experiment =
+        await evaluateDeepSeekV4Pro0813Experiment({
+          posthog,
+          userId,
+          selectedModel,
+          requestId: ctx.run.id,
+        });
+      if (deepSeekV4Pro0813Experiment) {
+        selectedModel = deepSeekV4Pro0813Experiment.modelKey;
+      }
+
       const notesEnabled = userCustomization?.include_notes ?? true;
 
       const estimatedInputTokens = await estimatePreflightInputTokens({
@@ -2294,7 +2312,6 @@ export const agentLongTask = task({
       };
       chatLogger.setChat(chatLogContext, selectedModel);
 
-      const posthog = PostHogClient();
       chatLogger.getBuilder().setAssistantId(assistantMessageId);
 
       // Wire trigger.dev's abort signal into a local controller.
@@ -2506,6 +2523,16 @@ export const agentLongTask = task({
                 extra: { selected_model: selectedModel },
               });
             }
+
+            const activeDeepSeekV4Pro0813Experiment =
+              getActiveDeepSeekV4Pro0813ExperimentAssignment(
+                deepSeekV4Pro0813Experiment,
+                selectedModel,
+              );
+            const routingExperimentContext =
+              getDeepSeekV4Pro0813ExperimentContext(
+                activeDeepSeekV4Pro0813Experiment,
+              );
 
             const freeMonthlyBudgetSnapshot =
               subscription === "free"
@@ -3256,6 +3283,7 @@ export const agentLongTask = task({
                   mode,
                   agentPermissionMode,
                   analyticsRequestContext,
+                  experiment: routingExperimentContext,
                   usage: usageCostRecord,
                   responseModel: state.responseModel,
                   ...(usageSettlementState && {
@@ -3475,6 +3503,16 @@ export const agentLongTask = task({
 
             let result;
             try {
+              captureDeepSeekV4Pro0813ExperimentExposure({
+                posthog,
+                userId,
+                subscription,
+                mode,
+                selectedModelOverride,
+                selectedModel,
+                configuredModel: configuredModelId,
+                assignment: activeDeepSeekV4Pro0813Experiment,
+              });
               result = await createStream(selectedModel);
             } catch (error) {
               if (
@@ -3818,6 +3856,7 @@ export const agentLongTask = task({
                                       state.budgetAbortDetails,
                                     agentPermissionMode,
                                     isAutoContinue: !!isAutoContinue,
+                                    experiment: routingExperimentContext,
                                     stepLimitTelemetry:
                                       buildAgentStepLimitTelemetry({
                                         configuredMaxSteps:
@@ -3990,6 +4029,7 @@ export const agentLongTask = task({
                         budgetAbortDetails: state.budgetAbortDetails,
                         agentPermissionMode,
                         isAutoContinue: !!isAutoContinue,
+                        experiment: routingExperimentContext,
                         stepLimitTelemetry: buildAgentStepLimitTelemetry({
                           configuredMaxSteps: state.configuredMaxSteps,
                           stepCount: state.agentStepCount,
