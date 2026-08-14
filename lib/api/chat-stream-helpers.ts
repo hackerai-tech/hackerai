@@ -618,6 +618,7 @@ const MEDIUM_GROK_REASONING_MODELS = new Set<string>([
 
 type FallbackOptions = {
   hasMultimodalToolResults?: boolean;
+  hasPdfAttachments?: boolean;
   reasoningOverride?: ProviderReasoningOverride;
   excludedModelSlugs?: readonly string[];
   requestedModelSlug?: string;
@@ -879,6 +880,16 @@ export function buildProviderOptions(
   return {
     openrouter: {
       reasoning,
+      ...(options.hasPdfAttachments && isDeepSeekV4
+        ? {
+            plugins: [
+              {
+                id: "file-parser" as const,
+                pdf: { engine: "mistral-ocr" as const },
+              },
+            ],
+          }
+        : {}),
       ...(userId && { user: userId }),
       ...(providerRouting && { provider: providerRouting }),
       ...(fallbackSlugs.length > 0 && { models: fallbackSlugs }),

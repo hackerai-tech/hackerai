@@ -270,6 +270,53 @@ export const resetServedModelTelemetryForRetry = (
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null;
 
+export const getOpenRouterFileAnnotations = (
+  providerMetadata: unknown,
+): unknown[] | undefined => {
+  if (!isRecord(providerMetadata)) return undefined;
+  const openrouter = providerMetadata.openrouter;
+  if (!isRecord(openrouter) || !Array.isArray(openrouter.annotations)) {
+    return undefined;
+  }
+  return openrouter.annotations.length > 0
+    ? [...openrouter.annotations]
+    : undefined;
+};
+
+export const addOpenRouterFileAnnotationsToLastAssistantMessage = (
+  messages: ModelMessage[],
+  annotations: unknown[] | undefined,
+): ModelMessage[] => {
+  if (!annotations?.length) return messages;
+
+  const index = messages.findLastIndex(
+    (message) => message.role === "assistant",
+  );
+  if (index < 0) return messages;
+
+  const message = messages[index] as ModelMessage & {
+    providerOptions?: Record<string, unknown>;
+  };
+  const providerOptions = isRecord(message.providerOptions)
+    ? message.providerOptions
+    : {};
+  const openrouter = isRecord(providerOptions.openrouter)
+    ? providerOptions.openrouter
+    : {};
+  const nextMessages = [...messages];
+  nextMessages[index] = {
+    ...message,
+    providerOptions: {
+      ...providerOptions,
+      openrouter: {
+        ...openrouter,
+        annotations,
+      },
+    },
+  } as ModelMessage;
+  return nextMessages;
+};
+
 const ESTIMATED_BYTES_PER_TOKEN = 4;
 
 const incrementCount = (counts: Record<string, number>, key: string): void => {
@@ -697,6 +744,12 @@ export async function createAgentStream(
   let streamHasImageViewResults = uiMessagesContainImageViewResult(
     state.finalMessages,
   );
+  const streamHasPdfAttachments = state.finalMessages.some((message) =>
+    message.parts?.some(
+      (part) => part.type === "file" && part.mediaType === "application/pdf",
+    ),
+  );
+  let openRouterFileAnnotations: unknown[] | undefined;
   const getEffectiveModelName = () =>
     resolveAgentModelForImageToolResults(
       modelName,
@@ -724,9 +777,10 @@ export async function createAgentStream(
       effectiveModelName,
       ctx.mode,
       {
-        hasMultimodalToolResults: streamHasImageViewResults,
-        excludedModelSlugs: ctx.excludedProviderModelSlugs,
         requestedModelSlug,
+        hasMultimodalToolResults: streamHasImageViewResults,
+        hasPdfAttachments: streamHasPdfAttachments,
+        excludedModelSlugs: ctx.excludedProviderModelSlugs,
         ...(ctx.providerReasoningOverride?.modelName === effectiveModelName && {
           reasoningOverride: ctx.providerReasoningOverride.reasoning,
         }),
@@ -754,9 +808,12 @@ export async function createAgentStream(
       repairedMessages = repair.messages as ModelMessage[];
     }
 
-    return appendPlatformAuthorizationToLatestUserMessage(
-      repairedMessages,
-      ctx.platformAuthorized,
+    return addOpenRouterFileAnnotationsToLastAssistantMessage(
+      appendPlatformAuthorizationToLatestUserMessage(
+        repairedMessages,
+        ctx.platformAuthorized,
+      ),
+      openRouterFileAnnotations,
     );
   };
   let latestProviderRequestDiagnostics: ProviderRequestDiagnostics | undefined;
@@ -1300,6 +1357,9 @@ export async function createAgentStream(
     onStepFinish: async ({ usage, response, providerMetadata }) => {
       ctx.onModelStreamFinish?.();
       state.agentStepCount += 1;
+      openRouterFileAnnotations =
+        getOpenRouterFileAnnotations(providerMetadata) ??
+        openRouterFileAnnotations;
       let stepUsageCostIndex: number | undefined;
       if (usage) {
         const stepAccountingModel = resolveServedModelForCostAccounting({

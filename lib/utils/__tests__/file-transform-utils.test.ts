@@ -359,6 +359,86 @@ describe("processMessageFiles image size guards", () => {
     ]);
   });
 
+  it("keeps Agent PDFs provider-visible while still staging a sandbox copy", async () => {
+    mockConvexAction.mockResolvedValue([
+      fileUrlInfo("https://storage.example/report.pdf", {
+        sizeBytes: 1024,
+        mediaType: "application/pdf",
+        name: "report.pdf",
+      }),
+    ]);
+
+    const result = await processMessageFiles(
+      makeMessage({
+        type: "file",
+        mediaType: "application/pdf",
+        fileId: "file_pdf",
+        name: "report.pdf",
+        url: "https://client.example/report.pdf",
+      }),
+      "agent",
+      "user123",
+      "/home/user/upload",
+      "pro",
+    );
+
+    expect(result.sandboxFiles).toEqual([
+      {
+        kind: "url",
+        url: "https://storage.example/report.pdf",
+        localPath: "/home/user/upload/report.pdf",
+      },
+    ]);
+    expect(result.messages[0].parts).toEqual([
+      { type: "text", text: "what is this?" },
+      expect.objectContaining({
+        type: "file",
+        mediaType: "application/pdf",
+        name: "report.pdf",
+        url: "https://storage.example/report.pdf",
+        size: 1024,
+      }),
+      {
+        type: "text",
+        text: '<attachment filename="report.pdf" local_path="/home/user/upload/report.pdf" />',
+      },
+    ]);
+    expect(result.containsPdfFiles).toBe(true);
+  });
+
+  it("keeps oversized Agent PDFs sandbox-only", async () => {
+    mockConvexAction.mockResolvedValue([
+      fileUrlInfo("https://storage.example/large.pdf", {
+        sizeBytes: 21 * 1024 * 1024,
+        mediaType: "application/pdf",
+        name: "large.pdf",
+      }),
+    ]);
+
+    const result = await processMessageFiles(
+      makeMessage({
+        type: "file",
+        mediaType: "application/pdf",
+        fileId: "file_large_pdf",
+        name: "large.pdf",
+      }),
+      "agent",
+      "user123",
+      "/home/user/upload",
+      "pro",
+    );
+
+    expect(result.sandboxFiles).toHaveLength(1);
+    expect(result.messages[0].parts).toEqual([
+      { type: "text", text: "what is this?" },
+      {
+        type: "text",
+        text: '<attachment filename="large.pdf" local_path="/home/user/upload/large.pdf" />',
+      },
+    ]);
+    expect(result.containsPdfFiles).toBe(false);
+  });
+
   it("omits stored images whose storage URL does not return valid image bytes", async () => {
     const notImageBytes = new TextEncoder().encode("<html>not an image</html>");
     mockConvexAction.mockResolvedValue([
