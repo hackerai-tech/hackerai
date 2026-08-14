@@ -179,6 +179,46 @@ describe("agent approval grants", () => {
   });
 
   it.each([
+    [
+      "an escaped cmd control operator",
+      String.raw`echo harmless\& whoami`,
+      "echo harmless",
+      ["echo"],
+    ],
+    [
+      "a quote interpreted differently by cmd.exe",
+      String.raw`echo "harmless\" & whoami & rem "`,
+      "echo harmless",
+      ["echo"],
+    ],
+    [
+      "an ambiguous Windows path",
+      String.raw`type C:\safe.txt`,
+      "type safe.txt",
+      ["type"],
+    ],
+  ])(
+    "requires fresh approval for %s",
+    (_description, target, safeTarget, prefixRule) => {
+      const reusableGrant = deriveAgentApprovalTargetGrant(
+        request("terminal_execute", safeTarget, prefixRule),
+      );
+
+      expect(reusableGrant).toMatchObject({ argv: prefixRule });
+      expect(
+        deriveAgentApprovalTargetGrant(request("terminal_execute", target)),
+      ).toBeNull();
+      expect(
+        reusableGrant &&
+          matchesAgentApprovalTargetGrant(
+            request("terminal_execute", target),
+            reusableGrant,
+          ),
+      ).toBe(false);
+    },
+  );
+
+  it.each([
     ["shell", "bash -c 'npm test && npm publish'"],
     ["absolute shell", "/bin/bash -lc 'npm test'"],
     ["Windows shell", String.raw`"C:\Windows\System32\cmd.exe" /c dir`],
