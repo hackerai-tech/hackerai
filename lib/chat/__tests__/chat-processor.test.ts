@@ -190,9 +190,9 @@ describe("selectModel", () => {
       );
     });
 
-    it("should return the Grok-backed agent model for paid agent with a PDF", () => {
+    it("should keep paid agent on DeepSeek V4 Pro when a PDF is attached", () => {
       expect(selectModel("agent", "pro", undefined, false, true)).toBe(
-        "agent-model",
+        "model-deepseek-v4-pro",
       );
     });
 
@@ -206,15 +206,15 @@ describe("selectModel", () => {
       );
     });
 
-    it("should return Grok 4.6 for paid ask when a PDF is attached", () => {
+    it("should keep paid ask on DeepSeek V4 Pro when a PDF is attached", () => {
       expect(selectModel("ask", "pro", undefined, false, true)).toBe(
-        "model-grok-4.6",
+        "model-deepseek-v4-pro",
       );
     });
 
-    it("should prefer Grok 4.6 when paid ask has both image and PDF attachments", () => {
+    it("should use the Grok-backed image route when paid ask has both image and PDF attachments", () => {
       expect(selectModel("ask", "pro", undefined, true, true)).toBe(
-        "model-grok-4.6",
+        "ask-model",
       );
     });
 
@@ -269,9 +269,9 @@ describe("selectModel", () => {
       );
     });
 
-    it("should promote HackerAI Standard to Grok 4.6 when a PDF is attached", () => {
+    it("should keep HackerAI Standard on DeepSeek V4 Pro when a PDF is attached", () => {
       expect(selectModel("ask", "pro", "hackerai-standard", false, true)).toBe(
-        "model-grok-4.6",
+        "model-deepseek-v4-pro",
       );
     });
 
@@ -308,7 +308,7 @@ describe("selectModel", () => {
     });
   });
 
-  // Agent mode — Auto/Standard use DeepSeek for text and media-capable routes otherwise.
+  // Agent mode — Auto/Standard use DeepSeek for text/PDF and media-capable routes for images.
   describe("tier override in agent mode", () => {
     it("should map HackerAI Standard to DeepSeek V4 Pro for text-only agent mode", () => {
       expect(selectModel("agent", "pro", "hackerai-standard")).toBe(
@@ -322,10 +322,10 @@ describe("selectModel", () => {
       ).toBe("model-grok-4.6");
     });
 
-    it("should route HackerAI Standard to Grok 4.6 when a PDF is attached", () => {
+    it("should keep HackerAI Standard on DeepSeek V4 Pro when a PDF is attached", () => {
       expect(
         selectModel("agent", "pro", "hackerai-standard", false, true),
-      ).toBe("model-grok-4.6");
+      ).toBe("model-deepseek-v4-pro");
     });
 
     it("should map HackerAI Pro to Grok 4.6 in text-only agent mode", () => {
@@ -403,12 +403,12 @@ describe("selectModel", () => {
       expect(selectModel("agent", "pro", "auto")).toBe("model-deepseek-v4-pro");
     });
 
-    it("should route paid agent Auto media to the Grok-backed agent model", () => {
+    it("should route paid agent Auto images to Grok and PDFs to DeepSeek", () => {
       expect(selectModel("agent", "pro", "auto", true, false)).toBe(
         "agent-model",
       );
       expect(selectModel("agent", "pro", "auto", false, true)).toBe(
-        "agent-model",
+        "model-deepseek-v4-pro",
       );
     });
 
@@ -420,9 +420,9 @@ describe("selectModel", () => {
       expect(selectModel("ask", "pro", "auto", true, false)).toBe("ask-model");
     });
 
-    it("should treat 'auto' as no override in ask mode with PDF -> Grok", () => {
+    it("should treat 'auto' as no override in ask mode with PDF -> DeepSeek", () => {
       expect(selectModel("ask", "pro", "auto", false, true)).toBe(
-        "model-grok-4.6",
+        "model-deepseek-v4-pro",
       );
     });
   });
@@ -440,7 +440,7 @@ describe("selectModel", () => {
         "ask-model",
       );
       expect(selectModel("ask", "pro", undefined, false, true)).toBe(
-        "model-grok-4.6",
+        "model-deepseek-v4-pro",
       );
     });
   });

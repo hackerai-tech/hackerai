@@ -290,6 +290,31 @@ describe("buildProviderOptions fallback chain", () => {
     });
   });
 
+  it("enables OpenRouter Mistral OCR for PDFs sent to DeepSeek V4", () => {
+    const opts = buildProviderOptions(
+      false,
+      "user-1",
+      "model-deepseek-v4-pro",
+      "agent",
+      { hasPdfAttachments: true },
+    );
+
+    expect(opts.openrouter.plugins).toEqual([
+      { id: "file-parser", pdf: { engine: "mistral-ocr" } },
+    ]);
+  });
+
+  it("does not enable the PDF parser when a DeepSeek request has no PDF", () => {
+    const opts = buildProviderOptions(
+      false,
+      "user-1",
+      "model-deepseek-v4-pro",
+      "agent",
+    );
+
+    expect(opts.openrouter).not.toHaveProperty("plugins");
+  });
+
   it("falls back from DeepSeek V4 Pro 0813 through the control route, Grok, then Kimi K3", () => {
     const opts = buildProviderOptions(
       false,
@@ -311,13 +336,14 @@ describe("buildProviderOptions fallback chain", () => {
     });
   });
 
-  it("falls back from paid Ask PDF Grok route to Kimi K3", () => {
+  it("does not force OCR on the Grok route", () => {
     const opts = buildProviderOptions(false, "user-1", "model-grok-4.6", "ask");
     expect(opts.openrouter).toMatchObject({
       reasoning: { enabled: true, effort: "medium" },
       models: [KIMI_K3_SLUG],
       user: "user-1",
     });
+    expect(opts.openrouter).not.toHaveProperty("plugins");
   });
 
   it("does not throw for an unknown registry key — no chain, no slug", () => {

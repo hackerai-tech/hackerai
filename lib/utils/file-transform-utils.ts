@@ -595,8 +595,9 @@ const applyUrlsToFileParts = async (
   for (const [fileKey, file] of filesToProcess) {
     if (!file.url) continue;
 
-    // Only convert PDFs to base64 in "ask" mode for inline viewing.
-    // In "agent" mode, we want the original URL for sandbox curl download.
+    // Ask mode keeps its existing base64 representation. Agent mode keeps the
+    // original signed URL so the same PDF can be sent to OpenRouter and staged
+    // in the sandbox without downloading it twice on our server.
     const finalUrl =
       mode === "ask" && file.mediaType === "application/pdf"
         ? await convertUrlToBase64DataUrl(file.url, "application/pdf").catch(
@@ -733,11 +734,16 @@ const removeFilePartsWithoutUrls = (messages: UIMessage[]) => {
   });
 };
 
-const isProviderVisibleAgentImagePart = (part: any): boolean => {
+const isProviderVisibleAgentFilePart = (part: any): boolean => {
   if (part?.type !== "file") return false;
   if (providerUnsafeImageParts.has(part)) return false;
   const mediaType = part.mediaType ?? "";
-  if (!isSupportedImageMediaType(mediaType)) return false;
+  if (
+    !isSupportedImageMediaType(mediaType) &&
+    mediaType !== "application/pdf"
+  ) {
+    return false;
+  }
 
   const size =
     typeof part.size === "number"
@@ -768,9 +774,12 @@ const applyModeSpecificTransforms = async (
     collectSandboxFiles(messages, sandboxFiles, uploadBasePath, {
       allowLocalDesktopFiles,
       getAttachmentTagKind: (part) =>
-        isProviderVisibleAgentImagePart(part) ? "inline-image" : "attachment",
+        isProviderVisibleAgentFilePart(part) &&
+        isSupportedImageMediaType(part.mediaType ?? "")
+          ? "inline-image"
+          : "attachment",
     });
-    removeNonMediaAndOversizedImageFileParts(messages);
+    removeNonProviderVisibleAgentFileParts(messages);
   } else {
     const nonMediaFileIds = filterNonMediaFileIds(messages, fileIds);
     if (nonMediaFileIds.length > 0) {
@@ -793,7 +802,7 @@ const applyModeSpecificTransforms = async (
  *
  * Transforms file parts based on chat mode:
  * - **Ask mode**: Converts non-media files to document content, keeps images/PDFs as file parts
- * - **Agent mode**: Prepares all files for sandbox upload, keeps only images as file parts
+ * - **Agent mode**: Prepares all files for sandbox upload and keeps provider-safe images/PDFs as file parts
  *
  * Processing steps:
  * 1. Generates fresh URLs for files (prevents expiration)
@@ -801,7 +810,7 @@ const applyModeSpecificTransforms = async (
  * 3. Detects media files (images/PDFs)
  * 4. Applies mode-specific transforms:
  *    - Ask: Injects document content for text files, removes audio
- *    - Agent: Collects files for sandbox, adds attachment tags, removes non-images
+ *    - Agent: Collects files for sandbox, adds attachment tags, removes files that cannot be sent to the provider
  *
  * @param messages - Messages to process
  * @param mode - Chat mode ("ask" or "agent")
@@ -1005,23 +1014,12 @@ const pruneFileParts = (
   });
 };
 
-const removeNonMediaAndOversizedImageFileParts = (messages: UIMessage[]) => {
+const removeNonProviderVisibleAgentFileParts = (messages: UIMessage[]) => {
   messages.forEach((msg) => {
     if (!msg.parts) return;
     msg.parts = msg.parts.filter((part: any) => {
       if (part?.type !== "file") return true;
-      if (providerUnsafeImageParts.has(part)) return false;
-      if (!isSupportedImageMediaType(part.mediaType ?? "")) return false;
-      return !isSandboxOnlyAgentUpload({
-        mode: "agent",
-        size:
-          typeof part.size === "number"
-            ? part.size
-            : typeof part.sizeBytes === "number"
-              ? part.sizeBytes
-              : 0,
-        mediaType: part.mediaType ?? "",
-      });
+      return isProviderVisibleAgentFilePart(part);
     });
   });
 };
