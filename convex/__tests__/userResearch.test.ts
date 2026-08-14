@@ -123,6 +123,27 @@ describe("userResearch.getMessageExcerpt", () => {
     expect(mockValidateServiceKey).toHaveBeenCalledWith("service-key");
   });
 
+  it.each(["queued", "completed", "failed"] as const)(
+    "rejects a %s research run",
+    async (runStatus) => {
+      const { getMessageExcerpt } = await import("../userResearch");
+      const { ctx, userId, chatId } = createCtx({
+        messageCount: 20,
+        runStatus,
+      });
+
+      await expect(
+        getMessageExcerpt.handler(ctx as never, {
+          serviceKey: "service-key",
+          analysisId: "analysis-1",
+          userId,
+          chatId,
+          maxMessages: 20,
+        }),
+      ).rejects.toThrow("Research run is not active");
+    },
+  );
+
   it("does not mark a chat truncated at the exact message limit", async () => {
     const { getMessageExcerpt } = await import("../userResearch");
     const { ctx, userId, chatId } = createCtx({ messageCount: 20 });
