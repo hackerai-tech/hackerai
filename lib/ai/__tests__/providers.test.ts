@@ -44,6 +44,13 @@ describe("provider registry", () => {
     ).toBe("x-ai/grok-4.6");
     expect(
       (
+        myProvider.languageModel("model-deepseek-v4-flash-0731") as {
+          modelId: string;
+        }
+      ).modelId,
+    ).toBe("deepseek/deepseek-v4-flash-0731");
+    expect(
+      (
         myProvider.languageModel("model-deepseek-v4-pro-0813") as {
           modelId: string;
         }
@@ -80,6 +87,12 @@ describe("provider registry", () => {
     expect(getModelDisplayName("model-grok-4.5-pro")).toBe("xAI Grok 4.6");
     expect(getModelDisplayName("model-grok-4.6-pro")).toBe("xAI Grok 4.6");
     expect(getModelCutoffDate("model-grok-4.6-pro")).toBe("August 2026");
+    expect(getModelDisplayName("model-deepseek-v4-flash-0731")).toBe(
+      "DeepSeek V4 Flash 0731",
+    );
+    expect(getModelCutoffDate("model-deepseek-v4-flash-0731")).toBe(
+      "July 2026",
+    );
     expect(getModelDisplayName("model-deepseek-v4-pro-0813")).toBe(
       "DeepSeek V4 Pro 0813",
     );
@@ -101,7 +114,8 @@ describe("provider registry", () => {
     expect(isAnthropicModel("anthropic/claude-opus-4.6")).toBe(true);
   });
 
-  it("classifies both DeepSeek V4 Pro experiment routes as DeepSeek", () => {
+  it("classifies the active DeepSeek tier routes as DeepSeek", () => {
+    expect(isDeepSeekModel("model-deepseek-v4-flash-0731")).toBe(true);
     expect(isDeepSeekModel("model-deepseek-v4-pro")).toBe(true);
     expect(isDeepSeekModel("model-deepseek-v4-pro-0813")).toBe(true);
   });

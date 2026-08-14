@@ -520,8 +520,9 @@ export class SummarizationTracker {
  * stream, OpenRouter rolls forward through this list and bills at the served
  * model's rate (response.modelId reflects what actually ran).
  *
- * The persisted Max key now resolves to Kimi K3 and falls back to Grok 4.6 in
- * every mode. Historical Opus response ids remain recognized for accounting.
+ * Paid Auto/Standard use DeepSeek V4 Flash 0731, Pro uses DeepSeek V4 Pro
+ * 0813, and Max uses Grok 4.6. Historical aliases remain recognized for
+ * in-flight requests and cost accounting.
  *
  * Keys and values are registry names (see lib/ai/providers.ts) — the actual
  * OpenRouter slugs are resolved at request-build time so this stays in sync
@@ -541,16 +542,17 @@ const AGENT_TEXT_FALLBACK_CHAIN = [
   "model-kimi-k3",
 ] as const satisfies readonly ModelName[];
 
-// HAC-68 treatment falls back through today's DeepSeek route before the
-// existing Grok/Kimi recovery chain.
-const DEEPSEEK_V4_PRO_0813_FALLBACK_CHAIN = [
-  "model-deepseek-v4-pro",
+const DEEPSEEK_V4_FLASH_0731_FALLBACK_CHAIN = [
+  "model-deepseek-v4-pro-0813",
   ...AGENT_TEXT_FALLBACK_CHAIN,
 ] as const satisfies readonly ModelName[];
 
-// HackerAI Pro uses Grok 4.6 for every request. GLM 5.2 remains its first
-// fallback, followed by Kimi K3 so media requests still have a multimodal final
-// recovery path if both primary providers are unavailable.
+const DEEPSEEK_V4_PRO_0813_FALLBACK_CHAIN = [
+  ...AGENT_TEXT_FALLBACK_CHAIN,
+] as const satisfies readonly ModelName[];
+
+// Preserve the historical Grok-backed Pro aliases for in-flight requests.
+// GLM 5.2 remains their first fallback, followed by Kimi K3.
 const HACKERAI_PRO_FALLBACK_CHAIN = [
   "model-glm-5.2",
   "model-kimi-k3",
@@ -559,6 +561,7 @@ const HACKERAI_PRO_FALLBACK_CHAIN = [
 const MODEL_FALLBACK_CHAIN: Partial<Record<ModelName, readonly ModelName[]>> = {
   "ask-model-free": AGENT_TEXT_FALLBACK_CHAIN,
   "agent-model-free": AGENT_TEXT_FALLBACK_CHAIN,
+  "model-deepseek-v4-flash-0731": DEEPSEEK_V4_FLASH_0731_FALLBACK_CHAIN,
   "model-deepseek-v4-pro": AGENT_TEXT_FALLBACK_CHAIN,
   "model-deepseek-v4-pro-0813": DEEPSEEK_V4_PRO_0813_FALLBACK_CHAIN,
   "ask-model": GROK_4_6_FALLBACK_CHAIN,
@@ -601,6 +604,8 @@ const HIGH_REASONING_MODELS = [
   "model-grok-4.5-pro",
   "model-grok-4.6",
   "model-grok-4.6-pro",
+  "model-deepseek-v4-flash-0731",
+  "model-deepseek-v4-pro-0813",
   "model-glm-5.2",
   "model-opus-4.6",
 ] as const satisfies readonly ModelName[];
@@ -608,13 +613,6 @@ const HIGH_REASONING_MODELS = [
 const isHighReasoningModel = (modelName?: string): boolean =>
   typeof modelName === "string" &&
   (HIGH_REASONING_MODELS as readonly string[]).includes(modelName);
-
-const MEDIUM_GROK_REASONING_MODELS = new Set<string>([
-  "ask-model",
-  "agent-model",
-  "model-grok-4.6",
-  "model-grok-4.5",
-]);
 
 type FallbackOptions = {
   hasMultimodalToolResults?: boolean;
@@ -647,12 +645,16 @@ const getFallbackKeys = (
   return MODEL_FALLBACK_CHAIN[modelName as ModelName];
 };
 
+/** Returns the first app-side retry model for a failed provider route. */
 export function getRetryFallbackModel(
   modelName: ModelName,
   _mode: ChatMode,
 ): ModelName {
+  if (modelName === "model-deepseek-v4-flash-0731") {
+    return "model-deepseek-v4-pro-0813";
+  }
   if (modelName === "model-deepseek-v4-pro-0813") {
-    return "model-deepseek-v4-pro";
+    return "model-grok-4.6";
   }
   if (
     modelName === "model-grok-4.6-pro" ||
@@ -762,6 +764,8 @@ const OPENROUTER_RESPONSE_MODEL_COST_KEYS: Record<string, string> = {
   "deepseek/deepseek-v4-flash-20260423": "deepseek/deepseek-v4-flash",
   "deepseek/deepseek-v4-flash-0731": "agent-model-free",
   "deepseek/deepseek-v4-flash-20260731": "agent-model-free",
+  "deepseek/deepseek-v4-pro-0813": "model-deepseek-v4-pro-0813",
+  "deepseek/deepseek-v4-pro-20260813": "model-deepseek-v4-pro-0813",
   "x-ai/grok-4.5": "model-grok-4.5",
   "x-ai/grok-4.6": "model-grok-4.6",
   "z-ai/glm-5.2": "model-glm-5.2",
@@ -845,15 +849,10 @@ export function buildProviderOptions(
       })
     : fallbackSlugs;
   // OpenRouter applies one reasoning configuration to both the primary model
-  // and every provider fallback. Auto and Standard use medium when Grok 4.6 is
-  // the primary route to reduce reasoning-token cost; Pro and routes that can
-  // only reach Grok as a fallback retain high reasoning.
+  // and every provider fallback. All paid Auto/Standard, Pro, and Max routes
+  // use high reasoning, including media requests promoted to Grok 4.6.
   const routesThroughGrok =
     isGrok46 || reasoningFallbackSlugs.includes(GROK_4_6_SLUG);
-  const usesMediumGrokReasoning =
-    isGrok46 &&
-    typeof modelName === "string" &&
-    MEDIUM_GROK_REASONING_MODELS.has(modelName);
   const providerRouting = modelId
     ? getOpenRouterProviderRoutingForModel(modelId)
     : undefined;
@@ -862,7 +861,7 @@ export function buildProviderOptions(
       ? options.reasoningOverride
       : {
           enabled: true,
-          effort: usesMediumGrokReasoning ? "medium" : "high",
+          effort: "high",
         }
     : (options.reasoningOverride ??
       (isHighReasoningModel(modelName) || isAgentDeepSeekV4

@@ -494,6 +494,15 @@ describe("token-bucket", () => {
       ).toBe(11310);
     });
 
+    it("should use DeepSeek V4 Flash 0731 pricing ($0.14/$0.28)", () => {
+      expect(
+        calculateTokenCost(1_000_000, "input", "model-deepseek-v4-flash-0731"),
+      ).toBe(1820);
+      expect(
+        calculateTokenCost(1_000_000, "output", "model-deepseek-v4-flash-0731"),
+      ).toBe(3640);
+    });
+
     it("should use GLM 5.2 baseline pricing ($0.76/$2.42)", () => {
       expect(calculateTokenCost(1_000_000, "input", "model-glm-5.2")).toBe(
         9880,
