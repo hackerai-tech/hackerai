@@ -4,6 +4,7 @@ const mockAuthenticate = jest.fn();
 const mockRefresh = jest.fn();
 const mockLoadSealedSession = jest.fn();
 const mockListOrganizationMemberships = jest.fn();
+const mockAutoPagination = jest.fn();
 const mockResponseCookieSet = jest.fn();
 
 jest.mock("next/server", () => ({
@@ -55,6 +56,10 @@ describe("GET /api/entitlements", () => {
       sealedSession: "refreshed-session",
       entitlements: ["pro-plan"],
     } as never);
+    mockListOrganizationMemberships.mockResolvedValue({
+      autoPagination: mockAutoPagination,
+    } as never);
+    mockAutoPagination.mockResolvedValue([] as never);
   });
 
   it("refreshes entitlements for the active organization from the session", async () => {
@@ -87,17 +92,99 @@ describe("GET /api/entitlements", () => {
     );
   });
 
-  it("does not select the first membership when the session has no active organization", async () => {
+  it("recovers entitlements from the only active membership when the session has no organization", async () => {
     mockAuthenticate.mockResolvedValueOnce({
       authenticated: true,
       user: { id: "user_123" },
     } as never);
+    mockAutoPagination.mockResolvedValueOnce([
+      { organizationId: "org_only" },
+    ] as never);
 
     const { GET } = await import("../route");
     const response = await GET(makeRequest());
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(mockListOrganizationMemberships).toHaveBeenCalledWith({
+      userId: "user_123",
+      statuses: ["active"],
+    });
+    expect(mockAutoPagination).toHaveBeenCalledTimes(1);
+    expect(mockRefresh).toHaveBeenCalledWith({
+      organizationId: "org_only",
+    });
+    expect(body).toEqual({
+      entitlements: ["pro-plan"],
+      subscription: "pro",
+    });
+  });
+
+  it("requires organization selection instead of choosing an arbitrary membership", async () => {
+    mockAuthenticate.mockResolvedValueOnce({
+      authenticated: true,
+      user: { id: "user_123" },
+    } as never);
+    mockAutoPagination.mockResolvedValueOnce([
+      { organizationId: "org_first" },
+      { organizationId: "org_second" },
+    ] as never);
+
+    const { GET } = await import("../route");
+    const response = await GET(makeRequest());
+    const body = await response.json();
+
+    expect(response.status).toBe(409);
+    expect(body).toEqual({
+      error: "Organization selection required",
+      code: "organization_selection_required",
+    });
+    expect(mockRefresh).not.toHaveBeenCalled();
+    expect(mockResponseCookieSet).not.toHaveBeenCalled();
+  });
+
+  it("keeps the unscoped refresh for users with no active memberships", async () => {
+    mockAuthenticate.mockResolvedValueOnce({
+      authenticated: true,
+      user: { id: "user_123" },
+    } as never);
+    mockRefresh.mockResolvedValueOnce({
+      sealedSession: "refreshed-session",
+      entitlements: [],
+    } as never);
+
+    const { GET } = await import("../route");
+    const response = await GET(makeRequest());
+    const body = await response.json();
 
     expect(response.status).toBe(200);
     expect(mockRefresh).toHaveBeenCalledWith();
-    expect(mockListOrganizationMemberships).not.toHaveBeenCalled();
+    expect(body).toEqual({
+      entitlements: [],
+      subscription: "free",
+    });
+  });
+
+  it("does not fall back to an unscoped refresh when membership lookup is rate limited", async () => {
+    mockAuthenticate.mockResolvedValueOnce({
+      authenticated: true,
+      user: { id: "user_123" },
+    } as never);
+    mockAutoPagination.mockRejectedValueOnce(
+      Object.assign(new Error("Rate limit exceeded"), { status: 429 }) as never,
+    );
+
+    const { GET } = await import("../route");
+    const response = await GET(makeRequest());
+    const body = await response.json();
+
+    expect(response.status).toBe(429);
+    expect(body).toEqual({
+      error: "Rate limited",
+      entitlements: [],
+      subscription: "free",
+    });
+    expect(mockRefresh).not.toHaveBeenCalled();
+    expect(mockResponseCookieSet).not.toHaveBeenCalled();
   });
 });

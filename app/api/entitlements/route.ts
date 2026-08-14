@@ -28,13 +28,37 @@ export async function GET(req: NextRequest) {
     // First authenticate to get user and organization info
     const authResult = await session.authenticate();
 
-    const organizationId = authResult.authenticated
-      ? ((authResult as any).organizationId as string | undefined)
+    let organizationId = authResult.authenticated
+      ? authResult.organizationId
       : undefined;
 
-    // Only scope the refresh when the authenticated session already names an
-    // active organization. Picking the first membership here can silently
-    // switch multi-organization users to an unrelated organization.
+    if (authResult.authenticated && !organizationId) {
+      const memberships =
+        await workos.userManagement.listOrganizationMemberships({
+          userId: authResult.user.id,
+          statuses: ["active"],
+        });
+      const activeMemberships = await memberships.autoPagination();
+
+      if (activeMemberships.length === 1) {
+        organizationId = activeMemberships[0].organizationId;
+      } else if (activeMemberships.length > 1) {
+        // There is no trustworthy active organization in the session. Refuse
+        // to pick an arbitrarily ordered membership and let the client retain
+        // its current entitlement state until the user selects an organization.
+        return json(
+          {
+            error: "Organization selection required",
+            code: "organization_selection_required",
+          },
+          { status: 409 },
+        );
+      }
+    }
+
+    // A session-selected organization is authoritative. The single-membership
+    // fallback preserves paid access for legacy unscoped sessions without
+    // silently switching users who belong to multiple organizations.
     const refreshResult = organizationId
       ? await session.refresh({ organizationId })
       : await session.refresh();
