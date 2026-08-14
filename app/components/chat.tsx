@@ -64,6 +64,7 @@ import {
 import {
   AGENT_PARTIAL_SAVE_ENDPOINT,
   AGENT_RESUME_ENDPOINT,
+  AGENT_STATUS_ENDPOINT,
   LEGACY_AGENT_RESUME_ENDPOINT,
 } from "@/lib/api/agent-endpoints";
 import { isTauriEnvironment } from "@/app/hooks/useTauri";
@@ -110,9 +111,9 @@ import { finalizeNewChatRoute } from "./chat-route";
 
 import { HackingSuggestions } from "./HackingSuggestions";
 
-const AGENT_LONG_COMPLETION_POLL_DELAY_MS = 5_000;
-const AGENT_LONG_COMPLETION_POLL_INTERVAL_MS = 2_000;
-const AGENT_LONG_COMPLETION_QUIET_MS = 3_000;
+const AGENT_LONG_COMPLETION_POLL_DELAY_MS = 15_000;
+const AGENT_LONG_COMPLETION_POLL_INTERVAL_MS = 15_000;
+const AGENT_LONG_COMPLETION_QUIET_MS = 10_000;
 const AGENT_LONG_COMPLETION_STOP_GRACE_MS = 6_000;
 type MessagePaginationStatus =
   "LoadingFirstPage" | "CanLoadMore" | "LoadingMore" | "Exhausted";
@@ -1285,6 +1286,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     let stopped = false;
     let pollInterval: ReturnType<typeof setInterval> | undefined;
     let finishTimeout: ReturnType<typeof setTimeout> | undefined;
+    let isCompletionCheckInFlight = false;
     const abortController = new AbortController();
 
     const finishLocally = () => {
@@ -1311,9 +1313,9 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
       if (stopped || finishTimeout !== undefined) return;
       saveAgentLongPartialSnapshot("resume_terminal_204");
 
-      // The transport also polls the resume endpoint and can deliver a
-      // synthetic finish after a terminal 204. Give it a brief chance to close
-      // normally before falling back to stop(), which aborts the active stream.
+      // The transport also polls the status endpoint and can deliver a
+      // synthetic finish after a terminal status. Give it a brief chance to
+      // close normally before falling back to stop(), which aborts the stream.
       finishTimeout = setTimeout(() => {
         finishTimeout = undefined;
         if (
@@ -1327,18 +1329,34 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
 
     const checkRunCompletion = async () => {
       if (
+        isCompletionCheckInFlight ||
         Date.now() - agentLongLastMessageChangeAtRef.current <
-        AGENT_LONG_COMPLETION_QUIET_MS
+          AGENT_LONG_COMPLETION_QUIET_MS
       ) {
         return;
       }
 
+      const runId =
+        agentLongRunCorrelationRef.current?.runId ??
+        activeTriggerRunRef.current;
+      if (!runId) return;
+
+      isCompletionCheckInFlight = true;
       try {
-        const response = await fetch(
-          `${AGENT_RESUME_ENDPOINT}?chatId=${encodeURIComponent(chatId)}`,
-          { method: "GET", signal: abortController.signal },
-        );
-        if (response.status === 204) {
+        const response = await fetch(AGENT_STATUS_ENDPOINT, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ chatId, runId }),
+          signal: abortController.signal,
+        });
+        if (response.status === 404) {
+          scheduleFinishLocally();
+          return;
+        }
+        if (!response.ok) return;
+
+        const payload = (await response.json()) as { terminal?: unknown };
+        if (payload.terminal === true) {
           scheduleFinishLocally();
         }
       } catch (error) {
@@ -1346,6 +1364,8 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
           // Ignore transient polling failures; the underlying stream still owns
           // the visible error state.
         }
+      } finally {
+        isCompletionCheckInFlight = false;
       }
     };
 
@@ -1368,6 +1388,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
       }
     };
   }, [
+    activeTriggerRunRef,
     chatId,
     isExistingChatRef,
     setIsAutoResuming,
