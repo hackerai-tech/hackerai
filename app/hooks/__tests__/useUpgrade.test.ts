@@ -251,6 +251,37 @@ describe("useUpgrade checkout attempts", () => {
     );
   });
 
+  it("allows an immediate retry when checkout navigation fails", async () => {
+    global.fetch = jest
+      .fn()
+      .mockResolvedValueOnce(
+        response({
+          ok: true,
+          status: 200,
+          body: { url: "https://[" },
+        }),
+      )
+      .mockResolvedValueOnce(
+        response({ ok: true, status: 200, body: { error: "cancelled" } }),
+      );
+    mockNewCheckoutAttemptId
+      .mockReturnValueOnce("ca_redirect_failed_123")
+      .mockReturnValueOnce("ca_redirect_retry_456");
+    const { result } = renderHook(() => useUpgrade());
+
+    await act(async () => {
+      await result.current.handleUpgrade("pro-monthly-plan");
+    });
+    await act(async () => {
+      await result.current.handleUpgrade("pro-monthly-plan");
+    });
+
+    expect(global.fetch).toHaveBeenCalledTimes(2);
+    expect(
+      window.sessionStorage.getItem("hackerai:billing:checkout-navigation:v1"),
+    ).toBeNull();
+  });
+
   it("suppresses a recent checkout redirect after a page reload", async () => {
     window.sessionStorage.setItem(
       "hackerai:billing:checkout-navigation:v1",

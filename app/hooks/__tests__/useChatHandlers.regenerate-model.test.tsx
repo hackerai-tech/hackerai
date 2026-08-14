@@ -466,4 +466,64 @@ describe("useChatHandlers regenerate model", () => {
       },
     );
   });
+
+  it("clears an obsolete run without resuming when none is active", async () => {
+    Object.defineProperty(globalThis, "fetch", {
+      configurable: true,
+      value: jest.fn(async () => {
+        return {
+          ok: false,
+          status: 409,
+          json: jest.fn(async () => ({
+            canceled: false,
+            reason: "stale_run",
+            activeTriggerRunId: null,
+          })),
+        } as unknown as Response;
+      }),
+    });
+    const activeTriggerRunRef: { current: string | undefined } = {
+      current: "run-1",
+    };
+    const resumeActiveRun = jest.fn(async () => undefined);
+    const { result } = renderHook(() =>
+      useChatHandlers({
+        chatId: "chat-1",
+        messages: [],
+        sendMessage: mockSendMessage,
+        stop: jest.fn(),
+        regenerate: mockRegenerate,
+        setMessages: mockSetMessages,
+        isExistingChat: true,
+        status: "ready",
+        isSendingNowRef: { current: false },
+        hasManuallyStoppedRef: { current: false },
+        activeTriggerRunRef,
+        resumeActiveRun,
+      }),
+    );
+
+    let stopped: boolean | undefined;
+    await act(async () => {
+      stopped = await result.current.handleStop();
+    });
+
+    expect(stopped).toBe(false);
+    expect(activeTriggerRunRef.current).toBeUndefined();
+    expect(resumeActiveRun).not.toHaveBeenCalled();
+    expect(mockSetIsAutoResuming).toHaveBeenLastCalledWith(false);
+    expect(mockToastInfo).toHaveBeenCalledWith("Agent run already finished", {
+      description: "Nothing is running to cancel. Try the action again.",
+    });
+    expect(mockCaptureAuthenticatedEvent).toHaveBeenCalledWith(
+      "agent_cancel_stale_recovery_started",
+      {
+        chat_id: "chat-1",
+        expected_trigger_run_id: "run-1",
+        active_trigger_run_id: null,
+        recovery_action: "no_active_run",
+        cancellation_applied: false,
+      },
+    );
+  });
 });

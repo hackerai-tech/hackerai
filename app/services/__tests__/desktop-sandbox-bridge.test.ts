@@ -1210,7 +1210,10 @@ describe("forwardChunk", () => {
           observed_chunks: 1,
           published_chunks: 1,
           exhausted_chunks: 0,
+          terminal_chunk_observed: null,
+          terminal_chunk_published: false,
           sequence_complete: true,
+          duration_ms: 250,
         }),
       );
     } finally {

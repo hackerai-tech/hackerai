@@ -189,7 +189,7 @@ export const useChatHandlers = ({
     | {
         outcome: "stale_run";
         expectedTriggerRunId?: string;
-        activeTriggerRunId?: string;
+        activeTriggerRunId?: string | null;
       };
 
   const cancelTriggerRun = async (): Promise<AgentCancellationResult> => {
@@ -209,11 +209,20 @@ export const useChatHandlers = ({
         activeTriggerRunId?: unknown;
       } | null;
       if (payload?.reason === "stale_run") {
+        const hasActiveTriggerRunId = Object.prototype.hasOwnProperty.call(
+          payload,
+          "activeTriggerRunId",
+        );
         return {
           outcome: "stale_run",
           expectedTriggerRunId,
-          ...(typeof payload.activeTriggerRunId === "string"
-            ? { activeTriggerRunId: payload.activeTriggerRunId }
+          ...(hasActiveTriggerRunId
+            ? {
+                activeTriggerRunId:
+                  typeof payload.activeTriggerRunId === "string"
+                    ? payload.activeTriggerRunId
+                    : null,
+              }
             : {}),
         };
       }
@@ -230,17 +239,31 @@ export const useChatHandlers = ({
     result: Extract<AgentCancellationResult, { outcome: "stale_run" }>,
   ): Promise<void> => {
     hasManuallyStoppedRef.current = false;
-    if (result.activeTriggerRunId && activeTriggerRunRef) {
-      activeTriggerRunRef.current = result.activeTriggerRunId;
+    if (activeTriggerRunRef && result.activeTriggerRunId !== undefined) {
+      activeTriggerRunRef.current = result.activeTriggerRunId ?? undefined;
     }
+
+    const hasNoActiveRun = result.activeTriggerRunId === null;
 
     captureAuthenticatedEvent("agent_cancel_stale_recovery_started", {
       chat_id: chatId,
       expected_trigger_run_id: result.expectedTriggerRunId,
       active_trigger_run_id: result.activeTriggerRunId,
-      recovery_action: resumeActiveRun ? "resume_stream" : "persisted_state",
+      recovery_action: hasNoActiveRun
+        ? "no_active_run"
+        : resumeActiveRun
+          ? "resume_stream"
+          : "persisted_state",
       cancellation_applied: false,
     });
+
+    if (hasNoActiveRun) {
+      setIsAutoResuming(false);
+      toast.info("Agent run already finished", {
+        description: "Nothing is running to cancel. Try the action again.",
+      });
+      return;
+    }
 
     toast.info("Agent run changed", {
       description: "Reconnecting to the current run instead of cancelling it.",

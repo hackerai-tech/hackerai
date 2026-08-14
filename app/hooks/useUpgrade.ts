@@ -149,6 +149,7 @@ export const useUpgrade = () => {
         const { error, url } = data;
 
         if (url) {
+          window.location.href = url;
           rememberCheckoutNavigation({
             attemptId: checkoutAttemptId,
             plan: selectedPlan,
@@ -167,7 +168,6 @@ export const useUpgrade = () => {
             limit_type: analyticsContext.limit_type,
             checkout_type: "new_subscription",
           });
-          window.location.href = url;
           navigationStarted = true;
           return;
         }
