@@ -23,6 +23,7 @@ export const USER_DELETION_TABLE_POLICY = {
     "local_sandbox_tokens",
     "local_sandbox_connections",
     "cancellation_reason_details",
+    "research_user_profiles",
   ],
   anonymize: [
     "usage_logs",
@@ -42,6 +43,10 @@ export const USER_DELETION_TABLE_POLICY = {
     "paid_start_mix_daily",
     "processed_webhooks",
     "processed_checkout_sessions",
+    // Reports contain only cohort-level patterns from runs with at least three
+    // users. Per-user profiles and their direct user IDs are deleted above.
+    "research_runs",
+    "research_reports",
   ],
 } as const;
 
@@ -414,6 +419,11 @@ async function cleanupUserDataForUser(
     "by_user_id_and_created_at",
     (q) => q.eq("user_id", userId),
   );
+  const researchUserProfilesBatch = await collectByIndexBatch<
+    Doc<"research_user_profiles">
+  >(ctx, budget, "research_user_profiles", "by_user_id", (q) =>
+    q.eq("user_id", userId),
+  );
 
   const deletionBatches = [
     projectsBatch,
@@ -428,6 +438,7 @@ async function cleanupUserDataForUser(
     extraUsageBatch,
     teamMemberUsageBatch,
     cancellationReasonDetailsBatch,
+    researchUserProfilesBatch,
   ];
   stats.hasMore ||= deletionBatches.some((batch) => batch.hasMore);
 
@@ -441,6 +452,7 @@ async function cleanupUserDataForUser(
   const extraUsage = extraUsageBatch.docs;
   const teamMemberUsage = teamMemberUsageBatch.docs;
   const cancellationReasonDetails = cancellationReasonDetailsBatch.docs;
+  const researchUserProfiles = researchUserProfilesBatch.docs;
 
   const chatsReadyToDelete = messagesBatch.hasMore
     ? []
@@ -479,6 +491,13 @@ async function cleanupUserDataForUser(
     stats,
     "cancellation_reason_details",
     cancellationReasonDetails,
+    mode,
+  );
+  await deleteDocs(
+    ctx,
+    stats,
+    "research_user_profiles",
+    researchUserProfiles,
     mode,
   );
 

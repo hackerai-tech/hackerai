@@ -535,6 +535,35 @@ function seedTables(userId = "user_123", otherUserId = "user_other"): Tables {
     ],
     processed_webhooks: [{ _id: "webhook", event_id: "evt_1" }],
     processed_checkout_sessions: [{ _id: "checkout", session_key: "cs_1" }],
+    research_runs: [
+      {
+        _id: "research-run",
+        analysis_id: "analysis-1",
+        cohort_size: 3,
+        status: "completed",
+      },
+    ],
+    research_reports: [
+      {
+        _id: "research-report",
+        analysis_id: "analysis-1",
+        report: { answerToQuestion: "Cohort-level answer" },
+      },
+    ],
+    research_user_profiles: [
+      {
+        _id: "research-profile-user",
+        analysis_id: "analysis-1",
+        user_id: userId,
+        pseudonym: "U01",
+      },
+      {
+        _id: "research-profile-other",
+        analysis_id: "analysis-1",
+        user_id: otherUserId,
+        pseudonym: "U02",
+      },
+    ],
   };
 }
 
@@ -573,6 +602,12 @@ describe("userDeletion", () => {
     expect(row(tables, "chats", "chat-other")).toBeTruthy();
     expect(row(tables, "feedback", "feedback-other")).toBeTruthy();
     expect(row(tables, "files", "file-other")).toBeTruthy();
+    expect(
+      row(tables, "research_user_profiles", "research-profile-user"),
+    ).toBeUndefined();
+    expect(
+      row(tables, "research_user_profiles", "research-profile-other"),
+    ).toBeTruthy();
     expect(row(tables, "temp_streams", "temp-stream-user")).toBeUndefined();
     expect(row(tables, "temp_streams", "temp-stream-other")).toBeTruthy();
 

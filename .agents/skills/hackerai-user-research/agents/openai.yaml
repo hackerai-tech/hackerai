@@ -1,0 +1,4 @@
+interface:
+  display_name: "HackerAI User Research"
+  short_description: "Analyze user workflows from private product evidence"
+  default_prompt: "Use $hackerai-user-research to answer this Linear research question from privacy-safe product evidence."
