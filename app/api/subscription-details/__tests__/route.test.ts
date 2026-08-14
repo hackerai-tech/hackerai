@@ -180,6 +180,9 @@ describe("POST /api/subscription-details", () => {
     expect(mockGetUser).not.toHaveBeenCalled();
     expect(mockListOrganizationMemberships).not.toHaveBeenCalled();
     expect(mockGetOrganization).not.toHaveBeenCalled();
+    expect(mockListCustomers).not.toHaveBeenCalled();
+    expect(mockListSubscriptions).not.toHaveBeenCalled();
+    expect(mockUpdateSubscription).not.toHaveBeenCalled();
   });
 
   it("rejects billing changes without an active membership in the session organization", async () => {
