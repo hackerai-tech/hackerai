@@ -32,17 +32,16 @@ const DEEPSEEK_FLASH_CANONICAL_SLUG = "deepseek/deepseek-v4-flash-20260731";
 const DEEPSEEK_FLASH_PREVIOUS_SLUG = "deepseek/deepseek-v4-flash";
 const DEEPSEEK_FLASH_PREVIOUS_CANONICAL_SLUG =
   "deepseek/deepseek-v4-flash-20260423";
-const DEEPSEEK_V4_PRO_SLUG = "deepseek/deepseek-v4-pro";
-const MEDIUM_GROK_PRIMARY_MODELS = [
+const DEEPSEEK_V4_PRO_0813_SLUG = "deepseek/deepseek-v4-pro-0813";
+const HIGH_GROK_PRIMARY_OR_FALLBACK_MODELS = [
   "ask-model",
   "agent-model",
-  "model-grok-4.6",
-  "model-grok-4.5",
-] as const;
-const HIGH_GROK_PRIMARY_OR_FALLBACK_MODELS = [
   "agent-model-free",
+  "model-grok-4.5",
   "model-grok-4.5-pro",
+  "model-grok-4.6",
   "model-grok-4.6-pro",
+  "model-deepseek-v4-flash-0731",
   "model-deepseek-v4-pro",
   "model-deepseek-v4-pro-0813",
   "model-opus-4.6",
@@ -103,24 +102,6 @@ describe("buildProviderOptions fallback chain", () => {
         expect(opts.openrouter.reasoning).toEqual({
           enabled: true,
           effort: "high",
-        });
-      }
-    },
-  );
-
-  it.each(MEDIUM_GROK_PRIMARY_MODELS)(
-    "uses medium reasoning for the Auto/Standard Grok route %s",
-    (modelName) => {
-      for (const mode of ["ask", "agent"] as const) {
-        const opts = buildProviderOptions(
-          mode === "agent",
-          "user-1",
-          modelName,
-          mode,
-        );
-        expect(opts.openrouter.reasoning).toEqual({
-          enabled: true,
-          effort: "medium",
         });
       }
     },
@@ -249,7 +230,7 @@ describe("buildProviderOptions fallback chain", () => {
       "agent",
     );
     expect(opts.openrouter).toMatchObject({
-      reasoning: { enabled: true, effort: "medium" },
+      reasoning: { enabled: true, effort: "high" },
       models: [KIMI_K3_SLUG],
       user: "user-1",
     });
@@ -290,32 +271,48 @@ describe("buildProviderOptions fallback chain", () => {
     });
   });
 
-  it("enables OpenRouter Mistral OCR for PDFs sent to DeepSeek V4", () => {
-    const opts = buildProviderOptions(
-      false,
-      "user-1",
-      "model-deepseek-v4-pro",
-      "agent",
-      { hasPdfAttachments: true },
-    );
+  it.each([
+    "model-deepseek-v4-flash-0731",
+    "model-deepseek-v4-pro-0813",
+  ] as const)(
+    "enables OpenRouter Mistral OCR for PDFs sent to %s",
+    (modelName) => {
+      const opts = buildProviderOptions(false, "user-1", modelName, "agent", {
+        hasPdfAttachments: true,
+      });
 
-    expect(opts.openrouter.plugins).toEqual([
-      { id: "file-parser", pdf: { engine: "mistral-ocr" } },
-    ]);
-  });
+      expect(opts.openrouter.plugins).toEqual([
+        { id: "file-parser", pdf: { engine: "mistral-ocr" } },
+      ]);
+    },
+  );
 
   it("does not enable the PDF parser when a DeepSeek request has no PDF", () => {
     const opts = buildProviderOptions(
       false,
       "user-1",
-      "model-deepseek-v4-pro",
+      "model-deepseek-v4-flash-0731",
       "agent",
     );
 
     expect(opts.openrouter).not.toHaveProperty("plugins");
   });
 
-  it("falls back from DeepSeek V4 Pro 0813 through the control route, Grok, then Kimi K3", () => {
+  it("falls back from DeepSeek V4 Flash 0731 through Pro 0813, Grok, then Kimi K3", () => {
+    const opts = buildProviderOptions(
+      false,
+      "user-1",
+      "model-deepseek-v4-flash-0731",
+      "ask",
+    );
+    expect(opts.openrouter).toMatchObject({
+      reasoning: { enabled: true, effort: "high" },
+      models: [DEEPSEEK_V4_PRO_0813_SLUG, GROK_SLUG, KIMI_K3_SLUG],
+      user: "user-1",
+    });
+  });
+
+  it("falls back from DeepSeek V4 Pro 0813 through Grok then Kimi K3", () => {
     const opts = buildProviderOptions(
       false,
       "user-1",
@@ -323,7 +320,8 @@ describe("buildProviderOptions fallback chain", () => {
       "ask",
     );
     expect(opts.openrouter).toMatchObject({
-      models: [DEEPSEEK_V4_PRO_SLUG, GROK_SLUG, KIMI_K3_SLUG],
+      reasoning: { enabled: true, effort: "high" },
+      models: [GROK_SLUG, KIMI_K3_SLUG],
       user: "user-1",
     });
   });
@@ -339,7 +337,7 @@ describe("buildProviderOptions fallback chain", () => {
   it("does not force OCR on the Grok route", () => {
     const opts = buildProviderOptions(false, "user-1", "model-grok-4.6", "ask");
     expect(opts.openrouter).toMatchObject({
-      reasoning: { enabled: true, effort: "medium" },
+      reasoning: { enabled: true, effort: "high" },
       models: [KIMI_K3_SLUG],
       user: "user-1",
     });
@@ -494,12 +492,12 @@ describe("buildProviderOptions fallback chain", () => {
   });
 
   it.each(["ask-model", "model-grok-4.6"])(
-    "enables medium reasoning for Auto/Standard Grok ask model %s",
+    "enables high reasoning for Auto/Standard Grok ask model %s",
     (modelName) => {
       const opts = buildProviderOptions(false, "user-1", modelName, "ask");
       expect(opts.openrouter.reasoning).toEqual({
         enabled: true,
-        effort: "medium",
+        effort: "high",
       });
     },
   );
@@ -562,7 +560,7 @@ describe("buildProviderOptions fallback chain", () => {
       "agent",
     );
     expect(grokReasoning.openrouter).toMatchObject({
-      reasoning: { enabled: true, effort: "medium" },
+      reasoning: { enabled: true, effort: "high" },
       models: [KIMI_K3_SLUG],
     });
 
@@ -673,9 +671,15 @@ describe("getRetryFallbackModel", () => {
     );
   });
 
-  it("retries the DeepSeek 0813 treatment with the current DeepSeek route", () => {
+  it("retries DeepSeek V4 Flash 0731 with DeepSeek V4 Pro 0813", () => {
+    expect(getRetryFallbackModel("model-deepseek-v4-flash-0731", "ask")).toBe(
+      "model-deepseek-v4-pro-0813",
+    );
+  });
+
+  it("retries DeepSeek V4 Pro 0813 with Grok", () => {
     expect(getRetryFallbackModel("model-deepseek-v4-pro-0813", "ask")).toBe(
-      "model-deepseek-v4-pro",
+      "model-grok-4.6",
     );
   });
 

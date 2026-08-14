@@ -37,12 +37,10 @@ export const getMaxStepsForUser = (mode: ChatMode): number => {
  * @param mode - Chat mode (ask or agent)
  * @param hasImageAttachment - Whether any message has an image attachment.
  * @param hasPdfAttachment - Whether any message has a PDF attachment.
- *   Paid ASK on the Standard/auto route normally uses DeepSeek V4 Pro
- *   (text-only); image prompts promote to Grok 4.6, while PDF prompts stay on
- *   DeepSeek and are parsed by OpenRouter. Paid Agent Auto/Standard routes use
- *   DeepSeek V4 Pro for text/PDF prompts and Grok 4.6 when images are attached.
- *   HackerAI Pro uses Grok 4.6
- *   for both text and vision; its GLM 5.2 fallback is configured downstream.
+ *   Paid Auto/Standard routes use DeepSeek V4 Flash 0731 for text/PDF prompts,
+ *   Pro uses DeepSeek V4 Pro 0813, and Max uses Grok 4.6. Images promote Auto,
+ *   Standard, and Pro to Grok 4.6; PDFs stay on DeepSeek and are parsed by
+ *   OpenRouter before inference.
  * @returns Model name to use
  */
 export function selectModel(
@@ -66,15 +64,15 @@ export function selectModel(
   const hasAskImage = !isAgent && !!hasImageAttachment;
   const hasProviderImage = !!hasImageAttachment;
   const paidAskMediaModel: ModelName = hasAskImage
-    ? "ask-model"
-    : "model-deepseek-v4-pro";
+    ? "model-grok-4.6"
+    : "model-deepseek-v4-flash-0731";
 
   const autoModel: ModelName = isAgent
     ? subscription === "free"
       ? "agent-model-free"
       : hasProviderImage
-        ? "agent-model"
-        : "model-deepseek-v4-pro"
+        ? "model-grok-4.6"
+        : "model-deepseek-v4-flash-0731"
     : isFreeAsk
       ? "ask-model-free"
       : paidAskMediaModel;
@@ -93,14 +91,11 @@ export function selectModel(
   // any UI that reads `getModelDisplayName` shows the picked model rather than
   // the auto-router label.
   if (allowedSelectedModel === "hackerai-standard") {
-    if (isAgent) {
-      return hasProviderImage ? "model-grok-4.6" : "model-deepseek-v4-pro";
-    }
-    return hasAskImage ? "model-grok-4.6" : "model-deepseek-v4-pro";
+    return hasProviderImage ? "model-grok-4.6" : "model-deepseek-v4-flash-0731";
   }
 
   if (allowedSelectedModel === "hackerai-pro") {
-    return "model-grok-4.6-pro";
+    return hasProviderImage ? "model-grok-4.6" : "model-deepseek-v4-pro-0813";
   }
 
   const providerKey = resolveTierToProviderKey(allowedSelectedModel, mode);
@@ -108,8 +103,7 @@ export function selectModel(
 }
 
 /**
- * Media file parts used by selectModel to decide whether the text-only
- * DeepSeek ask route is viable.
+ * Media file parts used by selectModel and OpenRouter PDF parser setup.
  */
 function getMediaAttachmentRouting(messages: UIMessage[]): {
   hasImage: boolean;

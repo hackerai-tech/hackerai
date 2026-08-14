@@ -211,9 +211,8 @@ const buildProviderMap = (
     "model-grok-4.5": or(GROK_4_6_SLUG),
     "model-grok-4.5-pro": or(GROK_4_6_SLUG),
     "model-grok-4.6-pro": or(GROK_4_6_SLUG),
+    "model-deepseek-v4-flash-0731": or(DEEPSEEK_V4_FLASH_SLUG),
     "model-deepseek-v4-pro": or(DEEPSEEK_V4_PRO_SLUG),
-    // HAC-68 treatment alias. Auto and Standard keep their persisted tier
-    // while the server-side experiment chooses the provider route per user.
     "model-deepseek-v4-pro-0813": or(DEEPSEEK_V4_PRO_0813_SLUG),
     // Keep the persisted Max compatibility key while routing new requests to
     // Kimi K3. Renaming the key would invalidate existing stored selections.
@@ -240,6 +239,7 @@ export const modelCutoffDates: Partial<Record<ModelName, string>> &
   "model-grok-4.5": "August 2026",
   "model-grok-4.5-pro": "August 2026",
   "model-grok-4.6-pro": "August 2026",
+  "model-deepseek-v4-flash-0731": "July 2026",
   "model-deepseek-v4-pro": "May 2025",
   "model-deepseek-v4-pro-0813": "August 2026",
   "model-opus-4.6": "July 2026",
@@ -260,6 +260,7 @@ export const modelDisplayNames: Record<ModelName, string> &
   "model-grok-4.5": "xAI Grok 4.6",
   "model-grok-4.5-pro": "xAI Grok 4.6",
   "model-grok-4.6-pro": "xAI Grok 4.6",
+  "model-deepseek-v4-flash-0731": "DeepSeek V4 Flash 0731",
   "model-deepseek-v4-pro": "DeepSeek V4 Pro",
   "model-deepseek-v4-pro-0813": "DeepSeek V4 Pro 0813",
   "model-opus-4.6": "Moonshot Kimi K3",
@@ -286,10 +287,12 @@ export function isAnthropicModel(modelName: string): boolean {
   return normalized.startsWith("anthropic/") || normalized.includes("claude");
 }
 
+/** Returns whether a provider key uses a DeepSeek V4 route. */
 export function isDeepSeekModel(modelName: string): boolean {
   return (
     modelName === "ask-model-free" ||
     modelName === "agent-model-free" ||
+    modelName === "model-deepseek-v4-flash-0731" ||
     modelName === "model-deepseek-v4-pro" ||
     modelName === "model-deepseek-v4-pro-0813"
   );
@@ -343,8 +346,9 @@ export function supportsMultimodalToolResults(modelName?: string): boolean {
 /**
  * Map a HackerAI tier id to the underlying provider key for a given mode.
  * Returns `null` for `"auto"` (the caller routes to the auto-router model
- * key instead). Standard maps to DeepSeek, Pro to Grok, and Max to Kimi K3 in
- * both modes; media-aware promotion happens in `selectModel`.
+ * key instead). Standard maps to DeepSeek V4 Flash 0731, Pro to DeepSeek V4
+ * Pro 0813, and Max to Grok 4.6 in both modes; media-aware promotion happens
+ * in `selectModel`.
  */
 export function resolveTierToProviderKey(
   tier: SelectedModel,
@@ -353,11 +357,11 @@ export function resolveTierToProviderKey(
   if (tier === "auto") return null;
   switch (tier) {
     case "hackerai-standard":
-      return "model-deepseek-v4-pro";
+      return "model-deepseek-v4-flash-0731";
     case "hackerai-pro":
-      return "model-grok-4.6-pro";
+      return "model-deepseek-v4-pro-0813";
     case "hackerai-max":
-      return "model-opus-4.6";
+      return "model-grok-4.6";
   }
 }
 

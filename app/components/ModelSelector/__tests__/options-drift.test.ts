@@ -31,30 +31,30 @@ describe("ModelSelector tier ↔ provider drift", () => {
     expect([...askIds].sort()).toEqual([...agentIds].sort());
   });
 
-  it("HackerAI Standard resolves to DeepSeek in both modes", () => {
+  it("HackerAI Standard resolves to DeepSeek V4 Flash 0731 in both modes", () => {
     expect(resolveTierToProviderKey("hackerai-standard", "ask")).toBe(
-      "model-deepseek-v4-pro",
+      "model-deepseek-v4-flash-0731",
     );
     expect(resolveTierToProviderKey("hackerai-standard", "agent")).toBe(
-      "model-deepseek-v4-pro",
+      "model-deepseek-v4-flash-0731",
     );
   });
 
-  it("HackerAI Pro resolves to its dedicated Grok route in both modes", () => {
+  it("HackerAI Pro resolves to DeepSeek V4 Pro 0813 in both modes", () => {
     expect(resolveTierToProviderKey("hackerai-pro", "ask")).toBe(
-      "model-grok-4.6-pro",
+      "model-deepseek-v4-pro-0813",
     );
     expect(resolveTierToProviderKey("hackerai-pro", "agent")).toBe(
-      "model-grok-4.6-pro",
+      "model-deepseek-v4-pro-0813",
     );
   });
 
   it("HackerAI Max resolves to the same provider in both modes", () => {
     expect(resolveTierToProviderKey("hackerai-max", "ask")).toBe(
-      "model-opus-4.6",
+      "model-grok-4.6",
     );
     expect(resolveTierToProviderKey("hackerai-max", "agent")).toBe(
-      "model-opus-4.6",
+      "model-grok-4.6",
     );
   });
 
@@ -76,28 +76,28 @@ describe("ModelSelector tier ↔ provider drift", () => {
     expect(
       AGENT_MODEL_OPTIONS.find((option) => option.id === "hackerai-standard")
         ?.poweredBy,
-    ).toBe("DeepSeek V4 Pro · xAI Grok 4.6 for vision");
+    ).toBe("DeepSeek V4 Flash 0731 · xAI Grok 4.6 for vision");
   });
 
-  it("discloses Grok 4.6 for HackerAI Pro", () => {
+  it("discloses DeepSeek V4 Pro 0813 and Grok vision for HackerAI Pro", () => {
     expect(
       ASK_MODEL_OPTIONS.find((option) => option.id === "hackerai-pro")
         ?.poweredBy,
-    ).toBe("xAI Grok 4.6");
+    ).toBe("DeepSeek V4 Pro 0813 · xAI Grok 4.6 for vision");
     expect(
       AGENT_MODEL_OPTIONS.find((option) => option.id === "hackerai-pro")
         ?.poweredBy,
-    ).toBe("xAI Grok 4.6");
+    ).toBe("DeepSeek V4 Pro 0813 · xAI Grok 4.6 for vision");
   });
 
-  it("discloses Kimi K3 for HackerAI Max", () => {
+  it("discloses Grok 4.6 for HackerAI Max", () => {
     expect(
       ASK_MODEL_OPTIONS.find((option) => option.id === "hackerai-max")
         ?.poweredBy,
-    ).toBe("Moonshot Kimi K3");
+    ).toBe("xAI Grok 4.6");
     expect(
       AGENT_MODEL_OPTIONS.find((option) => option.id === "hackerai-max")
         ?.poweredBy,
-    ).toBe("Moonshot Kimi K3");
+    ).toBe("xAI Grok 4.6");
   });
 });

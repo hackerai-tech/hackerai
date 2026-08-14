@@ -154,19 +154,19 @@ describe("limitImageParts", () => {
 // selectModel - Model selection logic
 // ==========================================================================
 describe("selectModel", () => {
-  it("routes HackerAI Pro through Grok 4.6 without experiment assignment", () => {
+  it("routes HackerAI Pro through DeepSeek V4 Pro 0813", () => {
     expect(selectModel("agent", "pro", "hackerai-pro")).toBe(
-      "model-grok-4.6-pro",
+      "model-deepseek-v4-pro-0813",
     );
   });
 
   it.each(["pro", "pro-plus", "ultra", "team"] as const)(
-    "routes paid %s Auto/Standard text to DeepSeek V4 Pro in both modes",
+    "routes paid %s Auto/Standard text to DeepSeek V4 Flash 0731 in both modes",
     (subscription) => {
       for (const mode of ["ask", "agent"] as const) {
         for (const selectedModel of ["auto", "hackerai-standard"] as const) {
           expect(selectModel(mode, subscription, selectedModel)).toBe(
-            "model-deepseek-v4-pro",
+            "model-deepseek-v4-flash-0731",
           );
         }
       }
@@ -176,45 +176,45 @@ describe("selectModel", () => {
   // Default model selection by mode
   describe("default models (no override)", () => {
     it.each(["pro", "pro-plus", "ultra", "team"] as const)(
-      "should return DeepSeek V4 Pro for paid agent text on %s",
+      "should return DeepSeek V4 Flash 0731 for paid agent text on %s",
       (subscription) => {
         expect(selectModel("agent", subscription)).toBe(
-          "model-deepseek-v4-pro",
+          "model-deepseek-v4-flash-0731",
         );
       },
     );
 
     it("should return the Grok-backed agent model for paid agent with an image", () => {
       expect(selectModel("agent", "pro", undefined, true, false)).toBe(
-        "agent-model",
+        "model-grok-4.6",
       );
     });
 
-    it("should keep paid agent on DeepSeek V4 Pro when a PDF is attached", () => {
+    it("should keep paid agent on DeepSeek V4 Flash 0731 when a PDF is attached", () => {
       expect(selectModel("agent", "pro", undefined, false, true)).toBe(
-        "model-deepseek-v4-pro",
+        "model-deepseek-v4-flash-0731",
       );
     });
 
-    it("should return DeepSeek V4 Pro for paid ask with no image/PDF", () => {
-      expect(selectModel("ask", "pro")).toBe("model-deepseek-v4-pro");
+    it("should return DeepSeek V4 Flash 0731 for paid ask with no image/PDF", () => {
+      expect(selectModel("ask", "pro")).toBe("model-deepseek-v4-flash-0731");
     });
 
     it("should return the Grok-backed ask model when an image is attached", () => {
       expect(selectModel("ask", "pro", undefined, true, false)).toBe(
-        "ask-model",
+        "model-grok-4.6",
       );
     });
 
-    it("should keep paid ask on DeepSeek V4 Pro when a PDF is attached", () => {
+    it("should keep paid ask on DeepSeek V4 Flash 0731 when a PDF is attached", () => {
       expect(selectModel("ask", "pro", undefined, false, true)).toBe(
-        "model-deepseek-v4-pro",
+        "model-deepseek-v4-flash-0731",
       );
     });
 
     it("should use the Grok-backed image route when paid ask has both image and PDF attachments", () => {
       expect(selectModel("ask", "pro", undefined, true, true)).toBe(
-        "ask-model",
+        "model-grok-4.6",
       );
     });
 
@@ -222,44 +222,44 @@ describe("selectModel", () => {
       expect(selectModel("ask", "free")).toBe("ask-model-free");
     });
 
-    it("should return DeepSeek V4 Pro for ultra subscription with no image/PDF", () => {
-      expect(selectModel("ask", "ultra")).toBe("model-deepseek-v4-pro");
+    it("should return DeepSeek V4 Flash 0731 for ultra subscription with no image/PDF", () => {
+      expect(selectModel("ask", "ultra")).toBe("model-deepseek-v4-flash-0731");
     });
 
-    it("should return DeepSeek V4 Pro for team subscription with no image/PDF", () => {
-      expect(selectModel("ask", "team")).toBe("model-deepseek-v4-pro");
+    it("should return DeepSeek V4 Flash 0731 for team subscription with no image/PDF", () => {
+      expect(selectModel("ask", "team")).toBe("model-deepseek-v4-flash-0731");
     });
   });
 
   // Tier override — Standard is content-aware in ask mode; Max maps to Opus in both modes
   describe("tier override for ask mode (paid users)", () => {
-    it("should map HackerAI Pro to Grok 4.6 for text-only ask mode", () => {
+    it("should map HackerAI Pro to DeepSeek V4 Pro 0813 for text-only ask mode", () => {
       expect(selectModel("ask", "ultra", "hackerai-pro")).toBe(
-        "model-grok-4.6-pro",
+        "model-deepseek-v4-pro-0813",
       );
     });
 
-    it("should map HackerAI Pro to Grok 4.6 for team users", () => {
+    it("should map HackerAI Pro to DeepSeek V4 Pro 0813 for team users", () => {
       expect(selectModel("ask", "team", "hackerai-pro")).toBe(
-        "model-grok-4.6-pro",
+        "model-deepseek-v4-pro-0813",
       );
     });
 
     it("should keep HackerAI Pro on Grok 4.6 when an image is attached", () => {
       expect(selectModel("ask", "pro", "hackerai-pro", true, false)).toBe(
-        "model-grok-4.6-pro",
+        "model-grok-4.6",
       );
     });
 
-    it("should keep HackerAI Pro on Grok 4.6 when a PDF is attached", () => {
+    it("should keep HackerAI Pro on DeepSeek V4 Pro 0813 when a PDF is attached", () => {
       expect(selectModel("ask", "pro", "hackerai-pro", false, true)).toBe(
-        "model-grok-4.6-pro",
+        "model-deepseek-v4-pro-0813",
       );
     });
 
-    it("should map HackerAI Standard to DeepSeek V4 Pro when no image/PDF", () => {
+    it("should map HackerAI Standard to DeepSeek V4 Flash 0731 when no image/PDF", () => {
       expect(selectModel("ask", "pro", "hackerai-standard")).toBe(
-        "model-deepseek-v4-pro",
+        "model-deepseek-v4-flash-0731",
       );
     });
 
@@ -269,9 +269,9 @@ describe("selectModel", () => {
       );
     });
 
-    it("should keep HackerAI Standard on DeepSeek V4 Pro when a PDF is attached", () => {
+    it("should keep HackerAI Standard on DeepSeek V4 Flash 0731 when a PDF is attached", () => {
       expect(selectModel("ask", "pro", "hackerai-standard", false, true)).toBe(
-        "model-deepseek-v4-pro",
+        "model-deepseek-v4-flash-0731",
       );
     });
 
@@ -281,38 +281,38 @@ describe("selectModel", () => {
       );
     });
 
-    it("should map HackerAI Max to its Kimi K3 compatibility route for Ultra", () => {
+    it("should map HackerAI Max to Grok 4.6 for Ultra", () => {
       expect(selectModel("ask", "ultra", "hackerai-max")).toBe(
-        "model-opus-4.6",
+        "model-grok-4.6",
       );
     });
 
     it("should downgrade HackerAI Max to Pro outside Ultra", () => {
       expect(selectModel("ask", "pro", "hackerai-max")).toBe(
-        "model-grok-4.6-pro",
+        "model-deepseek-v4-pro-0813",
       );
       expect(selectModel("ask", "pro-plus", "hackerai-max")).toBe(
-        "model-grok-4.6-pro",
+        "model-deepseek-v4-pro-0813",
       );
       expect(selectModel("ask", "team", "hackerai-max")).toBe(
-        "model-grok-4.6-pro",
+        "model-deepseek-v4-pro-0813",
       );
     });
 
-    it("should map HackerAI Max to its Kimi K3 compatibility route for paid users with extra usage", () => {
+    it("should map HackerAI Max to Grok 4.6 for paid users with extra usage", () => {
       expect(
         selectModel("ask", "pro", "hackerai-max", false, false, {
           extraUsageAvailable: true,
         }),
-      ).toBe("model-opus-4.6");
+      ).toBe("model-grok-4.6");
     });
   });
 
   // Agent mode — Auto/Standard use DeepSeek for text/PDF and media-capable routes for images.
   describe("tier override in agent mode", () => {
-    it("should map HackerAI Standard to DeepSeek V4 Pro for text-only agent mode", () => {
+    it("should map HackerAI Standard to DeepSeek V4 Flash 0731 for text-only agent mode", () => {
       expect(selectModel("agent", "pro", "hackerai-standard")).toBe(
-        "model-deepseek-v4-pro",
+        "model-deepseek-v4-flash-0731",
       );
     });
 
@@ -322,59 +322,61 @@ describe("selectModel", () => {
       ).toBe("model-grok-4.6");
     });
 
-    it("should keep HackerAI Standard on DeepSeek V4 Pro when a PDF is attached", () => {
+    it("should keep HackerAI Standard on DeepSeek V4 Flash 0731 when a PDF is attached", () => {
       expect(
         selectModel("agent", "pro", "hackerai-standard", false, true),
-      ).toBe("model-deepseek-v4-pro");
+      ).toBe("model-deepseek-v4-flash-0731");
     });
 
-    it("should map HackerAI Pro to Grok 4.6 in text-only agent mode", () => {
+    it("should map HackerAI Pro to DeepSeek V4 Pro 0813 in text-only agent mode", () => {
       expect(selectModel("agent", "pro", "hackerai-pro")).toBe(
-        "model-grok-4.6-pro",
+        "model-deepseek-v4-pro-0813",
       );
     });
 
     it("should route HackerAI Pro to Grok 4.6 in agent mode when an image is attached", () => {
       expect(selectModel("agent", "pro", "hackerai-pro", true, false)).toBe(
-        "model-grok-4.6-pro",
+        "model-grok-4.6",
       );
     });
 
-    it("should route HackerAI Pro to Grok 4.6 in agent mode when a PDF is attached", () => {
+    it("should keep HackerAI Pro on DeepSeek V4 Pro 0813 when a PDF is attached", () => {
       expect(selectModel("agent", "pro", "hackerai-pro", false, true)).toBe(
-        "model-grok-4.6-pro",
+        "model-deepseek-v4-pro-0813",
       );
     });
 
-    it("should map HackerAI Max to its Kimi K3 compatibility route in agent mode for Ultra", () => {
+    it("should map HackerAI Max to Grok 4.6 in agent mode for Ultra", () => {
       expect(selectModel("agent", "ultra", "hackerai-max")).toBe(
-        "model-opus-4.6",
+        "model-grok-4.6",
       );
     });
 
     it("should downgrade HackerAI Max to Pro in agent mode outside Ultra", () => {
       expect(selectModel("agent", "pro", "hackerai-max")).toBe(
-        "model-grok-4.6-pro",
+        "model-deepseek-v4-pro-0813",
       );
       expect(selectModel("agent", "pro-plus", "hackerai-max")).toBe(
-        "model-grok-4.6-pro",
+        "model-deepseek-v4-pro-0813",
       );
       expect(selectModel("agent", "team", "hackerai-max")).toBe(
-        "model-grok-4.6-pro",
+        "model-deepseek-v4-pro-0813",
       );
     });
 
-    it("should map HackerAI Max to its Kimi K3 compatibility route in agent mode for paid users with extra usage", () => {
+    it("should map HackerAI Max to Grok 4.6 in agent mode for paid users with extra usage", () => {
       expect(
         selectModel("agent", "pro-plus", "hackerai-max", false, false, {
           extraUsageAvailable: true,
         }),
-      ).toBe("model-opus-4.6");
+      ).toBe("model-grok-4.6");
     });
 
-    it("should default to DeepSeek V4 Pro when no model is selected", () => {
-      expect(selectModel("agent", "pro")).toBe("model-deepseek-v4-pro");
-      expect(selectModel("agent", "pro", "auto")).toBe("model-deepseek-v4-pro");
+    it("should default to DeepSeek V4 Flash 0731 when no model is selected", () => {
+      expect(selectModel("agent", "pro")).toBe("model-deepseek-v4-flash-0731");
+      expect(selectModel("agent", "pro", "auto")).toBe(
+        "model-deepseek-v4-flash-0731",
+      );
     });
   });
 
@@ -399,30 +401,36 @@ describe("selectModel", () => {
 
   // "auto" override
   describe("auto override", () => {
-    it("should route paid agent Auto text to DeepSeek V4 Pro", () => {
-      expect(selectModel("agent", "pro", "auto")).toBe("model-deepseek-v4-pro");
+    it("should route paid agent Auto text to DeepSeek V4 Flash 0731", () => {
+      expect(selectModel("agent", "pro", "auto")).toBe(
+        "model-deepseek-v4-flash-0731",
+      );
     });
 
     it("should route paid agent Auto images to Grok and PDFs to DeepSeek", () => {
       expect(selectModel("agent", "pro", "auto", true, false)).toBe(
-        "agent-model",
+        "model-grok-4.6",
       );
       expect(selectModel("agent", "pro", "auto", false, true)).toBe(
-        "model-deepseek-v4-pro",
+        "model-deepseek-v4-flash-0731",
       );
     });
 
-    it("should treat 'auto' as no override in paid ask mode (text-only → DeepSeek Pro)", () => {
-      expect(selectModel("ask", "pro", "auto")).toBe("model-deepseek-v4-pro");
+    it("should treat 'auto' as no override in paid ask mode (text-only → DeepSeek Flash)", () => {
+      expect(selectModel("ask", "pro", "auto")).toBe(
+        "model-deepseek-v4-flash-0731",
+      );
     });
 
     it("should treat 'auto' as no override in ask mode with image -> Grok", () => {
-      expect(selectModel("ask", "pro", "auto", true, false)).toBe("ask-model");
+      expect(selectModel("ask", "pro", "auto", true, false)).toBe(
+        "model-grok-4.6",
+      );
     });
 
     it("should treat 'auto' as no override in ask mode with PDF -> DeepSeek", () => {
       expect(selectModel("ask", "pro", "auto", false, true)).toBe(
-        "model-deepseek-v4-pro",
+        "model-deepseek-v4-flash-0731",
       );
     });
   });
@@ -431,16 +439,16 @@ describe("selectModel", () => {
   describe("undefined override", () => {
     it("should use default when override is undefined", () => {
       expect(selectModel("agent", "pro", undefined)).toBe(
-        "model-deepseek-v4-pro",
+        "model-deepseek-v4-flash-0731",
       );
       expect(selectModel("ask", "pro", undefined)).toBe(
-        "model-deepseek-v4-pro",
+        "model-deepseek-v4-flash-0731",
       );
       expect(selectModel("ask", "pro", undefined, true, false)).toBe(
-        "ask-model",
+        "model-grok-4.6",
       );
       expect(selectModel("ask", "pro", undefined, false, true)).toBe(
-        "model-deepseek-v4-pro",
+        "model-deepseek-v4-flash-0731",
       );
     });
   });
