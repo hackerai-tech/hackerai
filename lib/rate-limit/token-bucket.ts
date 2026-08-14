@@ -39,7 +39,7 @@ const DEFAULT_PRICING: ModelPricing = {
   cacheRead: 0.5,
   cacheWrite: 0.5,
 };
-const GROK_4_5_PRICING: ModelPricing = {
+const GROK_4_6_BASE_PRICING: ModelPricing = {
   input: 2.0,
   output: 6.0,
   cacheRead: 0.5,
@@ -92,17 +92,17 @@ const KIMI_K3_PRICING: ModelPricing = {
 /** Model pricing: $/1M tokens per model, including provider cache rates. */
 const MODEL_PRICING_MAP: Record<string, ModelPricing> = {
   default: DEFAULT_PRICING,
-  // Grok 4.5 rates from OpenRouter: $2.00 in / $6.00 out per 1M tokens.
-  "model-grok-4.5": GROK_4_5_PRICING,
-  "model-grok-4.5-pro": GROK_4_5_PRICING,
   // Grok 4.6 shares the $2/$6 base rate, with a 2x tier from 200k prompt
   // tokens handled by getModelPricing when the input size is available.
-  "model-grok-4.6-pro": GROK_4_5_PRICING,
-  // Auto and summarization aliases resolve to Grok 4.5.
-  "ask-model": GROK_4_5_PRICING,
-  "agent-model": GROK_4_5_PRICING,
-  "fallback-agent-model": GROK_4_5_PRICING,
-  "fallback-ask-model": GROK_4_5_PRICING,
+  "model-grok-4.6": GROK_4_6_BASE_PRICING,
+  "model-grok-4.6-pro": GROK_4_6_BASE_PRICING,
+  "model-grok-4.5": GROK_4_6_BASE_PRICING,
+  "model-grok-4.5-pro": GROK_4_6_BASE_PRICING,
+  "ask-model": GROK_4_6_BASE_PRICING,
+  "agent-model": GROK_4_6_BASE_PRICING,
+  "fallback-agent-model": GROK_4_6_BASE_PRICING,
+  "fallback-ask-model": GROK_4_6_BASE_PRICING,
+  "agent-auto-review-model": GROK_4_6_BASE_PRICING,
   // DeepSeek V4 Flash 0731 rates from OpenRouter: $0.14 in / $0.28 out per 1M tokens.
   "ask-model-free": DEEPSEEK_V4_FLASH_0731_PRICING,
   "agent-model-free": DEEPSEEK_V4_FLASH_0731_PRICING,
@@ -114,8 +114,9 @@ const MODEL_PRICING_MAP: Record<string, ModelPricing> = {
   // OpenRouter rates: $3.00 in / $15.00 out / $0.30 cached input per 1M tokens.
   "model-kimi-k3": KIMI_K3_PRICING,
   // Provider response ids can reach accounting before local-key normalization.
-  "x-ai/grok-4.5": GROK_4_5_PRICING,
-  "x-ai/grok-4.6": GROK_4_5_PRICING,
+  // Historical Grok 4.5 responses retain their original flat pricing.
+  "x-ai/grok-4.5": GROK_4_6_BASE_PRICING,
+  "x-ai/grok-4.6": GROK_4_6_BASE_PRICING,
   "deepseek/deepseek-v4-flash": DEEPSEEK_V4_FLASH_PRICING,
   "deepseek/deepseek-v4-flash-20260423": DEEPSEEK_V4_FLASH_PRICING,
   "deepseek/deepseek-v4-flash-0731": DEEPSEEK_V4_FLASH_0731_PRICING,
@@ -128,7 +129,18 @@ const MODEL_PRICING_MAP: Record<string, ModelPricing> = {
   "moonshotai/kimi-k3-20260715": KIMI_K3_PRICING,
 };
 
-const GROK_4_6_MODEL_IDS = new Set(["model-grok-4.6-pro", "x-ai/grok-4.6"]);
+const GROK_4_6_MODEL_IDS = new Set([
+  "model-grok-4.6",
+  "model-grok-4.6-pro",
+  "model-grok-4.5",
+  "model-grok-4.5-pro",
+  "ask-model",
+  "agent-model",
+  "fallback-agent-model",
+  "fallback-ask-model",
+  "agent-auto-review-model",
+  "x-ai/grok-4.6",
+]);
 
 const getModelPricing = (
   modelName?: string,

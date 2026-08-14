@@ -9,7 +9,7 @@ import type {
 const MIB = 1024 * 1024;
 
 const providerRequest: ProviderRequestDiagnostics = {
-  model: "model-grok-4.5",
+  model: "model-grok-4.6",
   requested_model_slug: "agent-model",
   step_index: 3,
   source: "prepare_step",

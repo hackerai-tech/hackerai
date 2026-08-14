@@ -132,7 +132,7 @@ describe("captureAgentRun", () => {
       sandboxInfo: null,
       outcome: "success",
       selectedModel: "agent-model",
-      configuredModelId: "x-ai/grok-4.5",
+      configuredModelId: "x-ai/grok-4.6",
       triggerRunId: "run_zero",
       triggerUsageDurationMs: 0,
       triggerTotalCostUsd: 0,
@@ -226,7 +226,7 @@ describe("captureAgentRun", () => {
       outcome: "success",
       selectedModel: "agent-model-free",
       configuredModelId: "deepseek/deepseek-v4-flash-0731",
-      responseModel: "x-ai/grok-4.5",
+      responseModel: "x-ai/grok-4.6",
       fallbackServed: true,
     });
 
@@ -236,7 +236,7 @@ describe("captureAgentRun", () => {
       properties: expect.objectContaining({
         selected_model: "agent-model-free",
         configured_model: "deepseek/deepseek-v4-flash-0731",
-        response_model: "x-ai/grok-4.5",
+        response_model: "x-ai/grok-4.6",
         fallback_served: true,
       }),
     });
@@ -881,7 +881,7 @@ describe("createChatLogger provider stream termination", () => {
       chatLogger.recordProviderError(err, {
         mode: "agent",
         model: "agent-model",
-        requestedModelSlug: "x-ai/grok-4.5",
+        requestedModelSlug: "x-ai/grok-4.6",
       });
       chatLogger.emitUnexpectedError(err);
 
@@ -933,7 +933,7 @@ describe("createChatLogger provider stream termination", () => {
         active_tools_mode: "all",
         reasoning_enabled: true,
         fallback_model_count: 1,
-        fallback_model_slugs: ["x-ai/grok-4.5"],
+        fallback_model_slugs: ["x-ai/grok-4.6"],
         has_user_attribution: true,
         has_multimodal_tool_results: true,
       };
@@ -1660,7 +1660,7 @@ describe("createChatLogger provider stream timeout", () => {
       chatLogger.recordProviderError(err, {
         mode: "agent",
         model: "agent-model",
-        requestedModelSlug: "x-ai/grok-4.5",
+        requestedModelSlug: "x-ai/grok-4.6",
       });
       chatLogger.emitUnexpectedError(err);
 

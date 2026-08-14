@@ -172,7 +172,7 @@ describe("resolveAgentModelForImageToolResults", () => {
         "agent",
         true,
       ),
-    ).toBe("model-grok-4.5");
+    ).toBe("model-grok-4.6");
   });
 
   it("keeps the HackerAI Pro GLM fallback active after image tool results", () => {
@@ -184,7 +184,7 @@ describe("resolveAgentModelForImageToolResults", () => {
   it("switches free DeepSeek Agent steps to Grok after image tool results", () => {
     expect(
       resolveAgentModelForImageToolResults("agent-model-free", "agent", true),
-    ).toBe("model-grok-4.5");
+    ).toBe("model-grok-4.6");
   });
 
   it("does not change Ask routes or multimodal Agent models", () => {
@@ -199,8 +199,8 @@ describe("resolveAgentModelForImageToolResults", () => {
       resolveAgentModelForImageToolResults("model-kimi-k3", "agent", true),
     ).toBe("model-kimi-k3");
     expect(
-      resolveAgentModelForImageToolResults("model-grok-4.5-pro", "agent", true),
-    ).toBe("model-grok-4.5-pro");
+      resolveAgentModelForImageToolResults("model-grok-4.6-pro", "agent", true),
+    ).toBe("model-grok-4.6-pro");
   });
 });
 
@@ -210,7 +210,7 @@ describe("resolveFallbackServedTelemetry", () => {
       resolveFallbackServedTelemetry({
         requestedModel: "deepseek/deepseek-v4-pro",
         responseModel: "deepseek/deepseek-v4-pro",
-        fallbackModels: ["x-ai/grok-4.5"],
+        fallbackModels: ["x-ai/grok-4.6"],
       }),
     ).toBe(false);
   });
@@ -219,15 +219,15 @@ describe("resolveFallbackServedTelemetry", () => {
     expect(
       resolveFallbackServedTelemetry({
         requestedModel: "deepseek/deepseek-v4-pro",
-        responseModel: "x-ai/grok-4.5",
-        fallbackModels: ["x-ai/grok-4.5"],
+        responseModel: "x-ai/grok-4.6",
+        fallbackModels: ["x-ai/grok-4.6"],
       }),
     ).toBe(true);
     expect(
       resolveFallbackServedTelemetry({
-        requestedModel: "x-ai/grok-4.5",
-        responseModel: "x-ai/grok-4.5",
-        fallbackModels: ["x-ai/grok-4.5"],
+        requestedModel: "x-ai/grok-4.6",
+        responseModel: "x-ai/grok-4.6",
+        fallbackModels: ["x-ai/grok-4.6"],
       }),
     ).toBe(false);
   });
@@ -236,14 +236,14 @@ describe("resolveFallbackServedTelemetry", () => {
     expect(
       resolveFallbackServedTelemetry({
         requestedModel: "anthropic/claude-opus-4.6",
-        fallbackModels: ["x-ai/grok-4.5"],
+        fallbackModels: ["x-ai/grok-4.6"],
       }),
     ).toBeUndefined();
     expect(
       resolveFallbackServedTelemetry({
         requestedModel: "anthropic/claude-opus-4.6",
         responseModel: "anthropic/claude-4.6-opus-20260205",
-        fallbackModels: ["x-ai/grok-4.5"],
+        fallbackModels: ["x-ai/grok-4.6"],
       }),
     ).toBeUndefined();
   });
@@ -254,7 +254,7 @@ describe("retry served-model telemetry", () => {
     expect(
       retryUsesDifferentModel("agent-model-free", "agent-model-free"),
     ).toBe(false);
-    expect(retryUsesDifferentModel("agent-model-free", "model-grok-4.5")).toBe(
+    expect(retryUsesDifferentModel("agent-model-free", "model-grok-4.6")).toBe(
       true,
     );
   });
