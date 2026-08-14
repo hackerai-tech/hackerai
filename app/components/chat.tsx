@@ -1828,6 +1828,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     isSendingNowRef,
     hasManuallyStoppedRef,
     activeTriggerRunRef,
+    resumeActiveRun: resumeStream,
     onStopCallback: () => {
       dispatchStreaming({ type: "RESET_ON_FINISH" });
     },

@@ -616,8 +616,13 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
     const now = new Date().toISOString();
     const agentFirstProperties = {
       experiment_key: agentDefaultDecision.experimentKey,
-      first_experience_event_version: 2,
+      first_experience_event_version: 3,
       variant: "agent_first",
+      assignment_type: "deterministic_eligibility",
+      assignment_unit: "authenticated_user",
+      randomized_assignment: false,
+      control_variant_available: false,
+      exposure_trigger: "default_applied",
       subscription: paidAgentSubscription,
       eligible_subscription_tier: agentDefaultDecision.eligibleSubscriptionTier,
       selected_subscription_tier: paidAgentSubscription,

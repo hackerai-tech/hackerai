@@ -15,6 +15,7 @@ jest.mock("@workos-inc/authkit-nextjs/components", () => ({
 jest.mock("sonner", () => ({
   toast: {
     error: jest.fn(),
+    info: jest.fn(),
   },
 }));
 
@@ -37,6 +38,7 @@ const mockGetPostHogRequestHeaders =
     typeof getPostHogRequestHeaders
   >;
 const mockToastError = toast.error as jest.MockedFunction<typeof toast.error>;
+const mockToastInfo = toast.info as jest.MockedFunction<typeof toast.info>;
 
 function response({
   ok,
@@ -72,6 +74,7 @@ describe("useUpgrade checkout attempts", () => {
 
   afterEach(() => {
     window.history.replaceState(null, "", "/");
+    window.sessionStorage.clear();
   });
 
   it("coalesces duplicate clicks before React commits the loading state", async () => {
@@ -245,6 +248,45 @@ describe("useUpgrade checkout attempts", () => {
     ]);
     expect(mockToastError).toHaveBeenCalledWith(
       "Checkout temporarily unavailable",
+    );
+  });
+
+  it("suppresses a recent checkout redirect after a page reload", async () => {
+    window.sessionStorage.setItem(
+      "hackerai:billing:checkout-navigation:v1",
+      JSON.stringify({
+        attemptId: "ca_recent_redirect_123",
+        plan: "pro-monthly-plan",
+        startedAt: Date.now(),
+      }),
+    );
+    global.fetch = jest.fn();
+    const { result } = renderHook(() => useUpgrade());
+
+    await act(async () => {
+      await result.current.handleUpgrade(
+        "pro-monthly-plan",
+        undefined,
+        undefined,
+        "free",
+        { source: "sidebar", surface: "pricing_dialog" },
+      );
+    });
+
+    expect(global.fetch).not.toHaveBeenCalled();
+    expect(mockNewCheckoutAttemptId).not.toHaveBeenCalled();
+    expect(mockToastInfo).toHaveBeenCalledWith("Checkout is already opening", {
+      description: "Wait a moment before trying again.",
+    });
+    expect(mockCaptureAuthenticatedEvent).toHaveBeenCalledWith(
+      "checkout_redirect_suppressed",
+      expect.objectContaining({
+        checkout_attempt_id: "ca_recent_redirect_123",
+        plan: "pro-monthly-plan",
+        source: "sidebar",
+        suppression_reason: "recent_navigation",
+        guard_window_ms: 30_000,
+      }),
     );
   });
 

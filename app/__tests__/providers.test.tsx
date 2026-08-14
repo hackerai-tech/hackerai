@@ -210,6 +210,58 @@ describe("PostHogProvider", () => {
     expect(posthog.identify).toHaveBeenCalledWith("user-deduped", undefined);
   });
 
+  it("sets sanitized first-touch properties once during identification", async () => {
+    const posthog = {
+      __loaded: false,
+      init: jest.fn(),
+      set_config: jest.fn(),
+      opt_in_capturing: jest.fn(),
+      has_opted_out_capturing: jest.fn(() => false),
+      identify: jest.fn(),
+      sessionRecordingStarted: jest.fn(() => false),
+      startSessionRecording: jest.fn(),
+      stopSessionRecording: jest.fn(),
+      reset: jest.fn(),
+      opt_out_capturing: jest.fn(),
+    };
+    mockLoadPostHogClient.mockResolvedValue(posthog);
+
+    render(
+      <PostHogProvider
+        firstTouchAttribution={{
+          version: 1,
+          source: "github",
+          medium: "social",
+          campaign: "aug_launch",
+          referringDomain: "github.com",
+          entrySurface: "home",
+          capturedAt: "2026-08-14T12:00:00.000Z",
+        }}
+      >
+        <div>child</div>
+      </PostHogProvider>,
+    );
+
+    await waitFor(() => expect(posthog.identify).toHaveBeenCalledTimes(1));
+    expect(posthog.identify).toHaveBeenCalledWith(
+      "user-123",
+      {
+        email: "user@example.com",
+        name: "Test User",
+        subscription: "pro",
+      },
+      {
+        first_touch_attribution_version: 1,
+        first_touch_source: "github",
+        first_touch_medium: "social",
+        first_touch_campaign: "aug_launch",
+        first_touch_referring_domain: "github.com",
+        first_touch_entry_surface: "home",
+        first_touch_captured_at: "2026-08-14T12:00:00.000Z",
+      },
+    );
+  });
+
   it("applies exception hooks when the shared client is already initialized", async () => {
     const posthog = {
       __loaded: true,

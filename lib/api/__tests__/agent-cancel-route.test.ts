@@ -164,6 +164,7 @@ describe("agent cancel route", () => {
     await expect(response.json()).resolves.toEqual({
       canceled: false,
       reason: "stale_run",
+      activeTriggerRunId: "run-2",
     });
     expect(mockLoggerWarn).toHaveBeenCalledWith(
       "Rejected Agent cancellation request",

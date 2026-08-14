@@ -1174,6 +1174,45 @@ describe("forwardChunk", () => {
           recoveryLatencyMs: 250,
         }),
       );
+
+      finishCommand();
+      await jest.advanceTimersByTimeAsync(0);
+      expect(captureAuthenticatedEvent).toHaveBeenNthCalledWith(
+        3,
+        "desktop_stream_command_settled",
+        {
+          connectionId: "conn-123",
+          commandId: "cmd-publish-recovery",
+          outcome: "recovered",
+          observedChunks: 1,
+          publishedChunks: 1,
+          exhaustedChunks: 0,
+          terminalChunkObserved: null,
+          terminalChunkPublished: false,
+          sequenceComplete: true,
+          durationMs: 250,
+        },
+      );
+      expect(
+        infoSpy.mock.calls
+          .map(([value]) => {
+            try {
+              return JSON.parse(String(value)) as Record<string, unknown>;
+            } catch {
+              return null;
+            }
+          })
+          .find((value) => value?.event === "desktop_stream_command_settled"),
+      ).toEqual(
+        expect.objectContaining({
+          level: "info",
+          outcome: "recovered",
+          observed_chunks: 1,
+          published_chunks: 1,
+          exhausted_chunks: 0,
+          sequence_complete: true,
+        }),
+      );
     } finally {
       finishCommand();
       mockSubscription.publish.mockResolvedValue(undefined);

@@ -5,6 +5,9 @@ import type { ChatMessage, SelectedModel } from "@/types";
 const mockRegenerate = jest.fn();
 const mockSendMessage = jest.fn();
 const mockSetMessages = jest.fn();
+const mockSetIsAutoResuming = jest.fn();
+const mockCaptureAuthenticatedEvent = jest.fn();
+const mockToastInfo = jest.fn();
 let mockSelectedModel: SelectedModel = "hackerai-standard";
 const originalFetch = globalThis.fetch;
 
@@ -33,7 +36,20 @@ jest.mock("@/app/contexts/GlobalState", () => ({
 }));
 
 jest.mock("@/app/components/DataStreamProvider", () => ({
-  useDataStreamDispatch: () => ({ setIsAutoResuming: jest.fn() }),
+  useDataStreamDispatch: () => ({
+    setIsAutoResuming: mockSetIsAutoResuming,
+  }),
+}));
+
+jest.mock("@/lib/analytics/client", () => ({
+  captureAuthenticatedEvent: mockCaptureAuthenticatedEvent,
+}));
+
+jest.mock("sonner", () => ({
+  toast: {
+    error: jest.fn(),
+    info: mockToastInfo,
+  },
 }));
 
 jest.mock("@/app/hooks/useTauri", () => ({
@@ -388,5 +404,66 @@ describe("useChatHandlers regenerate model", () => {
     });
 
     expect(stopped).toBe(false);
+  });
+
+  it("reconnects to the persisted run after a stale cancellation", async () => {
+    const fetchMock = jest.fn(async () => {
+      return {
+        ok: false,
+        status: 409,
+        json: jest.fn(async () => ({
+          canceled: false,
+          reason: "stale_run",
+          activeTriggerRunId: "run-2",
+        })),
+      } as unknown as Response;
+    });
+    Object.defineProperty(globalThis, "fetch", {
+      configurable: true,
+      value: fetchMock,
+    });
+    const activeTriggerRunRef = { current: "run-1" };
+    const hasManuallyStoppedRef = { current: false };
+    const resumeActiveRun = jest.fn(async () => undefined);
+    const { result } = renderHook(() =>
+      useChatHandlers({
+        chatId: "chat-1",
+        messages: [],
+        sendMessage: mockSendMessage,
+        stop: jest.fn(),
+        regenerate: mockRegenerate,
+        setMessages: mockSetMessages,
+        isExistingChat: true,
+        status: "ready",
+        isSendingNowRef: { current: false },
+        hasManuallyStoppedRef,
+        activeTriggerRunRef,
+        resumeActiveRun,
+      }),
+    );
+
+    let stopped: boolean | undefined;
+    await act(async () => {
+      stopped = await result.current.handleStop();
+    });
+
+    expect(stopped).toBe(false);
+    expect(activeTriggerRunRef.current).toBe("run-2");
+    expect(hasManuallyStoppedRef.current).toBe(false);
+    expect(resumeActiveRun).toHaveBeenCalledTimes(1);
+    expect(mockSetIsAutoResuming).toHaveBeenLastCalledWith(true);
+    expect(mockToastInfo).toHaveBeenCalledWith("Agent run changed", {
+      description: "Reconnecting to the current run instead of cancelling it.",
+    });
+    expect(mockCaptureAuthenticatedEvent).toHaveBeenCalledWith(
+      "agent_cancel_stale_recovery_started",
+      {
+        chat_id: "chat-1",
+        expected_trigger_run_id: "run-1",
+        active_trigger_run_id: "run-2",
+        recovery_action: "resume_stream",
+        cancellation_applied: false,
+      },
+    );
   });
 });
