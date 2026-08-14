@@ -526,6 +526,7 @@ describe("token-bucket", () => {
     );
 
     it.each([
+      "x-ai/grok-4.6",
       "model-grok-4.6",
       "model-grok-4.6-pro",
       "model-grok-4.5",
