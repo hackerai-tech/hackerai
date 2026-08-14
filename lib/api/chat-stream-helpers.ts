@@ -601,6 +601,13 @@ const isHighReasoningModel = (modelName?: string): boolean =>
   typeof modelName === "string" &&
   (HIGH_REASONING_MODELS as readonly string[]).includes(modelName);
 
+const MEDIUM_GROK_REASONING_MODELS = new Set<string>([
+  "ask-model",
+  "agent-model",
+  "model-grok-4.6",
+  "model-grok-4.5",
+]);
+
 type FallbackOptions = {
   hasMultimodalToolResults?: boolean;
   reasoningOverride?: ProviderReasoningOverride;
@@ -826,10 +833,15 @@ export function buildProviderOptions(
       })
     : fallbackSlugs;
   // OpenRouter applies one reasoning configuration to both the primary model
-  // and every provider fallback. Force high whenever Grok 4.6 is
-  // reachable so neither route can inherit less effort.
+  // and every provider fallback. Auto and Standard use medium when Grok 4.6 is
+  // the primary route to reduce reasoning-token cost; Pro and routes that can
+  // only reach Grok as a fallback retain high reasoning.
   const routesThroughGrok =
     isGrok46 || reasoningFallbackSlugs.includes(GROK_4_6_SLUG);
+  const usesMediumGrokReasoning =
+    isGrok46 &&
+    typeof modelName === "string" &&
+    MEDIUM_GROK_REASONING_MODELS.has(modelName);
   const providerRouting = modelId
     ? getOpenRouterProviderRoutingForModel(modelId)
     : undefined;
@@ -838,7 +850,7 @@ export function buildProviderOptions(
       ? options.reasoningOverride
       : {
           enabled: true,
-          effort: "high",
+          effort: usesMediumGrokReasoning ? "medium" : "high",
         }
     : (options.reasoningOverride ??
       (isHighReasoningModel(modelName) || isAgentDeepSeekV4
