@@ -136,91 +136,27 @@ export const DELETE = async (req: NextRequest) => {
       );
     }
 
-    // Try to get the membership first (it might be an invitation instead)
-    let isInvitation = false;
+    // Look up the membership first. Keep this catch scoped to the lookup so a
+    // later WorkOS 404 cannot be mistaken for an invitation ID.
+    let membershipToDelete;
     try {
-      const membershipToDelete =
+      membershipToDelete =
         await workos.userManagement.getOrganizationMembership(membershipId);
-
-      // Verify it belongs to the same organization
-      if (membershipToDelete.organizationId !== organizationId) {
-        return NextResponse.json(
-          { error: "Member not found in your organization" },
-          { status: 404 },
-        );
-      }
-
-      // Check if this is the last admin
-      const allMembers =
-        await workos.userManagement.listOrganizationMemberships({
-          organizationId,
-          statuses: ["active"],
-        });
-
-      const adminCount = allMembers.data.filter(
-        (m) => m.role?.slug === "admin",
-      ).length;
-
-      // Allow non-admins to remove themselves (leave team)
-      const isSelfRemoval = membershipToDelete.userId === userId;
-      const isRemoverAdmin = userMembership.role?.slug === "admin";
-
-      if (isSelfRemoval) {
-        // If you're an admin trying to leave
-        if (membershipToDelete.role?.slug === "admin" && adminCount <= 1) {
-          return NextResponse.json(
-            {
-              error: "Cannot leave as the last admin",
-              details:
-                "You must have at least one admin in the organization. Please promote another member to admin before leaving.",
-            },
-            { status: 400 },
-          );
-        }
-        // Non-admins can always leave
-      } else {
-        // Removing another member - only admins can do this
-        if (!isRemoverAdmin) {
-          return NextResponse.json(
-            { error: "Only admins can remove other members" },
-            { status: 403 },
-          );
-        }
-
-        // Admins can't remove other admins if it's the last one
-        if (membershipToDelete.role?.slug === "admin" && adminCount <= 1) {
-          return NextResponse.json(
-            {
-              error: "Cannot remove the last admin",
-              details:
-                "You must have at least one admin in the organization. Please promote another member to admin before removing this user.",
-            },
-            { status: 400 },
-          );
-        }
-      }
-
-      // Snapshot consumed credits before deletion (bucket is still accessible)
-      const consumed = await getTeamMemberConsumed(membershipToDelete.userId);
-
-      // Delete the membership first — only record debt if deletion succeeds
-      await workos.userManagement.deleteOrganizationMembership(membershipId);
-
-      // Record removed member's consumed credits to org counter
-      // so the next new member inherits the "used seat" debt
-      if (consumed > 0) {
-        await addOrgRemovedUsage(organizationId, consumed);
-      }
     } catch (error) {
       // Only a genuine not-found response can mean the supplied ID belongs to
       // an invitation. Propagate timeouts, rate limits, and server errors so we
       // do not mask a failed membership lookup as a missing invitation.
       if (!isNotFoundError(error)) throw error;
-      isInvitation = true;
-    }
 
-    // If it's an invitation, revoke it instead
-    if (isInvitation) {
+      // Pending invitations are an admin-only resource. The dedicated invite
+      // endpoint enforces the same policy; retain it here for legacy callers.
+      if (userMembership.role?.slug !== "admin") {
+        return NextResponse.json(
+          { error: "Only admins can revoke invitations" },
+          { status: 403 },
+        );
+      }
+
       try {
         const invitation =
           await workos.userManagement.getInvitation(membershipId);
@@ -241,6 +177,77 @@ export const DELETE = async (req: NextRequest) => {
           { status: 404 },
         );
       }
+
+      return NextResponse.json({ success: true });
+    }
+
+    // Verify it belongs to the same organization
+    if (membershipToDelete.organizationId !== organizationId) {
+      return NextResponse.json(
+        { error: "Member not found in your organization" },
+        { status: 404 },
+      );
+    }
+
+    // Check if this is the last admin
+    const allMembers = await workos.userManagement.listOrganizationMemberships({
+      organizationId,
+      statuses: ["active"],
+    });
+
+    const adminCount = allMembers.data.filter(
+      (m) => m.role?.slug === "admin",
+    ).length;
+
+    // Allow non-admins to remove themselves (leave team)
+    const isSelfRemoval = membershipToDelete.userId === userId;
+    const isRemoverAdmin = userMembership.role?.slug === "admin";
+
+    if (isSelfRemoval) {
+      // If you're an admin trying to leave
+      if (membershipToDelete.role?.slug === "admin" && adminCount <= 1) {
+        return NextResponse.json(
+          {
+            error: "Cannot leave as the last admin",
+            details:
+              "You must have at least one admin in the organization. Please promote another member to admin before leaving.",
+          },
+          { status: 400 },
+        );
+      }
+      // Non-admins can always leave
+    } else {
+      // Removing another member - only admins can do this
+      if (!isRemoverAdmin) {
+        return NextResponse.json(
+          { error: "Only admins can remove other members" },
+          { status: 403 },
+        );
+      }
+
+      // Admins can't remove other admins if it's the last one
+      if (membershipToDelete.role?.slug === "admin" && adminCount <= 1) {
+        return NextResponse.json(
+          {
+            error: "Cannot remove the last admin",
+            details:
+              "You must have at least one admin in the organization. Please promote another member to admin before removing this user.",
+          },
+          { status: 400 },
+        );
+      }
+    }
+
+    // Snapshot consumed credits before deletion (bucket is still accessible)
+    const consumed = await getTeamMemberConsumed(membershipToDelete.userId);
+
+    // Delete the membership first — only record debt if deletion succeeds
+    await workos.userManagement.deleteOrganizationMembership(membershipId);
+
+    // Record removed member's consumed credits to org counter
+    // so the next new member inherits the "used seat" debt
+    if (consumed > 0) {
+      await addOrgRemovedUsage(organizationId, consumed);
     }
 
     return NextResponse.json({ success: true });
