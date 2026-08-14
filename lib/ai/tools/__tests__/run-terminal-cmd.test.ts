@@ -736,6 +736,86 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
     expect(detectAgentBrowserUsage("agent-browser-next open")).toBeNull();
   });
 
+  test("injects the idle timeout only for cloud agent-browser commands", async () => {
+    const e2b = {
+      jupyterUrl: "http://fake",
+      sandboxId: "sandbox-browser-env",
+      setTimeout: jest.fn(async () => undefined),
+      isRunning: jest.fn(async () => true),
+      commands: {
+        run: jest.fn(async (command: string) => {
+          if (command === "echo ready") {
+            return { stdout: "ready\n", stderr: "", exitCode: 0 };
+          }
+
+          return {
+            pid: 4321,
+            stdout: "",
+            stderr: "",
+            wait: jest.fn(async () => ({
+              stdout: "done\n",
+              stderr: "",
+              exitCode: 0,
+            })),
+            kill: jest.fn(async () => true),
+          };
+        }),
+      },
+    };
+    const { context } = makeContext({ sandbox: e2b });
+    const tool = createRunTerminalCmd(context);
+
+    await runTool(tool, {
+      command: "agent-browser open https://example.com",
+      brief: "open a browser page",
+      is_background: false,
+      timeout: 5,
+      interactive: false,
+    });
+    await runTool(tool, {
+      command: "echo ok",
+      brief: "print a status",
+      is_background: false,
+      timeout: 5,
+      interactive: false,
+    });
+
+    const browserCall = e2b.commands.run.mock.calls.find(
+      ([command]) => command === "agent-browser open https://example.com",
+    );
+    const unrelatedCall = e2b.commands.run.mock.calls.find(
+      ([command]) => command === "echo ok",
+    );
+
+    expect(browserCall?.[1]).toMatchObject({
+      envs: { AGENT_BROWSER_IDLE_TIMEOUT_MS: "900000" },
+    });
+    expect(unrelatedCall?.[1]).not.toHaveProperty("envs");
+  });
+
+  test("injects the idle timeout into cloud interactive browser shells", async () => {
+    const fakeHandle = makeFakeHandle();
+    const e2b = makeFakeE2BSandbox();
+    mockCreateE2BPtyHandle.mockResolvedValue(fakeHandle);
+    const { context } = makeContext({ sandbox: e2b });
+
+    setTimeout(() => fakeHandle.resolveExit(0), 10);
+    await runTool(createRunTerminalCmd(context), {
+      command: "agent-browser snapshot -i",
+      brief: "inspect the browser page",
+      is_background: false,
+      timeout: 5,
+      interactive: true,
+    });
+
+    expect(mockCreateE2BPtyHandle).toHaveBeenCalledWith(
+      e2b,
+      expect.objectContaining({
+        envs: { AGENT_BROWSER_IDLE_TIMEOUT_MS: "900000" },
+      }),
+    );
+  });
+
   test("regression: legacy schema {command, brief, is_background, timeout} still works", async () => {
     // Use a non-E2B sandbox (sandboxKind !== "centrifugo" is NOT enough after
     // the isE2BSandbox hardening — a sandbox with sandboxKind: "centrifugo" is
@@ -1413,6 +1493,7 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
     expect(JSON.stringify(mockPhEvent.mock.calls)).not.toContain(
       "secret.example",
     );
+    expect(nonE2B.commands.run.mock.calls[0]?.[1]).not.toHaveProperty("envs");
   });
 
   test("schema defaults action=exec and interactive=false when omitted", async () => {
