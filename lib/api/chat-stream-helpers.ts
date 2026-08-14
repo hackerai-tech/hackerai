@@ -645,6 +645,7 @@ const getFallbackKeys = (
   return MODEL_FALLBACK_CHAIN[modelName as ModelName];
 };
 
+/** Returns the first app-side retry model for a failed provider route. */
 export function getRetryFallbackModel(
   modelName: ModelName,
   _mode: ChatMode,
