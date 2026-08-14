@@ -157,26 +157,28 @@ export const DELETE = async (req: NextRequest) => {
         );
       }
 
+      let invitation;
       try {
-        const invitation =
-          await workos.userManagement.getInvitation(membershipId);
-
-        // Verify it belongs to the same organization
-        if (invitation.organizationId !== organizationId) {
-          return NextResponse.json(
-            { error: "Invitation not found in your organization" },
-            { status: 404 },
-          );
-        }
-
-        // Revoke the invitation
-        await workos.userManagement.revokeInvitation(membershipId);
+        invitation = await workos.userManagement.getInvitation(membershipId);
       } catch (inviteError) {
+        if (!isNotFoundError(inviteError)) throw inviteError;
         return NextResponse.json(
           { error: "Member or invitation not found" },
           { status: 404 },
         );
       }
+
+      // Verify it belongs to the same organization
+      if (invitation.organizationId !== organizationId) {
+        return NextResponse.json(
+          { error: "Invitation not found in your organization" },
+          { status: 404 },
+        );
+      }
+
+      // A revocation failure is not a lookup miss and must reach the outer
+      // handler instead of being reported as a successfully absent invitation.
+      await workos.userManagement.revokeInvitation(membershipId);
 
       return NextResponse.json({ success: true });
     }

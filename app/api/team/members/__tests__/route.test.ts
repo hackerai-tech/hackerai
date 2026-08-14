@@ -74,21 +74,76 @@ describe("DELETE /api/team/members", () => {
     }
   });
 
-  it("falls back to invitation revocation only when membership is not found", async () => {
+  it.each([{ status: 404 }, { statusCode: 404 }])(
+    "falls back to invitation revocation when membership lookup returns %o",
+    async (notFoundShape) => {
+      mockGetOrganizationMembership.mockRejectedValueOnce(
+        Object.assign(new Error("Not found"), notFoundShape) as never,
+      );
+      mockGetInvitation.mockResolvedValueOnce({
+        id: "invitation_id",
+        organizationId: "org_team",
+      } as never);
+
+      const { DELETE } = await import("../route");
+      const response = await DELETE(makeRequest("invitation_id"));
+
+      expect(response.status).toBe(200);
+      expect(mockGetInvitation).toHaveBeenCalledWith("invitation_id");
+      expect(mockRevokeInvitation).toHaveBeenCalledWith("invitation_id");
+      expect(mockDeleteOrganizationMembership).not.toHaveBeenCalled();
+    },
+  );
+
+  it("does not treat a transient invitation lookup failure as not found", async () => {
     mockGetOrganizationMembership.mockRejectedValueOnce(
-      Object.assign(new Error("Not found"), { status: 404 }) as never,
+      Object.assign(new Error("Membership not found"), {
+        status: 404,
+      }) as never,
+    );
+    mockGetInvitation.mockRejectedValueOnce(
+      Object.assign(new Error("WorkOS unavailable"), {
+        statusCode: 503,
+      }) as never,
+    );
+    const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+
+    try {
+      const { DELETE } = await import("../route");
+      const response = await DELETE(makeRequest("invitation_id"));
+
+      expect(response.status).toBe(500);
+      expect(await response.json()).toEqual({ error: "WorkOS unavailable" });
+      expect(mockRevokeInvitation).not.toHaveBeenCalled();
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  it("does not treat a failed invitation revocation as not found", async () => {
+    mockGetOrganizationMembership.mockRejectedValueOnce(
+      Object.assign(new Error("Membership not found"), {
+        status: 404,
+      }) as never,
     );
     mockGetInvitation.mockResolvedValueOnce({
       id: "invitation_id",
       organizationId: "org_team",
     } as never);
+    mockRevokeInvitation.mockRejectedValueOnce(
+      Object.assign(new Error("Revocation failed"), { status: 404 }) as never,
+    );
+    const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
 
-    const { DELETE } = await import("../route");
-    const response = await DELETE(makeRequest("invitation_id"));
+    try {
+      const { DELETE } = await import("../route");
+      const response = await DELETE(makeRequest("invitation_id"));
 
-    expect(response.status).toBe(200);
-    expect(mockGetInvitation).toHaveBeenCalledWith("invitation_id");
-    expect(mockRevokeInvitation).toHaveBeenCalledWith("invitation_id");
+      expect(response.status).toBe(500);
+      expect(await response.json()).toEqual({ error: "Revocation failed" });
+    } finally {
+      errorSpy.mockRestore();
+    }
   });
 
   it("does not allow a non-admin to revoke an invitation", async () => {
