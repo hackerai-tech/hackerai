@@ -43,6 +43,7 @@ function createRequest({
   userAgent = "BetterStack",
   method = "GET",
   headers = {},
+  cookieNames = [],
 }: {
   pathname: string;
   accept?: string;
@@ -50,6 +51,7 @@ function createRequest({
   userAgent?: string;
   method?: string;
   headers?: Record<string, string>;
+  cookieNames?: string[];
 }): NextRequest {
   const url = new URL(pathname, "https://hackerai.co");
   return {
@@ -62,7 +64,10 @@ function createRequest({
       ...headers,
     }),
     cookies: {
-      has: jest.fn((name: string) => name === "wos-session" && hasSession),
+      has: jest.fn(
+        (name: string) =>
+          (name === "wos-session" && hasSession) || cookieNames.includes(name),
+      ),
     },
   } as unknown as NextRequest;
 }
@@ -111,6 +116,75 @@ describe("proxy", () => {
       expect(mockNextResponseRedirect).not.toHaveBeenCalled();
     },
   );
+
+  it("stores sanitized first-touch attribution before authentication", async () => {
+    mockAuthkit.mockResolvedValue({
+      session: { user: null },
+      headers: new Headers(),
+      authorizationUrl: "https://signin.hackerai.co/login",
+    });
+    const { default: proxy } = await import("../proxy");
+
+    const response = await proxy(
+      createRequest({
+        pathname:
+          "/?utm_source=github&utm_medium=social&utm_campaign=aug_launch&utm_term=private-target",
+        accept: "text/html",
+        userAgent: "Mozilla/5.0",
+        headers: {
+          referer: "https://github.com/hackerai-tech?secret=value",
+        },
+      }),
+    );
+
+    expect(response).toMatchObject({ kind: "next" });
+    const firstTouchCookieCall = response.cookies.set.mock.calls.find(
+      ([name]: [string]) => name === "hackerai_first_touch_attribution",
+    );
+    expect(firstTouchCookieCall).toBeDefined();
+    const [, value, options] = firstTouchCookieCall!;
+    expect(JSON.parse(decodeURIComponent(String(value)))).toMatchObject({
+      version: 1,
+      source: "github",
+      medium: "social",
+      campaign: "aug_launch",
+      referringDomain: "github.com",
+      entrySurface: "home",
+    });
+    expect(String(value)).not.toContain("private-target");
+    expect(String(value)).not.toContain("secret");
+    expect(options).toEqual({
+      httpOnly: true,
+      secure: false,
+      sameSite: "lax",
+      maxAge: 90 * 24 * 60 * 60,
+      path: "/",
+    });
+  });
+
+  it("does not overwrite existing first-touch attribution", async () => {
+    mockAuthkit.mockResolvedValue({
+      session: { user: null },
+      headers: new Headers(),
+      authorizationUrl: "https://signin.hackerai.co/login",
+    });
+    const { default: proxy } = await import("../proxy");
+
+    const response = await proxy(
+      createRequest({
+        pathname: "/?utm_source=second_touch",
+        accept: "text/html",
+        userAgent: "Mozilla/5.0",
+        cookieNames: ["hackerai_first_touch_attribution"],
+      }),
+    );
+
+    expect(
+      response.cookies.set.mock.calls.some(
+        ([name]: [string]) => name === "hackerai_first_touch_attribution",
+      ),
+    ).toBe(false);
+  });
 
   it("rejects non-action root POSTs before AuthKit", async () => {
     const { default: proxy } = await import("../proxy");

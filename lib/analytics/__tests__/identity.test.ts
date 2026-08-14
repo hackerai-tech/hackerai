@@ -23,4 +23,20 @@ describe("createPostHogIdentitySignature", () => {
       }),
     ).not.toBe(createPostHogIdentitySignature(identity));
   });
+
+  it("changes when first-touch attribution is added", () => {
+    expect(
+      createPostHogIdentitySignature({
+        ...identity,
+        firstTouchAttribution: {
+          version: 1,
+          source: "google",
+          medium: "organic",
+          referringDomain: "google.com",
+          entrySurface: "home",
+          capturedAt: "2026-08-14T12:00:00.000Z",
+        },
+      }),
+    ).not.toBe(createPostHogIdentitySignature(identity));
+  });
 });

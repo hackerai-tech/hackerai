@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
-import { headers } from "next/headers";
+import { cookies, headers } from "next/headers";
 import { withAuth } from "@workos-inc/authkit-nextjs";
 import "./globals.css";
 
@@ -15,6 +15,10 @@ import { PostHogProvider } from "./providers";
 import { DataStreamProvider } from "./components/DataStreamProvider";
 import { ChunkLoadRecovery } from "./components/ChunkLoadRecovery";
 import { resolveClientInitialAuth } from "@/lib/auth/initial-auth";
+import {
+  FIRST_TOUCH_ATTRIBUTION_COOKIE_NAME,
+  parseFirstTouchAttribution,
+} from "@/lib/analytics/acquisition";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -115,12 +119,18 @@ export default async function RootLayout({
 }>) {
   // Supplying server-resolved auth prevents AuthKitProvider from invoking its
   // getAuth Server Action on every mount.
-  const initialAuth = await getInitialAuth();
+  const [initialAuth, cookieStore] = await Promise.all([
+    getInitialAuth(),
+    cookies(),
+  ]);
+  const firstTouchAttribution = parseFirstTouchAttribution(
+    cookieStore.get(FIRST_TOUCH_ATTRIBUTION_COOKIE_NAME)?.value,
+  );
 
   const content = (
     <GlobalStateProvider>
       <AgentAutoReviewAvailabilityProvider>
-        <PostHogProvider>
+        <PostHogProvider firstTouchAttribution={firstTouchAttribution}>
           <ChunkLoadRecovery />
           <DataStreamProvider>
             <TodoBlockProvider>

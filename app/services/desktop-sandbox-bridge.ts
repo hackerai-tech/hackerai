@@ -70,6 +70,11 @@ interface DesktopStreamPublishRecoveryState {
   failureReported: boolean;
   recoveryReported: boolean;
   exhaustionReported: boolean;
+  observedChunks: number;
+  publishedChunks: number;
+  exhaustedChunks: number;
+  terminalChunkObserved: "exit" | "error" | null;
+  terminalChunkPublished: boolean;
 }
 
 function shouldForwardStreamChunk(chunk: StreamChunk): boolean {
@@ -499,16 +504,22 @@ export class DesktopSandboxBridge {
   private async handleCommand(command: CommandMessage): Promise<void> {
     const { commandId } = command;
     this.activeCommands.add(commandId);
+    const commandStartedAt = Date.now();
+    const recoveryState: DesktopStreamPublishRecoveryState = {
+      failureReported: false,
+      recoveryReported: false,
+      exhaustionReported: false,
+      observedChunks: 0,
+      publishedChunks: 0,
+      exhaustedChunks: 0,
+      terminalChunkObserved: null,
+      terminalChunkPublished: false,
+    };
 
     try {
       const { invoke, Channel } = await import("@tauri-apps/api/core");
 
       const channel = new Channel<StreamChunk>();
-      const recoveryState: DesktopStreamPublishRecoveryState = {
-        failureReported: false,
-        recoveryReported: false,
-        exhaustionReported: false,
-      };
       const recoveryDeadlineAt =
         Date.now() +
         (command.timeout ?? 30_000) +
@@ -520,6 +531,10 @@ export class DesktopSandboxBridge {
         if (!shouldForwardStreamChunk(chunk)) return;
 
         const sequence = nextSequence++;
+        recoveryState.observedChunks += 1;
+        if (chunk.type === "exit" || chunk.type === "error") {
+          recoveryState.terminalChunkObserved = chunk.type;
+        }
         const operation = streamPublishTail.then(async () => {
           try {
             await this.forwardChunkWithRetry(
@@ -568,8 +583,67 @@ export class DesktopSandboxBridge {
         message,
       });
     } finally {
+      this.reportDesktopStreamCommandSettlement(
+        commandId,
+        recoveryState,
+        Date.now() - commandStartedAt,
+      );
       this.activeCommands.delete(commandId);
     }
+  }
+
+  private reportDesktopStreamCommandSettlement(
+    commandId: string,
+    recoveryState: DesktopStreamPublishRecoveryState,
+    durationMs: number,
+  ): void {
+    if (!recoveryState.failureReported) return;
+
+    const outcome =
+      recoveryState.exhaustedChunks > 0
+        ? "incomplete"
+        : recoveryState.publishedChunks === recoveryState.observedChunks
+          ? "recovered"
+          : "interrupted";
+    const properties = {
+      connectionId: this.connectionId,
+      commandId,
+      outcome,
+      observedChunks: recoveryState.observedChunks,
+      publishedChunks: recoveryState.publishedChunks,
+      exhaustedChunks: recoveryState.exhaustedChunks,
+      terminalChunkObserved: recoveryState.terminalChunkObserved,
+      terminalChunkPublished: recoveryState.terminalChunkPublished,
+      sequenceComplete:
+        recoveryState.observedChunks === recoveryState.publishedChunks,
+      durationMs,
+    };
+    const log = JSON.stringify({
+      timestamp: new Date().toISOString(),
+      level: outcome === "recovered" ? "info" : "error",
+      event: "desktop_stream_command_settled",
+      service: "desktop_bridge",
+      environment: process.env.NODE_ENV ?? "unknown",
+      request_id: commandId,
+      connection_id: this.connectionId,
+      command_id: commandId,
+      outcome,
+      observed_chunks: recoveryState.observedChunks,
+      published_chunks: recoveryState.publishedChunks,
+      exhausted_chunks: recoveryState.exhaustedChunks,
+      terminal_chunk_observed: recoveryState.terminalChunkObserved,
+      terminal_chunk_published: recoveryState.terminalChunkPublished,
+      sequence_complete:
+        recoveryState.observedChunks === recoveryState.publishedChunks,
+      duration_ms: durationMs,
+    });
+
+    if (outcome === "recovered") {
+      console.info(log);
+    } else {
+      console.error(log);
+    }
+    captureAuthenticatedEvent("desktop_stream_command_settled", properties);
   }
 
   private getErrorMessage(error: unknown): string {
@@ -915,6 +989,10 @@ export class DesktopSandboxBridge {
 
       try {
         await this.forwardChunk(commandId, chunk, sequence);
+        recoveryState.publishedChunks += 1;
+        if (chunk.type === "exit" || chunk.type === "error") {
+          recoveryState.terminalChunkPublished = true;
+        }
         if (
           firstFailureAt !== null &&
           firstFailureReason !== null &&
@@ -992,6 +1070,7 @@ export class DesktopSandboxBridge {
           if (Date.now() < recoveryDeadlineAt) continue;
         }
 
+        recoveryState.exhaustedChunks += 1;
         if (!recoveryState.exhaustionReported) {
           recoveryState.exhaustionReported = true;
           const recoveryLatencyMs = Date.now() - firstFailureAt;
