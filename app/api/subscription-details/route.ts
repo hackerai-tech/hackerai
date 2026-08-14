@@ -93,14 +93,14 @@ export const POST = async (req: NextRequest) => {
         : "pro-monthly-plan";
 
     const { userId, organizationId } = await getUserIDAndPro(req);
-    const user = await workos.userManagement.getUser(userId);
-
     if (!organizationId) {
       return NextResponse.json(
         { error: "No active organization" },
         { status: 403 },
       );
     }
+
+    const user = await workos.userManagement.getUser(userId);
 
     // Verify billing permissions in the active organization from the session.
     const existingMemberships =

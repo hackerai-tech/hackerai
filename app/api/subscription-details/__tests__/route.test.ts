@@ -177,8 +177,31 @@ describe("POST /api/subscription-details", () => {
 
     expect(response.status).toBe(403);
     expect(body).toEqual({ error: "No active organization" });
+    expect(mockGetUser).not.toHaveBeenCalled();
     expect(mockListOrganizationMemberships).not.toHaveBeenCalled();
     expect(mockGetOrganization).not.toHaveBeenCalled();
+  });
+
+  it("rejects billing changes without an active membership in the session organization", async () => {
+    mockListOrganizationMemberships.mockResolvedValueOnce({
+      data: [],
+    } as never);
+
+    const { POST } = await import("../route");
+    const response = await POST(makeRequest({ plan: "pro-monthly-plan" }));
+    const body = await response.json();
+
+    expect(response.status).toBe(404);
+    expect(body).toEqual({ error: "No organization found" });
+    expect(mockListOrganizationMemberships).toHaveBeenCalledWith({
+      userId: "user_123",
+      organizationId: "org_team",
+      statuses: ["active"],
+    });
+    expect(mockGetOrganization).not.toHaveBeenCalled();
+    expect(mockListCustomers).not.toHaveBeenCalled();
+    expect(mockListSubscriptions).not.toHaveBeenCalled();
+    expect(mockUpdateSubscription).not.toHaveBeenCalled();
   });
 
   it("rejects non-owner, non-admin members from managing billing", async () => {
