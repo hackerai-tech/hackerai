@@ -19,8 +19,10 @@ import {
   type LimitCapReason,
 } from "@/lib/limit-pressure";
 import { isUserRateLimitKey } from "./key-cleanup";
+import { NORMAL_USAGE_MULTIPLIER, POINTS_PER_DOLLAR } from "./usage-pricing";
 
 export { isUserRateLimitKey } from "./key-cleanup";
+export { NORMAL_USAGE_MULTIPLIER, POINTS_PER_DOLLAR } from "./usage-pricing";
 
 // =============================================================================
 // Configuration
@@ -169,17 +171,6 @@ const getModelPricing = (
 
 const normalizeTokenCount = (value: number): number =>
   Number.isFinite(value) ? Math.max(0, value) : 0;
-
-/** Points per dollar (1 point = $0.0001) */
-export const POINTS_PER_DOLLAR = 10_000;
-
-/**
- * Normal usage pricing multiplier — covers additional operational costs
- * (infrastructure, overhead, etc.) on top of raw model pricing.
- * This is baked into the point cost so it depletes the subscription bucket
- * faster; it is NOT subtracted from the user's subscription credit balance.
- */
-export const NORMAL_USAGE_MULTIPLIER = 1.5;
 
 /** Convert raw provider/tool spend into billable user-balance points. */
 export const billableCostDollarsToPoints = (costDollars: number): number =>
