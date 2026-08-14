@@ -906,6 +906,11 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
           );
           setEntitlementApiResolvedUserId(user.id);
         } else {
+          // Multiple active memberships without a selected session org are
+          // ambiguous. Keep the last trustworthy tier instead of displaying a
+          // false downgrade while the user selects an organization.
+          if (response.status === 409) return;
+
           if (response.status === 401) {
             if (typeof window !== "undefined") {
               const { clientLogout } = await import("@/lib/utils/logout");
