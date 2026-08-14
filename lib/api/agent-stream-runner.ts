@@ -122,7 +122,7 @@ import {
   MAX_PROVIDER_TOOL_CALLS_PER_RESPONSE,
 } from "@/lib/ai/provider-response-guard";
 
-const AGENT_VISION_MODEL = "model-grok-4.5";
+const AGENT_VISION_MODEL = "model-grok-4.6";
 
 export const resolveAgentModelForImageToolResults = (
   modelName: string,

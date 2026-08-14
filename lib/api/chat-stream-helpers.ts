@@ -23,7 +23,6 @@ import type {
   UserCustomization,
 } from "@/types";
 import {
-  GROK_4_5_SLUG,
   GROK_4_6_SLUG,
   getOpenRouterProviderRoutingForModel,
   isAnthropicModel,
@@ -521,7 +520,7 @@ export class SummarizationTracker {
  * stream, OpenRouter rolls forward through this list and bills at the served
  * model's rate (response.modelId reflects what actually ran).
  *
- * The persisted Max key now resolves to Kimi K3 and falls back to Grok 4.5 in
+ * The persisted Max key now resolves to Kimi K3 and falls back to Grok 4.6 in
  * every mode. Historical Opus response ids remain recognized for accounting.
  *
  * Keys and values are registry names (see lib/ai/providers.ts) — the actual
@@ -530,19 +529,19 @@ export class SummarizationTracker {
  */
 const KIMI_K3_THEN_GROK_FALLBACK_CHAIN = [
   "model-kimi-k3",
-  "model-grok-4.5",
+  "model-grok-4.6",
 ] as const satisfies readonly ModelName[];
 
-const GROK_4_5_FALLBACK_CHAIN = [
+const GROK_4_6_FALLBACK_CHAIN = [
   "model-kimi-k3",
 ] as const satisfies readonly ModelName[];
 
 const AGENT_TEXT_FALLBACK_CHAIN = [
-  "model-grok-4.5",
+  "model-grok-4.6",
   "model-kimi-k3",
 ] as const satisfies readonly ModelName[];
 
-// HackerAI Pro uses Grok 4.5 for every request. GLM 5.2 remains its first
+// HackerAI Pro uses Grok 4.6 for every request. GLM 5.2 remains its first
 // fallback, followed by Kimi K3 so media requests still have a multimodal final
 // recovery path if both primary providers are unavailable.
 const HACKERAI_PRO_FALLBACK_CHAIN = [
@@ -550,27 +549,21 @@ const HACKERAI_PRO_FALLBACK_CHAIN = [
   "model-kimi-k3",
 ] as const satisfies readonly ModelName[];
 
-// HAC-64 treatment falls back through today's complete Pro route before the
-// existing GLM/Kimi recovery chain.
-const HACKERAI_GROK_4_6_PRO_FALLBACK_CHAIN = [
-  "model-grok-4.5-pro",
-  ...HACKERAI_PRO_FALLBACK_CHAIN,
-] as const satisfies readonly ModelName[];
-
 const MODEL_FALLBACK_CHAIN: Partial<Record<ModelName, readonly ModelName[]>> = {
   "ask-model-free": AGENT_TEXT_FALLBACK_CHAIN,
   "agent-model-free": AGENT_TEXT_FALLBACK_CHAIN,
   "model-deepseek-v4-pro": AGENT_TEXT_FALLBACK_CHAIN,
-  "ask-model": GROK_4_5_FALLBACK_CHAIN,
-  "agent-model": GROK_4_5_FALLBACK_CHAIN,
-  "model-grok-4.5": GROK_4_5_FALLBACK_CHAIN,
+  "ask-model": GROK_4_6_FALLBACK_CHAIN,
+  "agent-model": GROK_4_6_FALLBACK_CHAIN,
+  "model-grok-4.6": GROK_4_6_FALLBACK_CHAIN,
+  "model-grok-4.5": GROK_4_6_FALLBACK_CHAIN,
   "model-grok-4.5-pro": HACKERAI_PRO_FALLBACK_CHAIN,
-  "model-grok-4.6-pro": HACKERAI_GROK_4_6_PRO_FALLBACK_CHAIN,
-  "model-opus-4.6": ["model-grok-4.5"],
+  "model-grok-4.6-pro": HACKERAI_PRO_FALLBACK_CHAIN,
+  "model-opus-4.6": ["model-grok-4.6"],
   "model-glm-5.2": KIMI_K3_THEN_GROK_FALLBACK_CHAIN,
-  "fallback-agent-model": GROK_4_5_FALLBACK_CHAIN,
-  "fallback-ask-model": GROK_4_5_FALLBACK_CHAIN,
-  "model-kimi-k3": ["model-grok-4.5"],
+  "fallback-agent-model": GROK_4_6_FALLBACK_CHAIN,
+  "fallback-ask-model": GROK_4_6_FALLBACK_CHAIN,
+  "model-kimi-k3": ["model-grok-4.6"],
 };
 
 const AUTO_MODEL_KEYS = new Set<string>([
@@ -598,6 +591,7 @@ export function isAutoModelSelectionForRetry({
 
 const HIGH_REASONING_MODELS = [
   "model-grok-4.5-pro",
+  "model-grok-4.6",
   "model-grok-4.6-pro",
   "model-glm-5.2",
   "model-opus-4.6",
@@ -641,36 +635,37 @@ export function getRetryFallbackModel(
   modelName: ModelName,
   _mode: ChatMode,
 ): ModelName {
-  if (modelName === "model-grok-4.6-pro") {
-    return "model-grok-4.5-pro";
-  }
-  if (modelName === "model-grok-4.5-pro") {
+  if (
+    modelName === "model-grok-4.6-pro" ||
+    modelName === "model-grok-4.5-pro"
+  ) {
     return "model-glm-5.2";
   }
   if (modelName === "model-opus-4.6") {
-    return "model-grok-4.5";
+    return "model-grok-4.6";
   }
   if (
     modelName === "ask-model-free" ||
     modelName === "agent-model-free" ||
     modelName === "model-deepseek-v4-pro"
   ) {
-    return "model-grok-4.5";
+    return "model-grok-4.6";
   }
   if (
     modelName === "ask-model" ||
     modelName === "agent-model" ||
+    modelName === "model-grok-4.6" ||
     modelName === "model-grok-4.5" ||
     modelName === "fallback-agent-model" ||
     modelName === "fallback-ask-model"
   ) {
     return "model-kimi-k3";
   }
-  return "model-grok-4.5";
+  return "model-grok-4.6";
 }
 
 const CONTENT_FILTER_RETRY_CANDIDATES = [
-  "model-grok-4.5",
+  "model-grok-4.6",
   "model-kimi-k3",
   "model-glm-5.2",
 ] as const satisfies readonly ModelName[];
@@ -749,7 +744,7 @@ const OPENROUTER_RESPONSE_MODEL_COST_KEYS: Record<string, string> = {
   "deepseek/deepseek-v4-flash-0731": "agent-model-free",
   "deepseek/deepseek-v4-flash-20260731": "agent-model-free",
   "x-ai/grok-4.5": "model-grok-4.5",
-  "x-ai/grok-4.6": "model-grok-4.6-pro",
+  "x-ai/grok-4.6": "model-grok-4.6",
   "z-ai/glm-5.2": "model-glm-5.2",
   "z-ai/glm-5.2-20260616": "model-glm-5.2",
   "moonshotai/kimi-k3": "model-kimi-k3",
@@ -819,7 +814,6 @@ export function buildProviderOptions(
     options.requestedModelSlug ??
     (modelName ? resolveSlug(modelName) : undefined);
   const isDeepSeekV4 = modelId?.startsWith("deepseek/deepseek-v4") ?? false;
-  const isGrok45 = modelId === GROK_4_5_SLUG;
   const isGrok46 = modelId === GROK_4_6_SLUG;
   // Agent routes use high for both DeepSeek V4 Flash and Pro. Keep this
   // mode-scoped for any future route that does not also include Grok.
@@ -832,13 +826,10 @@ export function buildProviderOptions(
       })
     : fallbackSlugs;
   // OpenRouter applies one reasoning configuration to both the primary model
-  // and every provider fallback. Force high whenever Grok 4.5 or 4.6 is
+  // and every provider fallback. Force high whenever Grok 4.6 is
   // reachable so neither route can inherit less effort.
   const routesThroughGrok =
-    isGrok45 ||
-    isGrok46 ||
-    reasoningFallbackSlugs.includes(GROK_4_5_SLUG) ||
-    reasoningFallbackSlugs.includes(GROK_4_6_SLUG);
+    isGrok46 || reasoningFallbackSlugs.includes(GROK_4_6_SLUG);
   const providerRouting = modelId
     ? getOpenRouterProviderRoutingForModel(modelId)
     : undefined;

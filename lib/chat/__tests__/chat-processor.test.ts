@@ -154,17 +154,9 @@ describe("limitImageParts", () => {
 // selectModel - Model selection logic
 // ==========================================================================
 describe("selectModel", () => {
-  it("routes the HAC-64 treatment through the Grok 4.6 Pro alias", () => {
-    expect(
-      selectModel("agent", "pro", "hackerai-pro", false, false, {
-        proModelKey: "model-grok-4.6-pro",
-      }),
-    ).toBe("model-grok-4.6-pro");
-  });
-
-  it("keeps HackerAI Pro on Grok 4.5 without an experiment assignment", () => {
+  it("routes HackerAI Pro through Grok 4.6 without experiment assignment", () => {
     expect(selectModel("agent", "pro", "hackerai-pro")).toBe(
-      "model-grok-4.5-pro",
+      "model-grok-4.6-pro",
     );
   });
 
@@ -214,15 +206,15 @@ describe("selectModel", () => {
       );
     });
 
-    it("should return Grok 4.5 for paid ask when a PDF is attached", () => {
+    it("should return Grok 4.6 for paid ask when a PDF is attached", () => {
       expect(selectModel("ask", "pro", undefined, false, true)).toBe(
-        "model-grok-4.5",
+        "model-grok-4.6",
       );
     });
 
-    it("should prefer Grok 4.5 when paid ask has both image and PDF attachments", () => {
+    it("should prefer Grok 4.6 when paid ask has both image and PDF attachments", () => {
       expect(selectModel("ask", "pro", undefined, true, true)).toBe(
-        "model-grok-4.5",
+        "model-grok-4.6",
       );
     });
 
@@ -241,27 +233,27 @@ describe("selectModel", () => {
 
   // Tier override — Standard is content-aware in ask mode; Max maps to Opus in both modes
   describe("tier override for ask mode (paid users)", () => {
-    it("should map HackerAI Pro to Grok 4.5 for text-only ask mode", () => {
+    it("should map HackerAI Pro to Grok 4.6 for text-only ask mode", () => {
       expect(selectModel("ask", "ultra", "hackerai-pro")).toBe(
-        "model-grok-4.5-pro",
+        "model-grok-4.6-pro",
       );
     });
 
-    it("should map HackerAI Pro to Grok 4.5 for team users", () => {
+    it("should map HackerAI Pro to Grok 4.6 for team users", () => {
       expect(selectModel("ask", "team", "hackerai-pro")).toBe(
-        "model-grok-4.5-pro",
+        "model-grok-4.6-pro",
       );
     });
 
-    it("should keep HackerAI Pro on Grok 4.5 when an image is attached", () => {
+    it("should keep HackerAI Pro on Grok 4.6 when an image is attached", () => {
       expect(selectModel("ask", "pro", "hackerai-pro", true, false)).toBe(
-        "model-grok-4.5-pro",
+        "model-grok-4.6-pro",
       );
     });
 
-    it("should keep HackerAI Pro on Grok 4.5 when a PDF is attached", () => {
+    it("should keep HackerAI Pro on Grok 4.6 when a PDF is attached", () => {
       expect(selectModel("ask", "pro", "hackerai-pro", false, true)).toBe(
-        "model-grok-4.5-pro",
+        "model-grok-4.6-pro",
       );
     });
 
@@ -271,21 +263,21 @@ describe("selectModel", () => {
       );
     });
 
-    it("should promote HackerAI Standard to Grok 4.5 when an image is attached", () => {
+    it("should promote HackerAI Standard to Grok 4.6 when an image is attached", () => {
       expect(selectModel("ask", "pro", "hackerai-standard", true, false)).toBe(
-        "model-grok-4.5",
+        "model-grok-4.6",
       );
     });
 
-    it("should promote HackerAI Standard to Grok 4.5 when a PDF is attached", () => {
+    it("should promote HackerAI Standard to Grok 4.6 when a PDF is attached", () => {
       expect(selectModel("ask", "pro", "hackerai-standard", false, true)).toBe(
-        "model-grok-4.5",
+        "model-grok-4.6",
       );
     });
 
-    it("should prefer Grok 4.5 for HackerAI Standard when image and PDF are both attached", () => {
+    it("should prefer Grok 4.6 for HackerAI Standard when image and PDF are both attached", () => {
       expect(selectModel("ask", "pro", "hackerai-standard", true, true)).toBe(
-        "model-grok-4.5",
+        "model-grok-4.6",
       );
     });
 
@@ -297,13 +289,13 @@ describe("selectModel", () => {
 
     it("should downgrade HackerAI Max to Pro outside Ultra", () => {
       expect(selectModel("ask", "pro", "hackerai-max")).toBe(
-        "model-grok-4.5-pro",
+        "model-grok-4.6-pro",
       );
       expect(selectModel("ask", "pro-plus", "hackerai-max")).toBe(
-        "model-grok-4.5-pro",
+        "model-grok-4.6-pro",
       );
       expect(selectModel("ask", "team", "hackerai-max")).toBe(
-        "model-grok-4.5-pro",
+        "model-grok-4.6-pro",
       );
     });
 
@@ -324,33 +316,33 @@ describe("selectModel", () => {
       );
     });
 
-    it("should route HackerAI Standard to Grok 4.5 when an image is attached", () => {
+    it("should route HackerAI Standard to Grok 4.6 when an image is attached", () => {
       expect(
         selectModel("agent", "pro", "hackerai-standard", true, false),
-      ).toBe("model-grok-4.5");
+      ).toBe("model-grok-4.6");
     });
 
-    it("should route HackerAI Standard to Grok 4.5 when a PDF is attached", () => {
+    it("should route HackerAI Standard to Grok 4.6 when a PDF is attached", () => {
       expect(
         selectModel("agent", "pro", "hackerai-standard", false, true),
-      ).toBe("model-grok-4.5");
+      ).toBe("model-grok-4.6");
     });
 
-    it("should map HackerAI Pro to Grok 4.5 in text-only agent mode", () => {
+    it("should map HackerAI Pro to Grok 4.6 in text-only agent mode", () => {
       expect(selectModel("agent", "pro", "hackerai-pro")).toBe(
-        "model-grok-4.5-pro",
+        "model-grok-4.6-pro",
       );
     });
 
-    it("should route HackerAI Pro to Grok 4.5 in agent mode when an image is attached", () => {
+    it("should route HackerAI Pro to Grok 4.6 in agent mode when an image is attached", () => {
       expect(selectModel("agent", "pro", "hackerai-pro", true, false)).toBe(
-        "model-grok-4.5-pro",
+        "model-grok-4.6-pro",
       );
     });
 
-    it("should route HackerAI Pro to Grok 4.5 in agent mode when a PDF is attached", () => {
+    it("should route HackerAI Pro to Grok 4.6 in agent mode when a PDF is attached", () => {
       expect(selectModel("agent", "pro", "hackerai-pro", false, true)).toBe(
-        "model-grok-4.5-pro",
+        "model-grok-4.6-pro",
       );
     });
 
@@ -362,13 +354,13 @@ describe("selectModel", () => {
 
     it("should downgrade HackerAI Max to Pro in agent mode outside Ultra", () => {
       expect(selectModel("agent", "pro", "hackerai-max")).toBe(
-        "model-grok-4.5-pro",
+        "model-grok-4.6-pro",
       );
       expect(selectModel("agent", "pro-plus", "hackerai-max")).toBe(
-        "model-grok-4.5-pro",
+        "model-grok-4.6-pro",
       );
       expect(selectModel("agent", "team", "hackerai-max")).toBe(
-        "model-grok-4.5-pro",
+        "model-grok-4.6-pro",
       );
     });
 
@@ -430,7 +422,7 @@ describe("selectModel", () => {
 
     it("should treat 'auto' as no override in ask mode with PDF -> Grok", () => {
       expect(selectModel("ask", "pro", "auto", false, true)).toBe(
-        "model-grok-4.5",
+        "model-grok-4.6",
       );
     });
   });
@@ -448,7 +440,7 @@ describe("selectModel", () => {
         "ask-model",
       );
       expect(selectModel("ask", "pro", undefined, false, true)).toBe(
-        "model-grok-4.5",
+        "model-grok-4.6",
       );
     });
   });

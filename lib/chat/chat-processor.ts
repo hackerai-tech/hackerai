@@ -38,9 +38,9 @@ export const getMaxStepsForUser = (mode: ChatMode): number => {
  * @param hasImageAttachment - Whether any message has an image attachment.
  * @param hasPdfAttachment - Whether any message has a PDF attachment.
  *   Paid ASK on the Standard/auto route normally uses DeepSeek V4 Pro
- *   (text-only); image and PDF prompts promote to Grok 4.5. Paid Agent
+ *   (text-only); image and PDF prompts promote to Grok 4.6. Paid Agent
  *   Auto/Standard routes use DeepSeek V4 Pro for text-only prompts and Grok
- *   4.5 when provider-visible media is attached. HackerAI Pro uses Grok 4.5
+ *   4.6 when provider-visible media is attached. HackerAI Pro uses Grok 4.6
  *   for both text and vision; its GLM 5.2 fallback is configured downstream.
  * @returns Model name to use
  */
@@ -50,10 +50,7 @@ export function selectModel(
   selectedModel?: SelectedModel,
   hasImageAttachment?: boolean,
   hasPdfAttachment?: boolean,
-  options: {
-    extraUsageAvailable?: boolean;
-    proModelKey?: "model-grok-4.5-pro" | "model-grok-4.6-pro";
-  } = {},
+  options: { extraUsageAvailable?: boolean } = {},
 ): ModelName {
   const isAgent = isAgentMode(mode);
   const allowedSelectedModel = normalizeMaxModelForSubscription(
@@ -69,7 +66,7 @@ export function selectModel(
   const hasAskPdf = !isAgent && !!hasPdfAttachment;
   const hasProviderMedia = !!hasImageAttachment || !!hasPdfAttachment;
   const paidAskMediaModel: ModelName = hasAskPdf
-    ? "model-grok-4.5"
+    ? "model-grok-4.6"
     : hasAskImage
       ? "ask-model"
       : "model-deepseek-v4-pro";
@@ -99,15 +96,15 @@ export function selectModel(
   // the auto-router label.
   if (allowedSelectedModel === "hackerai-standard") {
     if (isAgent) {
-      return hasProviderMedia ? "model-grok-4.5" : "model-deepseek-v4-pro";
+      return hasProviderMedia ? "model-grok-4.6" : "model-deepseek-v4-pro";
     }
     return hasAskImage || hasAskPdf
-      ? "model-grok-4.5"
+      ? "model-grok-4.6"
       : "model-deepseek-v4-pro";
   }
 
   if (allowedSelectedModel === "hackerai-pro") {
-    return options.proModelKey ?? "model-grok-4.5-pro";
+    return "model-grok-4.6-pro";
   }
 
   const providerKey = resolveTierToProviderKey(allowedSelectedModel, mode);
@@ -649,7 +646,6 @@ export async function processChatMessages({
   uploadBasePath,
   modelOverride,
   extraUsageAvailable = false,
-  proModelKey,
   allowLocalDesktopFiles = false,
 }: {
   messages: UIMessage[];
@@ -659,7 +655,6 @@ export async function processChatMessages({
   uploadBasePath?: string;
   modelOverride?: SelectedModel;
   extraUsageAvailable?: boolean;
-  proModelKey?: "model-grok-4.5-pro" | "model-grok-4.6-pro";
   allowLocalDesktopFiles?: boolean;
 }) {
   const messagesWithoutOpenRouterReasoningMetadata =
@@ -737,7 +732,7 @@ export async function processChatMessages({
     modelOverride,
     mediaAttachmentRouting.hasImage,
     mediaAttachmentRouting.hasPdf,
-    { extraUsageAvailable, proModelKey },
+    { extraUsageAvailable },
   );
 
   // Strip providerMetadata for Anthropic models to prevent cross-model signature errors.

@@ -51,7 +51,7 @@ describe("Kimi reasoning policy", () => {
     expect(
       shouldUseMaxKimiReasoning({
         ...eligibleRequest,
-        configuredModelId: "x-ai/grok-4.5",
+        configuredModelId: "x-ai/grok-4.6",
       }),
     ).toBe(false);
   });
