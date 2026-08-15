@@ -162,7 +162,7 @@ describe("ChatInput - Integration Tests", () => {
   });
 
   describe("Ask Mode Integration", () => {
-    it("should render with ask mode as default", () => {
+    it("renders Ask mode by default without the logged-out mode selector", () => {
       render(
         <TestWrapper>
           <ChatInput
@@ -176,7 +176,7 @@ describe("ChatInput - Integration Tests", () => {
       expect(
         screen.getByPlaceholderText("Ask, learn, brainstorm"),
       ).toBeInTheDocument();
-      expect(screen.getByText("Ask")).toBeInTheDocument();
+      expect(screen.queryByText("Ask")).not.toBeInTheDocument();
       expect(
         screen.getByTestId("attach-files-button").querySelector(".lucide-plus"),
       ).toBeInTheDocument();

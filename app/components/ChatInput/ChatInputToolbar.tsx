@@ -49,7 +49,8 @@ export function ChatInputToolbar({
       <div className="shrink-0">
         <AttachmentButton onAttachClick={onAttachClick} disabled={!isOnline} />
       </div>
-      {chatModeAccessResolved &&
+      {user &&
+      chatModeAccessResolved &&
       !paidAgentOnlyActive &&
       !freeDesktopAgentOnlyActive ? (
         <ChatModeSelector />

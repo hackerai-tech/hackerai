@@ -125,10 +125,10 @@ describe("ChatInputToolbar", () => {
     mockAuthUser(null);
   });
 
-  it("hides the model selector for logged-out users", () => {
+  it("hides the mode and model selectors for logged-out users", () => {
     render(<ChatInputToolbar {...defaultProps} />);
 
-    expect(screen.getByTestId("chat-mode-selector")).toBeInTheDocument();
+    expect(screen.queryByTestId("chat-mode-selector")).not.toBeInTheDocument();
     expect(screen.queryByTestId("model-selector")).not.toBeInTheDocument();
   });
 
