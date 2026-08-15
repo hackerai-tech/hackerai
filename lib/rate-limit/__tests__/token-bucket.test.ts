@@ -534,6 +534,7 @@ describe("token-bucket", () => {
     it.each([
       "ask-model-free",
       "agent-model-free",
+      "agent-auto-review-model",
       "deepseek/deepseek-v4-flash-0731",
       "deepseek/deepseek-v4-flash-20260731",
     ])(
@@ -556,7 +557,6 @@ describe("token-bucket", () => {
       "agent-model",
       "fallback-agent-model",
       "fallback-ask-model",
-      "agent-auto-review-model",
     ])("should use Grok base pricing for %s ($2.00/$6.00)", (modelName) => {
       expect(calculateTokenCost(100_000, "input", modelName)).toBe(2600);
       expect(calculateTokenCost(1_000_000, "output", modelName)).toBe(78000);

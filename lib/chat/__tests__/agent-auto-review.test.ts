@@ -1,6 +1,8 @@
 import type { UIMessage } from "ai";
 
 import {
+  AGENT_AUTO_REVIEW_MODEL,
+  AGENT_AUTO_REVIEW_PROVIDER_OPTIONS,
   AgentAutoReviewDenialTracker,
   extractAgentAutoReviewAuthorizationContext,
   extractAgentAutoReviewConversationContext,
@@ -69,6 +71,17 @@ const authorizationContext = {
 };
 
 describe("Agent Auto review", () => {
+  it("uses DeepSeek with a no-reasoning Grok 4.5 fallback", () => {
+    expect(AGENT_AUTO_REVIEW_MODEL).toBe("agent-auto-review-model");
+    expect(AGENT_AUTO_REVIEW_PROVIDER_OPTIONS).toEqual({
+      openrouter: {
+        reasoning: { enabled: false },
+        models: ["x-ai/grok-4.5"],
+        usage: { include: true },
+      },
+    });
+  });
+
   it.each([
     ["auto_review", "enforce", "terminal_execute", true],
     ["auto_review", "shadow", "file_edit", true],
