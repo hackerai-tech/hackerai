@@ -545,7 +545,9 @@ describe("token-bucket", () => {
     );
 
     it.each([
+      "x-ai/grok-4.5",
       "x-ai/grok-4.6",
+      "x-ai/grok-4.5-20260708",
       "model-grok-4.6",
       "model-grok-4.6-pro",
       "model-grok-4.5",
@@ -555,7 +557,7 @@ describe("token-bucket", () => {
       "fallback-agent-model",
       "fallback-ask-model",
       "agent-auto-review-model",
-    ])("should use Grok 4.6 base pricing for %s ($2.00/$6.00)", (modelName) => {
+    ])("should use Grok base pricing for %s ($2.00/$6.00)", (modelName) => {
       expect(calculateTokenCost(100_000, "input", modelName)).toBe(2600);
       expect(calculateTokenCost(1_000_000, "output", modelName)).toBe(78000);
     });
@@ -581,6 +583,16 @@ describe("token-bucket", () => {
       expect(
         calculateTokenCost(10_000, "output", "model-grok-4.6-pro", 200_000),
       ).toBe(1560);
+    });
+
+    it("keeps Grok 4.5 Pro on flat pricing above 200k prompt tokens", () => {
+      expect(
+        calculateRawModelUsageCostDollars({
+          inputTokens: 200_000,
+          outputTokens: 10_000,
+          modelName: "model-grok-4.5-pro",
+        }),
+      ).toBeCloseTo(0.46);
     });
 
     it("higher-priced models should deplete budget faster", () => {

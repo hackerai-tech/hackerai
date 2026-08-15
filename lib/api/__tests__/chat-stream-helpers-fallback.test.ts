@@ -24,6 +24,7 @@ jest.mock("@/lib/logger", () => ({
 
 // Slugs the test asserts against. These match the registry in lib/ai/providers.ts.
 // If the registry slug for a model changes, update both places intentionally.
+const GROK_4_5_SLUG = "x-ai/grok-4.5";
 const GROK_SLUG = "x-ai/grok-4.6";
 const KIMI_K3_SLUG = "moonshotai/kimi-k3";
 const GLM_SLUG = "z-ai/glm-5.2";
@@ -33,11 +34,10 @@ const DEEPSEEK_FLASH_PREVIOUS_SLUG = "deepseek/deepseek-v4-flash";
 const DEEPSEEK_FLASH_PREVIOUS_CANONICAL_SLUG =
   "deepseek/deepseek-v4-flash-20260423";
 const DEEPSEEK_V4_PRO_0813_SLUG = "deepseek/deepseek-v4-pro-0813";
-const HIGH_GROK_PRIMARY_OR_FALLBACK_MODELS = [
+const HIGH_REASONING_ROUTES = [
   "ask-model",
   "agent-model",
   "agent-model-free",
-  "model-grok-4.5",
   "model-grok-4.5-pro",
   "model-grok-4.6",
   "model-grok-4.6-pro",
@@ -89,8 +89,8 @@ describe("buildProviderOptions fallback chain", () => {
     expect(currentRoute.openrouter).not.toHaveProperty("provider");
   });
 
-  it.each(HIGH_GROK_PRIMARY_OR_FALLBACK_MODELS)(
-    "uses high reasoning whenever %s can resolve to Grok",
+  it.each(HIGH_REASONING_ROUTES)(
+    "uses high reasoning for paid or Grok-reachable route %s",
     (modelName) => {
       for (const mode of ["ask", "agent"] as const) {
         const opts = buildProviderOptions(
@@ -208,7 +208,7 @@ describe("buildProviderOptions fallback chain", () => {
     },
   );
 
-  it("keeps the legacy Pro key on the Grok 4.6 fallback route", () => {
+  it("routes Pro vision through Grok 4.5 high with Kimi K3 fallback", () => {
     const opts = buildProviderOptions(
       true,
       "user-1",
@@ -217,20 +217,20 @@ describe("buildProviderOptions fallback chain", () => {
     );
     expect(opts.openrouter).toMatchObject({
       reasoning: { enabled: true, effort: "high" },
-      models: [GLM_SLUG, KIMI_K3_SLUG],
+      models: [KIMI_K3_SLUG],
       user: "user-1",
     });
   });
 
-  it("keeps the Standard Agent media route on its direct Kimi K3 fallback", () => {
+  it("routes Standard vision through Grok 4.5 medium with Kimi K3 fallback", () => {
     const opts = buildProviderOptions(
       true,
       "user-1",
-      "model-grok-4.6",
+      "model-grok-4.5",
       "agent",
     );
     expect(opts.openrouter).toMatchObject({
-      reasoning: { enabled: true, effort: "high" },
+      reasoning: { enabled: true, effort: "medium" },
       models: [KIMI_K3_SLUG],
       user: "user-1",
     });
@@ -491,19 +491,38 @@ describe("buildProviderOptions fallback chain", () => {
     });
   });
 
-  it.each(["ask-model", "model-grok-4.6"])(
-    "enables high reasoning for Auto/Standard Grok ask model %s",
-    (modelName) => {
-      const opts = buildProviderOptions(false, "user-1", modelName, "ask");
-      expect(opts.openrouter.reasoning).toEqual({
-        enabled: true,
-        effort: "high",
-      });
-    },
-  );
+  it("keeps Grok 4.5 Standard vision at medium despite a high override", () => {
+    const opts = buildProviderOptions(
+      false,
+      "user-1",
+      "model-grok-4.5",
+      "ask",
+      { reasoningOverride: { enabled: true, effort: "high" } },
+    );
+
+    expect(opts.openrouter.reasoning).toEqual({
+      enabled: true,
+      effort: "medium",
+    });
+  });
+
+  it("does not let a lower override weaken Grok 4.5 Pro vision reasoning", () => {
+    const opts = buildProviderOptions(
+      false,
+      "user-1",
+      "model-grok-4.5-pro",
+      "ask",
+      { reasoningOverride: { enabled: true, effort: "medium" } },
+    );
+
+    expect(opts.openrouter.reasoning).toEqual({
+      enabled: true,
+      effort: "high",
+    });
+  });
 
   it.each([
-    "model-grok-4.6-pro",
+    "model-grok-4.5-pro",
     "model-grok-4.6-pro",
     "model-glm-5.2",
     "model-opus-4.6",
@@ -516,7 +535,7 @@ describe("buildProviderOptions fallback chain", () => {
   });
 
   it.each([
-    "model-grok-4.6-pro",
+    "model-grok-4.5-pro",
     "model-grok-4.6-pro",
     "model-glm-5.2",
     "model-opus-4.6",
@@ -637,8 +656,10 @@ describe("getRetryFallbackModel", () => {
     );
   });
 
-  it("retries the Grok-backed paid Ask image route with Kimi K3", () => {
-    expect(getRetryFallbackModel("ask-model", "ask")).toBe("model-kimi-k3");
+  it("retries the Grok 4.5 Standard vision route with Kimi K3", () => {
+    expect(getRetryFallbackModel("model-grok-4.5", "ask")).toBe(
+      "model-kimi-k3",
+    );
   });
 
   it.each(["ask", "agent"] as const)(
@@ -659,8 +680,8 @@ describe("getRetryFallbackModel", () => {
     );
   });
 
-  it("retries the Standard Agent media route with Kimi K3", () => {
-    expect(getRetryFallbackModel("model-grok-4.6", "agent")).toBe(
+  it("retries the Grok 4.5 Pro vision route with Kimi K3", () => {
+    expect(getRetryFallbackModel("model-grok-4.5-pro", "agent")).toBe(
       "model-kimi-k3",
     );
   });
@@ -818,31 +839,45 @@ describe("resolveServedModelForCostAccounting", () => {
   it("maps HackerAI Pro primary and fallback usage to their exact cost keys", () => {
     expect(
       resolveServedModelForCostAccounting({
-        modelName: "model-grok-4.6-pro",
-        responseModel: GROK_SLUG,
+        modelName: "model-grok-4.5-pro",
+        responseModel: GROK_4_5_SLUG,
         mode: "agent",
       }),
-    ).toBe("model-grok-4.6-pro");
+    ).toBe("model-grok-4.5-pro");
     expect(
       resolveServedModelForCostAccounting({
-        modelName: "model-grok-4.6-pro",
-        responseModel: GLM_SLUG,
-        mode: "ask",
+        modelName: "model-grok-4.5-pro",
+        responseModel: "x-ai/grok-4.5-20260708",
+        mode: "agent",
       }),
-    ).toBe("model-glm-5.2");
+    ).toBe("model-grok-4.5");
     expect(
       resolveServedModelForCostAccounting({
-        modelName: "model-grok-4.6-pro",
+        modelName: "model-grok-4.5-pro",
         responseModel: KIMI_K3_SLUG,
         mode: "agent",
       }),
     ).toBe("model-kimi-k3");
   });
 
-  it("maps Standard Agent media Kimi K3 fallback usage back to its cost key", () => {
+  it("maps Standard Agent Grok 4.5 primary and fallback usage to exact cost keys", () => {
     expect(
       resolveServedModelForCostAccounting({
-        modelName: "model-grok-4.6",
+        modelName: "model-grok-4.5",
+        responseModel: GROK_4_5_SLUG,
+        mode: "agent",
+      }),
+    ).toBe("model-grok-4.5");
+    expect(
+      resolveServedModelForCostAccounting({
+        modelName: "model-grok-4.5",
+        responseModel: "x-ai/grok-4.5-20260708",
+        mode: "agent",
+      }),
+    ).toBe("model-grok-4.5");
+    expect(
+      resolveServedModelForCostAccounting({
+        modelName: "model-grok-4.5",
         responseModel: KIMI_K3_SLUG,
         mode: "agent",
       }),

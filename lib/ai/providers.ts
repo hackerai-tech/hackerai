@@ -181,6 +181,7 @@ type OpenRouterInstance = typeof openrouter;
 
 export const KIMI_K3_SLUG = "moonshotai/kimi-k3";
 export const GLM_5_2_SLUG = "z-ai/glm-5.2";
+export const GROK_4_5_SLUG = "x-ai/grok-4.5";
 export const GROK_4_6_SLUG = "x-ai/grok-4.6";
 export const DEEPSEEK_V4_PRO_SLUG = "deepseek/deepseek-v4-pro";
 export const DEEPSEEK_V4_PRO_0813_SLUG = "deepseek/deepseek-v4-pro-0813";
@@ -207,9 +208,10 @@ const buildProviderMap = (
     "agent-model-free": or(freeAgentDeepSeekSlug),
     "model-grok-4.6": or(GROK_4_6_SLUG),
     // Compatibility aliases keep in-flight requests and stored internal keys
-    // valid while routing every new provider request to Grok 4.6.
-    "model-grok-4.5": or(GROK_4_6_SLUG),
-    "model-grok-4.5-pro": or(GROK_4_6_SLUG),
+    // valid. Both keys are active for the Grok 4.5 vision experiment; provider
+    // reasoning options distinguish Standard from Pro.
+    "model-grok-4.5": or(GROK_4_5_SLUG),
+    "model-grok-4.5-pro": or(GROK_4_5_SLUG),
     "model-grok-4.6-pro": or(GROK_4_6_SLUG),
     "model-deepseek-v4-flash-0731": or(DEEPSEEK_V4_FLASH_SLUG),
     "model-deepseek-v4-pro": or(DEEPSEEK_V4_PRO_SLUG),
@@ -236,8 +238,6 @@ export const modelCutoffDates: Partial<Record<ModelName, string>> &
   "ask-model": "August 2026",
   "agent-model": "August 2026",
   "model-grok-4.6": "August 2026",
-  "model-grok-4.5": "August 2026",
-  "model-grok-4.5-pro": "August 2026",
   "model-grok-4.6-pro": "August 2026",
   "model-deepseek-v4-flash-0731": "July 2026",
   "model-deepseek-v4-pro": "May 2025",
@@ -257,8 +257,8 @@ export const modelDisplayNames: Record<ModelName, string> &
   "agent-model": "Auto, an intelligent model router built by HackerAI",
   "agent-model-free": "Auto, an intelligent model router built by HackerAI",
   "model-grok-4.6": "xAI Grok 4.6",
-  "model-grok-4.5": "xAI Grok 4.6",
-  "model-grok-4.5-pro": "xAI Grok 4.6",
+  "model-grok-4.5": "xAI Grok 4.5",
+  "model-grok-4.5-pro": "xAI Grok 4.5",
   "model-grok-4.6-pro": "xAI Grok 4.6",
   "model-deepseek-v4-flash-0731": "DeepSeek V4 Flash 0731",
   "model-deepseek-v4-pro": "DeepSeek V4 Pro",

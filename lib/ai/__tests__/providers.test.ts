@@ -33,11 +33,11 @@ describe("provider registry", () => {
     expect(
       (myProvider.languageModel("model-grok-4.5") as { modelId: string })
         .modelId,
-    ).toBe("x-ai/grok-4.6");
+    ).toBe("x-ai/grok-4.5");
     expect(
       (myProvider.languageModel("model-grok-4.5-pro") as { modelId: string })
         .modelId,
-    ).toBe("x-ai/grok-4.6");
+    ).toBe("x-ai/grok-4.5");
     expect(
       (myProvider.languageModel("model-grok-4.6-pro") as { modelId: string })
         .modelId,
@@ -83,8 +83,10 @@ describe("provider registry", () => {
     expect(getModelCutoffDate("ask-model-free")).toBeUndefined();
     expect(getModelCutoffDate("agent-model-free")).toBeUndefined();
     expect(getModelDisplayName("model-grok-4.6")).toBe("xAI Grok 4.6");
-    expect(getModelDisplayName("model-grok-4.5")).toBe("xAI Grok 4.6");
-    expect(getModelDisplayName("model-grok-4.5-pro")).toBe("xAI Grok 4.6");
+    expect(getModelDisplayName("model-grok-4.5")).toBe("xAI Grok 4.5");
+    expect(getModelDisplayName("model-grok-4.5-pro")).toBe("xAI Grok 4.5");
+    expect(getModelCutoffDate("model-grok-4.5")).toBeUndefined();
+    expect(getModelCutoffDate("model-grok-4.5-pro")).toBeUndefined();
     expect(getModelDisplayName("model-grok-4.6-pro")).toBe("xAI Grok 4.6");
     expect(getModelCutoffDate("model-grok-4.6-pro")).toBe("August 2026");
     expect(getModelDisplayName("model-deepseek-v4-flash-0731")).toBe(

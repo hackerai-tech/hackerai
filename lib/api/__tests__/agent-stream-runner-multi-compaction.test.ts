@@ -78,7 +78,8 @@ jest.mock("@/lib/chat/multimodal-tool-result-recovery", () => ({
 jest.mock("@/lib/ai/providers", () => ({
   isAnthropicModel: () => false,
   isDeepSeekModel: (modelName: string) =>
-    modelName === "agent-model-free" || modelName === "model-deepseek-v4-pro",
+    modelName === "agent-model-free" ||
+    modelName.startsWith("model-deepseek-v4"),
 }));
 jest.mock("@/lib/ai/tools/utils/pty-session-manager", () => ({
   ptySessionManager: { closeAllSessions: jest.fn() },
@@ -165,7 +166,7 @@ describe("resolveAgentModelForImageToolResults", () => {
     ).toBe("model-deepseek-v4-pro");
   });
 
-  it("switches DeepSeek Agent steps to Grok after image tool results", () => {
+  it("defaults DeepSeek Agent image tool results to the Grok 4.6 control", () => {
     expect(
       resolveAgentModelForImageToolResults(
         "model-deepseek-v4-pro",
@@ -173,6 +174,28 @@ describe("resolveAgentModelForImageToolResults", () => {
         true,
       ),
     ).toBe("model-grok-4.6");
+  });
+
+  it("uses the assigned Grok 4.5 medium route after image tool results", () => {
+    expect(
+      resolveAgentModelForImageToolResults(
+        "model-deepseek-v4-flash-0731",
+        "agent",
+        true,
+        "model-grok-4.5",
+      ),
+    ).toBe("model-grok-4.5");
+  });
+
+  it("uses the assigned Grok 4.5 high route after image tool results", () => {
+    expect(
+      resolveAgentModelForImageToolResults(
+        "model-deepseek-v4-pro-0813",
+        "agent",
+        true,
+        "model-grok-4.5-pro",
+      ),
+    ).toBe("model-grok-4.5-pro");
   });
 
   it("keeps the HackerAI Pro GLM fallback active after image tool results", () => {

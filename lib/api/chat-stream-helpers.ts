@@ -23,6 +23,7 @@ import type {
   UserCustomization,
 } from "@/types";
 import {
+  GROK_4_5_SLUG,
   GROK_4_6_SLUG,
   getOpenRouterProviderRoutingForModel,
   isAnthropicModel,
@@ -551,8 +552,8 @@ const DEEPSEEK_V4_PRO_0813_FALLBACK_CHAIN = [
   ...AGENT_TEXT_FALLBACK_CHAIN,
 ] as const satisfies readonly ModelName[];
 
-// Preserve the historical Grok-backed Pro aliases for in-flight requests.
-// GLM 5.2 remains their first fallback, followed by Kimi K3.
+// Preserve the historical Grok 4.6 Pro alias for in-flight requests. GLM 5.2
+// remains its first fallback, followed by Kimi K3.
 const HACKERAI_PRO_FALLBACK_CHAIN = [
   "model-glm-5.2",
   "model-kimi-k3",
@@ -567,8 +568,8 @@ const MODEL_FALLBACK_CHAIN: Partial<Record<ModelName, readonly ModelName[]>> = {
   "ask-model": GROK_4_6_FALLBACK_CHAIN,
   "agent-model": GROK_4_6_FALLBACK_CHAIN,
   "model-grok-4.6": GROK_4_6_FALLBACK_CHAIN,
-  "model-grok-4.5": GROK_4_6_FALLBACK_CHAIN,
-  "model-grok-4.5-pro": HACKERAI_PRO_FALLBACK_CHAIN,
+  "model-grok-4.5": ["model-kimi-k3"],
+  "model-grok-4.5-pro": ["model-kimi-k3"],
   "model-grok-4.6-pro": HACKERAI_PRO_FALLBACK_CHAIN,
   "model-opus-4.6": ["model-grok-4.6"],
   "model-glm-5.2": KIMI_K3_THEN_GROK_FALLBACK_CHAIN,
@@ -656,11 +657,11 @@ export function getRetryFallbackModel(
   if (modelName === "model-deepseek-v4-pro-0813") {
     return "model-grok-4.6";
   }
-  if (
-    modelName === "model-grok-4.6-pro" ||
-    modelName === "model-grok-4.5-pro"
-  ) {
+  if (modelName === "model-grok-4.6-pro") {
     return "model-glm-5.2";
+  }
+  if (modelName === "model-grok-4.5" || modelName === "model-grok-4.5-pro") {
+    return "model-kimi-k3";
   }
   if (modelName === "model-opus-4.6") {
     return "model-grok-4.6";
@@ -767,6 +768,7 @@ const OPENROUTER_RESPONSE_MODEL_COST_KEYS: Record<string, string> = {
   "deepseek/deepseek-v4-pro-0813": "model-deepseek-v4-pro-0813",
   "deepseek/deepseek-v4-pro-20260813": "model-deepseek-v4-pro-0813",
   "x-ai/grok-4.5": "model-grok-4.5",
+  "x-ai/grok-4.5-20260708": "model-grok-4.5",
   "x-ai/grok-4.6": "model-grok-4.6",
   "z-ai/glm-5.2": "model-glm-5.2",
   "z-ai/glm-5.2-20260616": "model-glm-5.2",
@@ -837,6 +839,7 @@ export function buildProviderOptions(
     options.requestedModelSlug ??
     (modelName ? resolveSlug(modelName) : undefined);
   const isDeepSeekV4 = modelId?.startsWith("deepseek/deepseek-v4") ?? false;
+  const isGrok45 = modelId === GROK_4_5_SLUG;
   const isGrok46 = modelId === GROK_4_6_SLUG;
   // Agent routes use high for both DeepSeek V4 Flash and Pro. Keep this
   // mode-scoped for any future route that does not also include Grok.
@@ -849,32 +852,41 @@ export function buildProviderOptions(
       })
     : fallbackSlugs;
   // OpenRouter applies one reasoning configuration to both the primary model
-  // and every provider fallback. All paid Auto/Standard, Pro, and Max routes
-  // use high reasoning, including media requests promoted to Grok 4.6.
+  // and every provider fallback. The experiment's Standard key deliberately
+  // uses medium while the Pro key and Grok 4.6 control remain high.
+  const isMediumGrok45Vision = modelName === "model-grok-4.5" && isGrok45;
   const routesThroughGrok =
-    isGrok46 || reasoningFallbackSlugs.includes(GROK_4_6_SLUG);
+    isGrok45 ||
+    isGrok46 ||
+    reasoningFallbackSlugs.includes(GROK_4_5_SLUG) ||
+    reasoningFallbackSlugs.includes(GROK_4_6_SLUG);
   const providerRouting = modelId
     ? getOpenRouterProviderRoutingForModel(modelId)
     : undefined;
-  const reasoning = routesThroughGrok
-    ? isHighOrGreaterReasoningOverride(options.reasoningOverride)
-      ? options.reasoningOverride
-      : {
-          enabled: true,
-          effort: "high",
-        }
-    : (options.reasoningOverride ??
-      (isHighReasoningModel(modelName) || isAgentDeepSeekV4
-        ? {
+  const reasoning = isMediumGrok45Vision
+    ? {
+        enabled: true,
+        effort: "medium",
+      }
+    : routesThroughGrok
+      ? isHighOrGreaterReasoningOverride(options.reasoningOverride)
+        ? options.reasoningOverride
+        : {
             enabled: true,
             effort: "high",
           }
-        : isReasoningModel
+      : (options.reasoningOverride ??
+        (isHighReasoningModel(modelName) || isAgentDeepSeekV4
           ? {
               enabled: true,
-              ...(isDeepSeekV4 ? { effort: "xhigh" } : {}),
+              effort: "high",
             }
-          : { enabled: false }));
+          : isReasoningModel
+            ? {
+                enabled: true,
+                ...(isDeepSeekV4 ? { effort: "xhigh" } : {}),
+              }
+            : { enabled: false }));
 
   return {
     openrouter: {

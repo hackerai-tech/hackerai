@@ -184,7 +184,7 @@ describe("selectModel", () => {
       },
     );
 
-    it("should return the Grok-backed agent model for paid agent with an image", () => {
+    it("should return the Grok 4.6 experiment control for paid Agent Auto with an image", () => {
       expect(selectModel("agent", "pro", undefined, true, false)).toBe(
         "model-grok-4.6",
       );
@@ -200,7 +200,7 @@ describe("selectModel", () => {
       expect(selectModel("ask", "pro")).toBe("model-deepseek-v4-flash-0731");
     });
 
-    it("should return the Grok-backed ask model when an image is attached", () => {
+    it("should return the Grok 4.6 experiment control for paid Ask Auto with an image", () => {
       expect(selectModel("ask", "pro", undefined, true, false)).toBe(
         "model-grok-4.6",
       );
@@ -212,7 +212,7 @@ describe("selectModel", () => {
       );
     });
 
-    it("should use the Grok-backed image route when paid ask has both image and PDF attachments", () => {
+    it("should use Grok 4.6 when paid Ask Auto has both image and PDF attachments", () => {
       expect(selectModel("ask", "pro", undefined, true, true)).toBe(
         "model-grok-4.6",
       );
@@ -245,7 +245,7 @@ describe("selectModel", () => {
       );
     });
 
-    it("should keep HackerAI Pro on Grok 4.6 when an image is attached", () => {
+    it("should keep HackerAI Pro on the Grok 4.6 experiment control when an image is attached", () => {
       expect(selectModel("ask", "pro", "hackerai-pro", true, false)).toBe(
         "model-grok-4.6",
       );
@@ -263,7 +263,7 @@ describe("selectModel", () => {
       );
     });
 
-    it("should promote HackerAI Standard to Grok 4.6 when an image is attached", () => {
+    it("should promote HackerAI Standard to the Grok 4.6 experiment control when an image is attached", () => {
       expect(selectModel("ask", "pro", "hackerai-standard", true, false)).toBe(
         "model-grok-4.6",
       );
@@ -407,7 +407,7 @@ describe("selectModel", () => {
       );
     });
 
-    it("should route paid agent Auto images to Grok and PDFs to DeepSeek", () => {
+    it("should route paid Agent Auto images to Grok and PDFs to DeepSeek", () => {
       expect(selectModel("agent", "pro", "auto", true, false)).toBe(
         "model-grok-4.6",
       );

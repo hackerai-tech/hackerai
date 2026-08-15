@@ -120,6 +120,7 @@ const MODEL_PRICING_MAP: Record<string, ModelPricing> = {
   // Provider response ids can reach accounting before local-key normalization.
   // Historical Grok 4.5 responses retain their original flat pricing.
   "x-ai/grok-4.5": GROK_4_6_BASE_PRICING,
+  "x-ai/grok-4.5-20260708": GROK_4_6_BASE_PRICING,
   "x-ai/grok-4.6": GROK_4_6_BASE_PRICING,
   "deepseek/deepseek-v4-flash": DEEPSEEK_V4_FLASH_PRICING,
   "deepseek/deepseek-v4-flash-20260423": DEEPSEEK_V4_FLASH_PRICING,
@@ -137,8 +138,6 @@ const MODEL_PRICING_MAP: Record<string, ModelPricing> = {
 const GROK_4_6_MODEL_IDS = new Set([
   "model-grok-4.6",
   "model-grok-4.6-pro",
-  "model-grok-4.5",
-  "model-grok-4.5-pro",
   "ask-model",
   "agent-model",
   "fallback-agent-model",

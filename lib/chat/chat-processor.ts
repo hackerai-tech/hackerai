@@ -39,8 +39,8 @@ export const getMaxStepsForUser = (mode: ChatMode): number => {
  * @param hasPdfAttachment - Whether any message has a PDF attachment.
  *   Paid Auto/Standard routes use DeepSeek V4 Flash 0731 for text/PDF prompts,
  *   Pro uses DeepSeek V4 Pro 0813, and Max uses Grok 4.6. Images promote Auto,
- *   Standard, and Pro to Grok 4.6; PDFs stay on DeepSeek and are parsed by
- *   OpenRouter before inference.
+ *   Standard, and Pro to the Grok 4.6 experiment control; PDFs stay on
+ *   DeepSeek and are parsed by OpenRouter before inference.
  * @returns Model name to use
  */
 export function selectModel(

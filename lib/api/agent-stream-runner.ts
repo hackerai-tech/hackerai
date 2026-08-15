@@ -122,16 +122,20 @@ import {
   MAX_PROVIDER_TOOL_CALLS_PER_RESPONSE,
 } from "@/lib/ai/provider-response-guard";
 
-const AGENT_VISION_MODEL = "model-grok-4.6";
+const CONTROL_AGENT_VISION_MODEL = "model-grok-4.6";
 
 export const resolveAgentModelForImageToolResults = (
   modelName: string,
   mode: ChatMode,
   hasImageToolResults: boolean,
+  assignedVisionModel?: string,
 ): string => {
   if (mode !== "agent" || !hasImageToolResults) return modelName;
-  if (modelName === "agent-model-free" || isDeepSeekModel(modelName)) {
-    return AGENT_VISION_MODEL;
+  if (modelName === "agent-model-free") {
+    return CONTROL_AGENT_VISION_MODEL;
+  }
+  if (isDeepSeekModel(modelName)) {
+    return assignedVisionModel ?? CONTROL_AGENT_VISION_MODEL;
   }
   return modelName;
 };
@@ -499,6 +503,8 @@ export type AgentStreamContext = {
   endpoint: ChatApiEndpoint;
   userId: string;
   subscription: SubscriptionTier;
+  visionModelName?: string;
+  onVisionModelRequest?: (modelName: string) => void;
   chatId: string;
   fileTokens: Record<string, number>;
   noteInjectionOpts: {
@@ -755,9 +761,13 @@ export async function createAgentStream(
       modelName,
       ctx.mode,
       streamHasImageViewResults,
+      ctx.visionModelName,
     );
   const getEffectiveModelInfo = () => {
     const effectiveModelName = getEffectiveModelName();
+    if (streamHasImageViewResults) {
+      ctx.onVisionModelRequest?.(effectiveModelName);
+    }
     const languageModel = ctx.trackedProvider.languageModel(effectiveModelName);
     lastRequestedSlug = languageModel.modelId;
     return {
