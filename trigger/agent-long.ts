@@ -3056,7 +3056,7 @@ export const agentLongTask = task({
 
             const titlePromise = isNewChat
               ? generateTitleFromUserMessageWithWriter(
-                  processedMessages,
+                  messagesForProcessing,
                   writer,
                   (title) => updateChatTitle({ chatId, title }),
                 )

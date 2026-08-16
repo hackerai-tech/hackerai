@@ -53,6 +53,21 @@ const makeImageOnlyMessage = (): UIMessage[] =>
     },
   ] as UIMessage[];
 
+const makeDescribedImageMessage = (text?: string): UIMessage[] =>
+  [
+    {
+      id: "message-1",
+      role: "user",
+      parts: [
+        ...(text ? [{ type: "text" as const, text }] : []),
+        {
+          type: "text",
+          text: '<image_description filename="screenshot.png" trust="untrusted">\nA terminal screenshot.\n</image_description>',
+        },
+      ],
+    },
+  ] as UIMessage[];
+
 describe("generateTitleFromUserMessage", () => {
   beforeEach(() => {
     mockGenerateText.mockReset();
@@ -93,6 +108,32 @@ describe("generateTitleFromUserMessage", () => {
 
     expect(mockLanguageModel).not.toHaveBeenCalled();
     expect(mockGenerateText).not.toHaveBeenCalled();
+  });
+
+  it("keeps the default title when auxiliary preprocessing replaced the only image", async () => {
+    await expect(
+      generateTitleFromUserMessage(makeDescribedImageMessage()),
+    ).resolves.toBe("New chat");
+
+    expect(mockLanguageModel).not.toHaveBeenCalled();
+    expect(mockGenerateText).not.toHaveBeenCalled();
+  });
+
+  it("generates a title from user text without auxiliary image markup", async () => {
+    mockGenerateText.mockResolvedValue({
+      output: { title: "Explain This Screenshot" },
+    });
+
+    await expect(
+      generateTitleFromUserMessage(
+        makeDescribedImageMessage("Tell me about this image"),
+      ),
+    ).resolves.toBe("Explain This Screenshot");
+
+    const prompt = mockGenerateText.mock.calls[0][0].messages[0]
+      .content as string;
+    expect(prompt).toContain("### User Message:\nTell me about this image");
+    expect(prompt).not.toContain("<image_description");
   });
 
   it("constrains generated titles to non-empty strings under the chat title limit", async () => {
