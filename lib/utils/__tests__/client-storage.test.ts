@@ -3,6 +3,7 @@ import {
   CONVERSATION_DRAFTS_STORAGE_KEY,
   getDraftAttachmentsById,
   readOpenSidebarProjectIds,
+  readDraftStore,
   readSelectedModel,
   removeDraftAttachments,
   writeSelectedModel,
@@ -502,5 +503,53 @@ describe("client-storage draft attachments", () => {
 
     expect(getDraftAttachmentsById("chat-1")).toEqual([]);
     expect(hasDraftAttachmentsById("chat-1")).toBe(false);
+  });
+});
+
+describe("client-storage draft cache", () => {
+  beforeEach(() => {
+    window.localStorage.clear();
+  });
+
+  it("reuses the parsed draft store while localStorage is unchanged", () => {
+    window.localStorage.setItem(
+      CONVERSATION_DRAFTS_STORAGE_KEY,
+      JSON.stringify({
+        drafts: [{ id: "chat-1", content: "cached", timestamp: 123 }],
+      }),
+    );
+
+    const parseSpy = jest.spyOn(JSON, "parse");
+    const firstRead = readDraftStore();
+    const parseCountAfterFirstRead = parseSpy.mock.calls.length;
+
+    expect(readDraftStore()).toBe(firstRead);
+    expect(parseSpy).toHaveBeenCalledTimes(parseCountAfterFirstRead);
+
+    window.localStorage.setItem(
+      CONVERSATION_DRAFTS_STORAGE_KEY,
+      JSON.stringify({
+        drafts: [{ id: "chat-2", content: "new value", timestamp: 456 }],
+      }),
+    );
+
+    expect(readDraftStore()).not.toBe(firstRead);
+    expect(parseSpy).toHaveBeenCalledTimes(parseCountAfterFirstRead + 1);
+    parseSpy.mockRestore();
+  });
+
+  it("keeps the cached snapshot synchronized with writes and clears", () => {
+    upsertDraft("chat-1", "saved draft", 123);
+
+    const writtenStore = readDraftStore();
+    expect(readDraftStore()).toBe(writtenStore);
+    expect(writtenStore.drafts).toEqual([
+      { id: "chat-1", content: "saved draft", timestamp: 123 },
+    ]);
+
+    window.localStorage.clear();
+
+    expect(readDraftStore()).toEqual({ drafts: [] });
+    expect(readDraftStore()).not.toBe(writtenStore);
   });
 });
