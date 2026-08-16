@@ -134,6 +134,7 @@ describe("generateTitleFromUserMessage", () => {
       .content as string;
     expect(prompt).toContain("### User Message:\nTell me about this image");
     expect(prompt).not.toContain("<image_description");
+    expect(prompt).not.toContain("A terminal screenshot.");
   });
 
   it("constrains generated titles to non-empty strings under the chat title limit", async () => {

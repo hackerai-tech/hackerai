@@ -1702,7 +1702,7 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(dbActionsSrc).toMatch(/export async function updateChatTitle/);
     expect(dbActionsSrc).toMatch(/api\.chats\.updateChatTitle/);
     expect(chatHandlerSrc).toMatch(
-      /generateTitleFromUserMessageWithWriter\(\s*truncatedMessages,[\s\S]*?\(title\) => updateChatTitle\(\{ chatId, title \}\)/,
+      /generateTitleFromUserMessageWithWriter\(\s*fetched\.truncatedMessages,[\s\S]*?\(title\) => updateChatTitle\(\{ chatId, title \}\)/,
     );
     expect(taskSrc).toMatch(
       /generateTitleFromUserMessageWithWriter\(\s*messagesForProcessing,[\s\S]*?\(title\) => updateChatTitle\(\{ chatId, title \}\)/,
