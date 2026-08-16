@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach } from "@jest/globals";
 import {
   CONVERSATION_DRAFTS_STORAGE_KEY,
+  clearAllDrafts,
   getDraftAttachmentsById,
   readOpenSidebarProjectIds,
   readDraftStore,
@@ -551,5 +552,18 @@ describe("client-storage draft cache", () => {
 
     expect(readDraftStore()).toEqual({ drafts: [] });
     expect(readDraftStore()).not.toBe(writtenStore);
+  });
+
+  it("resets the cached snapshot when all drafts are cleared", () => {
+    upsertDraft("chat-1", "saved draft", 123);
+    const writtenStore = readDraftStore();
+
+    clearAllDrafts();
+
+    expect(readDraftStore()).toEqual({ drafts: [] });
+    expect(readDraftStore()).not.toBe(writtenStore);
+    expect(
+      window.localStorage.getItem(CONVERSATION_DRAFTS_STORAGE_KEY),
+    ).toBeNull();
   });
 });
