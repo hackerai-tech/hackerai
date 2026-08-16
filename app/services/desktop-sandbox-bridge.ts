@@ -22,6 +22,7 @@ import {
   DEFAULT_PTY_ROWS,
 } from "@/lib/ai/tools/utils/pty-session-manager";
 import { CentrifugoPublishQueue } from "@/packages/local/src/centrifugo-transport";
+import { LOCAL_SANDBOX_HEARTBEAT_INTERVAL_MS } from "@/lib/centrifugo/presence";
 
 type RefreshTokenResult =
   | { ok: true; centrifugoToken: string }
@@ -50,7 +51,10 @@ type DesktopBridgeTerminationReason =
   | "unauthenticated"
   | "connection_not_found"
   | "ownership_mismatch"
-  | "connection_inactive";
+  | "connection_inactive"
+  | "transport_disconnected";
+
+type DesktopBridgeConnectionState = "connecting" | "connected";
 
 type DesktopStreamPublishFailureReason = "connection_closed" | "timeout";
 
@@ -58,6 +62,7 @@ const DESKTOP_STREAM_PUBLISH_MAX_ATTEMPTS = 3;
 const DESKTOP_STREAM_PUBLISH_RETRY_BASE_DELAY_MS = 250;
 const DESKTOP_STREAM_RECONNECT_WAIT_MS = 5_000;
 const DESKTOP_STREAM_RECOVERY_DEADLINE_BUFFER_MS = 3_000;
+const DESKTOP_BRIDGE_READY_TIMEOUT_MS = 15_000;
 
 interface StreamChunk {
   type: "stdout" | "stderr" | "exit" | "error";
@@ -188,6 +193,10 @@ interface DesktopBridgeConfig {
   disconnectDesktop: (args: {
     connectionId: string;
   }) => Promise<{ success: boolean }>;
+  heartbeatDesktop: (args: {
+    connectionId: string;
+  }) => Promise<{ success: boolean }>;
+  onConnectionState?: (state: DesktopBridgeConnectionState) => void;
   onTerminated?: (reason: DesktopBridgeTerminationReason) => void;
 }
 
@@ -200,6 +209,10 @@ export class DesktopSandboxBridge {
   private config: DesktopBridgeConfig;
   private publishQueue: CentrifugoPublishQueue | null = null;
 
+  private heartbeatInterval: ReturnType<typeof setInterval> | null = null;
+  private consecutiveHeartbeatFailures = 0;
+  private relayUnavailableAt: number | null = null;
+  private successfulRelayConnections = 0;
   constructor(config: DesktopBridgeConfig) {
     this.config = config;
   }
@@ -208,9 +221,100 @@ export class DesktopSandboxBridge {
     return this.connectionId;
   }
 
+  private logRelayState(
+    state: "connecting" | "connected" | "disconnected" | "error",
+    details: Record<string, unknown> = {},
+  ): void {
+    const properties = {
+      connectionId: this.connectionId,
+      clientSurface: "desktop_bridge",
+      state,
+      reconnectAttempt: Math.max(0, this.successfulRelayConnections - 1),
+      ...details,
+    };
+    const message = JSON.stringify({
+      timestamp: new Date().toISOString(),
+      event: "desktop_bridge_relay_state_changed",
+      ...properties,
+    });
+    if (state === "connected") {
+      console.info("[desktop-bridge]", message);
+    } else {
+      console.warn("[desktop-bridge]", message);
+    }
+    captureAuthenticatedEvent(
+      state === "error"
+        ? "desktop_bridge_relay_error"
+        : "desktop_bridge_relay_state_changed",
+      properties,
+    );
+  }
+
+  private async sendHeartbeat(): Promise<void> {
+    const connectionId = this.connectionId;
+    if (this.isStoppingOrStopped || !connectionId) return;
+
+    try {
+      const result = await this.config.heartbeatDesktop({ connectionId });
+      if (this.isStoppingOrStopped || this.connectionId !== connectionId)
+        return;
+      if (!result.success) {
+        this.logRelayState("disconnected", {
+          reason: "heartbeat_connection_inactive",
+        });
+        this.terminateClient("connection_inactive");
+        return;
+      }
+      if (this.consecutiveHeartbeatFailures > 0) {
+        this.logRelayState("connected", {
+          source: "heartbeat",
+          recoveredAfterFailures: this.consecutiveHeartbeatFailures,
+        });
+        this.consecutiveHeartbeatFailures = 0;
+      }
+    } catch (error) {
+      if (this.isStoppingOrStopped) return;
+      if (isUnauthenticatedError(error)) {
+        this.logRelayState("disconnected", {
+          reason: "heartbeat_unauthenticated",
+        });
+        this.terminateClient("unauthenticated");
+        return;
+      }
+      this.consecutiveHeartbeatFailures += 1;
+      if (
+        this.consecutiveHeartbeatFailures === 1 ||
+        this.consecutiveHeartbeatFailures % 4 === 0
+      ) {
+        this.logRelayState("error", {
+          errorType: "heartbeat",
+          consecutiveFailures: this.consecutiveHeartbeatFailures,
+          error:
+            error instanceof Error ? error.message : String(error ?? "unknown"),
+        });
+      }
+    }
+  }
+
+  private startHeartbeat(): void {
+    this.stopHeartbeat();
+    void this.sendHeartbeat();
+    this.heartbeatInterval = setInterval(() => {
+      void this.sendHeartbeat();
+    }, LOCAL_SANDBOX_HEARTBEAT_INTERVAL_MS);
+  }
+
+  private stopHeartbeat(): void {
+    if (this.heartbeatInterval) {
+      clearInterval(this.heartbeatInterval);
+      this.heartbeatInterval = null;
+    }
+  }
+
   private terminateClient(reason: DesktopBridgeTerminationReason): void {
     if (this.isStoppingOrStopped) return;
     this.isStoppingOrStopped = true;
+    this.stopHeartbeat();
     const client = this.client;
     const subscription = this.subscription;
     this.client = null;
@@ -308,6 +412,7 @@ export class DesktopSandboxBridge {
         throw new Error(`Centrifugo refresh aborted: ${result.reason}`);
       },
     });
+    const client = this.client;
 
     const userId = this.extractUserIdFromToken(centrifugoToken);
     const channel = sandboxConnectionChannel(userId, connectionId);
@@ -319,6 +424,87 @@ export class DesktopSandboxBridge {
       if (this.isStoppingOrStopped || this.subscription !== subscription)
         return;
       await subscription.publish(message);
+    });
+
+    client.on("connecting", (ctx) => {
+      if (this.isStoppingOrStopped) return;
+      if (this.relayUnavailableAt === null) {
+        this.relayUnavailableAt = Date.now();
+      }
+      this.config.onConnectionState?.("connecting");
+      this.logRelayState("connecting", {
+        code: ctx.code,
+        reason: ctx.reason,
+      });
+    });
+    client.on("connected", (ctx) => {
+      if (this.isStoppingOrStopped) return;
+      this.successfulRelayConnections += 1;
+      this.logRelayState("connected", {
+        transport: ctx.transport,
+        outageDurationMs:
+          this.relayUnavailableAt === null
+            ? 0
+            : Date.now() - this.relayUnavailableAt,
+      });
+      this.relayUnavailableAt = null;
+    });
+    client.on("disconnected", (ctx) => {
+      if (this.isStoppingOrStopped) return;
+      this.logRelayState("disconnected", {
+        code: ctx.code,
+        reason: ctx.reason,
+      });
+      this.terminateClient("transport_disconnected");
+    });
+    client.on("error", (ctx) => {
+      if (this.isStoppingOrStopped) return;
+      this.logRelayState("error", {
+        errorType: ctx.type,
+        code: ctx.error.code,
+        reason: ctx.error.message,
+        transport: ctx.transport,
+      });
+    });
+
+    subscription.on("subscribing", (ctx) => {
+      if (this.isStoppingOrStopped) return;
+      if (this.relayUnavailableAt === null) {
+        this.relayUnavailableAt = Date.now();
+      }
+      this.config.onConnectionState?.("connecting");
+      this.logRelayState("connecting", {
+        source: "subscription",
+        code: ctx.code,
+        reason: ctx.reason,
+      });
+    });
+    subscription.on("subscribed", (ctx) => {
+      if (this.isStoppingOrStopped) return;
+      this.config.onConnectionState?.("connected");
+      this.logRelayState("connected", {
+        source: "subscription",
+        recovered: ctx.recovered,
+        wasRecovering: ctx.wasRecovering,
+      });
+    });
+    subscription.on("unsubscribed", (ctx) => {
+      if (this.isStoppingOrStopped) return;
+      this.logRelayState("disconnected", {
+        source: "subscription",
+        code: ctx.code,
+        reason: ctx.reason,
+      });
+      this.terminateClient("transport_disconnected");
+    });
+    subscription.on("error", (ctx) => {
+      if (this.isStoppingOrStopped) return;
+      this.logRelayState("error", {
+        source: "subscription",
+        errorType: ctx.type,
+        code: ctx.error.code,
+        reason: ctx.error.message,
+      });
     });
 
     this.subscription.on("publication", (ctx) => {
@@ -415,7 +601,26 @@ export class DesktopSandboxBridge {
     });
 
     this.subscription.subscribe();
-    this.client.connect();
+    client.connect();
+
+    try {
+      await Promise.all([
+        client.ready(DESKTOP_BRIDGE_READY_TIMEOUT_MS),
+        subscription.ready(DESKTOP_BRIDGE_READY_TIMEOUT_MS),
+      ]);
+    } catch (error) {
+      this.logRelayState("error", {
+        errorType: "startup_readiness",
+        error:
+          error instanceof Error ? error.message : String(error ?? "unknown"),
+      });
+      throw error;
+    }
+    if (this.isStoppingOrStopped || this.connectionId !== connectionId) {
+      throw new Error("Desktop bridge stopped before relay became ready");
+    }
+    this.config.onConnectionState?.("connected");
+    this.startHeartbeat();
 
     return connectionId;
   }
@@ -1345,6 +1550,7 @@ export class DesktopSandboxBridge {
 
   async stop(): Promise<void> {
     this.isStoppingOrStopped = true;
+    this.stopHeartbeat();
     this.publishQueue = null;
     if (this.connectionId) {
       try {

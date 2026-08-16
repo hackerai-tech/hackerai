@@ -84,8 +84,27 @@ function buildConfig(overrides: Record<string, unknown> = {}) {
       .fn()
       .mockResolvedValue({ ok: true, centrifugoToken: "new-token" }),
     disconnectDesktop: jest.fn().mockResolvedValue({ success: true }),
+    heartbeatDesktop: jest.fn().mockResolvedValue({ success: true }),
     ...overrides,
   };
+}
+
+function getClientHandler(
+  eventName: string,
+): (ctx: Record<string, unknown>) => void {
+  const call = mockClient.on.mock.calls.find(([event]) => event === eventName);
+  if (!call) throw new Error(`No client ${eventName} handler registered`);
+  return call[1];
+}
+
+function getSubscriptionHandler(
+  eventName: string,
+): (ctx: Record<string, unknown>) => void {
+  const call = mockSubscription.on.mock.calls.find(
+    ([event]) => event === eventName,
+  );
+  if (!call) throw new Error(`No subscription ${eventName} handler registered`);
+  return call[1];
 }
 
 function getPublicationHandler(): (ctx: { data: unknown }) => void {
@@ -136,6 +155,71 @@ describe("desktop capability registration", () => {
       }),
     );
   });
+});
+
+it("waits for the relay and subscription before reporting ready", async () => {
+  const onConnectionState = jest.fn();
+  const config = buildConfig({ onConnectionState });
+  const bridge = new DesktopSandboxBridge(config);
+
+  await bridge.start();
+  await Promise.resolve();
+
+  expect(mockClient.ready).toHaveBeenCalledWith(15_000);
+  expect(mockSubscription.ready).toHaveBeenCalledWith(15_000);
+  expect(config.heartbeatDesktop).toHaveBeenCalledWith({
+    connectionId: "conn-123",
+  });
+  expect(onConnectionState).toHaveBeenCalledWith("connected");
+
+  await bridge.stop();
+});
+
+it("reports reconnecting and restored subscription state", async () => {
+  const onConnectionState = jest.fn();
+  const config = buildConfig({ onConnectionState });
+  const bridge = new DesktopSandboxBridge(config);
+  await bridge.start();
+
+  getClientHandler("connecting")({ code: 1, reason: "transport closed" });
+  getSubscriptionHandler("subscribing")({
+    code: 1,
+    reason: "transport closed",
+  });
+  getSubscriptionHandler("subscribed")({
+    recovered: true,
+    wasRecovering: true,
+  });
+
+  expect(onConnectionState).toHaveBeenNthCalledWith(2, "connecting");
+  expect(onConnectionState).toHaveBeenNthCalledWith(3, "connecting");
+  expect(onConnectionState).toHaveBeenLastCalledWith("connected");
+  expect(captureAuthenticatedEvent).toHaveBeenCalledWith(
+    "desktop_bridge_relay_state_changed",
+    expect.objectContaining({
+      state: "connected",
+      source: "subscription",
+      recovered: true,
+    }),
+  );
+
+  await bridge.stop();
+});
+
+it("requests a fresh bridge after a terminal transport disconnect", async () => {
+  const onTerminated = jest.fn();
+  const config = buildConfig({ onTerminated });
+  const bridge = new DesktopSandboxBridge(config);
+  await bridge.start();
+
+  getClientHandler("disconnected")({ code: 3500, reason: "transport closed" });
+
+  expect(onTerminated).toHaveBeenCalledWith("transport_disconnected");
+  expect(bridge.getConnectionId()).toBeNull();
+  expect(captureAuthenticatedEvent).toHaveBeenCalledWith(
+    "desktop_bridge_relay_state_changed",
+    expect.objectContaining({ state: "disconnected", code: 3500 }),
+  );
 });
 
 describe("terminal connection state", () => {
@@ -1245,14 +1329,14 @@ describe("forwardChunk", () => {
       new Promise<void>((_, reject) => {
         setTimeout(() => reject(new Error("ready timeout")), timeoutMs);
       });
-    mockClient.ready.mockImplementationOnce(rejectAtTimeout);
-    mockSubscription.ready.mockImplementationOnce(rejectAtTimeout);
     const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
     const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
 
     try {
       const bridge = new DesktopSandboxBridge(buildConfig());
       await bridge.start();
+      mockClient.ready.mockImplementationOnce(rejectAtTimeout);
+      mockSubscription.ready.mockImplementationOnce(rejectAtTimeout);
       const handler = getPublicationHandler();
       handler({
         data: {

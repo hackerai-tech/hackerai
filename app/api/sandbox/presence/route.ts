@@ -6,7 +6,10 @@ import { ConvexHttpClient } from "convex/browser";
 import { api } from "@/convex/_generated/api";
 import { phLogger } from "@/lib/posthog/server";
 import { sandboxConnectionChannel } from "@/lib/centrifugo/types";
-import { presenceHasConnectionId } from "@/lib/centrifugo/presence";
+import {
+  LOCAL_SANDBOX_PRESENCE_GRACE_MS,
+  presenceHasConnectionId,
+} from "@/lib/centrifugo/presence";
 
 export async function GET(request: NextRequest) {
   let userId: string;
@@ -132,14 +135,13 @@ export async function GET(request: NextRequest) {
   // Skip rows whose lastSeen is within the grace window — covers the race where a
   // client has just inserted its row but hasn't finished subscribing to Centrifugo,
   // and brief WebSocket reconnects on healthy clients (last_heartbeat is bumped on
-  // every successful Centrifugo token refresh).
-  const PRESENCE_GRACE_MS = 30_000;
+  // a lightweight client heartbeat).
   if (presenceReliable) {
     const now = Date.now();
     const stale = connections.filter(
       (conn) =>
         !onlineConnectionIds.has(conn.connectionId) &&
-        now - conn.lastSeen > PRESENCE_GRACE_MS,
+        now - conn.lastSeen > LOCAL_SANDBOX_PRESENCE_GRACE_MS,
     );
     if (stale.length > 0) {
       const results = await Promise.allSettled(

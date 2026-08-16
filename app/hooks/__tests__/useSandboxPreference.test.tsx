@@ -31,8 +31,10 @@ type BridgeConfig = {
       | "unauthenticated"
       | "connection_not_found"
       | "ownership_mismatch"
-      | "connection_inactive",
+      | "connection_inactive"
+      | "transport_disconnected",
   ) => void;
+  onConnectionState?: (state: "connecting" | "connected") => void;
 };
 
 describe("useSandboxPreference", () => {
@@ -53,7 +55,7 @@ describe("useSandboxPreference", () => {
     expect(DesktopSandboxBridge).not.toHaveBeenCalled();
   });
 
-  it("invalidates bridge startup and connected state when authentication is lost", async () => {
+  it("invalidates on auth loss and automatically recovers a stale connection", async () => {
     let resolveFirstStart: ((connectionId: string) => void) | undefined;
     const firstStart = new Promise<string>((resolve) => {
       resolveFirstStart = resolve;
@@ -123,17 +125,18 @@ describe("useSandboxPreference", () => {
       bridgeConfigs[1].onTerminated?.("connection_inactive");
     });
     await waitFor(() => {
-      expect(result.current.desktopBridgeStatus).toBe("failed");
+      expect(result.current.desktopBridgeStatus).toBe("connecting");
       expect(result.current.desktopBridgeActive).toBe(false);
     });
 
-    act(() => {
-      result.current.retryDesktopBridge();
-    });
-    await waitFor(() => {
-      expect(result.current.desktopBridgeStatus).toBe("connected");
-      expect(result.current.desktopBridgeActive).toBe(true);
-    });
+    await waitFor(
+      () => {
+        expect(bridgeInstances).toHaveLength(3);
+        expect(result.current.desktopBridgeStatus).toBe("connected");
+        expect(result.current.desktopBridgeActive).toBe(true);
+      },
+      { timeout: 3_000 },
+    );
 
     rerender({ isAuthenticated: false });
     await waitFor(() => {
