@@ -1,5 +1,5 @@
 import "@testing-library/jest-dom";
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { UIMessage } from "@ai-sdk/react";
 import { ReasoningHandler } from "../ReasoningHandler";
 
@@ -21,6 +21,12 @@ const StreamingReasoningParts = ({ message }: { message: UIMessage }) => (
 );
 
 describe("ReasoningHandler", () => {
+  const longReasoningPrefix = `Unique early reasoning marker.\n${"Filler reasoning line.\n".repeat(
+    800,
+  )}`;
+  const longReasoningTail = "Latest reasoning remains visible.";
+  const longReasoning = `${longReasoningPrefix}${longReasoningTail}`;
+
   it("renders OpenRouter reasoning parts with reasoning_details metadata", () => {
     const message = {
       id: "assistant-1",
@@ -240,5 +246,136 @@ describe("ReasoningHandler", () => {
 
     expect(screen.getByText("Reasoning")).toBeInTheDocument();
     expect(screen.getByText("Reviewing output")).toBeVisible();
+  });
+
+  it("bounds long reasoning while it is streaming", async () => {
+    const message = {
+      id: "assistant-long-stream",
+      role: "assistant",
+      parts: [{ type: "reasoning", state: "streaming", text: longReasoning }],
+    } as unknown as UIMessage;
+
+    render(
+      <ReasoningHandler
+        message={message}
+        partIndex={0}
+        status="streaming"
+        isLastMessage
+      />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId("long-reasoning-preview")).toBeVisible();
+    });
+    expect(screen.getByTestId("long-reasoning-preview")).toHaveTextContent(
+      longReasoningTail,
+    );
+    expect(screen.getByTestId("long-reasoning-preview")).not.toHaveTextContent(
+      "Unique early reasoning marker.",
+    );
+    expect(
+      screen.queryByRole("button", { name: "Show full reasoning" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("keeps a completed long stream bounded until full reasoning is requested", async () => {
+    const streamingMessage = {
+      id: "assistant-long-complete",
+      role: "assistant",
+      parts: [{ type: "reasoning", state: "streaming", text: longReasoning }],
+    } as unknown as UIMessage;
+    const { rerender } = render(
+      <ReasoningHandler
+        message={streamingMessage}
+        partIndex={0}
+        status="streaming"
+        isLastMessage
+        deferCollapseUntilParent
+      />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId("long-reasoning-preview")).toBeVisible();
+    });
+
+    const completedMessage = {
+      ...streamingMessage,
+      parts: [
+        { type: "reasoning", state: "done", text: longReasoning },
+        { type: "text", state: "done", text: "Done" },
+      ],
+    } as unknown as UIMessage;
+    rerender(
+      <ReasoningHandler
+        message={completedMessage}
+        partIndex={0}
+        status="ready"
+        isLastMessage
+        deferCollapseUntilParent
+      />,
+    );
+
+    const showFullButton = screen.getByRole("button", {
+      name: "Show full reasoning",
+    });
+    expect(screen.getByTestId("long-reasoning-preview")).toBeVisible();
+
+    fireEvent.click(showFullButton);
+
+    expect(
+      screen.queryByTestId("long-reasoning-preview"),
+    ).not.toBeInTheDocument();
+    expect(screen.getByTestId("streamdown")).toHaveTextContent(
+      "Unique early reasoning marker.",
+    );
+    expect(screen.getByTestId("streamdown")).toHaveTextContent(
+      longReasoningTail,
+    );
+  });
+
+  it("bounds complete historical long reasoning until full content is requested", async () => {
+    const message = {
+      id: "assistant-long-history",
+      role: "assistant",
+      parts: [{ type: "reasoning", state: "done", text: longReasoning }],
+    } as unknown as UIMessage;
+
+    const { rerender } = render(
+      <ReasoningHandler
+        message={message}
+        partIndex={0}
+        status="ready"
+        isLastMessage
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Reasoning" }));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("long-reasoning-preview")).toHaveTextContent(
+        longReasoningTail,
+      );
+    });
+    expect(screen.queryByTestId("streamdown")).not.toBeInTheDocument();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Show full reasoning" }),
+    );
+
+    expect(screen.getByTestId("streamdown")).toHaveTextContent(
+      "Unique early reasoning marker.",
+    );
+
+    rerender(
+      <ReasoningHandler
+        message={message}
+        partIndex={0}
+        status="streaming"
+        isLastMessage
+      />,
+    );
+
+    expect(screen.getByTestId("long-reasoning-preview")).toBeVisible();
+    expect(screen.queryByTestId("streamdown")).not.toBeInTheDocument();
   });
 });
