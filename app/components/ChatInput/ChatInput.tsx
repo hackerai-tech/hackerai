@@ -319,6 +319,7 @@ export const ChatInput = ({
     isNewChat && !hasMessages ? "new" : chatId || NULL_THREAD_DRAFT_ID;
   const skipNextAttachmentPersistRef = useRef(false);
   const hasPersistedDraftAttachmentsRef = useRef(false);
+  const isSubmittingAttachmentsRef = useRef(false);
   const uploadedFilesRef = useRef(uploadedFiles);
   const prevDraftIdRef = useRef(draftId);
   const draftTextFileIds = useMemo(
@@ -535,6 +536,16 @@ export const ChatInput = ({
     }
 
     if (prevDraftId === "new" && draftId !== "new") {
+      if (isSubmittingAttachmentsRef.current) {
+        uploadedFilesRef.current = [];
+        removeDraft("new");
+        removeDraft(draftId);
+        hasPersistedDraftAttachmentsRef.current = false;
+        skipNextAttachmentPersistRef.current = true;
+        isSubmittingAttachmentsRef.current = false;
+        return;
+      }
+
       const draftAttachments = uploadedFilesRef.current
         .map(uploadedFileToDraftAttachment)
         .filter(
@@ -664,9 +675,22 @@ export const ChatInput = ({
       (input.trim() || uploadedFiles.length > 0);
 
     if (canSubmit) {
+      isSubmittingAttachmentsRef.current =
+        clearDraftOnSubmit && uploadedFiles.length > 0;
       const accepted = await onSubmit(e);
-      if (clearDraftOnSubmit && accepted !== false) {
+      if (accepted === false) {
+        isSubmittingAttachmentsRef.current = false;
+        return;
+      }
+      if (clearDraftOnSubmit) {
+        uploadedFilesRef.current = [];
         removeDraft(draftId);
+        if (draftId === "new" && chatId) {
+          removeDraft(chatId);
+        }
+        if (draftId !== "new") {
+          isSubmittingAttachmentsRef.current = false;
+        }
         setTimeout(() => setInput(""), 0);
       }
     }
