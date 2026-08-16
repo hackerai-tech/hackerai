@@ -895,7 +895,7 @@ export const createChatHandler = () => {
             // Generate the title in parallel for new tasks.
             const titlePromise = isNewChat
               ? generateTitleFromUserMessageWithWriter(
-                  processedMessages,
+                  truncatedMessages,
                   writer,
                   (title) => updateChatTitle({ chatId, title }),
                 )
