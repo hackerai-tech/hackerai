@@ -27,6 +27,13 @@ describe("provider registry", () => {
         .modelId,
     ).toBe("deepseek/deepseek-v4-flash-0731");
     expect(
+      (
+        myProvider.languageModel("auxiliary-vision-model") as {
+          modelId: string;
+        }
+      ).modelId,
+    ).toBe("xiaomi/mimo-v2.5");
+    expect(
       (myProvider.languageModel("model-grok-4.6") as { modelId: string })
         .modelId,
     ).toBe("x-ai/grok-4.6");
