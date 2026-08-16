@@ -702,6 +702,8 @@ export interface ToolContext {
   onSandboxResourceMetrics?: SandboxResourceMetricsObserver;
   /** Optional Hermes-style image descriptor for text-only active models. */
   auxiliaryVision?: {
+    /** Distinguishes a user stop from a descriptor timeout/provider failure. */
+    isAborted?: () => boolean;
     describeImage: (args: {
       image: string;
       mediaType: string;

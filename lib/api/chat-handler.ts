@@ -668,6 +668,7 @@ export const createChatHandler = () => {
             const usageTracker = new UsageTracker();
             const auxiliaryVision = auxiliaryVisionAssignment
               ? {
+                  isAborted: () => userStopSignal.signal.aborted,
                   describeImage: (args: {
                     image: string;
                     mediaType: string;
@@ -875,15 +876,19 @@ export const createChatHandler = () => {
                   });
               } catch (error) {
                 if (
-                  error instanceof DOMException &&
-                  error.name === "AbortError"
+                  userStopSignal.signal.aborted ||
+                  (error instanceof DOMException && error.name === "AbortError")
                 ) {
                   throw error;
                 }
-                throw new ChatSDKError(
+                const auxiliaryVisionError = new ChatSDKError(
                   "bad_request:api",
                   AUXILIARY_VISION_UNAVAILABLE_MESSAGE,
                 );
+                preemptiveTimeout?.clear();
+                await usageRefundTracker.refund();
+                chatLogger?.emitChatError(auxiliaryVisionError);
+                throw auxiliaryVisionError;
               }
             }
 

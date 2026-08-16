@@ -457,13 +457,15 @@ const collectFilesToProcess = (
       if (!isFilePart(part)) return;
 
       const fileId = typeof part.fileId === "string" ? part.fileId : undefined;
+      // Auxiliary descriptions are server-derived cache metadata. Never trust
+      // values supplied in the request, including URL-only/legacy file parts.
+      delete (part as any).auxiliaryVisionDescription;
+      delete (part as any).auxiliaryVisionModel;
       if (fileId) {
         // File IDs are storage references, not proof that a request-supplied URL
         // is safe. Clear any client URL so every server-side fetch/download uses
         // an owner-checked URL resolved from storage below.
         delete (part as any).url;
-        delete (part as any).auxiliaryVisionDescription;
-        delete (part as any).auxiliaryVisionModel;
       }
 
       if (isMediaFile(part.mediaType)) hasMedia = true;
@@ -752,7 +754,17 @@ export const cacheAuxiliaryVisionDescription = async ({
   description: string;
   model: string;
 }): Promise<void> => {
-  if (!serviceKey) return;
+  if (!serviceKey) {
+    logger.warn("auxiliary_vision_description_cache_skipped", {
+      event: "auxiliary_vision_description_cache_skipped",
+      service: "chat-handler",
+      reason: "missing_service_key",
+      user_id: userId,
+      file_id: fileId,
+      model,
+    });
+    return;
+  }
   try {
     await getConvexClient().mutation(
       api.fileStorage.saveAuxiliaryVisionDescription,

@@ -808,6 +808,46 @@ describe("file tool image view", () => {
     expect(commandRun).toHaveBeenCalledTimes(1);
   });
 
+  test("propagates a user stop during an auxiliary file-view description", async () => {
+    mockUploadSandboxFileToConvex.mockResolvedValue({
+      fileId: "file-1" as never,
+      name: "screenshot.png",
+      mediaType: "image/png",
+    });
+    const commandRun = jest.fn(async () => ({
+      stdout: JSON.stringify({
+        path: "/tmp/screenshot.png",
+        mediaType: "image/png",
+        sizeBytes: 68,
+        kind: "image",
+        data: VALID_PNG_BASE64,
+      }),
+      stderr: "",
+      exitCode: 0,
+    }));
+    const abortError = new DOMException("Stopped", "AbortError");
+    const sandbox = makeSandbox(commandRun);
+    const tool = createFile(
+      makeContext(sandbox, {
+        modelName: "model-deepseek-v4-pro-0813",
+        auxiliaryVision: {
+          isAborted: () => true,
+          describeImage: jest.fn(async () => {
+            throw abortError;
+          }),
+        },
+      }),
+    );
+
+    await expect(
+      runTool(tool, {
+        action: "view",
+        path: "/tmp/screenshot.png",
+        brief: "Inspect the screenshot",
+      }),
+    ).rejects.toBe(abortError);
+  });
+
   test("redirects raster image reads to the view action", async () => {
     const commandRun = jest.fn<Promise<FakeCommandResult>, [string, any?]>();
     const sandbox = makeSandbox(commandRun);

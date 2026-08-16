@@ -99,6 +99,34 @@ describe("processMessageFiles image size guards", () => {
     consoleWarnSpy.mockRestore();
   });
 
+  it("does not preserve client auxiliary metadata on URL-only images", async () => {
+    const result = await processMessageFiles(
+      makeMessage({
+        type: "file",
+        mediaType: "image/png",
+        name: "legacy.png",
+        url: "https://example.com/legacy.png",
+        auxiliaryVisionDescription: "Client-supplied description",
+        auxiliaryVisionModel: "google/gemini-3.6-flash",
+      }),
+      "ask",
+      "user123",
+      undefined,
+      "pro",
+    );
+
+    expect(result.messages[0].parts[1]).toEqual({
+      type: "text",
+      text: '[Image "legacy.png" omitted: URL-backed image attachments must be reattached before they can be sent to the model]',
+    });
+    expect(result.messages[0].parts[1]).not.toHaveProperty(
+      "auxiliaryVisionDescription",
+    );
+    expect(result.messages[0].parts[1]).not.toHaveProperty(
+      "auxiliaryVisionModel",
+    );
+  });
+
   it("omits stored images when trusted file size is over the provider download limit", async () => {
     mockConvexAction.mockResolvedValue([
       fileUrlInfo("https://storage.example/huge.png", {

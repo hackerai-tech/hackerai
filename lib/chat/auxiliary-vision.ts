@@ -8,6 +8,8 @@ import { getProviderUsageRawModelCost } from "@/lib/provider-usage-cost";
 export const AUXILIARY_VISION_MODEL = "auxiliary-vision-model" as const;
 export const AUXILIARY_VISION_TIMEOUT_MS = 20_000;
 export const AUXILIARY_VISION_MAX_OUTPUT_TOKENS = 1_200;
+export const AUXILIARY_VISION_MAX_IMAGES_PER_TURN = 10;
+export const AUXILIARY_VISION_MAX_CONCURRENCY = 3;
 export const AUXILIARY_VISION_UNAVAILABLE_MESSAGE =
   "We couldn't inspect the image right now. Please retry. DeepSeek was not replaced by another model.";
 
@@ -242,74 +244,139 @@ export async function describeImageAttachmentsWithAuxiliaryVision({
     model: string;
   }) => Promise<void>;
 }): Promise<UIMessage[]> {
-  return Promise.all(
-    messages.map(async (message) => {
-      const parts = await Promise.all(
-        (message.parts ?? []).map(async (part) => {
-          if (
-            part.type !== "file" ||
-            !part.mediaType?.startsWith("image/") ||
-            typeof part.url !== "string"
-          ) {
-            return part;
-          }
-
-          const partRecord = part as unknown as Record<string, unknown>;
-          const partFilename =
-            typeof part.filename === "string"
-              ? part.filename
-              : typeof partRecord.name === "string"
-                ? partRecord.name
-                : undefined;
-
-          const cachedDescription =
-            typeof partRecord.auxiliaryVisionDescription === "string" &&
-            partRecord.auxiliaryVisionModel === AUXILIARY_VISION_SLUG
-              ? partRecord.auxiliaryVisionDescription
-              : undefined;
-
-          const filename = partFilename
-            ? ` filename="${escapeTagAttribute(partFilename)}"`
-            : "";
-          if (cachedDescription) {
-            return {
-              type: "text" as const,
-              text: `<image_description${filename} trust="untrusted">\n${escapeTagText(cachedDescription)}\n</image_description>`,
-            };
-          }
-
-          const result = await describeImageWithAuxiliaryVision({
-            image: part.url,
-            mediaType: part.mediaType,
-            filename: partFilename,
-            source: "attachment",
-            requestId,
-            userId,
-            chatId,
-            abortSignal,
-            onCost,
-            onExposure,
-            modelRunner,
-          });
-          if (
-            cacheDescription &&
-            userId &&
-            typeof partRecord.fileId === "string"
-          ) {
-            await cacheDescription({
-              userId,
-              fileId: partRecord.fileId,
-              description: result.description,
-              model: result.model,
-            });
-          }
-          return {
-            type: "text" as const,
-            text: `<image_description${filename} trust="untrusted">\n${escapeTagText(result.description)}\n</image_description>`,
-          };
-        }),
-      );
-      return { ...message, parts } as UIMessage;
-    }),
+  const updatedMessages = messages.map(
+    (message) =>
+      ({ ...message, parts: [...(message.parts ?? [])] }) as UIMessage,
   );
+  const tasks: Array<{
+    messageIndex: number;
+    partIndex: number;
+    image: string;
+    mediaType: string;
+    filename?: string;
+    fileId?: string;
+    cacheKey: string;
+  }> = [];
+
+  updatedMessages.forEach((message, messageIndex) => {
+    (message.parts ?? []).forEach((part, partIndex) => {
+      if (
+        part.type !== "file" ||
+        !part.mediaType?.startsWith("image/") ||
+        typeof part.url !== "string"
+      ) {
+        return;
+      }
+
+      const partRecord = part as unknown as Record<string, unknown>;
+      const fileId =
+        typeof partRecord.fileId === "string" ? partRecord.fileId : undefined;
+      const partFilename =
+        typeof part.filename === "string"
+          ? part.filename
+          : typeof partRecord.name === "string"
+            ? partRecord.name
+            : undefined;
+      const cachedDescription =
+        fileId &&
+        typeof partRecord.auxiliaryVisionDescription === "string" &&
+        partRecord.auxiliaryVisionModel === AUXILIARY_VISION_SLUG
+          ? partRecord.auxiliaryVisionDescription
+          : undefined;
+      const filename = partFilename
+        ? ` filename="${escapeTagAttribute(partFilename)}"`
+        : "";
+
+      if (cachedDescription) {
+        message.parts![partIndex] = {
+          type: "text",
+          text: `<image_description${filename} trust="untrusted">\n${escapeTagText(cachedDescription)}\n</image_description>`,
+        };
+        return;
+      }
+
+      tasks.push({
+        messageIndex,
+        partIndex,
+        image: part.url,
+        mediaType: part.mediaType,
+        filename: partFilename,
+        fileId,
+        cacheKey: fileId ? `file:${fileId}` : `url:${part.url}`,
+      });
+    });
+  });
+
+  const uniqueImageCount = new Set(tasks.map((task) => task.cacheKey)).size;
+  if (uniqueImageCount > AUXILIARY_VISION_MAX_IMAGES_PER_TURN) {
+    throw new Error(
+      `Auxiliary vision supports at most ${AUXILIARY_VISION_MAX_IMAGES_PER_TURN} new images per turn`,
+    );
+  }
+
+  const requestCache = new Map<string, Promise<AuxiliaryVisionResult>>();
+  const failures: unknown[] = [];
+  let nextTaskIndex = 0;
+  const runWorker = async (): Promise<void> => {
+    while (nextTaskIndex < tasks.length) {
+      const task = tasks[nextTaskIndex++];
+      try {
+        let resultPromise = requestCache.get(task.cacheKey);
+        if (!resultPromise) {
+          resultPromise = (async () => {
+            const result = await describeImageWithAuxiliaryVision({
+              image: task.image,
+              mediaType: task.mediaType,
+              filename: task.filename,
+              source: "attachment",
+              requestId,
+              userId,
+              chatId,
+              abortSignal,
+              onCost,
+              onExposure,
+              modelRunner,
+            });
+            if (cacheDescription && userId && task.fileId) {
+              await cacheDescription({
+                userId,
+                fileId: task.fileId,
+                description: result.description,
+                model: result.model,
+              });
+            }
+            return result;
+          })();
+          requestCache.set(task.cacheKey, resultPromise);
+        }
+
+        const result = await resultPromise;
+        const filename = task.filename
+          ? ` filename="${escapeTagAttribute(task.filename)}"`
+          : "";
+        updatedMessages[task.messageIndex].parts![task.partIndex] = {
+          type: "text",
+          text: `<image_description${filename} trust="untrusted">\n${escapeTagText(result.description)}\n</image_description>`,
+        };
+      } catch (error) {
+        failures.push(error);
+      }
+    }
+  };
+
+  await Promise.all(
+    Array.from(
+      {
+        length: Math.min(AUXILIARY_VISION_MAX_CONCURRENCY, tasks.length),
+      },
+      () => runWorker(),
+    ),
+  );
+  if (failures.length > 0) {
+    throw new AggregateError(
+      failures,
+      `Auxiliary vision failed for ${failures.length} image request(s)`,
+    );
+  }
+  return updatedMessages;
 }

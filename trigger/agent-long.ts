@@ -2452,6 +2452,7 @@ export const agentLongTask = task({
             observedUsageTracker = usageTracker;
             const auxiliaryVision = auxiliaryVisionAssignment
               ? {
+                  isAborted: () => userStopSignal.signal.aborted,
                   describeImage: (args: {
                     image: string;
                     mediaType: string;
@@ -3038,15 +3039,18 @@ export const agentLongTask = task({
                   });
               } catch (error) {
                 if (
-                  error instanceof DOMException &&
-                  error.name === "AbortError"
+                  userStopSignal.signal.aborted ||
+                  (error instanceof DOMException && error.name === "AbortError")
                 ) {
                   throw error;
                 }
-                throw new ChatSDKError(
+                const auxiliaryVisionError = new ChatSDKError(
                   "bad_request:api",
                   AUXILIARY_VISION_UNAVAILABLE_MESSAGE,
                 );
+                await usageRefundTracker.refund();
+                chatLogger?.emitChatError(auxiliaryVisionError);
+                throw auxiliaryVisionError;
               }
             }
 

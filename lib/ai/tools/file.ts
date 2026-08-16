@@ -1460,7 +1460,8 @@ export const createFile = (context: ToolContext) => {
                   viewPayload,
                   filename,
                 );
-              } catch {
+              } catch (error) {
+                if (context.auxiliaryVision.isAborted?.()) throw error;
                 visionDescriptionError =
                   "The auxiliary vision model could not inspect this image. Retry the view action.";
               }
@@ -1712,6 +1713,7 @@ export const createFile = (context: ToolContext) => {
             return { error: `Unknown action ${action}` };
         }
       } catch (error) {
+        if (context.auxiliaryVision?.isAborted?.()) throw error;
         return {
           error: resolveToolErrorMessage(error),
         };
@@ -1786,7 +1788,8 @@ export const createFile = (context: ToolContext) => {
                   description,
                 ),
               };
-            } catch {
+            } catch (error) {
+              if (context.auxiliaryVision.isAborted?.()) throw error;
               return {
                 type: "text" as const,
                 value:
