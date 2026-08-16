@@ -32,6 +32,51 @@ describe("ReasoningHandler", () => {
     firstCutoffNewline + 1,
   );
 
+  it("opens when the first reasoning delta replaces an empty streaming part", async () => {
+    const emptyMessage = {
+      id: "assistant-first-delta",
+      role: "assistant",
+      parts: [{ type: "reasoning", state: "streaming", text: "" }],
+    } as unknown as UIMessage;
+    const { rerender } = render(
+      <ReasoningHandler
+        message={emptyMessage}
+        partIndex={0}
+        status="streaming"
+        isLastMessage
+      />,
+    );
+
+    expect(
+      screen.queryByRole("button", { name: "Thinking..." }),
+    ).not.toBeInTheDocument();
+
+    const firstDeltaMessage = {
+      ...emptyMessage,
+      parts: [
+        {
+          type: "reasoning",
+          state: "streaming",
+          text: "First reasoning delta",
+        },
+      ],
+    } as unknown as UIMessage;
+    rerender(
+      <ReasoningHandler
+        message={firstDeltaMessage}
+        partIndex={0}
+        status="streaming"
+        isLastMessage
+      />,
+    );
+
+    const trigger = screen.getByRole("button", { name: "Thinking..." });
+    await waitFor(() =>
+      expect(trigger).toHaveAttribute("aria-expanded", "true"),
+    );
+    expect(screen.getByText("First reasoning delta")).toBeVisible();
+  });
+
   it("renders OpenRouter reasoning parts with reasoning_details metadata", () => {
     const message = {
       id: "assistant-1",
