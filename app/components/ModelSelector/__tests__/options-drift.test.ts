@@ -72,24 +72,22 @@ describe("ModelSelector tier ↔ provider drift", () => {
     }
   });
 
-  it("discloses the text and Grok vision providers for Agent Standard", () => {
+  it("discloses DeepSeek V4 Flash 0731 for Agent Standard", () => {
     expect(
       AGENT_MODEL_OPTIONS.find((option) => option.id === "hackerai-standard")
         ?.poweredBy,
-    ).toBe(
-      "DeepSeek V4 Flash 0731 · xAI Grok 4.5 (medium reasoning) for vision",
-    );
+    ).toBe("DeepSeek V4 Flash 0731");
   });
 
-  it("discloses DeepSeek V4 Pro 0813 and Grok vision for HackerAI Pro", () => {
+  it("discloses DeepSeek V4 Pro 0813 for HackerAI Pro", () => {
     expect(
       ASK_MODEL_OPTIONS.find((option) => option.id === "hackerai-pro")
         ?.poweredBy,
-    ).toBe("DeepSeek V4 Pro 0813 · xAI Grok 4.5 (high reasoning) for vision");
+    ).toBe("DeepSeek V4 Pro 0813");
     expect(
       AGENT_MODEL_OPTIONS.find((option) => option.id === "hackerai-pro")
         ?.poweredBy,
-    ).toBe("DeepSeek V4 Pro 0813 · xAI Grok 4.5 (high reasoning) for vision");
+    ).toBe("DeepSeek V4 Pro 0813");
   });
 
   it("discloses Grok 4.6 for HackerAI Max", () => {
