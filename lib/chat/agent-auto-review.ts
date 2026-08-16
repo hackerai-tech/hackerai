@@ -2,7 +2,7 @@ import { generateText, Output, type UIMessage } from "ai";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 
-import { myProvider } from "@/lib/ai/providers";
+import { GROK_4_5_SLUG, myProvider } from "@/lib/ai/providers";
 import { getProviderUsageRawModelCost } from "@/lib/provider-usage-cost";
 import { isAgentAutoReviewFilesystemDeletionCommand } from "@/lib/chat/agent-auto-review-evidence";
 import type {
@@ -28,6 +28,13 @@ const CONVERSATION_CONTEXT_SEPARATOR =
 const USER_CONTEXT_TRUNCATION_TAG = "user_content_truncated";
 export const AGENT_AUTO_REVIEW_TIMEOUT_MS = 15_000;
 export const AGENT_AUTO_REVIEW_MODEL = "agent-auto-review-model" as const;
+export const AGENT_AUTO_REVIEW_PROVIDER_OPTIONS = {
+  openrouter: {
+    reasoning: { enabled: false },
+    models: [GROK_4_5_SLUG],
+    usage: { include: true },
+  },
+};
 
 const riskCategories = [
   "routine",
@@ -114,12 +121,7 @@ const defaultModelRunner: AutoReviewModelRunner = async ({
     system,
     messages: [{ role: "user", content: prompt }],
     output: Output.object({ schema: agentAutoReviewOutputSchema }),
-    providerOptions: {
-      openrouter: {
-        reasoning: { effort: "minimal" },
-        usage: { include: true },
-      },
-    },
+    providerOptions: AGENT_AUTO_REVIEW_PROVIDER_OPTIONS,
     temperature: 0,
     maxOutputTokens: 1_000,
     maxRetries: 0,
