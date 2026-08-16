@@ -184,9 +184,9 @@ describe("selectModel", () => {
       },
     );
 
-    it("should return the Grok 4.6 experiment control for paid Agent Auto with an image", () => {
+    it("should return Grok 4.5 medium for paid Agent Auto with an image", () => {
       expect(selectModel("agent", "pro", undefined, true, false)).toBe(
-        "model-grok-4.6",
+        "model-grok-4.5",
       );
     });
 
@@ -200,9 +200,9 @@ describe("selectModel", () => {
       expect(selectModel("ask", "pro")).toBe("model-deepseek-v4-flash-0731");
     });
 
-    it("should return the Grok 4.6 experiment control for paid Ask Auto with an image", () => {
+    it("should return Grok 4.5 medium for paid Ask Auto with an image", () => {
       expect(selectModel("ask", "pro", undefined, true, false)).toBe(
-        "model-grok-4.6",
+        "model-grok-4.5",
       );
     });
 
@@ -212,9 +212,9 @@ describe("selectModel", () => {
       );
     });
 
-    it("should use Grok 4.6 when paid Ask Auto has both image and PDF attachments", () => {
+    it("should use Grok 4.5 medium when paid Ask Auto has both image and PDF attachments", () => {
       expect(selectModel("ask", "pro", undefined, true, true)).toBe(
-        "model-grok-4.6",
+        "model-grok-4.5",
       );
     });
 
@@ -245,9 +245,9 @@ describe("selectModel", () => {
       );
     });
 
-    it("should keep HackerAI Pro on the Grok 4.6 experiment control when an image is attached", () => {
+    it("should route HackerAI Pro vision to Grok 4.5 high", () => {
       expect(selectModel("ask", "pro", "hackerai-pro", true, false)).toBe(
-        "model-grok-4.6",
+        "model-grok-4.5-pro",
       );
     });
 
@@ -263,9 +263,9 @@ describe("selectModel", () => {
       );
     });
 
-    it("should promote HackerAI Standard to the Grok 4.6 experiment control when an image is attached", () => {
+    it("should promote HackerAI Standard vision to Grok 4.5 medium", () => {
       expect(selectModel("ask", "pro", "hackerai-standard", true, false)).toBe(
-        "model-grok-4.6",
+        "model-grok-4.5",
       );
     });
 
@@ -275,9 +275,9 @@ describe("selectModel", () => {
       );
     });
 
-    it("should prefer Grok 4.6 for HackerAI Standard when image and PDF are both attached", () => {
+    it("should prefer Grok 4.5 medium for HackerAI Standard when image and PDF are both attached", () => {
       expect(selectModel("ask", "pro", "hackerai-standard", true, true)).toBe(
-        "model-grok-4.6",
+        "model-grok-4.5",
       );
     });
 
@@ -316,10 +316,10 @@ describe("selectModel", () => {
       );
     });
 
-    it("should route HackerAI Standard to Grok 4.6 when an image is attached", () => {
+    it("should route HackerAI Standard vision to Grok 4.5 medium", () => {
       expect(
         selectModel("agent", "pro", "hackerai-standard", true, false),
-      ).toBe("model-grok-4.6");
+      ).toBe("model-grok-4.5");
     });
 
     it("should keep HackerAI Standard on DeepSeek V4 Flash 0731 when a PDF is attached", () => {
@@ -334,9 +334,9 @@ describe("selectModel", () => {
       );
     });
 
-    it("should route HackerAI Pro to Grok 4.6 in agent mode when an image is attached", () => {
+    it("should route HackerAI Pro vision to Grok 4.5 high in agent mode", () => {
       expect(selectModel("agent", "pro", "hackerai-pro", true, false)).toBe(
-        "model-grok-4.6",
+        "model-grok-4.5-pro",
       );
     });
 
@@ -409,7 +409,7 @@ describe("selectModel", () => {
 
     it("should route paid Agent Auto images to Grok and PDFs to DeepSeek", () => {
       expect(selectModel("agent", "pro", "auto", true, false)).toBe(
-        "model-grok-4.6",
+        "model-grok-4.5",
       );
       expect(selectModel("agent", "pro", "auto", false, true)).toBe(
         "model-deepseek-v4-flash-0731",
@@ -424,7 +424,7 @@ describe("selectModel", () => {
 
     it("should treat 'auto' as no override in ask mode with image -> Grok", () => {
       expect(selectModel("ask", "pro", "auto", true, false)).toBe(
-        "model-grok-4.6",
+        "model-grok-4.5",
       );
     });
 
@@ -445,7 +445,7 @@ describe("selectModel", () => {
         "model-deepseek-v4-flash-0731",
       );
       expect(selectModel("ask", "pro", undefined, true, false)).toBe(
-        "model-grok-4.6",
+        "model-grok-4.5",
       );
       expect(selectModel("ask", "pro", undefined, false, true)).toBe(
         "model-deepseek-v4-flash-0731",

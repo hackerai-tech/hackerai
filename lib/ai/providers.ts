@@ -207,9 +207,8 @@ const buildProviderMap = (
     "agent-model": or(GROK_4_6_SLUG),
     "agent-model-free": or(freeAgentDeepSeekSlug),
     "model-grok-4.6": or(GROK_4_6_SLUG),
-    // Compatibility aliases keep in-flight requests and stored internal keys
-    // valid. Both keys are active for the Grok 4.5 vision experiment; provider
-    // reasoning options distinguish Standard from Pro.
+    // Separate internal keys use the same Grok 4.5 provider model while
+    // provider reasoning options distinguish Standard from Pro vision.
     "model-grok-4.5": or(GROK_4_5_SLUG),
     "model-grok-4.5-pro": or(GROK_4_5_SLUG),
     "model-grok-4.6-pro": or(GROK_4_6_SLUG),

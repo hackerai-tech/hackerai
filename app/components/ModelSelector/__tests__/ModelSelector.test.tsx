@@ -106,7 +106,7 @@ describe("ModelSelector", () => {
     );
     expect(
       await screen.findAllByText(
-        "Powered by DeepSeek V4 Flash 0731 · xAI Grok 4.6 for vision",
+        "Powered by DeepSeek V4 Flash 0731 · xAI Grok 4.5 for vision",
       ),
     ).not.toHaveLength(0);
 
@@ -116,7 +116,7 @@ describe("ModelSelector", () => {
     await user.hover(screen.getByRole("button", { name: /HackerAI Pro/i }));
     expect(
       await screen.findAllByText(
-        "Powered by DeepSeek V4 Pro 0813 · xAI Grok 4.6 for vision",
+        "Powered by DeepSeek V4 Pro 0813 · xAI Grok 4.5 for vision",
       ),
     ).not.toHaveLength(0);
   });

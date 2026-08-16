@@ -153,12 +153,6 @@ import {
   getDeepSeekV4Pro0813ExperimentContext,
 } from "@/lib/experiments/deepseek-v4-pro-0813";
 import {
-  capturePaidVisionModelRoutingExposure,
-  evaluatePaidVisionModelRoutingExperiment,
-  getActivePaidVisionModelRoutingAssignment,
-  getPaidVisionModelRoutingExperimentContext,
-} from "@/lib/experiments/paid-vision-model-routing";
-import {
   capturePaidDailyFreeAllowanceServerEvent,
   createPaidDailyFreeAllowanceBudgetSnapshot,
   createPaidDailyFreeAllowanceRateLimitInfo,
@@ -436,29 +430,6 @@ export const createChatHandler = () => {
         );
       }
 
-      const hasInitialImageAttachment = processedMessages.some((message) =>
-        message.parts?.some(
-          (part) =>
-            part.type === "file" && part.mediaType?.startsWith("image/"),
-        ),
-      );
-
-      const paidVisionModelRoutingExperiment =
-        await evaluatePaidVisionModelRoutingExperiment({
-          posthog: (posthog ??= PostHogClient()),
-          userId,
-          subscription,
-          selectedModelOverride,
-          requestId: req.headers.get("x-vercel-id") ?? undefined,
-        });
-      if (
-        hasInitialImageAttachment &&
-        selectedModel === "model-grok-4.6" &&
-        paidVisionModelRoutingExperiment
-      ) {
-        selectedModel = paidVisionModelRoutingExperiment.modelKey;
-      }
-
       const deepSeekV4Pro0813Experiment =
         await evaluateDeepSeekV4Pro0813Experiment({
           posthog: (posthog ??= PostHogClient()),
@@ -610,15 +581,9 @@ export const createChatHandler = () => {
           deepSeekV4Pro0813Experiment,
           selectedModel,
         );
-      const activePaidVisionModelRoutingExperiment =
-        getActivePaidVisionModelRoutingAssignment(
-          paidVisionModelRoutingExperiment,
-          selectedModel,
-        );
-      let routingExperimentContext = getDeepSeekV4Pro0813ExperimentContext(
+      const routingExperimentContext = getDeepSeekV4Pro0813ExperimentContext(
         activeDeepSeekV4Pro0813Experiment,
       );
-      let paidVisionModelRoutingExperimentExposed = false;
 
       const freeMonthlyBudgetSnapshot =
         subscription === "free"
@@ -1314,31 +1279,7 @@ export const createChatHandler = () => {
               endpoint,
               userId,
               subscription,
-              visionModelName: activePaidVisionModelRoutingExperiment?.modelKey,
-              onVisionModelRequest: (modelName) => {
-                if (
-                  paidVisionModelRoutingExperimentExposed ||
-                  modelName !== activePaidVisionModelRoutingExperiment?.modelKey
-                ) {
-                  return;
-                }
-                capturePaidVisionModelRoutingExposure({
-                  posthog,
-                  userId,
-                  subscription,
-                  mode,
-                  selectedModelOverride,
-                  configuredModel:
-                    trackedProvider.languageModel(modelName).modelId,
-                  exposureSurface: "agent_image_tool_result",
-                  assignment: activePaidVisionModelRoutingExperiment,
-                });
-                paidVisionModelRoutingExperimentExposed = true;
-                routingExperimentContext =
-                  getPaidVisionModelRoutingExperimentContext(
-                    activePaidVisionModelRoutingExperiment,
-                  );
-              },
+              selectedModelOverride,
               chatId,
               fileTokens,
               noteInjectionOpts,
@@ -1402,27 +1343,6 @@ export const createChatHandler = () => {
 
             let result;
             try {
-              if (
-                hasInitialImageAttachment &&
-                selectedModel ===
-                  activePaidVisionModelRoutingExperiment?.modelKey
-              ) {
-                capturePaidVisionModelRoutingExposure({
-                  posthog,
-                  userId,
-                  subscription,
-                  mode,
-                  selectedModelOverride,
-                  configuredModel: configuredModelId,
-                  exposureSurface: "image_attachment",
-                  assignment: activePaidVisionModelRoutingExperiment,
-                });
-                paidVisionModelRoutingExperimentExposed = true;
-                routingExperimentContext =
-                  getPaidVisionModelRoutingExperimentContext(
-                    activePaidVisionModelRoutingExperiment,
-                  );
-              }
               captureDeepSeekV4Pro0813ExperimentExposure({
                 posthog,
                 userId,

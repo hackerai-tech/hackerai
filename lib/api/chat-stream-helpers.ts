@@ -852,8 +852,8 @@ export function buildProviderOptions(
       })
     : fallbackSlugs;
   // OpenRouter applies one reasoning configuration to both the primary model
-  // and every provider fallback. The experiment's Standard key deliberately
-  // uses medium while the Pro key and Grok 4.6 control remain high.
+  // and every provider fallback. The Standard vision key uses medium while
+  // the Pro vision key and Grok 4.6 routes remain high.
   const isMediumGrok45Vision = modelName === "model-grok-4.5" && isGrok45;
   const routesThroughGrok =
     isGrok45 ||

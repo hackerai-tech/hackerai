@@ -166,36 +166,47 @@ describe("resolveAgentModelForImageToolResults", () => {
     ).toBe("model-deepseek-v4-pro");
   });
 
-  it("defaults DeepSeek Agent image tool results to the Grok 4.6 control", () => {
+  it("infers the Grok 4.5 high route for Pro image tool results", () => {
     expect(
       resolveAgentModelForImageToolResults(
         "model-deepseek-v4-pro",
         "agent",
         true,
       ),
-    ).toBe("model-grok-4.6");
+    ).toBe("model-grok-4.5-pro");
   });
 
-  it("uses the assigned Grok 4.5 medium route after image tool results", () => {
+  it("uses Grok 4.5 medium for Standard image tool results", () => {
     expect(
       resolveAgentModelForImageToolResults(
         "model-deepseek-v4-flash-0731",
         "agent",
         true,
-        "model-grok-4.5",
+        "hackerai-standard",
       ),
     ).toBe("model-grok-4.5");
   });
 
-  it("uses the assigned Grok 4.5 high route after image tool results", () => {
+  it("uses Grok 4.5 high for Pro image tool results", () => {
     expect(
       resolveAgentModelForImageToolResults(
         "model-deepseek-v4-pro-0813",
         "agent",
         true,
-        "model-grok-4.5-pro",
+        "hackerai-pro",
       ),
     ).toBe("model-grok-4.5-pro");
+  });
+
+  it("keeps Auto on Grok 4.5 medium after a text retry reached DeepSeek Pro", () => {
+    expect(
+      resolveAgentModelForImageToolResults(
+        "model-deepseek-v4-pro-0813",
+        "agent",
+        true,
+        "auto",
+      ),
+    ).toBe("model-grok-4.5");
   });
 
   it("keeps the HackerAI Pro GLM fallback active after image tool results", () => {
