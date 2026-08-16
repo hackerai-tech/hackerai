@@ -183,8 +183,9 @@ export const KIMI_K3_SLUG = "moonshotai/kimi-k3";
 export const GLM_5_2_SLUG = "z-ai/glm-5.2";
 export const GROK_4_5_SLUG = "x-ai/grok-4.5";
 export const GROK_4_6_SLUG = "x-ai/grok-4.6";
-export const AUXILIARY_VISION_SLUG =
-  process.env.AUXILIARY_VISION_MODEL?.trim() || "xiaomi/mimo-v2.5";
+// MiMo-V2.5 is an open-weight multimodal model that avoids Google safety filters
+// while retaining low-latency OCR and screen understanding for security work.
+export const AUXILIARY_VISION_SLUG = "xiaomi/mimo-v2.5";
 export const DEEPSEEK_V4_PRO_SLUG = "deepseek/deepseek-v4-pro";
 export const DEEPSEEK_V4_PRO_0813_SLUG = "deepseek/deepseek-v4-pro-0813";
 export const DEEPSEEK_V4_FLASH_SLUG = "deepseek/deepseek-v4-flash-0731";
