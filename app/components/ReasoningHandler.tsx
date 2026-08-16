@@ -53,7 +53,10 @@ const ReasoningBody = memo(function ReasoningBody({
           ? "Showing the latest reasoning while it runs to keep the chat responsive."
           : "Showing the latest section of this long reasoning to keep the chat responsive."}
       </p>
-      <div className="whitespace-pre-wrap break-words [overflow-wrap:anywhere]">
+      <div
+        className="whitespace-pre-wrap break-words [overflow-wrap:anywhere]"
+        data-testid="long-reasoning-preview-body"
+      >
         {getReasoningTail(content)}
       </div>
       {!isStreamingMessage && (

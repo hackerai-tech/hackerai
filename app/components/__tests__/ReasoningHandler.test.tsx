@@ -24,8 +24,13 @@ describe("ReasoningHandler", () => {
   const longReasoningPrefix = `Unique early reasoning marker.\n${"Filler reasoning line.\n".repeat(
     800,
   )}`;
-  const longReasoningTail = "Latest reasoning remains visible.";
-  const longReasoning = `${longReasoningPrefix}${longReasoningTail}`;
+  const longReasoningEnd = "Latest reasoning remains visible.";
+  const longReasoning = `${longReasoningPrefix}${longReasoningEnd}`;
+  const longReasoningCutoff = longReasoning.slice(-6_000);
+  const firstCutoffNewline = longReasoningCutoff.indexOf("\n");
+  const expectedLongReasoningTail = longReasoningCutoff.slice(
+    firstCutoffNewline + 1,
+  );
 
   it("renders OpenRouter reasoning parts with reasoning_details metadata", () => {
     const message = {
@@ -267,11 +272,8 @@ describe("ReasoningHandler", () => {
     await waitFor(() => {
       expect(screen.getByTestId("long-reasoning-preview")).toBeVisible();
     });
-    expect(screen.getByTestId("long-reasoning-preview")).toHaveTextContent(
-      longReasoningTail,
-    );
-    expect(screen.getByTestId("long-reasoning-preview")).not.toHaveTextContent(
-      "Unique early reasoning marker.",
+    expect(screen.getByTestId("long-reasoning-preview-body").textContent).toBe(
+      expectedLongReasoningTail,
     );
     expect(
       screen.queryByRole("button", { name: "Show full reasoning" }),
@@ -329,7 +331,7 @@ describe("ReasoningHandler", () => {
       "Unique early reasoning marker.",
     );
     expect(screen.getByTestId("streamdown")).toHaveTextContent(
-      longReasoningTail,
+      longReasoningEnd,
     );
   });
 
@@ -353,7 +355,7 @@ describe("ReasoningHandler", () => {
 
     await waitFor(() => {
       expect(screen.getByTestId("long-reasoning-preview")).toHaveTextContent(
-        longReasoningTail,
+        longReasoningEnd,
       );
     });
     expect(screen.queryByTestId("streamdown")).not.toBeInTheDocument();
