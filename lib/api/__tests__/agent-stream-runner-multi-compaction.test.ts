@@ -102,6 +102,7 @@ const {
   createAgentStream,
   initAgentStreamState,
   resetServedModelTelemetryForRetry,
+  resolveAgentModelAfterSummarization,
   resolveAgentModelForImageToolResults,
   resolveFallbackServedTelemetry,
   retryUsesDifferentModel,
@@ -238,6 +239,35 @@ describe("resolveAgentModelForImageToolResults", () => {
   });
 });
 
+describe("resolveAgentModelAfterSummarization", () => {
+  it("returns Standard and Pro vision routes to their DeepSeek text routes", () => {
+    expect(
+      resolveAgentModelAfterSummarization("model-grok-4.5", "agent", false),
+    ).toBe("model-deepseek-v4-flash-0731");
+    expect(
+      resolveAgentModelAfterSummarization("model-grok-4.5-pro", "agent", false),
+    ).toBe("model-deepseek-v4-pro-0813");
+  });
+
+  it("keeps vision routes when compacted context still contains images", () => {
+    expect(
+      resolveAgentModelAfterSummarization("model-grok-4.5", "agent", true),
+    ).toBe("model-grok-4.5");
+    expect(
+      resolveAgentModelAfterSummarization("model-grok-4.5-pro", "agent", true),
+    ).toBe("model-grok-4.5-pro");
+  });
+
+  it("does not rewrite Ask or native non-vision-promotion routes", () => {
+    expect(
+      resolveAgentModelAfterSummarization("model-grok-4.5", "ask", false),
+    ).toBe("model-grok-4.5");
+    expect(
+      resolveAgentModelAfterSummarization("model-grok-4.6", "agent", false),
+    ).toBe("model-grok-4.6");
+  });
+});
+
 describe("resolveFallbackServedTelemetry", () => {
   it("returns false for the requested primary model", () => {
     expect(
@@ -312,6 +342,152 @@ describe("createAgentStream repeated compaction", () => {
   beforeEach(() => {
     jest.clearAllMocks();
     mockStreamText.mockImplementation((options) => options);
+  });
+
+  afterEach(() => {
+    mockRunSummarizationStep.mockReset();
+    mockCompactModelMessagesInRun.mockReset();
+    mockGetProviderPromptPressure.mockReset();
+  });
+
+  it.each([
+    ["model-grok-4.5", "model-deepseek-v4-flash-0731"],
+    ["model-grok-4.5-pro", "model-deepseek-v4-pro-0813"],
+  ])(
+    "switches %s back to %s after a text-only persisted summary",
+    async (visionModel, textModel) => {
+      const summary = uiMessage("summary", "The image findings are preserved.");
+      mockRunSummarizationStep.mockResolvedValue({
+        summarizationAttempted: true,
+        needsSummarization: true,
+        summarizedMessages: [summary],
+      });
+      const tracker = {
+        hasSummarized: false,
+        summarizationCount: 0,
+        recordSummarization() {
+          this.hasSummarized = true;
+          this.summarizationCount++;
+        },
+      };
+      const state = initAgentStreamState(
+        [uiMessage("initial", "Inspect the attached image")],
+        { usedTokens: 120_000, maxTokens: 128_000 },
+      );
+      const stream = (await createAgentStream(
+        visionModel,
+        createTestStreamContext({
+          trackedProvider: {
+            languageModel: (name: string) => ({ modelId: name }),
+          },
+          summarizationTracker: tracker,
+          usageTracker: {},
+        }) as any,
+        state,
+      )) as any;
+
+      const continued = await stream.prepareStep({
+        steps: [],
+        messages: [{ role: "user", content: "Inspect the attached image" }],
+      });
+
+      expect(continued.model.modelId).toBe(textModel);
+    },
+  );
+
+  it("keeps the Standard vision route when the persisted summary retains an image", async () => {
+    const summaryWithImage = {
+      id: "summary-with-image",
+      role: "user",
+      parts: [
+        { type: "text", text: "Recent visual context" },
+        {
+          type: "file",
+          mediaType: "image/png",
+          url: "data:image/png;base64,aW1hZ2U=",
+        },
+      ],
+    } as UIMessage;
+    mockRunSummarizationStep.mockResolvedValue({
+      summarizationAttempted: true,
+      needsSummarization: true,
+      summarizedMessages: [summaryWithImage],
+    });
+    const tracker = {
+      hasSummarized: false,
+      summarizationCount: 0,
+      recordSummarization() {
+        this.hasSummarized = true;
+        this.summarizationCount++;
+      },
+    };
+    const state = initAgentStreamState(
+      [uiMessage("initial", "Inspect the attached image")],
+      { usedTokens: 120_000, maxTokens: 128_000 },
+    );
+    const stream = (await createAgentStream(
+      "model-grok-4.5",
+      createTestStreamContext({
+        trackedProvider: {
+          languageModel: (name: string) => ({ modelId: name }),
+        },
+        summarizationTracker: tracker,
+        usageTracker: {},
+      }) as any,
+      state,
+    )) as any;
+
+    const continued = await stream.prepareStep({
+      steps: [],
+      messages: [{ role: "user", content: "Inspect the attached image" }],
+    });
+
+    expect(continued.model.modelId).toBe("model-grok-4.5");
+  });
+
+  it("switches back after text-only rolling compaction", async () => {
+    const summary = uiMessage("rolling-summary", "Visual findings preserved.");
+    mockCompactModelMessagesInRun.mockResolvedValue({
+      summaryMessage: summary,
+      summaryText: "Visual findings preserved.",
+      summarizationUsage: { inputTokens: 10, outputTokens: 2 },
+    });
+    mockGetProviderPromptPressure.mockReturnValue({
+      reason: "serialized_message_bytes",
+      reasons: [],
+    });
+    const tracker = {
+      hasSummarized: true,
+      summarizationCount: 1,
+      recordSummarization() {
+        this.summarizationCount++;
+      },
+    };
+    const state = initAgentStreamState(
+      [uiMessage("initial", "old visual context")],
+      { usedTokens: 120_000, maxTokens: 128_000 },
+    );
+    const stream = (await createAgentStream(
+      "model-grok-4.5-pro",
+      createTestStreamContext({
+        trackedProvider: {
+          languageModel: (name: string) => ({ modelId: name }),
+        },
+        summarizationTracker: tracker,
+        usageTracker: {},
+      }) as any,
+      state,
+    )) as any;
+
+    const continued = await stream.prepareStep({
+      steps: [{ toolResults: [] }],
+      messages: [
+        { role: "user", content: "old visual context ".repeat(4_000) },
+        { role: "assistant", content: "continue" },
+      ],
+    });
+
+    expect(continued.model.modelId).toBe("model-deepseek-v4-pro-0813");
   });
 
   it.each(["ask", "agent"] as const)(

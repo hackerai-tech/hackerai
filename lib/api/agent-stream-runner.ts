@@ -125,6 +125,33 @@ import {
 const STANDARD_AGENT_VISION_MODEL = "model-grok-4.5";
 const PRO_AGENT_VISION_MODEL = "model-grok-4.5-pro";
 const FREE_AGENT_VISION_MODEL = "model-grok-4.6";
+const STANDARD_AGENT_TEXT_MODEL = "model-deepseek-v4-flash-0731";
+const PRO_AGENT_TEXT_MODEL = "model-deepseek-v4-pro-0813";
+
+const uiMessagesContainImageAttachment = (messages: UIMessage[]): boolean =>
+  messages.some((message) =>
+    message.parts?.some(
+      (part) =>
+        part.type === "file" &&
+        typeof part.mediaType === "string" &&
+        part.mediaType.startsWith("image/"),
+    ),
+  );
+
+export const resolveAgentModelAfterSummarization = (
+  modelName: string,
+  mode: ChatMode,
+  compactedContextHasImages: boolean,
+): string => {
+  if (mode !== "agent" || compactedContextHasImages) return modelName;
+  if (modelName === STANDARD_AGENT_VISION_MODEL) {
+    return STANDARD_AGENT_TEXT_MODEL;
+  }
+  if (modelName === PRO_AGENT_VISION_MODEL) {
+    return PRO_AGENT_TEXT_MODEL;
+  }
+  return modelName;
+};
 
 export const resolveAgentModelForImageToolResults = (
   modelName: string,
@@ -756,6 +783,7 @@ export async function createAgentStream(
 
   const initialActiveTools = await getActiveTools();
   const maxOutputTokens = MAX_OUTPUT_TOKENS;
+  let routeModelName = modelName;
   let streamHasImageViewResults = uiMessagesContainImageViewResult(
     state.finalMessages,
   );
@@ -767,7 +795,7 @@ export async function createAgentStream(
   let openRouterFileAnnotations: unknown[] | undefined;
   const getEffectiveModelName = () =>
     resolveAgentModelForImageToolResults(
-      modelName,
+      routeModelName,
       ctx.mode,
       streamHasImageViewResults,
       ctx.selectedModelOverride,
@@ -999,9 +1027,19 @@ export async function createAgentStream(
               }
               state.finalMessages = result.summarizedMessages;
               state.transcriptSourceMessages = undefined;
+              streamHasImageViewResults = uiMessagesContainImageViewResult(
+                result.summarizedMessages,
+              );
+              routeModelName = resolveAgentModelAfterSummarization(
+                routeModelName,
+                ctx.mode,
+                streamHasImageViewResults ||
+                  uiMessagesContainImageAttachment(result.summarizedMessages),
+              );
+              const continuationModelInfo = getEffectiveModelInfo();
               const activeTools = await getActiveToolsForRecovery(loopRecovery);
               const providerOptions = getStepProviderOptions(
-                effectiveModelInfo.modelName,
+                continuationModelInfo.modelName,
               );
               let summarizedModelMessages = await convertToModelMessages(
                 result.summarizedMessages,
@@ -1025,11 +1063,11 @@ export async function createAgentStream(
               };
               const preparedMessages = prepareProviderMessages(
                 summarizedModelMessages,
-                effectiveModelInfo.modelName,
+                continuationModelInfo.modelName,
               );
               recordProviderRequestDiagnostics({
-                modelName: effectiveModelInfo.modelName,
-                requestedSlug: effectiveModelInfo.requestedSlug,
+                modelName: continuationModelInfo.modelName,
+                requestedSlug: continuationModelInfo.requestedSlug,
                 stepIndex: steps.length + 1,
                 source: "summarized_prepare_step",
                 messages: preparedMessages,
@@ -1040,7 +1078,7 @@ export async function createAgentStream(
               });
               return {
                 model: getNamespacedLanguageModel(
-                  effectiveModelInfo.languageModel,
+                  continuationModelInfo.languageModel,
                   steps.length,
                 ),
                 activeTools,
@@ -1166,6 +1204,16 @@ export async function createAgentStream(
                   rawMessageCursor: rawModelMessages.length,
                 };
                 rollingModelMessages = nextBaseMessages;
+                streamHasImageViewResults =
+                  limitModelImageToolResults(
+                    nextBaseMessages as Array<Record<string, unknown>>,
+                  ).totalImageCount > 0;
+                routeModelName = resolveAgentModelAfterSummarization(
+                  routeModelName,
+                  ctx.mode,
+                  streamHasImageViewResults,
+                );
+                const continuationModelInfo = getEffectiveModelInfo();
                 state.postSummarizationContinuationActive = true;
                 state.postSummarizationToolCallCount = 0;
                 state.postSummarizationText = "";
@@ -1173,15 +1221,15 @@ export async function createAgentStream(
                 const activeTools =
                   await getActiveToolsForRecovery(loopRecovery);
                 const providerOptions = getStepProviderOptions(
-                  effectiveModelInfo.modelName,
+                  continuationModelInfo.modelName,
                 );
                 const preparedMessages = prepareProviderMessages(
                   nextBaseMessages,
-                  effectiveModelInfo.modelName,
+                  continuationModelInfo.modelName,
                 );
                 recordProviderRequestDiagnostics({
-                  modelName: effectiveModelInfo.modelName,
-                  requestedSlug: effectiveModelInfo.requestedSlug,
+                  modelName: continuationModelInfo.modelName,
+                  requestedSlug: continuationModelInfo.requestedSlug,
                   stepIndex: steps.length + 1,
                   source: "summarized_prepare_step",
                   messages: preparedMessages,
@@ -1192,7 +1240,7 @@ export async function createAgentStream(
                 });
                 return {
                   model: getNamespacedLanguageModel(
-                    effectiveModelInfo.languageModel,
+                    continuationModelInfo.languageModel,
                     steps.length,
                   ),
                   activeTools,
