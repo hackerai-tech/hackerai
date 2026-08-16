@@ -13,6 +13,52 @@ import { convexLogger } from "./lib/logger";
 
 // Maximum storage per user: 10 GB
 const MAX_STORAGE_BYTES = 10 * 1024 * 1024 * 1024; // 10737418240 bytes
+const MAX_AUXILIARY_VISION_DESCRIPTION_CHARS = 12_000;
+
+/** Cache an owned image description so later turns do not rebill vision. */
+export const saveAuxiliaryVisionDescription = mutation({
+  args: {
+    serviceKey: v.string(),
+    userId: v.string(),
+    fileId: v.id("files"),
+    description: v.string(),
+    model: v.string(),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    validateServiceKey(args.serviceKey);
+    const file = await ctx.db.get(args.fileId);
+    if (!file || file.user_id !== args.userId) {
+      throw new ConvexError({
+        code: "UNAUTHORIZED",
+        message: "File does not belong to user",
+      });
+    }
+    if (!isSupportedImageMediaType(file.media_type)) {
+      throw new ConvexError({
+        code: "INVALID_FILE_TYPE",
+        message: "Auxiliary vision descriptions are only valid for images",
+      });
+    }
+
+    const description = args.description.trim();
+    if (
+      !description ||
+      description.length > MAX_AUXILIARY_VISION_DESCRIPTION_CHARS
+    ) {
+      throw new ConvexError({
+        code: "INVALID_DESCRIPTION",
+        message: "Auxiliary vision description has an invalid length",
+      });
+    }
+
+    await ctx.db.patch(file._id, {
+      auxiliary_vision_description: description,
+      auxiliary_vision_model: args.model,
+    });
+    return null;
+  },
+});
 
 /**
  * Delete file from storage by file ID

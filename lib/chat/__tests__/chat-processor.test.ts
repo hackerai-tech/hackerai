@@ -160,6 +160,30 @@ describe("selectModel", () => {
     );
   });
 
+  it.each([
+    ["ask", "hackerai-standard", "model-deepseek-v4-flash-0731"],
+    ["agent", "hackerai-standard", "model-deepseek-v4-flash-0731"],
+    ["ask", "hackerai-pro", "model-deepseek-v4-pro-0813"],
+    ["agent", "hackerai-pro", "model-deepseek-v4-pro-0813"],
+  ] as const)(
+    "keeps %s %s on DeepSeek for images when auxiliary vision is enabled",
+    (mode, selectedModel, expected) => {
+      expect(
+        selectModel(mode, "pro", selectedModel, true, false, {
+          auxiliaryVisionEnabled: true,
+        }),
+      ).toBe(expected);
+    },
+  );
+
+  it("keeps paid Auto image prompts on DeepSeek with auxiliary vision", () => {
+    expect(
+      selectModel("ask", "pro", undefined, true, false, {
+        auxiliaryVisionEnabled: true,
+      }),
+    ).toBe("model-deepseek-v4-flash-0731");
+  });
+
   it.each(["pro", "pro-plus", "ultra", "team"] as const)(
     "routes paid %s Auto/Standard text to DeepSeek V4 Flash 0731 in both modes",
     (subscription) => {

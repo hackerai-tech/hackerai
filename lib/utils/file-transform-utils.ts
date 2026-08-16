@@ -36,6 +36,8 @@ type FileToProcess = {
   url?: string;
   mediaType?: string;
   sizeBytes?: number;
+  auxiliaryVisionDescription?: string;
+  auxiliaryVisionModel?: string;
   positions: Array<{ messageIndex: number; partIndex: number }>;
 };
 
@@ -44,6 +46,8 @@ type ResolvedFileUrlInfo = {
   sizeBytes?: number;
   mediaType?: string;
   name?: string;
+  auxiliaryVisionDescription?: string;
+  auxiliaryVisionModel?: string;
 };
 
 type SizeProbeResult = {
@@ -100,6 +104,14 @@ const validateResolvedFileUrlInfo = (
       mediaType:
         typeof info.mediaType === "string" ? info.mediaType : undefined,
       name: typeof info.name === "string" ? info.name : undefined,
+      auxiliaryVisionDescription:
+        typeof info.auxiliaryVisionDescription === "string"
+          ? info.auxiliaryVisionDescription
+          : undefined,
+      auxiliaryVisionModel:
+        typeof info.auxiliaryVisionModel === "string"
+          ? info.auxiliaryVisionModel
+          : undefined,
     };
   } catch (error) {
     logger.warn("resolved_file_url_rejected", {
@@ -450,6 +462,8 @@ const collectFilesToProcess = (
         // is safe. Clear any client URL so every server-side fetch/download uses
         // an owner-checked URL resolved from storage below.
         delete (part as any).url;
+        delete (part as any).auxiliaryVisionDescription;
+        delete (part as any).auxiliaryVisionModel;
       }
 
       if (isMediaFile(part.mediaType)) hasMedia = true;
@@ -589,6 +603,8 @@ const applyUrlsToFileParts = async (
       if (!file.mediaType && resolved.mediaType) {
         file.mediaType = resolved.mediaType;
       }
+      file.auxiliaryVisionDescription = resolved.auxiliaryVisionDescription;
+      file.auxiliaryVisionModel = resolved.auxiliaryVisionModel;
     }
   });
 
@@ -691,6 +707,10 @@ const applyUrlsToFileParts = async (
         filePart.mediaType =
           normalizeImageMediaType(file.mediaType) ?? file.mediaType;
       }
+      if (file.auxiliaryVisionDescription) {
+        filePart.auxiliaryVisionDescription = file.auxiliaryVisionDescription;
+        filePart.auxiliaryVisionModel = file.auxiliaryVisionModel;
+      }
 
       if ((shouldOmitImage || shouldOmitInvalidImage) && mode === "agent") {
         filePart.url = finalUrl;
@@ -717,6 +737,41 @@ const applyUrlsToFileParts = async (
       } else {
         filePart.url = finalUrl;
       }
+    });
+  }
+};
+
+export const cacheAuxiliaryVisionDescription = async ({
+  userId,
+  fileId,
+  description,
+  model,
+}: {
+  userId: string;
+  fileId: string;
+  description: string;
+  model: string;
+}): Promise<void> => {
+  if (!serviceKey) return;
+  try {
+    await getConvexClient().mutation(
+      api.fileStorage.saveAuxiliaryVisionDescription,
+      {
+        serviceKey,
+        userId,
+        fileId: fileId as Id<"files">,
+        description,
+        model,
+      },
+    );
+  } catch (error) {
+    logger.warn("auxiliary_vision_description_cache_failed", {
+      event: "auxiliary_vision_description_cache_failed",
+      service: "chat-handler",
+      user_id: userId,
+      file_id: fileId,
+      model,
+      error: stringifyRedactedError(error),
     });
   }
 };

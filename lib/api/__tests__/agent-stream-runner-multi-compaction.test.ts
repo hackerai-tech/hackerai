@@ -199,6 +199,21 @@ describe("resolveAgentModelForImageToolResults", () => {
     ).toBe("model-grok-4.5-pro");
   });
 
+  it.each(["model-deepseek-v4-flash-0731", "model-deepseek-v4-pro-0813"])(
+    "keeps %s active when image tool results have auxiliary descriptions",
+    (modelName) => {
+      expect(
+        resolveAgentModelForImageToolResults(
+          modelName,
+          "agent",
+          true,
+          modelName.includes("pro") ? "hackerai-pro" : "hackerai-standard",
+          true,
+        ),
+      ).toBe(modelName);
+    },
+  );
+
   it("keeps Auto on Grok 4.5 medium after a text retry reached DeepSeek Pro", () => {
     expect(
       resolveAgentModelForImageToolResults(

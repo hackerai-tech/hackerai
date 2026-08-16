@@ -115,6 +115,12 @@ import {
 } from "@/lib/utils/stream-cancellation";
 import { v4 as uuidv4 } from "uuid";
 import { processChatMessages } from "@/lib/chat/chat-processor";
+import { cacheAuxiliaryVisionDescription } from "@/lib/utils/file-transform-utils";
+import {
+  AUXILIARY_VISION_UNAVAILABLE_MESSAGE,
+  describeImageAttachmentsWithAuxiliaryVision,
+  describeImageWithAuxiliaryVision,
+} from "@/lib/chat/auxiliary-vision";
 import { summarizeIncompleteToolParts } from "@/lib/chat/tool-abort-utils";
 import {
   hasVisibleAssistantContent,
@@ -152,6 +158,10 @@ import {
   getActiveDeepSeekV4Pro0813ExperimentAssignment,
   getDeepSeekV4Pro0813ExperimentContext,
 } from "@/lib/experiments/deepseek-v4-pro-0813";
+import {
+  createAuxiliaryVisionExposureRecorder,
+  evaluateAuxiliaryDeepSeekVisionFlag,
+} from "@/lib/experiments/auxiliary-deepseek-vision";
 import {
   capturePaidDailyFreeAllowanceServerEvent,
   createPaidDailyFreeAllowanceBudgetSnapshot,
@@ -370,6 +380,17 @@ export const createChatHandler = () => {
         selectedModelOverride,
         subscription,
       );
+      const auxiliaryVisionAssignment =
+        isAgentMode(mode) ||
+        countFileAttachments(truncatedMessages).imageCount > 0
+          ? await evaluateAuxiliaryDeepSeekVisionFlag({
+              posthog: (posthog ??= PostHogClient()),
+              userId,
+              subscription,
+              selectedModelOverride,
+              requestId: req.headers.get("x-vercel-id") ?? undefined,
+            })
+          : undefined;
 
       await handleInitialChatAndUserMessage({
         chatId,
@@ -415,6 +436,7 @@ export const createChatHandler = () => {
         extraUsageAvailable,
         allowLocalDesktopFiles:
           isAgentMode(mode) && sandboxPreference === "desktop",
+        auxiliaryVisionEnabled: !!auxiliaryVisionAssignment,
       });
 
       // Empty after processing → providers reject the request before the route can stream.
@@ -617,6 +639,16 @@ export const createChatHandler = () => {
       });
 
       const summarizationTracker = new SummarizationTracker();
+      const captureAuxiliaryVisionExposure =
+        createAuxiliaryVisionExposureRecorder({
+          posthog,
+          userId,
+          subscription,
+          mode,
+          selectedModelOverride,
+          getSelectedModel: () => selectedModel,
+          assignment: auxiliaryVisionAssignment,
+        });
 
       chatLogger.startStream();
 
@@ -633,6 +665,30 @@ export const createChatHandler = () => {
         },
         execute: async ({ writer }) => {
           try {
+            const usageTracker = new UsageTracker();
+            const auxiliaryVision = auxiliaryVisionAssignment
+              ? {
+                  describeImage: (args: {
+                    image: string;
+                    mediaType: string;
+                    filename?: string;
+                    source: "file_view";
+                  }) =>
+                    describeImageWithAuxiliaryVision({
+                      ...args,
+                      requestId: req.headers.get("x-vercel-id") ?? undefined,
+                      userId,
+                      chatId,
+                      abortSignal: userStopSignal.signal,
+                      onExposure: captureAuxiliaryVisionExposure,
+                      onCost: (costDollars) => {
+                        usageTracker.providerCost += costDollars;
+                        usageTracker.nonModelCost += costDollars;
+                        chatLogger?.getBuilder().addToolCost(costDollars);
+                      },
+                    }),
+                }
+              : undefined;
             sendRateLimitWarnings(writer, {
               subscription,
               mode,
@@ -683,6 +739,8 @@ export const createChatHandler = () => {
               undefined,
               undefined,
               projectContext.workingDirectory,
+              undefined,
+              auxiliaryVision,
             );
 
             // Helper to send file metadata via stream for resumable stream clients
@@ -796,6 +854,37 @@ export const createChatHandler = () => {
                 processedMessages,
                 uploadResult.pathRewrites,
               );
+            }
+
+            if (auxiliaryVisionAssignment) {
+              try {
+                processedMessages =
+                  await describeImageAttachmentsWithAuxiliaryVision({
+                    messages: processedMessages,
+                    requestId: req.headers.get("x-vercel-id") ?? undefined,
+                    userId,
+                    chatId,
+                    abortSignal: userStopSignal.signal,
+                    onExposure: captureAuxiliaryVisionExposure,
+                    onCost: (costDollars) => {
+                      usageTracker.providerCost += costDollars;
+                      usageTracker.nonModelCost += costDollars;
+                      chatLogger?.getBuilder().addToolCost(costDollars);
+                    },
+                    cacheDescription: cacheAuxiliaryVisionDescription,
+                  });
+              } catch (error) {
+                if (
+                  error instanceof DOMException &&
+                  error.name === "AbortError"
+                ) {
+                  throw error;
+                }
+                throw new ChatSDKError(
+                  "bad_request:api",
+                  AUXILIARY_VISION_UNAVAILABLE_MESSAGE,
+                );
+              }
             }
 
             // Generate the title in parallel for new tasks.
@@ -925,7 +1014,6 @@ export const createChatHandler = () => {
               trackedProvider.languageModel(fallbackModel).modelId;
             let activeModelName = selectedModel;
 
-            const usageTracker = new UsageTracker();
             let hasRecordedUsage = false;
             // Snapshot cache tokens before fallback retry so we can isolate fallback-only metrics
             let preFallbackCacheRead = 0;
@@ -1290,6 +1378,7 @@ export const createChatHandler = () => {
               contextUsageOn,
               isReasoningModel,
               platformAuthorized,
+              auxiliaryVisionEnabled: !!auxiliaryVisionAssignment,
               maxDurationMs: AGENT_MAX_STREAM_DURATION_MS,
               writer,
               abortController: userStopSignal,

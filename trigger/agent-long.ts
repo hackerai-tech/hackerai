@@ -26,6 +26,12 @@ import { ptySessionManager } from "@/lib/ai/tools/utils/pty-session-manager";
 import { generateTitleFromUserMessageWithWriter } from "@/lib/actions";
 import { createTrackedProvider } from "@/lib/ai/providers";
 import { processChatMessages } from "@/lib/chat/chat-processor";
+import { cacheAuxiliaryVisionDescription } from "@/lib/utils/file-transform-utils";
+import {
+  AUXILIARY_VISION_UNAVAILABLE_MESSAGE,
+  describeImageAttachmentsWithAuxiliaryVision,
+  describeImageWithAuxiliaryVision,
+} from "@/lib/chat/auxiliary-vision";
 import { summarizeIncompleteToolParts } from "@/lib/chat/tool-abort-utils";
 import {
   hasVisibleAssistantContent,
@@ -135,6 +141,10 @@ import {
   getActiveDeepSeekV4Pro0813ExperimentAssignment,
   getDeepSeekV4Pro0813ExperimentContext,
 } from "@/lib/experiments/deepseek-v4-pro-0813";
+import {
+  createAuxiliaryVisionExposureRecorder,
+  evaluateAuxiliaryDeepSeekVisionFlag,
+} from "@/lib/experiments/auxiliary-deepseek-vision";
 import type { AgentAutoReviewAssignment } from "@/lib/experiments/agent-auto-review";
 import { PAID_FUNNEL_EVENTS } from "@/lib/analytics/paid-funnel";
 import type { AnalyticsRequestContext } from "@/lib/analytics/request-context";
@@ -2236,6 +2246,15 @@ export const agentLongTask = task({
         selectedModelOverride,
         subscription,
       );
+      const posthog = PostHogClient();
+      const auxiliaryVisionAssignment =
+        await evaluateAuxiliaryDeepSeekVisionFlag({
+          posthog,
+          userId,
+          subscription,
+          selectedModelOverride,
+          requestId: ctx.run.id,
+        });
 
       const baseTodos: Todo[] = getBaseTodosForRequest(
         (chat?.todos as unknown as Todo[]) || [],
@@ -2265,6 +2284,7 @@ export const agentLongTask = task({
         modelOverride: selectedModelOverride,
         extraUsageAvailable,
         allowLocalDesktopFiles: sandboxPreference === "desktop",
+        auxiliaryVisionEnabled: !!auxiliaryVisionAssignment,
       });
 
       if (!processedMessages.length) {
@@ -2279,7 +2299,6 @@ export const agentLongTask = task({
         );
       }
 
-      const posthog = PostHogClient();
       const deepSeekV4Pro0813Experiment =
         await evaluateDeepSeekV4Pro0813Experiment({
           posthog,
@@ -2409,6 +2428,16 @@ export const agentLongTask = task({
         PaidDailyFreeAllowanceReservation | undefined;
 
       let streamError: unknown;
+      const captureAuxiliaryVisionExposure =
+        createAuxiliaryVisionExposureRecorder({
+          posthog,
+          userId,
+          subscription,
+          mode,
+          selectedModelOverride,
+          getSelectedModel: () => selectedModel,
+          assignment: auxiliaryVisionAssignment,
+        });
       const uiStream = createUIMessageStream({
         onError: (error) => {
           streamError ??= error;
@@ -2419,6 +2448,31 @@ export const agentLongTask = task({
         },
         execute: async ({ writer }) => {
           try {
+            const usageTracker = new UsageTracker();
+            observedUsageTracker = usageTracker;
+            const auxiliaryVision = auxiliaryVisionAssignment
+              ? {
+                  describeImage: (args: {
+                    image: string;
+                    mediaType: string;
+                    filename?: string;
+                    source: "file_view";
+                  }) =>
+                    describeImageWithAuxiliaryVision({
+                      ...args,
+                      requestId: ctx.run.id,
+                      userId,
+                      chatId,
+                      abortSignal: userStopSignal.signal,
+                      onExposure: captureAuxiliaryVisionExposure,
+                      onCost: (costDollars) => {
+                        usageTracker.providerCost += costDollars;
+                        usageTracker.nonModelCost += costDollars;
+                        chatLogger?.getBuilder().addToolCost(costDollars);
+                      },
+                    }),
+                }
+              : undefined;
             writeAgentLongFastStart(writer, "setup");
             await assertUserCanMakeCostIncurringRequest(userId);
             if (subscription === "free") {
@@ -2862,6 +2916,7 @@ export const agentLongTask = task({
               runTimingTracker.measureActiveTime,
               projectContext.workingDirectory,
               ctx.run.id,
+              auxiliaryVision,
             );
             approvalSandboxManager = sandboxManager;
 
@@ -2962,6 +3017,37 @@ export const agentLongTask = task({
                 processedMessages,
                 uploadResult.pathRewrites,
               );
+            }
+
+            if (auxiliaryVisionAssignment) {
+              try {
+                processedMessages =
+                  await describeImageAttachmentsWithAuxiliaryVision({
+                    messages: processedMessages,
+                    requestId: ctx.run.id,
+                    userId,
+                    chatId,
+                    abortSignal: userStopSignal.signal,
+                    onExposure: captureAuxiliaryVisionExposure,
+                    onCost: (costDollars) => {
+                      usageTracker.providerCost += costDollars;
+                      usageTracker.nonModelCost += costDollars;
+                      chatLogger?.getBuilder().addToolCost(costDollars);
+                    },
+                    cacheDescription: cacheAuxiliaryVisionDescription,
+                  });
+              } catch (error) {
+                if (
+                  error instanceof DOMException &&
+                  error.name === "AbortError"
+                ) {
+                  throw error;
+                }
+                throw new ChatSDKError(
+                  "bad_request:api",
+                  AUXILIARY_VISION_UNAVAILABLE_MESSAGE,
+                );
+              }
             }
 
             const titlePromise = isNewChat
@@ -3082,8 +3168,6 @@ export const agentLongTask = task({
               trackedProvider.languageModel(fallbackModel).modelId;
             let activeModelName = selectedModel;
 
-            const usageTracker = new UsageTracker();
-            observedUsageTracker = usageTracker;
             let hasRecordedUsage = false;
             let preFallbackCacheRead = 0;
             let preFallbackCacheWrite = 0;
@@ -3435,6 +3519,7 @@ export const agentLongTask = task({
               contextUsageOn,
               isReasoningModel: true, // long mode is always agent mode
               platformAuthorized,
+              auxiliaryVisionEnabled: !!auxiliaryVisionAssignment,
               maxDurationMs: agentLongMaxDurationMs,
               getActiveElapsedTimeMs: runtimeBudget.getElapsedTimeMs,
               writer,
