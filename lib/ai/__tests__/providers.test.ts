@@ -1,4 +1,5 @@
 import {
+  AUXILIARY_VISION_SLUG,
   getModelCutoffDate,
   getModelDisplayName,
   isAnthropicModel,
@@ -12,6 +13,9 @@ import {
 
 describe("provider registry", () => {
   it("keeps active routes pointed at their provider slugs", () => {
+    const expectedAuxiliaryVisionSlug =
+      process.env.AUXILIARY_VISION_MODEL?.trim() || "xiaomi/mimo-v2.5";
+
     expect(
       (myProvider.languageModel("ask-model") as { modelId: string }).modelId,
     ).toBe("x-ai/grok-4.6");
@@ -32,7 +36,8 @@ describe("provider registry", () => {
           modelId: string;
         }
       ).modelId,
-    ).toBe("xiaomi/mimo-v2.5");
+    ).toBe(expectedAuxiliaryVisionSlug);
+    expect(AUXILIARY_VISION_SLUG).toBe(expectedAuxiliaryVisionSlug);
     expect(
       (myProvider.languageModel("model-grok-4.6") as { modelId: string })
         .modelId,
