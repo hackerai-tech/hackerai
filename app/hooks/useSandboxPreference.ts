@@ -27,6 +27,8 @@ let bridgeStateListener:
   ((active: boolean, status: DesktopBridgeStatus) => void) | null = null;
 const PERSISTABLE_SANDBOX_PREFERENCES = new Set(["e2b", "desktop"]);
 const DESKTOP_BRIDGE_RECOVERY_DELAYS_MS = [1_000, 3_000, 8_000, 16_000];
+const DESKTOP_BRIDGE_MAX_RECOVERY_ATTEMPTS = 6;
+const DESKTOP_BRIDGE_STABLE_RESET_MS = 60_000;
 const RECOVERABLE_DESKTOP_TERMINATIONS = new Set([
   "connection_not_found",
   "connection_inactive",
@@ -34,15 +36,29 @@ const RECOVERABLE_DESKTOP_TERMINATIONS = new Set([
 ]);
 let bridgeRecoveryAttempt = 0;
 let bridgeRecoveryTimer: ReturnType<typeof setTimeout> | null = null;
+let bridgeStableResetTimer: ReturnType<typeof setTimeout> | null = null;
 
 function clearBridgeRecovery(resetAttempt: boolean): void {
   if (bridgeRecoveryTimer) {
     clearTimeout(bridgeRecoveryTimer);
     bridgeRecoveryTimer = null;
   }
+  if (bridgeStableResetTimer) {
+    clearTimeout(bridgeStableResetTimer);
+    bridgeStableResetTimer = null;
+  }
   if (resetAttempt) {
     bridgeRecoveryAttempt = 0;
   }
+}
+
+function scheduleStableRecoveryReset(generation: number): void {
+  if (bridgeStableResetTimer) clearTimeout(bridgeStableResetTimer);
+  bridgeStableResetTimer = setTimeout(() => {
+    bridgeStableResetTimer = null;
+    if (generation !== bridgeGeneration) return;
+    bridgeRecoveryAttempt = 0;
+  }, DESKTOP_BRIDGE_STABLE_RESET_MS);
 }
 
 export function useSandboxPreference(
@@ -152,7 +168,7 @@ export function useSandboxPreference(
                   onConnectionState: (state) => {
                     if (generation !== bridgeGeneration) return;
                     if (state === "connected") {
-                      clearBridgeRecovery(true);
+                      scheduleStableRecoveryReset(generation);
                     }
                     bridgeStateListener?.(state === "connected", state);
                   },
@@ -165,8 +181,24 @@ export function useSandboxPreference(
                       return;
                     }
 
-                    bridgeStateListener?.(false, "connecting");
                     clearBridgeRecovery(false);
+                    if (
+                      bridgeRecoveryAttempt >=
+                      DESKTOP_BRIDGE_MAX_RECOVERY_ATTEMPTS
+                    ) {
+                      console.warn(
+                        "[DesktopSandboxBridge] Automatic recovery exhausted",
+                        {
+                          reason,
+                          attempts: bridgeRecoveryAttempt,
+                        },
+                      );
+                      clearBridgeRecovery(true);
+                      bridgeStateListener?.(false, "failed");
+                      return;
+                    }
+
+                    bridgeStateListener?.(false, "connecting");
                     const delay =
                       DESKTOP_BRIDGE_RECOVERY_DELAYS_MS[
                         Math.min(
@@ -216,12 +248,12 @@ export function useSandboxPreference(
         // Keep Cloud selected by default; user can switch to Local if desired
         // setSandboxPreferenceState(connectionId);
       } catch (error) {
+        if (cancelled) return;
         if (bridgeRecoveryTimer) {
           setDesktopBridgeActive(false);
           setDesktopBridgeStatus("connecting");
           return;
         }
-        if (cancelled) return;
         console.error("[DesktopSandboxBridge] Failed to start:", error);
         setDesktopBridgeActive(false);
         setDesktopBridgeStatus("failed");
