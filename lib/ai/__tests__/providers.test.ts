@@ -1,4 +1,5 @@
 import {
+  AUXILIARY_VISION_SLUG,
   getModelCutoffDate,
   getModelDisplayName,
   isAnthropicModel,
@@ -26,6 +27,14 @@ describe("provider registry", () => {
       (myProvider.languageModel("agent-model-free") as { modelId: string })
         .modelId,
     ).toBe("deepseek/deepseek-v4-flash-0731");
+    expect(
+      (
+        myProvider.languageModel("auxiliary-vision-model") as {
+          modelId: string;
+        }
+      ).modelId,
+    ).toBe("xiaomi/mimo-v2.5");
+    expect(AUXILIARY_VISION_SLUG).toBe("xiaomi/mimo-v2.5");
     expect(
       (myProvider.languageModel("model-grok-4.6") as { modelId: string })
         .modelId,

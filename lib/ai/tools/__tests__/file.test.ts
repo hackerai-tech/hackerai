@@ -753,6 +753,101 @@ describe("file tool image view", () => {
     });
   });
 
+  test("returns an auxiliary description to DeepSeek without exposing image data", async () => {
+    mockUploadSandboxFileToConvex.mockResolvedValue({
+      fileId: "file-1" as never,
+      name: "screenshot.png",
+      mediaType: "image/png",
+    });
+    const commandRun = jest.fn(async (_command, opts) => {
+      expect(opts.envVars.HACKERAI_FILE_VIEW_INCLUDE_DATA).toBe("1");
+      return {
+        stdout: JSON.stringify({
+          path: "/tmp/screenshot.png",
+          mediaType: "image/png",
+          sizeBytes: 68,
+          kind: "image",
+          data: VALID_PNG_BASE64,
+        }),
+        stderr: "",
+        exitCode: 0,
+      };
+    });
+    const describeImage = jest.fn(async () => ({
+      description: "A browser displays a 403 Forbidden response.",
+    }));
+    const sandbox = makeSandbox(commandRun);
+    const tool = createFile(
+      makeContext(sandbox, {
+        modelName: "model-deepseek-v4-pro-0813",
+        auxiliaryVision: { describeImage },
+      }),
+    );
+
+    const result = await runTool(tool, {
+      action: "view",
+      path: "/tmp/screenshot.png",
+      brief: "Inspect the screenshot",
+    });
+
+    expect(describeImage).toHaveBeenCalledWith({
+      image: VALID_PNG_BASE64,
+      mediaType: "image/png",
+      filename: "screenshot.png",
+      source: "file_view",
+    });
+    expect(result).toMatchObject({
+      action: "view",
+      visionDescription: "A browser displays a 403 Forbidden response.",
+    });
+    await expect(runToModelOutput(tool, result)).resolves.toEqual({
+      type: "text",
+      value:
+        'Viewing image file: screenshot.png (image/png, 68 bytes).\n<image_description filename="screenshot.png" trust="untrusted">\nA browser displays a 403 Forbidden response.\n</image_description>',
+    });
+    expect(commandRun).toHaveBeenCalledTimes(1);
+  });
+
+  test("propagates a user stop during an auxiliary file-view description", async () => {
+    mockUploadSandboxFileToConvex.mockResolvedValue({
+      fileId: "file-1" as never,
+      name: "screenshot.png",
+      mediaType: "image/png",
+    });
+    const commandRun = jest.fn(async () => ({
+      stdout: JSON.stringify({
+        path: "/tmp/screenshot.png",
+        mediaType: "image/png",
+        sizeBytes: 68,
+        kind: "image",
+        data: VALID_PNG_BASE64,
+      }),
+      stderr: "",
+      exitCode: 0,
+    }));
+    const abortError = new DOMException("Stopped", "AbortError");
+    const sandbox = makeSandbox(commandRun);
+    const tool = createFile(
+      makeContext(sandbox, {
+        modelName: "model-deepseek-v4-pro-0813",
+        auxiliaryVision: {
+          isAborted: () => true,
+          describeImage: jest.fn(async () => {
+            throw abortError;
+          }),
+        },
+      }),
+    );
+
+    await expect(
+      runTool(tool, {
+        action: "view",
+        path: "/tmp/screenshot.png",
+        brief: "Inspect the screenshot",
+      }),
+    ).rejects.toBe(abortError);
+  });
+
   test("redirects raster image reads to the view action", async () => {
     const commandRun = jest.fn<Promise<FakeCommandResult>, [string, any?]>();
     const sandbox = makeSandbox(commandRun);
@@ -768,7 +863,7 @@ describe("file tool image view", () => {
       }),
     ).resolves.toEqual({
       error:
-        "Raster image files cannot be read as text. Use the view action instead; Agent will automatically route image inspection to a vision-capable model when necessary.",
+        "Raster image files cannot be read as text. Use the view action instead; Agent will inspect the image with its configured vision path.",
     });
     expect(commandRun).not.toHaveBeenCalled();
   });
@@ -802,7 +897,7 @@ describe("file tool image view", () => {
         }),
       ).resolves.toEqual({
         error:
-          "Raster image files cannot be read as text. Use the view action instead; Agent will automatically route image inspection to a vision-capable model when necessary.",
+          "Raster image files cannot be read as text. Use the view action instead; Agent will inspect the image with its configured vision path.",
       });
       expect(commandRun).toHaveBeenCalledTimes(1);
       expect(sandbox.files.read).not.toHaveBeenCalled();
@@ -824,7 +919,7 @@ describe("file tool image view", () => {
       }),
     ).resolves.toEqual({
       error:
-        "Raster image files cannot be read as text. Use the view action instead; Agent will automatically route image inspection to a vision-capable model when necessary.",
+        "Raster image files cannot be read as text. Use the view action instead; Agent will inspect the image with its configured vision path.",
     });
     expect(commandRun).not.toHaveBeenCalled();
   });

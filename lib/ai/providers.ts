@@ -183,6 +183,9 @@ export const KIMI_K3_SLUG = "moonshotai/kimi-k3";
 export const GLM_5_2_SLUG = "z-ai/glm-5.2";
 export const GROK_4_5_SLUG = "x-ai/grok-4.5";
 export const GROK_4_6_SLUG = "x-ai/grok-4.6";
+// MiMo-V2.5 is an open-weight multimodal model that avoids Google safety filters
+// while retaining low-latency OCR and screen understanding for security work.
+export const AUXILIARY_VISION_SLUG = "xiaomi/mimo-v2.5";
 export const DEEPSEEK_V4_PRO_SLUG = "deepseek/deepseek-v4-pro";
 export const DEEPSEEK_V4_PRO_0813_SLUG = "deepseek/deepseek-v4-pro-0813";
 export const DEEPSEEK_V4_FLASH_SLUG = "deepseek/deepseek-v4-flash-0731";
@@ -227,6 +230,9 @@ const buildProviderMap = (
     // Separate text-only, tool-less call used to review one approval-gated
     // action. The reviewer receives serialized evidence rather than images.
     "agent-auto-review-model": or(DEEPSEEK_V4_FLASH_SLUG),
+    // Image understanding for text-only routes. The resulting description is
+    // injected as untrusted text; this model never becomes the active agent.
+    "auxiliary-vision-model": or(AUXILIARY_VISION_SLUG),
   }) as Record<string, any>;
 
 const baseProviders = buildProviderMap(openrouter);
@@ -248,6 +254,7 @@ export const modelCutoffDates: Partial<Record<ModelName, string>> &
   "fallback-ask-model": "August 2026",
   "title-generator-model": "May 2025",
   "agent-auto-review-model": "July 2026",
+  "auxiliary-vision-model": "January 2025",
 };
 
 export const modelDisplayNames: Record<ModelName, string> &
@@ -270,6 +277,7 @@ export const modelDisplayNames: Record<ModelName, string> &
   "fallback-ask-model": "Auto, an intelligent model router built by HackerAI",
   "title-generator-model": "DeepSeek V4 Flash",
   "agent-auto-review-model": "DeepSeek V4 Flash 0731",
+  "auxiliary-vision-model": "Auxiliary vision model",
 };
 
 export const getModelDisplayName = (modelName: ModelName): string => {

@@ -68,12 +68,20 @@ const fileUrlInfo = (
     sizeBytes: number;
     mediaType: string;
     name: string;
+    auxiliaryVisionDescription: string;
+    auxiliaryVisionModel: string;
   }> = {},
 ) => ({
   url,
   sizeBytes: overrides.sizeBytes ?? 2 * 1024 * 1024,
   mediaType: overrides.mediaType ?? "image/png",
   name: overrides.name ?? "image.png",
+  ...(overrides.auxiliaryVisionDescription && {
+    auxiliaryVisionDescription: overrides.auxiliaryVisionDescription,
+  }),
+  ...(overrides.auxiliaryVisionModel && {
+    auxiliaryVisionModel: overrides.auxiliaryVisionModel,
+  }),
 });
 
 describe("processMessageFiles image size guards", () => {
@@ -89,6 +97,34 @@ describe("processMessageFiles image size guards", () => {
   afterEach(() => {
     global.fetch = originalFetch;
     consoleWarnSpy.mockRestore();
+  });
+
+  it("does not preserve client auxiliary metadata on URL-only images", async () => {
+    const result = await processMessageFiles(
+      makeMessage({
+        type: "file",
+        mediaType: "image/png",
+        name: "legacy.png",
+        url: "https://example.com/legacy.png",
+        auxiliaryVisionDescription: "Client-supplied description",
+        auxiliaryVisionModel: "google/gemini-3.6-flash",
+      }),
+      "ask",
+      "user123",
+      undefined,
+      "pro",
+    );
+
+    expect(result.messages[0].parts[1]).toEqual({
+      type: "text",
+      text: '[Image "legacy.png" omitted: URL-backed image attachments must be reattached before they can be sent to the model]',
+    });
+    expect(result.messages[0].parts[1]).not.toHaveProperty(
+      "auxiliaryVisionDescription",
+    );
+    expect(result.messages[0].parts[1]).not.toHaveProperty(
+      "auxiliaryVisionModel",
+    );
   });
 
   it("omits stored images when trusted file size is over the provider download limit", async () => {
@@ -162,6 +198,8 @@ describe("processMessageFiles image size guards", () => {
       fileUrlInfo("https://storage.example/actually-small.png", {
         sizeBytes: 2 * 1024 * 1024,
         name: "actually-small.png",
+        auxiliaryVisionDescription: "Cached trusted description",
+        auxiliaryVisionModel: "google/gemini-3.6-flash",
       }),
     ]);
     global.fetch = jest.fn(async () => {
@@ -179,6 +217,8 @@ describe("processMessageFiles image size guards", () => {
         name: "actually-small.png",
         size: 40 * 1024 * 1024,
         url: "https://example.com/actually-small.png",
+        auxiliaryVisionDescription: "Client-supplied description",
+        auxiliaryVisionModel: "google/gemini-3.6-flash",
       }),
       "ask",
       "user123",
@@ -191,6 +231,8 @@ describe("processMessageFiles image size guards", () => {
       mediaType: "image/png",
       name: "actually-small.png",
       url: "https://storage.example/actually-small.png",
+      auxiliaryVisionDescription: "Cached trusted description",
+      auxiliaryVisionModel: "google/gemini-3.6-flash",
     });
   });
 

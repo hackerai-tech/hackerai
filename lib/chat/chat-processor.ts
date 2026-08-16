@@ -38,10 +38,10 @@ export const getMaxStepsForUser = (mode: ChatMode): number => {
  * @param hasImageAttachment - Whether any message has an image attachment.
  * @param hasPdfAttachment - Whether any message has a PDF attachment.
  *   Paid Auto/Standard routes use DeepSeek V4 Flash 0731 for text/PDF prompts,
- *   Pro uses DeepSeek V4 Pro 0813, and Max uses Grok 4.6. Images promote Auto,
- *   and Standard to Grok 4.5 with medium reasoning, while Pro image prompts
- *   use Grok 4.5 with high reasoning. PDFs stay on DeepSeek and are parsed by
- *   OpenRouter before inference.
+ *   Pro uses DeepSeek V4 Pro 0813, and Max uses Grok 4.6. In the control route,
+ *   images promote Auto and Standard to Grok 4.5 with medium reasoning while
+ *   Pro uses high reasoning. The auxiliary route describes images as text and
+ *   keeps DeepSeek active. PDFs stay on DeepSeek and are parsed by OpenRouter.
  * @returns Model name to use
  */
 export function selectModel(
@@ -50,7 +50,10 @@ export function selectModel(
   selectedModel?: SelectedModel,
   hasImageAttachment?: boolean,
   _hasPdfAttachment?: boolean,
-  options: { extraUsageAvailable?: boolean } = {},
+  options: {
+    extraUsageAvailable?: boolean;
+    auxiliaryVisionEnabled?: boolean;
+  } = {},
 ): ModelName {
   const isAgent = isAgentMode(mode);
   const allowedSelectedModel = normalizeMaxModelForSubscription(
@@ -58,12 +61,14 @@ export function selectModel(
     subscription,
     options,
   );
-  // DeepSeek routes are text-only, so image prompts promote to a
-  // media-capable route. PDFs remain on DeepSeek because OpenRouter's file
-  // parser converts them to model-readable text before inference.
+  // In control, DeepSeek image prompts promote to a media-capable route. The
+  // auxiliary treatment replaces images with descriptions before inference.
+  // PDFs remain on DeepSeek via OpenRouter's file parser in both routes.
   const isFreeAsk = !isAgent && subscription === "free";
-  const hasAskImage = !isAgent && !!hasImageAttachment;
-  const hasProviderImage = !!hasImageAttachment;
+  const hasAskImage =
+    !isAgent && !!hasImageAttachment && !options.auxiliaryVisionEnabled;
+  const hasProviderImage =
+    !!hasImageAttachment && !options.auxiliaryVisionEnabled;
   const paidAskMediaModel: ModelName = hasAskImage
     ? "model-grok-4.5"
     : "model-deepseek-v4-flash-0731";
@@ -640,6 +645,7 @@ export async function processChatMessages({
   modelOverride,
   extraUsageAvailable = false,
   allowLocalDesktopFiles = false,
+  auxiliaryVisionEnabled = false,
 }: {
   messages: UIMessage[];
   mode: ChatMode;
@@ -649,6 +655,7 @@ export async function processChatMessages({
   modelOverride?: SelectedModel;
   extraUsageAvailable?: boolean;
   allowLocalDesktopFiles?: boolean;
+  auxiliaryVisionEnabled?: boolean;
 }) {
   const messagesWithoutOpenRouterReasoningMetadata =
     stripOpenRouterReasoningMetadataFromMessages(messages);
@@ -725,7 +732,7 @@ export async function processChatMessages({
     modelOverride,
     mediaAttachmentRouting.hasImage,
     mediaAttachmentRouting.hasPdf,
-    { extraUsageAvailable },
+    { extraUsageAvailable, auxiliaryVisionEnabled },
   );
 
   // Strip providerMetadata for Anthropic models to prevent cross-model signature errors.

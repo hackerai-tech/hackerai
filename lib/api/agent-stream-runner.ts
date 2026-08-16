@@ -158,8 +158,11 @@ export const resolveAgentModelForImageToolResults = (
   mode: ChatMode,
   hasImageToolResults: boolean,
   selectedModelOverride?: SelectedModel,
+  auxiliaryVisionEnabled = false,
 ): string => {
-  if (mode !== "agent" || !hasImageToolResults) return modelName;
+  if (mode !== "agent" || !hasImageToolResults || auxiliaryVisionEnabled) {
+    return modelName;
+  }
   if (modelName === "agent-model-free") {
     return FREE_AGENT_VISION_MODEL;
   }
@@ -555,6 +558,8 @@ export type AgentStreamContext = {
   contextUsageOn: boolean;
   isReasoningModel: boolean;
   platformAuthorized: boolean;
+  /** Images are represented as auxiliary descriptions; never promote the active model. */
+  auxiliaryVisionEnabled?: boolean;
   providerReasoningOverride?: {
     modelName: string;
     reasoning: ProviderReasoningOverride;
@@ -784,9 +789,9 @@ export async function createAgentStream(
   const initialActiveTools = await getActiveTools();
   const maxOutputTokens = MAX_OUTPUT_TOKENS;
   let routeModelName = modelName;
-  let streamHasImageViewResults = uiMessagesContainImageViewResult(
-    state.finalMessages,
-  );
+  let streamHasImageViewResults =
+    !ctx.auxiliaryVisionEnabled &&
+    uiMessagesContainImageViewResult(state.finalMessages);
   const streamHasPdfAttachments = state.finalMessages.some((message) =>
     message.parts?.some(
       (part) => part.type === "file" && part.mediaType === "application/pdf",
@@ -799,6 +804,7 @@ export async function createAgentStream(
       ctx.mode,
       streamHasImageViewResults,
       ctx.selectedModelOverride,
+      ctx.auxiliaryVisionEnabled,
     );
   const getEffectiveModelInfo = () => {
     const effectiveModelName = getEffectiveModelName();
@@ -965,7 +971,10 @@ export async function createAgentStream(
         const toolResults =
           (lastStep && (lastStep as { toolResults?: unknown[] }).toolResults) ||
           [];
-        if (toolResultsContainImageViewResult(toolResults)) {
+        if (
+          !ctx.auxiliaryVisionEnabled &&
+          toolResultsContainImageViewResult(toolResults)
+        ) {
           streamHasImageViewResults = true;
         }
         const effectiveModelInfo = getEffectiveModelInfo();
@@ -1027,9 +1036,9 @@ export async function createAgentStream(
               }
               state.finalMessages = result.summarizedMessages;
               state.transcriptSourceMessages = undefined;
-              streamHasImageViewResults = uiMessagesContainImageViewResult(
-                result.summarizedMessages,
-              );
+              streamHasImageViewResults =
+                !ctx.auxiliaryVisionEnabled &&
+                uiMessagesContainImageViewResult(result.summarizedMessages);
               routeModelName = resolveAgentModelAfterSummarization(
                 routeModelName,
                 ctx.mode,
@@ -1205,6 +1214,7 @@ export async function createAgentStream(
                 };
                 rollingModelMessages = nextBaseMessages;
                 streamHasImageViewResults =
+                  !ctx.auxiliaryVisionEnabled &&
                   limitModelImageToolResults(
                     nextBaseMessages as Array<Record<string, unknown>>,
                   ).totalImageCount > 0;

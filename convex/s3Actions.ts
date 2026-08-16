@@ -25,6 +25,8 @@ const serviceFileUrlInfoValidator = v.object({
   sizeBytes: v.number(),
   mediaType: v.string(),
   name: v.string(),
+  auxiliaryVisionDescription: v.optional(v.string()),
+  auxiliaryVisionModel: v.optional(v.string()),
 });
 
 type ServiceFileUrlInfo = {
@@ -32,6 +34,8 @@ type ServiceFileUrlInfo = {
   sizeBytes: number;
   mediaType: string;
   name: string;
+  auxiliaryVisionDescription?: string;
+  auxiliaryVisionModel?: string;
 };
 
 const MAX_SERVICE_FILE_URL_BATCH_SIZE = 50;
@@ -424,6 +428,8 @@ export const getFileUrlInfosByFileIdsAction = action({
                 sizeBytes: file.size,
                 mediaType: file.media_type,
                 name: file.name,
+                auxiliaryVisionDescription: file.auxiliary_vision_description,
+                auxiliaryVisionModel: file.auxiliary_vision_model,
               };
             }
 

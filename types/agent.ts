@@ -700,4 +700,15 @@ export interface ToolContext {
   measureAgentActiveTime?: AgentActiveTimeMeasurer;
   /** Observes resource metrics already fetched by E2B health checks. */
   onSandboxResourceMetrics?: SandboxResourceMetricsObserver;
+  /** Optional Hermes-style image descriptor for text-only active models. */
+  auxiliaryVision?: {
+    /** Distinguishes a user stop from a descriptor timeout/provider failure. */
+    isAborted?: () => boolean;
+    describeImage: (args: {
+      image: string;
+      mediaType: string;
+      filename?: string;
+      source: "file_view";
+    }) => Promise<{ description: string }>;
+  };
 }
