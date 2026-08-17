@@ -5,6 +5,7 @@ import {
   CreateMicrovmImageCommand,
   GetMicrovmImageCommand,
   LambdaMicrovmsClient,
+  paginateListMicrovmImages,
   UpdateMicrovmImageCommand,
 } from "@aws-sdk/client-lambda-microvms";
 import { PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
@@ -57,13 +58,13 @@ const common = {
     `arn:aws:lambda:${region}:aws:network-connector:aws-network-connector:INTERNET_EGRESS`,
   ],
   cpuConfigurations: [{ architecture: "ARM_64" }],
-  resources: [{ minimumMemoryInMiB: 2048 }],
+  resources: [{ minimumMemoryInMiB: 4096 }],
   additionalOsCapabilities: ["ALL"],
   hooks: {
     port: 8080,
     microvmHooks: {
       run: "ENABLED",
-      runTimeoutInSeconds: 90,
+      runTimeoutInSeconds: 60,
       resume: "ENABLED",
       resumeTimeoutInSeconds: 60,
       suspend: "ENABLED",
@@ -82,13 +83,13 @@ const common = {
 };
 
 let existing = null;
-try {
-  existing = await lambda.send(
-    new GetMicrovmImageCommand({ imageIdentifier: name }),
-  );
-} catch (error) {
-  if (!(error instanceof Error) || error.name !== "ResourceNotFoundException") {
-    throw error;
+for await (const page of paginateListMicrovmImages(
+  { client: lambda },
+  { nameFilter: name },
+)) {
+  existing = page.items?.find((image) => image.name === name) || null;
+  if (existing) {
+    break;
   }
 }
 

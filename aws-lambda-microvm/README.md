@@ -149,7 +149,9 @@ the internal rollout.
 - The managed internet connector must be validated with the capability suite;
   guest raw-socket capability alone does not prove that every network path has
   native semantics.
-- At the 2 GiB / 1 vCPU baseline, current first-tier US pricing is roughly
-  $0.126/hour while running, before burst compute, snapshots, and data transfer.
+- The full HackerAI tool image requires the 4 GiB / 2 vCPU baseline so its
+  build and runtime filesystem have 16 GB of disk. Current first-tier US
+  pricing is roughly $0.252/hour while running, before burst compute,
+  snapshots, and data transfer.
 - AWS penetration-testing rules and the target owner's authorization still
   apply to traffic originating from the account.

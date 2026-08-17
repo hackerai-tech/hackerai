@@ -85,13 +85,32 @@ describe("sandbox Dockerfile cache cleanup", () => {
     const goRun = findRun(
       "github.com/projectdiscovery/interactsh/cmd/interactsh-client",
     );
-    const lastInstallIndex = goRun.lastIndexOf("go install");
-    const cleanIndex = goRun.indexOf("go clean -cache -modcache");
-    const removeIndex = goRun.indexOf('rm -rf "$GOCACHE" "$GOPATH/pkg/mod"');
+    const commands = goRun.split("&&").map((command) => command.trim());
+    const installIndexes = commands.flatMap((command, index) =>
+      command.includes("go install") ? [index] : [],
+    );
 
-    expect(lastInstallIndex).toBeGreaterThan(-1);
-    expect(cleanIndex).toBeGreaterThan(lastInstallIndex);
-    expect(removeIndex).toBeGreaterThan(cleanIndex);
+    expect(installIndexes).not.toHaveLength(0);
+    for (const [position, installIndex] of installIndexes.entries()) {
+      const nextInstallIndex = installIndexes[position + 1] ?? commands.length;
+      const cleanupCommands = commands
+        .slice(installIndex + 1, nextInstallIndex)
+        .join(" && ");
+
+      expect(cleanupCommands).toContain("go clean -cache -modcache");
+      expect(cleanupCommands).toContain('rm -rf "$GOCACHE" "$GOPATH/pkg/mod"');
+    }
+  });
+
+  test("downloads Katana without compiling its dependency graph", () => {
+    const katanaRun = findRun(
+      "api.github.com/repos/projectdiscovery/katana/releases/latest",
+    );
+
+    expect(katanaRun).toContain('grep "${platform}.zip$"');
+    expect(katanaRun).toContain("find /tmp/katana_extracted");
+    expect(katanaRun).toContain('mv "$katana_bin" /usr/local/bin/katana');
+    expect(katanaRun).toContain("rm -rf /tmp/katana_extracted /tmp/katana.zip");
   });
 
   test("validates caches and important runtimes after cleanup", () => {

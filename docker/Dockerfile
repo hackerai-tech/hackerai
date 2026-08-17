@@ -231,7 +231,22 @@ RUN set -eux; \
     test -n "$httpx_bin"; \
     mv "$httpx_bin" /usr/local/bin/httpx; \
     chmod +x /usr/local/bin/httpx; \
-    rm -rf /tmp/httpx_extracted /tmp/httpx.zip
+    rm -rf /tmp/httpx_extracted /tmp/httpx.zip; \
+    # Katana's Go dependency graph exceeds Lambda MicroVM builder scratch space.
+    # Use ProjectDiscovery's official architecture-specific release binary.
+    KATANA_URL=$(curl -s https://api.github.com/repos/projectdiscovery/katana/releases/latest \
+      | grep "browser_download_url" | cut -d '"' -f4 \
+      | grep "${platform}.zip$" | head -n1); \
+    test -n "$KATANA_URL"; \
+    echo "Fetching katana: $KATANA_URL"; \
+    wget -qO /tmp/katana.zip "$KATANA_URL"; \
+    mkdir -p /tmp/katana_extracted; \
+    unzip -q /tmp/katana.zip -d /tmp/katana_extracted; \
+    katana_bin=$(find /tmp/katana_extracted -type f -name katana | head -n1); \
+    test -n "$katana_bin"; \
+    mv "$katana_bin" /usr/local/bin/katana; \
+    chmod +x /usr/local/bin/katana; \
+    rm -rf /tmp/katana_extracted /tmp/katana.zip
 
 # ============================================================================
 # Create Wrapper Scripts for Python Tools
@@ -264,7 +279,8 @@ RUN npm install -g --cache /tmp/npm-cache agent-browser@0.26.0 && \
 # ============================================================================
 RUN set -eux; \
     go install github.com/projectdiscovery/interactsh/cmd/interactsh-client@latest && \
-    go install github.com/projectdiscovery/katana/cmd/katana@latest && \
+    go clean -cache -modcache && \
+    rm -rf "$GOCACHE" "$GOPATH/pkg/mod" && \
     go install github.com/projectdiscovery/cvemap/cmd/cvemap@latest && \
     go clean -cache -modcache && \
     rm -rf "$GOCACHE" "$GOPATH/pkg/mod"
