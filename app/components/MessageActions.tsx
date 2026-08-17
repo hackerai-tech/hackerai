@@ -145,11 +145,19 @@ export const MessageActions = ({
   const [isSourcesOpen, setIsSourcesOpen] = useState(false);
   const [isRegenerating, setIsRegenerating] = useState(false);
   const regenerateInFlightRef = useRef(false);
+  const copyResetTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null,
+  );
   const mountedRef = useRef(true);
 
   useEffect(() => {
+    mountedRef.current = true;
     return () => {
       mountedRef.current = false;
+      if (copyResetTimeoutRef.current) {
+        clearTimeout(copyResetTimeoutRef.current);
+        copyResetTimeoutRef.current = null;
+      }
     };
   }, []);
 
@@ -157,7 +165,13 @@ export const MessageActions = ({
     try {
       await navigator.clipboard.writeText(messageText);
       setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
+      if (copyResetTimeoutRef.current) {
+        clearTimeout(copyResetTimeoutRef.current);
+      }
+      copyResetTimeoutRef.current = setTimeout(() => {
+        copyResetTimeoutRef.current = null;
+        if (mountedRef.current) setCopied(false);
+      }, 2000);
     } catch (error) {
       console.error("Failed to copy message:", error);
     }

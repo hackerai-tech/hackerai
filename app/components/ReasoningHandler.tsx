@@ -1,6 +1,6 @@
 "use client";
 
-import { memo, useMemo } from "react";
+import { memo, useMemo, useState } from "react";
 import { UIMessage } from "@ai-sdk/react";
 import type { ChatStatus } from "@/types";
 import { MemoizedMarkdown } from "./MemoizedMarkdown";
@@ -16,8 +16,61 @@ type ReasoningHandlerProps = {
   status: ChatStatus;
   isLastMessage?: boolean;
   keepLatestOpenDuringStreaming?: boolean;
+  suppressAutoOpenDuringStreaming?: boolean;
   deferCollapseUntilParent?: boolean;
 };
+
+const LONG_REASONING_THRESHOLD = 12_000;
+const LONG_REASONING_TAIL_LENGTH = 6_000;
+
+const getReasoningTail = (content: string): string => {
+  const tail = content.slice(-LONG_REASONING_TAIL_LENGTH);
+  const firstNewline = tail.indexOf("\n");
+
+  return firstNewline >= 0 ? tail.slice(firstNewline + 1) : tail;
+};
+
+const ReasoningBody = memo(function ReasoningBody({
+  content,
+  isStreamingMessage,
+}: {
+  content: string;
+  isStreamingMessage: boolean;
+}) {
+  const [showFullReasoning, setShowFullReasoning] = useState(false);
+  const isLongReasoning = content.length > LONG_REASONING_THRESHOLD;
+  const showBoundedPreview =
+    isLongReasoning && (isStreamingMessage || !showFullReasoning);
+
+  if (!showBoundedPreview) {
+    return <MemoizedMarkdown content={content} />;
+  }
+
+  return (
+    <div className="space-y-2" data-testid="long-reasoning-preview">
+      <p className="text-xs text-muted-foreground/80">
+        {isStreamingMessage
+          ? "Showing the latest reasoning while it runs to keep the chat responsive."
+          : "Showing the latest section of this long reasoning to keep the chat responsive."}
+      </p>
+      <div
+        className="whitespace-pre-wrap break-words [overflow-wrap:anywhere]"
+        data-testid="long-reasoning-preview-body"
+      >
+        {getReasoningTail(content)}
+      </div>
+      {!isStreamingMessage && (
+        <button
+          type="button"
+          className="text-xs text-foreground/80 underline-offset-4 hover:text-foreground hover:underline"
+          onClick={() => setShowFullReasoning(true)}
+        >
+          Show full reasoning
+        </button>
+      )}
+    </div>
+  );
+});
 
 const collectReasoningText = (
   parts: UIMessage["parts"],
@@ -85,6 +138,11 @@ function areReasoningPropsEqual(
   if (prev.isLastMessage !== next.isLastMessage) return false;
   if (prev.keepLatestOpenDuringStreaming !== next.keepLatestOpenDuringStreaming)
     return false;
+  if (
+    prev.suppressAutoOpenDuringStreaming !==
+    next.suppressAutoOpenDuringStreaming
+  )
+    return false;
   if (prev.deferCollapseUntilParent !== next.deferCollapseUntilParent)
     return false;
   if (prev.partIndex !== next.partIndex) return false;
@@ -113,6 +171,7 @@ export const ReasoningHandler = memo(function ReasoningHandler({
   status,
   isLastMessage,
   keepLatestOpenDuringStreaming = false,
+  suppressAutoOpenDuringStreaming = false,
   deferCollapseUntilParent = false,
 }: ReasoningHandlerProps) {
   // Memoize parts array reference to avoid recreation
@@ -152,6 +211,7 @@ export const ReasoningHandler = memo(function ReasoningHandler({
     isLatestVisibleReasoningBlock &&
     isReasoningBlockAtTail;
   const autoOpen =
+    !suppressAutoOpenDuringStreaming &&
     isStreamingMessage &&
     (keepLatestOpenDuringStreaming
       ? isLatestVisibleReasoningBlock
@@ -168,7 +228,10 @@ export const ReasoningHandler = memo(function ReasoningHandler({
       <ReasoningTrigger />
       {combined && (
         <ReasoningContent>
-          <MemoizedMarkdown content={combined} />
+          <ReasoningBody
+            content={combined}
+            isStreamingMessage={isStreamingMessage}
+          />
         </ReasoningContent>
       )}
     </Reasoning>

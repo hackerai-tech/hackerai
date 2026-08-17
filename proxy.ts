@@ -8,6 +8,12 @@ import {
   getReferralRewardConfig,
   isValidReferralCode,
 } from "@/lib/referrals/config";
+import {
+  FIRST_TOUCH_ATTRIBUTION_COOKIE_NAME,
+  FIRST_TOUCH_ATTRIBUTION_MAX_AGE_SECONDS,
+  createFirstTouchAttribution,
+  serializeFirstTouchAttribution,
+} from "@/lib/analytics/acquisition";
 
 const AUTHKIT_BYPASS_PATHS = new Set([
   "/api/health/connectivity",
@@ -117,10 +123,44 @@ function isBrowserRequest(request: NextRequest): boolean {
 
 const SESSION_HEADER = "x-workos-session";
 
-function withReferralCookie(
+function withAttributionCookies(
   request: NextRequest,
   response: NextResponse,
 ): NextResponse {
+  const pathname = request.nextUrl.pathname;
+  const shouldCaptureFirstTouch =
+    (request.method === "GET" || request.method === "HEAD") &&
+    isBrowserRequest(request) &&
+    !pathname.startsWith("/api/") &&
+    ![
+      "/callback",
+      "/logout",
+      "/auth-error",
+      "/desktop-callback",
+      "/desktop-login",
+    ].includes(pathname) &&
+    !request.cookies.has("wos-session") &&
+    !request.cookies.has(FIRST_TOUCH_ATTRIBUTION_COOKIE_NAME);
+
+  if (shouldCaptureFirstTouch) {
+    response.cookies.set(
+      FIRST_TOUCH_ATTRIBUTION_COOKIE_NAME,
+      serializeFirstTouchAttribution(
+        createFirstTouchAttribution({
+          url: request.nextUrl,
+          referer: request.headers.get("referer"),
+        }),
+      ),
+      {
+        httpOnly: true,
+        secure: process.env.NODE_ENV === "production",
+        sameSite: "lax",
+        maxAge: FIRST_TOUCH_ATTRIBUTION_MAX_AGE_SECONDS,
+        path: "/",
+      },
+    );
+  }
+
   const referralCode =
     request.nextUrl.searchParams.get("referral_code") ??
     request.nextUrl.searchParams.get("ref");
@@ -175,13 +215,13 @@ function buildEndedSessionResponse(
 
   if (isUnauthenticatedPath(pathname)) {
     return withSessionCookieCleared(
-      withReferralCookie(request, NextResponse.next()),
+      withAttributionCookies(request, NextResponse.next()),
     );
   }
 
   if (!isBrowserRequest(request)) {
     return withSessionCookieCleared(
-      withReferralCookie(
+      withAttributionCookies(
         request,
         NextResponse.json(
           {
@@ -200,7 +240,7 @@ function buildEndedSessionResponse(
     : new URL("/login", request.url);
 
   return withSessionCookieCleared(
-    withReferralCookie(request, NextResponse.redirect(redirectUrl)),
+    withAttributionCookies(request, NextResponse.redirect(redirectUrl)),
   );
 }
 
@@ -259,7 +299,7 @@ export default async function proxy(request: NextRequest) {
     const hasSession = request.cookies.has("wos-session");
 
     if (!hasSession && !isUnauthenticatedPath(pathname)) {
-      return withReferralCookie(
+      return withAttributionCookies(
         request,
         NextResponse.redirect(
           new URL("/desktop-callback?error=unauthenticated", request.url),
@@ -343,7 +383,7 @@ export default async function proxy(request: NextRequest) {
   });
 
   if (session.user || isUnauthenticatedPath(pathname)) {
-    return withReferralCookie(
+    return withAttributionCookies(
       request,
       NextResponse.next({
         request: { headers: requestHeaders },
@@ -357,7 +397,7 @@ export default async function proxy(request: NextRequest) {
     if (!isBrowserRequest(request)) {
       const rateLimitHeaders = new Headers(responseHeaders);
       rateLimitHeaders.set("Retry-After", "5");
-      return withReferralCookie(
+      return withAttributionCookies(
         request,
         NextResponse.json(
           { code: "rate_limited", message: "Please retry shortly." },
@@ -366,7 +406,7 @@ export default async function proxy(request: NextRequest) {
       );
     }
     // For browser requests, let through rather than forcing a confusing login redirect
-    return withReferralCookie(
+    return withAttributionCookies(
       request,
       NextResponse.next({
         request: { headers: requestHeaders },
@@ -376,7 +416,7 @@ export default async function proxy(request: NextRequest) {
   }
 
   if (!isBrowserRequest(request)) {
-    return withReferralCookie(
+    return withAttributionCookies(
       request,
       NextResponse.json(
         {
@@ -396,13 +436,13 @@ export default async function proxy(request: NextRequest) {
     });
     const errorUrl = new URL("/auth-error", request.url);
     errorUrl.searchParams.set("code", "503");
-    return withReferralCookie(
+    return withAttributionCookies(
       request,
       NextResponse.redirect(errorUrl, { headers: responseHeaders }),
     );
   }
 
-  return withReferralCookie(
+  return withAttributionCookies(
     request,
     NextResponse.redirect(authorizationUrl, { headers: responseHeaders }),
   );

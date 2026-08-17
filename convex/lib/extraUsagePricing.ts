@@ -1,4 +1,4 @@
-export const EXTRA_USAGE_MULTIPLIER = 1.2;
+export const EXTRA_USAGE_MULTIPLIER = 1.5;
 export const EXTRA_USAGE_POINTS_PER_DOLLAR = 10_000;
 
 export const extraUsageDollarsToPoints = (dollars: number): number =>

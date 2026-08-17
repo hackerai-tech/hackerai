@@ -183,6 +183,11 @@ export const KIMI_K3_SLUG = "moonshotai/kimi-k3";
 export const GLM_5_2_SLUG = "z-ai/glm-5.2";
 export const GROK_4_5_SLUG = "x-ai/grok-4.5";
 export const GROK_4_6_SLUG = "x-ai/grok-4.6";
+// MiMo-V2.5 is an open-weight multimodal model that avoids Google safety filters
+// while retaining low-latency OCR and screen understanding for security work.
+export const AUXILIARY_VISION_SLUG = "xiaomi/mimo-v2.5";
+export const DEEPSEEK_V4_PRO_SLUG = "deepseek/deepseek-v4-pro";
+export const DEEPSEEK_V4_PRO_0813_SLUG = "deepseek/deepseek-v4-pro-0813";
 export const DEEPSEEK_V4_FLASH_SLUG = "deepseek/deepseek-v4-flash-0731";
 export const DEEPSEEK_V4_FLASH_PREVIOUS_SLUG = "deepseek/deepseek-v4-flash";
 const TITLE_GENERATOR_DEEPSEEK_SLUG = "deepseek/deepseek-v4-flash";
@@ -200,29 +205,34 @@ const buildProviderMap = (
   freeAgentDeepSeekSlug = DEEPSEEK_V4_FLASH_SLUG,
 ) =>
   ({
-    "ask-model": or(GROK_4_5_SLUG),
+    "ask-model": or(GROK_4_6_SLUG),
     "ask-model-free": or(freeAskDeepSeekSlug),
-    "agent-model": or(GROK_4_5_SLUG),
+    "agent-model": or(GROK_4_6_SLUG),
     "agent-model-free": or(freeAgentDeepSeekSlug),
+    "model-grok-4.6": or(GROK_4_6_SLUG),
+    // Separate internal keys use the same Grok 4.5 provider model while
+    // provider reasoning options distinguish Standard from Pro vision.
     "model-grok-4.5": or(GROK_4_5_SLUG),
-    // Dedicated HackerAI Pro alias so its GLM fallback can evolve without
-    // changing Standard media fallback behavior.
     "model-grok-4.5-pro": or(GROK_4_5_SLUG),
-    // HAC-64 treatment alias. The persisted tier remains hackerai-pro while
-    // the server-side experiment chooses the provider route per user.
     "model-grok-4.6-pro": or(GROK_4_6_SLUG),
-    "model-deepseek-v4-pro": or("deepseek/deepseek-v4-pro"),
+    "model-deepseek-v4-flash-0731": or(DEEPSEEK_V4_FLASH_SLUG),
+    "model-deepseek-v4-pro": or(DEEPSEEK_V4_PRO_SLUG),
+    "model-deepseek-v4-pro-0813": or(DEEPSEEK_V4_PRO_0813_SLUG),
     // Keep the persisted Max compatibility key while routing new requests to
     // Kimi K3. Renaming the key would invalidate existing stored selections.
     "model-opus-4.6": or(KIMI_K3_SLUG),
     "model-glm-5.2": or(GLM_5_2_SLUG),
     "model-kimi-k3": or(KIMI_K3_SLUG),
-    "fallback-agent-model": or(GROK_4_5_SLUG),
-    "fallback-ask-model": or(GROK_4_5_SLUG),
+    "fallback-agent-model": or(GROK_4_6_SLUG),
+    "fallback-ask-model": or(GROK_4_6_SLUG),
     // Titles are a short structured-output task and should never use reasoning.
     "title-generator-model": or(TITLE_GENERATOR_DEEPSEEK_SLUG),
-    // Separate tool-less call used only to review one approval-gated action.
-    "agent-auto-review-model": or(GROK_4_5_SLUG),
+    // Separate text-only, tool-less call used to review one approval-gated
+    // action. The reviewer receives serialized evidence rather than images.
+    "agent-auto-review-model": or(DEEPSEEK_V4_FLASH_SLUG),
+    // Image understanding for text-only routes. The resulting description is
+    // injected as untrusted text; this model never becomes the active agent.
+    "auxiliary-vision-model": or(AUXILIARY_VISION_SLUG),
   }) as Record<string, any>;
 
 const baseProviders = buildProviderMap(openrouter);
@@ -231,18 +241,20 @@ export type ModelName = keyof typeof baseProviders;
 
 export const modelCutoffDates: Partial<Record<ModelName, string>> &
   Record<string, string | undefined> = {
-  "ask-model": "July 2026",
-  "agent-model": "July 2026",
-  "model-grok-4.5": "July 2026",
-  "model-grok-4.5-pro": "July 2026",
+  "ask-model": "August 2026",
+  "agent-model": "August 2026",
+  "model-grok-4.6": "August 2026",
   "model-grok-4.6-pro": "August 2026",
+  "model-deepseek-v4-flash-0731": "July 2026",
   "model-deepseek-v4-pro": "May 2025",
+  "model-deepseek-v4-pro-0813": "August 2026",
   "model-opus-4.6": "July 2026",
   "model-glm-5.2": "June 2026",
-  "fallback-agent-model": "July 2026",
-  "fallback-ask-model": "July 2026",
+  "fallback-agent-model": "August 2026",
+  "fallback-ask-model": "August 2026",
   "title-generator-model": "May 2025",
   "agent-auto-review-model": "July 2026",
+  "auxiliary-vision-model": "January 2025",
 };
 
 export const modelDisplayNames: Record<ModelName, string> &
@@ -251,17 +263,21 @@ export const modelDisplayNames: Record<ModelName, string> &
   "ask-model-free": "Auto, an intelligent model router built by HackerAI",
   "agent-model": "Auto, an intelligent model router built by HackerAI",
   "agent-model-free": "Auto, an intelligent model router built by HackerAI",
+  "model-grok-4.6": "xAI Grok 4.6",
   "model-grok-4.5": "xAI Grok 4.5",
   "model-grok-4.5-pro": "xAI Grok 4.5",
   "model-grok-4.6-pro": "xAI Grok 4.6",
+  "model-deepseek-v4-flash-0731": "DeepSeek V4 Flash 0731",
   "model-deepseek-v4-pro": "DeepSeek V4 Pro",
+  "model-deepseek-v4-pro-0813": "DeepSeek V4 Pro 0813",
   "model-opus-4.6": "Moonshot Kimi K3",
   "model-glm-5.2": "Z.ai GLM 5.2",
   "model-kimi-k3": "Moonshot Kimi K3",
   "fallback-agent-model": "Auto, an intelligent model router built by HackerAI",
   "fallback-ask-model": "Auto, an intelligent model router built by HackerAI",
   "title-generator-model": "DeepSeek V4 Flash",
-  "agent-auto-review-model": "xAI Grok 4.5",
+  "agent-auto-review-model": "DeepSeek V4 Flash 0731",
+  "auxiliary-vision-model": "Auxiliary vision model",
 };
 
 export const getModelDisplayName = (modelName: ModelName): string => {
@@ -279,11 +295,15 @@ export function isAnthropicModel(modelName: string): boolean {
   return normalized.startsWith("anthropic/") || normalized.includes("claude");
 }
 
+/** Returns whether a provider key uses a DeepSeek V4 route. */
 export function isDeepSeekModel(modelName: string): boolean {
   return (
     modelName === "ask-model-free" ||
     modelName === "agent-model-free" ||
-    modelName === "model-deepseek-v4-pro"
+    modelName === "agent-auto-review-model" ||
+    modelName === "model-deepseek-v4-flash-0731" ||
+    modelName === "model-deepseek-v4-pro" ||
+    modelName === "model-deepseek-v4-pro-0813"
   );
 }
 
@@ -303,6 +323,7 @@ function isGrokModel(modelName: string): boolean {
     normalized === "ask-model" ||
     normalized === "fallback-agent-model" ||
     normalized === "fallback-ask-model" ||
+    normalized === "model-grok-4.6" ||
     normalized === "model-grok-4.5" ||
     normalized === "model-grok-4.5-pro" ||
     normalized === "model-grok-4.6-pro" ||
@@ -334,8 +355,9 @@ export function supportsMultimodalToolResults(modelName?: string): boolean {
 /**
  * Map a HackerAI tier id to the underlying provider key for a given mode.
  * Returns `null` for `"auto"` (the caller routes to the auto-router model
- * key instead). Standard maps to DeepSeek, Pro to Grok, and Max to Kimi K3 in
- * both modes; media-aware promotion happens in `selectModel`.
+ * key instead). Standard maps to DeepSeek V4 Flash 0731, Pro to DeepSeek V4
+ * Pro 0813, and Max to Grok 4.6 in both modes; media-aware promotion happens
+ * in `selectModel`.
  */
 export function resolveTierToProviderKey(
   tier: SelectedModel,
@@ -344,11 +366,11 @@ export function resolveTierToProviderKey(
   if (tier === "auto") return null;
   switch (tier) {
     case "hackerai-standard":
-      return "model-deepseek-v4-pro";
+      return "model-deepseek-v4-flash-0731";
     case "hackerai-pro":
-      return "model-grok-4.5-pro";
+      return "model-deepseek-v4-pro-0813";
     case "hackerai-max":
-      return "model-opus-4.6";
+      return "model-grok-4.6";
   }
 }
 

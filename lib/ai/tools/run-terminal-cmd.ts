@@ -1,7 +1,11 @@
 import { tool, type Tool } from "ai";
 import { CommandExitError } from "@e2b/code-interpreter";
 import { randomUUID } from "crypto";
-import type { SandboxReadinessFailureReason, ToolContext } from "@/types";
+import type {
+  AgentAutoReviewTerminalInspection,
+  SandboxReadinessFailureReason,
+  ToolContext,
+} from "@/types";
 import { createTerminalHandler } from "@/lib/utils/terminal-executor";
 import { TIMEOUT_MESSAGE } from "@/lib/token-utils";
 import { saveTruncatedOutput } from "./utils/terminal-output-saver";
@@ -45,13 +49,21 @@ import {
   stripAnsi,
   peekExited,
 } from "./utils/pty-wait-utils";
-import { captureAgentBrowserUsage } from "./utils/agent-browser-usage";
+import {
+  captureAgentBrowserUsage,
+  getAgentBrowserRuntimeEnv,
+} from "./utils/agent-browser-usage";
 import {
   RUN_TERMINAL_DEFAULT_STREAM_TIMEOUT_SECONDS,
   RUN_TERMINAL_MAX_TIMEOUT_SECONDS,
   createRunTerminalCmdToolSchema,
 } from "./schemas";
 import { withE2BSandboxLeaseHeartbeat } from "./utils/sandbox";
+import {
+  collectAgentAutoReviewTerminalInspection,
+  getAgentAutoReviewInspectionKind,
+  terminalInspectionMatches,
+} from "@/lib/chat/agent-auto-review-evidence";
 
 const DEFAULT_STREAM_TIMEOUT_SECONDS =
   RUN_TERMINAL_DEFAULT_STREAM_TIMEOUT_SECONDS;
@@ -121,6 +133,7 @@ export const createRunTerminalCmd = (context: ToolContext) => {
     ptySessionManager,
     chatId,
   } = context;
+  const ptyScopeId = context.ptyScopeId ?? chatId;
   const measureTerminalWait = <T>(operation: () => Promise<T>): Promise<T> =>
     context.measureAgentActiveTime
       ? context.measureAgentActiveTime("terminal_wait", operation)
@@ -179,6 +192,7 @@ export const createRunTerminalCmd = (context: ToolContext) => {
   };
   const runTerminalCmdTool = createRunTerminalCmdToolSchema({
     approvalGated: !!context.requestToolApproval,
+    modelName: context.getCurrentModelName?.() ?? context.modelName,
     // The conditional schema adds approval-only fields, but both branches
     // normalize to the same execution input handled below.
   }) as unknown as Tool<RunTerminalCmdInput, unknown>;
@@ -250,6 +264,39 @@ export const createRunTerminalCmd = (context: ToolContext) => {
         MAX_TIMEOUT_SECONDS,
       );
 
+      let terminalInspection: AgentAutoReviewTerminalInspection | undefined;
+      const inspectionKind = context.autoReviewEvidenceEnabled
+        ? getAgentAutoReviewInspectionKind(command)
+        : null;
+      if (inspectionKind) {
+        try {
+          const { sandbox } = await getSandboxWithFallbackGuard({
+            sandboxManager,
+          });
+          terminalInspection = await collectAgentAutoReviewTerminalInspection({
+            command,
+            sandbox,
+          });
+        } catch (error) {
+          console.warn({
+            timestamp: new Date().toISOString(),
+            level: "warn",
+            event: "agent_auto_review_inspection_failed",
+            service: "agent",
+            environment:
+              process.env.VERCEL_ENV ?? process.env.NODE_ENV ?? "unknown",
+            tool_call_id: toolCallId,
+            inspection_kind: inspectionKind,
+            failure_class: error instanceof Error ? error.name : typeof error,
+          });
+          terminalInspection = {
+            kind: inspectionKind,
+            status: "unresolved" as const,
+            reason: "inspection_failed" as const,
+          };
+        }
+      }
+
       const approval = await context.requestToolApproval?.({
         toolCallId,
         toolName: "run_terminal_cmd",
@@ -261,6 +308,7 @@ export const createRunTerminalCmd = (context: ToolContext) => {
         autoReviewContext: {
           type: "terminal_command",
           command,
+          ...(terminalInspection ? { inspection: terminalInspection } : {}),
         },
       });
       if (approval && !approval.approved) {
@@ -276,11 +324,37 @@ export const createRunTerminalCmd = (context: ToolContext) => {
       const approvedSandboxIdentity = approval?.approved
         ? approval.sandboxIdentity
         : undefined;
-      const getApprovedExecutionSandbox = () =>
-        getSandboxWithFallbackGuard({
+      let terminalInspectionRevalidated = false;
+      const getApprovedExecutionSandbox = async () => {
+        const result = await getSandboxWithFallbackGuard({
           sandboxManager,
           expectedSandboxIdentity: approvedSandboxIdentity,
         });
+        if (
+          approval?.approved &&
+          approval.approvalSource === "auto_review" &&
+          terminalInspection?.status === "resolved" &&
+          !terminalInspectionRevalidated
+        ) {
+          const currentInspection =
+            await collectAgentAutoReviewTerminalInspection({
+              command,
+              sandbox: result.sandbox,
+            });
+          if (
+            !terminalInspectionMatches({
+              reviewed: terminalInspection,
+              current: currentInspection,
+            })
+          ) {
+            throw new Error(
+              "The command's inspected files changed after automatic review. The command was not run. Retry it so the current action can be reviewed.",
+            );
+          }
+          terminalInspectionRevalidated = true;
+        }
+        return result;
+      };
 
       // ─── Interactive PTY exec branch ─────────────────────────────────
       if (interactive) {
@@ -323,11 +397,14 @@ export const createRunTerminalCmd = (context: ToolContext) => {
             interactive: true,
             isBackground: false,
           });
+          const agentBrowserEnv = isE2B
+            ? getAgentBrowserRuntimeEnv(command)
+            : undefined;
 
           // Factory is invoked BY `ptySessionManager.create` — this ensures
           // that if the concurrency cap is hit, the factory is never called
           // and no PTY is spawned (see FIX 4).
-          const session = await ptySessionManager.create(chatId, {
+          const session = await ptySessionManager.create(ptyScopeId, {
             cols,
             rows,
             sandboxIdentity: getAgentApprovalSandboxIdentity(sandbox),
@@ -351,6 +428,7 @@ export const createRunTerminalCmd = (context: ToolContext) => {
               return createE2BPtyHandle(sandbox, {
                 cols,
                 rows,
+                envs: agentBrowserEnv,
               });
             },
           });
@@ -618,7 +696,7 @@ export const createRunTerminalCmd = (context: ToolContext) => {
 
             const forgetUnexposedCommandSession = () => {
               if (!commandSession || commandSessionExposed) return;
-              ptySessionManager.forget(chatId, commandSession.sessionId);
+              ptySessionManager.forget(ptyScopeId, commandSession.sessionId);
             };
 
             const terminateManagedCommand = async (): Promise<boolean> => {
@@ -938,7 +1016,7 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                     kill: terminateManagedCommand,
                   });
                   return ptySessionManager
-                    .create(chatId, {
+                    .create(ptyScopeId, {
                       cols,
                       rows,
                       kind: "command",
@@ -972,6 +1050,9 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                     onStderr: forwardCommandOutput,
                   },
             );
+            const agentBrowserEnv = isE2BSandbox(sandboxInstance)
+              ? getAgentBrowserRuntimeEnv(command)
+              : undefined;
             const runOptions = isCentrifugoSandbox(sandboxInstance)
               ? {
                   ...commonOptions,
@@ -983,7 +1064,11 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                   },
                 }
               : isE2BSandbox(sandboxInstance)
-                ? { ...commonOptions, signal: abortSignal }
+                ? {
+                    ...commonOptions,
+                    ...(agentBrowserEnv && { envs: agentBrowserEnv }),
+                    signal: abortSignal,
+                  }
                 : commonOptions;
 
             // Determine if an error is a permanent command failure (don't retry)

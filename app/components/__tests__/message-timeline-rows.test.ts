@@ -156,6 +156,46 @@ describe("deriveChatTimelineRows", () => {
     });
   });
 
+  it("projects adjacent successful child starts as one lifecycle row", () => {
+    const message = agentMessage([
+      {
+        type: "tool-create_agent",
+        toolCallId: "create-1",
+        state: "output-available",
+        output: { success: true, agent_id: "sa_1", name: "Validator one" },
+      },
+      {
+        type: "tool-create_agent",
+        toolCallId: "create-2",
+        state: "output-available",
+        output: { success: true, agent_id: "sa_2", name: "Validator two" },
+      },
+      {
+        type: "tool-create_agent",
+        toolCallId: "create-3",
+        state: "output-available",
+        output: { success: true, agent_id: "sa_3", name: "Validator three" },
+      },
+      { type: "text", text: "final answer" },
+    ] as ChatMessage["parts"]);
+
+    const rows = deriveChatTimelineRows({
+      messages: [message],
+      status: "streaming",
+      lastAssistantMessageIndex: 0,
+      expandedAgentMessageIds: new Set(),
+    });
+    const activityRows = rows.filter(
+      (row): row is AgentActivityTimelineRow => row.kind === "agent-activity",
+    );
+
+    expect(activityRows).toHaveLength(1);
+    expect(activityRows[0].groupedParts).toHaveLength(3);
+    expect(activityRows[0].groupedParts?.map(({ part }) => part)).toEqual(
+      message.parts.slice(0, 3),
+    );
+  });
+
   it("keeps settled activity collapsed until the user expands it", () => {
     const message = agentMessage([
       {
@@ -256,6 +296,7 @@ describe("deriveChatTimelineRows", () => {
       animateNewToolGroups: boolean,
       seenToolGroupIds = new Set<string>(),
       seenAgentMessageIds: ReadonlySet<string> | undefined = undefined,
+      restoredAgentMessageIds = new Set<string>(),
     ) =>
       deriveChatTimelineRows({
         messages: [message],
@@ -265,6 +306,7 @@ describe("deriveChatTimelineRows", () => {
         animateNewToolGroups,
         seenAgentMessageIds,
         seenToolGroupIds,
+        restoredAgentMessageIds,
       }).find((row) => row.kind === "agent-tool-group");
 
     const initialGroup = deriveGroup(false);
@@ -275,6 +317,14 @@ describe("deriveChatTimelineRows", () => {
 
     const liveGroup = deriveGroup(true, new Set(), new Set([message.id]));
     expect(liveGroup).toMatchObject({ animateOnMount: true });
+
+    const restoredGroup = deriveGroup(
+      true,
+      new Set(),
+      new Set([message.id]),
+      new Set([message.id]),
+    );
+    expect(restoredGroup).toMatchObject({ animateOnMount: false });
 
     const seenGroup = deriveGroup(
       true,

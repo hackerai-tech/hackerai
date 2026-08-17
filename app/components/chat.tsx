@@ -23,7 +23,7 @@ import { api } from "@/convex/_generated/api";
 import type { FileDetails } from "@/types/file";
 import { Messages } from "./Messages";
 import { ChatInput } from "./ChatInput";
-import { ChatLoadingStatusPill } from "./ChatLoadingStatusPill";
+import { ComposerOverlay } from "./ComposerOverlay";
 import type { RateLimitWarningData } from "./RateLimitWarning";
 import ChatHeader from "./ChatHeader";
 import Footer from "./Footer";
@@ -31,6 +31,7 @@ import { useMessageScroll } from "../hooks/useMessageScroll";
 import { useChatHandlers } from "../hooks/useChatHandlers";
 import { useGlobalState } from "../contexts/GlobalState";
 import { useComposerInput } from "../contexts/ComposerState";
+import { useChatRoutePresentation } from "../contexts/ChatRoutePresentationContext";
 import {
   type ActiveAgentToolApprovalRequest,
   useAgentApproval,
@@ -63,6 +64,7 @@ import {
 import {
   AGENT_PARTIAL_SAVE_ENDPOINT,
   AGENT_RESUME_ENDPOINT,
+  AGENT_STATUS_ENDPOINT,
   LEGACY_AGENT_RESUME_ENDPOINT,
 } from "@/lib/api/agent-endpoints";
 import { isTauriEnvironment } from "@/app/hooks/useTauri";
@@ -109,9 +111,9 @@ import { finalizeNewChatRoute } from "./chat-route";
 
 import { HackingSuggestions } from "./HackingSuggestions";
 
-const AGENT_LONG_COMPLETION_POLL_DELAY_MS = 5_000;
-const AGENT_LONG_COMPLETION_POLL_INTERVAL_MS = 2_000;
-const AGENT_LONG_COMPLETION_QUIET_MS = 3_000;
+const AGENT_LONG_COMPLETION_POLL_DELAY_MS = 15_000;
+const AGENT_LONG_COMPLETION_POLL_INTERVAL_MS = 15_000;
+const AGENT_LONG_COMPLETION_QUIET_MS = 10_000;
 const AGENT_LONG_COMPLETION_STOP_GRACE_MS = 6_000;
 type MessagePaginationStatus =
   "LoadingFirstPage" | "CanLoadMore" | "LoadingMore" | "Exhausted";
@@ -219,6 +221,26 @@ export function getExistingChatLoadState({
     !hasPaginatedMessageResults;
 
   return { isInitialExistingChatLoad, isChatNotFound };
+}
+
+const shouldReleaseStreamedTitle = (
+  streamedTitle: string | null,
+  persistedTitle: string | null | undefined,
+): boolean => Boolean(streamedTitle && persistedTitle === streamedTitle);
+
+export function useStreamedChatTitle(
+  persistedTitle: string | null | undefined,
+) {
+  const [streamedTitle, setStreamedTitle] = useState<string | null>(null);
+
+  // The streamed title only bridges the gap until Convex receives the same
+  // generated title. This guarded adjustment restarts the current render
+  // before children commit with a stale title source.
+  if (shouldReleaseStreamedTitle(streamedTitle, persistedTitle)) {
+    setStreamedTitle(null);
+  }
+
+  return [streamedTitle ?? persistedTitle ?? null, setStreamedTitle] as const;
 }
 
 export function useServerMessages(
@@ -532,6 +554,8 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   } = useGlobalState();
   const { setAgentApprovalSession, clearAgentApprovalSession } =
     useAgentApproval();
+  const { hasResolvedInitialPresentation, markInitialPresentationResolved } =
+    useChatRoutePresentation();
 
   // Simple logic: use route chatId if provided, otherwise generate new one
   const [chatId, setChatId] = useState<string>(() => {
@@ -560,9 +584,6 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   const [tempChatFileDetails, setTempChatFileDetails] = useState<
     Map<string, FileDetails[]>
   >(new Map());
-
-  // Title streamed mid-response so the header updates before Convex persists it
-  const [streamedTitle, setStreamedTitle] = useState<string | null>(null);
 
   // Use global state ref so streaming callback reads latest value
   const hasUserDismissedWarningRef = useLatestRef(
@@ -599,21 +620,6 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     null,
   );
 
-  // Sync local chat state from URL (single source of truth)
-  useEffect(() => {
-    setStreamedTitle(null);
-    lastAppliedTodoOutputRef.current = null;
-    if (routeChatId) {
-      setChatId(routeChatId);
-      setIsExistingChat(true);
-    } else {
-      // Navigated to "/" (new chat) — reset to fresh state
-      setChatId(uuidv4());
-      setIsExistingChat(false);
-      wasNewChatRef.current = true;
-    }
-  }, [routeChatId]);
-
   // Use paginated query to load messages in batches of 14
   const paginatedMessages = usePaginatedQuery(
     api.messages.getMessagesByChatId,
@@ -629,8 +635,26 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
 
   const chatDataForCurrentChat =
     chatData && (chatData as any).id === chatId ? chatData : undefined;
+  const [chatTitle, setStreamedTitle] = useStreamedChatTitle(
+    chatDataForCurrentChat?.title,
+  );
   const loadedChatDocumentId = chatDataForCurrentChat?._id;
   const lastRunFinishedAt = chatDataForCurrentChat?.last_run_finished_at;
+
+  // Sync local chat state from URL (single source of truth)
+  useEffect(() => {
+    setStreamedTitle(null);
+    lastAppliedTodoOutputRef.current = null;
+    if (routeChatId) {
+      setChatId(routeChatId);
+      setIsExistingChat(true);
+    } else {
+      // Navigated to "/" (new chat) — reset to fresh state
+      setChatId(uuidv4());
+      setIsExistingChat(false);
+      wasNewChatRef.current = true;
+    }
+  }, [routeChatId, setStreamedTitle]);
 
   useEffect(() => {
     if (!loadedChatDocumentId) return;
@@ -653,24 +677,32 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   const storedSandboxType = (chatDataForCurrentChat as any)?.sandbox_type as
     string | undefined;
 
-  // Prefer the mid-stream title — the server seeds chatData.title with the
-  // user's first message before generation completes, which would otherwise
-  // flicker into the header on abort.
-  const chatTitle = streamedTitle ?? chatDataForCurrentChat?.title ?? null;
   const activeTriggerRunId = (chatDataForCurrentChat as any)
     ?.active_trigger_run_id as string | undefined;
-  const storedAgentApprovalRequest = activeTriggerRunId
-    ? getStoredAgentApprovalRequest(chatDataForCurrentChat)
-    : null;
+  // The pending request is its own persisted lifecycle. Do not gate it on the
+  // run id: Convex can publish those fields in separate snapshots during
+  // reload, and hiding an otherwise-pending request briefly shows the composer.
+  const storedAgentApprovalRequest = getStoredAgentApprovalRequest(
+    chatDataForCurrentChat,
+  );
   const activeTriggerRunRef = useLatestRef(activeTriggerRunId);
   const hasLoadedCurrentChat = chatDataForCurrentChat !== undefined;
 
   useEffect(() => {
-    if (!hasLoadedCurrentChat || activeTriggerRunId) {
+    if (
+      !hasLoadedCurrentChat ||
+      activeTriggerRunId ||
+      storedAgentApprovalRequest
+    ) {
       return;
     }
     clearAgentApprovalSession();
-  }, [activeTriggerRunId, clearAgentApprovalSession, hasLoadedCurrentChat]);
+  }, [
+    activeTriggerRunId,
+    clearAgentApprovalSession,
+    hasLoadedCurrentChat,
+    storedAgentApprovalRequest,
+  ]);
 
   // Convert paginated Convex messages to UI format for useChat and useAutoResume
   // Messages come from server in descending order (newest first from pagination); reverse for chronological order
@@ -1254,6 +1286,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     let stopped = false;
     let pollInterval: ReturnType<typeof setInterval> | undefined;
     let finishTimeout: ReturnType<typeof setTimeout> | undefined;
+    let isCompletionCheckInFlight = false;
     const abortController = new AbortController();
 
     const finishLocally = () => {
@@ -1280,9 +1313,9 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
       if (stopped || finishTimeout !== undefined) return;
       saveAgentLongPartialSnapshot("resume_terminal_204");
 
-      // The transport also polls the resume endpoint and can deliver a
-      // synthetic finish after a terminal 204. Give it a brief chance to close
-      // normally before falling back to stop(), which aborts the active stream.
+      // The transport also polls the status endpoint and can deliver a
+      // synthetic finish after a terminal status. Give it a brief chance to
+      // close normally before falling back to stop(), which aborts the stream.
       finishTimeout = setTimeout(() => {
         finishTimeout = undefined;
         if (
@@ -1296,18 +1329,34 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
 
     const checkRunCompletion = async () => {
       if (
+        isCompletionCheckInFlight ||
         Date.now() - agentLongLastMessageChangeAtRef.current <
-        AGENT_LONG_COMPLETION_QUIET_MS
+          AGENT_LONG_COMPLETION_QUIET_MS
       ) {
         return;
       }
 
+      const runId =
+        agentLongRunCorrelationRef.current?.runId ??
+        activeTriggerRunRef.current;
+      if (!runId) return;
+
+      isCompletionCheckInFlight = true;
       try {
-        const response = await fetch(
-          `${AGENT_RESUME_ENDPOINT}?chatId=${encodeURIComponent(chatId)}`,
-          { method: "GET", signal: abortController.signal },
-        );
-        if (response.status === 204) {
+        const response = await fetch(AGENT_STATUS_ENDPOINT, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ chatId, runId }),
+          signal: abortController.signal,
+        });
+        if (response.status === 404) {
+          scheduleFinishLocally();
+          return;
+        }
+        if (!response.ok) return;
+
+        const payload = (await response.json()) as { terminal?: unknown };
+        if (payload.terminal === true) {
           scheduleFinishLocally();
         }
       } catch (error) {
@@ -1315,6 +1364,8 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
           // Ignore transient polling failures; the underlying stream still owns
           // the visible error state.
         }
+      } finally {
+        isCompletionCheckInFlight = false;
       }
     };
 
@@ -1337,6 +1388,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
       }
     };
   }, [
+    activeTriggerRunRef,
     chatId,
     isExistingChatRef,
     setIsAutoResuming,
@@ -1373,6 +1425,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   }, [
     setChatReset,
     setMessages,
+    setStreamedTitle,
     setTodos,
     resetAutoContinueCount,
     stopActiveBrowserStream,
@@ -1775,6 +1828,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     isSendingNowRef,
     hasManuallyStoppedRef,
     activeTriggerRunRef,
+    resumeActiveRun: resumeStream,
     onStopCallback: () => {
       dispatchStreaming({ type: "RESET_ON_FINISH" });
     },
@@ -1826,8 +1880,26 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
       hasPaginatedMessageResults: !!paginatedMessageResults,
       awaitingServerChat,
     });
+  const canResolveApprovalPresentation =
+    !isInitialExistingChatLoad && chatDataForCurrentChat !== undefined;
+
+  useEffect(() => {
+    if (!isExistingChat || canResolveApprovalPresentation) {
+      markInitialPresentationResolved();
+    }
+  }, [
+    canResolveApprovalPresentation,
+    isExistingChat,
+    markInitialPresentationResolved,
+  ]);
+
+  const isApprovalPresentationLoading =
+    isExistingChat &&
+    !hasResolvedInitialPresentation &&
+    !canResolveApprovalPresentation;
   const showBottomChatInput =
     (hasMessages || isExistingChat || isMobile) && !isChatNotFound;
+  const [composerOverlayHeight, setComposerOverlayHeight] = useState(0);
   const agentRunSpendCapWarning =
     rateLimitWarning?.warningType === "agent-run-spend-cap"
       ? rateLimitWarning
@@ -1943,6 +2015,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
                     branchedFromChatId={branchedFromChatId}
                     branchedFromChatTitle={branchedFromChatTitle}
                     anchorMessageId={timelineAnchorMessageId}
+                    contentInsetEndAdjustment={composerOverlayHeight}
                   />
                 </div>
               ) : (
@@ -1990,8 +2063,10 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
 
               {/* Chat Input - Bottom placement (also for mobile new chats) */}
               {showBottomChatInput ? (
-                <div className="flex-shrink-0">
-                  {isInitialExistingChatLoad ? <ChatLoadingStatusPill /> : null}
+                <ComposerOverlay
+                  active={showChatLayout}
+                  onHeightChange={setComposerOverlayHeight}
+                >
                   <ChatInput
                     onSubmit={handleSubmit}
                     onStop={handleStop}
@@ -2003,16 +2078,14 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
                     onScrollToBottom={handleScrollToBottom}
                     isNewChat={!isExistingChat}
                     chatId={chatId}
-                    sendDisabledReason={
-                      isInitialExistingChatLoad ? "Messages loading" : undefined
-                    }
+                    isResolvingInitialState={isApprovalPresentationLoading}
                     rateLimitWarning={
                       rateLimitWarning ? rateLimitWarning : undefined
                     }
                     onDismissRateLimitWarning={handleDismissRateLimitWarning}
                     storedApprovalRequest={storedAgentApprovalRequest}
                   />
-                </div>
+                </ComposerOverlay>
               ) : null}
             </div>
           </div>

@@ -35,7 +35,14 @@ import {
   type ExperimentAnalyticsContext,
 } from "@/lib/analytics/experiment-context";
 import type { AgentStepLimitTelemetry } from "@/lib/analytics/agent-step-limit-telemetry";
-import { extraUsagePointsToDollars } from "@/convex/lib/extraUsagePricing";
+import {
+  EXTRA_USAGE_MULTIPLIER,
+  extraUsagePointsToDollars,
+} from "@/convex/lib/extraUsagePricing";
+import {
+  NORMAL_USAGE_MULTIPLIER,
+  POINTS_PER_DOLLAR,
+} from "@/lib/rate-limit/usage-pricing";
 import type { UsageCostRecord } from "@/lib/usage-tracker";
 import type { UsageDeductionResult } from "@/lib/rate-limit";
 import type { BudgetAbortDetails } from "@/lib/chat/budget-monitor";
@@ -54,6 +61,17 @@ import {
 } from "@/lib/limit-pressure";
 
 export const USAGE_SETTLEMENT_SUCCESS_SAMPLE_RATE = 0.005;
+export const USAGE_PRICING_VERSION = `request-${NORMAL_USAGE_MULTIPLIER.toFixed(2)}-extra-${EXTRA_USAGE_MULTIPLIER.toFixed(2)}-v1`;
+
+const usagePricingAnalyticsProperties = {
+  usage_pricing_version: USAGE_PRICING_VERSION,
+  request_usage_multiplier: NORMAL_USAGE_MULTIPLIER,
+  included_usage_multiplier: NORMAL_USAGE_MULTIPLIER,
+  extra_usage_multiplier: EXTRA_USAGE_MULTIPLIER,
+  effective_extra_usage_multiplier: Number(
+    (NORMAL_USAGE_MULTIPLIER * EXTRA_USAGE_MULTIPLIER).toFixed(4),
+  ),
+} as const;
 
 const usageSettlementSampleBucket = (usageSettlementId: string): number => {
   let hash = 2166136261;
@@ -1443,9 +1461,17 @@ export function captureUsageCost({
   experiment?: ExperimentAnalyticsContext;
 }) {
   if (!posthog) return;
+  const includedUsageValueDollars =
+    usage.includedPointsDeducted / POINTS_PER_DOLLAR;
   const extraUsageChargeDollars = extraUsagePointsToDollars(
     usage.extraUsagePointsDeducted,
   );
+  const coveredUsageValueDollars =
+    includedUsageValueDollars + extraUsageChargeDollars;
+  const coveredUsageCostDollars =
+    usage.includedCostDollars + usage.extraUsageCostDollars;
+  const coveredUsageContributionDollars =
+    coveredUsageValueDollars - coveredUsageCostDollars;
   posthog.capture({
     distinctId: userId,
     event: "hackerai-usage_cost",
@@ -1469,8 +1495,17 @@ export function captureUsageCost({
       uncovered_cost_dollars: usage.uncoveredCostDollars,
       included_points_deducted: usage.includedPointsDeducted,
       extra_usage_points_deducted: usage.extraUsagePointsDeducted,
-      usage_economics_version: 1,
+      usage_economics_version: 2,
+      ...usagePricingAnalyticsProperties,
+      included_usage_value_dollars: includedUsageValueDollars,
       extra_usage_charge_dollars: extraUsageChargeDollars,
+      covered_usage_value_dollars: coveredUsageValueDollars,
+      covered_usage_cost_dollars: coveredUsageCostDollars,
+      covered_usage_contribution_dollars: coveredUsageContributionDollars,
+      ...(coveredUsageValueDollars > 0 && {
+        covered_usage_margin_ratio:
+          coveredUsageContributionDollars / coveredUsageValueDollars,
+      }),
       consumption_contribution_dollars:
         extraUsageChargeDollars - usage.costDollars,
       uncovered_points: usage.uncoveredPoints,
@@ -1584,6 +1619,7 @@ export function captureUsageSettlement({
       usage_deduction_failed: deduction.usageDeductionFailed,
       usage_deduction_failure_reason: deduction.usageDeductionFailureReason,
       forced,
+      ...usagePricingAnalyticsProperties,
       settlement_capture_reason: anomalous ? "anomaly" : "sampled_success",
       settlement_run_sampled: runSampled,
       settlement_success_sample_rate: USAGE_SETTLEMENT_SUCCESS_SAMPLE_RATE,

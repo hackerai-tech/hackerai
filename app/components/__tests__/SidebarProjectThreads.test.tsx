@@ -11,12 +11,21 @@ jest.mock("../ChatItem", () => ({
     id,
     title,
     indentContent,
+    isStreaming,
+    isAwaitingApproval,
   }: {
     id: string;
     title: string;
     indentContent?: boolean;
+    isStreaming?: boolean;
+    isAwaitingApproval?: boolean;
   }) => (
-    <div data-testid={`chat-${id}`} data-indent={String(indentContent)}>
+    <div
+      data-testid={`chat-${id}`}
+      data-indent={String(indentContent)}
+      data-streaming={String(!!isStreaming)}
+      data-awaiting-approval={String(!!isAwaitingApproval)}
+    >
       {title}
     </div>
   ),
@@ -90,5 +99,35 @@ describe("SidebarProjectThreads", () => {
 
     expect(screen.getByText("No tasks yet")).toBeInTheDocument();
     expect(screen.queryByText("Show more")).not.toBeInTheDocument();
+  });
+
+  it("shows pending approval without a streaming indicator", () => {
+    mockUseProjectThreads.mockReturnValue({
+      results: [
+        {
+          _id: "doc-approval",
+          id: "approval-chat",
+          title: "Approval task",
+          active_trigger_run_id: "run-1",
+          active_agent_approval_pending: true,
+        },
+      ],
+      status: "Exhausted",
+      loadMore: jest.fn(),
+      isLoading: false,
+    } as ReturnType<
+      typeof import("@/app/hooks/useProjects").useProjectThreads
+    >);
+
+    render(<SidebarProjectThreads project={project} />);
+
+    expect(screen.getByTestId("chat-approval-chat")).toHaveAttribute(
+      "data-awaiting-approval",
+      "true",
+    );
+    expect(screen.getByTestId("chat-approval-chat")).toHaveAttribute(
+      "data-streaming",
+      "false",
+    );
   });
 });

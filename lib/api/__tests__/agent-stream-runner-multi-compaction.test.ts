@@ -78,7 +78,8 @@ jest.mock("@/lib/chat/multimodal-tool-result-recovery", () => ({
 jest.mock("@/lib/ai/providers", () => ({
   isAnthropicModel: () => false,
   isDeepSeekModel: (modelName: string) =>
-    modelName === "agent-model-free" || modelName === "model-deepseek-v4-pro",
+    modelName === "agent-model-free" ||
+    modelName.startsWith("model-deepseek-v4"),
 }));
 jest.mock("@/lib/ai/tools/utils/pty-session-manager", () => ({
   ptySessionManager: { closeAllSessions: jest.fn() },
@@ -101,6 +102,7 @@ const {
   createAgentStream,
   initAgentStreamState,
   resetServedModelTelemetryForRetry,
+  resolveAgentModelAfterSummarization,
   resolveAgentModelForImageToolResults,
   resolveFallbackServedTelemetry,
   retryUsesDifferentModel,
@@ -165,12 +167,60 @@ describe("resolveAgentModelForImageToolResults", () => {
     ).toBe("model-deepseek-v4-pro");
   });
 
-  it("switches DeepSeek Agent steps to Grok after image tool results", () => {
+  it("infers the Grok 4.5 high route for Pro image tool results", () => {
     expect(
       resolveAgentModelForImageToolResults(
         "model-deepseek-v4-pro",
         "agent",
         true,
+      ),
+    ).toBe("model-grok-4.5-pro");
+  });
+
+  it("uses Grok 4.5 medium for Standard image tool results", () => {
+    expect(
+      resolveAgentModelForImageToolResults(
+        "model-deepseek-v4-flash-0731",
+        "agent",
+        true,
+        "hackerai-standard",
+      ),
+    ).toBe("model-grok-4.5");
+  });
+
+  it("uses Grok 4.5 high for Pro image tool results", () => {
+    expect(
+      resolveAgentModelForImageToolResults(
+        "model-deepseek-v4-pro-0813",
+        "agent",
+        true,
+        "hackerai-pro",
+      ),
+    ).toBe("model-grok-4.5-pro");
+  });
+
+  it.each(["model-deepseek-v4-flash-0731", "model-deepseek-v4-pro-0813"])(
+    "keeps %s active when image tool results have auxiliary descriptions",
+    (modelName) => {
+      expect(
+        resolveAgentModelForImageToolResults(
+          modelName,
+          "agent",
+          true,
+          modelName.includes("pro") ? "hackerai-pro" : "hackerai-standard",
+          true,
+        ),
+      ).toBe(modelName);
+    },
+  );
+
+  it("keeps Auto on Grok 4.5 medium after a text retry reached DeepSeek Pro", () => {
+    expect(
+      resolveAgentModelForImageToolResults(
+        "model-deepseek-v4-pro-0813",
+        "agent",
+        true,
+        "auto",
       ),
     ).toBe("model-grok-4.5");
   });
@@ -184,7 +234,7 @@ describe("resolveAgentModelForImageToolResults", () => {
   it("switches free DeepSeek Agent steps to Grok after image tool results", () => {
     expect(
       resolveAgentModelForImageToolResults("agent-model-free", "agent", true),
-    ).toBe("model-grok-4.5");
+    ).toBe("model-grok-4.6");
   });
 
   it("does not change Ask routes or multimodal Agent models", () => {
@@ -199,8 +249,37 @@ describe("resolveAgentModelForImageToolResults", () => {
       resolveAgentModelForImageToolResults("model-kimi-k3", "agent", true),
     ).toBe("model-kimi-k3");
     expect(
-      resolveAgentModelForImageToolResults("model-grok-4.5-pro", "agent", true),
+      resolveAgentModelForImageToolResults("model-grok-4.6-pro", "agent", true),
+    ).toBe("model-grok-4.6-pro");
+  });
+});
+
+describe("resolveAgentModelAfterSummarization", () => {
+  it("returns Standard and Pro vision routes to their DeepSeek text routes", () => {
+    expect(
+      resolveAgentModelAfterSummarization("model-grok-4.5", "agent", false),
+    ).toBe("model-deepseek-v4-flash-0731");
+    expect(
+      resolveAgentModelAfterSummarization("model-grok-4.5-pro", "agent", false),
+    ).toBe("model-deepseek-v4-pro-0813");
+  });
+
+  it("keeps vision routes when compacted context still contains images", () => {
+    expect(
+      resolveAgentModelAfterSummarization("model-grok-4.5", "agent", true),
+    ).toBe("model-grok-4.5");
+    expect(
+      resolveAgentModelAfterSummarization("model-grok-4.5-pro", "agent", true),
     ).toBe("model-grok-4.5-pro");
+  });
+
+  it("does not rewrite Ask or native non-vision-promotion routes", () => {
+    expect(
+      resolveAgentModelAfterSummarization("model-grok-4.5", "ask", false),
+    ).toBe("model-grok-4.5");
+    expect(
+      resolveAgentModelAfterSummarization("model-grok-4.6", "agent", false),
+    ).toBe("model-grok-4.6");
   });
 });
 
@@ -210,7 +289,7 @@ describe("resolveFallbackServedTelemetry", () => {
       resolveFallbackServedTelemetry({
         requestedModel: "deepseek/deepseek-v4-pro",
         responseModel: "deepseek/deepseek-v4-pro",
-        fallbackModels: ["x-ai/grok-4.5"],
+        fallbackModels: ["x-ai/grok-4.6"],
       }),
     ).toBe(false);
   });
@@ -219,15 +298,15 @@ describe("resolveFallbackServedTelemetry", () => {
     expect(
       resolveFallbackServedTelemetry({
         requestedModel: "deepseek/deepseek-v4-pro",
-        responseModel: "x-ai/grok-4.5",
-        fallbackModels: ["x-ai/grok-4.5"],
+        responseModel: "x-ai/grok-4.6",
+        fallbackModels: ["x-ai/grok-4.6"],
       }),
     ).toBe(true);
     expect(
       resolveFallbackServedTelemetry({
-        requestedModel: "x-ai/grok-4.5",
-        responseModel: "x-ai/grok-4.5",
-        fallbackModels: ["x-ai/grok-4.5"],
+        requestedModel: "x-ai/grok-4.6",
+        responseModel: "x-ai/grok-4.6",
+        fallbackModels: ["x-ai/grok-4.6"],
       }),
     ).toBe(false);
   });
@@ -236,14 +315,14 @@ describe("resolveFallbackServedTelemetry", () => {
     expect(
       resolveFallbackServedTelemetry({
         requestedModel: "anthropic/claude-opus-4.6",
-        fallbackModels: ["x-ai/grok-4.5"],
+        fallbackModels: ["x-ai/grok-4.6"],
       }),
     ).toBeUndefined();
     expect(
       resolveFallbackServedTelemetry({
         requestedModel: "anthropic/claude-opus-4.6",
         responseModel: "anthropic/claude-4.6-opus-20260205",
-        fallbackModels: ["x-ai/grok-4.5"],
+        fallbackModels: ["x-ai/grok-4.6"],
       }),
     ).toBeUndefined();
   });
@@ -254,7 +333,7 @@ describe("retry served-model telemetry", () => {
     expect(
       retryUsesDifferentModel("agent-model-free", "agent-model-free"),
     ).toBe(false);
-    expect(retryUsesDifferentModel("agent-model-free", "model-grok-4.5")).toBe(
+    expect(retryUsesDifferentModel("agent-model-free", "model-grok-4.6")).toBe(
       true,
     );
   });
@@ -278,6 +357,152 @@ describe("createAgentStream repeated compaction", () => {
   beforeEach(() => {
     jest.clearAllMocks();
     mockStreamText.mockImplementation((options) => options);
+  });
+
+  afterEach(() => {
+    mockRunSummarizationStep.mockReset();
+    mockCompactModelMessagesInRun.mockReset();
+    mockGetProviderPromptPressure.mockReset();
+  });
+
+  it.each([
+    ["model-grok-4.5", "model-deepseek-v4-flash-0731"],
+    ["model-grok-4.5-pro", "model-deepseek-v4-pro-0813"],
+  ])(
+    "switches %s back to %s after a text-only persisted summary",
+    async (visionModel, textModel) => {
+      const summary = uiMessage("summary", "The image findings are preserved.");
+      mockRunSummarizationStep.mockResolvedValue({
+        summarizationAttempted: true,
+        needsSummarization: true,
+        summarizedMessages: [summary],
+      });
+      const tracker = {
+        hasSummarized: false,
+        summarizationCount: 0,
+        recordSummarization() {
+          this.hasSummarized = true;
+          this.summarizationCount++;
+        },
+      };
+      const state = initAgentStreamState(
+        [uiMessage("initial", "Inspect the attached image")],
+        { usedTokens: 120_000, maxTokens: 128_000 },
+      );
+      const stream = (await createAgentStream(
+        visionModel,
+        createTestStreamContext({
+          trackedProvider: {
+            languageModel: (name: string) => ({ modelId: name }),
+          },
+          summarizationTracker: tracker,
+          usageTracker: {},
+        }) as any,
+        state,
+      )) as any;
+
+      const continued = await stream.prepareStep({
+        steps: [],
+        messages: [{ role: "user", content: "Inspect the attached image" }],
+      });
+
+      expect(continued.model.modelId).toBe(textModel);
+    },
+  );
+
+  it("keeps the Standard vision route when the persisted summary retains an image", async () => {
+    const summaryWithImage = {
+      id: "summary-with-image",
+      role: "user",
+      parts: [
+        { type: "text", text: "Recent visual context" },
+        {
+          type: "file",
+          mediaType: "image/png",
+          url: "data:image/png;base64,aW1hZ2U=",
+        },
+      ],
+    } as UIMessage;
+    mockRunSummarizationStep.mockResolvedValue({
+      summarizationAttempted: true,
+      needsSummarization: true,
+      summarizedMessages: [summaryWithImage],
+    });
+    const tracker = {
+      hasSummarized: false,
+      summarizationCount: 0,
+      recordSummarization() {
+        this.hasSummarized = true;
+        this.summarizationCount++;
+      },
+    };
+    const state = initAgentStreamState(
+      [uiMessage("initial", "Inspect the attached image")],
+      { usedTokens: 120_000, maxTokens: 128_000 },
+    );
+    const stream = (await createAgentStream(
+      "model-grok-4.5",
+      createTestStreamContext({
+        trackedProvider: {
+          languageModel: (name: string) => ({ modelId: name }),
+        },
+        summarizationTracker: tracker,
+        usageTracker: {},
+      }) as any,
+      state,
+    )) as any;
+
+    const continued = await stream.prepareStep({
+      steps: [],
+      messages: [{ role: "user", content: "Inspect the attached image" }],
+    });
+
+    expect(continued.model.modelId).toBe("model-grok-4.5");
+  });
+
+  it("switches back after text-only rolling compaction", async () => {
+    const summary = uiMessage("rolling-summary", "Visual findings preserved.");
+    mockCompactModelMessagesInRun.mockResolvedValue({
+      summaryMessage: summary,
+      summaryText: "Visual findings preserved.",
+      summarizationUsage: { inputTokens: 10, outputTokens: 2 },
+    });
+    mockGetProviderPromptPressure.mockReturnValue({
+      reason: "serialized_message_bytes",
+      reasons: [],
+    });
+    const tracker = {
+      hasSummarized: true,
+      summarizationCount: 1,
+      recordSummarization() {
+        this.summarizationCount++;
+      },
+    };
+    const state = initAgentStreamState(
+      [uiMessage("initial", "old visual context")],
+      { usedTokens: 120_000, maxTokens: 128_000 },
+    );
+    const stream = (await createAgentStream(
+      "model-grok-4.5-pro",
+      createTestStreamContext({
+        trackedProvider: {
+          languageModel: (name: string) => ({ modelId: name }),
+        },
+        summarizationTracker: tracker,
+        usageTracker: {},
+      }) as any,
+      state,
+    )) as any;
+
+    const continued = await stream.prepareStep({
+      steps: [{ toolResults: [] }],
+      messages: [
+        { role: "user", content: "old visual context ".repeat(4_000) },
+        { role: "assistant", content: "continue" },
+      ],
+    });
+
+    expect(continued.model.modelId).toBe("model-deepseek-v4-pro-0813");
   });
 
   it.each(["ask", "agent"] as const)(

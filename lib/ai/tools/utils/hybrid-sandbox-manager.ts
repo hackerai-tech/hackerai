@@ -25,7 +25,10 @@ import { SANDBOX_ENVIRONMENT_TOOLS } from "./sandbox-tools";
 import { getPlatformDisplayName } from "./platform-utils";
 import { generateCentrifugoToken } from "@/lib/centrifugo/jwt";
 import { sandboxConnectionChannel } from "@/lib/centrifugo/types";
-import { presenceHasConnectionId } from "@/lib/centrifugo/presence";
+import {
+  LOCAL_SANDBOX_PRESENCE_GRACE_MS,
+  presenceHasConnectionId,
+} from "@/lib/centrifugo/presence";
 import { isExpectedAlreadyGoneCleanupError } from "@/lib/utils/cleanup-errors";
 import { ensureCloudSandboxConnection } from "./cloud-sandbox";
 import { getCloudSandboxProvider } from "./cloud-sandbox-provider";
@@ -59,7 +62,7 @@ export interface SandboxFallbackInfo {
 // initial readiness check and one reconnect both fail. E2B reset remains
 // connection-only and never kills the shared per-user sandbox.
 const MAX_SANDBOX_HEALTH_FAILURES = 2;
-export const LOCAL_SANDBOX_PRESENCE_GRACE_MS = 30_000;
+export { LOCAL_SANDBOX_PRESENCE_GRACE_MS };
 const LOCAL_SANDBOX_PRESENCE_TIMEOUT_MS = 2_000;
 
 interface PresenceProbeResult {

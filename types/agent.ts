@@ -312,10 +312,49 @@ export type AgentAutoReviewFailureClass =
   | "context_truncated";
 export type AgentAutoReviewRolloutPhase = "shadow" | "enforce";
 
+export type AgentAutoReviewTerminalInspectionReason =
+  | "dynamic_command"
+  | "unsupported_platform"
+  | "missing_working_directory"
+  | "outside_scope"
+  | "sensitive_target"
+  | "too_broad"
+  | "too_large"
+  | "binary_content"
+  | "missing_target"
+  | "missing_package_task"
+  | "nested_indirection"
+  | "inspection_failed";
+
+export type AgentAutoReviewTerminalInspection = {
+  kind: "filesystem_delete" | "script" | "package_task";
+  status: "resolved" | "unresolved";
+  /** Stable digest used to detect action-context changes before execution. */
+  fingerprint?: string;
+  reason?: AgentAutoReviewTerminalInspectionReason;
+  workingDirectory?: string;
+  targets?: Array<{
+    path: string;
+    scope: "workspace" | "temporary" | "outside";
+    state: "missing" | "file" | "directory" | "symlink" | "other";
+    sizeBytes?: number;
+    entryCount?: number;
+  }>;
+  scripts?: Array<{
+    source: "file" | "package_script";
+    path?: string;
+    name?: string;
+    command?: string;
+    content?: string;
+  }>;
+};
+
 export type AgentAutoReviewActionContext =
   | {
       type: "terminal_command";
       command: string;
+      /** Bounded, read-only, untrusted evidence for resolving indirection. */
+      inspection?: AgentAutoReviewTerminalInspection;
     }
   | {
       type: "terminal_interaction";
@@ -633,6 +672,8 @@ export interface ToolContext {
   todoManager: TodoManager;
   userID: string;
   chatId: string;
+  /** Isolates child-agent PTYs without changing chat ownership/billing scope. */
+  ptyScopeId?: string;
   assistantMessageId?: string;
   /** Trigger.dev run ID when tools execute inside a durable Agent task. */
   triggerRunId?: string;
@@ -657,8 +698,23 @@ export interface ToolContext {
   onToolFailure?: ToolFailureLogger;
   /** Optional approval gate for mutating or command-executing agent tools. */
   requestToolApproval?: AgentToolApprovalRequester;
+  /** Collect bounded read-only evidence for the separate automatic reviewer. */
+  autoReviewEvidenceEnabled?: boolean;
   /** Aggregates active wall time for cost attribution in Trigger-hosted Agent runs. */
   measureAgentActiveTime?: AgentActiveTimeMeasurer;
   /** Observes resource metrics already fetched by E2B health checks. */
   onSandboxResourceMetrics?: SandboxResourceMetricsObserver;
+  /** Optional Hermes-style image descriptor for text-only active models. */
+  auxiliaryVision?: {
+    /** Returns false after the request has failed over to direct vision. */
+    isEnabled?: () => boolean;
+    /** Distinguishes a user stop from a descriptor timeout/provider failure. */
+    isAborted?: () => boolean;
+    describeImage: (args: {
+      image: string;
+      mediaType: string;
+      filename?: string;
+      source: "file_view";
+    }) => Promise<{ description: string }>;
+  };
 }

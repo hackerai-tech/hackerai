@@ -8,8 +8,9 @@ import {
   waitFor,
 } from "@testing-library/react";
 import { TooltipProvider } from "@/components/ui/tooltip";
-import { ReactNode, useEffect } from "react";
+import { ReactNode, useEffect, useState } from "react";
 import {
+  CHAT_MODE_STORAGE_KEY,
   CONVERSATION_DRAFTS_STORAGE_KEY,
   getDraftAttachmentsById,
   getDraftContentById,
@@ -68,14 +69,19 @@ const { GlobalStateProvider, useGlobalState } = jest.requireActual<
 const { AgentApprovalProvider, useAgentApproval } = jest.requireActual<
   typeof import("../../contexts/AgentApprovalContext")
 >("../../contexts/AgentApprovalContext");
+const { AgentAutoReviewAvailabilityProvider } = jest.requireActual<
+  typeof import("../../contexts/AgentAutoReviewAvailabilityContext")
+>("../../contexts/AgentAutoReviewAvailabilityContext");
 
 // Wrapper with real providers
 const TestWrapper = ({ children }: { children: ReactNode }) => {
   return (
     <GlobalStateProvider>
-      <AgentApprovalProvider>
-        <TooltipProvider>{children}</TooltipProvider>
-      </AgentApprovalProvider>
+      <AgentAutoReviewAvailabilityProvider>
+        <AgentApprovalProvider>
+          <TooltipProvider>{children}</TooltipProvider>
+        </AgentApprovalProvider>
+      </AgentAutoReviewAvailabilityProvider>
     </GlobalStateProvider>
   );
 };
@@ -93,6 +99,35 @@ const UploadedFilesSetter = ({
     <button type="button" onClick={() => setUploadedFiles(files)}>
       {label}
     </button>
+  );
+};
+
+const NewChatAttachmentSubmitHarness = ({
+  uploadedFile,
+}: {
+  uploadedFile: UploadedFileState;
+}) => {
+  const { setUploadedFiles } = useGlobalState();
+  const [hasMessages, setHasMessages] = useState(false);
+
+  return (
+    <>
+      <button type="button" onClick={() => setUploadedFiles([uploadedFile])}>
+        Attach file
+      </button>
+      <ChatInput
+        onSubmit={() => {
+          setHasMessages(true);
+          setUploadedFiles([]);
+          return true;
+        }}
+        onStop={jest.fn()}
+        status="ready"
+        isNewChat={true}
+        hasMessages={hasMessages}
+        chatId="chat-1"
+      />
+    </>
   );
 };
 
@@ -156,7 +191,7 @@ describe("ChatInput - Integration Tests", () => {
   });
 
   describe("Ask Mode Integration", () => {
-    it("should render with ask mode as default", () => {
+    it("renders Ask mode by default without the logged-out mode selector", () => {
       render(
         <TestWrapper>
           <ChatInput
@@ -170,7 +205,22 @@ describe("ChatInput - Integration Tests", () => {
       expect(
         screen.getByPlaceholderText("Ask, learn, brainstorm"),
       ).toBeInTheDocument();
-      expect(screen.getByText("Ask")).toBeInTheDocument();
+      expect(screen.queryByText("Ask")).not.toBeInTheDocument();
+      expect(
+        screen.getByTestId("attach-files-button").querySelector(".lucide-plus"),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByTestId("attach-files-button").querySelector(".size-5"),
+      ).toBeInTheDocument();
+      expect(screen.getByTestId("attach-files-button")).toHaveClass(
+        "h-8",
+        "w-8",
+        "rounded-md",
+        "hover:bg-muted/30",
+      );
+      expect(screen.getByTestId("attach-files-button")).not.toHaveClass(
+        "rounded-full",
+      );
     });
 
     it("should show only submit button when ready in ask mode", () => {
@@ -393,6 +443,45 @@ describe("ChatInput - Integration Tests", () => {
   });
 
   describe("Agent Mode Integration", () => {
+    it("renders a glass composer with a narrower sandbox context strip", () => {
+      window.localStorage.setItem(CHAT_MODE_STORAGE_KEY, "agent");
+      mockUseQuery.mockReturnValue([
+        {
+          connectionId: "local-sandbox",
+          name: "Local sandbox",
+          isDesktop: false,
+        },
+      ]);
+
+      render(
+        <TestWrapper>
+          <ChatInput
+            onSubmit={mockOnSubmit}
+            onStop={mockOnStop}
+            status="ready"
+            hasMessages
+          />
+        </TestWrapper>,
+      );
+
+      expect(screen.getByTestId("chat-input-surface")).toHaveClass(
+        "chat-input-glass-surface",
+        "z-10",
+      );
+      expect(screen.getByTestId("chat-input-agent-context")).toHaveClass(
+        "chat-input-glass-context",
+        "mx-6",
+        "-mt-2",
+        "h-10",
+        "rounded-b-[18px]",
+        "md:hidden",
+      );
+      expect(screen.getByTestId("chat-input-mobile-permission")).toHaveClass(
+        "ml-auto",
+        "md:hidden",
+      );
+    });
+
     it("does not show a late approval after the composer stop button is clicked", async () => {
       let resolveStop: ((stopped: boolean) => void) | undefined;
       const pendingStop = new Promise<boolean>((resolve) => {
@@ -548,6 +637,66 @@ describe("ChatInput - Integration Tests", () => {
       expect(screen.getByTestId("chat-input")).toBeInTheDocument();
     });
 
+    it("clears the approval prompt when the persisted lifecycle resolves", () => {
+      const storedApprovalRequest = {
+        approvalId: "stored-approval-1",
+        toolCallId: "tool-1",
+        title: "Allow HackerAI to run this terminal command?",
+        target: "ping -c 4 hackerone.com",
+        detail: "Approve to continue, or deny to stop this command.",
+        kind: "terminal" as const,
+        operation: "terminal_execute" as const,
+      };
+      const renderInput = (request: typeof storedApprovalRequest | null) => (
+        <TestWrapper>
+          <AgentModeSetter />
+          <ChatInput
+            onSubmit={mockOnSubmit}
+            onStop={mockOnStop}
+            status="ready"
+            chatId="approval-chat"
+            hasMessages
+            storedApprovalRequest={request}
+          />
+        </TestWrapper>
+      );
+      const { rerender } = render(renderInput(storedApprovalRequest));
+
+      rerender(renderInput(null));
+
+      expect(
+        screen.queryByTestId("agent-approval-prompt"),
+      ).not.toBeInTheDocument();
+      expect(screen.getByTestId("chat-input")).toBeInTheDocument();
+    });
+
+    it("shows a neutral input shell until the initial task state resolves", () => {
+      render(
+        <TestWrapper>
+          <AgentModeSetter />
+          <ChatInput
+            onSubmit={mockOnSubmit}
+            onStop={mockOnStop}
+            status="ready"
+            chatId="approval-chat"
+            hasMessages
+            isResolvingInitialState
+          />
+        </TestWrapper>,
+      );
+
+      expect(
+        screen.getByTestId("chat-input-loading-state"),
+      ).toBeInTheDocument();
+      expect(screen.getByTestId("chat-input-loading-surface")).toHaveClass(
+        "h-[98px]",
+      );
+      expect(screen.queryByTestId("chat-input")).not.toBeInTheDocument();
+      expect(
+        screen.queryByTestId("agent-approval-prompt"),
+      ).not.toBeInTheDocument();
+    });
+
     it("restores the approval prompt when stopping the Agent fails", async () => {
       const failedStop = jest.fn(async () => false);
 
@@ -622,6 +771,38 @@ describe("ChatInput - Integration Tests", () => {
   });
 
   describe("Submit Behavior Integration", () => {
+    it("does not restore a sent attachment when a new chat gets its real draft id", async () => {
+      const uploadedFile: UploadedFileState = {
+        file: new File(["image"], "screenshot.png", { type: "image/png" }),
+        uploading: false,
+        uploaded: true,
+        storage: "s3",
+        fileId: "file_screenshot",
+        tokens: 12,
+      };
+
+      render(
+        <TestWrapper>
+          <NewChatAttachmentSubmitHarness uploadedFile={uploadedFile} />
+        </TestWrapper>,
+      );
+
+      fireEvent.click(screen.getByText("Attach file"));
+      expect(await screen.findByAltText("screenshot.png")).toBeInTheDocument();
+
+      await waitFor(() => {
+        expect(getDraftAttachmentsById("new")).toHaveLength(1);
+      });
+
+      fireEvent.click(screen.getByLabelText("Send message"));
+
+      await waitFor(() => {
+        expect(screen.queryByAltText("screenshot.png")).not.toBeInTheDocument();
+        expect(getDraftAttachmentsById("new")).toEqual([]);
+        expect(getDraftAttachmentsById("chat-1")).toEqual([]);
+      });
+    });
+
     it("migrates restored pasted-text attachments when a new chat gets its real id", async () => {
       const draftAttachment = {
         kind: "pasted-text" as const,

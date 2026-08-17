@@ -70,7 +70,39 @@ interface ChatInputProps {
   storedApprovalRequest?: ActiveAgentToolApprovalRequest | null;
   offlineProtection?: boolean;
   sendDisabledReason?: string;
+  isResolvingInitialState?: boolean;
 }
+
+const ChatInputLoadingState = ({
+  showAgentControls,
+}: {
+  showAgentControls: boolean;
+}) => (
+  <div
+    aria-label="Loading task input"
+    aria-live="polite"
+    className="relative min-w-0 px-4 pb-3"
+    data-testid="chat-input-loading-state"
+    role="status"
+  >
+    <div className="mx-auto w-full min-w-0 max-w-full sm:min-w-[390px] sm:max-w-[768px]">
+      <div
+        className="chat-input-glass-surface relative z-10 flex h-[98px] flex-col justify-center gap-2 rounded-[22px] border border-black/8 px-4 shadow-[0px_12px_32px_0px_rgba(0,0,0,0.02)] dark:border-border"
+        data-testid="chat-input-loading-surface"
+      >
+        <div className="h-3 w-32 animate-pulse rounded-full bg-muted-foreground/15 motion-reduce:animate-none" />
+        <div className="h-3 w-20 animate-pulse rounded-full bg-muted-foreground/10 motion-reduce:animate-none" />
+      </div>
+      {showAgentControls ? (
+        <div
+          aria-hidden="true"
+          className="chat-input-glass-context relative z-0 mx-6 -mt-2 h-10 rounded-b-[18px] border border-t-0 border-black/8 md:hidden dark:border-border/70"
+          data-testid="chat-input-loading-controls"
+        />
+      ) : null}
+    </div>
+  </div>
+);
 
 const isBrowserFile = (file: UploadedFileState["file"]): file is File =>
   typeof globalThis.File !== "undefined" && file instanceof globalThis.File;
@@ -204,6 +236,7 @@ export const ChatInput = ({
   storedApprovalRequest,
   offlineProtection = true,
   sendDisabledReason,
+  isResolvingInitialState = false,
 }: ChatInputProps) => {
   const {
     chatMode,
@@ -265,10 +298,10 @@ export const ChatInput = ({
   const showAgentApprovalPrompt = !!approvalRequest && !isStoppingAgent;
 
   useEffect(() => {
-    if (!isGenerating && !approvalRequest) {
+    if (!isGenerating && !activeToolApprovalRequest && !storedApprovalRequest) {
       setIsStoppingAgent(false);
     }
-  }, [approvalRequest, isGenerating]);
+  }, [activeToolApprovalRequest, isGenerating, storedApprovalRequest]);
 
   const handleAgentStop = async () => {
     setIsStoppingAgent(true);
@@ -286,6 +319,7 @@ export const ChatInput = ({
     isNewChat && !hasMessages ? "new" : chatId || NULL_THREAD_DRAFT_ID;
   const skipNextAttachmentPersistRef = useRef(false);
   const hasPersistedDraftAttachmentsRef = useRef(false);
+  const isSubmittingAttachmentsRef = useRef(false);
   const uploadedFilesRef = useRef(uploadedFiles);
   const prevDraftIdRef = useRef(draftId);
   const draftTextFileIds = useMemo(
@@ -502,6 +536,16 @@ export const ChatInput = ({
     }
 
     if (prevDraftId === "new" && draftId !== "new") {
+      if (isSubmittingAttachmentsRef.current) {
+        uploadedFilesRef.current = [];
+        removeDraft("new");
+        removeDraft(draftId);
+        hasPersistedDraftAttachmentsRef.current = false;
+        skipNextAttachmentPersistRef.current = true;
+        isSubmittingAttachmentsRef.current = false;
+        return;
+      }
+
       const draftAttachments = uploadedFilesRef.current
         .map(uploadedFileToDraftAttachment)
         .filter(
@@ -631,9 +675,22 @@ export const ChatInput = ({
       (input.trim() || uploadedFiles.length > 0);
 
     if (canSubmit) {
+      isSubmittingAttachmentsRef.current =
+        clearDraftOnSubmit && uploadedFiles.length > 0;
       const accepted = await onSubmit(e);
-      if (clearDraftOnSubmit && accepted !== false) {
+      if (accepted === false) {
+        isSubmittingAttachmentsRef.current = false;
+        return;
+      }
+      if (clearDraftOnSubmit) {
+        uploadedFilesRef.current = [];
         removeDraft(draftId);
+        if (draftId === "new" && chatId) {
+          removeDraft(chatId);
+        }
+        if (draftId !== "new") {
+          isSubmittingAttachmentsRef.current = false;
+        }
         setTimeout(() => setInput(""), 0);
       }
     }
@@ -677,6 +734,10 @@ export const ChatInput = ({
     setInput(`${input}${separator}${content}`);
     await handleRemoveFile(index);
   };
+
+  if (isResolvingInitialState) {
+    return <ChatInputLoadingState showAgentControls={isAgent} />;
+  }
 
   return (
     <div className={`relative px-4 min-w-0 ${isCentered ? "" : "pb-3"}`}>
@@ -764,7 +825,8 @@ export const ChatInput = ({
           />
         ) : (
           <div
-            className={`order-2 sm:order-1 flex flex-col gap-3 transition-colors relative bg-input-chat py-3 max-h-[300px] min-w-0 overflow-hidden shadow-[0px_12px_32px_0px_rgba(0,0,0,0.02)] border border-black/8 dark:border-border ${uploadedFiles && uploadedFiles.length > 0 ? "rounded-b-[22px] border-t-0" : "rounded-[22px]"}`}
+            className={`chat-input-glass-surface relative z-10 order-2 flex max-h-[300px] min-w-0 flex-col gap-3 overflow-hidden border border-black/8 py-3 shadow-[0px_12px_32px_0px_rgba(0,0,0,0.02)] transition-colors sm:order-1 dark:border-border ${uploadedFiles && uploadedFiles.length > 0 ? "rounded-b-[22px] border-t-0" : "rounded-[22px]"}`}
+            data-testid="chat-input-surface"
           >
             <ChatInputTextarea
               draftId={draftId}
@@ -791,23 +853,21 @@ export const ChatInput = ({
           </div>
         )}
 
-        {/* Agent controls below input.
-            Desktop centered new chats (no messages yet): absolutely positioned to avoid
-            shifting the centered layout.
-            On mobile, permission approval sits beside the sandbox selector. */}
+        {/* Compact mobile Agent controls below the input. Desktop keeps these
+            selectors in the main toolbar where there is room for them. */}
         {isAgent && !showAgentApprovalPrompt && (
           <div
-            className={`order-3 flex items-center gap-2 px-1 pt-2 min-w-0 ${
-              isNewChat && !hasMessages
-                ? "md:absolute md:left-4 md:right-4 md:top-full"
-                : ""
-            }`}
+            className="chat-input-glass-context relative z-0 order-3 mx-6 -mt-2 flex h-10 min-w-0 items-center gap-2 rounded-b-[18px] border border-t-0 border-black/8 px-3 pt-2 md:hidden dark:border-border/70"
+            data-testid="chat-input-agent-context"
           >
             <SandboxSelector
               value={sandboxPreference}
               onChange={setSandboxPreference}
             />
-            <div className="min-w-0 md:hidden">
+            <div
+              className="ml-auto min-w-0 md:hidden"
+              data-testid="chat-input-mobile-permission"
+            >
               <AgentPermissionSelector analyticsSurface="chat_input" />
             </div>
           </div>

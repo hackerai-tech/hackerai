@@ -10,13 +10,17 @@ import { ConvexHttpClient } from "convex/browser";
 let client: ConvexHttpClient | null = null;
 let overrideUrl: string | undefined;
 
+export function getConvexUrl(): string {
+  const url = overrideUrl ?? process.env.NEXT_PUBLIC_CONVEX_URL;
+  if (!url) {
+    throw new Error("NEXT_PUBLIC_CONVEX_URL is not set");
+  }
+  return url;
+}
+
 export function getConvexClient(): ConvexHttpClient {
   if (!client) {
-    const url = overrideUrl ?? process.env.NEXT_PUBLIC_CONVEX_URL;
-    if (!url) {
-      throw new Error("NEXT_PUBLIC_CONVEX_URL is not set");
-    }
-    client = new ConvexHttpClient(url);
+    client = new ConvexHttpClient(getConvexUrl());
   }
   return client;
 }

@@ -115,23 +115,67 @@ import type {
   ProviderRequestDiagnostics,
   ProviderRequestRetentionDiagnostics,
 } from "@/lib/logger";
-import type { ChatMode, SubscriptionTier } from "@/types";
+import type { ChatMode, SelectedModel, SubscriptionTier } from "@/types";
 import { namespaceLanguageModelToolCalls } from "@/lib/ai/tool-call-id-namespace";
 import {
   guardLanguageModelProviderResponse,
   MAX_PROVIDER_TOOL_CALLS_PER_RESPONSE,
 } from "@/lib/ai/provider-response-guard";
 
-const AGENT_VISION_MODEL = "model-grok-4.5";
+const STANDARD_AGENT_VISION_MODEL = "model-grok-4.5";
+const PRO_AGENT_VISION_MODEL = "model-grok-4.5-pro";
+const FREE_AGENT_VISION_MODEL = "model-grok-4.6";
+const STANDARD_AGENT_TEXT_MODEL = "model-deepseek-v4-flash-0731";
+const PRO_AGENT_TEXT_MODEL = "model-deepseek-v4-pro-0813";
+
+const uiMessagesContainImageAttachment = (messages: UIMessage[]): boolean =>
+  messages.some((message) =>
+    message.parts?.some(
+      (part) =>
+        part.type === "file" &&
+        typeof part.mediaType === "string" &&
+        part.mediaType.startsWith("image/"),
+    ),
+  );
+
+export const resolveAgentModelAfterSummarization = (
+  modelName: string,
+  mode: ChatMode,
+  compactedContextHasImages: boolean,
+): string => {
+  if (mode !== "agent" || compactedContextHasImages) return modelName;
+  if (modelName === STANDARD_AGENT_VISION_MODEL) {
+    return STANDARD_AGENT_TEXT_MODEL;
+  }
+  if (modelName === PRO_AGENT_VISION_MODEL) {
+    return PRO_AGENT_TEXT_MODEL;
+  }
+  return modelName;
+};
 
 export const resolveAgentModelForImageToolResults = (
   modelName: string,
   mode: ChatMode,
   hasImageToolResults: boolean,
+  selectedModelOverride?: SelectedModel,
+  auxiliaryVisionEnabled = false,
 ): string => {
-  if (mode !== "agent" || !hasImageToolResults) return modelName;
-  if (modelName === "agent-model-free" || isDeepSeekModel(modelName)) {
-    return AGENT_VISION_MODEL;
+  if (mode !== "agent" || !hasImageToolResults || auxiliaryVisionEnabled) {
+    return modelName;
+  }
+  if (modelName === "agent-model-free") {
+    return FREE_AGENT_VISION_MODEL;
+  }
+  if (
+    selectedModelOverride === "hackerai-pro" ||
+    (!selectedModelOverride &&
+      (modelName === "model-deepseek-v4-pro" ||
+        modelName === "model-deepseek-v4-pro-0813"))
+  ) {
+    return PRO_AGENT_VISION_MODEL;
+  }
+  if (isDeepSeekModel(modelName)) {
+    return STANDARD_AGENT_VISION_MODEL;
   }
   return modelName;
 };
@@ -269,6 +313,53 @@ export const resetServedModelTelemetryForRetry = (
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null;
+
+export const getOpenRouterFileAnnotations = (
+  providerMetadata: unknown,
+): unknown[] | undefined => {
+  if (!isRecord(providerMetadata)) return undefined;
+  const openrouter = providerMetadata.openrouter;
+  if (!isRecord(openrouter) || !Array.isArray(openrouter.annotations)) {
+    return undefined;
+  }
+  return openrouter.annotations.length > 0
+    ? [...openrouter.annotations]
+    : undefined;
+};
+
+export const addOpenRouterFileAnnotationsToLastAssistantMessage = (
+  messages: ModelMessage[],
+  annotations: unknown[] | undefined,
+): ModelMessage[] => {
+  if (!annotations?.length) return messages;
+
+  const index = messages.findLastIndex(
+    (message) => message.role === "assistant",
+  );
+  if (index < 0) return messages;
+
+  const message = messages[index] as ModelMessage & {
+    providerOptions?: Record<string, unknown>;
+  };
+  const providerOptions = isRecord(message.providerOptions)
+    ? message.providerOptions
+    : {};
+  const openrouter = isRecord(providerOptions.openrouter)
+    ? providerOptions.openrouter
+    : {};
+  const nextMessages = [...messages];
+  nextMessages[index] = {
+    ...message,
+    providerOptions: {
+      ...providerOptions,
+      openrouter: {
+        ...openrouter,
+        annotations,
+      },
+    },
+  } as ModelMessage;
+  return nextMessages;
+};
 
 const ESTIMATED_BYTES_PER_TOKEN = 4;
 
@@ -452,6 +543,7 @@ export type AgentStreamContext = {
   endpoint: ChatApiEndpoint;
   userId: string;
   subscription: SubscriptionTier;
+  selectedModelOverride?: SelectedModel;
   chatId: string;
   fileTokens: Record<string, number>;
   noteInjectionOpts: {
@@ -466,6 +558,8 @@ export type AgentStreamContext = {
   contextUsageOn: boolean;
   isReasoningModel: boolean;
   platformAuthorized: boolean;
+  /** Images are represented as auxiliary descriptions; never promote the active model. */
+  auxiliaryVisionEnabled?: boolean;
   providerReasoningOverride?: {
     modelName: string;
     reasoning: ProviderReasoningOverride;
@@ -694,14 +788,23 @@ export async function createAgentStream(
 
   const initialActiveTools = await getActiveTools();
   const maxOutputTokens = MAX_OUTPUT_TOKENS;
-  let streamHasImageViewResults = uiMessagesContainImageViewResult(
-    state.finalMessages,
+  let routeModelName = modelName;
+  let streamHasImageViewResults =
+    !ctx.auxiliaryVisionEnabled &&
+    uiMessagesContainImageViewResult(state.finalMessages);
+  const streamHasPdfAttachments = state.finalMessages.some((message) =>
+    message.parts?.some(
+      (part) => part.type === "file" && part.mediaType === "application/pdf",
+    ),
   );
+  let openRouterFileAnnotations: unknown[] | undefined;
   const getEffectiveModelName = () =>
     resolveAgentModelForImageToolResults(
-      modelName,
+      routeModelName,
       ctx.mode,
       streamHasImageViewResults,
+      ctx.selectedModelOverride,
+      ctx.auxiliaryVisionEnabled,
     );
   const getEffectiveModelInfo = () => {
     const effectiveModelName = getEffectiveModelName();
@@ -724,9 +827,10 @@ export async function createAgentStream(
       effectiveModelName,
       ctx.mode,
       {
-        hasMultimodalToolResults: streamHasImageViewResults,
-        excludedModelSlugs: ctx.excludedProviderModelSlugs,
         requestedModelSlug,
+        hasMultimodalToolResults: streamHasImageViewResults,
+        hasPdfAttachments: streamHasPdfAttachments,
+        excludedModelSlugs: ctx.excludedProviderModelSlugs,
         ...(ctx.providerReasoningOverride?.modelName === effectiveModelName && {
           reasoningOverride: ctx.providerReasoningOverride.reasoning,
         }),
@@ -754,9 +858,12 @@ export async function createAgentStream(
       repairedMessages = repair.messages as ModelMessage[];
     }
 
-    return appendPlatformAuthorizationToLatestUserMessage(
-      repairedMessages,
-      ctx.platformAuthorized,
+    return addOpenRouterFileAnnotationsToLastAssistantMessage(
+      appendPlatformAuthorizationToLatestUserMessage(
+        repairedMessages,
+        ctx.platformAuthorized,
+      ),
+      openRouterFileAnnotations,
     );
   };
   let latestProviderRequestDiagnostics: ProviderRequestDiagnostics | undefined;
@@ -864,7 +971,10 @@ export async function createAgentStream(
         const toolResults =
           (lastStep && (lastStep as { toolResults?: unknown[] }).toolResults) ||
           [];
-        if (toolResultsContainImageViewResult(toolResults)) {
+        if (
+          !ctx.auxiliaryVisionEnabled &&
+          toolResultsContainImageViewResult(toolResults)
+        ) {
           streamHasImageViewResults = true;
         }
         const effectiveModelInfo = getEffectiveModelInfo();
@@ -926,9 +1036,19 @@ export async function createAgentStream(
               }
               state.finalMessages = result.summarizedMessages;
               state.transcriptSourceMessages = undefined;
+              streamHasImageViewResults =
+                !ctx.auxiliaryVisionEnabled &&
+                uiMessagesContainImageViewResult(result.summarizedMessages);
+              routeModelName = resolveAgentModelAfterSummarization(
+                routeModelName,
+                ctx.mode,
+                streamHasImageViewResults ||
+                  uiMessagesContainImageAttachment(result.summarizedMessages),
+              );
+              const continuationModelInfo = getEffectiveModelInfo();
               const activeTools = await getActiveToolsForRecovery(loopRecovery);
               const providerOptions = getStepProviderOptions(
-                effectiveModelInfo.modelName,
+                continuationModelInfo.modelName,
               );
               let summarizedModelMessages = await convertToModelMessages(
                 result.summarizedMessages,
@@ -952,11 +1072,11 @@ export async function createAgentStream(
               };
               const preparedMessages = prepareProviderMessages(
                 summarizedModelMessages,
-                effectiveModelInfo.modelName,
+                continuationModelInfo.modelName,
               );
               recordProviderRequestDiagnostics({
-                modelName: effectiveModelInfo.modelName,
-                requestedSlug: effectiveModelInfo.requestedSlug,
+                modelName: continuationModelInfo.modelName,
+                requestedSlug: continuationModelInfo.requestedSlug,
                 stepIndex: steps.length + 1,
                 source: "summarized_prepare_step",
                 messages: preparedMessages,
@@ -967,7 +1087,7 @@ export async function createAgentStream(
               });
               return {
                 model: getNamespacedLanguageModel(
-                  effectiveModelInfo.languageModel,
+                  continuationModelInfo.languageModel,
                   steps.length,
                 ),
                 activeTools,
@@ -1093,6 +1213,17 @@ export async function createAgentStream(
                   rawMessageCursor: rawModelMessages.length,
                 };
                 rollingModelMessages = nextBaseMessages;
+                streamHasImageViewResults =
+                  !ctx.auxiliaryVisionEnabled &&
+                  limitModelImageToolResults(
+                    nextBaseMessages as Array<Record<string, unknown>>,
+                  ).totalImageCount > 0;
+                routeModelName = resolveAgentModelAfterSummarization(
+                  routeModelName,
+                  ctx.mode,
+                  streamHasImageViewResults,
+                );
+                const continuationModelInfo = getEffectiveModelInfo();
                 state.postSummarizationContinuationActive = true;
                 state.postSummarizationToolCallCount = 0;
                 state.postSummarizationText = "";
@@ -1100,15 +1231,15 @@ export async function createAgentStream(
                 const activeTools =
                   await getActiveToolsForRecovery(loopRecovery);
                 const providerOptions = getStepProviderOptions(
-                  effectiveModelInfo.modelName,
+                  continuationModelInfo.modelName,
                 );
                 const preparedMessages = prepareProviderMessages(
                   nextBaseMessages,
-                  effectiveModelInfo.modelName,
+                  continuationModelInfo.modelName,
                 );
                 recordProviderRequestDiagnostics({
-                  modelName: effectiveModelInfo.modelName,
-                  requestedSlug: effectiveModelInfo.requestedSlug,
+                  modelName: continuationModelInfo.modelName,
+                  requestedSlug: continuationModelInfo.requestedSlug,
                   stepIndex: steps.length + 1,
                   source: "summarized_prepare_step",
                   messages: preparedMessages,
@@ -1119,7 +1250,7 @@ export async function createAgentStream(
                 });
                 return {
                   model: getNamespacedLanguageModel(
-                    effectiveModelInfo.languageModel,
+                    continuationModelInfo.languageModel,
                     steps.length,
                   ),
                   activeTools,
@@ -1300,6 +1431,9 @@ export async function createAgentStream(
     onStepFinish: async ({ usage, response, providerMetadata }) => {
       ctx.onModelStreamFinish?.();
       state.agentStepCount += 1;
+      openRouterFileAnnotations =
+        getOpenRouterFileAnnotations(providerMetadata) ??
+        openRouterFileAnnotations;
       let stepUsageCostIndex: number | undefined;
       if (usage) {
         const stepAccountingModel = resolveServedModelForCostAccounting({

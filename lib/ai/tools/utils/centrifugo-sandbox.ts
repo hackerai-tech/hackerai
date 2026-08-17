@@ -501,6 +501,10 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
             ...input,
             path: this.resolveWorkingPath(input.path),
             requestId,
+            ...(this.workingDirectory &&
+            (input.type === "file_write" || input.type === "file_append")
+              ? { allowedRoot: this.workingDirectory }
+              : {}),
             targetConnectionId: this.connectionInfo.connectionId,
           } as FileRequestMessage;
 
@@ -1022,7 +1026,10 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
    * Docker containers are always Linux regardless of host OS.
    */
   isWindows(): boolean {
-    return this.connectionInfo.osInfo?.platform === "win32";
+    return (
+      this.connectionInfo.osInfo?.platform === "win32" ||
+      this.shellKind === "cmd"
+    );
   }
 
   /**
@@ -1045,7 +1052,10 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
    * Uses double quotes on Windows (cmd.exe), single quotes on POSIX.
    */
   private escapeForTarget(value: string): string {
-    return escapeShellValue(value, this.connectionInfo.osInfo?.platform);
+    return escapeShellValue(
+      value,
+      this.isWindows() ? "win32" : this.connectionInfo.osInfo?.platform,
+    );
   }
 
   /**
@@ -1074,7 +1084,11 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
    */
   private async detectShell(): Promise<"bash" | "cmd"> {
     if (this.shellKind) return this.shellKind;
-    if (!this.isWindows()) {
+    const declaredPlatform = this.connectionInfo.osInfo?.platform;
+    // Older desktop clients did not publish osInfo. Probe those connections
+    // instead of assuming Bash: a Windows cmd relay would otherwise receive
+    // single-quoted signed URLs and split their `&` query fields into commands.
+    if (declaredPlatform && declaredPlatform !== "win32") {
       this.shellKind = "bash";
       return "bash";
     }

@@ -34,6 +34,12 @@ export type AgentWorkActivity = {
   id: string;
   part: MessagePart;
   partIndex: number;
+  groupedParts?: AgentWorkActivityPart[];
+};
+
+export type AgentWorkActivityPart = {
+  part: MessagePart;
+  partIndex: number;
 };
 
 export type AgentWorkTimelineItem =
@@ -78,6 +84,81 @@ const getToolCallId = (part: MessagePart) => {
   return typeof toolCallId === "string" && toolCallId.length > 0
     ? toolCallId
     : null;
+};
+
+const getSubagentLifecycleGroupKey = (part: MessagePart) => {
+  const candidate = part as {
+    type?: string;
+    state?: string;
+    output?: {
+      success?: boolean;
+      wait_outcome?: string;
+      result?: { status?: string };
+    };
+  };
+
+  if (
+    candidate.state !== "output-available" ||
+    candidate.output?.success !== true
+  ) {
+    return null;
+  }
+
+  if (candidate.type === "tool-create_agent") {
+    return "subagent:started";
+  }
+  if (candidate.type === "tool-send_message_to_agent") {
+    return "subagent:updated";
+  }
+  if (
+    candidate.type === "tool-wait_for_agents" &&
+    candidate.output.wait_outcome === "agent_finished"
+  ) {
+    return `subagent:finished:${candidate.output.result?.status ?? "completed"}`;
+  }
+
+  return null;
+};
+
+/**
+ * Combines adjacent successful child lifecycle events into one visual row.
+ * Each part remains independently clickable and keeps its original tool-call
+ * identity; only the presentation row is shared.
+ */
+const groupAdjacentSubagentActivities = (
+  activities: AgentWorkActivity[],
+): AgentWorkActivity[] => {
+  const grouped: AgentWorkActivity[] = [];
+
+  for (let index = 0; index < activities.length;) {
+    const first = activities[index];
+    const groupKey = getSubagentLifecycleGroupKey(first.part);
+    if (!groupKey) {
+      grouped.push(first);
+      index += 1;
+      continue;
+    }
+
+    const groupedParts: AgentWorkActivityPart[] = [
+      { part: first.part, partIndex: first.partIndex },
+    ];
+    let nextIndex = index + 1;
+    while (
+      nextIndex < activities.length &&
+      getSubagentLifecycleGroupKey(activities[nextIndex].part) === groupKey
+    ) {
+      groupedParts.push({
+        part: activities[nextIndex].part,
+        partIndex: activities[nextIndex].partIndex,
+      });
+      nextIndex += 1;
+    }
+
+    grouped.push({ ...first, groupedParts });
+    index = nextIndex;
+  }
+
+  return grouped;
 };
 
 const getPartType = (part: MessagePart) => (part as { type?: string }).type;
@@ -346,7 +427,7 @@ export function projectAgentWorkTimelineItems({
 
   for (let index = 0; index < activities.length; index += 1) {
     const first = activities[index];
-    if (!first || !isToolPart(first.part)) {
+    if (!first || !isToolPart(first.part) || first.groupedParts) {
       if (first) items.push({ kind: "activity", ...first });
       continue;
     }
@@ -356,7 +437,7 @@ export function projectAgentWorkTimelineItems({
     let cursor = index + 1;
     while (cursor < activities.length) {
       const next = activities[cursor];
-      if (!next || !isToolPart(next.part)) break;
+      if (!next || !isToolPart(next.part) || next.groupedParts) break;
 
       const nextExplicitStep = stepByActivityId.get(next.id);
       if (explicitStep !== undefined && nextExplicitStep !== explicitStep) {
@@ -473,9 +554,11 @@ export function projectAgentWorkParts(
     previousProjectedType = type;
   }
 
+  const groupedActivities = groupAdjacentSubagentActivities(activities);
+
   return {
-    activities,
-    hasExpandableWork: activities.some(({ part }) =>
+    activities: groupedActivities,
+    hasExpandableWork: groupedActivities.some(({ part }) =>
       isExpandableWorkedForPart(part),
     ),
     terminalChunksByToolCallId,

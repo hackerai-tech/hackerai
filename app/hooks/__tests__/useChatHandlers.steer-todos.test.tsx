@@ -312,6 +312,45 @@ describe("useChatHandlers steer todo handoff", () => {
     );
   });
 
+  it("persists and applies cleaned todos when editing a stopped response", async () => {
+    const regenerate = jest.fn();
+    const { result } = renderHook(() =>
+      useChatHandlers({
+        chatId: "chat-1",
+        messages,
+        sendMessage: mockSendMessage,
+        stop: mockStop,
+        regenerate,
+        setMessages: mockSetMessages,
+        isExistingChat: true,
+        status: "ready",
+        isSendingNowRef: { current: false },
+        hasManuallyStoppedRef: { current: true },
+        activeTriggerRunRef: { current: undefined },
+      }),
+    );
+
+    await act(async () => {
+      await result.current.handleEditMessage("user-1", "Edited task");
+    });
+
+    expect(mockRegenerateWithNewContent).toHaveBeenCalledWith({
+      messageId: "user-1",
+      newContent: "Edited task",
+      fileIds: undefined,
+      todos: [],
+    });
+    expect(mockSetTodos).toHaveBeenCalledWith([]);
+    expect(regenerate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        body: expect.objectContaining({
+          todos: [],
+          regenerate: true,
+        }),
+      }),
+    );
+  });
+
   it("keeps the queued message when the todo snapshot cannot be persisted", async () => {
     mockCancelStream.mockRejectedValueOnce(new Error("write failed"));
     const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
@@ -340,6 +379,52 @@ describe("useChatHandlers steer todo handoff", () => {
     }
 
     expect(globalThis.fetch).not.toHaveBeenCalled();
+    expect(mockRemoveQueuedMessage).not.toHaveBeenCalled();
+    expect(mockSendMessage).not.toHaveBeenCalled();
+  });
+
+  it("keeps the queued message and reconnects when cancellation is stale", async () => {
+    Object.defineProperty(globalThis, "fetch", {
+      configurable: true,
+      value: jest.fn(async () => {
+        return {
+          ok: false,
+          status: 409,
+          json: jest.fn(async () => ({
+            canceled: false,
+            reason: "stale_run",
+            activeTriggerRunId: "run-2",
+          })),
+        } as unknown as Response;
+      }),
+    });
+    const activeTriggerRunRef = { current: "run-1" };
+    const hasManuallyStoppedRef = { current: false };
+    const resumeActiveRun = jest.fn(async () => undefined);
+    const { result } = renderHook(() =>
+      useChatHandlers({
+        chatId: "chat-1",
+        messages,
+        sendMessage: mockSendMessage,
+        stop: mockStop,
+        regenerate: jest.fn(),
+        setMessages: mockSetMessages,
+        isExistingChat: true,
+        status: "streaming",
+        isSendingNowRef: { current: false },
+        hasManuallyStoppedRef,
+        activeTriggerRunRef,
+        resumeActiveRun,
+      }),
+    );
+
+    await act(async () => {
+      await result.current.handleSendNow("queued-1");
+    });
+
+    expect(activeTriggerRunRef.current).toBe("run-2");
+    expect(hasManuallyStoppedRef.current).toBe(false);
+    expect(resumeActiveRun).toHaveBeenCalledTimes(1);
     expect(mockRemoveQueuedMessage).not.toHaveBeenCalled();
     expect(mockSendMessage).not.toHaveBeenCalled();
   });

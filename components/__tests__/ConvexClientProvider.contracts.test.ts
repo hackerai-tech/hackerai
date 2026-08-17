@@ -73,4 +73,17 @@ describe("ConvexClientProvider auth recovery contracts", () => {
     );
     expect(authkitPatchSource).toContain("return { accessToken: undefined };");
   });
+
+  it("normalizes nullish refresh action options before destructuring", () => {
+    expect(authkitPatchSource).toContain(
+      "export const refreshAuthAction = async (options)",
+    );
+    expect(authkitPatchSource).toContain(
+      "export const refreshAuthAction = async (options?: RefreshAuthActionOptions | null)",
+    );
+    expect(authkitPatchSource).toContain(
+      "const { ensureSignedIn, organizationId } = options ?? {};",
+    );
+    expect(authkitPatchSource).toContain("it.each([undefined, null])");
+  });
 });

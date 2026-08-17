@@ -1,5 +1,5 @@
 import "@testing-library/jest-dom";
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, it, expect, jest, beforeEach } from "@jest/globals";
 import { useAuth } from "@workos-inc/authkit-nextjs/components";
 import type { SubscriptionTier } from "@/types";
@@ -9,6 +9,7 @@ let mockChatModeAccessResolved = true;
 let mockPaidAgentOnlyActive = false;
 let mockFreeDesktopAgentOnlyActive = false;
 let mockHasLocalSandbox = false;
+const mockSetSandboxPreference = jest.fn();
 
 jest.mock("@/app/components/AttachmentButton", () => ({
   AttachmentButton: () => <button type="button">Attach</button>,
@@ -31,6 +32,26 @@ jest.mock("@/app/components/ModelSelector", () => ({
 jest.mock("@/app/components/AgentPermissionSelector", () => ({
   AgentPermissionSelector: () => (
     <div data-testid="agent-permission-selector" />
+  ),
+}));
+
+jest.mock("@/app/components/SandboxSelector", () => ({
+  SandboxSelector: ({
+    size,
+    value,
+    onChange,
+  }: {
+    size?: string;
+    value?: string;
+    onChange?: (value: string) => void;
+  }) => (
+    <button
+      type="button"
+      data-testid="sandbox-selector"
+      data-size={size}
+      data-value={value}
+      onClick={() => onChange?.("local")}
+    />
   ),
 }));
 
@@ -61,6 +82,8 @@ jest.mock("@/app/contexts/GlobalState", () => ({
     hasLocalSandbox: mockHasLocalSandbox,
     paidAgentOnlyActive: mockPaidAgentOnlyActive,
     freeDesktopAgentOnlyActive: mockFreeDesktopAgentOnlyActive,
+    sandboxPreference: "e2b",
+    setSandboxPreference: mockSetSandboxPreference,
   }),
 }));
 
@@ -98,13 +121,14 @@ describe("ChatInputToolbar", () => {
     mockPaidAgentOnlyActive = false;
     mockFreeDesktopAgentOnlyActive = false;
     mockHasLocalSandbox = false;
+    mockSetSandboxPreference.mockClear();
     mockAuthUser(null);
   });
 
-  it("hides the model selector for logged-out users", () => {
+  it("hides the mode and model selectors for logged-out users", () => {
     render(<ChatInputToolbar {...defaultProps} />);
 
-    expect(screen.getByTestId("chat-mode-selector")).toBeInTheDocument();
+    expect(screen.queryByTestId("chat-mode-selector")).not.toBeInTheDocument();
     expect(screen.queryByTestId("model-selector")).not.toBeInTheDocument();
   });
 
@@ -157,7 +181,7 @@ describe("ChatInputToolbar", () => {
     ).not.toBeInTheDocument();
   });
 
-  it("shows the permission selector only in agent mode", () => {
+  it("shows desktop permission and sandbox selectors only in agent mode", () => {
     mockAuthUser({ id: "user_123" });
 
     const { rerender } = render(
@@ -166,9 +190,29 @@ describe("ChatInputToolbar", () => {
     expect(
       screen.queryByTestId("agent-permission-selector"),
     ).not.toBeInTheDocument();
+    expect(screen.queryByTestId("sandbox-selector")).not.toBeInTheDocument();
 
     rerender(<ChatInputToolbar {...defaultProps} chatMode="agent" />);
     expect(screen.getByTestId("agent-permission-selector")).toBeInTheDocument();
+    expect(screen.getByTestId("sandbox-selector")).toBeInTheDocument();
+    expect(screen.getByTestId("sandbox-selector")).toHaveAttribute(
+      "data-size",
+      "toolbar",
+    );
+    expect(screen.getByTestId("sandbox-selector")).toHaveAttribute(
+      "data-value",
+      "e2b",
+    );
+    fireEvent.click(screen.getByTestId("sandbox-selector"));
+    expect(mockSetSandboxPreference).toHaveBeenCalledWith("local");
+    expect(screen.getByTestId("chat-input-desktop-permission")).toHaveClass(
+      "hidden",
+      "md:block",
+    );
+    expect(screen.getByTestId("chat-input-desktop-sandbox")).toHaveClass(
+      "hidden",
+      "md:block",
+    );
   });
 
   it("removes only the mode selector for paid Agent-only mode", () => {

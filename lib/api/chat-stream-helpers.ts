@@ -521,8 +521,9 @@ export class SummarizationTracker {
  * stream, OpenRouter rolls forward through this list and bills at the served
  * model's rate (response.modelId reflects what actually ran).
  *
- * The persisted Max key now resolves to Kimi K3 and falls back to Grok 4.5 in
- * every mode. Historical Opus response ids remain recognized for accounting.
+ * Paid Auto/Standard use DeepSeek V4 Flash 0731, Pro uses DeepSeek V4 Pro
+ * 0813, and Max uses Grok 4.6. Historical aliases remain recognized for
+ * in-flight requests and cost accounting.
  *
  * Keys and values are registry names (see lib/ai/providers.ts) — the actual
  * OpenRouter slugs are resolved at request-build time so this stays in sync
@@ -530,47 +531,51 @@ export class SummarizationTracker {
  */
 const KIMI_K3_THEN_GROK_FALLBACK_CHAIN = [
   "model-kimi-k3",
-  "model-grok-4.5",
+  "model-grok-4.6",
 ] as const satisfies readonly ModelName[];
 
-const GROK_4_5_FALLBACK_CHAIN = [
+const GROK_4_6_FALLBACK_CHAIN = [
   "model-kimi-k3",
 ] as const satisfies readonly ModelName[];
 
 const AGENT_TEXT_FALLBACK_CHAIN = [
-  "model-grok-4.5",
+  "model-grok-4.6",
   "model-kimi-k3",
 ] as const satisfies readonly ModelName[];
 
-// HackerAI Pro uses Grok 4.5 for every request. GLM 5.2 remains its first
-// fallback, followed by Kimi K3 so media requests still have a multimodal final
-// recovery path if both primary providers are unavailable.
+const DEEPSEEK_V4_FLASH_0731_FALLBACK_CHAIN = [
+  "model-deepseek-v4-pro-0813",
+  ...AGENT_TEXT_FALLBACK_CHAIN,
+] as const satisfies readonly ModelName[];
+
+const DEEPSEEK_V4_PRO_0813_FALLBACK_CHAIN = [
+  ...AGENT_TEXT_FALLBACK_CHAIN,
+] as const satisfies readonly ModelName[];
+
+// Preserve the historical Grok 4.6 Pro alias for in-flight requests. GLM 5.2
+// remains its first fallback, followed by Kimi K3.
 const HACKERAI_PRO_FALLBACK_CHAIN = [
   "model-glm-5.2",
   "model-kimi-k3",
 ] as const satisfies readonly ModelName[];
 
-// HAC-64 treatment falls back through today's complete Pro route before the
-// existing GLM/Kimi recovery chain.
-const HACKERAI_GROK_4_6_PRO_FALLBACK_CHAIN = [
-  "model-grok-4.5-pro",
-  ...HACKERAI_PRO_FALLBACK_CHAIN,
-] as const satisfies readonly ModelName[];
-
 const MODEL_FALLBACK_CHAIN: Partial<Record<ModelName, readonly ModelName[]>> = {
   "ask-model-free": AGENT_TEXT_FALLBACK_CHAIN,
   "agent-model-free": AGENT_TEXT_FALLBACK_CHAIN,
+  "model-deepseek-v4-flash-0731": DEEPSEEK_V4_FLASH_0731_FALLBACK_CHAIN,
   "model-deepseek-v4-pro": AGENT_TEXT_FALLBACK_CHAIN,
-  "ask-model": GROK_4_5_FALLBACK_CHAIN,
-  "agent-model": GROK_4_5_FALLBACK_CHAIN,
-  "model-grok-4.5": GROK_4_5_FALLBACK_CHAIN,
-  "model-grok-4.5-pro": HACKERAI_PRO_FALLBACK_CHAIN,
-  "model-grok-4.6-pro": HACKERAI_GROK_4_6_PRO_FALLBACK_CHAIN,
-  "model-opus-4.6": ["model-grok-4.5"],
+  "model-deepseek-v4-pro-0813": DEEPSEEK_V4_PRO_0813_FALLBACK_CHAIN,
+  "ask-model": GROK_4_6_FALLBACK_CHAIN,
+  "agent-model": GROK_4_6_FALLBACK_CHAIN,
+  "model-grok-4.6": GROK_4_6_FALLBACK_CHAIN,
+  "model-grok-4.5": ["model-kimi-k3"],
+  "model-grok-4.5-pro": ["model-kimi-k3"],
+  "model-grok-4.6-pro": HACKERAI_PRO_FALLBACK_CHAIN,
+  "model-opus-4.6": ["model-grok-4.6"],
   "model-glm-5.2": KIMI_K3_THEN_GROK_FALLBACK_CHAIN,
-  "fallback-agent-model": GROK_4_5_FALLBACK_CHAIN,
-  "fallback-ask-model": GROK_4_5_FALLBACK_CHAIN,
-  "model-kimi-k3": ["model-grok-4.5"],
+  "fallback-agent-model": GROK_4_6_FALLBACK_CHAIN,
+  "fallback-ask-model": GROK_4_6_FALLBACK_CHAIN,
+  "model-kimi-k3": ["model-grok-4.6"],
 };
 
 const AUTO_MODEL_KEYS = new Set<string>([
@@ -598,7 +603,10 @@ export function isAutoModelSelectionForRetry({
 
 const HIGH_REASONING_MODELS = [
   "model-grok-4.5-pro",
+  "model-grok-4.6",
   "model-grok-4.6-pro",
+  "model-deepseek-v4-flash-0731",
+  "model-deepseek-v4-pro-0813",
   "model-glm-5.2",
   "model-opus-4.6",
 ] as const satisfies readonly ModelName[];
@@ -609,6 +617,7 @@ const isHighReasoningModel = (modelName?: string): boolean =>
 
 type FallbackOptions = {
   hasMultimodalToolResults?: boolean;
+  hasPdfAttachments?: boolean;
   reasoningOverride?: ProviderReasoningOverride;
   excludedModelSlugs?: readonly string[];
   requestedModelSlug?: string;
@@ -637,40 +646,48 @@ const getFallbackKeys = (
   return MODEL_FALLBACK_CHAIN[modelName as ModelName];
 };
 
+/** Returns the first app-side retry model for a failed provider route. */
 export function getRetryFallbackModel(
   modelName: ModelName,
   _mode: ChatMode,
 ): ModelName {
-  if (modelName === "model-grok-4.6-pro") {
-    return "model-grok-4.5-pro";
+  if (modelName === "model-deepseek-v4-flash-0731") {
+    return "model-deepseek-v4-pro-0813";
   }
-  if (modelName === "model-grok-4.5-pro") {
+  if (modelName === "model-deepseek-v4-pro-0813") {
+    return "model-grok-4.6";
+  }
+  if (modelName === "model-grok-4.6-pro") {
     return "model-glm-5.2";
   }
+  if (modelName === "model-grok-4.5" || modelName === "model-grok-4.5-pro") {
+    return "model-kimi-k3";
+  }
   if (modelName === "model-opus-4.6") {
-    return "model-grok-4.5";
+    return "model-grok-4.6";
   }
   if (
     modelName === "ask-model-free" ||
     modelName === "agent-model-free" ||
     modelName === "model-deepseek-v4-pro"
   ) {
-    return "model-grok-4.5";
+    return "model-grok-4.6";
   }
   if (
     modelName === "ask-model" ||
     modelName === "agent-model" ||
+    modelName === "model-grok-4.6" ||
     modelName === "model-grok-4.5" ||
     modelName === "fallback-agent-model" ||
     modelName === "fallback-ask-model"
   ) {
     return "model-kimi-k3";
   }
-  return "model-grok-4.5";
+  return "model-grok-4.6";
 }
 
 const CONTENT_FILTER_RETRY_CANDIDATES = [
-  "model-grok-4.5",
+  "model-grok-4.6",
   "model-kimi-k3",
   "model-glm-5.2",
 ] as const satisfies readonly ModelName[];
@@ -748,8 +765,11 @@ const OPENROUTER_RESPONSE_MODEL_COST_KEYS: Record<string, string> = {
   "deepseek/deepseek-v4-flash-20260423": "deepseek/deepseek-v4-flash",
   "deepseek/deepseek-v4-flash-0731": "agent-model-free",
   "deepseek/deepseek-v4-flash-20260731": "agent-model-free",
+  "deepseek/deepseek-v4-pro-0813": "model-deepseek-v4-pro-0813",
+  "deepseek/deepseek-v4-pro-20260813": "model-deepseek-v4-pro-0813",
   "x-ai/grok-4.5": "model-grok-4.5",
-  "x-ai/grok-4.6": "model-grok-4.6-pro",
+  "x-ai/grok-4.5-20260708": "model-grok-4.5",
+  "x-ai/grok-4.6": "model-grok-4.6",
   "z-ai/glm-5.2": "model-glm-5.2",
   "z-ai/glm-5.2-20260616": "model-glm-5.2",
   "moonshotai/kimi-k3": "model-kimi-k3",
@@ -832,8 +852,9 @@ export function buildProviderOptions(
       })
     : fallbackSlugs;
   // OpenRouter applies one reasoning configuration to both the primary model
-  // and every provider fallback. Force high whenever Grok 4.5 or 4.6 is
-  // reachable so neither route can inherit less effort.
+  // and every provider fallback. The Standard vision key uses medium while
+  // the Pro vision key and Grok 4.6 routes remain high.
+  const isMediumGrok45Vision = modelName === "model-grok-4.5" && isGrok45;
   const routesThroughGrok =
     isGrok45 ||
     isGrok46 ||
@@ -842,29 +863,44 @@ export function buildProviderOptions(
   const providerRouting = modelId
     ? getOpenRouterProviderRoutingForModel(modelId)
     : undefined;
-  const reasoning = routesThroughGrok
-    ? isHighOrGreaterReasoningOverride(options.reasoningOverride)
-      ? options.reasoningOverride
-      : {
-          enabled: true,
-          effort: "high",
-        }
-    : (options.reasoningOverride ??
-      (isHighReasoningModel(modelName) || isAgentDeepSeekV4
-        ? {
+  const reasoning = isMediumGrok45Vision
+    ? {
+        enabled: true,
+        effort: "medium",
+      }
+    : routesThroughGrok
+      ? isHighOrGreaterReasoningOverride(options.reasoningOverride)
+        ? options.reasoningOverride
+        : {
             enabled: true,
             effort: "high",
           }
-        : isReasoningModel
+      : (options.reasoningOverride ??
+        (isHighReasoningModel(modelName) || isAgentDeepSeekV4
           ? {
               enabled: true,
-              ...(isDeepSeekV4 ? { effort: "xhigh" } : {}),
+              effort: "high",
             }
-          : { enabled: false }));
+          : isReasoningModel
+            ? {
+                enabled: true,
+                ...(isDeepSeekV4 ? { effort: "xhigh" } : {}),
+              }
+            : { enabled: false }));
 
   return {
     openrouter: {
       reasoning,
+      ...(options.hasPdfAttachments && isDeepSeekV4
+        ? {
+            plugins: [
+              {
+                id: "file-parser" as const,
+                pdf: { engine: "mistral-ocr" as const },
+              },
+            ],
+          }
+        : {}),
       ...(userId && { user: userId }),
       ...(providerRouting && { provider: providerRouting }),
       ...(fallbackSlugs.length > 0 && { models: fallbackSlugs }),

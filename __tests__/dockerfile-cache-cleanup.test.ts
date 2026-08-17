@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { AGENT_BROWSER_IDLE_TIMEOUT_MS } from "@/lib/ai/tools/utils/agent-browser-runtime";
 
 const dockerfilePath = resolve(process.cwd(), "docker/Dockerfile");
 const dockerfile = readFileSync(dockerfilePath, "utf8");
@@ -79,6 +80,12 @@ describe("sandbox Dockerfile cache cleanup", () => {
     expect(installIndex).toBeGreaterThan(-1);
     expect(cleanupIndex).toBeGreaterThan(installIndex);
     expect(doctorIndex).toBeGreaterThan(cleanupIndex);
+  });
+
+  test("keeps the browser daemon timeout aligned with the Agent runtime", () => {
+    expect(dockerfile).toContain(
+      `ENV AGENT_BROWSER_IDLE_TIMEOUT_MS=${AGENT_BROWSER_IDLE_TIMEOUT_MS}`,
+    );
   });
 
   test("removes Go module and build caches after installing binaries", () => {

@@ -22,6 +22,7 @@ import {
 } from "@/lib/utils/client-storage";
 
 const mockMoveChatToProject = jest.fn<any>();
+const mockRenameChat = jest.fn<any>();
 const mockRouterPush = jest.fn();
 const mockToastSuccess = jest.fn();
 const mockToastInfo = jest.fn();
@@ -47,7 +48,7 @@ jest.mock("@/hooks/use-mobile", () => ({
   useIsMobile: () => mockUseIsMobile(),
 }));
 jest.mock("convex/react", () => ({
-  useMutation: () => jest.fn(),
+  useMutation: () => mockRenameChat,
 }));
 jest.mock("@/app/hooks/useChats", () => ({
   usePinChat: () => jest.fn(),
@@ -112,6 +113,7 @@ describe("ChatItem project actions", () => {
     jest.clearAllMocks();
     mockUseIsMobile.mockReturnValue(false);
     mockMoveChatToProject.mockResolvedValue(true);
+    mockRenameChat.mockResolvedValue(null);
     mockProjects = undefined;
     mockPathname = "/";
     clearSidebarTaskLastVisitedAt();
@@ -317,6 +319,23 @@ describe("ChatItem project actions", () => {
     expect(input).toHaveAttribute("name", "taskTitle");
     expect(input).toHaveAttribute("autocomplete", "off");
     expect(input).toHaveAttribute("placeholder", "Task name…");
+  });
+
+  it("does not persist the display-only default title when rename is unchanged", async () => {
+    const user = userEvent.setup();
+    render(<ChatItem id="chat-1" title="New Chat" />);
+
+    fireEvent.focus(screen.getByRole("button", { name: /Open task:/ }));
+    await user.click(screen.getByRole("button", { name: "Open task options" }));
+    await user.click(await screen.findByRole("menuitem", { name: "Rename" }));
+
+    expect(await screen.findByLabelText("Task name")).toHaveValue("New Task");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+
+    expect(mockRenameChat).not.toHaveBeenCalled();
+    expect(
+      screen.queryByRole("dialog", { name: "Rename Task" }),
+    ).not.toBeInTheDocument();
   });
 
   it("uses compact side padding for standard and project chat rows", () => {

@@ -1,10 +1,14 @@
 mod platform;
 mod pty;
 
+use cap_fs_ext::{FollowSymlinks, OpenOptionsFollowExt};
+use cap_std::ambient_authority;
+use cap_std::fs::{Dir, OpenOptions as CapOpenOptions};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
-use std::path::PathBuf;
+use std::io::Write as _;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU16, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri::Manager;
@@ -413,6 +417,7 @@ struct FileReadRequest {
 struct FileWriteRequest {
     path: String,
     content: String,
+    allowed_root: Option<String>,
     #[serde(default)]
     is_base64: bool,
 }
@@ -426,6 +431,7 @@ struct FileRemoveRequest {
 struct FileAppendRequest {
     path: String,
     content: String,
+    allowed_root: Option<String>,
     #[serde(default)]
     is_base64: bool,
 }
@@ -862,6 +868,110 @@ async fn count_file_lines(path: &std::path::Path, file_size: u64) -> Result<u64,
     Ok(lines)
 }
 
+fn scoped_mutation_target(path: &Path, allowed_root: &str) -> Result<(Dir, PathBuf), String> {
+    let root = Path::new(allowed_root);
+    if !root.is_absolute() || !path.is_absolute() {
+        return Err("Desktop project file mutations require absolute paths".to_string());
+    }
+
+    let relative_path = path.strip_prefix(root).map_err(|_| {
+        format!(
+            "Path is outside the allowed project folder: {}",
+            path.display()
+        )
+    })?;
+    if relative_path.as_os_str().is_empty()
+        || relative_path.components().any(|component| {
+            matches!(
+                component,
+                std::path::Component::ParentDir
+                    | std::path::Component::RootDir
+                    | std::path::Component::Prefix(_)
+            )
+        })
+    {
+        return Err(format!(
+            "Path is outside the allowed project folder: {}",
+            path.display()
+        ));
+    }
+
+    let dir = Dir::open_ambient_dir(root, ambient_authority()).map_err(|error| {
+        format!(
+            "Allowed root error: could not open project folder '{}': {}",
+            root.display(),
+            error
+        )
+    })?;
+    Ok((dir, relative_path.to_path_buf()))
+}
+
+fn open_scoped_mutation_file(
+    path: &Path,
+    allowed_root: &str,
+    append: bool,
+) -> Result<cap_std::fs::File, String> {
+    let (dir, relative_path) = scoped_mutation_target(path, allowed_root)?;
+    if let Some(parent) = relative_path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        dir.create_dir_all(parent)
+            .map_err(|error| format!("Mkdir error: {}", error))?;
+    }
+
+    let mut options = CapOpenOptions::new();
+    options.create(true).follow(FollowSymlinks::No);
+    if append {
+        options.append(true);
+    } else {
+        options.write(true).truncate(true);
+    }
+
+    dir.open_with(&relative_path, &options)
+        .map_err(|error| format!("Open error: {}", error))
+}
+
+fn open_unscoped_mutation_file(path: &Path, append: bool) -> Result<fs::File, String> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|error| format!("Mkdir error: {}", error))?;
+    }
+
+    let mut options = fs::OpenOptions::new();
+    options.create(true);
+    if append {
+        options.append(true);
+    } else {
+        options.write(true).truncate(true);
+    }
+    options
+        .open(path)
+        .map_err(|error| format!("Open error: {}", error))
+}
+
+fn write_desktop_file(
+    path: &Path,
+    allowed_root: Option<&str>,
+    bytes: &[u8],
+    append: bool,
+) -> Result<(), String> {
+    let allowed_root = allowed_root.filter(|root| !root.trim().is_empty());
+    if let Some(allowed_root) = allowed_root {
+        let mut file = open_scoped_mutation_file(path, allowed_root, append)?;
+        file.write_all(bytes)
+            .map_err(|error| format!("Write error: {}", error))?;
+        file.flush()
+            .map_err(|error| format!("Flush error: {}", error))?;
+    } else {
+        let mut file = open_unscoped_mutation_file(path, append)?;
+        file.write_all(bytes)
+            .map_err(|error| format!("Write error: {}", error))?;
+        file.flush()
+            .map_err(|error| format!("Flush error: {}", error))?;
+    }
+    Ok(())
+}
+
 async fn handle_file_stat(body: &str) -> Result<String, String> {
     let req: FileStatRequest =
         serde_json::from_str(body).map_err(|e| format!("Invalid JSON: {}", e))?;
@@ -997,26 +1107,21 @@ async fn handle_file_read(body: &str) -> Result<String, String> {
 async fn handle_file_write(body: &str) -> Result<String, String> {
     let req: FileWriteRequest =
         serde_json::from_str(body).map_err(|e| format!("Invalid JSON: {}", e))?;
-
-    // Ensure parent directory exists
-    if let Some(parent) = std::path::Path::new(&req.path).parent() {
-        tokio::fs::create_dir_all(parent)
-            .await
-            .map_err(|e| format!("Mkdir error: {}", e))?;
-    }
+    let path = std::path::Path::new(&req.path);
 
     if req.is_base64 {
         use base64::Engine;
         let bytes = base64::engine::general_purpose::STANDARD
             .decode(&req.content)
             .map_err(|e| format!("Base64 decode error: {}", e))?;
-        tokio::fs::write(&req.path, bytes)
-            .await
-            .map_err(|e| format!("Write error: {}", e))?;
+        write_desktop_file(path, req.allowed_root.as_deref(), &bytes, false)?;
     } else {
-        tokio::fs::write(&req.path, &req.content)
-            .await
-            .map_err(|e| format!("Write error: {}", e))?;
+        write_desktop_file(
+            path,
+            req.allowed_root.as_deref(),
+            req.content.as_bytes(),
+            false,
+        )?;
     }
 
     Ok(r#"{"ok":true}"#.to_string())
@@ -1025,35 +1130,22 @@ async fn handle_file_write(body: &str) -> Result<String, String> {
 async fn handle_file_append(body: &str) -> Result<String, String> {
     let req: FileAppendRequest =
         serde_json::from_str(body).map_err(|e| format!("Invalid JSON: {}", e))?;
+    let path = std::path::Path::new(&req.path);
 
-    if let Some(parent) = std::path::Path::new(&req.path).parent() {
-        tokio::fs::create_dir_all(parent)
-            .await
-            .map_err(|e| format!("Mkdir error: {}", e))?;
-    }
-
-    let mut file = tokio::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&req.path)
-        .await
-        .map_err(|e| format!("Open error: {}", e))?;
     if req.is_base64 {
         use base64::Engine;
         let bytes = base64::engine::general_purpose::STANDARD
             .decode(&req.content)
             .map_err(|e| format!("Base64 decode error: {}", e))?;
-        file.write_all(&bytes)
-            .await
-            .map_err(|e| format!("Append error: {}", e))?;
+        write_desktop_file(path, req.allowed_root.as_deref(), &bytes, true)?;
     } else {
-        file.write_all(req.content.as_bytes())
-            .await
-            .map_err(|e| format!("Append error: {}", e))?;
+        write_desktop_file(
+            path,
+            req.allowed_root.as_deref(),
+            req.content.as_bytes(),
+            true,
+        )?;
     }
-    file.flush()
-        .await
-        .map_err(|e| format!("Flush error: {}", e))?;
 
     Ok(r#"{"ok":true}"#.to_string())
 }
@@ -1097,6 +1189,41 @@ async fn handle_file_list(body: &str) -> Result<String, String> {
 }
 
 // ── Tauri IPC Commands ────────────────────────────────────────────────
+
+async fn dispatch_desktop_file_request(
+    request: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let request_type = request
+        .get("type")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| "Desktop file request is missing a type".to_string())?;
+    let body = serde_json::to_string(&request)
+        .map_err(|error| format!("Failed to serialize desktop file request: {}", error))?;
+
+    let response = match request_type {
+        "file_stat" => handle_file_stat(&body).await,
+        "file_read" => handle_file_read(&body).await,
+        "file_write" => handle_file_write(&body).await,
+        "file_append" => handle_file_append(&body).await,
+        "file_remove" => handle_file_remove(&body).await,
+        "file_list" => handle_file_list(&body).await,
+        _ => Err(format!(
+            "Unsupported desktop file request type: {}",
+            request_type
+        )),
+    }?;
+
+    serde_json::from_str(&response)
+        .map_err(|error| format!("Failed to parse desktop file response: {}", error))
+}
+
+/// Executes desktop file operations through Tauri IPC so the HTTPS webview
+/// never needs to fetch an insecure loopback HTTP endpoint. The existing HTTP
+/// handlers remain available for rolling compatibility with older web bundles.
+#[tauri::command]
+async fn desktop_file_request(request: serde_json::Value) -> Result<serde_json::Value, String> {
+    dispatch_desktop_file_request(request).await
+}
 
 #[derive(Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase", tag = "type")]
@@ -1720,6 +1847,210 @@ async fn execute_pty_kill(
     manager.kill(&session_id)
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn unique_test_dir(label: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "hackerai-desktop-{}-{}",
+            label,
+            uuid::Uuid::new_v4().simple()
+        ))
+    }
+
+    #[tokio::test]
+    async fn file_write_allows_nested_paths_inside_allowed_root() {
+        let root = unique_test_dir("allowed-root");
+        fs::create_dir_all(&root).expect("create allowed root");
+        let target = root.join("src").join("app.ts");
+        let body = serde_json::json!({
+            "path": target.to_string_lossy().to_string(),
+            "content": "updated",
+            "allowed_root": root.to_string_lossy().to_string(),
+        })
+        .to_string();
+
+        let result = handle_file_write(&body).await;
+
+        assert!(result.is_ok(), "{result:?}");
+        let content = fs::read_to_string(&target).expect("written file should exist");
+        assert_eq!(content, "updated");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn desktop_file_request_dispatches_write_and_read_over_ipc() {
+        let root = unique_test_dir("ipc-round-trip");
+        fs::create_dir_all(&root).expect("create root");
+        let target = root.join("notes.txt");
+
+        let write_result = dispatch_desktop_file_request(serde_json::json!({
+            "type": "file_write",
+            "path": target.to_string_lossy().to_string(),
+            "content": "written over ipc",
+            "allowed_root": root.to_string_lossy().to_string(),
+        }))
+        .await;
+        assert_eq!(
+            write_result.expect("IPC write should succeed"),
+            serde_json::json!({ "ok": true })
+        );
+
+        let read_result = dispatch_desktop_file_request(serde_json::json!({
+            "type": "file_read",
+            "path": target.to_string_lossy().to_string(),
+            "max_full_bytes": 1024,
+            "max_result_bytes": 1024,
+        }))
+        .await
+        .expect("IPC read should succeed");
+        assert_eq!(read_result["content"], "written over ipc");
+        assert_eq!(read_result["path"], target.to_string_lossy().as_ref());
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn desktop_file_request_rejects_unknown_operations() {
+        let result = dispatch_desktop_file_request(serde_json::json!({
+            "type": "file_execute",
+            "path": "/tmp/not-used",
+        }))
+        .await;
+
+        assert_eq!(
+            result.expect_err("unknown operation should fail"),
+            "Unsupported desktop file request type: file_execute"
+        );
+    }
+
+    #[tokio::test]
+    async fn file_write_preserves_unscoped_desktop_compatibility() {
+        let root = unique_test_dir("unscoped");
+        let target = root.join("notes.txt");
+        let body = serde_json::json!({
+            "path": target.to_string_lossy().to_string(),
+            "content": "updated",
+        })
+        .to_string();
+
+        let result = handle_file_write(&body).await;
+
+        assert!(result.is_ok(), "{result:?}");
+        assert_eq!(
+            fs::read_to_string(&target).expect("written file should exist"),
+            "updated"
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn file_append_allows_existing_files_inside_allowed_root() {
+        let root = unique_test_dir("allowed-append-root");
+        fs::create_dir_all(&root).expect("create allowed root");
+        let target = root.join("notes.txt");
+        fs::write(&target, "first").expect("seed target");
+        let body = serde_json::json!({
+            "path": target.to_string_lossy().to_string(),
+            "content": " second",
+            "allowed_root": root.to_string_lossy().to_string(),
+        })
+        .to_string();
+
+        let result = handle_file_append(&body).await;
+
+        assert!(result.is_ok(), "{result:?}");
+        assert_eq!(
+            fs::read_to_string(&target).expect("appended file should exist"),
+            "first second"
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn file_write_rejects_parent_traversal_from_allowed_root() {
+        let root = unique_test_dir("traversal-root");
+        let external = unique_test_dir("traversal-external");
+        fs::create_dir_all(&root).expect("create root");
+        let external_target = root
+            .join("..")
+            .join(external.file_name().expect("external basename"))
+            .join("outside.txt");
+        let body = serde_json::json!({
+            "path": external_target.to_string_lossy().to_string(),
+            "content": "overwritten",
+            "allowed_root": root.to_string_lossy().to_string(),
+        })
+        .to_string();
+
+        let result = handle_file_write(&body).await;
+
+        assert!(result.is_err(), "{result:?}");
+        assert!(!external_target.exists());
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(&external);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn file_write_rejects_symlink_escape_from_allowed_root() {
+        use std::os::unix::fs::symlink;
+
+        let root = unique_test_dir("symlink-root");
+        let external = unique_test_dir("symlink-external");
+        fs::create_dir_all(&root).expect("create root");
+        fs::create_dir_all(&external).expect("create external");
+        let external_target = external.join("secret.txt");
+        fs::write(&external_target, "secret").expect("seed external target");
+        let project_link = root.join("linked-secret.txt");
+        symlink(&external_target, &project_link).expect("create symlink");
+        let body = serde_json::json!({
+            "path": project_link.to_string_lossy().to_string(),
+            "content": "overwritten",
+            "allowed_root": root.to_string_lossy().to_string(),
+        })
+        .to_string();
+
+        let result = handle_file_write(&body).await;
+
+        assert!(result.is_err(), "{result:?}");
+        assert_eq!(
+            fs::read_to_string(&external_target).expect("external target should remain"),
+            "secret"
+        );
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(&external);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn file_write_rejects_parent_symlink_escape_from_allowed_root() {
+        use std::os::unix::fs::symlink;
+
+        let root = unique_test_dir("parent-symlink-root");
+        let external = unique_test_dir("parent-symlink-external");
+        fs::create_dir_all(&root).expect("create root");
+        fs::create_dir_all(&external).expect("create external");
+        let project_link = root.join("linked-directory");
+        symlink(&external, &project_link).expect("create directory symlink");
+        let target = project_link.join("secret.txt");
+        let body = serde_json::json!({
+            "path": target.to_string_lossy().to_string(),
+            "content": "overwritten",
+            "allowed_root": root.to_string_lossy().to_string(),
+        })
+        .to_string();
+
+        let result = handle_file_write(&body).await;
+
+        assert!(result.is_err(), "{result:?}");
+        assert!(!external.join("secret.txt").exists());
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(&external);
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -1727,6 +2058,7 @@ pub fn run() {
             get_dev_auth_port,
             prepare_desktop_auth_state,
             get_cmd_server_info,
+            desktop_file_request,
             get_local_file_metadata,
             write_generated_text_attachment,
             read_generated_text_attachment,

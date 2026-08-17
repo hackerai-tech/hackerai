@@ -14,7 +14,7 @@ import { convexLogger } from "./lib/logger";
 import type { RetainedTailDoc } from "./lib/retainedTail";
 import { assertUserCanAccessChatHistory } from "./lib/suspensionGuards";
 import {
-  getVisibleSharedChatByChatId,
+  getVisibleSharedChatByShareId,
   listVisibleSharedMessages,
   sharedMessageValidator,
 } from "./lib/sharedChatSnapshot";
@@ -1933,6 +1933,21 @@ export const regenerateWithNewContent = mutation({
     messageId: v.string(),
     newContent: v.string(),
     fileIds: v.optional(v.array(v.string())),
+    todos: v.optional(
+      v.array(
+        v.object({
+          id: v.string(),
+          content: v.string(),
+          status: v.union(
+            v.literal("pending"),
+            v.literal("in_progress"),
+            v.literal("completed"),
+            v.literal("cancelled"),
+          ),
+          sourceMessageId: v.optional(v.string()),
+        }),
+      ),
+    ),
   },
   returns: v.null(),
   handler: async (ctx, args) => {
@@ -2102,6 +2117,24 @@ export const regenerateWithNewContent = mutation({
         await ctx.db.delete(msg._id);
       }
 
+      // Keep the persisted todo snapshot consistent with the messages removed
+      // above. In particular, stopping an Agent run persists its todos before
+      // an edit discards that response; without this write, the reactive chat
+      // query can restore those stale todos in the UI.
+      if (args.todos !== undefined) {
+        const chat = await ctx.db
+          .query("chats")
+          .withIndex("by_chat_id", (q) => q.eq("id", message.chat_id))
+          .first();
+
+        if (chat && chat.user_id === user.subject) {
+          await ctx.db.patch(chat._id, {
+            todos: args.todos,
+            update_time: Date.now(),
+          });
+        }
+      }
+
       return null;
     } catch (error) {
       // Only log unexpected errors. "Message not found" is treated as a benign no-op above.
@@ -2140,15 +2173,15 @@ export const regenerateWithNewContent = mutation({
  * the shared link only shows messages that existed at share time.
  * New messages added after sharing are NOT visible until user updates the share.
  *
- * @param chatId - The ID of the chat to get messages for
+ * @param shareId - The active public share ID
  * @returns Array of messages (up to share_date) with files/images as placeholders
  */
 export const getSharedMessages = query({
-  args: { chatId: v.string() },
+  args: { shareId: v.string() },
   returns: v.array(sharedMessageValidator),
   handler: async (ctx, args) => {
     try {
-      const chat = await getVisibleSharedChatByChatId(ctx, args.chatId);
+      const chat = await getVisibleSharedChatByShareId(ctx, args.shareId);
       return chat ? await listVisibleSharedMessages(ctx, chat) : [];
     } catch (error) {
       console.error("Failed to get shared messages:", error);

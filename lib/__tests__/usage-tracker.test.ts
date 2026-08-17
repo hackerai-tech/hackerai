@@ -338,20 +338,20 @@ describe("UsageTracker", () => {
           outputTokens: 100_000,
           inputTokenDetails: { cacheReadTokens: 800_000 },
         },
-        "model-grok-4.5",
+        "model-grok-4.6",
       );
 
       // Known DeepSeek step: $0.10.
-      // Missing Grok step: 200k uncached input ($0.40),
-      // 800k cache reads ($0.40), and 100k output ($0.60).
+      // Missing Grok 4.6 long-context step: 200k uncached input ($0.80),
+      // 800k cache reads ($0.80), and 100k output ($1.20).
       expect(
-        tracker.computeCostDollars("agent-model", "model-grok-4.5"),
-      ).toBeCloseTo(1.5);
+        tracker.computeCostDollars("agent-model", "model-grok-4.6"),
+      ).toBeCloseTo(2.9);
 
       const usage = tracker.createUsageCostRecord({
         selectedModel: "agent-model",
-        configuredModelId: "x-ai/grok-4.5",
-        accountingModel: "model-grok-4.5",
+        configuredModelId: "x-ai/grok-4.6",
+        accountingModel: "model-grok-4.6",
         rateLimitInfo: {
           remaining: 1000,
           resetTime: new Date(),
@@ -374,7 +374,7 @@ describe("UsageTracker", () => {
 
       // 100k uncached input + 900k cache reads + 100k output.
       expect(
-        tracker.computeCostDollars("model-deepseek-v4-pro", "model-grok-4.5"),
+        tracker.computeCostDollars("model-deepseek-v4-pro", "model-grok-4.6"),
       ).toBeCloseTo(0.1337625);
     });
 
@@ -711,7 +711,7 @@ describe("UsageTracker", () => {
       const usage = tracker.createUsageCostRecord({
         selectedModel: "agent-model-free",
         accountingModel: "model-kimi-k3",
-        configuredModelId: "x-ai/grok-4.5",
+        configuredModelId: "x-ai/grok-4.6",
         rateLimitInfo: {
           remaining: 1000,
           resetTime: new Date(),
@@ -736,7 +736,7 @@ describe("UsageTracker", () => {
       const usage = tracker.createUsageCostRecord({
         selectedModel: "agent-model-free",
         accountingModel: "model-kimi-k3",
-        configuredModelId: "x-ai/grok-4.5",
+        configuredModelId: "x-ai/grok-4.6",
         rateLimitInfo: {
           remaining: 1000,
           resetTime: new Date(),
@@ -804,7 +804,7 @@ describe("UsageTracker", () => {
       const usage = tracker.createUsageCostRecord({
         selectedModel: "agent-model-free",
         accountingModel: "model-kimi-k3",
-        configuredModelId: "x-ai/grok-4.5",
+        configuredModelId: "x-ai/grok-4.6",
         rateLimitInfo: {
           remaining: 1000,
           resetTime: new Date(),

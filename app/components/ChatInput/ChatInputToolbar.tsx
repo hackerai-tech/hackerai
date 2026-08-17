@@ -1,6 +1,7 @@
 "use client";
 
 import { AttachmentButton } from "@/app/components/AttachmentButton";
+import { SandboxSelector } from "@/app/components/SandboxSelector";
 import { ChatModeSelector } from "./ChatModeSelector";
 import { ModelSelector } from "@/app/components/ModelSelector";
 import { AgentPermissionSelector } from "@/app/components/AgentPermissionSelector";
@@ -28,7 +29,9 @@ export function ChatInputToolbar({
     freeDesktopAgentOnlyActive,
     hasLocalSandbox,
     paidAgentOnlyActive,
+    sandboxPreference,
     selectedModel,
+    setSandboxPreference,
     setSelectedModel,
     subscription,
   } = useGlobalState();
@@ -46,16 +49,32 @@ export function ChatInputToolbar({
       <div className="shrink-0">
         <AttachmentButton onAttachClick={onAttachClick} disabled={!isOnline} />
       </div>
-      {chatModeAccessResolved &&
+      {user &&
+      chatModeAccessResolved &&
       !paidAgentOnlyActive &&
       !freeDesktopAgentOnlyActive ? (
         <ChatModeSelector />
       ) : null}
       {showFreeAskComputerActivation ? <FreeAskComputerActivation /> : null}
       {isAgentMode(chatMode) ? (
-        <div className="hidden md:block">
-          <AgentPermissionSelector analyticsSurface="chat_input" />
-        </div>
+        <>
+          <div
+            className="hidden md:block"
+            data-testid="chat-input-desktop-permission"
+          >
+            <AgentPermissionSelector analyticsSurface="chat_input" />
+          </div>
+          <div
+            className="hidden md:block"
+            data-testid="chat-input-desktop-sandbox"
+          >
+            <SandboxSelector
+              value={sandboxPreference}
+              onChange={setSandboxPreference}
+              size="toolbar"
+            />
+          </div>
+        </>
       ) : null}
       <div className="ml-auto shrink-0 flex items-center gap-2.5">
         {user ? (

@@ -97,6 +97,60 @@ describe("todo_write", () => {
     });
   });
 
+  it("skips exact normalized duplicate assistant todos and reports their ids", async () => {
+    const context = makeContext();
+    const result = await runTool(createTodoWrite(context), {
+      merge: false,
+      todos: [
+        { id: "first", content: "Review auth flow", status: "in_progress" },
+        {
+          id: "duplicate",
+          content: "  review   AUTH flow  ",
+          status: "pending",
+        },
+        {
+          id: "distinct",
+          content: "Review auth flow on mobile",
+          status: "pending",
+        },
+      ],
+    });
+
+    expect(result).toMatchObject({
+      result: expect.stringContaining(
+        "Skipped new to-do IDs with exact duplicate normalized content matching an earlier item in this write or a preserved manual to-do: duplicate.",
+      ),
+      skippedTodoIds: ["duplicate"],
+      counts: { completed: 0, total: 2 },
+      currentTodos: [
+        { id: "first", content: "Review auth flow" },
+        { id: "distinct", content: "Review auth flow on mobile" },
+      ],
+    });
+  });
+
+  it("keeps manual todos and skips new assistant duplicates of them", async () => {
+    const context = makeContext([
+      { id: "manual", content: "Review auth flow", status: "pending" },
+    ]);
+    const result = await runTool(createTodoWrite(context), {
+      merge: true,
+      todos: [
+        { id: "duplicate", content: "review auth flow", status: "pending" },
+        { id: "new", content: "Verify remediation", status: "pending" },
+      ],
+    });
+
+    expect(result).toMatchObject({
+      skippedTodoIds: ["duplicate"],
+      counts: { completed: 0, total: 2 },
+      currentTodos: [
+        { id: "manual", content: "Review auth flow" },
+        { id: "new", content: "Verify remediation" },
+      ],
+    });
+  });
+
   it("tracks unique todo changes without treating inherited todos as current-run work", async () => {
     const context = makeContext([
       { id: "stale", content: "Old work", status: "pending" },

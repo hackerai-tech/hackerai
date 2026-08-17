@@ -66,7 +66,7 @@ import {
   closeAgentApprovalSession,
 } from "@/lib/api/agent-approval-session";
 import { createAgentRunCorrelationToken } from "@/lib/api/agent-run-correlation";
-import { evaluateProGrok46Experiment } from "@/lib/experiments/pro-grok-46";
+import { resolveSecurityValidationSubagentsEnabled } from "@/lib/posthog/subagent-feature";
 import {
   evaluateAgentAutoReviewFlag,
   type AgentAutoReviewAssignment,
@@ -83,6 +83,22 @@ const AGENT_TRIGGER_PRIORITY_BY_SUBSCRIPTION: Record<SubscriptionTier, number> =
 
 const getAgentTriggerPriority = (subscription: SubscriptionTier) =>
   AGENT_TRIGGER_PRIORITY_BY_SUBSCRIPTION[subscription];
+
+type AgentTriggerMachinePreset = "small-1x" | "small-2x";
+
+const AGENT_TRIGGER_MACHINE_BY_SUBSCRIPTION: Record<
+  SubscriptionTier,
+  AgentTriggerMachinePreset
+> = {
+  free: "small-1x",
+  pro: "small-1x",
+  "pro-plus": "small-2x",
+  ultra: "small-2x",
+  team: "small-2x",
+};
+
+export const getAgentTriggerMachine = (subscription: SubscriptionTier) =>
+  AGENT_TRIGGER_MACHINE_BY_SUBSCRIPTION[subscription];
 
 type AgentDeploymentEnvironment = {
   NODE_ENV?: string;
@@ -384,6 +400,9 @@ export const createAgentTriggerPost =
       await assertUserCanMakeCostIncurringRequest(userId);
       const userLocation = geolocation(req);
       const triggerRegion = getTriggerRegionForVercelRequest(req, userLocation);
+      const securityValidationSubagentsEnabled =
+        agentPermissionMode === "full_access" &&
+        (await resolveSecurityValidationSubagentsEnabled(userId));
 
       assertFreeAgentGates({
         mode: "agent",
@@ -434,16 +453,6 @@ export const createAgentTriggerPost =
         userCustomization,
         organizationId,
       });
-      const proGrok46Posthog =
-        selectedModelOverride === "hackerai-pro" ? PostHogClient() : null;
-      let proGrok46Experiment = await evaluateProGrok46Experiment({
-        posthog: proGrok46Posthog,
-        userId,
-        subscription,
-        mode: "agent",
-        selectedModel: selectedModelOverride,
-      });
-      await proGrok46Posthog?.shutdown().catch(() => undefined);
       const autoReviewPosthog =
         agentPermissionMode === "auto_review" ? PostHogClient() : null;
       const autoReviewAssignment: AgentAutoReviewAssignment | undefined =
@@ -463,10 +472,6 @@ export const createAgentTriggerPost =
         selectedModelOverride,
         extraUsageConfig,
       });
-      if (selectedModelOverride !== "hackerai-pro") {
-        proGrok46Experiment = undefined;
-      }
-
       let messagesForPersistence =
         stripLocalDesktopSourcePaths(requestMessages);
       let messagesForTrigger = messagesForPersistence;
@@ -559,6 +564,7 @@ export const createAgentTriggerPost =
 
       const triggerRequestedAt = Date.now();
       const triggerPriority = getAgentTriggerPriority(subscription);
+      const triggerMachine = getAgentTriggerMachine(subscription);
       // Trigger.dev's atomic Vercel integration pins the app and worker from the
       // same commit. Reuse that pin so Sessions cannot schedule an older worker.
       const approvalWorkerVersion =
@@ -611,7 +617,6 @@ export const createAgentTriggerPost =
         approvalSessionId,
         approvalProtocolVersion: AGENT_APPROVAL_PROTOCOL_VERSION,
         selectedModel: selectedModelOverride,
-        proGrok46Experiment,
         autoReviewAssignment,
         userLocation,
         isAutoContinue,
@@ -620,6 +625,7 @@ export const createAgentTriggerPost =
         isNewChat,
         endpoint,
         analyticsRequestContext,
+        securityValidationSubagentsEnabled,
         convexUrl: process.env.NEXT_PUBLIC_CONVEX_URL,
         requestTiming: {
           routeStartedAt,
@@ -636,20 +642,20 @@ export const createAgentTriggerPost =
         routeStartedAt,
         triggerRequestedAt,
         triggerPriority,
+        triggerMachine,
         triggerPayloadMessageCount: messagesForPayload.length,
         agentPermissionMode: permissionSnapshot.mode,
+        securityValidationSubagentsEnabled,
         approvalProtocolVersion: AGENT_APPROVAL_PROTOCOL_VERSION,
         ...(approvalWorkerVersion ? { approvalWorkerVersion } : {}),
         ...(approvalSessionId ? { approvalSessionId } : {}),
-        ...(proGrok46Experiment && {
-          proGrok46ExperimentVariant: proGrok46Experiment.variant,
-        }),
         ...(autoReviewAssignment && {
           autoReviewRolloutPhase: autoReviewAssignment.phase,
         }),
       };
       const triggerOptions = {
         ...(triggerPriority > 0 ? { priority: triggerPriority } : {}),
+        machine: triggerMachine,
         tags: triggerTags,
         ...(triggerRegion ? { region: triggerRegion } : {}),
         idempotencyKey: triggerIdempotencyKey,
@@ -661,6 +667,7 @@ export const createAgentTriggerPost =
       if (approvalSessionId) {
         const approvalTriggerConfig = {
           basePayload: agentPayload,
+          machine: triggerMachine,
           tags: triggerTags,
           ...(triggerRegion ? { region: triggerRegion } : {}),
           ...(approvalWorkerVersion

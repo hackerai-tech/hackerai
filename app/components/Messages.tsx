@@ -13,6 +13,7 @@ import {
 } from "react";
 import dynamic from "next/dynamic";
 import { LegendList, type LegendListRef } from "@legendapp/list/react";
+import { BrainIcon } from "lucide-react";
 import { MessageItem } from "./MessageItem";
 import { AgentActivityRow } from "./AgentActivityRow";
 import { AgentToolGroupRow } from "./AgentToolGroupRow";
@@ -78,15 +79,36 @@ type StickyElementRef =
 
 const getTimelineRowKey = (row: ChatTimelineRow) => row.id;
 
+const PendingAgentReasoning = () => (
+  <div
+    aria-label="Thinking"
+    className="flex w-full max-w-full items-center gap-2 text-muted-foreground text-sm"
+    data-testid="pending-agent-reasoning"
+    role="status"
+  >
+    <BrainIcon className="size-4 shrink-0" />
+    <Shimmer as="span" className="min-w-0 truncate text-left text-sm leading-5">
+      Thinking...
+    </Shimmer>
+  </div>
+);
+
 type ToolGroupMountSnapshot = {
+  awaitingRestoredAgentMessage: boolean;
   chatId: string;
   hasCommittedTimeline: boolean;
+  isRestoringStream: boolean;
+  restoredAgentMessageIds: ReadonlySet<string>;
   seenAgentMessageIds: ReadonlySet<string>;
   seenToolGroupIds: ReadonlySet<string>;
 };
 
 type ToolGroupMountStore = {
-  commit: (chatId: string, rows: readonly ChatTimelineRow[]) => void;
+  commit: (
+    chatId: string,
+    rows: readonly ChatTimelineRow[],
+    isRestoringStream: boolean,
+  ) => void;
   getSnapshot: () => ToolGroupMountSnapshot;
   markToolGroupMounted: (chatId: string, rowId: string) => void;
   subscribe: (listener: () => void) => () => void;
@@ -94,18 +116,27 @@ type ToolGroupMountStore = {
 
 function createToolGroupMountStore(initialChatId: string): ToolGroupMountStore {
   let snapshot: ToolGroupMountSnapshot = {
+    awaitingRestoredAgentMessage: false,
     chatId: initialChatId,
     hasCommittedTimeline: false,
+    isRestoringStream: false,
+    restoredAgentMessageIds: new Set(),
     seenAgentMessageIds: new Set(),
     seenToolGroupIds: new Set(),
   };
   const listeners = new Set<() => void>();
 
   return {
-    commit(chatId, rows) {
+    commit(chatId, rows, isRestoringStream) {
       const isCurrentChat = snapshot.chatId === chatId;
+      let awaitingRestoredAgentMessage = isCurrentChat
+        ? snapshot.awaitingRestoredAgentMessage
+        : false;
       const previouslySeenAgentMessageIds = isCurrentChat
         ? snapshot.seenAgentMessageIds
+        : new Set<string>();
+      const restoredAgentMessageIds = isCurrentChat
+        ? new Set(snapshot.restoredAgentMessageIds)
         : new Set<string>();
       const seenAgentMessageIds = isCurrentChat
         ? new Set(snapshot.seenAgentMessageIds)
@@ -114,6 +145,29 @@ function createToolGroupMountStore(initialChatId: string): ToolGroupMountStore {
         ? new Set(snapshot.seenToolGroupIds)
         : new Set<string>();
       let changed = !isCurrentChat;
+
+      if (
+        isRestoringStream &&
+        (!isCurrentChat || !snapshot.isRestoringStream)
+      ) {
+        awaitingRestoredAgentMessage = true;
+        changed = true;
+      }
+      if (!isCurrentChat || snapshot.isRestoringStream !== isRestoringStream) {
+        changed = true;
+      }
+
+      const latestMessage = rows.at(-1)?.message;
+      const latestIsAgentMessage =
+        latestMessage?.role === "assistant" &&
+        latestMessage.metadata?.mode === "agent";
+      if (awaitingRestoredAgentMessage && latestIsAgentMessage) {
+        if (!restoredAgentMessageIds.has(latestMessage.id)) {
+          restoredAgentMessageIds.add(latestMessage.id);
+          changed = true;
+        }
+        awaitingRestoredAgentMessage = false;
+      }
 
       for (const row of rows) {
         const isAgentMessage =
@@ -144,8 +198,11 @@ function createToolGroupMountStore(initialChatId: string): ToolGroupMountStore {
       if (!changed) return;
 
       snapshot = {
+        awaitingRestoredAgentMessage,
         chatId,
         hasCommittedTimeline,
+        isRestoringStream,
+        restoredAgentMessageIds,
         seenAgentMessageIds,
         seenToolGroupIds,
       };
@@ -216,6 +273,7 @@ interface MessagesProps {
   branchedFromChatId?: string;
   branchedFromChatTitle?: string;
   anchorMessageId?: string | null;
+  contentInsetEndAdjustment?: number;
 }
 
 export const Messages = ({
@@ -245,6 +303,7 @@ export const Messages = ({
   branchedFromChatId,
   branchedFromChatTitle,
   anchorMessageId = null,
+  contentInsetEndAdjustment = 0,
 }: MessagesProps) => {
   const { isAutoResuming } = useDataStreamState();
   // Prefetch and cache image URLs for better performance
@@ -335,6 +394,21 @@ export const Messages = ({
   );
   const rawTimelineRows = useMemo(() => {
     const isCurrentChat = toolGroupMountState.chatId === chatId;
+    const restoredAgentMessageIds = isCurrentChat
+      ? new Set(toolGroupMountState.restoredAgentMessageIds)
+      : new Set<string>();
+    if (
+      isCurrentChat &&
+      (isAutoResuming || toolGroupMountState.awaitingRestoredAgentMessage)
+    ) {
+      const latestMessage = visibleMessages.at(-1);
+      if (
+        latestMessage?.role === "assistant" &&
+        latestMessage.metadata?.mode === "agent"
+      ) {
+        restoredAgentMessageIds.add(latestMessage.id);
+      }
+    }
 
     return deriveChatTimelineRows({
       messages: visibleMessages,
@@ -351,6 +425,7 @@ export const Messages = ({
       seenAgentMessageIds: isCurrentChat
         ? toolGroupMountState.seenAgentMessageIds
         : new Set(),
+      restoredAgentMessageIds,
     });
   }, [
     chatId,
@@ -374,8 +449,12 @@ export const Messages = ({
   );
   useLayoutEffect(() => {
     stableTimelineRowsRef.current = stableTimelineRowsState;
-    toolGroupMountStore.commit(chatId, stableTimelineRowsState.result);
-  }, [chatId, stableTimelineRowsState, toolGroupMountStore]);
+    toolGroupMountStore.commit(
+      chatId,
+      stableTimelineRowsState.result,
+      isAutoResuming,
+    );
+  }, [chatId, isAutoResuming, stableTimelineRowsState, toolGroupMountStore]);
   const timelineRows = stableTimelineRowsState.result;
   const navigatorItems = useMemo(
     () => deriveMessageNavigatorItems(visibleMessages, timelineRows),
@@ -658,6 +737,8 @@ export const Messages = ({
     summarizationStatus?.status === "started" ||
     uploadStatus?.isUploading ||
     shouldShowLoadingDots;
+  const showPendingAgentReasoning =
+    shouldShowLoadingDots && mode === "agent" && !isAutoResuming;
   const timelineExtraData = useMemo(
     () => ({ editingMessageId, status }),
     [editingMessageId, status],
@@ -714,9 +795,11 @@ export const Messages = ({
               keepLatestReasoningOpenDuringStreaming={
                 row.keepLatestReasoningOpenDuringStreaming
               }
+              suppressReasoningAutoOpen={row.suppressReasoningAutoOpen}
               message={row.message}
               part={row.part}
               partIndex={row.partIndex}
+              groupedParts={row.groupedParts}
               sharedFileDetails={sharedFileDetails}
               status={effectiveStatus}
               terminalChunksByToolCallId={row.terminalChunksByToolCallId}
@@ -853,11 +936,15 @@ export const Messages = ({
         {uploadStatus?.isUploading && (
           <Shimmer className="text-sm">{`${uploadStatus.message}...`}</Shimmer>
         )}
-        {shouldShowLoadingDots && (
-          <div className="inline-flex items-center rounded-lg bg-muted px-3 py-2 text-muted-foreground">
-            <DotsSpinner size="sm" variant="primary" />
-          </div>
-        )}
+        {shouldShowLoadingDots ? (
+          showPendingAgentReasoning ? (
+            <PendingAgentReasoning />
+          ) : (
+            <div className="inline-flex items-center rounded-lg bg-muted px-3 py-2 text-muted-foreground">
+              <DotsSpinner size="sm" variant="primary" />
+            </div>
+          )
+        ) : null}
         {error && finishReason !== "timeout" && (
           <MessageErrorState
             error={error}
@@ -889,6 +976,7 @@ export const Messages = ({
           recycleItems={false}
           initialScrollAtEnd
           {...(anchoredEndSpace ? { anchoredEndSpace } : {})}
+          contentInsetEndAdjustment={contentInsetEndAdjustment}
           maintainVisibleContentPosition={{ data: true, size: true }}
           style={{ height: "100%", minHeight: 0 }}
           className="h-full min-h-0 overflow-x-hidden"

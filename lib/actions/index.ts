@@ -11,6 +11,8 @@ const MAX_GENERATED_TITLE_LENGTH = 100;
 const TITLE_GENERATION_MAX_OUTPUT_TOKENS = 64;
 const FALLBACK_TITLE_WORD_LIMIT = 5;
 const IMAGE_ONLY_CHAT_TITLE = "New chat";
+const AUXILIARY_IMAGE_DESCRIPTION_PATTERN =
+  /^<image_description\b(?=[^>]*\btrust="untrusted")[^>]*>[\s\S]*<\/image_description>$/;
 
 const truncateMiddle = (text: string, maxLength: number): string => {
   if (text.length <= maxLength) return text;
@@ -60,12 +62,24 @@ export const generateTitleFromUserMessage = async (
   truncatedMessages: UIMessage[],
 ): Promise<string | undefined> => {
   const firstMessage = truncatedMessages[0];
-  const textContent = (firstMessage?.parts ?? [])
-    .filter((part: { type: string; text?: string }) => part.type === "text")
+  const firstMessageParts = firstMessage?.parts ?? [];
+  const isAuxiliaryImageDescription = (part: {
+    type: string;
+    text?: string;
+  }): boolean =>
+    part.type === "text" &&
+    AUXILIARY_IMAGE_DESCRIPTION_PATTERN.test((part.text ?? "").trim());
+  const textContent = firstMessageParts
+    .filter(
+      (part: { type: string; text?: string }) =>
+        part.type === "text" && !isAuxiliaryImageDescription(part),
+    )
     .map((part: { type: string; text?: string }) => part.text || "")
     .join(" ");
-  const hasImage = (firstMessage?.parts ?? []).some(
-    (part) => part.type === "file" && part.mediaType.startsWith("image/"),
+  const hasImage = firstMessageParts.some(
+    (part) =>
+      (part.type === "file" && part.mediaType.startsWith("image/")) ||
+      isAuxiliaryImageDescription(part),
   );
 
   if (!textContent.trim() && hasImage) {

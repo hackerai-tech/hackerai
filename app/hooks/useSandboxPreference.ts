@@ -26,6 +26,40 @@ let bridgeGeneration = 0;
 let bridgeStateListener:
   ((active: boolean, status: DesktopBridgeStatus) => void) | null = null;
 const PERSISTABLE_SANDBOX_PREFERENCES = new Set(["e2b", "desktop"]);
+const DESKTOP_BRIDGE_RECOVERY_DELAYS_MS = [1_000, 3_000, 8_000, 16_000];
+const DESKTOP_BRIDGE_MAX_RECOVERY_ATTEMPTS = 6;
+const DESKTOP_BRIDGE_STABLE_RESET_MS = 60_000;
+const RECOVERABLE_DESKTOP_TERMINATIONS = new Set([
+  "connection_not_found",
+  "connection_inactive",
+  "transport_disconnected",
+]);
+let bridgeRecoveryAttempt = 0;
+let bridgeRecoveryTimer: ReturnType<typeof setTimeout> | null = null;
+let bridgeStableResetTimer: ReturnType<typeof setTimeout> | null = null;
+
+function clearBridgeRecovery(resetAttempt: boolean): void {
+  if (bridgeRecoveryTimer) {
+    clearTimeout(bridgeRecoveryTimer);
+    bridgeRecoveryTimer = null;
+  }
+  if (bridgeStableResetTimer) {
+    clearTimeout(bridgeStableResetTimer);
+    bridgeStableResetTimer = null;
+  }
+  if (resetAttempt) {
+    bridgeRecoveryAttempt = 0;
+  }
+}
+
+function scheduleStableRecoveryReset(generation: number): void {
+  if (bridgeStableResetTimer) clearTimeout(bridgeStableResetTimer);
+  bridgeStableResetTimer = setTimeout(() => {
+    bridgeStableResetTimer = null;
+    if (generation !== bridgeGeneration) return;
+    bridgeRecoveryAttempt = 0;
+  }, DESKTOP_BRIDGE_STABLE_RESET_MS);
+}
 
 export function useSandboxPreference(
   isAuthenticated: boolean,
@@ -52,14 +86,22 @@ export function useSandboxPreference(
   );
   const disconnectMutation = useMutation(api.localSandbox.disconnectDesktop);
 
+  const heartbeatMutation = useMutation(api.localSandbox.heartbeatDesktop);
   const connectDesktopRef = useRef(connectDesktopMutation);
   const refreshTokenRef = useRef(refreshTokenMutation);
   const disconnectRef = useRef(disconnectMutation);
+  const heartbeatRef = useRef(heartbeatMutation);
   useEffect(() => {
     connectDesktopRef.current = connectDesktopMutation;
     refreshTokenRef.current = refreshTokenMutation;
     disconnectRef.current = disconnectMutation;
-  }, [connectDesktopMutation, refreshTokenMutation, disconnectMutation]);
+    heartbeatRef.current = heartbeatMutation;
+  }, [
+    connectDesktopMutation,
+    refreshTokenMutation,
+    disconnectMutation,
+    heartbeatMutation,
+  ]);
 
   useEffect(() => {
     let cancelled = false;
@@ -83,6 +125,7 @@ export function useSandboxPreference(
       bridgeStartPromise = null;
       const bridgeToStop = activeBridge;
       activeBridge = null;
+      clearBridgeRecovery(true);
       void bridgeToStop?.stop();
       syncBridgeState(false, "idle");
       return () => {
@@ -121,10 +164,56 @@ export function useSandboxPreference(
                   refreshCentrifugoTokenDesktop: (args) =>
                     refreshTokenRef.current(args),
                   disconnectDesktop: (args) => disconnectRef.current(args),
-                  onTerminated: () => {
+                  heartbeatDesktop: (args) => heartbeatRef.current(args),
+                  onConnectionState: (state) => {
+                    if (generation !== bridgeGeneration) return;
+                    if (state === "connected") {
+                      scheduleStableRecoveryReset(generation);
+                    }
+                    bridgeStateListener?.(state === "connected", state);
+                  },
+                  onTerminated: (reason) => {
                     if (generation !== bridgeGeneration) return;
                     if (activeBridge === bridge) activeBridge = null;
-                    bridgeStateListener?.(false, "failed");
+                    if (!RECOVERABLE_DESKTOP_TERMINATIONS.has(reason)) {
+                      clearBridgeRecovery(true);
+                      bridgeStateListener?.(false, "failed");
+                      return;
+                    }
+
+                    clearBridgeRecovery(false);
+                    if (
+                      bridgeRecoveryAttempt >=
+                      DESKTOP_BRIDGE_MAX_RECOVERY_ATTEMPTS
+                    ) {
+                      console.warn(
+                        "[DesktopSandboxBridge] Automatic recovery exhausted",
+                        {
+                          reason,
+                          attempts: bridgeRecoveryAttempt,
+                        },
+                      );
+                      clearBridgeRecovery(true);
+                      bridgeStateListener?.(false, "failed");
+                      return;
+                    }
+
+                    bridgeStateListener?.(false, "connecting");
+                    const delay =
+                      DESKTOP_BRIDGE_RECOVERY_DELAYS_MS[
+                        Math.min(
+                          bridgeRecoveryAttempt,
+                          DESKTOP_BRIDGE_RECOVERY_DELAYS_MS.length - 1,
+                        )
+                      ];
+                    bridgeRecoveryAttempt += 1;
+                    bridgeRecoveryTimer = setTimeout(() => {
+                      bridgeRecoveryTimer = null;
+                      if (generation !== bridgeGeneration) return;
+                      bridgeGeneration += 1;
+                      bridgeStartPromise = null;
+                      setDesktopBridgeRetryAttempt((attempt) => attempt + 1);
+                    }, delay);
                   },
                 });
 
@@ -160,6 +249,11 @@ export function useSandboxPreference(
         // setSandboxPreferenceState(connectionId);
       } catch (error) {
         if (cancelled) return;
+        if (bridgeRecoveryTimer) {
+          setDesktopBridgeActive(false);
+          setDesktopBridgeStatus("connecting");
+          return;
+        }
         console.error("[DesktopSandboxBridge] Failed to start:", error);
         setDesktopBridgeActive(false);
         setDesktopBridgeStatus("failed");
@@ -174,6 +268,7 @@ export function useSandboxPreference(
     // Cleanup on beforeunload (page close/refresh)
     const handleBeforeUnload = () => {
       bridgeGeneration += 1;
+      clearBridgeRecovery(true);
       bridgeStartPromise = null;
       bridgeStateListener = null;
       try {
@@ -217,6 +312,7 @@ export function useSandboxPreference(
   const retryDesktopBridge = useCallback(() => {
     if (!isAuthenticated || !isTauriEnvironment()) return;
     bridgeGeneration += 1;
+    clearBridgeRecovery(true);
     bridgeStartPromise = null;
     setDesktopBridgeActive(false);
     setDesktopBridgeStatus("connecting");

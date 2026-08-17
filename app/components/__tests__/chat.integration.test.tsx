@@ -189,6 +189,7 @@ import {
   Chat,
   getExistingChatLoadState,
   getStoredAgentApprovalRequest,
+  useStreamedChatTitle,
   useServerMessages,
 } from "../chat";
 import { ChatLayout } from "../ChatLayout";
@@ -233,6 +234,23 @@ const QueueEditingHarness = () => {
   );
 };
 
+const ChatTitleHandoffHarness = ({
+  persistedTitle,
+}: {
+  persistedTitle: string;
+}) => {
+  const [chatTitle, setStreamedTitle] = useStreamedChatTitle(persistedTitle);
+
+  return (
+    <>
+      <div data-testid="chat-title">{chatTitle}</div>
+      <button type="button" onClick={() => setStreamedTitle("Generated title")}>
+        Stream generated title
+      </button>
+    </>
+  );
+};
+
 describe("Chat Component Integration", () => {
   let mockUseChat: jest.Mock;
 
@@ -258,6 +276,29 @@ describe("Chat Component Integration", () => {
   });
 
   describe("Basic Rendering", () => {
+    it("releases a persisted streamed title so later manual renames stay visible", () => {
+      const { rerender } = render(
+        <ChatTitleHandoffHarness persistedTitle="Original prompt" />,
+      );
+
+      fireEvent.click(
+        screen.getByRole("button", { name: "Stream generated title" }),
+      );
+      expect(screen.getByTestId("chat-title")).toHaveTextContent(
+        "Generated title",
+      );
+
+      rerender(<ChatTitleHandoffHarness persistedTitle="Generated title" />);
+      expect(screen.getByTestId("chat-title")).toHaveTextContent(
+        "Generated title",
+      );
+
+      rerender(<ChatTitleHandoffHarness persistedTitle="Renamed title" />);
+      expect(screen.getByTestId("chat-title")).toHaveTextContent(
+        "Renamed title",
+      );
+    });
+
     it("should render new chat with welcome message", () => {
       render(
         <TestWrapper>

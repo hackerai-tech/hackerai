@@ -1147,12 +1147,20 @@ describe("s3Actions", () => {
   describe("getFileUrlsByFileIdsAction", () => {
     const serviceUrlInfo = (
       url: string,
-      file: { size: number; media_type: string; name: string },
+      file: {
+        size: number;
+        media_type: string;
+        name: string;
+        auxiliary_vision_description?: string;
+        auxiliary_vision_model?: string;
+      },
     ) => ({
       url,
       sizeBytes: file.size,
       mediaType: file.media_type,
       name: file.name,
+      auxiliaryVisionDescription: file.auxiliary_vision_description,
+      auxiliaryVisionModel: file.auxiliary_vision_model,
     });
 
     it("should generate URLs for multiple S3 files using service key", async () => {
@@ -1184,6 +1192,8 @@ describe("s3Actions", () => {
         size: 1024,
         file_token_size: 100,
         is_attached: true,
+        auxiliary_vision_description: "Cached screenshot description",
+        auxiliary_vision_model: "google/gemini-3.6-flash",
         _creationTime: Date.now(),
       };
 

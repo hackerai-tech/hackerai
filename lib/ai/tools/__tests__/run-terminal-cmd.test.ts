@@ -143,6 +143,7 @@ function makeContext(opts: {
   ptySessionManager?: PtySessionManager;
   chatId?: string;
   requestToolApproval?: import("@/types").AgentToolApprovalRequester;
+  autoReviewEvidenceEnabled?: boolean;
   onSandboxResourceMetrics?: import("@/types").SandboxResourceMetricsObserver;
   recordHealthFailure?: jest.MockedFunction<() => boolean>;
 }) {
@@ -202,6 +203,7 @@ function makeContext(opts: {
     getCurrentModelName: () => "active-model",
     subscription: "pro",
     requestToolApproval: opts.requestToolApproval,
+    autoReviewEvidenceEnabled: opts.autoReviewEvidenceEnabled,
     onSandboxResourceMetrics: opts.onSandboxResourceMetrics,
     isE2BSandbox: (s: unknown) => {
       if (!s || typeof s !== "object") return false;
@@ -408,6 +410,202 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
     });
   });
 
+  test("collects bounded script evidence only for automatic review", async () => {
+    const run = jest.fn(
+      async (_cmd: string, opts?: { onStdout?: (s: string) => void }) => {
+        opts?.onStdout?.("ok\n");
+        return { stdout: "ok\n", stderr: "", exitCode: 0 };
+      },
+    );
+    const sandbox = {
+      sandboxKind: "centrifugo" as const,
+      getConnectionId: () => "desktop-a",
+      getWorkingDirectory: () => "/workspace/project",
+      isWindows: () => false,
+      supportsNativeFileRelay: () => true,
+      files: {
+        readText: jest.fn(async () => ({
+          type: "file_read_result" as const,
+          requestId: "request-1",
+          path: "/workspace/project/scripts/test.sh",
+          sizeBytes: 18,
+          totalLines: 2,
+          content: "#!/bin/sh\necho ok\n",
+        })),
+      },
+      commands: { run },
+    };
+    const requestToolApproval = jest.fn(async (request) => {
+      expect(request.autoReviewContext).toMatchObject({
+        type: "terminal_command",
+        command: "bash scripts/test.sh",
+        inspection: {
+          kind: "script",
+          status: "resolved",
+          scripts: [
+            {
+              source: "file",
+              path: "/workspace/project/scripts/test.sh",
+              content: "#!/bin/sh\necho ok\n",
+            },
+          ],
+          fingerprint: expect.any(String),
+        },
+      });
+      return {
+        approved: true as const,
+        approvalId: "approval-1",
+        sandboxIdentity: "connection:desktop-a" as const,
+        approvalSource: "auto_review" as const,
+      };
+    });
+    const { context } = makeContext({
+      sandbox,
+      requestToolApproval,
+      autoReviewEvidenceEnabled: true,
+    });
+
+    const result = (await runTool(createRunTerminalCmd(context), {
+      command: "bash scripts/test.sh",
+      brief: "run focused tests",
+      is_background: false,
+      timeout: 5,
+      interactive: false,
+    })) as { result: { exitCode: number; output: string } };
+
+    expect(result.result.exitCode).toBe(0);
+    expect(result.result.output).toContain("ok");
+    expect(sandbox.files.readText).toHaveBeenCalledTimes(2);
+    expect(run).toHaveBeenCalledTimes(1);
+  });
+
+  test("does not acquire a sandbox before reviewing commands without inspectable indirection", async () => {
+    let sandboxCallsAtApproval = -1;
+    let getSandboxCallCount = () => -1;
+    const requestToolApproval = jest.fn(async () => {
+      sandboxCallsAtApproval = getSandboxCallCount();
+      return {
+        approved: false as const,
+        approvalId: "approval-1",
+        reason: "User denied this action.",
+      };
+    });
+    const { context, sandboxManager } = makeContext({
+      sandbox: null,
+      requestToolApproval,
+      autoReviewEvidenceEnabled: true,
+    });
+    getSandboxCallCount = () => sandboxManager.getSandbox.mock.calls.length;
+
+    await runTool(createRunTerminalCmd(context), {
+      command: "echo ok",
+      brief: "print a status",
+      is_background: false,
+      timeout: 5,
+      interactive: false,
+    });
+
+    expect(sandboxCallsAtApproval).toBe(0);
+    expect(sandboxManager.getSandbox).not.toHaveBeenCalled();
+  });
+
+  test("does not inspect files in Ask for approval mode", async () => {
+    const readText = jest.fn(async () => {
+      throw new Error("inspection should be disabled");
+    });
+    const sandbox = {
+      sandboxKind: "centrifugo" as const,
+      getConnectionId: () => "desktop-a",
+      getWorkingDirectory: () => "/workspace/project",
+      isWindows: () => false,
+      supportsNativeFileRelay: () => true,
+      files: { readText },
+      commands: {
+        run: jest.fn(
+          async (_cmd: string, opts?: { onStdout?: (s: string) => void }) => {
+            opts?.onStdout?.("ok\n");
+            return { stdout: "ok\n", stderr: "", exitCode: 0 };
+          },
+        ),
+      },
+    };
+    const requestToolApproval = jest.fn(async (request) => {
+      expect(request.autoReviewContext).toEqual({
+        type: "terminal_command",
+        command: "bash scripts/test.sh",
+      });
+      return {
+        approved: true as const,
+        approvalId: "approval-1",
+        sandboxIdentity: "connection:desktop-a" as const,
+      };
+    });
+    const { context } = makeContext({ sandbox, requestToolApproval });
+    await runTool(createRunTerminalCmd(context), {
+      command: "bash scripts/test.sh",
+      brief: "run focused tests",
+      is_background: false,
+      timeout: 5,
+      interactive: false,
+    });
+    expect(readText).not.toHaveBeenCalled();
+  });
+
+  test("blocks execution when inspected script contents change after automatic review", async () => {
+    const readText = jest
+      .fn()
+      .mockResolvedValueOnce({
+        type: "file_read_result" as const,
+        requestId: "request-1",
+        path: "/workspace/project/scripts/test.sh",
+        sizeBytes: 8,
+        totalLines: 1,
+        content: "echo ok\n",
+      })
+      .mockResolvedValueOnce({
+        type: "file_read_result" as const,
+        requestId: "request-2",
+        path: "/workspace/project/scripts/test.sh",
+        sizeBytes: 9,
+        totalLines: 1,
+        content: "echo bad\n",
+      });
+    const run = jest.fn();
+    const sandbox = {
+      sandboxKind: "centrifugo" as const,
+      getConnectionId: () => "desktop-a",
+      getWorkingDirectory: () => "/workspace/project",
+      isWindows: () => false,
+      supportsNativeFileRelay: () => true,
+      files: { readText },
+      commands: { run },
+    };
+    const requestToolApproval = jest.fn(async () => ({
+      approved: true as const,
+      approvalId: "approval-1",
+      sandboxIdentity: "connection:desktop-a" as const,
+      approvalSource: "auto_review" as const,
+    }));
+    const { context } = makeContext({
+      sandbox,
+      requestToolApproval,
+      autoReviewEvidenceEnabled: true,
+    });
+
+    const result = (await runTool(createRunTerminalCmd(context), {
+      command: "bash scripts/test.sh",
+      brief: "run focused tests",
+      is_background: false,
+      timeout: 5,
+      interactive: false,
+    })) as { result: { error?: string } };
+
+    expect(result.result.error).toContain(
+      "inspected files changed after automatic review",
+    );
+    expect(run).not.toHaveBeenCalled();
+  });
+
   test("does not execute a command on a replacement Desktop connection", async () => {
     const run = jest.fn(async () => ({
       stdout: "wrong host\n",
@@ -536,6 +734,86 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
   test("detectAgentBrowserUsage ignores whitespace-only mentions", () => {
     expect(detectAgentBrowserUsage("echo agent-browser open")).toBeNull();
     expect(detectAgentBrowserUsage("agent-browser-next open")).toBeNull();
+  });
+
+  test("injects the idle timeout only for cloud agent-browser commands", async () => {
+    const e2b = {
+      jupyterUrl: "http://fake",
+      sandboxId: "sandbox-browser-env",
+      setTimeout: jest.fn(async () => undefined),
+      isRunning: jest.fn(async () => true),
+      commands: {
+        run: jest.fn(async (command: string) => {
+          if (command === "echo ready") {
+            return { stdout: "ready\n", stderr: "", exitCode: 0 };
+          }
+
+          return {
+            pid: 4321,
+            stdout: "",
+            stderr: "",
+            wait: jest.fn(async () => ({
+              stdout: "done\n",
+              stderr: "",
+              exitCode: 0,
+            })),
+            kill: jest.fn(async () => true),
+          };
+        }),
+      },
+    };
+    const { context } = makeContext({ sandbox: e2b });
+    const tool = createRunTerminalCmd(context);
+
+    await runTool(tool, {
+      command: "agent-browser open https://example.com",
+      brief: "open a browser page",
+      is_background: false,
+      timeout: 5,
+      interactive: false,
+    });
+    await runTool(tool, {
+      command: "echo ok",
+      brief: "print a status",
+      is_background: false,
+      timeout: 5,
+      interactive: false,
+    });
+
+    const browserCall = e2b.commands.run.mock.calls.find(
+      ([command]) => command === "agent-browser open https://example.com",
+    );
+    const unrelatedCall = e2b.commands.run.mock.calls.find(
+      ([command]) => command === "echo ok",
+    );
+
+    expect(browserCall?.[1]).toMatchObject({
+      envs: { AGENT_BROWSER_IDLE_TIMEOUT_MS: "900000" },
+    });
+    expect(unrelatedCall?.[1]).not.toHaveProperty("envs");
+  });
+
+  test("injects the idle timeout into cloud interactive browser shells", async () => {
+    const fakeHandle = makeFakeHandle();
+    const e2b = makeFakeE2BSandbox();
+    mockCreateE2BPtyHandle.mockResolvedValue(fakeHandle);
+    const { context } = makeContext({ sandbox: e2b });
+
+    setTimeout(() => fakeHandle.resolveExit(0), 10);
+    await runTool(createRunTerminalCmd(context), {
+      command: "agent-browser snapshot -i",
+      brief: "inspect the browser page",
+      is_background: false,
+      timeout: 5,
+      interactive: true,
+    });
+
+    expect(mockCreateE2BPtyHandle).toHaveBeenCalledWith(
+      e2b,
+      expect.objectContaining({
+        envs: { AGENT_BROWSER_IDLE_TIMEOUT_MS: "900000" },
+      }),
+    );
   });
 
   test("regression: legacy schema {command, brief, is_background, timeout} still works", async () => {
@@ -1215,6 +1493,7 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
     expect(JSON.stringify(mockPhEvent.mock.calls)).not.toContain(
       "secret.example",
     );
+    expect(nonE2B.commands.run.mock.calls[0]?.[1]).not.toHaveProperty("envs");
   });
 
   test("schema defaults action=exec and interactive=false when omitted", async () => {

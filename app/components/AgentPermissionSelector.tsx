@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   Check,
   ChevronDown,
@@ -15,6 +15,7 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover";
 import { useGlobalState } from "@/app/contexts/GlobalState";
+import { useAgentAutoReviewAvailability } from "@/app/contexts/AgentAutoReviewAvailabilityContext";
 import { captureAuthenticatedEvent } from "@/lib/analytics/client";
 import type { AgentPermissionMode } from "@/types";
 
@@ -60,40 +61,33 @@ export function AgentPermissionSelector({
   analyticsSurface,
 }: AgentPermissionSelectorProps) {
   const [open, setOpen] = useState(false);
-  const [autoReviewAvailable, setAutoReviewAvailable] = useState(false);
   const { agentPermissionMode, setAgentPermissionMode } = useGlobalState();
-  const initialAgentPermissionMode = useRef(agentPermissionMode);
+  const { agentAutoReviewAvailable, resolveAgentAutoReviewAvailability } =
+    useAgentAutoReviewAvailability();
   useEffect(() => {
-    const controller = new AbortController();
-    const applyAvailability = (available: boolean) => {
-      setAutoReviewAvailable(available);
-      if (!available && initialAgentPermissionMode.current === "auto_review") {
-        setAgentPermissionMode("ask_approval");
-      }
-    };
-    void fetch("/api/experiments/agent-auto-review", {
-      credentials: "same-origin",
-      cache: "no-store",
-      signal: controller.signal,
-    })
-      .then(async (response) => {
-        if (!response.ok) return false;
-        const data = (await response.json()) as { available?: unknown };
-        return data.available === true;
-      })
-      .then(applyAvailability)
-      .catch(() => {
-        if (!controller.signal.aborted) applyAvailability(false);
-      });
-    return () => controller.abort();
-  }, [setAgentPermissionMode]);
+    resolveAgentAutoReviewAvailability();
+  }, [resolveAgentAutoReviewAvailability]);
+
+  useEffect(() => {
+    if (
+      agentAutoReviewAvailable === false &&
+      agentPermissionMode === "auto_review"
+    ) {
+      setAgentPermissionMode("ask_approval");
+    }
+  }, [agentAutoReviewAvailable, agentPermissionMode, setAgentPermissionMode]);
+
+  const showAutoReview =
+    agentAutoReviewAvailable === true ||
+    (agentAutoReviewAvailable === null &&
+      agentPermissionMode === "auto_review");
 
   const options = useMemo(
     () =>
-      autoReviewAvailable
+      showAutoReview
         ? baseOptions
         : baseOptions.filter((option) => option.id !== "auto_review"),
-    [autoReviewAvailable],
+    [showAutoReview],
   );
   const selectedOption =
     options.find((option) => option.id === agentPermissionMode) ?? options[0];

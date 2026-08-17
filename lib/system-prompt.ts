@@ -110,6 +110,10 @@ Useful reading commands:
 - \`agent-browser get text @e1\`, \`agent-browser get attr @e1 href\`, \`agent-browser get url\`, and \`agent-browser get title\` for targeted extraction.
 - Use semantic locators such as \`agent-browser find role button click --name "Submit"\` when a snapshot ref is unavailable.
 
+Session lifetime:
+- The cloud browser shuts down after 15 minutes without an agent-browser command. The next command starts a new browser, so assume open tabs, in-memory browser state, and element refs are lost; reopen the URL and take a fresh snapshot instead of reusing old tabs or refs.
+- If login state is lost after relaunch, authenticate again through the user-approved flow. Do not save cookies, local storage, or other authentication state to sandbox files for idle recovery because a user's cloud sandbox can be reused across Agent runs.
+
 Recovery:
 - For daemon, socket, connection, or browser-not-running failures, run \`agent-browser doctor\`; use \`agent-browser doctor --fix\` only when the diagnosis identifies a repairable problem, then reopen the page and retry.
 - For malformed command syntax, correct the command. For stale or invalid element refs, run a fresh \`agent-browser snapshot -i\`; do not blindly retry the same failing action.
@@ -467,6 +471,16 @@ edit code, run terminal commands, or execute code. ${agentModeCTA}
   return `${modeReminder}${getProductQuestionsSection()}`;
 };
 
+const SECURITY_VALIDATION_SUBAGENT_SECTION = `<independent_validation>
+The create_agent, send_message_to_agent, and wait_for_agents tools are restricted to independent validation of concrete vulnerability candidates with sufficient evidence to reproduce or reject them.
+Do not create an agent for reconnaissance, broad research, discovery, code review, generic testing, or a simple one-shot command. Do not create one unless you can name the affected asset, weakness class, claimed impact, minimum relevant evidence, success criteria, and authorization boundaries in task.
+For create_agent, choose a distinct human-readable name, set skills to ["security_validation"], and use inherit_context only when the latest user message contains necessary validation context. The child is independent and must reproduce or reject the candidate; do not ask it to trust your conclusion.
+create_agent starts the child asynchronously and returns a short parent-scoped agent_id handle. Use that exact handle as target_agent_id when essential new evidence, a focused question, or a concrete correction changes that active validation; do not send status pings.
+Continue useful parent work while the child runs, then call wait_for_agents. You must receive the structured terminal result before treating the candidate as independently validated. Treat only result.status=completed with result.verdict=confirmed as independently confirmed. Rejected, inconclusive, failed, canceled, or timed-out validation is not confirmation.
+If the child does not return a completed structured result, leave the candidate unvalidated. Do not substitute parent-run tools to repeat the same validation or present the parent's own checks as independent validation.
+Always refer to a child by its exact returned name when describing its start, update, or completion. Do not claim that validation is independent until wait_for_agents returns that child's successful completed result.
+</independent_validation>`;
+
 // Core system prompt with optimized structure
 export const systemPrompt = async (
   userId: string,
@@ -476,6 +490,7 @@ export const systemPrompt = async (
   userCustomization?: UserCustomization | null,
   sandboxContext?: string | null,
   agentPermissionMode: AgentPermissionMode = "full_access",
+  securityValidationSubagentsEnabled: boolean = false,
 ): Promise<string> => {
   const shouldIncludeNotes =
     (subscription !== "free" || mode === "agent") &&
@@ -513,6 +528,9 @@ The current date is ${currentDateTime}.`;
     sections.push(
       getAgentModeSection(mode, sandboxContext, agentPermissionMode),
     );
+    if (securityValidationSubagentsEnabled) {
+      sections.push(SECURITY_VALIDATION_SUBAGENT_SECTION);
+    }
   }
 
   if (isDeepSeekModel(modelName)) {

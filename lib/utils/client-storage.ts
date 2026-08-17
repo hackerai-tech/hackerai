@@ -51,6 +51,8 @@ let openSidebarProjectIdsMemorySnapshot =
 const sidebarTaskLastVisitedAtListeners = new Map<string, Set<() => void>>();
 let sidebarTaskLastVisitedAtMemory: Record<string, number> = {};
 let sidebarTaskLastVisitedAtSubscriberCount = 0;
+let draftStoreMemory:
+  { raw: string | null; store: ConversationDraftStore } | undefined;
 
 const isBrowser = (): boolean => typeof window !== "undefined";
 
@@ -360,11 +362,10 @@ export const clearSidebarTaskLastVisitedAt = (): void => {
   taskIds.forEach(notifySidebarTaskLastVisitedAt);
 };
 
-export const readDraftStore = (): ConversationDraftStore => {
-  if (!isBrowser()) return { drafts: [] };
+const parseDraftStore = (raw: string | null): ConversationDraftStore => {
+  if (!raw) return { drafts: [] };
+
   try {
-    const raw = window.localStorage.getItem(CONVERSATION_DRAFTS_STORAGE_KEY);
-    if (!raw) return { drafts: [] };
     const parsed = JSON.parse(raw);
     const drafts = Array.isArray(parsed?.drafts) ? parsed.drafts : [];
     const userId =
@@ -375,13 +376,30 @@ export const readDraftStore = (): ConversationDraftStore => {
   }
 };
 
+export const readDraftStore = (): ConversationDraftStore => {
+  if (!isBrowser()) return { drafts: [] };
+
+  try {
+    const raw = window.localStorage.getItem(CONVERSATION_DRAFTS_STORAGE_KEY);
+    // Reuse the parsed snapshot while still noticing replacements from another
+    // tab or direct localStorage writes in this one.
+    if (draftStoreMemory?.raw === raw) return draftStoreMemory.store;
+
+    const store = parseDraftStore(raw);
+    draftStoreMemory = { raw, store };
+    return store;
+  } catch {
+    return draftStoreMemory?.store ?? { drafts: [] };
+  }
+};
+
 export const writeDraftStore = (store: ConversationDraftStore): void => {
   if (!isBrowser()) return;
+
   try {
-    window.localStorage.setItem(
-      CONVERSATION_DRAFTS_STORAGE_KEY,
-      JSON.stringify({ drafts: store.drafts, userId: store.userId }),
-    );
+    const raw = JSON.stringify({ drafts: store.drafts, userId: store.userId });
+    draftStoreMemory = { raw, store };
+    window.localStorage.setItem(CONVERSATION_DRAFTS_STORAGE_KEY, raw);
   } catch {
     // ignore
   }
@@ -673,6 +691,7 @@ export const removeDraft = (id: string): void => {
 
 export const clearAllDrafts = (): void => {
   if (!isBrowser()) return;
+  draftStoreMemory = { raw: null, store: { drafts: [] } };
   try {
     window.localStorage.removeItem(CONVERSATION_DRAFTS_STORAGE_KEY);
   } catch {

@@ -63,6 +63,7 @@ export const LegendList = forwardRef(function MockLegendList<
     keyExtractor,
     ListHeaderComponent,
     ListFooterComponent,
+    contentInsetEndAdjustment,
     className,
     style,
     "data-testid": dataTestId,
@@ -79,6 +80,7 @@ export const LegendList = forwardRef(function MockLegendList<
     keyExtractor?: (item: Item, index: number) => string;
     ListHeaderComponent?: OptionalComponent;
     ListFooterComponent?: OptionalComponent;
+    contentInsetEndAdjustment?: number;
     className?: string;
     style?: React.CSSProperties;
     "data-testid"?: string;
@@ -106,6 +108,7 @@ export const LegendList = forwardRef(function MockLegendList<
       style={style}
       data-testid={dataTestId}
       data-list-key={dataKey}
+      data-content-inset-end={contentInsetEndAdjustment}
     >
       <div className="legend-list-content-container">
         {renderOptionalComponent(ListHeaderComponent)}

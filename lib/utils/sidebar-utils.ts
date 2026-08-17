@@ -34,6 +34,17 @@ export interface Message {
 // per-part forEach below.
 const STREAMS_DURING_INPUT = new Set<string>(["tool-file"]);
 
+const getWebSearchQuery = (input: unknown): string => {
+  if (!input || typeof input !== "object") return "";
+  const { queries, query } = input as {
+    queries?: unknown;
+    query?: unknown;
+  };
+  if (Array.isArray(queries)) return queries.join(", ");
+  if (typeof queries === "string") return queries;
+  return typeof query === "string" ? query : "";
+};
+
 /**
  * Extract sidebar content from a single message. Exported for incremental processing
  * (e.g. only reprocess the last message during streaming).
@@ -93,6 +104,37 @@ export function extractSidebarContentFromMessage(
       part.type.startsWith("tool-") &&
       !STREAMS_DURING_INPUT.has(part.type)
     ) {
+      return;
+    }
+
+    if (
+      (part.type === "tool-delegate_task" ||
+        part.type === "tool-create_agent" ||
+        part.type === "tool-send_message_to_agent" ||
+        part.type === "tool-wait_for_agents") &&
+      part.toolCallId &&
+      typeof message.id === "string"
+    ) {
+      const lifecycle = message.parts?.find(
+        (candidate: any) =>
+          candidate?.type === "data-subagent-lifecycle" &&
+          candidate?.data?.parent_tool_call_id === part.toolCallId,
+      ) as any;
+      const selectedSubagentId =
+        lifecycle?.data?.subagent_id ??
+        part.output?.agent_id ??
+        part.output?.target_agent_id ??
+        part.input?.target_agent_id;
+      contentList.push({
+        kind: "subagents",
+        parentMessageId: lifecycle?.data?.parent_message_id ?? message.id,
+        toolCallId: part.toolCallId,
+        ...(part.type !== "tool-create_agent" &&
+        part.type !== "tool-delegate_task" &&
+        selectedSubagentId
+          ? { selectedSubagentId }
+          : {}),
+      });
       return;
     }
 
@@ -281,8 +323,7 @@ export function extractSidebarContentFromMessage(
 
     // Web Search - extract at input-available for auto-follow, and output-available for results
     if (part.type === "tool-web_search" && part.state === "input-available") {
-      const queries = part.input?.queries || [];
-      const query = Array.isArray(queries) ? queries.join(", ") : queries;
+      const query = getWebSearchQuery(part.input);
       if (query) {
         contentList.push({
           query,
@@ -294,8 +335,7 @@ export function extractSidebarContentFromMessage(
     }
 
     if (part.type === "tool-web_search" && part.state === "output-available") {
-      const queries = part.input?.queries || [];
-      const query = Array.isArray(queries) ? queries.join(", ") : queries;
+      const query = getWebSearchQuery(part.input);
 
       let results: WebSearchResult[] = [];
       if (part.output) {

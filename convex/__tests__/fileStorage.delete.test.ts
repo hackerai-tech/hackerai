@@ -95,11 +95,94 @@ describe("fileStorage - deleteFile", () => {
       db: {
         get: jest.fn().mockResolvedValue(mockFile),
         delete: jest.fn().mockResolvedValue(undefined),
+        patch: jest.fn().mockResolvedValue(undefined),
       },
       scheduler: {
         runAfter: jest.fn().mockResolvedValue(undefined),
       },
     };
+  });
+
+  describe("auxiliary vision cache", () => {
+    it("stores a bounded description only on an owned image", async () => {
+      const { isSupportedImageMediaType } =
+        await import("../../lib/utils/file-utils");
+      (isSupportedImageMediaType as jest.Mock).mockReturnValue(true);
+      mockFile.media_type = "image/png";
+      const { saveAuxiliaryVisionDescription } = await import("../fileStorage");
+
+      await expect(
+        saveAuxiliaryVisionDescription.handler(mockCtx, {
+          serviceKey: "service-key",
+          userId: testUserId,
+          fileId: testFileId,
+          description: "  A terminal shows a 403 error.  ",
+          model: "google/gemini-3.6-flash",
+        }),
+      ).resolves.toBeNull();
+
+      expect(mockCtx.db.patch).toHaveBeenCalledWith(testFileId, {
+        auxiliary_vision_description: "A terminal shows a 403 error.",
+        auxiliary_vision_model: "google/gemini-3.6-flash",
+      });
+    });
+
+    it("rejects cache writes for another user's file", async () => {
+      const { saveAuxiliaryVisionDescription } = await import("../fileStorage");
+
+      await expect(
+        saveAuxiliaryVisionDescription.handler(mockCtx, {
+          serviceKey: "service-key",
+          userId: "other-user",
+          fileId: testFileId,
+          description: "Description",
+          model: "google/gemini-3.6-flash",
+        }),
+      ).rejects.toThrow("File does not belong to user");
+      expect(mockCtx.db.patch).not.toHaveBeenCalled();
+    });
+
+    it("rejects cache writes for non-image files", async () => {
+      const { isSupportedImageMediaType } =
+        await import("../../lib/utils/file-utils");
+      (isSupportedImageMediaType as jest.Mock).mockReturnValue(false);
+      const { saveAuxiliaryVisionDescription } = await import("../fileStorage");
+
+      await expect(
+        saveAuxiliaryVisionDescription.handler(mockCtx, {
+          serviceKey: "service-key",
+          userId: testUserId,
+          fileId: testFileId,
+          description: "Description",
+          model: "google/gemini-3.6-flash",
+        }),
+      ).rejects.toThrow(
+        "Auxiliary vision descriptions are only valid for images",
+      );
+      expect(mockCtx.db.patch).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ["empty", "   "],
+      ["overlong", "x".repeat(12_001)],
+    ])("rejects %s cache descriptions", async (_label, description) => {
+      const { isSupportedImageMediaType } =
+        await import("../../lib/utils/file-utils");
+      (isSupportedImageMediaType as jest.Mock).mockReturnValue(true);
+      mockFile.media_type = "image/png";
+      const { saveAuxiliaryVisionDescription } = await import("../fileStorage");
+
+      await expect(
+        saveAuxiliaryVisionDescription.handler(mockCtx, {
+          serviceKey: "service-key",
+          userId: testUserId,
+          fileId: testFileId,
+          description,
+          model: "google/gemini-3.6-flash",
+        }),
+      ).rejects.toThrow("Auxiliary vision description has an invalid length");
+      expect(mockCtx.db.patch).not.toHaveBeenCalled();
+    });
   });
 
   describe("Authentication and Authorization", () => {
