@@ -103,11 +103,12 @@ Optional controls:
 - Ingress is fixed to AWS's `NO_INGRESS` connector. The guest establishes the
   HackerAI relay outbound, so lifecycle hooks are never exposed as a public API.
 - `AWS_LAMBDA_MICROVM_EGRESS_CONNECTOR_ARN` defaults to `INTERNET_EGRESS`.
-- `AWS_LAMBDA_MICROVM_IDLE_SECONDS` enables Lambda auto-suspend. It is disabled
-  by default because the command relay is outbound/asynchronous and endpoint
-  traffic is what resets Lambda's idle timer.
-- `AWS_LAMBDA_MICROVM_SUSPENDED_SECONDS` defaults to 1,800 when auto-suspend is
-  explicitly enabled.
+- Lambda endpoint-idle suspension is intentionally not configurable. HackerAI
+  uses `NO_INGRESS` and an outbound asynchronous relay, while Lambda measures
+  idle time from inbound endpoint traffic. Enabling that policy could suspend a
+  MicroVM while an Agent command is still active. Explicit termination,
+  replacement cleanup, and the maximum-duration cap provide the lifecycle
+  safety boundary instead.
 
 Never expose these variables with a `NEXT_PUBLIC_` prefix. Bootstrap tokens are
 generated per user session, stored only as SHA-256 hashes in Convex, scoped to a

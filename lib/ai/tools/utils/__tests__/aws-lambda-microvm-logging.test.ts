@@ -50,6 +50,10 @@ describe("AWS Lambda MicroVM development logging", () => {
       AWS_LAMBDA_MICROVM_IMAGE_VERSION: "6.0",
       AWS_LAMBDA_MICROVM_EXECUTION_ROLE_ARN:
         "arn:aws:iam::630609837323:role/hackerai-microvm-execution",
+      // These legacy knobs must remain ignored. HackerAI's relay is outbound,
+      // so AWS endpoint-idle traffic is not a valid activity signal.
+      AWS_LAMBDA_MICROVM_IDLE_SECONDS: "60",
+      AWS_LAMBDA_MICROVM_SUSPENDED_SECONDS: "60",
       CONVEX_SERVICE_ROLE_KEY: "service-role-secret-value",
       CENTRIFUGO_WS_URL: "wss://relay.example.test/connection/websocket",
       CENTRIFUGO_TOKEN_SECRET: "centrifugo-secret-value",
@@ -136,6 +140,7 @@ describe("AWS Lambda MicroVM development logging", () => {
         },
       },
     });
+    expect(runInput).not.toHaveProperty("idlePolicy");
 
     const debugEvents = debugSpy.mock.calls.map(
       ([payload]) => JSON.parse(payload as string).event,
@@ -254,10 +259,13 @@ describe("AWS Lambda MicroVM development logging", () => {
   });
 
   it("uses a four-hour default but permits the eight-hour platform maximum", () => {
-    expect(getAwsLambdaMicrovmConfig()).toMatchObject({
+    const config = getAwsLambdaMicrovmConfig();
+    expect(config).toMatchObject({
       maxDurationSeconds: 14_400,
       minRemainingSeconds: 7_500,
     });
+    expect(config).not.toHaveProperty("idleSeconds");
+    expect(config).not.toHaveProperty("suspendedSeconds");
     process.env.AWS_LAMBDA_MICROVM_MAX_DURATION_SECONDS = "28800";
     expect(getAwsLambdaMicrovmConfig().maxDurationSeconds).toBe(28_800);
   });

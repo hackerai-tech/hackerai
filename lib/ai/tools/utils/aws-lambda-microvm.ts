@@ -14,7 +14,6 @@ const PROVIDER = "aws-lambda-microvm" as const;
 const PLATFORM_MAX_DURATION_SECONDS = 8 * 60 * 60;
 const DEFAULT_MAX_DURATION_SECONDS = 4 * 60 * 60;
 const DEFAULT_MIN_REMAINING_SECONDS = 2 * 60 * 60 + 5 * 60;
-const DEFAULT_SUSPENDED_SECONDS = 30 * 60;
 const SESSION_READY_TIMEOUT_MS = 90_000;
 const RELAY_READY_TIMEOUT_MS = 45_000;
 
@@ -50,8 +49,6 @@ type AwsLambdaMicrovmConfig = {
   egressConnectorArn: string;
   maxDurationSeconds: number;
   minRemainingSeconds: number;
-  idleSeconds?: number;
-  suspendedSeconds: number;
   logGroup: string;
   serviceKey: string;
   centrifugoWsUrl: string;
@@ -219,13 +216,6 @@ export function getAwsLambdaMicrovmConfig(): AwsLambdaMicrovmConfig {
       DEFAULT_MIN_REMAINING_SECONDS,
     ),
   );
-  const idleSeconds = process.env.AWS_LAMBDA_MICROVM_IDLE_SECONDS
-    ? Math.min(
-        maxDurationSeconds,
-        positiveInt("AWS_LAMBDA_MICROVM_IDLE_SECONDS", maxDurationSeconds),
-      )
-    : undefined;
-
   return {
     region,
     imageIdentifier: required("AWS_LAMBDA_MICROVM_IMAGE_ID"),
@@ -241,11 +231,6 @@ export function getAwsLambdaMicrovmConfig(): AwsLambdaMicrovmConfig {
       `arn:aws:lambda:${region}:aws:network-connector:aws-network-connector:INTERNET_EGRESS`,
     maxDurationSeconds,
     minRemainingSeconds,
-    idleSeconds,
-    suspendedSeconds: positiveInt(
-      "AWS_LAMBDA_MICROVM_SUSPENDED_SECONDS",
-      DEFAULT_SUSPENDED_SECONDS,
-    ),
     logGroup:
       process.env.AWS_LAMBDA_MICROVM_LOG_GROUP?.trim() ||
       "/aws/lambda/microvms/hackerai-cloud-agent",
@@ -656,9 +641,7 @@ export async function ensureAwsLambdaMicrovmConnection(
     egress_connector: config.egressConnectorArn.split(":").at(-1) ?? null,
     max_duration_seconds: config.maxDurationSeconds,
     min_remaining_seconds: config.minRemainingSeconds,
-    idle_policy_enabled: config.idleSeconds !== undefined,
-    idle_seconds: config.idleSeconds ?? null,
-    suspended_seconds: config.suspendedSeconds,
+    idle_policy_enabled: false,
     log_group: config.logGroup,
     credential_source: credentialSource(),
     aws_profile: process.env.AWS_PROFILE?.trim() || null,
@@ -810,7 +793,7 @@ export async function ensureAwsLambdaMicrovmConnection(
       egress_connector: config.egressConnectorArn.split(":").at(-1) ?? null,
       max_duration_seconds: config.maxDurationSeconds,
       min_remaining_seconds: config.minRemainingSeconds,
-      idle_policy_enabled: config.idleSeconds !== undefined,
+      idle_policy_enabled: false,
       convex_endpoint_kind: endpointKind(convexUrl),
     });
     const response = await getClient(config.region).send(
@@ -822,15 +805,6 @@ export async function ensureAwsLambdaMicrovmConnection(
           : {}),
         ingressNetworkConnectors: [config.ingressConnectorArn],
         egressNetworkConnectors: [config.egressConnectorArn],
-        ...(config.idleSeconds
-          ? {
-              idlePolicy: {
-                maxIdleDurationSeconds: config.idleSeconds,
-                suspendedDurationSeconds: config.suspendedSeconds,
-                autoResumeEnabled: false,
-              },
-            }
-          : {}),
         logging: config.executionRoleArn
           ? { cloudWatch: { logGroup: config.logGroup } }
           : { disabled: {} },
