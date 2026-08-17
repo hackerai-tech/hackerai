@@ -25,14 +25,6 @@ export function getConvexClient(): ConvexHttpClient {
   return client;
 }
 
-export function getConvexUrl(): string {
-  const url = overrideUrl ?? process.env.NEXT_PUBLIC_CONVEX_URL;
-  if (!url) {
-    throw new Error("NEXT_PUBLIC_CONVEX_URL is not set");
-  }
-  return url;
-}
-
 // Called by Trigger.dev tasks to point at the correct per-branch preview
 // deployment. The Trigger.dev process's NEXT_PUBLIC_CONVEX_URL only reflects
 // what the dashboard has configured, so the route forwards the right URL via
