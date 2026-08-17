@@ -808,6 +808,70 @@ describe("file tool image view", () => {
     expect(commandRun).toHaveBeenCalledTimes(1);
   });
 
+  test("hands the original image to direct vision after auxiliary failover", async () => {
+    mockUploadSandboxFileToConvex.mockResolvedValue({
+      fileId: "file-1" as never,
+      name: "screenshot.png",
+      mediaType: "image/png",
+    });
+    const commandRun = jest.fn(async (_command, opts) => {
+      expect(opts.envVars.HACKERAI_FILE_VIEW_INCLUDE_DATA).toBe("1");
+      return {
+        stdout: JSON.stringify({
+          path: "/tmp/screenshot.png",
+          mediaType: "image/png",
+          sizeBytes: 68,
+          kind: "image",
+          data: VALID_PNG_BASE64,
+        }),
+        stderr: "",
+        exitCode: 0,
+      };
+    });
+    let auxiliaryVisionEnabled = true;
+    const describeImage = jest.fn(async () => {
+      auxiliaryVisionEnabled = false;
+      throw new Error("provider failed");
+    });
+    const sandbox = makeSandbox(commandRun);
+    const tool = createFile(
+      makeContext(sandbox, {
+        modelName: "model-deepseek-v4-pro-0813",
+        auxiliaryVision: {
+          isEnabled: () => auxiliaryVisionEnabled,
+          describeImage,
+        },
+      }),
+    );
+
+    const result = await runTool(tool, {
+      action: "view",
+      path: "/tmp/screenshot.png",
+      brief: "Inspect the screenshot",
+    });
+
+    expect(result).toMatchObject({
+      action: "view",
+      visionDescriptionError: expect.any(String),
+    });
+    await expect(runToModelOutput(tool, result)).resolves.toEqual({
+      type: "content",
+      value: [
+        {
+          type: "text",
+          text: "Viewing image file: screenshot.png (image/png, 68 bytes).",
+        },
+        {
+          type: "image-data",
+          data: VALID_PNG_BASE64,
+          mediaType: "image/png",
+        },
+      ],
+    });
+    expect(describeImage).toHaveBeenCalledTimes(1);
+    expect(commandRun).toHaveBeenCalledTimes(2);
+  });
+
   test("propagates a user stop during an auxiliary file-view description", async () => {
     mockUploadSandboxFileToConvex.mockResolvedValue({
       fileId: "file-1" as never,

@@ -4,6 +4,7 @@ import { AUXILIARY_VISION_SLUG } from "@/lib/ai/providers";
 import {
   AUXILIARY_VISION_MAX_CONCURRENCY,
   AUXILIARY_VISION_MAX_IMAGES_PER_TURN,
+  createAuxiliaryVisionFailoverController,
   describeImageAttachmentsWithAuxiliaryVision,
   describeImageWithAuxiliaryVision,
   type AuxiliaryVisionModelRunner,
@@ -59,10 +60,91 @@ describe("auxiliary vision", () => {
     });
   });
 
+  it("activates direct vision failover once with bounded diagnostics", () => {
+    const controller = createAuxiliaryVisionFailoverController({
+      enabled: true,
+      service: "chat-handler",
+      requestId: "request-1",
+      userId: "user-1",
+      chatId: "chat-1",
+    });
+    const providerError = new Error("sensitive provider details");
+
+    expect(
+      controller.activate({ error: providerError, source: "attachment" }),
+    ).toBe(true);
+    expect(controller.isEnabled()).toBe(false);
+    expect(
+      controller.activate({ error: providerError, source: "file_view" }),
+    ).toBe(false);
+
+    expect(console.warn).toHaveBeenCalledTimes(1);
+    const payload = JSON.parse(
+      (console.warn as jest.Mock).mock.calls[0][0] as string,
+    );
+    expect(payload).toMatchObject({
+      event: "auxiliary_vision_failover_activated",
+      service: "chat-handler",
+      request_id: "request-1",
+      user_id: "user-1",
+      chat_id: "chat-1",
+      source: "attachment",
+      fallback_route: "direct_vision",
+      failure_reason: "provider_error",
+      error_name: "Error",
+      failed_image_count: 1,
+    });
+    expect(JSON.stringify(payload)).not.toContain("sensitive provider details");
+  });
+
+  it("does not activate failover for a user cancellation", () => {
+    const controller = createAuxiliaryVisionFailoverController({
+      enabled: true,
+      service: "agent-long",
+      isUserAborted: () => true,
+    });
+
+    expect(
+      controller.activate({
+        error: new DOMException("Stopped", "AbortError"),
+        source: "attachment",
+      }),
+    ).toBe(false);
+    expect(controller.isEnabled()).toBe(true);
+    expect(console.warn).not.toHaveBeenCalled();
+  });
+
+  it("classifies a descriptor timeout without logging its message", () => {
+    const controller = createAuxiliaryVisionFailoverController({
+      enabled: true,
+      service: "agent-long",
+    });
+
+    controller.activate({
+      error: new AggregateError([
+        new DOMException("provider timeout details", "AbortError"),
+      ]),
+      source: "attachment",
+    });
+
+    const payload = JSON.parse(
+      (console.warn as jest.Mock).mock.calls[0][0] as string,
+    );
+    expect(payload).toMatchObject({
+      service: "agent-long",
+      failure_reason: "timeout",
+      error_name: "AggregateError",
+      failed_image_count: 1,
+    });
+    expect(JSON.stringify(payload)).not.toContain("provider timeout details");
+  });
+
   it("replaces image files with untrusted descriptions and keeps other parts", async () => {
     const modelRunner = jest.fn(async () => ({
       text: "Visible login form with a red invalid-password warning.",
+      usage: { raw: { cost: 0.003 } },
     })) as jest.MockedFunction<AuxiliaryVisionModelRunner>;
+    const onCost = jest.fn();
 
     const messages = await describeImageAttachmentsWithAuxiliaryVision({
       messages: [
@@ -86,6 +168,7 @@ describe("auxiliary vision", () => {
           ],
         },
       ],
+      onCost,
       modelRunner,
     });
 
@@ -100,6 +183,8 @@ describe("auxiliary vision", () => {
         mediaType: "application/pdf",
       }),
     ]);
+    expect(onCost).toHaveBeenCalledTimes(1);
+    expect(onCost).toHaveBeenCalledWith(0.003);
   });
 
   it("reuses matching owned-file descriptions without another model call", async () => {
@@ -256,9 +341,13 @@ describe("auxiliary vision", () => {
 
   it("settles all calls and caches successes before reporting a partial failure", async () => {
     const cacheDescription = jest.fn(async () => undefined);
+    const onCost = jest.fn();
     const modelRunner = jest.fn(async ({ filename }) => {
       if (filename === "bad.png") throw new Error("provider failed");
-      return { text: "Successful description" };
+      return {
+        text: "Successful description",
+        usage: { raw: { cost: 0.004 } },
+      };
     }) as jest.MockedFunction<AuxiliaryVisionModelRunner>;
 
     await expect(
@@ -287,6 +376,7 @@ describe("auxiliary vision", () => {
         ],
         userId: "user-1",
         cacheDescription,
+        onCost,
         modelRunner,
       }),
     ).rejects.toThrow("failed for 1 image request");
@@ -296,6 +386,7 @@ describe("auxiliary vision", () => {
     expect(cacheDescription).toHaveBeenCalledWith(
       expect.objectContaining({ fileId: "file-good" }),
     );
+    expect(onCost).not.toHaveBeenCalled();
   });
 
   it("fails explicitly when the auxiliary model returns no description", async () => {

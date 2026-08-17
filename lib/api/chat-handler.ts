@@ -114,10 +114,10 @@ import {
   createPreemptiveTimeout,
 } from "@/lib/utils/stream-cancellation";
 import { v4 as uuidv4 } from "uuid";
-import { processChatMessages } from "@/lib/chat/chat-processor";
+import { processChatMessages, selectModel } from "@/lib/chat/chat-processor";
 import { cacheAuxiliaryVisionDescription } from "@/lib/utils/file-transform-utils";
 import {
-  AUXILIARY_VISION_UNAVAILABLE_MESSAGE,
+  createAuxiliaryVisionFailoverController,
   describeImageAttachmentsWithAuxiliaryVision,
   describeImageWithAuxiliaryVision,
 } from "@/lib/chat/auxiliary-vision";
@@ -188,6 +188,7 @@ import { isAgentMode } from "@/lib/utils/mode-helpers";
 import {
   createAgentStream,
   initAgentStreamState,
+  resolveAgentModelForImageToolResults,
   resetServedModelTelemetryForRetry,
   retryUsesDifferentModel,
   type AgentStreamContext,
@@ -598,12 +599,12 @@ export const createChatHandler = () => {
         });
       }
 
-      const activeDeepSeekV4Pro0813Experiment =
+      let activeDeepSeekV4Pro0813Experiment =
         getActiveDeepSeekV4Pro0813ExperimentAssignment(
           deepSeekV4Pro0813Experiment,
           selectedModel,
         );
-      const routingExperimentContext = getDeepSeekV4Pro0813ExperimentContext(
+      let routingExperimentContext = getDeepSeekV4Pro0813ExperimentContext(
         activeDeepSeekV4Pro0813Experiment,
       );
 
@@ -639,6 +640,14 @@ export const createChatHandler = () => {
       });
 
       const summarizationTracker = new SummarizationTracker();
+      const auxiliaryVisionFailover = createAuxiliaryVisionFailoverController({
+        enabled: !!auxiliaryVisionAssignment,
+        service: "chat-handler",
+        requestId: req.headers.get("x-vercel-id") ?? undefined,
+        userId,
+        chatId,
+        isUserAborted: () => userStopSignal.signal.aborted,
+      });
       const captureAuxiliaryVisionExposure =
         createAuxiliaryVisionExposureRecorder({
           posthog,
@@ -666,28 +675,38 @@ export const createChatHandler = () => {
         execute: async ({ writer }) => {
           try {
             const usageTracker = new UsageTracker();
-            const auxiliaryVision = auxiliaryVisionAssignment
+            const auxiliaryVision = auxiliaryVisionFailover.isEnabled()
               ? {
+                  isEnabled: auxiliaryVisionFailover.isEnabled,
                   isAborted: () => userStopSignal.signal.aborted,
-                  describeImage: (args: {
+                  describeImage: async (args: {
                     image: string;
                     mediaType: string;
                     filename?: string;
                     source: "file_view";
-                  }) =>
-                    describeImageWithAuxiliaryVision({
-                      ...args,
-                      requestId: req.headers.get("x-vercel-id") ?? undefined,
-                      userId,
-                      chatId,
-                      abortSignal: userStopSignal.signal,
-                      onExposure: captureAuxiliaryVisionExposure,
-                      onCost: (costDollars) => {
-                        usageTracker.providerCost += costDollars;
-                        usageTracker.nonModelCost += costDollars;
-                        chatLogger?.getBuilder().addToolCost(costDollars);
-                      },
-                    }),
+                  }) => {
+                    try {
+                      return await describeImageWithAuxiliaryVision({
+                        ...args,
+                        requestId: req.headers.get("x-vercel-id") ?? undefined,
+                        userId,
+                        chatId,
+                        abortSignal: userStopSignal.signal,
+                        onExposure: captureAuxiliaryVisionExposure,
+                        onCost: (costDollars) => {
+                          usageTracker.providerCost += costDollars;
+                          usageTracker.nonModelCost += costDollars;
+                          chatLogger?.getBuilder().addToolCost(costDollars);
+                        },
+                      });
+                    } catch (error) {
+                      auxiliaryVisionFailover.activate({
+                        error,
+                        source: "file_view",
+                      });
+                      throw error;
+                    }
+                  },
                 }
               : undefined;
             sendRateLimitWarnings(writer, {
@@ -857,7 +876,7 @@ export const createChatHandler = () => {
               );
             }
 
-            if (auxiliaryVisionAssignment) {
+            if (auxiliaryVisionFailover.isEnabled()) {
               try {
                 processedMessages =
                   await describeImageAttachmentsWithAuxiliaryVision({
@@ -875,20 +894,37 @@ export const createChatHandler = () => {
                     cacheDescription: cacheAuxiliaryVisionDescription,
                   });
               } catch (error) {
-                if (
-                  userStopSignal.signal.aborted ||
-                  (error instanceof DOMException && error.name === "AbortError")
-                ) {
-                  throw error;
-                }
-                const auxiliaryVisionError = new ChatSDKError(
-                  "bad_request:api",
-                  AUXILIARY_VISION_UNAVAILABLE_MESSAGE,
-                );
-                preemptiveTimeout?.clear();
-                await usageRefundTracker.refund();
-                chatLogger?.emitChatError(auxiliaryVisionError);
-                throw auxiliaryVisionError;
+                if (userStopSignal.signal.aborted) throw error;
+                auxiliaryVisionFailover.activate({
+                  error,
+                  source: "attachment",
+                });
+                selectedModel = isAgentMode(mode)
+                  ? resolveAgentModelForImageToolResults(
+                      selectedModel,
+                      mode,
+                      true,
+                      selectedModelOverride,
+                      false,
+                    )
+                  : selectModel(
+                      mode,
+                      subscription,
+                      selectedModelOverride,
+                      true,
+                      false,
+                      { extraUsageAvailable, auxiliaryVisionEnabled: false },
+                    );
+                activeDeepSeekV4Pro0813Experiment =
+                  getActiveDeepSeekV4Pro0813ExperimentAssignment(
+                    deepSeekV4Pro0813Experiment,
+                    selectedModel,
+                  );
+                routingExperimentContext =
+                  getDeepSeekV4Pro0813ExperimentContext(
+                    activeDeepSeekV4Pro0813Experiment,
+                  );
+                chatLogger?.setChat(chatLogContext, selectedModel);
               }
             }
 
@@ -1383,7 +1419,9 @@ export const createChatHandler = () => {
               contextUsageOn,
               isReasoningModel,
               platformAuthorized,
-              auxiliaryVisionEnabled: !!auxiliaryVisionAssignment,
+              get auxiliaryVisionEnabled() {
+                return auxiliaryVisionFailover.isEnabled();
+              },
               maxDurationMs: AGENT_MAX_STREAM_DURATION_MS,
               writer,
               abortController: userStopSignal,

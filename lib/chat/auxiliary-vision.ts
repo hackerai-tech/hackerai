@@ -10,10 +10,81 @@ export const AUXILIARY_VISION_TIMEOUT_MS = 20_000;
 export const AUXILIARY_VISION_MAX_OUTPUT_TOKENS = 1_200;
 export const AUXILIARY_VISION_MAX_IMAGES_PER_TURN = 10;
 export const AUXILIARY_VISION_MAX_CONCURRENCY = 3;
-export const AUXILIARY_VISION_UNAVAILABLE_MESSAGE =
-  "We couldn't inspect the image right now. Please retry. DeepSeek was not replaced by another model.";
 
 export type AuxiliaryVisionSource = "attachment" | "file_view";
+
+export type AuxiliaryVisionFailoverController = {
+  activate: (args: {
+    error: unknown;
+    source: AuxiliaryVisionSource;
+  }) => boolean;
+  isEnabled: () => boolean;
+};
+
+const getAuxiliaryVisionFailureDetails = (
+  error: unknown,
+): {
+  errorName: string;
+  failedImageCount: number;
+  reason: "provider_error" | "timeout";
+} => {
+  const errors = error instanceof AggregateError ? error.errors : [error];
+  const errorNames = errors.map((entry) =>
+    entry instanceof Error ? entry.name : "UnknownError",
+  );
+  return {
+    errorName:
+      error instanceof Error ? error.name : (errorNames[0] ?? "UnknownError"),
+    failedImageCount: Math.max(errors.length, 1),
+    reason: errorNames.includes("AbortError") ? "timeout" : "provider_error",
+  };
+};
+
+export function createAuxiliaryVisionFailoverController({
+  enabled,
+  service,
+  requestId,
+  userId,
+  chatId,
+  isUserAborted,
+}: {
+  enabled: boolean;
+  service: "agent-long" | "chat-handler";
+  requestId?: string;
+  userId?: string;
+  chatId?: string;
+  isUserAborted?: () => boolean;
+}): AuxiliaryVisionFailoverController {
+  let active = enabled;
+
+  return {
+    isEnabled: () => active,
+    activate: ({ error, source }) => {
+      if (!active || isUserAborted?.()) return false;
+      active = false;
+      const failure = getAuxiliaryVisionFailureDetails(error);
+      console.warn(
+        JSON.stringify({
+          timestamp: new Date().toISOString(),
+          level: "warn",
+          event: "auxiliary_vision_failover_activated",
+          service,
+          environment:
+            process.env.VERCEL_ENV ?? process.env.NODE_ENV ?? "unknown",
+          request_id: requestId ?? "unavailable",
+          user_id: userId,
+          chat_id: chatId,
+          source,
+          fallback_route: "direct_vision",
+          failure_reason: failure.reason,
+          error_name: failure.errorName,
+          failed_image_count: failure.failedImageCount,
+        }),
+      );
+      return true;
+    },
+  };
+}
 
 export type AuxiliaryVisionResult = {
   description: string;
@@ -317,6 +388,7 @@ export async function describeImageAttachmentsWithAuxiliaryVision({
 
   const requestCache = new Map<string, Promise<AuxiliaryVisionResult>>();
   const failures: unknown[] = [];
+  let pendingCostDollars = 0;
   let nextTaskIndex = 0;
   const runWorker = async (): Promise<void> => {
     while (nextTaskIndex < tasks.length) {
@@ -334,7 +406,9 @@ export async function describeImageAttachmentsWithAuxiliaryVision({
               userId,
               chatId,
               abortSignal,
-              onCost,
+              onCost: (costDollars) => {
+                pendingCostDollars += costDollars;
+              },
               onExposure,
               modelRunner,
             });
@@ -379,5 +453,6 @@ export async function describeImageAttachmentsWithAuxiliaryVision({
       `Auxiliary vision failed for ${failures.length} image request(s)`,
     );
   }
+  if (pendingCostDollars > 0) onCost?.(pendingCostDollars);
   return updatedMessages;
 }
