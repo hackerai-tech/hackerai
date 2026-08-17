@@ -191,6 +191,7 @@ export const createRunTerminalCmd = (context: ToolContext) => {
   };
   const runTerminalCmdTool = createRunTerminalCmdToolSchema({
     approvalGated: !!context.requestToolApproval,
+    modelName: context.getCurrentModelName?.() ?? context.modelName,
     // The conditional schema adds approval-only fields, but both branches
     // normalize to the same execution input handled below.
   }) as unknown as Tool<RunTerminalCmdInput, unknown>;

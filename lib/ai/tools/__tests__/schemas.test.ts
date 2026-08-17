@@ -1,7 +1,11 @@
 import {
   createAgentToolSchemaSet,
   createFileToolSchema,
+  createGetTerminalFilesToolSchema,
+  createInteractTerminalSessionToolSchema,
+  createOpenUrlToolSchema,
   createRunTerminalCmdToolSchema,
+  createWebSearchToolSchema,
   runTerminalCmdTool,
 } from "../schemas";
 
@@ -96,5 +100,39 @@ describe("agent tool schema descriptions", () => {
     expect(createAgentToolSchemaSet({ mode: "ask" })).not.toHaveProperty(
       "file",
     );
+  });
+
+  test("passes the active model into every brief-bearing tool schema", () => {
+    const createBriefBearingTools = (modelName: string) => ({
+      run_terminal_cmd: createRunTerminalCmdToolSchema({ modelName }),
+      interact_terminal_session: createInteractTerminalSessionToolSchema({
+        modelName,
+      }),
+      get_terminal_files: createGetTerminalFilesToolSchema({ modelName }),
+      file: createFileToolSchema({ supportsView: true, modelName }),
+      web_search: createWebSearchToolSchema({ modelName }),
+      open_url: createOpenUrlToolSchema({ modelName }),
+    });
+    const deepSeekTools = createBriefBearingTools("model-deepseek-v4-pro-0813");
+    const otherTools = createBriefBearingTools("model-grok-4.6");
+
+    for (const toolName of [
+      "run_terminal_cmd",
+      "interact_terminal_session",
+      "get_terminal_files",
+      "file",
+      "web_search",
+      "open_url",
+    ] as const) {
+      const deepSeekBrief = getInputShape(deepSeekTools[toolName]).brief as {
+        description: string;
+      };
+      const otherBrief = getInputShape(otherTools[toolName]).brief as {
+        description: string;
+      };
+
+      expect(deepSeekBrief.description).toContain("English only");
+      expect(otherBrief.description).not.toContain("English only");
+    }
   });
 });

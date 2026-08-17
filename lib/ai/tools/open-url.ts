@@ -4,7 +4,11 @@ import { truncateContent } from "@/lib/token-utils";
 import { stringifyRedactedError } from "@/lib/utils/error-redaction";
 import type { ToolContext } from "@/types";
 import { reportToolFailure } from "./tool-failure";
-import { openUrlTool, type OpenUrlToolInput } from "./schemas";
+import {
+  createOpenUrlToolSchema,
+  openUrlTool,
+  type OpenUrlToolInput,
+} from "./schemas";
 
 const NETWORK_ERROR_CODES = new Set([
   "ECONNREFUSED",
@@ -24,7 +28,10 @@ const NETWORK_ERROR_MESSAGE_PATTERN =
   /fetch failed|failed to fetch|network|timed?\s*out|timeout|connection (?:closed|reset|refused)|socket|getaddrinfo/i;
 
 type OpenUrlLogContext = Partial<
-  Pick<ToolContext, "chatId" | "onToolFailure" | "userID">
+  Pick<
+    ToolContext,
+    "chatId" | "getCurrentModelName" | "modelName" | "onToolFailure" | "userID"
+  >
 >;
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -79,6 +86,9 @@ const isOpenUrlNetworkError = (error: unknown): boolean => {
 export const createOpenUrlTool = (context?: OpenUrlLogContext) => {
   return tool({
     ...openUrlTool,
+    inputSchema: createOpenUrlToolSchema({
+      modelName: context?.getCurrentModelName?.() ?? context?.modelName,
+    }).inputSchema,
     execute: async ({ url }: OpenUrlToolInput, { abortSignal }) => {
       const startedAt = Date.now();
 

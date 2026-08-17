@@ -16,6 +16,7 @@ import { translateInput } from "./utils/pty-keys";
 import {
   INTERACT_TERMINAL_DEFAULT_WAIT_TIMEOUT_SECONDS,
   INTERACT_TERMINAL_MAX_WAIT_TIMEOUT_SECONDS,
+  createInteractTerminalSessionToolSchema,
   interactTerminalSessionTool,
 } from "./schemas";
 import {
@@ -64,6 +65,9 @@ export const createInteractTerminalSession = (context: ToolContext) => {
 
   return tool({
     ...interactTerminalSessionTool,
+    inputSchema: createInteractTerminalSessionToolSchema({
+      modelName: context.getCurrentModelName?.() ?? context.modelName,
+    }).inputSchema,
     execute: async (
       {
         session: sessionId,

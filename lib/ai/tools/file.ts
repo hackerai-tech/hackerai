@@ -1311,6 +1311,7 @@ export const createFile = (context: ToolContext) => {
   const fileToolSchema = createFileToolSchema({
     supportsView: supportsViewInSchema,
     approvalGated: !!context.requestToolApproval,
+    modelName: context.getCurrentModelName?.() ?? context.modelName,
   });
 
   return tool({

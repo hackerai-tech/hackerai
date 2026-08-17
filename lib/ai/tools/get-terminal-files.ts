@@ -5,13 +5,19 @@ import {
   getSandboxWithFallbackGuard,
   resolveToolErrorMessage,
 } from "./utils/sandbox-fallback";
-import { getTerminalFilesTool } from "./schemas";
+import {
+  createGetTerminalFilesToolSchema,
+  getTerminalFilesTool,
+} from "./schemas";
 
 export const createGetTerminalFiles = (context: ToolContext) => {
   const { sandboxManager, backgroundProcessTracker } = context;
 
   return tool({
     ...getTerminalFilesTool,
+    inputSchema: createGetTerminalFilesToolSchema({
+      modelName: context.getCurrentModelName?.() ?? context.modelName,
+    }).inputSchema,
     execute: async ({ files }: { files: string[] }) => {
       try {
         const { sandbox } = await getSandboxWithFallbackGuard({
