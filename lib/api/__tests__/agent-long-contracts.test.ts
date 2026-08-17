@@ -206,6 +206,25 @@ const toolExecutionSources = [
   },
 ];
 
+describe("auxiliary vision failover contracts", () => {
+  test.each([
+    ["agent-long", taskSrc],
+    ["chat handler", chatHandlerSrc],
+  ])("%s switches attachment failures to direct vision", (_name, source) => {
+    expect(source).toContain("createAuxiliaryVisionFailoverController");
+    expect(source).toMatch(
+      /auxiliaryVisionFailover\.activate\(\{\s*error,\s*source: "attachment",\s*\}\);/,
+    );
+    expect(source).toMatch(
+      /selectedModel = selectModel\([\s\S]*?auxiliaryVisionEnabled: false[\s\S]*?\);/,
+    );
+    expect(source).toMatch(
+      /get auxiliaryVisionEnabled\(\) \{\s*return auxiliaryVisionFailover\.isEnabled\(\);\s*\}/,
+    );
+    expect(source).not.toContain("AUXILIARY_VISION_UNAVAILABLE_MESSAGE");
+  });
+});
+
 describe("agent tool schemas — Head Start bundle boundary", () => {
   test("schema-only tool catalog imports only ai and zod", () => {
     const importSources = Array.from(

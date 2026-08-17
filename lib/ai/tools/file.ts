@@ -1275,6 +1275,10 @@ async function uploadViewPreviewFiles(args: {
 
 export const createFile = (context: ToolContext) => {
   const { sandboxManager, modelName, getCurrentModelName } = context;
+  const getAuxiliaryVision = () =>
+    context.auxiliaryVision?.isEnabled?.() === false
+      ? undefined
+      : context.auxiliaryVision;
   const getSandboxForFileTool = (
     expectedSandboxIdentity?: AgentApprovalSandboxIdentity,
   ) =>
@@ -1286,18 +1290,19 @@ export const createFile = (context: ToolContext) => {
     supportsMultimodalToolResults(getCurrentModelName?.() ?? modelName);
   const canHandoffMultimodalFiles = context.mode === "agent";
   const canReturnMultimodalFiles = () =>
-    !!context.auxiliaryVision ||
+    !!getAuxiliaryVision() ||
     canHandoffMultimodalFiles ||
     canViewMultimodalFiles();
   const auxiliaryDescriptionCache = new Map<string, Promise<string>>();
   const describeViewPayload = (
     viewPayload: SandboxViewPayload,
     filename: string,
+    auxiliaryVision: NonNullable<ToolContext["auxiliaryVision"]>,
   ): Promise<string> => {
     const existing = auxiliaryDescriptionCache.get(viewPayload.path);
     if (existing) return existing;
-    const description = context
-      .auxiliaryVision!.describeImage({
+    const description = auxiliaryVision
+      .describeImage({
         image: viewPayload.data!,
         mediaType: viewPayload.mediaType,
         filename,
@@ -1397,7 +1402,7 @@ export const createFile = (context: ToolContext) => {
               viewPayload = await readSandboxFileForView(
                 sandbox,
                 path,
-                !!context.auxiliaryVision,
+                !!getAuxiliaryVision(),
               );
             } catch (error) {
               const classification = classifyFileViewError(error);
@@ -1452,7 +1457,8 @@ export const createFile = (context: ToolContext) => {
 
             let visionDescription: string | undefined;
             let visionDescriptionError: string | undefined;
-            if (context.auxiliaryVision) {
+            const auxiliaryVision = getAuxiliaryVision();
+            if (auxiliaryVision) {
               try {
                 // A new explicit view may observe changed file contents and is
                 // also the retry boundary after a prior descriptor failure.
@@ -1460,9 +1466,10 @@ export const createFile = (context: ToolContext) => {
                 visionDescription = await describeViewPayload(
                   viewPayload,
                   filename,
+                  auxiliaryVision,
                 );
               } catch (error) {
-                if (context.auxiliaryVision.isAborted?.()) throw error;
+                if (auxiliaryVision.isAborted?.()) throw error;
                 visionDescriptionError =
                   "The auxiliary vision model could not inspect this image. Retry the view action.";
               }
@@ -1749,7 +1756,8 @@ export const createFile = (context: ToolContext) => {
             };
           }
 
-          if (context.auxiliaryVision) {
+          const auxiliaryVision = getAuxiliaryVision();
+          if (auxiliaryVision) {
             if (viewOutput.visionDescription) {
               return {
                 type: "text" as const,
@@ -1780,6 +1788,7 @@ export const createFile = (context: ToolContext) => {
               const description = await describeViewPayload(
                 viewPayload,
                 viewOutput.filename,
+                auxiliaryVision,
               );
               return {
                 type: "text" as const,
@@ -1790,7 +1799,7 @@ export const createFile = (context: ToolContext) => {
                 ),
               };
             } catch (error) {
-              if (context.auxiliaryVision.isAborted?.()) throw error;
+              if (auxiliaryVision.isAborted?.()) throw error;
               return {
                 type: "text" as const,
                 value:

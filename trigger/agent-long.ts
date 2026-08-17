@@ -25,10 +25,10 @@ import { createTools } from "@/lib/ai/tools";
 import { ptySessionManager } from "@/lib/ai/tools/utils/pty-session-manager";
 import { generateTitleFromUserMessageWithWriter } from "@/lib/actions";
 import { createTrackedProvider } from "@/lib/ai/providers";
-import { processChatMessages } from "@/lib/chat/chat-processor";
+import { processChatMessages, selectModel } from "@/lib/chat/chat-processor";
 import { cacheAuxiliaryVisionDescription } from "@/lib/utils/file-transform-utils";
 import {
-  AUXILIARY_VISION_UNAVAILABLE_MESSAGE,
+  createAuxiliaryVisionFailoverController,
   describeImageAttachmentsWithAuxiliaryVision,
   describeImageWithAuxiliaryVision,
 } from "@/lib/chat/auxiliary-vision";
@@ -2428,6 +2428,14 @@ export const agentLongTask = task({
         PaidDailyFreeAllowanceReservation | undefined;
 
       let streamError: unknown;
+      const auxiliaryVisionFailover = createAuxiliaryVisionFailoverController({
+        enabled: !!auxiliaryVisionAssignment,
+        service: "agent-long",
+        requestId: ctx.run.id,
+        userId,
+        chatId,
+        isUserAborted: () => userStopSignal.signal.aborted,
+      });
       const captureAuxiliaryVisionExposure =
         createAuxiliaryVisionExposureRecorder({
           posthog,
@@ -2450,28 +2458,38 @@ export const agentLongTask = task({
           try {
             const usageTracker = new UsageTracker();
             observedUsageTracker = usageTracker;
-            const auxiliaryVision = auxiliaryVisionAssignment
+            const auxiliaryVision = auxiliaryVisionFailover.isEnabled()
               ? {
+                  isEnabled: auxiliaryVisionFailover.isEnabled,
                   isAborted: () => userStopSignal.signal.aborted,
-                  describeImage: (args: {
+                  describeImage: async (args: {
                     image: string;
                     mediaType: string;
                     filename?: string;
                     source: "file_view";
-                  }) =>
-                    describeImageWithAuxiliaryVision({
-                      ...args,
-                      requestId: ctx.run.id,
-                      userId,
-                      chatId,
-                      abortSignal: userStopSignal.signal,
-                      onExposure: captureAuxiliaryVisionExposure,
-                      onCost: (costDollars) => {
-                        usageTracker.providerCost += costDollars;
-                        usageTracker.nonModelCost += costDollars;
-                        chatLogger?.getBuilder().addToolCost(costDollars);
-                      },
-                    }),
+                  }) => {
+                    try {
+                      return await describeImageWithAuxiliaryVision({
+                        ...args,
+                        requestId: ctx.run.id,
+                        userId,
+                        chatId,
+                        abortSignal: userStopSignal.signal,
+                        onExposure: captureAuxiliaryVisionExposure,
+                        onCost: (costDollars) => {
+                          usageTracker.providerCost += costDollars;
+                          usageTracker.nonModelCost += costDollars;
+                          chatLogger?.getBuilder().addToolCost(costDollars);
+                        },
+                      });
+                    } catch (error) {
+                      auxiliaryVisionFailover.activate({
+                        error,
+                        source: "file_view",
+                      });
+                      throw error;
+                    }
+                  },
                 }
               : undefined;
             writeAgentLongFastStart(writer, "setup");
@@ -3020,7 +3038,7 @@ export const agentLongTask = task({
               );
             }
 
-            if (auxiliaryVisionAssignment) {
+            if (auxiliaryVisionFailover.isEnabled()) {
               try {
                 processedMessages =
                   await describeImageAttachmentsWithAuxiliaryVision({
@@ -3038,19 +3056,20 @@ export const agentLongTask = task({
                     cacheDescription: cacheAuxiliaryVisionDescription,
                   });
               } catch (error) {
-                if (
-                  userStopSignal.signal.aborted ||
-                  (error instanceof DOMException && error.name === "AbortError")
-                ) {
-                  throw error;
-                }
-                const auxiliaryVisionError = new ChatSDKError(
-                  "bad_request:api",
-                  AUXILIARY_VISION_UNAVAILABLE_MESSAGE,
+                if (userStopSignal.signal.aborted) throw error;
+                auxiliaryVisionFailover.activate({
+                  error,
+                  source: "attachment",
+                });
+                selectedModel = selectModel(
+                  mode,
+                  subscription,
+                  selectedModelOverride,
+                  true,
+                  false,
+                  { extraUsageAvailable, auxiliaryVisionEnabled: false },
                 );
-                await usageRefundTracker.refund();
-                chatLogger?.emitChatError(auxiliaryVisionError);
-                throw auxiliaryVisionError;
+                chatLogger?.setChat(chatLogContext, selectedModel);
               }
             }
 
@@ -3523,7 +3542,9 @@ export const agentLongTask = task({
               contextUsageOn,
               isReasoningModel: true, // long mode is always agent mode
               platformAuthorized,
-              auxiliaryVisionEnabled: !!auxiliaryVisionAssignment,
+              get auxiliaryVisionEnabled() {
+                return auxiliaryVisionFailover.isEnabled();
+              },
               maxDurationMs: agentLongMaxDurationMs,
               getActiveElapsedTimeMs: runtimeBudget.getElapsedTimeMs,
               writer,
