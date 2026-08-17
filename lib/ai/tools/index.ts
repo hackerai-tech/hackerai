@@ -113,6 +113,7 @@ export const createTools = (
           onSandboxBoot,
           workingDirectory,
           triggerRunId,
+          chatId,
         )
       : new DefaultSandboxManager(
           userID,

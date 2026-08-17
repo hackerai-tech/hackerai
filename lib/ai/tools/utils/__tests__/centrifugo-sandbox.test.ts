@@ -201,6 +201,42 @@ describe("CentrifugoSandbox", () => {
   });
 
   describe("commands.run happy path", () => {
+    it("propagates stable chat and run identifiers to the desktop command", async () => {
+      const sandbox = new CentrifugoSandbox(
+        "user-1",
+        defaultConnection,
+        defaultConfig,
+        undefined,
+        "run-1",
+        "chat-1",
+      );
+      const { promise } = startCommand(sandbox, "echo correlated", {
+        timeoutMs: 5000,
+      });
+
+      await jest.advanceTimersByTimeAsync(0);
+      const sub = mockSubscriptions[0];
+      sub.emit("subscribed");
+      await jest.advanceTimersByTimeAsync(0);
+
+      expect(sub.publish).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: "command",
+          chatId: "chat-1",
+          triggerRunId: "run-1",
+        }),
+      );
+
+      sub.emit("publication", {
+        data: { type: "exit", commandId: FIXED_UUID, exitCode: 0 },
+      });
+      await expect(promise).resolves.toEqual({
+        stdout: "",
+        stderr: "",
+        exitCode: 0,
+      });
+    });
+
     it("uses the project folder as the default cwd", async () => {
       const sandbox = createDesktopSandbox("C:\\work\\hackerai");
       const { promise } = startCommand(sandbox, "git status", {
