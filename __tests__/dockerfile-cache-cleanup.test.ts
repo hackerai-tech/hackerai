@@ -111,13 +111,18 @@ describe("sandbox Dockerfile cache cleanup", () => {
 
   test("downloads Katana without compiling its dependency graph", () => {
     const katanaRun = findRun(
-      "api.github.com/repos/projectdiscovery/katana/releases/latest",
+      "github.com/projectdiscovery/katana/releases/download",
     );
 
-    expect(katanaRun).toContain('grep "${platform}.zip$"');
+    expect(katanaRun).toContain('KATANA_VERSION="1.7.0"');
+    expect(katanaRun).toContain("katana-${KATANA_VERSION}-checksums.txt");
+    expect(katanaRun).toContain("sha256sum -c katana-checksum.txt");
     expect(katanaRun).toContain("find /tmp/katana_extracted");
     expect(katanaRun).toContain('mv "$katana_bin" /usr/local/bin/katana');
-    expect(katanaRun).toContain("rm -rf /tmp/katana_extracted /tmp/katana.zip");
+    expect(katanaRun).not.toContain(
+      "api.github.com/repos/projectdiscovery/katana/releases/latest",
+    );
+    expect(katanaRun).not.toMatch(/\bgo\s+(?:install|build)\b[\s\S]*katana/i);
   });
 
   test("validates caches and important runtimes after cleanup", () => {
