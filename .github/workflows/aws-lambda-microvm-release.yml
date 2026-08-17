@@ -1,0 +1,171 @@
+name: Release AWS Lambda MicroVM image
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/aws-lambda-microvm-release.yml"
+      - "docker/**"
+      - "packages/local/**"
+      - "scripts/deploy-aws-microvm.mjs"
+      - "scripts/package-aws-microvm.mjs"
+      - "scripts/smoke-aws-microvm.mjs"
+      - "package.json"
+      - "pnpm-lock.yaml"
+  workflow_dispatch:
+
+concurrency:
+  group: aws-lambda-microvm-production
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Publish, smoke-test, and promote
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    environment: aws-lambda-microvm-production
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      AWS_REGION: us-east-1
+      AWS_LAMBDA_MICROVM_REGION: us-east-1
+      AWS_LAMBDA_MICROVM_ARTIFACT_BUCKET: ${{ vars.AWS_LAMBDA_MICROVM_ARTIFACT_BUCKET }}
+      AWS_LAMBDA_MICROVM_BUILD_ROLE_ARN: ${{ vars.AWS_LAMBDA_MICROVM_BUILD_ROLE_ARN }}
+      AWS_LAMBDA_MICROVM_EXECUTION_ROLE_ARN: ${{ vars.AWS_LAMBDA_MICROVM_EXECUTION_ROLE_ARN }}
+      AWS_RELEASE_ROLE_ARN: ${{ vars.AWS_RELEASE_ROLE_ARN }}
+      VERCEL_ORG_ID: ${{ vars.VERCEL_ORG_ID }}
+      VERCEL_PROJECT_ID: ${{ vars.VERCEL_PROJECT_ID }}
+      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+      TRIGGER_PROJECT_ID: ${{ vars.TRIGGER_PROJECT_ID }}
+      TRIGGER_ACCESS_TOKEN: ${{ secrets.TRIGGER_ACCESS_TOKEN }}
+
+    steps:
+      - name: Validate release configuration
+        shell: bash
+        run: |
+          required=(
+            AWS_LAMBDA_MICROVM_ARTIFACT_BUCKET
+            AWS_LAMBDA_MICROVM_BUILD_ROLE_ARN
+            AWS_LAMBDA_MICROVM_EXECUTION_ROLE_ARN
+            AWS_RELEASE_ROLE_ARN
+            VERCEL_ORG_ID
+            VERCEL_PROJECT_ID
+            VERCEL_TOKEN
+            TRIGGER_PROJECT_ID
+            TRIGGER_ACCESS_TOKEN
+          )
+          missing=()
+          for name in "${required[@]}"; do
+            if [[ -z "${!name:-}" ]]; then
+              missing+=("$name")
+            fi
+          done
+          if (( ${#missing[@]} > 0 )); then
+            printf 'Missing GitHub environment variables or secrets:\n'
+            printf '  %s\n' "${missing[@]}"
+            exit 1
+          fi
+
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 20.x
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Type check release sources
+        run: pnpm typecheck
+
+      - name: Authenticate to AWS with GitHub OIDC
+        uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
+        with:
+          aws-region: ${{ env.AWS_REGION }}
+          role-to-assume: ${{ env.AWS_RELEASE_ROLE_ARN }}
+          role-session-name: hackerai-microvm-${{ github.run_id }}
+
+      - name: Publish exact image version
+        id: publish
+        env:
+          AWS_LAMBDA_MICROVM_OUTPUT_FILE: ${{ runner.temp }}/microvm-release.env
+        shell: bash
+        run: |
+          pnpm aws:microvm:deploy
+          while IFS='=' read -r name value; do
+            case "$name" in
+              AWS_LAMBDA_MICROVM_IMAGE_ID|AWS_LAMBDA_MICROVM_IMAGE_VERSION)
+                printf -v "$name" '%s' "$value"
+                printf '%s=%s\n' "$name" "$value" >> "$GITHUB_ENV"
+                printf '%s=%s\n' "$name" "$value" >> "$GITHUB_OUTPUT"
+                ;;
+            esac
+          done < "$AWS_LAMBDA_MICROVM_OUTPUT_FILE"
+          if [[ -z "${AWS_LAMBDA_MICROVM_IMAGE_ID:-}" || -z "${AWS_LAMBDA_MICROVM_IMAGE_VERSION:-}" ]]; then
+            echo "Image publisher did not return an ID and exact active version"
+            exit 1
+          fi
+
+      - name: Launch and terminate exact image version
+        run: pnpm aws:microvm:smoke
+
+      - name: Link Vercel project
+        run: >-
+          pnpm dlx vercel@59.1.4 link
+          --yes
+          --team "$VERCEL_ORG_ID"
+          --project "$VERCEL_PROJECT_ID"
+          --token "$VERCEL_TOKEN"
+
+      - name: Update pinned Vercel image
+        shell: bash
+        run: |
+          pnpm dlx vercel@59.1.4 env add AWS_LAMBDA_MICROVM_IMAGE_ID production,preview \
+            --force --no-sensitive --yes --value "$AWS_LAMBDA_MICROVM_IMAGE_ID" --token "$VERCEL_TOKEN"
+          pnpm dlx vercel@59.1.4 env add AWS_LAMBDA_MICROVM_IMAGE_VERSION production,preview \
+            --force --no-sensitive --yes --value "$AWS_LAMBDA_MICROVM_IMAGE_VERSION" --token "$VERCEL_TOKEN"
+
+      - name: Deploy pinned Trigger.dev worker
+        shell: bash
+        run: |
+          trigger_env_file="$RUNNER_TEMP/trigger-microvm-release.env"
+          printf '%s\n' \
+            "TRIGGER_PROJECT_ID=$TRIGGER_PROJECT_ID" \
+            "CLOUD_SANDBOX_PROVIDER=aws-lambda-microvm" \
+            "AWS_LAMBDA_MICROVM_REGION=$AWS_LAMBDA_MICROVM_REGION" \
+            "AWS_LAMBDA_MICROVM_IMAGE_ID=$AWS_LAMBDA_MICROVM_IMAGE_ID" \
+            "AWS_LAMBDA_MICROVM_IMAGE_VERSION=$AWS_LAMBDA_MICROVM_IMAGE_VERSION" \
+            "AWS_LAMBDA_MICROVM_EXECUTION_ROLE_ARN=$AWS_LAMBDA_MICROVM_EXECUTION_ROLE_ARN" \
+            > "$trigger_env_file"
+          pnpm exec trigger deploy --env prod --env-file "$trigger_env_file"
+
+      - name: Redeploy Vercel production
+        run: >-
+          pnpm dlx vercel@59.1.4 deploy
+          --prod
+          --force
+          --yes
+          --token "$VERCEL_TOKEN"
+
+      - name: Write release summary
+        shell: bash
+        run: |
+          {
+            echo "### AWS Lambda MicroVM released"
+            echo
+            echo "- Image: \`$AWS_LAMBDA_MICROVM_IMAGE_ID\`"
+            echo "- Version: \`$AWS_LAMBDA_MICROVM_IMAGE_VERSION\`"
+            echo "- Smoke-test MicroVM: terminated"
+            echo "- Trigger.dev production: deployed"
+            echo "- Vercel production: deployed"
+          } >> "$GITHUB_STEP_SUMMARY"

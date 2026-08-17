@@ -1,6 +1,16 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Description: HackerAI Lambda MicroVM image build and runtime prerequisites
 
+Parameters:
+  GitHubRepository:
+    Type: String
+    Default: hackerai-tech/hackerai
+    Description: GitHub owner/repository allowed to publish MicroVM images
+  GitHubEnvironment:
+    Type: String
+    Default: aws-lambda-microvm-production
+    Description: Protected GitHub environment allowed to publish MicroVM images
+
 Resources:
   ArtifactBucket:
     Type: AWS::S3::Bucket
@@ -125,6 +135,36 @@ Resources:
             Action: iam:PassRole
             Resource: !GetAtt MicrovmBuildRole.Arn
 
+  GitHubActionsOidcProvider:
+    Type: AWS::IAM::OIDCProvider
+    Properties:
+      Url: https://token.actions.githubusercontent.com
+      ClientIdList:
+        - sts.amazonaws.com
+      Tags:
+        - Key: application
+          Value: hackerai
+
+  GitHubMicrovmReleaseRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Description: Publish and smoke-test HackerAI Lambda MicroVM images from GitHub Actions
+      MaxSessionDuration: 3600
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !Ref GitHubActionsOidcProvider
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                "token.actions.githubusercontent.com:aud": sts.amazonaws.com
+                "token.actions.githubusercontent.com:sub": !Sub "repo:${GitHubRepository}:environment:${GitHubEnvironment}"
+      ManagedPolicyArns:
+        - !Ref MicrovmDeployerPolicy
+        - !Ref MicrovmRuntimePolicy
+
 Outputs:
   ArtifactBucketName:
     Value: !Ref ArtifactBucket
@@ -136,3 +176,5 @@ Outputs:
     Value: !GetAtt MicrovmExecutionRole.Arn
   DeployerPolicyArn:
     Value: !Ref MicrovmDeployerPolicy
+  GitHubReleaseRoleArn:
+    Value: !GetAtt GitHubMicrovmReleaseRole.Arn

@@ -1211,7 +1211,8 @@ function writeLifecycleResponse(
 
 function parseCloudLifecyclePayload(value: unknown): {
   microvmId: string;
-  config: CloudLifecyclePayload;
+  config: CloudLifecyclePayload | null;
+  smokeTest: boolean;
 } {
   if (!value || typeof value !== "object") {
     throw new Error("Invalid lifecycle request");
@@ -1224,6 +1225,13 @@ function parseCloudLifecyclePayload(value: unknown): {
   }
   const payload = JSON.parse(rawPayload) as Partial<CloudLifecyclePayload>;
   if (
+    payload &&
+    typeof payload === "object" &&
+    (payload as Record<string, unknown>).smokeTest === true
+  ) {
+    return { microvmId, config: null, smokeTest: true };
+  }
+  if (
     typeof payload.convexUrl !== "string" ||
     typeof payload.sessionId !== "string" ||
     typeof payload.bootstrapToken !== "string"
@@ -1232,6 +1240,7 @@ function parseCloudLifecyclePayload(value: unknown): {
   }
   return {
     microvmId,
+    smokeTest: false,
     config: {
       convexUrl: payload.convexUrl,
       sessionId: payload.sessionId,
@@ -1383,9 +1392,16 @@ async function startCloudLifecycleServer(): Promise<void> {
         request.method === "POST" &&
         path === "/aws/lambda-microvms/runtime/v1/run"
       ) {
-        const { microvmId, config } = parseCloudLifecyclePayload(
+        const { microvmId, config, smokeTest } = parseCloudLifecyclePayload(
           await readJsonBody(request),
         );
+        if (smokeTest) {
+          lifecycleConfig = null;
+          await stopAgent();
+          writeLifecycleResponse(response, 200, { ok: true, smokeTest: true });
+          return;
+        }
+        if (!config) throw new Error("Cloud sandbox bootstrap is missing");
         lifecycleConfig = {
           convexUrl: config.convexUrl,
           token: config.bootstrapToken,

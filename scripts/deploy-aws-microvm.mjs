@@ -1,9 +1,9 @@
-import { readFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   CreateMicrovmImageCommand,
-  GetMicrovmImageCommand,
+  GetMicrovmImageVersionCommand,
   LambdaMicrovmsClient,
   paginateListMicrovmImages,
   UpdateMicrovmImageCommand,
@@ -110,21 +110,42 @@ const response = existing
     );
 
 const imageIdentifier = response.imageArn || name;
+const imageVersion = response.imageVersion;
+if (!imageVersion) {
+  throw new Error("AWS did not return the published MicroVM image version");
+}
+
 const deadline = Date.now() + 45 * 60 * 1000;
-let image = response;
+let version;
 while (Date.now() < deadline) {
-  image = await lambda.send(new GetMicrovmImageCommand({ imageIdentifier }));
-  if (image.state === "CREATED" || image.state === "UPDATED") break;
-  if (image.state?.endsWith("FAILED")) {
-    throw new Error(`MicroVM image build failed with state ${image.state}`);
+  version = await lambda.send(
+    new GetMicrovmImageVersionCommand({ imageIdentifier, imageVersion }),
+  );
+  if (version.state === "SUCCESSFUL" && version.status === "ACTIVE") break;
+  if (version.state === "FAILED") {
+    throw new Error(
+      `MicroVM image version ${imageVersion} failed: ${version.stateReason || "no reason returned"}`,
+    );
   }
   await new Promise((resolvePromise) => setTimeout(resolvePromise, 10_000));
 }
-if (image.state !== "CREATED" && image.state !== "UPDATED") {
-  throw new Error("Timed out waiting for the MicroVM image build");
+if (version?.state !== "SUCCESSFUL" || version.status !== "ACTIVE") {
+  throw new Error(
+    `Timed out waiting for MicroVM image version ${imageVersion} to become active`,
+  );
 }
 
-console.log(`AWS_LAMBDA_MICROVM_IMAGE_ID=${image.imageArn || imageIdentifier}`);
-console.log(
-  `AWS_LAMBDA_MICROVM_IMAGE_VERSION=${image.latestActiveImageVersion || ""}`,
-);
+const output = [
+  `AWS_LAMBDA_MICROVM_IMAGE_ID=${version.imageArn || imageIdentifier}`,
+  `AWS_LAMBDA_MICROVM_IMAGE_VERSION=${imageVersion}`,
+].join("\n");
+
+if (process.env.AWS_LAMBDA_MICROVM_OUTPUT_FILE) {
+  await writeFile(
+    resolve(process.env.AWS_LAMBDA_MICROVM_OUTPUT_FILE),
+    `${output}\n`,
+    { mode: 0o600 },
+  );
+}
+
+console.log(output);

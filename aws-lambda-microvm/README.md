@@ -52,7 +52,8 @@ pnpm aws:microvm:deploy
 
 The command builds `packages/local`, creates a Lambda-compatible zip under
 `.artifacts/`, uploads it to S3, creates or updates the MicroVM image, waits for
-the build, and prints `AWS_LAMBDA_MICROVM_IMAGE_ID` and
+the exact returned image version to become `SUCCESSFUL` and `ACTIVE`, and then
+prints `AWS_LAMBDA_MICROVM_IMAGE_ID` and
 `AWS_LAMBDA_MICROVM_IMAGE_VERSION`.
 
 If the image build fails, inspect the CloudWatch log group shown by the Lambda
@@ -113,6 +114,42 @@ Optional controls:
 Never expose these variables with a `NEXT_PUBLIC_` prefix. Bootstrap tokens are
 generated per user session, stored only as SHA-256 hashes in Convex, scoped to a
 single MicroVM/session, and expire after nine hours.
+
+## Automated image promotion
+
+`.github/workflows/aws-lambda-microvm-release.yml` publishes a new image only
+when MicroVM image inputs change on `main`, or when it is run manually. It does
+not float production to AWS's implicit latest version. Instead it waits for the
+exact published version, launches and terminates a short-lived smoke-test VM,
+pins that version in Vercel and Trigger.dev, and redeploys both runtimes. Older
+AWS image versions remain available for an explicit rollback.
+
+The CloudFormation stack creates a GitHub OIDC release role, so GitHub Actions
+does not need long-lived AWS access keys. Create a GitHub environment named
+`aws-lambda-microvm-production`, restrict it to the `main` branch, and configure
+these environment variables from the stack and project outputs:
+
+```text
+AWS_RELEASE_ROLE_ARN=<GitHubReleaseRoleArn>
+AWS_LAMBDA_MICROVM_ARTIFACT_BUCKET=<ArtifactBucketName>
+AWS_LAMBDA_MICROVM_BUILD_ROLE_ARN=<BuildRoleArn>
+AWS_LAMBDA_MICROVM_EXECUTION_ROLE_ARN=<ExecutionRoleArn>
+VERCEL_ORG_ID=<Vercel team ID>
+VERCEL_PROJECT_ID=<Vercel project ID>
+TRIGGER_PROJECT_ID=<Trigger.dev project ref>
+```
+
+Add dedicated CI tokens as environment secrets:
+
+```text
+VERCEL_TOKEN=<Vercel token allowed to update and deploy this project>
+TRIGGER_ACCESS_TOKEN=<Trigger.dev personal access token allowed to deploy this project>
+```
+
+The workflow only synchronizes non-secret MicroVM release configuration into
+Trigger.dev. The dedicated AWS runtime identity credentials and the existing
+Convex/Centrifugo secrets must already be configured directly in Vercel and
+Trigger.dev as described above; they are not copied through GitHub Actions.
 
 ## 5. Validate before broader rollout
 
