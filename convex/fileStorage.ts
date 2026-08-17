@@ -351,6 +351,8 @@ const fileForStorageLookupValidator = v.union(
     size: v.number(),
     file_token_size: v.number(),
     content: v.optional(v.string()),
+    auxiliary_vision_description: v.optional(v.string()),
+    auxiliary_vision_model: v.optional(v.string()),
     is_attached: v.boolean(),
     _creationTime: v.number(),
   }),
