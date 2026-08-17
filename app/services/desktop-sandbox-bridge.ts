@@ -208,6 +208,7 @@ export class DesktopSandboxBridge {
   private isStoppingOrStopped = true;
   private config: DesktopBridgeConfig;
   private publishQueue: CentrifugoPublishQueue | null = null;
+  private nativeFileIpcAvailable: boolean | null = null;
 
   private heartbeatInterval: ReturnType<typeof setInterval> | null = null;
   private consecutiveHeartbeatFailures = 0;
@@ -866,7 +867,17 @@ export class DesktopSandboxBridge {
     });
   }
 
-  private async callLocalFileServer<T>(
+  private isMissingNativeFileCommandError(error: unknown): boolean {
+    const message = this.getErrorMessage(error).toLowerCase();
+    return (
+      message.includes("desktop_file_request") &&
+      (message.includes("not found") ||
+        message.includes("unknown command") ||
+        message.includes("not registered"))
+    );
+  }
+
+  private async callLegacyLocalFileServer<T>(
     route: string,
     body: Record<string, unknown>,
   ): Promise<T> {
@@ -895,6 +906,39 @@ export class DesktopSandboxBridge {
       );
     }
     return payload as T;
+  }
+
+  private async callDesktopFileBridge<T>(
+    requestType:
+      | "file_stat"
+      | "file_read"
+      | "file_write"
+      | "file_append"
+      | "file_remove"
+      | "file_list",
+    legacyRoute: string,
+    body: Record<string, unknown>,
+  ): Promise<T> {
+    if (this.nativeFileIpcAvailable !== false) {
+      const { invoke } = await import("@tauri-apps/api/core");
+      try {
+        const payload = await invoke<T>("desktop_file_request", {
+          request: { ...body, type: requestType },
+        });
+        this.nativeFileIpcAvailable = true;
+        return payload;
+      } catch (error) {
+        if (!this.isMissingNativeFileCommandError(error)) {
+          throw error;
+        }
+        this.nativeFileIpcAvailable = false;
+        console.warn(
+          "[desktop-bridge] Native file IPC is unavailable; using the legacy loopback bridge",
+        );
+      }
+    }
+
+    return this.callLegacyLocalFileServer<T>(legacyRoute, body);
   }
 
   private countLines(content: string): number {
@@ -945,7 +989,7 @@ export class DesktopSandboxBridge {
     }
 
     if (content === undefined) {
-      throw new Error("Desktop file server returned an invalid read payload");
+      throw new Error("Desktop file bridge returned an invalid read payload");
     }
 
     const lines = content.split("\n");
@@ -967,38 +1011,30 @@ export class DesktopSandboxBridge {
   private async handleFileStat(message: FileStatMessage): Promise<void> {
     const { requestId, path } = message;
     try {
-      const { invoke } = await import("@tauri-apps/api/core");
-      const metadata = await invoke<{ path: string; size: number }>(
-        "get_local_file_metadata",
-        { path },
-      );
+      const payload = await this.callDesktopFileBridge<{
+        kind: "file" | "not_file" | "missing";
+        path: string;
+        sizeBytes?: number;
+      }>("file_stat", "/files/stat", { path });
+      if (
+        typeof payload.path !== "string" ||
+        (payload.kind !== "file" &&
+          payload.kind !== "not_file" &&
+          payload.kind !== "missing")
+      ) {
+        throw new Error("Desktop file bridge returned an invalid stat payload");
+      }
+      if (payload.kind === "file" && typeof payload.sizeBytes !== "number") {
+        throw new Error("Desktop file bridge returned an invalid stat payload");
+      }
       await this.publishResult({
         type: "file_stat_result",
         requestId,
-        kind: "file",
-        path: metadata.path,
-        sizeBytes: metadata.size,
+        kind: payload.kind,
+        path: payload.path,
+        ...(payload.kind === "file" ? { sizeBytes: payload.sizeBytes } : {}),
       });
     } catch (error) {
-      const msg = this.getErrorMessage(error);
-      if (msg.includes("Selected path is not a file")) {
-        await this.publishResult({
-          type: "file_stat_result",
-          requestId,
-          kind: "not_file",
-          path,
-        });
-        return;
-      }
-      if (msg.includes("Metadata error")) {
-        await this.publishResult({
-          type: "file_stat_result",
-          requestId,
-          kind: "missing",
-          path,
-        });
-        return;
-      }
       await this.publishFileError(requestId, error);
     }
   }
@@ -1006,13 +1042,17 @@ export class DesktopSandboxBridge {
   private async handleFileRead(message: FileReadMessage): Promise<void> {
     const { requestId, path, range, maxFullBytes, maxResultBytes } = message;
     try {
-      const payload = await this.callLocalFileServer<unknown>("/files/read", {
-        path,
-        range_start: range?.[0],
-        range_end: range?.[1],
-        max_full_bytes: maxFullBytes,
-        max_result_bytes: maxResultBytes,
-      });
+      const payload = await this.callDesktopFileBridge<unknown>(
+        "file_read",
+        "/files/read",
+        {
+          path,
+          range_start: range?.[0],
+          range_end: range?.[1],
+          max_full_bytes: maxFullBytes,
+          max_result_bytes: maxResultBytes,
+        },
+      );
       await this.publishResult({
         type: "file_read_result",
         requestId,
@@ -1026,7 +1066,7 @@ export class DesktopSandboxBridge {
   private async handleFileWrite(message: FileWriteMessage): Promise<void> {
     const { requestId, path, content, isBase64, allowedRoot } = message;
     try {
-      await this.callLocalFileServer("/files/write", {
+      await this.callDesktopFileBridge("file_write", "/files/write", {
         path,
         content,
         is_base64: Boolean(isBase64),
@@ -1041,7 +1081,7 @@ export class DesktopSandboxBridge {
   private async handleFileAppend(message: FileAppendMessage): Promise<void> {
     const { requestId, path, content, isBase64, allowedRoot } = message;
     try {
-      await this.callLocalFileServer("/files/append", {
+      await this.callDesktopFileBridge("file_append", "/files/append", {
         path,
         content,
         is_base64: Boolean(isBase64),
@@ -1056,7 +1096,9 @@ export class DesktopSandboxBridge {
   private async handleFileRemove(message: FileRemoveMessage): Promise<void> {
     const { requestId, path } = message;
     try {
-      await this.callLocalFileServer("/files/remove", { path });
+      await this.callDesktopFileBridge("file_remove", "/files/remove", {
+        path,
+      });
       await this.publishResult({ type: "file_ok", requestId });
     } catch (error) {
       await this.publishFileError(requestId, error);
@@ -1066,7 +1108,8 @@ export class DesktopSandboxBridge {
   private async handleFileList(message: FileListMessage): Promise<void> {
     const { requestId, path } = message;
     try {
-      const entries = await this.callLocalFileServer<Array<{ name: string }>>(
+      const entries = await this.callDesktopFileBridge<Array<{ name: string }>>(
+        "file_list",
         "/files/list",
         { path },
       );
