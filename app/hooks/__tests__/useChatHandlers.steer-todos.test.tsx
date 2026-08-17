@@ -312,6 +312,45 @@ describe("useChatHandlers steer todo handoff", () => {
     );
   });
 
+  it("persists and applies cleaned todos when editing a stopped response", async () => {
+    const regenerate = jest.fn();
+    const { result } = renderHook(() =>
+      useChatHandlers({
+        chatId: "chat-1",
+        messages,
+        sendMessage: mockSendMessage,
+        stop: mockStop,
+        regenerate,
+        setMessages: mockSetMessages,
+        isExistingChat: true,
+        status: "ready",
+        isSendingNowRef: { current: false },
+        hasManuallyStoppedRef: { current: true },
+        activeTriggerRunRef: { current: undefined },
+      }),
+    );
+
+    await act(async () => {
+      await result.current.handleEditMessage("user-1", "Edited task");
+    });
+
+    expect(mockRegenerateWithNewContent).toHaveBeenCalledWith({
+      messageId: "user-1",
+      newContent: "Edited task",
+      fileIds: undefined,
+      todos: [],
+    });
+    expect(mockSetTodos).toHaveBeenCalledWith([]);
+    expect(regenerate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        body: expect.objectContaining({
+          todos: [],
+          regenerate: true,
+        }),
+      }),
+    );
+  });
+
   it("keeps the queued message when the todo snapshot cannot be persisted", async () => {
     mockCancelStream.mockRejectedValueOnce(new Error("write failed"));
     const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
