@@ -93,7 +93,13 @@ CENTRIFUGO_TOKEN_SECRET=<existing signing secret>
 
 Optional controls:
 
-- `AWS_LAMBDA_MICROVM_MAX_DURATION_SECONDS` defaults to 28,800 (8 hours).
+- `AWS_LAMBDA_MICROVM_MAX_DURATION_SECONDS` defaults to 14,400 (4 hours) and
+  can be raised to Lambda's 28,800-second limit when a longer reuse window is
+  worth the additional runaway-cost exposure.
+- `AWS_LAMBDA_MICROVM_MIN_REMAINING_SECONDS` defaults to 7,500 (2 hours and 5
+  minutes). A reused VM below that remaining lifetime is terminated and
+  replaced before accepting another Agent run, so it cannot expire midway
+  through the two-hour Trigger.dev task window.
 - Ingress is fixed to AWS's `NO_INGRESS` connector. The guest establishes the
   HackerAI relay outbound, so lifecycle hooks are never exposed as a public API.
 - `AWS_LAMBDA_MICROVM_EGRESS_CONNECTOR_ARN` defaults to `INTERNET_EGRESS`.

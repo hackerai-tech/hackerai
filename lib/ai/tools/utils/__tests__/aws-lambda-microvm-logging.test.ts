@@ -29,7 +29,11 @@ jest.mock("../centrifugo-sandbox", () => ({
   CentrifugoSandbox: jest.fn(),
 }));
 
-import { ensureAwsLambdaMicrovmConnection } from "../aws-lambda-microvm";
+import {
+  ensureAwsLambdaMicrovmConnection,
+  getAwsLambdaMicrovmConfig,
+  terminateAwsLambdaMicrovmForUser,
+} from "../aws-lambda-microvm";
 
 describe("AWS Lambda MicroVM development logging", () => {
   const originalEnv = process.env;
@@ -73,6 +77,7 @@ describe("AWS Lambda MicroVM development logging", () => {
           bootstrapExpiresAt: Date.now() + 60_000,
         },
         bootstrapToken,
+        cleanupCandidates: [],
       })
       .mockResolvedValueOnce(undefined);
 
@@ -145,5 +150,115 @@ describe("AWS Lambda MicroVM development logging", () => {
 
     errorSpy.mockRestore();
     debugSpy.mockRestore();
+  });
+
+  it("keeps a session retryable when cleanup cannot terminate its MicroVM", async () => {
+    mockMutation
+      .mockResolvedValueOnce({
+        created: true,
+        session: {
+          sessionId: "session-cleanup",
+          status: "starting",
+          region: "us-east-1",
+          imageIdentifier: process.env.AWS_LAMBDA_MICROVM_IMAGE_ID,
+          imageVersion: "6.0",
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+          bootstrapExpiresAt: Date.now() + 60_000,
+        },
+        bootstrapToken: "bootstrap-cleanup",
+        cleanupCandidates: [],
+      })
+      .mockResolvedValueOnce(false)
+      .mockResolvedValueOnce(true);
+    mockSend
+      .mockResolvedValueOnce({
+        microvmId: "microvm-cleanup",
+        $metadata: { requestId: "run-request", httpStatusCode: 200 },
+      })
+      .mockRejectedValueOnce(
+        Object.assign(new Error("temporary AWS failure"), {
+          name: "ServiceUnavailableException",
+          $metadata: { httpStatusCode: 503 },
+        }),
+      );
+    const errorSpy = jest.spyOn(console, "error").mockImplementation();
+    const warnSpy = jest.spyOn(console, "warn").mockImplementation();
+    const infoSpy = jest.spyOn(console, "info").mockImplementation();
+    const debugSpy = jest.spyOn(console, "debug").mockImplementation();
+
+    await expect(
+      ensureAwsLambdaMicrovmConnection("user-cleanup"),
+    ).rejects.toThrow("Failed creating AWS Lambda MicroVM sandbox");
+
+    expect(mockMutation).toHaveBeenCalledTimes(3);
+    expect(mockMutation.mock.calls[2][1]).toMatchObject({
+      userId: "user-cleanup",
+      sessionId: "session-cleanup",
+      failureCode: "termination_retry_required",
+    });
+
+    errorSpy.mockRestore();
+    warnSpy.mockRestore();
+    infoSpy.mockRestore();
+    debugSpy.mockRestore();
+  });
+
+  it("attempts every user MicroVM termination before reporting failures", async () => {
+    mockQuery.mockResolvedValueOnce([
+      {
+        sessionId: "session-one",
+        status: "running",
+        microvmId: "microvm-one",
+        region: "us-east-1",
+      },
+      {
+        sessionId: "session-two",
+        status: "running",
+        microvmId: "microvm-two",
+        region: "us-east-1",
+      },
+    ]);
+    mockSend
+      .mockRejectedValueOnce(
+        Object.assign(new Error("denied"), { name: "AccessDeniedException" }),
+      )
+      .mockResolvedValueOnce({ $metadata: { httpStatusCode: 200 } });
+    mockMutation.mockResolvedValue(true);
+    const warnSpy = jest.spyOn(console, "warn").mockImplementation();
+    const infoSpy = jest.spyOn(console, "info").mockImplementation();
+
+    await expect(
+      terminateAwsLambdaMicrovmForUser("user-delete"),
+    ).rejects.toThrow("Failed to terminate 1 AWS Lambda MicroVM session");
+
+    expect(mockSend).toHaveBeenCalledTimes(2);
+    expect(mockMutation.mock.calls).toEqual(
+      expect.arrayContaining([
+        expect.arrayContaining([
+          expect.anything(),
+          expect.objectContaining({
+            sessionId: "session-one",
+            failureCode: "termination_retry_required",
+          }),
+        ]),
+        expect.arrayContaining([
+          expect.anything(),
+          expect.objectContaining({ sessionId: "session-two" }),
+        ]),
+      ]),
+    );
+
+    warnSpy.mockRestore();
+    infoSpy.mockRestore();
+  });
+
+  it("uses a four-hour default but permits the eight-hour platform maximum", () => {
+    expect(getAwsLambdaMicrovmConfig()).toMatchObject({
+      maxDurationSeconds: 14_400,
+      minRemainingSeconds: 7_500,
+    });
+    process.env.AWS_LAMBDA_MICROVM_MAX_DURATION_SECONDS = "28800";
+    expect(getAwsLambdaMicrovmConfig().maxDurationSeconds).toBe(28_800);
   });
 });

@@ -1,7 +1,7 @@
 import { internalMutation, mutation, query } from "./_generated/server";
 import { v, ConvexError } from "convex/values";
 import { validateServiceKey } from "./lib/utils";
-import { DatabaseReader } from "./_generated/server";
+import { DatabaseReader, DatabaseWriter } from "./_generated/server";
 import type { Doc } from "./_generated/dataModel";
 import { SignJWT } from "jose";
 
@@ -86,6 +86,13 @@ const cloudSessionForBackend = v.object({
   failureCode: v.optional(v.string()),
 });
 
+const cloudSessionCleanupCandidate = v.object({
+  sessionId: v.string(),
+  microvmId: v.optional(v.string()),
+  region: v.string(),
+  failureCode: v.string(),
+});
+
 function serializeCloudSession(session: {
   session_id: string;
   status: "starting" | "running" | "failed" | "terminated";
@@ -112,6 +119,24 @@ function serializeCloudSession(session: {
     bootstrapExpiresAt: session.bootstrap_expires_at,
     failureCode: session.failure_code,
   };
+}
+
+async function disconnectCloudSessionConnection(
+  db: DatabaseWriter,
+  connectionId: string | undefined,
+  now: number,
+): Promise<void> {
+  if (!connectionId) return;
+  const connection = await db
+    .query("local_sandbox_connections")
+    .withIndex("by_connection_id", (q) => q.eq("connection_id", connectionId))
+    .unique();
+  if (connection?.status !== "connected") return;
+  await db.patch(connection._id, {
+    status: "disconnected",
+    disconnected_at: now,
+    disconnect_reason: "client_disconnect",
+  });
 }
 
 // ============================================================================
@@ -501,64 +526,93 @@ export const beginCloudSession = mutation({
     created: v.boolean(),
     session: cloudSessionForBackend,
     bootstrapToken: v.optional(v.string()),
-    replacedMicrovmId: v.optional(v.string()),
+    cleanupCandidates: v.array(cloudSessionCleanupCandidate),
   }),
   handler: async (ctx, args) => {
     validateServiceKey(args.serviceKey);
     const now = Date.now();
-    const candidates = await ctx.db
-      .query("cloud_sandbox_sessions")
-      .withIndex("by_user_id", (q) => q.eq("user_id", args.userId))
-      .order("desc")
-      .take(10);
+    const [starting, running] = await Promise.all([
+      ctx.db
+        .query("cloud_sandbox_sessions")
+        .withIndex("by_user_and_status", (q) =>
+          q.eq("user_id", args.userId).eq("status", "starting"),
+        )
+        .order("desc")
+        .take(50),
+      ctx.db
+        .query("cloud_sandbox_sessions")
+        .withIndex("by_user_and_status", (q) =>
+          q.eq("user_id", args.userId).eq("status", "running"),
+        )
+        .order("desc")
+        .take(50),
+    ]);
+    const candidates = [...running, ...starting];
+    const isReusable = (session: (typeof candidates)[number]) =>
+      session.failure_code === undefined &&
+      session.bootstrap_expires_at > now &&
+      !(
+        session.status === "starting" &&
+        now - session.updated_at > CLOUD_SESSION_STARTING_STALE_MS
+      ) &&
+      session.region === args.region &&
+      session.image_identifier === args.imageIdentifier &&
+      session.image_version === args.imageVersion;
+    // Prefer an already-connected VM over a newer session that is still
+    // starting. This is both the lowest-latency and least-expensive choice.
+    const reusable = running.find(isReusable) ?? starting.find(isReusable);
+    const cleanupCandidates: Array<{
+      sessionId: string;
+      microvmId?: string;
+      region: string;
+      failureCode: string;
+    }> = [];
 
-    const active = candidates.find(
-      (session) =>
-        (session.status === "starting" || session.status === "running") &&
-        session.bootstrap_expires_at > now,
-    );
-    let replacedMicrovmId: string | undefined;
-
-    if (active) {
+    for (const candidate of candidates) {
+      if (candidate._id === reusable?._id) continue;
       const startingIsStale =
-        active.status === "starting" &&
-        now - active.updated_at > CLOUD_SESSION_STARTING_STALE_MS;
+        candidate.status === "starting" &&
+        now - candidate.updated_at > CLOUD_SESSION_STARTING_STALE_MS;
       const imageMatches =
-        active.region === args.region &&
-        active.image_identifier === args.imageIdentifier &&
-        active.image_version === args.imageVersion;
-
-      if (!startingIsStale && imageMatches) {
-        return {
-          created: false,
-          session: serializeCloudSession(active),
-        };
-      }
-
-      await ctx.db.patch(active._id, {
-        status: "terminated",
-        ended_at: now,
-        updated_at: now,
-        failure_code: startingIsStale
+        candidate.region === args.region &&
+        candidate.image_identifier === args.imageIdentifier &&
+        candidate.image_version === args.imageVersion;
+      const candidateFailureCode =
+        candidate.failure_code ??
+        (startingIsStale
           ? "starting_timeout"
-          : "image_configuration_changed",
+          : candidate.bootstrap_expires_at <= now
+            ? "bootstrap_expired"
+            : !imageMatches
+              ? "image_configuration_changed"
+              : "duplicate_active_session");
+
+      // Keep the session active until the backend confirms AWS termination.
+      // Otherwise a transient AWS failure would hide a still-billable VM from
+      // all future cleanup attempts.
+      await ctx.db.patch(candidate._id, {
+        updated_at: now,
+        failure_code: candidateFailureCode,
       });
-      if (active.connection_id) {
-        const staleConnection = await ctx.db
-          .query("local_sandbox_connections")
-          .withIndex("by_connection_id", (q) =>
-            q.eq("connection_id", active.connection_id!),
-          )
-          .unique();
-        if (staleConnection?.status === "connected") {
-          await ctx.db.patch(staleConnection._id, {
-            status: "disconnected",
-            disconnected_at: now,
-            disconnect_reason: "client_disconnect",
-          });
-        }
-      }
-      replacedMicrovmId = active.microvm_id;
+      await disconnectCloudSessionConnection(
+        ctx.db,
+        candidate.connection_id,
+        now,
+      );
+      cleanupCandidates.push({
+        sessionId: candidate.session_id,
+        microvmId: candidate.microvm_id,
+        region: candidate.region,
+        failureCode: candidateFailureCode,
+      });
+    }
+
+    if (reusable) {
+      return {
+        created: false,
+        session: serializeCloudSession(reusable),
+        cleanupCandidates,
+      };
     }
 
     const bootstrapToken = generateCloudBootstrapToken();
@@ -582,7 +636,7 @@ export const beginCloudSession = mutation({
       created: true,
       session: serializeCloudSession(session),
       bootstrapToken,
-      replacedMicrovmId,
+      cleanupCandidates,
     };
   },
 });
@@ -628,13 +682,13 @@ export const listActiveCloudSessionsForBackend = query({
         .withIndex("by_user_and_status", (q) =>
           q.eq("user_id", args.userId).eq("status", "starting"),
         )
-        .collect(),
+        .take(100),
       ctx.db
         .query("cloud_sandbox_sessions")
         .withIndex("by_user_and_status", (q) =>
           q.eq("user_id", args.userId).eq("status", "running"),
         )
-        .collect(),
+        .take(100),
     ]);
     return [...starting, ...running].map(serializeCloudSession);
   },
@@ -654,7 +708,13 @@ export const attachCloudMicrovm = mutation({
       .query("cloud_sandbox_sessions")
       .withIndex("by_session_id", (q) => q.eq("session_id", args.sessionId))
       .unique();
-    if (!session || session.user_id !== args.userId) return false;
+    if (
+      !session ||
+      session.user_id !== args.userId ||
+      (session.status !== "starting" && session.status !== "running")
+    ) {
+      return false;
+    }
     if (session.microvm_id && session.microvm_id !== args.microvmId) {
       throw new ConvexError({
         code: "CLOUD_SESSION_MISMATCH",
@@ -666,6 +726,78 @@ export const attachCloudMicrovm = mutation({
       updated_at: Date.now(),
     });
     return true;
+  },
+});
+
+export const markCloudSessionCleanupPending = mutation({
+  args: {
+    serviceKey: v.string(),
+    userId: v.string(),
+    sessionId: v.string(),
+    failureCode: v.string(),
+  },
+  returns: v.boolean(),
+  handler: async (ctx, args) => {
+    validateServiceKey(args.serviceKey);
+    const session = await ctx.db
+      .query("cloud_sandbox_sessions")
+      .withIndex("by_session_id", (q) => q.eq("session_id", args.sessionId))
+      .unique();
+    if (!session || session.user_id !== args.userId) return false;
+    if (session.status === "failed" || session.status === "terminated") {
+      return true;
+    }
+    const now = Date.now();
+    await ctx.db.patch(session._id, {
+      failure_code: args.failureCode,
+      updated_at: now,
+    });
+    await disconnectCloudSessionConnection(ctx.db, session.connection_id, now);
+    return true;
+  },
+});
+
+export const resolveCloudSessionCleanupTarget = mutation({
+  args: {
+    serviceKey: v.string(),
+    userId: v.string(),
+    sessionId: v.string(),
+  },
+  returns: v.object({
+    microvmId: v.optional(v.string()),
+    endedWithoutMicrovm: v.boolean(),
+  }),
+  handler: async (ctx, args) => {
+    validateServiceKey(args.serviceKey);
+    const session = await ctx.db
+      .query("cloud_sandbox_sessions")
+      .withIndex("by_session_id", (q) => q.eq("session_id", args.sessionId))
+      .unique();
+    if (!session || session.user_id !== args.userId) {
+      return { endedWithoutMicrovm: true };
+    }
+    if (session.microvm_id) {
+      return {
+        microvmId: session.microvm_id,
+        endedWithoutMicrovm: false,
+      };
+    }
+    if (session.status === "failed" || session.status === "terminated") {
+      return { endedWithoutMicrovm: true };
+    }
+
+    // This mutation is atomic with attachCloudMicrovm. If attach wins, its ID
+    // is returned for AWS termination. If cleanup wins, attach is rejected and
+    // the creator will terminate the ID from its own failure path.
+    const now = Date.now();
+    await ctx.db.patch(session._id, {
+      status: "failed",
+      failure_code: "cleanup_microvm_id_missing",
+      ended_at: now,
+      updated_at: now,
+    });
+    await disconnectCloudSessionConnection(ctx.db, session.connection_id, now);
+    return { endedWithoutMicrovm: true };
   },
 });
 
@@ -692,21 +824,7 @@ export const markCloudSessionEnded = mutation({
       ended_at: now,
       updated_at: now,
     });
-    if (session.connection_id) {
-      const connection = await ctx.db
-        .query("local_sandbox_connections")
-        .withIndex("by_connection_id", (q) =>
-          q.eq("connection_id", session.connection_id!),
-        )
-        .unique();
-      if (connection?.status === "connected") {
-        await ctx.db.patch(connection._id, {
-          status: "disconnected",
-          disconnected_at: now,
-          disconnect_reason: "client_disconnect",
-        });
-      }
-    }
+    await disconnectCloudSessionConnection(ctx.db, session.connection_id, now);
     return true;
   },
 });

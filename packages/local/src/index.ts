@@ -1251,14 +1251,32 @@ async function startCloudLifecycleServer(): Promise<void> {
     if (!child || child.exitCode !== null || child.killed) return;
 
     await new Promise<void>((resolve) => {
-      const timeout = setTimeout(() => {
+      let settled = false;
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(forceKillTimeout);
+        clearTimeout(hardStopTimeout);
+        child.off("exit", finish);
+        resolve();
+      };
+      const forceKillTimeout = setTimeout(() => {
         child.kill("SIGKILL");
       }, 5_000);
-      child.once("exit", () => {
-        clearTimeout(timeout);
-        resolve();
-      });
-      child.send?.({ type: "shutdown", terminated });
+      // Never let a wedged child consume the entire AWS lifecycle-hook
+      // timeout. AWS will complete suspend/termination after this handler
+      // returns even if the local process table has not emitted `exit`.
+      const hardStopTimeout = setTimeout(() => {
+        child.kill("SIGKILL");
+        finish();
+      }, 10_000);
+      child.once("exit", finish);
+      try {
+        child.send?.({ type: "shutdown", terminated });
+      } catch {
+        child.kill("SIGKILL");
+        finish();
+      }
     });
   };
 
