@@ -59,6 +59,7 @@ import {
   getAgentFirstDefaultDecision,
   normalizeAgentFirstSandboxType,
 } from "@/lib/activation/agent-first-default";
+import { resolveFreeDesktopSandboxPreference } from "@/lib/activation/free-desktop-sandbox";
 import {
   ComposerStateProvider,
   useComposerActions,
@@ -675,6 +676,22 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
     isTauriEnvironment();
   const agentOnlyActive = paidAgentOnlyActive || freeDesktopAgentOnlyActive;
   const accessibleChatMode: ChatMode = agentOnlyActive ? "agent" : chatMode;
+  const freeDesktopSandboxPreference = useMemo(
+    () =>
+      freeDesktopAgentOnlyActive
+        ? resolveFreeDesktopSandboxPreference({
+            sandboxPreference,
+            desktopBridgeActive,
+            localConnections,
+          })
+        : null,
+    [
+      desktopBridgeActive,
+      freeDesktopAgentOnlyActive,
+      localConnections,
+      sandboxPreference,
+    ],
+  );
 
   const setChatMode = useCallback(
     (mode: ChatMode) => {
@@ -687,14 +704,18 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
 
   useEffect(() => {
     if (!agentOnlyActive) return;
-    if (freeDesktopAgentOnlyActive && sandboxPreference !== "desktop") {
-      setSandboxPreference("desktop");
+    if (
+      freeDesktopSandboxPreference &&
+      sandboxPreference !== freeDesktopSandboxPreference
+    ) {
+      setSandboxPreference(freeDesktopSandboxPreference);
     }
     if (freeDesktopAgentOnlyActive && selectedModel !== "auto") {
       setSelectedModelRaw("auto");
     }
   }, [
     agentOnlyActive,
+    freeDesktopSandboxPreference,
     freeDesktopAgentOnlyActive,
     sandboxPreference,
     selectedModel,
