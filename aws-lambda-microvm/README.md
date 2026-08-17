@@ -35,7 +35,9 @@ aws cloudformation describe-stacks \
 Attach `DeployerPolicyArn` to the CI/operator identity that publishes images.
 Attach `RuntimePolicyArn` to the AWS identity used by both the HackerAI web
 runtime and Trigger.dev. Prefer workload identity/role assumption in production;
-access keys can be used for an initial test.
+access keys can be used for an initial test. Set `ExecutionRoleArn` as
+`AWS_LAMBDA_MICROVM_EXECUTION_ROLE_ARN`; Lambda assumes this narrowly scoped
+role to write guest runtime logs to CloudWatch.
 
 ## 2. Build and publish the image
 
@@ -80,6 +82,7 @@ CLOUD_SANDBOX_PROVIDER=aws-lambda-microvm
 AWS_LAMBDA_MICROVM_REGION=us-east-1
 AWS_LAMBDA_MICROVM_IMAGE_ID=<image ARN printed by deploy>
 AWS_LAMBDA_MICROVM_IMAGE_VERSION=<version printed by deploy>
+AWS_LAMBDA_MICROVM_EXECUTION_ROLE_ARN=<ExecutionRoleArn>
 AWS_ACCESS_KEY_ID=<runtime identity key for an initial test>
 AWS_SECRET_ACCESS_KEY=<runtime identity secret for an initial test>
 CONVEX_SERVICE_ROLE_KEY=<existing server role key>

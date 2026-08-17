@@ -61,6 +61,38 @@ Resources:
               - lambda:SuspendMicrovm
               - lambda:TerminateMicrovm
             Resource: "*"
+          - Effect: Allow
+            Action: iam:PassRole
+            Resource: !GetAtt MicrovmExecutionRole.Arn
+            Condition:
+              StringEquals:
+                iam:PassedToService: lambda.amazonaws.com
+
+  MicrovmExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+              - sts:TagSession
+      Policies:
+        - PolicyName: WriteRuntimeLogs
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: logs:CreateLogGroup
+                Resource: !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/microvms/hackerai-cloud-agent"
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/microvms/hackerai-cloud-agent:log-stream:*"
 
   MicrovmDeployerPolicy:
     Type: AWS::IAM::ManagedPolicy
@@ -100,5 +132,7 @@ Outputs:
     Value: !GetAtt MicrovmBuildRole.Arn
   RuntimePolicyArn:
     Value: !Ref MicrovmRuntimePolicy
+  ExecutionRoleArn:
+    Value: !GetAtt MicrovmExecutionRole.Arn
   DeployerPolicyArn:
     Value: !Ref MicrovmDeployerPolicy

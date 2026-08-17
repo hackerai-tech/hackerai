@@ -34,6 +34,7 @@ type AwsLambdaMicrovmConfig = {
   region: string;
   imageIdentifier: string;
   imageVersion?: string;
+  executionRoleArn?: string;
   ingressConnectorArn: string;
   egressConnectorArn: string;
   maxDurationSeconds: number;
@@ -47,6 +48,129 @@ type AwsLambdaMicrovmConfig = {
 
 let client: LambdaMicrovmsClient | null = null;
 let clientRegion: string | null = null;
+
+type LogLevel = "debug" | "info" | "warn" | "error";
+
+function runtimeEnvironment(): string {
+  return (
+    process.env.TRIGGER_ENV ??
+    process.env.VERCEL_ENV ??
+    process.env.NODE_ENV ??
+    "unknown"
+  );
+}
+
+function developmentLoggingEnabled(): boolean {
+  if (process.env.AWS_LAMBDA_MICROVM_DEBUG === "true") return true;
+  return runtimeEnvironment() !== "production";
+}
+
+function credentialSource(): string {
+  if (process.env.AWS_ACCESS_KEY_ID || process.env.AWS_SECRET_ACCESS_KEY) {
+    return "environment";
+  }
+  if (process.env.AWS_WEB_IDENTITY_TOKEN_FILE) return "web_identity";
+  if (
+    process.env.AWS_CONTAINER_CREDENTIALS_FULL_URI ||
+    process.env.AWS_CONTAINER_CREDENTIALS_RELATIVE_URI
+  ) {
+    return "container";
+  }
+  if (process.env.AWS_PROFILE) return "profile";
+  return "default_chain";
+}
+
+function endpointKind(value: string): string {
+  try {
+    const url = new URL(value);
+    if (
+      url.hostname === "127.0.0.1" ||
+      url.hostname === "localhost" ||
+      url.hostname === "::1"
+    ) {
+      return "local";
+    }
+    return url.protocol === "https:" ? "remote_https" : "remote_other";
+  } catch {
+    return "invalid";
+  }
+}
+
+function redactErrorMessage(
+  message: string,
+  additionalSecrets: Array<string | undefined> = [],
+): string {
+  let redacted = message.slice(0, 1_000);
+  const knownSecrets = [
+    process.env.AWS_SECRET_ACCESS_KEY,
+    process.env.AWS_SESSION_TOKEN,
+    process.env.CONVEX_SERVICE_ROLE_KEY,
+    process.env.CENTRIFUGO_TOKEN_SECRET,
+    ...additionalSecrets,
+  ].filter((value): value is string => Boolean(value && value.length >= 4));
+
+  for (const secret of knownSecrets) {
+    redacted = redacted.replaceAll(secret, "[REDACTED]");
+  }
+
+  return redacted.replace(
+    /((?:bootstrap[_-]?token|token|secret|password|access[_-]?key)\s*[:=]\s*)[^\s,}]+/gi,
+    "$1[REDACTED]",
+  );
+}
+
+function errorLogFields(
+  error: unknown,
+  additionalSecrets: Array<string | undefined> = [],
+): Record<string, unknown> {
+  const record =
+    error && typeof error === "object"
+      ? (error as {
+          name?: unknown;
+          message?: unknown;
+          $metadata?: {
+            requestId?: unknown;
+            httpStatusCode?: unknown;
+            attempts?: unknown;
+            totalRetryDelay?: unknown;
+          };
+        })
+      : null;
+  const rawMessage =
+    error instanceof Error
+      ? error.message
+      : typeof record?.message === "string"
+        ? record.message
+        : null;
+
+  return {
+    error_name:
+      error instanceof Error
+        ? error.name
+        : typeof record?.name === "string"
+          ? record.name
+          : typeof error,
+    error_message: rawMessage
+      ? redactErrorMessage(rawMessage, additionalSecrets)
+      : null,
+    aws_request_id:
+      typeof record?.$metadata?.requestId === "string"
+        ? record.$metadata.requestId
+        : null,
+    aws_http_status_code:
+      typeof record?.$metadata?.httpStatusCode === "number"
+        ? record.$metadata.httpStatusCode
+        : null,
+    aws_attempts:
+      typeof record?.$metadata?.attempts === "number"
+        ? record.$metadata.attempts
+        : null,
+    aws_retry_delay_ms:
+      typeof record?.$metadata?.totalRetryDelay === "number"
+        ? record.$metadata.totalRetryDelay
+        : null,
+  };
+}
 
 function required(name: string): string {
   const value = process.env[name]?.trim();
@@ -88,6 +212,8 @@ export function getAwsLambdaMicrovmConfig(): AwsLambdaMicrovmConfig {
     imageIdentifier: required("AWS_LAMBDA_MICROVM_IMAGE_ID"),
     imageVersion:
       process.env.AWS_LAMBDA_MICROVM_IMAGE_VERSION?.trim() || undefined,
+    executionRoleArn:
+      process.env.AWS_LAMBDA_MICROVM_EXECUTION_ROLE_ARN?.trim() || undefined,
     // The guest initiates its relay connection outbound. Keeping lifecycle
     // hooks behind NO_INGRESS prevents them from becoming a public control API.
     ingressConnectorArn: `arn:aws:lambda:${region}:aws:network-connector:aws-network-connector:NO_INGRESS`,
@@ -119,26 +245,24 @@ function getClient(region: string): LambdaMicrovmsClient {
 }
 
 function log(
-  level: "info" | "warn" | "error",
+  level: LogLevel,
   event: string,
   fields: Record<string, unknown>,
 ): void {
+  if (level === "debug" && !developmentLoggingEnabled()) return;
   const payload = JSON.stringify({
     timestamp: new Date().toISOString(),
     level,
     event,
     service: "cloud-sandbox-provider",
-    environment:
-      process.env.TRIGGER_ENV ??
-      process.env.VERCEL_ENV ??
-      process.env.NODE_ENV ??
-      "unknown",
+    environment: runtimeEnvironment(),
     request_id: process.env.VERCEL_REQUEST_ID ?? null,
     provider: PROVIDER,
     ...fields,
   });
   if (level === "error") console.error(payload);
   else if (level === "warn") console.warn(payload);
+  else if (level === "debug") console.debug(payload);
   else console.info(payload);
 }
 
@@ -353,23 +477,86 @@ export async function ensureAwsLambdaMicrovmConnection(
   onBoot?: (info: SandboxBootInfo) => void,
   replacementAttempt = 0,
 ): Promise<CentrifugoSandbox> {
-  const config = getAwsLambdaMicrovmConfig();
   const startedAt = performance.now();
-  const begin = (await getConvexClient().mutation(
-    api.localSandbox.beginCloudSession,
-    {
-      serviceKey: config.serviceKey,
-      userId,
-      region: config.region,
-      imageIdentifier: config.imageIdentifier,
-      imageVersion: config.imageVersion,
-    },
-  )) as {
+  let config: AwsLambdaMicrovmConfig;
+  try {
+    config = getAwsLambdaMicrovmConfig();
+  } catch (error) {
+    log("error", "cloud_sandbox_configuration_failed", {
+      user_id: userId,
+      replacement_attempt: replacementAttempt,
+      failure_stage: "resolve_configuration",
+      failure_code: failureCode(error),
+      duration_ms: Math.round(performance.now() - startedAt),
+      ...errorLogFields(error),
+    });
+    throw error;
+  }
+
+  const convexUrl = getConvexUrl();
+  log("debug", "cloud_sandbox_configuration_resolved", {
+    user_id: userId,
+    region: config.region,
+    image_identifier: config.imageIdentifier,
+    image_version: config.imageVersion ?? "latest",
+    execution_role_configured: Boolean(config.executionRoleArn),
+    ingress_connector: config.ingressConnectorArn.split(":").at(-1) ?? null,
+    egress_connector: config.egressConnectorArn.split(":").at(-1) ?? null,
+    max_duration_seconds: config.maxDurationSeconds,
+    idle_policy_enabled: config.idleSeconds !== undefined,
+    idle_seconds: config.idleSeconds ?? null,
+    suspended_seconds: config.suspendedSeconds,
+    log_group: config.logGroup,
+    credential_source: credentialSource(),
+    aws_profile: process.env.AWS_PROFILE?.trim() || null,
+    convex_endpoint_kind: endpointKind(convexUrl),
+    replacement_attempt: replacementAttempt,
+  });
+
+  let begin: {
     created: boolean;
     session: CloudSession;
     bootstrapToken?: string;
     replacedMicrovmId?: string;
   };
+  try {
+    begin = (await getConvexClient().mutation(
+      api.localSandbox.beginCloudSession,
+      {
+        serviceKey: config.serviceKey,
+        userId,
+        region: config.region,
+        imageIdentifier: config.imageIdentifier,
+        imageVersion: config.imageVersion,
+      },
+    )) as typeof begin;
+  } catch (error) {
+    log("error", "cloud_sandbox_session_prepare_failed", {
+      user_id: userId,
+      region: config.region,
+      image_version: config.imageVersion ?? "latest",
+      replacement_attempt: replacementAttempt,
+      failure_stage: "begin_cloud_session",
+      failure_code: failureCode(error),
+      duration_ms: Math.round(performance.now() - startedAt),
+      ...errorLogFields(error),
+    });
+    throw error;
+  }
+
+  log("debug", "cloud_sandbox_session_prepared", {
+    user_id: userId,
+    session_id: begin.session.sessionId,
+    microvm_id: begin.session.microvmId ?? null,
+    region: config.region,
+    image_version: config.imageVersion ?? "latest",
+    session_status: begin.session.status,
+    session_created: begin.created,
+    replacement_attempt: replacementAttempt,
+    replaced_microvm: Boolean(begin.replacedMicrovmId),
+    bootstrap_token_present: Boolean(begin.bootstrapToken),
+    duration_ms: Math.round(performance.now() - startedAt),
+  });
 
   if (!begin.created) {
     let existing: {
@@ -420,11 +607,29 @@ export async function ensureAwsLambdaMicrovmConnection(
   await terminateBestEffort(begin.replacedMicrovmId, config);
 
   let microvmId: string | undefined;
+  let failureStage = "run_microvm";
   try {
+    const runStartedAt = performance.now();
+    log("debug", "cloud_sandbox_run_requested", {
+      user_id: userId,
+      session_id: begin.session.sessionId,
+      region: config.region,
+      image_identifier: config.imageIdentifier,
+      image_version: config.imageVersion ?? "latest",
+      execution_role_configured: Boolean(config.executionRoleArn),
+      ingress_connector: config.ingressConnectorArn.split(":").at(-1) ?? null,
+      egress_connector: config.egressConnectorArn.split(":").at(-1) ?? null,
+      max_duration_seconds: config.maxDurationSeconds,
+      idle_policy_enabled: config.idleSeconds !== undefined,
+      convex_endpoint_kind: endpointKind(convexUrl),
+    });
     const response = await getClient(config.region).send(
       new RunMicrovmCommand({
         imageIdentifier: config.imageIdentifier,
         imageVersion: config.imageVersion,
+        ...(config.executionRoleArn
+          ? { executionRoleArn: config.executionRoleArn }
+          : {}),
         ingressNetworkConnectors: [config.ingressConnectorArn],
         egressNetworkConnectors: [config.egressConnectorArn],
         ...(config.idleSeconds
@@ -436,11 +641,13 @@ export async function ensureAwsLambdaMicrovmConnection(
               },
             }
           : {}),
-        logging: { cloudWatch: { logGroup: config.logGroup } },
+        logging: config.executionRoleArn
+          ? { cloudWatch: { logGroup: config.logGroup } }
+          : { disabled: {} },
         maximumDurationInSeconds: config.maxDurationSeconds,
         clientToken: begin.session.sessionId,
         runHookPayload: JSON.stringify({
-          convexUrl: getConvexUrl(),
+          convexUrl,
           sessionId: begin.session.sessionId,
           bootstrapToken: begin.bootstrapToken,
           connectionName: "AWS Lambda MicroVM",
@@ -449,7 +656,18 @@ export async function ensureAwsLambdaMicrovmConnection(
     );
     microvmId = response.microvmId;
     if (!microvmId) throw new Error("AWS did not return a MicroVM ID");
+    log("info", "cloud_sandbox_run_accepted", {
+      user_id: userId,
+      session_id: begin.session.sessionId,
+      microvm_id: microvmId,
+      region: config.region,
+      image_version: config.imageVersion ?? "latest",
+      aws_request_id: response.$metadata.requestId ?? null,
+      aws_http_status_code: response.$metadata.httpStatusCode ?? null,
+      duration_ms: Math.round(performance.now() - runStartedAt),
+    });
 
+    failureStage = "attach_cloud_microvm";
     await getConvexClient().mutation(api.localSandbox.attachCloudMicrovm, {
       serviceKey: config.serviceKey,
       userId,
@@ -457,12 +675,28 @@ export async function ensureAwsLambdaMicrovmConnection(
       microvmId,
     });
 
+    failureStage = "wait_for_guest_connection";
+    log("debug", "cloud_sandbox_guest_connection_wait_started", {
+      user_id: userId,
+      session_id: begin.session.sessionId,
+      microvm_id: microvmId,
+      region: config.region,
+      timeout_ms: SESSION_READY_TIMEOUT_MS,
+    });
     const connected = await waitForSessionConnection(
       userId,
       begin.session.sessionId,
       config,
     );
     const sandbox = createRelaySandbox(userId, connected, config);
+    failureStage = "wait_for_relay_ready";
+    log("debug", "cloud_sandbox_relay_ready_wait_started", {
+      user_id: userId,
+      session_id: connected.sessionId,
+      microvm_id: connected.microvmId,
+      region: config.region,
+      timeout_ms: RELAY_READY_TIMEOUT_MS,
+    });
     await waitForRelayReady(sandbox);
     onBoot?.({
       path: "create_fresh",
@@ -480,17 +714,27 @@ export async function ensureAwsLambdaMicrovmConnection(
     return sandbox;
   } catch (error) {
     const code = failureCode(error);
-    await terminateBestEffort(microvmId, config);
-    await markEnded(userId, begin.session.sessionId, config, "failed", code);
     log("error", "cloud_sandbox_creation_failed", {
       user_id: userId,
       session_id: begin.session.sessionId,
       microvm_id: microvmId ?? null,
       region: config.region,
+      image_identifier: config.imageIdentifier,
+      image_version: config.imageVersion ?? "latest",
+      execution_role_configured: Boolean(config.executionRoleArn),
+      failure_stage: failureStage,
       failure_code: code,
+      credential_source: credentialSource(),
+      aws_profile: process.env.AWS_PROFILE?.trim() || null,
+      convex_endpoint_kind: endpointKind(convexUrl),
       duration_ms: Math.round(performance.now() - startedAt),
+      ...errorLogFields(error, [begin.bootstrapToken]),
     });
-    throw new Error(`Failed creating AWS Lambda MicroVM sandbox (${code})`);
+    await terminateBestEffort(microvmId, config);
+    await markEnded(userId, begin.session.sessionId, config, "failed", code);
+    throw new Error(`Failed creating AWS Lambda MicroVM sandbox (${code})`, {
+      cause: error,
+    });
   }
 }
 
