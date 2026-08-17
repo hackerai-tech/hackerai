@@ -74,7 +74,7 @@ const common = {
     },
     microvmImageHooks: {
       ready: "ENABLED",
-      readyTimeoutInSeconds: 30,
+      readyTimeoutInSeconds: 60,
       validate: "ENABLED",
       validateTimeoutInSeconds: 30,
     },
