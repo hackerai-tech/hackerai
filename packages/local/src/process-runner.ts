@@ -51,6 +51,7 @@ interface PtyModule {
 const FLUSH_INTERVAL_MS = 16;
 const FLUSH_THRESHOLD_BYTES = 32 * 1024; // 32 KB
 const SIGTERM_GRACE_MS = 5_000;
+const SHUTDOWN_TIMEOUT_MS = SIGTERM_GRACE_MS + 2_000;
 export const NODE_PTY_UNAVAILABLE_MESSAGE =
   "Interactive terminal sessions are unavailable because node-pty could not be loaded. Non-interactive commands still work.";
 
@@ -198,6 +199,13 @@ export class ProcessRunner {
       return false;
     }
 
+    // A failed lifecycle cleanup can be retried while the original SIGKILL
+    // escalation is still pending. Preserve the earlier (sooner) timer rather
+    // than orphaning it by overwriting the map entry with a later timer.
+    if (this.killTimers.has(sessionId)) {
+      return true;
+    }
+
     const timer = setTimeout(() => {
       if (!this.activeProcesses.has(sessionId)) {
         this.clearKillTimer(sessionId);
@@ -206,8 +214,8 @@ export class ProcessRunner {
 
       try {
         if (this.killProcess(sessionId, proc, "SIGKILL")) {
-          this.activeProcesses.delete(sessionId);
-          this.outputBuffers.delete(sessionId);
+          // Keep tracking until node-pty confirms exit. Signal delivery is not
+          // proof that the PTY process tree is gone.
         }
       } catch {
         // killProcess already emitted the error event.
@@ -232,14 +240,35 @@ export class ProcessRunner {
 
   dispose(): void {
     this.stopAll();
+    this.disposeTimers(false);
+  }
+
+  async shutdown(timeoutMs = SHUTDOWN_TIMEOUT_MS): Promise<void> {
+    this.stopAll();
+    const deadline = Date.now() + timeoutMs;
+    while (this.activeProcesses.size > 0 && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    if (this.activeProcesses.size > 0) {
+      this.disposeTimers(false);
+      throw new Error(
+        `Timed out terminating ${this.activeProcesses.size} PTY process(es)`,
+      );
+    }
+    this.disposeTimers(true);
+  }
+
+  private disposeTimers(clearKillTimers: boolean): void {
     if (this.flushTimer) {
       clearInterval(this.flushTimer);
       this.flushTimer = undefined;
     }
-    for (const timer of this.killTimers.values()) {
-      clearTimeout(timer);
+    if (clearKillTimers) {
+      for (const timer of this.killTimers.values()) {
+        clearTimeout(timer);
+      }
+      this.killTimers.clear();
     }
-    this.killTimers.clear();
   }
 
   // -----------------------------------------------------------------------
@@ -251,8 +280,7 @@ export class ProcessRunner {
     ...args: Parameters<ProcessRunnerEvents[K]>
   ): void {
     const listener = this.listeners.get(event) as
-      | ProcessRunnerEvents[K]
-      | undefined;
+      ProcessRunnerEvents[K] | undefined;
     if (listener) {
       (listener as (...a: Parameters<ProcessRunnerEvents[K]>) => void)(...args);
     }

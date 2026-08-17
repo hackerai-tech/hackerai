@@ -8,6 +8,7 @@ import {
 import { api } from "@/convex/_generated/api";
 import type { SandboxBootInfo } from "@/types";
 import { getConvexClient, getConvexUrl } from "@/lib/db/convex-client";
+import { createConvexRealtimeClient } from "@/lib/db/convex-realtime-client";
 import { CentrifugoSandbox } from "./centrifugo-sandbox";
 
 const PROVIDER = "aws-lambda-microvm" as const;
@@ -422,37 +423,121 @@ async function cleanupCloudSessionCandidates(
   return failures;
 }
 
+type SessionConnectionWaiter = {
+  promise: Promise<CloudSession>;
+  dispose: () => Promise<void>;
+};
+
+function createSessionConnectionWaiter(
+  userId: string,
+  sessionId: string,
+  config: AwsLambdaMicrovmConfig,
+): SessionConnectionWaiter {
+  const realtime = createConvexRealtimeClient();
+  let unsubscribe: (() => void) | undefined;
+  let subscriptionStopped = false;
+  let timeout: NodeJS.Timeout | undefined;
+  let settled = false;
+  let resolvePromise!: (session: CloudSession) => void;
+  let rejectPromise!: (error: Error) => void;
+
+  const promise = new Promise<CloudSession>((resolve, reject) => {
+    resolvePromise = resolve;
+    rejectPromise = reject;
+  });
+  // Readiness can fail while AWS Run/attachment is still in flight. Mark the
+  // deferred as observed immediately; callers still await the original promise
+  // and receive its rejection once the durable attachment stage completes.
+  void promise.catch(() => undefined);
+
+  const finish = (result: CloudSession | Error): void => {
+    if (settled) return;
+    settled = true;
+    if (timeout) clearTimeout(timeout);
+    if (unsubscribe && !subscriptionStopped) {
+      subscriptionStopped = true;
+      unsubscribe();
+    }
+    if (result instanceof Error) rejectPromise(result);
+    else resolvePromise(result);
+  };
+
+  timeout = setTimeout(
+    () =>
+      finish(new Error("Timed out waiting for the cloud sandbox guest relay")),
+    SESSION_READY_TIMEOUT_MS,
+  );
+
+  const registeredUnsubscribe = realtime.onUpdate(
+    api.localSandbox.getCloudSessionForBackend,
+    {
+      serviceKey: config.serviceKey,
+      userId,
+      sessionId,
+    },
+    (session) => {
+      const current = session as CloudSession | null;
+      if (!current) {
+        finish(new Error("Cloud sandbox session disappeared"));
+        return;
+      }
+      if (current.status === "failed" || current.status === "terminated") {
+        finish(new Error(`Cloud sandbox session ended: ${current.status}`));
+        return;
+      }
+      if (
+        current.status === "running" &&
+        current.microvmId &&
+        current.connectionId
+      ) {
+        finish(current);
+      }
+    },
+    (error) => finish(error),
+  );
+  unsubscribe = registeredUnsubscribe;
+  if (settled && !subscriptionStopped) {
+    subscriptionStopped = true;
+    registeredUnsubscribe();
+  }
+
+  return {
+    promise,
+    dispose: async () => {
+      settled = true;
+      if (timeout) clearTimeout(timeout);
+      if (unsubscribe && !subscriptionStopped) {
+        subscriptionStopped = true;
+        unsubscribe();
+      }
+      try {
+        await realtime.close();
+      } catch (error) {
+        // Subscription teardown must not turn an otherwise successful launch
+        // into a failure or mask the original AWS/Convex failure.
+        log("warn", "cloud_sandbox_readiness_subscription_close_failed", {
+          user_id: userId,
+          session_id: sessionId,
+          provider: PROVIDER,
+          region: config.region,
+          ...errorLogFields(error),
+        });
+      }
+    },
+  };
+}
+
 async function waitForSessionConnection(
   userId: string,
   sessionId: string,
   config: AwsLambdaMicrovmConfig,
 ): Promise<CloudSession> {
-  const deadline = Date.now() + SESSION_READY_TIMEOUT_MS;
-  let pollDelayMs = 200;
-  while (Date.now() < deadline) {
-    const session = (await getConvexClient().query(
-      api.localSandbox.getCloudSessionForBackend,
-      {
-        serviceKey: config.serviceKey,
-        userId,
-        sessionId,
-      },
-    )) as CloudSession | null;
-    if (!session) throw new Error("Cloud sandbox session disappeared");
-    if (session.status === "failed" || session.status === "terminated") {
-      throw new Error(`Cloud sandbox session ended: ${session.status}`);
-    }
-    if (
-      session.status === "running" &&
-      session.microvmId &&
-      session.connectionId
-    ) {
-      return session;
-    }
-    await new Promise((resolve) => setTimeout(resolve, pollDelayMs));
-    pollDelayMs = Math.min(1_000, Math.round(pollDelayMs * 1.5));
+  const waiter = createSessionConnectionWaiter(userId, sessionId, config);
+  try {
+    return await waiter.promise;
+  } finally {
+    await waiter.dispose();
   }
-  throw new Error("Timed out waiting for the cloud sandbox guest relay");
 }
 
 function createRelaySandbox(
@@ -787,6 +872,14 @@ export async function ensureAwsLambdaMicrovmConnection(
     throw new Error("Cloud session bootstrap token was not returned");
   }
 
+  // Start the reactive query before asking AWS to run the VM. Its WebSocket
+  // handshake overlaps the control-plane allocation, so the guest's ready
+  // mutation is delivered without the old 200ms-to-1s polling gaps.
+  const sessionWaiter = createSessionConnectionWaiter(
+    userId,
+    begin.session.sessionId,
+    config,
+  );
   let microvmId: string | undefined;
   let failureStage = "run_microvm";
   try {
@@ -841,20 +934,6 @@ export async function ensureAwsLambdaMicrovmConnection(
     });
 
     failureStage = "attach_cloud_microvm";
-    const attached = await getConvexClient().mutation(
-      api.localSandbox.attachCloudMicrovm,
-      {
-        serviceKey: config.serviceKey,
-        userId,
-        sessionId: begin.session.sessionId,
-        microvmId,
-      },
-    );
-    if (!attached) {
-      throw new Error("Cloud session ended before the MicroVM was attached");
-    }
-
-    failureStage = "wait_for_guest_connection";
     log("debug", "cloud_sandbox_guest_connection_wait_started", {
       user_id: userId,
       session_id: begin.session.sessionId,
@@ -862,11 +941,25 @@ export async function ensureAwsLambdaMicrovmConnection(
       region: config.region,
       timeout_ms: SESSION_READY_TIMEOUT_MS,
     });
-    const connected = await waitForSessionConnection(
-      userId,
-      begin.session.sessionId,
-      config,
-    );
+    const attachPromise = getConvexClient()
+      .mutation(api.localSandbox.attachCloudMicrovm, {
+        serviceKey: config.serviceKey,
+        userId,
+        sessionId: begin.session.sessionId,
+        microvmId,
+      })
+      .then((attached) => {
+        if (!attached) {
+          throw new Error(
+            "Cloud session ended before the MicroVM was attached",
+          );
+        }
+      });
+    await attachPromise;
+    // Do not return until attachCloudMicrovm has durably persisted the AWS ID.
+    // The reactive readiness subscription has remained active in parallel.
+    failureStage = "wait_for_guest_connection";
+    const connected = await sessionWaiter.promise;
     const sandbox = createRelaySandbox(userId, connected, config);
     if (!connected.relayReadyAt) {
       failureStage = "wait_for_relay_ready";
@@ -939,6 +1032,8 @@ export async function ensureAwsLambdaMicrovmConnection(
     throw new Error(`Failed creating AWS Lambda MicroVM sandbox (${code})`, {
       cause: error,
     });
+  } finally {
+    await sessionWaiter.dispose();
   }
 }
 

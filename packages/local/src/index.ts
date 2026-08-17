@@ -15,7 +15,7 @@
 import { ConvexHttpClient } from "convex/browser";
 import { Centrifuge, Subscription, PublicationContext } from "centrifuge";
 import WebSocket from "ws";
-import { fork, spawn, ChildProcess } from "child_process";
+import { spawn, ChildProcess } from "child_process";
 import { createServer, type IncomingMessage, type ServerResponse } from "http";
 import os from "os";
 import {
@@ -35,6 +35,11 @@ import {
   isProcessTreeTerminationConfirmed,
 } from "./command-cancellation";
 import { CentrifugoPublishQueue } from "./centrifugo-transport";
+import {
+  CloudImagePrimeError,
+  primeCloudImageWorkingSet,
+} from "./cloud-image-prime";
+import { InProcessRelayLifecycle } from "./cloud-relay-lifecycle";
 
 const DEFAULT_SHELL = getDefaultShell(os.platform());
 
@@ -72,7 +77,7 @@ const chalk = {
   bold: (s: string) => `\x1b[1m${s}\x1b[0m`,
 };
 
-interface Config {
+export interface Config {
   convexUrl: string;
   token: string;
   name: string;
@@ -285,7 +290,11 @@ function isInvalidTokenError(error: unknown): boolean {
   return (data as { code?: string }).code === "UNAUTHORIZED";
 }
 
-class LocalSandboxClient {
+type LocalSandboxClientOptions = {
+  onExitRequested?: (code: number, error: Error) => void;
+};
+
+export class LocalSandboxClient {
   private convexHttp: ConvexHttpClient;
   private centrifuge?: Centrifuge;
   private subscription?: Subscription;
@@ -297,12 +306,70 @@ class LocalSandboxClient {
   private processRunner: ProcessRunner;
   private activeStreamCommands: Map<string, ChildProcess> = new Map();
   private publishQueue?: CentrifugoPublishQueue;
+  private cleanupPromise?: Promise<void>;
+  private exitRequested = false;
 
-  constructor(private config: Config) {
+  constructor(
+    private config: Config,
+    private readonly options: LocalSandboxClientOptions = {},
+  ) {
     this.convexHttp = new ConvexHttpClient(config.convexUrl);
     this.lastActivityTime = Date.now();
     this.processRunner = new ProcessRunner();
     this.setupProcessRunnerListeners();
+  }
+
+  async primeStartupWorkingSet(): Promise<void> {
+    const command = {
+      type: "command",
+      commandId: "image-validation",
+      command: "printf hackerai-image-prime",
+      targetConnectionId: "image-validation",
+    };
+    const parsed = JSON.parse(JSON.stringify(command)) as unknown;
+    if (!isTargetedIncomingMessage(parsed)) {
+      throw new Error("Command protocol priming failed");
+    }
+    const queue = new CentrifugoPublishQueue(async (fragment) => {
+      JSON.parse(JSON.stringify(fragment));
+    });
+    await queue.publish({
+      type: "exit",
+      commandId: "image-validation",
+      exitCode: 0,
+    });
+    this.getOsInfo();
+    this.getCapabilities();
+  }
+
+  disposePrimedResources(): void {
+    this.isShuttingDown = true;
+    this.processRunner.dispose();
+  }
+
+  private requestExit(code: number, error: Error): void {
+    if (this.exitRequested || this.isShuttingDown) return;
+    this.exitRequested = true;
+    void this.cleanup().then(
+      () => {
+        if (this.options.onExitRequested) {
+          this.options.onExitRequested(code, error);
+        } else {
+          process.exit(code);
+        }
+      },
+      (cleanupError) => {
+        const fatal =
+          cleanupError instanceof Error
+            ? cleanupError
+            : new Error(String(cleanupError));
+        if (this.options.onExitRequested) {
+          this.options.onExitRequested(code, fatal);
+        } else {
+          process.exit(code);
+        }
+      },
+    );
   }
 
   private setupProcessRunnerListeners(): void {
@@ -474,9 +541,6 @@ class LocalSandboxClient {
         console.error(chalk.yellow("Please regenerate your token in Settings"));
       }
       await this.cleanup();
-      if (this.config.authMode === "local") {
-        process.exit(1);
-      }
       throw error;
     }
   }
@@ -520,7 +584,7 @@ class LocalSandboxClient {
             // cleanup() synchronously calls centrifuge.disconnect() before any
             // awaits, so by the time we re-throw below Centrifuge is in a
             // terminal state and won't invoke getToken again.
-            this.cleanup().then(() => process.exit(1));
+            this.requestExit(1, new Error("Centrifugo token was rejected"));
           } else {
             console.error(
               chalk.red("Failed to refresh Centrifugo token:"),
@@ -563,7 +627,10 @@ class LocalSandboxClient {
         // calls centrifuge.disconnect() before any awaits, so by the time we
         // throw below Centrifuge is in a terminal state and won't invoke
         // getToken again.
-        this.cleanup().then(() => process.exit(1));
+        this.requestExit(
+          1,
+          new Error(`Centrifugo refresh aborted: ${result.reason}`),
+        );
         throw new Error(`Centrifugo refresh aborted: ${result.reason}`);
       },
     });
@@ -657,7 +724,7 @@ class LocalSandboxClient {
           console.error(
             chalk.yellow("Please try again later or contact support."),
           );
-          this.cleanup().then(() => process.exit(1));
+          this.requestExit(1, new Error("Centrifugo connection limit reached"));
         } else {
           console.log(
             chalk.yellow(`⚠️  Disconnected from Centrifugo: ${ctx.reason}`),
@@ -852,14 +919,29 @@ class LocalSandboxClient {
     }, 1000).unref();
   }
 
-  private terminateActiveStreamCommands(): void {
-    for (const [commandId, proc] of this.activeStreamCommands) {
-      console.log(
-        chalk.yellow(`[CMD] Terminating active command ${commandId}`),
+  private async terminateActiveStreamCommands(): Promise<void> {
+    const commands = [...this.activeStreamCommands.entries()];
+    const results = await Promise.all(
+      commands.map(async ([commandId, proc]) => {
+        console.log(
+          chalk.yellow(`[CMD] Terminating active command ${commandId}`),
+        );
+        const confirmed = await confirmProcessTermination(
+          proc,
+          () => this.terminateProcessTree(proc),
+          undefined,
+          () => isProcessTreeTerminationConfirmed(proc),
+        );
+        if (confirmed) this.activeStreamCommands.delete(commandId);
+        return confirmed;
+      }),
+    );
+    const unconfirmed = results.filter((confirmed) => !confirmed).length;
+    if (unconfirmed > 0) {
+      throw new Error(
+        `Could not confirm termination of ${unconfirmed} command process tree(s)`,
       );
-      this.terminateProcessTree(proc);
     }
-    this.activeStreamCommands.clear();
   }
 
   private async streamCommand(
@@ -1113,7 +1195,7 @@ class LocalSandboxClient {
           ),
         );
         console.log(chalk.yellow("Auto-terminating to save resources..."));
-        this.cleanup().then(() => process.exit(0));
+        this.requestExit(0, new Error("Local sandbox idle timeout"));
       }
     }, IDLE_CHECK_INTERVAL_MS);
   }
@@ -1126,16 +1208,28 @@ class LocalSandboxClient {
   }
 
   async cleanup(options: { terminated?: boolean } = {}): Promise<void> {
+    if (this.cleanupPromise) return this.cleanupPromise;
+    this.cleanupPromise = this.performCleanup(options).catch((error) => {
+      this.cleanupPromise = undefined;
+      throw error;
+    });
+    return this.cleanupPromise;
+  }
+
+  private async performCleanup(options: {
+    terminated?: boolean;
+  }): Promise<void> {
     console.log(chalk.blue("\n🧹 Cleaning up..."));
 
     this.isShuttingDown = true;
     this.stopIdleCheck();
 
-    // Stop all PTY sessions
-    this.processRunner.stopAll();
-
-    // Stop all active streamed commands before dropping the realtime connection.
-    this.terminateActiveStreamCommands();
+    // Confirm both PTY and streamed-command process trees are gone before AWS
+    // snapshots a suspended VM or completes termination.
+    const processShutdown = Promise.all([
+      this.processRunner.shutdown(),
+      this.terminateActiveStreamCommands(),
+    ]);
 
     // Disconnect Centrifugo
     if (this.subscription) {
@@ -1148,16 +1242,13 @@ class LocalSandboxClient {
       this.centrifuge = undefined;
     }
 
-    // Set up force-exit timeout (5 seconds)
-    const forceExitTimeout = setTimeout(() => {
-      console.log(chalk.yellow("⚠️  Force exiting after 5 second timeout..."));
-      process.exit(1);
-    }, 5000);
+    await processShutdown;
 
-    try {
-      if (this.connectionId) {
-        try {
-          await this.convexHttp.mutation(
+    if (this.connectionId) {
+      let disconnectTimeout: NodeJS.Timeout | undefined;
+      try {
+        await Promise.race([
+          this.convexHttp.mutation(
             (this.config.authMode === "cloud"
               ? api.localSandbox.disconnectCloud
               : api.localSandbox.disconnect) as never,
@@ -1172,16 +1263,22 @@ class LocalSandboxClient {
                   token: this.config.token,
                   connectionId: this.connectionId,
                 }) as never,
-          );
-          console.log(chalk.green("✓ Disconnected"));
-        } catch (error: unknown) {
-          const message =
-            error instanceof Error ? error.message : String(error);
-          console.warn(chalk.yellow(`⚠️  Failed to disconnect: ${message}`));
-        }
+          ),
+          new Promise<never>(
+            (_, reject) =>
+              (disconnectTimeout = setTimeout(
+                () => reject(new Error("Disconnect timed out after 5 seconds")),
+                5_000,
+              )),
+          ),
+        ]);
+        console.log(chalk.green("✓ Disconnected"));
+      } catch (error: unknown) {
+        const message = error instanceof Error ? error.message : String(error);
+        console.warn(chalk.yellow(`⚠️  Failed to disconnect: ${message}`));
+      } finally {
+        if (disconnectTimeout) clearTimeout(disconnectTimeout);
       }
-    } finally {
-      clearTimeout(forceExitTimeout);
     }
   }
 }
@@ -1267,116 +1364,71 @@ function parseCloudLifecyclePayload(value: unknown): {
 
 async function startCloudLifecycleServer(): Promise<void> {
   let lifecycleConfig: Config | null = null;
-  let agentProcess: ChildProcess | null = null;
-
-  const stopAgent = async (terminated = false): Promise<void> => {
-    const child = agentProcess;
-    agentProcess = null;
-    if (!child || child.exitCode !== null || child.killed) return;
-
-    await new Promise<void>((resolve) => {
-      let settled = false;
-      const finish = () => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(forceKillTimeout);
-        clearTimeout(hardStopTimeout);
-        child.off("exit", finish);
-        resolve();
-      };
-      const forceKillTimeout = setTimeout(() => {
-        child.kill("SIGKILL");
-      }, 5_000);
-      // Never let a wedged child consume the entire AWS lifecycle-hook
-      // timeout. AWS will complete suspend/termination after this handler
-      // returns even if the local process table has not emitted `exit`.
-      const hardStopTimeout = setTimeout(() => {
-        child.kill("SIGKILL");
-        finish();
-      }, 10_000);
-      child.once("exit", finish);
-      try {
-        child.send?.({ type: "shutdown", terminated });
-      } catch {
-        child.kill("SIGKILL");
-        finish();
-      }
-    });
-  };
-
-  const startAgent = async (): Promise<void> => {
-    if (!lifecycleConfig) throw new Error("Cloud sandbox is not bootstrapped");
-    const child = fork(process.argv[1], ["--cloud-agent"], {
-      env: {
-        ...process.env,
-        HACKERAI_CLOUD_BOOTSTRAP: JSON.stringify(lifecycleConfig),
-      },
-      stdio: ["ignore", "inherit", "inherit", "ipc"],
-    });
-    agentProcess = child;
-    await new Promise<void>((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        child.kill("SIGKILL");
-        reject(new Error("Timed out starting the cloud relay worker"));
-      }, 25_000);
-      const cleanup = () => {
-        clearTimeout(timeout);
-        child.off("error", onError);
-        child.off("exit", onExit);
-        child.off("message", onMessage);
-      };
-      const onError = (error: Error) => {
-        cleanup();
-        reject(error);
-      };
-      const onExit = (code: number | null) => {
-        cleanup();
-        reject(new Error(`Cloud relay worker exited before ready (${code})`));
-      };
-      const onMessage = (message: unknown) => {
-        if (
-          message &&
-          typeof message === "object" &&
-          (message as { type?: unknown }).type === "ready"
-        ) {
-          cleanup();
-          resolve();
-        }
-      };
-      child.once("error", onError);
-      child.once("exit", onExit);
-      child.on("message", onMessage);
-    });
-    child.once("exit", (code) => {
-      // stopAgent clears agentProcess before intentionally terminating the
-      // worker, so only unexpected exits reach the restart path.
-      if (agentProcess !== child) return;
-      agentProcess = null;
+  const relay = new InProcessRelayLifecycle<Config>(
+    (config, onFatal) =>
+      new LocalSandboxClient(config, {
+        onExitRequested: (_code, error) => onFatal(error),
+      }),
+    (error) => {
       console.error(
         JSON.stringify({
           timestamp: new Date().toISOString(),
           level: "error",
-          event: "cloud_sandbox_relay_worker_exited",
+          event: "cloud_sandbox_relay_failed",
           service: "hackerai-cloud-sandbox-agent",
           environment: "aws-lambda-microvm",
           request_id: lifecycleConfig?.cloudSessionId ?? null,
-          exit_code: code,
+          error: error.message,
         }),
       );
-      void startAgent().catch((error) => {
-        console.error(
-          JSON.stringify({
-            timestamp: new Date().toISOString(),
-            level: "error",
-            event: "cloud_sandbox_relay_worker_restart_failed",
-            service: "hackerai-cloud-sandbox-agent",
-            environment: "aws-lambda-microvm",
-            request_id: lifecycleConfig?.cloudSessionId ?? null,
-            error: error instanceof Error ? error.message : String(error),
-          }),
-        );
-      });
+    },
+    (error) => {
+      console.error(
+        JSON.stringify({
+          timestamp: new Date().toISOString(),
+          level: "error",
+          event: "cloud_sandbox_relay_restart_failed",
+          service: "hackerai-cloud-sandbox-agent",
+          environment: "aws-lambda-microvm",
+          request_id: lifecycleConfig?.cloudSessionId ?? null,
+          error: error.message,
+        }),
+      );
+    },
+  );
+
+  const primeImage = async (hook: string): Promise<void> => {
+    const result = await primeCloudImageWorkingSet({
+      primeRelay: async () => {
+        const client = new LocalSandboxClient({
+          convexUrl: "http://127.0.0.1",
+          token: "image-validation",
+          name: "image-validation",
+          authMode: "cloud",
+          cloudSessionId: "image-validation",
+          microvmId: "image-validation",
+        });
+        try {
+          await client.primeStartupWorkingSet();
+        } finally {
+          client.disposePrimedResources();
+        }
+      },
     });
+    console.log(
+      JSON.stringify({
+        timestamp: new Date().toISOString(),
+        level: "info",
+        event: "cloud_sandbox_image_primed",
+        service: "hackerai-cloud-sandbox-agent",
+        environment: "aws-lambda-microvm",
+        request_id: "image-build",
+        hook,
+        duration_ms: result.duration_ms,
+        step_count: result.steps.length,
+        steps: result.steps,
+      }),
+    );
   };
 
   const server = createServer(async (request, response) => {
@@ -1386,10 +1438,7 @@ async function startCloudLifecycleServer(): Promise<void> {
       if (request.method === "GET" && path === "/health") {
         writeLifecycleResponse(response, 200, {
           ok: true,
-          connected:
-            agentProcess !== null &&
-            agentProcess.exitCode === null &&
-            !agentProcess.killed,
+          connected: relay.running,
         });
         return;
       }
@@ -1399,7 +1448,8 @@ async function startCloudLifecycleServer(): Promise<void> {
         (path === "/aws/lambda-microvms/runtime/v1/ready" ||
           path === "/aws/lambda-microvms/runtime/v1/validate")
       ) {
-        writeLifecycleResponse(response, 200, { ok: true });
+        await primeImage(path.endsWith("/ready") ? "ready" : "validate");
+        writeLifecycleResponse(response, 200, { ok: true, primed: true });
         return;
       }
 
@@ -1412,7 +1462,7 @@ async function startCloudLifecycleServer(): Promise<void> {
         );
         if (smokeTest) {
           lifecycleConfig = null;
-          await stopAgent();
+          await relay.terminate();
           writeLifecycleResponse(response, 200, { ok: true, smokeTest: true });
           return;
         }
@@ -1425,8 +1475,7 @@ async function startCloudLifecycleServer(): Promise<void> {
           cloudSessionId: config.sessionId,
           microvmId,
         };
-        await stopAgent();
-        await startAgent();
+        await relay.run(lifecycleConfig);
         writeLifecycleResponse(response, 200, { ok: true });
         return;
       }
@@ -1435,7 +1484,7 @@ async function startCloudLifecycleServer(): Promise<void> {
         request.method === "POST" &&
         path === "/aws/lambda-microvms/runtime/v1/suspend"
       ) {
-        await stopAgent();
+        await relay.suspend();
         writeLifecycleResponse(response, 200, { ok: true });
         return;
       }
@@ -1444,8 +1493,7 @@ async function startCloudLifecycleServer(): Promise<void> {
         request.method === "POST" &&
         path === "/aws/lambda-microvms/runtime/v1/resume"
       ) {
-        await stopAgent();
-        await startAgent();
+        await relay.resume();
         writeLifecycleResponse(response, 200, { ok: true });
         return;
       }
@@ -1454,13 +1502,16 @@ async function startCloudLifecycleServer(): Promise<void> {
         request.method === "POST" &&
         path === "/aws/lambda-microvms/runtime/v1/terminate"
       ) {
-        await stopAgent(true);
+        await relay.terminate();
+        lifecycleConfig = null;
         writeLifecycleResponse(response, 200, { ok: true });
         return;
       }
 
       writeLifecycleResponse(response, 404, { error: "not_found" });
     } catch (error) {
+      const primeError =
+        error instanceof CloudImagePrimeError ? error : undefined;
       console.error(
         JSON.stringify({
           timestamp: new Date().toISOString(),
@@ -1470,6 +1521,12 @@ async function startCloudLifecycleServer(): Promise<void> {
           environment: "aws-lambda-microvm",
           request_id: requestId,
           hook: path,
+          failure_step: primeError?.step ?? null,
+          completed_steps: primeError?.completedSteps ?? null,
+          cause_error:
+            primeError?.cause instanceof Error
+              ? primeError.cause.message.slice(0, 500)
+              : null,
           error: error instanceof Error ? error.message : String(error),
         }),
       );
@@ -1478,7 +1535,7 @@ async function startCloudLifecycleServer(): Promise<void> {
   });
 
   const shutdown = async (): Promise<void> => {
-    await stopAgent(true);
+    await relay.terminate();
     server.close(() => process.exit(0));
   };
   process.on("SIGINT", () => void shutdown());
@@ -1499,9 +1556,10 @@ async function startCloudLifecycleServer(): Promise<void> {
   });
 }
 
-// Show help
-if (hasFlag("--help") || hasFlag("-h")) {
-  console.log(`
+export function main(): void {
+  // Show help
+  if (hasFlag("--help") || hasFlag("-h")) {
+    console.log(`
 ${chalk.bold("HackerAI Local Sandbox Client")}
 
 ${chalk.yellow("Usage:")}
@@ -1525,103 +1583,64 @@ ${chalk.cyan("Auto-termination:")}
   The client automatically terminates after 1 hour of inactivity (no commands
   executed) to save system resources.
 `);
-  process.exit(0);
-}
-
-if (hasFlag("--cloud-lifecycle")) {
-  void startCloudLifecycleServer().catch((error: unknown) => {
-    console.error(
-      JSON.stringify({
-        timestamp: new Date().toISOString(),
-        level: "error",
-        event: "cloud_sandbox_lifecycle_server_failed",
-        service: "hackerai-cloud-sandbox-agent",
-        environment: "aws-lambda-microvm",
-        request_id: "startup",
-        error: error instanceof Error ? error.message : String(error),
-      }),
-    );
-    process.exit(1);
-  });
-} else if (hasFlag("--cloud-agent")) {
-  const rawConfig = process.env.HACKERAI_CLOUD_BOOTSTRAP;
-  delete process.env.HACKERAI_CLOUD_BOOTSTRAP;
-  if (!rawConfig) {
-    console.error("Cloud relay worker is missing bootstrap configuration");
-    process.exit(1);
-  }
-  const config = JSON.parse(rawConfig) as Config;
-  const client = new LocalSandboxClient(config);
-  let shuttingDown = false;
-  const shutdown = async (terminated = false): Promise<void> => {
-    if (shuttingDown) return;
-    shuttingDown = true;
-    await client.cleanup({ terminated });
     process.exit(0);
-  };
-  process.on("message", (message: unknown) => {
-    if (
-      message &&
-      typeof message === "object" &&
-      (message as { type?: unknown }).type === "shutdown"
-    ) {
-      void shutdown((message as { terminated?: unknown }).terminated === true);
-    }
-  });
-  process.on("SIGINT", () => void shutdown());
-  process.on("SIGTERM", () => void shutdown());
-  client
-    .start()
-    .then(() => process.send?.({ type: "ready" }))
-    .catch((error: unknown) => {
+  }
+
+  if (hasFlag("--cloud-lifecycle")) {
+    void startCloudLifecycleServer().catch((error: unknown) => {
       console.error(
         JSON.stringify({
           timestamp: new Date().toISOString(),
           level: "error",
-          event: "cloud_sandbox_relay_worker_failed",
+          event: "cloud_sandbox_lifecycle_server_failed",
           service: "hackerai-cloud-sandbox-agent",
           environment: "aws-lambda-microvm",
-          request_id: config.cloudSessionId ?? "startup",
+          request_id: "startup",
           error: error instanceof Error ? error.message : String(error),
         }),
       );
       process.exit(1);
     });
-} else {
-  const config: Config = {
-    convexUrl: getArg("--convex-url") || PRODUCTION_CONVEX_URL,
-    token: getArg("--token") || "",
-    name: getArg("--name") || os.hostname(),
-    authMode: "local",
-  };
+  } else {
+    const config: Config = {
+      convexUrl: getArg("--convex-url") || PRODUCTION_CONVEX_URL,
+      token: getArg("--token") || "",
+      name: getArg("--name") || os.hostname(),
+      authMode: "local",
+    };
 
-  if (!config.token) {
-    console.error(chalk.red("❌ No authentication token provided"));
-    console.error(
-      chalk.yellow("Usage: npx @hackerai/local --token YOUR_TOKEN"),
-    );
-    console.error(
-      chalk.yellow("Get your token from HackerAI Settings > Agents"),
-    );
-    process.exit(1);
+    if (!config.token) {
+      console.error(chalk.red("❌ No authentication token provided"));
+      console.error(
+        chalk.yellow("Usage: npx @hackerai/local --token YOUR_TOKEN"),
+      );
+      console.error(
+        chalk.yellow("Get your token from HackerAI Settings > Agents"),
+      );
+      process.exit(1);
+    }
+
+    const client = new LocalSandboxClient(config);
+
+    process.on("SIGINT", async () => {
+      console.log(chalk.yellow("\n🛑 Shutting down..."));
+      await client.cleanup();
+      process.exit(0);
+    });
+
+    process.on("SIGTERM", async () => {
+      await client.cleanup();
+      process.exit(0);
+    });
+
+    client.start().catch((error: unknown) => {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(chalk.red("Fatal error:"), message);
+      process.exit(1);
+    });
   }
+}
 
-  const client = new LocalSandboxClient(config);
-
-  process.on("SIGINT", async () => {
-    console.log(chalk.yellow("\n🛑 Shutting down..."));
-    await client.cleanup();
-    process.exit(0);
-  });
-
-  process.on("SIGTERM", async () => {
-    await client.cleanup();
-    process.exit(0);
-  });
-
-  client.start().catch((error: unknown) => {
-    const message = error instanceof Error ? error.message : String(error);
-    console.error(chalk.red("Fatal error:"), message);
-    process.exit(1);
-  });
+if (require.main === module) {
+  main();
 }
