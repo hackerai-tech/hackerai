@@ -7,6 +7,7 @@ import {
 import { v, ConvexError } from "convex/values";
 import { validateServiceKey } from "./lib/utils";
 import { internal } from "./_generated/api";
+import type { Doc } from "./_generated/dataModel";
 import { isSupportedImageMediaType } from "../lib/utils/file-utils";
 import { fileCountAggregate } from "./fileAggregate";
 import { convexLogger } from "./lib/logger";
@@ -343,21 +344,37 @@ export const purgeExpiredUnattachedFiles = internalMutation({
 
 const fileForStorageLookupValidator = v.union(
   v.object({
-    _id: v.id("files"),
     s3_key: v.optional(v.string()),
     user_id: v.string(),
     name: v.string(),
     media_type: v.string(),
     size: v.number(),
-    file_token_size: v.number(),
-    content: v.optional(v.string()),
     auxiliary_vision_description: v.optional(v.string()),
     auxiliary_vision_model: v.optional(v.string()),
-    is_attached: v.boolean(),
-    _creationTime: v.number(),
   }),
   v.null(),
 );
+
+const toFileForStorageLookup = (file: Doc<"files"> | null) => {
+  if (!file) return null;
+
+  // Return only the metadata consumed by the URL actions. Returning the raw
+  // document lets future schema fields reach Convex return-validation errors,
+  // whose diagnostic values can include user-authored file content.
+  return {
+    ...(file.s3_key !== undefined ? { s3_key: file.s3_key } : {}),
+    user_id: file.user_id,
+    name: file.name,
+    media_type: file.media_type,
+    size: file.size,
+    ...(file.auxiliary_vision_description !== undefined
+      ? { auxiliary_vision_description: file.auxiliary_vision_description }
+      : {}),
+    ...(file.auxiliary_vision_model !== undefined
+      ? { auxiliary_vision_model: file.auxiliary_vision_model }
+      : {}),
+  };
+};
 
 /**
  * Internal query to get a file by ID
@@ -370,7 +387,7 @@ export const getFileById = internalQuery({
   returns: fileForStorageLookupValidator,
   handler: async (ctx, args) => {
     const file = await ctx.db.get(args.fileId);
-    return file;
+    return toFileForStorageLookup(file);
   },
 });
 
@@ -384,7 +401,10 @@ export const getFilesByIds = internalQuery({
   },
   returns: v.array(fileForStorageLookupValidator),
   handler: async (ctx, args) => {
-    return await Promise.all(args.fileIds.map((fileId) => ctx.db.get(fileId)));
+    const files = await Promise.all(
+      args.fileIds.map((fileId) => ctx.db.get(fileId)),
+    );
+    return files.map(toFileForStorageLookup);
   },
 });
 
