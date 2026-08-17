@@ -1190,6 +1190,41 @@ async fn handle_file_list(body: &str) -> Result<String, String> {
 
 // ── Tauri IPC Commands ────────────────────────────────────────────────
 
+async fn dispatch_desktop_file_request(
+    request: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let request_type = request
+        .get("type")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| "Desktop file request is missing a type".to_string())?;
+    let body = serde_json::to_string(&request)
+        .map_err(|error| format!("Failed to serialize desktop file request: {}", error))?;
+
+    let response = match request_type {
+        "file_stat" => handle_file_stat(&body).await,
+        "file_read" => handle_file_read(&body).await,
+        "file_write" => handle_file_write(&body).await,
+        "file_append" => handle_file_append(&body).await,
+        "file_remove" => handle_file_remove(&body).await,
+        "file_list" => handle_file_list(&body).await,
+        _ => Err(format!(
+            "Unsupported desktop file request type: {}",
+            request_type
+        )),
+    }?;
+
+    serde_json::from_str(&response)
+        .map_err(|error| format!("Failed to parse desktop file response: {}", error))
+}
+
+/// Executes desktop file operations through Tauri IPC so the HTTPS webview
+/// never needs to fetch an insecure loopback HTTP endpoint. The existing HTTP
+/// handlers remain available for rolling compatibility with older web bundles.
+#[tauri::command]
+async fn desktop_file_request(request: serde_json::Value) -> Result<serde_json::Value, String> {
+    dispatch_desktop_file_request(request).await
+}
+
 #[derive(Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase", tag = "type")]
 enum StreamEvent {
@@ -1845,6 +1880,52 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn desktop_file_request_dispatches_write_and_read_over_ipc() {
+        let root = unique_test_dir("ipc-round-trip");
+        fs::create_dir_all(&root).expect("create root");
+        let target = root.join("notes.txt");
+
+        let write_result = dispatch_desktop_file_request(serde_json::json!({
+            "type": "file_write",
+            "path": target.to_string_lossy().to_string(),
+            "content": "written over ipc",
+            "allowed_root": root.to_string_lossy().to_string(),
+        }))
+        .await;
+        assert_eq!(
+            write_result.expect("IPC write should succeed"),
+            serde_json::json!({ "ok": true })
+        );
+
+        let read_result = dispatch_desktop_file_request(serde_json::json!({
+            "type": "file_read",
+            "path": target.to_string_lossy().to_string(),
+            "max_full_bytes": 1024,
+            "max_result_bytes": 1024,
+        }))
+        .await
+        .expect("IPC read should succeed");
+        assert_eq!(read_result["content"], "written over ipc");
+        assert_eq!(read_result["path"], target.to_string_lossy().as_ref());
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn desktop_file_request_rejects_unknown_operations() {
+        let result = dispatch_desktop_file_request(serde_json::json!({
+            "type": "file_execute",
+            "path": "/tmp/not-used",
+        }))
+        .await;
+
+        assert_eq!(
+            result.expect_err("unknown operation should fail"),
+            "Unsupported desktop file request type: file_execute"
+        );
+    }
+
+    #[tokio::test]
     async fn file_write_preserves_unscoped_desktop_compatibility() {
         let root = unique_test_dir("unscoped");
         let target = root.join("notes.txt");
@@ -1977,6 +2058,7 @@ pub fn run() {
             get_dev_auth_port,
             prepare_desktop_auth_state,
             get_cmd_server_info,
+            desktop_file_request,
             get_local_file_metadata,
             write_generated_text_attachment,
             read_generated_text_attachment,
