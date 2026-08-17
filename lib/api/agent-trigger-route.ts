@@ -84,6 +84,22 @@ const AGENT_TRIGGER_PRIORITY_BY_SUBSCRIPTION: Record<SubscriptionTier, number> =
 const getAgentTriggerPriority = (subscription: SubscriptionTier) =>
   AGENT_TRIGGER_PRIORITY_BY_SUBSCRIPTION[subscription];
 
+type AgentTriggerMachinePreset = "small-1x" | "small-2x";
+
+const AGENT_TRIGGER_MACHINE_BY_SUBSCRIPTION: Record<
+  SubscriptionTier,
+  AgentTriggerMachinePreset
+> = {
+  free: "small-1x",
+  pro: "small-1x",
+  "pro-plus": "small-2x",
+  ultra: "small-2x",
+  team: "small-1x",
+};
+
+export const getAgentTriggerMachine = (subscription: SubscriptionTier) =>
+  AGENT_TRIGGER_MACHINE_BY_SUBSCRIPTION[subscription];
+
 type AgentDeploymentEnvironment = {
   NODE_ENV?: string;
   VERCEL_ENV?: string;
@@ -548,6 +564,7 @@ export const createAgentTriggerPost =
 
       const triggerRequestedAt = Date.now();
       const triggerPriority = getAgentTriggerPriority(subscription);
+      const triggerMachine = getAgentTriggerMachine(subscription);
       // Trigger.dev's atomic Vercel integration pins the app and worker from the
       // same commit. Reuse that pin so Sessions cannot schedule an older worker.
       const approvalWorkerVersion =
@@ -625,6 +642,7 @@ export const createAgentTriggerPost =
         routeStartedAt,
         triggerRequestedAt,
         triggerPriority,
+        triggerMachine,
         triggerPayloadMessageCount: messagesForPayload.length,
         agentPermissionMode: permissionSnapshot.mode,
         securityValidationSubagentsEnabled,
@@ -637,6 +655,7 @@ export const createAgentTriggerPost =
       };
       const triggerOptions = {
         ...(triggerPriority > 0 ? { priority: triggerPriority } : {}),
+        machine: triggerMachine,
         tags: triggerTags,
         ...(triggerRegion ? { region: triggerRegion } : {}),
         idempotencyKey: triggerIdempotencyKey,
@@ -648,6 +667,7 @@ export const createAgentTriggerPost =
       if (approvalSessionId) {
         const approvalTriggerConfig = {
           basePayload: agentPayload,
+          machine: triggerMachine,
           tags: triggerTags,
           ...(triggerRegion ? { region: triggerRegion } : {}),
           ...(approvalWorkerVersion

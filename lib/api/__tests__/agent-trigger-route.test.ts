@@ -80,6 +80,7 @@ const {
   buildAgentRunDedupeKeyParts,
   createAgentTriggerPost,
   finalizeStartedAgentRun,
+  getAgentTriggerMachine,
   shouldRequireAgentApprovalWorkerVersion,
 } =
   require("../agent-trigger-route") as typeof import("../agent-trigger-route");
@@ -303,5 +304,15 @@ describe("Agent trigger route lifecycle", () => {
       requiresApprovalSession: false,
     });
     expect(autoReviewRun.mode).toBe("auto_review");
+  });
+
+  it.each([
+    ["free", "small-1x"],
+    ["pro", "small-1x"],
+    ["pro-plus", "small-2x"],
+    ["ultra", "small-2x"],
+    ["team", "small-1x"],
+  ] as const)("uses %s Agent runs on %s", (subscription, machine) => {
+    expect(getAgentTriggerMachine(subscription)).toBe(machine);
   });
 });

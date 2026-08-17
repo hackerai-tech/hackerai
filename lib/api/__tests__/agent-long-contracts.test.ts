@@ -1130,6 +1130,10 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(routeSrc).toMatch(/process\.env\.TRIGGER_VERSION/);
     expect(routeSrc).not.toMatch(/AGENT_APPROVAL_TRIGGER_VERSION/);
     expect(routeSrc).toMatch(/lockToVersion:\s*approvalWorkerVersion/);
+    expect(routeSrc).toMatch(/machine:\s*triggerMachine/);
+    expect(routeSrc).toMatch(
+      /const approvalTriggerConfig\s*=\s*{[\s\S]*?machine:\s*triggerMachine/,
+    );
     expect(routeSrc).toMatch(
       /shouldRequireAgentApprovalWorkerVersion\(\)[\s\S]*!approvalWorkerVersion[\s\S]*temporarily unavailable/,
     );
