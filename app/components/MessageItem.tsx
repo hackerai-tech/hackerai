@@ -1,6 +1,7 @@
 import { memo, useMemo, useCallback, Fragment, useState } from "react";
 import { MessageActions } from "./MessageActions";
 import { MessagePartHandler } from "./MessagePartHandler";
+import { SubagentToolGroup } from "./tools/SubagentToolHandler";
 import { FilePartRenderer } from "./FilePartRenderer";
 import { MessageEditor, EditableFile } from "./MessageEditor";
 import { FeedbackInput } from "./FeedbackInput";
@@ -322,8 +323,17 @@ export const MessageItem = memo(function MessageItem({
 
   const renderWorkParts = () => (
     <>
-      {workProjection.activities.map(({ part, partIndex }) =>
-        renderAssistantPart(part, partIndex),
+      {workProjection.activities.map(({ id, part, partIndex, groupedParts }) =>
+        groupedParts ? (
+          <SubagentToolGroup
+            key={id}
+            message={message}
+            parts={groupedParts.map(({ part: groupedPart }) => groupedPart)}
+            status={effectiveStatus}
+          />
+        ) : (
+          renderAssistantPart(part, partIndex)
+        ),
       )}
     </>
   );

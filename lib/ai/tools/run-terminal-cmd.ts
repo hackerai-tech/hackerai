@@ -133,6 +133,7 @@ export const createRunTerminalCmd = (context: ToolContext) => {
     ptySessionManager,
     chatId,
   } = context;
+  const ptyScopeId = context.ptyScopeId ?? chatId;
   const measureTerminalWait = <T>(operation: () => Promise<T>): Promise<T> =>
     context.measureAgentActiveTime
       ? context.measureAgentActiveTime("terminal_wait", operation)
@@ -403,7 +404,7 @@ export const createRunTerminalCmd = (context: ToolContext) => {
           // Factory is invoked BY `ptySessionManager.create` — this ensures
           // that if the concurrency cap is hit, the factory is never called
           // and no PTY is spawned (see FIX 4).
-          const session = await ptySessionManager.create(chatId, {
+          const session = await ptySessionManager.create(ptyScopeId, {
             cols,
             rows,
             sandboxIdentity: getAgentApprovalSandboxIdentity(sandbox),
@@ -695,7 +696,7 @@ export const createRunTerminalCmd = (context: ToolContext) => {
 
             const forgetUnexposedCommandSession = () => {
               if (!commandSession || commandSessionExposed) return;
-              ptySessionManager.forget(chatId, commandSession.sessionId);
+              ptySessionManager.forget(ptyScopeId, commandSession.sessionId);
             };
 
             const terminateManagedCommand = async (): Promise<boolean> => {
@@ -1015,7 +1016,7 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                     kill: terminateManagedCommand,
                   });
                   return ptySessionManager
-                    .create(chatId, {
+                    .create(ptyScopeId, {
                       cols,
                       rows,
                       kind: "command",

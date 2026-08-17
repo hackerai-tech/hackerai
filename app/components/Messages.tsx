@@ -799,6 +799,7 @@ export const Messages = ({
               message={row.message}
               part={row.part}
               partIndex={row.partIndex}
+              groupedParts={row.groupedParts}
               sharedFileDetails={sharedFileDetails}
               status={effectiveStatus}
               terminalChunksByToolCallId={row.terminalChunksByToolCallId}

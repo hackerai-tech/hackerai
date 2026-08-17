@@ -47,6 +47,13 @@ import { E2B_COST_PER_MS } from "./utils/e2b-cost";
 
 export { isE2BSandbox };
 
+export type CreateToolsRuntimePolicy = {
+  allowedToolNames?: readonly string[];
+  additionalTools?: (context: ToolContext) => ToolSet;
+  ptyScopeId?: string;
+  chargeSandboxRuntime?: boolean;
+};
+
 // Factory function to create tools with context
 export const createTools = (
   userID: string,
@@ -71,6 +78,7 @@ export const createTools = (
   workingDirectory?: string,
   triggerRunId?: string,
   auxiliaryVision?: ToolContext["auxiliaryVision"],
+  runtimePolicy: CreateToolsRuntimePolicy = {},
 ) => {
   let sandbox: AnySandbox | null = null;
   let sandboxFirstUsedAt: number | null = null;
@@ -119,6 +127,7 @@ export const createTools = (
   const onSandboxResourceMetrics = createE2BResourcePressureObserver({
     userId: userID,
     chatId,
+    ptyScopeId: runtimePolicy.ptyScopeId,
     mode,
     subscription,
     triggerRunId,
@@ -131,6 +140,7 @@ export const createTools = (
     todoManager,
     userID,
     chatId,
+    ptyScopeId: runtimePolicy.ptyScopeId,
     assistantMessageId,
     triggerRunId,
     fileAccumulator,
@@ -174,7 +184,15 @@ export const createTools = (
       ...(process.env.JINA_API_KEY && {
         open_url: createOpenUrlTool(context),
       }),
+      ...(runtimePolicy.additionalTools?.(context) ?? {}),
     };
+
+    if (runtimePolicy.allowedToolNames) {
+      const allowed = new Set(runtimePolicy.allowedToolNames);
+      return Object.fromEntries(
+        Object.entries(allTools).filter(([name]) => allowed.has(name)),
+      ) as ToolSet;
+    }
 
     // Filter tools based on mode
     return mode === "ask"
@@ -231,6 +249,7 @@ export const createTools = (
   };
 
   const getSandboxSessionCost = (): number => {
+    if (runtimePolicy.chargeSandboxRuntime === false) return 0;
     if (!sandboxFirstUsedAt) return 0;
     return (Date.now() - sandboxFirstUsedAt) * E2B_COST_PER_MS;
   };

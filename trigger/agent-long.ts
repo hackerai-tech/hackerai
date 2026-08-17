@@ -254,6 +254,21 @@ import { isCentrifugoSandbox } from "@/lib/ai/tools/utils/sandbox-types";
 import { AgentRunTimingTracker } from "@/lib/chat/agent-run-timing";
 import { AgentLongMemoryTelemetry } from "@/lib/chat/agent-long-memory-telemetry";
 import {
+  createCreateAgentTool,
+  createSendMessageToAgentTool,
+  createWaitForAgentsTool,
+} from "@/lib/ai/tools/subagent-tools";
+import {
+  cancelSubagentsForParent,
+  listActiveSubagentsForParent,
+} from "@/lib/db/subagents";
+import { cancelAgentTriggerRun } from "@/lib/api/agent-approval-session";
+import { settleParentSubagents } from "@/lib/ai/subagents/parent-settlement";
+import {
+  captureSubagentLifecycleEvent,
+  subagentAvailabilityEventUuid,
+} from "@/lib/analytics/subagents";
+import {
   AgentAutoReviewDenialTracker,
   extractAgentAutoReviewAuthorizationContext,
   extractAgentAutoReviewConversationContext,
@@ -1988,8 +2003,23 @@ type RunCleanupState = {
   hasObservedUsage: () => boolean;
   chatLogger: ChatLogger | undefined;
   chatId: string;
+  subagentsEnabled: boolean;
 };
 const runCleanupMap = new Map<string, RunCleanupState>();
+
+const settleSubagentsForParentRun = async (
+  parentTriggerRunId: string,
+  reason: string,
+) =>
+  await settleParentSubagents(
+    { parentTriggerRunId, reason },
+    {
+      listActiveSubagents: listActiveSubagentsForParent,
+      cancelPersistedSubagents: cancelSubagentsForParent,
+      cancelTriggerRun: cancelAgentTriggerRun,
+      warn: (message, details) => triggerLogger.warn(message, details),
+    },
+  );
 
 export type AgentLongPayload = {
   chatId: string;
@@ -2013,6 +2043,7 @@ export type AgentLongPayload = {
   limitRescue?: LimitRescueRequest;
   endpoint?: AgentApiEndpoint;
   analyticsRequestContext?: AnalyticsRequestContext;
+  securityValidationSubagentsEnabled?: boolean;
   convexUrl?: string;
   requestTiming?: {
     routeStartedAt: number;
@@ -2045,6 +2076,9 @@ export const agentLongTask = task({
     ]);
     if (!cleanup.hasObservedUsage()) {
       await cleanup.usageRefundTracker.refund().catch(() => {});
+    }
+    if (cleanup.subagentsEnabled) {
+      await settleSubagentsForParentRun(ctx.run.id, "parent_canceled");
     }
     await ptySessionManager.closeAll(cleanup.chatId).catch(() => {});
     await phLogger.flush().catch(() => {});
@@ -2080,6 +2114,7 @@ export const agentLongTask = task({
       limitRescue,
       endpoint: payloadEndpoint,
       analyticsRequestContext,
+      securityValidationSubagentsEnabled = false,
     } = payload;
     let selectedModelOverride = rawSelectedModelOverride;
     const endpoint = payloadEndpoint ?? LEGACY_AGENT_API_ENDPOINT;
@@ -2204,6 +2239,7 @@ export const agentLongTask = task({
       hasObservedUsage,
       chatLogger,
       chatId,
+      subagentsEnabled: securityValidationSubagentsEnabled,
     });
 
     let activeRuntimeBudget: ActiveRuntimeBudget | undefined;
@@ -2937,7 +2973,31 @@ export const agentLongTask = task({
               projectContext.workingDirectory,
               ctx.run.id,
               auxiliaryVision,
+              securityValidationSubagentsEnabled
+                ? {
+                    additionalTools: (toolContext) => ({
+                      create_agent: createCreateAgentTool(toolContext, {
+                        organizationId,
+                        sandboxPreference,
+                        permissionMode: agentPermissionMode,
+                        subscription,
+                        freeQuotaSubject,
+                      }),
+                      send_message_to_agent:
+                        createSendMessageToAgentTool(toolContext),
+                      wait_for_agents: createWaitForAgentsTool(toolContext),
+                    }),
+                  }
+                : undefined,
             );
+            if (securityValidationSubagentsEnabled) {
+              captureSubagentLifecycleEvent("subagent_available", {
+                userId,
+                eventUuid: subagentAvailabilityEventUuid(ctx.run.id),
+                parentTriggerRunId: ctx.run.id,
+                profile: "security_validation",
+              });
+            }
             approvalSandboxManager = sandboxManager;
 
             const sendFileMetadataToStream = (
@@ -3099,6 +3159,7 @@ export const agentLongTask = task({
               userCustomization,
               sandboxContext,
               agentPermissionMode,
+              securityValidationSubagentsEnabled,
             );
             const systemPromptTokens = safeCountTokens(currentSystemPrompt);
 
@@ -4571,6 +4632,9 @@ export const agentLongTask = task({
       runtimeSettlementWatchdog?.dispose();
       memoryTelemetry.dispose();
       activeRuntimeBudget?.dispose();
+      if (securityValidationSubagentsEnabled) {
+        await settleSubagentsForParentRun(ctx.run.id, "parent_run_ended");
+      }
       runCleanupMap.delete(ctx.run.id);
       if (payload.approvalSessionId && triggerSessions) {
         try {
