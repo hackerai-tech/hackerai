@@ -646,6 +646,9 @@ export async function processChatMessages({
   extraUsageAvailable = false,
   allowLocalDesktopFiles = false,
   auxiliaryVisionEnabled = false,
+  chatId,
+  triggerRunId,
+  requestId,
 }: {
   messages: UIMessage[];
   mode: ChatMode;
@@ -656,6 +659,9 @@ export async function processChatMessages({
   extraUsageAvailable?: boolean;
   allowLocalDesktopFiles?: boolean;
   auxiliaryVisionEnabled?: boolean;
+  chatId?: string;
+  triggerRunId?: string;
+  requestId?: string;
 }) {
   const messagesWithoutOpenRouterReasoningMetadata =
     stripOpenRouterReasoningMetadataFromMessages(messages);
@@ -680,6 +686,7 @@ export async function processChatMessages({
       uploadBasePath,
       subscription,
       allowLocalDesktopFiles,
+      { chatId, triggerRunId, requestId },
     );
 
   // Fix incomplete tool invocations and reasoning (from interrupted streams) before filtering.

@@ -2322,6 +2322,9 @@ export const agentLongTask = task({
         extraUsageAvailable,
         allowLocalDesktopFiles: sandboxPreference === "desktop",
         auxiliaryVisionEnabled: !!auxiliaryVisionAssignment,
+        chatId,
+        triggerRunId: ctx.run.id,
+        requestId: ctx.run.id,
       });
 
       if (!processedMessages.length) {
@@ -2471,12 +2474,15 @@ export const agentLongTask = task({
         requestId: ctx.run.id,
         userId,
         chatId,
+        triggerRunId: ctx.run.id,
         isUserAborted: () => userStopSignal.signal.aborted,
       });
       const captureAuxiliaryVisionExposure =
         createAuxiliaryVisionExposureRecorder({
           posthog,
           userId,
+          chatId,
+          triggerRunId: ctx.run.id,
           subscription,
           mode,
           selectedModelOverride,
@@ -2511,6 +2517,7 @@ export const agentLongTask = task({
                         requestId: ctx.run.id,
                         userId,
                         chatId,
+                        triggerRunId: ctx.run.id,
                         abortSignal: userStopSignal.signal,
                         onExposure: captureAuxiliaryVisionExposure,
                         onCost: (costDollars) => {
@@ -3107,6 +3114,7 @@ export const agentLongTask = task({
                     requestId: ctx.run.id,
                     userId,
                     chatId,
+                    triggerRunId: ctx.run.id,
                     abortSignal: userStopSignal.signal,
                     onExposure: captureAuxiliaryVisionExposure,
                     onCost: (costDollars) => {

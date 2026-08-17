@@ -276,6 +276,8 @@ export class CentrifugoSandbox extends EventEmitter {
     private connectionInfo: ConnectionInfo,
     private config: CentrifugoConfig,
     private workingDirectory?: string,
+    private triggerRunId?: string,
+    private chatId?: string,
   ) {
     super();
   }
@@ -898,6 +900,8 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
               timeout,
               background: opts?.background,
               displayName: opts?.displayName,
+              chatId: this.chatId,
+              triggerRunId: this.triggerRunId,
               targetConnectionId: this.connectionInfo.connectionId,
             };
 

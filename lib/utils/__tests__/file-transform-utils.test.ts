@@ -87,16 +87,19 @@ const fileUrlInfo = (
 describe("processMessageFiles image size guards", () => {
   const originalFetch = global.fetch;
   let consoleWarnSpy: jest.SpyInstance;
+  let consoleInfoSpy: jest.SpyInstance;
 
   beforeEach(() => {
     mockConvexAction.mockResolvedValue([]);
     mockConvexQuery.mockResolvedValue([]);
     consoleWarnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+    consoleInfoSpy = jest.spyOn(console, "info").mockImplementation(() => {});
   });
 
   afterEach(() => {
     global.fetch = originalFetch;
     consoleWarnSpy.mockRestore();
+    consoleInfoSpy.mockRestore();
   });
 
   it("does not preserve client auxiliary metadata on URL-only images", async () => {
@@ -224,6 +227,12 @@ describe("processMessageFiles image size guards", () => {
       "user123",
       undefined,
       "pro",
+      false,
+      {
+        chatId: "chat-1",
+        triggerRunId: "run-1",
+        requestId: "run-1",
+      },
     );
 
     expect(result.messages[0].parts[1]).toMatchObject({
@@ -233,6 +242,22 @@ describe("processMessageFiles image size guards", () => {
       url: "https://storage.example/actually-small.png",
       auxiliaryVisionDescription: "Cached trusted description",
       auxiliaryVisionModel: "google/gemini-3.6-flash",
+    });
+    const successEvent = consoleInfoSpy.mock.calls
+      .map(([line]) => JSON.parse(String(line)) as Record<string, unknown>)
+      .find((payload) => payload.event === "persisted_image_reload_succeeded");
+    expect(successEvent).toMatchObject({
+      service: "agent-long",
+      request_id: "run-1",
+      user_id: "user123",
+      chat_id: "chat-1",
+      trigger_run_id: "run-1",
+      mode: "ask",
+      subscription_tier: "pro",
+      reload_stage: "owner_checked_storage_lookup",
+      image_count: 1,
+      metadata_lookup_image_count: 1,
+      legacy_fallback_image_count: 0,
     });
   });
 
