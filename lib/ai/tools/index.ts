@@ -87,6 +87,7 @@ export const createTools = (
   let sandboxCostPerMs = 0;
   let providerExposureRecorded = false;
   let currentModelName = modelName;
+  let pendingSandbox: Promise<AnySandbox> | null = null;
 
   const trackSandboxUsage = (newSandbox: AnySandbox) => {
     sandbox = newSandbox;
@@ -265,10 +266,20 @@ export const createTools = (
     if (options?.refresh) {
       await sandboxManager.resetSandbox?.(options.reason);
     }
-    const { sandbox: ensured } = await getSandboxWithFallbackGuard({
-      sandboxManager,
-    });
-    return ensured;
+    if (options?.refresh || options?.excludeConnectionId) {
+      const { sandbox: ensured } = await getSandboxWithFallbackGuard({
+        sandboxManager,
+      });
+      return ensured;
+    }
+    if (!pendingSandbox) {
+      pendingSandbox = getSandboxWithFallbackGuard({ sandboxManager })
+        .then(({ sandbox: ensured }) => ensured)
+        .finally(() => {
+          pendingSandbox = null;
+        });
+    }
+    return pendingSandbox;
   };
   const getTodoManager = () => todoManager;
   const getFileAccumulator = () => fileAccumulator;

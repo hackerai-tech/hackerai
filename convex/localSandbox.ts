@@ -64,6 +64,7 @@ async function hashCloudBootstrapToken(token: string): Promise<string> {
 const CLOUD_SESSION_PROVIDER = "aws-lambda-microvm" as const;
 const CLOUD_SESSION_TOKEN_TTL_MS = 9 * 60 * 60 * 1000;
 const CLOUD_SESSION_STARTING_STALE_MS = 2 * 60 * 1000;
+const RELAY_READY_CLIENT_VERSION = "aws-lambda-microvm-relay-ready-v1";
 
 const cloudSessionStatus = v.union(
   v.literal("starting"),
@@ -83,6 +84,7 @@ const cloudSessionForBackend = v.object({
   createdAt: v.number(),
   updatedAt: v.number(),
   bootstrapExpiresAt: v.number(),
+  relayReadyAt: v.optional(v.number()),
   failureCode: v.optional(v.string()),
 });
 
@@ -104,6 +106,7 @@ function serializeCloudSession(session: {
   created_at: number;
   updated_at: number;
   bootstrap_expires_at: number;
+  relay_ready_at?: number;
   failure_code?: string;
 }) {
   return {
@@ -117,6 +120,7 @@ function serializeCloudSession(session: {
     createdAt: session.created_at,
     updatedAt: session.updated_at,
     bootstrapExpiresAt: session.bootstrap_expires_at,
+    relayReadyAt: session.relay_ready_at,
     failureCode: session.failure_code,
   };
 }
@@ -932,7 +936,9 @@ export const connectCloud = mutation({
     }
 
     await ctx.db.patch(session._id, {
-      status: "running",
+      ...(args.clientVersion === RELAY_READY_CLIENT_VERSION
+        ? {}
+        : { status: "running" as const }),
       microvm_id: args.microvmId,
       connection_id: connectionId,
       last_connected_at: now,
@@ -953,6 +959,38 @@ export const connectCloud = mutation({
       ),
       centrifugoWsUrl,
     };
+  },
+});
+
+export const markCloudRelayReady = mutation({
+  args: {
+    sessionId: v.string(),
+    bootstrapToken: v.string(),
+    microvmId: v.string(),
+    connectionId: v.string(),
+  },
+  returns: v.boolean(),
+  handler: async (ctx, args) => {
+    const session = await validateCloudSessionCredential(
+      ctx,
+      args.sessionId,
+      args.bootstrapToken,
+    );
+    if (
+      !session ||
+      session.microvm_id !== args.microvmId ||
+      session.connection_id !== args.connectionId
+    ) {
+      return false;
+    }
+
+    const now = Date.now();
+    await ctx.db.patch(session._id, {
+      status: "running",
+      relay_ready_at: now,
+      updated_at: now,
+    });
+    return true;
   },
 });
 

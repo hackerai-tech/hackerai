@@ -28,6 +28,7 @@ type CloudSession = {
   createdAt: number;
   updatedAt: number;
   bootstrapExpiresAt: number;
+  relayReadyAt?: number;
   failureCode?: string;
 };
 
@@ -441,7 +442,13 @@ async function waitForSessionConnection(
     if (session.status === "failed" || session.status === "terminated") {
       throw new Error(`Cloud sandbox session ended: ${session.status}`);
     }
-    if (session.microvmId && session.connectionId) return session;
+    if (
+      session.status === "running" &&
+      session.microvmId &&
+      session.connectionId
+    ) {
+      return session;
+    }
     await new Promise((resolve) => setTimeout(resolve, pollDelayMs));
     pollDelayMs = Math.min(1_000, Math.round(pollDelayMs * 1.5));
   }
@@ -510,7 +517,9 @@ async function ensureExistingMicrovm(
       config,
     );
     const sandbox = createRelaySandbox(userId, connected, config);
-    await waitForRelayReady(sandbox);
+    if (!connected.relayReadyAt) {
+      await waitForRelayReady(sandbox);
+    }
     return { session: connected, sandbox };
   }
   try {
@@ -859,15 +868,18 @@ export async function ensureAwsLambdaMicrovmConnection(
       config,
     );
     const sandbox = createRelaySandbox(userId, connected, config);
-    failureStage = "wait_for_relay_ready";
-    log("debug", "cloud_sandbox_relay_ready_wait_started", {
-      user_id: userId,
-      session_id: connected.sessionId,
-      microvm_id: connected.microvmId,
-      region: config.region,
-      timeout_ms: RELAY_READY_TIMEOUT_MS,
-    });
-    await waitForRelayReady(sandbox);
+    if (!connected.relayReadyAt) {
+      failureStage = "wait_for_relay_ready";
+      log("debug", "cloud_sandbox_relay_ready_wait_started", {
+        user_id: userId,
+        session_id: connected.sessionId,
+        microvm_id: connected.microvmId,
+        region: config.region,
+        timeout_ms: RELAY_READY_TIMEOUT_MS,
+        compatibility_fallback: true,
+      });
+      await waitForRelayReady(sandbox);
+    }
     onBoot?.({
       path: "create_fresh",
       duration_ms: Math.round(performance.now() - startedAt),

@@ -167,6 +167,11 @@ naabu -version
 tcpdump --version
 ```
 
+The packaged Lambda image automatically routes `naabu` hostname lookups through
+the non-loopback resolver supplied by the MicroVM runtime. An explicit `-r`
+resolver still takes precedence. The wrapper also disables the per-VM update
+check because images are immutable; an explicit `-up` request still works.
+
 For network correctness, start known open and closed TCP/UDP listeners on a
 separate controlled host. Verify `nc`, `nmap -sT`, `nmap -sS`, `naabu`, and a UDP
 probe report the expected mix rather than every port as open. Also test ICMP,

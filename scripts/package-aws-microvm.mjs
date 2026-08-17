@@ -21,6 +21,11 @@ delete localPackage.scripts;
 
 const dockerfile = `${baseDockerfile.trim()}
 
+# Lambda MicroVM egress exposes an AWS link-local resolver that ProjectDiscovery
+# tools do not discover automatically. Keep explicit user resolver flags intact.
+COPY aws/naabu /usr/local/bin/naabu
+RUN chmod 0755 /usr/local/bin/naabu
+
 # AWS Lambda MicroVM lifecycle and command relay agent
 COPY agent/package.json /opt/hackerai-cloud-agent/package.json
 COPY agent/pnpm-lock.yaml /opt/hackerai-cloud-agent/pnpm-lock.yaml
@@ -36,6 +41,10 @@ ENTRYPOINT ["node", "/opt/hackerai-cloud-agent/dist/index.js", "--cloud-lifecycl
 
 const zip = new JSZip();
 zip.file("Dockerfile", dockerfile);
+zip.file(
+  "aws/naabu",
+  await readFile(join(root, "aws-lambda-microvm", "naabu")),
+);
 zip.file("agent/package.json", `${JSON.stringify(localPackage, null, 2)}\n`);
 zip.file(
   "agent/pnpm-lock.yaml",

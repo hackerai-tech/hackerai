@@ -841,6 +841,7 @@ export default defineSchema({
     created_at: v.number(),
     updated_at: v.number(),
     last_connected_at: v.optional(v.number()),
+    relay_ready_at: v.optional(v.number()),
     ended_at: v.optional(v.number()),
     failure_code: v.optional(v.string()),
   })

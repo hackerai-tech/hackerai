@@ -54,6 +54,7 @@ const api = {
     disconnect: "localSandbox:disconnect" as const,
     refreshCentrifugoToken: "localSandbox:refreshCentrifugoToken" as const,
     connectCloud: "localSandbox:connectCloud" as const,
+    markCloudRelayReady: "localSandbox:markCloudRelayReady" as const,
     refreshCloudCentrifugoToken:
       "localSandbox:refreshCloudCentrifugoToken" as const,
     disconnectCloud: "localSandbox:disconnectCloud" as const,
@@ -409,7 +410,7 @@ class LocalSandboxClient {
               sessionId: this.config.cloudSessionId,
               bootstrapToken: this.config.token,
               microvmId: this.config.microvmId,
-              clientVersion: "aws-lambda-microvm",
+              clientVersion: "aws-lambda-microvm-relay-ready-v1",
               osInfo: this.getOsInfo(),
               capabilities: this.getCapabilities(),
             }
@@ -443,6 +444,20 @@ class LocalSandboxClient {
         result.centrifugoWsUrl,
         result.centrifugoToken,
       );
+      if (this.config.authMode === "cloud") {
+        const ready = (await this.convexHttp.mutation(
+          api.localSandbox.markCloudRelayReady as never,
+          {
+            sessionId: this.config.cloudSessionId,
+            bootstrapToken: this.config.token,
+            microvmId: this.config.microvmId,
+            connectionId: this.connectionId,
+          } as never,
+        )) as boolean;
+        if (!ready) {
+          throw new Error("Cloud relay could not be marked ready");
+        }
+      }
       if (this.config.authMode === "local") {
         this.startIdleCheck();
       }

@@ -6,6 +6,7 @@ on:
       - main
     paths:
       - ".github/workflows/aws-lambda-microvm-release.yml"
+      - "aws-lambda-microvm/naabu"
       - "docker/**"
       - "packages/local/**"
       - "scripts/deploy-aws-microvm.mjs"
