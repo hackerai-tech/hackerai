@@ -188,6 +188,7 @@ import { isAgentMode } from "@/lib/utils/mode-helpers";
 import {
   createAgentStream,
   initAgentStreamState,
+  resolveAgentModelForImageToolResults,
   resetServedModelTelemetryForRetry,
   retryUsesDifferentModel,
   type AgentStreamContext,
@@ -598,12 +599,12 @@ export const createChatHandler = () => {
         });
       }
 
-      const activeDeepSeekV4Pro0813Experiment =
+      let activeDeepSeekV4Pro0813Experiment =
         getActiveDeepSeekV4Pro0813ExperimentAssignment(
           deepSeekV4Pro0813Experiment,
           selectedModel,
         );
-      const routingExperimentContext = getDeepSeekV4Pro0813ExperimentContext(
+      let routingExperimentContext = getDeepSeekV4Pro0813ExperimentContext(
         activeDeepSeekV4Pro0813Experiment,
       );
 
@@ -898,14 +899,31 @@ export const createChatHandler = () => {
                   error,
                   source: "attachment",
                 });
-                selectedModel = selectModel(
-                  mode,
-                  subscription,
-                  selectedModelOverride,
-                  true,
-                  false,
-                  { extraUsageAvailable, auxiliaryVisionEnabled: false },
-                );
+                selectedModel = isAgentMode(mode)
+                  ? resolveAgentModelForImageToolResults(
+                      selectedModel,
+                      mode,
+                      true,
+                      selectedModelOverride,
+                      false,
+                    )
+                  : selectModel(
+                      mode,
+                      subscription,
+                      selectedModelOverride,
+                      true,
+                      false,
+                      { extraUsageAvailable, auxiliaryVisionEnabled: false },
+                    );
+                activeDeepSeekV4Pro0813Experiment =
+                  getActiveDeepSeekV4Pro0813ExperimentAssignment(
+                    deepSeekV4Pro0813Experiment,
+                    selectedModel,
+                  );
+                routingExperimentContext =
+                  getDeepSeekV4Pro0813ExperimentContext(
+                    activeDeepSeekV4Pro0813Experiment,
+                  );
                 chatLogger?.setChat(chatLogContext, selectedModel);
               }
             }

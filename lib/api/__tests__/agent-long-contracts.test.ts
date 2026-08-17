@@ -216,7 +216,10 @@ describe("auxiliary vision failover contracts", () => {
       /auxiliaryVisionFailover\.activate\(\{\s*error,\s*source: "attachment",\s*\}\);/,
     );
     expect(source).toMatch(
-      /selectedModel = selectModel\([\s\S]*?auxiliaryVisionEnabled: false[\s\S]*?\);/,
+      /selectedModel = [\s\S]*?resolveAgentModelForImageToolResults\([\s\S]*?selectedModel[\s\S]*?true[\s\S]*?false[\s\S]*?\);/,
+    );
+    expect(source).toMatch(
+      /activeDeepSeekV4Pro0813Experiment =\s*getActiveDeepSeekV4Pro0813ExperimentAssignment\([\s\S]*?selectedModel[\s\S]*?\);/,
     );
     expect(source).toMatch(
       /get auxiliaryVisionEnabled\(\) \{\s*return auxiliaryVisionFailover\.isEnabled\(\);\s*\}/,

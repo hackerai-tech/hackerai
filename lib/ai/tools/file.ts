@@ -1288,6 +1288,8 @@ export const createFile = (context: ToolContext) => {
     });
   const canViewMultimodalFiles = () =>
     supportsMultimodalToolResults(getCurrentModelName?.() ?? modelName);
+  // Agent streams consume image-data as a handoff boundary: prepareStep
+  // promotes the active text model before the provider sees the tool result.
   const canHandoffMultimodalFiles = context.mode === "agent";
   const canReturnMultimodalFiles = () =>
     !!getAuxiliaryVision() ||
