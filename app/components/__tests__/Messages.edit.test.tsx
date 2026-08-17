@@ -330,7 +330,7 @@ describe("Messages virtualized row invalidation", () => {
     );
   });
 
-  it("shows an open reasoning shell while a new Agent response waits for its first delta", () => {
+  it("shows a non-interactive thinking state while a new Agent response waits for its first delta", () => {
     render(
       <DataStreamProvider>
         <Messages
@@ -351,10 +351,13 @@ describe("Messages virtualized row invalidation", () => {
     );
 
     expect(screen.getByTestId("pending-agent-reasoning")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Thinking..." })).toHaveAttribute(
-      "aria-expanded",
-      "true",
+    expect(screen.getByRole("status", { name: "Thinking" })).toHaveTextContent(
+      "Thinking...",
     );
+    expect(
+      screen.queryByRole("button", { name: "Thinking..." }),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByTestId("reasoning-chevron")).not.toBeInTheDocument();
     expect(
       screen.queryByRole("status", { name: "Loading" }),
     ).not.toBeInTheDocument();

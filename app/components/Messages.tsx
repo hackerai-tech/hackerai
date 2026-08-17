@@ -13,6 +13,7 @@ import {
 } from "react";
 import dynamic from "next/dynamic";
 import { LegendList, type LegendListRef } from "@legendapp/list/react";
+import { BrainIcon } from "lucide-react";
 import { MessageItem } from "./MessageItem";
 import { AgentActivityRow } from "./AgentActivityRow";
 import { AgentToolGroupRow } from "./AgentToolGroupRow";
@@ -20,10 +21,6 @@ import { AgentWorkHeader } from "./AgentWorkHeader";
 import { MessageErrorState } from "./MessageErrorState";
 import { SummarizationStatusDivider } from "./SummarizationStatusDivider";
 import { Shimmer } from "@/components/ai-elements/shimmer";
-import {
-  Reasoning,
-  ReasoningTrigger,
-} from "@/components/ai-elements/reasoning";
 import { useScrollPreservation } from "@/components/ai-elements/worked-for";
 import Loading from "@/components/ui/loading";
 import { useFeedback } from "../hooks/useFeedback";
@@ -83,15 +80,17 @@ type StickyElementRef =
 const getTimelineRowKey = (row: ChatTimelineRow) => row.id;
 
 const PendingAgentReasoning = () => (
-  <Reasoning
-    className="w-full"
-    defaultOpen
-    isActive
-    isStreaming
+  <div
+    aria-label="Thinking"
+    className="flex w-full max-w-full items-center gap-2 text-muted-foreground text-sm"
     data-testid="pending-agent-reasoning"
+    role="status"
   >
-    <ReasoningTrigger />
-  </Reasoning>
+    <BrainIcon className="size-4 shrink-0" />
+    <Shimmer as="span" className="min-w-0 truncate text-left text-sm leading-5">
+      Thinking...
+    </Shimmer>
+  </div>
 );
 
 type ToolGroupMountSnapshot = {
