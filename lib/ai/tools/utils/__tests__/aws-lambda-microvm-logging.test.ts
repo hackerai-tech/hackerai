@@ -3,6 +3,19 @@ const mockDestroy = jest.fn();
 const mockMutation = jest.fn();
 const mockQuery = jest.fn();
 const mockRelayRun = jest.fn();
+const mockRealtimeClose = jest.fn().mockResolvedValue(undefined);
+const mockRealtimeUnsubscribe = jest.fn();
+const mockRealtimeOnUpdate = jest.fn(
+  (
+    query: unknown,
+    args: unknown,
+    callback: (value: unknown) => void,
+    onError: (error: Error) => void,
+  ) => {
+    Promise.resolve(mockQuery(query, args)).then(callback, onError);
+    return mockRealtimeUnsubscribe;
+  },
+);
 
 jest.mock("@aws-sdk/client-lambda-microvms", () => {
   class Command {
@@ -26,6 +39,13 @@ jest.mock("@/lib/db/convex-client", () => ({
   getConvexUrl: () => "http://127.0.0.1:3210",
 }));
 
+jest.mock("@/lib/db/convex-realtime-client", () => ({
+  createConvexRealtimeClient: () => ({
+    onUpdate: mockRealtimeOnUpdate,
+    close: mockRealtimeClose,
+  }),
+}));
+
 jest.mock("../centrifugo-sandbox", () => ({
   CentrifugoSandbox: jest.fn().mockImplementation(() => ({
     commands: { run: mockRelayRun },
@@ -43,6 +63,13 @@ describe("AWS Lambda MicroVM development logging", () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    mockRealtimeClose.mockResolvedValue(undefined);
+    mockRealtimeOnUpdate.mockImplementation(
+      (query, args, callback, onError) => {
+        Promise.resolve(mockQuery(query, args)).then(callback, onError);
+        return mockRealtimeUnsubscribe;
+      },
+    );
     mockRelayRun.mockResolvedValue({
       stdout: "ready\n",
       stderr: "",
@@ -109,6 +136,8 @@ describe("AWS Lambda MicroVM development logging", () => {
     ).resolves.toBeDefined();
 
     expect(mockRelayRun).not.toHaveBeenCalled();
+    expect(mockRealtimeUnsubscribe).toHaveBeenCalled();
+    expect(mockRealtimeClose).toHaveBeenCalledTimes(1);
     infoSpy.mockRestore();
     debugSpy.mockRestore();
   });
@@ -218,6 +247,7 @@ describe("AWS Lambda MicroVM development logging", () => {
     });
     expect(errorPayload.error_message).toContain("[REDACTED]");
     expect(errorPayload.error_message).not.toContain(bootstrapToken);
+    expect(mockRealtimeClose).toHaveBeenCalledTimes(1);
 
     const runInput = (
       mockSend.mock.calls[0][0] as {
@@ -249,6 +279,202 @@ describe("AWS Lambda MicroVM development logging", () => {
     errorSpy.mockRestore();
     debugSpy.mockRestore();
   });
+
+  it("cleans up a readiness watch whose initial value is delivered synchronously", async () => {
+    const session = {
+      sessionId: "session-sync",
+      status: "starting" as const,
+      region: "us-east-1",
+      imageIdentifier: process.env.AWS_LAMBDA_MICROVM_IMAGE_ID,
+      imageVersion: "6.0",
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      bootstrapExpiresAt: Date.now() + 60_000,
+    };
+    mockRealtimeOnUpdate.mockImplementationOnce((_query, _args, callback) => {
+      callback({
+        ...session,
+        status: "running",
+        microvmId: "microvm-sync",
+        connectionId: "connection-sync",
+        relayReadyAt: Date.now(),
+      });
+      return mockRealtimeUnsubscribe;
+    });
+    mockMutation
+      .mockResolvedValueOnce({
+        created: true,
+        session,
+        bootstrapToken: "bootstrap-sync",
+        cleanupCandidates: [],
+      })
+      .mockResolvedValueOnce(true);
+    mockSend.mockResolvedValueOnce({
+      microvmId: "microvm-sync",
+      $metadata: { requestId: "run-sync", httpStatusCode: 200 },
+    });
+    const infoSpy = jest.spyOn(console, "info").mockImplementation();
+    const debugSpy = jest.spyOn(console, "debug").mockImplementation();
+
+    await expect(
+      ensureAwsLambdaMicrovmConnection("user-sync"),
+    ).resolves.toBeDefined();
+
+    expect(mockRealtimeUnsubscribe).toHaveBeenCalled();
+    expect(mockRealtimeClose).toHaveBeenCalledTimes(1);
+    infoSpy.mockRestore();
+    debugSpy.mockRestore();
+  });
+
+  it("does not mask a successful launch when readiness teardown fails", async () => {
+    const session = {
+      sessionId: "session-close-failure",
+      status: "starting" as const,
+      region: "us-east-1",
+      imageIdentifier: process.env.AWS_LAMBDA_MICROVM_IMAGE_ID,
+      imageVersion: "6.0",
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      bootstrapExpiresAt: Date.now() + 60_000,
+    };
+    mockMutation
+      .mockResolvedValueOnce({
+        created: true,
+        session,
+        bootstrapToken: "bootstrap-close-failure",
+        cleanupCandidates: [],
+      })
+      .mockResolvedValueOnce(true);
+    mockSend.mockResolvedValueOnce({
+      microvmId: "microvm-close-failure",
+      $metadata: { requestId: "run-close-failure", httpStatusCode: 200 },
+    });
+    mockQuery.mockResolvedValueOnce({
+      ...session,
+      status: "running",
+      microvmId: "microvm-close-failure",
+      connectionId: "connection-close-failure",
+      relayReadyAt: Date.now(),
+    });
+    mockRealtimeClose.mockRejectedValueOnce(new Error("socket close failed"));
+    const infoSpy = jest.spyOn(console, "info").mockImplementation();
+    const debugSpy = jest.spyOn(console, "debug").mockImplementation();
+    const warnSpy = jest.spyOn(console, "warn").mockImplementation();
+
+    await expect(
+      ensureAwsLambdaMicrovmConnection("user-close-failure"),
+    ).resolves.toBeDefined();
+
+    expect(
+      warnSpy.mock.calls.some(([value]) =>
+        String(value).includes(
+          "cloud_sandbox_readiness_subscription_close_failed",
+        ),
+      ),
+    ).toBe(true);
+    infoSpy.mockRestore();
+    debugSpy.mockRestore();
+    warnSpy.mockRestore();
+  });
+
+  it("times out a silent readiness subscription and closes it", async () => {
+    jest.useFakeTimers();
+    const session = {
+      sessionId: "session-timeout",
+      status: "starting" as const,
+      region: "us-east-1",
+      imageIdentifier: process.env.AWS_LAMBDA_MICROVM_IMAGE_ID,
+      imageVersion: "6.0",
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      bootstrapExpiresAt: Date.now() + 60_000,
+    };
+    mockRealtimeOnUpdate.mockImplementation(() => mockRealtimeUnsubscribe);
+    mockMutation
+      .mockResolvedValueOnce({
+        created: true,
+        session,
+        bootstrapToken: "bootstrap-timeout",
+        cleanupCandidates: [],
+      })
+      .mockResolvedValueOnce(true)
+      .mockResolvedValueOnce(true);
+    mockSend
+      .mockResolvedValueOnce({
+        microvmId: "microvm-timeout",
+        $metadata: { requestId: "run-timeout", httpStatusCode: 200 },
+      })
+      .mockResolvedValueOnce({ $metadata: { httpStatusCode: 200 } });
+    const errorSpy = jest.spyOn(console, "error").mockImplementation();
+    const infoSpy = jest.spyOn(console, "info").mockImplementation();
+    const debugSpy = jest.spyOn(console, "debug").mockImplementation();
+
+    const pending = expect(
+      ensureAwsLambdaMicrovmConnection("user-timeout"),
+    ).rejects.toThrow("Failed creating AWS Lambda MicroVM sandbox");
+    await jest.advanceTimersByTimeAsync(90_000);
+    await pending;
+
+    expect(mockRealtimeUnsubscribe).toHaveBeenCalled();
+    expect(mockRealtimeClose).toHaveBeenCalledTimes(1);
+    errorSpy.mockRestore();
+    infoSpy.mockRestore();
+    debugSpy.mockRestore();
+    jest.useRealTimers();
+  });
+
+  it.each(["terminal_status", "query_error"] as const)(
+    "closes readiness subscriptions on %s",
+    async (mode) => {
+      const session = {
+        sessionId: `session-${mode}`,
+        status: "starting" as const,
+        region: "us-east-1",
+        imageIdentifier: process.env.AWS_LAMBDA_MICROVM_IMAGE_ID,
+        imageVersion: "6.0",
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+        bootstrapExpiresAt: Date.now() + 60_000,
+      };
+      mockRealtimeOnUpdate.mockImplementation(
+        (_query, _args, callback, onError) => {
+          queueMicrotask(() => {
+            if (mode === "query_error") onError(new Error("query failed"));
+            else callback({ ...session, status: "terminated" });
+          });
+          return mockRealtimeUnsubscribe;
+        },
+      );
+      mockMutation
+        .mockResolvedValueOnce({
+          created: true,
+          session,
+          bootstrapToken: `bootstrap-${mode}`,
+          cleanupCandidates: [],
+        })
+        .mockResolvedValueOnce(true)
+        .mockResolvedValueOnce(true);
+      mockSend
+        .mockResolvedValueOnce({
+          microvmId: `microvm-${mode}`,
+          $metadata: { requestId: `run-${mode}`, httpStatusCode: 200 },
+        })
+        .mockResolvedValueOnce({ $metadata: { httpStatusCode: 200 } });
+      const errorSpy = jest.spyOn(console, "error").mockImplementation();
+      const infoSpy = jest.spyOn(console, "info").mockImplementation();
+      const debugSpy = jest.spyOn(console, "debug").mockImplementation();
+
+      await expect(
+        ensureAwsLambdaMicrovmConnection(`user-${mode}`),
+      ).rejects.toThrow("Failed creating AWS Lambda MicroVM sandbox");
+
+      expect(mockRealtimeUnsubscribe).toHaveBeenCalled();
+      expect(mockRealtimeClose).toHaveBeenCalledTimes(1);
+      errorSpy.mockRestore();
+      infoSpy.mockRestore();
+      debugSpy.mockRestore();
+    },
+  );
 
   it("keeps a session retryable when cleanup cannot terminate its MicroVM", async () => {
     mockMutation
@@ -295,6 +521,7 @@ describe("AWS Lambda MicroVM development logging", () => {
       sessionId: "session-cleanup",
       failureCode: "termination_retry_required",
     });
+    expect(mockRealtimeClose).toHaveBeenCalledTimes(1);
 
     errorSpy.mockRestore();
     warnSpy.mockRestore();

@@ -56,6 +56,13 @@ the exact returned image version to become `SUCCESSFUL` and `ACTIVE`, and then
 prints `AWS_LAMBDA_MICROVM_IMAGE_ID` and
 `AWS_LAMBDA_MICROVM_IMAGE_VERSION`.
 
+During AWS image preparation, both lifecycle image hooks run a bounded,
+credential-free working-set primer. It initializes the in-process relay and
+command protocol, a real shell PTY, local DNS lookup libraries, and the startup
+paths for `bash`, passwordless `sudo`, `nmap`, and `naabu`. Any required step
+failure rejects image validation rather than publishing an incompletely primed
+image; structured hook logs include per-step duration without bootstrap data.
+
 If the image build fails, inspect the CloudWatch log group shown by the Lambda
 MicroVM image. The HackerAI image currently uses Kali's public ARM64 container
 base, while the Lambda-managed MicroVM base is selected separately by the
@@ -175,6 +182,14 @@ The packaged Lambda image automatically routes `naabu` hostname lookups through
 the non-loopback resolver supplied by the MicroVM runtime. An explicit `-r`
 resolver still takes precedence. The wrapper also disables the per-VM update
 check because images are immutable; an explicit `-up` request still works.
+
+The lifecycle server hosts the outbound command relay in its already
+snapshotted Node process. Suspend, resume, termination, and unexpected relay
+restart are serialized in-process; `/run` does not fork a second Node worker.
+The launcher watches the Convex session reactively while AWS allocates the VM,
+then overlaps readiness with the durable MicroVM-ID attachment. It still waits
+for that attachment before returning so failure cleanup always has a persisted
+or locally held AWS identifier.
 
 For network correctness, start known open and closed TCP/UDP listeners on a
 separate controlled host. Verify `nc`, `nmap -sT`, `nmap -sS`, `naabu`, and a UDP
