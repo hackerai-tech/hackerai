@@ -40,7 +40,7 @@ function getObjectFields(validator: { json: ValidatorJson }) {
 }
 
 describe("file storage lookup validators", () => {
-  it("accepts cached auxiliary vision fields on single and batch lookups", async () => {
+  it("returns only URL lookup metadata for single and batch lookups", async () => {
     const { getFileById, getFilesByIds } = await import("../fileStorage");
     const singleValidator = (
       getFileById as unknown as { returns: { json: ValidatorJson } }
@@ -65,6 +65,80 @@ describe("file storage lookup validators", () => {
         fieldType: { type: "string" },
         optional: true,
       });
+      expect(fields.content).toBeUndefined();
+      expect(fields.file_token_size).toBeUndefined();
     }
+
+    const storedFile = {
+      _id: "file-1",
+      _creationTime: 1,
+      s3_key: "users/user-1/file.txt",
+      user_id: "user-1",
+      name: "file.txt",
+      media_type: "text/plain",
+      size: 42,
+      file_token_size: 8,
+      content: "private file contents",
+      auxiliary_vision_description: "safe cached description",
+      auxiliary_vision_model: "vision-model",
+      is_attached: true,
+      future_private_field: "must not cross the action boundary",
+    };
+    const db = { get: jest.fn().mockResolvedValue(storedFile) };
+
+    await expect(
+      (getFileById as unknown as { handler: Function }).handler(
+        { db },
+        { fileId: "file-1" },
+      ),
+    ).resolves.toEqual({
+      s3_key: "users/user-1/file.txt",
+      user_id: "user-1",
+      name: "file.txt",
+      media_type: "text/plain",
+      size: 42,
+      auxiliary_vision_description: "safe cached description",
+      auxiliary_vision_model: "vision-model",
+    });
+
+    await expect(
+      (getFilesByIds as unknown as { handler: Function }).handler(
+        { db },
+        { fileIds: ["file-1"] },
+      ),
+    ).resolves.toEqual([
+      {
+        s3_key: "users/user-1/file.txt",
+        user_id: "user-1",
+        name: "file.txt",
+        media_type: "text/plain",
+        size: 42,
+        auxiliary_vision_description: "safe cached description",
+        auxiliary_vision_model: "vision-model",
+      },
+    ]);
+
+    db.get.mockResolvedValueOnce({
+      _id: "file-2",
+      _creationTime: 2,
+      user_id: "user-1",
+      name: "legacy.txt",
+      media_type: "text/plain",
+      size: 7,
+      file_token_size: 2,
+      content: "private legacy contents",
+      is_attached: false,
+    });
+    await expect(
+      (getFileById as unknown as { handler: Function }).handler(
+        { db },
+        { fileId: "file-2" },
+      ),
+    ).resolves.toEqual({
+      user_id: "user-1",
+      name: "legacy.txt",
+      media_type: "text/plain",
+      size: 7,
+    });
   });
 });
