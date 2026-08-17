@@ -311,7 +311,7 @@ describe("Agent trigger route lifecycle", () => {
     ["pro", "small-1x"],
     ["pro-plus", "small-2x"],
     ["ultra", "small-2x"],
-    ["team", "small-1x"],
+    ["team", "small-2x"],
   ] as const)("uses %s Agent runs on %s", (subscription, machine) => {
     expect(getAgentTriggerMachine(subscription)).toBe(machine);
   });

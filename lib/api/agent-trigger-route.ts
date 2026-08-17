@@ -94,7 +94,7 @@ const AGENT_TRIGGER_MACHINE_BY_SUBSCRIPTION: Record<
   pro: "small-1x",
   "pro-plus": "small-2x",
   ultra: "small-2x",
-  team: "small-1x",
+  team: "small-2x",
 };
 
 export const getAgentTriggerMachine = (subscription: SubscriptionTier) =>
