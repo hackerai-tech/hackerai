@@ -26,6 +26,12 @@ import { ptySessionManager } from "@/lib/ai/tools/utils/pty-session-manager";
 import { generateTitleFromUserMessageWithWriter } from "@/lib/actions";
 import { createTrackedProvider } from "@/lib/ai/providers";
 import { processChatMessages } from "@/lib/chat/chat-processor";
+import { cacheAuxiliaryVisionDescription } from "@/lib/utils/file-transform-utils";
+import {
+  createAuxiliaryVisionFailoverController,
+  describeImageAttachmentsWithAuxiliaryVision,
+  describeImageWithAuxiliaryVision,
+} from "@/lib/chat/auxiliary-vision";
 import { summarizeIncompleteToolParts } from "@/lib/chat/tool-abort-utils";
 import {
   hasVisibleAssistantContent,
@@ -130,11 +136,15 @@ import {
 } from "@/lib/api/agent-endpoints";
 import { phLogger } from "@/lib/posthog/server";
 import {
-  captureProGrok46ExperimentExposure,
-  getActiveProGrok46ExperimentAssignment,
-  getProGrok46ExperimentContext,
-  type ProGrok46ExperimentAssignment,
-} from "@/lib/experiments/pro-grok-46";
+  captureDeepSeekV4Pro0813ExperimentExposure,
+  evaluateDeepSeekV4Pro0813Experiment,
+  getActiveDeepSeekV4Pro0813ExperimentAssignment,
+  getDeepSeekV4Pro0813ExperimentContext,
+} from "@/lib/experiments/deepseek-v4-pro-0813";
+import {
+  createAuxiliaryVisionExposureRecorder,
+  evaluateAuxiliaryDeepSeekVisionFlag,
+} from "@/lib/experiments/auxiliary-deepseek-vision";
 import type { AgentAutoReviewAssignment } from "@/lib/experiments/agent-auto-review";
 import { PAID_FUNNEL_EVENTS } from "@/lib/analytics/paid-funnel";
 import type { AnalyticsRequestContext } from "@/lib/analytics/request-context";
@@ -188,6 +198,7 @@ import {
 import {
   createAgentStream,
   initAgentStreamState,
+  resolveAgentModelForImageToolResults,
   resetServedModelTelemetryForRetry,
   retryUsesDifferentModel,
   type AgentStreamContext,
@@ -2024,7 +2035,6 @@ export type AgentLongPayload = {
   approvalSessionId?: string;
   approvalProtocolVersion?: number;
   selectedModel?: SelectedModel;
-  proGrok46Experiment?: ProGrok46ExperimentAssignment;
   autoReviewAssignment?: AgentAutoReviewAssignment;
   userLocation: Geo;
   isAutoContinue?: boolean;
@@ -2096,7 +2106,6 @@ export const agentLongTask = task({
       approvalSessionId,
       approvalProtocolVersion,
       selectedModel: rawSelectedModelOverride,
-      proGrok46Experiment,
       autoReviewAssignment,
       userLocation,
       isAutoContinue,
@@ -2274,6 +2283,15 @@ export const agentLongTask = task({
         selectedModelOverride,
         subscription,
       );
+      const posthog = PostHogClient();
+      const auxiliaryVisionAssignment =
+        await evaluateAuxiliaryDeepSeekVisionFlag({
+          posthog,
+          userId,
+          subscription,
+          selectedModelOverride,
+          requestId: ctx.run.id,
+        });
 
       const baseTodos: Todo[] = getBaseTodosForRequest(
         (chat?.todos as unknown as Todo[]) || [],
@@ -2302,8 +2320,8 @@ export const agentLongTask = task({
         uploadBasePath,
         modelOverride: selectedModelOverride,
         extraUsageAvailable,
-        proModelKey: proGrok46Experiment?.modelKey,
         allowLocalDesktopFiles: sandboxPreference === "desktop",
+        auxiliaryVisionEnabled: !!auxiliaryVisionAssignment,
       });
 
       if (!processedMessages.length) {
@@ -2316,6 +2334,17 @@ export const agentLongTask = task({
             sandboxPreference,
           }),
         );
+      }
+
+      const deepSeekV4Pro0813Experiment =
+        await evaluateDeepSeekV4Pro0813Experiment({
+          posthog,
+          userId,
+          selectedModel,
+          requestId: ctx.run.id,
+        });
+      if (deepSeekV4Pro0813Experiment) {
+        selectedModel = deepSeekV4Pro0813Experiment.modelKey;
       }
 
       const notesEnabled = userCustomization?.include_notes ?? true;
@@ -2339,7 +2368,6 @@ export const agentLongTask = task({
       };
       chatLogger.setChat(chatLogContext, selectedModel);
 
-      const posthog = PostHogClient();
       chatLogger.getBuilder().setAssistantId(assistantMessageId);
 
       // Wire trigger.dev's abort signal into a local controller.
@@ -2437,6 +2465,24 @@ export const agentLongTask = task({
         PaidDailyFreeAllowanceReservation | undefined;
 
       let streamError: unknown;
+      const auxiliaryVisionFailover = createAuxiliaryVisionFailoverController({
+        enabled: !!auxiliaryVisionAssignment,
+        service: "agent-long",
+        requestId: ctx.run.id,
+        userId,
+        chatId,
+        isUserAborted: () => userStopSignal.signal.aborted,
+      });
+      const captureAuxiliaryVisionExposure =
+        createAuxiliaryVisionExposureRecorder({
+          posthog,
+          userId,
+          subscription,
+          mode,
+          selectedModelOverride,
+          getSelectedModel: () => selectedModel,
+          assignment: auxiliaryVisionAssignment,
+        });
       const uiStream = createUIMessageStream({
         onError: (error) => {
           streamError ??= error;
@@ -2447,6 +2493,42 @@ export const agentLongTask = task({
         },
         execute: async ({ writer }) => {
           try {
+            const usageTracker = new UsageTracker();
+            observedUsageTracker = usageTracker;
+            const auxiliaryVision = auxiliaryVisionFailover.isEnabled()
+              ? {
+                  isEnabled: auxiliaryVisionFailover.isEnabled,
+                  isAborted: () => userStopSignal.signal.aborted,
+                  describeImage: async (args: {
+                    image: string;
+                    mediaType: string;
+                    filename?: string;
+                    source: "file_view";
+                  }) => {
+                    try {
+                      return await describeImageWithAuxiliaryVision({
+                        ...args,
+                        requestId: ctx.run.id,
+                        userId,
+                        chatId,
+                        abortSignal: userStopSignal.signal,
+                        onExposure: captureAuxiliaryVisionExposure,
+                        onCost: (costDollars) => {
+                          usageTracker.providerCost += costDollars;
+                          usageTracker.nonModelCost += costDollars;
+                          chatLogger?.getBuilder().addToolCost(costDollars);
+                        },
+                      });
+                    } catch (error) {
+                      auxiliaryVisionFailover.activate({
+                        error,
+                        source: "file_view",
+                      });
+                      throw error;
+                    }
+                  },
+                }
+              : undefined;
             writeAgentLongFastStart(writer, "setup");
             await assertUserCanMakeCostIncurringRequest(userId);
             if (subscription === "free") {
@@ -2552,14 +2634,15 @@ export const agentLongTask = task({
               });
             }
 
-            const activeProGrok46Experiment =
-              getActiveProGrok46ExperimentAssignment(
-                proGrok46Experiment,
+            let activeDeepSeekV4Pro0813Experiment =
+              getActiveDeepSeekV4Pro0813ExperimentAssignment(
+                deepSeekV4Pro0813Experiment,
                 selectedModel,
               );
-            const routingExperimentContext = getProGrok46ExperimentContext(
-              activeProGrok46Experiment,
-            );
+            let routingExperimentContext =
+              getDeepSeekV4Pro0813ExperimentContext(
+                activeDeepSeekV4Pro0813Experiment,
+              );
 
             const freeMonthlyBudgetSnapshot =
               subscription === "free"
@@ -2889,6 +2972,7 @@ export const agentLongTask = task({
               runTimingTracker.measureActiveTime,
               projectContext.workingDirectory,
               ctx.run.id,
+              auxiliaryVision,
               securityValidationSubagentsEnabled
                 ? {
                     additionalTools: (toolContext) => ({
@@ -3015,9 +3099,52 @@ export const agentLongTask = task({
               );
             }
 
+            if (auxiliaryVisionFailover.isEnabled()) {
+              try {
+                processedMessages =
+                  await describeImageAttachmentsWithAuxiliaryVision({
+                    messages: processedMessages,
+                    requestId: ctx.run.id,
+                    userId,
+                    chatId,
+                    abortSignal: userStopSignal.signal,
+                    onExposure: captureAuxiliaryVisionExposure,
+                    onCost: (costDollars) => {
+                      usageTracker.providerCost += costDollars;
+                      usageTracker.nonModelCost += costDollars;
+                      chatLogger?.getBuilder().addToolCost(costDollars);
+                    },
+                    cacheDescription: cacheAuxiliaryVisionDescription,
+                  });
+              } catch (error) {
+                if (userStopSignal.signal.aborted) throw error;
+                auxiliaryVisionFailover.activate({
+                  error,
+                  source: "attachment",
+                });
+                selectedModel = resolveAgentModelForImageToolResults(
+                  selectedModel,
+                  mode,
+                  true,
+                  selectedModelOverride,
+                  false,
+                );
+                activeDeepSeekV4Pro0813Experiment =
+                  getActiveDeepSeekV4Pro0813ExperimentAssignment(
+                    deepSeekV4Pro0813Experiment,
+                    selectedModel,
+                  );
+                routingExperimentContext =
+                  getDeepSeekV4Pro0813ExperimentContext(
+                    activeDeepSeekV4Pro0813Experiment,
+                  );
+                chatLogger?.setChat(chatLogContext, selectedModel);
+              }
+            }
+
             const titlePromise = isNewChat
               ? generateTitleFromUserMessageWithWriter(
-                  processedMessages,
+                  messagesForProcessing,
                   writer,
                   (title) => updateChatTitle({ chatId, title }),
                 )
@@ -3134,8 +3261,6 @@ export const agentLongTask = task({
               trackedProvider.languageModel(fallbackModel).modelId;
             let activeModelName = selectedModel;
 
-            const usageTracker = new UsageTracker();
-            observedUsageTracker = usageTracker;
             let hasRecordedUsage = false;
             let preFallbackCacheRead = 0;
             let preFallbackCacheWrite = 0;
@@ -3476,6 +3601,7 @@ export const agentLongTask = task({
               endpoint,
               userId,
               subscription,
+              selectedModelOverride,
               chatId,
               fileTokens,
               noteInjectionOpts,
@@ -3486,6 +3612,9 @@ export const agentLongTask = task({
               contextUsageOn,
               isReasoningModel: true, // long mode is always agent mode
               platformAuthorized,
+              get auxiliaryVisionEnabled() {
+                return auxiliaryVisionFailover.isEnabled();
+              },
               maxDurationMs: agentLongMaxDurationMs,
               getActiveElapsedTimeMs: runtimeBudget.getElapsedTimeMs,
               writer,
@@ -3555,14 +3684,15 @@ export const agentLongTask = task({
 
             let result;
             try {
-              captureProGrok46ExperimentExposure({
+              captureDeepSeekV4Pro0813ExperimentExposure({
                 posthog,
                 userId,
                 subscription,
                 mode,
+                selectedModelOverride,
                 selectedModel,
                 configuredModel: configuredModelId,
-                assignment: activeProGrok46Experiment,
+                assignment: activeDeepSeekV4Pro0813Experiment,
               });
               result = await createStream(selectedModel);
             } catch (error) {

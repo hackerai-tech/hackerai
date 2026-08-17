@@ -112,11 +112,14 @@ export const createAgentStatusPost =
         return new NextResponse("Forbidden", { status: 403 });
       }
 
-      if (run.status && TERMINAL_RUN_STATUSES.has(run.status)) {
+      const terminal = Boolean(
+        run.status && TERMINAL_RUN_STATUSES.has(run.status),
+      );
+      if (terminal) {
         await clearTerminalAgentRun({ chatId, userId, runId });
       }
 
-      return NextResponse.json({ status: run.status });
+      return NextResponse.json({ status: run.status, terminal });
     } catch (error) {
       if (isMissingTriggerRunError(error)) {
         if (chatId && userId && runId) {

@@ -77,6 +77,7 @@ export const createTools = (
   measureAgentActiveTime?: AgentActiveTimeMeasurer,
   workingDirectory?: string,
   triggerRunId?: string,
+  auxiliaryVision?: ToolContext["auxiliaryVision"],
   runtimePolicy: CreateToolsRuntimePolicy = {},
 ) => {
   let sandbox: AnySandbox | null = null;
@@ -158,6 +159,7 @@ export const createTools = (
     autoReviewEvidenceEnabled,
     measureAgentActiveTime,
     onSandboxResourceMetrics,
+    auxiliaryVision,
   };
 
   const buildTools = (): ToolSet => {

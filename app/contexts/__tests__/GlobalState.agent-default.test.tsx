@@ -670,4 +670,42 @@ describe("GlobalStateProvider agent defaults", () => {
       );
     });
   });
+
+  it("preserves paid state when checkout refresh requires organization selection", async () => {
+    const refreshAuth = jest.fn().mockResolvedValue(undefined);
+    const refreshAccessToken = jest.fn().mockResolvedValue("paid-token");
+
+    mockAuthUser(["pro-plan"], { refreshAuth });
+    jest.mocked(useAccessToken).mockReturnValue({
+      getAccessToken: jest.fn().mockResolvedValue("paid-token"),
+      accessToken: "paid-token",
+      refresh: refreshAccessToken,
+    } as ReturnType<typeof useAccessToken>);
+    window.history.pushState({}, "", "/?refresh=entitlements");
+    global.fetch = jest.fn((input) => {
+      const url = String(input);
+      if (url === "/api/entitlements") {
+        return Promise.resolve({ ok: false, status: 409 });
+      }
+
+      return Promise.resolve({ ok: false, status: 500 });
+    }) as unknown as typeof fetch;
+
+    render(
+      <GlobalStateProvider>
+        <GlobalStateProbe />
+      </GlobalStateProvider>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId("checking-pro-plan")).toHaveTextContent(
+        "false",
+      );
+      expect(window.location.search).toBe("");
+    });
+
+    expect(screen.getByTestId("subscription")).toHaveTextContent("pro");
+    expect(refreshAuth).not.toHaveBeenCalled();
+    expect(refreshAccessToken).not.toHaveBeenCalled();
+  });
 });

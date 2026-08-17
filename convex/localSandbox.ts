@@ -538,6 +538,41 @@ export const refreshCentrifugoTokenDesktop = mutation({
   },
 });
 
+export const heartbeatDesktop = mutation({
+  args: {
+    connectionId: v.string(),
+  },
+  returns: v.object({
+    success: v.boolean(),
+  }),
+  handler: async (ctx, { connectionId }) => {
+    const identity = await ctx.auth.getUserIdentity();
+    if (!identity) {
+      throw new ConvexError({
+        code: "UNAUTHORIZED",
+        message: "Unauthorized: User not authenticated",
+      });
+    }
+
+    const connection = await ctx.db
+      .query("local_sandbox_connections")
+      .withIndex("by_connection_id", (q) => q.eq("connection_id", connectionId))
+      .first();
+
+    if (
+      !connection ||
+      connection.user_id !== identity.subject ||
+      connection.client_version !== "desktop" ||
+      connection.status !== "connected"
+    ) {
+      return { success: false };
+    }
+
+    await ctx.db.patch(connection._id, { last_heartbeat: Date.now() });
+    return { success: true };
+  },
+});
+
 export const disconnectDesktop = mutation({
   args: {
     connectionId: v.string(),

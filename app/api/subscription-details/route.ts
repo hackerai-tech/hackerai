@@ -1,6 +1,6 @@
 import { stripe } from "../stripe";
 import { workos } from "../workos";
-import { getUserID } from "@/lib/auth/get-user-id";
+import { getUserIDAndPro } from "@/lib/auth/get-user-id";
 import { after, NextRequest, NextResponse } from "next/server";
 import { SubscriptionTier } from "@/types/chat";
 import { getSuspensionMessage } from "@/lib/suspensionMessage";
@@ -92,13 +92,22 @@ export const POST = async (req: NextRequest) => {
         ? requestedPlan
         : "pro-monthly-plan";
 
-    const userId = await getUserID(req);
+    const { userId, organizationId } = await getUserIDAndPro(req);
+    if (!organizationId) {
+      return NextResponse.json(
+        { error: "No active organization" },
+        { status: 403 },
+      );
+    }
+
     const user = await workos.userManagement.getUser(userId);
 
-    // Get user's organization
+    // Verify billing permissions in the active organization from the session.
     const existingMemberships =
       await workos.userManagement.listOrganizationMemberships({
         userId,
+        organizationId,
+        statuses: ["active"],
       });
 
     if (!existingMemberships.data || existingMemberships.data.length === 0) {
@@ -116,9 +125,8 @@ export const POST = async (req: NextRequest) => {
       );
     }
 
-    const organization = await workos.organizations.getOrganization(
-      membership.organizationId,
-    );
+    const organization =
+      await workos.organizations.getOrganization(organizationId);
 
     // Find Stripe customer
     const customers = await stripe.customers.list({

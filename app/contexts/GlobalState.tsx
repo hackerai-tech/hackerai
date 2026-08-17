@@ -616,8 +616,13 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
     const now = new Date().toISOString();
     const agentFirstProperties = {
       experiment_key: agentDefaultDecision.experimentKey,
-      first_experience_event_version: 2,
+      first_experience_event_version: 3,
       variant: "agent_first",
+      assignment_type: "deterministic_eligibility",
+      assignment_unit: "authenticated_user",
+      randomized_assignment: false,
+      control_variant_available: false,
+      exposure_trigger: "default_applied",
       subscription: paidAgentSubscription,
       eligible_subscription_tier: agentDefaultDecision.eligibleSubscriptionTier,
       selected_subscription_tier: paidAgentSubscription,
@@ -906,6 +911,11 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
           );
           setEntitlementApiResolvedUserId(user.id);
         } else {
+          // Multiple active memberships without a selected session org are
+          // ambiguous. Keep the last trustworthy tier instead of displaying a
+          // false downgrade while the user selects an organization.
+          if (response.status === 409) return;
+
           if (response.status === 401) {
             if (typeof window !== "undefined") {
               const { clientLogout } = await import("@/lib/utils/logout");

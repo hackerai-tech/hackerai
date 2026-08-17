@@ -67,7 +67,7 @@ describe("SidebarHistory", () => {
     expect(screen.queryByTestId("streaming-idle-chat")).not.toBeInTheDocument();
   });
 
-  it("marks chats with pending agent approval", () => {
+  it("shows pending approval without a streaming indicator", () => {
     render(
       <SidebarHistory
         chats={[
@@ -84,10 +84,12 @@ describe("SidebarHistory", () => {
     expect(
       screen.getByTestId("awaiting-approval-approval-chat"),
     ).toBeInTheDocument();
-    expect(screen.getByTestId("streaming-approval-chat")).toBeInTheDocument();
+    expect(
+      screen.queryByTestId("streaming-approval-chat"),
+    ).not.toBeInTheDocument();
   });
 
-  it("keeps pending approval chats marked as streaming without an active run", () => {
+  it("shows stored pending approval without a streaming indicator", () => {
     render(
       <SidebarHistory
         chats={[
@@ -104,8 +106,8 @@ describe("SidebarHistory", () => {
       screen.getByTestId("awaiting-approval-stored-approval-chat"),
     ).toBeInTheDocument();
     expect(
-      screen.getByTestId("streaming-stored-approval-chat"),
-    ).toBeInTheDocument();
+      screen.queryByTestId("streaming-stored-approval-chat"),
+    ).not.toBeInTheDocument();
   });
 
   it("keeps the pagination sentinel when the loaded page has no unpinned chats", () => {

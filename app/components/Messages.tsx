@@ -13,6 +13,7 @@ import {
 } from "react";
 import dynamic from "next/dynamic";
 import { LegendList, type LegendListRef } from "@legendapp/list/react";
+import { BrainIcon } from "lucide-react";
 import { MessageItem } from "./MessageItem";
 import { AgentActivityRow } from "./AgentActivityRow";
 import { AgentToolGroupRow } from "./AgentToolGroupRow";
@@ -77,6 +78,20 @@ type StickyElementRef =
     });
 
 const getTimelineRowKey = (row: ChatTimelineRow) => row.id;
+
+const PendingAgentReasoning = () => (
+  <div
+    aria-label="Thinking"
+    className="flex w-full max-w-full items-center gap-2 text-muted-foreground text-sm"
+    data-testid="pending-agent-reasoning"
+    role="status"
+  >
+    <BrainIcon className="size-4 shrink-0" />
+    <Shimmer as="span" className="min-w-0 truncate text-left text-sm leading-5">
+      Thinking...
+    </Shimmer>
+  </div>
+);
 
 type ToolGroupMountSnapshot = {
   awaitingRestoredAgentMessage: boolean;
@@ -722,6 +737,8 @@ export const Messages = ({
     summarizationStatus?.status === "started" ||
     uploadStatus?.isUploading ||
     shouldShowLoadingDots;
+  const showPendingAgentReasoning =
+    shouldShowLoadingDots && mode === "agent" && !isAutoResuming;
   const timelineExtraData = useMemo(
     () => ({ editingMessageId, status }),
     [editingMessageId, status],
@@ -919,11 +936,15 @@ export const Messages = ({
         {uploadStatus?.isUploading && (
           <Shimmer className="text-sm">{`${uploadStatus.message}...`}</Shimmer>
         )}
-        {shouldShowLoadingDots && (
-          <div className="inline-flex items-center rounded-lg bg-muted px-3 py-2 text-muted-foreground">
-            <DotsSpinner size="sm" variant="primary" />
-          </div>
-        )}
+        {shouldShowLoadingDots ? (
+          showPendingAgentReasoning ? (
+            <PendingAgentReasoning />
+          ) : (
+            <div className="inline-flex items-center rounded-lg bg-muted px-3 py-2 text-muted-foreground">
+              <DotsSpinner size="sm" variant="primary" />
+            </div>
+          )
+        ) : null}
         {error && finishReason !== "timeout" && (
           <MessageErrorState
             error={error}

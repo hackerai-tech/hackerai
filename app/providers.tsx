@@ -19,10 +19,20 @@ import {
   createPostHogIdentitySignature,
   POSTHOG_IDENTITY_SIGNATURE_STORAGE_KEY,
 } from "@/lib/analytics/identity";
+import {
+  firstTouchPersonProperties,
+  type FirstTouchAttribution,
+} from "@/lib/analytics/acquisition";
 
 let lastIdentifiedSignature: string | null = null;
 
-export function PostHogProvider({ children }: { children: React.ReactNode }) {
+export function PostHogProvider({
+  children,
+  firstTouchAttribution = null,
+}: {
+  children: React.ReactNode;
+  firstTouchAttribution?: FirstTouchAttribution | null;
+}) {
   const { subscription } = useGlobalState();
   const { user } = useAuth();
   const userId = user?.id;
@@ -101,6 +111,7 @@ export function PostHogProvider({ children }: { children: React.ReactNode }) {
           email: userEmail,
           name,
           subscription,
+          firstTouchAttribution,
         });
         if (lastIdentifiedSignature !== identitySignature) {
           let persistedIdentitySignature: string | null = null;
@@ -114,16 +125,22 @@ export function PostHogProvider({ children }: { children: React.ReactNode }) {
 
           const shouldUpdatePersonProperties =
             persistedIdentitySignature !== identitySignature;
-          posthog.identify(
-            userId!,
-            shouldUpdatePersonProperties
-              ? {
-                  email: userEmail,
-                  name,
-                  subscription,
-                }
-              : undefined,
-          );
+          const personProperties = shouldUpdatePersonProperties
+            ? {
+                email: userEmail,
+                name,
+                subscription,
+              }
+            : undefined;
+          if (shouldUpdatePersonProperties && firstTouchAttribution) {
+            posthog.identify(
+              userId!,
+              personProperties,
+              firstTouchPersonProperties(firstTouchAttribution),
+            );
+          } else {
+            posthog.identify(userId!, personProperties);
+          }
           lastIdentifiedSignature = identitySignature;
 
           if (shouldUpdatePersonProperties) {
@@ -154,7 +171,14 @@ export function PostHogProvider({ children }: { children: React.ReactNode }) {
     return () => {
       cancelled = true;
     };
-  }, [subscription, userEmail, userFirstName, userId, userLastName]);
+  }, [
+    firstTouchAttribution,
+    subscription,
+    userEmail,
+    userFirstName,
+    userId,
+    userLastName,
+  ]);
 
   return children;
 }

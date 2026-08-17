@@ -1228,7 +1228,14 @@ describe("CentrifugoSandbox", () => {
       });
 
       try {
-        const sandbox = createSandbox();
+        const sandbox = createSandbox({
+          osInfo: {
+            platform: "linux",
+            arch: "x86_64",
+            release: "6.1",
+            hostname: "linux-dev",
+          },
+        });
         await sandbox.files.write("/tmp/hackerai/test.txt", "hello world");
 
         // files.write runs mkdir -p then cat > ... heredoc.
@@ -1310,6 +1317,78 @@ describe("CentrifugoSandbox", () => {
       });
       return { sandbox, runs };
     }
+
+    it("probes legacy connections without OS info before building file commands", async () => {
+      const sandbox = createSandbox();
+      (sandbox as any).httpClient = "curl";
+      (sandbox as any).curlCaps = {
+        retryAllErrors: true,
+        retryConnrefused: true,
+        sslNoRevoke: true,
+      };
+      const runs: string[] = [];
+      (sandbox as any).commands.run = jest.fn(async (cmd: string) => {
+        runs.push(cmd);
+        if (cmd === "echo $BASH_VERSION") {
+          return {
+            stdout: "$BASH_VERSION\r\n",
+            stderr: "",
+            exitCode: 0,
+          };
+        }
+        return { stdout: "", stderr: "", exitCode: 0 };
+      });
+
+      await sandbox.files.downloadFromUrl(
+        "https://example.com/image.png?X-Amz-Algorithm=test&X-Amz-Credential=opaque&X-Amz-Signature=opaque",
+        "/tmp/hackerai-upload/image.png",
+      );
+
+      expect(runs[0]).toBe("echo $BASH_VERSION");
+      expect(runs[1]).toContain(
+        'if not exist "C:\\temp\\hackerai-upload" mkdir "C:\\temp\\hackerai-upload"',
+      );
+      expect(runs[1]).toContain(
+        '"https://example.com/image.png?X-Amz-Algorithm=test&X-Amz-Credential=opaque&X-Amz-Signature=opaque"',
+      );
+      expect(runs[1]).not.toContain("mkdir -p");
+      expect(sandbox.isWindows()).toBe(true);
+    });
+
+    it("keeps Bash semantics for legacy connections without OS info", async () => {
+      const sandbox = createSandbox();
+      (sandbox as any).httpClient = "curl";
+      (sandbox as any).curlCaps = {
+        retryAllErrors: true,
+        retryConnrefused: true,
+        sslNoRevoke: false,
+      };
+      const runs: string[] = [];
+      (sandbox as any).commands.run = jest.fn(async (cmd: string) => {
+        runs.push(cmd);
+        if (cmd === "echo $BASH_VERSION") {
+          return {
+            stdout: "5.2.37(1)-release\n",
+            stderr: "",
+            exitCode: 0,
+          };
+        }
+        return { stdout: "", stderr: "", exitCode: 0 };
+      });
+
+      await sandbox.files.downloadFromUrl(
+        "https://example.com/image.png?X-Amz-Algorithm=test&X-Amz-Signature=opaque",
+        "/tmp/hackerai-upload/image.png",
+      );
+
+      expect(runs[0]).toBe("echo $BASH_VERSION");
+      expect(runs[1]).toContain("mkdir -p '/tmp/hackerai-upload'");
+      expect(runs[1]).toContain(
+        "'https://example.com/image.png?X-Amz-Algorithm=test&X-Amz-Signature=opaque'",
+      );
+      expect(runs[1]).not.toContain("if not exist");
+      expect(sandbox.isWindows()).toBe(false);
+    });
 
     it("downloadFromUrl emits POSIX mkdir + curl with MSYS paths", async () => {
       const { sandbox, runs, runOptions } = createWindowsBashSandbox();

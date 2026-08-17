@@ -1,5 +1,5 @@
 diff --git a/dist/esm/actions.js b/dist/esm/actions.js
-index 48babd8e1868c58577252b8a27660fcb73e7ef98..bb6fefe1447ffed2e06833f3882ab6471aec4a05 100644
+index 48babd8e1868c58577252b8a27660fcb73e7ef98..508678797dee7f5f2c505465e8a652f1fa911dfb 100644
 --- a/dist/esm/actions.js
 +++ b/dist/esm/actions.js
 @@ -13,6 +13,56 @@ function sanitize(value) {
@@ -77,8 +77,13 @@ index 48babd8e1868c58577252b8a27660fcb73e7ef98..bb6fefe1447ffed2e06833f3882ab647
      const sanitized = sanitize(auth);
      if (options?.ensureSignedIn && !auth.user) {
          const signInUrl = await getSignInUrl();
-@@ -54,7 +104,7 @@ export const getAuthAction = async (options) => {
- export const refreshAuthAction = async ({ ensureSignedIn, organizationId, }) => {
+@@ -51,10 +101,11 @@ export const getAuthAction = async (options) => {
+     }
+     return sanitized;
+ };
+-export const refreshAuthAction = async ({ ensureSignedIn, organizationId, }) => {
++export const refreshAuthAction = async (options) => {
++    const { ensureSignedIn, organizationId } = options ?? {};
      // Never pass ensureSignedIn to refreshSession from a server action for the
      // same CORS reason as getAuthAction above.
 -    const auth = await refreshSession({ organizationId });
@@ -86,7 +91,7 @@ index 48babd8e1868c58577252b8a27660fcb73e7ef98..bb6fefe1447ffed2e06833f3882ab647
      const sanitized = sanitize(auth);
      if (ensureSignedIn && !auth.user) {
          const signInUrl = await getSignInUrl();
-@@ -63,14 +113,14 @@ export const refreshAuthAction = async ({ ensureSignedIn, organizationId, }) =>
+@@ -63,14 +114,14 @@ export const refreshAuthAction = async ({ ensureSignedIn, organizationId, }) =>
      return sanitized;
  };
  export const switchToOrganizationAction = async (organizationId, options) => {
@@ -103,7 +108,7 @@ index 48babd8e1868c58577252b8a27660fcb73e7ef98..bb6fefe1447ffed2e06833f3882ab647
      return auth.accessToken;
  }
  /**
-@@ -86,6 +136,9 @@ export async function refreshAccessTokenAction() {
+@@ -86,6 +137,9 @@ export async function refreshAccessTokenAction() {
          return { accessToken: auth.accessToken };
      }
      catch (error) {
@@ -113,8 +118,41 @@ index 48babd8e1868c58577252b8a27660fcb73e7ef98..bb6fefe1447ffed2e06833f3882ab647
          console.warn('Failed to refresh access token:', error instanceof Error ? error.message : String(error));
          return {
              accessToken: undefined,
+diff --git a/dist/esm/types/actions.d.ts b/dist/esm/types/actions.d.ts
+index 631a2e457db56b87b4c295da3fabc2844aba02ae..d5da9b46aa2dcc5f660814fe8437b795222736b0 100644
+--- a/dist/esm/types/actions.d.ts
++++ b/dist/esm/types/actions.d.ts
+@@ -30,10 +30,10 @@ export declare const getAuthAction: (options?: {
+     featureFlags?: string[] | undefined;
+     impersonator?: import("./interfaces.js").Impersonator | undefined;
+ }>;
+-export declare const refreshAuthAction: ({ ensureSignedIn, organizationId, }: {
++export declare const refreshAuthAction: (options?: {
+     ensureSignedIn?: boolean;
+     organizationId?: string;
+-}) => Promise<Omit<UserInfo | NoUserInfo, "accessToken"> | {
++} | null) => Promise<Omit<UserInfo | NoUserInfo, "accessToken"> | {
+     signInUrl: string;
+     organizationId?: string | undefined;
+     role?: string | undefined;
+diff --git a/src/actions.spec.ts b/src/actions.spec.ts
+index ff854d7d749c51a2c07f2b3ee3ef6f88f5aa8a99..619eacf8391e0048fbd5f0c3940d4b664cc97b71 100644
+--- a/src/actions.spec.ts
++++ b/src/actions.spec.ts
+@@ -154,4 +154,11 @@ describe('actions', () => {
+   describe('refreshAuthAction', () => {
++    it.each([undefined, null])('treats a %s options payload as default refresh options', async (options) => {
++      const result = await refreshAuthAction(options);
++
++      expect(refreshSession).toHaveBeenCalledWith({ organizationId: undefined });
++      expect(result).toEqual({ user: 'testUser', sessionId: 'session_123' });
++    });
++
+     it('should refresh session', async () => {
+       const params = { ensureSignedIn: false, organizationId: 'org_123' };
+       const result = await refreshAuthAction(params);
 diff --git a/src/actions.ts b/src/actions.ts
-index dbc84f49ce8960ac2c88d31e6f98d60af4deab90..f1d7a65274daffcfa5716f253460e4b9affc0e1c 100644
+index dbc84f49ce8960ac2c88d31e6f98d60af4deab90..7cf8af95ddd8fa3d65db17cae3505bd1624a4f70 100644
 --- a/src/actions.ts
 +++ b/src/actions.ts
 @@ -22,6 +22,64 @@ function sanitize<T extends UserInfo | NoUserInfo>(value: T) {
@@ -203,8 +241,19 @@ index dbc84f49ce8960ac2c88d31e6f98d60af4deab90..f1d7a65274daffcfa5716f253460e4b9
    const sanitized = sanitize(auth);
  
    if (options?.ensureSignedIn && !auth.user) {
-@@ -76,7 +137,10 @@ export const refreshAuthAction = async ({
- }) => {
+@@ -70,13 +131,16 @@ export const getAuthAction = async (options?: { ensureSignedIn?: boolean }) => {
+-export const refreshAuthAction = async ({
+-  ensureSignedIn,
+-  organizationId,
+-}: {
++type RefreshAuthActionOptions = {
+   ensureSignedIn?: boolean;
+   organizationId?: string;
+-}) => {
++};
++
++export const refreshAuthAction = async (options?: RefreshAuthActionOptions | null) => {
++  const { ensureSignedIn, organizationId } = options ?? {};
    // Never pass ensureSignedIn to refreshSession from a server action for the
    // same CORS reason as getAuthAction above.
 -  const auth = await refreshSession({ organizationId });

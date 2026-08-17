@@ -49,7 +49,10 @@ import {
   stripAnsi,
   peekExited,
 } from "./utils/pty-wait-utils";
-import { captureAgentBrowserUsage } from "./utils/agent-browser-usage";
+import {
+  captureAgentBrowserUsage,
+  getAgentBrowserRuntimeEnv,
+} from "./utils/agent-browser-usage";
 import {
   RUN_TERMINAL_DEFAULT_STREAM_TIMEOUT_SECONDS,
   RUN_TERMINAL_MAX_TIMEOUT_SECONDS,
@@ -189,6 +192,7 @@ export const createRunTerminalCmd = (context: ToolContext) => {
   };
   const runTerminalCmdTool = createRunTerminalCmdToolSchema({
     approvalGated: !!context.requestToolApproval,
+    modelName: context.getCurrentModelName?.() ?? context.modelName,
     // The conditional schema adds approval-only fields, but both branches
     // normalize to the same execution input handled below.
   }) as unknown as Tool<RunTerminalCmdInput, unknown>;
@@ -393,6 +397,9 @@ export const createRunTerminalCmd = (context: ToolContext) => {
             interactive: true,
             isBackground: false,
           });
+          const agentBrowserEnv = isE2B
+            ? getAgentBrowserRuntimeEnv(command)
+            : undefined;
 
           // Factory is invoked BY `ptySessionManager.create` — this ensures
           // that if the concurrency cap is hit, the factory is never called
@@ -421,6 +428,7 @@ export const createRunTerminalCmd = (context: ToolContext) => {
               return createE2BPtyHandle(sandbox, {
                 cols,
                 rows,
+                envs: agentBrowserEnv,
               });
             },
           });
@@ -1042,6 +1050,9 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                     onStderr: forwardCommandOutput,
                   },
             );
+            const agentBrowserEnv = isE2BSandbox(sandboxInstance)
+              ? getAgentBrowserRuntimeEnv(command)
+              : undefined;
             const runOptions = isCentrifugoSandbox(sandboxInstance)
               ? {
                   ...commonOptions,
@@ -1053,7 +1064,11 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                   },
                 }
               : isE2BSandbox(sandboxInstance)
-                ? { ...commonOptions, signal: abortSignal }
+                ? {
+                    ...commonOptions,
+                    ...(agentBrowserEnv && { envs: agentBrowserEnv }),
+                    signal: abortSignal,
+                  }
                 : commonOptions;
 
             // Determine if an error is a permanent command failure (don't retry)

@@ -34,7 +34,7 @@ const RASTER_IMAGE_EXTENSIONS = new Set([
   "webp",
 ]);
 const RASTER_READ_REDIRECT_MESSAGE =
-  "Raster image files cannot be read as text. Use the view action instead; Agent will automatically route image inspection to a vision-capable model when necessary.";
+  "Raster image files cannot be read as text. Use the view action instead; Agent will inspect the image with its configured vision path.";
 const MULTIMODAL_UPGRADE_MESSAGE =
   "The current model does not support multimodal tool results for sandbox images. Please select a model with image viewing support and retry the view action.";
 
@@ -58,6 +58,8 @@ type ViewMetadata = {
   previewUploadSucceeded?: boolean;
   previewFiles?: ViewPreviewFile[];
   previewError?: string;
+  visionDescription?: string;
+  visionDescriptionError?: string;
 };
 
 type SandboxViewPayload = {
@@ -90,6 +92,22 @@ type FileViewFailureCategory =
   | "sandbox_lifecycle"
   | "unsupported_capability"
   | "unsupported_input";
+
+const escapeImageDescriptionText = (value: string): string =>
+  value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;");
+
+const escapeImageDescriptionAttribute = (value: string): string =>
+  escapeImageDescriptionText(value).replaceAll('"', "&quot;");
+
+const formatImageDescriptionForModel = (
+  content: string,
+  filename: string,
+  description: string,
+): string =>
+  `${content}\n<image_description filename="${escapeImageDescriptionAttribute(filename)}" trust="untrusted">\n${escapeImageDescriptionText(description)}\n</image_description>`;
 
 const VIEW_FILE_SCRIPT = String.raw`
 import base64
@@ -1257,6 +1275,10 @@ async function uploadViewPreviewFiles(args: {
 
 export const createFile = (context: ToolContext) => {
   const { sandboxManager, modelName, getCurrentModelName } = context;
+  const getAuxiliaryVision = () =>
+    context.auxiliaryVision?.isEnabled?.() === false
+      ? undefined
+      : context.auxiliaryVision;
   const getSandboxForFileTool = (
     expectedSandboxIdentity?: AgentApprovalSandboxIdentity,
   ) =>
@@ -1266,13 +1288,37 @@ export const createFile = (context: ToolContext) => {
     });
   const canViewMultimodalFiles = () =>
     supportsMultimodalToolResults(getCurrentModelName?.() ?? modelName);
+  // Agent streams consume image-data as a handoff boundary: prepareStep
+  // promotes the active text model before the provider sees the tool result.
   const canHandoffMultimodalFiles = context.mode === "agent";
   const canReturnMultimodalFiles = () =>
-    canHandoffMultimodalFiles || canViewMultimodalFiles();
+    !!getAuxiliaryVision() ||
+    canHandoffMultimodalFiles ||
+    canViewMultimodalFiles();
+  const auxiliaryDescriptionCache = new Map<string, Promise<string>>();
+  const describeViewPayload = (
+    viewPayload: SandboxViewPayload,
+    filename: string,
+    auxiliaryVision: NonNullable<ToolContext["auxiliaryVision"]>,
+  ): Promise<string> => {
+    const existing = auxiliaryDescriptionCache.get(viewPayload.path);
+    if (existing) return existing;
+    const description = auxiliaryVision
+      .describeImage({
+        image: viewPayload.data!,
+        mediaType: viewPayload.mediaType,
+        filename,
+        source: "file_view",
+      })
+      .then((result) => result.description);
+    auxiliaryDescriptionCache.set(viewPayload.path, description);
+    return description;
+  };
   const supportsViewInSchema = canReturnMultimodalFiles();
   const fileToolSchema = createFileToolSchema({
     supportsView: supportsViewInSchema,
     approvalGated: !!context.requestToolApproval,
+    modelName: context.getCurrentModelName?.() ?? context.modelName,
   });
 
   return tool({
@@ -1355,7 +1401,11 @@ export const createFile = (context: ToolContext) => {
 
             let viewPayload: SandboxViewPayload;
             try {
-              viewPayload = await readSandboxFileForView(sandbox, path, false);
+              viewPayload = await readSandboxFileForView(
+                sandbox,
+                path,
+                !!getAuxiliaryVision(),
+              );
             } catch (error) {
               const classification = classifyFileViewError(error);
               captureFileViewImageUsage({
@@ -1407,6 +1457,26 @@ export const createFile = (context: ToolContext) => {
               );
             }
 
+            let visionDescription: string | undefined;
+            let visionDescriptionError: string | undefined;
+            const auxiliaryVision = getAuxiliaryVision();
+            if (auxiliaryVision) {
+              try {
+                // A new explicit view may observe changed file contents and is
+                // also the retry boundary after a prior descriptor failure.
+                auxiliaryDescriptionCache.delete(viewPayload.path);
+                visionDescription = await describeViewPayload(
+                  viewPayload,
+                  filename,
+                  auxiliaryVision,
+                );
+              } catch (error) {
+                if (auxiliaryVision.isAborted?.()) throw error;
+                visionDescriptionError =
+                  "The auxiliary vision model could not inspect this image. Retry the view action.";
+              }
+            }
+
             return {
               action: "view",
               content: `Viewing image file: ${filename} (${viewPayload.mediaType}, ${viewPayload.sizeBytes} bytes).`,
@@ -1417,6 +1487,8 @@ export const createFile = (context: ToolContext) => {
               kind: viewPayload.kind,
               previewUploadSucceeded: !previewUploadError,
               previewFiles,
+              ...(visionDescription ? { visionDescription } : {}),
+              ...(visionDescriptionError ? { visionDescriptionError } : {}),
               ...(previewUploadError
                 ? { previewError: previewUploadError }
                 : {}),
@@ -1651,6 +1723,7 @@ export const createFile = (context: ToolContext) => {
             return { error: `Unknown action ${action}` };
         }
       } catch (error) {
+        if (context.auxiliaryVision?.isAborted?.()) throw error;
         return {
           error: resolveToolErrorMessage(error),
         };
@@ -1683,6 +1756,58 @@ export const createFile = (context: ToolContext) => {
               type: "text" as const,
               value: `Error: ${MULTIMODAL_UPGRADE_MESSAGE}`,
             };
+          }
+
+          const auxiliaryVision = getAuxiliaryVision();
+          if (auxiliaryVision) {
+            if (viewOutput.visionDescription) {
+              return {
+                type: "text" as const,
+                value: formatImageDescriptionForModel(
+                  viewOutput.content,
+                  viewOutput.filename,
+                  viewOutput.visionDescription,
+                ),
+              };
+            }
+            if (viewOutput.visionDescriptionError) {
+              return {
+                type: "text" as const,
+                value: `Error: ${viewOutput.visionDescriptionError}`,
+              };
+            }
+
+            // Older persisted view results predate auxiliary descriptions.
+            // Resolve them once per request and keep the result in the tool
+            // closure so repeated prepareStep conversions do not rebill it.
+            try {
+              const { sandbox } = await getSandboxForFileTool();
+              const viewPayload = await readSandboxFileForView(
+                sandbox,
+                viewOutput.path,
+                true,
+              );
+              const description = await describeViewPayload(
+                viewPayload,
+                viewOutput.filename,
+                auxiliaryVision,
+              );
+              return {
+                type: "text" as const,
+                value: formatImageDescriptionForModel(
+                  viewOutput.content,
+                  viewOutput.filename,
+                  description,
+                ),
+              };
+            } catch (error) {
+              if (auxiliaryVision.isAborted?.()) throw error;
+              return {
+                type: "text" as const,
+                value:
+                  "Error: The auxiliary vision model could not inspect this historical image. Retry the view action.",
+              };
+            }
           }
 
           const viewStartedAt = Date.now();

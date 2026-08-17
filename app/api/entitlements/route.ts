@@ -28,44 +28,37 @@ export async function GET(req: NextRequest) {
     // First authenticate to get user and organization info
     const authResult = await session.authenticate();
 
-    let organizationId: string | undefined;
-    if (authResult.authenticated) {
-      // Check if organizationId is already available in the session
-      organizationId = (authResult as any).organizationId;
+    let organizationId = authResult.authenticated
+      ? authResult.organizationId
+      : undefined;
 
-      // If organizationId is not in session, fetch it using userId
-      if (!organizationId) {
-        const userId = (authResult as any).user?.id;
+    if (authResult.authenticated && !organizationId) {
+      const memberships =
+        await workos.userManagement.listOrganizationMemberships({
+          userId: authResult.user.id,
+          statuses: ["active"],
+        });
+      const activeMemberships = await memberships.autoPagination();
 
-        if (userId) {
-          // Get organization membership for this user
-          try {
-            const memberships =
-              await workos.userManagement.listOrganizationMemberships({
-                userId: userId,
-                statuses: ["active"],
-              });
-
-            // Use the first active membership's organization ID
-            if (memberships.data && memberships.data.length > 0) {
-              organizationId = memberships.data[0].organizationId;
-            }
-          } catch (membershipError) {
-            // Rethrow rate-limit errors so the outer catch returns 429
-            // instead of silently falling through to an unscoped refresh
-            if (isRateLimitError(membershipError)) {
-              throw membershipError;
-            }
-            console.error(
-              "Failed to fetch organization memberships:",
-              membershipError,
-            );
-          }
-        }
+      if (activeMemberships.length === 1) {
+        organizationId = activeMemberships[0].organizationId;
+      } else if (activeMemberships.length > 1) {
+        // There is no trustworthy active organization in the session. Refuse
+        // to pick an arbitrarily ordered membership and let the client retain
+        // its current entitlement state until the user selects an organization.
+        return json(
+          {
+            error: "Organization selection required",
+            code: "organization_selection_required",
+          },
+          { status: 409 },
+        );
       }
     }
 
-    // Refresh with organization ID to ensure we get entitlements for the correct org
+    // A session-selected organization is authoritative. The single-membership
+    // fallback preserves paid access for legacy unscoped sessions without
+    // silently switching users who belong to multiple organizations.
     const refreshResult = organizationId
       ? await session.refresh({ organizationId })
       : await session.refresh();

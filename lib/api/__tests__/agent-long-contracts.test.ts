@@ -206,6 +206,28 @@ const toolExecutionSources = [
   },
 ];
 
+describe("auxiliary vision failover contracts", () => {
+  test.each([
+    ["agent-long", taskSrc],
+    ["chat handler", chatHandlerSrc],
+  ])("%s switches attachment failures to direct vision", (_name, source) => {
+    expect(source).toContain("createAuxiliaryVisionFailoverController");
+    expect(source).toMatch(
+      /auxiliaryVisionFailover\.activate\(\{\s*error,\s*source: "attachment",\s*\}\);/,
+    );
+    expect(source).toMatch(
+      /selectedModel = [\s\S]*?resolveAgentModelForImageToolResults\([\s\S]*?selectedModel[\s\S]*?true[\s\S]*?false[\s\S]*?\);/,
+    );
+    expect(source).toMatch(
+      /activeDeepSeekV4Pro0813Experiment =\s*getActiveDeepSeekV4Pro0813ExperimentAssignment\([\s\S]*?selectedModel[\s\S]*?\);/,
+    );
+    expect(source).toMatch(
+      /get auxiliaryVisionEnabled\(\) \{\s*return auxiliaryVisionFailover\.isEnabled\(\);\s*\}/,
+    );
+    expect(source).not.toContain("AUXILIARY_VISION_UNAVAILABLE_MESSAGE");
+  });
+});
+
 describe("agent tool schemas — Head Start bundle boundary", () => {
   test("schema-only tool catalog imports only ai and zod", () => {
     const importSources = Array.from(
@@ -419,14 +441,33 @@ describe("agent stream runner — empty tool-input recovery", () => {
 });
 
 describe("agent-long chat UI — completion reconciliation", () => {
-  test("polls the resume endpoint and clears useChat state after backend completion", () => {
-    expect(chatComponentSrc).toMatch(/AGENT_LONG_COMPLETION_POLL_DELAY_MS/);
-    expect(chatComponentSrc).toMatch(/AGENT_LONG_COMPLETION_QUIET_MS/);
+  test("polls status without minting tokens and clears useChat state after backend completion", () => {
+    const reconciliationStart = chatComponentSrc.indexOf(
+      "// Trigger.dev can finish and persist an Agent answer",
+    );
+    const reconciliationEnd = chatComponentSrc.indexOf(
+      "// Ref bridge: StreamEffects exposes resetAutoContinueCount here",
+      reconciliationStart,
+    );
+    const reconciliationSrc = chatComponentSrc.slice(
+      reconciliationStart,
+      reconciliationEnd,
+    );
+
+    expect(reconciliationSrc).toMatch(/AGENT_LONG_COMPLETION_POLL_DELAY_MS/);
+    expect(reconciliationSrc).toMatch(/AGENT_LONG_COMPLETION_QUIET_MS/);
     expect(chatComponentSrc).toMatch(/AGENT_LONG_COMPLETION_STOP_GRACE_MS/);
-    expect(chatComponentSrc).toMatch(/AGENT_RESUME_ENDPOINT/);
-    expect(chatComponentSrc).toMatch(/response\.status\s*===\s*204/);
-    expect(chatComponentSrc).toMatch(/scheduleFinishLocally\(\)/);
-    expect(chatComponentSrc).toMatch(/finishLocally\(\)/);
+    expect(chatComponentSrc).toMatch(
+      /AGENT_LONG_COMPLETION_POLL_INTERVAL_MS\s*=\s*15_000/,
+    );
+    expect(reconciliationSrc).toMatch(/AGENT_STATUS_ENDPOINT/);
+    expect(reconciliationSrc).toMatch(/method:\s*"POST"/);
+    expect(reconciliationSrc).toMatch(/isCompletionCheckInFlight/);
+    expect(reconciliationSrc).toMatch(/response\.status\s*===\s*404/);
+    expect(reconciliationSrc).toMatch(/payload\.terminal\s*===\s*true/);
+    expect(reconciliationSrc).not.toMatch(/AGENT_RESUME_ENDPOINT/);
+    expect(reconciliationSrc).toMatch(/scheduleFinishLocally\(\)/);
+    expect(reconciliationSrc).toMatch(/finishLocally\(\)/);
     expect(chatComponentSrc).toMatch(/AGENT_PARTIAL_SAVE_ENDPOINT/);
     expect(chatComponentSrc).toMatch(/saveAgentLongPartialSnapshot/);
     expect(chatComponentSrc).toMatch(
@@ -440,6 +481,9 @@ describe("agent-long chat UI — completion reconciliation", () => {
       /const finishLocally = \(\) => \{[\s\S]*finalizeNewChatRoute/,
     );
     expect(chatComponentSrc).toMatch(/setIsExistingChat\(true\)/);
+    expect(statusSrc).toMatch(
+      /NextResponse\.json\(\{ status: run\.status, terminal \}\)/,
+    );
   });
 
   test("client partial-save endpoint is authenticated and assistant-only", () => {
@@ -1061,7 +1105,7 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     );
     expect(taskSrc).toMatch(/handled tool failure dashboard update failed/);
     expect(taskSrc).toMatch(
-      /onToolFailure,\s*requestToolApproval,\s*agentPermissionMode === "auto_review" &&\s*autoReviewAssignment\?\.phase !== undefined,\s*runTimingTracker\.measureActiveTime,\s*projectContext\.workingDirectory,\s*ctx\.run\.id,\s*securityValidationSubagentsEnabled/,
+      /onToolFailure,\s*requestToolApproval,\s*agentPermissionMode === "auto_review" &&\s*autoReviewAssignment\?\.phase !== undefined,\s*runTimingTracker\.measureActiveTime,\s*projectContext\.workingDirectory,\s*ctx\.run\.id,\s*auxiliaryVision,\s*securityValidationSubagentsEnabled/,
     );
     expect(taskSrc).toMatch(
       /additionalTools:[\s\S]*create_agent:[\s\S]*send_message_to_agent:[\s\S]*wait_for_agents:/,
@@ -1693,10 +1737,10 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(dbActionsSrc).toMatch(/export async function updateChatTitle/);
     expect(dbActionsSrc).toMatch(/api\.chats\.updateChatTitle/);
     expect(chatHandlerSrc).toMatch(
-      /generateTitleFromUserMessageWithWriter\([\s\S]*?\(title\) => updateChatTitle\(\{ chatId, title \}\)/,
+      /generateTitleFromUserMessageWithWriter\(\s*fetched\.truncatedMessages,[\s\S]*?\(title\) => updateChatTitle\(\{ chatId, title \}\)/,
     );
     expect(taskSrc).toMatch(
-      /generateTitleFromUserMessageWithWriter\([\s\S]*?\(title\) => updateChatTitle\(\{ chatId, title \}\)/,
+      /generateTitleFromUserMessageWithWriter\(\s*messagesForProcessing,[\s\S]*?\(title\) => updateChatTitle\(\{ chatId, title \}\)/,
     );
   });
 

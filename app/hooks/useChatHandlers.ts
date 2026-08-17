@@ -40,6 +40,7 @@ import { isPastedTextAttachmentAvailableInMode } from "@/lib/utils/pasted-text-a
 import { sanitizeForConvexValue } from "@/lib/db/convex-value-sanitizer";
 import { reconcileSidebarContentAfterRegeneration } from "@/lib/utils/sidebar-utils";
 import { v4 as uuidv4 } from "uuid";
+import { captureAuthenticatedEvent } from "@/lib/analytics/client";
 
 interface UseChatHandlersProps {
   chatId: string;
@@ -58,6 +59,7 @@ interface UseChatHandlersProps {
   isSendingNowRef: RefObject<boolean>;
   hasManuallyStoppedRef: RefObject<boolean>;
   activeTriggerRunRef?: RefObject<string | undefined>;
+  resumeActiveRun?: () => void | Promise<void>;
   onStopCallback?: () => void;
   resetAutoContinueCount?: () => void;
 }
@@ -92,6 +94,7 @@ export const useChatHandlers = ({
   isSendingNowRef,
   hasManuallyStoppedRef,
   activeTriggerRunRef,
+  resumeActiveRun,
   onStopCallback,
   resetAutoContinueCount,
 }: UseChatHandlersProps) => {
@@ -181,8 +184,16 @@ export const useChatHandlers = ({
       isTauri: isTauriEnvironment(),
     });
 
-  const cancelTriggerRun = async (): Promise<void> => {
-    if (!shouldCancelTriggerRun()) return;
+  type AgentCancellationResult =
+    | { outcome: "not_applicable" | "canceled" }
+    | {
+        outcome: "stale_run";
+        expectedTriggerRunId?: string;
+        activeTriggerRunId?: string | null;
+      };
+
+  const cancelTriggerRun = async (): Promise<AgentCancellationResult> => {
+    if (!shouldCancelTriggerRun()) return { outcome: "not_applicable" };
     const expectedTriggerRunId = activeTriggerRunRef?.current;
     const response = await fetch(AGENT_CANCEL_ENDPOINT, {
       method: "POST",
@@ -192,10 +203,84 @@ export const useChatHandlers = ({
         ...(expectedTriggerRunId ? { expectedTriggerRunId } : {}),
       }),
     });
+    if (response.status === 409) {
+      const payload = (await response.json().catch(() => null)) as {
+        reason?: unknown;
+        activeTriggerRunId?: unknown;
+      } | null;
+      if (payload?.reason === "stale_run") {
+        const hasActiveTriggerRunId = Object.prototype.hasOwnProperty.call(
+          payload,
+          "activeTriggerRunId",
+        );
+        return {
+          outcome: "stale_run",
+          expectedTriggerRunId,
+          ...(hasActiveTriggerRunId
+            ? {
+                activeTriggerRunId:
+                  typeof payload.activeTriggerRunId === "string"
+                    ? payload.activeTriggerRunId
+                    : null,
+              }
+            : {}),
+        };
+      }
+    }
     if (!response.ok) {
       throw new Error(
         `Agent cancellation failed with status ${response.status}`,
       );
+    }
+    return { outcome: "canceled" };
+  };
+
+  const recoverStaleAgentRun = async (
+    result: Extract<AgentCancellationResult, { outcome: "stale_run" }>,
+  ): Promise<void> => {
+    hasManuallyStoppedRef.current = false;
+    if (activeTriggerRunRef && result.activeTriggerRunId !== undefined) {
+      activeTriggerRunRef.current = result.activeTriggerRunId ?? undefined;
+    }
+
+    const hasNoActiveRun = result.activeTriggerRunId === null;
+
+    captureAuthenticatedEvent("agent_cancel_stale_recovery_started", {
+      chat_id: chatId,
+      expected_trigger_run_id: result.expectedTriggerRunId,
+      active_trigger_run_id: result.activeTriggerRunId,
+      recovery_action: hasNoActiveRun
+        ? "no_active_run"
+        : resumeActiveRun
+          ? "resume_stream"
+          : "persisted_state",
+      cancellation_applied: false,
+    });
+
+    if (hasNoActiveRun) {
+      setIsAutoResuming(false);
+      toast.info("Agent run already finished", {
+        description: "Nothing is running to cancel. Try the action again.",
+      });
+      return;
+    }
+
+    toast.info("Agent run changed", {
+      description: "Reconnecting to the current run instead of cancelling it.",
+    });
+
+    if (!resumeActiveRun) {
+      setIsAutoResuming(false);
+      return;
+    }
+
+    setIsAutoResuming(true);
+    try {
+      await resumeActiveRun();
+    } catch (error) {
+      setIsAutoResuming(false);
+      console.error("Failed to resume the current Agent run:", error);
+      toast.error("Could not reconnect to the current Agent run.");
     }
   };
 
@@ -286,7 +371,7 @@ export const useChatHandlers = ({
     return normalizedMessages;
   };
 
-  const stopActiveRunForReplacement = async (): Promise<void> => {
+  const stopActiveRunForReplacement = async (): Promise<boolean> => {
     const [triggerCancelResult, streamStopResult] = await Promise.allSettled([
       cancelTriggerRun(),
       stopActiveStream({ skipSave: true }),
@@ -303,13 +388,23 @@ export const useChatHandlers = ({
     if (streamStopResult.status === "rejected") {
       throw streamStopResult.reason;
     }
+    if (triggerCancelResult.value.outcome === "stale_run") {
+      await recoverStaleAgentRun(triggerCancelResult.value);
+      return false;
+    }
+    return true;
   };
 
-  const stopActiveRunForSteer = async (): Promise<void> => {
+  const stopActiveRunForSteer = async (): Promise<boolean> => {
     // Persist the latest message and todo snapshot before canceling the Trigger
     // run. The next run reads the persisted todo snapshot.
     await stopActiveStream({ requireCancelSuccess: true });
-    await cancelTriggerRun();
+    const cancelResult = await cancelTriggerRun();
+    if (cancelResult.outcome === "stale_run") {
+      await recoverStaleAgentRun(cancelResult);
+      return false;
+    }
+    return true;
   };
 
   const hasActiveRunToReplace = () =>
@@ -410,7 +505,7 @@ export const useChatHandlers = ({
         return true;
       } else if (queueBehavior === "stop-and-send") {
         try {
-          await stopActiveRunForSteer();
+          if (!(await stopActiveRunForSteer())) return false;
         } catch (error) {
           console.error(
             "Failed to stop the active run before steering:",
@@ -536,6 +631,14 @@ export const useChatHandlers = ({
       console.error("Error in handleStop:", streamStopResult.reason);
     }
 
+    if (
+      triggerCancelResult.status === "fulfilled" &&
+      triggerCancelResult.value.outcome === "stale_run"
+    ) {
+      await recoverStaleAgentRun(triggerCancelResult.value);
+      return false;
+    }
+
     return triggerCancelResult.status === "fulfilled";
   };
 
@@ -545,7 +648,7 @@ export const useChatHandlers = ({
 
     // Stop any active stream first to prevent message order issues and wasted tokens
     if (hasActiveRunToReplace()) {
-      await stopActiveRunForReplacement();
+      if (!(await stopActiveRunForReplacement())) return;
     }
     const agentRunRequestId = uuidv4();
 
@@ -616,7 +719,7 @@ export const useChatHandlers = ({
 
     // Stop any active stream first to prevent message order issues and wasted tokens
     if (hasActiveRunToReplace()) {
-      await stopActiveRunForReplacement();
+      if (!(await stopActiveRunForReplacement())) return;
     }
     const agentRunRequestId = uuidv4();
 
@@ -685,7 +788,7 @@ export const useChatHandlers = ({
 
     // Stop any active stream first to prevent message order issues and wasted tokens
     if (hasActiveRunToReplace()) {
-      await stopActiveRunForReplacement();
+      if (!(await stopActiveRunForReplacement())) return;
     }
     const agentRunRequestId = uuidv4();
 
@@ -831,7 +934,7 @@ export const useChatHandlers = ({
     try {
       setIsAutoResuming(false);
       if (hasActiveRunToReplace()) {
-        await stopActiveRunForSteer();
+        if (!(await stopActiveRunForSteer())) return;
       }
 
       // Keep the queued message available if stopping fails.
