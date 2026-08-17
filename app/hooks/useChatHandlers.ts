@@ -792,14 +792,26 @@ export const useChatHandlers = ({
     }
     const agentRunRequestId = uuidv4();
 
-    // Find the edited message index to identify subsequent messages
+    // Compute the todo snapshot before the edit mutation. Stopping a run
+    // persists its latest todos, so the same mutation that removes the old
+    // response must also replace that snapshot to avoid a reactive chat update
+    // restoring todos from the discarded response.
     const editedMessageIndex = messages.findIndex((m) => m.id === messageId);
+    const discardedMessageIds =
+      editedMessageIndex === -1
+        ? []
+        : messages.slice(editedMessageIndex + 1).map((message) => message.id);
+    const cleanedTodosForEdit = removeTodosBySourceMessages(
+      todos,
+      discardedMessageIds,
+    );
 
     try {
       await regenerateWithNewContent({
         messageId: messageId as Id<"messages">,
         newContent,
         fileIds: remainingFileIds,
+        todos: cleanedTodosForEdit,
       });
     } catch (error) {
       if (getConvexErrorCode(error) === "MESSAGE_NOT_EDITABLE") {
@@ -810,23 +822,7 @@ export const useChatHandlers = ({
       throw error;
     }
 
-    if (editedMessageIndex !== -1) {
-      // Get all subsequent messages (both user and assistant) that will be removed
-      const subsequentMessages = messages.slice(editedMessageIndex + 1);
-      const idsToClean = subsequentMessages.map((m) => m.id);
-
-      // Also clean todos from the edited message itself if it's an assistant message
-      const editedMessage = messages[editedMessageIndex];
-      if (editedMessage.role === "assistant") {
-        idsToClean.push(messageId);
-      }
-
-      // Remove todos linked to the edited message and all subsequent messages
-      if (idsToClean.length > 0) {
-        const updatedTodos = removeTodosBySourceMessages(todos, idsToClean);
-        setTodos(updatedTodos);
-      }
-    }
+    setTodos(cleanedTodosForEdit);
 
     // Build updated parts: text + remaining file parts
     const buildUpdatedParts = (currentParts: any[]) => {
@@ -868,17 +864,6 @@ export const useChatHandlers = ({
 
       return updatedMessages;
     });
-
-    // Trigger regeneration of assistant response with cleaned todos
-    const cleanedTodosForEdit = (() => {
-      const editedIndex = messages.findIndex((m) => m.id === messageId);
-      if (editedIndex === -1) return todos;
-      const subsequentMessages = messages.slice(editedIndex + 1);
-      const idsToClean = subsequentMessages.map((m) => m.id);
-      const editedMessage = messages[editedIndex];
-      if (editedMessage.role === "assistant") idsToClean.push(messageId);
-      return removeTodosBySourceMessages(todos, idsToClean);
-    })();
 
     runChatAction("regenerate edited message", () =>
       regenerate({

@@ -1933,6 +1933,21 @@ export const regenerateWithNewContent = mutation({
     messageId: v.string(),
     newContent: v.string(),
     fileIds: v.optional(v.array(v.string())),
+    todos: v.optional(
+      v.array(
+        v.object({
+          id: v.string(),
+          content: v.string(),
+          status: v.union(
+            v.literal("pending"),
+            v.literal("in_progress"),
+            v.literal("completed"),
+            v.literal("cancelled"),
+          ),
+          sourceMessageId: v.optional(v.string()),
+        }),
+      ),
+    ),
   },
   returns: v.null(),
   handler: async (ctx, args) => {
@@ -2100,6 +2115,24 @@ export const regenerateWithNewContent = mutation({
         }
 
         await ctx.db.delete(msg._id);
+      }
+
+      // Keep the persisted todo snapshot consistent with the messages removed
+      // above. In particular, stopping an Agent run persists its todos before
+      // an edit discards that response; without this write, the reactive chat
+      // query can restore those stale todos in the UI.
+      if (args.todos !== undefined) {
+        const chat = await ctx.db
+          .query("chats")
+          .withIndex("by_chat_id", (q) => q.eq("id", message.chat_id))
+          .first();
+
+        if (chat && chat.user_id === user.subject) {
+          await ctx.db.patch(chat._id, {
+            todos: args.todos,
+            update_time: Date.now(),
+          });
+        }
       }
 
       return null;
