@@ -13,7 +13,8 @@ connector, or an explicitly configured VPC connector.
 
 ## 1. Provision AWS prerequisites
 
-Choose a region where Lambda MicroVMs are available and deploy the stack:
+Lambda MicroVM execution is currently fixed to `us-east-1`. Deploy the stack
+there:
 
 ```bash
 aws cloudformation deploy \
@@ -44,7 +45,6 @@ role to write guest runtime logs to CloudWatch.
 Set the two CloudFormation outputs, then run:
 
 ```bash
-export AWS_REGION=us-east-1
 export AWS_LAMBDA_MICROVM_ARTIFACT_BUCKET='<ArtifactBucketName>'
 export AWS_LAMBDA_MICROVM_BUILD_ROLE_ARN='<BuildRoleArn>'
 pnpm aws:microvm:deploy
@@ -80,7 +80,6 @@ both runtimes:
 
 ```dotenv
 CLOUD_SANDBOX_PROVIDER=aws-lambda-microvm
-AWS_LAMBDA_MICROVM_REGION=us-east-1
 AWS_LAMBDA_MICROVM_IMAGE_ID=<image ARN printed by deploy>
 AWS_LAMBDA_MICROVM_IMAGE_VERSION=<version printed by deploy>
 AWS_LAMBDA_MICROVM_EXECUTION_ROLE_ARN=<ExecutionRoleArn>
@@ -91,6 +90,11 @@ NEXT_PUBLIC_CONVEX_URL=<existing Convex deployment URL>
 CENTRIFUGO_WS_URL=<existing wss URL>
 CENTRIFUGO_TOKEN_SECRET=<existing signing secret>
 ```
+
+The provider region is intentionally fixed in code to `us-east-1` until
+multi-region image publication and routing are implemented. Vercel,
+Trigger.dev, and local development do not need `AWS_REGION` or
+`AWS_LAMBDA_MICROVM_REGION` for this provider.
 
 Optional controls:
 

@@ -30,8 +30,6 @@ jobs:
       contents: read
       id-token: write
     env:
-      AWS_REGION: us-east-1
-      AWS_LAMBDA_MICROVM_REGION: us-east-1
       AWS_LAMBDA_MICROVM_ARTIFACT_BUCKET: ${{ vars.AWS_LAMBDA_MICROVM_ARTIFACT_BUCKET }}
       AWS_LAMBDA_MICROVM_BUILD_ROLE_ARN: ${{ vars.AWS_LAMBDA_MICROVM_BUILD_ROLE_ARN }}
       AWS_LAMBDA_MICROVM_EXECUTION_ROLE_ARN: ${{ vars.AWS_LAMBDA_MICROVM_EXECUTION_ROLE_ARN }}
@@ -92,7 +90,7 @@ jobs:
       - name: Authenticate to AWS with GitHub OIDC
         uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
         with:
-          aws-region: ${{ env.AWS_REGION }}
+          aws-region: us-east-1
           role-to-assume: ${{ env.AWS_RELEASE_ROLE_ARN }}
           role-session-name: hackerai-microvm-${{ github.run_id }}
 
@@ -143,7 +141,6 @@ jobs:
           printf '%s\n' \
             "TRIGGER_PROJECT_ID=$TRIGGER_PROJECT_ID" \
             "CLOUD_SANDBOX_PROVIDER=aws-lambda-microvm" \
-            "AWS_LAMBDA_MICROVM_REGION=$AWS_LAMBDA_MICROVM_REGION" \
             "AWS_LAMBDA_MICROVM_IMAGE_ID=$AWS_LAMBDA_MICROVM_IMAGE_ID" \
             "AWS_LAMBDA_MICROVM_IMAGE_VERSION=$AWS_LAMBDA_MICROVM_IMAGE_VERSION" \
             "AWS_LAMBDA_MICROVM_EXECUTION_ROLE_ARN=$AWS_LAMBDA_MICROVM_EXECUTION_ROLE_ARN" \
