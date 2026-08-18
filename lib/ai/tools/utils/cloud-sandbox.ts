@@ -73,6 +73,8 @@ export async function ensureCloudSandboxConnection(options: {
       chat_id: options.context?.chatId,
       trigger_run_id: options.context?.triggerRunId,
       provider,
+      cloud_sandbox_transport:
+        provider === "aws-lambda-microvm" ? "aws_websocket" : "e2b_sdk",
       subscription: options.context?.subscription,
       subscription_tier: options.context?.subscription,
       agent_run_kind: options.context?.runKind ?? "parent",
@@ -80,7 +82,7 @@ export async function ensureCloudSandboxConnection(options: {
       failure_stage: "ensure_cloud_sandbox",
       duration_ms: Date.now() - startedAt,
       error_name: error instanceof Error ? error.name : "UnknownError",
-      cloud_sandbox_acquisition_failed_event_version: 1,
+      cloud_sandbox_acquisition_failed_event_version: 2,
     });
     throw error;
   }

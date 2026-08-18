@@ -1,4 +1,5 @@
 import {
+  CreateMicrovmAuthTokenCommand,
   GetMicrovmCommand,
   LambdaMicrovmsClient,
   ResumeMicrovmCommand,
@@ -11,14 +12,16 @@ import type { SandboxBootInfo } from "@/types";
 import { getConvexClient, getConvexUrl } from "@/lib/db/convex-client";
 import { createConvexRealtimeClient } from "@/lib/db/convex-realtime-client";
 import { CentrifugoSandbox } from "./centrifugo-sandbox";
+import { AwsLambdaMicrovmDirectSandbox } from "./aws-lambda-microvm-direct-sandbox";
 
 const PROVIDER = "aws-lambda-microvm" as const;
 export const AWS_LAMBDA_MICROVM_REGION = "us-east-1" as const;
 const PLATFORM_MAX_DURATION_SECONDS = 8 * 60 * 60;
 const DEFAULT_MAX_DURATION_SECONDS = 4 * 60 * 60;
 const DEFAULT_MIN_REMAINING_SECONDS = 2 * 60 * 60 + 5 * 60;
+const DIRECT_IDLE_SECONDS = 5 * 60;
+const DIRECT_SUSPENDED_SECONDS = 30 * 60;
 const SESSION_READY_TIMEOUT_MS = 90_000;
-const RELAY_READY_TIMEOUT_MS = 45_000;
 
 type CloudSession = {
   sessionId: string;
@@ -63,8 +66,6 @@ type AwsLambdaMicrovmConfig = {
   minRemainingSeconds: number;
   logGroup: string;
   serviceKey: string;
-  centrifugoWsUrl: string;
-  centrifugoTokenSecret: string;
 };
 
 let client: LambdaMicrovmsClient | null = null;
@@ -232,9 +233,7 @@ export function getAwsLambdaMicrovmConfig(): AwsLambdaMicrovmConfig {
       process.env.AWS_LAMBDA_MICROVM_IMAGE_VERSION?.trim() || undefined,
     executionRoleArn:
       process.env.AWS_LAMBDA_MICROVM_EXECUTION_ROLE_ARN?.trim() || undefined,
-    // The guest initiates its relay connection outbound. Keeping lifecycle
-    // hooks behind NO_INGRESS prevents them from becoming a public control API.
-    ingressConnectorArn: `arn:aws:lambda:${region}:aws:network-connector:aws-network-connector:NO_INGRESS`,
+    ingressConnectorArn: `arn:aws:lambda:${region}:aws:network-connector:aws-network-connector:ALL_INGRESS`,
     egressConnectorArn:
       process.env.AWS_LAMBDA_MICROVM_EGRESS_CONNECTOR_ARN?.trim() ||
       `arn:aws:lambda:${region}:aws:network-connector:aws-network-connector:INTERNET_EGRESS`,
@@ -244,8 +243,6 @@ export function getAwsLambdaMicrovmConfig(): AwsLambdaMicrovmConfig {
       process.env.AWS_LAMBDA_MICROVM_LOG_GROUP?.trim() ||
       "/aws/lambda/microvms/hackerai-cloud-agent",
     serviceKey: required("CONVEX_SERVICE_ROLE_KEY"),
-    centrifugoWsUrl: required("CENTRIFUGO_WS_URL"),
-    centrifugoTokenSecret: required("CENTRIFUGO_TOKEN_SECRET"),
   };
 }
 
@@ -297,8 +294,8 @@ function failureCode(error: unknown): string {
   if (error.name === "ThrottlingException") return "throttled";
   if (error.name === "ValidationException") return "invalid_configuration";
   if (isAwsNotFound(error)) return "microvm_not_found";
-  if (/relay|centrifugo|presence|subscription/i.test(error.message)) {
-    return "relay_not_ready";
+  if (/websocket|direct endpoint|auth token|endpoint/i.test(error.message)) {
+    return "direct_endpoint_not_ready";
   }
   return "provider_error";
 }
@@ -334,6 +331,24 @@ async function markCleanupPending(
       failureCode: code,
     },
   );
+}
+
+async function markDirectReady(
+  userId: string,
+  sessionId: string,
+  microvmId: string,
+  config: Pick<AwsLambdaMicrovmConfig, "serviceKey">,
+): Promise<void> {
+  const ready = await getConvexClient().mutation(
+    api.localSandbox.markCloudDirectReady,
+    {
+      serviceKey: config.serviceKey,
+      userId,
+      sessionId,
+      microvmId,
+    },
+  );
+  if (!ready) throw new Error("Cloud session ended before direct readiness");
 }
 
 async function terminateMicrovm(
@@ -558,54 +573,58 @@ async function waitForSessionConnection(
   }
 }
 
-function createRelaySandbox(
+function createDirectSandbox(
   userId: string,
   session: CloudSession,
+  endpoint: string,
   config: AwsLambdaMicrovmConfig,
-): CentrifugoSandbox {
-  if (!session.connectionId) {
-    throw new Error("Cloud sandbox session has no relay connection");
-  }
-  return new CentrifugoSandbox(
+): AwsLambdaMicrovmDirectSandbox {
+  if (!session.microvmId) throw new Error("Cloud session has no MicroVM ID");
+  return new AwsLambdaMicrovmDirectSandbox({
     userId,
-    {
-      connectionId: session.connectionId,
-      name: "AWS Lambda MicroVM",
-      cloudProvider: PROVIDER,
-      osInfo: {
-        platform: "linux",
-        arch: "arm64",
-        release: "Kali Linux",
-        hostname: session.microvmId ?? "lambda-microvm",
-      },
-      capabilities: { commands: true, pty: true },
+    sessionId: session.sessionId,
+    microvmId: session.microvmId,
+    endpoint,
+    issueAuthToken: async () => {
+      const response = await getClient(config.region).send(
+        new CreateMicrovmAuthTokenCommand({
+          microvmIdentifier: session.microvmId,
+          expirationInMinutes: 60,
+          allowedPorts: [{ port: 9000 }],
+        }),
+      );
+      const token = response.authToken?.["X-aws-proxy-auth"];
+      if (!token) throw new Error("AWS did not return a MicroVM auth token");
+      return token;
     },
-    {
-      wsUrl: config.centrifugoWsUrl,
-      tokenSecret: config.centrifugoTokenSecret,
-    },
-    "/home/user",
-  );
+    log,
+  });
 }
 
-async function waitForRelayReady(sandbox: CentrifugoSandbox): Promise<void> {
-  const deadline = Date.now() + RELAY_READY_TIMEOUT_MS;
-  let lastError: unknown;
+async function waitForRunningEndpoint(
+  microvmId: string,
+  config: AwsLambdaMicrovmConfig,
+): Promise<string> {
+  const deadline = Date.now() + SESSION_READY_TIMEOUT_MS;
+  let delayMs = 250;
+  let lastState = "unknown";
   while (Date.now() < deadline) {
-    try {
-      const result = await sandbox.commands.run("echo ready", {
-        timeoutMs: 5_000,
-        displayName: "",
-      });
-      if (result.exitCode === 0 && result.stdout.includes("ready")) return;
-      lastError = new Error(`Guest readiness exited ${result.exitCode}`);
-    } catch (error) {
-      lastError = error;
+    const state = await getClient(config.region).send(
+      new GetMicrovmCommand({ microvmIdentifier: microvmId }),
+    );
+    lastState = state.state ?? "unknown";
+    if (state.state === "RUNNING" && state.endpoint) return state.endpoint;
+    if (state.state === "TERMINATED" || state.state === "TERMINATING") {
+      throw new Error(
+        `AWS MicroVM terminated before its direct endpoint was ready (${state.stateReason ?? "unknown"})`,
+      );
     }
-    await new Promise((resolve) => setTimeout(resolve, 1_000));
+    await new Promise((resolve) => setTimeout(resolve, delayMs));
+    delayMs = Math.min(Math.round(delayMs * 1.5), 1_000);
   }
-  const detail = lastError instanceof Error ? lastError.message : "unknown";
-  throw new Error(`Cloud sandbox relay did not become ready: ${detail}`);
+  throw new Error(
+    `AWS MicroVM direct endpoint did not become ready; last state was ${lastState}`,
+  );
 }
 
 async function ensureExistingMicrovm(
@@ -619,16 +638,37 @@ async function ensureExistingMicrovm(
       session.sessionId,
       config,
     );
-    const sandbox = createRelaySandbox(userId, connected, config);
-    if (!connected.relayReadyAt) {
-      await waitForRelayReady(sandbox);
-    }
-    return { session: connected, sandbox };
+    return ensureExistingMicrovm(userId, connected, config);
   }
+  let directSandbox: AwsLambdaMicrovmDirectSandbox | undefined;
   try {
     let state = await getClient(config.region).send(
       new GetMicrovmCommand({ microvmIdentifier: session.microvmId }),
     );
+    if (
+      !state.ingressNetworkConnectors?.some((connector) =>
+        connector.endsWith(":ALL_INGRESS"),
+      )
+    ) {
+      const outcome = await terminateMicrovm(session.microvmId, config.region);
+      if (outcome === "failed") {
+        await markCleanupPending(
+          userId,
+          session.sessionId,
+          config,
+          "legacy_ingress_cleanup_failed",
+        );
+        throw new Error("Legacy cloud sandbox could not be replaced safely");
+      }
+      await markEnded(
+        userId,
+        session.sessionId,
+        config,
+        "terminated",
+        "direct_ingress_required",
+      );
+      return null;
+    }
     if (state.startedAt && state.maximumDurationInSeconds) {
       const remainingMs =
         state.startedAt.getTime() +
@@ -703,15 +743,21 @@ async function ensureExistingMicrovm(
       return null;
     }
 
-    const connected = await waitForSessionConnection(
-      userId,
-      session.sessionId,
-      config,
-    );
-    const sandbox = createRelaySandbox(userId, connected, config);
-    await waitForRelayReady(sandbox);
-    return { session: connected, sandbox };
+    const endpoint = await waitForRunningEndpoint(session.microvmId, config);
+    directSandbox = createDirectSandbox(userId, session, endpoint, config);
+    await directSandbox.ready();
+    return { session, sandbox: directSandbox };
   } catch (error) {
+    await directSandbox?.close().catch((closeError: unknown) => {
+      log("warn", "cloud_sandbox_direct_cleanup_failed", {
+        user_id: userId,
+        session_id: session.sessionId,
+        microvm_id: session.microvmId ?? null,
+        region: config.region,
+        failure_stage: "reuse_connection_cleanup",
+        ...errorLogFields(closeError),
+      });
+    });
     if (isAwsNotFound(error)) {
       await markEnded(
         userId,
@@ -758,7 +804,10 @@ export async function ensureAwsLambdaMicrovmConnection(
     egress_connector: config.egressConnectorArn.split(":").at(-1) ?? null,
     max_duration_seconds: config.maxDurationSeconds,
     min_remaining_seconds: config.minRemainingSeconds,
-    idle_policy_enabled: false,
+    idle_policy_enabled: true,
+    idle_seconds: DIRECT_IDLE_SECONDS,
+    suspended_seconds: DIRECT_SUSPENDED_SECONDS,
+    transport: "aws_websocket",
     log_group: config.logGroup,
     credential_source: credentialSource(),
     aws_profile: process.env.AWS_PROFILE?.trim() || null,
@@ -838,7 +887,9 @@ export async function ensureAwsLambdaMicrovmConnection(
       existing = await ensureExistingMicrovm(userId, begin.session, config);
     } catch (error) {
       const code = failureCode(error);
-      if (code !== "relay_not_ready" || replacementAttempt >= 1) throw error;
+      if (code !== "direct_endpoint_not_ready" || replacementAttempt >= 1) {
+        throw error;
+      }
       if (!begin.session.microvmId) throw error;
       const terminationOutcome = await terminateMicrovm(
         begin.session.microvmId,
@@ -854,7 +905,7 @@ export async function ensureAwsLambdaMicrovmConnection(
         throw error;
       }
       await markEnded(userId, begin.session.sessionId, config, "failed", code);
-      log("warn", "cloud_sandbox_relay_replacement", {
+      log("warn", "cloud_sandbox_direct_replacement", {
         user_id: userId,
         session_id: begin.session.sessionId,
         microvm_id: begin.session.microvmId ?? null,
@@ -884,27 +935,8 @@ export async function ensureAwsLambdaMicrovmConnection(
     return existing.sandbox;
   }
 
-  if (!begin.bootstrapToken) {
-    await markEnded(
-      userId,
-      begin.session.sessionId,
-      config,
-      "failed",
-      "bootstrap_token_missing",
-    );
-    throw new Error("Cloud session bootstrap token was not returned");
-  }
-
-  // Start the reactive query before asking AWS to run the VM. Its WebSocket
-  // handshake overlaps the control-plane allocation, so the guest's ready
-  // mutation is delivered without the old 200ms-to-1s polling gaps.
-  const sessionWaiter = createSessionConnectionWaiter(
-    userId,
-    begin.session.sessionId,
-    config,
-    false,
-  );
   let microvmId: string | undefined;
+  let directSandbox: AwsLambdaMicrovmDirectSandbox | undefined;
   let failureStage = "run_microvm";
   try {
     const runStartedAt = performance.now();
@@ -919,7 +951,10 @@ export async function ensureAwsLambdaMicrovmConnection(
       egress_connector: config.egressConnectorArn.split(":").at(-1) ?? null,
       max_duration_seconds: config.maxDurationSeconds,
       min_remaining_seconds: config.minRemainingSeconds,
-      idle_policy_enabled: false,
+      idle_policy_enabled: true,
+      idle_seconds: DIRECT_IDLE_SECONDS,
+      suspended_seconds: DIRECT_SUSPENDED_SECONDS,
+      transport: "aws_websocket",
       convex_endpoint_kind: endpointKind(convexUrl),
     });
     const response = await getClient(config.region).send(
@@ -931,15 +966,18 @@ export async function ensureAwsLambdaMicrovmConnection(
           : {}),
         ingressNetworkConnectors: [config.ingressConnectorArn],
         egressNetworkConnectors: [config.egressConnectorArn],
+        idlePolicy: {
+          maxIdleDurationSeconds: DIRECT_IDLE_SECONDS,
+          suspendedDurationSeconds: DIRECT_SUSPENDED_SECONDS,
+          autoResumeEnabled: true,
+        },
         logging: config.executionRoleArn
           ? { cloudWatch: { logGroup: config.logGroup } }
           : { disabled: {} },
         maximumDurationInSeconds: config.maxDurationSeconds,
         clientToken: begin.session.sessionId,
         runHookPayload: JSON.stringify({
-          convexUrl,
           sessionId: begin.session.sessionId,
-          bootstrapToken: begin.bootstrapToken,
           connectionName: "AWS Lambda MicroVM",
         }),
       }),
@@ -958,7 +996,7 @@ export async function ensureAwsLambdaMicrovmConnection(
     });
 
     failureStage = "attach_cloud_microvm";
-    log("debug", "cloud_sandbox_guest_connection_wait_started", {
+    log("debug", "cloud_sandbox_direct_endpoint_wait_started", {
       user_id: userId,
       session_id: begin.session.sessionId,
       microvm_id: microvmId,
@@ -980,24 +1018,16 @@ export async function ensureAwsLambdaMicrovmConnection(
         }
       });
     await attachPromise;
-    // Do not return until attachCloudMicrovm has durably persisted the AWS ID.
-    // The reactive readiness subscription has remained active in parallel.
-    failureStage = "wait_for_guest_connection";
-    sessionWaiter.armTimeout();
-    const connected = await sessionWaiter.promise;
-    const sandbox = createRelaySandbox(userId, connected, config);
-    if (!connected.relayReadyAt) {
-      failureStage = "wait_for_relay_ready";
-      log("debug", "cloud_sandbox_relay_ready_wait_started", {
-        user_id: userId,
-        session_id: connected.sessionId,
-        microvm_id: connected.microvmId,
-        region: config.region,
-        timeout_ms: RELAY_READY_TIMEOUT_MS,
-        compatibility_fallback: true,
-      });
-      await waitForRelayReady(sandbox);
-    }
+    failureStage = "wait_for_direct_endpoint";
+    const endpoint =
+      response.state === "RUNNING" && response.endpoint
+        ? response.endpoint
+        : await waitForRunningEndpoint(microvmId, config);
+    const connected: CloudSession = { ...begin.session, microvmId };
+    directSandbox = createDirectSandbox(userId, connected, endpoint, config);
+    await directSandbox.ready();
+    failureStage = "mark_direct_ready";
+    await markDirectReady(userId, connected.sessionId, microvmId, config);
     onBoot?.({
       path: "create_fresh",
       duration_ms: Math.round(performance.now() - startedAt),
@@ -1011,7 +1041,7 @@ export async function ensureAwsLambdaMicrovmConnection(
       image_version: connected.imageVersion ?? "latest",
       duration_ms: Math.round(performance.now() - startedAt),
     });
-    return sandbox;
+    return directSandbox;
   } catch (error) {
     const code = failureCode(error);
     log("error", "cloud_sandbox_creation_failed", {
@@ -1029,6 +1059,16 @@ export async function ensureAwsLambdaMicrovmConnection(
       convex_endpoint_kind: endpointKind(convexUrl),
       duration_ms: Math.round(performance.now() - startedAt),
       ...errorLogFields(error, [begin.bootstrapToken]),
+    });
+    await directSandbox?.close().catch((closeError: unknown) => {
+      log("warn", "cloud_sandbox_direct_cleanup_failed", {
+        user_id: userId,
+        session_id: begin.session.sessionId,
+        microvm_id: microvmId ?? null,
+        region: config.region,
+        failure_stage: "creation_connection_cleanup",
+        ...errorLogFields(closeError),
+      });
     });
     if (microvmId) {
       const terminationOutcome = await terminateMicrovm(
@@ -1057,8 +1097,6 @@ export async function ensureAwsLambdaMicrovmConnection(
     throw new Error(`Failed creating AWS Lambda MicroVM sandbox (${code})`, {
       cause: error,
     });
-  } finally {
-    await sessionWaiter.dispose();
   }
 }
 

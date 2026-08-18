@@ -63,6 +63,7 @@ Resources:
           - Effect: Allow
             Action:
               - lambda:RunMicrovm
+              - lambda:CreateMicrovmAuthToken
               - lambda:GetMicrovm
               - lambda:ListMicrovms
               - lambda:ResumeMicrovm

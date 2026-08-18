@@ -818,9 +818,9 @@ export default defineSchema({
     .index("by_user_and_status", ["user_id", "status"])
     .index("by_status_and_created_at", ["status", "created_at"]),
 
-  // Server-created, user-scoped AWS Lambda MicroVM sessions. The bootstrap
-  // credential is stored only as a SHA-256 digest and is valid solely for
-  // connecting the matching guest runner to its Centrifugo channel.
+  // Server-created, user-scoped AWS Lambda MicroVM sessions. Legacy bootstrap
+  // fields remain while pre-direct-transport rows age out; direct endpoint
+  // credentials are short-lived AWS tokens and are never stored in Convex.
   cloud_sandbox_sessions: defineTable({
     user_id: v.string(),
     session_id: v.string(),

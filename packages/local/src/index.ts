@@ -4,7 +4,8 @@
  * HackerAI Local Sandbox Client
  *
  * Connects to HackerAI backend via Convex for connection lifecycle
- * and uses Centrifugo for real-time command relay and streaming output.
+ * and uses either Centrifugo or AWS's authenticated endpoint for real-time
+ * command transport and streaming output.
  *
  * Runs commands directly on the host OS (no Docker isolation).
  *
@@ -14,7 +15,7 @@
 
 import { ConvexHttpClient } from "convex/browser";
 import { Centrifuge, Subscription, PublicationContext } from "centrifuge";
-import WebSocket from "ws";
+import WebSocket, { WebSocketServer } from "ws";
 import { spawn, ChildProcess } from "child_process";
 import { createServer, type IncomingMessage, type ServerResponse } from "http";
 import os from "os";
@@ -40,6 +41,10 @@ import {
   primeCloudImageWorkingSet,
 } from "./cloud-image-prime";
 import { InProcessRelayLifecycle } from "./cloud-relay-lifecycle";
+import {
+  CloudDirectTransport,
+  type DirectTransportDisconnect,
+} from "./cloud-direct-transport";
 
 const DEFAULT_SHELL = getDefaultShell(os.platform());
 
@@ -81,7 +86,7 @@ export interface Config {
   convexUrl: string;
   token: string;
   name: string;
-  authMode: "local" | "cloud";
+  authMode: "local" | "cloud" | "direct-cloud";
   cloudSessionId?: string;
   microvmId?: string;
 }
@@ -292,6 +297,7 @@ function isInvalidTokenError(error: unknown): boolean {
 
 type LocalSandboxClientOptions = {
   onExitRequested?: (code: number, error: Error) => void;
+  directTransport?: CloudDirectTransport;
 };
 
 export class LocalSandboxClient {
@@ -423,7 +429,7 @@ export class LocalSandboxClient {
   }
 
   async start(): Promise<void> {
-    if (this.config.authMode === "cloud") {
+    if (this.config.authMode !== "local") {
       console.log(
         JSON.stringify({
           timestamp: new Date().toISOString(),
@@ -463,6 +469,18 @@ export class LocalSandboxClient {
   }
 
   private async connect(): Promise<void> {
+    if (this.config.authMode === "direct-cloud") {
+      if (!this.options.directTransport || !this.config.microvmId) {
+        throw new Error("Direct cloud transport is not configured");
+      }
+      this.connectionId = this.config.microvmId;
+      this.options.directTransport.start({
+        onMessage: (message) => this.handleIncomingMessage(message),
+        onDisconnect: (pending) => this.handleDirectDisconnect(pending),
+      });
+      return;
+    }
+
     if (this.config.authMode === "local") {
       console.log(chalk.blue("Connecting to HackerAI..."));
     }
@@ -651,70 +669,7 @@ export class LocalSandboxClient {
     });
 
     this.subscription.on("publication", (ctx: PublicationContext) => {
-      if (this.isShuttingDown) return;
-
-      const message = ctx.data;
-
-      if (!isTargetedIncomingMessage(message)) {
-        return;
-      }
-
-      if (message.targetConnectionId !== this.connectionId) {
-        return;
-      }
-
-      this.lastActivityTime = Date.now();
-
-      switch (message.type) {
-        case "command":
-          this.handleCommand(message as CentrifugoCommandMessage).catch(
-            (error: unknown) => {
-              const errorMsg =
-                error instanceof Error ? error.message : JSON.stringify(error);
-              console.error(chalk.red(`Error handling command: ${errorMsg}`));
-            },
-          );
-          break;
-
-        case "command_cancel":
-          this.handleCommandCancel(
-            message as CentrifugoCommandCancelMessage,
-          ).catch((error: unknown) => {
-            console.error(
-              chalk.red(
-                `[CMD] Failed to handle cancellation: ${error instanceof Error ? error.message : String(error)}`,
-              ),
-            );
-          });
-          break;
-
-        case "pty_create":
-          this.handlePtyCreate(message as PtyCreateMessage).catch(
-            (error: unknown) => {
-              const errorMsg =
-                error instanceof Error ? error.message : String(error);
-              console.error(
-                chalk.red(`[PTY] Error creating session: ${errorMsg}`),
-              );
-            },
-          );
-          break;
-
-        case "pty_input":
-          this.handlePtyInput(message as PtyInputMessage);
-          break;
-
-        case "pty_resize":
-          this.handlePtyResize(message as PtyResizeMessage);
-          break;
-
-        case "pty_kill":
-          this.handlePtyKill(message as PtyKillMessage);
-          break;
-
-        default:
-          break;
-      }
+      this.handleIncomingMessage(ctx.data);
     });
 
     this.centrifuge.on("disconnected", (ctx) => {
@@ -772,6 +727,16 @@ export class LocalSandboxClient {
   private async publishToChannel(
     data: CentrifugoOutgoingMessage,
   ): Promise<void> {
+    if (this.config.authMode === "direct-cloud") {
+      if (!this.options.directTransport) {
+        throw new Error("Direct cloud transport is not configured");
+      }
+      await this.options.directTransport.publish(
+        data as unknown as Record<string, unknown>,
+      );
+      return;
+    }
+
     if (!this.publishQueue) {
       console.error(chalk.red("Cannot publish: no active subscription"));
       return;
@@ -787,6 +752,70 @@ export class LocalSandboxClient {
     }
   }
 
+  private handleIncomingMessage(message: unknown): void {
+    if (this.isShuttingDown || !isTargetedIncomingMessage(message)) return;
+    if (message.targetConnectionId !== this.connectionId) return;
+
+    this.lastActivityTime = Date.now();
+    switch (message.type) {
+      case "command":
+        this.handleCommand(message).catch((error: unknown) => {
+          const errorMsg =
+            error instanceof Error ? error.message : JSON.stringify(error);
+          console.error(
+            chalk.red(
+              this.config.authMode === "direct-cloud"
+                ? "Error handling direct command"
+                : `Error handling command: ${errorMsg}`,
+            ),
+          );
+        });
+        break;
+      case "command_cancel":
+        this.handleCommandCancel(message).catch((error: unknown) => {
+          console.error(
+            chalk.red(
+              `[CMD] Failed to handle cancellation: ${error instanceof Error ? error.message : String(error)}`,
+            ),
+          );
+        });
+        break;
+      case "pty_create":
+        this.handlePtyCreate(message).catch((error: unknown) => {
+          const errorMsg =
+            error instanceof Error ? error.message : String(error);
+          console.error(chalk.red(`[PTY] Error creating session: ${errorMsg}`));
+        });
+        break;
+      case "pty_input":
+        this.handlePtyInput(message);
+        break;
+      case "pty_resize":
+        this.handlePtyResize(message);
+        break;
+      case "pty_kill":
+        this.handlePtyKill(message);
+        break;
+    }
+  }
+
+  private handleDirectDisconnect(pending: DirectTransportDisconnect): void {
+    for (const commandId of pending.commandIds) {
+      void this.handleCommandCancel({
+        type: "command_cancel",
+        commandId,
+        targetConnectionId: this.connectionId ?? "",
+      }).catch(() => undefined);
+    }
+    for (const sessionId of pending.sessionIds) {
+      this.handlePtyKill({
+        type: "pty_kill",
+        sessionId,
+        targetConnectionId: this.connectionId ?? "",
+      });
+    }
+  }
+
   private async handleCommand(msg: CentrifugoCommandMessage): Promise<void> {
     const { commandId, command, env, cwd, timeout, background, displayName } =
       msg;
@@ -795,8 +824,14 @@ export class LocalSandboxClient {
     // - displayName === "" (empty string): hide command entirely
     // - displayName === "something": show that instead of command
     // - displayName === undefined: show actual command
-    const shouldShow = displayName !== "";
-    const displayText = displayName || command;
+    // CloudWatch guest logs must never contain user commands, arguments,
+    // targets, working directories, environment values, or command output.
+    const shouldShow =
+      this.config.authMode !== "direct-cloud" && displayName !== "";
+    const displayText =
+      this.config.authMode === "direct-cloud"
+        ? "direct command"
+        : displayName || command;
     if (shouldShow) {
       console.log(chalk.cyan(`▶ ${background ? "[BG] " : ""}${displayText}`));
     }
@@ -869,7 +904,13 @@ export class LocalSandboxClient {
         commandId,
         message: truncateOutput(message),
       });
-      console.log(chalk.red(`✗ ${displayText}: ${message}`));
+      console.log(
+        chalk.red(
+          this.config.authMode === "direct-cloud"
+            ? "✗ Direct command failed"
+            : `✗ ${displayText}: ${message}`,
+        ),
+      );
     }
   }
 
@@ -1122,7 +1163,13 @@ export class LocalSandboxClient {
   private async handlePtyCreate(msg: PtyCreateMessage): Promise<void> {
     const { sessionId, command, cols, rows, cwd, env } = msg;
 
-    console.log(chalk.cyan(`[PTY] Creating session ${sessionId}: ${command}`));
+    console.log(
+      chalk.cyan(
+        this.config.authMode === "direct-cloud"
+          ? `[PTY] Creating session ${sessionId}`
+          : `[PTY] Creating session ${sessionId}: ${command}`,
+      ),
+    );
 
     try {
       const opts: ProcessRunOptions = {};
@@ -1149,7 +1196,11 @@ export class LocalSandboxClient {
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error);
       console.error(
-        chalk.red(`[PTY] Failed to create session ${sessionId}: ${message}`),
+        chalk.red(
+          this.config.authMode === "direct-cloud"
+            ? `[PTY] Failed to create session ${sessionId}`
+            : `[PTY] Failed to create session ${sessionId}: ${message}`,
+        ),
       );
       await this.publishToChannel({
         type: "pty_error",
@@ -1237,6 +1288,11 @@ export class LocalSandboxClient {
       this.terminateActiveStreamCommands(),
     ]);
 
+    const directTransportShutdown =
+      this.config.authMode === "direct-cloud"
+        ? this.options.directTransport?.stop()
+        : undefined;
+
     // Disconnect Centrifugo
     if (this.subscription) {
       this.subscription.unsubscribe();
@@ -1248,9 +1304,9 @@ export class LocalSandboxClient {
       this.centrifuge = undefined;
     }
 
-    await processShutdown;
+    await Promise.all([processShutdown, directTransportShutdown]);
 
-    if (this.connectionId) {
+    if (this.connectionId && this.config.authMode !== "direct-cloud") {
       let disconnectTimeout: NodeJS.Timeout | undefined;
       try {
         await Promise.race([
@@ -1301,9 +1357,7 @@ const hasFlag = (flag: string): boolean => {
 };
 
 interface CloudLifecyclePayload {
-  convexUrl: string;
   sessionId: string;
-  bootstrapToken: string;
   connectionName?: string;
 }
 
@@ -1347,22 +1401,20 @@ function parseCloudLifecyclePayload(value: unknown): {
     typeof payload === "object" &&
     (payload as Record<string, unknown>).smokeTest === true
   ) {
-    return { microvmId, config: null, smokeTest: true };
+    return {
+      microvmId,
+      config: { sessionId: "image-smoke-test" },
+      smokeTest: true,
+    };
   }
-  if (
-    typeof payload.convexUrl !== "string" ||
-    typeof payload.sessionId !== "string" ||
-    typeof payload.bootstrapToken !== "string"
-  ) {
+  if (typeof payload.sessionId !== "string") {
     throw new Error("Invalid cloud bootstrap payload");
   }
   return {
     microvmId,
     smokeTest: false,
     config: {
-      convexUrl: payload.convexUrl,
       sessionId: payload.sessionId,
-      bootstrapToken: payload.bootstrapToken,
       connectionName: payload.connectionName,
     },
   };
@@ -1370,17 +1422,19 @@ function parseCloudLifecyclePayload(value: unknown): {
 
 async function startCloudLifecycleServer(): Promise<void> {
   let lifecycleConfig: Config | null = null;
+  const directTransport = new CloudDirectTransport();
   const relay = new InProcessRelayLifecycle<Config>(
     (config, onFatal) =>
       new LocalSandboxClient(config, {
         onExitRequested: (_code, error) => onFatal(error),
+        directTransport,
       }),
     (error) => {
       console.error(
         JSON.stringify({
           timestamp: new Date().toISOString(),
           level: "error",
-          event: "cloud_sandbox_relay_failed",
+          event: "cloud_sandbox_guest_failed",
           service: "hackerai-cloud-sandbox-agent",
           environment: "aws-lambda-microvm",
           request_id: lifecycleConfig?.cloudSessionId ?? null,
@@ -1393,7 +1447,7 @@ async function startCloudLifecycleServer(): Promise<void> {
         JSON.stringify({
           timestamp: new Date().toISOString(),
           level: "error",
-          event: "cloud_sandbox_relay_restart_failed",
+          event: "cloud_sandbox_guest_restart_failed",
           service: "hackerai-cloud-sandbox-agent",
           environment: "aws-lambda-microvm",
           request_id: lifecycleConfig?.cloudSessionId ?? null,
@@ -1466,23 +1520,17 @@ async function startCloudLifecycleServer(): Promise<void> {
         const { microvmId, config, smokeTest } = parseCloudLifecyclePayload(
           await readJsonBody(request),
         );
-        if (smokeTest) {
-          lifecycleConfig = null;
-          await relay.terminate();
-          writeLifecycleResponse(response, 200, { ok: true, smokeTest: true });
-          return;
-        }
         if (!config) throw new Error("Cloud sandbox bootstrap is missing");
         lifecycleConfig = {
-          convexUrl: config.convexUrl,
-          token: config.bootstrapToken,
+          convexUrl: "http://127.0.0.1",
+          token: "",
           name: config.connectionName ?? "AWS Lambda MicroVM",
-          authMode: "cloud",
+          authMode: "direct-cloud",
           cloudSessionId: config.sessionId,
           microvmId,
         };
         await relay.run(lifecycleConfig);
-        writeLifecycleResponse(response, 200, { ok: true });
+        writeLifecycleResponse(response, 200, { ok: true, smokeTest });
         return;
       }
 
@@ -1540,6 +1588,25 @@ async function startCloudLifecycleServer(): Promise<void> {
     }
   });
 
+  const directServer = createServer((_request, response) => {
+    writeLifecycleResponse(response, 426, { error: "websocket_required" });
+  });
+  const directWebSockets = new WebSocketServer({
+    noServer: true,
+    maxPayload: 4 * 1024 * 1024,
+    perMessageDeflate: false,
+  });
+  directServer.on("upgrade", (request, socket, head) => {
+    const path = request.url?.split("?", 1)[0] ?? "/";
+    if (path !== "/sandbox") {
+      socket.destroy();
+      return;
+    }
+    directWebSockets.handleUpgrade(request, socket, head, (webSocket) => {
+      directTransport.accept(webSocket);
+    });
+  });
+
   const shutdown = async (): Promise<void> => {
     try {
       await relay.terminate();
@@ -1552,11 +1619,13 @@ async function startCloudLifecycleServer(): Promise<void> {
           service: "hackerai-cloud-sandbox-agent",
           environment: "aws-lambda-microvm",
           request_id: lifecycleConfig?.cloudSessionId ?? "signal",
-          failure_code: "relay_termination_failed",
+          failure_code: "guest_termination_failed",
           error: error instanceof Error ? error.message : String(error),
         }),
       );
     }
+    directWebSockets.close();
+    directServer.close();
     server.close(() => process.exit(0));
   };
   process.on("SIGINT", () => void shutdown());
@@ -1572,6 +1641,19 @@ async function startCloudLifecycleServer(): Promise<void> {
         environment: "aws-lambda-microvm",
         request_id: "image-build",
         port: 8080,
+      }),
+    );
+  });
+  directServer.listen(9000, "0.0.0.0", () => {
+    console.log(
+      JSON.stringify({
+        timestamp: new Date().toISOString(),
+        level: "info",
+        event: "cloud_sandbox_direct_server_ready",
+        service: "hackerai-cloud-sandbox-agent",
+        environment: "aws-lambda-microvm",
+        request_id: "image-build",
+        port: 9000,
       }),
     );
   });

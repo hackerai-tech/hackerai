@@ -1,15 +1,17 @@
 # AWS Lambda MicroVM cloud sandbox
 
-This provider runs the existing HackerAI command relay inside one isolated AWS
-Lambda MicroVM per user. The web and Trigger.dev runtimes call the Lambda
-MicroVM API; the guest connects outbound to Convex and Centrifugo, so HackerAI
-does not expose a public command port.
+This provider runs the HackerAI command server inside one isolated AWS Lambda
+MicroVM per user. Trigger.dev connects directly to the VM through AWS's
+authenticated WebSocket endpoint. AWS validates the short-lived, VM- and
+port-scoped token before proxying traffic to guest port 9000; the token never
+enters Convex, the guest bootstrap payload, or application logs.
 
 The integration is ARM64-only because Lambda MicroVMs currently support
 Graviton only. The image grants `ALL` guest OS capabilities so tools that need
-raw sockets can run inside the VM. Inbound Lambda endpoints remain disabled by
-default. Outbound internet access uses Lambda's managed `INTERNET_EGRESS`
-connector, or an explicitly configured VPC connector.
+raw sockets can run inside the VM. The AWS-managed authenticated endpoint uses
+`ALL_INGRESS`; it is not an unauthenticated public listener. Outbound internet
+access uses Lambda's managed `INTERNET_EGRESS` connector, or an explicitly
+configured VPC connector.
 
 ## 1. Provision AWS prerequisites
 
@@ -34,9 +36,11 @@ aws cloudformation describe-stacks \
 ```
 
 Attach `DeployerPolicyArn` to the CI/operator identity that publishes images.
-Attach `RuntimePolicyArn` to the AWS identity used by both the HackerAI web
-runtime and Trigger.dev. Prefer workload identity/role assumption in production;
-access keys can be used for an initial test. Set `ExecutionRoleArn` as
+Attach `RuntimePolicyArn` to the AWS identity used by Trigger.dev. The Vercel
+Data Controls cleanup path also needs `GetMicrovm`, `ListMicrovms`, and
+`TerminateMicrovm`; a separate cleanup-only policy is preferable once workload
+identity is configured. Prefer role assumption in production; access keys can
+be used for an initial test. Set `ExecutionRoleArn` as
 `AWS_LAMBDA_MICROVM_EXECUTION_ROLE_ARN`; Lambda assumes this narrowly scoped
 role to write guest runtime logs to CloudWatch.
 
@@ -57,7 +61,7 @@ prints `AWS_LAMBDA_MICROVM_IMAGE_ID` and
 `AWS_LAMBDA_MICROVM_IMAGE_VERSION`.
 
 During AWS image preparation, both lifecycle image hooks run a bounded,
-credential-free working-set primer. It initializes the in-process relay and
+credential-free working-set primer. It initializes the in-process transport and
 command protocol, a real shell PTY, local DNS lookup libraries, and the startup
 paths for `bash`, passwordless `sudo`, `nmap`, and `naabu`. Any required step
 failure rejects image validation rather than publishing an incompletely primed
@@ -76,9 +80,9 @@ Deploy the Convex schema and functions before selecting the provider in the app:
 pnpm exec convex deploy
 ```
 
-The Convex deployment must already contain the same `CENTRIFUGO_WS_URL`,
-`CENTRIFUGO_TOKEN_SECRET`, and `CONVEX_SERVICE_ROLE_KEY` values used by the
-current local/desktop relay.
+The Convex deployment must already contain `CONVEX_SERVICE_ROLE_KEY`. Existing
+`CENTRIFUGO_WS_URL` and `CENTRIFUGO_TOKEN_SECRET` values remain necessary for
+local/desktop sandboxes, but the AWS MicroVM command path does not use them.
 
 ## 4. Configure HackerAI runtimes
 
@@ -95,16 +99,18 @@ AWS_ACCESS_KEY_ID=<runtime identity key for an initial test>
 AWS_SECRET_ACCESS_KEY=<runtime identity secret for an initial test>
 CONVEX_SERVICE_ROLE_KEY=<existing server role key>
 NEXT_PUBLIC_CONVEX_URL=<existing Convex deployment URL>
-CENTRIFUGO_WS_URL=<existing wss URL>
-CENTRIFUGO_TOKEN_SECRET=<existing signing secret>
 ```
+
+Keep the existing `CENTRIFUGO_WS_URL` and `CENTRIFUGO_TOKEN_SECRET` in
+Trigger.dev only if local/desktop sandbox connections are enabled. They are not
+read while the selected provider is `aws-lambda-microvm`.
 
 The provider region is intentionally fixed in code to `us-east-1` until
 multi-region image publication and routing are implemented. Vercel,
 Trigger.dev, and local development do not need `AWS_REGION` or
 `AWS_LAMBDA_MICROVM_REGION` for this provider.
 
-Vercel does not need the image ID, image version, execution role, or relay
+Vercel does not need the image ID, image version, execution role, or WebSocket
 configuration. Its Data Controls route terminates persisted MicroVM IDs
 directly, so Vercel only needs the dedicated AWS runtime credentials and
 `CONVEX_SERVICE_ROLE_KEY` for that cleanup operation.
@@ -118,31 +124,33 @@ Optional controls:
   minutes). A reused VM below that remaining lifetime is terminated and
   replaced before accepting another Agent run, so it cannot expire midway
   through the two-hour Trigger.dev task window.
-- Ingress is fixed to AWS's `NO_INGRESS` connector. The guest establishes the
-  HackerAI relay outbound, so lifecycle hooks are never exposed as a public API.
+- Ingress is fixed to AWS's `ALL_INGRESS` connector so Trigger.dev can use the
+  AWS-authenticated WebSocket endpoint. Runtime auth tokens are minted for one
+  MicroVM, expire after at most 60 minutes, and are restricted to guest port 9000. Port 8080 lifecycle hooks are never included in application tokens.
 - `AWS_LAMBDA_MICROVM_EGRESS_CONNECTOR_ARN` defaults to `INTERNET_EGRESS`.
-- Lambda endpoint-idle suspension is intentionally not configurable. HackerAI
-  uses `NO_INGRESS` and an outbound asynchronous relay, while Lambda measures
-  idle time from inbound endpoint traffic. Enabling that policy could suspend a
-  MicroVM while an Agent command is still active. Instead, parent Agent cleanup
-  compare-clears the ending Trigger run, verifies that the user has no other
-  active parent runs or subagents, and explicitly suspends the shared MicroVM.
-  A suspend failure falls back to termination, while replacement cleanup, Data
-  Controls termination, and the maximum-duration cap remain additional safety
-  boundaries.
+- Lambda endpoint-idle suspension is intentionally hard-coded to five minutes,
+  followed by termination after 30 suspended minutes. While a Trigger worker is
+  using the sandbox, its WebSocket heartbeat counts as endpoint activity.
+  Parent Agent cleanup also compare-clears the ending Trigger run, verifies that
+  the user has no other active parent runs or subagents, and explicitly suspends
+  the shared MicroVM. A suspend failure falls back to termination, while
+  replacement cleanup, Data Controls termination, and the maximum-duration cap
+  remain additional safety boundaries.
 
-Never expose these variables with a `NEXT_PUBLIC_` prefix. Bootstrap tokens are
-generated per user session, stored only as SHA-256 hashes in Convex, scoped to a
-single MicroVM/session, and expire after nine hours.
+Never expose these variables with a `NEXT_PUBLIC_` prefix. AWS endpoint tokens
+are generated on demand by the Trigger.dev runtime, restricted to port 9000,
+and never stored. The prescribed token appears only in the TLS-protected
+WebSocket subprotocol during the AWS-authenticated upgrade.
 
 ## Automated image promotion
 
 `.github/workflows/aws-lambda-microvm-release.yml` publishes a new image only
 when MicroVM image inputs change on `main`, or when it is run manually. It does
 not float production to AWS's implicit latest version. Instead it waits for the
-exact published version, launches and terminates a short-lived smoke-test VM,
-pins that version in a new Trigger.dev production worker, and leaves Vercel
-unchanged. Older AWS image versions remain available for an explicit rollback.
+exact published version, launches a short-lived VM, executes a real command
+through its authenticated WebSocket, terminates it, pins that version in a new
+Trigger.dev production worker, and leaves Vercel unchanged. Older AWS image
+versions remain available for an explicit rollback.
 
 The CloudFormation stack creates a GitHub OIDC release role, so GitHub Actions
 does not need long-lived AWS access keys. Create a GitHub environment named
@@ -164,10 +172,11 @@ TRIGGER_ACCESS_TOKEN=<Trigger.dev personal access token allowed to deploy this p
 ```
 
 The workflow only synchronizes non-secret MicroVM release configuration into
-Trigger.dev. The dedicated AWS runtime identity credentials and the existing
-Convex/Centrifugo secrets must already be configured directly in Trigger.dev;
-Vercel retains only the AWS credentials and Convex key required by Data
-Controls cleanup. They are not copied through GitHub Actions.
+Trigger.dev. The dedicated AWS runtime identity credentials and existing Convex
+service key must already be configured directly in Trigger.dev; local/desktop
+sandbox support also keeps its existing Centrifugo values there. Vercel retains
+only the AWS credentials and Convex key required by Data Controls cleanup. They
+are not copied through GitHub Actions.
 
 ## 5. Validate the Ultra-only gradual rollout
 
@@ -180,8 +189,9 @@ Preview and Trigger.dev development runs use AWS for Ultra users so the
 candidate remains testable without widening production.
 
 Measure actual acquisition exposure with `cloud_sandbox_provider_selected`.
-It includes the provider, rollout variant, subscription tier, acquisition path,
-acquisition duration, create attempts, and evaluated feature-flag value. Failed
+It includes the provider, transport (`aws_websocket` or `e2b_sdk`), rollout
+variant, subscription tier, acquisition path, acquisition duration, create
+attempts, and evaluated feature-flag value. Failed
 acquisitions emit `cloud_sandbox_acquisition_failed` with the intended provider,
 rollout variant, failure stage, duration, and privacy-safe error name. Compare
 the `hackerai-agent_run` outcome and Trigger duration/cost fields by
@@ -225,13 +235,11 @@ the non-loopback resolver supplied by the MicroVM runtime. An explicit `-r`
 resolver still takes precedence. The wrapper also disables the per-VM update
 check because images are immutable; an explicit `-up` request still works.
 
-The lifecycle server hosts the outbound command relay in its already
-snapshotted Node process. Suspend, resume, termination, and unexpected relay
-restart are serialized in-process; `/run` does not fork a second Node worker.
-The launcher watches the Convex session reactively while AWS allocates the VM,
-then overlaps readiness with the durable MicroVM-ID attachment. It still waits
-for that attachment before returning so failure cleanup always has a persisted
-or locally held AWS identifier.
+The lifecycle process also hosts the direct command server in the snapshotted
+Node process. Suspend, resume, termination, and unexpected guest restart are
+serialized in-process; `/run` does not fork a second Node worker. The launcher
+persists the MicroVM ID before opening the direct endpoint, so every failure
+path can terminate using either the durable or locally held AWS identifier.
 
 For network correctness, start known open and closed TCP/UDP listeners on a
 separate controlled host. Verify `nc`, `nmap -sT`, `nmap -sS`, `naabu`, and a UDP
@@ -257,10 +265,10 @@ attributed to the AWS rollout so the failure-rate guardrail stays honest.
 
 ## Known boundaries
 
-- Lambda's public inbound endpoint supports application protocols over HTTPS,
-  not arbitrary inbound TCP/UDP. HackerAI therefore uses outbound Centrifugo
-  for command transport. Reverse-listener scenarios still require an external
-  relay or a VPC design that supports the required callback path.
+- Lambda's authenticated inbound endpoint supports HTTP-family protocols,
+  including HackerAI's direct WebSocket, but not arbitrary inbound TCP/UDP.
+  Reverse-listener scenarios still require an external relay or a VPC design
+  that supports the required callback path.
 - The managed internet connector must be validated with the capability suite;
   guest raw-socket capability alone does not prove that every network path has
   native semantics.

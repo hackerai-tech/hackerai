@@ -151,6 +151,8 @@ export const createTools = (
         chat_id: chatId,
         trigger_run_id: triggerRunId,
         provider,
+        cloud_sandbox_transport:
+          provider === "aws-lambda-microvm" ? "aws_websocket" : "e2b_sdk",
         subscription,
         subscription_tier: subscription,
         agent_run_kind: cloudSandboxContext.runKind,
@@ -166,7 +168,7 @@ export const createTools = (
           provider === "aws-lambda-microvm"
             ? (process.env.AWS_LAMBDA_MICROVM_IMAGE_VERSION ?? "latest")
             : (process.env.E2B_TEMPLATE ?? "terminal-agent-sandbox"),
-        cloud_sandbox_provider_event_version: 2,
+        cloud_sandbox_provider_event_version: 3,
       });
     }
   };

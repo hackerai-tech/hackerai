@@ -733,6 +733,39 @@ export const attachCloudMicrovm = mutation({
   },
 });
 
+export const markCloudDirectReady = mutation({
+  args: {
+    serviceKey: v.string(),
+    userId: v.string(),
+    sessionId: v.string(),
+    microvmId: v.string(),
+  },
+  returns: v.boolean(),
+  handler: async (ctx, args) => {
+    validateServiceKey(args.serviceKey);
+    const session = await ctx.db
+      .query("cloud_sandbox_sessions")
+      .withIndex("by_session_id", (q) => q.eq("session_id", args.sessionId))
+      .unique();
+    if (
+      !session ||
+      session.user_id !== args.userId ||
+      session.microvm_id !== args.microvmId ||
+      (session.status !== "starting" && session.status !== "running")
+    ) {
+      return false;
+    }
+    const now = Date.now();
+    await ctx.db.patch(session._id, {
+      status: "running",
+      relay_ready_at: now,
+      last_connected_at: now,
+      updated_at: now,
+    });
+    return true;
+  },
+});
+
 export const markCloudSessionCleanupPending = mutation({
   args: {
     serviceKey: v.string(),

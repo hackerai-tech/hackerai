@@ -68,6 +68,7 @@ describe("cloud sandbox rollout telemetry", () => {
         chat_id: "chat-1",
         trigger_run_id: "run-1",
         provider: "e2b",
+        cloud_sandbox_transport: "e2b_sdk",
         subscription_tier: "ultra",
         rollout_eligible: true,
         rollout_variant: "e2b",
@@ -75,7 +76,7 @@ describe("cloud sandbox rollout telemetry", () => {
         [AWS_LAMBDA_MICROVM_ROLLOUT_FEATURE_PROPERTY]: false,
         failure_stage: "ensure_cloud_sandbox",
         error_name: "SandboxUnavailableError",
-        cloud_sandbox_acquisition_failed_event_version: 1,
+        cloud_sandbox_acquisition_failed_event_version: 2,
       }),
     );
     expect(JSON.stringify(mockEvent.mock.calls[0])).not.toContain(
