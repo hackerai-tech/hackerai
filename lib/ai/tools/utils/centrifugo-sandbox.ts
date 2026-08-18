@@ -290,6 +290,10 @@ export class CentrifugoSandbox extends EventEmitter {
     return this.connectionInfo.name;
   }
 
+  getConnectionInfo(): Readonly<ConnectionInfo> {
+    return this.connectionInfo;
+  }
+
   getCloudProvider(): "aws-lambda-microvm" | null {
     return this.connectionInfo.cloudProvider ?? null;
   }

@@ -74,6 +74,12 @@ const NOISY_TIMEOUT_MIN_BUFFERED_CHARS = 256 * 1024;
 // return in ~half a second instead of blocking the user-supplied timeout
 // ceiling. The agent can follow up with action=wait/send.
 const INTERACTIVE_QUIET_WINDOW_MS = 500;
+const LOCAL_COMMAND_RELAY_UNSUBSCRIBED =
+  /local sandbox connection\s+\S+\s+is not subscribed to the command relay/i;
+
+export const isLocalCommandRelayUnsubscribedError = (error: unknown): boolean =>
+  error instanceof Error &&
+  LOCAL_COMMAND_RELAY_UNSUBSCRIBED.test(error.message);
 
 const getTerminalProcessStatus = (
   result: Record<string, unknown>,
@@ -500,6 +506,67 @@ export const createRunTerminalCmd = (context: ToolContext) => {
         // Get fresh sandbox and verify it's ready
         const { sandbox } = await getApprovedExecutionSandbox();
 
+        const executeWithLocalRelayRecovery = async (
+          sandboxInstance: typeof sandbox,
+        ) => {
+          try {
+            return await executeCommand(sandboxInstance);
+          } catch (error) {
+            if (
+              !isCentrifugoSandbox(sandboxInstance) ||
+              !isLocalCommandRelayUnsubscribedError(error) ||
+              !sandboxManager.recoverLocalConnection
+            ) {
+              throw error;
+            }
+
+            const staleConnectionId = sandboxInstance.getConnectionId();
+            console.warn(
+              JSON.stringify({
+                timestamp: new Date().toISOString(),
+                level: "warn",
+                event: "agent_terminal_local_relay_recovery_started",
+                ...buildTerminalLogContext(),
+                chat_id: context.chatId,
+                user_id: context.userID,
+                subscription: context.subscription ?? "unknown",
+                tool_call_id: toolCallId,
+                stale_connection_id: staleConnectionId,
+              }),
+            );
+
+            await measureSandboxRecovery(() =>
+              sandboxManager.recoverLocalConnection!(
+                staleConnectionId,
+                "command_relay_unsubscribed",
+              ),
+            );
+            const { sandbox: recoveredSandbox } =
+              await getApprovedExecutionSandbox();
+
+            console.warn(
+              JSON.stringify({
+                timestamp: new Date().toISOString(),
+                level: "warn",
+                event: "agent_terminal_local_relay_recovery_completed",
+                ...buildTerminalLogContext(),
+                chat_id: context.chatId,
+                user_id: context.userID,
+                subscription: context.subscription ?? "unknown",
+                tool_call_id: toolCallId,
+                stale_connection_id: staleConnectionId,
+                replacement_connection_id: isCentrifugoSandbox(recoveredSandbox)
+                  ? recoveredSandbox.getConnectionId()
+                  : null,
+              }),
+            );
+
+            // The relay presence check rejects before the command is published,
+            // so one retry on the verified same-machine successor is safe.
+            return executeCommand(recoveredSandbox);
+          }
+        };
+
         // Bail early if sandbox was already marked unavailable by any tool
         if (sandboxManager.isSandboxUnavailable()) {
           return {
@@ -641,17 +708,19 @@ export const createRunTerminalCmd = (context: ToolContext) => {
             });
 
             if (!recovery.ok) return recovery.response;
-            return isE2BSandbox(recovery.sandbox) && !is_background
+            return await (isE2BSandbox(recovery.sandbox) && !is_background
               ? withE2BSandboxLeaseHeartbeat(recovery.sandbox, () =>
-                  executeCommand(recovery.sandbox),
+                  executeWithLocalRelayRecovery(recovery.sandbox),
                 )
-              : executeCommand(recovery.sandbox);
+              : executeWithLocalRelayRecovery(recovery.sandbox));
           }
         }
 
-        return isE2BSandbox(sandbox) && !is_background
-          ? withE2BSandboxLeaseHeartbeat(sandbox, () => executeCommand(sandbox))
-          : executeCommand(sandbox);
+        return await (isE2BSandbox(sandbox) && !is_background
+          ? withE2BSandboxLeaseHeartbeat(sandbox, () =>
+              executeWithLocalRelayRecovery(sandbox),
+            )
+          : executeWithLocalRelayRecovery(sandbox));
 
         async function executeCommand(sandboxInstance: typeof sandbox) {
           captureAgentBrowserUsage({
@@ -1084,6 +1153,13 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                 // a process is terminated externally (e.g., by our abort handler).
                 // We must not retry these as the termination was intentional.
                 if (error.message.includes("signal:")) {
+                  return true;
+                }
+
+                // Presence is checked before the command is published. Handle
+                // this once at the sandbox layer instead of backing off against
+                // the same stale relay connection six times.
+                if (isLocalCommandRelayUnsubscribedError(error)) {
                   return true;
                 }
 

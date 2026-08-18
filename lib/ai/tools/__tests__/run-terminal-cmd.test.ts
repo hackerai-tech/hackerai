@@ -870,6 +870,125 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
     ).toContain("echo hi");
   });
 
+  test("retires an unsubscribed relay and retries once on its verified successor", async () => {
+    const relayError = new Error(
+      "Local sandbox connection conn-stale is not subscribed to the command relay. Reconnect the local runner or Desktop app, wait until it is ready, then try again.",
+    );
+    const staleSandbox = {
+      sandboxKind: "centrifugo" as const,
+      getConnectionId: () => "conn-stale",
+      isWindows: () => false,
+      commands: { run: jest.fn(async () => Promise.reject(relayError)) },
+    };
+    const replacementSandbox = {
+      sandboxKind: "centrifugo" as const,
+      getConnectionId: () => "conn-replacement",
+      isWindows: () => false,
+      commands: {
+        run: jest.fn(
+          async (_cmd: string, opts?: { onStdout?: (s: string) => void }) => {
+            opts?.onStdout?.("recovered\n");
+            return { stdout: "recovered\n", stderr: "", exitCode: 0 };
+          },
+        ),
+      },
+    };
+    const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+    const { context, sandboxManager } = makeContext({
+      sandbox: staleSandbox,
+    });
+    const recoverLocalConnection = jest.fn(async () => {
+      sandboxManager.getSandbox.mockResolvedValue({
+        sandbox: replacementSandbox,
+      });
+      return { sandbox: replacementSandbox };
+    });
+    Object.assign(sandboxManager, { recoverLocalConnection });
+
+    try {
+      const result = (await runTool(createRunTerminalCmd(context), {
+        command: "echo recovered",
+        brief: "verify local recovery",
+        is_background: false,
+        timeout: 5,
+        interactive: false,
+      })) as {
+        result: { output: string; exitCode: number; processStarted?: boolean };
+      };
+
+      expect(result.result).toMatchObject({
+        output: expect.stringContaining("recovered"),
+        exitCode: 0,
+        processStarted: true,
+      });
+      expect(staleSandbox.commands.run).toHaveBeenCalledTimes(1);
+      expect(recoverLocalConnection).toHaveBeenCalledWith(
+        "conn-stale",
+        "command_relay_unsubscribed",
+      );
+      expect(replacementSandbox.commands.run).toHaveBeenCalledTimes(1);
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  test("does not reuse an approval after stale-relay recovery changes the connection", async () => {
+    const staleSandbox = {
+      sandboxKind: "centrifugo" as const,
+      getConnectionId: () => "conn-stale",
+      isWindows: () => false,
+      commands: {
+        run: jest.fn(async () => {
+          throw new Error(
+            "Local sandbox connection conn-stale is not subscribed to the command relay.",
+          );
+        }),
+      },
+    };
+    const replacementSandbox = {
+      sandboxKind: "centrifugo" as const,
+      getConnectionId: () => "conn-replacement",
+      isWindows: () => false,
+      commands: { run: jest.fn() },
+    };
+    const requestToolApproval = jest.fn(async () => ({
+      approved: true as const,
+      approvalId: "approval-1",
+      sandboxIdentity: "connection:conn-stale" as const,
+    }));
+    const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+    const { context, sandboxManager } = makeContext({
+      sandbox: staleSandbox,
+      requestToolApproval,
+    });
+    Object.assign(sandboxManager, {
+      recoverLocalConnection: jest.fn(async () => {
+        sandboxManager.getSandbox.mockResolvedValue({
+          sandbox: replacementSandbox,
+        });
+        return { sandbox: replacementSandbox };
+      }),
+    });
+
+    try {
+      const result = (await runTool(createRunTerminalCmd(context), {
+        command: "echo protected",
+        brief: "verify approval binding",
+        is_background: false,
+        timeout: 5,
+        interactive: false,
+      })) as { result: { error: string; exitCode: number } };
+
+      expect(result.result.error).toContain(
+        "selected sandbox changed after approval",
+      );
+      expect(result.result.exitCode).toBe(1);
+      expect(replacementSandbox.commands.run).not.toHaveBeenCalled();
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
   test("returns a real opaque session when a foreground command outlives its wait window", async () => {
     let finishCommand!: (result: {
       stdout: string;
