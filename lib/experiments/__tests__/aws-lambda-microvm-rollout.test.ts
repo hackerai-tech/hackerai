@@ -5,23 +5,16 @@ import {
   resolvePersistedSubagentCloudSandboxRollout,
 } from "../aws-lambda-microvm-rollout";
 
-const production = {
-  VERCEL_ENV: "production",
-  TRIGGER_ENV: "PRODUCTION",
-  NODE_ENV: "production",
-};
-
-describe("AWS Lambda MicroVM Ultra rollout", () => {
-  it("hard-gates every non-Ultra plan to E2B before flag evaluation", async () => {
+describe("AWS Lambda MicroVM paid rollout", () => {
+  it("hard-gates the free plan to E2B before flag evaluation", async () => {
     const evaluateFlags = jest.fn();
 
     await expect(
       evaluateAwsLambdaMicrovmRollout({
         posthog: { evaluateFlags } as never,
-        userId: "user-pro",
-        subscription: "pro",
+        userId: "user-free",
+        subscription: "free",
         configuredProvider: "aws-lambda-microvm",
-        environment: production,
       }),
     ).resolves.toMatchObject({
       provider: "e2b",
@@ -41,7 +34,6 @@ describe("AWS Lambda MicroVM Ultra rollout", () => {
         userId: "user-ultra",
         subscription: "ultra",
         configuredProvider: "e2b",
-        environment: production,
       }),
     ).resolves.toMatchObject({
       provider: "e2b",
@@ -51,41 +43,56 @@ describe("AWS Lambda MicroVM Ultra rollout", () => {
     expect(evaluateFlags).not.toHaveBeenCalled();
   });
 
-  it.each([
-    [true, "aws-lambda-microvm", "aws", "flag_enabled"],
-    [false, "e2b", "e2b", "flag_disabled"],
-  ] as const)(
-    "routes an Ultra flag value of %s to %s",
-    async (value, provider, variant, reason) => {
+  it.each(["pro", "pro-plus", "ultra", "team"] as const)(
+    "allows the %s plan to reach PostHog rollout evaluation",
+    async (subscription) => {
       const evaluateFlags = jest.fn(async () => ({
         getFlag: (key: string) =>
-          key === AWS_LAMBDA_MICROVM_ROLLOUT_FLAG_KEY ? value : undefined,
+          key === AWS_LAMBDA_MICROVM_ROLLOUT_FLAG_KEY ? true : undefined,
       }));
 
       await expect(
         evaluateAwsLambdaMicrovmRollout({
           posthog: { evaluateFlags } as never,
-          userId: "user-ultra",
-          subscription: "ultra",
+          userId: `user-${subscription}`,
+          subscription,
           configuredProvider: "aws-lambda-microvm",
-          environment: production,
         }),
       ).resolves.toMatchObject({
-        provider,
+        provider: "aws-lambda-microvm",
         eligible: true,
-        variant,
-        flagValue: value,
-        reason,
+        variant: "aws",
+        flagValue: true,
+        reason: "flag_enabled",
       });
-      expect(evaluateFlags).toHaveBeenCalledWith("user-ultra", {
+      expect(evaluateFlags).toHaveBeenCalledWith(`user-${subscription}`, {
         flagKeys: [AWS_LAMBDA_MICROVM_ROLLOUT_FLAG_KEY],
         personProperties: {
-          subscription: "ultra",
-          subscription_tier: "ultra",
+          subscription,
+          subscription_tier: subscription,
         },
       });
     },
   );
+
+  it("routes a disabled paid flag to E2B", async () => {
+    const evaluateFlags = jest.fn(async () => ({ getFlag: () => false }));
+
+    await expect(
+      evaluateAwsLambdaMicrovmRollout({
+        posthog: { evaluateFlags } as never,
+        userId: "user-pro",
+        subscription: "pro",
+        configuredProvider: "aws-lambda-microvm",
+      }),
+    ).resolves.toMatchObject({
+      provider: "e2b",
+      eligible: true,
+      variant: "e2b",
+      flagValue: false,
+      reason: "flag_disabled",
+    });
+  });
 
   it("fails closed without claiming a control exposure when the flag is absent", async () => {
     const evaluateFlags = jest.fn(async () => ({
@@ -97,7 +104,6 @@ describe("AWS Lambda MicroVM Ultra rollout", () => {
       userId: "user-ultra",
       subscription: "ultra",
       configuredProvider: "aws-lambda-microvm",
-      environment: production,
     });
 
     expect(result).toMatchObject({
@@ -124,7 +130,6 @@ describe("AWS Lambda MicroVM Ultra rollout", () => {
         subscription: "ultra",
         configuredProvider: "aws-lambda-microvm",
         requestId: "run-1",
-        environment: production,
       }),
     ).resolves.toMatchObject({
       provider: "e2b",
@@ -140,24 +145,6 @@ describe("AWS Lambda MicroVM Ultra rollout", () => {
     });
     expect(warn.mock.calls[0][0]).not.toContain("private detail");
     warn.mockRestore();
-  });
-
-  it("enables AWS for Ultra users in non-production previews", async () => {
-    const evaluateFlags = jest.fn();
-    await expect(
-      evaluateAwsLambdaMicrovmRollout({
-        posthog: { evaluateFlags } as never,
-        userId: "user-ultra",
-        subscription: "ultra",
-        configuredProvider: "aws-lambda-microvm",
-        environment: { VERCEL_ENV: "preview", NODE_ENV: "production" },
-      }),
-    ).resolves.toMatchObject({
-      provider: "aws-lambda-microvm",
-      eligible: true,
-      reason: "non_production_ultra",
-    });
-    expect(evaluateFlags).not.toHaveBeenCalled();
   });
 
   it("preserves the parent provider for validation subagents", () => {
@@ -182,16 +169,27 @@ describe("AWS Lambda MicroVM Ultra rollout", () => {
         sandboxIdentity: "e2b:sandbox-123",
       }),
     ).toMatchObject({ provider: "e2b", flagValue: false });
-    const downgradedAssignment = resolvePersistedSubagentCloudSandboxRollout({
-      subscription: "pro",
+    expect(
+      resolvePersistedSubagentCloudSandboxRollout({
+        subscription: "pro",
+        sandboxPreference: "e2b",
+        sandboxIdentity: "connection:paid-aws-relay",
+      }),
+    ).toMatchObject({
+      provider: "aws-lambda-microvm",
+      eligible: true,
+      flagValue: true,
+    });
+    const freeAssignment = resolvePersistedSubagentCloudSandboxRollout({
+      subscription: "free",
       sandboxPreference: "e2b",
       sandboxIdentity: "connection:stale-aws-relay",
     });
-    expect(downgradedAssignment).toMatchObject({
+    expect(freeAssignment).toMatchObject({
       provider: "e2b",
       eligible: false,
     });
-    expect(downgradedAssignment).not.toHaveProperty("flagValue");
+    expect(freeAssignment).not.toHaveProperty("flagValue");
   });
 
   it("carries the evaluated flag value on provider outcome events", () => {

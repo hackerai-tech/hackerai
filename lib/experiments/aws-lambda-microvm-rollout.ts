@@ -16,7 +16,6 @@ export type AwsLambdaMicrovmRolloutAssignment = {
   reason:
     | "provider_disabled"
     | "subscription_ineligible"
-    | "non_production_ultra"
     | "flag_enabled"
     | "flag_disabled"
     | "flag_unavailable"
@@ -41,12 +40,6 @@ export function getAwsLambdaMicrovmRolloutTelemetryProperties(
   };
 }
 
-type RolloutEnvironment = {
-  VERCEL_ENV?: string;
-  TRIGGER_ENV?: string;
-  NODE_ENV?: string;
-};
-
 const assignment = (
   provider: CloudSandboxProvider,
   eligible: boolean,
@@ -61,17 +54,12 @@ const assignment = (
   reason,
 });
 
-const isNonProductionEnvironment = (environment: RolloutEnvironment) =>
-  environment.VERCEL_ENV === "preview" ||
-  environment.TRIGGER_ENV?.toLowerCase() === "development" ||
-  environment.NODE_ENV === "development";
-
 /**
  * Resolve the cloud provider once per parent Agent run.
  *
- * The application-level Ultra check is intentionally independent of PostHog
- * targeting, so an accidentally broadened flag cannot expose another plan.
- * Evaluation failures route to E2B, which is the established control.
+ * Free users remain hard-gated outside PostHog because they cannot use a cloud
+ * sandbox. Every paid plan is eligible for the rollout, while PostHog remains
+ * the final provider gate. Evaluation failures route to E2B.
  */
 export async function evaluateAwsLambdaMicrovmRollout({
   posthog,
@@ -79,27 +67,18 @@ export async function evaluateAwsLambdaMicrovmRollout({
   subscription,
   configuredProvider,
   requestId,
-  environment = {
-    VERCEL_ENV: process.env.VERCEL_ENV,
-    TRIGGER_ENV: process.env.TRIGGER_ENV,
-    NODE_ENV: process.env.NODE_ENV,
-  },
 }: {
   posthog: Pick<PostHog, "evaluateFlags"> | null;
   userId: string;
   subscription: SubscriptionTier;
   configuredProvider: CloudSandboxProvider;
   requestId?: string;
-  environment?: RolloutEnvironment;
 }): Promise<AwsLambdaMicrovmRolloutAssignment> {
   if (configuredProvider !== "aws-lambda-microvm") {
     return assignment("e2b", false, "provider_disabled");
   }
-  if (subscription !== "ultra") {
+  if (subscription === "free") {
     return assignment("e2b", false, "subscription_ineligible");
-  }
-  if (isNonProductionEnvironment(environment)) {
-    return assignment("aws-lambda-microvm", true, "non_production_ultra", true);
   }
   if (!posthog) {
     return assignment("e2b", true, "flag_unavailable");
@@ -154,7 +133,7 @@ export function resolvePersistedSubagentCloudSandboxRollout({
   sandboxPreference?: SandboxPreference;
   sandboxIdentity?: string;
 }): AwsLambdaMicrovmRolloutAssignment {
-  const eligible = subscription === "ultra";
+  const eligible = subscription !== "free";
   const hasAwsIdentity =
     sandboxIdentity?.startsWith("aws:") ||
     (sandboxPreference === "e2b" && sandboxIdentity?.startsWith("connection:"));
