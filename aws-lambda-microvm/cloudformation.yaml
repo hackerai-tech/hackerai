@@ -74,9 +74,6 @@ Resources:
           - Effect: Allow
             Action: iam:PassRole
             Resource: !GetAtt MicrovmExecutionRole.Arn
-            Condition:
-              StringEquals:
-                iam:PassedToService: lambda.amazonaws.com
 
   MicrovmExecutionRole:
     Type: AWS::IAM::Role
