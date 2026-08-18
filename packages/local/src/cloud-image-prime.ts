@@ -62,6 +62,9 @@ async function runBoundedCommand(
 async function primePty(): Promise<void> {
   const runner = new ProcessRunner();
   let primeError: unknown;
+  let hasPrimeError = false;
+  let shutdownError: unknown;
+  let hasShutdownError = false;
   try {
     await new Promise<void>((resolve, reject) => {
       const sessionId = "image-validation";
@@ -88,15 +91,20 @@ async function primePty(): Promise<void> {
     });
   } catch (error) {
     primeError = error;
-    throw error;
+    hasPrimeError = true;
   } finally {
     try {
       await runner.shutdown();
-    } catch (shutdownError) {
-      if (primeError === undefined) throw shutdownError;
-      runner.dispose();
+    } catch (error) {
+      if (hasPrimeError) runner.dispose();
+      else {
+        shutdownError = error;
+        hasShutdownError = true;
+      }
     }
   }
+  if (hasPrimeError) throw primeError;
+  if (hasShutdownError) throw shutdownError;
 }
 
 export async function primeCloudImageWorkingSet(
