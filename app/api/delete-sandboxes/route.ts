@@ -52,7 +52,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const agentCleanup = await closeAndCancelAgentResources(
+    await closeAndCancelAgentResources(
       [
         ...activeAgentResources.runs,
         ...childCancellation.triggerRunIds.map((triggerRunId) => ({
@@ -62,22 +62,12 @@ export async function POST(req: NextRequest) {
       ],
       SANDBOX_DELETION_REASON,
     );
-    const { total, killed, alreadyGone } =
-      await terminateCloudSandboxesForUser(userId);
+    await terminateCloudSandboxesForUser(userId);
 
-    return new Response(
-      JSON.stringify({
-        success: true,
-        total,
-        killed,
-        alreadyGone,
-        ...agentCleanup,
-      }),
-      {
-        status: 200,
-        headers: { "Content-Type": "application/json" },
-      },
-    );
+    // Cleanup counts and provider details are operational telemetry. A 204 is
+    // sufficient for the client to confirm that the requested deletion
+    // completed without exposing internal sandbox topology.
+    return new Response(null, { status: 204 });
   } catch (error) {
     console.error("Error deleting sandboxes:", error);
     return new Response(

@@ -48,15 +48,19 @@ describe("POST /api/delete-sandboxes", () => {
   beforeAll(() => {
     global.Response = class TestResponse {
       status: number;
-      private body: string;
+      private body: string | null;
 
-      constructor(body: string, init?: ResponseInit) {
+      constructor(body: string | null, init?: ResponseInit) {
         this.body = body;
         this.status = init?.status ?? 200;
       }
 
       async json() {
-        return JSON.parse(this.body);
+        return JSON.parse(this.body ?? "");
+      }
+
+      async text() {
+        return this.body ?? "";
       }
     } as unknown as typeof Response;
   });
@@ -94,7 +98,7 @@ describe("POST /api/delete-sandboxes", () => {
     errorSpy.mockRestore();
   });
 
-  it("treats already-gone sandbox kills as successful delete progress", async () => {
+  it("returns no operational details after successful deletion", async () => {
     mockTerminateCloudSandboxesForUser.mockResolvedValue({
       total: 2,
       killed: 1,
@@ -102,17 +106,8 @@ describe("POST /api/delete-sandboxes", () => {
     });
 
     const response = await POST({} as any);
-    const body = await response.json();
-
-    expect(response.status).toBe(200);
-    expect(body).toEqual({
-      success: true,
-      total: 2,
-      killed: 1,
-      alreadyGone: 1,
-      canceledTriggerRuns: 2,
-      closedApprovalSessions: 1,
-    });
+    expect(response.status).toBe(204);
+    await expect(response.text()).resolves.toBe("");
     expect(mockGetActiveTriggerRunsForUser).toHaveBeenCalledWith({
       userId: "user_123",
     });
