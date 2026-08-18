@@ -34,6 +34,7 @@ jobs:
       AWS_LAMBDA_MICROVM_BUILD_ROLE_ARN: ${{ vars.AWS_LAMBDA_MICROVM_BUILD_ROLE_ARN }}
       AWS_LAMBDA_MICROVM_EXECUTION_ROLE_ARN: ${{ vars.AWS_LAMBDA_MICROVM_EXECUTION_ROLE_ARN }}
       AWS_RELEASE_ROLE_ARN: ${{ vars.AWS_RELEASE_ROLE_ARN }}
+      CONVEX_DEPLOY_KEY: ${{ secrets.CONVEX_DEPLOY_KEY }}
       TRIGGER_PROJECT_ID: ${{ vars.TRIGGER_PROJECT_ID }}
       TRIGGER_ACCESS_TOKEN: ${{ secrets.TRIGGER_ACCESS_TOKEN }}
 
@@ -46,6 +47,7 @@ jobs:
             AWS_LAMBDA_MICROVM_BUILD_ROLE_ARN
             AWS_LAMBDA_MICROVM_EXECUTION_ROLE_ARN
             AWS_RELEASE_ROLE_ARN
+            CONVEX_DEPLOY_KEY
             TRIGGER_PROJECT_ID
             TRIGGER_ACCESS_TOKEN
           )
@@ -80,6 +82,9 @@ jobs:
 
       - name: Type check release sources
         run: pnpm typecheck
+
+      - name: Deploy production Convex backend
+        run: pnpm exec convex deploy --message "AWS Lambda MicroVM release ${GITHUB_SHA}"
 
       - name: Authenticate to AWS with GitHub OIDC
         uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3

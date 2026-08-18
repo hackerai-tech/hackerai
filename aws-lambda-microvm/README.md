@@ -83,6 +83,8 @@ pnpm exec convex deploy
 The Convex deployment must already contain `CONVEX_SERVICE_ROLE_KEY`. Existing
 `CENTRIFUGO_WS_URL` and `CENTRIFUGO_TOKEN_SECRET` values remain necessary for
 local/desktop sandboxes, but the AWS MicroVM command path does not use them.
+The protected production release workflow performs this deployment
+automatically; the manual command is only for a local/operator release.
 
 ## 4. Configure HackerAI runtimes
 
@@ -168,15 +170,17 @@ TRIGGER_PROJECT_ID=<Trigger.dev project ref>
 Add dedicated CI tokens as environment secrets:
 
 ```text
+CONVEX_DEPLOY_KEY=<production Convex deploy key>
 TRIGGER_ACCESS_TOKEN=<Trigger.dev personal access token allowed to deploy this project>
 ```
 
-The workflow only synchronizes non-secret MicroVM release configuration into
-Trigger.dev. The dedicated AWS runtime identity credentials and existing Convex
-service key must already be configured directly in Trigger.dev; local/desktop
-sandbox support also keeps its existing Centrifugo values there. Vercel retains
-only the AWS credentials and Convex key required by Data Controls cleanup. They
-are not copied through GitHub Actions.
+The workflow deploys the production Convex functions before publishing and
+promoting the image, then synchronizes non-secret MicroVM release configuration
+into Trigger.dev. The dedicated AWS runtime identity credentials and existing
+Convex service key must already be configured directly in Trigger.dev;
+local/desktop sandbox support also keeps its existing Centrifugo values there.
+Vercel retains only the AWS credentials and Convex key required by Data
+Controls cleanup. They are not copied through GitHub Actions.
 
 ## 5. Validate the Ultra-only gradual rollout
 
