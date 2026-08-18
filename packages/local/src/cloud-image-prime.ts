@@ -61,6 +61,7 @@ async function runBoundedCommand(
 
 async function primePty(): Promise<void> {
   const runner = new ProcessRunner();
+  let primeError: unknown;
   try {
     await new Promise<void>((resolve, reject) => {
       const sessionId = "image-validation";
@@ -85,8 +86,16 @@ async function primePty(): Promise<void> {
         rows: 24,
       });
     });
+  } catch (error) {
+    primeError = error;
+    throw error;
   } finally {
-    await runner.shutdown();
+    try {
+      await runner.shutdown();
+    } catch (shutdownError) {
+      if (primeError === undefined) throw shutdownError;
+      runner.dispose();
+    }
   }
 }
 

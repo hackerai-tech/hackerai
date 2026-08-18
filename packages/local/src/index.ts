@@ -540,7 +540,13 @@ export class LocalSandboxClient {
       ) {
         console.error(chalk.yellow("Please regenerate your token in Settings"));
       }
-      await this.cleanup();
+      await this.cleanup().catch((cleanupError: unknown) => {
+        const detail =
+          cleanupError instanceof Error
+            ? cleanupError.message
+            : String(cleanupError);
+        console.warn(chalk.yellow(`⚠️  Cleanup incomplete: ${detail}`));
+      });
       throw error;
     }
   }
@@ -1624,13 +1630,31 @@ ${chalk.cyan("Auto-termination:")}
 
     process.on("SIGINT", async () => {
       console.log(chalk.yellow("\n🛑 Shutting down..."));
-      await client.cleanup();
-      process.exit(0);
+      try {
+        await client.cleanup();
+        process.exit(0);
+      } catch (error) {
+        console.error(
+          chalk.red(
+            `Cleanup failed: ${error instanceof Error ? error.message : String(error)}`,
+          ),
+        );
+        process.exit(1);
+      }
     });
 
     process.on("SIGTERM", async () => {
-      await client.cleanup();
-      process.exit(0);
+      try {
+        await client.cleanup();
+        process.exit(0);
+      } catch (error) {
+        console.error(
+          chalk.red(
+            `Cleanup failed: ${error instanceof Error ? error.message : String(error)}`,
+          ),
+        );
+        process.exit(1);
+      }
     });
 
     client.start().catch((error: unknown) => {
