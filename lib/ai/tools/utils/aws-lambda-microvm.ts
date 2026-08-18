@@ -11,7 +11,6 @@ import { getConvexClient, getConvexUrl } from "@/lib/db/convex-client";
 import { CentrifugoSandbox } from "./centrifugo-sandbox";
 
 const PROVIDER = "aws-lambda-microvm" as const;
-export const AWS_LAMBDA_MICROVM_REGION = "us-east-1" as const;
 const PLATFORM_MAX_DURATION_SECONDS = 8 * 60 * 60;
 const DEFAULT_MAX_DURATION_SECONDS = 4 * 60 * 60;
 const DEFAULT_MIN_REMAINING_SECONDS = 2 * 60 * 60 + 5 * 60;
@@ -200,7 +199,10 @@ function positiveInt(name: string, fallback: number): number {
 }
 
 export function getAwsLambdaMicrovmConfig(): AwsLambdaMicrovmConfig {
-  const region = AWS_LAMBDA_MICROVM_REGION;
+  const region =
+    process.env.AWS_LAMBDA_MICROVM_REGION?.trim() ||
+    process.env.AWS_REGION?.trim() ||
+    "us-east-1";
   const maxDurationSeconds = Math.min(
     PLATFORM_MAX_DURATION_SECONDS,
     positiveInt(

@@ -52,6 +52,7 @@ describe("AWS Lambda MicroVM development logging", () => {
       ...originalEnv,
       NODE_ENV: "development",
       AWS_PROFILE: "hackerai-microvm-admin",
+      AWS_LAMBDA_MICROVM_REGION: "us-east-1",
       AWS_LAMBDA_MICROVM_IMAGE_ID:
         "arn:aws:lambda:us-east-1:630609837323:microvm-image:hackerai-cloud-agent",
       AWS_LAMBDA_MICROVM_IMAGE_VERSION: "6.0",
@@ -361,12 +362,5 @@ describe("AWS Lambda MicroVM development logging", () => {
     expect(config).not.toHaveProperty("suspendedSeconds");
     process.env.AWS_LAMBDA_MICROVM_MAX_DURATION_SECONDS = "28800";
     expect(getAwsLambdaMicrovmConfig().maxDurationSeconds).toBe(28_800);
-  });
-
-  it("keeps MicroVM execution in us-east-1 regardless of AWS region variables", () => {
-    process.env.AWS_LAMBDA_MICROVM_REGION = "eu-west-1";
-    process.env.AWS_REGION = "us-west-2";
-
-    expect(getAwsLambdaMicrovmConfig().region).toBe("us-east-1");
   });
 });

@@ -45,7 +45,6 @@ import { getSandboxWithFallbackGuard } from "./utils/sandbox-fallback";
 import { createE2BResourcePressureObserver } from "@/lib/analytics/sandbox-resource-pressure";
 import { E2B_COST_PER_MS } from "./utils/e2b-cost";
 import { AWS_LAMBDA_MICROVM_COST_PER_MS } from "./utils/aws-lambda-microvm-cost";
-import { AWS_LAMBDA_MICROVM_REGION } from "./utils/aws-lambda-microvm";
 import { phLogger } from "@/lib/posthog/server";
 
 export { isE2BSandbox };
@@ -113,7 +112,9 @@ export const createTools = (
         provider,
         region:
           provider === "aws-lambda-microvm"
-            ? AWS_LAMBDA_MICROVM_REGION
+            ? (process.env.AWS_LAMBDA_MICROVM_REGION ??
+              process.env.AWS_REGION ??
+              "us-east-1")
             : undefined,
         image_version:
           provider === "aws-lambda-microvm"

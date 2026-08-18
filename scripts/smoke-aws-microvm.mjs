@@ -5,7 +5,10 @@ import {
   TerminateMicrovmCommand,
 } from "@aws-sdk/client-lambda-microvms";
 
-const region = "us-east-1";
+const region =
+  process.env.AWS_LAMBDA_MICROVM_REGION ||
+  process.env.AWS_REGION ||
+  "us-east-1";
 const imageIdentifier = process.env.AWS_LAMBDA_MICROVM_IMAGE_ID;
 const imageVersion = process.env.AWS_LAMBDA_MICROVM_IMAGE_VERSION;
 const executionRoleArn = process.env.AWS_LAMBDA_MICROVM_EXECUTION_ROLE_ARN;
