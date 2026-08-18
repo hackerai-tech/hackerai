@@ -425,6 +425,7 @@ async function cleanupCloudSessionCandidates(
 
 type SessionConnectionWaiter = {
   promise: Promise<CloudSession>;
+  armTimeout: () => void;
   dispose: () => Promise<void>;
 };
 
@@ -432,11 +433,13 @@ function createSessionConnectionWaiter(
   userId: string,
   sessionId: string,
   config: AwsLambdaMicrovmConfig,
+  armImmediately = true,
 ): SessionConnectionWaiter {
   const realtime = createConvexRealtimeClient();
   let unsubscribe: (() => void) | undefined;
   let subscriptionStopped = false;
   let timeout: NodeJS.Timeout | undefined;
+  let timeoutArmed = false;
   let settled = false;
   let resolvePromise!: (session: CloudSession) => void;
   let rejectPromise!: (error: Error) => void;
@@ -462,11 +465,18 @@ function createSessionConnectionWaiter(
     else resolvePromise(result);
   };
 
-  timeout = setTimeout(
-    () =>
-      finish(new Error("Timed out waiting for the cloud sandbox guest relay")),
-    SESSION_READY_TIMEOUT_MS,
-  );
+  const armTimeout = (): void => {
+    if (settled || timeoutArmed) return;
+    timeoutArmed = true;
+    timeout = setTimeout(
+      () =>
+        finish(
+          new Error("Timed out waiting for the cloud sandbox guest relay"),
+        ),
+      SESSION_READY_TIMEOUT_MS,
+    );
+  };
+  if (armImmediately) armTimeout();
 
   const registeredUnsubscribe = realtime.onUpdate(
     api.localSandbox.getCloudSessionForBackend,
@@ -503,6 +513,7 @@ function createSessionConnectionWaiter(
 
   return {
     promise,
+    armTimeout,
     dispose: async () => {
       settled = true;
       if (timeout) clearTimeout(timeout);
@@ -879,6 +890,7 @@ export async function ensureAwsLambdaMicrovmConnection(
     userId,
     begin.session.sessionId,
     config,
+    false,
   );
   let microvmId: string | undefined;
   let failureStage = "run_microvm";
@@ -959,6 +971,7 @@ export async function ensureAwsLambdaMicrovmConnection(
     // Do not return until attachCloudMicrovm has durably persisted the AWS ID.
     // The reactive readiness subscription has remained active in parallel.
     failureStage = "wait_for_guest_connection";
+    sessionWaiter.armTimeout();
     const connected = await sessionWaiter.promise;
     const sandbox = createRelaySandbox(userId, connected, config);
     if (!connected.relayReadyAt) {

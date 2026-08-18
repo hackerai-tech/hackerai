@@ -74,4 +74,23 @@ describe("in-process cloud relay lifecycle", () => {
     expect(factory).toHaveBeenCalledTimes(1);
     expect(lifecycle.running).toBe(false);
   });
+
+  it("retains a client when cleanup fails so a lifecycle retry can finish", async () => {
+    const cleanup = jest
+      .fn()
+      .mockRejectedValueOnce(new Error("PTY still running"))
+      .mockResolvedValueOnce(undefined);
+    const lifecycle = new InProcessRelayLifecycle(
+      () => ({ start: jest.fn().mockResolvedValue(undefined), cleanup }),
+      jest.fn(),
+    );
+
+    await lifecycle.run({ sessionId: "one" });
+    await expect(lifecycle.suspend()).rejects.toThrow("PTY still running");
+    expect(lifecycle.running).toBe(true);
+
+    await expect(lifecycle.suspend()).resolves.toBeUndefined();
+    expect(cleanup).toHaveBeenCalledTimes(2);
+    expect(lifecycle.running).toBe(false);
+  });
 });

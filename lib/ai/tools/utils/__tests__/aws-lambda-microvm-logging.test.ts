@@ -424,6 +424,62 @@ describe("AWS Lambda MicroVM development logging", () => {
     jest.useRealTimers();
   });
 
+  it("does not spend the guest readiness budget on AWS allocation", async () => {
+    jest.useFakeTimers();
+    const session = {
+      sessionId: "session-slow-allocation",
+      status: "starting" as const,
+      region: "us-east-1",
+      imageIdentifier: process.env.AWS_LAMBDA_MICROVM_IMAGE_ID,
+      imageVersion: "6.0",
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      bootstrapExpiresAt: Date.now() + 180_000,
+    };
+    let deliverSession!: (value: unknown) => void;
+    let acceptRun!: (value: unknown) => void;
+    mockRealtimeOnUpdate.mockImplementationOnce((_query, _args, callback) => {
+      deliverSession = callback;
+      return mockRealtimeUnsubscribe;
+    });
+    mockMutation
+      .mockResolvedValueOnce({
+        created: true,
+        session,
+        bootstrapToken: "bootstrap-slow-allocation",
+        cleanupCandidates: [],
+      })
+      .mockResolvedValueOnce(true);
+    mockSend.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          acceptRun = resolve;
+        }),
+    );
+    const infoSpy = jest.spyOn(console, "info").mockImplementation();
+    const debugSpy = jest.spyOn(console, "debug").mockImplementation();
+
+    const pending = ensureAwsLambdaMicrovmConnection("user-slow-allocation");
+    await jest.advanceTimersByTimeAsync(0);
+    await jest.advanceTimersByTimeAsync(90_000);
+    acceptRun({
+      microvmId: "microvm-slow-allocation",
+      $metadata: { requestId: "run-slow-allocation", httpStatusCode: 200 },
+    });
+    deliverSession({
+      ...session,
+      status: "running",
+      microvmId: "microvm-slow-allocation",
+      connectionId: "connection-slow-allocation",
+      relayReadyAt: Date.now(),
+    });
+
+    await expect(pending).resolves.toBeDefined();
+    infoSpy.mockRestore();
+    debugSpy.mockRestore();
+    jest.useRealTimers();
+  });
+
   it.each(["terminal_status", "query_error"] as const)(
     "closes readiness subscriptions on %s",
     async (mode) => {

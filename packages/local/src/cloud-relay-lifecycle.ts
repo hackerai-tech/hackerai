@@ -80,7 +80,15 @@ export class InProcessRelayLifecycle<Config> {
   private async stopCurrent(terminated: boolean): Promise<void> {
     const client = this.client;
     this.client = null;
-    if (client) await client.cleanup({ terminated });
+    if (!client) return;
+    try {
+      await client.cleanup({ terminated });
+    } catch (error) {
+      // Retain the cleanup handle so an AWS lifecycle-hook retry cannot report
+      // success while the original process trees are still running.
+      if (this.client === null) this.client = client;
+      throw error;
+    }
   }
 
   private handleFatal(client: InProcessRelayClient, error: Error): void {

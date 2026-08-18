@@ -213,10 +213,9 @@ export class ProcessRunner {
       }
 
       try {
-        if (this.killProcess(sessionId, proc, "SIGKILL")) {
-          // Keep tracking until node-pty confirms exit. Signal delivery is not
-          // proof that the PTY process tree is gone.
-        }
+        // Keep tracking until node-pty confirms exit. Signal delivery is not
+        // proof that the PTY process tree is gone.
+        this.killProcess(sessionId, proc, "SIGKILL");
       } catch {
         // killProcess already emitted the error event.
       } finally {
@@ -250,7 +249,6 @@ export class ProcessRunner {
       await new Promise((resolve) => setTimeout(resolve, 25));
     }
     if (this.activeProcesses.size > 0) {
-      this.disposeTimers(false);
       throw new Error(
         `Timed out terminating ${this.activeProcesses.size} PTY process(es)`,
       );
