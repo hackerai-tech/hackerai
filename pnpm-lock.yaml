@@ -88,14 +88,14 @@ importers:
         specifier: 3.0.210
         version: 3.0.210(react@19.2.8)(zod@4.4.3)
       '@aws-sdk/client-lambda-microvms':
-        specifier: 3.1111.0
-        version: 3.1111.0
+        specifier: 3.1107.0
+        version: 3.1107.0
       '@aws-sdk/client-s3':
-        specifier: 3.1111.0
-        version: 3.1111.0
+        specifier: 3.1107.0
+        version: 3.1107.0
       '@aws-sdk/s3-request-presigner':
-        specifier: 3.1111.0
-        version: 3.1111.0
+        specifier: 3.1107.0
+        version: 3.1107.0
       '@convex-dev/aggregate':
         specifier: ^0.2.2
         version: 0.2.2(convex@1.44.0(react@19.2.8))
@@ -110,7 +110,7 @@ importers:
         version: 2.7.1
       '@langchain/community':
         specifier: ^1.1.29
-        version: 1.1.29(3ac2e95b35049d865025c7a8ea4915b1)
+        version: 1.1.29(9f4bd54004146f8b18df0fbe57d1e777)
       '@legendapp/list':
         specifier: 3.3.6
         version: 3.3.6(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
@@ -585,12 +585,12 @@ packages:
     resolution: {integrity: sha512-VCpnmyHQ1IH49ni3LXnQj7DPr7rmcJmzYeiCkYdCcfgNtkvOj38cdcL9lapBWoItZWFACJPFJlymqC7/gem3Gw==}
     engines: {node: '>=20.0.0'}
 
-  '@aws-sdk/client-lambda-microvms@3.1111.0':
-    resolution: {integrity: sha512-jYdZa3qBTOO/c6O4LAUcoD5PJwIgbyM8SnKwW+2truqgLhpco9El0bIBrMY7EaIjJsRFlCF73mNfqLr6721kXA==}
+  '@aws-sdk/client-lambda-microvms@3.1107.0':
+    resolution: {integrity: sha512-shjiDIVSIhPS+RUvRUg38f6mb1mBz+bHYCQT8QgRJi+czU2hhM4GJRByHcNz2YypMXRX6S3vmWBk3jzJQBIGCw==}
     engines: {node: '>=20.0.0'}
 
-  '@aws-sdk/client-s3@3.1111.0':
-    resolution: {integrity: sha512-VnLT6aSTN8tWl/NsXUysXNZor7wQBp9CRwufo7kt8cwGXvHLZ0S/cV1K9WFcREGboVYSo3NGQ3ZvU7LRidh2aQ==}
+  '@aws-sdk/client-s3@3.1107.0':
+    resolution: {integrity: sha512-95N3VATuqbyhEUO0YHQSsgKdkG872rZXm+O2ZkffsF8RJLRDQAsplVD8/OdWW3vX78vNDogK/zbfD1VG1OcSIA==}
     engines: {node: '>=20.0.0'}
 
   '@aws-sdk/core@3.977.8':
@@ -637,8 +637,8 @@ packages:
     resolution: {integrity: sha512-bit+VpqWNyi3wHxFoTsTliNXimCSL2r2OeDTm7ZrG+YsTZ2D7ofDJ6r/t9PVBn80i6/v0X2h9Tgw6QP2MAKfPw==}
     engines: {node: '>=20.0.0'}
 
-  '@aws-sdk/s3-request-presigner@3.1111.0':
-    resolution: {integrity: sha512-ACp/VtDTw6AjFW5Q3M59uAMrBbAHeQS0UBIOIgUROO98Z3uhpiy37k9RmvxbXYVugmTcdNTy4DPVQtLG8sDy6g==}
+  '@aws-sdk/s3-request-presigner@3.1107.0':
+    resolution: {integrity: sha512-/jlRXrrYLlVYmF33+ppCFMi8G+vYkt3LQZtwyVifDXBx66U1j1KqKstoGq6GXOQfb4I/gmojzACrrPU8eL37hw==}
     engines: {node: '>=20.0.0'}
 
   '@aws-sdk/signature-v4-multi-region@3.996.45':
@@ -8751,7 +8751,7 @@ snapshots:
       '@smithy/types': 4.16.1
       tslib: 2.8.1
 
-  '@aws-sdk/client-lambda-microvms@3.1111.0':
+  '@aws-sdk/client-lambda-microvms@3.1107.0':
     dependencies:
       '@aws-sdk/core': 3.977.8
       '@aws-sdk/credential-provider-node': 3.972.80
@@ -8762,7 +8762,7 @@ snapshots:
       '@smithy/types': 4.16.1
       tslib: 2.8.1
 
-  '@aws-sdk/client-s3@3.1111.0':
+  '@aws-sdk/client-s3@3.1107.0':
     dependencies:
       '@aws-sdk/checksums': 3.1000.28
       '@aws-sdk/core': 3.977.8
@@ -8891,7 +8891,7 @@ snapshots:
       '@smithy/types': 4.16.1
       tslib: 2.8.1
 
-  '@aws-sdk/s3-request-presigner@3.1111.0':
+  '@aws-sdk/s3-request-presigner@3.1107.0':
     dependencies:
       '@aws-sdk/core': 3.977.8
       '@aws-sdk/signature-v4-multi-region': 3.996.45
@@ -9979,7 +9979,7 @@ snapshots:
       - openai
       - ws
 
-  '@langchain/community@1.1.29(3ac2e95b35049d865025c7a8ea4915b1)':
+  '@langchain/community@1.1.29(9f4bd54004146f8b18df0fbe57d1e777)':
     dependencies:
       '@browserbasehq/stagehand': 1.14.0(@playwright/test@1.62.1)(deepmerge@4.3.1)(dotenv@17.4.2)(openai@6.49.0(@aws-sdk/credential-provider-node@3.972.80)(@smithy/signature-v4@5.6.12)(ws@8.21.3)(zod@4.4.3))(zod@4.4.3)
       '@ibm-cloud/watsonx-ai': 1.6.12
@@ -9997,7 +9997,7 @@ snapshots:
       zod: 4.4.3
     optionalDependencies:
       '@aws-crypto/sha256-js': 5.2.0
-      '@aws-sdk/client-s3': 3.1111.0
+      '@aws-sdk/client-s3': 3.1107.0
       '@aws-sdk/credential-provider-node': 3.972.80
       '@browserbasehq/sdk': 2.6.0
       '@smithy/eventstream-codec': 4.2.14
@@ -14211,7 +14211,7 @@ snapshots:
       isstream: 0.1.2
       jsonwebtoken: 9.0.3
       mime-types: 2.1.35
-      retry-axios: 2.6.0(axios@1.18.0)
+      retry-axios: 2.6.0(axios@1.18.0(debug@4.4.3))
       tough-cookie: 4.1.4
     transitivePeerDependencies:
       - supports-color
@@ -16475,7 +16475,7 @@ snapshots:
 
   resumable-stream@2.2.12: {}
 
-  retry-axios@2.6.0(axios@1.18.0):
+  retry-axios@2.6.0(axios@1.18.0(debug@4.4.3)):
     dependencies:
       axios: 1.18.0(debug@4.4.3)
 
