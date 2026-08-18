@@ -34,9 +34,6 @@ jobs:
       AWS_LAMBDA_MICROVM_BUILD_ROLE_ARN: ${{ vars.AWS_LAMBDA_MICROVM_BUILD_ROLE_ARN }}
       AWS_LAMBDA_MICROVM_EXECUTION_ROLE_ARN: ${{ vars.AWS_LAMBDA_MICROVM_EXECUTION_ROLE_ARN }}
       AWS_RELEASE_ROLE_ARN: ${{ vars.AWS_RELEASE_ROLE_ARN }}
-      VERCEL_ORG_ID: ${{ vars.VERCEL_ORG_ID }}
-      VERCEL_PROJECT_ID: ${{ vars.VERCEL_PROJECT_ID }}
-      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
       TRIGGER_PROJECT_ID: ${{ vars.TRIGGER_PROJECT_ID }}
       TRIGGER_ACCESS_TOKEN: ${{ secrets.TRIGGER_ACCESS_TOKEN }}
 
@@ -49,9 +46,6 @@ jobs:
             AWS_LAMBDA_MICROVM_BUILD_ROLE_ARN
             AWS_LAMBDA_MICROVM_EXECUTION_ROLE_ARN
             AWS_RELEASE_ROLE_ARN
-            VERCEL_ORG_ID
-            VERCEL_PROJECT_ID
-            VERCEL_TOKEN
             TRIGGER_PROJECT_ID
             TRIGGER_ACCESS_TOKEN
           )
@@ -118,22 +112,6 @@ jobs:
       - name: Launch and terminate exact image version
         run: pnpm aws:microvm:smoke
 
-      - name: Link Vercel project
-        run: >-
-          pnpm dlx vercel@59.1.4 link
-          --yes
-          --team "$VERCEL_ORG_ID"
-          --project "$VERCEL_PROJECT_ID"
-          --token "$VERCEL_TOKEN"
-
-      - name: Update pinned Vercel image
-        shell: bash
-        run: |
-          pnpm dlx vercel@59.1.4 env add AWS_LAMBDA_MICROVM_IMAGE_ID production,preview \
-            --force --no-sensitive --yes --value "$AWS_LAMBDA_MICROVM_IMAGE_ID" --token "$VERCEL_TOKEN"
-          pnpm dlx vercel@59.1.4 env add AWS_LAMBDA_MICROVM_IMAGE_VERSION production,preview \
-            --force --no-sensitive --yes --value "$AWS_LAMBDA_MICROVM_IMAGE_VERSION" --token "$VERCEL_TOKEN"
-
       - name: Deploy pinned Trigger.dev worker
         shell: bash
         run: |
@@ -147,14 +125,6 @@ jobs:
             > "$trigger_env_file"
           pnpm exec trigger deploy --env prod --env-file "$trigger_env_file"
 
-      - name: Redeploy Vercel production
-        run: >-
-          pnpm dlx vercel@59.1.4 deploy
-          --prod
-          --force
-          --yes
-          --token "$VERCEL_TOKEN"
-
       - name: Write release summary
         shell: bash
         run: |
@@ -165,5 +135,5 @@ jobs:
             echo "- Version: \`$AWS_LAMBDA_MICROVM_IMAGE_VERSION\`"
             echo "- Smoke-test MicroVM: terminated"
             echo "- Trigger.dev production: deployed"
-            echo "- Vercel production: deployed"
+            echo "- Vercel: unchanged (Agent execution is Trigger.dev-only)"
           } >> "$GITHUB_STEP_SUMMARY"

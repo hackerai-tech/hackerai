@@ -82,8 +82,9 @@ current local/desktop relay.
 
 ## 4. Configure HackerAI runtimes
 
-Set these server-side variables in both Vercel and Trigger.dev, then redeploy
-both runtimes:
+Set these server-side variables in Trigger.dev. Every Agent run executes in a
+Trigger.dev worker, which is the only application runtime that launches or
+reuses a MicroVM:
 
 ```dotenv
 CLOUD_SANDBOX_PROVIDER=aws-lambda-microvm
@@ -102,6 +103,11 @@ The provider region is intentionally fixed in code to `us-east-1` until
 multi-region image publication and routing are implemented. Vercel,
 Trigger.dev, and local development do not need `AWS_REGION` or
 `AWS_LAMBDA_MICROVM_REGION` for this provider.
+
+Vercel does not need the image ID, image version, execution role, or relay
+configuration. Its Data Controls route terminates persisted MicroVM IDs
+directly, so Vercel only needs the dedicated AWS runtime credentials and
+`CONVEX_SERVICE_ROLE_KEY` for that cleanup operation.
 
 Optional controls:
 
@@ -132,8 +138,8 @@ single MicroVM/session, and expire after nine hours.
 when MicroVM image inputs change on `main`, or when it is run manually. It does
 not float production to AWS's implicit latest version. Instead it waits for the
 exact published version, launches and terminates a short-lived smoke-test VM,
-pins that version in Vercel and Trigger.dev, and redeploys both runtimes. Older
-AWS image versions remain available for an explicit rollback.
+pins that version in a new Trigger.dev production worker, and leaves Vercel
+unchanged. Older AWS image versions remain available for an explicit rollback.
 
 The CloudFormation stack creates a GitHub OIDC release role, so GitHub Actions
 does not need long-lived AWS access keys. Create a GitHub environment named
@@ -145,22 +151,20 @@ AWS_RELEASE_ROLE_ARN=<GitHubReleaseRoleArn>
 AWS_LAMBDA_MICROVM_ARTIFACT_BUCKET=<ArtifactBucketName>
 AWS_LAMBDA_MICROVM_BUILD_ROLE_ARN=<BuildRoleArn>
 AWS_LAMBDA_MICROVM_EXECUTION_ROLE_ARN=<ExecutionRoleArn>
-VERCEL_ORG_ID=<Vercel team ID>
-VERCEL_PROJECT_ID=<Vercel project ID>
 TRIGGER_PROJECT_ID=<Trigger.dev project ref>
 ```
 
 Add dedicated CI tokens as environment secrets:
 
 ```text
-VERCEL_TOKEN=<Vercel token allowed to update and deploy this project>
 TRIGGER_ACCESS_TOKEN=<Trigger.dev personal access token allowed to deploy this project>
 ```
 
 The workflow only synchronizes non-secret MicroVM release configuration into
 Trigger.dev. The dedicated AWS runtime identity credentials and the existing
-Convex/Centrifugo secrets must already be configured directly in Vercel and
-Trigger.dev as described above; they are not copied through GitHub Actions.
+Convex/Centrifugo secrets must already be configured directly in Trigger.dev;
+Vercel retains only the AWS credentials and Convex key required by Data
+Controls cleanup. They are not copied through GitHub Actions.
 
 ## 5. Validate before broader rollout
 
@@ -206,7 +210,7 @@ the MicroVM becomes `TERMINATED` in AWS. Check the
 ## Rollback
 
 Terminate existing AWS MicroVM sessions from Data Controls or AWS first. Then
-set `CLOUD_SANDBOX_PROVIDER=e2b` in both Vercel and Trigger.dev and redeploy.
+set `CLOUD_SANDBOX_PROVIDER=e2b` in Trigger.dev and redeploy it.
 The provider never silently falls
 back from AWS to E2B, so configuration or quota failures stay visible during
 the internal rollout.

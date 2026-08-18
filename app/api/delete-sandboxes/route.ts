@@ -1,8 +1,12 @@
 import { getUserIDAndPro } from "@/lib/auth/get-user-id";
 import { NextRequest } from "next/server";
 import { terminateCloudSandboxesForUser } from "@/lib/ai/tools/utils/cloud-sandbox";
+import { getActiveTriggerRunsForUser } from "@/lib/db/actions";
+import { cancelSubagentsForUserDeletion } from "@/lib/db/subagents";
+import { closeAndCancelAgentResources } from "@/lib/api/agent-deletion-cleanup";
 
 export const maxDuration = 60;
+const SANDBOX_DELETION_REASON = "terminal-sandbox-deleted";
 
 export async function POST(req: NextRequest) {
   try {
@@ -23,6 +27,41 @@ export async function POST(req: NextRequest) {
       });
     }
 
+    const activeAgentResources = await getActiveTriggerRunsForUser({ userId });
+    if (activeAgentResources.hasMore) {
+      return new Response(
+        JSON.stringify({
+          error:
+            "Too many active Agent runs to stop safely. Please retry deletion.",
+        }),
+        { status: 409, headers: { "Content-Type": "application/json" } },
+      );
+    }
+
+    const childCancellation = await cancelSubagentsForUserDeletion(
+      userId,
+      SANDBOX_DELETION_REASON,
+    );
+    if (childCancellation.hasMore) {
+      return new Response(
+        JSON.stringify({
+          error:
+            "Too many active validation runs to stop safely. Please retry deletion.",
+        }),
+        { status: 409, headers: { "Content-Type": "application/json" } },
+      );
+    }
+
+    const agentCleanup = await closeAndCancelAgentResources(
+      [
+        ...activeAgentResources.runs,
+        ...childCancellation.triggerRunIds.map((triggerRunId) => ({
+          chatId: "subagent",
+          triggerRunId,
+        })),
+      ],
+      SANDBOX_DELETION_REASON,
+    );
     const { total, killed, alreadyGone } =
       await terminateCloudSandboxesForUser(userId);
 
@@ -32,6 +71,7 @@ export async function POST(req: NextRequest) {
         total,
         killed,
         alreadyGone,
+        ...agentCleanup,
       }),
       {
         status: 200,

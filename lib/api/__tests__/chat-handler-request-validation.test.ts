@@ -1,9 +1,28 @@
+import fs from "fs";
+import path from "path";
 import {
   requireChatMessagesArray,
   requireRetiredTemporaryFieldAbsent,
+  requireVercelChatMode,
 } from "@/lib/api/chat-request-validation";
 
 describe("chat-handler request validation", () => {
+  it("enforces the Trigger.dev Agent boundary before Vercel auth or billing work", () => {
+    const source = fs.readFileSync(
+      path.resolve(__dirname, "../chat-handler.ts"),
+      "utf8",
+    );
+    const modeBoundary = source.indexOf("requireVercelChatMode(rawMode)");
+    const authentication = source.indexOf("getUserIDAndPro(req)");
+    const billingGate = source.indexOf(
+      "assertUserCanMakeCostIncurringRequest(userId)",
+    );
+
+    expect(modeBoundary).toBeGreaterThan(-1);
+    expect(modeBoundary).toBeLessThan(authentication);
+    expect(modeBoundary).toBeLessThan(billingGate);
+  });
+
   it.each([true, false])(
     "rejects retired temporary=%s before persistence",
     (temporary) => {
@@ -34,6 +53,36 @@ describe("chat-handler request validation", () => {
     expect(() =>
       requireRetiredTemporaryFieldAbsent({ messages: [] }),
     ).not.toThrow();
+  });
+
+  it("rejects legacy Vercel Agent execution before downstream work", () => {
+    expect(() => requireVercelChatMode("agent")).toThrow(
+      expect.objectContaining({
+        type: "bad_request",
+        surface: "api",
+        statusCode: 400,
+        cause:
+          "Agent requests must use the Trigger.dev-backed /api/agent endpoint.",
+        metadata: expect.objectContaining({
+          invalid_request_field: "mode",
+          invalid_request_field_reason: "agent_requires_trigger_route",
+          required_endpoint: "/api/agent",
+        }),
+      }),
+    );
+  });
+
+  it("keeps /api/chat limited to ask mode", () => {
+    expect(requireVercelChatMode("ask")).toBe("ask");
+    expect(() => requireVercelChatMode("unknown")).toThrow(
+      expect.objectContaining({
+        type: "bad_request",
+        metadata: expect.objectContaining({
+          invalid_request_field: "mode",
+          invalid_request_field_reason: "invalid_mode",
+        }),
+      }),
+    );
   });
 
   it("rejects non-array messages as a bad request", () => {
