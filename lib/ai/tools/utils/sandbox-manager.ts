@@ -7,7 +7,10 @@ import type {
 } from "@/types";
 import { refreshE2BSandboxLeaseBestEffort } from "./sandbox";
 import { SANDBOX_ENVIRONMENT_TOOLS } from "./sandbox-tools";
-import { ensureCloudSandboxConnection } from "./cloud-sandbox";
+import {
+  ensureCloudSandboxConnection,
+  type CloudSandboxAcquisitionContext,
+} from "./cloud-sandbox";
 import { getCloudSandboxProvider } from "./cloud-sandbox-provider";
 import { isE2BSandbox } from "./sandbox-types";
 import { isExpectedAlreadyGoneCleanupError } from "@/lib/utils/cleanup-errors";
@@ -27,6 +30,7 @@ export class DefaultSandboxManager implements SandboxManager {
     private setSandboxCallback: (sandbox: AnySandbox) => void,
     initialSandbox?: AnySandbox | null,
     private onBoot?: (info: SandboxBootInfo) => void,
+    private cloudSandboxContext?: CloudSandboxAcquisitionContext,
   ) {
     this.sandbox = initialSandbox || null;
   }
@@ -49,7 +53,10 @@ export class DefaultSandboxManager implements SandboxManager {
   }
 
   getSandboxInfo(): SandboxInfo | null {
-    return { type: "e2b", provider: getCloudSandboxProvider() };
+    return {
+      type: "e2b",
+      provider: this.cloudSandboxContext?.provider ?? getCloudSandboxProvider(),
+    };
   }
 
   getEffectivePreference(): string {
@@ -80,6 +87,7 @@ export class DefaultSandboxManager implements SandboxManager {
       setSandbox: this.setSandboxCallback,
       onBoot: this.onBoot,
       initialSandbox: this.sandbox,
+      context: this.cloudSandboxContext,
     });
     this.sandbox = result.sandbox;
 

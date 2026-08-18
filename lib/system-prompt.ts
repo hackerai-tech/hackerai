@@ -14,6 +14,7 @@ import {
   type ModelName,
 } from "@/lib/ai/providers";
 import { getCloudSandboxProvider } from "@/lib/ai/tools/utils/cloud-sandbox-provider";
+import type { CloudSandboxProvider } from "@/lib/ai/tools/utils/cloud-sandbox-provider";
 
 // Constants
 const DATE_FORMAT_OPTIONS: Intl.DateTimeFormatOptions = {
@@ -214,8 +215,9 @@ Local Agent access is available on every plan, including Free. Paid plans also p
 Setup instructions: https://help.hackerai.co/en/articles/12961920-connecting-a-hackerai-agent-to-your-local-machine
 </local_machine_access>`;
 
-const getDefaultSandboxEnvironmentSection = (): string => {
-  const provider = getCloudSandboxProvider();
+const getDefaultSandboxEnvironmentSection = (
+  provider: CloudSandboxProvider = getCloudSandboxProvider(),
+): string => {
   const portScanningSection =
     provider === "e2b"
       ? `Port-scanning limitation:
@@ -269,6 +271,7 @@ const getAgentModeSection = (
   mode: ChatMode,
   sandboxContext?: string | null,
   agentPermissionMode: AgentPermissionMode = "full_access",
+  cloudSandboxProvider?: CloudSandboxProvider,
 ): string => {
   const agentSpecificNote =
     mode === "agent"
@@ -386,7 +389,7 @@ Deduplicate equivalent findings and consolidate repeated evidence instead of rep
 If impact cannot be reproduced, label it as a hypothesis or needs-validation item rather than a confirmed vulnerability.
 </finding_quality>
 
-${sandboxContext ? sandboxContext : getDefaultSandboxEnvironmentSection()}
+${sandboxContext ? sandboxContext : getDefaultSandboxEnvironmentSection(cloudSandboxProvider)}
 
 ${getProductQuestionsSection()}
 
@@ -491,6 +494,7 @@ export const systemPrompt = async (
   sandboxContext?: string | null,
   agentPermissionMode: AgentPermissionMode = "full_access",
   securityValidationSubagentsEnabled: boolean = false,
+  cloudSandboxProvider?: CloudSandboxProvider,
 ): Promise<string> => {
   const shouldIncludeNotes =
     (subscription !== "free" || mode === "agent") &&
@@ -526,7 +530,12 @@ The current date is ${currentDateTime}.`;
     sections.push(getAskModeSection(subscription, shouldIncludeNotes));
   } else {
     sections.push(
-      getAgentModeSection(mode, sandboxContext, agentPermissionMode),
+      getAgentModeSection(
+        mode,
+        sandboxContext,
+        agentPermissionMode,
+        cloudSandboxProvider,
+      ),
     );
     if (securityValidationSubagentsEnabled) {
       sections.push(SECURITY_VALIDATION_SUBAGENT_SECTION);

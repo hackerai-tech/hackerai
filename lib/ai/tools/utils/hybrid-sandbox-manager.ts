@@ -30,7 +30,10 @@ import {
   presenceHasConnectionId,
 } from "@/lib/centrifugo/presence";
 import { isExpectedAlreadyGoneCleanupError } from "@/lib/utils/cleanup-errors";
-import { ensureCloudSandboxConnection } from "./cloud-sandbox";
+import {
+  ensureCloudSandboxConnection,
+  type CloudSandboxAcquisitionContext,
+} from "./cloud-sandbox";
 import { getCloudSandboxProvider } from "./cloud-sandbox-provider";
 
 type SandboxInstance = AnySandbox;
@@ -255,6 +258,7 @@ export class HybridSandboxManager implements SandboxManager {
     private onBoot?: (info: SandboxBootInfo) => void,
     private workingDirectory?: string,
     private requestId?: string,
+    private cloudSandboxContext?: CloudSandboxAcquisitionContext,
   ) {
     this.sandbox = initialSandbox || null;
   }
@@ -450,7 +454,11 @@ export class HybridSandboxManager implements SandboxManager {
 
   getSandboxInfo(): SandboxInfo | null {
     if (!this.isLocal) {
-      return { type: "e2b", provider: getCloudSandboxProvider() };
+      return {
+        type: "e2b",
+        provider:
+          this.cloudSandboxContext?.provider ?? getCloudSandboxProvider(),
+      };
     }
     const type: SandboxType =
       this.sandboxPreference === "desktop" ? "desktop" : "remote-connection";
@@ -704,6 +712,7 @@ export class HybridSandboxManager implements SandboxManager {
       },
       onBoot: this.onBoot,
       initialSandbox: this.isLocal ? null : this.sandbox,
+      context: this.cloudSandboxContext,
     });
 
     this.sandbox = result.sandbox;

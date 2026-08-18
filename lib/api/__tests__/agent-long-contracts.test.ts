@@ -1124,7 +1124,7 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     );
     expect(taskSrc).toMatch(/handled tool failure dashboard update failed/);
     expect(taskSrc).toMatch(
-      /onToolFailure,\s*requestToolApproval,\s*agentPermissionMode === "auto_review" &&\s*autoReviewAssignment\?\.phase !== undefined,\s*runTimingTracker\.measureActiveTime,\s*projectContext\.workingDirectory,\s*ctx\.run\.id,\s*auxiliaryVision,\s*securityValidationSubagentsEnabled/,
+      /onToolFailure,\s*requestToolApproval,\s*agentPermissionMode === "auto_review" &&\s*autoReviewAssignment\?\.phase !== undefined,\s*runTimingTracker\.measureActiveTime,\s*projectContext\.workingDirectory,\s*ctx\.run\.id,\s*auxiliaryVision,\s*{\s*cloudSandboxRollout,/,
     );
     expect(taskSrc).toMatch(
       /additionalTools:[\s\S]*create_agent:[\s\S]*send_message_to_agent:[\s\S]*wait_for_agents:/,
@@ -1918,5 +1918,19 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     );
     expect(taskSrc).toMatch(/checkFreeMonthlyCostLimit\(freeUsageSubject\)/);
     expect(taskSrc).toMatch(/recordFreeMonthlyCost\(\s*freeUsageSubject/);
+  });
+
+  test("agent-long resolves one cloud provider assignment for tools and prompt", () => {
+    const evaluationIdx = taskSrc.indexOf("evaluateAwsLambdaMicrovmRollout({");
+    const toolsIdx = taskSrc.indexOf("createTools(", evaluationIdx);
+    const promptIdx = taskSrc.indexOf("systemPrompt(", toolsIdx);
+
+    expect(evaluationIdx).toBeGreaterThan(-1);
+    expect(toolsIdx).toBeGreaterThan(evaluationIdx);
+    expect(promptIdx).toBeGreaterThan(toolsIdx);
+    expect(taskSrc.slice(toolsIdx, promptIdx)).toContain("cloudSandboxRollout");
+    expect(taskSrc.slice(promptIdx, promptIdx + 700)).toContain(
+      "cloudSandboxRollout.provider",
+    );
   });
 });

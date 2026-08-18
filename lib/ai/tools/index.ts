@@ -47,6 +47,11 @@ import { E2B_COST_PER_MS } from "./utils/e2b-cost";
 import { AWS_LAMBDA_MICROVM_COST_PER_MS } from "./utils/aws-lambda-microvm-cost";
 import { AWS_LAMBDA_MICROVM_REGION } from "./utils/aws-lambda-microvm";
 import { phLogger } from "@/lib/posthog/server";
+import {
+  getAwsLambdaMicrovmRolloutTelemetryProperties,
+  type AwsLambdaMicrovmRolloutAssignment,
+} from "@/lib/experiments/aws-lambda-microvm-rollout";
+import type { CloudSandboxAcquisitionContext } from "./utils/cloud-sandbox";
 
 export { isE2BSandbox };
 
@@ -55,6 +60,7 @@ export type CreateToolsRuntimePolicy = {
   additionalTools?: (context: ToolContext) => ToolSet;
   ptyScopeId?: string;
   chargeSandboxRuntime?: boolean;
+  cloudSandboxRollout?: AwsLambdaMicrovmRolloutAssignment;
 };
 
 // Factory function to create tools with context
@@ -87,8 +93,24 @@ export const createTools = (
   let sandboxFirstUsedAt: number | null = null;
   let sandboxCostPerMs = 0;
   let providerExposureRecorded = false;
+  let sandboxBootInfo: SandboxBootInfo | null = null;
   let currentModelName = modelName;
   let pendingSandbox: Promise<AnySandbox> | null = null;
+
+  const recordSandboxBoot = (info: SandboxBootInfo) => {
+    sandboxBootInfo = info;
+    onSandboxBoot?.(info);
+  };
+
+  const cloudSandboxContext: CloudSandboxAcquisitionContext = {
+    provider: runtimePolicy.cloudSandboxRollout?.provider,
+    subscription,
+    chatId,
+    triggerRunId,
+    rollout: runtimePolicy.cloudSandboxRollout,
+    runKind:
+      runtimePolicy.chargeSandboxRuntime === false ? "subagent" : "parent",
+  };
 
   const trackSandboxUsage = (newSandbox: AnySandbox) => {
     sandbox = newSandbox;
@@ -106,11 +128,19 @@ export const createTools = (
     }
     if (provider && !providerExposureRecorded) {
       providerExposureRecorded = true;
+      const rollout = runtimePolicy.cloudSandboxRollout;
       phLogger.event("cloud_sandbox_provider_selected", {
         userId: userID,
         chat_id: chatId,
         trigger_run_id: triggerRunId,
         provider,
+        subscription,
+        subscription_tier: subscription,
+        agent_run_kind: cloudSandboxContext.runKind,
+        ...getAwsLambdaMicrovmRolloutTelemetryProperties(rollout),
+        sandbox_boot_path: sandboxBootInfo?.path,
+        sandbox_acquisition_duration_ms: sandboxBootInfo?.duration_ms,
+        sandbox_create_attempts: sandboxBootInfo?.create_attempts,
         region:
           provider === "aws-lambda-microvm"
             ? AWS_LAMBDA_MICROVM_REGION
@@ -119,7 +149,7 @@ export const createTools = (
           provider === "aws-lambda-microvm"
             ? (process.env.AWS_LAMBDA_MICROVM_IMAGE_VERSION ?? "latest")
             : (process.env.E2B_TEMPLATE ?? "terminal-agent-sandbox"),
-        cloud_sandbox_provider_event_version: 1,
+        cloud_sandbox_provider_event_version: 2,
       });
     }
   };
@@ -143,15 +173,17 @@ export const createTools = (
           serviceKey,
           isE2BSandbox(sandbox) ? sandbox : null,
           subscription,
-          onSandboxBoot,
+          recordSandboxBoot,
           workingDirectory,
           triggerRunId,
+          cloudSandboxContext,
         )
       : new DefaultSandboxManager(
           userID,
           trackSandboxUsage,
           isE2BSandbox(sandbox) ? sandbox : null,
-          onSandboxBoot,
+          recordSandboxBoot,
+          cloudSandboxContext,
         );
 
   const todoManager = new TodoManager(initialTodos);

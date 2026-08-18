@@ -169,9 +169,41 @@ Convex/Centrifugo secrets must already be configured directly in Trigger.dev;
 Vercel retains only the AWS credentials and Convex key required by Data
 Controls cleanup. They are not copied through GitHub Actions.
 
-## 5. Validate before broader rollout
+## 5. Validate the Ultra-only gradual rollout
 
-Use an internal paid account and select **Cloud** in Agent mode. Confirm the
+Production assignment is controlled by the PostHog feature flag
+[`aws_lambda_microvm_ultra_rollout_v1`](https://us.posthog.com/project/144137/feature_flags/828023).
+The application hard-gates eligibility to Ultra before evaluating the flag, so
+no PostHog targeting mistake can expose another plan. Start at 10% of Ultra
+users; the remaining eligible users stay on E2B as the concurrent control.
+Preview and Trigger.dev development runs use AWS for Ultra users so the
+candidate remains testable without widening production.
+
+Measure actual acquisition exposure with `cloud_sandbox_provider_selected`.
+It includes the provider, rollout variant, subscription tier, acquisition path,
+acquisition duration, create attempts, and evaluated feature-flag value. Failed
+acquisitions emit `cloud_sandbox_acquisition_failed` with the intended provider,
+rollout variant, failure stage, duration, and privacy-safe error name. Compare
+the `hackerai-agent_run` outcome and Trigger duration/cost fields by
+`sandbox_provider` to verify that AWS is no worse than E2B on reliability and
+latency before each ramp. The saved
+[rollout dashboard](https://us.posthog.com/project/144137/dashboard/2005952)
+tracks these guardrails and cost by provider.
+
+The initial rollout guardrails are:
+
+- successful Agent-run rate is no more than 3 percentage points below E2B;
+- sandbox-acquisition success is no more than 2 percentage points below E2B;
+- AWS p95 acquisition latency is no more than 3 seconds slower than E2B; and
+- no AWS MicroVM remains running more than 2 minutes after the user's final
+  parent run and validation subagent finish.
+
+Review after at least 100 AWS exposures or seven days, whichever comes later.
+If the guardrails hold, ramp Ultra targeting through 25%, 50%, then 100%, with
+a fresh readout at every step. Keep non-Ultra plans on E2B until Ultra reaches
+100% and the full-network capability test below is green.
+
+Use an internal Ultra account and select **Cloud** in Agent mode. Confirm the
 first terminal command creates one MicroVM. After the Agent run ends, confirm
 the MicroVM transitions to `SUSPENDED`; a later Agent command should resume and
 reuse it. When two Agent runs for the same user overlap, finishing either one
@@ -210,16 +242,18 @@ minutes.
 
 Finally, use **Settings -> Data Controls -> Delete terminal sandbox** and verify
 the MicroVM becomes `TERMINATED` in AWS. Check the
-`cloud_sandbox_provider_selected` PostHog event and structured
-`cloud_sandbox_*` logs for the test user.
+`cloud_sandbox_provider_selected`, `cloud_sandbox_acquisition_failed`, and
+`hackerai-agent_run` PostHog events plus structured `cloud_sandbox_*` logs for
+the test user.
 
 ## Rollback
 
-Terminate existing AWS MicroVM sessions from Data Controls or AWS first. Then
-set `CLOUD_SANDBOX_PROVIDER=e2b` in Trigger.dev and redeploy it.
-The provider never silently falls
-back from AWS to E2B, so configuration or quota failures stay visible during
-the internal rollout.
+Disable `aws_lambda_microvm_ultra_rollout_v1` to route all production users to
+E2B immediately. For the configuration-level kill switch, terminate existing
+AWS MicroVM sessions from Data Controls or AWS, set
+`CLOUD_SANDBOX_PROVIDER=e2b` in Trigger.dev, and redeploy it. Per-run AWS
+configuration or quota failures never silently retry on E2B; they remain
+attributed to the AWS rollout so the failure-rate guardrail stays honest.
 
 ## Known boundaries
 

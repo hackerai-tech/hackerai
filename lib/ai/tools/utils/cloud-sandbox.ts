@@ -1,7 +1,25 @@
 import type { AnySandbox, SandboxBootInfo } from "@/types";
-import { getCloudSandboxProvider } from "./cloud-sandbox-provider";
+import type { SubscriptionTier } from "@/types";
+import {
+  getAwsLambdaMicrovmRolloutTelemetryProperties,
+  type AwsLambdaMicrovmRolloutAssignment,
+} from "@/lib/experiments/aws-lambda-microvm-rollout";
+import {
+  getCloudSandboxProvider,
+  type CloudSandboxProvider,
+} from "./cloud-sandbox-provider";
 import { ensureSandboxConnection } from "./sandbox";
 import { isAwsLambdaMicrovmSandbox, isE2BSandbox } from "./sandbox-types";
+import { phLogger } from "@/lib/posthog/server";
+
+export type CloudSandboxAcquisitionContext = {
+  provider?: CloudSandboxProvider;
+  subscription?: SubscriptionTier;
+  chatId?: string;
+  triggerRunId?: string;
+  rollout?: AwsLambdaMicrovmRolloutAssignment;
+  runKind?: "parent" | "subagent";
+};
 
 export type CloudSandboxSuspensionSummary = {
   total: number;
@@ -16,35 +34,56 @@ export async function ensureCloudSandboxConnection(options: {
   initialSandbox?: AnySandbox | null;
   setSandbox: (sandbox: AnySandbox) => void;
   onBoot?: (info: SandboxBootInfo) => void;
+  context?: CloudSandboxAcquisitionContext;
 }): Promise<{ sandbox: AnySandbox }> {
-  const provider = getCloudSandboxProvider();
-  if (provider === "aws-lambda-microvm") {
-    if (isAwsLambdaMicrovmSandbox(options.initialSandbox ?? null)) {
-      return { sandbox: options.initialSandbox! };
+  const provider = options.context?.provider ?? getCloudSandboxProvider();
+  const startedAt = Date.now();
+  try {
+    if (provider === "aws-lambda-microvm") {
+      if (isAwsLambdaMicrovmSandbox(options.initialSandbox ?? null)) {
+        return { sandbox: options.initialSandbox! };
+      }
+      const { ensureAwsLambdaMicrovmConnection } =
+        await import("./aws-lambda-microvm");
+      const sandbox = await ensureAwsLambdaMicrovmConnection(
+        options.userId,
+        options.onBoot,
+      );
+      options.setSandbox(sandbox);
+      return { sandbox };
     }
-    const { ensureAwsLambdaMicrovmConnection } =
-      await import("./aws-lambda-microvm");
-    const sandbox = await ensureAwsLambdaMicrovmConnection(
-      options.userId,
-      options.onBoot,
-    );
-    options.setSandbox(sandbox);
-    return { sandbox };
-  }
 
-  return ensureSandboxConnection(
-    {
-      userID: options.userId,
-      setSandbox: options.setSandbox,
-      onBoot: options.onBoot,
-    },
-    {
-      initialSandbox:
-        options.initialSandbox && isE2BSandbox(options.initialSandbox)
-          ? options.initialSandbox
-          : null,
-    },
-  );
+    return await ensureSandboxConnection(
+      {
+        userID: options.userId,
+        setSandbox: options.setSandbox,
+        onBoot: options.onBoot,
+      },
+      {
+        initialSandbox:
+          options.initialSandbox && isE2BSandbox(options.initialSandbox)
+            ? options.initialSandbox
+            : null,
+      },
+    );
+  } catch (error) {
+    const rollout = options.context?.rollout;
+    phLogger.event("cloud_sandbox_acquisition_failed", {
+      userId: options.userId,
+      chat_id: options.context?.chatId,
+      trigger_run_id: options.context?.triggerRunId,
+      provider,
+      subscription: options.context?.subscription,
+      subscription_tier: options.context?.subscription,
+      agent_run_kind: options.context?.runKind ?? "parent",
+      ...getAwsLambdaMicrovmRolloutTelemetryProperties(rollout),
+      failure_stage: "ensure_cloud_sandbox",
+      duration_ms: Date.now() - startedAt,
+      error_name: error instanceof Error ? error.name : "UnknownError",
+      cloud_sandbox_acquisition_failed_event_version: 1,
+    });
+    throw error;
+  }
 }
 
 export async function terminateCloudSandboxesForUser(userId: string): Promise<{

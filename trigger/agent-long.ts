@@ -18,6 +18,8 @@ import {
 } from "ai";
 import type { Geo } from "@vercel/functions";
 import PostHogClient from "@/app/posthog";
+import { getCloudSandboxProvider } from "@/lib/ai/tools/utils/cloud-sandbox-provider";
+import { evaluateAwsLambdaMicrovmRollout } from "@/lib/experiments/aws-lambda-microvm-rollout";
 
 import { systemPrompt } from "@/lib/system-prompt";
 import { getResumeSection } from "@/lib/system-prompt/resume";
@@ -2417,14 +2419,23 @@ export const agentLongTask = task({
         subscription,
       );
       const posthog = PostHogClient();
-      const auxiliaryVisionAssignment =
-        await evaluateAuxiliaryDeepSeekVisionFlag({
-          posthog,
-          userId,
-          subscription,
-          selectedModelOverride,
-          requestId: ctx.run.id,
-        });
+      const [cloudSandboxRollout, auxiliaryVisionAssignment] =
+        await Promise.all([
+          evaluateAwsLambdaMicrovmRollout({
+            posthog,
+            userId,
+            subscription,
+            configuredProvider: getCloudSandboxProvider(),
+            requestId: ctx.run.id,
+          }),
+          evaluateAuxiliaryDeepSeekVisionFlag({
+            posthog,
+            userId,
+            subscription,
+            selectedModelOverride,
+            requestId: ctx.run.id,
+          }),
+        ]);
 
       const baseTodos: Todo[] = getBaseTodosForRequest(
         (chat?.todos as unknown as Todo[]) || [],
@@ -3106,22 +3117,25 @@ export const agentLongTask = task({
               projectContext.workingDirectory,
               ctx.run.id,
               auxiliaryVision,
-              securityValidationSubagentsEnabled
-                ? {
-                    additionalTools: (toolContext) => ({
-                      create_agent: createCreateAgentTool(toolContext, {
-                        organizationId,
-                        sandboxPreference,
-                        permissionMode: agentPermissionMode,
-                        subscription,
-                        freeQuotaSubject,
+              {
+                cloudSandboxRollout,
+                ...(securityValidationSubagentsEnabled
+                  ? {
+                      additionalTools: (toolContext) => ({
+                        create_agent: createCreateAgentTool(toolContext, {
+                          organizationId,
+                          sandboxPreference,
+                          permissionMode: agentPermissionMode,
+                          subscription,
+                          freeQuotaSubject,
+                        }),
+                        send_message_to_agent:
+                          createSendMessageToAgentTool(toolContext),
+                        wait_for_agents: createWaitForAgentsTool(toolContext),
                       }),
-                      send_message_to_agent:
-                        createSendMessageToAgentTool(toolContext),
-                      wait_for_agents: createWaitForAgentsTool(toolContext),
-                    }),
-                  }
-                : undefined,
+                    }
+                  : {}),
+              },
             );
             if (securityValidationSubagentsEnabled) {
               captureSubagentLifecycleEvent("subagent_available", {
@@ -3293,6 +3307,7 @@ export const agentLongTask = task({
               sandboxContext,
               agentPermissionMode,
               securityValidationSubagentsEnabled,
+              cloudSandboxRollout.provider,
             );
             const systemPromptTokens = safeCountTokens(currentSystemPrompt);
 

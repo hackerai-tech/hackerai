@@ -631,6 +631,33 @@ Commands run directly on the host OS "workstation" without Docker isolation. Be 
     }
   });
 
+  it("uses the provider assigned to the run instead of the process-wide default", async () => {
+    const originalProvider = process.env.CLOUD_SANDBOX_PROVIDER;
+    process.env.CLOUD_SANDBOX_PROVIDER = "aws-lambda-microvm";
+    try {
+      const prompt = await systemPrompt(
+        "user_ultra_control",
+        "agent",
+        "ultra",
+        "agent-model",
+        null,
+        null,
+        "full_access",
+        false,
+        "e2b",
+      );
+
+      expect(prompt).toContain("Port-scanning limitation:");
+      expect(prompt).not.toContain("isolated AWS Lambda MicroVM");
+    } finally {
+      if (originalProvider === undefined) {
+        delete process.env.CLOUD_SANDBOX_PROVIDER;
+      } else {
+        process.env.CLOUD_SANDBOX_PROVIDER = originalProvider;
+      }
+    }
+  });
+
   it("does not describe a command sandbox in ask mode", async () => {
     const prompt = await systemPrompt(
       "user_123",
