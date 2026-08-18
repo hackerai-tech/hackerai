@@ -13,6 +13,7 @@ import type { CentrifugoConfig } from "../centrifugo-sandbox";
 import {
   LOCAL_COMMAND_RELAY_UNSUBSCRIBED_ERROR_CODE,
   LocalCommandRelayUnsubscribedError,
+  isLocalCommandRelayUnsubscribedError,
 } from "../local-sandbox-errors";
 import { fragmentCentrifugoMessage } from "@/packages/local/src/centrifugo-transport";
 
@@ -201,6 +202,44 @@ describe("CentrifugoSandbox", () => {
       } finally {
         warnSpy.mockRestore();
       }
+    });
+  });
+
+  describe("connection identity", () => {
+    it("returns defensive copies of nested recovery metadata", () => {
+      const sandbox = createDesktopSandbox();
+      const first = sandbox.getConnectionInfo();
+
+      (first.osInfo as { hostname: string }).hostname = "mutated-host";
+      (first.capabilities as { commands: boolean }).commands = false;
+
+      const second = sandbox.getConnectionInfo();
+      expect(second).not.toBe(first);
+      expect(second.osInfo).not.toBe(first.osInfo);
+      expect(second.capabilities).not.toBe(first.capabilities);
+      expect(second.osInfo?.hostname).toBe("WIN-DEV");
+      expect(second.capabilities?.commands).toBe(true);
+    });
+  });
+
+  describe("relay error classification", () => {
+    it("requires both the stable code and a string connection ID", () => {
+      expect(
+        isLocalCommandRelayUnsubscribedError(
+          new LocalCommandRelayUnsubscribedError("conn-1"),
+        ),
+      ).toBe(true);
+      expect(
+        isLocalCommandRelayUnsubscribedError({
+          code: LOCAL_COMMAND_RELAY_UNSUBSCRIBED_ERROR_CODE,
+        }),
+      ).toBe(false);
+      expect(
+        isLocalCommandRelayUnsubscribedError({
+          code: LOCAL_COMMAND_RELAY_UNSUBSCRIBED_ERROR_CODE,
+          connectionId: 123,
+        }),
+      ).toBe(false);
     });
   });
 

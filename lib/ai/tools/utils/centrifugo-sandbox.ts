@@ -293,7 +293,15 @@ export class CentrifugoSandbox extends EventEmitter {
 
   /** Returns the immutable identity metadata used to bind recovery to this host. */
   getConnectionInfo(): Readonly<ConnectionInfo> {
-    return this.connectionInfo;
+    return {
+      ...this.connectionInfo,
+      ...(this.connectionInfo.osInfo
+        ? { osInfo: { ...this.connectionInfo.osInfo } }
+        : {}),
+      ...(this.connectionInfo.capabilities
+        ? { capabilities: { ...this.connectionInfo.capabilities } }
+        : {}),
+    };
   }
 
   getCloudProvider(): "aws-lambda-microvm" | null {

@@ -20,4 +20,6 @@ export const isLocalCommandRelayUnsubscribedError = (
   typeof error === "object" &&
   error !== null &&
   "code" in error &&
-  error.code === LOCAL_COMMAND_RELAY_UNSUBSCRIBED_ERROR_CODE;
+  error.code === LOCAL_COMMAND_RELAY_UNSUBSCRIBED_ERROR_CODE &&
+  "connectionId" in error &&
+  typeof error.connectionId === "string";
