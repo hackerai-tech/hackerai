@@ -75,12 +75,17 @@ jest.mock("@/lib/utils/sandbox-file-utils", () => ({
 }));
 
 const {
+  AGENT_TRIGGER_PAYLOAD_MAX_BYTES,
   buildAgentApprovalSessionId,
   buildAgentPermissionRunSnapshot,
   buildAgentRunDedupeKeyParts,
+  createAgentTriggerPayloadTooLargeResponse,
   createAgentTriggerPost,
   finalizeStartedAgentRun,
+  getAgentTriggerPayloadSizeBytes,
   getAgentTriggerMachine,
+  isAgentTriggerPayloadSizeTooLarge,
+  isTriggerRequestBodyTooLargeError,
   shouldRequireAgentApprovalWorkerVersion,
 } =
   require("../agent-trigger-route") as typeof import("../agent-trigger-route");
@@ -93,6 +98,61 @@ describe("Agent trigger route lifecycle", () => {
       .mockResolvedValueOnce("session-token");
     mockCancelAgentTriggerRun.mockResolvedValue(true);
     mockCloseAgentApprovalSession.mockResolvedValue(true);
+  });
+
+  it("measures the aggregate serialized trigger payload in UTF-8 bytes", () => {
+    const payload = { messages: [{ text: "security évidence" }] };
+
+    expect(getAgentTriggerPayloadSizeBytes(payload)).toBe(
+      Buffer.byteLength(JSON.stringify(payload), "utf8"),
+    );
+    expect(AGENT_TRIGGER_PAYLOAD_MAX_BYTES).toBe(3 * 1024 * 1024);
+    expect(
+      isAgentTriggerPayloadSizeTooLarge(AGENT_TRIGGER_PAYLOAD_MAX_BYTES),
+    ).toBe(false);
+    expect(
+      isAgentTriggerPayloadSizeTooLarge(AGENT_TRIGGER_PAYLOAD_MAX_BYTES + 1),
+    ).toBe(true);
+  });
+
+  it("recognizes only Trigger's exact request-body 413", () => {
+    const bodyTooLarge = Object.assign(new Error("Request body too large"), {
+      name: "TriggerApiError",
+      status: 413,
+    });
+
+    expect(isTriggerRequestBodyTooLargeError(bodyTooLarge)).toBe(true);
+    expect(
+      isTriggerRequestBodyTooLargeError(
+        Object.assign(new Error("Request body too large"), {
+          name: "TriggerApiError",
+          status: 500,
+        }),
+      ),
+    ).toBe(false);
+    expect(
+      isTriggerRequestBodyTooLargeError(
+        Object.assign(new Error("Provider media is too large"), {
+          name: "TriggerApiError",
+          statusCode: 413,
+        }),
+      ),
+    ).toBe(false);
+    expect(
+      isTriggerRequestBodyTooLargeError(
+        Object.assign(new Error("Request body too large"), { status: 413 }),
+      ),
+    ).toBe(false);
+  });
+
+  it("returns a user-correctable 413 for oversized Agent starts", async () => {
+    const response = createAgentTriggerPayloadTooLargeResponse();
+
+    expect(response.status).toBe(413);
+    await expect(response.json()).resolves.toMatchObject({
+      code: "bad_request:api",
+      cause: expect.stringContaining("too large to start"),
+    });
   });
 
   it.each([true, false])(
