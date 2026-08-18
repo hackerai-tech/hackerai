@@ -92,6 +92,15 @@ export const getAgentTriggerPayloadSizeBytes = (payload: unknown): number =>
 export const isAgentTriggerPayloadSizeTooLarge = (sizeBytes: number): boolean =>
   sizeBytes > AGENT_TRIGGER_PAYLOAD_MAX_BYTES;
 
+export const isAgentTriggerRequestSizeTooLarge = ({
+  payloadBytes,
+  requestBodyBytes,
+}: {
+  payloadBytes: number;
+  requestBodyBytes?: number;
+}): boolean =>
+  isAgentTriggerPayloadSizeTooLarge(requestBodyBytes ?? payloadBytes);
+
 export const isTriggerRequestBodyTooLargeError = (error: unknown): boolean => {
   if (!(error instanceof Error) || error.name !== "TriggerApiError") {
     return false;
@@ -762,13 +771,22 @@ export const createAgentTriggerPost =
           };
           triggerRequestBodyBytes =
             getAgentTriggerPayloadSizeBytes(approvalSessionBody);
-          if (isAgentTriggerPayloadSizeTooLarge(triggerPayloadBytes)) {
+          if (
+            isAgentTriggerRequestSizeTooLarge({
+              payloadBytes: triggerPayloadBytes,
+              requestBodyBytes: triggerRequestBodyBytes,
+            })
+          ) {
             return triggerPayloadTooLargeResponse("payload_limit_exceeded");
           }
           const session = await sessions.start(approvalSessionBody);
           runId = session.runId;
         } else {
-          if (isAgentTriggerPayloadSizeTooLarge(triggerPayloadBytes)) {
+          if (
+            isAgentTriggerRequestSizeTooLarge({
+              payloadBytes: triggerPayloadBytes,
+            })
+          ) {
             return triggerPayloadTooLargeResponse("payload_limit_exceeded");
           }
           const handle = await tasks.trigger<typeof agentLongTask>(

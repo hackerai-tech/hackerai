@@ -85,6 +85,7 @@ const {
   getAgentTriggerPayloadSizeBytes,
   getAgentTriggerMachine,
   isAgentTriggerPayloadSizeTooLarge,
+  isAgentTriggerRequestSizeTooLarge,
   isTriggerRequestBodyTooLargeError,
   shouldRequireAgentApprovalWorkerVersion,
 } =
@@ -112,6 +113,19 @@ describe("Agent trigger route lifecycle", () => {
     ).toBe(false);
     expect(
       isAgentTriggerPayloadSizeTooLarge(AGENT_TRIGGER_PAYLOAD_MAX_BYTES + 1),
+    ).toBe(true);
+  });
+
+  it("rejects an oversized approval request when its base payload fits", () => {
+    const basePayloadBytes = AGENT_TRIGGER_PAYLOAD_MAX_BYTES;
+    const approvalRequestBodyBytes = AGENT_TRIGGER_PAYLOAD_MAX_BYTES + 1;
+
+    expect(isAgentTriggerPayloadSizeTooLarge(basePayloadBytes)).toBe(false);
+    expect(
+      isAgentTriggerRequestSizeTooLarge({
+        payloadBytes: basePayloadBytes,
+        requestBodyBytes: approvalRequestBodyBytes,
+      }),
     ).toBe(true);
   });
 
