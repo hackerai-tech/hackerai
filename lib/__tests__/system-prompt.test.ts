@@ -618,7 +618,7 @@ Commands run directly on the host OS "workstation" without Docker isolation. Be 
     );
   });
 
-  it("uses the AWS MicroVM network guidance when that cloud provider is selected", async () => {
+  it("omits the E2B port-scanning warning when AWS MicroVM is selected", async () => {
     const originalProvider = process.env.CLOUD_SANDBOX_PROVIDER;
     process.env.CLOUD_SANDBOX_PROVIDER = "aws-lambda-microvm";
     try {
@@ -631,11 +631,10 @@ Commands run directly on the host OS "workstation" without Docker isolation. Be 
         null,
       );
 
-      expect(prompt).toContain("isolated AWS Lambda MicroVM");
       expect(prompt).toContain("linux/arm64");
-      expect(prompt).toContain(
-        "can still depend on the configured AWS network connector",
-      );
+      expect(prompt).not.toContain("isolated AWS Lambda MicroVM");
+      expect(prompt).not.toContain("Network behavior:");
+      expect(prompt).not.toContain("configured AWS network connector");
       expect(prompt).not.toContain(
         "Cloud Agent networking can produce false-positive TCP port results",
       );

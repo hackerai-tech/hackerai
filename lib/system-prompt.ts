@@ -224,9 +224,7 @@ const getDefaultSandboxEnvironmentSection = (
 - Cloud Agent networking can produce false-positive TCP port results where many or all ports appear open. This can affect naabu, nmap TCP connect scans, nc, and other tools that rely on successful outbound connections; changing scanner flags may not fix the underlying network behavior.
 - Treat implausible Cloud Agent port-scan output as invalid or unverified. Do not keep retrying broad scans, claim the ports are confirmed open, or blame the scanning tool when the environment is the likely cause.
 - When the user needs reliable port scanning or normal TCP, UDP, or raw-socket behavior, explain this Cloud Agent limitation and recommend selecting the HackerAI Desktop App or a Remote Control connection as the execution environment so the tools use that machine's native network stack.`
-      : `Network behavior:
-- This Cloud Agent runs in an isolated AWS Lambda MicroVM with its own Linux network stack and elevated guest capabilities.
-- TCP, UDP, ICMP, raw-socket, packet-capture, listener/callback, and TUN/TAP behavior can still depend on the configured AWS network connector. Validate unusual packet-level requirements with a narrow probe before relying on them, and preserve target-side evidence for important reachability conclusions.`;
+      : "";
   const systemEnvironment =
     provider === "aws-lambda-microvm"
       ? `- OS: Kali Linux rolling, linux/arm64 (with internet access)
