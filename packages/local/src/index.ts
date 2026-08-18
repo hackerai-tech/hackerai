@@ -1541,7 +1541,22 @@ async function startCloudLifecycleServer(): Promise<void> {
   });
 
   const shutdown = async (): Promise<void> => {
-    await relay.terminate();
+    try {
+      await relay.terminate();
+    } catch (error) {
+      console.error(
+        JSON.stringify({
+          timestamp: new Date().toISOString(),
+          level: "error",
+          event: "cloud_sandbox_shutdown_cleanup_failed",
+          service: "hackerai-cloud-sandbox-agent",
+          environment: "aws-lambda-microvm",
+          request_id: lifecycleConfig?.cloudSessionId ?? "signal",
+          failure_code: "relay_termination_failed",
+          error: error instanceof Error ? error.message : String(error),
+        }),
+      );
+    }
     server.close(() => process.exit(0));
   };
   process.on("SIGINT", () => void shutdown());

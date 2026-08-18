@@ -115,7 +115,10 @@ export async function terminateCloudSandboxesForUser(userId: string): Promise<{
   const paginator = (await import("@e2b/code-interpreter")).Sandbox.list({
     query: { metadata: { userID: userId } },
   });
-  const sandboxes = await paginator.nextItems();
+  const sandboxes = [];
+  do {
+    sandboxes.push(...(await paginator.nextItems()));
+  } while (paginator.hasNext);
   let killed = 0;
   let alreadyGone = 0;
   const { isExpectedMissingResourceCleanupError } =

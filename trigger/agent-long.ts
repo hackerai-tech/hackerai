@@ -266,6 +266,7 @@ import {
 import {
   cancelSubagentsForParent,
   listActiveSubagentsForParent,
+  listActiveSubagentsForUser,
 } from "@/lib/db/subagents";
 import { cancelAgentTriggerRun } from "@/lib/api/agent-approval-session";
 import { settleParentSubagents } from "@/lib/ai/subagents/parent-settlement";
@@ -2084,6 +2085,37 @@ const finishCloudSandboxLifecycleForParentRun = async ({
       trigger_run_id: triggerRunId,
       error: stringifyRedactedError(error),
     });
+    return;
+  }
+
+  try {
+    const activeUserSubagents = await listActiveSubagentsForUser(userId);
+    if (activeUserSubagents.runs.length > 0 || activeUserSubagents.hasMore) {
+      triggerLogger.info(
+        "[agent-long] shared sandbox retained for user-wide active subagents",
+        {
+          event: "agent_cloud_sandbox_suspend_skipped",
+          user_id: userId,
+          chat_id: chatId,
+          trigger_run_id: triggerRunId,
+          active_subagent_count: activeUserSubagents.runs.length,
+          active_subagents_truncated: activeUserSubagents.hasMore,
+          reason: "user_subagents_active",
+        },
+      );
+      return;
+    }
+  } catch (error) {
+    triggerLogger.error(
+      "[agent-long] failed to check user-wide active subagents",
+      {
+        event: "agent_cloud_sandbox_user_subagents_check_failed",
+        user_id: userId,
+        chat_id: chatId,
+        trigger_run_id: triggerRunId,
+        error: stringifyRedactedError(error),
+      },
+    );
     return;
   }
 

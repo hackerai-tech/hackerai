@@ -687,6 +687,11 @@ async function ensureExistingMicrovm(
           break;
         }
       }
+      if (state.state === "SUSPENDING") {
+        throw new Error(
+          "Cloud sandbox remained SUSPENDING after the resume wait budget",
+        );
+      }
     } else if (state.state === "TERMINATED" || state.state === "TERMINATING") {
       await markEnded(
         userId,
@@ -1073,20 +1078,30 @@ export async function terminateAwsLambdaMicrovmForUser(
   const failures: unknown[] = [];
 
   for (const session of sessions) {
+    let microvmId = session.microvmId;
     try {
-      if (!session.microvmId) {
-        await markEnded(
-          userId,
-          session.sessionId,
-          { serviceKey },
-          "terminated",
-          "deleted_before_start",
+      if (!microvmId) {
+        const resolved = await getConvexClient().mutation(
+          api.localSandbox.resolveCloudSessionCleanupTarget,
+          {
+            serviceKey,
+            userId,
+            sessionId: session.sessionId,
+          },
         );
-        alreadyGone++;
-        continue;
+        if (resolved.endedWithoutMicrovm) {
+          alreadyGone++;
+          continue;
+        }
+        microvmId = resolved.microvmId;
+        if (!microvmId) {
+          throw new Error(
+            `Cloud session ${session.sessionId} has no resolvable MicroVM ID`,
+          );
+        }
       }
 
-      const outcome = await terminateMicrovm(session.microvmId, session.region);
+      const outcome = await terminateMicrovm(microvmId, session.region);
       if (outcome === "terminated") {
         await markEnded(
           userId,
@@ -1098,7 +1113,7 @@ export async function terminateAwsLambdaMicrovmForUser(
         log("info", "cloud_sandbox_deleted", {
           user_id: userId,
           session_id: session.sessionId,
-          microvm_id: session.microvmId,
+          microvm_id: microvmId,
           region: session.region,
         });
         continue;
@@ -1122,16 +1137,14 @@ export async function terminateAwsLambdaMicrovmForUser(
         "termination_retry_required",
       );
       failures.push(
-        new Error(
-          `Failed to terminate AWS Lambda MicroVM ${session.microvmId}`,
-        ),
+        new Error(`Failed to terminate AWS Lambda MicroVM ${microvmId}`),
       );
     } catch (error) {
       failures.push(error);
       log("warn", "cloud_sandbox_delete_session_failed", {
         user_id: userId,
         session_id: session.sessionId,
-        microvm_id: session.microvmId ?? null,
+        microvm_id: microvmId ?? null,
         region: session.region,
         failure_code: failureCode(error),
         ...errorLogFields(error),

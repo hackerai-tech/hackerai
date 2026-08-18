@@ -409,6 +409,23 @@ Commands run directly on the host OS "workstation" without Docker isolation. Be 
     );
   });
 
+  it("describes the provisioned AWS MicroVM baseline", async () => {
+    const prompt = await systemPrompt(
+      "user_123",
+      "agent",
+      "ultra",
+      "agent-model",
+      null,
+      null,
+      "full_access",
+      false,
+      "aws-lambda-microvm",
+    );
+
+    expect(prompt).toContain("Compute: 2 baseline vCPU and 4 GiB RAM");
+    expect(prompt).not.toContain("2 GiB RAM");
+  });
+
   it("describes cloud sandbox browser automation tools", async () => {
     const prompt = await systemPrompt(
       "user_123",

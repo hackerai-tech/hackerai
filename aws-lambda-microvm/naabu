@@ -21,7 +21,7 @@ if [ "$custom_resolver" = true ]; then
   exec /usr/bin/naabu "$@"
 fi
 
-resolver="$(awk '$1 == "nameserver" && $2 !~ /^127\./ { print $2; exit }' /etc/resolv.conf)"
+resolver="$(awk '$1 == "nameserver" && $2 !~ /^(127\.|::1|0:0:0:0:0:0:0:1)$/ { print $2; exit }' /etc/resolv.conf)"
 if [ -n "$resolver" ]; then
   if [ -n "$disable_update_check" ]; then
     exec /usr/bin/naabu "$disable_update_check" -r "$resolver" "$@"

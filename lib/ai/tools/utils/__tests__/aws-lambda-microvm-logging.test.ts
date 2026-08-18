@@ -96,6 +96,10 @@ describe("AWS Lambda MicroVM development logging", () => {
     };
   });
 
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
   afterAll(() => {
     process.env = originalEnv;
   });
@@ -422,7 +426,6 @@ describe("AWS Lambda MicroVM development logging", () => {
     errorSpy.mockRestore();
     infoSpy.mockRestore();
     debugSpy.mockRestore();
-    jest.useRealTimers();
   });
 
   it("does not spend the guest readiness budget on AWS allocation", async () => {
@@ -478,7 +481,35 @@ describe("AWS Lambda MicroVM development logging", () => {
     await expect(pending).resolves.toBeDefined();
     infoSpy.mockRestore();
     debugSpy.mockRestore();
-    jest.useRealTimers();
+  });
+
+  it("fails closed when a reused MicroVM never finishes suspending", async () => {
+    jest.useFakeTimers();
+    mockMutation.mockResolvedValueOnce({
+      created: false,
+      session: {
+        sessionId: "session-stuck-suspending",
+        status: "running",
+        microvmId: "microvm-stuck-suspending",
+        connectionId: "connection-stuck-suspending",
+        region: "us-east-1",
+        imageIdentifier: process.env.AWS_LAMBDA_MICROVM_IMAGE_ID,
+        imageVersion: "6.0",
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+        bootstrapExpiresAt: Date.now() + 60_000,
+      },
+      cleanupCandidates: [],
+    });
+    mockSend.mockResolvedValue({ state: "SUSPENDING" });
+    const pending = expect(
+      ensureAwsLambdaMicrovmConnection("user-stuck-suspending"),
+    ).rejects.toThrow("remained SUSPENDING");
+
+    await jest.advanceTimersByTimeAsync(20_000);
+
+    await pending;
+    expect(mockSend).toHaveBeenCalledTimes(21);
   });
 
   it.each(["terminal_status", "query_error"] as const)(
@@ -633,6 +664,39 @@ describe("AWS Lambda MicroVM development logging", () => {
     );
 
     warnSpy.mockRestore();
+    infoSpy.mockRestore();
+  });
+
+  it("resolves an attachment race before declaring a starting session gone", async () => {
+    mockQuery.mockResolvedValueOnce([
+      {
+        sessionId: "session-attachment-race",
+        status: "starting",
+        region: "us-east-1",
+      },
+    ]);
+    mockMutation
+      .mockResolvedValueOnce({
+        endedWithoutMicrovm: false,
+        microvmId: "microvm-attached-late",
+      })
+      .mockResolvedValueOnce(true);
+    mockSend.mockResolvedValueOnce({ $metadata: { httpStatusCode: 200 } });
+    const infoSpy = jest.spyOn(console, "info").mockImplementation();
+
+    await expect(
+      terminateAwsLambdaMicrovmForUser("user-attachment-race"),
+    ).resolves.toEqual({ total: 1, killed: 1, alreadyGone: 0 });
+
+    expect(mockMutation.mock.calls[0][1]).toMatchObject({
+      userId: "user-attachment-race",
+      sessionId: "session-attachment-race",
+    });
+    expect(mockSend).toHaveBeenCalledWith(
+      expect.objectContaining({
+        input: { microvmIdentifier: "microvm-attached-late" },
+      }),
+    );
     infoSpy.mockRestore();
   });
 

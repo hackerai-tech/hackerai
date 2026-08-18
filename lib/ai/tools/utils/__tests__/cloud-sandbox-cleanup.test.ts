@@ -19,6 +19,9 @@ const mockTerminateAwsLambdaMicrovmForUser =
 const mockListE2BSandboxes = Sandbox.list as jest.MockedFunction<
   typeof Sandbox.list
 >;
+const mockKillE2BSandbox = Sandbox.kill as jest.MockedFunction<
+  typeof Sandbox.kill
+>;
 
 describe("cloud sandbox cleanup configuration", () => {
   const originalEnv = process.env;
@@ -54,5 +57,39 @@ describe("cloud sandbox cleanup configuration", () => {
       "user_123",
     );
     expect(mockListE2BSandboxes).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when AWS is selected without cleanup authorization", async () => {
+    process.env.CLOUD_SANDBOX_PROVIDER = "aws-lambda-microvm";
+    delete process.env.CONVEX_SERVICE_ROLE_KEY;
+
+    await expect(terminateCloudSandboxesForUser("user_123")).rejects.toThrow(
+      "CONVEX_SERVICE_ROLE_KEY is required",
+    );
+  });
+
+  it("terminates every page of E2B sandboxes during provider migration", async () => {
+    process.env.E2B_API_KEY = "e2b-test-key";
+    let page = 0;
+    const pages = [
+      [{ sandboxId: "sandbox-page-1" }],
+      [{ sandboxId: "sandbox-page-2" }],
+    ];
+    mockListE2BSandboxes.mockReturnValue({
+      nextItems: jest.fn(async () => pages[page++] ?? []),
+      get hasNext() {
+        return page < pages.length;
+      },
+    } as ReturnType<typeof Sandbox.list>);
+    mockKillE2BSandbox.mockResolvedValue(undefined);
+
+    await expect(terminateCloudSandboxesForUser("user_123")).resolves.toEqual({
+      total: 3,
+      killed: 3,
+      alreadyGone: 0,
+    });
+    expect(mockKillE2BSandbox).toHaveBeenCalledTimes(2);
+    expect(mockKillE2BSandbox).toHaveBeenNthCalledWith(1, "sandbox-page-1");
+    expect(mockKillE2BSandbox).toHaveBeenNthCalledWith(2, "sandbox-page-2");
   });
 });

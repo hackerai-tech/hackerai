@@ -52,6 +52,7 @@ import {
   type AwsLambdaMicrovmRolloutAssignment,
 } from "@/lib/experiments/aws-lambda-microvm-rollout";
 import type { CloudSandboxAcquisitionContext } from "./utils/cloud-sandbox";
+import type { CloudSandboxProvider } from "./utils/cloud-sandbox-provider";
 
 export { isE2BSandbox };
 
@@ -90,11 +91,14 @@ export const createTools = (
   runtimePolicy: CreateToolsRuntimePolicy = {},
 ) => {
   let sandbox: AnySandbox | null = null;
-  let sandboxFirstUsedAt: number | null = null;
+  let sandboxCostSegmentStartedAt: number | null = null;
+  let sandboxAccumulatedCost = 0;
   let sandboxCostPerMs = 0;
+  let sandboxCostProvider: CloudSandboxProvider | null = null;
   let providerExposureRecorded = false;
   let sandboxBootInfo: SandboxBootInfo | null = null;
   let currentModelName = modelName;
+  let sandboxOperationQueue: Promise<void> = Promise.resolve();
   let pendingSandbox: Promise<AnySandbox> | null = null;
 
   const recordSandboxBoot = (info: SandboxBootInfo) => {
@@ -119,12 +123,25 @@ export const createTools = (
       : isE2BSandbox(newSandbox)
         ? "e2b"
         : null;
-    if (!sandboxFirstUsedAt && provider) {
-      sandboxFirstUsedAt = Date.now();
-      sandboxCostPerMs =
+    if (provider) {
+      const now = Date.now();
+      const nextCostPerMs =
         provider === "aws-lambda-microvm"
           ? AWS_LAMBDA_MICROVM_COST_PER_MS
           : E2B_COST_PER_MS;
+      if (sandboxCostSegmentStartedAt === null) {
+        sandboxCostSegmentStartedAt = now;
+      } else if (
+        sandboxCostProvider !== null &&
+        sandboxCostProvider !== provider &&
+        sandboxCostSegmentStartedAt !== null
+      ) {
+        sandboxAccumulatedCost +=
+          (now - sandboxCostSegmentStartedAt) * sandboxCostPerMs;
+        sandboxCostSegmentStartedAt = now;
+      }
+      sandboxCostProvider = provider;
+      sandboxCostPerMs = nextCostPerMs;
     }
     if (provider && !providerExposureRecorded) {
       providerExposureRecorded = true;
@@ -287,31 +304,42 @@ export const createTools = (
     reason?: string;
     excludeConnectionId?: string;
   }) => {
-    if (options?.excludeConnectionId) {
-      // HybridSandboxManager treats this as a strict retry: quarantine the
-      // selected computer and reject acquisition before choosing another host.
-      await sandboxManager.quarantineLocalConnection?.(
-        options.excludeConnectionId,
-        "command_unresponsive",
-      );
-    }
-    if (options?.refresh) {
-      await sandboxManager.resetSandbox?.(options.reason);
-    }
-    if (options?.refresh || options?.excludeConnectionId) {
+    const recoveryRequested = Boolean(
+      options?.refresh || options?.excludeConnectionId,
+    );
+    if (!recoveryRequested && pendingSandbox) return pendingSandbox;
+
+    const operation = sandboxOperationQueue.then(async () => {
+      if (options?.excludeConnectionId) {
+        // Serialize quarantine/reset with every acquisition so a promise that
+        // began before recovery cannot repopulate the manager afterward.
+        await sandboxManager.quarantineLocalConnection?.(
+          options.excludeConnectionId,
+          "command_unresponsive",
+        );
+      }
+      if (options?.refresh) {
+        await sandboxManager.resetSandbox?.(options.reason);
+      }
       const { sandbox: ensured } = await getSandboxWithFallbackGuard({
         sandboxManager,
       });
       return ensured;
-    }
-    if (!pendingSandbox) {
-      pendingSandbox = getSandboxWithFallbackGuard({ sandboxManager })
-        .then(({ sandbox: ensured }) => ensured)
-        .finally(() => {
-          pendingSandbox = null;
-        });
-    }
-    return pendingSandbox;
+    });
+    sandboxOperationQueue = operation.then(
+      () => undefined,
+      () => undefined,
+    );
+    pendingSandbox = operation;
+    void operation.then(
+      () => {
+        if (pendingSandbox === operation) pendingSandbox = null;
+      },
+      () => {
+        if (pendingSandbox === operation) pendingSandbox = null;
+      },
+    );
+    return operation;
   };
   const getTodoManager = () => todoManager;
   const getFileAccumulator = () => fileAccumulator;
@@ -326,8 +354,11 @@ export const createTools = (
 
   const getSandboxSessionCost = (): number => {
     if (runtimePolicy.chargeSandboxRuntime === false) return 0;
-    if (!sandboxFirstUsedAt) return 0;
-    return (Date.now() - sandboxFirstUsedAt) * sandboxCostPerMs;
+    if (sandboxCostSegmentStartedAt === null) return 0;
+    return (
+      sandboxAccumulatedCost +
+      (Date.now() - sandboxCostSegmentStartedAt) * sandboxCostPerMs
+    );
   };
 
   return {

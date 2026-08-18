@@ -935,6 +935,10 @@ export const connectCloud = mutation({
       });
     }
 
+    if (!connectionId) {
+      throw new Error("Cloud connection ID was not created");
+    }
+
     await ctx.db.patch(session._id, {
       ...(args.clientVersion === RELAY_READY_CLIENT_VERSION
         ? {}
@@ -944,10 +948,6 @@ export const connectCloud = mutation({
       last_connected_at: now,
       updated_at: now,
     });
-
-    if (!connectionId) {
-      throw new Error("Cloud connection ID was not created");
-    }
 
     return {
       success: true,
@@ -1091,12 +1091,10 @@ export const purgeStaleCloudSessions = internalMutation({
   returns: v.object({ deletedCount: v.number() }),
   handler: async (ctx, args) => {
     const limit = args.limit ?? 100;
-    const staleStates = [
-      "failed",
-      "terminated",
-      "starting",
-      "running",
-    ] as const;
+    // Non-terminal rows retain the only durable MicroVM identifier available
+    // to backend AWS cleanup. Never delete them from a database-only cron;
+    // the AWS termination path marks them terminal after cleanup is confirmed.
+    const staleStates = ["failed", "terminated"] as const;
     const rows: Doc<"cloud_sandbox_sessions">[] = [];
     for (const status of staleStates) {
       const remaining = limit - rows.length;
@@ -1111,7 +1109,11 @@ export const purgeStaleCloudSessions = internalMutation({
           .take(remaining)),
       );
     }
-    for (const row of rows) await ctx.db.delete(row._id);
+    const now = Date.now();
+    for (const row of rows) {
+      await disconnectCloudSessionConnection(ctx.db, row.connection_id, now);
+      await ctx.db.delete(row._id);
+    }
     return { deletedCount: rows.length };
   },
 });

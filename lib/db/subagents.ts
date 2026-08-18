@@ -104,6 +104,16 @@ export const listActiveSubagentsForParent = async (
     parentTriggerRunId,
   })) as PersistedSubagent[];
 
+export const listActiveSubagentsForUser = async (
+  userId: string,
+  limit = 100,
+): Promise<{ runs: PersistedSubagent[]; hasMore: boolean }> =>
+  (await getConvexClient().query(api.subagents.listActiveForUserBackend, {
+    serviceKey,
+    userId,
+    limit,
+  })) as { runs: PersistedSubagent[]; hasMore: boolean };
+
 export const getOwnedSubagent = async (
   subagentId: string,
   userId: string,

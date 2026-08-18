@@ -1096,6 +1096,9 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
       /listActiveSubagentsForParent\(triggerRunId\)[\s\S]*?activeSubagents\.length > 0[\s\S]*?reason: "subagents_active"[\s\S]*?return;/,
     );
     expect(taskSrc).toMatch(
+      /listActiveSubagentsForUser\(userId\)[\s\S]*?activeUserSubagents\.runs\.length > 0 \|\| activeUserSubagents\.hasMore[\s\S]*?reason: "user_subagents_active"[\s\S]*?return;/,
+    );
+    expect(taskSrc).toMatch(
       /const otherRuns = activeRuns\.runs\.filter\([\s\S]*?run\.triggerRunId !== triggerRunId[\s\S]*?if \(otherRuns\.length > 0 \|\| activeRuns\.hasMore\)[\s\S]*?return;/,
     );
     expect(taskSrc).toMatch(/await suspendCloudSandboxesForUser\(userId\)/);

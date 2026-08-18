@@ -230,7 +230,7 @@ const getDefaultSandboxEnvironmentSection = (
   const systemEnvironment =
     provider === "aws-lambda-microvm"
       ? `- OS: Kali Linux rolling, linux/arm64 (with internet access)
-- Compute: 1 baseline vCPU and 2 GiB RAM, with short vertical bursts managed by AWS. Avoid running multiple sustained CPU-intensive cracking, fuzzing, or scanning jobs concurrently.
+- Compute: 2 baseline vCPU and 4 GiB RAM, with short vertical bursts managed by AWS. Avoid running multiple sustained CPU-intensive cracking, fuzzing, or scanning jobs concurrently.
 - User: \`root\` (with sudo privileges)`
       : `- OS: Debian GNU/Linux 12 linux/amd64 (with internet access)
 - Compute: 4 vCPU, 4 GiB RAM. Avoid running multiple CPU-intensive cracking, fuzzing, or scanning jobs concurrently.

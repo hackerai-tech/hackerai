@@ -10,7 +10,6 @@ Parameters:
     Type: String
     Default: aws-lambda-microvm-production
     Description: Protected GitHub environment allowed to publish MicroVM images
-
 Resources:
   ArtifactBucket:
     Type: AWS::S3::Bucket
@@ -64,12 +63,17 @@ Resources:
           - Effect: Allow
             Action:
               - lambda:RunMicrovm
-              - lambda:PassNetworkConnector
               - lambda:GetMicrovm
               - lambda:ListMicrovms
               - lambda:ResumeMicrovm
               - lambda:SuspendMicrovm
               - lambda:TerminateMicrovm
+            Resource: "*"
+          - Effect: Allow
+            Action: lambda:PassNetworkConnector
+            # AWS does not currently support resource-level permissions for
+            # PassNetworkConnector. Keep the wildcard isolated to this one
+            # permission-only action.
             Resource: "*"
           - Effect: Allow
             Action: iam:PassRole
@@ -117,7 +121,6 @@ Resources:
             Action:
               - lambda:CreateMicrovmImage
               - lambda:UpdateMicrovmImage
-              - lambda:PassNetworkConnector
               - lambda:GetMicrovmImage
               - lambda:GetMicrovmImageVersion
               - lambda:ListMicrovmImages
@@ -127,6 +130,12 @@ Resources:
               - lambda:ListManagedMicrovmImageVersions
               - lambda:TagResource
               - lambda:UntagResource
+            Resource: "*"
+          - Effect: Allow
+            Action: lambda:PassNetworkConnector
+            # AWS does not currently support resource-level permissions for
+            # PassNetworkConnector. Keep the wildcard isolated to this one
+            # permission-only action.
             Resource: "*"
           - Effect: Allow
             Action: iam:PassRole
