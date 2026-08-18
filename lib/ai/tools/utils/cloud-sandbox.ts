@@ -64,7 +64,7 @@ export async function terminateCloudSandboxesForUser(userId: string): Promise<{
 
   // E2B does not persist provider rows in Convex, so query it whenever its
   // credentials remain configured (including during an AWS migration).
-  if (provider !== "e2b" && !process.env.E2B_API_KEY) return totals;
+  if (!process.env.E2B_API_KEY) return totals;
   const paginator = (await import("@e2b/code-interpreter")).Sandbox.list({
     query: { metadata: { userID: userId } },
   });
