@@ -47,6 +47,7 @@ import {
 } from "@/app/hooks/useOnlineStatus";
 import { WifiOff } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { isFreeDesktopSandboxAvailable } from "@/lib/activation/free-desktop-sandbox";
 
 interface ChatInputProps {
   onSubmit: (e: React.FormEvent) => void | boolean | Promise<void | boolean>;
@@ -257,6 +258,7 @@ export const ChatInput = ({
     subscription,
     isCheckingProPlan,
     hasLocalSandbox,
+    localConnections,
     freeDesktopAgentOnlyActive,
     desktopBridgeStatus,
     defaultLocalSandboxPreference,
@@ -598,14 +600,18 @@ export const ChatInput = ({
   }, [draftId, restoreDraftAttachments, uploadedFiles]);
 
   // Free agent mode constraints:
-  // 1. Requires local sandbox — web users fall back to Ask if disconnected,
-  //    while Desktop stays Agent-only and waits for its bridge to reconnect
+  // 1. Requires a connected local sandbox — Desktop may use either its
+  //    built-in bridge or a separately connected local runner
   // 2. Force local sandbox preference (not e2b)
   // 3. Force auto model selection
   const isFreeAgent =
     !isCheckingProPlan && subscription === "free" && isAgentMode(chatMode);
   const freeAgentSandboxAvailable = freeDesktopAgentOnlyActive
-    ? desktopBridgeStatus === "connected"
+    ? isFreeDesktopSandboxAvailable({
+        sandboxPreference,
+        desktopBridgeActive: desktopBridgeStatus === "connected",
+        localConnections,
+      })
     : hasLocalSandbox;
 
   const prevFreeAgentSandboxAvailableRef = useRef(freeAgentSandboxAvailable);
@@ -619,10 +625,18 @@ export const ChatInput = ({
     if (!freeAgentSandboxAvailable) {
       if (freeDesktopAgentOnlyActive) {
         if (wasConnected) {
-          toast.info("Desktop sandbox disconnected.", {
-            description: "Reconnect the Desktop sandbox to keep using Agent.",
-            duration: 5000,
-          });
+          const selectedDesktop = sandboxPreference === "desktop";
+          toast.info(
+            selectedDesktop
+              ? "Desktop sandbox disconnected."
+              : "Local sandbox disconnected.",
+            {
+              description: selectedDesktop
+                ? "Reconnect the Desktop sandbox to keep using Agent."
+                : "Reconnect the selected local runner to keep using Agent.",
+              duration: 5000,
+            },
+          );
         }
         return;
       }
@@ -639,6 +653,7 @@ export const ChatInput = ({
     freeAgentSandboxAvailable,
     freeDesktopAgentOnlyActive,
     isFreeAgent,
+    sandboxPreference,
     setChatMode,
   ]);
 
@@ -656,14 +671,18 @@ export const ChatInput = ({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isFreeAgent]);
 
-  const desktopSandboxUnavailableReason =
-    freeDesktopAgentOnlyActive && desktopBridgeStatus !== "connected"
-      ? desktopBridgeStatus === "connecting"
-        ? "Desktop sandbox is connecting"
-        : "Reconnect the Desktop sandbox to use Agent"
+  const freeDesktopSandboxUnavailableReason =
+    freeDesktopAgentOnlyActive && !freeAgentSandboxAvailable
+      ? sandboxPreference === "desktop"
+        ? desktopBridgeStatus === "connecting"
+          ? "Desktop sandbox is reconnecting"
+          : "Reconnect the Desktop sandbox to use Agent"
+        : sandboxPreference === "e2b"
+          ? "Select a local sandbox to use Agent"
+          : "Reconnect the selected local sandbox to use Agent"
       : undefined;
   const effectiveSendDisabledReason =
-    sendDisabledReason ?? desktopSandboxUnavailableReason;
+    sendDisabledReason ?? freeDesktopSandboxUnavailableReason;
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();

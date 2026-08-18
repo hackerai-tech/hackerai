@@ -45,7 +45,11 @@ export function SandboxSelector({
   const [open, setOpen] = useState(false);
   const [connectHovered, setConnectHovered] = useState(false);
   const { isTauri } = useTauri();
-  const { subscription, localConnections: connections } = useGlobalState();
+  const {
+    subscription,
+    localConnections: connections,
+    desktopBridgeStatus,
+  } = useGlobalState();
   const isFreeUser = subscription === "free";
 
   const detectedPlatform = useMemo(() => {
@@ -59,13 +63,19 @@ export function SandboxSelector({
     shortLabel: "Cloud",
     icon: Cloud,
   };
+  const desktopLabel =
+    isTauri && desktopBridgeStatus !== "connected"
+      ? desktopBridgeStatus === "connecting"
+        ? "Local reconnecting"
+        : "Local unavailable"
+      : "Local";
   const desktopOptions: ConnectionOption[] =
     connections
       ?.filter((conn) => conn.isDesktop)
       .map(() => ({
         id: "desktop" as string,
-        label: "Local",
-        shortLabel: "Local",
+        label: desktopLabel,
+        shortLabel: desktopLabel,
         icon: Monitor,
       })) || [];
   const remoteOptions: ConnectionOption[] =
@@ -113,7 +123,27 @@ export function SandboxSelector({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isFreeUser, value, connections]);
 
-  const selectedOption = options.find((opt) => opt.id === value) || options[0];
+  const unavailableLocalOption: ConnectionOption | null =
+    value !== "e2b" && !valueMatchesOption
+      ? {
+          id: value,
+          label:
+            value === "desktop" && desktopBridgeStatus === "connecting"
+              ? "Local reconnecting"
+              : "Local unavailable",
+          shortLabel:
+            value === "desktop" && desktopBridgeStatus === "connecting"
+              ? "Local reconnecting"
+              : value === "desktop" && desktopBridgeStatus === "connected"
+                ? "Local"
+                : "Local unavailable",
+          icon: value === "desktop" ? Monitor : Laptop,
+        }
+      : null;
+  const selectedOption =
+    options.find((option) => option.id === value) ??
+    unavailableLocalOption ??
+    cloudOption;
   const Icon = selectedOption?.icon || Cloud;
 
   const buttonClassName =

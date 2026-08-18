@@ -1496,10 +1496,7 @@ async fn start_dev_auth_server(app_handle: tauri::AppHandle) {
                         origin, encoded_token, encoded_state
                     );
 
-                    log::info!(
-                        "Dev auth: navigating to callback (token: {}...)",
-                        &t[..8.min(t.len())]
-                    );
+                    log::info!("Dev auth: navigating to callback");
 
                     if let Some(window) = handle.get_webview_window("main") {
                         let _ = window.set_focus();
@@ -1580,6 +1577,16 @@ fn get_allowed_hosts() -> Vec<String> {
 
 fn is_valid_token_format(token: &str) -> bool {
     token.len() == 64 && token.chars().all(|c| c.is_ascii_hexdigit())
+}
+
+fn deep_link_log_label(url: &url::Url) -> String {
+    let mut label = format!("{}:", url.scheme());
+    if let Some(host) = url.host_str() {
+        label.push_str("//");
+        label.push_str(host);
+    }
+    label.push_str(url.path());
+    label
 }
 
 fn validate_origin(origin: &str) -> bool {
@@ -1671,15 +1678,12 @@ fn handle_auth_deep_link(app: &tauri::AppHandle, url: &url::Url) {
                         "{}/desktop-callback?token={}&desktop_state={}",
                         origin, encoded_token, encoded_state
                     );
-                    log::info!(
-                        "Navigating to desktop callback (token: {}...)",
-                        &token[..8.min(token.len())]
-                    );
+                    log::info!("Navigating to desktop callback");
 
                     match callback_url.parse() {
                         Ok(parsed_url) => {
-                            if let Err(e) = window.navigate(parsed_url) {
-                                log::error!("Failed to navigate to callback URL: {}", e);
+                            if window.navigate(parsed_url).is_err() {
+                                log::error!("Failed to navigate to callback URL");
                                 // Try to navigate to error page
                                 let error_url = format!("{}/login?error=navigation_failed", origin);
                                 if let Ok(error_parsed) = error_url.parse() {
@@ -1687,17 +1691,20 @@ fn handle_auth_deep_link(app: &tauri::AppHandle, url: &url::Url) {
                                 }
                             }
                         }
-                        Err(e) => {
-                            log::error!("Invalid callback URL format: {}", e);
+                        Err(_) => {
+                            log::error!("Invalid callback URL format");
                         }
                     }
                 }
             }
             None => {
-                if let Some((_, error)) = url.query_pairs().find(|(k, _)| k == "error") {
-                    log::error!("Auth deep link received with error: {}", error);
+                if url.query_pairs().any(|(k, _)| k == "error") {
+                    log::error!("Auth deep link received with an error");
                 } else {
-                    log::warn!("Auth deep link received without token: {:?}", url);
+                    log::warn!(
+                        "Auth deep link received without token: {}",
+                        deep_link_log_label(url)
+                    );
                 }
             }
         }
@@ -1857,6 +1864,23 @@ mod tests {
             label,
             uuid::Uuid::new_v4().simple()
         ))
+    }
+
+    #[test]
+    fn deep_link_log_label_omits_authentication_query_values() {
+        let token = "a".repeat(64);
+        let desktop_state = "b".repeat(64);
+        let url = url::Url::parse(&format!(
+            "hackerai://auth?token={token}&origin=https%3A%2F%2Fhackerai.co&desktop_state={desktop_state}"
+        ))
+        .expect("valid deep link");
+
+        let label = deep_link_log_label(&url);
+
+        assert_eq!(label, "hackerai://auth");
+        assert!(!label.contains(&token));
+        assert!(!label.contains(&desktop_state));
+        assert!(!label.contains("origin"));
     }
 
     #[tokio::test]
@@ -2081,11 +2105,17 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
             // Handle deep links passed as CLI args (Linux/Windows)
-            log::info!("Single instance callback with args: {:?}", args);
+            log::info!(
+                "Single instance callback with {} argument(s)",
+                args.len()
+            );
             for arg in args.iter().skip(1) {
                 if let Ok(url) = url::Url::parse(arg) {
                     if url.scheme() == "hackerai" {
-                        log::info!("Processing deep link from CLI arg: {}", arg);
+                        log::info!(
+                            "Processing deep link from CLI arg: {}",
+                            deep_link_log_label(&url)
+                        );
                         handle_auth_deep_link(app, &url);
                     }
                 }
@@ -2122,9 +2152,16 @@ pub fn run() {
                 let handle = app.handle().clone();
                 app.deep_link().on_open_url(move |event| {
                     let urls = event.urls();
-                    log::info!("Deep link received: {:?}", urls);
+                    log::info!(
+                        "Deep link callback received with {} URL(s)",
+                        urls.len()
+                    );
 
                     for url in urls {
+                        log::info!(
+                            "Processing deep link: {}",
+                            deep_link_log_label(&url)
+                        );
                         handle_auth_deep_link(&handle, &url);
                     }
                 });

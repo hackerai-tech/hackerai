@@ -7,6 +7,8 @@ export interface CommandMessage {
   timeout?: number;
   background?: boolean;
   displayName?: string;
+  chatId?: string;
+  triggerRunId?: string;
   targetConnectionId: string;
 }
 

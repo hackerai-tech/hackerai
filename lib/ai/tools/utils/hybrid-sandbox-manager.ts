@@ -258,6 +258,7 @@ export class HybridSandboxManager implements SandboxManager {
     private onBoot?: (info: SandboxBootInfo) => void,
     private workingDirectory?: string,
     private requestId?: string,
+    private chatId?: string,
     private cloudSandboxContext?: CloudSandboxAcquisitionContext,
   ) {
     this.sandbox = initialSandbox || null;
@@ -686,6 +687,8 @@ export class HybridSandboxManager implements SandboxManager {
       connection,
       centrifugoConfig,
       this.workingDirectory,
+      this.requestId,
+      this.chatId,
     );
     this.isLocal = true;
     this.currentConnectionId = connection.connectionId;

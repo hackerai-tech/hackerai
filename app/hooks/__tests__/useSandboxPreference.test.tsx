@@ -16,6 +16,11 @@ jest.mock("@/app/services/desktop-sandbox-bridge", () => ({
   DesktopSandboxBridge: jest.fn(),
 }));
 
+const mockCaptureAuthenticatedEvent = jest.fn();
+jest.mock("@/lib/analytics/client", () => ({
+  captureAuthenticatedEvent: mockCaptureAuthenticatedEvent,
+}));
+
 jest.mock("sonner", () => ({
   toast: { error: jest.fn() },
 }));
@@ -53,6 +58,71 @@ describe("useSandboxPreference", () => {
       expect(result.current.desktopBridgeStatus).toBe("idle");
     });
     expect(DesktopSandboxBridge).not.toHaveBeenCalled();
+  });
+
+  it("automatically retries a bridge that fails during startup readiness", async () => {
+    const bridgeInstances: Array<{
+      start: jest.Mock;
+      stop: jest.Mock;
+      getConnectionId: jest.Mock;
+    }> = [];
+    const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+
+    (DesktopSandboxBridge as jest.Mock).mockImplementation(() => {
+      const index = bridgeInstances.length;
+      const instance = {
+        start: jest
+          .fn()
+          .mockImplementation(() =>
+            index === 0
+              ? Promise.reject(new Error("transport closed"))
+              : Promise.resolve("connection-2"),
+          ),
+        stop: jest.fn().mockResolvedValue(undefined),
+        getConnectionId: jest.fn().mockReturnValue("connection-2"),
+      };
+      bridgeInstances.push(instance);
+      return instance;
+    });
+
+    jest.useFakeTimers();
+    try {
+      const { result, rerender } = renderHook(
+        ({ isAuthenticated }) => useSandboxPreference(isAuthenticated),
+        { initialProps: { isAuthenticated: true } },
+      );
+
+      await act(async () => {
+        await jest.advanceTimersByTimeAsync(0);
+      });
+      expect(bridgeInstances).toHaveLength(1);
+      expect(result.current.desktopBridgeStatus).toBe("connecting");
+      expect(mockCaptureAuthenticatedEvent).toHaveBeenCalledWith(
+        "desktop_bridge_recovery_scheduled",
+        {
+          clientSurface: "desktop_bridge",
+          reason: "startup_failed",
+          attempt: 1,
+          delayMs: 1_000,
+        },
+      );
+
+      await act(async () => {
+        await jest.advanceTimersByTimeAsync(1_000);
+      });
+      expect(bridgeInstances).toHaveLength(2);
+      expect(result.current.desktopBridgeStatus).toBe("connected");
+      expect(result.current.desktopBridgeActive).toBe(true);
+
+      rerender({ isAuthenticated: false });
+      await act(async () => {
+        await jest.advanceTimersByTimeAsync(0);
+      });
+      expect(result.current.desktopBridgeStatus).toBe("idle");
+    } finally {
+      jest.useRealTimers();
+      warnSpy.mockRestore();
+    }
   });
 
   it("invalidates on auth loss and automatically recovers a stale connection", async () => {

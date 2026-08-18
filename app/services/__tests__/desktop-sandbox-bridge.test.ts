@@ -1135,6 +1135,8 @@ describe("forwardChunk", () => {
             type: "command",
             commandId: "cmd-publish-failure",
             command: "test",
+            chatId: "chat-1",
+            triggerRunId: "run-1",
             targetConnectionId: "conn-123",
           },
         });
@@ -1154,6 +1156,8 @@ describe("forwardChunk", () => {
           {
             connectionId: "conn-123",
             commandId: "cmd-publish-failure",
+            chatId: "chat-1",
+            triggerRunId: "run-1",
             chunkType: "stdout",
             reason,
             attempt: 1,
@@ -1166,6 +1170,8 @@ describe("forwardChunk", () => {
           {
             connectionId: "conn-123",
             commandId: "cmd-publish-failure",
+            chatId: "chat-1",
+            triggerRunId: "run-1",
             chunkType: "stdout",
             reason,
             attempts: 3,
@@ -1193,6 +1199,8 @@ describe("forwardChunk", () => {
             request_id: "cmd-publish-failure",
             connection_id: "conn-123",
             command_id: "cmd-publish-failure",
+            chat_id: "chat-1",
+            trigger_run_id: "run-1",
             chunk_type: "stdout",
             reason,
             attempt: 1,

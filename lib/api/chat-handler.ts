@@ -439,6 +439,8 @@ export const createChatHandler = () => {
         allowLocalDesktopFiles:
           isAgentMode(mode) && sandboxPreference === "desktop",
         auxiliaryVisionEnabled: !!auxiliaryVisionAssignment,
+        chatId,
+        requestId: req.headers.get("x-vercel-id") ?? undefined,
       });
 
       // Empty after processing → providers reject the request before the route can stream.
@@ -653,6 +655,7 @@ export const createChatHandler = () => {
         createAuxiliaryVisionExposureRecorder({
           posthog,
           userId,
+          chatId,
           subscription,
           mode,
           selectedModelOverride,

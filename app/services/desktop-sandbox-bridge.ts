@@ -82,6 +82,11 @@ interface DesktopStreamPublishRecoveryState {
   terminalChunkPublished: boolean;
 }
 
+type DesktopStreamTelemetryContext = Pick<
+  CommandMessage,
+  "chatId" | "triggerRunId"
+>;
+
 function shouldForwardStreamChunk(chunk: StreamChunk): boolean {
   if (chunk.type === "stdout" || chunk.type === "stderr") {
     return Boolean(chunk.data);
@@ -709,6 +714,10 @@ export class DesktopSandboxBridge {
 
   private async handleCommand(command: CommandMessage): Promise<void> {
     const { commandId } = command;
+    const telemetryContext: DesktopStreamTelemetryContext = {
+      chatId: command.chatId,
+      triggerRunId: command.triggerRunId,
+    };
     this.activeCommands.add(commandId);
     const commandStartedAt = Date.now();
     const recoveryState: DesktopStreamPublishRecoveryState = {
@@ -749,6 +758,7 @@ export class DesktopSandboxBridge {
               sequence,
               recoveryState,
               recoveryDeadlineAt,
+              telemetryContext,
             );
           } catch (error) {
             // Tauri does not await Channel callbacks. Exhausted known
@@ -793,6 +803,7 @@ export class DesktopSandboxBridge {
         commandId,
         recoveryState,
         Date.now() - commandStartedAt,
+        telemetryContext,
       );
       this.activeCommands.delete(commandId);
     }
@@ -802,6 +813,7 @@ export class DesktopSandboxBridge {
     commandId: string,
     recoveryState: DesktopStreamPublishRecoveryState,
     durationMs: number,
+    telemetryContext: DesktopStreamTelemetryContext,
   ): void {
     if (!recoveryState.failureReported) return;
 
@@ -814,6 +826,10 @@ export class DesktopSandboxBridge {
     const properties = {
       connectionId: this.connectionId,
       commandId,
+      ...(telemetryContext.chatId && { chatId: telemetryContext.chatId }),
+      ...(telemetryContext.triggerRunId && {
+        triggerRunId: telemetryContext.triggerRunId,
+      }),
       outcome,
       observedChunks: recoveryState.observedChunks,
       publishedChunks: recoveryState.publishedChunks,
@@ -833,6 +849,8 @@ export class DesktopSandboxBridge {
       request_id: commandId,
       connection_id: this.connectionId,
       command_id: commandId,
+      chat_id: telemetryContext.chatId,
+      trigger_run_id: telemetryContext.triggerRunId,
       outcome,
       observed_chunks: recoveryState.observedChunks,
       published_chunks: recoveryState.publishedChunks,
@@ -1224,6 +1242,7 @@ export class DesktopSandboxBridge {
     sequence: number,
     recoveryState: DesktopStreamPublishRecoveryState,
     recoveryDeadlineAt: number,
+    telemetryContext: DesktopStreamTelemetryContext,
   ): Promise<void> {
     let firstFailureAt: number | null = null;
     let firstFailureReason: DesktopStreamPublishFailureReason | null = null;
@@ -1258,6 +1277,8 @@ export class DesktopSandboxBridge {
               request_id: commandId,
               connection_id: this.connectionId,
               command_id: commandId,
+              chat_id: telemetryContext.chatId,
+              trigger_run_id: telemetryContext.triggerRunId,
               chunk_type: chunk.type,
               reason: firstFailureReason,
               attempts: attempt,
@@ -1267,6 +1288,12 @@ export class DesktopSandboxBridge {
           captureAuthenticatedEvent("desktop_stream_publish_recovered", {
             connectionId: this.connectionId,
             commandId,
+            ...(telemetryContext.chatId && {
+              chatId: telemetryContext.chatId,
+            }),
+            ...(telemetryContext.triggerRunId && {
+              triggerRunId: telemetryContext.triggerRunId,
+            }),
             chunkType: chunk.type,
             reason: firstFailureReason,
             attempts: attempt,
@@ -1293,6 +1320,8 @@ export class DesktopSandboxBridge {
               request_id: commandId,
               connection_id: this.connectionId,
               command_id: commandId,
+              chat_id: telemetryContext.chatId,
+              trigger_run_id: telemetryContext.triggerRunId,
               chunk_type: chunk.type,
               reason,
               attempt,
@@ -1302,6 +1331,12 @@ export class DesktopSandboxBridge {
           captureAuthenticatedEvent("desktop_stream_publish_failed", {
             connectionId: this.connectionId,
             commandId,
+            ...(telemetryContext.chatId && {
+              chatId: telemetryContext.chatId,
+            }),
+            ...(telemetryContext.triggerRunId && {
+              triggerRunId: telemetryContext.triggerRunId,
+            }),
             chunkType: chunk.type,
             reason,
             attempt,
@@ -1334,6 +1369,8 @@ export class DesktopSandboxBridge {
               request_id: commandId,
               connection_id: this.connectionId,
               command_id: commandId,
+              chat_id: telemetryContext.chatId,
+              trigger_run_id: telemetryContext.triggerRunId,
               chunk_type: chunk.type,
               reason: firstFailureReason,
               attempts: attempt,
@@ -1346,6 +1383,12 @@ export class DesktopSandboxBridge {
             {
               connectionId: this.connectionId,
               commandId,
+              ...(telemetryContext.chatId && {
+                chatId: telemetryContext.chatId,
+              }),
+              ...(telemetryContext.triggerRunId && {
+                triggerRunId: telemetryContext.triggerRunId,
+              }),
               chunkType: chunk.type,
               reason: firstFailureReason,
               attempts: attempt,

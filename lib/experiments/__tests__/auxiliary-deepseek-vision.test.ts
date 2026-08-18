@@ -55,6 +55,8 @@ describe("auxiliary DeepSeek vision flag", () => {
     const record = createAuxiliaryVisionExposureRecorder({
       posthog: { capture } as never,
       userId: "user-1",
+      chatId: "chat-1",
+      triggerRunId: "run-1",
       subscription: "pro",
       mode: "agent",
       selectedModelOverride: "hackerai-pro",
@@ -73,6 +75,8 @@ describe("auxiliary DeepSeek vision flag", () => {
       properties: expect.objectContaining({
         experiment_variant: "test",
         exposure_surface: "file_view",
+        chat_id: "chat-1",
+        trigger_run_id: "run-1",
         selected_model_override: "hackerai-pro",
         selected_model: "model-deepseek-v4-pro-0813",
         $process_person_profile: false,

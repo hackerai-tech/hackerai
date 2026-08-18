@@ -88,6 +88,8 @@ export async function evaluateAuxiliaryDeepSeekVisionFlag({
 export function createAuxiliaryVisionExposureRecorder({
   posthog,
   userId,
+  chatId,
+  triggerRunId,
   subscription,
   mode,
   selectedModelOverride,
@@ -96,6 +98,8 @@ export function createAuxiliaryVisionExposureRecorder({
 }: {
   posthog: Pick<PostHog, "capture"> | null;
   userId: string;
+  chatId: string;
+  triggerRunId?: string;
   subscription: SubscriptionTier;
   mode: ChatMode;
   selectedModelOverride?: SelectedModel;
@@ -120,6 +124,8 @@ export function createAuxiliaryVisionExposureRecorder({
         selected_model_override: selectedModelOverride ?? "auto",
         selected_model: getSelectedModel(),
         exposure_surface: source,
+        chat_id: chatId,
+        ...(triggerRunId && { trigger_run_id: triggerRunId }),
         $process_person_profile: false,
       },
     });

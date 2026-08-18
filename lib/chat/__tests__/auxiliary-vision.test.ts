@@ -67,6 +67,7 @@ describe("auxiliary vision", () => {
       requestId: "request-1",
       userId: "user-1",
       chatId: "chat-1",
+      triggerRunId: "run-1",
     });
     const providerError = new Error("sensitive provider details");
 
@@ -88,6 +89,7 @@ describe("auxiliary vision", () => {
       request_id: "request-1",
       user_id: "user-1",
       chat_id: "chat-1",
+      trigger_run_id: "run-1",
       source: "attachment",
       fallback_route: "direct_vision",
       failure_reason: "provider_error",
@@ -375,6 +377,9 @@ describe("auxiliary vision", () => {
           },
         ],
         userId: "user-1",
+        chatId: "chat-1",
+        triggerRunId: "run-1",
+        requestId: "run-1",
         cacheDescription,
         onCost,
         modelRunner,
@@ -387,6 +392,18 @@ describe("auxiliary vision", () => {
       expect.objectContaining({ fileId: "file-good" }),
     );
     expect(onCost).not.toHaveBeenCalled();
+    const failedEvent = (console.warn as jest.Mock).mock.calls
+      .map(([line]) => JSON.parse(String(line)) as Record<string, unknown>)
+      .find(
+        (payload) => payload.event === "auxiliary_vision_description_failed",
+      );
+    expect(failedEvent).toMatchObject({
+      request_id: "run-1",
+      user_id: "user-1",
+      chat_id: "chat-1",
+      trigger_run_id: "run-1",
+      source: "attachment",
+    });
   });
 
   it("fails explicitly when the auxiliary model returns no description", async () => {

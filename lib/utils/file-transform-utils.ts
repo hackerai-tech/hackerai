@@ -50,6 +50,17 @@ type ResolvedFileUrlInfo = {
   auxiliaryVisionModel?: string;
 };
 
+type PersistedFileUrlFetchResult = {
+  value: ResolvedFileUrlInfo | string | null;
+  lookupPath: "metadata" | "legacy_fallback" | "failed";
+};
+
+type PersistedImageReloadTelemetryContext = {
+  chatId?: string;
+  triggerRunId?: string;
+  requestId?: string;
+};
+
 type SizeProbeResult = {
   bytes: number;
   source: "file_record" | "content_length" | "content_range" | "download_probe";
@@ -498,7 +509,7 @@ const collectFilesToProcess = (
 const fetchFileUrls = async (
   fileIds: string[],
   userId: string | undefined,
-): Promise<(ResolvedFileUrlInfo | string | null)[]> => {
+): Promise<PersistedFileUrlFetchResult[]> => {
   if (!fileIds.length) return [];
   if (!userId) {
     logger.warn("file_url_fetch_skipped_missing_user_id", {
@@ -517,12 +528,9 @@ const fetchFileUrls = async (
 
     const chunkResults = await Promise.all(
       chunks.map(
-        async (
-          chunk,
-          index,
-        ): Promise<(ResolvedFileUrlInfo | string | null)[]> => {
+        async (chunk, index): Promise<PersistedFileUrlFetchResult[]> => {
           try {
-            return await getConvexClient().action(
+            const values = await getConvexClient().action(
               api.s3Actions.getFileUrlInfosByFileIdsAction,
               {
                 serviceKey,
@@ -530,6 +538,10 @@ const fetchFileUrls = async (
                 fileIds: chunk as Id<"files">[],
               },
             );
+            return values.map((value) => ({
+              value,
+              lookupPath: "metadata" as const,
+            }));
           } catch (error) {
             logger.warn("file_url_fetch_chunk_failed", {
               event: "file_url_fetch_chunk_failed",
@@ -542,7 +554,7 @@ const fetchFileUrls = async (
             });
 
             try {
-              return await getConvexClient().action(
+              const values = await getConvexClient().action(
                 api.s3Actions.getFileUrlsByFileIdsAction,
                 {
                   serviceKey,
@@ -550,6 +562,10 @@ const fetchFileUrls = async (
                   fileIds: chunk as Id<"files">[],
                 },
               );
+              return values.map((value) => ({
+                value,
+                lookupPath: "legacy_fallback" as const,
+              }));
             } catch (fallbackError) {
               logger.warn("file_url_legacy_fetch_chunk_failed", {
                 event: "file_url_legacy_fetch_chunk_failed",
@@ -560,7 +576,10 @@ const fetchFileUrls = async (
                 chunk_index: index,
                 chunk_count: chunks.length,
               });
-              return chunk.map(() => null);
+              return chunk.map(() => ({
+                value: null,
+                lookupPath: "failed" as const,
+              }));
             }
           }
         },
@@ -584,6 +603,8 @@ const applyUrlsToFileParts = async (
   filesToProcess: Map<string, FileToProcess>,
   mode: ChatMode,
   userId: string,
+  subscription?: SubscriptionTier,
+  telemetryContext?: PersistedImageReloadTelemetryContext,
 ) => {
   const filesNeedingUrls = Array.from(filesToProcess.values()).filter(
     (file) => file.fileId && !file.url,
@@ -592,9 +613,13 @@ const applyUrlsToFileParts = async (
 
   const fetchedUrls = await fetchFileUrls(fileIdsNeedingUrls, userId);
 
+  let metadataLookupImageCount = 0;
+  let legacyFallbackImageCount = 0;
+
   filesNeedingUrls.forEach((file, index) => {
+    const fetchResult = fetchedUrls[index];
     const resolved = validateResolvedFileUrlInfo(
-      fetchedUrls[index],
+      fetchResult?.value,
       file.fileId!,
     );
     if (resolved) {
@@ -607,8 +632,49 @@ const applyUrlsToFileParts = async (
       }
       file.auxiliaryVisionDescription = resolved.auxiliaryVisionDescription;
       file.auxiliaryVisionModel = resolved.auxiliaryVisionModel;
+
+      const resolvedMediaType =
+        normalizeImageMediaType(file.mediaType) ?? file.mediaType ?? "";
+      if (isSupportedImageMediaType(resolvedMediaType)) {
+        if (fetchResult?.lookupPath === "metadata") {
+          metadataLookupImageCount += 1;
+        } else if (fetchResult?.lookupPath === "legacy_fallback") {
+          legacyFallbackImageCount += 1;
+        }
+      }
     }
   });
+
+  const persistedImageCount =
+    metadataLookupImageCount + legacyFallbackImageCount;
+  if (persistedImageCount > 0) {
+    console.info(
+      JSON.stringify({
+        timestamp: new Date().toISOString(),
+        level: "info",
+        event: "persisted_image_reload_succeeded",
+        service: telemetryContext?.triggerRunId ? "agent-long" : "chat-handler",
+        environment:
+          process.env.TRIGGER_ENV ??
+          process.env.VERCEL_ENV ??
+          process.env.NODE_ENV ??
+          "unknown",
+        request_id:
+          telemetryContext?.requestId ??
+          telemetryContext?.triggerRunId ??
+          "unavailable",
+        user_id: userId,
+        chat_id: telemetryContext?.chatId,
+        trigger_run_id: telemetryContext?.triggerRunId,
+        mode,
+        subscription_tier: subscription,
+        reload_stage: "owner_checked_storage_lookup",
+        image_count: persistedImageCount,
+        metadata_lookup_image_count: metadataLookupImageCount,
+        legacy_fallback_image_count: legacyFallbackImageCount,
+      }),
+    );
+  }
 
   for (const [fileKey, file] of filesToProcess) {
     if (!file.url) continue;
@@ -892,6 +958,7 @@ export const processMessageFiles = async (
   uploadBasePath?: string,
   subscription?: SubscriptionTier,
   allowLocalDesktopFiles: boolean = false,
+  telemetryContext?: PersistedImageReloadTelemetryContext,
 ): Promise<{
   messages: UIMessage[];
   hasMediaFiles: boolean;
@@ -918,7 +985,14 @@ export const processMessageFiles = async (
   const { hasMedia, files } = collectFilesToProcess(updatedMessages, mode);
 
   if (files.size > 0) {
-    await applyUrlsToFileParts(updatedMessages, files, mode, userId);
+    await applyUrlsToFileParts(
+      updatedMessages,
+      files,
+      mode,
+      userId,
+      subscription,
+      telemetryContext,
+    );
   }
 
   const maxFileTokens = subscription

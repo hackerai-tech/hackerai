@@ -46,6 +46,7 @@ export function createAuxiliaryVisionFailoverController({
   requestId,
   userId,
   chatId,
+  triggerRunId,
   isUserAborted,
 }: {
   enabled: boolean;
@@ -53,6 +54,7 @@ export function createAuxiliaryVisionFailoverController({
   requestId?: string;
   userId?: string;
   chatId?: string;
+  triggerRunId?: string;
   isUserAborted?: () => boolean;
 }): AuxiliaryVisionFailoverController {
   let active = enabled;
@@ -74,6 +76,7 @@ export function createAuxiliaryVisionFailoverController({
           request_id: requestId ?? "unavailable",
           user_id: userId,
           chat_id: chatId,
+          trigger_run_id: triggerRunId,
           source,
           fallback_route: "direct_vision",
           failure_reason: failure.reason,
@@ -175,6 +178,7 @@ export async function describeImageWithAuxiliaryVision({
   requestId,
   userId,
   chatId,
+  triggerRunId,
   abortSignal,
   onCost,
   onExposure,
@@ -187,6 +191,7 @@ export async function describeImageWithAuxiliaryVision({
   requestId?: string;
   userId?: string;
   chatId?: string;
+  triggerRunId?: string;
   abortSignal?: AbortSignal;
   onCost?: (costDollars: number) => void;
   onExposure?: (source: AuxiliaryVisionSource) => void;
@@ -236,6 +241,7 @@ export async function describeImageWithAuxiliaryVision({
         request_id: requestId ?? "unavailable",
         user_id: userId,
         chat_id: chatId,
+        trigger_run_id: triggerRunId,
         source,
         model: AUXILIARY_VISION_SLUG,
         media_type: mediaType,
@@ -268,6 +274,7 @@ export async function describeImageWithAuxiliaryVision({
         request_id: requestId ?? "unavailable",
         user_id: userId,
         chat_id: chatId,
+        trigger_run_id: triggerRunId,
         source,
         model: AUXILIARY_VISION_SLUG,
         media_type: mediaType,
@@ -295,6 +302,7 @@ export async function describeImageAttachmentsWithAuxiliaryVision({
   requestId,
   userId,
   chatId,
+  triggerRunId,
   abortSignal,
   onCost,
   onExposure,
@@ -305,6 +313,7 @@ export async function describeImageAttachmentsWithAuxiliaryVision({
   requestId?: string;
   userId?: string;
   chatId?: string;
+  triggerRunId?: string;
   abortSignal?: AbortSignal;
   onCost?: (costDollars: number) => void;
   onExposure?: (source: AuxiliaryVisionSource) => void;
@@ -405,6 +414,7 @@ export async function describeImageAttachmentsWithAuxiliaryVision({
               requestId,
               userId,
               chatId,
+              triggerRunId,
               abortSignal,
               onCost: (costDollars) => {
                 pendingCostDollars += costDollars;

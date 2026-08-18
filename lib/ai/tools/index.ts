@@ -176,6 +176,7 @@ export const createTools = (
           recordSandboxBoot,
           workingDirectory,
           triggerRunId,
+          chatId,
           cloudSandboxContext,
         )
       : new DefaultSandboxManager(
