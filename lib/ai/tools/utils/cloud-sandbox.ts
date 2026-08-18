@@ -3,6 +3,14 @@ import { getCloudSandboxProvider } from "./cloud-sandbox-provider";
 import { ensureSandboxConnection } from "./sandbox";
 import { isAwsLambdaMicrovmSandbox, isE2BSandbox } from "./sandbox-types";
 
+export type CloudSandboxSuspensionSummary = {
+  total: number;
+  suspended: number;
+  alreadySuspended: number;
+  terminated: number;
+  alreadyGone: number;
+};
+
 export async function ensureCloudSandboxConnection(options: {
   userId: string;
   initialSandbox?: AnySandbox | null;
@@ -95,4 +103,22 @@ export async function terminateCloudSandboxesForUser(userId: string): Promise<{
   totals.killed += killed;
   totals.alreadyGone += alreadyGone;
   return totals;
+}
+
+export async function suspendCloudSandboxesForUser(
+  userId: string,
+): Promise<CloudSandboxSuspensionSummary> {
+  if (getCloudSandboxProvider() !== "aws-lambda-microvm") {
+    return {
+      total: 0,
+      suspended: 0,
+      alreadySuspended: 0,
+      terminated: 0,
+      alreadyGone: 0,
+    };
+  }
+
+  const { suspendAwsLambdaMicrovmsForUser } =
+    await import("./aws-lambda-microvm");
+  return suspendAwsLambdaMicrovmsForUser(userId);
 }

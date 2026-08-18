@@ -3,6 +3,7 @@ import {
   LambdaMicrovmsClient,
   ResumeMicrovmCommand,
   RunMicrovmCommand,
+  SuspendMicrovmCommand,
   TerminateMicrovmCommand,
 } from "@aws-sdk/client-lambda-microvms";
 import { api } from "@/convex/_generated/api";
@@ -42,6 +43,14 @@ type CloudSessionCleanupCandidate = {
 };
 
 type TerminationOutcome = "terminated" | "already_gone" | "failed";
+
+export type AwsLambdaMicrovmSuspensionSummary = {
+  total: number;
+  suspended: number;
+  alreadySuspended: number;
+  terminated: number;
+  alreadyGone: number;
+};
 
 type AwsLambdaMicrovmConfig = {
   region: string;
@@ -1138,4 +1147,181 @@ export async function terminateAwsLambdaMicrovmForUser(
   }
 
   return { total: sessions.length, killed, alreadyGone };
+}
+
+/**
+ * Stop compute for a user's reusable MicroVMs while retaining their state.
+ *
+ * The caller must first verify that no other Agent run is using the user's
+ * shared sandbox. A failed suspend falls back to termination so an ended run
+ * cannot leave a billable MicroVM running indefinitely.
+ */
+export async function suspendAwsLambdaMicrovmsForUser(
+  userId: string,
+): Promise<AwsLambdaMicrovmSuspensionSummary> {
+  const serviceKey = required("CONVEX_SERVICE_ROLE_KEY");
+  const sessions = (await getConvexClient().query(
+    api.localSandbox.listActiveCloudSessionsForBackend,
+    {
+      serviceKey,
+      userId,
+    },
+  )) as CloudSession[];
+  const summary: AwsLambdaMicrovmSuspensionSummary = {
+    total: sessions.length,
+    suspended: 0,
+    alreadySuspended: 0,
+    terminated: 0,
+    alreadyGone: 0,
+  };
+  const failures: unknown[] = [];
+
+  for (const session of sessions) {
+    let microvmId = session.microvmId;
+    if (!microvmId) {
+      const resolved = await getConvexClient().mutation(
+        api.localSandbox.resolveCloudSessionCleanupTarget,
+        {
+          serviceKey,
+          userId,
+          sessionId: session.sessionId,
+        },
+      );
+      if (resolved.endedWithoutMicrovm) {
+        summary.alreadyGone++;
+        continue;
+      }
+      microvmId = resolved.microvmId;
+      if (!microvmId) {
+        failures.push(
+          new Error(
+            `Cloud session ${session.sessionId} has no resolvable MicroVM ID`,
+          ),
+        );
+        continue;
+      }
+    }
+
+    const startedAt = performance.now();
+    try {
+      const current = await getClient(session.region).send(
+        new GetMicrovmCommand({ microvmIdentifier: microvmId }),
+      );
+      if (current.state === "SUSPENDED" || current.state === "SUSPENDING") {
+        summary.alreadySuspended++;
+        log("info", "cloud_sandbox_suspend_skipped", {
+          user_id: userId,
+          session_id: session.sessionId,
+          microvm_id: microvmId,
+          region: session.region,
+          microvm_state: current.state,
+          reason: "already_suspended",
+          duration_ms: Math.round(performance.now() - startedAt),
+        });
+        continue;
+      }
+      if (current.state === "TERMINATED" || current.state === "TERMINATING") {
+        await markEnded(
+          userId,
+          session.sessionId,
+          { serviceKey },
+          "terminated",
+          "microvm_ended",
+        );
+        summary.alreadyGone++;
+        continue;
+      }
+      if (current.state !== "RUNNING") {
+        throw new Error(
+          `MicroVM cannot be suspended from state ${current.state ?? "unknown"}`,
+        );
+      }
+
+      const response = await getClient(session.region).send(
+        new SuspendMicrovmCommand({ microvmIdentifier: microvmId }),
+      );
+      summary.suspended++;
+      log("info", "cloud_sandbox_suspend_accepted", {
+        user_id: userId,
+        session_id: session.sessionId,
+        microvm_id: microvmId,
+        region: session.region,
+        previous_state: current.state,
+        aws_request_id: response.$metadata.requestId ?? null,
+        aws_http_status_code: response.$metadata.httpStatusCode ?? null,
+        duration_ms: Math.round(performance.now() - startedAt),
+      });
+    } catch (error) {
+      if (isAwsNotFound(error)) {
+        await markEnded(
+          userId,
+          session.sessionId,
+          { serviceKey },
+          "terminated",
+          "microvm_not_found",
+        );
+        summary.alreadyGone++;
+        continue;
+      }
+
+      log("warn", "cloud_sandbox_suspend_failed", {
+        user_id: userId,
+        session_id: session.sessionId,
+        microvm_id: microvmId,
+        region: session.region,
+        failure_code: failureCode(error),
+        duration_ms: Math.round(performance.now() - startedAt),
+        ...errorLogFields(error),
+      });
+      const terminationOutcome = await terminateMicrovm(
+        microvmId,
+        session.region,
+      );
+      if (terminationOutcome === "terminated") {
+        await markEnded(
+          userId,
+          session.sessionId,
+          { serviceKey },
+          "terminated",
+          "suspend_failed_terminated",
+        );
+        summary.terminated++;
+        log("warn", "cloud_sandbox_suspend_fallback_terminated", {
+          user_id: userId,
+          session_id: session.sessionId,
+          microvm_id: microvmId,
+          region: session.region,
+        });
+        continue;
+      }
+      if (terminationOutcome === "already_gone") {
+        await markEnded(
+          userId,
+          session.sessionId,
+          { serviceKey },
+          "terminated",
+          "microvm_not_found",
+        );
+        summary.alreadyGone++;
+        continue;
+      }
+
+      await markCleanupPending(
+        userId,
+        session.sessionId,
+        { serviceKey },
+        "suspend_and_termination_failed",
+      );
+      failures.push(error);
+    }
+  }
+
+  if (failures.length > 0) {
+    throw new AggregateError(
+      failures,
+      `Failed to stop ${failures.length} AWS Lambda MicroVM session(s)`,
+    );
+  }
+
+  return summary;
 }

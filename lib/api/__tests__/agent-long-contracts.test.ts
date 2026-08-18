@@ -1064,7 +1064,7 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
 
   test("terminal approval cleanup compare-clears stale composer state", () => {
     expect(taskSrc).toMatch(
-      /expectedRunId:\s*ctx\.run\.id,[\s\S]*clearApprovalPending:\s*true/,
+      /expectedRunId:\s*triggerRunId,[\s\S]*clearApprovalPending:\s*true/,
     );
     expect(resumeSrc).toMatch(
       /expectedRunId:\s*runId,[\s\S]*clearApprovalPending:\s*true/,
@@ -1081,10 +1081,29 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
 
   test("every parent wind-down settles active subagents before teardown", () => {
     expect(taskSrc).toMatch(
-      /if \(cleanup\.subagentsEnabled\) \{\s*await settleSubagentsForParentRun\(ctx\.run\.id, "parent_canceled"\);\s*\}/,
+      /if \(cleanup\.subagentsEnabled\) \{\s*await settleSubagentsForParentRun\(ctx\.run\.id, "parent_canceled"\)\.catch/,
     );
     expect(taskSrc).toMatch(
-      /finally \{[\s\S]*?if \(securityValidationSubagentsEnabled\) \{\s*await settleSubagentsForParentRun\(ctx\.run\.id, "parent_run_ended"\);\s*\}[\s\S]*?runCleanupMap\.delete\(ctx\.run\.id\)[\s\S]*?triggerSessions\.close/,
+      /finally \{[\s\S]*?if \(securityValidationSubagentsEnabled\) \{\s*await settleSubagentsForParentRun\([\s\S]*?"parent_run_ended"\)\.catch[\s\S]*?triggerSessions\.close[\s\S]*?finishCloudSandboxLifecycle\(\)[\s\S]*?runCleanupMap\.delete\(ctx\.run\.id\)/,
+    );
+  });
+
+  test("parent completion only suspends the shared sandbox after the user becomes idle", () => {
+    expect(taskSrc).toMatch(
+      /finishCloudSandboxLifecycleForParentRun[\s\S]*?setActiveTriggerRun\([\s\S]*?expectedRunId:\s*triggerRunId[\s\S]*?getActiveTriggerRunsForUser\(\{ userId \}\)/,
+    );
+    expect(taskSrc).toMatch(
+      /listActiveSubagentsForParent\(triggerRunId\)[\s\S]*?activeSubagents\.length > 0[\s\S]*?reason: "subagents_active"[\s\S]*?return;/,
+    );
+    expect(taskSrc).toMatch(
+      /const otherRuns = activeRuns\.runs\.filter\([\s\S]*?run\.triggerRunId !== triggerRunId[\s\S]*?if \(otherRuns\.length > 0 \|\| activeRuns\.hasMore\)[\s\S]*?return;/,
+    );
+    expect(taskSrc).toMatch(/await suspendCloudSandboxesForUser\(userId\)/);
+    expect(taskSrc).toMatch(
+      /await ptySessionManager\.closeAll\(cleanup\.chatId\)[\s\S]*?await cleanup\.finishCloudSandboxLifecycle\(\)/,
+    );
+    expect(taskSrc).toMatch(
+      /await ptySessionManager\.closeAll\(chatId\)[\s\S]*?await finishCloudSandboxLifecycle\(\)/,
     );
   });
 

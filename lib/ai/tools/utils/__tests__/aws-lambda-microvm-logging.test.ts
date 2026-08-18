@@ -26,6 +26,7 @@ jest.mock("@aws-sdk/client-lambda-microvms", () => {
     GetMicrovmCommand: Command,
     ResumeMicrovmCommand: Command,
     RunMicrovmCommand: Command,
+    SuspendMicrovmCommand: Command,
     TerminateMicrovmCommand: Command,
     LambdaMicrovmsClient: jest.fn().mockImplementation(() => ({
       send: mockSend,
@@ -55,6 +56,7 @@ jest.mock("../centrifugo-sandbox", () => ({
 import {
   ensureAwsLambdaMicrovmConnection,
   getAwsLambdaMicrovmConfig,
+  suspendAwsLambdaMicrovmsForUser,
   terminateAwsLambdaMicrovmForUser,
 } from "../aws-lambda-microvm";
 
@@ -632,6 +634,119 @@ describe("AWS Lambda MicroVM development logging", () => {
 
     warnSpy.mockRestore();
     infoSpy.mockRestore();
+  });
+
+  it("suspends a running reusable MicroVM when the Agent becomes idle", async () => {
+    mockQuery.mockResolvedValueOnce([
+      {
+        sessionId: "session-suspend",
+        status: "running",
+        microvmId: "microvm-suspend",
+        region: "us-east-1",
+      },
+    ]);
+    mockSend.mockResolvedValueOnce({ state: "RUNNING" }).mockResolvedValueOnce({
+      $metadata: { requestId: "suspend-request", httpStatusCode: 200 },
+    });
+    const infoSpy = jest.spyOn(console, "info").mockImplementation();
+
+    await expect(suspendAwsLambdaMicrovmsForUser("user-idle")).resolves.toEqual(
+      {
+        total: 1,
+        suspended: 1,
+        alreadySuspended: 0,
+        terminated: 0,
+        alreadyGone: 0,
+      },
+    );
+
+    expect(mockSend).toHaveBeenCalledTimes(2);
+    expect(mockSend.mock.calls[1][0]).toMatchObject({
+      input: { microvmIdentifier: "microvm-suspend" },
+    });
+    const event = infoSpy.mock.calls
+      .map(([payload]) => JSON.parse(payload as string))
+      .find((payload) => payload.event === "cloud_sandbox_suspend_accepted");
+    expect(event).toMatchObject({
+      user_id: "user-idle",
+      session_id: "session-suspend",
+      microvm_id: "microvm-suspend",
+      aws_request_id: "suspend-request",
+    });
+
+    infoSpy.mockRestore();
+  });
+
+  it("terminates a MicroVM when suspension fails", async () => {
+    mockQuery.mockResolvedValueOnce([
+      {
+        sessionId: "session-suspend-fallback",
+        status: "running",
+        microvmId: "microvm-suspend-fallback",
+        region: "us-east-1",
+      },
+    ]);
+    mockSend
+      .mockResolvedValueOnce({ state: "RUNNING" })
+      .mockRejectedValueOnce(
+        Object.assign(new Error("suspend unavailable"), {
+          name: "ServiceUnavailableException",
+        }),
+      )
+      .mockResolvedValueOnce({ $metadata: { httpStatusCode: 200 } });
+    mockMutation.mockResolvedValueOnce(true);
+    const warnSpy = jest.spyOn(console, "warn").mockImplementation();
+
+    await expect(
+      suspendAwsLambdaMicrovmsForUser("user-fallback"),
+    ).resolves.toEqual({
+      total: 1,
+      suspended: 0,
+      alreadySuspended: 0,
+      terminated: 1,
+      alreadyGone: 0,
+    });
+    expect(mockSend).toHaveBeenCalledTimes(3);
+    expect(mockMutation).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        sessionId: "session-suspend-fallback",
+        status: "terminated",
+        failureCode: "suspend_failed_terminated",
+      }),
+    );
+
+    warnSpy.mockRestore();
+  });
+
+  it("keeps a session retryable when suspend and termination both fail", async () => {
+    mockQuery.mockResolvedValueOnce([
+      {
+        sessionId: "session-double-failure",
+        status: "running",
+        microvmId: "microvm-double-failure",
+        region: "us-east-1",
+      },
+    ]);
+    mockSend
+      .mockResolvedValueOnce({ state: "RUNNING" })
+      .mockRejectedValueOnce(new Error("suspend failed"))
+      .mockRejectedValueOnce(new Error("terminate failed"));
+    mockMutation.mockResolvedValueOnce(true);
+    const warnSpy = jest.spyOn(console, "warn").mockImplementation();
+
+    await expect(
+      suspendAwsLambdaMicrovmsForUser("user-double-failure"),
+    ).rejects.toThrow("Failed to stop 1 AWS Lambda MicroVM session");
+    expect(mockMutation).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        sessionId: "session-double-failure",
+        failureCode: "suspend_and_termination_failed",
+      }),
+    );
+
+    warnSpy.mockRestore();
   });
 
   it("uses a four-hour default but permits the eight-hour platform maximum", () => {

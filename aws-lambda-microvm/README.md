@@ -124,9 +124,12 @@ Optional controls:
 - Lambda endpoint-idle suspension is intentionally not configurable. HackerAI
   uses `NO_INGRESS` and an outbound asynchronous relay, while Lambda measures
   idle time from inbound endpoint traffic. Enabling that policy could suspend a
-  MicroVM while an Agent command is still active. Explicit termination,
-  replacement cleanup, and the maximum-duration cap provide the lifecycle
-  safety boundary instead.
+  MicroVM while an Agent command is still active. Instead, parent Agent cleanup
+  compare-clears the ending Trigger run, verifies that the user has no other
+  active parent runs or subagents, and explicitly suspends the shared MicroVM.
+  A suspend failure falls back to termination, while replacement cleanup, Data
+  Controls termination, and the maximum-duration cap remain additional safety
+  boundaries.
 
 Never expose these variables with a `NEXT_PUBLIC_` prefix. Bootstrap tokens are
 generated per user session, stored only as SHA-256 hashes in Convex, scoped to a
@@ -169,8 +172,11 @@ Controls cleanup. They are not copied through GitHub Actions.
 ## 5. Validate before broader rollout
 
 Use an internal paid account and select **Cloud** in Agent mode. Confirm the
-first terminal command creates one MicroVM and later commands reuse it. Then run
-the following only against systems you own or are authorized to test:
+first terminal command creates one MicroVM. After the Agent run ends, confirm
+the MicroVM transitions to `SUSPENDED`; a later Agent command should resume and
+reuse it. When two Agent runs for the same user overlap, finishing either one
+must leave the MicroVM running until the final run and its subagents finish.
+Then run the following only against systems you own or are authorized to test:
 
 ```bash
 uname -m

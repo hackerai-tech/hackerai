@@ -85,6 +85,7 @@ import {
   updateChat,
   updateChatTitle,
   getUserCustomization,
+  getActiveTriggerRunsForUser,
   setActiveTriggerRun,
   setActiveAgentApprovalPending,
   persistAgentApprovalGrant,
@@ -94,6 +95,8 @@ import {
   prepareForNewStream,
   setConvexUrl,
 } from "@/lib/db/actions";
+import { suspendCloudSandboxesForUser } from "@/lib/ai/tools/utils/cloud-sandbox";
+import { stringifyRedactedError } from "@/lib/utils/error-redaction";
 import { resolveProjectExecutionContext } from "@/lib/chat/project-context";
 import {
   getMaxTokensForSubscription,
@@ -2004,6 +2007,7 @@ type RunCleanupState = {
   chatLogger: ChatLogger | undefined;
   chatId: string;
   subagentsEnabled: boolean;
+  finishCloudSandboxLifecycle: () => Promise<void>;
 };
 const runCleanupMap = new Map<string, RunCleanupState>();
 
@@ -2020,6 +2024,122 @@ const settleSubagentsForParentRun = async (
       warn: (message, details) => triggerLogger.warn(message, details),
     },
   );
+
+const finishCloudSandboxLifecycleForParentRun = async ({
+  chatId,
+  userId,
+  triggerRunId,
+}: {
+  chatId: string;
+  userId: string;
+  triggerRunId: string;
+}): Promise<void> => {
+  try {
+    await setActiveTriggerRun({
+      chatId,
+      triggerRunId: null,
+      approvalSessionId: null,
+      expectedRunId: triggerRunId,
+      clearApprovalPending: true,
+    });
+  } catch (error) {
+    // Continue to the authoritative user-wide query. If the compare-clear did
+    // not commit, the current run is filtered below while every other run
+    // remains a reason to keep the shared MicroVM active.
+    triggerLogger.warn(
+      "[agent-long] active run clear failed before sandbox wind-down",
+      {
+        event: "agent_cloud_sandbox_active_run_clear_failed",
+        user_id: userId,
+        chat_id: chatId,
+        trigger_run_id: triggerRunId,
+        error: stringifyRedactedError(error),
+      },
+    );
+  }
+
+  try {
+    const activeSubagents = await listActiveSubagentsForParent(triggerRunId);
+    if (activeSubagents.length > 0) {
+      triggerLogger.info(
+        "[agent-long] shared sandbox retained for active subagents",
+        {
+          event: "agent_cloud_sandbox_suspend_skipped",
+          user_id: userId,
+          chat_id: chatId,
+          trigger_run_id: triggerRunId,
+          active_subagent_count: activeSubagents.length,
+          reason: "subagents_active",
+        },
+      );
+      return;
+    }
+  } catch (error) {
+    triggerLogger.error("[agent-long] failed to check active subagents", {
+      event: "agent_cloud_sandbox_active_subagents_check_failed",
+      user_id: userId,
+      chat_id: chatId,
+      trigger_run_id: triggerRunId,
+      error: stringifyRedactedError(error),
+    });
+    return;
+  }
+
+  let activeRuns: Awaited<ReturnType<typeof getActiveTriggerRunsForUser>>;
+  try {
+    activeRuns = await getActiveTriggerRunsForUser({ userId });
+  } catch (error) {
+    // Do not risk suspending a shared MicroVM when its active users cannot be
+    // established. The platform maximum duration remains the final backstop.
+    triggerLogger.error("[agent-long] failed to check shared sandbox users", {
+      event: "agent_cloud_sandbox_active_runs_check_failed",
+      user_id: userId,
+      chat_id: chatId,
+      trigger_run_id: triggerRunId,
+      error: stringifyRedactedError(error),
+    });
+    return;
+  }
+
+  const otherRuns = activeRuns.runs.filter(
+    (run) => run.triggerRunId !== triggerRunId,
+  );
+  if (otherRuns.length > 0 || activeRuns.hasMore) {
+    triggerLogger.info("[agent-long] shared sandbox retained for active runs", {
+      event: "agent_cloud_sandbox_suspend_skipped",
+      user_id: userId,
+      chat_id: chatId,
+      trigger_run_id: triggerRunId,
+      other_active_run_count: otherRuns.length,
+      active_runs_truncated: activeRuns.hasMore,
+      reason: "other_agent_runs_active",
+    });
+    return;
+  }
+
+  try {
+    const result = await suspendCloudSandboxesForUser(userId);
+    if (result.total > 0) {
+      triggerLogger.info("[agent-long] shared sandbox wind-down completed", {
+        event: "agent_cloud_sandbox_wind_down_completed",
+        user_id: userId,
+        chat_id: chatId,
+        trigger_run_id: triggerRunId,
+        ...result,
+      });
+    }
+  } catch (error) {
+    // AWS suspension already attempts termination as a cost-safety fallback.
+    // Preserve the Agent result while surfacing any double failure for retry.
+    triggerLogger.error("[agent-long] shared sandbox wind-down failed", {
+      event: "agent_cloud_sandbox_wind_down_failed",
+      user_id: userId,
+      chat_id: chatId,
+      trigger_run_id: triggerRunId,
+      error: stringifyRedactedError(error),
+    });
+  }
+};
 
 export type AgentLongPayload = {
   chatId: string;
@@ -2078,9 +2198,12 @@ export const agentLongTask = task({
       await cleanup.usageRefundTracker.refund().catch(() => {});
     }
     if (cleanup.subagentsEnabled) {
-      await settleSubagentsForParentRun(ctx.run.id, "parent_canceled");
+      await settleSubagentsForParentRun(ctx.run.id, "parent_canceled").catch(
+        () => undefined,
+      );
     }
     await ptySessionManager.closeAll(cleanup.chatId).catch(() => {});
+    await cleanup.finishCloudSandboxLifecycle();
     await phLogger.flush().catch(() => {});
     runCleanupMap.delete(ctx.run.id);
   },
@@ -2234,12 +2357,22 @@ export const agentLongTask = task({
     let streamPiped = false;
     let observedUsageTracker: UsageTracker | undefined;
     const hasObservedUsage = () => !!observedUsageTracker?.hasUsage;
+    let cloudSandboxLifecyclePromise: Promise<void> | undefined;
+    const finishCloudSandboxLifecycle = () => {
+      cloudSandboxLifecyclePromise ??= finishCloudSandboxLifecycleForParentRun({
+        chatId,
+        userId,
+        triggerRunId: ctx.run.id,
+      });
+      return cloudSandboxLifecyclePromise;
+    };
     runCleanupMap.set(ctx.run.id, {
       usageRefundTracker,
       hasObservedUsage,
       chatLogger,
       chatId,
       subagentsEnabled: securityValidationSubagentsEnabled,
+      finishCloudSandboxLifecycle,
     });
 
     let activeRuntimeBudget: ActiveRuntimeBudget | undefined;
@@ -4633,9 +4766,11 @@ export const agentLongTask = task({
       memoryTelemetry.dispose();
       activeRuntimeBudget?.dispose();
       if (securityValidationSubagentsEnabled) {
-        await settleSubagentsForParentRun(ctx.run.id, "parent_run_ended");
+        await settleSubagentsForParentRun(ctx.run.id, "parent_run_ended").catch(
+          () => undefined,
+        );
       }
-      runCleanupMap.delete(ctx.run.id);
+      await ptySessionManager.closeAll(chatId).catch(() => undefined);
       if (payload.approvalSessionId && triggerSessions) {
         try {
           await triggerSessions.close(payload.approvalSessionId, {
@@ -4648,20 +4783,8 @@ export const agentLongTask = task({
           );
         }
       }
-      try {
-        await setActiveTriggerRun({
-          chatId,
-          triggerRunId: null,
-          approvalSessionId: null,
-          expectedRunId: ctx.run.id,
-          clearApprovalPending: true,
-        });
-      } catch (error) {
-        console.error(
-          "[agent-long] failed to clear active_trigger_run_id:",
-          error,
-        );
-      }
+      await finishCloudSandboxLifecycle();
+      runCleanupMap.delete(ctx.run.id);
     }
 
     return { chatId, assistantMessageId };
