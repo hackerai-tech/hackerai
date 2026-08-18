@@ -57,6 +57,7 @@ import {
   PtySessionManager,
   MAX_CONCURRENT_PTYS_PER_CHAT,
 } from "../utils/pty-session-manager";
+import { LocalCommandRelayUnsubscribedError } from "../utils/local-sandbox-errors";
 
 // ── Mock hybrid-sandbox-manager so we can return a fake sandbox ──────
 jest.mock("../utils/e2b-pty-adapter", () => {
@@ -871,9 +872,7 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
   });
 
   test("retires an unsubscribed relay and retries once on its verified successor", async () => {
-    const relayError = new Error(
-      "Local sandbox connection conn-stale is not subscribed to the command relay. Reconnect the local runner or Desktop app, wait until it is ready, then try again.",
-    );
+    const relayError = new LocalCommandRelayUnsubscribedError("conn-stale");
     const staleSandbox = {
       sandboxKind: "centrifugo" as const,
       getConnectionId: () => "conn-stale",
@@ -939,9 +938,7 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
       isWindows: () => false,
       commands: {
         run: jest.fn(async () => {
-          throw new Error(
-            "Local sandbox connection conn-stale is not subscribed to the command relay.",
-          );
+          throw new LocalCommandRelayUnsubscribedError("conn-stale");
         }),
       },
     };

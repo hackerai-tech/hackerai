@@ -21,6 +21,7 @@ import {
 import { getPlatformDisplayName, escapeShellValue } from "./platform-utils";
 import type { ConnectionInfo } from "./sandbox-types";
 import { validateDownloadUrl } from "./path-validation";
+import { LocalCommandRelayUnsubscribedError } from "./local-sandbox-errors";
 
 const VALID_MESSAGE_TYPES = new Set([
   "command",
@@ -290,6 +291,7 @@ export class CentrifugoSandbox extends EventEmitter {
     return this.connectionInfo.name;
   }
 
+  /** Returns the immutable identity metadata used to bind recovery to this host. */
   getConnectionInfo(): Readonly<ConnectionInfo> {
     return this.connectionInfo;
   }
@@ -881,8 +883,8 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
                 settled = true;
                 cleanup();
                 reject(
-                  new Error(
-                    `Local sandbox connection ${this.connectionInfo.connectionId} is not subscribed to the command relay. Reconnect the local runner or Desktop app, wait until it is ready, then try again.`,
+                  new LocalCommandRelayUnsubscribedError(
+                    this.connectionInfo.connectionId,
                   ),
                 );
                 return;

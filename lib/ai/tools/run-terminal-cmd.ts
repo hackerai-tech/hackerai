@@ -64,6 +64,7 @@ import {
   getAgentAutoReviewInspectionKind,
   terminalInspectionMatches,
 } from "@/lib/chat/agent-auto-review-evidence";
+import { isLocalCommandRelayUnsubscribedError } from "./utils/local-sandbox-errors";
 
 const DEFAULT_STREAM_TIMEOUT_SECONDS =
   RUN_TERMINAL_DEFAULT_STREAM_TIMEOUT_SECONDS;
@@ -74,13 +75,6 @@ const NOISY_TIMEOUT_MIN_BUFFERED_CHARS = 256 * 1024;
 // return in ~half a second instead of blocking the user-supplied timeout
 // ceiling. The agent can follow up with action=wait/send.
 const INTERACTIVE_QUIET_WINDOW_MS = 500;
-const LOCAL_COMMAND_RELAY_UNSUBSCRIBED =
-  /local sandbox connection\s+\S+\s+is not subscribed to the command relay/i;
-
-export const isLocalCommandRelayUnsubscribedError = (error: unknown): boolean =>
-  error instanceof Error &&
-  LOCAL_COMMAND_RELAY_UNSUBSCRIBED.test(error.message);
-
 const getTerminalProcessStatus = (
   result: Record<string, unknown>,
 ): string | undefined => {

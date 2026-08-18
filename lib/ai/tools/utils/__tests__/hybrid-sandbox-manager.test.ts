@@ -871,7 +871,7 @@ describe("HybridSandboxManager reset cleanup", () => {
       "conn-stale",
       "service-key",
       null,
-      "free",
+      "pro",
     );
     manager.setSandbox({
       sandboxKind: "centrifugo",

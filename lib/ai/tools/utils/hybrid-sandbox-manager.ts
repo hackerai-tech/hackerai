@@ -80,6 +80,7 @@ interface PresenceFilterResult {
   staleConnections: ConnectionInfo[];
 }
 
+/** Requires a full local host identity match before changing connection IDs. */
 export function isSameLocalMachine(
   current: ConnectionInfo,
   candidate: ConnectionInfo,
@@ -371,6 +372,7 @@ export class HybridSandboxManager implements SandboxManager {
     throw lastError;
   }
 
+  /** Recovers a pre-publish relay failure without switching physical hosts. */
   async recoverLocalConnection(
     connectionId: string,
     reason: "command_relay_unsubscribed",

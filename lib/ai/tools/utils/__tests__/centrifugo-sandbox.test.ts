@@ -10,6 +10,10 @@
 import { EventEmitter } from "events";
 import { CentrifugoSandbox, parseSandboxMessage } from "../centrifugo-sandbox";
 import type { CentrifugoConfig } from "../centrifugo-sandbox";
+import {
+  LOCAL_COMMAND_RELAY_UNSUBSCRIBED_ERROR_CODE,
+  LocalCommandRelayUnsubscribedError,
+} from "../local-sandbox-errors";
 import { fragmentCentrifugoMessage } from "@/packages/local/src/centrifugo-transport";
 
 // Track all created mock subscriptions and clients for assertions
@@ -507,14 +511,18 @@ describe("CentrifugoSandbox", () => {
         },
       });
 
-      const rejection = expect(promise).rejects.toThrow(
-        "is not subscribed to the command relay",
-      );
+      const rejection = promise.catch((error) => error);
 
       sub.emit("subscribed");
       await jest.advanceTimersByTimeAsync(0);
 
-      await rejection;
+      const error = await rejection;
+      expect(error).toBeInstanceOf(LocalCommandRelayUnsubscribedError);
+      expect(error).toMatchObject({
+        code: LOCAL_COMMAND_RELAY_UNSUBSCRIBED_ERROR_CODE,
+        connectionId: "conn-1",
+      });
+      expect(error.message).toContain("is not subscribed to the command relay");
       expect(sub.publish).not.toHaveBeenCalled();
       expect(sub.unsubscribe).toHaveBeenCalled();
       expect(mockClients[0].disconnect).toHaveBeenCalled();
