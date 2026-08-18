@@ -548,6 +548,11 @@ const DEEPSEEK_V4_FLASH_0731_FALLBACK_CHAIN = [
   ...AGENT_TEXT_FALLBACK_CHAIN,
 ] as const satisfies readonly ModelName[];
 
+const DEEPSEEK_V4_FLASH_PREVIOUS_FALLBACK_CHAIN = [
+  "model-deepseek-v4-flash-0731",
+  ...DEEPSEEK_V4_FLASH_0731_FALLBACK_CHAIN,
+] as const satisfies readonly ModelName[];
+
 const DEEPSEEK_V4_PRO_0813_FALLBACK_CHAIN = [
   ...AGENT_TEXT_FALLBACK_CHAIN,
 ] as const satisfies readonly ModelName[];
@@ -560,8 +565,8 @@ const HACKERAI_PRO_FALLBACK_CHAIN = [
 ] as const satisfies readonly ModelName[];
 
 const MODEL_FALLBACK_CHAIN: Partial<Record<ModelName, readonly ModelName[]>> = {
-  "ask-model-free": AGENT_TEXT_FALLBACK_CHAIN,
-  "agent-model-free": AGENT_TEXT_FALLBACK_CHAIN,
+  "ask-model-free": DEEPSEEK_V4_FLASH_PREVIOUS_FALLBACK_CHAIN,
+  "agent-model-free": DEEPSEEK_V4_FLASH_0731_FALLBACK_CHAIN,
   "model-deepseek-v4-flash-0731": DEEPSEEK_V4_FLASH_0731_FALLBACK_CHAIN,
   "model-deepseek-v4-pro": AGENT_TEXT_FALLBACK_CHAIN,
   "model-deepseek-v4-pro-0813": DEEPSEEK_V4_PRO_0813_FALLBACK_CHAIN,
@@ -651,8 +656,14 @@ export function getRetryFallbackModel(
   modelName: ModelName,
   _mode: ChatMode,
 ): ModelName {
-  if (modelName === "model-deepseek-v4-flash-0731") {
+  if (
+    modelName === "agent-model-free" ||
+    modelName === "model-deepseek-v4-flash-0731"
+  ) {
     return "model-deepseek-v4-pro-0813";
+  }
+  if (modelName === "ask-model-free") {
+    return "model-deepseek-v4-flash-0731";
   }
   if (modelName === "model-deepseek-v4-pro-0813") {
     return "model-grok-4.6";
@@ -666,11 +677,7 @@ export function getRetryFallbackModel(
   if (modelName === "model-opus-4.6") {
     return "model-grok-4.6";
   }
-  if (
-    modelName === "ask-model-free" ||
-    modelName === "agent-model-free" ||
-    modelName === "model-deepseek-v4-pro"
-  ) {
+  if (modelName === "model-deepseek-v4-pro") {
     return "model-grok-4.6";
   }
   if (
@@ -705,7 +712,19 @@ export function getContentFilterRetryModel(
   const preferredFallback = getRetryFallbackModel(modelName, mode);
   if (!servedModel) return preferredFallback;
 
-  const candidates = [preferredFallback, ...CONTENT_FILTER_RETRY_CANDIDATES];
+  const route = [modelName, ...(getFallbackKeys(modelName) ?? [])];
+  const servedIndex = route.findIndex((candidate) => {
+    const candidateSlug = resolveSlug(candidate);
+    return (
+      candidateSlug !== undefined &&
+      areEquivalentProviderModelIds(candidateSlug, servedModel)
+    );
+  });
+  const candidates = [
+    ...(servedIndex >= 0 ? route.slice(servedIndex + 1) : []),
+    preferredFallback,
+    ...CONTENT_FILTER_RETRY_CANDIDATES,
+  ];
   const retryModel = candidates.find((candidate) => {
     const candidateSlug = resolveSlug(candidate);
     return (
