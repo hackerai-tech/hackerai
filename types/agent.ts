@@ -34,6 +34,11 @@ export interface SandboxManager {
     connectionId: string,
     reason: "command_unresponsive",
   ): Promise<void>;
+  /** Replace a stale relay connection with a live successor for the same machine. */
+  recoverLocalConnection?(
+    connectionId: string,
+    reason: "command_relay_unsubscribed",
+  ): Promise<{ sandbox: AnySandbox }>;
   getSandboxType(toolName: string): SandboxType | undefined;
   getSandboxInfo(): SandboxInfo | null;
   // Optional: only HybridSandboxManager implements this

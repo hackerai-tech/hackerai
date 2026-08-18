@@ -24,6 +24,7 @@ jest.mock("@/lib/db/convex-client", () => ({
 import {
   filterConnectionsByPresence,
   HybridSandboxManager,
+  isSameLocalMachine,
   LOCAL_SANDBOX_PRESENCE_GRACE_MS,
 } from "../hybrid-sandbox-manager";
 import {
@@ -107,6 +108,52 @@ describe("filterConnectionsByPresence", () => {
 
     expect(result.availableConnections).toEqual([live]);
     expect(result.staleConnections).toEqual([stale]);
+  });
+});
+
+describe("isSameLocalMachine", () => {
+  const kaliConnection = makeConnection({
+    connectionId: "conn-old",
+    name: "4p3x",
+    isDesktop: false,
+    osInfo: {
+      platform: "linux",
+      arch: "x86_64",
+      release: "6.18.5-kali1-amd64",
+      hostname: "4p3x",
+    },
+  });
+
+  it("matches a restarted runner on the same host", () => {
+    expect(
+      isSameLocalMachine(
+        kaliConnection,
+        makeConnection({
+          ...kaliConnection,
+          connectionId: "conn-new",
+          lastSeen: Date.now(),
+        }),
+      ),
+    ).toBe(true);
+  });
+
+  it("rejects another host and connections without host identity", () => {
+    expect(
+      isSameLocalMachine(
+        kaliConnection,
+        makeConnection({
+          ...kaliConnection,
+          connectionId: "conn-other",
+          osInfo: { ...kaliConnection.osInfo!, hostname: "other-host" },
+        }),
+      ),
+    ).toBe(false);
+    expect(
+      isSameLocalMachine(
+        kaliConnection,
+        makeConnection({ connectionId: "conn-unknown", osInfo: undefined }),
+      ),
+    ).toBe(false);
   });
 });
 
@@ -722,6 +769,139 @@ describe("HybridSandboxManager reset cleanup", () => {
     } finally {
       warnSpy.mockRestore();
       errorSpy.mockRestore();
+    }
+  });
+
+  it("recovers an unsubscribed relay only onto the same machine", async () => {
+    const originalWsUrl = process.env.CENTRIFUGO_WS_URL;
+    const originalTokenSecret = process.env.CENTRIFUGO_TOKEN_SECRET;
+    process.env.CENTRIFUGO_WS_URL = "ws://centrifugo.test/connection/websocket";
+    process.env.CENTRIFUGO_TOKEN_SECRET = "test-secret";
+    const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+    const stale = makeConnection({
+      connectionId: "conn-stale",
+      name: "4p3x",
+      isDesktop: false,
+      osInfo: {
+        platform: "linux",
+        arch: "x86_64",
+        release: "6.18.5-kali1-amd64",
+        hostname: "4p3x",
+      },
+    });
+    const replacement = makeConnection({
+      ...stale,
+      connectionId: "conn-replacement",
+      lastSeen: 2_000,
+    });
+    const otherHost = makeConnection({
+      ...stale,
+      connectionId: "conn-other",
+      name: "other-host",
+      osInfo: { ...stale.osInfo!, hostname: "other-host" },
+      lastSeen: 3_000,
+    });
+    const setSandbox = jest.fn();
+    const manager = new HybridSandboxManager(
+      "user-1",
+      setSandbox,
+      "conn-stale",
+      "service-key",
+      null,
+      "free",
+      undefined,
+      undefined,
+      "run-123",
+    );
+    const staleSandbox = {
+      sandboxKind: "centrifugo" as const,
+      getConnectionId: () => stale.connectionId,
+      getConnectionName: () => stale.name,
+      getConnectionInfo: () => stale,
+      getCloudProvider: () => null,
+    };
+    manager.setSandbox(staleSandbox as any);
+    jest
+      .spyOn(manager, "listConnections")
+      .mockResolvedValue([otherHost, replacement]);
+    mockConvexMutation.mockResolvedValue({ success: true });
+
+    try {
+      const recovered = await manager.recoverLocalConnection(
+        stale.connectionId,
+        "command_relay_unsubscribed",
+      );
+
+      expect((recovered.sandbox as any).getConnectionId()).toBe(
+        "conn-replacement",
+      );
+      expect(manager.getEffectivePreference()).toBe("conn-replacement");
+      expect(mockConvexMutation).toHaveBeenCalledWith(expect.anything(), {
+        serviceKey: "service-key",
+        connectionId: "conn-stale",
+        reason: "command_unresponsive",
+      });
+      expect(setSandbox).toHaveBeenLastCalledWith(recovered.sandbox);
+    } finally {
+      warnSpy.mockRestore();
+      if (originalWsUrl === undefined) delete process.env.CENTRIFUGO_WS_URL;
+      else process.env.CENTRIFUGO_WS_URL = originalWsUrl;
+      if (originalTokenSecret === undefined)
+        delete process.env.CENTRIFUGO_TOKEN_SECRET;
+      else process.env.CENTRIFUGO_TOKEN_SECRET = originalTokenSecret;
+    }
+  });
+
+  it("fails closed when only a different machine is connected", async () => {
+    const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+    const stale = makeConnection({
+      connectionId: "conn-stale",
+      name: "4p3x",
+      isDesktop: false,
+      osInfo: {
+        platform: "linux",
+        arch: "x86_64",
+        release: "6.18.5-kali1-amd64",
+        hostname: "4p3x",
+      },
+    });
+    const manager = new HybridSandboxManager(
+      "user-1",
+      jest.fn(),
+      "conn-stale",
+      "service-key",
+      null,
+      "pro",
+    );
+    manager.setSandbox({
+      sandboxKind: "centrifugo",
+      getConnectionId: () => stale.connectionId,
+      getConnectionName: () => stale.name,
+      getConnectionInfo: () => stale,
+      getCloudProvider: () => null,
+    } as any);
+    jest.spyOn(manager, "listConnections").mockResolvedValue([
+      makeConnection({
+        connectionId: "conn-other",
+        name: "other-host",
+        osInfo: { ...stale.osInfo!, hostname: "other-host" },
+      }),
+    ]);
+    mockConvexMutation.mockResolvedValue({ success: true });
+
+    try {
+      await expect(
+        manager.recoverLocalConnection(
+          stale.connectionId,
+          "command_relay_unsubscribed",
+        ),
+      ).rejects.toThrow("selected local sandbox stopped responding");
+      await expect(manager.getSandbox()).rejects.toThrow(
+        "selected local sandbox stopped responding",
+      );
+      expect(sandboxApi.list).not.toHaveBeenCalled();
+    } finally {
+      warnSpy.mockRestore();
     }
   });
 

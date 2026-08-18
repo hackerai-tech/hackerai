@@ -80,6 +80,24 @@ interface PresenceFilterResult {
   staleConnections: ConnectionInfo[];
 }
 
+/** Requires a full local host identity match before changing connection IDs. */
+export function isSameLocalMachine(
+  current: ConnectionInfo,
+  candidate: ConnectionInfo,
+): boolean {
+  if (!current.osInfo || !candidate.osInfo) return false;
+
+  return (
+    current.name === candidate.name &&
+    current.isDesktop === candidate.isDesktop &&
+    current.cloudProvider === candidate.cloudProvider &&
+    current.osInfo.platform === candidate.osInfo.platform &&
+    current.osInfo.arch === candidate.osInfo.arch &&
+    current.osInfo.release === candidate.osInfo.release &&
+    current.osInfo.hostname === candidate.osInfo.hostname
+  );
+}
+
 const logStructured = (
   level: "warn" | "error",
   event: string,
@@ -352,6 +370,66 @@ export class HybridSandboxManager implements SandboxManager {
       error: lastError instanceof Error ? lastError.message : String(lastError),
     });
     throw lastError;
+  }
+
+  /** Recovers a pre-publish relay failure without switching physical hosts. */
+  async recoverLocalConnection(
+    connectionId: string,
+    reason: "command_relay_unsubscribed",
+  ): Promise<{ sandbox: SandboxInstance }> {
+    if (
+      !this.sandbox ||
+      !isCentrifugoSandbox(this.sandbox) ||
+      this.sandbox.getConnectionId() !== connectionId
+    ) {
+      throw new Error(
+        "The selected local sandbox changed before it could be reconnected. Try the command again.",
+      );
+    }
+
+    const previousConnection = this.sandbox.getConnectionInfo();
+    await this.quarantineLocalConnection(connectionId, "command_unresponsive");
+    await this.resetSandbox(reason);
+
+    const replacement = (await this.listConnections())
+      .filter(
+        (connection) =>
+          connection.connectionId !== connectionId &&
+          connection.capabilities?.commands !== false &&
+          isSameLocalMachine(previousConnection, connection),
+      )
+      .sort((a, b) => (b.lastSeen ?? 0) - (a.lastSeen ?? 0))[0];
+
+    if (!replacement) {
+      logStructured("warn", "local_sandbox_same_machine_recovery_unavailable", {
+        service: this.requestId ? "agent-long" : "chat-handler",
+        request_id: this.requestId ?? process.env.VERCEL_REQUEST_ID ?? null,
+        user_id: this.userID,
+        connection_id: connectionId,
+        reason,
+      });
+      throw new Error(
+        "The selected local sandbox stopped responding. Reconnect it in Remote Control, then try again.",
+      );
+    }
+
+    await this.useCentrifugoConnection(replacement);
+    this.requiredConnectionIdAfterQuarantine = null;
+    if (this.sandboxPreference !== "desktop") {
+      this.sandboxPreference = replacement.connectionId;
+    }
+    this.resetHealthFailures();
+
+    logStructured("warn", "local_sandbox_same_machine_recovered", {
+      service: this.requestId ? "agent-long" : "chat-handler",
+      request_id: this.requestId ?? process.env.VERCEL_REQUEST_ID ?? null,
+      user_id: this.userID,
+      stale_connection_id: connectionId,
+      replacement_connection_id: replacement.connectionId,
+      reason,
+    });
+
+    return { sandbox: this.sandbox! };
   }
 
   /**
