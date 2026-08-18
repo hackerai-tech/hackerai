@@ -96,8 +96,8 @@ async function primePty(): Promise<void> {
     try {
       await runner.shutdown();
     } catch (error) {
-      if (hasPrimeError) runner.dispose();
-      else {
+      runner.dispose();
+      if (!hasPrimeError) {
         shutdownError = error;
         hasShutdownError = true;
       }
