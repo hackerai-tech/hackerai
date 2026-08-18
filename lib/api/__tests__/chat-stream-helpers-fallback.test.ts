@@ -236,17 +236,13 @@ describe("buildProviderOptions fallback chain", () => {
     });
   });
 
-  it("falls back from free Ask DeepSeek through Flash 0731, Pro 0813, Grok, then Kimi K3", () => {
+  it("limits free Ask OpenRouter fallbacks to Flash 0731, Pro 0813, then Grok", () => {
     const opts = buildProviderOptions(false, "user-1", "ask-model-free", "ask");
     expect(opts.openrouter).toMatchObject({
-      models: [
-        DEEPSEEK_FLASH_SLUG,
-        DEEPSEEK_V4_PRO_0813_SLUG,
-        GROK_SLUG,
-        KIMI_K3_SLUG,
-      ],
+      models: [DEEPSEEK_FLASH_SLUG, DEEPSEEK_V4_PRO_0813_SLUG, GROK_SLUG],
       user: "user-1",
     });
+    expect(opts.openrouter.models).toHaveLength(3);
   });
 
   it("runs free Agent on DeepSeek Flash high and falls back through Pro 0813, Grok, then Kimi K3", () => {
@@ -372,7 +368,6 @@ describe("buildProviderOptions fallback chain", () => {
       DEEPSEEK_FLASH_SLUG,
       DEEPSEEK_V4_PRO_0813_SLUG,
       GROK_SLUG,
-      KIMI_K3_SLUG,
     ]);
   });
 
@@ -395,7 +390,6 @@ describe("buildProviderOptions fallback chain", () => {
       DEEPSEEK_FLASH_SLUG,
       DEEPSEEK_V4_PRO_0813_SLUG,
       GROK_SLUG,
-      KIMI_K3_SLUG,
     ]);
   });
 
@@ -733,6 +727,12 @@ describe("getRetryFallbackModel", () => {
 });
 
 describe("getContentFilterRetryModel", () => {
+  it("keeps Kimi available as an app-side retry after free Ask served Grok", () => {
+    expect(getContentFilterRetryModel("ask-model-free", "ask", GROK_SLUG)).toBe(
+      "model-kimi-k3",
+    );
+  });
+
   it("uses DeepSeek Pro 0813 when the configured free Agent primary was served", () => {
     expect(
       getContentFilterRetryModel(

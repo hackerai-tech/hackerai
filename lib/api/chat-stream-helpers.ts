@@ -543,6 +543,10 @@ const AGENT_TEXT_FALLBACK_CHAIN = [
   "model-kimi-k3",
 ] as const satisfies readonly ModelName[];
 
+// OpenRouter rejects requests whose `models` fallback array has more than
+// three entries. Longer logical routes can still be used by app-side retries.
+const OPENROUTER_MAX_FALLBACK_MODELS = 3;
+
 const DEEPSEEK_V4_FLASH_0731_FALLBACK_CHAIN = [
   "model-deepseek-v4-pro-0813",
   ...AGENT_TEXT_FALLBACK_CHAIN,
@@ -756,7 +760,8 @@ const resolveSlug = (modelName: string): string | undefined => {
 
 /**
  * Resolve a model's fallback chain to OpenRouter slugs.
- * Returns an empty array if the model has no chain or all entries are stale.
+ * Returns at most the number of fallback models accepted by OpenRouter, or an
+ * empty array if the model has no chain or all entries are stale.
  */
 export function getFallbackSlugs(
   modelName?: string,
@@ -775,7 +780,7 @@ export function getFallbackSlugs(
             areEquivalentProviderModelIds(slug, excludedSlug),
           ),
       ) ?? []
-  );
+  ).slice(0, OPENROUTER_MAX_FALLBACK_MODELS);
 }
 
 const OPENROUTER_RESPONSE_MODEL_COST_KEYS: Record<string, string> = {
