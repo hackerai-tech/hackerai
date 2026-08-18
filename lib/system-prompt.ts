@@ -13,6 +13,8 @@ import {
   isDeepSeekModel,
   type ModelName,
 } from "@/lib/ai/providers";
+import { getCloudSandboxProvider } from "@/lib/ai/tools/utils/cloud-sandbox-provider";
+import type { CloudSandboxProvider } from "@/lib/ai/tools/utils/cloud-sandbox-provider";
 
 // Constants
 const DATE_FORMAT_OPTIONS: Intl.DateTimeFormatOptions = {
@@ -213,7 +215,26 @@ Local Agent access is available on every plan, including Free. Paid plans also p
 Setup instructions: https://help.hackerai.co/en/articles/12961920-connecting-a-hackerai-agent-to-your-local-machine
 </local_machine_access>`;
 
-const getDefaultSandboxEnvironmentSection = (): string => `<sandbox_environment>
+const getDefaultSandboxEnvironmentSection = (
+  provider: CloudSandboxProvider = getCloudSandboxProvider(),
+): string => {
+  const portScanningSection =
+    provider === "e2b"
+      ? `Port-scanning limitation:
+- Cloud Agent networking can produce false-positive TCP port results where many or all ports appear open. This can affect naabu, nmap TCP connect scans, nc, and other tools that rely on successful outbound connections; changing scanner flags may not fix the underlying network behavior.
+- Treat implausible Cloud Agent port-scan output as invalid or unverified. Do not keep retrying broad scans, claim the ports are confirmed open, or blame the scanning tool when the environment is the likely cause.
+- When the user needs reliable port scanning or normal TCP, UDP, or raw-socket behavior, explain this Cloud Agent limitation and recommend selecting the HackerAI Desktop App or a Remote Control connection as the execution environment so the tools use that machine's native network stack.`
+      : "";
+  const systemEnvironment =
+    provider === "aws-lambda-microvm"
+      ? `- OS: Kali Linux rolling, linux/arm64 (with internet access)
+- Compute: 2 baseline vCPU and 4 GiB RAM, with short vertical bursts managed by AWS. Avoid running multiple sustained CPU-intensive cracking, fuzzing, or scanning jobs concurrently.
+- User: \`root\` (with sudo privileges)`
+      : `- OS: Debian GNU/Linux 12 linux/amd64 (with internet access)
+- Compute: 4 vCPU, 4 GiB RAM. Avoid running multiple CPU-intensive cracking, fuzzing, or scanning jobs concurrently.
+- User: \`root\` (with sudo privileges)`;
+
+  return `<sandbox_environment>
 IMPORTANT: All tools operate in an isolated sandbox environment that is individual to each user. You CANNOT access the user's actual machine, local filesystem, or local system. Tools can ONLY interact with the sandbox environment described below.
 
 Local/internal target access:
@@ -222,19 +243,14 @@ Local/internal target access:
 - For local or internal targets, use the HackerAI Desktop App, Remote Control, or a user-provided reachable tunnel URL.
 - Do not invent host aliases or imply the cloud sandbox can directly reach private/internal assets unless the user has provided a reachable route.
 
-Port-scanning limitation:
-- Cloud Agent networking can produce false-positive TCP port results where many or all ports appear open. This can affect naabu, nmap TCP connect scans, nc, and other tools that rely on successful outbound connections; changing scanner flags may not fix the underlying network behavior.
-- Treat implausible Cloud Agent port-scan output as invalid or unverified. Do not keep retrying broad scans, claim the ports are confirmed open, or blame the scanning tool when the environment is the likely cause.
-- When the user needs reliable port scanning or normal TCP, UDP, or raw-socket behavior, explain this Cloud Agent limitation and recommend selecting the HackerAI Desktop App or a Remote Control connection as the execution environment so the tools use that machine's native network stack.
+${portScanningSection}
 
 System Environment:
-- OS: Debian GNU/Linux 12 linux/amd64 (with internet access)
-- Compute: 4 vCPU, 4 GiB RAM. Avoid running multiple CPU-intensive cracking, fuzzing, or scanning jobs concurrently.
-- User: \`root\` (with sudo privileges)
+${systemEnvironment}
 - Home directory: /home/user
 - User attachments are available in /home/user/upload. If a specific file is not found, ask the user to re-upload and resend their message with the file attached
 - Inline image attachments are already visible in the conversation. If an \`inline_image_attachment\` also lists a sandbox path, use that path only for file-system operations such as metadata extraction, conversion, or scripting; do not call the file view action just to describe the image.
-- VPN connectivity is not available due to missing TUN/TAP device support in the sandbox environment
+${provider === "e2b" ? "- VPN connectivity is not available due to missing TUN/TAP device support in the sandbox environment" : "- Before using a VPN, check whether /dev/net/tun is present and whether the selected AWS network connector permits the required traffic"}
 
 Development Environment:
 - Python 3.12.11 (commands: python3, pip3)
@@ -247,11 +263,13 @@ ${SANDBOX_TOOL_RECIPES_SECTION}
 
 ${AGENT_BROWSER_SECTION}
 </sandbox_environment>`;
+};
 
 const getAgentModeSection = (
   mode: ChatMode,
   sandboxContext?: string | null,
   agentPermissionMode: AgentPermissionMode = "full_access",
+  cloudSandboxProvider?: CloudSandboxProvider,
 ): string => {
   const agentSpecificNote =
     mode === "agent"
@@ -369,7 +387,7 @@ Deduplicate equivalent findings and consolidate repeated evidence instead of rep
 If impact cannot be reproduced, label it as a hypothesis or needs-validation item rather than a confirmed vulnerability.
 </finding_quality>
 
-${sandboxContext ? sandboxContext : getDefaultSandboxEnvironmentSection()}
+${sandboxContext ? sandboxContext : getDefaultSandboxEnvironmentSection(cloudSandboxProvider)}
 
 ${getProductQuestionsSection()}
 
@@ -474,6 +492,7 @@ export const systemPrompt = async (
   sandboxContext?: string | null,
   agentPermissionMode: AgentPermissionMode = "full_access",
   securityValidationSubagentsEnabled: boolean = false,
+  cloudSandboxProvider?: CloudSandboxProvider,
 ): Promise<string> => {
   const shouldIncludeNotes =
     (subscription !== "free" || mode === "agent") &&
@@ -509,7 +528,12 @@ The current date is ${currentDateTime}.`;
     sections.push(getAskModeSection(subscription, shouldIncludeNotes));
   } else {
     sections.push(
-      getAgentModeSection(mode, sandboxContext, agentPermissionMode),
+      getAgentModeSection(
+        mode,
+        sandboxContext,
+        agentPermissionMode,
+        cloudSandboxProvider,
+      ),
     );
     if (securityValidationSubagentsEnabled) {
       sections.push(SECURITY_VALIDATION_SUBAGENT_SECTION);

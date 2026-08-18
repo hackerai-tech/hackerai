@@ -85,6 +85,7 @@ import {
   subagentOutcomeEventUuid,
 } from "@/lib/analytics/subagents";
 import { phLogger } from "@/lib/posthog/server";
+import { resolvePersistedSubagentCloudSandboxRollout } from "@/lib/experiments/aws-lambda-microvm-rollout";
 import { ptySessionManager } from "@/lib/ai/tools/utils/pty-session-manager";
 import {
   extractErrorDetails,
@@ -513,6 +514,12 @@ export const subagentTask = task({
               inputSchema: profile.finalResultTool.schema,
               execute: acceptValidationResult,
             });
+            const cloudSandboxRollout =
+              resolvePersistedSubagentCloudSandboxRollout({
+                subscription: row.subscription,
+                sandboxPreference: row.sandbox_preference,
+                sandboxIdentity: row.sandbox_identity,
+              });
 
             const { tools, ensureSandbox, setCurrentModelName } = createTools(
               row.user_id,
@@ -550,6 +557,7 @@ export const subagentTask = task({
                 }),
                 ptyScopeId: row.subagent_id,
                 chargeSandboxRuntime: false,
+                cloudSandboxRollout,
               },
             );
             const sandbox = await ensureSandbox();

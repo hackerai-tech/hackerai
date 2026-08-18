@@ -290,6 +290,10 @@ export class CentrifugoSandbox extends EventEmitter {
     return this.connectionInfo.name;
   }
 
+  getCloudProvider(): "aws-lambda-microvm" | null {
+    return this.connectionInfo.cloudProvider ?? null;
+  }
+
   getWorkingDirectory(): string | undefined {
     return this.workingDirectory;
   }
@@ -325,6 +329,9 @@ export class CentrifugoSandbox extends EventEmitter {
    * Get sandbox context for AI based on mode
    */
   getSandboxContext(): string | null {
+    if (this.connectionInfo.cloudProvider === "aws-lambda-microvm") {
+      return null;
+    }
     const { capabilities, osInfo } = this.connectionInfo;
 
     if (osInfo) {

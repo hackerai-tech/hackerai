@@ -155,6 +155,13 @@ export async function createCentrifugoPtyHandle(
   sandbox: CentrifugoSandbox,
   opts: CentrifugoPtyOptions,
 ): Promise<PtyHandle> {
+  const direct = sandbox as CentrifugoSandbox & {
+    createPtyHandle?: (options: CentrifugoPtyOptions) => Promise<PtyHandle>;
+  };
+  if (typeof direct.createPtyHandle === "function") {
+    return direct.createPtyHandle(opts);
+  }
+
   const sessionId = crypto.randomUUID();
   const userId = sandbox.getUserId();
   const connectionId = sandbox.getConnectionId();

@@ -409,6 +409,23 @@ Commands run directly on the host OS "workstation" without Docker isolation. Be 
     );
   });
 
+  it("describes the provisioned AWS MicroVM baseline", async () => {
+    const prompt = await systemPrompt(
+      "user_123",
+      "agent",
+      "ultra",
+      "agent-model",
+      null,
+      null,
+      "full_access",
+      false,
+      "aws-lambda-microvm",
+    );
+
+    expect(prompt).toContain("Compute: 2 baseline vCPU and 4 GiB RAM");
+    expect(prompt).not.toContain("2 GiB RAM");
+  });
+
   it("describes cloud sandbox browser automation tools", async () => {
     const prompt = await systemPrompt(
       "user_123",
@@ -599,6 +616,62 @@ Commands run directly on the host OS "workstation" without Docker isolation. Be 
     expect(localPrompt).not.toContain(
       "Cloud Agent networking can produce false-positive TCP port results",
     );
+  });
+
+  it("omits the E2B port-scanning warning when AWS MicroVM is selected", async () => {
+    const originalProvider = process.env.CLOUD_SANDBOX_PROVIDER;
+    process.env.CLOUD_SANDBOX_PROVIDER = "aws-lambda-microvm";
+    try {
+      const prompt = await systemPrompt(
+        "user_123",
+        "agent",
+        "pro",
+        "agent-model",
+        null,
+        null,
+      );
+
+      expect(prompt).toContain("linux/arm64");
+      expect(prompt).not.toContain("isolated AWS Lambda MicroVM");
+      expect(prompt).not.toContain("Network behavior:");
+      expect(prompt).not.toContain("configured AWS network connector");
+      expect(prompt).not.toContain(
+        "Cloud Agent networking can produce false-positive TCP port results",
+      );
+    } finally {
+      if (originalProvider === undefined) {
+        delete process.env.CLOUD_SANDBOX_PROVIDER;
+      } else {
+        process.env.CLOUD_SANDBOX_PROVIDER = originalProvider;
+      }
+    }
+  });
+
+  it("uses the provider assigned to the run instead of the process-wide default", async () => {
+    const originalProvider = process.env.CLOUD_SANDBOX_PROVIDER;
+    process.env.CLOUD_SANDBOX_PROVIDER = "aws-lambda-microvm";
+    try {
+      const prompt = await systemPrompt(
+        "user_ultra_control",
+        "agent",
+        "ultra",
+        "agent-model",
+        null,
+        null,
+        "full_access",
+        false,
+        "e2b",
+      );
+
+      expect(prompt).toContain("Port-scanning limitation:");
+      expect(prompt).not.toContain("isolated AWS Lambda MicroVM");
+    } finally {
+      if (originalProvider === undefined) {
+        delete process.env.CLOUD_SANDBOX_PROVIDER;
+      } else {
+        process.env.CLOUD_SANDBOX_PROVIDER = originalProvider;
+      }
+    }
   });
 
   it("does not describe a command sandbox in ask mode", async () => {

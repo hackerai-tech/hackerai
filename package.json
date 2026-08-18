@@ -48,6 +48,9 @@
     "s3:validate": "npx ts-node scripts/validate-s3-security.ts",
     "e2b:build:dev": "npx tsx e2b/build.dev.ts",
     "e2b:build:prod": "npx tsx e2b/build.prod.ts",
+    "aws:microvm:package": "pnpm local-sandbox:build && node scripts/package-aws-microvm.mjs",
+    "aws:microvm:deploy": "pnpm aws:microvm:package && node scripts/deploy-aws-microvm.mjs",
+    "aws:microvm:smoke": "node scripts/smoke-aws-microvm.mjs",
     "local-sandbox": "npx tsx packages/local/src/index.ts",
     "local-sandbox:build": "cd packages/local && pnpm build",
     "desktop:dev": "cd packages/desktop && pnpm dev",
@@ -61,6 +64,7 @@
   "dependencies": {
     "@ai-sdk/openai": "3.0.74",
     "@ai-sdk/react": "3.0.210",
+    "@aws-sdk/client-lambda-microvms": "3.1107.0",
     "@aws-sdk/client-s3": "3.1107.0",
     "@aws-sdk/s3-request-presigner": "3.1107.0",
     "@convex-dev/aggregate": "^0.2.2",
@@ -145,6 +149,7 @@
     "use-stick-to-bottom": "^1.1.6",
     "uuid": "^14.0.1",
     "word-extractor": "^1.0.4",
+    "ws": "^8.21.0",
     "zod": "^4.4.3"
   },
   "devDependencies": {
@@ -165,6 +170,7 @@
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.4",
     "@types/word-extractor": "^1.0.6",
+    "@types/ws": "^8.18.1",
     "concurrently": "^10.0.4",
     "dotenv": "^17.4.2",
     "eslint": "^9.39.4",

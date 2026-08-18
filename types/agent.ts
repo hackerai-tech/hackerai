@@ -9,6 +9,7 @@ import type { PtyParserLogBudget } from "@/lib/ai/tools/utils/pty-output-formatt
 import type { ChatMode, SubscriptionTier } from "./chat";
 import type { CentrifugoSandbox } from "@/lib/ai/tools/utils/centrifugo-sandbox";
 import type { SandboxFallbackInfo } from "@/lib/ai/tools/utils/hybrid-sandbox-manager";
+import type { CloudSandboxProvider } from "@/lib/ai/tools/utils/cloud-sandbox-provider";
 
 // Union type for E2B Sandbox and local CentrifugoSandbox
 export type AnySandbox = Sandbox | CentrifugoSandbox;
@@ -21,6 +22,7 @@ export type SandboxType = "e2b" | "desktop" | "remote-connection";
 export interface SandboxInfo {
   type: SandboxType;
   name?: string;
+  provider?: CloudSandboxProvider;
 }
 
 export interface SandboxManager {
@@ -139,7 +141,7 @@ export type SandboxResourceMetricsObserver = (
 
 export interface SandboxContext {
   userID: string;
-  setSandbox: (sandbox: Sandbox) => void;
+  setSandbox: (sandbox: AnySandbox) => void;
   /** Called once when ensureSandboxConnection actually does work (creates or reconnects). */
   onBoot?: (info: SandboxBootInfo) => void;
 }

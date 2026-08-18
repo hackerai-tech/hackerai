@@ -160,6 +160,14 @@ describe("security validation subagent runtime contracts", () => {
     expect(parent).not.toContain("vulnerability_report");
   });
 
+  it("inherits the parent cloud provider instead of re-evaluating rollout", () => {
+    const child = read("trigger/subagent.ts");
+    expect(child).toContain("resolvePersistedSubagentCloudSandboxRollout");
+    expect(child).toContain("sandboxIdentity: row.sandbox_identity");
+    expect(child).toContain("cloudSandboxRollout,");
+    expect(child).not.toContain("evaluateAwsLambdaMicrovmRollout");
+  });
+
   it("deletes child transcripts in bounded batches before deleting the child", () => {
     const chats = read("convex/chats.ts");
     expect(chats).toContain("async function deleteSubagentDataForChat");

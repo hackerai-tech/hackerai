@@ -92,13 +92,37 @@ describe("sandbox Dockerfile cache cleanup", () => {
     const goRun = findRun(
       "github.com/projectdiscovery/interactsh/cmd/interactsh-client",
     );
-    const lastInstallIndex = goRun.lastIndexOf("go install");
-    const cleanIndex = goRun.indexOf("go clean -cache -modcache");
-    const removeIndex = goRun.indexOf('rm -rf "$GOCACHE" "$GOPATH/pkg/mod"');
+    const commands = goRun.split("&&").map((command) => command.trim());
+    const installIndexes = commands.flatMap((command, index) =>
+      command.includes("go install") ? [index] : [],
+    );
 
-    expect(lastInstallIndex).toBeGreaterThan(-1);
-    expect(cleanIndex).toBeGreaterThan(lastInstallIndex);
-    expect(removeIndex).toBeGreaterThan(cleanIndex);
+    expect(installIndexes).not.toHaveLength(0);
+    for (const [position, installIndex] of installIndexes.entries()) {
+      const nextInstallIndex = installIndexes[position + 1] ?? commands.length;
+      const cleanupCommands = commands
+        .slice(installIndex + 1, nextInstallIndex)
+        .join(" && ");
+
+      expect(cleanupCommands).toContain("go clean -cache -modcache");
+      expect(cleanupCommands).toContain('rm -rf "$GOCACHE" "$GOPATH/pkg/mod"');
+    }
+  });
+
+  test("downloads Katana without compiling its dependency graph", () => {
+    const katanaRun = findRun(
+      "github.com/projectdiscovery/katana/releases/download",
+    );
+
+    expect(katanaRun).toContain('KATANA_VERSION="1.7.0"');
+    expect(katanaRun).toContain("katana-${KATANA_VERSION}-checksums.txt");
+    expect(katanaRun).toContain("sha256sum -c katana-checksum.txt");
+    expect(katanaRun).toContain("find /tmp/katana_extracted");
+    expect(katanaRun).toContain('mv "$katana_bin" /usr/local/bin/katana');
+    expect(katanaRun).not.toContain(
+      "api.github.com/repos/projectdiscovery/katana/releases/latest",
+    );
+    expect(katanaRun).not.toMatch(/\bgo\s+(?:install|build)\b[\s\S]*katana/i);
   });
 
   test("validates caches and important runtimes after cleanup", () => {

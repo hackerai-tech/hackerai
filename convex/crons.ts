@@ -76,7 +76,16 @@ export const runStaleConnectionsPurge = internalAction({
       lastDeletedCount = deletedCount;
       if (deletedCount < limit) break;
     }
-    if (lastDeletedCount === limit) {
+    let lastCloudDeletedCount = 0;
+    for (let i = 0; i < 10; i++) {
+      const { deletedCount } = await ctx.runMutation(
+        internal.localSandbox.purgeStaleCloudSessions,
+        { cutoffTimeMs: cutoff, limit },
+      );
+      lastCloudDeletedCount = deletedCount;
+      if (deletedCount < limit) break;
+    }
+    if (lastDeletedCount === limit || lastCloudDeletedCount === limit) {
       await ctx.scheduler.runAfter(
         0,
         internal.crons.runStaleConnectionsPurge,

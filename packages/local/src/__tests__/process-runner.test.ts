@@ -59,20 +59,23 @@ describe("ProcessRunner cleanup", () => {
     runner.dispose();
   });
 
-  it("drops local tracking after SIGKILL escalation", () => {
+  it("retains tracking until PTY exit is confirmed after SIGKILL", async () => {
     const proc = makePtyProcess();
     mockSpawn.mockReturnValue(proc);
 
     const runner = new ProcessRunner();
     runner.run("session-1", "sleep 10");
 
-    expect(runner.stop("session-1")).toBe(true);
-    jest.advanceTimersByTime(5_000);
+    const shutdown = runner.shutdown();
+    await jest.advanceTimersByTimeAsync(5_000);
 
     expect(proc.kill).toHaveBeenNthCalledWith(1, "SIGTERM");
     expect(proc.kill).toHaveBeenNthCalledWith(2, "SIGKILL");
+    expect(runner.isRunning("session-1")).toBe(true);
+    proc.__exit();
+    await jest.advanceTimersByTimeAsync(25);
+    await shutdown;
     expect(runner.isRunning("session-1")).toBe(false);
-    runner.dispose();
   });
 
   it("catches unexpected SIGKILL errors during escalation", () => {
@@ -93,6 +96,43 @@ describe("ProcessRunner cleanup", () => {
     expect(() => jest.advanceTimersByTime(5_000)).not.toThrow();
 
     expect(errorListener).toHaveBeenCalledWith("session-1", expect.any(Error));
+    proc.__exit();
+    runner.dispose();
+  });
+
+  it("rejects shutdown when a SIGKILL-resistant PTY never exits", async () => {
+    const proc = makePtyProcess();
+    mockSpawn.mockReturnValue(proc);
+    const runner = new ProcessRunner();
+    runner.run("session-1", "trap '' TERM; sleep 10");
+
+    const shutdown = expect(runner.shutdown()).rejects.toThrow(
+      "Timed out terminating 1 PTY process",
+    );
+    await jest.advanceTimersByTimeAsync(7_000);
+
+    await shutdown;
+    expect(proc.kill).toHaveBeenNthCalledWith(1, "SIGTERM");
+    expect(proc.kill).toHaveBeenNthCalledWith(2, "SIGKILL");
+    proc.__exit();
+    runner.dispose();
+  });
+
+  it("preserves the first SIGKILL deadline when shutdown is retried", async () => {
+    const proc = makePtyProcess();
+    mockSpawn.mockReturnValue(proc);
+    const runner = new ProcessRunner();
+    runner.run("session-1", "sleep 10");
+
+    expect(runner.stop("session-1")).toBe(true);
+    await jest.advanceTimersByTimeAsync(4_000);
+    expect(runner.stop("session-1")).toBe(true);
+    await jest.advanceTimersByTimeAsync(1_000);
+
+    expect(proc.kill).toHaveBeenNthCalledWith(1, "SIGTERM");
+    expect(proc.kill).toHaveBeenNthCalledWith(2, "SIGTERM");
+    expect(proc.kill).toHaveBeenNthCalledWith(3, "SIGKILL");
+    proc.__exit();
     runner.dispose();
   });
 });

@@ -16,7 +16,6 @@ import { generateTitleFromUserMessageWithWriter } from "@/lib/actions";
 import { getUserIDAndPro } from "@/lib/auth/get-user-id";
 import { assertUserCanMakeCostIncurringRequest } from "@/lib/suspensions";
 import type {
-  ChatMode,
   LimitRescueRequest,
   Todo,
   SandboxPreference,
@@ -182,6 +181,7 @@ import {
   requireChatMessagesArray,
   requireOptionalIdentifier,
   requireRetiredTemporaryFieldAbsent,
+  requireVercelChatMode,
 } from "@/lib/api/chat-request-validation";
 import { resolveProjectExecutionContext } from "@/lib/chat/project-context";
 import { isAgentMode } from "@/lib/utils/mode-helpers";
@@ -247,7 +247,7 @@ export const createChatHandler = () => {
 
       const {
         messages,
-        mode,
+        mode: rawMode,
         todos,
         chatId,
         regenerate,
@@ -259,7 +259,7 @@ export const createChatHandler = () => {
         projectId: rawProjectId,
       } = rawRequestBody as {
         messages: unknown;
-        mode: ChatMode;
+        mode: unknown;
         chatId: string;
         todos?: Todo[];
         regenerate?: boolean;
@@ -270,6 +270,7 @@ export const createChatHandler = () => {
         limitRescue?: unknown;
         projectId?: unknown;
       };
+      const mode = requireVercelChatMode(rawMode);
       const analyticsRequestContext = readAnalyticsRequestContext(req.headers);
       const requestedProjectId = requireOptionalIdentifier(
         "projectId",
