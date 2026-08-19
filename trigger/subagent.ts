@@ -512,6 +512,7 @@ export const subagentTask = task({
                   error: "A validation result was already accepted.",
                 };
               }
+              await assertRuntimeAuthorized();
               const finalizing = await markSubagentFinalizing(
                 row.subagent_id,
                 ctx.run.id,

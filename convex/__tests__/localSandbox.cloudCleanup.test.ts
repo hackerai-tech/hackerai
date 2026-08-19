@@ -45,6 +45,7 @@ describe("cloud sandbox session cleanup", () => {
         imageIdentifier: "image-1",
       }),
     ).rejects.toBeInstanceOf(Error);
+    expect(query).toHaveBeenCalledWith("user_deletion_fences");
     expect(insert).not.toHaveBeenCalled();
   });
 

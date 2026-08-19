@@ -10,14 +10,21 @@ const activeChild = {
 };
 
 describe("subagent runtime authorization", () => {
-  it("accepts a bound active child while its parent is non-terminal", async () => {
+  it.each([
+    "DELAYED",
+    "DEQUEUED",
+    "EXECUTING",
+    "PENDING_VERSION",
+    "QUEUED",
+    "WAITING",
+  ])("accepts a bound active child while its parent is %s", async (status) => {
     await expect(
       assertSubagentRuntimeAuthorized({
         subagentId: "subagent-1",
         childTriggerRunId: "child-run",
         parentTriggerRunId: "parent-run",
         loadChild: jest.fn(async () => activeChild),
-        retrieveParent: jest.fn(async () => ({ status: "EXECUTING" })),
+        retrieveParent: jest.fn(async () => ({ status })),
       }),
     ).resolves.toBeUndefined();
   });
@@ -60,7 +67,9 @@ describe("subagent runtime authorization", () => {
     "SYSTEM_FAILURE",
     "EXPIRED",
     "TIMED_OUT",
-  ])("rejects a terminal parent with status %s", async (status) => {
+    "INTERRUPTED",
+    "FUTURE_STATUS",
+  ])("rejects a non-active parent with status %s", async (status) => {
     await expect(
       assertSubagentRuntimeAuthorized({
         subagentId: "subagent-1",
@@ -69,6 +78,25 @@ describe("subagent runtime authorization", () => {
         loadChild: jest.fn(async () => activeChild),
         retrieveParent: jest.fn(async () => ({ status })),
       }),
+    ).rejects.toThrow("no longer active");
+  });
+
+  it("rejects finalization after authorization is revoked between checks", async () => {
+    let parentStatus = "EXECUTING";
+    const authorization = {
+      subagentId: "subagent-1",
+      childTriggerRunId: "child-run",
+      parentTriggerRunId: "parent-run",
+      loadChild: jest.fn(async () => activeChild),
+      retrieveParent: jest.fn(async () => ({ status: parentStatus })),
+    };
+
+    await expect(
+      assertSubagentRuntimeAuthorized(authorization),
+    ).resolves.toBeUndefined();
+    parentStatus = "INTERRUPTED";
+    await expect(
+      assertSubagentRuntimeAuthorized(authorization),
     ).rejects.toThrow("no longer active");
   });
 

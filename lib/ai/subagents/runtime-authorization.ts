@@ -2,14 +2,13 @@ import type { ToolSet } from "ai";
 
 import { SUBAGENT_TERMINAL_STATUSES, type SubagentStatus } from "./contracts";
 
-const TERMINAL_PARENT_RUN_STATUSES = new Set([
-  "COMPLETED",
-  "CANCELED",
-  "FAILED",
-  "CRASHED",
-  "SYSTEM_FAILURE",
-  "EXPIRED",
-  "TIMED_OUT",
+const ACTIVE_PARENT_RUN_STATUSES = new Set([
+  "DELAYED",
+  "DEQUEUED",
+  "EXECUTING",
+  "PENDING_VERSION",
+  "QUEUED",
+  "WAITING",
 ]);
 
 type ChildRunAuthorizationSnapshot = {
@@ -55,7 +54,7 @@ export async function assertSubagentRuntimeAuthorized(args: {
   const parent = await args.retrieveParent(args.parentTriggerRunId);
   if (
     typeof parent.status !== "string" ||
-    TERMINAL_PARENT_RUN_STATUSES.has(parent.status)
+    !ACTIVE_PARENT_RUN_STATUSES.has(parent.status)
   ) {
     throw new SubagentRuntimeAuthorizationError(
       "Parent Agent run is no longer active",
