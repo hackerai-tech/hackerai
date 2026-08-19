@@ -54,6 +54,7 @@ import {
   getContentFilterRetryModel,
   getRetryFallbackModel,
   isAutoModelSelectionForRetry,
+  isExplicitDeepSeekProSelectionForRetry,
   resolveServedModelForCostAccounting,
 } from "@/lib/api/chat-stream-helpers";
 import {
@@ -254,6 +255,7 @@ import {
 } from "@/lib/chat/stop-conditions";
 import {
   detectAssistantContentLoopFromParts,
+  shouldRetryProviderStreamAfterReasoningOnlyOutput,
   shouldRetryProviderStreamAfterInterruptedToolInput,
   shouldRetryAgentLongWithFallback,
 } from "@/lib/chat/agent-long-provider-retry";
@@ -1639,14 +1641,13 @@ const getTerminalProviderStreamError = (
     Pick<AgentStreamState, "streamFinishReason" | "providerError"> | undefined,
 ): unknown | undefined => {
   if (!state) return undefined;
+  if (state.providerError) return state.providerError;
   if (
     state.streamFinishReason !== "error" &&
     !isProviderContentFilterFinishReason(state.streamFinishReason)
   ) {
     return undefined;
   }
-  if (state.providerError) return state.providerError;
-
   if (isProviderContentFilterFinishReason(state.streamFinishReason)) {
     return createProviderContentBlockedFinishReasonError();
   }
@@ -1664,6 +1665,7 @@ const isTerminalProviderStreamError = (
   state:
     Pick<AgentStreamState, "streamFinishReason" | "providerError"> | undefined,
 ): boolean =>
+  state?.providerError != null ||
   state?.streamFinishReason === "error" ||
   isProviderContentFilterFinishReason(state?.streamFinishReason);
 
@@ -4042,6 +4044,17 @@ export const agentLongTask = task({
                         );
                       const hasTerminalProviderStreamError =
                         isTerminalProviderStreamError(state);
+                      const shouldRetryReasoningOnlyProviderError =
+                        shouldRetryProviderStreamAfterReasoningOnlyOutput(
+                          lastAssistantMessageParts,
+                          { hasTerminalProviderStreamError },
+                        );
+                      const shouldRetryExplicitDeepSeekProReasoning =
+                        shouldRetryReasoningOnlyProviderError &&
+                        isExplicitDeepSeekProSelectionForRetry({
+                          selectedModel,
+                          selectedModelOverride,
+                        });
                       const shouldRetryInterruptedToolInput =
                         shouldRetryProviderStreamAfterInterruptedToolInput(
                           lastAssistantMessageParts,
@@ -4078,7 +4091,8 @@ export const agentLongTask = task({
                           shouldRetryWithoutImageToolResults ||
                           stoppedDueToAssistantContentLoop ||
                           state.stoppedDueToDoomLoop ||
-                          shouldRetryInterruptedToolInput)
+                          shouldRetryInterruptedToolInput ||
+                          shouldRetryExplicitDeepSeekProReasoning)
                       ) {
                         const retryReason = shouldRetryWithoutImageToolResults
                           ? "image_tool_result_rejection"
@@ -4090,7 +4104,9 @@ export const agentLongTask = task({
                                 ? "doom_loop"
                                 : shouldRetryInterruptedToolInput
                                   ? "interrupted_tool_input"
-                                  : "incomplete_stream";
+                                  : shouldRetryReasoningOnlyProviderError
+                                    ? "reasoning_only_provider_error"
+                                    : "incomplete_stream";
                         const blockedProviderModel = providerContentBlocked
                           ? state.responseModel
                           : undefined;
