@@ -10,7 +10,7 @@ jest.mock("../../SharedChatContext", () => ({
 const { SharedMessagePartHandler } =
   require("../SharedMessagePartHandler") as typeof import("../SharedMessagePartHandler");
 
-describe("SharedMessagePartHandler subagent failures", () => {
+describe("SharedMessagePartHandler subagents", () => {
   it.each([
     ["tool-create_agent", "Validator failed to start"],
     ["tool-send_message_to_agent", "Validator update failed"],
@@ -67,5 +67,26 @@ describe("SharedMessagePartHandler subagent failures", () => {
     );
 
     expect(screen.getByText("Subagent targets not found")).toBeVisible();
+  });
+
+  it("shows durable and active subagent counts", () => {
+    render(
+      <SharedMessagePartHandler
+        part={{
+          type: "tool-list_agents",
+          output: {
+            success: true,
+            agents: [
+              { agent_id: "sa_done", status: "completed" },
+              { agent_id: "sa_active", status: "finalizing" },
+            ],
+          },
+        }}
+        partIndex={0}
+        isUser={false}
+      />,
+    );
+
+    expect(screen.getByText("2 total · 1 active")).toBeVisible();
   });
 });

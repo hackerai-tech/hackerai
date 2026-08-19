@@ -43,6 +43,7 @@ import {
 } from "@/app/components/tools/shell-tool-utils";
 import { PROXY_COMPLETED_LABELS } from "@/app/components/tools/ProxyToolHandler";
 import { isUserStoppedToolError } from "@/lib/chat/tool-abort-utils";
+import { formatSubagentCountSummary } from "@/lib/ai/subagents/status-summary";
 
 interface MessagePart {
   type: string;
@@ -188,9 +189,6 @@ export const SharedMessagePartHandler = ({
       );
     }
     if (part.type === "tool-list_agents") {
-      const count = Array.isArray(part.output?.agents)
-        ? part.output.agents.length
-        : 0;
       return (
         <ToolBlock
           key={idx}
@@ -198,7 +196,7 @@ export const SharedMessagePartHandler = ({
           action={
             toolFailed
               ? "Could not list subagents"
-              : `${count} ${count === 1 ? "subagent" : "subagents"}`
+              : formatSubagentCountSummary(part.output?.agents)
           }
         />
       );

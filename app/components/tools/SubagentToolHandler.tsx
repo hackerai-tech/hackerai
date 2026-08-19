@@ -18,6 +18,7 @@ import ToolBlock from "@/components/ui/tool-block";
 import type { ChatStatus, SidebarSubagents } from "@/types/chat";
 import { isSidebarSubagents } from "@/types/chat";
 import { useToolSidebar } from "@/app/hooks/useToolSidebar";
+import { formatSubagentCountSummary } from "@/lib/ai/subagents/status-summary";
 
 type LifecyclePart = {
   type: "data-subagent-lifecycle";
@@ -214,12 +215,11 @@ const presentationForPart = (
     action = `${agentName} ${suffix}`;
     showAsChip = true;
   } else if (isList) {
-    const count = Array.isArray(output?.agents) ? output.agents.length : 0;
     action = waiting
       ? "Checking subagents"
       : failed
         ? "Could not list subagents"
-        : `${count} ${count === 1 ? "subagent" : "subagents"}`;
+        : formatSubagentCountSummary(output?.agents);
   } else if (isSend) {
     suffix = failed ? "update failed" : waiting ? "updating" : "updated";
     action = `${agentName} ${suffix}`;
