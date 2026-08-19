@@ -11,17 +11,16 @@ import {
   cohortSynthesisSchema,
   normalizeCohortSynthesis,
   normalizeResearchUserProfile,
+  pmUserResearchPayloadSchema,
   researchUserProfileSchema,
   USER_RESEARCH_MODEL_KEY,
+  USER_RESEARCH_MIN_COHORT_SIZE,
   USER_RESEARCH_PROMPT_VERSION,
   USER_RESEARCH_PROVIDER_OPTIONS,
   type ResearchCohortReport,
   type ResearchCoverage,
 } from "@/lib/research/user-research";
 
-const MIN_COHORT_SIZE = 3;
-const MAX_COHORT_SIZE = 20;
-const DEFAULT_MAX_CHATS_PER_USER = 12;
 const MAX_MESSAGES_PER_CHAT = 80;
 
 const workerPayloadSchema = z.object({
@@ -32,35 +31,7 @@ const workerPayloadSchema = z.object({
   maxChatsPerUser: z.number().int().min(3).max(20),
 });
 
-export const pmUserResearchPayloadSchema = z
-  .object({
-    linearIssueId: z
-      .string()
-      .trim()
-      .regex(/^[A-Z]+-\d+$/),
-    question: z.string().trim().min(10).max(1_000),
-    cohortLabel: z.string().trim().min(3).max(200),
-    userIds: z
-      .array(z.string().trim().min(1).max(200))
-      .min(MIN_COHORT_SIZE)
-      .max(MAX_COHORT_SIZE),
-    requestedBy: z.string().trim().min(2).max(100),
-    maxChatsPerUser: z
-      .number()
-      .int()
-      .min(3)
-      .max(20)
-      .default(DEFAULT_MAX_CHATS_PER_USER),
-  })
-  .superRefine((payload, ctx) => {
-    if (new Set(payload.userIds).size !== payload.userIds.length) {
-      ctx.addIssue({
-        code: "custom",
-        message: "userIds must be unique",
-        path: ["userIds"],
-      });
-    }
-  });
+export { pmUserResearchPayloadSchema } from "@/lib/research/user-research";
 
 const getResearchClient = () => {
   const convexUrl = process.env.NEXT_PUBLIC_CONVEX_URL?.trim();
@@ -234,7 +205,7 @@ export const pmUserResearch = schemaTask({
         serviceKey,
         analysisId,
       });
-      if (profiles.length < MIN_COHORT_SIZE) {
+      if (profiles.length < USER_RESEARCH_MIN_COHORT_SIZE) {
         throw new Error(
           "Fewer than three users had enough evidence for privacy-safe synthesis",
         );

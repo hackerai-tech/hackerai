@@ -17,9 +17,9 @@ called through the repo-owned Codex skill `$hackerai-user-research`.
 6. Stores the audit record, structured pseudonymized profiles, aggregate report,
    evidence coverage, token usage, and provider cost in Convex.
 
-Both stages use `x-ai/grok-4.6` through the existing OpenRouter provider with
-reasoning explicitly disabled and zero-data-retention routing required. The task
-fails closed if no ZDR-capable endpoint is available.
+Both stages use `deepseek/deepseek-v4-flash-0731` through the existing OpenRouter
+provider with reasoning explicitly disabled and zero-data-retention routing
+required. The task fails closed if no ZDR-capable endpoint is available.
 
 ## Retention and deletion
 
@@ -53,9 +53,19 @@ matching Convex deployment, but use independent values for Preview and
 Production. Deploy the Trigger project after the application/Convex schema
 reaches the target environment.
 
+The Vercel Production environment also exposes a narrow PM gateway at
+`/api/internal/user-research`. Configure only its Production
+`PM_USER_RESEARCH_RUNNER_KEY_SHA256` with the SHA-256 digest of the scoped key
+held by the PM. The gateway records `pm-gateway` as the requester, uses Vercel's
+existing `TRIGGER_SECRET_KEY` server-side, can start only `pm-user-research`, and
+returns status/output only for runs carrying its gateway tag. It never returns
+task payloads, other runs, worker profiles, or provider diagnostics. The PM
+runner uses the fixed production URL, so Preview needs no PM gateway URL or key.
+
 ## PM invocation
 
 Invoke `$hackerai-user-research` in Codex with the Linear issue. The skill uses
-PostHog for cohort selection and Trigger MCP to discover, trigger, and wait for
+PostHog for cohort selection and the scoped gateway runner to start and wait for
 `pm-user-research`. PostHog's Stripe sync can be the normal spend source; direct
-Stripe access is only necessary for reconciliation gaps.
+Stripe access is only necessary for reconciliation gaps. Do not add PMs to the
+Trigger organization or give them Trigger/Convex credentials.

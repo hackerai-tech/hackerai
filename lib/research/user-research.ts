@@ -7,6 +7,9 @@ export const USER_RESEARCH_MODEL_KEY = "model-deepseek-v4-flash-0731" as const;
 export const USER_RESEARCH_PROMPT_VERSION = "user-research-v1";
 export const USER_RESEARCH_MAX_CONTEXT_CHARS = 120_000;
 export const USER_RESEARCH_MAX_COHORT_CONTEXT_CHARS = 240_000;
+export const USER_RESEARCH_MIN_COHORT_SIZE = 3;
+export const USER_RESEARCH_MAX_COHORT_SIZE = 20;
+export const USER_RESEARCH_DEFAULT_MAX_CHATS_PER_USER = 12;
 export const USER_RESEARCH_PROVIDER_OPTIONS = {
   openrouter: {
     reasoning: { enabled: false },
@@ -16,6 +19,48 @@ export const USER_RESEARCH_PROVIDER_OPTIONS = {
 } as const;
 
 const confidenceSchema = z.enum(["low", "medium", "high"]);
+
+const pmUserResearchPayloadBaseSchema = z.object({
+  linearIssueId: z
+    .string()
+    .trim()
+    .regex(/^[A-Z]+-\d+$/),
+  question: z.string().trim().min(10).max(1_000),
+  cohortLabel: z.string().trim().min(3).max(200),
+  userIds: z
+    .array(z.string().trim().min(1).max(200))
+    .min(USER_RESEARCH_MIN_COHORT_SIZE)
+    .max(USER_RESEARCH_MAX_COHORT_SIZE),
+  requestedBy: z.string().trim().min(2).max(100),
+  maxChatsPerUser: z
+    .number()
+    .int()
+    .min(3)
+    .max(20)
+    .default(USER_RESEARCH_DEFAULT_MAX_CHATS_PER_USER),
+});
+
+const requireUniqueResearchUsers = (
+  payload: { userIds: string[] },
+  ctx: z.core.$RefinementCtx,
+) => {
+  if (new Set(payload.userIds).size !== payload.userIds.length) {
+    ctx.addIssue({
+      code: "custom",
+      message: "userIds must be unique",
+      path: ["userIds"],
+      input: payload.userIds,
+    });
+  }
+};
+
+export const pmUserResearchPayloadSchema =
+  pmUserResearchPayloadBaseSchema.superRefine(requireUniqueResearchUsers);
+
+export const pmUserResearchGatewayRequestSchema =
+  pmUserResearchPayloadBaseSchema
+    .omit({ requestedBy: true })
+    .superRefine(requireUniqueResearchUsers);
 
 export const researchUserTypeSchema = z.enum([
   "bug_bounty_hunter",
@@ -112,18 +157,28 @@ const cohortSynthesisSchema = z.object({
   privacyNote: z.string().trim().min(1).max(500),
 });
 
+export const researchCohortReportSchema = cohortSynthesisSchema.extend({
+  coverage: z.object({
+    usersRequested: z.number().int().min(USER_RESEARCH_MIN_COHORT_SIZE).max(20),
+    usersAnalyzed: z.number().int().min(USER_RESEARCH_MIN_COHORT_SIZE).max(20),
+    profilesFailed: z.number().int().min(0).max(20),
+    chatsReviewed: z.number().int().min(0),
+    messagesReviewed: z.number().int().min(0),
+  }),
+});
+
+export const pmUserResearchResultSchema = z.object({
+  analysisId: z.uuid(),
+  status: z.literal("completed"),
+  failedProfiles: z.number().int().min(0).max(20),
+  usersAnalyzed: z.number().int().min(USER_RESEARCH_MIN_COHORT_SIZE).max(20),
+  report: researchCohortReportSchema,
+});
+
 export type ResearchUserProfile = z.infer<typeof researchUserProfileSchema>;
 export type ResearchCoverage = z.infer<typeof researchCoverageSchema>;
 export type ResearchCohortSynthesis = z.infer<typeof cohortSynthesisSchema>;
-export type ResearchCohortReport = ResearchCohortSynthesis & {
-  coverage: {
-    usersRequested: number;
-    usersAnalyzed: number;
-    profilesFailed: number;
-    chatsReviewed: number;
-    messagesReviewed: number;
-  };
-};
+export type ResearchCohortReport = z.infer<typeof researchCohortReportSchema>;
 
 export type ResearchChatEvidence = {
   chatId: string;
