@@ -64,10 +64,10 @@ export const pmUserResearchPayloadSchema = z
 
 const getResearchClient = () => {
   const convexUrl = process.env.NEXT_PUBLIC_CONVEX_URL?.trim();
-  const serviceKey = process.env.CONVEX_SERVICE_ROLE_KEY?.trim();
+  const serviceKey = process.env.CONVEX_USER_RESEARCH_SERVICE_KEY?.trim();
   if (!convexUrl || !serviceKey) {
     throw new Error(
-      "NEXT_PUBLIC_CONVEX_URL and CONVEX_SERVICE_ROLE_KEY are required",
+      "NEXT_PUBLIC_CONVEX_URL and CONVEX_USER_RESEARCH_SERVICE_KEY are required",
     );
   }
   return { client: new ConvexHttpClient(convexUrl), serviceKey };

@@ -5,7 +5,7 @@ import {
   type MutationCtx,
   type QueryCtx,
 } from "./_generated/server";
-import { validateServiceKey } from "./lib/utils";
+import { validateUserResearchServiceKey } from "./lib/userResearchAuth";
 import {
   researchCohortReportValidator,
   researchCoverageValidator,
@@ -123,7 +123,7 @@ export const createRun = mutation({
   },
   returns: v.null(),
   handler: async (ctx, args) => {
-    validateServiceKey(args.serviceKey);
+    validateUserResearchServiceKey(args.serviceKey);
     assertIntegerInRange(
       args.members.length,
       MIN_RESEARCH_COHORT_SIZE,
@@ -196,7 +196,7 @@ export const markRunRunning = mutation({
   args: { serviceKey: v.string(), analysisId: v.string() },
   returns: v.null(),
   handler: async (ctx, args) => {
-    validateServiceKey(args.serviceKey);
+    validateUserResearchServiceKey(args.serviceKey);
     const run = await ctx.db
       .query("research_runs")
       .withIndex("by_analysis_id", (q) => q.eq("analysis_id", args.analysisId))
@@ -226,7 +226,7 @@ export const listRepresentativeChats = query({
   },
   returns: v.array(researchChatValidator),
   handler: async (ctx, args) => {
-    validateServiceKey(args.serviceKey);
+    validateUserResearchServiceKey(args.serviceKey);
     await getRunningResearchMember(ctx, args.analysisId, args.userId);
     assertIntegerInRange(
       args.maxChats,
@@ -316,7 +316,7 @@ export const getMessageExcerpt = query({
     truncated: v.boolean(),
   }),
   handler: async (ctx, args) => {
-    validateServiceKey(args.serviceKey);
+    validateUserResearchServiceKey(args.serviceKey);
     await getRunningResearchMember(ctx, args.analysisId, args.userId);
     assertIntegerInRange(
       args.maxMessages,
@@ -391,7 +391,7 @@ export const saveUserProfile = mutation({
   },
   returns: v.null(),
   handler: async (ctx, args) => {
-    validateServiceKey(args.serviceKey);
+    validateUserResearchServiceKey(args.serviceKey);
     const { run, member } = await getRunningResearchMember(
       ctx,
       args.analysisId,
@@ -460,7 +460,7 @@ export const listProfiles = query({
     }),
   ),
   handler: async (ctx, args) => {
-    validateServiceKey(args.serviceKey);
+    validateUserResearchServiceKey(args.serviceKey);
     const profiles = await ctx.db
       .query("research_user_profiles")
       .withIndex("by_analysis_and_user", (q) =>
@@ -492,7 +492,7 @@ export const completeRun = mutation({
   },
   returns: v.null(),
   handler: async (ctx, args) => {
-    validateServiceKey(args.serviceKey);
+    validateUserResearchServiceKey(args.serviceKey);
     const run = await ctx.db
       .query("research_runs")
       .withIndex("by_analysis_id", (q) => q.eq("analysis_id", args.analysisId))
@@ -578,7 +578,7 @@ export const failRun = mutation({
   },
   returns: v.null(),
   handler: async (ctx, args) => {
-    validateServiceKey(args.serviceKey);
+    validateUserResearchServiceKey(args.serviceKey);
     const run = await ctx.db
       .query("research_runs")
       .withIndex("by_analysis_id", (q) => q.eq("analysis_id", args.analysisId))

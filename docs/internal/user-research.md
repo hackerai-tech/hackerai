@@ -40,15 +40,18 @@ only after at least three user profiles are available.
 - `userResearch.completeRun` and `failRun`: finalize the report, cost, coverage,
   and status.
 
-Every function requires `CONVEX_SERVICE_ROLE_KEY`; none is intended for direct
-browser or PM access.
+Every function requires the dedicated `CONVEX_USER_RESEARCH_SERVICE_KEY`; none
+is intended for direct browser or PM access. This key must be distinct from
+`CONVEX_SERVICE_ROLE_KEY` and from the value used in any other environment.
 
 ## Runtime requirements
 
 The Trigger environment must have `NEXT_PUBLIC_CONVEX_URL`,
-`CONVEX_SERVICE_ROLE_KEY`, and the existing OpenRouter configuration used by
-`lib/ai/providers.ts`. Deploy the Trigger project after the application/Convex
-schema reaches the target environment.
+`CONVEX_USER_RESEARCH_SERVICE_KEY`, and the existing OpenRouter configuration
+used by `lib/ai/providers.ts`. Configure the same dedicated research key on the
+matching Convex deployment, but use independent values for Preview and
+Production. Deploy the Trigger project after the application/Convex schema
+reaches the target environment.
 
 ## PM invocation
 

@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, jest } from "@jest/globals";
 
-const mockValidateServiceKey = jest.fn();
+const mockValidateUserResearchServiceKey = jest.fn();
 
 jest.mock("../_generated/server", () => ({
   mutation: jest.fn((config) => config),
@@ -17,8 +17,8 @@ jest.mock("convex/values", () => ({
   ),
 }));
 
-jest.mock("../lib/utils", () => ({
-  validateServiceKey: mockValidateServiceKey,
+jest.mock("../lib/userResearchAuth", () => ({
+  validateUserResearchServiceKey: mockValidateUserResearchServiceKey,
 }));
 
 type Row = { _id: string; _creationTime?: number; [key: string]: unknown };
@@ -120,7 +120,9 @@ describe("userResearch.getMessageExcerpt", () => {
         maxMessages: 20,
       }),
     ).rejects.toThrow("User is not part of this research run");
-    expect(mockValidateServiceKey).toHaveBeenCalledWith("service-key");
+    expect(mockValidateUserResearchServiceKey).toHaveBeenCalledWith(
+      "service-key",
+    );
   });
 
   it.each(["queued", "completed", "failed"] as const)(
