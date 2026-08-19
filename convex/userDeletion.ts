@@ -43,6 +43,9 @@ export const USER_DELETION_TABLE_POLICY = {
     "user_suspensions",
   ],
   retain: [
+    // Operational tombstone that prevents stale authenticated requests from
+    // recreating execution resources after account deletion begins.
+    "user_deletion_fences",
     "team_extra_usage",
     "paid_start_mix_daily",
     "processed_webhooks",
@@ -862,8 +865,9 @@ async function cleanupOrphanChatSummaries(
 }
 
 /**
- * Delete all data for the authenticated user in the same policy path used by
- * the server-side account deletion route.
+ * Preserve the legacy public function as a fail-closed compatibility shim.
+ * Account deletion must run through the server route so Trigger runs and
+ * provider resources are terminated before their durable identifiers vanish.
  */
 export const deleteAllUserData = mutation({
   args: {},
@@ -874,7 +878,31 @@ export const deleteAllUserData = mutation({
       throw new Error("Unauthorized: User not authenticated");
     }
 
-    return await cleanupUserDataForUser(ctx, user.subject, "execute");
+    throw new Error(
+      "Direct user data deletion is disabled; use the secure account deletion endpoint",
+    );
+  },
+});
+
+export const beginUserDataDeletionByService = mutation({
+  args: {
+    serviceKey: v.string(),
+    userId: v.string(),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    validateServiceKey(args.serviceKey);
+    const existing = await ctx.db
+      .query("user_deletion_fences")
+      .withIndex("by_user_id", (q) => q.eq("user_id", args.userId))
+      .unique();
+    if (!existing) {
+      await ctx.db.insert("user_deletion_fences", {
+        user_id: args.userId,
+        started_at: Date.now(),
+      });
+    }
+    return null;
   },
 });
 

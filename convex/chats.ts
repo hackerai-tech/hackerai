@@ -26,6 +26,7 @@ import {
   assertUserCanAccessChatHistory,
 } from "./lib/suspensionGuards";
 import { resolveBranchedFromTitle } from "./lib/branchedChatTitle";
+import { isUserDeletionFenced } from "./lib/userDeletionFence";
 
 const DELETE_ALL_CHATS_MESSAGE_BATCH_SIZE = 10;
 const DELETE_ALL_CHATS_SUMMARY_BATCH_SIZE = 25;
@@ -646,6 +647,15 @@ export const saveChat = mutation({
     let failureStage = "start";
 
     try {
+      failureStage = "check_user_deletion_fence";
+      if (await isUserDeletionFenced(ctx.db, args.userId)) {
+        throw new ConvexError({
+          code: "ACCOUNT_DELETION_IN_PROGRESS",
+          message: "Account deletion is in progress",
+          operation: "chats.saveChat",
+        });
+      }
+
       failureStage = "find_existing_chat";
       const existingChat = await ctx.db
         .query("chats")
@@ -712,6 +722,7 @@ export const saveChat = mutation({
       const causeData = getConvexErrorData(error);
       if (
         getConvexErrorCode(causeData) === "CHAT_UNAUTHORIZED" ||
+        getConvexErrorCode(causeData) === "ACCOUNT_DELETION_IN_PROGRESS" ||
         getConvexErrorCode(causeData) === "PROJECT_NOT_FOUND" ||
         getConvexErrorCode(causeData) === "PROJECT_ACCESS_DENIED"
       ) {
@@ -1619,6 +1630,12 @@ export const setActiveTriggerRun = mutation({
       .withIndex("by_chat_id", (q) => q.eq("id", args.chatId))
       .first();
     if (!chat) return "not_found" as const;
+    if (
+      args.triggerRunId !== null &&
+      (await isUserDeletionFenced(ctx.db, chat.user_id))
+    ) {
+      return "deleting" as const;
+    }
     if (chat.deletion_started_at !== undefined && args.triggerRunId !== null) {
       return "deleting" as const;
     }

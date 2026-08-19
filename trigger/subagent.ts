@@ -1,6 +1,7 @@
 import {
   logger as triggerLogger,
   metadata,
+  runs,
   tags,
   task,
 } from "@trigger.dev/sdk";
@@ -47,6 +48,10 @@ import {
   SUBAGENT_TEXT_MODEL,
 } from "@/lib/ai/subagents/model-routing";
 import { assertSubagentSandboxIdentity } from "@/lib/ai/subagents/sandbox-identity";
+import {
+  assertSubagentRuntimeAuthorized,
+  guardSubagentToolExecutions,
+} from "@/lib/ai/subagents/runtime-authorization";
 import {
   attachSubagentTriggerRun,
   consumePendingSubagentMessages,
@@ -341,6 +346,7 @@ export const subagentTask = task({
     const activeAbort = new AbortController();
     let activeTimedOut = false;
     let spendCapExceeded = false;
+    let runtimeAuthorizationRevoked = false;
     const abortFromParent = () => activeAbort.abort();
     triggerSignal.addEventListener("abort", abortFromParent, { once: true });
     const timeout = setTimeout(() => {
@@ -367,6 +373,23 @@ export const subagentTask = task({
     metadata
       .set("selectedModel", selectedModel)
       .set("activeModel", activeModelName);
+
+    const assertRuntimeAuthorized = async (): Promise<void> => {
+      try {
+        await assertSubagentRuntimeAuthorized({
+          subagentId: row.subagent_id,
+          childTriggerRunId: ctx.run.id,
+          parentTriggerRunId: row.parent_trigger_run_id,
+          loadChild: getSubagent,
+          retrieveParent: async (parentTriggerRunId) =>
+            await runs.retrieve(parentTriggerRunId),
+        });
+      } catch (error) {
+        runtimeAuthorizationRevoked = true;
+        activeAbort.abort();
+        throw error;
+      }
+    };
 
     const settleUsage = async (): Promise<{
       costDollars: number;
@@ -431,6 +454,7 @@ export const subagentTask = task({
     };
 
     try {
+      await assertRuntimeAuthorized();
       const customization = await getUserCustomization({ userId: row.user_id });
       extraUsageConfig = await buildExtraUsageConfig({
         userId: row.user_id,
@@ -488,6 +512,7 @@ export const subagentTask = task({
                   error: "A validation result was already accepted.",
                 };
               }
+              await assertRuntimeAuthorized();
               const finalizing = await markSubagentFinalizing(
                 row.subagent_id,
                 ctx.run.id,
@@ -521,7 +546,11 @@ export const subagentTask = task({
                 sandboxIdentity: row.sandbox_identity,
               });
 
-            const { tools, ensureSandbox, setCurrentModelName } = createTools(
+            const {
+              tools: unguardedTools,
+              ensureSandbox,
+              setCurrentModelName,
+            } = createTools(
               row.user_id,
               row.chat_id,
               writer,
@@ -559,6 +588,10 @@ export const subagentTask = task({
                 chargeSandboxRuntime: false,
                 cloudSandboxRollout,
               },
+            );
+            const tools = guardSubagentToolExecutions(
+              unguardedTools,
+              assertRuntimeAuthorized,
             );
             const sandbox = await ensureSandbox();
             assertSubagentSandboxIdentity(sandbox, row.sandbox_identity);
@@ -639,6 +672,7 @@ export const subagentTask = task({
                 maxOutputTokens: profile.maxOutputTokens,
                 abortSignal: activeAbort.signal,
                 prepareStep: async ({ messages, steps }) => {
+                  await assertRuntimeAuthorized();
                   const pendingUpdates = await consumePendingSubagentMessages({
                     subagentId: row.subagent_id,
                     triggerRunId: ctx.run.id,
@@ -918,7 +952,7 @@ export const subagentTask = task({
             summary:
               "Independent validation reached its 15-minute active limit.",
           }
-        : triggerSignal.aborted
+        : triggerSignal.aborted || runtimeAuthorizationRevoked
           ? {
               status: "canceled" as const,
               code: "parent_or_user_canceled",
@@ -1034,7 +1068,7 @@ export const subagentTask = task({
             summary:
               "Independent validation reached its 15-minute active limit.",
           }
-        : triggerSignal.aborted
+        : triggerSignal.aborted || runtimeAuthorizationRevoked
           ? {
               status: "canceled" as const,
               code: "parent_or_user_canceled",
