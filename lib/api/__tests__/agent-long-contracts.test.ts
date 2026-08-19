@@ -1430,6 +1430,23 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(fallbackIdx).toBeGreaterThan(retryModelIdx);
   });
 
+  test("explicit DeepSeek Pro retries only terminal reasoning-only provider failures", () => {
+    for (const source of [taskSrc, chatHandlerSrc]) {
+      expect(source).toMatch(
+        /shouldRetryProviderStreamAfterReasoningOnlyOutput\(\s*lastAssistantMessageParts,/,
+      );
+      expect(source).toMatch(
+        /shouldRetryReasoningOnlyProviderError\s*&&\s*isExplicitDeepSeekProSelectionForRetry\(\{/,
+      );
+      expect(source).toMatch(
+        /shouldRetryInterruptedToolInput\s*\|\|\s*shouldRetryExplicitDeepSeekProReasoning/,
+      );
+    }
+
+    expect(taskSrc).toMatch(/state\?\.providerError != null\s*\|\|/);
+    expect(chatHandlerSrc).toMatch(/state\.providerError != null/);
+  });
+
   test("/api/chat attributes fallback usage to the persisted retry message", () => {
     expect(chatHandlerSrc).toMatch(
       /const deductAccumulatedUsage = async \(\s*assistantMessageIdForUsage = assistantMessageId,\s*\)/,

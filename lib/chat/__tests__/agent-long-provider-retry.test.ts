@@ -2,6 +2,7 @@ import {
   createAssistantContentLoopMonitor,
   detectAssistantContentLoopFromText,
   shouldRetryAgentLongWithFallback,
+  shouldRetryProviderStreamAfterReasoningOnlyOutput,
   shouldRetryProviderStreamAfterInterruptedToolInput,
 } from "../agent-long-provider-retry";
 
@@ -277,6 +278,77 @@ describe("shouldRetryAgentLongWithFallback", () => {
           hasTerminalProviderStreamError: false,
           detectAssistantContentLoop: false,
         },
+      ),
+    ).toBe(false);
+  });
+});
+
+describe("shouldRetryProviderStreamAfterReasoningOnlyOutput", () => {
+  it("accepts terminal reasoning-only output with hidden metadata", () => {
+    expect(
+      shouldRetryProviderStreamAfterReasoningOnlyOutput(
+        [
+          { type: "data-agent-heartbeat", data: { at: 1 } },
+          { type: "step-start" },
+          { type: "reasoning", text: "thinking", state: "done" },
+          { type: "data-context-usage", data: { usedTokens: 100 } },
+        ],
+        { hasTerminalProviderStreamError: true },
+      ),
+    ).toBe(true);
+  });
+
+  it.each([
+    {
+      label: "a completed tool side effect",
+      parts: [
+        { type: "step-start" },
+        { type: "reasoning", text: "thinking", state: "done" },
+        {
+          type: "tool-run_terminal_cmd",
+          toolCallId: "call_1",
+          state: "output-available",
+          output: { result: { exitCode: 0 } },
+        },
+      ],
+    },
+    {
+      label: "visible text",
+      parts: [
+        { type: "step-start" },
+        { type: "reasoning", text: "thinking", state: "done" },
+        { type: "text", text: "partial answer" },
+      ],
+    },
+    {
+      label: "interrupted tool input",
+      parts: [
+        { type: "step-start" },
+        { type: "reasoning", text: "thinking", state: "done" },
+        {
+          type: "tool-file",
+          toolCallId: "call_1",
+          state: "input-streaming",
+          input: { path: "/repo/file.ts" },
+        },
+      ],
+    },
+  ])("rejects terminal output containing $label", ({ parts }) => {
+    expect(
+      shouldRetryProviderStreamAfterReasoningOnlyOutput(parts, {
+        hasTerminalProviderStreamError: true,
+      }),
+    ).toBe(false);
+  });
+
+  it("rejects reasoning-only output without a terminal provider error", () => {
+    expect(
+      shouldRetryProviderStreamAfterReasoningOnlyOutput(
+        [
+          { type: "step-start" },
+          { type: "reasoning", text: "thinking", state: "done" },
+        ],
+        { hasTerminalProviderStreamError: false },
       ),
     ).toBe(false);
   });

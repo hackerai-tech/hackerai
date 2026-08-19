@@ -94,6 +94,7 @@ import {
   getContentFilterRetryModel,
   getRetryFallbackModel,
   isAutoModelSelectionForRetry,
+  isExplicitDeepSeekProSelectionForRetry,
   resolveServedModelForCostAccounting,
 } from "@/lib/api/chat-stream-helpers";
 import { geolocation } from "@vercel/functions";
@@ -211,6 +212,7 @@ import {
 } from "@/lib/chat/multimodal-tool-result-recovery";
 import {
   detectAssistantContentLoopFromParts,
+  shouldRetryProviderStreamAfterReasoningOnlyOutput,
   shouldRetryProviderStreamAfterInterruptedToolInput,
   shouldRetryProviderStreamWithFallback,
 } from "@/lib/chat/agent-long-provider-retry";
@@ -1640,7 +1642,19 @@ export const createChatHandler = () => {
                       );
                     const hasTerminalProviderStreamError =
                       state.streamFinishReason === "error" ||
-                      providerContentBlocked;
+                      providerContentBlocked ||
+                      state.providerError != null;
+                    const shouldRetryReasoningOnlyProviderError =
+                      shouldRetryProviderStreamAfterReasoningOnlyOutput(
+                        lastAssistantMessageParts,
+                        { hasTerminalProviderStreamError },
+                      );
+                    const shouldRetryExplicitDeepSeekProReasoning =
+                      shouldRetryReasoningOnlyProviderError &&
+                      isExplicitDeepSeekProSelectionForRetry({
+                        selectedModel,
+                        selectedModelOverride,
+                      });
                     const shouldRetryInterruptedToolInput =
                       shouldRetryProviderStreamAfterInterruptedToolInput(
                         lastAssistantMessageParts,
@@ -1683,7 +1697,9 @@ export const createChatHandler = () => {
                               ? "doom_loop"
                               : shouldRetryInterruptedToolInput
                                 ? "interrupted_tool_input"
-                                : "incomplete_stream";
+                                : shouldRetryReasoningOnlyProviderError
+                                  ? "reasoning_only_provider_error"
+                                  : "incomplete_stream";
                       const blockedProviderModel = providerContentBlocked
                         ? state.responseModel
                         : undefined;
@@ -1709,9 +1725,12 @@ export const createChatHandler = () => {
                                 ? "Agent doom loop detected - triggering fallback"
                                 : retryReason === "interrupted_tool_input"
                                   ? "Provider stream errored during tool input - triggering bounded fallback"
-                                  : hasTerminalProviderStreamError
-                                    ? "Provider stream errored before useful output - triggering fallback"
-                                    : "Stream finished incomplete - triggering fallback",
+                                  : retryReason ===
+                                      "reasoning_only_provider_error"
+                                    ? "Provider stream errored after reasoning-only output - triggering bounded fallback"
+                                    : hasTerminalProviderStreamError
+                                      ? "Provider stream errored before useful output - triggering fallback"
+                                      : "Stream finished incomplete - triggering fallback",
                         {
                           chatId,
                           endpoint,
@@ -1747,7 +1766,8 @@ export const createChatHandler = () => {
                           providerContentBlocked ||
                           shouldRetryWithoutImageToolResults ||
                           loopTriggeredRetry ||
-                          shouldRetryInterruptedToolInput)
+                          shouldRetryInterruptedToolInput ||
+                          shouldRetryExplicitDeepSeekProReasoning)
                       ) {
                         isRetryWithFallback = true;
                         state.lastStepInputTokens = 0;
