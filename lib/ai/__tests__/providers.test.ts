@@ -1,7 +1,9 @@
 import {
+  AUXILIARY_VISION_SLUG,
   getModelCutoffDate,
   getModelDisplayName,
   isAnthropicModel,
+  isDeepSeekModel,
   isKimiModel,
   createTrackedProvider,
   myProvider,
@@ -13,10 +15,10 @@ describe("provider registry", () => {
   it("keeps active routes pointed at their provider slugs", () => {
     expect(
       (myProvider.languageModel("ask-model") as { modelId: string }).modelId,
-    ).toBe("x-ai/grok-4.5");
+    ).toBe("x-ai/grok-4.6");
     expect(
       (myProvider.languageModel("agent-model") as { modelId: string }).modelId,
-    ).toBe("x-ai/grok-4.5");
+    ).toBe("x-ai/grok-4.6");
     expect(
       (myProvider.languageModel("ask-model-free") as { modelId: string })
         .modelId,
@@ -25,6 +27,18 @@ describe("provider registry", () => {
       (myProvider.languageModel("agent-model-free") as { modelId: string })
         .modelId,
     ).toBe("deepseek/deepseek-v4-flash-0731");
+    expect(
+      (
+        myProvider.languageModel("auxiliary-vision-model") as {
+          modelId: string;
+        }
+      ).modelId,
+    ).toBe("xiaomi/mimo-v2.5");
+    expect(AUXILIARY_VISION_SLUG).toBe("xiaomi/mimo-v2.5");
+    expect(
+      (myProvider.languageModel("model-grok-4.6") as { modelId: string })
+        .modelId,
+    ).toBe("x-ai/grok-4.6");
     expect(
       (myProvider.languageModel("model-grok-4.5") as { modelId: string })
         .modelId,
@@ -37,6 +51,20 @@ describe("provider registry", () => {
       (myProvider.languageModel("model-grok-4.6-pro") as { modelId: string })
         .modelId,
     ).toBe("x-ai/grok-4.6");
+    expect(
+      (
+        myProvider.languageModel("model-deepseek-v4-flash-0731") as {
+          modelId: string;
+        }
+      ).modelId,
+    ).toBe("deepseek/deepseek-v4-flash-0731");
+    expect(
+      (
+        myProvider.languageModel("model-deepseek-v4-pro-0813") as {
+          modelId: string;
+        }
+      ).modelId,
+    ).toBe("deepseek/deepseek-v4-pro-0813");
     expect(
       (myProvider.languageModel("model-glm-5.2") as { modelId: string })
         .modelId,
@@ -52,21 +80,43 @@ describe("provider registry", () => {
     expect(
       (myProvider.languageModel("fallback-agent-model") as { modelId: string })
         .modelId,
-    ).toBe("x-ai/grok-4.5");
+    ).toBe("x-ai/grok-4.6");
     expect(
       (myProvider.languageModel("fallback-ask-model") as { modelId: string })
         .modelId,
-    ).toBe("x-ai/grok-4.5");
+    ).toBe("x-ai/grok-4.6");
     expect(
       (myProvider.languageModel("title-generator-model") as { modelId: string })
         .modelId,
     ).toBe("deepseek/deepseek-v4-flash");
+    expect(
+      (
+        myProvider.languageModel("agent-auto-review-model") as {
+          modelId: string;
+        }
+      ).modelId,
+    ).toBe("deepseek/deepseek-v4-flash-0731");
     expect(getModelCutoffDate("ask-model-free")).toBeUndefined();
     expect(getModelCutoffDate("agent-model-free")).toBeUndefined();
+    expect(getModelDisplayName("model-grok-4.6")).toBe("xAI Grok 4.6");
     expect(getModelDisplayName("model-grok-4.5")).toBe("xAI Grok 4.5");
     expect(getModelDisplayName("model-grok-4.5-pro")).toBe("xAI Grok 4.5");
+    expect(getModelCutoffDate("model-grok-4.5")).toBeUndefined();
+    expect(getModelCutoffDate("model-grok-4.5-pro")).toBeUndefined();
     expect(getModelDisplayName("model-grok-4.6-pro")).toBe("xAI Grok 4.6");
     expect(getModelCutoffDate("model-grok-4.6-pro")).toBe("August 2026");
+    expect(getModelDisplayName("model-deepseek-v4-flash-0731")).toBe(
+      "DeepSeek V4 Flash 0731",
+    );
+    expect(getModelCutoffDate("model-deepseek-v4-flash-0731")).toBe(
+      "July 2026",
+    );
+    expect(getModelDisplayName("model-deepseek-v4-pro-0813")).toBe(
+      "DeepSeek V4 Pro 0813",
+    );
+    expect(getModelCutoffDate("model-deepseek-v4-pro-0813")).toBe(
+      "August 2026",
+    );
     expect(getModelDisplayName("model-glm-5.2")).toBe("Z.ai GLM 5.2");
     expect(getModelDisplayName("model-kimi-k3")).toBe("Moonshot Kimi K3");
     expect(getModelCutoffDate("model-opus-4.6")).toBe("July 2026");
@@ -74,12 +124,23 @@ describe("provider registry", () => {
     expect(getModelDisplayName("title-generator-model")).toBe(
       "DeepSeek V4 Flash",
     );
+    expect(getModelDisplayName("agent-auto-review-model")).toBe(
+      "DeepSeek V4 Flash 0731",
+    );
+    expect(getModelCutoffDate("agent-auto-review-model")).toBe("July 2026");
   });
 
   it("applies Kimi rather than Anthropic provider behavior to HackerAI Max", () => {
     expect(isKimiModel("model-opus-4.6")).toBe(true);
     expect(isAnthropicModel("model-opus-4.6")).toBe(false);
     expect(isAnthropicModel("anthropic/claude-opus-4.6")).toBe(true);
+  });
+
+  it("classifies the active DeepSeek tier routes as DeepSeek", () => {
+    expect(isDeepSeekModel("model-deepseek-v4-flash-0731")).toBe(true);
+    expect(isDeepSeekModel("model-deepseek-v4-pro")).toBe(true);
+    expect(isDeepSeekModel("model-deepseek-v4-pro-0813")).toBe(true);
+    expect(isDeepSeekModel("agent-auto-review-model")).toBe(true);
   });
 
   it("keeps tracked free routes split by mode", () => {
@@ -110,7 +171,7 @@ describe("sanitizeOpenRouterRequestForXai", () => {
   it("strips encrypted reasoning details when an OpenRouter fallback can route to xAI", () => {
     const body = {
       model: "moonshotai/kimi-k3",
-      models: ["x-ai/grok-4.5"],
+      models: ["x-ai/grok-4.6"],
       messages: [
         {
           role: "assistant",
@@ -268,6 +329,9 @@ describe("supportsMultimodalToolResults", () => {
   it("rejects text-only DeepSeek model keys", () => {
     expect(supportsMultimodalToolResults("agent-model-free")).toBe(false);
     expect(supportsMultimodalToolResults("model-deepseek-v4-pro")).toBe(false);
+    expect(supportsMultimodalToolResults("model-deepseek-v4-pro-0813")).toBe(
+      false,
+    );
   });
 
   it.each([

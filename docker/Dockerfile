@@ -231,7 +231,24 @@ RUN set -eux; \
     test -n "$httpx_bin"; \
     mv "$httpx_bin" /usr/local/bin/httpx; \
     chmod +x /usr/local/bin/httpx; \
-    rm -rf /tmp/httpx_extracted /tmp/httpx.zip
+    rm -rf /tmp/httpx_extracted /tmp/httpx.zip; \
+    # Katana's Go dependency graph exceeds Lambda MicroVM builder scratch space.
+    # Use a pinned ProjectDiscovery release and verify its published checksum.
+    KATANA_VERSION="1.7.0"; \
+    KATANA_ARCHIVE="katana_${KATANA_VERSION}_${platform}.zip"; \
+    KATANA_BASE_URL="https://github.com/projectdiscovery/katana/releases/download/v${KATANA_VERSION}"; \
+    echo "Fetching katana ${KATANA_VERSION} for ${platform}"; \
+    wget -qO "/tmp/${KATANA_ARCHIVE}" "${KATANA_BASE_URL}/${KATANA_ARCHIVE}"; \
+    wget -qO /tmp/katana-checksums.txt "${KATANA_BASE_URL}/katana-${KATANA_VERSION}-checksums.txt"; \
+    grep "  ${KATANA_ARCHIVE}$" /tmp/katana-checksums.txt > /tmp/katana-checksum.txt; \
+    (cd /tmp && sha256sum -c katana-checksum.txt); \
+    mkdir -p /tmp/katana_extracted; \
+    unzip -q "/tmp/${KATANA_ARCHIVE}" -d /tmp/katana_extracted; \
+    katana_bin=$(find /tmp/katana_extracted -type f -name katana | head -n1); \
+    test -n "$katana_bin"; \
+    mv "$katana_bin" /usr/local/bin/katana; \
+    chmod +x /usr/local/bin/katana; \
+    rm -rf /tmp/katana_extracted "/tmp/${KATANA_ARCHIVE}" /tmp/katana-checksums.txt /tmp/katana-checksum.txt
 
 # ============================================================================
 # Create Wrapper Scripts for Python Tools
@@ -252,6 +269,9 @@ ENV AGENT_BROWSER_EXECUTABLE_PATH=/usr/bin/chromium
 ENV AGENT_BROWSER_USER_AGENT="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 ENV AGENT_BROWSER_ARGS="--disable-blink-features=AutomationControlled,--no-first-run,--no-default-browser-check,--disable-dev-shm-usage,--no-sandbox,--lang=en-US"
 ENV AGENT_BROWSER_SCREENSHOT_DIR=/home/user/agent-browser-screenshots
+# Keep the browser daemon available across one maximum-length terminal command
+# plus a five-minute buffer, then reclaim abandoned Chromium processes.
+ENV AGENT_BROWSER_IDLE_TIMEOUT_MS=900000
 
 RUN npm install -g --cache /tmp/npm-cache agent-browser@0.26.0 && \
     rm -rf /tmp/npm-cache && \
@@ -264,7 +284,8 @@ RUN npm install -g --cache /tmp/npm-cache agent-browser@0.26.0 && \
 # ============================================================================
 RUN set -eux; \
     go install github.com/projectdiscovery/interactsh/cmd/interactsh-client@latest && \
-    go install github.com/projectdiscovery/katana/cmd/katana@latest && \
+    go clean -cache -modcache && \
+    rm -rf "$GOCACHE" "$GOPATH/pkg/mod" && \
     go install github.com/projectdiscovery/cvemap/cmd/cvemap@latest && \
     go clean -cache -modcache && \
     rm -rf "$GOCACHE" "$GOPATH/pkg/mod"

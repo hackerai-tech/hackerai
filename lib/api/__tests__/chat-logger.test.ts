@@ -132,7 +132,7 @@ describe("captureAgentRun", () => {
       sandboxInfo: null,
       outcome: "success",
       selectedModel: "agent-model",
-      configuredModelId: "x-ai/grok-4.5",
+      configuredModelId: "x-ai/grok-4.6",
       triggerRunId: "run_zero",
       triggerUsageDurationMs: 0,
       triggerTotalCostUsd: 0,
@@ -226,7 +226,7 @@ describe("captureAgentRun", () => {
       outcome: "success",
       selectedModel: "agent-model-free",
       configuredModelId: "deepseek/deepseek-v4-flash-0731",
-      responseModel: "x-ai/grok-4.5",
+      responseModel: "x-ai/grok-4.6",
       fallbackServed: true,
     });
 
@@ -236,7 +236,7 @@ describe("captureAgentRun", () => {
       properties: expect.objectContaining({
         selected_model: "agent-model-free",
         configured_model: "deepseek/deepseek-v4-flash-0731",
-        response_model: "x-ai/grok-4.5",
+        response_model: "x-ai/grok-4.6",
         fallback_served: true,
       }),
     });
@@ -569,9 +569,19 @@ describe("captureUsageCost", () => {
         extra_usage_cost_dollars: 0.32,
         included_points_deducted: 1000,
         extra_usage_points_deducted: 3200,
-        usage_economics_version: 1,
-        extra_usage_charge_dollars: 0.384,
-        consumption_contribution_dollars: -0.035999999999999976,
+        usage_economics_version: 2,
+        usage_pricing_version: "request-1.30-extra-1.50-v1",
+        request_usage_multiplier: 1.3,
+        included_usage_multiplier: 1.3,
+        extra_usage_multiplier: 1.5,
+        effective_extra_usage_multiplier: 1.95,
+        included_usage_value_dollars: 0.1,
+        extra_usage_charge_dollars: 0.48,
+        covered_usage_value_dollars: 0.58,
+        covered_usage_cost_dollars: 0.42000000000000004,
+        covered_usage_contribution_dollars: 0.15999999999999992,
+        covered_usage_margin_ratio: 0.2758620689655171,
+        consumption_contribution_dollars: 0.06,
         model_cost_dollars: 0.3,
         non_model_cost_dollars: 0.12,
         input_tokens: 1000,
@@ -685,6 +695,11 @@ describe("captureUsageSettlement", () => {
         usage_deduction_failed: true,
         usage_deduction_failure_reason: "monthly_cap_exceeded",
         forced: false,
+        usage_pricing_version: "request-1.30-extra-1.50-v1",
+        request_usage_multiplier: 1.3,
+        included_usage_multiplier: 1.3,
+        extra_usage_multiplier: 1.5,
+        effective_extra_usage_multiplier: 1.95,
         settlement_capture_reason: "anomaly",
         settlement_run_sampled:
           isUsageSettlementSuccessSampled("settlement_123"),
@@ -881,7 +896,7 @@ describe("createChatLogger provider stream termination", () => {
       chatLogger.recordProviderError(err, {
         mode: "agent",
         model: "agent-model",
-        requestedModelSlug: "x-ai/grok-4.5",
+        requestedModelSlug: "x-ai/grok-4.6",
       });
       chatLogger.emitUnexpectedError(err);
 
@@ -933,7 +948,7 @@ describe("createChatLogger provider stream termination", () => {
         active_tools_mode: "all",
         reasoning_enabled: true,
         fallback_model_count: 1,
-        fallback_model_slugs: ["x-ai/grok-4.5"],
+        fallback_model_slugs: ["x-ai/grok-4.6"],
         has_user_attribution: true,
         has_multimodal_tool_results: true,
       };
@@ -1660,7 +1675,7 @@ describe("createChatLogger provider stream timeout", () => {
       chatLogger.recordProviderError(err, {
         mode: "agent",
         model: "agent-model",
-        requestedModelSlug: "x-ai/grok-4.5",
+        requestedModelSlug: "x-ai/grok-4.6",
       });
       chatLogger.emitUnexpectedError(err);
 

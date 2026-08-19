@@ -64,7 +64,7 @@ const DataControlsTab = () => {
         throw new Error(data.error || "Failed to delete sandbox");
       }
 
-      toast.success("Successfully deleted terminal sandbox");
+      toast.success("Terminal sandbox deleted");
     } catch (error) {
       console.error("Failed to delete sandbox:", error);
       toast.error("Failed to delete terminal sandbox");
@@ -197,7 +197,7 @@ const DataControlsTab = () => {
             <AlertDialogDescription>
               This action cannot be undone. This will permanently remove all
               files and data from your terminal sandbox. Any running processes
-              will be stopped.
+              and active Agent or validation runs will be stopped.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

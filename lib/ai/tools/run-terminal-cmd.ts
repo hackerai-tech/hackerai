@@ -49,7 +49,10 @@ import {
   stripAnsi,
   peekExited,
 } from "./utils/pty-wait-utils";
-import { captureAgentBrowserUsage } from "./utils/agent-browser-usage";
+import {
+  captureAgentBrowserUsage,
+  getAgentBrowserRuntimeEnv,
+} from "./utils/agent-browser-usage";
 import {
   RUN_TERMINAL_DEFAULT_STREAM_TIMEOUT_SECONDS,
   RUN_TERMINAL_MAX_TIMEOUT_SECONDS,
@@ -61,6 +64,7 @@ import {
   getAgentAutoReviewInspectionKind,
   terminalInspectionMatches,
 } from "@/lib/chat/agent-auto-review-evidence";
+import { isLocalCommandRelayUnsubscribedError } from "./utils/local-sandbox-errors";
 
 const DEFAULT_STREAM_TIMEOUT_SECONDS =
   RUN_TERMINAL_DEFAULT_STREAM_TIMEOUT_SECONDS;
@@ -71,7 +75,6 @@ const NOISY_TIMEOUT_MIN_BUFFERED_CHARS = 256 * 1024;
 // return in ~half a second instead of blocking the user-supplied timeout
 // ceiling. The agent can follow up with action=wait/send.
 const INTERACTIVE_QUIET_WINDOW_MS = 500;
-
 const getTerminalProcessStatus = (
   result: Record<string, unknown>,
 ): string | undefined => {
@@ -130,6 +133,7 @@ export const createRunTerminalCmd = (context: ToolContext) => {
     ptySessionManager,
     chatId,
   } = context;
+  const ptyScopeId = context.ptyScopeId ?? chatId;
   const measureTerminalWait = <T>(operation: () => Promise<T>): Promise<T> =>
     context.measureAgentActiveTime
       ? context.measureAgentActiveTime("terminal_wait", operation)
@@ -188,6 +192,7 @@ export const createRunTerminalCmd = (context: ToolContext) => {
   };
   const runTerminalCmdTool = createRunTerminalCmdToolSchema({
     approvalGated: !!context.requestToolApproval,
+    modelName: context.getCurrentModelName?.() ?? context.modelName,
     // The conditional schema adds approval-only fields, but both branches
     // normalize to the same execution input handled below.
   }) as unknown as Tool<RunTerminalCmdInput, unknown>;
@@ -392,11 +397,14 @@ export const createRunTerminalCmd = (context: ToolContext) => {
             interactive: true,
             isBackground: false,
           });
+          const agentBrowserEnv = isE2B
+            ? getAgentBrowserRuntimeEnv(command)
+            : undefined;
 
           // Factory is invoked BY `ptySessionManager.create` — this ensures
           // that if the concurrency cap is hit, the factory is never called
           // and no PTY is spawned (see FIX 4).
-          const session = await ptySessionManager.create(chatId, {
+          const session = await ptySessionManager.create(ptyScopeId, {
             cols,
             rows,
             sandboxIdentity: getAgentApprovalSandboxIdentity(sandbox),
@@ -420,6 +428,7 @@ export const createRunTerminalCmd = (context: ToolContext) => {
               return createE2BPtyHandle(sandbox, {
                 cols,
                 rows,
+                envs: agentBrowserEnv,
               });
             },
           });
@@ -490,6 +499,67 @@ export const createRunTerminalCmd = (context: ToolContext) => {
       try {
         // Get fresh sandbox and verify it's ready
         const { sandbox } = await getApprovedExecutionSandbox();
+
+        const executeWithLocalRelayRecovery = async (
+          sandboxInstance: typeof sandbox,
+        ) => {
+          try {
+            return await executeCommand(sandboxInstance);
+          } catch (error) {
+            if (
+              !isCentrifugoSandbox(sandboxInstance) ||
+              !isLocalCommandRelayUnsubscribedError(error) ||
+              !sandboxManager.recoverLocalConnection
+            ) {
+              throw error;
+            }
+
+            const staleConnectionId = sandboxInstance.getConnectionId();
+            console.warn(
+              JSON.stringify({
+                timestamp: new Date().toISOString(),
+                level: "warn",
+                event: "agent_terminal_local_relay_recovery_started",
+                ...buildTerminalLogContext(),
+                chat_id: context.chatId,
+                user_id: context.userID,
+                subscription: context.subscription ?? "unknown",
+                tool_call_id: toolCallId,
+                stale_connection_id: staleConnectionId,
+              }),
+            );
+
+            await measureSandboxRecovery(() =>
+              sandboxManager.recoverLocalConnection!(
+                staleConnectionId,
+                "command_relay_unsubscribed",
+              ),
+            );
+            const { sandbox: recoveredSandbox } =
+              await getApprovedExecutionSandbox();
+
+            console.warn(
+              JSON.stringify({
+                timestamp: new Date().toISOString(),
+                level: "warn",
+                event: "agent_terminal_local_relay_recovery_completed",
+                ...buildTerminalLogContext(),
+                chat_id: context.chatId,
+                user_id: context.userID,
+                subscription: context.subscription ?? "unknown",
+                tool_call_id: toolCallId,
+                stale_connection_id: staleConnectionId,
+                replacement_connection_id: isCentrifugoSandbox(recoveredSandbox)
+                  ? recoveredSandbox.getConnectionId()
+                  : null,
+              }),
+            );
+
+            // The relay presence check rejects before the command is published,
+            // so one retry on the verified same-machine successor is safe.
+            return executeCommand(recoveredSandbox);
+          }
+        };
 
         // Bail early if sandbox was already marked unavailable by any tool
         if (sandboxManager.isSandboxUnavailable()) {
@@ -632,17 +702,19 @@ export const createRunTerminalCmd = (context: ToolContext) => {
             });
 
             if (!recovery.ok) return recovery.response;
-            return isE2BSandbox(recovery.sandbox) && !is_background
+            return await (isE2BSandbox(recovery.sandbox) && !is_background
               ? withE2BSandboxLeaseHeartbeat(recovery.sandbox, () =>
-                  executeCommand(recovery.sandbox),
+                  executeWithLocalRelayRecovery(recovery.sandbox),
                 )
-              : executeCommand(recovery.sandbox);
+              : executeWithLocalRelayRecovery(recovery.sandbox));
           }
         }
 
-        return isE2BSandbox(sandbox) && !is_background
-          ? withE2BSandboxLeaseHeartbeat(sandbox, () => executeCommand(sandbox))
-          : executeCommand(sandbox);
+        return await (isE2BSandbox(sandbox) && !is_background
+          ? withE2BSandboxLeaseHeartbeat(sandbox, () =>
+              executeWithLocalRelayRecovery(sandbox),
+            )
+          : executeWithLocalRelayRecovery(sandbox));
 
         async function executeCommand(sandboxInstance: typeof sandbox) {
           captureAgentBrowserUsage({
@@ -687,7 +759,7 @@ export const createRunTerminalCmd = (context: ToolContext) => {
 
             const forgetUnexposedCommandSession = () => {
               if (!commandSession || commandSessionExposed) return;
-              ptySessionManager.forget(chatId, commandSession.sessionId);
+              ptySessionManager.forget(ptyScopeId, commandSession.sessionId);
             };
 
             const terminateManagedCommand = async (): Promise<boolean> => {
@@ -1007,7 +1079,7 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                     kill: terminateManagedCommand,
                   });
                   return ptySessionManager
-                    .create(chatId, {
+                    .create(ptyScopeId, {
                       cols,
                       rows,
                       kind: "command",
@@ -1041,6 +1113,9 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                     onStderr: forwardCommandOutput,
                   },
             );
+            const agentBrowserEnv = isE2BSandbox(sandboxInstance)
+              ? getAgentBrowserRuntimeEnv(command)
+              : undefined;
             const runOptions = isCentrifugoSandbox(sandboxInstance)
               ? {
                   ...commonOptions,
@@ -1052,7 +1127,11 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                   },
                 }
               : isE2BSandbox(sandboxInstance)
-                ? { ...commonOptions, signal: abortSignal }
+                ? {
+                    ...commonOptions,
+                    ...(agentBrowserEnv && { envs: agentBrowserEnv }),
+                    signal: abortSignal,
+                  }
                 : commonOptions;
 
             // Determine if an error is a permanent command failure (don't retry)
@@ -1068,6 +1147,13 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                 // a process is terminated externally (e.g., by our abort handler).
                 // We must not retry these as the termination was intentional.
                 if (error.message.includes("signal:")) {
+                  return true;
+                }
+
+                // Presence is checked before the command is published. Handle
+                // this once at the sandbox layer instead of backing off against
+                // the same stale relay connection six times.
+                if (isLocalCommandRelayUnsubscribedError(error)) {
                   return true;
                 }
 

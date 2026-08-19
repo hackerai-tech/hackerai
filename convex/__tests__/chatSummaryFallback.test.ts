@@ -1483,7 +1483,7 @@ describe("regenerateWithNewContent feedback cleanup", () => {
     };
   });
 
-  it("should delete feedback for later messages removed by edit-regenerate", async () => {
+  it("should delete feedback and replace todos for later messages removed by edit-regenerate", async () => {
     const editedUserMessage = {
       _id: "user-doc-1" as Id<"messages">,
       id: "user-msg-1",
@@ -1545,6 +1545,7 @@ describe("regenerateWithNewContent feedback cleanup", () => {
     await regenerateWithNewContent.handler(mockCtx, {
       messageId: editedUserMessage.id,
       newContent: "new prompt",
+      todos: [],
     });
 
     const deleteArgs = mockCtx.db.delete.mock.calls.map(
@@ -1554,6 +1555,10 @@ describe("regenerateWithNewContent feedback cleanup", () => {
     expect(deleteArgs).toContain(laterAssistantMessage._id);
     expect(deleteArgs.indexOf("feedback-2")).toBeLessThan(
       deleteArgs.indexOf(laterAssistantMessage._id),
+    );
+    expect(mockCtx.db.patch).toHaveBeenCalledWith(
+      CHAT_DOC_ID,
+      expect.objectContaining({ todos: [], update_time: expect.any(Number) }),
     );
   });
 

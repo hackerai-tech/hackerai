@@ -7,7 +7,6 @@ import { internal } from "./_generated/api";
 import { validateServiceKey } from "./lib/utils";
 import { convexLogger } from "./lib/logger";
 import { checkFileUploadRateLimit } from "./fileActions";
-import { Doc } from "./_generated/dataModel";
 import { validateUploadPolicy } from "../lib/utils/upload-policy";
 import { hasPaidEntitlement } from "../lib/auth/entitlements";
 
@@ -18,13 +17,35 @@ type StorageUsage = {
 } | null;
 
 /** File record returned by internal.fileStorage.getFileById */
-type FileRecord = Doc<"files"> | null;
+type FileRecord = {
+  s3_key?: string;
+  user_id: string;
+  name: string;
+  media_type: string;
+  size: number;
+  auxiliary_vision_description?: string;
+  auxiliary_vision_model?: string;
+} | null;
+
+const getFileLookupErrorFields = (error: unknown) => {
+  const errorMessage = error instanceof Error ? error.message : "";
+  const reason =
+    (error instanceof Error && error.name === "ReturnsValidationError") ||
+    errorMessage.includes("ReturnsValidationError") ||
+    errorMessage.includes("Value does not match validator")
+      ? "returns_validation"
+      : "unknown";
+
+  return { reason };
+};
 
 const serviceFileUrlInfoValidator = v.object({
   url: v.string(),
   sizeBytes: v.number(),
   mediaType: v.string(),
   name: v.string(),
+  auxiliaryVisionDescription: v.optional(v.string()),
+  auxiliaryVisionModel: v.optional(v.string()),
 });
 
 type ServiceFileUrlInfo = {
@@ -32,6 +53,8 @@ type ServiceFileUrlInfo = {
   sizeBytes: number;
   mediaType: string;
   name: string;
+  auxiliaryVisionDescription?: string;
+  auxiliaryVisionModel?: string;
 };
 
 const MAX_SERVICE_FILE_URL_BATCH_SIZE = 50;
@@ -264,15 +287,9 @@ export const getFileUrlAction = action({
       convexLogger.error("file_get_url_failed", {
         userId: identity.subject,
         fileId: args.fileId,
-        error:
-          error instanceof Error
-            ? { name: error.name, message: error.message, stack: error.stack }
-            : String(error),
+        ...getFileLookupErrorFields(error),
       });
-      throw new Error(
-        "Failed to get file URL: " +
-          (error instanceof Error ? error.message : "Unknown error"),
-      );
+      throw new Error("Failed to get file URL");
     }
   },
 });
@@ -324,10 +341,7 @@ export const getFileUrlsByFileIdsAction = action({
       convexLogger.error("file_batch_lookup_failed", {
         caller: "service",
         fileCount: args.fileIds.length,
-        error:
-          error instanceof Error
-            ? { name: error.name, message: error.message }
-            : String(error),
+        ...getFileLookupErrorFields(error),
       });
       return args.fileIds.map(() => null);
     }
@@ -400,10 +414,7 @@ export const getFileUrlInfosByFileIdsAction = action({
       convexLogger.error("file_batch_lookup_failed", {
         caller: "service-info",
         fileCount: args.fileIds.length,
-        error:
-          error instanceof Error
-            ? { name: error.name, message: error.message }
-            : String(error),
+        ...getFileLookupErrorFields(error),
       });
       return args.fileIds.map(() => null);
     }
@@ -424,6 +435,8 @@ export const getFileUrlInfosByFileIdsAction = action({
                 sizeBytes: file.size,
                 mediaType: file.media_type,
                 name: file.name,
+                auxiliaryVisionDescription: file.auxiliary_vision_description,
+                auxiliaryVisionModel: file.auxiliary_vision_model,
               };
             }
 
@@ -496,10 +509,7 @@ export const getFileUrlsBatchAction = action({
         userId: identity.subject,
         caller: "user",
         fileCount: args.fileIds.length,
-        error:
-          error instanceof Error
-            ? { name: error.name, message: error.message }
-            : String(error),
+        ...getFileLookupErrorFields(error),
       });
       return urlMap;
     }

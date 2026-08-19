@@ -66,7 +66,7 @@ import {
   closeAgentApprovalSession,
 } from "@/lib/api/agent-approval-session";
 import { createAgentRunCorrelationToken } from "@/lib/api/agent-run-correlation";
-import { evaluateProGrok46Experiment } from "@/lib/experiments/pro-grok-46";
+import { resolveSecurityValidationSubagentsEnabled } from "@/lib/posthog/subagent-feature";
 import {
   evaluateAgentAutoReviewFlag,
   type AgentAutoReviewAssignment,
@@ -81,8 +81,73 @@ const AGENT_TRIGGER_PRIORITY_BY_SUBSCRIPTION: Record<SubscriptionTier, number> =
     team: 5,
   };
 
+// Trigger.dev rejects a single trigger payload above 3 MiB. tasks.trigger()
+// offloads large packets, but sessions.start() sends triggerConfig.basePayload
+// inline, so enforce the documented payload boundary before either path.
+export const AGENT_TRIGGER_PAYLOAD_MAX_BYTES = 3 * 1024 * 1024;
+
+export const getAgentTriggerPayloadSizeBytes = (payload: unknown): number =>
+  Buffer.byteLength(JSON.stringify(payload), "utf8");
+
+export const isAgentTriggerPayloadSizeTooLarge = (sizeBytes: number): boolean =>
+  sizeBytes > AGENT_TRIGGER_PAYLOAD_MAX_BYTES;
+
+export const isAgentTriggerRequestSizeTooLarge = ({
+  payloadBytes,
+  requestBodyBytes,
+}: {
+  payloadBytes: number;
+  requestBodyBytes?: number;
+}): boolean =>
+  isAgentTriggerPayloadSizeTooLarge(requestBodyBytes ?? payloadBytes);
+
+export const isTriggerRequestBodyTooLargeError = (error: unknown): boolean => {
+  if (!(error instanceof Error) || error.name !== "TriggerApiError") {
+    return false;
+  }
+
+  const status = (error as Error & { status?: unknown; statusCode?: unknown })
+    .status;
+  const statusCode = (
+    error as Error & { status?: unknown; statusCode?: unknown }
+  ).statusCode;
+
+  return (
+    (status === 413 || statusCode === 413) &&
+    error.message === "Request body too large"
+  );
+};
+
+export const createAgentTriggerPayloadTooLargeResponse = () =>
+  Response.json(
+    {
+      code: "bad_request:api",
+      message:
+        "The request couldn't be processed. Please check your input and try again.",
+      cause:
+        "This Agent request is too large to start. Remove some attachments or start a new chat and try again.",
+    },
+    { status: 413 },
+  );
+
 const getAgentTriggerPriority = (subscription: SubscriptionTier) =>
   AGENT_TRIGGER_PRIORITY_BY_SUBSCRIPTION[subscription];
+
+type AgentTriggerMachinePreset = "small-1x" | "small-2x";
+
+const AGENT_TRIGGER_MACHINE_BY_SUBSCRIPTION: Record<
+  SubscriptionTier,
+  AgentTriggerMachinePreset
+> = {
+  free: "small-1x",
+  pro: "small-1x",
+  "pro-plus": "small-2x",
+  ultra: "small-2x",
+  team: "small-2x",
+};
+
+export const getAgentTriggerMachine = (subscription: SubscriptionTier) =>
+  AGENT_TRIGGER_MACHINE_BY_SUBSCRIPTION[subscription];
 
 type AgentDeploymentEnvironment = {
   NODE_ENV?: string;
@@ -384,6 +449,9 @@ export const createAgentTriggerPost =
       await assertUserCanMakeCostIncurringRequest(userId);
       const userLocation = geolocation(req);
       const triggerRegion = getTriggerRegionForVercelRequest(req, userLocation);
+      const securityValidationSubagentsEnabled =
+        agentPermissionMode === "full_access" &&
+        (await resolveSecurityValidationSubagentsEnabled(userId));
 
       assertFreeAgentGates({
         mode: "agent",
@@ -434,16 +502,6 @@ export const createAgentTriggerPost =
         userCustomization,
         organizationId,
       });
-      const proGrok46Posthog =
-        selectedModelOverride === "hackerai-pro" ? PostHogClient() : null;
-      let proGrok46Experiment = await evaluateProGrok46Experiment({
-        posthog: proGrok46Posthog,
-        userId,
-        subscription,
-        mode: "agent",
-        selectedModel: selectedModelOverride,
-      });
-      await proGrok46Posthog?.shutdown().catch(() => undefined);
       const autoReviewPosthog =
         agentPermissionMode === "auto_review" ? PostHogClient() : null;
       const autoReviewAssignment: AgentAutoReviewAssignment | undefined =
@@ -463,10 +521,6 @@ export const createAgentTriggerPost =
         selectedModelOverride,
         extraUsageConfig,
       });
-      if (selectedModelOverride !== "hackerai-pro") {
-        proGrok46Experiment = undefined;
-      }
-
       let messagesForPersistence =
         stripLocalDesktopSourcePaths(requestMessages);
       let messagesForTrigger = messagesForPersistence;
@@ -559,6 +613,7 @@ export const createAgentTriggerPost =
 
       const triggerRequestedAt = Date.now();
       const triggerPriority = getAgentTriggerPriority(subscription);
+      const triggerMachine = getAgentTriggerMachine(subscription);
       // Trigger.dev's atomic Vercel integration pins the app and worker from the
       // same commit. Reuse that pin so Sessions cannot schedule an older worker.
       const approvalWorkerVersion =
@@ -611,7 +666,6 @@ export const createAgentTriggerPost =
         approvalSessionId,
         approvalProtocolVersion: AGENT_APPROVAL_PROTOCOL_VERSION,
         selectedModel: selectedModelOverride,
-        proGrok46Experiment,
         autoReviewAssignment,
         userLocation,
         isAutoContinue,
@@ -620,12 +674,17 @@ export const createAgentTriggerPost =
         isNewChat,
         endpoint,
         analyticsRequestContext,
+        securityValidationSubagentsEnabled,
         convexUrl: process.env.NEXT_PUBLIC_CONVEX_URL,
         requestTiming: {
           routeStartedAt,
           triggerRequestedAt,
         },
       };
+      const triggerPayloadBytes = getAgentTriggerPayloadSizeBytes(agentPayload);
+      const triggerApiMethod = approvalSessionId
+        ? "sessions.start"
+        : "tasks.trigger";
       const triggerMetadata = {
         status: "queued",
         chatId,
@@ -636,53 +695,112 @@ export const createAgentTriggerPost =
         routeStartedAt,
         triggerRequestedAt,
         triggerPriority,
+        triggerMachine,
         triggerPayloadMessageCount: messagesForPayload.length,
         agentPermissionMode: permissionSnapshot.mode,
+        securityValidationSubagentsEnabled,
         approvalProtocolVersion: AGENT_APPROVAL_PROTOCOL_VERSION,
         ...(approvalWorkerVersion ? { approvalWorkerVersion } : {}),
         ...(approvalSessionId ? { approvalSessionId } : {}),
-        ...(proGrok46Experiment && {
-          proGrok46ExperimentVariant: proGrok46Experiment.variant,
-        }),
         ...(autoReviewAssignment && {
           autoReviewRolloutPhase: autoReviewAssignment.phase,
         }),
       };
       const triggerOptions = {
         ...(triggerPriority > 0 ? { priority: triggerPriority } : {}),
+        machine: triggerMachine,
         tags: triggerTags,
         ...(triggerRegion ? { region: triggerRegion } : {}),
         idempotencyKey: triggerIdempotencyKey,
         idempotencyKeyTTL: "6h",
         metadata: triggerMetadata,
       };
+      let triggerRequestBodyBytes: number | undefined;
+      const triggerPayloadTooLargeResponse = (
+        reason: "payload_limit_exceeded" | "trigger_api_413",
+      ) => {
+        console.warn(
+          JSON.stringify({
+            timestamp: new Date().toISOString(),
+            level: "warn",
+            event: "agent_trigger_payload_rejected",
+            service: "hackerai-web",
+            environment:
+              process.env.VERCEL_ENV ?? process.env.NODE_ENV ?? "unknown",
+            endpoint,
+            reason,
+            http_status: 413,
+            trigger_api_method: triggerApiMethod,
+            trigger_payload_bytes: triggerPayloadBytes,
+            trigger_request_body_bytes: triggerRequestBodyBytes,
+            trigger_payload_limit_bytes: AGENT_TRIGGER_PAYLOAD_MAX_BYTES,
+            trigger_payload_message_count: messagesForPayload.length,
+            base_todos_count: Array.isArray(todos) ? todos.length : 0,
+            local_desktop_attachments_prepared: localDesktopAttachmentsPrepared,
+            agent_permission_mode: permissionSnapshot.mode,
+            request_id:
+              req.headers.get("x-vercel-id")?.slice(0, 128) ?? "unknown",
+            user_id: userId.slice(0, 128),
+            chat_id: chatId.slice(0, 128),
+            organization_id: organizationId?.slice(0, 128),
+          }),
+        );
+
+        return createAgentTriggerPayloadTooLargeResponse();
+      };
 
       let runId: string;
-      if (approvalSessionId) {
-        const approvalTriggerConfig = {
-          basePayload: agentPayload,
-          tags: triggerTags,
-          ...(triggerRegion ? { region: triggerRegion } : {}),
-          ...(approvalWorkerVersion
-            ? { lockToVersion: approvalWorkerVersion }
-            : {}),
-        };
-        const session = await sessions.start({
-          type: `agent-long-approval.v${AGENT_APPROVAL_PROTOCOL_VERSION}`,
-          externalId: approvalSessionId,
-          taskIdentifier: AGENT_TRIGGER_TASK_ID,
-          tags: triggerTags,
-          metadata: triggerMetadata,
-          triggerConfig: approvalTriggerConfig,
-        });
-        runId = session.runId;
-      } else {
-        const handle = await tasks.trigger<typeof agentLongTask>(
-          AGENT_TRIGGER_TASK_ID,
-          agentPayload,
-          triggerOptions,
-        );
-        runId = handle.id;
+      try {
+        if (approvalSessionId) {
+          const approvalTriggerConfig = {
+            basePayload: agentPayload,
+            machine: triggerMachine,
+            tags: triggerTags,
+            ...(triggerRegion ? { region: triggerRegion } : {}),
+            ...(approvalWorkerVersion
+              ? { lockToVersion: approvalWorkerVersion }
+              : {}),
+          };
+          const approvalSessionBody = {
+            type: `agent-long-approval.v${AGENT_APPROVAL_PROTOCOL_VERSION}`,
+            externalId: approvalSessionId,
+            taskIdentifier: AGENT_TRIGGER_TASK_ID,
+            tags: triggerTags,
+            metadata: triggerMetadata,
+            triggerConfig: approvalTriggerConfig,
+          };
+          triggerRequestBodyBytes =
+            getAgentTriggerPayloadSizeBytes(approvalSessionBody);
+          if (
+            isAgentTriggerRequestSizeTooLarge({
+              payloadBytes: triggerPayloadBytes,
+              requestBodyBytes: triggerRequestBodyBytes,
+            })
+          ) {
+            return triggerPayloadTooLargeResponse("payload_limit_exceeded");
+          }
+          const session = await sessions.start(approvalSessionBody);
+          runId = session.runId;
+        } else {
+          if (
+            isAgentTriggerRequestSizeTooLarge({
+              payloadBytes: triggerPayloadBytes,
+            })
+          ) {
+            return triggerPayloadTooLargeResponse("payload_limit_exceeded");
+          }
+          const handle = await tasks.trigger<typeof agentLongTask>(
+            AGENT_TRIGGER_TASK_ID,
+            agentPayload,
+            triggerOptions,
+          );
+          runId = handle.id;
+        }
+      } catch (error) {
+        if (isTriggerRequestBodyTooLargeError(error)) {
+          return triggerPayloadTooLargeResponse("trigger_api_413");
+        }
+        throw error;
       }
 
       const triggerCompletedAt = Date.now();

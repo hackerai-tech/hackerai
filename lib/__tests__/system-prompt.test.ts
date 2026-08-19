@@ -2,6 +2,39 @@ import { describe, expect, it } from "@jest/globals";
 import { systemPrompt } from "@/lib/system-prompt";
 
 describe("systemPrompt security instructions", () => {
+  it("exposes only the independent validation subagent policy when enabled", async () => {
+    const disabled = await systemPrompt(
+      "user_123",
+      "agent",
+      "pro",
+      "agent-model",
+      null,
+      null,
+      "full_access",
+      false,
+    );
+    const enabled = await systemPrompt(
+      "user_123",
+      "agent",
+      "pro",
+      "agent-model",
+      null,
+      null,
+      "full_access",
+      true,
+    );
+
+    expect(disabled).not.toContain("<independent_validation>");
+    expect(enabled).toContain("<independent_validation>");
+    expect(enabled).toContain("Do not create an agent for reconnaissance");
+    expect(enabled).not.toContain("vulnerability_report");
+    expect(enabled).not.toContain("report_eligible");
+    expect(enabled).toContain("result.verdict=confirmed");
+    expect(enabled).toContain(
+      "Do not substitute parent-run tools to repeat the same validation",
+    );
+  });
+
   it("answers general questions directly without cybersecurity scope disclaimers", async () => {
     const prompt = await systemPrompt(
       "user_123",
@@ -376,6 +409,23 @@ Commands run directly on the host OS "workstation" without Docker isolation. Be 
     );
   });
 
+  it("describes the provisioned AWS MicroVM baseline", async () => {
+    const prompt = await systemPrompt(
+      "user_123",
+      "agent",
+      "ultra",
+      "agent-model",
+      null,
+      null,
+      "full_access",
+      false,
+      "aws-lambda-microvm",
+    );
+
+    expect(prompt).toContain("Compute: 2 baseline vCPU and 4 GiB RAM");
+    expect(prompt).not.toContain("2 GiB RAM");
+  });
+
   it("describes cloud sandbox browser automation tools", async () => {
     const prompt = await systemPrompt(
       "user_123",
@@ -442,10 +492,28 @@ Commands run directly on the host OS "workstation" without Docker isolation. Be 
     expect(cloudPrompt).toContain(
       "Invoke `agent-browser` directly through the terminal command tool",
     );
+    expect(cloudPrompt).toContain(
+      "shuts down after 15 minutes without an agent-browser command",
+    );
+    expect(cloudPrompt).toContain(
+      "assume open tabs, in-memory browser state, and element refs are lost",
+    );
+    expect(cloudPrompt).toContain(
+      "reopen the URL and take a fresh snapshot instead of reusing old tabs or refs",
+    );
+    expect(cloudPrompt).toContain(
+      "authenticate again through the user-approved flow",
+    );
+    expect(cloudPrompt).toContain(
+      "Do not save cookies, local storage, or other authentication state to sandbox files",
+    );
+    expect(cloudPrompt).not.toContain("agent-browser state save");
+    expect(cloudPrompt).not.toContain("agent-browser --state");
 
     for (const prompt of [localPrompt, askPrompt]) {
       expect(prompt).not.toContain("<agent_browser>");
       expect(prompt).not.toContain("agent-browser doctor --fix");
+      expect(prompt).not.toContain("authentication state to sandbox files");
       expect(prompt).not.toContain(
         "Invoke `agent-browser` directly through the terminal command tool",
       );
@@ -548,6 +616,62 @@ Commands run directly on the host OS "workstation" without Docker isolation. Be 
     expect(localPrompt).not.toContain(
       "Cloud Agent networking can produce false-positive TCP port results",
     );
+  });
+
+  it("omits the E2B port-scanning warning when AWS MicroVM is selected", async () => {
+    const originalProvider = process.env.CLOUD_SANDBOX_PROVIDER;
+    process.env.CLOUD_SANDBOX_PROVIDER = "aws-lambda-microvm";
+    try {
+      const prompt = await systemPrompt(
+        "user_123",
+        "agent",
+        "pro",
+        "agent-model",
+        null,
+        null,
+      );
+
+      expect(prompt).toContain("linux/arm64");
+      expect(prompt).not.toContain("isolated AWS Lambda MicroVM");
+      expect(prompt).not.toContain("Network behavior:");
+      expect(prompt).not.toContain("configured AWS network connector");
+      expect(prompt).not.toContain(
+        "Cloud Agent networking can produce false-positive TCP port results",
+      );
+    } finally {
+      if (originalProvider === undefined) {
+        delete process.env.CLOUD_SANDBOX_PROVIDER;
+      } else {
+        process.env.CLOUD_SANDBOX_PROVIDER = originalProvider;
+      }
+    }
+  });
+
+  it("uses the provider assigned to the run instead of the process-wide default", async () => {
+    const originalProvider = process.env.CLOUD_SANDBOX_PROVIDER;
+    process.env.CLOUD_SANDBOX_PROVIDER = "aws-lambda-microvm";
+    try {
+      const prompt = await systemPrompt(
+        "user_ultra_control",
+        "agent",
+        "ultra",
+        "agent-model",
+        null,
+        null,
+        "full_access",
+        false,
+        "e2b",
+      );
+
+      expect(prompt).toContain("Port-scanning limitation:");
+      expect(prompt).not.toContain("isolated AWS Lambda MicroVM");
+    } finally {
+      if (originalProvider === undefined) {
+        delete process.env.CLOUD_SANDBOX_PROVIDER;
+      } else {
+        process.env.CLOUD_SANDBOX_PROVIDER = originalProvider;
+      }
+    }
   });
 
   it("does not describe a command sandbox in ask mode", async () => {

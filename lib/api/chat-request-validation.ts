@@ -1,5 +1,6 @@
 import type { UIMessage } from "ai";
 import { ChatSDKError } from "@/lib/errors";
+import { AGENT_API_ENDPOINT } from "@/lib/api/agent-endpoints";
 
 const CHAT_MESSAGE_ROLES = new Set(["user", "assistant", "system"]);
 
@@ -25,6 +26,34 @@ export const requireRetiredTemporaryFieldAbsent = (
       },
     );
   }
+};
+
+export const requireVercelChatMode = (mode: unknown): "ask" => {
+  if (mode === "agent") {
+    throw new ChatSDKError(
+      "bad_request:api",
+      `Agent requests must use the Trigger.dev-backed ${AGENT_API_ENDPOINT} endpoint.`,
+      {
+        invalid_request_field: "mode",
+        invalid_request_field_reason: "agent_requires_trigger_route",
+        required_endpoint: AGENT_API_ENDPOINT,
+      },
+    );
+  }
+
+  if (mode !== "ask") {
+    throw new ChatSDKError(
+      "bad_request:api",
+      "Invalid chat request: mode must be ask.",
+      {
+        invalid_request_field: "mode",
+        invalid_request_field_type: getValueKind(mode),
+        invalid_request_field_reason: "invalid_mode",
+      },
+    );
+  }
+
+  return mode;
 };
 
 const invalidMessagesError = (

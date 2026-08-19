@@ -16,7 +16,6 @@ import { generateTitleFromUserMessageWithWriter } from "@/lib/actions";
 import { getUserIDAndPro } from "@/lib/auth/get-user-id";
 import { assertUserCanMakeCostIncurringRequest } from "@/lib/suspensions";
 import type {
-  ChatMode,
   LimitRescueRequest,
   Todo,
   SandboxPreference,
@@ -114,7 +113,13 @@ import {
   createPreemptiveTimeout,
 } from "@/lib/utils/stream-cancellation";
 import { v4 as uuidv4 } from "uuid";
-import { processChatMessages } from "@/lib/chat/chat-processor";
+import { processChatMessages, selectModel } from "@/lib/chat/chat-processor";
+import { cacheAuxiliaryVisionDescription } from "@/lib/utils/file-transform-utils";
+import {
+  createAuxiliaryVisionFailoverController,
+  describeImageAttachmentsWithAuxiliaryVision,
+  describeImageWithAuxiliaryVision,
+} from "@/lib/chat/auxiliary-vision";
 import { summarizeIncompleteToolParts } from "@/lib/chat/tool-abort-utils";
 import {
   hasVisibleAssistantContent,
@@ -147,11 +152,15 @@ import { PAID_FUNNEL_EVENTS } from "@/lib/analytics/paid-funnel";
 import { readAnalyticsRequestContext } from "@/lib/analytics/request-context";
 import { buildAgentStepLimitTelemetry } from "@/lib/analytics/agent-step-limit-telemetry";
 import {
-  captureProGrok46ExperimentExposure,
-  evaluateProGrok46Experiment,
-  getActiveProGrok46ExperimentAssignment,
-  getProGrok46ExperimentContext,
-} from "@/lib/experiments/pro-grok-46";
+  captureDeepSeekV4Pro0813ExperimentExposure,
+  evaluateDeepSeekV4Pro0813Experiment,
+  getActiveDeepSeekV4Pro0813ExperimentAssignment,
+  getDeepSeekV4Pro0813ExperimentContext,
+} from "@/lib/experiments/deepseek-v4-pro-0813";
+import {
+  createAuxiliaryVisionExposureRecorder,
+  evaluateAuxiliaryDeepSeekVisionFlag,
+} from "@/lib/experiments/auxiliary-deepseek-vision";
 import {
   capturePaidDailyFreeAllowanceServerEvent,
   createPaidDailyFreeAllowanceBudgetSnapshot,
@@ -172,12 +181,14 @@ import {
   requireChatMessagesArray,
   requireOptionalIdentifier,
   requireRetiredTemporaryFieldAbsent,
+  requireVercelChatMode,
 } from "@/lib/api/chat-request-validation";
 import { resolveProjectExecutionContext } from "@/lib/chat/project-context";
 import { isAgentMode } from "@/lib/utils/mode-helpers";
 import {
   createAgentStream,
   initAgentStreamState,
+  resolveAgentModelForImageToolResults,
   resetServedModelTelemetryForRetry,
   retryUsesDifferentModel,
   type AgentStreamContext,
@@ -236,7 +247,7 @@ export const createChatHandler = () => {
 
       const {
         messages,
-        mode,
+        mode: rawMode,
         todos,
         chatId,
         regenerate,
@@ -248,7 +259,7 @@ export const createChatHandler = () => {
         projectId: rawProjectId,
       } = rawRequestBody as {
         messages: unknown;
-        mode: ChatMode;
+        mode: unknown;
         chatId: string;
         todos?: Todo[];
         regenerate?: boolean;
@@ -259,6 +270,7 @@ export const createChatHandler = () => {
         limitRescue?: unknown;
         projectId?: unknown;
       };
+      const mode = requireVercelChatMode(rawMode);
       const analyticsRequestContext = readAnalyticsRequestContext(req.headers);
       const requestedProjectId = requireOptionalIdentifier(
         "projectId",
@@ -361,16 +373,6 @@ export const createChatHandler = () => {
         organizationId,
       });
       const extraUsageAvailable = canUseExtraUsage(baseExtraUsageConfig);
-      const proGrok46Experiment =
-        isAgentMode(mode) && selectedModelOverride === "hackerai-pro"
-          ? await evaluateProGrok46Experiment({
-              posthog: (posthog ??= PostHogClient()),
-              userId,
-              subscription,
-              mode,
-              selectedModel: selectedModelOverride,
-            })
-          : undefined;
       selectedModelOverride =
         normalizeMaxModelForSubscription(selectedModelOverride, subscription, {
           extraUsageAvailable,
@@ -380,6 +382,17 @@ export const createChatHandler = () => {
         selectedModelOverride,
         subscription,
       );
+      const auxiliaryVisionAssignment =
+        isAgentMode(mode) ||
+        countFileAttachments(truncatedMessages).imageCount > 0
+          ? await evaluateAuxiliaryDeepSeekVisionFlag({
+              posthog: (posthog ??= PostHogClient()),
+              userId,
+              subscription,
+              selectedModelOverride,
+              requestId: req.headers.get("x-vercel-id") ?? undefined,
+            })
+          : undefined;
 
       await handleInitialChatAndUserMessage({
         chatId,
@@ -423,9 +436,11 @@ export const createChatHandler = () => {
         uploadBasePath,
         modelOverride: selectedModelOverride,
         extraUsageAvailable,
-        proModelKey: proGrok46Experiment?.modelKey,
         allowLocalDesktopFiles:
           isAgentMode(mode) && sandboxPreference === "desktop",
+        auxiliaryVisionEnabled: !!auxiliaryVisionAssignment,
+        chatId,
+        requestId: req.headers.get("x-vercel-id") ?? undefined,
       });
 
       // Empty after processing → providers reject the request before the route can stream.
@@ -439,6 +454,17 @@ export const createChatHandler = () => {
             sandboxPreference,
           }),
         );
+      }
+
+      const deepSeekV4Pro0813Experiment =
+        await evaluateDeepSeekV4Pro0813Experiment({
+          posthog: (posthog ??= PostHogClient()),
+          userId,
+          selectedModel,
+          requestId: req.headers.get("x-vercel-id") ?? undefined,
+        });
+      if (deepSeekV4Pro0813Experiment) {
+        selectedModel = deepSeekV4Pro0813Experiment.modelKey;
       }
 
       const notesEnabled =
@@ -576,12 +602,13 @@ export const createChatHandler = () => {
         });
       }
 
-      const activeProGrok46Experiment = getActiveProGrok46ExperimentAssignment(
-        proGrok46Experiment,
-        selectedModel,
-      );
-      const routingExperimentContext = getProGrok46ExperimentContext(
-        activeProGrok46Experiment,
+      let activeDeepSeekV4Pro0813Experiment =
+        getActiveDeepSeekV4Pro0813ExperimentAssignment(
+          deepSeekV4Pro0813Experiment,
+          selectedModel,
+        );
+      let routingExperimentContext = getDeepSeekV4Pro0813ExperimentContext(
+        activeDeepSeekV4Pro0813Experiment,
       );
 
       const freeMonthlyBudgetSnapshot =
@@ -616,6 +643,25 @@ export const createChatHandler = () => {
       });
 
       const summarizationTracker = new SummarizationTracker();
+      const auxiliaryVisionFailover = createAuxiliaryVisionFailoverController({
+        enabled: !!auxiliaryVisionAssignment,
+        service: "chat-handler",
+        requestId: req.headers.get("x-vercel-id") ?? undefined,
+        userId,
+        chatId,
+        isUserAborted: () => userStopSignal.signal.aborted,
+      });
+      const captureAuxiliaryVisionExposure =
+        createAuxiliaryVisionExposureRecorder({
+          posthog,
+          userId,
+          chatId,
+          subscription,
+          mode,
+          selectedModelOverride,
+          getSelectedModel: () => selectedModel,
+          assignment: auxiliaryVisionAssignment,
+        });
 
       chatLogger.startStream();
 
@@ -632,6 +678,41 @@ export const createChatHandler = () => {
         },
         execute: async ({ writer }) => {
           try {
+            const usageTracker = new UsageTracker();
+            const auxiliaryVision = auxiliaryVisionFailover.isEnabled()
+              ? {
+                  isEnabled: auxiliaryVisionFailover.isEnabled,
+                  isAborted: () => userStopSignal.signal.aborted,
+                  describeImage: async (args: {
+                    image: string;
+                    mediaType: string;
+                    filename?: string;
+                    source: "file_view";
+                  }) => {
+                    try {
+                      return await describeImageWithAuxiliaryVision({
+                        ...args,
+                        requestId: req.headers.get("x-vercel-id") ?? undefined,
+                        userId,
+                        chatId,
+                        abortSignal: userStopSignal.signal,
+                        onExposure: captureAuxiliaryVisionExposure,
+                        onCost: (costDollars) => {
+                          usageTracker.providerCost += costDollars;
+                          usageTracker.nonModelCost += costDollars;
+                          chatLogger?.getBuilder().addToolCost(costDollars);
+                        },
+                      });
+                    } catch (error) {
+                      auxiliaryVisionFailover.activate({
+                        error,
+                        source: "file_view",
+                      });
+                      throw error;
+                    }
+                  },
+                }
+              : undefined;
             sendRateLimitWarnings(writer, {
               subscription,
               mode,
@@ -682,6 +763,8 @@ export const createChatHandler = () => {
               undefined,
               undefined,
               projectContext.workingDirectory,
+              undefined,
+              auxiliaryVision,
             );
 
             // Helper to send file metadata via stream for resumable stream clients
@@ -797,10 +880,62 @@ export const createChatHandler = () => {
               );
             }
 
+            if (auxiliaryVisionFailover.isEnabled()) {
+              try {
+                processedMessages =
+                  await describeImageAttachmentsWithAuxiliaryVision({
+                    messages: processedMessages,
+                    requestId: req.headers.get("x-vercel-id") ?? undefined,
+                    userId,
+                    chatId,
+                    abortSignal: userStopSignal.signal,
+                    onExposure: captureAuxiliaryVisionExposure,
+                    onCost: (costDollars) => {
+                      usageTracker.providerCost += costDollars;
+                      usageTracker.nonModelCost += costDollars;
+                      chatLogger?.getBuilder().addToolCost(costDollars);
+                    },
+                    cacheDescription: cacheAuxiliaryVisionDescription,
+                  });
+              } catch (error) {
+                if (userStopSignal.signal.aborted) throw error;
+                auxiliaryVisionFailover.activate({
+                  error,
+                  source: "attachment",
+                });
+                selectedModel = isAgentMode(mode)
+                  ? resolveAgentModelForImageToolResults(
+                      selectedModel,
+                      mode,
+                      true,
+                      selectedModelOverride,
+                      false,
+                    )
+                  : selectModel(
+                      mode,
+                      subscription,
+                      selectedModelOverride,
+                      true,
+                      false,
+                      { extraUsageAvailable, auxiliaryVisionEnabled: false },
+                    );
+                activeDeepSeekV4Pro0813Experiment =
+                  getActiveDeepSeekV4Pro0813ExperimentAssignment(
+                    deepSeekV4Pro0813Experiment,
+                    selectedModel,
+                  );
+                routingExperimentContext =
+                  getDeepSeekV4Pro0813ExperimentContext(
+                    activeDeepSeekV4Pro0813Experiment,
+                  );
+                chatLogger?.setChat(chatLogContext, selectedModel);
+              }
+            }
+
             // Generate the title in parallel for new tasks.
             const titlePromise = isNewChat
               ? generateTitleFromUserMessageWithWriter(
-                  processedMessages,
+                  fetched.truncatedMessages,
                   writer,
                   (title) => updateChatTitle({ chatId, title }),
                 )
@@ -924,7 +1059,6 @@ export const createChatHandler = () => {
               trackedProvider.languageModel(fallbackModel).modelId;
             let activeModelName = selectedModel;
 
-            const usageTracker = new UsageTracker();
             let hasRecordedUsage = false;
             // Snapshot cache tokens before fallback retry so we can isolate fallback-only metrics
             let preFallbackCacheRead = 0;
@@ -1278,6 +1412,7 @@ export const createChatHandler = () => {
               endpoint,
               userId,
               subscription,
+              selectedModelOverride,
               chatId,
               fileTokens,
               noteInjectionOpts,
@@ -1288,6 +1423,9 @@ export const createChatHandler = () => {
               contextUsageOn,
               isReasoningModel,
               platformAuthorized,
+              get auxiliaryVisionEnabled() {
+                return auxiliaryVisionFailover.isEnabled();
+              },
               maxDurationMs: AGENT_MAX_STREAM_DURATION_MS,
               writer,
               abortController: userStopSignal,
@@ -1341,14 +1479,15 @@ export const createChatHandler = () => {
 
             let result;
             try {
-              captureProGrok46ExperimentExposure({
+              captureDeepSeekV4Pro0813ExperimentExposure({
                 posthog,
                 userId,
                 subscription,
                 mode,
+                selectedModelOverride,
                 selectedModel,
                 configuredModel: configuredModelId,
-                assignment: activeProGrok46Experiment,
+                assignment: activeDeepSeekV4Pro0813Experiment,
               });
               result = await createStream(selectedModel);
             } catch (error) {

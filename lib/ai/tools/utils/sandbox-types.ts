@@ -15,6 +15,7 @@ export interface ConnectionInfo {
   osInfo?: OsInfo;
   lastSeen?: number;
   isDesktop?: boolean;
+  cloudProvider?: "aws-lambda-microvm";
   capabilities?: {
     commands: boolean;
     pty: boolean;
@@ -46,6 +47,16 @@ export function isE2BSandbox(sandbox: AnySandbox | null): sandbox is Sandbox {
   if (sandbox === null) return false;
   if (isCentrifugoSandbox(sandbox)) return false;
   return true; // any non-Centrifugo sandbox is E2B
+}
+
+export function isAwsLambdaMicrovmSandbox(
+  sandbox: AnySandbox | null,
+): sandbox is CentrifugoSandbox {
+  return (
+    isCentrifugoSandbox(sandbox) &&
+    typeof sandbox.getCloudProvider === "function" &&
+    sandbox.getCloudProvider() === "aws-lambda-microvm"
+  );
 }
 
 /**

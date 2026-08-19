@@ -8,7 +8,7 @@ import {
   waitFor,
 } from "@testing-library/react";
 import { TooltipProvider } from "@/components/ui/tooltip";
-import { ReactNode, useEffect } from "react";
+import { ReactNode, useEffect, useState } from "react";
 import {
   CHAT_MODE_STORAGE_KEY,
   CONVERSATION_DRAFTS_STORAGE_KEY,
@@ -102,6 +102,35 @@ const UploadedFilesSetter = ({
   );
 };
 
+const NewChatAttachmentSubmitHarness = ({
+  uploadedFile,
+}: {
+  uploadedFile: UploadedFileState;
+}) => {
+  const { setUploadedFiles } = useGlobalState();
+  const [hasMessages, setHasMessages] = useState(false);
+
+  return (
+    <>
+      <button type="button" onClick={() => setUploadedFiles([uploadedFile])}>
+        Attach file
+      </button>
+      <ChatInput
+        onSubmit={() => {
+          setHasMessages(true);
+          setUploadedFiles([]);
+          return true;
+        }}
+        onStop={jest.fn()}
+        status="ready"
+        isNewChat={true}
+        hasMessages={hasMessages}
+        chatId="chat-1"
+      />
+    </>
+  );
+};
+
 const AgentApprovalSetter = () => {
   const { setChatMode } = useGlobalState();
   const { setAgentApprovalSession, setActiveToolApprovalRequest } =
@@ -162,7 +191,7 @@ describe("ChatInput - Integration Tests", () => {
   });
 
   describe("Ask Mode Integration", () => {
-    it("should render with ask mode as default", () => {
+    it("renders Ask mode by default without the logged-out mode selector", () => {
       render(
         <TestWrapper>
           <ChatInput
@@ -176,7 +205,7 @@ describe("ChatInput - Integration Tests", () => {
       expect(
         screen.getByPlaceholderText("Ask, learn, brainstorm"),
       ).toBeInTheDocument();
-      expect(screen.getByText("Ask")).toBeInTheDocument();
+      expect(screen.queryByText("Ask")).not.toBeInTheDocument();
       expect(
         screen.getByTestId("attach-files-button").querySelector(".lucide-plus"),
       ).toBeInTheDocument();
@@ -742,6 +771,38 @@ describe("ChatInput - Integration Tests", () => {
   });
 
   describe("Submit Behavior Integration", () => {
+    it("does not restore a sent attachment when a new chat gets its real draft id", async () => {
+      const uploadedFile: UploadedFileState = {
+        file: new File(["image"], "screenshot.png", { type: "image/png" }),
+        uploading: false,
+        uploaded: true,
+        storage: "s3",
+        fileId: "file_screenshot",
+        tokens: 12,
+      };
+
+      render(
+        <TestWrapper>
+          <NewChatAttachmentSubmitHarness uploadedFile={uploadedFile} />
+        </TestWrapper>,
+      );
+
+      fireEvent.click(screen.getByText("Attach file"));
+      expect(await screen.findByAltText("screenshot.png")).toBeInTheDocument();
+
+      await waitFor(() => {
+        expect(getDraftAttachmentsById("new")).toHaveLength(1);
+      });
+
+      fireEvent.click(screen.getByLabelText("Send message"));
+
+      await waitFor(() => {
+        expect(screen.queryByAltText("screenshot.png")).not.toBeInTheDocument();
+        expect(getDraftAttachmentsById("new")).toEqual([]);
+        expect(getDraftAttachmentsById("chat-1")).toEqual([]);
+      });
+    });
+
     it("migrates restored pasted-text attachments when a new chat gets its real id", async () => {
       const draftAttachment = {
         kind: "pasted-text" as const,

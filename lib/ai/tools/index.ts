@@ -40,12 +40,29 @@ import { FileAccumulator } from "./utils/file-accumulator";
 import { BackgroundProcessTracker } from "./utils/background-process-tracker";
 import { ptySessionManager } from "./utils/pty-session-manager";
 import { createPtyParserLogBudget } from "./utils/pty-output-formatter";
-import { isE2BSandbox } from "./utils/sandbox-types";
+import { isAwsLambdaMicrovmSandbox, isE2BSandbox } from "./utils/sandbox-types";
 import { getSandboxWithFallbackGuard } from "./utils/sandbox-fallback";
 import { createE2BResourcePressureObserver } from "@/lib/analytics/sandbox-resource-pressure";
 import { E2B_COST_PER_MS } from "./utils/e2b-cost";
+import { AWS_LAMBDA_MICROVM_COST_PER_MS } from "./utils/aws-lambda-microvm-cost";
+import { AWS_LAMBDA_MICROVM_REGION } from "./utils/aws-lambda-microvm";
+import { phLogger } from "@/lib/posthog/server";
+import {
+  getAwsLambdaMicrovmRolloutTelemetryProperties,
+  type AwsLambdaMicrovmRolloutAssignment,
+} from "@/lib/experiments/aws-lambda-microvm-rollout";
+import type { CloudSandboxAcquisitionContext } from "./utils/cloud-sandbox";
+import type { CloudSandboxProvider } from "./utils/cloud-sandbox-provider";
 
 export { isE2BSandbox };
+
+export type CreateToolsRuntimePolicy = {
+  allowedToolNames?: readonly string[];
+  additionalTools?: (context: ToolContext) => ToolSet;
+  ptyScopeId?: string;
+  chargeSandboxRuntime?: boolean;
+  cloudSandboxRollout?: AwsLambdaMicrovmRolloutAssignment;
+};
 
 // Factory function to create tools with context
 export const createTools = (
@@ -70,23 +87,97 @@ export const createTools = (
   measureAgentActiveTime?: AgentActiveTimeMeasurer,
   workingDirectory?: string,
   triggerRunId?: string,
+  auxiliaryVision?: ToolContext["auxiliaryVision"],
+  runtimePolicy: CreateToolsRuntimePolicy = {},
 ) => {
   let sandbox: AnySandbox | null = null;
-  let sandboxFirstUsedAt: number | null = null;
+  let sandboxCostSegmentStartedAt: number | null = null;
+  let sandboxAccumulatedCost = 0;
+  let sandboxCostPerMs = 0;
+  let sandboxCostProvider: CloudSandboxProvider | null = null;
+  let providerExposureRecorded = false;
+  let sandboxBootInfo: SandboxBootInfo | null = null;
   let currentModelName = modelName;
+  let sandboxOperationQueue: Promise<void> = Promise.resolve();
+  let pendingSandbox: Promise<AnySandbox> | null = null;
+
+  const recordSandboxBoot = (info: SandboxBootInfo) => {
+    sandboxBootInfo = info;
+    onSandboxBoot?.(info);
+  };
+
+  const cloudSandboxContext: CloudSandboxAcquisitionContext = {
+    provider: runtimePolicy.cloudSandboxRollout?.provider,
+    subscription,
+    chatId,
+    triggerRunId,
+    rollout: runtimePolicy.cloudSandboxRollout,
+    runKind:
+      runtimePolicy.chargeSandboxRuntime === false ? "subagent" : "parent",
+  };
 
   const trackSandboxUsage = (newSandbox: AnySandbox) => {
     sandbox = newSandbox;
-    if (!sandboxFirstUsedAt && isE2BSandbox(newSandbox)) {
-      sandboxFirstUsedAt = Date.now();
+    const provider = isAwsLambdaMicrovmSandbox(newSandbox)
+      ? "aws-lambda-microvm"
+      : isE2BSandbox(newSandbox)
+        ? "e2b"
+        : null;
+    if (provider) {
+      const now = Date.now();
+      const nextCostPerMs =
+        provider === "aws-lambda-microvm"
+          ? AWS_LAMBDA_MICROVM_COST_PER_MS
+          : E2B_COST_PER_MS;
+      if (sandboxCostSegmentStartedAt === null) {
+        sandboxCostSegmentStartedAt = now;
+      } else if (
+        sandboxCostProvider !== null &&
+        sandboxCostProvider !== provider &&
+        sandboxCostSegmentStartedAt !== null
+      ) {
+        sandboxAccumulatedCost +=
+          (now - sandboxCostSegmentStartedAt) * sandboxCostPerMs;
+        sandboxCostSegmentStartedAt = now;
+      }
+      sandboxCostProvider = provider;
+      sandboxCostPerMs = nextCostPerMs;
+    }
+    if (provider && !providerExposureRecorded) {
+      providerExposureRecorded = true;
+      const rollout = runtimePolicy.cloudSandboxRollout;
+      phLogger.event("cloud_sandbox_provider_selected", {
+        userId: userID,
+        chat_id: chatId,
+        trigger_run_id: triggerRunId,
+        provider,
+        cloud_sandbox_transport:
+          provider === "aws-lambda-microvm" ? "aws_websocket" : "e2b_sdk",
+        subscription,
+        subscription_tier: subscription,
+        agent_run_kind: cloudSandboxContext.runKind,
+        ...getAwsLambdaMicrovmRolloutTelemetryProperties(rollout),
+        sandbox_boot_path: sandboxBootInfo?.path,
+        sandbox_acquisition_duration_ms: sandboxBootInfo?.duration_ms,
+        sandbox_create_attempts: sandboxBootInfo?.create_attempts,
+        region:
+          provider === "aws-lambda-microvm"
+            ? AWS_LAMBDA_MICROVM_REGION
+            : undefined,
+        image_version:
+          provider === "aws-lambda-microvm"
+            ? (process.env.AWS_LAMBDA_MICROVM_IMAGE_VERSION ?? "latest")
+            : (process.env.E2B_TEMPLATE ?? "terminal-agent-sandbox"),
+        cloud_sandbox_provider_event_version: 3,
+      });
     }
   };
 
-  // E2B protection: free agent users must never use DefaultSandboxManager (always E2B)
+  // Cloud protection: free agent users must use a user-owned execution host.
   if (subscription === "free" && isAgentMode(mode)) {
     if (!sandboxPreference || sandboxPreference === "e2b") {
       throw new Error(
-        "Free agent mode requires a local sandbox. E2B is not available on the free plan.",
+        "Free agent mode requires a local sandbox. Cloud sandboxes are not available on the free plan.",
       );
     }
   }
@@ -101,15 +192,18 @@ export const createTools = (
           serviceKey,
           isE2BSandbox(sandbox) ? sandbox : null,
           subscription,
-          onSandboxBoot,
+          recordSandboxBoot,
           workingDirectory,
           triggerRunId,
+          chatId,
+          cloudSandboxContext,
         )
       : new DefaultSandboxManager(
           userID,
           trackSandboxUsage,
           isE2BSandbox(sandbox) ? sandbox : null,
-          onSandboxBoot,
+          recordSandboxBoot,
+          cloudSandboxContext,
         );
 
   const todoManager = new TodoManager(initialTodos);
@@ -118,6 +212,7 @@ export const createTools = (
   const onSandboxResourceMetrics = createE2BResourcePressureObserver({
     userId: userID,
     chatId,
+    ptyScopeId: runtimePolicy.ptyScopeId,
     mode,
     subscription,
     triggerRunId,
@@ -130,6 +225,7 @@ export const createTools = (
     todoManager,
     userID,
     chatId,
+    ptyScopeId: runtimePolicy.ptyScopeId,
     assistantMessageId,
     triggerRunId,
     fileAccumulator,
@@ -148,6 +244,7 @@ export const createTools = (
     autoReviewEvidenceEnabled,
     measureAgentActiveTime,
     onSandboxResourceMetrics,
+    auxiliaryVision,
   };
 
   const buildTools = (): ToolSet => {
@@ -172,7 +269,15 @@ export const createTools = (
       ...(process.env.JINA_API_KEY && {
         open_url: createOpenUrlTool(context),
       }),
+      ...(runtimePolicy.additionalTools?.(context) ?? {}),
     };
+
+    if (runtimePolicy.allowedToolNames) {
+      const allowed = new Set(runtimePolicy.allowedToolNames);
+      return Object.fromEntries(
+        Object.entries(allTools).filter(([name]) => allowed.has(name)),
+      ) as ToolSet;
+    }
 
     // Filter tools based on mode
     return mode === "ask"
@@ -201,21 +306,42 @@ export const createTools = (
     reason?: string;
     excludeConnectionId?: string;
   }) => {
-    if (options?.excludeConnectionId) {
-      // HybridSandboxManager treats this as a strict retry: quarantine the
-      // selected computer and reject acquisition before choosing another host.
-      await sandboxManager.quarantineLocalConnection?.(
-        options.excludeConnectionId,
-        "command_unresponsive",
-      );
-    }
-    if (options?.refresh) {
-      await sandboxManager.resetSandbox?.(options.reason);
-    }
-    const { sandbox: ensured } = await getSandboxWithFallbackGuard({
-      sandboxManager,
+    const recoveryRequested = Boolean(
+      options?.refresh || options?.excludeConnectionId,
+    );
+    if (!recoveryRequested && pendingSandbox) return pendingSandbox;
+
+    const operation = sandboxOperationQueue.then(async () => {
+      if (options?.excludeConnectionId) {
+        // Serialize quarantine/reset with every acquisition so a promise that
+        // began before recovery cannot repopulate the manager afterward.
+        await sandboxManager.quarantineLocalConnection?.(
+          options.excludeConnectionId,
+          "command_unresponsive",
+        );
+      }
+      if (options?.refresh) {
+        await sandboxManager.resetSandbox?.(options.reason);
+      }
+      const { sandbox: ensured } = await getSandboxWithFallbackGuard({
+        sandboxManager,
+      });
+      return ensured;
     });
-    return ensured;
+    sandboxOperationQueue = operation.then(
+      () => undefined,
+      () => undefined,
+    );
+    pendingSandbox = operation;
+    void operation.then(
+      () => {
+        if (pendingSandbox === operation) pendingSandbox = null;
+      },
+      () => {
+        if (pendingSandbox === operation) pendingSandbox = null;
+      },
+    );
+    return operation;
   };
   const getTodoManager = () => todoManager;
   const getFileAccumulator = () => fileAccumulator;
@@ -229,8 +355,12 @@ export const createTools = (
   };
 
   const getSandboxSessionCost = (): number => {
-    if (!sandboxFirstUsedAt) return 0;
-    return (Date.now() - sandboxFirstUsedAt) * E2B_COST_PER_MS;
+    if (runtimePolicy.chargeSandboxRuntime === false) return 0;
+    if (sandboxCostSegmentStartedAt === null) return 0;
+    return (
+      sandboxAccumulatedCost +
+      (Date.now() - sandboxCostSegmentStartedAt) * sandboxCostPerMs
+    );
   };
 
   return {

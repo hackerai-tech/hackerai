@@ -85,6 +85,28 @@ const agentApprovalTargetGrantValidator = v.union(
   }),
 );
 
+const subagentStatusValidator = v.union(
+  v.literal("queued"),
+  v.literal("running"),
+  v.literal("finalizing"),
+  v.literal("completed"),
+  v.literal("failed"),
+  v.literal("canceled"),
+  v.literal("timed_out"),
+);
+
+const subagentVerdictValidator = v.union(
+  v.literal("confirmed"),
+  v.literal("rejected"),
+  v.literal("inconclusive"),
+);
+
+const validationConfidenceValidator = v.union(
+  v.literal("low"),
+  v.literal("medium"),
+  v.literal("high"),
+);
+
 export default defineSchema({
   projects: defineTable({
     user_id: v.string(),
@@ -242,6 +264,8 @@ export default defineSchema({
     size: v.number(),
     file_token_size: v.number(),
     content: v.optional(v.string()),
+    auxiliary_vision_description: v.optional(v.string()),
+    auxiliary_vision_model: v.optional(v.string()),
     is_attached: v.boolean(),
   })
     .index("by_user_id", ["user_id"])
@@ -757,7 +781,11 @@ export default defineSchema({
     connection_name: v.string(),
     container_id: v.optional(v.string()),
     client_version: v.string(),
-    mode: v.union(v.literal("docker"), v.literal("dangerous")),
+    mode: v.union(
+      v.literal("docker"),
+      v.literal("dangerous"),
+      v.literal("cloud"),
+    ),
     os_info: v.optional(
       v.object({
         platform: v.string(),
@@ -796,6 +824,38 @@ export default defineSchema({
     .index("by_user_and_status", ["user_id", "status"])
     .index("by_status_and_created_at", ["status", "created_at"]),
 
+  // Server-created, user-scoped AWS Lambda MicroVM sessions. Legacy bootstrap
+  // fields remain while pre-direct-transport rows age out; direct endpoint
+  // credentials are short-lived AWS tokens and are never stored in Convex.
+  cloud_sandbox_sessions: defineTable({
+    user_id: v.string(),
+    session_id: v.string(),
+    provider: v.literal("aws-lambda-microvm"),
+    status: v.union(
+      v.literal("starting"),
+      v.literal("running"),
+      v.literal("failed"),
+      v.literal("terminated"),
+    ),
+    bootstrap_token_hash: v.string(),
+    bootstrap_expires_at: v.number(),
+    microvm_id: v.optional(v.string()),
+    connection_id: v.optional(v.string()),
+    region: v.string(),
+    image_identifier: v.string(),
+    image_version: v.optional(v.string()),
+    created_at: v.number(),
+    updated_at: v.number(),
+    last_connected_at: v.optional(v.number()),
+    relay_ready_at: v.optional(v.number()),
+    ended_at: v.optional(v.number()),
+    failure_code: v.optional(v.string()),
+  })
+    .index("by_user_id", ["user_id"])
+    .index("by_user_and_status", ["user_id", "status"])
+    .index("by_session_id", ["session_id"])
+    .index("by_status_and_updated_at", ["status", "updated_at"]),
+
   // Per-request usage logs for the usage dashboard
   usage_logs: defineTable({
     usage_settlement_id: v.optional(v.string()),
@@ -820,6 +880,10 @@ export default defineSchema({
     ),
     input_tokens: v.number(),
     output_tokens: v.number(),
+    // Long-lived development deployments can still contain rows written
+    // before the redundant usage fields were removed. Keep read
+    // compatibility so current functions can deploy; new writes omit them.
+    total_tokens: v.optional(v.number()),
     cache_read_tokens: v.optional(v.number()),
     cache_write_tokens: v.optional(v.number()),
     cost_dollars: v.number(),
@@ -829,6 +893,7 @@ export default defineSchema({
     included_points_deducted: v.optional(v.number()),
     extra_usage_points_deducted: v.optional(v.number()),
     uncovered_points: v.optional(v.number()),
+    usage_deduction_failed: v.optional(v.boolean()),
     usage_deduction_failure_reason: v.optional(
       usageDeductionFailureReasonValidator,
     ),
@@ -842,6 +907,8 @@ export default defineSchema({
         v.literal("raw_token_estimate"),
       ),
     ),
+    max_mode: v.optional(v.boolean()),
+    byok: v.optional(v.boolean()),
   })
     .index("by_usage_settlement_id", ["usage_settlement_id"])
     .index("by_user", ["user_id"])
@@ -1069,6 +1136,150 @@ export default defineSchema({
     created_at: v.number(),
     updated_at: v.number(),
   }).index("by_analysis_id", ["analysis_id"]),
+
+  // Durable child-agent state. Sensitive objectives and validation artifacts
+  // stay here instead of Trigger metadata or analytics properties.
+  subagent_runs: defineTable({
+    subagent_id: v.string(),
+    user_id: v.string(),
+    organization_id: v.optional(v.string()),
+    chat_id: v.string(),
+    parent_message_id: v.string(),
+    parent_tool_call_id: v.string(),
+    parent_trigger_run_id: v.string(),
+    trigger_run_id: v.optional(v.string()),
+    profile: v.literal("security_validation"),
+    depth: v.number(),
+    status: subagentStatusValidator,
+    name: v.optional(v.string()),
+    objective: v.string(),
+    inherit_context: v.optional(v.boolean()),
+    skills: v.optional(v.array(v.string())),
+    candidate: v.optional(
+      v.object({
+        title: v.string(),
+        affected_asset: v.string(),
+        weakness_class: v.string(),
+        claimed_impact: v.string(),
+        reproduction_hint: v.optional(v.string()),
+      }),
+    ),
+    candidate_fingerprint: v.string(),
+    context_refs: v.array(v.any()),
+    sandbox_preference: v.optional(v.string()),
+    sandbox_identity: v.optional(v.string()),
+    permission_mode: v.optional(v.string()),
+    selected_model: v.optional(v.string()),
+    subscription: v.union(
+      v.literal("free"),
+      v.literal("pro"),
+      v.literal("pro-plus"),
+      v.literal("ultra"),
+      v.literal("team"),
+    ),
+    free_quota_subject: v.optional(v.string()),
+    user_location: v.optional(v.any()),
+    summary: v.optional(v.string()),
+    verdict: v.optional(subagentVerdictValidator),
+    confidence: v.optional(validationConfidenceValidator),
+    structured_result: v.optional(v.any()),
+    failure_code: v.optional(v.string()),
+    failure_reason: v.optional(v.string()),
+    cancel_reason: v.optional(v.string()),
+    cost_limit_dollars: v.number(),
+    cost_dollars: v.optional(v.number()),
+    step_count: v.optional(v.number()),
+    provider_retry_count: v.optional(v.number()),
+    result_recovery_count: v.optional(v.number()),
+    parent_notified_at: v.optional(v.number()),
+    created_at: v.number(),
+    started_at: v.optional(v.number()),
+    completed_at: v.optional(v.number()),
+    updated_at: v.number(),
+  })
+    .index("by_subagent_id", ["subagent_id"])
+    .index("by_chat_id", ["chat_id"])
+    .index("by_user_id", ["user_id"])
+    .index("by_chat_and_status", ["chat_id", "status"])
+    .index("by_user_and_status", ["user_id", "status"])
+    .index("by_chat_status_and_cancel_reason", [
+      "chat_id",
+      "status",
+      "cancel_reason",
+    ])
+    .index("by_user_status_and_cancel_reason", [
+      "user_id",
+      "status",
+      "cancel_reason",
+    ])
+    .index("by_parent_run_and_tool_call", [
+      "parent_trigger_run_id",
+      "parent_tool_call_id",
+    ])
+    .index("by_user_chat_and_parent_run", [
+      "user_id",
+      "chat_id",
+      "parent_trigger_run_id",
+    ])
+    .index("by_user_and_chat", ["user_id", "chat_id"])
+    .index("by_parent_run", ["parent_trigger_run_id"])
+    .index("by_user_and_parent_message", ["user_id", "parent_message_id"])
+    .index("by_user_chat_and_candidate", [
+      "user_id",
+      "chat_id",
+      "candidate_fingerprint",
+    ]),
+
+  subagent_messages: defineTable({
+    subagent_id: v.string(),
+    user_id: v.string(),
+    sequence: v.number(),
+    role: v.union(
+      v.literal("user"),
+      v.literal("assistant"),
+      v.literal("system"),
+    ),
+    parts: v.array(v.any()),
+    feedback_type: v.optional(
+      v.union(v.literal("positive"), v.literal("negative")),
+    ),
+    feedback_details: v.optional(v.string()),
+    message_source: v.optional(v.literal("parent_update")),
+    external_message_id: v.optional(v.string()),
+    parent_tool_call_id: v.optional(v.string()),
+    message_type: v.optional(
+      v.union(
+        v.literal("query"),
+        v.literal("instruction"),
+        v.literal("information"),
+      ),
+    ),
+    priority: v.optional(
+      v.union(
+        v.literal("low"),
+        v.literal("normal"),
+        v.literal("high"),
+        v.literal("urgent"),
+      ),
+    ),
+    delivery_status: v.optional(
+      v.union(v.literal("pending"), v.literal("consumed")),
+    ),
+    consumed_at: v.optional(v.number()),
+    created_at: v.number(),
+    updated_at: v.number(),
+  })
+    .index("by_subagent_and_sequence", ["subagent_id", "sequence"])
+    .index("by_subagent_and_created_at", ["subagent_id", "created_at"])
+    .index("by_subagent_and_delivery_status", [
+      "subagent_id",
+      "delivery_status",
+    ])
+    .index("by_subagent_and_external_message_id", [
+      "subagent_id",
+      "external_message_id",
+    ])
+    .index("by_user_id", ["user_id"]),
 
   // Webhook idempotency (prevents double-crediting on Stripe retries)
   processed_webhooks: defineTable({

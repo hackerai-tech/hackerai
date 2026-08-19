@@ -1,6 +1,7 @@
 import type { AnySandbox, SandboxType, ToolContext } from "@/types";
 import { phLogger } from "@/lib/posthog/server";
 import { isCentrifugoSandbox, isE2BSandbox } from "./sandbox-types";
+import { AGENT_BROWSER_IDLE_TIMEOUT_MS } from "./agent-browser-runtime";
 
 const AGENT_BROWSER_INVOCATION_RE =
   /(?:^|[;&|()]\s*)(?:(?:env\s+)?(?:[A-Za-z_][A-Za-z0-9_]*=(?:"[^"]*"|'[^']*'|[^\s;&|()]+)\s+)*)?(?:npx\s+(?:--yes\s+|-y\s+)?)?agent-browser(?:@[^\s;&|()]+)?(?=$|\s|[;&|()])(?:\s+([^\s;&|()]+))?/g;
@@ -96,6 +97,16 @@ export function detectAgentBrowserUsage(
     primaryAction: actions[0] ?? "unknown",
     actions,
     usedViaNpx,
+  };
+}
+
+export function getAgentBrowserRuntimeEnv(
+  command: string,
+): Record<string, string> | undefined {
+  if (!detectAgentBrowserUsage(command)) return undefined;
+
+  return {
+    AGENT_BROWSER_IDLE_TIMEOUT_MS: String(AGENT_BROWSER_IDLE_TIMEOUT_MS),
   };
 }
 

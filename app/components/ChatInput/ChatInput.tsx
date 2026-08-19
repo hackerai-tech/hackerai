@@ -47,6 +47,7 @@ import {
 } from "@/app/hooks/useOnlineStatus";
 import { WifiOff } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { isFreeDesktopSandboxAvailable } from "@/lib/activation/free-desktop-sandbox";
 
 interface ChatInputProps {
   onSubmit: (e: React.FormEvent) => void | boolean | Promise<void | boolean>;
@@ -257,6 +258,7 @@ export const ChatInput = ({
     subscription,
     isCheckingProPlan,
     hasLocalSandbox,
+    localConnections,
     freeDesktopAgentOnlyActive,
     desktopBridgeStatus,
     defaultLocalSandboxPreference,
@@ -319,6 +321,7 @@ export const ChatInput = ({
     isNewChat && !hasMessages ? "new" : chatId || NULL_THREAD_DRAFT_ID;
   const skipNextAttachmentPersistRef = useRef(false);
   const hasPersistedDraftAttachmentsRef = useRef(false);
+  const isSubmittingAttachmentsRef = useRef(false);
   const uploadedFilesRef = useRef(uploadedFiles);
   const prevDraftIdRef = useRef(draftId);
   const draftTextFileIds = useMemo(
@@ -535,6 +538,16 @@ export const ChatInput = ({
     }
 
     if (prevDraftId === "new" && draftId !== "new") {
+      if (isSubmittingAttachmentsRef.current) {
+        uploadedFilesRef.current = [];
+        removeDraft("new");
+        removeDraft(draftId);
+        hasPersistedDraftAttachmentsRef.current = false;
+        skipNextAttachmentPersistRef.current = true;
+        isSubmittingAttachmentsRef.current = false;
+        return;
+      }
+
       const draftAttachments = uploadedFilesRef.current
         .map(uploadedFileToDraftAttachment)
         .filter(
@@ -587,14 +600,18 @@ export const ChatInput = ({
   }, [draftId, restoreDraftAttachments, uploadedFiles]);
 
   // Free agent mode constraints:
-  // 1. Requires local sandbox — web users fall back to Ask if disconnected,
-  //    while Desktop stays Agent-only and waits for its bridge to reconnect
+  // 1. Requires a connected local sandbox — Desktop may use either its
+  //    built-in bridge or a separately connected local runner
   // 2. Force local sandbox preference (not e2b)
   // 3. Force auto model selection
   const isFreeAgent =
     !isCheckingProPlan && subscription === "free" && isAgentMode(chatMode);
   const freeAgentSandboxAvailable = freeDesktopAgentOnlyActive
-    ? desktopBridgeStatus === "connected"
+    ? isFreeDesktopSandboxAvailable({
+        sandboxPreference,
+        desktopBridgeActive: desktopBridgeStatus === "connected",
+        localConnections,
+      })
     : hasLocalSandbox;
 
   const prevFreeAgentSandboxAvailableRef = useRef(freeAgentSandboxAvailable);
@@ -608,10 +625,18 @@ export const ChatInput = ({
     if (!freeAgentSandboxAvailable) {
       if (freeDesktopAgentOnlyActive) {
         if (wasConnected) {
-          toast.info("Desktop sandbox disconnected.", {
-            description: "Reconnect the Desktop sandbox to keep using Agent.",
-            duration: 5000,
-          });
+          const selectedDesktop = sandboxPreference === "desktop";
+          toast.info(
+            selectedDesktop
+              ? "Desktop sandbox disconnected."
+              : "Local sandbox disconnected.",
+            {
+              description: selectedDesktop
+                ? "Reconnect the Desktop sandbox to keep using Agent."
+                : "Reconnect the selected local runner to keep using Agent.",
+              duration: 5000,
+            },
+          );
         }
         return;
       }
@@ -628,6 +653,7 @@ export const ChatInput = ({
     freeAgentSandboxAvailable,
     freeDesktopAgentOnlyActive,
     isFreeAgent,
+    sandboxPreference,
     setChatMode,
   ]);
 
@@ -645,14 +671,18 @@ export const ChatInput = ({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isFreeAgent]);
 
-  const desktopSandboxUnavailableReason =
-    freeDesktopAgentOnlyActive && desktopBridgeStatus !== "connected"
-      ? desktopBridgeStatus === "connecting"
-        ? "Desktop sandbox is connecting"
-        : "Reconnect the Desktop sandbox to use Agent"
+  const freeDesktopSandboxUnavailableReason =
+    freeDesktopAgentOnlyActive && !freeAgentSandboxAvailable
+      ? sandboxPreference === "desktop"
+        ? desktopBridgeStatus === "connecting"
+          ? "Desktop sandbox is reconnecting"
+          : "Reconnect the Desktop sandbox to use Agent"
+        : sandboxPreference === "e2b"
+          ? "Select a local sandbox to use Agent"
+          : "Reconnect the selected local sandbox to use Agent"
       : undefined;
   const effectiveSendDisabledReason =
-    sendDisabledReason ?? desktopSandboxUnavailableReason;
+    sendDisabledReason ?? freeDesktopSandboxUnavailableReason;
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -664,9 +694,22 @@ export const ChatInput = ({
       (input.trim() || uploadedFiles.length > 0);
 
     if (canSubmit) {
+      isSubmittingAttachmentsRef.current =
+        clearDraftOnSubmit && uploadedFiles.length > 0;
       const accepted = await onSubmit(e);
-      if (clearDraftOnSubmit && accepted !== false) {
+      if (accepted === false) {
+        isSubmittingAttachmentsRef.current = false;
+        return;
+      }
+      if (clearDraftOnSubmit) {
+        uploadedFilesRef.current = [];
         removeDraft(draftId);
+        if (draftId === "new" && chatId) {
+          removeDraft(chatId);
+        }
+        if (draftId !== "new") {
+          isSubmittingAttachmentsRef.current = false;
+        }
         setTimeout(() => setInput(""), 0);
       }
     }

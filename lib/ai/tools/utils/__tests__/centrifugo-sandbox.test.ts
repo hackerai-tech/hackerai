@@ -10,6 +10,11 @@
 import { EventEmitter } from "events";
 import { CentrifugoSandbox, parseSandboxMessage } from "../centrifugo-sandbox";
 import type { CentrifugoConfig } from "../centrifugo-sandbox";
+import {
+  LOCAL_COMMAND_RELAY_UNSUBSCRIBED_ERROR_CODE,
+  LocalCommandRelayUnsubscribedError,
+  isLocalCommandRelayUnsubscribedError,
+} from "../local-sandbox-errors";
 import { fragmentCentrifugoMessage } from "@/packages/local/src/centrifugo-transport";
 
 // Track all created mock subscriptions and clients for assertions
@@ -200,7 +205,81 @@ describe("CentrifugoSandbox", () => {
     });
   });
 
+  describe("connection identity", () => {
+    it("returns defensive copies of nested recovery metadata", () => {
+      const sandbox = createDesktopSandbox();
+      const first = sandbox.getConnectionInfo();
+
+      (first.osInfo as { hostname: string }).hostname = "mutated-host";
+      (first.capabilities as { commands: boolean }).commands = false;
+
+      const second = sandbox.getConnectionInfo();
+      expect(second).not.toBe(first);
+      expect(second.osInfo).not.toBe(first.osInfo);
+      expect(second.capabilities).not.toBe(first.capabilities);
+      expect(second.osInfo?.hostname).toBe("WIN-DEV");
+      expect(second.capabilities?.commands).toBe(true);
+    });
+  });
+
+  describe("relay error classification", () => {
+    it("requires both the stable code and a string connection ID", () => {
+      expect(
+        isLocalCommandRelayUnsubscribedError(
+          new LocalCommandRelayUnsubscribedError("conn-1"),
+        ),
+      ).toBe(true);
+      expect(
+        isLocalCommandRelayUnsubscribedError({
+          code: LOCAL_COMMAND_RELAY_UNSUBSCRIBED_ERROR_CODE,
+        }),
+      ).toBe(false);
+      expect(
+        isLocalCommandRelayUnsubscribedError({
+          code: LOCAL_COMMAND_RELAY_UNSUBSCRIBED_ERROR_CODE,
+          connectionId: 123,
+        }),
+      ).toBe(false);
+    });
+  });
+
   describe("commands.run happy path", () => {
+    it("propagates stable chat and run identifiers to the desktop command", async () => {
+      const sandbox = new CentrifugoSandbox(
+        "user-1",
+        defaultConnection,
+        defaultConfig,
+        undefined,
+        "run-1",
+        "chat-1",
+      );
+      const { promise } = startCommand(sandbox, "echo correlated", {
+        timeoutMs: 5000,
+      });
+
+      await jest.advanceTimersByTimeAsync(0);
+      const sub = mockSubscriptions[0];
+      sub.emit("subscribed");
+      await jest.advanceTimersByTimeAsync(0);
+
+      expect(sub.publish).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: "command",
+          chatId: "chat-1",
+          triggerRunId: "run-1",
+        }),
+      );
+
+      sub.emit("publication", {
+        data: { type: "exit", commandId: FIXED_UUID, exitCode: 0 },
+      });
+      await expect(promise).resolves.toEqual({
+        stdout: "",
+        stderr: "",
+        exitCode: 0,
+      });
+    });
+
     it("uses the project folder as the default cwd", async () => {
       const sandbox = createDesktopSandbox("C:\\work\\hackerai");
       const { promise } = startCommand(sandbox, "git status", {
@@ -471,14 +550,18 @@ describe("CentrifugoSandbox", () => {
         },
       });
 
-      const rejection = expect(promise).rejects.toThrow(
-        "is not subscribed to the command relay",
-      );
+      const rejection = promise.catch((error) => error);
 
       sub.emit("subscribed");
       await jest.advanceTimersByTimeAsync(0);
 
-      await rejection;
+      const error = await rejection;
+      expect(error).toBeInstanceOf(LocalCommandRelayUnsubscribedError);
+      expect(error).toMatchObject({
+        code: LOCAL_COMMAND_RELAY_UNSUBSCRIBED_ERROR_CODE,
+        connectionId: "conn-1",
+      });
+      expect(error.message).toContain("is not subscribed to the command relay");
       expect(sub.publish).not.toHaveBeenCalled();
       expect(sub.unsubscribe).toHaveBeenCalled();
       expect(mockClients[0].disconnect).toHaveBeenCalled();
@@ -1228,7 +1311,14 @@ describe("CentrifugoSandbox", () => {
       });
 
       try {
-        const sandbox = createSandbox();
+        const sandbox = createSandbox({
+          osInfo: {
+            platform: "linux",
+            arch: "x86_64",
+            release: "6.1",
+            hostname: "linux-dev",
+          },
+        });
         await sandbox.files.write("/tmp/hackerai/test.txt", "hello world");
 
         // files.write runs mkdir -p then cat > ... heredoc.
@@ -1310,6 +1400,78 @@ describe("CentrifugoSandbox", () => {
       });
       return { sandbox, runs };
     }
+
+    it("probes legacy connections without OS info before building file commands", async () => {
+      const sandbox = createSandbox();
+      (sandbox as any).httpClient = "curl";
+      (sandbox as any).curlCaps = {
+        retryAllErrors: true,
+        retryConnrefused: true,
+        sslNoRevoke: true,
+      };
+      const runs: string[] = [];
+      (sandbox as any).commands.run = jest.fn(async (cmd: string) => {
+        runs.push(cmd);
+        if (cmd === "echo $BASH_VERSION") {
+          return {
+            stdout: "$BASH_VERSION\r\n",
+            stderr: "",
+            exitCode: 0,
+          };
+        }
+        return { stdout: "", stderr: "", exitCode: 0 };
+      });
+
+      await sandbox.files.downloadFromUrl(
+        "https://example.com/image.png?X-Amz-Algorithm=test&X-Amz-Credential=opaque&X-Amz-Signature=opaque",
+        "/tmp/hackerai-upload/image.png",
+      );
+
+      expect(runs[0]).toBe("echo $BASH_VERSION");
+      expect(runs[1]).toContain(
+        'if not exist "C:\\temp\\hackerai-upload" mkdir "C:\\temp\\hackerai-upload"',
+      );
+      expect(runs[1]).toContain(
+        '"https://example.com/image.png?X-Amz-Algorithm=test&X-Amz-Credential=opaque&X-Amz-Signature=opaque"',
+      );
+      expect(runs[1]).not.toContain("mkdir -p");
+      expect(sandbox.isWindows()).toBe(true);
+    });
+
+    it("keeps Bash semantics for legacy connections without OS info", async () => {
+      const sandbox = createSandbox();
+      (sandbox as any).httpClient = "curl";
+      (sandbox as any).curlCaps = {
+        retryAllErrors: true,
+        retryConnrefused: true,
+        sslNoRevoke: false,
+      };
+      const runs: string[] = [];
+      (sandbox as any).commands.run = jest.fn(async (cmd: string) => {
+        runs.push(cmd);
+        if (cmd === "echo $BASH_VERSION") {
+          return {
+            stdout: "5.2.37(1)-release\n",
+            stderr: "",
+            exitCode: 0,
+          };
+        }
+        return { stdout: "", stderr: "", exitCode: 0 };
+      });
+
+      await sandbox.files.downloadFromUrl(
+        "https://example.com/image.png?X-Amz-Algorithm=test&X-Amz-Signature=opaque",
+        "/tmp/hackerai-upload/image.png",
+      );
+
+      expect(runs[0]).toBe("echo $BASH_VERSION");
+      expect(runs[1]).toContain("mkdir -p '/tmp/hackerai-upload'");
+      expect(runs[1]).toContain(
+        "'https://example.com/image.png?X-Amz-Algorithm=test&X-Amz-Signature=opaque'",
+      );
+      expect(runs[1]).not.toContain("if not exist");
+      expect(sandbox.isWindows()).toBe(false);
+    });
 
     it("downloadFromUrl emits POSIX mkdir + curl with MSYS paths", async () => {
       const { sandbox, runs, runOptions } = createWindowsBashSandbox();

@@ -1190,6 +1190,41 @@ async fn handle_file_list(body: &str) -> Result<String, String> {
 
 // ── Tauri IPC Commands ────────────────────────────────────────────────
 
+async fn dispatch_desktop_file_request(
+    request: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let request_type = request
+        .get("type")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| "Desktop file request is missing a type".to_string())?;
+    let body = serde_json::to_string(&request)
+        .map_err(|error| format!("Failed to serialize desktop file request: {}", error))?;
+
+    let response = match request_type {
+        "file_stat" => handle_file_stat(&body).await,
+        "file_read" => handle_file_read(&body).await,
+        "file_write" => handle_file_write(&body).await,
+        "file_append" => handle_file_append(&body).await,
+        "file_remove" => handle_file_remove(&body).await,
+        "file_list" => handle_file_list(&body).await,
+        _ => Err(format!(
+            "Unsupported desktop file request type: {}",
+            request_type
+        )),
+    }?;
+
+    serde_json::from_str(&response)
+        .map_err(|error| format!("Failed to parse desktop file response: {}", error))
+}
+
+/// Executes desktop file operations through Tauri IPC so the HTTPS webview
+/// never needs to fetch an insecure loopback HTTP endpoint. The existing HTTP
+/// handlers remain available for rolling compatibility with older web bundles.
+#[tauri::command]
+async fn desktop_file_request(request: serde_json::Value) -> Result<serde_json::Value, String> {
+    dispatch_desktop_file_request(request).await
+}
+
 #[derive(Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase", tag = "type")]
 enum StreamEvent {
@@ -1461,10 +1496,7 @@ async fn start_dev_auth_server(app_handle: tauri::AppHandle) {
                         origin, encoded_token, encoded_state
                     );
 
-                    log::info!(
-                        "Dev auth: navigating to callback (token: {}...)",
-                        &t[..8.min(t.len())]
-                    );
+                    log::info!("Dev auth: navigating to callback");
 
                     if let Some(window) = handle.get_webview_window("main") {
                         let _ = window.set_focus();
@@ -1545,6 +1577,16 @@ fn get_allowed_hosts() -> Vec<String> {
 
 fn is_valid_token_format(token: &str) -> bool {
     token.len() == 64 && token.chars().all(|c| c.is_ascii_hexdigit())
+}
+
+fn deep_link_log_label(url: &url::Url) -> String {
+    let mut label = format!("{}:", url.scheme());
+    if let Some(host) = url.host_str() {
+        label.push_str("//");
+        label.push_str(host);
+    }
+    label.push_str(url.path());
+    label
 }
 
 fn validate_origin(origin: &str) -> bool {
@@ -1636,15 +1678,12 @@ fn handle_auth_deep_link(app: &tauri::AppHandle, url: &url::Url) {
                         "{}/desktop-callback?token={}&desktop_state={}",
                         origin, encoded_token, encoded_state
                     );
-                    log::info!(
-                        "Navigating to desktop callback (token: {}...)",
-                        &token[..8.min(token.len())]
-                    );
+                    log::info!("Navigating to desktop callback");
 
                     match callback_url.parse() {
                         Ok(parsed_url) => {
-                            if let Err(e) = window.navigate(parsed_url) {
-                                log::error!("Failed to navigate to callback URL: {}", e);
+                            if window.navigate(parsed_url).is_err() {
+                                log::error!("Failed to navigate to callback URL");
                                 // Try to navigate to error page
                                 let error_url = format!("{}/login?error=navigation_failed", origin);
                                 if let Ok(error_parsed) = error_url.parse() {
@@ -1652,17 +1691,20 @@ fn handle_auth_deep_link(app: &tauri::AppHandle, url: &url::Url) {
                                 }
                             }
                         }
-                        Err(e) => {
-                            log::error!("Invalid callback URL format: {}", e);
+                        Err(_) => {
+                            log::error!("Invalid callback URL format");
                         }
                     }
                 }
             }
             None => {
-                if let Some((_, error)) = url.query_pairs().find(|(k, _)| k == "error") {
-                    log::error!("Auth deep link received with error: {}", error);
+                if url.query_pairs().any(|(k, _)| k == "error") {
+                    log::error!("Auth deep link received with an error");
                 } else {
-                    log::warn!("Auth deep link received without token: {:?}", url);
+                    log::warn!(
+                        "Auth deep link received without token: {}",
+                        deep_link_log_label(url)
+                    );
                 }
             }
         }
@@ -1824,6 +1866,23 @@ mod tests {
         ))
     }
 
+    #[test]
+    fn deep_link_log_label_omits_authentication_query_values() {
+        let token = "a".repeat(64);
+        let desktop_state = "b".repeat(64);
+        let url = url::Url::parse(&format!(
+            "hackerai://auth?token={token}&origin=https%3A%2F%2Fhackerai.co&desktop_state={desktop_state}"
+        ))
+        .expect("valid deep link");
+
+        let label = deep_link_log_label(&url);
+
+        assert_eq!(label, "hackerai://auth");
+        assert!(!label.contains(&token));
+        assert!(!label.contains(&desktop_state));
+        assert!(!label.contains("origin"));
+    }
+
     #[tokio::test]
     async fn file_write_allows_nested_paths_inside_allowed_root() {
         let root = unique_test_dir("allowed-root");
@@ -1842,6 +1901,52 @@ mod tests {
         let content = fs::read_to_string(&target).expect("written file should exist");
         assert_eq!(content, "updated");
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn desktop_file_request_dispatches_write_and_read_over_ipc() {
+        let root = unique_test_dir("ipc-round-trip");
+        fs::create_dir_all(&root).expect("create root");
+        let target = root.join("notes.txt");
+
+        let write_result = dispatch_desktop_file_request(serde_json::json!({
+            "type": "file_write",
+            "path": target.to_string_lossy().to_string(),
+            "content": "written over ipc",
+            "allowed_root": root.to_string_lossy().to_string(),
+        }))
+        .await;
+        assert_eq!(
+            write_result.expect("IPC write should succeed"),
+            serde_json::json!({ "ok": true })
+        );
+
+        let read_result = dispatch_desktop_file_request(serde_json::json!({
+            "type": "file_read",
+            "path": target.to_string_lossy().to_string(),
+            "max_full_bytes": 1024,
+            "max_result_bytes": 1024,
+        }))
+        .await
+        .expect("IPC read should succeed");
+        assert_eq!(read_result["content"], "written over ipc");
+        assert_eq!(read_result["path"], target.to_string_lossy().as_ref());
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn desktop_file_request_rejects_unknown_operations() {
+        let result = dispatch_desktop_file_request(serde_json::json!({
+            "type": "file_execute",
+            "path": "/tmp/not-used",
+        }))
+        .await;
+
+        assert_eq!(
+            result.expect_err("unknown operation should fail"),
+            "Unsupported desktop file request type: file_execute"
+        );
     }
 
     #[tokio::test]
@@ -1977,6 +2082,7 @@ pub fn run() {
             get_dev_auth_port,
             prepare_desktop_auth_state,
             get_cmd_server_info,
+            desktop_file_request,
             get_local_file_metadata,
             write_generated_text_attachment,
             read_generated_text_attachment,
@@ -1999,11 +2105,17 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
             // Handle deep links passed as CLI args (Linux/Windows)
-            log::info!("Single instance callback with args: {:?}", args);
+            log::info!(
+                "Single instance callback with {} argument(s)",
+                args.len()
+            );
             for arg in args.iter().skip(1) {
                 if let Ok(url) = url::Url::parse(arg) {
                     if url.scheme() == "hackerai" {
-                        log::info!("Processing deep link from CLI arg: {}", arg);
+                        log::info!(
+                            "Processing deep link from CLI arg: {}",
+                            deep_link_log_label(&url)
+                        );
                         handle_auth_deep_link(app, &url);
                     }
                 }
@@ -2040,9 +2152,16 @@ pub fn run() {
                 let handle = app.handle().clone();
                 app.deep_link().on_open_url(move |event| {
                     let urls = event.urls();
-                    log::info!("Deep link received: {:?}", urls);
+                    log::info!(
+                        "Deep link callback received with {} URL(s)",
+                        urls.len()
+                    );
 
                     for url in urls {
+                        log::info!(
+                            "Processing deep link: {}",
+                            deep_link_log_label(&url)
+                        );
                         handle_auth_deep_link(&handle, &url);
                     }
                 });

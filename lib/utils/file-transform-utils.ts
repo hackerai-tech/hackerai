@@ -36,6 +36,8 @@ type FileToProcess = {
   url?: string;
   mediaType?: string;
   sizeBytes?: number;
+  auxiliaryVisionDescription?: string;
+  auxiliaryVisionModel?: string;
   positions: Array<{ messageIndex: number; partIndex: number }>;
 };
 
@@ -44,6 +46,19 @@ type ResolvedFileUrlInfo = {
   sizeBytes?: number;
   mediaType?: string;
   name?: string;
+  auxiliaryVisionDescription?: string;
+  auxiliaryVisionModel?: string;
+};
+
+type PersistedFileUrlFetchResult = {
+  value: ResolvedFileUrlInfo | string | null;
+  lookupPath: "metadata" | "legacy_fallback" | "failed";
+};
+
+type PersistedImageReloadTelemetryContext = {
+  chatId?: string;
+  triggerRunId?: string;
+  requestId?: string;
 };
 
 type SizeProbeResult = {
@@ -100,6 +115,14 @@ const validateResolvedFileUrlInfo = (
       mediaType:
         typeof info.mediaType === "string" ? info.mediaType : undefined,
       name: typeof info.name === "string" ? info.name : undefined,
+      auxiliaryVisionDescription:
+        typeof info.auxiliaryVisionDescription === "string"
+          ? info.auxiliaryVisionDescription
+          : undefined,
+      auxiliaryVisionModel:
+        typeof info.auxiliaryVisionModel === "string"
+          ? info.auxiliaryVisionModel
+          : undefined,
     };
   } catch (error) {
     logger.warn("resolved_file_url_rejected", {
@@ -445,6 +468,10 @@ const collectFilesToProcess = (
       if (!isFilePart(part)) return;
 
       const fileId = typeof part.fileId === "string" ? part.fileId : undefined;
+      // Auxiliary descriptions are server-derived cache metadata. Never trust
+      // values supplied in the request, including URL-only/legacy file parts.
+      delete (part as any).auxiliaryVisionDescription;
+      delete (part as any).auxiliaryVisionModel;
       if (fileId) {
         // File IDs are storage references, not proof that a request-supplied URL
         // is safe. Clear any client URL so every server-side fetch/download uses
@@ -482,7 +509,7 @@ const collectFilesToProcess = (
 const fetchFileUrls = async (
   fileIds: string[],
   userId: string | undefined,
-): Promise<(ResolvedFileUrlInfo | string | null)[]> => {
+): Promise<PersistedFileUrlFetchResult[]> => {
   if (!fileIds.length) return [];
   if (!userId) {
     logger.warn("file_url_fetch_skipped_missing_user_id", {
@@ -501,12 +528,9 @@ const fetchFileUrls = async (
 
     const chunkResults = await Promise.all(
       chunks.map(
-        async (
-          chunk,
-          index,
-        ): Promise<(ResolvedFileUrlInfo | string | null)[]> => {
+        async (chunk, index): Promise<PersistedFileUrlFetchResult[]> => {
           try {
-            return await getConvexClient().action(
+            const values = await getConvexClient().action(
               api.s3Actions.getFileUrlInfosByFileIdsAction,
               {
                 serviceKey,
@@ -514,6 +538,10 @@ const fetchFileUrls = async (
                 fileIds: chunk as Id<"files">[],
               },
             );
+            return values.map((value) => ({
+              value,
+              lookupPath: "metadata" as const,
+            }));
           } catch (error) {
             logger.warn("file_url_fetch_chunk_failed", {
               event: "file_url_fetch_chunk_failed",
@@ -526,7 +554,7 @@ const fetchFileUrls = async (
             });
 
             try {
-              return await getConvexClient().action(
+              const values = await getConvexClient().action(
                 api.s3Actions.getFileUrlsByFileIdsAction,
                 {
                   serviceKey,
@@ -534,6 +562,10 @@ const fetchFileUrls = async (
                   fileIds: chunk as Id<"files">[],
                 },
               );
+              return values.map((value) => ({
+                value,
+                lookupPath: "legacy_fallback" as const,
+              }));
             } catch (fallbackError) {
               logger.warn("file_url_legacy_fetch_chunk_failed", {
                 event: "file_url_legacy_fetch_chunk_failed",
@@ -544,7 +576,10 @@ const fetchFileUrls = async (
                 chunk_index: index,
                 chunk_count: chunks.length,
               });
-              return chunk.map(() => null);
+              return chunk.map(() => ({
+                value: null,
+                lookupPath: "failed" as const,
+              }));
             }
           }
         },
@@ -568,6 +603,8 @@ const applyUrlsToFileParts = async (
   filesToProcess: Map<string, FileToProcess>,
   mode: ChatMode,
   userId: string,
+  subscription?: SubscriptionTier,
+  telemetryContext?: PersistedImageReloadTelemetryContext,
 ) => {
   const filesNeedingUrls = Array.from(filesToProcess.values()).filter(
     (file) => file.fileId && !file.url,
@@ -576,9 +613,13 @@ const applyUrlsToFileParts = async (
 
   const fetchedUrls = await fetchFileUrls(fileIdsNeedingUrls, userId);
 
+  let metadataLookupImageCount = 0;
+  let legacyFallbackImageCount = 0;
+
   filesNeedingUrls.forEach((file, index) => {
+    const fetchResult = fetchedUrls[index];
     const resolved = validateResolvedFileUrlInfo(
-      fetchedUrls[index],
+      fetchResult?.value,
       file.fileId!,
     );
     if (resolved) {
@@ -589,14 +630,58 @@ const applyUrlsToFileParts = async (
       if (!file.mediaType && resolved.mediaType) {
         file.mediaType = resolved.mediaType;
       }
+      file.auxiliaryVisionDescription = resolved.auxiliaryVisionDescription;
+      file.auxiliaryVisionModel = resolved.auxiliaryVisionModel;
+
+      const resolvedMediaType =
+        normalizeImageMediaType(file.mediaType) ?? file.mediaType ?? "";
+      if (isSupportedImageMediaType(resolvedMediaType)) {
+        if (fetchResult?.lookupPath === "metadata") {
+          metadataLookupImageCount += 1;
+        } else if (fetchResult?.lookupPath === "legacy_fallback") {
+          legacyFallbackImageCount += 1;
+        }
+      }
     }
   });
+
+  const persistedImageCount =
+    metadataLookupImageCount + legacyFallbackImageCount;
+  if (persistedImageCount > 0) {
+    console.info(
+      JSON.stringify({
+        timestamp: new Date().toISOString(),
+        level: "info",
+        event: "persisted_image_reload_succeeded",
+        service: telemetryContext?.triggerRunId ? "agent-long" : "chat-handler",
+        environment:
+          process.env.TRIGGER_ENV ??
+          process.env.VERCEL_ENV ??
+          process.env.NODE_ENV ??
+          "unknown",
+        request_id:
+          telemetryContext?.requestId ??
+          telemetryContext?.triggerRunId ??
+          "unavailable",
+        user_id: userId,
+        chat_id: telemetryContext?.chatId,
+        trigger_run_id: telemetryContext?.triggerRunId,
+        mode,
+        subscription_tier: subscription,
+        reload_stage: "owner_checked_storage_lookup",
+        image_count: persistedImageCount,
+        metadata_lookup_image_count: metadataLookupImageCount,
+        legacy_fallback_image_count: legacyFallbackImageCount,
+      }),
+    );
+  }
 
   for (const [fileKey, file] of filesToProcess) {
     if (!file.url) continue;
 
-    // Only convert PDFs to base64 in "ask" mode for inline viewing.
-    // In "agent" mode, we want the original URL for sandbox curl download.
+    // Ask mode keeps its existing base64 representation. Agent mode keeps the
+    // original signed URL so the same PDF can be sent to OpenRouter and staged
+    // in the sandbox without downloading it twice on our server.
     const finalUrl =
       mode === "ask" && file.mediaType === "application/pdf"
         ? await convertUrlToBase64DataUrl(file.url, "application/pdf").catch(
@@ -690,6 +775,10 @@ const applyUrlsToFileParts = async (
         filePart.mediaType =
           normalizeImageMediaType(file.mediaType) ?? file.mediaType;
       }
+      if (file.auxiliaryVisionDescription) {
+        filePart.auxiliaryVisionDescription = file.auxiliaryVisionDescription;
+        filePart.auxiliaryVisionModel = file.auxiliaryVisionModel;
+      }
 
       if ((shouldOmitImage || shouldOmitInvalidImage) && mode === "agent") {
         filePart.url = finalUrl;
@@ -720,6 +809,51 @@ const applyUrlsToFileParts = async (
   }
 };
 
+export const cacheAuxiliaryVisionDescription = async ({
+  userId,
+  fileId,
+  description,
+  model,
+}: {
+  userId: string;
+  fileId: string;
+  description: string;
+  model: string;
+}): Promise<void> => {
+  if (!serviceKey) {
+    logger.warn("auxiliary_vision_description_cache_skipped", {
+      event: "auxiliary_vision_description_cache_skipped",
+      service: "chat-handler",
+      reason: "missing_service_key",
+      user_id: userId,
+      file_id: fileId,
+      model,
+    });
+    return;
+  }
+  try {
+    await getConvexClient().mutation(
+      api.fileStorage.saveAuxiliaryVisionDescription,
+      {
+        serviceKey,
+        userId,
+        fileId: fileId as Id<"files">,
+        description,
+        model,
+      },
+    );
+  } catch (error) {
+    logger.warn("auxiliary_vision_description_cache_failed", {
+      event: "auxiliary_vision_description_cache_failed",
+      service: "chat-handler",
+      user_id: userId,
+      file_id: fileId,
+      model,
+      error: stringifyRedactedError(error),
+    });
+  }
+};
+
 /**
  * Removes file parts that don't have a URL (failed to fetch).
  * These would cause AI_InvalidPromptError since file parts require actual content.
@@ -733,11 +867,16 @@ const removeFilePartsWithoutUrls = (messages: UIMessage[]) => {
   });
 };
 
-const isProviderVisibleAgentImagePart = (part: any): boolean => {
+const isProviderVisibleAgentFilePart = (part: any): boolean => {
   if (part?.type !== "file") return false;
   if (providerUnsafeImageParts.has(part)) return false;
   const mediaType = part.mediaType ?? "";
-  if (!isSupportedImageMediaType(mediaType)) return false;
+  if (
+    !isSupportedImageMediaType(mediaType) &&
+    mediaType !== "application/pdf"
+  ) {
+    return false;
+  }
 
   const size =
     typeof part.size === "number"
@@ -768,9 +907,12 @@ const applyModeSpecificTransforms = async (
     collectSandboxFiles(messages, sandboxFiles, uploadBasePath, {
       allowLocalDesktopFiles,
       getAttachmentTagKind: (part) =>
-        isProviderVisibleAgentImagePart(part) ? "inline-image" : "attachment",
+        isProviderVisibleAgentFilePart(part) &&
+        isSupportedImageMediaType(part.mediaType ?? "")
+          ? "inline-image"
+          : "attachment",
     });
-    removeNonMediaAndOversizedImageFileParts(messages);
+    removeNonProviderVisibleAgentFileParts(messages);
   } else {
     const nonMediaFileIds = filterNonMediaFileIds(messages, fileIds);
     if (nonMediaFileIds.length > 0) {
@@ -793,7 +935,7 @@ const applyModeSpecificTransforms = async (
  *
  * Transforms file parts based on chat mode:
  * - **Ask mode**: Converts non-media files to document content, keeps images/PDFs as file parts
- * - **Agent mode**: Prepares all files for sandbox upload, keeps only images as file parts
+ * - **Agent mode**: Prepares all files for sandbox upload and keeps provider-safe images/PDFs as file parts
  *
  * Processing steps:
  * 1. Generates fresh URLs for files (prevents expiration)
@@ -801,7 +943,7 @@ const applyModeSpecificTransforms = async (
  * 3. Detects media files (images/PDFs)
  * 4. Applies mode-specific transforms:
  *    - Ask: Injects document content for text files, removes audio
- *    - Agent: Collects files for sandbox, adds attachment tags, removes non-images
+ *    - Agent: Collects files for sandbox, adds attachment tags, removes files that cannot be sent to the provider
  *
  * @param messages - Messages to process
  * @param mode - Chat mode ("ask" or "agent")
@@ -816,6 +958,7 @@ export const processMessageFiles = async (
   uploadBasePath?: string,
   subscription?: SubscriptionTier,
   allowLocalDesktopFiles: boolean = false,
+  telemetryContext?: PersistedImageReloadTelemetryContext,
 ): Promise<{
   messages: UIMessage[];
   hasMediaFiles: boolean;
@@ -842,7 +985,14 @@ export const processMessageFiles = async (
   const { hasMedia, files } = collectFilesToProcess(updatedMessages, mode);
 
   if (files.size > 0) {
-    await applyUrlsToFileParts(updatedMessages, files, mode, userId);
+    await applyUrlsToFileParts(
+      updatedMessages,
+      files,
+      mode,
+      userId,
+      subscription,
+      telemetryContext,
+    );
   }
 
   const maxFileTokens = subscription
@@ -1005,23 +1155,12 @@ const pruneFileParts = (
   });
 };
 
-const removeNonMediaAndOversizedImageFileParts = (messages: UIMessage[]) => {
+const removeNonProviderVisibleAgentFileParts = (messages: UIMessage[]) => {
   messages.forEach((msg) => {
     if (!msg.parts) return;
     msg.parts = msg.parts.filter((part: any) => {
       if (part?.type !== "file") return true;
-      if (providerUnsafeImageParts.has(part)) return false;
-      if (!isSupportedImageMediaType(part.mediaType ?? "")) return false;
-      return !isSandboxOnlyAgentUpload({
-        mode: "agent",
-        size:
-          typeof part.size === "number"
-            ? part.size
-            : typeof part.sizeBytes === "number"
-              ? part.sizeBytes
-              : 0,
-        mediaType: part.mediaType ?? "",
-      });
+      return isProviderVisibleAgentFilePart(part);
     });
   });
 };

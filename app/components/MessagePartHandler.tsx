@@ -14,6 +14,7 @@ import { SummarizationHandler } from "./tools/SummarizationHandler";
 import type { ChatStatus } from "@/types";
 import type { FileDetails } from "@/types/file";
 import { ReasoningHandler } from "./ReasoningHandler";
+import { SubagentToolHandler } from "./tools/SubagentToolHandler";
 
 interface MessagePartHandlerProps {
   message: UIMessage;
@@ -29,6 +30,37 @@ interface MessagePartHandlerProps {
   /** File details from get_terminal_files tool (streamed progressively) */
   sharedFileDetails?: FileDetails[];
 }
+
+const SUBAGENT_TOOL_PART_TYPES = new Set([
+  "tool-delegate_task",
+  "tool-create_agent",
+  "tool-send_message_to_agent",
+  "tool-wait_for_agents",
+]);
+
+const subagentLifecycleSignature = (
+  message: UIMessage,
+  toolCallId: unknown,
+): string => {
+  if (typeof toolCallId !== "string") return "";
+  return (message.parts as any[])
+    .filter(
+      (candidate) =>
+        candidate?.type === "data-subagent-lifecycle" &&
+        candidate?.data?.parent_tool_call_id === toolCallId,
+    )
+    .map((candidate) => {
+      const data = candidate.data ?? {};
+      return [
+        data.subagent_id,
+        data.parent_message_id,
+        data.agent_name,
+        data.event,
+        data.status,
+      ].join(":");
+    })
+    .join("|");
+};
 
 // Memoized user text component - avoids re-renders for unchanged text
 const UserTextPart = memo(function UserTextPart({ text }: { text: string }) {
@@ -65,7 +97,7 @@ function deepEqual(a: any, b: any): boolean {
 }
 
 // Custom comparison for MessagePartHandler to minimize re-renders
-function arePropsEqual(
+export function areMessagePartHandlerPropsEqual(
   prevProps: MessagePartHandlerProps,
   nextProps: MessagePartHandlerProps,
 ): boolean {
@@ -97,6 +129,18 @@ function arePropsEqual(
     prevProps.sharedFileDetails !== nextProps.sharedFileDetails
   )
     return false;
+
+  if (SUBAGENT_TOOL_PART_TYPES.has(prevProps.part?.type)) {
+    const previousLifecycle = subagentLifecycleSignature(
+      prevProps.message,
+      prevProps.part?.toolCallId,
+    );
+    const nextLifecycle = subagentLifecycleSignature(
+      nextProps.message,
+      nextProps.part?.toolCallId,
+    );
+    if (previousLifecycle !== nextLifecycle) return false;
+  }
 
   // Auto review metadata arrives immediately before the approval request. Keep
   // approval rows responsive if React commits between those two stream parts.
@@ -252,6 +296,14 @@ export const MessagePartHandler = memo(function MessagePartHandler({
     case "tool-todo_write":
       return <TodoToolHandler message={message} part={part} status={status} />;
 
+    case "tool-delegate_task":
+    case "tool-create_agent":
+    case "tool-send_message_to_agent":
+    case "tool-wait_for_agents":
+      return (
+        <SubagentToolHandler message={message} part={part} status={status} />
+      );
+
     case "tool-create_note":
       return (
         <NotesToolHandler part={part} status={status} toolName="create_note" />
@@ -308,4 +360,4 @@ export const MessagePartHandler = memo(function MessagePartHandler({
     default:
       return null;
   }
-}, arePropsEqual);
+}, areMessagePartHandlerPropsEqual);

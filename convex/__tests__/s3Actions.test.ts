@@ -672,6 +672,41 @@ describe("s3Actions", () => {
         getFileUrlAction.handler(mockCtx, { fileId: mockFileId }),
       ).rejects.toThrow("Failed to get file URL");
     });
+
+    it("does not expose return-validation values to logs or callers", async () => {
+      const privateValue = "private auxiliary description";
+      const validationError = new Error(
+        `ReturnsValidationError: Value does not match validator: ${privateValue}`,
+      );
+      const consoleError = jest
+        .spyOn(console, "error")
+        .mockImplementation(() => {});
+      const { getFileUrlAction } = await import("../s3Actions");
+      const mockCtx = {
+        auth: {
+          getUserIdentity: jest.fn().mockResolvedValue({
+            subject: "user123",
+          }),
+        },
+        runQuery: jest.fn().mockRejectedValue(validationError),
+      } as any;
+
+      try {
+        await expect(
+          getFileUrlAction.handler(mockCtx, { fileId: "file123" as any }),
+        ).rejects.toThrow(/^Failed to get file URL$/);
+
+        const serializedLog = consoleError.mock.calls
+          .flat()
+          .map(String)
+          .join("\n");
+        expect(serializedLog).toContain('"reason":"returns_validation"');
+        expect(serializedLog).not.toContain(privateValue);
+        expect(serializedLog).not.toContain("Value does not match validator");
+      } finally {
+        consoleError.mockRestore();
+      }
+    });
   });
 
   describe("getFileUrlsBatchAction", () => {
@@ -1147,12 +1182,20 @@ describe("s3Actions", () => {
   describe("getFileUrlsByFileIdsAction", () => {
     const serviceUrlInfo = (
       url: string,
-      file: { size: number; media_type: string; name: string },
+      file: {
+        size: number;
+        media_type: string;
+        name: string;
+        auxiliary_vision_description?: string;
+        auxiliary_vision_model?: string;
+      },
     ) => ({
       url,
       sizeBytes: file.size,
       mediaType: file.media_type,
       name: file.name,
+      auxiliaryVisionDescription: file.auxiliary_vision_description,
+      auxiliaryVisionModel: file.auxiliary_vision_model,
     });
 
     it("should generate URLs for multiple S3 files using service key", async () => {
@@ -1184,6 +1227,8 @@ describe("s3Actions", () => {
         size: 1024,
         file_token_size: 100,
         is_attached: true,
+        auxiliary_vision_description: "Cached screenshot description",
+        auxiliary_vision_model: "google/gemini-3.6-flash",
         _creationTime: Date.now(),
       };
 

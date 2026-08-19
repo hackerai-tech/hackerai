@@ -1,0 +1,187 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: HackerAI Lambda MicroVM image build and runtime prerequisites
+
+Parameters:
+  GitHubRepository:
+    Type: String
+    Default: hackerai-tech/hackerai
+    Description: GitHub owner/repository allowed to publish MicroVM images
+  GitHubEnvironment:
+    Type: String
+    Default: aws-lambda-microvm-production
+    Description: Protected GitHub environment allowed to publish MicroVM images
+Resources:
+  ArtifactBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  MicrovmBuildRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+              - sts:TagSession
+      Policies:
+        - PolicyName: ReadArtifactsAndWriteBuildLogs
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: s3:GetObject
+                Resource: !Sub "${ArtifactBucket.Arn}/*"
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: "*"
+
+  MicrovmRuntimePolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      Description: Run and manage HackerAI Lambda MicroVM sessions
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - lambda:RunMicrovm
+              - lambda:CreateMicrovmAuthToken
+              - lambda:GetMicrovm
+              - lambda:ListMicrovms
+              - lambda:ResumeMicrovm
+              - lambda:SuspendMicrovm
+              - lambda:TerminateMicrovm
+            Resource: "*"
+          - Effect: Allow
+            Action: lambda:PassNetworkConnector
+            # AWS does not currently support resource-level permissions for
+            # PassNetworkConnector. Keep the wildcard isolated to this one
+            # permission-only action.
+            Resource: "*"
+          - Effect: Allow
+            Action: iam:PassRole
+            Resource: !GetAtt MicrovmExecutionRole.Arn
+
+  MicrovmExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+              - sts:TagSession
+      Policies:
+        - PolicyName: WriteRuntimeLogs
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: logs:CreateLogGroup
+                Resource: !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/microvms/hackerai-cloud-agent"
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/microvms/hackerai-cloud-agent:log-stream:*"
+
+  MicrovmDeployerPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      Description: Build and publish HackerAI Lambda MicroVM images
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - s3:PutObject
+              - s3:GetObject
+            Resource: !Sub "${ArtifactBucket.Arn}/*"
+          - Effect: Allow
+            Action:
+              - lambda:CreateMicrovmImage
+              - lambda:UpdateMicrovmImage
+              - lambda:GetMicrovmImage
+              - lambda:GetMicrovmImageVersion
+              - lambda:ListMicrovmImages
+              - lambda:ListMicrovmImageVersions
+              - lambda:ListMicrovmImageBuilds
+              - lambda:ListManagedMicrovmImages
+              - lambda:ListManagedMicrovmImageVersions
+              - lambda:TagResource
+              - lambda:UntagResource
+            Resource: "*"
+          - Effect: Allow
+            Action: lambda:PassNetworkConnector
+            # AWS does not currently support resource-level permissions for
+            # PassNetworkConnector. Keep the wildcard isolated to this one
+            # permission-only action.
+            Resource: "*"
+          - Effect: Allow
+            Action: iam:PassRole
+            Resource: !GetAtt MicrovmBuildRole.Arn
+
+  GitHubActionsOidcProvider:
+    Type: AWS::IAM::OIDCProvider
+    Properties:
+      Url: https://token.actions.githubusercontent.com
+      ClientIdList:
+        - sts.amazonaws.com
+      Tags:
+        - Key: application
+          Value: hackerai
+
+  GitHubMicrovmReleaseRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Description: Publish and smoke-test HackerAI Lambda MicroVM images from GitHub Actions
+      MaxSessionDuration: 3600
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !Ref GitHubActionsOidcProvider
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                "token.actions.githubusercontent.com:aud": sts.amazonaws.com
+                "token.actions.githubusercontent.com:sub": !Sub "repo:${GitHubRepository}:environment:${GitHubEnvironment}"
+      ManagedPolicyArns:
+        - !Ref MicrovmDeployerPolicy
+        - !Ref MicrovmRuntimePolicy
+
+Outputs:
+  ArtifactBucketName:
+    Value: !Ref ArtifactBucket
+  BuildRoleArn:
+    Value: !GetAtt MicrovmBuildRole.Arn
+  RuntimePolicyArn:
+    Value: !Ref MicrovmRuntimePolicy
+  ExecutionRoleArn:
+    Value: !GetAtt MicrovmExecutionRole.Arn
+  DeployerPolicyArn:
+    Value: !Ref MicrovmDeployerPolicy
+  GitHubReleaseRoleArn:
+    Value: !GetAtt GitHubMicrovmReleaseRole.Arn

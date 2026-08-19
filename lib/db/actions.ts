@@ -840,10 +840,33 @@ export async function fenceAndGetActiveAgentResourcesForUser({
       }
 
       if (result.isDone) {
-        const resources = [...resourcesByChatId.values()];
+        const activeSubagents = await getConvexClient().query(
+          api.subagents.listActiveForUserBackend,
+          {
+            serviceKey,
+            userId,
+            limit: MAX_ACTIVE_AGENT_RESOURCES_TO_RETURN,
+          },
+        );
+        const resources = [
+          ...resourcesByChatId.values(),
+          ...activeSubagents.runs.flatMap(
+            (child: { chat_id: string; trigger_run_id?: string }) =>
+              child.trigger_run_id
+                ? [
+                    {
+                      chatId: child.chat_id,
+                      triggerRunId: child.trigger_run_id,
+                    },
+                  ]
+                : [],
+          ),
+        ];
         return {
           resources: resources.slice(0, MAX_ACTIVE_AGENT_RESOURCES_TO_RETURN),
-          hasMore: resources.length > MAX_ACTIVE_AGENT_RESOURCES_TO_RETURN,
+          hasMore:
+            activeSubagents.hasMore ||
+            resources.length > MAX_ACTIVE_AGENT_RESOURCES_TO_RETURN,
         };
       }
 

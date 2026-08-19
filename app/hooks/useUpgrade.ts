@@ -7,10 +7,16 @@ import {
   newCheckoutAttemptId,
 } from "@/lib/analytics/client";
 import {
+  PAID_FUNNEL_EVENTS,
   planLookupKeyToBillingInterval,
   planLookupKeyToTier,
   type PaidFunnelPlan,
 } from "@/lib/analytics/paid-funnel";
+import {
+  CHECKOUT_NAVIGATION_GUARD_WINDOW_MS,
+  getRecentCheckoutNavigation,
+  rememberCheckoutNavigation,
+} from "@/lib/billing/checkout-navigation-guard";
 
 // Keep a tab's upgrade ownership across pricing dialog remounts. Server routes
 // remain authoritative across page loads and tabs, including open-session reuse.
@@ -44,13 +50,41 @@ export const useUpgrade = () => {
       return;
     }
 
+    const selectedPlan = planKey || "pro-monthly-plan";
+    if (!currentSubscription || currentSubscription === "free") {
+      const recentNavigation = getRecentCheckoutNavigation({
+        plan: selectedPlan,
+      });
+      if (recentNavigation) {
+        captureAuthenticatedEvent(
+          PAID_FUNNEL_EVENTS.checkoutRedirectSuppressed,
+          {
+            checkout_attempt_id: recentNavigation.attemptId,
+            plan: selectedPlan,
+            from_tier: currentSubscription ?? "free",
+            to_tier: planLookupKeyToTier(selectedPlan),
+            billing_interval: planLookupKeyToBillingInterval(selectedPlan),
+            surface: analyticsContext.surface,
+            source: analyticsContext.source,
+            reason: analyticsContext.reason,
+            limit_type: analyticsContext.limit_type,
+            suppression_reason: "recent_navigation",
+            guard_window_ms: CHECKOUT_NAVIGATION_GUARD_WINDOW_MS,
+          },
+        );
+        toast.info("Checkout is already opening", {
+          description: "Wait a moment before trying again.",
+        });
+        return;
+      }
+    }
+
     upgradeInFlight = true;
     setUpgradeLoading(true);
 
     let navigationStarted = false;
 
     try {
-      const selectedPlan = planKey || "pro-monthly-plan";
       const checkoutAttemptId = newCheckoutAttemptId();
       const toTier = planLookupKeyToTier(selectedPlan);
       const billingInterval = planLookupKeyToBillingInterval(selectedPlan);
@@ -115,6 +149,12 @@ export const useUpgrade = () => {
         const { error, url } = data;
 
         if (url) {
+          window.location.href = url;
+          rememberCheckoutNavigation({
+            attemptId: checkoutAttemptId,
+            plan: selectedPlan,
+            startedAt: Date.now(),
+          });
           captureAuthenticatedEvent("checkout_redirected", {
             checkout_attempt_id: checkoutAttemptId,
             plan: selectedPlan,
@@ -128,7 +168,6 @@ export const useUpgrade = () => {
             limit_type: analyticsContext.limit_type,
             checkout_type: "new_subscription",
           });
-          window.location.href = url;
           navigationStarted = true;
           return;
         }

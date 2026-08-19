@@ -238,7 +238,7 @@ export const POST = async (req: NextRequest) => {
     const fromTier = paidFunnelTierFromUnknown(body?.fromTier);
     const posthogSessionId = req.headers.get("x-posthog-session-id");
     // Get user ID and subscription state from authenticated session
-    const { userId, subscription, freeQuotaSubject } =
+    const { userId, subscription, organizationId, freeQuotaSubject } =
       await getUserIDAndPro(req);
 
     // Get user details from WorkOS to create a personal organization.
@@ -330,12 +330,33 @@ export const POST = async (req: NextRequest) => {
       await workos.userManagement.listOrganizationMemberships({
         userId,
         statuses: ["active"],
+        ...(organizationId && { organizationId }),
       });
 
     let organization;
 
+    if (organizationId && existingMemberships.data.length === 0) {
+      return json(
+        {
+          error: "Select an active organization before subscribing",
+          code: "organization_selection_required",
+        },
+        { status: 409 },
+      );
+    }
+
     if (existingMemberships.data && existingMemberships.data.length > 0) {
-      // User already has an organization, use the first one
+      // The authenticated active organization scopes multi-organization users.
+      // Without one, only a single unambiguous membership is safe to select.
+      if (!organizationId && existingMemberships.data.length > 1) {
+        return json(
+          {
+            error: "Select an active organization before subscribing",
+            code: "organization_selection_required",
+          },
+          { status: 409 },
+        );
+      }
       const membership = existingMemberships.data[0];
       if (!canManageOrganizationBilling(membership)) {
         return json(

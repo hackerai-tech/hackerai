@@ -1,4 +1,10 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import { describe, expect, it, jest } from "@jest/globals";
 
 jest.mock("@/components/ui/with-tooltip", () => ({
@@ -64,6 +70,46 @@ describe("MessageActions editing", () => {
     fireEvent.click(screen.getByRole("button", { name: "Edit message" }));
 
     expect(onEdit).toHaveBeenCalledTimes(1);
+  });
+
+  it("clears the copied-state timeout when the actions unmount", async () => {
+    jest.useFakeTimers();
+    const writeText = jest.fn<any>().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText },
+    });
+    const consoleError = jest
+      .spyOn(console, "error")
+      .mockImplementation(() => {});
+
+    const { unmount } = render(
+      <MessageActions
+        messageText="Answer"
+        isUser={false}
+        isLastAssistantMessage={false}
+        canRegenerate={false}
+        onRegenerate={jest.fn()}
+        onEdit={jest.fn()}
+        canEdit={false}
+        isHovered
+        isEditing={false}
+        status="ready"
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Copy message" }));
+    await act(async () => Promise.resolve());
+    expect(writeText).toHaveBeenCalledWith("Answer");
+    const pendingTimersAfterCopy = jest.getTimerCount();
+    expect(pendingTimersAfterCopy).toBeGreaterThan(0);
+    unmount();
+    expect(jest.getTimerCount()).toBe(pendingTimersAfterCopy - 1);
+    act(() => jest.runOnlyPendingTimers());
+
+    expect(consoleError).not.toHaveBeenCalled();
+    consoleError.mockRestore();
+    jest.useRealTimers();
   });
 });
 

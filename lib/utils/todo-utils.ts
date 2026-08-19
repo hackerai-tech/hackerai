@@ -91,6 +91,50 @@ export const dedupeTodosById = <T extends { id: string }>(
   return deduped.reverse();
 };
 
+const normalizeTodoContentForDeduplication = (content: string): string =>
+  content.normalize("NFKC").trim().replace(/\s+/g, " ").toLowerCase();
+
+export const dedupeNewAssistantTodosByContent = <T extends TodoLike>(
+  todos: ReadonlyArray<T>,
+  options: {
+    existingTodoIds?: ReadonlySet<string>;
+    manualTodos?: ReadonlyArray<Todo>;
+  } = {},
+): { todos: T[]; skippedTodoIds: string[] } => {
+  const existingTodoIds = options.existingTodoIds ?? new Set<string>();
+  const seenContent = new Set(
+    (options.manualTodos ?? []).map((todo) =>
+      normalizeTodoContentForDeduplication(todo.content),
+    ),
+  );
+  const deduped: T[] = [];
+  const skippedTodoIds: string[] = [];
+
+  for (const todo of todos) {
+    if (
+      existingTodoIds.has(todo.id) ||
+      typeof todo.content !== "string" ||
+      todo.content.trim() === ""
+    ) {
+      deduped.push(todo);
+      continue;
+    }
+
+    const normalizedContent = normalizeTodoContentForDeduplication(
+      todo.content,
+    );
+    if (seenContent.has(normalizedContent)) {
+      skippedTodoIds.push(todo.id);
+      continue;
+    }
+
+    seenContent.add(normalizedContent);
+    deduped.push(todo);
+  }
+
+  return { todos: deduped, skippedTodoIds };
+};
+
 export interface ApplyTodoWriteUpdateOptions {
   currentTodos: Todo[];
   incomingTodos: ReadonlyArray<TodoLike>;

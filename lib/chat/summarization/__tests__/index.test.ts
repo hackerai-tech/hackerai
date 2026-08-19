@@ -39,7 +39,7 @@ jest.doMock("@/lib/db/actions", () => ({
   saveChatSummary: mockSaveChatSummary,
 }));
 jest.doMock("@/lib/ai/providers", () => ({
-  GROK_4_5_SLUG: "x-ai/grok-4.5",
+  GROK_4_5_SLUG: "x-ai/grok-4.6",
   KIMI_K3_SLUG: "moonshotai/kimi-k3",
   myProvider: {
     languageModel: mockProviderLanguageModel,
@@ -1036,7 +1036,7 @@ describe("checkAndSummarizeIfNeeded", () => {
         openrouter: {
           user: "user_123",
           reasoning: { enabled: false },
-          models: ["x-ai/grok-4.5", "moonshotai/kimi-k3"],
+          models: ["x-ai/grok-4.6", "moonshotai/kimi-k3"],
         },
       },
     );

@@ -101,7 +101,11 @@ export const createAgentCancelPost =
           reason: "stale_run",
         });
         return NextResponse.json(
-          { canceled: false, reason: "stale_run" },
+          {
+            canceled: false,
+            reason: "stale_run",
+            activeTriggerRunId: runId ?? null,
+          },
           { status: 409 },
         );
       }

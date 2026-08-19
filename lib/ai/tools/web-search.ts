@@ -14,6 +14,7 @@ import {
 import { reportToolFailure } from "./tool-failure";
 import {
   PERPLEXITY_QUERY_MAX_LENGTH,
+  createWebSearchToolSchema,
   webSearchTool,
   type WebSearchToolInput,
 } from "./schemas";
@@ -186,6 +187,9 @@ export const createWebSearch = (context: ToolContext) => {
 
   return tool({
     ...webSearchTool,
+    inputSchema: createWebSearchToolSchema({
+      modelName: context.getCurrentModelName?.() ?? context.modelName,
+    }).inputSchema,
     execute: async (
       { queries: rawQueries, time }: WebSearchToolInput,
       { abortSignal },

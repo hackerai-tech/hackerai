@@ -21,6 +21,7 @@ import {
 import { getPlatformDisplayName, escapeShellValue } from "./platform-utils";
 import type { ConnectionInfo } from "./sandbox-types";
 import { validateDownloadUrl } from "./path-validation";
+import { LocalCommandRelayUnsubscribedError } from "./local-sandbox-errors";
 
 const VALID_MESSAGE_TYPES = new Set([
   "command",
@@ -276,6 +277,8 @@ export class CentrifugoSandbox extends EventEmitter {
     private connectionInfo: ConnectionInfo,
     private config: CentrifugoConfig,
     private workingDirectory?: string,
+    private triggerRunId?: string,
+    private chatId?: string,
   ) {
     super();
   }
@@ -286,6 +289,23 @@ export class CentrifugoSandbox extends EventEmitter {
 
   getConnectionName(): string {
     return this.connectionInfo.name;
+  }
+
+  /** Returns the immutable identity metadata used to bind recovery to this host. */
+  getConnectionInfo(): Readonly<ConnectionInfo> {
+    return {
+      ...this.connectionInfo,
+      ...(this.connectionInfo.osInfo
+        ? { osInfo: { ...this.connectionInfo.osInfo } }
+        : {}),
+      ...(this.connectionInfo.capabilities
+        ? { capabilities: { ...this.connectionInfo.capabilities } }
+        : {}),
+    };
+  }
+
+  getCloudProvider(): "aws-lambda-microvm" | null {
+    return this.connectionInfo.cloudProvider ?? null;
   }
 
   getWorkingDirectory(): string | undefined {
@@ -323,6 +343,9 @@ export class CentrifugoSandbox extends EventEmitter {
    * Get sandbox context for AI based on mode
    */
   getSandboxContext(): string | null {
+    if (this.connectionInfo.cloudProvider === "aws-lambda-microvm") {
+      return null;
+    }
     const { capabilities, osInfo } = this.connectionInfo;
 
     if (osInfo) {
@@ -868,8 +891,8 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
                 settled = true;
                 cleanup();
                 reject(
-                  new Error(
-                    `Local sandbox connection ${this.connectionInfo.connectionId} is not subscribed to the command relay. Reconnect the local runner or Desktop app, wait until it is ready, then try again.`,
+                  new LocalCommandRelayUnsubscribedError(
+                    this.connectionInfo.connectionId,
                   ),
                 );
                 return;
@@ -898,6 +921,8 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
               timeout,
               background: opts?.background,
               displayName: opts?.displayName,
+              chatId: this.chatId,
+              triggerRunId: this.triggerRunId,
               targetConnectionId: this.connectionInfo.connectionId,
             };
 
@@ -1019,7 +1044,10 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
    * Docker containers are always Linux regardless of host OS.
    */
   isWindows(): boolean {
-    return this.connectionInfo.osInfo?.platform === "win32";
+    return (
+      this.connectionInfo.osInfo?.platform === "win32" ||
+      this.shellKind === "cmd"
+    );
   }
 
   /**
@@ -1042,7 +1070,10 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
    * Uses double quotes on Windows (cmd.exe), single quotes on POSIX.
    */
   private escapeForTarget(value: string): string {
-    return escapeShellValue(value, this.connectionInfo.osInfo?.platform);
+    return escapeShellValue(
+      value,
+      this.isWindows() ? "win32" : this.connectionInfo.osInfo?.platform,
+    );
   }
 
   /**
@@ -1071,7 +1102,11 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
    */
   private async detectShell(): Promise<"bash" | "cmd"> {
     if (this.shellKind) return this.shellKind;
-    if (!this.isWindows()) {
+    const declaredPlatform = this.connectionInfo.osInfo?.platform;
+    // Older desktop clients did not publish osInfo. Probe those connections
+    // instead of assuming Bash: a Windows cmd relay would otherwise receive
+    // single-quoted signed URLs and split their `&` query fields into commands.
+    if (declaredPlatform && declaredPlatform !== "win32") {
       this.shellKind = "bash";
       return "bash";
     }

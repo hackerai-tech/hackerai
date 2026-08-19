@@ -18,6 +18,8 @@ import {
 } from "ai";
 import type { Geo } from "@vercel/functions";
 import PostHogClient from "@/app/posthog";
+import { getCloudSandboxProvider } from "@/lib/ai/tools/utils/cloud-sandbox-provider";
+import { evaluateAwsLambdaMicrovmRollout } from "@/lib/experiments/aws-lambda-microvm-rollout";
 
 import { systemPrompt } from "@/lib/system-prompt";
 import { getResumeSection } from "@/lib/system-prompt/resume";
@@ -26,6 +28,12 @@ import { ptySessionManager } from "@/lib/ai/tools/utils/pty-session-manager";
 import { generateTitleFromUserMessageWithWriter } from "@/lib/actions";
 import { createTrackedProvider } from "@/lib/ai/providers";
 import { processChatMessages } from "@/lib/chat/chat-processor";
+import { cacheAuxiliaryVisionDescription } from "@/lib/utils/file-transform-utils";
+import {
+  createAuxiliaryVisionFailoverController,
+  describeImageAttachmentsWithAuxiliaryVision,
+  describeImageWithAuxiliaryVision,
+} from "@/lib/chat/auxiliary-vision";
 import { summarizeIncompleteToolParts } from "@/lib/chat/tool-abort-utils";
 import {
   hasVisibleAssistantContent,
@@ -79,6 +87,7 @@ import {
   updateChat,
   updateChatTitle,
   getUserCustomization,
+  getActiveTriggerRunsForUser,
   setActiveTriggerRun,
   setActiveAgentApprovalPending,
   persistAgentApprovalGrant,
@@ -88,6 +97,8 @@ import {
   prepareForNewStream,
   setConvexUrl,
 } from "@/lib/db/actions";
+import { suspendCloudSandboxesForUser } from "@/lib/ai/tools/utils/cloud-sandbox";
+import { stringifyRedactedError } from "@/lib/utils/error-redaction";
 import { resolveProjectExecutionContext } from "@/lib/chat/project-context";
 import {
   getMaxTokensForSubscription,
@@ -130,11 +141,15 @@ import {
 } from "@/lib/api/agent-endpoints";
 import { phLogger } from "@/lib/posthog/server";
 import {
-  captureProGrok46ExperimentExposure,
-  getActiveProGrok46ExperimentAssignment,
-  getProGrok46ExperimentContext,
-  type ProGrok46ExperimentAssignment,
-} from "@/lib/experiments/pro-grok-46";
+  captureDeepSeekV4Pro0813ExperimentExposure,
+  evaluateDeepSeekV4Pro0813Experiment,
+  getActiveDeepSeekV4Pro0813ExperimentAssignment,
+  getDeepSeekV4Pro0813ExperimentContext,
+} from "@/lib/experiments/deepseek-v4-pro-0813";
+import {
+  createAuxiliaryVisionExposureRecorder,
+  evaluateAuxiliaryDeepSeekVisionFlag,
+} from "@/lib/experiments/auxiliary-deepseek-vision";
 import type { AgentAutoReviewAssignment } from "@/lib/experiments/agent-auto-review";
 import { PAID_FUNNEL_EVENTS } from "@/lib/analytics/paid-funnel";
 import type { AnalyticsRequestContext } from "@/lib/analytics/request-context";
@@ -188,6 +203,7 @@ import {
 import {
   createAgentStream,
   initAgentStreamState,
+  resolveAgentModelForImageToolResults,
   resetServedModelTelemetryForRetry,
   retryUsesDifferentModel,
   type AgentStreamContext,
@@ -242,6 +258,22 @@ import { FREE_AGENT_LONG_RUN_LOCK_TTL_SECONDS } from "@/lib/rate-limit/free-conf
 import { isCentrifugoSandbox } from "@/lib/ai/tools/utils/sandbox-types";
 import { AgentRunTimingTracker } from "@/lib/chat/agent-run-timing";
 import { AgentLongMemoryTelemetry } from "@/lib/chat/agent-long-memory-telemetry";
+import {
+  createCreateAgentTool,
+  createSendMessageToAgentTool,
+  createWaitForAgentsTool,
+} from "@/lib/ai/tools/subagent-tools";
+import {
+  cancelSubagentsForParent,
+  listActiveSubagentsForParent,
+  listActiveSubagentsForUser,
+} from "@/lib/db/subagents";
+import { cancelAgentTriggerRun } from "@/lib/api/agent-approval-session";
+import { settleParentSubagents } from "@/lib/ai/subagents/parent-settlement";
+import {
+  captureSubagentLifecycleEvent,
+  subagentAvailabilityEventUuid,
+} from "@/lib/analytics/subagents";
 import {
   AgentAutoReviewDenialTracker,
   extractAgentAutoReviewAuthorizationContext,
@@ -1977,8 +2009,171 @@ type RunCleanupState = {
   hasObservedUsage: () => boolean;
   chatLogger: ChatLogger | undefined;
   chatId: string;
+  subagentsEnabled: boolean;
+  finishCloudSandboxLifecycle: () => Promise<void>;
 };
 const runCleanupMap = new Map<string, RunCleanupState>();
+
+const settleSubagentsForParentRun = async (
+  parentTriggerRunId: string,
+  reason: string,
+) =>
+  await settleParentSubagents(
+    { parentTriggerRunId, reason },
+    {
+      listActiveSubagents: listActiveSubagentsForParent,
+      cancelPersistedSubagents: cancelSubagentsForParent,
+      cancelTriggerRun: cancelAgentTriggerRun,
+      warn: (message, details) => triggerLogger.warn(message, details),
+    },
+  );
+
+const finishCloudSandboxLifecycleForParentRun = async ({
+  chatId,
+  userId,
+  triggerRunId,
+}: {
+  chatId: string;
+  userId: string;
+  triggerRunId: string;
+}): Promise<void> => {
+  try {
+    await setActiveTriggerRun({
+      chatId,
+      triggerRunId: null,
+      approvalSessionId: null,
+      expectedRunId: triggerRunId,
+      clearApprovalPending: true,
+    });
+  } catch (error) {
+    // Continue to the authoritative user-wide query. If the compare-clear did
+    // not commit, the current run is filtered below while every other run
+    // remains a reason to keep the shared MicroVM active.
+    triggerLogger.warn(
+      "[agent-long] active run clear failed before sandbox wind-down",
+      {
+        event: "agent_cloud_sandbox_active_run_clear_failed",
+        user_id: userId,
+        chat_id: chatId,
+        trigger_run_id: triggerRunId,
+        error: stringifyRedactedError(error),
+      },
+    );
+  }
+
+  try {
+    const activeSubagents = await listActiveSubagentsForParent(triggerRunId);
+    if (activeSubagents.length > 0) {
+      triggerLogger.info(
+        "[agent-long] shared sandbox retained for active subagents",
+        {
+          event: "agent_cloud_sandbox_suspend_skipped",
+          user_id: userId,
+          chat_id: chatId,
+          trigger_run_id: triggerRunId,
+          active_subagent_count: activeSubagents.length,
+          reason: "subagents_active",
+        },
+      );
+      return;
+    }
+  } catch (error) {
+    triggerLogger.error("[agent-long] failed to check active subagents", {
+      event: "agent_cloud_sandbox_active_subagents_check_failed",
+      user_id: userId,
+      chat_id: chatId,
+      trigger_run_id: triggerRunId,
+      error: stringifyRedactedError(error),
+    });
+    return;
+  }
+
+  try {
+    const activeUserSubagents = await listActiveSubagentsForUser(userId);
+    if (activeUserSubagents.runs.length > 0 || activeUserSubagents.hasMore) {
+      triggerLogger.info(
+        "[agent-long] shared sandbox retained for user-wide active subagents",
+        {
+          event: "agent_cloud_sandbox_suspend_skipped",
+          user_id: userId,
+          chat_id: chatId,
+          trigger_run_id: triggerRunId,
+          active_subagent_count: activeUserSubagents.runs.length,
+          active_subagents_truncated: activeUserSubagents.hasMore,
+          reason: "user_subagents_active",
+        },
+      );
+      return;
+    }
+  } catch (error) {
+    triggerLogger.error(
+      "[agent-long] failed to check user-wide active subagents",
+      {
+        event: "agent_cloud_sandbox_user_subagents_check_failed",
+        user_id: userId,
+        chat_id: chatId,
+        trigger_run_id: triggerRunId,
+        error: stringifyRedactedError(error),
+      },
+    );
+    return;
+  }
+
+  let activeRuns: Awaited<ReturnType<typeof getActiveTriggerRunsForUser>>;
+  try {
+    activeRuns = await getActiveTriggerRunsForUser({ userId });
+  } catch (error) {
+    // Do not risk suspending a shared MicroVM when its active users cannot be
+    // established. The platform maximum duration remains the final backstop.
+    triggerLogger.error("[agent-long] failed to check shared sandbox users", {
+      event: "agent_cloud_sandbox_active_runs_check_failed",
+      user_id: userId,
+      chat_id: chatId,
+      trigger_run_id: triggerRunId,
+      error: stringifyRedactedError(error),
+    });
+    return;
+  }
+
+  const otherRuns = activeRuns.runs.filter(
+    (run) => run.triggerRunId !== triggerRunId,
+  );
+  if (otherRuns.length > 0 || activeRuns.hasMore) {
+    triggerLogger.info("[agent-long] shared sandbox retained for active runs", {
+      event: "agent_cloud_sandbox_suspend_skipped",
+      user_id: userId,
+      chat_id: chatId,
+      trigger_run_id: triggerRunId,
+      other_active_run_count: otherRuns.length,
+      active_runs_truncated: activeRuns.hasMore,
+      reason: "other_agent_runs_active",
+    });
+    return;
+  }
+
+  try {
+    const result = await suspendCloudSandboxesForUser(userId);
+    if (result.total > 0) {
+      triggerLogger.info("[agent-long] shared sandbox wind-down completed", {
+        event: "agent_cloud_sandbox_wind_down_completed",
+        user_id: userId,
+        chat_id: chatId,
+        trigger_run_id: triggerRunId,
+        ...result,
+      });
+    }
+  } catch (error) {
+    // AWS suspension already attempts termination as a cost-safety fallback.
+    // Preserve the Agent result while surfacing any double failure for retry.
+    triggerLogger.error("[agent-long] shared sandbox wind-down failed", {
+      event: "agent_cloud_sandbox_wind_down_failed",
+      user_id: userId,
+      chat_id: chatId,
+      trigger_run_id: triggerRunId,
+      error: stringifyRedactedError(error),
+    });
+  }
+};
 
 export type AgentLongPayload = {
   chatId: string;
@@ -1994,7 +2189,6 @@ export type AgentLongPayload = {
   approvalSessionId?: string;
   approvalProtocolVersion?: number;
   selectedModel?: SelectedModel;
-  proGrok46Experiment?: ProGrok46ExperimentAssignment;
   autoReviewAssignment?: AgentAutoReviewAssignment;
   userLocation: Geo;
   isAutoContinue?: boolean;
@@ -2003,6 +2197,7 @@ export type AgentLongPayload = {
   limitRescue?: LimitRescueRequest;
   endpoint?: AgentApiEndpoint;
   analyticsRequestContext?: AnalyticsRequestContext;
+  securityValidationSubagentsEnabled?: boolean;
   convexUrl?: string;
   requestTiming?: {
     routeStartedAt: number;
@@ -2036,7 +2231,13 @@ export const agentLongTask = task({
     if (!cleanup.hasObservedUsage()) {
       await cleanup.usageRefundTracker.refund().catch(() => {});
     }
+    if (cleanup.subagentsEnabled) {
+      await settleSubagentsForParentRun(ctx.run.id, "parent_canceled").catch(
+        () => undefined,
+      );
+    }
     await ptySessionManager.closeAll(cleanup.chatId).catch(() => {});
+    await cleanup.finishCloudSandboxLifecycle();
     await phLogger.flush().catch(() => {});
     runCleanupMap.delete(ctx.run.id);
   },
@@ -2062,7 +2263,6 @@ export const agentLongTask = task({
       approvalSessionId,
       approvalProtocolVersion,
       selectedModel: rawSelectedModelOverride,
-      proGrok46Experiment,
       autoReviewAssignment,
       userLocation,
       isAutoContinue,
@@ -2071,6 +2271,7 @@ export const agentLongTask = task({
       limitRescue,
       endpoint: payloadEndpoint,
       analyticsRequestContext,
+      securityValidationSubagentsEnabled = false,
     } = payload;
     let selectedModelOverride = rawSelectedModelOverride;
     const endpoint = payloadEndpoint ?? LEGACY_AGENT_API_ENDPOINT;
@@ -2190,11 +2391,22 @@ export const agentLongTask = task({
     let streamPiped = false;
     let observedUsageTracker: UsageTracker | undefined;
     const hasObservedUsage = () => !!observedUsageTracker?.hasUsage;
+    let cloudSandboxLifecyclePromise: Promise<void> | undefined;
+    const finishCloudSandboxLifecycle = () => {
+      cloudSandboxLifecyclePromise ??= finishCloudSandboxLifecycleForParentRun({
+        chatId,
+        userId,
+        triggerRunId: ctx.run.id,
+      });
+      return cloudSandboxLifecyclePromise;
+    };
     runCleanupMap.set(ctx.run.id, {
       usageRefundTracker,
       hasObservedUsage,
       chatLogger,
       chatId,
+      subagentsEnabled: securityValidationSubagentsEnabled,
+      finishCloudSandboxLifecycle,
     });
 
     let activeRuntimeBudget: ActiveRuntimeBudget | undefined;
@@ -2238,6 +2450,24 @@ export const agentLongTask = task({
         selectedModelOverride,
         subscription,
       );
+      const posthog = PostHogClient();
+      const [cloudSandboxRollout, auxiliaryVisionAssignment] =
+        await Promise.all([
+          evaluateAwsLambdaMicrovmRollout({
+            posthog,
+            userId,
+            subscription,
+            configuredProvider: getCloudSandboxProvider(),
+            requestId: ctx.run.id,
+          }),
+          evaluateAuxiliaryDeepSeekVisionFlag({
+            posthog,
+            userId,
+            subscription,
+            selectedModelOverride,
+            requestId: ctx.run.id,
+          }),
+        ]);
 
       const baseTodos: Todo[] = getBaseTodosForRequest(
         (chat?.todos as unknown as Todo[]) || [],
@@ -2266,8 +2496,11 @@ export const agentLongTask = task({
         uploadBasePath,
         modelOverride: selectedModelOverride,
         extraUsageAvailable,
-        proModelKey: proGrok46Experiment?.modelKey,
         allowLocalDesktopFiles: sandboxPreference === "desktop",
+        auxiliaryVisionEnabled: !!auxiliaryVisionAssignment,
+        chatId,
+        triggerRunId: ctx.run.id,
+        requestId: ctx.run.id,
       });
 
       if (!processedMessages.length) {
@@ -2280,6 +2513,17 @@ export const agentLongTask = task({
             sandboxPreference,
           }),
         );
+      }
+
+      const deepSeekV4Pro0813Experiment =
+        await evaluateDeepSeekV4Pro0813Experiment({
+          posthog,
+          userId,
+          selectedModel,
+          requestId: ctx.run.id,
+        });
+      if (deepSeekV4Pro0813Experiment) {
+        selectedModel = deepSeekV4Pro0813Experiment.modelKey;
       }
 
       const notesEnabled = userCustomization?.include_notes ?? true;
@@ -2303,7 +2547,6 @@ export const agentLongTask = task({
       };
       chatLogger.setChat(chatLogContext, selectedModel);
 
-      const posthog = PostHogClient();
       chatLogger.getBuilder().setAssistantId(assistantMessageId);
 
       // Wire trigger.dev's abort signal into a local controller.
@@ -2401,6 +2644,27 @@ export const agentLongTask = task({
         PaidDailyFreeAllowanceReservation | undefined;
 
       let streamError: unknown;
+      const auxiliaryVisionFailover = createAuxiliaryVisionFailoverController({
+        enabled: !!auxiliaryVisionAssignment,
+        service: "agent-long",
+        requestId: ctx.run.id,
+        userId,
+        chatId,
+        triggerRunId: ctx.run.id,
+        isUserAborted: () => userStopSignal.signal.aborted,
+      });
+      const captureAuxiliaryVisionExposure =
+        createAuxiliaryVisionExposureRecorder({
+          posthog,
+          userId,
+          chatId,
+          triggerRunId: ctx.run.id,
+          subscription,
+          mode,
+          selectedModelOverride,
+          getSelectedModel: () => selectedModel,
+          assignment: auxiliaryVisionAssignment,
+        });
       const uiStream = createUIMessageStream({
         onError: (error) => {
           streamError ??= error;
@@ -2411,6 +2675,43 @@ export const agentLongTask = task({
         },
         execute: async ({ writer }) => {
           try {
+            const usageTracker = new UsageTracker();
+            observedUsageTracker = usageTracker;
+            const auxiliaryVision = auxiliaryVisionFailover.isEnabled()
+              ? {
+                  isEnabled: auxiliaryVisionFailover.isEnabled,
+                  isAborted: () => userStopSignal.signal.aborted,
+                  describeImage: async (args: {
+                    image: string;
+                    mediaType: string;
+                    filename?: string;
+                    source: "file_view";
+                  }) => {
+                    try {
+                      return await describeImageWithAuxiliaryVision({
+                        ...args,
+                        requestId: ctx.run.id,
+                        userId,
+                        chatId,
+                        triggerRunId: ctx.run.id,
+                        abortSignal: userStopSignal.signal,
+                        onExposure: captureAuxiliaryVisionExposure,
+                        onCost: (costDollars) => {
+                          usageTracker.providerCost += costDollars;
+                          usageTracker.nonModelCost += costDollars;
+                          chatLogger?.getBuilder().addToolCost(costDollars);
+                        },
+                      });
+                    } catch (error) {
+                      auxiliaryVisionFailover.activate({
+                        error,
+                        source: "file_view",
+                      });
+                      throw error;
+                    }
+                  },
+                }
+              : undefined;
             writeAgentLongFastStart(writer, "setup");
             await assertUserCanMakeCostIncurringRequest(userId);
             if (subscription === "free") {
@@ -2516,14 +2817,15 @@ export const agentLongTask = task({
               });
             }
 
-            const activeProGrok46Experiment =
-              getActiveProGrok46ExperimentAssignment(
-                proGrok46Experiment,
+            let activeDeepSeekV4Pro0813Experiment =
+              getActiveDeepSeekV4Pro0813ExperimentAssignment(
+                deepSeekV4Pro0813Experiment,
                 selectedModel,
               );
-            const routingExperimentContext = getProGrok46ExperimentContext(
-              activeProGrok46Experiment,
-            );
+            let routingExperimentContext =
+              getDeepSeekV4Pro0813ExperimentContext(
+                activeDeepSeekV4Pro0813Experiment,
+              );
 
             const freeMonthlyBudgetSnapshot =
               subscription === "free"
@@ -2853,7 +3155,35 @@ export const agentLongTask = task({
               runTimingTracker.measureActiveTime,
               projectContext.workingDirectory,
               ctx.run.id,
+              auxiliaryVision,
+              {
+                cloudSandboxRollout,
+                ...(securityValidationSubagentsEnabled
+                  ? {
+                      additionalTools: (toolContext) => ({
+                        create_agent: createCreateAgentTool(toolContext, {
+                          organizationId,
+                          sandboxPreference,
+                          permissionMode: agentPermissionMode,
+                          subscription,
+                          freeQuotaSubject,
+                        }),
+                        send_message_to_agent:
+                          createSendMessageToAgentTool(toolContext),
+                        wait_for_agents: createWaitForAgentsTool(toolContext),
+                      }),
+                    }
+                  : {}),
+              },
             );
+            if (securityValidationSubagentsEnabled) {
+              captureSubagentLifecycleEvent("subagent_available", {
+                userId,
+                eventUuid: subagentAvailabilityEventUuid(ctx.run.id),
+                parentTriggerRunId: ctx.run.id,
+                profile: "security_validation",
+              });
+            }
             approvalSandboxManager = sandboxManager;
 
             const sendFileMetadataToStream = (
@@ -2955,9 +3285,53 @@ export const agentLongTask = task({
               );
             }
 
+            if (auxiliaryVisionFailover.isEnabled()) {
+              try {
+                processedMessages =
+                  await describeImageAttachmentsWithAuxiliaryVision({
+                    messages: processedMessages,
+                    requestId: ctx.run.id,
+                    userId,
+                    chatId,
+                    triggerRunId: ctx.run.id,
+                    abortSignal: userStopSignal.signal,
+                    onExposure: captureAuxiliaryVisionExposure,
+                    onCost: (costDollars) => {
+                      usageTracker.providerCost += costDollars;
+                      usageTracker.nonModelCost += costDollars;
+                      chatLogger?.getBuilder().addToolCost(costDollars);
+                    },
+                    cacheDescription: cacheAuxiliaryVisionDescription,
+                  });
+              } catch (error) {
+                if (userStopSignal.signal.aborted) throw error;
+                auxiliaryVisionFailover.activate({
+                  error,
+                  source: "attachment",
+                });
+                selectedModel = resolveAgentModelForImageToolResults(
+                  selectedModel,
+                  mode,
+                  true,
+                  selectedModelOverride,
+                  false,
+                );
+                activeDeepSeekV4Pro0813Experiment =
+                  getActiveDeepSeekV4Pro0813ExperimentAssignment(
+                    deepSeekV4Pro0813Experiment,
+                    selectedModel,
+                  );
+                routingExperimentContext =
+                  getDeepSeekV4Pro0813ExperimentContext(
+                    activeDeepSeekV4Pro0813Experiment,
+                  );
+                chatLogger?.setChat(chatLogContext, selectedModel);
+              }
+            }
+
             const titlePromise = isNewChat
               ? generateTitleFromUserMessageWithWriter(
-                  processedMessages,
+                  messagesForProcessing,
                   writer,
                   (title) => updateChatTitle({ chatId, title }),
                 )
@@ -2972,6 +3346,8 @@ export const agentLongTask = task({
               userCustomization,
               sandboxContext,
               agentPermissionMode,
+              securityValidationSubagentsEnabled,
+              cloudSandboxRollout.provider,
             );
             const systemPromptTokens = safeCountTokens(currentSystemPrompt);
 
@@ -3073,8 +3449,6 @@ export const agentLongTask = task({
               trackedProvider.languageModel(fallbackModel).modelId;
             let activeModelName = selectedModel;
 
-            const usageTracker = new UsageTracker();
-            observedUsageTracker = usageTracker;
             let hasRecordedUsage = false;
             let preFallbackCacheRead = 0;
             let preFallbackCacheWrite = 0;
@@ -3415,6 +3789,7 @@ export const agentLongTask = task({
               endpoint,
               userId,
               subscription,
+              selectedModelOverride,
               chatId,
               fileTokens,
               noteInjectionOpts,
@@ -3425,6 +3800,9 @@ export const agentLongTask = task({
               contextUsageOn,
               isReasoningModel: true, // long mode is always agent mode
               platformAuthorized,
+              get auxiliaryVisionEnabled() {
+                return auxiliaryVisionFailover.isEnabled();
+              },
               maxDurationMs: agentLongMaxDurationMs,
               getActiveElapsedTimeMs: runtimeBudget.getElapsedTimeMs,
               writer,
@@ -3494,14 +3872,15 @@ export const agentLongTask = task({
 
             let result;
             try {
-              captureProGrok46ExperimentExposure({
+              captureDeepSeekV4Pro0813ExperimentExposure({
                 posthog,
                 userId,
                 subscription,
                 mode,
+                selectedModelOverride,
                 selectedModel,
                 configuredModel: configuredModelId,
-                assignment: activeProGrok46Experiment,
+                assignment: activeDeepSeekV4Pro0813Experiment,
               });
               result = await createStream(selectedModel);
             } catch (error) {
@@ -4441,7 +4820,12 @@ export const agentLongTask = task({
       runtimeSettlementWatchdog?.dispose();
       memoryTelemetry.dispose();
       activeRuntimeBudget?.dispose();
-      runCleanupMap.delete(ctx.run.id);
+      if (securityValidationSubagentsEnabled) {
+        await settleSubagentsForParentRun(ctx.run.id, "parent_run_ended").catch(
+          () => undefined,
+        );
+      }
+      await ptySessionManager.closeAll(chatId).catch(() => undefined);
       if (payload.approvalSessionId && triggerSessions) {
         try {
           await triggerSessions.close(payload.approvalSessionId, {
@@ -4454,20 +4838,8 @@ export const agentLongTask = task({
           );
         }
       }
-      try {
-        await setActiveTriggerRun({
-          chatId,
-          triggerRunId: null,
-          approvalSessionId: null,
-          expectedRunId: ctx.run.id,
-          clearApprovalPending: true,
-        });
-      } catch (error) {
-        console.error(
-          "[agent-long] failed to clear active_trigger_run_id:",
-          error,
-        );
-      }
+      await finishCloudSandboxLifecycle();
+      runCleanupMap.delete(ctx.run.id);
     }
 
     return { chatId, assistantMessageId };

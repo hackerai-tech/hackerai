@@ -164,6 +164,7 @@ describe("agent cancel route", () => {
     await expect(response.json()).resolves.toEqual({
       canceled: false,
       reason: "stale_run",
+      activeTriggerRunId: "run-2",
     });
     expect(mockLoggerWarn).toHaveBeenCalledWith(
       "Rejected Agent cancellation request",
@@ -181,5 +182,28 @@ describe("agent cancel route", () => {
     expect(mockCloseAgentApprovalSession).not.toHaveBeenCalled();
     expect(mockCancelAgentTriggerRun).not.toHaveBeenCalled();
     expect(mockSetActiveTriggerRun).not.toHaveBeenCalled();
+  });
+
+  it("reports an explicit null when a stale cancellation has no active run", async () => {
+    const { createAgentCancelPost } = await import("../agent-cancel-route");
+    mockGetChatById.mockResolvedValue({
+      user_id: "user-1",
+      active_trigger_run_id: null,
+    } as never);
+
+    const response = await createAgentCancelPost({ endpoint: "/api/agent" })(
+      request({
+        chatId: "chat-1",
+        expectedTriggerRunId: "run-1",
+      }),
+    );
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toEqual({
+      canceled: false,
+      reason: "stale_run",
+      activeTriggerRunId: null,
+    });
+    expect(mockCancelAgentTriggerRun).not.toHaveBeenCalled();
   });
 });

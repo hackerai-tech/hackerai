@@ -16,6 +16,7 @@ import { translateInput } from "./utils/pty-keys";
 import {
   INTERACT_TERMINAL_DEFAULT_WAIT_TIMEOUT_SECONDS,
   INTERACT_TERMINAL_MAX_WAIT_TIMEOUT_SECONDS,
+  createInteractTerminalSessionToolSchema,
   interactTerminalSessionTool,
 } from "./schemas";
 import {
@@ -41,6 +42,7 @@ const MAX_AUTO_REVIEW_TERMINAL_OUTPUT_CHARS = 6_000;
 
 export const createInteractTerminalSession = (context: ToolContext) => {
   const { writer, chatId, ptySessionManager } = context;
+  const ptyScopeId = context.ptyScopeId ?? chatId;
   const measureTerminalWait = <T>(operation: () => Promise<T>): Promise<T> =>
     context.measureAgentActiveTime
       ? context.measureAgentActiveTime("terminal_wait", operation)
@@ -64,6 +66,9 @@ export const createInteractTerminalSession = (context: ToolContext) => {
 
   return tool({
     ...interactTerminalSessionTool,
+    inputSchema: createInteractTerminalSessionToolSchema({
+      modelName: context.getCurrentModelName?.() ?? context.modelName,
+    }).inputSchema,
     execute: async (
       {
         session: sessionId,
@@ -132,7 +137,7 @@ export const createInteractTerminalSession = (context: ToolContext) => {
             error: errorResult(`action=${actionName} requires \`session\`.`),
           };
         }
-        const found = ptySessionManager.get(chatId, sid);
+        const found = ptySessionManager.get(ptyScopeId, sid);
         if (!found) {
           return {
             error: errorResult(
@@ -499,9 +504,9 @@ export const createInteractTerminalSession = (context: ToolContext) => {
         // in both the agent transcript and the sidebar.
         const exitPromise = session.handle.exited;
         try {
-          await ptySessionManager.close(chatId, session.sessionId);
+          await ptySessionManager.close(ptyScopeId, session.sessionId);
         } catch (err) {
-          const retained = ptySessionManager.get(chatId, session.sessionId);
+          const retained = ptySessionManager.get(ptyScopeId, session.sessionId);
           return errorResult(
             `Failed to kill session ${sessionId}: ${err instanceof Error ? err.message : String(err)}. ${retained ? "The session was retained so cleanup can be retried." : "The bounded cleanup limit was reached, so local session tracking was removed."}`,
           );

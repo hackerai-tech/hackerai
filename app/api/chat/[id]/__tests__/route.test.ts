@@ -7,6 +7,7 @@ const mockDeleteChatForBackend = jest.fn();
 const mockCancelAgentTriggerRun = jest.fn();
 const mockCloseAgentApprovalSession = jest.fn();
 const mockAssertUserCanAccessChatHistory = jest.fn();
+const mockCancelSubagentsForChatDeletion = jest.fn();
 
 jest.mock("next/server", () => ({
   NextResponse: class MockNextResponse {
@@ -46,6 +47,10 @@ jest.mock("@/lib/auth/get-user-id", () => ({
 jest.mock("@/lib/db/actions", () => ({
   getChatById: mockGetChatById,
   deleteChatForBackend: mockDeleteChatForBackend,
+}));
+
+jest.mock("@/lib/db/subagents", () => ({
+  cancelSubagentsForChatDeletion: mockCancelSubagentsForChatDeletion,
 }));
 
 jest.mock("@/lib/suspensions", () => ({
@@ -89,6 +94,10 @@ describe("DELETE /api/chat/[id]", () => {
     mockCancelAgentTriggerRun.mockResolvedValue(true as never);
     mockCloseAgentApprovalSession.mockResolvedValue(true as never);
     mockDeleteChatForBackend.mockResolvedValue("deleted" as never);
+    mockCancelSubagentsForChatDeletion.mockResolvedValue({
+      triggerRunIds: [],
+      hasMore: false,
+    } as never);
   });
 
   afterEach(() => {
@@ -130,8 +139,33 @@ describe("DELETE /api/chat/[id]", () => {
       expectedTriggerRunId: "run-1",
       expectedApprovalSessionId: "approval-session-1",
     });
+    expect(mockCancelSubagentsForChatDeletion).toHaveBeenCalledWith(
+      "chat-1",
+      "user-1",
+      "chat_deleted",
+    );
     expect(calls.slice(0, 2).sort()).toEqual(["cancel", "close"]);
     expect(calls[2]).toBe("delete");
+  });
+
+  it("cancels child Trigger runs before deleting their persisted records", async () => {
+    const { DELETE } = await import("../route");
+    mockCancelSubagentsForChatDeletion.mockResolvedValue({
+      triggerRunIds: ["child-run-1"],
+      hasMore: false,
+    } as never);
+
+    const response = await DELETE(request, paramsFor());
+
+    expect(response.status).toBe(200);
+    expect(mockCancelAgentTriggerRun).toHaveBeenCalledWith("run-1");
+    expect(mockCancelAgentTriggerRun).toHaveBeenCalledWith("child-run-1");
+    expect(
+      mockCancelSubagentsForChatDeletion.mock.invocationCallOrder[0],
+    ).toBeLessThan(mockDeleteChatForBackend.mock.invocationCallOrder[0]);
+    expect(mockCancelAgentTriggerRun.mock.invocationCallOrder[1]).toBeLessThan(
+      mockDeleteChatForBackend.mock.invocationCallOrder[0],
+    );
   });
 
   it("does not delete when Trigger cleanup fails", async () => {
@@ -143,6 +177,20 @@ describe("DELETE /api/chat/[id]", () => {
     const response = await DELETE(request, paramsFor());
 
     expect(response.status).toBe(500);
+    expect(mockDeleteChatForBackend).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when child cancellation exceeds the safe batch", async () => {
+    const { DELETE } = await import("../route");
+    mockCancelSubagentsForChatDeletion.mockResolvedValue({
+      triggerRunIds: [],
+      hasMore: true,
+    } as never);
+
+    const response = await DELETE(request, paramsFor());
+
+    expect(response.status).toBe(409);
+    expect(mockCancelAgentTriggerRun).not.toHaveBeenCalled();
     expect(mockDeleteChatForBackend).not.toHaveBeenCalled();
   });
 

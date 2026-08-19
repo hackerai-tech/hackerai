@@ -25,7 +25,7 @@ You'll need the following accounts:
 
 - [OpenRouter](https://openrouter.ai/) - AI model provider
 - [OpenAI](https://platform.openai.com/) - Content moderation
-- [E2B](https://e2b.dev/) - Sandbox environment for secure code execution in agent mode
+- [E2B](https://e2b.dev/) or [AWS Lambda MicroVMs](https://docs.aws.amazon.com/lambda/latest/dg/lambda-microvms-guide.html) - Isolated cloud execution in Agent mode
 - [Convex](https://www.convex.dev/) - Database and backend
 - [WorkOS](https://workos.com/) - Authentication and user management
 - [Trigger.dev](https://trigger.dev/) - Required durable runtime for agent tasks
@@ -89,7 +89,7 @@ To use the agent locally:
 2. In the Trigger.dev dashboard → your project → **Environment Variables**,
    add the env vars the task needs to run (these live on the worker, not on
    Vercel): `NEXT_PUBLIC_CONVEX_URL`, `CONVEX_SERVICE_ROLE_KEY`,
-   `OPENROUTER_API_KEY`, `OPENAI_API_KEY`, `E2B_API_KEY`, plus any keys you use
+   `OPENROUTER_API_KEY`, `OPENAI_API_KEY`, one cloud sandbox provider, plus any keys you use
    (`PERPLEXITY_API_KEY`, `JINA_API_KEY`, S3, etc.).
 3. Start the worker in a third terminal:
 

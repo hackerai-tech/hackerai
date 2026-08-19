@@ -25,10 +25,10 @@ import {
 import { stripOpenRouterReasoningMetadataFromMessages } from "@/lib/chat/provider-metadata-sanitizer";
 /**
  * Get maximum steps allowed for a request.
- * Agent mode: 300 steps. Ask mode: 15 steps (free users only).
+ * Agent mode: 500 steps. Ask mode: 15 steps (free users only).
  */
 export const getMaxStepsForUser = (mode: ChatMode): number => {
-  if (isAgentMode(mode)) return 300;
+  if (isAgentMode(mode)) return 500;
   return 15;
 };
 
@@ -37,11 +37,11 @@ export const getMaxStepsForUser = (mode: ChatMode): number => {
  * @param mode - Chat mode (ask or agent)
  * @param hasImageAttachment - Whether any message has an image attachment.
  * @param hasPdfAttachment - Whether any message has a PDF attachment.
- *   Paid ASK on the Standard/auto route normally uses DeepSeek V4 Pro
- *   (text-only); image and PDF prompts promote to Grok 4.5. Paid Agent
- *   Auto/Standard routes use DeepSeek V4 Pro for text-only prompts and Grok
- *   4.5 when provider-visible media is attached. HackerAI Pro uses Grok 4.5
- *   for both text and vision; its GLM 5.2 fallback is configured downstream.
+ *   Paid Auto/Standard routes use DeepSeek V4 Flash 0731 for text/PDF prompts,
+ *   Pro uses DeepSeek V4 Pro 0813, and Max uses Grok 4.6. In the control route,
+ *   images promote Auto and Standard to Grok 4.5 with medium reasoning while
+ *   Pro uses high reasoning. The auxiliary route describes images as text and
+ *   keeps DeepSeek active. PDFs stay on DeepSeek and are parsed by OpenRouter.
  * @returns Model name to use
  */
 export function selectModel(
@@ -49,10 +49,10 @@ export function selectModel(
   subscription: SubscriptionTier,
   selectedModel?: SelectedModel,
   hasImageAttachment?: boolean,
-  hasPdfAttachment?: boolean,
+  _hasPdfAttachment?: boolean,
   options: {
     extraUsageAvailable?: boolean;
-    proModelKey?: "model-grok-4.5-pro" | "model-grok-4.6-pro";
+    auxiliaryVisionEnabled?: boolean;
   } = {},
 ): ModelName {
   const isAgent = isAgentMode(mode);
@@ -61,25 +61,24 @@ export function selectModel(
     subscription,
     options,
   );
-  // DeepSeek routes are text-only, so image/PDF prompts promote to a
-  // media-capable route unless the selected tier intentionally uses a
-  // multimodal/file-capable model such as Grok, Kimi, or Opus.
+  // In control, DeepSeek image prompts promote to a media-capable route. The
+  // auxiliary treatment replaces images with descriptions before inference.
+  // PDFs remain on DeepSeek via OpenRouter's file parser in both routes.
   const isFreeAsk = !isAgent && subscription === "free";
-  const hasAskImage = !isAgent && !!hasImageAttachment;
-  const hasAskPdf = !isAgent && !!hasPdfAttachment;
-  const hasProviderMedia = !!hasImageAttachment || !!hasPdfAttachment;
-  const paidAskMediaModel: ModelName = hasAskPdf
+  const hasAskImage =
+    !isAgent && !!hasImageAttachment && !options.auxiliaryVisionEnabled;
+  const hasProviderImage =
+    !!hasImageAttachment && !options.auxiliaryVisionEnabled;
+  const paidAskMediaModel: ModelName = hasAskImage
     ? "model-grok-4.5"
-    : hasAskImage
-      ? "ask-model"
-      : "model-deepseek-v4-pro";
+    : "model-deepseek-v4-flash-0731";
 
   const autoModel: ModelName = isAgent
     ? subscription === "free"
       ? "agent-model-free"
-      : hasProviderMedia
-        ? "agent-model"
-        : "model-deepseek-v4-pro"
+      : hasProviderImage
+        ? "model-grok-4.5"
+        : "model-deepseek-v4-flash-0731"
     : isFreeAsk
       ? "ask-model-free"
       : paidAskMediaModel;
@@ -98,16 +97,13 @@ export function selectModel(
   // any UI that reads `getModelDisplayName` shows the picked model rather than
   // the auto-router label.
   if (allowedSelectedModel === "hackerai-standard") {
-    if (isAgent) {
-      return hasProviderMedia ? "model-grok-4.5" : "model-deepseek-v4-pro";
-    }
-    return hasAskImage || hasAskPdf
-      ? "model-grok-4.5"
-      : "model-deepseek-v4-pro";
+    return hasProviderImage ? "model-grok-4.5" : "model-deepseek-v4-flash-0731";
   }
 
   if (allowedSelectedModel === "hackerai-pro") {
-    return options.proModelKey ?? "model-grok-4.5-pro";
+    return hasProviderImage
+      ? "model-grok-4.5-pro"
+      : "model-deepseek-v4-pro-0813";
   }
 
   const providerKey = resolveTierToProviderKey(allowedSelectedModel, mode);
@@ -115,8 +111,7 @@ export function selectModel(
 }
 
 /**
- * Media file parts used by selectModel to decide whether the text-only
- * DeepSeek ask route is viable.
+ * Media file parts used by selectModel and OpenRouter PDF parser setup.
  */
 function getMediaAttachmentRouting(messages: UIMessage[]): {
   hasImage: boolean;
@@ -649,8 +644,11 @@ export async function processChatMessages({
   uploadBasePath,
   modelOverride,
   extraUsageAvailable = false,
-  proModelKey,
   allowLocalDesktopFiles = false,
+  auxiliaryVisionEnabled = false,
+  chatId,
+  triggerRunId,
+  requestId,
 }: {
   messages: UIMessage[];
   mode: ChatMode;
@@ -659,8 +657,11 @@ export async function processChatMessages({
   uploadBasePath?: string;
   modelOverride?: SelectedModel;
   extraUsageAvailable?: boolean;
-  proModelKey?: "model-grok-4.5-pro" | "model-grok-4.6-pro";
   allowLocalDesktopFiles?: boolean;
+  auxiliaryVisionEnabled?: boolean;
+  chatId?: string;
+  triggerRunId?: string;
+  requestId?: string;
 }) {
   const messagesWithoutOpenRouterReasoningMetadata =
     stripOpenRouterReasoningMetadataFromMessages(messages);
@@ -685,6 +686,7 @@ export async function processChatMessages({
       uploadBasePath,
       subscription,
       allowLocalDesktopFiles,
+      { chatId, triggerRunId, requestId },
     );
 
   // Fix incomplete tool invocations and reasoning (from interrupted streams) before filtering.
@@ -737,7 +739,7 @@ export async function processChatMessages({
     modelOverride,
     mediaAttachmentRouting.hasImage,
     mediaAttachmentRouting.hasPdf,
-    { extraUsageAvailable, proModelKey },
+    { extraUsageAvailable, auxiliaryVisionEnabled },
   );
 
   // Strip providerMetadata for Anthropic models to prevent cross-model signature errors.

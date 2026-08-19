@@ -1,9 +1,12 @@
-import { Sandbox } from "@e2b/code-interpreter";
 import { getUserIDAndPro } from "@/lib/auth/get-user-id";
 import { NextRequest } from "next/server";
-import { isExpectedMissingResourceCleanupError } from "@/lib/utils/cleanup-errors";
+import { terminateCloudSandboxesForUser } from "@/lib/ai/tools/utils/cloud-sandbox";
+import { getActiveTriggerRunsForUser } from "@/lib/db/actions";
+import { cancelSubagentsForUserDeletion } from "@/lib/db/subagents";
+import { closeAndCancelAgentResources } from "@/lib/api/agent-deletion-cleanup";
 
 export const maxDuration = 60;
+const SANDBOX_DELETION_REASON = "terminal-sandbox-deleted";
 
 export async function POST(req: NextRequest) {
   try {
@@ -24,51 +27,47 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    // List all sandboxes for this user
-    const paginator = Sandbox.list({
-      query: {
-        metadata: {
-          userID: userId,
-        },
-      },
-    });
-
-    const sandboxes = await paginator.nextItems();
-
-    // Kill each sandbox. Treat terminal-state races as success so a refresh,
-    // auto-pause, or concurrent cleanup does not fail the whole request.
-    let killed = 0;
-    let alreadyGone = 0;
-    for (const sandbox of sandboxes) {
-      try {
-        await Sandbox.kill(sandbox.sandboxId);
-        killed++;
-      } catch (error) {
-        if (isExpectedMissingResourceCleanupError(error)) {
-          alreadyGone++;
-          console.debug(
-            `Sandbox ${sandbox.sandboxId} was already gone during delete`,
-            error,
-          );
-          continue;
-        }
-        console.error(`Failed to kill sandbox ${sandbox.sandboxId}:`, error);
-        throw error;
-      }
+    const activeAgentResources = await getActiveTriggerRunsForUser({ userId });
+    if (activeAgentResources.hasMore) {
+      return new Response(
+        JSON.stringify({
+          error:
+            "Too many active Agent runs to stop safely. Please retry deletion.",
+        }),
+        { status: 409, headers: { "Content-Type": "application/json" } },
+      );
     }
 
-    return new Response(
-      JSON.stringify({
-        success: true,
-        total: sandboxes.length,
-        killed,
-        alreadyGone,
-      }),
-      {
-        status: 200,
-        headers: { "Content-Type": "application/json" },
-      },
+    const childCancellation = await cancelSubagentsForUserDeletion(
+      userId,
+      SANDBOX_DELETION_REASON,
     );
+    if (childCancellation.hasMore) {
+      return new Response(
+        JSON.stringify({
+          error:
+            "Too many active validation runs to stop safely. Please retry deletion.",
+        }),
+        { status: 409, headers: { "Content-Type": "application/json" } },
+      );
+    }
+
+    await closeAndCancelAgentResources(
+      [
+        ...activeAgentResources.runs,
+        ...childCancellation.triggerRunIds.map((triggerRunId) => ({
+          chatId: "subagent",
+          triggerRunId,
+        })),
+      ],
+      SANDBOX_DELETION_REASON,
+    );
+    await terminateCloudSandboxesForUser(userId);
+
+    // Cleanup counts and provider details are operational telemetry. A 204 is
+    // sufficient for the client to confirm that the requested deletion
+    // completed without exposing internal sandbox topology.
+    return new Response(null, { status: 204 });
   } catch (error) {
     console.error("Error deleting sandboxes:", error);
     return new Response(

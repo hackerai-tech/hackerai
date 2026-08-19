@@ -1,7 +1,8 @@
-import { Sandbox } from "@e2b/code-interpreter";
 import { Centrifuge, type Subscription } from "centrifuge";
 import type {
+  AnySandbox,
   SandboxBootInfo,
+  SandboxInfo,
   SandboxManager,
   SandboxType,
   SubscriptionTier,
@@ -11,21 +12,31 @@ import {
   serializePromptText,
   type CentrifugoConfig,
 } from "./centrifugo-sandbox";
-import { isCentrifugoSandbox, type ConnectionInfo } from "./sandbox-types";
 import {
-  ensureSandboxConnection,
-  refreshE2BSandboxLeaseBestEffort,
-} from "./sandbox";
+  isAwsLambdaMicrovmSandbox,
+  isCentrifugoSandbox,
+  isE2BSandbox,
+  type ConnectionInfo,
+} from "./sandbox-types";
+import { refreshE2BSandboxLeaseBestEffort } from "./sandbox";
 import { getConvexClient } from "@/lib/db/convex-client";
 import { api } from "@/convex/_generated/api";
 import { SANDBOX_ENVIRONMENT_TOOLS } from "./sandbox-tools";
 import { getPlatformDisplayName } from "./platform-utils";
 import { generateCentrifugoToken } from "@/lib/centrifugo/jwt";
 import { sandboxConnectionChannel } from "@/lib/centrifugo/types";
-import { presenceHasConnectionId } from "@/lib/centrifugo/presence";
+import {
+  LOCAL_SANDBOX_PRESENCE_GRACE_MS,
+  presenceHasConnectionId,
+} from "@/lib/centrifugo/presence";
 import { isExpectedAlreadyGoneCleanupError } from "@/lib/utils/cleanup-errors";
+import {
+  ensureCloudSandboxConnection,
+  type CloudSandboxAcquisitionContext,
+} from "./cloud-sandbox";
+import { getCloudSandboxProvider } from "./cloud-sandbox-provider";
 
-type SandboxInstance = Sandbox | CentrifugoSandbox;
+type SandboxInstance = AnySandbox;
 
 // "e2b" for cloud sandbox, "desktop" for Tauri desktop app, or a connectionId UUID for a specific local connection.
 // Uses `string & {}` to preserve autocomplete for well-known values while allowing arbitrary strings.
@@ -54,7 +65,7 @@ export interface SandboxFallbackInfo {
 // initial readiness check and one reconnect both fail. E2B reset remains
 // connection-only and never kills the shared per-user sandbox.
 const MAX_SANDBOX_HEALTH_FAILURES = 2;
-export const LOCAL_SANDBOX_PRESENCE_GRACE_MS = 30_000;
+export { LOCAL_SANDBOX_PRESENCE_GRACE_MS };
 const LOCAL_SANDBOX_PRESENCE_TIMEOUT_MS = 2_000;
 
 interface PresenceProbeResult {
@@ -67,6 +78,24 @@ interface PresenceProbeResult {
 interface PresenceFilterResult {
   availableConnections: ConnectionInfo[];
   staleConnections: ConnectionInfo[];
+}
+
+/** Requires a full local host identity match before changing connection IDs. */
+export function isSameLocalMachine(
+  current: ConnectionInfo,
+  candidate: ConnectionInfo,
+): boolean {
+  if (!current.osInfo || !candidate.osInfo) return false;
+
+  return (
+    current.name === candidate.name &&
+    current.isDesktop === candidate.isDesktop &&
+    current.cloudProvider === candidate.cloudProvider &&
+    current.osInfo.platform === candidate.osInfo.platform &&
+    current.osInfo.arch === candidate.osInfo.arch &&
+    current.osInfo.release === candidate.osInfo.release &&
+    current.osInfo.hostname === candidate.osInfo.hostname
+  );
 }
 
 const logStructured = (
@@ -242,11 +271,13 @@ export class HybridSandboxManager implements SandboxManager {
     private setSandboxCallback: (sandbox: SandboxInstance) => void,
     private sandboxPreference: SandboxPreference = "e2b",
     private serviceKey: string,
-    initialSandbox?: Sandbox | null,
+    initialSandbox?: AnySandbox | null,
     private subscription?: SubscriptionTier,
     private onBoot?: (info: SandboxBootInfo) => void,
     private workingDirectory?: string,
     private requestId?: string,
+    private chatId?: string,
+    private cloudSandboxContext?: CloudSandboxAcquisitionContext,
   ) {
     this.sandbox = initialSandbox || null;
   }
@@ -339,6 +370,66 @@ export class HybridSandboxManager implements SandboxManager {
       error: lastError instanceof Error ? lastError.message : String(lastError),
     });
     throw lastError;
+  }
+
+  /** Recovers a pre-publish relay failure without switching physical hosts. */
+  async recoverLocalConnection(
+    connectionId: string,
+    reason: "command_relay_unsubscribed",
+  ): Promise<{ sandbox: SandboxInstance }> {
+    if (
+      !this.sandbox ||
+      !isCentrifugoSandbox(this.sandbox) ||
+      this.sandbox.getConnectionId() !== connectionId
+    ) {
+      throw new Error(
+        "The selected local sandbox changed before it could be reconnected. Try the command again.",
+      );
+    }
+
+    const previousConnection = this.sandbox.getConnectionInfo();
+    await this.quarantineLocalConnection(connectionId, "command_unresponsive");
+    await this.resetSandbox(reason);
+
+    const replacement = (await this.listConnections())
+      .filter(
+        (connection) =>
+          connection.connectionId !== connectionId &&
+          connection.capabilities?.commands !== false &&
+          isSameLocalMachine(previousConnection, connection),
+      )
+      .sort((a, b) => (b.lastSeen ?? 0) - (a.lastSeen ?? 0))[0];
+
+    if (!replacement) {
+      logStructured("warn", "local_sandbox_same_machine_recovery_unavailable", {
+        service: this.requestId ? "agent-long" : "chat-handler",
+        request_id: this.requestId ?? process.env.VERCEL_REQUEST_ID ?? null,
+        user_id: this.userID,
+        connection_id: connectionId,
+        reason,
+      });
+      throw new Error(
+        "The selected local sandbox stopped responding. Reconnect it in Remote Control, then try again.",
+      );
+    }
+
+    await this.useCentrifugoConnection(replacement);
+    this.requiredConnectionIdAfterQuarantine = null;
+    if (this.sandboxPreference !== "desktop") {
+      this.sandboxPreference = replacement.connectionId;
+    }
+    this.resetHealthFailures();
+
+    logStructured("warn", "local_sandbox_same_machine_recovered", {
+      service: this.requestId ? "agent-long" : "chat-handler",
+      request_id: this.requestId ?? process.env.VERCEL_REQUEST_ID ?? null,
+      user_id: this.userID,
+      stale_connection_id: connectionId,
+      replacement_connection_id: replacement.connectionId,
+      reason,
+    });
+
+    return { sandbox: this.sandbox! };
   }
 
   /**
@@ -440,9 +531,13 @@ export class HybridSandboxManager implements SandboxManager {
     this.pendingFallbackInfo = info;
   }
 
-  getSandboxInfo(): { type: SandboxType; name?: string } | null {
+  getSandboxInfo(): SandboxInfo | null {
     if (!this.isLocal) {
-      return { type: "e2b" };
+      return {
+        type: "e2b",
+        provider:
+          this.cloudSandboxContext?.provider ?? getCloudSandboxProvider(),
+      };
     }
     const type: SandboxType =
       this.sandboxPreference === "desktop" ? "desktop" : "remote-connection";
@@ -576,7 +671,7 @@ export class HybridSandboxManager implements SandboxManager {
       if (this.subscription === "free") {
         throw new Error("Cloud sandbox requires a paid plan.");
       }
-      return this.getE2BSandbox();
+      return this.getCloudSandbox();
     }
 
     // Check if the preferred connection is available
@@ -634,7 +729,7 @@ export class HybridSandboxManager implements SandboxManager {
       actualSandboxName: "Cloud",
     });
 
-    return this.getE2BSandbox();
+    return this.getCloudSandbox();
   }
 
   private async getPreferredOrFallbackConnection(): Promise<ConnectionInfo | null> {
@@ -670,6 +765,8 @@ export class HybridSandboxManager implements SandboxManager {
       connection,
       centrifugoConfig,
       this.workingDirectory,
+      this.requestId,
+      this.chatId,
     );
     this.isLocal = true;
     this.currentConnectionId = connection.connectionId;
@@ -677,28 +774,27 @@ export class HybridSandboxManager implements SandboxManager {
     this.setSandboxCallback(this.sandbox);
   }
 
-  private async getE2BSandbox(): Promise<{ sandbox: Sandbox }> {
-    if (!this.isLocal && this.sandbox && this.sandbox instanceof Sandbox) {
-      await refreshE2BSandboxLeaseBestEffort(this.sandbox, {
-        source: "hybrid_manager_cache",
-      });
+  private async getCloudSandbox(): Promise<{ sandbox: AnySandbox }> {
+    if (!this.isLocal && this.sandbox) {
+      if (isE2BSandbox(this.sandbox)) {
+        await refreshE2BSandboxLeaseBestEffort(this.sandbox, {
+          source: "hybrid_manager_cache",
+        });
+      }
       return { sandbox: this.sandbox };
     }
 
     await this.closeCurrentSandbox();
-    const result = await ensureSandboxConnection(
-      {
-        userID: this.userID,
-        setSandbox: (sandbox) => {
-          this.sandbox = sandbox;
-          this.setSandboxCallback(sandbox);
-        },
-        onBoot: this.onBoot,
+    const result = await ensureCloudSandboxConnection({
+      userId: this.userID,
+      setSandbox: (sandbox) => {
+        this.sandbox = sandbox;
+        this.setSandboxCallback(sandbox);
       },
-      {
-        initialSandbox: this.isLocal ? null : (this.sandbox as Sandbox | null),
-      },
-    );
+      onBoot: this.onBoot,
+      initialSandbox: this.isLocal ? null : this.sandbox,
+      context: this.cloudSandboxContext,
+    });
 
     this.sandbox = result.sandbox;
     this.isLocal = false;
@@ -711,8 +807,9 @@ export class HybridSandboxManager implements SandboxManager {
 
   setSandbox(sandbox: SandboxInstance): void {
     this.sandbox = sandbox;
-    this.isLocal = isCentrifugoSandbox(sandbox);
-    if (isCentrifugoSandbox(sandbox)) {
+    this.isLocal =
+      isCentrifugoSandbox(sandbox) && !isAwsLambdaMicrovmSandbox(sandbox);
+    if (this.isLocal && isCentrifugoSandbox(sandbox)) {
       this.currentConnectionId = sandbox.getConnectionId();
       this.currentConnectionName = sandbox.getConnectionName();
     } else {

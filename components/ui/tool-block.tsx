@@ -9,6 +9,7 @@ interface ToolBlockProps {
   isClickable?: boolean;
   onClick?: () => void;
   onKeyDown?: (e: React.KeyboardEvent) => void;
+  accessibleLabel?: string;
 }
 
 const ToolBlock: React.FC<ToolBlockProps> = ({
@@ -19,6 +20,7 @@ const ToolBlock: React.FC<ToolBlockProps> = ({
   isClickable = false,
   onClick,
   onKeyDown,
+  accessibleLabel,
 }) => {
   const baseClasses =
     "rounded-[15px] px-[10px] py-[6px] border border-border bg-muted/20 inline-flex max-w-full gap-[4px] items-center relative h-[36px] overflow-hidden";
@@ -35,7 +37,8 @@ const ToolBlock: React.FC<ToolBlockProps> = ({
         tabIndex={isClickable ? 0 : undefined}
         role={isClickable ? "button" : undefined}
         aria-label={
-          isClickable && target ? `Open ${target} in sidebar` : undefined
+          accessibleLabel ??
+          (isClickable && target ? `Open ${target} in sidebar` : undefined)
         }
       >
         <div className="w-[21px] inline-flex items-center flex-shrink-0 text-foreground [&>svg]:h-4 [&>svg]:w-4">

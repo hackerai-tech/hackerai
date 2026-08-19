@@ -9,6 +9,7 @@ import type { PtyParserLogBudget } from "@/lib/ai/tools/utils/pty-output-formatt
 import type { ChatMode, SubscriptionTier } from "./chat";
 import type { CentrifugoSandbox } from "@/lib/ai/tools/utils/centrifugo-sandbox";
 import type { SandboxFallbackInfo } from "@/lib/ai/tools/utils/hybrid-sandbox-manager";
+import type { CloudSandboxProvider } from "@/lib/ai/tools/utils/cloud-sandbox-provider";
 
 // Union type for E2B Sandbox and local CentrifugoSandbox
 export type AnySandbox = Sandbox | CentrifugoSandbox;
@@ -21,6 +22,7 @@ export type SandboxType = "e2b" | "desktop" | "remote-connection";
 export interface SandboxInfo {
   type: SandboxType;
   name?: string;
+  provider?: CloudSandboxProvider;
 }
 
 export interface SandboxManager {
@@ -32,6 +34,11 @@ export interface SandboxManager {
     connectionId: string,
     reason: "command_unresponsive",
   ): Promise<void>;
+  /** Replace a stale relay connection with a live successor for the same machine. */
+  recoverLocalConnection?(
+    connectionId: string,
+    reason: "command_relay_unsubscribed",
+  ): Promise<{ sandbox: AnySandbox }>;
   getSandboxType(toolName: string): SandboxType | undefined;
   getSandboxInfo(): SandboxInfo | null;
   // Optional: only HybridSandboxManager implements this
@@ -139,7 +146,7 @@ export type SandboxResourceMetricsObserver = (
 
 export interface SandboxContext {
   userID: string;
-  setSandbox: (sandbox: Sandbox) => void;
+  setSandbox: (sandbox: AnySandbox) => void;
   /** Called once when ensureSandboxConnection actually does work (creates or reconnects). */
   onBoot?: (info: SandboxBootInfo) => void;
 }
@@ -670,6 +677,8 @@ export interface ToolContext {
   todoManager: TodoManager;
   userID: string;
   chatId: string;
+  /** Isolates child-agent PTYs without changing chat ownership/billing scope. */
+  ptyScopeId?: string;
   assistantMessageId?: string;
   /** Trigger.dev run ID when tools execute inside a durable Agent task. */
   triggerRunId?: string;
@@ -700,4 +709,17 @@ export interface ToolContext {
   measureAgentActiveTime?: AgentActiveTimeMeasurer;
   /** Observes resource metrics already fetched by E2B health checks. */
   onSandboxResourceMetrics?: SandboxResourceMetricsObserver;
+  /** Optional Hermes-style image descriptor for text-only active models. */
+  auxiliaryVision?: {
+    /** Returns false after the request has failed over to direct vision. */
+    isEnabled?: () => boolean;
+    /** Distinguishes a user stop from a descriptor timeout/provider failure. */
+    isAborted?: () => boolean;
+    describeImage: (args: {
+      image: string;
+      mediaType: string;
+      filename?: string;
+      source: "file_view";
+    }) => Promise<{ description: string }>;
+  };
 }

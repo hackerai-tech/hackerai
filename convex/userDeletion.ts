@@ -22,9 +22,12 @@ export const USER_DELETION_TABLE_POLICY = {
     "temp_streams",
     "local_sandbox_tokens",
     "local_sandbox_connections",
+    "cloud_sandbox_sessions",
     "cancellation_reason_details",
     "research_run_members",
     "research_user_profiles",
+    "subagent_messages",
+    "subagent_runs",
   ],
   anonymize: [
     "usage_logs",
@@ -399,6 +402,11 @@ async function cleanupUserDataForUser(
   >(ctx, budget, "local_sandbox_connections", "by_user_id", (q) =>
     q.eq("user_id", userId),
   );
+  const cloudSandboxSessionsBatch = await collectByIndexBatch<
+    Doc<"cloud_sandbox_sessions">
+  >(ctx, budget, "cloud_sandbox_sessions", "by_user_id", (q) =>
+    q.eq("user_id", userId),
+  );
   const extraUsageBatch = await collectByIndexBatch<Doc<"extra_usage">>(
     ctx,
     budget,
@@ -430,7 +438,18 @@ async function cleanupUserDataForUser(
   >(ctx, budget, "research_run_members", "by_user_id", (q) =>
     q.eq("user_id", userId),
   );
-
+  const subagentMessagesBatch = await collectByIndexBatch<
+    Doc<"subagent_messages">
+  >(ctx, budget, "subagent_messages", "by_user_id", (q) =>
+    q.eq("user_id", userId),
+  );
+  const subagentRunsBatch = await collectByIndexBatch<Doc<"subagent_runs">>(
+    ctx,
+    budget,
+    "subagent_runs",
+    "by_user_id",
+    (q) => q.eq("user_id", userId),
+  );
   const deletionBatches = [
     projectsBatch,
     chatsBatch,
@@ -441,11 +460,14 @@ async function cleanupUserDataForUser(
     tempStreamsBatch,
     localSandboxTokensBatch,
     localSandboxConnectionsBatch,
+    cloudSandboxSessionsBatch,
     extraUsageBatch,
     teamMemberUsageBatch,
     cancellationReasonDetailsBatch,
     researchRunMembersBatch,
     researchUserProfilesBatch,
+    subagentMessagesBatch,
+    subagentRunsBatch,
   ];
   stats.hasMore ||= deletionBatches.some((batch) => batch.hasMore);
 
@@ -456,15 +478,21 @@ async function cleanupUserDataForUser(
   const tempStreams = tempStreamsBatch.docs;
   const localSandboxTokens = localSandboxTokensBatch.docs;
   const localSandboxConnections = localSandboxConnectionsBatch.docs;
+  const cloudSandboxSessions = cloudSandboxSessionsBatch.docs;
   const extraUsage = extraUsageBatch.docs;
   const teamMemberUsage = teamMemberUsageBatch.docs;
   const cancellationReasonDetails = cancellationReasonDetailsBatch.docs;
   const researchRunMembers = researchRunMembersBatch.docs;
   const researchUserProfiles = researchUserProfilesBatch.docs;
+  const subagentMessages = subagentMessagesBatch.docs;
+  const subagentRuns = subagentRunsBatch.docs;
 
-  const chatsReadyToDelete = messagesBatch.hasMore
-    ? []
-    : chats.filter((chat) => !incompleteChatIds.has(chat.id));
+  const chatsReadyToDelete =
+    messagesBatch.hasMore ||
+    subagentMessagesBatch.hasMore ||
+    subagentRunsBatch.hasMore
+      ? []
+      : chats.filter((chat) => !incompleteChatIds.has(chat.id));
   if (chatsReadyToDelete.length < chats.length) {
     stats.hasMore = true;
   }
@@ -472,6 +500,8 @@ async function cleanupUserDataForUser(
   await deleteDocs(ctx, stats, "feedback", feedback, mode);
   await deleteDocs(ctx, stats, "messages", messages, mode);
   await deleteDocs(ctx, stats, "chat_summaries", chatSummaries, mode);
+  await deleteDocs(ctx, stats, "subagent_messages", subagentMessages, mode);
+  await deleteDocs(ctx, stats, "subagent_runs", subagentRuns, mode);
   await deleteDocs(ctx, stats, "chats", chatsReadyToDelete, mode);
   await deleteDocs(ctx, stats, "projects", projects, mode);
   await deleteFiles(ctx, stats, files, mode);
@@ -490,6 +520,13 @@ async function cleanupUserDataForUser(
     stats,
     "local_sandbox_connections",
     localSandboxConnections,
+    mode,
+  );
+  await deleteDocs(
+    ctx,
+    stats,
+    "cloud_sandbox_sessions",
+    cloudSandboxSessions,
     mode,
   );
   await deleteDocs(ctx, stats, "extra_usage", extraUsage, mode);

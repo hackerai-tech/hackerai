@@ -330,6 +330,67 @@ describe("Messages virtualized row invalidation", () => {
     );
   });
 
+  it("shows a non-interactive thinking state while a new Agent response waits for its first delta", () => {
+    render(
+      <DataStreamProvider>
+        <Messages
+          chatId="chat-agent-start"
+          messages={messages.slice(0, 1)}
+          setMessages={jest.fn()}
+          onRegenerate={jest.fn()}
+          onRetry={jest.fn()}
+          onEditMessage={jest.fn()}
+          status="submitted"
+          error={null}
+          scrollRef={createRef<HTMLElement>()}
+          contentRef={createRef<HTMLElement>()}
+          isMobile
+          mode="agent"
+        />
+      </DataStreamProvider>,
+    );
+
+    expect(screen.getByTestId("pending-agent-reasoning")).toBeInTheDocument();
+    expect(screen.getByRole("status", { name: "Thinking" })).toHaveTextContent(
+      "Thinking...",
+    );
+    expect(
+      screen.queryByRole("button", { name: "Thinking..." }),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByTestId("reasoning-chevron")).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("status", { name: "Loading" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("keeps the loading indicator while an Agent stream reconnects", () => {
+    render(
+      <DataStreamProvider>
+        <AutoResumeState>
+          <Messages
+            chatId="chat-agent-resume"
+            messages={messages.slice(0, 1)}
+            setMessages={jest.fn()}
+            onRegenerate={jest.fn()}
+            onRetry={jest.fn()}
+            onEditMessage={jest.fn()}
+            status="streaming"
+            error={null}
+            scrollRef={createRef<HTMLElement>()}
+            contentRef={createRef<HTMLElement>()}
+            isMobile
+            mode="agent"
+          />
+        </AutoResumeState>
+      </DataStreamProvider>,
+    );
+
+    expect(
+      screen.queryByTestId("pending-agent-reasoning"),
+    ).not.toBeInTheDocument();
+    expect(screen.getByRole("status", { name: "Loading" })).toBeInTheDocument();
+  });
+
   it("starts tool groups already present on page load collapsed", () => {
     render(
       <DataStreamProvider>
