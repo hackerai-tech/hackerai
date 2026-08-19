@@ -43,8 +43,21 @@ jest.mock("@/lib/analytics/client", () => ({
 }));
 
 jest.mock("../MessagePartHandler", () => ({
-  MessagePartHandler: ({ part }: { part: { text?: string } }) => (
-    <div>{part.text}</div>
+  MessagePartHandler: ({
+    keepLatestReasoningOpenDuringStreaming,
+    part,
+  }: {
+    keepLatestReasoningOpenDuringStreaming?: boolean;
+    part: { text?: string; type: string };
+  }) => (
+    <div
+      data-testid={`part-${part.type}`}
+      data-keep-latest-reasoning-open={
+        keepLatestReasoningOpenDuringStreaming ? "true" : "false"
+      }
+    >
+      {part.text}
+    </div>
   ),
 }));
 
@@ -248,6 +261,77 @@ describe("SubagentsSidebar", () => {
     expect(
       screen.queryByText("Internal worker prompt"),
     ).not.toBeInTheDocument();
+  });
+
+  it("uses the normal Agent activity UI for tool summaries and running reasoning", () => {
+    mockUseQuery.mockImplementation((query, args) => {
+      if (query === "listForParentMessage") return [activeChild];
+      if (query === "getOwned") {
+        return args === "skip" ? undefined : activeChild;
+      }
+      return [
+        {
+          message_id: "subagent-message-activity",
+          sequence: 1,
+          role: "assistant",
+          parts: [
+            { type: "step-start" },
+            {
+              type: "reasoning",
+              state: "done",
+              text: "Planning the checks",
+            },
+            {
+              type: "tool-read_file",
+              toolCallId: "read-1",
+              state: "output-available",
+              input: { path: "/workspace/app.ts" },
+              output: "source",
+            },
+            {
+              type: "tool-web_search",
+              toolCallId: "search-1",
+              state: "output-available",
+              input: { query: "example" },
+              output: { results: [] },
+            },
+            { type: "step-start" },
+            {
+              type: "reasoning",
+              state: "streaming",
+              text: "Reviewing the results",
+            },
+          ],
+          created_at: Date.now(),
+          updated_at: Date.now(),
+        },
+      ];
+    });
+
+    render(
+      <SubagentsSidebar
+        content={{
+          kind: "subagents",
+          parentMessageId: "parent-message",
+          toolCallId: "tool-1",
+          selectedSubagentId: "sa_active",
+        }}
+        closeSidebar={jest.fn()}
+      />,
+    );
+
+    expect(
+      screen.getByRole("button", {
+        name: /read a file, searched the web\. show tool details/i,
+      }),
+    ).toBeVisible();
+    expect(screen.getAllByTestId("part-reasoning")).toHaveLength(2);
+    for (const reasoning of screen.getAllByTestId("part-reasoning")) {
+      expect(reasoning).toHaveAttribute(
+        "data-keep-latest-reasoning-open",
+        "true",
+      );
+    }
   });
 
   it("resolves a later update back to the child creation group", () => {

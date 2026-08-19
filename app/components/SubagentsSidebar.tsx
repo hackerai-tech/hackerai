@@ -18,11 +18,17 @@ import { toast } from "sonner";
 
 import { api } from "@/convex/_generated/api";
 import type { Id } from "@/convex/_generated/dataModel";
-import type { SidebarSubagentOrigin, SidebarSubagents } from "@/types/chat";
+import type {
+  ChatMessage,
+  ChatStatus,
+  SidebarSubagentOrigin,
+  SidebarSubagents,
+} from "@/types/chat";
 import { ToolSidebarOriginProvider } from "@/app/contexts/ToolSidebarOriginContext";
+import { AgentActivityRow } from "./AgentActivityRow";
+import { AgentToolGroupRow } from "./AgentToolGroupRow";
 import { FeedbackInput } from "./FeedbackInput";
 import { MessageActions } from "./MessageActions";
-import { MessagePartHandler } from "./MessagePartHandler";
 import { MemoizedMarkdown } from "./MemoizedMarkdown";
 import { useSubagentRealtime } from "@/app/hooks/useSubagentRealtime";
 import { captureAuthenticatedEvent } from "@/lib/analytics/client";
@@ -33,6 +39,10 @@ import {
 } from "@/lib/ai/subagents/contracts";
 import { toSubagentHandle } from "@/lib/ai/subagents/agent-handle";
 import { extractMessageText } from "@/lib/utils/message-utils";
+import {
+  projectAgentWorkParts,
+  projectAgentWorkTimelineItems,
+} from "./worked-for-parts";
 
 type ChildSummary = {
   subagent_id: string;
@@ -68,6 +78,8 @@ type TranscriptMessage = UIMessage & {
   messageType?: "query" | "instruction" | "information";
   priority?: "low" | "normal" | "high" | "urgent";
 };
+
+const ignoreToolGroupMount = () => undefined;
 
 const isActive = (status: SubagentStatus) =>
   SUBAGENT_ACTIVE_STATUSES.has(status);
@@ -336,6 +348,79 @@ const SubagentMessageActions = memo(function SubagentMessageActions({
   );
 });
 
+const SubagentTranscriptParts = memo(function SubagentTranscriptParts({
+  active,
+  isLastMessage,
+  message,
+  parts,
+}: {
+  active: boolean;
+  isLastMessage: boolean;
+  message: TranscriptMessage;
+  parts: UIMessage["parts"];
+}) {
+  const visibleMessage = useMemo(
+    () => ({ ...message, parts }) as ChatMessage,
+    [message, parts],
+  );
+  const partIndexes = useMemo(() => parts.map((_, index) => index), [parts]);
+  const projection = useMemo(
+    () => projectAgentWorkParts(visibleMessage.parts, partIndexes),
+    [partIndexes, visibleMessage.parts],
+  );
+  const timelineItems = useMemo(
+    () =>
+      projectAgentWorkTimelineItems({
+        activities: projection.activities,
+        messageSettled: !active || !isLastMessage,
+        parts: visibleMessage.parts,
+        workPartIndexes: partIndexes,
+      }),
+    [
+      active,
+      isLastMessage,
+      partIndexes,
+      projection.activities,
+      visibleMessage.parts,
+    ],
+  );
+  const status: ChatStatus = active && isLastMessage ? "streaming" : "ready";
+
+  return timelineItems.map((item) => {
+    if (item.kind === "tool-group") {
+      return (
+        <AgentToolGroupRow
+          key={item.id}
+          activities={item.activities}
+          animateOnMount={false}
+          groupId={`${message.id}:${item.id}`}
+          isLastMessage={isLastMessage}
+          message={visibleMessage}
+          onMount={ignoreToolGroupMount}
+          status={status}
+          summary={item.summary}
+          terminalChunksByToolCallId={projection.terminalChunksByToolCallId}
+        />
+      );
+    }
+
+    return (
+      <AgentActivityRow
+        key={item.id}
+        deferReasoningCollapseUntilParent={false}
+        isLastMessage={isLastMessage}
+        keepLatestReasoningOpenDuringStreaming
+        suppressReasoningAutoOpen={false}
+        message={visibleMessage}
+        part={item.part}
+        partIndex={item.partIndex}
+        status={status}
+        terminalChunksByToolCallId={projection.terminalChunksByToolCallId}
+      />
+    );
+  });
+});
+
 const Transcript = memo(function Transcript({
   child,
   sidebarContent,
@@ -469,6 +554,8 @@ const Transcript = memo(function Transcript({
                   child.status === "completed",
                 );
             const messageText = extractMessageText(visibleParts);
+            const isLastMessage =
+              message === visibleMessages[visibleMessages.length - 1];
             return (
               <section
                 key={message.id}
@@ -486,18 +573,12 @@ const Transcript = memo(function Transcript({
                     : "Subagent"}
                 </div>
                 <div className="min-w-0 space-y-2 overflow-hidden text-sm text-foreground">
-                  {visibleParts.map((part, partIndex) => (
-                    <MessagePartHandler
-                      key={`${message.id}-${partIndex}`}
-                      message={message}
-                      part={part}
-                      partIndex={partIndex}
-                      status={active ? "streaming" : "ready"}
-                      isLastMessage={
-                        message === visibleMessages[visibleMessages.length - 1]
-                      }
-                    />
-                  ))}
+                  <SubagentTranscriptParts
+                    active={active}
+                    isLastMessage={isLastMessage}
+                    message={message}
+                    parts={visibleParts}
+                  />
                 </div>
                 {!isParentUpdate &&
                   message.persistedMessageId &&
