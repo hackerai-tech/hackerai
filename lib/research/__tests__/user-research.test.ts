@@ -1,6 +1,8 @@
 import {
+  assertResearchPromptIsSafe,
   buildCohortPrompt,
   buildUserProfilePrompt,
+  containsUnredactedResearchSecret,
   normalizeCohortSynthesis,
   normalizeResearchUserProfile,
   sanitizeResearchText,
@@ -71,6 +73,74 @@ nmap -sV target.example.com`);
     expect(sanitizeResearchText("Open customer-report.pdf")).toBe(
       "Open [file omitted]",
     );
+  });
+
+  it("redacts standalone provider credentials and private keys", () => {
+    const openAiKey = `sk-proj-${"a".repeat(48)}`;
+    const githubToken = `ghp_${"b".repeat(36)}`;
+    const awsAccessKey = `AKIA${"C".repeat(16)}`;
+    const privateKey = `-----BEGIN PRIVATE KEY-----
+${"QUJD".repeat(16)}
+-----END PRIVATE KEY-----`;
+    const sanitized = sanitizeResearchText(
+      `Tokens: ${openAiKey} ${githubToken} ${awsAccessKey}\n${privateKey}`,
+    );
+
+    expect(sanitized).not.toContain(openAiKey);
+    expect(sanitized).not.toContain(githubToken);
+    expect(sanitized).not.toContain(awsAccessKey);
+    expect(sanitized).not.toContain("BEGIN PRIVATE KEY");
+    expect(sanitized.match(/\[secret omitted\]/g)).toHaveLength(4);
+
+    const assigned = sanitizeResearchText(
+      "OPENAI_API_KEY=unredacted-value\nAuthorization: Bearer bearer-value",
+    );
+    expect(assigned).not.toContain("unredacted-value");
+    expect(assigned).not.toContain("bearer-value");
+    expect(containsUnredactedResearchSecret(assigned)).toBe(false);
+  });
+
+  it("fails closed when recognizable secret material reaches a model prompt", () => {
+    const leakedSecrets = [
+      `sk-proj-${"a".repeat(48)}`,
+      `github_pat_${"d".repeat(40)}`,
+      `AKIA${"C".repeat(16)}`,
+      "-----BEGIN RSA PRIVATE KEY-----",
+      "OPENAI_API_KEY=unredacted-value",
+      "Authorization: Bearer unredacted-value",
+      "eyJheader.payload.signature",
+    ];
+
+    for (const leakedSecret of leakedSecrets) {
+      expect(containsUnredactedResearchSecret(leakedSecret)).toBe(true);
+      expect(() =>
+        assertResearchPromptIsSafe(`Evidence: ${leakedSecret}`),
+      ).toThrow("Research prompt contains unredacted secret material");
+    }
+    expect(() =>
+      assertResearchPromptIsSafe("Evidence: recurring Agent workflows"),
+    ).not.toThrow();
+  });
+
+  it("removes standalone secrets before constructing the model prompt", () => {
+    const leakedToken = `sk-svcacct-${"e".repeat(48)}`;
+    const prompt = buildUserProfilePrompt({
+      question: "What recurring workflows appear?",
+      pseudonym: "U01",
+      chats: [
+        {
+          chatId: "never-included",
+          updatedAt: Date.UTC(2026, 7, 1),
+          mode: "agent",
+          truncated: false,
+          messages: [{ role: "user", text: `Use ${leakedToken}` }],
+        },
+      ],
+    });
+
+    expect(prompt).not.toContain(leakedToken);
+    expect(prompt).toContain("[secret omitted]");
+    expect(() => assertResearchPromptIsSafe(prompt)).not.toThrow();
   });
 
   it("redacts evidence before constructing the model prompt", () => {

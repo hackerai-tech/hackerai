@@ -18,11 +18,20 @@ Ask Codex:
 > cohort, run the analysis, wait for it, and give me the aggregate findings with
 > coverage, confidence, unknowns, and recommended experiments.
 
-Codex should use Trigger's task discovery/schema tools, trigger
-`pm-user-research` in production, then wait for completion. The task runs one
+Codex should use the skill's `scripts/run-research.mjs` gateway runner and wait
+for completion. The PM's Codex environment must contain the scoped
+`HACKERAI_PM_USER_RESEARCH_KEY`; it must not contain Trigger or Convex service
+keys. The runner always calls the production gateway at
+`https://hackerai.co/api/internal/user-research`; no Preview URL or Preview PM
+gateway key is required. The gateway can start and read only
+`pm-user-research`, and it returns only the aggregate result. The task runs one
 parallel worker per user and a final cohort synthesis. Both calls use
-`x-ai/grok-4.6` with OpenRouter reasoning explicitly disabled and zero-data-
-retention routing required.
+`deepseek/deepseek-v4-flash-0731` with OpenRouter reasoning explicitly disabled
+and zero-data-retention routing required.
+
+The request JSON is temporary restricted data because it contains internal user
+IDs. Create it outside the repository with mode 600, pass its path to the
+runner, then remove it. Never commit it or copy it into Linear.
 
 ## 3. Interpret the result
 
@@ -33,6 +42,7 @@ hypotheses until a separate experiment validates them.
 
 ## 4. Share safely
 
-Keep the complete Trigger result and Convex records restricted. A Linear update
-may include only the aggregate answer, avatars, coverage, confidence, unknowns,
-and experiments. Do not include the cohort IDs or pseudonym-level profiles.
+Keep the gateway key, request payload, Trigger records, and Convex records
+restricted. A Linear update may include only the aggregate answer, avatars,
+coverage, confidence, unknowns, and experiments. Do not include the cohort IDs
+or pseudonym-level profiles.

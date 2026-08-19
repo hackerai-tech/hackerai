@@ -7,6 +7,9 @@ export const USER_RESEARCH_MODEL_KEY = "model-deepseek-v4-flash-0731" as const;
 export const USER_RESEARCH_PROMPT_VERSION = "user-research-v1";
 export const USER_RESEARCH_MAX_CONTEXT_CHARS = 120_000;
 export const USER_RESEARCH_MAX_COHORT_CONTEXT_CHARS = 240_000;
+export const USER_RESEARCH_MIN_COHORT_SIZE = 3;
+export const USER_RESEARCH_MAX_COHORT_SIZE = 20;
+export const USER_RESEARCH_DEFAULT_MAX_CHATS_PER_USER = 12;
 export const USER_RESEARCH_PROVIDER_OPTIONS = {
   openrouter: {
     reasoning: { enabled: false },
@@ -16,6 +19,48 @@ export const USER_RESEARCH_PROVIDER_OPTIONS = {
 } as const;
 
 const confidenceSchema = z.enum(["low", "medium", "high"]);
+
+const pmUserResearchPayloadBaseSchema = z.object({
+  linearIssueId: z
+    .string()
+    .trim()
+    .regex(/^[A-Z]+-\d+$/),
+  question: z.string().trim().min(10).max(1_000),
+  cohortLabel: z.string().trim().min(3).max(200),
+  userIds: z
+    .array(z.string().trim().min(1).max(200))
+    .min(USER_RESEARCH_MIN_COHORT_SIZE)
+    .max(USER_RESEARCH_MAX_COHORT_SIZE),
+  requestedBy: z.string().trim().min(2).max(100),
+  maxChatsPerUser: z
+    .number()
+    .int()
+    .min(3)
+    .max(20)
+    .default(USER_RESEARCH_DEFAULT_MAX_CHATS_PER_USER),
+});
+
+const requireUniqueResearchUsers = (
+  payload: { userIds: string[] },
+  ctx: z.core.$RefinementCtx,
+) => {
+  if (new Set(payload.userIds).size !== payload.userIds.length) {
+    ctx.addIssue({
+      code: "custom",
+      message: "userIds must be unique",
+      path: ["userIds"],
+      input: payload.userIds,
+    });
+  }
+};
+
+export const pmUserResearchPayloadSchema =
+  pmUserResearchPayloadBaseSchema.superRefine(requireUniqueResearchUsers);
+
+export const pmUserResearchGatewayRequestSchema =
+  pmUserResearchPayloadBaseSchema
+    .omit({ requestedBy: true })
+    .superRefine(requireUniqueResearchUsers);
 
 export const researchUserTypeSchema = z.enum([
   "bug_bounty_hunter",
@@ -112,18 +157,28 @@ const cohortSynthesisSchema = z.object({
   privacyNote: z.string().trim().min(1).max(500),
 });
 
+export const researchCohortReportSchema = cohortSynthesisSchema.extend({
+  coverage: z.object({
+    usersRequested: z.number().int().min(USER_RESEARCH_MIN_COHORT_SIZE).max(20),
+    usersAnalyzed: z.number().int().min(USER_RESEARCH_MIN_COHORT_SIZE).max(20),
+    profilesFailed: z.number().int().min(0).max(20),
+    chatsReviewed: z.number().int().min(0),
+    messagesReviewed: z.number().int().min(0),
+  }),
+});
+
+export const pmUserResearchResultSchema = z.object({
+  analysisId: z.uuid(),
+  status: z.literal("completed"),
+  failedProfiles: z.number().int().min(0).max(20),
+  usersAnalyzed: z.number().int().min(USER_RESEARCH_MIN_COHORT_SIZE).max(20),
+  report: researchCohortReportSchema,
+});
+
 export type ResearchUserProfile = z.infer<typeof researchUserProfileSchema>;
 export type ResearchCoverage = z.infer<typeof researchCoverageSchema>;
 export type ResearchCohortSynthesis = z.infer<typeof cohortSynthesisSchema>;
-export type ResearchCohortReport = ResearchCohortSynthesis & {
-  coverage: {
-    usersRequested: number;
-    usersAnalyzed: number;
-    profilesFailed: number;
-    chatsReviewed: number;
-    messagesReviewed: number;
-  };
-};
+export type ResearchCohortReport = z.infer<typeof researchCohortReportSchema>;
 
 export type ResearchChatEvidence = {
   chatId: string;
@@ -137,9 +192,17 @@ export type ResearchChatEvidence = {
 
 const fencedCodePattern = /```[\s\S]*?```/g;
 const secretAssignmentPattern =
-  /\b(api[_-]?key|access[_-]?token|refresh[_-]?token|secret|password|authorization)\b\s*[:=]\s*(?:"[^"]+"|'[^']+'|[^\s,;]+)/gi;
+  /\b((?:[a-z0-9]+[_-])*(?:api[_-]?key|access[_-]?token|refresh[_-]?token|secret[_-]?access[_-]?key|secret|password|authorization|private[_-]?key))\b\s*[:=]\s*(?:"[^"]+"|'[^']+'|[^\s,;]+)/gi;
 const bearerPattern = /\bbearer\s+[a-z0-9._~+/=-]+/gi;
 const jwtPattern = /\beyJ[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+\b/g;
+const privateKeyBlockPattern =
+  /-----BEGIN(?: [A-Z0-9]+)* PRIVATE KEY-----[\s\S]*?-----END(?: [A-Z0-9]+)* PRIVATE KEY-----/gi;
+const privateKeyMarkerPattern = /-----BEGIN(?: [A-Z0-9]+)* PRIVATE KEY-----/i;
+const standaloneSecretPatterns = [
+  /\bsk-(?:proj-|svcacct-)?[a-zA-Z0-9_-]{20,}\b/gi,
+  /\b(?:gh[pousr]_[a-zA-Z0-9]{20,255}|github_pat_[a-zA-Z0-9_]{20,255})\b/gi,
+  /\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/g,
+] as const;
 const emailPattern = /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi;
 const urlPattern = /\b(?:https?|ftp):\/\/[^\s<>{}\[\]"']+/gi;
 const ipv4Pattern =
@@ -156,16 +219,45 @@ const posixPathPattern =
 const securityCommandPattern =
   /^(\s*)(?:\$\s*)?(nmap|curl|wget|sqlmap|ffuf|gobuster|nikto|nuclei|masscan|hydra|john|hashcat|burp|metasploit|msfconsole)(?:\s+.+)$/gim;
 
+const redactStandaloneSecrets = (value: string): string =>
+  standaloneSecretPatterns.reduce(
+    (sanitized, pattern) => sanitized.replace(pattern, "[secret omitted]"),
+    value,
+  );
+
+const patternMatches = (pattern: RegExp, value: string): boolean => {
+  pattern.lastIndex = 0;
+  const matches = pattern.test(value);
+  pattern.lastIndex = 0;
+  return matches;
+};
+
+export const containsUnredactedResearchSecret = (value: string): boolean =>
+  patternMatches(secretAssignmentPattern, value) ||
+  patternMatches(bearerPattern, value) ||
+  patternMatches(jwtPattern, value) ||
+  patternMatches(privateKeyMarkerPattern, value) ||
+  standaloneSecretPatterns.some((pattern) => patternMatches(pattern, value));
+
+export const assertResearchPromptIsSafe = (prompt: string): void => {
+  if (containsUnredactedResearchSecret(prompt)) {
+    throw new Error("Research prompt contains unredacted secret material");
+  }
+};
+
 /**
  * Remove direct identifiers, secrets, targets, and bulky payloads while
  * preserving product/workflow language and security tool names.
  */
 export const sanitizeResearchText = (value: string): string =>
-  value
-    .replace(fencedCodePattern, "[code omitted]")
-    .replace(secretAssignmentPattern, "$1=[secret omitted]")
-    .replace(bearerPattern, "Bearer [secret omitted]")
-    .replace(jwtPattern, "[token omitted]")
+  redactStandaloneSecrets(
+    value
+      .replace(fencedCodePattern, "[code omitted]")
+      .replace(privateKeyBlockPattern, "[secret omitted]")
+      .replace(bearerPattern, "Bearer [secret omitted]")
+      .replace(secretAssignmentPattern, "[secret omitted]")
+      .replace(jwtPattern, "[token omitted]"),
+  )
     .replace(emailPattern, "[email omitted]")
     .replace(urlPattern, "[url omitted]")
     .replace(ipv4Pattern, "[ip omitted]")
