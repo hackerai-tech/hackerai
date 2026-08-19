@@ -24,6 +24,8 @@ export const USER_DELETION_TABLE_POLICY = {
     "local_sandbox_connections",
     "cloud_sandbox_sessions",
     "cancellation_reason_details",
+    "research_run_members",
+    "research_user_profiles",
     "subagent_messages",
     "subagent_runs",
   ],
@@ -45,6 +47,10 @@ export const USER_DELETION_TABLE_POLICY = {
     "paid_start_mix_daily",
     "processed_webhooks",
     "processed_checkout_sessions",
+    // Reports contain only cohort-level patterns from runs with at least three
+    // users. Per-user profiles and their direct user IDs are deleted above.
+    "research_runs",
+    "research_reports",
   ],
 } as const;
 
@@ -422,6 +428,16 @@ async function cleanupUserDataForUser(
     "by_user_id_and_created_at",
     (q) => q.eq("user_id", userId),
   );
+  const researchUserProfilesBatch = await collectByIndexBatch<
+    Doc<"research_user_profiles">
+  >(ctx, budget, "research_user_profiles", "by_user_id", (q) =>
+    q.eq("user_id", userId),
+  );
+  const researchRunMembersBatch = await collectByIndexBatch<
+    Doc<"research_run_members">
+  >(ctx, budget, "research_run_members", "by_user_id", (q) =>
+    q.eq("user_id", userId),
+  );
   const subagentMessagesBatch = await collectByIndexBatch<
     Doc<"subagent_messages">
   >(ctx, budget, "subagent_messages", "by_user_id", (q) =>
@@ -448,6 +464,8 @@ async function cleanupUserDataForUser(
     extraUsageBatch,
     teamMemberUsageBatch,
     cancellationReasonDetailsBatch,
+    researchRunMembersBatch,
+    researchUserProfilesBatch,
     subagentMessagesBatch,
     subagentRunsBatch,
   ];
@@ -464,6 +482,8 @@ async function cleanupUserDataForUser(
   const extraUsage = extraUsageBatch.docs;
   const teamMemberUsage = teamMemberUsageBatch.docs;
   const cancellationReasonDetails = cancellationReasonDetailsBatch.docs;
+  const researchRunMembers = researchRunMembersBatch.docs;
+  const researchUserProfiles = researchUserProfilesBatch.docs;
   const subagentMessages = subagentMessagesBatch.docs;
   const subagentRuns = subagentRunsBatch.docs;
 
@@ -516,6 +536,20 @@ async function cleanupUserDataForUser(
     stats,
     "cancellation_reason_details",
     cancellationReasonDetails,
+    mode,
+  );
+  await deleteDocs(
+    ctx,
+    stats,
+    "research_run_members",
+    researchRunMembers,
+    mode,
+  );
+  await deleteDocs(
+    ctx,
+    stats,
+    "research_user_profiles",
+    researchUserProfiles,
     mode,
   );
 

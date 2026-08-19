@@ -1,6 +1,12 @@
 import { defineSchema, defineTable } from "convex/server";
 import { v } from "convex/values";
 import { retainedTailValidator } from "./lib/retainedTail";
+import {
+  researchCohortReportValidator,
+  researchCoverageValidator,
+  researchRunStatusValidator,
+  researchUserProfileValidator,
+} from "./userResearchValidators";
 
 const usageDeductionFailureReasonValidator = v.union(
   v.literal("extra_usage_unavailable"),
@@ -1066,6 +1072,70 @@ export default defineSchema({
     .index("by_type_day", ["entity_type", "day"])
     .index("by_user_day", ["user_id", "day"])
     .index("by_org_day", ["organization_id", "day"]),
+
+  // Restricted, privacy-safe product research. Raw messages are read only by
+  // the service-keyed analysis task and are never stored in these tables.
+  research_runs: defineTable({
+    analysis_id: v.string(),
+    linear_issue_id: v.string(),
+    question: v.string(),
+    cohort_label: v.string(),
+    requested_by: v.string(),
+    cohort_size: v.number(),
+    max_chats_per_user: v.number(),
+    model: v.string(),
+    reasoning_enabled: v.boolean(),
+    status: researchRunStatusValidator,
+    profiles_completed: v.number(),
+    profiles_failed: v.number(),
+    input_tokens: v.optional(v.number()),
+    output_tokens: v.optional(v.number()),
+    cost_dollars: v.optional(v.number()),
+    error: v.optional(v.string()),
+    created_at: v.number(),
+    updated_at: v.number(),
+    completed_at: v.optional(v.number()),
+  })
+    .index("by_analysis_id", ["analysis_id"])
+    .index("by_created_at", ["created_at"]),
+
+  research_run_members: defineTable({
+    analysis_id: v.string(),
+    user_id: v.string(),
+    pseudonym: v.string(),
+    created_at: v.number(),
+  })
+    .index("by_analysis_and_user", ["analysis_id", "user_id"])
+    .index("by_user_id", ["user_id"]),
+
+  research_user_profiles: defineTable({
+    analysis_id: v.string(),
+    user_id: v.string(),
+    pseudonym: v.string(),
+    profile: researchUserProfileValidator,
+    coverage: researchCoverageValidator,
+    model: v.string(),
+    prompt_version: v.string(),
+    input_tokens: v.optional(v.number()),
+    output_tokens: v.optional(v.number()),
+    cost_dollars: v.optional(v.number()),
+    created_at: v.number(),
+    updated_at: v.number(),
+  })
+    .index("by_analysis_and_user", ["analysis_id", "user_id"])
+    .index("by_user_id", ["user_id"]),
+
+  research_reports: defineTable({
+    analysis_id: v.string(),
+    report: researchCohortReportValidator,
+    model: v.string(),
+    prompt_version: v.string(),
+    input_tokens: v.optional(v.number()),
+    output_tokens: v.optional(v.number()),
+    cost_dollars: v.optional(v.number()),
+    created_at: v.number(),
+    updated_at: v.number(),
+  }).index("by_analysis_id", ["analysis_id"]),
 
   // Durable child-agent state. Sensitive objectives and validation artifacts
   // stay here instead of Trigger metadata or analytics properties.

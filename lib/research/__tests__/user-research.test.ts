@@ -1,0 +1,248 @@
+import {
+  buildCohortPrompt,
+  buildUserProfilePrompt,
+  normalizeCohortSynthesis,
+  normalizeResearchUserProfile,
+  sanitizeResearchText,
+  USER_RESEARCH_MAX_COHORT_CONTEXT_CHARS,
+  USER_RESEARCH_MAX_CONTEXT_CHARS,
+  USER_RESEARCH_MODEL_KEY,
+  USER_RESEARCH_PROVIDER_OPTIONS,
+} from "../user-research";
+
+const baseProfile = {
+  summary: "A recurring security workflow.",
+  userTypes: [
+    {
+      type: "bug_bounty_hunter" as const,
+      evidenceCount: 9,
+      confidence: "high" as const,
+    },
+  ],
+  declaredContext: null,
+  recurringJobs: [
+    {
+      label: "Validate findings",
+      description: "Repeated validation work.",
+      evidenceCount: 9,
+      confidence: "high" as const,
+    },
+  ],
+  workflowPatterns: [],
+  toolsAndEnvironments: [],
+  valueDrivers: [],
+  frictionAndUnmetNeeds: [],
+  reasonsToPay: [],
+  confidence: "high" as const,
+  uncertainty: [],
+};
+
+describe("user research privacy controls", () => {
+  it("pins Grok 4.6 and disables OpenRouter reasoning", () => {
+    expect(USER_RESEARCH_MODEL_KEY).toBe("model-grok-4.6-pro");
+    expect(USER_RESEARCH_PROVIDER_OPTIONS).toEqual({
+      openrouter: {
+        reasoning: { enabled: false },
+        usage: { include: true },
+        provider: { zdr: true },
+      },
+    });
+  });
+
+  it("removes direct identifiers, targets, secrets, code, and command arguments", () => {
+    const sanitized =
+      sanitizeResearchText(`Contact sam@example.com about https://target.example.com/a.
+Host 192.168.10.20 and id 550e8400-e29b-41d4-a716-446655440000.
+api_key=super-secret
+\`\`\`bash
+curl https://target.example.com/private -H "Authorization: Bearer token"
+\`\`\`
+nmap -sV target.example.com`);
+
+    expect(sanitized).not.toContain("sam@example.com");
+    expect(sanitized).not.toContain("target.example.com");
+    expect(sanitized).not.toContain("192.168.10.20");
+    expect(sanitized).not.toContain("550e8400");
+    expect(sanitized).not.toContain("super-secret");
+    expect(sanitized).not.toContain("-sV");
+    expect(sanitized).toContain("[email omitted]");
+    expect(sanitized).toContain("[code omitted]");
+    expect(sanitized).toContain("nmap [arguments omitted]");
+    expect(sanitizeResearchText("Open customer-report.pdf")).toBe(
+      "Open [file omitted]",
+    );
+  });
+
+  it("redacts evidence before constructing the model prompt", () => {
+    const prompt = buildUserProfilePrompt({
+      question: "What does this user repeatedly do?",
+      pseudonym: "U01",
+      chats: [
+        {
+          chatId: "never-included",
+          updatedAt: Date.UTC(2026, 7, 1),
+          mode: "agent",
+          truncated: false,
+          messages: [
+            {
+              role: "user",
+              text: "Test https://private.example.com with api_key=abcd",
+            },
+          ],
+        },
+      ],
+    });
+
+    expect(prompt).not.toContain("never-included");
+    expect(prompt).not.toContain("private.example.com");
+    expect(prompt).not.toContain("abcd");
+    expect(prompt).toContain("[url omitted]");
+  });
+
+  it("keeps first and last evidence from every chat within the context budget", () => {
+    const chats = Array.from({ length: 12 }, (_, chatIndex) => ({
+      chatId: `chat-${chatIndex}`,
+      updatedAt: Date.UTC(2026, 7, chatIndex + 1),
+      mode: "agent" as const,
+      truncated: true,
+      messages: Array.from({ length: 80 }, (_, messageIndex) => ({
+        role: (messageIndex % 2 === 0 ? "user" : "assistant") as
+          "user" | "assistant",
+        text: `${
+          messageIndex === 0
+            ? `first-${chatIndex}`
+            : messageIndex === 79
+              ? `last-${chatIndex}`
+              : "middle"
+        } ${"x".repeat(2_500)}`,
+      })),
+    }));
+    const prompt = buildUserProfilePrompt({
+      question: "What recurring workflows appear?",
+      pseudonym: "U01",
+      chats,
+    });
+
+    expect(prompt.length).toBeLessThan(USER_RESEARCH_MAX_CONTEXT_CHARS);
+    for (let index = 0; index < chats.length; index += 1) {
+      expect(prompt).toContain(`first-${index}`);
+      expect(prompt).toContain(`last-${index}`);
+    }
+  });
+
+  it("keeps every profile in a valid bounded cohort payload", () => {
+    const prompt = buildCohortPrompt({
+      question: "Which recurring user types and jobs appear?",
+      cohortLabel: "Reconciled paid cohort",
+      profiles: Array.from({ length: 20 }, (_, index) => ({
+        pseudonym: `U${String(index + 1).padStart(2, "0")}`,
+        profile: {
+          ...baseProfile,
+          summary: `profile-${index} ${"summary ".repeat(500)}`,
+          recurringJobs: Array.from({ length: 8 }, (_, jobIndex) => ({
+            label: `job-${jobIndex}`,
+            description: "description ".repeat(100),
+            evidenceCount: 10,
+            confidence: "high" as const,
+          })),
+        },
+        coverage: {
+          chatsReviewed: 12,
+          messagesReviewed: 240,
+          askChats: 4,
+          agentChats: 8,
+          truncatedChats: 2,
+        },
+      })),
+    });
+    const payload = prompt.split("Synthesize this cohort:\n")[1];
+    const parsed = JSON.parse(payload) as { profiles: Array<unknown> };
+
+    expect(prompt.length).toBeLessThan(USER_RESEARCH_MAX_COHORT_CONTEXT_CHARS);
+    expect(parsed.profiles).toHaveLength(20);
+    expect(payload).toContain("profile-0");
+    expect(payload).toContain("profile-19");
+    expect(payload).toContain("bug_bounty_hunter");
+    expect(payload).toContain('"confidence":"high"');
+  });
+
+  it("caps model evidence counts and lowers confidence for sparse users", () => {
+    const normalized = normalizeResearchUserProfile(baseProfile, 2);
+
+    expect(normalized.userTypes[0].evidenceCount).toBe(2);
+    expect(normalized.recurringJobs[0].evidenceCount).toBe(2);
+    expect(normalized.confidence).toBe("low");
+  });
+
+  it("sanitizes structured model output before storage", () => {
+    const normalized = normalizeResearchUserProfile(
+      {
+        ...baseProfile,
+        summary: "Uses https://private.example.com and sam@example.com",
+      },
+      4,
+    );
+
+    expect(normalized.summary).toBe("Uses [url omitted] and [email omitted]");
+  });
+
+  it("normalizes cohort references, evidence counts, and identifiers", () => {
+    const normalized = normalizeCohortSynthesis(
+      {
+        answerToQuestion: "See https://private.example.com",
+        executiveSummary: "Aggregate summary",
+        avatars: [
+          {
+            name: "Independent Operator",
+            definition: "Uses sam@example.com for repeated work",
+            mainJob: "Validate security issues",
+            supportingUserTypes: ["bug_bounty_hunter"],
+            pains: [],
+            desiredOutcomes: [],
+            reasonsToPay: [],
+            productFeatures: [],
+            objectionsAndTrustNeeds: [],
+            acquisitionHypotheses: [],
+            messageHypotheses: [],
+            evidenceUserCount: 20,
+            confidence: "high",
+          },
+          {
+            name: "Security Learner",
+            definition: "Learns practical workflows",
+            mainJob: "Build skills",
+            supportingUserTypes: ["security_student"],
+            pains: [],
+            desiredOutcomes: [],
+            reasonsToPay: [],
+            productFeatures: [],
+            objectionsAndTrustNeeds: [],
+            acquisitionHypotheses: [],
+            messageHypotheses: [],
+            evidenceUserCount: 2,
+            confidence: "medium",
+          },
+        ],
+        primaryAvatar: "Missing avatar",
+        secondaryAvatars: [
+          "Security Learner",
+          "Missing avatar",
+          "Security Learner",
+        ],
+        crossCohortPatterns: [],
+        unknowns: [],
+        followUpExperiments: [],
+        privacyNote: "Aggregate only",
+      },
+      4,
+    );
+
+    expect(normalized.answerToQuestion).toBe("See [url omitted]");
+    expect(normalized.avatars[0].definition).toBe(
+      "Uses [email omitted] for repeated work",
+    );
+    expect(normalized.avatars[0].evidenceUserCount).toBe(4);
+    expect(normalized.primaryAvatar).toBe("Independent Operator");
+    expect(normalized.secondaryAvatars).toEqual(["Security Learner"]);
+  });
+});
