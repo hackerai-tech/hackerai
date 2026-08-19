@@ -44,6 +44,7 @@ import {
   sendRateLimitWarnings,
   SummarizationTracker,
   appendSystemReminderToLastUserMessage,
+  countFileAttachments,
   estimatePreflightInputTokens,
   buildExtraUsageConfig,
   computeContextUsage,
@@ -146,6 +147,12 @@ import {
   getActiveDeepSeekV4Pro0813ExperimentAssignment,
   getDeepSeekV4Pro0813ExperimentContext,
 } from "@/lib/experiments/deepseek-v4-pro-0813";
+import {
+  captureProPlusUltraDeepSeekProDefaultExposure,
+  evaluateProPlusUltraDeepSeekProDefault,
+  getActiveProPlusUltraDeepSeekProDefaultAssignment,
+  getProPlusUltraDeepSeekProDefaultContext,
+} from "@/lib/experiments/pro-plus-ultra-deepseek-pro-default";
 import {
   createAuxiliaryVisionExposureRecorder,
   evaluateAuxiliaryDeepSeekVisionFlag,
@@ -2434,6 +2441,14 @@ export const agentLongTask = task({
         sandboxPreference,
       });
       const truncatedMessages = fetched.truncatedMessages;
+      const messagesForProcessing =
+        localDesktopAttachmentsPrepared && messages.length > 0
+          ? messages
+          : truncatedMessages.length
+            ? truncatedMessages
+            : messages;
+      const messagesForAccounting = messagesForProcessing;
+      const attachmentCounts = countFileAttachments(messagesForProcessing);
       const baseExtraUsageConfig = await buildExtraUsageConfig({
         userId,
         subscription,
@@ -2451,23 +2466,34 @@ export const agentLongTask = task({
         subscription,
       );
       const posthog = PostHogClient();
-      const [cloudSandboxRollout, auxiliaryVisionAssignment] =
-        await Promise.all([
-          evaluateAwsLambdaMicrovmRollout({
-            posthog,
-            userId,
-            subscription,
-            configuredProvider: getCloudSandboxProvider(),
-            requestId: ctx.run.id,
-          }),
-          evaluateAuxiliaryDeepSeekVisionFlag({
-            posthog,
-            userId,
-            subscription,
-            selectedModelOverride,
-            requestId: ctx.run.id,
-          }),
-        ]);
+      const [
+        cloudSandboxRollout,
+        auxiliaryVisionAssignment,
+        deepSeekProDefaultAssignment,
+      ] = await Promise.all([
+        evaluateAwsLambdaMicrovmRollout({
+          posthog,
+          userId,
+          subscription,
+          configuredProvider: getCloudSandboxProvider(),
+          requestId: ctx.run.id,
+        }),
+        evaluateAuxiliaryDeepSeekVisionFlag({
+          posthog,
+          userId,
+          subscription,
+          selectedModelOverride,
+          requestId: ctx.run.id,
+        }),
+        evaluateProPlusUltraDeepSeekProDefault({
+          posthog,
+          userId,
+          subscription,
+          selectedModelOverride,
+          hasImageAttachment: attachmentCounts.imageCount > 0,
+          requestId: ctx.run.id,
+        }),
+      ]);
 
       const baseTodos: Todo[] = getBaseTodosForRequest(
         (chat?.todos as unknown as Todo[]) || [],
@@ -2475,13 +2501,6 @@ export const agentLongTask = task({
       );
 
       const uploadBasePath = getUploadBasePath(sandboxPreference);
-      const messagesForProcessing =
-        localDesktopAttachmentsPrepared && messages.length > 0
-          ? messages
-          : truncatedMessages.length
-            ? truncatedMessages
-            : messages;
-      const messagesForAccounting = messagesForProcessing;
 
       let {
         processedMessages,
@@ -2498,6 +2517,8 @@ export const agentLongTask = task({
         extraUsageAvailable,
         allowLocalDesktopFiles: sandboxPreference === "desktop",
         auxiliaryVisionEnabled: !!auxiliaryVisionAssignment,
+        proPlusUltraDeepSeekProDefaultEnabled:
+          deepSeekProDefaultAssignment?.variant === "deepseek_pro",
         chatId,
         triggerRunId: ctx.run.id,
         requestId: ctx.run.id,
@@ -2822,7 +2843,15 @@ export const agentLongTask = task({
                 deepSeekV4Pro0813Experiment,
                 selectedModel,
               );
+            let activeDeepSeekProDefaultAssignment =
+              getActiveProPlusUltraDeepSeekProDefaultAssignment(
+                deepSeekProDefaultAssignment,
+                selectedModel,
+              );
             let routingExperimentContext =
+              getProPlusUltraDeepSeekProDefaultContext(
+                activeDeepSeekProDefaultAssignment,
+              ) ??
               getDeepSeekV4Pro0813ExperimentContext(
                 activeDeepSeekV4Pro0813Experiment,
               );
@@ -3321,7 +3350,15 @@ export const agentLongTask = task({
                     deepSeekV4Pro0813Experiment,
                     selectedModel,
                   );
+                activeDeepSeekProDefaultAssignment =
+                  getActiveProPlusUltraDeepSeekProDefaultAssignment(
+                    deepSeekProDefaultAssignment,
+                    selectedModel,
+                  );
                 routingExperimentContext =
+                  getProPlusUltraDeepSeekProDefaultContext(
+                    activeDeepSeekProDefaultAssignment,
+                  ) ??
                   getDeepSeekV4Pro0813ExperimentContext(
                     activeDeepSeekV4Pro0813Experiment,
                   );
@@ -3744,6 +3781,7 @@ export const agentLongTask = task({
                   requestedDeltaPoints: additionalCostPoints,
                   deduction: deductionResult,
                   forced: force,
+                  experiment: routingExperimentContext,
                 });
 
                 usageRefundTracker.addDeductions(deductionResult);
@@ -3872,6 +3910,19 @@ export const agentLongTask = task({
 
             let result;
             try {
+              captureProPlusUltraDeepSeekProDefaultExposure({
+                posthog,
+                userId,
+                subscription,
+                mode,
+                endpoint,
+                selectedModelOverride,
+                selectedModel,
+                configuredModel: configuredModelId,
+                chatId,
+                triggerRunId: ctx.run.id,
+                assignment: activeDeepSeekProDefaultAssignment,
+              });
               captureDeepSeekV4Pro0813ExperimentExposure({
                 posthog,
                 userId,

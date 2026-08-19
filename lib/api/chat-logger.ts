@@ -1570,6 +1570,7 @@ export function captureUsageSettlement({
   requestedDeltaPoints,
   deduction,
   forced,
+  experiment,
 }: {
   posthog: PostHog | null;
   userId: string;
@@ -1586,6 +1587,7 @@ export function captureUsageSettlement({
   requestedDeltaPoints: number;
   deduction: UsageDeductionResult;
   forced: boolean;
+  experiment?: ExperimentAnalyticsContext;
 }) {
   if (!posthog) return;
   const runSampled = isUsageSettlementSuccessSampled(usageSettlementId);
@@ -1624,6 +1626,7 @@ export function captureUsageSettlement({
       settlement_run_sampled: runSampled,
       settlement_success_sample_rate: USAGE_SETTLEMENT_SUCCESS_SAMPLE_RATE,
       settlement_event_version: 2,
+      ...getExperimentAnalyticsProperties(experiment),
     },
   });
 }
