@@ -100,16 +100,25 @@ function request({
   token = runnerKey,
   body = validPayload,
   idempotencyKey = "research-request-123",
+  contentLength,
   runId,
 }: {
   token?: string | null;
   body?: unknown;
   idempotencyKey?: string | null;
+  contentLength?: string | null;
   runId?: string;
 } = {}): NextRequest {
   const headers = new Headers({ "x-request-id": "request-123" });
   if (token) headers.set("authorization", `Bearer ${token}`);
   if (idempotencyKey) headers.set("idempotency-key", idempotencyKey);
+  if (contentLength !== null) {
+    headers.set(
+      "content-length",
+      contentLength ??
+        String(new TextEncoder().encode(JSON.stringify(body)).length),
+    );
+  }
   const nextUrl = new URL("https://hackerai.co/api/internal/user-research");
   if (runId) nextUrl.searchParams.set("runId", runId);
   return {
@@ -192,6 +201,26 @@ describe("PM user research gateway", () => {
       request({ body: { ...validPayload, userIds: ["user-1", "user-2"] } }),
     );
     expect(invalidCohort.status).toBe(400);
+    expect(triggerTask).not.toHaveBeenCalled();
+  });
+
+  it("rejects missing, malformed, and oversized content lengths", async () => {
+    const { POST } = await import("../route");
+
+    const missing = await POST(request({ contentLength: null }));
+    expect(missing.status).toBe(411);
+    await expect(missing.json()).resolves.toEqual({
+      error: "content_length_required",
+    });
+
+    const malformed = await POST(request({ contentLength: "not-a-number" }));
+    expect(malformed.status).toBe(411);
+
+    const oversized = await POST(request({ contentLength: String(33 * 1024) }));
+    expect(oversized.status).toBe(413);
+    await expect(oversized.json()).resolves.toEqual({
+      error: "payload_too_large",
+    });
     expect(triggerTask).not.toHaveBeenCalled();
   });
 

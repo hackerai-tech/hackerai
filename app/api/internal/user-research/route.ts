@@ -94,8 +94,12 @@ export async function POST(request: NextRequest) {
   const authResponse = authenticate(request);
   if (authResponse) return authResponse;
 
-  const contentLength = Number(request.headers.get("content-length") ?? "0");
-  if (Number.isFinite(contentLength) && contentLength > MAX_REQUEST_BYTES) {
+  const contentLengthHeader = request.headers.get("content-length");
+  if (!contentLengthHeader || !/^\d+$/.test(contentLengthHeader)) {
+    return json({ error: "content_length_required" }, { status: 411 });
+  }
+  const contentLength = Number(contentLengthHeader);
+  if (contentLength > MAX_REQUEST_BYTES) {
     return json({ error: "payload_too_large" }, { status: 413 });
   }
 

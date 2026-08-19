@@ -6,6 +6,7 @@ import { api } from "@/convex/_generated/api";
 import { DEEPSEEK_V4_FLASH_SLUG, myProvider } from "@/lib/ai/providers";
 import { getProviderUsageRawModelCost } from "@/lib/provider-usage-cost";
 import {
+  assertResearchPromptIsSafe,
   buildCohortPrompt,
   buildUserProfilePrompt,
   cohortSynthesisSchema,
@@ -109,6 +110,12 @@ export const analyzeUserResearchProfile = schemaTask({
       truncatedChats: evidence.filter((chat) => chat.truncated).length,
     };
 
+    const prompt = buildUserProfilePrompt({
+      question: payload.question,
+      pseudonym: payload.pseudonym,
+      chats: evidence,
+    });
+    assertResearchPromptIsSafe(prompt);
     const result = await generateText({
       model: myProvider.languageModel(USER_RESEARCH_MODEL_KEY),
       output: Output.object({ schema: researchUserProfileSchema }),
@@ -116,11 +123,7 @@ export const analyzeUserResearchProfile = schemaTask({
       temperature: 0,
       maxOutputTokens: 6_000,
       maxRetries: 1,
-      prompt: buildUserProfilePrompt({
-        question: payload.question,
-        pseudonym: payload.pseudonym,
-        chats: evidence,
-      }),
+      prompt,
     });
     const profile = normalizeResearchUserProfile(
       result.output,
@@ -211,6 +214,12 @@ export const pmUserResearch = schemaTask({
         );
       }
 
+      const prompt = buildCohortPrompt({
+        question: payload.question,
+        cohortLabel: payload.cohortLabel,
+        profiles,
+      });
+      assertResearchPromptIsSafe(prompt);
       const result = await generateText({
         model: myProvider.languageModel(USER_RESEARCH_MODEL_KEY),
         output: Output.object({ schema: cohortSynthesisSchema }),
@@ -218,11 +227,7 @@ export const pmUserResearch = schemaTask({
         temperature: 0,
         maxOutputTokens: 8_000,
         maxRetries: 1,
-        prompt: buildCohortPrompt({
-          question: payload.question,
-          cohortLabel: payload.cohortLabel,
-          profiles,
-        }),
+        prompt,
       });
       const synthesis = normalizeCohortSynthesis(
         result.output,

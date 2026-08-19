@@ -192,9 +192,17 @@ export type ResearchChatEvidence = {
 
 const fencedCodePattern = /```[\s\S]*?```/g;
 const secretAssignmentPattern =
-  /\b(api[_-]?key|access[_-]?token|refresh[_-]?token|secret|password|authorization)\b\s*[:=]\s*(?:"[^"]+"|'[^']+'|[^\s,;]+)/gi;
+  /\b((?:[a-z0-9]+[_-])*(?:api[_-]?key|access[_-]?token|refresh[_-]?token|secret[_-]?access[_-]?key|secret|password|authorization|private[_-]?key))\b\s*[:=]\s*(?:"[^"]+"|'[^']+'|[^\s,;]+)/gi;
 const bearerPattern = /\bbearer\s+[a-z0-9._~+/=-]+/gi;
 const jwtPattern = /\beyJ[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+\b/g;
+const privateKeyBlockPattern =
+  /-----BEGIN(?: [A-Z0-9]+)* PRIVATE KEY-----[\s\S]*?-----END(?: [A-Z0-9]+)* PRIVATE KEY-----/gi;
+const privateKeyMarkerPattern = /-----BEGIN(?: [A-Z0-9]+)* PRIVATE KEY-----/i;
+const standaloneSecretPatterns = [
+  /\bsk-(?:proj-|svcacct-)?[a-zA-Z0-9_-]{20,}\b/gi,
+  /\b(?:gh[pousr]_[a-zA-Z0-9]{20,255}|github_pat_[a-zA-Z0-9_]{20,255})\b/gi,
+  /\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/g,
+] as const;
 const emailPattern = /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi;
 const urlPattern = /\b(?:https?|ftp):\/\/[^\s<>{}\[\]"']+/gi;
 const ipv4Pattern =
@@ -211,16 +219,45 @@ const posixPathPattern =
 const securityCommandPattern =
   /^(\s*)(?:\$\s*)?(nmap|curl|wget|sqlmap|ffuf|gobuster|nikto|nuclei|masscan|hydra|john|hashcat|burp|metasploit|msfconsole)(?:\s+.+)$/gim;
 
+const redactStandaloneSecrets = (value: string): string =>
+  standaloneSecretPatterns.reduce(
+    (sanitized, pattern) => sanitized.replace(pattern, "[secret omitted]"),
+    value,
+  );
+
+const patternMatches = (pattern: RegExp, value: string): boolean => {
+  pattern.lastIndex = 0;
+  const matches = pattern.test(value);
+  pattern.lastIndex = 0;
+  return matches;
+};
+
+export const containsUnredactedResearchSecret = (value: string): boolean =>
+  patternMatches(secretAssignmentPattern, value) ||
+  patternMatches(bearerPattern, value) ||
+  patternMatches(jwtPattern, value) ||
+  patternMatches(privateKeyMarkerPattern, value) ||
+  standaloneSecretPatterns.some((pattern) => patternMatches(pattern, value));
+
+export const assertResearchPromptIsSafe = (prompt: string): void => {
+  if (containsUnredactedResearchSecret(prompt)) {
+    throw new Error("Research prompt contains unredacted secret material");
+  }
+};
+
 /**
  * Remove direct identifiers, secrets, targets, and bulky payloads while
  * preserving product/workflow language and security tool names.
  */
 export const sanitizeResearchText = (value: string): string =>
-  value
-    .replace(fencedCodePattern, "[code omitted]")
-    .replace(secretAssignmentPattern, "$1=[secret omitted]")
-    .replace(bearerPattern, "Bearer [secret omitted]")
-    .replace(jwtPattern, "[token omitted]")
+  redactStandaloneSecrets(
+    value
+      .replace(fencedCodePattern, "[code omitted]")
+      .replace(privateKeyBlockPattern, "[secret omitted]")
+      .replace(bearerPattern, "Bearer [secret omitted]")
+      .replace(secretAssignmentPattern, "[secret omitted]")
+      .replace(jwtPattern, "[token omitted]"),
+  )
     .replace(emailPattern, "[email omitted]")
     .replace(urlPattern, "[url omitted]")
     .replace(ipv4Pattern, "[ip omitted]")
