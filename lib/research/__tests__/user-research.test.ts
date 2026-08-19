@@ -38,8 +38,8 @@ const baseProfile = {
 };
 
 describe("user research privacy controls", () => {
-  it("pins Grok 4.6 and disables OpenRouter reasoning", () => {
-    expect(USER_RESEARCH_MODEL_KEY).toBe("model-grok-4.6-pro");
+  it("pins DeepSeek V4 Flash for text-only research and disables reasoning", () => {
+    expect(USER_RESEARCH_MODEL_KEY).toBe("model-deepseek-v4-flash-0731");
     expect(USER_RESEARCH_PROVIDER_OPTIONS).toEqual({
       openrouter: {
         reasoning: { enabled: false },

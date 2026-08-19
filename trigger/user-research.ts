@@ -3,7 +3,7 @@ import { ConvexHttpClient } from "convex/browser";
 import { generateText, Output } from "ai";
 import { z } from "zod";
 import { api } from "@/convex/_generated/api";
-import { GROK_4_6_SLUG, myProvider } from "@/lib/ai/providers";
+import { DEEPSEEK_V4_FLASH_SLUG, myProvider } from "@/lib/ai/providers";
 import { getProviderUsageRawModelCost } from "@/lib/provider-usage-cost";
 import {
   buildCohortPrompt,
@@ -164,7 +164,7 @@ export const analyzeUserResearchProfile = schemaTask({
       pseudonym: payload.pseudonym,
       profile,
       coverage,
-      model: GROK_4_6_SLUG,
+      model: DEEPSEEK_V4_FLASH_SLUG,
       promptVersion: USER_RESEARCH_PROMPT_VERSION,
       ...usage,
     });
@@ -202,7 +202,7 @@ export const pmUserResearch = schemaTask({
       requestedBy: payload.requestedBy,
       members,
       maxChatsPerUser: payload.maxChatsPerUser,
-      model: GROK_4_6_SLUG,
+      model: DEEPSEEK_V4_FLASH_SLUG,
     });
     try {
       await client.mutation(api.userResearch.markRunRunning, {
@@ -278,7 +278,7 @@ export const pmUserResearch = schemaTask({
         serviceKey,
         analysisId,
         report,
-        model: GROK_4_6_SLUG,
+        model: DEEPSEEK_V4_FLASH_SLUG,
         promptVersion: USER_RESEARCH_PROMPT_VERSION,
         ...usageForStorage(result.usage),
       });
