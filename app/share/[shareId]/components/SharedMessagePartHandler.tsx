@@ -153,8 +153,10 @@ export const SharedMessagePartHandler = ({
   if (
     part.type === "tool-delegate_task" ||
     part.type === "tool-create_agent" ||
+    part.type === "tool-list_agents" ||
     part.type === "tool-send_message_to_agent" ||
-    part.type === "tool-wait_for_agents"
+    part.type === "tool-wait_for_agents" ||
+    part.type === "tool-cancel_agent"
   ) {
     const agentName =
       part.output?.name ??
@@ -180,6 +182,31 @@ export const SharedMessagePartHandler = ({
           key={idx}
           icon={<Users aria-hidden="true" />}
           action={`${agentName} ${toolFailed ? "update failed" : "updated"}`}
+        />
+      );
+    }
+    if (part.type === "tool-list_agents") {
+      const count = Array.isArray(part.output?.agents)
+        ? part.output.agents.length
+        : 0;
+      return (
+        <ToolBlock
+          key={idx}
+          icon={<Users aria-hidden="true" />}
+          action={
+            toolFailed
+              ? "Could not list subagents"
+              : `${count} ${count === 1 ? "subagent" : "subagents"}`
+          }
+        />
+      );
+    }
+    if (part.type === "tool-cancel_agent") {
+      return (
+        <ToolBlock
+          key={idx}
+          icon={<Users aria-hidden="true" />}
+          action={`${agentName} ${toolFailed ? "cancel failed" : "canceled"}`}
         />
       );
     }

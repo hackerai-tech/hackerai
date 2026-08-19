@@ -12,6 +12,7 @@ const {
   subagentCreateAttemptEventUuid,
   subagentModelPromotionEventUuid,
   subagentOutcomeEventUuid,
+  subagentResultDeliveredEventUuid,
 } = require("../subagents") as typeof import("../subagents");
 
 describe("subagent lifecycle analytics", () => {
@@ -40,6 +41,7 @@ describe("subagent lifecycle analytics", () => {
       model_from: undefined,
       model_to: undefined,
       model_promotion_reason: undefined,
+      task_status: undefined,
     });
   });
 
@@ -49,6 +51,21 @@ describe("subagent lifecycle analytics", () => {
     );
     expect(subagentCreateAttemptEventUuid("parent-1", "tool-1")).not.toBe(
       subagentCreateAttemptEventUuid("parent-1", "tool-2"),
+    );
+  });
+
+  it("deduplicates repeated targeted delivery of the same child result", () => {
+    expect(subagentResultDeliveredEventUuid("sa_1")).toBe(
+      subagentResultDeliveredEventUuid("sa_1"),
+    );
+    expect(subagentResultDeliveredEventUuid("sa_1")).not.toBe(
+      subagentResultDeliveredEventUuid("sa_2"),
+    );
+  });
+
+  it("keeps availability ids distinct by profile", () => {
+    expect(subagentAvailabilityEventUuid("parent-1", "security_task")).not.toBe(
+      subagentAvailabilityEventUuid("parent-1", "security_validation"),
     );
   });
 

@@ -5,10 +5,13 @@ import { getConvexClient } from "./convex-client";
 import type {
   SecurityValidationCandidate,
   SecurityValidationResult,
+  SecurityTaskResult,
   SubagentMessagePriority,
   SubagentMessageType,
   SubagentContextRef,
   SubagentStatus,
+  SubagentProfile,
+  SubagentStructuredResult,
   ValidationConfidence,
 } from "@/lib/ai/subagents/contracts";
 import type { SubscriptionTier } from "@/types/chat";
@@ -24,11 +27,12 @@ export type PersistedSubagent = {
   parent_tool_call_id: string;
   parent_trigger_run_id: string;
   trigger_run_id?: string;
-  profile: "security_validation";
+  profile: SubagentProfile;
   depth: number;
   status: SubagentStatus;
   name?: string;
   objective: string;
+  success_criteria?: string[];
   inherit_context?: boolean;
   skills?: string[];
   candidate?: SecurityValidationCandidate;
@@ -44,7 +48,7 @@ export type PersistedSubagent = {
   summary?: string;
   verdict?: SecurityValidationResult["verdict"];
   confidence?: ValidationConfidence;
-  structured_result?: SecurityValidationResult;
+  structured_result?: SubagentStructuredResult;
   failure_code?: string;
   failure_reason?: string;
   cancel_reason?: string;
@@ -68,8 +72,10 @@ export const reserveSubagent = async (args: {
   parentMessageId: string;
   parentToolCallId: string;
   parentTriggerRunId: string;
+  profile: SubagentProfile;
   name?: string;
   objective: string;
+  successCriteria?: string[];
   inheritContext?: boolean;
   skills?: string[];
   candidate?: SecurityValidationCandidate;
@@ -103,6 +109,27 @@ export const listActiveSubagentsForParent = async (
     serviceKey,
     parentTriggerRunId,
   })) as PersistedSubagent[];
+
+export const listSubagentsForParent = async (args: {
+  userId: string;
+  chatId: string;
+  parentTriggerRunId: string;
+}): Promise<PersistedSubagent[]> =>
+  (await getConvexClient().query(api.subagents.listForParentBackend, {
+    serviceKey,
+    ...args,
+  })) as PersistedSubagent[];
+
+export const getSubagentForParent = async (args: {
+  userId: string;
+  chatId: string;
+  parentTriggerRunId: string;
+  targetAgentId: string;
+}): Promise<PersistedSubagent | null> =>
+  (await getConvexClient().query(api.subagents.getForParentBackend, {
+    serviceKey,
+    ...args,
+  })) as PersistedSubagent | null;
 
 export const listActiveSubagentsForUser = async (
   userId: string,
@@ -223,7 +250,7 @@ export const finishSubagent = async (args: {
   summary: string;
   verdict?: SecurityValidationResult["verdict"];
   confidence?: ValidationConfidence;
-  structuredResult?: SecurityValidationResult;
+  structuredResult?: SecurityValidationResult | SecurityTaskResult;
   failureCode?: string;
   failureReason?: string;
   cancelReason?: string;
@@ -293,6 +320,7 @@ export const claimNextTerminalSubagentForParent = async (args: {
   userId: string;
   chatId: string;
   parentTriggerRunId: string;
+  targetAgentIds?: string[];
 }): Promise<ParentSubagentState> =>
   (await getConvexClient().mutation(
     api.subagents.claimNextTerminalForParentBackend,

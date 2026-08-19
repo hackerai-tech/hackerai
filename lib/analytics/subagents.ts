@@ -5,6 +5,7 @@ import { phLogger } from "@/lib/posthog/server";
 import type {
   SubagentStatus,
   SubagentVerdict,
+  SubagentProfile,
 } from "@/lib/ai/subagents/contracts";
 
 type BaseSubagentEvent = {
@@ -12,7 +13,7 @@ type BaseSubagentEvent = {
   eventUuid?: string;
   subagentId?: string;
   parentTriggerRunId: string;
-  profile: "security_validation";
+  profile: SubagentProfile;
 };
 
 type SubagentLifecycleEvent = BaseSubagentEvent & {
@@ -25,6 +26,7 @@ type SubagentLifecycleEvent = BaseSubagentEvent & {
   modelFrom?: string;
   modelTo?: string;
   modelPromotionReason?: string;
+  taskStatus?: "completed" | "partial" | "blocked";
 };
 
 const boundedCategory = (value: string | undefined): string | undefined =>
@@ -34,8 +36,11 @@ export const captureSubagentLifecycleEvent = (
   event:
     | "subagent_available"
     | "subagent_create_attempted"
+    | "subagent_create_blocked"
     | "subagent_spawned"
     | "subagent_updated"
+    | "subagent_result_delivered"
+    | "subagent_cancel_requested"
     | "subagent_completed"
     | "subagent_validation_confirmed"
     | "subagent_validation_rejected"
@@ -59,24 +64,34 @@ export const captureSubagentLifecycleEvent = (
     model_from: boundedCategory(fields.modelFrom),
     model_to: boundedCategory(fields.modelTo),
     model_promotion_reason: boundedCategory(fields.modelPromotionReason),
+    task_status: fields.taskStatus,
   });
 };
 
 export const subagentAvailabilityEventUuid = (
   parentTriggerRunId: string,
-): string => uuidv5(`subagent-available:${parentTriggerRunId}`, uuidv5.URL);
+  profile: SubagentProfile = "security_validation",
+): string =>
+  uuidv5(`subagent-available:${parentTriggerRunId}:${profile}`, uuidv5.URL);
 
 export const subagentCreateAttemptEventUuid = (
   parentTriggerRunId: string,
   parentToolCallId: string,
+  profile: SubagentProfile = "security_validation",
 ): string =>
   uuidv5(
-    `subagent-create-attempted:${parentTriggerRunId}:${parentToolCallId}`,
+    `subagent-create-attempted:${parentTriggerRunId}:${parentToolCallId}:${profile}`,
     uuidv5.URL,
   );
 
 export const subagentOutcomeEventUuid = (subagentId: string): string =>
   uuidv5(`subagent-terminal-outcome:${subagentId}`, uuidv5.URL);
+
+export const subagentResultDeliveredEventUuid = (subagentId: string): string =>
+  uuidv5(`subagent-result-delivered:${subagentId}`, uuidv5.URL);
+
+export const subagentCancelRequestedEventUuid = (subagentId: string): string =>
+  uuidv5(`subagent-cancel-requested:${subagentId}`, uuidv5.URL);
 
 export const subagentModelPromotionEventUuid = (subagentId: string): string =>
   uuidv5(`subagent-model-promoted:${subagentId}`, uuidv5.URL);

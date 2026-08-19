@@ -627,7 +627,7 @@ describe("subagent coordination messages", () => {
     );
   });
 
-  it("claims a terminal child completion exactly once", async () => {
+  it("claims an untargeted completion once and targeted completion idempotently", async () => {
     const row: Record<string, any> = {
       _id: "subagent-doc",
       subagent_id: "sa_1",
@@ -693,6 +693,15 @@ describe("subagent coordination messages", () => {
     await expect(
       claimNextTerminalForParentBackend.handler(ctx, claimArgs),
     ).resolves.toEqual({ terminal: null, active: [] });
+    await expect(
+      claimNextTerminalForParentBackend.handler(ctx, {
+        ...claimArgs,
+        targetAgentIds: ["sa_1"],
+      }),
+    ).resolves.toEqual({
+      terminal: expect.objectContaining({ name: "Stored XSS validator" }),
+      active: [],
+    });
     expect(patch).toHaveBeenCalledTimes(1);
     expect(withIndex).toHaveBeenCalledWith(
       "by_user_chat_and_parent_run",

@@ -171,11 +171,17 @@ const presentationForPart = (
     output?.agent_name ??
     input?.name ??
     nameForAgentId(message, agentId) ??
-    (type === "tool-delegate_task" ? legacyTitle : "Subagent");
+    (type === "tool-delegate_task"
+      ? legacyTitle
+      : type === "tool-list_agents"
+        ? "Subagents"
+        : "Subagent");
   const parentMessageId = lifecycle?.data?.parent_message_id ?? message.id;
   const isCreate = type === "tool-create_agent";
+  const isList = type === "tool-list_agents";
   const isSend = type === "tool-send_message_to_agent";
   const isWait = type === "tool-wait_for_agents";
+  const isCancel = type === "tool-cancel_agent";
   const isLegacy = type === "tool-delegate_task";
   const hasChildLifecycle = Boolean(lifecycle?.data?.subagent_id);
   const failed = Boolean(errorText) || output?.success === false;
@@ -187,7 +193,10 @@ const presentationForPart = (
       ? legacyCanOpen
       : hasChildLifecycle ||
         (isCreate && output?.success === true) ||
-        ((isSend || isWait) && output?.success === true && agentId));
+        (isList && output?.success === true) ||
+        ((isSend || isWait || isCancel) &&
+          output?.success === true &&
+          agentId));
   const waiting =
     state === "input-streaming" ||
     (state === "input-available" && status === "streaming");
@@ -203,6 +212,13 @@ const presentationForPart = (
         : "started working";
     action = `${agentName} ${suffix}`;
     showAsChip = true;
+  } else if (isList) {
+    const count = Array.isArray(output?.agents) ? output.agents.length : 0;
+    action = waiting
+      ? "Checking subagents"
+      : failed
+        ? "Could not list subagents"
+        : `${count} ${count === 1 ? "subagent" : "subagents"}`;
   } else if (isSend) {
     suffix = failed ? "update failed" : waiting ? "updating" : "updated";
     action = `${agentName} ${suffix}`;
@@ -223,6 +239,10 @@ const presentationForPart = (
       action = `${agentName} ${suffix}`;
       showAsChip = Boolean(agentId);
     }
+  } else if (isCancel) {
+    suffix = failed ? "cancel failed" : waiting ? "canceling" : "canceled";
+    action = `${agentName} ${suffix}`;
+    showAsChip = true;
   } else {
     action =
       output?.status && output.status !== "completed"
@@ -247,7 +267,9 @@ const presentationForPart = (
       kind: "subagents",
       parentMessageId,
       toolCallId,
-      ...(!isLegacy && agentId ? { selectedSubagentId: agentId } : {}),
+      ...(!isLegacy && !isList && agentId
+        ? { selectedSubagentId: agentId }
+        : {}),
     },
     suffix,
     toolCallId,

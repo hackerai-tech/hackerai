@@ -5,6 +5,7 @@ describe("resultFromPersistedSubagent", () => {
   it("preserves a valid bounded terminal result", () => {
     expect(
       resultFromPersistedSubagent({
+        profile: "security_validation",
         status: "completed",
         structured_result: {
           verdict: "rejected",
@@ -17,6 +18,7 @@ describe("resultFromPersistedSubagent", () => {
         },
       }),
     ).toEqual({
+      profile: "security_validation",
       status: "completed",
       verdict: "rejected",
       confidence: "high",
@@ -30,6 +32,7 @@ describe("resultFromPersistedSubagent", () => {
 
   it("bounds malformed persisted values instead of throwing", () => {
     const result = resultFromPersistedSubagent({
+      profile: "security_validation",
       status: "failed",
       summary: "fallback summary",
       verdict: "unexpected",
@@ -52,5 +55,31 @@ describe("resultFromPersistedSubagent", () => {
     expect(result.summary).toHaveLength(2_000);
     expect(result.evidence_refs).toHaveLength(1);
     expect(result.evidence_refs[0]).toHaveLength(500);
+  });
+
+  it("preserves a bounded generic security task result", () => {
+    expect(
+      resultFromPersistedSubagent({
+        profile: "security_task",
+        status: "completed",
+        structured_result: {
+          task_status: "partial",
+          summary: "Inspected the supplied artifact.",
+          evidence_refs: ["file:/tmp/sample.json"],
+          artifacts: [{ path: "/tmp/findings.md", description: "Notes" }],
+          limitations: ["No live target access."],
+          next_steps: ["Validate the suspicious request."],
+        },
+      }),
+    ).toEqual({
+      profile: "security_task",
+      status: "completed",
+      task_status: "partial",
+      summary: "Inspected the supplied artifact.",
+      evidence_refs: ["file:/tmp/sample.json"],
+      artifacts: [{ path: "/tmp/findings.md", description: "Notes" }],
+      limitations: ["No live target access."],
+      next_steps: ["Validate the suspicious request."],
+    });
   });
 });

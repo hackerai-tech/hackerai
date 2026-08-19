@@ -4,6 +4,8 @@ import { getPostHogFeatureFlagForUser } from "./server";
 
 export const SECURITY_VALIDATION_SUBAGENTS_FLAG =
   "agent-subagents-security-validation-v1" as const;
+export const SECURITY_TASK_SUBAGENTS_FLAG =
+  "agent-subagents-security-task-v1" as const;
 
 type SubagentFeatureEnvironment = {
   NODE_ENV?: string;
@@ -28,3 +30,8 @@ export const resolveSecurityValidationSubagentsEnabled = async (
     userId,
   );
 };
+
+export const resolveSecurityTaskSubagentsEnabled = async (
+  userId: string,
+): Promise<boolean> =>
+  await getPostHogFeatureFlagForUser(SECURITY_TASK_SUBAGENTS_FLAG, userId);

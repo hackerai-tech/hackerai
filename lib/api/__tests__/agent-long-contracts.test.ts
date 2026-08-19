@@ -1084,7 +1084,7 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
       /if \(cleanup\.subagentsEnabled\) \{\s*await settleSubagentsForParentRun\(ctx\.run\.id, "parent_canceled"\)\.catch/,
     );
     expect(taskSrc).toMatch(
-      /finally \{[\s\S]*?if \(securityValidationSubagentsEnabled\) \{\s*await settleSubagentsForParentRun\([\s\S]*?"parent_run_ended"\)\.catch[\s\S]*?triggerSessions\.close[\s\S]*?finishCloudSandboxLifecycle\(\)[\s\S]*?runCleanupMap\.delete\(ctx\.run\.id\)/,
+      /finally \{[\s\S]*?if \(subagentsEnabled\) \{\s*await settleSubagentsForParentRun\([\s\S]*?"parent_run_ended"\)\.catch[\s\S]*?triggerSessions\.close[\s\S]*?finishCloudSandboxLifecycle\(\)[\s\S]*?runCleanupMap\.delete\(ctx\.run\.id\)/,
     );
   });
 

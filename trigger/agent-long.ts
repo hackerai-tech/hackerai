@@ -259,7 +259,9 @@ import { isCentrifugoSandbox } from "@/lib/ai/tools/utils/sandbox-types";
 import { AgentRunTimingTracker } from "@/lib/chat/agent-run-timing";
 import { AgentLongMemoryTelemetry } from "@/lib/chat/agent-long-memory-telemetry";
 import {
+  createCancelAgentTool,
   createCreateAgentTool,
+  createListAgentsTool,
   createSendMessageToAgentTool,
   createWaitForAgentsTool,
 } from "@/lib/ai/tools/subagent-tools";
@@ -2198,6 +2200,7 @@ export type AgentLongPayload = {
   endpoint?: AgentApiEndpoint;
   analyticsRequestContext?: AnalyticsRequestContext;
   securityValidationSubagentsEnabled?: boolean;
+  securityTaskSubagentsEnabled?: boolean;
   convexUrl?: string;
   requestTiming?: {
     routeStartedAt: number;
@@ -2272,7 +2275,10 @@ export const agentLongTask = task({
       endpoint: payloadEndpoint,
       analyticsRequestContext,
       securityValidationSubagentsEnabled = false,
+      securityTaskSubagentsEnabled = false,
     } = payload;
+    const subagentsEnabled =
+      securityValidationSubagentsEnabled || securityTaskSubagentsEnabled;
     let selectedModelOverride = rawSelectedModelOverride;
     const endpoint = payloadEndpoint ?? LEGACY_AGENT_API_ENDPOINT;
     const freeUsageSubject = freeQuotaSubject ?? userId;
@@ -2405,7 +2411,7 @@ export const agentLongTask = task({
       hasObservedUsage,
       chatLogger,
       chatId,
-      subagentsEnabled: securityValidationSubagentsEnabled,
+      subagentsEnabled,
       finishCloudSandboxLifecycle,
     });
 
@@ -3158,7 +3164,7 @@ export const agentLongTask = task({
               auxiliaryVision,
               {
                 cloudSandboxRollout,
-                ...(securityValidationSubagentsEnabled
+                ...(subagentsEnabled
                   ? {
                       additionalTools: (toolContext) => ({
                         create_agent: createCreateAgentTool(toolContext, {
@@ -3167,10 +3173,15 @@ export const agentLongTask = task({
                           permissionMode: agentPermissionMode,
                           subscription,
                           freeQuotaSubject,
+                          securityTaskEnabled: securityTaskSubagentsEnabled,
+                          securityValidationEnabled:
+                            securityValidationSubagentsEnabled,
                         }),
+                        list_agents: createListAgentsTool(toolContext),
                         send_message_to_agent:
                           createSendMessageToAgentTool(toolContext),
                         wait_for_agents: createWaitForAgentsTool(toolContext),
+                        cancel_agent: createCancelAgentTool(toolContext),
                       }),
                     }
                   : {}),
@@ -3182,6 +3193,17 @@ export const agentLongTask = task({
                 eventUuid: subagentAvailabilityEventUuid(ctx.run.id),
                 parentTriggerRunId: ctx.run.id,
                 profile: "security_validation",
+              });
+            }
+            if (securityTaskSubagentsEnabled) {
+              captureSubagentLifecycleEvent("subagent_available", {
+                userId,
+                eventUuid: subagentAvailabilityEventUuid(
+                  ctx.run.id,
+                  "security_task",
+                ),
+                parentTriggerRunId: ctx.run.id,
+                profile: "security_task",
               });
             }
             approvalSandboxManager = sandboxManager;
@@ -3348,6 +3370,7 @@ export const agentLongTask = task({
               agentPermissionMode,
               securityValidationSubagentsEnabled,
               cloudSandboxRollout.provider,
+              securityTaskSubagentsEnabled,
             );
             const systemPromptTokens = safeCountTokens(currentSystemPrompt);
 
@@ -4820,7 +4843,7 @@ export const agentLongTask = task({
       runtimeSettlementWatchdog?.dispose();
       memoryTelemetry.dispose();
       activeRuntimeBudget?.dispose();
-      if (securityValidationSubagentsEnabled) {
+      if (subagentsEnabled) {
         await settleSubagentsForParentRun(ctx.run.id, "parent_run_ended").catch(
           () => undefined,
         );

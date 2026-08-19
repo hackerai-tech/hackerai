@@ -1,14 +1,19 @@
 import {
+  agentSecurityTaskResultSchema,
   agentValidationResultSchema,
+  securityTaskArtifactSchema,
+  securityTaskStatusSchema,
   SUBAGENT_TERMINAL_STATUSES,
   subagentVerdictSchema,
   validationConfidenceSchema,
   vulnerabilitySeveritySchema,
-  type AgentValidationResult,
+  type AgentSubagentResult,
+  type SubagentProfile,
   type SubagentStatus,
 } from "./contracts";
 
 type PersistedResultSource = {
+  profile: SubagentProfile;
   status: SubagentStatus;
   summary?: unknown;
   verdict?: unknown;
@@ -47,12 +52,50 @@ const boundedStringArray = (
 /** Converts untrusted persisted child data into a bounded parent-visible result. */
 export const resultFromPersistedSubagent = (
   row: PersistedResultSource,
-): AgentValidationResult => {
+): AgentSubagentResult => {
   const result = asRecord(row.structured_result);
-  const terminalStatus: AgentValidationResult["status"] =
-    SUBAGENT_TERMINAL_STATUSES.has(row.status)
-      ? (row.status as AgentValidationResult["status"])
-      : "failed";
+  const terminalStatus = SUBAGENT_TERMINAL_STATUSES.has(row.status)
+    ? (row.status as "completed" | "failed" | "canceled" | "timed_out")
+    : "failed";
+  const summary =
+    boundedString(result.summary, 2_000) ??
+    boundedString(row.summary, 2_000) ??
+    "Subagent did not finish.";
+
+  if (row.profile === "security_task") {
+    const taskStatus = securityTaskStatusSchema.safeParse(result.task_status);
+    const artifacts = Array.isArray(result.artifacts)
+      ? result.artifacts
+          .flatMap((item) => {
+            const parsed = securityTaskArtifactSchema.safeParse(item);
+            return parsed.success ? [parsed.data] : [];
+          })
+          .slice(0, 8)
+      : [];
+    const candidate = {
+      profile: "security_task" as const,
+      status: terminalStatus,
+      task_status: taskStatus.success ? taskStatus.data : null,
+      summary,
+      evidence_refs: boundedStringArray(result.evidence_refs, 8, 500),
+      artifacts,
+      limitations: boundedStringArray(result.limitations, 8, 500),
+      next_steps: boundedStringArray(result.next_steps, 8, 500),
+    };
+    const parsed = agentSecurityTaskResultSchema.safeParse(candidate);
+    if (parsed.success) return parsed.data;
+    return {
+      profile: "security_task",
+      status: terminalStatus,
+      task_status: null,
+      summary: "Security task result could not be read.",
+      evidence_refs: [],
+      artifacts: [],
+      limitations: [],
+      next_steps: [],
+    };
+  }
+
   const verdict = subagentVerdictSchema.safeParse(
     result.verdict ?? row.verdict,
   );
@@ -62,10 +105,6 @@ export const resultFromPersistedSubagent = (
   const recommendedSeverity = vulnerabilitySeveritySchema.safeParse(
     result.recommended_severity,
   );
-  const summary =
-    boundedString(result.summary, 2_000) ??
-    boundedString(row.summary, 2_000) ??
-    "Independent validation did not finish.";
   const observedImpact = boundedString(result.observed_impact, 2_000);
   const reproductionSteps = boundedStringArray(
     result.reproduction_steps,
@@ -73,6 +112,7 @@ export const resultFromPersistedSubagent = (
     500,
   );
   const candidate = {
+    profile: "security_validation" as const,
     status: terminalStatus,
     verdict: verdict.success ? verdict.data : null,
     confidence: confidence.success ? confidence.data : null,
@@ -91,6 +131,7 @@ export const resultFromPersistedSubagent = (
   if (parsed.success) return parsed.data;
 
   return {
+    profile: "security_validation",
     status: terminalStatus,
     verdict: null,
     confidence: null,

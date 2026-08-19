@@ -32,7 +32,7 @@ import {
   SUBAGENT_MAX_DURATION_SECONDS,
   SUBAGENT_MAX_STEPS,
   SUBAGENT_TERMINAL_STATUSES,
-  type SecurityValidationResult,
+  type SubagentStructuredResult,
 } from "@/lib/ai/subagents/contracts";
 import {
   buildMissingSubagentResultRecoveryMessage,
@@ -107,6 +107,7 @@ type CancellationCleanup = {
   subagentId: string;
   userId: string;
   parentTriggerRunId: string;
+  profile: "security_task" | "security_validation";
 };
 
 const cancellationCleanup = new Map<string, CancellationCleanup>();
@@ -169,7 +170,7 @@ const waitForRetryDelay = async (
 
 const captureCompletion = (
   row: NonNullable<Awaited<ReturnType<typeof getSubagent>>>,
-  result: SecurityValidationResult,
+  result: SubagentStructuredResult,
   costDollars: number,
   stepCount: number,
   durationMs: number,
@@ -178,9 +179,14 @@ const captureCompletion = (
     userId: row.user_id,
     subagentId: row.subagent_id,
     parentTriggerRunId: row.parent_trigger_run_id,
-    profile: "security_validation" as const,
+    profile: row.profile,
     status: "completed" as const,
-    verdict: result.verdict,
+    ...(row.profile === "security_validation" && "verdict" in result
+      ? { verdict: result.verdict }
+      : {}),
+    ...(row.profile === "security_task" && "task_status" in result
+      ? { taskStatus: result.task_status }
+      : {}),
     durationMs,
     stepCount,
     costDollars,
@@ -189,14 +195,16 @@ const captureCompletion = (
     ...base,
     eventUuid: subagentOutcomeEventUuid(row.subagent_id),
   });
-  captureSubagentLifecycleEvent(
-    result.verdict === "confirmed"
-      ? "subagent_validation_confirmed"
-      : result.verdict === "rejected"
-        ? "subagent_validation_rejected"
-        : "subagent_validation_inconclusive",
-    base,
-  );
+  if (row.profile === "security_validation" && "verdict" in result) {
+    captureSubagentLifecycleEvent(
+      result.verdict === "confirmed"
+        ? "subagent_validation_confirmed"
+        : result.verdict === "rejected"
+          ? "subagent_validation_rejected"
+          : "subagent_validation_inconclusive",
+      { ...base, verdict: result.verdict },
+    );
+  }
 };
 
 export const subagentTask = task({
@@ -223,7 +231,7 @@ export const subagentTask = task({
       subagentId: cleanup.subagentId,
       triggerRunId: ctx.run.id,
       status: "canceled",
-      summary: "Independent validation was canceled with its parent run.",
+      summary: "Subagent was canceled with its parent run.",
       failureCode: "parent_or_user_canceled",
       cancelReason: "parent_or_user_canceled",
     }).catch(() => undefined);
@@ -232,7 +240,7 @@ export const subagentTask = task({
       userId: cleanup.userId,
       subagentId: cleanup.subagentId,
       parentTriggerRunId: cleanup.parentTriggerRunId,
-      profile: "security_validation",
+      profile: cleanup.profile,
       status: "canceled",
       errorCategory: "parent_or_user_canceled",
     });
@@ -266,6 +274,7 @@ export const subagentTask = task({
       subagentId: row.subagent_id,
       userId: row.user_id,
       parentTriggerRunId: row.parent_trigger_run_id,
+      profile: row.profile,
     });
     try {
       const attachOutcome = await attachSubagentTriggerRun(
@@ -301,7 +310,7 @@ export const subagentTask = task({
         `subagent_${row.subagent_id}`,
         `parent_${row.parent_trigger_run_id}`,
         `user_${row.user_id}`,
-        "profile_security_validation",
+        `profile_${row.profile}`,
       ]);
       metadata
         .set("status", "running")
@@ -315,7 +324,7 @@ export const subagentTask = task({
         subagentId: row.subagent_id,
         triggerRunId: ctx.run.id,
         status: "failed",
-        summary: "Independent validation failed during setup.",
+        summary: "Subagent failed during setup.",
         failureCode: "setup_failed",
         failureReason:
           typeof setupError.errorMessage === "string"
@@ -327,7 +336,7 @@ export const subagentTask = task({
           userId: row.user_id,
           subagentId: row.subagent_id,
           parentTriggerRunId: row.parent_trigger_run_id,
-          profile: "security_validation",
+          profile: row.profile,
           status: "failed",
           durationMs: Date.now() - startedAt,
           errorCategory: "setup_failed",
@@ -349,7 +358,7 @@ export const subagentTask = task({
     }, SUBAGENT_MAX_ACTIVE_SECONDS * 1_000);
 
     const usageTracker = new UsageTracker();
-    let resultValue: SecurityValidationResult | undefined;
+    let resultValue: SubagentStructuredResult | undefined;
     let stepCount = 0;
     let responseModel: string | undefined;
     let runtimeFailure: unknown;
@@ -471,7 +480,7 @@ export const subagentTask = task({
         },
         execute: async ({ writer }) => {
           try {
-            const acceptValidationResult = async (input: unknown) => {
+            const acceptResult = async (input: unknown) => {
               const parsed = profile.finalResultTool.schema.parse(input);
               if (
                 Buffer.byteLength(JSON.stringify(parsed), "utf8") >
@@ -485,7 +494,7 @@ export const subagentTask = task({
               if (resultValue) {
                 return {
                   accepted: false,
-                  error: "A validation result was already accepted.",
+                  error: "A structured result was already accepted.",
                 };
               }
               const finalizing = await markSubagentFinalizing(
@@ -503,16 +512,23 @@ export const subagentTask = task({
               if (finalizing !== "updated") {
                 return {
                   accepted: false,
-                  error: "This validation is no longer accepting results.",
+                  error: "This subagent is no longer accepting results.",
                 };
               }
               resultValue = parsed;
-              return { accepted: true, verdict: parsed.verdict };
+              return {
+                accepted: true,
+                ...(row.profile === "security_validation" && "verdict" in parsed
+                  ? { verdict: parsed.verdict }
+                  : "task_status" in parsed
+                    ? { task_status: parsed.task_status }
+                    : {}),
+              };
             };
             const submitResult = tool({
               description: profile.finalResultTool.description,
               inputSchema: profile.finalResultTool.schema,
-              execute: acceptValidationResult,
+              execute: acceptResult,
             });
             const cloudSandboxRollout =
               resolvePersistedSubagentCloudSandboxRollout({
@@ -581,7 +597,7 @@ export const subagentTask = task({
                     maxToolCalls,
                   }) => {
                     triggerLogger.warn(
-                      "[security-validation-subagent] provider tool calls bounded",
+                      "[subagent] provider tool calls bounded",
                       {
                         event: "provider_tool_call_guard_applied",
                         service: "hackerai-subagent",
@@ -682,7 +698,7 @@ export const subagentTask = task({
                       ),
                       subagentId: row.subagent_id,
                       parentTriggerRunId: row.parent_trigger_run_id,
-                      profile: "security_validation",
+                      profile: row.profile,
                       modelFrom: previousModelName,
                       modelTo: activeModelName,
                       modelPromotionReason: "image_tool_result",
@@ -763,7 +779,7 @@ export const subagentTask = task({
                   await generation.consumeStream();
                   const recoveredResult = await generation.output;
                   if (recoveredResult) {
-                    await acceptValidationResult(recoveredResult);
+                    await acceptResult(recoveredResult);
                   }
                 } catch (error) {
                   attemptError ??= error;
@@ -841,7 +857,7 @@ export const subagentTask = task({
                   }).catch(() => false);
                   metadata.set("providerRetryCount", providerRetriesUsed);
                   triggerLogger.warn(
-                    "[security-validation-subagent] retrying recoverable provider failure",
+                    "[subagent] retrying recoverable provider failure",
                     {
                       subagentId: row.subagent_id,
                       parentTriggerRunId: row.parent_trigger_run_id,
@@ -886,7 +902,9 @@ export const subagentTask = task({
               resultRecoveriesUsed += 1;
               conversationMessages.push({
                 role: "user",
-                content: buildMissingSubagentResultRecoveryMessage(),
+                content: buildMissingSubagentResultRecoveryMessage(
+                  profile.finalResultTool.name,
+                ),
               });
               await recordSubagentRecovery({
                 subagentId: row.subagent_id,
@@ -915,27 +933,26 @@ export const subagentTask = task({
         ? {
             status: "timed_out" as const,
             code: "active_time_limit",
-            summary:
-              "Independent validation reached its 15-minute active limit.",
+            summary: "Subagent reached its 15-minute active limit.",
           }
         : triggerSignal.aborted
           ? {
               status: "canceled" as const,
               code: "parent_or_user_canceled",
-              summary: "Independent validation was canceled.",
+              summary: "Subagent was canceled.",
             }
           : spendCapExceeded
             ? {
                 status: "failed" as const,
                 code: "spend_cap",
-                summary: `Independent validation reached its $${costLimitDollars.toFixed(2)} spend limit.`,
+                summary: `Subagent reached its $${costLimitDollars.toFixed(2)} spend limit.`,
               }
             : billingFailure
               ? {
                   status: "failed" as const,
                   code: "billing_limit",
                   summary:
-                    "Independent validation could not settle within the available usage budget.",
+                    "Subagent could not settle within the available usage budget.",
                 }
               : runtimeFailure
                 ? {
@@ -955,8 +972,7 @@ export const subagentTask = task({
                   ? {
                       status: "failed" as const,
                       code: "structured_result_missing",
-                      summary:
-                        "Independent validation ended without a structured verdict.",
+                      summary: "Subagent ended without a structured result.",
                     }
                   : null;
 
@@ -977,7 +993,7 @@ export const subagentTask = task({
           userId: row.user_id,
           subagentId: row.subagent_id,
           parentTriggerRunId: row.parent_trigger_run_id,
-          profile: "security_validation",
+          profile: row.profile,
           status: terminalFailure.status,
           durationMs: Date.now() - startedAt,
           stepCount,
@@ -985,42 +1001,43 @@ export const subagentTask = task({
           errorCategory: terminalFailure.code,
         });
         if (runtimeFailure) {
-          triggerLogger.error(
-            "[security-validation-subagent] bounded recovery exhausted",
-            {
-              subagentId: row.subagent_id,
-              parentTriggerRunId: row.parent_trigger_run_id,
-              triggerRunId: ctx.run.id,
-              failureCode: terminalFailure.code,
-              providerRetryCount: providerRetriesUsed,
-              resultRecoveryCount: resultRecoveriesUsed,
-            },
-          );
+          triggerLogger.error("[subagent] bounded recovery exhausted", {
+            subagentId: row.subagent_id,
+            parentTriggerRunId: row.parent_trigger_run_id,
+            triggerRunId: ctx.run.id,
+            failureCode: terminalFailure.code,
+            providerRetryCount: providerRetriesUsed,
+            resultRecoveryCount: resultRecoveriesUsed,
+          });
         }
         metadata.set("status", terminalFailure.status);
         return { subagentId: row.subagent_id, status: terminalFailure.status };
       }
 
-      const validationResult = resultValue as SecurityValidationResult;
+      const completedResult = resultValue as SubagentStructuredResult;
       await finishSubagent({
         subagentId: row.subagent_id,
         triggerRunId: ctx.run.id,
         status: "completed",
-        summary: validationResult.summary,
-        verdict: validationResult.verdict,
-        confidence: validationResult.confidence,
-        structuredResult: validationResult,
+        summary: completedResult.summary,
+        ...(row.profile === "security_validation" &&
+        "verdict" in completedResult
+          ? {
+              verdict: completedResult.verdict,
+              confidence: completedResult.confidence,
+            }
+          : {}),
+        structuredResult: completedResult,
         costDollars,
         stepCount,
       });
       metadata
         .set("status", "completed")
-        .set("verdict", validationResult.verdict)
         .set("stepCount", stepCount)
         .set("costDollars", costDollars);
       captureCompletion(
         row,
-        validationResult,
+        completedResult,
         costDollars,
         stepCount,
         Date.now() - startedAt,
@@ -1031,26 +1048,25 @@ export const subagentTask = task({
         ? {
             status: "timed_out" as const,
             code: "active_time_limit",
-            summary:
-              "Independent validation reached its 15-minute active limit.",
+            summary: "Subagent reached its 15-minute active limit.",
           }
         : triggerSignal.aborted
           ? {
               status: "canceled" as const,
               code: "parent_or_user_canceled",
-              summary: "Independent validation was canceled.",
+              summary: "Subagent was canceled.",
             }
           : spendCapExceeded
             ? {
                 status: "failed" as const,
                 code: "spend_cap",
-                summary: `Independent validation reached its $${costLimitDollars.toFixed(2)} spend limit.`,
+                summary: `Subagent reached its $${costLimitDollars.toFixed(2)} spend limit.`,
               }
             : {
                 status: "failed" as const,
                 code: "runtime_error",
                 summary:
-                  "Independent validation failed before producing a verdict.",
+                  "Subagent failed before producing a structured result.",
               };
       const fallbackCostDollars = usageTracker.computeCostDollars(
         selectedModel,
@@ -1076,14 +1092,14 @@ export const subagentTask = task({
         userId: row.user_id,
         subagentId: row.subagent_id,
         parentTriggerRunId: row.parent_trigger_run_id,
-        profile: "security_validation",
+        profile: row.profile,
         status: terminalFailure.status,
         durationMs: Date.now() - startedAt,
         stepCount,
         costDollars: settlement.costDollars,
         errorCategory: terminalFailure.code,
       });
-      triggerLogger.error("[security-validation-subagent] run failed", {
+      triggerLogger.error("[subagent] run failed", {
         subagentId: row.subagent_id,
         parentTriggerRunId: row.parent_trigger_run_id,
         errorName: error instanceof Error ? error.name : "UnknownError",

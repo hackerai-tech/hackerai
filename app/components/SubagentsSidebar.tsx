@@ -28,6 +28,7 @@ import { useSubagentRealtime } from "@/app/hooks/useSubagentRealtime";
 import { captureAuthenticatedEvent } from "@/lib/analytics/client";
 import {
   SUBAGENT_ACTIVE_STATUSES,
+  type SubagentProfile,
   type SubagentStatus,
 } from "@/lib/ai/subagents/contracts";
 import { toSubagentHandle } from "@/lib/ai/subagents/agent-handle";
@@ -39,7 +40,7 @@ type ChildSummary = {
   parent_trigger_run_id: string;
   parent_tool_call_id: string;
   trigger_run_id?: string;
-  profile?: string;
+  profile: SubagentProfile;
   status: SubagentStatus;
   name?: string;
   objective?: string;
@@ -576,7 +577,6 @@ export const SubagentsSidebar = ({
     if (!selectedOriginResolved) return;
     captureAuthenticatedEvent("subagent_sidebar_opened", {
       parent_message_id: effectiveParentMessageId,
-      profile: "security_validation",
       view: "list",
     });
   }, [effectiveParentMessageId, selectedOriginResolved]);
@@ -589,7 +589,7 @@ export const SubagentsSidebar = ({
         captureAuthenticatedEvent("subagent_abandoned", {
           subagent_id: child.subagent_id,
           parent_trigger_run_id: child.parent_trigger_run_id,
-          profile: "security_validation",
+          profile: child.profile,
           status: child.status,
           open_duration_ms:
             Date.now() -
@@ -611,7 +611,7 @@ export const SubagentsSidebar = ({
     captureAuthenticatedEvent("subagent_opened", {
       subagent_id: selected.subagent_id,
       parent_trigger_run_id: selected.parent_trigger_run_id,
-      profile: "security_validation",
+      profile: selected.profile,
       status: selected.status,
       open_latency_ms: Date.now() - selected.created_at,
     });

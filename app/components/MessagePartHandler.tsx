@@ -34,8 +34,10 @@ interface MessagePartHandlerProps {
 const SUBAGENT_TOOL_PART_TYPES = new Set([
   "tool-delegate_task",
   "tool-create_agent",
+  "tool-list_agents",
   "tool-send_message_to_agent",
   "tool-wait_for_agents",
+  "tool-cancel_agent",
 ]);
 
 const subagentLifecycleSignature = (
@@ -298,8 +300,10 @@ export const MessagePartHandler = memo(function MessagePartHandler({
 
     case "tool-delegate_task":
     case "tool-create_agent":
+    case "tool-list_agents":
     case "tool-send_message_to_agent":
     case "tool-wait_for_agents":
+    case "tool-cancel_agent":
       return (
         <SubagentToolHandler message={message} part={part} status={status} />
       );
