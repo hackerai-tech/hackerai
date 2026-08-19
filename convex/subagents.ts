@@ -678,6 +678,16 @@ export const claimNextTerminalForParentBackend = mutation({
             toSubagentHandle(row.subagent_id) === targetAgentId,
         ),
     );
+    const active = scopedRows.filter(
+      (row) => row.name !== undefined && isActiveStatus(row.status),
+    );
+    if (unmatchedTargetAgentIds.length > 0) {
+      return {
+        terminal: null,
+        active,
+        unmatchedTargetAgentIds,
+      };
+    }
     const terminal = scopedRows
       .filter(
         (row) =>
@@ -703,9 +713,7 @@ export const claimNextTerminalForParentBackend = mutation({
             ...terminal,
           }
         : null,
-      active: scopedRows.filter(
-        (row) => row.name !== undefined && isActiveStatus(row.status),
-      ),
+      active,
       unmatchedTargetAgentIds,
     };
   },

@@ -685,6 +685,18 @@ describe("subagent coordination messages", () => {
     };
 
     await expect(
+      claimNextTerminalForParentBackend.handler(ctx, {
+        ...claimArgs,
+        targetAgentIds: ["sa_1", "sa_unknown"],
+      }),
+    ).resolves.toEqual({
+      terminal: null,
+      active: [],
+      unmatchedTargetAgentIds: ["sa_unknown"],
+    });
+    expect(patch).not.toHaveBeenCalled();
+
+    await expect(
       claimNextTerminalForParentBackend.handler(ctx, claimArgs),
     ).resolves.toEqual({
       terminal: expect.objectContaining({ name: "Stored XSS validator" }),
