@@ -10,6 +10,7 @@ import { logger } from "@/lib/logger";
 import { fenceAndGetActiveAgentResourcesForUser } from "@/lib/db/actions";
 import { closeAndCancelAgentResources } from "@/lib/api/agent-deletion-cleanup";
 import { cancelSubagentsForUserDeletion } from "@/lib/db/subagents";
+import { terminateCloudSandboxesForUser } from "@/lib/ai/tools/utils/cloud-sandbox";
 
 type OrganizationMembership = Awaited<
   ReturnType<typeof workos.userManagement.listOrganizationMemberships>
@@ -271,6 +272,14 @@ export const POST = async (req: NextRequest) => {
     }
 
     const serviceKey = getConvexServiceKey();
+    stage = "begin_user_data_deletion";
+    await getConvexClient().mutation(
+      api.userDeletion.beginUserDataDeletionByService,
+      {
+        serviceKey,
+        userId,
+      },
+    );
     stage = "mark_account_identity_deleted";
     await markAccountIdentityDeleted(userId, freeQuotaSubject, serviceKey);
 
@@ -304,6 +313,11 @@ export const POST = async (req: NextRequest) => {
       ],
       "account-deleted",
     );
+
+    // Provider cleanup must finish while the Convex session rows still retain
+    // the AWS MicroVM identifiers needed for termination and safe retries.
+    stage = "terminate_cloud_sandboxes";
+    await terminateCloudSandboxesForUser(userId);
 
     // Own app-data cleanup on the server so account deletion does not depend
     // on the browser successfully running a Convex mutation before this route.

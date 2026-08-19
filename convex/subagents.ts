@@ -12,6 +12,7 @@ import {
   SUBAGENT_WATCHDOG_GRACE_SECONDS,
 } from "../lib/ai/subagents/contracts";
 import { toSubagentHandle } from "../lib/ai/subagents/agent-handle";
+import { isUserDeletionFenced } from "./lib/userDeletionFence";
 
 const statusValidator = v.union(
   v.literal("queued"),
@@ -98,20 +99,15 @@ const subagentSummaryValidator = v.object({
 
 const ACTIVE_SUBAGENT_STATUSES = ["queued", "running", "finalizing"] as const;
 const SUBAGENT_DELETION_CANCELLATION_BATCH_SIZE = 100;
-const DELETION_CANCELLATION_REASONS = new Set([
-  "chat_deleted",
-  "all_chats_deleted",
-  "account_deleted",
-]);
 const isActiveStatus = (status: string): boolean =>
   ACTIVE_SUBAGENT_STATUSES.some((activeStatus) => activeStatus === status);
-const isPendingDeletionCancellation = (row: {
-  status: string;
-  cancel_reason?: string;
-}): boolean =>
-  row.status === "canceled" &&
-  typeof row.cancel_reason === "string" &&
-  DELETION_CANCELLATION_REASONS.has(row.cancel_reason);
+const isPendingDeletionCancellation = (
+  row: {
+    status: string;
+    cancel_reason?: string;
+  },
+  reason: string,
+): boolean => row.status === "canceled" && row.cancel_reason === reason;
 const deletionCancellationResultValidator = v.object({
   triggerRunIds: v.array(v.string()),
   hasMore: v.boolean(),
@@ -220,6 +216,10 @@ export const reserveForBackend = mutation({
   }),
   handler: async (ctx, args) => {
     validateServiceKey(args.serviceKey);
+
+    if (await isUserDeletionFenced(ctx.db, args.userId)) {
+      return { outcome: "chat_missing" as const };
+    }
 
     const chat = await ctx.db
       .query("chats")
@@ -948,7 +948,9 @@ export const cancelForChatDeletionBackend = mutation({
       isActiveStatus(row.status),
     );
     const cancellationRows = candidateRows.filter(
-      (row) => isActiveStatus(row.status) || isPendingDeletionCancellation(row),
+      (row) =>
+        isActiveStatus(row.status) ||
+        isPendingDeletionCancellation(row, args.reason),
     );
     const now = Date.now();
     await Promise.all(
@@ -1009,7 +1011,9 @@ export const cancelForUserDeletionBackend = mutation({
       isActiveStatus(row.status),
     );
     const cancellationRows = candidateRows.filter(
-      (row) => isActiveStatus(row.status) || isPendingDeletionCancellation(row),
+      (row) =>
+        isActiveStatus(row.status) ||
+        isPendingDeletionCancellation(row, args.reason),
     );
     const now = Date.now();
     await Promise.all(

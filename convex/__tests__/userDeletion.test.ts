@@ -115,6 +115,7 @@ function createMockCtx(tables: Tables, subject = "user_123") {
   const scheduler = {
     runAfter: jest.fn().mockResolvedValue(undefined),
   };
+  let insertedDocuments = 0;
 
   const db = {
     query: jest.fn((table: string) =>
@@ -150,6 +151,12 @@ function createMockCtx(tables: Tables, subject = "user_123") {
           }
         }
       }
+    }),
+    insert: jest.fn(async (table: string, value: Record<string, any>) => {
+      insertedDocuments += 1;
+      const id = `inserted-${table}-${insertedDocuments}`;
+      (tables[table] ??= []).push({ _id: id, ...value });
+      return id;
     }),
   };
 
@@ -535,6 +542,10 @@ function seedTables(userId = "user_123", otherUserId = "user_other"): Tables {
     ],
     processed_webhooks: [{ _id: "webhook", event_id: "evt_1" }],
     processed_checkout_sessions: [{ _id: "checkout", session_key: "cs_1" }],
+    user_deletion_fences: [
+      { _id: "fence-user", user_id: userId, started_at: 1 },
+      { _id: "fence-other", user_id: otherUserId, started_at: 1 },
+    ],
     research_runs: [
       {
         _id: "research-run",
@@ -598,12 +609,18 @@ describe("userDeletion", () => {
   });
 
   it("deletes product data, anonymizes ledgers, and retains aggregate tables", async () => {
-    const { deleteAllUserData, DELETED_USER_ID, USER_DELETION_TABLE_POLICY } =
-      await import("../userDeletion");
+    const {
+      deleteAllUserDataByService,
+      DELETED_USER_ID,
+      USER_DELETION_TABLE_POLICY,
+    } = await import("../userDeletion");
     const tables = seedTables();
     const { ctx, scheduler, deletedIds } = createMockCtx(tables);
 
-    await deleteAllUserData.handler(ctx as any, {});
+    await deleteAllUserDataByService.handler(ctx as any, {
+      serviceKey: "service_key",
+      userId: "user_123",
+    });
 
     for (const table of USER_DELETION_TABLE_POLICY.delete) {
       expect(
@@ -632,6 +649,7 @@ describe("userDeletion", () => {
     expect(row(tables, "research_reports", "research-report")).toBeTruthy();
     expect(row(tables, "temp_streams", "temp-stream-user")).toBeUndefined();
     expect(row(tables, "temp_streams", "temp-stream-other")).toBeTruthy();
+    expect(row(tables, "user_deletion_fences", "fence-user")).toBeTruthy();
 
     expect(row(tables, "cancellation_reasons", "cancel-user")).toMatchObject({
       user_id: DELETED_USER_ID,
@@ -715,7 +733,9 @@ describe("userDeletion", () => {
     });
 
     for (const table of USER_DELETION_TABLE_POLICY.retain) {
-      expect(tables[table]).toHaveLength(1);
+      expect(tables[table]).toHaveLength(
+        table === "user_deletion_fences" ? 2 : 1,
+      );
     }
 
     expect(mockFileCountAggregate.deleteIfExists).toHaveBeenCalledWith(
@@ -747,6 +767,29 @@ describe("userDeletion", () => {
     });
 
     expect(row(tables, "chats", "chat-doc")).toBeUndefined();
+  });
+
+  it("creates an idempotent deletion fence before lifecycle cleanup", async () => {
+    const { beginUserDataDeletionByService } = await import("../userDeletion");
+    const tables = seedTables();
+    tables.user_deletion_fences = [];
+    const { ctx, db } = createMockCtx(tables);
+
+    await beginUserDataDeletionByService.handler(ctx as any, {
+      serviceKey: "service_key",
+      userId: "user_123",
+    });
+    await beginUserDataDeletionByService.handler(ctx as any, {
+      serviceKey: "service_key",
+      userId: "user_123",
+    });
+
+    expect(tables.user_deletion_fences).toHaveLength(1);
+    expect(tables.user_deletion_fences[0]).toMatchObject({
+      user_id: "user_123",
+      started_at: expect.any(Number),
+    });
+    expect(db.insert).toHaveBeenCalledTimes(1);
   });
 
   it("rejects service-key cleanup with an invalid key", async () => {
@@ -838,7 +881,7 @@ describe("userDeletion", () => {
   });
 
   it("keeps cleanup reads bounded and preserves chats until a later message batch", async () => {
-    const { deleteAllUserData } = await import("../userDeletion");
+    const { deleteAllUserDataByService } = await import("../userDeletion");
     const tables = seedTables();
     tables.feedback = Array.from({ length: 101 }, (_, index) => ({
       _id: `feedback-user-${index}`,
@@ -856,7 +899,10 @@ describe("userDeletion", () => {
     }));
     const { ctx, readCounter } = createMockCtx(tables);
 
-    const firstBatch = await deleteAllUserData.handler(ctx as any, {});
+    const firstBatch = await deleteAllUserDataByService.handler(ctx as any, {
+      serviceKey: "service_key",
+      userId: "user_123",
+    });
     const firstBatchReads = readCounter.value;
 
     expect(firstBatch.hasMore).toBe(true);
@@ -867,7 +913,10 @@ describe("userDeletion", () => {
     expect(firstBatchReads).toBeLessThanOrEqual(100);
     expect(row(tables, "chats", "chat-doc")).toBeTruthy();
 
-    const secondBatch = await deleteAllUserData.handler(ctx as any, {});
+    const secondBatch = await deleteAllUserDataByService.handler(ctx as any, {
+      serviceKey: "service_key",
+      userId: "user_123",
+    });
     const secondBatchReads = readCounter.value - firstBatchReads;
 
     expect(secondBatch.hasMore).toBe(true);
@@ -878,7 +927,10 @@ describe("userDeletion", () => {
     expect(secondBatchReads).toBeLessThanOrEqual(100);
     expect(row(tables, "chats", "chat-doc")).toBeTruthy();
 
-    const thirdBatch = await deleteAllUserData.handler(ctx as any, {});
+    const thirdBatch = await deleteAllUserDataByService.handler(ctx as any, {
+      serviceKey: "service_key",
+      userId: "user_123",
+    });
     const thirdBatchReads =
       readCounter.value - firstBatchReads - secondBatchReads;
 
@@ -892,20 +944,35 @@ describe("userDeletion", () => {
   });
 
   it("fails user deletion if S3 cleanup scheduling fails", async () => {
-    const { deleteAllUserData } = await import("../userDeletion");
+    const { deleteAllUserDataByService } = await import("../userDeletion");
     const tables = seedTables();
     const { ctx, scheduler } = createMockCtx(tables);
     scheduler.runAfter.mockRejectedValueOnce(new Error("Scheduler error"));
 
-    await expect(deleteAllUserData.handler(ctx as any, {})).rejects.toThrow(
-      "Scheduler error",
-    );
+    await expect(
+      deleteAllUserDataByService.handler(ctx as any, {
+        serviceKey: "service_key",
+        userId: "user_123",
+      }),
+    ).rejects.toThrow("Scheduler error");
 
     expect(scheduler.runAfter).toHaveBeenCalledWith(
       0,
       "deleteS3ObjectsBatchAction",
       { s3Keys: ["users/user_123/file.pdf"] },
     );
+  });
+
+  it("blocks authenticated clients from bypassing lifecycle-aware account deletion", async () => {
+    const { deleteAllUserData } = await import("../userDeletion");
+    const tables = seedTables();
+    const { ctx } = createMockCtx(tables);
+
+    await expect(deleteAllUserData.handler(ctx as any, {})).rejects.toThrow(
+      "use the secure account deletion endpoint",
+    );
+
+    expect(row(tables, "chats", "chat-doc")).toBeTruthy();
   });
 
   it("throws if the public mutation has no authenticated user", async () => {

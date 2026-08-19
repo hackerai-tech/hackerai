@@ -72,11 +72,13 @@ const makeCtx = ({
   insertResult = "chat-doc-1",
   project,
   authenticatedUserId = "user-1",
+  deletionFenced = false,
 }: {
   existingChat?: Record<string, unknown> | null;
   insertResult?: string;
   project?: Record<string, unknown> | null;
   authenticatedUserId?: string | null;
+  deletionFenced?: boolean;
 }) => {
   const unique = jest.fn<any>().mockResolvedValue(existingChat ?? null);
   const first = jest.fn<any>().mockResolvedValue(existingChat ?? null);
@@ -91,7 +93,17 @@ const makeCtx = ({
     build(q);
     return { first, unique };
   });
-  const query = jest.fn(() => ({ withIndex }));
+  const query = jest.fn((table: string) =>
+    table === "user_deletion_fences"
+      ? {
+          withIndex: jest.fn(() => ({
+            first: jest
+              .fn<any>()
+              .mockResolvedValue(deletionFenced ? { _id: "fence-1" } : null),
+          })),
+        }
+      : { withIndex },
+  );
   const insert = jest.fn<any>().mockResolvedValue(insertResult);
   const normalizeId = jest.fn<any>((_table: string, id: string) => id);
   const get = jest.fn<any>().mockResolvedValue(project ?? null);
@@ -127,6 +139,18 @@ const makeCtx = ({
 };
 
 describe("saveChat", () => {
+  it("rejects chat creation after account deletion starts", async () => {
+    const { saveChat } = await import("../chats");
+    const { ctx, insert } = makeCtx({ deletionFenced: true });
+
+    await expect(saveChat.handler(ctx, saveChatArgs)).rejects.toMatchObject({
+      data: expect.objectContaining({
+        code: "ACCOUNT_DELETION_IN_PROGRESS",
+      }),
+    });
+    expect(insert).not.toHaveBeenCalled();
+  });
+
   it("uses unique chat id lookup before inserting", async () => {
     const { saveChat } = await import("../chats");
     const { ctx, first, indexEq, insert, unique, withIndex } = makeCtx({});

@@ -60,10 +60,23 @@ const {
   setActiveTriggerRun,
 } = require("../chats") as typeof import("../chats");
 
-const makeCtx = (chat: Record<string, unknown> | null) => {
+const makeCtx = (
+  chat: Record<string, unknown> | null,
+  deletionFenced = false,
+) => {
   const first = jest.fn<any>().mockResolvedValue(chat);
   const withIndex = jest.fn(() => ({ first }));
-  const query = jest.fn(() => ({ withIndex }));
+  const query = jest.fn((table: string) =>
+    table === "user_deletion_fences"
+      ? {
+          withIndex: jest.fn(() => ({
+            first: jest
+              .fn<any>()
+              .mockResolvedValue(deletionFenced ? { _id: "fence-1" } : null),
+          })),
+        }
+      : { withIndex },
+  );
   const patch = jest.fn<any>().mockResolvedValue(undefined);
   return { ctx: { db: { query, patch } } as any, patch };
 };
@@ -113,6 +126,26 @@ describe("Agent approval lifecycle guards", () => {
     expect(patch).not.toHaveBeenCalled();
   });
 
+  it("does not attach a new run after account deletion starts", async () => {
+    const { ctx, patch } = makeCtx(
+      {
+        _id: "chat-doc-1",
+        id: "chat-1",
+        user_id: "user-1",
+      },
+      true,
+    );
+
+    await expect(
+      setActiveTriggerRun.handler(ctx, {
+        serviceKey: "service-key",
+        chatId: "chat-1",
+        triggerRunId: "late-run",
+      }),
+    ).resolves.toBe("deleting");
+    expect(patch).not.toHaveBeenCalled();
+  });
+
   it("fences an inactive chat before a late run can be associated", async () => {
     const chat: Record<string, unknown> = {
       _id: "chat-doc-1",
@@ -132,7 +165,18 @@ describe("Agent approval lifecycle guards", () => {
       Object.assign(chat, update);
     });
     const ctx = {
-      db: { query: jest.fn(() => ({ withIndex })), patch },
+      db: {
+        query: jest.fn((table: string) =>
+          table === "user_deletion_fences"
+            ? {
+                withIndex: jest.fn(() => ({
+                  first: jest.fn<any>().mockResolvedValue(null),
+                })),
+              }
+            : { withIndex },
+        ),
+        patch,
+      },
     } as any;
 
     await expect(
