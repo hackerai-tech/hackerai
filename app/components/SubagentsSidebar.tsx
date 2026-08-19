@@ -116,10 +116,35 @@ const childTitle = (child: ChildSummary): string =>
 const childSubtitle = (child: ChildSummary): string | undefined =>
   child.subtitle ?? child.candidate?.affected_asset;
 
+const cancellationDescription = (child: ChildSummary): string | undefined => {
+  switch (child.cancel_reason) {
+    case "parent_requested":
+      return "Canceled by the parent agent.";
+    case "user_canceled_child":
+      return "Canceled by you.";
+    case "parent_run_ended":
+    case "agent-run-ended":
+      return "Canceled when the parent Agent run ended.";
+    case "parent_canceled":
+      return "Canceled when the parent Agent run was canceled.";
+    case "parent_run_failed":
+      return "Canceled when the parent Agent run failed.";
+    case "chat_deleted":
+      return "Canceled because the chat was deleted.";
+    case "all_chats_deleted":
+      return "Canceled because all chats were deleted.";
+    case "account_deleted":
+      return "Canceled during account deletion.";
+    default:
+      return child.status === "canceled" ? "Subagent was canceled." : undefined;
+  }
+};
+
 const childDescription = (child: ChildSummary): string =>
   child.summary ??
-  child.failure_reason ??
-  child.cancel_reason ??
+  (child.status === "canceled"
+    ? cancellationDescription(child)
+    : child.failure_reason) ??
   childSubtitle(child) ??
   child.objective ??
   "No task summary yet";
@@ -242,6 +267,14 @@ const getVisibleAssistantParts = (
   });
   return visibleParts;
 };
+
+const hasRenderableTranscriptParts = (parts: UIMessage["parts"]): boolean =>
+  parts.some((part) => {
+    if (part.type === "text" || part.type === "reasoning") {
+      return part.text.trim().length > 0;
+    }
+    return part.type === "data-summarization" || part.type.startsWith("tool-");
+  });
 
 const SubagentMessageActions = memo(function SubagentMessageActions({
   messageId,
@@ -435,15 +468,17 @@ const Transcript = memo(function Transcript({
   const hasPersistedAssistant = persisted?.some(
     (message) => message.role === "assistant",
   );
+  const shouldReplayTerminalStream =
+    child.status !== "canceled" &&
+    persisted !== undefined &&
+    !hasPersistedAssistant;
   const {
     message: liveMessage,
     state,
     retry,
   } = useSubagentRealtime({
     subagentId: child.subagent_id,
-    enabled:
-      !!child.trigger_run_id &&
-      (active || (persisted !== undefined && !hasPersistedAssistant)),
+    enabled: !!child.trigger_run_id && (active || shouldReplayTerminalStream),
   });
 
   const messages = useMemo(() => {
@@ -466,9 +501,10 @@ const Transcript = memo(function Transcript({
     () =>
       messages.filter(
         (message) =>
-          message.role === "assistant" ||
-          (message.role === "user" &&
-            message.messageSource === "parent_update"),
+          hasRenderableTranscriptParts(message.parts) &&
+          (message.role === "assistant" ||
+            (message.role === "user" &&
+              message.messageSource === "parent_update")),
       ),
     [messages],
   );
@@ -898,11 +934,15 @@ export const SubagentsSidebar = ({
                       </button>
                     )}
                   </div>
-                  {(selected.failure_reason || selected.cancel_reason) && (
-                    <p className="mt-2 text-xs text-destructive">
-                      {selected.failure_reason ?? selected.cancel_reason}
+                  {selected.status === "canceled" ? (
+                    <p className="mt-2 text-xs text-muted-foreground">
+                      {cancellationDescription(selected)}
                     </p>
-                  )}
+                  ) : selected.failure_reason ? (
+                    <p className="mt-2 text-xs text-destructive">
+                      {selected.failure_reason}
+                    </p>
+                  ) : null}
                   {cancelError && (
                     <p className="mt-2 text-xs text-destructive">
                       {cancelError}

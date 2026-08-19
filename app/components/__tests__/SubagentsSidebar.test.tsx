@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, jest } from "@jest/globals";
 
 const mockUseQuery = jest.fn<any>();
 const mockSetMessageFeedback = jest.fn<any>();
+const mockUseSubagentRealtime = jest.fn<any>();
 jest.mock("convex/react", () => ({
   useQuery: (...args: unknown[]) => mockUseQuery(...args),
   useMutation: () => mockSetMessageFeedback,
@@ -29,11 +30,7 @@ jest.mock("sonner", () => ({
 }));
 
 jest.mock("@/app/hooks/useSubagentRealtime", () => ({
-  useSubagentRealtime: () => ({
-    message: null,
-    state: "connecting",
-    retry: jest.fn(),
-  }),
+  useSubagentRealtime: (...args: unknown[]) => mockUseSubagentRealtime(...args),
 }));
 
 const captureAuthenticatedEvent = jest.fn();
@@ -100,12 +97,31 @@ const doneChild = {
   completed_at: Date.now() - 1_000,
 };
 
+const canceledChild = {
+  ...activeChild,
+  subagent_id: "sa_canceled",
+  trigger_run_id: "child-run-canceled",
+  status: "canceled",
+  summary: "Subagent was canceled.",
+  cancel_reason: "parent_requested",
+  objective: "Check whether the target reflects the supplied marker.",
+  title: "Canceled candidate",
+  completed_at: Date.now() - 1_000,
+};
+
 const persistedAssistantCreatedAt = Date.now() - 60_000;
 
 describe("SubagentsSidebar", () => {
   beforeEach(() => {
     jest.clearAllMocks();
     mockSetMessageFeedback.mockResolvedValue("updated");
+    mockUseSubagentRealtime.mockImplementation(
+      ({ enabled }: { enabled: boolean }) => ({
+        message: null,
+        state: enabled ? "connecting" : "idle",
+        retry: jest.fn(),
+      }),
+    );
     mockUseQuery.mockImplementation((query, args) => {
       if (query === "listForParentMessage") return [activeChild, doneChild];
       if (query === "getOwned") {
@@ -261,6 +277,61 @@ describe("SubagentsSidebar", () => {
     expect(
       screen.queryByText("Internal worker prompt"),
     ).not.toBeInTheDocument();
+  });
+
+  it("shows a stable user-facing empty state for a canceled subagent", () => {
+    mockUseQuery.mockImplementation((query, args) => {
+      if (query === "listForParentMessage") return [canceledChild];
+      if (query === "getOwned") {
+        return args === "skip" ? undefined : canceledChild;
+      }
+      return [
+        {
+          message_id: "subagent-message-prompt",
+          sequence: 0,
+          role: "user",
+          parts: [{ type: "text", text: "Internal worker prompt" }],
+          created_at: Date.now(),
+          updated_at: Date.now(),
+        },
+        {
+          message_id: "subagent-message-empty",
+          sequence: 1,
+          role: "assistant",
+          parts: [],
+          created_at: Date.now(),
+          updated_at: Date.now(),
+        },
+      ];
+    });
+
+    render(
+      <SubagentsSidebar
+        content={{
+          kind: "subagents",
+          parentMessageId: "parent-message",
+          toolCallId: "tool-1",
+          selectedSubagentId: "sa_canceled",
+        }}
+        closeSidebar={jest.fn()}
+      />,
+    );
+
+    expect(screen.getByText("Canceled by the parent agent.")).toBeVisible();
+    expect(screen.queryByText("parent_requested")).not.toBeInTheDocument();
+    expect(
+      screen.getByText("No transcript activity was persisted."),
+    ).toBeVisible();
+    expect(
+      screen.queryByText("Connecting to activity…"),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByText("Subagent", { exact: true }),
+    ).not.toBeInTheDocument();
+    expect(mockUseSubagentRealtime).toHaveBeenCalledWith({
+      subagentId: "sa_canceled",
+      enabled: false,
+    });
   });
 
   it("uses the normal Agent activity UI for tool summaries and running reasoning", () => {
