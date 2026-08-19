@@ -6,6 +6,7 @@ import {
   createAgentInputSchema,
   securityValidationResultSchema,
   sendMessageToAgentInputSchema,
+  waitForAgentsResultSchema,
   waitForAgentsInputSchema,
 } from "../contracts";
 
@@ -54,6 +55,19 @@ describe("subagent contracts", () => {
     expect(() =>
       waitForAgentsInputSchema.parse({ timeout_seconds: 301 }),
     ).toThrow();
+    expect(
+      waitForAgentsResultSchema.parse({
+        success: false,
+        wait_outcome: "targets_not_found",
+        reason: "Wait for the mapper",
+        target_agent_ids: ["sa_unknown"],
+        active_agents: [],
+        error: "Target not found",
+      }),
+    ).toMatchObject({
+      wait_outcome: "targets_not_found",
+      target_agent_ids: ["sa_unknown"],
+    });
   });
 
   it("requires evidence for confirmed verdicts", () => {

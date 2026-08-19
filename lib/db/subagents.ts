@@ -314,6 +314,7 @@ export const consumePendingSubagentMessages = async (args: {
 export type ParentSubagentState = {
   terminal: (PersistedSubagent & { title?: string }) | null;
   active: Array<PersistedSubagent & { title?: string }>;
+  unmatchedTargetAgentIds: string[];
 };
 
 export const claimNextTerminalSubagentForParent = async (args: {

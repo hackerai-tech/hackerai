@@ -29,4 +29,43 @@ describe("SharedMessagePartHandler subagent failures", () => {
 
     expect(screen.getByText(expectedAction)).toBeVisible();
   });
+
+  it("preserves a failed cancellation target handle", () => {
+    render(
+      <SharedMessagePartHandler
+        part={{
+          type: "tool-cancel_agent",
+          input: { target_agent_id: "sa_mapper" },
+          output: {
+            success: false,
+            target_agent_id: "sa_mapper",
+            error: "The target subagent was not found.",
+          },
+        }}
+        partIndex={0}
+        isUser={false}
+      />,
+    );
+
+    expect(screen.getByText("sa_mapper cancel failed")).toBeVisible();
+  });
+
+  it("distinguishes unknown targeted waits from an empty agent set", () => {
+    render(
+      <SharedMessagePartHandler
+        part={{
+          type: "tool-wait_for_agents",
+          output: {
+            success: false,
+            wait_outcome: "targets_not_found",
+            target_agent_ids: ["sa_unknown"],
+          },
+        }}
+        partIndex={0}
+        isUser={false}
+      />,
+    );
+
+    expect(screen.getByText("Subagent targets not found")).toBeVisible();
+  });
 });

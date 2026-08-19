@@ -7,31 +7,31 @@ import {
 
 describe("subagent coordination fingerprints", () => {
   it("keeps profile and success criteria in generic task deduplication", () => {
-    const generic = createAgentFingerprint(
-      "security_task",
-      "Mapper",
-      "Trace authorization",
-      ["Find the enforcing function"],
-      [],
-    );
+    const generic = createAgentFingerprint({
+      profile: "security_task",
+      name: "Mapper",
+      task: "Trace authorization",
+      successCriteria: ["Find the enforcing function"],
+      skills: [],
+    });
 
     expect(generic).not.toBe(
-      createAgentFingerprint(
-        "security_validation",
-        "Mapper",
-        "Trace authorization",
-        ["Find the enforcing function"],
-        [],
-      ),
+      createAgentFingerprint({
+        profile: "security_validation",
+        name: "Mapper",
+        task: "Trace authorization",
+        successCriteria: ["Find the enforcing function"],
+        skills: [],
+      }),
     );
     expect(generic).not.toBe(
-      createAgentFingerprint(
-        "security_task",
-        "Mapper",
-        "Trace authorization",
-        ["Exercise the endpoint"],
-        [],
-      ),
+      createAgentFingerprint({
+        profile: "security_task",
+        name: "Mapper",
+        task: "Trace authorization",
+        successCriteria: ["Exercise the endpoint"],
+        skills: [],
+      }),
     );
   });
 

@@ -259,6 +259,30 @@ describe("SubagentToolHandler", () => {
     ).toBeInTheDocument();
   });
 
+  it("preserves the target handle when cancellation fails before name resolution", () => {
+    render(
+      <SubagentToolHandler
+        message={{ id: "parent-run", role: "assistant", parts: [] } as any}
+        status="ready"
+        part={{
+          type: "tool-cancel_agent",
+          toolCallId: "tool-cancel-failed",
+          state: "output-available",
+          input: { target_agent_id: "sa_mapper" },
+          output: {
+            success: false,
+            target_agent_id: "sa_mapper",
+            error: "The target subagent was not found.",
+          },
+        }}
+      />,
+    );
+
+    expect(
+      screen.getByRole("group", { name: "sa_mapper cancel failed" }),
+    ).toBeInTheDocument();
+  });
+
   it("shows adjacent child starts as one row with distinct visual identities", () => {
     const parts = [
       {

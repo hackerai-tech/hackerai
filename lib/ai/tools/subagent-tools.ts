@@ -143,13 +143,13 @@ export const createCreateAgentTool = (
       });
       const sandboxIdentity = getSubagentSandboxIdentity(sandbox);
       const skills = parsed.skills ?? [];
-      const candidateFingerprint = createAgentFingerprint(
+      const candidateFingerprint = createAgentFingerprint({
         profile,
-        parsed.name,
-        parsed.task,
-        parsed.success_criteria,
+        name: parsed.name,
+        task: parsed.task,
+        successCriteria: parsed.success_criteria,
         skills,
-      );
+      });
       const proposedSubagentId = createSubagentId();
       const reservation = await reserveSubagent({
         subagentId: proposedSubagentId,
@@ -449,27 +449,46 @@ export const createCancelAgentTool = (context: ToolContext) =>
           error: "That subagent is already terminal.",
         };
       }
-      const triggerCancellationRequested = row.trigger_run_id
-        ? await cancelAgentTriggerRun(row.trigger_run_id)
-        : false;
       const stateCanceled = await cancelSubagentForUser({
         subagentId: row.subagent_id,
         userId: context.userID,
         triggerRunId: row.trigger_run_id,
         reason: "parent_requested",
       }).catch(() => false);
-      if (!triggerCancellationRequested && !stateCanceled) {
+      if (!stateCanceled) {
+        const persistedRow = await getSubagentForParent({
+          userId: context.userID,
+          chatId: context.chatId,
+          parentTriggerRunId,
+          targetAgentId: parsed.target_agent_id,
+        }).catch(() => null);
+        const persistedStatus = persistedRow?.status ?? row.status;
         return {
           success: false,
           target_agent_id: parsed.target_agent_id,
-          target_agent_name: agentName(row),
-          status: row.status,
-          error: "The subagent changed state before cancellation.",
+          target_agent_name: agentName(persistedRow ?? row),
+          status: persistedStatus,
+          error: SUBAGENT_ACTIVE_STATUSES.has(persistedStatus)
+            ? "The cancellation could not be persisted."
+            : `The subagent reached ${persistedStatus} before cancellation was persisted.`,
         };
       }
+      const triggerCancellationRequested = row.trigger_run_id
+        ? await cancelAgentTriggerRun(row.trigger_run_id).catch(() => false)
+        : true;
       captureSubagentLifecycleEvent("subagent_cancel_requested", {
         userId: context.userID,
         eventUuid: subagentCancelRequestedEventUuid(row.subagent_id),
+        subagentId: row.subagent_id,
+        parentTriggerRunId,
+        profile: row.profile,
+        status: "canceled",
+        errorCategory: triggerCancellationRequested
+          ? "parent_requested"
+          : "parent_requested_trigger_error",
+      });
+      captureSubagentTerminalOutcome({
+        userId: context.userID,
         subagentId: row.subagent_id,
         parentTriggerRunId,
         profile: row.profile,
@@ -509,6 +528,18 @@ export const createWaitForAgentsTool = (context: ToolContext) =>
           parentTriggerRunId: context.triggerRunId,
           targetAgentIds: parsed.target_agent_ids ?? undefined,
         });
+        const unmatchedTargetAgentIds = state.unmatchedTargetAgentIds ?? [];
+        if (unmatchedTargetAgentIds.length > 0) {
+          return {
+            success: false,
+            wait_outcome: "targets_not_found" as const,
+            reason: parsed.reason,
+            target_agent_ids: unmatchedTargetAgentIds,
+            active_agents: activeAgentOutput(state.active),
+            error:
+              "One or more target subagents were not found in this parent run.",
+          };
+        }
         if (state.terminal) {
           const name = agentName(state.terminal);
           const result = resultFromPersistedSubagent(state.terminal);

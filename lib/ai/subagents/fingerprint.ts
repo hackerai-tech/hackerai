@@ -36,13 +36,19 @@ export const createCandidateFingerprint = (
   return createHash("sha256").update(canonical).digest("hex");
 };
 
-export const createAgentFingerprint = (
-  profile: SubagentProfile,
-  name: string,
-  task: string,
-  successCriteria: string[],
-  skills: string[],
-): string => {
+export const createAgentFingerprint = ({
+  profile,
+  name,
+  task,
+  successCriteria,
+  skills,
+}: {
+  profile: SubagentProfile;
+  name: string;
+  task: string;
+  successCriteria: string[];
+  skills: string[];
+}): string => {
   const canonical = JSON.stringify({
     profile,
     name: normalize(name),

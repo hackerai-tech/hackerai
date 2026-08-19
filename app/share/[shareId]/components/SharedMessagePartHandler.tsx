@@ -164,6 +164,8 @@ export const SharedMessagePartHandler = ({
       part.output?.agent_name ??
       part.input?.name ??
       part.input?.profile_input?.candidate?.title ??
+      part.output?.target_agent_id ??
+      part.input?.target_agent_id ??
       "Subagent";
     const toolFailed =
       Boolean(part.errorText) || part.output?.success === false;
@@ -216,9 +218,11 @@ export const SharedMessagePartHandler = ({
           key={idx}
           icon={<Users aria-hidden="true" />}
           action={
-            part.output?.wait_outcome === "agent_finished"
-              ? `${agentName} finished`
-              : "Waited for subagents"
+            part.output?.wait_outcome === "targets_not_found"
+              ? "Subagent targets not found"
+              : part.output?.wait_outcome === "agent_finished"
+                ? `${agentName} finished`
+                : "Waited for subagents"
           }
         />
       );

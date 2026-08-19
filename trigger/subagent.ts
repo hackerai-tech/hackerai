@@ -98,6 +98,19 @@ type SubagentTaskOutput = {
   status: "completed" | "failed" | "canceled" | "timed_out";
 };
 
+const loadPersistedTerminalOutput = async (
+  subagentId: string,
+): Promise<SubagentTaskOutput | null> => {
+  const persisted = await getSubagent(subagentId);
+  if (!persisted || !SUBAGENT_TERMINAL_STATUSES.has(persisted.status)) {
+    return null;
+  }
+  return {
+    subagentId: persisted.subagent_id,
+    status: persisted.status as SubagentTaskOutput["status"],
+  };
+};
+
 type SubagentTaskPayload = {
   subagentId: string;
   convexUrl?: string;
@@ -227,23 +240,25 @@ export const subagentTask = task({
       runPromise.catch(() => undefined),
       new Promise((resolve) => setTimeout(resolve, 5_000)),
     ]);
-    await finishSubagent({
+    const finishOutcome = await finishSubagent({
       subagentId: cleanup.subagentId,
       triggerRunId: ctx.run.id,
       status: "canceled",
       summary: "Subagent was canceled with its parent run.",
       failureCode: "parent_or_user_canceled",
       cancelReason: "parent_or_user_canceled",
-    }).catch(() => undefined);
+    }).catch(() => null);
     await ptySessionManager.closeAll(cleanup.subagentId).catch(() => undefined);
-    captureSubagentTerminalOutcome({
-      userId: cleanup.userId,
-      subagentId: cleanup.subagentId,
-      parentTriggerRunId: cleanup.parentTriggerRunId,
-      profile: cleanup.profile,
-      status: "canceled",
-      errorCategory: "parent_or_user_canceled",
-    });
+    if (finishOutcome === "updated") {
+      captureSubagentTerminalOutcome({
+        userId: cleanup.userId,
+        subagentId: cleanup.subagentId,
+        parentTriggerRunId: cleanup.parentTriggerRunId,
+        profile: cleanup.profile,
+        status: "canceled",
+        errorCategory: "parent_or_user_canceled",
+      });
+    }
     await phLogger.flush().catch(() => undefined);
     cancellationCleanup.delete(ctx.run.id);
   },
@@ -977,7 +992,7 @@ export const subagentTask = task({
                   : null;
 
       if (terminalFailure) {
-        await finishSubagent({
+        const finishOutcome = await finishSubagent({
           subagentId: row.subagent_id,
           triggerRunId: ctx.run.id,
           status: terminalFailure.status,
@@ -989,6 +1004,16 @@ export const subagentTask = task({
           costDollars,
           stepCount,
         });
+        if (finishOutcome !== "updated") {
+          const persistedOutput = await loadPersistedTerminalOutput(
+            row.subagent_id,
+          );
+          if (persistedOutput) {
+            metadata.set("status", persistedOutput.status);
+            return persistedOutput;
+          }
+          throw new Error(`Subagent finalization failed: ${finishOutcome}`);
+        }
         captureSubagentTerminalOutcome({
           userId: row.user_id,
           subagentId: row.subagent_id,
@@ -1015,7 +1040,7 @@ export const subagentTask = task({
       }
 
       const completedResult = resultValue as SubagentStructuredResult;
-      await finishSubagent({
+      const finishOutcome = await finishSubagent({
         subagentId: row.subagent_id,
         triggerRunId: ctx.run.id,
         status: "completed",
@@ -1031,6 +1056,19 @@ export const subagentTask = task({
         costDollars,
         stepCount,
       });
+      if (finishOutcome !== "updated") {
+        const persistedOutput = await loadPersistedTerminalOutput(
+          row.subagent_id,
+        );
+        if (persistedOutput) {
+          metadata
+            .set("status", persistedOutput.status)
+            .set("stepCount", stepCount)
+            .set("costDollars", costDollars);
+          return persistedOutput;
+        }
+        throw new Error(`Subagent finalization failed: ${finishOutcome}`);
+      }
       metadata
         .set("status", "completed")
         .set("stepCount", stepCount)
@@ -1076,7 +1114,7 @@ export const subagentTask = task({
         costDollars: fallbackCostDollars,
         billingFailure: true,
       }));
-      await finishSubagent({
+      const finishOutcome = await finishSubagent({
         subagentId: row.subagent_id,
         triggerRunId: ctx.run.id,
         status: terminalFailure.status,
@@ -1087,18 +1125,28 @@ export const subagentTask = task({
           : {}),
         costDollars: settlement.costDollars,
         stepCount,
-      }).catch(() => undefined);
-      captureSubagentTerminalOutcome({
-        userId: row.user_id,
-        subagentId: row.subagent_id,
-        parentTriggerRunId: row.parent_trigger_run_id,
-        profile: row.profile,
-        status: terminalFailure.status,
-        durationMs: Date.now() - startedAt,
-        stepCount,
-        costDollars: settlement.costDollars,
-        errorCategory: terminalFailure.code,
-      });
+      }).catch(() => null);
+      if (finishOutcome === "updated") {
+        captureSubagentTerminalOutcome({
+          userId: row.user_id,
+          subagentId: row.subagent_id,
+          parentTriggerRunId: row.parent_trigger_run_id,
+          profile: row.profile,
+          status: terminalFailure.status,
+          durationMs: Date.now() - startedAt,
+          stepCount,
+          costDollars: settlement.costDollars,
+          errorCategory: terminalFailure.code,
+        });
+      } else {
+        const persistedOutput = await loadPersistedTerminalOutput(
+          row.subagent_id,
+        ).catch(() => null);
+        if (persistedOutput) {
+          metadata.set("status", persistedOutput.status);
+          return persistedOutput;
+        }
+      }
       triggerLogger.error("[subagent] run failed", {
         subagentId: row.subagent_id,
         parentTriggerRunId: row.parent_trigger_run_id,

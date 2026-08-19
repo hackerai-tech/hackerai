@@ -171,6 +171,7 @@ const presentationForPart = (
     output?.agent_name ??
     input?.name ??
     nameForAgentId(message, agentId) ??
+    (type === "tool-cancel_agent" ? agentId : undefined) ??
     (type === "tool-delegate_task"
       ? legacyTitle
       : type === "tool-list_agents"
@@ -227,6 +228,8 @@ const presentationForPart = (
     const terminalStatus = output?.result?.status ?? lifecycle?.data?.status;
     if (waiting) {
       action = "Waiting for subagents";
+    } else if (output?.wait_outcome === "targets_not_found") {
+      action = "Subagent targets not found";
     } else if (output?.wait_outcome === "timeout") {
       action = "Subagent wait timed out";
     } else if (output?.wait_outcome === "no_active_agents") {

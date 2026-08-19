@@ -303,8 +303,14 @@ export const sendMessageToAgentResultSchema = z.object({
 
 export const waitForAgentsResultSchema = z.object({
   success: z.boolean(),
-  wait_outcome: z.enum(["agent_finished", "timeout", "no_active_agents"]),
+  wait_outcome: z.enum([
+    "agent_finished",
+    "timeout",
+    "no_active_agents",
+    "targets_not_found",
+  ]),
   reason: z.string(),
+  target_agent_ids: z.array(z.string()).optional(),
   agent_id: z.string().optional(),
   agent_name: z.string().optional(),
   result: agentSubagentResultSchema.optional(),
@@ -317,6 +323,7 @@ export const waitForAgentsResultSchema = z.object({
       }),
     )
     .optional(),
+  error: z.string().optional(),
 });
 
 export const listAgentsResultSchema = z.object({

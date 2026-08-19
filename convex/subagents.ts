@@ -670,6 +670,14 @@ export const claimNextTerminalForParentBackend = mutation({
             args.targetAgentIds?.includes(toSubagentHandle(row.subagent_id)),
         )
       : rows;
+    const unmatchedTargetAgentIds = (args.targetAgentIds ?? []).filter(
+      (targetAgentId) =>
+        !rows.some(
+          (row) =>
+            row.subagent_id === targetAgentId ||
+            toSubagentHandle(row.subagent_id) === targetAgentId,
+        ),
+    );
     const terminal = scopedRows
       .filter(
         (row) =>
@@ -698,6 +706,7 @@ export const claimNextTerminalForParentBackend = mutation({
       active: scopedRows.filter(
         (row) => row.name !== undefined && isActiveStatus(row.status),
       ),
+      unmatchedTargetAgentIds,
     };
   },
 });
@@ -811,7 +820,7 @@ export const cancelForBackend = mutation({
     }
     await ctx.db.patch(row._id, {
       status: "canceled",
-      summary: "Independent validation was canceled.",
+      summary: "Subagent was canceled.",
       cancel_reason: args.reason,
       failure_code: args.reason,
       completed_at: Date.now(),
@@ -969,7 +978,7 @@ export const cancelForParentBackend = mutation({
       activeRows.map((row) =>
         ctx.db.patch(row._id, {
           status: "canceled",
-          summary: "Independent validation was canceled with its parent run.",
+          summary: "Subagent was canceled with its parent run.",
           cancel_reason: args.reason,
           failure_code: args.reason,
           completed_at: now,
@@ -1031,8 +1040,7 @@ export const cancelForChatDeletionBackend = mutation({
       activeRows.map((row) =>
         ctx.db.patch(row._id, {
           status: "canceled",
-          summary:
-            "Independent validation was canceled because its chat was deleted.",
+          summary: "Subagent was canceled because its chat was deleted.",
           cancel_reason: args.reason,
           failure_code: args.reason,
           completed_at: now,
@@ -1092,7 +1100,7 @@ export const cancelForUserDeletionBackend = mutation({
       activeRows.map((row) =>
         ctx.db.patch(row._id, {
           status: "canceled",
-          summary: "Independent validation was canceled during data deletion.",
+          summary: "Subagent was canceled during data deletion.",
           cancel_reason: args.reason,
           failure_code: args.reason,
           completed_at: now,

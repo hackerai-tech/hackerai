@@ -689,10 +689,15 @@ describe("subagent coordination messages", () => {
     ).resolves.toEqual({
       terminal: expect.objectContaining({ name: "Stored XSS validator" }),
       active: [],
+      unmatchedTargetAgentIds: [],
     });
     await expect(
       claimNextTerminalForParentBackend.handler(ctx, claimArgs),
-    ).resolves.toEqual({ terminal: null, active: [] });
+    ).resolves.toEqual({
+      terminal: null,
+      active: [],
+      unmatchedTargetAgentIds: [],
+    });
     await expect(
       claimNextTerminalForParentBackend.handler(ctx, {
         ...claimArgs,
@@ -701,6 +706,17 @@ describe("subagent coordination messages", () => {
     ).resolves.toEqual({
       terminal: expect.objectContaining({ name: "Stored XSS validator" }),
       active: [],
+      unmatchedTargetAgentIds: [],
+    });
+    await expect(
+      claimNextTerminalForParentBackend.handler(ctx, {
+        ...claimArgs,
+        targetAgentIds: ["sa_unknown"],
+      }),
+    ).resolves.toEqual({
+      terminal: null,
+      active: [],
+      unmatchedTargetAgentIds: ["sa_unknown"],
     });
     expect(patch).toHaveBeenCalledTimes(1);
     expect(withIndex).toHaveBeenCalledWith(
@@ -841,7 +857,7 @@ describe("subagent finalization", () => {
       _id: "subagent-doc",
       status: "canceled",
       trigger_run_id: "child-run",
-      summary: "Independent validation was canceled.",
+      summary: "Subagent was canceled.",
       failure_code: "user_canceled_child",
       cancel_reason: "user_canceled_child",
       failure_reason: "Canceled from the sidebar",
@@ -881,7 +897,7 @@ describe("subagent finalization", () => {
     expect(patch).toHaveBeenCalledWith(
       "subagent-doc",
       expect.objectContaining({
-        summary: "Independent validation was canceled.",
+        summary: "Subagent was canceled.",
         failure_code: "user_canceled_child",
         cancel_reason: "user_canceled_child",
         failure_reason: "Canceled from the sidebar",

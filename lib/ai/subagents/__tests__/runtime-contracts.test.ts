@@ -157,9 +157,20 @@ describe("security validation subagent runtime contracts", () => {
     expect(tools).toContain("createListAgentsTool");
     expect(tools).toContain("createCancelAgentTool");
     expect(tools).toContain("targetAgentIds: parsed.target_agent_ids");
+    expect(tools).toContain("unmatchedTargetAgentIds.length > 0");
+    expect(tools).toContain('wait_outcome: "targets_not_found"');
     expect(tools).toContain("getSubagentForParent");
+    expect(tools).toContain("const persistedStatus =");
+    expect(tools).toContain("if (!stateCanceled)");
     expect(convex).toContain("getForParentBackend");
     expect(convex).toContain("scopedRows");
+    expect(convex).toContain("unmatchedTargetAgentIds");
+    expect(read("trigger/subagent.ts")).toContain(
+      "loadPersistedTerminalOutput",
+    );
+    expect(read("trigger/subagent.ts")).toContain(
+      'finishOutcome !== "updated"',
+    );
   });
 
   it("keeps reporting out of the validation-only runtime", () => {
