@@ -4,7 +4,7 @@ export const FREE_AGENT_LONG_RUN_LOCK_TTL_SECONDS = 65 * 60;
 export const FREE_MAX_CONTEXT_TOKENS = 128000;
 export const FREE_RATE_LIMIT_REQUESTS_DEFAULT = 10;
 export const FREE_ASK_REQUEST_COST = 1;
-export const FREE_AGENT_REQUEST_COST = 2;
+export const FREE_AGENT_REQUEST_COST = 1;
 
 export const getFreeRequestLimit = (): number => {
   const configuredLimit = parseInt(
