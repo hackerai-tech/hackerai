@@ -319,9 +319,18 @@ describe("SubagentsSidebar", () => {
 
     expect(screen.getByText("Canceled by the parent agent.")).toBeVisible();
     expect(screen.queryByText("parent_requested")).not.toBeInTheDocument();
+    const taskLabel = screen.getByText("Task", { exact: true });
+    const activityLabel = screen.getByText("Activity", { exact: true });
     expect(
-      screen.getByText("No transcript activity was persisted."),
+      screen.getByText("Canceled before any activity was recorded."),
     ).toBeVisible();
+    expect(
+      screen.queryByText("No transcript activity was persisted."),
+    ).not.toBeInTheDocument();
+    expect(
+      taskLabel.compareDocumentPosition(activityLabel) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
     expect(
       screen.queryByText("Connecting to activity…"),
     ).not.toBeInTheDocument();

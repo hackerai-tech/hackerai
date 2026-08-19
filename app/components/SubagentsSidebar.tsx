@@ -276,6 +276,21 @@ const hasRenderableTranscriptParts = (parts: UIMessage["parts"]): boolean =>
     return part.type === "data-summarization" || part.type.startsWith("tool-");
   });
 
+const emptyActivityDescription = (child: ChildSummary): string => {
+  switch (child.status) {
+    case "canceled":
+      return "Canceled before any activity was recorded.";
+    case "completed":
+      return "Finished without recorded activity.";
+    case "failed":
+      return "Stopped before any activity was recorded.";
+    case "timed_out":
+      return "Timed out before any activity was recorded.";
+    default:
+      return "Waiting for activity…";
+  }
+};
+
 const SubagentMessageActions = memo(function SubagentMessageActions({
   messageId,
   messageText,
@@ -536,40 +551,6 @@ const Transcript = memo(function Transcript({
         aria-live={active ? "polite" : "off"}
         aria-label="Subagent transcript and tool activity"
       >
-        {visibleMessages.length === 0 && state !== "error" && (
-          <div className="flex items-center gap-2 rounded-lg border border-border/40 bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
-            {(active || state === "connecting") && (
-              <LoaderCircle
-                className="h-4 w-4 animate-spin motion-reduce:animate-none"
-                aria-hidden
-              />
-            )}
-            {state === "connecting"
-              ? "Connecting to activity…"
-              : active
-                ? "Waiting for activity…"
-                : "No transcript activity was persisted."}
-          </div>
-        )}
-        {state === "error" && active && (
-          <div className="mb-3 rounded-lg border border-destructive/30 bg-destructive/5 p-3 text-sm">
-            <p className="text-destructive">Live activity disconnected.</p>
-            <button
-              type="button"
-              onClick={retry}
-              className="mt-2 inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-xs hover:bg-muted"
-            >
-              <RefreshCw className="h-3.5 w-3.5" aria-hidden />
-              Reconnect
-            </button>
-          </div>
-        )}
-        {state === "error" && !active && visibleMessages.length === 0 && (
-          <div className="mb-3 rounded-lg border border-border/50 bg-muted/20 p-3 text-sm text-muted-foreground">
-            Transcript activity is unavailable. The final status above is still
-            authoritative.
-          </div>
-        )}
         <div className="space-y-5">
           <section className="min-w-0">
             <div className="mb-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
@@ -581,6 +562,48 @@ const Transcript = memo(function Transcript({
               />
             </div>
           </section>
+          {visibleMessages.length === 0 && state !== "error" && (
+            <section className="min-w-0">
+              <div className="mb-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                Activity
+              </div>
+              <p className="flex items-center gap-2 text-sm text-muted-foreground">
+                {(active || state === "connecting") && (
+                  <LoaderCircle
+                    className="h-4 w-4 shrink-0 animate-spin motion-reduce:animate-none"
+                    aria-hidden
+                  />
+                )}
+                {state === "connecting"
+                  ? "Connecting to activity…"
+                  : emptyActivityDescription(child)}
+              </p>
+            </section>
+          )}
+          {state === "error" && active && (
+            <section className="min-w-0 rounded-lg border border-destructive/30 bg-destructive/5 p-3 text-sm">
+              <p className="text-destructive">Live activity disconnected.</p>
+              <button
+                type="button"
+                onClick={retry}
+                className="mt-2 inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-xs hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                <RefreshCw className="h-3.5 w-3.5" aria-hidden />
+                Reconnect
+              </button>
+            </section>
+          )}
+          {state === "error" && !active && visibleMessages.length === 0 && (
+            <section className="min-w-0">
+              <div className="mb-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                Activity
+              </div>
+              <p className="text-sm text-muted-foreground">
+                Activity is unavailable. The final status above is still
+                authoritative.
+              </p>
+            </section>
+          )}
           {visibleMessages.map((message) => {
             const isParentUpdate = message.messageSource === "parent_update";
             const visibleParts = isParentUpdate
