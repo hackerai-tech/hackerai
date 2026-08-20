@@ -1,9 +1,10 @@
 import { z } from "zod";
 
-// Research evidence is intentionally text-only, so use the fast structured
-// synthesis model without reasoning. If this workflow ever accepts images,
-// route that separate vision path to Grok 4.6 Pro with reasoning enabled.
-export const USER_RESEARCH_MODEL_KEY = "model-deepseek-v4-flash-0731" as const;
+// Research evidence is intentionally text-only, so use Grok 4.6 for structured
+// profiling and synthesis with reasoning disabled. If this workflow ever
+// accepts images, route that separate vision path to Grok 4.6 Pro with
+// reasoning enabled.
+export const USER_RESEARCH_MODEL_KEY = "model-grok-4.6" as const;
 export const USER_RESEARCH_PROMPT_VERSION = "user-research-v1";
 export const USER_RESEARCH_MAX_CONTEXT_CHARS = 120_000;
 export const USER_RESEARCH_MAX_COHORT_CONTEXT_CHARS = 240_000;

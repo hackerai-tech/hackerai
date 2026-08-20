@@ -17,7 +17,7 @@ called through the repo-owned Codex skill `$hackerai-user-research`.
 6. Stores the audit record, structured pseudonymized profiles, aggregate report,
    evidence coverage, token usage, and provider cost in Convex.
 
-Both stages use `deepseek/deepseek-v4-flash-0731` through the existing OpenRouter
+Both stages use `x-ai/grok-4.6` through the existing OpenRouter
 provider with reasoning explicitly disabled and zero-data-retention routing
 required. The task fails closed if no ZDR-capable endpoint is available.
 
