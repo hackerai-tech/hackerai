@@ -476,6 +476,9 @@ const Transcript = memo(function Transcript({
   child: ChildSummary;
   sidebarContent: SidebarSubagents;
 }) {
+  const transcriptOpenedAt = useRef(0);
+  const resolvedTelemetrySent = useRef(false);
+  const failureTelemetryCategories = useRef(new Set<string>());
   const persisted = useQuery(api.subagents.getMessagesOwned, {
     subagentId: child.subagent_id,
   });
@@ -535,6 +538,118 @@ const Transcript = memo(function Transcript({
     [child.subagent_id, sidebarContent],
   );
   const [hoveredMessageId, setHoveredMessageId] = useState<string | null>(null);
+
+  useEffect(() => {
+    transcriptOpenedAt.current = Date.now();
+    resolvedTelemetrySent.current = false;
+    failureTelemetryCategories.current.clear();
+  }, [child.subagent_id]);
+
+  useEffect(() => {
+    if (persisted !== undefined) return;
+    const timeout = window.setTimeout(() => {
+      if (failureTelemetryCategories.current.has("persisted_load_timeout")) {
+        return;
+      }
+      failureTelemetryCategories.current.add("persisted_load_timeout");
+      captureAuthenticatedEvent("subagent_transcript_failed", {
+        subagent_id: child.subagent_id,
+        parent_trigger_run_id: child.parent_trigger_run_id,
+        profile: child.profile,
+        status: child.status,
+        error_category: "persisted_load_timeout",
+        active,
+        load_latency_ms: Date.now() - transcriptOpenedAt.current,
+      });
+    }, 10_000);
+    return () => window.clearTimeout(timeout);
+  }, [
+    active,
+    child.parent_trigger_run_id,
+    child.profile,
+    child.status,
+    child.subagent_id,
+    persisted,
+  ]);
+
+  useEffect(() => {
+    if (state !== "error") return;
+    const errorCategory = "realtime_disconnected";
+    if (failureTelemetryCategories.current.has(errorCategory)) return;
+    failureTelemetryCategories.current.add(errorCategory);
+    captureAuthenticatedEvent("subagent_transcript_failed", {
+      subagent_id: child.subagent_id,
+      parent_trigger_run_id: child.parent_trigger_run_id,
+      profile: child.profile,
+      status: child.status,
+      error_category: errorCategory,
+      active,
+      has_persisted_activity: visibleMessages.length > 0,
+      activity_message_count: visibleMessages.length,
+      load_latency_ms: Date.now() - transcriptOpenedAt.current,
+    });
+  }, [
+    active,
+    child.parent_trigger_run_id,
+    child.profile,
+    child.status,
+    child.subagent_id,
+    state,
+    visibleMessages.length,
+  ]);
+
+  useEffect(() => {
+    if (persisted === undefined || resolvedTelemetrySent.current) return;
+    const hasActivity = visibleMessages.length > 0;
+    const source = hasActivity
+      ? hasPersistedAssistant
+        ? "persisted"
+        : liveMessage
+          ? "live"
+          : "persisted"
+      : state === "error"
+        ? "error_fallback"
+        : active
+          ? state === "live" || state === "complete"
+            ? "live_empty"
+            : null
+          : "empty_terminal";
+    if (!source) return;
+
+    const reportResolved = () => {
+      if (resolvedTelemetrySent.current) return;
+      resolvedTelemetrySent.current = true;
+      captureAuthenticatedEvent("subagent_transcript_resolved", {
+        subagent_id: child.subagent_id,
+        parent_trigger_run_id: child.parent_trigger_run_id,
+        profile: child.profile,
+        status: child.status,
+        source,
+        active,
+        has_activity: hasActivity,
+        activity_message_count: visibleMessages.length,
+        realtime_state: state,
+        load_latency_ms: Date.now() - transcriptOpenedAt.current,
+      });
+    };
+
+    if (source === "empty_terminal") {
+      const timeout = window.setTimeout(reportResolved, 1_500);
+      return () => window.clearTimeout(timeout);
+    }
+    reportResolved();
+  }, [
+    active,
+    child.parent_trigger_run_id,
+    child.profile,
+    child.status,
+    child.subagent_id,
+    hasPersistedAssistant,
+    liveMessage,
+    persisted,
+    state,
+    visibleMessages.length,
+  ]);
 
   if (persisted === undefined) {
     return (

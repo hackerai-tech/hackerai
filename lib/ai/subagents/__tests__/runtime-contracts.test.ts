@@ -171,6 +171,13 @@ describe("security validation subagent runtime contracts", () => {
     expect(tools).toContain("getSubagentForParent");
     expect(tools).toContain("const persistedStatus =");
     expect(tools).toContain("if (!stateCanceled)");
+    expect(tools).toContain('"subagent_create_failed"');
+    expect(tools).toContain('"subagent_list_outcome"');
+    expect(tools).toContain('"subagent_update_outcome"');
+    expect(tools).toContain('"subagent_wait_outcome"');
+    expect(tools).toContain('"subagent_cancel_outcome"');
+    expect(tools).toContain('"sandbox_acquisition_error"');
+    expect(tools).toContain('errorCategory: "state_lookup_error"');
     expect(convex).toContain("getForParentBackend");
     expect(convex).toContain("scopedRows");
     expect(convex).toContain("unmatchedTargetAgentIds");

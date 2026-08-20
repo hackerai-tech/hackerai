@@ -42,6 +42,8 @@ import {
   captureSubagentTerminalOutcome,
   subagentCancelRequestedEventUuid,
   subagentCreateAttemptEventUuid,
+  subagentCreateFailureEventUuid,
+  subagentOperationEventUuid,
   subagentResultDeliveredEventUuid,
 } from "@/lib/analytics/subagents";
 import { subagentTask } from "@/trigger/subagent";
@@ -138,8 +140,34 @@ export const createCreateAgentTool = (
         profile,
       });
 
+      const createStartedAt = Date.now();
+      const captureCreateFailure = (
+        failureStage: string,
+        errorCategory: string,
+        subagentId?: string,
+      ) =>
+        captureSubagentLifecycleEvent("subagent_create_failed", {
+          userId: context.userID,
+          eventUuid: subagentCreateFailureEventUuid(
+            parentTriggerRunId,
+            execution.toolCallId,
+            profile,
+          ),
+          subagentId,
+          parentTriggerRunId,
+          profile,
+          durationMs: Date.now() - createStartedAt,
+          failureStage,
+          errorCategory,
+        });
       const { sandbox } = await getSandboxWithFallbackGuard({
         sandboxManager: context.sandboxManager,
+      }).catch((error) => {
+        captureCreateFailure(
+          "sandbox_acquisition",
+          "sandbox_acquisition_error",
+        );
+        throw error;
       });
       const sandboxIdentity = getSubagentSandboxIdentity(sandbox);
       const skills = parsed.skills ?? [];
@@ -174,6 +202,9 @@ export const createCreateAgentTool = (
         subscription: config.subscription,
         freeQuotaSubject: config.freeQuotaSubject,
         userLocation: context.userLocation,
+      }).catch((error) => {
+        captureCreateFailure("reservation", "reservation_error");
+        throw error;
       });
 
       if (!reservation.subagentId) {
@@ -181,6 +212,7 @@ export const createCreateAgentTool = (
           userId: context.userID,
           parentTriggerRunId,
           profile,
+          durationMs: Date.now() - createStartedAt,
           errorCategory: reservation.outcome,
         });
         return {
@@ -191,9 +223,24 @@ export const createCreateAgentTool = (
 
       const subagentId = reservation.subagentId;
       const agentHandle = toSubagentHandle(subagentId);
-      let record = await getSubagent(subagentId);
+      let record = await getSubagent(subagentId).catch((error) => {
+        captureCreateFailure(
+          "reservation_lookup",
+          "reservation_lookup_error",
+          subagentId,
+        );
+        throw error;
+      });
       if (!record) {
-        return { success: false, error: "The subagent reservation was lost." };
+        captureCreateFailure(
+          "reservation_lookup",
+          "reservation_lost",
+          subagentId,
+        );
+        return {
+          success: false,
+          error: "The subagent reservation was lost.",
+        };
       }
 
       writeLifecycle(context.writer, {
@@ -240,6 +287,11 @@ export const createCreateAgentTool = (
             },
           );
         } catch {
+          captureCreateFailure(
+            "child_trigger",
+            "child_trigger_failed",
+            subagentId,
+          );
           const failed = await failUnattachedSubagent({
             subagentId,
             parentTriggerRunId,
@@ -301,6 +353,7 @@ export const createSendMessageToAgentTool = (context: ToolContext) =>
             "send_message_to_agent is only available inside a durable Agent run.",
         };
       }
+      const operationStartedAt = Date.now();
       const messageId = createSubagentUpdateMessageId(
         parentTriggerRunId,
         parsed.target_agent_id,
@@ -316,6 +369,20 @@ export const createSendMessageToAgentTool = (context: ToolContext) =>
         message: parsed.message,
         messageType: parsed.message_type,
         priority: parsed.priority,
+      }).catch((error) => {
+        captureSubagentLifecycleEvent("subagent_update_outcome", {
+          userId: context.userID,
+          eventUuid: subagentOperationEventUuid(
+            parentTriggerRunId,
+            execution.toolCallId,
+            "update",
+          ),
+          parentTriggerRunId,
+          durationMs: Date.now() - operationStartedAt,
+          outcome: "error",
+          errorCategory: "delivery_error",
+        });
+        throw error;
       })) as {
         outcome: "delivered" | "not_found" | "not_active";
         subagentId?: string;
@@ -334,6 +401,21 @@ export const createSendMessageToAgentTool = (context: ToolContext) =>
         !delivery.profile ||
         !delivery.status
       ) {
+        captureSubagentLifecycleEvent("subagent_update_outcome", {
+          userId: context.userID,
+          eventUuid: subagentOperationEventUuid(
+            parentTriggerRunId,
+            execution.toolCallId,
+            "update",
+          ),
+          subagentId: delivery.subagentId,
+          parentTriggerRunId,
+          profile: delivery.profile,
+          status: delivery.status,
+          durationMs: Date.now() - operationStartedAt,
+          outcome: delivery.outcome,
+          errorCategory: delivery.outcome,
+        });
         return {
           success: false,
           target_agent_id: parsed.target_agent_id,
@@ -362,6 +444,20 @@ export const createSendMessageToAgentTool = (context: ToolContext) =>
         profile: delivery.profile,
         status: delivery.status,
       });
+      captureSubagentLifecycleEvent("subagent_update_outcome", {
+        userId: context.userID,
+        eventUuid: subagentOperationEventUuid(
+          parentTriggerRunId,
+          execution.toolCallId,
+          "update",
+        ),
+        subagentId: delivery.subagentId,
+        parentTriggerRunId,
+        profile: delivery.profile,
+        status: delivery.status,
+        durationMs: Date.now() - operationStartedAt,
+        outcome: "delivered",
+      });
       return {
         success: true,
         target_agent_id: parsed.target_agent_id,
@@ -385,7 +481,7 @@ export const createListAgentsTool = (context: ToolContext) =>
     description:
       "List this parent run's subagents and their current durable status. Use the returned short agent_id handles for updates, targeted waits, or cancellation.",
     inputSchema: listAgentsInputSchema,
-    execute: async (input) => {
+    execute: async (input, execution) => {
       listAgentsInputSchema.parse(input);
       if (!context.triggerRunId || !context.assistantMessageId) {
         return {
@@ -394,10 +490,40 @@ export const createListAgentsTool = (context: ToolContext) =>
           error: "list_agents is only available inside a durable Agent run.",
         };
       }
+      const operationStartedAt = Date.now();
       const agents = await listSubagentsForParent({
         userId: context.userID,
         chatId: context.chatId,
         parentTriggerRunId: context.triggerRunId,
+      }).catch((error) => {
+        captureSubagentLifecycleEvent("subagent_list_outcome", {
+          userId: context.userID,
+          eventUuid: subagentOperationEventUuid(
+            context.triggerRunId!,
+            execution.toolCallId,
+            "list",
+          ),
+          parentTriggerRunId: context.triggerRunId!,
+          durationMs: Date.now() - operationStartedAt,
+          outcome: "error",
+          errorCategory: "list_error",
+        });
+        throw error;
+      });
+      captureSubagentLifecycleEvent("subagent_list_outcome", {
+        userId: context.userID,
+        eventUuid: subagentOperationEventUuid(
+          context.triggerRunId,
+          execution.toolCallId,
+          "list",
+        ),
+        parentTriggerRunId: context.triggerRunId,
+        durationMs: Date.now() - operationStartedAt,
+        outcome: "listed",
+        totalCount: agents.length,
+        activeCount: agents.filter((row) =>
+          SUBAGENT_ACTIVE_STATUSES.has(row.status),
+        ).length,
       });
       return {
         success: true,
@@ -417,7 +543,7 @@ export const createCancelAgentTool = (context: ToolContext) =>
     description:
       "Cancel one active subagent owned by this parent run using its short target_agent_id. Use only when its work is no longer useful or its scope is wrong.",
     inputSchema: cancelAgentInputSchema,
-    execute: async (input) => {
+    execute: async (input, execution) => {
       const parsed = cancelAgentInputSchema.parse(input);
       const parentTriggerRunId = context.triggerRunId;
       if (!parentTriggerRunId || !context.assistantMessageId) {
@@ -427,13 +553,40 @@ export const createCancelAgentTool = (context: ToolContext) =>
           error: "cancel_agent is only available inside a durable Agent run.",
         };
       }
+      const operationStartedAt = Date.now();
       const row = await getSubagentForParent({
         userId: context.userID,
         chatId: context.chatId,
         parentTriggerRunId,
         targetAgentId: parsed.target_agent_id,
+      }).catch((error) => {
+        captureSubagentLifecycleEvent("subagent_cancel_outcome", {
+          userId: context.userID,
+          eventUuid: subagentOperationEventUuid(
+            parentTriggerRunId,
+            execution.toolCallId,
+            "cancel",
+          ),
+          parentTriggerRunId,
+          durationMs: Date.now() - operationStartedAt,
+          outcome: "error",
+          errorCategory: "lookup_error",
+        });
+        throw error;
       });
       if (!row) {
+        captureSubagentLifecycleEvent("subagent_cancel_outcome", {
+          userId: context.userID,
+          eventUuid: subagentOperationEventUuid(
+            parentTriggerRunId,
+            execution.toolCallId,
+            "cancel",
+          ),
+          parentTriggerRunId,
+          durationMs: Date.now() - operationStartedAt,
+          outcome: "not_found",
+          errorCategory: "not_found",
+        });
         return {
           success: false,
           target_agent_id: parsed.target_agent_id,
@@ -441,6 +594,21 @@ export const createCancelAgentTool = (context: ToolContext) =>
         };
       }
       if (!SUBAGENT_ACTIVE_STATUSES.has(row.status)) {
+        captureSubagentLifecycleEvent("subagent_cancel_outcome", {
+          userId: context.userID,
+          eventUuid: subagentOperationEventUuid(
+            parentTriggerRunId,
+            execution.toolCallId,
+            "cancel",
+          ),
+          subagentId: row.subagent_id,
+          parentTriggerRunId,
+          profile: row.profile,
+          status: row.status,
+          durationMs: Date.now() - operationStartedAt,
+          outcome: "already_terminal",
+          errorCategory: "already_terminal",
+        });
         return {
           success: false,
           target_agent_id: parsed.target_agent_id,
@@ -463,6 +631,25 @@ export const createCancelAgentTool = (context: ToolContext) =>
           targetAgentId: parsed.target_agent_id,
         }).catch(() => null);
         const persistedStatus = persistedRow?.status ?? row.status;
+        captureSubagentLifecycleEvent("subagent_cancel_outcome", {
+          userId: context.userID,
+          eventUuid: subagentOperationEventUuid(
+            parentTriggerRunId,
+            execution.toolCallId,
+            "cancel",
+          ),
+          subagentId: row.subagent_id,
+          parentTriggerRunId,
+          profile: row.profile,
+          status: persistedStatus,
+          durationMs: Date.now() - operationStartedAt,
+          outcome: SUBAGENT_ACTIVE_STATUSES.has(persistedStatus)
+            ? "persistence_failed"
+            : "terminal_race",
+          errorCategory: SUBAGENT_ACTIVE_STATUSES.has(persistedStatus)
+            ? "persistence_failed"
+            : "terminal_race",
+        });
         return {
           success: false,
           target_agent_id: parsed.target_agent_id,
@@ -495,6 +682,25 @@ export const createCancelAgentTool = (context: ToolContext) =>
         status: "canceled",
         errorCategory: "parent_requested",
       });
+      captureSubagentLifecycleEvent("subagent_cancel_outcome", {
+        userId: context.userID,
+        eventUuid: subagentOperationEventUuid(
+          parentTriggerRunId,
+          execution.toolCallId,
+          "cancel",
+        ),
+        subagentId: row.subagent_id,
+        parentTriggerRunId,
+        profile: row.profile,
+        status: "canceled",
+        durationMs: Date.now() - operationStartedAt,
+        outcome: triggerCancellationRequested
+          ? "canceled"
+          : "canceled_trigger_error",
+        errorCategory: triggerCancellationRequested
+          ? undefined
+          : "trigger_cancel_failed",
+      });
       return {
         success: true,
         target_agent_id: parsed.target_agent_id,
@@ -521,15 +727,63 @@ export const createWaitForAgentsTool = (context: ToolContext) =>
 
       const startedAt = Date.now();
       const deadline = startedAt + parsed.timeout_seconds * 1_000;
+      const captureWaitOutcome = ({
+        outcome,
+        activeCount,
+        subagent,
+        resultAvailable,
+        errorCategory,
+      }: {
+        outcome:
+          | "agent_finished"
+          | "no_active_agents"
+          | "timeout"
+          | "targets_not_found"
+          | "error";
+        activeCount: number;
+        subagent?: PersistedSubagent;
+        resultAvailable?: boolean;
+        errorCategory?: string;
+      }) =>
+        captureSubagentLifecycleEvent("subagent_wait_outcome", {
+          userId: context.userID,
+          eventUuid: subagentOperationEventUuid(
+            context.triggerRunId!,
+            execution.toolCallId,
+            "wait",
+          ),
+          subagentId: subagent?.subagent_id,
+          parentTriggerRunId: context.triggerRunId!,
+          profile: subagent?.profile,
+          status: subagent?.status,
+          durationMs: Date.now() - startedAt,
+          outcome,
+          activeCount,
+          targetCount: parsed.target_agent_ids?.length ?? 0,
+          resultAvailable,
+          errorCategory,
+        });
       while (true) {
         const state = await claimNextTerminalSubagentForParent({
           userId: context.userID,
           chatId: context.chatId,
           parentTriggerRunId: context.triggerRunId,
           targetAgentIds: parsed.target_agent_ids ?? undefined,
+        }).catch((error) => {
+          captureWaitOutcome({
+            outcome: "error",
+            activeCount: 0,
+            errorCategory: "state_lookup_error",
+          });
+          throw error;
         });
         const unmatchedTargetAgentIds = state.unmatchedTargetAgentIds ?? [];
         if (unmatchedTargetAgentIds.length > 0) {
+          captureWaitOutcome({
+            outcome: "targets_not_found",
+            activeCount: state.active.length,
+            errorCategory: "targets_not_found",
+          });
           return {
             success: false,
             wait_outcome: "targets_not_found" as const,
@@ -552,6 +806,12 @@ export const createWaitForAgentsTool = (context: ToolContext) =>
             parentTriggerRunId: context.triggerRunId,
             profile: state.terminal.profile,
             status: state.terminal.status,
+          });
+          captureWaitOutcome({
+            outcome: "agent_finished",
+            activeCount: state.active.length,
+            subagent: state.terminal,
+            resultAvailable: state.terminal.structured_result !== undefined,
           });
           writeLifecycle(context.writer, {
             subagent_id: state.terminal.subagent_id,
@@ -583,6 +843,10 @@ export const createWaitForAgentsTool = (context: ToolContext) =>
           };
         }
         if (state.active.length === 0) {
+          captureWaitOutcome({
+            outcome: "no_active_agents",
+            activeCount: 0,
+          });
           return {
             success: true,
             wait_outcome: "no_active_agents" as const,
@@ -593,6 +857,11 @@ export const createWaitForAgentsTool = (context: ToolContext) =>
 
         const remainingSeconds = Math.ceil((deadline - Date.now()) / 1_000);
         if (remainingSeconds <= 0) {
+          captureWaitOutcome({
+            outcome: "timeout",
+            activeCount: state.active.length,
+            errorCategory: "timeout",
+          });
           return {
             success: true,
             wait_outcome: "timeout" as const,
