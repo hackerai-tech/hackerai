@@ -1,4 +1,5 @@
 import {
+  AWS_LAMBDA_MICROVM_DEFAULT_REGION,
   AWS_LAMBDA_MICROVM_REGIONS,
   AWS_LAMBDA_MICROVM_RELEASE_SCHEMA_VERSION,
   type AwsLambdaMicrovmRegion,
@@ -12,6 +13,32 @@ type RegionalReleaseOutput = {
   AWS_LAMBDA_MICROVM_IMAGE_VERSION: string;
   AWS_LAMBDA_MICROVM_EXECUTION_ROLE_ARN: string;
 };
+
+export const AWS_LAMBDA_MICROVM_ENABLED_REGIONS_ENV =
+  "AWS_LAMBDA_MICROVM_ENABLED_REGIONS" as const;
+
+export function parseAwsLambdaMicrovmEnabledRegions(
+  raw: string | undefined,
+): readonly AwsLambdaMicrovmRegion[] {
+  if (!raw?.trim()) return AWS_LAMBDA_MICROVM_REGIONS;
+  const enabled = [...new Set(raw.split(",").map((value) => value.trim()))];
+  if (
+    enabled.some(
+      (region) =>
+        !AWS_LAMBDA_MICROVM_REGIONS.includes(region as AwsLambdaMicrovmRegion),
+    )
+  ) {
+    throw new Error(
+      `${AWS_LAMBDA_MICROVM_ENABLED_REGIONS_ENV} contains an unsupported region`,
+    );
+  }
+  if (!enabled.includes(AWS_LAMBDA_MICROVM_DEFAULT_REGION)) {
+    throw new Error(
+      `${AWS_LAMBDA_MICROVM_ENABLED_REGIONS_ENV} must include ${AWS_LAMBDA_MICROVM_DEFAULT_REGION}`,
+    );
+  }
+  return enabled as AwsLambdaMicrovmRegion[];
+}
 
 function required(record: Record<string, string>, name: string): string {
   const value = record[name]?.trim();
@@ -51,9 +78,11 @@ export function parseRegionalReleaseOutput(raw: string): RegionalReleaseOutput {
 export function buildAwsLambdaMicrovmReleaseManifest({
   releaseId,
   outputs,
+  enabledRegions = AWS_LAMBDA_MICROVM_REGIONS,
 }: {
   releaseId: string;
   outputs: RegionalReleaseOutput[];
+  enabledRegions?: readonly AwsLambdaMicrovmRegion[];
 }): AwsLambdaMicrovmReleaseManifest {
   const byRegion = new Map(
     outputs.map((output) => [output.AWS_REGION, output]),
@@ -72,7 +101,7 @@ export function buildAwsLambdaMicrovmReleaseManifest({
           imageIdentifier: output.AWS_LAMBDA_MICROVM_IMAGE_ID,
           imageVersion: output.AWS_LAMBDA_MICROVM_IMAGE_VERSION,
           executionRoleArn: output.AWS_LAMBDA_MICROVM_EXECUTION_ROLE_ARN,
-          enabledForNewPlacements: true,
+          enabledForNewPlacements: enabledRegions.includes(region),
         },
       ];
     }),

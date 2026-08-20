@@ -15,6 +15,7 @@ on:
       - "scripts/sync-trigger-microvm-release-env.ts"
       - "scripts/lib/aws-microvm-release-manifest.ts"
       - "scripts/lib/trigger-microvm-release-env.ts"
+      - "lib/ai/tools/utils/aws-lambda-microvm-release.ts"
       - "package.json"
       - "pnpm-lock.yaml"
   workflow_dispatch:
@@ -29,6 +30,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     environment: aws-lambda-microvm-production
+    permissions:
+      contents: read
     env:
       CONVEX_DEPLOY_KEY: ${{ secrets.CONVEX_DEPLOY_KEY }}
     steps:
@@ -144,6 +147,7 @@ jobs:
           AWS_LAMBDA_MICROVM_OUTPUT_FILE: ${{ runner.temp }}/${{ matrix.region }}.env
         shell: bash
         run: |
+          # shellcheck disable=SC2163 # Export the variable named by each verified release-output key.
           while IFS='=' read -r name value; do
             case "$name" in
               AWS_LAMBDA_MICROVM_IMAGE_ID|AWS_LAMBDA_MICROVM_IMAGE_VERSION)
@@ -168,9 +172,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     environment: aws-lambda-microvm-production
+    permissions:
+      contents: read
     env:
       TRIGGER_PROJECT_ID: ${{ vars.TRIGGER_PROJECT_ID }}
       TRIGGER_ACCESS_TOKEN: ${{ secrets.TRIGGER_ACCESS_TOKEN }}
+      AWS_LAMBDA_MICROVM_ENABLED_REGIONS: ${{ vars.AWS_LAMBDA_MICROVM_ENABLED_REGIONS || 'us-east-1,us-west-2,eu-west-1' }}
     steps:
       - name: Validate promotion configuration
         shell: bash

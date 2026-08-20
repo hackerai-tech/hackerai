@@ -56,9 +56,9 @@ Trigger.dev. The Vercel
 Data Controls cleanup path also needs `GetMicrovm`, `ListMicrovms`, and
 `TerminateMicrovm`; a separate cleanup-only policy is preferable once workload
 identity is configured. Prefer role assumption in production; access keys can
-be used for an initial test. Set `ExecutionRoleArn` as
-regional release manifest stores the matching `ExecutionRoleArn`; Lambda
-assumes that narrowly scoped role to write guest runtime logs to CloudWatch.
+be used for an initial test. Every regional release manifest entry must set
+`ExecutionRoleArn` to the matching regional role ARN; Lambda assumes that
+narrowly scoped role to write guest runtime logs to CloudWatch.
 
 ## 2. Build and publish the image
 
@@ -179,6 +179,12 @@ manifest, upload and read back that exact manifest in Trigger.dev production,
 and deploy the pinned worker. A partial regional build can never become the
 active release. Vercel remains unchanged and older AWS image versions remain
 available for rollback.
+
+`AWS_LAMBDA_MICROVM_ENABLED_REGIONS` in the protected GitHub production
+environment is the durable placement kill switch. Keep `us-east-1` present and
+use a comma-separated subset such as `us-east-1,eu-west-1` to stop new Oregon
+placements without re-enabling them during the next image release. Existing
+sessions remain pinned to their persisted region.
 
 The CloudFormation stack creates a GitHub OIDC release role, so GitHub Actions
 does not need long-lived AWS access keys. Create a GitHub environment named

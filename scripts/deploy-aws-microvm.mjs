@@ -19,15 +19,17 @@ const region =
   process.env.AWS_REGION || process.env.AWS_DEFAULT_REGION || "us-east-1";
 const bucket = process.env.AWS_LAMBDA_MICROVM_ARTIFACT_BUCKET;
 const buildRoleArn = process.env.AWS_LAMBDA_MICROVM_BUILD_ROLE_ARN;
+const executionRoleArn =
+  process.env.AWS_LAMBDA_MICROVM_EXECUTION_ROLE_ARN?.trim();
 const name =
   process.env.AWS_LAMBDA_MICROVM_IMAGE_NAME || "hackerai-cloud-agent";
 const baseImageArn =
   process.env.AWS_LAMBDA_MICROVM_BASE_IMAGE_ARN ||
   `arn:aws:lambda:${region}:aws:microvm-image:al2023-1`;
 
-if (!bucket || !buildRoleArn) {
+if (!bucket || !buildRoleArn || !executionRoleArn) {
   throw new Error(
-    "AWS_LAMBDA_MICROVM_ARTIFACT_BUCKET and AWS_LAMBDA_MICROVM_BUILD_ROLE_ARN are required",
+    "AWS_LAMBDA_MICROVM_ARTIFACT_BUCKET, AWS_LAMBDA_MICROVM_BUILD_ROLE_ARN, and AWS_LAMBDA_MICROVM_EXECUTION_ROLE_ARN are required",
   );
 }
 
@@ -137,7 +139,7 @@ const output = [
   `AWS_REGION=${region}`,
   `AWS_LAMBDA_MICROVM_IMAGE_ID=${version.imageArn || imageIdentifier}`,
   `AWS_LAMBDA_MICROVM_IMAGE_VERSION=${imageVersion}`,
-  `AWS_LAMBDA_MICROVM_EXECUTION_ROLE_ARN=${process.env.AWS_LAMBDA_MICROVM_EXECUTION_ROLE_ARN || ""}`,
+  `AWS_LAMBDA_MICROVM_EXECUTION_ROLE_ARN=${executionRoleArn}`,
 ].join("\n");
 
 if (process.env.AWS_LAMBDA_MICROVM_OUTPUT_FILE) {

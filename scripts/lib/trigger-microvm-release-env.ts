@@ -1,3 +1,4 @@
+import type { envvars } from "@trigger.dev/sdk";
 import { parseAwsLambdaMicrovmReleaseManifest } from "../../lib/ai/tools/utils/aws-lambda-microvm-release";
 
 export const TRIGGER_MICROVM_RELEASE_ENVIRONMENT = "prod" as const;
@@ -13,21 +14,7 @@ export const TRIGGER_MICROVM_RELEASE_ENV_NAMES = [
 type TriggerMicrovmReleaseEnvName =
   (typeof TRIGGER_MICROVM_RELEASE_ENV_NAMES)[number];
 
-type TriggerEnvClient = {
-  upload: (
-    projectRef: string,
-    environment: typeof TRIGGER_MICROVM_RELEASE_ENVIRONMENT,
-    params: {
-      variables: Record<TriggerMicrovmReleaseEnvName, string>;
-      override: true;
-    },
-  ) => Promise<{ success: boolean }>;
-  retrieve: (
-    projectRef: string,
-    environment: typeof TRIGGER_MICROVM_RELEASE_ENVIRONMENT,
-    name: TriggerMicrovmReleaseEnvName,
-  ) => Promise<{ name: string; value: string; isSecret: boolean }>;
-};
+type TriggerEnvClient = Pick<typeof envvars, "upload" | "retrieve">;
 
 export type TriggerMicrovmReleaseConfig = {
   accessToken: string;

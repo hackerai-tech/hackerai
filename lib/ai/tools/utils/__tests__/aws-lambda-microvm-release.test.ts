@@ -60,6 +60,18 @@ describe("AWS Lambda MicroVM release manifest", () => {
     });
   });
 
+  it("falls back safely when a serialized task contains an unknown region", () => {
+    const parsed = parseAwsLambdaMicrovmReleaseManifest(
+      JSON.stringify(manifest()),
+    );
+    expect(resolveAwsLambdaMicrovmPlacement("ap-southeast-1", parsed)).toEqual({
+      triggerRegion: "us-east-1",
+      requestedRegion: "us-east-1",
+      region: "us-east-1",
+      reason: "invalid_trigger_region",
+    });
+  });
+
   it("rejects cross-region image ARNs and a disabled fallback", () => {
     const wrongArn = manifest();
     wrongArn.regions["us-west-2"].imageIdentifier =

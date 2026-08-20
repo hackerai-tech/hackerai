@@ -33,7 +33,8 @@ export type AwsLambdaMicrovmPlacement = {
   reason:
     | "trigger_region_exact"
     | "trigger_region_europe_pairing"
-    | "regional_placement_disabled";
+    | "regional_placement_disabled"
+    | "invalid_trigger_region";
 };
 
 const TRIGGER_TO_AWS_REGION: Record<TriggerRunRegion, AwsLambdaMicrovmRegion> =
@@ -142,25 +143,34 @@ export function parseAwsLambdaMicrovmReleaseManifest(
 }
 
 export function resolveAwsLambdaMicrovmPlacement(
-  triggerRegion: TriggerRunRegion,
+  triggerRegion: TriggerRunRegion | string,
   manifest: AwsLambdaMicrovmReleaseManifest,
 ): AwsLambdaMicrovmPlacement {
-  const requestedRegion = TRIGGER_TO_AWS_REGION[triggerRegion];
+  if (!Object.hasOwn(TRIGGER_TO_AWS_REGION, triggerRegion)) {
+    return {
+      triggerRegion: "us-east-1",
+      requestedRegion: AWS_LAMBDA_MICROVM_DEFAULT_REGION,
+      region: AWS_LAMBDA_MICROVM_DEFAULT_REGION,
+      reason: "invalid_trigger_region",
+    };
+  }
+  const normalizedTriggerRegion = triggerRegion as TriggerRunRegion;
+  const requestedRegion = TRIGGER_TO_AWS_REGION[normalizedTriggerRegion];
   const requested = manifest.regions[requestedRegion];
   if (!requested.enabledForNewPlacements) {
     return {
-      triggerRegion,
+      triggerRegion: normalizedTriggerRegion,
       requestedRegion,
       region: AWS_LAMBDA_MICROVM_DEFAULT_REGION,
       reason: "regional_placement_disabled",
     };
   }
   return {
-    triggerRegion,
+    triggerRegion: normalizedTriggerRegion,
     requestedRegion,
     region: requestedRegion,
     reason:
-      triggerRegion === "eu-central-1"
+      normalizedTriggerRegion === "eu-central-1"
         ? "trigger_region_europe_pairing"
         : "trigger_region_exact",
   };

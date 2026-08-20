@@ -28,6 +28,9 @@ export default defineConfig({
   },
   dirs: ["./trigger"],
   build: {
+    autoDetectExternal: true,
+    keepNames: true,
+    minify: false,
     // Native modules that must be installed at deploy time, not bundled.
     // @e2b/code-interpreter is pure JS and intentionally NOT listed here —
     // bundling it lets esbuild convert chalk's ESM to CJS inline, avoiding

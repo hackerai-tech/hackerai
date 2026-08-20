@@ -3,7 +3,9 @@
 import { readdir, readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import {
+  AWS_LAMBDA_MICROVM_ENABLED_REGIONS_ENV,
   buildAwsLambdaMicrovmReleaseManifest,
+  parseAwsLambdaMicrovmEnabledRegions,
   parseRegionalReleaseOutput,
   serializeAwsLambdaMicrovmReleaseEnvironment,
 } from "./lib/aws-microvm-release-manifest";
@@ -28,7 +30,13 @@ async function main() {
       ),
     ),
   );
-  const manifest = buildAwsLambdaMicrovmReleaseManifest({ releaseId, outputs });
+  const manifest = buildAwsLambdaMicrovmReleaseManifest({
+    releaseId,
+    outputs,
+    enabledRegions: parseAwsLambdaMicrovmEnabledRegions(
+      process.env[AWS_LAMBDA_MICROVM_ENABLED_REGIONS_ENV],
+    ),
+  });
   await writeFile(
     resolve(outputFile),
     `${serializeAwsLambdaMicrovmReleaseEnvironment(manifest)}\n`,
