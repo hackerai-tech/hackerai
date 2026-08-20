@@ -36,7 +36,7 @@ import {
   isProcessTreeTerminationConfirmed,
 } from "./command-cancellation";
 import { CentrifugoPublishQueue } from "./centrifugo-transport";
-import { buildCentrifugoTransportEndpoints } from "./centrifugo-endpoints";
+import { buildCentrifugoTransportConfig } from "./centrifugo-endpoints";
 import {
   CloudImagePrimeError,
   primeCloudImageWorkingSet,
@@ -583,8 +583,10 @@ export class LocalSandboxClient {
     wsUrl: string,
     initialToken: string,
   ): Promise<void> {
-    this.centrifuge = new Centrifuge(buildCentrifugoTransportEndpoints(wsUrl), {
+    const transportConfig = buildCentrifugoTransportConfig(wsUrl);
+    this.centrifuge = new Centrifuge(transportConfig.endpoints, {
       websocket: WebSocket as unknown as typeof globalThis.WebSocket,
+      emulationEndpoint: transportConfig.emulationEndpoint,
       token: initialToken,
       getToken: async (): Promise<string> => {
         if (!this.connectionId) {

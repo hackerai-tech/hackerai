@@ -23,7 +23,10 @@ const mockClient = {
   on: jest.fn(),
   ready: jest.fn().mockResolvedValue(undefined),
 };
-let mockClientOptions: { getToken?: () => Promise<string> } | null = null;
+let mockClientOptions: {
+  getToken?: () => Promise<string>;
+  emulationEndpoint?: string;
+} | null = null;
 let mockClientEndpoint: unknown = null;
 
 jest.mock("centrifuge", () => ({
@@ -178,6 +181,9 @@ it("waits for the relay and subscription before reporting ready", async () => {
       endpoint: "http://localhost:8000/connection/http_stream",
     },
   ]);
+  expect(mockClientOptions?.emulationEndpoint).toBe(
+    "http://localhost:8000/emulation",
+  );
   expect(mockClient.ready).toHaveBeenCalledWith(15_000);
   expect(mockSubscription.ready).toHaveBeenCalledWith(15_000);
   expect(config.heartbeatDesktop).toHaveBeenCalledWith({
