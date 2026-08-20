@@ -6,6 +6,7 @@ import { workos } from "../../workos";
 import { fenceAndGetActiveAgentResourcesForUser } from "@/lib/db/actions";
 import { closeAndCancelAgentResources } from "@/lib/api/agent-deletion-cleanup";
 import { cancelSubagentsForUserDeletion } from "@/lib/db/subagents";
+import { terminateCloudSandboxesForUser } from "@/lib/ai/tools/utils/cloud-sandbox";
 import { logger } from "@/lib/logger";
 
 const mockConvexMutation = jest.fn();
@@ -45,6 +46,10 @@ jest.mock("@/lib/db/subagents", () => ({
   cancelSubagentsForUserDeletion: jest.fn(),
 }));
 
+jest.mock("@/lib/ai/tools/utils/cloud-sandbox", () => ({
+  terminateCloudSandboxesForUser: jest.fn(),
+}));
+
 jest.mock("@/lib/logger", () => ({
   logger: {
     error: jest.fn(),
@@ -59,6 +64,8 @@ jest.mock("@/convex/_generated/api", () => ({
       markDeleted: "accountIdentities.markDeleted",
     },
     userDeletion: {
+      beginUserDataDeletionByService:
+        "userDeletion.beginUserDataDeletionByService",
       deleteAllUserDataByService: "userDeletion.deleteAllUserDataByService",
     },
   },
@@ -137,6 +144,10 @@ const mockCancelSubagentsForUserDeletion =
   cancelSubagentsForUserDeletion as jest.MockedFunction<
     typeof cancelSubagentsForUserDeletion
   >;
+const mockTerminateCloudSandboxesForUser =
+  terminateCloudSandboxesForUser as jest.MockedFunction<
+    typeof terminateCloudSandboxesForUser
+  >;
 const mockLoggerError = logger.error as jest.MockedFunction<
   typeof logger.error
 >;
@@ -170,6 +181,11 @@ describe("POST /api/delete-account", () => {
       triggerRunIds: [],
       hasMore: false,
     } as never);
+    mockTerminateCloudSandboxesForUser.mockResolvedValue({
+      total: 0,
+      killed: 0,
+      alreadyGone: 0,
+    });
     mockConvexMutation.mockImplementation(async (functionReference) =>
       functionReference === "userDeletion.deleteAllUserDataByService"
         ? { hasMore: false }
@@ -254,11 +270,16 @@ describe("POST /api/delete-account", () => {
     );
     expect(
       mockCloseAndCancelAgentResources.mock.invocationCallOrder[0],
-    ).toBeLessThan(mockConvexMutation.mock.invocationCallOrder[1]);
-    expect(mockConvexMutation.mock.invocationCallOrder[1]).toBeLessThan(
+    ).toBeLessThan(
+      mockTerminateCloudSandboxesForUser.mock.invocationCallOrder[0],
+    );
+    expect(
+      mockTerminateCloudSandboxesForUser.mock.invocationCallOrder[0],
+    ).toBeLessThan(mockConvexMutation.mock.invocationCallOrder[2]);
+    expect(mockConvexMutation.mock.invocationCallOrder[2]).toBeLessThan(
       mockDeleteOrganizationMembership.mock.invocationCallOrder[0],
     );
-    expect(mockConvexMutation.mock.invocationCallOrder[1]).toBeLessThan(
+    expect(mockConvexMutation.mock.invocationCallOrder[2]).toBeLessThan(
       mockDeleteUser.mock.invocationCallOrder[0],
     );
   });
@@ -323,6 +344,14 @@ describe("POST /api/delete-account", () => {
     expect(response.status).toBe(200);
     expect(mockConvexMutation).toHaveBeenNthCalledWith(
       1,
+      "userDeletion.beginUserDataDeletionByService",
+      {
+        serviceKey: "service_key",
+        userId: "user_123",
+      },
+    );
+    expect(mockConvexMutation).toHaveBeenNthCalledWith(
+      2,
       "accountIdentities.markDeleted",
       {
         serviceKey: "service_key",
@@ -331,14 +360,14 @@ describe("POST /api/delete-account", () => {
       },
     );
     expect(mockConvexMutation).toHaveBeenNthCalledWith(
-      2,
+      3,
       "userDeletion.deleteAllUserDataByService",
       {
         serviceKey: "service_key",
         userId: "user_123",
       },
     );
-    expect(mockConvexMutation.mock.invocationCallOrder[1]).toBeLessThan(
+    expect(mockConvexMutation.mock.invocationCallOrder[2]).toBeLessThan(
       mockDeleteUser.mock.invocationCallOrder[0],
     );
   });
@@ -396,6 +425,7 @@ describe("POST /api/delete-account", () => {
     } as never);
     mockConvexMutation
       .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(null)
       .mockRejectedValueOnce(new Error("Convex cleanup failed"));
 
     const response = await POST(request() as any);
@@ -436,8 +466,13 @@ describe("POST /api/delete-account", () => {
     );
     expect(
       mockCloseAndCancelAgentResources.mock.invocationCallOrder[0],
-    ).toBeLessThan(mockConvexMutation.mock.invocationCallOrder[1]);
-    expect(mockConvexMutation.mock.invocationCallOrder[1]).toBeLessThan(
+    ).toBeLessThan(
+      mockTerminateCloudSandboxesForUser.mock.invocationCallOrder[0],
+    );
+    expect(
+      mockTerminateCloudSandboxesForUser.mock.invocationCallOrder[0],
+    ).toBeLessThan(mockConvexMutation.mock.invocationCallOrder[2]);
+    expect(mockConvexMutation.mock.invocationCallOrder[2]).toBeLessThan(
       mockDeleteUser.mock.invocationCallOrder[0],
     );
   });
@@ -459,7 +494,27 @@ describe("POST /api/delete-account", () => {
 
     expect(response.status).toBe(500);
     expect(body.error).toBe("Trigger cleanup failed");
-    expect(mockConvexMutation).toHaveBeenCalledTimes(1);
+    expect(mockConvexMutation).toHaveBeenCalledTimes(2);
+    expect(mockDeleteOrganizationMembership).not.toHaveBeenCalled();
+    expect(mockDeleteUserRateLimitKeys).not.toHaveBeenCalled();
+    expect(mockDeleteUser).not.toHaveBeenCalled();
+  });
+
+  it("keeps cloud session identifiers when provider termination fails", async () => {
+    mockListOrganizationMemberships.mockResolvedValueOnce({
+      data: [],
+    } as never);
+    mockTerminateCloudSandboxesForUser.mockRejectedValueOnce(
+      new Error("AWS termination failed"),
+    );
+
+    const response = await POST(request() as any);
+    const body = await response.json();
+
+    expect(response.status).toBe(500);
+    expect(body.error).toBe("AWS termination failed");
+    expect(mockCloseAndCancelAgentResources).toHaveBeenCalled();
+    expect(mockConvexMutation).toHaveBeenCalledTimes(2);
     expect(mockDeleteOrganizationMembership).not.toHaveBeenCalled();
     expect(mockDeleteUserRateLimitKeys).not.toHaveBeenCalled();
     expect(mockDeleteUser).not.toHaveBeenCalled();
@@ -471,6 +526,7 @@ describe("POST /api/delete-account", () => {
     } as never);
     mockConvexMutation
       .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(null)
       .mockResolvedValueOnce({ hasMore: true })
       .mockResolvedValueOnce({ hasMore: false });
 
@@ -479,18 +535,18 @@ describe("POST /api/delete-account", () => {
     expect(response.status).toBe(200);
     expect(mockConvexMutation).toHaveBeenNthCalledWith(
       1,
-      "accountIdentities.markDeleted",
+      "userDeletion.beginUserDataDeletionByService",
       {
         serviceKey: "service_key",
-        identityHash: "free_quota:v1:identity_hash",
         userId: "user_123",
       },
     );
     expect(mockConvexMutation).toHaveBeenNthCalledWith(
       2,
-      "userDeletion.deleteAllUserDataByService",
+      "accountIdentities.markDeleted",
       {
         serviceKey: "service_key",
+        identityHash: "free_quota:v1:identity_hash",
         userId: "user_123",
       },
     );
@@ -502,7 +558,15 @@ describe("POST /api/delete-account", () => {
         userId: "user_123",
       },
     );
-    expect(mockConvexMutation.mock.invocationCallOrder[2]).toBeLessThan(
+    expect(mockConvexMutation).toHaveBeenNthCalledWith(
+      4,
+      "userDeletion.deleteAllUserDataByService",
+      {
+        serviceKey: "service_key",
+        userId: "user_123",
+      },
+    );
+    expect(mockConvexMutation.mock.invocationCallOrder[3]).toBeLessThan(
       mockDeleteUser.mock.invocationCallOrder[0],
     );
     expect(mockDeleteUser).toHaveBeenCalledWith("user_123");
@@ -514,6 +578,7 @@ describe("POST /api/delete-account", () => {
       data: [],
     } as never);
     mockConvexMutation
+      .mockResolvedValueOnce(null)
       .mockResolvedValueOnce(null)
       // Older Convex deployments returned only the completion marker. Keep
       // that deploy-skew shape compatible while collecting newer progress.
@@ -530,7 +595,7 @@ describe("POST /api/delete-account", () => {
 
     expect(response.status).toBe(500);
     expect(body.error).toContain("taking longer than expected");
-    expect(mockConvexMutation).toHaveBeenCalledTimes(51);
+    expect(mockConvexMutation).toHaveBeenCalledTimes(52);
     expect(mockLoggerError).toHaveBeenCalledWith(
       "account_cleanup_batch_limit_exhausted",
       undefined,
@@ -561,7 +626,10 @@ describe("POST /api/delete-account", () => {
     mockListOrganizationMemberships.mockResolvedValueOnce({
       data: [],
     } as never);
-    mockConvexMutation.mockResolvedValueOnce(null).mockResolvedValueOnce(null);
+    mockConvexMutation
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(null);
 
     const response = await POST(request() as any);
     const body = await response.json();

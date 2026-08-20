@@ -154,6 +154,57 @@ describe("limitImageParts", () => {
 // selectModel - Model selection logic
 // ==========================================================================
 describe("selectModel", () => {
+  it.each([
+    ["ask", "pro-plus"],
+    ["agent", "pro-plus"],
+    ["ask", "ultra"],
+    ["agent", "ultra"],
+  ] as const)(
+    "routes %s %s Auto text to DeepSeek V4 Pro in the treatment",
+    (mode, subscription) => {
+      expect(
+        selectModel(mode, subscription, "auto", false, false, {
+          proPlusUltraDeepSeekProDefaultEnabled: true,
+        }),
+      ).toBe("model-deepseek-v4-pro-0813");
+    },
+  );
+
+  it.each(["pro", "team"] as const)(
+    "does not change %s Auto routing in the treatment",
+    (subscription) => {
+      expect(
+        selectModel("agent", subscription, "auto", false, false, {
+          proPlusUltraDeepSeekProDefaultEnabled: true,
+        }),
+      ).toBe("model-deepseek-v4-flash-0731");
+    },
+  );
+
+  it("keeps explicit models and image routes unchanged in the treatment", () => {
+    const treatment = {
+      auxiliaryVisionEnabled: true,
+      proPlusUltraDeepSeekProDefaultEnabled: true,
+    };
+
+    expect(
+      selectModel(
+        "agent",
+        "pro-plus",
+        "hackerai-standard",
+        false,
+        false,
+        treatment,
+      ),
+    ).toBe("model-deepseek-v4-flash-0731");
+    expect(
+      selectModel("agent", "pro-plus", "hackerai-pro", false, false, treatment),
+    ).toBe("model-deepseek-v4-pro-0813");
+    expect(selectModel("agent", "ultra", "auto", true, false, treatment)).toBe(
+      "model-deepseek-v4-flash-0731",
+    );
+  });
+
   it("routes HackerAI Pro through DeepSeek V4 Pro 0813", () => {
     expect(selectModel("agent", "pro", "hackerai-pro")).toBe(
       "model-deepseek-v4-pro-0813",

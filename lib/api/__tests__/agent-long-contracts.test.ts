@@ -1430,6 +1430,23 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(fallbackIdx).toBeGreaterThan(retryModelIdx);
   });
 
+  test("explicit DeepSeek Pro retries only terminal reasoning-only provider failures", () => {
+    for (const source of [taskSrc, chatHandlerSrc]) {
+      expect(source).toMatch(
+        /shouldRetryProviderStreamAfterReasoningOnlyOutput\(\s*lastAssistantMessageParts,/,
+      );
+      expect(source).toMatch(
+        /shouldRetryReasoningOnlyProviderError\s*&&\s*isExplicitDeepSeekProSelectionForRetry\(\{/,
+      );
+      expect(source).toMatch(
+        /shouldRetryInterruptedToolInput\s*\|\|\s*shouldRetryExplicitDeepSeekProReasoning/,
+      );
+    }
+
+    expect(taskSrc).toMatch(/state\?\.providerError != null\s*\|\|/);
+    expect(chatHandlerSrc).toMatch(/state\.providerError != null/);
+  });
+
   test("/api/chat attributes fallback usage to the persisted retry message", () => {
     expect(chatHandlerSrc).toMatch(
       /const deductAccumulatedUsage = async \(\s*assistantMessageIdForUsage = assistantMessageId,\s*\)/,
@@ -1934,6 +1951,21 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(taskSrc.slice(toolsIdx, promptIdx)).toContain("cloudSandboxRollout");
     expect(taskSrc.slice(promptIdx, promptIdx + 700)).toContain(
       "cloudSandboxRollout.provider",
+    );
+  });
+
+  test("agent-long disables whole-task retries for its shared UI stream", () => {
+    expect(taskSrc).toMatch(
+      /Streaming tasks must not retry:[\s\S]*retry:\s*\{\s*maxAttempts:\s*1\s*\}/,
+    );
+  });
+
+  test("agent-long groups provider transport alerts by failure category", () => {
+    expect(taskSrc).toMatch(
+      /GROUPED_PROVIDER_ALERT_CATEGORIES[\s\S]*provider_timeout[\s\S]*provider_stream_terminated/,
+    );
+    expect(taskSrc).toMatch(
+      /recordGroupedSpikeAlert\(\{[\s\S]*spikeKey:\s*`agent_long:\$\{summary\.category\}`[\s\S]*sourceEvent:\s*"agent_long_provider_transport_failed"/,
     );
   });
 });

@@ -94,6 +94,7 @@ import {
   getContentFilterRetryModel,
   getRetryFallbackModel,
   isAutoModelSelectionForRetry,
+  isExplicitDeepSeekProSelectionForRetry,
   resolveServedModelForCostAccounting,
 } from "@/lib/api/chat-stream-helpers";
 import { geolocation } from "@vercel/functions";
@@ -158,6 +159,12 @@ import {
   getDeepSeekV4Pro0813ExperimentContext,
 } from "@/lib/experiments/deepseek-v4-pro-0813";
 import {
+  captureProPlusUltraDeepSeekProDefaultExposure,
+  evaluateProPlusUltraDeepSeekProDefault,
+  getActiveProPlusUltraDeepSeekProDefaultAssignment,
+  getProPlusUltraDeepSeekProDefaultContext,
+} from "@/lib/experiments/pro-plus-ultra-deepseek-pro-default";
+import {
   createAuxiliaryVisionExposureRecorder,
   evaluateAuxiliaryDeepSeekVisionFlag,
 } from "@/lib/experiments/auxiliary-deepseek-vision";
@@ -205,6 +212,7 @@ import {
 } from "@/lib/chat/multimodal-tool-result-recovery";
 import {
   detectAssistantContentLoopFromParts,
+  shouldRetryProviderStreamAfterReasoningOnlyOutput,
   shouldRetryProviderStreamAfterInterruptedToolInput,
   shouldRetryProviderStreamWithFallback,
 } from "@/lib/chat/agent-long-provider-retry";
@@ -382,17 +390,28 @@ export const createChatHandler = () => {
         selectedModelOverride,
         subscription,
       );
-      const auxiliaryVisionAssignment =
-        isAgentMode(mode) ||
-        countFileAttachments(truncatedMessages).imageCount > 0
-          ? await evaluateAuxiliaryDeepSeekVisionFlag({
-              posthog: (posthog ??= PostHogClient()),
-              userId,
-              subscription,
-              selectedModelOverride,
-              requestId: req.headers.get("x-vercel-id") ?? undefined,
-            })
-          : undefined;
+      const attachmentCounts = countFileAttachments(truncatedMessages);
+      const routingPosthog = (posthog ??= PostHogClient());
+      const [auxiliaryVisionAssignment, deepSeekProDefaultAssignment] =
+        await Promise.all([
+          isAgentMode(mode) || attachmentCounts.imageCount > 0
+            ? evaluateAuxiliaryDeepSeekVisionFlag({
+                posthog: routingPosthog,
+                userId,
+                subscription,
+                selectedModelOverride,
+                requestId: req.headers.get("x-vercel-id") ?? undefined,
+              })
+            : Promise.resolve(undefined),
+          evaluateProPlusUltraDeepSeekProDefault({
+            posthog: routingPosthog,
+            userId,
+            subscription,
+            selectedModelOverride,
+            hasImageAttachment: attachmentCounts.imageCount > 0,
+            requestId: req.headers.get("x-vercel-id") ?? undefined,
+          }),
+        ]);
 
       await handleInitialChatAndUserMessage({
         chatId,
@@ -439,6 +458,8 @@ export const createChatHandler = () => {
         allowLocalDesktopFiles:
           isAgentMode(mode) && sandboxPreference === "desktop",
         auxiliaryVisionEnabled: !!auxiliaryVisionAssignment,
+        proPlusUltraDeepSeekProDefaultEnabled:
+          deepSeekProDefaultAssignment?.variant === "deepseek_pro",
         chatId,
         requestId: req.headers.get("x-vercel-id") ?? undefined,
       });
@@ -607,9 +628,18 @@ export const createChatHandler = () => {
           deepSeekV4Pro0813Experiment,
           selectedModel,
         );
-      let routingExperimentContext = getDeepSeekV4Pro0813ExperimentContext(
-        activeDeepSeekV4Pro0813Experiment,
-      );
+      let activeDeepSeekProDefaultAssignment =
+        getActiveProPlusUltraDeepSeekProDefaultAssignment(
+          deepSeekProDefaultAssignment,
+          selectedModel,
+        );
+      let routingExperimentContext =
+        getProPlusUltraDeepSeekProDefaultContext(
+          activeDeepSeekProDefaultAssignment,
+        ) ??
+        getDeepSeekV4Pro0813ExperimentContext(
+          activeDeepSeekV4Pro0813Experiment,
+        );
 
       const freeMonthlyBudgetSnapshot =
         subscription === "free"
@@ -924,7 +954,15 @@ export const createChatHandler = () => {
                     deepSeekV4Pro0813Experiment,
                     selectedModel,
                   );
+                activeDeepSeekProDefaultAssignment =
+                  getActiveProPlusUltraDeepSeekProDefaultAssignment(
+                    deepSeekProDefaultAssignment,
+                    selectedModel,
+                  );
                 routingExperimentContext =
+                  getProPlusUltraDeepSeekProDefaultContext(
+                    activeDeepSeekProDefaultAssignment,
+                  ) ??
                   getDeepSeekV4Pro0813ExperimentContext(
                     activeDeepSeekV4Pro0813Experiment,
                   );
@@ -1367,6 +1405,7 @@ export const createChatHandler = () => {
                   requestedDeltaPoints: additionalCostPoints,
                   deduction: deductionResult,
                   forced: force,
+                  experiment: routingExperimentContext,
                 });
 
                 usageRefundTracker.addDeductions(deductionResult);
@@ -1479,6 +1518,18 @@ export const createChatHandler = () => {
 
             let result;
             try {
+              captureProPlusUltraDeepSeekProDefaultExposure({
+                posthog,
+                userId,
+                subscription,
+                mode,
+                endpoint,
+                selectedModelOverride,
+                selectedModel,
+                configuredModel: configuredModelId,
+                chatId,
+                assignment: activeDeepSeekProDefaultAssignment,
+              });
               captureDeepSeekV4Pro0813ExperimentExposure({
                 posthog,
                 userId,
@@ -1591,7 +1642,19 @@ export const createChatHandler = () => {
                       );
                     const hasTerminalProviderStreamError =
                       state.streamFinishReason === "error" ||
-                      providerContentBlocked;
+                      providerContentBlocked ||
+                      state.providerError != null;
+                    const shouldRetryReasoningOnlyProviderError =
+                      shouldRetryProviderStreamAfterReasoningOnlyOutput(
+                        lastAssistantMessageParts,
+                        { hasTerminalProviderStreamError },
+                      );
+                    const shouldRetryExplicitDeepSeekProReasoning =
+                      shouldRetryReasoningOnlyProviderError &&
+                      isExplicitDeepSeekProSelectionForRetry({
+                        selectedModel,
+                        selectedModelOverride,
+                      });
                     const shouldRetryInterruptedToolInput =
                       shouldRetryProviderStreamAfterInterruptedToolInput(
                         lastAssistantMessageParts,
@@ -1634,7 +1697,9 @@ export const createChatHandler = () => {
                               ? "doom_loop"
                               : shouldRetryInterruptedToolInput
                                 ? "interrupted_tool_input"
-                                : "incomplete_stream";
+                                : shouldRetryReasoningOnlyProviderError
+                                  ? "reasoning_only_provider_error"
+                                  : "incomplete_stream";
                       const blockedProviderModel = providerContentBlocked
                         ? state.responseModel
                         : undefined;
@@ -1660,9 +1725,12 @@ export const createChatHandler = () => {
                                 ? "Agent doom loop detected - triggering fallback"
                                 : retryReason === "interrupted_tool_input"
                                   ? "Provider stream errored during tool input - triggering bounded fallback"
-                                  : hasTerminalProviderStreamError
-                                    ? "Provider stream errored before useful output - triggering fallback"
-                                    : "Stream finished incomplete - triggering fallback",
+                                  : retryReason ===
+                                      "reasoning_only_provider_error"
+                                    ? "Provider stream errored after reasoning-only output - triggering bounded fallback"
+                                    : hasTerminalProviderStreamError
+                                      ? "Provider stream errored before useful output - triggering fallback"
+                                      : "Stream finished incomplete - triggering fallback",
                         {
                           chatId,
                           endpoint,
@@ -1698,7 +1766,8 @@ export const createChatHandler = () => {
                           providerContentBlocked ||
                           shouldRetryWithoutImageToolResults ||
                           loopTriggeredRetry ||
-                          shouldRetryInterruptedToolInput)
+                          shouldRetryInterruptedToolInput ||
+                          shouldRetryExplicitDeepSeekProReasoning)
                       ) {
                         isRetryWithFallback = true;
                         state.lastStepInputTokens = 0;

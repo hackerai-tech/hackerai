@@ -37,11 +37,10 @@ export const getMaxStepsForUser = (mode: ChatMode): number => {
  * @param mode - Chat mode (ask or agent)
  * @param hasImageAttachment - Whether any message has an image attachment.
  * @param hasPdfAttachment - Whether any message has a PDF attachment.
- *   Paid Auto/Standard routes use DeepSeek V4 Flash 0731 for text/PDF prompts,
- *   Pro uses DeepSeek V4 Pro 0813, and Max uses Grok 4.6. In the control route,
- *   images promote Auto and Standard to Grok 4.5 with medium reasoning while
- *   Pro uses high reasoning. The auxiliary route describes images as text and
- *   keeps DeepSeek active. PDFs stay on DeepSeek and are parsed by OpenRouter.
+ *   Paid Auto normally uses DeepSeek V4 Flash 0731 for text/PDF prompts. A
+ *   staged Pro Plus/Ultra treatment promotes Auto to DeepSeek V4 Pro 0813.
+ *   Explicit Standard stays on Flash, Pro uses Pro 0813, and Max uses Grok
+ *   4.6. Images retain their existing direct or auxiliary vision behavior.
  * @returns Model name to use
  */
 export function selectModel(
@@ -53,6 +52,7 @@ export function selectModel(
   options: {
     extraUsageAvailable?: boolean;
     auxiliaryVisionEnabled?: boolean;
+    proPlusUltraDeepSeekProDefaultEnabled?: boolean;
   } = {},
 ): ModelName {
   const isAgent = isAgentMode(mode);
@@ -69,16 +69,22 @@ export function selectModel(
     !isAgent && !!hasImageAttachment && !options.auxiliaryVisionEnabled;
   const hasProviderImage =
     !!hasImageAttachment && !options.auxiliaryVisionEnabled;
+  const paidAutoTextModel: ModelName =
+    options.proPlusUltraDeepSeekProDefaultEnabled &&
+    (subscription === "pro-plus" || subscription === "ultra") &&
+    !hasImageAttachment
+      ? "model-deepseek-v4-pro-0813"
+      : "model-deepseek-v4-flash-0731";
   const paidAskMediaModel: ModelName = hasAskImage
     ? "model-grok-4.5"
-    : "model-deepseek-v4-flash-0731";
+    : paidAutoTextModel;
 
   const autoModel: ModelName = isAgent
     ? subscription === "free"
       ? "agent-model-free"
       : hasProviderImage
         ? "model-grok-4.5"
-        : "model-deepseek-v4-flash-0731"
+        : paidAutoTextModel
     : isFreeAsk
       ? "ask-model-free"
       : paidAskMediaModel;
@@ -646,6 +652,7 @@ export async function processChatMessages({
   extraUsageAvailable = false,
   allowLocalDesktopFiles = false,
   auxiliaryVisionEnabled = false,
+  proPlusUltraDeepSeekProDefaultEnabled = false,
   chatId,
   triggerRunId,
   requestId,
@@ -659,6 +666,7 @@ export async function processChatMessages({
   extraUsageAvailable?: boolean;
   allowLocalDesktopFiles?: boolean;
   auxiliaryVisionEnabled?: boolean;
+  proPlusUltraDeepSeekProDefaultEnabled?: boolean;
   chatId?: string;
   triggerRunId?: string;
   requestId?: string;
@@ -739,7 +747,11 @@ export async function processChatMessages({
     modelOverride,
     mediaAttachmentRouting.hasImage,
     mediaAttachmentRouting.hasPdf,
-    { extraUsageAvailable, auxiliaryVisionEnabled },
+    {
+      extraUsageAvailable,
+      auxiliaryVisionEnabled,
+      proPlusUltraDeepSeekProDefaultEnabled,
+    },
   );
 
   // Strip providerMetadata for Anthropic models to prevent cross-model signature errors.

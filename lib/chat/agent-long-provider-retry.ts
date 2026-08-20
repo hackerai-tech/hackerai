@@ -241,6 +241,13 @@ export const createAssistantContentLoopMonitor = () => {
   };
 };
 
+export const shouldRetryProviderStreamAfterReasoningOnlyOutput = (
+  parts: unknown[],
+  options: Pick<RetryDecisionOptions, "hasTerminalProviderStreamError">,
+): boolean =>
+  options.hasTerminalProviderStreamError &&
+  isReasoningOnlyProviderOutput(parts);
+
 export const shouldRetryProviderStreamWithFallback = (
   parts: unknown[],
   options: RetryDecisionOptions,
@@ -271,8 +278,8 @@ export const shouldRetryProviderStreamWithFallback = (
   // is no text, tool call, or tool output to preserve. Retrying on fallback is
   // safer than failing the whole run on a discarded provider socket.
   return (
-    options.hasTerminalProviderStreamError &&
-    (isReasoningOnlyProviderOutput(parts) ||
+    shouldRetryProviderStreamAfterReasoningOnlyOutput(parts, options) ||
+    (options.hasTerminalProviderStreamError &&
       isInterruptedToolInputOnlyProviderOutput(parts))
   );
 };

@@ -37,6 +37,7 @@ const {
   attachTriggerRunForBackend,
   cancelForBackend,
   cancelForChatDeletionBackend,
+  cancelForUserDeletionBackend,
   claimNextTerminalForParentBackend,
   consumePendingMessagesForBackend,
   failUnattachedForBackend,
@@ -75,10 +76,12 @@ const makeCtx = ({
   exact = null,
   parentRuns = [],
   sameCandidate = [],
+  deletionFenced = false,
 }: {
   exact?: Record<string, any> | null;
   parentRuns?: Array<Record<string, any>>;
   sameCandidate?: Array<Record<string, any>>;
+  deletionFenced?: boolean;
 }) => {
   const insert = jest.fn<any>().mockResolvedValue("subagent-doc");
   const runAfter = jest.fn<any>().mockResolvedValue(undefined);
@@ -89,6 +92,13 @@ const makeCtx = ({
   const query = jest.fn((table: string) => ({
     withIndex: jest.fn((indexName: string, callback: (q: any) => unknown) => {
       callback(chain);
+      if (table === "user_deletion_fences") {
+        return {
+          first: jest
+            .fn<any>()
+            .mockResolvedValue(deletionFenced ? { _id: "fence-1" } : null),
+        };
+      }
       if (table === "chats") {
         return {
           first: jest.fn<any>().mockResolvedValue({
@@ -119,6 +129,15 @@ const makeCtx = ({
 
 describe("subagent reservation", () => {
   beforeEach(() => jest.clearAllMocks());
+
+  it("does not reserve a child after account deletion starts", async () => {
+    const { ctx, insert } = makeCtx({ deletionFenced: true });
+
+    await expect(reserveForBackend.handler(ctx, args)).resolves.toEqual({
+      outcome: "chat_missing",
+    });
+    expect(insert).not.toHaveBeenCalled();
+  });
 
   it("returns the exact prior child for a retried parent tool call", async () => {
     const { ctx, insert } = makeCtx({
@@ -1135,6 +1154,51 @@ describe("subagent deletion cancellation", () => {
         cancel_reason: "chat_deleted",
       }),
     );
+  });
+
+  it("retries a sandbox-deletion cancellation after Trigger cleanup fails", async () => {
+    const patch = jest.fn<any>().mockResolvedValue(undefined);
+    const retryRow = {
+      _id: "retry-child",
+      user_id: "user-1",
+      status: "canceled",
+      trigger_run_id: "child-run-retry",
+      cancel_reason: "terminal-sandbox-deleted",
+    };
+    const ctx = {
+      db: {
+        query: jest.fn(() => ({
+          withIndex: jest.fn((_name: string, callback: (q: any) => void) => {
+            let status = "";
+            const q = {
+              eq: jest.fn((field: string, value: string) => {
+                if (field === "status") status = value;
+                return q;
+              }),
+            };
+            callback(q);
+            return {
+              take: jest
+                .fn<any>()
+                .mockResolvedValue(status === "canceled" ? [retryRow] : []),
+            };
+          }),
+        })),
+        patch,
+      },
+    } as any;
+
+    await expect(
+      cancelForUserDeletionBackend.handler(ctx, {
+        serviceKey: "service-key",
+        userId: "user-1",
+        reason: "terminal-sandbox-deleted",
+      }),
+    ).resolves.toEqual({
+      triggerRunIds: ["child-run-retry"],
+      hasMore: false,
+    });
+    expect(patch).not.toHaveBeenCalled();
   });
 
   it("fails closed without patching when a status batch is truncated", async () => {

@@ -7,7 +7,7 @@ description: Run privacy-safe HackerAI customer research from a Linear question 
 
 Turn a research question and 3-20 internal user IDs into restricted per-user
 profiles and an aggregated cohort report. The deployed task samples messages,
-redacts sensitive data, and uses Grok 4.6 with reasoning disabled.
+redacts sensitive data, and uses DeepSeek V4 Flash with reasoning disabled.
 
 Read [references/privacy-policy.md](references/privacy-policy.md) and
 [references/pm-runbook.md](references/pm-runbook.md) before running the task.
@@ -27,12 +27,16 @@ Read [references/privacy-policy.md](references/privacy-policy.md) and
    internal/test/fraud accounts and deduplicate payer or organization
    relationships before triggering analysis. Stop unless 3-20 unique internal
    user IDs remain after filtering.
-4. Discover the Trigger task `pm-user-research` and inspect its current schema.
-   Trigger it in the intended environment with the Linear issue ID, exact
-   question, descriptive cohort label, 3-20 unique user IDs, PM name/handle, and
-   optional chat limit. Never call the worker task directly.
-5. Wait for the run to complete. Keep the returned `analysisId`; it is the audit
-   and lookup key for the restricted Convex records.
+4. Create a mode-600 temporary JSON request outside the repository using the
+   gateway payload below. Run
+   `node .agents/skills/hackerai-user-research/scripts/run-research.mjs --payload <path>`.
+   The runner requires `HACKERAI_PM_USER_RESEARCH_KEY` in the PM's Codex
+   environment and always calls the production HackerAI gateway. Never print
+   the key, put it in the request, or use Trigger
+   dashboard access. Remove the temporary request after the command reads it.
+5. Wait for the runner to return a completed aggregate. Keep the returned
+   `analysisId`; it is the audit and lookup key for the restricted Convex
+   records. Do not substitute direct Trigger access if the gateway fails.
 6. Present only the aggregate answer, evidence coverage, supported user types,
    avatars, primary/secondary target, confidence, unknowns, and experiments.
    Detailed pseudonym-level profiles remain in restricted Convex records and are
@@ -41,7 +45,7 @@ Read [references/privacy-policy.md](references/privacy-policy.md) and
    unknowns, and experiments. Never copy cohort IDs, pseudonym-level profiles,
    raw evidence, direct identifiers, or per-user findings or targeting decisions.
 
-## Trigger payload
+## Gateway payload
 
 Use the current task schema as the authority. A typical HAC-65 run is:
 
@@ -51,7 +55,6 @@ Use the current task schema as the authority. A typical HAC-65 run is:
   "question": "What kinds of users are our highest-spending customers, what recurring work do they use HackerAI for, and why do they pay?",
   "cohortLabel": "Top 10 users by reconciled lifetime net paid spend",
   "userIds": ["internal-user-id-1", "internal-user-id-2", "internal-user-id-3"],
-  "requestedBy": "PM name or handle",
   "maxChatsPerUser": 12
 }
 ```
@@ -76,6 +79,7 @@ payload. `userIds` must be the internal Convex/WorkOS user IDs.
 
 ## Result boundary
 
-The Trigger result contains only aggregate internal research. Detailed profiles
-remain restricted and deletion-aware in Convex. The aggregate report is the only
-part that may be copied to Linear, under the owning issue's privacy rules.
+The gateway returns only aggregate internal research and cannot read other
+Trigger tasks or runs. Detailed profiles remain restricted and deletion-aware
+in Convex. The aggregate report is the only part that may be copied to Linear,
+under the owning issue's privacy rules.

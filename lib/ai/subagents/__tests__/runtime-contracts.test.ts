@@ -77,6 +77,15 @@ describe("security validation subagent runtime contracts", () => {
     expect(child).toContain("Output.object({");
     expect(child).toContain("await generation.consumeStream()");
     expect(child).toContain("await acceptResult(recoveredResult)");
+    const acceptResult = child.slice(
+      child.indexOf("const acceptResult ="),
+      child.indexOf("const submitResult ="),
+    );
+    expectMarkerOrder(
+      acceptResult,
+      "await assertRuntimeAuthorized()",
+      "await markSubagentFinalizing(",
+    );
     expect(child).not.toContain(
       "model: provider.languageModel(activeModelName)",
     );

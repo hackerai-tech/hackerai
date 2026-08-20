@@ -25,6 +25,30 @@ describe("cloud sandbox session cleanup", () => {
     jest.clearAllMocks();
   });
 
+  it("does not create a MicroVM session after account deletion starts", async () => {
+    const query = jest.fn((table: string) => {
+      expect(table).toBe("user_deletion_fences");
+      return {
+        withIndex: jest.fn(() => ({
+          first: jest.fn().mockResolvedValue({ _id: "fence-1" }),
+        })),
+      };
+    });
+    const insert = jest.fn();
+    const { beginCloudSession } = await import("../localSandbox");
+
+    await expect(
+      beginCloudSession.handler({ db: { query, insert } } as never, {
+        serviceKey: "service-key",
+        userId: "user-1",
+        region: "us-east-1",
+        imageIdentifier: "image-1",
+      }),
+    ).rejects.toBeInstanceOf(Error);
+    expect(query).toHaveBeenCalledWith("user_deletion_fences");
+    expect(insert).not.toHaveBeenCalled();
+  });
+
   it("purges only terminal rows and disconnects their relay records", async () => {
     const statuses: string[] = [];
     const rowsByStatus = {

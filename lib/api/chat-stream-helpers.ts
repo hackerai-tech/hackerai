@@ -594,6 +594,10 @@ const AUTO_MODEL_KEYS = new Set<string>([
   "agent-model-free",
 ]);
 const EXPLICIT_RETRY_MODEL_KEYS = new Set<string>(["model-grok-4.6-pro"]);
+const EXPLICIT_DEEPSEEK_PRO_RETRY_MODEL_KEYS = new Set<string>([
+  "model-deepseek-v4-pro",
+  "model-deepseek-v4-pro-0813",
+]);
 
 export function isAutoModelSelectionForRetry({
   selectedModel,
@@ -607,6 +611,19 @@ export function isAutoModelSelectionForRetry({
     selectedModelOverride === "auto" ||
     AUTO_MODEL_KEYS.has(selectedModel) ||
     EXPLICIT_RETRY_MODEL_KEYS.has(selectedModel)
+  );
+}
+
+export function isExplicitDeepSeekProSelectionForRetry({
+  selectedModel,
+  selectedModelOverride,
+}: {
+  selectedModel: string;
+  selectedModelOverride?: SelectedModel | null;
+}): boolean {
+  return (
+    selectedModelOverride === "hackerai-pro" &&
+    EXPLICIT_DEEPSEEK_PRO_RETRY_MODEL_KEYS.has(selectedModel)
   );
 }
 

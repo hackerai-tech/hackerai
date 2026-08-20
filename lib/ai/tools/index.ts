@@ -52,6 +52,10 @@ import {
   type AwsLambdaMicrovmRolloutAssignment,
 } from "@/lib/experiments/aws-lambda-microvm-rollout";
 import type { CloudSandboxAcquisitionContext } from "./utils/cloud-sandbox";
+import {
+  AlternateCloudSandboxUnavailableError,
+  getCloudSandboxRecoveryTelemetryProperties,
+} from "./utils/cloud-sandbox-recovery";
 import type { CloudSandboxProvider } from "./utils/cloud-sandbox-provider";
 
 export { isE2BSandbox };
@@ -157,6 +161,7 @@ export const createTools = (
         subscription_tier: subscription,
         agent_run_kind: cloudSandboxContext.runKind,
         ...getAwsLambdaMicrovmRolloutTelemetryProperties(rollout),
+        ...getCloudSandboxRecoveryTelemetryProperties(cloudSandboxContext),
         sandbox_boot_path: sandboxBootInfo?.path,
         sandbox_acquisition_duration_ms: sandboxBootInfo?.duration_ms,
         sandbox_create_attempts: sandboxBootInfo?.create_attempts,
@@ -305,9 +310,12 @@ export const createTools = (
     refresh?: boolean;
     reason?: string;
     excludeConnectionId?: string;
+    requireAlternateCloudProvider?: boolean;
   }) => {
     const recoveryRequested = Boolean(
-      options?.refresh || options?.excludeConnectionId,
+      options?.refresh ||
+      options?.excludeConnectionId ||
+      options?.requireAlternateCloudProvider,
     );
     if (!recoveryRequested && pendingSandbox) return pendingSandbox;
 
@@ -319,6 +327,13 @@ export const createTools = (
           options.excludeConnectionId,
           "command_unresponsive",
         );
+      }
+      if (options?.requireAlternateCloudProvider) {
+        const alternateProvider =
+          sandboxManager.selectAlternateCloudProviderForRecovery?.() ?? null;
+        if (!alternateProvider) {
+          throw new AlternateCloudSandboxUnavailableError();
+        }
       }
       if (options?.refresh) {
         await sandboxManager.resetSandbox?.(options.reason);

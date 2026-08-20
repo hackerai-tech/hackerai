@@ -1,6 +1,7 @@
 jest.mock("server-only", () => ({}), { virtual: true });
 
 import type { UIMessage } from "ai";
+import { AlternateCloudSandboxUnavailableError } from "@/lib/ai/tools/utils/cloud-sandbox-recovery";
 import {
   getSandboxUploadFailureMetadata,
   getSandboxUploadUserMessage,
@@ -628,18 +629,21 @@ describe("desktop-local sandbox file helpers", () => {
     [
       "Sandbox operation timed out. The sandbox may be overloaded. Please try again.",
       "operation_timeout",
+      "fresh_sandbox",
     ],
     [
       "Failed creating persistent sandbox: The operation was aborted due to timeout",
       "operation_timeout",
+      "fresh_sandbox",
     ],
     [
       "Failed creating persistent sandbox: 500: Failed to place sandbox",
       "placement_failure",
+      "alternate_cloud_provider",
     ],
   ])(
     "refreshes once after retryable sandbox acquisition failure %s",
-    async (errorMessage, failureReason) => {
+    async (errorMessage, failureReason, recoveryStrategy) => {
       const consoleWarnSpy = jest
         .spyOn(console, "warn")
         .mockImplementation(() => {});
@@ -682,6 +686,8 @@ describe("desktop-local sandbox file helpers", () => {
         expect(ensureSandbox.mock.calls[1][0]).toEqual({
           refresh: true,
           reason: "attachment_staging_sandbox_acquisition_failure",
+          requireAlternateCloudProvider:
+            recoveryStrategy === "alternate_cloud_provider",
         });
         expect(downloadFromUrl).toHaveBeenCalledTimes(1);
 
@@ -703,6 +709,7 @@ describe("desktop-local sandbox file helpers", () => {
           chat_id: "chat-123",
           initial_failure_reason: failureReason,
           final_failure_reason: null,
+          recovery_strategy: recoveryStrategy,
         });
         expect(
           consoleInfoSpy.mock.calls.some(([value]) =>
@@ -811,7 +818,7 @@ describe("desktop-local sandbox file helpers", () => {
       });
       const retryFailedLog = JSON.parse(
         String(
-          consoleErrorSpy.mock.calls.find(([value]) =>
+          consoleWarnSpy.mock.calls.find(([value]) =>
             String(value).includes(
               "sandbox_attachment_acquisition_retry_failed",
             ),
@@ -819,12 +826,56 @@ describe("desktop-local sandbox file helpers", () => {
         ),
       );
       expect(retryFailedLog).toMatchObject({
+        level: "warn",
         initial_failure_reason: "operation_timeout",
         final_failure_reason: "placement_failure",
+        recovery_strategy: "fresh_sandbox",
       });
     } finally {
       consoleWarnSpy.mockRestore();
       consoleErrorSpy.mockRestore();
+    }
+  });
+
+  it("fails fast when placement recovery has no rollout-authorized alternate provider", async () => {
+    const consoleWarnSpy = jest
+      .spyOn(console, "warn")
+      .mockImplementation(() => {});
+    const ensureSandbox = jest
+      .fn()
+      .mockRejectedValueOnce(
+        new Error(
+          "Failed creating persistent sandbox: 500: Failed to place sandbox",
+        ),
+      )
+      .mockRejectedValueOnce(new AlternateCloudSandboxUnavailableError());
+
+    try {
+      const result = await uploadSandboxFiles(
+        [
+          {
+            kind: "url",
+            url: "https://example.com/screenshot.png",
+            localPath: "/home/user/upload/screenshot.png",
+          },
+        ],
+        ensureSandbox,
+        { retryWithFreshSandboxOnTransientFailure: true },
+      );
+
+      expect(ensureSandbox).toHaveBeenCalledTimes(2);
+      expect(ensureSandbox.mock.calls[1][0]).toEqual({
+        refresh: true,
+        reason: "attachment_staging_sandbox_acquisition_failure",
+        requireAlternateCloudProvider: true,
+      });
+      expect(result.retriedWithFreshSandbox).toBeUndefined();
+      expect(getSandboxUploadFailureMetadata(result)).toMatchObject({
+        upload_failure_reason: "sandbox_placement_failure",
+        upload_failure_sandbox_readiness_reason: "placement_failure",
+      });
+    } finally {
+      consoleWarnSpy.mockRestore();
     }
   });
 

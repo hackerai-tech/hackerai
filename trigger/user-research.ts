@@ -3,25 +3,25 @@ import { ConvexHttpClient } from "convex/browser";
 import { generateText, Output } from "ai";
 import { z } from "zod";
 import { api } from "@/convex/_generated/api";
-import { GROK_4_6_SLUG, myProvider } from "@/lib/ai/providers";
+import { DEEPSEEK_V4_FLASH_SLUG, myProvider } from "@/lib/ai/providers";
 import { getProviderUsageRawModelCost } from "@/lib/provider-usage-cost";
 import {
+  assertResearchPromptIsSafe,
   buildCohortPrompt,
   buildUserProfilePrompt,
   cohortSynthesisSchema,
   normalizeCohortSynthesis,
   normalizeResearchUserProfile,
+  pmUserResearchPayloadSchema,
   researchUserProfileSchema,
   USER_RESEARCH_MODEL_KEY,
+  USER_RESEARCH_MIN_COHORT_SIZE,
   USER_RESEARCH_PROMPT_VERSION,
   USER_RESEARCH_PROVIDER_OPTIONS,
   type ResearchCohortReport,
   type ResearchCoverage,
 } from "@/lib/research/user-research";
 
-const MIN_COHORT_SIZE = 3;
-const MAX_COHORT_SIZE = 20;
-const DEFAULT_MAX_CHATS_PER_USER = 12;
 const MAX_MESSAGES_PER_CHAT = 80;
 
 const workerPayloadSchema = z.object({
@@ -32,35 +32,7 @@ const workerPayloadSchema = z.object({
   maxChatsPerUser: z.number().int().min(3).max(20),
 });
 
-export const pmUserResearchPayloadSchema = z
-  .object({
-    linearIssueId: z
-      .string()
-      .trim()
-      .regex(/^[A-Z]+-\d+$/),
-    question: z.string().trim().min(10).max(1_000),
-    cohortLabel: z.string().trim().min(3).max(200),
-    userIds: z
-      .array(z.string().trim().min(1).max(200))
-      .min(MIN_COHORT_SIZE)
-      .max(MAX_COHORT_SIZE),
-    requestedBy: z.string().trim().min(2).max(100),
-    maxChatsPerUser: z
-      .number()
-      .int()
-      .min(3)
-      .max(20)
-      .default(DEFAULT_MAX_CHATS_PER_USER),
-  })
-  .superRefine((payload, ctx) => {
-    if (new Set(payload.userIds).size !== payload.userIds.length) {
-      ctx.addIssue({
-        code: "custom",
-        message: "userIds must be unique",
-        path: ["userIds"],
-      });
-    }
-  });
+export { pmUserResearchPayloadSchema } from "@/lib/research/user-research";
 
 const getResearchClient = () => {
   const convexUrl = process.env.NEXT_PUBLIC_CONVEX_URL?.trim();
@@ -138,6 +110,12 @@ export const analyzeUserResearchProfile = schemaTask({
       truncatedChats: evidence.filter((chat) => chat.truncated).length,
     };
 
+    const prompt = buildUserProfilePrompt({
+      question: payload.question,
+      pseudonym: payload.pseudonym,
+      chats: evidence,
+    });
+    assertResearchPromptIsSafe(prompt);
     const result = await generateText({
       model: myProvider.languageModel(USER_RESEARCH_MODEL_KEY),
       output: Output.object({ schema: researchUserProfileSchema }),
@@ -145,11 +123,7 @@ export const analyzeUserResearchProfile = schemaTask({
       temperature: 0,
       maxOutputTokens: 6_000,
       maxRetries: 1,
-      prompt: buildUserProfilePrompt({
-        question: payload.question,
-        pseudonym: payload.pseudonym,
-        chats: evidence,
-      }),
+      prompt,
     });
     const profile = normalizeResearchUserProfile(
       result.output,
@@ -164,7 +138,7 @@ export const analyzeUserResearchProfile = schemaTask({
       pseudonym: payload.pseudonym,
       profile,
       coverage,
-      model: GROK_4_6_SLUG,
+      model: DEEPSEEK_V4_FLASH_SLUG,
       promptVersion: USER_RESEARCH_PROMPT_VERSION,
       ...usage,
     });
@@ -202,7 +176,7 @@ export const pmUserResearch = schemaTask({
       requestedBy: payload.requestedBy,
       members,
       maxChatsPerUser: payload.maxChatsPerUser,
-      model: GROK_4_6_SLUG,
+      model: DEEPSEEK_V4_FLASH_SLUG,
     });
     try {
       await client.mutation(api.userResearch.markRunRunning, {
@@ -234,12 +208,18 @@ export const pmUserResearch = schemaTask({
         serviceKey,
         analysisId,
       });
-      if (profiles.length < MIN_COHORT_SIZE) {
+      if (profiles.length < USER_RESEARCH_MIN_COHORT_SIZE) {
         throw new Error(
           "Fewer than three users had enough evidence for privacy-safe synthesis",
         );
       }
 
+      const prompt = buildCohortPrompt({
+        question: payload.question,
+        cohortLabel: payload.cohortLabel,
+        profiles,
+      });
+      assertResearchPromptIsSafe(prompt);
       const result = await generateText({
         model: myProvider.languageModel(USER_RESEARCH_MODEL_KEY),
         output: Output.object({ schema: cohortSynthesisSchema }),
@@ -247,11 +227,7 @@ export const pmUserResearch = schemaTask({
         temperature: 0,
         maxOutputTokens: 8_000,
         maxRetries: 1,
-        prompt: buildCohortPrompt({
-          question: payload.question,
-          cohortLabel: payload.cohortLabel,
-          profiles,
-        }),
+        prompt,
       });
       const synthesis = normalizeCohortSynthesis(
         result.output,
@@ -278,7 +254,7 @@ export const pmUserResearch = schemaTask({
         serviceKey,
         analysisId,
         report,
-        model: GROK_4_6_SLUG,
+        model: DEEPSEEK_V4_FLASH_SLUG,
         promptVersion: USER_RESEARCH_PROMPT_VERSION,
         ...usageForStorage(result.usage),
       });

@@ -11,6 +11,7 @@ import {
   getContentFilterRetryModel,
   getRetryFallbackModel,
   isAutoModelSelectionForRetry,
+  isExplicitDeepSeekProSelectionForRetry,
   resolveServedModelForCostAccounting,
 } from "@/lib/api/chat-stream-helpers";
 
@@ -650,6 +651,45 @@ describe("isAutoModelSelectionForRetry", () => {
       }),
     ).toBe(true);
   });
+});
+
+describe("isExplicitDeepSeekProSelectionForRetry", () => {
+  it.each(["model-deepseek-v4-pro", "model-deepseek-v4-pro-0813"])(
+    "recognizes explicit HackerAI Pro on %s",
+    (selectedModel) => {
+      expect(
+        isExplicitDeepSeekProSelectionForRetry({
+          selectedModel,
+          selectedModelOverride: "hackerai-pro",
+        }),
+      ).toBe(true);
+    },
+  );
+
+  it.each([
+    {
+      selectedModel: "model-deepseek-v4-pro",
+      selectedModelOverride: "auto" as const,
+    },
+    {
+      selectedModel: "model-deepseek-v4-pro",
+      selectedModelOverride: "hackerai-standard" as const,
+    },
+    {
+      selectedModel: "model-grok-4.5-pro",
+      selectedModelOverride: "hackerai-pro" as const,
+    },
+  ])(
+    "rejects non-explicit-DeepSeek selection $selectedModelOverride / $selectedModel",
+    ({ selectedModel, selectedModelOverride }) => {
+      expect(
+        isExplicitDeepSeekProSelectionForRetry({
+          selectedModel,
+          selectedModelOverride,
+        }),
+      ).toBe(false);
+    },
+  );
 });
 
 describe("getRetryFallbackModel", () => {

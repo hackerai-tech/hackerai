@@ -695,6 +695,14 @@ export default defineSchema({
     .index("by_identity_hash", ["identity_hash"])
     .index("by_latest_user_id", ["latest_user_id"]),
 
+  // Durable tombstone created before account deletion starts. It prevents
+  // concurrent requests from provisioning new execution resources after the
+  // deletion route has enumerated the user's existing resources.
+  user_deletion_fences: defineTable({
+    user_id: v.string(),
+    started_at: v.number(),
+  }).index("by_user_id", ["user_id"]),
+
   user_suspensions: defineTable({
     user_id: v.string(),
     status: v.union(v.literal("active"), v.literal("resolved")),

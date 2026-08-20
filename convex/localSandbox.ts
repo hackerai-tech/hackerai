@@ -4,6 +4,7 @@ import { validateServiceKey } from "./lib/utils";
 import { DatabaseReader, DatabaseWriter } from "./_generated/server";
 import type { Doc } from "./_generated/dataModel";
 import { SignJWT } from "jose";
+import { isUserDeletionFenced } from "./lib/userDeletionFence";
 
 /**
  * Internal mutation: purge disconnected sandbox connections older than cutoff.
@@ -534,6 +535,12 @@ export const beginCloudSession = mutation({
   }),
   handler: async (ctx, args) => {
     validateServiceKey(args.serviceKey);
+    if (await isUserDeletionFenced(ctx.db, args.userId)) {
+      throw new ConvexError({
+        code: "ACCOUNT_DELETION_IN_PROGRESS",
+        message: "Account deletion is in progress",
+      });
+    }
     const now = Date.now();
     const [starting, running] = await Promise.all([
       ctx.db
