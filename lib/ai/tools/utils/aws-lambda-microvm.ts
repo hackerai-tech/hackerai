@@ -56,7 +56,7 @@ const NON_FAILOVER_ERROR_NAMES = new Set([
 
 type CloudSession = {
   sessionId: string;
-  status: "starting" | "running" | "failed" | "terminated";
+  status: "starting" | "active" | "running" | "failed" | "terminated";
   microvmId?: string;
   connectionId?: string;
   region: string;
@@ -74,7 +74,30 @@ type CloudSession = {
   updatedAt: number;
   bootstrapExpiresAt: number;
   relayReadyAt?: number;
+  awsState?: AwsMicrovmState;
+  awsStateCheckedAt?: number;
   failureCode?: string;
+};
+
+type AwsMicrovmState =
+  | "PENDING"
+  | "RUNNING"
+  | "SUSPENDING"
+  | "SUSPENDED"
+  | "TERMINATING"
+  | "TERMINATED";
+
+type CloudSessionReconciliationCandidate = {
+  userId: string;
+  session: CloudSession;
+};
+
+export type AwsLambdaMicrovmReconciliationSummary = {
+  checked: number;
+  running: number;
+  suspended: number;
+  terminal: number;
+  failures: number;
 };
 
 type CloudSessionCleanupCandidate = {
@@ -587,6 +610,43 @@ async function markDirectReady(
   if (!ready) throw new Error("Cloud session ended before direct readiness");
 }
 
+async function recordCloudMicrovmState(
+  userId: string,
+  sessionId: string,
+  microvmId: string,
+  serviceKey: string,
+  state: AwsMicrovmState,
+  failureCodeValue?: string,
+): Promise<boolean> {
+  return Boolean(
+    await getConvexClient().mutation(
+      api.localSandbox.recordCloudMicrovmStateForBackend,
+      {
+        serviceKey,
+        userId,
+        sessionId,
+        microvmId,
+        state,
+        failureCode: failureCodeValue,
+      },
+    ),
+  );
+}
+
+function asAwsMicrovmState(value: unknown): AwsMicrovmState | undefined {
+  switch (value) {
+    case "PENDING":
+    case "RUNNING":
+    case "SUSPENDING":
+    case "SUSPENDED":
+    case "TERMINATING":
+    case "TERMINATED":
+      return value;
+    default:
+      return undefined;
+  }
+}
+
 async function terminateMicrovm(
   microvmId: string,
   region: string,
@@ -754,9 +814,8 @@ function createSessionConnectionWaiter(
         return;
       }
       if (
-        current.status === "running" &&
-        current.microvmId &&
-        current.connectionId
+        (current.status === "active" || current.status === "running") &&
+        current.microvmId
       ) {
         finish(current);
       }
@@ -1293,6 +1352,14 @@ export async function ensureAwsLambdaMicrovmConnection(
     runHookPayload: JSON.stringify({
       sessionId: begin.session.sessionId,
       connectionName: "AWS Lambda MicroVM",
+      ...(endpointKind(convexUrl) === "remote_https" && begin.bootstrapToken
+        ? {
+            lifecycleCallback: {
+              convexUrl,
+              bootstrapToken: begin.bootstrapToken,
+            },
+          }
+        : {}),
     }),
   };
   try {
@@ -1770,6 +1837,13 @@ export async function suspendAwsLambdaMicrovmsForUser(
         new GetMicrovmCommand({ microvmIdentifier: microvmId }),
       );
       if (current.state === "SUSPENDED" || current.state === "SUSPENDING") {
+        await recordCloudMicrovmState(
+          userId,
+          session.sessionId,
+          microvmId,
+          serviceKey,
+          current.state,
+        );
         summary.alreadySuspended++;
         log("info", "cloud_sandbox_suspend_skipped", {
           user_id: userId,
@@ -1801,6 +1875,13 @@ export async function suspendAwsLambdaMicrovmsForUser(
 
       const response = await getClient(session.region).send(
         new SuspendMicrovmCommand({ microvmIdentifier: microvmId }),
+      );
+      await recordCloudMicrovmState(
+        userId,
+        session.sessionId,
+        microvmId,
+        serviceKey,
+        "SUSPENDING",
       );
       summary.suspended++;
       log("info", "cloud_sandbox_suspend_accepted", {
@@ -1885,5 +1966,102 @@ export async function suspendAwsLambdaMicrovmsForUser(
     );
   }
 
+  return summary;
+}
+
+/**
+ * Reconcile Convex's durable session index with AWS's authoritative physical
+ * MicroVM state. Lifecycle callbacks normally keep rows current; this bounded
+ * sweep repairs missed callbacks and platform-enforced terminations.
+ */
+export async function reconcileAwsLambdaMicrovmSessions(
+  limit = 100,
+): Promise<AwsLambdaMicrovmReconciliationSummary> {
+  const serviceKey = required("CONVEX_SERVICE_ROLE_KEY");
+  const candidates = (await getConvexClient().query(
+    api.localSandbox.listCloudSessionsForReconciliation,
+    { serviceKey, limit },
+  )) as CloudSessionReconciliationCandidate[];
+  const summary: AwsLambdaMicrovmReconciliationSummary = {
+    checked: 0,
+    running: 0,
+    suspended: 0,
+    terminal: 0,
+    failures: 0,
+  };
+  const errors: unknown[] = [];
+
+  for (let offset = 0; offset < candidates.length; offset += 10) {
+    const batch = candidates.slice(offset, offset + 10);
+    await Promise.all(
+      batch.map(async ({ userId, session }) => {
+        if (!session.microvmId) return;
+        try {
+          const response = await getClient(session.region).send(
+            new GetMicrovmCommand({
+              microvmIdentifier: session.microvmId,
+            }),
+          );
+          const state = asAwsMicrovmState(response.state);
+          if (!state) {
+            throw new Error(
+              `AWS returned unknown MicroVM state ${String(response.state)}`,
+            );
+          }
+          await recordCloudMicrovmState(
+            userId,
+            session.sessionId,
+            session.microvmId,
+            serviceKey,
+            state,
+            state === "TERMINATING" || state === "TERMINATED"
+              ? "microvm_ended"
+              : undefined,
+          );
+          summary.checked++;
+          if (state === "RUNNING" || state === "PENDING") summary.running++;
+          else if (state === "SUSPENDED" || state === "SUSPENDING") {
+            summary.suspended++;
+          } else summary.terminal++;
+        } catch (error) {
+          if (isAwsNotFound(error)) {
+            try {
+              await recordCloudMicrovmState(
+                userId,
+                session.sessionId,
+                session.microvmId,
+                serviceKey,
+                "TERMINATED",
+                "microvm_not_found",
+              );
+              summary.checked++;
+              summary.terminal++;
+              return;
+            } catch (recordError) {
+              error = recordError;
+            }
+          }
+          summary.failures++;
+          errors.push(error);
+          log("warn", "cloud_sandbox_state_reconciliation_failed", {
+            user_id: userId,
+            session_id: session.sessionId,
+            microvm_id: session.microvmId,
+            region: session.region,
+            failure_code: failureCode(error),
+            ...errorLogFields(error),
+          });
+        }
+      }),
+    );
+  }
+
+  log("info", "cloud_sandbox_state_reconciliation_completed", summary);
+  if (errors.length > 0) {
+    throw new AggregateError(
+      errors,
+      `Failed to reconcile ${errors.length} AWS Lambda MicroVM session(s)`,
+    );
+  }
   return summary;
 }

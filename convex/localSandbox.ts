@@ -69,9 +69,19 @@ const RELAY_READY_CLIENT_VERSION = "aws-lambda-microvm-relay-ready-v1";
 
 const cloudSessionStatus = v.union(
   v.literal("starting"),
+  v.literal("active"),
   v.literal("running"),
   v.literal("failed"),
   v.literal("terminated"),
+);
+
+const cloudMicrovmState = v.union(
+  v.literal("PENDING"),
+  v.literal("RUNNING"),
+  v.literal("SUSPENDING"),
+  v.literal("SUSPENDED"),
+  v.literal("TERMINATING"),
+  v.literal("TERMINATED"),
 );
 
 const cloudSessionForBackend = v.object({
@@ -96,7 +106,14 @@ const cloudSessionForBackend = v.object({
   updatedAt: v.number(),
   bootstrapExpiresAt: v.number(),
   relayReadyAt: v.optional(v.number()),
+  awsState: v.optional(cloudMicrovmState),
+  awsStateCheckedAt: v.optional(v.number()),
   failureCode: v.optional(v.string()),
+});
+
+const cloudSessionForReconciliation = v.object({
+  userId: v.string(),
+  session: cloudSessionForBackend,
 });
 
 const cloudSessionCleanupCandidate = v.object({
@@ -108,7 +125,7 @@ const cloudSessionCleanupCandidate = v.object({
 
 function serializeCloudSession(session: {
   session_id: string;
-  status: "starting" | "running" | "failed" | "terminated";
+  status: "starting" | "active" | "running" | "failed" | "terminated";
   microvm_id?: string;
   connection_id?: string;
   region: string;
@@ -126,6 +143,14 @@ function serializeCloudSession(session: {
   updated_at: number;
   bootstrap_expires_at: number;
   relay_ready_at?: number;
+  aws_state?:
+    | "PENDING"
+    | "RUNNING"
+    | "SUSPENDING"
+    | "SUSPENDED"
+    | "TERMINATING"
+    | "TERMINATED";
+  aws_state_checked_at?: number;
   failure_code?: string;
 }) {
   return {
@@ -148,7 +173,35 @@ function serializeCloudSession(session: {
     updatedAt: session.updated_at,
     bootstrapExpiresAt: session.bootstrap_expires_at,
     relayReadyAt: session.relay_ready_at,
+    awsState: session.aws_state,
+    awsStateCheckedAt: session.aws_state_checked_at,
     failureCode: session.failure_code,
+  };
+}
+
+function cloudMicrovmStatePatch(
+  session: {
+    status: "starting" | "active" | "running" | "failed" | "terminated";
+  },
+  state:
+    | "PENDING"
+    | "RUNNING"
+    | "SUSPENDING"
+    | "SUSPENDED"
+    | "TERMINATING"
+    | "TERMINATED",
+  now: number,
+) {
+  const terminal = state === "TERMINATING" || state === "TERMINATED";
+  return {
+    aws_state: state,
+    aws_state_checked_at: now,
+    ...(terminal
+      ? { status: "terminated" as const, ended_at: now }
+      : session.status === "running"
+        ? { status: "active" as const }
+        : {}),
+    updated_at: now,
   };
 }
 
@@ -573,7 +626,14 @@ export const beginCloudSession = mutation({
       });
     }
     const now = Date.now();
-    const [starting, running] = await Promise.all([
+    const [active, starting, running] = await Promise.all([
+      ctx.db
+        .query("cloud_sandbox_sessions")
+        .withIndex("by_user_and_status", (q) =>
+          q.eq("user_id", args.userId).eq("status", "active"),
+        )
+        .order("desc")
+        .take(50),
       ctx.db
         .query("cloud_sandbox_sessions")
         .withIndex("by_user_and_status", (q) =>
@@ -589,7 +649,7 @@ export const beginCloudSession = mutation({
         .order("desc")
         .take(50),
     ]);
-    const candidates = [...running, ...starting];
+    const candidates = [...active, ...running, ...starting];
     const isReusable = (session: (typeof candidates)[number]) =>
       session.failure_code === undefined &&
       session.bootstrap_expires_at > now &&
@@ -603,7 +663,10 @@ export const beginCloudSession = mutation({
     // New placement inputs apply only after the active session naturally ends.
     // Prefer an already-connected VM over a newer session that is still
     // starting. This is both the lowest-latency and least-expensive choice.
-    const reusable = running.find(isReusable) ?? starting.find(isReusable);
+    const reusable =
+      active.find(isReusable) ??
+      running.find(isReusable) ??
+      starting.find(isReusable);
     const cleanupCandidates: Array<{
       sessionId: string;
       microvmId?: string;
@@ -724,7 +787,13 @@ export const listActiveCloudSessionsForBackend = query({
   returns: v.array(cloudSessionForBackend),
   handler: async (ctx, args) => {
     validateServiceKey(args.serviceKey);
-    const [starting, running] = await Promise.all([
+    const [active, starting, running] = await Promise.all([
+      ctx.db
+        .query("cloud_sandbox_sessions")
+        .withIndex("by_user_and_status", (q) =>
+          q.eq("user_id", args.userId).eq("status", "active"),
+        )
+        .take(100),
       ctx.db
         .query("cloud_sandbox_sessions")
         .withIndex("by_user_and_status", (q) =>
@@ -738,7 +807,43 @@ export const listActiveCloudSessionsForBackend = query({
         )
         .take(100),
     ]);
-    return [...starting, ...running].map(serializeCloudSession);
+    return [...starting, ...active, ...running].map(serializeCloudSession);
+  },
+});
+
+export const listCloudSessionsForReconciliation = query({
+  args: {
+    serviceKey: v.string(),
+    limit: v.number(),
+  },
+  returns: v.array(cloudSessionForReconciliation),
+  handler: async (ctx, args) => {
+    validateServiceKey(args.serviceKey);
+    const limit = Math.max(1, Math.min(Math.floor(args.limit), 200));
+    const statuses = ["starting", "active", "running"] as const;
+    const groups = await Promise.all(
+      statuses.map((status) =>
+        ctx.db
+          .query("cloud_sandbox_sessions")
+          .withIndex("by_status_and_aws_state_checked_at", (q) =>
+            q.eq("status", status),
+          )
+          .order("asc")
+          .take(limit),
+      ),
+    );
+    return groups
+      .flat()
+      .filter((session) => session.microvm_id !== undefined)
+      .sort(
+        (left, right) =>
+          (left.aws_state_checked_at ?? 0) - (right.aws_state_checked_at ?? 0),
+      )
+      .slice(0, limit)
+      .map((session) => ({
+        userId: session.user_id,
+        session: serializeCloudSession(session),
+      }));
   },
 });
 
@@ -759,7 +864,9 @@ export const attachCloudMicrovm = mutation({
     if (
       !session ||
       session.user_id !== args.userId ||
-      (session.status !== "starting" && session.status !== "running")
+      (session.status !== "starting" &&
+        session.status !== "active" &&
+        session.status !== "running")
     ) {
       return false;
     }
@@ -795,13 +902,17 @@ export const markCloudDirectReady = mutation({
       !session ||
       session.user_id !== args.userId ||
       session.microvm_id !== args.microvmId ||
-      (session.status !== "starting" && session.status !== "running")
+      (session.status !== "starting" &&
+        session.status !== "active" &&
+        session.status !== "running")
     ) {
       return false;
     }
     const now = Date.now();
     await ctx.db.patch(session._id, {
-      status: "running",
+      status: "active",
+      aws_state: "RUNNING",
+      aws_state_checked_at: now,
       relay_ready_at: now,
       last_connected_at: now,
       ...(session.failover_started_at !== undefined &&
@@ -912,6 +1023,12 @@ export const markCloudSessionEnded = mutation({
     const now = Date.now();
     await ctx.db.patch(session._id, {
       status: args.status,
+      ...(args.status === "terminated"
+        ? {
+            aws_state: "TERMINATED" as const,
+            aws_state_checked_at: now,
+          }
+        : {}),
       failure_code: args.failureCode,
       ...(args.status === "failed" &&
       session.failover_started_at !== undefined &&
@@ -929,6 +1046,83 @@ export const markCloudSessionEnded = mutation({
       updated_at: now,
     });
     await disconnectCloudSessionConnection(ctx.db, session.connection_id, now);
+    return true;
+  },
+});
+
+export const recordCloudMicrovmStateForBackend = mutation({
+  args: {
+    serviceKey: v.string(),
+    userId: v.string(),
+    sessionId: v.string(),
+    microvmId: v.string(),
+    state: cloudMicrovmState,
+    failureCode: v.optional(v.string()),
+  },
+  returns: v.boolean(),
+  handler: async (ctx, args) => {
+    validateServiceKey(args.serviceKey);
+    const session = await ctx.db
+      .query("cloud_sandbox_sessions")
+      .withIndex("by_session_id", (q) => q.eq("session_id", args.sessionId))
+      .unique();
+    if (
+      !session ||
+      session.user_id !== args.userId ||
+      session.microvm_id !== args.microvmId ||
+      session.status === "failed" ||
+      session.status === "terminated"
+    ) {
+      return false;
+    }
+    const now = Date.now();
+    await ctx.db.patch(session._id, {
+      ...cloudMicrovmStatePatch(session, args.state, now),
+      ...(args.failureCode ? { failure_code: args.failureCode } : {}),
+    });
+    if (args.state === "TERMINATING" || args.state === "TERMINATED") {
+      await disconnectCloudSessionConnection(
+        ctx.db,
+        session.connection_id,
+        now,
+      );
+    }
+    return true;
+  },
+});
+
+export const reportCloudLifecycleState = mutation({
+  args: {
+    sessionId: v.string(),
+    bootstrapToken: v.string(),
+    microvmId: v.string(),
+    state: v.union(
+      v.literal("RUNNING"),
+      v.literal("SUSPENDING"),
+      v.literal("SUSPENDED"),
+      v.literal("TERMINATING"),
+    ),
+  },
+  returns: v.boolean(),
+  handler: async (ctx, args) => {
+    const session = await validateCloudSessionCredential(
+      ctx,
+      args.sessionId,
+      args.bootstrapToken,
+    );
+    if (!session || session.microvm_id !== args.microvmId) return false;
+    const now = Date.now();
+    await ctx.db.patch(
+      session._id,
+      cloudMicrovmStatePatch(session, args.state, now),
+    );
+    if (args.state === "TERMINATING") {
+      await disconnectCloudSessionConnection(
+        ctx.db,
+        session.connection_id,
+        now,
+      );
+    }
     return true;
   },
 });

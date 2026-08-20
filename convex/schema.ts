@@ -823,15 +823,17 @@ export default defineSchema({
     .index("by_user_and_status", ["user_id", "status"])
     .index("by_status_and_created_at", ["status", "created_at"]),
 
-  // Server-created, user-scoped AWS Lambda MicroVM sessions. Legacy bootstrap
-  // fields remain while pre-direct-transport rows age out; direct endpoint
-  // credentials are short-lived AWS tokens and are never stored in Convex.
+  // Server-created, user-scoped AWS Lambda MicroVM sessions. `status` tracks
+  // the logical reusable session lifecycle; `aws_state` records the latest
+  // observed physical AWS state. `running` is retained for legacy rows and is
+  // lazily migrated to `active` when the row is next observed.
   cloud_sandbox_sessions: defineTable({
     user_id: v.string(),
     session_id: v.string(),
     provider: v.literal("aws-lambda-microvm"),
     status: v.union(
       v.literal("starting"),
+      v.literal("active"),
       v.literal("running"),
       v.literal("failed"),
       v.literal("terminated"),
@@ -857,13 +859,28 @@ export default defineSchema({
     updated_at: v.number(),
     last_connected_at: v.optional(v.number()),
     relay_ready_at: v.optional(v.number()),
+    aws_state: v.optional(
+      v.union(
+        v.literal("PENDING"),
+        v.literal("RUNNING"),
+        v.literal("SUSPENDING"),
+        v.literal("SUSPENDED"),
+        v.literal("TERMINATING"),
+        v.literal("TERMINATED"),
+      ),
+    ),
+    aws_state_checked_at: v.optional(v.number()),
     ended_at: v.optional(v.number()),
     failure_code: v.optional(v.string()),
   })
     .index("by_user_id", ["user_id"])
     .index("by_user_and_status", ["user_id", "status"])
     .index("by_session_id", ["session_id"])
-    .index("by_status_and_updated_at", ["status", "updated_at"]),
+    .index("by_status_and_updated_at", ["status", "updated_at"])
+    .index("by_status_and_aws_state_checked_at", [
+      "status",
+      "aws_state_checked_at",
+    ]),
 
   // Per-request usage logs for the usage dashboard
   usage_logs: defineTable({

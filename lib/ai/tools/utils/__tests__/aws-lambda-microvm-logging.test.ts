@@ -8,6 +8,7 @@ const mockDirectClose = jest.fn();
 const mockDirectConstructor = jest.fn();
 const mockRealtimeClose = jest.fn().mockResolvedValue(undefined);
 const mockRealtimeUnsubscribe = jest.fn();
+let mockConvexUrl = "http://127.0.0.1:3210";
 const mockRealtimeOnUpdate = jest.fn(
   (
     query: unknown,
@@ -41,7 +42,7 @@ jest.mock("@aws-sdk/client-lambda-microvms", () => {
 
 jest.mock("@/lib/db/convex-client", () => ({
   getConvexClient: () => ({ mutation: mockMutation, query: mockQuery }),
-  getConvexUrl: () => "http://127.0.0.1:3210",
+  getConvexUrl: () => mockConvexUrl,
 }));
 
 jest.mock("@/lib/db/convex-realtime-client", () => ({
@@ -73,6 +74,7 @@ import {
   ensureAwsLambdaMicrovmConnection,
   getAwsLambdaMicrovmConfig,
   isRegionalFailoverEligibleError,
+  reconcileAwsLambdaMicrovmSessions,
   suspendAwsLambdaMicrovmsForUser,
   terminateAwsLambdaMicrovmForUser,
 } from "../aws-lambda-microvm";
@@ -114,6 +116,7 @@ describe("AWS Lambda MicroVM development logging", () => {
     });
     mockDirectReady.mockResolvedValue(undefined);
     mockDirectClose.mockResolvedValue(undefined);
+    mockConvexUrl = "http://127.0.0.1:3210";
     process.env = {
       ...originalEnv,
       NODE_ENV: "development",
@@ -227,6 +230,107 @@ describe("AWS Lambda MicroVM development logging", () => {
       region: "us-east-1",
       ingressConnectorArn: expect.stringContaining(":ALL_INGRESS"),
     });
+  });
+
+  it("passes a scoped lifecycle callback only to remote Convex launches", async () => {
+    mockConvexUrl = "https://convex.example.test";
+    mockMutation
+      .mockResolvedValueOnce({
+        created: true,
+        session: {
+          sessionId: "session-lifecycle-callback",
+          status: "starting",
+          region: "us-east-1",
+          imageIdentifier: process.env.AWS_LAMBDA_MICROVM_IMAGE_ID,
+          imageVersion: "6.0",
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+          bootstrapExpiresAt: Date.now() + 60_000,
+        },
+        bootstrapToken: "scoped-lifecycle-token",
+        cleanupCandidates: [],
+      })
+      .mockResolvedValueOnce(true)
+      .mockResolvedValueOnce(true);
+    mockSend.mockResolvedValueOnce({
+      microvmId: "microvm-lifecycle-callback",
+      state: "RUNNING",
+      endpoint: "microvm-lifecycle-callback.example.test",
+      $metadata: { httpStatusCode: 200 },
+    });
+    const infoSpy = jest.spyOn(console, "info").mockImplementation();
+
+    await ensureAwsLambdaMicrovmConnection("user-lifecycle-callback");
+
+    const runInput = (mockSend.mock.calls[0][0] as { input: any }).input;
+    expect(JSON.parse(runInput.runHookPayload)).toEqual({
+      sessionId: "session-lifecycle-callback",
+      connectionName: "AWS Lambda MicroVM",
+      lifecycleCallback: {
+        convexUrl: "https://convex.example.test",
+        bootstrapToken: "scoped-lifecycle-token",
+      },
+    });
+    expect(infoSpy.mock.calls.flat().join(" ")).not.toContain(
+      "scoped-lifecycle-token",
+    );
+    infoSpy.mockRestore();
+  });
+
+  it("reconciles terminal and suspended AWS state into Convex", async () => {
+    mockQuery.mockResolvedValueOnce([
+      {
+        userId: "user-terminal",
+        session: {
+          sessionId: "session-terminal",
+          status: "active",
+          microvmId: "microvm-terminal",
+          region: "us-east-1",
+        },
+      },
+      {
+        userId: "user-suspended",
+        session: {
+          sessionId: "session-suspended",
+          status: "active",
+          microvmId: "microvm-suspended",
+          region: "eu-west-1",
+        },
+      },
+    ]);
+    mockSend
+      .mockResolvedValueOnce({ state: "TERMINATED" })
+      .mockResolvedValueOnce({ state: "SUSPENDED" });
+    mockMutation.mockResolvedValue(true);
+    const infoSpy = jest.spyOn(console, "info").mockImplementation();
+
+    await expect(reconcileAwsLambdaMicrovmSessions()).resolves.toEqual({
+      checked: 2,
+      running: 0,
+      suspended: 1,
+      terminal: 1,
+      failures: 0,
+    });
+    expect(mockMutation.mock.calls).toEqual(
+      expect.arrayContaining([
+        expect.arrayContaining([
+          expect.anything(),
+          expect.objectContaining({
+            sessionId: "session-terminal",
+            state: "TERMINATED",
+            failureCode: "microvm_ended",
+          }),
+        ]),
+        expect.arrayContaining([
+          expect.anything(),
+          expect.objectContaining({
+            sessionId: "session-suspended",
+            state: "SUSPENDED",
+          }),
+        ]),
+      ]),
+    );
+    infoSpy.mockRestore();
   });
 
   it("closes the direct client and terminates AWS when readiness fails", async () => {

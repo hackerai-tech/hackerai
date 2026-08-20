@@ -81,7 +81,7 @@ describe("cloud sandbox session cleanup", () => {
       user_id: "user-1",
       session_id: "session-1",
       provider: "aws-lambda-microvm",
-      status: "running",
+      status: "active",
       microvm_id: "microvm-1",
       connection_id: "connection-1",
       bootstrap_expires_at: now + 60_000,
@@ -105,7 +105,13 @@ describe("cloud sandbox session cleanup", () => {
           let status = "";
           const range = {
             eq: jest.fn((_field: string, value: string) => {
-              if (value === "starting" || value === "running") status = value;
+              if (
+                value === "starting" ||
+                value === "active" ||
+                value === "running"
+              ) {
+                status = value;
+              }
               return range;
             }),
           };
@@ -114,7 +120,7 @@ describe("cloud sandbox session cleanup", () => {
             order: jest.fn(() => ({
               take: jest
                 .fn()
-                .mockResolvedValue(status === "running" ? [active] : []),
+                .mockResolvedValue(status === "active" ? [active] : []),
             })),
           };
         }),
@@ -236,10 +242,96 @@ describe("cloud sandbox session cleanup", () => {
     expect(patch).toHaveBeenCalledWith(
       "session-row-ready",
       expect.objectContaining({
-        status: "running",
+        status: "active",
+        aws_state: "RUNNING",
+        aws_state_checked_at: expect.any(Number),
         failover_completed_at: expect.any(Number),
         failover_duration_ms: expect.any(Number),
         failover_outcome: "succeeded",
+      }),
+    );
+  });
+
+  it("records an authenticated guest lifecycle transition", async () => {
+    const bootstrapToken = "hcs_lifecycle_test";
+    const bootstrapHash = Array.from(
+      new Uint8Array(
+        await webcrypto.subtle.digest(
+          "SHA-256",
+          new TextEncoder().encode(bootstrapToken),
+        ),
+      ),
+      (byte) => byte.toString(16).padStart(2, "0"),
+    ).join("");
+    const patch = jest.fn().mockResolvedValue(undefined);
+    const query = jest.fn(() => ({
+      withIndex: jest.fn(() => ({
+        unique: jest.fn().mockResolvedValue({
+          _id: "session-row-lifecycle",
+          user_id: "user-lifecycle",
+          session_id: "session-lifecycle",
+          status: "active",
+          microvm_id: "microvm-lifecycle",
+          bootstrap_token_hash: bootstrapHash,
+          bootstrap_expires_at: Date.now() + 60_000,
+        }),
+      })),
+    }));
+    const { reportCloudLifecycleState } = await import("../localSandbox");
+
+    await expect(
+      reportCloudLifecycleState.handler({ db: { query, patch } } as never, {
+        sessionId: "session-lifecycle",
+        bootstrapToken,
+        microvmId: "microvm-lifecycle",
+        state: "SUSPENDING",
+      }),
+    ).resolves.toBe(true);
+    expect(patch).toHaveBeenCalledWith(
+      "session-row-lifecycle",
+      expect.objectContaining({
+        aws_state: "SUSPENDING",
+        aws_state_checked_at: expect.any(Number),
+      }),
+    );
+  });
+
+  it("marks a physically terminated legacy session terminal", async () => {
+    const patch = jest.fn().mockResolvedValue(undefined);
+    const query = jest.fn(() => ({
+      withIndex: jest.fn(() => ({
+        unique: jest.fn().mockResolvedValue({
+          _id: "session-row-stale",
+          user_id: "user-stale",
+          session_id: "session-stale",
+          status: "running",
+          microvm_id: "microvm-stale",
+        }),
+      })),
+    }));
+    const { recordCloudMicrovmStateForBackend } =
+      await import("../localSandbox");
+
+    await expect(
+      recordCloudMicrovmStateForBackend.handler(
+        { db: { query, patch } } as never,
+        {
+          serviceKey: "service-key",
+          userId: "user-stale",
+          sessionId: "session-stale",
+          microvmId: "microvm-stale",
+          state: "TERMINATED",
+          failureCode: "microvm_ended",
+        },
+      ),
+    ).resolves.toBe(true);
+    expect(patch).toHaveBeenCalledWith(
+      "session-row-stale",
+      expect.objectContaining({
+        status: "terminated",
+        aws_state: "TERMINATED",
+        failure_code: "microvm_ended",
+        ended_at: expect.any(Number),
       }),
     );
   });

@@ -68,6 +68,8 @@ const api = {
     refreshCloudCentrifugoToken:
       "localSandbox:refreshCloudCentrifugoToken" as const,
     disconnectCloud: "localSandbox:disconnectCloud" as const,
+    reportCloudLifecycleState:
+      "localSandbox:reportCloudLifecycleState" as const,
   },
 };
 
@@ -89,6 +91,7 @@ export interface Config {
   authMode: "local" | "cloud" | "direct-cloud";
   cloudSessionId?: string;
   microvmId?: string;
+  lifecycleCallback?: CloudLifecycleCallback;
 }
 
 interface OsInfo {
@@ -1356,9 +1359,15 @@ const hasFlag = (flag: string): boolean => {
   return args.includes(flag);
 };
 
+interface CloudLifecycleCallback {
+  convexUrl: string;
+  bootstrapToken: string;
+}
+
 interface CloudLifecyclePayload {
   sessionId: string;
   connectionName?: string;
+  lifecycleCallback?: CloudLifecycleCallback;
 }
 
 async function readJsonBody(request: IncomingMessage): Promise<unknown> {
@@ -1410,12 +1419,34 @@ function parseCloudLifecyclePayload(value: unknown): {
   if (typeof payload.sessionId !== "string") {
     throw new Error("Invalid cloud bootstrap payload");
   }
+  let lifecycleCallback: CloudLifecycleCallback | undefined;
+  if (payload.lifecycleCallback !== undefined) {
+    const callback = payload.lifecycleCallback;
+    if (
+      !callback ||
+      typeof callback !== "object" ||
+      typeof callback.convexUrl !== "string" ||
+      typeof callback.bootstrapToken !== "string" ||
+      callback.bootstrapToken.length === 0
+    ) {
+      throw new Error("Invalid cloud lifecycle callback");
+    }
+    const callbackUrl = new URL(callback.convexUrl);
+    if (callbackUrl.protocol !== "https:") {
+      throw new Error("Cloud lifecycle callback must use HTTPS");
+    }
+    lifecycleCallback = {
+      convexUrl: callbackUrl.toString().replace(/\/$/, ""),
+      bootstrapToken: callback.bootstrapToken,
+    };
+  }
   return {
     microvmId,
     smokeTest: false,
     config: {
       sessionId: payload.sessionId,
       connectionName: payload.connectionName,
+      lifecycleCallback,
     },
   };
 }
@@ -1456,6 +1487,78 @@ async function startCloudLifecycleServer(): Promise<void> {
       );
     },
   );
+
+  const reportLifecycleState = async (
+    config: Config | null,
+    state: "RUNNING" | "SUSPENDING" | "SUSPENDED" | "TERMINATING",
+  ): Promise<void> => {
+    if (
+      !config?.lifecycleCallback ||
+      !config.cloudSessionId ||
+      !config.microvmId
+    ) {
+      return;
+    }
+    const startedAt = performance.now();
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const client = new ConvexHttpClient(config.lifecycleCallback.convexUrl);
+      const reported = await Promise.race([
+        client.mutation(
+          api.localSandbox.reportCloudLifecycleState as never,
+          {
+            sessionId: config.cloudSessionId,
+            bootstrapToken: config.lifecycleCallback.bootstrapToken,
+            microvmId: config.microvmId,
+            state,
+          } as never,
+        ),
+        new Promise<never>((_resolve, reject) => {
+          timeout = setTimeout(
+            () => reject(new Error("Lifecycle callback timed out")),
+            2_000,
+          );
+        }),
+      ]);
+      if (!reported) throw new Error("Lifecycle callback was rejected");
+      console.log(
+        JSON.stringify({
+          timestamp: new Date().toISOString(),
+          level: "info",
+          event: "cloud_sandbox_lifecycle_state_reported",
+          service: "hackerai-cloud-sandbox-agent",
+          environment: "aws-lambda-microvm",
+          request_id: config.cloudSessionId,
+          microvm_id: config.microvmId,
+          microvm_state: state,
+          duration_ms: Math.round(performance.now() - startedAt),
+        }),
+      );
+    } catch (error) {
+      // AWS lifecycle progress must not depend on Convex availability. The
+      // scheduled control-plane reconciliation repairs missed callbacks.
+      console.warn(
+        JSON.stringify({
+          timestamp: new Date().toISOString(),
+          level: "warn",
+          event: "cloud_sandbox_lifecycle_state_report_failed",
+          service: "hackerai-cloud-sandbox-agent",
+          environment: "aws-lambda-microvm",
+          request_id: config.cloudSessionId,
+          microvm_id: config.microvmId,
+          microvm_state: state,
+          duration_ms: Math.round(performance.now() - startedAt),
+          error_name: error instanceof Error ? error.name : typeof error,
+          error_message:
+            error instanceof Error
+              ? error.message.slice(0, 500)
+              : String(error).slice(0, 500),
+        }),
+      );
+    } finally {
+      if (timeout) clearTimeout(timeout);
+    }
+  };
 
   const primeImage = async (hook: string): Promise<void> => {
     const result = await primeCloudImageWorkingSet({
@@ -1528,6 +1631,7 @@ async function startCloudLifecycleServer(): Promise<void> {
           authMode: "direct-cloud",
           cloudSessionId: config.sessionId,
           microvmId,
+          lifecycleCallback: config.lifecycleCallback,
         };
         await relay.run(lifecycleConfig);
         writeLifecycleResponse(response, 200, { ok: true, smokeTest });
@@ -1539,6 +1643,7 @@ async function startCloudLifecycleServer(): Promise<void> {
         path === "/aws/lambda-microvms/runtime/v1/suspend"
       ) {
         await relay.suspend();
+        await reportLifecycleState(lifecycleConfig, "SUSPENDING");
         writeLifecycleResponse(response, 200, { ok: true });
         return;
       }
@@ -1548,6 +1653,7 @@ async function startCloudLifecycleServer(): Promise<void> {
         path === "/aws/lambda-microvms/runtime/v1/resume"
       ) {
         await relay.resume();
+        await reportLifecycleState(lifecycleConfig, "RUNNING");
         writeLifecycleResponse(response, 200, { ok: true });
         return;
       }
@@ -1557,6 +1663,7 @@ async function startCloudLifecycleServer(): Promise<void> {
         path === "/aws/lambda-microvms/runtime/v1/terminate"
       ) {
         await relay.terminate();
+        await reportLifecycleState(lifecycleConfig, "TERMINATING");
         lifecycleConfig = null;
         writeLifecycleResponse(response, 200, { ok: true });
         return;
