@@ -83,26 +83,19 @@ jobs:
       matrix:
         include:
           - region: us-east-1
-            artifact_bucket: ${{ vars.AWS_LAMBDA_MICROVM_ARTIFACT_BUCKET_US_EAST_1 || vars.AWS_LAMBDA_MICROVM_ARTIFACT_BUCKET }}
-            build_role_arn: ${{ vars.AWS_LAMBDA_MICROVM_BUILD_ROLE_ARN_US_EAST_1 || vars.AWS_LAMBDA_MICROVM_BUILD_ROLE_ARN }}
-            execution_role_arn: ${{ vars.AWS_LAMBDA_MICROVM_EXECUTION_ROLE_ARN_US_EAST_1 || vars.AWS_LAMBDA_MICROVM_EXECUTION_ROLE_ARN }}
-            release_role_arn: ${{ vars.AWS_RELEASE_ROLE_ARN_US_EAST_1 || vars.AWS_RELEASE_ROLE_ARN }}
+            variable_suffix: US_EAST_1
           - region: us-west-2
-            artifact_bucket: ${{ vars.AWS_LAMBDA_MICROVM_ARTIFACT_BUCKET_US_WEST_2 }}
-            build_role_arn: ${{ vars.AWS_LAMBDA_MICROVM_BUILD_ROLE_ARN_US_WEST_2 }}
-            execution_role_arn: ${{ vars.AWS_LAMBDA_MICROVM_EXECUTION_ROLE_ARN_US_WEST_2 }}
-            release_role_arn: ${{ vars.AWS_RELEASE_ROLE_ARN_US_WEST_2 }}
+            variable_suffix: US_WEST_2
           - region: eu-west-1
-            artifact_bucket: ${{ vars.AWS_LAMBDA_MICROVM_ARTIFACT_BUCKET_EU_WEST_1 }}
-            build_role_arn: ${{ vars.AWS_LAMBDA_MICROVM_BUILD_ROLE_ARN_EU_WEST_1 }}
-            execution_role_arn: ${{ vars.AWS_LAMBDA_MICROVM_EXECUTION_ROLE_ARN_EU_WEST_1 }}
-            release_role_arn: ${{ vars.AWS_RELEASE_ROLE_ARN_EU_WEST_1 }}
+            variable_suffix: EU_WEST_1
     env:
       AWS_REGION: ${{ matrix.region }}
-      AWS_LAMBDA_MICROVM_ARTIFACT_BUCKET: ${{ matrix.artifact_bucket }}
-      AWS_LAMBDA_MICROVM_BUILD_ROLE_ARN: ${{ matrix.build_role_arn }}
-      AWS_LAMBDA_MICROVM_EXECUTION_ROLE_ARN: ${{ matrix.execution_role_arn }}
-      AWS_RELEASE_ROLE_ARN: ${{ matrix.release_role_arn }}
+      # Environment-scoped vars are unavailable while GitHub expands a job matrix.
+      # Resolve them only after this job has entered the protected environment.
+      AWS_LAMBDA_MICROVM_ARTIFACT_BUCKET: ${{ vars[format('AWS_LAMBDA_MICROVM_ARTIFACT_BUCKET_{0}', matrix.variable_suffix)] }}
+      AWS_LAMBDA_MICROVM_BUILD_ROLE_ARN: ${{ vars[format('AWS_LAMBDA_MICROVM_BUILD_ROLE_ARN_{0}', matrix.variable_suffix)] }}
+      AWS_LAMBDA_MICROVM_EXECUTION_ROLE_ARN: ${{ vars[format('AWS_LAMBDA_MICROVM_EXECUTION_ROLE_ARN_{0}', matrix.variable_suffix)] }}
+      AWS_RELEASE_ROLE_ARN: ${{ vars[format('AWS_RELEASE_ROLE_ARN_{0}', matrix.variable_suffix)] }}
     steps:
       - name: Validate regional release configuration
         shell: bash
