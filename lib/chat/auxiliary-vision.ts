@@ -181,7 +181,6 @@ export async function describeImageWithAuxiliaryVision({
   triggerRunId,
   abortSignal,
   onCost,
-  onExposure,
   modelRunner = defaultModelRunner,
 }: {
   image: string;
@@ -194,7 +193,6 @@ export async function describeImageWithAuxiliaryVision({
   triggerRunId?: string;
   abortSignal?: AbortSignal;
   onCost?: (costDollars: number) => void;
-  onExposure?: (source: AuxiliaryVisionSource) => void;
   modelRunner?: AuxiliaryVisionModelRunner;
 }): Promise<AuxiliaryVisionResult> {
   const startedAt = Date.now();
@@ -208,7 +206,6 @@ export async function describeImageWithAuxiliaryVision({
     : timeoutController.signal;
 
   try {
-    onExposure?.(source);
     const result = await modelRunner({
       image: withDataUrlPrefix(image, mediaType),
       mediaType,
@@ -305,7 +302,6 @@ export async function describeImageAttachmentsWithAuxiliaryVision({
   triggerRunId,
   abortSignal,
   onCost,
-  onExposure,
   modelRunner,
   cacheDescription,
 }: {
@@ -316,7 +312,6 @@ export async function describeImageAttachmentsWithAuxiliaryVision({
   triggerRunId?: string;
   abortSignal?: AbortSignal;
   onCost?: (costDollars: number) => void;
-  onExposure?: (source: AuxiliaryVisionSource) => void;
   modelRunner?: AuxiliaryVisionModelRunner;
   cacheDescription?: (args: {
     userId: string;
@@ -419,7 +414,6 @@ export async function describeImageAttachmentsWithAuxiliaryVision({
               onCost: (costDollars) => {
                 pendingCostDollars += costDollars;
               },
-              onExposure,
               modelRunner,
             });
             if (cacheDescription && userId && task.fileId) {

@@ -20,7 +20,7 @@ describe("auxiliary vision", () => {
     jest.restoreAllMocks();
   });
 
-  it("prefixes sandbox base64, records exposure and cost, and returns text", async () => {
+  it("prefixes sandbox base64, records cost, and returns text", async () => {
     const modelRunner = jest.fn(async () => ({
       text: "  A terminal shows an exact 403 error.  ",
       usage: {
@@ -29,7 +29,6 @@ describe("auxiliary vision", () => {
         raw: { cost: 0.004 },
       },
     })) as jest.MockedFunction<AuxiliaryVisionModelRunner>;
-    const onExposure = jest.fn();
     const onCost = jest.fn();
 
     const result = await describeImageWithAuxiliaryVision({
@@ -37,7 +36,6 @@ describe("auxiliary vision", () => {
       mediaType: "image/png",
       filename: "screen.png",
       source: "file_view",
-      onExposure,
       onCost,
       modelRunner,
     });
@@ -50,7 +48,6 @@ describe("auxiliary vision", () => {
         abortSignal: expect.any(AbortSignal),
       }),
     );
-    expect(onExposure).toHaveBeenCalledWith("file_view");
     expect(onCost).toHaveBeenCalledWith(0.004);
     expect(result).toMatchObject({
       description: "A terminal shows an exact 403 error.",

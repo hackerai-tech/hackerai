@@ -2,7 +2,6 @@ import { NextRequest, NextResponse } from "next/server";
 import { createHash } from "crypto";
 import { tasks, auth, idempotencyKeys, sessions } from "@trigger.dev/sdk";
 import type { agentLongTask } from "@/trigger/agent-long";
-import PostHogClient from "@/app/posthog";
 import { geolocation } from "@vercel/functions";
 import type { UIMessage } from "ai";
 
@@ -66,12 +65,9 @@ import {
   closeAgentApprovalSession,
 } from "@/lib/api/agent-approval-session";
 import { createAgentRunCorrelationToken } from "@/lib/api/agent-run-correlation";
+import { resolveSecurityTaskSubagentsEnabled } from "@/lib/posthog/subagent-feature";
 import {
-  resolveSecurityTaskSubagentsEnabled,
-  resolveSecurityValidationSubagentsEnabled,
-} from "@/lib/posthog/subagent-feature";
-import {
-  evaluateAgentAutoReviewFlag,
+  DEFAULT_AGENT_AUTO_REVIEW_ASSIGNMENT,
   type AgentAutoReviewAssignment,
 } from "@/lib/experiments/agent-auto-review";
 
@@ -453,13 +449,12 @@ export const createAgentTriggerPost =
       const userLocation = geolocation(req);
       const triggerRegion =
         getTriggerRegionForVercelRequest(req, userLocation) ?? "us-east-1";
-      const [securityValidationSubagentsEnabled, securityTaskSubagentsEnabled] =
+      const securityValidationSubagentsEnabled =
+        agentPermissionMode === "full_access";
+      const securityTaskSubagentsEnabled =
         agentPermissionMode === "full_access"
-          ? await Promise.all([
-              resolveSecurityValidationSubagentsEnabled(userId),
-              resolveSecurityTaskSubagentsEnabled(userId),
-            ])
-          : [false, false];
+          ? await resolveSecurityTaskSubagentsEnabled(userId)
+          : false;
 
       assertFreeAgentGates({
         mode: "agent",
@@ -510,17 +505,10 @@ export const createAgentTriggerPost =
         userCustomization,
         organizationId,
       });
-      const autoReviewPosthog =
-        agentPermissionMode === "auto_review" ? PostHogClient() : null;
       const autoReviewAssignment: AgentAutoReviewAssignment | undefined =
         agentPermissionMode === "auto_review"
-          ? await evaluateAgentAutoReviewFlag({
-              posthog: autoReviewPosthog,
-              userId,
-              surface: "agent_run",
-            })
+          ? DEFAULT_AGENT_AUTO_REVIEW_ASSIGNMENT
           : undefined;
-      await autoReviewPosthog?.shutdown().catch(() => undefined);
       selectedModelOverride = resolveAgentRunSpendCapContinuationModel({
         finishReason: existingChat?.finish_reason,
         isAutoContinue,

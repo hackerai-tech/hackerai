@@ -156,10 +156,7 @@ import {
   getActiveProPlusUltraDeepSeekProDefaultAssignment,
   getProPlusUltraDeepSeekProDefaultContext,
 } from "@/lib/experiments/pro-plus-ultra-deepseek-pro-default";
-import {
-  createAuxiliaryVisionExposureRecorder,
-  evaluateAuxiliaryDeepSeekVisionFlag,
-} from "@/lib/experiments/auxiliary-deepseek-vision";
+import { isEligibleForAuxiliaryDeepSeekVision } from "@/lib/chat/auxiliary-vision-eligibility";
 import type { AgentAutoReviewAssignment } from "@/lib/experiments/agent-auto-review";
 import { PAID_FUNNEL_EVENTS } from "@/lib/analytics/paid-funnel";
 import type { AnalyticsRequestContext } from "@/lib/analytics/request-context";
@@ -2497,35 +2494,29 @@ export const agentLongTask = task({
         selectedModelOverride,
         subscription,
       );
+      const auxiliaryVisionEnabled = isEligibleForAuxiliaryDeepSeekVision({
+        subscription,
+        selectedModelOverride,
+      });
       const posthog = PostHogClient();
-      const [
-        cloudSandboxRollout,
-        auxiliaryVisionAssignment,
-        deepSeekProDefaultAssignment,
-      ] = await Promise.all([
-        evaluateAwsLambdaMicrovmRollout({
-          posthog,
-          userId,
-          subscription,
-          configuredProvider: getCloudSandboxProvider(),
-          requestId: ctx.run.id,
-        }),
-        evaluateAuxiliaryDeepSeekVisionFlag({
-          posthog,
-          userId,
-          subscription,
-          selectedModelOverride,
-          requestId: ctx.run.id,
-        }),
-        evaluateProPlusUltraDeepSeekProDefault({
-          posthog,
-          userId,
-          subscription,
-          selectedModelOverride,
-          hasImageAttachment: attachmentCounts.imageCount > 0,
-          requestId: ctx.run.id,
-        }),
-      ]);
+      const [cloudSandboxRollout, deepSeekProDefaultAssignment] =
+        await Promise.all([
+          evaluateAwsLambdaMicrovmRollout({
+            posthog,
+            userId,
+            subscription,
+            configuredProvider: getCloudSandboxProvider(),
+            requestId: ctx.run.id,
+          }),
+          evaluateProPlusUltraDeepSeekProDefault({
+            posthog,
+            userId,
+            subscription,
+            selectedModelOverride,
+            hasImageAttachment: attachmentCounts.imageCount > 0,
+            requestId: ctx.run.id,
+          }),
+        ]);
 
       const baseTodos: Todo[] = getBaseTodosForRequest(
         (chat?.todos as unknown as Todo[]) || [],
@@ -2548,7 +2539,7 @@ export const agentLongTask = task({
         modelOverride: selectedModelOverride,
         extraUsageAvailable,
         allowLocalDesktopFiles: sandboxPreference === "desktop",
-        auxiliaryVisionEnabled: !!auxiliaryVisionAssignment,
+        auxiliaryVisionEnabled,
         proPlusUltraDeepSeekProDefaultEnabled:
           deepSeekProDefaultAssignment?.variant === "deepseek_pro",
         chatId,
@@ -2698,7 +2689,7 @@ export const agentLongTask = task({
 
       let streamError: unknown;
       const auxiliaryVisionFailover = createAuxiliaryVisionFailoverController({
-        enabled: !!auxiliaryVisionAssignment,
+        enabled: auxiliaryVisionEnabled,
         service: "agent-long",
         requestId: ctx.run.id,
         userId,
@@ -2706,18 +2697,6 @@ export const agentLongTask = task({
         triggerRunId: ctx.run.id,
         isUserAborted: () => userStopSignal.signal.aborted,
       });
-      const captureAuxiliaryVisionExposure =
-        createAuxiliaryVisionExposureRecorder({
-          posthog,
-          userId,
-          chatId,
-          triggerRunId: ctx.run.id,
-          subscription,
-          mode,
-          selectedModelOverride,
-          getSelectedModel: () => selectedModel,
-          assignment: auxiliaryVisionAssignment,
-        });
       const uiStream = createUIMessageStream({
         onError: (error) => {
           streamError ??= error;
@@ -2748,7 +2727,6 @@ export const agentLongTask = task({
                         chatId,
                         triggerRunId: ctx.run.id,
                         abortSignal: userStopSignal.signal,
-                        onExposure: captureAuxiliaryVisionExposure,
                         onCost: (costDollars) => {
                           usageTracker.providerCost += costDollars;
                           usageTracker.nonModelCost += costDollars;
@@ -3373,7 +3351,6 @@ export const agentLongTask = task({
                     chatId,
                     triggerRunId: ctx.run.id,
                     abortSignal: userStopSignal.signal,
-                    onExposure: captureAuxiliaryVisionExposure,
                     onCost: (costDollars) => {
                       usageTracker.providerCost += costDollars;
                       usageTracker.nonModelCost += costDollars;

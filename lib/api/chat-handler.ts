@@ -164,10 +164,7 @@ import {
   getActiveProPlusUltraDeepSeekProDefaultAssignment,
   getProPlusUltraDeepSeekProDefaultContext,
 } from "@/lib/experiments/pro-plus-ultra-deepseek-pro-default";
-import {
-  createAuxiliaryVisionExposureRecorder,
-  evaluateAuxiliaryDeepSeekVisionFlag,
-} from "@/lib/experiments/auxiliary-deepseek-vision";
+import { isEligibleForAuxiliaryDeepSeekVision } from "@/lib/chat/auxiliary-vision-eligibility";
 import {
   capturePaidDailyFreeAllowanceServerEvent,
   createPaidDailyFreeAllowanceBudgetSnapshot,
@@ -392,26 +389,21 @@ export const createChatHandler = () => {
       );
       const attachmentCounts = countFileAttachments(truncatedMessages);
       const routingPosthog = (posthog ??= PostHogClient());
-      const [auxiliaryVisionAssignment, deepSeekProDefaultAssignment] =
-        await Promise.all([
-          isAgentMode(mode) || attachmentCounts.imageCount > 0
-            ? evaluateAuxiliaryDeepSeekVisionFlag({
-                posthog: routingPosthog,
-                userId,
-                subscription,
-                selectedModelOverride,
-                requestId: req.headers.get("x-vercel-id") ?? undefined,
-              })
-            : Promise.resolve(undefined),
-          evaluateProPlusUltraDeepSeekProDefault({
-            posthog: routingPosthog,
-            userId,
-            subscription,
-            selectedModelOverride,
-            hasImageAttachment: attachmentCounts.imageCount > 0,
-            requestId: req.headers.get("x-vercel-id") ?? undefined,
-          }),
-        ]);
+      const auxiliaryVisionEnabled =
+        (isAgentMode(mode) || attachmentCounts.imageCount > 0) &&
+        isEligibleForAuxiliaryDeepSeekVision({
+          subscription,
+          selectedModelOverride,
+        });
+      const deepSeekProDefaultAssignment =
+        await evaluateProPlusUltraDeepSeekProDefault({
+          posthog: routingPosthog,
+          userId,
+          subscription,
+          selectedModelOverride,
+          hasImageAttachment: attachmentCounts.imageCount > 0,
+          requestId: req.headers.get("x-vercel-id") ?? undefined,
+        });
 
       await handleInitialChatAndUserMessage({
         chatId,
@@ -457,7 +449,7 @@ export const createChatHandler = () => {
         extraUsageAvailable,
         allowLocalDesktopFiles:
           isAgentMode(mode) && sandboxPreference === "desktop",
-        auxiliaryVisionEnabled: !!auxiliaryVisionAssignment,
+        auxiliaryVisionEnabled,
         proPlusUltraDeepSeekProDefaultEnabled:
           deepSeekProDefaultAssignment?.variant === "deepseek_pro",
         chatId,
@@ -674,25 +666,13 @@ export const createChatHandler = () => {
 
       const summarizationTracker = new SummarizationTracker();
       const auxiliaryVisionFailover = createAuxiliaryVisionFailoverController({
-        enabled: !!auxiliaryVisionAssignment,
+        enabled: auxiliaryVisionEnabled,
         service: "chat-handler",
         requestId: req.headers.get("x-vercel-id") ?? undefined,
         userId,
         chatId,
         isUserAborted: () => userStopSignal.signal.aborted,
       });
-      const captureAuxiliaryVisionExposure =
-        createAuxiliaryVisionExposureRecorder({
-          posthog,
-          userId,
-          chatId,
-          subscription,
-          mode,
-          selectedModelOverride,
-          getSelectedModel: () => selectedModel,
-          assignment: auxiliaryVisionAssignment,
-        });
-
       chatLogger.startStream();
 
       const stream = createUIMessageStream({
@@ -726,7 +706,6 @@ export const createChatHandler = () => {
                         userId,
                         chatId,
                         abortSignal: userStopSignal.signal,
-                        onExposure: captureAuxiliaryVisionExposure,
                         onCost: (costDollars) => {
                           usageTracker.providerCost += costDollars;
                           usageTracker.nonModelCost += costDollars;
@@ -919,7 +898,6 @@ export const createChatHandler = () => {
                     userId,
                     chatId,
                     abortSignal: userStopSignal.signal,
-                    onExposure: captureAuxiliaryVisionExposure,
                     onCost: (costDollars) => {
                       usageTracker.providerCost += costDollars;
                       usageTracker.nonModelCost += costDollars;
