@@ -297,23 +297,68 @@ const getLastUserMessageIndex = (messages: UIMessage[]): number => {
 const formatSandboxAttachmentTag = (
   sanitizedName: string,
   localPath: string,
+  legacyFallbackPath?: string,
 ): string =>
-  `<attachment filename="${sanitizedName}" local_path="${localPath}" />`;
+  `<attachment filename="${sanitizedName}" local_path="${localPath}"${
+    legacyFallbackPath
+      ? ` legacy_fallback_path="${legacyFallbackPath}" use_legacy_fallback_only_if_primary_missing="true"`
+      : ""
+  } />`;
 
 const formatInlineImageAttachmentTag = (
   sanitizedName: string,
   localPath: string,
+  legacyFallbackPath?: string,
 ): string =>
-  `<inline_image_attachment filename="${sanitizedName}" sandbox_path="${localPath}" already_visible_to_model="true" use_sandbox_path_for="file_operations_only" />`;
+  `<inline_image_attachment filename="${sanitizedName}" sandbox_path="${localPath}"${
+    legacyFallbackPath
+      ? ` legacy_fallback_path="${legacyFallbackPath}" use_legacy_fallback_only_if_primary_missing="true"`
+      : ""
+  } already_visible_to_model="true" use_sandbox_path_for="file_operations_only" />`;
 
 const formatSandboxFileTag = (
   kind: SandboxAttachmentTagKind,
   sanitizedName: string,
   localPath: string,
+  legacyFallbackPath?: string,
 ): string =>
   kind === "inline-image"
-    ? formatInlineImageAttachmentTag(sanitizedName, localPath)
-    : formatSandboxAttachmentTag(sanitizedName, localPath);
+    ? formatInlineImageAttachmentTag(
+        sanitizedName,
+        localPath,
+        legacyFallbackPath,
+      )
+    : formatSandboxAttachmentTag(sanitizedName, localPath, legacyFallbackPath);
+
+const getSandboxAttachmentIdentity = (part: any): string => {
+  if (part?.storage === "local-desktop") {
+    const localId =
+      part.localAttachmentId ||
+      part.generatedTextAttachmentId ||
+      "local-attachment";
+    return `${String(localId)}:${String(part.localPath || "unknown-path")}`;
+  }
+
+  return String(part?.fileId || "stored-attachment");
+};
+
+const getSandboxAttachmentLocalPath = (
+  uploadBasePath: string,
+  sanitizedName: string,
+  part: any,
+): string => {
+  const storageKind =
+    part?.storage === "local-desktop" ? "local-desktop" : "stored";
+  const attachmentNamespace = createHash("sha256")
+    .update(`${storageKind}:${getSandboxAttachmentIdentity(part)}`)
+    .digest("hex");
+  return `${uploadBasePath.replace(/\/+$/, "")}/${attachmentNamespace}/${sanitizedName}`;
+};
+
+const getLegacySandboxAttachmentLocalPath = (
+  uploadBasePath: string,
+  sanitizedName: string,
+): string => `${uploadBasePath.replace(/\/+$/, "")}/${sanitizedName}`;
 
 export const sanitizeFilenameForTerminal = (filename: string): string => {
   const basename = filename.split(/[/\\]/g).pop() ?? "file";
@@ -356,6 +401,7 @@ export const collectSandboxFiles = (
 ): void => {
   const lastUserIdx = getLastUserMessageIndex(updatedMessages);
   if (lastUserIdx === -1) return;
+  const queuedPaths = new Set(sandboxFiles.map((file) => file.localPath));
 
   updatedMessages.forEach((msg, i) => {
     if (msg.role !== "user" || !msg.parts) return;
@@ -374,15 +420,31 @@ export const collectSandboxFiles = (
         const sanitizedName = sanitizeFilenameForTerminal(
           part.name || part.filename || "file",
         );
-        const localPath = `${uploadBasePath}/${sanitizedName}`;
-        if (i === lastUserIdx) {
+        const localPath = getSandboxAttachmentLocalPath(
+          uploadBasePath,
+          sanitizedName,
+          part,
+        );
+        if (i === lastUserIdx && !queuedPaths.has(localPath)) {
+          queuedPaths.add(localPath);
           sandboxFiles.push({
             kind: "localPath",
             path: part.localPath,
             localPath,
           });
         }
-        tags.push(formatSandboxAttachmentTag(sanitizedName, localPath));
+        tags.push(
+          formatSandboxAttachmentTag(
+            sanitizedName,
+            localPath,
+            i === lastUserIdx
+              ? undefined
+              : getLegacySandboxAttachmentLocalPath(
+                  uploadBasePath,
+                  sanitizedName,
+                ),
+          ),
+        );
         return;
       }
 
@@ -390,9 +452,14 @@ export const collectSandboxFiles = (
         const sanitizedName = sanitizeFilenameForTerminal(
           part.name || part.filename || "file",
         );
-        const localPath = `${uploadBasePath}/${sanitizedName}`;
+        const localPath = getSandboxAttachmentLocalPath(
+          uploadBasePath,
+          sanitizedName,
+          part,
+        );
 
-        if (i === lastUserIdx) {
+        if (i === lastUserIdx && !queuedPaths.has(localPath)) {
+          queuedPaths.add(localPath);
           sandboxFiles.push({ kind: "url", url: part.url, localPath });
         }
         tags.push(
@@ -400,6 +467,12 @@ export const collectSandboxFiles = (
             options.getAttachmentTagKind?.(part) ?? "attachment",
             sanitizedName,
             localPath,
+            i === lastUserIdx
+              ? undefined
+              : getLegacySandboxAttachmentLocalPath(
+                  uploadBasePath,
+                  sanitizedName,
+                ),
           ),
         );
       }
@@ -484,6 +557,7 @@ export const prepareLocalDesktopAttachmentsForTrigger = (
   ) as UIMessage[];
   const sandboxFiles: SandboxFile[] = [];
   const lastUserIdx = getLastUserMessageIndex(messages);
+  const queuedPaths = new Set<string>();
 
   messages.forEach((message, messageIndex) => {
     if (message.role !== "user" || !message.parts) return;
@@ -500,15 +574,31 @@ export const prepareLocalDesktopAttachmentsForTrigger = (
       const sanitizedName = sanitizeFilenameForTerminal(
         part.name || part.filename || "file",
       );
-      const localPath = `${uploadBasePath}/${sanitizedName}`;
-      if (messageIndex === lastUserIdx) {
+      const localPath = getSandboxAttachmentLocalPath(
+        uploadBasePath,
+        sanitizedName,
+        part,
+      );
+      if (messageIndex === lastUserIdx && !queuedPaths.has(localPath)) {
+        queuedPaths.add(localPath);
         sandboxFiles.push({
           kind: "localPath",
           path: part.localPath,
           localPath,
         });
       }
-      tags.push(formatSandboxAttachmentTag(sanitizedName, localPath));
+      tags.push(
+        formatSandboxAttachmentTag(
+          sanitizedName,
+          localPath,
+          messageIndex === lastUserIdx
+            ? undefined
+            : getLegacySandboxAttachmentLocalPath(
+                uploadBasePath,
+                sanitizedName,
+              ),
+        ),
+      );
     });
 
     if (tags.length > 0) {
