@@ -403,13 +403,14 @@ describe("processMessageFiles image size guards", () => {
       "pro",
     );
 
-    expect(result.sandboxFiles).toEqual([
-      {
-        kind: "url",
-        url: "https://storage.example/small.png",
-        localPath: "/home/user/upload/small.png",
-      },
-    ]);
+    expect(result.sandboxFiles).toHaveLength(1);
+    expect(result.sandboxFiles[0]).toMatchObject({
+      kind: "url",
+      url: "https://storage.example/small.png",
+    });
+    expect(result.sandboxFiles[0].localPath).toMatch(
+      /^\/home\/user\/upload\/[a-f0-9]{64}\/small\.png$/,
+    );
     expect(result.messages[0].parts).toEqual([
       { type: "text", text: "what is this?" },
       expect.objectContaining({
@@ -421,7 +422,7 @@ describe("processMessageFiles image size guards", () => {
       }),
       {
         type: "text",
-        text: '<inline_image_attachment filename="small.png" sandbox_path="/home/user/upload/small.png" already_visible_to_model="true" use_sandbox_path_for="file_operations_only" />',
+        text: `<inline_image_attachment filename="small.png" sandbox_path="${result.sandboxFiles[0].localPath}" already_visible_to_model="true" use_sandbox_path_for="file_operations_only" />`,
       },
     ]);
   });
@@ -449,13 +450,14 @@ describe("processMessageFiles image size guards", () => {
       "pro",
     );
 
-    expect(result.sandboxFiles).toEqual([
-      {
-        kind: "url",
-        url: "https://storage.example/report.pdf",
-        localPath: "/home/user/upload/report.pdf",
-      },
-    ]);
+    expect(result.sandboxFiles).toHaveLength(1);
+    expect(result.sandboxFiles[0]).toMatchObject({
+      kind: "url",
+      url: "https://storage.example/report.pdf",
+    });
+    expect(result.sandboxFiles[0].localPath).toMatch(
+      /^\/home\/user\/upload\/[a-f0-9]{64}\/report\.pdf$/,
+    );
     expect(result.messages[0].parts).toEqual([
       { type: "text", text: "what is this?" },
       expect.objectContaining({
@@ -467,7 +469,7 @@ describe("processMessageFiles image size guards", () => {
       }),
       {
         type: "text",
-        text: '<attachment filename="report.pdf" local_path="/home/user/upload/report.pdf" />',
+        text: `<attachment filename="report.pdf" local_path="${result.sandboxFiles[0].localPath}" />`,
       },
     ]);
     expect(result.containsPdfFiles).toBe(true);
@@ -500,7 +502,7 @@ describe("processMessageFiles image size guards", () => {
       { type: "text", text: "what is this?" },
       {
         type: "text",
-        text: '<attachment filename="large.pdf" local_path="/home/user/upload/large.pdf" />',
+        text: `<attachment filename="large.pdf" local_path="${result.sandboxFiles[0].localPath}" />`,
       },
     ]);
     expect(result.containsPdfFiles).toBe(false);
@@ -643,18 +645,19 @@ describe("processMessageFiles image size guards", () => {
       "pro",
     );
 
-    expect(result.sandboxFiles).toEqual([
-      {
-        kind: "url",
-        url: "https://storage.example/broken.png",
-        localPath: "/home/user/upload/broken.png",
-      },
-    ]);
+    expect(result.sandboxFiles).toHaveLength(1);
+    expect(result.sandboxFiles[0]).toMatchObject({
+      kind: "url",
+      url: "https://storage.example/broken.png",
+    });
+    expect(result.sandboxFiles[0].localPath).toMatch(
+      /^\/home\/user\/upload\/[a-f0-9]{64}\/broken\.png$/,
+    );
     expect(result.messages[0].parts).toEqual([
       { type: "text", text: "what is this?" },
       {
         type: "text",
-        text: '<attachment filename="broken.png" local_path="/home/user/upload/broken.png" />',
+        text: `<attachment filename="broken.png" local_path="${result.sandboxFiles[0].localPath}" />`,
       },
     ]);
   });
@@ -737,18 +740,19 @@ describe("processMessageFiles image size guards", () => {
       "pro",
     );
 
-    expect(result.sandboxFiles).toEqual([
-      {
-        kind: "url",
-        url: "https://storage.example/large.png",
-        localPath: "/home/user/upload/large.png",
-      },
-    ]);
+    expect(result.sandboxFiles).toHaveLength(1);
+    expect(result.sandboxFiles[0]).toMatchObject({
+      kind: "url",
+      url: "https://storage.example/large.png",
+    });
+    expect(result.sandboxFiles[0].localPath).toMatch(
+      /^\/home\/user\/upload\/[a-f0-9]{64}\/large\.png$/,
+    );
     expect(result.messages[0].parts).toEqual([
       { type: "text", text: "what is this?" },
       {
         type: "text",
-        text: '<attachment filename="large.png" local_path="/home/user/upload/large.png" />',
+        text: `<attachment filename="large.png" local_path="${result.sandboxFiles[0].localPath}" />`,
       },
     ]);
   });
@@ -778,13 +782,14 @@ describe("processMessageFiles image size guards", () => {
     );
 
     expect(mockConvexAction).toHaveBeenCalledTimes(2);
-    expect(result.sandboxFiles).toEqual([
-      {
-        kind: "url",
-        url: "https://storage.example/secret.txt",
-        localPath: "/home/user/upload/secret.txt",
-      },
-    ]);
+    expect(result.sandboxFiles).toHaveLength(1);
+    expect(result.sandboxFiles[0]).toMatchObject({
+      kind: "url",
+      url: "https://storage.example/secret.txt",
+    });
+    expect(result.sandboxFiles[0].localPath).toMatch(
+      /^\/home\/user\/upload\/[a-f0-9]{64}\/secret\.txt$/,
+    );
     expect(JSON.stringify(result.messages)).not.toContain(
       "https://client.example/secret.txt",
     );

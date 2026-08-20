@@ -3,6 +3,7 @@ jest.mock("server-only", () => ({}), { virtual: true });
 import type { UIMessage } from "ai";
 import { AlternateCloudSandboxUnavailableError } from "@/lib/ai/tools/utils/cloud-sandbox-recovery";
 import {
+  collectSandboxFiles,
   getSandboxUploadFailureMetadata,
   getSandboxUploadUserMessage,
   prepareLocalDesktopAttachmentsForTrigger,
@@ -54,13 +55,14 @@ describe("desktop-local sandbox file helpers", () => {
       "/tmp/hackerai-upload",
     );
 
-    expect(sandboxFiles).toEqual([
-      {
-        kind: "localPath",
-        path: "/Users/alice/Secrets/report.pdf",
-        localPath: "/tmp/hackerai-upload/report.pdf",
-      },
-    ]);
+    expect(sandboxFiles).toHaveLength(1);
+    expect(sandboxFiles[0]).toMatchObject({
+      kind: "localPath",
+      path: "/Users/alice/Secrets/report.pdf",
+    });
+    expect(sandboxFiles[0].localPath).toMatch(
+      /^\/tmp\/hackerai-upload\/[a-f0-9]{64}\/report\.pdf$/,
+    );
     expect(JSON.stringify(messages)).not.toContain(
       "/Users/alice/Secrets/report.pdf",
     );
@@ -69,9 +71,91 @@ describe("desktop-local sandbox file helpers", () => {
         (part: any) =>
           part.type === "text" &&
           part.text ===
-            '<attachment filename="report.pdf" local_path="/tmp/hackerai-upload/report.pdf" />',
+            `<attachment filename="report.pdf" local_path="${sandboxFiles[0].localPath}" />`,
       ),
     ).toBe(true);
+  });
+
+  it("gives same-named desktop attachments distinct stable sandbox paths", () => {
+    const first = makeLocalMessage();
+    const second = {
+      ...first.parts?.[1],
+      localPath: "/Users/alice/Other/report.pdf",
+    };
+    first.parts?.push(second as never);
+
+    const { messages, sandboxFiles } = prepareLocalDesktopAttachmentsForTrigger(
+      [first],
+      "/tmp/hackerai-upload",
+    );
+
+    expect(sandboxFiles).toHaveLength(2);
+    expect(new Set(sandboxFiles.map((file) => file.localPath)).size).toBe(2);
+    expect(
+      sandboxFiles.every((file) => file.localPath.endsWith("/report.pdf")),
+    ).toBe(true);
+    const tags = messages[0].parts?.filter(
+      (part: any) => part.type === "text" && part.text.includes("<attachment"),
+    );
+    expect(tags?.[0]).toEqual({
+      type: "text",
+      text: sandboxFiles
+        .map(
+          (file) =>
+            `<attachment filename="report.pdf" local_path="${file.localPath}" />`,
+        )
+        .join("\n"),
+    });
+  });
+
+  it("keeps historical same-named stored attachments on distinct paths", () => {
+    const messages = [
+      {
+        id: "old-message",
+        role: "user",
+        parts: [
+          {
+            type: "file",
+            fileId: "file-old",
+            url: "https://storage.example/old-report.pdf",
+            name: "report.pdf",
+          },
+        ],
+      },
+      {
+        id: "new-message",
+        role: "user",
+        parts: [
+          {
+            type: "file",
+            fileId: "file-new",
+            url: "https://storage.example/new-report.pdf",
+            name: "report.pdf",
+          },
+        ],
+      },
+    ] as UIMessage[];
+    const sandboxFiles: Parameters<typeof collectSandboxFiles>[1] = [];
+
+    collectSandboxFiles(messages, sandboxFiles, "/home/user/upload");
+
+    expect(sandboxFiles).toHaveLength(1);
+    const oldTag = (messages[0].parts?.[1] as { text: string }).text;
+    const newTag = (messages[1].parts?.[1] as { text: string }).text;
+    const oldPath = oldTag.match(/local_path="([^"]+)"/)?.[1];
+    const newPath = newTag.match(/local_path="([^"]+)"/)?.[1];
+    expect(oldPath).toMatch(
+      /^\/home\/user\/upload\/[a-f0-9]{64}\/report\.pdf$/,
+    );
+    expect(oldTag).toContain(
+      'legacy_fallback_path="/home/user/upload/report.pdf"',
+    );
+    expect(oldTag).toContain(
+      'use_legacy_fallback_only_if_primary_missing="true"',
+    );
+    expect(newPath).toBe(sandboxFiles[0].localPath);
+    expect(newPath).not.toBe(oldPath);
+    expect(newTag).not.toContain("legacy_fallback_path");
   });
 
   it("copies desktop-local files through the local sandbox instead of downloading", async () => {
