@@ -1,5 +1,13 @@
 import { EventEmitter } from "events";
-import { mkdtemp, readFile, rm, stat, symlink } from "fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  rename,
+  rm,
+  stat,
+  symlink,
+} from "fs/promises";
 import { tmpdir } from "os";
 import { join } from "path";
 import type WebSocket from "ws";
@@ -61,7 +69,9 @@ function waitForResponse(
   });
 }
 
-async function createDirectFileHarness(): Promise<{
+async function createDirectFileHarness(
+  beforeDirectFileDescriptorOpen?: (allowedRoot: string) => Promise<void>,
+): Promise<{
   allowedRoot: string;
   client: LocalSandboxClient;
   socket: FakeSocket;
@@ -77,7 +87,12 @@ async function createDirectFileHarness(): Promise<{
       cloudSessionId: "session-files",
       microvmId: "microvm-files",
     },
-    { directTransport: transport },
+    {
+      directTransport: transport,
+      beforeDirectFileDescriptorOpen: beforeDirectFileDescriptorOpen
+        ? () => beforeDirectFileDescriptorOpen(allowedRoot)
+        : undefined,
+    },
   );
   const socket = new FakeSocket();
   await client.start();
@@ -198,6 +213,22 @@ describe("direct cloud file mutations", () => {
           requestId: request.requestId,
         });
       }
+      socket.receive({
+        type: "file_write",
+        requestId: "invalid-base64-flag",
+        path: join(allowedRoot, "invalid-base64-flag.json"),
+        content: "plain text",
+        isBase64: "true",
+        allowedRoot,
+        targetConnectionId: "microvm-files",
+      });
+      await Promise.resolve();
+      expect(socket.sent).not.toContainEqual(
+        expect.objectContaining({ requestId: "invalid-base64-flag" }),
+      );
+      await expect(
+        stat(join(allowedRoot, "invalid-base64-flag.json")),
+      ).rejects.toMatchObject({ code: "ENOENT" });
       await expect(
         stat(join(outsideRoot, "outside.json")),
       ).rejects.toMatchObject({ code: "ENOENT" });
@@ -205,6 +236,52 @@ describe("direct cloud file mutations", () => {
         code: "ENOENT",
       });
     } finally {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      errorSpy.mockRestore();
+      await client.cleanup();
+      await Promise.all([
+        rm(allowedRoot, { recursive: true, force: true }),
+        rm(outsideRoot, { recursive: true, force: true }),
+      ]);
+    }
+  });
+
+  it("rejects an ancestor symlink swap between validation and descriptor open", async () => {
+    const outsideRoot = await mkdtemp(
+      join(tmpdir(), "hackerai-direct-files-race-outside-"),
+    );
+    const { allowedRoot, client, socket } = await createDirectFileHarness(
+      async (root) => {
+        const ancestorPath = join(root, "race");
+        await rename(ancestorPath, join(root, "race-verified"));
+        await symlink(outsideRoot, ancestorPath, "dir");
+      },
+    );
+    const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+    await Promise.all([
+      mkdir(join(allowedRoot, "race", "parent"), { recursive: true }),
+      mkdir(join(outsideRoot, "parent"), { recursive: true }),
+    ]);
+
+    try {
+      await expect(
+        sendFileMutation(socket, {
+          type: "file_write",
+          requestId: "ancestor-symlink-race",
+          path: join(allowedRoot, "race", "parent", "outside.json"),
+          content: "e30=",
+          isBase64: true,
+          allowedRoot,
+        }),
+      ).resolves.toMatchObject({
+        type: "file_error",
+        requestId: "ancestor-symlink-race",
+      });
+      await expect(
+        stat(join(outsideRoot, "parent", "outside.json")),
+      ).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      await new Promise((resolve) => setTimeout(resolve, 0));
       errorSpy.mockRestore();
       await client.cleanup();
       await Promise.all([

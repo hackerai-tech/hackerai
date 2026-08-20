@@ -17,10 +17,19 @@ import { ConvexHttpClient } from "convex/browser";
 import { Centrifuge, Subscription, PublicationContext } from "centrifuge";
 import WebSocket, { WebSocketServer } from "ws";
 import { spawn, ChildProcess } from "child_process";
-import { appendFile, lstat, mkdir, realpath, writeFile } from "fs/promises";
+import { constants as fsConstants } from "fs";
+import { lstat, mkdir, open, realpath } from "fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "http";
 import os from "os";
-import { dirname, isAbsolute, relative, resolve, sep } from "path";
+import {
+  basename,
+  dirname,
+  isAbsolute,
+  join,
+  relative,
+  resolve,
+  sep,
+} from "path";
 import {
   truncateOutput,
   MAX_OUTPUT_SIZE,
@@ -231,16 +240,18 @@ function isTargetedIncomingMessage(
   };
   if (typeof targetConnectionId !== "string") return false;
   if (type === "file_write" || type === "file_append") {
-    const { requestId, path, content, allowedRoot } = message as {
+    const { requestId, path, content, isBase64, allowedRoot } = message as {
       requestId?: unknown;
       path?: unknown;
       content?: unknown;
+      isBase64?: unknown;
       allowedRoot?: unknown;
     };
     return (
       typeof requestId === "string" &&
       typeof path === "string" &&
       typeof content === "string" &&
+      (isBase64 === undefined || typeof isBase64 === "boolean") &&
       (allowedRoot === undefined || typeof allowedRoot === "string")
     );
   }
@@ -324,7 +335,11 @@ function decodeFileMutationContent(message: FileMutationMessage): Buffer {
 async function prepareFileMutationPath(
   rawPath: string,
   rawAllowedRoot?: string,
-): Promise<string> {
+): Promise<{
+  parentPath: string;
+  targetName: string;
+  realAllowedRoot: string;
+}> {
   if (!rawAllowedRoot) {
     throw new Error("Direct file mutation is missing its allowed root");
   }
@@ -367,7 +382,57 @@ async function prepareFileMutationPath(
   } catch (error) {
     if (!isMissingPathError(error)) throw error;
   }
-  return targetPath;
+  return {
+    parentPath,
+    targetName: basename(targetPath),
+    realAllowedRoot,
+  };
+}
+
+async function mutatePreparedFile(
+  prepared: Awaited<ReturnType<typeof prepareFileMutationPath>>,
+  content: Buffer,
+  append: boolean,
+): Promise<void> {
+  const parentHandle = await open(
+    prepared.parentPath,
+    fsConstants.O_RDONLY | fsConstants.O_DIRECTORY | fsConstants.O_NOFOLLOW,
+  );
+  try {
+    // AWS MicroVM guests are Linux, where /proc keeps the final lookup anchored
+    // to this verified directory descriptor even if its pathname is replaced.
+    // The pathname fallback supports non-Linux local package tests only.
+    const anchoredParentPath =
+      os.platform() === "linux"
+        ? `/proc/self/fd/${parentHandle.fd}`
+        : prepared.parentPath;
+    const openedParentPath = await realpath(anchoredParentPath);
+    if (!isPathInside(prepared.realAllowedRoot, openedParentPath)) {
+      throw new Error("Direct file mutation parent escapes its allowed root");
+    }
+
+    const flags = append
+      ? fsConstants.O_WRONLY |
+        fsConstants.O_CREAT |
+        fsConstants.O_APPEND |
+        fsConstants.O_NOFOLLOW
+      : fsConstants.O_WRONLY |
+        fsConstants.O_CREAT |
+        fsConstants.O_TRUNC |
+        fsConstants.O_NOFOLLOW;
+    const targetHandle = await open(
+      join(anchoredParentPath, prepared.targetName),
+      flags,
+      0o600,
+    );
+    try {
+      await targetHandle.writeFile(content);
+    } finally {
+      await targetHandle.close();
+    }
+  } finally {
+    await parentHandle.close();
+  }
 }
 
 interface ConnectResult {
@@ -415,6 +480,7 @@ function isInvalidTokenError(error: unknown): boolean {
 type LocalSandboxClientOptions = {
   onExitRequested?: (code: number, error: Error) => void;
   directTransport?: CloudDirectTransport;
+  beforeDirectFileDescriptorOpen?: () => void | Promise<void>;
 };
 
 export class LocalSandboxClient {
@@ -941,22 +1007,25 @@ export class LocalSandboxClient {
         typeof message.requestId !== "string" ||
         typeof message.path !== "string" ||
         typeof message.content !== "string" ||
+        (message.isBase64 !== undefined &&
+          typeof message.isBase64 !== "boolean") ||
         (message.allowedRoot !== undefined &&
           typeof message.allowedRoot !== "string")
       ) {
         throw new Error("Invalid direct file mutation request");
       }
 
-      const targetPath = await prepareFileMutationPath(
+      const prepared = await prepareFileMutationPath(
         message.path,
         message.allowedRoot,
       );
       const content = decodeFileMutationContent(message);
-      if (message.type === "file_write") {
-        await writeFile(targetPath, content);
-      } else {
-        await appendFile(targetPath, content);
-      }
+      await this.options.beforeDirectFileDescriptorOpen?.();
+      await mutatePreparedFile(
+        prepared,
+        content,
+        message.type === "file_append",
+      );
       await this.publishToChannel({ type: "file_ok", requestId });
     } catch (error) {
       await this.publishToChannel({
