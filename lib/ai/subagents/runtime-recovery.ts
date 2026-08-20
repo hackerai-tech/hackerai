@@ -37,7 +37,7 @@ export type SubagentProviderRetryDecision = {
 
 export type SubagentRecoveryErrorDiagnostics = {
   category: ProviderErrorCategory;
-  errorName: string;
+  errorName?: string;
   errorCode?: string;
   statusCode?: number;
 };
@@ -48,13 +48,37 @@ export type SubagentResultRecoveryRetryDecision =
     delayMs: number;
   };
 
-const safeDiagnosticToken = (value: unknown): string | undefined => {
-  if (typeof value !== "string" && typeof value !== "number") {
-    return undefined;
-  }
-  const token = String(value);
-  return /^[A-Za-z0-9_.:-]{1,120}$/.test(token) ? token : undefined;
-};
+const ALLOWED_RECOVERY_ERROR_NAMES = new Set([
+  "AI_APICallError",
+  "AI_JSONParseError",
+  "AI_NoObjectGeneratedError",
+  "AI_NoOutputGeneratedError",
+  "AI_RetryError",
+  "AI_TypeValidationError",
+  "AbortError",
+  "TimeoutError",
+]);
+
+const ALLOWED_RECOVERY_ERROR_CODES = new Set([
+  "AI_APICallError",
+  "AI_JSONParseError",
+  "AI_NoObjectGeneratedError",
+  "AI_NoOutputGeneratedError",
+  "AI_RetryError",
+  "AI_TypeValidationError",
+  "ECONNREFUSED",
+  "ECONNRESET",
+  "EPIPE",
+  "ETIMEDOUT",
+  "UND_ERR_CONNECT_TIMEOUT",
+  "UND_ERR_SOCKET",
+]);
+
+const allowlistedDiagnostic = (
+  value: unknown,
+  allowedValues: ReadonlySet<string>,
+): string | undefined =>
+  typeof value === "string" && allowedValues.has(value) ? value : undefined;
 
 export const getSubagentRecoveryErrorDiagnostics = (
   error: unknown,
@@ -67,11 +91,18 @@ export const getSubagentRecoveryErrorDiagnostics = (
     details.statusCode <= 599
       ? details.statusCode
       : undefined;
-  const errorCode = safeDiagnosticToken(details.errorCode);
+  const errorName = allowlistedDiagnostic(
+    details.errorName,
+    ALLOWED_RECOVERY_ERROR_NAMES,
+  );
+  const errorCode = allowlistedDiagnostic(
+    details.errorCode,
+    ALLOWED_RECOVERY_ERROR_CODES,
+  );
 
   return {
     category: getProviderErrorCategory(details),
-    errorName: safeDiagnosticToken(details.errorName) ?? "UnknownError",
+    ...(errorName ? { errorName } : {}),
     ...(errorCode ? { errorCode } : {}),
     ...(statusCode == null ? {} : { statusCode }),
   };

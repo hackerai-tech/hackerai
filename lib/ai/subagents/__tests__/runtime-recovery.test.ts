@@ -105,7 +105,7 @@ describe("subagent runtime recovery", () => {
     const outputFailure = Object.assign(
       new Error("No object generated: response did not match schema"),
       {
-        name: "NoOutputGeneratedError",
+        name: "AI_NoOutputGeneratedError",
         code: "AI_NoOutputGeneratedError",
       },
     );
@@ -114,7 +114,7 @@ describe("subagent runtime recovery", () => {
       getSubagentResultRecoveryRetryDecision(outputFailure, 0, healthyRuntime),
     ).toMatchObject({
       category: "unknown",
-      errorName: "NoOutputGeneratedError",
+      errorName: "AI_NoOutputGeneratedError",
       errorCode: "AI_NoOutputGeneratedError",
       shouldRetry: true,
       delayMs: 750,
@@ -141,14 +141,13 @@ describe("subagent runtime recovery", () => {
 
   it("keeps recovery diagnostics bounded and excludes error messages", () => {
     const outputFailure = Object.assign(new Error("private prompt content"), {
-      name: "NoOutputGeneratedError",
+      name: "secret_user_identifier",
       code: "unsafe code with spaces",
       statusCode: 503,
     });
 
     expect(getSubagentRecoveryErrorDiagnostics(outputFailure)).toEqual({
       category: "provider_5xx",
-      errorName: "NoOutputGeneratedError",
       statusCode: 503,
     });
   });

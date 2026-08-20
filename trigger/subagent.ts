@@ -894,9 +894,16 @@ export const subagentTask = task({
                     },
                   );
                   lastRecoveryErrorDiagnostics = recoveryRetry;
-                  metadata
-                    .set("resultRecoveryErrorCategory", recoveryRetry.category)
-                    .set("resultRecoveryErrorName", recoveryRetry.errorName);
+                  metadata.set(
+                    "resultRecoveryErrorCategory",
+                    recoveryRetry.category,
+                  );
+                  if (recoveryRetry.errorName) {
+                    metadata.set(
+                      "resultRecoveryErrorName",
+                      recoveryRetry.errorName,
+                    );
+                  }
                   if (recoveryRetry.errorCode) {
                     metadata.set(
                       "resultRecoveryErrorCode",
@@ -1202,6 +1209,8 @@ export const subagentTask = task({
       );
       return { subagentId: row.subagent_id, status: "completed" };
     } catch (error) {
+      const outerRuntimeDiagnostics =
+        getSubagentRecoveryErrorDiagnostics(error);
       const terminalFailure = activeTimedOut
         ? {
             status: "timed_out" as const,
@@ -1257,6 +1266,10 @@ export const subagentTask = task({
           stepCount,
           costDollars: settlement.costDollars,
           errorCategory: terminalFailure.code,
+          runtimeErrorCategory:
+            outerRuntimeDiagnostics.category === "unknown"
+              ? undefined
+              : outerRuntimeDiagnostics.category,
         });
       } else {
         const persistedOutput = await loadPersistedTerminalOutput(
@@ -1268,10 +1281,18 @@ export const subagentTask = task({
         }
       }
       triggerLogger.error("[subagent] run failed", {
-        subagentId: row.subagent_id,
-        parentTriggerRunId: row.parent_trigger_run_id,
-        errorName: error instanceof Error ? error.name : "UnknownError",
-        failureCode: terminalFailure.code,
+        event: "subagent_run_failed",
+        service: "hackerai-subagent",
+        environment:
+          process.env.TRIGGER_ENV ?? process.env.NODE_ENV ?? "unknown",
+        subagent_id: row.subagent_id,
+        parent_trigger_run_id: row.parent_trigger_run_id,
+        trigger_run_id: ctx.run.id,
+        failure_code: terminalFailure.code,
+        error_category: outerRuntimeDiagnostics.category,
+        error_name: outerRuntimeDiagnostics.errorName,
+        error_code: outerRuntimeDiagnostics.errorCode,
+        status_code: outerRuntimeDiagnostics.statusCode,
       });
       throw error;
     } finally {
