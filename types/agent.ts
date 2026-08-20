@@ -74,6 +74,9 @@ export interface SandboxBootInfo {
   placement_reason?: string;
   release_id?: string;
   image_version?: string;
+  failover_from_region?: string;
+  failover_error_name?: string;
+  failover_duration_ms?: number;
 }
 
 export interface SandboxResourceMetrics {

@@ -197,7 +197,19 @@ export const createTools = (
           provider === "aws-lambda-microvm"
             ? (sandboxBootInfo?.image_version ?? "latest")
             : (process.env.E2B_TEMPLATE ?? "terminal-agent-sandbox"),
-        cloud_sandbox_provider_event_version: 4,
+        region_failover_from:
+          provider === "aws-lambda-microvm"
+            ? sandboxBootInfo?.failover_from_region
+            : undefined,
+        region_failover_error_name:
+          provider === "aws-lambda-microvm"
+            ? sandboxBootInfo?.failover_error_name
+            : undefined,
+        region_failover_duration_ms:
+          provider === "aws-lambda-microvm"
+            ? sandboxBootInfo?.failover_duration_ms
+            : undefined,
+        cloud_sandbox_provider_event_version: 5,
       });
     }
   };

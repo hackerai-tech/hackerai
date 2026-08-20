@@ -1,5 +1,6 @@
 import {
   parseAwsLambdaMicrovmReleaseManifest,
+  resolveAwsLambdaMicrovmFailoverRegion,
   resolveAwsLambdaMicrovmPlacement,
 } from "../aws-lambda-microvm-release";
 
@@ -85,5 +86,42 @@ describe("AWS Lambda MicroVM release manifest", () => {
     expect(() =>
       parseAwsLambdaMicrovmReleaseManifest(JSON.stringify(disabledFallback)),
     ).toThrow("us-east-1 must remain enabled");
+  });
+
+  it.each([
+    ["us-east-1", "us-west-2"],
+    ["us-west-2", "us-east-1"],
+    ["eu-west-1", "us-east-1"],
+  ] as const)(
+    "selects the first enabled failover region after %s",
+    (failedRegion, expectedRegion) => {
+      const parsed = parseAwsLambdaMicrovmReleaseManifest(
+        JSON.stringify(manifest()),
+      );
+      expect(resolveAwsLambdaMicrovmFailoverRegion(failedRegion, parsed)).toBe(
+        expectedRegion,
+      );
+    },
+  );
+
+  it("skips disabled alternates and returns no region when none remain", () => {
+    const withWestDisabled = manifest();
+    withWestDisabled.regions["us-west-2"].enabledForNewPlacements = false;
+    const parsed = parseAwsLambdaMicrovmReleaseManifest(
+      JSON.stringify(withWestDisabled),
+    );
+    expect(resolveAwsLambdaMicrovmFailoverRegion("us-east-1", parsed)).toBe(
+      "eu-west-1",
+    );
+
+    const withoutAlternates = manifest();
+    withoutAlternates.regions["us-west-2"].enabledForNewPlacements = false;
+    withoutAlternates.regions["eu-west-1"].enabledForNewPlacements = false;
+    expect(
+      resolveAwsLambdaMicrovmFailoverRegion(
+        "us-east-1",
+        parseAwsLambdaMicrovmReleaseManifest(JSON.stringify(withoutAlternates)),
+      ),
+    ).toBeUndefined();
   });
 });

@@ -1,4 +1,29 @@
-import { beforeEach, describe, expect, it, jest } from "@jest/globals";
+import {
+  afterAll,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  jest,
+} from "@jest/globals";
+import { webcrypto } from "node:crypto";
+
+const originalCrypto = globalThis.crypto;
+
+beforeAll(() => {
+  Object.defineProperty(globalThis, "crypto", {
+    configurable: true,
+    value: webcrypto,
+  });
+});
+
+afterAll(() => {
+  Object.defineProperty(globalThis, "crypto", {
+    configurable: true,
+    value: originalCrypto,
+  });
+});
 
 jest.mock("../_generated/server", () => ({
   internalMutation: jest.fn((config) => config),
@@ -121,6 +146,138 @@ describe("cloud sandbox session cleanup", () => {
     );
     expect(insert).not.toHaveBeenCalled();
     expect(patch).not.toHaveBeenCalled();
+  });
+
+  it("persists regional failover placement metadata on the replacement session", async () => {
+    const query = jest.fn((table: string) => {
+      if (table === "user_deletion_fences") {
+        return {
+          withIndex: jest.fn(() => ({
+            first: jest.fn().mockResolvedValue(null),
+          })),
+        };
+      }
+      expect(table).toBe("cloud_sandbox_sessions");
+      return {
+        withIndex: jest.fn(() => ({
+          order: jest.fn(() => ({
+            take: jest.fn().mockResolvedValue([]),
+          })),
+        })),
+      };
+    });
+    const insert = jest.fn().mockResolvedValue("session-row-failover");
+    const { beginCloudSession } = await import("../localSandbox");
+
+    await expect(
+      beginCloudSession.handler({ db: { query, insert } } as never, {
+        serviceKey: "service-key",
+        userId: "user-failover",
+        region: "us-west-2",
+        requestedRegion: "us-east-1",
+        placementReason: "regional_capacity_failover",
+        imageIdentifier: "west-image",
+        imageVersion: "15.0",
+        failoverFromRegion: "us-east-1",
+        failoverErrorName: "ThrottlingException",
+        failoverStartedAt: 1_000,
+      }),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        created: true,
+        session: expect.objectContaining({
+          region: "us-west-2",
+          requestedRegion: "us-east-1",
+          placementReason: "regional_capacity_failover",
+          failoverFromRegion: "us-east-1",
+          failoverErrorName: "ThrottlingException",
+          failoverStartedAt: 1_000,
+        }),
+      }),
+    );
+    expect(insert).toHaveBeenCalledWith(
+      "cloud_sandbox_sessions",
+      expect.objectContaining({
+        region: "us-west-2",
+        requested_region: "us-east-1",
+        placement_reason: "regional_capacity_failover",
+        failover_from_region: "us-east-1",
+        failover_error_name: "ThrottlingException",
+        failover_started_at: 1_000,
+      }),
+    );
+  });
+
+  it("records successful regional failover timing when the endpoint is ready", async () => {
+    const failoverStartedAt = Date.now() - 25;
+    const patch = jest.fn().mockResolvedValue(undefined);
+    const query = jest.fn(() => ({
+      withIndex: jest.fn(() => ({
+        unique: jest.fn().mockResolvedValue({
+          _id: "session-row-ready",
+          user_id: "user-failover-ready",
+          session_id: "session-failover-ready",
+          status: "starting",
+          microvm_id: "microvm-failover-ready",
+          failover_started_at: failoverStartedAt,
+        }),
+      })),
+    }));
+    const { markCloudDirectReady } = await import("../localSandbox");
+
+    await expect(
+      markCloudDirectReady.handler({ db: { query, patch } } as never, {
+        serviceKey: "service-key",
+        userId: "user-failover-ready",
+        sessionId: "session-failover-ready",
+        microvmId: "microvm-failover-ready",
+      }),
+    ).resolves.toBe(true);
+    expect(patch).toHaveBeenCalledWith(
+      "session-row-ready",
+      expect.objectContaining({
+        status: "running",
+        failover_completed_at: expect.any(Number),
+        failover_duration_ms: expect.any(Number),
+        failover_outcome: "succeeded",
+      }),
+    );
+  });
+
+  it("records failed regional failover timing when the replacement ends", async () => {
+    const failoverStartedAt = Date.now() - 25;
+    const patch = jest.fn().mockResolvedValue(undefined);
+    const query = jest.fn(() => ({
+      withIndex: jest.fn(() => ({
+        unique: jest.fn().mockResolvedValue({
+          _id: "session-row-failed",
+          user_id: "user-failover-failed",
+          session_id: "session-failover-failed",
+          status: "starting",
+          failover_started_at: failoverStartedAt,
+        }),
+      })),
+    }));
+    const { markCloudSessionEnded } = await import("../localSandbox");
+
+    await expect(
+      markCloudSessionEnded.handler({ db: { query, patch } } as never, {
+        serviceKey: "service-key",
+        userId: "user-failover-failed",
+        sessionId: "session-failover-failed",
+        status: "failed",
+        failureCode: "quota_exceeded",
+      }),
+    ).resolves.toBe(true);
+    expect(patch).toHaveBeenCalledWith(
+      "session-row-failed",
+      expect.objectContaining({
+        status: "failed",
+        failover_completed_at: expect.any(Number),
+        failover_duration_ms: expect.any(Number),
+        failover_outcome: "failed",
+      }),
+    );
   });
 
   it("purges only terminal rows and disconnects their relay records", async () => {

@@ -132,6 +132,18 @@ to its persisted region and image until it ends; a later request never silently
 migrates its memory, disk, or outbound source location. Neither Trigger.dev nor
 Vercel needs `AWS_REGION` or `AWS_LAMBDA_MICROVM_REGION` at runtime.
 
+For a new session only, a regional capacity failure can make one bounded
+cross-region attempt. US East tries Oregon, Oregon tries US East, and Ireland
+tries US East; if that preferred alternate is administratively disabled, the
+remaining enabled region is selected instead. Eligible failures are AWS
+throttling, quota, retryable internal/5xx responses, and retryable network
+transport errors from `RunMicrovm`. Authentication, authorization, signature,
+validation, image/role/connector configuration, and guest lifecycle-hook
+failures never trigger regional failover. The original Convex session must be
+durably closed and any known MicroVM must be confirmed terminated before the
+alternate launch begins. A failed alternate is returned to the caller without
+cascading to a third region.
+
 Vercel does not need the release manifest, image IDs, execution roles, or
 WebSocket configuration. Its Data Controls route terminates persisted MicroVM
 IDs in their recorded regions, so Vercel only needs the dedicated AWS runtime
@@ -242,10 +254,14 @@ Measure actual acquisition exposure with `cloud_sandbox_provider_selected`.
 It includes the provider, transport (`aws_websocket` or `e2b_sdk`), rollout
 variant, subscription tier, Trigger region, requested and effective AWS region,
 placement reason, release ID, pinned image version, acquisition path,
-acquisition duration, create attempts, and evaluated feature-flag value. Failed
-acquisitions emit `cloud_sandbox_acquisition_failed` with the intended provider,
-rollout variant, failure stage, duration, and privacy-safe error name. Compare
-the `hackerai-agent_run` outcome and Trigger duration/cost fields by
+acquisition duration, create attempts, failover source/error/duration when
+applicable, and evaluated feature-flag value. Structured
+`cloud_sandbox_region_failover_started`, `_succeeded`, and `_failed` events
+record the requested, failed, and selected regions plus privacy-safe AWS error
+classification and timing. Failed acquisitions emit
+`cloud_sandbox_acquisition_failed` with the intended provider, rollout variant,
+failure stage, duration, and privacy-safe error name. Compare the
+`hackerai-agent_run` outcome and Trigger duration/cost fields by
 `sandbox_provider` to verify that AWS is no worse than E2B on reliability and
 latency before each ramp. The saved
 [rollout dashboard](https://us.posthog.com/project/144137/dashboard/2005952)
