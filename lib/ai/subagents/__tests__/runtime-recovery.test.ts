@@ -4,6 +4,8 @@ import {
   buildMissingSubagentResultRecoveryMessage,
   canRecoverMissingSubagentResult,
   getSubagentProviderRetryDecision,
+  getSubagentRecoveryErrorDiagnostics,
+  getSubagentResultRecoveryRetryDecision,
   isRecoverableProviderCategory,
   isTransientProviderCategory,
   pipeSubagentUiMessageStream,
@@ -97,6 +99,57 @@ describe("subagent runtime recovery", () => {
     expect(buildMissingSubagentResultRecoveryMessage()).toContain(
       "confirmed result must include at least one reproduction step and one evidence reference",
     );
+  });
+
+  it("retries a failed structured-result recovery exactly once", () => {
+    const outputFailure = Object.assign(
+      new Error("No object generated: response did not match schema"),
+      {
+        name: "AI_NoOutputGeneratedError",
+        code: "AI_NoOutputGeneratedError",
+      },
+    );
+
+    expect(
+      getSubagentResultRecoveryRetryDecision(outputFailure, 0, healthyRuntime),
+    ).toMatchObject({
+      category: "unknown",
+      errorName: "AI_NoOutputGeneratedError",
+      errorCode: "AI_NoOutputGeneratedError",
+      shouldRetry: true,
+      delayMs: 750,
+    });
+    expect(
+      getSubagentResultRecoveryRetryDecision(outputFailure, 1, healthyRuntime)
+        .shouldRetry,
+    ).toBe(false);
+  });
+
+  it("does not retry structured-result recovery after cancellation, spend, or step exhaustion", () => {
+    const outputFailure = new Error("No object generated");
+    for (const runtime of [
+      { ...healthyRuntime, aborted: true },
+      { ...healthyRuntime, spendCapExceeded: true },
+      { ...healthyRuntime, hasStepsRemaining: false },
+    ]) {
+      expect(
+        getSubagentResultRecoveryRetryDecision(outputFailure, 0, runtime)
+          .shouldRetry,
+      ).toBe(false);
+    }
+  });
+
+  it("keeps recovery diagnostics bounded and excludes error messages", () => {
+    const outputFailure = Object.assign(new Error("private prompt content"), {
+      name: "secret_user_identifier",
+      code: "unsafe code with spaces",
+      statusCode: 503,
+    });
+
+    expect(getSubagentRecoveryErrorDiagnostics(outputFailure)).toEqual({
+      category: "provider_5xx",
+      statusCode: 503,
+    });
   });
 
   it("cancels an unfinished source when writing a streamed chunk fails", async () => {

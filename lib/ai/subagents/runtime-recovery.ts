@@ -1,5 +1,6 @@
 import {
   SUBAGENT_MAX_RESULT_RECOVERIES,
+  SUBAGENT_MAX_RESULT_RECOVERY_FAILURE_RETRIES,
   SUBAGENT_MAX_PROVIDER_RECOVERY_RETRIES,
 } from "./contracts";
 import {
@@ -32,6 +33,102 @@ export type SubagentProviderRetryDecision = {
   category: ProviderErrorCategory;
   shouldRetry: boolean;
   delayMs: number;
+};
+
+export type SubagentRecoveryErrorDiagnostics = {
+  category: ProviderErrorCategory;
+  errorName?: string;
+  errorCode?: string;
+  statusCode?: number;
+};
+
+export type SubagentResultRecoveryRetryDecision =
+  SubagentRecoveryErrorDiagnostics & {
+    shouldRetry: boolean;
+    delayMs: number;
+  };
+
+const ALLOWED_RECOVERY_ERROR_NAMES = new Set([
+  "AI_APICallError",
+  "AI_JSONParseError",
+  "AI_NoObjectGeneratedError",
+  "AI_NoOutputGeneratedError",
+  "AI_RetryError",
+  "AI_TypeValidationError",
+  "AbortError",
+  "TimeoutError",
+]);
+
+const ALLOWED_RECOVERY_ERROR_CODES = new Set([
+  "AI_APICallError",
+  "AI_JSONParseError",
+  "AI_NoObjectGeneratedError",
+  "AI_NoOutputGeneratedError",
+  "AI_RetryError",
+  "AI_TypeValidationError",
+  "ECONNREFUSED",
+  "ECONNRESET",
+  "EPIPE",
+  "ETIMEDOUT",
+  "UND_ERR_CONNECT_TIMEOUT",
+  "UND_ERR_SOCKET",
+]);
+
+const allowlistedDiagnostic = (
+  value: unknown,
+  allowedValues: ReadonlySet<string>,
+): string | undefined =>
+  typeof value === "string" && allowedValues.has(value) ? value : undefined;
+
+export const getSubagentRecoveryErrorDiagnostics = (
+  error: unknown,
+): SubagentRecoveryErrorDiagnostics => {
+  const details = extractErrorDetails(error);
+  const statusCode =
+    typeof details.statusCode === "number" &&
+    Number.isInteger(details.statusCode) &&
+    details.statusCode >= 400 &&
+    details.statusCode <= 599
+      ? details.statusCode
+      : undefined;
+  const errorName = allowlistedDiagnostic(
+    details.errorName,
+    ALLOWED_RECOVERY_ERROR_NAMES,
+  );
+  const errorCode = allowlistedDiagnostic(
+    details.errorCode,
+    ALLOWED_RECOVERY_ERROR_CODES,
+  );
+
+  return {
+    category: getProviderErrorCategory(details),
+    ...(errorName ? { errorName } : {}),
+    ...(errorCode ? { errorCode } : {}),
+    ...(statusCode == null ? {} : { statusCode }),
+  };
+};
+
+export const getSubagentResultRecoveryRetryDecision = (
+  error: unknown,
+  retriesUsed: number,
+  options: {
+    aborted: boolean;
+    spendCapExceeded: boolean;
+    hasStepsRemaining: boolean;
+  },
+): SubagentResultRecoveryRetryDecision => {
+  const diagnostics = getSubagentRecoveryErrorDiagnostics(error);
+  const shouldRetry =
+    !options.aborted &&
+    !options.spendCapExceeded &&
+    options.hasStepsRemaining &&
+    retriesUsed < SUBAGENT_MAX_RESULT_RECOVERY_FAILURE_RETRIES;
+
+  return {
+    ...diagnostics,
+    shouldRetry,
+    delayMs: shouldRetry ? 750 : 0,
+  };
 };
 
 export const getSubagentProviderRetryDecision = (
