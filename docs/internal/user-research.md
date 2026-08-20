@@ -18,7 +18,7 @@ called through the repo-owned Codex skill `$hackerai-user-research`.
    evidence coverage, token usage, and provider cost in Convex.
 
 Both stages use `x-ai/grok-4.6` through the existing OpenRouter
-provider with reasoning explicitly disabled and zero-data-retention routing
+provider with reasoning set to low and zero-data-retention routing
 required. The task fails closed if no ZDR-capable endpoint is available.
 
 ## Retention and deletion

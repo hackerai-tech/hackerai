@@ -26,7 +26,7 @@ keys. The runner always calls the production gateway at
 gateway key is required. The gateway can start and read only
 `pm-user-research`, and it returns only the aggregate result. The task runs one
 parallel worker per user and a final cohort synthesis. Both calls use
-`x-ai/grok-4.6` with OpenRouter reasoning explicitly disabled
+`x-ai/grok-4.6` with OpenRouter reasoning set to low
 and zero-data-retention routing required.
 
 The request JSON is temporary restricted data because it contains internal user

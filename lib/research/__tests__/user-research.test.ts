@@ -40,11 +40,11 @@ const baseProfile = {
 };
 
 describe("user research privacy controls", () => {
-  it("pins Grok 4.6 for text-only research and disables reasoning", () => {
+  it("pins Grok 4.6 for text-only research with low reasoning", () => {
     expect(USER_RESEARCH_MODEL_KEY).toBe("model-grok-4.6");
     expect(USER_RESEARCH_PROVIDER_OPTIONS).toEqual({
       openrouter: {
-        reasoning: { enabled: false },
+        reasoning: { enabled: true, effort: "low" },
         usage: { include: true },
         provider: { zdr: true },
       },
