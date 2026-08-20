@@ -29,6 +29,8 @@ export interface SandboxManager {
   getSandbox(): Promise<{ sandbox: AnySandbox }>;
   setSandbox(sandbox: AnySandbox): void;
   resetSandbox?(reason?: string): Promise<void>;
+  /** Select a rollout-authorized alternate cloud provider for one recovery attempt. */
+  selectAlternateCloudProviderForRecovery?(): CloudSandboxProvider | null;
   /** Quarantine an unresponsive local connection and keep retry acquisition bound to that explicit selection. */
   quarantineLocalConnection?(
     connectionId: string,

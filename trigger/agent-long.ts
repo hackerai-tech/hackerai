@@ -20,6 +20,7 @@ import type { Geo } from "@vercel/functions";
 import PostHogClient from "@/app/posthog";
 import { getCloudSandboxProvider } from "@/lib/ai/tools/utils/cloud-sandbox-provider";
 import { evaluateAwsLambdaMicrovmRollout } from "@/lib/experiments/aws-lambda-microvm-rollout";
+import { recordGroupedSpikeAlert } from "@/lib/observability/grouped-spike-alert";
 
 import { systemPrompt } from "@/lib/system-prompt";
 import { getResumeSection } from "@/lib/system-prompt/resume";
@@ -1673,6 +1674,11 @@ type RecordedAgentLongFailure = {
   userCorrectable: boolean;
 };
 
+const GROUPED_PROVIDER_ALERT_CATEGORIES = new Set([
+  "provider_timeout",
+  "provider_stream_terminated",
+]);
+
 const recordAgentLongFailureForDashboard = async (
   error: unknown,
   context: {
@@ -1830,6 +1836,21 @@ const recordAgentLongFailureForDashboard = async (
     );
   } else {
     triggerLogger.error("[agent-long] run failed", logFields);
+  }
+
+  if (GROUPED_PROVIDER_ALERT_CATEGORIES.has(summary.category)) {
+    await recordGroupedSpikeAlert({
+      spikeKey: `agent_long:${summary.category}`,
+      sourceEvent: "agent_long_provider_transport_failed",
+      attributes: {
+        component: "agent-long",
+        request_id: context.runId,
+        error_category: summary.category,
+        error_name: summary.name,
+        error_code: summary.code ?? null,
+        terminal_phase: context.phase,
+      },
+    });
   }
 
   await metadata.flush();

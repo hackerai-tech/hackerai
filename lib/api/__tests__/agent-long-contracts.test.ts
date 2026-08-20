@@ -1953,4 +1953,19 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
       "cloudSandboxRollout.provider",
     );
   });
+
+  test("agent-long disables whole-task retries for its shared UI stream", () => {
+    expect(taskSrc).toMatch(
+      /Streaming tasks must not retry:[\s\S]*retry:\s*\{\s*maxAttempts:\s*1\s*\}/,
+    );
+  });
+
+  test("agent-long groups provider transport alerts by failure category", () => {
+    expect(taskSrc).toMatch(
+      /GROUPED_PROVIDER_ALERT_CATEGORIES[\s\S]*provider_timeout[\s\S]*provider_stream_terminated/,
+    );
+    expect(taskSrc).toMatch(
+      /recordGroupedSpikeAlert\(\{[\s\S]*spikeKey:\s*`agent_long:\$\{summary\.category\}`[\s\S]*sourceEvent:\s*"agent_long_provider_transport_failed"/,
+    );
+  });
 });

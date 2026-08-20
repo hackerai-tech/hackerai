@@ -5,6 +5,8 @@ import { UIMessage } from "ai";
 import type { SandboxPreference, SandboxReadinessFailureReason } from "@/types";
 import { validateDownloadUrl } from "@/lib/ai/tools/utils/path-validation";
 import { classifySandboxReadinessFailureSignal } from "@/lib/ai/tools/utils/sandbox-readiness-failure";
+import { AlternateCloudSandboxUnavailableError } from "@/lib/ai/tools/utils/cloud-sandbox-recovery";
+import { recordGroupedSpikeAlert } from "@/lib/observability/grouped-spike-alert";
 
 export type SandboxFile = {
   localPath: string;
@@ -63,6 +65,7 @@ type SandboxRefreshOptions = {
   refresh?: boolean;
   reason?: string;
   excludeConnectionId?: string;
+  requireAlternateCloudProvider?: boolean;
 };
 
 type EnsureSandboxForUpload = (options?: SandboxRefreshOptions) => Promise<any>;
@@ -209,9 +212,10 @@ const logSandboxAcquisitionRecovery = (
     | "sandbox_attachment_acquisition_retry_scheduled"
     | "sandbox_attachment_acquisition_recovered"
     | "sandbox_attachment_acquisition_retry_failed",
-  level: "info" | "warn" | "error",
+  level: "info" | "warn",
   initialFailureReason: SandboxReadinessFailureReason,
   finalFailureReason?: SandboxReadinessFailureReason,
+  recoveryStrategy?: "fresh_sandbox" | "alternate_cloud_provider",
 ): void => {
   const payload = JSON.stringify({
     timestamp: new Date().toISOString(),
@@ -229,10 +233,10 @@ const logSandboxAcquisitionRecovery = (
     chat_id: options?.logContext?.chatId ?? null,
     initial_failure_reason: initialFailureReason,
     final_failure_reason: finalFailureReason ?? null,
+    recovery_strategy: recoveryStrategy ?? null,
   });
 
-  if (level === "error") console.error(payload);
-  else if (level === "warn") console.warn(payload);
+  if (level === "warn") console.warn(payload);
   else console.info(payload);
 };
 
@@ -1031,40 +1035,70 @@ export const uploadSandboxFiles = async (
     }
 
     retriedWithFreshSandbox = true;
+    const recoveryStrategy =
+      initialFailureReason === "placement_failure"
+        ? "alternate_cloud_provider"
+        : "fresh_sandbox";
     logSandboxAcquisitionRecovery(
       options,
       "sandbox_attachment_acquisition_retry_scheduled",
       "warn",
       initialFailureReason,
+      undefined,
+      recoveryStrategy,
     );
     try {
       sandbox = await ensureSandbox({
         refresh: true,
         reason: "attachment_staging_sandbox_acquisition_failure",
+        requireAlternateCloudProvider:
+          recoveryStrategy === "alternate_cloud_provider",
       });
       logSandboxAcquisitionRecovery(
         options,
         "sandbox_attachment_acquisition_recovered",
         "info",
         initialFailureReason,
+        undefined,
+        recoveryStrategy,
       );
     } catch (retryError) {
-      const finalFailureReason =
-        classifySandboxUploadReadinessFailure(retryError);
+      const alternateUnavailable =
+        retryError instanceof AlternateCloudSandboxUnavailableError;
+      const finalFailureReason = alternateUnavailable
+        ? initialFailureReason
+        : classifySandboxUploadReadinessFailure(retryError);
       logSandboxAcquisitionRecovery(
         options,
         "sandbox_attachment_acquisition_retry_failed",
-        "error",
+        "warn",
         initialFailureReason,
         finalFailureReason,
+        recoveryStrategy,
       );
+      await recordGroupedSpikeAlert({
+        spikeKey: `sandbox_attachment_acquisition:${finalFailureReason}`,
+        sourceEvent: "sandbox_attachment_acquisition_retry_failed",
+        attributes: {
+          component: options?.logContext?.service ?? "chat-handler",
+          request_id: options?.logContext?.requestId ?? null,
+          initial_failure_reason: initialFailureReason,
+          final_failure_reason: finalFailureReason,
+          recovery_strategy: recoveryStrategy,
+          alternate_provider_available: !alternateUnavailable,
+        },
+      });
       return {
         failedCount: sandboxFiles.length,
         pathRewrites: [],
         failureDetails: sandboxFiles.map((file) =>
-          summarizeSandboxUploadFailure(file, retryError, "acquisition"),
+          summarizeSandboxUploadFailure(
+            file,
+            alternateUnavailable ? error : retryError,
+            "acquisition",
+          ),
         ),
-        retriedWithFreshSandbox: true,
+        ...(alternateUnavailable ? {} : { retriedWithFreshSandbox: true }),
       };
     }
   }
