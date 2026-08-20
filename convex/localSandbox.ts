@@ -80,8 +80,18 @@ const cloudSessionForBackend = v.object({
   microvmId: v.optional(v.string()),
   connectionId: v.optional(v.string()),
   region: v.string(),
+  requestedRegion: v.optional(v.string()),
+  placementReason: v.optional(v.string()),
   imageIdentifier: v.string(),
   imageVersion: v.optional(v.string()),
+  failoverFromRegion: v.optional(v.string()),
+  failoverErrorName: v.optional(v.string()),
+  failoverStartedAt: v.optional(v.number()),
+  failoverCompletedAt: v.optional(v.number()),
+  failoverDurationMs: v.optional(v.number()),
+  failoverOutcome: v.optional(
+    v.union(v.literal("succeeded"), v.literal("failed")),
+  ),
   createdAt: v.number(),
   updatedAt: v.number(),
   bootstrapExpiresAt: v.number(),
@@ -102,8 +112,16 @@ function serializeCloudSession(session: {
   microvm_id?: string;
   connection_id?: string;
   region: string;
+  requested_region?: string;
+  placement_reason?: string;
   image_identifier: string;
   image_version?: string;
+  failover_from_region?: string;
+  failover_error_name?: string;
+  failover_started_at?: number;
+  failover_completed_at?: number;
+  failover_duration_ms?: number;
+  failover_outcome?: "succeeded" | "failed";
   created_at: number;
   updated_at: number;
   bootstrap_expires_at: number;
@@ -116,8 +134,16 @@ function serializeCloudSession(session: {
     microvmId: session.microvm_id,
     connectionId: session.connection_id,
     region: session.region,
+    requestedRegion: session.requested_region,
+    placementReason: session.placement_reason,
     imageIdentifier: session.image_identifier,
     imageVersion: session.image_version,
+    failoverFromRegion: session.failover_from_region,
+    failoverErrorName: session.failover_error_name,
+    failoverStartedAt: session.failover_started_at,
+    failoverCompletedAt: session.failover_completed_at,
+    failoverDurationMs: session.failover_duration_ms,
+    failoverOutcome: session.failover_outcome,
     createdAt: session.created_at,
     updatedAt: session.updated_at,
     bootstrapExpiresAt: session.bootstrap_expires_at,
@@ -524,8 +550,13 @@ export const beginCloudSession = mutation({
     serviceKey: v.string(),
     userId: v.string(),
     region: v.string(),
+    requestedRegion: v.optional(v.string()),
+    placementReason: v.optional(v.string()),
     imageIdentifier: v.string(),
     imageVersion: v.optional(v.string()),
+    failoverFromRegion: v.optional(v.string()),
+    failoverErrorName: v.optional(v.string()),
+    failoverStartedAt: v.optional(v.number()),
   },
   returns: v.object({
     created: v.boolean(),
@@ -637,8 +668,13 @@ export const beginCloudSession = mutation({
       bootstrap_token_hash: await hashCloudBootstrapToken(bootstrapToken),
       bootstrap_expires_at: now + CLOUD_SESSION_TOKEN_TTL_MS,
       region: args.region,
+      requested_region: args.requestedRegion,
+      placement_reason: args.placementReason,
       image_identifier: args.imageIdentifier,
       image_version: args.imageVersion,
+      failover_from_region: args.failoverFromRegion,
+      failover_error_name: args.failoverErrorName,
+      failover_started_at: args.failoverStartedAt,
       created_at: now,
       updated_at: now,
     };
@@ -768,6 +804,17 @@ export const markCloudDirectReady = mutation({
       status: "running",
       relay_ready_at: now,
       last_connected_at: now,
+      ...(session.failover_started_at !== undefined &&
+      session.failover_completed_at === undefined
+        ? {
+            failover_completed_at: now,
+            failover_duration_ms: Math.max(
+              0,
+              now - session.failover_started_at,
+            ),
+            failover_outcome: "succeeded" as const,
+          }
+        : {}),
       updated_at: now,
     });
     return true;
@@ -866,6 +913,18 @@ export const markCloudSessionEnded = mutation({
     await ctx.db.patch(session._id, {
       status: args.status,
       failure_code: args.failureCode,
+      ...(args.status === "failed" &&
+      session.failover_started_at !== undefined &&
+      session.failover_completed_at === undefined
+        ? {
+            failover_completed_at: now,
+            failover_duration_ms: Math.max(
+              0,
+              now - session.failover_started_at,
+            ),
+            failover_outcome: "failed" as const,
+          }
+        : {}),
       ended_at: now,
       updated_at: now,
     });

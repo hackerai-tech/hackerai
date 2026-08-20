@@ -44,6 +44,15 @@ const TRIGGER_TO_AWS_REGION: Record<TriggerRunRegion, AwsLambdaMicrovmRegion> =
     "eu-central-1": "eu-west-1",
   };
 
+const AWS_LAMBDA_MICROVM_FAILOVER_ORDER: Record<
+  AwsLambdaMicrovmRegion,
+  readonly AwsLambdaMicrovmRegion[]
+> = {
+  "us-east-1": ["us-west-2", "eu-west-1"],
+  "us-west-2": ["us-east-1", "eu-west-1"],
+  "eu-west-1": ["us-east-1", "us-west-2"],
+};
+
 function nonEmptyString(value: unknown, path: string): string {
   if (typeof value !== "string" || !value.trim()) {
     throw new Error(`${path} must be a non-empty string`);
@@ -174,4 +183,20 @@ export function resolveAwsLambdaMicrovmPlacement(
         ? "trigger_region_europe_pairing"
         : "trigger_region_exact",
   };
+}
+
+/**
+ * Select one alternate region for a new-session capacity failover.
+ *
+ * The order is deterministic, and administratively disabled regions are
+ * skipped. Callers make at most one cross-region attempt with the returned
+ * region; they do not cascade through the remaining entries after a failure.
+ */
+export function resolveAwsLambdaMicrovmFailoverRegion(
+  failedRegion: AwsLambdaMicrovmRegion,
+  manifest: AwsLambdaMicrovmReleaseManifest,
+): AwsLambdaMicrovmRegion | undefined {
+  return AWS_LAMBDA_MICROVM_FAILOVER_ORDER[failedRegion].find(
+    (region) => manifest.regions[region].enabledForNewPlacements,
+  );
 }

@@ -72,9 +72,28 @@ jest.mock("../aws-lambda-microvm-direct-sandbox", () => ({
 import {
   ensureAwsLambdaMicrovmConnection,
   getAwsLambdaMicrovmConfig,
+  isRegionalFailoverEligibleError,
   suspendAwsLambdaMicrovmsForUser,
   terminateAwsLambdaMicrovmForUser,
 } from "../aws-lambda-microvm";
+
+function regionalReleaseManifest() {
+  return JSON.stringify({
+    schemaVersion: 1,
+    releaseId: "regional-release",
+    regions: Object.fromEntries(
+      ["us-east-1", "us-west-2", "eu-west-1"].map((region) => [
+        region,
+        {
+          imageIdentifier: `arn:aws:lambda:${region}:630609837323:microvm-image:hackerai-cloud-agent`,
+          imageVersion: `${region}-version`,
+          executionRoleArn: `arn:aws:iam::630609837323:role/${region}`,
+          enabledForNewPlacements: true,
+        },
+      ]),
+    ),
+  });
+}
 
 describe("AWS Lambda MicroVM development logging", () => {
   const originalEnv = process.env;
@@ -350,6 +369,407 @@ describe("AWS Lambda MicroVM development logging", () => {
 
     errorSpy.mockRestore();
     debugSpy.mockRestore();
+  });
+
+  it("fails over one new session after a regional capacity error", async () => {
+    process.env.AWS_LAMBDA_MICROVM_RELEASE_MANIFEST = regionalReleaseManifest();
+    const now = Date.now();
+    mockMutation
+      .mockResolvedValueOnce({
+        created: true,
+        session: {
+          sessionId: "session-east",
+          status: "starting",
+          region: "us-east-1",
+          imageIdentifier:
+            "arn:aws:lambda:us-east-1:630609837323:microvm-image:hackerai-cloud-agent",
+          imageVersion: "us-east-1-version",
+          createdAt: now,
+          updatedAt: now,
+          bootstrapExpiresAt: now + 60_000,
+        },
+        bootstrapToken: "bootstrap-east",
+        cleanupCandidates: [],
+      })
+      .mockResolvedValueOnce(true)
+      .mockResolvedValueOnce({
+        created: true,
+        session: {
+          sessionId: "session-west",
+          status: "starting",
+          region: "us-west-2",
+          requestedRegion: "us-east-1",
+          placementReason: "regional_capacity_failover",
+          imageIdentifier:
+            "arn:aws:lambda:us-west-2:630609837323:microvm-image:hackerai-cloud-agent",
+          imageVersion: "us-west-2-version",
+          failoverFromRegion: "us-east-1",
+          failoverErrorName: "ThrottlingException",
+          createdAt: now,
+          updatedAt: now,
+          bootstrapExpiresAt: now + 60_000,
+        },
+        bootstrapToken: "bootstrap-west",
+        cleanupCandidates: [],
+      })
+      .mockResolvedValueOnce(true)
+      .mockResolvedValueOnce(true);
+    mockSend
+      .mockRejectedValueOnce(
+        Object.assign(new Error("regional capacity exhausted"), {
+          name: "ThrottlingException",
+          $metadata: { httpStatusCode: 429 },
+        }),
+      )
+      .mockResolvedValueOnce({
+        microvmId: "microvm-west",
+        state: "RUNNING",
+        endpoint: "microvm-west.lambda-microvm.us-west-2.on.aws",
+        $metadata: { requestId: "run-west", httpStatusCode: 200 },
+      });
+    const onBoot = jest.fn();
+    const warnSpy = jest.spyOn(console, "warn").mockImplementation();
+    const infoSpy = jest.spyOn(console, "info").mockImplementation();
+    const debugSpy = jest.spyOn(console, "debug").mockImplementation();
+
+    await expect(
+      ensureAwsLambdaMicrovmConnection(
+        "user-failover",
+        onBoot,
+        "us-east-1",
+        "trigger-run-failover",
+      ),
+    ).resolves.toBeDefined();
+
+    expect(mockSend).toHaveBeenCalledTimes(2);
+    expect(mockSend.mock.calls[0][0]).toMatchObject({
+      input: {
+        imageIdentifier: expect.stringContaining(":us-east-1:"),
+      },
+    });
+    expect(mockSend.mock.calls[1][0]).toMatchObject({
+      input: {
+        imageIdentifier: expect.stringContaining(":us-west-2:"),
+        imageVersion: "us-west-2-version",
+      },
+    });
+    expect(mockMutation.mock.calls[2][1]).toMatchObject({
+      userId: "user-failover",
+      region: "us-west-2",
+      requestedRegion: "us-east-1",
+      placementReason: "regional_capacity_failover",
+      failoverFromRegion: "us-east-1",
+      failoverErrorName: "ThrottlingException",
+      failoverStartedAt: expect.any(Number),
+    });
+    expect(onBoot).toHaveBeenCalledWith(
+      expect.objectContaining({
+        create_attempts: 2,
+        region: "us-west-2",
+        requested_region: "us-east-1",
+        failover_from_region: "us-east-1",
+        failover_error_name: "ThrottlingException",
+        failover_duration_ms: expect.any(Number),
+      }),
+    );
+    const warningEvents = warnSpy.mock.calls.map(
+      ([payload]) => JSON.parse(payload as string).event,
+    );
+    expect(warningEvents).toContain("cloud_sandbox_region_failover_started");
+    const successEvent = infoSpy.mock.calls
+      .map(([payload]) => JSON.parse(payload as string))
+      .find(
+        (payload) =>
+          payload.event === "cloud_sandbox_region_failover_succeeded",
+      );
+    expect(successEvent).toMatchObject({
+      requested_region: "us-east-1",
+      failed_region: "us-east-1",
+      selected_region: "us-west-2",
+      initial_error_name: "ThrottlingException",
+      outcome: "created",
+    });
+
+    warnSpy.mockRestore();
+    infoSpy.mockRestore();
+    debugSpy.mockRestore();
+  });
+
+  it("makes at most one cross-region attempt", async () => {
+    process.env.AWS_LAMBDA_MICROVM_RELEASE_MANIFEST = regionalReleaseManifest();
+    const session = (sessionId: string, region: string) => ({
+      sessionId,
+      status: "starting" as const,
+      region,
+      imageIdentifier: `arn:aws:lambda:${region}:630609837323:microvm-image:hackerai-cloud-agent`,
+      imageVersion: `${region}-version`,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      bootstrapExpiresAt: Date.now() + 60_000,
+    });
+    mockMutation
+      .mockResolvedValueOnce({
+        created: true,
+        session: session("session-east-bounded", "us-east-1"),
+        bootstrapToken: "bootstrap-east-bounded",
+        cleanupCandidates: [],
+      })
+      .mockResolvedValueOnce(true)
+      .mockResolvedValueOnce({
+        created: true,
+        session: session("session-west-bounded", "us-west-2"),
+        bootstrapToken: "bootstrap-west-bounded",
+        cleanupCandidates: [],
+      })
+      .mockResolvedValueOnce(true);
+    mockSend
+      .mockRejectedValueOnce(
+        Object.assign(new Error("east throttled"), {
+          name: "TooManyRequestsException",
+        }),
+      )
+      .mockRejectedValueOnce(
+        Object.assign(new Error("west quota exhausted"), {
+          name: "ServiceQuotaExceededException",
+        }),
+      );
+    const errorSpy = jest.spyOn(console, "error").mockImplementation();
+    const warnSpy = jest.spyOn(console, "warn").mockImplementation();
+    const debugSpy = jest.spyOn(console, "debug").mockImplementation();
+
+    await expect(
+      ensureAwsLambdaMicrovmConnection("user-bounded-failover"),
+    ).rejects.toThrow("quota_exceeded");
+
+    expect(mockSend).toHaveBeenCalledTimes(2);
+    expect(mockMutation).toHaveBeenCalledTimes(4);
+    const failureEvent = errorSpy.mock.calls
+      .map(([payload]) => JSON.parse(payload as string))
+      .find(
+        (payload) => payload.event === "cloud_sandbox_region_failover_failed",
+      );
+    expect(failureEvent).toMatchObject({
+      failed_region: "us-east-1",
+      selected_region: "us-west-2",
+      initial_error_name: "TooManyRequestsException",
+      outcome: "failed",
+    });
+
+    errorSpy.mockRestore();
+    warnSpy.mockRestore();
+    debugSpy.mockRestore();
+  });
+
+  it("does not fail over until the original session is durably closed", async () => {
+    process.env.AWS_LAMBDA_MICROVM_RELEASE_MANIFEST = regionalReleaseManifest();
+    mockMutation
+      .mockResolvedValueOnce({
+        created: true,
+        session: {
+          sessionId: "session-cleanup-unconfirmed",
+          status: "starting",
+          region: "us-east-1",
+          imageIdentifier:
+            "arn:aws:lambda:us-east-1:630609837323:microvm-image:hackerai-cloud-agent",
+          imageVersion: "us-east-1-version",
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+          bootstrapExpiresAt: Date.now() + 60_000,
+        },
+        bootstrapToken: "bootstrap-cleanup-unconfirmed",
+        cleanupCandidates: [],
+      })
+      .mockResolvedValueOnce(false);
+    mockSend.mockRejectedValueOnce(
+      Object.assign(new Error("regional service unavailable"), {
+        name: "InternalServerException",
+        $metadata: { httpStatusCode: 503 },
+      }),
+    );
+    const errorSpy = jest.spyOn(console, "error").mockImplementation();
+    const debugSpy = jest.spyOn(console, "debug").mockImplementation();
+
+    await expect(
+      ensureAwsLambdaMicrovmConnection("user-cleanup-unconfirmed"),
+    ).rejects.toThrow("provider_unavailable");
+
+    expect(mockSend).toHaveBeenCalledTimes(1);
+    expect(mockMutation).toHaveBeenCalledTimes(2);
+    const failureEvent = JSON.parse(
+      errorSpy.mock.calls.at(-1)?.[0] as string,
+    ) as Record<string, unknown>;
+    expect(failureEvent).toMatchObject({
+      regional_failover_eligible: true,
+      primary_cleanup_confirmed: false,
+    });
+
+    errorSpy.mockRestore();
+    debugSpy.mockRestore();
+  });
+
+  it("reconciles a lost RunMicrovm response with the same client token", async () => {
+    process.env.AWS_LAMBDA_MICROVM_RELEASE_MANIFEST = regionalReleaseManifest();
+    mockMutation
+      .mockResolvedValueOnce({
+        created: true,
+        session: {
+          sessionId: "session-transport-recovered",
+          status: "starting",
+          region: "us-east-1",
+          imageIdentifier:
+            "arn:aws:lambda:us-east-1:630609837323:microvm-image:hackerai-cloud-agent",
+          imageVersion: "us-east-1-version",
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+          bootstrapExpiresAt: Date.now() + 60_000,
+        },
+        bootstrapToken: "bootstrap-transport-recovered",
+        cleanupCandidates: [],
+      })
+      .mockResolvedValueOnce(true)
+      .mockResolvedValueOnce(true);
+    mockSend
+      .mockRejectedValueOnce(
+        Object.assign(new Error("response timed out"), { code: "ETIMEDOUT" }),
+      )
+      .mockResolvedValueOnce({
+        microvmId: "microvm-transport-recovered",
+        state: "RUNNING",
+        endpoint: "microvm-transport-recovered.example.test",
+        $metadata: { requestId: "run-reconciled", httpStatusCode: 200 },
+      });
+    const warnSpy = jest.spyOn(console, "warn").mockImplementation();
+    const infoSpy = jest.spyOn(console, "info").mockImplementation();
+    const debugSpy = jest.spyOn(console, "debug").mockImplementation();
+
+    await expect(
+      ensureAwsLambdaMicrovmConnection("user-transport-recovered"),
+    ).resolves.toBeDefined();
+
+    expect(mockSend).toHaveBeenCalledTimes(2);
+    expect(mockSend.mock.calls[0][0]).toMatchObject({
+      input: { clientToken: "session-transport-recovered" },
+    });
+    const initialRunInput = (mockSend.mock.calls[0][0] as { input: unknown })
+      .input;
+    const replayRunInput = (mockSend.mock.calls[1][0] as { input: unknown })
+      .input;
+    expect(replayRunInput).toEqual(initialRunInput);
+    expect(mockMutation).toHaveBeenCalledTimes(3);
+    const warningEvents = warnSpy.mock.calls.map(
+      ([payload]) => JSON.parse(payload as string).event,
+    );
+    expect(warningEvents).toContain("cloud_sandbox_run_reconciliation_started");
+    expect(warningEvents).not.toContain(
+      "cloud_sandbox_region_failover_started",
+    );
+    const infoEvents = infoSpy.mock.calls.map(
+      ([payload]) => JSON.parse(payload as string).event,
+    );
+    expect(infoEvents).toContain("cloud_sandbox_run_reconciliation_succeeded");
+
+    warnSpy.mockRestore();
+    infoSpy.mockRestore();
+    debugSpy.mockRestore();
+  });
+
+  it("blocks failover when a lost RunMicrovm response cannot be reconciled", async () => {
+    process.env.AWS_LAMBDA_MICROVM_RELEASE_MANIFEST = regionalReleaseManifest();
+    mockMutation
+      .mockResolvedValueOnce({
+        created: true,
+        session: {
+          sessionId: "session-transport-unknown",
+          status: "starting",
+          region: "us-east-1",
+          imageIdentifier:
+            "arn:aws:lambda:us-east-1:630609837323:microvm-image:hackerai-cloud-agent",
+          imageVersion: "us-east-1-version",
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+          bootstrapExpiresAt: Date.now() + 60_000,
+        },
+        bootstrapToken: "bootstrap-transport-unknown",
+        cleanupCandidates: [],
+      })
+      .mockResolvedValueOnce(true);
+    mockSend
+      .mockRejectedValueOnce(
+        Object.assign(new Error("response reset"), { code: "ECONNRESET" }),
+      )
+      .mockRejectedValueOnce(
+        Object.assign(new Error("reconciliation timed out"), {
+          code: "ETIMEDOUT",
+        }),
+      );
+    const errorSpy = jest.spyOn(console, "error").mockImplementation();
+    const warnSpy = jest.spyOn(console, "warn").mockImplementation();
+    const debugSpy = jest.spyOn(console, "debug").mockImplementation();
+
+    await expect(
+      ensureAwsLambdaMicrovmConnection("user-transport-unknown"),
+    ).rejects.toThrow("provider_error");
+
+    expect(mockSend).toHaveBeenCalledTimes(2);
+    expect(mockMutation).toHaveBeenCalledTimes(2);
+    const warningEvents = warnSpy.mock.calls.map(
+      ([payload]) => JSON.parse(payload as string).event,
+    );
+    expect(warningEvents).toContain("cloud_sandbox_run_reconciliation_failed");
+    expect(warningEvents).not.toContain(
+      "cloud_sandbox_region_failover_started",
+    );
+    const failureEvent = JSON.parse(
+      errorSpy.mock.calls.at(-1)?.[0] as string,
+    ) as Record<string, unknown>;
+    expect(failureEvent).toMatchObject({
+      regional_failover_error_eligible: true,
+      regional_failover_eligible: false,
+      run_outcome_reconciliation_failed: true,
+      convex_session_closed: true,
+      primary_cleanup_confirmed: false,
+    });
+
+    errorSpy.mockRestore();
+    warnSpy.mockRestore();
+    debugSpy.mockRestore();
+  });
+
+  it("classifies only RunMicrovm regional failures as failover eligible", () => {
+    for (const error of [
+      Object.assign(new Error("throttle"), { name: "ThrottlingException" }),
+      Object.assign(new Error("quota"), {
+        name: "ServiceQuotaExceededException",
+      }),
+      Object.assign(new Error("internal"), {
+        name: "InternalServerException",
+        $metadata: { httpStatusCode: 500 },
+      }),
+      Object.assign(new Error("timeout"), { code: "ETIMEDOUT" }),
+    ]) {
+      expect(isRegionalFailoverEligibleError(error, "run_microvm")).toBe(true);
+    }
+    for (const name of [
+      "AccessDeniedException",
+      "InvalidSignatureException",
+      "ValidationException",
+    ]) {
+      expect(
+        isRegionalFailoverEligibleError(
+          Object.assign(new Error(name), { name }),
+          "run_microvm",
+        ),
+      ).toBe(false);
+    }
+    expect(
+      isRegionalFailoverEligibleError(
+        Object.assign(new Error("guest hook failed"), {
+          name: "InternalServerException",
+          $metadata: { httpStatusCode: 500 },
+        }),
+        "wait_for_direct_endpoint",
+      ),
+    ).toBe(false);
   });
 
   it("fails closed when a reused MicroVM never finishes suspending", async () => {
@@ -654,21 +1074,7 @@ describe("AWS Lambda MicroVM development logging", () => {
   });
 
   it("selects the release entry paired with the Trigger execution region", () => {
-    process.env.AWS_LAMBDA_MICROVM_RELEASE_MANIFEST = JSON.stringify({
-      schemaVersion: 1,
-      releaseId: "regional-release",
-      regions: Object.fromEntries(
-        ["us-east-1", "us-west-2", "eu-west-1"].map((region) => [
-          region,
-          {
-            imageIdentifier: `arn:aws:lambda:${region}:630609837323:microvm-image:hackerai-cloud-agent`,
-            imageVersion: `${region}-version`,
-            executionRoleArn: `arn:aws:iam::630609837323:role/${region}`,
-            enabledForNewPlacements: true,
-          },
-        ]),
-      ),
-    });
+    process.env.AWS_LAMBDA_MICROVM_RELEASE_MANIFEST = regionalReleaseManifest();
 
     expect(getAwsLambdaMicrovmConfig("eu-central-1")).toMatchObject({
       triggerRegion: "eu-central-1",

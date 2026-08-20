@@ -4,6 +4,7 @@ import {
   LambdaMicrovmsClient,
   ResumeMicrovmCommand,
   RunMicrovmCommand,
+  type RunMicrovmCommandInput,
   SuspendMicrovmCommand,
   TerminateMicrovmCommand,
 } from "@aws-sdk/client-lambda-microvms";
@@ -21,6 +22,7 @@ import {
   type AwsLambdaMicrovmPlacement,
   type AwsLambdaMicrovmRegion,
   parseAwsLambdaMicrovmReleaseManifest,
+  resolveAwsLambdaMicrovmFailoverRegion,
   resolveAwsLambdaMicrovmPlacement,
 } from "./aws-lambda-microvm-release";
 
@@ -32,6 +34,25 @@ const DEFAULT_MIN_REMAINING_SECONDS = 2 * 60 * 60 + 5 * 60;
 const DIRECT_IDLE_SECONDS = 5 * 60;
 const DIRECT_SUSPENDED_SECONDS = 30 * 60;
 const SESSION_READY_TIMEOUT_MS = 90_000;
+const RETRYABLE_TRANSPORT_ERROR_CODES = new Set([
+  "EAI_AGAIN",
+  "ENOTFOUND",
+  "ECONNREFUSED",
+  "ECONNRESET",
+  "ETIMEDOUT",
+  "NetworkingError",
+  "TimeoutError",
+]);
+const NON_FAILOVER_ERROR_NAMES = new Set([
+  "AccessDeniedException",
+  "CredentialsProviderError",
+  "ExpiredTokenException",
+  "InvalidParameterValueException",
+  "InvalidSignatureException",
+  "ResourceNotFoundException",
+  "UnrecognizedClientException",
+  "ValidationException",
+]);
 
 type CloudSession = {
   sessionId: string;
@@ -39,8 +60,16 @@ type CloudSession = {
   microvmId?: string;
   connectionId?: string;
   region: string;
+  requestedRegion?: string;
+  placementReason?: string;
   imageIdentifier: string;
   imageVersion?: string;
+  failoverFromRegion?: string;
+  failoverErrorName?: string;
+  failoverStartedAt?: number;
+  failoverCompletedAt?: number;
+  failoverDurationMs?: number;
+  failoverOutcome?: "succeeded" | "failed";
   createdAt: number;
   updatedAt: number;
   bootstrapExpiresAt: number;
@@ -69,7 +98,10 @@ type AwsLambdaMicrovmConfig = {
   region: AwsLambdaMicrovmRegion;
   requestedRegion: AwsLambdaMicrovmRegion;
   triggerRegion: TriggerRunRegion;
-  placementReason: AwsLambdaMicrovmPlacement["reason"] | "legacy_us_east";
+  placementReason:
+    | AwsLambdaMicrovmPlacement["reason"]
+    | "legacy_us_east"
+    | "regional_capacity_failover";
   releaseId?: string;
   imageIdentifier: string;
   imageVersion?: string;
@@ -80,6 +112,20 @@ type AwsLambdaMicrovmConfig = {
   minRemainingSeconds: number;
   logGroup: string;
   serviceKey: string;
+};
+
+type RegionFailoverAttempt = {
+  fromRegion: AwsLambdaMicrovmRegion;
+  toRegion: AwsLambdaMicrovmRegion;
+  initialSessionId: string;
+  initialErrorName: string;
+  initialFailureCode: string;
+  startedAtMs: number;
+};
+
+type ConnectionAttemptContext = {
+  acquisitionStartedAt: number;
+  failover?: RegionFailoverAttempt;
 };
 
 const clients = new Map<string, LambdaMicrovmsClient>();
@@ -283,6 +329,45 @@ export function getAwsLambdaMicrovmConfig(
   };
 }
 
+function getRegionalReleaseConfig(
+  base: AwsLambdaMicrovmConfig,
+  region: AwsLambdaMicrovmRegion,
+): AwsLambdaMicrovmConfig {
+  const rawManifest =
+    process.env[AWS_LAMBDA_MICROVM_RELEASE_MANIFEST_ENV]?.trim();
+  if (!rawManifest) {
+    throw new Error(
+      `${AWS_LAMBDA_MICROVM_RELEASE_MANIFEST_ENV} is required for regional failover`,
+    );
+  }
+  const manifest = parseAwsLambdaMicrovmReleaseManifest(rawManifest);
+  const release = manifest.regions[region];
+  if (!release.enabledForNewPlacements) {
+    throw new Error(`${region} is disabled for new AWS MicroVM placements`);
+  }
+  return {
+    ...base,
+    region,
+    placementReason: "regional_capacity_failover",
+    imageIdentifier: release.imageIdentifier,
+    imageVersion: release.imageVersion,
+    executionRoleArn: release.executionRoleArn,
+    ingressConnectorArn: `arn:aws:lambda:${region}:aws:network-connector:aws-network-connector:ALL_INGRESS`,
+    egressConnectorArn: `arn:aws:lambda:${region}:aws:network-connector:aws-network-connector:INTERNET_EGRESS`,
+  };
+}
+
+function getRegionalFailoverConfig(
+  failed: AwsLambdaMicrovmConfig,
+): AwsLambdaMicrovmConfig | undefined {
+  const rawManifest =
+    process.env[AWS_LAMBDA_MICROVM_RELEASE_MANIFEST_ENV]?.trim();
+  if (!rawManifest) return undefined;
+  const manifest = parseAwsLambdaMicrovmReleaseManifest(rawManifest);
+  const region = resolveAwsLambdaMicrovmFailoverRegion(failed.region, manifest);
+  return region ? getRegionalReleaseConfig(failed, region) : undefined;
+}
+
 function getClient(region: string): LambdaMicrovmsClient {
   const existing = clients.get(region);
   if (existing) return existing;
@@ -358,13 +443,95 @@ function failureCode(error: unknown): string {
   if (!(error instanceof Error)) return "unknown";
   if (error.name === "AccessDeniedException") return "access_denied";
   if (error.name === "ServiceQuotaExceededException") return "quota_exceeded";
-  if (error.name === "ThrottlingException") return "throttled";
+  if (
+    error.name === "ThrottlingException" ||
+    error.name === "TooManyRequestsException"
+  ) {
+    return "throttled";
+  }
   if (error.name === "ValidationException") return "invalid_configuration";
   if (isAwsNotFound(error)) return "microvm_not_found";
   if (/websocket|direct endpoint|auth token|endpoint/i.test(error.message)) {
     return "direct_endpoint_not_ready";
   }
+  const status = (error as { $metadata?: { httpStatusCode?: unknown } })
+    .$metadata?.httpStatusCode;
+  if (
+    error.name === "InternalServerException" ||
+    (typeof status === "number" && status >= 500)
+  ) {
+    return "provider_unavailable";
+  }
   return "provider_error";
+}
+
+function errorName(error: unknown): string {
+  if (error instanceof Error) return error.name;
+  if (
+    error &&
+    typeof error === "object" &&
+    typeof (error as { name?: unknown }).name === "string"
+  ) {
+    return (error as { name: string }).name;
+  }
+  return typeof error;
+}
+
+function errorCauseOrSelf(error: unknown): unknown {
+  return error instanceof Error && error.cause !== undefined
+    ? error.cause
+    : error;
+}
+
+function isRetryableTransportError(error: unknown): boolean {
+  const record =
+    error && typeof error === "object"
+      ? (error as {
+          name?: unknown;
+          code?: unknown;
+          $retryable?: unknown;
+          $metadata?: { httpStatusCode?: unknown };
+        })
+      : undefined;
+  if (record?.$metadata?.httpStatusCode !== undefined) return false;
+  const name = errorName(error);
+  if (NON_FAILOVER_ERROR_NAMES.has(name)) return false;
+  const code = typeof record?.code === "string" ? record.code : name;
+  return (
+    Boolean(record?.$retryable) || RETRYABLE_TRANSPORT_ERROR_CODES.has(code)
+  );
+}
+
+export function isRegionalFailoverEligibleError(
+  error: unknown,
+  failureStage: string,
+): boolean {
+  if (failureStage !== "run_microvm") return false;
+  const record =
+    error && typeof error === "object"
+      ? (error as {
+          name?: unknown;
+          code?: unknown;
+          $retryable?: unknown;
+          $metadata?: { httpStatusCode?: unknown };
+        })
+      : undefined;
+  const name = errorName(error);
+  if (NON_FAILOVER_ERROR_NAMES.has(name)) return false;
+  if (
+    name === "ThrottlingException" ||
+    name === "TooManyRequestsException" ||
+    name === "ServiceQuotaExceededException"
+  ) {
+    return true;
+  }
+  const status = record?.$metadata?.httpStatusCode;
+  if (typeof status === "number" && status >= 500 && status <= 599) {
+    return true;
+  }
+  if (name === "InternalServerException") return true;
+
+  return isRetryableTransportError(error);
 }
 
 async function markEnded(
@@ -373,14 +540,16 @@ async function markEnded(
   config: Pick<AwsLambdaMicrovmConfig, "serviceKey">,
   status: "failed" | "terminated",
   code?: string,
-): Promise<void> {
-  await getConvexClient().mutation(api.localSandbox.markCloudSessionEnded, {
-    serviceKey: config.serviceKey,
-    userId,
-    sessionId,
-    status,
-    failureCode: code,
-  });
+): Promise<boolean> {
+  return Boolean(
+    await getConvexClient().mutation(api.localSandbox.markCloudSessionEnded, {
+      serviceKey: config.serviceKey,
+      userId,
+      sessionId,
+      status,
+      failureCode: code,
+    }),
+  );
 }
 
 async function markCleanupPending(
@@ -845,12 +1014,22 @@ export async function ensureAwsLambdaMicrovmConnection(
   triggerRegion: TriggerRunRegion = "us-east-1",
   triggerRunId?: string,
   replacementAttempt = 0,
+  attemptContext?: ConnectionAttemptContext,
 ): Promise<CentrifugoSandbox> {
-  const startedAt = performance.now();
+  const startedAt = attemptContext?.acquisitionStartedAt ?? performance.now();
+  const currentAttempt: ConnectionAttemptContext = attemptContext ?? {
+    acquisitionStartedAt: startedAt,
+  };
   const correlation = { trigger_run_id: triggerRunId ?? null };
   let config: AwsLambdaMicrovmConfig;
   try {
-    config = getAwsLambdaMicrovmConfig(triggerRegion);
+    const requestedConfig = getAwsLambdaMicrovmConfig(triggerRegion);
+    config = currentAttempt.failover
+      ? getRegionalReleaseConfig(
+          requestedConfig,
+          currentAttempt.failover.toRegion,
+        )
+      : requestedConfig;
   } catch (error) {
     log("error", "cloud_sandbox_configuration_failed", {
       user_id: userId,
@@ -889,6 +1068,8 @@ export async function ensureAwsLambdaMicrovmConnection(
     aws_profile: process.env.AWS_PROFILE?.trim() || null,
     convex_endpoint_kind: endpointKind(convexUrl),
     replacement_attempt: replacementAttempt,
+    failover_attempt: Boolean(currentAttempt.failover),
+    failover_from_region: currentAttempt.failover?.fromRegion ?? null,
   });
 
   let begin: {
@@ -904,8 +1085,17 @@ export async function ensureAwsLambdaMicrovmConnection(
         serviceKey: config.serviceKey,
         userId,
         region: config.region,
+        requestedRegion: config.requestedRegion,
+        placementReason: config.placementReason,
         imageIdentifier: config.imageIdentifier,
         imageVersion: config.imageVersion,
+        ...(currentAttempt.failover
+          ? {
+              failoverFromRegion: currentAttempt.failover.fromRegion,
+              failoverErrorName: currentAttempt.failover.initialErrorName,
+              failoverStartedAt: currentAttempt.failover.startedAtMs,
+            }
+          : {}),
       },
     )) as typeof begin;
   } catch (error) {
@@ -1020,6 +1210,7 @@ export async function ensureAwsLambdaMicrovmConnection(
         triggerRegion,
         triggerRunId,
         1,
+        currentAttempt,
       );
     }
     if (!existing) {
@@ -1032,6 +1223,7 @@ export async function ensureAwsLambdaMicrovmConnection(
         triggerRegion,
         triggerRunId,
         1,
+        currentAttempt,
       );
     }
     onBoot?.({
@@ -1044,6 +1236,11 @@ export async function ensureAwsLambdaMicrovmConnection(
       placement_reason: config.placementReason,
       release_id: config.releaseId,
       image_version: existing.session.imageVersion ?? "latest",
+      failover_from_region: currentAttempt.failover?.fromRegion,
+      failover_error_name: currentAttempt.failover?.initialErrorName,
+      failover_duration_ms: currentAttempt.failover
+        ? Date.now() - currentAttempt.failover.startedAtMs
+        : undefined,
     });
     log("info", "cloud_sandbox_reused", {
       user_id: userId,
@@ -1053,12 +1250,51 @@ export async function ensureAwsLambdaMicrovmConnection(
       region: config.region,
       image_version: existing.session.imageVersion ?? "latest",
     });
+    if (currentAttempt.failover) {
+      log("info", "cloud_sandbox_region_failover_succeeded", {
+        user_id: userId,
+        ...correlation,
+        initial_session_id: currentAttempt.failover.initialSessionId,
+        session_id: existing.session.sessionId,
+        requested_region: config.requestedRegion,
+        failed_region: currentAttempt.failover.fromRegion,
+        selected_region: config.region,
+        initial_error_name: currentAttempt.failover.initialErrorName,
+        initial_failure_code: currentAttempt.failover.initialFailureCode,
+        failover_duration_ms: Date.now() - currentAttempt.failover.startedAtMs,
+        outcome: "reused_concurrent_session",
+      });
+    }
     return existing.sandbox;
   }
 
   let microvmId: string | undefined;
   let directSandbox: AwsLambdaMicrovmDirectSandbox | undefined;
   let failureStage = "run_microvm";
+  let runOutcomeReconciliationFailed = false;
+  const runRequest: RunMicrovmCommandInput = {
+    imageIdentifier: config.imageIdentifier,
+    imageVersion: config.imageVersion,
+    ...(config.executionRoleArn
+      ? { executionRoleArn: config.executionRoleArn }
+      : {}),
+    ingressNetworkConnectors: [config.ingressConnectorArn],
+    egressNetworkConnectors: [config.egressConnectorArn],
+    idlePolicy: {
+      maxIdleDurationSeconds: DIRECT_IDLE_SECONDS,
+      suspendedDurationSeconds: DIRECT_SUSPENDED_SECONDS,
+      autoResumeEnabled: true,
+    },
+    logging: config.executionRoleArn
+      ? { cloudWatch: { logGroup: config.logGroup } }
+      : { disabled: {} },
+    maximumDurationInSeconds: config.maxDurationSeconds,
+    clientToken: begin.session.sessionId,
+    runHookPayload: JSON.stringify({
+      sessionId: begin.session.sessionId,
+      connectionName: "AWS Lambda MicroVM",
+    }),
+  };
   try {
     const runStartedAt = performance.now();
     log("debug", "cloud_sandbox_run_requested", {
@@ -1079,31 +1315,52 @@ export async function ensureAwsLambdaMicrovmConnection(
       transport: "aws_websocket",
       convex_endpoint_kind: endpointKind(convexUrl),
     });
-    const response = await getClient(config.region).send(
-      new RunMicrovmCommand({
-        imageIdentifier: config.imageIdentifier,
-        imageVersion: config.imageVersion,
-        ...(config.executionRoleArn
-          ? { executionRoleArn: config.executionRoleArn }
-          : {}),
-        ingressNetworkConnectors: [config.ingressConnectorArn],
-        egressNetworkConnectors: [config.egressConnectorArn],
-        idlePolicy: {
-          maxIdleDurationSeconds: DIRECT_IDLE_SECONDS,
-          suspendedDurationSeconds: DIRECT_SUSPENDED_SECONDS,
-          autoResumeEnabled: true,
-        },
-        logging: config.executionRoleArn
-          ? { cloudWatch: { logGroup: config.logGroup } }
-          : { disabled: {} },
-        maximumDurationInSeconds: config.maxDurationSeconds,
-        clientToken: begin.session.sessionId,
-        runHookPayload: JSON.stringify({
-          sessionId: begin.session.sessionId,
-          connectionName: "AWS Lambda MicroVM",
-        }),
-      }),
-    );
+    let response;
+    try {
+      response = await getClient(config.region).send(
+        new RunMicrovmCommand(runRequest),
+      );
+    } catch (runError) {
+      if (!isRetryableTransportError(runError)) throw runError;
+      log("warn", "cloud_sandbox_run_reconciliation_started", {
+        user_id: userId,
+        ...correlation,
+        session_id: begin.session.sessionId,
+        region: config.region,
+        initial_error_name: errorName(runError),
+        initial_failure_code: failureCode(runError),
+      });
+      try {
+        // Replaying the identical idempotent request is the only safe way to
+        // recover an AWS-created MicroVM when the first response was lost.
+        response = await getClient(config.region).send(
+          new RunMicrovmCommand(runRequest),
+        );
+      } catch (reconciliationError) {
+        runOutcomeReconciliationFailed = true;
+        log("warn", "cloud_sandbox_run_reconciliation_failed", {
+          user_id: userId,
+          ...correlation,
+          session_id: begin.session.sessionId,
+          region: config.region,
+          initial_error_name: errorName(runError),
+          reconciliation_error_name: errorName(reconciliationError),
+          reconciliation_failure_code: failureCode(reconciliationError),
+          ...errorLogFields(reconciliationError),
+        });
+        throw runError;
+      }
+      log("info", "cloud_sandbox_run_reconciliation_succeeded", {
+        user_id: userId,
+        ...correlation,
+        session_id: begin.session.sessionId,
+        microvm_id: response.microvmId ?? null,
+        region: config.region,
+        initial_error_name: errorName(runError),
+        aws_request_id: response.$metadata.requestId ?? null,
+        aws_http_status_code: response.$metadata.httpStatusCode ?? null,
+      });
+    }
     microvmId = response.microvmId;
     if (!microvmId) throw new Error("AWS did not return a MicroVM ID");
     log("info", "cloud_sandbox_run_accepted", {
@@ -1155,13 +1412,18 @@ export async function ensureAwsLambdaMicrovmConnection(
     onBoot?.({
       path: "create_fresh",
       duration_ms: Math.round(performance.now() - startedAt),
-      create_attempts: 1,
+      create_attempts: currentAttempt.failover ? 2 : 1,
       region: config.region,
       trigger_region: config.triggerRegion,
       requested_region: config.requestedRegion,
       placement_reason: config.placementReason,
       release_id: config.releaseId,
       image_version: connected.imageVersion ?? "latest",
+      failover_from_region: currentAttempt.failover?.fromRegion,
+      failover_error_name: currentAttempt.failover?.initialErrorName,
+      failover_duration_ms: currentAttempt.failover
+        ? Date.now() - currentAttempt.failover.startedAtMs
+        : undefined,
     });
     log("info", "cloud_sandbox_created", {
       user_id: userId,
@@ -1172,26 +1434,49 @@ export async function ensureAwsLambdaMicrovmConnection(
       image_version: connected.imageVersion ?? "latest",
       duration_ms: Math.round(performance.now() - startedAt),
     });
+    if (currentAttempt.failover) {
+      log("info", "cloud_sandbox_region_failover_succeeded", {
+        user_id: userId,
+        ...correlation,
+        initial_session_id: currentAttempt.failover.initialSessionId,
+        session_id: connected.sessionId,
+        microvm_id: connected.microvmId,
+        requested_region: config.requestedRegion,
+        failed_region: currentAttempt.failover.fromRegion,
+        selected_region: config.region,
+        initial_error_name: currentAttempt.failover.initialErrorName,
+        initial_failure_code: currentAttempt.failover.initialFailureCode,
+        failover_duration_ms: Date.now() - currentAttempt.failover.startedAtMs,
+        outcome: "created",
+      });
+    }
     return directSandbox;
   } catch (error) {
     const code = failureCode(error);
-    log("error", "cloud_sandbox_creation_failed", {
-      user_id: userId,
-      ...correlation,
-      session_id: begin.session.sessionId,
-      microvm_id: microvmId ?? null,
-      region: config.region,
-      image_identifier: config.imageIdentifier,
-      image_version: config.imageVersion ?? "latest",
-      execution_role_configured: Boolean(config.executionRoleArn),
-      failure_stage: failureStage,
-      failure_code: code,
-      credential_source: credentialSource(),
-      aws_profile: process.env.AWS_PROFILE?.trim() || null,
-      convex_endpoint_kind: endpointKind(convexUrl),
-      duration_ms: Math.round(performance.now() - startedAt),
-      ...errorLogFields(error, [begin.bootstrapToken]),
-    });
+    const initialErrorName = errorName(error);
+    const regionalFailoverErrorEligible =
+      begin.created &&
+      !currentAttempt.failover &&
+      isRegionalFailoverEligibleError(error, failureStage);
+    const regionalFailoverEligible =
+      regionalFailoverErrorEligible && !runOutcomeReconciliationFailed;
+    let failoverConfig: AwsLambdaMicrovmConfig | undefined;
+    if (regionalFailoverEligible) {
+      try {
+        failoverConfig = getRegionalFailoverConfig(config);
+      } catch (failoverConfigError) {
+        log("warn", "cloud_sandbox_region_failover_configuration_failed", {
+          user_id: userId,
+          ...correlation,
+          initial_session_id: begin.session.sessionId,
+          requested_region: config.requestedRegion,
+          failed_region: config.region,
+          initial_error_name: initialErrorName,
+          initial_failure_code: code,
+          ...errorLogFields(failoverConfigError),
+        });
+      }
+    }
     await directSandbox?.close().catch((closeError: unknown) => {
       log("warn", "cloud_sandbox_direct_cleanup_failed", {
         user_id: userId,
@@ -1203,6 +1488,8 @@ export async function ensureAwsLambdaMicrovmConnection(
         ...errorLogFields(closeError),
       });
     });
+    let convexSessionClosed = false;
+    let primaryCleanupConfirmed = false;
     if (microvmId) {
       const terminationOutcome = await terminateMicrovm(
         microvmId,
@@ -1216,16 +1503,107 @@ export async function ensureAwsLambdaMicrovmConnection(
           "termination_retry_required",
         );
       } else {
-        await markEnded(
+        convexSessionClosed = await markEnded(
           userId,
           begin.session.sessionId,
           config,
           "failed",
           code,
         );
+        primaryCleanupConfirmed = convexSessionClosed;
       }
     } else {
-      await markEnded(userId, begin.session.sessionId, config, "failed", code);
+      convexSessionClosed = await markEnded(
+        userId,
+        begin.session.sessionId,
+        config,
+        "failed",
+        code,
+      );
+      primaryCleanupConfirmed =
+        convexSessionClosed && !runOutcomeReconciliationFailed;
+    }
+
+    const willFailOver = Boolean(failoverConfig && primaryCleanupConfirmed);
+    log(willFailOver ? "warn" : "error", "cloud_sandbox_creation_failed", {
+      user_id: userId,
+      ...correlation,
+      session_id: begin.session.sessionId,
+      microvm_id: microvmId ?? null,
+      region: config.region,
+      requested_region: config.requestedRegion,
+      image_identifier: config.imageIdentifier,
+      image_version: config.imageVersion ?? "latest",
+      execution_role_configured: Boolean(config.executionRoleArn),
+      failure_stage: failureStage,
+      failure_code: code,
+      regional_failover_error_eligible: regionalFailoverErrorEligible,
+      regional_failover_eligible: regionalFailoverEligible,
+      run_outcome_reconciliation_failed: runOutcomeReconciliationFailed,
+      regional_failover_available: Boolean(failoverConfig),
+      regional_failover_selected_region: failoverConfig?.region ?? null,
+      convex_session_closed: convexSessionClosed,
+      primary_cleanup_confirmed: primaryCleanupConfirmed,
+      credential_source: credentialSource(),
+      aws_profile: process.env.AWS_PROFILE?.trim() || null,
+      convex_endpoint_kind: endpointKind(convexUrl),
+      duration_ms: Math.round(performance.now() - startedAt),
+      ...errorLogFields(error, [begin.bootstrapToken]),
+    });
+
+    if (failoverConfig && primaryCleanupConfirmed) {
+      const failover: RegionFailoverAttempt = {
+        fromRegion: config.region,
+        toRegion: failoverConfig.region,
+        initialSessionId: begin.session.sessionId,
+        initialErrorName,
+        initialFailureCode: code,
+        startedAtMs: Date.now(),
+      };
+      log("warn", "cloud_sandbox_region_failover_started", {
+        user_id: userId,
+        ...correlation,
+        initial_session_id: failover.initialSessionId,
+        requested_region: config.requestedRegion,
+        failed_region: failover.fromRegion,
+        selected_region: failover.toRegion,
+        initial_error_name: failover.initialErrorName,
+        initial_failure_code: failover.initialFailureCode,
+        primary_cleanup_confirmed: true,
+        acquisition_elapsed_ms: Math.round(performance.now() - startedAt),
+        release_id: config.releaseId ?? null,
+      });
+      try {
+        return await ensureAwsLambdaMicrovmConnection(
+          userId,
+          onBoot,
+          triggerRegion,
+          triggerRunId,
+          replacementAttempt,
+          {
+            acquisitionStartedAt: currentAttempt.acquisitionStartedAt,
+            failover,
+          },
+        );
+      } catch (failoverError) {
+        const fallbackCause = errorCauseOrSelf(failoverError);
+        log("error", "cloud_sandbox_region_failover_failed", {
+          user_id: userId,
+          ...correlation,
+          initial_session_id: failover.initialSessionId,
+          requested_region: config.requestedRegion,
+          failed_region: failover.fromRegion,
+          selected_region: failover.toRegion,
+          initial_error_name: failover.initialErrorName,
+          initial_failure_code: failover.initialFailureCode,
+          failover_duration_ms: Date.now() - failover.startedAtMs,
+          outcome: "failed",
+          fallback_error_name: errorName(fallbackCause),
+          fallback_failure_code: failureCode(fallbackCause),
+          ...errorLogFields(fallbackCause),
+        });
+        throw failoverError;
+      }
     }
     throw new Error(`Failed creating AWS Lambda MicroVM sandbox (${code})`, {
       cause: error,
