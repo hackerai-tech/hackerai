@@ -19,6 +19,7 @@ const AUTHKIT_BYPASS_PATHS = new Set([
   "/api/health/connectivity",
   "/api/health/core",
   "/api/health/trigger-agent-mode",
+  "/api/internal/user-research",
   "/robots.txt",
   "/sitemap.xml",
 ]);
