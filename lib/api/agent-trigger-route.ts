@@ -448,7 +448,8 @@ export const createAgentTriggerPost =
         );
       await assertUserCanMakeCostIncurringRequest(userId);
       const userLocation = geolocation(req);
-      const triggerRegion = getTriggerRegionForVercelRequest(req, userLocation);
+      const triggerRegion =
+        getTriggerRegionForVercelRequest(req, userLocation) ?? "us-east-1";
       const securityValidationSubagentsEnabled =
         agentPermissionMode === "full_access" &&
         (await resolveSecurityValidationSubagentsEnabled(userId));
@@ -668,6 +669,7 @@ export const createAgentTriggerPost =
         selectedModel: selectedModelOverride,
         autoReviewAssignment,
         userLocation,
+        triggerRegion,
         isAutoContinue,
         regenerate,
         limitRescue,
@@ -710,7 +712,7 @@ export const createAgentTriggerPost =
         ...(triggerPriority > 0 ? { priority: triggerPriority } : {}),
         machine: triggerMachine,
         tags: triggerTags,
-        ...(triggerRegion ? { region: triggerRegion } : {}),
+        region: triggerRegion,
         idempotencyKey: triggerIdempotencyKey,
         idempotencyKeyTTL: "6h",
         metadata: triggerMetadata,
@@ -756,7 +758,7 @@ export const createAgentTriggerPost =
             basePayload: agentPayload,
             machine: triggerMachine,
             tags: triggerTags,
-            ...(triggerRegion ? { region: triggerRegion } : {}),
+            region: triggerRegion,
             ...(approvalWorkerVersion
               ? { lockToVersion: approvalWorkerVersion }
               : {}),

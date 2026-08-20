@@ -14,7 +14,7 @@ async function main() {
     config: releaseConfig,
   });
   console.log(
-    `Trigger.dev production environment now points to MicroVM image version ${releaseConfig.variables.AWS_LAMBDA_MICROVM_IMAGE_VERSION}.`,
+    "Trigger.dev production environment now points to one verified three-region MicroVM release manifest.",
   );
 }
 

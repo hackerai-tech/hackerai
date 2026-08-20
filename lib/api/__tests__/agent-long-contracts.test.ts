@@ -1876,7 +1876,7 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(taskSrc).toMatch(/alreadyEmittedFromStream/);
   });
 
-  test("agent-long only passes explicit Trigger.dev region when mapped", () => {
+  test("agent-long always pins the mapped Trigger.dev region", () => {
     const userLocationIdx = routeSrc.indexOf(
       "const userLocation = geolocation(req)",
     );
@@ -1889,7 +1889,7 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
       routingIdx,
     );
     const triggerOptionsRegionIdx = routeSrc.indexOf(
-      "...(triggerRegion ? { region: triggerRegion } : {})",
+      "region: triggerRegion",
       triggerOptionsIdx,
     );
     const approvalTriggerConfigIdx = routeSrc.indexOf(
@@ -1897,7 +1897,7 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
       triggerOptionsRegionIdx,
     );
     const sessionRegionIdx = routeSrc.indexOf(
-      "...(triggerRegion ? { region: triggerRegion } : {})",
+      "region: triggerRegion",
       approvalTriggerConfigIdx,
     );
     const sessionStartIdx = routeSrc.indexOf(

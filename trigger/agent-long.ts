@@ -17,6 +17,7 @@ import {
   UIMessage,
 } from "ai";
 import type { Geo } from "@vercel/functions";
+import type { TriggerRunRegion } from "@/lib/api/trigger-region";
 import PostHogClient from "@/app/posthog";
 import { getCloudSandboxProvider } from "@/lib/ai/tools/utils/cloud-sandbox-provider";
 import { evaluateAwsLambdaMicrovmRollout } from "@/lib/experiments/aws-lambda-microvm-rollout";
@@ -2221,6 +2222,7 @@ export type AgentLongPayload = {
   selectedModel?: SelectedModel;
   autoReviewAssignment?: AgentAutoReviewAssignment;
   userLocation: Geo;
+  triggerRegion?: TriggerRunRegion;
   isAutoContinue?: boolean;
   regenerate?: boolean;
   isNewChat?: boolean;
@@ -2295,6 +2297,7 @@ export const agentLongTask = task({
       selectedModel: rawSelectedModelOverride,
       autoReviewAssignment,
       userLocation,
+      triggerRegion = "us-east-1",
       isAutoContinue,
       regenerate,
       isNewChat,
@@ -3210,6 +3213,7 @@ export const agentLongTask = task({
               auxiliaryVision,
               {
                 cloudSandboxRollout,
+                triggerRegion,
                 ...(securityValidationSubagentsEnabled
                   ? {
                       additionalTools: (toolContext) => ({

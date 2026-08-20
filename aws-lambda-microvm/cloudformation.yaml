@@ -10,6 +10,12 @@ Parameters:
     Type: String
     Default: aws-lambda-microvm-production
     Description: Protected GitHub environment allowed to publish MicroVM images
+  ExistingGitHubOidcProviderArn:
+    Type: String
+    Default: ""
+    Description: Existing account-wide GitHub OIDC provider ARN; leave empty only in the primary stack
+Conditions:
+  CreateGitHubOidcProvider: !Equals [!Ref ExistingGitHubOidcProviderArn, ""]
 Resources:
   ArtifactBucket:
     Type: AWS::S3::Bucket
@@ -144,6 +150,7 @@ Resources:
 
   GitHubActionsOidcProvider:
     Type: AWS::IAM::OIDCProvider
+    Condition: CreateGitHubOidcProvider
     Properties:
       Url: https://token.actions.githubusercontent.com
       ClientIdList:
@@ -162,7 +169,10 @@ Resources:
         Statement:
           - Effect: Allow
             Principal:
-              Federated: !Ref GitHubActionsOidcProvider
+              Federated: !If
+                - CreateGitHubOidcProvider
+                - !Ref GitHubActionsOidcProvider
+                - !Ref ExistingGitHubOidcProviderArn
             Action: sts:AssumeRoleWithWebIdentity
             Condition:
               StringEquals:
@@ -185,3 +195,8 @@ Outputs:
     Value: !Ref MicrovmDeployerPolicy
   GitHubReleaseRoleArn:
     Value: !GetAtt GitHubMicrovmReleaseRole.Arn
+  GitHubOidcProviderArn:
+    Value: !If
+      - CreateGitHubOidcProvider
+      - !Ref GitHubActionsOidcProvider
+      - !Ref ExistingGitHubOidcProviderArn

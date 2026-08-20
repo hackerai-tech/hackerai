@@ -4,13 +4,26 @@ import {
   TRIGGER_MICROVM_RELEASE_ENV_NAMES,
 } from "../lib/trigger-microvm-release-env";
 
+const releaseManifest = {
+  schemaVersion: 1,
+  releaseId: "sha-test",
+  regions: Object.fromEntries(
+    ["us-east-1", "us-west-2", "eu-west-1"].map((region) => [
+      region,
+      {
+        imageIdentifier: `arn:aws:lambda:${region}:123:microvm-image:test`,
+        imageVersion: "15.0",
+        executionRoleArn: `arn:aws:iam::123:role/test-${region}`,
+        enabledForNewPlacements: true,
+      },
+    ]),
+  ),
+};
+
 const releaseEnv = {
   TRIGGER_ACCESS_TOKEN: "tr_pat_test",
   TRIGGER_PROJECT_ID: "proj_test",
-  AWS_LAMBDA_MICROVM_IMAGE_ID:
-    "arn:aws:lambda:us-east-1:123:microvm-image:test",
-  AWS_LAMBDA_MICROVM_IMAGE_VERSION: "15.0",
-  AWS_LAMBDA_MICROVM_EXECUTION_ROLE_ARN: "arn:aws:iam::123:role/test",
+  AWS_LAMBDA_MICROVM_RELEASE_MANIFEST: JSON.stringify(releaseManifest),
 };
 
 describe("Trigger.dev MicroVM release environment sync", () => {
@@ -20,10 +33,12 @@ describe("Trigger.dev MicroVM release environment sync", () => {
       projectRef: "proj_test",
       variables: {
         CLOUD_SANDBOX_PROVIDER: "aws-lambda-microvm",
+        AWS_LAMBDA_MICROVM_RELEASE_MANIFEST: JSON.stringify(releaseManifest),
         AWS_LAMBDA_MICROVM_IMAGE_ID:
           "arn:aws:lambda:us-east-1:123:microvm-image:test",
         AWS_LAMBDA_MICROVM_IMAGE_VERSION: "15.0",
-        AWS_LAMBDA_MICROVM_EXECUTION_ROLE_ARN: "arn:aws:iam::123:role/test",
+        AWS_LAMBDA_MICROVM_EXECUTION_ROLE_ARN:
+          "arn:aws:iam::123:role/test-us-east-1",
       },
     });
   });
@@ -32,9 +47,9 @@ describe("Trigger.dev MicroVM release environment sync", () => {
     expect(() =>
       getTriggerMicrovmReleaseConfig({
         ...releaseEnv,
-        AWS_LAMBDA_MICROVM_IMAGE_VERSION: " ",
+        AWS_LAMBDA_MICROVM_RELEASE_MANIFEST: " ",
       }),
-    ).toThrow("AWS_LAMBDA_MICROVM_IMAGE_VERSION is required");
+    ).toThrow("AWS_LAMBDA_MICROVM_RELEASE_MANIFEST is required");
   });
 
   it("overrides and verifies every stored production value", async () => {

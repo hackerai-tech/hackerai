@@ -1,7 +1,10 @@
+import { parseAwsLambdaMicrovmReleaseManifest } from "../../lib/ai/tools/utils/aws-lambda-microvm-release";
+
 export const TRIGGER_MICROVM_RELEASE_ENVIRONMENT = "prod" as const;
 
 export const TRIGGER_MICROVM_RELEASE_ENV_NAMES = [
   "CLOUD_SANDBOX_PROVIDER",
+  "AWS_LAMBDA_MICROVM_RELEASE_MANIFEST",
   "AWS_LAMBDA_MICROVM_IMAGE_ID",
   "AWS_LAMBDA_MICROVM_IMAGE_VERSION",
   "AWS_LAMBDA_MICROVM_EXECUTION_ROLE_ARN",
@@ -41,20 +44,18 @@ const required = (env: NodeJS.ProcessEnv, name: string) => {
 export function getTriggerMicrovmReleaseConfig(
   env: NodeJS.ProcessEnv,
 ): TriggerMicrovmReleaseConfig {
+  const rawManifest = required(env, "AWS_LAMBDA_MICROVM_RELEASE_MANIFEST");
+  const manifest = parseAwsLambdaMicrovmReleaseManifest(rawManifest);
+  const east = manifest.regions["us-east-1"];
   return {
     accessToken: required(env, "TRIGGER_ACCESS_TOKEN"),
     projectRef: required(env, "TRIGGER_PROJECT_ID"),
     variables: {
       CLOUD_SANDBOX_PROVIDER: "aws-lambda-microvm",
-      AWS_LAMBDA_MICROVM_IMAGE_ID: required(env, "AWS_LAMBDA_MICROVM_IMAGE_ID"),
-      AWS_LAMBDA_MICROVM_IMAGE_VERSION: required(
-        env,
-        "AWS_LAMBDA_MICROVM_IMAGE_VERSION",
-      ),
-      AWS_LAMBDA_MICROVM_EXECUTION_ROLE_ARN: required(
-        env,
-        "AWS_LAMBDA_MICROVM_EXECUTION_ROLE_ARN",
-      ),
+      AWS_LAMBDA_MICROVM_RELEASE_MANIFEST: JSON.stringify(manifest),
+      AWS_LAMBDA_MICROVM_IMAGE_ID: east.imageIdentifier,
+      AWS_LAMBDA_MICROVM_IMAGE_VERSION: east.imageVersion,
+      AWS_LAMBDA_MICROVM_EXECUTION_ROLE_ARN: east.executionRoleArn,
     },
   };
 }

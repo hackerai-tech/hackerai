@@ -50,6 +50,7 @@
     "e2b:build:prod": "npx tsx e2b/build.prod.ts",
     "aws:microvm:package": "pnpm local-sandbox:build && node scripts/package-aws-microvm.mjs",
     "aws:microvm:deploy": "pnpm aws:microvm:package && node scripts/deploy-aws-microvm.mjs",
+    "aws:microvm:build-release-manifest": "tsx scripts/build-aws-microvm-release-manifest.ts",
     "aws:microvm:smoke": "node scripts/smoke-aws-microvm.mjs",
     "aws:microvm:sync-trigger-env": "tsx scripts/sync-trigger-microvm-release-env.ts",
     "local-sandbox": "npx tsx packages/local/src/index.ts",

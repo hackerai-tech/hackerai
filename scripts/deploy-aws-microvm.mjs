@@ -15,7 +15,8 @@ const artifactPath = resolve(
   root,
   ".artifacts/aws-lambda-microvm/hackerai-lambda-microvm.zip",
 );
-const region = "us-east-1";
+const region =
+  process.env.AWS_REGION || process.env.AWS_DEFAULT_REGION || "us-east-1";
 const bucket = process.env.AWS_LAMBDA_MICROVM_ARTIFACT_BUCKET;
 const buildRoleArn = process.env.AWS_LAMBDA_MICROVM_BUILD_ROLE_ARN;
 const name =
@@ -133,8 +134,10 @@ if (version?.state !== "SUCCESSFUL" || version.status !== "ACTIVE") {
 }
 
 const output = [
+  `AWS_REGION=${region}`,
   `AWS_LAMBDA_MICROVM_IMAGE_ID=${version.imageArn || imageIdentifier}`,
   `AWS_LAMBDA_MICROVM_IMAGE_VERSION=${imageVersion}`,
+  `AWS_LAMBDA_MICROVM_EXECUTION_ROLE_ARN=${process.env.AWS_LAMBDA_MICROVM_EXECUTION_ROLE_ARN || ""}`,
 ].join("\n");
 
 if (process.env.AWS_LAMBDA_MICROVM_OUTPUT_FILE) {

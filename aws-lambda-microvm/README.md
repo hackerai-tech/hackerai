@@ -15,8 +15,8 @@ configured VPC connector.
 
 ## 1. Provision AWS prerequisites
 
-Lambda MicroVM execution is currently fixed to `us-east-1`. Deploy the stack
-there:
+HackerAI's curated catalog uses `us-east-1`, `us-west-2`, and `eu-west-1`.
+Deploy the primary stack first; it owns the account-wide GitHub OIDC provider:
 
 ```bash
 aws cloudformation deploy \
@@ -35,30 +35,49 @@ aws cloudformation describe-stacks \
   --query 'Stacks[0].Outputs'
 ```
 
+Save its `GitHubOidcProviderArn`, then deploy the same regional prerequisites
+without trying to create duplicate account-wide OIDC providers:
+
+```bash
+OIDC_PROVIDER_ARN='<GitHubOidcProviderArn from us-east-1>'
+for region in us-west-2 eu-west-1; do
+  aws cloudformation deploy \
+    --region "$region" \
+    --stack-name hackerai-lambda-microvm \
+    --template-file aws-lambda-microvm/cloudformation.yaml \
+    --capabilities CAPABILITY_NAMED_IAM \
+    --parameter-overrides ExistingGitHubOidcProviderArn="$OIDC_PROVIDER_ARN"
+done
+```
+
 Attach `DeployerPolicyArn` to the CI/operator identity that publishes images.
-Attach `RuntimePolicyArn` to the AWS identity used by Trigger.dev. The Vercel
+Attach every regional `RuntimePolicyArn` to the AWS identity used by
+Trigger.dev. The Vercel
 Data Controls cleanup path also needs `GetMicrovm`, `ListMicrovms`, and
 `TerminateMicrovm`; a separate cleanup-only policy is preferable once workload
 identity is configured. Prefer role assumption in production; access keys can
 be used for an initial test. Set `ExecutionRoleArn` as
-`AWS_LAMBDA_MICROVM_EXECUTION_ROLE_ARN`; Lambda assumes this narrowly scoped
-role to write guest runtime logs to CloudWatch.
+regional release manifest stores the matching `ExecutionRoleArn`; Lambda
+assumes that narrowly scoped role to write guest runtime logs to CloudWatch.
 
 ## 2. Build and publish the image
 
-Set the two CloudFormation outputs, then run:
+Set one region's CloudFormation outputs and region, then run:
 
 ```bash
 export AWS_LAMBDA_MICROVM_ARTIFACT_BUCKET='<ArtifactBucketName>'
 export AWS_LAMBDA_MICROVM_BUILD_ROLE_ARN='<BuildRoleArn>'
+export AWS_LAMBDA_MICROVM_EXECUTION_ROLE_ARN='<ExecutionRoleArn>'
+export AWS_REGION=us-east-1
 pnpm aws:microvm:deploy
 ```
 
 The command builds `packages/local`, creates a Lambda-compatible zip under
 `.artifacts/`, uploads it to S3, creates or updates the MicroVM image, waits for
 the exact returned image version to become `SUCCESSFUL` and `ACTIVE`, and then
-prints `AWS_LAMBDA_MICROVM_IMAGE_ID` and
-`AWS_LAMBDA_MICROVM_IMAGE_VERSION`.
+prints the region, exact image ID/version, and execution role. Repeat with the
+matching outputs for `us-west-2` and `eu-west-1`; S3 artifacts cannot be reused
+across regions.
 
 During AWS image preparation, both lifecycle image hooks run a bounded,
 credential-free working-set primer. It initializes the in-process transport and
@@ -94,9 +113,7 @@ reuses a MicroVM:
 
 ```dotenv
 CLOUD_SANDBOX_PROVIDER=aws-lambda-microvm
-AWS_LAMBDA_MICROVM_IMAGE_ID=<image ARN printed by deploy>
-AWS_LAMBDA_MICROVM_IMAGE_VERSION=<version printed by deploy>
-AWS_LAMBDA_MICROVM_EXECUTION_ROLE_ARN=<ExecutionRoleArn>
+AWS_LAMBDA_MICROVM_RELEASE_MANIFEST=<atomic JSON manifest produced by the release workflow>
 AWS_ACCESS_KEY_ID=<runtime identity key for an initial test>
 AWS_SECRET_ACCESS_KEY=<runtime identity secret for an initial test>
 CONVEX_SERVICE_ROLE_KEY=<existing server role key>
@@ -107,14 +124,18 @@ Keep the existing `CENTRIFUGO_WS_URL` and `CENTRIFUGO_TOKEN_SECRET` in
 Trigger.dev only if local/desktop sandbox connections are enabled. They are not
 read while the selected provider is `aws-lambda-microvm`.
 
-The provider region is intentionally fixed in code to `us-east-1` until
-multi-region image publication and routing are implemented. Vercel,
-Trigger.dev, and local development do not need `AWS_REGION` or
-`AWS_LAMBDA_MICROVM_REGION` for this provider.
+The Vercel route always pins a Trigger execution region. New AWS sessions map
+`us-east-1` to `us-east-1`, `us-west-2` to `us-west-2`, and Trigger's
+`eu-central-1` worker region to AWS Ireland (`eu-west-1`). Unknown geography
+defaults explicitly to US East. A running or suspended sandbox remains pinned
+to its persisted region and image until it ends; a later request never silently
+migrates its memory, disk, or outbound source location. Neither Trigger.dev nor
+Vercel needs `AWS_REGION` or `AWS_LAMBDA_MICROVM_REGION` at runtime.
 
-Vercel does not need the image ID, image version, execution role, or WebSocket
-configuration. Its Data Controls route terminates persisted MicroVM IDs
-directly, so Vercel only needs the dedicated AWS runtime credentials and
+Vercel does not need the release manifest, image IDs, execution roles, or
+WebSocket configuration. Its Data Controls route terminates persisted MicroVM
+IDs in their recorded regions, so Vercel only needs the dedicated AWS runtime
+credentials (authorized by all three regional runtime policies) and
 `CONVEX_SERVICE_ROLE_KEY` for that cleanup operation.
 
 Optional controls:
@@ -129,7 +150,9 @@ Optional controls:
 - Ingress is fixed to AWS's `ALL_INGRESS` connector so Trigger.dev can use the
   AWS-authenticated WebSocket endpoint. Runtime auth tokens are minted for one
   MicroVM, expire after at most 60 minutes, and are restricted to guest port 9000. Port 8080 lifecycle hooks are never included in application tokens.
-- `AWS_LAMBDA_MICROVM_EGRESS_CONNECTOR_ARN` defaults to `INTERNET_EGRESS`.
+- Egress is fixed to each region's managed `INTERNET_EGRESS` connector. A
+  future VPC connector rollout must add an explicit per-region catalog entry;
+  one global connector ARN is intentionally not accepted.
 - Lambda endpoint-idle suspension is intentionally hard-coded to five minutes,
   followed by termination after 30 suspended minutes. While a Trigger worker is
   using the sandbox, its WebSocket heartbeat counts as endpoint activity.
@@ -149,12 +172,13 @@ WebSocket subprotocol during the AWS-authenticated upgrade.
 `.github/workflows/aws-lambda-microvm-release.yml` publishes a new image only
 when MicroVM image inputs change on `main`, or when it is run manually. It does
 not float production to AWS's implicit latest version. Instead it waits for the
-exact published version, launches a short-lived VM, executes a real command
-through its authenticated WebSocket, terminates it, uploads and verifies that
-exact version in Trigger.dev's stored production environment, pins it in a new
-production worker, and leaves Vercel unchanged. Older AWS image versions remain
-available for an explicit rollback. A failed Trigger.dev upload or read-back
-verification stops the release before the worker deploys.
+exact versions in all three regions, launches a short-lived VM in each region,
+executes a real command through every authenticated WebSocket, and confirms
+termination. Only after every matrix leg succeeds does it build one release
+manifest, upload and read back that exact manifest in Trigger.dev production,
+and deploy the pinned worker. A partial regional build can never become the
+active release. Vercel remains unchanged and older AWS image versions remain
+available for rollback.
 
 The CloudFormation stack creates a GitHub OIDC release role, so GitHub Actions
 does not need long-lived AWS access keys. Create a GitHub environment named
@@ -162,12 +186,26 @@ does not need long-lived AWS access keys. Create a GitHub environment named
 these environment variables from the stack and project outputs:
 
 ```text
-AWS_RELEASE_ROLE_ARN=<GitHubReleaseRoleArn>
-AWS_LAMBDA_MICROVM_ARTIFACT_BUCKET=<ArtifactBucketName>
-AWS_LAMBDA_MICROVM_BUILD_ROLE_ARN=<BuildRoleArn>
-AWS_LAMBDA_MICROVM_EXECUTION_ROLE_ARN=<ExecutionRoleArn>
+AWS_RELEASE_ROLE_ARN_US_EAST_1=<GitHubReleaseRoleArn from us-east-1>
+AWS_LAMBDA_MICROVM_ARTIFACT_BUCKET_US_EAST_1=<ArtifactBucketName>
+AWS_LAMBDA_MICROVM_BUILD_ROLE_ARN_US_EAST_1=<BuildRoleArn>
+AWS_LAMBDA_MICROVM_EXECUTION_ROLE_ARN_US_EAST_1=<ExecutionRoleArn>
+
+AWS_RELEASE_ROLE_ARN_US_WEST_2=<GitHubReleaseRoleArn from us-west-2>
+AWS_LAMBDA_MICROVM_ARTIFACT_BUCKET_US_WEST_2=<ArtifactBucketName>
+AWS_LAMBDA_MICROVM_BUILD_ROLE_ARN_US_WEST_2=<BuildRoleArn>
+AWS_LAMBDA_MICROVM_EXECUTION_ROLE_ARN_US_WEST_2=<ExecutionRoleArn>
+
+AWS_RELEASE_ROLE_ARN_EU_WEST_1=<GitHubReleaseRoleArn from eu-west-1>
+AWS_LAMBDA_MICROVM_ARTIFACT_BUCKET_EU_WEST_1=<ArtifactBucketName>
+AWS_LAMBDA_MICROVM_BUILD_ROLE_ARN_EU_WEST_1=<BuildRoleArn>
+AWS_LAMBDA_MICROVM_EXECUTION_ROLE_ARN_EU_WEST_1=<ExecutionRoleArn>
+
 TRIGGER_PROJECT_ID=<Trigger.dev project ref>
 ```
+
+The unsuffixed US East variable names remain accepted temporarily so an
+existing production environment can migrate without a flag-day rename.
 
 Add dedicated CI tokens as environment secrets:
 
@@ -196,8 +234,9 @@ control.
 
 Measure actual acquisition exposure with `cloud_sandbox_provider_selected`.
 It includes the provider, transport (`aws_websocket` or `e2b_sdk`), rollout
-variant, subscription tier, acquisition path, acquisition duration, create
-attempts, and evaluated feature-flag value. Failed
+variant, subscription tier, Trigger region, requested and effective AWS region,
+placement reason, release ID, pinned image version, acquisition path,
+acquisition duration, create attempts, and evaluated feature-flag value. Failed
 acquisitions emit `cloud_sandbox_acquisition_failed` with the intended provider,
 rollout variant, failure stage, duration, and privacy-safe error name. Compare
 the `hackerai-agent_run` outcome and Trigger duration/cost fields by

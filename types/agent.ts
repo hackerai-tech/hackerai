@@ -68,6 +68,12 @@ export interface SandboxBootInfo {
     | "create_after_broken";
   duration_ms: number;
   create_attempts: number;
+  region?: string;
+  trigger_region?: string;
+  requested_region?: string;
+  placement_reason?: string;
+  release_id?: string;
+  image_version?: string;
 }
 
 export interface SandboxResourceMetrics {

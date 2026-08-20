@@ -652,4 +652,31 @@ describe("AWS Lambda MicroVM development logging", () => {
 
     expect(getAwsLambdaMicrovmConfig().region).toBe("us-east-1");
   });
+
+  it("selects the release entry paired with the Trigger execution region", () => {
+    process.env.AWS_LAMBDA_MICROVM_RELEASE_MANIFEST = JSON.stringify({
+      schemaVersion: 1,
+      releaseId: "regional-release",
+      regions: Object.fromEntries(
+        ["us-east-1", "us-west-2", "eu-west-1"].map((region) => [
+          region,
+          {
+            imageIdentifier: `arn:aws:lambda:${region}:630609837323:microvm-image:hackerai-cloud-agent`,
+            imageVersion: `${region}-version`,
+            executionRoleArn: `arn:aws:iam::630609837323:role/${region}`,
+            enabledForNewPlacements: true,
+          },
+        ]),
+      ),
+    });
+
+    expect(getAwsLambdaMicrovmConfig("eu-central-1")).toMatchObject({
+      triggerRegion: "eu-central-1",
+      requestedRegion: "eu-west-1",
+      region: "eu-west-1",
+      imageVersion: "eu-west-1-version",
+      placementReason: "trigger_region_europe_pairing",
+      releaseId: "regional-release",
+    });
+  });
 });
