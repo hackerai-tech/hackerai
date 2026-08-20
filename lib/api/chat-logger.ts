@@ -44,6 +44,7 @@ import {
   POINTS_PER_DOLLAR,
 } from "@/lib/rate-limit/usage-pricing";
 import type { UsageCostRecord } from "@/lib/usage-tracker";
+import type { SandboxSessionUsage } from "@/lib/ai/tools";
 import type { UsageDeductionResult } from "@/lib/rate-limit";
 import type { BudgetAbortDetails } from "@/lib/chat/budget-monitor";
 import type { OpenRouterModelMetadata } from "@/lib/api/openrouter-metadata";
@@ -1431,6 +1432,7 @@ export function captureUsageCost({
   responseModel,
   paidDailyFreeAllowance,
   usageSettlement,
+  sandboxUsage,
   analyticsRequestContext,
   fallbackServed,
   experiment,
@@ -1456,6 +1458,7 @@ export function captureUsageCost({
     id: string;
     midRunCount: number;
   };
+  sandboxUsage?: SandboxSessionUsage;
   analyticsRequestContext?: AnalyticsRequestContext;
   fallbackServed?: boolean;
   experiment?: ExperimentAnalyticsContext;
@@ -1513,6 +1516,22 @@ export function captureUsageCost({
       usage_deduction_failure_reason: usage.usageDeductionFailureReason,
       model_cost_dollars: usage.modelCostDollars,
       non_model_cost_dollars: usage.nonModelCostDollars,
+      ...(sandboxUsage && {
+        sandbox_cost_accounting_version: 1,
+        sandbox_cost_source: "configured_baseline_estimate",
+        sandbox_cost_dollars: sandboxUsage.totalCostDollars,
+        sandbox_e2b_runtime_ms: sandboxUsage.e2bRuntimeMs,
+        sandbox_e2b_cost_dollars: sandboxUsage.e2bCostDollars,
+        sandbox_aws_lambda_microvm_runtime_ms:
+          sandboxUsage.awsLambdaMicrovmRuntimeMs,
+        sandbox_aws_lambda_microvm_baseline_cost_dollars:
+          sandboxUsage.awsLambdaMicrovmCostDollars,
+        ...(sandboxUsage.awsLambdaMicrovmRuntimeMs > 0 && {
+          sandbox_aws_lambda_microvm_burst_cost_included: false,
+          sandbox_aws_lambda_microvm_snapshot_cost_included: false,
+          sandbox_aws_lambda_microvm_data_transfer_cost_included: false,
+        }),
+      }),
       input_tokens: usage.inputTokens,
       output_tokens: usage.outputTokens,
       total_tokens: usage.totalTokens,
@@ -1568,6 +1587,7 @@ export function captureUsageSettlement({
   settlementSequence,
   currentCostDollars,
   requestedDeltaPoints,
+  sandboxCostDollars,
   deduction,
   forced,
   experiment,
@@ -1585,6 +1605,7 @@ export function captureUsageSettlement({
   settlementSequence: number;
   currentCostDollars: number;
   requestedDeltaPoints: number;
+  sandboxCostDollars?: number;
   deduction: UsageDeductionResult;
   forced: boolean;
   experiment?: ExperimentAnalyticsContext;
@@ -1615,6 +1636,11 @@ export function captureUsageSettlement({
       settlement_sequence: settlementSequence,
       current_cost_dollars: currentCostDollars,
       requested_delta_points: requestedDeltaPoints,
+      ...(sandboxCostDollars !== undefined && {
+        sandbox_cost_dollars: sandboxCostDollars,
+        sandbox_cost_source: "configured_baseline_estimate",
+        sandbox_cost_accounting_version: 1,
+      }),
       included_points_deducted: deduction.includedPointsDeducted,
       extra_usage_points_deducted: deduction.extraUsagePointsDeducted,
       uncovered_points: deduction.uncoveredPoints,

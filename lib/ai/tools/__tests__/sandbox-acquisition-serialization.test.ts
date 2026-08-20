@@ -123,7 +123,7 @@ describe("sandbox acquisition serialization", () => {
     mockIsE2BSandbox.mockImplementation(
       (sandbox: { provider?: string } | null) => sandbox?.provider === "e2b",
     );
-    const { getSandboxSessionCost } = createTools(
+    const { getSandboxSessionCost, getSandboxSessionUsage } = createTools(
       "user-1",
       "chat-1",
       {} as never,
@@ -145,5 +145,57 @@ describe("sandbox acquisition serialization", () => {
       E2B_COST_PER_MS * 1_000 + AWS_LAMBDA_MICROVM_COST_PER_MS * 2_000,
       12,
     );
+    expect(getSandboxSessionUsage()).toEqual({
+      totalCostDollars:
+        E2B_COST_PER_MS * 1_000 + AWS_LAMBDA_MICROVM_COST_PER_MS * 2_000,
+      e2bRuntimeMs: 1_000,
+      e2bCostDollars: E2B_COST_PER_MS * 1_000,
+      awsLambdaMicrovmRuntimeMs: 2_000,
+      awsLambdaMicrovmCostDollars: AWS_LAMBDA_MICROVM_COST_PER_MS * 2_000,
+    });
+  });
+
+  it("does not charge shared sandbox runtime to a child agent", () => {
+    jest.useFakeTimers();
+    mockIsAwsLambdaMicrovmSandbox.mockImplementation(
+      (sandbox: { provider?: string } | null) => sandbox?.provider === "aws",
+    );
+    const { getSandboxSessionCost, getSandboxSessionUsage } = createTools(
+      "user-1",
+      "chat-1",
+      {} as never,
+      "agent",
+      {} as never,
+      undefined,
+      true,
+      undefined,
+      "e2b",
+      "service-key",
+      undefined,
+      undefined,
+      "pro",
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      "run-1",
+      undefined,
+      { chargeSandboxRuntime: false },
+    );
+
+    mockTrackSandboxUsage?.({ provider: "aws" });
+    jest.advanceTimersByTime(5_000);
+
+    expect(getSandboxSessionCost()).toBe(0);
+    expect(getSandboxSessionUsage()).toEqual({
+      totalCostDollars: 0,
+      e2bRuntimeMs: 0,
+      e2bCostDollars: 0,
+      awsLambdaMicrovmRuntimeMs: 0,
+      awsLambdaMicrovmCostDollars: 0,
+    });
   });
 });

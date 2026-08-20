@@ -591,8 +591,11 @@ export type AgentStreamContext = {
     diagnostics: ProviderRequestDiagnostics,
     retention: ProviderRequestRetentionDiagnostics,
   ) => void;
+  /** Current cumulative runtime cost outside UsageTracker, such as a sandbox. */
+  getSandboxCostDollars?: () => number;
   settleUsageAfterStep?: (args: {
     currentCostDollars: number;
+    sandboxCostDollars: number;
     force: boolean;
     model: string;
   }) => Promise<void>;
@@ -1467,11 +1470,14 @@ export async function createAgentStream(
         stepOpenRouterMetadata.openrouter_upstream_inference_cost,
       );
 
-      const currentCostDollars = ctx.usageTracker.computeCostDollars(modelName);
+      const sandboxCostDollars = ctx.getSandboxCostDollars?.() ?? 0;
+      const currentCostDollars =
+        ctx.usageTracker.computeCostDollars(modelName) + sandboxCostDollars;
       const budgetDecision =
         ctx.budgetMonitor?.checkAfterStep(currentCostDollars);
       await ctx.settleUsageAfterStep?.({
         currentCostDollars,
+        sandboxCostDollars,
         force:
           budgetDecision?.type === "abort" ||
           budgetDecision?.type === "abort-agent-run-spend-cap",

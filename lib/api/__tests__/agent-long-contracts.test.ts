@@ -1550,9 +1550,13 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
       "stepOpenRouterMetadata.openrouter_upstream_inference_cost",
       stepIndexArgIdx,
     );
-    const budgetCostIdx = agentStreamRunnerSrc.indexOf(
-      "const currentCostDollars = ctx.usageTracker.computeCostDollars(modelName)",
+    const sandboxCostIdx = agentStreamRunnerSrc.indexOf(
+      "ctx.getSandboxCostDollars?.() ?? 0",
       upstreamCostArgIdx,
+    );
+    const budgetCostIdx = agentStreamRunnerSrc.indexOf(
+      "ctx.usageTracker.computeCostDollars(modelName) + sandboxCostDollars",
+      sandboxCostIdx,
     );
 
     expect(onStepFinishIdx).toBeGreaterThan(-1);
@@ -1561,7 +1565,8 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(setCostIdx).toBeGreaterThan(extractIdx);
     expect(stepIndexArgIdx).toBeGreaterThan(setCostIdx);
     expect(upstreamCostArgIdx).toBeGreaterThan(stepIndexArgIdx);
-    expect(budgetCostIdx).toBeGreaterThan(upstreamCostArgIdx);
+    expect(sandboxCostIdx).toBeGreaterThan(upstreamCostArgIdx);
+    expect(budgetCostIdx).toBeGreaterThan(sandboxCostIdx);
   });
 
   test("agent stream uses finish-step raw usage as OpenRouter metadata cost fallback", () => {
