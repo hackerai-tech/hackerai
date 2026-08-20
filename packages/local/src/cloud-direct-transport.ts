@@ -23,6 +23,9 @@ function correlationKey(message: DirectMessage): string | null {
   if (typeof message.sessionId === "string") {
     return `pty:${message.sessionId}`;
   }
+  if (typeof message.requestId === "string") {
+    return `file:${message.requestId}`;
+  }
   return null;
 }
 
@@ -33,6 +36,8 @@ function isTerminalResponse(message: DirectMessage): boolean {
   return (
     message.type === "exit" ||
     message.type === "error" ||
+    message.type === "file_ok" ||
+    message.type === "file_error" ||
     message.type === "pty_exit" ||
     message.type === "pty_error"
   );
@@ -104,7 +109,12 @@ export class CloudDirectTransport {
     const remove = () => this.removeClient(socket);
     socket.once("close", remove);
     socket.once("error", remove);
-    socket.send(JSON.stringify({ type: "transport_ready" }));
+    socket.send(
+      JSON.stringify({
+        type: "transport_ready",
+        capabilities: { fileMutations: true },
+      }),
+    );
   }
 
   async publish(message: DirectMessage): Promise<void> {

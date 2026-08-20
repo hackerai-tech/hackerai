@@ -53,6 +53,19 @@ class FakeWebSocket extends EventEmitter {
         );
       });
     }
+    if (message.type === "file_write" || message.type === "file_append") {
+      queueMicrotask(() => {
+        this.emit(
+          "message",
+          Buffer.from(
+            JSON.stringify({
+              type: "file_ok",
+              requestId: message.requestId,
+            }),
+          ),
+        );
+      });
+    }
     if (message.type === "pty_create") {
       queueMicrotask(() => {
         this.emit(
@@ -112,7 +125,12 @@ describe("AwsLambdaMicrovmDirectSandbox", () => {
         queueMicrotask(() => {
           socket.emit(
             "message",
-            Buffer.from(JSON.stringify({ type: "transport_ready" })),
+            Buffer.from(
+              JSON.stringify({
+                type: "transport_ready",
+                capabilities: { fileMutations: true },
+              }),
+            ),
           );
         });
         return socket as unknown as WebSocket;
@@ -211,6 +229,106 @@ describe("AwsLambdaMicrovmDirectSandbox", () => {
     await expect(pty.exited).resolves.toEqual({ exitCode: 0 });
     expect(chunks).toEqual(["id\n"]);
 
+    await sandbox.close();
+  });
+
+  it("writes large transcripts as bounded native file chunks", async () => {
+    const socket = new FakeWebSocket();
+    const sandbox = new AwsLambdaMicrovmDirectSandbox({
+      userId: "user-direct",
+      sessionId: "session-direct",
+      microvmId: "microvm-direct",
+      endpoint: "https://microvm-direct.example.test",
+      issueAuthToken: jest.fn().mockResolvedValue("short-lived-jwe"),
+      log: jest.fn(),
+      createWebSocket: () => {
+        queueMicrotask(() => {
+          socket.emit(
+            "message",
+            Buffer.from(
+              JSON.stringify({
+                type: "transport_ready",
+                capabilities: { fileMutations: true },
+              }),
+            ),
+          );
+        });
+        return socket as unknown as WebSocket;
+      },
+    });
+    const transcript = Buffer.from(
+      JSON.stringify({ messages: [{ content: "x".repeat(256 * 1024) }] }),
+    );
+    const transcriptArrayBuffer = new ArrayBuffer(transcript.byteLength);
+    new Uint8Array(transcriptArrayBuffer).set(transcript);
+
+    await sandbox.ready();
+    await sandbox.files.write("transcripts/large.json", transcriptArrayBuffer);
+
+    const mutations = socket.sent.filter(
+      (message) =>
+        message.type === "file_write" || message.type === "file_append",
+    );
+    expect(mutations.length).toBeGreaterThan(1);
+    expect(mutations[0]).toMatchObject({
+      type: "file_write",
+      path: "/home/user/transcripts/large.json",
+      allowedRoot: "/home/user",
+      targetConnectionId: "microvm-direct",
+    });
+    expect(mutations.slice(1)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ type: "file_append" }),
+      ]),
+    );
+    expect(
+      mutations.every(
+        (message) =>
+          typeof message.content === "string" &&
+          message.content.length <= 48 * 1024,
+      ),
+    ).toBe(true);
+    const reconstructed = Buffer.from(
+      mutations.map((message) => message.content).join(""),
+      "base64",
+    );
+    expect(reconstructed.equals(transcript)).toBe(true);
+    expect(socket.sent).not.toContainEqual(
+      expect.objectContaining({ type: "command" }),
+    );
+
+    await sandbox.close();
+  });
+
+  it("keeps shell writes for older guests without file capabilities", async () => {
+    const socket = new FakeWebSocket();
+    const sandbox = new AwsLambdaMicrovmDirectSandbox({
+      userId: "user-direct",
+      sessionId: "session-direct",
+      microvmId: "microvm-direct",
+      endpoint: "https://microvm-direct.example.test",
+      issueAuthToken: jest.fn().mockResolvedValue("short-lived-jwe"),
+      log: jest.fn(),
+      createWebSocket: () => {
+        queueMicrotask(() => {
+          socket.emit(
+            "message",
+            Buffer.from(JSON.stringify({ type: "transport_ready" })),
+          );
+        });
+        return socket as unknown as WebSocket;
+      },
+    });
+
+    await sandbox.ready();
+    await sandbox.files.write("transcripts/compatible.json", Buffer.from("{}"));
+
+    expect(socket.sent).toContainEqual(
+      expect.objectContaining({ type: "command" }),
+    );
+    expect(socket.sent).not.toContainEqual(
+      expect.objectContaining({ type: "file_write" }),
+    );
     await sandbox.close();
   });
 });

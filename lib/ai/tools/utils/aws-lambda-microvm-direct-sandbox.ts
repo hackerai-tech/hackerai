@@ -3,6 +3,8 @@ import WebSocket from "ws";
 import type {
   CommandCancelResultMessage,
   CommandResponseMessage,
+  FileRequestMessage,
+  FileResponseMessage,
   PtyCreateMessage,
   PtyDataMessage,
   PtyErrorMessage,
@@ -12,7 +14,7 @@ import type {
   PtyReadyMessage,
   PtyResizeMessage,
 } from "@/lib/centrifugo/types";
-import { CentrifugoSandbox } from "./centrifugo-sandbox";
+import { CentrifugoSandbox, type FileRequestInput } from "./centrifugo-sandbox";
 import type { CreatePtyOptions, PtyHandle } from "./e2b-pty-adapter";
 import { createResolvableExited } from "./pty-exited-promise";
 
@@ -90,6 +92,7 @@ export class AwsLambdaMicrovmDirectSandbox extends CentrifugoSandbox {
   private directSocket: WebSocket | null = null;
   private connectPromise: Promise<void> | null = null;
   private closed = false;
+  private nativeFileMutations = false;
   private heartbeat: NodeJS.Timeout | null = null;
   private lastPongAt = 0;
   private readonly commandHandlers = new Map<
@@ -106,6 +109,10 @@ export class AwsLambdaMicrovmDirectSandbox extends CentrifugoSandbox {
         | PtyErrorMessage
         | Error,
     ) => void
+  >();
+  private readonly fileHandlers = new Map<
+    string,
+    (message: FileResponseMessage | Error) => void
   >();
 
   constructor(private readonly direct: AwsLambdaMicrovmDirectSandboxOptions) {
@@ -130,6 +137,70 @@ export class AwsLambdaMicrovmDirectSandbox extends CentrifugoSandbox {
 
   async ready(): Promise<void> {
     await this.ensureConnected();
+  }
+
+  protected override supportsNativeFileMutations(): boolean {
+    return this.nativeFileMutations;
+  }
+
+  protected override async runFileRequest<T extends FileResponseMessage>(
+    input: FileRequestInput,
+    expectedTypes: Set<string>,
+    timeoutMs = 30_000,
+  ): Promise<T> {
+    if (input.type !== "file_write" && input.type !== "file_append") {
+      throw new Error("Direct MicroVM file request is not supported");
+    }
+
+    const requestId = crypto.randomUUID();
+    const workingDirectory = this.getWorkingDirectory();
+    const request = {
+      ...input,
+      path: this.resolveWorkingPath(input.path),
+      requestId,
+      ...(workingDirectory ? { allowedRoot: workingDirectory } : {}),
+      targetConnectionId: this.direct.microvmId,
+    } satisfies FileRequestMessage;
+
+    return new Promise<T>((resolve, reject) => {
+      let settled = false;
+      const cleanup = () => {
+        clearTimeout(timeout);
+        this.fileHandlers.delete(requestId);
+      };
+      const fail = (error: Error) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        reject(error);
+      };
+      const timeout = setTimeout(() => {
+        fail(
+          new Error(
+            `Direct MicroVM file request timed out after ${timeoutMs}ms`,
+          ),
+        );
+      }, timeoutMs + 5_000);
+
+      this.fileHandlers.set(requestId, (message) => {
+        if (message instanceof Error) {
+          fail(message);
+          return;
+        }
+        if (message.type === "file_error") {
+          fail(new Error(message.message));
+          return;
+        }
+        if (!expectedTypes.has(message.type) || settled) return;
+        settled = true;
+        cleanup();
+        resolve(message as T);
+      });
+
+      void this.send(request).catch((error) =>
+        fail(error instanceof Error ? error : new Error(String(error))),
+      );
+    });
   }
 
   commands = {
@@ -509,6 +580,11 @@ export class AwsLambdaMicrovmDirectSandbox extends CentrifugoSandbox {
         if (!message) return;
         if (message.type === "transport_ready" && !opened) {
           opened = true;
+          const capabilities = message.capabilities;
+          this.nativeFileMutations =
+            typeof capabilities === "object" &&
+            capabilities !== null &&
+            (capabilities as Record<string, unknown>).fileMutations === true;
           clearTimeout(timeout);
           socket.off("error", fail);
           this.installSocket(socket);
@@ -529,6 +605,13 @@ export class AwsLambdaMicrovmDirectSandbox extends CentrifugoSandbox {
       if (!message || message.type === "transport_ready") return;
       if (message.type === "transport_pong") {
         this.lastPongAt = Date.now();
+        return;
+      }
+      const requestId = message.requestId;
+      if (typeof requestId === "string") {
+        this.fileHandlers.get(requestId)?.(
+          message as unknown as FileResponseMessage,
+        );
         return;
       }
       const commandId = message.commandId;
@@ -577,6 +660,7 @@ export class AwsLambdaMicrovmDirectSandbox extends CentrifugoSandbox {
     this.heartbeat = null;
     const pendingCommands = this.commandHandlers.size;
     const pendingPtys = this.ptyHandlers.size;
+    const pendingFiles = this.fileHandlers.size;
     const error = new Error(`AWS MicroVM WebSocket closed (code ${code})`);
     this.failPending(error);
     if (!this.closed) {
@@ -588,6 +672,7 @@ export class AwsLambdaMicrovmDirectSandbox extends CentrifugoSandbox {
         close_code: code,
         pending_command_count: pendingCommands,
         pending_pty_count: pendingPtys,
+        pending_file_request_count: pendingFiles,
       });
     }
   }
@@ -595,7 +680,9 @@ export class AwsLambdaMicrovmDirectSandbox extends CentrifugoSandbox {
   private failPending(error: Error): void {
     for (const handler of this.commandHandlers.values()) handler(error);
     for (const handler of this.ptyHandlers.values()) handler(error);
+    for (const handler of this.fileHandlers.values()) handler(error);
     this.commandHandlers.clear();
     this.ptyHandlers.clear();
+    this.fileHandlers.clear();
   }
 }

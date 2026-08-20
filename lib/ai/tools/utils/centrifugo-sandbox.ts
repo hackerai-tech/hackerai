@@ -254,7 +254,7 @@ interface CommandResult {
 type DistributiveOmit<T, K extends keyof any> = T extends unknown
   ? Omit<T, K>
   : never;
-type FileRequestInput = DistributiveOmit<
+export type FileRequestInput = DistributiveOmit<
   FileRequestMessage,
   "requestId" | "targetConnectionId"
 >;
@@ -323,6 +323,11 @@ export class CentrifugoSandbox extends EventEmitter {
     );
   }
 
+  /** Native write/append support may be available without the full file API. */
+  protected supportsNativeFileMutations(): boolean {
+    return this.supportsNativeFileRelay();
+  }
+
   getUserId(): string {
     return this.userId;
   }
@@ -383,7 +388,7 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
     return this.getSandboxContext();
   }
 
-  private async runFileRequest<T extends FileResponseMessage>(
+  protected async runFileRequest<T extends FileResponseMessage>(
     input: FileRequestInput,
     expectedTypes: Set<string>,
     timeoutMs = 30000,
@@ -1008,7 +1013,7 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
     return `'${path.replace(/'/g, "'\\''")}'`;
   }
 
-  private resolveWorkingPath(path: string): string {
+  protected resolveWorkingPath(path: string): string {
     if (!this.workingDirectory) return path;
     const isAbsolute =
       path.startsWith("/") ||
@@ -1404,15 +1409,42 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
     rawPath: string,
     content: string,
   ): Promise<void> {
-    await this.runFileRequest<FileOkMessage>(
-      {
-        type: "file_append",
-        path: rawPath,
-        content,
-      },
-      new Set(["file_ok"]),
-      120000,
-    );
+    if (
+      Buffer.byteLength(content, "utf8") <=
+      CentrifugoSandbox.MAX_NATIVE_FILE_MESSAGE_CHARS
+    ) {
+      await this.runFileRequest<FileOkMessage>(
+        {
+          type: "file_append",
+          path: rawPath,
+          content,
+        },
+        new Set(["file_ok"]),
+        120000,
+      );
+      return;
+    }
+
+    const encodedContent = Buffer.from(content, "utf8").toString("base64");
+    for (
+      let offset = 0;
+      offset < encodedContent.length;
+      offset += CentrifugoSandbox.MAX_NATIVE_FILE_MESSAGE_CHARS
+    ) {
+      await this.runFileRequest<FileOkMessage>(
+        {
+          type: "file_append",
+          path: rawPath,
+          content: encodedContent.slice(
+            offset,
+            offset + CentrifugoSandbox.MAX_NATIVE_FILE_MESSAGE_CHARS,
+          ),
+          isBase64: true,
+        },
+        new Set(["file_ok"]),
+        120000,
+      );
+    }
   }
 
   private async removeNativeFile(rawPath: string): Promise<void> {
@@ -1451,7 +1483,7 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
     },
 
     append: async (rawPath: string, content: string): Promise<void> => {
-      if (this.supportsNativeFileRelay()) {
+      if (this.supportsNativeFileMutations()) {
         await this.appendNativeTextFile(rawPath, content);
         return;
       }
@@ -1464,7 +1496,7 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
       rawPath: string,
       content: string | Buffer | ArrayBuffer,
     ): Promise<void> => {
-      if (this.supportsNativeFileRelay()) {
+      if (this.supportsNativeFileMutations()) {
         await this.writeNativeFile(rawPath, content);
         return;
       }

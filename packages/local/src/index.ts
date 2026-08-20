@@ -17,8 +17,10 @@ import { ConvexHttpClient } from "convex/browser";
 import { Centrifuge, Subscription, PublicationContext } from "centrifuge";
 import WebSocket, { WebSocketServer } from "ws";
 import { spawn, ChildProcess } from "child_process";
+import { appendFile, lstat, mkdir, realpath, writeFile } from "fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "http";
 import os from "os";
+import { dirname, isAbsolute, relative, resolve, sep } from "path";
 import {
   truncateOutput,
   MAX_OUTPUT_SIZE,
@@ -152,6 +154,27 @@ interface CentrifugoCommandCancelResultMessage {
   canceled: boolean;
 }
 
+interface FileMutationMessage {
+  type: "file_write" | "file_append";
+  requestId: string;
+  path: string;
+  content: string;
+  isBase64?: boolean;
+  allowedRoot?: string;
+  targetConnectionId: string;
+}
+
+interface FileOkMessage {
+  type: "file_ok";
+  requestId: string;
+}
+
+interface FileErrorMessage {
+  type: "file_error";
+  requestId: string;
+  message: string;
+}
+
 // --- PTY incoming message types ---
 
 interface PtyCreateMessage {
@@ -193,6 +216,7 @@ type CentrifugoPtyIncomingMessage =
 type TargetedIncomingMessage =
   | CentrifugoCommandMessage
   | CentrifugoCommandCancelMessage
+  | FileMutationMessage
   | CentrifugoPtyIncomingMessage;
 
 function isTargetedIncomingMessage(
@@ -205,14 +229,28 @@ function isTargetedIncomingMessage(
     type?: unknown;
     targetConnectionId?: unknown;
   };
+  if (typeof targetConnectionId !== "string") return false;
+  if (type === "file_write" || type === "file_append") {
+    const { requestId, path, content, allowedRoot } = message as {
+      requestId?: unknown;
+      path?: unknown;
+      content?: unknown;
+      allowedRoot?: unknown;
+    };
+    return (
+      typeof requestId === "string" &&
+      typeof path === "string" &&
+      typeof content === "string" &&
+      (allowedRoot === undefined || typeof allowedRoot === "string")
+    );
+  }
   return (
-    typeof targetConnectionId === "string" &&
-    (type === "command" ||
-      type === "command_cancel" ||
-      type === "pty_create" ||
-      type === "pty_input" ||
-      type === "pty_resize" ||
-      type === "pty_kill")
+    type === "command" ||
+    type === "command_cancel" ||
+    type === "pty_create" ||
+    type === "pty_input" ||
+    type === "pty_resize" ||
+    type === "pty_kill"
   );
 }
 
@@ -248,10 +286,75 @@ type CentrifugoOutgoingMessage =
   | CentrifugoExitMessage
   | CentrifugoErrorMessage
   | CentrifugoCommandCancelResultMessage
+  | FileOkMessage
+  | FileErrorMessage
   | CentrifugoPtyReadyMessage
   | CentrifugoPtyDataMessage
   | CentrifugoPtyExitMessage
   | CentrifugoPtyErrorMessage;
+
+function isPathInside(root: string, candidate: string): boolean {
+  const relativePath = relative(root, candidate);
+  return (
+    relativePath === "" ||
+    (relativePath !== ".." &&
+      !relativePath.startsWith(`..${sep}`) &&
+      !isAbsolute(relativePath))
+  );
+}
+
+function isMissingPathError(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    error.code === "ENOENT"
+  );
+}
+
+function decodeFileMutationContent(message: FileMutationMessage): Buffer {
+  if (!message.isBase64) return Buffer.from(message.content, "utf8");
+  const decoded = Buffer.from(message.content, "base64");
+  if (decoded.toString("base64") !== message.content) {
+    throw new Error("Invalid base64 file content");
+  }
+  return decoded;
+}
+
+async function prepareFileMutationPath(
+  rawPath: string,
+  rawAllowedRoot?: string,
+): Promise<string> {
+  if (!rawAllowedRoot) {
+    throw new Error("Direct file mutation is missing its allowed root");
+  }
+
+  const allowedRoot = resolve(rawAllowedRoot);
+  const targetPath = resolve(rawPath);
+  if (!isPathInside(allowedRoot, targetPath) || targetPath === allowedRoot) {
+    throw new Error("Direct file mutation path is outside its allowed root");
+  }
+
+  const parentPath = dirname(targetPath);
+  await mkdir(parentPath, { recursive: true });
+  const [realAllowedRoot, realParentPath] = await Promise.all([
+    realpath(allowedRoot),
+    realpath(parentPath),
+  ]);
+  if (!isPathInside(realAllowedRoot, realParentPath)) {
+    throw new Error("Direct file mutation parent escapes its allowed root");
+  }
+
+  try {
+    const target = await lstat(targetPath);
+    if (target.isSymbolicLink()) {
+      throw new Error("Direct file mutation cannot target a symbolic link");
+    }
+  } catch (error) {
+    if (!isMissingPathError(error)) throw error;
+  }
+  return targetPath;
+}
 
 interface ConnectResult {
   success: boolean;
@@ -780,6 +883,18 @@ export class LocalSandboxClient {
           );
         });
         break;
+      case "file_write":
+      case "file_append":
+        this.handleFileMutation(message).catch((error: unknown) => {
+          console.error(
+            chalk.red(
+              this.config.authMode === "direct-cloud"
+                ? "[FILE] Direct file mutation failed"
+                : `[FILE] File mutation failed: ${error instanceof Error ? error.message : String(error)}`,
+            ),
+          );
+        });
+        break;
       case "pty_create":
         this.handlePtyCreate(message).catch((error: unknown) => {
           const errorMsg =
@@ -796,6 +911,46 @@ export class LocalSandboxClient {
       case "pty_kill":
         this.handlePtyKill(message);
         break;
+    }
+  }
+
+  private async handleFileMutation(
+    message: FileMutationMessage,
+  ): Promise<void> {
+    const requestId =
+      typeof message.requestId === "string" ? message.requestId : "invalid";
+    try {
+      if (this.config.authMode !== "direct-cloud") {
+        throw new Error("Native file mutations require direct cloud transport");
+      }
+      if (
+        typeof message.requestId !== "string" ||
+        typeof message.path !== "string" ||
+        typeof message.content !== "string" ||
+        (message.allowedRoot !== undefined &&
+          typeof message.allowedRoot !== "string")
+      ) {
+        throw new Error("Invalid direct file mutation request");
+      }
+
+      const targetPath = await prepareFileMutationPath(
+        message.path,
+        message.allowedRoot,
+      );
+      const content = decodeFileMutationContent(message);
+      if (message.type === "file_write") {
+        await writeFile(targetPath, content);
+      } else {
+        await appendFile(targetPath, content);
+      }
+      await this.publishToChannel({ type: "file_ok", requestId });
+    } catch (error) {
+      await this.publishToChannel({
+        type: "file_error",
+        requestId,
+        message: error instanceof Error ? error.message : String(error),
+      });
+      throw error;
     }
   }
 
