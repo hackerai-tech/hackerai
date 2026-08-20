@@ -654,6 +654,32 @@ describe("HybridSandboxManager reset cleanup", () => {
     }
   });
 
+  it("keeps a cloud fallback pinned when the preferred desktop reconnects", async () => {
+    const manager = new HybridSandboxManager(
+      "user-1",
+      jest.fn(),
+      "desktop",
+      "service-key",
+      null,
+      "pro",
+    );
+    const sandbox = Object.assign(new Sandbox(), {
+      sandboxId: "sandbox-1",
+      setTimeout: jest.fn(async () => {}),
+    });
+    manager.setSandbox(sandbox as any);
+    mockConvexQuery.mockResolvedValue([
+      makeConnection({
+        connectionId: "desktop-conn",
+        name: "Desktop",
+        isDesktop: true,
+      }),
+    ]);
+
+    await expect(manager.getSandbox()).resolves.toEqual({ sandbox });
+    expect(mockConvexQuery).not.toHaveBeenCalled();
+  });
+
   it("classifies an AWS relay sandbox as cloud rather than local", () => {
     const originalProvider = process.env.CLOUD_SANDBOX_PROVIDER;
     process.env.CLOUD_SANDBOX_PROVIDER = "aws-lambda-microvm";
