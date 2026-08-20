@@ -1,20 +1,10 @@
 import { config } from "dotenv";
 import { defineConfig } from "@trigger.dev/sdk";
-import {
-  additionalPackages,
-  syncEnvVars,
-} from "@trigger.dev/build/extensions/core";
+import { additionalPackages } from "@trigger.dev/build/extensions/core";
 
 if (process.env.NODE_ENV !== "production") {
   config({ path: ".env.local" });
 }
-
-const microvmReleaseEnvNames = [
-  "CLOUD_SANDBOX_PROVIDER",
-  "AWS_LAMBDA_MICROVM_IMAGE_ID",
-  "AWS_LAMBDA_MICROVM_IMAGE_VERSION",
-  "AWS_LAMBDA_MICROVM_EXECUTION_ROLE_ARN",
-] as const;
 
 export default defineConfig({
   project: process.env.TRIGGER_PROJECT_ID!,
@@ -38,6 +28,9 @@ export default defineConfig({
   },
   dirs: ["./trigger"],
   build: {
+    autoDetectExternal: true,
+    keepNames: true,
+    minify: false,
     // Native modules that must be installed at deploy time, not bundled.
     // @e2b/code-interpreter is pure JS and intentionally NOT listed here —
     // bundling it lets esbuild convert chalk's ESM to CJS inline, avoiding
@@ -47,12 +40,6 @@ export default defineConfig({
       additionalPackages({
         packages: ["node-pty", "sharp"],
       }),
-      syncEnvVars(({ env }) =>
-        microvmReleaseEnvNames.flatMap((name) => {
-          const value = env[name]?.trim();
-          return value ? [{ name, value }] : [];
-        }),
-      ),
     ],
   },
 });

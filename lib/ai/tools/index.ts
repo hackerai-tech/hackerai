@@ -45,8 +45,8 @@ import { getSandboxWithFallbackGuard } from "./utils/sandbox-fallback";
 import { createE2BResourcePressureObserver } from "@/lib/analytics/sandbox-resource-pressure";
 import { E2B_COST_PER_MS } from "./utils/e2b-cost";
 import { AWS_LAMBDA_MICROVM_COST_PER_MS } from "./utils/aws-lambda-microvm-cost";
-import { AWS_LAMBDA_MICROVM_REGION } from "./utils/aws-lambda-microvm";
 import { phLogger } from "@/lib/posthog/server";
+import type { TriggerRunRegion } from "@/lib/api/trigger-region";
 import {
   getAwsLambdaMicrovmRolloutTelemetryProperties,
   type AwsLambdaMicrovmRolloutAssignment,
@@ -66,6 +66,7 @@ export type CreateToolsRuntimePolicy = {
   ptyScopeId?: string;
   chargeSandboxRuntime?: boolean;
   cloudSandboxRollout?: AwsLambdaMicrovmRolloutAssignment;
+  triggerRegion?: TriggerRunRegion;
 };
 
 // Factory function to create tools with context
@@ -116,6 +117,7 @@ export const createTools = (
     chatId,
     triggerRunId,
     rollout: runtimePolicy.cloudSandboxRollout,
+    triggerRegion: runtimePolicy.triggerRegion,
     runKind:
       runtimePolicy.chargeSandboxRuntime === false ? "subagent" : "parent",
   };
@@ -167,13 +169,29 @@ export const createTools = (
         sandbox_create_attempts: sandboxBootInfo?.create_attempts,
         region:
           provider === "aws-lambda-microvm"
-            ? AWS_LAMBDA_MICROVM_REGION
+            ? sandboxBootInfo?.region
+            : undefined,
+        trigger_region:
+          provider === "aws-lambda-microvm"
+            ? sandboxBootInfo?.trigger_region
+            : undefined,
+        requested_region:
+          provider === "aws-lambda-microvm"
+            ? sandboxBootInfo?.requested_region
+            : undefined,
+        region_placement_reason:
+          provider === "aws-lambda-microvm"
+            ? sandboxBootInfo?.placement_reason
+            : undefined,
+        microvm_release_id:
+          provider === "aws-lambda-microvm"
+            ? sandboxBootInfo?.release_id
             : undefined,
         image_version:
           provider === "aws-lambda-microvm"
-            ? (process.env.AWS_LAMBDA_MICROVM_IMAGE_VERSION ?? "latest")
+            ? (sandboxBootInfo?.image_version ?? "latest")
             : (process.env.E2B_TEMPLATE ?? "terminal-agent-sandbox"),
-        cloud_sandbox_provider_event_version: 3,
+        cloud_sandbox_provider_event_version: 4,
       });
     }
   };

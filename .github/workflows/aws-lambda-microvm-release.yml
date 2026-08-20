@@ -2,16 +2,20 @@ name: Release AWS Lambda MicroVM image
 
 on:
   push:
-    branches:
-      - main
+    branches: [main]
     paths:
       - ".github/workflows/aws-lambda-microvm-release.yml"
-      - "aws-lambda-microvm/naabu"
+      - "aws-lambda-microvm/**"
       - "docker/**"
       - "packages/local/**"
+      - "scripts/build-aws-microvm-release-manifest.ts"
       - "scripts/deploy-aws-microvm.mjs"
       - "scripts/package-aws-microvm.mjs"
       - "scripts/smoke-aws-microvm.mjs"
+      - "scripts/sync-trigger-microvm-release-env.ts"
+      - "scripts/lib/aws-microvm-release-manifest.ts"
+      - "scripts/lib/trigger-microvm-release-env.ts"
+      - "lib/ai/tools/utils/aws-lambda-microvm-release.ts"
       - "package.json"
       - "pnpm-lock.yaml"
   workflow_dispatch:
@@ -21,124 +25,213 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  release:
-    name: Publish, smoke-test, and promote
+  prepare:
+    name: Build release artifact
     runs-on: ubuntu-latest
-    timeout-minutes: 75
+    timeout-minutes: 30
     environment: aws-lambda-microvm-production
     permissions:
       contents: read
-      id-token: write
     env:
-      AWS_LAMBDA_MICROVM_ARTIFACT_BUCKET: ${{ vars.AWS_LAMBDA_MICROVM_ARTIFACT_BUCKET }}
-      AWS_LAMBDA_MICROVM_BUILD_ROLE_ARN: ${{ vars.AWS_LAMBDA_MICROVM_BUILD_ROLE_ARN }}
-      AWS_LAMBDA_MICROVM_EXECUTION_ROLE_ARN: ${{ vars.AWS_LAMBDA_MICROVM_EXECUTION_ROLE_ARN }}
-      AWS_RELEASE_ROLE_ARN: ${{ vars.AWS_RELEASE_ROLE_ARN }}
       CONVEX_DEPLOY_KEY: ${{ secrets.CONVEX_DEPLOY_KEY }}
-      TRIGGER_PROJECT_ID: ${{ vars.TRIGGER_PROJECT_ID }}
-      TRIGGER_ACCESS_TOKEN: ${{ secrets.TRIGGER_ACCESS_TOKEN }}
-
     steps:
-      - name: Validate release configuration
+      - name: Validate shared release configuration
         shell: bash
         run: |
-          required=(
-            AWS_LAMBDA_MICROVM_ARTIFACT_BUCKET
-            AWS_LAMBDA_MICROVM_BUILD_ROLE_ARN
-            AWS_LAMBDA_MICROVM_EXECUTION_ROLE_ARN
-            AWS_RELEASE_ROLE_ARN
-            CONVEX_DEPLOY_KEY
-            TRIGGER_PROJECT_ID
-            TRIGGER_ACCESS_TOKEN
-          )
-          missing=()
-          for name in "${required[@]}"; do
-            if [[ -z "${!name:-}" ]]; then
-              missing+=("$name")
-            fi
-          done
-          if (( ${#missing[@]} > 0 )); then
-            printf 'Missing GitHub environment variables or secrets:\n'
-            printf '  %s\n' "${missing[@]}"
+          if [[ -z "$CONVEX_DEPLOY_KEY" ]]; then
+            echo "Missing GitHub environment secret: CONVEX_DEPLOY_KEY"
             exit 1
           fi
-
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-
       - name: Install pnpm
         uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
-
       - name: Setup Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 20.x
           cache: pnpm
-
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
-
       - name: Type check release sources
         run: pnpm typecheck
-
       - name: Deploy production Convex backend
         run: pnpm exec convex deploy --message "AWS Lambda MicroVM release ${GITHUB_SHA}"
-
-      - name: Authenticate to AWS with GitHub OIDC
-        uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
+      - name: Build image artifact once
+        run: pnpm aws:microvm:package
+      - name: Upload image artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          aws-region: us-east-1
-          role-to-assume: ${{ env.AWS_RELEASE_ROLE_ARN }}
-          role-session-name: hackerai-microvm-${{ github.run_id }}
+          name: aws-lambda-microvm-image
+          path: .artifacts/aws-lambda-microvm/hackerai-lambda-microvm.zip
+          if-no-files-found: error
+          retention-days: 1
 
-      - name: Publish exact image version
-        id: publish
-        env:
-          AWS_LAMBDA_MICROVM_OUTPUT_FILE: ${{ runner.temp }}/microvm-release.env
+  publish:
+    name: Publish and smoke-test ${{ matrix.region }}
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 65
+    environment: aws-lambda-microvm-production
+    permissions:
+      contents: read
+      id-token: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - region: us-east-1
+            artifact_bucket: ${{ vars.AWS_LAMBDA_MICROVM_ARTIFACT_BUCKET_US_EAST_1 || vars.AWS_LAMBDA_MICROVM_ARTIFACT_BUCKET }}
+            build_role_arn: ${{ vars.AWS_LAMBDA_MICROVM_BUILD_ROLE_ARN_US_EAST_1 || vars.AWS_LAMBDA_MICROVM_BUILD_ROLE_ARN }}
+            execution_role_arn: ${{ vars.AWS_LAMBDA_MICROVM_EXECUTION_ROLE_ARN_US_EAST_1 || vars.AWS_LAMBDA_MICROVM_EXECUTION_ROLE_ARN }}
+            release_role_arn: ${{ vars.AWS_RELEASE_ROLE_ARN_US_EAST_1 || vars.AWS_RELEASE_ROLE_ARN }}
+          - region: us-west-2
+            artifact_bucket: ${{ vars.AWS_LAMBDA_MICROVM_ARTIFACT_BUCKET_US_WEST_2 }}
+            build_role_arn: ${{ vars.AWS_LAMBDA_MICROVM_BUILD_ROLE_ARN_US_WEST_2 }}
+            execution_role_arn: ${{ vars.AWS_LAMBDA_MICROVM_EXECUTION_ROLE_ARN_US_WEST_2 }}
+            release_role_arn: ${{ vars.AWS_RELEASE_ROLE_ARN_US_WEST_2 }}
+          - region: eu-west-1
+            artifact_bucket: ${{ vars.AWS_LAMBDA_MICROVM_ARTIFACT_BUCKET_EU_WEST_1 }}
+            build_role_arn: ${{ vars.AWS_LAMBDA_MICROVM_BUILD_ROLE_ARN_EU_WEST_1 }}
+            execution_role_arn: ${{ vars.AWS_LAMBDA_MICROVM_EXECUTION_ROLE_ARN_EU_WEST_1 }}
+            release_role_arn: ${{ vars.AWS_RELEASE_ROLE_ARN_EU_WEST_1 }}
+    env:
+      AWS_REGION: ${{ matrix.region }}
+      AWS_LAMBDA_MICROVM_ARTIFACT_BUCKET: ${{ matrix.artifact_bucket }}
+      AWS_LAMBDA_MICROVM_BUILD_ROLE_ARN: ${{ matrix.build_role_arn }}
+      AWS_LAMBDA_MICROVM_EXECUTION_ROLE_ARN: ${{ matrix.execution_role_arn }}
+      AWS_RELEASE_ROLE_ARN: ${{ matrix.release_role_arn }}
+    steps:
+      - name: Validate regional release configuration
         shell: bash
         run: |
-          pnpm aws:microvm:deploy
+          required=(AWS_LAMBDA_MICROVM_ARTIFACT_BUCKET AWS_LAMBDA_MICROVM_BUILD_ROLE_ARN AWS_LAMBDA_MICROVM_EXECUTION_ROLE_ARN AWS_RELEASE_ROLE_ARN)
+          for name in "${required[@]}"; do
+            if [[ -z "${!name:-}" ]]; then
+              echo "Missing GitHub environment variable for $AWS_REGION: $name"
+              exit 1
+            fi
+          done
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install pnpm
+        uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 20.x
+          cache: pnpm
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Download image artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: aws-lambda-microvm-image
+          path: .artifacts/aws-lambda-microvm
+      - name: Authenticate to regional AWS release role
+        uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
+        with:
+          aws-region: ${{ matrix.region }}
+          role-to-assume: ${{ env.AWS_RELEASE_ROLE_ARN }}
+          role-session-name: hackerai-microvm-${{ github.run_id }}-${{ strategy.job-index }}
+      - name: Publish exact regional image version
+        env:
+          AWS_LAMBDA_MICROVM_OUTPUT_FILE: ${{ runner.temp }}/${{ matrix.region }}.env
+        run: node scripts/deploy-aws-microvm.mjs
+      - name: Launch and terminate exact regional image version
+        env:
+          AWS_LAMBDA_MICROVM_OUTPUT_FILE: ${{ runner.temp }}/${{ matrix.region }}.env
+        shell: bash
+        run: |
+          # shellcheck disable=SC2163 # Export the variable named by each verified release-output key.
           while IFS='=' read -r name value; do
             case "$name" in
               AWS_LAMBDA_MICROVM_IMAGE_ID|AWS_LAMBDA_MICROVM_IMAGE_VERSION)
                 printf -v "$name" '%s' "$value"
+                export "$name"
                 printf '%s=%s\n' "$name" "$value" >> "$GITHUB_ENV"
-                printf '%s=%s\n' "$name" "$value" >> "$GITHUB_OUTPUT"
                 ;;
             esac
           done < "$AWS_LAMBDA_MICROVM_OUTPUT_FILE"
-          if [[ -z "${AWS_LAMBDA_MICROVM_IMAGE_ID:-}" || -z "${AWS_LAMBDA_MICROVM_IMAGE_VERSION:-}" ]]; then
-            echo "Image publisher did not return an ID and exact active version"
-            exit 1
-          fi
+          pnpm aws:microvm:smoke
+      - name: Upload verified regional release
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: aws-lambda-microvm-release-${{ matrix.region }}
+          path: ${{ runner.temp }}/${{ matrix.region }}.env
+          if-no-files-found: error
+          retention-days: 7
 
-      - name: Launch and terminate exact image version
-        run: pnpm aws:microvm:smoke
-
-      - name: Deploy pinned Trigger.dev worker
+  promote:
+    name: Atomically promote regional release
+    needs: publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: aws-lambda-microvm-production
+    permissions:
+      contents: read
+    env:
+      TRIGGER_PROJECT_ID: ${{ vars.TRIGGER_PROJECT_ID }}
+      TRIGGER_ACCESS_TOKEN: ${{ secrets.TRIGGER_ACCESS_TOKEN }}
+      AWS_LAMBDA_MICROVM_ENABLED_REGIONS: ${{ vars.AWS_LAMBDA_MICROVM_ENABLED_REGIONS || 'us-east-1,us-west-2,eu-west-1' }}
+    steps:
+      - name: Validate promotion configuration
         shell: bash
         run: |
-          trigger_env_file="$RUNNER_TEMP/trigger-microvm-release.env"
-          printf '%s\n' \
-            "TRIGGER_PROJECT_ID=$TRIGGER_PROJECT_ID" \
-            "CLOUD_SANDBOX_PROVIDER=aws-lambda-microvm" \
-            "AWS_LAMBDA_MICROVM_IMAGE_ID=$AWS_LAMBDA_MICROVM_IMAGE_ID" \
-            "AWS_LAMBDA_MICROVM_IMAGE_VERSION=$AWS_LAMBDA_MICROVM_IMAGE_VERSION" \
-            "AWS_LAMBDA_MICROVM_EXECUTION_ROLE_ARN=$AWS_LAMBDA_MICROVM_EXECUTION_ROLE_ARN" \
-            > "$trigger_env_file"
-          pnpm exec trigger deploy --env prod --env-file "$trigger_env_file"
-
+          if [[ -z "$TRIGGER_PROJECT_ID" || -z "$TRIGGER_ACCESS_TOKEN" ]]; then
+            echo "Missing TRIGGER_PROJECT_ID or TRIGGER_ACCESS_TOKEN"
+            exit 1
+          fi
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install pnpm
+        uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 20.x
+          cache: pnpm
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Download every verified regional release
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: aws-lambda-microvm-release-*
+          path: ${{ runner.temp }}/regional-releases
+          merge-multiple: true
+      - name: Build atomic release manifest
+        env:
+          AWS_LAMBDA_MICROVM_RELEASE_INPUT_DIR: ${{ runner.temp }}/regional-releases
+          AWS_LAMBDA_MICROVM_OUTPUT_FILE: ${{ runner.temp }}/microvm-release.env
+        shell: bash
+        run: |
+          pnpm aws:microvm:build-release-manifest
+          while IFS='=' read -r name value; do
+            case "$name" in
+              AWS_LAMBDA_MICROVM_RELEASE_MANIFEST|AWS_LAMBDA_MICROVM_IMAGE_ID|AWS_LAMBDA_MICROVM_IMAGE_VERSION|AWS_LAMBDA_MICROVM_EXECUTION_ROLE_ARN)
+                printf '%s=%s\n' "$name" "$value" >> "$GITHUB_ENV"
+                ;;
+            esac
+          done < "$AWS_LAMBDA_MICROVM_OUTPUT_FILE"
+      - name: Sync and verify Trigger.dev production environment
+        run: pnpm aws:microvm:sync-trigger-env
+      - name: Deploy pinned Trigger.dev worker
+        run: pnpm exec trigger deploy --env prod --skip-update-check
       - name: Write release summary
         shell: bash
         run: |
           {
-            echo "### AWS Lambda MicroVM released"
+            echo "### AWS Lambda MicroVM regional release promoted"
             echo
-            echo "- Image: \`$AWS_LAMBDA_MICROVM_IMAGE_ID\`"
-            echo "- Version: \`$AWS_LAMBDA_MICROVM_IMAGE_VERSION\`"
-            echo "- Smoke-test MicroVM: terminated"
-            echo "- Trigger.dev production: deployed"
+            echo "- Release: \`$GITHUB_SHA\`"
+            echo "- Regions: \`us-east-1\`, \`us-west-2\`, \`eu-west-1\`"
+            echo "- All regional images: built, validated, smoke-tested, and terminated"
+            echo "- Trigger.dev production: stored manifest verified and worker deployed"
             echo "- Vercel: unchanged (Agent execution is Trigger.dev-only)"
           } >> "$GITHUB_STEP_SUMMARY"

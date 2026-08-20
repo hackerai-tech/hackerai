@@ -3,6 +3,7 @@ import { getCloudSandboxProvider } from "../cloud-sandbox-provider";
 describe("cloud sandbox provider selection", () => {
   const originalProvider = process.env.CLOUD_SANDBOX_PROVIDER;
   const originalImage = process.env.AWS_LAMBDA_MICROVM_IMAGE_ID;
+  const originalManifest = process.env.AWS_LAMBDA_MICROVM_RELEASE_MANIFEST;
 
   afterEach(() => {
     if (originalProvider === undefined) {
@@ -15,12 +16,25 @@ describe("cloud sandbox provider selection", () => {
     } else {
       process.env.AWS_LAMBDA_MICROVM_IMAGE_ID = originalImage;
     }
+    if (originalManifest === undefined) {
+      delete process.env.AWS_LAMBDA_MICROVM_RELEASE_MANIFEST;
+    } else {
+      process.env.AWS_LAMBDA_MICROVM_RELEASE_MANIFEST = originalManifest;
+    }
   });
 
   it("defaults to E2B when AWS is not configured", () => {
     delete process.env.CLOUD_SANDBOX_PROVIDER;
     delete process.env.AWS_LAMBDA_MICROVM_IMAGE_ID;
+    delete process.env.AWS_LAMBDA_MICROVM_RELEASE_MANIFEST;
     expect(getCloudSandboxProvider()).toBe("e2b");
+  });
+
+  it("selects AWS when an atomic regional release manifest is configured", () => {
+    delete process.env.CLOUD_SANDBOX_PROVIDER;
+    delete process.env.AWS_LAMBDA_MICROVM_IMAGE_ID;
+    process.env.AWS_LAMBDA_MICROVM_RELEASE_MANIFEST = "{}";
+    expect(getCloudSandboxProvider()).toBe("aws-lambda-microvm");
   });
 
   it("selects AWS when an image is explicitly configured", () => {

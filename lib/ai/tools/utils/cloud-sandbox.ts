@@ -12,6 +12,7 @@ import { ensureSandboxConnection } from "./sandbox";
 import { isAwsLambdaMicrovmSandbox, isE2BSandbox } from "./sandbox-types";
 import { phLogger } from "@/lib/posthog/server";
 import { getCloudSandboxRecoveryTelemetryProperties } from "./cloud-sandbox-recovery";
+import type { TriggerRunRegion } from "@/lib/api/trigger-region";
 
 export type CloudSandboxAcquisitionContext = {
   provider?: CloudSandboxProvider;
@@ -25,6 +26,7 @@ export type CloudSandboxAcquisitionContext = {
     toProvider: CloudSandboxProvider;
     reason: "attachment_placement_failure";
   };
+  triggerRegion?: TriggerRunRegion;
 };
 
 export type CloudSandboxSuspensionSummary = {
@@ -54,6 +56,8 @@ export async function ensureCloudSandboxConnection(options: {
       const sandbox = await ensureAwsLambdaMicrovmConnection(
         options.userId,
         options.onBoot,
+        options.context?.triggerRegion,
+        options.context?.triggerRunId,
       );
       options.setSandbox(sandbox);
       return { sandbox };
@@ -85,6 +89,7 @@ export async function ensureCloudSandboxConnection(options: {
       subscription_tier: options.context?.subscription,
       agent_run_kind: options.context?.runKind ?? "parent",
       ...getCloudSandboxRecoveryTelemetryProperties(options.context),
+      trigger_region: options.context?.triggerRegion,
       ...getAwsLambdaMicrovmRolloutTelemetryProperties(rollout),
       failure_stage: "ensure_cloud_sandbox",
       duration_ms: Date.now() - startedAt,

@@ -49,6 +49,80 @@ describe("cloud sandbox session cleanup", () => {
     expect(insert).not.toHaveBeenCalled();
   });
 
+  it("keeps a healthy active session pinned across region and image changes", async () => {
+    const now = Date.now();
+    const active = {
+      _id: "session-row-1",
+      user_id: "user-1",
+      session_id: "session-1",
+      provider: "aws-lambda-microvm",
+      status: "running",
+      microvm_id: "microvm-1",
+      connection_id: "connection-1",
+      bootstrap_expires_at: now + 60_000,
+      region: "us-east-1",
+      image_identifier: "east-image",
+      image_version: "14.0",
+      created_at: now - 1_000,
+      updated_at: now - 500,
+    };
+    const query = jest.fn((table: string) => {
+      if (table === "user_deletion_fences") {
+        return {
+          withIndex: jest.fn(() => ({
+            first: jest.fn().mockResolvedValue(null),
+          })),
+        };
+      }
+      expect(table).toBe("cloud_sandbox_sessions");
+      return {
+        withIndex: jest.fn((_index, buildRange) => {
+          let status = "";
+          const range = {
+            eq: jest.fn((_field: string, value: string) => {
+              if (value === "starting" || value === "running") status = value;
+              return range;
+            }),
+          };
+          buildRange(range);
+          return {
+            order: jest.fn(() => ({
+              take: jest
+                .fn()
+                .mockResolvedValue(status === "running" ? [active] : []),
+            })),
+          };
+        }),
+      };
+    });
+    const insert = jest.fn();
+    const patch = jest.fn();
+    const { beginCloudSession } = await import("../localSandbox");
+
+    await expect(
+      beginCloudSession.handler({ db: { query, insert, patch } } as never, {
+        serviceKey: "service-key",
+        userId: "user-1",
+        region: "eu-west-1",
+        imageIdentifier: "eu-image",
+        imageVersion: "2.0",
+      }),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        created: false,
+        session: expect.objectContaining({
+          sessionId: "session-1",
+          region: "us-east-1",
+          imageIdentifier: "east-image",
+          imageVersion: "14.0",
+        }),
+        cleanupCandidates: [],
+      }),
+    );
+    expect(insert).not.toHaveBeenCalled();
+    expect(patch).not.toHaveBeenCalled();
+  });
+
   it("purges only terminal rows and disconnects their relay records", async () => {
     const statuses: string[] = [];
     const rowsByStatus = {

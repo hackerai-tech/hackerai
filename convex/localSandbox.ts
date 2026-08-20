@@ -565,10 +565,11 @@ export const beginCloudSession = mutation({
       !(
         session.status === "starting" &&
         now - session.updated_at > CLOUD_SESSION_STARTING_STALE_MS
-      ) &&
-      session.region === args.region &&
-      session.image_identifier === args.imageIdentifier &&
-      session.image_version === args.imageVersion;
+      );
+    // An active sandbox owns in-memory and disk state. Keep it pinned to its
+    // persisted region and image even when a later Agent run is routed to a
+    // different Trigger region or a new global image release is promoted.
+    // New placement inputs apply only after the active session naturally ends.
     // Prefer an already-connected VM over a newer session that is still
     // starting. This is both the lowest-latency and least-expensive choice.
     const reusable = running.find(isReusable) ?? starting.find(isReusable);

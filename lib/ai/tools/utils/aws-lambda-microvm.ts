@@ -13,9 +13,19 @@ import { getConvexClient, getConvexUrl } from "@/lib/db/convex-client";
 import { createConvexRealtimeClient } from "@/lib/db/convex-realtime-client";
 import { CentrifugoSandbox } from "./centrifugo-sandbox";
 import { AwsLambdaMicrovmDirectSandbox } from "./aws-lambda-microvm-direct-sandbox";
+import type { TriggerRunRegion } from "@/lib/api/trigger-region";
+import {
+  AWS_LAMBDA_MICROVM_DEFAULT_REGION,
+  AWS_LAMBDA_MICROVM_REGIONS,
+  AWS_LAMBDA_MICROVM_RELEASE_MANIFEST_ENV,
+  type AwsLambdaMicrovmPlacement,
+  type AwsLambdaMicrovmRegion,
+  parseAwsLambdaMicrovmReleaseManifest,
+  resolveAwsLambdaMicrovmPlacement,
+} from "./aws-lambda-microvm-release";
 
 const PROVIDER = "aws-lambda-microvm" as const;
-export const AWS_LAMBDA_MICROVM_REGION = "us-east-1" as const;
+export const AWS_LAMBDA_MICROVM_REGION = AWS_LAMBDA_MICROVM_DEFAULT_REGION;
 const PLATFORM_MAX_DURATION_SECONDS = 8 * 60 * 60;
 const DEFAULT_MAX_DURATION_SECONDS = 4 * 60 * 60;
 const DEFAULT_MIN_REMAINING_SECONDS = 2 * 60 * 60 + 5 * 60;
@@ -56,7 +66,11 @@ export type AwsLambdaMicrovmSuspensionSummary = {
 };
 
 type AwsLambdaMicrovmConfig = {
-  region: string;
+  region: AwsLambdaMicrovmRegion;
+  requestedRegion: AwsLambdaMicrovmRegion;
+  triggerRegion: TriggerRunRegion;
+  placementReason: AwsLambdaMicrovmPlacement["reason"] | "legacy_us_east";
+  releaseId?: string;
   imageIdentifier: string;
   imageVersion?: string;
   executionRoleArn?: string;
@@ -68,8 +82,7 @@ type AwsLambdaMicrovmConfig = {
   serviceKey: string;
 };
 
-let client: LambdaMicrovmsClient | null = null;
-let clientRegion: string | null = null;
+const clients = new Map<string, LambdaMicrovmsClient>();
 
 type LogLevel = "debug" | "info" | "warn" | "error";
 
@@ -210,8 +223,24 @@ function positiveInt(name: string, fallback: number): number {
   return value;
 }
 
-export function getAwsLambdaMicrovmConfig(): AwsLambdaMicrovmConfig {
-  const region = AWS_LAMBDA_MICROVM_REGION;
+export function getAwsLambdaMicrovmConfig(
+  triggerRegion: TriggerRunRegion = "us-east-1",
+): AwsLambdaMicrovmConfig {
+  const rawManifest =
+    process.env[AWS_LAMBDA_MICROVM_RELEASE_MANIFEST_ENV]?.trim();
+  const manifest = rawManifest
+    ? parseAwsLambdaMicrovmReleaseManifest(rawManifest)
+    : undefined;
+  const placement = manifest
+    ? resolveAwsLambdaMicrovmPlacement(triggerRegion, manifest)
+    : {
+        triggerRegion,
+        requestedRegion: AWS_LAMBDA_MICROVM_DEFAULT_REGION,
+        region: AWS_LAMBDA_MICROVM_DEFAULT_REGION,
+        reason: "legacy_us_east" as const,
+      };
+  const region = placement.region;
+  const regionalRelease = manifest?.regions[region];
   const maxDurationSeconds = Math.min(
     PLATFORM_MAX_DURATION_SECONDS,
     positiveInt(
@@ -228,15 +257,23 @@ export function getAwsLambdaMicrovmConfig(): AwsLambdaMicrovmConfig {
   );
   return {
     region,
-    imageIdentifier: required("AWS_LAMBDA_MICROVM_IMAGE_ID"),
+    requestedRegion: placement.requestedRegion,
+    triggerRegion: placement.triggerRegion,
+    placementReason: placement.reason,
+    releaseId: manifest?.releaseId,
+    imageIdentifier:
+      regionalRelease?.imageIdentifier ??
+      required("AWS_LAMBDA_MICROVM_IMAGE_ID"),
     imageVersion:
-      process.env.AWS_LAMBDA_MICROVM_IMAGE_VERSION?.trim() || undefined,
+      regionalRelease?.imageVersion ??
+      process.env.AWS_LAMBDA_MICROVM_IMAGE_VERSION?.trim() ??
+      undefined,
     executionRoleArn:
-      process.env.AWS_LAMBDA_MICROVM_EXECUTION_ROLE_ARN?.trim() || undefined,
+      regionalRelease?.executionRoleArn ??
+      process.env.AWS_LAMBDA_MICROVM_EXECUTION_ROLE_ARN?.trim() ??
+      undefined,
     ingressConnectorArn: `arn:aws:lambda:${region}:aws:network-connector:aws-network-connector:ALL_INGRESS`,
-    egressConnectorArn:
-      process.env.AWS_LAMBDA_MICROVM_EGRESS_CONNECTOR_ARN?.trim() ||
-      `arn:aws:lambda:${region}:aws:network-connector:aws-network-connector:INTERNET_EGRESS`,
+    egressConnectorArn: `arn:aws:lambda:${region}:aws:network-connector:aws-network-connector:INTERNET_EGRESS`,
     maxDurationSeconds,
     minRemainingSeconds,
     logGroup:
@@ -247,12 +284,42 @@ export function getAwsLambdaMicrovmConfig(): AwsLambdaMicrovmConfig {
 }
 
 function getClient(region: string): LambdaMicrovmsClient {
-  if (!client || clientRegion !== region) {
-    client?.destroy();
-    client = new LambdaMicrovmsClient({ region, maxAttempts: 4 });
-    clientRegion = region;
+  const existing = clients.get(region);
+  if (existing) return existing;
+  const created = new LambdaMicrovmsClient({ region, maxAttempts: 4 });
+  clients.set(region, created);
+  return created;
+}
+
+function getConfigForPersistedSession(
+  session: CloudSession,
+  desired: AwsLambdaMicrovmConfig,
+): AwsLambdaMicrovmConfig {
+  if (
+    !AWS_LAMBDA_MICROVM_REGIONS.includes(
+      session.region as AwsLambdaMicrovmRegion,
+    )
+  ) {
+    throw new Error(
+      `Persisted AWS Lambda MicroVM region ${session.region} is not supported`,
+    );
   }
-  return client;
+  const region = session.region as AwsLambdaMicrovmRegion;
+  const rawManifest =
+    process.env[AWS_LAMBDA_MICROVM_RELEASE_MANIFEST_ENV]?.trim();
+  const regionalRelease = rawManifest
+    ? parseAwsLambdaMicrovmReleaseManifest(rawManifest).regions[region]
+    : undefined;
+  return {
+    ...desired,
+    region,
+    imageIdentifier: session.imageIdentifier,
+    imageVersion: session.imageVersion,
+    executionRoleArn:
+      regionalRelease?.executionRoleArn ?? desired.executionRoleArn,
+    ingressConnectorArn: `arn:aws:lambda:${region}:aws:network-connector:aws-network-connector:ALL_INGRESS`,
+    egressConnectorArn: `arn:aws:lambda:${region}:aws:network-connector:aws-network-connector:INTERNET_EGRESS`,
+  };
 }
 
 function log(
@@ -775,15 +842,19 @@ async function ensureExistingMicrovm(
 export async function ensureAwsLambdaMicrovmConnection(
   userId: string,
   onBoot?: (info: SandboxBootInfo) => void,
+  triggerRegion: TriggerRunRegion = "us-east-1",
+  triggerRunId?: string,
   replacementAttempt = 0,
 ): Promise<CentrifugoSandbox> {
   const startedAt = performance.now();
+  const correlation = { trigger_run_id: triggerRunId ?? null };
   let config: AwsLambdaMicrovmConfig;
   try {
-    config = getAwsLambdaMicrovmConfig();
+    config = getAwsLambdaMicrovmConfig(triggerRegion);
   } catch (error) {
     log("error", "cloud_sandbox_configuration_failed", {
       user_id: userId,
+      ...correlation,
       replacement_attempt: replacementAttempt,
       failure_stage: "resolve_configuration",
       failure_code: failureCode(error),
@@ -796,7 +867,12 @@ export async function ensureAwsLambdaMicrovmConnection(
   const convexUrl = getConvexUrl();
   log("debug", "cloud_sandbox_configuration_resolved", {
     user_id: userId,
+    ...correlation,
+    trigger_region: config.triggerRegion,
+    requested_region: config.requestedRegion,
     region: config.region,
+    placement_reason: config.placementReason,
+    release_id: config.releaseId ?? null,
     image_identifier: config.imageIdentifier,
     image_version: config.imageVersion ?? "latest",
     execution_role_configured: Boolean(config.executionRoleArn),
@@ -835,6 +911,7 @@ export async function ensureAwsLambdaMicrovmConnection(
   } catch (error) {
     log("error", "cloud_sandbox_session_prepare_failed", {
       user_id: userId,
+      ...correlation,
       region: config.region,
       image_version: config.imageVersion ?? "latest",
       replacement_attempt: replacementAttempt,
@@ -848,6 +925,7 @@ export async function ensureAwsLambdaMicrovmConnection(
 
   log("debug", "cloud_sandbox_session_prepared", {
     user_id: userId,
+    ...correlation,
     session_id: begin.session.sessionId,
     microvm_id: begin.session.microvmId ?? null,
     region: config.region,
@@ -859,6 +937,29 @@ export async function ensureAwsLambdaMicrovmConnection(
     bootstrap_token_present: Boolean(begin.bootstrapToken),
     duration_ms: Math.round(performance.now() - startedAt),
   });
+
+  const desiredConfig = config;
+  config = getConfigForPersistedSession(begin.session, desiredConfig);
+  if (
+    !begin.created &&
+    (config.region !== desiredConfig.region ||
+      config.imageIdentifier !== desiredConfig.imageIdentifier ||
+      config.imageVersion !== desiredConfig.imageVersion)
+  ) {
+    log("info", "cloud_sandbox_sticky_session_retained", {
+      user_id: userId,
+      ...correlation,
+      session_id: begin.session.sessionId,
+      microvm_id: begin.session.microvmId ?? null,
+      trigger_region: desiredConfig.triggerRegion,
+      requested_region: desiredConfig.requestedRegion,
+      selected_region: desiredConfig.region,
+      persisted_region: config.region,
+      requested_image_version: desiredConfig.imageVersion ?? "latest",
+      persisted_image_version: config.imageVersion ?? "latest",
+      release_id: desiredConfig.releaseId ?? null,
+    });
+  }
 
   const cleanupFailureCount = await cleanupCloudSessionCandidates(
     userId,
@@ -907,26 +1008,46 @@ export async function ensureAwsLambdaMicrovmConnection(
       await markEnded(userId, begin.session.sessionId, config, "failed", code);
       log("warn", "cloud_sandbox_direct_replacement", {
         user_id: userId,
+        ...correlation,
         session_id: begin.session.sessionId,
         microvm_id: begin.session.microvmId ?? null,
         region: config.region,
         failure_code: code,
       });
-      return ensureAwsLambdaMicrovmConnection(userId, onBoot, 1);
+      return ensureAwsLambdaMicrovmConnection(
+        userId,
+        onBoot,
+        triggerRegion,
+        triggerRunId,
+        1,
+      );
     }
     if (!existing) {
       if (replacementAttempt >= 1) {
         throw new Error("Cloud sandbox could not be replaced");
       }
-      return ensureAwsLambdaMicrovmConnection(userId, onBoot, 1);
+      return ensureAwsLambdaMicrovmConnection(
+        userId,
+        onBoot,
+        triggerRegion,
+        triggerRunId,
+        1,
+      );
     }
     onBoot?.({
       path: "reuse_existing",
       duration_ms: Math.round(performance.now() - startedAt),
       create_attempts: 0,
+      region: config.region,
+      trigger_region: config.triggerRegion,
+      requested_region: config.requestedRegion,
+      placement_reason: config.placementReason,
+      release_id: config.releaseId,
+      image_version: existing.session.imageVersion ?? "latest",
     });
     log("info", "cloud_sandbox_reused", {
       user_id: userId,
+      ...correlation,
       session_id: existing.session.sessionId,
       microvm_id: existing.session.microvmId,
       region: config.region,
@@ -942,6 +1063,7 @@ export async function ensureAwsLambdaMicrovmConnection(
     const runStartedAt = performance.now();
     log("debug", "cloud_sandbox_run_requested", {
       user_id: userId,
+      ...correlation,
       session_id: begin.session.sessionId,
       region: config.region,
       image_identifier: config.imageIdentifier,
@@ -986,6 +1108,7 @@ export async function ensureAwsLambdaMicrovmConnection(
     if (!microvmId) throw new Error("AWS did not return a MicroVM ID");
     log("info", "cloud_sandbox_run_accepted", {
       user_id: userId,
+      ...correlation,
       session_id: begin.session.sessionId,
       microvm_id: microvmId,
       region: config.region,
@@ -998,6 +1121,7 @@ export async function ensureAwsLambdaMicrovmConnection(
     failureStage = "attach_cloud_microvm";
     log("debug", "cloud_sandbox_direct_endpoint_wait_started", {
       user_id: userId,
+      ...correlation,
       session_id: begin.session.sessionId,
       microvm_id: microvmId,
       region: config.region,
@@ -1032,9 +1156,16 @@ export async function ensureAwsLambdaMicrovmConnection(
       path: "create_fresh",
       duration_ms: Math.round(performance.now() - startedAt),
       create_attempts: 1,
+      region: config.region,
+      trigger_region: config.triggerRegion,
+      requested_region: config.requestedRegion,
+      placement_reason: config.placementReason,
+      release_id: config.releaseId,
+      image_version: connected.imageVersion ?? "latest",
     });
     log("info", "cloud_sandbox_created", {
       user_id: userId,
+      ...correlation,
       session_id: connected.sessionId,
       microvm_id: connected.microvmId,
       region: config.region,
@@ -1046,6 +1177,7 @@ export async function ensureAwsLambdaMicrovmConnection(
     const code = failureCode(error);
     log("error", "cloud_sandbox_creation_failed", {
       user_id: userId,
+      ...correlation,
       session_id: begin.session.sessionId,
       microvm_id: microvmId ?? null,
       region: config.region,
@@ -1063,6 +1195,7 @@ export async function ensureAwsLambdaMicrovmConnection(
     await directSandbox?.close().catch((closeError: unknown) => {
       log("warn", "cloud_sandbox_direct_cleanup_failed", {
         user_id: userId,
+        ...correlation,
         session_id: begin.session.sessionId,
         microvm_id: microvmId ?? null,
         region: config.region,
