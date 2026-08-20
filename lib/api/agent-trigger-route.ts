@@ -66,7 +66,10 @@ import {
   closeAgentApprovalSession,
 } from "@/lib/api/agent-approval-session";
 import { createAgentRunCorrelationToken } from "@/lib/api/agent-run-correlation";
-import { resolveSecurityValidationSubagentsEnabled } from "@/lib/posthog/subagent-feature";
+import {
+  resolveSecurityTaskSubagentsEnabled,
+  resolveSecurityValidationSubagentsEnabled,
+} from "@/lib/posthog/subagent-feature";
 import {
   evaluateAgentAutoReviewFlag,
   type AgentAutoReviewAssignment,
@@ -450,9 +453,13 @@ export const createAgentTriggerPost =
       const userLocation = geolocation(req);
       const triggerRegion =
         getTriggerRegionForVercelRequest(req, userLocation) ?? "us-east-1";
-      const securityValidationSubagentsEnabled =
-        agentPermissionMode === "full_access" &&
-        (await resolveSecurityValidationSubagentsEnabled(userId));
+      const [securityValidationSubagentsEnabled, securityTaskSubagentsEnabled] =
+        agentPermissionMode === "full_access"
+          ? await Promise.all([
+              resolveSecurityValidationSubagentsEnabled(userId),
+              resolveSecurityTaskSubagentsEnabled(userId),
+            ])
+          : [false, false];
 
       assertFreeAgentGates({
         mode: "agent",
@@ -677,6 +684,7 @@ export const createAgentTriggerPost =
         endpoint,
         analyticsRequestContext,
         securityValidationSubagentsEnabled,
+        securityTaskSubagentsEnabled,
         convexUrl: process.env.NEXT_PUBLIC_CONVEX_URL,
         requestTiming: {
           routeStartedAt,
@@ -701,6 +709,7 @@ export const createAgentTriggerPost =
         triggerPayloadMessageCount: messagesForPayload.length,
         agentPermissionMode: permissionSnapshot.mode,
         securityValidationSubagentsEnabled,
+        securityTaskSubagentsEnabled,
         approvalProtocolVersion: AGENT_APPROVAL_PROTOCOL_VERSION,
         ...(approvalWorkerVersion ? { approvalWorkerVersion } : {}),
         ...(approvalSessionId ? { approvalSessionId } : {}),

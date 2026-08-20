@@ -35,6 +35,28 @@ describe("systemPrompt security instructions", () => {
     );
   });
 
+  it("exposes the free-form security_task policy without runtime skills", async () => {
+    const prompt = await systemPrompt(
+      "user_123",
+      "agent",
+      "pro",
+      "agent-model",
+      null,
+      null,
+      "full_access",
+      false,
+      undefined,
+      true,
+    );
+
+    expect(prompt).toContain("<focused_security_tasks>");
+    expect(prompt).toContain('profile="security_task"');
+    expect(prompt).toContain("The task is free-form");
+    expect(prompt).toContain("Do not pass skills");
+    expect(prompt).toContain("one-active and three-total limits");
+    expect(prompt).not.toContain("<independent_validation>");
+  });
+
   it("answers general questions directly without cybersecurity scope disclaimers", async () => {
     const prompt = await systemPrompt(
       "user_123",

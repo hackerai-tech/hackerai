@@ -18,20 +18,31 @@ import { toast } from "sonner";
 
 import { api } from "@/convex/_generated/api";
 import type { Id } from "@/convex/_generated/dataModel";
-import type { SidebarSubagentOrigin, SidebarSubagents } from "@/types/chat";
+import type {
+  ChatMessage,
+  ChatStatus,
+  SidebarSubagentOrigin,
+  SidebarSubagents,
+} from "@/types/chat";
 import { ToolSidebarOriginProvider } from "@/app/contexts/ToolSidebarOriginContext";
+import { AgentActivityRow } from "./AgentActivityRow";
+import { AgentToolGroupRow } from "./AgentToolGroupRow";
 import { FeedbackInput } from "./FeedbackInput";
 import { MessageActions } from "./MessageActions";
-import { MessagePartHandler } from "./MessagePartHandler";
 import { MemoizedMarkdown } from "./MemoizedMarkdown";
 import { useSubagentRealtime } from "@/app/hooks/useSubagentRealtime";
 import { captureAuthenticatedEvent } from "@/lib/analytics/client";
 import {
   SUBAGENT_ACTIVE_STATUSES,
+  type SubagentProfile,
   type SubagentStatus,
 } from "@/lib/ai/subagents/contracts";
 import { toSubagentHandle } from "@/lib/ai/subagents/agent-handle";
 import { extractMessageText } from "@/lib/utils/message-utils";
+import {
+  projectAgentWorkParts,
+  projectAgentWorkTimelineItems,
+} from "./worked-for-parts";
 
 type ChildSummary = {
   subagent_id: string;
@@ -39,7 +50,7 @@ type ChildSummary = {
   parent_trigger_run_id: string;
   parent_tool_call_id: string;
   trigger_run_id?: string;
-  profile?: string;
+  profile: SubagentProfile;
   status: SubagentStatus;
   name?: string;
   objective?: string;
@@ -67,6 +78,8 @@ type TranscriptMessage = UIMessage & {
   messageType?: "query" | "instruction" | "information";
   priority?: "low" | "normal" | "high" | "urgent";
 };
+
+const ignoreToolGroupMount = () => undefined;
 
 const isActive = (status: SubagentStatus) =>
   SUBAGENT_ACTIVE_STATUSES.has(status);
@@ -103,10 +116,35 @@ const childTitle = (child: ChildSummary): string =>
 const childSubtitle = (child: ChildSummary): string | undefined =>
   child.subtitle ?? child.candidate?.affected_asset;
 
+const cancellationDescription = (child: ChildSummary): string | undefined => {
+  switch (child.cancel_reason) {
+    case "parent_requested":
+      return "Canceled by the parent agent.";
+    case "user_canceled_child":
+      return "Canceled by you.";
+    case "parent_run_ended":
+    case "agent-run-ended":
+      return "Canceled when the parent Agent run ended.";
+    case "parent_canceled":
+      return "Canceled when the parent Agent run was canceled.";
+    case "parent_run_failed":
+      return "Canceled when the parent Agent run failed.";
+    case "chat_deleted":
+      return "Canceled because the chat was deleted.";
+    case "all_chats_deleted":
+      return "Canceled because all chats were deleted.";
+    case "account_deleted":
+      return "Canceled during account deletion.";
+    default:
+      return child.status === "canceled" ? "Subagent was canceled." : undefined;
+  }
+};
+
 const childDescription = (child: ChildSummary): string =>
   child.summary ??
-  child.failure_reason ??
-  child.cancel_reason ??
+  (child.status === "canceled"
+    ? cancellationDescription(child)
+    : child.failure_reason) ??
   childSubtitle(child) ??
   child.objective ??
   "No task summary yet";
@@ -230,6 +268,29 @@ const getVisibleAssistantParts = (
   return visibleParts;
 };
 
+const hasRenderableTranscriptParts = (parts: UIMessage["parts"]): boolean =>
+  parts.some((part) => {
+    if (part.type === "text" || part.type === "reasoning") {
+      return part.text.trim().length > 0;
+    }
+    return part.type === "data-summarization" || part.type.startsWith("tool-");
+  });
+
+const emptyActivityDescription = (child: ChildSummary): string => {
+  switch (child.status) {
+    case "canceled":
+      return "Canceled before any activity was recorded.";
+    case "completed":
+      return "Finished without recorded activity.";
+    case "failed":
+      return "Stopped before any activity was recorded.";
+    case "timed_out":
+      return "Timed out before any activity was recorded.";
+    default:
+      return "Waiting for activity…";
+  }
+};
+
 const SubagentMessageActions = memo(function SubagentMessageActions({
   messageId,
   messageText,
@@ -335,6 +396,79 @@ const SubagentMessageActions = memo(function SubagentMessageActions({
   );
 });
 
+const SubagentTranscriptParts = memo(function SubagentTranscriptParts({
+  active,
+  isLastMessage,
+  message,
+  parts,
+}: {
+  active: boolean;
+  isLastMessage: boolean;
+  message: TranscriptMessage;
+  parts: UIMessage["parts"];
+}) {
+  const visibleMessage = useMemo(
+    () => ({ ...message, parts }) as ChatMessage,
+    [message, parts],
+  );
+  const partIndexes = useMemo(() => parts.map((_, index) => index), [parts]);
+  const projection = useMemo(
+    () => projectAgentWorkParts(visibleMessage.parts, partIndexes),
+    [partIndexes, visibleMessage.parts],
+  );
+  const timelineItems = useMemo(
+    () =>
+      projectAgentWorkTimelineItems({
+        activities: projection.activities,
+        messageSettled: !active || !isLastMessage,
+        parts: visibleMessage.parts,
+        workPartIndexes: partIndexes,
+      }),
+    [
+      active,
+      isLastMessage,
+      partIndexes,
+      projection.activities,
+      visibleMessage.parts,
+    ],
+  );
+  const status: ChatStatus = active && isLastMessage ? "streaming" : "ready";
+
+  return timelineItems.map((item) => {
+    if (item.kind === "tool-group") {
+      return (
+        <AgentToolGroupRow
+          key={item.id}
+          activities={item.activities}
+          animateOnMount={false}
+          groupId={`${message.id}:${item.id}`}
+          isLastMessage={isLastMessage}
+          message={visibleMessage}
+          onMount={ignoreToolGroupMount}
+          status={status}
+          summary={item.summary}
+          terminalChunksByToolCallId={projection.terminalChunksByToolCallId}
+        />
+      );
+    }
+
+    return (
+      <AgentActivityRow
+        key={item.id}
+        deferReasoningCollapseUntilParent={false}
+        isLastMessage={isLastMessage}
+        keepLatestReasoningOpenDuringStreaming
+        suppressReasoningAutoOpen={false}
+        message={visibleMessage}
+        part={item.part}
+        partIndex={item.partIndex}
+        status={status}
+        terminalChunksByToolCallId={projection.terminalChunksByToolCallId}
+      />
+    );
+  });
+});
+
 const Transcript = memo(function Transcript({
   child,
   sidebarContent,
@@ -342,6 +476,9 @@ const Transcript = memo(function Transcript({
   child: ChildSummary;
   sidebarContent: SidebarSubagents;
 }) {
+  const transcriptOpenedAt = useRef(0);
+  const resolvedTelemetrySent = useRef(false);
+  const failureTelemetryCategories = useRef(new Set<string>());
   const persisted = useQuery(api.subagents.getMessagesOwned, {
     subagentId: child.subagent_id,
   });
@@ -349,15 +486,17 @@ const Transcript = memo(function Transcript({
   const hasPersistedAssistant = persisted?.some(
     (message) => message.role === "assistant",
   );
+  const shouldReplayTerminalStream =
+    child.status !== "canceled" &&
+    persisted !== undefined &&
+    !hasPersistedAssistant;
   const {
     message: liveMessage,
     state,
     retry,
   } = useSubagentRealtime({
     subagentId: child.subagent_id,
-    enabled:
-      !!child.trigger_run_id &&
-      (active || (persisted !== undefined && !hasPersistedAssistant)),
+    enabled: !!child.trigger_run_id && (active || shouldReplayTerminalStream),
   });
 
   const messages = useMemo(() => {
@@ -380,9 +519,10 @@ const Transcript = memo(function Transcript({
     () =>
       messages.filter(
         (message) =>
-          message.role === "assistant" ||
-          (message.role === "user" &&
-            message.messageSource === "parent_update"),
+          hasRenderableTranscriptParts(message.parts) &&
+          (message.role === "assistant" ||
+            (message.role === "user" &&
+              message.messageSource === "parent_update")),
       ),
     [messages],
   );
@@ -399,6 +539,118 @@ const Transcript = memo(function Transcript({
   );
   const [hoveredMessageId, setHoveredMessageId] = useState<string | null>(null);
 
+  useEffect(() => {
+    transcriptOpenedAt.current = Date.now();
+    resolvedTelemetrySent.current = false;
+    failureTelemetryCategories.current.clear();
+  }, [child.subagent_id]);
+
+  useEffect(() => {
+    if (persisted !== undefined) return;
+    const timeout = window.setTimeout(() => {
+      if (failureTelemetryCategories.current.has("persisted_load_timeout")) {
+        return;
+      }
+      failureTelemetryCategories.current.add("persisted_load_timeout");
+      captureAuthenticatedEvent("subagent_transcript_failed", {
+        subagent_id: child.subagent_id,
+        parent_trigger_run_id: child.parent_trigger_run_id,
+        profile: child.profile,
+        status: child.status,
+        error_category: "persisted_load_timeout",
+        active,
+        load_latency_ms: Date.now() - transcriptOpenedAt.current,
+      });
+    }, 10_000);
+    return () => window.clearTimeout(timeout);
+  }, [
+    active,
+    child.parent_trigger_run_id,
+    child.profile,
+    child.status,
+    child.subagent_id,
+    persisted,
+  ]);
+
+  useEffect(() => {
+    if (state !== "error") return;
+    const errorCategory = "realtime_disconnected";
+    if (failureTelemetryCategories.current.has(errorCategory)) return;
+    failureTelemetryCategories.current.add(errorCategory);
+    captureAuthenticatedEvent("subagent_transcript_failed", {
+      subagent_id: child.subagent_id,
+      parent_trigger_run_id: child.parent_trigger_run_id,
+      profile: child.profile,
+      status: child.status,
+      error_category: errorCategory,
+      active,
+      has_persisted_activity: visibleMessages.length > 0,
+      activity_message_count: visibleMessages.length,
+      load_latency_ms: Date.now() - transcriptOpenedAt.current,
+    });
+  }, [
+    active,
+    child.parent_trigger_run_id,
+    child.profile,
+    child.status,
+    child.subagent_id,
+    state,
+    visibleMessages.length,
+  ]);
+
+  useEffect(() => {
+    if (persisted === undefined || resolvedTelemetrySent.current) return;
+    const hasActivity = visibleMessages.length > 0;
+    const source = hasActivity
+      ? hasPersistedAssistant
+        ? "persisted"
+        : liveMessage
+          ? "live"
+          : "persisted"
+      : state === "error"
+        ? "error_fallback"
+        : active
+          ? state === "live" || state === "complete"
+            ? "live_empty"
+            : null
+          : "empty_terminal";
+    if (!source) return;
+
+    const reportResolved = () => {
+      if (resolvedTelemetrySent.current) return;
+      resolvedTelemetrySent.current = true;
+      captureAuthenticatedEvent("subagent_transcript_resolved", {
+        subagent_id: child.subagent_id,
+        parent_trigger_run_id: child.parent_trigger_run_id,
+        profile: child.profile,
+        status: child.status,
+        source,
+        active,
+        has_activity: hasActivity,
+        activity_message_count: visibleMessages.length,
+        realtime_state: state,
+        load_latency_ms: Date.now() - transcriptOpenedAt.current,
+      });
+    };
+
+    if (source === "empty_terminal") {
+      const timeout = window.setTimeout(reportResolved, 1_500);
+      return () => window.clearTimeout(timeout);
+    }
+    reportResolved();
+  }, [
+    active,
+    child.parent_trigger_run_id,
+    child.profile,
+    child.status,
+    child.subagent_id,
+    hasPersistedAssistant,
+    liveMessage,
+    persisted,
+    state,
+    visibleMessages.length,
+  ]);
+
   if (persisted === undefined) {
     return (
       <div className="flex flex-1 items-center justify-center text-sm text-muted-foreground">
@@ -414,40 +666,6 @@ const Transcript = memo(function Transcript({
         aria-live={active ? "polite" : "off"}
         aria-label="Subagent transcript and tool activity"
       >
-        {visibleMessages.length === 0 && state !== "error" && (
-          <div className="flex items-center gap-2 rounded-lg border border-border/40 bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
-            {(active || state === "connecting") && (
-              <LoaderCircle
-                className="h-4 w-4 animate-spin motion-reduce:animate-none"
-                aria-hidden
-              />
-            )}
-            {state === "connecting"
-              ? "Connecting to activity…"
-              : active
-                ? "Waiting for activity…"
-                : "No transcript activity was persisted."}
-          </div>
-        )}
-        {state === "error" && active && (
-          <div className="mb-3 rounded-lg border border-destructive/30 bg-destructive/5 p-3 text-sm">
-            <p className="text-destructive">Live activity disconnected.</p>
-            <button
-              type="button"
-              onClick={retry}
-              className="mt-2 inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-xs hover:bg-muted"
-            >
-              <RefreshCw className="h-3.5 w-3.5" aria-hidden />
-              Reconnect
-            </button>
-          </div>
-        )}
-        {state === "error" && !active && visibleMessages.length === 0 && (
-          <div className="mb-3 rounded-lg border border-border/50 bg-muted/20 p-3 text-sm text-muted-foreground">
-            Transcript activity is unavailable. The final status above is still
-            authoritative.
-          </div>
-        )}
         <div className="space-y-5">
           <section className="min-w-0">
             <div className="mb-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
@@ -459,6 +677,48 @@ const Transcript = memo(function Transcript({
               />
             </div>
           </section>
+          {visibleMessages.length === 0 && state !== "error" && (
+            <section className="min-w-0">
+              <div className="mb-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                Activity
+              </div>
+              <p className="flex items-center gap-2 text-sm text-muted-foreground">
+                {(active || state === "connecting") && (
+                  <LoaderCircle
+                    className="h-4 w-4 shrink-0 animate-spin motion-reduce:animate-none"
+                    aria-hidden
+                  />
+                )}
+                {state === "connecting"
+                  ? "Connecting to activity…"
+                  : emptyActivityDescription(child)}
+              </p>
+            </section>
+          )}
+          {state === "error" && active && (
+            <section className="min-w-0 rounded-lg border border-destructive/30 bg-destructive/5 p-3 text-sm">
+              <p className="text-destructive">Live activity disconnected.</p>
+              <button
+                type="button"
+                onClick={retry}
+                className="mt-2 inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-xs hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                <RefreshCw className="h-3.5 w-3.5" aria-hidden />
+                Reconnect
+              </button>
+            </section>
+          )}
+          {state === "error" && !active && visibleMessages.length === 0 && (
+            <section className="min-w-0">
+              <div className="mb-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                Activity
+              </div>
+              <p className="text-sm text-muted-foreground">
+                Activity is unavailable. The final status above is still
+                authoritative.
+              </p>
+            </section>
+          )}
           {visibleMessages.map((message) => {
             const isParentUpdate = message.messageSource === "parent_update";
             const visibleParts = isParentUpdate
@@ -468,6 +728,8 @@ const Transcript = memo(function Transcript({
                   child.status === "completed",
                 );
             const messageText = extractMessageText(visibleParts);
+            const isLastMessage =
+              message === visibleMessages[visibleMessages.length - 1];
             return (
               <section
                 key={message.id}
@@ -485,18 +747,12 @@ const Transcript = memo(function Transcript({
                     : "Subagent"}
                 </div>
                 <div className="min-w-0 space-y-2 overflow-hidden text-sm text-foreground">
-                  {visibleParts.map((part, partIndex) => (
-                    <MessagePartHandler
-                      key={`${message.id}-${partIndex}`}
-                      message={message}
-                      part={part}
-                      partIndex={partIndex}
-                      status={active ? "streaming" : "ready"}
-                      isLastMessage={
-                        message === visibleMessages[visibleMessages.length - 1]
-                      }
-                    />
-                  ))}
+                  <SubagentTranscriptParts
+                    active={active}
+                    isLastMessage={isLastMessage}
+                    message={message}
+                    parts={visibleParts}
+                  />
                 </div>
                 {!isParentUpdate &&
                   message.persistedMessageId &&
@@ -576,7 +832,6 @@ export const SubagentsSidebar = ({
     if (!selectedOriginResolved) return;
     captureAuthenticatedEvent("subagent_sidebar_opened", {
       parent_message_id: effectiveParentMessageId,
-      profile: "security_validation",
       view: "list",
     });
   }, [effectiveParentMessageId, selectedOriginResolved]);
@@ -589,7 +844,7 @@ export const SubagentsSidebar = ({
         captureAuthenticatedEvent("subagent_abandoned", {
           subagent_id: child.subagent_id,
           parent_trigger_run_id: child.parent_trigger_run_id,
-          profile: "security_validation",
+          profile: child.profile,
           status: child.status,
           open_duration_ms:
             Date.now() -
@@ -611,7 +866,7 @@ export const SubagentsSidebar = ({
     captureAuthenticatedEvent("subagent_opened", {
       subagent_id: selected.subagent_id,
       parent_trigger_run_id: selected.parent_trigger_run_id,
-      profile: "security_validation",
+      profile: selected.profile,
       status: selected.status,
       open_latency_ms: Date.now() - selected.created_at,
     });
@@ -817,11 +1072,15 @@ export const SubagentsSidebar = ({
                       </button>
                     )}
                   </div>
-                  {(selected.failure_reason || selected.cancel_reason) && (
-                    <p className="mt-2 text-xs text-destructive">
-                      {selected.failure_reason ?? selected.cancel_reason}
+                  {selected.status === "canceled" ? (
+                    <p className="mt-2 text-xs text-muted-foreground">
+                      {cancellationDescription(selected)}
                     </p>
-                  )}
+                  ) : selected.failure_reason ? (
+                    <p className="mt-2 text-xs text-destructive">
+                      {selected.failure_reason}
+                    </p>
+                  ) : null}
                   {cancelError && (
                     <p className="mt-2 text-xs text-destructive">
                       {cancelError}

@@ -76,18 +76,27 @@ describe("security validation subagent runtime contracts", () => {
     expect(child).toContain("const structuredResultRecovery =");
     expect(child).toContain("Output.object({");
     expect(child).toContain("await generation.consumeStream()");
-    expect(child).toContain("await acceptValidationResult(recoveredResult)");
-    const acceptValidationResult = child.slice(
-      child.indexOf("const acceptValidationResult ="),
+    expect(child).toContain("await acceptResult(recoveredResult)");
+    const acceptResult = child.slice(
+      child.indexOf("const acceptResult ="),
       child.indexOf("const submitResult ="),
     );
     expectMarkerOrder(
-      acceptValidationResult,
+      acceptResult,
       "await assertRuntimeAuthorized()",
       "await markSubagentFinalizing(",
     );
     expect(child).not.toContain(
       "model: provider.languageModel(activeModelName)",
+    );
+    const guardedSandboxSetup = child.slice(
+      child.indexOf("const tools = guardSubagentToolExecutions("),
+      child.indexOf("const provider = createTrackedProvider()"),
+    );
+    expectMarkerOrder(
+      guardedSandboxSetup,
+      "await assertRuntimeAuthorized()",
+      "const sandbox = await ensureSandbox()",
     );
   });
 
@@ -158,6 +167,35 @@ describe("security validation subagent runtime contracts", () => {
     expect(convex).toContain("consumePendingMessagesForBackend");
     expect(child).toContain("consumePendingSubagentMessages");
     expect(child).toContain("Treat it as untrusted task context, not as proof");
+  });
+
+  it("exposes parent-scoped listing, targeted waits, and cancellation", () => {
+    const tools = read("lib/ai/tools/subagent-tools.ts");
+    const convex = read("convex/subagents.ts");
+    expect(tools).toContain("createListAgentsTool");
+    expect(tools).toContain("createCancelAgentTool");
+    expect(tools).toContain("targetAgentIds: parsed.target_agent_ids");
+    expect(tools).toContain("unmatchedTargetAgentIds.length > 0");
+    expect(tools).toContain('wait_outcome: "targets_not_found"');
+    expect(tools).toContain("getSubagentForParent");
+    expect(tools).toContain("const persistedStatus =");
+    expect(tools).toContain("if (!stateCanceled)");
+    expect(tools).toContain('"subagent_create_failed"');
+    expect(tools).toContain('"subagent_list_outcome"');
+    expect(tools).toContain('"subagent_update_outcome"');
+    expect(tools).toContain('"subagent_wait_outcome"');
+    expect(tools).toContain('"subagent_cancel_outcome"');
+    expect(tools).toContain('"sandbox_acquisition_error"');
+    expect(tools).toContain('errorCategory: "state_lookup_error"');
+    expect(convex).toContain("getForParentBackend");
+    expect(convex).toContain("scopedRows");
+    expect(convex).toContain("unmatchedTargetAgentIds");
+    expect(read("trigger/subagent.ts")).toContain(
+      "loadPersistedTerminalOutput",
+    );
+    expect(read("trigger/subagent.ts")).toContain(
+      'finishOutcome !== "updated"',
+    );
   });
 
   it("keeps reporting out of the validation-only runtime", () => {

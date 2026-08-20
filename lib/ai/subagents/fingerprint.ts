@@ -4,6 +4,7 @@ import { createHash, randomUUID } from "node:crypto";
 import type {
   SecurityValidationCandidate,
   SubagentContextRef,
+  SubagentProfile,
 } from "./contracts";
 
 const normalize = (value: string): string =>
@@ -35,14 +36,24 @@ export const createCandidateFingerprint = (
   return createHash("sha256").update(canonical).digest("hex");
 };
 
-export const createAgentFingerprint = (
-  name: string,
-  task: string,
-  skills: string[],
-): string => {
+export const createAgentFingerprint = ({
+  profile,
+  name,
+  task,
+  successCriteria,
+  skills,
+}: {
+  profile: SubagentProfile;
+  name: string;
+  task: string;
+  successCriteria: string[];
+  skills: string[];
+}): string => {
   const canonical = JSON.stringify({
+    profile,
     name: normalize(name),
     task: normalize(task),
+    successCriteria: successCriteria.map(normalize),
     skills: skills.map(normalize).sort(),
   });
   return createHash("sha256").update(canonical).digest("hex");
