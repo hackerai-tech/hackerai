@@ -7,7 +7,7 @@ description: Run privacy-safe HackerAI customer research from a Linear question 
 
 Turn a research question and 3-20 internal user IDs into restricted per-user
 profiles and an aggregated cohort report. The deployed task samples messages,
-redacts sensitive data, and uses DeepSeek V4 Flash with reasoning disabled.
+redacts sensitive data, and uses Grok 4.6 with low reasoning.
 
 Read [references/privacy-policy.md](references/privacy-policy.md) and
 [references/pm-runbook.md](references/pm-runbook.md) before running the task.

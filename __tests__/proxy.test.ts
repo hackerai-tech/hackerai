@@ -102,6 +102,49 @@ describe("proxy", () => {
     expect(mockNextResponseRedirect).not.toHaveBeenCalled();
   });
 
+  it("bypasses AuthKit for the independently authenticated user-research gateway", async () => {
+    const { default: proxy } = await import("../proxy");
+
+    const response = await proxy(
+      createRequest({
+        pathname: "/api/internal/user-research",
+        method: "POST",
+      }),
+    );
+
+    expect(response).toMatchObject({ kind: "next" });
+    expect(mockAuthkit).not.toHaveBeenCalled();
+    expect(mockNextResponseNext).toHaveBeenCalledWith();
+    expect(mockNextResponseJson).not.toHaveBeenCalled();
+    expect(mockNextResponseRedirect).not.toHaveBeenCalled();
+  });
+
+  it("does not bypass AuthKit for sibling internal API paths", async () => {
+    mockAuthkit.mockResolvedValue({
+      session: { user: null },
+      headers: new Headers(),
+      authorizationUrl: "https://auth.hackerai.co/login",
+    });
+    const { default: proxy } = await import("../proxy");
+
+    await proxy(
+      createRequest({
+        pathname: "/api/internal/user-research/status",
+        method: "POST",
+      }),
+    );
+
+    expect(mockAuthkit).toHaveBeenCalledTimes(1);
+    expect(mockNextResponseJson).toHaveBeenCalledWith(
+      {
+        code: "unauthorized:auth",
+        message: "You need to sign in before continuing.",
+        cause: "Session expired or invalid",
+      },
+      expect.objectContaining({ status: 401 }),
+    );
+  });
+
   it.each(["/robots.txt", "/sitemap.xml"])(
     "bypasses AuthKit for the public SEO route %s",
     async (pathname) => {

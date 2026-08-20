@@ -30,7 +30,7 @@ The owning Linear issue must define the cohort and intended output.
 
 Raw message excerpts exist only in the analysis worker's memory and model
 request. Model calls require an OpenRouter zero-data-retention route and fail
-closed if no eligible DeepSeek V4 Flash endpoint is available. Convex stores the
+closed if no eligible Grok 4.6 endpoint is available. Convex stores the
 run audit, pseudonymized structured profiles, and the aggregate report. Account
 deletion removes that user's stored profile and run-membership linkage; runs and
 reports are retained only as cohort-level outputs from cohorts of at least
