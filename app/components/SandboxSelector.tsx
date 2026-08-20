@@ -52,8 +52,6 @@ export function SandboxSelector({
     desktopBridgeStatus,
   } = useGlobalState();
   const isFreeUser = subscription === "free";
-  const [onlineRemoteConnectionIds, setOnlineRemoteConnectionIds] =
-    useState<Set<string> | null>(null);
 
   const detectedPlatform = useMemo(() => {
     if (typeof window === "undefined") return null;
@@ -101,6 +99,21 @@ export function SandboxSelector({
     isTauri &&
     desktopBridgeStatus !== "connected" &&
     remoteConnections.length > 0;
+  const remotePresenceRequest = useMemo(
+    () => ({
+      enabled: shouldVerifyRemotePresence,
+      connectionIds: remoteConnectionIds,
+    }),
+    [remoteConnectionIds, shouldVerifyRemotePresence],
+  );
+  const [remotePresence, setRemotePresence] = useState<{
+    request: typeof remotePresenceRequest;
+    onlineConnectionIds: Set<string>;
+  } | null>(null);
+  const onlineRemoteConnectionIds =
+    remotePresence?.request === remotePresenceRequest
+      ? remotePresence.onlineConnectionIds
+      : null;
   const liveRemoteConnections = useMemo(
     () =>
       shouldVerifyRemotePresence && onlineRemoteConnectionIds
@@ -124,13 +137,9 @@ export function SandboxSelector({
   // subscribed. Confirm live Centrifugo presence before automatically choosing
   // a remote runner over a reconnecting embedded bridge.
   useEffect(() => {
-    if (!shouldVerifyRemotePresence) {
-      setOnlineRemoteConnectionIds(null);
-      return;
-    }
+    if (!remotePresenceRequest.enabled) return;
 
     let cancelled = false;
-    setOnlineRemoteConnectionIds(null);
     fetch("/api/sandbox/presence")
       .then((response) => {
         if (!response.ok) throw new Error("Presence check failed");
@@ -140,8 +149,9 @@ export function SandboxSelector({
       })
       .then((presence) => {
         if (cancelled) return;
-        setOnlineRemoteConnectionIds(
-          new Set(
+        setRemotePresence({
+          request: remotePresenceRequest,
+          onlineConnectionIds: new Set(
             (presence.connections ?? [])
               .filter(
                 (connection) =>
@@ -150,7 +160,7 @@ export function SandboxSelector({
               )
               .map((connection) => connection.connectionId as string),
           ),
-        );
+        });
       })
       .catch(() => {
         // Keep the remote options visible for manual selection, but do not
@@ -160,7 +170,7 @@ export function SandboxSelector({
     return () => {
       cancelled = true;
     };
-  }, [shouldVerifyRemotePresence, remoteConnectionIds]);
+  }, [remotePresenceRequest]);
 
   // Trigger presence cleanup when dropdown opens
   useEffect(() => {
