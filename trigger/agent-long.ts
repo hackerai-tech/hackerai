@@ -3163,6 +3163,7 @@ export const agentLongTask = task({
               getFileAccumulator,
               sandboxManager,
               getSandboxSessionCost,
+              getSandboxSessionUsage,
               setCurrentModelName,
               getToolsForModel,
             } = createTools(
@@ -3525,7 +3526,8 @@ export const agentLongTask = task({
             const deductAccumulatedUsage = async () => {
               try {
                 if (hasRecordedUsage) return;
-                const sandboxCost = getSandboxSessionCost();
+                const sandboxUsage = getSandboxSessionUsage();
+                const sandboxCost = sandboxUsage.totalCostDollars;
                 if (sandboxCost > 0) {
                   usageTracker.providerCost += sandboxCost;
                   usageTracker.nonModelCost += sandboxCost;
@@ -3714,6 +3716,7 @@ export const agentLongTask = task({
                   analyticsRequestContext,
                   experiment: routingExperimentContext,
                   usage: usageCostRecord,
+                  ...(sandboxCost > 0 && { sandboxUsage }),
                   responseModel: state.responseModel,
                   ...(usageSettlementState && {
                     usageSettlement: {
@@ -3735,7 +3738,12 @@ export const agentLongTask = task({
             };
 
             const settleUsageAfterStep: AgentStreamContext["settleUsageAfterStep"] =
-              async ({ currentCostDollars, force, model }) => {
+              async ({
+                currentCostDollars,
+                sandboxCostDollars,
+                force,
+                model,
+              }) => {
                 if (!usageSettlementState || hasRecordedUsage) return;
                 if (
                   !shouldSettleUsageMidRun({
@@ -3779,6 +3787,7 @@ export const agentLongTask = task({
                     additional_cost_points: additionalCostPoints,
                     usage_settlement_id: usageTracker.usageSettlementId,
                     current_cost_dollars: currentCostDollars,
+                    sandbox_cost_dollars: sandboxCostDollars,
                     force,
                     error_name:
                       error instanceof Error ? error.name : "UnknownError",
@@ -3805,6 +3814,7 @@ export const agentLongTask = task({
                   usageSettlementId: usageTracker.usageSettlementId,
                   settlementSequence: usageSettlementSequence,
                   currentCostDollars,
+                  sandboxCostDollars,
                   requestedDeltaPoints: additionalCostPoints,
                   deduction: deductionResult,
                   forced: force,
@@ -3833,6 +3843,7 @@ export const agentLongTask = task({
                   selected_model: selectedModel,
                   additional_cost_points: additionalCostPoints,
                   current_cost_dollars: currentCostDollars,
+                  sandbox_cost_dollars: sandboxCostDollars,
                   included_points_deducted:
                     cumulativeDeduction.includedPointsDeducted,
                   extra_usage_points_deducted:
@@ -3880,6 +3891,7 @@ export const agentLongTask = task({
               ensureSandbox,
               chatLogger,
               usageRefundTracker,
+              getSandboxCostDollars: getSandboxSessionCost,
               onModelStreamStart: runTimingTracker.startModelStream,
               onModelStreamFinish: runTimingTracker.finishModelStream,
               onProviderRequestDiagnostics: (providerRequest, retention) => {

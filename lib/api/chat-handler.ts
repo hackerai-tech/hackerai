@@ -743,6 +743,7 @@ export const createChatHandler = () => {
               getFileAccumulator,
               sandboxManager,
               getSandboxSessionCost,
+              getSandboxSessionUsage,
               setCurrentModelName,
               getToolsForModel,
             } = createTools(
@@ -1090,8 +1091,9 @@ export const createChatHandler = () => {
             ) => {
               try {
                 if (hasRecordedUsage) return;
-                // Add E2B sandbox session cost (duration-based)
-                const sandboxCost = getSandboxSessionCost();
+                // Add cloud sandbox session cost (duration-based).
+                const sandboxUsage = getSandboxSessionUsage();
+                const sandboxCost = sandboxUsage.totalCostDollars;
                 if (sandboxCost > 0) {
                   usageTracker.providerCost += sandboxCost;
                   usageTracker.nonModelCost += sandboxCost;
@@ -1283,6 +1285,7 @@ export const createChatHandler = () => {
                   endpoint,
                   mode,
                   usage: usageCostRecord,
+                  ...(sandboxCost > 0 && { sandboxUsage }),
                   responseModel: state.responseModel,
                   analyticsRequestContext,
                   experiment: routingExperimentContext,
@@ -1310,7 +1313,12 @@ export const createChatHandler = () => {
             };
 
             const settleUsageAfterStep: AgentStreamContext["settleUsageAfterStep"] =
-              async ({ currentCostDollars, force, model }) => {
+              async ({
+                currentCostDollars,
+                sandboxCostDollars,
+                force,
+                model,
+              }) => {
                 if (!usageSettlementState || hasRecordedUsage) return;
                 if (
                   !shouldSettleUsageMidRun({
@@ -1354,6 +1362,7 @@ export const createChatHandler = () => {
                     additional_cost_points: additionalCostPoints,
                     usage_settlement_id: usageTracker.usageSettlementId,
                     current_cost_dollars: currentCostDollars,
+                    sandbox_cost_dollars: sandboxCostDollars,
                     force,
                     error_name:
                       error instanceof Error ? error.name : "UnknownError",
@@ -1380,6 +1389,7 @@ export const createChatHandler = () => {
                   usageSettlementId: usageTracker.usageSettlementId,
                   settlementSequence: usageSettlementSequence,
                   currentCostDollars,
+                  sandboxCostDollars,
                   requestedDeltaPoints: additionalCostPoints,
                   deduction: deductionResult,
                   forced: force,
@@ -1408,6 +1418,7 @@ export const createChatHandler = () => {
                   selected_model: selectedModel,
                   additional_cost_points: additionalCostPoints,
                   current_cost_dollars: currentCostDollars,
+                  sandbox_cost_dollars: sandboxCostDollars,
                   included_points_deducted:
                     cumulativeDeduction.includedPointsDeducted,
                   extra_usage_points_deducted:
@@ -1454,6 +1465,7 @@ export const createChatHandler = () => {
               ensureSandbox,
               chatLogger,
               usageRefundTracker,
+              getSandboxCostDollars: getSandboxSessionCost,
               settleUsageAfterStep,
               ...(useMaxKimiReasoning && {
                 providerReasoningOverride: {

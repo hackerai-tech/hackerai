@@ -69,6 +69,19 @@ export type CreateToolsRuntimePolicy = {
   triggerRegion?: TriggerRunRegion;
 };
 
+export type SandboxSessionUsage = {
+  totalCostDollars: number;
+  e2bRuntimeMs: number;
+  e2bCostDollars: number;
+  awsLambdaMicrovmRuntimeMs: number;
+  awsLambdaMicrovmCostDollars: number;
+};
+
+const emptySandboxRuntimeMs = (): Record<CloudSandboxProvider, number> => ({
+  e2b: 0,
+  "aws-lambda-microvm": 0,
+});
+
 // Factory function to create tools with context
 export const createTools = (
   userID: string,
@@ -97,9 +110,8 @@ export const createTools = (
 ) => {
   let sandbox: AnySandbox | null = null;
   let sandboxCostSegmentStartedAt: number | null = null;
-  let sandboxAccumulatedCost = 0;
-  let sandboxCostPerMs = 0;
   let sandboxCostProvider: CloudSandboxProvider | null = null;
+  const sandboxAccumulatedRuntimeMs = emptySandboxRuntimeMs();
   let providerExposureRecorded = false;
   let sandboxBootInfo: SandboxBootInfo | null = null;
   let currentModelName = modelName;
@@ -129,26 +141,20 @@ export const createTools = (
       : isE2BSandbox(newSandbox)
         ? "e2b"
         : null;
-    if (provider) {
-      const now = Date.now();
-      const nextCostPerMs =
-        provider === "aws-lambda-microvm"
-          ? AWS_LAMBDA_MICROVM_COST_PER_MS
-          : E2B_COST_PER_MS;
-      if (sandboxCostSegmentStartedAt === null) {
-        sandboxCostSegmentStartedAt = now;
-      } else if (
-        sandboxCostProvider !== null &&
-        sandboxCostProvider !== provider &&
-        sandboxCostSegmentStartedAt !== null
-      ) {
-        sandboxAccumulatedCost +=
-          (now - sandboxCostSegmentStartedAt) * sandboxCostPerMs;
-        sandboxCostSegmentStartedAt = now;
-      }
-      sandboxCostProvider = provider;
-      sandboxCostPerMs = nextCostPerMs;
+    const now = Date.now();
+    if (
+      sandboxCostSegmentStartedAt !== null &&
+      sandboxCostProvider !== null &&
+      sandboxCostProvider !== provider
+    ) {
+      sandboxAccumulatedRuntimeMs[sandboxCostProvider] +=
+        now - sandboxCostSegmentStartedAt;
+      sandboxCostSegmentStartedAt = null;
     }
+    if (provider !== null && sandboxCostSegmentStartedAt === null) {
+      sandboxCostSegmentStartedAt = now;
+    }
+    sandboxCostProvider = provider;
     if (provider && !providerExposureRecorded) {
       providerExposureRecorded = true;
       const rollout = runtimePolicy.cloudSandboxRollout;
@@ -387,14 +393,36 @@ export const createTools = (
     return buildTools();
   };
 
-  const getSandboxSessionCost = (): number => {
-    if (runtimePolicy.chargeSandboxRuntime === false) return 0;
-    if (sandboxCostSegmentStartedAt === null) return 0;
-    return (
-      sandboxAccumulatedCost +
-      (Date.now() - sandboxCostSegmentStartedAt) * sandboxCostPerMs
-    );
+  const getSandboxSessionUsage = (): SandboxSessionUsage => {
+    if (runtimePolicy.chargeSandboxRuntime === false) {
+      return {
+        totalCostDollars: 0,
+        e2bRuntimeMs: 0,
+        e2bCostDollars: 0,
+        awsLambdaMicrovmRuntimeMs: 0,
+        awsLambdaMicrovmCostDollars: 0,
+      };
+    }
+
+    const runtimeMs = { ...sandboxAccumulatedRuntimeMs };
+    if (sandboxCostSegmentStartedAt !== null && sandboxCostProvider !== null) {
+      runtimeMs[sandboxCostProvider] +=
+        Date.now() - sandboxCostSegmentStartedAt;
+    }
+    const e2bCostDollars = runtimeMs.e2b * E2B_COST_PER_MS;
+    const awsLambdaMicrovmCostDollars =
+      runtimeMs["aws-lambda-microvm"] * AWS_LAMBDA_MICROVM_COST_PER_MS;
+    return {
+      totalCostDollars: e2bCostDollars + awsLambdaMicrovmCostDollars,
+      e2bRuntimeMs: runtimeMs.e2b,
+      e2bCostDollars,
+      awsLambdaMicrovmRuntimeMs: runtimeMs["aws-lambda-microvm"],
+      awsLambdaMicrovmCostDollars,
+    };
   };
+
+  const getSandboxSessionCost = (): number =>
+    getSandboxSessionUsage().totalCostDollars;
 
   return {
     tools,
@@ -404,6 +432,7 @@ export const createTools = (
     getFileAccumulator,
     sandboxManager,
     getSandboxSessionCost,
+    getSandboxSessionUsage,
     setCurrentModelName,
     getToolsForModel,
   };

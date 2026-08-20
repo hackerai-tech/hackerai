@@ -29,6 +29,13 @@ jest.mock("@/lib/api/chat-stream-helpers", () => ({
   buildSystemPrompt: (prompt: string) => prompt,
   getFallbackSlugs: () => [],
   isXaiSafetyError: () => false,
+  resolveServedModelForCostAccounting: ({
+    modelName,
+    responseModel,
+  }: {
+    modelName: string;
+    responseModel?: string;
+  }) => responseModel ?? modelName,
   runSummarizationStep: mockRunSummarizationStep,
 }));
 jest.mock("@/lib/chat/summarization", () => ({
@@ -363,6 +370,49 @@ describe("createAgentStream repeated compaction", () => {
     mockRunSummarizationStep.mockReset();
     mockCompactModelMessagesInRun.mockReset();
     mockGetProviderPromptPressure.mockReset();
+  });
+
+  it("includes sandbox runtime in budget checks and per-step settlement", async () => {
+    const checkAfterStep = jest.fn(() => undefined);
+    const settleUsageAfterStep = jest.fn(async () => undefined);
+    const usageTracker = {
+      accumulateStep: jest.fn(() => 0),
+      setAuthoritativeModelCostForStep: jest.fn(),
+      computeCostDollars: jest.fn(() => 0.2),
+    };
+    const state = initAgentStreamState([uiMessage("initial", "Run a scan")], {
+      usedTokens: 1_000,
+      maxTokens: 128_000,
+    });
+    const stream = (await createAgentStream(
+      "test-model",
+      createTestStreamContext({
+        budgetMonitor: { checkAfterStep },
+        getSandboxCostDollars: () => 0.05,
+        settleUsageAfterStep,
+        summarizationTracker: {
+          hasSummarized: false,
+          summarizationCount: 0,
+          recordSummarization: jest.fn(),
+        },
+        usageTracker,
+      }) as any,
+      state,
+    )) as any;
+
+    await stream.onStepFinish({
+      usage: { inputTokens: 10, outputTokens: 5 },
+      response: { modelId: "test-model" },
+      providerMetadata: undefined,
+    });
+
+    expect(checkAfterStep).toHaveBeenCalledWith(0.25);
+    expect(settleUsageAfterStep).toHaveBeenCalledWith({
+      currentCostDollars: 0.25,
+      sandboxCostDollars: 0.05,
+      force: false,
+      model: "test-model",
+    });
   });
 
   it.each([
