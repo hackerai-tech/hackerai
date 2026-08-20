@@ -624,6 +624,7 @@ export const subagentTask = task({
               unguardedTools,
               assertRuntimeAuthorized,
             );
+            await assertRuntimeAuthorized();
             const sandbox = await ensureSandbox();
             assertSubagentSandboxIdentity(sandbox, row.sandbox_identity);
 

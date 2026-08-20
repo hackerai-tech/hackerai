@@ -89,6 +89,15 @@ describe("security validation subagent runtime contracts", () => {
     expect(child).not.toContain(
       "model: provider.languageModel(activeModelName)",
     );
+    const guardedSandboxSetup = child.slice(
+      child.indexOf("const tools = guardSubagentToolExecutions("),
+      child.indexOf("const provider = createTrackedProvider()"),
+    );
+    expectMarkerOrder(
+      guardedSandboxSetup,
+      "await assertRuntimeAuthorized()",
+      "const sandbox = await ensureSandbox()",
+    );
   });
 
   it("settles paid included usage when on-demand usage is disabled", () => {
