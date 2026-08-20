@@ -1,10 +1,17 @@
 import "@testing-library/jest-dom";
 import React from "react";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import { beforeEach, describe, expect, it, jest } from "@jest/globals";
 
 const mockUseQuery = jest.fn<any>();
 const mockSetMessageFeedback = jest.fn<any>();
+const mockUseSubagentRealtime = jest.fn<any>();
 jest.mock("convex/react", () => ({
   useQuery: (...args: unknown[]) => mockUseQuery(...args),
   useMutation: () => mockSetMessageFeedback,
@@ -29,11 +36,7 @@ jest.mock("sonner", () => ({
 }));
 
 jest.mock("@/app/hooks/useSubagentRealtime", () => ({
-  useSubagentRealtime: () => ({
-    message: null,
-    state: "connecting",
-    retry: jest.fn(),
-  }),
+  useSubagentRealtime: (...args: unknown[]) => mockUseSubagentRealtime(...args),
 }));
 
 const captureAuthenticatedEvent = jest.fn();
@@ -43,8 +46,21 @@ jest.mock("@/lib/analytics/client", () => ({
 }));
 
 jest.mock("../MessagePartHandler", () => ({
-  MessagePartHandler: ({ part }: { part: { text?: string } }) => (
-    <div>{part.text}</div>
+  MessagePartHandler: ({
+    keepLatestReasoningOpenDuringStreaming,
+    part,
+  }: {
+    keepLatestReasoningOpenDuringStreaming?: boolean;
+    part: { text?: string; type: string };
+  }) => (
+    <div
+      data-testid={`part-${part.type}`}
+      data-keep-latest-reasoning-open={
+        keepLatestReasoningOpenDuringStreaming ? "true" : "false"
+      }
+    >
+      {part.text}
+    </div>
   ),
 }));
 
@@ -87,12 +103,31 @@ const doneChild = {
   completed_at: Date.now() - 1_000,
 };
 
+const canceledChild = {
+  ...activeChild,
+  subagent_id: "sa_canceled",
+  trigger_run_id: "child-run-canceled",
+  status: "canceled",
+  summary: "Subagent was canceled.",
+  cancel_reason: "parent_requested",
+  objective: "Check whether the target reflects the supplied marker.",
+  title: "Canceled candidate",
+  completed_at: Date.now() - 1_000,
+};
+
 const persistedAssistantCreatedAt = Date.now() - 60_000;
 
 describe("SubagentsSidebar", () => {
   beforeEach(() => {
     jest.clearAllMocks();
     mockSetMessageFeedback.mockResolvedValue("updated");
+    mockUseSubagentRealtime.mockImplementation(
+      ({ enabled }: { enabled: boolean }) => ({
+        message: null,
+        state: enabled ? "connecting" : "idle",
+        retry: jest.fn(),
+      }),
+    );
     mockUseQuery.mockImplementation((query, args) => {
       if (query === "listForParentMessage") return [activeChild, doneChild];
       if (query === "getOwned") {
@@ -180,6 +215,15 @@ describe("SubagentsSidebar", () => {
       "subagent_opened",
       expect.objectContaining({ subagent_id: "sa_active" }),
     );
+    expect(captureAuthenticatedEvent).toHaveBeenCalledWith(
+      "subagent_transcript_resolved",
+      expect.objectContaining({
+        subagent_id: "sa_active",
+        source: "persisted",
+        has_activity: true,
+        activity_message_count: 1,
+      }),
+    );
 
     fireEvent.keyDown(window, { key: "Escape" });
     expect(screen.getByRole("heading", { name: "Subagents" })).toBeVisible();
@@ -187,6 +231,36 @@ describe("SubagentsSidebar", () => {
 
     fireEvent.keyDown(window, { key: "Escape" });
     expect(closeSidebar).toHaveBeenCalledTimes(1);
+  });
+
+  it("records a privacy-safe transcript failure when realtime disconnects", () => {
+    mockUseSubagentRealtime.mockReturnValue({
+      message: null,
+      state: "error",
+      retry: jest.fn(),
+    });
+
+    render(
+      <SubagentsSidebar
+        content={{
+          kind: "subagents",
+          parentMessageId: "parent-message",
+          toolCallId: "tool-1",
+          selectedSubagentId: "sa_active",
+        }}
+        closeSidebar={jest.fn()}
+      />,
+    );
+
+    expect(captureAuthenticatedEvent).toHaveBeenCalledWith(
+      "subagent_transcript_failed",
+      expect.objectContaining({
+        subagent_id: "sa_active",
+        error_category: "realtime_disconnected",
+        has_persisted_activity: true,
+        activity_message_count: 1,
+      }),
+    );
   });
 
   it("keeps the Active and Done groups visible when there are no children", () => {
@@ -248,6 +322,187 @@ describe("SubagentsSidebar", () => {
     expect(
       screen.queryByText("Internal worker prompt"),
     ).not.toBeInTheDocument();
+  });
+
+  it("shows a stable user-facing empty state for a canceled subagent", () => {
+    jest.useFakeTimers();
+    mockUseQuery.mockImplementation((query, args) => {
+      if (query === "listForParentMessage") return [canceledChild];
+      if (query === "getOwned") {
+        return args === "skip" ? undefined : canceledChild;
+      }
+      return [
+        {
+          message_id: "subagent-message-prompt",
+          sequence: 0,
+          role: "user",
+          parts: [{ type: "text", text: "Internal worker prompt" }],
+          created_at: Date.now(),
+          updated_at: Date.now(),
+        },
+        {
+          message_id: "subagent-message-empty",
+          sequence: 1,
+          role: "assistant",
+          parts: [],
+          created_at: Date.now(),
+          updated_at: Date.now(),
+        },
+      ];
+    });
+
+    render(
+      <SubagentsSidebar
+        content={{
+          kind: "subagents",
+          parentMessageId: "parent-message",
+          toolCallId: "tool-1",
+          selectedSubagentId: "sa_canceled",
+        }}
+        closeSidebar={jest.fn()}
+      />,
+    );
+
+    expect(screen.getByText("Canceled by the parent agent.")).toBeVisible();
+    expect(screen.queryByText("parent_requested")).not.toBeInTheDocument();
+    const taskLabel = screen.getByText("Task", { exact: true });
+    const activityLabel = screen.getByText("Activity", { exact: true });
+    expect(
+      screen.getByText("Canceled before any activity was recorded."),
+    ).toBeVisible();
+    expect(
+      screen.queryByText("No transcript activity was persisted."),
+    ).not.toBeInTheDocument();
+    expect(
+      taskLabel.compareDocumentPosition(activityLabel) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(
+      screen.queryByText("Connecting to activity…"),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByText("Subagent", { exact: true }),
+    ).not.toBeInTheDocument();
+    expect(mockUseSubagentRealtime).toHaveBeenCalledWith({
+      subagentId: "sa_canceled",
+      enabled: false,
+    });
+    act(() => jest.advanceTimersByTime(1_500));
+    expect(captureAuthenticatedEvent).toHaveBeenCalledWith(
+      "subagent_transcript_resolved",
+      expect.objectContaining({
+        subagent_id: "sa_canceled",
+        source: "empty_terminal",
+        has_activity: false,
+        activity_message_count: 0,
+      }),
+    );
+    jest.useRealTimers();
+  });
+
+  it("records a transcript load timeout without capturing content", () => {
+    jest.useFakeTimers();
+    mockUseQuery.mockImplementation((query, args) => {
+      if (query === "listForParentMessage") return [activeChild];
+      if (query === "getOwned") {
+        return args === "skip" ? undefined : activeChild;
+      }
+      return undefined;
+    });
+
+    render(
+      <SubagentsSidebar
+        content={{
+          kind: "subagents",
+          parentMessageId: "parent-message",
+          toolCallId: "tool-1",
+          selectedSubagentId: "sa_active",
+        }}
+        closeSidebar={jest.fn()}
+      />,
+    );
+
+    act(() => jest.advanceTimersByTime(10_000));
+    expect(captureAuthenticatedEvent).toHaveBeenCalledWith(
+      "subagent_transcript_failed",
+      expect.objectContaining({
+        subagent_id: "sa_active",
+        error_category: "persisted_load_timeout",
+        load_latency_ms: 10_000,
+      }),
+    );
+    jest.useRealTimers();
+  });
+
+  it("uses the normal Agent activity UI for tool summaries and running reasoning", () => {
+    mockUseQuery.mockImplementation((query, args) => {
+      if (query === "listForParentMessage") return [activeChild];
+      if (query === "getOwned") {
+        return args === "skip" ? undefined : activeChild;
+      }
+      return [
+        {
+          message_id: "subagent-message-activity",
+          sequence: 1,
+          role: "assistant",
+          parts: [
+            { type: "step-start" },
+            {
+              type: "reasoning",
+              state: "done",
+              text: "Planning the checks",
+            },
+            {
+              type: "tool-read_file",
+              toolCallId: "read-1",
+              state: "output-available",
+              input: { path: "/workspace/app.ts" },
+              output: "source",
+            },
+            {
+              type: "tool-web_search",
+              toolCallId: "search-1",
+              state: "output-available",
+              input: { query: "example" },
+              output: { results: [] },
+            },
+            { type: "step-start" },
+            {
+              type: "reasoning",
+              state: "streaming",
+              text: "Reviewing the results",
+            },
+          ],
+          created_at: Date.now(),
+          updated_at: Date.now(),
+        },
+      ];
+    });
+
+    render(
+      <SubagentsSidebar
+        content={{
+          kind: "subagents",
+          parentMessageId: "parent-message",
+          toolCallId: "tool-1",
+          selectedSubagentId: "sa_active",
+        }}
+        closeSidebar={jest.fn()}
+      />,
+    );
+
+    expect(
+      screen.getByRole("button", {
+        name: /read a file, searched the web\. show tool details/i,
+      }),
+    ).toBeVisible();
+    expect(screen.getAllByTestId("part-reasoning")).toHaveLength(2);
+    for (const reasoning of screen.getAllByTestId("part-reasoning")) {
+      expect(reasoning).toHaveAttribute(
+        "data-keep-latest-reasoning-open",
+        "true",
+      );
+    }
   });
 
   it("resolves a later update back to the child creation group", () => {

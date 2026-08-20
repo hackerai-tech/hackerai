@@ -24,6 +24,11 @@ const statusValidator = v.union(
   v.literal("timed_out"),
 );
 
+const profileValidator = v.union(
+  v.literal("security_task"),
+  v.literal("security_validation"),
+);
+
 const verdictValidator = v.union(
   v.literal("confirmed"),
   v.literal("rejected"),
@@ -76,7 +81,7 @@ const subagentSummaryValidator = v.object({
   parent_message_id: v.string(),
   parent_tool_call_id: v.string(),
   trigger_run_id: v.optional(v.string()),
-  profile: v.literal("security_validation"),
+  profile: profileValidator,
   status: statusValidator,
   name: v.string(),
   objective: v.string(),
@@ -119,9 +124,10 @@ const toSummary = (row: {
   parent_message_id: string;
   parent_tool_call_id: string;
   trigger_run_id?: string;
-  profile: "security_validation";
+  profile: "security_task" | "security_validation";
   name?: string;
   objective: string;
+  success_criteria?: string[];
   status:
     | "queued"
     | "running"
@@ -186,8 +192,10 @@ export const reserveForBackend = mutation({
     parentMessageId: v.string(),
     parentToolCallId: v.string(),
     parentTriggerRunId: v.string(),
+    profile: v.optional(profileValidator),
     name: v.optional(v.string()),
     objective: v.string(),
+    successCriteria: v.optional(v.array(v.string())),
     inheritContext: v.optional(v.boolean()),
     skills: v.optional(v.array(v.string())),
     candidate: v.optional(candidateValidator),
@@ -335,11 +343,12 @@ export const reserveForBackend = mutation({
       parent_message_id: args.parentMessageId,
       parent_tool_call_id: args.parentToolCallId,
       parent_trigger_run_id: args.parentTriggerRunId,
-      profile: "security_validation",
+      profile: args.profile ?? "security_validation",
       depth: 1,
       status: "queued",
       name: args.name,
       objective: args.objective,
+      success_criteria: args.successCriteria,
       inherit_context: args.inheritContext,
       skills: args.skills,
       candidate: args.candidate,
@@ -397,6 +406,58 @@ export const listActiveForParentBackend = query({
       )
       .take(MAX_SUBAGENTS_PER_PARENT_RUN);
     return rows.filter((row) => isActiveStatus(row.status));
+  },
+});
+
+export const listForParentBackend = query({
+  args: {
+    serviceKey: v.string(),
+    userId: v.string(),
+    chatId: v.string(),
+    parentTriggerRunId: v.string(),
+  },
+  returns: v.array(v.any()),
+  handler: async (ctx, args) => {
+    validateServiceKey(args.serviceKey);
+    return await ctx.db
+      .query("subagent_runs")
+      .withIndex("by_user_chat_and_parent_run", (q) =>
+        q
+          .eq("user_id", args.userId)
+          .eq("chat_id", args.chatId)
+          .eq("parent_trigger_run_id", args.parentTriggerRunId),
+      )
+      .order("asc")
+      .take(MAX_SUBAGENTS_PER_PARENT_RUN);
+  },
+});
+
+export const getForParentBackend = query({
+  args: {
+    serviceKey: v.string(),
+    userId: v.string(),
+    chatId: v.string(),
+    parentTriggerRunId: v.string(),
+    targetAgentId: v.string(),
+  },
+  returns: v.union(v.any(), v.null()),
+  handler: async (ctx, args) => {
+    validateServiceKey(args.serviceKey);
+    const rows = await ctx.db
+      .query("subagent_runs")
+      .withIndex("by_user_chat_and_parent_run", (q) =>
+        q
+          .eq("user_id", args.userId)
+          .eq("chat_id", args.chatId)
+          .eq("parent_trigger_run_id", args.parentTriggerRunId),
+      )
+      .take(MAX_SUBAGENTS_PER_PARENT_RUN + 1);
+    const exact = rows.find((row) => row.subagent_id === args.targetAgentId);
+    if (exact) return exact;
+    const matches = rows.filter(
+      (row) => toSubagentHandle(row.subagent_id) === args.targetAgentId,
+    );
+    return matches.length === 1 ? matches[0] : null;
   },
 });
 
@@ -470,6 +531,7 @@ export const sendMessageForBackend = mutation({
         outcome: "not_active" as const,
         subagentId: run.subagent_id,
         agentName,
+        profile: run.profile,
         status: run.status,
         parentMessageId: run.parent_message_id,
       };
@@ -507,6 +569,7 @@ export const sendMessageForBackend = mutation({
       subagentId: run.subagent_id,
       messageId: existing?.external_message_id ?? args.messageId,
       agentName,
+      profile: run.profile,
       status: run.status,
       parentMessageId: run.parent_message_id,
     };
@@ -585,6 +648,7 @@ export const claimNextTerminalForParentBackend = mutation({
     userId: v.string(),
     chatId: v.string(),
     parentTriggerRunId: v.string(),
+    targetAgentIds: v.optional(v.array(v.string())),
   },
   returns: v.any(),
   handler: async (ctx, args) => {
@@ -599,15 +663,45 @@ export const claimNextTerminalForParentBackend = mutation({
       )
       .order("desc")
       .take(MAX_SUBAGENTS_PER_PARENT_RUN);
-    const terminal = rows
+    const scopedRows = args.targetAgentIds?.length
+      ? rows.filter(
+          (row) =>
+            args.targetAgentIds?.includes(row.subagent_id) ||
+            args.targetAgentIds?.includes(toSubagentHandle(row.subagent_id)),
+        )
+      : rows;
+    const unmatchedTargetAgentIds = (args.targetAgentIds ?? []).filter(
+      (targetAgentId) =>
+        !rows.some(
+          (row) =>
+            row.subagent_id === targetAgentId ||
+            toSubagentHandle(row.subagent_id) === targetAgentId,
+        ),
+    );
+    const active = scopedRows.filter(
+      (row) => row.name !== undefined && isActiveStatus(row.status),
+    );
+    if (unmatchedTargetAgentIds.length > 0) {
+      return {
+        terminal: null,
+        active,
+        unmatchedTargetAgentIds,
+      };
+    }
+    const terminal = scopedRows
       .filter(
         (row) =>
           row.name !== undefined &&
           !isActiveStatus(row.status) &&
-          !row.parent_notified_at,
+          (!row.parent_notified_at || Boolean(args.targetAgentIds?.length)),
       )
-      .sort((a, b) => a.created_at - b.created_at)[0];
-    if (terminal) {
+      .sort(
+        (a, b) =>
+          Number(Boolean(a.parent_notified_at)) -
+            Number(Boolean(b.parent_notified_at)) ||
+          a.created_at - b.created_at,
+      )[0];
+    if (terminal && !terminal.parent_notified_at) {
       await ctx.db.patch(terminal._id, {
         parent_notified_at: Date.now(),
         updated_at: Date.now(),
@@ -619,9 +713,8 @@ export const claimNextTerminalForParentBackend = mutation({
             ...terminal,
           }
         : null,
-      active: rows.filter(
-        (row) => row.name !== undefined && isActiveStatus(row.status),
-      ),
+      active,
+      unmatchedTargetAgentIds,
     };
   },
 });
@@ -735,7 +828,7 @@ export const cancelForBackend = mutation({
     }
     await ctx.db.patch(row._id, {
       status: "canceled",
-      summary: "Independent validation was canceled.",
+      summary: "Subagent was canceled.",
       cancel_reason: args.reason,
       failure_code: args.reason,
       completed_at: Date.now(),
@@ -893,7 +986,7 @@ export const cancelForParentBackend = mutation({
       activeRows.map((row) =>
         ctx.db.patch(row._id, {
           status: "canceled",
-          summary: "Independent validation was canceled with its parent run.",
+          summary: "Subagent was canceled with its parent run.",
           cancel_reason: args.reason,
           failure_code: args.reason,
           completed_at: now,
@@ -957,8 +1050,7 @@ export const cancelForChatDeletionBackend = mutation({
       activeRows.map((row) =>
         ctx.db.patch(row._id, {
           status: "canceled",
-          summary:
-            "Independent validation was canceled because its chat was deleted.",
+          summary: "Subagent was canceled because its chat was deleted.",
           cancel_reason: args.reason,
           failure_code: args.reason,
           completed_at: now,
@@ -1020,7 +1112,7 @@ export const cancelForUserDeletionBackend = mutation({
       activeRows.map((row) =>
         ctx.db.patch(row._id, {
           status: "canceled",
-          summary: "Independent validation was canceled during data deletion.",
+          summary: "Subagent was canceled during data deletion.",
           cancel_reason: args.reason,
           failure_code: args.reason,
           completed_at: now,

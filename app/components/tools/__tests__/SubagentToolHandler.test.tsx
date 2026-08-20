@@ -205,6 +205,111 @@ describe("SubagentToolHandler", () => {
     ).toBeInTheDocument();
   });
 
+  it("opens the run-level sidebar from list_agents", () => {
+    render(
+      <SubagentToolHandler
+        message={{ id: "parent-run", role: "assistant", parts: [] } as any}
+        status="ready"
+        part={{
+          type: "tool-list_agents",
+          toolCallId: "tool-list-1",
+          state: "output-available",
+          input: {},
+          output: {
+            success: true,
+            agents: [
+              { agent_id: "sa_1", status: "completed" },
+              { agent_id: "sa_2", status: "canceled" },
+            ],
+          },
+        }}
+      />,
+    );
+
+    expect(screen.getByText("2 total · 0 active")).toBeInTheDocument();
+    fireEvent.click(
+      screen.getByRole("button", { name: "Open Subagents in sidebar" }),
+    );
+    expect(openSidebar).toHaveBeenCalledWith({
+      kind: "subagents",
+      parentMessageId: "parent-run",
+      toolCallId: "tool-list-1",
+    });
+  });
+
+  it("distinguishes active subagents from the durable total", () => {
+    render(
+      <SubagentToolHandler
+        message={{ id: "parent-run", role: "assistant", parts: [] } as any}
+        status="ready"
+        part={{
+          type: "tool-list_agents",
+          toolCallId: "tool-list-active",
+          state: "output-available",
+          input: {},
+          output: {
+            success: true,
+            agents: [
+              { agent_id: "sa_done", status: "completed" },
+              { agent_id: "sa_active", status: "running" },
+            ],
+          },
+        }}
+      />,
+    );
+
+    expect(screen.getByText("2 total · 1 active")).toBeInTheDocument();
+  });
+
+  it("names the exact child canceled by the parent", () => {
+    render(
+      <SubagentToolHandler
+        message={{ id: "parent-run", role: "assistant", parts: [] } as any}
+        status="ready"
+        part={{
+          type: "tool-cancel_agent",
+          toolCallId: "tool-cancel-1",
+          state: "output-available",
+          input: { target_agent_id: "sa_mapper" },
+          output: {
+            success: true,
+            target_agent_id: "sa_mapper",
+            target_agent_name: "Authorization mapper",
+            status: "canceled",
+          },
+        }}
+      />,
+    );
+
+    expect(
+      screen.getByRole("group", { name: "Authorization mapper canceled" }),
+    ).toBeInTheDocument();
+  });
+
+  it("preserves the target handle when cancellation fails before name resolution", () => {
+    render(
+      <SubagentToolHandler
+        message={{ id: "parent-run", role: "assistant", parts: [] } as any}
+        status="ready"
+        part={{
+          type: "tool-cancel_agent",
+          toolCallId: "tool-cancel-failed",
+          state: "output-available",
+          input: { target_agent_id: "sa_mapper" },
+          output: {
+            success: false,
+            target_agent_id: "sa_mapper",
+            error: "The target subagent was not found.",
+          },
+        }}
+      />,
+    );
+
+    expect(
+      screen.getByRole("group", { name: "sa_mapper cancel failed" }),
+    ).toBeInTheDocument();
+  });
+
   it("shows adjacent child starts as one row with distinct visual identities", () => {
     const parts = [
       {

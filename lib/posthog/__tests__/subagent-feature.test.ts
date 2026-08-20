@@ -9,7 +9,9 @@ jest.mock("@/lib/posthog/server", () => ({
 }));
 
 const {
+  SECURITY_TASK_SUBAGENTS_FLAG,
   SECURITY_VALIDATION_SUBAGENTS_FLAG,
+  resolveSecurityTaskSubagentsEnabled,
   resolveSecurityValidationSubagentsEnabled,
   shouldBypassSecurityValidationSubagentsFlag,
 } = require("../subagent-feature") as typeof import("../subagent-feature");
@@ -55,5 +57,17 @@ describe("security validation subagent feature", () => {
     await expect(
       resolveSecurityValidationSubagentsEnabled("user_123", environment),
     ).resolves.toBe(false);
+  });
+
+  it("evaluates the generic task flag in every environment", async () => {
+    mockGetPostHogFeatureFlagForUser.mockResolvedValueOnce(true);
+
+    await expect(resolveSecurityTaskSubagentsEnabled("user_123")).resolves.toBe(
+      true,
+    );
+    expect(mockGetPostHogFeatureFlagForUser).toHaveBeenCalledWith(
+      SECURITY_TASK_SUBAGENTS_FLAG,
+      "user_123",
+    );
   });
 });

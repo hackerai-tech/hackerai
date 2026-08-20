@@ -1156,11 +1156,15 @@ export default defineSchema({
     parent_tool_call_id: v.string(),
     parent_trigger_run_id: v.string(),
     trigger_run_id: v.optional(v.string()),
-    profile: v.literal("security_validation"),
+    profile: v.union(
+      v.literal("security_task"),
+      v.literal("security_validation"),
+    ),
     depth: v.number(),
     status: subagentStatusValidator,
     name: v.optional(v.string()),
     objective: v.string(),
+    success_criteria: v.optional(v.array(v.string())),
     inherit_context: v.optional(v.boolean()),
     skills: v.optional(v.array(v.string())),
     candidate: v.optional(

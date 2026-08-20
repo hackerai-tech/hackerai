@@ -473,14 +473,21 @@ edit code, run terminal commands, or execute code. ${agentModeCTA}
 };
 
 const SECURITY_VALIDATION_SUBAGENT_SECTION = `<independent_validation>
-The create_agent, send_message_to_agent, and wait_for_agents tools are restricted to independent validation of concrete vulnerability candidates with sufficient evidence to reproduce or reject them.
+The security_validation profile is restricted to independent validation of concrete vulnerability candidates with sufficient evidence to reproduce or reject them.
 Do not create an agent for reconnaissance, broad research, discovery, code review, generic testing, or a simple one-shot command. Do not create one unless you can name the affected asset, weakness class, claimed impact, minimum relevant evidence, success criteria, and authorization boundaries in task.
-For create_agent, choose a distinct human-readable name, set skills to ["security_validation"], and use inherit_context only when the latest user message contains necessary validation context. The child is independent and must reproduce or reject the candidate; do not ask it to trust your conclusion.
+For create_agent, set profile="security_validation", choose a distinct human-readable name, set skills to ["security_validation"], and use inherit_context only when the latest user message contains necessary validation context. The child is independent and must reproduce or reject the candidate; do not ask it to trust your conclusion.
 create_agent starts the child asynchronously and returns a short parent-scoped agent_id handle. Use that exact handle as target_agent_id when essential new evidence, a focused question, or a concrete correction changes that active validation; do not send status pings.
 Continue useful parent work while the child runs, then call wait_for_agents. You must receive the structured terminal result before treating the candidate as independently validated. Treat only result.status=completed with result.verdict=confirmed as independently confirmed. Rejected, inconclusive, failed, canceled, or timed-out validation is not confirmation.
 If the child does not return a completed structured result, leave the candidate unvalidated. Do not substitute parent-run tools to repeat the same validation or present the parent's own checks as independent validation.
 Always refer to a child by its exact returned name when describing its start, update, or completion. Do not claim that validation is independent until wait_for_agents returns that child's successful completed result.
 </independent_validation>`;
+
+const SECURITY_TASK_SUBAGENT_SECTION = `<focused_security_tasks>
+Use create_agent with profile="security_task" for a clearly bounded security subtask that can make useful progress independently, such as focused code analysis, artifact investigation, reconnaissance, or testing. The task is free-form; do not invent a fixed task kind. Provide a distinct name, explicit success_criteria, scope and authorization boundaries, and only the minimal context needed.
+security_task uses a fixed server-controlled tool set. Do not pass skills. It cannot delegate, expand scope, create or promote a vulnerability report, or independently confirm a vulnerability. Use security_validation when the purpose is to reproduce or reject a concrete vulnerability candidate.
+create_agent is asynchronous. Continue useful parent work, use list_agents for durable status, send_message_to_agent only for material updates, wait_for_agents with target_agent_ids when waiting for specific children, and cancel_agent when a child is no longer useful or has the wrong scope. Respect the one-active and three-total limits instead of repeatedly retrying blocked creation.
+Treat a security_task result as supporting work. Inspect its task_status, evidence_refs, artifacts, limitations, and next_steps before using it. Never describe it as independent vulnerability confirmation.
+</focused_security_tasks>`;
 
 // Core system prompt with optimized structure
 export const systemPrompt = async (
@@ -493,6 +500,7 @@ export const systemPrompt = async (
   agentPermissionMode: AgentPermissionMode = "full_access",
   securityValidationSubagentsEnabled: boolean = false,
   cloudSandboxProvider?: CloudSandboxProvider,
+  securityTaskSubagentsEnabled: boolean = false,
 ): Promise<string> => {
   const shouldIncludeNotes =
     (subscription !== "free" || mode === "agent") &&
@@ -537,6 +545,9 @@ The current date is ${currentDateTime}.`;
     );
     if (securityValidationSubagentsEnabled) {
       sections.push(SECURITY_VALIDATION_SUBAGENT_SECTION);
+    }
+    if (securityTaskSubagentsEnabled) {
+      sections.push(SECURITY_TASK_SUBAGENT_SECTION);
     }
   }
 

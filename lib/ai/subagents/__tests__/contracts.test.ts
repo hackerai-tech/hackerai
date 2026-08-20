@@ -2,9 +2,11 @@ import { describe, expect, it } from "@jest/globals";
 
 import {
   agentValidationResultSchema,
+  agentSecurityTaskResultSchema,
   createAgentInputSchema,
   securityValidationResultSchema,
   sendMessageToAgentInputSchema,
+  waitForAgentsResultSchema,
   waitForAgentsInputSchema,
 } from "../contracts";
 
@@ -18,16 +20,19 @@ describe("subagent contracts", () => {
     ).toEqual({
       name: "Stored XSS validator",
       task: "Validate stored XSS on the profile page.",
+      success_criteria: [],
       inherit_context: true,
+      context_refs: null,
       skills: null,
     });
-    expect(() =>
+    expect(
       createAgentInputSchema.parse({
-        name: "Validator",
-        task: "Validate",
-        profile: "security_validation",
-      }),
-    ).toThrow();
+        name: "Analyzer",
+        task: "Trace authorization checks",
+        profile: "security_task",
+        success_criteria: ["Identify the enforcing function"],
+      }).profile,
+    ).toBe("security_task");
   });
 
   it("matches the send_message_to_agent and wait_for_agents contracts", () => {
@@ -45,10 +50,24 @@ describe("subagent contracts", () => {
     expect(waitForAgentsInputSchema.parse({})).toEqual({
       reason: "Waiting for messages from other agents",
       timeout_seconds: 300,
+      target_agent_ids: null,
     });
     expect(() =>
       waitForAgentsInputSchema.parse({ timeout_seconds: 301 }),
     ).toThrow();
+    expect(
+      waitForAgentsResultSchema.parse({
+        success: false,
+        wait_outcome: "targets_not_found",
+        reason: "Wait for the mapper",
+        target_agent_ids: ["sa_unknown"],
+        active_agents: [],
+        error: "Target not found",
+      }),
+    ).toMatchObject({
+      wait_outcome: "targets_not_found",
+      target_agent_ids: ["sa_unknown"],
+    });
   });
 
   it("requires evidence for confirmed verdicts", () => {
@@ -67,6 +86,7 @@ describe("subagent contracts", () => {
 
   it("keeps Trigger and failure internals out of the parent validation result", () => {
     const result = agentValidationResultSchema.parse({
+      profile: "security_validation",
       trigger_run_id: "run_internal",
       failure_code: "internal_failure",
       status: "completed",
@@ -81,5 +101,20 @@ describe("subagent contracts", () => {
 
     expect(result).not.toHaveProperty("trigger_run_id");
     expect(result).not.toHaveProperty("failure_code");
+  });
+
+  it("accepts a bounded generic security task result", () => {
+    expect(
+      agentSecurityTaskResultSchema.parse({
+        profile: "security_task",
+        status: "completed",
+        task_status: "partial",
+        summary: "Mapped the authorization path.",
+        evidence_refs: ["file:src/auth.ts:42"],
+        artifacts: [{ path: "/tmp/auth-map.md" }],
+        limitations: ["Dynamic behavior was not exercised."],
+        next_steps: ["Run the focused endpoint test."],
+      }),
+    ).toMatchObject({ profile: "security_task", task_status: "partial" });
   });
 });

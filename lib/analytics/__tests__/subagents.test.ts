@@ -10,8 +10,11 @@ const {
   captureSubagentTerminalOutcome,
   subagentAvailabilityEventUuid,
   subagentCreateAttemptEventUuid,
+  subagentCreateFailureEventUuid,
   subagentModelPromotionEventUuid,
+  subagentOperationEventUuid,
   subagentOutcomeEventUuid,
+  subagentResultDeliveredEventUuid,
 } = require("../subagents") as typeof import("../subagents");
 
 describe("subagent lifecycle analytics", () => {
@@ -40,6 +43,15 @@ describe("subagent lifecycle analytics", () => {
       model_from: undefined,
       model_to: undefined,
       model_promotion_reason: undefined,
+      task_status: undefined,
+      outcome: undefined,
+      failure_stage: undefined,
+      active_count: undefined,
+      total_count: undefined,
+      target_count: undefined,
+      result_available: undefined,
+      environment: expect.any(String),
+      service_version: expect.any(String),
     });
   });
 
@@ -49,6 +61,60 @@ describe("subagent lifecycle analytics", () => {
     );
     expect(subagentCreateAttemptEventUuid("parent-1", "tool-1")).not.toBe(
       subagentCreateAttemptEventUuid("parent-1", "tool-2"),
+    );
+  });
+
+  it("keeps classified failure and coordination outcome ids stable", () => {
+    expect(
+      subagentCreateFailureEventUuid("parent-1", "tool-1", "security_task"),
+    ).toBe(
+      subagentCreateFailureEventUuid("parent-1", "tool-1", "security_task"),
+    );
+    expect(subagentOperationEventUuid("parent-1", "tool-1", "wait")).not.toBe(
+      subagentOperationEventUuid("parent-1", "tool-1", "cancel"),
+    );
+  });
+
+  it("records privacy-safe operation outcomes and release correlation", () => {
+    captureSubagentLifecycleEvent("subagent_wait_outcome", {
+      userId: "user-1",
+      eventUuid: subagentOperationEventUuid("parent-1", "tool-1", "wait"),
+      parentTriggerRunId: "parent-1",
+      profile: "security_task",
+      status: "completed",
+      outcome: "agent finished with unsafe spaces",
+      activeCount: 0,
+      targetCount: 1,
+      resultAvailable: true,
+      durationMs: 1200,
+    });
+
+    expect(mockEvent).toHaveBeenCalledWith(
+      "subagent_wait_outcome",
+      expect.objectContaining({
+        outcome: "agent_finished_with_unsafe_spaces",
+        active_count: 0,
+        target_count: 1,
+        result_available: true,
+        duration_ms: 1200,
+        environment: expect.any(String),
+        service_version: expect.any(String),
+      }),
+    );
+  });
+
+  it("deduplicates repeated targeted delivery of the same child result", () => {
+    expect(subagentResultDeliveredEventUuid("sa_1")).toBe(
+      subagentResultDeliveredEventUuid("sa_1"),
+    );
+    expect(subagentResultDeliveredEventUuid("sa_1")).not.toBe(
+      subagentResultDeliveredEventUuid("sa_2"),
+    );
+  });
+
+  it("keeps availability ids distinct by profile", () => {
+    expect(subagentAvailabilityEventUuid("parent-1", "security_task")).not.toBe(
+      subagentAvailabilityEventUuid("parent-1", "security_validation"),
     );
   });
 
