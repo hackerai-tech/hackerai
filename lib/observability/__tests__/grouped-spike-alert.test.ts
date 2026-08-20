@@ -63,6 +63,44 @@ describe("recordGroupedSpikeAlert", () => {
     expect(mockRedis.set).toHaveBeenCalledTimes(2);
   });
 
+  it("does not let caller attributes override the grouped-event contract", async () => {
+    mockRedis.incr.mockResolvedValueOnce(1);
+    mockRedis.set.mockResolvedValueOnce("OK");
+
+    await recordGroupedSpikeAlert({
+      spikeKey: "provider timeout / openai",
+      sourceEvent: "provider_timeout",
+      threshold: 1,
+      windowMs: 60_000,
+      cooldownMs: 120_000,
+      attributes: {
+        event: "caller_event",
+        spike_key: "caller_spike_key",
+        source_event: "caller_source_event",
+        occurrence_count: 999,
+        threshold: 999,
+        window_ms: 999,
+        cooldown_ms: 999,
+        window_started_at: "caller_window",
+        request_id: "request-123",
+      },
+    });
+
+    expect(mockPhLogger.error).toHaveBeenCalledWith(
+      "Grouped operational error spike detected",
+      expect.objectContaining({
+        event: "grouped_operational_error_spike_detected",
+        spike_key: "provider_timeout___openai",
+        source_event: "provider_timeout",
+        occurrence_count: 1,
+        threshold: 1,
+        window_ms: 60_000,
+        cooldown_ms: 120_000,
+        request_id: "request-123",
+      }),
+    );
+  });
+
   it("does nothing when the shared counter is not configured", async () => {
     mockCreateRedisClient.mockReturnValueOnce(null as never);
 

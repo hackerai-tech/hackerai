@@ -57,6 +57,7 @@ export async function recordGroupedSpikeAlert({
     if (!claimed) return;
 
     phLogger.error("Grouped operational error spike detected", {
+      ...attributes,
       event: "grouped_operational_error_spike_detected",
       spike_key: normalizedSpikeKey,
       source_event: sourceEvent,
@@ -65,7 +66,6 @@ export async function recordGroupedSpikeAlert({
       window_ms: windowMs,
       cooldown_ms: cooldownMs,
       window_started_at: new Date(bucketStartedAt).toISOString(),
-      ...attributes,
     });
   } catch (error) {
     if (counterFailureLogged) return;
