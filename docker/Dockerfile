@@ -283,10 +283,19 @@ RUN npm install -g --cache /tmp/npm-cache agent-browser@0.26.0 && \
 # Go-based Security Tools
 # ============================================================================
 RUN set -eux; \
-    go install github.com/projectdiscovery/interactsh/cmd/interactsh-client@latest && \
+    go_install_with_retry() { \
+      package="$1"; \
+      attempt=1; \
+      while ! GODEBUG=http2client=0 go install "$package"; do \
+        if [ "$attempt" -ge 3 ]; then return 1; fi; \
+        sleep $((attempt * 5)); \
+        attempt=$((attempt + 1)); \
+      done; \
+    }; \
+    go_install_with_retry github.com/projectdiscovery/interactsh/cmd/interactsh-client@latest && \
     go clean -cache -modcache && \
     rm -rf "$GOCACHE" "$GOPATH/pkg/mod" && \
-    go install github.com/projectdiscovery/cvemap/cmd/cvemap@latest && \
+    go_install_with_retry github.com/projectdiscovery/cvemap/cmd/cvemap@latest && \
     go clean -cache -modcache && \
     rm -rf "$GOCACHE" "$GOPATH/pkg/mod"
 

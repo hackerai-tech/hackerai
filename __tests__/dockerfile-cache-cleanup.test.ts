@@ -109,6 +109,17 @@ describe("sandbox Dockerfile cache cleanup", () => {
     }
   });
 
+  test("retries Go installs without HTTP/2 in the AWS image builder", () => {
+    const goRun = findRun(
+      "github.com/projectdiscovery/interactsh/cmd/interactsh-client",
+    );
+
+    expect(goRun).toContain("go_install_with_retry()");
+    expect(goRun).toContain("GODEBUG=http2client=0 go install");
+    expect(goRun).toContain('[ "$attempt" -ge 3 ]');
+    expect(goRun).toContain("sleep $((attempt * 5))");
+  });
+
   test("downloads Katana without compiling its dependency graph", () => {
     const katanaRun = findRun(
       "github.com/projectdiscovery/katana/releases/download",
