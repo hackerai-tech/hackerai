@@ -145,13 +145,18 @@ describe("subagent lifecycle analytics", () => {
       parentTriggerRunId: "parent-1",
       profile: "security_validation",
       status: "failed",
-      errorCategory: "runtime_error",
+      errorCategory: "structured_result_recovery_exhausted",
+      runtimeErrorCategory: "unknown",
     });
 
     expect(mockEvent).toHaveBeenCalledTimes(1);
     expect(mockEvent).toHaveBeenCalledWith(
       "subagent_completed",
-      expect.objectContaining({ status: "failed" }),
+      expect.objectContaining({
+        status: "failed",
+        error_category: "structured_result_recovery_exhausted",
+        runtime_error_category: "unknown",
+      }),
     );
   });
 

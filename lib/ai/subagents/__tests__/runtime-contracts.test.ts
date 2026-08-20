@@ -137,6 +137,10 @@ describe("security validation subagent runtime contracts", () => {
     expect(child).toContain("captureSubagentTerminalOutcome");
     expect(child).toContain("getSubagentProviderRetryDecision");
     expect(child).toContain("canRecoverMissingSubagentResult");
+    expect(child).toContain("getSubagentResultRecoveryRetryDecision");
+    expect(child).toContain('"structured_result_recovery_exhausted"');
+    expect(child).toContain('"resultRecoveryRetryCount"');
+    expect(child).toContain('event: "subagent_recovery_exhausted"');
     expect(child).toContain("persistAssistantMessages");
     expect(child).toContain("recordSubagentRecovery");
     expect(child).toContain("hasToolCall(profile.finalResultTool.name)");

@@ -39,8 +39,11 @@ import {
   buildMissingSubagentResultRecoveryMessage,
   canRecoverMissingSubagentResult,
   getSubagentProviderRetryDecision,
+  getSubagentRecoveryErrorDiagnostics,
+  getSubagentResultRecoveryRetryDecision,
   isTransientProviderCategory,
   pipeSubagentUiMessageStream,
+  type SubagentRecoveryErrorDiagnostics,
 } from "@/lib/ai/subagents/runtime-recovery";
 import { getSubagentProfileDefinition } from "@/lib/ai/subagents/profiles";
 import {
@@ -386,6 +389,9 @@ export const subagentTask = task({
     let runtimeFailureCode: string | undefined;
     let providerRetriesUsed = 0;
     let resultRecoveriesUsed = 0;
+    let resultRecoveryRetriesUsed = 0;
+    let lastRecoveryErrorDiagnostics:
+      SubagentRecoveryErrorDiagnostics | undefined;
     let deferredForParentUpdate = false;
     let extraUsageConfig:
       Awaited<ReturnType<typeof buildExtraUsageConfig>> | undefined;
@@ -877,6 +883,68 @@ export const subagentTask = task({
 
               if (resultValue) break;
               if (attemptError) {
+                if (structuredResultRecovery) {
+                  const recoveryRetry = getSubagentResultRecoveryRetryDecision(
+                    attemptError,
+                    resultRecoveryRetriesUsed,
+                    {
+                      aborted: activeAbort.signal.aborted,
+                      spendCapExceeded,
+                      hasStepsRemaining: stepCount < SUBAGENT_MAX_STEPS,
+                    },
+                  );
+                  lastRecoveryErrorDiagnostics = recoveryRetry;
+                  metadata
+                    .set("resultRecoveryErrorCategory", recoveryRetry.category)
+                    .set("resultRecoveryErrorName", recoveryRetry.errorName);
+                  if (recoveryRetry.errorCode) {
+                    metadata.set(
+                      "resultRecoveryErrorCode",
+                      recoveryRetry.errorCode,
+                    );
+                  }
+                  if (recoveryRetry.statusCode) {
+                    metadata.set(
+                      "resultRecoveryStatusCode",
+                      recoveryRetry.statusCode,
+                    );
+                  }
+                  if (recoveryRetry.shouldRetry) {
+                    resultRecoveryRetriesUsed += 1;
+                    metadata.set(
+                      "resultRecoveryRetryCount",
+                      resultRecoveryRetriesUsed,
+                    );
+                    triggerLogger.warn(
+                      "[subagent] retrying structured result recovery",
+                      {
+                        event: "subagent_result_recovery_retried",
+                        service: "hackerai-subagent",
+                        environment:
+                          process.env.TRIGGER_ENV ??
+                          process.env.NODE_ENV ??
+                          "unknown",
+                        subagent_id: row.subagent_id,
+                        parent_trigger_run_id: row.parent_trigger_run_id,
+                        trigger_run_id: ctx.run.id,
+                        attempt: resultRecoveryRetriesUsed,
+                        error_category: recoveryRetry.category,
+                        error_name: recoveryRetry.errorName,
+                        error_code: recoveryRetry.errorCode,
+                        status_code: recoveryRetry.statusCode,
+                        delay_ms: recoveryRetry.delayMs,
+                      },
+                    );
+                    await waitForRetryDelay(
+                      recoveryRetry.delayMs,
+                      activeAbort.signal,
+                    );
+                    continue;
+                  }
+                  runtimeFailure = attemptError;
+                  runtimeFailureCode = "structured_result_recovery_exhausted";
+                  break;
+                }
                 const retry = getSubagentProviderRetryDecision(
                   attemptError,
                   providerRetriesUsed,
@@ -1012,11 +1080,14 @@ export const subagentTask = task({
                       runtimeFailureCode === "provider_retry_exhausted"
                         ? "Subagent could not recover from a temporary model provider error."
                         : runtimeFailureCode ===
-                            "content_filter_retry_exhausted"
-                          ? "Subagent could not complete because the available model providers blocked the validation content."
-                          : runtimeFailureCode === "provider_error"
-                            ? "Subagent stopped because the model provider rejected the request."
-                            : "Subagent failed before returning a result.",
+                            "structured_result_recovery_exhausted"
+                          ? "Subagent could not produce a structured result after retrying result recovery."
+                          : runtimeFailureCode ===
+                              "content_filter_retry_exhausted"
+                            ? "Subagent could not complete because the available model providers blocked the validation content."
+                            : runtimeFailureCode === "provider_error"
+                              ? "Subagent stopped because the model provider rejected the request."
+                              : "Subagent failed before returning a result.",
                   }
                 : !resultValue
                   ? {
@@ -1025,6 +1096,10 @@ export const subagentTask = task({
                       summary: "Subagent ended without a structured result.",
                     }
                   : null;
+      const runtimeDiagnostics = runtimeFailure
+        ? (lastRecoveryErrorDiagnostics ??
+          getSubagentRecoveryErrorDiagnostics(runtimeFailure))
+        : undefined;
 
       if (terminalFailure) {
         const finishOutcome = await finishSubagent({
@@ -1059,15 +1134,25 @@ export const subagentTask = task({
           stepCount,
           costDollars,
           errorCategory: terminalFailure.code,
+          runtimeErrorCategory: runtimeDiagnostics?.category,
         });
-        if (runtimeFailure) {
+        if (runtimeDiagnostics) {
           triggerLogger.error("[subagent] bounded recovery exhausted", {
-            subagentId: row.subagent_id,
-            parentTriggerRunId: row.parent_trigger_run_id,
-            triggerRunId: ctx.run.id,
-            failureCode: terminalFailure.code,
-            providerRetryCount: providerRetriesUsed,
-            resultRecoveryCount: resultRecoveriesUsed,
+            event: "subagent_recovery_exhausted",
+            service: "hackerai-subagent",
+            environment:
+              process.env.TRIGGER_ENV ?? process.env.NODE_ENV ?? "unknown",
+            subagent_id: row.subagent_id,
+            parent_trigger_run_id: row.parent_trigger_run_id,
+            trigger_run_id: ctx.run.id,
+            failure_code: terminalFailure.code,
+            error_category: runtimeDiagnostics.category,
+            error_name: runtimeDiagnostics.errorName,
+            error_code: runtimeDiagnostics.errorCode,
+            status_code: runtimeDiagnostics.statusCode,
+            provider_retry_count: providerRetriesUsed,
+            result_recovery_count: resultRecoveriesUsed,
+            result_recovery_retry_count: resultRecoveryRetriesUsed,
           });
         }
         metadata.set("status", terminalFailure.status);

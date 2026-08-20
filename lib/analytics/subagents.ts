@@ -23,6 +23,7 @@ type SubagentLifecycleEvent = BaseSubagentEvent & {
   stepCount?: number;
   costDollars?: number;
   errorCategory?: string;
+  runtimeErrorCategory?: string;
   modelFrom?: string;
   modelTo?: string;
   modelPromotionReason?: string;
@@ -84,6 +85,7 @@ export const captureSubagentLifecycleEvent = (
     step_count: fields.stepCount,
     cost_dollars: fields.costDollars,
     error_category: boundedCategory(fields.errorCategory),
+    runtime_error_category: boundedCategory(fields.runtimeErrorCategory),
     model_from: boundedCategory(fields.modelFrom),
     model_to: boundedCategory(fields.modelTo),
     model_promotion_reason: boundedCategory(fields.modelPromotionReason),
