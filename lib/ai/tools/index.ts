@@ -139,21 +139,20 @@ export const createTools = (
       : isE2BSandbox(newSandbox)
         ? "e2b"
         : null;
-    if (provider) {
-      const now = Date.now();
-      if (sandboxCostSegmentStartedAt === null) {
-        sandboxCostSegmentStartedAt = now;
-      } else if (
-        sandboxCostProvider !== null &&
-        sandboxCostProvider !== provider &&
-        sandboxCostSegmentStartedAt !== null
-      ) {
-        sandboxAccumulatedRuntimeMs[sandboxCostProvider] +=
-          now - sandboxCostSegmentStartedAt;
-        sandboxCostSegmentStartedAt = now;
-      }
-      sandboxCostProvider = provider;
+    const now = Date.now();
+    if (
+      sandboxCostSegmentStartedAt !== null &&
+      sandboxCostProvider !== null &&
+      sandboxCostProvider !== provider
+    ) {
+      sandboxAccumulatedRuntimeMs[sandboxCostProvider] +=
+        now - sandboxCostSegmentStartedAt;
+      sandboxCostSegmentStartedAt = null;
     }
+    if (provider !== null && sandboxCostSegmentStartedAt === null) {
+      sandboxCostSegmentStartedAt = now;
+    }
+    sandboxCostProvider = provider;
     if (provider && !providerExposureRecorded) {
       providerExposureRecorded = true;
       const rollout = runtimePolicy.cloudSandboxRollout;

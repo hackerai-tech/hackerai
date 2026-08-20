@@ -198,4 +198,42 @@ describe("sandbox acquisition serialization", () => {
       awsLambdaMicrovmCostDollars: 0,
     });
   });
+
+  it("stops cloud runtime billing while a non-cloud sandbox is active", () => {
+    jest.useFakeTimers();
+    mockIsAwsLambdaMicrovmSandbox.mockImplementation(
+      (sandbox: { provider?: string } | null) => sandbox?.provider === "aws",
+    );
+    mockIsE2BSandbox.mockImplementation(
+      (sandbox: { provider?: string } | null) => sandbox?.provider === "e2b",
+    );
+    const { getSandboxSessionUsage } = createTools(
+      "user-1",
+      "chat-1",
+      {} as never,
+      "agent",
+      {} as never,
+      undefined,
+      true,
+      undefined,
+      "e2b",
+      "service-key",
+    );
+
+    mockTrackSandboxUsage?.({ provider: "e2b" });
+    jest.advanceTimersByTime(1_000);
+    mockTrackSandboxUsage?.({ provider: "local" });
+    jest.advanceTimersByTime(2_000);
+    mockTrackSandboxUsage?.({ provider: "aws" });
+    jest.advanceTimersByTime(3_000);
+
+    expect(getSandboxSessionUsage()).toEqual({
+      totalCostDollars:
+        E2B_COST_PER_MS * 1_000 + AWS_LAMBDA_MICROVM_COST_PER_MS * 3_000,
+      e2bRuntimeMs: 1_000,
+      e2bCostDollars: E2B_COST_PER_MS * 1_000,
+      awsLambdaMicrovmRuntimeMs: 3_000,
+      awsLambdaMicrovmCostDollars: AWS_LAMBDA_MICROVM_COST_PER_MS * 3_000,
+    });
+  });
 });
