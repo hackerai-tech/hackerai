@@ -46,7 +46,6 @@ import type * as subagents from "../subagents.js";
 import type * as supportFraudActions from "../supportFraudActions.js";
 import type * as teamExtraUsage from "../teamExtraUsage.js";
 import type * as teamExtraUsageActions from "../teamExtraUsageActions.js";
-import type * as tempStreams from "../tempStreams.js";
 import type * as unitEconomics from "../unitEconomics.js";
 import type * as unitEconomicsLib from "../unitEconomicsLib.js";
 import type * as usageLogs from "../usageLogs.js";
@@ -101,7 +100,6 @@ declare const fullApi: ApiFromModules<{
   supportFraudActions: typeof supportFraudActions;
   teamExtraUsage: typeof teamExtraUsage;
   teamExtraUsageActions: typeof teamExtraUsageActions;
-  tempStreams: typeof tempStreams;
   unitEconomics: typeof unitEconomics;
   unitEconomicsLib: typeof unitEconomicsLib;
   usageLogs: typeof usageLogs;
