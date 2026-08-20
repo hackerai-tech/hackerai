@@ -100,4 +100,44 @@ describe("CloudDirectTransport", () => {
     });
     expect(onMessage).not.toHaveBeenCalled();
   });
+
+  it("routes file acknowledgements only to the requesting socket", async () => {
+    const transport = new CloudDirectTransport();
+    const onMessage = jest.fn();
+    transport.start({ onMessage, onDisconnect: jest.fn() });
+    const owner = new FakeSocket();
+    const other = new FakeSocket();
+    transport.accept(owner as unknown as WebSocket);
+    transport.accept(other as unknown as WebSocket);
+
+    owner.receive({
+      type: "file_write",
+      requestId: "file-1",
+      path: "/home/user/transcript.json",
+      content: "e30=",
+      isBase64: true,
+      allowedRoot: "/home/user",
+      targetConnectionId: "microvm-1",
+    });
+    other.receive({
+      type: "file_append",
+      requestId: "file-1",
+      path: "/home/user/transcript.json",
+      content: "Cg==",
+      isBase64: true,
+      allowedRoot: "/home/user",
+      targetConnectionId: "microvm-1",
+    });
+    await transport.publish({ type: "file_ok", requestId: "file-1" });
+
+    expect(onMessage).toHaveBeenCalledTimes(1);
+    expect(owner.sent).toContainEqual({
+      type: "file_ok",
+      requestId: "file-1",
+    });
+    expect(other.sent).not.toContainEqual(
+      expect.objectContaining({ requestId: "file-1" }),
+    );
+    await transport.stop();
+  });
 });

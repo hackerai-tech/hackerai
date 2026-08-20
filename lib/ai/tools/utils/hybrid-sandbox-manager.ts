@@ -674,6 +674,14 @@ export class HybridSandboxManager implements SandboxManager {
       );
     }
 
+    // Once this Agent run has fallen back to Cloud, keep using that same
+    // filesystem for the rest of the run. A local connection may reappear
+    // while the model is streaming; switching at that point would split
+    // commands and transcript files across two unrelated sandboxes.
+    if (!this.isLocal && this.sandbox) {
+      return this.getCloudSandbox();
+    }
+
     // If preference is E2B, always use E2B (but block for free users)
     if (this.sandboxPreference === "e2b") {
       if (this.subscription === "free") {

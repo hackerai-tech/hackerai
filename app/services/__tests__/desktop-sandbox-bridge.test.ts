@@ -822,6 +822,57 @@ describe("native desktop file relay", () => {
     });
   });
 
+  it("falls back when native file IPC is blocked by an older Tauri ACL", async () => {
+    const bridge = new DesktopSandboxBridge(buildConfig());
+    await bridge.start();
+    const handler = getPublicationHandler();
+
+    mockInvokeHandler = async (cmd: string) => {
+      if (cmd === "desktop_file_request") {
+        throw new Error("Command desktop_file_request not allowed by ACL");
+      }
+      if (cmd === "get_cmd_server_info") {
+        return { port: 49152, token: "file-token" };
+      }
+      throw new Error(`Unexpected command: ${cmd}`);
+    };
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ ok: true }),
+    } as Response);
+    const publicationPublished = new Promise<void>((resolve) => {
+      mockSubscription.publish.mockImplementationOnce(async () => {
+        resolve();
+      });
+    });
+
+    handler({
+      data: {
+        type: "file_write",
+        requestId: "file-acl-fallback-1",
+        path: "C:\\repo\\transcript.json",
+        content: "compatible",
+        targetConnectionId: "conn-123",
+      },
+    });
+    await publicationPublished;
+
+    expect(global.fetch).toHaveBeenCalledWith(
+      "http://127.0.0.1:49152/files/write",
+      expect.objectContaining({
+        body: JSON.stringify({
+          path: "C:\\repo\\transcript.json",
+          content: "compatible",
+          is_base64: false,
+        }),
+      }),
+    );
+    expect(mockSubscription.publish).toHaveBeenCalledWith({
+      type: "file_ok",
+      requestId: "file-acl-fallback-1",
+    });
+  });
+
   it("does not fall back when native IPC reports a real file error", async () => {
     const bridge = new DesktopSandboxBridge(buildConfig());
     await bridge.start();

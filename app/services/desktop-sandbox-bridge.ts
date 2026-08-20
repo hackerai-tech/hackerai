@@ -888,13 +888,14 @@ export class DesktopSandboxBridge {
     });
   }
 
-  private isMissingNativeFileCommandError(error: unknown): boolean {
+  private isUnavailableNativeFileCommandError(error: unknown): boolean {
     const message = this.getErrorMessage(error).toLowerCase();
     return (
       message.includes("desktop_file_request") &&
       (message.includes("not found") ||
         message.includes("unknown command") ||
-        message.includes("not registered"))
+        message.includes("not registered") ||
+        message.includes("not allowed by acl"))
     );
   }
 
@@ -949,7 +950,7 @@ export class DesktopSandboxBridge {
         this.nativeFileIpcAvailable = true;
         return payload;
       } catch (error) {
-        if (!this.isMissingNativeFileCommandError(error)) {
+        if (!this.isUnavailableNativeFileCommandError(error)) {
           throw error;
         }
         this.nativeFileIpcAvailable = false;
