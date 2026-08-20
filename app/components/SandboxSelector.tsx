@@ -52,6 +52,8 @@ export function SandboxSelector({
     desktopBridgeStatus,
   } = useGlobalState();
   const isFreeUser = subscription === "free";
+  const [onlineRemoteConnectionIds, setOnlineRemoteConnectionIds] =
+    useState<Set<string> | null>(null);
 
   const detectedPlatform = useMemo(() => {
     if (typeof window === "undefined") return null;
@@ -83,16 +85,82 @@ export function SandboxSelector({
         },
       ]
     : [];
-  const remoteOptions: ConnectionOption[] =
-    connections
-      ?.filter((conn) => !conn.isDesktop)
-      .map((conn) => ({
-        id: conn.connectionId,
-        label: conn.osInfo?.hostname || conn.name,
-        shortLabel: conn.osInfo?.hostname || conn.name,
-        icon: Laptop,
-      })) || [];
+  const remoteConnections = useMemo(
+    () => connections?.filter((conn) => !conn.isDesktop) ?? [],
+    [connections],
+  );
+  const remoteConnectionIds = useMemo(
+    () =>
+      remoteConnections
+        .map((connection) => connection.connectionId)
+        .sort()
+        .join(","),
+    [remoteConnections],
+  );
+  const shouldVerifyRemotePresence =
+    isTauri &&
+    desktopBridgeStatus !== "connected" &&
+    remoteConnections.length > 0;
+  const liveRemoteConnections = useMemo(
+    () =>
+      shouldVerifyRemotePresence && onlineRemoteConnectionIds
+        ? remoteConnections.filter((connection) =>
+            onlineRemoteConnectionIds.has(connection.connectionId),
+          )
+        : remoteConnections,
+    [onlineRemoteConnectionIds, remoteConnections, shouldVerifyRemotePresence],
+  );
+  const remoteOptions: ConnectionOption[] = liveRemoteConnections.map(
+    (conn) => ({
+      id: conn.connectionId,
+      label: conn.osInfo?.hostname || conn.name,
+      shortLabel: conn.osInfo?.hostname || conn.name,
+      icon: Laptop,
+    }),
+  );
   const options = [cloudOption, ...desktopOptions, ...remoteOptions];
+
+  // A connected Convex row can briefly exist before the command relay has
+  // subscribed. Confirm live Centrifugo presence before automatically choosing
+  // a remote runner over a reconnecting embedded bridge.
+  useEffect(() => {
+    if (!shouldVerifyRemotePresence) {
+      setOnlineRemoteConnectionIds(null);
+      return;
+    }
+
+    let cancelled = false;
+    setOnlineRemoteConnectionIds(null);
+    fetch("/api/sandbox/presence")
+      .then((response) => {
+        if (!response.ok) throw new Error("Presence check failed");
+        return response.json() as Promise<{
+          connections?: Array<{ connectionId?: string; online?: boolean }>;
+        }>;
+      })
+      .then((presence) => {
+        if (cancelled) return;
+        setOnlineRemoteConnectionIds(
+          new Set(
+            (presence.connections ?? [])
+              .filter(
+                (connection) =>
+                  connection.online &&
+                  typeof connection.connectionId === "string",
+              )
+              .map((connection) => connection.connectionId as string),
+          ),
+        );
+      })
+      .catch(() => {
+        // Keep the remote options visible for manual selection, but do not
+        // auto-select one without authoritative presence.
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [shouldVerifyRemotePresence, remoteConnectionIds]);
 
   // Trigger presence cleanup when dropdown opens
   useEffect(() => {
@@ -126,7 +194,11 @@ export function SandboxSelector({
   useEffect(() => {
     if (!isFreeUser || !connections?.length) return;
 
-    const firstRemote = connections.find((connection) => !connection.isDesktop);
+    const firstRemote = shouldVerifyRemotePresence
+      ? onlineRemoteConnectionIds
+        ? liveRemoteConnections[0]
+        : undefined
+      : remoteConnections[0];
     const preferredLocal =
       desktopConnection && desktopIsSelectable
         ? "desktop"
@@ -146,6 +218,10 @@ export function SandboxSelector({
     desktopConnection,
     desktopIsSelectable,
     isTauri,
+    shouldVerifyRemotePresence,
+    onlineRemoteConnectionIds,
+    liveRemoteConnections,
+    remoteConnections,
   ]);
 
   const unavailableLocalOption: ConnectionOption | null =
