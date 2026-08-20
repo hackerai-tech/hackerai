@@ -1383,20 +1383,27 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
       return;
     }
 
+    await this.sendNativeBase64Chunks(rawPath, encodedContent, "file_write");
+  }
+
+  private async sendNativeBase64Chunks(
+    rawPath: string,
+    encodedContent: string,
+    firstChunkType: "file_write" | "file_append",
+  ): Promise<void> {
     for (
       let offset = 0;
       offset < encodedContent.length;
       offset += CentrifugoSandbox.MAX_NATIVE_FILE_MESSAGE_CHARS
     ) {
-      const chunk = encodedContent.slice(
-        offset,
-        offset + CentrifugoSandbox.MAX_NATIVE_FILE_MESSAGE_CHARS,
-      );
       await this.runFileRequest<FileOkMessage>(
         {
-          type: offset === 0 ? "file_write" : "file_append",
+          type: offset === 0 ? firstChunkType : "file_append",
           path: rawPath,
-          content: chunk,
+          content: encodedContent.slice(
+            offset,
+            offset + CentrifugoSandbox.MAX_NATIVE_FILE_MESSAGE_CHARS,
+          ),
           isBase64: true,
         },
         new Set(["file_ok"]),
@@ -1425,26 +1432,11 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
       return;
     }
 
-    const encodedContent = Buffer.from(content, "utf8").toString("base64");
-    for (
-      let offset = 0;
-      offset < encodedContent.length;
-      offset += CentrifugoSandbox.MAX_NATIVE_FILE_MESSAGE_CHARS
-    ) {
-      await this.runFileRequest<FileOkMessage>(
-        {
-          type: "file_append",
-          path: rawPath,
-          content: encodedContent.slice(
-            offset,
-            offset + CentrifugoSandbox.MAX_NATIVE_FILE_MESSAGE_CHARS,
-          ),
-          isBase64: true,
-        },
-        new Set(["file_ok"]),
-        120000,
-      );
-    }
+    await this.sendNativeBase64Chunks(
+      rawPath,
+      Buffer.from(content, "utf8").toString("base64"),
+      "file_append",
+    );
   }
 
   private async removeNativeFile(rawPath: string): Promise<void> {

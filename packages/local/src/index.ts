@@ -336,11 +336,25 @@ async function prepareFileMutationPath(
   }
 
   const parentPath = dirname(targetPath);
+  const realAllowedRoot = await realpath(allowedRoot);
+  let existingAncestor = parentPath;
+  for (;;) {
+    try {
+      existingAncestor = await realpath(existingAncestor);
+      break;
+    } catch (error) {
+      if (!isMissingPathError(error)) throw error;
+      const nextAncestor = dirname(existingAncestor);
+      if (nextAncestor === existingAncestor) throw error;
+      existingAncestor = nextAncestor;
+    }
+  }
+  if (!isPathInside(realAllowedRoot, existingAncestor)) {
+    throw new Error("Direct file mutation parent escapes its allowed root");
+  }
+
   await mkdir(parentPath, { recursive: true });
-  const [realAllowedRoot, realParentPath] = await Promise.all([
-    realpath(allowedRoot),
-    realpath(parentPath),
-  ]);
+  const realParentPath = await realpath(parentPath);
   if (!isPathInside(realAllowedRoot, realParentPath)) {
     throw new Error("Direct file mutation parent escapes its allowed root");
   }
