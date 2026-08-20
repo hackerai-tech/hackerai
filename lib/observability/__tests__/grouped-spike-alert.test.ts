@@ -64,6 +64,9 @@ describe("recordGroupedSpikeAlert", () => {
   });
 
   it("does not let caller attributes override the grouped-event contract", async () => {
+    const dateNowSpy = jest
+      .spyOn(Date, "now")
+      .mockReturnValue(Date.parse("2026-08-20T14:38:41.000Z"));
     mockRedis.incr.mockResolvedValueOnce(1);
     mockRedis.set.mockResolvedValueOnce("OK");
 
@@ -85,6 +88,7 @@ describe("recordGroupedSpikeAlert", () => {
         request_id: "request-123",
       },
     });
+    dateNowSpy.mockRestore();
 
     expect(mockPhLogger.error).toHaveBeenCalledWith(
       "Grouped operational error spike detected",
@@ -96,6 +100,7 @@ describe("recordGroupedSpikeAlert", () => {
         threshold: 1,
         window_ms: 60_000,
         cooldown_ms: 120_000,
+        window_started_at: "2026-08-20T14:38:00.000Z",
         request_id: "request-123",
       }),
     );
