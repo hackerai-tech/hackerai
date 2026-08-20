@@ -607,6 +607,132 @@ describe("AWS Lambda MicroVM development logging", () => {
     debugSpy.mockRestore();
   });
 
+  it("reconciles a lost RunMicrovm response with the same client token", async () => {
+    process.env.AWS_LAMBDA_MICROVM_RELEASE_MANIFEST = regionalReleaseManifest();
+    mockMutation
+      .mockResolvedValueOnce({
+        created: true,
+        session: {
+          sessionId: "session-transport-recovered",
+          status: "starting",
+          region: "us-east-1",
+          imageIdentifier:
+            "arn:aws:lambda:us-east-1:630609837323:microvm-image:hackerai-cloud-agent",
+          imageVersion: "us-east-1-version",
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+          bootstrapExpiresAt: Date.now() + 60_000,
+        },
+        bootstrapToken: "bootstrap-transport-recovered",
+        cleanupCandidates: [],
+      })
+      .mockResolvedValueOnce(true)
+      .mockResolvedValueOnce(true);
+    mockSend
+      .mockRejectedValueOnce(
+        Object.assign(new Error("response timed out"), { code: "ETIMEDOUT" }),
+      )
+      .mockResolvedValueOnce({
+        microvmId: "microvm-transport-recovered",
+        state: "RUNNING",
+        endpoint: "microvm-transport-recovered.example.test",
+        $metadata: { requestId: "run-reconciled", httpStatusCode: 200 },
+      });
+    const warnSpy = jest.spyOn(console, "warn").mockImplementation();
+    const infoSpy = jest.spyOn(console, "info").mockImplementation();
+    const debugSpy = jest.spyOn(console, "debug").mockImplementation();
+
+    await expect(
+      ensureAwsLambdaMicrovmConnection("user-transport-recovered"),
+    ).resolves.toBeDefined();
+
+    expect(mockSend).toHaveBeenCalledTimes(2);
+    expect(mockSend.mock.calls[0][0]).toMatchObject({
+      input: { clientToken: "session-transport-recovered" },
+    });
+    expect(mockSend.mock.calls[1][0]).toMatchObject({
+      input: { clientToken: "session-transport-recovered" },
+    });
+    expect(mockMutation).toHaveBeenCalledTimes(3);
+    const warningEvents = warnSpy.mock.calls.map(
+      ([payload]) => JSON.parse(payload as string).event,
+    );
+    expect(warningEvents).toContain("cloud_sandbox_run_reconciliation_started");
+    expect(warningEvents).not.toContain(
+      "cloud_sandbox_region_failover_started",
+    );
+    const infoEvents = infoSpy.mock.calls.map(
+      ([payload]) => JSON.parse(payload as string).event,
+    );
+    expect(infoEvents).toContain("cloud_sandbox_run_reconciliation_succeeded");
+
+    warnSpy.mockRestore();
+    infoSpy.mockRestore();
+    debugSpy.mockRestore();
+  });
+
+  it("blocks failover when a lost RunMicrovm response cannot be reconciled", async () => {
+    process.env.AWS_LAMBDA_MICROVM_RELEASE_MANIFEST = regionalReleaseManifest();
+    mockMutation
+      .mockResolvedValueOnce({
+        created: true,
+        session: {
+          sessionId: "session-transport-unknown",
+          status: "starting",
+          region: "us-east-1",
+          imageIdentifier:
+            "arn:aws:lambda:us-east-1:630609837323:microvm-image:hackerai-cloud-agent",
+          imageVersion: "us-east-1-version",
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+          bootstrapExpiresAt: Date.now() + 60_000,
+        },
+        bootstrapToken: "bootstrap-transport-unknown",
+        cleanupCandidates: [],
+      })
+      .mockResolvedValueOnce(true);
+    mockSend
+      .mockRejectedValueOnce(
+        Object.assign(new Error("response reset"), { code: "ECONNRESET" }),
+      )
+      .mockRejectedValueOnce(
+        Object.assign(new Error("reconciliation timed out"), {
+          code: "ETIMEDOUT",
+        }),
+      );
+    const errorSpy = jest.spyOn(console, "error").mockImplementation();
+    const warnSpy = jest.spyOn(console, "warn").mockImplementation();
+    const debugSpy = jest.spyOn(console, "debug").mockImplementation();
+
+    await expect(
+      ensureAwsLambdaMicrovmConnection("user-transport-unknown"),
+    ).rejects.toThrow("provider_error");
+
+    expect(mockSend).toHaveBeenCalledTimes(2);
+    expect(mockMutation).toHaveBeenCalledTimes(2);
+    const warningEvents = warnSpy.mock.calls.map(
+      ([payload]) => JSON.parse(payload as string).event,
+    );
+    expect(warningEvents).toContain("cloud_sandbox_run_reconciliation_failed");
+    expect(warningEvents).not.toContain(
+      "cloud_sandbox_region_failover_started",
+    );
+    const failureEvent = JSON.parse(
+      errorSpy.mock.calls.at(-1)?.[0] as string,
+    ) as Record<string, unknown>;
+    expect(failureEvent).toMatchObject({
+      regional_failover_error_eligible: true,
+      regional_failover_eligible: false,
+      run_outcome_reconciliation_failed: true,
+      convex_session_closed: true,
+      primary_cleanup_confirmed: false,
+    });
+
+    errorSpy.mockRestore();
+    warnSpy.mockRestore();
+    debugSpy.mockRestore();
+  });
+
   it("classifies only RunMicrovm regional failures as failover eligible", () => {
     for (const error of [
       Object.assign(new Error("throttle"), { name: "ThrottlingException" }),

@@ -142,7 +142,11 @@ validation, image/role/connector configuration, and guest lifecycle-hook
 failures never trigger regional failover. The original Convex session must be
 durably closed and any known MicroVM must be confirmed terminated before the
 alternate launch begins. A failed alternate is returned to the caller without
-cascading to a third region.
+cascading to a third region. Because a transport error can mean AWS created the
+VM but its response was lost, the launcher first replays the identical
+idempotent request with the same client token. A recovered primary continues
+normally; if reconciliation also fails, that acquisition fails closed instead
+of risking a duplicate cross-region VM.
 
 Vercel does not need the release manifest, image IDs, execution roles, or
 WebSocket configuration. Its Data Controls route terminates persisted MicroVM

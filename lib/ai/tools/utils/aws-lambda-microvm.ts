@@ -482,6 +482,25 @@ function errorCauseOrSelf(error: unknown): unknown {
     : error;
 }
 
+function isRetryableTransportError(error: unknown): boolean {
+  const record =
+    error && typeof error === "object"
+      ? (error as {
+          name?: unknown;
+          code?: unknown;
+          $retryable?: unknown;
+          $metadata?: { httpStatusCode?: unknown };
+        })
+      : undefined;
+  if (record?.$metadata?.httpStatusCode !== undefined) return false;
+  const name = errorName(error);
+  if (NON_FAILOVER_ERROR_NAMES.has(name)) return false;
+  const code = typeof record?.code === "string" ? record.code : name;
+  return (
+    Boolean(record?.$retryable) || RETRYABLE_TRANSPORT_ERROR_CODES.has(code)
+  );
+}
+
 export function isRegionalFailoverEligibleError(
   error: unknown,
   failureStage: string,
@@ -511,11 +530,7 @@ export function isRegionalFailoverEligibleError(
   }
   if (name === "InternalServerException") return true;
 
-  const code = typeof record?.code === "string" ? record.code : name;
-  return (
-    status === undefined &&
-    (Boolean(record?.$retryable) || RETRYABLE_TRANSPORT_ERROR_CODES.has(code))
-  );
+  return isRetryableTransportError(error);
 }
 
 async function markEnded(
@@ -1255,6 +1270,30 @@ export async function ensureAwsLambdaMicrovmConnection(
   let microvmId: string | undefined;
   let directSandbox: AwsLambdaMicrovmDirectSandbox | undefined;
   let failureStage = "run_microvm";
+  let runOutcomeReconciliationFailed = false;
+  const runRequest = {
+    imageIdentifier: config.imageIdentifier,
+    imageVersion: config.imageVersion,
+    ...(config.executionRoleArn
+      ? { executionRoleArn: config.executionRoleArn }
+      : {}),
+    ingressNetworkConnectors: [config.ingressConnectorArn],
+    egressNetworkConnectors: [config.egressConnectorArn],
+    idlePolicy: {
+      maxIdleDurationSeconds: DIRECT_IDLE_SECONDS,
+      suspendedDurationSeconds: DIRECT_SUSPENDED_SECONDS,
+      autoResumeEnabled: true,
+    },
+    logging: config.executionRoleArn
+      ? { cloudWatch: { logGroup: config.logGroup } }
+      : { disabled: {} },
+    maximumDurationInSeconds: config.maxDurationSeconds,
+    clientToken: begin.session.sessionId,
+    runHookPayload: JSON.stringify({
+      sessionId: begin.session.sessionId,
+      connectionName: "AWS Lambda MicroVM",
+    }),
+  };
   try {
     const runStartedAt = performance.now();
     log("debug", "cloud_sandbox_run_requested", {
@@ -1275,31 +1314,52 @@ export async function ensureAwsLambdaMicrovmConnection(
       transport: "aws_websocket",
       convex_endpoint_kind: endpointKind(convexUrl),
     });
-    const response = await getClient(config.region).send(
-      new RunMicrovmCommand({
-        imageIdentifier: config.imageIdentifier,
-        imageVersion: config.imageVersion,
-        ...(config.executionRoleArn
-          ? { executionRoleArn: config.executionRoleArn }
-          : {}),
-        ingressNetworkConnectors: [config.ingressConnectorArn],
-        egressNetworkConnectors: [config.egressConnectorArn],
-        idlePolicy: {
-          maxIdleDurationSeconds: DIRECT_IDLE_SECONDS,
-          suspendedDurationSeconds: DIRECT_SUSPENDED_SECONDS,
-          autoResumeEnabled: true,
-        },
-        logging: config.executionRoleArn
-          ? { cloudWatch: { logGroup: config.logGroup } }
-          : { disabled: {} },
-        maximumDurationInSeconds: config.maxDurationSeconds,
-        clientToken: begin.session.sessionId,
-        runHookPayload: JSON.stringify({
-          sessionId: begin.session.sessionId,
-          connectionName: "AWS Lambda MicroVM",
-        }),
-      }),
-    );
+    let response;
+    try {
+      response = await getClient(config.region).send(
+        new RunMicrovmCommand(runRequest),
+      );
+    } catch (runError) {
+      if (!isRetryableTransportError(runError)) throw runError;
+      log("warn", "cloud_sandbox_run_reconciliation_started", {
+        user_id: userId,
+        ...correlation,
+        session_id: begin.session.sessionId,
+        region: config.region,
+        initial_error_name: errorName(runError),
+        initial_failure_code: failureCode(runError),
+      });
+      try {
+        // Replaying the identical idempotent request is the only safe way to
+        // recover an AWS-created MicroVM when the first response was lost.
+        response = await getClient(config.region).send(
+          new RunMicrovmCommand(runRequest),
+        );
+      } catch (reconciliationError) {
+        runOutcomeReconciliationFailed = true;
+        log("warn", "cloud_sandbox_run_reconciliation_failed", {
+          user_id: userId,
+          ...correlation,
+          session_id: begin.session.sessionId,
+          region: config.region,
+          initial_error_name: errorName(runError),
+          reconciliation_error_name: errorName(reconciliationError),
+          reconciliation_failure_code: failureCode(reconciliationError),
+          ...errorLogFields(reconciliationError),
+        });
+        throw runError;
+      }
+      log("info", "cloud_sandbox_run_reconciliation_succeeded", {
+        user_id: userId,
+        ...correlation,
+        session_id: begin.session.sessionId,
+        microvm_id: response.microvmId ?? null,
+        region: config.region,
+        initial_error_name: errorName(runError),
+        aws_request_id: response.$metadata.requestId ?? null,
+        aws_http_status_code: response.$metadata.httpStatusCode ?? null,
+      });
+    }
     microvmId = response.microvmId;
     if (!microvmId) throw new Error("AWS did not return a MicroVM ID");
     log("info", "cloud_sandbox_run_accepted", {
@@ -1393,10 +1453,12 @@ export async function ensureAwsLambdaMicrovmConnection(
   } catch (error) {
     const code = failureCode(error);
     const initialErrorName = errorName(error);
-    const regionalFailoverEligible =
+    const regionalFailoverErrorEligible =
       begin.created &&
       !currentAttempt.failover &&
       isRegionalFailoverEligibleError(error, failureStage);
+    const regionalFailoverEligible =
+      regionalFailoverErrorEligible && !runOutcomeReconciliationFailed;
     let failoverConfig: AwsLambdaMicrovmConfig | undefined;
     if (regionalFailoverEligible) {
       try {
@@ -1425,6 +1487,7 @@ export async function ensureAwsLambdaMicrovmConnection(
         ...errorLogFields(closeError),
       });
     });
+    let convexSessionClosed = false;
     let primaryCleanupConfirmed = false;
     if (microvmId) {
       const terminationOutcome = await terminateMicrovm(
@@ -1439,22 +1502,25 @@ export async function ensureAwsLambdaMicrovmConnection(
           "termination_retry_required",
         );
       } else {
-        primaryCleanupConfirmed = await markEnded(
+        convexSessionClosed = await markEnded(
           userId,
           begin.session.sessionId,
           config,
           "failed",
           code,
         );
+        primaryCleanupConfirmed = convexSessionClosed;
       }
     } else {
-      primaryCleanupConfirmed = await markEnded(
+      convexSessionClosed = await markEnded(
         userId,
         begin.session.sessionId,
         config,
         "failed",
         code,
       );
+      primaryCleanupConfirmed =
+        convexSessionClosed && !runOutcomeReconciliationFailed;
     }
 
     const willFailOver = Boolean(failoverConfig && primaryCleanupConfirmed);
@@ -1470,9 +1536,12 @@ export async function ensureAwsLambdaMicrovmConnection(
       execution_role_configured: Boolean(config.executionRoleArn),
       failure_stage: failureStage,
       failure_code: code,
+      regional_failover_error_eligible: regionalFailoverErrorEligible,
       regional_failover_eligible: regionalFailoverEligible,
+      run_outcome_reconciliation_failed: runOutcomeReconciliationFailed,
       regional_failover_available: Boolean(failoverConfig),
       regional_failover_selected_region: failoverConfig?.region ?? null,
+      convex_session_closed: convexSessionClosed,
       primary_cleanup_confirmed: primaryCleanupConfirmed,
       credential_source: credentialSource(),
       aws_profile: process.env.AWS_PROFILE?.trim() || null,
