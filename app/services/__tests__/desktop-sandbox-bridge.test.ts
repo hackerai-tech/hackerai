@@ -24,9 +24,11 @@ const mockClient = {
   ready: jest.fn().mockResolvedValue(undefined),
 };
 let mockClientOptions: { getToken?: () => Promise<string> } | null = null;
+let mockClientEndpoint: unknown = null;
 
 jest.mock("centrifuge", () => ({
-  Centrifuge: jest.fn().mockImplementation((_, options) => {
+  Centrifuge: jest.fn().mockImplementation((endpoint, options) => {
+    mockClientEndpoint = endpoint;
     mockClientOptions = options;
     return mockClient;
   }),
@@ -119,6 +121,7 @@ function getPublicationHandler(): (ctx: { data: unknown }) => void {
 beforeEach(() => {
   jest.clearAllMocks();
   capturedChannel = null;
+  mockClientEndpoint = null;
   mockClientOptions = null;
   global.fetch = originalFetch;
 
@@ -165,6 +168,16 @@ it("waits for the relay and subscription before reporting ready", async () => {
   await bridge.start();
   await Promise.resolve();
 
+  expect(mockClientEndpoint).toEqual([
+    {
+      transport: "websocket",
+      endpoint: "ws://localhost:8000/connection/websocket",
+    },
+    {
+      transport: "http_stream",
+      endpoint: "http://localhost:8000/connection/http_stream",
+    },
+  ]);
   expect(mockClient.ready).toHaveBeenCalledWith(15_000);
   expect(mockSubscription.ready).toHaveBeenCalledWith(15_000);
   expect(config.heartbeatDesktop).toHaveBeenCalledWith({

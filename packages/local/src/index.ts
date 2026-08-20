@@ -36,6 +36,7 @@ import {
   isProcessTreeTerminationConfirmed,
 } from "./command-cancellation";
 import { CentrifugoPublishQueue } from "./centrifugo-transport";
+import { buildCentrifugoTransportEndpoints } from "./centrifugo-endpoints";
 import {
   CloudImagePrimeError,
   primeCloudImageWorkingSet,
@@ -314,6 +315,7 @@ export class LocalSandboxClient {
   private publishQueue?: CentrifugoPublishQueue;
   private cleanupPromise?: Promise<void>;
   private exitRequested = false;
+  private relayTransport: string | null = null;
 
   constructor(
     private config: Config,
@@ -521,14 +523,22 @@ export class LocalSandboxClient {
 
       if (this.config.authMode === "local") {
         console.log(chalk.green("✓ Authenticated"));
-        console.log(chalk.bold(chalk.green("🎉 Local sandbox is ready!")));
-        console.log(chalk.gray(`Connection: ${this.connectionId}`));
+        console.log(chalk.blue("Connecting to command relay..."));
       }
 
       await this.setupCentrifugo(
         result.centrifugoWsUrl,
         result.centrifugoToken,
       );
+      if (this.config.authMode === "local") {
+        console.log(
+          chalk.green(
+            `✓ Connected to command relay (${this.relayTransport ?? "unknown transport"})`,
+          ),
+        );
+        console.log(chalk.bold(chalk.green("🎉 Local sandbox is ready!")));
+        console.log(chalk.gray(`Connection: ${this.connectionId}`));
+      }
       if (this.config.authMode === "cloud") {
         const ready = (await this.convexHttp.mutation(
           api.localSandbox.markCloudRelayReady as never,
@@ -573,7 +583,7 @@ export class LocalSandboxClient {
     wsUrl: string,
     initialToken: string,
   ): Promise<void> {
-    this.centrifuge = new Centrifuge(wsUrl, {
+    this.centrifuge = new Centrifuge(buildCentrifugoTransportEndpoints(wsUrl), {
       websocket: WebSocket as unknown as typeof globalThis.WebSocket,
       token: initialToken,
       getToken: async (): Promise<string> => {
@@ -694,8 +704,13 @@ export class LocalSandboxClient {
       }
     });
 
-    this.centrifuge.on("connected", () => {
-      console.log(chalk.green("✓ Connected to command relay"));
+    this.centrifuge.on("connected", (ctx) => {
+      this.relayTransport = ctx.transport;
+      if (this.config.authMode !== "local") {
+        console.log(
+          chalk.green(`✓ Connected to command relay (${ctx.transport})`),
+        );
+      }
     });
 
     const ready = new Promise<void>((resolve, reject) => {

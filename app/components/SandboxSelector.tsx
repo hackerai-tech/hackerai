@@ -34,6 +34,7 @@ interface ConnectionOption {
   label: string;
   shortLabel: string;
   icon: typeof Cloud;
+  disabled?: boolean;
 }
 
 export function SandboxSelector({
@@ -69,15 +70,19 @@ export function SandboxSelector({
         ? "Local reconnecting"
         : "Local unavailable"
       : "Local";
-  const desktopOptions: ConnectionOption[] =
-    connections
-      ?.filter((conn) => conn.isDesktop)
-      .map(() => ({
-        id: "desktop" as string,
-        label: desktopLabel,
-        shortLabel: desktopLabel,
-        icon: Monitor,
-      })) || [];
+  const desktopConnection = connections?.find((conn) => conn.isDesktop);
+  const desktopIsSelectable = !isTauri || desktopBridgeStatus === "connected";
+  const desktopOptions: ConnectionOption[] = desktopConnection
+    ? [
+        {
+          id: "desktop",
+          label: desktopLabel,
+          shortLabel: desktopLabel,
+          icon: Monitor,
+          disabled: !desktopIsSelectable,
+        },
+      ]
+    : [];
   const remoteOptions: ConnectionOption[] =
     connections
       ?.filter((conn) => !conn.isDesktop)
@@ -115,13 +120,33 @@ export function SandboxSelector({
     }
   }, [connections, valueMatchesOption, value, onChange, isFreeUser]);
 
-  // Auto-select first local option for free users who default to Cloud
+  // Keep free users on a usable local connection. A stale Desktop presence can
+  // outlive the embedded bridge, so prefer a healthy remote runner while the
+  // bridge reconnects instead of repeatedly selecting the unavailable bridge.
   useEffect(() => {
-    if (!isFreeUser || value !== "e2b" || !connections?.length) return;
-    const desktop = connections.find((c) => c.isDesktop);
-    onChange?.(desktop ? "desktop" : connections[0].connectionId);
+    if (!isFreeUser || !connections?.length) return;
+
+    const firstRemote = connections.find((connection) => !connection.isDesktop);
+    const preferredLocal =
+      desktopConnection && desktopIsSelectable
+        ? "desktop"
+        : firstRemote?.connectionId;
+    if (!preferredLocal) return;
+
+    const desktopUnavailable =
+      isTauri && value === "desktop" && !desktopIsSelectable;
+    if (value === "e2b" || desktopUnavailable) {
+      onChange?.(preferredLocal);
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isFreeUser, value, connections]);
+  }, [
+    isFreeUser,
+    value,
+    connections,
+    desktopConnection,
+    desktopIsSelectable,
+    isTauri,
+  ]);
 
   const unavailableLocalOption: ConnectionOption | null =
     value !== "e2b" && !valueMatchesOption
@@ -216,14 +241,18 @@ export function SandboxSelector({
             return (
               <button
                 key={option.id}
+                disabled={option.disabled}
                 onClick={() => {
+                  if (option.disabled) return;
                   onChange?.(option.id);
                   setOpen(false);
                 }}
                 className={`w-full flex items-center gap-2.5 p-2 rounded-md text-left transition-colors ${
-                  value === option.id
-                    ? "bg-accent text-accent-foreground"
-                    : "hover:bg-muted"
+                  option.disabled
+                    ? "opacity-60 cursor-not-allowed"
+                    : value === option.id
+                      ? "bg-accent text-accent-foreground"
+                      : "hover:bg-muted"
                 }`}
               >
                 <OptionIcon className="h-4 w-4 shrink-0" />

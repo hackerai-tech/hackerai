@@ -22,6 +22,7 @@ import {
   DEFAULT_PTY_ROWS,
 } from "@/lib/ai/tools/utils/pty-session-manager";
 import { CentrifugoPublishQueue } from "@/packages/local/src/centrifugo-transport";
+import { buildCentrifugoTransportEndpoints } from "@/packages/local/src/centrifugo-endpoints";
 import { LOCAL_SANDBOX_HEARTBEAT_INTERVAL_MS } from "@/lib/centrifugo/presence";
 
 type RefreshTokenResult =
@@ -358,7 +359,8 @@ export class DesktopSandboxBridge {
 
     this.connectionId = connectionId;
 
-    this.client = new Centrifuge(centrifugoWsUrl, {
+    const relayEndpoints = buildCentrifugoTransportEndpoints(centrifugoWsUrl);
+    this.client = new Centrifuge(relayEndpoints, {
       token: centrifugoToken,
       getToken: async () => {
         if (!this.connectionId) {

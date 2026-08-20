@@ -128,4 +128,69 @@ describe("LocalSandboxClient in-process cleanup", () => {
     expect(exitSpy).toHaveBeenCalledWith(1);
     exitSpy.mockRestore();
   });
+
+  it("does not report the local sandbox ready before relay subscription", async () => {
+    let relayStarted!: () => void;
+    const setupStarted = new Promise<void>((resolve) => {
+      relayStarted = resolve;
+    });
+    let markRelayReady!: () => void;
+    const relayReady = new Promise<void>((resolve) => {
+      markRelayReady = resolve;
+    });
+    const logSpy = jest.spyOn(console, "log").mockImplementation(() => {});
+    const client = new LocalSandboxClient({
+      convexUrl: "http://127.0.0.1:3210",
+      token: "test-token",
+      name: "test",
+      authMode: "local",
+    });
+    (
+      client as unknown as {
+        convexHttp: {
+          mutation: jest.Mock;
+        };
+      }
+    ).convexHttp.mutation = jest.fn().mockResolvedValue({
+      success: true,
+      userId: "user-1",
+      connectionId: "connection-1",
+      centrifugoToken: "relay-token",
+      centrifugoWsUrl: "wss://relay.example.test/connection/websocket",
+    });
+    (
+      client as unknown as {
+        setupCentrifugo: () => Promise<void>;
+        startIdleCheck: () => void;
+      }
+    ).setupCentrifugo = jest.fn(async () => {
+      relayStarted();
+      await relayReady;
+    });
+    (
+      client as unknown as {
+        startIdleCheck: () => void;
+      }
+    ).startIdleCheck = jest.fn();
+
+    const start = client.start();
+    await setupStarted;
+
+    const logsBeforeRelay = logSpy.mock.calls.flat().join("\n");
+    expect(logsBeforeRelay).toContain("✓ Authenticated");
+    expect(logsBeforeRelay).toContain("Connecting to command relay");
+    expect(logsBeforeRelay).not.toContain("Local sandbox is ready");
+
+    markRelayReady();
+    await start;
+
+    const logsAfterRelay = logSpy.mock.calls.flat().join("\n");
+    expect(logsAfterRelay).toContain("✓ Connected to command relay");
+    expect(logsAfterRelay).toContain("Local sandbox is ready");
+    expect(logsAfterRelay.indexOf("✓ Connected to command relay")).toBeLessThan(
+      logsAfterRelay.indexOf("Local sandbox is ready"),
+    );
+
+    logSpy.mockRestore();
+  });
 });
