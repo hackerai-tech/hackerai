@@ -4,6 +4,7 @@ import {
   LambdaMicrovmsClient,
   ResumeMicrovmCommand,
   RunMicrovmCommand,
+  type RunMicrovmCommandInput,
   SuspendMicrovmCommand,
   TerminateMicrovmCommand,
 } from "@aws-sdk/client-lambda-microvms";
@@ -1271,7 +1272,7 @@ export async function ensureAwsLambdaMicrovmConnection(
   let directSandbox: AwsLambdaMicrovmDirectSandbox | undefined;
   let failureStage = "run_microvm";
   let runOutcomeReconciliationFailed = false;
-  const runRequest = {
+  const runRequest: RunMicrovmCommandInput = {
     imageIdentifier: config.imageIdentifier,
     imageVersion: config.imageVersion,
     ...(config.executionRoleArn

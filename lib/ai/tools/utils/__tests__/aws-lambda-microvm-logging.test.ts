@@ -650,9 +650,11 @@ describe("AWS Lambda MicroVM development logging", () => {
     expect(mockSend.mock.calls[0][0]).toMatchObject({
       input: { clientToken: "session-transport-recovered" },
     });
-    expect(mockSend.mock.calls[1][0]).toMatchObject({
-      input: { clientToken: "session-transport-recovered" },
-    });
+    const initialRunInput = (mockSend.mock.calls[0][0] as { input: unknown })
+      .input;
+    const replayRunInput = (mockSend.mock.calls[1][0] as { input: unknown })
+      .input;
+    expect(replayRunInput).toEqual(initialRunInput);
     expect(mockMutation).toHaveBeenCalledTimes(3);
     const warningEvents = warnSpy.mock.calls.map(
       ([payload]) => JSON.parse(payload as string).event,
