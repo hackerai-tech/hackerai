@@ -51,6 +51,7 @@
     "aws:microvm:package": "pnpm local-sandbox:build && node scripts/package-aws-microvm.mjs",
     "aws:microvm:deploy": "pnpm aws:microvm:package && node scripts/deploy-aws-microvm.mjs",
     "aws:microvm:smoke": "node scripts/smoke-aws-microvm.mjs",
+    "aws:microvm:sync-trigger-env": "tsx scripts/sync-trigger-microvm-release-env.ts",
     "local-sandbox": "npx tsx packages/local/src/index.ts",
     "local-sandbox:build": "cd packages/local && pnpm build",
     "desktop:dev": "cd packages/desktop && pnpm dev",

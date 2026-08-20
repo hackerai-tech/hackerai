@@ -150,9 +150,11 @@ WebSocket subprotocol during the AWS-authenticated upgrade.
 when MicroVM image inputs change on `main`, or when it is run manually. It does
 not float production to AWS's implicit latest version. Instead it waits for the
 exact published version, launches a short-lived VM, executes a real command
-through its authenticated WebSocket, terminates it, pins that version in a new
-Trigger.dev production worker, and leaves Vercel unchanged. Older AWS image
-versions remain available for an explicit rollback.
+through its authenticated WebSocket, terminates it, uploads and verifies that
+exact version in Trigger.dev's stored production environment, pins it in a new
+production worker, and leaves Vercel unchanged. Older AWS image versions remain
+available for an explicit rollback. A failed Trigger.dev upload or read-back
+verification stops the release before the worker deploys.
 
 The CloudFormation stack creates a GitHub OIDC release role, so GitHub Actions
 does not need long-lived AWS access keys. Create a GitHub environment named
@@ -182,15 +184,15 @@ local/desktop sandbox support also keeps its existing Centrifugo values there.
 Vercel retains only the AWS credentials and Convex key required by Data
 Controls cleanup. They are not copied through GitHub Actions.
 
-## 5. Validate the Ultra-only gradual rollout
+## 5. Validate the paid-plan gradual rollout
 
 Production assignment is controlled by the PostHog feature flag
 [`aws_lambda_microvm_ultra_rollout_v1`](https://us.posthog.com/project/144137/feature_flags/828023).
-The application hard-gates eligibility to Ultra before evaluating the flag, so
-no PostHog targeting mistake can expose another plan. Start at 10% of Ultra
-users; the remaining eligible users stay on E2B as the concurrent control.
-Preview and Trigger.dev development runs use AWS for Ultra users so the
-candidate remains testable without widening production.
+The application hard-gates Free users to local-only behavior and evaluates the
+flag for every paid plan. PostHog is the final AWS/E2B provider gate in every
+environment, so use an explicit allowlist before widening percentage rollout;
+paid users outside the enabled population stay on E2B as the concurrent
+control.
 
 Measure actual acquisition exposure with `cloud_sandbox_provider_selected`.
 It includes the provider, transport (`aws_websocket` or `e2b_sdk`), rollout

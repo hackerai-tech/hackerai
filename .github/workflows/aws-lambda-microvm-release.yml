@@ -12,6 +12,8 @@ on:
       - "scripts/deploy-aws-microvm.mjs"
       - "scripts/package-aws-microvm.mjs"
       - "scripts/smoke-aws-microvm.mjs"
+      - "scripts/sync-trigger-microvm-release-env.ts"
+      - "scripts/lib/trigger-microvm-release-env.ts"
       - "package.json"
       - "pnpm-lock.yaml"
   workflow_dispatch:
@@ -117,18 +119,11 @@ jobs:
       - name: Launch and terminate exact image version
         run: pnpm aws:microvm:smoke
 
+      - name: Sync and verify Trigger.dev production environment
+        run: pnpm aws:microvm:sync-trigger-env
+
       - name: Deploy pinned Trigger.dev worker
-        shell: bash
-        run: |
-          trigger_env_file="$RUNNER_TEMP/trigger-microvm-release.env"
-          printf '%s\n' \
-            "TRIGGER_PROJECT_ID=$TRIGGER_PROJECT_ID" \
-            "CLOUD_SANDBOX_PROVIDER=aws-lambda-microvm" \
-            "AWS_LAMBDA_MICROVM_IMAGE_ID=$AWS_LAMBDA_MICROVM_IMAGE_ID" \
-            "AWS_LAMBDA_MICROVM_IMAGE_VERSION=$AWS_LAMBDA_MICROVM_IMAGE_VERSION" \
-            "AWS_LAMBDA_MICROVM_EXECUTION_ROLE_ARN=$AWS_LAMBDA_MICROVM_EXECUTION_ROLE_ARN" \
-            > "$trigger_env_file"
-          pnpm exec trigger deploy --env prod --env-file "$trigger_env_file"
+        run: pnpm exec trigger deploy --env prod --skip-update-check
 
       - name: Write release summary
         shell: bash
