@@ -1,5 +1,5 @@
 import "@testing-library/jest-dom";
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, jest } from "@jest/globals";
 
 const mockGlobalState = {
@@ -12,6 +12,10 @@ const mockGlobalState = {
   }>,
   desktopBridgeStatus: "connecting",
 };
+let mockPresenceConnections: Array<{
+  connectionId: string;
+  online: boolean;
+}> = [];
 
 jest.mock("@/app/contexts/GlobalState", () => ({
   useGlobalState: () => mockGlobalState,
@@ -37,6 +41,11 @@ describe("SandboxSelector", () => {
     mockGlobalState.subscription = "free";
     mockGlobalState.localConnections = [];
     mockGlobalState.desktopBridgeStatus = "connecting";
+    mockPresenceConnections = [];
+    global.fetch = jest.fn().mockImplementation(async () => ({
+      ok: true,
+      json: async () => ({ connections: mockPresenceConnections }),
+    })) as typeof fetch;
   });
 
   it("shows Local reconnecting instead of Cloud while Desktop reconnects", () => {
@@ -61,6 +70,7 @@ describe("SandboxSelector", () => {
   });
 
   it("shows the selected remote runner when it is connected", () => {
+    mockGlobalState.desktopBridgeStatus = "connected";
     mockGlobalState.localConnections = [
       {
         connectionId: "remote-kali",
@@ -73,5 +83,79 @@ describe("SandboxSelector", () => {
     render(<SandboxSelector value="remote-kali" />);
 
     expect(screen.getByRole("button", { name: /4p3x/i })).toBeInTheDocument();
+  });
+
+  it("selects a healthy remote runner while the embedded bridge reconnects", async () => {
+    const onChange = jest.fn();
+    mockGlobalState.localConnections = [
+      { connectionId: "stale-desktop", isDesktop: true },
+      {
+        connectionId: "remote-kali",
+        isDesktop: false,
+        name: "Kali VM",
+        osInfo: { hostname: "4p3x" },
+      },
+    ];
+    mockPresenceConnections = [
+      { connectionId: "stale-desktop", online: false },
+      { connectionId: "remote-kali", online: true },
+    ];
+
+    render(<SandboxSelector value="desktop" onChange={onChange} />);
+
+    await waitFor(() => expect(onChange).toHaveBeenCalledWith("remote-kali"));
+  });
+
+  it("does not select a remote runner without live relay presence", async () => {
+    const onChange = jest.fn();
+    mockGlobalState.localConnections = [
+      { connectionId: "stale-desktop", isDesktop: true },
+      {
+        connectionId: "remote-kali",
+        isDesktop: false,
+        name: "Kali VM",
+        osInfo: { hostname: "4p3x" },
+      },
+    ];
+    mockPresenceConnections = [
+      { connectionId: "stale-desktop", online: false },
+      { connectionId: "remote-kali", online: false },
+    ];
+
+    render(<SandboxSelector value="desktop" onChange={onChange} />);
+
+    await waitFor(() =>
+      expect(global.fetch).toHaveBeenCalledWith("/api/sandbox/presence"),
+    );
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("button", { name: /4p3x/i }),
+      ).not.toBeInTheDocument(),
+    );
+    expect(onChange).not.toHaveBeenCalledWith("remote-kali");
+  });
+
+  it("does not auto-select a reconnecting embedded bridge", async () => {
+    const onChange = jest.fn();
+    mockGlobalState.localConnections = [
+      { connectionId: "stale-desktop", isDesktop: true },
+    ];
+
+    render(<SandboxSelector value="e2b" onChange={onChange} />);
+
+    await waitFor(() => expect(onChange).not.toHaveBeenCalled());
+  });
+
+  it("continues to prefer a connected embedded bridge", async () => {
+    const onChange = jest.fn();
+    mockGlobalState.desktopBridgeStatus = "connected";
+    mockGlobalState.localConnections = [
+      { connectionId: "desktop-connection", isDesktop: true },
+      { connectionId: "remote-kali", isDesktop: false, name: "Kali VM" },
+    ];
+
+    render(<SandboxSelector value="e2b" onChange={onChange} />);
+
+    await waitFor(() => expect(onChange).toHaveBeenCalledWith("desktop"));
   });
 });

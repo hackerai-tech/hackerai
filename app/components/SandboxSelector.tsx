@@ -34,6 +34,7 @@ interface ConnectionOption {
   label: string;
   shortLabel: string;
   icon: typeof Cloud;
+  disabled?: boolean;
 }
 
 export function SandboxSelector({
@@ -69,25 +70,107 @@ export function SandboxSelector({
         ? "Local reconnecting"
         : "Local unavailable"
       : "Local";
-  const desktopOptions: ConnectionOption[] =
-    connections
-      ?.filter((conn) => conn.isDesktop)
-      .map(() => ({
-        id: "desktop" as string,
-        label: desktopLabel,
-        shortLabel: desktopLabel,
-        icon: Monitor,
-      })) || [];
-  const remoteOptions: ConnectionOption[] =
-    connections
-      ?.filter((conn) => !conn.isDesktop)
-      .map((conn) => ({
-        id: conn.connectionId,
-        label: conn.osInfo?.hostname || conn.name,
-        shortLabel: conn.osInfo?.hostname || conn.name,
-        icon: Laptop,
-      })) || [];
+  const desktopConnection = connections?.find((conn) => conn.isDesktop);
+  const desktopIsSelectable = !isTauri || desktopBridgeStatus === "connected";
+  const desktopOptions: ConnectionOption[] = desktopConnection
+    ? [
+        {
+          id: "desktop",
+          label: desktopLabel,
+          shortLabel: desktopLabel,
+          icon: Monitor,
+          disabled: !desktopIsSelectable,
+        },
+      ]
+    : [];
+  const remoteConnections = useMemo(
+    () => connections?.filter((conn) => !conn.isDesktop) ?? [],
+    [connections],
+  );
+  const remoteConnectionIds = useMemo(
+    () =>
+      remoteConnections
+        .map((connection) => connection.connectionId)
+        .sort()
+        .join(","),
+    [remoteConnections],
+  );
+  const shouldVerifyRemotePresence =
+    isTauri &&
+    desktopBridgeStatus !== "connected" &&
+    remoteConnections.length > 0;
+  const remotePresenceRequest = useMemo(
+    () => ({
+      enabled: shouldVerifyRemotePresence,
+      connectionIds: remoteConnectionIds,
+    }),
+    [remoteConnectionIds, shouldVerifyRemotePresence],
+  );
+  const [remotePresence, setRemotePresence] = useState<{
+    request: typeof remotePresenceRequest;
+    onlineConnectionIds: Set<string>;
+  } | null>(null);
+  const onlineRemoteConnectionIds =
+    remotePresence?.request === remotePresenceRequest
+      ? remotePresence.onlineConnectionIds
+      : null;
+  const liveRemoteConnections = useMemo(
+    () =>
+      shouldVerifyRemotePresence && onlineRemoteConnectionIds
+        ? remoteConnections.filter((connection) =>
+            onlineRemoteConnectionIds.has(connection.connectionId),
+          )
+        : remoteConnections,
+    [onlineRemoteConnectionIds, remoteConnections, shouldVerifyRemotePresence],
+  );
+  const remoteOptions: ConnectionOption[] = liveRemoteConnections.map(
+    (conn) => ({
+      id: conn.connectionId,
+      label: conn.osInfo?.hostname || conn.name,
+      shortLabel: conn.osInfo?.hostname || conn.name,
+      icon: Laptop,
+    }),
+  );
   const options = [cloudOption, ...desktopOptions, ...remoteOptions];
+
+  // A connected Convex row can briefly exist before the command relay has
+  // subscribed. Confirm live Centrifugo presence before automatically choosing
+  // a remote runner over a reconnecting embedded bridge.
+  useEffect(() => {
+    if (!remotePresenceRequest.enabled) return;
+
+    let cancelled = false;
+    fetch("/api/sandbox/presence")
+      .then((response) => {
+        if (!response.ok) throw new Error("Presence check failed");
+        return response.json() as Promise<{
+          connections?: Array<{ connectionId?: string; online?: boolean }>;
+        }>;
+      })
+      .then((presence) => {
+        if (cancelled) return;
+        setRemotePresence({
+          request: remotePresenceRequest,
+          onlineConnectionIds: new Set(
+            (presence.connections ?? [])
+              .filter(
+                (connection) =>
+                  connection.online &&
+                  typeof connection.connectionId === "string",
+              )
+              .map((connection) => connection.connectionId as string),
+          ),
+        });
+      })
+      .catch(() => {
+        // Keep the remote options visible for manual selection, but do not
+        // auto-select one without authoritative presence.
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [remotePresenceRequest]);
 
   // Trigger presence cleanup when dropdown opens
   useEffect(() => {
@@ -115,13 +198,41 @@ export function SandboxSelector({
     }
   }, [connections, valueMatchesOption, value, onChange, isFreeUser]);
 
-  // Auto-select first local option for free users who default to Cloud
+  // Keep free users on a usable local connection. A stale Desktop presence can
+  // outlive the embedded bridge, so prefer a healthy remote runner while the
+  // bridge reconnects instead of repeatedly selecting the unavailable bridge.
   useEffect(() => {
-    if (!isFreeUser || value !== "e2b" || !connections?.length) return;
-    const desktop = connections.find((c) => c.isDesktop);
-    onChange?.(desktop ? "desktop" : connections[0].connectionId);
+    if (!isFreeUser || !connections?.length) return;
+
+    const firstRemote = shouldVerifyRemotePresence
+      ? onlineRemoteConnectionIds
+        ? liveRemoteConnections[0]
+        : undefined
+      : remoteConnections[0];
+    const preferredLocal =
+      desktopConnection && desktopIsSelectable
+        ? "desktop"
+        : firstRemote?.connectionId;
+    if (!preferredLocal) return;
+
+    const desktopUnavailable =
+      isTauri && value === "desktop" && !desktopIsSelectable;
+    if (value === "e2b" || desktopUnavailable) {
+      onChange?.(preferredLocal);
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isFreeUser, value, connections]);
+  }, [
+    isFreeUser,
+    value,
+    connections,
+    desktopConnection,
+    desktopIsSelectable,
+    isTauri,
+    shouldVerifyRemotePresence,
+    onlineRemoteConnectionIds,
+    liveRemoteConnections,
+    remoteConnections,
+  ]);
 
   const unavailableLocalOption: ConnectionOption | null =
     value !== "e2b" && !valueMatchesOption
@@ -216,14 +327,18 @@ export function SandboxSelector({
             return (
               <button
                 key={option.id}
+                disabled={option.disabled}
                 onClick={() => {
+                  if (option.disabled) return;
                   onChange?.(option.id);
                   setOpen(false);
                 }}
                 className={`w-full flex items-center gap-2.5 p-2 rounded-md text-left transition-colors ${
-                  value === option.id
-                    ? "bg-accent text-accent-foreground"
-                    : "hover:bg-muted"
+                  option.disabled
+                    ? "opacity-60 cursor-not-allowed"
+                    : value === option.id
+                      ? "bg-accent text-accent-foreground"
+                      : "hover:bg-muted"
                 }`}
               >
                 <OptionIcon className="h-4 w-4 shrink-0" />
