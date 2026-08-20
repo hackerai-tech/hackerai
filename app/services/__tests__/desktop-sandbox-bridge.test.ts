@@ -821,6 +821,11 @@ describe("native desktop file relay", () => {
       ok: true,
       json: async () => ({ ok: true }),
     } as Response);
+    const publicationPublished = new Promise<void>((resolve) => {
+      mockSubscription.publish.mockImplementationOnce(async () => {
+        resolve();
+      });
+    });
 
     handler({
       data: {
@@ -831,7 +836,7 @@ describe("native desktop file relay", () => {
         targetConnectionId: "conn-123",
       },
     });
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    await publicationPublished;
 
     expect(global.fetch).toHaveBeenCalledWith(
       "http://127.0.0.1:49152/files/write",
