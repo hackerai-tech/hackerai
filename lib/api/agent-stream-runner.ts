@@ -65,7 +65,12 @@ import {
   toolResultsContainImageViewResult,
   uiMessagesContainImageViewResult,
 } from "@/lib/chat/multimodal-tool-result-recovery";
-import { isAnthropicModel, isDeepSeekModel } from "@/lib/ai/providers";
+import {
+  isAnthropicModel,
+  isDeepSeekModel,
+  PDF_PARSER_ENGINE_HEADER,
+  PDF_PARSER_RECOVERY_HEADER,
+} from "@/lib/ai/providers";
 import { MAX_OUTPUT_TOKENS } from "@/lib/ai/output-limits";
 import { ptySessionManager } from "@/lib/ai/tools/utils/pty-session-manager";
 import { getMaxTokensForSubscription } from "@/lib/token-utils";
@@ -137,6 +142,40 @@ const uiMessagesContainImageAttachment = (messages: UIMessage[]): boolean =>
         part.mediaType.startsWith("image/"),
     ),
   );
+
+export const omitPdfFilePartsFromModelMessages = (
+  messages: ModelMessage[],
+): ModelMessage[] => {
+  let changed = false;
+  const nextMessages = messages.flatMap<ModelMessage>((message) => {
+    if (message.role !== "user" || !Array.isArray(message.content)) {
+      return message;
+    }
+    const content = message.content.filter((part) => {
+      const shouldRemove =
+        part.type === "file" && part.mediaType === "application/pdf";
+      changed ||= shouldRemove;
+      return !shouldRemove;
+    });
+    if (content.length === message.content.length) return message;
+    return content.length === 0 ? [] : { ...message, content };
+  });
+  return changed ? nextMessages : messages;
+};
+
+const getResponseHeader = (
+  headers: unknown,
+  name: string,
+): string | undefined => {
+  if (headers instanceof Headers) return headers.get(name) ?? undefined;
+  if (!headers || typeof headers !== "object") return undefined;
+  const headerRecord = headers as Record<string, unknown>;
+  const target = name.toLowerCase();
+  const entry = Object.entries(headerRecord).find(
+    ([key]) => key.toLowerCase() === target,
+  );
+  return typeof entry?.[1] === "string" ? entry[1] : undefined;
+};
 
 export const resolveAgentModelAfterSummarization = (
   modelName: string,
@@ -795,11 +834,13 @@ export async function createAgentStream(
   let streamHasImageViewResults =
     !ctx.auxiliaryVisionEnabled &&
     uiMessagesContainImageViewResult(state.finalMessages);
-  const streamHasPdfAttachments = state.finalMessages.some((message) =>
+  let streamHasPdfAttachments = state.finalMessages.some((message) =>
     message.parts?.some(
       (part) => part.type === "file" && part.mediaType === "application/pdf",
     ),
   );
+  let pdfParserEngine: "mistral-ocr" | "cloudflare-ai" = "mistral-ocr";
+  let providerPdfAttachmentsDisabled = false;
   let openRouterFileAnnotations: unknown[] | undefined;
   const getEffectiveModelName = () =>
     resolveAgentModelForImageToolResults(
@@ -832,7 +873,9 @@ export async function createAgentStream(
       {
         requestedModelSlug,
         hasMultimodalToolResults: streamHasImageViewResults,
-        hasPdfAttachments: streamHasPdfAttachments,
+        hasPdfAttachments:
+          streamHasPdfAttachments && !providerPdfAttachmentsDisabled,
+        pdfParserEngine,
         excludedModelSlugs: ctx.excludedProviderModelSlugs,
         ...(ctx.providerReasoningOverride?.modelName === effectiveModelName && {
           reasoningOverride: ctx.providerReasoningOverride.reasoning,
@@ -844,7 +887,10 @@ export async function createAgentStream(
     messages: ModelMessage[],
     effectiveModelName = getEffectiveModelName(),
   ): ModelMessage[] => {
-    const nonEmptyMessages = filterEmptyAssistantMessages(messages);
+    const providerMessages = providerPdfAttachmentsDisabled
+      ? omitPdfFilePartsFromModelMessages(messages)
+      : messages;
+    const nonEmptyMessages = filterEmptyAssistantMessages(providerMessages);
     let repairedMessages = nonEmptyMessages;
 
     if (isAnthropicModel(effectiveModelName)) {
@@ -1434,6 +1480,20 @@ export async function createAgentStream(
     onStepFinish: async ({ usage, response, providerMetadata }) => {
       ctx.onModelStreamFinish?.();
       state.agentStepCount += 1;
+      const responsePdfParserEngine = getResponseHeader(
+        response?.headers,
+        PDF_PARSER_ENGINE_HEADER,
+      );
+      if (responsePdfParserEngine === "cloudflare-ai") {
+        pdfParserEngine = "cloudflare-ai";
+      }
+      if (
+        getResponseHeader(response?.headers, PDF_PARSER_RECOVERY_HEADER) ===
+        "sandbox"
+      ) {
+        providerPdfAttachmentsDisabled = true;
+        streamHasPdfAttachments = false;
+      }
       openRouterFileAnnotations =
         getOpenRouterFileAnnotations(providerMetadata) ??
         openRouterFileAnnotations;

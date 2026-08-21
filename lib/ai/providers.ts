@@ -143,6 +143,209 @@ const withOpenRouterMetadataHeader = (
   return nextHeaders;
 };
 
+export const PDF_PARSER_ENGINE_HEADER =
+  "x-hackerai-openrouter-pdf-parser-engine";
+export const PDF_PARSER_RECOVERY_HEADER =
+  "x-hackerai-openrouter-pdf-parser-recovery";
+export const MALFORMED_PDF_USER_RESPONSE =
+  "This attachment isn’t a valid PDF; re-export or re-upload it.";
+
+const PDF_PARSER_RATE_LIMIT_ERROR =
+  "The document parsing engine is currently rate limited. Please retry shortly.";
+const PDF_PARSER_INVALID_DOCUMENT_ERROR =
+  "The file could not be read as a valid document. It may be corrupt, truncated, or not actually a PDF.";
+const SANDBOX_PDF_RECOVERY_INSTRUCTION = `The provider PDF parsers could not read the attached PDF. Inspect the corresponding local_path in the sandbox using terminal or PDF tools. If sandbox tools also cannot open it as a valid PDF, respond exactly: “${MALFORMED_PDF_USER_RESPONSE}” Treat this as a user-correctable attachment issue, not an infrastructure failure.`;
+
+type PdfParserFailure = "rate_limited" | "invalid_document";
+
+const classifyPdfParserFailure = async (
+  response: Response,
+): Promise<PdfParserFailure | undefined> => {
+  if (response.ok) return undefined;
+
+  try {
+    const responseText = await response.clone().text();
+    if (responseText.includes(PDF_PARSER_RATE_LIMIT_ERROR)) {
+      return "rate_limited";
+    }
+    if (responseText.includes(PDF_PARSER_INVALID_DOCUMENT_ERROR)) {
+      return "invalid_document";
+    }
+  } catch {
+    // Preserve the original provider response when its body cannot be read.
+  }
+  return undefined;
+};
+
+const replacePdfParserEngine = (
+  body: unknown,
+  fromEngine: "mistral-ocr" | "cloudflare-ai",
+  toEngine: "cloudflare-ai",
+): { body: unknown; changed: boolean } => {
+  if (!isRecord(body) || !Array.isArray(body.plugins)) {
+    return { body, changed: false };
+  }
+
+  let changed = false;
+  const plugins = body.plugins.map((plugin) => {
+    if (
+      !isRecord(plugin) ||
+      plugin.id !== "file-parser" ||
+      !isRecord(plugin.pdf) ||
+      plugin.pdf.engine !== fromEngine
+    ) {
+      return plugin;
+    }
+    changed = true;
+    return { ...plugin, pdf: { ...plugin.pdf, engine: toEngine } };
+  });
+
+  return changed
+    ? { body: { ...body, plugins }, changed: true }
+    : { body, changed: false };
+};
+
+const requestUsesPdfParserEngine = (
+  body: unknown,
+  engine: "mistral-ocr" | "cloudflare-ai",
+): boolean =>
+  isRecord(body) &&
+  Array.isArray(body.plugins) &&
+  body.plugins.some(
+    (plugin) =>
+      isRecord(plugin) &&
+      plugin.id === "file-parser" &&
+      isRecord(plugin.pdf) &&
+      plugin.pdf.engine === engine,
+  );
+
+const textHasSandboxAttachmentPath = (text: string): boolean =>
+  text.includes("<attachment") &&
+  text.includes('local_path="/home/user/upload/');
+
+const hasSandboxAttachmentPath = (messages: unknown[]): boolean =>
+  messages.some((message) => {
+    if (!isRecord(message)) return false;
+    const content = message.content;
+    if (typeof content === "string") {
+      return textHasSandboxAttachmentPath(content);
+    }
+    return (
+      Array.isArray(content) &&
+      content.some(
+        (part) =>
+          isRecord(part) &&
+          part.type === "text" &&
+          typeof part.text === "string" &&
+          textHasSandboxAttachmentPath(part.text),
+      )
+    );
+  });
+
+const isPdfRequestPart = (part: unknown): boolean => {
+  if (!isRecord(part) || part.type !== "file" || !isRecord(part.file)) {
+    return false;
+  }
+  const filename = part.file.filename;
+  const fileData = part.file.file_data;
+  return (
+    (typeof filename === "string" && filename.toLowerCase().endsWith(".pdf")) ||
+    (typeof fileData === "string" &&
+      fileData.toLowerCase().startsWith("data:application/pdf"))
+  );
+};
+
+const createSandboxPdfRecoveryBody = (
+  body: unknown,
+): { body: unknown; changed: boolean } => {
+  if (!isRecord(body) || !Array.isArray(body.messages)) {
+    return { body, changed: false };
+  }
+  if (!hasSandboxAttachmentPath(body.messages)) {
+    return { body, changed: false };
+  }
+
+  let removedFilePart = false;
+  let lastUserMessageIndex = -1;
+  const messages = body.messages.map((message, index) => {
+    if (!isRecord(message)) return message;
+    if (message.role === "user") lastUserMessageIndex = index;
+    if (!Array.isArray(message.content)) return message;
+
+    const content = message.content.filter((part) => {
+      const shouldRemove = isPdfRequestPart(part);
+      removedFilePart ||= shouldRemove;
+      return !shouldRemove;
+    });
+    return content.length === message.content.length
+      ? message
+      : { ...message, content };
+  });
+
+  if (!removedFilePart || lastUserMessageIndex < 0) {
+    return { body, changed: false };
+  }
+
+  const lastUserMessage = messages[lastUserMessageIndex];
+  if (!isRecord(lastUserMessage)) {
+    return { body, changed: false };
+  }
+  const existingContent = lastUserMessage.content;
+  const content = Array.isArray(existingContent)
+    ? [
+        ...existingContent,
+        { type: "text", text: SANDBOX_PDF_RECOVERY_INSTRUCTION },
+      ]
+    : [
+        ...(typeof existingContent === "string" && existingContent.length > 0
+          ? [{ type: "text", text: existingContent }]
+          : []),
+        { type: "text", text: SANDBOX_PDF_RECOVERY_INSTRUCTION },
+      ];
+  messages[lastUserMessageIndex] = { ...lastUserMessage, content };
+
+  const plugins = Array.isArray(body.plugins)
+    ? body.plugins.filter(
+        (plugin) => !isRecord(plugin) || plugin.id !== "file-parser",
+      )
+    : body.plugins;
+
+  return {
+    body: { ...body, messages, ...(plugins ? { plugins } : {}) },
+    changed: true,
+  };
+};
+
+const withPrivateResponseHeader = (
+  response: Response,
+  name: string,
+  value: string,
+): Response => {
+  const headers = new Headers(response.headers);
+  headers.set(name, value);
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  });
+};
+
+const logPdfParserRecovery = (
+  fromEngine: "mistral-ocr" | "cloudflare-ai",
+  toEngine: "cloudflare-ai" | "sandbox",
+  reason: PdfParserFailure,
+) => {
+  console.warn(
+    JSON.stringify({
+      level: "warn",
+      event: "openrouter_pdf_parser_recovery",
+      from_engine: fromEngine,
+      to_engine: toEngine,
+      reason,
+    }),
+  );
+};
+
 // Custom fetch for OpenRouter provider-specific request-body repairs.
 //
 // - Kimi requires a `reasoning` field on assistant tool-call messages when
@@ -151,26 +354,88 @@ const withOpenRouterMetadataHeader = (
 //   when OpenRouter falls back to Grok. The visible assistant text remains in
 //   the prompt, so these provider-private blobs are safe to omit for xAI routes.
 // - The metadata header opts into OpenRouter routing metadata for attribution.
-const openrouterPatchFetch: typeof fetch = async (url, init) => {
-  let nextInit: RequestInit = {
-    ...init,
-    headers: withOpenRouterMetadataHeader(init?.headers),
+export const createOpenRouterPatchFetch =
+  (fetchImplementation: typeof fetch = globalThis.fetch): typeof fetch =>
+  async (url, init) => {
+    let nextInit: RequestInit = {
+      ...init,
+      headers: withOpenRouterMetadataHeader(init?.headers),
+    };
+
+    let parsedRequestBody: unknown;
+
+    if (nextInit.body && typeof nextInit.body === "string") {
+      try {
+        const parsedBody = JSON.parse(nextInit.body) as unknown;
+        const kimiPatched = patchKimiReasoningToolCalls(parsedBody);
+        const xaiPatched = sanitizeOpenRouterRequestForXai(kimiPatched.body);
+        parsedRequestBody = xaiPatched.body;
+        if (kimiPatched.changed || xaiPatched.changed) {
+          nextInit = { ...nextInit, body: JSON.stringify(xaiPatched.body) };
+        }
+      } catch {
+        // If parsing fails, send the request as-is
+      }
+    }
+
+    const initialResponse = await fetchImplementation(url, nextInit);
+    const parserFailure = await classifyPdfParserFailure(initialResponse);
+    if (!parserFailure) return initialResponse;
+
+    if (requestUsesPdfParserEngine(parsedRequestBody, "cloudflare-ai")) {
+      const sandboxBody = createSandboxPdfRecoveryBody(parsedRequestBody);
+      if (!sandboxBody.changed) return initialResponse;
+
+      logPdfParserRecovery("cloudflare-ai", "sandbox", parserFailure);
+      const sandboxResponse = await fetchImplementation(url, {
+        ...nextInit,
+        body: JSON.stringify(sandboxBody.body),
+      });
+      return withPrivateResponseHeader(
+        sandboxResponse,
+        PDF_PARSER_RECOVERY_HEADER,
+        "sandbox",
+      );
+    }
+
+    const cloudflareBody = replacePdfParserEngine(
+      parsedRequestBody,
+      "mistral-ocr",
+      "cloudflare-ai",
+    );
+    if (!cloudflareBody.changed) return initialResponse;
+
+    logPdfParserRecovery("mistral-ocr", "cloudflare-ai", parserFailure);
+    const cloudflareResponse = await fetchImplementation(url, {
+      ...nextInit,
+      body: JSON.stringify(cloudflareBody.body),
+    });
+    const cloudflareFailure =
+      await classifyPdfParserFailure(cloudflareResponse);
+    if (!cloudflareFailure) {
+      return withPrivateResponseHeader(
+        cloudflareResponse,
+        PDF_PARSER_ENGINE_HEADER,
+        "cloudflare-ai",
+      );
+    }
+
+    const sandboxBody = createSandboxPdfRecoveryBody(cloudflareBody.body);
+    if (!sandboxBody.changed) return cloudflareResponse;
+
+    logPdfParserRecovery("cloudflare-ai", "sandbox", cloudflareFailure);
+    const sandboxResponse = await fetchImplementation(url, {
+      ...nextInit,
+      body: JSON.stringify(sandboxBody.body),
+    });
+    return withPrivateResponseHeader(
+      sandboxResponse,
+      PDF_PARSER_RECOVERY_HEADER,
+      "sandbox",
+    );
   };
 
-  if (nextInit.body && typeof nextInit.body === "string") {
-    try {
-      const parsedBody = JSON.parse(nextInit.body) as unknown;
-      const kimiPatched = patchKimiReasoningToolCalls(parsedBody);
-      const xaiPatched = sanitizeOpenRouterRequestForXai(kimiPatched.body);
-      if (kimiPatched.changed || xaiPatched.changed) {
-        nextInit = { ...nextInit, body: JSON.stringify(xaiPatched.body) };
-      }
-    } catch {
-      // If parsing fails, send the request as-is
-    }
-  }
-  return globalThis.fetch(url, nextInit);
-};
+const openrouterPatchFetch = createOpenRouterPatchFetch();
 
 const openrouter = createOpenRouter({
   fetch: openrouterPatchFetch,

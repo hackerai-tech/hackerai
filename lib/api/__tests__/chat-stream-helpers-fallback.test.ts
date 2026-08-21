@@ -301,6 +301,23 @@ describe("buildProviderOptions fallback chain", () => {
     expect(opts.openrouter).not.toHaveProperty("plugins");
   });
 
+  it("can keep later PDF steps on the Cloudflare parser", () => {
+    const opts = buildProviderOptions(
+      false,
+      "user-1",
+      "model-deepseek-v4-flash-0731",
+      "agent",
+      {
+        hasPdfAttachments: true,
+        pdfParserEngine: "cloudflare-ai",
+      },
+    );
+
+    expect(opts.openrouter.plugins).toEqual([
+      { id: "file-parser", pdf: { engine: "cloudflare-ai" } },
+    ]);
+  });
+
   it("falls back from DeepSeek V4 Flash 0731 through Pro 0813, Grok, then Kimi K3", () => {
     const opts = buildProviderOptions(
       false,
