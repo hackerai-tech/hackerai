@@ -57,6 +57,10 @@ import {
 } from "@/lib/extra-usage";
 import { systemPrompt } from "@/lib/system-prompt";
 import { isAgentMode } from "@/lib/utils/mode-helpers";
+import {
+  extractErrorDetails,
+  getProviderStatusCode,
+} from "@/lib/utils/error-utils";
 
 /**
  * Check if messages contain file attachments
@@ -299,12 +303,44 @@ export function isXaiSafetyError(error: unknown): boolean {
   );
 }
 
-/**
- * Check if an error is a provider API error that should trigger fallback
- * Specifically targets provider-side invalid argument errors before streaming.
- */
+const PROVIDER_CAPACITY_ERROR_PATTERN =
+  /\bprovider_unavailable\b|\bcurrently at capacity\b|\bhigh demand\b/i;
+
+const stringifyErrorField = (value: unknown): string => {
+  if (typeof value === "string") return value;
+  if (value == null) return "";
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return "";
+  }
+};
+
+/** Check if a pre-stream provider API error should trigger model fallback. */
 export function isProviderApiError(error: unknown): boolean {
   if (!error || typeof error !== "object") return false;
+
+  const details = extractErrorDetails(error);
+  const statusCode = getProviderStatusCode(details);
+  const providerErrorText = [
+    details.errorMessage,
+    details.providerErrorMessage,
+    details.providerRawError,
+    details.responseBody,
+    details.providerData,
+  ]
+    .map(stringifyErrorField)
+    .join(" ");
+
+  // xAI returns this when Grok is temporarily saturated. It is safe to retry
+  // with the configured fallback because the request never produced output.
+  if (
+    statusCode != null &&
+    statusCode >= 500 &&
+    PROVIDER_CAPACITY_ERROR_PATTERN.test(providerErrorText)
+  ) {
+    return true;
+  }
 
   const err = error as {
     statusCode?: number;
@@ -593,7 +629,10 @@ const AUTO_MODEL_KEYS = new Set<string>([
   "agent-model",
   "agent-model-free",
 ]);
-const EXPLICIT_RETRY_MODEL_KEYS = new Set<string>(["model-grok-4.6-pro"]);
+const EXPLICIT_RETRY_MODEL_KEYS = new Set<string>([
+  "model-grok-4.6",
+  "model-grok-4.6-pro",
+]);
 const EXPLICIT_DEEPSEEK_PRO_RETRY_MODEL_KEYS = new Set<string>([
   "model-deepseek-v4-pro",
   "model-deepseek-v4-pro-0813",

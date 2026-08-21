@@ -12,6 +12,7 @@ import {
   getRetryFallbackModel,
   isAutoModelSelectionForRetry,
   isExplicitDeepSeekProSelectionForRetry,
+  isProviderApiError,
   resolveServedModelForCostAccounting,
 } from "@/lib/api/chat-stream-helpers";
 
@@ -643,11 +644,66 @@ describe("isAutoModelSelectionForRetry", () => {
     ).toBe(true);
   });
 
+  it("keeps explicitly selected HackerAI Max Grok 4.6 retryable", () => {
+    expect(
+      isAutoModelSelectionForRetry({
+        selectedModel: "model-grok-4.6",
+        selectedModelOverride: "hackerai-max",
+      }),
+    ).toBe(true);
+  });
+
   it("preserves retry behavior for legacy auto-router model keys", () => {
     expect(
       isAutoModelSelectionForRetry({
         selectedModel: "ask-model-free",
         selectedModelOverride: "hackerai-standard",
+      }),
+    ).toBe(true);
+  });
+});
+
+describe("isProviderApiError", () => {
+  it("retries the xAI Grok capacity response", () => {
+    expect(
+      isProviderApiError({
+        code: 502,
+        message:
+          "The model is currently at capacity due to high demand. Please try again in a few minutes.",
+        metadata: { error_type: "provider_unavailable" },
+      }),
+    ).toBe(true);
+  });
+
+  it("retries a nested OpenRouter provider_unavailable response", () => {
+    expect(
+      isProviderApiError({
+        statusCode: 502,
+        data: {
+          error: {
+            code: 502,
+            message: "Provider unavailable",
+            metadata: { error_type: "provider_unavailable" },
+          },
+        },
+      }),
+    ).toBe(true);
+  });
+
+  it("does not retry unrelated provider 5xx responses through this path", () => {
+    expect(
+      isProviderApiError({
+        statusCode: 502,
+        message: "Bad gateway",
+      }),
+    ).toBe(false);
+  });
+
+  it("preserves invalid-argument fallback handling", () => {
+    expect(
+      isProviderApiError({
+        statusCode: 400,
+        responseBody: '{"error":"INVALID_ARGUMENT"}',
       }),
     ).toBe(true);
   });
