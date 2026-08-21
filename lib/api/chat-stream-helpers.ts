@@ -683,6 +683,7 @@ const isHighReasoningModel = (modelName?: string): boolean =>
 type FallbackOptions = {
   hasMultimodalToolResults?: boolean;
   hasPdfAttachments?: boolean;
+  pdfParserEngine?: "mistral-ocr" | "cloudflare-ai";
   reasoningOverride?: ProviderReasoningOverride;
   excludedModelSlugs?: readonly string[];
   requestedModelSlug?: string;
@@ -976,7 +977,7 @@ export function buildProviderOptions(
             plugins: [
               {
                 id: "file-parser" as const,
-                pdf: { engine: "mistral-ocr" as const },
+                pdf: { engine: options.pdfParserEngine ?? "mistral-ocr" },
               },
             ],
           }

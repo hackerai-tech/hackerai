@@ -87,6 +87,8 @@ jest.mock("@/lib/ai/providers", () => ({
   isDeepSeekModel: (modelName: string) =>
     modelName === "agent-model-free" ||
     modelName.startsWith("model-deepseek-v4"),
+  PDF_PARSER_ENGINE_HEADER: "x-hackerai-openrouter-pdf-parser-engine",
+  PDF_PARSER_RECOVERY_HEADER: "x-hackerai-openrouter-pdf-parser-recovery",
 }));
 jest.mock("@/lib/ai/tools/utils/pty-session-manager", () => ({
   ptySessionManager: { closeAllSessions: jest.fn() },
@@ -108,6 +110,7 @@ jest.mock("@/lib/utils/error-utils", () => ({
 const {
   createAgentStream,
   initAgentStreamState,
+  omitPdfFilePartsFromModelMessages,
   resetServedModelTelemetryForRetry,
   resolveAgentModelAfterSummarization,
   resolveAgentModelForImageToolResults,
@@ -287,6 +290,41 @@ describe("resolveAgentModelAfterSummarization", () => {
     expect(
       resolveAgentModelAfterSummarization("model-grok-4.6", "agent", false),
     ).toBe("model-grok-4.6");
+  });
+});
+
+describe("omitPdfFilePartsFromModelMessages", () => {
+  it("removes provider PDF parts while preserving the sandbox attachment tag", () => {
+    const messages = [
+      {
+        role: "user" as const,
+        content: [
+          {
+            type: "text" as const,
+            text: '<attachment filename="report.pdf" local_path="/home/user/upload/report.pdf" />',
+          },
+          {
+            type: "file" as const,
+            data: "data:application/pdf;base64,JVBERi0=",
+            mediaType: "application/pdf",
+          },
+        ],
+      },
+    ] satisfies ModelMessage[];
+
+    const result = omitPdfFilePartsFromModelMessages(messages);
+
+    expect(result).toEqual([
+      {
+        role: "user",
+        content: [
+          {
+            type: "text",
+            text: '<attachment filename="report.pdf" local_path="/home/user/upload/report.pdf" />',
+          },
+        ],
+      },
+    ]);
   });
 });
 
