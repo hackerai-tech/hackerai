@@ -209,6 +209,23 @@ describe("OpenRouter metadata extraction", () => {
     });
   });
 
+  it("does not treat generic error payload IDs or requested models as generation attribution", () => {
+    const error = {
+      data: {
+        id: "chatcmpl-request-id",
+        model: "deepseek/deepseek-v4-flash-0731",
+        error: {
+          message: "Network connection lost.",
+          metadata: { provider_name: "DeepInfra" },
+        },
+      },
+    };
+
+    expect(extractOpenRouterMetadataFromError(error)).toEqual({
+      provider_name: "DeepInfra",
+    });
+  });
+
   it("looks up generation request and upstream IDs without exposing credentials", async () => {
     const fetchMock = jest.fn(async () => ({
       ok: true,
@@ -224,12 +241,15 @@ describe("OpenRouter metadata extraction", () => {
       }),
     }));
 
-    await expect(
-      fetchOpenRouterGenerationMetadata("gen-stream-failure", {
+    const metadata = await fetchOpenRouterGenerationMetadata(
+      "gen-stream-failure",
+      {
         apiKey: "test-secret",
-        fetch: fetchMock,
-      }),
-    ).resolves.toEqual({
+        fetch: fetchMock as unknown as typeof globalThis.fetch,
+      },
+    );
+
+    expect(metadata).toEqual({
       provider_name: "DeepInfra",
       openrouter_generation_id: "gen-stream-failure",
       openrouter_request_id: "req-generation-record",
@@ -237,11 +257,66 @@ describe("OpenRouter metadata extraction", () => {
       openrouter_upstream_id: "upstream-generation-record",
       openrouter_selected_model: "deepseek/deepseek-v4-flash-0731",
     });
+    expect(JSON.stringify(metadata)).not.toContain("test-secret");
     expect(fetchMock).toHaveBeenCalledWith(
       "https://openrouter.ai/api/v1/generation?id=gen-stream-failure",
       expect.objectContaining({
         headers: { Authorization: "Bearer test-secret" },
       }),
     );
+  });
+
+  it("retries once when a generation record is not immediately available", async () => {
+    const fetchMock = jest
+      .fn()
+      .mockResolvedValueOnce({ ok: false, status: 404 })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          data: {
+            id: "gen-delayed",
+            provider_name: "Novita",
+            upstream_id: "upstream-delayed",
+          },
+        }),
+      });
+
+    await expect(
+      fetchOpenRouterGenerationMetadata("gen-delayed", {
+        apiKey: "test-secret",
+        fetch: fetchMock as unknown as typeof globalThis.fetch,
+      }),
+    ).resolves.toEqual({
+      provider_name: "Novita",
+      openrouter_generation_id: "gen-delayed",
+      openrouter_upstream_id: "upstream-delayed",
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("logs lookup failures without logging credentials", async () => {
+    const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+    const fetchMock = jest.fn().mockResolvedValue({ ok: false, status: 503 });
+
+    try {
+      await expect(
+        fetchOpenRouterGenerationMetadata("gen-unavailable", {
+          apiKey: "test-secret",
+          fetch: fetchMock as unknown as typeof globalThis.fetch,
+        }),
+      ).resolves.toEqual({});
+      expect(warn).toHaveBeenCalledWith(
+        "[openrouter-metadata] generation lookup failed",
+        expect.objectContaining({
+          event: "openrouter_generation_lookup_failed",
+          generationId: "gen-unavailable",
+          statusCode: 503,
+          attempt: 1,
+        }),
+      );
+      expect(JSON.stringify(warn.mock.calls)).not.toContain("test-secret");
+    } finally {
+      warn.mockRestore();
+    }
   });
 });

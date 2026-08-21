@@ -176,6 +176,7 @@ import {
   getUserFriendlyProviderError,
   isInvalidImageInputError,
   isProviderContentFilterFinishReason,
+  isRetriableProviderStreamDisconnectError,
 } from "@/lib/utils/error-utils";
 import { ChatSDKError, serializeChatSDKErrorForStream } from "@/lib/errors";
 import type { Id } from "@/convex/_generated/dataModel";
@@ -4138,6 +4139,9 @@ export const agentLongTask = task({
                         );
                       const providerDisconnectContinuation =
                         hasTerminalProviderStreamError &&
+                        isRetriableProviderStreamDisconnectError(
+                          state.providerError,
+                        ) &&
                         !providerContentBlocked &&
                         !isAborted
                           ? prepareProviderDisconnectContinuation(
@@ -4281,6 +4285,25 @@ export const agentLongTask = task({
                             );
                         } else {
                           usageTracker.resetModelLeg();
+                        }
+                        if (providerDisconnectContinuation) {
+                          const preservedFileIds = getFileAccumulator()
+                            .getAll()
+                            .map((file) => file.fileId);
+                          for (const message of providerDisconnectContinuation.messages) {
+                            if (message.role !== "assistant") continue;
+                            await saveMessage({
+                              chatId,
+                              userId,
+                              message,
+                              extraFileIds: preservedFileIds,
+                              model: configuredModelId,
+                              mode,
+                              generationStartedAt: streamStartTime,
+                              generationTimeMs:
+                                fallbackStartTime - streamStartTime,
+                            });
+                          }
                         }
                         const retryResult = await createStream(
                           retryModel,
@@ -4453,22 +4476,6 @@ export const agentLongTask = task({
                                     );
                                     const fallbackGenerationTimeMs =
                                       Date.now() - fallbackStartTime;
-                                    for (const message of providerDisconnectContinuation?.messages ??
-                                      []) {
-                                      if (message.role !== "assistant")
-                                        continue;
-                                      await saveMessage({
-                                        chatId,
-                                        userId,
-                                        message,
-                                        extraFileIds: newFileIds,
-                                        model: configuredModelId,
-                                        mode,
-                                        generationStartedAt: streamStartTime,
-                                        generationTimeMs:
-                                          fallbackStartTime - streamStartTime,
-                                      });
-                                    }
                                     for (const msg of retryMessages) {
                                       if (msg.role !== "assistant") continue;
                                       const processed =

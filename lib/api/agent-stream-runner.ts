@@ -1698,18 +1698,9 @@ export async function createAgentStream(
     onError: async ({ error }) => {
       state.providerError = error;
       const errorOpenRouterMetadata = extractOpenRouterMetadataFromError(error);
-      const generationMetadata =
-        errorOpenRouterMetadata.openrouter_generation_id &&
-        (!errorOpenRouterMetadata.openrouter_request_id ||
-          !errorOpenRouterMetadata.openrouter_upstream_id ||
-          !errorOpenRouterMetadata.provider_name)
-          ? await fetchOpenRouterGenerationMetadata(
-              errorOpenRouterMetadata.openrouter_generation_id,
-            )
-          : {};
       state.openRouterMetadata = mergeOpenRouterMetadata(
         errorOpenRouterMetadata,
-        mergeOpenRouterMetadata(generationMetadata, state.openRouterMetadata),
+        state.openRouterMetadata,
       );
       await refundProviderContentBlockedIfSettled({
         error,
@@ -1732,6 +1723,36 @@ export async function createAgentStream(
           hadSummarization: ctx.summarizationTracker.hasSummarized,
         });
       }
+      if (
+        !isProviderContentBlockedFinishReasonError(error) &&
+        !ctx.usageTracker.hasUsage
+      ) {
+        await ctx.usageRefundTracker.refund();
+      }
+      await ptySessionManager
+        .closeAll(ctx.chatId)
+        .catch((err) =>
+          console.error("[agent-stream] PTY closeAll (onError) failed:", err),
+        );
+
+      // The generation endpoint can lag the stream failure. Keep it out of the
+      // latency-sensitive /api/chat path and run it only after refunds/cleanup.
+      if (
+        ctx.endpoint !== "/api/chat" &&
+        errorOpenRouterMetadata.openrouter_generation_id &&
+        (!errorOpenRouterMetadata.openrouter_request_id ||
+          !errorOpenRouterMetadata.openrouter_upstream_id ||
+          !errorOpenRouterMetadata.provider_name)
+      ) {
+        const generationMetadata = await fetchOpenRouterGenerationMetadata(
+          errorOpenRouterMetadata.openrouter_generation_id,
+        );
+        state.openRouterMetadata = mergeOpenRouterMetadata(
+          errorOpenRouterMetadata,
+          mergeOpenRouterMetadata(generationMetadata, state.openRouterMetadata),
+        );
+      }
+
       if (!isXaiSafetyError(error)) {
         const fallbackSlugs = getFallbackSlugs(modelName, ctx.mode, {
           hasMultimodalToolResults: streamHasImageViewResults,
@@ -1748,17 +1769,6 @@ export async function createAgentStream(
           openRouterMetadata: state.openRouterMetadata,
         });
       }
-      if (
-        !isProviderContentBlockedFinishReasonError(error) &&
-        !ctx.usageTracker.hasUsage
-      ) {
-        await ctx.usageRefundTracker.refund();
-      }
-      await ptySessionManager
-        .closeAll(ctx.chatId)
-        .catch((err) =>
-          console.error("[agent-stream] PTY closeAll (onError) failed:", err),
-        );
     },
 
     onAbort: async ({ steps }) => {

@@ -371,7 +371,7 @@ export const enrichOpenRouterStreamError = (
 export const attachOpenRouterStreamErrorMetadata = (
   response: Response,
 ): Response => {
-  if (!response.body) return response;
+  if (!response.ok || !response.body) return response;
 
   const reader = response.body.getReader();
   const responseHeaders = Object.fromEntries(response.headers.entries());

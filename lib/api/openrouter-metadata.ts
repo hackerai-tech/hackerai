@@ -28,6 +28,7 @@ type ResponseLike = {
 const MAX_ATTEMPTS_TO_LOG = 8;
 const MAX_ERROR_SOURCE_DEPTH = 4;
 const OPENROUTER_GENERATION_LOOKUP_TIMEOUT_MS = 2_500;
+const OPENROUTER_GENERATION_LOOKUP_RETRY_DELAY_MS = 150;
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
@@ -247,6 +248,7 @@ const collectErrorRecords = (
 
 const metadataFromGenerationPayload = (
   source: unknown,
+  options: { includeSelectedModel?: boolean } = {},
 ): OpenRouterModelMetadata => {
   const payload =
     isRecord(source) && isRecord(source.data) ? source.data : source;
@@ -254,14 +256,16 @@ const metadataFromGenerationPayload = (
 
   return compactOpenRouterMetadata({
     provider_name: pickString(payload.provider_name),
-    openrouter_generation_id: pickIdentifier(payload.id),
+    openrouter_generation_id: pickGenerationId({ id: payload.id }),
     openrouter_request_id: pickIdentifier(payload.request_id),
     openrouter_router: pickString(payload.router),
     openrouter_upstream_id: pickIdentifier(payload.upstream_id),
     openrouter_upstream_inference_cost: pickPositiveNumber(
       payload.upstream_inference_cost,
     ),
-    openrouter_selected_model: pickString(payload.model),
+    openrouter_selected_model: options.includeSelectedModel
+      ? pickString(payload.model)
+      : undefined,
   });
 };
 
@@ -335,19 +339,47 @@ export async function fetchOpenRouterGenerationMetadata(
     options.timeoutMs ?? OPENROUTER_GENERATION_LOOKUP_TIMEOUT_MS,
   );
   try {
-    const response = await (options.fetch ?? globalThis.fetch)(
-      `https://openrouter.ai/api/v1/generation?id=${encodeURIComponent(generationId)}`,
-      {
-        headers: { Authorization: `Bearer ${apiKey}` },
-        signal: controller.signal,
-      },
-    );
-    if (!response.ok) return {};
-    const payload = (await response.json()) as unknown;
-    return mergeOpenRouterMetadata(metadataFromGenerationPayload(payload), {
-      openrouter_generation_id: generationId,
-    });
-  } catch {
+    for (let attempt = 1; attempt <= 2; attempt += 1) {
+      try {
+        const response = await (options.fetch ?? globalThis.fetch)(
+          `https://openrouter.ai/api/v1/generation?id=${encodeURIComponent(generationId)}`,
+          {
+            headers: { Authorization: `Bearer ${apiKey}` },
+            signal: controller.signal,
+          },
+        );
+        if (response.ok) {
+          const payload = (await response.json()) as unknown;
+          return mergeOpenRouterMetadata(
+            metadataFromGenerationPayload(payload, {
+              includeSelectedModel: true,
+            }),
+            { openrouter_generation_id: generationId },
+          );
+        }
+        if (response.status === 404 && attempt === 1) {
+          await new Promise((resolve) =>
+            setTimeout(resolve, OPENROUTER_GENERATION_LOOKUP_RETRY_DELAY_MS),
+          );
+          continue;
+        }
+        console.warn("[openrouter-metadata] generation lookup failed", {
+          event: "openrouter_generation_lookup_failed",
+          generationId,
+          statusCode: response.status,
+          attempt,
+        });
+        return {};
+      } catch (error) {
+        console.warn("[openrouter-metadata] generation lookup failed", {
+          event: "openrouter_generation_lookup_failed",
+          generationId,
+          errorName: error instanceof Error ? error.name : "UnknownError",
+          attempt,
+        });
+        return {};
+      }
+    }
     return {};
   } finally {
     clearTimeout(timeout);

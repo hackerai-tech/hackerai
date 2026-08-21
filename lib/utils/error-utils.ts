@@ -346,6 +346,11 @@ export type ProviderErrorCategory =
   | "timeout"
   | "unknown";
 
+const PROVIDER_STREAM_TERMINATION_PATTERN =
+  /terminated|aborted|abort|network connection lost|connection (?:reset|closed|lost)|socket hang up|unexpected eof/i;
+const PROVIDER_STREAM_DISCONNECT_PATTERN =
+  /terminated|network connection lost|connection (?:reset|closed|lost)|socket hang up|unexpected eof/i;
+
 const parseHttpStatus = (value: unknown): number | undefined => {
   const code =
     typeof value === "number"
@@ -451,11 +456,7 @@ export const getProviderErrorCategory = (
   if (statusCode != null && statusCode >= 400) return "provider_4xx";
 
   const message = getProviderMessageText(details);
-  if (
-    /terminated|aborted|abort|network connection lost|connection (?:reset|closed|lost)|socket hang up|unexpected eof/i.test(
-      message,
-    )
-  ) {
+  if (PROVIDER_STREAM_TERMINATION_PATTERN.test(message)) {
     return "stream_terminated";
   }
   if (/timeout|timed out/i.test(message)) return "timeout";
@@ -472,6 +473,24 @@ export const getProviderErrorCategory = (
 
 export const isProviderStreamTerminatedError = (error: unknown): boolean =>
   getProviderErrorCategory(extractErrorDetails(error)) === "stream_terminated";
+
+/** Allow one continuation only for errors that explicitly describe a disconnect. */
+export const isRetriableProviderStreamDisconnectError = (
+  error: unknown,
+): boolean => {
+  const details = extractErrorDetails(error);
+  if (
+    !PROVIDER_STREAM_DISCONNECT_PATTERN.test(getProviderMessageText(details))
+  ) {
+    return false;
+  }
+  const category = getProviderErrorCategory(details);
+  return (
+    category === "stream_terminated" ||
+    category === "timeout" ||
+    category === "provider_5xx"
+  );
+};
 
 export interface ProviderAttempt {
   status_code?: number;

@@ -16,6 +16,7 @@ const fingerprintToken = (value: string | undefined): string =>
 const providerFromModel = (model: string | undefined): string | undefined =>
   model?.includes("/") ? model.split("/", 1)[0] : undefined;
 
+/** Stable provider failure envelope used by Trigger.dev error fingerprinting. */
 export class ProviderTerminalError extends Error {
   readonly provider: string;
   readonly model: string;
@@ -67,6 +68,7 @@ export class ProviderTerminalError extends Error {
   }
 }
 
+/** Preserve the original cause while adding stable provider failure fields. */
 export const wrapProviderTerminalError = (
   error: unknown,
   context: {
