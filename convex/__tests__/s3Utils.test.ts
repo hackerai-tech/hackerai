@@ -49,6 +49,7 @@ describe("s3Utils", () => {
       expect(S3Client).toHaveBeenCalledWith(
         expect.objectContaining({
           region: "us-east-1",
+          requestChecksumCalculation: "WHEN_REQUIRED",
           credentials: expect.objectContaining({
             accessKeyId: "test-access-key",
             secretAccessKey: "test-secret-key",
