@@ -33,6 +33,10 @@ export function getS3Client(): S3Client {
 
   return new S3Client({
     region,
+    // Presigned browser uploads do not provide the body while signing. The
+    // SDK's default WHEN_SUPPORTED behavior otherwise signs the CRC32 of an
+    // empty body, which S3 rejects when the browser PUTs the real file.
+    requestChecksumCalculation: "WHEN_REQUIRED",
     credentials: {
       accessKeyId,
       secretAccessKey,

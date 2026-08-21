@@ -2,7 +2,11 @@ import "server-only";
 
 import { generateText, type UIMessage } from "ai";
 
-import { AUXILIARY_VISION_SLUG, myProvider } from "@/lib/ai/providers";
+import {
+  AUXILIARY_VISION_FALLBACK_SLUG,
+  AUXILIARY_VISION_SLUG,
+  myProvider,
+} from "@/lib/ai/providers";
 import { getProviderUsageRawModelCost } from "@/lib/provider-usage-cost";
 
 export const AUXILIARY_VISION_MODEL = "auxiliary-vision-model" as const;
@@ -10,6 +14,13 @@ export const AUXILIARY_VISION_TIMEOUT_MS = 20_000;
 export const AUXILIARY_VISION_MAX_OUTPUT_TOKENS = 1_200;
 export const AUXILIARY_VISION_MAX_IMAGES_PER_TURN = 10;
 export const AUXILIARY_VISION_MAX_CONCURRENCY = 3;
+export const AUXILIARY_VISION_PROVIDER_OPTIONS = {
+  openrouter: {
+    reasoning: { enabled: false },
+    models: [AUXILIARY_VISION_FALLBACK_SLUG],
+    provider: { sort: "latency", data_collection: "deny" },
+  },
+};
 
 export type AuxiliaryVisionSource = "attachment" | "file_view";
 
@@ -111,6 +122,7 @@ export type AuxiliaryVisionModelRunner = (args: {
     outputTokens?: number;
     raw?: unknown;
   };
+  model?: string;
 }>;
 
 const AUXILIARY_VISION_SYSTEM_PROMPT = `You are a precise visual-analysis component for a text-only cybersecurity assistant. Describe only what is visibly supported by the image.
@@ -149,8 +161,7 @@ const defaultModelRunner: AuxiliaryVisionModelRunner = async ({
     ],
     providerOptions: {
       openrouter: {
-        reasoning: { enabled: false },
-        provider: { sort: "latency", data_collection: "deny" },
+        ...AUXILIARY_VISION_PROVIDER_OPTIONS.openrouter,
         ...(userId && { user: userId }),
       },
     },
@@ -160,7 +171,11 @@ const defaultModelRunner: AuxiliaryVisionModelRunner = async ({
     abortSignal,
   });
 
-  return { text: result.text, usage: result.usage };
+  return {
+    text: result.text,
+    usage: result.usage,
+    model: result.response.modelId,
+  };
 };
 
 const withDataUrlPrefix = (image: string, mediaType: string): string =>
@@ -217,6 +232,7 @@ export async function describeImageWithAuxiliaryVision({
     if (!description) {
       throw new Error("Auxiliary vision model returned an empty description");
     }
+    const model = result.model?.trim() || AUXILIARY_VISION_SLUG;
 
     const costDollars = getProviderUsageRawModelCost(result.usage?.raw);
     if (
@@ -240,7 +256,8 @@ export async function describeImageWithAuxiliaryVision({
         chat_id: chatId,
         trigger_run_id: triggerRunId,
         source,
-        model: AUXILIARY_VISION_SLUG,
+        model,
+        fallback_served: model === AUXILIARY_VISION_FALLBACK_SLUG,
         media_type: mediaType,
         duration_ms: durationMs,
         input_tokens: result.usage?.inputTokens ?? 0,
@@ -257,7 +274,7 @@ export async function describeImageWithAuxiliaryVision({
       inputTokens: result.usage?.inputTokens ?? 0,
       outputTokens: result.usage?.outputTokens ?? 0,
       durationMs,
-      model: AUXILIARY_VISION_SLUG,
+      model,
     };
   } catch (error) {
     console.warn(
@@ -356,7 +373,8 @@ export async function describeImageAttachmentsWithAuxiliaryVision({
       const cachedDescription =
         fileId &&
         typeof partRecord.auxiliaryVisionDescription === "string" &&
-        partRecord.auxiliaryVisionModel === AUXILIARY_VISION_SLUG
+        (partRecord.auxiliaryVisionModel === AUXILIARY_VISION_SLUG ||
+          partRecord.auxiliaryVisionModel === AUXILIARY_VISION_FALLBACK_SLUG)
           ? partRecord.auxiliaryVisionDescription
           : undefined;
       const filename = partFilename
