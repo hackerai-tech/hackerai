@@ -33,7 +33,13 @@ describe("subagent parent delivery", () => {
           _delivery_claim: { subagent_id: 42, claim_id: "claim_3" },
         },
       },
-      { toolName: "other", output: { success: true } },
+      {
+        toolName: "other",
+        output: {
+          success: true,
+          _delivery_claim: { subagent_id: "sa_3", claim_id: "claim_3" },
+        },
+      },
     ];
 
     expect(extractSubagentDeliveryClaims(toolResults)).toEqual([

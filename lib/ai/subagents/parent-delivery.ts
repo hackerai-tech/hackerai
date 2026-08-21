@@ -28,6 +28,7 @@ export const extractSubagentDeliveryClaims = (
 
   for (const toolResult of toolResults) {
     if (!isRecord(toolResult)) continue;
+    if (toolResult.toolName !== "wait_for_agents") continue;
     const output = isRecord(toolResult.output)
       ? toolResult.output
       : isRecord(toolResult.result)
