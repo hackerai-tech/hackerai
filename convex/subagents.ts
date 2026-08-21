@@ -1,6 +1,11 @@
 import { ConvexError, v } from "convex/values";
 import { internal } from "./_generated/api";
-import { internalMutation, mutation, query } from "./_generated/server";
+import {
+  internalMutation,
+  mutation,
+  query,
+  type MutationCtx,
+} from "./_generated/server";
 import { validateServiceKey } from "./lib/utils";
 import {
   MAX_ACTIVE_SUBAGENTS_PER_PARENT_RUN,
@@ -11,6 +16,7 @@ import {
   SUBAGENT_MAX_QUEUE_SECONDS,
   SUBAGENT_WATCHDOG_GRACE_SECONDS,
 } from "../lib/ai/subagents/contracts";
+import { SUBAGENT_PARENT_DELIVERY_CLAIM_TTL_MS } from "../lib/ai/subagents/parent-delivery";
 import { toSubagentHandle } from "../lib/ai/subagents/agent-handle";
 import { isUserDeletionFenced } from "./lib/userDeletionFence";
 
@@ -649,6 +655,7 @@ export const claimNextTerminalForParentBackend = mutation({
     chatId: v.string(),
     parentTriggerRunId: v.string(),
     targetAgentIds: v.optional(v.array(v.string())),
+    deliveryClaimId: v.string(),
   },
   returns: v.any(),
   handler: async (ctx, args) => {
@@ -681,30 +688,48 @@ export const claimNextTerminalForParentBackend = mutation({
     const active = scopedRows.filter(
       (row) => row.name !== undefined && isActiveStatus(row.status),
     );
+    const unconsumedTerminalRows = scopedRows.filter(
+      (row) =>
+        row.name !== undefined &&
+        !isActiveStatus(row.status) &&
+        !row.parent_result_consumed_at,
+    );
     if (unmatchedTargetAgentIds.length > 0) {
       return {
         terminal: null,
         active,
         unmatchedTargetAgentIds,
+        pendingDeliveryCount: unconsumedTerminalRows.length,
       };
     }
+    const now = Date.now();
     const terminal = scopedRows
       .filter(
         (row) =>
           row.name !== undefined &&
           !isActiveStatus(row.status) &&
-          (!row.parent_notified_at || Boolean(args.targetAgentIds?.length)),
+          (Boolean(args.targetAgentIds?.length) ||
+            !row.parent_result_consumed_at) &&
+          (row.parent_result_consumed_at !== undefined ||
+            row.parent_delivery_claim_id === args.deliveryClaimId ||
+            !row.parent_delivery_claim_expires_at ||
+            row.parent_delivery_claim_expires_at <= now),
       )
       .sort(
         (a, b) =>
-          Number(Boolean(a.parent_notified_at)) -
-            Number(Boolean(b.parent_notified_at)) ||
+          Number(Boolean(a.parent_result_consumed_at)) -
+            Number(Boolean(b.parent_result_consumed_at)) ||
           a.created_at - b.created_at,
       )[0];
-    if (terminal && !terminal.parent_notified_at) {
+    let deliveryClaimId: string | undefined;
+    if (terminal && !terminal.parent_result_consumed_at) {
+      deliveryClaimId = args.deliveryClaimId;
       await ctx.db.patch(terminal._id, {
-        parent_notified_at: Date.now(),
-        updated_at: Date.now(),
+        parent_delivery_claim_id: deliveryClaimId,
+        parent_delivery_claimed_at: now,
+        parent_delivery_claim_expires_at:
+          now + SUBAGENT_PARENT_DELIVERY_CLAIM_TTL_MS,
+        updated_at: now,
       });
     }
     return {
@@ -715,7 +740,93 @@ export const claimNextTerminalForParentBackend = mutation({
         : null,
       active,
       unmatchedTargetAgentIds,
+      pendingDeliveryCount: unconsumedTerminalRows.length,
+      deliveryClaimId,
     };
+  },
+});
+
+const parentDeliveryTransitionArgs = {
+  serviceKey: v.string(),
+  userId: v.string(),
+  chatId: v.string(),
+  parentTriggerRunId: v.string(),
+  subagentId: v.string(),
+  deliveryClaimId: v.string(),
+};
+
+const getOwnedParentDeliveryRow = async (
+  ctx: MutationCtx,
+  args: {
+    userId: string;
+    chatId: string;
+    parentTriggerRunId: string;
+    subagentId: string;
+  },
+) =>
+  await ctx.db
+    .query("subagent_runs")
+    .withIndex("by_subagent_id", (q) => q.eq("subagent_id", args.subagentId))
+    .filter((q) =>
+      q.and(
+        q.eq(q.field("user_id"), args.userId),
+        q.eq(q.field("chat_id"), args.chatId),
+        q.eq(q.field("parent_trigger_run_id"), args.parentTriggerRunId),
+      ),
+    )
+    .first();
+
+export const markResultInjectedForParentBackend = mutation({
+  args: parentDeliveryTransitionArgs,
+  returns: v.union(
+    v.literal("updated"),
+    v.literal("already_consumed"),
+    v.literal("stale_claim"),
+    v.literal("not_found"),
+  ),
+  handler: async (ctx, args) => {
+    validateServiceKey(args.serviceKey);
+    const row = await getOwnedParentDeliveryRow(ctx, args);
+    if (!row) return "not_found" as const;
+    if (row.parent_result_consumed_at) return "already_consumed" as const;
+    if (row.parent_delivery_claim_id !== args.deliveryClaimId) {
+      return "stale_claim" as const;
+    }
+    const now = Date.now();
+    await ctx.db.patch(row._id, {
+      parent_result_injected_at: now,
+      parent_delivery_claim_expires_at:
+        now + SUBAGENT_PARENT_DELIVERY_CLAIM_TTL_MS,
+      updated_at: now,
+    });
+    return "updated" as const;
+  },
+});
+
+export const markResultConsumedForParentBackend = mutation({
+  args: parentDeliveryTransitionArgs,
+  returns: v.union(
+    v.literal("updated"),
+    v.literal("already_consumed"),
+    v.literal("stale_claim"),
+    v.literal("not_found"),
+  ),
+  handler: async (ctx, args) => {
+    validateServiceKey(args.serviceKey);
+    const row = await getOwnedParentDeliveryRow(ctx, args);
+    if (!row) return "not_found" as const;
+    if (row.parent_result_consumed_at) return "already_consumed" as const;
+    if (row.parent_delivery_claim_id !== args.deliveryClaimId) {
+      return "stale_claim" as const;
+    }
+    const now = Date.now();
+    await ctx.db.patch(row._id, {
+      parent_result_injected_at: row.parent_result_injected_at ?? now,
+      parent_result_consumed_at: now,
+      parent_notified_at: now,
+      updated_at: now,
+    });
+    return "updated" as const;
   },
 });
 

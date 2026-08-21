@@ -2,6 +2,32 @@ type ActiveSubagentRun = {
   trigger_run_id?: string;
 };
 
+type ParentSubagentSettlementRow = {
+  status: string;
+  parent_result_consumed_at?: number;
+  /** Compatibility with rows created before acknowledged delivery. */
+  parent_notified_at?: number;
+};
+
+export const summarizeParentSubagentSettlement = (
+  rows: ParentSubagentSettlementRow[],
+) => {
+  const activeCount = rows.filter((row) =>
+    ["queued", "running", "finalizing"].includes(row.status),
+  ).length;
+  const terminalRows = rows.filter((row) =>
+    ["completed", "failed", "canceled", "timed_out"].includes(row.status),
+  );
+  return {
+    totalCount: rows.length,
+    activeCount,
+    terminalCount: terminalRows.length,
+    undeliveredCount: terminalRows.filter(
+      (row) => !row.parent_result_consumed_at && !row.parent_notified_at,
+    ).length,
+  };
+};
+
 type ParentSubagentSettlementDependencies = {
   listActiveSubagents: (
     parentTriggerRunId: string,

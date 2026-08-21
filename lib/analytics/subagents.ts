@@ -32,6 +32,8 @@ type SubagentLifecycleEvent = BaseSubagentEvent & {
   failureStage?: string;
   activeCount?: number;
   totalCount?: number;
+  terminalCount?: number;
+  undeliveredCount?: number;
   targetCount?: number;
   resultAvailable?: boolean;
 };
@@ -63,6 +65,11 @@ export const captureSubagentLifecycleEvent = (
     | "subagent_update_outcome"
     | "subagent_wait_outcome"
     | "subagent_cancel_outcome"
+    | "subagent_parent_settlement"
+    | "subagent_parent_finish_blocked"
+    | "subagent_deadline_reminder_sent"
+    | "subagent_result_claimed"
+    | "subagent_result_injected"
     | "subagent_result_delivered"
     | "subagent_cancel_requested"
     | "subagent_completed"
@@ -94,6 +101,8 @@ export const captureSubagentLifecycleEvent = (
     failure_stage: boundedCategory(fields.failureStage),
     active_count: fields.activeCount,
     total_count: fields.totalCount,
+    terminal_count: fields.terminalCount,
+    undelivered_count: fields.undeliveredCount,
     target_count: fields.targetCount,
     result_available: fields.resultAvailable,
     environment: runtimeEnvironment(),
@@ -143,11 +152,33 @@ export const subagentOutcomeEventUuid = (subagentId: string): string =>
 export const subagentResultDeliveredEventUuid = (subagentId: string): string =>
   uuidv5(`subagent-result-delivered:${subagentId}`, uuidv5.URL);
 
+export const subagentResultClaimedEventUuid = (
+  subagentId: string,
+  deliveryClaimId: string,
+): string =>
+  uuidv5(
+    `subagent-result-claimed:${subagentId}:${deliveryClaimId}`,
+    uuidv5.URL,
+  );
+
+export const subagentResultInjectedEventUuid = (subagentId: string): string =>
+  uuidv5(`subagent-result-injected:${subagentId}`, uuidv5.URL);
+
+export const subagentParentFinishBlockedEventUuid = (
+  parentTriggerRunId: string,
+): string =>
+  uuidv5(`subagent-parent-finish-blocked:${parentTriggerRunId}`, uuidv5.URL);
+
 export const subagentCancelRequestedEventUuid = (subagentId: string): string =>
   uuidv5(`subagent-cancel-requested:${subagentId}`, uuidv5.URL);
 
 export const subagentModelPromotionEventUuid = (subagentId: string): string =>
   uuidv5(`subagent-model-promoted:${subagentId}`, uuidv5.URL);
+
+export const subagentParentSettlementEventUuid = (
+  parentTriggerRunId: string,
+): string =>
+  uuidv5(`subagent-parent-settlement:${parentTriggerRunId}`, uuidv5.URL);
 
 export const captureSubagentTerminalOutcome = (
   fields: SubagentLifecycleEvent & {

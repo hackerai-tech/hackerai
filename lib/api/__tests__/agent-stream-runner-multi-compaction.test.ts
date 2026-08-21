@@ -470,6 +470,89 @@ describe("createAgentStream repeated compaction", () => {
     });
   });
 
+  it("forces durable waiting, injects the claimed result, and consumes it after synthesis", async () => {
+    let completionState = {
+      activeCount: 1,
+      unconsumedSubagentIds: [] as string[],
+    };
+    const markInjected = jest.fn(async () => undefined);
+    const markConsumed = jest.fn(async () => {
+      completionState = { activeCount: 0, unconsumedSubagentIds: [] };
+    });
+    const onBlocked = jest.fn();
+    const usageTracker = {
+      setAuthoritativeModelCostForStep: jest.fn(),
+      computeCostDollars: jest.fn(() => 0),
+    };
+    const state = initAgentStreamState([uiMessage("initial", "Delegate")], {
+      usedTokens: 1_000,
+      maxTokens: 128_000,
+    });
+    const stream = (await createAgentStream(
+      "test-model",
+      createTestStreamContext({
+        tools: { wait_for_agents: {} },
+        summarizationTracker: {
+          hasSummarized: false,
+          summarizationCount: 0,
+        },
+        usageTracker,
+        subagentCompletionGate: {
+          getState: async () => completionState,
+          markInjected,
+          markConsumed,
+          onBlocked,
+        },
+      }) as any,
+      state,
+    )) as any;
+
+    const forcedWait = await stream.prepareStep({
+      steps: [{ toolResults: [{ toolName: "create_agent", output: {} }] }],
+      messages: [{ role: "user", content: "Delegate" }],
+    });
+    expect(forcedWait.toolChoice).toEqual({
+      type: "tool",
+      toolName: "wait_for_agents",
+    });
+    expect(forcedWait.messages.at(-1)?.content).toContain(
+      "cannot finish this response",
+    );
+    expect(onBlocked).toHaveBeenCalledWith(completionState);
+
+    completionState = {
+      activeCount: 0,
+      unconsumedSubagentIds: ["sa_1"],
+    };
+    const deliveryClaim = { subagent_id: "sa_1", claim_id: "claim_1" };
+    const synthesis = await stream.prepareStep({
+      steps: [
+        {
+          toolResults: [
+            {
+              toolName: "wait_for_agents",
+              output: { _delivery_claim: deliveryClaim },
+            },
+          ],
+        },
+      ],
+      messages: [{ role: "user", content: "Delegate" }],
+    });
+    expect(markInjected).toHaveBeenCalledWith([deliveryClaim]);
+    expect(synthesis.toolChoice).toBeUndefined();
+
+    await stream.onStepFinish({
+      usage: undefined,
+      response: { modelId: "test-model" },
+      providerMetadata: undefined,
+    });
+    expect(markConsumed).toHaveBeenCalledWith([deliveryClaim]);
+    expect(completionState).toEqual({
+      activeCount: 0,
+      unconsumedSubagentIds: [],
+    });
+  });
+
   it.each([
     ["model-grok-4.5", "model-deepseek-v4-flash-0731"],
     ["model-grok-4.5-pro", "model-deepseek-v4-pro-0813"],

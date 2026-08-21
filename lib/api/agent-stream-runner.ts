@@ -37,7 +37,6 @@ import {
   elapsedTimeExceeds,
   tokenExhaustedAfterSummarization,
   doomLoopDetected,
-  stepLimitReached,
   PREEMPTIVE_TIMEOUT_FINISH_REASON,
   TOKEN_EXHAUSTION_FINISH_REASON,
   DOOM_LOOP_FINISH_REASON,
@@ -83,6 +82,13 @@ import { compactModelMessagesInRun } from "@/lib/chat/summarization";
 import { getRecentCompleteModelTail } from "@/lib/chat/summarization/helpers";
 import { getProviderPromptPressure } from "@/lib/chat/summarization/provider-pressure";
 import { getMaxStepsForUser } from "@/lib/chat/chat-processor";
+import {
+  extractSubagentDeliveryClaims,
+  requiresSubagentParentGate,
+  SUBAGENT_PARENT_GATE_EXTRA_STEPS,
+  type SubagentDeliveryClaim,
+  type SubagentParentCompletionGate,
+} from "@/lib/ai/subagents/parent-delivery";
 import {
   isIncompletePostSummarizationStop,
   POST_SUMMARIZATION_CONTINUATION_PROMPT,
@@ -638,6 +644,7 @@ export type AgentStreamContext = {
     force: boolean;
     model: string;
   }) => Promise<void>;
+  subagentCompletionGate?: SubagentParentCompletionGate;
 
   /**
    * Platform-specific: return a finish-reason string if a hard platform
@@ -660,6 +667,85 @@ export async function createAgentStream(
   state.configuredMaxSteps = configuredMaxSteps;
   const toolCallRunNamespace = randomUUID().replaceAll("-", "").slice(0, 8);
   const stepUsageCostIndexes: Array<number | undefined> = [];
+  let pendingDeliveryClaims: SubagentDeliveryClaim[] = [];
+  let hasObservedSubagents = false;
+  const parentGateReminder =
+    "A delegated subagent is still active or has an unconsumed result. Call wait_for_agents now. You cannot finish this response until every delegated result has been incorporated.";
+  const resolveParentGate = async (
+    toolResults: readonly unknown[],
+  ): Promise<{
+    blocked: boolean;
+    reminder?: string;
+    toolChoice?: { type: "tool"; toolName: "wait_for_agents" };
+  }> => {
+    const gate = ctx.subagentCompletionGate;
+    if (!gate) return { blocked: false };
+
+    const claims = extractSubagentDeliveryClaims(toolResults);
+    let injectedClaims: SubagentDeliveryClaim[] = [];
+    if (claims.length > 0) {
+      hasObservedSubagents = true;
+      try {
+        await gate.markInjected(claims);
+        pendingDeliveryClaims = claims;
+        injectedClaims = claims;
+      } catch {
+        console.warn(
+          JSON.stringify({
+            timestamp: new Date().toISOString(),
+            level: "warn",
+            event: "subagent_result_injection_ack_failed",
+            service: "agent-stream",
+            environment:
+              process.env.TRIGGER_ENV ?? process.env.NODE_ENV ?? "unknown",
+            request_id: ctx.chatId,
+            claim_count: claims.length,
+          }),
+        );
+        return {
+          blocked: true,
+          reminder: parentGateReminder,
+          toolChoice: { type: "tool", toolName: "wait_for_agents" },
+        };
+      }
+    }
+
+    try {
+      const completionState = await gate.getState();
+      hasObservedSubagents ||=
+        completionState.activeCount > 0 ||
+        completionState.unconsumedSubagentIds.length > 0;
+      const blocked = requiresSubagentParentGate(
+        completionState,
+        injectedClaims,
+      );
+      if (!blocked) return { blocked: false };
+      gate.onBlocked?.(completionState);
+      return {
+        blocked: true,
+        reminder: parentGateReminder,
+        toolChoice: { type: "tool", toolName: "wait_for_agents" },
+      };
+    } catch {
+      if (!hasObservedSubagents) return { blocked: false };
+      console.warn(
+        JSON.stringify({
+          timestamp: new Date().toISOString(),
+          level: "warn",
+          event: "subagent_parent_gate_lookup_failed",
+          service: "agent-stream",
+          environment:
+            process.env.TRIGGER_ENV ?? process.env.NODE_ENV ?? "unknown",
+          request_id: ctx.chatId,
+        }),
+      );
+      return {
+        blocked: true,
+        reminder: parentGateReminder,
+        toolChoice: { type: "tool", toolName: "wait_for_agents" },
+      };
+    }
+  };
   const getActiveToolsWithExclusions = async (
     excludedToolNames: ReadonlySet<string> = new Set(),
   ): Promise<Array<keyof typeof ctx.tools> | undefined> => {
@@ -1009,6 +1095,19 @@ export async function createAgentStream(
       rollingModelMessages = limitModelImageToolResults(
         rollingModelMessages as Array<Record<string, unknown>>,
       ).messages as ModelMessage[];
+      const lastStep = Array.isArray(steps) ? steps.at(-1) : undefined;
+      const toolResults =
+        (lastStep && (lastStep as { toolResults?: unknown[] }).toolResults) ||
+        [];
+      const parentGate = await resolveParentGate(toolResults);
+      const enforceParentGateTool = (
+        activeTools: Array<keyof typeof ctx.tools> | undefined,
+      ): Array<keyof typeof ctx.tools> | undefined => {
+        if (!parentGate.blocked || !activeTools) return activeTools;
+        return activeTools.includes("wait_for_agents")
+          ? activeTools
+          : [...activeTools, "wait_for_agents"];
+      };
       try {
         const pruneResult = pruneToolOutputs(state.finalMessages);
         if (pruneResult.prunedCount > 0) {
@@ -1016,10 +1115,6 @@ export async function createAgentStream(
           state.finalMessages = pruneResult.messages;
         }
 
-        const lastStep = Array.isArray(steps) ? steps.at(-1) : undefined;
-        const toolResults =
-          (lastStep && (lastStep as { toolResults?: unknown[] }).toolResults) ||
-          [];
         if (
           !ctx.auxiliaryVisionEnabled &&
           toolResultsContainImageViewResult(toolResults)
@@ -1095,7 +1190,9 @@ export async function createAgentStream(
                   uiMessagesContainImageAttachment(result.summarizedMessages),
               );
               const continuationModelInfo = getEffectiveModelInfo();
-              const activeTools = await getActiveToolsForRecovery(loopRecovery);
+              const activeTools = enforceParentGateTool(
+                await getActiveToolsForRecovery(loopRecovery),
+              );
               const providerOptions = getStepProviderOptions(
                 continuationModelInfo.modelName,
               );
@@ -1114,6 +1211,9 @@ export async function createAgentStream(
               summarizedModelMessages = [
                 ...summarizedModelMessages,
                 { role: "user", content: continuationPrompt },
+                ...(parentGate.reminder
+                  ? [{ role: "user" as const, content: parentGate.reminder }]
+                  : []),
               ];
               rollingContextCheckpoint = {
                 baseMessages: summarizedModelMessages,
@@ -1142,6 +1242,9 @@ export async function createAgentStream(
                 activeTools,
                 providerOptions,
                 messages: preparedMessages,
+                ...(parentGate.toolChoice
+                  ? { toolChoice: parentGate.toolChoice }
+                  : {}),
               };
             }
           } else if (
@@ -1201,6 +1304,9 @@ export async function createAgentStream(
                 ...compactedModelMessages,
                 ...retainedModelTail,
                 { role: "user", content: continuationPrompt },
+                ...(parentGate.reminder
+                  ? [{ role: "user" as const, content: parentGate.reminder }]
+                  : []),
               ];
               const effectiveCompaction = isRollingCompactionEffective(
                 rollingModelMessages,
@@ -1277,8 +1383,9 @@ export async function createAgentStream(
                 state.postSummarizationToolCallCount = 0;
                 state.postSummarizationText = "";
 
-                const activeTools =
-                  await getActiveToolsForRecovery(loopRecovery);
+                const activeTools = enforceParentGateTool(
+                  await getActiveToolsForRecovery(loopRecovery),
+                );
                 const providerOptions = getStepProviderOptions(
                   continuationModelInfo.modelName,
                 );
@@ -1305,6 +1412,9 @@ export async function createAgentStream(
                   activeTools,
                   providerOptions,
                   messages: preparedMessages,
+                  ...(parentGate.toolChoice
+                    ? { toolChoice: parentGate.toolChoice }
+                    : {}),
                 };
               }
             }
@@ -1330,8 +1440,16 @@ export async function createAgentStream(
             { role: "user", content: loopRecovery.nudge },
           ] as typeof updatedMessages;
         }
+        if (parentGate.reminder) {
+          updatedMessages = [
+            ...updatedMessages,
+            { role: "user", content: parentGate.reminder },
+          ] as typeof updatedMessages;
+        }
 
-        const activeTools = await getActiveToolsForRecovery(loopRecovery);
+        const activeTools = enforceParentGateTool(
+          await getActiveToolsForRecovery(loopRecovery),
+        );
         const providerOptions = getStepProviderOptions(
           effectiveModelInfo.modelName,
         );
@@ -1361,6 +1479,9 @@ export async function createAgentStream(
           activeTools,
           providerOptions,
           messages: preparedMessages,
+          ...(parentGate.toolChoice
+            ? { toolChoice: parentGate.toolChoice }
+            : {}),
         };
       } catch (error) {
         if (error instanceof DOMException && error.name === "AbortError") {
@@ -1393,6 +1514,9 @@ export async function createAgentStream(
           ),
           providerOptions,
           messages: fallbackMessages,
+          ...(parentGate.toolChoice
+            ? { toolChoice: parentGate.toolChoice }
+            : {}),
           ...(ctx.currentSystemPrompt
             ? { system: ctx.currentSystemPrompt }
             : undefined),
@@ -1401,12 +1525,42 @@ export async function createAgentStream(
     },
 
     stopWhen: [
-      stepLimitReached({
-        maxSteps: configuredMaxSteps,
-        onFired: () => {
-          state.stoppedDueToStepLimit = true;
-        },
-      }),
+      async ({ steps }) => {
+        if (steps.length < configuredMaxSteps) return false;
+        const gate = ctx.subagentCompletionGate;
+        if (gate) {
+          try {
+            const completionState = await gate.getState();
+            const hasActive = completionState.activeCount > 0;
+            const hasUnconsumed =
+              completionState.unconsumedSubagentIds.length > 0;
+            const withinActiveReserve =
+              steps.length <
+              configuredMaxSteps + SUBAGENT_PARENT_GATE_EXTRA_STEPS;
+            const withinResultReserve =
+              steps.length <=
+              configuredMaxSteps + SUBAGENT_PARENT_GATE_EXTRA_STEPS;
+            if (
+              (hasActive && withinActiveReserve) ||
+              (hasUnconsumed && withinResultReserve)
+            ) {
+              hasObservedSubagents = true;
+              gate.onBlocked?.(completionState);
+              return false;
+            }
+          } catch {
+            if (
+              hasObservedSubagents &&
+              steps.length <
+                configuredMaxSteps + SUBAGENT_PARENT_GATE_EXTRA_STEPS
+            ) {
+              return false;
+            }
+          }
+        }
+        state.stoppedDueToStepLimit = true;
+        return true;
+      },
       tokenExhaustedAfterSummarization({
         threshold: summarizationThreshold,
         getLastStepInputTokens: () => state.lastStepInputTokens,
@@ -1493,6 +1647,10 @@ export async function createAgentStream(
       ) {
         providerPdfAttachmentsDisabled = true;
         streamHasPdfAttachments = false;
+      }
+      if (pendingDeliveryClaims.length > 0 && ctx.subagentCompletionGate) {
+        await ctx.subagentCompletionGate.markConsumed(pendingDeliveryClaims);
+        pendingDeliveryClaims = [];
       }
       openRouterFileAnnotations =
         getOpenRouterFileAnnotations(providerMetadata) ??

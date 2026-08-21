@@ -57,6 +57,11 @@ export type PersistedSubagent = {
   step_count?: number;
   provider_retry_count?: number;
   result_recovery_count?: number;
+  parent_delivery_claim_id?: string;
+  parent_delivery_claimed_at?: number;
+  parent_delivery_claim_expires_at?: number;
+  parent_result_injected_at?: number;
+  parent_result_consumed_at?: number;
   parent_notified_at?: number;
   created_at: number;
   started_at?: number;
@@ -315,6 +320,8 @@ export type ParentSubagentState = {
   terminal: (PersistedSubagent & { title?: string }) | null;
   active: Array<PersistedSubagent & { title?: string }>;
   unmatchedTargetAgentIds: string[];
+  pendingDeliveryCount: number;
+  deliveryClaimId?: string;
 };
 
 export const claimNextTerminalSubagentForParent = async (args: {
@@ -322,8 +329,33 @@ export const claimNextTerminalSubagentForParent = async (args: {
   chatId: string;
   parentTriggerRunId: string;
   targetAgentIds?: string[];
+  deliveryClaimId: string;
 }): Promise<ParentSubagentState> =>
   (await getConvexClient().mutation(
     api.subagents.claimNextTerminalForParentBackend,
     { serviceKey, ...args },
   )) as ParentSubagentState;
+
+export const markSubagentResultInjectedForParent = async (args: {
+  userId: string;
+  chatId: string;
+  parentTriggerRunId: string;
+  subagentId: string;
+  deliveryClaimId: string;
+}) =>
+  await getConvexClient().mutation(
+    api.subagents.markResultInjectedForParentBackend,
+    { serviceKey, ...args },
+  );
+
+export const markSubagentResultConsumedForParent = async (args: {
+  userId: string;
+  chatId: string;
+  parentTriggerRunId: string;
+  subagentId: string;
+  deliveryClaimId: string;
+}) =>
+  await getConvexClient().mutation(
+    api.subagents.markResultConsumedForParentBackend,
+    { serviceKey, ...args },
+  );

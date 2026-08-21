@@ -277,13 +277,28 @@ import {
   cancelSubagentsForParent,
   listActiveSubagentsForParent,
   listActiveSubagentsForUser,
+  listSubagentsForParent,
+  markSubagentResultConsumedForParent,
+  markSubagentResultInjectedForParent,
 } from "@/lib/db/subagents";
 import { cancelAgentTriggerRun } from "@/lib/api/agent-approval-session";
-import { settleParentSubagents } from "@/lib/ai/subagents/parent-settlement";
+import {
+  settleParentSubagents,
+  summarizeParentSubagentSettlement,
+} from "@/lib/ai/subagents/parent-settlement";
 import {
   captureSubagentLifecycleEvent,
   subagentAvailabilityEventUuid,
+  subagentParentFinishBlockedEventUuid,
+  subagentParentSettlementEventUuid,
+  subagentResultDeliveredEventUuid,
+  subagentResultInjectedEventUuid,
 } from "@/lib/analytics/subagents";
+import { SUBAGENT_ACTIVE_STATUSES } from "@/lib/ai/subagents/contracts";
+import type {
+  SubagentDeliveryClaim,
+  SubagentParentCompletionGate,
+} from "@/lib/ai/subagents/parent-delivery";
 import {
   AgentAutoReviewDenialTracker,
   extractAgentAutoReviewAuthorizationContext,
@@ -2039,6 +2054,7 @@ type RunCleanupState = {
   hasObservedUsage: () => boolean;
   chatLogger: ChatLogger | undefined;
   chatId: string;
+  userId: string;
   subagentsEnabled: boolean;
   finishCloudSandboxLifecycle: () => Promise<void>;
 };
@@ -2047,7 +2063,65 @@ const runCleanupMap = new Map<string, RunCleanupState>();
 const settleSubagentsForParentRun = async (
   parentTriggerRunId: string,
   reason: string,
-) =>
+  userId: string,
+  chatId: string,
+) => {
+  try {
+    const rows = await listSubagentsForParent({
+      userId,
+      chatId,
+      parentTriggerRunId,
+    });
+    if (rows.length > 0) {
+      const summary = summarizeParentSubagentSettlement(rows);
+      captureSubagentLifecycleEvent("subagent_parent_settlement", {
+        userId,
+        eventUuid: subagentParentSettlementEventUuid(parentTriggerRunId),
+        parentTriggerRunId,
+        outcome: reason,
+        totalCount: summary.totalCount,
+        activeCount: summary.activeCount,
+        terminalCount: summary.terminalCount,
+        undeliveredCount: summary.undeliveredCount,
+        resultAvailable: summary.terminalCount > 0,
+      });
+      const logFields = {
+        event: "subagent_parent_settlement",
+        service: "agent-long",
+        environment:
+          process.env.TRIGGER_ENV ?? process.env.NODE_ENV ?? "unknown",
+        user_id: userId,
+        chat_id: chatId,
+        parent_trigger_run_id: parentTriggerRunId,
+        settlement_reason: reason,
+        total_count: summary.totalCount,
+        active_count: summary.activeCount,
+        terminal_count: summary.terminalCount,
+        undelivered_count: summary.undeliveredCount,
+      };
+      if (summary.undeliveredCount > 0) {
+        triggerLogger.warn(
+          "[agent-long] parent ended with undelivered subagent results",
+          logFields,
+        );
+      } else {
+        triggerLogger.info(
+          "[agent-long] parent subagent settlement observed",
+          logFields,
+        );
+      }
+    }
+  } catch {
+    triggerLogger.warn("[agent-long] parent settlement telemetry failed", {
+      event: "subagent_parent_settlement_telemetry_failed",
+      service: "agent-long",
+      environment: process.env.TRIGGER_ENV ?? process.env.NODE_ENV ?? "unknown",
+      user_id: userId,
+      chat_id: chatId,
+      parent_trigger_run_id: parentTriggerRunId,
+      settlement_reason: reason,
+    });
+  }
   await settleParentSubagents(
     { parentTriggerRunId, reason },
     {
@@ -2057,6 +2131,8 @@ const settleSubagentsForParentRun = async (
       warn: (message, details) => triggerLogger.warn(message, details),
     },
   );
+  await phLogger.flush().catch(() => undefined);
+};
 
 const finishCloudSandboxLifecycleForParentRun = async ({
   chatId,
@@ -2264,9 +2340,12 @@ export const agentLongTask = task({
       await cleanup.usageRefundTracker.refund().catch(() => {});
     }
     if (cleanup.subagentsEnabled) {
-      await settleSubagentsForParentRun(ctx.run.id, "parent_canceled").catch(
-        () => undefined,
-      );
+      await settleSubagentsForParentRun(
+        ctx.run.id,
+        "parent_canceled",
+        cleanup.userId,
+        cleanup.chatId,
+      ).catch(() => undefined);
     }
     await ptySessionManager.closeAll(cleanup.chatId).catch(() => {});
     await cleanup.finishCloudSandboxLifecycle();
@@ -2441,6 +2520,7 @@ export const agentLongTask = task({
       hasObservedUsage,
       chatLogger,
       chatId,
+      userId,
       subagentsEnabled,
       finishCloudSandboxLifecycle,
     });
@@ -3856,6 +3936,169 @@ export const agentLongTask = task({
                 userStopSignal.abort();
               };
 
+            let parentFinishBlockedObserved = false;
+            const retryParentDeliveryTransition = async (
+              transition: () => Promise<unknown>,
+            ) => {
+              let lastError: unknown;
+              for (let attempt = 1; attempt <= 3; attempt += 1) {
+                try {
+                  const outcome = await transition();
+                  if (outcome === "updated" || outcome === "already_consumed") {
+                    return;
+                  }
+                  throw new Error(`Unexpected delivery outcome: ${outcome}`);
+                } catch (error) {
+                  lastError = error;
+                }
+              }
+              throw lastError;
+            };
+            const subagentCompletionGate: SubagentParentCompletionGate | null =
+              subagentsEnabled
+                ? {
+                    getState: async () => {
+                      const rows = await listSubagentsForParent({
+                        userId,
+                        chatId,
+                        parentTriggerRunId: ctx.run.id,
+                      });
+                      return {
+                        activeCount: rows.filter((row) =>
+                          SUBAGENT_ACTIVE_STATUSES.has(row.status),
+                        ).length,
+                        unconsumedSubagentIds: rows
+                          .filter(
+                            (row) =>
+                              !SUBAGENT_ACTIVE_STATUSES.has(row.status) &&
+                              !row.parent_result_consumed_at &&
+                              !row.parent_notified_at,
+                          )
+                          .map((row) => row.subagent_id),
+                      };
+                    },
+                    markInjected: async (claims: SubagentDeliveryClaim[]) => {
+                      for (const claim of claims) {
+                        await retryParentDeliveryTransition(() =>
+                          markSubagentResultInjectedForParent({
+                            userId,
+                            chatId,
+                            parentTriggerRunId: ctx.run.id,
+                            subagentId: claim.subagent_id,
+                            deliveryClaimId: claim.claim_id,
+                          }),
+                        );
+                        captureSubagentLifecycleEvent(
+                          "subagent_result_injected",
+                          {
+                            userId,
+                            eventUuid: subagentResultInjectedEventUuid(
+                              claim.subagent_id,
+                            ),
+                            subagentId: claim.subagent_id,
+                            parentTriggerRunId: ctx.run.id,
+                          },
+                        );
+                        triggerLogger.info(
+                          "[agent-long] subagent result injected into parent turn",
+                          {
+                            event: "subagent_result_injected",
+                            service: "agent-long",
+                            environment:
+                              process.env.TRIGGER_ENV ??
+                              process.env.NODE_ENV ??
+                              "unknown",
+                            request_id: ctx.run.id,
+                            user_id: userId,
+                            chat_id: chatId,
+                            parent_trigger_run_id: ctx.run.id,
+                            subagent_id: claim.subagent_id,
+                          },
+                        );
+                      }
+                    },
+                    markConsumed: async (claims: SubagentDeliveryClaim[]) => {
+                      for (const claim of claims) {
+                        await retryParentDeliveryTransition(() =>
+                          markSubagentResultConsumedForParent({
+                            userId,
+                            chatId,
+                            parentTriggerRunId: ctx.run.id,
+                            subagentId: claim.subagent_id,
+                            deliveryClaimId: claim.claim_id,
+                          }),
+                        );
+                        captureSubagentLifecycleEvent(
+                          "subagent_result_delivered",
+                          {
+                            userId,
+                            eventUuid: subagentResultDeliveredEventUuid(
+                              claim.subagent_id,
+                            ),
+                            subagentId: claim.subagent_id,
+                            parentTriggerRunId: ctx.run.id,
+                          },
+                        );
+                        triggerLogger.info(
+                          "[agent-long] parent model consumed subagent result",
+                          {
+                            event: "subagent_result_consumed",
+                            service: "agent-long",
+                            environment:
+                              process.env.TRIGGER_ENV ??
+                              process.env.NODE_ENV ??
+                              "unknown",
+                            request_id: ctx.run.id,
+                            user_id: userId,
+                            chat_id: chatId,
+                            parent_trigger_run_id: ctx.run.id,
+                            subagent_id: claim.subagent_id,
+                          },
+                        );
+                      }
+                    },
+                    onBlocked: (completionState) => {
+                      if (parentFinishBlockedObserved) return;
+                      parentFinishBlockedObserved = true;
+                      captureSubagentLifecycleEvent(
+                        "subagent_parent_finish_blocked",
+                        {
+                          userId,
+                          eventUuid: subagentParentFinishBlockedEventUuid(
+                            ctx.run.id,
+                          ),
+                          parentTriggerRunId: ctx.run.id,
+                          activeCount: completionState.activeCount,
+                          undeliveredCount:
+                            completionState.unconsumedSubagentIds.length,
+                          outcome:
+                            completionState.activeCount > 0
+                              ? "active_children"
+                              : "unconsumed_results",
+                        },
+                      );
+                      triggerLogger.info(
+                        "[agent-long] parent completion blocked for subagent handoff",
+                        {
+                          event: "subagent_parent_finish_blocked",
+                          service: "agent-long",
+                          environment:
+                            process.env.TRIGGER_ENV ??
+                            process.env.NODE_ENV ??
+                            "unknown",
+                          request_id: ctx.run.id,
+                          user_id: userId,
+                          chat_id: chatId,
+                          parent_trigger_run_id: ctx.run.id,
+                          active_count: completionState.activeCount,
+                          unconsumed_count:
+                            completionState.unconsumedSubagentIds.length,
+                        },
+                      );
+                    },
+                  }
+                : null;
+
             // Shared runner context — immutable deps + platform hook.
             const streamCtx: AgentStreamContext = {
               trackedProvider,
@@ -3906,6 +4149,7 @@ export const agentLongTask = task({
                 }
               },
               settleUsageAfterStep,
+              ...(subagentCompletionGate ? { subagentCompletionGate } : {}),
               ...(useMaxKimiReasoning && {
                 providerReasoningOverride: {
                   modelName: selectedModel,
@@ -4925,9 +5169,12 @@ export const agentLongTask = task({
       memoryTelemetry.dispose();
       activeRuntimeBudget?.dispose();
       if (subagentsEnabled) {
-        await settleSubagentsForParentRun(ctx.run.id, "parent_run_ended").catch(
-          () => undefined,
-        );
+        await settleSubagentsForParentRun(
+          ctx.run.id,
+          "parent_run_ended",
+          userId,
+          chatId,
+        ).catch(() => undefined);
       }
       await ptySessionManager.closeAll(chatId).catch(() => undefined);
       if (payload.approvalSessionId && triggerSessions) {
