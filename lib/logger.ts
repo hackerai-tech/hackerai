@@ -215,6 +215,8 @@ export interface ChatWideEvent {
     requested_model_slug?: string;
     model_provider_slug?: string;
     openrouter_generation_id?: string;
+    openrouter_request_id?: string;
+    openrouter_upstream_id?: string;
     provider_error_fingerprint?: string;
     // Per-attempt breakdown when the SDK retried internally. Each entry is one
     // upstream call. Lets you tell consistent-500 from a mixed cascade and
@@ -589,6 +591,8 @@ export class WideEventBuilder {
     requestedModelSlug?: string;
     modelProviderSlug?: string;
     openrouterGenerationId?: string;
+    openrouterRequestId?: string;
+    openrouterUpstreamId?: string;
     providerErrorFingerprint?: string;
     attempts?: NonNullable<ChatWideEvent["provider_error"]>["attempts"];
   }): this {
@@ -606,6 +610,8 @@ export class WideEventBuilder {
       requested_model_slug: details.requestedModelSlug,
       model_provider_slug: details.modelProviderSlug,
       openrouter_generation_id: details.openrouterGenerationId,
+      openrouter_request_id: details.openrouterRequestId,
+      openrouter_upstream_id: details.openrouterUpstreamId,
       provider_error_fingerprint: details.providerErrorFingerprint,
       attempts: details.attempts,
     };

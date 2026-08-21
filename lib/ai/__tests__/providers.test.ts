@@ -1,6 +1,7 @@
 import {
   AUXILIARY_VISION_SLUG,
   createOpenRouterPatchFetch,
+  enrichOpenRouterStreamError,
   getModelCutoffDate,
   getModelDisplayName,
   isAnthropicModel,
@@ -78,6 +79,23 @@ const parserErrorResponse = (message: string) =>
       headers: { "content-type": "application/json" },
     },
   );
+
+describe("enrichOpenRouterStreamError", () => {
+  it("attaches response IDs to body errors that happen after headers", () => {
+    expect(
+      enrichOpenRouterStreamError(new Error("Network connection lost."), {
+        "x-generation-id": "gen-header-1",
+        "x-request-id": "req-header-1",
+      }),
+    ).toMatchObject({
+      message: "Network connection lost.",
+      responseHeaders: expect.objectContaining({
+        "x-generation-id": "gen-header-1",
+        "x-request-id": "req-header-1",
+      }),
+    });
+  });
+});
 
 describe("provider registry", () => {
   it("keeps active routes pointed at their provider slugs", () => {

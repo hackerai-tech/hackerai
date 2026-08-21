@@ -1275,14 +1275,14 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(returnIdx).toBeGreaterThan(handledRateLimitIdx);
   });
 
-  test("non-rate-limit stream errors are still rethrown after the handled branch", () => {
+  test("non-rate-limit stream errors are wrapped with provider attribution after the handled branch", () => {
     const streamErrorIdx = taskSrc.indexOf("if (terminalStreamError)");
     const handledRateLimitIdx = taskSrc.indexOf(
       "isHandledUserRateLimitError(terminalStreamError)",
       streamErrorIdx,
     );
     const throwIdx = taskSrc.indexOf(
-      "throw terminalStreamError",
+      "throw wrapProviderTerminalError(terminalStreamError",
       handledRateLimitIdx,
     );
     expect(streamErrorIdx).toBeGreaterThan(-1);
@@ -1297,7 +1297,7 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
       waitIdx,
     );
     const throwIdx = taskSrc.indexOf(
-      "throw terminalStreamError",
+      "throw wrapProviderTerminalError(terminalStreamError",
       terminalErrorIdx,
     );
 
@@ -1356,6 +1356,66 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(terminalHelperIdx).toBeGreaterThan(-1);
     expect(contentFilterIdx).toBeGreaterThan(terminalHelperIdx);
     expect(terminalCheckIdx).toBeGreaterThan(contentFilterIdx);
+  });
+
+  test("mid-stream disconnect continuation is bounded and preserves a replay-safe transcript", () => {
+    expect(taskSrc).toMatch(
+      /prepareProviderDisconnectContinuation\(\s*normalizedFinishedMessages/,
+    );
+    expect(taskSrc).toMatch(
+      /hasTerminalProviderStreamError\s*&&\s*isRetriableProviderStreamDisconnectError\(\s*state\.providerError/,
+    );
+    expect(taskSrc).toMatch(
+      /shouldContinueAfterProviderDisconnect\)\s*&&\s*!isRetryWithFallback/,
+    );
+    expect(taskSrc).toMatch(
+      /state\.finalMessages\s*=\s*\[\s*\.\.\.state\.finalMessages,\s*\.\.\.providerDisconnectContinuation\.messages/,
+    );
+    expect(taskSrc).toContain(
+      "Do not repeat completed tool calls or their side effects.",
+    );
+  });
+
+  test("persists replay-safe output before fallback stream creation can fail", () => {
+    const recoveryIdx = taskSrc.indexOf(
+      "if (providerDisconnectContinuation) {",
+      taskSrc.indexOf("state.finalMessages ="),
+    );
+    const persistenceIdx = taskSrc.indexOf("await saveMessage({", recoveryIdx);
+    const fallbackCreationIdx = taskSrc.indexOf(
+      "const retryResult = await createStream(",
+      persistenceIdx,
+    );
+
+    expect(recoveryIdx).toBeGreaterThan(-1);
+    expect(persistenceIdx).toBeGreaterThan(recoveryIdx);
+    expect(fallbackCreationIdx).toBeGreaterThan(persistenceIdx);
+  });
+
+  test("looks up generation attribution only after failure cleanup and outside interactive chat", () => {
+    const onErrorIdx = agentStreamRunnerSrc.indexOf("onError: async");
+    const refundIdx = agentStreamRunnerSrc.indexOf(
+      "ctx.usageRefundTracker.refund()",
+      onErrorIdx,
+    );
+    const closeIdx = agentStreamRunnerSrc.indexOf(
+      ".closeAll(ctx.chatId)",
+      refundIdx,
+    );
+    const lookupGuardIdx = agentStreamRunnerSrc.indexOf(
+      'ctx.endpoint !== "/api/chat"',
+      closeIdx,
+    );
+    const lookupIdx = agentStreamRunnerSrc.indexOf(
+      "await fetchOpenRouterGenerationMetadata(",
+      lookupGuardIdx,
+    );
+
+    expect(onErrorIdx).toBeGreaterThan(-1);
+    expect(refundIdx).toBeGreaterThan(onErrorIdx);
+    expect(closeIdx).toBeGreaterThan(refundIdx);
+    expect(lookupGuardIdx).toBeGreaterThan(closeIdx);
+    expect(lookupIdx).toBeGreaterThan(lookupGuardIdx);
   });
 
   test("direct context-limit finish reasons trigger auto-continue in both agent paths", () => {

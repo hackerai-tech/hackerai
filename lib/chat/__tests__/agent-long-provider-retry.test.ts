@@ -1,10 +1,102 @@
 import {
   createAssistantContentLoopMonitor,
   detectAssistantContentLoopFromText,
+  prepareProviderDisconnectContinuation,
   shouldRetryAgentLongWithFallback,
   shouldRetryProviderStreamAfterReasoningOnlyOutput,
   shouldRetryProviderStreamAfterInterruptedToolInput,
 } from "../agent-long-provider-retry";
+import type { UIMessage } from "ai";
+
+describe("prepareProviderDisconnectContinuation", () => {
+  it("preserves completed text and tool output while removing only the failed step", () => {
+    const messages = [
+      { id: "user-1", role: "user", parts: [{ type: "text", text: "fix it" }] },
+      {
+        id: "assistant-1",
+        role: "assistant",
+        parts: [
+          { type: "step-start" },
+          { type: "text", text: "I found the issue.", state: "done" },
+          {
+            type: "tool-run_terminal_cmd",
+            toolCallId: "call-1",
+            state: "output-available",
+            input: { command: "npm test" },
+            output: { result: { exitCode: 0, output: "ok" } },
+          },
+          { type: "step-start" },
+          { type: "text", text: "The final answer was cut", state: "done" },
+        ],
+      },
+    ] as UIMessage[];
+
+    const recovery = prepareProviderDisconnectContinuation(messages);
+
+    expect(recovery).toMatchObject({
+      removedPartCount: 2,
+      preservedCompletedToolCount: 1,
+      preservedTextPartCount: 1,
+    });
+    expect(recovery?.messages.at(-1)?.parts).toEqual([
+      { type: "step-start" },
+      { type: "text", text: "I found the issue.", state: "done" },
+      {
+        type: "tool-run_terminal_cmd",
+        toolCallId: "call-1",
+        state: "output-available",
+        input: { command: "npm test" },
+        output: { result: { exitCode: 0, output: "ok" } },
+      },
+    ]);
+  });
+
+  it("keeps a completed tool result in the failed step and drops its partial tail", () => {
+    const messages = [
+      { id: "user-1", role: "user", parts: [{ type: "text", text: "fix it" }] },
+      {
+        id: "assistant-1",
+        role: "assistant",
+        parts: [
+          { type: "step-start" },
+          {
+            type: "tool-file",
+            toolCallId: "call-1",
+            state: "output-available",
+            input: { action: "write", path: "/repo/a.ts" },
+            output: { ok: true },
+          },
+          { type: "text", text: "Now I will", state: "streaming" },
+        ],
+      },
+    ] as UIMessage[];
+
+    const recovery = prepareProviderDisconnectContinuation(messages);
+
+    expect(recovery?.removedPartCount).toBe(1);
+    expect(recovery?.preservedCompletedToolCount).toBe(1);
+    expect(recovery?.messages.at(-1)?.parts).toHaveLength(2);
+  });
+
+  it("removes an entirely incomplete first assistant step", () => {
+    const messages = [
+      { id: "user-1", role: "user", parts: [{ type: "text", text: "answer" }] },
+      {
+        id: "assistant-1",
+        role: "assistant",
+        parts: [
+          { type: "step-start" },
+          { type: "text", text: "partial", state: "done" },
+        ],
+      },
+    ] as UIMessage[];
+
+    const recovery = prepareProviderDisconnectContinuation(messages);
+
+    expect(recovery?.removedPartCount).toBe(2);
+    expect(recovery?.messages).toEqual([messages[0]]);
+  });
+});
 
 describe("shouldRetryAgentLongWithFallback", () => {
   it("preserves the legacy retry for streams that only emitted step-start", () => {

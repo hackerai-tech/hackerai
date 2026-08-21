@@ -12,6 +12,7 @@ import {
   isProviderContentBlockedFinishReasonError,
   isProviderContentFilterFinishReason,
   isProviderStreamTerminatedError,
+  isRetriableProviderStreamDisconnectError,
 } from "../error-utils";
 
 const apiCallError = (overrides: Record<string, unknown>) =>
@@ -379,6 +380,23 @@ describe("provider error classification", () => {
       "stream_terminated",
     );
     expect(isProviderStreamTerminatedError(err)).toBe(true);
+    expect(isRetriableProviderStreamDisconnectError(err)).toBe(true);
+  });
+
+  it("allows 5xx network disconnects but rejects non-disconnect provider failures", () => {
+    expect(
+      isRetriableProviderStreamDisconnectError(
+        apiCallError({ statusCode: 502, message: "Network connection lost." }),
+      ),
+    ).toBe(true);
+    expect(
+      isRetriableProviderStreamDisconnectError(
+        apiCallError({
+          statusCode: 502,
+          message: "Internal error during token generation",
+        }),
+      ),
+    ).toBe(false);
   });
 
   it("classifies provider status codes before message patterns", () => {
