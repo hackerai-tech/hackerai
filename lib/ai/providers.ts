@@ -183,9 +183,10 @@ export const KIMI_K3_SLUG = "moonshotai/kimi-k3";
 export const GLM_5_2_SLUG = "z-ai/glm-5.2";
 export const GROK_4_5_SLUG = "x-ai/grok-4.5";
 export const GROK_4_6_SLUG = "x-ai/grok-4.6";
-// MiMo-V2.5 is an open-weight multimodal model that avoids Google safety filters
-// while retaining low-latency OCR and screen understanding for security work.
-export const AUXILIARY_VISION_SLUG = "xiaomi/mimo-v2.5";
+// Prefer DeepSeek's purpose-built vision model for auxiliary image analysis,
+// with MiMo-V2.5 retained as the cyber-friendly provider fallback.
+export const AUXILIARY_VISION_SLUG = "deepseek/deepseek-v4-flash-vision-exp";
+export const AUXILIARY_VISION_FALLBACK_SLUG = "xiaomi/mimo-v2.5";
 export const DEEPSEEK_V4_PRO_SLUG = "deepseek/deepseek-v4-pro";
 export const DEEPSEEK_V4_PRO_0813_SLUG = "deepseek/deepseek-v4-pro-0813";
 export const DEEPSEEK_V4_FLASH_SLUG = "deepseek/deepseek-v4-flash-0731";
@@ -254,7 +255,7 @@ export const modelCutoffDates: Partial<Record<ModelName, string>> &
   "fallback-ask-model": "August 2026",
   "title-generator-model": "May 2025",
   "agent-auto-review-model": "July 2026",
-  "auxiliary-vision-model": "January 2025",
+  "auxiliary-vision-model": "July 2026",
 };
 
 export const modelDisplayNames: Record<ModelName, string> &

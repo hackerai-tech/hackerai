@@ -1,4 +1,5 @@
 import {
+  AUXILIARY_VISION_FALLBACK_SLUG,
   AUXILIARY_VISION_SLUG,
   getModelCutoffDate,
   getModelDisplayName,
@@ -33,8 +34,10 @@ describe("provider registry", () => {
           modelId: string;
         }
       ).modelId,
-    ).toBe("xiaomi/mimo-v2.5");
-    expect(AUXILIARY_VISION_SLUG).toBe("xiaomi/mimo-v2.5");
+    ).toBe("deepseek/deepseek-v4-flash-vision-exp");
+    expect(AUXILIARY_VISION_SLUG).toBe("deepseek/deepseek-v4-flash-vision-exp");
+    expect(AUXILIARY_VISION_FALLBACK_SLUG).toBe("xiaomi/mimo-v2.5");
+    expect(getModelCutoffDate("auxiliary-vision-model")).toBe("July 2026");
     expect(
       (myProvider.languageModel("model-grok-4.6") as { modelId: string })
         .modelId,
