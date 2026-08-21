@@ -5148,6 +5148,9 @@ export const agentLongTask = task({
           await phLogger.flush().catch(() => {});
           return { chatId, assistantMessageId };
         }
+        if (terminalStreamError instanceof ChatSDKError) {
+          throw terminalStreamError;
+        }
         throw wrapProviderTerminalError(terminalStreamError, {
           model: terminalRequestedModelSlug,
           openRouterMetadata: terminalAgentState?.openRouterMetadata,

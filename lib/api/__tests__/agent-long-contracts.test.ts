@@ -1295,11 +1295,15 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(returnIdx).toBeGreaterThan(handledRateLimitIdx);
   });
 
-  test("non-rate-limit stream errors are wrapped with provider attribution after the handled branch", () => {
+  test("ChatSDK stream errors preserve their user-correctable classification before provider wrapping", () => {
     const streamErrorIdx = taskSrc.indexOf("if (terminalStreamError)");
     const handledRateLimitIdx = taskSrc.indexOf(
       "isHandledUserRateLimitError(terminalStreamError)",
       streamErrorIdx,
+    );
+    const chatSdkErrorIdx = taskSrc.indexOf(
+      "terminalStreamError instanceof ChatSDKError",
+      handledRateLimitIdx,
     );
     const throwIdx = taskSrc.indexOf(
       "throw wrapProviderTerminalError(terminalStreamError",
@@ -1307,7 +1311,8 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     );
     expect(streamErrorIdx).toBeGreaterThan(-1);
     expect(handledRateLimitIdx).toBeGreaterThan(streamErrorIdx);
-    expect(throwIdx).toBeGreaterThan(streamErrorIdx);
+    expect(chatSdkErrorIdx).toBeGreaterThan(handledRateLimitIdx);
+    expect(throwIdx).toBeGreaterThan(chatSdkErrorIdx);
   });
 
   test("provider finishReason error fails the task after the UI stream drains", () => {
