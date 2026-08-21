@@ -157,6 +157,9 @@ describe("subagent lifecycle analytics", () => {
     expect(subagentResultClaimedEventUuid("sa_1", "claim_1")).toBe(
       subagentResultClaimedEventUuid("sa_1", "claim_1"),
     );
+    expect(subagentResultClaimedEventUuid("sa_1", "claim_1")).not.toBe(
+      subagentResultClaimedEventUuid("sa_1", "claim_2"),
+    );
     expect(subagentResultInjectedEventUuid("sa_1")).not.toBe(
       subagentResultDeliveredEventUuid("sa_1"),
     );

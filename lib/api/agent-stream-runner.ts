@@ -1649,8 +1649,24 @@ export async function createAgentStream(
         streamHasPdfAttachments = false;
       }
       if (pendingDeliveryClaims.length > 0 && ctx.subagentCompletionGate) {
-        await ctx.subagentCompletionGate.markConsumed(pendingDeliveryClaims);
-        pendingDeliveryClaims = [];
+        try {
+          await ctx.subagentCompletionGate.markConsumed(pendingDeliveryClaims);
+          pendingDeliveryClaims = [];
+        } catch (error) {
+          console.warn(
+            JSON.stringify({
+              timestamp: new Date().toISOString(),
+              level: "warn",
+              event: "subagent_result_consumption_ack_failed",
+              service: "agent-stream",
+              environment:
+                process.env.TRIGGER_ENV ?? process.env.NODE_ENV ?? "unknown",
+              request_id: ctx.chatId,
+              claim_count: pendingDeliveryClaims.length,
+              error_name: error instanceof Error ? error.name : "unknown",
+            }),
+          );
+        }
       }
       openRouterFileAnnotations =
         getOpenRouterFileAnnotations(providerMetadata) ??

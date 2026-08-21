@@ -19,6 +19,7 @@ describe("security validation subagent runtime contracts", () => {
     expect(source).toContain("SUBAGENT_MAX_ACTIVE_SECONDS");
     expect(source).toContain("SUBAGENT_RESULT_DEADLINE_SECONDS");
     expect(source).toContain('event: "subagent_deadline_reminder_sent"');
+    expect(source).toContain("conversationMessages.push(deadlineMessage)");
     expect(source).toContain("SUBAGENT_MAX_STEPS");
     expect(source).toContain("row.cost_limit_dollars");
     expect(source).toContain("retry: { maxAttempts: 1 }");
@@ -64,16 +65,8 @@ describe("security validation subagent runtime contracts", () => {
     expect(convex).toContain("parent_delivery_claim_expires_at");
     expect(convex).toContain("parent_result_injected_at");
     expect(convex).toContain("parent_result_consumed_at");
-    const consumeTransition = convex.slice(
-      convex.indexOf("markResultConsumedForParentBackend"),
-    );
-    const consumePatch = consumeTransition.slice(
-      consumeTransition.indexOf("await ctx.db.patch"),
-    );
-    expectMarkerOrder(
-      consumePatch,
-      "parent_result_injected_at",
-      "parent_result_consumed_at",
+    expect(convex).toContain(
+      'if (!row.parent_result_injected_at) return "stale_claim" as const',
     );
   });
 

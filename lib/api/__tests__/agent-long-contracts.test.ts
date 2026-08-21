@@ -420,9 +420,13 @@ describe("agent stream runner — empty tool-input recovery", () => {
       "const activeTools = enforceParentGateTool(",
       summarizationIdx,
     );
+    const normalContinuationIdx = agentStreamRunnerSrc.indexOf(
+      "let currentMessages = rollingModelMessages",
+      summarizedActiveToolsIdx,
+    );
     const normalActiveToolsIdx = agentStreamRunnerSrc.indexOf(
       "const activeTools = enforceParentGateTool(",
-      summarizedActiveToolsIdx + 1,
+      normalContinuationIdx,
     );
     const summarizedNudgeIdx = agentStreamRunnerSrc.indexOf(
       "loopRecovery.nudge",
@@ -432,7 +436,8 @@ describe("agent stream runner — empty tool-input recovery", () => {
     expect(recoveryIdx).toBeGreaterThan(-1);
     expect(summarizationIdx).toBeGreaterThan(recoveryIdx);
     expect(summarizedActiveToolsIdx).toBeGreaterThan(summarizationIdx);
-    expect(normalActiveToolsIdx).toBeGreaterThan(summarizedActiveToolsIdx);
+    expect(normalContinuationIdx).toBeGreaterThan(summarizedActiveToolsIdx);
+    expect(normalActiveToolsIdx).toBeGreaterThan(normalContinuationIdx);
     expect(summarizedNudgeIdx).toBeGreaterThan(summarizationIdx);
     expect(agentStreamRunnerSrc).toMatch(
       /getActiveToolsWithExclusions\(recovery\.excludedTools\)/,
@@ -1098,6 +1103,7 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(taskSrc).toMatch(
       /markConsumed:[\s\S]*?markSubagentResultConsumedForParent/,
     );
+    expect(taskSrc).toContain("retry.onThrow(transition");
     expect(taskSrc).toMatch(/subagent_parent_finish_blocked/);
     expect(taskSrc).toMatch(/subagent_result_consumed/);
   });

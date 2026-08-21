@@ -553,6 +553,166 @@ describe("createAgentStream repeated compaction", () => {
     });
   });
 
+  it("fails closed when injection or gate-state persistence is unavailable", async () => {
+    const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+    const usageTracker = {
+      setAuthoritativeModelCostForStep: jest.fn(),
+      computeCostDollars: jest.fn(() => 0),
+    };
+    const summarizationTracker = {
+      hasSummarized: false,
+      summarizationCount: 0,
+    };
+    const deliveryClaim = { subagent_id: "sa_1", claim_id: "claim_1" };
+    const injectionFailureStream = (await createAgentStream(
+      "test-model",
+      createTestStreamContext({
+        tools: { wait_for_agents: {} },
+        usageTracker,
+        summarizationTracker,
+        subagentCompletionGate: {
+          getState: jest.fn(async () => ({
+            activeCount: 0,
+            unconsumedSubagentIds: ["sa_1"],
+          })),
+          markInjected: jest.fn(async () => {
+            throw new Error("persistence unavailable");
+          }),
+          markConsumed: jest.fn(async () => undefined),
+        },
+      }) as any,
+      initAgentStreamState([uiMessage("initial", "Delegate")], {
+        usedTokens: 1_000,
+        maxTokens: 128_000,
+      }),
+    )) as any;
+
+    const injectionFailure = await injectionFailureStream.prepareStep({
+      steps: [
+        {
+          toolResults: [
+            {
+              toolName: "wait_for_agents",
+              output: { _delivery_claim: deliveryClaim },
+            },
+          ],
+        },
+      ],
+      messages: [{ role: "user", content: "Delegate" }],
+    });
+    expect(injectionFailure.toolChoice).toEqual({
+      type: "tool",
+      toolName: "wait_for_agents",
+    });
+
+    let gateLookupFails = false;
+    const gateLookupFailureStream = (await createAgentStream(
+      "test-model",
+      createTestStreamContext({
+        tools: { wait_for_agents: {} },
+        usageTracker,
+        summarizationTracker,
+        subagentCompletionGate: {
+          getState: jest.fn(async () => {
+            if (gateLookupFails) throw new Error("lookup unavailable");
+            return { activeCount: 1, unconsumedSubagentIds: [] };
+          }),
+          markInjected: jest.fn(async () => undefined),
+          markConsumed: jest.fn(async () => undefined),
+        },
+      }) as any,
+      initAgentStreamState([uiMessage("initial", "Delegate")], {
+        usedTokens: 1_000,
+        maxTokens: 128_000,
+      }),
+    )) as any;
+
+    await gateLookupFailureStream.prepareStep({
+      steps: [{ toolResults: [{ toolName: "create_agent", output: {} }] }],
+      messages: [{ role: "user", content: "Delegate" }],
+    });
+    gateLookupFails = true;
+    const lookupFailure = await gateLookupFailureStream.prepareStep({
+      steps: [{ toolResults: [] }],
+      messages: [{ role: "user", content: "Delegate" }],
+    });
+    expect(lookupFailure.toolChoice).toEqual({
+      type: "tool",
+      toolName: "wait_for_agents",
+    });
+    warn.mockRestore();
+  });
+
+  it("keeps a delivery claim pending when the consumption acknowledgement fails", async () => {
+    const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+    const deliveryClaim = { subagent_id: "sa_1", claim_id: "claim_1" };
+    const completionState = {
+      activeCount: 0,
+      unconsumedSubagentIds: ["sa_1"],
+    };
+    const markConsumed = jest.fn(async () => {
+      throw new Error("persistence unavailable");
+    });
+    const stream = (await createAgentStream(
+      "test-model",
+      createTestStreamContext({
+        tools: { wait_for_agents: {} },
+        summarizationTracker: {
+          hasSummarized: false,
+          summarizationCount: 0,
+        },
+        usageTracker: {
+          setAuthoritativeModelCostForStep: jest.fn(),
+          computeCostDollars: jest.fn(() => 0),
+        },
+        subagentCompletionGate: {
+          getState: jest.fn(async () => completionState),
+          markInjected: jest.fn(async () => undefined),
+          markConsumed,
+        },
+      }) as any,
+      initAgentStreamState([uiMessage("initial", "Delegate")], {
+        usedTokens: 1_000,
+        maxTokens: 128_000,
+      }),
+    )) as any;
+
+    await stream.prepareStep({
+      steps: [
+        {
+          toolResults: [
+            {
+              toolName: "wait_for_agents",
+              output: { _delivery_claim: deliveryClaim },
+            },
+          ],
+        },
+      ],
+      messages: [{ role: "user", content: "Delegate" }],
+    });
+    await expect(
+      stream.onStepFinish({
+        usage: undefined,
+        response: { modelId: "test-model" },
+        providerMetadata: undefined,
+      }),
+    ).resolves.toBeUndefined();
+
+    const blocked = await stream.prepareStep({
+      steps: [{ toolResults: [] }],
+      messages: [{ role: "user", content: "Delegate" }],
+    });
+    expect(markConsumed).toHaveBeenCalledWith([deliveryClaim]);
+    expect(blocked.toolChoice).toEqual({
+      type: "tool",
+      toolName: "wait_for_agents",
+    });
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining("subagent_result_consumption_ack_failed"),
+    );
+    warn.mockRestore();
+  });
+
   it.each([
     ["model-grok-4.5", "model-deepseek-v4-flash-0731"],
     ["model-grok-4.5-pro", "model-deepseek-v4-pro-0813"],

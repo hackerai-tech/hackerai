@@ -809,6 +809,7 @@ export const subagentTask = task({
                           ? "Runtime deadline approaching. Stop further exploration and submit the best supported structured result now. Use a partial or blocked status when the investigation is incomplete."
                           : "Runtime deadline approaching. Stop further exploration and submit the best supported structured result now. Use an inconclusive verdict when the validation is incomplete.",
                     };
+                    conversationMessages.push(deadlineMessage);
                     metadata
                       .set("deadlineReminderSent", true)
                       .set("deadlineReminderStep", stepCount);

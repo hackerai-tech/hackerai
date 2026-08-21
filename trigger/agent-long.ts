@@ -2,6 +2,7 @@ import {
   task,
   metadata,
   logger as triggerLogger,
+  retry,
   usage as triggerUsage,
 } from "@trigger.dev/sdk";
 import * as triggerSdk from "@trigger.dev/sdk";
@@ -3940,19 +3941,16 @@ export const agentLongTask = task({
             const retryParentDeliveryTransition = async (
               transition: () => Promise<unknown>,
             ) => {
-              let lastError: unknown;
-              for (let attempt = 1; attempt <= 3; attempt += 1) {
-                try {
-                  const outcome = await transition();
-                  if (outcome === "updated" || outcome === "already_consumed") {
-                    return;
-                  }
-                  throw new Error(`Unexpected delivery outcome: ${outcome}`);
-                } catch (error) {
-                  lastError = error;
-                }
+              const outcome = await retry.onThrow(transition, {
+                maxAttempts: 3,
+                factor: 2,
+                minTimeoutInMs: 250,
+                maxTimeoutInMs: 1_000,
+              });
+              if (outcome === "updated" || outcome === "already_consumed") {
+                return;
               }
-              throw lastError;
+              throw new Error(`Unexpected delivery outcome: ${outcome}`);
             };
             const subagentCompletionGate: SubagentParentCompletionGate | null =
               subagentsEnabled

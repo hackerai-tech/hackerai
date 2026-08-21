@@ -9,13 +9,14 @@ describe("summarizeParentSubagentSettlement", () => {
       summarizeParentSubagentSettlement([
         { status: "running" },
         { status: "completed", parent_result_consumed_at: 123 },
+        { status: "completed", parent_notified_at: 456 },
         { status: "failed" },
         { status: "canceled" },
       ]),
     ).toEqual({
-      totalCount: 4,
+      totalCount: 5,
       activeCount: 1,
-      terminalCount: 3,
+      terminalCount: 4,
       undeliveredCount: 2,
     });
   });

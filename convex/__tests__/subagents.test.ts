@@ -795,13 +795,12 @@ describe("subagent coordination messages", () => {
           Object.assign(row, value);
         },
       );
-    const first = jest.fn<any>().mockResolvedValue(row);
-    const filter = jest.fn(() => ({ first }));
+    const unique = jest.fn<any>().mockResolvedValue(row);
     const withIndex = jest.fn((_name: string, callback: (q: any) => void) => {
       const q = { eq: jest.fn<any>() };
       q.eq.mockReturnValue(q);
       callback(q);
-      return { filter };
+      return { unique };
     });
     const ctx = {
       db: { query: jest.fn(() => ({ withIndex })), patch },
@@ -814,6 +813,14 @@ describe("subagent coordination messages", () => {
       subagentId: "sa_1",
       deliveryClaimId: "claim-1",
     };
+
+    await expect(
+      markResultInjectedForParentBackend.handler(ctx, {
+        ...deliveryArgs,
+        userId: "different-user",
+      }),
+    ).resolves.toBe("not_found");
+    expect(patch).not.toHaveBeenCalled();
 
     await expect(
       markResultInjectedForParentBackend.handler(ctx, deliveryArgs),
@@ -830,6 +837,27 @@ describe("subagent coordination messages", () => {
     await expect(
       markResultConsumedForParentBackend.handler(ctx, deliveryArgs),
     ).resolves.toBe("already_consumed");
+
+    delete row.parent_result_consumed_at;
+    delete row.parent_notified_at;
+    row.parent_delivery_claim_id = "different-claim";
+    await expect(
+      markResultConsumedForParentBackend.handler(ctx, deliveryArgs),
+    ).resolves.toBe("stale_claim");
+    expect(row.parent_result_consumed_at).toBeUndefined();
+
+    row.parent_delivery_claim_id = "claim-1";
+    delete row.parent_result_injected_at;
+    await expect(
+      markResultConsumedForParentBackend.handler(ctx, deliveryArgs),
+    ).resolves.toBe("stale_claim");
+    expect(row.parent_result_consumed_at).toBeUndefined();
+
+    unique.mockResolvedValueOnce(null);
+    await expect(
+      markResultConsumedForParentBackend.handler(ctx, deliveryArgs),
+    ).resolves.toBe("not_found");
+    expect(row.parent_result_consumed_at).toBeUndefined();
   });
 });
 

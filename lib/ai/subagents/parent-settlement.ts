@@ -1,9 +1,15 @@
+import {
+  SUBAGENT_ACTIVE_STATUSES,
+  SUBAGENT_TERMINAL_STATUSES,
+  type SubagentStatus,
+} from "@/lib/ai/subagents/contracts";
+
 type ActiveSubagentRun = {
   trigger_run_id?: string;
 };
 
 type ParentSubagentSettlementRow = {
-  status: string;
+  status: SubagentStatus;
   parent_result_consumed_at?: number;
   /** Compatibility with rows created before acknowledged delivery. */
   parent_notified_at?: number;
@@ -13,10 +19,10 @@ export const summarizeParentSubagentSettlement = (
   rows: ParentSubagentSettlementRow[],
 ) => {
   const activeCount = rows.filter((row) =>
-    ["queued", "running", "finalizing"].includes(row.status),
+    SUBAGENT_ACTIVE_STATUSES.has(row.status),
   ).length;
   const terminalRows = rows.filter((row) =>
-    ["completed", "failed", "canceled", "timed_out"].includes(row.status),
+    SUBAGENT_TERMINAL_STATUSES.has(row.status),
   );
   return {
     totalCount: rows.length,

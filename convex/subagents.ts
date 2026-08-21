@@ -763,18 +763,21 @@ const getOwnedParentDeliveryRow = async (
     parentTriggerRunId: string;
     subagentId: string;
   },
-) =>
-  await ctx.db
+) => {
+  const row = await ctx.db
     .query("subagent_runs")
     .withIndex("by_subagent_id", (q) => q.eq("subagent_id", args.subagentId))
-    .filter((q) =>
-      q.and(
-        q.eq(q.field("user_id"), args.userId),
-        q.eq(q.field("chat_id"), args.chatId),
-        q.eq(q.field("parent_trigger_run_id"), args.parentTriggerRunId),
-      ),
-    )
-    .first();
+    .unique();
+  if (
+    !row ||
+    row.user_id !== args.userId ||
+    row.chat_id !== args.chatId ||
+    row.parent_trigger_run_id !== args.parentTriggerRunId
+  ) {
+    return null;
+  }
+  return row;
+};
 
 export const markResultInjectedForParentBackend = mutation({
   args: parentDeliveryTransitionArgs,
@@ -819,9 +822,9 @@ export const markResultConsumedForParentBackend = mutation({
     if (row.parent_delivery_claim_id !== args.deliveryClaimId) {
       return "stale_claim" as const;
     }
+    if (!row.parent_result_injected_at) return "stale_claim" as const;
     const now = Date.now();
     await ctx.db.patch(row._id, {
-      parent_result_injected_at: row.parent_result_injected_at ?? now,
       parent_result_consumed_at: now,
       parent_notified_at: now,
       updated_at: now,
