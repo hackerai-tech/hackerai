@@ -1305,6 +1305,10 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
       "terminalStreamError instanceof ChatSDKError",
       handledRateLimitIdx,
     );
+    const directThrowIdx = taskSrc.indexOf(
+      "throw terminalStreamError;",
+      chatSdkErrorIdx,
+    );
     const throwIdx = taskSrc.indexOf(
       "throw wrapProviderTerminalError(terminalStreamError",
       handledRateLimitIdx,
@@ -1312,7 +1316,8 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(streamErrorIdx).toBeGreaterThan(-1);
     expect(handledRateLimitIdx).toBeGreaterThan(streamErrorIdx);
     expect(chatSdkErrorIdx).toBeGreaterThan(handledRateLimitIdx);
-    expect(throwIdx).toBeGreaterThan(chatSdkErrorIdx);
+    expect(directThrowIdx).toBeGreaterThan(chatSdkErrorIdx);
+    expect(throwIdx).toBeGreaterThan(directThrowIdx);
   });
 
   test("provider finishReason error fails the task after the UI stream drains", () => {
