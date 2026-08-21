@@ -326,6 +326,23 @@ describe("omitPdfFilePartsFromModelMessages", () => {
       },
     ]);
   });
+
+  it("drops a user message when removing its PDF leaves empty content", () => {
+    const messages = [
+      {
+        role: "user" as const,
+        content: [
+          {
+            type: "file" as const,
+            data: "data:application/pdf;base64,JVBERi0=",
+            mediaType: "application/pdf",
+          },
+        ],
+      },
+    ] satisfies ModelMessage[];
+
+    expect(omitPdfFilePartsFromModelMessages(messages)).toEqual([]);
+  });
 });
 
 describe("resolveFallbackServedTelemetry", () => {

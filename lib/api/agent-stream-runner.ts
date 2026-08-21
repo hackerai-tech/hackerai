@@ -147,7 +147,7 @@ export const omitPdfFilePartsFromModelMessages = (
   messages: ModelMessage[],
 ): ModelMessage[] => {
   let changed = false;
-  const nextMessages = messages.map((message) => {
+  const nextMessages = messages.flatMap<ModelMessage>((message) => {
     if (message.role !== "user" || !Array.isArray(message.content)) {
       return message;
     }
@@ -157,9 +157,8 @@ export const omitPdfFilePartsFromModelMessages = (
       changed ||= shouldRemove;
       return !shouldRemove;
     });
-    return content.length === message.content.length
-      ? message
-      : { ...message, content };
+    if (content.length === message.content.length) return message;
+    return content.length === 0 ? [] : { ...message, content };
   });
   return changed ? nextMessages : messages;
 };
@@ -171,8 +170,11 @@ const getResponseHeader = (
   if (headers instanceof Headers) return headers.get(name) ?? undefined;
   if (!headers || typeof headers !== "object") return undefined;
   const headerRecord = headers as Record<string, unknown>;
-  const value = headerRecord[name] ?? headerRecord[name.toLowerCase()];
-  return typeof value === "string" ? value : undefined;
+  const target = name.toLowerCase();
+  const entry = Object.entries(headerRecord).find(
+    ([key]) => key.toLowerCase() === target,
+  );
+  return typeof entry?.[1] === "string" ? entry[1] : undefined;
 };
 
 export const resolveAgentModelAfterSummarization = (
