@@ -1573,6 +1573,46 @@ describe("createChatLogger ChatSDKError metadata", () => {
 });
 
 describe("createChatLogger OpenRouter metadata", () => {
+  it("records request and upstream IDs for failed provider streams", () => {
+    const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+    const logSpy = jest.spyOn(console, "log").mockImplementation(() => {});
+
+    try {
+      const chatLogger = createChatLogger({
+        chatId: "chat_provider_failure_metadata",
+        endpoint: "/api/agent-long",
+      });
+      const error = new Error("Network connection lost.");
+
+      chatLogger.recordProviderError(error, {
+        mode: "agent",
+        model: "model-deepseek-v4-flash-0731",
+        requestedModelSlug: "deepseek/deepseek-v4-flash-0731",
+        openRouterMetadata: {
+          provider_name: "DeepInfra",
+          openrouter_generation_id: "gen-failed",
+          openrouter_request_id: "req-failed",
+          openrouter_upstream_id: "upstream-failed",
+        },
+      });
+      chatLogger.emitUnexpectedError(error);
+
+      const warning = warnSpy.mock.calls.flat().map(String).join("\n");
+      const wideEvent = JSON.parse(String(logSpy.mock.calls[0][0]));
+      expect(warning).toContain('"openrouter_request_id":"req-failed"');
+      expect(warning).toContain('"openrouter_upstream_id":"upstream-failed"');
+      expect(wideEvent.provider_error).toMatchObject({
+        provider_name: "DeepInfra",
+        openrouter_generation_id: "gen-failed",
+        openrouter_request_id: "req-failed",
+        openrouter_upstream_id: "upstream-failed",
+      });
+    } finally {
+      warnSpy.mockRestore();
+      logSpy.mockRestore();
+    }
+  });
+
   it("adds provider attribution fields to the wide event model block", () => {
     const logSpy = jest.spyOn(console, "log").mockImplementation(() => {});
 

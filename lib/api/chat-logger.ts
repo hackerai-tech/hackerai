@@ -47,7 +47,11 @@ import type { UsageCostRecord } from "@/lib/usage-tracker";
 import type { SandboxSessionUsage } from "@/lib/ai/tools";
 import type { UsageDeductionResult } from "@/lib/rate-limit";
 import type { BudgetAbortDetails } from "@/lib/chat/budget-monitor";
-import type { OpenRouterModelMetadata } from "@/lib/api/openrouter-metadata";
+import {
+  extractOpenRouterMetadataFromError,
+  mergeOpenRouterMetadata,
+  type OpenRouterModelMetadata,
+} from "@/lib/api/openrouter-metadata";
 import {
   extractErrorDetails,
   extractRetryAttempts,
@@ -725,15 +729,26 @@ export function createChatLogger(config: ChatLoggerConfig) {
         userId?: string;
         subscription?: string;
         providerRequest?: ProviderRequestDiagnostics;
+        openRouterMetadata?: OpenRouterModelMetadata;
       },
     ) {
-      const { providerRequest, ...providerContext } = context;
+      const {
+        providerRequest,
+        openRouterMetadata: providedOpenRouterMetadata,
+        ...providerContext
+      } = context;
       const details = extractErrorDetails(error);
+      const openRouterMetadata = mergeOpenRouterMetadata(
+        providedOpenRouterMetadata ?? {},
+        extractOpenRouterMetadataFromError(error),
+      );
       const attempts = extractRetryAttempts(error);
       const category = getProviderErrorCategory(details);
       const providerStatusCode = getProviderStatusCode(details);
       const diagnosticMessage = getProviderDiagnosticMessage(details);
       const providerName = nonEmptyString(details.providerName);
+      const attributedProviderName =
+        nonEmptyString(openRouterMetadata.provider_name) ?? providerName;
       const configuredModel =
         nonEmptyString(providerContext.model) ??
         nonEmptyString(providerRequest?.model);
@@ -742,18 +757,19 @@ export function createChatLogger(config: ChatLoggerConfig) {
         nonEmptyString(providerRequest?.requested_model_slug);
       const modelProviderSlug = getModelProviderSlug(requestedModelSlug);
       const openrouterGenerationId = nonEmptyString(
-        details.openrouterGenerationId,
+        openRouterMetadata.openrouter_generation_id ??
+          details.openrouterGenerationId,
       );
       const providerErrorFingerprint = buildProviderErrorFingerprint({
         category,
         statusCode: providerStatusCode,
         requestedModelSlug,
         modelProviderSlug,
-        providerName,
+        providerName: attributedProviderName,
       });
       const normalizedProviderContext = {
-        ...(providerName && {
-          provider_name: providerName,
+        ...(attributedProviderName && {
+          provider_name: attributedProviderName,
           provider_name_source: "openrouter_error_metadata",
         }),
         ...(configuredModel && { configured_model: configuredModel }),
@@ -761,6 +777,12 @@ export function createChatLogger(config: ChatLoggerConfig) {
         ...(modelProviderSlug && { model_provider_slug: modelProviderSlug }),
         ...(openrouterGenerationId && {
           openrouter_generation_id: openrouterGenerationId,
+        }),
+        ...(openRouterMetadata.openrouter_request_id && {
+          openrouter_request_id: openRouterMetadata.openrouter_request_id,
+        }),
+        ...(openRouterMetadata.openrouter_upstream_id && {
+          openrouter_upstream_id: openRouterMetadata.openrouter_upstream_id,
         }),
       };
       lastProviderErrorCategory = category;
@@ -829,14 +851,16 @@ export function createChatLogger(config: ChatLoggerConfig) {
           typeof details.isRetryable === "boolean"
             ? details.isRetryable
             : isRetriableProviderCategory(category),
-        providerName,
-        providerNameSource: providerName
+        providerName: attributedProviderName,
+        providerNameSource: attributedProviderName
           ? "openrouter_error_metadata"
           : undefined,
         configuredModel,
         requestedModelSlug,
         modelProviderSlug,
         openrouterGenerationId,
+        openrouterRequestId: openRouterMetadata.openrouter_request_id,
+        openrouterUpstreamId: openRouterMetadata.openrouter_upstream_id,
         providerErrorFingerprint,
         attempts,
       });

@@ -254,10 +254,12 @@ import {
 } from "@/lib/chat/stop-conditions";
 import {
   detectAssistantContentLoopFromParts,
+  prepareProviderDisconnectContinuation,
   shouldRetryProviderStreamAfterReasoningOnlyOutput,
   shouldRetryProviderStreamAfterInterruptedToolInput,
   shouldRetryAgentLongWithFallback,
 } from "@/lib/chat/agent-long-provider-retry";
+import { wrapProviderTerminalError } from "@/lib/api/provider-terminal-error";
 import {
   omitImageViewToolResultsForProviderRetry,
   omitTrailingStepStartAssistantMessage,
@@ -1670,6 +1672,9 @@ const isTerminalProviderStreamError = (
   state?.streamFinishReason === "error" ||
   isProviderContentFilterFinishReason(state?.streamFinishReason);
 
+const PROVIDER_DISCONNECT_CONTINUATION_PROMPT =
+  "The previous model connection ended mid-response. Continue from the preserved completed text and tool results. Do not repeat completed tool calls or their side effects. Finish the task from the last durable result.";
+
 type RecordedAgentLongFailure = {
   userCorrectable: boolean;
 };
@@ -2603,6 +2608,7 @@ export const agentLongTask = task({
       const summarizationTracker = new SummarizationTracker();
       chatLogger.startStream();
       let terminalAgentState: AgentStreamState | undefined;
+      let terminalRequestedModelSlug: string | undefined;
       let agentLongDurationExceeded = false;
       const markAgentLongDurationExceeded = () => {
         agentLongDurationExceeded = true;
@@ -3941,6 +3947,8 @@ export const agentLongTask = task({
               excludedProviderModelSlugs?: readonly string[],
             ) => {
               activeModelName = modelName;
+              terminalRequestedModelSlug =
+                trackedProvider.languageModel(modelName).modelId;
               streamCtx.tools = getToolsForModel(modelName);
               streamCtx.excludedProviderModelSlugs = excludedProviderModelSlugs;
               setCurrentModelName(modelName);
@@ -4117,10 +4125,33 @@ export const agentLongTask = task({
                           : { messages: finishedMessages, omittedCount: 0 };
                       const shouldRetryWithoutImageToolResults =
                         imageRecovery.omittedCount > 0 && !isAborted;
+                      const normalizedFinishedMessages = finishedMessages
+                        .map((message) =>
+                          message.role === "assistant"
+                            ? stripAgentLongHeartbeatParts(message)
+                            : message,
+                        )
+                        .filter(
+                          (message) =>
+                            message.role !== "assistant" ||
+                            (message.parts?.length ?? 0) > 0,
+                        );
+                      const providerDisconnectContinuation =
+                        hasTerminalProviderStreamError &&
+                        !providerContentBlocked &&
+                        !isAborted
+                          ? prepareProviderDisconnectContinuation(
+                              normalizedFinishedMessages,
+                            )
+                          : undefined;
+                      const shouldContinueAfterProviderDisconnect = Boolean(
+                        providerDisconnectContinuation,
+                      );
 
                       if (
                         (shouldRetryWithFallback ||
-                          shouldRetryWithoutImageToolResults) &&
+                          shouldRetryWithoutImageToolResults ||
+                          shouldContinueAfterProviderDisconnect) &&
                         !isRetryWithFallback &&
                         (!isAborted || stoppedDueToAssistantContentLoop) &&
                         (isAutoModel ||
@@ -4129,21 +4160,24 @@ export const agentLongTask = task({
                           stoppedDueToAssistantContentLoop ||
                           state.stoppedDueToDoomLoop ||
                           shouldRetryInterruptedToolInput ||
-                          shouldRetryExplicitDeepSeekProReasoning)
+                          shouldRetryExplicitDeepSeekProReasoning ||
+                          shouldContinueAfterProviderDisconnect)
                       ) {
                         const retryReason = shouldRetryWithoutImageToolResults
                           ? "image_tool_result_rejection"
-                          : providerContentBlocked
-                            ? "content_filter"
-                            : stoppedDueToAssistantContentLoop
-                              ? "assistant_content_loop"
-                              : state.stoppedDueToDoomLoop
-                                ? "doom_loop"
-                                : shouldRetryInterruptedToolInput
-                                  ? "interrupted_tool_input"
-                                  : shouldRetryReasoningOnlyProviderError
-                                    ? "reasoning_only_provider_error"
-                                    : "incomplete_stream";
+                          : shouldContinueAfterProviderDisconnect
+                            ? "provider_disconnect_continuation"
+                            : providerContentBlocked
+                              ? "content_filter"
+                              : stoppedDueToAssistantContentLoop
+                                ? "assistant_content_loop"
+                                : state.stoppedDueToDoomLoop
+                                  ? "doom_loop"
+                                  : shouldRetryInterruptedToolInput
+                                    ? "interrupted_tool_input"
+                                    : shouldRetryReasoningOnlyProviderError
+                                      ? "reasoning_only_provider_error"
+                                      : "incomplete_stream";
                         const blockedProviderModel = providerContentBlocked
                           ? state.responseModel
                           : undefined;
@@ -4179,9 +4213,17 @@ export const agentLongTask = task({
                                 : undefined,
                             shouldRetryInterruptedToolInput,
                             imageToolResultsOmitted: imageRecovery.omittedCount,
+                            disconnectRemovedPartCount:
+                              providerDisconnectContinuation?.removedPartCount,
+                            disconnectPreservedCompletedToolCount:
+                              providerDisconnectContinuation?.preservedCompletedToolCount,
+                            disconnectPreservedTextPartCount:
+                              providerDisconnectContinuation?.preservedTextPartCount,
                           },
                         );
                         isRetryWithFallback = true;
+                        streamError = undefined;
+                        state.openRouterMetadata = {};
                         state.lastStepInputTokens = 0;
                         state.stoppedDueToStepLimit = false;
                         state.streamFinishReason = undefined;
@@ -4206,7 +4248,22 @@ export const agentLongTask = task({
                           retryUsesDifferentModel(selectedModel, retryModel) ||
                           providerContentBlocked;
                         resetServedModelTelemetryForRetry(state);
-                        if (shouldRetryWithoutImageToolResults) {
+                        if (providerDisconnectContinuation) {
+                          state.finalMessages = [
+                            ...state.finalMessages,
+                            ...providerDisconnectContinuation.messages,
+                            {
+                              id: generateId(),
+                              role: "user",
+                              parts: [
+                                {
+                                  type: "text",
+                                  text: PROVIDER_DISCONNECT_CONTINUATION_PROMPT,
+                                },
+                              ],
+                            },
+                          ];
+                        } else if (shouldRetryWithoutImageToolResults) {
                           const normalizedRetryMessages = imageRecovery.messages
                             .map((message) =>
                               message.role === "assistant"
@@ -4396,6 +4453,22 @@ export const agentLongTask = task({
                                     );
                                     const fallbackGenerationTimeMs =
                                       Date.now() - fallbackStartTime;
+                                    for (const message of providerDisconnectContinuation?.messages ??
+                                      []) {
+                                      if (message.role !== "assistant")
+                                        continue;
+                                      await saveMessage({
+                                        chatId,
+                                        userId,
+                                        message,
+                                        extraFileIds: newFileIds,
+                                        model: configuredModelId,
+                                        mode,
+                                        generationStartedAt: streamStartTime,
+                                        generationTimeMs:
+                                          fallbackStartTime - streamStartTime,
+                                      });
+                                    }
                                     for (const msg of retryMessages) {
                                       if (msg.role !== "assistant") continue;
                                       const processed =
@@ -4826,7 +4899,10 @@ export const agentLongTask = task({
           await phLogger.flush().catch(() => {});
           return { chatId, assistantMessageId };
         }
-        throw terminalStreamError;
+        throw wrapProviderTerminalError(terminalStreamError, {
+          model: terminalRequestedModelSlug,
+          openRouterMetadata: terminalAgentState?.openRouterMetadata,
+        });
       }
 
       metadata.set("status", "done");

@@ -1275,14 +1275,14 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(returnIdx).toBeGreaterThan(handledRateLimitIdx);
   });
 
-  test("non-rate-limit stream errors are still rethrown after the handled branch", () => {
+  test("non-rate-limit stream errors are wrapped with provider attribution after the handled branch", () => {
     const streamErrorIdx = taskSrc.indexOf("if (terminalStreamError)");
     const handledRateLimitIdx = taskSrc.indexOf(
       "isHandledUserRateLimitError(terminalStreamError)",
       streamErrorIdx,
     );
     const throwIdx = taskSrc.indexOf(
-      "throw terminalStreamError",
+      "throw wrapProviderTerminalError(terminalStreamError",
       handledRateLimitIdx,
     );
     expect(streamErrorIdx).toBeGreaterThan(-1);
@@ -1297,7 +1297,7 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
       waitIdx,
     );
     const throwIdx = taskSrc.indexOf(
-      "throw terminalStreamError",
+      "throw wrapProviderTerminalError(terminalStreamError",
       terminalErrorIdx,
     );
 
@@ -1356,6 +1356,21 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(terminalHelperIdx).toBeGreaterThan(-1);
     expect(contentFilterIdx).toBeGreaterThan(terminalHelperIdx);
     expect(terminalCheckIdx).toBeGreaterThan(contentFilterIdx);
+  });
+
+  test("mid-stream disconnect continuation is bounded and preserves a replay-safe transcript", () => {
+    expect(taskSrc).toMatch(
+      /prepareProviderDisconnectContinuation\(\s*normalizedFinishedMessages/,
+    );
+    expect(taskSrc).toMatch(
+      /shouldContinueAfterProviderDisconnect\)\s*&&\s*!isRetryWithFallback/,
+    );
+    expect(taskSrc).toMatch(
+      /state\.finalMessages\s*=\s*\[\s*\.\.\.state\.finalMessages,\s*\.\.\.providerDisconnectContinuation\.messages/,
+    );
+    expect(taskSrc).toContain(
+      "Do not repeat completed tool calls or their side effects.",
+    );
   });
 
   test("direct context-limit finish reasons trigger auto-continue in both agent paths", () => {

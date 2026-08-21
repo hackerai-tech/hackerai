@@ -1,4 +1,5 @@
 import { hasMeaningfulToolInput } from "@/lib/chat/tool-abort-utils";
+import type { UIMessage } from "ai";
 
 type MessagePartLike = {
   type?: unknown;
@@ -81,6 +82,77 @@ const hasToolOutputOrError = (part: unknown): boolean => {
     candidate.state === "output-available" ||
     candidate.state === "output-error"
   );
+};
+
+const isCompletedToolPart = (part: unknown): boolean =>
+  isToolPart(part) && hasToolOutputOrError(part);
+
+const hasDurableAssistantPart = (parts: unknown[]): boolean =>
+  parts.some((part) => {
+    const type = getPartType(part);
+    if (type === "text") return Boolean(getPartText(part)?.trim());
+    return isCompletedToolPart(part);
+  });
+
+export type ProviderDisconnectContinuation = {
+  messages: UIMessage[];
+  removedPartCount: number;
+  preservedCompletedToolCount: number;
+  preservedTextPartCount: number;
+};
+
+/**
+ * Build a replay-safe transcript after a provider socket dies mid-step.
+ *
+ * AI SDK agent output uses `step-start` boundaries. Everything before the
+ * final boundary belongs to completed model/tool steps and is safe to retain.
+ * The final step is incomplete even when the provider adapter closes its text
+ * part during error cleanup, so it must not be treated as durable. A completed
+ * tool result is the exception: preserve it and trim only the tail after it so
+ * a continuation cannot repeat an already-executed side effect.
+ */
+export const prepareProviderDisconnectContinuation = (
+  messages: UIMessage[],
+): ProviderDisconnectContinuation | undefined => {
+  const assistantIndex = messages.findLastIndex(
+    (message) => message.role === "assistant",
+  );
+  if (assistantIndex < 0) return undefined;
+
+  const assistant = messages[assistantIndex];
+  const parts = assistant.parts ?? [];
+  const lastStepStartIndex = parts.findLastIndex(
+    (part) => getPartType(part) === "step-start",
+  );
+  if (lastStepStartIndex < 0) return undefined;
+
+  const lastCompletedToolIndex = parts.findLastIndex(isCompletedToolPart);
+  const preserveUntil = Math.max(
+    lastStepStartIndex,
+    lastCompletedToolIndex >= lastStepStartIndex
+      ? lastCompletedToolIndex + 1
+      : lastStepStartIndex,
+  );
+  const removedPartCount = parts.length - preserveUntil;
+  if (removedPartCount <= 0) return undefined;
+
+  const preservedParts = parts.slice(0, preserveUntil);
+  const normalizedMessages = messages.slice(0, assistantIndex);
+  if (hasDurableAssistantPart(preservedParts)) {
+    normalizedMessages.push({ ...assistant, parts: preservedParts });
+  }
+  normalizedMessages.push(...messages.slice(assistantIndex + 1));
+
+  return {
+    messages: normalizedMessages,
+    removedPartCount,
+    preservedCompletedToolCount:
+      preservedParts.filter(isCompletedToolPart).length,
+    preservedTextPartCount: preservedParts.filter(
+      (part) =>
+        getPartType(part) === "text" && Boolean(getPartText(part)?.trim()),
+    ).length,
+  };
 };
 
 const isRestartableInterruptedToolInput = (part: unknown): boolean => {

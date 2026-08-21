@@ -26,12 +26,19 @@ type ResponseLike = {
 };
 
 const MAX_ATTEMPTS_TO_LOG = 8;
+const MAX_ERROR_SOURCE_DEPTH = 4;
+const OPENROUTER_GENERATION_LOOKUP_TIMEOUT_MS = 2_500;
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
 const pickString = (value: unknown): string | undefined =>
   typeof value === "string" && value.length > 0 ? value : undefined;
+
+const pickIdentifier = (value: unknown): string | undefined => {
+  const identifier = pickString(value);
+  return identifier && identifier.length <= 512 ? identifier : undefined;
+};
 
 const pickNumber = (value: unknown): number | undefined =>
   typeof value === "number" && Number.isFinite(value) ? value : undefined;
@@ -136,12 +143,15 @@ const pickAttempts = (
     .slice(0, MAX_ATTEMPTS_TO_LOG)
     .map((attempt): OpenRouterAttemptMetadata | undefined => {
       if (!isRecord(attempt)) return undefined;
-      const item: OpenRouterAttemptMetadata = {
-        provider: pickString(attempt.provider),
-        model: pickString(attempt.model),
-        status: pickNumber(attempt.status),
-        selected: pickBoolean(attempt.selected),
-      };
+      const item: OpenRouterAttemptMetadata = {};
+      const provider = pickString(attempt.provider);
+      const model = pickString(attempt.model);
+      const status = pickNumber(attempt.status);
+      const selected = pickBoolean(attempt.selected);
+      if (provider) item.provider = provider;
+      if (model) item.model = model;
+      if (status !== undefined) item.status = status;
+      if (selected !== undefined) item.selected = selected;
       return Object.values(item).some((value) => value !== undefined)
         ? item
         : undefined;
@@ -188,6 +198,9 @@ const metadataFromRouterPayload = (
     openrouter_strategy: pickString(metadata.strategy),
     openrouter_region: pickString(metadata.region),
     openrouter_attempt: pickNumber(metadata.attempt),
+    openrouter_request_id: pickIdentifier(metadata.request_id),
+    openrouter_router: pickString(metadata.router),
+    openrouter_upstream_id: pickIdentifier(metadata.upstream_id),
     openrouter_upstream_inference_cost: pickUpstreamInferenceCost(metadata),
     openrouter_selected_model:
       pickString(selectedEndpoint?.model) ??
@@ -196,15 +209,160 @@ const metadataFromRouterPayload = (
   };
 };
 
+const parseJsonRecord = (
+  value: unknown,
+): Record<string, unknown> | undefined => {
+  if (isRecord(value)) return value;
+  if (typeof value !== "string") return undefined;
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return isRecord(parsed) ? parsed : undefined;
+  } catch {
+    return undefined;
+  }
+};
+
+const collectErrorRecords = (
+  value: unknown,
+  records: Record<string, unknown>[] = [],
+  seen = new WeakSet<object>(),
+  depth = 0,
+): Record<string, unknown>[] => {
+  if (!isRecord(value) || seen.has(value) || depth > MAX_ERROR_SOURCE_DEPTH) {
+    return records;
+  }
+  seen.add(value);
+  records.push(value);
+
+  for (const key of ["error", "cause"] as const) {
+    collectErrorRecords(value[key], records, seen, depth + 1);
+  }
+  if (Array.isArray(value.errors)) {
+    for (const nested of value.errors.slice(0, MAX_ATTEMPTS_TO_LOG)) {
+      collectErrorRecords(nested, records, seen, depth + 1);
+    }
+  }
+  return records;
+};
+
+const metadataFromGenerationPayload = (
+  source: unknown,
+): OpenRouterModelMetadata => {
+  const payload =
+    isRecord(source) && isRecord(source.data) ? source.data : source;
+  if (!isRecord(payload)) return {};
+
+  return compactOpenRouterMetadata({
+    provider_name: pickString(payload.provider_name),
+    openrouter_generation_id: pickIdentifier(payload.id),
+    openrouter_request_id: pickIdentifier(payload.request_id),
+    openrouter_router: pickString(payload.router),
+    openrouter_upstream_id: pickIdentifier(payload.upstream_id),
+    openrouter_upstream_inference_cost: pickPositiveNumber(
+      payload.upstream_inference_cost,
+    ),
+    openrouter_selected_model: pickString(payload.model),
+  });
+};
+
+/** Extract IDs and provider attribution retained on a failed OpenRouter call. */
+export function extractOpenRouterMetadataFromError(
+  error: unknown,
+): OpenRouterModelMetadata {
+  let metadata: OpenRouterModelMetadata = {};
+
+  for (const source of collectErrorRecords(error)) {
+    const response = isRecord(source.response) ? source.response : undefined;
+    const responseHeaders = source.responseHeaders ?? response?.headers;
+    const data = parseJsonRecord(source.data);
+    const responseBody = parseJsonRecord(source.responseBody);
+
+    // Parsed payload metadata is more specific than wrapper response headers,
+    // so visit it first and let primary-first merging retain those IDs.
+    for (const payload of [data, responseBody, source]) {
+      if (!payload) continue;
+      const routerMetadata = findOpenRouterMetadata(payload);
+      const nestedError = isRecord(payload.error) ? payload.error : undefined;
+      const errorMetadata = isRecord(nestedError?.metadata)
+        ? nestedError.metadata
+        : undefined;
+      const generationMetadata = metadataFromGenerationPayload(payload);
+      const routerPayloadMetadata = metadataFromRouterPayload(routerMetadata);
+      metadata = mergeOpenRouterMetadata(metadata, {
+        ...generationMetadata,
+        ...routerPayloadMetadata,
+        openrouter_generation_id:
+          generationMetadata.openrouter_generation_id ??
+          pickGenerationId({ id: payload.id, headers: responseHeaders }),
+        openrouter_request_id:
+          generationMetadata.openrouter_request_id ??
+          pickRequestId({ headers: responseHeaders }, routerMetadata),
+        provider_name:
+          pickString(errorMetadata?.provider_name) ??
+          routerPayloadMetadata.provider_name,
+      });
+    }
+
+    metadata = mergeOpenRouterMetadata(metadata, {
+      openrouter_generation_id: pickGenerationId({
+        id: source.id,
+        headers: responseHeaders,
+      }),
+      openrouter_request_id: pickRequestId({ headers: responseHeaders }),
+    });
+  }
+
+  return compactOpenRouterMetadata(metadata);
+}
+
+/** Best-effort lookup for IDs OpenRouter only exposes on its generation record. */
+export async function fetchOpenRouterGenerationMetadata(
+  generationId: string,
+  options: {
+    apiKey?: string;
+    fetch?: typeof globalThis.fetch;
+    timeoutMs?: number;
+  } = {},
+): Promise<OpenRouterModelMetadata> {
+  const apiKey = options.apiKey ?? process.env.OPENROUTER_API_KEY;
+  if (!apiKey || !generationId.startsWith("gen-")) {
+    return {};
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(
+    () => controller.abort(),
+    options.timeoutMs ?? OPENROUTER_GENERATION_LOOKUP_TIMEOUT_MS,
+  );
+  try {
+    const response = await (options.fetch ?? globalThis.fetch)(
+      `https://openrouter.ai/api/v1/generation?id=${encodeURIComponent(generationId)}`,
+      {
+        headers: { Authorization: `Bearer ${apiKey}` },
+        signal: controller.signal,
+      },
+    );
+    if (!response.ok) return {};
+    const payload = (await response.json()) as unknown;
+    return mergeOpenRouterMetadata(metadataFromGenerationPayload(payload), {
+      openrouter_generation_id: generationId,
+    });
+  } catch {
+    return {};
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 export function extractOpenRouterMetadata(args: {
   response?: ResponseLike;
   providerMetadata?: unknown;
 }): OpenRouterModelMetadata {
   const routerMetadata = findOpenRouterMetadata(args.providerMetadata);
   return compactOpenRouterMetadata({
+    ...metadataFromRouterPayload(routerMetadata),
     openrouter_generation_id: pickGenerationId(args.response),
     openrouter_request_id: pickRequestId(args.response, routerMetadata),
-    ...metadataFromRouterPayload(routerMetadata),
   });
 }
 

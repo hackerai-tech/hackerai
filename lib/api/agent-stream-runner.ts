@@ -95,7 +95,10 @@ import {
 } from "@/lib/utils/stream-writer-utils";
 import {
   extractOpenRouterMetadata,
+  extractOpenRouterMetadataFromError,
+  fetchOpenRouterGenerationMetadata,
   mergeOpenRouterMetadata,
+  type OpenRouterModelMetadata,
 } from "@/lib/api/openrouter-metadata";
 import { getOpenRouterUpstreamInferenceCostFromUsageRaw } from "@/lib/provider-usage-cost";
 import {
@@ -288,6 +291,8 @@ export type AgentStreamState = {
   fallbackServed: boolean | undefined;
   /** Original provider/AI SDK error captured from streamText.onError. */
   providerError: unknown;
+  /** Best-effort OpenRouter IDs/provider attribution, including failed streams. */
+  openRouterMetadata: OpenRouterModelMetadata;
   /** True when a provider rejected an image-bearing tool result. */
   providerRejectedMultimodalToolResults: boolean;
   /** Stop-condition flags set by the respective onFired callbacks. */
@@ -324,6 +329,7 @@ export function initAgentStreamState(
     responseModel: undefined,
     fallbackServed: undefined,
     providerError: undefined,
+    openRouterMetadata: {},
     providerRejectedMultimodalToolResults: false,
     configuredMaxSteps: 0,
     agentStepCount: 0,
@@ -1525,6 +1531,10 @@ export async function createAgentStream(
         response,
         providerMetadata,
       });
+      state.openRouterMetadata = mergeOpenRouterMetadata(
+        stepOpenRouterMetadata,
+        state.openRouterMetadata,
+      );
       ctx.usageTracker.setAuthoritativeModelCostForStep(
         stepUsageCostIndex,
         stepOpenRouterMetadata.openrouter_upstream_inference_cost,
@@ -1641,6 +1651,10 @@ export async function createAgentStream(
         finishOpenRouterMetadata,
         stepOpenRouterMetadatas.at(-1),
       );
+      state.openRouterMetadata = mergeOpenRouterMetadata(
+        openRouterMetadata,
+        state.openRouterMetadata,
+      );
 
       ctx.usageTracker.setAuthoritativeModelCostForStep(
         stepUsageCostIndexes.at(-1),
@@ -1683,6 +1697,20 @@ export async function createAgentStream(
 
     onError: async ({ error }) => {
       state.providerError = error;
+      const errorOpenRouterMetadata = extractOpenRouterMetadataFromError(error);
+      const generationMetadata =
+        errorOpenRouterMetadata.openrouter_generation_id &&
+        (!errorOpenRouterMetadata.openrouter_request_id ||
+          !errorOpenRouterMetadata.openrouter_upstream_id ||
+          !errorOpenRouterMetadata.provider_name)
+          ? await fetchOpenRouterGenerationMetadata(
+              errorOpenRouterMetadata.openrouter_generation_id,
+            )
+          : {};
+      state.openRouterMetadata = mergeOpenRouterMetadata(
+        errorOpenRouterMetadata,
+        mergeOpenRouterMetadata(generationMetadata, state.openRouterMetadata),
+      );
       await refundProviderContentBlockedIfSettled({
         error,
         settled: false,
@@ -1717,6 +1745,7 @@ export async function createAgentStream(
           userId: ctx.userId,
           subscription: ctx.subscription,
           providerRequest: latestProviderRequestDiagnostics,
+          openRouterMetadata: state.openRouterMetadata,
         });
       }
       if (

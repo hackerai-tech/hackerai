@@ -1,5 +1,7 @@
 import {
   extractOpenRouterMetadata,
+  extractOpenRouterMetadataFromError,
+  fetchOpenRouterGenerationMetadata,
   mergeOpenRouterMetadata,
 } from "../openrouter-metadata";
 
@@ -176,5 +178,70 @@ describe("OpenRouter metadata extraction", () => {
       openrouter_generation_id: "gen-finish-only",
       provider_name: "Novita",
     });
+  });
+
+  it("extracts response IDs and upstream attribution from wrapped stream errors", () => {
+    const error = Object.assign(new Error("Network connection lost."), {
+      responseHeaders: {
+        "x-generation-id": "gen-stream-failure",
+        "x-request-id": "req-stream-failure",
+      },
+      data: {
+        error: {
+          code: 502,
+          message: "Network connection lost.",
+          metadata: { provider_name: "DeepInfra" },
+        },
+        openrouter_metadata: {
+          request_id: "req-router-metadata",
+          upstream_id: "upstream-deepseek-1",
+          router: "openrouter/auto",
+        },
+      },
+    });
+
+    expect(extractOpenRouterMetadataFromError(error)).toEqual({
+      provider_name: "DeepInfra",
+      openrouter_generation_id: "gen-stream-failure",
+      openrouter_request_id: "req-router-metadata",
+      openrouter_router: "openrouter/auto",
+      openrouter_upstream_id: "upstream-deepseek-1",
+    });
+  });
+
+  it("looks up generation request and upstream IDs without exposing credentials", async () => {
+    const fetchMock = jest.fn(async () => ({
+      ok: true,
+      json: async () => ({
+        data: {
+          id: "gen-stream-failure",
+          provider_name: "DeepInfra",
+          request_id: "req-generation-record",
+          upstream_id: "upstream-generation-record",
+          router: "openrouter/auto",
+          model: "deepseek/deepseek-v4-flash-0731",
+        },
+      }),
+    }));
+
+    await expect(
+      fetchOpenRouterGenerationMetadata("gen-stream-failure", {
+        apiKey: "test-secret",
+        fetch: fetchMock,
+      }),
+    ).resolves.toEqual({
+      provider_name: "DeepInfra",
+      openrouter_generation_id: "gen-stream-failure",
+      openrouter_request_id: "req-generation-record",
+      openrouter_router: "openrouter/auto",
+      openrouter_upstream_id: "upstream-generation-record",
+      openrouter_selected_model: "deepseek/deepseek-v4-flash-0731",
+    });
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://openrouter.ai/api/v1/generation?id=gen-stream-failure",
+      expect.objectContaining({
+        headers: { Authorization: "Bearer test-secret" },
+      }),
+    );
   });
 });

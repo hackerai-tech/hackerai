@@ -98,6 +98,8 @@ jest.mock("@/lib/ai/tools/prompt-serialization", () => ({
 }));
 jest.mock("@/lib/api/openrouter-metadata", () => ({
   extractOpenRouterMetadata: () => ({}),
+  extractOpenRouterMetadataFromError: () => ({}),
+  fetchOpenRouterGenerationMetadata: async () => ({}),
   mergeOpenRouterMetadata: () => ({}),
 }));
 jest.mock("@/lib/provider-usage-cost", () => ({

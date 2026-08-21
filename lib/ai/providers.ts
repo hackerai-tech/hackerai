@@ -131,7 +131,7 @@ const patchKimiReasoningToolCalls = (
     : { body, changed: false };
 };
 
-const OPENROUTER_METADATA_HEADER = "X-OpenRouter-Experimental-Metadata";
+const OPENROUTER_METADATA_HEADER = "X-OpenRouter-Metadata";
 
 const withOpenRouterMetadataHeader = (
   headers: HeadersInit | undefined,
@@ -346,6 +346,60 @@ const logPdfParserRecovery = (
   );
 };
 
+/** Attach response headers to body-stream failures for later attribution. */
+export const enrichOpenRouterStreamError = (
+  error: unknown,
+  responseHeaders: Record<string, string>,
+): Error & { responseHeaders: Record<string, string> } => {
+  const enriched =
+    error instanceof Error
+      ? error
+      : new Error(
+          typeof error === "string" ? error : "OpenRouter stream failed",
+        );
+  try {
+    return Object.assign(enriched, { responseHeaders });
+  } catch {
+    return Object.assign(new Error(enriched.message, { cause: error }), {
+      name: enriched.name,
+      responseHeaders,
+    });
+  }
+};
+
+/** Retain response IDs when the response body fails after headers arrived. */
+export const attachOpenRouterStreamErrorMetadata = (
+  response: Response,
+): Response => {
+  if (!response.body) return response;
+
+  const reader = response.body.getReader();
+  const responseHeaders = Object.fromEntries(response.headers.entries());
+  const body = new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      try {
+        const chunk = await reader.read();
+        if (chunk.done) {
+          controller.close();
+          return;
+        }
+        controller.enqueue(chunk.value);
+      } catch (error) {
+        controller.error(enrichOpenRouterStreamError(error, responseHeaders));
+      }
+    },
+    cancel(reason) {
+      return reader.cancel(reason);
+    },
+  });
+
+  return new Response(body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers: response.headers,
+  });
+};
+
 // Custom fetch for OpenRouter provider-specific request-body repairs.
 //
 // - Kimi requires a `reasoning` field on assistant tool-call messages when
@@ -380,21 +434,27 @@ export const createOpenRouterPatchFetch =
 
     const initialResponse = await fetchImplementation(url, nextInit);
     const parserFailure = await classifyPdfParserFailure(initialResponse);
-    if (!parserFailure) return initialResponse;
+    if (!parserFailure) {
+      return attachOpenRouterStreamErrorMetadata(initialResponse);
+    }
 
     if (requestUsesPdfParserEngine(parsedRequestBody, "cloudflare-ai")) {
       const sandboxBody = createSandboxPdfRecoveryBody(parsedRequestBody);
-      if (!sandboxBody.changed) return initialResponse;
+      if (!sandboxBody.changed) {
+        return attachOpenRouterStreamErrorMetadata(initialResponse);
+      }
 
       logPdfParserRecovery("cloudflare-ai", "sandbox", parserFailure);
       const sandboxResponse = await fetchImplementation(url, {
         ...nextInit,
         body: JSON.stringify(sandboxBody.body),
       });
-      return withPrivateResponseHeader(
-        sandboxResponse,
-        PDF_PARSER_RECOVERY_HEADER,
-        "sandbox",
+      return attachOpenRouterStreamErrorMetadata(
+        withPrivateResponseHeader(
+          sandboxResponse,
+          PDF_PARSER_RECOVERY_HEADER,
+          "sandbox",
+        ),
       );
     }
 
@@ -403,7 +463,9 @@ export const createOpenRouterPatchFetch =
       "mistral-ocr",
       "cloudflare-ai",
     );
-    if (!cloudflareBody.changed) return initialResponse;
+    if (!cloudflareBody.changed) {
+      return attachOpenRouterStreamErrorMetadata(initialResponse);
+    }
 
     logPdfParserRecovery("mistral-ocr", "cloudflare-ai", parserFailure);
     const cloudflareResponse = await fetchImplementation(url, {
@@ -413,25 +475,31 @@ export const createOpenRouterPatchFetch =
     const cloudflareFailure =
       await classifyPdfParserFailure(cloudflareResponse);
     if (!cloudflareFailure) {
-      return withPrivateResponseHeader(
-        cloudflareResponse,
-        PDF_PARSER_ENGINE_HEADER,
-        "cloudflare-ai",
+      return attachOpenRouterStreamErrorMetadata(
+        withPrivateResponseHeader(
+          cloudflareResponse,
+          PDF_PARSER_ENGINE_HEADER,
+          "cloudflare-ai",
+        ),
       );
     }
 
     const sandboxBody = createSandboxPdfRecoveryBody(cloudflareBody.body);
-    if (!sandboxBody.changed) return cloudflareResponse;
+    if (!sandboxBody.changed) {
+      return attachOpenRouterStreamErrorMetadata(cloudflareResponse);
+    }
 
     logPdfParserRecovery("cloudflare-ai", "sandbox", cloudflareFailure);
     const sandboxResponse = await fetchImplementation(url, {
       ...nextInit,
       body: JSON.stringify(sandboxBody.body),
     });
-    return withPrivateResponseHeader(
-      sandboxResponse,
-      PDF_PARSER_RECOVERY_HEADER,
-      "sandbox",
+    return attachOpenRouterStreamErrorMetadata(
+      withPrivateResponseHeader(
+        sandboxResponse,
+        PDF_PARSER_RECOVERY_HEADER,
+        "sandbox",
+      ),
     );
   };
 
