@@ -32,6 +32,7 @@ import {
   SUBAGENT_MAX_ACTIVE_SECONDS,
   SUBAGENT_MAX_DURATION_SECONDS,
   SUBAGENT_MAX_STEPS,
+  SUBAGENT_RESULT_DEADLINE_SECONDS,
   SUBAGENT_TERMINAL_STATUSES,
   type SubagentStructuredResult,
 } from "@/lib/ai/subagents/contracts";
@@ -228,6 +229,73 @@ const captureCompletion = (
   }
 };
 
+const persistedDurationMs = (
+  row: NonNullable<Awaited<ReturnType<typeof getSubagent>>>,
+): number | undefined => {
+  if (!row.completed_at) return undefined;
+  return Math.max(0, row.completed_at - (row.started_at ?? row.created_at));
+};
+
+const reusePersistedTerminalState = async (
+  row: NonNullable<Awaited<ReturnType<typeof getSubagent>>>,
+  triggerRunId: string,
+  reuseStage: "pre_attach" | "attach_terminal",
+): Promise<SubagentTaskOutput> => {
+  const durationMs = persistedDurationMs(row);
+  if (row.status === "completed") {
+    const structuredResult = row.structured_result;
+    captureSubagentLifecycleEvent("subagent_completed", {
+      userId: row.user_id,
+      eventUuid: subagentOutcomeEventUuid(row.subagent_id),
+      subagentId: row.subagent_id,
+      parentTriggerRunId: row.parent_trigger_run_id,
+      profile: row.profile,
+      status: "completed",
+      durationMs,
+      stepCount: row.step_count,
+      costDollars: row.cost_dollars,
+      ...(row.profile === "security_validation" && row.verdict
+        ? { verdict: row.verdict }
+        : {}),
+      ...(row.profile === "security_task" &&
+      structuredResult &&
+      "task_status" in structuredResult
+        ? { taskStatus: structuredResult.task_status }
+        : {}),
+    });
+  } else {
+    captureSubagentTerminalOutcome({
+      userId: row.user_id,
+      subagentId: row.subagent_id,
+      parentTriggerRunId: row.parent_trigger_run_id,
+      profile: row.profile,
+      status: row.status as "failed" | "canceled" | "timed_out",
+      durationMs,
+      stepCount: row.step_count,
+      costDollars: row.cost_dollars,
+      errorCategory:
+        row.failure_code ?? row.cancel_reason ?? "persisted_terminal_state",
+      failureStage: reuseStage,
+    });
+  }
+  triggerLogger.info("[subagent] persisted terminal state reused", {
+    event: "subagent_terminal_state_reused",
+    service: "hackerai-subagent",
+    environment: process.env.TRIGGER_ENV ?? process.env.NODE_ENV ?? "unknown",
+    subagent_id: row.subagent_id,
+    parent_trigger_run_id: row.parent_trigger_run_id,
+    trigger_run_id: triggerRunId,
+    terminal_status: row.status,
+    reuse_stage: reuseStage,
+  });
+  metadata.set("status", row.status).set("terminalStateReused", true);
+  await phLogger.flush().catch(() => undefined);
+  return {
+    subagentId: row.subagent_id,
+    status: row.status as SubagentTaskOutput["status"],
+  };
+};
+
 export const subagentTask = task({
   id: "hackerai-subagent",
   maxDuration: SUBAGENT_MAX_DURATION_SECONDS,
@@ -285,10 +353,7 @@ export const subagentTask = task({
     const row = await getSubagent(payload.subagentId);
     if (!row) throw new Error("Subagent reservation not found");
     if (SUBAGENT_TERMINAL_STATUSES.has(row.status)) {
-      return {
-        subagentId: row.subagent_id,
-        status: row.status as SubagentTaskOutput["status"],
-      };
+      return await reusePersistedTerminalState(row, ctx.run.id, "pre_attach");
     }
     const costLimitDollars = row.cost_limit_dollars;
     let profile!: ReturnType<typeof getSubagentProfileDefinition>;
@@ -313,10 +378,11 @@ export const subagentTask = task({
           throw new Error("Subagent became unavailable during attachment");
         }
         cancellationCleanup.delete(ctx.run.id);
-        return {
-          subagentId: terminalRow.subagent_id,
-          status: terminalRow.status as SubagentTaskOutput["status"],
-        };
+        return await reusePersistedTerminalState(
+          terminalRow,
+          ctx.run.id,
+          "attach_terminal",
+        );
       }
       if (attachOutcome !== "updated") {
         throw new Error(`Subagent attachment failed: ${attachOutcome}`);
@@ -363,9 +429,14 @@ export const subagentTask = task({
           status: "failed",
           durationMs: Date.now() - startedAt,
           errorCategory: "setup_failed",
+          failureStage: "setup",
         });
       }
       cancellationCleanup.delete(ctx.run.id);
+      metadata
+        .set("status", "failed")
+        .set("failureCode", "setup_failed")
+        .set("failureStage", "setup");
       await phLogger.flush().catch(() => undefined);
       throw error;
     }
@@ -387,6 +458,9 @@ export const subagentTask = task({
     let responseModel: string | undefined;
     let runtimeFailure: unknown;
     let runtimeFailureCode: string | undefined;
+    let runtimeFailureStage: string | undefined;
+    let runtimeStage = "authorization";
+    let deadlineReminderSent = false;
     let providerRetriesUsed = 0;
     let resultRecoveriesUsed = 0;
     let resultRecoveryRetriesUsed = 0;
@@ -484,7 +558,9 @@ export const subagentTask = task({
     };
 
     try {
+      runtimeStage = "authorization";
       await assertRuntimeAuthorized();
+      runtimeStage = "billing_setup";
       const customization = await getUserCustomization({ userId: row.user_id });
       extraUsageConfig = await buildExtraUsageConfig({
         userId: row.user_id,
@@ -506,6 +582,7 @@ export const subagentTask = task({
         await checkFreeMonthlyCostLimit(row.free_quota_subject ?? row.user_id);
       }
 
+      runtimeStage = "context_resolution";
       const resolvedContext = await resolveSubagentContext(row.subagent_id);
       const prompt = profile.buildPrompt(row, resolvedContext);
       await saveSubagentMessage({
@@ -526,6 +603,7 @@ export const subagentTask = task({
         execute: async ({ writer }) => {
           try {
             const acceptResult = async (input: unknown) => {
+              runtimeStage = "result_validation";
               const parsed = profile.finalResultTool.schema.parse(input);
               if (
                 Buffer.byteLength(JSON.stringify(parsed), "utf8") >
@@ -542,7 +620,9 @@ export const subagentTask = task({
                   error: "A structured result was already accepted.",
                 };
               }
+              runtimeStage = "authorization";
               await assertRuntimeAuthorized();
+              runtimeStage = "result_finalization";
               const finalizing = await markSubagentFinalizing(
                 row.subagent_id,
                 ctx.run.id,
@@ -630,6 +710,7 @@ export const subagentTask = task({
               unguardedTools,
               assertRuntimeAuthorized,
             );
+            runtimeStage = "sandbox_setup";
             await assertRuntimeAuthorized();
             const sandbox = await ensureSandbox();
             assertSubagentSandboxIdentity(sandbox, row.sandbox_identity);
@@ -682,6 +763,7 @@ export const subagentTask = task({
               stepCount < SUBAGENT_MAX_STEPS &&
               !activeAbort.signal.aborted
             ) {
+              runtimeStage = "generation";
               generationAttempt += 1;
               let attemptError: unknown;
               let attemptResponseModel: string | undefined;
@@ -710,7 +792,55 @@ export const subagentTask = task({
                 maxOutputTokens: profile.maxOutputTokens,
                 abortSignal: activeAbort.signal,
                 prepareStep: async ({ messages, steps }) => {
+                  runtimeStage = "authorization";
                   await assertRuntimeAuthorized();
+                  runtimeStage = "generation";
+                  let deadlineMessage: ModelMessage | undefined;
+                  if (
+                    !deadlineReminderSent &&
+                    Date.now() - startedAt >=
+                      SUBAGENT_RESULT_DEADLINE_SECONDS * 1_000
+                  ) {
+                    deadlineReminderSent = true;
+                    deadlineMessage = {
+                      role: "user",
+                      content:
+                        row.profile === "security_task"
+                          ? "Runtime deadline approaching. Stop further exploration and submit the best supported structured result now. Use a partial or blocked status when the investigation is incomplete."
+                          : "Runtime deadline approaching. Stop further exploration and submit the best supported structured result now. Use an inconclusive verdict when the validation is incomplete.",
+                    };
+                    conversationMessages.push(deadlineMessage);
+                    metadata
+                      .set("deadlineReminderSent", true)
+                      .set("deadlineReminderStep", stepCount);
+                    captureSubagentLifecycleEvent(
+                      "subagent_deadline_reminder_sent",
+                      {
+                        userId: row.user_id,
+                        subagentId: row.subagent_id,
+                        parentTriggerRunId: row.parent_trigger_run_id,
+                        profile: row.profile,
+                        durationMs: Date.now() - startedAt,
+                        stepCount,
+                      },
+                    );
+                    triggerLogger.warn(
+                      "[subagent] result deadline reminder sent",
+                      {
+                        event: "subagent_deadline_reminder_sent",
+                        service: "hackerai-subagent",
+                        environment:
+                          process.env.TRIGGER_ENV ??
+                          process.env.NODE_ENV ??
+                          "unknown",
+                        subagent_id: row.subagent_id,
+                        parent_trigger_run_id: row.parent_trigger_run_id,
+                        trigger_run_id: ctx.run.id,
+                        elapsed_ms: Date.now() - startedAt,
+                        step_count: stepCount,
+                      },
+                    );
+                  }
                   const pendingUpdates = await consumePendingSubagentMessages({
                     subagentId: row.subagent_id,
                     triggerRunId: ctx.run.id,
@@ -776,6 +906,7 @@ export const subagentTask = task({
                   const serializedMessages = JSON.stringify(messages);
                   const messagesWithUpdates = [
                     ...(messages as ModelMessage[]),
+                    ...(deadlineMessage ? [deadlineMessage] : []),
                     ...Array.from(parentUpdates.entries()).flatMap(
                       ([messageId, updateMessage]) =>
                         serializedMessages.includes(messageId)
@@ -949,6 +1080,7 @@ export const subagentTask = task({
                     continue;
                   }
                   runtimeFailure = attemptError;
+                  runtimeFailureStage = runtimeStage;
                   runtimeFailureCode = "structured_result_recovery_exhausted";
                   break;
                 }
@@ -998,6 +1130,7 @@ export const subagentTask = task({
                   continue;
                 }
                 runtimeFailure = attemptError;
+                runtimeFailureStage = runtimeStage;
                 runtimeFailureCode =
                   retry.category === "content_blocked"
                     ? "content_filter_retry_exhausted"
@@ -1040,6 +1173,7 @@ export const subagentTask = task({
             }
           } catch (error) {
             runtimeFailure = error;
+            runtimeFailureStage = runtimeStage;
             runtimeFailureCode ??= "runtime_error";
             throw error;
           }
@@ -1050,8 +1184,10 @@ export const subagentTask = task({
         sanitizeStream(uiStream),
       );
       await waitUntilComplete();
+      runtimeStage = "result_finalization";
       await markSubagentFinalizing(row.subagent_id, ctx.run.id);
 
+      runtimeStage = "usage_settlement";
       const { costDollars, billingFailure } = await settleUsage();
 
       const terminalFailure = activeTimedOut
@@ -1107,6 +1243,11 @@ export const subagentTask = task({
         ? (lastRecoveryErrorDiagnostics ??
           getSubagentRecoveryErrorDiagnostics(runtimeFailure))
         : undefined;
+      const terminalFailureStage = activeTimedOut
+        ? "generation"
+        : runtimeAuthorizationRevoked
+          ? "authorization"
+          : (runtimeFailureStage ?? runtimeStage);
 
       if (terminalFailure) {
         const finishOutcome = await finishSubagent({
@@ -1142,6 +1283,7 @@ export const subagentTask = task({
           costDollars,
           errorCategory: terminalFailure.code,
           runtimeErrorCategory: runtimeDiagnostics?.category,
+          failureStage: terminalFailureStage,
         });
         if (runtimeDiagnostics) {
           triggerLogger.error("[subagent] bounded recovery exhausted", {
@@ -1153,6 +1295,7 @@ export const subagentTask = task({
             parent_trigger_run_id: row.parent_trigger_run_id,
             trigger_run_id: ctx.run.id,
             failure_code: terminalFailure.code,
+            failure_stage: terminalFailureStage,
             error_category: runtimeDiagnostics.category,
             error_name: runtimeDiagnostics.errorName,
             error_code: runtimeDiagnostics.errorCode,
@@ -1162,11 +1305,18 @@ export const subagentTask = task({
             result_recovery_retry_count: resultRecoveryRetriesUsed,
           });
         }
-        metadata.set("status", terminalFailure.status);
+        metadata
+          .set("status", terminalFailure.status)
+          .set("failureCode", terminalFailure.code)
+          .set("failureStage", terminalFailureStage);
+        if (runtimeDiagnostics?.category) {
+          metadata.set("runtimeErrorCategory", runtimeDiagnostics.category);
+        }
         return { subagentId: row.subagent_id, status: terminalFailure.status };
       }
 
       const completedResult = resultValue as SubagentStructuredResult;
+      runtimeStage = "persistence";
       const finishOutcome = await finishSubagent({
         subagentId: row.subagent_id,
         triggerRunId: ctx.run.id,
@@ -1270,6 +1420,7 @@ export const subagentTask = task({
             outerRuntimeDiagnostics.category === "unknown"
               ? undefined
               : outerRuntimeDiagnostics.category,
+          failureStage: runtimeStage,
         });
       } else {
         const persistedOutput = await loadPersistedTerminalOutput(
@@ -1289,11 +1440,17 @@ export const subagentTask = task({
         parent_trigger_run_id: row.parent_trigger_run_id,
         trigger_run_id: ctx.run.id,
         failure_code: terminalFailure.code,
+        failure_stage: runtimeStage,
         error_category: outerRuntimeDiagnostics.category,
         error_name: outerRuntimeDiagnostics.errorName,
         error_code: outerRuntimeDiagnostics.errorCode,
         status_code: outerRuntimeDiagnostics.statusCode,
       });
+      metadata
+        .set("status", terminalFailure.status)
+        .set("failureCode", terminalFailure.code)
+        .set("failureStage", runtimeStage)
+        .set("runtimeErrorCategory", outerRuntimeDiagnostics.category);
       throw error;
     } finally {
       clearTimeout(timeout);

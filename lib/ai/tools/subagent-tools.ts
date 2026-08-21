@@ -44,7 +44,7 @@ import {
   subagentCreateAttemptEventUuid,
   subagentCreateFailureEventUuid,
   subagentOperationEventUuid,
-  subagentResultDeliveredEventUuid,
+  subagentResultClaimedEventUuid,
 } from "@/lib/analytics/subagents";
 import { subagentTask } from "@/trigger/subagent";
 import { resultFromPersistedSubagent } from "@/lib/ai/subagents/persisted-result";
@@ -333,7 +333,7 @@ export const createCreateAgentTool = (
         agent_id: agentHandle,
         name: agentName(record),
         status: record.status,
-        message: `Spawned '${agentName(record)}' (${agentHandle}) running in parallel.`,
+        message: `Spawned '${agentName(record)}' (${agentHandle}) running in parallel. Before your final answer, call wait_for_agents targeting ${agentHandle} so its result is incorporated.`,
       };
     },
   });
@@ -727,6 +727,11 @@ export const createWaitForAgentsTool = (context: ToolContext) =>
 
       const startedAt = Date.now();
       const deadline = startedAt + parsed.timeout_seconds * 1_000;
+      const deliveryClaimId = subagentOperationEventUuid(
+        context.triggerRunId,
+        execution.toolCallId,
+        "wait",
+      );
       const captureWaitOutcome = ({
         outcome,
         activeCount,
@@ -769,6 +774,7 @@ export const createWaitForAgentsTool = (context: ToolContext) =>
           chatId: context.chatId,
           parentTriggerRunId: context.triggerRunId,
           targetAgentIds: parsed.target_agent_ids ?? undefined,
+          deliveryClaimId,
         }).catch((error) => {
           captureWaitOutcome({
             outcome: "error",
@@ -797,16 +803,19 @@ export const createWaitForAgentsTool = (context: ToolContext) =>
         if (state.terminal) {
           const name = agentName(state.terminal);
           const result = resultFromPersistedSubagent(state.terminal);
-          captureSubagentLifecycleEvent("subagent_result_delivered", {
-            userId: context.userID,
-            eventUuid: subagentResultDeliveredEventUuid(
-              state.terminal.subagent_id,
-            ),
-            subagentId: state.terminal.subagent_id,
-            parentTriggerRunId: context.triggerRunId,
-            profile: state.terminal.profile,
-            status: state.terminal.status,
-          });
+          if (state.deliveryClaimId) {
+            captureSubagentLifecycleEvent("subagent_result_claimed", {
+              userId: context.userID,
+              eventUuid: subagentResultClaimedEventUuid(
+                state.terminal.subagent_id,
+                state.deliveryClaimId,
+              ),
+              subagentId: state.terminal.subagent_id,
+              parentTriggerRunId: context.triggerRunId,
+              profile: state.terminal.profile,
+              status: state.terminal.status,
+            });
+          }
           captureWaitOutcome({
             outcome: "agent_finished",
             activeCount: state.active.length,
@@ -840,9 +849,17 @@ export const createWaitForAgentsTool = (context: ToolContext) =>
             agent_name: name,
             result,
             active_agents: activeAgentOutput(state.active),
+            ...(state.deliveryClaimId
+              ? {
+                  _delivery_claim: {
+                    subagent_id: state.terminal.subagent_id,
+                    claim_id: state.deliveryClaimId,
+                  },
+                }
+              : {}),
           };
         }
-        if (state.active.length === 0) {
+        if (state.active.length === 0 && state.pendingDeliveryCount === 0) {
           captureWaitOutcome({
             outcome: "no_active_agents",
             activeCount: 0,

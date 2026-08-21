@@ -1,5 +1,37 @@
+import {
+  SUBAGENT_ACTIVE_STATUSES,
+  SUBAGENT_TERMINAL_STATUSES,
+  type SubagentStatus,
+} from "@/lib/ai/subagents/contracts";
+
 type ActiveSubagentRun = {
   trigger_run_id?: string;
+};
+
+type ParentSubagentSettlementRow = {
+  status: SubagentStatus;
+  parent_result_consumed_at?: number;
+  /** Compatibility with rows created before acknowledged delivery. */
+  parent_notified_at?: number;
+};
+
+export const summarizeParentSubagentSettlement = (
+  rows: ParentSubagentSettlementRow[],
+) => {
+  const activeCount = rows.filter((row) =>
+    SUBAGENT_ACTIVE_STATUSES.has(row.status),
+  ).length;
+  const terminalRows = rows.filter((row) =>
+    SUBAGENT_TERMINAL_STATUSES.has(row.status),
+  );
+  return {
+    totalCount: rows.length,
+    activeCount,
+    terminalCount: terminalRows.length,
+    undeliveredCount: terminalRows.filter(
+      (row) => !row.parent_result_consumed_at && !row.parent_notified_at,
+    ).length,
+  };
 };
 
 type ParentSubagentSettlementDependencies = {

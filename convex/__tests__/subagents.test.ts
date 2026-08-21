@@ -43,6 +43,8 @@ const {
   failUnattachedForBackend,
   finishForBackend,
   listForParentMessage,
+  markResultConsumedForParentBackend,
+  markResultInjectedForParentBackend,
   reconcileAttachedRun,
   reconcileQueuedReservation,
   reserveForBackend,
@@ -701,6 +703,7 @@ describe("subagent coordination messages", () => {
       userId: "user-1",
       chatId: "chat-1",
       parentTriggerRunId: "parent-run",
+      deliveryClaimId: "claim-1",
     };
 
     await expect(
@@ -712,6 +715,7 @@ describe("subagent coordination messages", () => {
       terminal: null,
       active: [],
       unmatchedTargetAgentIds: ["sa_unknown"],
+      pendingDeliveryCount: 1,
     });
     expect(patch).not.toHaveBeenCalled();
 
@@ -721,13 +725,29 @@ describe("subagent coordination messages", () => {
       terminal: expect.objectContaining({ name: "Stored XSS validator" }),
       active: [],
       unmatchedTargetAgentIds: [],
+      pendingDeliveryCount: 1,
+      deliveryClaimId: "claim-1",
     });
     await expect(
-      claimNextTerminalForParentBackend.handler(ctx, claimArgs),
+      claimNextTerminalForParentBackend.handler(ctx, {
+        ...claimArgs,
+        deliveryClaimId: "claim-2",
+      }),
     ).resolves.toEqual({
       terminal: null,
       active: [],
       unmatchedTargetAgentIds: [],
+      pendingDeliveryCount: 1,
+      deliveryClaimId: undefined,
+    });
+    await expect(
+      claimNextTerminalForParentBackend.handler(ctx, claimArgs),
+    ).resolves.toEqual({
+      terminal: expect.objectContaining({ name: "Stored XSS validator" }),
+      active: [],
+      unmatchedTargetAgentIds: [],
+      pendingDeliveryCount: 1,
+      deliveryClaimId: "claim-1",
     });
     await expect(
       claimNextTerminalForParentBackend.handler(ctx, {
@@ -738,6 +758,8 @@ describe("subagent coordination messages", () => {
       terminal: expect.objectContaining({ name: "Stored XSS validator" }),
       active: [],
       unmatchedTargetAgentIds: [],
+      pendingDeliveryCount: 1,
+      deliveryClaimId: "claim-1",
     });
     await expect(
       claimNextTerminalForParentBackend.handler(ctx, {
@@ -748,12 +770,94 @@ describe("subagent coordination messages", () => {
       terminal: null,
       active: [],
       unmatchedTargetAgentIds: ["sa_unknown"],
+      pendingDeliveryCount: 0,
     });
-    expect(patch).toHaveBeenCalledTimes(1);
+    expect(patch).toHaveBeenCalledTimes(3);
     expect(withIndex).toHaveBeenCalledWith(
       "by_user_chat_and_parent_run",
       expect.any(Function),
     );
+  });
+
+  it("acknowledges injection before marking a claimed result consumed", async () => {
+    const row: Record<string, any> = {
+      _id: "subagent-doc",
+      subagent_id: "sa_1",
+      user_id: "user-1",
+      chat_id: "chat-1",
+      parent_trigger_run_id: "parent-run",
+      parent_delivery_claim_id: "claim-1",
+    };
+    const patch = jest
+      .fn<any>()
+      .mockImplementation(
+        async (_id: string, value: Record<string, unknown>) => {
+          Object.assign(row, value);
+        },
+      );
+    const unique = jest.fn<any>().mockResolvedValue(row);
+    const withIndex = jest.fn((_name: string, callback: (q: any) => void) => {
+      const q = { eq: jest.fn<any>() };
+      q.eq.mockReturnValue(q);
+      callback(q);
+      return { unique };
+    });
+    const ctx = {
+      db: { query: jest.fn(() => ({ withIndex })), patch },
+    } as any;
+    const deliveryArgs = {
+      serviceKey: "service-key",
+      userId: "user-1",
+      chatId: "chat-1",
+      parentTriggerRunId: "parent-run",
+      subagentId: "sa_1",
+      deliveryClaimId: "claim-1",
+    };
+
+    await expect(
+      markResultInjectedForParentBackend.handler(ctx, {
+        ...deliveryArgs,
+        userId: "different-user",
+      }),
+    ).resolves.toBe("not_found");
+    expect(patch).not.toHaveBeenCalled();
+
+    await expect(
+      markResultInjectedForParentBackend.handler(ctx, deliveryArgs),
+    ).resolves.toBe("updated");
+    expect(row.parent_result_injected_at).toEqual(expect.any(Number));
+    expect(row.parent_result_consumed_at).toBeUndefined();
+
+    await expect(
+      markResultConsumedForParentBackend.handler(ctx, deliveryArgs),
+    ).resolves.toBe("updated");
+    expect(row.parent_result_consumed_at).toEqual(expect.any(Number));
+    expect(row.parent_notified_at).toEqual(row.parent_result_consumed_at);
+
+    await expect(
+      markResultConsumedForParentBackend.handler(ctx, deliveryArgs),
+    ).resolves.toBe("already_consumed");
+
+    delete row.parent_result_consumed_at;
+    delete row.parent_notified_at;
+    row.parent_delivery_claim_id = "different-claim";
+    await expect(
+      markResultConsumedForParentBackend.handler(ctx, deliveryArgs),
+    ).resolves.toBe("stale_claim");
+    expect(row.parent_result_consumed_at).toBeUndefined();
+
+    row.parent_delivery_claim_id = "claim-1";
+    delete row.parent_result_injected_at;
+    await expect(
+      markResultConsumedForParentBackend.handler(ctx, deliveryArgs),
+    ).resolves.toBe("stale_claim");
+    expect(row.parent_result_consumed_at).toBeUndefined();
+
+    unique.mockResolvedValueOnce(null);
+    await expect(
+      markResultConsumedForParentBackend.handler(ctx, deliveryArgs),
+    ).resolves.toBe("not_found");
+    expect(row.parent_result_consumed_at).toBeUndefined();
   });
 });
 

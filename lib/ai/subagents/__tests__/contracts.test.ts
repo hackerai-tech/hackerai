@@ -1,6 +1,8 @@
 import { describe, expect, it } from "@jest/globals";
 
 import {
+  SUBAGENT_MAX_ACTIVE_SECONDS,
+  SUBAGENT_RESULT_DEADLINE_SECONDS,
   agentValidationResultSchema,
   agentSecurityTaskResultSchema,
   createAgentInputSchema,
@@ -11,6 +13,12 @@ import {
 } from "../contracts";
 
 describe("subagent contracts", () => {
+  it("reserves time to submit a structured result before hard timeout", () => {
+    expect(SUBAGENT_RESULT_DEADLINE_SECONDS).toBeLessThan(
+      SUBAGENT_MAX_ACTIVE_SECONDS,
+    );
+  });
+
   it("matches the create_agent parameter contract", () => {
     expect(
       createAgentInputSchema.parse({

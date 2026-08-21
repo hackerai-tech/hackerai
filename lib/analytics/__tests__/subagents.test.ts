@@ -14,7 +14,11 @@ const {
   subagentModelPromotionEventUuid,
   subagentOperationEventUuid,
   subagentOutcomeEventUuid,
+  subagentParentFinishBlockedEventUuid,
+  subagentParentSettlementEventUuid,
+  subagentResultClaimedEventUuid,
   subagentResultDeliveredEventUuid,
+  subagentResultInjectedEventUuid,
 } = require("../subagents") as typeof import("../subagents");
 
 describe("subagent lifecycle analytics", () => {
@@ -40,6 +44,7 @@ describe("subagent lifecycle analytics", () => {
       step_count: undefined,
       cost_dollars: undefined,
       error_category: undefined,
+      runtime_error_category: undefined,
       model_from: undefined,
       model_to: undefined,
       model_promotion_reason: undefined,
@@ -48,6 +53,8 @@ describe("subagent lifecycle analytics", () => {
       failure_stage: undefined,
       active_count: undefined,
       total_count: undefined,
+      terminal_count: undefined,
+      undelivered_count: undefined,
       target_count: undefined,
       result_available: undefined,
       environment: expect.any(String),
@@ -72,6 +79,40 @@ describe("subagent lifecycle analytics", () => {
     );
     expect(subagentOperationEventUuid("parent-1", "tool-1", "wait")).not.toBe(
       subagentOperationEventUuid("parent-1", "tool-1", "cancel"),
+    );
+  });
+
+  it("deduplicates parent settlement measurements per parent run", () => {
+    expect(subagentParentSettlementEventUuid("parent-1")).toBe(
+      subagentParentSettlementEventUuid("parent-1"),
+    );
+    expect(subagentParentSettlementEventUuid("parent-1")).not.toBe(
+      subagentParentSettlementEventUuid("parent-2"),
+    );
+  });
+
+  it("records parent settlement result-consumption counts", () => {
+    captureSubagentLifecycleEvent("subagent_parent_settlement", {
+      userId: "user-1",
+      eventUuid: subagentParentSettlementEventUuid("parent-1"),
+      parentTriggerRunId: "parent-1",
+      outcome: "parent_run_ended",
+      totalCount: 3,
+      activeCount: 0,
+      terminalCount: 3,
+      undeliveredCount: 2,
+      resultAvailable: true,
+    });
+
+    expect(mockEvent).toHaveBeenCalledWith(
+      "subagent_parent_settlement",
+      expect.objectContaining({
+        total_count: 3,
+        active_count: 0,
+        terminal_count: 3,
+        undelivered_count: 2,
+        result_available: true,
+      }),
     );
   });
 
@@ -109,6 +150,21 @@ describe("subagent lifecycle analytics", () => {
     );
     expect(subagentResultDeliveredEventUuid("sa_1")).not.toBe(
       subagentResultDeliveredEventUuid("sa_2"),
+    );
+  });
+
+  it("keeps every acknowledged delivery stage stable and distinct", () => {
+    expect(subagentResultClaimedEventUuid("sa_1", "claim_1")).toBe(
+      subagentResultClaimedEventUuid("sa_1", "claim_1"),
+    );
+    expect(subagentResultClaimedEventUuid("sa_1", "claim_1")).not.toBe(
+      subagentResultClaimedEventUuid("sa_1", "claim_2"),
+    );
+    expect(subagentResultInjectedEventUuid("sa_1")).not.toBe(
+      subagentResultDeliveredEventUuid("sa_1"),
+    );
+    expect(subagentParentFinishBlockedEventUuid("parent-1")).toBe(
+      subagentParentFinishBlockedEventUuid("parent-1"),
     );
   });
 

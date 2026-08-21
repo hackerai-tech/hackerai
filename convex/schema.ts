@@ -1221,6 +1221,13 @@ export default defineSchema({
     step_count: v.optional(v.number()),
     provider_retry_count: v.optional(v.number()),
     result_recovery_count: v.optional(v.number()),
+    parent_delivery_claim_id: v.optional(v.string()),
+    parent_delivery_claimed_at: v.optional(v.number()),
+    parent_delivery_claim_expires_at: v.optional(v.number()),
+    parent_result_injected_at: v.optional(v.number()),
+    parent_result_consumed_at: v.optional(v.number()),
+    // Compatibility field for existing dashboards. New code writes it only
+    // after a parent model step has consumed the result.
     parent_notified_at: v.optional(v.number()),
     created_at: v.number(),
     started_at: v.optional(v.number()),

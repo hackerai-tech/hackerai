@@ -417,12 +417,16 @@ describe("agent stream runner — empty tool-input recovery", () => {
       "runSummarizationStep({",
     );
     const summarizedActiveToolsIdx = agentStreamRunnerSrc.indexOf(
-      "const activeTools = await getActiveToolsForRecovery(loopRecovery)",
+      "const activeTools = enforceParentGateTool(",
       summarizationIdx,
     );
+    const normalContinuationIdx = agentStreamRunnerSrc.indexOf(
+      "let currentMessages = rollingModelMessages",
+      summarizedActiveToolsIdx,
+    );
     const normalActiveToolsIdx = agentStreamRunnerSrc.indexOf(
-      "const activeTools = await getActiveToolsForRecovery(loopRecovery)",
-      summarizedActiveToolsIdx + 1,
+      "const activeTools = enforceParentGateTool(",
+      normalContinuationIdx,
     );
     const summarizedNudgeIdx = agentStreamRunnerSrc.indexOf(
       "loopRecovery.nudge",
@@ -432,10 +436,14 @@ describe("agent stream runner — empty tool-input recovery", () => {
     expect(recoveryIdx).toBeGreaterThan(-1);
     expect(summarizationIdx).toBeGreaterThan(recoveryIdx);
     expect(summarizedActiveToolsIdx).toBeGreaterThan(summarizationIdx);
-    expect(normalActiveToolsIdx).toBeGreaterThan(summarizedActiveToolsIdx);
+    expect(normalContinuationIdx).toBeGreaterThan(summarizedActiveToolsIdx);
+    expect(normalActiveToolsIdx).toBeGreaterThan(normalContinuationIdx);
     expect(summarizedNudgeIdx).toBeGreaterThan(summarizationIdx);
     expect(agentStreamRunnerSrc).toMatch(
       /getActiveToolsWithExclusions\(recovery\.excludedTools\)/,
+    );
+    expect(agentStreamRunnerSrc).toMatch(
+      /enforceParentGateTool\([\s\S]*?getActiveToolsForRecovery\(loopRecovery\)/,
     );
   });
 });
@@ -1081,11 +1089,23 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
 
   test("every parent wind-down settles active subagents before teardown", () => {
     expect(taskSrc).toMatch(
-      /if \(cleanup\.subagentsEnabled\) \{\s*await settleSubagentsForParentRun\(ctx\.run\.id, "parent_canceled"\)\.catch/,
+      /if \(cleanup\.subagentsEnabled\) \{\s*await settleSubagentsForParentRun\([\s\S]*?ctx\.run\.id,[\s\S]*?"parent_canceled",[\s\S]*?cleanup\.userId,[\s\S]*?cleanup\.chatId,[\s\S]*?\)\.catch/,
     );
     expect(taskSrc).toMatch(
-      /finally \{[\s\S]*?if \(subagentsEnabled\) \{\s*await settleSubagentsForParentRun\([\s\S]*?"parent_run_ended"\)\.catch[\s\S]*?triggerSessions\.close[\s\S]*?finishCloudSandboxLifecycle\(\)[\s\S]*?runCleanupMap\.delete\(ctx\.run\.id\)/,
+      /finally \{[\s\S]*?if \(subagentsEnabled\) \{\s*await settleSubagentsForParentRun\([\s\S]*?"parent_run_ended",[\s\S]*?userId,[\s\S]*?chatId,[\s\S]*?\)\.catch[\s\S]*?triggerSessions\.close[\s\S]*?finishCloudSandboxLifecycle\(\)[\s\S]*?runCleanupMap\.delete\(ctx\.run\.id\)/,
     );
+  });
+
+  test("parent delivery is acknowledged only after result injection and synthesis", () => {
+    expect(taskSrc).toMatch(
+      /subagentCompletionGate:[\s\S]*?markInjected:[\s\S]*?markSubagentResultInjectedForParent/,
+    );
+    expect(taskSrc).toMatch(
+      /markConsumed:[\s\S]*?markSubagentResultConsumedForParent/,
+    );
+    expect(taskSrc).toContain("retry.onThrow(transition");
+    expect(taskSrc).toMatch(/subagent_parent_finish_blocked/);
+    expect(taskSrc).toMatch(/subagent_result_consumed/);
   });
 
   test("parent completion only suspends the shared sandbox after the user becomes idle", () => {

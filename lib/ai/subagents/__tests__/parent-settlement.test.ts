@@ -1,4 +1,26 @@
-import { settleParentSubagents } from "@/lib/ai/subagents/parent-settlement";
+import {
+  settleParentSubagents,
+  summarizeParentSubagentSettlement,
+} from "@/lib/ai/subagents/parent-settlement";
+
+describe("summarizeParentSubagentSettlement", () => {
+  it("separates active, terminal, and undelivered child results", () => {
+    expect(
+      summarizeParentSubagentSettlement([
+        { status: "running" },
+        { status: "completed", parent_result_consumed_at: 123 },
+        { status: "completed", parent_notified_at: 456 },
+        { status: "failed" },
+        { status: "canceled" },
+      ]),
+    ).toEqual({
+      totalCount: 5,
+      activeCount: 1,
+      terminalCount: 4,
+      undeliveredCount: 2,
+    });
+  });
+});
 
 const createDependencies = () => ({
   listActiveSubagents: jest.fn(

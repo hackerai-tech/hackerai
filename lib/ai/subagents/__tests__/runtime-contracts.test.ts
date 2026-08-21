@@ -17,6 +17,9 @@ describe("security validation subagent runtime contracts", () => {
     expect(source).toContain("getSubagentProfileDefinition");
     expect(source).toContain("agentUiStream.pipe");
     expect(source).toContain("SUBAGENT_MAX_ACTIVE_SECONDS");
+    expect(source).toContain("SUBAGENT_RESULT_DEADLINE_SECONDS");
+    expect(source).toContain('event: "subagent_deadline_reminder_sent"');
+    expect(source).toContain("conversationMessages.push(deadlineMessage)");
     expect(source).toContain("SUBAGENT_MAX_STEPS");
     expect(source).toContain("row.cost_limit_dollars");
     expect(source).toContain("retry: { maxAttempts: 1 }");
@@ -43,6 +46,27 @@ describe("security validation subagent runtime contracts", () => {
       child,
       "setConvexUrl(payload.convexUrl)",
       "getSubagent(payload.subagentId)",
+    );
+  });
+
+  it("blocks parent completion until a claimed result reaches a successful synthesis step", () => {
+    const runner = read("lib/api/agent-stream-runner.ts");
+    const parent = read("trigger/agent-long.ts");
+    const convex = read("convex/subagents.ts");
+    expect(runner).toContain("subagentCompletionGate");
+    expect(runner).toContain('toolName: "wait_for_agents"');
+    expect(runner).toContain("extractSubagentDeliveryClaims(toolResults)");
+    expect(runner).toContain("gate.markInjected(claims)");
+    expect(runner).toContain("markConsumed(pendingDeliveryClaims)");
+    expect(runner).toContain("SUBAGENT_PARENT_GATE_EXTRA_STEPS");
+    expect(parent).toContain("markSubagentResultInjectedForParent");
+    expect(parent).toContain("markSubagentResultConsumedForParent");
+    expect(parent).toContain('"subagent_parent_finish_blocked"');
+    expect(convex).toContain("parent_delivery_claim_expires_at");
+    expect(convex).toContain("parent_result_injected_at");
+    expect(convex).toContain("parent_result_consumed_at");
+    expect(convex).toContain(
+      'if (!row.parent_result_injected_at) return "stale_claim" as const',
     );
   });
 
@@ -129,6 +153,8 @@ describe("security validation subagent runtime contracts", () => {
       "await attachSubagentTriggerRun",
     );
     expect(child).toContain('attachOutcome === "terminal"');
+    expect(child).toContain("reusePersistedTerminalState");
+    expect(child).toContain('event: "subagent_terminal_state_reused"');
     expect(child).toContain('failureCode: "setup_failed"');
     expect(child).toContain('errorCategory: "setup_failed"');
     expect(child).toContain("onError: (error) =>");
@@ -149,6 +175,11 @@ describe("security validation subagent runtime contracts", () => {
     expect(tools).toContain("failUnattachedSubagent");
     expect(tools).toContain('failureCode: "child_trigger_failed"');
     expect(child).toContain("pipeSubagentUiMessageStream");
+    expect(tools).toContain(
+      "Before your final answer, call wait_for_agents targeting",
+    );
+    expect(parent).toContain('"subagent_parent_settlement"');
+    expect(parent).toContain("undelivered_count");
   });
 
   it("delivers named parent updates through a durable child inbox", () => {
