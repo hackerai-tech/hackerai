@@ -1497,6 +1497,100 @@ describe("CentrifugoSandbox", () => {
       });
     });
 
+    it("falls back to PowerShell when curl is unavailable on Windows", async () => {
+      const sandbox = createSandbox({
+        osInfo: {
+          platform: "win32",
+          arch: "x86_64",
+          release: "10.0.19045",
+          hostname: "WIN-DEV",
+        },
+      });
+      (sandbox as any).shellKind = "cmd";
+      const run = jest
+        .fn()
+        .mockResolvedValueOnce({
+          stdout: "",
+          stderr: "INFO: Could not find files for the given pattern(s).",
+          exitCode: 1,
+        })
+        .mockResolvedValueOnce({ stdout: "", stderr: "", exitCode: 0 });
+      (sandbox as any).commands.run = run;
+
+      const signedUrl = "https://example.com/image.png?X-Amz-Signature=opaque";
+      await sandbox.files.downloadFromUrl(
+        signedUrl,
+        "/tmp/hackerai-upload/image.png",
+      );
+
+      expect(run).toHaveBeenNthCalledWith(1, "where curl 2>nul", {
+        displayName: "",
+        timeoutMs: 30000,
+      });
+      const command = run.mock.calls[1][0] as string;
+      expect(command).toMatch(
+        /^powershell -NoLogo -NoProfile -NonInteractive -EncodedCommand /,
+      );
+      expect(command).not.toContain(signedUrl);
+      expect(command).not.toContain("C:\\temp\\hackerai-upload");
+
+      const encodedCommand = command.split(" ").at(-1)!;
+      const script = Buffer.from(encodedCommand, "base64").toString("utf16le");
+      expect(script).toContain("Invoke-WebRequest -UseBasicParsing");
+      expect(script).toContain("-OutFile $destination");
+      expect(script).toContain(
+        Buffer.from(signedUrl, "utf8").toString("base64"),
+      );
+      expect(script).toContain(
+        Buffer.from("C:\\temp\\hackerai-upload\\image.png", "utf8").toString(
+          "base64",
+        ),
+      );
+    });
+
+    it("uses the Windows PowerShell fallback for presigned URL uploads", async () => {
+      const sandbox = createSandbox({
+        osInfo: {
+          platform: "win32",
+          arch: "x86_64",
+          release: "10.0.19045",
+          hostname: "WIN-DEV",
+        },
+      });
+      (sandbox as any).shellKind = "cmd";
+      const run = jest
+        .fn()
+        .mockResolvedValueOnce({ stdout: "", stderr: "", exitCode: 1 })
+        .mockResolvedValueOnce({ stdout: "", stderr: "", exitCode: 0 });
+      (sandbox as any).commands.run = run;
+
+      const uploadUrl = "https://example.com/upload?X-Amz-Signature=opaque";
+      await sandbox.files.uploadToUrl(
+        "/tmp/hackerai-upload/report.txt",
+        uploadUrl,
+        "text/plain",
+      );
+
+      const command = run.mock.calls[1][0] as string;
+      expect(command).toMatch(
+        /^powershell -NoLogo -NoProfile -NonInteractive -EncodedCommand /,
+      );
+      expect(command).not.toContain(uploadUrl);
+
+      const encodedCommand = command.split(" ").at(-1)!;
+      const script = Buffer.from(encodedCommand, "base64").toString("utf16le");
+      expect(script).toContain(
+        "Invoke-WebRequest -UseBasicParsing -Method Put",
+      );
+      expect(script).toContain("-InFile $source");
+      expect(script).toContain(
+        Buffer.from(uploadUrl, "utf8").toString("base64"),
+      );
+      expect(script).toContain(
+        Buffer.from("text/plain", "utf8").toString("base64"),
+      );
+    });
+
     it("downloadFromUrl omits --ssl-no-revoke when Windows curl lacks support", async () => {
       const { sandbox, runs } = createWindowsBashSandbox();
       (sandbox as any).curlCaps = {

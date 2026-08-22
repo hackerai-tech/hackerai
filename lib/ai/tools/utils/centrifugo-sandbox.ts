@@ -63,6 +63,8 @@ const COMMAND_CANCEL_ACK_TIMEOUT_MS = 5000;
 const TRANSIENT_COMMAND_TIMEOUT_ERROR_PATTERN =
   /\b(?:deadline_exceeded|operation timed out:.*\btimeoutMs\b|exceeding ['"]?timeoutMs['"]?|Command timeout after \d+ms)\b/i;
 
+type HttpClient = "curl" | "wget" | "powershell";
+
 const getErrorMessage = (error: unknown): string =>
   error instanceof Error ? error.message : String(error);
 
@@ -1160,6 +1162,7 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
   private async shellContext(rawPath: string): Promise<{
     useBash: boolean;
     path: string;
+    nativePath: string;
     escapePath: (value: string) => string;
     escapeValue: (value: string) => string;
   }> {
@@ -1175,7 +1178,7 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
     const escapeValue = useBash
       ? (v: string) => `'${v.replace(/'/g, "'\\''")}'`
       : (v: string) => this.escapeForTarget(v);
-    return { useBash, path, escapePath, escapeValue };
+    return { useBash, path, nativePath, escapePath, escapeValue };
   }
 
   /**
@@ -1200,8 +1203,8 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
     }
   }
 
-  // Cache for detected HTTP client (curl or wget)
-  private httpClient: "curl" | "wget" | null = null;
+  // Cache for the detected HTTP client.
+  private httpClient: HttpClient | null = null;
   private snapCurlFallbackSelected = false;
 
   // Cache for detected curl capabilities (probed once per sandbox).
@@ -1240,20 +1243,32 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
   }
 
   /**
-   * Detect available HTTP client (curl or wget).
+   * Detect an available HTTP client for the target platform.
    * Alpine Linux uses wget by default, most other distros have curl.
-   * On Windows (cmd.exe), curl resolves to the real curl.exe bundled with Win10+.
+   * Windows falls back to PowerShell when curl.exe is unavailable.
    */
-  private async detectHttpClient(): Promise<"curl" | "wget"> {
+  private async detectHttpClient(): Promise<HttpClient> {
     if (this.httpClient) return this.httpClient;
 
-    // On Windows, curl.exe is bundled since Win10 build 17063 and there's no
-    // wget to fall back to. Skip detection since `command -v` is POSIX-only.
-    // If curl is missing on an older Windows Server, the download command
-    // itself will fail with a clear "curl is not recognized" error.
+    // Most supported Windows versions bundle curl.exe, but hardened or older
+    // installations can omit it. Probe with syntax matching the selected
+    // shell, then fall back to Windows PowerShell's HTTP client.
     if (this.isWindows()) {
-      this.httpClient = "curl";
-      return "curl";
+      const shell = await this.detectShell();
+      const curlCheck = await this.runSetupCommand(
+        shell === "bash" ? "command -v curl || true" : "where curl 2>nul",
+        { displayName: "" },
+      );
+      if (
+        curlCheck.exitCode === 0 &&
+        /curl(?:\.exe)?/i.test(curlCheck.stdout)
+      ) {
+        this.httpClient = "curl";
+        return "curl";
+      }
+
+      this.httpClient = "powershell";
+      return "powershell";
     }
 
     const curlCheck = await this.runSetupCommand("command -v curl || true", {
@@ -1304,6 +1319,20 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
 
     this.httpClient = "curl";
     return "curl";
+  }
+
+  private static encodePowerShellValue(value: string): string {
+    const encoded = Buffer.from(value, "utf8").toString("base64");
+    return `[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${encoded}'))`;
+  }
+
+  private static buildEncodedPowerShellCommand(
+    script: string,
+    useBash: boolean,
+  ): string {
+    const executable = useBash ? "powershell.exe" : "powershell";
+    const encoded = Buffer.from(script, "utf16le").toString("base64");
+    return `${executable} -NoLogo -NoProfile -NonInteractive -EncodedCommand ${encoded}`;
   }
 
   private async statNativeFile(
@@ -1717,7 +1746,7 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
       // emit POSIX syntax with MSYS-form paths. cmd.exe syntax like
       // `if not exist` breaks under bash and leaves the target dir missing,
       // causing curl to fail with the Windows "invalid filename syntax" error.
-      const { useBash, path, escapePath, escapeValue } =
+      const { useBash, path, nativePath, escapePath, escapeValue } =
         await this.shellContext(rawPath);
       const httpClient = await this.detectHttpClient();
       const dir = CentrifugoSandbox.parentDir(path);
@@ -1751,10 +1780,27 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
           .filter(Boolean)
           .join(" ");
         downloadPart = `curl ${curlFlags} -o ${escapedPath} ${escapedUrl}`;
-      } else {
+      } else if (httpClient === "wget") {
         downloadPart = `wget -q --tries=3 --waitretry=1 -O ${escapedPath} ${escapedUrl}`;
+      } else {
+        const powerShellScript = [
+          "$ErrorActionPreference='Stop'",
+          "$ProgressPreference='SilentlyContinue'",
+          `$url=${CentrifugoSandbox.encodePowerShellValue(url)}`,
+          `$destination=${CentrifugoSandbox.encodePowerShellValue(nativePath)}`,
+          "$directory=[IO.Path]::GetDirectoryName($destination)",
+          "if ($directory) { [IO.Directory]::CreateDirectory($directory) | Out-Null }",
+          "Invoke-WebRequest -UseBasicParsing -Uri $url -OutFile $destination",
+        ].join("; ");
+        downloadPart = CentrifugoSandbox.buildEncodedPowerShellCommand(
+          powerShellScript,
+          useBash,
+        );
       }
-      const command = `${mkdirPart} ${downloadPart}`;
+      const command =
+        httpClient === "powershell"
+          ? downloadPart
+          : `${mkdirPart} ${downloadPart}`;
 
       // JS-level retry safety net on top of curl's --retry, for transient
       // network/TLS errors that can survive curl's own retry loop:
@@ -1769,7 +1815,9 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
       const transientExitCodes =
         httpClient === "curl"
           ? new Set([7, 18, 23, 28, 35, 56, 92, 124])
-          : new Set([4, 124]);
+          : httpClient === "wget"
+            ? new Set([4, 124])
+            : new Set<number>();
       const MAX_ATTEMPTS = 3;
 
       let result: Awaited<ReturnType<typeof this.commands.run>> | null = null;
@@ -1842,7 +1890,7 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
       uploadUrl: string,
       contentType: string,
     ): Promise<void> => {
-      const { path, escapePath, escapeValue } =
+      const { useBash, path, nativePath, escapePath, escapeValue } =
         await this.shellContext(rawPath);
       const httpClient = await this.detectHttpClient();
 
@@ -1879,10 +1927,25 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
               .join(" ")
           : "";
 
-      const command =
-        httpClient === "curl"
-          ? `curl ${curlUploadFlags} -X PUT -H ${escapedContentType} --data-binary @${escapedPath} ${escapedUrl}`
-          : `wget -q --method=PUT --header=${escapedContentType} --body-file=${escapedPath} -O - ${escapedUrl}`;
+      let command: string;
+      if (httpClient === "curl") {
+        command = `curl ${curlUploadFlags} -X PUT -H ${escapedContentType} --data-binary @${escapedPath} ${escapedUrl}`;
+      } else if (httpClient === "wget") {
+        command = `wget -q --method=PUT --header=${escapedContentType} --body-file=${escapedPath} -O - ${escapedUrl}`;
+      } else {
+        const powerShellScript = [
+          "$ErrorActionPreference='Stop'",
+          "$ProgressPreference='SilentlyContinue'",
+          `$url=${CentrifugoSandbox.encodePowerShellValue(uploadUrl)}`,
+          `$source=${CentrifugoSandbox.encodePowerShellValue(nativePath)}`,
+          `$contentType=${CentrifugoSandbox.encodePowerShellValue(contentType)}`,
+          "Invoke-WebRequest -UseBasicParsing -Method Put -Uri $url -InFile $source -ContentType $contentType",
+        ].join("; ");
+        command = CentrifugoSandbox.buildEncodedPowerShellCommand(
+          powerShellScript,
+          useBash,
+        );
+      }
 
       const result = await this.commands.run(command, {
         timeoutMs: 120000,
