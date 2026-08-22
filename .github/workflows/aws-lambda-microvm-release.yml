@@ -5,7 +5,9 @@ on:
     branches: [main]
     paths:
       - ".github/workflows/aws-lambda-microvm-release.yml"
-      - "aws-lambda-microvm/**"
+      # Only this binary is packaged from aws-lambda-microvm/. Documentation
+      # and CloudFormation edits must not republish unchanged regional images.
+      - "aws-lambda-microvm/naabu"
       - "docker/**"
       - "packages/local/**"
       - "scripts/build-aws-microvm-release-manifest.ts"
@@ -73,7 +75,9 @@ jobs:
     name: Publish and smoke-test ${{ matrix.region }}
     needs: prepare
     runs-on: ubuntu-latest
-    timeout-minutes: 65
+    # One opaque AWS image-builder failure is retried. Allow both bounded
+    # 45-minute publish windows to finish before GitHub terminates the job.
+    timeout-minutes: 100
     environment: aws-lambda-microvm-production
     permissions:
       contents: read
@@ -96,6 +100,7 @@ jobs:
       AWS_LAMBDA_MICROVM_BUILD_ROLE_ARN: ${{ vars[format('AWS_LAMBDA_MICROVM_BUILD_ROLE_ARN_{0}', matrix.variable_suffix)] }}
       AWS_LAMBDA_MICROVM_EXECUTION_ROLE_ARN: ${{ vars[format('AWS_LAMBDA_MICROVM_EXECUTION_ROLE_ARN_{0}', matrix.variable_suffix)] }}
       AWS_RELEASE_ROLE_ARN: ${{ vars[format('AWS_RELEASE_ROLE_ARN_{0}', matrix.variable_suffix)] }}
+      AWS_LAMBDA_MICROVM_PUBLISH_ATTEMPTS: "2"
     steps:
       - name: Validate regional release configuration
         shell: bash
