@@ -351,7 +351,7 @@ const classifyPdfParserFailure = async (
     if (responseText.includes(PDF_PARSER_INVALID_DOCUMENT_ERROR)) {
       return "invalid_document";
     }
-    if (/failed to parse(?:\s*:)?\s*(?:"|[}\]])/i.test(responseText)) {
+    if (/failed to parse\b/i.test(responseText)) {
       return "generic_parse";
     }
   } catch {

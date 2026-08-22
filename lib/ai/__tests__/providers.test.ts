@@ -730,7 +730,10 @@ describe("OpenRouter PDF parser recovery", () => {
   });
 
   it("does not retry unrelated provider errors", async () => {
-    const originalResponse = parserErrorResponse("Unrelated provider error");
+    const originalResponse = new Response(
+      JSON.stringify({ error: { message: "Unrelated provider error" } }),
+      { status: 400, headers: { "content-type": "application/json" } },
+    );
     const fetchMock = jest.fn().mockResolvedValueOnce(originalResponse);
     const patchedFetch = createOpenRouterPatchFetch(
       fetchMock as unknown as typeof fetch,
@@ -745,41 +748,44 @@ describe("OpenRouter PDF parser recovery", () => {
     expect(response).toBe(originalResponse);
   });
 
-  it("falls back to sandbox paths when generic file parsing fails", async () => {
-    const genericParseError = new Response(
-      JSON.stringify({ error: { message: "Failed to parse " } }),
-      { status: 400, headers: { "content-type": "application/json" } },
-    );
-    const fetchMock = jest
-      .fn()
-      .mockResolvedValueOnce(genericParseError)
-      .mockResolvedValueOnce(new Response("ok", { status: 200 }));
-    const patchedFetch = createOpenRouterPatchFetch(
-      fetchMock as unknown as typeof fetch,
-    );
+  it.each(["Failed to parse ", "Failed to parse : report.pdf"])(
+    "falls back to sandbox paths for generic file parsing error %s",
+    async (providerMessage) => {
+      const genericParseError = new Response(
+        JSON.stringify({ error: { message: providerMessage } }),
+        { status: 400, headers: { "content-type": "application/json" } },
+      );
+      const fetchMock = jest
+        .fn()
+        .mockResolvedValueOnce(genericParseError)
+        .mockResolvedValueOnce(new Response("ok", { status: 200 }));
+      const patchedFetch = createOpenRouterPatchFetch(
+        fetchMock as unknown as typeof fetch,
+      );
 
-    const response = await patchedFetch("https://openrouter.test/chat", {
-      method: "POST",
-      body: JSON.stringify(createPdfParserRequest()),
-    });
+      const response = await patchedFetch("https://openrouter.test/chat", {
+        method: "POST",
+        body: JSON.stringify(createPdfParserRequest()),
+      });
 
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-    const sandboxRequest = JSON.parse(fetchMock.mock.calls[1][1].body);
-    expect(
-      sandboxRequest.messages.flatMap(
-        (message: {
-          content?: Array<{ type?: string; file?: { filename?: string } }>;
-        }) =>
-          (message.content ?? [])
-            .filter((part) => part.type === "file")
-            .map((part) => part.file?.filename),
-      ),
-    ).toEqual(["notes.txt"]);
-    expect(JSON.stringify(sandboxRequest)).toContain(
-      "inspect the files with sandbox tools",
-    );
-    expect(response.headers.get(PDF_PARSER_RECOVERY_HEADER)).toBe("sandbox");
-  });
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      const sandboxRequest = JSON.parse(fetchMock.mock.calls[1][1].body);
+      expect(
+        sandboxRequest.messages.flatMap(
+          (message: {
+            content?: Array<{ type?: string; file?: { filename?: string } }>;
+          }) =>
+            (message.content ?? [])
+              .filter((part) => part.type === "file")
+              .map((part) => part.file?.filename),
+        ),
+      ).toEqual(["notes.txt"]);
+      expect(JSON.stringify(sandboxRequest)).toContain(
+        "inspect the files with sandbox tools",
+      );
+      expect(response.headers.get(PDF_PARSER_RECOVERY_HEADER)).toBe("sandbox");
+    },
+  );
 });
 
 describe("supportsMultimodalToolResults", () => {
