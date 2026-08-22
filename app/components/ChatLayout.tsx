@@ -6,29 +6,14 @@ import { useIsMobile } from "@/hooks/use-mobile";
 import { useGlobalState } from "../contexts/GlobalState";
 import { useChats } from "../hooks/useChats";
 import { SidebarProvider } from "@/components/ui/sidebar";
-import Loading from "@/components/ui/loading";
 import MainSidebar from "./Sidebar";
 import { onOpenSettingsDialog } from "@/lib/utils/settings-dialog";
-
-function SettingsDialogLoading() {
-  return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
-      role="status"
-      aria-label="Loading settings"
-    >
-      <div className="flex h-[calc(80dvh+55px)] max-h-[95%] w-[380px] max-w-[98%] items-center justify-center overflow-hidden rounded-[20px] border bg-background shadow-lg md:h-[672px] md:w-[95vw] md:max-w-[920px]">
-        <Loading size={6} />
-      </div>
-    </div>
-  );
-}
 
 const SettingsDialog = dynamic(
   () => import("./SettingsDialog").then((module) => module.SettingsDialog),
   {
     ssr: false,
-    loading: SettingsDialogLoading,
+    loading: () => null,
   },
 );
 
