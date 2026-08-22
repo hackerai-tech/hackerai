@@ -1760,6 +1760,46 @@ describe("CentrifugoSandbox", () => {
       expect(remove).toHaveBeenCalledWith(nativeScriptPath);
     });
 
+    it("redacts the native destination from Git Bash PowerShell download errors", async () => {
+      const sandbox = createSandbox({
+        isDesktop: true,
+        capabilities: { commands: true, pty: true, files: true },
+        osInfo: {
+          platform: "win32",
+          arch: "x86_64",
+          release: "10.0.19045",
+          hostname: "WIN-DEV",
+        },
+      });
+      (sandbox as any).shellKind = "bash";
+      (sandbox as any).httpClient = "powershell";
+      sandbox.files.write = jest.fn(async () => undefined);
+      sandbox.files.remove = jest.fn(async () => undefined);
+      const nativeDestination = "C:\\temp\\hackerai-upload\\report.txt";
+      (sandbox as any).commands.run = jest.fn(async (command: string) =>
+        command.startsWith("powershell.exe ")
+          ? {
+              stdout: "",
+              stderr: `Download failed at ${nativeDestination}`,
+              exitCode: 1,
+            }
+          : {
+              stdout: "target_dir_exists=true",
+              stderr: "",
+              exitCode: 0,
+            },
+      );
+
+      await expect(
+        sandbox.files.downloadFromUrl(
+          "https://example.com/report.txt?X-Amz-Signature=opaque",
+          "/tmp/hackerai-upload/report.txt",
+        ),
+      ).rejects.toThrow(
+        "Failed to download file: Download failed at [redacted-destination-path]",
+      );
+    });
+
     it("downloadFromUrl omits --ssl-no-revoke when Windows curl lacks support", async () => {
       const { sandbox, runs } = createWindowsBashSandbox();
       (sandbox as any).curlCaps = {

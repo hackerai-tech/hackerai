@@ -1893,6 +1893,7 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
           const safeStderr = redactTransferDetails(result.stderr, url, [
             rawPath,
             path,
+            nativePath,
           ]);
           throw new Error(
             `Failed to download file: ${safeStderr}\n` +
