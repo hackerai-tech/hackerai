@@ -1,5 +1,13 @@
 import { useState, useEffect, useMemo, useRef } from "react";
+import { useAction, useQuery } from "convex/react";
 import { Button } from "@/components/ui/button";
+import {
+  BuyExtraUsageDialog,
+  getApproximateWeeklyExtraUsageSpend,
+  getRecommendedExtraUsagePurchaseAmount,
+} from "@/app/components/extra-usage/BuyExtraUsageDialog";
+import { api } from "@/convex/_generated/api";
+import { toast } from "sonner";
 import { MemoizedMarkdown } from "./MemoizedMarkdown";
 import {
   ChatSDKError,
@@ -12,10 +20,16 @@ import { openSettingsDialog } from "@/lib/utils/settings-dialog";
 import {
   captureAddCreditCtaClick,
   captureAddCreditCtaImpression,
+  captureAuthenticatedEvent,
+  newCheckoutAttemptId,
   capturePaidDailyFreeAllowanceClick,
   capturePaidDailyFreeAllowanceImpression,
   captureUpgradeCtaImpression,
 } from "@/lib/analytics/client";
+import {
+  PAID_FUNNEL_EVENTS,
+  paidFunnelProperties,
+} from "@/lib/analytics/paid-funnel";
 import type { ChatMode } from "@/types";
 import type { LimitCapReason } from "@/lib/limit-pressure";
 import {
@@ -48,6 +62,11 @@ const formatCountdown = (ms: number): string => {
   return `${seconds}s`;
 };
 
+const getCurrentReturnPath = (): string => {
+  const fullPath = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+  return fullPath.length <= 400 ? fullPath : window.location.pathname;
+};
+
 export const MessageErrorState = ({
   error,
   onRetry,
@@ -72,6 +91,19 @@ export const MessageErrorState = ({
   const paidDailyFreeAllowanceImpressionRef = useRef(false);
 
   const [timeRemaining, setTimeRemaining] = useState<number>(0);
+  const [showBuyDialog, setShowBuyDialog] = useState(false);
+  const [isPurchasing, setIsPurchasing] = useState(false);
+  const [isUpdatingPayment, setIsUpdatingPayment] = useState(false);
+  const createPurchaseSession = useAction(
+    api.extraUsageActions.createPurchaseSession,
+  );
+  const createBillingPortalSession = useAction(
+    api.extraUsageActions.createBillingPortalSession,
+  );
+  const extraUsageSettings = useQuery(
+    api.extraUsage.getExtraUsageSettings,
+    showBuyDialog ? {} : "skip",
+  );
 
   useEffect(() => {
     if (!resetTimestamp) return;
@@ -137,6 +169,99 @@ export const MessageErrorState = ({
   const showRateLimitRetry = !shouldFocusPaidAllowanceActions;
   const showRateLimitUsage = !shouldFocusPaidAllowanceActions;
   const showUpgrade = canUpgrade && !shouldFocusPaidAllowanceActions;
+  const isDirectAddCredits = extraUsageCta?.analyticsText === "Add Credits";
+  const isPaymentRecovery = capReason === "auto_reload_failed";
+  const extraUsageCtaText = isDirectAddCredits
+    ? "Add $15 and continue"
+    : isPaymentRecovery
+      ? "Update card and retry"
+      : extraUsageCta?.label;
+  const recommendedPurchaseAmountDollars =
+    getRecommendedExtraUsagePurchaseAmount(
+      getApproximateWeeklyExtraUsageSpend(
+        extraUsageSettings?.monthlySpentDollars,
+      ),
+    );
+
+  useEffect(() => {
+    const url = new URL(window.location.href);
+    const shouldResume =
+      url.searchParams.get("extra-usage-resume") === "true" ||
+      url.searchParams.get("extra-usage-payment-retry") === "true";
+
+    if (!shouldResume) return;
+
+    url.searchParams.delete("extra-usage-resume");
+    url.searchParams.delete("extra-usage-payment-retry");
+    window.history.replaceState(
+      window.history.state,
+      "",
+      url.pathname + url.search + url.hash,
+    );
+    onRetry();
+  }, [onRetry]);
+
+  const handlePurchaseCredits = async (amountDollars: number) => {
+    setIsPurchasing(true);
+    try {
+      const checkoutAttemptId = newCheckoutAttemptId();
+      const result = await createPurchaseSession({
+        amountDollars,
+        baseUrl: window.location.origin,
+        checkoutAttemptId,
+        returnPath: getCurrentReturnPath(),
+        resumeAfterPurchase: true,
+        enableExtraUsageAfterPurchase: true,
+      });
+
+      if (!result.url) {
+        toast.error(result.error || "Failed to create checkout session");
+        return;
+      }
+
+      captureAuthenticatedEvent(
+        PAID_FUNNEL_EVENTS.addCreditCheckoutStarted,
+        paidFunnelProperties({
+          checkout_attempt_id: checkoutAttemptId,
+          checkout_type: "extra_usage_purchase",
+          surface: "message_error_state",
+          source: "rate_limit_error",
+          amount_dollars: amountDollars,
+          stripe_checkout_session_id: result.checkoutSessionId,
+        }),
+      );
+      window.location.href = result.url;
+    } catch (error) {
+      console.error("Failed to purchase credits:", error);
+      toast.error("Failed to purchase credits");
+    } finally {
+      setIsPurchasing(false);
+    }
+  };
+
+  const handleUpdatePaymentMethod = async () => {
+    setIsUpdatingPayment(true);
+    try {
+      const returnUrl = new URL(window.location.href);
+      returnUrl.searchParams.set("extra-usage-payment-retry", "true");
+      const result = await createBillingPortalSession({
+        flow: "payment_method",
+        baseUrl: returnUrl.toString(),
+      });
+
+      if (!result.url) {
+        toast.error(result.error || "Failed to open billing portal");
+        return;
+      }
+
+      window.location.href = result.url;
+    } catch (error) {
+      console.error("Failed to update payment method:", error);
+      toast.error("Failed to open billing portal");
+    } finally {
+      setIsUpdatingPayment(false);
+    }
+  };
 
   useEffect(() => {
     if (!isRateLimitError || !showUpgrade || upgradeImpressionRef.current)
@@ -176,9 +301,16 @@ export const MessageErrorState = ({
       source: "rate_limit_error",
       from_tier: subscription,
       cap_reason: capReason,
-      cta_text: extraUsageCta.analyticsText,
+      cta_text: extraUsageCtaText ?? extraUsageCta.analyticsText,
     });
-  }, [capReason, extraUsageCta, isPaidUser, isRateLimitError, subscription]);
+  }, [
+    capReason,
+    extraUsageCta,
+    extraUsageCtaText,
+    isPaidUser,
+    isRateLimitError,
+    subscription,
+  ]);
 
   useEffect(() => {
     if (
@@ -282,24 +414,27 @@ export const MessageErrorState = ({
             )}
             {extraUsageCta && (
               <Button
-                variant={
-                  extraUsageCta.analyticsText === "Add Credits"
-                    ? "default"
-                    : "outline"
-                }
+                variant={isDirectAddCredits ? "default" : "outline"}
                 size="sm"
+                disabled={isPurchasing || isUpdatingPayment}
                 onClick={() => {
                   captureAddCreditCtaClick({
                     surface: "message_error_state",
                     source: "rate_limit_error",
                     from_tier: subscription,
                     cap_reason: capReason,
-                    cta_text: extraUsageCta.analyticsText,
+                    cta_text: extraUsageCtaText ?? extraUsageCta.analyticsText,
                   });
-                  openSettingsDialog(extraUsageCta.settingsTab);
+                  if (isDirectAddCredits) {
+                    setShowBuyDialog(true);
+                  } else if (isPaymentRecovery) {
+                    void handleUpdatePaymentMethod();
+                  } else {
+                    openSettingsDialog(extraUsageCta.settingsTab);
+                  }
                 }}
               >
-                {extraUsageCta.label}
+                {isUpdatingPayment ? "Opening billing..." : extraUsageCtaText}
               </Button>
             )}
             {canUsePaidDailyFreeAllowance && (
@@ -388,6 +523,15 @@ export const MessageErrorState = ({
           </>
         )}
       </div>
+      <BuyExtraUsageDialog
+        open={showBuyDialog}
+        onOpenChange={setShowBuyDialog}
+        onPurchase={handlePurchaseCredits}
+        isLoading={isPurchasing}
+        recommendedAmountDollars={recommendedPurchaseAmountDollars}
+        title="Add credits and continue"
+        description="Choose how much extra usage to add. Your stopped task will retry after payment succeeds."
+      />
     </div>
   );
 };

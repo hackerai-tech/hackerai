@@ -499,6 +499,9 @@ export const createPurchaseSession = action({
     amountDollars: v.number(),
     baseUrl: v.string(),
     checkoutAttemptId: v.optional(v.string()),
+    returnPath: v.optional(v.string()),
+    resumeAfterPurchase: v.optional(v.boolean()),
+    enableExtraUsageAfterPurchase: v.optional(v.boolean()),
   },
   returns: v.object({
     url: v.union(v.string(), v.null()),
@@ -525,6 +528,14 @@ export const createPurchaseSession = action({
     // Basic URL validation
     if (!args.baseUrl || !args.baseUrl.startsWith("http")) {
       return { url: null, error: "Invalid base URL" };
+    }
+    if (
+      args.returnPath !== undefined &&
+      (!args.returnPath.startsWith("/") ||
+        args.returnPath.startsWith("//") ||
+        args.returnPath.length > 400)
+    ) {
+      return { url: null, error: "Invalid return path" };
     }
 
     try {
@@ -569,9 +580,16 @@ export const createPurchaseSession = action({
           ...(args.checkoutAttemptId && {
             checkoutAttemptId: args.checkoutAttemptId,
           }),
+          ...(args.returnPath && { returnPath: args.returnPath }),
+          ...(args.resumeAfterPurchase && { resumeAfterPurchase: "true" }),
+          ...(args.enableExtraUsageAfterPurchase && {
+            enableExtraUsageAfterPurchase: "true",
+          }),
         },
         success_url: `${args.baseUrl}/api/extra-usage/confirm?session_id={CHECKOUT_SESSION_ID}`,
-        cancel_url: args.baseUrl,
+        cancel_url: args.returnPath
+          ? new URL(args.returnPath, args.baseUrl).toString()
+          : args.baseUrl,
       });
 
       try {

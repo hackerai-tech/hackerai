@@ -533,6 +533,7 @@ export const addCredits = mutation({
     purchaseRoute: v.optional(
       v.union(v.literal("confirm"), v.literal("webhook"), v.literal("repair")),
     ),
+    enableExtraUsage: v.optional(v.boolean()),
   },
   returns: v.object({
     newBalance: v.number(), // Returns dollars
@@ -638,6 +639,27 @@ export const addCredits = mutation({
         balance_points: newBalancePoints,
         updated_at: now,
       });
+    }
+
+    if (args.enableExtraUsage) {
+      const customization = await ctx.db
+        .query("user_customization")
+        .withIndex("by_user_id", (q) => q.eq("user_id", args.userId))
+        .first();
+
+      if (customization) {
+        await ctx.db.patch(customization._id, {
+          extra_usage_enabled: true,
+          updated_at: now,
+        });
+      } else {
+        await ctx.db.insert("user_customization", {
+          user_id: args.userId,
+          include_notes: true,
+          extra_usage_enabled: true,
+          updated_at: now,
+        });
+      }
     }
 
     // Mark processed after success (so retries work if above fails)
@@ -1359,7 +1381,9 @@ export const getExtraUsageSettings = query({
         settings.monthly_cap_points === undefined
           ? undefined
           : pointsToDollars(settings.monthly_cap_points),
-      monthlySpentDollars: pointsToDollars(settings.monthly_spent_points ?? 0),
+      monthlySpentDollars: pointsToDollars(
+        getMonthlySpentPointsForCurrentMonth(settings),
+      ),
       autoReloadDisabledReason: settings.auto_reload_disabled_reason,
     };
   },

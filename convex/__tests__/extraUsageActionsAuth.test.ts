@@ -129,11 +129,15 @@ function makeCtx(userId = "user_member") {
   };
 }
 
-async function callCreatePurchaseSession(ctx: any) {
+async function callCreatePurchaseSession(
+  ctx: any,
+  overrides: Record<string, unknown> = {},
+) {
   const { createPurchaseSession } = await import("../extraUsageActions");
   return (createPurchaseSession as any).handler(ctx, {
     amountDollars: 15,
     baseUrl: "https://hackerai.example/settings",
+    ...overrides,
   });
 }
 
@@ -310,6 +314,38 @@ describe("extraUsageActions billing authorization", () => {
       url: "https://checkout.stripe.test/session",
       checkoutSessionId: "cs_test",
     });
+  });
+
+  it("returns a resumable direct-purchase Checkout session to the stopped task", async () => {
+    mockListOrganizationMemberships.mockResolvedValue({
+      data: [
+        {
+          organizationId: "org_team",
+          status: "active",
+          role: { slug: "admin" },
+        },
+      ],
+    } as never);
+
+    await callCreatePurchaseSession(makeCtx("user_admin"), {
+      baseUrl: "https://hackerai.example",
+      returnPath: "/chat-123?view=task",
+      resumeAfterPurchase: true,
+      enableExtraUsageAfterPurchase: true,
+    });
+
+    expect(mockCheckoutSessionCreate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        success_url:
+          "https://hackerai.example/api/extra-usage/confirm?session_id={CHECKOUT_SESSION_ID}",
+        cancel_url: "https://hackerai.example/chat-123?view=task",
+        metadata: expect.objectContaining({
+          returnPath: "/chat-123?view=task",
+          resumeAfterPurchase: "true",
+          enableExtraUsageAfterPurchase: "true",
+        }),
+      }),
+    );
   });
 
   it("still returns the Checkout session when purchase recording fails", async () => {
