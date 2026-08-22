@@ -407,8 +407,13 @@ describe("provider error classification", () => {
   it("allows upstream idle timeouts to use replay-safe continuation", () => {
     expect(
       isRetriableProviderStreamDisconnectError({
-        code: 502,
         message: "Upstream idle timeout exceeded",
+      }),
+    ).toBe(true);
+    expect(
+      isRetriableProviderStreamDisconnectError({
+        code: 502,
+        message: "Bad Gateway",
       }),
     ).toBe(true);
   });

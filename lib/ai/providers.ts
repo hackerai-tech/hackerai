@@ -60,18 +60,22 @@ const normalizeKimiChatToolResults = (
     }
 
     if (message.role === "assistant" && Array.isArray(message.tool_calls)) {
+      let messageChanged = false;
       const toolCalls = message.tool_calls.map((toolCall, toolCallIndex) => {
         if (!isRecord(toolCall)) return toolCall;
         const existingId = nonEmptyString(toolCall.id);
         const id =
           existingId ?? `hackerai_recovered_${messageIndex}_${toolCallIndex}`;
         const idChanged = id !== toolCall.id;
-        if (idChanged) changed = true;
+        if (idChanged) {
+          changed = true;
+          messageChanged = true;
+        }
         pendingToolCallIds.push(id);
         return idChanged ? { ...toolCall, id } : toolCall;
       });
       normalized.push(
-        changed ? { ...message, tool_calls: toolCalls } : message,
+        messageChanged ? { ...message, tool_calls: toolCalls } : message,
       );
       return;
     }
@@ -398,28 +402,47 @@ const requestUsesPdfParserEngine = (
       plugin.pdf.engine === engine,
   );
 
-const textHasSandboxAttachmentPath = (text: string): boolean =>
-  text.includes("<attachment") &&
-  text.includes('local_path="/home/user/upload/');
+const getAttributeFromAttachmentTag = (
+  tag: string,
+  attribute: string,
+): string | undefined =>
+  new RegExp(`\\b${attribute}="([^"]+)"`, "i").exec(tag)?.[1];
 
-const hasSandboxAttachmentPath = (messages: unknown[]): boolean =>
-  messages.some((message) => {
-    if (!isRecord(message)) return false;
-    const content = message.content;
-    if (typeof content === "string") {
-      return textHasSandboxAttachmentPath(content);
+const collectSandboxAttachmentFilenames = (
+  messages: unknown[],
+): Set<string> => {
+  const filenames = new Set<string>();
+  const collectFromText = (text: string) => {
+    for (const match of text.matchAll(/<attachment\b[^>]*>/gi)) {
+      const tag = match[0];
+      const localPath = getAttributeFromAttachmentTag(tag, "local_path");
+      const filename = getAttributeFromAttachmentTag(tag, "filename");
+      if (localPath?.startsWith("/home/user/upload/") && filename) {
+        filenames.add(filename);
+      }
     }
-    return (
-      Array.isArray(content) &&
-      content.some(
-        (part) =>
-          isRecord(part) &&
-          part.type === "text" &&
-          typeof part.text === "string" &&
-          textHasSandboxAttachmentPath(part.text),
-      )
-    );
+  };
+
+  messages.forEach((message) => {
+    if (!isRecord(message)) return;
+    if (typeof message.content === "string") {
+      collectFromText(message.content);
+      return;
+    }
+    if (!Array.isArray(message.content)) return;
+    message.content.forEach((part) => {
+      if (
+        isRecord(part) &&
+        part.type === "text" &&
+        typeof part.text === "string"
+      ) {
+        collectFromText(part.text);
+      }
+    });
   });
+
+  return filenames;
+};
 
 const isPdfRequestPart = (part: unknown): boolean => {
   if (!isRecord(part) || part.type !== "file" || !isRecord(part.file)) {
@@ -437,6 +460,11 @@ const isPdfRequestPart = (part: unknown): boolean => {
 const isFileRequestPart = (part: unknown): boolean =>
   isRecord(part) && part.type === "file";
 
+const getFileRequestFilename = (part: unknown): string | undefined =>
+  isRecord(part) && isRecord(part.file)
+    ? nonEmptyString(part.file.filename)
+    : undefined;
+
 const GENERIC_SANDBOX_ATTACHMENT_RECOVERY_INSTRUCTION =
   "The provider could not parse one or more attached files. Use the corresponding local_path values and inspect the files with sandbox tools instead of asking the provider to parse them again.";
 
@@ -447,7 +475,10 @@ const createSandboxPdfRecoveryBody = (
   if (!isRecord(body) || !Array.isArray(body.messages)) {
     return { body, changed: false };
   }
-  if (!hasSandboxAttachmentPath(body.messages)) {
+  const sandboxAttachmentFilenames = collectSandboxAttachmentFilenames(
+    body.messages,
+  );
+  if (sandboxAttachmentFilenames.size === 0) {
     return { body, changed: false };
   }
 
@@ -459,9 +490,10 @@ const createSandboxPdfRecoveryBody = (
     if (!Array.isArray(message.content)) return message;
 
     const content = message.content.filter((part) => {
-      const shouldRemove = removeAllFileParts
-        ? isFileRequestPart(part)
-        : isPdfRequestPart(part);
+      const filename = getFileRequestFilename(part);
+      const shouldRemove =
+        Boolean(filename && sandboxAttachmentFilenames.has(filename)) &&
+        (removeAllFileParts ? isFileRequestPart(part) : isPdfRequestPart(part));
       removedFilePart ||= shouldRemove;
       return !shouldRemove;
     });
@@ -478,27 +510,17 @@ const createSandboxPdfRecoveryBody = (
   if (!isRecord(lastUserMessage)) {
     return { body, changed: false };
   }
+  const recoveryInstruction = removeAllFileParts
+    ? GENERIC_SANDBOX_ATTACHMENT_RECOVERY_INSTRUCTION
+    : SANDBOX_PDF_RECOVERY_INSTRUCTION;
   const existingContent = lastUserMessage.content;
   const content = Array.isArray(existingContent)
-    ? [
-        ...existingContent,
-        {
-          type: "text",
-          text: removeAllFileParts
-            ? GENERIC_SANDBOX_ATTACHMENT_RECOVERY_INSTRUCTION
-            : SANDBOX_PDF_RECOVERY_INSTRUCTION,
-        },
-      ]
+    ? [...existingContent, { type: "text", text: recoveryInstruction }]
     : [
         ...(typeof existingContent === "string" && existingContent.length > 0
           ? [{ type: "text", text: existingContent }]
           : []),
-        {
-          type: "text",
-          text: removeAllFileParts
-            ? GENERIC_SANDBOX_ATTACHMENT_RECOVERY_INSTRUCTION
-            : SANDBOX_PDF_RECOVERY_INSTRUCTION,
-        },
+        { type: "text", text: recoveryInstruction },
       ];
   messages[lastUserMessageIndex] = { ...lastUserMessage, content };
 

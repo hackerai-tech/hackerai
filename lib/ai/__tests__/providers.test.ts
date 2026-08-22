@@ -514,6 +514,29 @@ describe("makeOpenRouterToolChoiceCompatibleWithXaiReasoning", () => {
       changed: false,
     });
   });
+
+  it.each([
+    ["required", true],
+    ["none", false],
+  ] as const)(
+    "handles string tool choice %s with changed=%s",
+    (toolChoice, changed) => {
+      const body = {
+        model: "x-ai/grok-4.6",
+        reasoning: { enabled: true, effort: "high" },
+        tool_choice: toolChoice,
+      };
+
+      const result = makeOpenRouterToolChoiceCompatibleWithXaiReasoning(body);
+
+      expect(result.changed).toBe(changed);
+      expect(result.body).toEqual(
+        changed
+          ? { ...body, reasoning: { enabled: false, effort: "high" } }
+          : body,
+      );
+    },
+  );
 });
 
 describe("OpenRouter request normalization", () => {
@@ -744,10 +767,14 @@ describe("OpenRouter PDF parser recovery", () => {
     const sandboxRequest = JSON.parse(fetchMock.mock.calls[1][1].body);
     expect(
       sandboxRequest.messages.flatMap(
-        (message: { content?: Array<{ type?: string }> }) =>
-          (message.content ?? []).filter((part) => part.type === "file"),
+        (message: {
+          content?: Array<{ type?: string; file?: { filename?: string } }>;
+        }) =>
+          (message.content ?? [])
+            .filter((part) => part.type === "file")
+            .map((part) => part.file?.filename),
       ),
-    ).toEqual([]);
+    ).toEqual(["notes.txt"]);
     expect(JSON.stringify(sandboxRequest)).toContain(
       "inspect the files with sandbox tools",
     );
