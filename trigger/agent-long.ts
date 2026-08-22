@@ -1696,6 +1696,28 @@ const isTerminalProviderStreamError = (
 const PROVIDER_DISCONNECT_CONTINUATION_PROMPT =
   "The previous model connection ended mid-response. Continue from the preserved completed text and tool results. Do not repeat completed tool calls or their side effects. Finish the task from the last durable result.";
 
+const resetAgentStreamStateForRetry = (state: AgentStreamState): void => {
+  state.openRouterMetadata = {};
+  state.lastStepInputTokens = 0;
+  state.stoppedDueToStepLimit = false;
+  state.streamFinishReason = undefined;
+  state.providerError = undefined;
+  state.providerRejectedMultimodalToolResults = false;
+  state.stoppedDueToTokenExhaustion = false;
+  state.stoppedDueToElapsedTimeout = false;
+  state.stoppedDueToDoomLoop = false;
+  state.stoppedDueToAssistantContentLoop = false;
+  state.assistantContentLoopDetection = undefined;
+  state.stoppedDueToBudgetExhaustion = false;
+  state.stoppedDueToAgentRunSpendCap = false;
+  state.stoppedDueToPostSummarizationIncomplete = false;
+  state.postSummarizationContinuationActive = false;
+  state.postSummarizationToolCallCount = 0;
+  state.postSummarizationText = "";
+  state.budgetAbortDetails = undefined;
+  resetServedModelTelemetryForRetry(state);
+};
+
 type RecordedAgentLongFailure = {
   userCorrectable: boolean;
 };
@@ -4515,21 +4537,8 @@ export const agentLongTask = task({
                   selectedModel,
                   fallbackModel,
                 );
-                resetServedModelTelemetryForRetry(state);
-                state.lastStepInputTokens = 0;
-                state.stoppedDueToStepLimit = false;
-                state.stoppedDueToTokenExhaustion = false;
-                state.stoppedDueToElapsedTimeout = false;
-                state.stoppedDueToDoomLoop = false;
-                state.stoppedDueToAssistantContentLoop = false;
-                state.assistantContentLoopDetection = undefined;
-                state.stoppedDueToBudgetExhaustion = false;
-                state.stoppedDueToAgentRunSpendCap = false;
-                state.stoppedDueToPostSummarizationIncomplete = false;
-                state.postSummarizationContinuationActive = false;
-                state.postSummarizationToolCallCount = 0;
-                state.postSummarizationText = "";
-                state.budgetAbortDetails = undefined;
+                streamError = undefined;
+                resetAgentStreamStateForRetry(state);
                 preFallbackCacheRead = usageTracker.cacheReadTokens;
                 preFallbackCacheWrite = usageTracker.cacheWriteTokens;
                 usageTracker.resetModelLeg();
@@ -4739,31 +4748,13 @@ export const agentLongTask = task({
                         }
                         isRetryWithFallback = true;
                         streamError = undefined;
-                        state.openRouterMetadata = {};
-                        state.lastStepInputTokens = 0;
-                        state.stoppedDueToStepLimit = false;
-                        state.streamFinishReason = undefined;
-                        state.providerError = undefined;
-                        state.providerRejectedMultimodalToolResults = false;
-                        state.stoppedDueToTokenExhaustion = false;
-                        state.stoppedDueToElapsedTimeout = false;
-                        state.stoppedDueToDoomLoop = false;
-                        state.stoppedDueToAssistantContentLoop = false;
-                        state.assistantContentLoopDetection = undefined;
-                        state.stoppedDueToBudgetExhaustion = false;
-                        state.stoppedDueToAgentRunSpendCap = false;
-                        state.stoppedDueToPostSummarizationIncomplete = false;
-                        state.postSummarizationContinuationActive = false;
-                        state.postSummarizationToolCallCount = 0;
-                        state.postSummarizationText = "";
-                        state.budgetAbortDetails = undefined;
                         const fallbackStartTime = Date.now();
                         preFallbackCacheRead = usageTracker.cacheReadTokens;
                         preFallbackCacheWrite = usageTracker.cacheWriteTokens;
                         retryUsedFallbackModel =
                           retryUsesDifferentModel(selectedModel, retryModel) ||
                           providerContentBlocked;
-                        resetServedModelTelemetryForRetry(state);
+                        resetAgentStreamStateForRetry(state);
                         if (providerDisconnectContinuation) {
                           state.finalMessages = [
                             ...state.finalMessages,
@@ -4892,26 +4883,7 @@ export const agentLongTask = task({
                                       continuation: nextContinuation,
                                     });
                                     streamError = undefined;
-                                    state.openRouterMetadata = {};
-                                    state.lastStepInputTokens = 0;
-                                    state.stoppedDueToStepLimit = false;
-                                    state.streamFinishReason = undefined;
-                                    state.providerError = undefined;
-                                    state.providerRejectedMultimodalToolResults = false;
-                                    state.stoppedDueToTokenExhaustion = false;
-                                    state.stoppedDueToElapsedTimeout = false;
-                                    state.stoppedDueToDoomLoop = false;
-                                    state.stoppedDueToAssistantContentLoop = false;
-                                    state.assistantContentLoopDetection =
-                                      undefined;
-                                    state.stoppedDueToBudgetExhaustion = false;
-                                    state.stoppedDueToAgentRunSpendCap = false;
-                                    state.stoppedDueToPostSummarizationIncomplete = false;
-                                    state.postSummarizationContinuationActive = false;
-                                    state.postSummarizationToolCallCount = 0;
-                                    state.postSummarizationText = "";
-                                    state.budgetAbortDetails = undefined;
-                                    resetServedModelTelemetryForRetry(state);
+                                    resetAgentStreamStateForRetry(state);
                                     retryUsedFallbackModel = true;
                                     state.finalMessages = [
                                       ...state.finalMessages,
@@ -4951,6 +4923,10 @@ export const agentLongTask = task({
                                           fallbackStartTime,
                                       });
                                     }
+                                    preFallbackCacheRead =
+                                      usageTracker.cacheReadTokens;
+                                    preFallbackCacheWrite =
+                                      usageTracker.cacheWriteTokens;
                                     const finalRetryResult =
                                       await createStream(finalRetryModel);
                                     const finalRetryMessageId = generateId();

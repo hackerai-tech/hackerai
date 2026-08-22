@@ -122,6 +122,13 @@ describe("getNextDeepSeekProDisconnectRetryModel", () => {
     expect(
       getNextDeepSeekProDisconnectRetryModel({
         originalModel: "model-deepseek-v4-pro-0813",
+        failedModel: "model-glm-5.2",
+        completedRetryCount: 1,
+      }),
+    ).toBeUndefined();
+    expect(
+      getNextDeepSeekProDisconnectRetryModel({
+        originalModel: "model-deepseek-v4-pro-0813",
         failedModel: "model-kimi-k3",
         completedRetryCount: 2,
       }),

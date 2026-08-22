@@ -101,6 +101,7 @@ export type ProviderDisconnectContinuation = {
   preservedTextPartCount: number;
 };
 
+const DEEPSEEK_PRO_MODEL = "model-deepseek-v4-pro-0813";
 const DEEPSEEK_PRO_RECOVERY_CHAIN = [
   "model-grok-4.6",
   "model-kimi-k3",
@@ -120,12 +121,9 @@ export const getNextDeepSeekProDisconnectRetryModel = ({
   failedModel: string;
   completedRetryCount: number;
 }): (typeof DEEPSEEK_PRO_RECOVERY_CHAIN)[number] | undefined => {
-  if (originalModel !== "model-deepseek-v4-pro-0813") return undefined;
+  if (originalModel !== DEEPSEEK_PRO_MODEL) return undefined;
 
-  if (
-    completedRetryCount === 0 &&
-    failedModel === "model-deepseek-v4-pro-0813"
-  ) {
+  if (completedRetryCount === 0 && failedModel === DEEPSEEK_PRO_MODEL) {
     return DEEPSEEK_PRO_RECOVERY_CHAIN[0];
   }
 

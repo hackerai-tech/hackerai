@@ -1306,41 +1306,7 @@ export function captureAgentRun({
   providerRecoveryAttempts,
   providerRecoveryModels,
   providerRecoverySucceeded,
-}: {
-  posthog: PostHog | null;
-  userId: string;
-  chatId: string;
-  mode: ChatMode;
-  subscription: string;
-  sandboxInfo: SandboxInfo | null;
-  outcome: AgentRunOutcome;
-  abortSource?: AgentAbortSource;
-  selectedModel: string;
-  configuredModelId: string;
-  responseModel?: string;
-  fallbackServed?: boolean;
-  finishReason?: string;
-  budgetAbortDetails?: BudgetAbortDetails;
-  agentPermissionMode?: AgentPermissionMode;
-  triggerRunId?: string;
-  triggerUsageDurationMs?: number;
-  triggerTotalCostUsd?: number;
-  approvalWaitCount?: number;
-  approvalWaitDurationMs?: number;
-  activeModelStreamDurationMs?: number;
-  activeTerminalWaitDurationMs?: number;
-  activeSandboxRecoveryDurationMs?: number;
-  isAutoContinue?: boolean;
-  stepLimitTelemetry?: AgentStepLimitTelemetry;
-  experiment?: ExperimentAnalyticsContext;
-  upstreamProvider?: string;
-  providerErrorProvider?: string;
-  providerErrorCategory?: string;
-  providerErrorStatusCode?: number;
-  providerRecoveryAttempts?: number;
-  providerRecoveryModels?: readonly string[];
-  providerRecoverySucceeded?: boolean;
-}) {
+}: Omit<AgentCompletionAnalyticsArgs, "endpoint" | "chatLogger">) {
   if (!posthog || mode !== "agent") return;
   posthog.capture({
     distinctId: userId,

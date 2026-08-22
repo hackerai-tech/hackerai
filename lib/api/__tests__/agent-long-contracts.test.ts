@@ -1410,9 +1410,19 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(taskSrc).toMatch(
       /const finalRetryResult =\s*await createStream\(finalRetryModel\)/,
     );
-    expect(taskSrc).not.toMatch(
-      /finalRetryResult[\s\S]{0,2500}getNextDeepSeekProDisconnectRetryModel/,
+    expect(
+      taskSrc.match(/getNextDeepSeekProDisconnectRetryModel\(\{/g),
+    ).toHaveLength(1);
+    const finalRetryCacheBaselineIdx = taskSrc.indexOf(
+      "preFallbackCacheRead =",
+      taskSrc.indexOf("const finalRetryStartTime = Date.now()"),
     );
+    const finalRetryStreamIdx = taskSrc.indexOf(
+      "await createStream(finalRetryModel)",
+      finalRetryCacheBaselineIdx,
+    );
+    expect(finalRetryCacheBaselineIdx).toBeGreaterThan(-1);
+    expect(finalRetryStreamIdx).toBeGreaterThan(finalRetryCacheBaselineIdx);
   });
 
   test("persists replay-safe output before fallback stream creation can fail", () => {
@@ -1567,21 +1577,16 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
   });
 
   test("retry streams reset served-model telemetry and distinguish same-model recovery", () => {
-    for (const [source, expectedResetCount] of [
-      [taskSrc, 3],
-      [chatHandlerSrc, 2],
+    for (const [source, resetCall, expectedResetCount] of [
+      [taskSrc, "resetAgentStreamStateForRetry(state)", 3],
+      [chatHandlerSrc, "resetServedModelTelemetryForRetry(state)", 2],
     ] as const) {
-      expect(
-        source.match(/resetServedModelTelemetryForRetry\(state\)/g),
-      ).toHaveLength(expectedResetCount);
+      expect(source.split(resetCall)).toHaveLength(expectedResetCount + 1);
 
       const catchModelSwitchIdx = source.indexOf(
         "retryUsedFallbackModel = retryUsesDifferentModel(",
       );
-      const catchResetIdx = source.indexOf(
-        "resetServedModelTelemetryForRetry(state)",
-        catchModelSwitchIdx,
-      );
+      const catchResetIdx = source.indexOf(resetCall, catchModelSwitchIdx);
       const catchRetryStreamIdx = source.indexOf(
         "createStream(fallbackModel)",
         catchResetIdx,
@@ -1598,10 +1603,7 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
         "retryUsedFallbackModel =",
         retryModelIdx,
       );
-      const resetIdx = source.indexOf(
-        "resetServedModelTelemetryForRetry(state)",
-        modelSwitchIdx,
-      );
+      const resetIdx = source.indexOf(resetCall, modelSwitchIdx);
       const retryStreamIdx = source.indexOf("createStream(", resetIdx);
 
       expect(modelSwitchIdx).toBeGreaterThan(retryModelIdx);
