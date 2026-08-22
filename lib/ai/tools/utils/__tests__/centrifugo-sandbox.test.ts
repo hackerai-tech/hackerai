@@ -1533,7 +1533,7 @@ describe("CentrifugoSandbox", () => {
         command.startsWith("powershell "),
       )!;
       expect(command).toMatch(
-        /^powershell -NoLogo -NoProfile -NonInteractive -File /,
+        /^powershell -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File /,
       );
       expect(command.length).toBeLessThan(8_191);
       expect(command).not.toContain(signedUrl);
@@ -1585,7 +1585,7 @@ describe("CentrifugoSandbox", () => {
         if (command.startsWith("powershell ")) {
           return {
             stdout: "",
-            stderr: "The remote server returned an error",
+            stderr: `Upload failed for ${uploadUrl} from C:\\temp\\hackerai-upload\\report.txt`,
             exitCode: 1,
           };
         }
@@ -1594,20 +1594,25 @@ describe("CentrifugoSandbox", () => {
       (sandbox as any).commands.run = run;
 
       const uploadUrl = `https://example.com/upload?X-Amz-Signature=${"b".repeat(6_000)}`;
-      await expect(
-        sandbox.files.uploadToUrl(
-          "/tmp/hackerai-upload/report.txt",
-          uploadUrl,
-          "text/plain",
-        ),
-      ).rejects.toThrow("Failed to upload file");
+      const upload = sandbox.files.uploadToUrl(
+        "/tmp/hackerai-upload/report.txt",
+        uploadUrl,
+        "text/plain",
+      );
+      await expect(upload).rejects.toThrow(
+        "Failed to upload file: Upload failed for [redacted-url] from [redacted-destination-path]",
+      );
+      await expect(upload).rejects.not.toThrow(uploadUrl);
+      await expect(upload).rejects.not.toThrow(
+        "C:\\temp\\hackerai-upload\\report.txt",
+      );
 
       const commands = run.mock.calls.map(([command]) => command as string);
       const command = commands.find((command) =>
         command.startsWith("powershell "),
       )!;
       expect(command).toMatch(
-        /^powershell -NoLogo -NoProfile -NonInteractive -File /,
+        /^powershell -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File /,
       );
       expect(command.length).toBeLessThan(8_191);
       expect(command).not.toContain(uploadUrl);

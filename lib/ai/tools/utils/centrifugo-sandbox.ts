@@ -1337,7 +1337,7 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
       const { useBash, path, escapePath } = await this.shellContext(scriptPath);
       const executable = useBash ? "powershell.exe" : "powershell";
       return {
-        command: `${executable} -NoLogo -NoProfile -NonInteractive -File ${escapePath(path)}`,
+        command: `${executable} -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ${escapePath(path)}`,
         cleanup: async () => {
           await this.files.remove(scriptPath);
         },
@@ -1972,7 +1972,11 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
           displayName: `Uploading: ${fileName}`,
         });
         if (result.exitCode !== 0) {
-          throw new Error(`Failed to upload file: ${result.stderr}`);
+          const safeStderr = redactTransferDetails(result.stderr, uploadUrl, [
+            rawPath,
+            path,
+          ]);
+          throw new Error(`Failed to upload file: ${safeStderr}`);
         }
       } finally {
         await cleanupPowerShellScript?.().catch(() => undefined);
