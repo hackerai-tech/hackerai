@@ -43,7 +43,7 @@ export function SummarizationStatusDivider({
   return (
     <div
       className={cn(
-        "not-prose my-4 flex w-full min-w-0 items-center gap-2 text-sm leading-6 text-muted-foreground",
+        "not-prose flex w-full min-w-0 items-center gap-2 text-sm leading-6 text-muted-foreground",
         className,
       )}
       aria-live={isStarted ? "polite" : undefined}

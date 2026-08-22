@@ -10,6 +10,7 @@ describe("SummarizationStatusDivider", () => {
     const icon = screen.getByTestId("summarization-status-icon");
 
     expect(status).toHaveClass("w-full", "items-center", "gap-2");
+    expect(status).not.toHaveClass("my-4");
     expect(status).not.toHaveClass("justify-center");
     expect(status.querySelector(".bg-border")).not.toBeInTheDocument();
     expect(icon).toHaveClass("lucide-notebook-text");
