@@ -133,23 +133,68 @@ let imageIdentifier = existing?.imageArn || name;
 let imageVersion;
 let version;
 
-publish: for (let attempt = 1; attempt <= publishAttempts; attempt += 1) {
-  const response =
-    existing || attempt > 1
-      ? await lambda.send(
-          new UpdateMicrovmImageCommand({
-            ...common,
-            imageIdentifier,
-            clientToken: crypto.randomUUID(),
-          }),
-        )
-      : await lambda.send(
-          new CreateMicrovmImageCommand({
-            ...common,
-            name,
-            clientToken: crypto.randomUUID(),
-          }),
+async function sendPublishCommand({ attempt, input, update }) {
+  const blockedDeadline = Date.now() + 45 * 60 * 1000;
+  let blockedAt;
+
+  while (true) {
+    try {
+      const response = await lambda.send(
+        update
+          ? new UpdateMicrovmImageCommand(input)
+          : new CreateMicrovmImageCommand(input),
+      );
+      if (blockedAt !== undefined) {
+        releaseLog("info", "aws_microvm_image_publish_unblocked", {
+          region,
+          image_identifier: imageIdentifier,
+          attempt,
+          max_attempts: publishAttempts,
+          blocked_duration_ms: Date.now() - blockedAt,
+        });
+      }
+      return response;
+    } catch (error) {
+      const blocked =
+        update &&
+        error?.name === "ValidationException" &&
+        error.message?.includes(
+          "Cannot update MicroVM Image in its current state",
         );
+      if (!blocked || Date.now() >= blockedDeadline) throw error;
+      if (blockedAt === undefined) {
+        blockedAt = Date.now();
+        releaseLog("warn", "aws_microvm_image_publish_blocked", {
+          region,
+          image_identifier: imageIdentifier,
+          attempt,
+          max_attempts: publishAttempts,
+          error_name: error.name,
+          retry_interval_ms: 30_000,
+        });
+      }
+      await new Promise((resolvePromise) => setTimeout(resolvePromise, 30_000));
+    }
+  }
+}
+
+publish: for (let attempt = 1; attempt <= publishAttempts; attempt += 1) {
+  const update = Boolean(existing || attempt > 1);
+  const response = await sendPublishCommand({
+    attempt,
+    update,
+    input: update
+      ? {
+          ...common,
+          imageIdentifier,
+          clientToken: crypto.randomUUID(),
+        }
+      : {
+          ...common,
+          name,
+          clientToken: crypto.randomUUID(),
+        },
+  });
 
   imageIdentifier = response.imageArn || imageIdentifier;
   imageVersion = response.imageVersion;

@@ -75,9 +75,9 @@ jobs:
     name: Publish and smoke-test ${{ matrix.region }}
     needs: prepare
     runs-on: ubuntu-latest
-    # One opaque AWS image-builder failure is retried. Allow both bounded
-    # 45-minute publish windows to finish before GitHub terminates the job.
-    timeout-minutes: 100
+    # Allow a bounded wait for a prior AWS build lock plus two bounded publish
+    # windows when an opaque image-builder failure needs one retry.
+    timeout-minutes: 150
     environment: aws-lambda-microvm-production
     permissions:
       contents: read
