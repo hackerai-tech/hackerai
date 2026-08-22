@@ -58,10 +58,9 @@ function canManageOrganizationBilling(membership: BillingMembership): boolean {
   return (status === undefined || status === "active") && !!hasBillingRole;
 }
 
-/**
- * Restrict Stripe return URLs to application origins controlled by HackerAI.
- * Local HTTP origins remain available for development and automated tests.
- */
+const DEFAULT_APPLICATION_ORIGINS = new Set(["https://hackerai.co"]);
+
+/** Restrict Stripe return URLs to exact server-configured application origins. */
 function isAllowedApplicationOrigin(url: URL): boolean {
   const hostname = url.hostname.toLowerCase();
   const isLocalhost =
@@ -77,12 +76,21 @@ function isAllowedApplicationOrigin(url: URL): boolean {
     return false;
   }
 
-  return (
-    hostname === "hackerai.co" ||
-    hostname.endsWith(".hackerai.co") ||
-    hostname === "hackerai.vercel.app" ||
-    hostname.endsWith("-hackerai.vercel.app")
-  );
+  const allowedOrigins = new Set(DEFAULT_APPLICATION_ORIGINS);
+  for (const configuredOrigin of (
+    process.env.EXTRA_USAGE_CHECKOUT_ALLOWED_ORIGINS ?? ""
+  ).split(",")) {
+    const value = configuredOrigin.trim();
+    if (!value) continue;
+
+    try {
+      allowedOrigins.add(new URL(value).origin);
+    } catch {
+      // Ignore malformed server configuration rather than trusting it.
+    }
+  }
+
+  return allowedOrigins.has(url.origin);
 }
 
 async function getStripeCustomerId(userId: string): Promise<string | null> {

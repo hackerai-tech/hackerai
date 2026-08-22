@@ -261,6 +261,16 @@ describe("extraUsageActions billing authorization", () => {
     expect(mockCheckoutSessionCreate).not.toHaveBeenCalled();
   });
 
+  it("rejects a similarly named Vercel project outside the exact allowlist", async () => {
+    const result = await callCreatePurchaseSession(makeCtx(), {
+      baseUrl: "https://attacker-hackerai.vercel.app",
+    });
+
+    expect(result).toEqual({ url: null, error: "Invalid base URL" });
+    expect(mockListOrganizationMemberships).not.toHaveBeenCalled();
+    expect(mockCheckoutSessionCreate).not.toHaveBeenCalled();
+  });
+
   it("rejects a non-admin active org member before creating a Billing Portal session", async () => {
     mockListOrganizationMemberships.mockResolvedValue({
       data: [
