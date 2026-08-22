@@ -30,6 +30,7 @@ const publishAttempts = Number.parseInt(
   process.env.AWS_LAMBDA_MICROVM_PUBLISH_ATTEMPTS || "2",
   10,
 );
+const retrySignalFile = process.env.AWS_LAMBDA_MICROVM_RETRY_SIGNAL_FILE;
 const releaseRequestId = [
   process.env.GITHUB_RUN_ID,
   process.env.GITHUB_RUN_ATTEMPT,
@@ -230,8 +231,10 @@ publish: for (let attempt = 1; attempt <= publishAttempts; attempt += 1) {
     if (version.state === "FAILED") {
       const stateReason = version.stateReason?.trim() || null;
       const retrying = stateReason === null && attempt < publishAttempts;
+      const delegatingRetry =
+        stateReason === null && !retrying && Boolean(retrySignalFile);
       releaseLog(
-        retrying ? "warn" : "error",
+        retrying || delegatingRetry ? "warn" : "error",
         "aws_microvm_image_publish_failed",
         {
           region,
@@ -242,7 +245,8 @@ publish: for (let attempt = 1; attempt <= publishAttempts; attempt += 1) {
           state: version.state,
           status: version.status,
           state_reason: stateReason,
-          retry_scheduled: retrying,
+          retry_scheduled: retrying || delegatingRetry,
+          retry_delegated: delegatingRetry,
         },
       );
       if (retrying) {
@@ -250,6 +254,9 @@ publish: for (let attempt = 1; attempt <= publishAttempts; attempt += 1) {
           setTimeout(resolvePromise, 10_000),
         );
         continue publish;
+      }
+      if (delegatingRetry) {
+        await writeFile(resolve(retrySignalFile), "retry\n", { mode: 0o600 });
       }
       throw new Error(
         `MicroVM image version ${imageVersion} failed: ${stateReason || "no reason returned"}`,

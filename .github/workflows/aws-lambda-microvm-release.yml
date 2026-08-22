@@ -100,7 +100,6 @@ jobs:
       AWS_LAMBDA_MICROVM_BUILD_ROLE_ARN: ${{ vars[format('AWS_LAMBDA_MICROVM_BUILD_ROLE_ARN_{0}', matrix.variable_suffix)] }}
       AWS_LAMBDA_MICROVM_EXECUTION_ROLE_ARN: ${{ vars[format('AWS_LAMBDA_MICROVM_EXECUTION_ROLE_ARN_{0}', matrix.variable_suffix)] }}
       AWS_RELEASE_ROLE_ARN: ${{ vars[format('AWS_RELEASE_ROLE_ARN_{0}', matrix.variable_suffix)] }}
-      AWS_LAMBDA_MICROVM_PUBLISH_ATTEMPTS: "2"
     steps:
       - name: Validate regional release configuration
         shell: bash
@@ -137,8 +136,35 @@ jobs:
           role-to-assume: ${{ env.AWS_RELEASE_ROLE_ARN }}
           role-session-name: hackerai-microvm-${{ github.run_id }}-${{ strategy.job-index }}
       - name: Publish exact regional image version
+        id: publish_attempt_1
         env:
           AWS_LAMBDA_MICROVM_OUTPUT_FILE: ${{ runner.temp }}/${{ matrix.region }}.env
+          AWS_LAMBDA_MICROVM_PUBLISH_ATTEMPTS: "1"
+          AWS_LAMBDA_MICROVM_RETRY_SIGNAL_FILE: ${{ runner.temp }}/${{ matrix.region }}.retry
+        shell: bash
+        run: |
+          set +e
+          node scripts/deploy-aws-microvm.mjs
+          status=$?
+          set -e
+          if [[ -f "$AWS_LAMBDA_MICROVM_RETRY_SIGNAL_FILE" ]]; then
+            echo "retry=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          exit "$status"
+      - name: Refresh AWS credentials for regional image retry
+        if: steps.publish_attempt_1.outputs.retry == 'true'
+        uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
+        with:
+          aws-region: ${{ matrix.region }}
+          role-to-assume: ${{ env.AWS_RELEASE_ROLE_ARN }}
+          role-session-name: hackerai-microvm-${{ github.run_id }}-${{ strategy.job-index }}-retry
+          unset-current-credentials: true
+      - name: Retry exact regional image version
+        if: steps.publish_attempt_1.outputs.retry == 'true'
+        env:
+          AWS_LAMBDA_MICROVM_OUTPUT_FILE: ${{ runner.temp }}/${{ matrix.region }}.env
+          AWS_LAMBDA_MICROVM_PUBLISH_ATTEMPTS: "1"
         run: node scripts/deploy-aws-microvm.mjs
       - name: Launch and terminate exact regional image version
         env:
