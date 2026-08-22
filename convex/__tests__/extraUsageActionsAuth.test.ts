@@ -241,6 +241,16 @@ describe("extraUsageActions billing authorization", () => {
     });
   });
 
+  it("rejects a return path that resolves outside the application origin", async () => {
+    const result = await callCreatePurchaseSession(makeCtx(), {
+      baseUrl: "https://hackerai.example",
+      returnPath: "/\\evil.example",
+    });
+
+    expect(result).toEqual({ url: null, error: "Invalid return path" });
+    expect(mockCheckoutSessionCreate).not.toHaveBeenCalled();
+  });
+
   it("rejects a non-admin active org member before creating a Billing Portal session", async () => {
     mockListOrganizationMemberships.mockResolvedValue({
       data: [

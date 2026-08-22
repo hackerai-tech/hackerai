@@ -223,6 +223,40 @@ describe("MessageErrorState", () => {
     expect(openSettingsDialog).not.toHaveBeenCalled();
   });
 
+  it("uses a bounded return path when the current pathname is too long", async () => {
+    const user = userEvent.setup();
+    window.history.replaceState(
+      window.history.state,
+      "",
+      `/${"a".repeat(401)}`,
+    );
+
+    render(
+      <TestWrapper>
+        <MessageErrorState
+          error={
+            new ChatSDKError("rate_limit:chat", "Limit reached", {
+              capReason: "monthly_exhausted",
+            })
+          }
+          onRetry={jest.fn()}
+        />
+      </TestWrapper>,
+    );
+
+    await user.click(
+      screen.getByRole("button", { name: "Add $15 and continue" }),
+    );
+    await user.click(screen.getByRole("button", { name: "Purchase" }));
+
+    await waitFor(() =>
+      expect(mockConvexAction).toHaveBeenCalledWith(
+        expect.objectContaining({ returnPath: "/" }),
+      ),
+    );
+    window.history.replaceState(window.history.state, "", "/");
+  });
+
   it("retries once after a successful purchase returns to the task", () => {
     const onRetry = jest.fn();
     window.history.replaceState(

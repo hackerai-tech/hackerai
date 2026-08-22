@@ -525,17 +525,29 @@ export const createPurchaseSession = action({
       return { url: null, error: "Maximum amount is $999,999" };
     }
 
-    // Basic URL validation
-    if (!args.baseUrl || !args.baseUrl.startsWith("http")) {
+    let applicationOrigin: string;
+    try {
+      const applicationUrl = new URL(args.baseUrl);
+      if (!["http:", "https:"].includes(applicationUrl.protocol)) {
+        return { url: null, error: "Invalid base URL" };
+      }
+      applicationOrigin = applicationUrl.origin;
+    } catch {
       return { url: null, error: "Invalid base URL" };
     }
+
+    let returnUrl: URL | undefined;
     if (
       args.returnPath !== undefined &&
-      (!args.returnPath.startsWith("/") ||
-        args.returnPath.startsWith("//") ||
-        args.returnPath.length > 400)
+      (!args.returnPath.startsWith("/") || args.returnPath.length > 400)
     ) {
       return { url: null, error: "Invalid return path" };
+    }
+    if (args.returnPath) {
+      returnUrl = new URL(args.returnPath, applicationOrigin);
+      if (returnUrl.origin !== applicationOrigin) {
+        return { url: null, error: "Invalid return path" };
+      }
     }
 
     try {
@@ -586,10 +598,8 @@ export const createPurchaseSession = action({
             enableExtraUsageAfterPurchase: "true",
           }),
         },
-        success_url: `${args.baseUrl}/api/extra-usage/confirm?session_id={CHECKOUT_SESSION_ID}`,
-        cancel_url: args.returnPath
-          ? new URL(args.returnPath, args.baseUrl).toString()
-          : args.baseUrl,
+        success_url: `${applicationOrigin}/api/extra-usage/confirm?session_id={CHECKOUT_SESSION_ID}`,
+        cancel_url: returnUrl?.toString() ?? applicationOrigin,
       });
 
       try {

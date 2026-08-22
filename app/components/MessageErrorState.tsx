@@ -64,7 +64,10 @@ const formatCountdown = (ms: number): string => {
 
 const getCurrentReturnPath = (): string => {
   const fullPath = `${window.location.pathname}${window.location.search}${window.location.hash}`;
-  return fullPath.length <= 400 ? fullPath : window.location.pathname;
+  if (fullPath.length <= 400) return fullPath;
+  return window.location.pathname.length <= 400
+    ? window.location.pathname
+    : "/";
 };
 
 export const MessageErrorState = ({
