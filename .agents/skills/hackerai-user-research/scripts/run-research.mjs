@@ -2,6 +2,8 @@
 
 import { readFile, stat } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
+import { pathToFileURL } from "node:url";
+import { EnvHttpProxyAgent, fetch as undiciFetch } from "undici";
 
 const ENDPOINT = "https://hackerai.co/api/internal/user-research";
 const POLL_INTERVAL_MS = 5_000;
@@ -16,7 +18,7 @@ Required environment:
   HACKERAI_PM_USER_RESEARCH_KEY  Scoped PM research gateway key`);
 }
 
-function parseArgs(argv) {
+export function parseArgs(argv) {
   const args = { wait: true, payloadPath: undefined };
   for (let index = 0; index < argv.length; index += 1) {
     const value = argv[index];
@@ -36,8 +38,27 @@ function parseArgs(argv) {
   return args;
 }
 
-async function gatewayRequest(url, key, init = {}) {
-  const response = await fetch(url, {
+export function createProxyDispatcher(env = process.env) {
+  const httpProxy = env.http_proxy ?? env.HTTP_PROXY;
+  const httpsProxy = env.https_proxy ?? env.HTTPS_PROXY;
+  if (!httpProxy && !httpsProxy) return undefined;
+
+  return new EnvHttpProxyAgent({
+    httpProxy,
+    httpsProxy,
+    noProxy: env.no_proxy ?? env.NO_PROXY,
+  });
+}
+
+const proxyDispatcher = createProxyDispatcher();
+
+export async function gatewayRequest(
+  url,
+  key,
+  init = {},
+  { request = undiciFetch, dispatcher = proxyDispatcher } = {},
+) {
+  const response = await request(url, {
     ...init,
     headers: {
       authorization: `Bearer ${key}`,
@@ -45,6 +66,7 @@ async function gatewayRequest(url, key, init = {}) {
       ...init.headers,
     },
     signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    ...(dispatcher ? { dispatcher } : {}),
   });
   const body = await response.json().catch(() => ({}));
   if (!response.ok) {
@@ -54,7 +76,7 @@ async function gatewayRequest(url, key, init = {}) {
   return body;
 }
 
-async function main() {
+export async function main() {
   const args = parseArgs(process.argv.slice(2));
   if (args.help) {
     usage();
@@ -115,7 +137,14 @@ async function main() {
   throw new Error("Timed out waiting for the research aggregate after 35 minutes");
 }
 
-main().catch((error) => {
-  console.error(error instanceof Error ? error.message : "Research runner failed");
-  process.exitCode = 1;
-});
+if (
+  process.argv[1] &&
+  import.meta.url === pathToFileURL(process.argv[1]).href
+) {
+  main().catch((error) => {
+    console.error(
+      error instanceof Error ? error.message : "Research runner failed",
+    );
+    process.exitCode = 1;
+  });
+}

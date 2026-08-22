@@ -102,21 +102,23 @@ function request({
   idempotencyKey = "research-request-123",
   contentLength,
   runId,
+  rawBody,
 }: {
   token?: string | null;
   body?: unknown;
   idempotencyKey?: string | null;
   contentLength?: string | null;
   runId?: string;
+  rawBody?: string;
 } = {}): NextRequest {
+  const encodedBody = new TextEncoder().encode(rawBody ?? JSON.stringify(body));
   const headers = new Headers({ "x-request-id": "request-123" });
   if (token) headers.set("authorization", `Bearer ${token}`);
   if (idempotencyKey) headers.set("idempotency-key", idempotencyKey);
   if (contentLength !== null) {
     headers.set(
       "content-length",
-      contentLength ??
-        String(new TextEncoder().encode(JSON.stringify(body)).length),
+      contentLength ?? String(encodedBody.byteLength),
     );
   }
   const nextUrl = new URL("https://hackerai.co/api/internal/user-research");
@@ -124,7 +126,12 @@ function request({
   return {
     headers,
     nextUrl,
-    json: async () => body,
+    body: new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encodedBody);
+        controller.close();
+      },
+    }),
   } as unknown as NextRequest;
 }
 
@@ -176,14 +183,14 @@ describe("PM user research gateway", () => {
   it("rejects an invalid credential before parsing or triggering", async () => {
     const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
     const invalid = request({ token: "wrong-secret" });
-    invalid.json = jest.fn() as never;
+    const getReader = jest.spyOn(invalid.body!, "getReader");
     const { POST } = await import("../route");
 
     const response = await POST(invalid);
 
     expect(response.status).toBe(401);
     await expect(response.json()).resolves.toEqual({ error: "unauthorized" });
-    expect(invalid.json).not.toHaveBeenCalled();
+    expect(getReader).not.toHaveBeenCalled();
     expect(triggerTask).not.toHaveBeenCalled();
     expect(warnSpy).toHaveBeenCalledWith(
       expect.not.stringContaining("wrong-secret"),
@@ -204,23 +211,47 @@ describe("PM user research gateway", () => {
     expect(triggerTask).not.toHaveBeenCalled();
   });
 
-  it("rejects missing, malformed, and oversized content lengths", async () => {
+  it("accepts missing or rewritten content lengths while bounding the body", async () => {
     const { POST } = await import("../route");
 
     const missing = await POST(request({ contentLength: null }));
-    expect(missing.status).toBe(411);
-    await expect(missing.json()).resolves.toEqual({
-      error: "content_length_required",
-    });
+    expect(missing.status).toBe(202);
 
     const malformed = await POST(request({ contentLength: "not-a-number" }));
-    expect(malformed.status).toBe(411);
+    expect(malformed.status).toBe(202);
+
+    expect(triggerTask).toHaveBeenCalledTimes(2);
+  });
+
+  it("rejects oversized declared and streamed bodies", async () => {
+    const { POST } = await import("../route");
 
     const oversized = await POST(request({ contentLength: String(33 * 1024) }));
     expect(oversized.status).toBe(413);
     await expect(oversized.json()).resolves.toEqual({
       error: "payload_too_large",
     });
+
+    const oversizedStream = await POST(
+      request({
+        contentLength: "1",
+        rawBody: "x".repeat(33 * 1024),
+      }),
+    );
+    expect(oversizedStream.status).toBe(413);
+    await expect(oversizedStream.json()).resolves.toEqual({
+      error: "payload_too_large",
+    });
+    expect(triggerTask).not.toHaveBeenCalled();
+  });
+
+  it("rejects invalid JSON after bounded reading", async () => {
+    const { POST } = await import("../route");
+
+    const response = await POST(request({ rawBody: "{" }));
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({ error: "invalid_json" });
     expect(triggerTask).not.toHaveBeenCalled();
   });
 

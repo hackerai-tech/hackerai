@@ -19,6 +19,8 @@ const RUN_ID_PATTERN = /^run_[A-Za-z0-9]+$/;
 const MAX_REQUEST_BYTES = 32 * 1024;
 const NO_STORE_HEADERS = { "Cache-Control": "private, no-store" } as const;
 
+class RequestBodyTooLargeError extends Error {}
+
 function json(body: Record<string, unknown>, init?: ResponseInit) {
   return NextResponse.json(body, {
     ...init,
@@ -90,16 +92,49 @@ function authenticate(request: NextRequest): NextResponse | null {
   return json({ error: "unauthorized" }, { status: 401 });
 }
 
+async function readBoundedJson(request: NextRequest): Promise<unknown> {
+  if (!request.body) throw new SyntaxError("Missing request body");
+
+  const reader = request.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let totalBytes = 0;
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      totalBytes += value.byteLength;
+      if (totalBytes > MAX_REQUEST_BYTES) {
+        await reader.cancel().catch(() => undefined);
+        throw new RequestBodyTooLargeError();
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+
+  const bytes = new Uint8Array(totalBytes);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+
+  return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+}
+
 export async function POST(request: NextRequest) {
   const authResponse = authenticate(request);
   if (authResponse) return authResponse;
 
   const contentLengthHeader = request.headers.get("content-length");
-  if (!contentLengthHeader || !/^\d+$/.test(contentLengthHeader)) {
-    return json({ error: "content_length_required" }, { status: 411 });
-  }
-  const contentLength = Number(contentLengthHeader);
-  if (contentLength > MAX_REQUEST_BYTES) {
+  if (
+    contentLengthHeader &&
+    /^\d+$/.test(contentLengthHeader) &&
+    Number(contentLengthHeader) > MAX_REQUEST_BYTES
+  ) {
     return json({ error: "payload_too_large" }, { status: 413 });
   }
 
@@ -110,8 +145,11 @@ export async function POST(request: NextRequest) {
 
   let rawPayload: unknown;
   try {
-    rawPayload = await request.json();
-  } catch {
+    rawPayload = await readBoundedJson(request);
+  } catch (error) {
+    if (error instanceof RequestBodyTooLargeError) {
+      return json({ error: "payload_too_large" }, { status: 413 });
+    }
     return json({ error: "invalid_json" }, { status: 400 });
   }
 
