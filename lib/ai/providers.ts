@@ -9,10 +9,166 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 const isXaiModelSlug = (value: unknown): boolean =>
   typeof value === "string" && value.toLowerCase().startsWith("x-ai/");
 
+const isKimiModelSlug = (value: unknown): boolean =>
+  typeof value === "string" &&
+  value.toLowerCase().startsWith("moonshotai/kimi-");
+
 const requestCanRouteToXai = (body: unknown): boolean => {
   if (!isRecord(body)) return false;
   if (isXaiModelSlug(body.model)) return true;
   return Array.isArray(body.models) && body.models.some(isXaiModelSlug);
+};
+
+const requestCanRouteToKimi = (body: unknown): boolean => {
+  if (!isRecord(body)) return false;
+  if (isKimiModelSlug(body.model)) return true;
+  return Array.isArray(body.models) && body.models.some(isKimiModelSlug);
+};
+
+const nonEmptyString = (value: unknown): string | undefined =>
+  typeof value === "string" && value.trim().length > 0
+    ? value.trim()
+    : undefined;
+
+const takePendingToolCallId = (
+  pendingToolCallIds: string[],
+  requestedId: unknown,
+): string | undefined => {
+  const toolCallId = nonEmptyString(requestedId);
+  if (toolCallId) {
+    const matchingIndex = pendingToolCallIds.indexOf(toolCallId);
+    if (matchingIndex >= 0) {
+      pendingToolCallIds.splice(matchingIndex, 1);
+      return toolCallId;
+    }
+    return undefined;
+  }
+  return pendingToolCallIds.shift();
+};
+
+const normalizeKimiChatToolResults = (
+  messages: unknown[],
+): { messages: unknown[]; changed: boolean } => {
+  const pendingToolCallIds: string[] = [];
+  let changed = false;
+  const normalized: unknown[] = [];
+
+  messages.forEach((message, messageIndex) => {
+    if (!isRecord(message)) {
+      normalized.push(message);
+      return;
+    }
+
+    if (message.role === "assistant" && Array.isArray(message.tool_calls)) {
+      let messageChanged = false;
+      const toolCalls = message.tool_calls.map((toolCall, toolCallIndex) => {
+        if (!isRecord(toolCall)) return toolCall;
+        const existingId = nonEmptyString(toolCall.id);
+        const id =
+          existingId ?? `hackerai_recovered_${messageIndex}_${toolCallIndex}`;
+        const idChanged = id !== toolCall.id;
+        if (idChanged) {
+          changed = true;
+          messageChanged = true;
+        }
+        pendingToolCallIds.push(id);
+        return idChanged ? { ...toolCall, id } : toolCall;
+      });
+      normalized.push(
+        messageChanged ? { ...message, tool_calls: toolCalls } : message,
+      );
+      return;
+    }
+
+    if (message.role === "tool") {
+      const toolCallId = takePendingToolCallId(
+        pendingToolCallIds,
+        message.tool_call_id,
+      );
+      if (!toolCallId) {
+        changed = true;
+        return;
+      }
+      if (toolCallId !== message.tool_call_id) {
+        changed = true;
+        normalized.push({ ...message, tool_call_id: toolCallId });
+        return;
+      }
+    }
+
+    normalized.push(message);
+  });
+
+  return { messages: changed ? normalized : messages, changed };
+};
+
+const normalizeKimiResponsesToolResults = (
+  input: unknown[],
+): { input: unknown[]; changed: boolean } => {
+  const pendingToolCallIds: string[] = [];
+  let changed = false;
+  const normalized: unknown[] = [];
+
+  input.forEach((item, itemIndex) => {
+    if (!isRecord(item)) {
+      normalized.push(item);
+      return;
+    }
+
+    if (item.type === "function_call") {
+      const existingId = nonEmptyString(item.call_id);
+      const callId = existingId ?? `hackerai_recovered_${itemIndex}`;
+      const idChanged = callId !== item.call_id;
+      if (idChanged) changed = true;
+      pendingToolCallIds.push(callId);
+      normalized.push(idChanged ? { ...item, call_id: callId } : item);
+      return;
+    }
+
+    if (item.type === "function_call_output") {
+      const callId = takePendingToolCallId(pendingToolCallIds, item.call_id);
+      if (!callId) {
+        changed = true;
+        return;
+      }
+      if (callId !== item.call_id) {
+        changed = true;
+        normalized.push({ ...item, call_id: callId });
+        return;
+      }
+    }
+
+    normalized.push(item);
+  });
+
+  return { input: changed ? normalized : input, changed };
+};
+
+export const normalizeOpenRouterRequestForKimi = (
+  body: unknown,
+): { body: unknown; changed: boolean } => {
+  if (!isRecord(body) || !requestCanRouteToKimi(body)) {
+    return { body, changed: false };
+  }
+
+  const chatResult = Array.isArray(body.messages)
+    ? normalizeKimiChatToolResults(body.messages)
+    : undefined;
+  const responsesResult = Array.isArray(body.input)
+    ? normalizeKimiResponsesToolResults(body.input)
+    : undefined;
+  if (!chatResult?.changed && !responsesResult?.changed) {
+    return { body, changed: false };
+  }
+
+  return {
+    body: {
+      ...body,
+      ...(chatResult?.changed ? { messages: chatResult.messages } : {}),
+      ...(responsesResult?.changed ? { input: responsesResult.input } : {}),
+    },
+    changed: true,
+  };
 };
 
 const hasOwnEncryptedContent = (value: unknown): boolean =>
@@ -99,6 +255,30 @@ export const sanitizeOpenRouterRequestForXai = (
   return { body: { ...body, messages }, changed: true };
 };
 
+export const makeOpenRouterToolChoiceCompatibleWithXaiReasoning = (
+  body: unknown,
+): { body: unknown; changed: boolean } => {
+  if (
+    !isRecord(body) ||
+    !requestCanRouteToXai(body) ||
+    !isRecord(body.reasoning) ||
+    body.reasoning.enabled !== true ||
+    body.tool_choice == null ||
+    body.tool_choice === "auto" ||
+    body.tool_choice === "none"
+  ) {
+    return { body, changed: false };
+  }
+
+  return {
+    body: {
+      ...body,
+      reasoning: { ...body.reasoning, enabled: false },
+    },
+    changed: true,
+  };
+};
+
 const patchKimiReasoningToolCalls = (
   body: unknown,
 ): { body: unknown; changed: boolean } => {
@@ -156,7 +336,7 @@ const PDF_PARSER_INVALID_DOCUMENT_ERROR =
   "The file could not be read as a valid document. It may be corrupt, truncated, or not actually a PDF.";
 const SANDBOX_PDF_RECOVERY_INSTRUCTION = `The provider PDF parsers could not read the attached PDF. Inspect the corresponding local_path in the sandbox using terminal or PDF tools. If sandbox tools also cannot open it as a valid PDF, respond exactly: “${MALFORMED_PDF_USER_RESPONSE}” Treat this as a user-correctable attachment issue, not an infrastructure failure.`;
 
-type PdfParserFailure = "rate_limited" | "invalid_document";
+type PdfParserFailure = "rate_limited" | "invalid_document" | "generic_parse";
 
 const classifyPdfParserFailure = async (
   response: Response,
@@ -170,6 +350,9 @@ const classifyPdfParserFailure = async (
     }
     if (responseText.includes(PDF_PARSER_INVALID_DOCUMENT_ERROR)) {
       return "invalid_document";
+    }
+    if (/failed to parse\b/i.test(responseText)) {
+      return "generic_parse";
     }
   } catch {
     // Preserve the original provider response when its body cannot be read.
@@ -219,28 +402,47 @@ const requestUsesPdfParserEngine = (
       plugin.pdf.engine === engine,
   );
 
-const textHasSandboxAttachmentPath = (text: string): boolean =>
-  text.includes("<attachment") &&
-  text.includes('local_path="/home/user/upload/');
+const getAttributeFromAttachmentTag = (
+  tag: string,
+  attribute: string,
+): string | undefined =>
+  new RegExp(`\\b${attribute}="([^"]+)"`, "i").exec(tag)?.[1];
 
-const hasSandboxAttachmentPath = (messages: unknown[]): boolean =>
-  messages.some((message) => {
-    if (!isRecord(message)) return false;
-    const content = message.content;
-    if (typeof content === "string") {
-      return textHasSandboxAttachmentPath(content);
+const collectSandboxAttachmentFilenames = (
+  messages: unknown[],
+): Set<string> => {
+  const filenames = new Set<string>();
+  const collectFromText = (text: string) => {
+    for (const match of text.matchAll(/<attachment\b[^>]*>/gi)) {
+      const tag = match[0];
+      const localPath = getAttributeFromAttachmentTag(tag, "local_path");
+      const filename = getAttributeFromAttachmentTag(tag, "filename");
+      if (localPath?.startsWith("/home/user/upload/") && filename) {
+        filenames.add(filename);
+      }
     }
-    return (
-      Array.isArray(content) &&
-      content.some(
-        (part) =>
-          isRecord(part) &&
-          part.type === "text" &&
-          typeof part.text === "string" &&
-          textHasSandboxAttachmentPath(part.text),
-      )
-    );
+  };
+
+  messages.forEach((message) => {
+    if (!isRecord(message)) return;
+    if (typeof message.content === "string") {
+      collectFromText(message.content);
+      return;
+    }
+    if (!Array.isArray(message.content)) return;
+    message.content.forEach((part) => {
+      if (
+        isRecord(part) &&
+        part.type === "text" &&
+        typeof part.text === "string"
+      ) {
+        collectFromText(part.text);
+      }
+    });
   });
+
+  return filenames;
+};
 
 const isPdfRequestPart = (part: unknown): boolean => {
   if (!isRecord(part) || part.type !== "file" || !isRecord(part.file)) {
@@ -255,13 +457,28 @@ const isPdfRequestPart = (part: unknown): boolean => {
   );
 };
 
+const isFileRequestPart = (part: unknown): boolean =>
+  isRecord(part) && part.type === "file";
+
+const getFileRequestFilename = (part: unknown): string | undefined =>
+  isRecord(part) && isRecord(part.file)
+    ? nonEmptyString(part.file.filename)
+    : undefined;
+
+const GENERIC_SANDBOX_ATTACHMENT_RECOVERY_INSTRUCTION =
+  "The provider could not parse one or more attached files. Use the corresponding local_path values and inspect the files with sandbox tools instead of asking the provider to parse them again.";
+
 const createSandboxPdfRecoveryBody = (
   body: unknown,
+  removeAllFileParts = false,
 ): { body: unknown; changed: boolean } => {
   if (!isRecord(body) || !Array.isArray(body.messages)) {
     return { body, changed: false };
   }
-  if (!hasSandboxAttachmentPath(body.messages)) {
+  const sandboxAttachmentFilenames = collectSandboxAttachmentFilenames(
+    body.messages,
+  );
+  if (sandboxAttachmentFilenames.size === 0) {
     return { body, changed: false };
   }
 
@@ -273,7 +490,10 @@ const createSandboxPdfRecoveryBody = (
     if (!Array.isArray(message.content)) return message;
 
     const content = message.content.filter((part) => {
-      const shouldRemove = isPdfRequestPart(part);
+      const filename = getFileRequestFilename(part);
+      const shouldRemove =
+        Boolean(filename && sandboxAttachmentFilenames.has(filename)) &&
+        (removeAllFileParts ? isFileRequestPart(part) : isPdfRequestPart(part));
       removedFilePart ||= shouldRemove;
       return !shouldRemove;
     });
@@ -290,17 +510,17 @@ const createSandboxPdfRecoveryBody = (
   if (!isRecord(lastUserMessage)) {
     return { body, changed: false };
   }
+  const recoveryInstruction = removeAllFileParts
+    ? GENERIC_SANDBOX_ATTACHMENT_RECOVERY_INSTRUCTION
+    : SANDBOX_PDF_RECOVERY_INSTRUCTION;
   const existingContent = lastUserMessage.content;
   const content = Array.isArray(existingContent)
-    ? [
-        ...existingContent,
-        { type: "text", text: SANDBOX_PDF_RECOVERY_INSTRUCTION },
-      ]
+    ? [...existingContent, { type: "text", text: recoveryInstruction }]
     : [
         ...(typeof existingContent === "string" && existingContent.length > 0
           ? [{ type: "text", text: existingContent }]
           : []),
-        { type: "text", text: SANDBOX_PDF_RECOVERY_INSTRUCTION },
+        { type: "text", text: recoveryInstruction },
       ];
   messages[lastUserMessageIndex] = { ...lastUserMessage, content };
 
@@ -331,14 +551,21 @@ const withPrivateResponseHeader = (
 };
 
 const logPdfParserRecovery = (
-  fromEngine: "mistral-ocr" | "cloudflare-ai",
+  fromEngine: "mistral-ocr" | "cloudflare-ai" | "unknown",
   toEngine: "cloudflare-ai" | "sandbox",
   reason: PdfParserFailure,
 ) => {
   console.warn(
     JSON.stringify({
+      timestamp: new Date().toISOString(),
       level: "warn",
       event: "openrouter_pdf_parser_recovery",
+      service: "openrouter",
+      environment:
+        process.env.TRIGGER_ENV ??
+        process.env.VERCEL_ENV ??
+        process.env.NODE_ENV ??
+        "unknown",
       from_engine: fromEngine,
       to_engine: toEngine,
       reason,
@@ -402,11 +629,15 @@ export const attachOpenRouterStreamErrorMetadata = (
 
 // Custom fetch for OpenRouter provider-specific request-body repairs.
 //
+// - Kimi rejects missing or orphaned tool-result IDs. Repair IDs when the
+//   transcript order makes the match deterministic and omit unmatchable output.
 // - Kimi requires a `reasoning` field on assistant tool-call messages when
 //   reasoning mode is enabled, but the AI SDK does not always include one.
 // - xAI rejects encrypted reasoning blobs generated by a different provider
 //   when OpenRouter falls back to Grok. The visible assistant text remains in
 //   the prompt, so these provider-private blobs are safe to omit for xAI routes.
+// - xAI rejects forced tool choice while reasoning is enabled. Preserve the
+//   forced tool and disable reasoning for that single provider request.
 // - The metadata header opts into OpenRouter routing metadata for attribution.
 export const createOpenRouterPatchFetch =
   (fetchImplementation: typeof fetch = globalThis.fetch): typeof fetch =>
@@ -421,11 +652,22 @@ export const createOpenRouterPatchFetch =
     if (nextInit.body && typeof nextInit.body === "string") {
       try {
         const parsedBody = JSON.parse(nextInit.body) as unknown;
-        const kimiPatched = patchKimiReasoningToolCalls(parsedBody);
+        const kimiNormalized = normalizeOpenRouterRequestForKimi(parsedBody);
+        const kimiPatched = patchKimiReasoningToolCalls(kimiNormalized.body);
         const xaiPatched = sanitizeOpenRouterRequestForXai(kimiPatched.body);
-        parsedRequestBody = xaiPatched.body;
-        if (kimiPatched.changed || xaiPatched.changed) {
-          nextInit = { ...nextInit, body: JSON.stringify(xaiPatched.body) };
+        const xaiCompatible =
+          makeOpenRouterToolChoiceCompatibleWithXaiReasoning(xaiPatched.body);
+        parsedRequestBody = xaiCompatible.body;
+        if (
+          kimiNormalized.changed ||
+          kimiPatched.changed ||
+          xaiPatched.changed ||
+          xaiCompatible.changed
+        ) {
+          nextInit = {
+            ...nextInit,
+            body: JSON.stringify(xaiCompatible.body),
+          };
         }
       } catch {
         // If parsing fails, send the request as-is
@@ -436,6 +678,26 @@ export const createOpenRouterPatchFetch =
     const parserFailure = await classifyPdfParserFailure(initialResponse);
     if (!parserFailure) {
       return attachOpenRouterStreamErrorMetadata(initialResponse);
+    }
+
+    if (parserFailure === "generic_parse") {
+      const sandboxBody = createSandboxPdfRecoveryBody(parsedRequestBody, true);
+      if (!sandboxBody.changed) {
+        return attachOpenRouterStreamErrorMetadata(initialResponse);
+      }
+
+      logPdfParserRecovery("unknown", "sandbox", parserFailure);
+      const sandboxResponse = await fetchImplementation(url, {
+        ...nextInit,
+        body: JSON.stringify(sandboxBody.body),
+      });
+      return attachOpenRouterStreamErrorMetadata(
+        withPrivateResponseHeader(
+          sandboxResponse,
+          PDF_PARSER_RECOVERY_HEADER,
+          "sandbox",
+        ),
+      );
     }
 
     if (requestUsesPdfParserEngine(parsedRequestBody, "cloudflare-ai")) {
