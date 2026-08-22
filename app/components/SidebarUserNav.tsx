@@ -43,7 +43,10 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { clientLogout } from "@/lib/utils/logout";
-import { openSettingsDialog } from "@/lib/utils/settings-dialog";
+import {
+  openSettingsDialog,
+  preloadSettingsDialog,
+} from "@/lib/utils/settings-dialog";
 import { ReferralRewardDialog } from "./ReferralRewardDialog";
 
 const NEXT_PUBLIC_HELP_CENTER_URL =
@@ -303,7 +306,11 @@ const SidebarUserNav = ({ isCollapsed = false }: { isCollapsed?: boolean }) => {
       {/* Upgrade banner above user nav */}
       <UpgradeBanner isCollapsed={isCollapsed} />
 
-      <DropdownMenu>
+      <DropdownMenu
+        onOpenChange={(open) => {
+          if (open) preloadSettingsDialog();
+        }}
+      >
         <DropdownMenuTrigger asChild>
           {isCollapsed ? (
             /* Collapsed state - only show avatar */
@@ -314,6 +321,8 @@ const SidebarUserNav = ({ isCollapsed = false }: { isCollapsed?: boolean }) => {
                 className="flex items-center justify-center p-2 cursor-pointer hover:bg-sidebar-accent/50 rounded-md transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 w-full"
                 aria-haspopup="menu"
                 aria-label={`Open user menu for ${getDisplayName()}`}
+                onPointerEnter={preloadSettingsDialog}
+                onFocus={preloadSettingsDialog}
               >
                 <Avatar data-testid="user-avatar" className="h-7 w-7">
                   <AvatarImage
@@ -334,6 +343,8 @@ const SidebarUserNav = ({ isCollapsed = false }: { isCollapsed?: boolean }) => {
               className="flex items-center gap-3 p-3 cursor-pointer hover:bg-sidebar-accent/50 rounded-md transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 w-full text-left"
               aria-haspopup="menu"
               aria-label={`Open user menu for ${getDisplayName()}`}
+              onPointerEnter={preloadSettingsDialog}
+              onFocus={preloadSettingsDialog}
             >
               <Avatar data-testid="user-avatar" className="h-7 w-7">
                 <AvatarImage
