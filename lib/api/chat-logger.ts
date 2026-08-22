@@ -1263,6 +1263,13 @@ type AgentCompletionAnalyticsArgs = {
   isAutoContinue?: boolean;
   stepLimitTelemetry?: AgentStepLimitTelemetry;
   experiment?: ExperimentAnalyticsContext;
+  upstreamProvider?: string;
+  providerErrorProvider?: string;
+  providerErrorCategory?: string;
+  providerErrorStatusCode?: number;
+  providerRecoveryAttempts?: number;
+  providerRecoveryModels?: readonly string[];
+  providerRecoverySucceeded?: boolean;
 };
 
 export function captureAgentRun({
@@ -1292,34 +1299,14 @@ export function captureAgentRun({
   isAutoContinue,
   stepLimitTelemetry,
   experiment,
-}: {
-  posthog: PostHog | null;
-  userId: string;
-  chatId: string;
-  mode: ChatMode;
-  subscription: string;
-  sandboxInfo: SandboxInfo | null;
-  outcome: AgentRunOutcome;
-  abortSource?: AgentAbortSource;
-  selectedModel: string;
-  configuredModelId: string;
-  responseModel?: string;
-  fallbackServed?: boolean;
-  finishReason?: string;
-  budgetAbortDetails?: BudgetAbortDetails;
-  agentPermissionMode?: AgentPermissionMode;
-  triggerRunId?: string;
-  triggerUsageDurationMs?: number;
-  triggerTotalCostUsd?: number;
-  approvalWaitCount?: number;
-  approvalWaitDurationMs?: number;
-  activeModelStreamDurationMs?: number;
-  activeTerminalWaitDurationMs?: number;
-  activeSandboxRecoveryDurationMs?: number;
-  isAutoContinue?: boolean;
-  stepLimitTelemetry?: AgentStepLimitTelemetry;
-  experiment?: ExperimentAnalyticsContext;
-}) {
+  upstreamProvider,
+  providerErrorProvider,
+  providerErrorCategory,
+  providerErrorStatusCode,
+  providerRecoveryAttempts,
+  providerRecoveryModels,
+  providerRecoverySucceeded,
+}: Omit<AgentCompletionAnalyticsArgs, "endpoint" | "chatLogger">) {
   if (!posthog || mode !== "agent") return;
   posthog.capture({
     distinctId: userId,
@@ -1372,6 +1359,25 @@ export function captureAgentRun({
         sandbox_provider: sandboxInfo.provider,
       }),
       ...(finishReason && { finish_reason: finishReason }),
+      ...(upstreamProvider && { upstream_provider: upstreamProvider }),
+      ...(providerErrorProvider && {
+        provider_error_provider: providerErrorProvider,
+      }),
+      ...(providerErrorCategory && {
+        provider_error_category: providerErrorCategory,
+      }),
+      ...(providerErrorStatusCode !== undefined && {
+        provider_error_status_code: providerErrorStatusCode,
+      }),
+      ...(providerRecoveryAttempts !== undefined && {
+        provider_recovery_attempts: providerRecoveryAttempts,
+      }),
+      ...(providerRecoveryModels && {
+        provider_recovery_models: [...providerRecoveryModels],
+      }),
+      ...(providerRecoverySucceeded !== undefined && {
+        provider_recovery_succeeded: providerRecoverySucceeded,
+      }),
       ...(stepLimitTelemetry && {
         step_limit_telemetry_version: stepLimitTelemetry.version,
         configured_max_steps: stepLimitTelemetry.configuredMaxSteps,
@@ -1432,6 +1438,13 @@ export function captureAgentCompletionAnalytics(
     isAutoContinue: args.isAutoContinue,
     stepLimitTelemetry: args.stepLimitTelemetry,
     experiment: args.experiment,
+    upstreamProvider: args.upstreamProvider,
+    providerErrorProvider: args.providerErrorProvider,
+    providerErrorCategory: args.providerErrorCategory,
+    providerErrorStatusCode: args.providerErrorStatusCode,
+    providerRecoveryAttempts: args.providerRecoveryAttempts,
+    providerRecoveryModels: args.providerRecoveryModels,
+    providerRecoverySucceeded: args.providerRecoverySucceeded,
   });
 }
 

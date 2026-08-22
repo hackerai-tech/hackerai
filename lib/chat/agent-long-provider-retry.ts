@@ -101,6 +101,42 @@ export type ProviderDisconnectContinuation = {
   preservedTextPartCount: number;
 };
 
+const DEEPSEEK_PRO_MODEL = "model-deepseek-v4-pro-0813";
+const DEEPSEEK_PRO_RECOVERY_CHAIN = [
+  "model-grok-4.6",
+  "model-kimi-k3",
+] as const;
+
+/**
+ * Return the next bounded app-side recovery model for a DeepSeek Pro stream
+ * disconnect. `completedRetryCount` counts retries already started, so the
+ * only valid transitions are DeepSeek -> Grok -> Kimi.
+ */
+export const getNextDeepSeekProDisconnectRetryModel = ({
+  originalModel,
+  failedModel,
+  completedRetryCount,
+}: {
+  originalModel: string;
+  failedModel: string;
+  completedRetryCount: number;
+}): (typeof DEEPSEEK_PRO_RECOVERY_CHAIN)[number] | undefined => {
+  if (originalModel !== DEEPSEEK_PRO_MODEL) return undefined;
+
+  if (completedRetryCount === 0 && failedModel === DEEPSEEK_PRO_MODEL) {
+    return DEEPSEEK_PRO_RECOVERY_CHAIN[0];
+  }
+
+  if (
+    completedRetryCount === 1 &&
+    failedModel === DEEPSEEK_PRO_RECOVERY_CHAIN[0]
+  ) {
+    return DEEPSEEK_PRO_RECOVERY_CHAIN[1];
+  }
+
+  return undefined;
+};
+
 /**
  * Build a replay-safe transcript after a provider socket dies mid-step.
  *

@@ -257,12 +257,16 @@ import {
 } from "@/lib/chat/stop-conditions";
 import {
   detectAssistantContentLoopFromParts,
+  getNextDeepSeekProDisconnectRetryModel,
   prepareProviderDisconnectContinuation,
   shouldRetryProviderStreamAfterReasoningOnlyOutput,
   shouldRetryProviderStreamAfterInterruptedToolInput,
   shouldRetryAgentLongWithFallback,
 } from "@/lib/chat/agent-long-provider-retry";
-import { wrapProviderTerminalError } from "@/lib/api/provider-terminal-error";
+import {
+  ProviderTerminalError,
+  wrapProviderTerminalError,
+} from "@/lib/api/provider-terminal-error";
 import {
   omitImageViewToolResultsForProviderRetry,
   omitTrailingStepStartAssistantMessage,
@@ -1692,6 +1696,28 @@ const isTerminalProviderStreamError = (
 
 const PROVIDER_DISCONNECT_CONTINUATION_PROMPT =
   "The previous model connection ended mid-response. Continue from the preserved completed text and tool results. Do not repeat completed tool calls or their side effects. Finish the task from the last durable result.";
+
+const resetAgentStreamStateForRetry = (state: AgentStreamState): void => {
+  state.openRouterMetadata = {};
+  state.lastStepInputTokens = 0;
+  state.stoppedDueToStepLimit = false;
+  state.streamFinishReason = undefined;
+  state.providerError = undefined;
+  state.providerRejectedMultimodalToolResults = false;
+  state.stoppedDueToTokenExhaustion = false;
+  state.stoppedDueToElapsedTimeout = false;
+  state.stoppedDueToDoomLoop = false;
+  state.stoppedDueToAssistantContentLoop = false;
+  state.assistantContentLoopDetection = undefined;
+  state.stoppedDueToBudgetExhaustion = false;
+  state.stoppedDueToAgentRunSpendCap = false;
+  state.stoppedDueToPostSummarizationIncomplete = false;
+  state.postSummarizationContinuationActive = false;
+  state.postSummarizationToolCallCount = 0;
+  state.postSummarizationText = "";
+  state.budgetAbortDetails = undefined;
+  resetServedModelTelemetryForRetry(state);
+};
 
 type RecordedAgentLongFailure = {
   userCorrectable: boolean;
@@ -3611,6 +3637,9 @@ export const agentLongTask = task({
 
             let isRetryWithFallback = false;
             let retryUsedFallbackModel = false;
+            let providerRecoveryAttempts = 0;
+            const providerRecoveryModels: string[] = [];
+            let lastProviderRecoveryError: ProviderTerminalError | undefined;
             const isAutoModel = isAutoModelSelectionForRetry({
               selectedModel,
               selectedModelOverride,
@@ -4216,6 +4245,262 @@ export const agentLongTask = task({
               return createAgentStream(modelName, streamCtx, state);
             };
 
+            const getProviderRecoveryAnalytics = (
+              outcome: "success" | "error" | "aborted",
+            ) => {
+              const terminalError = getTerminalProviderStreamError(state);
+              const providerError = terminalError
+                ? wrapProviderTerminalError(terminalError, {
+                    model: terminalRequestedModelSlug,
+                    openRouterMetadata: state.openRouterMetadata,
+                  })
+                : lastProviderRecoveryError;
+
+              return {
+                upstreamProvider: state.openRouterMetadata.provider_name,
+                providerErrorProvider: providerError?.provider,
+                providerErrorCategory: providerError?.category,
+                providerErrorStatusCode: providerError?.statusCode,
+                providerRecoveryAttempts,
+                providerRecoveryModels,
+                providerRecoverySucceeded:
+                  providerRecoveryAttempts > 0 && outcome === "success",
+              };
+            };
+
+            const recordProviderDisconnectRecoveryAttempt = ({
+              failedModel,
+              retryModel,
+              continuation,
+            }: {
+              failedModel: string;
+              retryModel: string;
+              continuation: NonNullable<
+                ReturnType<typeof prepareProviderDisconnectContinuation>
+              >;
+            }) => {
+              const failure = wrapProviderTerminalError(state.providerError, {
+                model: trackedProvider.languageModel(failedModel).modelId,
+                openRouterMetadata: state.openRouterMetadata,
+              });
+              providerRecoveryAttempts += 1;
+              providerRecoveryModels.push(retryModel);
+              lastProviderRecoveryError = failure;
+              const fields = {
+                event: "agent_provider_disconnect_recovery_attempted",
+                service: "agent-long",
+                environment:
+                  process.env.TRIGGER_ENV ??
+                  process.env.VERCEL_ENV ??
+                  process.env.NODE_ENV ??
+                  "unknown",
+                timestamp: new Date().toISOString(),
+                request_id: ctx.run.id,
+                run_id: ctx.run.id,
+                chat_id: chatId,
+                userId,
+                original_model: selectedModel,
+                failed_model: failedModel,
+                retry_model: retryModel,
+                retry_attempt: providerRecoveryAttempts,
+                max_retry_attempts: 2,
+                provider: failure.provider,
+                error_category: failure.category,
+                error_status_code: failure.statusCode,
+                openrouter_generation_id: failure.openrouterGenerationId,
+                openrouter_request_id: failure.openrouterRequestId,
+                openrouter_upstream_id: failure.openrouterUpstreamId,
+                checkpoint_removed_part_count: continuation.removedPartCount,
+                checkpoint_completed_tool_count:
+                  continuation.preservedCompletedToolCount,
+                checkpoint_text_part_count: continuation.preservedTextPartCount,
+              };
+              phLogger.warn(
+                "[agent-long] Retrying provider disconnect from checkpoint",
+                fields,
+              );
+              phLogger.event("agent_provider_disconnect_recovery_attempted", {
+                ...fields,
+                userId,
+              });
+              metadata
+                .set("providerRecoveryAttempts", providerRecoveryAttempts)
+                .set("providerRecoveryModel", retryModel)
+                .set("providerRecoveryProvider", failure.provider)
+                .set("providerRecoveryErrorCategory", failure.category);
+            };
+
+            const finalizeRetryStream = async ({
+              retryMessages,
+              retryAborted,
+              retryMessageId,
+              retryStartTime,
+            }: {
+              retryMessages: UIMessage[];
+              retryAborted: boolean;
+              retryMessageId: string;
+              retryStartTime: number;
+            }) => {
+              const fallbackCacheRead =
+                usageTracker.cacheReadTokens - preFallbackCacheRead;
+              const fallbackCacheWrite =
+                usageTracker.cacheWriteTokens - preFallbackCacheWrite;
+              const fallbackCacheTotal = fallbackCacheRead + fallbackCacheWrite;
+              const sandboxInfo = sandboxManager.getSandboxInfo();
+              chatLogger?.setSandbox(sandboxInfo);
+              chatLogger?.setCacheMetrics({
+                cacheHitRate:
+                  fallbackCacheTotal > 0
+                    ? fallbackCacheRead / fallbackCacheTotal
+                    : null,
+                cacheReadTokens: fallbackCacheRead,
+                cacheWriteTokens: fallbackCacheWrite,
+              });
+              captureToolCalls({ posthog, chatLogger, userId, mode });
+              // Final reconciliation can change the finish reason to
+              // budget-exhausted; do it before analytics and persistence.
+              await deductAccumulatedUsage();
+              const outcome = retryAborted
+                ? "aborted"
+                : isTerminalProviderStreamError(state)
+                  ? "error"
+                  : "success";
+              captureAgentCompletionAnalytics({
+                posthog,
+                userId,
+                chatId,
+                endpoint,
+                mode,
+                subscription,
+                sandboxInfo,
+                outcome,
+                abortSource: resolveAgentAbortSource({
+                  outcome,
+                  stoppedDueToBudgetExhaustion:
+                    state.stoppedDueToBudgetExhaustion,
+                  stoppedDueToAgentRunSpendCap:
+                    state.stoppedDueToAgentRunSpendCap,
+                  stoppedDueToElapsedTimeout: state.stoppedDueToElapsedTimeout,
+                  requestCancelled: triggerSignal.aborted,
+                }),
+                chatLogger,
+                selectedModel,
+                configuredModelId,
+                responseModel: state.responseModel,
+                fallbackServed:
+                  state.responseModel && retryUsedFallbackModel
+                    ? true
+                    : state.fallbackServed,
+                finishReason: state.streamFinishReason,
+                budgetAbortDetails: state.budgetAbortDetails,
+                agentPermissionMode,
+                isAutoContinue: !!isAutoContinue,
+                experiment: routingExperimentContext,
+                stepLimitTelemetry: buildAgentStepLimitTelemetry({
+                  configuredMaxSteps: state.configuredMaxSteps,
+                  stepCount: state.agentStepCount,
+                  stepLimitReached: state.stoppedDueToStepLimit,
+                  todoRunMetrics: getTodoManager().getRunMetrics(),
+                }),
+                ...getProviderRecoveryAnalytics(outcome),
+                ...getTriggerRunTelemetry(),
+              });
+              if (!isTerminalProviderStreamError(state)) {
+                chatLogger?.emitSuccess({
+                  finishReason: state.streamFinishReason,
+                  wasAborted: retryAborted,
+                  wasPreemptiveTimeout: false,
+                  hadSummarization: summarizationTracker.hasSummarized,
+                });
+              }
+
+              const generatedTitle = await titlePromise;
+              const mergedTodos = getTodoManager().mergeWith(
+                baseTodos,
+                retryMessageId,
+              );
+              if (
+                generatedTitle ||
+                state.streamFinishReason ||
+                mergedTodos.length > 0
+              ) {
+                try {
+                  await updateChat({
+                    chatId,
+                    title: generatedTitle,
+                    finishReason: state.streamFinishReason,
+                    todos: mergedTodos,
+                    defaultModelSlug: "agent",
+                    sandboxType: sandboxManager.getEffectivePreference(),
+                    selectedModel: selectedModelOverride,
+                  });
+                } catch (error) {
+                  recordAgentLongChatMetadataUpdateFailure(error, {
+                    chatId,
+                    userId,
+                    runId: ctx.run.id,
+                  });
+                }
+              } else {
+                await prepareForNewStream({ chatId });
+              }
+              const accumulatedFiles = getFileAccumulator().getAll();
+              const newFileIds = accumulatedFiles.map((file) => file.fileId);
+              const fallbackGenerationTimeMs = Date.now() - retryStartTime;
+              for (const message of retryMessages) {
+                if (message.role !== "assistant") continue;
+                const processed = stripAgentLongHeartbeatParts(
+                  summarizationTracker.processMessageForSave(message),
+                );
+                await saveMessage({
+                  chatId,
+                  userId,
+                  message: processed,
+                  extraFileIds: newFileIds,
+                  usage: state.streamUsage,
+                  model: state.responseModel,
+                  mode,
+                  generationStartedAt: retryStartTime,
+                  generationTimeMs: fallbackGenerationTimeMs,
+                  finishReason: state.streamFinishReason,
+                });
+              }
+              writer.write({
+                type: "message-metadata",
+                messageMetadata: {
+                  mode,
+                  createdAt: retryStartTime,
+                  generationStartedAt: retryStartTime,
+                  generationTimeMs: fallbackGenerationTimeMs,
+                },
+              });
+              sendFileMetadataToStream(accumulatedFiles);
+              if (providerRecoveryAttempts > 0) {
+                const recoveryFields = {
+                  userId,
+                  run_id: ctx.run.id,
+                  chat_id: chatId,
+                  original_model: selectedModel,
+                  final_model: activeModelName,
+                  recovery_attempts: providerRecoveryAttempts,
+                  recovery_models: providerRecoveryModels,
+                  outcome,
+                };
+                phLogger.info(
+                  "[agent-long] Provider disconnect recovery completed",
+                  {
+                    ...recoveryFields,
+                    event: "agent_provider_disconnect_recovery_completed",
+                  },
+                );
+                phLogger.event(
+                  "agent_provider_disconnect_recovery_completed",
+                  recoveryFields,
+                );
+              }
+              posthog?.shutdown();
+            };
+
             let result;
             try {
               captureProPlusUltraDeepSeekProDefaultExposure({
@@ -4270,21 +4555,8 @@ export const agentLongTask = task({
                   selectedModel,
                   fallbackModel,
                 );
-                resetServedModelTelemetryForRetry(state);
-                state.lastStepInputTokens = 0;
-                state.stoppedDueToStepLimit = false;
-                state.stoppedDueToTokenExhaustion = false;
-                state.stoppedDueToElapsedTimeout = false;
-                state.stoppedDueToDoomLoop = false;
-                state.stoppedDueToAssistantContentLoop = false;
-                state.assistantContentLoopDetection = undefined;
-                state.stoppedDueToBudgetExhaustion = false;
-                state.stoppedDueToAgentRunSpendCap = false;
-                state.stoppedDueToPostSummarizationIncomplete = false;
-                state.postSummarizationContinuationActive = false;
-                state.postSummarizationToolCallCount = 0;
-                state.postSummarizationText = "";
-                state.budgetAbortDetails = undefined;
+                streamError = undefined;
+                resetAgentStreamStateForRetry(state);
                 preFallbackCacheRead = usageTracker.cacheReadTokens;
                 preFallbackCacheWrite = usageTracker.cacheWriteTokens;
                 usageTracker.resetModelLeg();
@@ -4485,33 +4757,22 @@ export const agentLongTask = task({
                               providerDisconnectContinuation?.preservedTextPartCount,
                           },
                         );
+                        if (providerDisconnectContinuation) {
+                          recordProviderDisconnectRecoveryAttempt({
+                            failedModel: selectedModel,
+                            retryModel,
+                            continuation: providerDisconnectContinuation,
+                          });
+                        }
                         isRetryWithFallback = true;
                         streamError = undefined;
-                        state.openRouterMetadata = {};
-                        state.lastStepInputTokens = 0;
-                        state.stoppedDueToStepLimit = false;
-                        state.streamFinishReason = undefined;
-                        state.providerError = undefined;
-                        state.providerRejectedMultimodalToolResults = false;
-                        state.stoppedDueToTokenExhaustion = false;
-                        state.stoppedDueToElapsedTimeout = false;
-                        state.stoppedDueToDoomLoop = false;
-                        state.stoppedDueToAssistantContentLoop = false;
-                        state.assistantContentLoopDetection = undefined;
-                        state.stoppedDueToBudgetExhaustion = false;
-                        state.stoppedDueToAgentRunSpendCap = false;
-                        state.stoppedDueToPostSummarizationIncomplete = false;
-                        state.postSummarizationContinuationActive = false;
-                        state.postSummarizationToolCallCount = 0;
-                        state.postSummarizationText = "";
-                        state.budgetAbortDetails = undefined;
                         const fallbackStartTime = Date.now();
                         preFallbackCacheRead = usageTracker.cacheReadTokens;
                         preFallbackCacheWrite = usageTracker.cacheWriteTokens;
                         retryUsedFallbackModel =
                           retryUsesDifferentModel(selectedModel, retryModel) ||
                           providerContentBlocked;
-                        resetServedModelTelemetryForRetry(state);
+                        resetAgentStreamStateForRetry(state);
                         if (providerDisconnectContinuation) {
                           state.finalMessages = [
                             ...state.finalMessages,
@@ -4601,178 +4862,155 @@ export const agentLongTask = task({
                                 messages: retryMessages,
                                 isAborted: retryAborted,
                               }) => {
+                                let finalRetryScheduled = false;
                                 try {
-                                  const fallbackCacheRead =
-                                    usageTracker.cacheReadTokens -
-                                    preFallbackCacheRead;
-                                  const fallbackCacheWrite =
-                                    usageTracker.cacheWriteTokens -
-                                    preFallbackCacheWrite;
-                                  const fallbackCacheTotal =
-                                    fallbackCacheRead + fallbackCacheWrite;
-                                  const sandboxInfo =
-                                    sandboxManager.getSandboxInfo();
-                                  chatLogger?.setSandbox(sandboxInfo);
-                                  chatLogger?.setCacheMetrics({
-                                    cacheHitRate:
-                                      fallbackCacheTotal > 0
-                                        ? fallbackCacheRead / fallbackCacheTotal
-                                        : null,
-                                    cacheReadTokens: fallbackCacheRead,
-                                    cacheWriteTokens: fallbackCacheWrite,
-                                  });
-                                  captureToolCalls({
-                                    posthog,
-                                    chatLogger,
-                                    userId,
-                                    mode,
-                                  });
-                                  // Final reconciliation can change the finish
-                                  // reason to budget-exhausted; do it before
-                                  // analytics and persistence consume state.
-                                  await deductAccumulatedUsage();
-                                  const outcome = retryAborted
-                                    ? "aborted"
-                                    : isTerminalProviderStreamError(state)
-                                      ? "error"
-                                      : "success";
-                                  captureAgentCompletionAnalytics({
-                                    posthog,
-                                    userId,
-                                    chatId,
-                                    endpoint,
-                                    mode,
-                                    subscription,
-                                    sandboxInfo,
-                                    outcome,
-                                    abortSource: resolveAgentAbortSource({
-                                      outcome,
-                                      stoppedDueToBudgetExhaustion:
-                                        state.stoppedDueToBudgetExhaustion,
-                                      stoppedDueToAgentRunSpendCap:
-                                        state.stoppedDueToAgentRunSpendCap,
-                                      stoppedDueToElapsedTimeout:
-                                        state.stoppedDueToElapsedTimeout,
-                                      requestCancelled: triggerSignal.aborted,
-                                    }),
-                                    chatLogger,
-                                    selectedModel,
-                                    configuredModelId,
-                                    responseModel: state.responseModel,
-                                    fallbackServed:
-                                      state.responseModel &&
-                                      retryUsedFallbackModel
-                                        ? true
-                                        : state.fallbackServed,
-                                    finishReason: state.streamFinishReason,
-                                    budgetAbortDetails:
-                                      state.budgetAbortDetails,
-                                    agentPermissionMode,
-                                    isAutoContinue: !!isAutoContinue,
-                                    experiment: routingExperimentContext,
-                                    stepLimitTelemetry:
-                                      buildAgentStepLimitTelemetry({
-                                        configuredMaxSteps:
-                                          state.configuredMaxSteps,
-                                        stepCount: state.agentStepCount,
-                                        stepLimitReached:
-                                          state.stoppedDueToStepLimit,
-                                        todoRunMetrics:
-                                          getTodoManager().getRunMetrics(),
-                                      }),
-                                    ...getTriggerRunTelemetry(),
-                                  });
-                                  if (!isTerminalProviderStreamError(state)) {
-                                    chatLogger?.emitSuccess({
-                                      finishReason: state.streamFinishReason,
-                                      wasAborted: retryAborted,
-                                      wasPreemptiveTimeout: false,
-                                      hadSummarization:
-                                        summarizationTracker.hasSummarized,
-                                    });
-                                  }
-
-                                  const generatedTitle = await titlePromise;
-                                  {
-                                    const mergedTodos =
-                                      getTodoManager().mergeWith(
-                                        baseTodos,
-                                        retryMessageId,
-                                      );
-                                    if (
-                                      generatedTitle ||
-                                      state.streamFinishReason ||
-                                      mergedTodos.length > 0
-                                    ) {
-                                      try {
-                                        await updateChat({
-                                          chatId,
-                                          title: generatedTitle,
-                                          finishReason:
-                                            state.streamFinishReason,
-                                          todos: mergedTodos,
-                                          defaultModelSlug: "agent",
-                                          sandboxType:
-                                            sandboxManager.getEffectivePreference(),
-                                          selectedModel: selectedModelOverride,
-                                        });
-                                      } catch (error) {
-                                        recordAgentLongChatMetadataUpdateFailure(
-                                          error,
-                                          {
-                                            chatId,
-                                            userId,
-                                            runId: ctx.run.id,
-                                          },
-                                        );
-                                      }
-                                    } else {
-                                      await prepareForNewStream({ chatId });
-                                    }
-                                    const accumulatedFiles =
-                                      getFileAccumulator().getAll();
-                                    const newFileIds = accumulatedFiles.map(
-                                      (f) => f.fileId,
+                                  const normalizedRetryMessages = retryMessages
+                                    .map((message) =>
+                                      message.role === "assistant"
+                                        ? stripAgentLongHeartbeatParts(message)
+                                        : message,
+                                    )
+                                    .filter(
+                                      (message) =>
+                                        message.role !== "assistant" ||
+                                        (message.parts?.length ?? 0) > 0,
                                     );
-                                    const fallbackGenerationTimeMs =
-                                      Date.now() - fallbackStartTime;
-                                    for (const msg of retryMessages) {
-                                      if (msg.role !== "assistant") continue;
-                                      const processed =
-                                        stripAgentLongHeartbeatParts(
-                                          summarizationTracker.processMessageForSave(
-                                            msg,
-                                          ),
-                                        );
+                                  const nextContinuation =
+                                    isTerminalProviderStreamError(state) &&
+                                    isRetriableProviderStreamDisconnectError(
+                                      state.providerError,
+                                    ) &&
+                                    !retryAborted
+                                      ? prepareProviderDisconnectContinuation(
+                                          normalizedRetryMessages,
+                                        )
+                                      : undefined;
+                                  const finalRetryModel = nextContinuation
+                                    ? getNextDeepSeekProDisconnectRetryModel({
+                                        originalModel: selectedModel,
+                                        failedModel: retryModel,
+                                        completedRetryCount:
+                                          providerRecoveryAttempts,
+                                      })
+                                    : undefined;
+
+                                  if (nextContinuation && finalRetryModel) {
+                                    recordProviderDisconnectRecoveryAttempt({
+                                      failedModel: retryModel,
+                                      retryModel: finalRetryModel,
+                                      continuation: nextContinuation,
+                                    });
+                                    streamError = undefined;
+                                    resetAgentStreamStateForRetry(state);
+                                    retryUsedFallbackModel = true;
+                                    state.finalMessages = [
+                                      ...state.finalMessages,
+                                      ...nextContinuation.messages,
+                                      {
+                                        id: generateId(),
+                                        role: "user",
+                                        parts: [
+                                          {
+                                            type: "text",
+                                            text: PROVIDER_DISCONNECT_CONTINUATION_PROMPT,
+                                          },
+                                        ],
+                                      },
+                                    ];
+                                    const finalRetryStartTime = Date.now();
+                                    const preservedFileIds =
+                                      getFileAccumulator()
+                                        .getAll()
+                                        .map((file) => file.fileId);
+                                    for (const message of nextContinuation.messages) {
+                                      if (message.role !== "assistant")
+                                        continue;
                                       await saveMessage({
                                         chatId,
                                         userId,
-                                        message: processed,
-                                        extraFileIds: newFileIds,
-                                        usage: state.streamUsage,
-                                        model: state.responseModel,
+                                        message,
+                                        extraFileIds: preservedFileIds,
+                                        model:
+                                          trackedProvider.languageModel(
+                                            retryModel,
+                                          ).modelId,
                                         mode,
                                         generationStartedAt: fallbackStartTime,
                                         generationTimeMs:
-                                          fallbackGenerationTimeMs,
-                                        finishReason: state.streamFinishReason,
+                                          finalRetryStartTime -
+                                          fallbackStartTime,
                                       });
                                     }
-                                    writer.write({
-                                      type: "message-metadata",
-                                      messageMetadata: {
-                                        mode,
-                                        createdAt: fallbackStartTime,
-                                        generationStartedAt: fallbackStartTime,
-                                        generationTimeMs:
-                                          fallbackGenerationTimeMs,
-                                      },
-                                    });
-                                    sendFileMetadataToStream(accumulatedFiles);
+                                    preFallbackCacheRead =
+                                      usageTracker.cacheReadTokens;
+                                    preFallbackCacheWrite =
+                                      usageTracker.cacheWriteTokens;
+                                    const finalRetryResult =
+                                      await createStream(finalRetryModel);
+                                    const finalRetryMessageId = generateId();
+                                    writer.merge(
+                                      withAgentLongStreamHeartbeat(
+                                        finalRetryResult.toUIMessageStream({
+                                          generateMessageId: () =>
+                                            finalRetryMessageId,
+                                          sendReasoning: true,
+                                          messageMetadata: ({ part }) => {
+                                            if (part.type === "start") {
+                                              return {
+                                                mode,
+                                                createdAt: finalRetryStartTime,
+                                                generationStartedAt:
+                                                  finalRetryStartTime,
+                                              };
+                                            }
+                                            if (part.type === "finish") {
+                                              return {
+                                                mode,
+                                                createdAt: finalRetryStartTime,
+                                                generationStartedAt:
+                                                  finalRetryStartTime,
+                                                generationTimeMs:
+                                                  Date.now() -
+                                                  finalRetryStartTime,
+                                              };
+                                            }
+                                          },
+                                          onFinish: async ({
+                                            messages: finalRetryMessages,
+                                            isAborted: finalRetryAborted,
+                                          }) => {
+                                            try {
+                                              await finalizeRetryStream({
+                                                retryMessages:
+                                                  finalRetryMessages,
+                                                retryAborted: finalRetryAborted,
+                                                retryMessageId:
+                                                  finalRetryMessageId,
+                                                retryStartTime:
+                                                  finalRetryStartTime,
+                                              });
+                                            } finally {
+                                              await releaseFreeRunLockOnce();
+                                            }
+                                          },
+                                        }),
+                                        userStopSignal.signal,
+                                      ),
+                                    );
+                                    finalRetryScheduled = true;
+                                    return;
                                   }
-                                  posthog?.shutdown();
+
+                                  await finalizeRetryStream({
+                                    retryMessages,
+                                    retryAborted,
+                                    retryMessageId,
+                                    retryStartTime: fallbackStartTime,
+                                  });
                                 } finally {
-                                  await releaseFreeRunLockOnce();
+                                  if (!finalRetryScheduled) {
+                                    await releaseFreeRunLockOnce();
+                                  }
                                 }
                               },
                             }),
@@ -4849,6 +5087,7 @@ export const agentLongTask = task({
                           stepLimitReached: state.stoppedDueToStepLimit,
                           todoRunMetrics: getTodoManager().getRunMetrics(),
                         }),
+                        ...getProviderRecoveryAnalytics(outcome),
                         ...getTriggerRunTelemetry(),
                       });
                       if (!isTerminalProviderStreamError(state)) {

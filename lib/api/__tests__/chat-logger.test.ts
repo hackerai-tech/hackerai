@@ -91,6 +91,13 @@ describe("captureAgentRun", () => {
       activeModelStreamDurationMs: 30_000,
       activeTerminalWaitDurationMs: 10_000,
       activeSandboxRecoveryDurationMs: 2_000,
+      upstreamProvider: "Cloudflare",
+      providerErrorProvider: "DeepInfra",
+      providerErrorCategory: "timeout",
+      providerErrorStatusCode: 504,
+      providerRecoveryAttempts: 2,
+      providerRecoveryModels: ["model-grok-4.6", "model-kimi-k3"],
+      providerRecoverySucceeded: true,
     });
 
     expect(capture).toHaveBeenCalledWith({
@@ -113,6 +120,13 @@ describe("captureAgentRun", () => {
         active_model_stream_duration_ms: 30_000,
         active_terminal_wait_duration_ms: 10_000,
         active_sandbox_recovery_duration_ms: 2_000,
+        upstream_provider: "Cloudflare",
+        provider_error_provider: "DeepInfra",
+        provider_error_category: "timeout",
+        provider_error_status_code: 504,
+        provider_recovery_attempts: 2,
+        provider_recovery_models: ["model-grok-4.6", "model-kimi-k3"],
+        provider_recovery_succeeded: true,
         response_model: "deepseek/deepseek-v4-pro",
         fallback_served: false,
         sandbox_type: "remote-connection",
