@@ -2,7 +2,6 @@ import { Sandbox } from "@e2b/code-interpreter";
 import type { SandboxBootInfo, SandboxContext } from "@/types";
 import { NotFoundError, getUserFacingE2BErrorMessage } from "./e2b-errors";
 import { isExpectedAlreadyGoneCleanupError } from "@/lib/utils/cleanup-errors";
-import { classifySandboxReadinessFailureSignal } from "./sandbox-readiness-failure";
 
 type SandboxReadyPath = SandboxBootInfo["path"];
 
@@ -249,43 +248,10 @@ export const ensureSandboxConnection = async (
             `[${userID}] Unexpected error resuming sandbox ${existingSandbox.sandboxId}:`,
             e,
           );
-          const failureReason = classifySandboxReadinessFailureSignal(e);
-          const canQuarantinePausedSandbox =
-            existingSandbox.state === "paused" &&
-            (failureReason === "placement_failure" ||
-              failureReason === "operation_timeout");
-          if (canQuarantinePausedSandbox) {
-            console.warn(
-              JSON.stringify({
-                timestamp: new Date().toISOString(),
-                level: "warn",
-                event: "e2b_paused_sandbox_quarantined_after_resume_failure",
-                service: "chat-handler",
-                environment:
-                  process.env.TRIGGER_ENV ??
-                  process.env.VERCEL_ENV ??
-                  process.env.NODE_ENV ??
-                  "unknown",
-                request_id: process.env.VERCEL_REQUEST_ID ?? null,
-                user_id: userID,
-                sandbox_id: existingSandbox.sandboxId,
-                failure_reason: failureReason,
-              }),
-            );
-            try {
-              await Sandbox.kill(existingSandbox.sandboxId);
-            } catch (killError) {
-              logSandboxKillFailure(
-                userID,
-                `Failed to quarantine paused sandbox ${existingSandbox.sandboxId}`,
-                killError,
-              );
-            }
-          }
-          // Never destroy a shared user sandbox for a transient connection
-          // error while it is running. A paused sandbox cannot own active
-          // commands, so placement/timeout failures quarantine it before the
-          // caller attempts bounded recovery on AWS.
+          // The listed state can become stale while connect is pending. Never
+          // destroy a shared user sandbox here: another run may have resumed
+          // it by the time this failure is observed. The attachment path owns
+          // bounded provider recovery and can retry safely on AWS.
           throw e;
         }
       }
