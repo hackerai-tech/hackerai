@@ -1263,6 +1263,13 @@ type AgentCompletionAnalyticsArgs = {
   isAutoContinue?: boolean;
   stepLimitTelemetry?: AgentStepLimitTelemetry;
   experiment?: ExperimentAnalyticsContext;
+  upstreamProvider?: string;
+  providerErrorProvider?: string;
+  providerErrorCategory?: string;
+  providerErrorStatusCode?: number;
+  providerRecoveryAttempts?: number;
+  providerRecoveryModels?: readonly string[];
+  providerRecoverySucceeded?: boolean;
 };
 
 export function captureAgentRun({
@@ -1292,6 +1299,13 @@ export function captureAgentRun({
   isAutoContinue,
   stepLimitTelemetry,
   experiment,
+  upstreamProvider,
+  providerErrorProvider,
+  providerErrorCategory,
+  providerErrorStatusCode,
+  providerRecoveryAttempts,
+  providerRecoveryModels,
+  providerRecoverySucceeded,
 }: {
   posthog: PostHog | null;
   userId: string;
@@ -1319,6 +1333,13 @@ export function captureAgentRun({
   isAutoContinue?: boolean;
   stepLimitTelemetry?: AgentStepLimitTelemetry;
   experiment?: ExperimentAnalyticsContext;
+  upstreamProvider?: string;
+  providerErrorProvider?: string;
+  providerErrorCategory?: string;
+  providerErrorStatusCode?: number;
+  providerRecoveryAttempts?: number;
+  providerRecoveryModels?: readonly string[];
+  providerRecoverySucceeded?: boolean;
 }) {
   if (!posthog || mode !== "agent") return;
   posthog.capture({
@@ -1372,6 +1393,25 @@ export function captureAgentRun({
         sandbox_provider: sandboxInfo.provider,
       }),
       ...(finishReason && { finish_reason: finishReason }),
+      ...(upstreamProvider && { upstream_provider: upstreamProvider }),
+      ...(providerErrorProvider && {
+        provider_error_provider: providerErrorProvider,
+      }),
+      ...(providerErrorCategory && {
+        provider_error_category: providerErrorCategory,
+      }),
+      ...(providerErrorStatusCode !== undefined && {
+        provider_error_status_code: providerErrorStatusCode,
+      }),
+      ...(providerRecoveryAttempts !== undefined && {
+        provider_recovery_attempts: providerRecoveryAttempts,
+      }),
+      ...(providerRecoveryModels && {
+        provider_recovery_models: [...providerRecoveryModels],
+      }),
+      ...(providerRecoverySucceeded !== undefined && {
+        provider_recovery_succeeded: providerRecoverySucceeded,
+      }),
       ...(stepLimitTelemetry && {
         step_limit_telemetry_version: stepLimitTelemetry.version,
         configured_max_steps: stepLimitTelemetry.configuredMaxSteps,
@@ -1432,6 +1472,13 @@ export function captureAgentCompletionAnalytics(
     isAutoContinue: args.isAutoContinue,
     stepLimitTelemetry: args.stepLimitTelemetry,
     experiment: args.experiment,
+    upstreamProvider: args.upstreamProvider,
+    providerErrorProvider: args.providerErrorProvider,
+    providerErrorCategory: args.providerErrorCategory,
+    providerErrorStatusCode: args.providerErrorStatusCode,
+    providerRecoveryAttempts: args.providerRecoveryAttempts,
+    providerRecoveryModels: args.providerRecoveryModels,
+    providerRecoverySucceeded: args.providerRecoverySucceeded,
   });
 }
 

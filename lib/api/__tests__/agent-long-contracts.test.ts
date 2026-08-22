@@ -1404,6 +1404,15 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(taskSrc).toContain(
       "Do not repeat completed tool calls or their side effects.",
     );
+    expect(taskSrc).toMatch(
+      /getNextDeepSeekProDisconnectRetryModel\(\{[\s\S]{0,250}failedModel: retryModel,[\s\S]{0,250}completedRetryCount:[\s\S]{0,100}providerRecoveryAttempts/,
+    );
+    expect(taskSrc).toMatch(
+      /const finalRetryResult =\s*await createStream\(finalRetryModel\)/,
+    );
+    expect(taskSrc).not.toMatch(
+      /finalRetryResult[\s\S]{0,2500}getNextDeepSeekProDisconnectRetryModel/,
+    );
   });
 
   test("persists replay-safe output before fallback stream creation can fail", () => {
@@ -1558,10 +1567,13 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
   });
 
   test("retry streams reset served-model telemetry and distinguish same-model recovery", () => {
-    for (const source of [taskSrc, chatHandlerSrc]) {
+    for (const [source, expectedResetCount] of [
+      [taskSrc, 3],
+      [chatHandlerSrc, 2],
+    ] as const) {
       expect(
         source.match(/resetServedModelTelemetryForRetry\(state\)/g),
-      ).toHaveLength(2);
+      ).toHaveLength(expectedResetCount);
 
       const catchModelSwitchIdx = source.indexOf(
         "retryUsedFallbackModel = retryUsesDifferentModel(",

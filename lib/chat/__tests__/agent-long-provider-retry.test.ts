@@ -1,6 +1,7 @@
 import {
   createAssistantContentLoopMonitor,
   detectAssistantContentLoopFromText,
+  getNextDeepSeekProDisconnectRetryModel,
   prepareProviderDisconnectContinuation,
   shouldRetryAgentLongWithFallback,
   shouldRetryProviderStreamAfterReasoningOnlyOutput,
@@ -95,6 +96,43 @@ describe("prepareProviderDisconnectContinuation", () => {
 
     expect(recovery?.removedPartCount).toBe(2);
     expect(recovery?.messages).toEqual([messages[0]]);
+  });
+});
+
+describe("getNextDeepSeekProDisconnectRetryModel", () => {
+  it("uses Grok and then one final Kimi retry", () => {
+    expect(
+      getNextDeepSeekProDisconnectRetryModel({
+        originalModel: "model-deepseek-v4-pro-0813",
+        failedModel: "model-deepseek-v4-pro-0813",
+        completedRetryCount: 0,
+      }),
+    ).toBe("model-grok-4.6");
+
+    expect(
+      getNextDeepSeekProDisconnectRetryModel({
+        originalModel: "model-deepseek-v4-pro-0813",
+        failedModel: "model-grok-4.6",
+        completedRetryCount: 1,
+      }),
+    ).toBe("model-kimi-k3");
+  });
+
+  it("stops after Kimi and does not affect other original models", () => {
+    expect(
+      getNextDeepSeekProDisconnectRetryModel({
+        originalModel: "model-deepseek-v4-pro-0813",
+        failedModel: "model-kimi-k3",
+        completedRetryCount: 2,
+      }),
+    ).toBeUndefined();
+    expect(
+      getNextDeepSeekProDisconnectRetryModel({
+        originalModel: "model-grok-4.6",
+        failedModel: "model-grok-4.6",
+        completedRetryCount: 0,
+      }),
+    ).toBeUndefined();
   });
 });
 
