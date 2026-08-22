@@ -1326,13 +1326,26 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
     return `[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${encoded}'))`;
   }
 
-  private static buildEncodedPowerShellCommand(
+  private async preparePowerShellCommand(
     script: string,
-    useBash: boolean,
-  ): string {
-    const executable = useBash ? "powershell.exe" : "powershell";
-    const encoded = Buffer.from(script, "utf16le").toString("base64");
-    return `${executable} -NoLogo -NoProfile -NonInteractive -EncodedCommand ${encoded}`;
+  ): Promise<{ command: string; cleanup: () => Promise<void> }> {
+    const scriptPath = `/tmp/hackerai-transfer-${crypto.randomUUID()}.ps1`;
+    try {
+      // files.write already chunks legacy cmd.exe writes below its command
+      // length limit and uses the native file relay when the client supports it.
+      await this.files.write(scriptPath, script);
+      const { useBash, path, escapePath } = await this.shellContext(scriptPath);
+      const executable = useBash ? "powershell.exe" : "powershell";
+      return {
+        command: `${executable} -NoLogo -NoProfile -NonInteractive -File ${escapePath(path)}`,
+        cleanup: async () => {
+          await this.files.remove(scriptPath);
+        },
+      };
+    } catch (error) {
+      await this.files.remove(scriptPath).catch(() => undefined);
+      throw error;
+    }
   }
 
   private async statNativeFile(
@@ -1573,6 +1586,9 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
             { displayName: i === 0 ? `Writing: ${fileName}` : "" },
           );
           if (result.exitCode !== 0) {
+            await this.commands
+              .run(`del /q /f ${tempFile}`, { displayName: "" })
+              .catch(() => undefined);
             throw new Error(`Failed to write file: ${result.stderr}`);
           }
         }
@@ -1755,6 +1771,7 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
       const escapedPath = escapePath(path);
       const escapedUrl = escapeValue(url);
       const escapedDir = dir ? escapePath(dir) : "";
+      let cleanupPowerShellScript: (() => Promise<void>) | undefined;
 
       // Combine mkdir + download into a single command to avoid separate
       // round-trips through the sandbox bridge (e.g. Tauri desktop app),
@@ -1792,10 +1809,9 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
           "if ($directory) { [IO.Directory]::CreateDirectory($directory) | Out-Null }",
           "Invoke-WebRequest -UseBasicParsing -Uri $url -OutFile $destination",
         ].join("; ");
-        downloadPart = CentrifugoSandbox.buildEncodedPowerShellCommand(
-          powerShellScript,
-          useBash,
-        );
+        const prepared = await this.preparePowerShellCommand(powerShellScript);
+        downloadPart = prepared.command;
+        cleanupPowerShellScript = prepared.cleanup;
       }
       const command =
         httpClient === "powershell"
@@ -1820,68 +1836,71 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
             : new Set<number>();
       const MAX_ATTEMPTS = 3;
 
-      let result: Awaited<ReturnType<typeof this.commands.run>> | null = null;
-      for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
-        try {
-          result = await this.commands.run(command, {
-            displayName:
-              attempt === 1
-                ? `Downloading: ${fileName}`
-                : `Downloading: ${fileName} (retry ${attempt - 1})`,
-            timeoutMs: FILE_DOWNLOAD_TIMEOUT_MS,
-          });
-        } catch (error) {
+      try {
+        let result: Awaited<ReturnType<typeof this.commands.run>> | null = null;
+        for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+          try {
+            result = await this.commands.run(command, {
+              displayName:
+                attempt === 1
+                  ? `Downloading: ${fileName}`
+                  : `Downloading: ${fileName} (retry ${attempt - 1})`,
+              timeoutMs: FILE_DOWNLOAD_TIMEOUT_MS,
+            });
+          } catch (error) {
+            if (
+              attempt === MAX_ATTEMPTS ||
+              !isTransientCommandTimeoutError(error)
+            ) {
+              throw error;
+            }
+            console.warn(
+              `[centrifugo-download] command timeout on attempt ${attempt}/${MAX_ATTEMPTS}, retrying: ${redactTransferDetails(getErrorMessage(error), url, [rawPath, path])}`,
+            );
+            await new Promise((r) => setTimeout(r, 500 * attempt));
+            continue;
+          }
+
+          if (result.exitCode === 0) break;
           if (
             attempt === MAX_ATTEMPTS ||
-            !isTransientCommandTimeoutError(error)
+            !transientExitCodes.has(result.exitCode)
           ) {
-            throw error;
+            break;
           }
           console.warn(
-            `[centrifugo-download] command timeout on attempt ${attempt}/${MAX_ATTEMPTS}, retrying: ${redactTransferDetails(getErrorMessage(error), url, [rawPath, path])}`,
+            `[centrifugo-download] ${httpClient} exit ${result.exitCode} on attempt ${attempt}/${MAX_ATTEMPTS}, retrying`,
           );
           await new Promise((r) => setTimeout(r, 500 * attempt));
-          continue;
         }
-
-        if (result.exitCode === 0) break;
-        if (
-          attempt === MAX_ATTEMPTS ||
-          !transientExitCodes.has(result.exitCode)
-        ) {
-          break;
+        if (!result) {
+          throw new Error("Download command failed without returning a result");
         }
-        console.warn(
-          `[centrifugo-download] ${httpClient} exit ${result.exitCode} on attempt ${attempt}/${MAX_ATTEMPTS}, retrying`,
-        );
-        await new Promise((r) => setTimeout(r, 500 * attempt));
-        continue;
-      }
-      if (!result) {
-        throw new Error("Download command failed without returning a result");
-      }
-      if (result.exitCode !== 0) {
-        // Gather diagnostic info to help debug write failures (e.g. curl exit 23).
-        // Fall back to the target's own directory context when the destination
-        // is a drive root and `dir` is empty. Avoid listing directory contents:
-        // this can be a user's local machine in desktop dangerous mode.
-        const diagDir = escapedDir || (useBash ? "/" : '"."');
-        const diagCmd = useBash
-          ? `test -d ${diagDir} && echo target_dir_exists=true || echo target_dir_exists=false; test -w ${diagDir} && echo target_dir_writable=true || echo target_dir_writable=false; df -h /tmp 2>&1 | sed -n '1,2p'`
-          : `if exist ${diagDir} (echo target_dir_exists=true) else (echo target_dir_exists=false) & (pushd ${diagDir} >nul 2>nul && (copy /Y NUL .hackerai_write_probe.tmp >nul 2>nul && del /q .hackerai_write_probe.tmp >nul 2>nul && echo target_dir_writable=true || echo target_dir_writable=false) & popd >nul 2>nul) || echo target_dir_writable=false`;
-        const diag = await this.commands.run(diagCmd, { displayName: "" });
-        const safeStderr = redactTransferDetails(result.stderr, url, [
-          rawPath,
-          path,
-        ]);
-        throw new Error(
-          `Failed to download file: ${safeStderr}\n` +
-            `  source: [redacted-url]\n` +
-            `  destination: [redacted-destination-path]\n` +
-            `  command: ${httpClient}\n` +
-            `  exitCode: ${result.exitCode}\n` +
-            `  diagnostics: ${diag.stdout}`,
-        );
+        if (result.exitCode !== 0) {
+          // Gather diagnostic info to help debug write failures (e.g. curl exit 23).
+          // Fall back to the target's own directory context when the destination
+          // is a drive root and `dir` is empty. Avoid listing directory contents:
+          // this can be a user's local machine in desktop dangerous mode.
+          const diagDir = escapedDir || (useBash ? "/" : '"."');
+          const diagCmd = useBash
+            ? `test -d ${diagDir} && echo target_dir_exists=true || echo target_dir_exists=false; test -w ${diagDir} && echo target_dir_writable=true || echo target_dir_writable=false; df -h /tmp 2>&1 | sed -n '1,2p'`
+            : `if exist ${diagDir} (echo target_dir_exists=true) else (echo target_dir_exists=false) & (pushd ${diagDir} >nul 2>nul && (copy /Y NUL .hackerai_write_probe.tmp >nul 2>nul && del /q .hackerai_write_probe.tmp >nul 2>nul && echo target_dir_writable=true || echo target_dir_writable=false) & popd >nul 2>nul) || echo target_dir_writable=false`;
+          const diag = await this.commands.run(diagCmd, { displayName: "" });
+          const safeStderr = redactTransferDetails(result.stderr, url, [
+            rawPath,
+            path,
+          ]);
+          throw new Error(
+            `Failed to download file: ${safeStderr}\n` +
+              `  source: [redacted-url]\n` +
+              `  destination: [redacted-destination-path]\n` +
+              `  command: ${httpClient}\n` +
+              `  exitCode: ${result.exitCode}\n` +
+              `  diagnostics: ${diag.stdout}`,
+          );
+        }
+      } finally {
+        await cleanupPowerShellScript?.().catch(() => undefined);
       }
     },
 
@@ -1890,7 +1909,7 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
       uploadUrl: string,
       contentType: string,
     ): Promise<void> => {
-      const { useBash, path, nativePath, escapePath, escapeValue } =
+      const { path, nativePath, escapePath, escapeValue } =
         await this.shellContext(rawPath);
       const httpClient = await this.detectHttpClient();
 
@@ -1928,6 +1947,7 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
           : "";
 
       let command: string;
+      let cleanupPowerShellScript: (() => Promise<void>) | undefined;
       if (httpClient === "curl") {
         command = `curl ${curlUploadFlags} -X PUT -H ${escapedContentType} --data-binary @${escapedPath} ${escapedUrl}`;
       } else if (httpClient === "wget") {
@@ -1941,18 +1961,21 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
           `$contentType=${CentrifugoSandbox.encodePowerShellValue(contentType)}`,
           "Invoke-WebRequest -UseBasicParsing -Method Put -Uri $url -InFile $source -ContentType $contentType",
         ].join("; ");
-        command = CentrifugoSandbox.buildEncodedPowerShellCommand(
-          powerShellScript,
-          useBash,
-        );
+        const prepared = await this.preparePowerShellCommand(powerShellScript);
+        command = prepared.command;
+        cleanupPowerShellScript = prepared.cleanup;
       }
 
-      const result = await this.commands.run(command, {
-        timeoutMs: 120000,
-        displayName: `Uploading: ${fileName}`,
-      });
-      if (result.exitCode !== 0) {
-        throw new Error(`Failed to upload file: ${result.stderr}`);
+      try {
+        const result = await this.commands.run(command, {
+          timeoutMs: 120000,
+          displayName: `Uploading: ${fileName}`,
+        });
+        if (result.exitCode !== 0) {
+          throw new Error(`Failed to upload file: ${result.stderr}`);
+        }
+      } finally {
+        await cleanupPowerShellScript?.().catch(() => undefined);
       }
     },
   };

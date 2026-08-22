@@ -1497,7 +1497,7 @@ describe("CentrifugoSandbox", () => {
       });
     });
 
-    it("falls back to PowerShell when curl is unavailable on Windows", async () => {
+    it("stages and cleans a PowerShell download script when curl is unavailable on Windows", async () => {
       const sandbox = createSandbox({
         osInfo: {
           platform: "win32",
@@ -1507,17 +1507,18 @@ describe("CentrifugoSandbox", () => {
         },
       });
       (sandbox as any).shellKind = "cmd";
-      const run = jest
-        .fn()
-        .mockResolvedValueOnce({
-          stdout: "",
-          stderr: "INFO: Could not find files for the given pattern(s).",
-          exitCode: 1,
-        })
-        .mockResolvedValueOnce({ stdout: "", stderr: "", exitCode: 0 });
+      const run = jest.fn(async (command: string) =>
+        command === "where curl 2>nul"
+          ? {
+              stdout: "",
+              stderr: "INFO: Could not find files for the given pattern(s).",
+              exitCode: 1,
+            }
+          : { stdout: "", stderr: "", exitCode: 0 },
+      );
       (sandbox as any).commands.run = run;
 
-      const signedUrl = "https://example.com/image.png?X-Amz-Signature=opaque";
+      const signedUrl = `https://example.com/image.png?X-Amz-Signature=${"a".repeat(6_000)}`;
       await sandbox.files.downloadFromUrl(
         signedUrl,
         "/tmp/hackerai-upload/image.png",
@@ -1527,15 +1528,29 @@ describe("CentrifugoSandbox", () => {
         displayName: "",
         timeoutMs: 30000,
       });
-      const command = run.mock.calls[1][0] as string;
+      const commands = run.mock.calls.map(([command]) => command as string);
+      const command = commands.find((command) =>
+        command.startsWith("powershell "),
+      )!;
       expect(command).toMatch(
-        /^powershell -NoLogo -NoProfile -NonInteractive -EncodedCommand /,
+        /^powershell -NoLogo -NoProfile -NonInteractive -File /,
       );
+      expect(command.length).toBeLessThan(8_191);
       expect(command).not.toContain(signedUrl);
       expect(command).not.toContain("C:\\temp\\hackerai-upload");
 
-      const encodedCommand = command.split(" ").at(-1)!;
-      const script = Buffer.from(encodedCommand, "base64").toString("utf16le");
+      const scriptChunks = commands
+        .filter((command) => command.startsWith("echo "))
+        .map((command) => command.match(/^echo (\S+) >{1,2} /)?.[1] ?? "");
+      expect(scriptChunks.length).toBeGreaterThan(1);
+      expect(
+        commands
+          .filter((command) => command.startsWith("echo "))
+          .every((command) => command.length < 8_191),
+      ).toBe(true);
+      const script = Buffer.from(scriptChunks.join(""), "base64").toString(
+        "utf8",
+      );
       expect(script).toContain("Invoke-WebRequest -UseBasicParsing");
       expect(script).toContain("-OutFile $destination");
       expect(script).toContain(
@@ -1546,9 +1561,14 @@ describe("CentrifugoSandbox", () => {
           "base64",
         ),
       );
+      const scriptPath = command.match(/-File ("[^"]+\.ps1")$/)?.[1];
+      expect(scriptPath).toBeDefined();
+      expect(commands).toContain(
+        `del /q /f ${scriptPath} 2>nul & rmdir /s /q ${scriptPath} 2>nul`,
+      );
     });
 
-    it("uses the Windows PowerShell fallback for presigned URL uploads", async () => {
+    it("cleans the staged PowerShell upload script after transfer failure", async () => {
       const sandbox = createSandbox({
         osInfo: {
           platform: "win32",
@@ -1558,27 +1578,52 @@ describe("CentrifugoSandbox", () => {
         },
       });
       (sandbox as any).shellKind = "cmd";
-      const run = jest
-        .fn()
-        .mockResolvedValueOnce({ stdout: "", stderr: "", exitCode: 1 })
-        .mockResolvedValueOnce({ stdout: "", stderr: "", exitCode: 0 });
+      const run = jest.fn(async (command: string) => {
+        if (command === "where curl 2>nul") {
+          return { stdout: "", stderr: "", exitCode: 1 };
+        }
+        if (command.startsWith("powershell ")) {
+          return {
+            stdout: "",
+            stderr: "The remote server returned an error",
+            exitCode: 1,
+          };
+        }
+        return { stdout: "", stderr: "", exitCode: 0 };
+      });
       (sandbox as any).commands.run = run;
 
-      const uploadUrl = "https://example.com/upload?X-Amz-Signature=opaque";
-      await sandbox.files.uploadToUrl(
-        "/tmp/hackerai-upload/report.txt",
-        uploadUrl,
-        "text/plain",
-      );
+      const uploadUrl = `https://example.com/upload?X-Amz-Signature=${"b".repeat(6_000)}`;
+      await expect(
+        sandbox.files.uploadToUrl(
+          "/tmp/hackerai-upload/report.txt",
+          uploadUrl,
+          "text/plain",
+        ),
+      ).rejects.toThrow("Failed to upload file");
 
-      const command = run.mock.calls[1][0] as string;
+      const commands = run.mock.calls.map(([command]) => command as string);
+      const command = commands.find((command) =>
+        command.startsWith("powershell "),
+      )!;
       expect(command).toMatch(
-        /^powershell -NoLogo -NoProfile -NonInteractive -EncodedCommand /,
+        /^powershell -NoLogo -NoProfile -NonInteractive -File /,
       );
+      expect(command.length).toBeLessThan(8_191);
       expect(command).not.toContain(uploadUrl);
 
-      const encodedCommand = command.split(" ").at(-1)!;
-      const script = Buffer.from(encodedCommand, "base64").toString("utf16le");
+      const scriptChunks = commands
+        .filter((command) => command.startsWith("echo "))
+        .map((command) => command.match(/^echo (\S+) >{1,2} /)?.[1] ?? "");
+      expect(scriptChunks.length).toBeGreaterThan(1);
+      expect(
+        commands
+          .filter((command) => command.startsWith("echo "))
+          .every((command) => command.length < 8_191),
+      ).toBe(true);
+      const script = Buffer.from(scriptChunks.join(""), "base64").toString(
+        "utf8",
+      );
       expect(script).toContain(
         "Invoke-WebRequest -UseBasicParsing -Method Put",
       );
@@ -1588,6 +1633,11 @@ describe("CentrifugoSandbox", () => {
       );
       expect(script).toContain(
         Buffer.from("text/plain", "utf8").toString("base64"),
+      );
+      const scriptPath = command.match(/-File ("[^"]+\.ps1")$/)?.[1];
+      expect(scriptPath).toBeDefined();
+      expect(commands).toContain(
+        `del /q /f ${scriptPath} 2>nul & rmdir /s /q ${scriptPath} 2>nul`,
       );
     });
 
