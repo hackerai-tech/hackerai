@@ -227,6 +227,8 @@ export async function POST(req: NextRequest) {
           stripePaymentIntentId,
           stripeInvoiceId,
           purchaseRoute: "webhook",
+          enableExtraUsage:
+            session.metadata.enableExtraUsageAfterPurchase === "true",
         });
 
         logExtraUsagePurchase(
