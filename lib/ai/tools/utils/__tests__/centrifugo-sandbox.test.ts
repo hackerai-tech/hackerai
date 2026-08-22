@@ -1340,6 +1340,38 @@ describe("CentrifugoSandbox", () => {
         jest.useFakeTimers();
       }
     }, 15000);
+
+    it("cleans the cmd Base64 temporary file when a chunk command rejects", async () => {
+      const sandbox = createSandbox({
+        osInfo: {
+          platform: "win32",
+          arch: "x86_64",
+          release: "10.0.19045",
+          hostname: "WIN-DEV",
+        },
+      });
+      (sandbox as any).shellKind = "cmd";
+      let echoCount = 0;
+      const commands: string[] = [];
+      (sandbox as any).commands.run = jest.fn(async (command: string) => {
+        commands.push(command);
+        if (command.startsWith("echo ") && ++echoCount === 2) {
+          throw new Error("relay disconnected");
+        }
+        return { stdout: "", stderr: "", exitCode: 0 };
+      });
+
+      await expect(
+        sandbox.files.write("/tmp/hackerai-transfer.ps1", "x".repeat(12_000)),
+      ).rejects.toThrow("relay disconnected");
+
+      const firstChunk = commands.find((command) =>
+        command.startsWith("echo "),
+      )!;
+      const tempFile = firstChunk.match(/ > (.+)$/)?.[1];
+      expect(tempFile).toBeDefined();
+      expect(commands).toContain(`del /q /f ${tempFile}`);
+    });
   });
 
   describe("git-bash on Windows", () => {
@@ -1469,6 +1501,31 @@ describe("CentrifugoSandbox", () => {
       expect(runs[1]).toContain(
         "'https://example.com/image.png?X-Amz-Algorithm=test&X-Amz-Signature=opaque'",
       );
+      expect(runs[1]).not.toContain("if not exist");
+      expect(sandbox.isWindows()).toBe(false);
+    });
+
+    it("keeps POSIX semantics when a legacy non-Bash shell leaves BASH_VERSION empty", async () => {
+      const sandbox = createSandbox();
+      (sandbox as any).httpClient = "curl";
+      (sandbox as any).curlCaps = {
+        retryAllErrors: true,
+        retryConnrefused: true,
+        sslNoRevoke: false,
+      };
+      const runs: string[] = [];
+      (sandbox as any).commands.run = jest.fn(async (cmd: string) => {
+        runs.push(cmd);
+        return { stdout: "\n", stderr: "", exitCode: 0 };
+      });
+
+      await sandbox.files.downloadFromUrl(
+        "https://example.com/image.png?X-Amz-Signature=opaque",
+        "/tmp/hackerai-upload/image.png",
+      );
+
+      expect(runs[0]).toBe("echo $BASH_VERSION");
+      expect(runs[1]).toContain("mkdir -p '/tmp/hackerai-upload'");
       expect(runs[1]).not.toContain("if not exist");
       expect(sandbox.isWindows()).toBe(false);
     });
@@ -1644,6 +1701,63 @@ describe("CentrifugoSandbox", () => {
       expect(commands).toContain(
         `del /q /f ${scriptPath} 2>nul & rmdir /s /q ${scriptPath} 2>nul`,
       );
+    });
+
+    it("uses the native relay path and redacts it from Git Bash PowerShell upload errors", async () => {
+      const sandbox = createSandbox({
+        isDesktop: true,
+        capabilities: { commands: true, pty: true, files: true },
+        osInfo: {
+          platform: "win32",
+          arch: "x86_64",
+          release: "10.0.19045",
+          hostname: "WIN-DEV",
+        },
+      });
+      (sandbox as any).shellKind = "bash";
+      (sandbox as any).httpClient = "powershell";
+      const write = jest.fn(async () => undefined);
+      const remove = jest.fn(async () => undefined);
+      sandbox.files.write = write;
+      sandbox.files.remove = remove;
+      const nativeSource = "C:\\temp\\hackerai-upload\\report.txt";
+      (sandbox as any).commands.run = jest.fn(async (command: string) =>
+        command.startsWith("powershell.exe ")
+          ? {
+              stdout: "",
+              stderr: `Upload failed from ${nativeSource}`,
+              exitCode: 1,
+            }
+          : { stdout: "", stderr: "", exitCode: 0 },
+      );
+
+      await expect(
+        sandbox.files.uploadToUrl(
+          "/tmp/hackerai-upload/report.txt",
+          "https://example.com/upload?X-Amz-Signature=opaque",
+          "text/plain",
+        ),
+      ).rejects.toThrow(
+        "Failed to upload file: Upload failed from [redacted-destination-path]",
+      );
+
+      const nativeScriptPath = write.mock.calls[0][0] as string;
+      expect(nativeScriptPath).toMatch(
+        /^C:\\temp\\hackerai-transfer-[\w-]+\.ps1$/,
+      );
+      const powerShellCommand = (sandbox as any).commands.run.mock.calls.find(
+        ([command]: [string]) => command.startsWith("powershell.exe "),
+      )[0] as string;
+      expect(powerShellCommand).toContain(
+        `-File '${nativeScriptPath
+          .replace(
+            /^([A-Za-z]):/,
+            (_, drive: string) => `/${drive.toLowerCase()}`,
+          )
+          .replace(/\\/g, "/")}'`,
+      );
+      expect(powerShellCommand).not.toContain(nativeSource);
+      expect(remove).toHaveBeenCalledWith(nativeScriptPath);
     });
 
     it("downloadFromUrl omits --ssl-no-revoke when Windows curl lacks support", async () => {

@@ -1104,8 +1104,8 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
    * Detect whether the remote shell is bash (git-bash on Windows, or any
    * POSIX host) or cmd.exe. Cached per sandbox instance.
    *
-   * Probe: `echo $BASH_VERSION` — bash substitutes the version string,
-   * cmd.exe echoes the literal `$BASH_VERSION`.
+   * Probe: `echo $BASH_VERSION` — cmd.exe echoes the literal variable while
+   * POSIX shells either expand it (Bash) or emit an empty line (sh/dash/zsh).
    */
   private async detectShell(): Promise<"bash" | "cmd"> {
     if (this.shellKind) return this.shellKind;
@@ -1120,7 +1120,7 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
     const probe = await this.runSetupCommand("echo $BASH_VERSION", {
       displayName: "",
     });
-    this.shellKind = /^\d/.test(probe.stdout.trim()) ? "bash" : "cmd";
+    this.shellKind = probe.stdout.trim() === "$BASH_VERSION" ? "cmd" : "bash";
     return this.shellKind;
   }
 
@@ -1330,20 +1330,24 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
     script: string,
   ): Promise<{ command: string; cleanup: () => Promise<void> }> {
     const scriptPath = `/tmp/hackerai-transfer-${crypto.randomUUID()}.ps1`;
+    const nativeScriptPath = this.toNativePath(
+      this.resolveWorkingPath(scriptPath),
+    );
     try {
       // files.write already chunks legacy cmd.exe writes below its command
       // length limit and uses the native file relay when the client supports it.
-      await this.files.write(scriptPath, script);
-      const { useBash, path, escapePath } = await this.shellContext(scriptPath);
+      await this.files.write(nativeScriptPath, script);
+      const { useBash, path, escapePath } =
+        await this.shellContext(nativeScriptPath);
       const executable = useBash ? "powershell.exe" : "powershell";
       return {
         command: `${executable} -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ${escapePath(path)}`,
         cleanup: async () => {
-          await this.files.remove(scriptPath);
+          await this.files.remove(nativeScriptPath);
         },
       };
     } catch (error) {
-      await this.files.remove(scriptPath).catch(() => undefined);
+      await this.files.remove(nativeScriptPath).catch(() => undefined);
       throw error;
     }
   }
@@ -1579,30 +1583,30 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
         // Write base64 to temp file, then certutil -decode to target
         // certutil adds header/footer lines, so we write raw base64 via echo
         const tempFile = this.escapeForTarget(`${path}.b64tmp.${Date.now()}`);
-        for (let i = 0; i < chunks.length; i++) {
-          const operator = i === 0 ? ">" : ">>";
-          const result = await this.commands.run(
-            `echo ${chunks[i]} ${operator} ${tempFile}`,
-            { displayName: i === 0 ? `Writing: ${fileName}` : "" },
-          );
-          if (result.exitCode !== 0) {
-            await this.commands
-              .run(`del /q /f ${tempFile}`, { displayName: "" })
-              .catch(() => undefined);
-            throw new Error(`Failed to write file: ${result.stderr}`);
+        try {
+          for (let i = 0; i < chunks.length; i++) {
+            const operator = i === 0 ? ">" : ">>";
+            const result = await this.commands.run(
+              `echo ${chunks[i]} ${operator} ${tempFile}`,
+              { displayName: i === 0 ? `Writing: ${fileName}` : "" },
+            );
+            if (result.exitCode !== 0) {
+              throw new Error(`Failed to write file: ${result.stderr}`);
+            }
           }
-        }
-        // Decode and clean up temp file
-        const decodeResult = await this.commands.run(
-          `certutil -decode ${tempFile} ${escapedPath} >nul & del /q /f ${tempFile}`,
-          { displayName: "" },
-        );
-        if (decodeResult.exitCode !== 0) {
-          // Clean up temp file on failure
-          await this.commands.run(`del /q /f ${tempFile}`, {
-            displayName: "",
-          });
-          throw new Error(`Failed to write file: ${decodeResult.stderr}`);
+          // Decode and clean up temp file
+          const decodeResult = await this.commands.run(
+            `certutil -decode ${tempFile} ${escapedPath} >nul & del /q /f ${tempFile}`,
+            { displayName: "" },
+          );
+          if (decodeResult.exitCode !== 0) {
+            throw new Error(`Failed to write file: ${decodeResult.stderr}`);
+          }
+        } catch (error) {
+          await this.commands
+            .run(`del /q /f ${tempFile}`, { displayName: "" })
+            .catch(() => undefined);
+          throw error;
         }
       } else if (
         isBinary &&
@@ -1975,6 +1979,7 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
           const safeStderr = redactTransferDetails(result.stderr, uploadUrl, [
             rawPath,
             path,
+            nativePath,
           ]);
           throw new Error(`Failed to upload file: ${safeStderr}`);
         }
