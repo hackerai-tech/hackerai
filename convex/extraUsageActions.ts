@@ -58,6 +58,33 @@ function canManageOrganizationBilling(membership: BillingMembership): boolean {
   return (status === undefined || status === "active") && !!hasBillingRole;
 }
 
+/**
+ * Restrict Stripe return URLs to application origins controlled by HackerAI.
+ * Local HTTP origins remain available for development and automated tests.
+ */
+function isAllowedApplicationOrigin(url: URL): boolean {
+  const hostname = url.hostname.toLowerCase();
+  const isLocalhost =
+    hostname === "localhost" ||
+    hostname === "127.0.0.1" ||
+    hostname === "[::1]";
+
+  if (isLocalhost) {
+    return url.protocol === "http:" || url.protocol === "https:";
+  }
+
+  if (url.protocol !== "https:") {
+    return false;
+  }
+
+  return (
+    hostname === "hackerai.co" ||
+    hostname.endsWith(".hackerai.co") ||
+    hostname === "hackerai.vercel.app" ||
+    hostname.endsWith("-hackerai.vercel.app")
+  );
+}
+
 async function getStripeCustomerId(userId: string): Promise<string | null> {
   const workos = getWorkOS();
 
@@ -528,7 +555,7 @@ export const createPurchaseSession = action({
     let applicationOrigin: string;
     try {
       const applicationUrl = new URL(args.baseUrl);
-      if (!["http:", "https:"].includes(applicationUrl.protocol)) {
+      if (!isAllowedApplicationOrigin(applicationUrl)) {
         return { url: null, error: "Invalid base URL" };
       }
       applicationOrigin = applicationUrl.origin;

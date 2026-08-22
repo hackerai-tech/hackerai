@@ -136,7 +136,7 @@ async function callCreatePurchaseSession(
   const { createPurchaseSession } = await import("../extraUsageActions");
   return (createPurchaseSession as any).handler(ctx, {
     amountDollars: 15,
-    baseUrl: "https://hackerai.example/settings",
+    baseUrl: "https://hackerai.co/settings",
     ...overrides,
   });
 }
@@ -243,11 +243,21 @@ describe("extraUsageActions billing authorization", () => {
 
   it("rejects a return path that resolves outside the application origin", async () => {
     const result = await callCreatePurchaseSession(makeCtx(), {
-      baseUrl: "https://hackerai.example",
+      baseUrl: "https://hackerai.co",
       returnPath: "/\\evil.example",
     });
 
     expect(result).toEqual({ url: null, error: "Invalid return path" });
+    expect(mockCheckoutSessionCreate).not.toHaveBeenCalled();
+  });
+
+  it("rejects a caller-controlled external application origin", async () => {
+    const result = await callCreatePurchaseSession(makeCtx(), {
+      baseUrl: "https://evil.example",
+    });
+
+    expect(result).toEqual({ url: null, error: "Invalid base URL" });
+    expect(mockListOrganizationMemberships).not.toHaveBeenCalled();
     expect(mockCheckoutSessionCreate).not.toHaveBeenCalled();
   });
 
@@ -338,7 +348,7 @@ describe("extraUsageActions billing authorization", () => {
     } as never);
 
     await callCreatePurchaseSession(makeCtx("user_admin"), {
-      baseUrl: "https://hackerai.example",
+      baseUrl: "https://hackerai.co",
       returnPath: "/chat-123?view=task",
       resumeAfterPurchase: true,
       enableExtraUsageAfterPurchase: true,
@@ -347,8 +357,8 @@ describe("extraUsageActions billing authorization", () => {
     expect(mockCheckoutSessionCreate).toHaveBeenCalledWith(
       expect.objectContaining({
         success_url:
-          "https://hackerai.example/api/extra-usage/confirm?session_id={CHECKOUT_SESSION_ID}",
-        cancel_url: "https://hackerai.example/chat-123?view=task",
+          "https://hackerai.co/api/extra-usage/confirm?session_id={CHECKOUT_SESSION_ID}",
+        cancel_url: "https://hackerai.co/chat-123?view=task",
         metadata: expect.objectContaining({
           returnPath: "/chat-123?view=task",
           resumeAfterPurchase: "true",
