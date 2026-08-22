@@ -297,6 +297,72 @@ describe("E2B sandbox lease lifecycle", () => {
     }
   });
 
+  it("preserves a paused sandbox after a placement failure", async () => {
+    const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      listSandbox({ state: "paused" });
+      sandboxApi.connect.mockRejectedValue(
+        new Error("500: Failed to place sandbox"),
+      );
+
+      await expect(
+        ensureSandboxConnection({
+          userID: "user-1",
+          setSandbox: jest.fn(),
+        }),
+      ).rejects.toThrow("Failed to place sandbox");
+
+      expect(sandboxApi.kill).not.toHaveBeenCalled();
+      expect(sandboxApi.create).not.toHaveBeenCalled();
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  it("preserves a paused sandbox after an operation timeout", async () => {
+    const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      listSandbox({ state: "paused" });
+      sandboxApi.connect.mockRejectedValue(
+        new Error("sandbox operation timed out"),
+      );
+
+      await expect(
+        ensureSandboxConnection({
+          userID: "user-1",
+          setSandbox: jest.fn(),
+        }),
+      ).rejects.toThrow("sandbox operation timed out");
+
+      expect(sandboxApi.kill).not.toHaveBeenCalled();
+      expect(sandboxApi.create).not.toHaveBeenCalled();
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  it("preserves a running sandbox after a placement failure", async () => {
+    const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      listSandbox({ state: "running" });
+      sandboxApi.connect.mockRejectedValue(
+        new Error("500: Failed to place sandbox"),
+      );
+
+      await expect(
+        ensureSandboxConnection({
+          userID: "user-1",
+          setSandbox: jest.fn(),
+        }),
+      ).rejects.toThrow("Failed to place sandbox");
+
+      expect(sandboxApi.kill).not.toHaveBeenCalled();
+      expect(sandboxApi.create).not.toHaveBeenCalled();
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
   it("creates a replacement without killing when the listed sandbox is gone", async () => {
     const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
     try {

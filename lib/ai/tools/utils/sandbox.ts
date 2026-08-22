@@ -248,8 +248,10 @@ export const ensureSandboxConnection = async (
             `[${userID}] Unexpected error resuming sandbox ${existingSandbox.sandboxId}:`,
             e,
           );
-          // Never destroy a shared user sandbox for a transient connection
-          // error. Another Agent run may still own active commands inside it.
+          // The listed state can become stale while connect is pending. Never
+          // destroy a shared user sandbox here: another run may have resumed
+          // it by the time this failure is observed. The attachment path owns
+          // bounded provider recovery and can retry safely on AWS.
           throw e;
         }
       }

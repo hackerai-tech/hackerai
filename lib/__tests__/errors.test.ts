@@ -39,6 +39,17 @@ describe("ChatSDKError messages", () => {
       "The computer attachment upload failed.",
     );
   });
+
+  it("surfaces a classified sandbox recovery message when available", () => {
+    expect(
+      new ChatSDKError(
+        "bad_request:sandbox",
+        "The Cloud sandbox could not start to receive the attachment. Please try again.",
+      ).message,
+    ).toBe(
+      "The Cloud sandbox could not start to receive the attachment. Please try again.",
+    );
+  });
 });
 
 describe("ChatSDKError stream serialization", () => {
