@@ -21,7 +21,7 @@ import type { Geo } from "@vercel/functions";
 import type { TriggerRunRegion } from "@/lib/api/trigger-region";
 import PostHogClient from "@/app/posthog";
 import { getCloudSandboxProvider } from "@/lib/ai/tools/utils/cloud-sandbox-provider";
-import { evaluateAwsLambdaMicrovmRollout } from "@/lib/experiments/aws-lambda-microvm-rollout";
+import { resolveAwsLambdaMicrovmRollout } from "@/lib/experiments/aws-lambda-microvm-rollout";
 import { recordGroupedSpikeAlert } from "@/lib/observability/grouped-spike-alert";
 
 import { systemPrompt } from "@/lib/system-prompt";
@@ -2613,24 +2613,19 @@ export const agentLongTask = task({
         selectedModelOverride,
       });
       const posthog = PostHogClient();
-      const [cloudSandboxRollout, deepSeekProDefaultAssignment] =
-        await Promise.all([
-          evaluateAwsLambdaMicrovmRollout({
-            posthog,
-            userId,
-            subscription,
-            configuredProvider: getCloudSandboxProvider(),
-            requestId: ctx.run.id,
-          }),
-          evaluateProPlusUltraDeepSeekProDefault({
-            posthog,
-            userId,
-            subscription,
-            selectedModelOverride,
-            hasImageAttachment: attachmentCounts.imageCount > 0,
-            requestId: ctx.run.id,
-          }),
-        ]);
+      const cloudSandboxRollout = resolveAwsLambdaMicrovmRollout({
+        subscription,
+        configuredProvider: getCloudSandboxProvider(),
+      });
+      const deepSeekProDefaultAssignment =
+        await evaluateProPlusUltraDeepSeekProDefault({
+          posthog,
+          userId,
+          subscription,
+          selectedModelOverride,
+          hasImageAttachment: attachmentCounts.imageCount > 0,
+          requestId: ctx.run.id,
+        });
 
       const baseTodos: Todo[] = getBaseTodosForRequest(
         (chat?.todos as unknown as Todo[]) || [],

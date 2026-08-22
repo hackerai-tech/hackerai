@@ -11,10 +11,7 @@ export function getCloudSandboxProvider(): CloudSandboxProvider {
     );
   }
 
-  // Supplying an image is an explicit opt-in that makes AWS the cloud
-  // provider without requiring a second environment variable.
-  return process.env.AWS_LAMBDA_MICROVM_RELEASE_MANIFEST ||
-    process.env.AWS_LAMBDA_MICROVM_IMAGE_ID
-    ? "aws-lambda-microvm"
-    : "e2b";
+  // AWS is the fully released provider. Keep the explicit environment setting
+  // above as an emergency rollback to E2B.
+  return "aws-lambda-microvm";
 }

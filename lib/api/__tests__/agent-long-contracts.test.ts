@@ -2050,12 +2050,12 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
   });
 
   test("agent-long resolves one cloud provider assignment for tools and prompt", () => {
-    const evaluationIdx = taskSrc.indexOf("evaluateAwsLambdaMicrovmRollout({");
-    const toolsIdx = taskSrc.indexOf("createTools(", evaluationIdx);
+    const resolutionIdx = taskSrc.indexOf("resolveAwsLambdaMicrovmRollout({");
+    const toolsIdx = taskSrc.indexOf("createTools(", resolutionIdx);
     const promptIdx = taskSrc.indexOf("systemPrompt(", toolsIdx);
 
-    expect(evaluationIdx).toBeGreaterThan(-1);
-    expect(toolsIdx).toBeGreaterThan(evaluationIdx);
+    expect(resolutionIdx).toBeGreaterThan(-1);
+    expect(toolsIdx).toBeGreaterThan(resolutionIdx);
     expect(promptIdx).toBeGreaterThan(toolsIdx);
     expect(taskSrc.slice(toolsIdx, promptIdx)).toContain("cloudSandboxRollout");
     expect(taskSrc.slice(promptIdx, promptIdx + 700)).toContain(

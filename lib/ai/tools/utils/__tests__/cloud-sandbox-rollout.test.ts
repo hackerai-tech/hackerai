@@ -11,10 +11,6 @@ jest.mock("@/lib/posthog/server", () => ({
 }));
 
 import { ensureCloudSandboxConnection } from "../cloud-sandbox";
-import {
-  AWS_LAMBDA_MICROVM_ROLLOUT_FEATURE_PROPERTY,
-  AWS_LAMBDA_MICROVM_ROLLOUT_FLAG_KEY,
-} from "@/lib/experiments/aws-lambda-microvm-rollout";
 
 describe("cloud sandbox rollout telemetry", () => {
   const originalProvider = process.env.CLOUD_SANDBOX_PROVIDER;
@@ -32,7 +28,7 @@ describe("cloud sandbox rollout telemetry", () => {
     }
   });
 
-  it("uses the per-run control assignment and attributes acquisition failures", async () => {
+  it("attributes acquisition failures under the explicit E2B rollback", async () => {
     const failure = Object.assign(new Error("private target detail"), {
       name: "SandboxUnavailableError",
     });
@@ -49,12 +45,10 @@ describe("cloud sandbox rollout telemetry", () => {
           triggerRunId: "run-1",
           runKind: "parent",
           rollout: {
-            key: AWS_LAMBDA_MICROVM_ROLLOUT_FLAG_KEY,
             provider: "e2b",
-            eligible: true,
+            eligible: false,
             variant: "e2b",
-            flagValue: false,
-            reason: "flag_disabled",
+            reason: "provider_disabled",
           },
         },
       }),
@@ -70,10 +64,9 @@ describe("cloud sandbox rollout telemetry", () => {
         provider: "e2b",
         cloud_sandbox_transport: "e2b_sdk",
         subscription_tier: "ultra",
-        rollout_eligible: true,
+        rollout_eligible: false,
         rollout_variant: "e2b",
-        rollout_reason: "flag_disabled",
-        [AWS_LAMBDA_MICROVM_ROLLOUT_FEATURE_PROPERTY]: false,
+        rollout_reason: "provider_disabled",
         failure_stage: "ensure_cloud_sandbox",
         error_name: "SandboxUnavailableError",
         cloud_sandbox_acquisition_failed_event_version: 2,

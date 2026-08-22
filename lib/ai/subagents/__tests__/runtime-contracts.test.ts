@@ -249,7 +249,7 @@ describe("security validation subagent runtime contracts", () => {
     expect(child).toContain("resolvePersistedSubagentCloudSandboxRollout");
     expect(child).toContain("sandboxIdentity: row.sandbox_identity");
     expect(child).toContain("cloudSandboxRollout,");
-    expect(child).not.toContain("evaluateAwsLambdaMicrovmRollout");
+    expect(child).not.toContain("resolveAwsLambdaMicrovmRollout");
   });
 
   it("deletes child transcripts in bounded batches before deleting the child", () => {

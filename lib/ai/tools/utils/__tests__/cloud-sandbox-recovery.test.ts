@@ -12,12 +12,10 @@ describe("cloud sandbox placement recovery", () => {
       provider: "e2b",
       subscription: "pro",
       rollout: {
-        key: "aws_lambda_microvm_ultra_rollout_v1",
         provider: "e2b",
         eligible: true,
         variant: "e2b",
-        flagValue: false,
-        reason: "flag_disabled",
+        reason: "persisted_parent_sandbox",
       },
     };
 
@@ -47,7 +45,6 @@ describe("cloud sandbox placement recovery", () => {
       provider: "e2b",
       subscription: "pro",
       rollout: {
-        key: "aws_lambda_microvm_ultra_rollout_v1",
         provider: "e2b",
         eligible: false,
         variant: "e2b",
@@ -64,11 +61,10 @@ describe("cloud sandbox placement recovery", () => {
       provider: "e2b",
       subscription: "free",
       rollout: {
-        key: "aws_lambda_microvm_ultra_rollout_v1",
         provider: "e2b",
-        eligible: true,
+        eligible: false,
         variant: "e2b",
-        reason: "flag_disabled",
+        reason: "subscription_ineligible",
       },
     };
 

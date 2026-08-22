@@ -409,6 +409,9 @@ Commands run directly on the host OS "workstation" without Docker isolation. Be 
       "agent-model",
       null,
       null,
+      "full_access",
+      false,
+      "e2b",
     );
     const localPrompt = await systemPrompt(
       "user_123",
@@ -613,6 +616,9 @@ Commands run directly on the host OS "workstation" without Docker isolation. Be 
       "agent-model",
       null,
       null,
+      "full_access",
+      false,
+      "e2b",
     );
     const localPrompt = await systemPrompt(
       "user_123",

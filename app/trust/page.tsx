@@ -36,7 +36,7 @@ export const metadata: Metadata = {
 
 export const dynamic = "force-static";
 
-const LAST_UPDATED = "June 24, 2026";
+const LAST_UPDATED = "August 22, 2026";
 
 const HELP_CENTER_URL =
   process.env.NEXT_PUBLIC_HELP_CENTER_URL || "https://help.hackerai.co/en/";
@@ -72,7 +72,7 @@ const subprocessors: Subprocessor[] = [
   },
   {
     name: "E2B",
-    purpose: "Cloud sandboxes for terminal and browser execution",
+    purpose: "Emergency rollback cloud sandboxes",
     dataCategories: "Commands, command output, files inside the sandbox",
   },
   {
@@ -81,9 +81,10 @@ const subprocessors: Subprocessor[] = [
     dataCategories: "Account data, tasks, messages, files, settings",
   },
   {
-    name: "Amazon Web Services (S3)",
-    purpose: "File storage",
-    dataCategories: "Uploaded files",
+    name: "Amazon Web Services (Lambda MicroVMs and S3)",
+    purpose: "Cloud sandboxes and file storage",
+    dataCategories:
+      "Commands, command output, files inside the sandbox, uploaded files",
   },
   {
     name: "Upstash / Redis",
@@ -231,8 +232,8 @@ export default function TrustPage() {
           <div className="grid gap-6 md:grid-cols-2">
             <Section icon={Terminal} title="Execution environments">
               <p>
-                By default, terminal and browser actions run in an isolated E2B
-                cloud sandbox tied to your account, separate from our
+                By default, terminal and browser actions run in an isolated AWS
+                Lambda MicroVM tied to your account, separate from our
                 application infrastructure. You can delete your sandboxes at any
                 time from Settings &rarr; Data controls.
               </p>

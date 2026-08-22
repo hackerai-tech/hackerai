@@ -1024,6 +1024,8 @@ describe("HybridSandboxManager reset cleanup", () => {
   });
 
   it("forgets an E2B connection without killing the shared user sandbox", async () => {
+    const originalProvider = process.env.CLOUD_SANDBOX_PROVIDER;
+    process.env.CLOUD_SANDBOX_PROVIDER = "e2b";
     const manager = new HybridSandboxManager(
       "user-1",
       jest.fn(),
@@ -1049,12 +1051,20 @@ describe("HybridSandboxManager reset cleanup", () => {
     });
     sandboxApi.connect.mockResolvedValue(replacement);
 
-    manager.setSandbox(sandbox as any);
-    await manager.resetSandbox("test");
-    const reacquired = await manager.getSandbox();
+    try {
+      manager.setSandbox(sandbox as any);
+      await manager.resetSandbox("test");
+      const reacquired = await manager.getSandbox();
 
-    expect(sandbox.kill).not.toHaveBeenCalled();
-    expect(reacquired.sandbox).toBe(replacement);
-    expect(reacquired.sandbox).not.toBe(sandbox);
+      expect(sandbox.kill).not.toHaveBeenCalled();
+      expect(reacquired.sandbox).toBe(replacement);
+      expect(reacquired.sandbox).not.toBe(sandbox);
+    } finally {
+      if (originalProvider === undefined) {
+        delete process.env.CLOUD_SANDBOX_PROVIDER;
+      } else {
+        process.env.CLOUD_SANDBOX_PROVIDER = originalProvider;
+      }
+    }
   });
 });

@@ -23,11 +23,11 @@ describe("cloud sandbox provider selection", () => {
     }
   });
 
-  it("defaults to E2B when AWS is not configured", () => {
+  it("defaults to AWS after the full rollout", () => {
     delete process.env.CLOUD_SANDBOX_PROVIDER;
     delete process.env.AWS_LAMBDA_MICROVM_IMAGE_ID;
     delete process.env.AWS_LAMBDA_MICROVM_RELEASE_MANIFEST;
-    expect(getCloudSandboxProvider()).toBe("e2b");
+    expect(getCloudSandboxProvider()).toBe("aws-lambda-microvm");
   });
 
   it("selects AWS when an atomic regional release manifest is configured", () => {
