@@ -7,10 +7,13 @@ import { useGlobalState } from "../contexts/GlobalState";
 import { useChats } from "../hooks/useChats";
 import { SidebarProvider } from "@/components/ui/sidebar";
 import MainSidebar from "./Sidebar";
-import { onOpenSettingsDialog } from "@/lib/utils/settings-dialog";
+import {
+  loadSettingsDialog,
+  onOpenSettingsDialog,
+} from "@/lib/utils/settings-dialog";
 
 const SettingsDialog = dynamic(
-  () => import("./SettingsDialog").then((module) => module.SettingsDialog),
+  () => loadSettingsDialog().then((module) => module.SettingsDialog),
   {
     ssr: false,
     loading: () => null,
