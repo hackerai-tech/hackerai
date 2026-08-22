@@ -2,9 +2,10 @@
 
 ## 1. Prepare the cohort
 
-Start only after the responsible owner explicitly approves customer-message
-research in the Linear issue. Creating or editing the issue is not approval. For
-spend-ranked research, use
+Start from a specific research request made by an authorized PM. The request
+must define the question, cohort rule, exclusions, and intended aggregate
+output. A Linear issue may be included for optional tracking, but its presence
+or state is not an authorization control. For spend-ranked research, use
 PostHog's Stripe-synced lifetime net paid amount when available and current.
 Exclude refunds/disputes, internal and test users, fraud, duplicates, and
 unmatched customers. Open Stripe only to resolve discrepancies or payer/account
@@ -14,9 +15,9 @@ ownership. Produce internal Convex/WorkOS user IDs, not emails or Stripe IDs.
 
 Ask Codex:
 
-> Use $hackerai-user-research for HAC-65. Select the reconciled top-spender
-> cohort, run the analysis, wait for it, and give me the aggregate findings with
-> coverage, confidence, unknowns, and recommended experiments.
+> Use $hackerai-user-research. Select the reconciled top-spender cohort, run the
+> analysis, wait for it, and give me the aggregate findings with coverage,
+> confidence, unknowns, and recommended experiments.
 
 Codex should use the skill's `scripts/run-research.mjs` gateway runner and wait
 for completion. The PM's Codex environment must contain the scoped
@@ -43,6 +44,6 @@ hypotheses until a separate experiment validates them.
 ## 4. Share safely
 
 Keep the gateway key, request payload, Trigger records, and Convex records
-restricted. A Linear update may include only the aggregate answer, avatars,
-coverage, confidence, unknowns, and experiments. Do not include the cohort IDs
-or pseudonym-level profiles.
+restricted. If optional Linear tracking is used, its update may include only the
+aggregate answer, avatars, coverage, confidence, unknowns, and experiments. Do
+not include the cohort IDs or pseudonym-level profiles.

@@ -9,6 +9,7 @@ import {
   USER_RESEARCH_MAX_COHORT_CONTEXT_CHARS,
   USER_RESEARCH_MAX_CONTEXT_CHARS,
   USER_RESEARCH_MODEL_KEY,
+  pmUserResearchGatewayRequestSchema,
   USER_RESEARCH_PROVIDER_OPTIONS,
 } from "../user-research";
 
@@ -40,6 +41,23 @@ const baseProfile = {
 };
 
 describe("user research privacy controls", () => {
+  it("accepts a bounded request without a Linear reference", () => {
+    const request = {
+      question: "What recurring work creates the most customer value?",
+      cohortLabel: "Approved production research cohort",
+      userIds: ["user-1", "user-2", "user-3"],
+      maxChatsPerUser: 12,
+    };
+
+    expect(pmUserResearchGatewayRequestSchema.parse(request)).toEqual(request);
+    expect(
+      pmUserResearchGatewayRequestSchema.parse({
+        ...request,
+        linearIssueId: "HAC-65",
+      }).linearIssueId,
+    ).toBe("HAC-65");
+  });
+
   it("pins Grok 4.6 for text-only research with low reasoning", () => {
     expect(USER_RESEARCH_MODEL_KEY).toBe("model-grok-4.6");
     expect(USER_RESEARCH_PROVIDER_OPTIONS).toEqual({

@@ -108,7 +108,7 @@ export const createRun = mutation({
   args: {
     serviceKey: v.string(),
     analysisId: v.string(),
-    linearIssueId: v.string(),
+    linearIssueId: v.optional(v.string()),
     question: v.string(),
     cohortLabel: v.string(),
     requestedBy: v.string(),
@@ -164,7 +164,7 @@ export const createRun = mutation({
     const now = Date.now();
     await ctx.db.insert("research_runs", {
       analysis_id: args.analysisId,
-      linear_issue_id: args.linearIssueId,
+      ...(args.linearIssueId ? { linear_issue_id: args.linearIssueId } : {}),
       question: args.question,
       cohort_label: args.cohortLabel,
       requested_by: args.requestedBy,

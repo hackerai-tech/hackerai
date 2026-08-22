@@ -5,8 +5,9 @@ called through the repo-owned Codex skill `$hackerai-user-research`.
 
 ## What it does
 
-1. Accepts an approved Linear issue, a research question, and 3-20 internal user
-   IDs selected from PostHog/Stripe/account evidence.
+1. Accepts an authorized PM's research question and 3-20 internal user IDs
+   selected from PostHog/Stripe/account evidence. A Linear issue is optional
+   tracking metadata and does not authorize or block a run.
 2. Uses service-keyed Convex queries to sample up to 20 chats across each user's
    observed date range.
 3. Reads bounded text excerpts from the beginning and end of each chat. It never
@@ -64,8 +65,9 @@ runner uses the fixed production URL, so Preview needs no PM gateway URL or key.
 
 ## PM invocation
 
-Invoke `$hackerai-user-research` in Codex with the Linear issue. The skill uses
-PostHog for cohort selection and the scoped gateway runner to start and wait for
-`pm-user-research`. PostHog's Stripe sync can be the normal spend source; direct
-Stripe access is only necessary for reconciliation gaps. Do not add PMs to the
-Trigger organization or give them Trigger/Convex credentials.
+Invoke `$hackerai-user-research` in Codex with the research question and cohort
+criteria. A Linear issue may be supplied only when tracking is useful. The skill
+uses PostHog for cohort selection and the scoped gateway runner to start and
+wait for `pm-user-research`. PostHog's Stripe sync can be the normal spend
+source; direct Stripe access is only necessary for reconciliation gaps. Do not
+add PMs to the Trigger organization or give them Trigger/Convex credentials.

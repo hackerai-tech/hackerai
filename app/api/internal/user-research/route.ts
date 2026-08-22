@@ -181,7 +181,9 @@ export async function POST(request: NextRequest) {
 
     audit(request, "info", "pm_user_research_run_started", {
       run_id: handle.id,
-      linear_issue_id: parsed.data.linearIssueId,
+      ...(parsed.data.linearIssueId
+        ? { linear_issue_id: parsed.data.linearIssueId }
+        : {}),
       cohort_size: parsed.data.userIds.length,
       requested_by: GATEWAY_REQUESTER,
     });
@@ -196,7 +198,9 @@ export async function POST(request: NextRequest) {
     );
   } catch (error) {
     audit(request, "error", "pm_user_research_run_start_failed", {
-      linear_issue_id: parsed.data.linearIssueId,
+      ...(parsed.data.linearIssueId
+        ? { linear_issue_id: parsed.data.linearIssueId }
+        : {}),
       cohort_size: parsed.data.userIds.length,
       error_name: error instanceof Error ? error.name : "UnknownError",
     });

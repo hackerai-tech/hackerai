@@ -42,7 +42,6 @@ const runnerKey = "pm-runner-test-secret";
 const originalHash = process.env.PM_USER_RESEARCH_RUNNER_KEY_SHA256;
 
 const validPayload = {
-  linearIssueId: "HAC-65",
   question: "What recurring work creates the most customer value?",
   cohortLabel: "Approved production research cohort",
   userIds: ["user-1", "user-2", "user-3"],
@@ -177,6 +176,30 @@ describe("PM user research gateway", () => {
     );
     expect(JSON.stringify(body)).not.toContain("user-1");
     expect(infoSpy).toHaveBeenCalledWith(expect.not.stringContaining("user-1"));
+    infoSpy.mockRestore();
+  });
+
+  it("accepts an optional Linear issue reference for tracking", async () => {
+    const infoSpy = jest.spyOn(console, "info").mockImplementation(() => {});
+    const { POST } = await import("../route");
+
+    const response = await POST(
+      request({ body: { ...validPayload, linearIssueId: "HAC-65" } }),
+    );
+
+    expect(response.status).toBe(202);
+    expect(triggerTask).toHaveBeenCalledWith(
+      "pm-user-research",
+      {
+        ...validPayload,
+        linearIssueId: "HAC-65",
+        requestedBy: "pm-gateway",
+      },
+      expect.any(Object),
+    );
+    expect(infoSpy).toHaveBeenCalledWith(
+      expect.stringContaining('"linear_issue_id":"HAC-65"'),
+    );
     infoSpy.mockRestore();
   });
 
