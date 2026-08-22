@@ -7,43 +7,72 @@ import {
 import type { CloudSandboxAcquisitionContext } from "../cloud-sandbox";
 
 describe("cloud sandbox placement recovery", () => {
-  const originalE2BApiKey = process.env.E2B_API_KEY;
-
-  afterEach(() => {
-    if (originalE2BApiKey === undefined) delete process.env.E2B_API_KEY;
-    else process.env.E2B_API_KEY = originalE2BApiKey;
-  });
-
-  it("switches an AWS-assigned run once to the established E2B backend", () => {
-    process.env.E2B_API_KEY = "configured";
+  it("switches an eligible E2B-assigned paid run once to AWS", () => {
     const context: CloudSandboxAcquisitionContext = {
-      provider: "aws-lambda-microvm",
+      provider: "e2b",
+      subscription: "pro",
+      rollout: {
+        key: "aws_lambda_microvm_ultra_rollout_v1",
+        provider: "e2b",
+        eligible: true,
+        variant: "e2b",
+        flagValue: false,
+        reason: "flag_disabled",
+      },
     };
 
-    expect(selectAlternateCloudSandboxProviderForRecovery(context)).toBe("e2b");
-    expect(context.provider).toBe("e2b");
+    expect(selectAlternateCloudSandboxProviderForRecovery(context)).toBe(
+      "aws-lambda-microvm",
+    );
+    expect(context.provider).toBe("aws-lambda-microvm");
     expect(getCloudSandboxRecoveryTelemetryProperties(context)).toEqual({
-      cloud_sandbox_recovery_from_provider: "aws-lambda-microvm",
-      cloud_sandbox_recovery_to_provider: "e2b",
+      cloud_sandbox_recovery_from_provider: "e2b",
+      cloud_sandbox_recovery_to_provider: "aws-lambda-microvm",
       cloud_sandbox_recovery_reason: "attachment_placement_failure",
     });
   });
 
-  it("does not bypass the AWS rollout for an E2B-assigned run", () => {
-    process.env.E2B_API_KEY = "configured";
-    const context: CloudSandboxAcquisitionContext = { provider: "e2b" };
-
-    expect(selectAlternateCloudSandboxProviderForRecovery(context)).toBeNull();
-    expect(context).toEqual({ provider: "e2b" });
-  });
-
-  it("fails closed when E2B is not configured", () => {
-    delete process.env.E2B_API_KEY;
+  it("does not mask an AWS-assigned run failure with E2B", () => {
     const context: CloudSandboxAcquisitionContext = {
       provider: "aws-lambda-microvm",
+      subscription: "pro",
     };
 
     expect(selectAlternateCloudSandboxProviderForRecovery(context)).toBeNull();
     expect(context.provider).toBe("aws-lambda-microvm");
+  });
+
+  it("does not bypass rollout eligibility for an E2B-assigned run", () => {
+    const context: CloudSandboxAcquisitionContext = {
+      provider: "e2b",
+      subscription: "pro",
+      rollout: {
+        key: "aws_lambda_microvm_ultra_rollout_v1",
+        provider: "e2b",
+        eligible: false,
+        variant: "e2b",
+        reason: "provider_disabled",
+      },
+    };
+
+    expect(selectAlternateCloudSandboxProviderForRecovery(context)).toBeNull();
+    expect(context.provider).toBe("e2b");
+  });
+
+  it("keeps free users out of cloud recovery", () => {
+    const context: CloudSandboxAcquisitionContext = {
+      provider: "e2b",
+      subscription: "free",
+      rollout: {
+        key: "aws_lambda_microvm_ultra_rollout_v1",
+        provider: "e2b",
+        eligible: true,
+        variant: "e2b",
+        reason: "flag_disabled",
+      },
+    };
+
+    expect(selectAlternateCloudSandboxProviderForRecovery(context)).toBeNull();
+    expect(context.provider).toBe("e2b");
   });
 });

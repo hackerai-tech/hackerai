@@ -7,6 +7,7 @@ import {
   getSandboxUploadFailureMetadata,
   getSandboxUploadUserMessage,
   prepareLocalDesktopAttachmentsForTrigger,
+  recoverProviderVisibleImagesAfterSandboxUploadFailure,
   rewriteSandboxFilePathsInMessages,
   stripLocalDesktopSourcePaths,
   uploadSandboxFiles,
@@ -1245,5 +1246,147 @@ describe("desktop-local sandbox file helpers", () => {
     expect(rewritten[0].parts?.[0]).toMatchObject({
       text: '<attachment filename="report.pdf" local_path="/home/alice/hackerai-upload/report.pdf" />',
     });
+  });
+
+  it("keeps provider-visible images when cloud staging is unavailable", () => {
+    const consoleWarnSpy = jest
+      .spyOn(console, "warn")
+      .mockImplementation(() => {});
+    const messages = [
+      {
+        id: "m1",
+        role: "user",
+        parts: [
+          {
+            type: "file",
+            url: "https://storage.example/screenshot.png",
+            mediaType: "image/png",
+            name: "screenshot.png",
+          },
+          {
+            type: "text",
+            text: '<inline_image_attachment filename="screenshot.png" sandbox_path="/home/user/upload/screenshot.png" already_visible_to_model="true" use_sandbox_path_for="file_operations_only" />',
+          },
+        ],
+      },
+    ] as UIMessage[];
+
+    try {
+      const recovered = recoverProviderVisibleImagesAfterSandboxUploadFailure(
+        messages,
+        [
+          {
+            kind: "url",
+            url: "https://storage.example/screenshot.png",
+            localPath: "/home/user/upload/screenshot.png",
+          },
+        ],
+        {
+          failedCount: 1,
+          pathRewrites: [],
+          failureDetails: [
+            {
+              kind: "url",
+              error: "sandbox placement failed",
+              reason: "sandbox_placement_failure",
+              transientSandboxCommand: false,
+              sandboxReadinessReason: "placement_failure",
+            },
+          ],
+        },
+        {
+          service: "agent-long",
+          requestId: "run-1",
+          userId: "user-1",
+          chatId: "chat-1",
+        },
+      );
+
+      expect(recovered).not.toBeNull();
+      expect(recovered?.[0].parts).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            type: "file",
+            url: "https://storage.example/screenshot.png",
+          }),
+          expect.objectContaining({
+            type: "text",
+            text: expect.stringContaining('images_visible_inline="true"'),
+          }),
+        ]),
+      );
+      expect(JSON.stringify(recovered)).not.toContain(
+        "/home/user/upload/screenshot.png",
+      );
+      expect(consoleWarnSpy).toHaveBeenCalledWith(
+        expect.stringContaining("sandbox_image_attachment_staging_bypassed"),
+      );
+    } finally {
+      consoleWarnSpy.mockRestore();
+    }
+  });
+
+  it("does not bypass failed staging for non-image attachments", () => {
+    const messages = [
+      {
+        id: "m1",
+        role: "user",
+        parts: [
+          {
+            type: "file",
+            url: "https://storage.example/report.pdf",
+            mediaType: "application/pdf",
+            name: "report.pdf",
+          },
+        ],
+      },
+    ] as UIMessage[];
+
+    expect(
+      recoverProviderVisibleImagesAfterSandboxUploadFailure(
+        messages,
+        [
+          {
+            kind: "url",
+            url: "https://storage.example/report.pdf",
+            localPath: "/home/user/upload/report.pdf",
+          },
+        ],
+        { failedCount: 1, pathRewrites: [] },
+        {
+          service: "chat-handler",
+          userId: "user-1",
+          chatId: "chat-1",
+        },
+      ),
+    ).toBeNull();
+  });
+
+  it("does not bypass a partial batch upload failure", () => {
+    const imageFiles = [
+      {
+        kind: "url" as const,
+        url: "https://storage.example/one.png",
+        localPath: "/home/user/upload/one.png",
+      },
+      {
+        kind: "url" as const,
+        url: "https://storage.example/two.png",
+        localPath: "/home/user/upload/two.png",
+      },
+    ];
+
+    expect(
+      recoverProviderVisibleImagesAfterSandboxUploadFailure(
+        [],
+        imageFiles,
+        { failedCount: 1, pathRewrites: [] },
+        {
+          service: "agent-long",
+          userId: "user-1",
+          chatId: "chat-1",
+        },
+      ),
+    ).toBeNull();
   });
 });

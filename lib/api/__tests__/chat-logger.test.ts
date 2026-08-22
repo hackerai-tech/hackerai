@@ -1379,7 +1379,8 @@ describe("createChatLogger ChatSDKError metadata", () => {
       const wideEvent = JSON.parse(String(logSpy.mock.calls[0][0]));
       expect(wideEvent.error).toMatchObject({
         code: "bad_request:sandbox",
-        message: "The computer attachment upload failed.",
+        message:
+          "The selected computer stopped responding while preparing the attachment. Reconnect it in Remote Control, then try again.",
         cause:
           "The selected computer stopped responding while preparing the attachment. Reconnect it in Remote Control, then try again.",
         retriable: true,

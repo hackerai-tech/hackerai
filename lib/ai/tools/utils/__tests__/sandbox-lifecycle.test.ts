@@ -297,6 +297,58 @@ describe("E2B sandbox lease lifecycle", () => {
     }
   });
 
+  it("quarantines a paused sandbox after a placement failure", async () => {
+    const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+    const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      listSandbox({ state: "paused" });
+      sandboxApi.connect.mockRejectedValue(
+        new Error("500: Failed to place sandbox"),
+      );
+      sandboxApi.kill.mockResolvedValue(true);
+
+      await expect(
+        ensureSandboxConnection({
+          userID: "user-1",
+          setSandbox: jest.fn(),
+        }),
+      ).rejects.toThrow("Failed to place sandbox");
+
+      expect(sandboxApi.kill).toHaveBeenCalledWith("sandbox-1");
+      expect(sandboxApi.create).not.toHaveBeenCalled();
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining(
+          "e2b_paused_sandbox_quarantined_after_resume_failure",
+        ),
+      );
+    } finally {
+      warnSpy.mockRestore();
+      errorSpy.mockRestore();
+    }
+  });
+
+  it("preserves a running sandbox after a placement failure", async () => {
+    const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      listSandbox({ state: "running" });
+      sandboxApi.connect.mockRejectedValue(
+        new Error("500: Failed to place sandbox"),
+      );
+
+      await expect(
+        ensureSandboxConnection({
+          userID: "user-1",
+          setSandbox: jest.fn(),
+        }),
+      ).rejects.toThrow("Failed to place sandbox");
+
+      expect(sandboxApi.kill).not.toHaveBeenCalled();
+      expect(sandboxApi.create).not.toHaveBeenCalled();
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
   it("creates a replacement without killing when the listed sandbox is gone", async () => {
     const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
     try {

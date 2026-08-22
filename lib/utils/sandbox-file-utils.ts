@@ -80,6 +80,13 @@ type UploadSandboxFilesOptions = {
   };
 };
 
+type ProviderVisibleImageFallbackOptions = {
+  service: "agent-long" | "chat-handler";
+  requestId?: string;
+  userId: string;
+  chatId: string;
+};
+
 type SandboxAttachmentTagKind = "attachment" | "inline-image";
 
 type CollectSandboxFilesOptions = {
@@ -542,6 +549,100 @@ export const rewriteSandboxFilePathsInMessages = <T extends { parts?: any[] }>(
       }),
     };
   });
+};
+
+/**
+ * Preserve an Agent request when every failed sandbox upload is an image that
+ * remains visible to the model through its owner-checked signed URL. The
+ * sandbox-only path hints are removed so the model does not try to read files
+ * that were never staged. Non-image, local, and partial failures still fail
+ * closed because the provider cannot safely replace sandbox file access.
+ */
+export const recoverProviderVisibleImagesAfterSandboxUploadFailure = (
+  messages: UIMessage[],
+  sandboxFiles: SandboxFile[],
+  uploadResult: SandboxUploadResult,
+  options: ProviderVisibleImageFallbackOptions,
+): UIMessage[] | null => {
+  if (
+    sandboxFiles.length === 0 ||
+    uploadResult.failedCount !== sandboxFiles.length ||
+    sandboxFiles.some((file) => file.kind !== "url")
+  ) {
+    return null;
+  }
+
+  const providerVisibleImageUrls = new Set<string>();
+  for (const message of messages) {
+    for (const part of message.parts ?? []) {
+      if (
+        part?.type === "file" &&
+        typeof part.url === "string" &&
+        part.mediaType?.startsWith("image/")
+      ) {
+        providerVisibleImageUrls.add(part.url);
+      }
+    }
+  }
+
+  const failedImageFiles = sandboxFiles as Array<
+    Extract<SandboxFile, { kind: "url" }>
+  >;
+  if (
+    failedImageFiles.some((file) => !providerVisibleImageUrls.has(file.url))
+  ) {
+    return null;
+  }
+
+  const failedPaths = new Set(failedImageFiles.map((file) => file.localPath));
+  const recoveredMessages = messages.map((message) => {
+    if (!message.parts) return message;
+    const parts = message.parts.flatMap((part) => {
+      if (!("text" in part) || typeof part.text !== "string") return [part];
+      const remainingLines = part.text.split("\n").filter((line) => {
+        if (!line.startsWith("<inline_image_attachment ")) return true;
+        return !Array.from(failedPaths).some((path) =>
+          line.includes(`sandbox_path="${path}"`),
+        );
+      });
+      const text = remainingLines.join("\n").trim();
+      return text ? [{ ...part, text }] : [];
+    });
+    return { ...message, parts } as UIMessage;
+  });
+
+  const lastUserIndex = getLastUserMessageIndex(recoveredMessages);
+  if (lastUserIndex >= 0) {
+    recoveredMessages[lastUserIndex].parts ??= [];
+    recoveredMessages[lastUserIndex].parts!.push({
+      type: "text",
+      text: '<attachment_staging_status cloud_computer="unavailable" images_visible_inline="true">The image attachments are still visible inline. Answer from the images and user text; do not claim the files exist in the cloud computer.</attachment_staging_status>',
+    });
+  }
+
+  const failure = uploadResult.failureDetails?.[0];
+  console.warn(
+    JSON.stringify({
+      timestamp: new Date().toISOString(),
+      level: "warn",
+      event: "sandbox_image_attachment_staging_bypassed",
+      service: options.service,
+      environment:
+        process.env.TRIGGER_ENV ??
+        process.env.VERCEL_ENV ??
+        process.env.NODE_ENV ??
+        "unknown",
+      request_id: options.requestId ?? null,
+      user_id: options.userId,
+      chat_id: options.chatId,
+      failed_image_count: failedImageFiles.length,
+      failure_reason: failure?.reason ?? "unknown",
+      sandbox_readiness_reason: failure?.sandboxReadinessReason ?? "unknown",
+      retried_with_fresh_sandbox: uploadResult.retriedWithFreshSandbox ?? false,
+    }),
+  );
+
+  return recoveredMessages;
 };
 
 export const prepareLocalDesktopAttachmentsForTrigger = (

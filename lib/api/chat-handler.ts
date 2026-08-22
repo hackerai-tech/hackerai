@@ -131,6 +131,7 @@ import { createTrackedProvider } from "@/lib/ai/providers";
 import {
   getSandboxUploadFailureMetadata,
   getSandboxUploadUserMessage,
+  recoverProviderVisibleImagesAfterSandboxUploadFailure,
   uploadSandboxFiles,
   getUploadBasePath,
   rewriteSandboxFilePathsInMessages,
@@ -871,23 +872,40 @@ export const createChatHandler = () => {
                 writeUploadCompleteStatus(writer);
               }
               if (uploadResult.failedCount > 0) {
-                const uploadError = new ChatSDKError(
-                  "bad_request:sandbox",
-                  getSandboxUploadUserMessage(uploadResult),
-                  getSandboxUploadFailureMetadata(uploadResult),
+                const recoveredMessages =
+                  recoverProviderVisibleImagesAfterSandboxUploadFailure(
+                    processedMessages,
+                    sandboxFiles,
+                    uploadResult,
+                    {
+                      service: "chat-handler",
+                      requestId: req.headers.get("x-vercel-id") ?? undefined,
+                      userId,
+                      chatId,
+                    },
+                  );
+                if (recoveredMessages) {
+                  processedMessages = recoveredMessages;
+                } else {
+                  const uploadError = new ChatSDKError(
+                    "bad_request:sandbox",
+                    getSandboxUploadUserMessage(uploadResult),
+                    getSandboxUploadFailureMetadata(uploadResult),
+                  );
+                  // Errors thrown from execute are caught by createUIMessageStream's
+                  // onError and never reach the outer catch, so refund / timeout
+                  // clear / error logging must happen here. refund() is idempotent.
+                  preemptiveTimeout?.clear();
+                  await usageRefundTracker.refund();
+                  chatLogger?.emitChatError(uploadError);
+                  throw uploadError;
+                }
+              } else {
+                processedMessages = rewriteSandboxFilePathsInMessages(
+                  processedMessages,
+                  uploadResult.pathRewrites,
                 );
-                // Errors thrown from execute are caught by createUIMessageStream's
-                // onError and never reach the outer catch, so refund / timeout
-                // clear / error logging must happen here. refund() is idempotent.
-                preemptiveTimeout?.clear();
-                await usageRefundTracker.refund();
-                chatLogger?.emitChatError(uploadError);
-                throw uploadError;
               }
-              processedMessages = rewriteSandboxFilePathsInMessages(
-                processedMessages,
-                uploadResult.pathRewrites,
-              );
             }
 
             if (auxiliaryVisionFailover.isEnabled()) {

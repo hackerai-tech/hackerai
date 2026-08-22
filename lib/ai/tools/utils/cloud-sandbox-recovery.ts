@@ -13,19 +13,25 @@ export class AlternateCloudSandboxUnavailableError extends Error {
 export function selectAlternateCloudSandboxProviderForRecovery(
   context?: CloudSandboxAcquisitionContext,
 ): CloudSandboxProvider | null {
-  // AWS-assigned runs may safely fall back to the established E2B backend.
-  // E2B-assigned runs must not bypass the AWS rollout gate during recovery.
-  if (context?.provider !== "aws-lambda-microvm" || !process.env.E2B_API_KEY) {
+  // Keep AWS failures visible while the product migrates away from E2B.
+  // A paid run that was eligible for the AWS rollout may use AWS for one
+  // bounded recovery attempt when its E2B attachment placement fails, even
+  // when the normal rollout assignment selected the E2B control variant.
+  if (
+    context?.provider !== "e2b" ||
+    context.rollout?.eligible !== true ||
+    context.subscription === "free"
+  ) {
     return null;
   }
 
   context.recovery = {
-    fromProvider: "aws-lambda-microvm",
-    toProvider: "e2b",
+    fromProvider: "e2b",
+    toProvider: "aws-lambda-microvm",
     reason: "attachment_placement_failure",
   };
-  context.provider = "e2b";
-  return "e2b";
+  context.provider = "aws-lambda-microvm";
+  return "aws-lambda-microvm";
 }
 
 export function getCloudSandboxRecoveryTelemetryProperties(

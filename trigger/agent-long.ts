@@ -118,6 +118,7 @@ import {
 import {
   getSandboxUploadFailureMetadata,
   getSandboxUploadUserMessage,
+  recoverProviderVisibleImagesAfterSandboxUploadFailure,
   uploadSandboxFiles,
   getUploadBasePath,
   rewriteSandboxFilePathsInMessages,
@@ -3415,19 +3416,36 @@ export const agentLongTask = task({
                 writeUploadCompleteStatus(writer);
               }
               if (uploadResult.failedCount > 0) {
-                const uploadError = new ChatSDKError(
-                  "bad_request:sandbox",
-                  getSandboxUploadUserMessage(uploadResult),
-                  getSandboxUploadFailureMetadata(uploadResult),
+                const recoveredMessages =
+                  recoverProviderVisibleImagesAfterSandboxUploadFailure(
+                    processedMessages,
+                    sandboxFiles,
+                    uploadResult,
+                    {
+                      service: "agent-long",
+                      requestId: ctx.run.id,
+                      userId,
+                      chatId,
+                    },
+                  );
+                if (recoveredMessages) {
+                  processedMessages = recoveredMessages;
+                } else {
+                  const uploadError = new ChatSDKError(
+                    "bad_request:sandbox",
+                    getSandboxUploadUserMessage(uploadResult),
+                    getSandboxUploadFailureMetadata(uploadResult),
+                  );
+                  await usageRefundTracker.refund();
+                  chatLogger?.emitChatError(uploadError);
+                  throw uploadError;
+                }
+              } else {
+                processedMessages = rewriteSandboxFilePathsInMessages(
+                  processedMessages,
+                  uploadResult.pathRewrites,
                 );
-                await usageRefundTracker.refund();
-                chatLogger?.emitChatError(uploadError);
-                throw uploadError;
               }
-              processedMessages = rewriteSandboxFilePathsInMessages(
-                processedMessages,
-                uploadResult.pathRewrites,
-              );
             }
 
             if (auxiliaryVisionFailover.isEnabled()) {
