@@ -383,7 +383,7 @@ describe("provider error classification", () => {
     expect(isRetriableProviderStreamDisconnectError(err)).toBe(true);
   });
 
-  it("allows 5xx network disconnects but rejects non-disconnect provider failures", () => {
+  it("allows transient 5xx failures without requiring provider-specific wording", () => {
     expect(
       isRetriableProviderStreamDisconnectError(
         apiCallError({ statusCode: 502, message: "Network connection lost." }),
@@ -396,7 +396,21 @@ describe("provider error classification", () => {
           message: "Internal error during token generation",
         }),
       ),
+    ).toBe(true);
+    expect(
+      isRetriableProviderStreamDisconnectError(
+        apiCallError({ statusCode: 400, message: "Invalid request" }),
+      ),
     ).toBe(false);
+  });
+
+  it("allows upstream idle timeouts to use replay-safe continuation", () => {
+    expect(
+      isRetriableProviderStreamDisconnectError({
+        code: 502,
+        message: "Upstream idle timeout exceeded",
+      }),
+    ).toBe(true);
   });
 
   it("classifies provider status codes before message patterns", () => {

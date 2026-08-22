@@ -139,7 +139,10 @@ const AGENT_TRIGGER_MACHINE_BY_SUBSCRIPTION: Record<
   AgentTriggerMachinePreset
 > = {
   free: "small-1x",
-  pro: "small-1x",
+  // Long Pro runs can exceed the 512 MB small-1x ceiling while retaining
+  // provider checkpoints and tool output. Match the other paid tiers so a
+  // recoverable stream does not become an unrecoverable worker OOM.
+  pro: "small-2x",
   "pro-plus": "small-2x",
   ultra: "small-2x",
   team: "small-2x",

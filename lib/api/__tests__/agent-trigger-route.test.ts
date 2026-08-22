@@ -382,7 +382,7 @@ describe("Agent trigger route lifecycle", () => {
 
   it.each([
     ["free", "small-1x"],
-    ["pro", "small-1x"],
+    ["pro", "small-2x"],
     ["pro-plus", "small-2x"],
     ["ultra", "small-2x"],
     ["team", "small-2x"],

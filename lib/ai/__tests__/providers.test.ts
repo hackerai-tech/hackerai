@@ -11,6 +11,8 @@ import {
   createTrackedProvider,
   myProvider,
   MALFORMED_PDF_USER_RESPONSE,
+  makeOpenRouterToolChoiceCompatibleWithXaiReasoning,
+  normalizeOpenRouterRequestForKimi,
   PDF_PARSER_ENGINE_HEADER,
   PDF_PARSER_RECOVERY_HEADER,
   sanitizeOpenRouterRequestForXai,
@@ -397,6 +399,174 @@ describe("sanitizeOpenRouterRequestForXai", () => {
   });
 });
 
+describe("normalizeOpenRouterRequestForKimi", () => {
+  it("repairs missing chat tool-call IDs and removes unmatchable results", () => {
+    const body = {
+      model: "moonshotai/kimi-k3",
+      messages: [
+        {
+          role: "assistant",
+          tool_calls: [
+            { id: "call_1", function: { name: "first", arguments: "{}" } },
+            { id: "", function: { name: "second", arguments: "{}" } },
+          ],
+        },
+        { role: "tool", tool_call_id: "call_1", content: "first result" },
+        { role: "tool", content: "second result" },
+        { role: "tool", tool_call_id: "orphan", content: "orphan result" },
+      ],
+    };
+
+    const result = normalizeOpenRouterRequestForKimi(body);
+
+    expect(result.changed).toBe(true);
+    expect(result.body).toEqual({
+      ...body,
+      messages: [
+        {
+          role: "assistant",
+          tool_calls: [
+            { id: "call_1", function: { name: "first", arguments: "{}" } },
+            {
+              id: "hackerai_recovered_0_1",
+              function: { name: "second", arguments: "{}" },
+            },
+          ],
+        },
+        { role: "tool", tool_call_id: "call_1", content: "first result" },
+        {
+          role: "tool",
+          tool_call_id: "hackerai_recovered_0_1",
+          content: "second result",
+        },
+      ],
+    });
+  });
+
+  it("repairs Responses API function-call output IDs", () => {
+    const body = {
+      model: "moonshotai/kimi-k3",
+      input: [
+        { type: "function_call", call_id: "", name: "lookup" },
+        { type: "function_call_output", output: "done" },
+      ],
+    };
+
+    expect(normalizeOpenRouterRequestForKimi(body)).toEqual({
+      changed: true,
+      body: {
+        ...body,
+        input: [
+          {
+            type: "function_call",
+            call_id: "hackerai_recovered_0",
+            name: "lookup",
+          },
+          {
+            type: "function_call_output",
+            call_id: "hackerai_recovered_0",
+            output: "done",
+          },
+        ],
+      },
+    });
+  });
+
+  it("leaves non-Kimi requests untouched", () => {
+    const body = {
+      model: "deepseek/deepseek-v4-flash-0731",
+      messages: [{ role: "tool", content: "missing id" }],
+    };
+
+    expect(normalizeOpenRouterRequestForKimi(body)).toEqual({
+      body,
+      changed: false,
+    });
+  });
+});
+
+describe("makeOpenRouterToolChoiceCompatibleWithXaiReasoning", () => {
+  it("preserves forced tool choice and disables reasoning for xAI routes", () => {
+    const body = {
+      model: "x-ai/grok-4.6",
+      reasoning: { enabled: true, effort: "high" },
+      tool_choice: { type: "function", function: { name: "wait_for_agents" } },
+    };
+
+    expect(makeOpenRouterToolChoiceCompatibleWithXaiReasoning(body)).toEqual({
+      changed: true,
+      body: {
+        ...body,
+        reasoning: { enabled: false, effort: "high" },
+      },
+    });
+  });
+
+  it("leaves automatic tool choice unchanged", () => {
+    const body = {
+      model: "x-ai/grok-4.6",
+      reasoning: { enabled: true, effort: "high" },
+      tool_choice: "auto",
+    };
+
+    expect(makeOpenRouterToolChoiceCompatibleWithXaiReasoning(body)).toEqual({
+      body,
+      changed: false,
+    });
+  });
+});
+
+describe("OpenRouter request normalization", () => {
+  it("applies Kimi transcript repair and xAI tool-choice compatibility together", async () => {
+    const fetchMock = jest
+      .fn()
+      .mockResolvedValueOnce(new Response("ok", { status: 200 }));
+    const patchedFetch = createOpenRouterPatchFetch(
+      fetchMock as unknown as typeof fetch,
+    );
+
+    await patchedFetch("https://openrouter.test/chat", {
+      method: "POST",
+      body: JSON.stringify({
+        model: "moonshotai/kimi-k3",
+        models: ["x-ai/grok-4.6"],
+        reasoning: { enabled: true, effort: "high" },
+        tool_choice: {
+          type: "function",
+          function: { name: "wait_for_agents" },
+        },
+        messages: [
+          {
+            role: "assistant",
+            tool_calls: [{ id: "", function: { name: "wait_for_agents" } }],
+          },
+          { role: "tool", content: "agents complete" },
+        ],
+      }),
+    });
+
+    const requestBody = JSON.parse(fetchMock.mock.calls[0][1].body);
+    expect(requestBody.reasoning).toEqual({ enabled: false, effort: "high" });
+    expect(requestBody.messages).toEqual([
+      {
+        role: "assistant",
+        reasoning: ".",
+        tool_calls: [
+          {
+            id: "hackerai_recovered_0_0",
+            function: { name: "wait_for_agents" },
+          },
+        ],
+      },
+      {
+        role: "tool",
+        tool_call_id: "hackerai_recovered_0_0",
+        content: "agents complete",
+      },
+    ]);
+  });
+});
+
 describe("OpenRouter PDF parser recovery", () => {
   let warnSpy: jest.SpyInstance;
 
@@ -550,6 +720,38 @@ describe("OpenRouter PDF parser recovery", () => {
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(response).toBe(originalResponse);
+  });
+
+  it("falls back to sandbox paths when generic file parsing fails", async () => {
+    const genericParseError = new Response(
+      JSON.stringify({ error: { message: "Failed to parse " } }),
+      { status: 400, headers: { "content-type": "application/json" } },
+    );
+    const fetchMock = jest
+      .fn()
+      .mockResolvedValueOnce(genericParseError)
+      .mockResolvedValueOnce(new Response("ok", { status: 200 }));
+    const patchedFetch = createOpenRouterPatchFetch(
+      fetchMock as unknown as typeof fetch,
+    );
+
+    const response = await patchedFetch("https://openrouter.test/chat", {
+      method: "POST",
+      body: JSON.stringify(createPdfParserRequest()),
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const sandboxRequest = JSON.parse(fetchMock.mock.calls[1][1].body);
+    expect(
+      sandboxRequest.messages.flatMap(
+        (message: { content?: Array<{ type?: string }> }) =>
+          (message.content ?? []).filter((part) => part.type === "file"),
+      ),
+    ).toEqual([]);
+    expect(JSON.stringify(sandboxRequest)).toContain(
+      "inspect the files with sandbox tools",
+    );
+    expect(response.headers.get(PDF_PARSER_RECOVERY_HEADER)).toBe("sandbox");
   });
 });
 

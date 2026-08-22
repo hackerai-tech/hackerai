@@ -474,21 +474,16 @@ export const getProviderErrorCategory = (
 export const isProviderStreamTerminatedError = (error: unknown): boolean =>
   getProviderErrorCategory(extractErrorDetails(error)) === "stream_terminated";
 
-/** Allow one continuation only for errors that explicitly describe a disconnect. */
+/** Allow one replay-safe continuation for provider disconnects and transient failures. */
 export const isRetriableProviderStreamDisconnectError = (
   error: unknown,
 ): boolean => {
   const details = extractErrorDetails(error);
-  if (
-    !PROVIDER_STREAM_DISCONNECT_PATTERN.test(getProviderMessageText(details))
-  ) {
-    return false;
-  }
   const category = getProviderErrorCategory(details);
+  if (category === "timeout" || category === "provider_5xx") return true;
   return (
-    category === "stream_terminated" ||
-    category === "timeout" ||
-    category === "provider_5xx"
+    category === "stream_terminated" &&
+    PROVIDER_STREAM_DISCONNECT_PATTERN.test(getProviderMessageText(details))
   );
 };
 
