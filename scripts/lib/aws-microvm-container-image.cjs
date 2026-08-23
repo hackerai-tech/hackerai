@@ -1,5 +1,7 @@
-const CONTAINER_IMAGE_DIGEST_PATTERN =
-  /^(?:[a-z0-9.-]+(?::[0-9]+)?\/)?[a-z0-9._/-]+@sha256:[a-f0-9]{64}$/;
+const REPOSITORY_COMPONENT = "[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*";
+const CONTAINER_IMAGE_DIGEST_PATTERN = new RegExp(
+  `^(?:[a-z0-9.-]+(?::[0-9]+)?/)?${REPOSITORY_COMPONENT}(?:/${REPOSITORY_COMPONENT})*@sha256:[a-f0-9]{64}$`,
+);
 
 function resolveContainerBaseImage(value) {
   const image = value?.trim();

@@ -118,6 +118,11 @@ jobs:
             echo "Missing valid sandbox base digest"
             exit 1
           fi
+          docker logout "$REGISTRY" >/dev/null 2>&1 || true
+          if ! docker buildx imagetools inspect "${REGISTRY}/${IMAGE_NAME}@${digest}" >/dev/null; then
+            echo "Sandbox base image must allow anonymous GHCR pulls"
+            exit 1
+          fi
           echo "image=${REGISTRY}/${IMAGE_NAME}@${digest}" >> "$GITHUB_OUTPUT"
           echo "Using ${REGISTRY}/${IMAGE_NAME}@${digest}"
 

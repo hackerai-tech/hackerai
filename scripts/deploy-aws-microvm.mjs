@@ -101,7 +101,10 @@ async function resolveBuildFailure(imageIdentifier, imageVersion) {
       state_reason: build.stateReason?.trim() || null,
     }));
     const stateReason = builds.find(
-      (build) => build.state_reason,
+      (build) =>
+        build.build_state === "FAILED" &&
+        build.architecture === "ARM_64" &&
+        build.state_reason,
     )?.state_reason;
     return { builds, stateReason: stateReason || null };
   } catch (error) {

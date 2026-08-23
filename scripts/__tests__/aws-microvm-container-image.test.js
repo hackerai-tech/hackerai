@@ -18,6 +18,7 @@ describe("AWS Lambda MicroVM container base image", () => {
     "",
     "ghcr.io/hackerai-tech/hackerai-sandbox:latest",
     "ghcr.io/hackerai-tech/hackerai-sandbox@sha256:short",
+    `ghcr.io/hackerai-tech//hackerai-sandbox@sha256:${digest}`,
     `ghcr.io/hackerai-tech/hackerai-sandbox@sha256:${digest}\nRUN id`,
   ])("rejects a mutable or invalid image reference: %p", (value) => {
     expect(() => resolveContainerBaseImage(value)).toThrow(
