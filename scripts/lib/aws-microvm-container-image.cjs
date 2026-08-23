@@ -1,6 +1,8 @@
 const REPOSITORY_COMPONENT = "[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*";
+const REGISTRY_LABEL = "[a-z0-9](?:[a-z0-9-]*[a-z0-9])?";
+const REGISTRY_HOST = `${REGISTRY_LABEL}(?:\\.${REGISTRY_LABEL})*(?::[0-9]+)?`;
 const CONTAINER_IMAGE_DIGEST_PATTERN = new RegExp(
-  `^(?:[a-z0-9.-]+(?::[0-9]+)?/)?${REPOSITORY_COMPONENT}(?:/${REPOSITORY_COMPONENT})*@sha256:[a-f0-9]{64}$`,
+  `^(?:${REGISTRY_HOST}/)?${REPOSITORY_COMPONENT}(?:/${REPOSITORY_COMPONENT})*@sha256:[a-f0-9]{64}$`,
 );
 
 function resolveContainerBaseImage(value) {

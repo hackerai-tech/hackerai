@@ -10,6 +10,9 @@ import {
   UpdateMicrovmImageCommand,
 } from "@aws-sdk/client-lambda-microvms";
 import { PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
+import buildDiagnostics from "./lib/aws-microvm-build-diagnostics.cjs";
+
+const { listMicrovmBuildDiagnostics } = buildDiagnostics;
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const artifactPath = resolve(
@@ -87,26 +90,12 @@ const lambda = new LambdaMicrovmsClient({ region, maxAttempts: 4 });
 
 async function resolveBuildFailure(imageIdentifier, imageVersion) {
   try {
-    const response = await lambda.send(
-      new ListMicrovmImageBuildsCommand({
-        imageIdentifier,
-        imageVersion,
-        maxResults: 25,
-      }),
-    );
-    const builds = (response.items || []).map((build) => ({
-      build_id: build.buildId,
-      build_state: build.buildState,
-      architecture: build.architecture,
-      state_reason: build.stateReason?.trim() || null,
-    }));
-    const stateReason = builds.find(
-      (build) =>
-        build.build_state === "FAILED" &&
-        build.architecture === "ARM_64" &&
-        build.state_reason,
-    )?.state_reason;
-    return { builds, stateReason: stateReason || null };
+    return await listMicrovmBuildDiagnostics({
+      imageIdentifier,
+      imageVersion,
+      listPage: (input) =>
+        lambda.send(new ListMicrovmImageBuildsCommand(input)),
+    });
   } catch (error) {
     releaseLog("warn", "aws_microvm_image_build_diagnostics_failed", {
       region,

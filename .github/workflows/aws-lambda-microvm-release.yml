@@ -13,6 +13,7 @@ on:
       - "scripts/build-aws-microvm-release-manifest.ts"
       - "scripts/deploy-aws-microvm.mjs"
       - "scripts/package-aws-microvm.mjs"
+      - "scripts/lib/aws-microvm-build-diagnostics.cjs"
       - "scripts/lib/aws-microvm-container-image.cjs"
       - "scripts/smoke-aws-microvm.mjs"
       - "scripts/sync-trigger-microvm-release-env.ts"
