@@ -265,17 +265,16 @@ AWS Lambda MicroVMs are the default cloud sandbox for every paid plan. The
 application continues to hard-gate Free users to local-only behavior, and
 `CLOUD_SANDBOX_PROVIDER=e2b` remains the explicit emergency rollback.
 
-Measure actual acquisition exposure with `cloud_sandbox_provider_selected`.
-It includes the provider, transport (`aws_websocket` or `e2b_sdk`), rollout
-variant, subscription tier, Trigger region, requested and effective AWS region,
-placement reason, release ID, pinned image version, acquisition path,
-acquisition duration, create attempts, failover source/error/duration when
-applicable. Structured
+Measure provider health with `cloud_sandbox_provider_selected`. It includes the
+provider, transport (`aws_websocket` or `e2b_sdk`), subscription tier, Trigger
+region, requested and effective AWS region, placement reason, release ID,
+pinned image version, acquisition path, acquisition duration, create attempts,
+and failover source/error/duration when applicable. Structured
 `cloud_sandbox_region_failover_started`, `_succeeded`, and `_failed` events
 record the requested, failed, and selected regions plus privacy-safe AWS error
 classification and timing. Failed acquisitions emit
-`cloud_sandbox_acquisition_failed` with the intended provider, rollout variant,
-failure stage, duration, and privacy-safe error name. Compare the
+`cloud_sandbox_acquisition_failed` with the intended provider, failure stage,
+duration, and privacy-safe error name. Compare the
 `hackerai-agent_run` outcome and Trigger duration/cost fields by
 `sandbox_provider` to verify AWS reliability and latency after releases. The
 saved

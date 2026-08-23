@@ -21,7 +21,6 @@ import type { Geo } from "@vercel/functions";
 import type { TriggerRunRegion } from "@/lib/api/trigger-region";
 import PostHogClient from "@/app/posthog";
 import { getCloudSandboxProvider } from "@/lib/ai/tools/utils/cloud-sandbox-provider";
-import { resolveAwsLambdaMicrovmRollout } from "@/lib/experiments/aws-lambda-microvm-rollout";
 import { recordGroupedSpikeAlert } from "@/lib/observability/grouped-spike-alert";
 
 import { systemPrompt } from "@/lib/system-prompt";
@@ -2613,10 +2612,7 @@ export const agentLongTask = task({
         selectedModelOverride,
       });
       const posthog = PostHogClient();
-      const cloudSandboxRollout = resolveAwsLambdaMicrovmRollout({
-        subscription,
-        configuredProvider: getCloudSandboxProvider(),
-      });
+      const cloudSandboxProvider = getCloudSandboxProvider();
       const deepSeekProDefaultAssignment =
         await evaluateProPlusUltraDeepSeekProDefault({
           posthog,
@@ -3307,7 +3303,7 @@ export const agentLongTask = task({
               ctx.run.id,
               auxiliaryVision,
               {
-                cloudSandboxRollout,
+                cloudSandboxProvider,
                 triggerRegion,
                 ...(subagentsEnabled
                   ? {
@@ -3538,7 +3534,7 @@ export const agentLongTask = task({
               sandboxContext,
               agentPermissionMode,
               securityValidationSubagentsEnabled,
-              cloudSandboxRollout.provider,
+              cloudSandboxProvider,
               securityTaskSubagentsEnabled,
             );
             const systemPromptTokens = safeCountTokens(currentSystemPrompt);

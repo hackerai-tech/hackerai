@@ -1,4 +1,5 @@
-import type { AnySandbox } from "@/types";
+import type { AnySandbox, SandboxPreference, SubscriptionTier } from "@/types";
+import type { CloudSandboxProvider } from "@/lib/ai/tools/utils/cloud-sandbox-provider";
 import {
   isAwsLambdaMicrovmSandbox,
   isCentrifugoSandbox,
@@ -12,6 +13,23 @@ export const getSubagentSandboxIdentity = (sandbox: AnySandbox): string => {
     return `connection:${sandbox.getConnectionId()}`;
   }
   return `e2b:${sandbox.sandboxId}`;
+};
+
+/** Resolve the provider that owns the parent sandbox persisted for a child. */
+export const resolvePersistedSubagentCloudSandboxProvider = ({
+  subscription,
+  sandboxPreference,
+  sandboxIdentity,
+}: {
+  subscription: SubscriptionTier;
+  sandboxPreference?: SandboxPreference;
+  sandboxIdentity?: string;
+}): CloudSandboxProvider => {
+  if (subscription === "free") return "e2b";
+  const hasAwsIdentity =
+    sandboxIdentity?.startsWith("aws:") ||
+    (sandboxPreference === "e2b" && sandboxIdentity?.startsWith("connection:"));
+  return hasAwsIdentity ? "aws-lambda-microvm" : "e2b";
 };
 
 export const assertSubagentSandboxIdentity = (

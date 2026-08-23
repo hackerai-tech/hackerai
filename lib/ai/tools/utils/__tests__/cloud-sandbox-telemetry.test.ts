@@ -12,23 +12,8 @@ jest.mock("@/lib/posthog/server", () => ({
 
 import { ensureCloudSandboxConnection } from "../cloud-sandbox";
 
-describe("cloud sandbox rollout telemetry", () => {
-  const originalProvider = process.env.CLOUD_SANDBOX_PROVIDER;
-
-  beforeEach(() => {
-    jest.clearAllMocks();
-    process.env.CLOUD_SANDBOX_PROVIDER = "aws-lambda-microvm";
-  });
-
-  afterAll(() => {
-    if (originalProvider === undefined) {
-      delete process.env.CLOUD_SANDBOX_PROVIDER;
-    } else {
-      process.env.CLOUD_SANDBOX_PROVIDER = originalProvider;
-    }
-  });
-
-  it("attributes acquisition failures under the explicit E2B rollback", async () => {
+describe("cloud sandbox operational telemetry", () => {
+  it("attributes acquisition failures without rollout properties", async () => {
     const failure = Object.assign(new Error("private target detail"), {
       name: "SandboxUnavailableError",
     });
@@ -44,12 +29,6 @@ describe("cloud sandbox rollout telemetry", () => {
           chatId: "chat-1",
           triggerRunId: "run-1",
           runKind: "parent",
-          rollout: {
-            provider: "e2b",
-            eligible: false,
-            variant: "e2b",
-            reason: "provider_disabled",
-          },
         },
       }),
     ).rejects.toBe(failure);
@@ -64,14 +43,16 @@ describe("cloud sandbox rollout telemetry", () => {
         provider: "e2b",
         cloud_sandbox_transport: "e2b_sdk",
         subscription_tier: "ultra",
-        rollout_eligible: false,
-        rollout_variant: "e2b",
-        rollout_reason: "provider_disabled",
         failure_stage: "ensure_cloud_sandbox",
         error_name: "SandboxUnavailableError",
         cloud_sandbox_acquisition_failed_event_version: 2,
       }),
     );
+    expect(
+      Object.keys(mockEvent.mock.calls[0][1]).some((key) =>
+        key.startsWith("rollout_"),
+      ),
+    ).toBe(false);
     expect(JSON.stringify(mockEvent.mock.calls[0])).not.toContain(
       "private target detail",
     );
