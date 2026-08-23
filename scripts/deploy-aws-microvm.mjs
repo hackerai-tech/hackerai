@@ -5,10 +5,14 @@ import {
   CreateMicrovmImageCommand,
   GetMicrovmImageVersionCommand,
   LambdaMicrovmsClient,
+  ListMicrovmImageBuildsCommand,
   paginateListMicrovmImages,
   UpdateMicrovmImageCommand,
 } from "@aws-sdk/client-lambda-microvms";
 import { PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
+import buildDiagnostics from "./lib/aws-microvm-build-diagnostics.cjs";
+
+const { listMicrovmBuildDiagnostics } = buildDiagnostics;
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const artifactPath = resolve(
@@ -83,6 +87,27 @@ await new S3Client({ region }).send(
 );
 
 const lambda = new LambdaMicrovmsClient({ region, maxAttempts: 4 });
+
+async function resolveBuildFailure(imageIdentifier, imageVersion) {
+  try {
+    return await listMicrovmBuildDiagnostics({
+      imageIdentifier,
+      imageVersion,
+      listPage: (input) =>
+        lambda.send(new ListMicrovmImageBuildsCommand(input)),
+    });
+  } catch (error) {
+    releaseLog("warn", "aws_microvm_image_build_diagnostics_failed", {
+      region,
+      image_identifier: imageIdentifier,
+      image_version: imageVersion,
+      error_name: error?.name || "Error",
+      error_message: error?.message || String(error),
+    });
+    return { builds: [], stateReason: null };
+  }
+}
+
 const common = {
   baseImageArn,
   buildRoleArn,
@@ -229,7 +254,12 @@ publish: for (let attempt = 1; attempt <= publishAttempts; attempt += 1) {
       break publish;
     }
     if (version.state === "FAILED") {
-      const stateReason = version.stateReason?.trim() || null;
+      const buildFailure = await resolveBuildFailure(
+        imageIdentifier,
+        imageVersion,
+      );
+      const stateReason =
+        version.stateReason?.trim() || buildFailure.stateReason || null;
       const retrying = stateReason === null && attempt < publishAttempts;
       const delegatingRetry =
         stateReason === null && !retrying && Boolean(retrySignalFile);
@@ -245,6 +275,7 @@ publish: for (let attempt = 1; attempt <= publishAttempts; attempt += 1) {
           state: version.state,
           status: version.status,
           state_reason: stateReason,
+          builds: buildFailure.builds,
           retry_scheduled: retrying || delegatingRetry,
           retry_delegated: delegatingRetry,
         },
