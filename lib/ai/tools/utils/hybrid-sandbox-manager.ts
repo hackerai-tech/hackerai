@@ -34,7 +34,6 @@ import {
   ensureCloudSandboxConnection,
   type CloudSandboxAcquisitionContext,
 } from "./cloud-sandbox";
-import { selectAlternateCloudSandboxProviderForRecovery } from "./cloud-sandbox-recovery";
 import { getCloudSandboxProvider } from "./cloud-sandbox-provider";
 
 type SandboxInstance = AnySandbox;
@@ -450,13 +449,6 @@ export class HybridSandboxManager implements SandboxManager {
     }
     // Sandbox hasn't been initialized yet; return original preference
     return this.sandboxPreference;
-  }
-
-  selectAlternateCloudProviderForRecovery() {
-    if (this.sandboxPreference !== "e2b") return null;
-    return selectAlternateCloudSandboxProviderForRecovery(
-      this.cloudSandboxContext,
-    );
   }
 
   /**

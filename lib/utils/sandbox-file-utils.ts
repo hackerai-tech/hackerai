@@ -5,7 +5,6 @@ import { UIMessage } from "ai";
 import type { SandboxPreference, SandboxReadinessFailureReason } from "@/types";
 import { validateDownloadUrl } from "@/lib/ai/tools/utils/path-validation";
 import { classifySandboxReadinessFailureSignal } from "@/lib/ai/tools/utils/sandbox-readiness-failure";
-import { AlternateCloudSandboxUnavailableError } from "@/lib/ai/tools/utils/cloud-sandbox-recovery";
 import { recordGroupedSpikeAlert } from "@/lib/observability/grouped-spike-alert";
 
 export type SandboxFile = {
@@ -65,7 +64,6 @@ type SandboxRefreshOptions = {
   refresh?: boolean;
   reason?: string;
   excludeConnectionId?: string;
-  requireAlternateCloudProvider?: boolean;
 };
 
 type EnsureSandboxForUpload = (options?: SandboxRefreshOptions) => Promise<any>;
@@ -222,7 +220,7 @@ const logSandboxAcquisitionRecovery = (
   level: "info" | "warn",
   initialFailureReason: SandboxReadinessFailureReason,
   finalFailureReason?: SandboxReadinessFailureReason,
-  recoveryStrategy?: "fresh_sandbox" | "alternate_cloud_provider",
+  recoveryStrategy?: "fresh_sandbox",
 ): void => {
   const payload = JSON.stringify({
     timestamp: new Date().toISOString(),
@@ -1226,10 +1224,7 @@ export const uploadSandboxFiles = async (
     }
 
     retriedWithFreshSandbox = true;
-    const recoveryStrategy =
-      initialFailureReason === "placement_failure"
-        ? "alternate_cloud_provider"
-        : "fresh_sandbox";
+    const recoveryStrategy = "fresh_sandbox" as const;
     logSandboxAcquisitionRecovery(
       options,
       "sandbox_attachment_acquisition_retry_scheduled",
@@ -1242,8 +1237,6 @@ export const uploadSandboxFiles = async (
       sandbox = await ensureSandbox({
         refresh: true,
         reason: "attachment_staging_sandbox_acquisition_failure",
-        requireAlternateCloudProvider:
-          recoveryStrategy === "alternate_cloud_provider",
       });
       logSandboxAcquisitionRecovery(
         options,
@@ -1254,11 +1247,8 @@ export const uploadSandboxFiles = async (
         recoveryStrategy,
       );
     } catch (retryError) {
-      const alternateUnavailable =
-        retryError instanceof AlternateCloudSandboxUnavailableError;
-      const finalFailureReason = alternateUnavailable
-        ? initialFailureReason
-        : classifySandboxUploadReadinessFailure(retryError);
+      const finalFailureReason =
+        classifySandboxUploadReadinessFailure(retryError);
       logSandboxAcquisitionRecovery(
         options,
         "sandbox_attachment_acquisition_retry_failed",
@@ -1276,20 +1266,15 @@ export const uploadSandboxFiles = async (
           initial_failure_reason: initialFailureReason,
           final_failure_reason: finalFailureReason,
           recovery_strategy: recoveryStrategy,
-          alternate_provider_available: !alternateUnavailable,
         },
       });
       return {
         failedCount: sandboxFiles.length,
         pathRewrites: [],
         failureDetails: sandboxFiles.map((file) =>
-          summarizeSandboxUploadFailure(
-            file,
-            alternateUnavailable ? error : retryError,
-            "acquisition",
-          ),
+          summarizeSandboxUploadFailure(file, retryError, "acquisition"),
         ),
-        ...(alternateUnavailable ? {} : { retriedWithFreshSandbox: true }),
+        retriedWithFreshSandbox: true,
       };
     }
   }

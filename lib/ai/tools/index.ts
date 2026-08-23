@@ -47,15 +47,7 @@ import { E2B_COST_PER_MS } from "./utils/e2b-cost";
 import { AWS_LAMBDA_MICROVM_COST_PER_MS } from "./utils/aws-lambda-microvm-cost";
 import { phLogger } from "@/lib/posthog/server";
 import type { TriggerRunRegion } from "@/lib/api/trigger-region";
-import {
-  getAwsLambdaMicrovmRolloutTelemetryProperties,
-  type AwsLambdaMicrovmRolloutAssignment,
-} from "@/lib/experiments/aws-lambda-microvm-rollout";
 import type { CloudSandboxAcquisitionContext } from "./utils/cloud-sandbox";
-import {
-  AlternateCloudSandboxUnavailableError,
-  getCloudSandboxRecoveryTelemetryProperties,
-} from "./utils/cloud-sandbox-recovery";
 import type { CloudSandboxProvider } from "./utils/cloud-sandbox-provider";
 
 export { isE2BSandbox };
@@ -65,7 +57,7 @@ export type CreateToolsRuntimePolicy = {
   additionalTools?: (context: ToolContext) => ToolSet;
   ptyScopeId?: string;
   chargeSandboxRuntime?: boolean;
-  cloudSandboxRollout?: AwsLambdaMicrovmRolloutAssignment;
+  cloudSandboxProvider?: CloudSandboxProvider;
   triggerRegion?: TriggerRunRegion;
 };
 
@@ -112,7 +104,7 @@ export const createTools = (
   let sandboxCostSegmentStartedAt: number | null = null;
   let sandboxCostProvider: CloudSandboxProvider | null = null;
   const sandboxAccumulatedRuntimeMs = emptySandboxRuntimeMs();
-  let providerExposureRecorded = false;
+  let providerSelectionRecorded = false;
   let sandboxBootInfo: SandboxBootInfo | null = null;
   let currentModelName = modelName;
   let sandboxOperationQueue: Promise<void> = Promise.resolve();
@@ -124,11 +116,10 @@ export const createTools = (
   };
 
   const cloudSandboxContext: CloudSandboxAcquisitionContext = {
-    provider: runtimePolicy.cloudSandboxRollout?.provider,
+    provider: runtimePolicy.cloudSandboxProvider,
     subscription,
     chatId,
     triggerRunId,
-    rollout: runtimePolicy.cloudSandboxRollout,
     triggerRegion: runtimePolicy.triggerRegion,
     runKind:
       runtimePolicy.chargeSandboxRuntime === false ? "subagent" : "parent",
@@ -155,9 +146,8 @@ export const createTools = (
       sandboxCostSegmentStartedAt = now;
     }
     sandboxCostProvider = provider;
-    if (provider && !providerExposureRecorded) {
-      providerExposureRecorded = true;
-      const rollout = runtimePolicy.cloudSandboxRollout;
+    if (provider && !providerSelectionRecorded) {
+      providerSelectionRecorded = true;
       phLogger.event("cloud_sandbox_provider_selected", {
         userId: userID,
         chat_id: chatId,
@@ -168,8 +158,6 @@ export const createTools = (
         subscription,
         subscription_tier: subscription,
         agent_run_kind: cloudSandboxContext.runKind,
-        ...getAwsLambdaMicrovmRolloutTelemetryProperties(rollout),
-        ...getCloudSandboxRecoveryTelemetryProperties(cloudSandboxContext),
         sandbox_boot_path: sandboxBootInfo?.path,
         sandbox_acquisition_duration_ms: sandboxBootInfo?.duration_ms,
         sandbox_create_attempts: sandboxBootInfo?.create_attempts,
@@ -346,12 +334,9 @@ export const createTools = (
     refresh?: boolean;
     reason?: string;
     excludeConnectionId?: string;
-    requireAlternateCloudProvider?: boolean;
   }) => {
     const recoveryRequested = Boolean(
-      options?.refresh ||
-      options?.excludeConnectionId ||
-      options?.requireAlternateCloudProvider,
+      options?.refresh || options?.excludeConnectionId,
     );
     if (!recoveryRequested && pendingSandbox) return pendingSandbox;
 
@@ -363,13 +348,6 @@ export const createTools = (
           options.excludeConnectionId,
           "command_unresponsive",
         );
-      }
-      if (options?.requireAlternateCloudProvider) {
-        const alternateProvider =
-          sandboxManager.selectAlternateCloudProviderForRecovery?.() ?? null;
-        if (!alternateProvider) {
-          throw new AlternateCloudSandboxUnavailableError();
-        }
       }
       if (options?.refresh) {
         await sandboxManager.resetSandbox?.(options.reason);

@@ -1,7 +1,6 @@
 jest.mock("server-only", () => ({}), { virtual: true });
 
 import type { UIMessage } from "ai";
-import { AlternateCloudSandboxUnavailableError } from "@/lib/ai/tools/utils/cloud-sandbox-recovery";
 import {
   collectSandboxFiles,
   getSandboxUploadFailureMetadata,
@@ -724,7 +723,7 @@ describe("desktop-local sandbox file helpers", () => {
     [
       "Failed creating persistent sandbox: 500: Failed to place sandbox",
       "placement_failure",
-      "alternate_cloud_provider",
+      "fresh_sandbox",
     ],
   ])(
     "refreshes once after retryable sandbox acquisition failure %s",
@@ -771,8 +770,6 @@ describe("desktop-local sandbox file helpers", () => {
         expect(ensureSandbox.mock.calls[1][0]).toEqual({
           refresh: true,
           reason: "attachment_staging_sandbox_acquisition_failure",
-          requireAlternateCloudProvider:
-            recoveryStrategy === "alternate_cloud_provider",
         });
         expect(downloadFromUrl).toHaveBeenCalledTimes(1);
 
@@ -922,7 +919,7 @@ describe("desktop-local sandbox file helpers", () => {
     }
   });
 
-  it("fails fast when placement recovery has no rollout-authorized alternate provider", async () => {
+  it("retries placement recovery with a fresh configured-provider sandbox", async () => {
     const consoleWarnSpy = jest
       .spyOn(console, "warn")
       .mockImplementation(() => {});
@@ -933,7 +930,7 @@ describe("desktop-local sandbox file helpers", () => {
           "Failed creating persistent sandbox: 500: Failed to place sandbox",
         ),
       )
-      .mockRejectedValueOnce(new AlternateCloudSandboxUnavailableError());
+      .mockRejectedValueOnce(new Error("500: Failed to place sandbox"));
 
     try {
       const result = await uploadSandboxFiles(
@@ -952,9 +949,8 @@ describe("desktop-local sandbox file helpers", () => {
       expect(ensureSandbox.mock.calls[1][0]).toEqual({
         refresh: true,
         reason: "attachment_staging_sandbox_acquisition_failure",
-        requireAlternateCloudProvider: true,
       });
-      expect(result.retriedWithFreshSandbox).toBeUndefined();
+      expect(result.retriedWithFreshSandbox).toBe(true);
       expect(getSandboxUploadFailureMetadata(result)).toMatchObject({
         upload_failure_reason: "sandbox_placement_failure",
         upload_failure_sandbox_readiness_reason: "placement_failure",

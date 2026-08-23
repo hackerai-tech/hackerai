@@ -11,7 +11,6 @@ import {
   ensureCloudSandboxConnection,
   type CloudSandboxAcquisitionContext,
 } from "./cloud-sandbox";
-import { selectAlternateCloudSandboxProviderForRecovery } from "./cloud-sandbox-recovery";
 import { getCloudSandboxProvider } from "./cloud-sandbox-provider";
 import { isE2BSandbox } from "./sandbox-types";
 import { isExpectedAlreadyGoneCleanupError } from "@/lib/utils/cleanup-errors";
@@ -62,12 +61,6 @@ export class DefaultSandboxManager implements SandboxManager {
 
   getEffectivePreference(): string {
     return "e2b";
-  }
-
-  selectAlternateCloudProviderForRecovery() {
-    return selectAlternateCloudSandboxProviderForRecovery(
-      this.cloudSandboxContext,
-    );
   }
 
   getSandboxType(toolName: string): SandboxType | undefined {
