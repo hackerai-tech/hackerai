@@ -737,6 +737,19 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
     expect(detectAgentBrowserUsage("agent-browser-next open")).toBeNull();
   });
 
+  test("detectAgentBrowserUsage handles adversarial assignment text in linear time", () => {
+    const adversarialCommand = `&A=${'"" A='.repeat(20_000)}`;
+
+    expect(detectAgentBrowserUsage(adversarialCommand)).toBeNull();
+  });
+
+  test("detectAgentBrowserUsage ignores command separators inside quotes", () => {
+    expect(detectAgentBrowserUsage('echo "&& agent-browser open"')).toBeNull();
+    expect(
+      detectAgentBrowserUsage("printf '; agent-browser click'"),
+    ).toBeNull();
+  });
+
   test("injects the idle timeout only for cloud agent-browser commands", async () => {
     const e2b = {
       jupyterUrl: "http://fake",
