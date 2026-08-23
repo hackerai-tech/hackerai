@@ -68,6 +68,7 @@ Set one region's CloudFormation outputs and region, then run:
 export AWS_LAMBDA_MICROVM_ARTIFACT_BUCKET='<ArtifactBucketName>'
 export AWS_LAMBDA_MICROVM_BUILD_ROLE_ARN='<BuildRoleArn>'
 export AWS_LAMBDA_MICROVM_EXECUTION_ROLE_ARN='<ExecutionRoleArn>'
+export AWS_LAMBDA_MICROVM_CONTAINER_BASE_IMAGE='ghcr.io/hackerai-tech/hackerai-sandbox@sha256:<digest>'
 export AWS_REGION=us-east-1
 pnpm aws:microvm:deploy
 ```
@@ -87,9 +88,14 @@ failure rejects image validation rather than publishing an incompletely primed
 image; structured hook logs include per-step duration without bootstrap data.
 
 If the image build fails, inspect the CloudWatch log group shown by the Lambda
-MicroVM image. The HackerAI image currently uses Kali's public ARM64 container
-base, while the Lambda-managed MicroVM base is selected separately by the
-deployment script.
+MicroVM image. The heavyweight Kali and security-tool layer is built by GitHub
+Actions on a native ARM64 runner only when the `docker/` tree changes, published
+to GHCR, and pinned by digest in the small Lambda build artifact. The GHCR
+package must remain public so AWS's image builder can pull it without a registry
+credential. The Lambda-managed MicroVM base is selected separately by the
+deployment script. Failed releases also list the per-architecture image build
+states and reasons in the structured GitHub Actions log, even when the parent
+image version omits its reason.
 
 ## 3. Deploy the backend schema first
 
@@ -186,15 +192,24 @@ WebSocket subprotocol during the AWS-authenticated upgrade.
 ## Automated image promotion
 
 `.github/workflows/aws-lambda-microvm-release.yml` publishes a new image only
-when MicroVM image inputs change on `main`, or when it is run manually. It does
-not float production to AWS's implicit latest version. Instead it waits for the
-exact versions in all three regions, launches a short-lived VM in each region,
-executes a real command through every authenticated WebSocket, and confirms
-termination. Only after every matrix leg succeeds does it build one release
-manifest, upload and read back that exact manifest in Trigger.dev production,
-and deploy the pinned worker. A partial regional build can never become the
-active release. Vercel remains unchanged and older AWS image versions remain
-available for rollback.
+when MicroVM image inputs change on `main`, or when it is run manually. It first
+derives a content-addressed tag from the `docker/` tree. An existing tag is
+reused; a missing tag builds the heavyweight ARM64 sandbox once on a native ARM
+runner and publishes it to GHCR. Every regional Lambda artifact then contains
+only the agent layer and uses the exact resolved base digest. Normal agent-only
+changes therefore avoid rebuilding Kali and the security toolchain. The
+workflow does not float production to AWS's or GHCR's implicit latest version.
+Use the manual `rebuild_base` input for an intentional toolchain refresh when
+`docker/` is unchanged; that bypasses the registry and layer caches, publishes a
+new digest behind the tree tag, and promotes only the newly resolved digest.
+
+It then waits for the exact versions in all three regions, launches a
+short-lived VM in each region, executes a real command through every
+authenticated WebSocket, and confirms termination. Only after every matrix leg
+succeeds does it build one release manifest, upload and read back that exact
+manifest in Trigger.dev production, and deploy the pinned worker. A partial
+regional build can never become the active release. Vercel remains unchanged
+and older AWS image versions remain available for rollback.
 
 `AWS_LAMBDA_MICROVM_ENABLED_REGIONS` in the protected GitHub production
 environment is the durable placement kill switch. Keep `us-east-1` present and
