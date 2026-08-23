@@ -66,11 +66,13 @@ jobs:
         shell: bash
         run: |
           tree_id="$(git rev-parse HEAD:docker)"
+          echo "tree_id=${tree_id}" >> "$GITHUB_OUTPUT"
           echo "tag=microvm-base-${tree_id}" >> "$GITHUB_OUTPUT"
       - name: Reuse existing content-addressed base
         id: inspect
         env:
           BASE_TAG: ${{ steps.context.outputs.tag }}
+          EXPECTED_TREE_ID: ${{ steps.context.outputs.tree_id }}
           FORCE_REBUILD: ${{ github.event_name == 'workflow_dispatch' && inputs.rebuild_base }}
         shell: bash
         run: |
@@ -84,6 +86,14 @@ jobs:
             digest="$(awk '$1 == "Digest:" { print $2; exit }' "$inspect_file")"
             if [[ ! "$digest" =~ ^sha256:[a-f0-9]{64}$ ]]; then
               echo "Unable to resolve an immutable digest for $image_ref"
+              exit 1
+            fi
+            image_json="$(docker buildx imagetools inspect "$image_ref" --format '{{json .Image}}')"
+            architecture="$(jq -r 'if .architecture then .architecture else .["linux/arm64"].architecture // empty end' <<< "$image_json")"
+            os="$(jq -r 'if .os then .os else .["linux/arm64"].os // empty end' <<< "$image_json")"
+            tree_id="$(jq -r 'if .config then .config.Labels["tech.hackerai.microvm-base-tree"] // empty else .["linux/arm64"].config.Labels["tech.hackerai.microvm-base-tree"] // empty end' <<< "$image_json")"
+            if [[ "$os/$architecture" != "linux/arm64" || "$tree_id" != "$EXPECTED_TREE_ID" ]]; then
+              echo "Refusing incompatible base tag: expected linux/arm64 tree $EXPECTED_TREE_ID, got $os/$architecture tree ${tree_id:-missing}"
               exit 1
             fi
             echo "exists=true" >> "$GITHUB_OUTPUT"
@@ -103,6 +113,7 @@ jobs:
           labels: |
             org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            tech.hackerai.microvm-base-tree=${{ steps.context.outputs.tree_id }}
           cache-from: type=gha,scope=microvm-sandbox-base
           cache-to: type=gha,mode=max,scope=microvm-sandbox-base
           no-cache: ${{ github.event_name == 'workflow_dispatch' && inputs.rebuild_base }}
@@ -112,6 +123,7 @@ jobs:
         env:
           EXISTING_DIGEST: ${{ steps.inspect.outputs.digest }}
           BUILT_DIGEST: ${{ steps.build.outputs.digest }}
+          EXPECTED_TREE_ID: ${{ steps.context.outputs.tree_id }}
         shell: bash
         run: |
           digest="${EXISTING_DIGEST:-$BUILT_DIGEST}"
@@ -119,13 +131,22 @@ jobs:
             echo "Missing valid sandbox base digest"
             exit 1
           fi
+          image_ref="${REGISTRY}/${IMAGE_NAME}@${digest}"
+          image_json="$(docker buildx imagetools inspect "$image_ref" --format '{{json .Image}}')"
+          architecture="$(jq -r 'if .architecture then .architecture else .["linux/arm64"].architecture // empty end' <<< "$image_json")"
+          os="$(jq -r 'if .os then .os else .["linux/arm64"].os // empty end' <<< "$image_json")"
+          tree_id="$(jq -r 'if .config then .config.Labels["tech.hackerai.microvm-base-tree"] // empty else .["linux/arm64"].config.Labels["tech.hackerai.microvm-base-tree"] // empty end' <<< "$image_json")"
+          if [[ "$os/$architecture" != "linux/arm64" || "$tree_id" != "$EXPECTED_TREE_ID" ]]; then
+            echo "Resolved base image does not match linux/arm64 tree $EXPECTED_TREE_ID"
+            exit 1
+          fi
           docker logout "$REGISTRY" >/dev/null 2>&1 || true
-          if ! docker buildx imagetools inspect "${REGISTRY}/${IMAGE_NAME}@${digest}" >/dev/null; then
+          if ! docker buildx imagetools inspect "$image_ref" >/dev/null; then
             echo "Sandbox base image must allow anonymous GHCR pulls"
             exit 1
           fi
-          echo "image=${REGISTRY}/${IMAGE_NAME}@${digest}" >> "$GITHUB_OUTPUT"
-          echo "Using ${REGISTRY}/${IMAGE_NAME}@${digest}"
+          echo "image=${image_ref}" >> "$GITHUB_OUTPUT"
+          echo "Using ${image_ref}"
 
   prepare:
     name: Build release artifact
