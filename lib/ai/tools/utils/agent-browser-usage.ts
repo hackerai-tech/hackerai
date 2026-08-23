@@ -13,6 +13,7 @@ function splitShellCommands(command: string): string[] {
   let start = 0;
   let quote: "'" | '"' | null = null;
   let escaped = false;
+  let redirectionOperatorOpen = false;
 
   for (let index = 0; index < command.length; index++) {
     const character = command[index];
@@ -32,6 +33,21 @@ function splitShellCommands(command: string): string[] {
       quote = character;
       continue;
     }
+    if (redirectionOperatorOpen) {
+      if (
+        character === ">" ||
+        character === "<" ||
+        character === "&" ||
+        character === "|"
+      ) {
+        continue;
+      }
+      redirectionOperatorOpen = false;
+    }
+    if (character === ">" || character === "<") {
+      redirectionOperatorOpen = true;
+      continue;
+    }
     if (SHELL_COMMAND_SEPARATORS.has(character)) {
       commands.push(command.slice(start, index));
       start = index + 1;
@@ -48,6 +64,9 @@ function splitShellWords(command: string): string[] {
   let quote: "'" | '"' | null = null;
   let escaped = false;
   let hasContent = false;
+  let skippingRedirectionTarget = false;
+  let redirectionTargetStarted = false;
+  let redirectionOperatorOpen = false;
 
   const pushCurrent = () => {
     if (!hasContent) return;
@@ -58,25 +77,64 @@ function splitShellWords(command: string): string[] {
 
   for (const character of command) {
     if (escaped) {
-      current += character;
-      hasContent = true;
       escaped = false;
+      if (character === "\n") continue;
+      if (skippingRedirectionTarget) redirectionTargetStarted = true;
+      else {
+        current += character;
+        hasContent = true;
+      }
       continue;
     }
     if (character === "\\" && quote !== "'") {
       escaped = true;
-      hasContent = true;
       continue;
     }
     if (quote) {
       if (character === quote) quote = null;
-      else current += character;
-      hasContent = true;
+      else if (!skippingRedirectionTarget) current += character;
+      if (skippingRedirectionTarget) redirectionTargetStarted = true;
+      else hasContent = true;
       continue;
     }
     if (character === "'" || character === '"') {
       quote = character;
-      hasContent = true;
+      if (skippingRedirectionTarget) redirectionTargetStarted = true;
+      else hasContent = true;
+      continue;
+    }
+    if (skippingRedirectionTarget) {
+      if (redirectionOperatorOpen) {
+        if (
+          character === ">" ||
+          character === "<" ||
+          character === "&" ||
+          character === "|"
+        ) {
+          continue;
+        }
+        redirectionOperatorOpen = false;
+      }
+      if (SHELL_WHITESPACE_RE.test(character)) {
+        if (redirectionTargetStarted) {
+          skippingRedirectionTarget = false;
+          redirectionTargetStarted = false;
+        }
+      } else {
+        redirectionTargetStarted = true;
+      }
+      continue;
+    }
+    if (character === ">" || character === "<") {
+      if (/^\d+$/.test(current)) {
+        current = "";
+        hasContent = false;
+      } else {
+        pushCurrent();
+      }
+      skippingRedirectionTarget = true;
+      redirectionTargetStarted = false;
+      redirectionOperatorOpen = true;
       continue;
     }
     if (SHELL_WHITESPACE_RE.test(character)) {
@@ -87,7 +145,10 @@ function splitShellWords(command: string): string[] {
     hasContent = true;
   }
 
-  if (escaped) current += "\\";
+  if (escaped) {
+    current += "\\";
+    hasContent = true;
+  }
   pushCurrent();
   return words;
 }
