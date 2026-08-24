@@ -1,4 +1,8 @@
-import { idempotencyKeys, wait } from "@trigger.dev/sdk";
+import {
+  idempotencyKeys,
+  logger as triggerLogger,
+  wait,
+} from "@trigger.dev/sdk";
 import { tool, type UIMessageStreamWriter } from "ai";
 
 import type { ToolContext } from "@/types";
@@ -24,6 +28,7 @@ import {
 } from "@/lib/ai/subagents/fingerprint";
 import { getSubagentSandboxIdentity } from "@/lib/ai/subagents/sandbox-identity";
 import { SUBAGENT_TEXT_MODEL } from "@/lib/ai/subagents/model-routing";
+import { getSubagentRecoveryErrorDiagnostics } from "@/lib/ai/subagents/runtime-recovery";
 import { getSandboxWithFallbackGuard } from "@/lib/ai/tools/utils/sandbox-fallback";
 import {
   claimNextTerminalSubagentForParent,
@@ -163,10 +168,27 @@ export const createCreateAgentTool = (
       const { sandbox } = await getSandboxWithFallbackGuard({
         sandboxManager: context.sandboxManager,
       }).catch((error) => {
+        const diagnostics = getSubagentRecoveryErrorDiagnostics(error);
         captureCreateFailure(
           "sandbox_acquisition",
           "sandbox_acquisition_error",
         );
+        triggerLogger.error("[subagent] sandbox acquisition failed", {
+          event: "subagent_sandbox_acquisition_failed",
+          service: "hackerai-subagent",
+          environment:
+            process.env.TRIGGER_ENV ?? process.env.NODE_ENV ?? "unknown",
+          user_id: context.userID,
+          parent_trigger_run_id: parentTriggerRunId,
+          parent_tool_call_id: execution.toolCallId,
+          profile,
+          failure_stage: "sandbox_acquisition",
+          error_category: diagnostics.category,
+          error_name: diagnostics.errorName,
+          error_code: diagnostics.errorCode,
+          status_code: diagnostics.statusCode,
+          duration_ms: Date.now() - createStartedAt,
+        });
         throw error;
       });
       const sandboxIdentity = getSubagentSandboxIdentity(sandbox);

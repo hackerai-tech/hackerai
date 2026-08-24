@@ -192,6 +192,12 @@ export async function getS3ObjectMetadata(
     ) {
       return { exists: false };
     }
+    if (record?.$metadata?.httpStatusCode === 403) {
+      throw new Error(
+        `S3 metadata access denied in ${region} (HTTP 403); verify s3:GetObject permission for the target key`,
+        { cause: error },
+      );
+    }
     throw error;
   }
 }

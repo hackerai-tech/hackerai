@@ -36,6 +36,8 @@ type SubagentLifecycleEvent = BaseSubagentEvent & {
   undeliveredCount?: number;
   targetCount?: number;
   resultAvailable?: boolean;
+  resultRecoveryCount?: number;
+  resultSubmissionCount?: number;
 };
 
 const boundedCategory = (value: string | undefined): string | undefined =>
@@ -105,6 +107,8 @@ export const captureSubagentLifecycleEvent = (
     undelivered_count: fields.undeliveredCount,
     target_count: fields.targetCount,
     result_available: fields.resultAvailable,
+    result_recovery_count: fields.resultRecoveryCount,
+    result_submission_count: fields.resultSubmissionCount,
     environment: runtimeEnvironment(),
     service_version: serviceVersion(),
   });

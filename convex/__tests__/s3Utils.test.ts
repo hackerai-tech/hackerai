@@ -274,6 +274,28 @@ describe("s3Utils", () => {
       await expect(s3ObjectExists("workspace.tar.gz")).rejects.toBe(outage);
     });
 
+    it("reports the region and required permission for access-denied metadata reads", async () => {
+      const { S3Client } = await import("@aws-sdk/client-s3");
+      const accessDenied = {
+        name: "Unknown",
+        $metadata: { httpStatusCode: 403 },
+      };
+      const mockSend = jest.fn().mockRejectedValue(accessDenied);
+      (S3Client as jest.MockedClass<typeof S3Client>).mockImplementation(
+        () => ({ send: mockSend }) as unknown as S3Client,
+      );
+      const { getS3ObjectMetadata } = await import("../s3Utils");
+
+      await expect(
+        getS3ObjectMetadata("workspace.tar.gz", {
+          region: "eu-west-1",
+          bucketName: "workspace-eu",
+        }),
+      ).rejects.toThrow(
+        "S3 metadata access denied in eu-west-1 (HTTP 403); verify s3:GetObject permission for the target key",
+      );
+    });
+
     it("returns S3's server-side modification time for regional selection", async () => {
       const { S3Client } = await import("@aws-sdk/client-s3");
       const lastModified = new Date("2026-08-24T04:00:00.000Z");

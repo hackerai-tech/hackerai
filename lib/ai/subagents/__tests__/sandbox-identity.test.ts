@@ -25,6 +25,9 @@ describe("subagent sandbox identity", () => {
       assertSubagentSandboxIdentity(aws, "aws:relay-1"),
     ).not.toThrow();
     expect(() =>
+      assertSubagentSandboxIdentity(aws, "aws:replaced-relay"),
+    ).not.toThrow();
+    expect(() =>
       assertSubagentSandboxIdentity(aws, "connection:relay-1"),
     ).not.toThrow();
     expect(() => assertSubagentSandboxIdentity(local, "aws:relay-1")).toThrow(

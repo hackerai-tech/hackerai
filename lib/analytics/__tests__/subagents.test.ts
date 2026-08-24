@@ -57,6 +57,8 @@ describe("subagent lifecycle analytics", () => {
       undelivered_count: undefined,
       target_count: undefined,
       result_available: undefined,
+      result_recovery_count: undefined,
+      result_submission_count: undefined,
       environment: expect.any(String),
       service_version: expect.any(String),
     });

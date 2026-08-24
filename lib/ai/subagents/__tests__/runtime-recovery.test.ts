@@ -3,12 +3,15 @@ import { describe, expect, it } from "@jest/globals";
 import {
   buildMissingSubagentResultRecoveryMessage,
   canRecoverMissingSubagentResult,
+  getSubagentExplorationStepLimit,
   getSubagentProviderRetryDecision,
   getSubagentRecoveryErrorDiagnostics,
   getSubagentResultRecoveryRetryDecision,
   isRecoverableProviderCategory,
   isTransientProviderCategory,
   pipeSubagentUiMessageStream,
+  shouldStartSubagentResultRecovery,
+  SUBAGENT_RESULT_RECOVERY_STEP_RESERVE,
 } from "../runtime-recovery";
 
 describe("subagent runtime recovery", () => {
@@ -99,6 +102,26 @@ describe("subagent runtime recovery", () => {
     expect(buildMissingSubagentResultRecoveryMessage()).toContain(
       "confirmed result must include at least one reproduction step and one evidence reference",
     );
+  });
+
+  it("reserves the final steps for structured-result recovery", () => {
+    expect(SUBAGENT_RESULT_RECOVERY_STEP_RESERVE).toBe(2);
+    expect(getSubagentExplorationStepLimit(50)).toBe(48);
+    expect(getSubagentExplorationStepLimit(2)).toBe(1);
+    expect(
+      shouldStartSubagentResultRecovery(0, {
+        aborted: false,
+        spendCapExceeded: false,
+        remainingSteps: 2,
+      }),
+    ).toBe(true);
+    expect(
+      shouldStartSubagentResultRecovery(1, {
+        aborted: false,
+        spendCapExceeded: false,
+        remainingSteps: 2,
+      }),
+    ).toBe(false);
   });
 
   it("retries a failed structured-result recovery exactly once", () => {
