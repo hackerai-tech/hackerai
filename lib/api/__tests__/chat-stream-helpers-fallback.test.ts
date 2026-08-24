@@ -29,7 +29,8 @@ jest.mock("@/lib/logger", () => ({
 const GROK_4_5_SLUG = "x-ai/grok-4.5";
 const GROK_SLUG = "x-ai/grok-4.6";
 const KIMI_K3_SLUG = "moonshotai/kimi-k3";
-const GLM_SLUG = "z-ai/glm-5.2";
+const GLM_5_2_SLUG = "z-ai/glm-5.2";
+const GLM_SLUG = "z-ai/glm-5.3";
 const DEEPSEEK_FLASH_SLUG = "deepseek/deepseek-v4-flash-0731";
 const DEEPSEEK_FLASH_CANONICAL_SLUG = "deepseek/deepseek-v4-flash-20260731";
 const DEEPSEEK_FLASH_PREVIOUS_SLUG = "deepseek/deepseek-v4-flash";
@@ -48,6 +49,7 @@ const HIGH_REASONING_ROUTES = [
   "model-deepseek-v4-pro-0813",
   "model-opus-4.6",
   "model-glm-5.2",
+  "model-glm-5.3",
   "model-kimi-k3",
   "fallback-agent-model",
   "fallback-ask-model",
@@ -157,6 +159,19 @@ describe("buildProviderOptions fallback chain", () => {
     });
   });
 
+  it("resolves GLM 5.3 to Kimi K3", () => {
+    const opts = buildProviderOptions(
+      false,
+      "user-1",
+      "model-glm-5.3",
+      "agent",
+    );
+    expect(opts.openrouter).toMatchObject({
+      models: [KIMI_K3_SLUG],
+      user: "user-1",
+    });
+  });
+
   it("resolves Kimi K3 fallback through the active Grok route", () => {
     const opts = buildProviderOptions(
       false,
@@ -176,7 +191,7 @@ describe("buildProviderOptions fallback chain", () => {
       "user-1",
       "model-grok-4.6-pro",
       "agent",
-      { excludedModelSlugs: ["z-ai/glm-5.2-20260616"] },
+      { excludedModelSlugs: ["z-ai/glm-5.3-20260816"] },
     );
 
     expect(opts.openrouter).toMatchObject({
@@ -185,16 +200,16 @@ describe("buildProviderOptions fallback chain", () => {
     });
   });
 
-  it("falls back from the Grok-backed auto agent route to Kimi K3", () => {
+  it("falls back from the Grok-backed auto agent route through GLM 5.3 then Kimi K3", () => {
     const opts = buildProviderOptions(false, "user-1", "agent-model", "agent");
     expect(opts.openrouter).toMatchObject({
-      models: [KIMI_K3_SLUG],
+      models: [GLM_SLUG, KIMI_K3_SLUG],
       user: "user-1",
     });
   });
 
   it.each(["ask", "agent"] as const)(
-    "falls back from HackerAI Pro Grok 4.6 to GLM 5.2 then Kimi K3 in %s mode",
+    "falls back from HackerAI Pro Grok 4.6 to GLM 5.3 then Kimi K3 in %s mode",
     (mode) => {
       const opts = buildProviderOptions(
         mode === "agent",
@@ -238,16 +253,16 @@ describe("buildProviderOptions fallback chain", () => {
     });
   });
 
-  it("limits free Ask OpenRouter fallbacks to Flash 0731, Pro 0813, then Grok", () => {
+  it("limits free Ask OpenRouter fallbacks to Flash 0731, Pro 0813, then GLM 5.3", () => {
     const opts = buildProviderOptions(false, "user-1", "ask-model-free", "ask");
     expect(opts.openrouter).toMatchObject({
-      models: [DEEPSEEK_FLASH_SLUG, DEEPSEEK_V4_PRO_0813_SLUG, GROK_SLUG],
+      models: [DEEPSEEK_FLASH_SLUG, DEEPSEEK_V4_PRO_0813_SLUG, GLM_SLUG],
       user: "user-1",
     });
     expect(opts.openrouter.models).toHaveLength(3);
   });
 
-  it("runs free Agent on DeepSeek Flash high and falls back through Pro 0813, Grok, then Kimi K3", () => {
+  it("runs free Agent on DeepSeek Flash high and falls back through Pro 0813, GLM 5.3, then Kimi K3", () => {
     const opts = buildProviderOptions(
       true,
       "user-1",
@@ -256,12 +271,12 @@ describe("buildProviderOptions fallback chain", () => {
     );
     expect(opts.openrouter).toMatchObject({
       reasoning: { enabled: true, effort: "high" },
-      models: [DEEPSEEK_V4_PRO_0813_SLUG, GROK_SLUG, KIMI_K3_SLUG],
+      models: [DEEPSEEK_V4_PRO_0813_SLUG, GLM_SLUG, KIMI_K3_SLUG],
       user: "user-1",
     });
   });
 
-  it("falls back from explicit DeepSeek Pro ask model through Grok then Kimi K3", () => {
+  it("falls back from explicit DeepSeek Pro ask model through GLM 5.3 then Kimi K3", () => {
     const opts = buildProviderOptions(
       false,
       "user-1",
@@ -269,7 +284,7 @@ describe("buildProviderOptions fallback chain", () => {
       "ask",
     );
     expect(opts.openrouter).toMatchObject({
-      models: [GROK_SLUG, KIMI_K3_SLUG],
+      models: [GLM_SLUG, KIMI_K3_SLUG],
       user: "user-1",
     });
   });
@@ -318,7 +333,7 @@ describe("buildProviderOptions fallback chain", () => {
     ]);
   });
 
-  it("falls back from DeepSeek V4 Flash 0731 through Pro 0813, Grok, then Kimi K3", () => {
+  it("falls back from DeepSeek V4 Flash 0731 through Pro 0813, GLM 5.3, then Kimi K3", () => {
     const opts = buildProviderOptions(
       false,
       "user-1",
@@ -327,12 +342,12 @@ describe("buildProviderOptions fallback chain", () => {
     );
     expect(opts.openrouter).toMatchObject({
       reasoning: { enabled: true, effort: "high" },
-      models: [DEEPSEEK_V4_PRO_0813_SLUG, GROK_SLUG, KIMI_K3_SLUG],
+      models: [DEEPSEEK_V4_PRO_0813_SLUG, GLM_SLUG, KIMI_K3_SLUG],
       user: "user-1",
     });
   });
 
-  it("falls back from DeepSeek V4 Pro 0813 through Grok then Kimi K3", () => {
+  it("falls back from DeepSeek V4 Pro 0813 through GLM 5.3 then Kimi K3", () => {
     const opts = buildProviderOptions(
       false,
       "user-1",
@@ -341,15 +356,15 @@ describe("buildProviderOptions fallback chain", () => {
     );
     expect(opts.openrouter).toMatchObject({
       reasoning: { enabled: true, effort: "high" },
-      models: [GROK_SLUG, KIMI_K3_SLUG],
+      models: [GLM_SLUG, KIMI_K3_SLUG],
       user: "user-1",
     });
   });
 
-  it("falls back from the Grok-backed paid Ask image route to Kimi K3", () => {
+  it("falls back from the Grok-backed paid Ask image route through GLM 5.3 then Kimi K3", () => {
     const opts = buildProviderOptions(false, "user-1", "ask-model", "ask");
     expect(opts.openrouter).toMatchObject({
-      models: [KIMI_K3_SLUG],
+      models: [GLM_SLUG, KIMI_K3_SLUG],
       user: "user-1",
     });
   });
@@ -358,7 +373,7 @@ describe("buildProviderOptions fallback chain", () => {
     const opts = buildProviderOptions(false, "user-1", "model-grok-4.6", "ask");
     expect(opts.openrouter).toMatchObject({
       reasoning: { enabled: true, effort: "high" },
-      models: [KIMI_K3_SLUG],
+      models: [GLM_SLUG, KIMI_K3_SLUG],
       user: "user-1",
     });
     expect(opts.openrouter).not.toHaveProperty("plugins");
@@ -386,7 +401,7 @@ describe("buildProviderOptions fallback chain", () => {
     expect(opts.openrouter.models).toEqual([
       DEEPSEEK_FLASH_SLUG,
       DEEPSEEK_V4_PRO_0813_SLUG,
-      GROK_SLUG,
+      GLM_SLUG,
     ]);
   });
 
@@ -408,7 +423,7 @@ describe("buildProviderOptions fallback chain", () => {
     expect(opts.openrouter.models).toEqual([
       DEEPSEEK_FLASH_SLUG,
       DEEPSEEK_V4_PRO_0813_SLUG,
-      GROK_SLUG,
+      GLM_SLUG,
     ]);
   });
 
@@ -429,7 +444,7 @@ describe("buildProviderOptions fallback chain", () => {
     });
   });
 
-  it("keeps Grok fallback reasoning high over a lower scoped override", () => {
+  it("keeps GLM fallback reasoning high over a lower scoped override", () => {
     const opts = buildProviderOptions(
       false,
       "user-1",
@@ -444,7 +459,7 @@ describe("buildProviderOptions fallback chain", () => {
       enabled: true,
       effort: "high",
     });
-    expect(opts.openrouter.models).toEqual([GROK_SLUG, KIMI_K3_SLUG]);
+    expect(opts.openrouter.models).toEqual([GLM_SLUG, KIMI_K3_SLUG]);
   });
 
   it("allows a scoped reasoning override when Grok is not in the route", () => {
@@ -506,7 +521,7 @@ describe("buildProviderOptions fallback chain", () => {
     },
   );
 
-  it("enables high reasoning for the DeepSeek Pro route with a Grok fallback", () => {
+  it("enables high reasoning for the DeepSeek Pro route with a GLM fallback", () => {
     const opts = buildProviderOptions(
       false,
       "user-1",
@@ -553,6 +568,7 @@ describe("buildProviderOptions fallback chain", () => {
     "model-grok-4.5-pro",
     "model-grok-4.6-pro",
     "model-glm-5.2",
+    "model-glm-5.3",
     "model-opus-4.6",
   ])("enables high reasoning for ask mode model %s", (modelName) => {
     const opts = buildProviderOptions(false, "user-1", modelName, "ask");
@@ -566,6 +582,7 @@ describe("buildProviderOptions fallback chain", () => {
     "model-grok-4.5-pro",
     "model-grok-4.6-pro",
     "model-glm-5.2",
+    "model-glm-5.3",
     "model-opus-4.6",
   ])("enables high reasoning for agent mode model %s", (modelName) => {
     const opts = buildProviderOptions(true, "user-1", modelName, "agent");
@@ -608,7 +625,7 @@ describe("buildProviderOptions fallback chain", () => {
     );
     expect(grokReasoning.openrouter).toMatchObject({
       reasoning: { enabled: true, effort: "high" },
-      models: [KIMI_K3_SLUG],
+      models: [GLM_SLUG, KIMI_K3_SLUG],
     });
 
     const multimodal = buildProviderOptions(
@@ -793,12 +810,12 @@ describe("getRetryFallbackModel", () => {
     },
   );
 
-  it("retries HackerAI Pro Grok with GLM 5.2", () => {
+  it("retries HackerAI Pro Grok with GLM 5.3", () => {
     expect(getRetryFallbackModel("model-grok-4.6-pro", "agent")).toBe(
-      "model-glm-5.2",
+      "model-glm-5.3",
     );
     expect(getRetryFallbackModel("model-grok-4.6-pro", "ask")).toBe(
-      "model-glm-5.2",
+      "model-glm-5.3",
     );
   });
 
@@ -808,9 +825,9 @@ describe("getRetryFallbackModel", () => {
     );
   });
 
-  it("retries paid DeepSeek Pro with Grok", () => {
+  it("retries paid DeepSeek Pro with GLM 5.3", () => {
     expect(getRetryFallbackModel("model-deepseek-v4-pro", "ask")).toBe(
-      "model-grok-4.6",
+      "model-glm-5.3",
     );
   });
 
@@ -820,9 +837,9 @@ describe("getRetryFallbackModel", () => {
     );
   });
 
-  it("retries DeepSeek V4 Pro 0813 with Grok", () => {
+  it("retries DeepSeek V4 Pro 0813 with GLM 5.3", () => {
     expect(getRetryFallbackModel("model-deepseek-v4-pro-0813", "ask")).toBe(
-      "model-grok-4.6",
+      "model-glm-5.3",
     );
   });
 
@@ -832,17 +849,17 @@ describe("getRetryFallbackModel", () => {
     );
   });
 
-  it("retries the Grok-backed paid Ask route with Kimi K3", () => {
+  it("retries the Grok-backed paid Ask route with GLM 5.3", () => {
     expect(getRetryFallbackModel("model-grok-4.6", "ask")).toBe(
-      "model-kimi-k3",
+      "model-glm-5.3",
     );
   });
 });
 
 describe("getContentFilterRetryModel", () => {
-  it("keeps Kimi available as an app-side retry after free Ask served Grok", () => {
+  it("restarts the configured chain when free Ask unexpectedly served Grok", () => {
     expect(getContentFilterRetryModel("ask-model-free", "ask", GROK_SLUG)).toBe(
-      "model-kimi-k3",
+      "model-deepseek-v4-flash-0731",
     );
   });
 
@@ -856,19 +873,19 @@ describe("getContentFilterRetryModel", () => {
     ).toBe("model-deepseek-v4-pro-0813");
   });
 
-  it("advances to Grok when OpenRouter already served DeepSeek Pro 0813", () => {
+  it("advances to GLM 5.3 when OpenRouter already served DeepSeek Pro 0813", () => {
     expect(
       getContentFilterRetryModel(
         "agent-model-free",
         "agent",
         DEEPSEEK_V4_PRO_0813_SLUG,
       ),
-    ).toBe("model-grok-4.6");
+    ).toBe("model-glm-5.3");
   });
 
-  it("advances to Kimi when OpenRouter already served Grok", () => {
+  it("advances to Kimi when OpenRouter already served GLM 5.3", () => {
     expect(
-      getContentFilterRetryModel("agent-model-free", "agent", GROK_SLUG),
+      getContentFilterRetryModel("agent-model-free", "agent", GLM_SLUG),
     ).toBe("model-kimi-k3");
   });
 
@@ -879,7 +896,7 @@ describe("getContentFilterRetryModel", () => {
         "agent",
         "moonshotai/kimi-k3-20260715",
       ),
-    ).toBe("model-grok-4.6");
+    ).toBe("model-glm-5.3");
   });
 });
 
@@ -1049,11 +1066,11 @@ describe("resolveServedModelForCostAccounting", () => {
     ).toBe("model-opus-4.6");
   });
 
-  it("maps GLM provider response slugs back to the local cost key", () => {
+  it("maps GLM 5.2 provider response slugs back to the historical cost key", () => {
     expect(
       resolveServedModelForCostAccounting({
         modelName: "model-glm-5.2",
-        responseModel: GLM_SLUG,
+        responseModel: GLM_5_2_SLUG,
         mode: "agent",
       }),
     ).toBe("model-glm-5.2");
@@ -1064,6 +1081,23 @@ describe("resolveServedModelForCostAccounting", () => {
         mode: "ask",
       }),
     ).toBe("model-glm-5.2");
+  });
+
+  it("maps GLM 5.3 provider response slugs back to the active cost key", () => {
+    expect(
+      resolveServedModelForCostAccounting({
+        modelName: "model-glm-5.3",
+        responseModel: GLM_SLUG,
+        mode: "agent",
+      }),
+    ).toBe("model-glm-5.3");
+    expect(
+      resolveServedModelForCostAccounting({
+        modelName: "model-grok-4.6",
+        responseModel: "z-ai/glm-5.3-20260816",
+        mode: "ask",
+      }),
+    ).toBe("model-glm-5.3");
   });
 
   it("falls back to the active model key when provider metadata is absent", () => {

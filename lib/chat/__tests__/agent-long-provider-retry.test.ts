@@ -100,19 +100,19 @@ describe("prepareProviderDisconnectContinuation", () => {
 });
 
 describe("getNextDeepSeekProDisconnectRetryModel", () => {
-  it("uses Grok and then one final Kimi retry", () => {
+  it("uses GLM 5.3 and then one final Kimi retry", () => {
     expect(
       getNextDeepSeekProDisconnectRetryModel({
         originalModel: "model-deepseek-v4-pro-0813",
         failedModel: "model-deepseek-v4-pro-0813",
         completedRetryCount: 0,
       }),
-    ).toBe("model-grok-4.6");
+    ).toBe("model-glm-5.3");
 
     expect(
       getNextDeepSeekProDisconnectRetryModel({
         originalModel: "model-deepseek-v4-pro-0813",
-        failedModel: "model-grok-4.6",
+        failedModel: "model-glm-5.3",
         completedRetryCount: 1,
       }),
     ).toBe("model-kimi-k3");
@@ -122,7 +122,7 @@ describe("getNextDeepSeekProDisconnectRetryModel", () => {
     expect(
       getNextDeepSeekProDisconnectRetryModel({
         originalModel: "model-deepseek-v4-pro-0813",
-        failedModel: "model-glm-5.2",
+        failedModel: "model-grok-4.6",
         completedRetryCount: 1,
       }),
     ).toBeUndefined();

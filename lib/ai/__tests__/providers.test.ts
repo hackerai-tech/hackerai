@@ -161,6 +161,10 @@ describe("provider registry", () => {
         .modelId,
     ).toBe("z-ai/glm-5.2");
     expect(
+      (myProvider.languageModel("model-glm-5.3") as { modelId: string })
+        .modelId,
+    ).toBe("z-ai/glm-5.3");
+    expect(
       (myProvider.languageModel("model-kimi-k3") as { modelId: string })
         .modelId,
     ).toBe("moonshotai/kimi-k3");
@@ -209,6 +213,8 @@ describe("provider registry", () => {
       "August 2026",
     );
     expect(getModelDisplayName("model-glm-5.2")).toBe("Z.ai GLM 5.2");
+    expect(getModelDisplayName("model-glm-5.3")).toBe("Z.ai GLM 5.3");
+    expect(getModelCutoffDate("model-glm-5.3")).toBeUndefined();
     expect(getModelDisplayName("model-kimi-k3")).toBe("Moonshot Kimi K3");
     expect(getModelCutoffDate("model-opus-4.6")).toBe("July 2026");
     expect(getModelDisplayName("model-opus-4.6")).toBe("Moonshot Kimi K3");
@@ -507,7 +513,7 @@ describe("makeOpenRouterToolChoiceCompatibleWithXaiReasoning", () => {
   it("preserves the remaining non-xAI fallback order after promotion", () => {
     const body = {
       model: "x-ai/grok-4.6",
-      models: ["z-ai/glm-5.2", "moonshotai/kimi-k3"],
+      models: ["z-ai/glm-5.3", "moonshotai/kimi-k3"],
       reasoning: { enabled: true, effort: "high" },
       tool_choice: "required",
     };
@@ -515,7 +521,7 @@ describe("makeOpenRouterToolChoiceCompatibleWithXaiReasoning", () => {
     expect(makeOpenRouterToolChoiceCompatibleWithXaiReasoning(body)).toEqual({
       changed: true,
       body: {
-        model: "z-ai/glm-5.2",
+        model: "z-ai/glm-5.3",
         models: ["moonshotai/kimi-k3"],
         reasoning: { enabled: true, effort: "high" },
         tool_choice: "required",

@@ -237,10 +237,10 @@ describe("resolveAgentModelForImageToolResults", () => {
     ).toBe("model-grok-4.5");
   });
 
-  it("keeps the HackerAI Pro GLM fallback active after image tool results", () => {
+  it("keeps the HackerAI Pro GLM 5.3 fallback active after image tool results", () => {
     expect(
-      resolveAgentModelForImageToolResults("model-glm-5.2", "agent", true),
-    ).toBe("model-glm-5.2");
+      resolveAgentModelForImageToolResults("model-glm-5.3", "agent", true),
+    ).toBe("model-glm-5.3");
   });
 
   it("switches free DeepSeek Agent steps to Grok after image tool results", () => {

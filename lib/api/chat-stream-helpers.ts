@@ -23,6 +23,7 @@ import type {
   UserCustomization,
 } from "@/types";
 import {
+  GLM_5_3_SLUG,
   GROK_4_5_SLUG,
   GROK_4_6_SLUG,
   getOpenRouterProviderRoutingForModel,
@@ -571,11 +572,12 @@ const KIMI_K3_THEN_GROK_FALLBACK_CHAIN = [
 ] as const satisfies readonly ModelName[];
 
 const GROK_4_6_FALLBACK_CHAIN = [
+  "model-glm-5.3",
   "model-kimi-k3",
 ] as const satisfies readonly ModelName[];
 
-const AGENT_TEXT_FALLBACK_CHAIN = [
-  "model-grok-4.6",
+const PRO_TEXT_FALLBACK_CHAIN = [
+  "model-glm-5.3",
   "model-kimi-k3",
 ] as const satisfies readonly ModelName[];
 
@@ -585,7 +587,7 @@ const OPENROUTER_MAX_FALLBACK_MODELS = 3;
 
 const DEEPSEEK_V4_FLASH_0731_FALLBACK_CHAIN = [
   "model-deepseek-v4-pro-0813",
-  ...AGENT_TEXT_FALLBACK_CHAIN,
+  ...PRO_TEXT_FALLBACK_CHAIN,
 ] as const satisfies readonly ModelName[];
 
 const DEEPSEEK_V4_FLASH_PREVIOUS_FALLBACK_CHAIN = [
@@ -594,13 +596,13 @@ const DEEPSEEK_V4_FLASH_PREVIOUS_FALLBACK_CHAIN = [
 ] as const satisfies readonly ModelName[];
 
 const DEEPSEEK_V4_PRO_0813_FALLBACK_CHAIN = [
-  ...AGENT_TEXT_FALLBACK_CHAIN,
+  ...PRO_TEXT_FALLBACK_CHAIN,
 ] as const satisfies readonly ModelName[];
 
-// Preserve the historical Grok 4.6 Pro alias for in-flight requests. GLM 5.2
+// Preserve the historical Grok 4.6 Pro alias for in-flight requests. GLM 5.3
 // remains its first fallback, followed by Kimi K3.
 const HACKERAI_PRO_FALLBACK_CHAIN = [
-  "model-glm-5.2",
+  "model-glm-5.3",
   "model-kimi-k3",
 ] as const satisfies readonly ModelName[];
 
@@ -608,7 +610,7 @@ const MODEL_FALLBACK_CHAIN: Partial<Record<ModelName, readonly ModelName[]>> = {
   "ask-model-free": DEEPSEEK_V4_FLASH_PREVIOUS_FALLBACK_CHAIN,
   "agent-model-free": DEEPSEEK_V4_FLASH_0731_FALLBACK_CHAIN,
   "model-deepseek-v4-flash-0731": DEEPSEEK_V4_FLASH_0731_FALLBACK_CHAIN,
-  "model-deepseek-v4-pro": AGENT_TEXT_FALLBACK_CHAIN,
+  "model-deepseek-v4-pro": PRO_TEXT_FALLBACK_CHAIN,
   "model-deepseek-v4-pro-0813": DEEPSEEK_V4_PRO_0813_FALLBACK_CHAIN,
   "ask-model": GROK_4_6_FALLBACK_CHAIN,
   "agent-model": GROK_4_6_FALLBACK_CHAIN,
@@ -618,6 +620,7 @@ const MODEL_FALLBACK_CHAIN: Partial<Record<ModelName, readonly ModelName[]>> = {
   "model-grok-4.6-pro": HACKERAI_PRO_FALLBACK_CHAIN,
   "model-opus-4.6": ["model-grok-4.6"],
   "model-glm-5.2": KIMI_K3_THEN_GROK_FALLBACK_CHAIN,
+  "model-glm-5.3": ["model-kimi-k3"],
   "fallback-agent-model": GROK_4_6_FALLBACK_CHAIN,
   "fallback-ask-model": GROK_4_6_FALLBACK_CHAIN,
   "model-kimi-k3": ["model-grok-4.6"],
@@ -673,6 +676,7 @@ const HIGH_REASONING_MODELS = [
   "model-deepseek-v4-flash-0731",
   "model-deepseek-v4-pro-0813",
   "model-glm-5.2",
+  "model-glm-5.3",
   "model-opus-4.6",
 ] as const satisfies readonly ModelName[];
 
@@ -727,10 +731,10 @@ export function getRetryFallbackModel(
     return "model-deepseek-v4-flash-0731";
   }
   if (modelName === "model-deepseek-v4-pro-0813") {
-    return "model-grok-4.6";
+    return "model-glm-5.3";
   }
   if (modelName === "model-grok-4.6-pro") {
-    return "model-glm-5.2";
+    return "model-glm-5.3";
   }
   if (modelName === "model-grok-4.5" || modelName === "model-grok-4.5-pro") {
     return "model-kimi-k3";
@@ -739,7 +743,7 @@ export function getRetryFallbackModel(
     return "model-grok-4.6";
   }
   if (modelName === "model-deepseek-v4-pro") {
-    return "model-grok-4.6";
+    return "model-glm-5.3";
   }
   if (
     modelName === "ask-model" ||
@@ -749,15 +753,18 @@ export function getRetryFallbackModel(
     modelName === "fallback-agent-model" ||
     modelName === "fallback-ask-model"
   ) {
+    return "model-glm-5.3";
+  }
+  if (modelName === "model-glm-5.3") {
     return "model-kimi-k3";
   }
   return "model-grok-4.6";
 }
 
 const CONTENT_FILTER_RETRY_CANDIDATES = [
-  "model-grok-4.6",
+  "model-glm-5.3",
   "model-kimi-k3",
-  "model-glm-5.2",
+  "model-grok-4.6",
 ] as const satisfies readonly ModelName[];
 
 /**
@@ -853,6 +860,8 @@ const OPENROUTER_RESPONSE_MODEL_COST_KEYS: Record<string, string> = {
   "x-ai/grok-4.6": "model-grok-4.6",
   "z-ai/glm-5.2": "model-glm-5.2",
   "z-ai/glm-5.2-20260616": "model-glm-5.2",
+  "z-ai/glm-5.3": "model-glm-5.3",
+  "z-ai/glm-5.3-20260816": "model-glm-5.3",
   "moonshotai/kimi-k3": "model-kimi-k3",
   "moonshotai/kimi-k3-20260715": "model-kimi-k3",
 };
@@ -934,13 +943,14 @@ export function buildProviderOptions(
     : fallbackSlugs;
   // OpenRouter applies one reasoning configuration to both the primary model
   // and every provider fallback. The Standard vision key uses medium while
-  // the Pro vision key and Grok 4.6 routes remain high.
+  // GLM 5.3, Pro vision, and Grok 4.6 routes remain high.
   const isMediumGrok45Vision = modelName === "model-grok-4.5" && isGrok45;
-  const routesThroughGrok =
+  const routesThroughHighReasoningModel =
     isGrok45 ||
     isGrok46 ||
     reasoningFallbackSlugs.includes(GROK_4_5_SLUG) ||
-    reasoningFallbackSlugs.includes(GROK_4_6_SLUG);
+    reasoningFallbackSlugs.includes(GROK_4_6_SLUG) ||
+    reasoningFallbackSlugs.includes(GLM_5_3_SLUG);
   const providerRouting = modelId
     ? getOpenRouterProviderRoutingForModel(modelId)
     : undefined;
@@ -949,7 +959,7 @@ export function buildProviderOptions(
         enabled: true,
         effort: "medium",
       }
-    : routesThroughGrok
+    : routesThroughHighReasoningModel
       ? isHighOrGreaterReasoningOverride(options.reasoningOverride)
         ? options.reasoningOverride
         : {

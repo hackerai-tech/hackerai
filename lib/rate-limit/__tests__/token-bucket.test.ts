@@ -512,6 +512,14 @@ describe("token-bucket", () => {
       );
     });
 
+    it.each(["model-glm-5.3", "z-ai/glm-5.3", "z-ai/glm-5.3-20260816"])(
+      "should use GLM 5.3 pricing for %s ($1.40/$4.40)",
+      (modelName) => {
+        expect(calculateTokenCost(1_000_000, "input", modelName)).toBe(18200);
+        expect(calculateTokenCost(1_000_000, "output", modelName)).toBe(57200);
+      },
+    );
+
     it.each(["model-kimi-k3", "model-opus-4.6"])(
       "should use Kimi K3 pricing for %s ($3.00/$15.00)",
       (modelName) => {

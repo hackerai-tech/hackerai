@@ -813,6 +813,7 @@ type OpenRouterInstance = typeof openrouter;
 
 export const KIMI_K3_SLUG = "moonshotai/kimi-k3";
 export const GLM_5_2_SLUG = "z-ai/glm-5.2";
+export const GLM_5_3_SLUG = "z-ai/glm-5.3";
 export const GROK_4_5_SLUG = "x-ai/grok-4.5";
 export const GROK_4_6_SLUG = "x-ai/grok-4.6";
 // Prefer DeepSeek's purpose-built vision model for auxiliary image analysis,
@@ -855,6 +856,7 @@ const buildProviderMap = (
     // Kimi K3. Renaming the key would invalidate existing stored selections.
     "model-opus-4.6": or(KIMI_K3_SLUG),
     "model-glm-5.2": or(GLM_5_2_SLUG),
+    "model-glm-5.3": or(GLM_5_3_SLUG),
     "model-kimi-k3": or(KIMI_K3_SLUG),
     "fallback-agent-model": or(GROK_4_6_SLUG),
     "fallback-ask-model": or(GROK_4_6_SLUG),
@@ -905,6 +907,7 @@ export const modelDisplayNames: Record<ModelName, string> &
   "model-deepseek-v4-pro-0813": "DeepSeek V4 Pro 0813",
   "model-opus-4.6": "Moonshot Kimi K3",
   "model-glm-5.2": "Z.ai GLM 5.2",
+  "model-glm-5.3": "Z.ai GLM 5.3",
   "model-kimi-k3": "Moonshot Kimi K3",
   "fallback-agent-model": "Auto, an intelligent model router built by HackerAI",
   "fallback-ask-model": "Auto, an intelligent model router built by HackerAI",

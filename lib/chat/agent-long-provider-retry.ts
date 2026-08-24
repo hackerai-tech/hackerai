@@ -102,15 +102,12 @@ export type ProviderDisconnectContinuation = {
 };
 
 const DEEPSEEK_PRO_MODEL = "model-deepseek-v4-pro-0813";
-const DEEPSEEK_PRO_RECOVERY_CHAIN = [
-  "model-grok-4.6",
-  "model-kimi-k3",
-] as const;
+const DEEPSEEK_PRO_RECOVERY_CHAIN = ["model-glm-5.3", "model-kimi-k3"] as const;
 
 /**
  * Return the next bounded app-side recovery model for a DeepSeek Pro stream
  * disconnect. `completedRetryCount` counts retries already started, so the
- * only valid transitions are DeepSeek -> Grok -> Kimi.
+ * only valid transitions are DeepSeek -> GLM -> Kimi.
  */
 export const getNextDeepSeekProDisconnectRetryModel = ({
   originalModel,
