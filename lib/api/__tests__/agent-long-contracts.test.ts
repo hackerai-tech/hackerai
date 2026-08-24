@@ -475,6 +475,10 @@ describe("agent-long chat UI — completion reconciliation", () => {
       /status\s*!==\s*"streaming"\s*&&\s*status\s*!==\s*"submitted"/,
     );
     expect(reconciliationSrc).toMatch(/agentLongRunId\s*\?\?/);
+    expect(reconciliationSrc).toMatch(/trackedAgentLongRunId/);
+    expect(reconciliationSrc).toMatch(
+      /!shouldUseAgentLongForCurrentChat\s*&&\s*!trackedAgentLongRunId/,
+    );
     expect(reconciliationSrc).not.toMatch(/agentLongLastMessageChangeAtRef/);
     expect(reconciliationSrc).toMatch(/AGENT_STATUS_ENDPOINT/);
     expect(reconciliationSrc).toMatch(/method:\s*"POST"/);
@@ -492,7 +496,8 @@ describe("agent-long chat UI — completion reconciliation", () => {
     expect(chatComponentSrc).toMatch(
       /getLatestAgentLongAssistantMessageForPartialSave/,
     );
-    expect(chatComponentSrc).toMatch(/stop\(\)/);
+    expect(reconciliationSrc).toMatch(/stopRef\.current\(\)/);
+    expect(reconciliationSrc).not.toMatch(/^\s+stop,$/m);
     const submittedEffectStart = chatComponentSrc.indexOf(
       'if (status === "submitted")',
     );

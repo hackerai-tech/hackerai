@@ -1317,9 +1317,13 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   // the app's authenticated resume endpoint so the first message in a new
   // chat can leave "Working..." even before chatData is subscribed.
   useEffect(() => {
+    const trackedAgentLongRunId =
+      agentLongRunId ??
+      agentLongRunCorrelationRef.current?.runId ??
+      activeTriggerRunRef.current;
     if (
       (status !== "streaming" && status !== "submitted") ||
-      !shouldUseAgentLongForCurrentChat
+      (!shouldUseAgentLongForCurrentChat && !trackedAgentLongRunId)
     ) {
       return;
     }
@@ -1333,7 +1337,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     const finishLocally = () => {
       if (stopped || activeChatIdRef.current !== chatId) return;
       stopped = true;
-      stop();
+      stopRef.current();
       setIsAutoResuming(false);
       setAwaitingServerChat(false);
       dispatchStreaming({ type: "RESET_ON_FINISH" });
@@ -1375,7 +1379,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
       if (isCompletionCheckInFlight) return;
 
       const runId =
-        agentLongRunId ??
+        trackedAgentLongRunId ??
         agentLongRunCorrelationRef.current?.runId ??
         activeTriggerRunRef.current;
       if (!runId) return;
@@ -1440,7 +1444,6 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     saveAgentLongPartialSnapshot,
     shouldUseAgentLongForCurrentChat,
     status,
-    stop,
   ]);
 
   // Ref bridge: StreamEffects exposes resetAutoContinueCount here
