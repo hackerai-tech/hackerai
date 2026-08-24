@@ -57,6 +57,14 @@ deletion cannot silently release the address. If the stack is intentionally
 removed, clean up the retained address separately only after every customer has
 been notified and migrated.
 
+Availability tradeoff: each region intentionally uses one NAT Gateway and one
+Elastic IP in one Availability Zone. This keeps the published allowlist to one
+stable IP per region and avoids doubling the fixed NAT cost. An outage of that
+AZ can interrupt that region's connector and existing sessions; new sessions
+can use the configured cross-region failover when the customer has allowlisted
+all three regional IPs. Multi-AZ egress should be introduced separately if its
+additional recurring cost and three extra customer-facing IPs are justified.
+
 Attach `DeployerPolicyArn` to the CI/operator identity that publishes images.
 Attach every regional `RuntimePolicyArn` to the AWS identity used by
 Trigger.dev. The Vercel

@@ -847,6 +847,8 @@ export default defineSchema({
     placement_reason: v.optional(v.string()),
     image_identifier: v.string(),
     image_version: v.optional(v.string()),
+    egress_connector_arn: v.optional(v.string()),
+    egress_ipv4_address: v.optional(v.string()),
     failover_from_region: v.optional(v.string()),
     failover_error_name: v.optional(v.string()),
     failover_started_at: v.optional(v.number()),

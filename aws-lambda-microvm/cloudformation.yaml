@@ -47,6 +47,9 @@ Resources:
   EgressPublicSubnet:
     Type: AWS::EC2::Subnet
     Properties:
+      # Deliberately one AZ per region for the initial fixed-egress rollout.
+      # A second NAT would double the regional fixed cost and publish another
+      # customer allowlist IP; see the README availability tradeoff.
       AvailabilityZone: !Select [0, !GetAZs ""]
       CidrBlock: 10.90.0.0/24
       MapPublicIpOnLaunch: false
