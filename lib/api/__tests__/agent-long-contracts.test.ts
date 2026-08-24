@@ -465,8 +465,9 @@ describe("agent-long chat UI — completion reconciliation", () => {
     expect(reconciliationSrc).toMatch(
       /AGENT_LONG_SILENT_COMPLETION_POLL_DELAY_MS/,
     );
-    expect(reconciliationSrc).toMatch(/AGENT_LONG_SILENT_COMPLETION_QUIET_MS/);
-    expect(chatComponentSrc).toMatch(/AGENT_LONG_COMPLETION_STOP_GRACE_MS/);
+    expect(chatComponentSrc).toMatch(
+      /AGENT_LONG_COMPLETION_STOP_GRACE_MS\s*=\s*2_000/,
+    );
     expect(chatComponentSrc).toMatch(
       /AGENT_LONG_ACTIVE_COMPLETION_POLL_INTERVAL_MS\s*=\s*15_000/,
     );
@@ -474,6 +475,7 @@ describe("agent-long chat UI — completion reconciliation", () => {
       /status\s*!==\s*"streaming"\s*&&\s*status\s*!==\s*"submitted"/,
     );
     expect(reconciliationSrc).toMatch(/agentLongRunId\s*\?\?/);
+    expect(reconciliationSrc).not.toMatch(/agentLongLastMessageChangeAtRef/);
     expect(reconciliationSrc).toMatch(/AGENT_STATUS_ENDPOINT/);
     expect(reconciliationSrc).toMatch(/method:\s*"POST"/);
     expect(reconciliationSrc).toMatch(/isCompletionCheckInFlight/);

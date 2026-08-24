@@ -114,9 +114,7 @@ import { HackingSuggestions } from "./HackingSuggestions";
 const AGENT_LONG_SILENT_COMPLETION_POLL_DELAY_MS = 5_000;
 const AGENT_LONG_SILENT_COMPLETION_POLL_INTERVAL_MS = 5_000;
 const AGENT_LONG_ACTIVE_COMPLETION_POLL_INTERVAL_MS = 15_000;
-const AGENT_LONG_SILENT_COMPLETION_QUIET_MS = 3_000;
-const AGENT_LONG_ACTIVE_COMPLETION_QUIET_MS = 10_000;
-const AGENT_LONG_COMPLETION_STOP_GRACE_MS = 6_000;
+const AGENT_LONG_COMPLETION_STOP_GRACE_MS = 2_000;
 type MessagePaginationStatus =
   "LoadingFirstPage" | "CanLoadMore" | "LoadingMore" | "Exhausted";
 
@@ -1220,7 +1218,6 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
       agentLongHasVisibleProgressRef.current = false;
       agentLongMessageFingerprintRef.current =
         getAgentLongMessageProgressFingerprint(messagesRef.current);
-      agentLongLastMessageChangeAtRef.current = Date.now();
     }
     if (
       shouldUseAgentLongForCurrentChat &&
@@ -1298,7 +1295,6 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   const agentLongMessageFingerprint =
     getAgentLongMessageProgressFingerprint(messages);
   const agentLongMessageFingerprintRef = useRef(agentLongMessageFingerprint);
-  const agentLongLastMessageChangeAtRef = useRef(Date.now());
 
   useEffect(() => {
     if (
@@ -1307,7 +1303,6 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
       return;
     }
     agentLongMessageFingerprintRef.current = agentLongMessageFingerprint;
-    agentLongLastMessageChangeAtRef.current = Date.now();
     agentLongHasVisibleProgressRef.current = true;
   }, [agentLongMessageFingerprint]);
 
@@ -1371,15 +1366,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     };
 
     const checkRunCompletion = async () => {
-      const quietMs = agentLongHasVisibleProgressRef.current
-        ? AGENT_LONG_ACTIVE_COMPLETION_QUIET_MS
-        : AGENT_LONG_SILENT_COMPLETION_QUIET_MS;
-      if (
-        isCompletionCheckInFlight ||
-        Date.now() - agentLongLastMessageChangeAtRef.current < quietMs
-      ) {
-        return;
-      }
+      if (isCompletionCheckInFlight) return;
 
       const runId =
         agentLongRunId ??
