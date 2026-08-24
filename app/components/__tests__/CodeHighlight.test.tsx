@@ -1,5 +1,5 @@
 import "@testing-library/jest-dom";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
 import {
   CodeHighlight,
   MAX_HIGHLIGHT_CHARS,
@@ -86,7 +86,7 @@ describe("CodeHighlight", () => {
     expect(screen.getByTestId("shiki")).toHaveTextContent(code);
   });
 
-  it("keeps oversized completed blocks plain until highlighting is requested", () => {
+  it("keeps oversized completed blocks plain without a highlighting override", () => {
     mockInlineCode = false;
     const code = "x".repeat(MAX_HIGHLIGHT_CHARS + 1);
 
@@ -103,15 +103,9 @@ describe("CodeHighlight", () => {
       container.querySelector('[data-highlight-mode="plain-large"]'),
     ).toBeInTheDocument();
     expect(mockShikiRenderCount).toBe(0);
-
-    fireEvent.click(
-      screen.getByRole("button", { name: "Enable syntax highlighting" }),
-    );
-
     expect(
-      container.querySelector('[data-highlight-mode="highlighted"]'),
-    ).toBeInTheDocument();
-    expect(mockShikiRenderCount).toBe(1);
+      screen.queryByRole("button", { name: "Enable syntax highlighting" }),
+    ).not.toBeInTheDocument();
   });
 
   it("also bounds completed blocks with extremely many short lines", () => {

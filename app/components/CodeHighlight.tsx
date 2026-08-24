@@ -37,7 +37,6 @@ const CodeHighlightImpl = ({
   const codeContent = String(children);
 
   const [isWrapped, setIsWrapped] = useState(false);
-  const [forceHighlight, setForceHighlight] = useState(false);
   const isIncomplete = useIsCodeFenceIncomplete();
 
   const isInline: boolean | undefined = node
@@ -60,15 +59,11 @@ const CodeHighlightImpl = ({
     [codeContent, isIncomplete],
   );
   const shouldUsePlainText =
-    !isLanguageSupported ||
-    isLargeStreamingBlock ||
-    (isOversizedCompletedBlock && !forceHighlight);
-  const canForceHighlight =
-    isLanguageSupported && isOversizedCompletedBlock && !forceHighlight;
+    !isLanguageSupported || isLargeStreamingBlock || isOversizedCompletedBlock;
   const highlightMode = shouldUsePlainText
     ? isLargeStreamingBlock
       ? "plain-streaming"
-      : isOversizedCompletedBlock && !forceHighlight
+      : isOversizedCompletedBlock
         ? "plain-large"
         : "plain-unsupported"
     : "highlighted";
@@ -100,8 +95,6 @@ const CodeHighlightImpl = ({
           isWrapped={isWrapped}
           onToggleWrap={handleToggleWrap}
           variant="codeblock"
-          showHighlight={canForceHighlight}
-          onHighlight={() => setForceHighlight(true)}
         />
       </div>
 
