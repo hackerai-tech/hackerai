@@ -49,7 +49,12 @@ const stripRedundantOpeningFence = (
 ): string => {
   if (!isInsideMarkdownFence(previousText)) return continuationText;
 
-  return continuationText.replace(/^\s*```[^\n\r]*\r?\n/, "");
+  // A bare fence closes the block left open by the previous segment. Only
+  // remove a repeated opening fence when it carries an info string.
+  return continuationText.replace(
+    /^[\t ]*```[\t ]*[^\s`][^\n\r]*\r?\n/,
+    "",
+  );
 };
 
 const findExactSuffixPrefixOverlap = (
@@ -187,6 +192,15 @@ export const mergeAskContinuationMessages = (
           ...message.metadata,
           createdAt:
             previousMessage.metadata?.createdAt ?? message.metadata?.createdAt,
+          generationStartedAt:
+            previousMessage.metadata?.generationStartedAt ??
+            message.metadata?.generationStartedAt,
+          generationTimeMs:
+            previousMessage.metadata?.generationTimeMs === undefined &&
+            message.metadata?.generationTimeMs === undefined
+              ? undefined
+              : (previousMessage.metadata?.generationTimeMs ?? 0) +
+                (message.metadata?.generationTimeMs ?? 0),
           feedbackType:
             message.metadata?.feedbackType ??
             previousMessage.metadata?.feedbackType,

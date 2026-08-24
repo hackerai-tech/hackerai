@@ -11,13 +11,17 @@ import { mockLegendListScrollToIndex } from "../../../__mocks__/@legendapp/list-
 
 jest.mock("../MessageItem", () => ({
   MessageItem: ({
+    branchBoundaryIndex,
     canEdit,
+    index,
     isEditing,
     message,
     onStartEdit,
     status,
   }: {
+    branchBoundaryIndex?: number;
     canEdit: boolean;
+    index: number;
     isEditing: boolean;
     message: ChatMessage;
     onStartEdit: (messageId: string) => void;
@@ -25,6 +29,7 @@ jest.mock("../MessageItem", () => ({
   }) => (
     <div
       data-testid={`message-${message.id}`}
+      data-is-branch-boundary={index === branchBoundaryIndex}
       data-status={status}
       data-parts={JSON.stringify(message.parts)}
     >
@@ -228,6 +233,60 @@ describe("Messages virtualized row invalidation", () => {
           text: "```ts\nconst a = 1;\nconst b = 2;\n```",
         },
       ]),
+    );
+  });
+
+  it("aligns a merged Ask continuation branch boundary with the visible row", () => {
+    const continuationMessages = [
+      {
+        id: "user-1",
+        role: "user",
+        parts: [{ type: "text", text: "Write code" }],
+        metadata: { mode: "ask" },
+      },
+      {
+        id: "assistant-1",
+        role: "assistant",
+        parts: [{ type: "text", text: "first" }],
+        metadata: { mode: "ask" },
+      },
+      {
+        id: "continue-1",
+        role: "user",
+        parts: [{ type: "text", text: "Continue" }],
+        metadata: { mode: "ask", isAutoContinue: true },
+      },
+      {
+        id: "assistant-2",
+        role: "assistant",
+        sourceMessageId: "source-assistant-2",
+        parts: [{ type: "text", text: " second" }],
+        metadata: { mode: "ask" },
+      },
+    ] as ChatMessage[];
+
+    render(
+      <DataStreamProvider>
+        <Messages
+          chatId="chat-branched-continuation"
+          messages={continuationMessages}
+          setMessages={jest.fn()}
+          onRegenerate={jest.fn()}
+          onRetry={jest.fn()}
+          onEditMessage={jest.fn()}
+          status="ready"
+          error={null}
+          scrollRef={createRef<HTMLElement>()}
+          contentRef={createRef<HTMLElement>()}
+          isMobile
+          mode="ask"
+        />
+      </DataStreamProvider>,
+    );
+
+    expect(screen.getByTestId("message-assistant-2")).toHaveAttribute(
+      "data-is-branch-boundary",
+      "true",
     );
   });
   it("invalidates the virtualized row when editing starts", () => {

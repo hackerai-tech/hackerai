@@ -41,6 +41,15 @@ describe("message-utils", () => {
       ).toBe("```python\nprint('first')\nprint('second')\n```");
     });
 
+    it("preserves a bare fence that closes the in-progress code block", () => {
+      expect(
+        joinContinuationText(
+          "```python\nprint('done')\n",
+          "```\n\nThe script is complete.",
+        ),
+      ).toBe("```python\nprint('done')\n```\n\nThe script is complete.");
+    });
+
     it("deduplicates a substantial exact overlap", () => {
       expect(
         joinContinuationText(
@@ -156,6 +165,32 @@ describe("message-utils", () => {
           text: "```ts\nconst a = 1;\nconst b = 2;\n```",
         },
       ]);
+    });
+
+    it("combines timing metadata across Ask continuation segments", () => {
+      const first = {
+        ...askMessage("assistant-1", "assistant", "first"),
+        metadata: {
+          mode: "ask" as const,
+          generationStartedAt: 1_000,
+          generationTimeMs: 2_000,
+        },
+      };
+      const continuation = {
+        ...askMessage("assistant-2", "assistant", " second"),
+        metadata: {
+          mode: "ask" as const,
+          generationStartedAt: 5_000,
+          generationTimeMs: 3_000,
+        },
+      };
+
+      expect(
+        mergeAskContinuationMessages([first, continuation])[0].metadata,
+      ).toMatchObject({
+        generationStartedAt: 1_000,
+        generationTimeMs: 5_000,
+      });
     });
   });
 
