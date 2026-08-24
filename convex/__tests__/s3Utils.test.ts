@@ -133,6 +133,52 @@ describe("s3Utils", () => {
     });
   });
 
+  describe("generateS3UploadUrlForKey", () => {
+    it("presigns the trusted workspace key without a content-length constraint", async () => {
+      const { PutObjectCommand } = await import("@aws-sdk/client-s3");
+      const { getSignedUrl } = await import("@aws-sdk/s3-request-presigner");
+      const mockGetSignedUrl = getSignedUrl as jest.MockedFunction<
+        typeof getSignedUrl
+      >;
+      mockGetSignedUrl.mockResolvedValue("https://s3.amazonaws.com/workspace");
+      const { generateS3UploadUrlForKey } = await import("../s3Utils");
+
+      await expect(
+        generateS3UploadUrlForKey(
+          "users/user_123/microvm-workspace/v1/workspace.tar.gz",
+        ),
+      ).resolves.toBe("https://s3.amazonaws.com/workspace");
+      expect(PutObjectCommand).toHaveBeenCalledWith({
+        Bucket: "test-bucket",
+        Key: "users/user_123/microvm-workspace/v1/workspace.tar.gz",
+      });
+    });
+
+    it("presigns against an explicit regional target without changing attachment configuration", async () => {
+      const { S3Client, PutObjectCommand } = await import("@aws-sdk/client-s3");
+      const { getSignedUrl } = await import("@aws-sdk/s3-request-presigner");
+      const mockGetSignedUrl = getSignedUrl as jest.MockedFunction<
+        typeof getSignedUrl
+      >;
+      mockGetSignedUrl.mockResolvedValue("https://s3.amazonaws.com/workspace");
+      const { generateS3UploadUrlForKey } = await import("../s3Utils");
+
+      await generateS3UploadUrlForKey("workspace.tar.gz", 28_800, {
+        region: "eu-west-1",
+        bucketName: "regional-workspace-bucket",
+      });
+
+      expect(S3Client).toHaveBeenCalledWith(
+        expect.objectContaining({ region: "eu-west-1" }),
+      );
+      expect(PutObjectCommand).toHaveBeenCalledWith({
+        Bucket: "regional-workspace-bucket",
+        Key: "workspace.tar.gz",
+      });
+      expect(process.env.AWS_S3_BUCKET_NAME).toBe("test-bucket");
+    });
+  });
+
   describe("generateS3DownloadUrl", () => {
     it("should generate presigned download URL", async () => {
       const { getSignedUrl } = await import("@aws-sdk/s3-request-presigner");
@@ -187,6 +233,67 @@ describe("s3Utils", () => {
       await expect(
         deleteS3Object("users/user123/123-uuid-test.pdf"),
       ).rejects.toThrow("Delete failed");
+    });
+  });
+
+  describe("s3ObjectExists", () => {
+    it("returns true when S3 can read the object metadata", async () => {
+      const { S3Client } = await import("@aws-sdk/client-s3");
+      const mockSend = jest.fn().mockResolvedValue({ ContentLength: 42 });
+      (S3Client as jest.MockedClass<typeof S3Client>).mockImplementation(
+        () => ({ send: mockSend }) as unknown as S3Client,
+      );
+      const { s3ObjectExists } = await import("../s3Utils");
+
+      await expect(s3ObjectExists("workspace.tar.gz")).resolves.toBe(true);
+    });
+
+    it("returns false only for an authoritative missing-object response", async () => {
+      const { S3Client } = await import("@aws-sdk/client-s3");
+      const mockSend = jest.fn().mockRejectedValue({
+        name: "NotFound",
+        $metadata: { httpStatusCode: 404 },
+      });
+      (S3Client as jest.MockedClass<typeof S3Client>).mockImplementation(
+        () => ({ send: mockSend }) as unknown as S3Client,
+      );
+      const { s3ObjectExists } = await import("../s3Utils");
+
+      await expect(s3ObjectExists("workspace.tar.gz")).resolves.toBe(false);
+    });
+
+    it("does not hide storage outages as an empty workspace", async () => {
+      const { S3Client } = await import("@aws-sdk/client-s3");
+      const outage = new Error("S3 unavailable");
+      const mockSend = jest.fn().mockRejectedValue(outage);
+      (S3Client as jest.MockedClass<typeof S3Client>).mockImplementation(
+        () => ({ send: mockSend }) as unknown as S3Client,
+      );
+      const { s3ObjectExists } = await import("../s3Utils");
+
+      await expect(s3ObjectExists("workspace.tar.gz")).rejects.toBe(outage);
+    });
+
+    it("returns S3's server-side modification time for regional selection", async () => {
+      const { S3Client } = await import("@aws-sdk/client-s3");
+      const lastModified = new Date("2026-08-24T04:00:00.000Z");
+      const mockSend = jest
+        .fn()
+        .mockResolvedValue({ LastModified: lastModified });
+      (S3Client as jest.MockedClass<typeof S3Client>).mockImplementation(
+        () => ({ send: mockSend }) as unknown as S3Client,
+      );
+      const { getS3ObjectMetadata } = await import("../s3Utils");
+
+      await expect(
+        getS3ObjectMetadata("workspace.tar.gz", {
+          region: "us-west-2",
+          bucketName: "workspace-west",
+        }),
+      ).resolves.toEqual({
+        exists: true,
+        lastModifiedMs: lastModified.getTime(),
+      });
     });
   });
 });

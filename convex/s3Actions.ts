@@ -1,14 +1,28 @@
 "use node";
 
 import { action } from "./_generated/server";
-import { v, ConvexError } from "convex/values";
-import { generateS3UploadUrl, generateS3DownloadUrl } from "./s3Utils";
+import { v, ConvexError, type VLiteral } from "convex/values";
+import {
+  deleteS3Object,
+  generateS3DownloadUrl,
+  generateS3UploadUrl,
+  generateS3UploadUrlForKey,
+  getS3ObjectMetadata,
+  type S3ObjectTarget,
+} from "./s3Utils";
 import { internal } from "./_generated/api";
 import { validateServiceKey } from "./lib/utils";
 import { convexLogger } from "./lib/logger";
 import { checkFileUploadRateLimit } from "./fileActions";
 import { validateUploadPolicy } from "../lib/utils/upload-policy";
 import { hasPaidEntitlement } from "../lib/auth/entitlements";
+import {
+  getMicrovmWorkspaceS3Key,
+  MICROVM_WORKSPACE_BUCKET_ENV_BY_REGION,
+  MICROVM_WORKSPACE_REGIONS,
+  MICROVM_WORKSPACE_URL_LIFETIME_SECONDS,
+  type MicrovmWorkspaceRegion,
+} from "../lib/constants/s3";
 
 type StorageUsage = {
   usedBytes: number;
@@ -58,6 +72,108 @@ type ServiceFileUrlInfo = {
 };
 
 const MAX_SERVICE_FILE_URL_BATCH_SIZE = 50;
+
+const microvmWorkspaceRegionValidator = v.union(
+  ...(MICROVM_WORKSPACE_REGIONS.map((region) => v.literal(region)) as [
+    VLiteral<MicrovmWorkspaceRegion>,
+    ...VLiteral<MicrovmWorkspaceRegion>[],
+  ]),
+);
+
+function getMicrovmWorkspaceS3Target(
+  region: MicrovmWorkspaceRegion,
+): S3ObjectTarget {
+  const envName = MICROVM_WORKSPACE_BUCKET_ENV_BY_REGION[region];
+  const bucketName = process.env[envName]?.trim();
+  if (!bucketName) {
+    throw new Error(`Missing required environment variable: ${envName}`);
+  }
+  return { region, bucketName };
+}
+
+export const generateMicrovmWorkspaceUploadUrlAction = action({
+  args: {
+    serviceKey: v.string(),
+    userId: v.string(),
+    region: microvmWorkspaceRegionValidator,
+  },
+  returns: v.string(),
+  handler: async (_ctx, args) => {
+    validateServiceKey(args.serviceKey);
+    return generateS3UploadUrlForKey(
+      getMicrovmWorkspaceS3Key(args.userId),
+      MICROVM_WORKSPACE_URL_LIFETIME_SECONDS,
+      getMicrovmWorkspaceS3Target(args.region),
+    );
+  },
+});
+
+export const getMicrovmWorkspaceDownloadUrlAction = action({
+  args: {
+    serviceKey: v.string(),
+    userId: v.string(),
+    region: microvmWorkspaceRegionValidator,
+  },
+  returns: v.union(v.string(), v.null()),
+  handler: async (_ctx, args) => {
+    validateServiceKey(args.serviceKey);
+    const s3Key = getMicrovmWorkspaceS3Key(args.userId);
+    const candidates = await Promise.all(
+      MICROVM_WORKSPACE_REGIONS.map(async (sourceRegion) => {
+        const target = getMicrovmWorkspaceS3Target(sourceRegion);
+        const metadata = await getS3ObjectMetadata(s3Key, target);
+        if (!metadata.exists) return null;
+        if (
+          metadata.lastModifiedMs === null ||
+          !Number.isFinite(metadata.lastModifiedMs)
+        ) {
+          throw new Error(
+            `S3 workspace metadata in ${sourceRegion} is missing LastModified`,
+          );
+        }
+        return {
+          sourceRegion,
+          target,
+          lastModifiedMs: metadata.lastModifiedMs,
+        };
+      }),
+    );
+    const available = candidates.filter(
+      (candidate): candidate is NonNullable<typeof candidate> =>
+        candidate !== null,
+    );
+    if (available.length === 0) return null;
+    const latest = available.reduce((selected, candidate) => {
+      if (candidate.lastModifiedMs > selected.lastModifiedMs) return candidate;
+      if (
+        candidate.lastModifiedMs === selected.lastModifiedMs &&
+        candidate.sourceRegion === args.region
+      ) {
+        return candidate;
+      }
+      return selected;
+    });
+    return generateS3DownloadUrl(s3Key, latest.target);
+  },
+});
+
+export const deleteMicrovmWorkspaceAction = action({
+  args: {
+    serviceKey: v.string(),
+    userId: v.string(),
+  },
+  returns: v.null(),
+  handler: async (_ctx, args) => {
+    validateServiceKey(args.serviceKey);
+    const s3Key = getMicrovmWorkspaceS3Key(args.userId);
+    await Promise.all(
+      MICROVM_WORKSPACE_REGIONS.map((region) =>
+        deleteS3Object(s3Key, getMicrovmWorkspaceS3Target(region)),
+      ),
+    );
+    return null;
+  },
+});
 
 const getIdentityEntitlements = (identity: unknown) => {
   if (

@@ -24,6 +24,7 @@ export type CloudSandboxSuspensionSummary = {
   alreadySuspended: number;
   terminated: number;
   alreadyGone: number;
+  workspacesSaved: number;
 };
 
 export async function ensureCloudSandboxConnection(options: {
@@ -109,41 +110,54 @@ export async function terminateCloudSandboxesForUser(userId: string): Promise<{
     );
   }
 
+  // Delete only after AWS writers are stopped so a checkpoint cannot recreate
+  // the archive, but before independent E2B cleanup can fail.
+  if (process.env.CONVEX_SERVICE_ROLE_KEY) {
+    const { deleteAwsLambdaMicrovmWorkspace } =
+      await import("./aws-lambda-microvm-workspace");
+    await deleteAwsLambdaMicrovmWorkspace(
+      userId,
+      process.env.CONVEX_SERVICE_ROLE_KEY,
+    );
+  }
+
   // E2B does not persist provider rows in Convex, so query it whenever its
   // credentials remain configured (including during an AWS migration).
-  if (!process.env.E2B_API_KEY) return totals;
-  const paginator = (await import("@e2b/code-interpreter")).Sandbox.list({
-    query: { metadata: { userID: userId } },
-  });
-  const sandboxes = [];
-  do {
-    sandboxes.push(...(await paginator.nextItems()));
-  } while (paginator.hasNext);
-  let killed = 0;
-  let alreadyGone = 0;
-  const { isExpectedMissingResourceCleanupError } =
-    await import("@/lib/utils/cleanup-errors");
-  const { Sandbox } = await import("@e2b/code-interpreter");
-  for (const sandbox of sandboxes) {
-    try {
-      await Sandbox.kill(sandbox.sandboxId);
-      killed++;
-    } catch (error) {
-      if (isExpectedMissingResourceCleanupError(error)) {
-        alreadyGone++;
-        console.debug(
-          `Sandbox ${sandbox.sandboxId} was already gone during delete`,
-          error,
-        );
-        continue;
+  if (process.env.E2B_API_KEY) {
+    const paginator = (await import("@e2b/code-interpreter")).Sandbox.list({
+      query: { metadata: { userID: userId } },
+    });
+    const sandboxes = [];
+    do {
+      sandboxes.push(...(await paginator.nextItems()));
+    } while (paginator.hasNext);
+    let killed = 0;
+    let alreadyGone = 0;
+    const { isExpectedMissingResourceCleanupError } =
+      await import("@/lib/utils/cleanup-errors");
+    const { Sandbox } = await import("@e2b/code-interpreter");
+    for (const sandbox of sandboxes) {
+      try {
+        await Sandbox.kill(sandbox.sandboxId);
+        killed++;
+      } catch (error) {
+        if (isExpectedMissingResourceCleanupError(error)) {
+          alreadyGone++;
+          console.debug(
+            `Sandbox ${sandbox.sandboxId} was already gone during delete`,
+            error,
+          );
+          continue;
+        }
+        console.error(`Failed to kill sandbox ${sandbox.sandboxId}:`, error);
+        throw error;
       }
-      console.error(`Failed to kill sandbox ${sandbox.sandboxId}:`, error);
-      throw error;
     }
+    totals.total += sandboxes.length;
+    totals.killed += killed;
+    totals.alreadyGone += alreadyGone;
   }
-  totals.total += sandboxes.length;
-  totals.killed += killed;
-  totals.alreadyGone += alreadyGone;
+
   return totals;
 }
 
@@ -157,6 +171,7 @@ export async function suspendCloudSandboxesForUser(
       alreadySuspended: 0,
       terminated: 0,
       alreadyGone: 0,
+      workspacesSaved: 0,
     };
   }
 
