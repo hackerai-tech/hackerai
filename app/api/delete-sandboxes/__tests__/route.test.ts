@@ -1,6 +1,10 @@
 import { getUserIDAndPro } from "@/lib/auth/get-user-id";
 import { terminateCloudSandboxesForUser } from "@/lib/ai/tools/utils/cloud-sandbox";
-import { getActiveTriggerRunsForUser } from "@/lib/db/actions";
+import {
+  beginCloudSandboxDeletionForUser,
+  finishCloudSandboxDeletionForUser,
+  getActiveTriggerRunsForUser,
+} from "@/lib/db/actions";
 import { cancelSubagentsForUserDeletion } from "@/lib/db/subagents";
 import { closeAndCancelAgentResources } from "@/lib/api/agent-deletion-cleanup";
 import { POST } from "../route";
@@ -12,6 +16,8 @@ jest.mock("@/lib/ai/tools/utils/cloud-sandbox", () => ({
   terminateCloudSandboxesForUser: jest.fn(),
 }));
 jest.mock("@/lib/db/actions", () => ({
+  beginCloudSandboxDeletionForUser: jest.fn(),
+  finishCloudSandboxDeletionForUser: jest.fn(),
   getActiveTriggerRunsForUser: jest.fn(),
 }));
 jest.mock("@/lib/db/subagents", () => ({
@@ -31,6 +37,14 @@ const mockTerminateCloudSandboxesForUser =
 const mockGetActiveTriggerRunsForUser =
   getActiveTriggerRunsForUser as jest.MockedFunction<
     typeof getActiveTriggerRunsForUser
+  >;
+const mockBeginCloudSandboxDeletionForUser =
+  beginCloudSandboxDeletionForUser as jest.MockedFunction<
+    typeof beginCloudSandboxDeletionForUser
+  >;
+const mockFinishCloudSandboxDeletionForUser =
+  finishCloudSandboxDeletionForUser as jest.MockedFunction<
+    typeof finishCloudSandboxDeletionForUser
   >;
 const mockCancelSubagentsForUserDeletion =
   cancelSubagentsForUserDeletion as jest.MockedFunction<
@@ -73,6 +87,11 @@ describe("POST /api/delete-sandboxes", () => {
       userId: "user_123",
       subscription: "pro",
     } as never);
+    mockBeginCloudSandboxDeletionForUser.mockResolvedValue({
+      acquired: true,
+      operationId: "sandbox-deletion-operation",
+    });
+    mockFinishCloudSandboxDeletionForUser.mockResolvedValue(true);
     mockGetActiveTriggerRunsForUser.mockResolvedValue({
       runs: [
         {
@@ -111,6 +130,9 @@ describe("POST /api/delete-sandboxes", () => {
     expect(mockGetActiveTriggerRunsForUser).toHaveBeenCalledWith({
       userId: "user_123",
     });
+    expect(mockBeginCloudSandboxDeletionForUser).toHaveBeenCalledWith({
+      userId: "user_123",
+    });
     expect(mockCancelSubagentsForUserDeletion).toHaveBeenCalledWith(
       "user_123",
       "terminal-sandbox-deleted",
@@ -127,6 +149,13 @@ describe("POST /api/delete-sandboxes", () => {
       "terminal-sandbox-deleted",
     );
     expect(mockTerminateCloudSandboxesForUser).toHaveBeenCalledWith("user_123");
+    expect(mockFinishCloudSandboxDeletionForUser).toHaveBeenCalledWith({
+      userId: "user_123",
+      operationId: "sandbox-deletion-operation",
+    });
+    expect(
+      mockBeginCloudSandboxDeletionForUser.mock.invocationCallOrder[0],
+    ).toBeLessThan(mockGetActiveTriggerRunsForUser.mock.invocationCallOrder[0]);
     expect(
       mockCloseAndCancelAgentResources.mock.invocationCallOrder[0],
     ).toBeLessThan(
@@ -149,6 +178,7 @@ describe("POST /api/delete-sandboxes", () => {
     });
     expect(mockCancelSubagentsForUserDeletion).not.toHaveBeenCalled();
     expect(mockTerminateCloudSandboxesForUser).not.toHaveBeenCalled();
+    expect(mockFinishCloudSandboxDeletionForUser).toHaveBeenCalledTimes(1);
   });
 
   it("stops before termination when validation cleanup is not bounded", async () => {
@@ -166,6 +196,23 @@ describe("POST /api/delete-sandboxes", () => {
     });
     expect(mockCloseAndCancelAgentResources).not.toHaveBeenCalled();
     expect(mockTerminateCloudSandboxesForUser).not.toHaveBeenCalled();
+    expect(mockFinishCloudSandboxDeletionForUser).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not overlap two sandbox deletion operations", async () => {
+    mockBeginCloudSandboxDeletionForUser.mockResolvedValueOnce({
+      acquired: false,
+    });
+
+    const response = await POST({} as any);
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toEqual({
+      error: "Sandbox deletion is already in progress",
+    });
+    expect(mockGetActiveTriggerRunsForUser).not.toHaveBeenCalled();
+    expect(mockTerminateCloudSandboxesForUser).not.toHaveBeenCalled();
+    expect(mockFinishCloudSandboxDeletionForUser).not.toHaveBeenCalled();
   });
 
   it("does not query or terminate sandboxes for free users", async () => {
@@ -177,6 +224,7 @@ describe("POST /api/delete-sandboxes", () => {
     const response = await POST({} as any);
 
     expect(response.status).toBe(403);
+    expect(mockBeginCloudSandboxDeletionForUser).not.toHaveBeenCalled();
     expect(mockGetActiveTriggerRunsForUser).not.toHaveBeenCalled();
     expect(mockTerminateCloudSandboxesForUser).not.toHaveBeenCalled();
   });

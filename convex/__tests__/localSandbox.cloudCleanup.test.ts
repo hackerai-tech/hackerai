@@ -74,6 +74,125 @@ describe("cloud sandbox session cleanup", () => {
     expect(insert).not.toHaveBeenCalled();
   });
 
+  it("does not create a MicroVM session while sandbox deletion is active", async () => {
+    const query = jest.fn((table: string) => {
+      if (table === "user_deletion_fences") {
+        return {
+          withIndex: jest.fn(() => ({
+            first: jest.fn().mockResolvedValue(null),
+          })),
+        };
+      }
+      expect(table).toBe("cloud_sandbox_deletion_fences");
+      return {
+        withIndex: jest.fn(() => ({
+          unique: jest.fn().mockResolvedValue({
+            _id: "sandbox-fence-1",
+            expires_at: Date.now() + 60_000,
+          }),
+        })),
+      };
+    });
+    const insert = jest.fn();
+    const deleteRow = jest.fn();
+    const { beginCloudSession } = await import("../localSandbox");
+
+    await expect(
+      beginCloudSession.handler(
+        { db: { query, insert, delete: deleteRow } } as never,
+        {
+          serviceKey: "service-key",
+          userId: "user-1",
+          region: "us-east-1",
+          imageIdentifier: "image-1",
+        },
+      ),
+    ).rejects.toBeInstanceOf(Error);
+    expect(insert).not.toHaveBeenCalled();
+    expect(deleteRow).not.toHaveBeenCalled();
+  });
+
+  it("replaces an expired sandbox deletion lease", async () => {
+    const query = jest.fn(() => ({
+      withIndex: jest.fn(() => ({
+        unique: jest.fn().mockResolvedValue({
+          _id: "expired-fence",
+          expires_at: Date.now() - 1,
+        }),
+      })),
+    }));
+    const deleteRow = jest.fn();
+    const insert = jest.fn();
+    const { beginCloudSandboxDeletion } = await import("../localSandbox");
+
+    await expect(
+      beginCloudSandboxDeletion.handler(
+        { db: { query, delete: deleteRow, insert } } as never,
+        { serviceKey: "service-key", userId: "user-1" },
+      ),
+    ).resolves.toEqual({
+      acquired: true,
+      operationId: expect.any(String),
+    });
+    expect(deleteRow).toHaveBeenCalledWith("expired-fence");
+    expect(insert).toHaveBeenCalledWith(
+      "cloud_sandbox_deletion_fences",
+      expect.objectContaining({
+        user_id: "user-1",
+        operation_id: expect.any(String),
+        expires_at: expect.any(Number),
+      }),
+    );
+  });
+
+  it("does not overlap an active sandbox deletion lease", async () => {
+    const query = jest.fn(() => ({
+      withIndex: jest.fn(() => ({
+        unique: jest.fn().mockResolvedValue({
+          _id: "active-fence",
+          expires_at: Date.now() + 60_000,
+        }),
+      })),
+    }));
+    const deleteRow = jest.fn();
+    const insert = jest.fn();
+    const { beginCloudSandboxDeletion } = await import("../localSandbox");
+
+    await expect(
+      beginCloudSandboxDeletion.handler(
+        { db: { query, delete: deleteRow, insert } } as never,
+        { serviceKey: "service-key", userId: "user-1" },
+      ),
+    ).resolves.toEqual({ acquired: false });
+    expect(deleteRow).not.toHaveBeenCalled();
+    expect(insert).not.toHaveBeenCalled();
+  });
+
+  it("does not release another sandbox deletion operation's lease", async () => {
+    const query = jest.fn(() => ({
+      withIndex: jest.fn(() => ({
+        unique: jest.fn().mockResolvedValue({
+          _id: "newer-fence",
+          operation_id: "newer-operation",
+        }),
+      })),
+    }));
+    const deleteRow = jest.fn();
+    const { finishCloudSandboxDeletion } = await import("../localSandbox");
+
+    await expect(
+      finishCloudSandboxDeletion.handler(
+        { db: { query, delete: deleteRow } } as never,
+        {
+          serviceKey: "service-key",
+          userId: "user-1",
+          operationId: "older-operation",
+        },
+      ),
+    ).resolves.toBe(false);
+    expect(deleteRow).not.toHaveBeenCalled();
+  });
+
   it("keeps a healthy active session pinned across region and image changes", async () => {
     const now = Date.now();
     const active = {
@@ -99,6 +218,13 @@ describe("cloud sandbox session cleanup", () => {
         return {
           withIndex: jest.fn(() => ({
             first: jest.fn().mockResolvedValue(null),
+          })),
+        };
+      }
+      if (table === "cloud_sandbox_deletion_fences") {
+        return {
+          withIndex: jest.fn(() => ({
+            unique: jest.fn().mockResolvedValue(null),
           })),
         };
       }
@@ -169,6 +295,13 @@ describe("cloud sandbox session cleanup", () => {
         return {
           withIndex: jest.fn(() => ({
             first: jest.fn().mockResolvedValue(null),
+          })),
+        };
+      }
+      if (table === "cloud_sandbox_deletion_fences") {
+        return {
+          withIndex: jest.fn(() => ({
+            unique: jest.fn().mockResolvedValue(null),
           })),
         };
       }

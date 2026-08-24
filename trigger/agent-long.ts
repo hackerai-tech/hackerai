@@ -317,8 +317,8 @@ import {
   type AgentAutoReviewDecision,
 } from "@/lib/chat/agent-auto-review";
 
-const AGENT_LONG_FREE_MAX_DURATION_SECONDS = 60 * 60;
-const AGENT_LONG_PAID_MAX_DURATION_SECONDS = 2 * 60 * 60;
+const AGENT_LONG_FREE_MAX_DURATION_SECONDS = 4 * 60 * 60;
+const AGENT_LONG_PAID_MAX_DURATION_SECONDS = 4 * 60 * 60;
 const AGENT_LONG_CLEANUP_GRACE_MS = 2 * 60 * 1000;
 const AGENT_LONG_RUNTIME_SETTLEMENT_WATCHDOG_MS = 30 * 1000;
 const AGENT_LONG_TRIGGER_MAX_DURATION_SECONDS =
@@ -2303,8 +2303,9 @@ const finishCloudSandboxLifecycleForParentRun = async ({
       });
     }
   } catch (error) {
-    // AWS suspension already attempts termination as a cost-safety fallback.
-    // Preserve the Agent result while surfacing any double failure for retry.
+    // Wind-down retains an unsaved VM so its checkpoint loop can retry. Once a
+    // snapshot exists, a failed suspend can still terminate as a cost backstop.
+    // Preserve the Agent result while surfacing the cleanup failure.
     triggerLogger.error("[agent-long] shared sandbox wind-down failed", {
       event: "agent_cloud_sandbox_wind_down_failed",
       user_id: userId,
