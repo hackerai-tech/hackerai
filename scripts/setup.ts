@@ -39,38 +39,6 @@ async function getOpenRouterApiKey(): Promise<string> {
   return await getOpenRouterApiKey();
 }
 
-async function getOpenAiApiKey(): Promise<string> {
-  console.log(`\n${chalk.bold("Getting OpenAI API Key")}`);
-  console.log(
-    "You can find your OpenAI API Key at: https://platform.openai.com/api-keys",
-  );
-  const key = await question("Enter your OpenAI API Key: ");
-
-  if (key.startsWith("sk-")) {
-    return key;
-  }
-
-  console.log(chalk.red("Invalid OpenAI API Key format"));
-  console.log('OpenAI keys should start with "sk-"');
-
-  return await getOpenAiApiKey();
-}
-
-async function getXaiApiKey(): Promise<string> {
-  console.log(`\n${chalk.bold("Getting XAI API Key for Agent mode")}`);
-  console.log("You can find your XAI API Key at: https://xai.com/api-keys");
-  const key = await question("Enter your XAI API Key: ");
-
-  if (key.startsWith("xai-")) {
-    return key;
-  }
-
-  console.log(chalk.red("Invalid XAI API Key format"));
-  console.log('XAI keys should start with "xai-"');
-
-  return await getXaiApiKey();
-}
-
 async function getE2bApiKey(): Promise<string> {
   console.log(`\n${chalk.bold("Getting E2B API Key for cloud sandbox")}`);
   console.log(
@@ -269,13 +237,8 @@ AWS_S3_BUCKET_NAME=
 # AI PROVIDERS (Required)
 # =============================================================================
 # OpenRouter - Get key at: https://openrouter.ai/
+# Serves every AI call, including input moderation.
 OPENROUTER_API_KEY=${envVars.OPENROUTER_API_KEY}
-
-# OpenAI - Get key at: https://platform.openai.com/
-OPENAI_API_KEY=${envVars.OPENAI_API_KEY}
-
-# XAI (Grok) - Get key at: https://x.ai/
-XAI_API_KEY=${envVars.XAI_API_KEY}
 
 # =============================================================================
 # CODE EXECUTION - E2B (Required for Agent Mode)
@@ -469,8 +432,6 @@ async function main() {
 
   // Get required API keys
   const OPENROUTER_API_KEY = await getOpenRouterApiKey();
-  const OPENAI_API_KEY = await getOpenAiApiKey();
-  const XAI_API_KEY = await getXaiApiKey();
   const E2B_API_KEY = await getE2bApiKey();
 
   // Get WorkOS configuration
@@ -493,8 +454,6 @@ async function main() {
   // Write the complete environment file
   await writeEnvFile({
     OPENROUTER_API_KEY,
-    OPENAI_API_KEY,
-    XAI_API_KEY,
     E2B_API_KEY,
     WORKOS_API_KEY,
     WORKOS_CLIENT_ID,

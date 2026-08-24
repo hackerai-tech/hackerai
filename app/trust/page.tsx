@@ -52,13 +52,9 @@ interface Subprocessor {
 const subprocessors: Subprocessor[] = [
   {
     name: "OpenRouter",
-    purpose: "Routes task requests to third-party AI model providers",
+    purpose:
+      "Routes task requests to third-party AI model providers, including content moderation",
     dataCategories: "Prompts, conversation context, file content, tool output",
-  },
-  {
-    name: "OpenAI",
-    purpose: "Content moderation",
-    dataCategories: "Message content",
   },
   {
     name: "Perplexity",
@@ -219,7 +215,8 @@ export default function TrustPage() {
             <p>
               When the agent searches the web or opens a URL, search queries are
               processed by Perplexity and page content is retrieved through Jina
-              AI. Message content is screened by OpenAI for content moderation.
+              AI. Message content is screened for content moderation by a
+              classifier model routed through OpenRouter.
             </p>
             <p>
               Each provider processes data under its own terms. Whether data is

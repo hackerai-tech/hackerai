@@ -825,6 +825,10 @@ export const DEEPSEEK_V4_PRO_0813_SLUG = "deepseek/deepseek-v4-pro-0813";
 export const DEEPSEEK_V4_FLASH_SLUG = "deepseek/deepseek-v4-flash-0731";
 export const DEEPSEEK_V4_FLASH_PREVIOUS_SLUG = "deepseek/deepseek-v4-flash";
 const TITLE_GENERATOR_DEEPSEEK_SLUG = "deepseek/deepseek-v4-flash";
+// Safety-tuned classifier used for input moderation. OpenRouter exposes no
+// dedicated /moderations endpoint, so moderation runs as a structured-output
+// chat completion against this model instead.
+export const MODERATION_SAFEGUARD_SLUG = "openai/gpt-oss-safeguard-20b";
 
 export const getOpenRouterProviderRoutingForModel = (
   modelSlug: string,
@@ -868,6 +872,8 @@ const buildProviderMap = (
     // Image understanding for text-only routes. The resulting description is
     // injected as untrusted text; this model never becomes the active agent.
     "auxiliary-vision-model": or(AUXILIARY_VISION_SLUG),
+    // Input moderation classifier. Never generates user-facing text.
+    "moderation-model": or(MODERATION_SAFEGUARD_SLUG),
   }) as Record<string, any>;
 
 const baseProviders = buildProviderMap(openrouter);
@@ -914,6 +920,7 @@ export const modelDisplayNames: Record<ModelName, string> &
   "title-generator-model": "DeepSeek V4 Flash",
   "agent-auto-review-model": "DeepSeek V4 Flash 0731",
   "auxiliary-vision-model": "Auxiliary vision model",
+  "moderation-model": "Moderation classifier",
 };
 
 export const getModelDisplayName = (modelName: ModelName): string => {
