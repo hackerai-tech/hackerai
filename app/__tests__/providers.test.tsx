@@ -156,7 +156,7 @@ describe("PostHogProvider", () => {
     expect(posthog.stopSessionRecording).not.toHaveBeenCalled();
   });
 
-  it.each(["fr-FR", "es_ES", "invalid locale"])(
+  it.each(["fr-FR", "es_ES", "invalid locale", "   "])(
     "does not record a paid user's %s session",
     async (locale) => {
       const posthog = {

@@ -169,7 +169,8 @@ export function PostHogProvider({
 
         confirmAuthenticatedAnalyticsUserId(userId!);
 
-        const replayLocale = userLocale?.trim() || window.navigator.language;
+        const replayLocale =
+          userLocale == null ? window.navigator.language : userLocale;
         const shouldRecordSession =
           subscription !== "free" && isEnglishLocale(replayLocale);
 
