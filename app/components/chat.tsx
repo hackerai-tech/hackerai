@@ -115,6 +115,7 @@ const AGENT_LONG_SILENT_COMPLETION_POLL_DELAY_MS = 5_000;
 const AGENT_LONG_SILENT_COMPLETION_POLL_INTERVAL_MS = 5_000;
 const AGENT_LONG_ACTIVE_COMPLETION_POLL_INTERVAL_MS = 15_000;
 const AGENT_LONG_COMPLETION_STOP_GRACE_MS = 2_000;
+const AGENT_LONG_COMPLETION_REQUEST_TIMEOUT_MS = 8_000;
 type MessagePaginationStatus =
   "LoadingFirstPage" | "CanLoadMore" | "LoadingMore" | "Exhausted";
 
@@ -726,6 +727,8 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   } | null>(null);
   const [agentLongRunId, setAgentLongRunId] = useState<string | null>(null);
   const agentLongHasVisibleProgressRef = useRef(false);
+  const agentLongRunFallbackAllowedRef = useRef(true);
+  const agentLongSubmissionGenerationRef = useRef(0);
 
   useLayoutEffect(() => {
     activeChatIdRef.current = chatId;
@@ -772,15 +775,24 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
           // Reset the previous run before starting the request. Doing this in
           // the passive `submitted` effect can race with onRunStarted and
           // erase the new run metadata before completion reconciliation sees it.
+          const submissionGeneration =
+            ++agentLongSubmissionGenerationRef.current;
           agentLongRunCorrelationRef.current = null;
+          agentLongRunFallbackAllowedRef.current = false;
           setAgentLongRunId(null);
           agentLongHasVisibleProgressRef.current = false;
-          agentLongMessageFingerprintRef.current =
-            getAgentLongMessageProgressFingerprint(messagesRef.current);
+          agentLongMessageFingerprintRef.current = {
+            chatId: activeChatIdRef.current,
+            fingerprint: getAgentLongMessageProgressFingerprint(
+              messagesRef.current,
+            ),
+          };
           return fetchAgentLongStream(init, (run) => {
             if (
-              run.chatId !== undefined &&
-              run.chatId !== activeChatIdRef.current
+              submissionGeneration !==
+                agentLongSubmissionGenerationRef.current ||
+              (run.chatId !== undefined &&
+                run.chatId !== activeChatIdRef.current)
             ) {
               return;
             }
@@ -792,6 +804,12 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
               };
             }
           });
+        }
+        if (init?.method !== "GET") {
+          agentLongSubmissionGenerationRef.current += 1;
+          agentLongRunCorrelationRef.current = null;
+          agentLongRunFallbackAllowedRef.current = false;
+          setAgentLongRunId(null);
         }
         // Reconnect for legacy "agent-long" chats normalised to "agent" mode
         // on load — route based on the URL (not on ref state) to be resilient
@@ -1036,6 +1054,9 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
         return;
       }
       browserStreamFinishedRef.current = true;
+      agentLongRunCorrelationRef.current = null;
+      agentLongRunFallbackAllowedRef.current = false;
+      setAgentLongRunId(null);
       setIsAutoResuming(false);
       setAwaitingServerChat(false);
       dispatchStreaming({ type: "RESET_ON_FINISH" });
@@ -1056,6 +1077,9 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
         return;
       }
       browserStreamFinishedRef.current = true;
+      agentLongRunCorrelationRef.current = null;
+      agentLongRunFallbackAllowedRef.current = false;
+      setAgentLongRunId(null);
       setIsAutoResuming(false);
       setAwaitingServerChat(false);
       dispatchStreaming({ type: "RESET_ON_FINISH" });
@@ -1222,8 +1246,12 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   useEffect(() => {
     if (status === "submitted") {
       agentLongHasVisibleProgressRef.current = false;
-      agentLongMessageFingerprintRef.current =
-        getAgentLongMessageProgressFingerprint(messagesRef.current);
+      agentLongMessageFingerprintRef.current = {
+        chatId,
+        fingerprint: getAgentLongMessageProgressFingerprint(
+          messagesRef.current,
+        ),
+      };
     }
     if (
       shouldUseAgentLongForCurrentChat &&
@@ -1231,7 +1259,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     ) {
       browserStreamFinishedRef.current = false;
     }
-  }, [shouldUseAgentLongForCurrentChat, status]);
+  }, [chatId, shouldUseAgentLongForCurrentChat, status]);
 
   useEffect(() => {
     const isAgentLongDoubleCloseNoise = (message: unknown) =>
@@ -1284,7 +1312,9 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   }, []);
 
   useEffect(() => {
+    agentLongSubmissionGenerationRef.current += 1;
     agentLongRunCorrelationRef.current = null;
+    agentLongRunFallbackAllowedRef.current = true;
     setAgentLongRunId(null);
     agentLongHasVisibleProgressRef.current = false;
     setDataStream([]);
@@ -1300,17 +1330,31 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
 
   const agentLongMessageFingerprint =
     getAgentLongMessageProgressFingerprint(messages);
-  const agentLongMessageFingerprintRef = useRef(agentLongMessageFingerprint);
+  const agentLongMessageFingerprintRef = useRef({
+    chatId,
+    fingerprint: agentLongMessageFingerprint,
+  });
 
   useEffect(() => {
+    if (agentLongMessageFingerprintRef.current.chatId !== chatId) {
+      agentLongMessageFingerprintRef.current = {
+        chatId,
+        fingerprint: agentLongMessageFingerprint,
+      };
+      return;
+    }
     if (
-      agentLongMessageFingerprintRef.current === agentLongMessageFingerprint
+      agentLongMessageFingerprintRef.current.fingerprint ===
+      agentLongMessageFingerprint
     ) {
       return;
     }
-    agentLongMessageFingerprintRef.current = agentLongMessageFingerprint;
+    agentLongMessageFingerprintRef.current = {
+      chatId,
+      fingerprint: agentLongMessageFingerprint,
+    };
     agentLongHasVisibleProgressRef.current = true;
-  }, [agentLongMessageFingerprint]);
+  }, [agentLongMessageFingerprint, chatId]);
 
   // Trigger.dev can finish and persist an Agent answer even if the realtime
   // UI stream never delivers a terminal chunk to useChat. Reconcile against
@@ -1320,7 +1364,9 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     const trackedAgentLongRunId =
       agentLongRunId ??
       agentLongRunCorrelationRef.current?.runId ??
-      activeTriggerRunRef.current;
+      (agentLongRunFallbackAllowedRef.current
+        ? activeTriggerRunRef.current
+        : null);
     if (
       (status !== "streaming" && status !== "submitted") ||
       (!shouldUseAgentLongForCurrentChat && !trackedAgentLongRunId)
@@ -1337,6 +1383,9 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     const finishLocally = () => {
       if (stopped || activeChatIdRef.current !== chatId) return;
       stopped = true;
+      agentLongRunCorrelationRef.current = null;
+      agentLongRunFallbackAllowedRef.current = false;
+      setAgentLongRunId(null);
       stopRef.current();
       setIsAutoResuming(false);
       setAwaitingServerChat(false);
@@ -1381,16 +1430,27 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
       const runId =
         trackedAgentLongRunId ??
         agentLongRunCorrelationRef.current?.runId ??
-        activeTriggerRunRef.current;
+        (agentLongRunFallbackAllowedRef.current
+          ? activeTriggerRunRef.current
+          : null);
       if (!runId) return;
 
       isCompletionCheckInFlight = true;
+      const requestAbortController = new AbortController();
+      const abortRequest = () => requestAbortController.abort();
+      abortController.signal.addEventListener("abort", abortRequest, {
+        once: true,
+      });
+      const requestTimeout = setTimeout(
+        abortRequest,
+        AGENT_LONG_COMPLETION_REQUEST_TIMEOUT_MS,
+      );
       try {
         const response = await fetch(AGENT_STATUS_ENDPOINT, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ chatId, runId }),
-          signal: abortController.signal,
+          signal: requestAbortController.signal,
         });
         if (response.status === 404) {
           scheduleFinishLocally();
@@ -1408,6 +1468,8 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
           // the visible error state.
         }
       } finally {
+        clearTimeout(requestTimeout);
+        abortController.signal.removeEventListener("abort", abortRequest);
         isCompletionCheckInFlight = false;
       }
     };
