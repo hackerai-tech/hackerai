@@ -15,8 +15,12 @@ const WORKSPACE_CHECKPOINT_START_LOCK =
   "/tmp/.hackerai-workspace-v1-checkpoint-start.lock";
 const WORKSPACE_CHECKPOINT_INTERVAL_SECONDS = 2 * 60;
 const WORKSPACE_TRANSFER_TIMEOUT_MS = 10 * 60 * 1_000;
-const WORKSPACE_RESTORE_WAIT_ATTEMPTS =
-  Math.floor(WORKSPACE_TRANSFER_TIMEOUT_MS / 1_000) - 5;
+const WORKSPACE_TRANSFER_TIMEOUT_SECONDS = Math.ceil(
+  WORKSPACE_TRANSFER_TIMEOUT_MS / 1_000,
+);
+const WORKSPACE_RESTORE_WAIT_ATTEMPTS = WORKSPACE_TRANSFER_TIMEOUT_SECONDS;
+const WORKSPACE_RESTORE_COMMAND_TIMEOUT_MS =
+  WORKSPACE_TRANSFER_TIMEOUT_MS + 30_000;
 
 type WorkspaceSandbox = {
   commands: {
@@ -50,6 +54,15 @@ export function buildWorkspaceRestoreCommand(downloadUrl: string | null) {
         `tar -xzf "$archive" -C ${shellQuote(WORKSPACE_ROOT)} --no-same-owner --no-same-permissions`,
       ].join("; ")
     : "true";
+  const boundedRestore = [
+    "timeout",
+    "--signal=TERM",
+    "--kill-after=5s",
+    `${WORKSPACE_TRANSFER_TIMEOUT_SECONDS}s`,
+    "/bin/bash",
+    "-c",
+    shellQuote(`set -eu; ${restore}`),
+  ].join(" ");
 
   return [
     "set -eu",
@@ -61,14 +74,14 @@ export function buildWorkspaceRestoreCommand(downloadUrl: string | null) {
     "  trap 'rmdir \"$lock\" 2>/dev/null || true' EXIT",
     '  rm -f "$failed"',
     `  mkdir -p ${shellQuote(WORKSPACE_ROOT)}`,
-    `  if ! ( ${restore} ); then touch "$failed"; exit 70; fi`,
+    `  if ! ${boundedRestore}; then touch "$failed"; exit 70; fi`,
     '  touch "$ready"',
     "else",
     "  attempts=0",
     '  while [ ! -f "$ready" ]; do',
     '    [ -f "$failed" ] && exit 70',
     "    attempts=$((attempts + 1))",
-    `    [ "$attempts" -ge ${WORKSPACE_RESTORE_WAIT_ATTEMPTS} ] && exit 71`,
+    `    [ "$attempts" -gt ${WORKSPACE_RESTORE_WAIT_ATTEMPTS} ] && exit 71`,
     "    sleep 1",
     "  done",
     "fi",
@@ -157,7 +170,7 @@ export async function restoreAwsLambdaMicrovmWorkspace(args: {
   );
   const result = await args.sandbox.commands.run(
     buildWorkspaceRestoreCommand(downloadUrl),
-    { timeoutMs: WORKSPACE_TRANSFER_TIMEOUT_MS, displayName: "" },
+    { timeoutMs: WORKSPACE_RESTORE_COMMAND_TIMEOUT_MS, displayName: "" },
   );
   if (result.exitCode !== 0) throw transferError("restore", result.exitCode);
 

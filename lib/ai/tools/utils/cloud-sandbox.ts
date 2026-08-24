@@ -95,17 +95,6 @@ export async function terminateCloudSandboxesForUser(userId: string): Promise<{
   const provider = getCloudSandboxProvider();
   const totals = { total: 0, killed: 0, alreadyGone: 0 };
 
-  // Honor explicit deletion before provider cleanup, which can fail
-  // independently. This archive is the durable copy of the user's workspace.
-  if (process.env.CONVEX_SERVICE_ROLE_KEY) {
-    const { deleteAwsLambdaMicrovmWorkspace } =
-      await import("./aws-lambda-microvm-workspace");
-    await deleteAwsLambdaMicrovmWorkspace(
-      userId,
-      process.env.CONVEX_SERVICE_ROLE_KEY,
-    );
-  }
-
   // Cloud provider selection can change during a rollback. Clean up persisted
   // AWS sessions independently of the provider currently selected.
   if (process.env.CONVEX_SERVICE_ROLE_KEY) {
@@ -118,6 +107,17 @@ export async function terminateCloudSandboxesForUser(userId: string): Promise<{
   } else if (provider === "aws-lambda-microvm") {
     throw new Error(
       "CONVEX_SERVICE_ROLE_KEY is required to delete AWS Lambda MicroVMs",
+    );
+  }
+
+  // Delete only after AWS writers are stopped so a checkpoint cannot recreate
+  // the archive, but before independent E2B cleanup can fail.
+  if (process.env.CONVEX_SERVICE_ROLE_KEY) {
+    const { deleteAwsLambdaMicrovmWorkspace } =
+      await import("./aws-lambda-microvm-workspace");
+    await deleteAwsLambdaMicrovmWorkspace(
+      userId,
+      process.env.CONVEX_SERVICE_ROLE_KEY,
     );
   }
 

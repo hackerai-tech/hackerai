@@ -45,11 +45,16 @@ describe("AWS Lambda MicroVM durable workspace", () => {
     expect(command.indexOf('tar -tzf "$archive"')).toBeLessThan(
       command.indexOf('tar -xzf "$archive"'),
     );
-    expect(command).toContain("-C '/home/user'");
+    expect(command).toContain("/home/user");
     expect(command).toContain(".hackerai-workspace-v1.ready");
     expect(command).toContain(".hackerai-workspace-v1.lock");
-    expect(command).toContain(`trap 'rm -f "$archive"' EXIT`);
-    expect(command).toContain('[ "$attempts" -ge 595 ] && exit 71');
+    expect(command.match(/rmdir/g)).toHaveLength(1);
+    expect(command).toContain('[ "$attempts" -gt 600 ] && exit 71');
+    expect(command).toContain("--kill-after=5s 600s /bin/bash -c");
+    expect(run.mock.calls[0][1]).toEqual({
+      timeoutMs: 630_000,
+      displayName: "",
+    });
     expect(run).toHaveBeenCalledTimes(2);
     const checkpointCommand = run.mock.calls[1][0] as string;
     expect(checkpointCommand).toContain("sleep 120");

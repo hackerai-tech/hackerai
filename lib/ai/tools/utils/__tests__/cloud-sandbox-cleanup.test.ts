@@ -78,7 +78,7 @@ describe("cloud sandbox cleanup configuration", () => {
     );
   });
 
-  it("deletes the durable workspace before AWS cleanup can fail", async () => {
+  it("does not delete an archive that a still-running AWS VM can recreate", async () => {
     mockTerminateAwsLambdaMicrovmForUser.mockRejectedValueOnce(
       new Error("AWS unavailable"),
     );
@@ -86,15 +86,7 @@ describe("cloud sandbox cleanup configuration", () => {
     await expect(terminateCloudSandboxesForUser("user_123")).rejects.toThrow(
       "AWS unavailable",
     );
-    expect(mockDeleteAwsLambdaMicrovmWorkspace).toHaveBeenCalledWith(
-      "user_123",
-      "test-service-key",
-    );
-    expect(
-      mockDeleteAwsLambdaMicrovmWorkspace.mock.invocationCallOrder[0],
-    ).toBeLessThan(
-      mockTerminateAwsLambdaMicrovmForUser.mock.invocationCallOrder[0],
-    );
+    expect(mockDeleteAwsLambdaMicrovmWorkspace).not.toHaveBeenCalled();
   });
 
   it("terminates every page of E2B sandboxes during provider migration", async () => {
@@ -120,6 +112,14 @@ describe("cloud sandbox cleanup configuration", () => {
     expect(mockKillE2BSandbox).toHaveBeenCalledTimes(2);
     expect(mockKillE2BSandbox).toHaveBeenNthCalledWith(1, "sandbox-page-1");
     expect(mockKillE2BSandbox).toHaveBeenNthCalledWith(2, "sandbox-page-2");
+    expect(
+      mockTerminateAwsLambdaMicrovmForUser.mock.invocationCallOrder[0],
+    ).toBeLessThan(
+      mockDeleteAwsLambdaMicrovmWorkspace.mock.invocationCallOrder[0],
+    );
+    expect(
+      mockDeleteAwsLambdaMicrovmWorkspace.mock.invocationCallOrder[0],
+    ).toBeLessThan(mockKillE2BSandbox.mock.invocationCallOrder[0]);
   });
 
   it("deletes the durable workspace even when legacy E2B cleanup fails", async () => {
