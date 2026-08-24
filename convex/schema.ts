@@ -703,6 +703,16 @@ export default defineSchema({
     started_at: v.number(),
   }).index("by_user_id", ["user_id"]),
 
+  // Short-lived lease held while Data Controls stops a user's sandboxes and
+  // deletes their durable workspace. This closes the acquisition/deletion
+  // race without permanently fencing the account when a request is interrupted.
+  cloud_sandbox_deletion_fences: defineTable({
+    user_id: v.string(),
+    operation_id: v.string(),
+    started_at: v.number(),
+    expires_at: v.number(),
+  }).index("by_user_id", ["user_id"]),
+
   user_suspensions: defineTable({
     user_id: v.string(),
     status: v.union(v.literal("active"), v.literal("resolved")),

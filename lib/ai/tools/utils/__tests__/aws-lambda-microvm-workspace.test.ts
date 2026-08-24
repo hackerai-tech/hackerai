@@ -108,7 +108,10 @@ describe("AWS Lambda MicroVM durable workspace", () => {
     const command = buildWorkspaceSnapshotCommand("https://s3.example/upload");
     const result = spawnSync(
       "bash",
-      ["-c", `tar() { return 1; }; curl() { printf uploaded; }; ${command}`],
+      [
+        "-c",
+        `flock() { return 0; }; tar() { return 1; }; curl() { printf uploaded; }; ${command}`,
+      ],
       { encoding: "utf8" },
     );
 
@@ -120,7 +123,10 @@ describe("AWS Lambda MicroVM durable workspace", () => {
     const command = buildWorkspaceSnapshotCommand("https://s3.example/upload");
     const result = spawnSync(
       "bash",
-      ["-c", `tar() { return 2; }; curl() { printf uploaded; }; ${command}`],
+      [
+        "-c",
+        `flock() { return 0; }; tar() { return 2; }; curl() { printf uploaded; }; ${command}`,
+      ],
       { encoding: "utf8" },
     );
 
