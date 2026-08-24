@@ -1256,6 +1256,12 @@ type AgentCompletionAnalyticsArgs = {
   triggerRunId?: string;
   triggerUsageDurationMs?: number;
   triggerTotalCostUsd?: number;
+  startupTimingVersion?: 1;
+  routePreTriggerDurationMs?: number;
+  triggerTaskStartLatencyMs?: number;
+  taskToFirstModelStartMs?: number;
+  requestToFirstModelStartMs?: number;
+  requestToFirstModelChunkMs?: number;
   approvalWaitCount?: number;
   approvalWaitDurationMs?: number;
   activeModelStreamDurationMs?: number;
@@ -1292,6 +1298,12 @@ export function captureAgentRun({
   triggerRunId,
   triggerUsageDurationMs,
   triggerTotalCostUsd,
+  startupTimingVersion,
+  routePreTriggerDurationMs,
+  triggerTaskStartLatencyMs,
+  taskToFirstModelStartMs,
+  requestToFirstModelStartMs,
+  requestToFirstModelChunkMs,
   approvalWaitCount,
   approvalWaitDurationMs,
   activeModelStreamDurationMs,
@@ -1331,6 +1343,24 @@ export function captureAgentRun({
       }),
       ...(triggerTotalCostUsd !== undefined && {
         trigger_total_cost_usd: triggerTotalCostUsd,
+      }),
+      ...(startupTimingVersion !== undefined && {
+        startup_timing_version: startupTimingVersion,
+      }),
+      ...(routePreTriggerDurationMs !== undefined && {
+        route_pre_trigger_duration_ms: routePreTriggerDurationMs,
+      }),
+      ...(triggerTaskStartLatencyMs !== undefined && {
+        trigger_task_start_latency_ms: triggerTaskStartLatencyMs,
+      }),
+      ...(taskToFirstModelStartMs !== undefined && {
+        task_to_first_model_start_ms: taskToFirstModelStartMs,
+      }),
+      ...(requestToFirstModelStartMs !== undefined && {
+        request_to_first_model_start_ms: requestToFirstModelStartMs,
+      }),
+      ...(requestToFirstModelChunkMs !== undefined && {
+        request_to_first_model_chunk_ms: requestToFirstModelChunkMs,
       }),
       ...(approvalWaitCount !== undefined && {
         approval_wait_count: approvalWaitCount,
@@ -1431,6 +1461,12 @@ export function captureAgentCompletionAnalytics(
     triggerRunId: args.triggerRunId,
     triggerUsageDurationMs: args.triggerUsageDurationMs,
     triggerTotalCostUsd: args.triggerTotalCostUsd,
+    startupTimingVersion: args.startupTimingVersion,
+    routePreTriggerDurationMs: args.routePreTriggerDurationMs,
+    triggerTaskStartLatencyMs: args.triggerTaskStartLatencyMs,
+    taskToFirstModelStartMs: args.taskToFirstModelStartMs,
+    requestToFirstModelStartMs: args.requestToFirstModelStartMs,
+    requestToFirstModelChunkMs: args.requestToFirstModelChunkMs,
     approvalWaitCount: args.approvalWaitCount,
     approvalWaitDurationMs: args.approvalWaitDurationMs,
     activeModelStreamDurationMs: args.activeModelStreamDurationMs,

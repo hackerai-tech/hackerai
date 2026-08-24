@@ -1,6 +1,12 @@
 import type { AgentActiveTimeCategory } from "@/types";
 
 export type AgentRunTimingSnapshot = {
+  startupTimingVersion?: 1;
+  routePreTriggerDurationMs?: number;
+  triggerTaskStartLatencyMs?: number;
+  taskToFirstModelStartMs?: number;
+  requestToFirstModelStartMs?: number;
+  requestToFirstModelChunkMs?: number;
   approvalWaitCount: number;
   approvalWaitDurationMs: number;
   activeModelStreamDurationMs: number;
@@ -14,6 +20,15 @@ export type AgentRunTimingSnapshot = {
  * these categories explain where that active runtime was spent.
  */
 export class AgentRunTimingTracker {
+  private startup:
+    | {
+        requestStartedAt: number;
+        triggerRequestedAt: number;
+        taskStartedAt: number;
+      }
+    | undefined;
+  private firstModelStartedAt: number | undefined;
+  private firstModelChunkAt: number | undefined;
   private approvalWaitCount = 0;
   private approvalWaitDurationMs = 0;
   private activeModelStreamDurationMs = 0;
@@ -22,6 +37,23 @@ export class AgentRunTimingTracker {
   private modelStreamStartedAt: number | undefined;
 
   constructor(private readonly now: () => number = Date.now) {}
+
+  initializeStartup = (timing: {
+    requestStartedAt: number;
+    triggerRequestedAt: number;
+    taskStartedAt: number;
+  }): void => {
+    if (
+      !Number.isFinite(timing.requestStartedAt) ||
+      !Number.isFinite(timing.triggerRequestedAt) ||
+      !Number.isFinite(timing.taskStartedAt) ||
+      timing.requestStartedAt > timing.triggerRequestedAt ||
+      timing.triggerRequestedAt > timing.taskStartedAt
+    ) {
+      return;
+    }
+    this.startup = timing;
+  };
 
   recordApprovalWait = (
     durationMs: number,
@@ -33,7 +65,13 @@ export class AgentRunTimingTracker {
 
   startModelStream = (): void => {
     this.finishModelStream();
-    this.modelStreamStartedAt = this.now();
+    const startedAt = this.now();
+    this.firstModelStartedAt ??= startedAt;
+    this.modelStreamStartedAt = startedAt;
+  };
+
+  recordFirstModelChunk = (): void => {
+    this.firstModelChunkAt ??= this.now();
   };
 
   finishModelStream = (): void => {
@@ -61,17 +99,42 @@ export class AgentRunTimingTracker {
     }
   };
 
-  snapshot = (): AgentRunTimingSnapshot => ({
-    approvalWaitCount: this.approvalWaitCount,
-    approvalWaitDurationMs: this.approvalWaitDurationMs,
-    activeModelStreamDurationMs:
-      this.activeModelStreamDurationMs +
-      (this.modelStreamStartedAt === undefined
-        ? 0
-        : normalizeDuration(this.now() - this.modelStreamStartedAt)),
-    activeTerminalWaitDurationMs: this.activeTerminalWaitDurationMs,
-    activeSandboxRecoveryDurationMs: this.activeSandboxRecoveryDurationMs,
-  });
+  snapshot = (): AgentRunTimingSnapshot => {
+    const startup = this.startup;
+    return {
+      ...(startup && {
+        startupTimingVersion: 1 as const,
+        routePreTriggerDurationMs: normalizeDuration(
+          startup.triggerRequestedAt - startup.requestStartedAt,
+        ),
+        triggerTaskStartLatencyMs: normalizeDuration(
+          startup.taskStartedAt - startup.triggerRequestedAt,
+        ),
+        ...(this.firstModelStartedAt !== undefined && {
+          taskToFirstModelStartMs: normalizeDuration(
+            this.firstModelStartedAt - startup.taskStartedAt,
+          ),
+          requestToFirstModelStartMs: normalizeDuration(
+            this.firstModelStartedAt - startup.requestStartedAt,
+          ),
+        }),
+        ...(this.firstModelChunkAt !== undefined && {
+          requestToFirstModelChunkMs: normalizeDuration(
+            this.firstModelChunkAt - startup.requestStartedAt,
+          ),
+        }),
+      }),
+      approvalWaitCount: this.approvalWaitCount,
+      approvalWaitDurationMs: this.approvalWaitDurationMs,
+      activeModelStreamDurationMs:
+        this.activeModelStreamDurationMs +
+        (this.modelStreamStartedAt === undefined
+          ? 0
+          : normalizeDuration(this.now() - this.modelStreamStartedAt)),
+      activeTerminalWaitDurationMs: this.activeTerminalWaitDurationMs,
+      activeSandboxRecoveryDurationMs: this.activeSandboxRecoveryDurationMs,
+    };
+  };
 }
 
 const normalizeDuration = (durationMs: number): number =>

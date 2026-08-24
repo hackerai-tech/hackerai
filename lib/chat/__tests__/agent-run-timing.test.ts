@@ -56,4 +56,47 @@ describe("AgentRunTimingTracker", () => {
 
     expect(tracker.snapshot().activeTerminalWaitDurationMs).toBe(750);
   });
+
+  it("records first-turn startup milestones once", () => {
+    let now = 1_300;
+    const tracker = new AgentRunTimingTracker(() => now);
+    tracker.initializeStartup({
+      requestStartedAt: 1_000,
+      triggerRequestedAt: 1_100,
+      taskStartedAt: 1_300,
+    });
+
+    now = 1_800;
+    tracker.startModelStream();
+    now = 2_050;
+    tracker.recordFirstModelChunk();
+
+    now = 2_500;
+    tracker.startModelStream();
+    tracker.recordFirstModelChunk();
+
+    expect(tracker.snapshot()).toEqual(
+      expect.objectContaining({
+        startupTimingVersion: 1,
+        routePreTriggerDurationMs: 100,
+        triggerTaskStartLatencyMs: 200,
+        taskToFirstModelStartMs: 500,
+        requestToFirstModelStartMs: 800,
+        requestToFirstModelChunkMs: 1_050,
+      }),
+    );
+  });
+
+  it("ignores invalid startup ordering", () => {
+    const tracker = new AgentRunTimingTracker(() => 2_000);
+    tracker.initializeStartup({
+      requestStartedAt: 1_500,
+      triggerRequestedAt: 1_400,
+      taskStartedAt: 1_600,
+    });
+    tracker.startModelStream();
+    tracker.recordFirstModelChunk();
+
+    expect(tracker.snapshot()).not.toHaveProperty("startupTimingVersion");
+  });
 });
