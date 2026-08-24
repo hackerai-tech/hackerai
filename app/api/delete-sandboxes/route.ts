@@ -1,7 +1,11 @@
 import { getUserIDAndPro } from "@/lib/auth/get-user-id";
 import { NextRequest } from "next/server";
 import { terminateCloudSandboxesForUser } from "@/lib/ai/tools/utils/cloud-sandbox";
-import { getActiveTriggerRunsForUser } from "@/lib/db/actions";
+import {
+  beginCloudSandboxDeletionForUser,
+  finishCloudSandboxDeletionForUser,
+  getActiveTriggerRunsForUser,
+} from "@/lib/db/actions";
 import { cancelSubagentsForUserDeletion } from "@/lib/db/subagents";
 import { closeAndCancelAgentResources } from "@/lib/api/agent-deletion-cleanup";
 
@@ -9,6 +13,11 @@ export const maxDuration = 60;
 const SANDBOX_DELETION_REASON = "terminal-sandbox-deleted";
 
 export async function POST(req: NextRequest) {
+  let deletionFence: { userId: string; operationId: string } | undefined;
+  const requestId =
+    req.headers?.get("x-request-id") ??
+    req.headers?.get("x-vercel-id") ??
+    crypto.randomUUID();
   try {
     const { userId, subscription } = await getUserIDAndPro(req);
 
@@ -26,6 +35,15 @@ export async function POST(req: NextRequest) {
         headers: { "Content-Type": "application/json" },
       });
     }
+
+    const fence = await beginCloudSandboxDeletionForUser({ userId });
+    if (!fence.acquired) {
+      return new Response(
+        JSON.stringify({ error: "Sandbox deletion is already in progress" }),
+        { status: 409, headers: { "Content-Type": "application/json" } },
+      );
+    }
+    deletionFence = { userId, operationId: fence.operationId };
 
     const activeAgentResources = await getActiveTriggerRunsForUser({ userId });
     if (activeAgentResources.hasMore) {
@@ -77,5 +95,25 @@ export async function POST(req: NextRequest) {
         headers: { "Content-Type": "application/json" },
       },
     );
+  } finally {
+    if (deletionFence) {
+      try {
+        await finishCloudSandboxDeletionForUser(deletionFence);
+      } catch (error) {
+        console.error(
+          JSON.stringify({
+            timestamp: new Date().toISOString(),
+            level: "error",
+            event: "cloud_sandbox_deletion_fence_release_failed",
+            request_id: requestId,
+            service: "delete-sandboxes-api",
+            environment:
+              process.env.VERCEL_ENV ?? process.env.NODE_ENV ?? "unknown",
+            user_id: deletionFence.userId,
+            error_name: error instanceof Error ? error.name : "UnknownError",
+          }),
+        );
+      }
+    }
   }
 }

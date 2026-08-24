@@ -38,6 +38,8 @@ const DEFAULT_MIN_REMAINING_SECONDS = 2 * 60 * 60 + 5 * 60;
 const DIRECT_IDLE_SECONDS = 5 * 60;
 const DIRECT_SUSPENDED_SECONDS = 30 * 60;
 const SESSION_READY_TIMEOUT_MS = 90_000;
+const USER_DELETION_TERMINATION_CONFIRM_TIMEOUT_MS =
+  process.env.NODE_ENV === "test" ? 1_000 : 15_000;
 const RETRYABLE_TRANSPORT_ERROR_CODES = new Set([
   "EAI_AGAIN",
   "ENOTFOUND",
@@ -680,6 +682,39 @@ async function terminateMicrovm(
       ...errorLogFields(error),
     });
     return "failed";
+  }
+}
+
+async function confirmMicrovmTerminated(
+  microvmId: string,
+  region: string,
+): Promise<void> {
+  const deadline = Date.now() + USER_DELETION_TERMINATION_CONFIRM_TIMEOUT_MS;
+  let delayMs = 250;
+  let lastState = "unknown";
+
+  while (true) {
+    try {
+      const response = await getClient(region).send(
+        new GetMicrovmCommand({ microvmIdentifier: microvmId }),
+      );
+      lastState = response.state ?? "unknown";
+      if (response.state === "TERMINATED") return;
+    } catch (error) {
+      if (isAwsNotFound(error)) return;
+      throw error;
+    }
+
+    const remainingMs = deadline - Date.now();
+    if (remainingMs <= 0) {
+      throw new Error(
+        `AWS MicroVM termination was not confirmed; last state was ${lastState}`,
+      );
+    }
+    await new Promise((resolve) =>
+      setTimeout(resolve, Math.min(delayMs, remainingMs)),
+    );
+    delayMs = Math.min(Math.round(delayMs * 1.5), 1_000);
   }
 }
 
@@ -1784,6 +1819,20 @@ export async function terminateAwsLambdaMicrovmForUser(
 
       const outcome = await terminateMicrovm(microvmId, session.region);
       if (outcome === "terminated") {
+        // TerminateMicrovm acknowledges the request before AWS necessarily
+        // stops the guest. Confirm the terminal state before the caller is
+        // allowed to delete the workspace object that guest can checkpoint.
+        try {
+          await confirmMicrovmTerminated(microvmId, session.region);
+        } catch (error) {
+          await markCleanupPending(
+            userId,
+            session.sessionId,
+            { serviceKey },
+            "termination_confirmation_required",
+          );
+          throw error;
+        }
         await markEnded(
           userId,
           session.sessionId,
@@ -2036,30 +2085,16 @@ export async function suspendAwsLambdaMicrovmsForUser(
         ...errorLogFields(error),
       });
       if (!workspaceSaved) {
-        // Never destroy the only remaining copy of a user's project. Make one
-        // best-effort suspend attempt to contain cost, then leave the MicroVM
-        // for the platform duration backstop if both operations failed.
-        try {
-          await getClient(session.region).send(
-            new SuspendMicrovmCommand({ microvmIdentifier: microvmId }),
-          );
-          await recordCloudMicrovmState(
-            userId,
-            session.sessionId,
-            microvmId,
-            serviceKey,
-            "SUSPENDING",
-          );
-        } catch (suspendError) {
-          log("error", "cloud_sandbox_unsaved_workspace_retained", {
-            user_id: userId,
-            session_id: session.sessionId,
-            microvm_id: microvmId,
-            region: session.region,
-            reason: "snapshot_and_suspend_failed",
-            ...errorLogFields(suspendError),
-          });
-        }
+        // Suspending would put the only live copy on AWS's 30-minute automatic
+        // termination path. Keep the session reusable and leave its existing
+        // two-minute checkpoint loop running so transient S3 failures can heal.
+        log("warn", "cloud_sandbox_unsaved_workspace_retained", {
+          user_id: userId,
+          session_id: session.sessionId,
+          microvm_id: microvmId,
+          region: session.region,
+          reason: "snapshot_failed",
+        });
         failures.push(error);
         continue;
       }

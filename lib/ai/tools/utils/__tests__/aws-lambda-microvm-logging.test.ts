@@ -1168,7 +1168,8 @@ describe("AWS Lambda MicroVM development logging", () => {
       .mockRejectedValueOnce(
         Object.assign(new Error("denied"), { name: "AccessDeniedException" }),
       )
-      .mockResolvedValueOnce({ $metadata: { httpStatusCode: 200 } });
+      .mockResolvedValueOnce({ $metadata: { httpStatusCode: 200 } })
+      .mockResolvedValueOnce({ state: "TERMINATED" });
     mockMutation.mockResolvedValue(true);
     const warnSpy = jest.spyOn(console, "warn").mockImplementation();
     const infoSpy = jest.spyOn(console, "info").mockImplementation();
@@ -1177,7 +1178,7 @@ describe("AWS Lambda MicroVM development logging", () => {
       terminateAwsLambdaMicrovmForUser("user-delete"),
     ).rejects.toThrow("Failed to terminate 1 AWS Lambda MicroVM session");
 
-    expect(mockSend).toHaveBeenCalledTimes(2);
+    expect(mockSend).toHaveBeenCalledTimes(3);
     expect(mockMutation.mock.calls).toEqual(
       expect.arrayContaining([
         expect.arrayContaining([
@@ -1212,7 +1213,9 @@ describe("AWS Lambda MicroVM development logging", () => {
         microvmId: "microvm-attached-late",
       })
       .mockResolvedValueOnce(true);
-    mockSend.mockResolvedValueOnce({ $metadata: { httpStatusCode: 200 } });
+    mockSend
+      .mockResolvedValueOnce({ $metadata: { httpStatusCode: 200 } })
+      .mockResolvedValueOnce({ state: "TERMINATED" });
     const infoSpy = jest.spyOn(console, "info").mockImplementation();
 
     await expect(
@@ -1229,6 +1232,39 @@ describe("AWS Lambda MicroVM development logging", () => {
       }),
     );
     infoSpy.mockRestore();
+  });
+
+  it("keeps workspace deletion blocked until AWS termination is confirmed", async () => {
+    jest.useFakeTimers();
+    mockQuery.mockResolvedValueOnce([
+      {
+        sessionId: "session-termination-pending",
+        status: "running",
+        microvmId: "microvm-termination-pending",
+        region: "us-east-1",
+      },
+    ]);
+    mockSend
+      .mockResolvedValueOnce({ $metadata: { httpStatusCode: 200 } })
+      .mockResolvedValue({ state: "TERMINATING" });
+    mockMutation.mockResolvedValue(true);
+    const warnSpy = jest.spyOn(console, "warn").mockImplementation();
+
+    const pending = expect(
+      terminateAwsLambdaMicrovmForUser("user-termination-pending"),
+    ).rejects.toThrow("Failed to terminate 1 AWS Lambda MicroVM session");
+    await jest.advanceTimersByTimeAsync(1_000);
+    await pending;
+
+    expect(mockMutation).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        userId: "user-termination-pending",
+        sessionId: "session-termination-pending",
+        failureCode: "termination_confirmation_required",
+      }),
+    );
+    warnSpy.mockRestore();
   });
 
   it("suspends a running reusable MicroVM when the Agent becomes idle", async () => {
@@ -1325,24 +1361,33 @@ describe("AWS Lambda MicroVM development logging", () => {
       },
     ]);
     mockSnapshotWorkspace.mockRejectedValueOnce(new Error("S3 unavailable"));
-    mockSend
-      .mockResolvedValueOnce({
-        state: "RUNNING",
-        endpoint: "microvm-unsaved.example.test",
-      })
-      .mockResolvedValueOnce({ $metadata: { httpStatusCode: 200 } });
+    mockSend.mockResolvedValueOnce({
+      state: "RUNNING",
+      endpoint: "microvm-unsaved.example.test",
+    });
     const warnSpy = jest.spyOn(console, "warn").mockImplementation();
 
     await expect(
       suspendAwsLambdaMicrovmsForUser("user-unsaved"),
     ).rejects.toThrow("Failed to stop 1 AWS Lambda MicroVM session");
-    expect(mockSend).toHaveBeenCalledTimes(2);
+    expect(mockSend).toHaveBeenCalledTimes(1);
     expect(
       mockMutation.mock.calls.some(
         ([, args]) =>
           args.sessionId === "session-unsaved" && args.state === "SUSPENDING",
       ),
-    ).toBe(true);
+    ).toBe(false);
+    const retainedEvent = warnSpy.mock.calls
+      .map(([payload]) => JSON.parse(payload as string))
+      .find(
+        (payload) =>
+          payload.event === "cloud_sandbox_unsaved_workspace_retained",
+      );
+    expect(retainedEvent).toMatchObject({
+      user_id: "user-unsaved",
+      session_id: "session-unsaved",
+      reason: "snapshot_failed",
+    });
 
     warnSpy.mockRestore();
   });

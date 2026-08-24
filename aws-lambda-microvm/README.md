@@ -209,10 +209,18 @@ AWS_LAMBDA_MICROVM_WORKSPACE_BUCKET_EU_WEST_1=<private bucket in eu-west-1>
 The existing `AWS_S3_REGION` and `AWS_S3_BUCKET_NAME` continue to serve normal
 file attachments and are not changed by workspace routing. The S3 identity must
 have `s3:GetObject`, `s3:PutObject`, and `s3:DeleteObject` for
-`users/*/microvm-workspace/v1/*` in each workspace bucket. S3 credentials are
-never placed inside the guest. Every regional metadata lookup must succeed
-before restore chooses an object, so an outage cannot be mistaken for an empty
-or older workspace.
+`users/*/microvm-workspace/v1/*` in each workspace bucket. It also needs
+`s3:ListBucket` on each workspace bucket, constrained with an `s3:prefix`
+condition to `users/*/microvm-workspace/v1/*`, so `HeadObject` can distinguish a
+new workspace from an authorization failure. S3 credentials are never placed
+inside the guest. Every regional metadata lookup must succeed before restore
+chooses an object, so an outage cannot be mistaken for an empty or older
+workspace.
+
+Workspace buckets must keep versioning disabled. If versioning was ever enabled,
+delete all historical versions before using the bucket for workspaces; deleting
+only the current deterministic key would otherwise leave old workspace contents
+behind.
 
 Optional controls:
 

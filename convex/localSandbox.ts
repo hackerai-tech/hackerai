@@ -65,6 +65,7 @@ async function hashCloudBootstrapToken(token: string): Promise<string> {
 const CLOUD_SESSION_PROVIDER = "aws-lambda-microvm" as const;
 const CLOUD_SESSION_TOKEN_TTL_MS = 9 * 60 * 60 * 1000;
 const CLOUD_SESSION_STARTING_STALE_MS = 2 * 60 * 1000;
+const CLOUD_SANDBOX_DELETION_FENCE_TTL_MS = 2 * 60 * 1000;
 const RELAY_READY_CLIENT_VERSION = "aws-lambda-microvm-relay-ready-v1";
 
 const cloudSessionStatus = v.union(
@@ -604,6 +605,63 @@ export const disconnect = mutation({
 // AWS LAMBDA MICROVM CLOUD CONNECTIONS
 // ============================================================================
 
+export const beginCloudSandboxDeletion = mutation({
+  args: {
+    serviceKey: v.string(),
+    userId: v.string(),
+  },
+  returns: v.union(
+    v.object({
+      acquired: v.literal(true),
+      operationId: v.string(),
+    }),
+    v.object({ acquired: v.literal(false) }),
+  ),
+  handler: async (ctx, args) => {
+    validateServiceKey(args.serviceKey);
+    const now = Date.now();
+    const existing = await ctx.db
+      .query("cloud_sandbox_deletion_fences")
+      .withIndex("by_user_id", (q) => q.eq("user_id", args.userId))
+      .unique();
+
+    if (existing && existing.expires_at > now) {
+      return { acquired: false as const };
+    }
+    if (existing) {
+      await ctx.db.delete(existing._id);
+    }
+
+    const operationId = crypto.randomUUID();
+    await ctx.db.insert("cloud_sandbox_deletion_fences", {
+      user_id: args.userId,
+      operation_id: operationId,
+      started_at: now,
+      expires_at: now + CLOUD_SANDBOX_DELETION_FENCE_TTL_MS,
+    });
+    return { acquired: true as const, operationId };
+  },
+});
+
+export const finishCloudSandboxDeletion = mutation({
+  args: {
+    serviceKey: v.string(),
+    userId: v.string(),
+    operationId: v.string(),
+  },
+  returns: v.boolean(),
+  handler: async (ctx, args) => {
+    validateServiceKey(args.serviceKey);
+    const existing = await ctx.db
+      .query("cloud_sandbox_deletion_fences")
+      .withIndex("by_user_id", (q) => q.eq("user_id", args.userId))
+      .unique();
+    if (!existing || existing.operation_id !== args.operationId) return false;
+    await ctx.db.delete(existing._id);
+    return true;
+  },
+});
+
 export const beginCloudSession = mutation({
   args: {
     serviceKey: v.string(),
@@ -634,6 +692,19 @@ export const beginCloudSession = mutation({
       });
     }
     const now = Date.now();
+    const sandboxDeletionFence = await ctx.db
+      .query("cloud_sandbox_deletion_fences")
+      .withIndex("by_user_id", (q) => q.eq("user_id", args.userId))
+      .unique();
+    if (sandboxDeletionFence && sandboxDeletionFence.expires_at > now) {
+      throw new ConvexError({
+        code: "SANDBOX_DELETION_IN_PROGRESS",
+        message: "Sandbox deletion is in progress",
+      });
+    }
+    if (sandboxDeletionFence) {
+      await ctx.db.delete(sandboxDeletionFence._id);
+    }
     const [active, starting, running] = await Promise.all([
       ctx.db
         .query("cloud_sandbox_sessions")
