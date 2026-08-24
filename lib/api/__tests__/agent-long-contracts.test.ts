@@ -493,6 +493,24 @@ describe("agent-long chat UI — completion reconciliation", () => {
       /getLatestAgentLongAssistantMessageForPartialSave/,
     );
     expect(chatComponentSrc).toMatch(/stop\(\)/);
+    const submittedEffectStart = chatComponentSrc.indexOf(
+      'if (status === "submitted")',
+    );
+    const submittedEffectEnd = chatComponentSrc.indexOf(
+      "if (\n      shouldUseAgentLongForCurrentChat",
+      submittedEffectStart,
+    );
+    const submittedEffectSrc = chatComponentSrc.slice(
+      submittedEffectStart,
+      submittedEffectEnd,
+    );
+    expect(submittedEffectSrc).not.toMatch(/setAgentLongRunId\(null\)/);
+    expect(submittedEffectSrc).not.toMatch(
+      /agentLongRunCorrelationRef\.current\s*=\s*null/,
+    );
+    expect(chatComponentSrc).toMatch(
+      /agentLongRunCorrelationRef\.current\s*=\s*null;[\s\S]*setAgentLongRunId\(null\);[\s\S]*return fetchAgentLongStream/,
+    );
     expect(chatComponentSrc).toMatch(
       /const finishLocally = \(\) => \{[\s\S]*finalizeNewChatRoute/,
     );

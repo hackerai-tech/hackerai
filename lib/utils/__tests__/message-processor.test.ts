@@ -9,6 +9,7 @@ describe("normalizeMessages", () => {
       { action: "exec", command: "sleep 60", brief: "Running check" },
     ],
     ["tool-run_terminal_cmd", { command: "sleep 60" }],
+    ["tool-interact_terminal_session", { command: "\u0003" }],
   ])("marks an interrupted %s invocation as stopped", (type, input) => {
     const messages = [
       {
@@ -36,12 +37,14 @@ describe("normalizeMessages", () => {
 
     const result = normalizeMessages(messages);
     const terminalPart = result.messages[1].parts[0] as {
+      type: string;
       state: string;
       errorText?: string;
       output?: { output?: string; result?: { stdout?: string } };
     };
 
     expect(result.hasChanges).toBe(true);
+    expect(terminalPart.type).toBe(type);
     expect(terminalPart.state).toBe("output-error");
     expect(terminalPart.errorText).toBe(ABORTED_TOOL_ERROR_TEXT);
     expect(

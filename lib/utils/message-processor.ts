@@ -233,7 +233,7 @@ const transformTerminalToolPart = (
   }
 
   return {
-    type: "tool-run_terminal_cmd",
+    type: terminalPart.type,
     toolCallId: terminalPart.toolCallId,
     state: "output-error",
     input: terminalPart.input,

@@ -769,6 +769,14 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
               init,
             );
           }
+          // Reset the previous run before starting the request. Doing this in
+          // the passive `submitted` effect can race with onRunStarted and
+          // erase the new run metadata before completion reconciliation sees it.
+          agentLongRunCorrelationRef.current = null;
+          setAgentLongRunId(null);
+          agentLongHasVisibleProgressRef.current = false;
+          agentLongMessageFingerprintRef.current =
+            getAgentLongMessageProgressFingerprint(messagesRef.current);
           return fetchAgentLongStream(init, (run) => {
             if (
               run.chatId !== undefined &&
@@ -1213,8 +1221,6 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
 
   useEffect(() => {
     if (status === "submitted") {
-      agentLongRunCorrelationRef.current = null;
-      setAgentLongRunId(null);
       agentLongHasVisibleProgressRef.current = false;
       agentLongMessageFingerprintRef.current =
         getAgentLongMessageProgressFingerprint(messagesRef.current);
