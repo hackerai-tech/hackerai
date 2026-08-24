@@ -462,12 +462,18 @@ describe("agent-long chat UI — completion reconciliation", () => {
       reconciliationEnd,
     );
 
-    expect(reconciliationSrc).toMatch(/AGENT_LONG_COMPLETION_POLL_DELAY_MS/);
-    expect(reconciliationSrc).toMatch(/AGENT_LONG_COMPLETION_QUIET_MS/);
+    expect(reconciliationSrc).toMatch(
+      /AGENT_LONG_SILENT_COMPLETION_POLL_DELAY_MS/,
+    );
+    expect(reconciliationSrc).toMatch(/AGENT_LONG_SILENT_COMPLETION_QUIET_MS/);
     expect(chatComponentSrc).toMatch(/AGENT_LONG_COMPLETION_STOP_GRACE_MS/);
     expect(chatComponentSrc).toMatch(
-      /AGENT_LONG_COMPLETION_POLL_INTERVAL_MS\s*=\s*15_000/,
+      /AGENT_LONG_ACTIVE_COMPLETION_POLL_INTERVAL_MS\s*=\s*15_000/,
     );
+    expect(reconciliationSrc).toMatch(
+      /status\s*!==\s*"streaming"\s*&&\s*status\s*!==\s*"submitted"/,
+    );
+    expect(reconciliationSrc).toMatch(/agentLongRunId\s*\?\?/);
     expect(reconciliationSrc).toMatch(/AGENT_STATUS_ENDPOINT/);
     expect(reconciliationSrc).toMatch(/method:\s*"POST"/);
     expect(reconciliationSrc).toMatch(/isCompletionCheckInFlight/);
@@ -491,6 +497,15 @@ describe("agent-long chat UI — completion reconciliation", () => {
     expect(chatComponentSrc).toMatch(/setIsExistingChat\(true\)/);
     expect(statusSrc).toMatch(
       /NextResponse\.json\(\{ status: run\.status, terminal \}\)/,
+    );
+  });
+
+  test("captures the Trigger run before realtime data reaches useChat", () => {
+    expect(transportSrc).toMatch(
+      /onRunStarted\?\.\(\{[\s\S]*runId:\s*handle\.runId/,
+    );
+    expect(chatComponentSrc).toMatch(
+      /fetchAgentLongStream\(init,\s*\(run\)\s*=>\s*\{[\s\S]*setAgentLongRunId\(run\.runId\)/,
     );
   });
 

@@ -111,9 +111,11 @@ import { finalizeNewChatRoute } from "./chat-route";
 
 import { HackingSuggestions } from "./HackingSuggestions";
 
-const AGENT_LONG_COMPLETION_POLL_DELAY_MS = 15_000;
-const AGENT_LONG_COMPLETION_POLL_INTERVAL_MS = 15_000;
-const AGENT_LONG_COMPLETION_QUIET_MS = 10_000;
+const AGENT_LONG_SILENT_COMPLETION_POLL_DELAY_MS = 5_000;
+const AGENT_LONG_SILENT_COMPLETION_POLL_INTERVAL_MS = 5_000;
+const AGENT_LONG_ACTIVE_COMPLETION_POLL_INTERVAL_MS = 15_000;
+const AGENT_LONG_SILENT_COMPLETION_QUIET_MS = 3_000;
+const AGENT_LONG_ACTIVE_COMPLETION_QUIET_MS = 10_000;
 const AGENT_LONG_COMPLETION_STOP_GRACE_MS = 6_000;
 type MessagePaginationStatus =
   "LoadingFirstPage" | "CanLoadMore" | "LoadingMore" | "Exhausted";
@@ -642,7 +644,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   const lastRunFinishedAt = chatDataForCurrentChat?.last_run_finished_at;
 
   // Sync local chat state from URL (single source of truth)
-  useEffect(() => {
+  useLayoutEffect(() => {
     setStreamedTitle(null);
     lastAppliedTodoOutputRef.current = null;
     if (routeChatId) {
@@ -724,6 +726,8 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     runId: string;
     token: string;
   } | null>(null);
+  const [agentLongRunId, setAgentLongRunId] = useState<string | null>(null);
+  const agentLongHasVisibleProgressRef = useRef(false);
 
   useLayoutEffect(() => {
     activeChatIdRef.current = chatId;
@@ -767,7 +771,21 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
               init,
             );
           }
-          return fetchAgentLongStream(init);
+          return fetchAgentLongStream(init, (run) => {
+            if (
+              run.chatId !== undefined &&
+              run.chatId !== activeChatIdRef.current
+            ) {
+              return;
+            }
+            setAgentLongRunId(run.runId);
+            if (run.runCorrelationToken) {
+              agentLongRunCorrelationRef.current = {
+                runId: run.runId,
+                token: run.runCorrelationToken,
+              };
+            }
+          });
         }
         // Reconnect for legacy "agent-long" chats normalised to "agent" mode
         // on load — route based on the URL (not on ref state) to be resilient
@@ -887,9 +905,11 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
             runId: correlationData.runId,
             token: correlationData.token,
           };
+          setAgentLongRunId(correlationData.runId);
         }
         return;
       }
+      agentLongHasVisibleProgressRef.current = true;
       setDataStream((ds) => [...ds, { ...dataPart, __chatId: chatId }]);
       switch (dataPart.type) {
         case "data-agent-approval-session": {
@@ -1081,6 +1101,15 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   setMessagesRef.current = setMessages;
   messagesRef.current = messages;
 
+  const messagesChatIdRef = useRef(chatId);
+  useLayoutEffect(() => {
+    if (messagesChatIdRef.current === chatId) return;
+    messagesChatIdRef.current = chatId;
+    messagesRef.current = serverMessages;
+    setMessages(serverMessages);
+    setTempChatFileDetails(new Map());
+  }, [chatId, serverMessages, setMessages]);
+
   useEffect(() => {
     const shouldApplyOutput =
       status === "streaming" || status === "submitted" || !shouldFetchMessages;
@@ -1187,6 +1216,11 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   useEffect(() => {
     if (status === "submitted") {
       agentLongRunCorrelationRef.current = null;
+      setAgentLongRunId(null);
+      agentLongHasVisibleProgressRef.current = false;
+      agentLongMessageFingerprintRef.current =
+        getAgentLongMessageProgressFingerprint(messagesRef.current);
+      agentLongLastMessageChangeAtRef.current = Date.now();
     }
     if (
       shouldUseAgentLongForCurrentChat &&
@@ -1248,6 +1282,8 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
 
   useEffect(() => {
     agentLongRunCorrelationRef.current = null;
+    setAgentLongRunId(null);
+    agentLongHasVisibleProgressRef.current = false;
     setDataStream([]);
     setIsAutoResuming(false);
     dispatchStreaming({ type: "RESET_ON_CHAT_CHANGE" });
@@ -1272,6 +1308,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     }
     agentLongMessageFingerprintRef.current = agentLongMessageFingerprint;
     agentLongLastMessageChangeAtRef.current = Date.now();
+    agentLongHasVisibleProgressRef.current = true;
   }, [agentLongMessageFingerprint]);
 
   // Trigger.dev can finish and persist an Agent answer even if the realtime
@@ -1279,12 +1316,15 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   // the app's authenticated resume endpoint so the first message in a new
   // chat can leave "Working..." even before chatData is subscribed.
   useEffect(() => {
-    if (status !== "streaming" || !shouldUseAgentLongForCurrentChat) {
+    if (
+      (status !== "streaming" && status !== "submitted") ||
+      !shouldUseAgentLongForCurrentChat
+    ) {
       return;
     }
 
     let stopped = false;
-    let pollInterval: ReturnType<typeof setInterval> | undefined;
+    let pollTimeout: ReturnType<typeof setTimeout> | undefined;
     let finishTimeout: ReturnType<typeof setTimeout> | undefined;
     let isCompletionCheckInFlight = false;
     const abortController = new AbortController();
@@ -1316,6 +1356,9 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
       // The transport also polls the status endpoint and can deliver a
       // synthetic finish after a terminal status. Give it a brief chance to
       // close normally before falling back to stop(), which aborts the stream.
+      const stopGraceMs = agentLongHasVisibleProgressRef.current
+        ? AGENT_LONG_COMPLETION_STOP_GRACE_MS
+        : 0;
       finishTimeout = setTimeout(() => {
         finishTimeout = undefined;
         if (
@@ -1324,19 +1367,22 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
         ) {
           finishLocally();
         }
-      }, AGENT_LONG_COMPLETION_STOP_GRACE_MS);
+      }, stopGraceMs);
     };
 
     const checkRunCompletion = async () => {
+      const quietMs = agentLongHasVisibleProgressRef.current
+        ? AGENT_LONG_ACTIVE_COMPLETION_QUIET_MS
+        : AGENT_LONG_SILENT_COMPLETION_QUIET_MS;
       if (
         isCompletionCheckInFlight ||
-        Date.now() - agentLongLastMessageChangeAtRef.current <
-          AGENT_LONG_COMPLETION_QUIET_MS
+        Date.now() - agentLongLastMessageChangeAtRef.current < quietMs
       ) {
         return;
       }
 
       const runId =
+        agentLongRunId ??
         agentLongRunCorrelationRef.current?.runId ??
         activeTriggerRunRef.current;
       if (!runId) return;
@@ -1369,26 +1415,32 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
       }
     };
 
-    const pollDelay = setTimeout(() => {
-      void checkRunCompletion();
-      pollInterval = setInterval(() => {
-        void checkRunCompletion();
-      }, AGENT_LONG_COMPLETION_POLL_INTERVAL_MS);
-    }, AGENT_LONG_COMPLETION_POLL_DELAY_MS);
+    const scheduleCompletionCheck = (delayMs: number) => {
+      pollTimeout = setTimeout(async () => {
+        await checkRunCompletion();
+        if (stopped) return;
+        scheduleCompletionCheck(
+          agentLongHasVisibleProgressRef.current
+            ? AGENT_LONG_ACTIVE_COMPLETION_POLL_INTERVAL_MS
+            : AGENT_LONG_SILENT_COMPLETION_POLL_INTERVAL_MS,
+        );
+      }, delayMs);
+    };
+    scheduleCompletionCheck(AGENT_LONG_SILENT_COMPLETION_POLL_DELAY_MS);
 
     return () => {
       stopped = true;
       abortController.abort();
-      clearTimeout(pollDelay);
+      if (pollTimeout !== undefined) {
+        clearTimeout(pollTimeout);
+      }
       if (finishTimeout !== undefined) {
         clearTimeout(finishTimeout);
-      }
-      if (pollInterval !== undefined) {
-        clearInterval(pollInterval);
       }
     };
   }, [
     activeTriggerRunRef,
+    agentLongRunId,
     chatId,
     isExistingChatRef,
     setIsAutoResuming,
@@ -1866,7 +1918,9 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     [branchChatMutation, initializeChat, router],
   );
 
-  const hasMessages = messages.length > 0;
+  const isRouteTransitioning =
+    routeChatId !== undefined && routeChatId !== chatId;
+  const hasMessages = !isRouteTransitioning && messages.length > 0;
   const showChatLayout = hasMessages || isExistingChat;
   const { isInitialExistingChatLoad, isChatNotFound } =
     getExistingChatLoadState({
@@ -1979,44 +2033,53 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
                 </div>
               ) : showChatLayout ? (
                 <div
-                  className={`flex min-h-0 flex-1 transition-opacity duration-150 motion-reduce:transition-none ${
-                    isInitialExistingChatLoad ? "opacity-0" : "opacity-100"
-                  }`}
-                  aria-busy={isInitialExistingChatLoad}
+                  className="flex min-h-0 flex-1"
+                  aria-busy={isInitialExistingChatLoad || isRouteTransitioning}
                   data-testid="chat-timeline-shell"
                 >
-                  <Messages
-                    chatId={chatId}
-                    scrollRef={scrollRef}
-                    contentRef={contentRef}
-                    messages={messages}
-                    setMessages={setMessages}
-                    onRegenerate={handleRegenerate}
-                    onRetry={handleRetry}
-                    onContinue={handleContinue}
-                    onReconnect={resumeStream}
-                    onEditMessage={handleEditMessage}
-                    onBranchMessage={handleBranchMessage}
-                    status={status}
-                    error={error || null}
-                    paginationStatus={paginatedMessages.status}
-                    loadMore={paginatedMessages.loadMore}
-                    isMobile={isMobile}
-                    tempChatFileDetails={tempChatFileDetails}
-                    finishReason={chatDataForCurrentChat?.finish_reason}
-                    agentRunSpendCapWarning={agentRunSpendCapWarning}
-                    uploadStatus={uploadStatus}
-                    summarizationStatus={summarizationStatus}
-                    mode={
-                      chatMode ??
-                      (chatDataForCurrentChat as any)?.default_model_slug
-                    }
-                    chatTitle={chatTitle}
-                    branchedFromChatId={branchedFromChatId}
-                    branchedFromChatTitle={branchedFromChatTitle}
-                    anchorMessageId={timelineAnchorMessageId}
-                    contentInsetEndAdjustment={composerOverlayHeight}
-                  />
+                  {isInitialExistingChatLoad || isRouteTransitioning ? (
+                    <div
+                      className="flex min-h-0 flex-1 items-center justify-center text-sm text-muted-foreground"
+                      role="status"
+                      data-testid="chat-timeline-loading"
+                    >
+                      Loading task…
+                    </div>
+                  ) : (
+                    <Messages
+                      key={chatId}
+                      chatId={chatId}
+                      scrollRef={scrollRef}
+                      contentRef={contentRef}
+                      messages={messages}
+                      setMessages={setMessages}
+                      onRegenerate={handleRegenerate}
+                      onRetry={handleRetry}
+                      onContinue={handleContinue}
+                      onReconnect={resumeStream}
+                      onEditMessage={handleEditMessage}
+                      onBranchMessage={handleBranchMessage}
+                      status={status}
+                      error={error || null}
+                      paginationStatus={paginatedMessages.status}
+                      loadMore={paginatedMessages.loadMore}
+                      isMobile={isMobile}
+                      tempChatFileDetails={tempChatFileDetails}
+                      finishReason={chatDataForCurrentChat?.finish_reason}
+                      agentRunSpendCapWarning={agentRunSpendCapWarning}
+                      uploadStatus={uploadStatus}
+                      summarizationStatus={summarizationStatus}
+                      mode={
+                        chatMode ??
+                        (chatDataForCurrentChat as any)?.default_model_slug
+                      }
+                      chatTitle={chatTitle}
+                      branchedFromChatId={branchedFromChatId}
+                      branchedFromChatTitle={branchedFromChatTitle}
+                      anchorMessageId={timelineAnchorMessageId}
+                      contentInsetEndAdjustment={composerOverlayHeight}
+                    />
+                  )}
                 </div>
               ) : (
                 <div className="flex-1 flex flex-col min-h-0">

@@ -828,7 +828,6 @@ export const ChatInput = ({
         <input
           ref={fileInputRef}
           type="file"
-          accept="*"
           multiple
           className="hidden"
           aria-label="Upload files"

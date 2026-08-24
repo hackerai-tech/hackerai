@@ -41,6 +41,12 @@ type RunHandle = {
   approvalSessionPublicAccessToken?: string;
 };
 
+export type AgentLongRunStarted = {
+  chatId?: string;
+  runId: string;
+  runCorrelationToken?: string;
+};
+
 const getAgentResumeUrl = (chatId: string | undefined): string | undefined =>
   chatId
     ? `${AGENT_RESUME_ENDPOINT}?chatId=${encodeURIComponent(chatId)}`
@@ -743,6 +749,7 @@ const buildSSEResponseFromRun = (
 
 export const fetchAgentLongStream = async (
   init: RequestInit | undefined,
+  onRunStarted?: (run: AgentLongRunStarted) => void,
 ): Promise<Response> => {
   const chatId = getChatIdFromRequestInit(init);
   const linkedAbort = createLinkedAbortController(init?.signal ?? undefined);
@@ -758,6 +765,11 @@ export const fetchAgentLongStream = async (
     if (!startResponse.ok) return startResponse;
 
     const handle: RunHandle = await startResponse.json();
+    onRunStarted?.({
+      chatId: handle.chatId ?? chatId,
+      runId: handle.runId,
+      runCorrelationToken: handle.runCorrelationToken,
+    });
     return buildSSEResponseFromRun(handle, init?.signal ?? undefined, {
       chatId,
       resumeUrl: getAgentResumeUrl(chatId),
