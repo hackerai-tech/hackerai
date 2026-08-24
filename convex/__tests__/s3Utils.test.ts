@@ -286,13 +286,17 @@ describe("s3Utils", () => {
       );
       const { getS3ObjectMetadata } = await import("../s3Utils");
 
-      await expect(
-        getS3ObjectMetadata("workspace.tar.gz", {
-          region: "eu-west-1",
-          bucketName: "workspace-eu",
-        }),
-      ).rejects.toThrow(
+      const metadataPromise = getS3ObjectMetadata("workspace.tar.gz", {
+        region: "eu-west-1",
+        bucketName: "workspace-eu",
+      });
+
+      await expect(metadataPromise).rejects.toThrow(
         "S3 metadata access denied in eu-west-1 (HTTP 403); verify s3:GetObject permission for the target key",
+      );
+      await expect(metadataPromise).rejects.toHaveProperty(
+        "cause",
+        accessDenied,
       );
     });
 

@@ -54,6 +54,13 @@ export type SubagentResultRecoveryRetryDecision =
 export const SUBAGENT_RESULT_RECOVERY_STEP_RESERVE =
   1 + SUBAGENT_MAX_RESULT_RECOVERY_FAILURE_RETRIES;
 
+// Count every structured-output generation, including generations that defer
+// because a parent update arrived. This prevents deferrals from bypassing the
+// same bounded recovery budget used for provider and schema failures.
+export const canStartSubagentResultRecoveryGeneration = (
+  generationAttemptsUsed: number,
+): boolean => generationAttemptsUsed < SUBAGENT_RESULT_RECOVERY_STEP_RESERVE;
+
 export const getSubagentExplorationStepLimit = (
   remainingSteps: number,
 ): number =>

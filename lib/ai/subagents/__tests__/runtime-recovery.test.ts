@@ -3,6 +3,7 @@ import { describe, expect, it } from "@jest/globals";
 import {
   buildMissingSubagentResultRecoveryMessage,
   canRecoverMissingSubagentResult,
+  canStartSubagentResultRecoveryGeneration,
   getSubagentExplorationStepLimit,
   getSubagentProviderRetryDecision,
   getSubagentRecoveryErrorDiagnostics,
@@ -146,6 +147,12 @@ describe("subagent runtime recovery", () => {
       getSubagentResultRecoveryRetryDecision(outputFailure, 1, healthyRuntime)
         .shouldRetry,
     ).toBe(false);
+  });
+
+  it("bounds every structured-result generation, including deferred submissions", () => {
+    expect(canStartSubagentResultRecoveryGeneration(0)).toBe(true);
+    expect(canStartSubagentResultRecoveryGeneration(1)).toBe(true);
+    expect(canStartSubagentResultRecoveryGeneration(2)).toBe(false);
   });
 
   it("does not retry structured-result recovery after cancellation, spend, or step exhaustion", () => {

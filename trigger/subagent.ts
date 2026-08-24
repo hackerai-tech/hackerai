@@ -40,6 +40,7 @@ import {
 import {
   buildMissingSubagentResultRecoveryMessage,
   canRecoverMissingSubagentResult,
+  canStartSubagentResultRecoveryGeneration,
   getSubagentExplorationStepLimit,
   getSubagentProviderRetryDecision,
   getSubagentRecoveryErrorDiagnostics,
@@ -471,6 +472,7 @@ export const subagentTask = task({
     let deadlineReminderSent = false;
     let providerRetriesUsed = 0;
     let resultRecoveriesUsed = 0;
+    let resultRecoveryGenerationAttempts = 0;
     let resultRecoveryRetriesUsed = 0;
     let resultSubmissionAttempts = 0;
     let generationAttempt = 0;
@@ -845,6 +847,41 @@ export const subagentTask = task({
                 remainingSteps = SUBAGENT_MAX_STEPS - stepCount;
               }
               const structuredResultRecovery = resultRecoveriesUsed > 0;
+              if (structuredResultRecovery) {
+                if (
+                  !canStartSubagentResultRecoveryGeneration(
+                    resultRecoveryGenerationAttempts,
+                  )
+                ) {
+                  triggerLogger.error(
+                    "[subagent] structured result generation budget exhausted",
+                    {
+                      event:
+                        "subagent_structured_result_generation_budget_exhausted",
+                      service: "hackerai-subagent",
+                      environment:
+                        process.env.TRIGGER_ENV ??
+                        process.env.NODE_ENV ??
+                        "unknown",
+                      subagent_id: row.subagent_id,
+                      parent_trigger_run_id: row.parent_trigger_run_id,
+                      trigger_run_id: ctx.run.id,
+                      result_recovery_generation_count:
+                        resultRecoveryGenerationAttempts,
+                      result_recovery_retry_count: resultRecoveryRetriesUsed,
+                      result_submission_count: resultSubmissionAttempts,
+                      deferred_for_parent_update: deferredForParentUpdate,
+                      step_count: stepCount,
+                    },
+                  );
+                  break;
+                }
+                resultRecoveryGenerationAttempts += 1;
+                metadata.set(
+                  "resultRecoveryGenerationCount",
+                  resultRecoveryGenerationAttempts,
+                );
+              }
               const attemptStepLimit = structuredResultRecovery
                 ? remainingSteps
                 : getSubagentExplorationStepLimit(remainingSteps);
@@ -1377,6 +1414,7 @@ export const subagentTask = task({
             status_code: runtimeDiagnostics.statusCode,
             provider_retry_count: providerRetriesUsed,
             result_recovery_count: resultRecoveriesUsed,
+            result_recovery_generation_count: resultRecoveryGenerationAttempts,
             result_recovery_retry_count: resultRecoveryRetriesUsed,
             result_submission_count: resultSubmissionAttempts,
           });
@@ -1395,6 +1433,7 @@ export const subagentTask = task({
             step_count: stepCount,
             generation_attempt_count: generationAttempt,
             result_recovery_count: resultRecoveriesUsed,
+            result_recovery_generation_count: resultRecoveryGenerationAttempts,
             result_recovery_retry_count: resultRecoveryRetriesUsed,
             result_submission_count: resultSubmissionAttempts,
             deadline_reminder_sent: deadlineReminderSent,
@@ -1546,6 +1585,7 @@ export const subagentTask = task({
         error_code: outerRuntimeDiagnostics.errorCode,
         status_code: outerRuntimeDiagnostics.statusCode,
         result_recovery_count: resultRecoveriesUsed,
+        result_recovery_generation_count: resultRecoveryGenerationAttempts,
         result_recovery_retry_count: resultRecoveryRetriesUsed,
         result_submission_count: resultSubmissionAttempts,
       });
