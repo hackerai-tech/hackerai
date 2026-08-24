@@ -35,13 +35,8 @@ export type TerminalOutputPersistenceTelemetry = {
 const getPersistenceProvider = (
   sandbox: AnySandbox,
 ): TerminalOutputPersistenceProvider => {
+  if (isAwsLambdaMicrovmSandbox(sandbox)) return "aws-lambda-microvm";
   if (isCentrifugoSandbox(sandbox)) {
-    if (
-      typeof sandbox.getCloudProvider === "function" &&
-      sandbox.getCloudProvider() === "aws-lambda-microvm"
-    ) {
-      return "aws-lambda-microvm";
-    }
     if (
       typeof sandbox.supportsNativeFileRelay === "function" &&
       sandbox.supportsNativeFileRelay()
