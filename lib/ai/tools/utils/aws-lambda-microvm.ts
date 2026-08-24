@@ -692,25 +692,36 @@ async function confirmMicrovmTerminated(
   const deadline = Date.now() + USER_DELETION_TERMINATION_CONFIRM_TIMEOUT_MS;
   let delayMs = 250;
   let lastState = "unknown";
+  const timeoutError = () =>
+    new Error(
+      `AWS MicroVM termination was not confirmed; last state was ${lastState}`,
+    );
 
   while (true) {
+    const requestBudgetMs = deadline - Date.now();
+    if (requestBudgetMs <= 0) throw timeoutError();
+    const abortController = new AbortController();
+    const abortTimeout = setTimeout(
+      () => abortController.abort(),
+      requestBudgetMs,
+    );
     try {
       const response = await getClient(region).send(
         new GetMicrovmCommand({ microvmIdentifier: microvmId }),
+        { abortSignal: abortController.signal },
       );
       lastState = response.state ?? "unknown";
       if (response.state === "TERMINATED") return;
     } catch (error) {
       if (isAwsNotFound(error)) return;
+      if (abortController.signal.aborted) throw timeoutError();
       throw error;
+    } finally {
+      clearTimeout(abortTimeout);
     }
 
     const remainingMs = deadline - Date.now();
-    if (remainingMs <= 0) {
-      throw new Error(
-        `AWS MicroVM termination was not confirmed; last state was ${lastState}`,
-      );
-    }
+    if (remainingMs <= 0) throw timeoutError();
     await new Promise((resolve) =>
       setTimeout(resolve, Math.min(delayMs, remainingMs)),
     );

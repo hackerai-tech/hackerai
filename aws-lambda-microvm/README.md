@@ -217,10 +217,11 @@ inside the guest. Every regional metadata lookup must succeed before restore
 chooses an object, so an outage cannot be mistaken for an empty or older
 workspace.
 
-Workspace buckets must keep versioning disabled. If versioning was ever enabled,
-delete all historical versions before using the bucket for workspaces; deleting
-only the current deterministic key would otherwise leave old workspace contents
-behind.
+Workspace buckets must be never-versioned: `GetBucketVersioning` must return no
+status. Reject buckets whose status is `Enabled` or `Suspended`; S3 cannot return
+those buckets to the never-versioned state. Before decommissioning a previously
+versioned bucket, use version-aware administrative cleanup to list and delete
+every object version and delete marker. A key-only delete is not sufficient.
 
 Optional controls:
 

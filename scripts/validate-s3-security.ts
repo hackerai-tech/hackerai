@@ -455,7 +455,7 @@ function validateIamPermissions(): ValidationResult {
     message:
       "Please manually verify IAM permissions follow least privilege principle:",
     warning:
-      'Attachments require s3:PutObject, s3:GetObject, and s3:DeleteObject on "arn:aws:s3:::YOUR_BUCKET/*". MicroVM workspace buckets additionally require bucket-level s3:ListBucket constrained by s3:prefix to "users/*/microvm-workspace/v1/*", and versioning must remain disabled. No wildcard permissions.',
+      'Attachments require s3:PutObject, s3:GetObject, and s3:DeleteObject on "arn:aws:s3:::YOUR_BUCKET/*". MicroVM workspace buckets additionally require bucket-level s3:ListBucket constrained by s3:prefix to "users/*/microvm-workspace/v1/*" and must be never-versioned (GetBucketVersioning returns no status); reject Enabled or Suspended buckets. Before decommissioning a previously versioned bucket, list and delete every object version and delete marker with version-aware admin tooling. No wildcard permissions.',
   };
 }
 

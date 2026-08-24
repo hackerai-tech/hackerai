@@ -1267,6 +1267,51 @@ describe("AWS Lambda MicroVM development logging", () => {
     warnSpy.mockRestore();
   });
 
+  it("aborts a stalled termination status request within the deadline", async () => {
+    jest.useFakeTimers();
+    mockQuery.mockResolvedValueOnce([
+      {
+        sessionId: "session-termination-stalled",
+        status: "running",
+        microvmId: "microvm-termination-stalled",
+        region: "us-east-1",
+      },
+    ]);
+    mockSend
+      .mockResolvedValueOnce({ $metadata: { httpStatusCode: 200 } })
+      .mockImplementationOnce(
+        (_command: unknown, options?: { abortSignal?: AbortSignal }) =>
+          new Promise((_resolve, reject) => {
+            options?.abortSignal?.addEventListener("abort", () => {
+              reject(
+                Object.assign(new Error("aborted"), { name: "AbortError" }),
+              );
+            });
+          }),
+      );
+    mockMutation.mockResolvedValue(true);
+    const warnSpy = jest.spyOn(console, "warn").mockImplementation();
+
+    const pending = expect(
+      terminateAwsLambdaMicrovmForUser("user-termination-stalled"),
+    ).rejects.toThrow("Failed to terminate 1 AWS Lambda MicroVM session");
+    await jest.advanceTimersByTimeAsync(1_000);
+    await pending;
+
+    expect(mockSend.mock.calls[1][1]).toEqual({
+      abortSignal: expect.objectContaining({ aborted: true }),
+    });
+    expect(mockMutation).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        userId: "user-termination-stalled",
+        sessionId: "session-termination-stalled",
+        failureCode: "termination_confirmation_required",
+      }),
+    );
+    warnSpy.mockRestore();
+  });
+
   it("suspends a running reusable MicroVM when the Agent becomes idle", async () => {
     mockQuery.mockResolvedValueOnce([
       {
