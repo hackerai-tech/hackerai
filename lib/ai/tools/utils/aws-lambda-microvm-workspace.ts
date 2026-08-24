@@ -15,6 +15,9 @@ const WORKSPACE_CHECKPOINT_PID = "/tmp/.hackerai-workspace-v1-checkpoint.pid";
 const WORKSPACE_CHECKPOINT_START_LOCK =
   "/tmp/.hackerai-workspace-v1-checkpoint-start.lock";
 const WORKSPACE_CHECKPOINT_INTERVAL_SECONDS = 2 * 60;
+const WORKSPACE_CHECKPOINT_TAR_TIMEOUT_SECONDS = 45;
+const WORKSPACE_CHECKPOINT_UPLOAD_TIMEOUT_SECONDS = 50;
+const WORKSPACE_CHECKPOINT_CONNECT_TIMEOUT_SECONDS = 15;
 const WORKSPACE_TRANSFER_TIMEOUT_MS = 10 * 60 * 1_000;
 const WORKSPACE_TRANSFER_TIMEOUT_SECONDS = Math.ceil(
   WORKSPACE_TRANSFER_TIMEOUT_MS / 1_000,
@@ -123,10 +126,10 @@ export function buildWorkspaceCheckpointScript() {
     '    archive="$(mktemp /tmp/hackerai-workspace.XXXXXX.tar.gz)"',
     "    trap 'rm -f \"$archive\"' EXIT",
     "    tar_status=0",
-    `    tar --create --gzip --file="$archive" --directory=${shellQuote(WORKSPACE_ROOT)} --warning=no-file-changed --exclude='./.cache' --exclude='./.npm/_cacache' --exclude='./.local/share/pnpm/store' --exclude='*/node_modules' . || tar_status=$?`,
+    `    timeout --signal=TERM --kill-after=5s ${WORKSPACE_CHECKPOINT_TAR_TIMEOUT_SECONDS}s tar --create --gzip --file="$archive" --directory=${shellQuote(WORKSPACE_ROOT)} --warning=no-file-changed --exclude='./.cache' --exclude='./.npm/_cacache' --exclude='./.local/share/pnpm/store' --exclude='*/node_modules' . || tar_status=$?`,
     '    [ "$tar_status" -le 1 ]',
     `    upload_url="$(cat ${shellQuote(WORKSPACE_UPLOAD_URL_FILE)})"`,
-    '    curl --fail --silent --show-error --retry 3 --retry-all-errors --request PUT --upload-file "$archive" "$upload_url"',
+    `    timeout --signal=TERM --kill-after=5s ${WORKSPACE_CHECKPOINT_UPLOAD_TIMEOUT_SECONDS}s curl --fail --silent --show-error --connect-timeout ${WORKSPACE_CHECKPOINT_CONNECT_TIMEOUT_SECONDS} --max-time ${WORKSPACE_CHECKPOINT_UPLOAD_TIMEOUT_SECONDS} --retry 3 --retry-all-errors --request PUT --upload-file "$archive" "$upload_url"`,
     `  ) 9>${shellQuote(WORKSPACE_SNAPSHOT_LOCK)} || true`,
     "done",
   ].join("\n");

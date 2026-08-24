@@ -1,7 +1,7 @@
 "use node";
 
 import { action } from "./_generated/server";
-import { v, ConvexError } from "convex/values";
+import { v, ConvexError, type VLiteral } from "convex/values";
 import {
   deleteS3Object,
   generateS3DownloadUrl,
@@ -74,9 +74,10 @@ type ServiceFileUrlInfo = {
 const MAX_SERVICE_FILE_URL_BATCH_SIZE = 50;
 
 const microvmWorkspaceRegionValidator = v.union(
-  v.literal("us-east-1"),
-  v.literal("us-west-2"),
-  v.literal("eu-west-1"),
+  ...(MICROVM_WORKSPACE_REGIONS.map((region) => v.literal(region)) as [
+    VLiteral<MicrovmWorkspaceRegion>,
+    ...VLiteral<MicrovmWorkspaceRegion>[],
+  ]),
 );
 
 function getMicrovmWorkspaceS3Target(

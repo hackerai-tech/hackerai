@@ -182,4 +182,13 @@ describe("AWS Lambda MicroVM durable workspace", () => {
     expect(script).toContain("tar_status=$?");
     expect(script).toContain('[ "$tar_status" -le 1 ]');
   });
+
+  it("bounds detached checkpoint work below the final snapshot lock wait", () => {
+    const script = buildWorkspaceCheckpointScript();
+
+    expect(script).toContain("timeout --signal=TERM --kill-after=5s 45s tar");
+    expect(script).toContain("timeout --signal=TERM --kill-after=5s 50s curl");
+    expect(script).toContain("--connect-timeout 15 --max-time 50");
+    expect(45 + 5 + 50 + 5).toBeLessThan(120);
+  });
 });

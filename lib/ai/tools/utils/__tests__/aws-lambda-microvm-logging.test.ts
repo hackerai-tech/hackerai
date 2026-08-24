@@ -344,6 +344,80 @@ describe("AWS Lambda MicroVM development logging", () => {
     infoSpy.mockRestore();
   });
 
+  it("snapshots a near-expiry reused MicroVM before terminating it", async () => {
+    const lifecycleOrder: string[] = [];
+    mockMutation
+      .mockResolvedValueOnce({
+        created: false,
+        session: {
+          sessionId: "session-near-expiry",
+          status: "running",
+          microvmId: "microvm-near-expiry",
+          connectionId: "connection-near-expiry",
+          region: "us-east-1",
+          imageIdentifier: process.env.AWS_LAMBDA_MICROVM_IMAGE_ID,
+          imageVersion: "6.0",
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+          bootstrapExpiresAt: Date.now() + 60_000,
+        },
+        cleanupCandidates: [],
+      })
+      .mockResolvedValueOnce(true)
+      .mockRejectedValueOnce(new Error("stop after near-expiry replacement"));
+    mockSend
+      .mockResolvedValueOnce({
+        state: "RUNNING",
+        ingressNetworkConnectors: [
+          "arn:aws:lambda:us-east-1:aws:network-connector:aws-network-connector:ALL_INGRESS",
+        ],
+        startedAt: new Date(Date.now() - 7 * 60 * 60 * 1_000),
+        maximumDurationInSeconds: 8 * 60 * 60,
+      })
+      .mockResolvedValueOnce({
+        state: "RUNNING",
+        endpoint: "microvm-near-expiry.example.test",
+      })
+      .mockImplementationOnce(async () => {
+        lifecycleOrder.push("terminate");
+        return { $metadata: { httpStatusCode: 200 } };
+      });
+    mockSnapshotWorkspace.mockImplementationOnce(async () => {
+      lifecycleOrder.push("snapshot");
+    });
+    mockDirectClose.mockImplementationOnce(async () => {
+      lifecycleOrder.push("close");
+    });
+    const errorSpy = jest.spyOn(console, "error").mockImplementation();
+    const infoSpy = jest.spyOn(console, "info").mockImplementation();
+    const debugSpy = jest.spyOn(console, "debug").mockImplementation();
+
+    await expect(
+      ensureAwsLambdaMicrovmConnection("user-near-expiry"),
+    ).rejects.toThrow("stop after near-expiry replacement");
+
+    expect(lifecycleOrder).toEqual(["snapshot", "close", "terminate"]);
+    expect(mockSnapshotWorkspace).toHaveBeenCalledWith(
+      expect.objectContaining({
+        userId: "user-near-expiry",
+        region: "us-east-1",
+      }),
+    );
+    expect(mockRestoreWorkspace).not.toHaveBeenCalled();
+    expect(
+      infoSpy.mock.calls
+        .map(([payload]) => JSON.parse(payload as string))
+        .find((payload) => payload.event === "cloud_sandbox_expiring_replaced"),
+    ).toMatchObject({
+      user_id: "user-near-expiry",
+      workspace_snapshotted: true,
+    });
+
+    errorSpy.mockRestore();
+    infoSpy.mockRestore();
+    debugSpy.mockRestore();
+  });
+
   it("passes a scoped lifecycle callback only to remote Convex launches", async () => {
     mockConvexUrl = "https://convex.example.test";
     mockMutation
