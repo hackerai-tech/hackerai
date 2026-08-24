@@ -26,6 +26,17 @@ import {
 
 let lastIdentifiedSignature: string | null = null;
 
+function isEnglishLocale(locale: string | null | undefined) {
+  const normalizedLocale = locale?.trim().replaceAll("_", "-");
+  if (!normalizedLocale) return false;
+
+  try {
+    return new Intl.Locale(normalizedLocale).language === "en";
+  } catch {
+    return false;
+  }
+}
+
 export function PostHogProvider({
   children,
   firstTouchAttribution = null,
@@ -39,6 +50,7 @@ export function PostHogProvider({
   const userEmail = user?.email;
   const userFirstName = user?.firstName;
   const userLastName = user?.lastName;
+  const userLocale = user?.locale;
 
   useEffect(() => {
     const posthogKey = process.env.NEXT_PUBLIC_POSTHOG_KEY;
@@ -157,7 +169,12 @@ export function PostHogProvider({
 
         confirmAuthenticatedAnalyticsUserId(userId!);
 
-        if (subscription !== "free") {
+        const replayLocale =
+          userLocale == null ? window.navigator.language : userLocale;
+        const shouldRecordSession =
+          subscription !== "free" && isEnglishLocale(replayLocale);
+
+        if (shouldRecordSession) {
           if (!posthog.sessionRecordingStarted()) {
             posthog.startSessionRecording();
           }
@@ -178,6 +195,7 @@ export function PostHogProvider({
     userFirstName,
     userId,
     userLastName,
+    userLocale,
   ]);
 
   return children;

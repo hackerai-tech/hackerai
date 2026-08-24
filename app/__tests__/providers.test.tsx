@@ -66,6 +66,7 @@ describe("PostHogProvider", () => {
         email: "user@example.com",
         firstName: "Test",
         lastName: "User",
+        locale: "en-US",
       },
     });
   });
@@ -151,6 +152,92 @@ describe("PostHogProvider", () => {
       $current_url: "https://hackerai.co/auth-error",
       $referrer: "https://idp.example/callback",
     });
+    expect(posthog.startSessionRecording).toHaveBeenCalledTimes(1);
+    expect(posthog.stopSessionRecording).not.toHaveBeenCalled();
+  });
+
+  it.each(["fr-FR", "es_ES", "invalid locale", "   "])(
+    "does not record a paid user's %s session",
+    async (locale) => {
+      const posthog = {
+        __loaded: false,
+        init: jest.fn(),
+        set_config: jest.fn(),
+        opt_in_capturing: jest.fn(),
+        has_opted_out_capturing: jest.fn(() => false),
+        identify: jest.fn(),
+        sessionRecordingStarted: jest.fn(() => false),
+        startSessionRecording: jest.fn(),
+        stopSessionRecording: jest.fn(),
+        reset: jest.fn(),
+        opt_out_capturing: jest.fn(),
+      };
+      mockUseAuth.mockReturnValue({
+        user: {
+          id: "user-123",
+          email: "user@example.com",
+          firstName: "Test",
+          lastName: "User",
+          locale,
+        },
+      });
+      mockLoadPostHogClient.mockResolvedValue(posthog);
+
+      render(
+        <PostHogProvider>
+          <div>child</div>
+        </PostHogProvider>,
+      );
+
+      await waitFor(() =>
+        expect(posthog.stopSessionRecording).toHaveBeenCalledTimes(1),
+      );
+      expect(posthog.startSessionRecording).not.toHaveBeenCalled();
+    },
+  );
+
+  it("falls back to the primary browser locale when account locale is missing", async () => {
+    const languageSpy = jest
+      .spyOn(window.navigator, "language", "get")
+      .mockReturnValue("en-CA");
+    const posthog = {
+      __loaded: false,
+      init: jest.fn(),
+      set_config: jest.fn(),
+      opt_in_capturing: jest.fn(),
+      has_opted_out_capturing: jest.fn(() => false),
+      identify: jest.fn(),
+      sessionRecordingStarted: jest.fn(() => false),
+      startSessionRecording: jest.fn(),
+      stopSessionRecording: jest.fn(),
+      reset: jest.fn(),
+      opt_out_capturing: jest.fn(),
+    };
+    mockUseAuth.mockReturnValue({
+      user: {
+        id: "user-123",
+        email: "user@example.com",
+        firstName: "Test",
+        lastName: "User",
+        locale: null,
+      },
+    });
+    mockLoadPostHogClient.mockResolvedValue(posthog);
+
+    try {
+      render(
+        <PostHogProvider>
+          <div>child</div>
+        </PostHogProvider>,
+      );
+
+      await waitFor(() =>
+        expect(posthog.startSessionRecording).toHaveBeenCalledTimes(1),
+      );
+      expect(posthog.stopSessionRecording).not.toHaveBeenCalled();
+    } finally {
+      languageSpy.mockRestore();
+    }
   });
 
   it("clears the queued analytics identity when the user signs out", () => {
