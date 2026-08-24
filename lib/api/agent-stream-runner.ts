@@ -644,9 +644,12 @@ export type AgentStreamContext = {
   ) => void;
   /** Current cumulative runtime cost outside UsageTracker, such as a sandbox. */
   getSandboxCostDollars?: () => number;
+  /** Current cumulative Trigger.dev run cost, including compute and invocation. */
+  getTriggerRunCostDollars?: () => number;
   settleUsageAfterStep?: (args: {
     currentCostDollars: number;
     sandboxCostDollars: number;
+    triggerRunCostDollars: number;
     force: boolean;
     model: string;
   }) => Promise<void>;
@@ -1715,13 +1718,17 @@ export async function createAgentStream(
       );
 
       const sandboxCostDollars = ctx.getSandboxCostDollars?.() ?? 0;
+      const triggerRunCostDollars = ctx.getTriggerRunCostDollars?.() ?? 0;
       const currentCostDollars =
-        ctx.usageTracker.computeCostDollars(modelName) + sandboxCostDollars;
+        ctx.usageTracker.computeCostDollars(modelName) +
+        sandboxCostDollars +
+        triggerRunCostDollars;
       const budgetDecision =
         ctx.budgetMonitor?.checkAfterStep(currentCostDollars);
       await ctx.settleUsageAfterStep?.({
         currentCostDollars,
         sandboxCostDollars,
+        triggerRunCostDollars,
         force:
           budgetDecision?.type === "abort" ||
           budgetDecision?.type === "abort-agent-run-spend-cap",

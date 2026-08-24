@@ -429,7 +429,7 @@ describe("createAgentStream repeated compaction", () => {
     mockGetProviderPromptPressure.mockReset();
   });
 
-  it("includes sandbox runtime in budget checks and per-step settlement", async () => {
+  it("includes sandbox and Trigger runtime in budget checks and per-step settlement", async () => {
     const checkAfterStep = jest.fn(() => undefined);
     const settleUsageAfterStep = jest.fn(async () => undefined);
     const usageTracker = {
@@ -446,6 +446,7 @@ describe("createAgentStream repeated compaction", () => {
       createTestStreamContext({
         budgetMonitor: { checkAfterStep },
         getSandboxCostDollars: () => 0.05,
+        getTriggerRunCostDollars: () => 0.03,
         settleUsageAfterStep,
         summarizationTracker: {
           hasSummarized: false,
@@ -463,10 +464,11 @@ describe("createAgentStream repeated compaction", () => {
       providerMetadata: undefined,
     });
 
-    expect(checkAfterStep).toHaveBeenCalledWith(0.25);
+    expect(checkAfterStep).toHaveBeenCalledWith(0.28);
     expect(settleUsageAfterStep).toHaveBeenCalledWith({
-      currentCostDollars: 0.25,
+      currentCostDollars: 0.28,
       sandboxCostDollars: 0.05,
+      triggerRunCostDollars: 0.03,
       force: false,
       model: "test-model",
     });

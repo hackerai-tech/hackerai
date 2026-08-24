@@ -803,10 +803,16 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
   test("captures Trigger usage and active-time attribution on Agent completion", () => {
     expect(taskSrc).toMatch(/triggerUsage\.getCurrent\(\)/);
     expect(taskSrc).toMatch(
-      /triggerUsageDurationMs:\s*currentUsage\.compute\.total\.durationMs/,
+      /triggerUsageDurationMs:\s*currentUsage\.durationMs/,
     );
     expect(taskSrc).toMatch(
-      /triggerTotalCostUsd:\s*currentUsage\.totalCostInCents\s*\/\s*100/,
+      /triggerTotalCostUsd:\s*currentUsage\.totalCostDollars/,
+    );
+    expect(taskSrc).toMatch(
+      /usageTracker\.nonModelCost\s*\+=\s*triggerRunCost/,
+    );
+    expect(taskSrc).toMatch(
+      /getTriggerRunCostDollars:\s*\(\)\s*=>\s*getTriggerRunUsage\(\)\.totalCostDollars/,
     );
     expect(taskSrc).toMatch(
       /onApprovalWait:\s*runTimingTracker\.recordApprovalWait/,
@@ -1658,9 +1664,13 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
       "ctx.getSandboxCostDollars?.() ?? 0",
       upstreamCostArgIdx,
     );
-    const budgetCostIdx = agentStreamRunnerSrc.indexOf(
-      "ctx.usageTracker.computeCostDollars(modelName) + sandboxCostDollars",
+    const triggerRunCostIdx = agentStreamRunnerSrc.indexOf(
+      "ctx.getTriggerRunCostDollars?.() ?? 0",
       sandboxCostIdx,
+    );
+    const budgetCostIdx = agentStreamRunnerSrc.indexOf(
+      "ctx.usageTracker.computeCostDollars(modelName) +",
+      triggerRunCostIdx,
     );
 
     expect(onStepFinishIdx).toBeGreaterThan(-1);
@@ -1670,7 +1680,8 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(stepIndexArgIdx).toBeGreaterThan(setCostIdx);
     expect(upstreamCostArgIdx).toBeGreaterThan(stepIndexArgIdx);
     expect(sandboxCostIdx).toBeGreaterThan(upstreamCostArgIdx);
-    expect(budgetCostIdx).toBeGreaterThan(sandboxCostIdx);
+    expect(triggerRunCostIdx).toBeGreaterThan(sandboxCostIdx);
+    expect(budgetCostIdx).toBeGreaterThan(triggerRunCostIdx);
   });
 
   test("agent stream uses finish-step raw usage as OpenRouter metadata cost fallback", () => {

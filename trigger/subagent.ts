@@ -4,6 +4,7 @@ import {
   runs,
   tags,
   task,
+  usage as triggerUsage,
 } from "@trigger.dev/sdk";
 import {
   convertToModelMessages,
@@ -75,6 +76,7 @@ import {
 import { sanitizeAgentLongRealtimeChunk } from "@/lib/chat/agent-long-realtime-sanitizer";
 import { toolResultsContainImageViewResult } from "@/lib/chat/multimodal-tool-result-recovery";
 import { UsageTracker } from "@/lib/usage-tracker";
+import { resolveTriggerRunCost } from "@/lib/billing/trigger-run-cost";
 import {
   checkFreeMonthlyCostLimit,
   checkRateLimitCapacity,
@@ -472,6 +474,7 @@ export const subagentTask = task({
     let rateLimitInfo:
       Awaited<ReturnType<typeof checkRateLimitCapacity>> | undefined;
     let usageSettled = false;
+    let triggerRunCostRecorded = false;
     const selectedModel = row.selected_model ?? SUBAGENT_TEXT_MODEL;
     let activeModelName = selectedModel;
     metadata
@@ -499,6 +502,15 @@ export const subagentTask = task({
       costDollars: number;
       billingFailure: boolean;
     }> => {
+      const triggerRunUsage = resolveTriggerRunCost(triggerUsage.getCurrent());
+      if (!triggerRunCostRecorded && triggerRunUsage.totalCostDollars > 0) {
+        usageTracker.providerCost += triggerRunUsage.totalCostDollars;
+        usageTracker.nonModelCost += triggerRunUsage.totalCostDollars;
+        triggerRunCostRecorded = true;
+        metadata
+          .set("triggerRunCostDollars", triggerRunUsage.totalCostDollars)
+          .set("triggerUsageDurationMs", triggerRunUsage.durationMs);
+      }
       const costDollars = usageTracker.computeCostDollars(
         selectedModel,
         responseModel,
@@ -953,7 +965,10 @@ export const subagentTask = task({
                     usageTracker.computeCostDollars(
                       selectedModel,
                       responseModel,
-                    ) >= costLimitDollars
+                    ) +
+                      resolveTriggerRunCost(triggerUsage.getCurrent())
+                        .totalCostDollars >=
+                    costLimitDollars
                   ) {
                     spendCapExceeded = true;
                     activeAbort.abort();
@@ -1385,10 +1400,11 @@ export const subagentTask = task({
                 summary:
                   "Subagent failed before producing a structured result.",
               };
-      const fallbackCostDollars = usageTracker.computeCostDollars(
-        selectedModel,
-        responseModel,
-      );
+      const fallbackCostDollars =
+        usageTracker.computeCostDollars(selectedModel, responseModel) +
+        (triggerRunCostRecorded
+          ? 0
+          : resolveTriggerRunCost(triggerUsage.getCurrent()).totalCostDollars);
       const settlement = await settleUsage().catch(() => ({
         costDollars: fallbackCostDollars,
         billingFailure: true,

@@ -101,13 +101,31 @@ describe("generateTitleFromUserMessage", () => {
     );
   });
 
+  it("reports the title model's authoritative provider cost", async () => {
+    mockGenerateText.mockResolvedValue({
+      output: { title: "Costed Title" },
+      usage: { raw: { cost: 0.0042 } },
+    });
+    const onCost = jest.fn();
+
+    await generateTitleFromUserMessage(
+      makeMessage("track title generation cost"),
+      onCost,
+    );
+
+    expect(onCost).toHaveBeenCalledWith(0.0042);
+  });
+
   it("keeps the default title without calling the title model for an image-only message", async () => {
+    const onCost = jest.fn();
+
     await expect(
-      generateTitleFromUserMessage(makeImageOnlyMessage()),
+      generateTitleFromUserMessage(makeImageOnlyMessage(), onCost),
     ).resolves.toBe("New chat");
 
     expect(mockLanguageModel).not.toHaveBeenCalled();
     expect(mockGenerateText).not.toHaveBeenCalled();
+    expect(onCost).not.toHaveBeenCalled();
   });
 
   it("keeps the default title when auxiliary preprocessing replaced the only image", async () => {

@@ -22,6 +22,13 @@ describe("security validation subagent runtime contracts", () => {
     expect(source).toContain("conversationMessages.push(deadlineMessage)");
     expect(source).toContain("SUBAGENT_MAX_STEPS");
     expect(source).toContain("row.cost_limit_dollars");
+    expect(source).toContain("usage as triggerUsage");
+    expect(source).toContain(
+      "resolveTriggerRunCost(triggerUsage.getCurrent())",
+    );
+    expect(source).toContain(
+      "usageTracker.nonModelCost += triggerRunUsage.totalCostDollars",
+    );
     expect(source).toContain("retry: { maxAttempts: 1 }");
     expect(source).not.toMatch(/allowedToolNames:[\s\S]{0,500}"delegate_task"/);
   });
