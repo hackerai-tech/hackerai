@@ -25,6 +25,10 @@ import {
   resolveAwsLambdaMicrovmFailoverRegion,
   resolveAwsLambdaMicrovmPlacement,
 } from "./aws-lambda-microvm-release";
+import {
+  restoreAwsLambdaMicrovmWorkspace,
+  snapshotAwsLambdaMicrovmWorkspace,
+} from "./aws-lambda-microvm-workspace";
 
 const PROVIDER = "aws-lambda-microvm" as const;
 export const AWS_LAMBDA_MICROVM_REGION = AWS_LAMBDA_MICROVM_DEFAULT_REGION;
@@ -117,6 +121,7 @@ export type AwsLambdaMicrovmSuspensionSummary = {
   alreadySuspended: number;
   terminated: number;
   alreadyGone: number;
+  workspacesSaved: number;
 };
 
 type AwsLambdaMicrovmConfig = {
@@ -974,45 +979,6 @@ async function ensureExistingMicrovm(
       );
       return null;
     }
-    if (state.startedAt && state.maximumDurationInSeconds) {
-      const remainingMs =
-        state.startedAt.getTime() +
-        state.maximumDurationInSeconds * 1_000 -
-        Date.now();
-      if (remainingMs < config.minRemainingSeconds * 1_000) {
-        const terminationOutcome = await terminateMicrovm(
-          session.microvmId,
-          config.region,
-        );
-        if (terminationOutcome === "failed") {
-          await markCleanupPending(
-            userId,
-            session.sessionId,
-            config,
-            "termination_retry_required",
-          );
-          throw new Error(
-            "Cloud sandbox is near its maximum duration and could not be replaced safely",
-          );
-        }
-        await markEnded(
-          userId,
-          session.sessionId,
-          config,
-          "terminated",
-          "remaining_duration_low",
-        );
-        log("info", "cloud_sandbox_expiring_replaced", {
-          user_id: userId,
-          session_id: session.sessionId,
-          microvm_id: session.microvmId,
-          region: config.region,
-          remaining_seconds: Math.max(0, Math.floor(remainingMs / 1_000)),
-          min_remaining_seconds: config.minRemainingSeconds,
-        });
-        return null;
-      }
-    }
     if (state.state === "SUSPENDED") {
       await getClient(config.region).send(
         new ResumeMicrovmCommand({ microvmIdentifier: session.microvmId }),
@@ -1051,6 +1017,68 @@ async function ensureExistingMicrovm(
     const endpoint = await waitForRunningEndpoint(session.microvmId, config);
     directSandbox = createDirectSandbox(userId, session, endpoint, config);
     await directSandbox.ready();
+    const restore = await restoreAwsLambdaMicrovmWorkspace({
+      userId,
+      serviceKey: config.serviceKey,
+      sandbox: directSandbox,
+    });
+    log("info", "cloud_sandbox_workspace_ready", {
+      user_id: userId,
+      session_id: session.sessionId,
+      microvm_id: session.microvmId,
+      region: config.region,
+      workspace_snapshot_available: restore.snapshotAvailable,
+      workspace_checkpointing_enabled: true,
+      sandbox_reused: true,
+    });
+
+    if (state.startedAt && state.maximumDurationInSeconds) {
+      const remainingMs =
+        state.startedAt.getTime() +
+        state.maximumDurationInSeconds * 1_000 -
+        Date.now();
+      if (remainingMs < config.minRemainingSeconds * 1_000) {
+        await snapshotAwsLambdaMicrovmWorkspace({
+          userId,
+          serviceKey: config.serviceKey,
+          sandbox: directSandbox,
+        });
+        await directSandbox.close();
+        directSandbox = undefined;
+        const terminationOutcome = await terminateMicrovm(
+          session.microvmId,
+          config.region,
+        );
+        if (terminationOutcome === "failed") {
+          await markCleanupPending(
+            userId,
+            session.sessionId,
+            config,
+            "termination_retry_required",
+          );
+          throw new Error(
+            "Cloud sandbox is near its maximum duration and could not be replaced safely",
+          );
+        }
+        await markEnded(
+          userId,
+          session.sessionId,
+          config,
+          "terminated",
+          "remaining_duration_low",
+        );
+        log("info", "cloud_sandbox_expiring_replaced", {
+          user_id: userId,
+          session_id: session.sessionId,
+          microvm_id: session.microvmId,
+          region: config.region,
+          remaining_seconds: Math.max(0, Math.floor(remainingMs / 1_000)),
+          min_remaining_seconds: config.minRemainingSeconds,
+          workspace_snapshotted: true,
+        });
+        return null;
+      }
+    }
     return { session, sandbox: directSandbox };
   } catch (error) {
     await directSandbox?.close().catch((closeError: unknown) => {
@@ -1492,6 +1520,22 @@ export async function ensureAwsLambdaMicrovmConnection(
     const connected: CloudSession = { ...begin.session, microvmId };
     directSandbox = createDirectSandbox(userId, connected, endpoint, config);
     await directSandbox.ready();
+    failureStage = "restore_workspace";
+    const restore = await restoreAwsLambdaMicrovmWorkspace({
+      userId,
+      serviceKey: config.serviceKey,
+      sandbox: directSandbox,
+    });
+    log("info", "cloud_sandbox_workspace_ready", {
+      user_id: userId,
+      ...correlation,
+      session_id: connected.sessionId,
+      microvm_id: connected.microvmId,
+      region: config.region,
+      workspace_snapshot_available: restore.snapshotAvailable,
+      workspace_checkpointing_enabled: true,
+      sandbox_reused: false,
+    });
     failureStage = "mark_direct_ready";
     await markDirectReady(userId, connected.sessionId, microvmId, config);
     onBoot?.({
@@ -1820,6 +1864,7 @@ export async function suspendAwsLambdaMicrovmsForUser(
     alreadySuspended: 0,
     terminated: 0,
     alreadyGone: 0,
+    workspacesSaved: 0,
   };
   const failures: unknown[] = [];
 
@@ -1850,30 +1895,16 @@ export async function suspendAwsLambdaMicrovmsForUser(
     }
 
     const startedAt = performance.now();
+    let workspaceSaved = false;
+    let directSandbox: AwsLambdaMicrovmDirectSandbox | undefined;
     try {
-      const current = await getClient(session.region).send(
+      const sessionConfig = getConfigForPersistedSession(
+        session,
+        getAwsLambdaMicrovmConfig(),
+      );
+      let current = await getClient(session.region).send(
         new GetMicrovmCommand({ microvmIdentifier: microvmId }),
       );
-      if (current.state === "SUSPENDED" || current.state === "SUSPENDING") {
-        await recordCloudMicrovmState(
-          userId,
-          session.sessionId,
-          microvmId,
-          serviceKey,
-          current.state,
-        );
-        summary.alreadySuspended++;
-        log("info", "cloud_sandbox_suspend_skipped", {
-          user_id: userId,
-          session_id: session.sessionId,
-          microvm_id: microvmId,
-          region: session.region,
-          microvm_state: current.state,
-          reason: "already_suspended",
-          duration_ms: Math.round(performance.now() - startedAt),
-        });
-        continue;
-      }
       if (current.state === "TERMINATED" || current.state === "TERMINATING") {
         await markEnded(
           userId,
@@ -1885,11 +1916,67 @@ export async function suspendAwsLambdaMicrovmsForUser(
         summary.alreadyGone++;
         continue;
       }
-      if (current.state !== "RUNNING") {
-        throw new Error(
-          `MicroVM cannot be suspended from state ${current.state ?? "unknown"}`,
+
+      const previousState = current.state;
+      if (current.state === "SUSPENDING") {
+        for (let attempt = 0; attempt < 20; attempt++) {
+          await new Promise((resolve) => setTimeout(resolve, 1_000));
+          current = await getClient(session.region).send(
+            new GetMicrovmCommand({ microvmIdentifier: microvmId }),
+          );
+          if (current.state !== "SUSPENDING") break;
+        }
+      }
+      if (current.state === "SUSPENDED") {
+        await getClient(session.region).send(
+          new ResumeMicrovmCommand({ microvmIdentifier: microvmId }),
+        );
+        const endpoint = await waitForRunningEndpoint(microvmId, sessionConfig);
+        directSandbox = createDirectSandbox(
+          userId,
+          { ...session, microvmId },
+          endpoint,
+          sessionConfig,
+        );
+      } else if (current.state === "RUNNING") {
+        const endpoint =
+          current.endpoint ??
+          (await waitForRunningEndpoint(microvmId, sessionConfig));
+        directSandbox = createDirectSandbox(
+          userId,
+          { ...session, microvmId },
+          endpoint,
+          sessionConfig,
         );
       }
+      if (current.state !== "RUNNING") {
+        if (!directSandbox) {
+          throw new Error(
+            `MicroVM cannot be snapshotted from state ${current.state ?? "unknown"}`,
+          );
+        }
+      }
+
+      if (!directSandbox) {
+        throw new Error("MicroVM workspace connection was not created");
+      }
+      await directSandbox.ready();
+      await snapshotAwsLambdaMicrovmWorkspace({
+        userId,
+        serviceKey,
+        sandbox: directSandbox,
+      });
+      workspaceSaved = true;
+      summary.workspacesSaved++;
+      await directSandbox.close();
+      directSandbox = undefined;
+      log("info", "cloud_sandbox_workspace_saved", {
+        user_id: userId,
+        session_id: session.sessionId,
+        microvm_id: microvmId,
+        region: session.region,
+        duration_ms: Math.round(performance.now() - startedAt),
+      });
 
       const response = await getClient(session.region).send(
         new SuspendMicrovmCommand({ microvmIdentifier: microvmId }),
@@ -1907,12 +1994,14 @@ export async function suspendAwsLambdaMicrovmsForUser(
         session_id: session.sessionId,
         microvm_id: microvmId,
         region: session.region,
-        previous_state: current.state,
+        previous_state: previousState,
+        workspace_snapshotted: true,
         aws_request_id: response.$metadata.requestId ?? null,
         aws_http_status_code: response.$metadata.httpStatusCode ?? null,
         duration_ms: Math.round(performance.now() - startedAt),
       });
     } catch (error) {
+      await directSandbox?.close().catch(() => undefined);
       if (isAwsNotFound(error)) {
         await markEnded(
           userId,
@@ -1931,9 +2020,38 @@ export async function suspendAwsLambdaMicrovmsForUser(
         microvm_id: microvmId,
         region: session.region,
         failure_code: failureCode(error),
+        workspace_snapshotted: workspaceSaved,
         duration_ms: Math.round(performance.now() - startedAt),
         ...errorLogFields(error),
       });
+      if (!workspaceSaved) {
+        // Never destroy the only remaining copy of a user's project. Make one
+        // best-effort suspend attempt to contain cost, then leave the MicroVM
+        // for the platform duration backstop if both operations failed.
+        try {
+          await getClient(session.region).send(
+            new SuspendMicrovmCommand({ microvmIdentifier: microvmId }),
+          );
+          await recordCloudMicrovmState(
+            userId,
+            session.sessionId,
+            microvmId,
+            serviceKey,
+            "SUSPENDING",
+          );
+        } catch (suspendError) {
+          log("error", "cloud_sandbox_unsaved_workspace_retained", {
+            user_id: userId,
+            session_id: session.sessionId,
+            microvm_id: microvmId,
+            region: session.region,
+            reason: "snapshot_and_suspend_failed",
+            ...errorLogFields(suspendError),
+          });
+        }
+        failures.push(error);
+        continue;
+      }
       const terminationOutcome = await terminateMicrovm(
         microvmId,
         session.region,

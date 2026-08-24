@@ -6,6 +6,10 @@ const mockRelayRun = jest.fn();
 const mockDirectReady = jest.fn();
 const mockDirectClose = jest.fn();
 const mockDirectConstructor = jest.fn();
+const mockRestoreWorkspace = jest
+  .fn()
+  .mockResolvedValue({ snapshotAvailable: false });
+const mockSnapshotWorkspace = jest.fn().mockResolvedValue(undefined);
 const mockRealtimeClose = jest.fn().mockResolvedValue(undefined);
 const mockRealtimeUnsubscribe = jest.fn();
 let mockConvexUrl = "http://127.0.0.1:3210";
@@ -70,6 +74,13 @@ jest.mock("../aws-lambda-microvm-direct-sandbox", () => ({
     }),
 }));
 
+jest.mock("../aws-lambda-microvm-workspace", () => ({
+  restoreAwsLambdaMicrovmWorkspace: (...args: unknown[]) =>
+    mockRestoreWorkspace(...args),
+  snapshotAwsLambdaMicrovmWorkspace: (...args: unknown[]) =>
+    mockSnapshotWorkspace(...args),
+}));
+
 import {
   ensureAwsLambdaMicrovmConnection,
   getAwsLambdaMicrovmConfig,
@@ -118,6 +129,8 @@ describe("AWS Lambda MicroVM development logging", () => {
     });
     mockDirectReady.mockResolvedValue(undefined);
     mockDirectClose.mockResolvedValue(undefined);
+    mockRestoreWorkspace.mockResolvedValue({ snapshotAvailable: false });
+    mockSnapshotWorkspace.mockResolvedValue(undefined);
     mockConvexUrl = "http://127.0.0.1:3210";
     process.env = {
       ...originalEnv,
@@ -1153,9 +1166,14 @@ describe("AWS Lambda MicroVM development logging", () => {
         region: "us-east-1",
       },
     ]);
-    mockSend.mockResolvedValueOnce({ state: "RUNNING" }).mockResolvedValueOnce({
-      $metadata: { requestId: "suspend-request", httpStatusCode: 200 },
-    });
+    mockSend
+      .mockResolvedValueOnce({
+        state: "RUNNING",
+        endpoint: "microvm-suspend.example.test",
+      })
+      .mockResolvedValueOnce({
+        $metadata: { requestId: "suspend-request", httpStatusCode: 200 },
+      });
     const infoSpy = jest.spyOn(console, "info").mockImplementation();
 
     await expect(suspendAwsLambdaMicrovmsForUser("user-idle")).resolves.toEqual(
@@ -1165,6 +1183,7 @@ describe("AWS Lambda MicroVM development logging", () => {
         alreadySuspended: 0,
         terminated: 0,
         alreadyGone: 0,
+        workspacesSaved: 1,
       },
     );
 
@@ -1185,6 +1204,38 @@ describe("AWS Lambda MicroVM development logging", () => {
     infoSpy.mockRestore();
   });
 
+  it("retains the MicroVM instead of terminating the only unsaved workspace", async () => {
+    mockQuery.mockResolvedValueOnce([
+      {
+        sessionId: "session-unsaved",
+        status: "running",
+        microvmId: "microvm-unsaved",
+        region: "us-east-1",
+      },
+    ]);
+    mockSnapshotWorkspace.mockRejectedValueOnce(new Error("S3 unavailable"));
+    mockSend
+      .mockResolvedValueOnce({
+        state: "RUNNING",
+        endpoint: "microvm-unsaved.example.test",
+      })
+      .mockResolvedValueOnce({ $metadata: { httpStatusCode: 200 } });
+    const warnSpy = jest.spyOn(console, "warn").mockImplementation();
+
+    await expect(
+      suspendAwsLambdaMicrovmsForUser("user-unsaved"),
+    ).rejects.toThrow("Failed to stop 1 AWS Lambda MicroVM session");
+    expect(mockSend).toHaveBeenCalledTimes(2);
+    expect(
+      mockMutation.mock.calls.some(
+        ([, args]) =>
+          args.sessionId === "session-unsaved" && args.state === "SUSPENDING",
+      ),
+    ).toBe(true);
+
+    warnSpy.mockRestore();
+  });
+
   it("terminates a MicroVM when suspension fails", async () => {
     mockQuery.mockResolvedValueOnce([
       {
@@ -1195,7 +1246,10 @@ describe("AWS Lambda MicroVM development logging", () => {
       },
     ]);
     mockSend
-      .mockResolvedValueOnce({ state: "RUNNING" })
+      .mockResolvedValueOnce({
+        state: "RUNNING",
+        endpoint: "microvm-suspend-fallback.example.test",
+      })
       .mockRejectedValueOnce(
         Object.assign(new Error("suspend unavailable"), {
           name: "ServiceUnavailableException",
@@ -1213,6 +1267,7 @@ describe("AWS Lambda MicroVM development logging", () => {
       alreadySuspended: 0,
       terminated: 1,
       alreadyGone: 0,
+      workspacesSaved: 1,
     });
     expect(mockSend).toHaveBeenCalledTimes(3);
     expect(mockMutation).toHaveBeenCalledWith(
@@ -1237,7 +1292,10 @@ describe("AWS Lambda MicroVM development logging", () => {
       },
     ]);
     mockSend
-      .mockResolvedValueOnce({ state: "RUNNING" })
+      .mockResolvedValueOnce({
+        state: "RUNNING",
+        endpoint: "microvm-double-failure.example.test",
+      })
       .mockRejectedValueOnce(new Error("suspend failed"))
       .mockRejectedValueOnce(new Error("terminate failed"));
     mockMutation.mockResolvedValueOnce(true);

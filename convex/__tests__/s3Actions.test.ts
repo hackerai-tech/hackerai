@@ -58,6 +58,89 @@ describe("s3Actions", () => {
     process.env.AWS_S3_BUCKET_NAME = "test-bucket";
   });
 
+  describe("MicroVM workspace actions", () => {
+    it("uses one deterministic user-scoped object for upload and restore", async () => {
+      const {
+        generateS3UploadUrlForKey,
+        s3ObjectExists,
+        generateS3DownloadUrl,
+      } = await import("../s3Utils");
+      (
+        generateS3UploadUrlForKey as jest.MockedFunction<
+          typeof generateS3UploadUrlForKey
+        >
+      ).mockResolvedValue("https://s3.example/upload");
+      (
+        s3ObjectExists as jest.MockedFunction<typeof s3ObjectExists>
+      ).mockResolvedValue(true);
+      (
+        generateS3DownloadUrl as jest.MockedFunction<
+          typeof generateS3DownloadUrl
+        >
+      ).mockResolvedValue("https://s3.example/download");
+      const {
+        generateMicrovmWorkspaceUploadUrlAction,
+        getMicrovmWorkspaceDownloadUrlAction,
+      } = await import("../s3Actions");
+
+      await expect(
+        generateMicrovmWorkspaceUploadUrlAction.handler({} as any, {
+          serviceKey: "service-key",
+          userId: "user/123",
+        }),
+      ).resolves.toBe("https://s3.example/upload");
+      await expect(
+        getMicrovmWorkspaceDownloadUrlAction.handler({} as any, {
+          serviceKey: "service-key",
+          userId: "user/123",
+        }),
+      ).resolves.toBe("https://s3.example/download");
+
+      const expectedKey =
+        "users/user%2F123/microvm-workspace/v1/workspace.tar.gz";
+      expect(generateS3UploadUrlForKey).toHaveBeenCalledWith(
+        expectedKey,
+        28_800,
+      );
+      expect(s3ObjectExists).toHaveBeenCalledWith(expectedKey);
+      expect(generateS3DownloadUrl).toHaveBeenCalledWith(expectedKey);
+    });
+
+    it("returns null when no durable workspace exists yet", async () => {
+      const { s3ObjectExists, generateS3DownloadUrl } =
+        await import("../s3Utils");
+      (
+        s3ObjectExists as jest.MockedFunction<typeof s3ObjectExists>
+      ).mockResolvedValue(false);
+      const { getMicrovmWorkspaceDownloadUrlAction } =
+        await import("../s3Actions");
+
+      await expect(
+        getMicrovmWorkspaceDownloadUrlAction.handler({} as any, {
+          serviceKey: "service-key",
+          userId: "user_123",
+        }),
+      ).resolves.toBeNull();
+      expect(generateS3DownloadUrl).not.toHaveBeenCalled();
+    });
+
+    it("deletes the same deterministic object", async () => {
+      const { deleteS3Object } = await import("../s3Utils");
+      (
+        deleteS3Object as jest.MockedFunction<typeof deleteS3Object>
+      ).mockResolvedValue(undefined);
+      const { deleteMicrovmWorkspaceAction } = await import("../s3Actions");
+
+      await deleteMicrovmWorkspaceAction.handler({} as any, {
+        serviceKey: "service-key",
+        userId: "user_123",
+      });
+      expect(deleteS3Object).toHaveBeenCalledWith(
+        "users/user_123/microvm-workspace/v1/workspace.tar.gz",
+      );
+    });
+  });
+
   describe("generateS3UploadUrlAction", () => {
     it("should generate upload URL for authenticated user", async () => {
       const { generateS3UploadUrl } = await import("../s3Utils");

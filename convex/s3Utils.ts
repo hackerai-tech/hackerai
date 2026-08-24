@@ -95,6 +95,23 @@ export async function generateS3UploadUrl(
   }
 }
 
+/** Generate a presigned upload URL for a trusted, pre-scoped S3 key. */
+export async function generateS3UploadUrlForKey(
+  s3Key: string,
+  expiresIn = getS3UrlLifetimeSeconds(),
+): Promise<string> {
+  const s3Client = getS3Client();
+  const bucketName = getRequiredEnvVar("AWS_S3_BUCKET_NAME");
+  const command = new PutObjectCommand({
+    Bucket: bucketName,
+    Key: s3Key,
+  });
+
+  return getSignedUrl(s3Client, command, {
+    expiresIn,
+  });
+}
+
 /**
  * Generate presigned URL for file download
  */
@@ -119,6 +136,35 @@ export async function generateS3DownloadUrl(s3Key: string): Promise<string> {
       "Failed to generate download URL: " +
         (error instanceof Error ? error.message : "Unknown error"),
     );
+  }
+}
+
+/** Return whether an S3 object exists without treating a missing key as an error. */
+export async function s3ObjectExists(s3Key: string): Promise<boolean> {
+  const s3Client = getS3Client();
+  const bucketName = getRequiredEnvVar("AWS_S3_BUCKET_NAME");
+
+  try {
+    await s3Client.send(
+      new HeadObjectCommand({ Bucket: bucketName, Key: s3Key }),
+    );
+    return true;
+  } catch (error) {
+    const record =
+      error && typeof error === "object"
+        ? (error as {
+            name?: unknown;
+            $metadata?: { httpStatusCode?: unknown };
+          })
+        : null;
+    if (
+      record?.name === "NotFound" ||
+      record?.name === "NoSuchKey" ||
+      record?.$metadata?.httpStatusCode === 404
+    ) {
+      return false;
+    }
+    throw error;
   }
 }
 

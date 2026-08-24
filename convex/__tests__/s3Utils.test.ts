@@ -133,6 +133,28 @@ describe("s3Utils", () => {
     });
   });
 
+  describe("generateS3UploadUrlForKey", () => {
+    it("presigns the trusted workspace key without a content-length constraint", async () => {
+      const { PutObjectCommand } = await import("@aws-sdk/client-s3");
+      const { getSignedUrl } = await import("@aws-sdk/s3-request-presigner");
+      const mockGetSignedUrl = getSignedUrl as jest.MockedFunction<
+        typeof getSignedUrl
+      >;
+      mockGetSignedUrl.mockResolvedValue("https://s3.amazonaws.com/workspace");
+      const { generateS3UploadUrlForKey } = await import("../s3Utils");
+
+      await expect(
+        generateS3UploadUrlForKey(
+          "users/user_123/microvm-workspace/v1/workspace.tar.gz",
+        ),
+      ).resolves.toBe("https://s3.amazonaws.com/workspace");
+      expect(PutObjectCommand).toHaveBeenCalledWith({
+        Bucket: "test-bucket",
+        Key: "users/user_123/microvm-workspace/v1/workspace.tar.gz",
+      });
+    });
+  });
+
   describe("generateS3DownloadUrl", () => {
     it("should generate presigned download URL", async () => {
       const { getSignedUrl } = await import("@aws-sdk/s3-request-presigner");
@@ -187,6 +209,45 @@ describe("s3Utils", () => {
       await expect(
         deleteS3Object("users/user123/123-uuid-test.pdf"),
       ).rejects.toThrow("Delete failed");
+    });
+  });
+
+  describe("s3ObjectExists", () => {
+    it("returns true when S3 can read the object metadata", async () => {
+      const { S3Client } = await import("@aws-sdk/client-s3");
+      const mockSend = jest.fn().mockResolvedValue({ ContentLength: 42 });
+      (S3Client as jest.MockedClass<typeof S3Client>).mockImplementation(
+        () => ({ send: mockSend }) as unknown as S3Client,
+      );
+      const { s3ObjectExists } = await import("../s3Utils");
+
+      await expect(s3ObjectExists("workspace.tar.gz")).resolves.toBe(true);
+    });
+
+    it("returns false only for an authoritative missing-object response", async () => {
+      const { S3Client } = await import("@aws-sdk/client-s3");
+      const mockSend = jest.fn().mockRejectedValue({
+        name: "NotFound",
+        $metadata: { httpStatusCode: 404 },
+      });
+      (S3Client as jest.MockedClass<typeof S3Client>).mockImplementation(
+        () => ({ send: mockSend }) as unknown as S3Client,
+      );
+      const { s3ObjectExists } = await import("../s3Utils");
+
+      await expect(s3ObjectExists("workspace.tar.gz")).resolves.toBe(false);
+    });
+
+    it("does not hide storage outages as an empty workspace", async () => {
+      const { S3Client } = await import("@aws-sdk/client-s3");
+      const outage = new Error("S3 unavailable");
+      const mockSend = jest.fn().mockRejectedValue(outage);
+      (S3Client as jest.MockedClass<typeof S3Client>).mockImplementation(
+        () => ({ send: mockSend }) as unknown as S3Client,
+      );
+      const { s3ObjectExists } = await import("../s3Utils");
+
+      await expect(s3ObjectExists("workspace.tar.gz")).rejects.toBe(outage);
     });
   });
 });

@@ -2,13 +2,23 @@
 
 import { action } from "./_generated/server";
 import { v, ConvexError } from "convex/values";
-import { generateS3UploadUrl, generateS3DownloadUrl } from "./s3Utils";
+import {
+  deleteS3Object,
+  generateS3DownloadUrl,
+  generateS3UploadUrl,
+  generateS3UploadUrlForKey,
+  s3ObjectExists,
+} from "./s3Utils";
 import { internal } from "./_generated/api";
 import { validateServiceKey } from "./lib/utils";
 import { convexLogger } from "./lib/logger";
 import { checkFileUploadRateLimit } from "./fileActions";
 import { validateUploadPolicy } from "../lib/utils/upload-policy";
 import { hasPaidEntitlement } from "../lib/auth/entitlements";
+import {
+  getMicrovmWorkspaceS3Key,
+  MICROVM_WORKSPACE_URL_LIFETIME_SECONDS,
+} from "../lib/constants/s3";
 
 type StorageUsage = {
   usedBytes: number;
@@ -58,6 +68,48 @@ type ServiceFileUrlInfo = {
 };
 
 const MAX_SERVICE_FILE_URL_BATCH_SIZE = 50;
+
+export const generateMicrovmWorkspaceUploadUrlAction = action({
+  args: {
+    serviceKey: v.string(),
+    userId: v.string(),
+  },
+  returns: v.string(),
+  handler: async (_ctx, args) => {
+    validateServiceKey(args.serviceKey);
+    return generateS3UploadUrlForKey(
+      getMicrovmWorkspaceS3Key(args.userId),
+      MICROVM_WORKSPACE_URL_LIFETIME_SECONDS,
+    );
+  },
+});
+
+export const getMicrovmWorkspaceDownloadUrlAction = action({
+  args: {
+    serviceKey: v.string(),
+    userId: v.string(),
+  },
+  returns: v.union(v.string(), v.null()),
+  handler: async (_ctx, args) => {
+    validateServiceKey(args.serviceKey);
+    const s3Key = getMicrovmWorkspaceS3Key(args.userId);
+    if (!(await s3ObjectExists(s3Key))) return null;
+    return generateS3DownloadUrl(s3Key);
+  },
+});
+
+export const deleteMicrovmWorkspaceAction = action({
+  args: {
+    serviceKey: v.string(),
+    userId: v.string(),
+  },
+  returns: v.null(),
+  handler: async (_ctx, args) => {
+    validateServiceKey(args.serviceKey);
+    await deleteS3Object(getMicrovmWorkspaceS3Key(args.userId));
+    return null;
+  },
+});
 
 const getIdentityEntitlements = (identity: unknown) => {
   if (

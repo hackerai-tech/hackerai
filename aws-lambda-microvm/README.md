@@ -177,6 +177,28 @@ IDs in their recorded regions, so Vercel only needs the dedicated AWS runtime
 credentials (authorized by all three regional runtime policies) and
 `CONVEX_SERVICE_ROLE_KEY` for that cleanup operation.
 
+### Durable user workspaces
+
+MicroVM disk remains ephemeral and must never be the only copy of a project.
+After the last active parent run or subagent finishes, the guest archives
+`/home/user` and uploads it to one private, user-scoped `workspace.tar.gz`
+object in the existing HackerAI S3 bucket before suspending the VM. A fresh
+replacement checks that object and restores it before any Agent tool can use the
+new VM. Near-lifetime replacement also snapshots before terminating the old VM.
+While a VM is running, a guest-side checkpoint process refreshes the same object
+every two minutes using a scoped eight-hour upload URL. This bounds data loss if
+Trigger.dev reaches its hard task cutoff before normal Agent cleanup can run.
+
+The archive keeps source files, dotfiles, and Git state, but excludes
+rebuildable `node_modules`, pnpm/npm caches, and the general home cache. The S3
+object remains available across AWS's automatic suspended-VM termination and
+the four-hour maximum lifetime. Data Controls **Delete sandboxes** and account
+deletion both remove the durable object. Presigned transfer URLs are generated
+by service-key-authenticated Convex actions using the existing
+`AWS_S3_ACCESS_KEY_ID`, `AWS_S3_SECRET_ACCESS_KEY`, `AWS_S3_REGION`, and
+`AWS_S3_BUCKET_NAME` Convex environment variables; S3 credentials are never
+placed inside the guest.
+
 Optional controls:
 
 - `AWS_LAMBDA_MICROVM_MAX_DURATION_SECONDS` defaults to Lambda's 28,800-second
@@ -196,9 +218,11 @@ Optional controls:
   using the sandbox, its WebSocket heartbeat counts as endpoint activity.
   Parent Agent cleanup also compare-clears the ending Trigger run, verifies that
   the user has no other active parent runs or subagents, and explicitly suspends
-  the shared MicroVM. A suspend failure falls back to termination, while
-  replacement cleanup, Data Controls termination, and the maximum-duration cap
-  remain additional safety boundaries.
+  the shared MicroVM. A suspend failure falls back to termination only after a
+  workspace snapshot succeeds. If both snapshot and suspend fail, the VM is
+  retained until the maximum-duration backstop rather than deleting the only
+  project copy. Replacement cleanup and Data Controls termination remain
+  additional safety boundaries.
 
 Never expose these variables with a `NEXT_PUBLIC_` prefix. AWS endpoint tokens
 are generated on demand by the Trigger.dev runtime, restricted to port 9000,

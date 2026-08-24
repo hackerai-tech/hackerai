@@ -2,8 +2,13 @@ import { Sandbox } from "@e2b/code-interpreter";
 import { terminateAwsLambdaMicrovmForUser } from "../aws-lambda-microvm";
 import { terminateCloudSandboxesForUser } from "../cloud-sandbox";
 
+const mockDeleteAwsLambdaMicrovmWorkspace = jest.fn();
+
 jest.mock("../aws-lambda-microvm", () => ({
   terminateAwsLambdaMicrovmForUser: jest.fn(),
+}));
+jest.mock("../aws-lambda-microvm-workspace", () => ({
+  deleteAwsLambdaMicrovmWorkspace: mockDeleteAwsLambdaMicrovmWorkspace,
 }));
 jest.mock("@e2b/code-interpreter", () => ({
   Sandbox: {
@@ -40,6 +45,7 @@ describe("cloud sandbox cleanup configuration", () => {
       killed: 1,
       alreadyGone: 0,
     });
+    mockDeleteAwsLambdaMicrovmWorkspace.mockResolvedValue(undefined);
   });
 
   afterAll(() => {
@@ -57,6 +63,10 @@ describe("cloud sandbox cleanup configuration", () => {
       "user_123",
     );
     expect(mockListE2BSandboxes).not.toHaveBeenCalled();
+    expect(mockDeleteAwsLambdaMicrovmWorkspace).toHaveBeenCalledWith(
+      "user_123",
+      "test-service-key",
+    );
   });
 
   it("fails closed when AWS is selected without cleanup authorization", async () => {

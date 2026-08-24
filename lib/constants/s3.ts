@@ -27,3 +27,13 @@ export const MAX_GENERATED_FILE_SIZE_BYTES = 250 * 1024 * 1024;
 
 // S3 key prefix for user files
 export const S3_USER_FILES_PREFIX = "users";
+export const MICROVM_WORKSPACE_URL_LIFETIME_SECONDS = 8 * 60 * 60;
+
+/**
+ * One durable workspace object per user. The object is replaced only after the
+ * last active Agent run finishes and is deleted with the user's cloud sandbox
+ * or account.
+ */
+export function getMicrovmWorkspaceS3Key(userId: string): string {
+  return `${S3_USER_FILES_PREFIX}/${encodeURIComponent(userId)}/microvm-workspace/v1/workspace.tar.gz`;
+}
