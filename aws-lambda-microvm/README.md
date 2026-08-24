@@ -222,6 +222,10 @@ status. Reject buckets whose status is `Enabled` or `Suspended`; S3 cannot retur
 those buckets to the never-versioned state. Before decommissioning a previously
 versioned bucket, use version-aware administrative cleanup to list and delete
 every object version and delete marker. A key-only delete is not sufficient.
+Before enabling the provider, run `pnpm s3:validate` with all three workspace
+bucket variables and an operator identity allowed to call
+`s3:GetBucketVersioning`. The runtime identity does not need that bucket-level
+permission.
 
 Optional controls:
 
