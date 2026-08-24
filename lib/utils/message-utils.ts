@@ -2,6 +2,8 @@
  * Utility functions for processing message parts
  */
 
+import type { ChatMessage, ChatMode } from "@/types";
+
 export interface MessagePart {
   type: string;
   text?: string;
@@ -27,6 +29,181 @@ export const hasTextContent = (parts: MessagePart[]): boolean => {
       part.type === "step-start" ||
       part.type.startsWith("tool-"),
   );
+};
+
+const MIN_CONTINUATION_OVERLAP_CHARS = 24;
+
+const isTextPart = (
+  part: ChatMessage["parts"][number],
+): part is ChatMessage["parts"][number] & { type: "text"; text: string } =>
+  part.type === "text" && typeof (part as { text?: unknown }).text === "string";
+
+const isInsideMarkdownFence = (text: string): boolean => {
+  const fences = text.match(/^[\t ]*```/gm);
+  return (fences?.length ?? 0) % 2 === 1;
+};
+
+const stripRedundantOpeningFence = (
+  previousText: string,
+  continuationText: string,
+): string => {
+  if (!isInsideMarkdownFence(previousText)) return continuationText;
+
+  return continuationText.replace(/^\s*```[^\n\r]*\r?\n/, "");
+};
+
+const findExactSuffixPrefixOverlap = (
+  previousText: string,
+  continuationText: string,
+): number => {
+  if (
+    previousText.length < MIN_CONTINUATION_OVERLAP_CHARS ||
+    continuationText.length < MIN_CONTINUATION_OVERLAP_CHARS
+  ) {
+    return 0;
+  }
+
+  // KMP prefix table over `continuation + sentinel + previous` finds the
+  // longest continuation prefix that is also a suffix of the previous text in
+  // linear time. Use -1 as an out-of-band sentinel for UTF-16 code units.
+  const previousSuffix = previousText.slice(-continuationText.length);
+  const sequenceLength = continuationText.length + 1 + previousSuffix.length;
+  const prefixLengths = new Uint32Array(sequenceLength);
+  const codeUnitAt = (index: number): number => {
+    if (index < continuationText.length) {
+      return continuationText.charCodeAt(index);
+    }
+    if (index === continuationText.length) return -1;
+    return previousSuffix.charCodeAt(index - continuationText.length - 1);
+  };
+
+  for (let index = 1; index < sequenceLength; index++) {
+    let prefixLength = prefixLengths[index - 1];
+    const codeUnit = codeUnitAt(index);
+    while (prefixLength > 0 && codeUnit !== codeUnitAt(prefixLength)) {
+      prefixLength = prefixLengths[prefixLength - 1];
+    }
+    if (codeUnit === codeUnitAt(prefixLength)) prefixLength += 1;
+    prefixLengths[index] = prefixLength;
+  }
+
+  const overlap = prefixLengths[sequenceLength - 1];
+  return overlap >= MIN_CONTINUATION_OVERLAP_CHARS ? overlap : 0;
+};
+
+/**
+ * Joins a separately generated continuation to the previous text without
+ * introducing a second Markdown/code block. Providers occasionally repeat the
+ * tail of the first generation, so remove only a substantial exact overlap.
+ */
+export const joinContinuationText = (
+  previousText: string,
+  continuationText: string,
+): string => {
+  const strippedContinuation = stripRedundantOpeningFence(
+    previousText,
+    continuationText,
+  );
+  const overlap = findExactSuffixPrefixOverlap(
+    previousText,
+    strippedContinuation,
+  );
+
+  return previousText + strippedContinuation.slice(overlap);
+};
+
+const mergeContinuationParts = (
+  previousParts: ChatMessage["parts"],
+  continuationParts: ChatMessage["parts"],
+): ChatMessage["parts"] => {
+  const previousTextIndex = previousParts.findLastIndex(isTextPart);
+  const continuationTextIndex = continuationParts.findIndex(isTextPart);
+
+  if (previousTextIndex === -1 || continuationTextIndex === -1) {
+    return [...previousParts, ...continuationParts];
+  }
+
+  const previousTextPart = previousParts[previousTextIndex];
+  const continuationTextPart = continuationParts[continuationTextIndex];
+  if (!isTextPart(previousTextPart) || !isTextPart(continuationTextPart)) {
+    return [...previousParts, ...continuationParts];
+  }
+
+  return [
+    ...previousParts.slice(0, previousTextIndex),
+    ...continuationParts.slice(0, continuationTextIndex),
+    {
+      ...continuationTextPart,
+      text: joinContinuationText(
+        previousTextPart.text,
+        continuationTextPart.text,
+      ),
+    },
+    ...previousParts.slice(previousTextIndex + 1),
+    ...continuationParts.slice(continuationTextIndex + 1),
+  ];
+};
+
+const getMessageMode = (
+  message: ChatMessage,
+  fallbackMode?: ChatMode,
+): ChatMode | undefined => message.metadata?.mode ?? fallbackMode;
+
+/**
+ * Projects stored generation segments into the user-visible conversation.
+ * Ask-mode continuations remain separate records for usage, retry, and audit,
+ * but render as one logical assistant response. Hidden continuation prompts are
+ * removed here as before. Consecutive Ask assistant rows cover restored chats,
+ * where Convex intentionally omits the hidden prompt from query results.
+ */
+export const mergeAskContinuationMessages = (
+  messages: ChatMessage[],
+  fallbackMode?: ChatMode,
+): ChatMessage[] => {
+  const visibleMessages: ChatMessage[] = [];
+
+  for (const message of messages) {
+    if (message.role === "user" && message.metadata?.isAutoContinue) {
+      continue;
+    }
+
+    const previousMessage = visibleMessages.at(-1);
+    const isAskContinuation =
+      message.role === "assistant" &&
+      previousMessage?.role === "assistant" &&
+      getMessageMode(message, fallbackMode) === "ask" &&
+      getMessageMode(previousMessage, fallbackMode) === "ask";
+
+    if (isAskContinuation && previousMessage) {
+      visibleMessages[visibleMessages.length - 1] = {
+        ...previousMessage,
+        ...message,
+        createdAt: previousMessage.createdAt ?? message.createdAt,
+        sourceMessageId:
+          message.sourceMessageId ?? previousMessage.sourceMessageId,
+        parts: mergeContinuationParts(previousMessage.parts, message.parts),
+        metadata: {
+          ...previousMessage.metadata,
+          ...message.metadata,
+          createdAt:
+            previousMessage.metadata?.createdAt ?? message.metadata?.createdAt,
+          feedbackType:
+            message.metadata?.feedbackType ??
+            previousMessage.metadata?.feedbackType,
+        },
+        ...((previousMessage.fileDetails || message.fileDetails) && {
+          fileDetails: [
+            ...(previousMessage.fileDetails ?? []),
+            ...(message.fileDetails ?? []),
+          ],
+        }),
+      };
+    } else {
+      visibleMessages.push(message);
+    }
+  }
+
+  return visibleMessages;
 };
 
 /**

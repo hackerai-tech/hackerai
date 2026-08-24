@@ -23,7 +23,11 @@ jest.mock("../MessageItem", () => ({
     onStartEdit: (messageId: string) => void;
     status: string;
   }) => (
-    <div data-testid={`message-${message.id}`} data-status={status}>
+    <div
+      data-testid={`message-${message.id}`}
+      data-status={status}
+      data-parts={JSON.stringify(message.parts)}
+    >
       {isEditing ? (
         <div data-testid="message-editor">Editing {message.id}</div>
       ) : canEdit ? (
@@ -165,6 +169,66 @@ describe("Messages virtualized row invalidation", () => {
   beforeEach(() => {
     mockLegendListScrollToIndex.mockReset();
     mockLegendListScrollToIndex.mockResolvedValue(undefined);
+  });
+
+  it("renders Ask continuation segments as one combined assistant row", () => {
+    const continuationMessages = [
+      {
+        id: "user-1",
+        role: "user",
+        parts: [{ type: "text", text: "Write code" }],
+        metadata: { mode: "ask" },
+      },
+      {
+        id: "assistant-1",
+        role: "assistant",
+        parts: [{ type: "text", text: "```ts\nconst a = 1;\n" }],
+        metadata: { mode: "ask" },
+      },
+      {
+        id: "continue-1",
+        role: "user",
+        parts: [{ type: "text", text: "Continue" }],
+        metadata: { mode: "ask", isAutoContinue: true },
+      },
+      {
+        id: "assistant-2",
+        role: "assistant",
+        parts: [{ type: "text", text: "const b = 2;\n```" }],
+        metadata: { mode: "ask" },
+      },
+    ] as ChatMessage[];
+
+    render(
+      <DataStreamProvider>
+        <Messages
+          chatId="chat-continue"
+          messages={continuationMessages}
+          setMessages={jest.fn()}
+          onRegenerate={jest.fn()}
+          onRetry={jest.fn()}
+          onEditMessage={jest.fn()}
+          status="ready"
+          error={null}
+          scrollRef={createRef<HTMLElement>()}
+          contentRef={createRef<HTMLElement>()}
+          isMobile
+          mode="ask"
+        />
+      </DataStreamProvider>,
+    );
+
+    expect(screen.queryByTestId("message-assistant-1")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("message-continue-1")).not.toBeInTheDocument();
+    expect(screen.getByTestId("message-assistant-2")).toHaveAttribute(
+      "data-parts",
+      JSON.stringify([
+        {
+          type: "text",
+          text: "```ts\nconst a = 1;\nconst b = 2;\n```",
+        },
+      ]),
+    );
   });
   it("invalidates the virtualized row when editing starts", () => {
     render(

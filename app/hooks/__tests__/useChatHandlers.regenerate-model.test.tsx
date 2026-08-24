@@ -1,6 +1,7 @@
 import { act, renderHook } from "@testing-library/react";
 import { jest } from "@jest/globals";
 import type { ChatMessage, SelectedModel } from "@/types";
+import { ASK_CONTINUE_PROMPT } from "@/app/hooks/useAutoContinue";
 
 const mockRegenerate = jest.fn();
 const mockSendMessage = jest.fn();
@@ -145,7 +146,10 @@ describe("useChatHandlers regenerate model", () => {
     });
 
     expect(mockSendMessage).toHaveBeenCalledWith(
-      expect.any(Object),
+      {
+        text: ASK_CONTINUE_PROMPT,
+        metadata: { isAutoContinue: true },
+      },
       expect.objectContaining({
         body: expect.objectContaining({ selectedModel: "hackerai-max" }),
       }),

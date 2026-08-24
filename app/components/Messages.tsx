@@ -29,6 +29,7 @@ import { FileUrlCacheProvider } from "../contexts/FileUrlCacheContext";
 import {
   findLastAssistantMessageIndex,
   findLastUserMessageIndex,
+  mergeAskContinuationMessages,
 } from "@/lib/utils/message-utils";
 import type { ChatStatus, ChatMessage } from "@/types";
 import type { FileDetails } from "@/types/file";
@@ -309,10 +310,11 @@ export const Messages = ({
   // Prefetch and cache image URLs for better performance
   const { getCachedUrl, setCachedUrl } = useFileUrlCache(messages);
 
-  // Filter out auto-continue messages for rendering
+  // Keep Ask-mode continuation generations in one visible assistant response.
+  // The underlying messages remain separate for persistence and usage tracking.
   const visibleMessages = useMemo(
-    () => messages.filter((msg) => !msg.metadata?.isAutoContinue),
-    [messages],
+    () => mergeAskContinuationMessages(messages, mode),
+    [messages, mode],
   );
 
   // Memoize expensive calculations

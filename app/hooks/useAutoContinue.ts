@@ -12,6 +12,8 @@ import { useLatestRef } from "./useLatestRef";
 export const MAX_AUTO_CONTINUES = 5;
 export const AUTO_CONTINUE_PROMPT =
   "Continue from the latest saved progress. Do not restart the original task or repeat completed work.";
+export const ASK_CONTINUE_PROMPT =
+  "Continue exactly where the previous response stopped. Do not repeat any previous text. If it stopped inside a code block, continue inside that same code block without opening a new one.";
 const AUTO_CONTINUE_SETTLE_DELAY_MS = 250;
 
 export interface UseAutoContinueParams {

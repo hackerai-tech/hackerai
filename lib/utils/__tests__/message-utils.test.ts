@@ -3,7 +3,10 @@ import {
   findLastUserMessageIndex,
   getAutoContinueChainAssistantIds,
   getMessagesUpToLastRealUser,
+  joinContinuationText,
+  mergeAskContinuationMessages,
 } from "../message-utils";
+import type { ChatMessage } from "@/types";
 
 const msg = (
   id: string,
@@ -19,6 +22,143 @@ const msg = (
 });
 
 describe("message-utils", () => {
+  describe("joinContinuationText", () => {
+    it("continues an open code fence as one downloadable code block", () => {
+      expect(
+        joinContinuationText(
+          "```ts\nconst first = 1;\n",
+          "const second = 2;\n```",
+        ),
+      ).toBe("```ts\nconst first = 1;\nconst second = 2;\n```");
+    });
+
+    it("removes a redundant opening fence from an in-progress code block", () => {
+      expect(
+        joinContinuationText(
+          "```python\nprint('first')\n",
+          "```python\nprint('second')\n```",
+        ),
+      ).toBe("```python\nprint('first')\nprint('second')\n```");
+    });
+
+    it("deduplicates a substantial exact overlap", () => {
+      expect(
+        joinContinuationText(
+          "The generated value is abcdefghijklmnopqrstuvwxyz",
+          "abcdefghijklmnopqrstuvwxyz\nand then it finishes.",
+        ),
+      ).toBe(
+        "The generated value is abcdefghijklmnopqrstuvwxyz\nand then it finishes.",
+      );
+    });
+  });
+
+  describe("mergeAskContinuationMessages", () => {
+    const askMessage = (
+      id: string,
+      role: "user" | "assistant",
+      text: string,
+      isAutoContinue = false,
+    ) =>
+      ({
+        id,
+        role,
+        parts: [{ type: "text", text }],
+        metadata: {
+          mode: "ask",
+          ...(isAutoContinue ? { isAutoContinue: true } : {}),
+        },
+      }) as ChatMessage;
+
+    it("renders a live Ask continuation as one assistant response", () => {
+      const visible = mergeAskContinuationMessages([
+        askMessage("user-1", "user", "Write code"),
+        askMessage("assistant-1", "assistant", "```ts\nconst a = 1;\n"),
+        askMessage("continue-1", "user", "Continue", true),
+        askMessage("assistant-2", "assistant", "const b = 2;\n```"),
+      ]);
+
+      expect(visible).toHaveLength(2);
+      expect(visible[1]).toMatchObject({
+        id: "assistant-2",
+        role: "assistant",
+        parts: [
+          {
+            type: "text",
+            text: "```ts\nconst a = 1;\nconst b = 2;\n```",
+          },
+        ],
+      });
+    });
+
+    it("merges restored consecutive Ask assistant segments", () => {
+      const visible = mergeAskContinuationMessages([
+        askMessage("user-1", "user", "Write code"),
+        askMessage("assistant-1", "assistant", "first"),
+        askMessage("assistant-2", "assistant", " second"),
+      ]);
+
+      expect(visible.map((message) => message.id)).toEqual([
+        "user-1",
+        "assistant-2",
+      ]);
+      expect(visible[1].parts).toEqual([
+        { type: "text", text: "first second" },
+      ]);
+    });
+
+    it("does not merge Ask responses separated by a real user message", () => {
+      const visible = mergeAskContinuationMessages([
+        askMessage("user-1", "user", "First question"),
+        askMessage("assistant-1", "assistant", "First answer"),
+        askMessage("user-2", "user", "Second question"),
+        askMessage("assistant-2", "assistant", "Second answer"),
+      ]);
+
+      expect(visible).toHaveLength(4);
+    });
+
+    it("leaves Agent continuation messages separate", () => {
+      const messages = [
+        {
+          ...askMessage("assistant-1", "assistant", "first"),
+          metadata: { mode: "agent" as const },
+        },
+        {
+          ...askMessage("assistant-2", "assistant", "second"),
+          metadata: { mode: "agent" as const },
+        },
+      ];
+
+      expect(mergeAskContinuationMessages(messages)).toEqual(messages);
+    });
+
+    it("places continuation reasoning before the combined final text", () => {
+      const first = askMessage(
+        "assistant-1",
+        "assistant",
+        "```ts\nconst a = 1;\n",
+      );
+      const continuation = {
+        ...askMessage("assistant-2", "assistant", "const b = 2;\n```"),
+        parts: [
+          { type: "reasoning", text: "Continue the function" },
+          { type: "text", text: "const b = 2;\n```" },
+        ],
+      } as ChatMessage;
+
+      expect(
+        mergeAskContinuationMessages([first, continuation])[0].parts,
+      ).toEqual([
+        { type: "reasoning", text: "Continue the function" },
+        {
+          type: "text",
+          text: "```ts\nconst a = 1;\nconst b = 2;\n```",
+        },
+      ]);
+    });
+  });
+
   describe("findLastUserMessageIndex", () => {
     it("returns the latest user-authored message before an assistant response", () => {
       expect(
