@@ -5,7 +5,8 @@ import { safeEncode } from "@/lib/token-utils";
 import { myProvider } from "@/lib/ai/providers";
 
 const MODERATION_TOKEN_LIMIT = 512;
-const MODERATION_MAX_OUTPUT_TOKENS = 512;
+// Generous enough to cover the model's mandatory reasoning plus the scores.
+const MODERATION_MAX_OUTPUT_TOKENS = 4_000;
 const MODERATION_TIMEOUT_MS = 10_000;
 // The moderations endpoint returned per-category booleans alongside scores.
 // A single score threshold stands in for those calibrated per-category cutoffs.
@@ -108,11 +109,9 @@ export async function getModerationResult(
       system: MODERATION_POLICY,
       messages: [{ role: "user", content: input }],
       output: Output.object({ schema: moderationSchema }),
-      providerOptions: {
-        openrouter: {
-          reasoning: { enabled: false },
-        },
-      },
+      // gpt-oss-safeguard reasons about the policy before answering and
+      // OpenRouter rejects the request outright if reasoning is disabled, so
+      // the output budget has to cover reasoning tokens as well.
       temperature: 0,
       maxOutputTokens: MODERATION_MAX_OUTPUT_TOKENS,
       maxRetries: 1,
@@ -138,7 +137,11 @@ export async function getModerationResult(
     );
 
     return { shouldUncensorResponse, moderationText: input };
-  } catch (_error: any) {
+  } catch (error: any) {
+    // Moderation failing open to "no uncensoring" is safe, but failing
+    // silently is not: a misconfigured request would degrade the gate to a
+    // permanent no-op with nothing in the logs to show for it.
+    console.error("Moderation request failed", error?.message ?? error);
     return emptyModerationResult();
   }
 }
