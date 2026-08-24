@@ -109,9 +109,9 @@ export async function getModerationResult(
       system: MODERATION_POLICY,
       messages: [{ role: "user", content: input }],
       output: Output.object({ schema: moderationSchema }),
-      // gpt-oss-safeguard reasons about the policy before answering and
-      // OpenRouter rejects the request outright if reasoning is disabled, so
-      // the output budget has to cover reasoning tokens as well.
+      // Left at the model's default reasoning behavior on purpose: some
+      // classifier models reject an explicit `reasoning: { enabled: false }`
+      // outright, so the output budget covers reasoning tokens instead.
       temperature: 0,
       maxOutputTokens: MODERATION_MAX_OUTPUT_TOKENS,
       maxRetries: 1,
