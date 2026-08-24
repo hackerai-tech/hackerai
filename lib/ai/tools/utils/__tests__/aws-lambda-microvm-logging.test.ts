@@ -287,6 +287,50 @@ describe("AWS Lambda MicroVM development logging", () => {
     infoSpy.mockRestore();
   });
 
+  it("keeps pre-migration reused MicroVMs on the managed egress identity", async () => {
+    process.env.AWS_LAMBDA_MICROVM_RELEASE_MANIFEST = regionalReleaseManifest();
+    mockMutation.mockResolvedValueOnce({
+      created: false,
+      session: {
+        sessionId: "session-legacy-egress",
+        status: "running",
+        microvmId: "microvm-legacy-egress",
+        connectionId: "connection-legacy-egress",
+        region: "us-east-1",
+        imageIdentifier:
+          "arn:aws:lambda:us-east-1:630609837323:microvm-image:hackerai-cloud-agent",
+        imageVersion: "us-east-1-version",
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+        bootstrapExpiresAt: Date.now() + 60_000,
+      },
+      cleanupCandidates: [],
+    });
+    mockSend.mockResolvedValue({
+      state: "RUNNING",
+      endpoint: "microvm-legacy-egress.example.test",
+      ingressNetworkConnectors: [
+        "arn:aws:lambda:us-east-1:aws:network-connector:aws-network-connector:ALL_INGRESS",
+      ],
+    });
+    const infoSpy = jest.spyOn(console, "info").mockImplementation();
+
+    await expect(
+      ensureAwsLambdaMicrovmConnection("user-legacy-egress"),
+    ).resolves.toBeDefined();
+
+    const stickyEvent = infoSpy.mock.calls
+      .map(([payload]) => JSON.parse(payload as string))
+      .find(
+        (payload) => payload.event === "cloud_sandbox_sticky_session_retained",
+      );
+    expect(stickyEvent).toMatchObject({
+      persisted_egress_connector: "INTERNET_EGRESS",
+      persisted_egress_ipv4: null,
+    });
+    infoSpy.mockRestore();
+  });
+
   it("passes a scoped lifecycle callback only to remote Convex launches", async () => {
     mockConvexUrl = "https://convex.example.test";
     mockMutation

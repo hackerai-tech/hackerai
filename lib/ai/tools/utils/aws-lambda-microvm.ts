@@ -435,10 +435,8 @@ function getConfigForPersistedSession(
     ingressConnectorArn: `arn:aws:lambda:${region}:aws:network-connector:aws-network-connector:ALL_INGRESS`,
     egressConnectorArn:
       session.egressConnectorArn ??
-      regionalRelease?.egressConnectorArn ??
       `arn:aws:lambda:${region}:aws:network-connector:aws-network-connector:INTERNET_EGRESS`,
-    egressIpv4Address:
-      session.egressIpv4Address ?? regionalRelease?.egressIpv4Address,
+    egressIpv4Address: session.egressIpv4Address,
   };
 }
 
