@@ -66,6 +66,11 @@ describe("agent status route", () => {
 
   it("reports a nonterminal run without touching persisted lifecycle state", async () => {
     const { createAgentStatusPost } = await import("../agent-status-route");
+    mockGetChatById.mockResolvedValue({
+      id: "chat-1",
+      user_id: "user-1",
+      active_trigger_run_id: "run-1",
+    } as never);
     mockRunsRetrieve.mockResolvedValue({
       status: "EXECUTING",
       metadata: { chatId: "chat-1", userId: "user-1" },
@@ -80,7 +85,28 @@ describe("agent status route", () => {
       status: "EXECUTING",
       terminal: false,
     });
-    expect(mockGetChatById).not.toHaveBeenCalled();
+    expect(mockGetChatById).toHaveBeenCalledWith({ id: "chat-1" });
+    expect(mockSetActiveTriggerRun).not.toHaveBeenCalled();
+  });
+
+  it("treats a persisted run detached during cleanup as UI-terminal", async () => {
+    const { createAgentStatusPost } = await import("../agent-status-route");
+    mockGetChatById.mockResolvedValue({
+      id: "chat-1",
+      user_id: "user-1",
+      active_trigger_run_id: null,
+    } as never);
+
+    const response = await createAgentStatusPost({ endpoint: "/api/agent" })(
+      requestFor("chat-1", "run-1"),
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({
+      status: "DETACHED",
+      terminal: true,
+    });
+    expect(mockRunsRetrieve).not.toHaveBeenCalled();
     expect(mockSetActiveTriggerRun).not.toHaveBeenCalled();
   });
 
@@ -117,5 +143,21 @@ describe("agent status route", () => {
       expectedRunId: "run-1",
       clearApprovalPending: true,
     });
+  });
+
+  it("does not reveal status for a chat owned by another user", async () => {
+    const { createAgentStatusPost } = await import("../agent-status-route");
+    mockGetChatById.mockResolvedValue({
+      id: "chat-1",
+      user_id: "user-2",
+      active_trigger_run_id: "run-1",
+    } as never);
+
+    const response = await createAgentStatusPost({ endpoint: "/api/agent" })(
+      requestFor("chat-1", "run-1"),
+    );
+
+    expect(response.status).toBe(403);
+    expect(mockRunsRetrieve).not.toHaveBeenCalled();
   });
 });

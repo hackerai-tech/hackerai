@@ -107,6 +107,22 @@ export const createAgentStatusPost =
       const authContext = await getUserIDAndPro(req);
       userId = authContext.userId;
 
+      const chat = await getChatById({ id: chatId });
+      if (!chat) {
+        return new NextResponse("Chat not found", { status: 404 });
+      }
+      if (chat.user_id !== userId) {
+        return new NextResponse("Forbidden", { status: 403 });
+      }
+
+      // The Agent task clears this association as soon as its user-visible
+      // answer is persisted, before post-run cleanup finishes in Trigger.dev.
+      // Treat that detached state as UI-terminal so the browser does not keep
+      // showing Stop while only backend cleanup remains.
+      if (chat.active_trigger_run_id !== runId) {
+        return NextResponse.json({ status: "DETACHED", terminal: true });
+      }
+
       const run = (await runs.retrieve(runId)) as TriggerRunStatus;
       if (!runBelongsToChatOwner(run, { chatId, userId })) {
         return new NextResponse("Forbidden", { status: 403 });

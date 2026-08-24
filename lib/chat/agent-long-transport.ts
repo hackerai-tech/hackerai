@@ -419,7 +419,7 @@ const buildSSEResponseFromRun = (
         };
 
         const handleRunStatus = (status: string | undefined) => {
-          if (status === "COMPLETED") {
+          if (status === "COMPLETED" || status === "DETACHED") {
             startCompletedRunDrainTimer();
             return;
           }
