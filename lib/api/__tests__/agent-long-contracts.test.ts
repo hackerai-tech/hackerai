@@ -462,17 +462,42 @@ describe("agent-long chat UI — completion reconciliation", () => {
       reconciliationEnd,
     );
 
-    expect(reconciliationSrc).toMatch(/AGENT_LONG_COMPLETION_POLL_DELAY_MS/);
-    expect(reconciliationSrc).toMatch(/AGENT_LONG_COMPLETION_QUIET_MS/);
-    expect(chatComponentSrc).toMatch(/AGENT_LONG_COMPLETION_STOP_GRACE_MS/);
-    expect(chatComponentSrc).toMatch(
-      /AGENT_LONG_COMPLETION_POLL_INTERVAL_MS\s*=\s*15_000/,
+    expect(reconciliationSrc).toMatch(
+      /AGENT_LONG_SILENT_COMPLETION_POLL_DELAY_MS/,
     );
+    expect(chatComponentSrc).toMatch(
+      /AGENT_LONG_COMPLETION_STOP_GRACE_MS\s*=\s*2_000/,
+    );
+    expect(chatComponentSrc).toMatch(
+      /AGENT_LONG_ACTIVE_COMPLETION_POLL_INTERVAL_MS\s*=\s*15_000/,
+    );
+    expect(chatComponentSrc).toMatch(
+      /AGENT_LONG_COMPLETION_REQUEST_TIMEOUT_MS\s*=\s*8_000/,
+    );
+    expect(reconciliationSrc).toMatch(
+      /status\s*!==\s*"streaming"\s*&&\s*status\s*!==\s*"submitted"/,
+    );
+    expect(reconciliationSrc).toMatch(/agentLongRunId\s*\?\?/);
+    expect(reconciliationSrc).toMatch(/trackedAgentLongRunId/);
+    expect(reconciliationSrc).toMatch(
+      /!shouldUseAgentLongForCurrentChat\s*&&\s*!trackedAgentLongRunId/,
+    );
+    expect(reconciliationSrc).not.toMatch(/agentLongLastMessageChangeAtRef/);
     expect(reconciliationSrc).toMatch(/AGENT_STATUS_ENDPOINT/);
     expect(reconciliationSrc).toMatch(/method:\s*"POST"/);
     expect(reconciliationSrc).toMatch(/isCompletionCheckInFlight/);
+    expect(reconciliationSrc).toMatch(/requestAbortController/);
+    expect(reconciliationSrc).toMatch(
+      /setTimeout\([\s\S]*AGENT_LONG_COMPLETION_REQUEST_TIMEOUT_MS/,
+    );
+    expect(reconciliationSrc).toMatch(/clearTimeout\(requestTimeout\)/);
     expect(reconciliationSrc).toMatch(/response\.status\s*===\s*404/);
     expect(reconciliationSrc).toMatch(/payload\.terminal\s*===\s*true/);
+    expect(statusSrc).toMatch(/active_trigger_run_id\s*!==\s*runId/);
+    expect(statusSrc).toMatch(/status:\s*"DETACHED",\s*terminal:\s*true/);
+    expect(transportSrc).toMatch(
+      /status\s*===\s*"COMPLETED"\s*\|\|\s*status\s*===\s*"DETACHED"/,
+    );
     expect(reconciliationSrc).not.toMatch(/AGENT_RESUME_ENDPOINT/);
     expect(reconciliationSrc).toMatch(/scheduleFinishLocally\(\)/);
     expect(reconciliationSrc).toMatch(/finishLocally\(\)/);
@@ -484,13 +509,59 @@ describe("agent-long chat UI — completion reconciliation", () => {
     expect(chatComponentSrc).toMatch(
       /getLatestAgentLongAssistantMessageForPartialSave/,
     );
-    expect(chatComponentSrc).toMatch(/stop\(\)/);
+    expect(reconciliationSrc).toMatch(/stopRef\.current\(\)/);
+    expect(reconciliationSrc).not.toMatch(/^\s+stop,$/m);
+    expect(reconciliationSrc).toMatch(
+      /agentLongRunFallbackAllowedRef\.current\s*\?\s*activeTriggerRunRef\.current\s*:\s*null/,
+    );
+    expect(chatComponentSrc).toMatch(
+      /agentLongRunFallbackAllowedRef\.current\s*=\s*false;[\s\S]*return fetchAgentLongStream/,
+    );
+    expect(chatComponentSrc).toMatch(
+      /submissionGeneration\s*=\s*\+\+agentLongSubmissionGenerationRef\.current/,
+    );
+    expect(chatComponentSrc).toMatch(
+      /submissionGeneration\s*!==\s*agentLongSubmissionGenerationRef\.current/,
+    );
+    expect(chatComponentSrc).toMatch(
+      /if \(init\?\.method !== "GET"\) \{[\s\S]*agentLongRunCorrelationRef\.current = null;[\s\S]*agentLongRunFallbackAllowedRef\.current = false;[\s\S]*setAgentLongRunId\(null\)/,
+    );
+    expect(chatComponentSrc).toMatch(
+      /agentLongMessageFingerprintRef\.current\.chatId !== chatId/,
+    );
+    const submittedEffectStart = chatComponentSrc.indexOf(
+      'if (status === "submitted")',
+    );
+    const submittedEffectEnd = chatComponentSrc.indexOf(
+      "if (\n      shouldUseAgentLongForCurrentChat",
+      submittedEffectStart,
+    );
+    const submittedEffectSrc = chatComponentSrc.slice(
+      submittedEffectStart,
+      submittedEffectEnd,
+    );
+    expect(submittedEffectSrc).not.toMatch(/setAgentLongRunId\(null\)/);
+    expect(submittedEffectSrc).not.toMatch(
+      /agentLongRunCorrelationRef\.current\s*=\s*null/,
+    );
+    expect(chatComponentSrc).toMatch(
+      /agentLongRunCorrelationRef\.current\s*=\s*null;[\s\S]*setAgentLongRunId\(null\);[\s\S]*return fetchAgentLongStream/,
+    );
     expect(chatComponentSrc).toMatch(
       /const finishLocally = \(\) => \{[\s\S]*finalizeNewChatRoute/,
     );
     expect(chatComponentSrc).toMatch(/setIsExistingChat\(true\)/);
     expect(statusSrc).toMatch(
       /NextResponse\.json\(\{ status: run\.status, terminal \}\)/,
+    );
+  });
+
+  test("captures the Trigger run before realtime data reaches useChat", () => {
+    expect(transportSrc).toMatch(
+      /onRunStarted\?\.\(\{[\s\S]*runId:\s*handle\.runId/,
+    );
+    expect(chatComponentSrc).toMatch(
+      /fetchAgentLongStream\(init,\s*\(run\)\s*=>\s*\{[\s\S]*setAgentLongRunId\(run\.runId\)/,
     );
   });
 

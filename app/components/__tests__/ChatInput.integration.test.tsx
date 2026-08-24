@@ -191,6 +191,22 @@ describe("ChatInput - Integration Tests", () => {
   });
 
   describe("Ask Mode Integration", () => {
+    it("leaves the unrestricted file picker accept list unset", () => {
+      render(
+        <TestWrapper>
+          <ChatInput
+            onSubmit={mockOnSubmit}
+            onStop={mockOnStop}
+            status="ready"
+          />
+        </TestWrapper>,
+      );
+
+      expect(screen.getByLabelText("Upload files")).not.toHaveAttribute(
+        "accept",
+      );
+    });
+
     it("renders Ask mode by default without the logged-out mode selector", () => {
       render(
         <TestWrapper>
