@@ -224,17 +224,20 @@ describe("PostHogProvider", () => {
     });
     mockLoadPostHogClient.mockResolvedValue(posthog);
 
-    render(
-      <PostHogProvider>
-        <div>child</div>
-      </PostHogProvider>,
-    );
+    try {
+      render(
+        <PostHogProvider>
+          <div>child</div>
+        </PostHogProvider>,
+      );
 
-    await waitFor(() =>
-      expect(posthog.startSessionRecording).toHaveBeenCalledTimes(1),
-    );
-    expect(posthog.stopSessionRecording).not.toHaveBeenCalled();
-    languageSpy.mockRestore();
+      await waitFor(() =>
+        expect(posthog.startSessionRecording).toHaveBeenCalledTimes(1),
+      );
+      expect(posthog.stopSessionRecording).not.toHaveBeenCalled();
+    } finally {
+      languageSpy.mockRestore();
+    }
   });
 
   it("clears the queued analytics identity when the user signs out", () => {
