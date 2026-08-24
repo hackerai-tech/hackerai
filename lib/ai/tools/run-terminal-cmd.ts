@@ -166,6 +166,20 @@ export const createRunTerminalCmd = (context: ToolContext) => {
     session_id: sessionId,
     log_budget: context.ptyParserLogBudget,
   });
+  const buildTerminalOutputPersistenceTelemetry = () => ({
+    service: context.triggerRunId
+      ? ("agent-long" as const)
+      : ("chat-handler" as const),
+    environment:
+      process.env.TRIGGER_ENV ??
+      process.env.VERCEL_ENV ??
+      process.env.NODE_ENV ??
+      "unknown",
+    requestId: context.triggerRunId ?? process.env.VERCEL_REQUEST_ID ?? null,
+    triggerRunId: context.triggerRunId ?? null,
+    chatId: context.chatId,
+    userId: context.userID,
+  });
   const logSandboxReadinessRecovery = (args: {
     level: "info" | "warn" | "error";
     outcome: "started" | "reconnected" | "failed" | "skipped_unavailable";
@@ -1299,6 +1313,7 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                       sandbox: sandboxInstance,
                       terminalWriter: createTerminalWriter,
                       scopeId: chatId,
+                      telemetry: buildTerminalOutputPersistenceTelemetry(),
                     });
                     if (saveMsg) {
                       outputWithSaveInfo = saveMsg + "\n" + outputWithSaveInfo;
@@ -1364,6 +1379,7 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                         sandbox: sandboxInstance,
                         terminalWriter: createTerminalWriter,
                         scopeId: chatId,
+                        telemetry: buildTerminalOutputPersistenceTelemetry(),
                       });
                       if (saveMsg) {
                         outputWithSaveInfo =
