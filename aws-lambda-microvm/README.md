@@ -10,8 +10,9 @@ The integration is ARM64-only because Lambda MicroVMs currently support
 Graviton only. The image grants `ALL` guest OS capabilities so tools that need
 raw sockets can run inside the VM. The AWS-managed authenticated endpoint uses
 `ALL_INGRESS`; it is not an unauthenticated public listener. Outbound internet
-access uses Lambda's managed `INTERNET_EGRESS` connector, or an explicitly
-configured VPC connector.
+access uses a regional VPC connector whose private subnet routes through a NAT
+Gateway and retained Elastic IP. Replacing a MicroVM therefore does not change
+the public source IPv4 address observed by an authorized target.
 
 ## 1. Provision AWS prerequisites
 
@@ -50,6 +51,20 @@ for region in us-west-2 eu-west-1; do
 done
 ```
 
+Each regional stack output includes `EgressNetworkConnectorArn` and
+`EgressIpv4Address`. The Elastic IP has a CloudFormation retain policy so stack
+deletion cannot silently release the address. If the stack is intentionally
+removed, clean up the retained address separately only after every customer has
+been notified and migrated.
+
+Availability tradeoff: each region intentionally uses one NAT Gateway and one
+Elastic IP in one Availability Zone. This keeps the published allowlist to one
+stable IP per region and avoids doubling the fixed NAT cost. An outage of that
+AZ can interrupt that region's connector and existing sessions; new sessions
+can use the configured cross-region failover when the customer has allowlisted
+all three regional IPs. Multi-AZ egress should be introduced separately if its
+additional recurring cost and three extra customer-facing IPs are justified.
+
 Attach `DeployerPolicyArn` to the CI/operator identity that publishes images.
 Attach every regional `RuntimePolicyArn` to the AWS identity used by
 Trigger.dev. The Vercel
@@ -68,6 +83,8 @@ Set one region's CloudFormation outputs and region, then run:
 export AWS_LAMBDA_MICROVM_ARTIFACT_BUCKET='<ArtifactBucketName>'
 export AWS_LAMBDA_MICROVM_BUILD_ROLE_ARN='<BuildRoleArn>'
 export AWS_LAMBDA_MICROVM_EXECUTION_ROLE_ARN='<ExecutionRoleArn>'
+export AWS_LAMBDA_MICROVM_EGRESS_CONNECTOR_ARN='<EgressNetworkConnectorArn>'
+export AWS_LAMBDA_MICROVM_EGRESS_IPV4='<EgressIpv4Address>'
 export AWS_LAMBDA_MICROVM_CONTAINER_BASE_IMAGE='ghcr.io/hackerai-tech/hackerai-sandbox@sha256:<digest>'
 export AWS_REGION=us-east-1
 pnpm aws:microvm:deploy
@@ -76,9 +93,9 @@ pnpm aws:microvm:deploy
 The command builds `packages/local`, creates a Lambda-compatible zip under
 `.artifacts/`, uploads it to S3, creates or updates the MicroVM image, waits for
 the exact returned image version to become `SUCCESSFUL` and `ACTIVE`, and then
-prints the region, exact image ID/version, and execution role. Repeat with the
-matching outputs for `us-west-2` and `eu-west-1`; S3 artifacts cannot be reused
-across regions.
+prints the region, exact image ID/version, execution role, connector ARN, and
+reserved egress IPv4 address. Repeat with the matching outputs for `us-west-2`
+and `eu-west-1`; S3 artifacts cannot be reused across regions.
 
 During AWS image preparation, both lifecycle image hooks run a bounded,
 credential-free working-set primer. It initializes the in-process transport and
@@ -171,9 +188,9 @@ Optional controls:
 - Ingress is fixed to AWS's `ALL_INGRESS` connector so Trigger.dev can use the
   AWS-authenticated WebSocket endpoint. Runtime auth tokens are minted for one
   MicroVM, expire after at most 60 minutes, and are restricted to guest port 9000. Port 8080 lifecycle hooks are never included in application tokens.
-- Egress is fixed to each region's managed `INTERNET_EGRESS` connector. A
-  future VPC connector rollout must add an explicit per-region catalog entry;
-  one global connector ARN is intentionally not accepted.
+- Egress is fixed to the VPC connector stored in each regional release catalog
+  entry. Every connector routes through that region's retained Elastic IP; one
+  global connector ARN is intentionally not accepted.
 - Lambda endpoint-idle suspension is intentionally hard-coded to five minutes,
   followed by termination after 30 suspended minutes. While a Trigger worker is
   using the sandbox, its WebSocket heartbeat counts as endpoint activity.
@@ -204,11 +221,12 @@ new digest behind the tree tag, and promotes only the newly resolved digest.
 
 It then waits for the exact versions in all three regions, launches a
 short-lived VM in each region, executes a real command through every
-authenticated WebSocket, and confirms termination. Only after every matrix leg
-succeeds does it build one release manifest, upload and read back that exact
-manifest in Trigger.dev production, and deploy the pinned worker. A partial
-regional build can never become the active release. Vercel remains unchanged
-and older AWS image versions remain available for rollback.
+authenticated WebSocket, verifies `checkip.amazonaws.com` observes the
+configured regional Elastic IP, and confirms termination. Only after every
+matrix leg succeeds does it build one release manifest, upload and read back
+that exact manifest in Trigger.dev production, and deploy the pinned worker. A
+partial regional build can never become the active release. Vercel remains
+unchanged and older AWS image versions remain available for rollback.
 
 `AWS_LAMBDA_MICROVM_ENABLED_REGIONS` in the protected GitHub production
 environment is the durable placement kill switch. Keep `us-east-1` present and
@@ -226,16 +244,22 @@ AWS_RELEASE_ROLE_ARN_US_EAST_1=<GitHubReleaseRoleArn from us-east-1>
 AWS_LAMBDA_MICROVM_ARTIFACT_BUCKET_US_EAST_1=<ArtifactBucketName>
 AWS_LAMBDA_MICROVM_BUILD_ROLE_ARN_US_EAST_1=<BuildRoleArn>
 AWS_LAMBDA_MICROVM_EXECUTION_ROLE_ARN_US_EAST_1=<ExecutionRoleArn>
+AWS_LAMBDA_MICROVM_EGRESS_CONNECTOR_ARN_US_EAST_1=<EgressNetworkConnectorArn>
+AWS_LAMBDA_MICROVM_EGRESS_IPV4_US_EAST_1=<EgressIpv4Address>
 
 AWS_RELEASE_ROLE_ARN_US_WEST_2=<GitHubReleaseRoleArn from us-west-2>
 AWS_LAMBDA_MICROVM_ARTIFACT_BUCKET_US_WEST_2=<ArtifactBucketName>
 AWS_LAMBDA_MICROVM_BUILD_ROLE_ARN_US_WEST_2=<BuildRoleArn>
 AWS_LAMBDA_MICROVM_EXECUTION_ROLE_ARN_US_WEST_2=<ExecutionRoleArn>
+AWS_LAMBDA_MICROVM_EGRESS_CONNECTOR_ARN_US_WEST_2=<EgressNetworkConnectorArn>
+AWS_LAMBDA_MICROVM_EGRESS_IPV4_US_WEST_2=<EgressIpv4Address>
 
 AWS_RELEASE_ROLE_ARN_EU_WEST_1=<GitHubReleaseRoleArn from eu-west-1>
 AWS_LAMBDA_MICROVM_ARTIFACT_BUCKET_EU_WEST_1=<ArtifactBucketName>
 AWS_LAMBDA_MICROVM_BUILD_ROLE_ARN_EU_WEST_1=<BuildRoleArn>
 AWS_LAMBDA_MICROVM_EXECUTION_ROLE_ARN_EU_WEST_1=<ExecutionRoleArn>
+AWS_LAMBDA_MICROVM_EGRESS_CONNECTOR_ARN_EU_WEST_1=<EgressNetworkConnectorArn>
+AWS_LAMBDA_MICROVM_EGRESS_IPV4_EU_WEST_1=<EgressIpv4Address>
 
 TRIGGER_PROJECT_ID=<Trigger.dev project ref>
 ```
@@ -306,7 +330,12 @@ sudo -n true
 nmap --version
 naabu -version
 tcpdump --version
+curl --fail --silent --show-error https://checkip.amazonaws.com
 ```
+
+The final command must print the `EgressIpv4Address` for the session's persisted
+AWS region. Publish all three addresses as HackerAI Cloud Agent egress IPs so a
+target owner can allowlist the full regional failover set once.
 
 The packaged Lambda image automatically routes `naabu` hostname lookups through
 the non-loopback resolver supplied by the MicroVM runtime. An explicit `-r`
@@ -346,9 +375,9 @@ honest.
   including HackerAI's direct WebSocket, but not arbitrary inbound TCP/UDP.
   Reverse-listener scenarios still require an external relay or a VPC design
   that supports the required callback path.
-- The managed internet connector must be validated with the capability suite;
-  guest raw-socket capability alone does not prove that every network path has
-  native semantics.
+- The VPC egress connector must be validated with the capability suite; guest
+  raw-socket capability alone does not prove that every network path has native
+  semantics.
 - The full HackerAI tool image requires the 4 GiB / 2 vCPU baseline so its
   build and runtime filesystem have 16 GB of disk. Current first-tier US
   pricing is roughly $0.252/hour while running, before burst compute,

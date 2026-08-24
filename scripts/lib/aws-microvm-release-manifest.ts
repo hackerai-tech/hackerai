@@ -12,6 +12,8 @@ type RegionalReleaseOutput = {
   AWS_LAMBDA_MICROVM_IMAGE_ID: string;
   AWS_LAMBDA_MICROVM_IMAGE_VERSION: string;
   AWS_LAMBDA_MICROVM_EXECUTION_ROLE_ARN: string;
+  AWS_LAMBDA_MICROVM_EGRESS_CONNECTOR_ARN: string;
+  AWS_LAMBDA_MICROVM_EGRESS_IPV4: string;
 };
 
 export const AWS_LAMBDA_MICROVM_ENABLED_REGIONS_ENV =
@@ -72,6 +74,14 @@ export function parseRegionalReleaseOutput(raw: string): RegionalReleaseOutput {
       record,
       "AWS_LAMBDA_MICROVM_EXECUTION_ROLE_ARN",
     ),
+    AWS_LAMBDA_MICROVM_EGRESS_CONNECTOR_ARN: required(
+      record,
+      "AWS_LAMBDA_MICROVM_EGRESS_CONNECTOR_ARN",
+    ),
+    AWS_LAMBDA_MICROVM_EGRESS_IPV4: required(
+      record,
+      "AWS_LAMBDA_MICROVM_EGRESS_IPV4",
+    ),
   };
 }
 
@@ -101,6 +111,8 @@ export function buildAwsLambdaMicrovmReleaseManifest({
           imageIdentifier: output.AWS_LAMBDA_MICROVM_IMAGE_ID,
           imageVersion: output.AWS_LAMBDA_MICROVM_IMAGE_VERSION,
           executionRoleArn: output.AWS_LAMBDA_MICROVM_EXECUTION_ROLE_ARN,
+          egressConnectorArn: output.AWS_LAMBDA_MICROVM_EGRESS_CONNECTOR_ARN,
+          egressIpv4Address: output.AWS_LAMBDA_MICROVM_EGRESS_IPV4,
           enabledForNewPlacements: enabledRegions.includes(region),
         },
       ];

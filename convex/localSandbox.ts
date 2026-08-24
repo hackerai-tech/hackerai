@@ -94,6 +94,8 @@ const cloudSessionForBackend = v.object({
   placementReason: v.optional(v.string()),
   imageIdentifier: v.string(),
   imageVersion: v.optional(v.string()),
+  egressConnectorArn: v.optional(v.string()),
+  egressIpv4Address: v.optional(v.string()),
   failoverFromRegion: v.optional(v.string()),
   failoverErrorName: v.optional(v.string()),
   failoverStartedAt: v.optional(v.number()),
@@ -133,6 +135,8 @@ function serializeCloudSession(session: {
   placement_reason?: string;
   image_identifier: string;
   image_version?: string;
+  egress_connector_arn?: string;
+  egress_ipv4_address?: string;
   failover_from_region?: string;
   failover_error_name?: string;
   failover_started_at?: number;
@@ -163,6 +167,8 @@ function serializeCloudSession(session: {
     placementReason: session.placement_reason,
     imageIdentifier: session.image_identifier,
     imageVersion: session.image_version,
+    egressConnectorArn: session.egress_connector_arn,
+    egressIpv4Address: session.egress_ipv4_address,
     failoverFromRegion: session.failover_from_region,
     failoverErrorName: session.failover_error_name,
     failoverStartedAt: session.failover_started_at,
@@ -607,6 +613,8 @@ export const beginCloudSession = mutation({
     placementReason: v.optional(v.string()),
     imageIdentifier: v.string(),
     imageVersion: v.optional(v.string()),
+    egressConnectorArn: v.optional(v.string()),
+    egressIpv4Address: v.optional(v.string()),
     failoverFromRegion: v.optional(v.string()),
     failoverErrorName: v.optional(v.string()),
     failoverStartedAt: v.optional(v.number()),
@@ -735,6 +743,8 @@ export const beginCloudSession = mutation({
       placement_reason: args.placementReason,
       image_identifier: args.imageIdentifier,
       image_version: args.imageVersion,
+      egress_connector_arn: args.egressConnectorArn,
+      egress_ipv4_address: args.egressIpv4Address,
       failover_from_region: args.failoverFromRegion,
       failover_error_name: args.failoverErrorName,
       failover_started_at: args.failoverStartedAt,

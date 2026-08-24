@@ -13,6 +13,9 @@ const manifest = () => ({
         "arn:aws:lambda:us-east-1:123456789012:microvm-image:hackerai",
       imageVersion: "15.0",
       executionRoleArn: "arn:aws:iam::123456789012:role/east",
+      egressConnectorArn:
+        "arn:aws:lambda:us-east-1:123456789012:network-connector:hackerai-static-egress:1",
+      egressIpv4Address: "192.0.2.10",
       enabledForNewPlacements: true,
     },
     "us-west-2": {
@@ -20,6 +23,9 @@ const manifest = () => ({
         "arn:aws:lambda:us-west-2:123456789012:microvm-image:hackerai",
       imageVersion: "8.0",
       executionRoleArn: "arn:aws:iam::123456789012:role/west",
+      egressConnectorArn:
+        "arn:aws:lambda:us-west-2:123456789012:network-connector:hackerai-static-egress:1",
+      egressIpv4Address: "192.0.2.20",
       enabledForNewPlacements: true,
     },
     "eu-west-1": {
@@ -27,12 +33,36 @@ const manifest = () => ({
         "arn:aws:lambda:eu-west-1:123456789012:microvm-image:hackerai",
       imageVersion: "3.0",
       executionRoleArn: "arn:aws:iam::123456789012:role/eu",
+      egressConnectorArn:
+        "arn:aws:lambda:eu-west-1:123456789012:network-connector:hackerai-static-egress:1",
+      egressIpv4Address: "192.0.2.30",
       enabledForNewPlacements: true,
     },
   },
 });
 
 describe("AWS Lambda MicroVM release manifest", () => {
+  it("keeps the regional connector and reserved IPv4 in the parsed catalog", () => {
+    const parsed = parseAwsLambdaMicrovmReleaseManifest(
+      JSON.stringify(manifest()),
+    );
+    expect(parsed.regions["us-west-2"]).toMatchObject({
+      egressConnectorArn:
+        "arn:aws:lambda:us-west-2:123456789012:network-connector:hackerai-static-egress:1",
+      egressIpv4Address: "192.0.2.20",
+    });
+  });
+
+  it("keeps legacy manifests on managed internet egress during migration", () => {
+    const legacy = manifest();
+    delete (legacy.regions["us-east-1"] as { egressConnectorArn?: string })
+      .egressConnectorArn;
+    const parsed = parseAwsLambdaMicrovmReleaseManifest(JSON.stringify(legacy));
+    expect(parsed.regions["us-east-1"].egressConnectorArn).toBe(
+      "arn:aws:lambda:us-east-1:aws:network-connector:aws-network-connector:INTERNET_EGRESS",
+    );
+  });
+
   it.each([
     ["us-east-1", "us-east-1", "trigger_region_exact"],
     ["us-west-2", "us-west-2", "trigger_region_exact"],

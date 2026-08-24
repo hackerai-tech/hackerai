@@ -17,6 +17,8 @@ export type AwsLambdaMicrovmReleaseRegion = {
   imageIdentifier: string;
   imageVersion: string;
   executionRoleArn: string;
+  egressConnectorArn: string;
+  egressIpv4Address?: string;
   enabledForNewPlacements: boolean;
 };
 
@@ -60,6 +62,22 @@ function nonEmptyString(value: unknown, path: string): string {
   return value.trim();
 }
 
+function optionalIpv4Address(value: unknown, path: string): string | undefined {
+  if (value === undefined) return undefined;
+  const address = nonEmptyString(value, path);
+  const octets = address.split(".");
+  if (
+    octets.length !== 4 ||
+    octets.some((octet) => {
+      const parsed = Number(octet);
+      return !/^\d{1,3}$/.test(octet) || parsed < 0 || parsed > 255;
+    })
+  ) {
+    throw new Error(`${path} must be an IPv4 address`);
+  }
+  return address;
+}
+
 function parseReleaseRegion(
   value: unknown,
   region: AwsLambdaMicrovmRegion,
@@ -91,6 +109,19 @@ function parseReleaseRegion(
       `regions.${region}.enabledForNewPlacements must be a boolean`,
     );
   }
+  const egressConnectorArn =
+    typeof record.egressConnectorArn === "string" &&
+    record.egressConnectorArn.trim()
+      ? record.egressConnectorArn.trim()
+      : `arn:aws:lambda:${region}:aws:network-connector:aws-network-connector:INTERNET_EGRESS`;
+  if (
+    !egressConnectorArn.startsWith(`arn:aws:lambda:${region}:`) ||
+    !egressConnectorArn.includes(":network-connector:")
+  ) {
+    throw new Error(
+      `regions.${region}.egressConnectorArn must be a network connector ARN in ${region}`,
+    );
+  }
   return {
     imageIdentifier,
     imageVersion: nonEmptyString(
@@ -98,6 +129,11 @@ function parseReleaseRegion(
       `regions.${region}.imageVersion`,
     ),
     executionRoleArn,
+    egressConnectorArn,
+    egressIpv4Address: optionalIpv4Address(
+      record.egressIpv4Address,
+      `regions.${region}.egressIpv4Address`,
+    ),
     enabledForNewPlacements: record.enabledForNewPlacements,
   };
 }

@@ -64,6 +64,8 @@ type CloudSession = {
   placementReason?: string;
   imageIdentifier: string;
   imageVersion?: string;
+  egressConnectorArn?: string;
+  egressIpv4Address?: string;
   failoverFromRegion?: string;
   failoverErrorName?: string;
   failoverStartedAt?: number;
@@ -131,6 +133,7 @@ type AwsLambdaMicrovmConfig = {
   executionRoleArn?: string;
   ingressConnectorArn: string;
   egressConnectorArn: string;
+  egressIpv4Address?: string;
   maxDurationSeconds: number;
   minRemainingSeconds: number;
   logGroup: string;
@@ -342,7 +345,10 @@ export function getAwsLambdaMicrovmConfig(
       process.env.AWS_LAMBDA_MICROVM_EXECUTION_ROLE_ARN?.trim() ??
       undefined,
     ingressConnectorArn: `arn:aws:lambda:${region}:aws:network-connector:aws-network-connector:ALL_INGRESS`,
-    egressConnectorArn: `arn:aws:lambda:${region}:aws:network-connector:aws-network-connector:INTERNET_EGRESS`,
+    egressConnectorArn:
+      regionalRelease?.egressConnectorArn ??
+      `arn:aws:lambda:${region}:aws:network-connector:aws-network-connector:INTERNET_EGRESS`,
+    egressIpv4Address: regionalRelease?.egressIpv4Address,
     maxDurationSeconds,
     minRemainingSeconds,
     logGroup:
@@ -376,7 +382,8 @@ function getRegionalReleaseConfig(
     imageVersion: release.imageVersion,
     executionRoleArn: release.executionRoleArn,
     ingressConnectorArn: `arn:aws:lambda:${region}:aws:network-connector:aws-network-connector:ALL_INGRESS`,
-    egressConnectorArn: `arn:aws:lambda:${region}:aws:network-connector:aws-network-connector:INTERNET_EGRESS`,
+    egressConnectorArn: release.egressConnectorArn,
+    egressIpv4Address: release.egressIpv4Address,
   };
 }
 
@@ -426,7 +433,10 @@ function getConfigForPersistedSession(
     executionRoleArn:
       regionalRelease?.executionRoleArn ?? desired.executionRoleArn,
     ingressConnectorArn: `arn:aws:lambda:${region}:aws:network-connector:aws-network-connector:ALL_INGRESS`,
-    egressConnectorArn: `arn:aws:lambda:${region}:aws:network-connector:aws-network-connector:INTERNET_EGRESS`,
+    egressConnectorArn:
+      session.egressConnectorArn ??
+      `arn:aws:lambda:${region}:aws:network-connector:aws-network-connector:INTERNET_EGRESS`,
+    egressIpv4Address: session.egressIpv4Address,
   };
 }
 
@@ -1148,6 +1158,8 @@ export async function ensureAwsLambdaMicrovmConnection(
         placementReason: config.placementReason,
         imageIdentifier: config.imageIdentifier,
         imageVersion: config.imageVersion,
+        egressConnectorArn: config.egressConnectorArn,
+        egressIpv4Address: config.egressIpv4Address,
         ...(currentAttempt.failover
           ? {
               failoverFromRegion: currentAttempt.failover.fromRegion,
@@ -1193,7 +1205,8 @@ export async function ensureAwsLambdaMicrovmConnection(
     !begin.created &&
     (config.region !== desiredConfig.region ||
       config.imageIdentifier !== desiredConfig.imageIdentifier ||
-      config.imageVersion !== desiredConfig.imageVersion)
+      config.imageVersion !== desiredConfig.imageVersion ||
+      config.egressConnectorArn !== desiredConfig.egressConnectorArn)
   ) {
     log("info", "cloud_sandbox_sticky_session_retained", {
       user_id: userId,
@@ -1206,6 +1219,11 @@ export async function ensureAwsLambdaMicrovmConnection(
       persisted_region: config.region,
       requested_image_version: desiredConfig.imageVersion ?? "latest",
       persisted_image_version: config.imageVersion ?? "latest",
+      requested_egress_connector:
+        desiredConfig.egressConnectorArn.split(":").at(-1) ?? null,
+      persisted_egress_connector:
+        config.egressConnectorArn.split(":").at(-1) ?? null,
+      persisted_egress_ipv4: config.egressIpv4Address ?? null,
       release_id: desiredConfig.releaseId ?? null,
     });
   }

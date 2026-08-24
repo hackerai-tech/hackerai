@@ -17,6 +17,182 @@ Parameters:
 Conditions:
   CreateGitHubOidcProvider: !Equals [!Ref ExistingGitHubOidcProviderArn, ""]
 Resources:
+  EgressVpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.90.0.0/16
+      EnableDnsHostnames: true
+      EnableDnsSupport: true
+      Tags:
+        - Key: Name
+          Value: !Sub "hackerai-microvm-egress-${AWS::Region}"
+        - Key: application
+          Value: hackerai
+
+  EgressInternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: !Sub "hackerai-microvm-egress-${AWS::Region}"
+        - Key: application
+          Value: hackerai
+
+  EgressInternetGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      InternetGatewayId: !Ref EgressInternetGateway
+      VpcId: !Ref EgressVpc
+
+  EgressPublicSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      # Deliberately one AZ per region for the initial fixed-egress rollout.
+      # A second NAT would double the regional fixed cost and publish another
+      # customer allowlist IP; see the README availability tradeoff.
+      AvailabilityZone: !Select [0, !GetAZs ""]
+      CidrBlock: 10.90.0.0/24
+      MapPublicIpOnLaunch: false
+      VpcId: !Ref EgressVpc
+      Tags:
+        - Key: Name
+          Value: !Sub "hackerai-microvm-egress-public-${AWS::Region}"
+        - Key: application
+          Value: hackerai
+
+  EgressPublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref EgressVpc
+      Tags:
+        - Key: Name
+          Value: !Sub "hackerai-microvm-egress-public-${AWS::Region}"
+        - Key: application
+          Value: hackerai
+
+  EgressPublicDefaultRoute:
+    Type: AWS::EC2::Route
+    DependsOn: EgressInternetGatewayAttachment
+    Properties:
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref EgressInternetGateway
+      RouteTableId: !Ref EgressPublicRouteTable
+
+  EgressPublicRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref EgressPublicRouteTable
+      SubnetId: !Ref EgressPublicSubnet
+
+  EgressElasticIp:
+    Type: AWS::EC2::EIP
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    DependsOn: EgressInternetGatewayAttachment
+    Properties:
+      Domain: vpc
+      Tags:
+        - Key: Name
+          Value: !Sub "hackerai-microvm-egress-${AWS::Region}"
+        - Key: application
+          Value: hackerai
+
+  EgressNatGateway:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt EgressElasticIp.AllocationId
+      ConnectivityType: public
+      SubnetId: !Ref EgressPublicSubnet
+      Tags:
+        - Key: Name
+          Value: !Sub "hackerai-microvm-egress-${AWS::Region}"
+        - Key: application
+          Value: hackerai
+
+  EgressPrivateSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone: !Select [0, !GetAZs ""]
+      CidrBlock: 10.90.1.0/24
+      MapPublicIpOnLaunch: false
+      VpcId: !Ref EgressVpc
+      Tags:
+        - Key: Name
+          Value: !Sub "hackerai-microvm-egress-private-${AWS::Region}"
+        - Key: application
+          Value: hackerai
+
+  EgressPrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref EgressVpc
+      Tags:
+        - Key: Name
+          Value: !Sub "hackerai-microvm-egress-private-${AWS::Region}"
+        - Key: application
+          Value: hackerai
+
+  EgressPrivateDefaultRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref EgressNatGateway
+      RouteTableId: !Ref EgressPrivateRouteTable
+
+  EgressPrivateRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref EgressPrivateRouteTable
+      SubnetId: !Ref EgressPrivateSubnet
+
+  EgressSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow Lambda MicroVM outbound traffic through the regional NAT gateway
+      SecurityGroupEgress:
+        - CidrIp: 0.0.0.0/0
+          Description: HackerAI Cloud Agent internet egress
+          IpProtocol: "-1"
+      VpcId: !Ref EgressVpc
+      Tags:
+        - Key: Name
+          Value: !Sub "hackerai-microvm-egress-${AWS::Region}"
+        - Key: application
+          Value: hackerai
+
+  NetworkConnectorOperatorRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub "arn:${AWS::Partition}:iam::aws:policy/AWSLambdaNetworkConnectorOperatorPolicy"
+
+  EgressNetworkConnector:
+    Type: AWS::Lambda::NetworkConnector
+    Properties:
+      Name: hackerai-microvm-static-egress
+      OperatorRole: !GetAtt NetworkConnectorOperatorRole.Arn
+      Configuration:
+        VpcEgressConfiguration:
+          AssociatedComputeResourceTypes:
+            - MicroVm
+          NetworkProtocol: IPv4
+          SecurityGroupIds:
+            - !Ref EgressSecurityGroup
+          SubnetIds:
+            - !Ref EgressPrivateSubnet
+      Tags:
+        - Key: application
+          Value: hackerai
+        - Key: component
+          Value: cloud-sandbox
+
   ArtifactBucket:
     Type: AWS::S3::Bucket
     DeletionPolicy: Retain
@@ -183,6 +359,12 @@ Resources:
         - !Ref MicrovmRuntimePolicy
 
 Outputs:
+  EgressIpv4Address:
+    Description: Stable public IPv4 address used by HackerAI MicroVM outbound traffic
+    Value: !Ref EgressElasticIp
+  EgressNetworkConnectorArn:
+    Description: Regional VPC egress connector passed to Lambda MicroVM launches
+    Value: !Ref EgressNetworkConnector
   ArtifactBucketName:
     Value: !Ref ArtifactBucket
   BuildRoleArn:

@@ -90,6 +90,8 @@ function regionalReleaseManifest() {
           imageIdentifier: `arn:aws:lambda:${region}:630609837323:microvm-image:hackerai-cloud-agent`,
           imageVersion: `${region}-version`,
           executionRoleArn: `arn:aws:iam::630609837323:role/${region}`,
+          egressConnectorArn: `arn:aws:lambda:${region}:630609837323:network-connector:hackerai-microvm-static-egress:1`,
+          egressIpv4Address: "192.0.2.10",
           enabledForNewPlacements: true,
         },
       ]),
@@ -230,6 +232,103 @@ describe("AWS Lambda MicroVM development logging", () => {
       region: "us-east-1",
       ingressConnectorArn: expect.stringContaining(":ALL_INGRESS"),
     });
+  });
+
+  it("retains the connector identity persisted with a reused MicroVM", async () => {
+    process.env.AWS_LAMBDA_MICROVM_RELEASE_MANIFEST = regionalReleaseManifest();
+    const persistedConnector =
+      "arn:aws:lambda:us-east-1:630609837323:network-connector:hackerai-microvm-static-egress:previous";
+    mockMutation.mockResolvedValueOnce({
+      created: false,
+      session: {
+        sessionId: "session-persisted-egress",
+        status: "running",
+        microvmId: "microvm-persisted-egress",
+        connectionId: "connection-persisted-egress",
+        region: "us-east-1",
+        imageIdentifier:
+          "arn:aws:lambda:us-east-1:630609837323:microvm-image:hackerai-cloud-agent",
+        imageVersion: "us-east-1-version",
+        egressConnectorArn: persistedConnector,
+        egressIpv4Address: "192.0.2.77",
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+        bootstrapExpiresAt: Date.now() + 60_000,
+      },
+      cleanupCandidates: [],
+    });
+    mockSend.mockResolvedValue({
+      state: "RUNNING",
+      endpoint: "microvm-persisted-egress.example.test",
+      ingressNetworkConnectors: [
+        "arn:aws:lambda:us-east-1:aws:network-connector:aws-network-connector:ALL_INGRESS",
+      ],
+    });
+    const infoSpy = jest.spyOn(console, "info").mockImplementation();
+
+    await expect(
+      ensureAwsLambdaMicrovmConnection("user-persisted-egress"),
+    ).resolves.toBeDefined();
+
+    const stickyEvent = infoSpy.mock.calls
+      .map(([payload]) => JSON.parse(payload as string))
+      .find(
+        (payload) => payload.event === "cloud_sandbox_sticky_session_retained",
+      );
+    expect(stickyEvent).toMatchObject({
+      persisted_egress_connector: "previous",
+      persisted_egress_ipv4: "192.0.2.77",
+    });
+    expect(mockMutation.mock.calls[0][1]).toMatchObject({
+      egressConnectorArn:
+        "arn:aws:lambda:us-east-1:630609837323:network-connector:hackerai-microvm-static-egress:1",
+      egressIpv4Address: "192.0.2.10",
+    });
+    infoSpy.mockRestore();
+  });
+
+  it("keeps pre-migration reused MicroVMs on the managed egress identity", async () => {
+    process.env.AWS_LAMBDA_MICROVM_RELEASE_MANIFEST = regionalReleaseManifest();
+    mockMutation.mockResolvedValueOnce({
+      created: false,
+      session: {
+        sessionId: "session-legacy-egress",
+        status: "running",
+        microvmId: "microvm-legacy-egress",
+        connectionId: "connection-legacy-egress",
+        region: "us-east-1",
+        imageIdentifier:
+          "arn:aws:lambda:us-east-1:630609837323:microvm-image:hackerai-cloud-agent",
+        imageVersion: "us-east-1-version",
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+        bootstrapExpiresAt: Date.now() + 60_000,
+      },
+      cleanupCandidates: [],
+    });
+    mockSend.mockResolvedValue({
+      state: "RUNNING",
+      endpoint: "microvm-legacy-egress.example.test",
+      ingressNetworkConnectors: [
+        "arn:aws:lambda:us-east-1:aws:network-connector:aws-network-connector:ALL_INGRESS",
+      ],
+    });
+    const infoSpy = jest.spyOn(console, "info").mockImplementation();
+
+    await expect(
+      ensureAwsLambdaMicrovmConnection("user-legacy-egress"),
+    ).resolves.toBeDefined();
+
+    const stickyEvent = infoSpy.mock.calls
+      .map(([payload]) => JSON.parse(payload as string))
+      .find(
+        (payload) => payload.event === "cloud_sandbox_sticky_session_retained",
+      );
+    expect(stickyEvent).toMatchObject({
+      persisted_egress_connector: "INTERNET_EGRESS",
+      persisted_egress_ipv4: null,
+    });
+    infoSpy.mockRestore();
   });
 
   it("passes a scoped lifecycle callback only to remote Convex launches", async () => {
@@ -1185,6 +1284,8 @@ describe("AWS Lambda MicroVM development logging", () => {
       requestedRegion: "eu-west-1",
       region: "eu-west-1",
       imageVersion: "eu-west-1-version",
+      egressConnectorArn:
+        "arn:aws:lambda:eu-west-1:630609837323:network-connector:hackerai-microvm-static-egress:1",
       placementReason: "trigger_region_europe_pairing",
       releaseId: "regional-release",
     });

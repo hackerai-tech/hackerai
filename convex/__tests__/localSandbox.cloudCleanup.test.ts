@@ -88,6 +88,9 @@ describe("cloud sandbox session cleanup", () => {
       region: "us-east-1",
       image_identifier: "east-image",
       image_version: "14.0",
+      egress_connector_arn:
+        "arn:aws:lambda:us-east-1:123:network-connector:retained:7",
+      egress_ipv4_address: "192.0.2.7",
       created_at: now - 1_000,
       updated_at: now - 500,
     };
@@ -137,6 +140,9 @@ describe("cloud sandbox session cleanup", () => {
         region: "eu-west-1",
         imageIdentifier: "eu-image",
         imageVersion: "2.0",
+        egressConnectorArn:
+          "arn:aws:lambda:eu-west-1:123:network-connector:new:8",
+        egressIpv4Address: "192.0.2.8",
       }),
     ).resolves.toEqual(
       expect.objectContaining({
@@ -146,6 +152,9 @@ describe("cloud sandbox session cleanup", () => {
           region: "us-east-1",
           imageIdentifier: "east-image",
           imageVersion: "14.0",
+          egressConnectorArn:
+            "arn:aws:lambda:us-east-1:123:network-connector:retained:7",
+          egressIpv4Address: "192.0.2.7",
         }),
         cleanupCandidates: [],
       }),
@@ -184,6 +193,9 @@ describe("cloud sandbox session cleanup", () => {
         placementReason: "regional_capacity_failover",
         imageIdentifier: "west-image",
         imageVersion: "15.0",
+        egressConnectorArn:
+          "arn:aws:lambda:us-west-2:123:network-connector:west:3",
+        egressIpv4Address: "192.0.2.33",
         failoverFromRegion: "us-east-1",
         failoverErrorName: "ThrottlingException",
         failoverStartedAt: 1_000,
@@ -198,6 +210,9 @@ describe("cloud sandbox session cleanup", () => {
           failoverFromRegion: "us-east-1",
           failoverErrorName: "ThrottlingException",
           failoverStartedAt: 1_000,
+          egressConnectorArn:
+            "arn:aws:lambda:us-west-2:123:network-connector:west:3",
+          egressIpv4Address: "192.0.2.33",
         }),
       }),
     );
@@ -210,6 +225,9 @@ describe("cloud sandbox session cleanup", () => {
         failover_from_region: "us-east-1",
         failover_error_name: "ThrottlingException",
         failover_started_at: 1_000,
+        egress_connector_arn:
+          "arn:aws:lambda:us-west-2:123:network-connector:west:3",
+        egress_ipv4_address: "192.0.2.33",
       }),
     );
   });

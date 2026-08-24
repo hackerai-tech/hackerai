@@ -12,18 +12,26 @@ const region =
 const imageIdentifier = process.env.AWS_LAMBDA_MICROVM_IMAGE_ID;
 const imageVersion = process.env.AWS_LAMBDA_MICROVM_IMAGE_VERSION;
 const executionRoleArn = process.env.AWS_LAMBDA_MICROVM_EXECUTION_ROLE_ARN;
+const egressConnector =
+  process.env.AWS_LAMBDA_MICROVM_EGRESS_CONNECTOR_ARN?.trim();
+const expectedEgressIpv4 = process.env.AWS_LAMBDA_MICROVM_EGRESS_IPV4?.trim();
 const logGroup =
   process.env.AWS_LAMBDA_MICROVM_LOG_GROUP ||
   "/aws/lambda/microvms/hackerai-cloud-agent";
 
-if (!imageIdentifier || !imageVersion || !executionRoleArn) {
+if (
+  !imageIdentifier ||
+  !imageVersion ||
+  !executionRoleArn ||
+  !egressConnector ||
+  !expectedEgressIpv4
+) {
   throw new Error(
-    "AWS_LAMBDA_MICROVM_IMAGE_ID, AWS_LAMBDA_MICROVM_IMAGE_VERSION, and AWS_LAMBDA_MICROVM_EXECUTION_ROLE_ARN are required",
+    "AWS_LAMBDA_MICROVM_IMAGE_ID, AWS_LAMBDA_MICROVM_IMAGE_VERSION, AWS_LAMBDA_MICROVM_EXECUTION_ROLE_ARN, AWS_LAMBDA_MICROVM_EGRESS_CONNECTOR_ARN, and AWS_LAMBDA_MICROVM_EGRESS_IPV4 are required",
   );
 }
 
 const ingressConnector = `arn:aws:lambda:${region}:aws:network-connector:aws-network-connector:ALL_INGRESS`;
-const egressConnector = `arn:aws:lambda:${region}:aws:network-connector:aws-network-connector:INTERNET_EGRESS`;
 const client = new LambdaMicrovmsClient({ region, maxAttempts: 4 });
 const sleep = (durationMs) =>
   new Promise((resolvePromise) => setTimeout(resolvePromise, durationMs));
@@ -109,8 +117,9 @@ async function runDirectCommand(microvm) {
             JSON.stringify({
               type: "command",
               commandId,
-              command: "printf hackerai-direct-smoke",
-              timeout: 10_000,
+              command:
+                "printf 'hackerai-direct-smoke\\n'; curl --fail --silent --show-error --max-time 15 https://checkip.amazonaws.com",
+              timeout: 30_000,
               displayName: "",
               targetConnectionId: microvm.microvmId,
             }),
@@ -123,10 +132,15 @@ async function runDirectCommand(microvm) {
           finish(new Error(`Direct command failed: ${message.message}`));
         }
         if (message.type === "exit") {
-          if (message.exitCode !== 0 || stdout !== "hackerai-direct-smoke") {
+          const [marker, observedEgressIpv4] = stdout.trim().split(/\r?\n/);
+          if (
+            message.exitCode !== 0 ||
+            marker !== "hackerai-direct-smoke" ||
+            observedEgressIpv4 !== expectedEgressIpv4
+          ) {
             finish(
               new Error(
-                `Direct command returned exit=${message.exitCode} stdout=${JSON.stringify(stdout)}`,
+                `Direct command returned exit=${message.exitCode} stdout=${JSON.stringify(stdout)}; expected egress IPv4 ${expectedEgressIpv4}`,
               ),
             );
           } else {
