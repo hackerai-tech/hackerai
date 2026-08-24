@@ -429,6 +429,31 @@ describe("createAgentStream repeated compaction", () => {
     mockGetProviderPromptPressure.mockReset();
   });
 
+  it("reports the first provider chunk to startup timing", async () => {
+    const onModelChunk = jest.fn();
+    const stream = (await createAgentStream(
+      "test-model",
+      createTestStreamContext({
+        onModelChunk,
+        summarizationTracker: {
+          hasSummarized: false,
+          summarizationCount: 0,
+        },
+        usageTracker: {},
+      }) as any,
+      initAgentStreamState([uiMessage("initial", "Say hello")], {
+        usedTokens: 1_000,
+        maxTokens: 128_000,
+      }),
+    )) as any;
+
+    await stream.onChunk({
+      chunk: { type: "text-delta", id: "text-1", text: "Hello" },
+    });
+
+    expect(onModelChunk).toHaveBeenCalledTimes(1);
+  });
+
   it("includes sandbox and Trigger runtime in budget checks and per-step settlement", async () => {
     const checkAfterStep = jest.fn(() => undefined);
     const settleUsageAfterStep = jest.fn(async () => undefined);
