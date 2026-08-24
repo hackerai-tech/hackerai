@@ -220,7 +220,12 @@ export const MessagePartHandler = memo(function MessagePartHandler({
       }
 
       // For assistant messages, use memoized markdown rendering
-      return <MemoizedMarkdown content={text} />;
+      return (
+        <MemoizedMarkdown
+          content={text}
+          isAnimating={status === "streaming" && isLastMessage === true}
+        />
+      );
     }
 
     case "reasoning":

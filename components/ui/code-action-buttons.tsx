@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { Download, Copy, Check, WrapText } from "lucide-react";
+import { Download, Copy, Check, WrapText, Braces } from "lucide-react";
 import {
   Tooltip,
   TooltipTrigger,
@@ -19,6 +19,8 @@ interface CodeActionButtonsProps {
   showDownload?: boolean;
   showCopy?: boolean;
   showWrap?: boolean;
+  showHighlight?: boolean;
+  onHighlight?: () => void;
 }
 
 export const CodeActionButtons: React.FC<CodeActionButtonsProps> = ({
@@ -31,6 +33,8 @@ export const CodeActionButtons: React.FC<CodeActionButtonsProps> = ({
   showDownload = true,
   showCopy = true,
   showWrap = true,
+  showHighlight = false,
+  onHighlight,
 }) => {
   const [copied, setCopied] = useState(false);
 
@@ -81,6 +85,24 @@ export const CodeActionButtons: React.FC<CodeActionButtonsProps> = ({
     <div
       className={`flex items-center ${variant === "sidebar" ? "gap-0.5" : "space-x-2"}`}
     >
+      {showHighlight && onHighlight && (
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <button
+              type="button"
+              onClick={onHighlight}
+              className={getButtonClasses()}
+              aria-label="Enable syntax highlighting"
+            >
+              <Braces size={14} />
+            </button>
+          </TooltipTrigger>
+          <TooltipContent>
+            Enable syntax highlighting (may be slow)
+          </TooltipContent>
+        </Tooltip>
+      )}
+
       {showDownload && (
         <Tooltip>
           <TooltipTrigger asChild>
