@@ -51,6 +51,9 @@ const INDEX_FIELDS: Record<string, Record<string, string[]>> = {
   extra_usage: {
     by_user_id: ["user_id"],
   },
+  user_customization: {
+    by_user_id: ["user_id"],
+  },
   extra_usage_purchases: {
     by_stripe_checkout_session_id: ["stripe_checkout_session_id"],
   },
@@ -104,6 +107,7 @@ function createQueryBuilder(tables: Tables, table: string) {
 function createMockCtx(initialTables: Partial<Tables> = {}) {
   const tables: Tables = {
     extra_usage: [],
+    user_customization: [],
     extra_usage_purchases: [],
     processed_checkout_sessions: [],
     processed_webhooks: [],
@@ -159,7 +163,7 @@ async function callRecordPurchaseFailed(ctx: any) {
   });
 }
 
-async function callAddCredits(ctx: any) {
+async function callAddCredits(ctx: any, enableExtraUsage = false) {
   const { addCredits } = await import("../extraUsage");
   return (addCredits as any).handler(ctx, {
     serviceKey: SERVICE_KEY,
@@ -173,6 +177,7 @@ async function callAddCredits(ctx: any) {
     stripePaymentIntentId: "pi_test",
     stripeInvoiceId: "in_test",
     purchaseRoute: "confirm",
+    enableExtraUsage,
   });
 }
 
@@ -300,6 +305,27 @@ describe("extra usage purchase ledger", () => {
       credited_at: 950_000,
     });
     expect(mockRecordRevenueEventInternal).not.toHaveBeenCalled();
+  });
+
+  it("enables extra usage atomically for a direct purchase", async () => {
+    const { ctx, tables } = createMockCtx({
+      user_customization: [
+        {
+          _id: "customization-1",
+          user_id: "user_123",
+          include_notes: true,
+          extra_usage_enabled: false,
+          updated_at: 900_000,
+        },
+      ],
+    });
+
+    await callAddCredits(ctx, true);
+
+    expect(tables.user_customization[0]).toMatchObject({
+      extra_usage_enabled: true,
+      updated_at: 1_000_000,
+    });
   });
 
   it("does not mark legacy webhook duplicates as credited without session-key proof", async () => {

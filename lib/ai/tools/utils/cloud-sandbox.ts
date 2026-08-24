@@ -1,17 +1,12 @@
 import type { AnySandbox, SandboxBootInfo } from "@/types";
 import type { SubscriptionTier } from "@/types";
 import {
-  getAwsLambdaMicrovmRolloutTelemetryProperties,
-  type AwsLambdaMicrovmRolloutAssignment,
-} from "@/lib/experiments/aws-lambda-microvm-rollout";
-import {
   getCloudSandboxProvider,
   type CloudSandboxProvider,
 } from "./cloud-sandbox-provider";
 import { ensureSandboxConnection } from "./sandbox";
 import { isAwsLambdaMicrovmSandbox, isE2BSandbox } from "./sandbox-types";
 import { phLogger } from "@/lib/posthog/server";
-import { getCloudSandboxRecoveryTelemetryProperties } from "./cloud-sandbox-recovery";
 import type { TriggerRunRegion } from "@/lib/api/trigger-region";
 
 export type CloudSandboxAcquisitionContext = {
@@ -19,13 +14,7 @@ export type CloudSandboxAcquisitionContext = {
   subscription?: SubscriptionTier;
   chatId?: string;
   triggerRunId?: string;
-  rollout?: AwsLambdaMicrovmRolloutAssignment;
   runKind?: "parent" | "subagent";
-  recovery?: {
-    fromProvider: CloudSandboxProvider;
-    toProvider: CloudSandboxProvider;
-    reason: "attachment_placement_failure";
-  };
   triggerRegion?: TriggerRunRegion;
 };
 
@@ -77,7 +66,6 @@ export async function ensureCloudSandboxConnection(options: {
       },
     );
   } catch (error) {
-    const rollout = options.context?.rollout;
     phLogger.event("cloud_sandbox_acquisition_failed", {
       userId: options.userId,
       chat_id: options.context?.chatId,
@@ -88,9 +76,7 @@ export async function ensureCloudSandboxConnection(options: {
       subscription: options.context?.subscription,
       subscription_tier: options.context?.subscription,
       agent_run_kind: options.context?.runKind ?? "parent",
-      ...getCloudSandboxRecoveryTelemetryProperties(options.context),
       trigger_region: options.context?.triggerRegion,
-      ...getAwsLambdaMicrovmRolloutTelemetryProperties(rollout),
       failure_stage: "ensure_cloud_sandbox",
       duration_ms: Date.now() - startedAt,
       error_name: error instanceof Error ? error.name : "UnknownError",

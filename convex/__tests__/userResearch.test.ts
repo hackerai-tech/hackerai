@@ -178,3 +178,45 @@ describe("userResearch.getMessageExcerpt", () => {
     expect(result.truncated).toBe(true);
   });
 });
+
+describe("userResearch.createRun", () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  it("creates an auditable run without optional Linear tracking", async () => {
+    const insert = jest.fn(async () => "document-id");
+    const ctx = {
+      db: {
+        query: jest.fn(() => ({
+          withIndex: jest.fn(() => ({
+            unique: jest.fn(async () => null),
+          })),
+        })),
+        insert,
+      },
+    };
+    const { createRun } = await import("../userResearch");
+
+    await createRun.handler(ctx as never, {
+      serviceKey: "service-key",
+      analysisId: "analysis-1",
+      question: "What recurring work creates the most customer value?",
+      cohortLabel: "Approved production research cohort",
+      requestedBy: "pm-gateway",
+      members: [
+        { userId: "user-1", pseudonym: "U01" },
+        { userId: "user-2", pseudonym: "U02" },
+        { userId: "user-3", pseudonym: "U03" },
+      ],
+      maxChatsPerUser: 12,
+      model: "x-ai/grok-4.6",
+    });
+
+    expect(insert).toHaveBeenCalledWith(
+      "research_runs",
+      expect.not.objectContaining({ linear_issue_id: expect.anything() }),
+    );
+    expect(insert).toHaveBeenCalledTimes(4);
+  });
+});

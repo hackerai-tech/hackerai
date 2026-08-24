@@ -170,7 +170,9 @@ export const pmUserResearch = schemaTask({
     await client.mutation(api.userResearch.createRun, {
       serviceKey,
       analysisId,
-      linearIssueId: payload.linearIssueId,
+      ...(payload.linearIssueId
+        ? { linearIssueId: payload.linearIssueId }
+        : {}),
       question: payload.question,
       cohortLabel: payload.cohortLabel,
       requestedBy: payload.requestedBy,

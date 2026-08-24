@@ -29,8 +29,6 @@ export interface SandboxManager {
   getSandbox(): Promise<{ sandbox: AnySandbox }>;
   setSandbox(sandbox: AnySandbox): void;
   resetSandbox?(reason?: string): Promise<void>;
-  /** Select AWS for one rollout-authorized recovery attempt after an E2B placement failure. */
-  selectAlternateCloudProviderForRecovery?(): CloudSandboxProvider | null;
   /** Quarantine an unresponsive local connection and keep retry acquisition bound to that explicit selection. */
   quarantineLocalConnection?(
     connectionId: string,

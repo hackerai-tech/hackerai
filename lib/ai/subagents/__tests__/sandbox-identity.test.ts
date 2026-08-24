@@ -1,6 +1,7 @@
 import {
   assertSubagentSandboxIdentity,
   getSubagentSandboxIdentity,
+  resolvePersistedSubagentCloudSandboxProvider,
 } from "../sandbox-identity";
 
 const relaySandbox = (
@@ -29,5 +30,36 @@ describe("subagent sandbox identity", () => {
     expect(() => assertSubagentSandboxIdentity(local, "aws:relay-1")).toThrow(
       "The validation sandbox changed before the child started.",
     );
+  });
+
+  it("resolves the provider that owns a persisted parent sandbox", () => {
+    expect(
+      resolvePersistedSubagentCloudSandboxProvider({
+        subscription: "ultra",
+        sandboxPreference: "desktop",
+        sandboxIdentity: "aws:relay-1",
+      }),
+    ).toBe("aws-lambda-microvm");
+    expect(
+      resolvePersistedSubagentCloudSandboxProvider({
+        subscription: "pro",
+        sandboxPreference: "e2b",
+        sandboxIdentity: "connection:legacy-aws-relay",
+      }),
+    ).toBe("aws-lambda-microvm");
+    expect(
+      resolvePersistedSubagentCloudSandboxProvider({
+        subscription: "pro",
+        sandboxPreference: "e2b",
+        sandboxIdentity: "e2b:sandbox-1",
+      }),
+    ).toBe("e2b");
+    expect(
+      resolvePersistedSubagentCloudSandboxProvider({
+        subscription: "free",
+        sandboxPreference: "e2b",
+        sandboxIdentity: "connection:stale-aws-relay",
+      }),
+    ).toBe("e2b");
   });
 });

@@ -1,6 +1,6 @@
 ---
 name: hackerai-user-research
-description: Run privacy-safe HackerAI customer research from a Linear question and a product-data cohort. Use for requests to understand user types, recurring jobs, workflows, friction, value drivers, reasons to pay, or customer avatars from actual HackerAI messages, including HAC-65-style top-spender research. Also use when a PM asks how to run, repeat, or interpret the `pm-user-research` Trigger task. Do not use for support investigations, decisions about one person's eligibility or risk, or exporting raw customer content.
+description: Run privacy-safe HackerAI customer research from an authorized PM question and a product-data cohort. Use for requests to understand user types, recurring jobs, workflows, friction, value drivers, reasons to pay, or customer avatars from actual HackerAI messages, including top-spender research. Also use when a PM asks how to run, repeat, or interpret the `pm-user-research` Trigger task. Do not use for support investigations, decisions about one person's eligibility or risk, or exporting raw customer content.
 ---
 
 # HackerAI User Research
@@ -14,11 +14,10 @@ Read [references/privacy-policy.md](references/privacy-policy.md) and
 
 ## Workflow
 
-1. Read the owning Linear issue. Extract the research question, cohort rule,
-   exclusions, requested output, and privacy constraints. Confirm the responsible
-   owner explicitly approved customer-message research. If no approved issue
-   exists, create or update one and stop until approval is recorded; creating the
-   issue does not itself grant approval.
+1. Extract the research question, cohort rule, exclusions, requested output, and
+   privacy constraints from the authorized PM's request. A Linear issue may be
+   supplied for optional tracking, but it is not an authorization control and
+   must not be required to run research.
 2. Select the cohort in PostHog. Use Stripe-synced revenue in PostHog when its
    freshness and account mapping are sufficient. Check Stripe directly only for
    unmatched customers, refunds/disputes, payer-versus-user ambiguity, or other
@@ -41,23 +40,27 @@ Read [references/privacy-policy.md](references/privacy-policy.md) and
    avatars, primary/secondary target, confidence, unknowns, and experiments.
    Detailed pseudonym-level profiles remain in restricted Convex records and are
    not returned through Trigger.
-7. Update Linear only when asked. Copy aggregate findings, coverage, confidence,
-   unknowns, and experiments. Never copy cohort IDs, pseudonym-level profiles,
-   raw evidence, direct identifiers, or per-user findings or targeting decisions.
+7. Update an optional Linear issue only when asked. Copy aggregate findings,
+   coverage, confidence, unknowns, and experiments. Never copy cohort IDs,
+   pseudonym-level profiles, raw evidence, direct identifiers, or per-user
+   findings or targeting decisions.
 
 ## Gateway payload
 
-Use the current task schema as the authority. A typical HAC-65 run is:
+Use the current task schema as the authority. A typical run is:
 
 ```json
 {
-  "linearIssueId": "HAC-65",
   "question": "What kinds of users are our highest-spending customers, what recurring work do they use HackerAI for, and why do they pay?",
   "cohortLabel": "Top 10 users by reconciled lifetime net paid spend",
   "userIds": ["internal-user-id-1", "internal-user-id-2", "internal-user-id-3"],
   "maxChatsPerUser": 12
 }
 ```
+
+`linearIssueId` may be added as an optional tracking reference, for example
+`"linearIssueId": "HAC-65"`. The issue's presence or state does not authorize
+or block a run.
 
 Do not place email addresses, Stripe customer IDs, or message content in the
 payload. `userIds` must be the internal Convex/WorkOS user IDs.
@@ -81,5 +84,5 @@ payload. `userIds` must be the internal Convex/WorkOS user IDs.
 
 The gateway returns only aggregate internal research and cannot read other
 Trigger tasks or runs. Detailed profiles remain restricted and deletion-aware
-in Convex. The aggregate report is the only part that may be copied to Linear,
-under the owning issue's privacy rules.
+in Convex. The aggregate report is the only part that may be copied to an
+optional Linear issue, under the same privacy rules.

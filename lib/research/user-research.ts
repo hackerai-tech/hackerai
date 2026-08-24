@@ -25,7 +25,8 @@ const pmUserResearchPayloadBaseSchema = z.object({
   linearIssueId: z
     .string()
     .trim()
-    .regex(/^[A-Z]+-\d+$/),
+    .regex(/^[A-Z]+-\d+$/)
+    .optional(),
   question: z.string().trim().min(10).max(1_000),
   cohortLabel: z.string().trim().min(3).max(200),
   userIds: z

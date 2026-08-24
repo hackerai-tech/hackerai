@@ -5,10 +5,14 @@ import {
   CreateMicrovmImageCommand,
   GetMicrovmImageVersionCommand,
   LambdaMicrovmsClient,
+  ListMicrovmImageBuildsCommand,
   paginateListMicrovmImages,
   UpdateMicrovmImageCommand,
 } from "@aws-sdk/client-lambda-microvms";
 import { PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
+import buildDiagnostics from "./lib/aws-microvm-build-diagnostics.cjs";
+
+const { listMicrovmBuildDiagnostics } = buildDiagnostics;
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const artifactPath = resolve(
@@ -26,10 +30,47 @@ const name =
 const baseImageArn =
   process.env.AWS_LAMBDA_MICROVM_BASE_IMAGE_ARN ||
   `arn:aws:lambda:${region}:aws:microvm-image:al2023-1`;
+const publishAttempts = Number.parseInt(
+  process.env.AWS_LAMBDA_MICROVM_PUBLISH_ATTEMPTS || "2",
+  10,
+);
+const retrySignalFile = process.env.AWS_LAMBDA_MICROVM_RETRY_SIGNAL_FILE;
+const releaseRequestId = [
+  process.env.GITHUB_RUN_ID,
+  process.env.GITHUB_RUN_ATTEMPT,
+]
+  .filter(Boolean)
+  .join(":");
+const releaseEnvironment =
+  process.env.GITHUB_ACTIONS === "true" ? "prod" : "local";
+
+function releaseLog(level, event, properties) {
+  const output = JSON.stringify({
+    timestamp: new Date().toISOString(),
+    level,
+    event,
+    request_id: releaseRequestId || "unavailable",
+    service: "aws-microvm-release",
+    environment: releaseEnvironment,
+    ...properties,
+  });
+  if (level === "error") console.error(output);
+  else if (level === "warn") console.warn(output);
+  else console.log(output);
+}
 
 if (!bucket || !buildRoleArn || !executionRoleArn) {
   throw new Error(
     "AWS_LAMBDA_MICROVM_ARTIFACT_BUCKET, AWS_LAMBDA_MICROVM_BUILD_ROLE_ARN, and AWS_LAMBDA_MICROVM_EXECUTION_ROLE_ARN are required",
+  );
+}
+if (
+  !Number.isSafeInteger(publishAttempts) ||
+  publishAttempts < 1 ||
+  publishAttempts > 3
+) {
+  throw new Error(
+    "AWS_LAMBDA_MICROVM_PUBLISH_ATTEMPTS must be an integer from 1 through 3",
   );
 }
 
@@ -46,6 +87,27 @@ await new S3Client({ region }).send(
 );
 
 const lambda = new LambdaMicrovmsClient({ region, maxAttempts: 4 });
+
+async function resolveBuildFailure(imageIdentifier, imageVersion) {
+  try {
+    return await listMicrovmBuildDiagnostics({
+      imageIdentifier,
+      imageVersion,
+      listPage: (input) =>
+        lambda.send(new ListMicrovmImageBuildsCommand(input)),
+    });
+  } catch (error) {
+    releaseLog("warn", "aws_microvm_image_build_diagnostics_failed", {
+      region,
+      image_identifier: imageIdentifier,
+      image_version: imageVersion,
+      error_name: error?.name || "Error",
+      error_message: error?.message || String(error),
+    });
+    return { builds: [], stateReason: null };
+  }
+}
+
 const common = {
   baseImageArn,
   buildRoleArn,
@@ -93,46 +155,158 @@ for await (const page of paginateListMicrovmImages(
   }
 }
 
-const response = existing
-  ? await lambda.send(
-      new UpdateMicrovmImageCommand({
-        ...common,
-        imageIdentifier: existing.imageArn || name,
-        clientToken: crypto.randomUUID(),
-      }),
-    )
-  : await lambda.send(
-      new CreateMicrovmImageCommand({
-        ...common,
-        name,
-        clientToken: crypto.randomUUID(),
-      }),
-    );
-
-const imageIdentifier = response.imageArn || name;
-const imageVersion = response.imageVersion;
-if (!imageVersion) {
-  throw new Error("AWS did not return the published MicroVM image version");
-}
-
-const deadline = Date.now() + 45 * 60 * 1000;
+let imageIdentifier = existing?.imageArn || name;
+let imageVersion;
 let version;
-while (Date.now() < deadline) {
-  version = await lambda.send(
-    new GetMicrovmImageVersionCommand({ imageIdentifier, imageVersion }),
-  );
-  if (version.state === "SUCCESSFUL" && version.status === "ACTIVE") break;
-  if (version.state === "FAILED") {
-    throw new Error(
-      `MicroVM image version ${imageVersion} failed: ${version.stateReason || "no reason returned"}`,
-    );
+
+async function sendPublishCommand({ attempt, input, update }) {
+  const blockedDeadline = Date.now() + 45 * 60 * 1000;
+  let blockedAt;
+
+  while (true) {
+    try {
+      const response = await lambda.send(
+        update
+          ? new UpdateMicrovmImageCommand(input)
+          : new CreateMicrovmImageCommand(input),
+      );
+      if (blockedAt !== undefined) {
+        releaseLog("info", "aws_microvm_image_publish_unblocked", {
+          region,
+          image_identifier: imageIdentifier,
+          attempt,
+          max_attempts: publishAttempts,
+          blocked_duration_ms: Date.now() - blockedAt,
+        });
+      }
+      return response;
+    } catch (error) {
+      const blocked =
+        update &&
+        error?.name === "ValidationException" &&
+        error.message?.includes(
+          "Cannot update MicroVM Image in its current state",
+        );
+      if (!blocked || Date.now() >= blockedDeadline) throw error;
+      if (blockedAt === undefined) {
+        blockedAt = Date.now();
+        releaseLog("warn", "aws_microvm_image_publish_blocked", {
+          region,
+          image_identifier: imageIdentifier,
+          attempt,
+          max_attempts: publishAttempts,
+          error_name: error.name,
+          retry_interval_ms: 30_000,
+        });
+      }
+      await new Promise((resolvePromise) => setTimeout(resolvePromise, 30_000));
+    }
   }
-  await new Promise((resolvePromise) => setTimeout(resolvePromise, 10_000));
 }
-if (version?.state !== "SUCCESSFUL" || version.status !== "ACTIVE") {
+
+publish: for (let attempt = 1; attempt <= publishAttempts; attempt += 1) {
+  const update = Boolean(existing || attempt > 1);
+  const response = await sendPublishCommand({
+    attempt,
+    update,
+    input: update
+      ? {
+          ...common,
+          imageIdentifier,
+          clientToken: crypto.randomUUID(),
+        }
+      : {
+          ...common,
+          name,
+          clientToken: crypto.randomUUID(),
+        },
+  });
+
+  imageIdentifier = response.imageArn || imageIdentifier;
+  imageVersion = response.imageVersion;
+  if (!imageVersion) {
+    throw new Error("AWS did not return the published MicroVM image version");
+  }
+
+  releaseLog("info", "aws_microvm_image_publish_started", {
+    region,
+    image_identifier: imageIdentifier,
+    image_version: imageVersion,
+    attempt,
+    max_attempts: publishAttempts,
+  });
+
+  const deadline = Date.now() + 45 * 60 * 1000;
+  while (Date.now() < deadline) {
+    version = await lambda.send(
+      new GetMicrovmImageVersionCommand({ imageIdentifier, imageVersion }),
+    );
+    if (version.state === "SUCCESSFUL" && version.status === "ACTIVE") {
+      releaseLog("info", "aws_microvm_image_publish_succeeded", {
+        region,
+        image_identifier: imageIdentifier,
+        image_version: imageVersion,
+        attempt,
+        max_attempts: publishAttempts,
+        state: version.state,
+        status: version.status,
+      });
+      break publish;
+    }
+    if (version.state === "FAILED") {
+      const buildFailure = await resolveBuildFailure(
+        imageIdentifier,
+        imageVersion,
+      );
+      const stateReason =
+        version.stateReason?.trim() || buildFailure.stateReason || null;
+      const retrying = stateReason === null && attempt < publishAttempts;
+      const delegatingRetry =
+        stateReason === null && !retrying && Boolean(retrySignalFile);
+      releaseLog(
+        retrying || delegatingRetry ? "warn" : "error",
+        "aws_microvm_image_publish_failed",
+        {
+          region,
+          image_identifier: imageIdentifier,
+          image_version: imageVersion,
+          attempt,
+          max_attempts: publishAttempts,
+          state: version.state,
+          status: version.status,
+          state_reason: stateReason,
+          builds: buildFailure.builds,
+          retry_scheduled: retrying || delegatingRetry,
+          retry_delegated: delegatingRetry,
+        },
+      );
+      if (retrying) {
+        await new Promise((resolvePromise) =>
+          setTimeout(resolvePromise, 10_000),
+        );
+        continue publish;
+      }
+      if (delegatingRetry) {
+        await writeFile(resolve(retrySignalFile), "retry\n", { mode: 0o600 });
+      }
+      throw new Error(
+        `MicroVM image version ${imageVersion} failed: ${stateReason || "no reason returned"}`,
+      );
+    }
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 10_000));
+  }
+
   throw new Error(
     `Timed out waiting for MicroVM image version ${imageVersion} to become active`,
   );
+}
+
+if (
+  !imageVersion ||
+  version?.state !== "SUCCESSFUL" ||
+  version.status !== "ACTIVE"
+) {
+  throw new Error("AWS did not publish an active MicroVM image version");
 }
 
 const output = [

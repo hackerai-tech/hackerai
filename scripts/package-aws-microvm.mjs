@@ -2,13 +2,14 @@ import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import JSZip from "jszip";
+import containerImage from "./lib/aws-microvm-container-image.cjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const outputDir = join(root, ".artifacts", "aws-lambda-microvm");
 const outputPath = join(outputDir, "hackerai-lambda-microvm.zip");
-const baseDockerfile = await readFile(
-  join(root, "docker", "Dockerfile"),
-  "utf8",
+const { resolveContainerBaseImage } = containerImage;
+const containerBaseImage = resolveContainerBaseImage(
+  process.env.AWS_LAMBDA_MICROVM_CONTAINER_BASE_IMAGE,
 );
 const localPackage = JSON.parse(
   await readFile(join(root, "packages", "local", "package.json"), "utf8"),
@@ -19,7 +20,7 @@ const localPackage = JSON.parse(
 // retaining optional node-pty for managed-cloud PTY support.
 delete localPackage.scripts;
 
-const dockerfile = `${baseDockerfile.trim()}
+const dockerfile = `FROM ${containerBaseImage}
 
 # Lambda MicroVM egress exposes an AWS link-local resolver that ProjectDiscovery
 # tools do not discover automatically. Keep explicit user resolver flags intact.

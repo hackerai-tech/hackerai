@@ -1103,7 +1103,7 @@ export default defineSchema({
   // the service-keyed analysis task and are never stored in these tables.
   research_runs: defineTable({
     analysis_id: v.string(),
-    linear_issue_id: v.string(),
+    linear_issue_id: v.optional(v.string()),
     question: v.string(),
     cohort_label: v.string(),
     requested_by: v.string(),

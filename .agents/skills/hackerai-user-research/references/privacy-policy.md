@@ -1,7 +1,8 @@
 # Customer research privacy policy
 
-Use customer messages only for an approved, specific internal research purpose.
-The owning Linear issue must define the cohort and intended output.
+Use customer messages only for a specific internal research purpose requested by
+an authorized PM. The request must define the cohort and intended output. A
+Linear issue is optional tracking metadata, not an authorization control.
 
 ## Allowed
 
@@ -23,7 +24,7 @@ The owning Linear issue must define the cohort and intended output.
 - Copying cohort IDs, pseudonym-level profiles, raw prompts, transcripts, direct
   quotes, identifiers, evidence, files, code, commands, payloads, secrets, or
   per-user targets, findings, or targeting decisions into Linear or task output.
-- Sanitized aggregate report fields may be copied to the approved Linear issue.
+- Sanitized aggregate report fields may be copied to an optional Linear issue.
 - Manual browsing as a fallback when the bounded task fails.
 
 ## Storage and deletion

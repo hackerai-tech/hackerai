@@ -68,6 +68,7 @@ Set one region's CloudFormation outputs and region, then run:
 export AWS_LAMBDA_MICROVM_ARTIFACT_BUCKET='<ArtifactBucketName>'
 export AWS_LAMBDA_MICROVM_BUILD_ROLE_ARN='<BuildRoleArn>'
 export AWS_LAMBDA_MICROVM_EXECUTION_ROLE_ARN='<ExecutionRoleArn>'
+export AWS_LAMBDA_MICROVM_CONTAINER_BASE_IMAGE='ghcr.io/hackerai-tech/hackerai-sandbox@sha256:<digest>'
 export AWS_REGION=us-east-1
 pnpm aws:microvm:deploy
 ```
@@ -87,9 +88,14 @@ failure rejects image validation rather than publishing an incompletely primed
 image; structured hook logs include per-step duration without bootstrap data.
 
 If the image build fails, inspect the CloudWatch log group shown by the Lambda
-MicroVM image. The HackerAI image currently uses Kali's public ARM64 container
-base, while the Lambda-managed MicroVM base is selected separately by the
-deployment script.
+MicroVM image. The heavyweight Kali and security-tool layer is built by GitHub
+Actions on a native ARM64 runner only when the `docker/` tree changes, published
+to GHCR, and pinned by digest in the small Lambda build artifact. The GHCR
+package must remain public so AWS's image builder can pull it without a registry
+credential. The Lambda-managed MicroVM base is selected separately by the
+deployment script. Failed releases also list the per-architecture image build
+states and reasons in the structured GitHub Actions log, even when the parent
+image version omits its reason.
 
 ## 3. Deploy the backend schema first
 
@@ -186,15 +192,24 @@ WebSocket subprotocol during the AWS-authenticated upgrade.
 ## Automated image promotion
 
 `.github/workflows/aws-lambda-microvm-release.yml` publishes a new image only
-when MicroVM image inputs change on `main`, or when it is run manually. It does
-not float production to AWS's implicit latest version. Instead it waits for the
-exact versions in all three regions, launches a short-lived VM in each region,
-executes a real command through every authenticated WebSocket, and confirms
-termination. Only after every matrix leg succeeds does it build one release
-manifest, upload and read back that exact manifest in Trigger.dev production,
-and deploy the pinned worker. A partial regional build can never become the
-active release. Vercel remains unchanged and older AWS image versions remain
-available for rollback.
+when MicroVM image inputs change on `main`, or when it is run manually. It first
+derives a content-addressed tag from the `docker/` tree. An existing tag is
+reused; a missing tag builds the heavyweight ARM64 sandbox once on a native ARM
+runner and publishes it to GHCR. Every regional Lambda artifact then contains
+only the agent layer and uses the exact resolved base digest. Normal agent-only
+changes therefore avoid rebuilding Kali and the security toolchain. The
+workflow does not float production to AWS's or GHCR's implicit latest version.
+Use the manual `rebuild_base` input for an intentional toolchain refresh when
+`docker/` is unchanged; that bypasses the registry and layer caches, publishes a
+new digest behind the tree tag, and promotes only the newly resolved digest.
+
+It then waits for the exact versions in all three regions, launches a
+short-lived VM in each region, executes a real command through every
+authenticated WebSocket, and confirms termination. Only after every matrix leg
+succeeds does it build one release manifest, upload and read back that exact
+manifest in Trigger.dev production, and deploy the pinned worker. A partial
+regional build can never become the active release. Vercel remains unchanged
+and older AWS image versions remain available for rollback.
 
 `AWS_LAMBDA_MICROVM_ENABLED_REGIONS` in the protected GitHub production
 environment is the durable placement kill switch. Keep `us-east-1` present and
@@ -244,34 +259,29 @@ local/desktop sandbox support also keeps its existing Centrifugo values there.
 Vercel retains only the AWS credentials and Convex key required by Data
 Controls cleanup. They are not copied through GitHub Actions.
 
-## 5. Validate the paid-plan gradual rollout
+## 5. Validate the paid-plan release
 
-Production assignment is controlled by the PostHog feature flag
-[`aws_lambda_microvm_ultra_rollout_v1`](https://us.posthog.com/project/144137/feature_flags/828023).
-The application hard-gates Free users to local-only behavior and evaluates the
-flag for every paid plan. PostHog is the final AWS/E2B provider gate in every
-environment, so use an explicit allowlist before widening percentage rollout;
-paid users outside the enabled population stay on E2B as the concurrent
-control.
+AWS Lambda MicroVMs are the default cloud sandbox for every paid plan. The
+application continues to hard-gate Free users to local-only behavior, and
+`CLOUD_SANDBOX_PROVIDER=e2b` remains the explicit emergency rollback.
 
-Measure actual acquisition exposure with `cloud_sandbox_provider_selected`.
-It includes the provider, transport (`aws_websocket` or `e2b_sdk`), rollout
-variant, subscription tier, Trigger region, requested and effective AWS region,
-placement reason, release ID, pinned image version, acquisition path,
-acquisition duration, create attempts, failover source/error/duration when
-applicable, and evaluated feature-flag value. Structured
+Measure provider health with `cloud_sandbox_provider_selected`. It includes the
+provider, transport (`aws_websocket` or `e2b_sdk`), subscription tier, Trigger
+region, requested and effective AWS region, placement reason, release ID,
+pinned image version, acquisition path, acquisition duration, create attempts,
+and failover source/error/duration when applicable. Structured
 `cloud_sandbox_region_failover_started`, `_succeeded`, and `_failed` events
 record the requested, failed, and selected regions plus privacy-safe AWS error
 classification and timing. Failed acquisitions emit
-`cloud_sandbox_acquisition_failed` with the intended provider, rollout variant,
-failure stage, duration, and privacy-safe error name. Compare the
+`cloud_sandbox_acquisition_failed` with the intended provider, failure stage,
+duration, and privacy-safe error name. Compare the
 `hackerai-agent_run` outcome and Trigger duration/cost fields by
-`sandbox_provider` to verify that AWS is no worse than E2B on reliability and
-latency before each ramp. The saved
+`sandbox_provider` to verify AWS reliability and latency after releases. The
+saved
 [rollout dashboard](https://us.posthog.com/project/144137/dashboard/2005952)
 tracks these guardrails and cost by provider.
 
-The initial rollout guardrails are:
+The release guardrails are:
 
 - successful Agent-run rate is no more than 3 percentage points below E2B;
 - sandbox-acquisition success is no more than 2 percentage points below E2B;
@@ -279,12 +289,10 @@ The initial rollout guardrails are:
 - no AWS MicroVM remains running more than 2 minutes after the user's final
   parent run and validation subagent finish.
 
-Review after at least 100 AWS exposures or seven days, whichever comes later.
-If the guardrails hold, ramp Ultra targeting through 25%, 50%, then 100%, with
-a fresh readout at every step. Keep non-Ultra plans on E2B until Ultra reaches
-100% and the full-network capability test below is green.
+Review these guardrails after deployments and during reliability incidents. If
+they fail, use the explicit E2B rollback while the AWS issue is investigated.
 
-Use an internal Ultra account and select **Cloud** in Agent mode. Confirm the
+Use an internal paid account and select **Cloud** in Agent mode. Confirm the
 first terminal command creates one MicroVM. After the Agent run ends, confirm
 the MicroVM transitions to `SUSPENDED`; a later Agent command should resume and
 reuse it. When two Agent runs for the same user overlap, finishing either one
@@ -327,12 +335,11 @@ the test user.
 
 ## Rollback
 
-Disable `aws_lambda_microvm_ultra_rollout_v1` to route all production users to
-E2B immediately. For the configuration-level kill switch, terminate existing
-AWS MicroVM sessions from Data Controls or AWS, set
-`CLOUD_SANDBOX_PROVIDER=e2b` in Trigger.dev, and redeploy it. Per-run AWS
-configuration or quota failures never silently retry on E2B; they remain
-attributed to the AWS rollout so the failure-rate guardrail stays honest.
+To route production users to E2B, terminate existing AWS MicroVM sessions from
+Data Controls or AWS, set `CLOUD_SANDBOX_PROVIDER=e2b` in Trigger.dev, and
+redeploy it. Per-run AWS configuration or quota failures never silently retry
+on E2B; they remain attributed to AWS so the failure-rate guardrail stays
+honest.
 
 ## Known boundaries
 

@@ -11,28 +11,9 @@ jest.mock("@/lib/posthog/server", () => ({
 }));
 
 import { ensureCloudSandboxConnection } from "../cloud-sandbox";
-import {
-  AWS_LAMBDA_MICROVM_ROLLOUT_FEATURE_PROPERTY,
-  AWS_LAMBDA_MICROVM_ROLLOUT_FLAG_KEY,
-} from "@/lib/experiments/aws-lambda-microvm-rollout";
 
-describe("cloud sandbox rollout telemetry", () => {
-  const originalProvider = process.env.CLOUD_SANDBOX_PROVIDER;
-
-  beforeEach(() => {
-    jest.clearAllMocks();
-    process.env.CLOUD_SANDBOX_PROVIDER = "aws-lambda-microvm";
-  });
-
-  afterAll(() => {
-    if (originalProvider === undefined) {
-      delete process.env.CLOUD_SANDBOX_PROVIDER;
-    } else {
-      process.env.CLOUD_SANDBOX_PROVIDER = originalProvider;
-    }
-  });
-
-  it("uses the per-run control assignment and attributes acquisition failures", async () => {
+describe("cloud sandbox operational telemetry", () => {
+  it("attributes acquisition failures without rollout properties", async () => {
     const failure = Object.assign(new Error("private target detail"), {
       name: "SandboxUnavailableError",
     });
@@ -48,14 +29,6 @@ describe("cloud sandbox rollout telemetry", () => {
           chatId: "chat-1",
           triggerRunId: "run-1",
           runKind: "parent",
-          rollout: {
-            key: AWS_LAMBDA_MICROVM_ROLLOUT_FLAG_KEY,
-            provider: "e2b",
-            eligible: true,
-            variant: "e2b",
-            flagValue: false,
-            reason: "flag_disabled",
-          },
         },
       }),
     ).rejects.toBe(failure);
@@ -70,15 +43,16 @@ describe("cloud sandbox rollout telemetry", () => {
         provider: "e2b",
         cloud_sandbox_transport: "e2b_sdk",
         subscription_tier: "ultra",
-        rollout_eligible: true,
-        rollout_variant: "e2b",
-        rollout_reason: "flag_disabled",
-        [AWS_LAMBDA_MICROVM_ROLLOUT_FEATURE_PROPERTY]: false,
         failure_stage: "ensure_cloud_sandbox",
         error_name: "SandboxUnavailableError",
         cloud_sandbox_acquisition_failed_event_version: 2,
       }),
     );
+    expect(
+      Object.keys(mockEvent.mock.calls[0][1]).some((key) =>
+        key.startsWith("rollout_"),
+      ),
+    ).toBe(false);
     expect(JSON.stringify(mockEvent.mock.calls[0])).not.toContain(
       "private target detail",
     );

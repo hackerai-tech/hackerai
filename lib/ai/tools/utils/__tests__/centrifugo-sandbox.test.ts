@@ -1340,6 +1340,38 @@ describe("CentrifugoSandbox", () => {
         jest.useFakeTimers();
       }
     }, 15000);
+
+    it("cleans the cmd Base64 temporary file when a chunk command rejects", async () => {
+      const sandbox = createSandbox({
+        osInfo: {
+          platform: "win32",
+          arch: "x86_64",
+          release: "10.0.19045",
+          hostname: "WIN-DEV",
+        },
+      });
+      (sandbox as any).shellKind = "cmd";
+      let echoCount = 0;
+      const commands: string[] = [];
+      (sandbox as any).commands.run = jest.fn(async (command: string) => {
+        commands.push(command);
+        if (command.startsWith("echo ") && ++echoCount === 2) {
+          throw new Error("relay disconnected");
+        }
+        return { stdout: "", stderr: "", exitCode: 0 };
+      });
+
+      await expect(
+        sandbox.files.write("/tmp/hackerai-transfer.ps1", "x".repeat(12_000)),
+      ).rejects.toThrow("relay disconnected");
+
+      const firstChunk = commands.find((command) =>
+        command.startsWith("echo "),
+      )!;
+      const tempFile = firstChunk.match(/ > (.+)$/)?.[1];
+      expect(tempFile).toBeDefined();
+      expect(commands).toContain(`del /q /f ${tempFile}`);
+    });
   });
 
   describe("git-bash on Windows", () => {
@@ -1473,6 +1505,31 @@ describe("CentrifugoSandbox", () => {
       expect(sandbox.isWindows()).toBe(false);
     });
 
+    it("keeps POSIX semantics when a legacy non-Bash shell leaves BASH_VERSION empty", async () => {
+      const sandbox = createSandbox();
+      (sandbox as any).httpClient = "curl";
+      (sandbox as any).curlCaps = {
+        retryAllErrors: true,
+        retryConnrefused: true,
+        sslNoRevoke: false,
+      };
+      const runs: string[] = [];
+      (sandbox as any).commands.run = jest.fn(async (cmd: string) => {
+        runs.push(cmd);
+        return { stdout: "\n", stderr: "", exitCode: 0 };
+      });
+
+      await sandbox.files.downloadFromUrl(
+        "https://example.com/image.png?X-Amz-Signature=opaque",
+        "/tmp/hackerai-upload/image.png",
+      );
+
+      expect(runs[0]).toBe("echo $BASH_VERSION");
+      expect(runs[1]).toContain("mkdir -p '/tmp/hackerai-upload'");
+      expect(runs[1]).not.toContain("if not exist");
+      expect(sandbox.isWindows()).toBe(false);
+    });
+
     it("downloadFromUrl emits POSIX mkdir + curl with MSYS paths", async () => {
       const { sandbox, runs, runOptions } = createWindowsBashSandbox();
       // Mock validateDownloadUrl is real; use an https URL it accepts.
@@ -1495,6 +1552,252 @@ describe("CentrifugoSandbox", () => {
         displayName: "Downloading: image.png",
         timeoutMs: 120000,
       });
+    });
+
+    it("stages and cleans a PowerShell download script when curl is unavailable on Windows", async () => {
+      const sandbox = createSandbox({
+        osInfo: {
+          platform: "win32",
+          arch: "x86_64",
+          release: "10.0.19045",
+          hostname: "WIN-DEV",
+        },
+      });
+      (sandbox as any).shellKind = "cmd";
+      const run = jest.fn(async (command: string) =>
+        command === "where curl 2>nul"
+          ? {
+              stdout: "",
+              stderr: "INFO: Could not find files for the given pattern(s).",
+              exitCode: 1,
+            }
+          : { stdout: "", stderr: "", exitCode: 0 },
+      );
+      (sandbox as any).commands.run = run;
+
+      const signedUrl = `https://example.com/image.png?X-Amz-Signature=${"a".repeat(6_000)}`;
+      await sandbox.files.downloadFromUrl(
+        signedUrl,
+        "/tmp/hackerai-upload/image.png",
+      );
+
+      expect(run).toHaveBeenNthCalledWith(1, "where curl 2>nul", {
+        displayName: "",
+        timeoutMs: 30000,
+      });
+      const commands = run.mock.calls.map(([command]) => command as string);
+      const command = commands.find((command) =>
+        command.startsWith("powershell "),
+      )!;
+      expect(command).toMatch(
+        /^powershell -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File /,
+      );
+      expect(command.length).toBeLessThan(8_191);
+      expect(command).not.toContain(signedUrl);
+      expect(command).not.toContain("C:\\temp\\hackerai-upload");
+
+      const scriptChunks = commands
+        .filter((command) => command.startsWith("echo "))
+        .map((command) => command.match(/^echo (\S+) >{1,2} /)?.[1] ?? "");
+      expect(scriptChunks.length).toBeGreaterThan(1);
+      expect(
+        commands
+          .filter((command) => command.startsWith("echo "))
+          .every((command) => command.length < 8_191),
+      ).toBe(true);
+      const script = Buffer.from(scriptChunks.join(""), "base64").toString(
+        "utf8",
+      );
+      expect(script).toContain("Invoke-WebRequest -UseBasicParsing");
+      expect(script).toContain("-OutFile $destination");
+      expect(script).toContain(
+        Buffer.from(signedUrl, "utf8").toString("base64"),
+      );
+      expect(script).toContain(
+        Buffer.from("C:\\temp\\hackerai-upload\\image.png", "utf8").toString(
+          "base64",
+        ),
+      );
+      const scriptPath = command.match(/-File ("[^"]+\.ps1")$/)?.[1];
+      expect(scriptPath).toBeDefined();
+      expect(commands).toContain(
+        `del /q /f ${scriptPath} 2>nul & rmdir /s /q ${scriptPath} 2>nul`,
+      );
+    });
+
+    it("cleans the staged PowerShell upload script after transfer failure", async () => {
+      const sandbox = createSandbox({
+        osInfo: {
+          platform: "win32",
+          arch: "x86_64",
+          release: "10.0.19045",
+          hostname: "WIN-DEV",
+        },
+      });
+      (sandbox as any).shellKind = "cmd";
+      const run = jest.fn(async (command: string) => {
+        if (command === "where curl 2>nul") {
+          return { stdout: "", stderr: "", exitCode: 1 };
+        }
+        if (command.startsWith("powershell ")) {
+          return {
+            stdout: "",
+            stderr: `Upload failed for ${uploadUrl} from C:\\temp\\hackerai-upload\\report.txt`,
+            exitCode: 1,
+          };
+        }
+        return { stdout: "", stderr: "", exitCode: 0 };
+      });
+      (sandbox as any).commands.run = run;
+
+      const uploadUrl = `https://example.com/upload?X-Amz-Signature=${"b".repeat(6_000)}`;
+      const upload = sandbox.files.uploadToUrl(
+        "/tmp/hackerai-upload/report.txt",
+        uploadUrl,
+        "text/plain",
+      );
+      await expect(upload).rejects.toThrow(
+        "Failed to upload file: Upload failed for [redacted-url] from [redacted-destination-path]",
+      );
+      await expect(upload).rejects.not.toThrow(uploadUrl);
+      await expect(upload).rejects.not.toThrow(
+        "C:\\temp\\hackerai-upload\\report.txt",
+      );
+
+      const commands = run.mock.calls.map(([command]) => command as string);
+      const command = commands.find((command) =>
+        command.startsWith("powershell "),
+      )!;
+      expect(command).toMatch(
+        /^powershell -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File /,
+      );
+      expect(command.length).toBeLessThan(8_191);
+      expect(command).not.toContain(uploadUrl);
+
+      const scriptChunks = commands
+        .filter((command) => command.startsWith("echo "))
+        .map((command) => command.match(/^echo (\S+) >{1,2} /)?.[1] ?? "");
+      expect(scriptChunks.length).toBeGreaterThan(1);
+      expect(
+        commands
+          .filter((command) => command.startsWith("echo "))
+          .every((command) => command.length < 8_191),
+      ).toBe(true);
+      const script = Buffer.from(scriptChunks.join(""), "base64").toString(
+        "utf8",
+      );
+      expect(script).toContain(
+        "Invoke-WebRequest -UseBasicParsing -Method Put",
+      );
+      expect(script).toContain("-InFile $source");
+      expect(script).toContain(
+        Buffer.from(uploadUrl, "utf8").toString("base64"),
+      );
+      expect(script).toContain(
+        Buffer.from("text/plain", "utf8").toString("base64"),
+      );
+      const scriptPath = command.match(/-File ("[^"]+\.ps1")$/)?.[1];
+      expect(scriptPath).toBeDefined();
+      expect(commands).toContain(
+        `del /q /f ${scriptPath} 2>nul & rmdir /s /q ${scriptPath} 2>nul`,
+      );
+    });
+
+    it("uses the native relay path and redacts it from Git Bash PowerShell upload errors", async () => {
+      const sandbox = createSandbox({
+        isDesktop: true,
+        capabilities: { commands: true, pty: true, files: true },
+        osInfo: {
+          platform: "win32",
+          arch: "x86_64",
+          release: "10.0.19045",
+          hostname: "WIN-DEV",
+        },
+      });
+      (sandbox as any).shellKind = "bash";
+      (sandbox as any).httpClient = "powershell";
+      const write = jest.fn(async () => undefined);
+      const remove = jest.fn(async () => undefined);
+      sandbox.files.write = write;
+      sandbox.files.remove = remove;
+      const nativeSource = "C:\\temp\\hackerai-upload\\report.txt";
+      (sandbox as any).commands.run = jest.fn(async (command: string) =>
+        command.startsWith("powershell.exe ")
+          ? {
+              stdout: "",
+              stderr: `Upload failed from ${nativeSource}`,
+              exitCode: 1,
+            }
+          : { stdout: "", stderr: "", exitCode: 0 },
+      );
+
+      await expect(
+        sandbox.files.uploadToUrl(
+          "/tmp/hackerai-upload/report.txt",
+          "https://example.com/upload?X-Amz-Signature=opaque",
+          "text/plain",
+        ),
+      ).rejects.toThrow(
+        "Failed to upload file: Upload failed from [redacted-destination-path]",
+      );
+
+      const nativeScriptPath = write.mock.calls[0][0] as string;
+      expect(nativeScriptPath).toMatch(
+        /^C:\\temp\\hackerai-transfer-[\w-]+\.ps1$/,
+      );
+      const powerShellCommand = (sandbox as any).commands.run.mock.calls.find(
+        ([command]: [string]) => command.startsWith("powershell.exe "),
+      )[0] as string;
+      expect(powerShellCommand).toContain(
+        `-File '${nativeScriptPath
+          .replace(
+            /^([A-Za-z]):/,
+            (_, drive: string) => `/${drive.toLowerCase()}`,
+          )
+          .replace(/\\/g, "/")}'`,
+      );
+      expect(powerShellCommand).not.toContain(nativeSource);
+      expect(remove).toHaveBeenCalledWith(nativeScriptPath);
+    });
+
+    it("redacts the native destination from Git Bash PowerShell download errors", async () => {
+      const sandbox = createSandbox({
+        isDesktop: true,
+        capabilities: { commands: true, pty: true, files: true },
+        osInfo: {
+          platform: "win32",
+          arch: "x86_64",
+          release: "10.0.19045",
+          hostname: "WIN-DEV",
+        },
+      });
+      (sandbox as any).shellKind = "bash";
+      (sandbox as any).httpClient = "powershell";
+      sandbox.files.write = jest.fn(async () => undefined);
+      sandbox.files.remove = jest.fn(async () => undefined);
+      const nativeDestination = "C:\\temp\\hackerai-upload\\report.txt";
+      (sandbox as any).commands.run = jest.fn(async (command: string) =>
+        command.startsWith("powershell.exe ")
+          ? {
+              stdout: "",
+              stderr: `Download failed at ${nativeDestination}`,
+              exitCode: 1,
+            }
+          : {
+              stdout: "target_dir_exists=true",
+              stderr: "",
+              exitCode: 0,
+            },
+      );
+
+      await expect(
+        sandbox.files.downloadFromUrl(
+          "https://example.com/report.txt?X-Amz-Signature=opaque",
+          "/tmp/hackerai-upload/report.txt",
+        ),
+      ).rejects.toThrow(
+        "Failed to download file: Download failed at [redacted-destination-path]",
+      );
     });
 
     it("downloadFromUrl omits --ssl-no-revoke when Windows curl lacks support", async () => {

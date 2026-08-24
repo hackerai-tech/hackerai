@@ -486,9 +486,10 @@ describe("normalizeOpenRouterRequestForKimi", () => {
 });
 
 describe("makeOpenRouterToolChoiceCompatibleWithXaiReasoning", () => {
-  it("preserves forced tool choice and disables reasoning for xAI routes", () => {
+  it("preserves forced tool choice and reasoning on a non-xAI fallback", () => {
     const body = {
       model: "x-ai/grok-4.6",
+      models: ["x-ai/grok-4.6-20260810", "moonshotai/kimi-k3"],
       reasoning: { enabled: true, effort: "high" },
       tool_choice: { type: "function", function: { name: "wait_for_agents" } },
     };
@@ -496,8 +497,28 @@ describe("makeOpenRouterToolChoiceCompatibleWithXaiReasoning", () => {
     expect(makeOpenRouterToolChoiceCompatibleWithXaiReasoning(body)).toEqual({
       changed: true,
       body: {
-        ...body,
-        reasoning: { enabled: false, effort: "high" },
+        model: "moonshotai/kimi-k3",
+        reasoning: { enabled: true, effort: "high" },
+        tool_choice: body.tool_choice,
+      },
+    });
+  });
+
+  it("preserves the remaining non-xAI fallback order after promotion", () => {
+    const body = {
+      model: "x-ai/grok-4.6",
+      models: ["z-ai/glm-5.2", "moonshotai/kimi-k3"],
+      reasoning: { enabled: true, effort: "high" },
+      tool_choice: "required",
+    };
+
+    expect(makeOpenRouterToolChoiceCompatibleWithXaiReasoning(body)).toEqual({
+      changed: true,
+      body: {
+        model: "z-ai/glm-5.2",
+        models: ["moonshotai/kimi-k3"],
+        reasoning: { enabled: true, effort: "high" },
+        tool_choice: "required",
       },
     });
   });
@@ -515,31 +536,83 @@ describe("makeOpenRouterToolChoiceCompatibleWithXaiReasoning", () => {
     });
   });
 
-  it.each([
-    ["required", true],
-    ["none", false],
-  ] as const)(
-    "handles string tool choice %s with changed=%s",
-    (toolChoice, changed) => {
-      const body = {
-        model: "x-ai/grok-4.6",
-        reasoning: { enabled: true, effort: "high" },
-        tool_choice: toolChoice,
-      };
+  it("uses automatic tool choice when an xAI-only route has no fallback", () => {
+    const body = {
+      model: "x-ai/grok-4.6",
+      reasoning: { enabled: true, effort: "high" },
+      tool_choice: "required",
+    };
 
-      const result = makeOpenRouterToolChoiceCompatibleWithXaiReasoning(body);
+    expect(makeOpenRouterToolChoiceCompatibleWithXaiReasoning(body)).toEqual({
+      changed: true,
+      body: { ...body, tool_choice: "auto" },
+    });
+  });
 
-      expect(result.changed).toBe(changed);
-      expect(result.body).toEqual(
-        changed
-          ? { ...body, reasoning: { enabled: false, effort: "high" } }
-          : body,
-      );
-    },
-  );
+  it("leaves disabled tool choice unchanged", () => {
+    const body = {
+      model: "x-ai/grok-4.6",
+      reasoning: { enabled: true, effort: "high" },
+      tool_choice: "none",
+    };
+
+    expect(makeOpenRouterToolChoiceCompatibleWithXaiReasoning(body)).toEqual({
+      body,
+      changed: false,
+    });
+  });
+
+  it("keeps the existing disabled-reasoning compatibility for older xAI routes", () => {
+    const body = {
+      model: "x-ai/grok-4.5",
+      models: ["moonshotai/kimi-k3"],
+      reasoning: { enabled: true, effort: "high" },
+      tool_choice: "required",
+    };
+
+    expect(makeOpenRouterToolChoiceCompatibleWithXaiReasoning(body)).toEqual({
+      changed: true,
+      body: {
+        ...body,
+        reasoning: { enabled: false, effort: "high" },
+      },
+    });
+  });
 });
 
 describe("OpenRouter request normalization", () => {
+  it("routes a forced Grok tool step through Kimi without disabling reasoning", async () => {
+    const fetchMock = jest
+      .fn()
+      .mockResolvedValueOnce(new Response("ok", { status: 200 }));
+    const patchedFetch = createOpenRouterPatchFetch(
+      fetchMock as unknown as typeof fetch,
+    );
+
+    const toolChoice = {
+      type: "function",
+      function: { name: "wait_for_agents" },
+    };
+    await patchedFetch("https://openrouter.test/chat", {
+      method: "POST",
+      body: JSON.stringify({
+        model: "x-ai/grok-4.6",
+        models: ["moonshotai/kimi-k3"],
+        reasoning: { enabled: true, effort: "high" },
+        tool_choice: toolChoice,
+        messages: [{ role: "user", content: "Wait for delegated results." }],
+      }),
+    });
+
+    const requestBody = JSON.parse(fetchMock.mock.calls[0][1].body);
+    expect(requestBody).toMatchObject({
+      model: "moonshotai/kimi-k3",
+      reasoning: { enabled: true, effort: "high" },
+      tool_choice: toolChoice,
+    });
+    expect(requestBody.models).toBeUndefined();
+  });
+
   it("applies Kimi transcript repair and xAI tool-choice compatibility together", async () => {
     const fetchMock = jest
       .fn()
@@ -570,6 +643,7 @@ describe("OpenRouter request normalization", () => {
 
     const requestBody = JSON.parse(fetchMock.mock.calls[0][1].body);
     expect(requestBody.reasoning).toEqual({ enabled: false, effort: "high" });
+    expect(requestBody.models).toEqual(["x-ai/grok-4.6"]);
     expect(requestBody.messages).toEqual([
       {
         role: "assistant",
