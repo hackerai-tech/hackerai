@@ -179,9 +179,8 @@ credentials (authorized by all three regional runtime policies) and
 
 Optional controls:
 
-- `AWS_LAMBDA_MICROVM_MAX_DURATION_SECONDS` defaults to 14,400 (4 hours) and
-  can be raised to Lambda's 28,800-second limit when a longer reuse window is
-  worth the additional runaway-cost exposure.
+- `AWS_LAMBDA_MICROVM_MAX_DURATION_SECONDS` defaults to Lambda's 28,800-second
+  limit (8 hours).
 - `AWS_LAMBDA_MICROVM_MIN_REMAINING_SECONDS` defaults to 7,500 (2 hours and 5
   minutes). A reused VM below that remaining lifetime is terminated and
   replaced before accepting another Agent run, so it cannot expire midway

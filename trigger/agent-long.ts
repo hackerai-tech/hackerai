@@ -2449,6 +2449,13 @@ export const agentLongTask = task({
     const taskStartTime = Date.now();
     const agentLongMaxDurationMs = getAgentLongMaxDurationMs(subscription);
     const runTimingTracker = new AgentRunTimingTracker();
+    if (payload.requestTiming) {
+      runTimingTracker.initializeStartup({
+        requestStartedAt: payload.requestTiming.routeStartedAt,
+        triggerRequestedAt: payload.requestTiming.triggerRequestedAt,
+        taskStartedAt: taskStartTime,
+      });
+    }
     const memoryTelemetry = new AgentLongMemoryTelemetry({
       runId: ctx.run.id,
       chatId,
@@ -2579,7 +2586,7 @@ export const agentLongTask = task({
         }),
       ]);
       const { chat, fileTokens } = fetched;
-      const projectContext = await resolveProjectExecutionContext({
+      const projectContextPromise = resolveProjectExecutionContext({
         chat,
         userId,
         mode,
@@ -2594,12 +2601,16 @@ export const agentLongTask = task({
             : messages;
       const messagesForAccounting = messagesForProcessing;
       const attachmentCounts = countFileAttachments(messagesForProcessing);
-      const baseExtraUsageConfig = await buildExtraUsageConfig({
+      const baseExtraUsageConfigPromise = buildExtraUsageConfig({
         userId,
         subscription,
         userCustomization,
         organizationId,
       });
+      const [projectContext, baseExtraUsageConfig] = await Promise.all([
+        projectContextPromise,
+        baseExtraUsageConfigPromise,
+      ]);
       const extraUsageAvailable = canUseExtraUsage(baseExtraUsageConfig);
       selectedModelOverride =
         normalizeMaxModelForSubscription(selectedModelOverride, subscription, {
@@ -3532,35 +3543,6 @@ export const agentLongTask = task({
                 )
               : Promise.resolve(undefined);
 
-            const trackedProvider = createTrackedProvider();
-            const currentSystemPrompt = await systemPrompt(
-              userId,
-              mode,
-              subscription,
-              selectedModel,
-              userCustomization,
-              sandboxContext,
-              agentPermissionMode,
-              securityValidationSubagentsEnabled,
-              cloudSandboxProvider,
-              securityTaskSubagentsEnabled,
-            );
-            const systemPromptTokens = safeCountTokens(currentSystemPrompt);
-
-            const contextUsageOn = isContextUsageEnabled(subscription, mode);
-            const ctxSystemTokens = contextUsageOn ? systemPromptTokens : 0;
-            const ctxMaxTokens = contextUsageOn
-              ? getMaxTokensForSubscription(subscription, { mode })
-              : 0;
-            const initialCtxUsage = contextUsageOn
-              ? computeContextUsage(
-                  messagesForAccounting,
-                  fileTokens,
-                  ctxSystemTokens,
-                  ctxMaxTokens,
-                )
-              : { usedTokens: 0, maxTokens: 0 };
-
             let finalMessages = processedMessages;
 
             if (sandboxFallbackReminder) {
@@ -3585,10 +3567,38 @@ export const agentLongTask = task({
               subscription,
               shouldIncludeNotes: userCustomization?.include_notes ?? true,
             };
-            finalMessages = await injectNotesIntoMessages(
-              finalMessages,
-              noteInjectionOpts,
-            );
+            const trackedProvider = createTrackedProvider();
+            const [currentSystemPrompt, messagesWithNotes] = await Promise.all([
+              systemPrompt(
+                userId,
+                mode,
+                subscription,
+                selectedModel,
+                userCustomization,
+                sandboxContext,
+                agentPermissionMode,
+                securityValidationSubagentsEnabled,
+                cloudSandboxProvider,
+                securityTaskSubagentsEnabled,
+              ),
+              injectNotesIntoMessages(finalMessages, noteInjectionOpts),
+            ]);
+            finalMessages = messagesWithNotes;
+
+            const systemPromptTokens = safeCountTokens(currentSystemPrompt);
+            const contextUsageOn = isContextUsageEnabled(subscription, mode);
+            const ctxSystemTokens = contextUsageOn ? systemPromptTokens : 0;
+            const ctxMaxTokens = contextUsageOn
+              ? getMaxTokensForSubscription(subscription, { mode })
+              : 0;
+            const initialCtxUsage = contextUsageOn
+              ? computeContextUsage(
+                  messagesForAccounting,
+                  fileTokens,
+                  ctxSystemTokens,
+                  ctxMaxTokens,
+                )
+              : { usedTokens: 0, maxTokens: 0 };
 
             // Mutable stream state — updated in-place by the shared runner and
             // read back here in toUIMessageStream.onFinish.
@@ -4204,6 +4214,7 @@ export const agentLongTask = task({
                 getTriggerRunUsage().totalCostDollars,
               onModelStreamStart: runTimingTracker.startModelStream,
               onModelStreamFinish: runTimingTracker.finishModelStream,
+              onModelChunk: runTimingTracker.recordFirstModelChunk,
               onProviderRequestDiagnostics: (providerRequest, retention) => {
                 if (
                   memoryTelemetry.checkpoint({

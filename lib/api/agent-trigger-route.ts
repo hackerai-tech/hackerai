@@ -454,10 +454,6 @@ export const createAgentTriggerPost =
         getTriggerRegionForVercelRequest(req, userLocation) ?? "us-east-1";
       const securityValidationSubagentsEnabled =
         agentPermissionMode === "full_access";
-      const securityTaskSubagentsEnabled =
-        agentPermissionMode === "full_access"
-          ? await resolveSecurityTaskSubagentsEnabled(userId)
-          : false;
 
       assertFreeAgentGates({
         mode: "agent",
@@ -489,25 +485,37 @@ export const createAgentTriggerPost =
         );
       }
 
+      // These independent authorization/config reads used to run serially
+      // before Trigger was called. Overlap them so the worker starts booting as
+      // soon as possible after the suspension check succeeds.
+      const [existingChat, userCustomization, securityTaskSubagentsEnabled] =
+        await Promise.all([
+          getChatById({ id: chatId }),
+          getUserCustomization({ userId }),
+          agentPermissionMode === "full_access"
+            ? resolveSecurityTaskSubagentsEnabled(userId)
+            : Promise.resolve(false),
+        ]);
+
       // Fetch existing chat to: (a) detect isNewChat for title generation,
       // (b) pass to handleInitialChatAndUserMessage so it skips saveChat on
       //     regenerate/auto-continue and does the ownership check instead.
-      const existingChat = await getChatById({ id: chatId });
-      const projectContext = await resolveProjectExecutionContext({
-        chat: existingChat,
-        requestedProjectId,
-        userId,
-        mode: "agent",
-        sandboxPreference,
-      });
+      const [projectContext, extraUsageConfig] = await Promise.all([
+        resolveProjectExecutionContext({
+          chat: existingChat,
+          requestedProjectId,
+          userId,
+          mode: "agent",
+          sandboxPreference,
+        }),
+        buildExtraUsageConfig({
+          userId,
+          subscription,
+          userCustomization,
+          organizationId,
+        }),
+      ]);
       const isNewChat = !existingChat && !regenerate && !isAutoContinue;
-      const userCustomization = await getUserCustomization({ userId });
-      const extraUsageConfig = await buildExtraUsageConfig({
-        userId,
-        subscription,
-        userCustomization,
-        organizationId,
-      });
       const autoReviewAssignment: AgentAutoReviewAssignment | undefined =
         agentPermissionMode === "auto_review"
           ? DEFAULT_AGENT_AUTO_REVIEW_ASSIGNMENT

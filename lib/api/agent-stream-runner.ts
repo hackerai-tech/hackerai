@@ -638,6 +638,7 @@ export type AgentStreamContext = {
   onBudgetAbort?: (details: BudgetAbortDetails & { model: string }) => void;
   onModelStreamStart?: () => void;
   onModelStreamFinish?: () => void;
+  onModelChunk?: () => void;
   onProviderRequestDiagnostics?: (
     diagnostics: ProviderRequestDiagnostics,
     retention: ProviderRequestRetentionDiagnostics,
@@ -1597,6 +1598,7 @@ export async function createAgentStream(
     ],
 
     onChunk: async (chunk) => {
+      ctx.onModelChunk?.();
       if (chunk.chunk.type === "text-delta") {
         if (state.postSummarizationContinuationActive) {
           state.postSummarizationText += chunk.chunk.text;

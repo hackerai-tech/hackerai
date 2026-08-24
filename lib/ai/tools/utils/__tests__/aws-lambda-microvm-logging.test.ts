@@ -1257,10 +1257,10 @@ describe("AWS Lambda MicroVM development logging", () => {
     warnSpy.mockRestore();
   });
 
-  it("uses a four-hour default but permits the eight-hour platform maximum", () => {
+  it("uses the eight-hour platform maximum by default", () => {
     const config = getAwsLambdaMicrovmConfig();
     expect(config).toMatchObject({
-      maxDurationSeconds: 14_400,
+      maxDurationSeconds: 28_800,
       minRemainingSeconds: 7_500,
     });
     expect(config).not.toHaveProperty("idleSeconds");
