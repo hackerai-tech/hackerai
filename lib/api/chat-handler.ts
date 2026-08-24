@@ -973,6 +973,11 @@ export const createChatHandler = () => {
                   fetched.truncatedMessages,
                   writer,
                   (title) => updateChatTitle({ chatId, title }),
+                  (costDollars) => {
+                    usageTracker.providerCost += costDollars;
+                    usageTracker.nonModelCost += costDollars;
+                    chatLogger?.getBuilder().addToolCost(costDollars);
+                  },
                 )
               : Promise.resolve(undefined);
 
@@ -1109,6 +1114,9 @@ export const createChatHandler = () => {
             ) => {
               try {
                 if (hasRecordedUsage) return;
+                // Title generation starts in parallel with the main stream.
+                // Wait for it so its provider cost is included exactly once.
+                await titlePromise;
                 // Add cloud sandbox session cost (duration-based).
                 const sandboxUsage = getSandboxSessionUsage();
                 const sandboxCost = sandboxUsage.totalCostDollars;

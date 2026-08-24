@@ -64,6 +64,7 @@ import {
   captureBudgetSnapshot,
 } from "@/lib/chat/budget-monitor";
 import { UsageTracker } from "@/lib/usage-tracker";
+import { resolveTriggerRunCost } from "@/lib/billing/trigger-run-cost";
 import {
   acquireFreeRunConcurrencyLock,
   checkFreeMonthlyCostLimit,
@@ -2455,12 +2456,14 @@ export const agentLongTask = task({
       emit: (event) =>
         triggerLogger.info("[agent-long] memory checkpoint", event),
     });
+    const getTriggerRunUsage = () =>
+      resolveTriggerRunCost(triggerUsage.getCurrent());
     const getTriggerRunTelemetry = () => {
-      const currentUsage = triggerUsage.getCurrent();
+      const currentUsage = getTriggerRunUsage();
       return {
         triggerRunId: ctx.run.id,
-        triggerUsageDurationMs: currentUsage.compute.total.durationMs,
-        triggerTotalCostUsd: currentUsage.totalCostInCents / 100,
+        triggerUsageDurationMs: currentUsage.durationMs,
+        triggerTotalCostUsd: currentUsage.totalCostDollars,
         ...runTimingTracker.snapshot(),
       };
     };
@@ -3521,6 +3524,11 @@ export const agentLongTask = task({
                   messagesForProcessing,
                   writer,
                   (title) => updateChatTitle({ chatId, title }),
+                  (costDollars) => {
+                    usageTracker.providerCost += costDollars;
+                    usageTracker.nonModelCost += costDollars;
+                    chatLogger?.getBuilder().addToolCost(costDollars);
+                  },
                 )
               : Promise.resolve(undefined);
 
@@ -3652,12 +3660,22 @@ export const agentLongTask = task({
             const deductAccumulatedUsage = async () => {
               try {
                 if (hasRecordedUsage) return;
+                // Title generation starts in parallel with the main run. Wait
+                // for it so its provider cost cannot race final settlement.
+                await titlePromise;
                 const sandboxUsage = getSandboxSessionUsage();
                 const sandboxCost = sandboxUsage.totalCostDollars;
                 if (sandboxCost > 0) {
                   usageTracker.providerCost += sandboxCost;
                   usageTracker.nonModelCost += sandboxCost;
                   chatLogger?.getBuilder().addToolCost(sandboxCost);
+                }
+                const triggerRunUsage = getTriggerRunUsage();
+                const triggerRunCost = triggerRunUsage.totalCostDollars;
+                if (triggerRunCost > 0) {
+                  usageTracker.providerCost += triggerRunCost;
+                  usageTracker.nonModelCost += triggerRunCost;
+                  chatLogger?.getBuilder().addToolCost(triggerRunCost);
                 }
                 if (!usageTracker.hasUsage) return;
                 hasRecordedUsage = true;
@@ -3843,6 +3861,7 @@ export const agentLongTask = task({
                   experiment: routingExperimentContext,
                   usage: usageCostRecord,
                   ...(sandboxCost > 0 && { sandboxUsage }),
+                  ...(triggerRunCost > 0 && { triggerRunUsage }),
                   responseModel: state.responseModel,
                   ...(usageSettlementState && {
                     usageSettlement: {
@@ -3867,6 +3886,7 @@ export const agentLongTask = task({
               async ({
                 currentCostDollars,
                 sandboxCostDollars,
+                triggerRunCostDollars,
                 force,
                 model,
               }) => {
@@ -3914,6 +3934,7 @@ export const agentLongTask = task({
                     usage_settlement_id: usageTracker.usageSettlementId,
                     current_cost_dollars: currentCostDollars,
                     sandbox_cost_dollars: sandboxCostDollars,
+                    trigger_run_cost_dollars: triggerRunCostDollars,
                     force,
                     error_name:
                       error instanceof Error ? error.name : "UnknownError",
@@ -3941,6 +3962,7 @@ export const agentLongTask = task({
                   settlementSequence: usageSettlementSequence,
                   currentCostDollars,
                   sandboxCostDollars,
+                  triggerRunCostDollars,
                   requestedDeltaPoints: additionalCostPoints,
                   deduction: deductionResult,
                   forced: force,
@@ -4178,6 +4200,8 @@ export const agentLongTask = task({
               chatLogger,
               usageRefundTracker,
               getSandboxCostDollars: getSandboxSessionCost,
+              getTriggerRunCostDollars: () =>
+                getTriggerRunUsage().totalCostDollars,
               onModelStreamStart: runTimingTracker.startModelStream,
               onModelStreamFinish: runTimingTracker.finishModelStream,
               onProviderRequestDiagnostics: (providerRequest, retention) => {

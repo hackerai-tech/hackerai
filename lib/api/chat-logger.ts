@@ -45,6 +45,7 @@ import {
 } from "@/lib/rate-limit/usage-pricing";
 import type { UsageCostRecord } from "@/lib/usage-tracker";
 import type { SandboxSessionUsage } from "@/lib/ai/tools";
+import type { TriggerRunCostBreakdown } from "@/lib/billing/trigger-run-cost";
 import type { UsageDeductionResult } from "@/lib/rate-limit";
 import type { BudgetAbortDetails } from "@/lib/chat/budget-monitor";
 import {
@@ -1470,6 +1471,7 @@ export function captureUsageCost({
   paidDailyFreeAllowance,
   usageSettlement,
   sandboxUsage,
+  triggerRunUsage,
   analyticsRequestContext,
   fallbackServed,
   experiment,
@@ -1496,6 +1498,7 @@ export function captureUsageCost({
     midRunCount: number;
   };
   sandboxUsage?: SandboxSessionUsage;
+  triggerRunUsage?: TriggerRunCostBreakdown;
   analyticsRequestContext?: AnalyticsRequestContext;
   fallbackServed?: boolean;
   experiment?: ExperimentAnalyticsContext;
@@ -1569,6 +1572,14 @@ export function captureUsageCost({
           sandbox_aws_lambda_microvm_data_transfer_cost_included: false,
         }),
       }),
+      ...(triggerRunUsage && {
+        trigger_run_cost_accounting_version: 1,
+        trigger_run_cost_source: "trigger_usage_api",
+        trigger_run_cost_dollars: triggerRunUsage.totalCostDollars,
+        trigger_compute_cost_dollars: triggerRunUsage.computeCostDollars,
+        trigger_base_cost_dollars: triggerRunUsage.baseCostDollars,
+        trigger_usage_duration_ms: triggerRunUsage.durationMs,
+      }),
       input_tokens: usage.inputTokens,
       output_tokens: usage.outputTokens,
       total_tokens: usage.totalTokens,
@@ -1625,6 +1636,7 @@ export function captureUsageSettlement({
   currentCostDollars,
   requestedDeltaPoints,
   sandboxCostDollars,
+  triggerRunCostDollars,
   deduction,
   forced,
   experiment,
@@ -1643,6 +1655,7 @@ export function captureUsageSettlement({
   currentCostDollars: number;
   requestedDeltaPoints: number;
   sandboxCostDollars?: number;
+  triggerRunCostDollars?: number;
   deduction: UsageDeductionResult;
   forced: boolean;
   experiment?: ExperimentAnalyticsContext;
@@ -1677,6 +1690,11 @@ export function captureUsageSettlement({
         sandbox_cost_dollars: sandboxCostDollars,
         sandbox_cost_source: "configured_baseline_estimate",
         sandbox_cost_accounting_version: 1,
+      }),
+      ...(triggerRunCostDollars !== undefined && {
+        trigger_run_cost_dollars: triggerRunCostDollars,
+        trigger_run_cost_source: "trigger_usage_api",
+        trigger_run_cost_accounting_version: 1,
       }),
       included_points_deducted: deduction.includedPointsDeducted,
       extra_usage_points_deducted: deduction.extraUsagePointsDeducted,

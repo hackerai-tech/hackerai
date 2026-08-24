@@ -6,6 +6,7 @@ import {
 } from "@/lib/ai/providers";
 import { z } from "zod";
 import { isXaiSafetyError } from "@/lib/api/chat-stream-helpers";
+import { getProviderUsageRawModelCost } from "@/lib/provider-usage-cost";
 
 const MAX_GENERATED_TITLE_LENGTH = 100;
 const TITLE_GENERATION_MAX_OUTPUT_TOKENS = 64;
@@ -60,6 +61,7 @@ ${truncateMiddle(message, 8000)}`;
 
 export const generateTitleFromUserMessage = async (
   truncatedMessages: UIMessage[],
+  onCost?: (costDollars: number) => void,
 ): Promise<string | undefined> => {
   const firstMessage = truncatedMessages[0];
   const firstMessageParts = firstMessage?.parts ?? [];
@@ -89,7 +91,7 @@ export const generateTitleFromUserMessage = async (
   const fallbackTitle = fallbackTitleFromMessage(textContent);
 
   try {
-    const { output } = await generateText({
+    const result = await generateText({
       model: myProvider.languageModel("title-generator-model"),
       providerOptions: {
         openrouter: {
@@ -122,7 +124,12 @@ export const generateTitleFromUserMessage = async (
       ],
     });
 
-    return normalizeTitle(output?.title) ?? fallbackTitle;
+    const costDollars = getProviderUsageRawModelCost(result.usage?.raw);
+    if (costDollars !== undefined) {
+      onCost?.(costDollars);
+    }
+
+    return normalizeTitle(result.output?.title) ?? fallbackTitle;
   } catch {
     return fallbackTitle;
   }
@@ -132,9 +139,13 @@ export const generateTitleFromUserMessageWithWriter = async (
   truncatedMessages: UIMessage[],
   writer: UIMessageStreamWriter,
   onTitleGenerated?: (title: string) => Promise<unknown>,
+  onCost?: (costDollars: number) => void,
 ): Promise<string | undefined> => {
   try {
-    const chatTitle = await generateTitleFromUserMessage(truncatedMessages);
+    const chatTitle = await generateTitleFromUserMessage(
+      truncatedMessages,
+      onCost,
+    );
 
     writer.write({
       type: "data-title",
