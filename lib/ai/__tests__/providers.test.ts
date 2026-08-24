@@ -15,7 +15,7 @@ import {
   normalizeOpenRouterRequestForKimi,
   PDF_PARSER_ENGINE_HEADER,
   PDF_PARSER_RECOVERY_HEADER,
-  sanitizeOpenRouterRequestForXai,
+  sanitizeOpenRouterEncryptedReasoning,
   supportsMultimodalToolResults,
 } from "@/lib/ai/providers";
 
@@ -264,7 +264,7 @@ describe("provider registry", () => {
   });
 });
 
-describe("sanitizeOpenRouterRequestForXai", () => {
+describe("sanitizeOpenRouterEncryptedReasoning", () => {
   it("strips encrypted reasoning details when an OpenRouter fallback can route to xAI", () => {
     const body = {
       model: "moonshotai/kimi-k3",
@@ -285,7 +285,7 @@ describe("sanitizeOpenRouterRequestForXai", () => {
       ],
     };
 
-    const result = sanitizeOpenRouterRequestForXai(body);
+    const result = sanitizeOpenRouterEncryptedReasoning(body);
 
     expect(result.changed).toBe(true);
     expect(result.body).toEqual({
@@ -320,7 +320,7 @@ describe("sanitizeOpenRouterRequestForXai", () => {
       ],
     };
 
-    const result = sanitizeOpenRouterRequestForXai(body);
+    const result = sanitizeOpenRouterEncryptedReasoning(body);
 
     expect(result.changed).toBe(true);
     expect(result.body).toEqual({
@@ -334,24 +334,77 @@ describe("sanitizeOpenRouterRequestForXai", () => {
     });
   });
 
-  it("leaves non-xAI routes unchanged", () => {
+  it("strips encrypted reasoning from non-xAI routes", () => {
     const body = {
-      model: "moonshotai/kimi-k3",
+      model: "deepseek/deepseek-v4-flash-0731",
+      models: ["z-ai/glm-5.3", "moonshotai/kimi-k3"],
       messages: [
         {
           role: "assistant",
           content: "Here is the answer.",
           reasoning_details: [
-            { type: "encrypted", encrypted_content: "provider-blob" },
+            { type: "reasoning.text", text: "Visible reasoning stays." },
+            {
+              type: "reasoning.encrypted",
+              data: "xai-provider-private-blob",
+              format: "xai-responses-v1",
+            },
           ],
         },
       ],
     };
 
-    const result = sanitizeOpenRouterRequestForXai(body);
+    const result = sanitizeOpenRouterEncryptedReasoning(body);
 
-    expect(result.changed).toBe(false);
-    expect(result.body).toBe(body);
+    expect(result.changed).toBe(true);
+    expect(result.body).toEqual({
+      ...body,
+      messages: [
+        {
+          role: "assistant",
+          content: "Here is the answer.",
+          reasoning_details: [
+            { type: "reasoning.text", text: "Visible reasoning stays." },
+          ],
+        },
+      ],
+    });
+  });
+
+  it("strips encrypted reasoning from Responses-style input", () => {
+    const body = {
+      model: "deepseek/deepseek-v4-flash-0731",
+      input: [
+        {
+          role: "assistant",
+          content: "Visible answer stays.",
+          provider_options: {
+            openrouter: {
+              reasoning_details: [
+                {
+                  type: "reasoning.encrypted",
+                  data: "provider-private-blob",
+                },
+              ],
+            },
+          },
+        },
+      ],
+    };
+
+    const result = sanitizeOpenRouterEncryptedReasoning(body);
+
+    expect(result.changed).toBe(true);
+    expect(result.body).toEqual({
+      ...body,
+      input: [
+        {
+          role: "assistant",
+          content: "Visible answer stays.",
+          provider_options: { openrouter: {} },
+        },
+      ],
+    });
   });
 
   it("preserves encrypted_content outside provider reasoning metadata", () => {
@@ -393,7 +446,7 @@ describe("sanitizeOpenRouterRequestForXai", () => {
       ],
     };
 
-    const result = sanitizeOpenRouterRequestForXai(body);
+    const result = sanitizeOpenRouterEncryptedReasoning(body);
 
     expect(result.changed).toBe(false);
     expect(result.body).toBe(body);
@@ -587,6 +640,48 @@ describe("makeOpenRouterToolChoiceCompatibleWithXaiReasoning", () => {
 });
 
 describe("OpenRouter request normalization", () => {
+  it("removes endpoint-pinned reasoning before a cross-model Agent step", async () => {
+    const fetchMock = jest
+      .fn()
+      .mockResolvedValueOnce(new Response("ok", { status: 200 }));
+    const patchedFetch = createOpenRouterPatchFetch(
+      fetchMock as unknown as typeof fetch,
+    );
+
+    await patchedFetch("https://openrouter.test/chat", {
+      method: "POST",
+      body: JSON.stringify({
+        model: "deepseek/deepseek-v4-flash-0731",
+        models: ["z-ai/glm-5.3", "moonshotai/kimi-k3"],
+        messages: [
+          {
+            role: "assistant",
+            content: "A prior Agent step completed.",
+            reasoning_details: [
+              {
+                type: "reasoning.encrypted",
+                data: "xai-endpoint-pinned-blob",
+                format: "xai-responses-v1",
+              },
+            ],
+          },
+          { role: "user", content: "Summarize the next step." },
+        ],
+      }),
+    });
+
+    const requestBody = JSON.parse(fetchMock.mock.calls[0][1].body);
+    expect(requestBody.model).toBe("deepseek/deepseek-v4-flash-0731");
+    expect(requestBody.models).toEqual(["z-ai/glm-5.3", "moonshotai/kimi-k3"]);
+    expect(requestBody.messages).toEqual([
+      { role: "assistant", content: "A prior Agent step completed." },
+      { role: "user", content: "Summarize the next step." },
+    ]);
+    expect(JSON.stringify(requestBody)).not.toContain(
+      "xai-endpoint-pinned-blob",
+    );
+  });
+
   it("routes a forced Grok tool step through Kimi without disabling reasoning", async () => {
     const fetchMock = jest
       .fn()
