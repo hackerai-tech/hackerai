@@ -40,11 +40,14 @@ import {
 import {
   buildMissingSubagentResultRecoveryMessage,
   canRecoverMissingSubagentResult,
+  canStartSubagentResultRecoveryGeneration,
+  getSubagentExplorationStepLimit,
   getSubagentProviderRetryDecision,
   getSubagentRecoveryErrorDiagnostics,
   getSubagentResultRecoveryRetryDecision,
   isTransientProviderCategory,
   pipeSubagentUiMessageStream,
+  shouldStartSubagentResultRecovery,
   type SubagentRecoveryErrorDiagnostics,
 } from "@/lib/ai/subagents/runtime-recovery";
 import { getSubagentProfileDefinition } from "@/lib/ai/subagents/profiles";
@@ -198,6 +201,8 @@ const captureCompletion = (
   costDollars: number,
   stepCount: number,
   durationMs: number,
+  resultRecoveryCount: number,
+  resultSubmissionCount: number,
 ) => {
   const base = {
     userId: row.user_id,
@@ -214,6 +219,8 @@ const captureCompletion = (
     durationMs,
     stepCount,
     costDollars,
+    resultRecoveryCount,
+    resultSubmissionCount,
   };
   captureSubagentLifecycleEvent("subagent_completed", {
     ...base,
@@ -465,7 +472,10 @@ export const subagentTask = task({
     let deadlineReminderSent = false;
     let providerRetriesUsed = 0;
     let resultRecoveriesUsed = 0;
+    let resultRecoveryGenerationAttempts = 0;
     let resultRecoveryRetriesUsed = 0;
+    let resultSubmissionAttempts = 0;
+    let generationAttempt = 0;
     let lastRecoveryErrorDiagnostics:
       SubagentRecoveryErrorDiagnostics | undefined;
     let deferredForParentUpdate = false;
@@ -616,6 +626,7 @@ export const subagentTask = task({
           try {
             const acceptResult = async (input: unknown) => {
               runtimeStage = "result_validation";
+              resultSubmissionAttempts += 1;
               const parsed = profile.finalResultTool.schema.parse(input);
               if (
                 Buffer.byteLength(JSON.stringify(parsed), "utf8") >
@@ -722,9 +733,10 @@ export const subagentTask = task({
               unguardedTools,
               assertRuntimeAuthorized,
             );
-            runtimeStage = "sandbox_setup";
+            runtimeStage = "sandbox_acquisition";
             await assertRuntimeAuthorized();
             const sandbox = await ensureSandbox();
+            runtimeStage = "sandbox_identity_validation";
             assertSubagentSandboxIdentity(sandbox, row.sandbox_identity);
 
             const provider = createTrackedProvider();
@@ -768,7 +780,54 @@ export const subagentTask = task({
               { role: "user", content: prompt },
             ];
             const parentUpdates = new Map<string, ModelMessage>();
-            let generationAttempt = 0;
+            const beginStructuredResultRecovery = async (
+              reason: "missing_result" | "reserved_step_budget",
+            ): Promise<boolean> => {
+              const remainingSteps = SUBAGENT_MAX_STEPS - stepCount;
+              const canRecover = canRecoverMissingSubagentResult(
+                resultRecoveriesUsed,
+                {
+                  aborted: activeAbort.signal.aborted,
+                  spendCapExceeded,
+                  hasStepsRemaining: remainingSteps > 0,
+                },
+              );
+              if (!canRecover) return false;
+
+              resultRecoveriesUsed += 1;
+              conversationMessages.push({
+                role: "user",
+                content: buildMissingSubagentResultRecoveryMessage(
+                  profile.finalResultTool.name,
+                ),
+              });
+              await recordSubagentRecovery({
+                subagentId: row.subagent_id,
+                triggerRunId: ctx.run.id,
+                kind: "result_recovery",
+              }).catch(() => false);
+              metadata.set("resultRecoveryCount", resultRecoveriesUsed);
+              triggerLogger.warn(
+                "[subagent] structured result recovery started",
+                {
+                  event: "subagent_structured_result_recovery_started",
+                  service: "hackerai-subagent",
+                  environment:
+                    process.env.TRIGGER_ENV ??
+                    process.env.NODE_ENV ??
+                    "unknown",
+                  user_id: row.user_id,
+                  subagent_id: row.subagent_id,
+                  parent_trigger_run_id: row.parent_trigger_run_id,
+                  trigger_run_id: ctx.run.id,
+                  recovery_reason: reason,
+                  result_recovery_count: resultRecoveriesUsed,
+                  step_count: stepCount,
+                  remaining_step_count: remainingSteps,
+                },
+              );
+              return true;
+            };
 
             while (
               !resultValue &&
@@ -776,12 +835,60 @@ export const subagentTask = task({
               !activeAbort.signal.aborted
             ) {
               runtimeStage = "generation";
+              let remainingSteps = SUBAGENT_MAX_STEPS - stepCount;
+              if (
+                shouldStartSubagentResultRecovery(resultRecoveriesUsed, {
+                  aborted: activeAbort.signal.aborted,
+                  spendCapExceeded,
+                  remainingSteps,
+                })
+              ) {
+                await beginStructuredResultRecovery("reserved_step_budget");
+                remainingSteps = SUBAGENT_MAX_STEPS - stepCount;
+              }
+              const structuredResultRecovery = resultRecoveriesUsed > 0;
+              if (structuredResultRecovery) {
+                if (
+                  !canStartSubagentResultRecoveryGeneration(
+                    resultRecoveryGenerationAttempts,
+                  )
+                ) {
+                  triggerLogger.error(
+                    "[subagent] structured result generation budget exhausted",
+                    {
+                      event:
+                        "subagent_structured_result_generation_budget_exhausted",
+                      service: "hackerai-subagent",
+                      environment:
+                        process.env.TRIGGER_ENV ??
+                        process.env.NODE_ENV ??
+                        "unknown",
+                      subagent_id: row.subagent_id,
+                      parent_trigger_run_id: row.parent_trigger_run_id,
+                      trigger_run_id: ctx.run.id,
+                      result_recovery_generation_count:
+                        resultRecoveryGenerationAttempts,
+                      result_recovery_retry_count: resultRecoveryRetriesUsed,
+                      result_submission_count: resultSubmissionAttempts,
+                      deferred_for_parent_update: deferredForParentUpdate,
+                      step_count: stepCount,
+                    },
+                  );
+                  break;
+                }
+                resultRecoveryGenerationAttempts += 1;
+                metadata.set(
+                  "resultRecoveryGenerationCount",
+                  resultRecoveryGenerationAttempts,
+                );
+              }
+              const attemptStepLimit = structuredResultRecovery
+                ? remainingSteps
+                : getSubagentExplorationStepLimit(remainingSteps);
               generationAttempt += 1;
               let attemptError: unknown;
               let attemptResponseModel: string | undefined;
               let attemptUiMessages: UIMessage[] = [];
-              const remainingSteps = SUBAGENT_MAX_STEPS - stepCount;
-              const structuredResultRecovery = resultRecoveriesUsed > 0;
               const generation = streamText({
                 model: getGuardedLanguageModel(
                   activeModelName,
@@ -799,7 +906,7 @@ export const subagentTask = task({
                   : undefined,
                 stopWhen: [
                   hasToolCall(profile.finalResultTool.name),
-                  stepCountIs(remainingSteps),
+                  stepCountIs(attemptStepLimit),
                 ],
                 maxOutputTokens: profile.maxOutputTokens,
                 abortSignal: activeAbort.signal,
@@ -1162,34 +1269,19 @@ export const subagentTask = task({
                 continue;
               }
 
-              const canRecover = canRecoverMissingSubagentResult(
-                resultRecoveriesUsed,
-                {
-                  aborted: activeAbort.signal.aborted,
-                  spendCapExceeded,
-                  hasStepsRemaining: stepCount < SUBAGENT_MAX_STEPS,
-                },
-              );
-              if (!canRecover) break;
-
-              resultRecoveriesUsed += 1;
-              conversationMessages.push({
-                role: "user",
-                content: buildMissingSubagentResultRecoveryMessage(
-                  profile.finalResultTool.name,
-                ),
-              });
-              await recordSubagentRecovery({
-                subagentId: row.subagent_id,
-                triggerRunId: ctx.run.id,
-                kind: "result_recovery",
-              }).catch(() => false);
-              metadata.set("resultRecoveryCount", resultRecoveriesUsed);
+              if (!(await beginStructuredResultRecovery("missing_result"))) {
+                break;
+              }
             }
           } catch (error) {
             runtimeFailure = error;
             runtimeFailureStage = runtimeStage;
-            runtimeFailureCode ??= "runtime_error";
+            runtimeFailureCode ??=
+              runtimeStage === "sandbox_acquisition"
+                ? "sandbox_acquisition_failed"
+                : runtimeStage === "sandbox_identity_validation"
+                  ? "sandbox_identity_changed"
+                  : "runtime_error";
             throw error;
           }
         },
@@ -1297,8 +1389,13 @@ export const subagentTask = task({
           stepCount,
           costDollars,
           errorCategory: terminalFailure.code,
-          runtimeErrorCategory: runtimeDiagnostics?.category,
+          runtimeErrorCategory:
+            runtimeDiagnostics?.category === "unknown"
+              ? undefined
+              : runtimeDiagnostics?.category,
           failureStage: terminalFailureStage,
+          resultRecoveryCount: resultRecoveriesUsed,
+          resultSubmissionCount: resultSubmissionAttempts,
         });
         if (runtimeDiagnostics) {
           triggerLogger.error("[subagent] bounded recovery exhausted", {
@@ -1317,7 +1414,29 @@ export const subagentTask = task({
             status_code: runtimeDiagnostics.statusCode,
             provider_retry_count: providerRetriesUsed,
             result_recovery_count: resultRecoveriesUsed,
+            result_recovery_generation_count: resultRecoveryGenerationAttempts,
             result_recovery_retry_count: resultRecoveryRetriesUsed,
+            result_submission_count: resultSubmissionAttempts,
+          });
+        }
+        if (terminalFailure.code === "structured_result_missing") {
+          triggerLogger.error("[subagent] structured result missing", {
+            event: "subagent_structured_result_missing",
+            service: "hackerai-subagent",
+            environment:
+              process.env.TRIGGER_ENV ?? process.env.NODE_ENV ?? "unknown",
+            user_id: row.user_id,
+            subagent_id: row.subagent_id,
+            parent_trigger_run_id: row.parent_trigger_run_id,
+            trigger_run_id: ctx.run.id,
+            model: activeModelName,
+            step_count: stepCount,
+            generation_attempt_count: generationAttempt,
+            result_recovery_count: resultRecoveriesUsed,
+            result_recovery_generation_count: resultRecoveryGenerationAttempts,
+            result_recovery_retry_count: resultRecoveryRetriesUsed,
+            result_submission_count: resultSubmissionAttempts,
+            deadline_reminder_sent: deadlineReminderSent,
           });
         }
         metadata
@@ -1371,6 +1490,8 @@ export const subagentTask = task({
         costDollars,
         stepCount,
         Date.now() - startedAt,
+        resultRecoveriesUsed,
+        resultSubmissionAttempts,
       );
       return { subagentId: row.subagent_id, status: "completed" };
     } catch (error) {
@@ -1437,6 +1558,8 @@ export const subagentTask = task({
               ? undefined
               : outerRuntimeDiagnostics.category,
           failureStage: runtimeStage,
+          resultRecoveryCount: resultRecoveriesUsed,
+          resultSubmissionCount: resultSubmissionAttempts,
         });
       } else {
         const persistedOutput = await loadPersistedTerminalOutput(
@@ -1461,6 +1584,10 @@ export const subagentTask = task({
         error_name: outerRuntimeDiagnostics.errorName,
         error_code: outerRuntimeDiagnostics.errorCode,
         status_code: outerRuntimeDiagnostics.statusCode,
+        result_recovery_count: resultRecoveriesUsed,
+        result_recovery_generation_count: resultRecoveryGenerationAttempts,
+        result_recovery_retry_count: resultRecoveryRetriesUsed,
+        result_submission_count: resultSubmissionAttempts,
       });
       metadata
         .set("status", terminalFailure.status)

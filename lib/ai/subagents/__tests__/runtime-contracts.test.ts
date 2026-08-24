@@ -171,6 +171,11 @@ describe("security validation subagent runtime contracts", () => {
     expect(child).toContain("getSubagentProviderRetryDecision");
     expect(child).toContain("canRecoverMissingSubagentResult");
     expect(child).toContain("getSubagentResultRecoveryRetryDecision");
+    expect(child).toContain("getSubagentExplorationStepLimit");
+    expect(child).toContain("shouldStartSubagentResultRecovery");
+    expect(child).toContain(
+      'event: "subagent_structured_result_recovery_started"',
+    );
     expect(child).toContain('"structured_result_recovery_exhausted"');
     expect(child).toContain('"resultRecoveryRetryCount"');
     expect(child).toContain('event: "subagent_recovery_exhausted"');

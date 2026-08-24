@@ -38,6 +38,16 @@ export const assertSubagentSandboxIdentity = (
 ): void => {
   if (!expectedIdentity) return;
   const actualIdentity = getSubagentSandboxIdentity(sandbox);
+  // AWS MicroVMs are a user-scoped cloud workspace. The physical VM can be
+  // replaced while the parent run is active, and the workspace is restored
+  // onto the single active VM recorded for that user. Keep provider isolation,
+  // but do not reject a child solely because the physical MicroVM rotated.
+  if (
+    expectedIdentity.startsWith("aws:") &&
+    actualIdentity.startsWith("aws:")
+  ) {
+    return;
+  }
   const legacyAwsIdentity = actualIdentity.startsWith("aws:")
     ? `connection:${actualIdentity.slice("aws:".length)}`
     : undefined;

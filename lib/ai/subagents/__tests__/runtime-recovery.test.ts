@@ -3,12 +3,16 @@ import { describe, expect, it } from "@jest/globals";
 import {
   buildMissingSubagentResultRecoveryMessage,
   canRecoverMissingSubagentResult,
+  canStartSubagentResultRecoveryGeneration,
+  getSubagentExplorationStepLimit,
   getSubagentProviderRetryDecision,
   getSubagentRecoveryErrorDiagnostics,
   getSubagentResultRecoveryRetryDecision,
   isRecoverableProviderCategory,
   isTransientProviderCategory,
   pipeSubagentUiMessageStream,
+  shouldStartSubagentResultRecovery,
+  SUBAGENT_RESULT_RECOVERY_STEP_RESERVE,
 } from "../runtime-recovery";
 
 describe("subagent runtime recovery", () => {
@@ -101,6 +105,26 @@ describe("subagent runtime recovery", () => {
     );
   });
 
+  it("reserves the final steps for structured-result recovery", () => {
+    expect(SUBAGENT_RESULT_RECOVERY_STEP_RESERVE).toBe(2);
+    expect(getSubagentExplorationStepLimit(50)).toBe(48);
+    expect(getSubagentExplorationStepLimit(2)).toBe(1);
+    expect(
+      shouldStartSubagentResultRecovery(0, {
+        aborted: false,
+        spendCapExceeded: false,
+        remainingSteps: 2,
+      }),
+    ).toBe(true);
+    expect(
+      shouldStartSubagentResultRecovery(1, {
+        aborted: false,
+        spendCapExceeded: false,
+        remainingSteps: 2,
+      }),
+    ).toBe(false);
+  });
+
   it("retries a failed structured-result recovery exactly once", () => {
     const outputFailure = Object.assign(
       new Error("No object generated: response did not match schema"),
@@ -123,6 +147,12 @@ describe("subagent runtime recovery", () => {
       getSubagentResultRecoveryRetryDecision(outputFailure, 1, healthyRuntime)
         .shouldRetry,
     ).toBe(false);
+  });
+
+  it("bounds every structured-result generation, including deferred submissions", () => {
+    expect(canStartSubagentResultRecoveryGeneration(0)).toBe(true);
+    expect(canStartSubagentResultRecoveryGeneration(1)).toBe(true);
+    expect(canStartSubagentResultRecoveryGeneration(2)).toBe(false);
   });
 
   it("does not retry structured-result recovery after cancellation, spend, or step exhaustion", () => {

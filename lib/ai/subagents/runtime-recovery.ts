@@ -48,6 +48,39 @@ export type SubagentResultRecoveryRetryDecision =
     delayMs: number;
   };
 
+// Keep enough of the global step budget for one structured-output attempt and
+// its single bounded retry. Without this reserve, an exploratory generation can
+// consume all 50 steps and make the existing result-recovery path unreachable.
+export const SUBAGENT_RESULT_RECOVERY_STEP_RESERVE =
+  1 + SUBAGENT_MAX_RESULT_RECOVERY_FAILURE_RETRIES;
+
+// Count every structured-output generation, including generations that defer
+// because a parent update arrived. This prevents deferrals from bypassing the
+// same bounded recovery budget used for provider and schema failures.
+export const canStartSubagentResultRecoveryGeneration = (
+  generationAttemptsUsed: number,
+): boolean => generationAttemptsUsed < SUBAGENT_RESULT_RECOVERY_STEP_RESERVE;
+
+export const getSubagentExplorationStepLimit = (
+  remainingSteps: number,
+): number =>
+  Math.max(1, remainingSteps - SUBAGENT_RESULT_RECOVERY_STEP_RESERVE);
+
+export const shouldStartSubagentResultRecovery = (
+  recoveriesUsed: number,
+  options: {
+    aborted: boolean;
+    spendCapExceeded: boolean;
+    remainingSteps: number;
+  },
+): boolean =>
+  options.remainingSteps <= SUBAGENT_RESULT_RECOVERY_STEP_RESERVE &&
+  canRecoverMissingSubagentResult(recoveriesUsed, {
+    aborted: options.aborted,
+    spendCapExceeded: options.spendCapExceeded,
+    hasStepsRemaining: options.remainingSteps > 0,
+  });
+
 const ALLOWED_RECOVERY_ERROR_NAMES = new Set([
   "AI_APICallError",
   "AI_JSONParseError",
