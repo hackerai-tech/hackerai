@@ -78,6 +78,25 @@ describe("cloud sandbox cleanup configuration", () => {
     );
   });
 
+  it("deletes the durable workspace before AWS cleanup can fail", async () => {
+    mockTerminateAwsLambdaMicrovmForUser.mockRejectedValueOnce(
+      new Error("AWS unavailable"),
+    );
+
+    await expect(terminateCloudSandboxesForUser("user_123")).rejects.toThrow(
+      "AWS unavailable",
+    );
+    expect(mockDeleteAwsLambdaMicrovmWorkspace).toHaveBeenCalledWith(
+      "user_123",
+      "test-service-key",
+    );
+    expect(
+      mockDeleteAwsLambdaMicrovmWorkspace.mock.invocationCallOrder[0],
+    ).toBeLessThan(
+      mockTerminateAwsLambdaMicrovmForUser.mock.invocationCallOrder[0],
+    );
+  });
+
   it("terminates every page of E2B sandboxes during provider migration", async () => {
     process.env.E2B_API_KEY = "e2b-test-key";
     let page = 0;
@@ -101,5 +120,28 @@ describe("cloud sandbox cleanup configuration", () => {
     expect(mockKillE2BSandbox).toHaveBeenCalledTimes(2);
     expect(mockKillE2BSandbox).toHaveBeenNthCalledWith(1, "sandbox-page-1");
     expect(mockKillE2BSandbox).toHaveBeenNthCalledWith(2, "sandbox-page-2");
+  });
+
+  it("deletes the durable workspace even when legacy E2B cleanup fails", async () => {
+    process.env.E2B_API_KEY = "e2b-test-key";
+    mockListE2BSandboxes.mockReturnValue({
+      nextItems: jest.fn(async () => [{ sandboxId: "sandbox-failing" }]),
+      hasNext: false,
+    } as ReturnType<typeof Sandbox.list>);
+    mockKillE2BSandbox.mockRejectedValueOnce(new Error("E2B unavailable"));
+    const errorSpy = jest.spyOn(console, "error").mockImplementation();
+
+    await expect(terminateCloudSandboxesForUser("user_123")).rejects.toThrow(
+      "E2B unavailable",
+    );
+    expect(mockDeleteAwsLambdaMicrovmWorkspace).toHaveBeenCalledWith(
+      "user_123",
+      "test-service-key",
+    );
+    expect(
+      mockDeleteAwsLambdaMicrovmWorkspace.mock.invocationCallOrder[0],
+    ).toBeLessThan(mockKillE2BSandbox.mock.invocationCallOrder[0]);
+
+    errorSpy.mockRestore();
   });
 });

@@ -48,6 +48,8 @@ describe("AWS Lambda MicroVM durable workspace", () => {
     expect(command).toContain("-C '/home/user'");
     expect(command).toContain(".hackerai-workspace-v1.ready");
     expect(command).toContain(".hackerai-workspace-v1.lock");
+    expect(command).toContain(`trap 'rm -f "$archive"' EXIT`);
+    expect(command).toContain('[ "$attempts" -ge 595 ] && exit 71');
     expect(run).toHaveBeenCalledTimes(2);
     const checkpointCommand = run.mock.calls[1][0] as string;
     expect(checkpointCommand).toContain("sleep 120");
@@ -80,7 +82,33 @@ describe("AWS Lambda MicroVM durable workspace", () => {
     expect(command).toContain("mktemp /tmp/hackerai-workspace");
     expect(command).toContain("--directory='/home/user'");
     expect(command).toContain("--exclude='*/node_modules'");
+    expect(command).toContain("tar_status=0");
+    expect(command).toContain('[ "$tar_status" -le 1 ]');
     expect(command).toContain('--upload-file "$archive"');
+  });
+
+  it("uploads a usable snapshot when GNU tar reports changed files", () => {
+    const command = buildWorkspaceSnapshotCommand("https://s3.example/upload");
+    const result = spawnSync(
+      "bash",
+      ["-c", `tar() { return 1; }; curl() { printf uploaded; }; ${command}`],
+      { encoding: "utf8" },
+    );
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toBe("uploaded");
+  });
+
+  it("does not upload a snapshot after a fatal tar error", () => {
+    const command = buildWorkspaceSnapshotCommand("https://s3.example/upload");
+    const result = spawnSync(
+      "bash",
+      ["-c", `tar() { return 2; }; curl() { printf uploaded; }; ${command}`],
+      { encoding: "utf8" },
+    );
+
+    expect(result.status).not.toBe(0);
+    expect(result.stdout).toBe("");
   });
 
   it("fails the lifecycle when a transfer command does not complete", async () => {
@@ -128,5 +156,12 @@ describe("AWS Lambda MicroVM durable workspace", () => {
       const result = spawnSync("bash", ["-n"], { input: command });
       expect(result.status).toBe(0);
     }
+  });
+
+  it("keeps fatal checkpoint tar errors from reaching the upload", () => {
+    const script = buildWorkspaceCheckpointScript();
+    expect(script).toContain("tar_status=0");
+    expect(script).toContain("tar_status=$?");
+    expect(script).toContain('[ "$tar_status" -le 1 ]');
   });
 });

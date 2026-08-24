@@ -15,6 +15,8 @@ const WORKSPACE_CHECKPOINT_START_LOCK =
   "/tmp/.hackerai-workspace-v1-checkpoint-start.lock";
 const WORKSPACE_CHECKPOINT_INTERVAL_SECONDS = 2 * 60;
 const WORKSPACE_TRANSFER_TIMEOUT_MS = 10 * 60 * 1_000;
+const WORKSPACE_RESTORE_WAIT_ATTEMPTS =
+  Math.floor(WORKSPACE_TRANSFER_TIMEOUT_MS / 1_000) - 5;
 
 type WorkspaceSandbox = {
   commands: {
@@ -42,7 +44,7 @@ export function buildWorkspaceRestoreCommand(downloadUrl: string | null) {
   const restore = downloadUrl
     ? [
         'archive="$(mktemp /tmp/hackerai-workspace.XXXXXX.tar.gz)"',
-        'trap \'rm -f "$archive"; rmdir "$lock" 2>/dev/null || true\' EXIT',
+        "trap 'rm -f \"$archive\"' EXIT",
         `curl --fail --silent --show-error --location --retry 3 --retry-all-errors --output "$archive" ${shellQuote(downloadUrl)}`,
         'tar -tzf "$archive" >/dev/null',
         `tar -xzf "$archive" -C ${shellQuote(WORKSPACE_ROOT)} --no-same-owner --no-same-permissions`,
@@ -66,7 +68,7 @@ export function buildWorkspaceRestoreCommand(downloadUrl: string | null) {
     '  while [ ! -f "$ready" ]; do',
     '    [ -f "$failed" ] && exit 70',
     "    attempts=$((attempts + 1))",
-    '    [ "$attempts" -ge 180 ] && exit 71',
+    `    [ "$attempts" -ge ${WORKSPACE_RESTORE_WAIT_ATTEMPTS} ] && exit 71`,
     "    sleep 1",
     "  done",
     "fi",
@@ -80,6 +82,7 @@ export function buildWorkspaceSnapshotCommand(uploadUrl: string) {
     "flock -w 120 9;",
     'archive="$(mktemp /tmp/hackerai-workspace.XXXXXX.tar.gz)";',
     "trap 'rm -f \"$archive\"' EXIT;",
+    "tar_status=0;",
     'tar --create --gzip --file="$archive"',
     `--directory=${shellQuote(WORKSPACE_ROOT)}`,
     "--warning=no-file-changed",
@@ -87,7 +90,8 @@ export function buildWorkspaceSnapshotCommand(uploadUrl: string) {
     "--exclude='./.npm/_cacache'",
     "--exclude='./.local/share/pnpm/store'",
     "--exclude='*/node_modules'",
-    ".;",
+    ". || tar_status=$?;",
+    '[ "$tar_status" -le 1 ];',
     "curl --fail --silent --show-error --retry 3 --retry-all-errors",
     '--request PUT --upload-file "$archive"',
     shellQuote(uploadUrl),
@@ -104,7 +108,9 @@ export function buildWorkspaceCheckpointScript() {
     "    flock -n 9 || exit 0",
     '    archive="$(mktemp /tmp/hackerai-workspace.XXXXXX.tar.gz)"',
     "    trap 'rm -f \"$archive\"' EXIT",
-    `    tar --create --gzip --file="$archive" --directory=${shellQuote(WORKSPACE_ROOT)} --warning=no-file-changed --exclude='./.cache' --exclude='./.npm/_cacache' --exclude='./.local/share/pnpm/store' --exclude='*/node_modules' .`,
+    "    tar_status=0",
+    `    tar --create --gzip --file="$archive" --directory=${shellQuote(WORKSPACE_ROOT)} --warning=no-file-changed --exclude='./.cache' --exclude='./.npm/_cacache' --exclude='./.local/share/pnpm/store' --exclude='*/node_modules' . || tar_status=$?`,
+    '    [ "$tar_status" -le 1 ]',
     `    upload_url="$(cat ${shellQuote(WORKSPACE_UPLOAD_URL_FILE)})"`,
     '    curl --fail --silent --show-error --retry 3 --retry-all-errors --request PUT --upload-file "$archive" "$upload_url"',
     `  ) 9>${shellQuote(WORKSPACE_SNAPSHOT_LOCK)} || true`,

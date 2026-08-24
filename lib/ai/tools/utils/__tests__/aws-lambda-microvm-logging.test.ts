@@ -1204,6 +1204,43 @@ describe("AWS Lambda MicroVM development logging", () => {
     infoSpy.mockRestore();
   });
 
+  it("durably snapshots an already suspended MicroVM before counting it", async () => {
+    mockQuery.mockResolvedValueOnce([
+      {
+        sessionId: "session-already-suspended",
+        status: "suspended",
+        microvmId: "microvm-already-suspended",
+        region: "us-east-1",
+      },
+    ]);
+    mockSend
+      .mockResolvedValueOnce({ state: "SUSPENDED" })
+      .mockResolvedValueOnce({ $metadata: { httpStatusCode: 200 } })
+      .mockResolvedValueOnce({
+        state: "RUNNING",
+        endpoint: "microvm-already-suspended.example.test",
+      })
+      .mockResolvedValueOnce({
+        $metadata: { requestId: "resuspend-request", httpStatusCode: 200 },
+      });
+    const infoSpy = jest.spyOn(console, "info").mockImplementation();
+
+    await expect(
+      suspendAwsLambdaMicrovmsForUser("user-already-suspended"),
+    ).resolves.toEqual({
+      total: 1,
+      suspended: 0,
+      alreadySuspended: 1,
+      terminated: 0,
+      alreadyGone: 0,
+      workspacesSaved: 1,
+    });
+
+    expect(mockSnapshotWorkspace).toHaveBeenCalledTimes(1);
+    expect(mockSend).toHaveBeenCalledTimes(4);
+    infoSpy.mockRestore();
+  });
+
   it("retains the MicroVM instead of terminating the only unsaved workspace", async () => {
     mockQuery.mockResolvedValueOnce([
       {

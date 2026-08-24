@@ -1017,21 +1017,6 @@ async function ensureExistingMicrovm(
     const endpoint = await waitForRunningEndpoint(session.microvmId, config);
     directSandbox = createDirectSandbox(userId, session, endpoint, config);
     await directSandbox.ready();
-    const restore = await restoreAwsLambdaMicrovmWorkspace({
-      userId,
-      serviceKey: config.serviceKey,
-      sandbox: directSandbox,
-    });
-    log("info", "cloud_sandbox_workspace_ready", {
-      user_id: userId,
-      session_id: session.sessionId,
-      microvm_id: session.microvmId,
-      region: config.region,
-      workspace_snapshot_available: restore.snapshotAvailable,
-      workspace_checkpointing_enabled: true,
-      sandbox_reused: true,
-    });
-
     if (state.startedAt && state.maximumDurationInSeconds) {
       const remainingMs =
         state.startedAt.getTime() +
@@ -1079,6 +1064,21 @@ async function ensureExistingMicrovm(
         return null;
       }
     }
+
+    const restore = await restoreAwsLambdaMicrovmWorkspace({
+      userId,
+      serviceKey: config.serviceKey,
+      sandbox: directSandbox,
+    });
+    log("info", "cloud_sandbox_workspace_ready", {
+      user_id: userId,
+      session_id: session.sessionId,
+      microvm_id: session.microvmId,
+      region: config.region,
+      workspace_snapshot_available: restore.snapshotAvailable,
+      workspace_checkpointing_enabled: true,
+      sandbox_reused: true,
+    });
     return { session, sandbox: directSandbox };
   } catch (error) {
     await directSandbox?.close().catch((closeError: unknown) => {
@@ -1928,6 +1928,9 @@ export async function suspendAwsLambdaMicrovmsForUser(
         }
       }
       if (current.state === "SUSPENDED") {
+        // A suspended VM is not proof that S3 has a current archive: it may
+        // predate workspace persistence or have been suspended after a failed
+        // snapshot. Resume it once so cleanup cannot strand the only copy.
         await getClient(session.region).send(
           new ResumeMicrovmCommand({ microvmIdentifier: microvmId }),
         );
@@ -1988,7 +1991,11 @@ export async function suspendAwsLambdaMicrovmsForUser(
         serviceKey,
         "SUSPENDING",
       );
-      summary.suspended++;
+      if (previousState === "SUSPENDED") {
+        summary.alreadySuspended++;
+      } else {
+        summary.suspended++;
+      }
       log("info", "cloud_sandbox_suspend_accepted", {
         user_id: userId,
         session_id: session.sessionId,
