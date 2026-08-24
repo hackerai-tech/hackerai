@@ -23,13 +23,28 @@ function getRequiredEnvVar(name: string): string {
   return value;
 }
 
+export type S3ObjectTarget = {
+  region: string;
+  bucketName: string;
+};
+
+function getS3ObjectTarget(target?: S3ObjectTarget): S3ObjectTarget {
+  return (
+    target ?? {
+      region: getRequiredEnvVar("AWS_S3_REGION"),
+      bucketName: getRequiredEnvVar("AWS_S3_BUCKET_NAME"),
+    }
+  );
+}
+
 /**
  * Get S3 client with credentials from environment variables
  */
-export function getS3Client(): S3Client {
+export function getS3Client(
+  region = getRequiredEnvVar("AWS_S3_REGION"),
+): S3Client {
   const accessKeyId = getRequiredEnvVar("AWS_S3_ACCESS_KEY_ID");
   const secretAccessKey = getRequiredEnvVar("AWS_S3_SECRET_ACCESS_KEY");
-  const region = getRequiredEnvVar("AWS_S3_REGION");
 
   return new S3Client({
     region,
@@ -99,9 +114,10 @@ export async function generateS3UploadUrl(
 export async function generateS3UploadUrlForKey(
   s3Key: string,
   expiresIn = getS3UrlLifetimeSeconds(),
+  target?: S3ObjectTarget,
 ): Promise<string> {
-  const s3Client = getS3Client();
-  const bucketName = getRequiredEnvVar("AWS_S3_BUCKET_NAME");
+  const { region, bucketName } = getS3ObjectTarget(target);
+  const s3Client = getS3Client(region);
   const command = new PutObjectCommand({
     Bucket: bucketName,
     Key: s3Key,
@@ -115,10 +131,13 @@ export async function generateS3UploadUrlForKey(
 /**
  * Generate presigned URL for file download
  */
-export async function generateS3DownloadUrl(s3Key: string): Promise<string> {
+export async function generateS3DownloadUrl(
+  s3Key: string,
+  target?: S3ObjectTarget,
+): Promise<string> {
   try {
-    const s3Client = getS3Client();
-    const bucketName = getRequiredEnvVar("AWS_S3_BUCKET_NAME");
+    const { region, bucketName } = getS3ObjectTarget(target);
+    const s3Client = getS3Client(region);
 
     const command = new GetObjectCommand({
       Bucket: bucketName,
@@ -139,16 +158,25 @@ export async function generateS3DownloadUrl(s3Key: string): Promise<string> {
   }
 }
 
-/** Return whether an S3 object exists without treating a missing key as an error. */
-export async function s3ObjectExists(s3Key: string): Promise<boolean> {
-  const s3Client = getS3Client();
-  const bucketName = getRequiredEnvVar("AWS_S3_BUCKET_NAME");
+export type S3ObjectMetadata =
+  { exists: false } | { exists: true; lastModifiedMs: number | null };
+
+/** Read object presence and its S3-authoritative modification time. */
+export async function getS3ObjectMetadata(
+  s3Key: string,
+  target?: S3ObjectTarget,
+): Promise<S3ObjectMetadata> {
+  const { region, bucketName } = getS3ObjectTarget(target);
+  const s3Client = getS3Client(region);
 
   try {
-    await s3Client.send(
+    const result = await s3Client.send(
       new HeadObjectCommand({ Bucket: bucketName, Key: s3Key }),
     );
-    return true;
+    return {
+      exists: true,
+      lastModifiedMs: result.LastModified?.getTime() ?? null,
+    };
   } catch (error) {
     const record =
       error && typeof error === "object"
@@ -162,19 +190,30 @@ export async function s3ObjectExists(s3Key: string): Promise<boolean> {
       record?.name === "NoSuchKey" ||
       record?.$metadata?.httpStatusCode === 404
     ) {
-      return false;
+      return { exists: false };
     }
     throw error;
   }
 }
 
+/** Return whether an S3 object exists without treating a missing key as an error. */
+export async function s3ObjectExists(
+  s3Key: string,
+  target?: S3ObjectTarget,
+): Promise<boolean> {
+  return (await getS3ObjectMetadata(s3Key, target)).exists;
+}
+
 /**
  * Delete object from S3
  */
-export async function deleteS3Object(s3Key: string): Promise<void> {
+export async function deleteS3Object(
+  s3Key: string,
+  target?: S3ObjectTarget,
+): Promise<void> {
   try {
-    const s3Client = getS3Client();
-    const bucketName = getRequiredEnvVar("AWS_S3_BUCKET_NAME");
+    const { region, bucketName } = getS3ObjectTarget(target);
+    const s3Client = getS3Client(region);
 
     const command = new DeleteObjectCommand({
       Bucket: bucketName,

@@ -56,62 +56,53 @@ describe("s3Actions", () => {
     process.env.AWS_S3_SECRET_ACCESS_KEY = "test-secret-key";
     process.env.AWS_S3_REGION = "us-east-1";
     process.env.AWS_S3_BUCKET_NAME = "test-bucket";
+    process.env.AWS_LAMBDA_MICROVM_WORKSPACE_BUCKET_US_EAST_1 =
+      "workspace-east";
+    process.env.AWS_LAMBDA_MICROVM_WORKSPACE_BUCKET_US_WEST_2 =
+      "workspace-west";
+    process.env.AWS_LAMBDA_MICROVM_WORKSPACE_BUCKET_EU_WEST_1 = "workspace-eu";
   });
 
   describe("MicroVM workspace actions", () => {
-    it("uses one deterministic user-scoped object for upload and restore", async () => {
-      const {
-        generateS3UploadUrlForKey,
-        s3ObjectExists,
-        generateS3DownloadUrl,
-      } = await import("../s3Utils");
+    it("uploads to the MicroVM's regional workspace bucket", async () => {
+      const { generateS3UploadUrlForKey } = await import("../s3Utils");
       (
         generateS3UploadUrlForKey as jest.MockedFunction<
           typeof generateS3UploadUrlForKey
         >
       ).mockResolvedValue("https://s3.example/upload");
-      (
-        s3ObjectExists as jest.MockedFunction<typeof s3ObjectExists>
-      ).mockResolvedValue(true);
-      (
-        generateS3DownloadUrl as jest.MockedFunction<
-          typeof generateS3DownloadUrl
-        >
-      ).mockResolvedValue("https://s3.example/download");
-      const {
-        generateMicrovmWorkspaceUploadUrlAction,
-        getMicrovmWorkspaceDownloadUrlAction,
-      } = await import("../s3Actions");
+      const { generateMicrovmWorkspaceUploadUrlAction } =
+        await import("../s3Actions");
 
       await expect(
         generateMicrovmWorkspaceUploadUrlAction.handler({} as any, {
           serviceKey: "service-key",
           userId: "user/123",
+          region: "us-west-2",
         }),
       ).resolves.toBe("https://s3.example/upload");
-      await expect(
-        getMicrovmWorkspaceDownloadUrlAction.handler({} as any, {
-          serviceKey: "service-key",
-          userId: "user/123",
-        }),
-      ).resolves.toBe("https://s3.example/download");
 
       const expectedKey =
         "users/user%2F123/microvm-workspace/v1/workspace.tar.gz";
       expect(generateS3UploadUrlForKey).toHaveBeenCalledWith(
         expectedKey,
         28_800,
+        { region: "us-west-2", bucketName: "workspace-west" },
       );
-      expect(s3ObjectExists).toHaveBeenCalledWith(expectedKey);
-      expect(generateS3DownloadUrl).toHaveBeenCalledWith(expectedKey);
     });
 
-    it("returns null when no durable workspace exists yet", async () => {
-      const { s3ObjectExists, generateS3DownloadUrl } =
+    it("restores the newest snapshot across all workspace regions", async () => {
+      const { getS3ObjectMetadata, generateS3DownloadUrl } =
         await import("../s3Utils");
+      (getS3ObjectMetadata as jest.MockedFunction<typeof getS3ObjectMetadata>)
+        .mockResolvedValueOnce({ exists: true, lastModifiedMs: 100 })
+        .mockResolvedValueOnce({ exists: true, lastModifiedMs: 300 })
+        .mockResolvedValueOnce({ exists: true, lastModifiedMs: 200 });
       (
-        s3ObjectExists as jest.MockedFunction<typeof s3ObjectExists>
-      ).mockResolvedValue(false);
+        generateS3DownloadUrl as jest.MockedFunction<
+          typeof generateS3DownloadUrl
+        >
+      ).mockResolvedValue("https://s3.example/download");
       const { getMicrovmWorkspaceDownloadUrlAction } =
         await import("../s3Actions");
 
@@ -119,12 +110,100 @@ describe("s3Actions", () => {
         getMicrovmWorkspaceDownloadUrlAction.handler({} as any, {
           serviceKey: "service-key",
           userId: "user_123",
+          region: "us-east-1",
+        }),
+      ).resolves.toBe("https://s3.example/download");
+      expect(getS3ObjectMetadata).toHaveBeenCalledTimes(3);
+      expect(generateS3DownloadUrl).toHaveBeenCalledWith(
+        "users/user_123/microvm-workspace/v1/workspace.tar.gz",
+        { region: "us-west-2", bucketName: "workspace-west" },
+      );
+    });
+
+    it("prefers the current region when latest timestamps tie", async () => {
+      const { getS3ObjectMetadata, generateS3DownloadUrl } =
+        await import("../s3Utils");
+      (getS3ObjectMetadata as jest.MockedFunction<typeof getS3ObjectMetadata>)
+        .mockResolvedValueOnce({ exists: true, lastModifiedMs: 300 })
+        .mockResolvedValueOnce({ exists: true, lastModifiedMs: 100 })
+        .mockResolvedValueOnce({ exists: true, lastModifiedMs: 300 });
+      (
+        generateS3DownloadUrl as jest.MockedFunction<
+          typeof generateS3DownloadUrl
+        >
+      ).mockResolvedValue("https://s3.example/download");
+      const { getMicrovmWorkspaceDownloadUrlAction } =
+        await import("../s3Actions");
+
+      await getMicrovmWorkspaceDownloadUrlAction.handler({} as any, {
+        serviceKey: "service-key",
+        userId: "user_123",
+        region: "eu-west-1",
+      });
+
+      expect(generateS3DownloadUrl).toHaveBeenCalledWith(
+        "users/user_123/microvm-workspace/v1/workspace.tar.gz",
+        { region: "eu-west-1", bucketName: "workspace-eu" },
+      );
+    });
+
+    it("returns null when no durable workspace exists in any region", async () => {
+      const { getS3ObjectMetadata, generateS3DownloadUrl } =
+        await import("../s3Utils");
+      (
+        getS3ObjectMetadata as jest.MockedFunction<typeof getS3ObjectMetadata>
+      ).mockResolvedValue({ exists: false });
+      const { getMicrovmWorkspaceDownloadUrlAction } =
+        await import("../s3Actions");
+
+      await expect(
+        getMicrovmWorkspaceDownloadUrlAction.handler({} as any, {
+          serviceKey: "service-key",
+          userId: "user_123",
+          region: "us-east-1",
         }),
       ).resolves.toBeNull();
       expect(generateS3DownloadUrl).not.toHaveBeenCalled();
     });
 
-    it("deletes the same deterministic object", async () => {
+    it("fails closed when any regional snapshot lookup is unavailable", async () => {
+      const { getS3ObjectMetadata, generateS3DownloadUrl } =
+        await import("../s3Utils");
+      const regionalOutage = new Error("regional S3 unavailable");
+      (getS3ObjectMetadata as jest.MockedFunction<typeof getS3ObjectMetadata>)
+        .mockResolvedValueOnce({ exists: true, lastModifiedMs: 100 })
+        .mockRejectedValueOnce(regionalOutage)
+        .mockResolvedValueOnce({ exists: false });
+      const { getMicrovmWorkspaceDownloadUrlAction } =
+        await import("../s3Actions");
+
+      await expect(
+        getMicrovmWorkspaceDownloadUrlAction.handler({} as any, {
+          serviceKey: "service-key",
+          userId: "user_123",
+          region: "us-east-1",
+        }),
+      ).rejects.toBe(regionalOutage);
+      expect(generateS3DownloadUrl).not.toHaveBeenCalled();
+    });
+
+    it("fails closed when a regional bucket is not configured", async () => {
+      delete process.env.AWS_LAMBDA_MICROVM_WORKSPACE_BUCKET_EU_WEST_1;
+      const { generateMicrovmWorkspaceUploadUrlAction } =
+        await import("../s3Actions");
+
+      await expect(
+        generateMicrovmWorkspaceUploadUrlAction.handler({} as any, {
+          serviceKey: "service-key",
+          userId: "user_123",
+          region: "eu-west-1",
+        }),
+      ).rejects.toThrow(
+        "Missing required environment variable: AWS_LAMBDA_MICROVM_WORKSPACE_BUCKET_EU_WEST_1",
+      );
+    });
+
+    it("deletes the deterministic object from every workspace region", async () => {
       const { deleteS3Object } = await import("../s3Utils");
       (
         deleteS3Object as jest.MockedFunction<typeof deleteS3Object>
@@ -137,7 +216,17 @@ describe("s3Actions", () => {
       });
       expect(deleteS3Object).toHaveBeenCalledWith(
         "users/user_123/microvm-workspace/v1/workspace.tar.gz",
+        { region: "us-east-1", bucketName: "workspace-east" },
       );
+      expect(deleteS3Object).toHaveBeenCalledWith(
+        "users/user_123/microvm-workspace/v1/workspace.tar.gz",
+        { region: "us-west-2", bucketName: "workspace-west" },
+      );
+      expect(deleteS3Object).toHaveBeenCalledWith(
+        "users/user_123/microvm-workspace/v1/workspace.tar.gz",
+        { region: "eu-west-1", bucketName: "workspace-eu" },
+      );
+      expect(deleteS3Object).toHaveBeenCalledTimes(3);
     });
   });
 

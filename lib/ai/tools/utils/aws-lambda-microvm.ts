@@ -1026,6 +1026,7 @@ async function ensureExistingMicrovm(
         await snapshotAwsLambdaMicrovmWorkspace({
           userId,
           serviceKey: config.serviceKey,
+          region: config.region,
           sandbox: directSandbox,
         });
         await directSandbox.close();
@@ -1068,6 +1069,7 @@ async function ensureExistingMicrovm(
     const restore = await restoreAwsLambdaMicrovmWorkspace({
       userId,
       serviceKey: config.serviceKey,
+      region: config.region,
       sandbox: directSandbox,
     });
     log("info", "cloud_sandbox_workspace_ready", {
@@ -1524,6 +1526,7 @@ export async function ensureAwsLambdaMicrovmConnection(
     const restore = await restoreAwsLambdaMicrovmWorkspace({
       userId,
       serviceKey: config.serviceKey,
+      region: config.region,
       sandbox: directSandbox,
     });
     log("info", "cloud_sandbox_workspace_ready", {
@@ -1967,6 +1970,7 @@ export async function suspendAwsLambdaMicrovmsForUser(
       await snapshotAwsLambdaMicrovmWorkspace({
         userId,
         serviceKey,
+        region: sessionConfig.region,
         sandbox: directSandbox,
       });
       workspaceSaved = true;

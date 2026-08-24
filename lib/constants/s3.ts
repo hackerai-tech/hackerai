@@ -28,6 +28,22 @@ export const MAX_GENERATED_FILE_SIZE_BYTES = 250 * 1024 * 1024;
 // S3 key prefix for user files
 export const S3_USER_FILES_PREFIX = "users";
 export const MICROVM_WORKSPACE_URL_LIFETIME_SECONDS = 8 * 60 * 60;
+export const MICROVM_WORKSPACE_REGIONS = [
+  "us-east-1",
+  "us-west-2",
+  "eu-west-1",
+] as const;
+
+export type MicrovmWorkspaceRegion = (typeof MICROVM_WORKSPACE_REGIONS)[number];
+
+export const MICROVM_WORKSPACE_BUCKET_ENV_BY_REGION: Record<
+  MicrovmWorkspaceRegion,
+  string
+> = {
+  "us-east-1": "AWS_LAMBDA_MICROVM_WORKSPACE_BUCKET_US_EAST_1",
+  "us-west-2": "AWS_LAMBDA_MICROVM_WORKSPACE_BUCKET_US_WEST_2",
+  "eu-west-1": "AWS_LAMBDA_MICROVM_WORKSPACE_BUCKET_EU_WEST_1",
+};
 
 /**
  * One durable workspace object per user. The object is replaced only after the

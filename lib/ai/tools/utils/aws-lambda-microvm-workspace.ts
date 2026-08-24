@@ -2,6 +2,7 @@ import "server-only";
 
 import { api } from "@/convex/_generated/api";
 import { getConvexClient } from "@/lib/db/convex-client";
+import type { AwsLambdaMicrovmRegion } from "./aws-lambda-microvm-release";
 
 const WORKSPACE_ROOT = "/home/user";
 const WORKSPACE_READY_MARKER = "/tmp/.hackerai-workspace-v1.ready";
@@ -162,11 +163,16 @@ export function buildWorkspaceCheckpointCommand(uploadUrl: string) {
 export async function restoreAwsLambdaMicrovmWorkspace(args: {
   userId: string;
   serviceKey: string;
+  region: AwsLambdaMicrovmRegion;
   sandbox: WorkspaceSandbox;
 }): Promise<{ snapshotAvailable: boolean }> {
   const downloadUrl = await getConvexClient().action(
     api.s3Actions.getMicrovmWorkspaceDownloadUrlAction,
-    { serviceKey: args.serviceKey, userId: args.userId },
+    {
+      serviceKey: args.serviceKey,
+      userId: args.userId,
+      region: args.region,
+    },
   );
   const result = await args.sandbox.commands.run(
     buildWorkspaceRestoreCommand(downloadUrl),
@@ -176,7 +182,11 @@ export async function restoreAwsLambdaMicrovmWorkspace(args: {
 
   const uploadUrl = await getConvexClient().action(
     api.s3Actions.generateMicrovmWorkspaceUploadUrlAction,
-    { serviceKey: args.serviceKey, userId: args.userId },
+    {
+      serviceKey: args.serviceKey,
+      userId: args.userId,
+      region: args.region,
+    },
   );
   const checkpointResult = await args.sandbox.commands.run(
     buildWorkspaceCheckpointCommand(uploadUrl),
@@ -191,11 +201,16 @@ export async function restoreAwsLambdaMicrovmWorkspace(args: {
 export async function snapshotAwsLambdaMicrovmWorkspace(args: {
   userId: string;
   serviceKey: string;
+  region: AwsLambdaMicrovmRegion;
   sandbox: WorkspaceSandbox;
 }): Promise<void> {
   const uploadUrl = await getConvexClient().action(
     api.s3Actions.generateMicrovmWorkspaceUploadUrlAction,
-    { serviceKey: args.serviceKey, userId: args.userId },
+    {
+      serviceKey: args.serviceKey,
+      userId: args.userId,
+      region: args.region,
+    },
   );
   const result = await args.sandbox.commands.run(
     buildWorkspaceSnapshotCommand(uploadUrl),

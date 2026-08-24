@@ -36,6 +36,7 @@ describe("AWS Lambda MicroVM durable workspace", () => {
       restoreAwsLambdaMicrovmWorkspace({
         userId: "user_123",
         serviceKey: "service-key",
+        region: "us-west-2",
         sandbox: { commands: { run } },
       }),
     ).resolves.toEqual({ snapshotAvailable: true });
@@ -56,6 +57,16 @@ describe("AWS Lambda MicroVM durable workspace", () => {
       displayName: "",
     });
     expect(run).toHaveBeenCalledTimes(2);
+    expect(mockAction).toHaveBeenNthCalledWith(1, expect.anything(), {
+      serviceKey: "service-key",
+      userId: "user_123",
+      region: "us-west-2",
+    });
+    expect(mockAction).toHaveBeenNthCalledWith(2, expect.anything(), {
+      serviceKey: "service-key",
+      userId: "user_123",
+      region: "us-west-2",
+    });
     const checkpointCommand = run.mock.calls[1][0] as string;
     expect(checkpointCommand).toContain("sleep 120");
     expect(checkpointCommand).toContain("nohup /bin/bash");
@@ -79,6 +90,7 @@ describe("AWS Lambda MicroVM durable workspace", () => {
     await snapshotAwsLambdaMicrovmWorkspace({
       userId: "user_123",
       serviceKey: "service-key",
+      region: "eu-west-1",
       sandbox: { commands: { run } },
     });
 
@@ -128,6 +140,7 @@ describe("AWS Lambda MicroVM durable workspace", () => {
       snapshotAwsLambdaMicrovmWorkspace({
         userId: "user_123",
         serviceKey: "service-key",
+        region: "us-east-1",
         sandbox: { commands: { run } },
       }),
     ).rejects.toThrow("Cloud workspace snapshot failed with exit code 22");
