@@ -12,6 +12,8 @@ const output = (region: "us-east-1" | "us-west-2" | "eu-west-1") =>
       `AWS_LAMBDA_MICROVM_IMAGE_ID=arn:aws:lambda:${region}:123456789012:microvm-image:hackerai`,
       "AWS_LAMBDA_MICROVM_IMAGE_VERSION=15.0",
       `AWS_LAMBDA_MICROVM_EXECUTION_ROLE_ARN=arn:aws:iam::123456789012:role/${region}`,
+      `AWS_LAMBDA_MICROVM_EGRESS_CONNECTOR_ARN=arn:aws:lambda:${region}:123456789012:network-connector:hackerai-static-egress:1`,
+      `AWS_LAMBDA_MICROVM_EGRESS_IPV4=${region === "us-east-1" ? "192.0.2.10" : region === "us-west-2" ? "192.0.2.20" : "192.0.2.30"}`,
     ].join("\n"),
   );
 
@@ -28,6 +30,7 @@ describe("AWS Lambda MicroVM regional release manifest", () => {
       "eu-west-1",
     ]);
     expect(manifest.regions["eu-west-1"].enabledForNewPlacements).toBe(true);
+    expect(manifest.regions["eu-west-1"].egressIpv4Address).toBe("192.0.2.30");
     expect(
       serializeAwsLambdaMicrovmReleaseEnvironment(manifest).split("\n"),
     ).toEqual([

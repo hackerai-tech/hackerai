@@ -342,7 +342,9 @@ export function getAwsLambdaMicrovmConfig(
       process.env.AWS_LAMBDA_MICROVM_EXECUTION_ROLE_ARN?.trim() ??
       undefined,
     ingressConnectorArn: `arn:aws:lambda:${region}:aws:network-connector:aws-network-connector:ALL_INGRESS`,
-    egressConnectorArn: `arn:aws:lambda:${region}:aws:network-connector:aws-network-connector:INTERNET_EGRESS`,
+    egressConnectorArn:
+      regionalRelease?.egressConnectorArn ??
+      `arn:aws:lambda:${region}:aws:network-connector:aws-network-connector:INTERNET_EGRESS`,
     maxDurationSeconds,
     minRemainingSeconds,
     logGroup:
@@ -376,7 +378,7 @@ function getRegionalReleaseConfig(
     imageVersion: release.imageVersion,
     executionRoleArn: release.executionRoleArn,
     ingressConnectorArn: `arn:aws:lambda:${region}:aws:network-connector:aws-network-connector:ALL_INGRESS`,
-    egressConnectorArn: `arn:aws:lambda:${region}:aws:network-connector:aws-network-connector:INTERNET_EGRESS`,
+    egressConnectorArn: release.egressConnectorArn,
   };
 }
 
@@ -426,7 +428,9 @@ function getConfigForPersistedSession(
     executionRoleArn:
       regionalRelease?.executionRoleArn ?? desired.executionRoleArn,
     ingressConnectorArn: `arn:aws:lambda:${region}:aws:network-connector:aws-network-connector:ALL_INGRESS`,
-    egressConnectorArn: `arn:aws:lambda:${region}:aws:network-connector:aws-network-connector:INTERNET_EGRESS`,
+    egressConnectorArn:
+      regionalRelease?.egressConnectorArn ??
+      `arn:aws:lambda:${region}:aws:network-connector:aws-network-connector:INTERNET_EGRESS`,
   };
 }
 

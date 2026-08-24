@@ -25,6 +25,9 @@ const bucket = process.env.AWS_LAMBDA_MICROVM_ARTIFACT_BUCKET;
 const buildRoleArn = process.env.AWS_LAMBDA_MICROVM_BUILD_ROLE_ARN;
 const executionRoleArn =
   process.env.AWS_LAMBDA_MICROVM_EXECUTION_ROLE_ARN?.trim();
+const egressConnectorArn =
+  process.env.AWS_LAMBDA_MICROVM_EGRESS_CONNECTOR_ARN?.trim();
+const egressIpv4Address = process.env.AWS_LAMBDA_MICROVM_EGRESS_IPV4?.trim();
 const name =
   process.env.AWS_LAMBDA_MICROVM_IMAGE_NAME || "hackerai-cloud-agent";
 const baseImageArn =
@@ -59,9 +62,23 @@ function releaseLog(level, event, properties) {
   else console.log(output);
 }
 
-if (!bucket || !buildRoleArn || !executionRoleArn) {
+if (
+  !bucket ||
+  !buildRoleArn ||
+  !executionRoleArn ||
+  !egressConnectorArn ||
+  !egressIpv4Address
+) {
   throw new Error(
-    "AWS_LAMBDA_MICROVM_ARTIFACT_BUCKET, AWS_LAMBDA_MICROVM_BUILD_ROLE_ARN, and AWS_LAMBDA_MICROVM_EXECUTION_ROLE_ARN are required",
+    "AWS_LAMBDA_MICROVM_ARTIFACT_BUCKET, AWS_LAMBDA_MICROVM_BUILD_ROLE_ARN, AWS_LAMBDA_MICROVM_EXECUTION_ROLE_ARN, AWS_LAMBDA_MICROVM_EGRESS_CONNECTOR_ARN, and AWS_LAMBDA_MICROVM_EGRESS_IPV4 are required",
+  );
+}
+if (
+  !egressConnectorArn.startsWith(`arn:aws:lambda:${region}:`) ||
+  !egressConnectorArn.includes(":network-connector:")
+) {
+  throw new Error(
+    `AWS_LAMBDA_MICROVM_EGRESS_CONNECTOR_ARN must be a network connector ARN in ${region}`,
   );
 }
 if (
@@ -116,9 +133,7 @@ const common = {
   logging: {
     cloudWatch: { logGroup: "/aws/lambda/microvms/hackerai-cloud-agent" },
   },
-  egressNetworkConnectors: [
-    `arn:aws:lambda:${region}:aws:network-connector:aws-network-connector:INTERNET_EGRESS`,
-  ],
+  egressNetworkConnectors: [egressConnectorArn],
   cpuConfigurations: [{ architecture: "ARM_64" }],
   resources: [{ minimumMemoryInMiB: 4096 }],
   additionalOsCapabilities: ["ALL"],
@@ -314,6 +329,8 @@ const output = [
   `AWS_LAMBDA_MICROVM_IMAGE_ID=${version.imageArn || imageIdentifier}`,
   `AWS_LAMBDA_MICROVM_IMAGE_VERSION=${imageVersion}`,
   `AWS_LAMBDA_MICROVM_EXECUTION_ROLE_ARN=${executionRoleArn}`,
+  `AWS_LAMBDA_MICROVM_EGRESS_CONNECTOR_ARN=${egressConnectorArn}`,
+  `AWS_LAMBDA_MICROVM_EGRESS_IPV4=${egressIpv4Address}`,
 ].join("\n");
 
 if (process.env.AWS_LAMBDA_MICROVM_OUTPUT_FILE) {

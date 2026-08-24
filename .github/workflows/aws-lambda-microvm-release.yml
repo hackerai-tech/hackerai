@@ -222,12 +222,14 @@ jobs:
       AWS_LAMBDA_MICROVM_ARTIFACT_BUCKET: ${{ vars[format('AWS_LAMBDA_MICROVM_ARTIFACT_BUCKET_{0}', matrix.variable_suffix)] }}
       AWS_LAMBDA_MICROVM_BUILD_ROLE_ARN: ${{ vars[format('AWS_LAMBDA_MICROVM_BUILD_ROLE_ARN_{0}', matrix.variable_suffix)] }}
       AWS_LAMBDA_MICROVM_EXECUTION_ROLE_ARN: ${{ vars[format('AWS_LAMBDA_MICROVM_EXECUTION_ROLE_ARN_{0}', matrix.variable_suffix)] }}
+      AWS_LAMBDA_MICROVM_EGRESS_CONNECTOR_ARN: ${{ vars[format('AWS_LAMBDA_MICROVM_EGRESS_CONNECTOR_ARN_{0}', matrix.variable_suffix)] }}
+      AWS_LAMBDA_MICROVM_EGRESS_IPV4: ${{ vars[format('AWS_LAMBDA_MICROVM_EGRESS_IPV4_{0}', matrix.variable_suffix)] }}
       AWS_RELEASE_ROLE_ARN: ${{ vars[format('AWS_RELEASE_ROLE_ARN_{0}', matrix.variable_suffix)] }}
     steps:
       - name: Validate regional release configuration
         shell: bash
         run: |
-          required=(AWS_LAMBDA_MICROVM_ARTIFACT_BUCKET AWS_LAMBDA_MICROVM_BUILD_ROLE_ARN AWS_LAMBDA_MICROVM_EXECUTION_ROLE_ARN AWS_RELEASE_ROLE_ARN)
+          required=(AWS_LAMBDA_MICROVM_ARTIFACT_BUCKET AWS_LAMBDA_MICROVM_BUILD_ROLE_ARN AWS_LAMBDA_MICROVM_EXECUTION_ROLE_ARN AWS_LAMBDA_MICROVM_EGRESS_CONNECTOR_ARN AWS_LAMBDA_MICROVM_EGRESS_IPV4 AWS_RELEASE_ROLE_ARN)
           for name in "${required[@]}"; do
             if [[ -z "${!name:-}" ]]; then
               echo "Missing GitHub environment variable for $AWS_REGION: $name"
@@ -297,7 +299,7 @@ jobs:
           # shellcheck disable=SC2163 # Export the variable named by each verified release-output key.
           while IFS='=' read -r name value; do
             case "$name" in
-              AWS_LAMBDA_MICROVM_IMAGE_ID|AWS_LAMBDA_MICROVM_IMAGE_VERSION)
+              AWS_LAMBDA_MICROVM_IMAGE_ID|AWS_LAMBDA_MICROVM_IMAGE_VERSION|AWS_LAMBDA_MICROVM_EGRESS_CONNECTOR_ARN|AWS_LAMBDA_MICROVM_EGRESS_IPV4)
                 printf -v "$name" '%s' "$value"
                 export "$name"
                 printf '%s=%s\n' "$name" "$value" >> "$GITHUB_ENV"
@@ -378,7 +380,7 @@ jobs:
             echo
             echo "- Release: \`$GITHUB_SHA\`"
             echo "- Regions: \`us-east-1\`, \`us-west-2\`, \`eu-west-1\`"
-            echo "- All regional images: built, validated, smoke-tested, and terminated"
+            echo "- All regional images: built, validated, smoke-tested through their reserved egress IPv4, and terminated"
             echo "- Trigger.dev production: stored manifest verified and worker deployed"
             echo "- Vercel: unchanged (Agent execution is Trigger.dev-only)"
           } >> "$GITHUB_STEP_SUMMARY"

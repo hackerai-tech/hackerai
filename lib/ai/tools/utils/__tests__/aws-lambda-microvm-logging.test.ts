@@ -90,6 +90,8 @@ function regionalReleaseManifest() {
           imageIdentifier: `arn:aws:lambda:${region}:630609837323:microvm-image:hackerai-cloud-agent`,
           imageVersion: `${region}-version`,
           executionRoleArn: `arn:aws:iam::630609837323:role/${region}`,
+          egressConnectorArn: `arn:aws:lambda:${region}:630609837323:network-connector:hackerai-microvm-static-egress:1`,
+          egressIpv4Address: "192.0.2.10",
           enabledForNewPlacements: true,
         },
       ]),
@@ -1185,6 +1187,8 @@ describe("AWS Lambda MicroVM development logging", () => {
       requestedRegion: "eu-west-1",
       region: "eu-west-1",
       imageVersion: "eu-west-1-version",
+      egressConnectorArn:
+        "arn:aws:lambda:eu-west-1:630609837323:network-connector:hackerai-microvm-static-egress:1",
       placementReason: "trigger_region_europe_pairing",
       releaseId: "regional-release",
     });

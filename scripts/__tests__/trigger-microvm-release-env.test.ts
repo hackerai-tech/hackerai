@@ -14,6 +14,8 @@ const releaseManifest = {
         imageIdentifier: `arn:aws:lambda:${region}:123:microvm-image:test`,
         imageVersion: "15.0",
         executionRoleArn: `arn:aws:iam::123:role/test-${region}`,
+        egressConnectorArn: `arn:aws:lambda:${region}:123:network-connector:hackerai-static-egress:1`,
+        egressIpv4Address: "192.0.2.10",
         enabledForNewPlacements: true,
       },
     ]),
