@@ -3,8 +3,176 @@ import { phLogger } from "@/lib/posthog/server";
 import { isCentrifugoSandbox, isE2BSandbox } from "./sandbox-types";
 import { AGENT_BROWSER_IDLE_TIMEOUT_MS } from "./agent-browser-runtime";
 
-const AGENT_BROWSER_INVOCATION_RE =
-  /(?:^|[;&|()]\s*)(?:(?:env\s+)?(?:[A-Za-z_][A-Za-z0-9_]*=(?:"[^"]*"|'[^']*'|[^\s;&|()]+)\s+)*)?(?:npx\s+(?:--yes\s+|-y\s+)?)?agent-browser(?:@[^\s;&|()]+)?(?=$|\s|[;&|()])(?:\s+([^\s;&|()]+))?/g;
+const SHELL_COMMAND_SEPARATORS = new Set([";", "&", "|", "(", ")", "\n", "\r"]);
+const SHELL_WHITESPACE_RE = /\s/;
+const ENV_ASSIGNMENT_RE = /^[A-Za-z_][A-Za-z0-9_]*=/;
+const AGENT_BROWSER_COMMAND_RE = /^agent-browser(?:@[^\s;&|()]+)?$/;
+
+function splitShellCommands(command: string): string[] {
+  const commands: string[] = [];
+  let start = 0;
+  let quote: "'" | '"' | null = null;
+  let escaped = false;
+  let redirectionOperatorOpen = false;
+
+  for (let index = 0; index < command.length; index++) {
+    const character = command[index];
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (character === "\\" && quote !== "'") {
+      escaped = true;
+      continue;
+    }
+    if (quote) {
+      if (character === quote) quote = null;
+      continue;
+    }
+    if (character === "'" || character === '"') {
+      quote = character;
+      continue;
+    }
+    if (redirectionOperatorOpen) {
+      if (
+        character === ">" ||
+        character === "<" ||
+        character === "&" ||
+        character === "|"
+      ) {
+        continue;
+      }
+      redirectionOperatorOpen = false;
+    }
+    if (character === ">" || character === "<") {
+      redirectionOperatorOpen = true;
+      continue;
+    }
+    if (SHELL_COMMAND_SEPARATORS.has(character)) {
+      commands.push(command.slice(start, index));
+      start = index + 1;
+    }
+  }
+
+  commands.push(command.slice(start));
+  return commands;
+}
+
+function splitShellWords(command: string): string[] {
+  const words: string[] = [];
+  let current = "";
+  let quote: "'" | '"' | null = null;
+  let escaped = false;
+  let hasContent = false;
+  let skippingRedirectionTarget = false;
+  let redirectionTargetStarted = false;
+  let redirectionOperatorOpen = false;
+
+  const pushCurrent = () => {
+    if (!hasContent) return;
+    words.push(current);
+    current = "";
+    hasContent = false;
+  };
+
+  for (const character of command) {
+    if (escaped) {
+      escaped = false;
+      if (character === "\n") continue;
+      if (skippingRedirectionTarget) redirectionTargetStarted = true;
+      else {
+        current += character;
+        hasContent = true;
+      }
+      continue;
+    }
+    if (character === "\\" && quote !== "'") {
+      escaped = true;
+      continue;
+    }
+    if (quote) {
+      if (character === quote) quote = null;
+      else if (!skippingRedirectionTarget) current += character;
+      if (skippingRedirectionTarget) redirectionTargetStarted = true;
+      else hasContent = true;
+      continue;
+    }
+    if (character === "'" || character === '"') {
+      quote = character;
+      if (skippingRedirectionTarget) redirectionTargetStarted = true;
+      else hasContent = true;
+      continue;
+    }
+    if (skippingRedirectionTarget) {
+      if (redirectionOperatorOpen) {
+        if (
+          character === ">" ||
+          character === "<" ||
+          character === "&" ||
+          character === "|"
+        ) {
+          continue;
+        }
+        redirectionOperatorOpen = false;
+      }
+      if (SHELL_WHITESPACE_RE.test(character)) {
+        if (redirectionTargetStarted) {
+          skippingRedirectionTarget = false;
+          redirectionTargetStarted = false;
+        }
+      } else {
+        redirectionTargetStarted = true;
+      }
+      continue;
+    }
+    if (character === ">" || character === "<") {
+      if (/^\d+$/.test(current)) {
+        current = "";
+        hasContent = false;
+      } else {
+        pushCurrent();
+      }
+      skippingRedirectionTarget = true;
+      redirectionTargetStarted = false;
+      redirectionOperatorOpen = true;
+      continue;
+    }
+    if (SHELL_WHITESPACE_RE.test(character)) {
+      pushCurrent();
+      continue;
+    }
+    current += character;
+    hasContent = true;
+  }
+
+  if (escaped) {
+    current += "\\";
+    hasContent = true;
+  }
+  pushCurrent();
+  return words;
+}
+
+function parseAgentBrowserInvocation(command: string): {
+  action?: string;
+  usedViaNpx: boolean;
+} | null {
+  const words = splitShellWords(command);
+  let index = 0;
+
+  if (words[index] === "env") index++;
+  while (ENV_ASSIGNMENT_RE.test(words[index] ?? "")) index++;
+
+  let usedViaNpx = false;
+  if (words[index] === "npx") {
+    usedViaNpx = true;
+    index++;
+    if (words[index] === "--yes" || words[index] === "-y") index++;
+  }
+
+  if (!AGENT_BROWSER_COMMAND_RE.test(words[index] ?? "")) return null;
+  return { action: words[index + 1], usedViaNpx };
+}
 
 const KNOWN_AGENT_BROWSER_ACTIONS = new Set([
   "open",
@@ -72,22 +240,12 @@ export function detectAgentBrowserUsage(
   let invocationCount = 0;
   let usedViaNpx = false;
 
-  AGENT_BROWSER_INVOCATION_RE.lastIndex = 0;
-  for (
-    let match = AGENT_BROWSER_INVOCATION_RE.exec(command);
-    match !== null;
-    match = AGENT_BROWSER_INVOCATION_RE.exec(command)
-  ) {
+  for (const shellCommand of splitShellCommands(command)) {
+    const invocation = parseAgentBrowserInvocation(shellCommand);
+    if (!invocation) continue;
     invocationCount++;
-    const matchedCommand = match[0] ?? "";
-    if (
-      /\bnpx\s+(?:--yes\s+|-y\s+)?agent-browser(?:@[^\s;&|()]+)?(?=$|\s|[;&|()])/.test(
-        matchedCommand,
-      )
-    ) {
-      usedViaNpx = true;
-    }
-    const action = normalizeAgentBrowserAction(match[1]);
+    usedViaNpx ||= invocation.usedViaNpx;
+    const action = normalizeAgentBrowserAction(invocation.action);
     if (!actions.includes(action)) actions.push(action);
   }
 
