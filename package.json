@@ -149,7 +149,7 @@
     "stripe": "22.5.0",
     "swr": "2.5.1",
     "tailwind-merge": "^3.6.0",
-    "undici": "7.28.0",
+    "undici": "7.29.0",
     "use-stick-to-bottom": "^1.1.6",
     "uuid": "^14.0.1",
     "word-extractor": "^1.0.4",
