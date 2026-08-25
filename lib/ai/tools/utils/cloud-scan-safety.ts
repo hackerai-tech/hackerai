@@ -379,6 +379,14 @@ const targetIsSingleHost = (target: string): boolean => {
   return /\/32$/.test(target) || /\/128$/.test(target);
 };
 
+const shellRedirection = (
+  token: string,
+): { consumesNextToken: boolean } | null => {
+  const match = token.match(/^(?:\d+|&)?(?:<>|>>?|<<?|>\||<&|>&)(.*)$/);
+  if (!match) return null;
+  return { consumesNextToken: match[1].length === 0 };
+};
+
 const probeTargetIsSingleHost = (target: string): boolean => {
   if (/^https?:\/\//i.test(target)) {
     try {
@@ -404,6 +412,11 @@ const isBoundedCloudPortScan = (
 
   for (let index = scannerIndex + 1; index < tokens.length; index++) {
     const token = tokens[index];
+    const redirection = shellRedirection(token);
+    if (redirection) {
+      if (redirection.consumesNextToken) index++;
+      continue;
+    }
     if (
       token === "-iL" ||
       token === "-iR" ||

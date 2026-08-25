@@ -61,6 +61,8 @@ describe("Cloud scan safety", () => {
     "nmap -sV 203.0.113.10/32",
     "naabu -host 203.0.113.10",
     "naabu --host=example.com --ports=80,443",
+    String.raw`naabu -host hackerai.co -top-ports 1000 -silent 2>&1 | tee /home/user/naabu\_hackerai.txt`,
+    String.raw`nmap -Pn -sS --top-ports 1000 -T4 --max-retries 2 -oN /home/user/hackerai\_ports.txt 216.150.1.1 2>&1 | tail -40`,
     "nmap --script-timeout 10s -p 80 example.com",
     "bash -lc 'nmap -sV 203.0.113.10'",
     "cat > notes.txt <<'EOF'\nnmap -p- 203.0.113.10\nEOF",
