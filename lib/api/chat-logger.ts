@@ -1598,15 +1598,6 @@ export function captureUsageCost({
         sandbox_cost_dollars: sandboxUsage.totalCostDollars,
         sandbox_e2b_runtime_ms: sandboxUsage.e2bRuntimeMs,
         sandbox_e2b_cost_dollars: sandboxUsage.e2bCostDollars,
-        sandbox_aws_lambda_microvm_runtime_ms:
-          sandboxUsage.awsLambdaMicrovmRuntimeMs,
-        sandbox_aws_lambda_microvm_baseline_cost_dollars:
-          sandboxUsage.awsLambdaMicrovmCostDollars,
-        ...(sandboxUsage.awsLambdaMicrovmRuntimeMs > 0 && {
-          sandbox_aws_lambda_microvm_burst_cost_included: false,
-          sandbox_aws_lambda_microvm_snapshot_cost_included: false,
-          sandbox_aws_lambda_microvm_data_transfer_cost_included: false,
-        }),
       }),
       ...(triggerRunUsage && {
         trigger_run_cost_accounting_version: 1,

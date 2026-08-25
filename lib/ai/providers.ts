@@ -508,7 +508,14 @@ const getFileRequestFilename = (part: unknown): string | undefined =>
     : undefined;
 
 const GENERIC_SANDBOX_ATTACHMENT_RECOVERY_INSTRUCTION =
-  "The provider could not parse one or more attached files. Use the corresponding local_path values and inspect the files with sandbox tools instead of asking the provider to parse them again.";
+  "Use the corresponding local_path values and inspect the files with sandbox tools instead of asking the provider to parse them again.";
+
+// OpenRouter enforces this against the complete serialized HTTP body, not
+// individual messages, attachments, or token estimates.
+export const OPENROUTER_REQUEST_MAX_BYTES = 5 * 1024 * 1024;
+
+const OPENROUTER_REQUEST_SIZE_GUARD_HEADER =
+  "x-hackerai-openrouter-request-size-guard";
 
 const createSandboxPdfRecoveryBody = (
   body: unknown,
@@ -517,10 +524,7 @@ const createSandboxPdfRecoveryBody = (
   if (!isRecord(body) || !Array.isArray(body.messages)) {
     return { body, changed: false };
   }
-  const sandboxAttachmentFilenames = collectSandboxAttachmentFilenames(
-    body.messages,
-  );
-  if (sandboxAttachmentFilenames.size === 0) {
+  if (collectSandboxAttachmentFilenames(body.messages).size === 0) {
     return { body, changed: false };
   }
 
@@ -531,10 +535,28 @@ const createSandboxPdfRecoveryBody = (
     if (message.role === "user") lastUserMessageIndex = index;
     if (!Array.isArray(message.content)) return message;
 
+    // The provider file part does not retain a stable attachment ID. Limit a
+    // filename match to the same message and reject duplicate names there.
+    const sandboxAttachmentFilenames = collectSandboxAttachmentFilenames([
+      message,
+    ]);
+    const filePartFilenameCounts = new Map<string, number>();
+    message.content.forEach((part) => {
+      if (!isFileRequestPart(part)) return;
+      const filename = getFileRequestFilename(part);
+      if (!filename) return;
+      filePartFilenameCounts.set(
+        filename,
+        (filePartFilenameCounts.get(filename) ?? 0) + 1,
+      );
+    });
+
     const content = message.content.filter((part) => {
       const filename = getFileRequestFilename(part);
       const shouldRemove =
-        Boolean(filename && sandboxAttachmentFilenames.has(filename)) &&
+        filename !== undefined &&
+        sandboxAttachmentFilenames.has(filename) &&
+        filePartFilenameCounts.get(filename) === 1 &&
         (removeAllFileParts ? isFileRequestPart(part) : isPdfRequestPart(part));
       removedFilePart ||= shouldRemove;
       return !shouldRemove;
@@ -613,6 +635,125 @@ const logPdfParserRecovery = (
       reason,
     }),
   );
+};
+
+const getUtf8ByteLength = (value: string): number =>
+  new TextEncoder().encode(value).byteLength;
+
+const getOpenRouterRequestLogContext = (
+  body: unknown,
+): { model?: string; userId?: string } => {
+  if (!isRecord(body)) return {};
+  const model =
+    typeof body.model === "string" &&
+    /^[a-z0-9][a-z0-9._/-]{0,127}$/i.test(body.model)
+      ? body.model
+      : undefined;
+  const userId =
+    typeof body.user === "string" && /^user_[a-z0-9_-]{1,128}$/i.test(body.user)
+      ? body.user
+      : undefined;
+  return { model, userId };
+};
+
+const logOpenRouterRequestSizeGuard = ({
+  action,
+  requestBytesBefore,
+  requestBytesAfter,
+  model,
+  userId,
+}: {
+  action: "sandbox_file_fallback" | "rejected";
+  requestBytesBefore: number;
+  requestBytesAfter: number;
+  model?: string;
+  userId?: string;
+}) => {
+  console.warn(
+    JSON.stringify({
+      timestamp: new Date().toISOString(),
+      level: "warn",
+      event: "openrouter_request_size_guard",
+      service: "openrouter",
+      environment:
+        process.env.TRIGGER_ENV ??
+        process.env.VERCEL_ENV ??
+        process.env.NODE_ENV ??
+        "unknown",
+      reason: "request_limit_exceeded",
+      action,
+      model,
+      user_id: userId,
+      request_bytes_before: requestBytesBefore,
+      request_bytes_after: requestBytesAfter,
+      limit_bytes: OPENROUTER_REQUEST_MAX_BYTES,
+    }),
+  );
+};
+
+const createOpenRouterRequestTooLargeResponse = (
+  requestBytes: number,
+): Response =>
+  new Response(
+    JSON.stringify({
+      error: {
+        code: "request_too_large",
+        message: `OpenRouter request is ${requestBytes} bytes, exceeding the ${OPENROUTER_REQUEST_MAX_BYTES}-byte limit, and no safe request reduction fit within the limit.`,
+      },
+    }),
+    {
+      status: 413,
+      headers: {
+        "content-type": "application/json",
+        [OPENROUTER_REQUEST_SIZE_GUARD_HEADER]: "rejected",
+      },
+    },
+  );
+
+const enforceOpenRouterRequestSizeLimit = (
+  init: RequestInit,
+): { init: RequestInit; rejection?: Response } => {
+  if (typeof init.body !== "string") return { init };
+
+  const requestBytesBefore = getUtf8ByteLength(init.body);
+  if (requestBytesBefore <= OPENROUTER_REQUEST_MAX_BYTES) return { init };
+
+  let fallbackBody: string | undefined;
+  let requestContext: { model?: string; userId?: string } = {};
+  try {
+    const parsedBody = JSON.parse(init.body) as unknown;
+    requestContext = getOpenRouterRequestLogContext(parsedBody);
+    const fallback = createSandboxPdfRecoveryBody(parsedBody, true);
+    if (fallback.changed) fallbackBody = JSON.stringify(fallback.body);
+  } catch {
+    // Only valid JSON request bodies can use the attachment fallback.
+  }
+
+  const requestBytesAfter = fallbackBody
+    ? getUtf8ByteLength(fallbackBody)
+    : requestBytesBefore;
+  if (fallbackBody && requestBytesAfter <= OPENROUTER_REQUEST_MAX_BYTES) {
+    logOpenRouterRequestSizeGuard({
+      action: "sandbox_file_fallback",
+      requestBytesBefore,
+      requestBytesAfter,
+      ...requestContext,
+    });
+    const headers = new Headers(init.headers);
+    headers.delete("content-length");
+    return { init: { ...init, headers, body: fallbackBody } };
+  }
+
+  logOpenRouterRequestSizeGuard({
+    action: "rejected",
+    requestBytesBefore,
+    requestBytesAfter,
+    ...requestContext,
+  });
+  return {
+    init,
+    rejection: createOpenRouterRequestTooLargeResponse(requestBytesAfter),
+  };
 };
 
 /** Attach response headers to body-stream failures for later attribution. */
@@ -722,7 +863,15 @@ export const createOpenRouterPatchFetch =
       }
     }
 
-    const initialResponse = await fetchImplementation(url, nextInit);
+    const fetchWithinRequestLimit = async (
+      requestInit: RequestInit,
+    ): Promise<Response> => {
+      const guarded = enforceOpenRouterRequestSizeLimit(requestInit);
+      if (guarded.rejection) return guarded.rejection;
+      return fetchImplementation(url, guarded.init);
+    };
+
+    const initialResponse = await fetchWithinRequestLimit(nextInit);
     const parserFailure = await classifyPdfParserFailure(initialResponse);
     if (!parserFailure) {
       return attachOpenRouterStreamErrorMetadata(initialResponse);
@@ -735,7 +884,7 @@ export const createOpenRouterPatchFetch =
       }
 
       logPdfParserRecovery("unknown", "sandbox", parserFailure);
-      const sandboxResponse = await fetchImplementation(url, {
+      const sandboxResponse = await fetchWithinRequestLimit({
         ...nextInit,
         body: JSON.stringify(sandboxBody.body),
       });
@@ -755,7 +904,7 @@ export const createOpenRouterPatchFetch =
       }
 
       logPdfParserRecovery("cloudflare-ai", "sandbox", parserFailure);
-      const sandboxResponse = await fetchImplementation(url, {
+      const sandboxResponse = await fetchWithinRequestLimit({
         ...nextInit,
         body: JSON.stringify(sandboxBody.body),
       });
@@ -778,7 +927,7 @@ export const createOpenRouterPatchFetch =
     }
 
     logPdfParserRecovery("mistral-ocr", "cloudflare-ai", parserFailure);
-    const cloudflareResponse = await fetchImplementation(url, {
+    const cloudflareResponse = await fetchWithinRequestLimit({
       ...nextInit,
       body: JSON.stringify(cloudflareBody.body),
     });
@@ -800,7 +949,7 @@ export const createOpenRouterPatchFetch =
     }
 
     logPdfParserRecovery("cloudflare-ai", "sandbox", cloudflareFailure);
-    const sandboxResponse = await fetchImplementation(url, {
+    const sandboxResponse = await fetchWithinRequestLimit({
       ...nextInit,
       body: JSON.stringify(sandboxBody.body),
     });

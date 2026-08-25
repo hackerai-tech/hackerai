@@ -24,10 +24,6 @@ import {
   getSandboxWithFallbackGuard,
   resolveToolErrorMessage,
 } from "./utils/sandbox-fallback";
-import {
-  enforceCloudScanSafety,
-  updateTerminalScanSafetyInput,
-} from "./utils/cloud-scan-safety";
 
 // ─── Interactive PTY constants ──────────────────────────────────────────
 const MAX_INPUT_BYTES_PER_SEND = 8 * 1024;
@@ -368,37 +364,6 @@ export const createInteractTerminalSession = (context: ToolContext) => {
         const postApprovalSandbox = await getMatchingSessionSandbox(session);
         if ("error" in postApprovalSandbox) return postApprovalSandbox.error;
 
-        const translatedInput = new TextDecoder().decode(bytes);
-        const bufferedInput = updateTerminalScanSafetyInput(
-          session.scanSafetyInputLine,
-          translatedInput,
-        );
-        try {
-          const safety = await enforceCloudScanSafety({
-            command: bufferedInput.inspection,
-            sandbox: postApprovalSandbox.sandbox,
-            context,
-            toolCallId,
-            source: "terminal_interaction",
-          });
-          if (safety.blocked) {
-            await ptySessionManager
-              .close(ptyScopeId, session.sessionId)
-              .catch(() => undefined);
-            return {
-              result: {
-                output: "",
-                exitCode: 126,
-                error: safety.error,
-                cloudScanSafetyBlocked: true,
-                cloudSessionTerminationStatus: safety.terminationStatus,
-              },
-            };
-          }
-        } catch (error) {
-          return errorResult(resolveToolErrorMessage(error));
-        }
-
         if (
           approvalResult.autoReviewed &&
           terminalStateChanged(sessionId, reviewState.state)
@@ -412,7 +377,6 @@ export const createInteractTerminalSession = (context: ToolContext) => {
         // raw text has a trailing newline normalized to CR for submission.
         try {
           await session.handle.sendInput(bytes);
-          session.scanSafetyInputLine = bufferedInput.currentLine;
         } catch (err) {
           // sendInput may have raced with a natural exit between the
           // pre-check and now — surface that explicitly when it's the cause.

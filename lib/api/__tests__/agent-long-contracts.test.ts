@@ -1185,20 +1185,10 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(taskSrc).toMatch(/subagent_result_consumed/);
   });
 
-  test("parent completion only suspends the shared sandbox after the user becomes idle", () => {
+  test("parent completion clears the active run after terminal teardown", () => {
     expect(taskSrc).toMatch(
-      /finishCloudSandboxLifecycleForParentRun[\s\S]*?setActiveTriggerRun\([\s\S]*?expectedRunId:\s*triggerRunId[\s\S]*?getActiveTriggerRunsForUser\(\{ userId \}\)/,
+      /finishCloudSandboxLifecycleForParentRun[\s\S]*?setActiveTriggerRun\([\s\S]*?expectedRunId:\s*triggerRunId/,
     );
-    expect(taskSrc).toMatch(
-      /listActiveSubagentsForParent\(triggerRunId\)[\s\S]*?activeSubagents\.length > 0[\s\S]*?reason: "subagents_active"[\s\S]*?return;/,
-    );
-    expect(taskSrc).toMatch(
-      /listActiveSubagentsForUser\(userId\)[\s\S]*?activeUserSubagents\.runs\.length > 0 \|\| activeUserSubagents\.hasMore[\s\S]*?reason: "user_subagents_active"[\s\S]*?return;/,
-    );
-    expect(taskSrc).toMatch(
-      /const otherRuns = activeRuns\.runs\.filter\([\s\S]*?run\.triggerRunId !== triggerRunId[\s\S]*?if \(otherRuns\.length > 0 \|\| activeRuns\.hasMore\)[\s\S]*?return;/,
-    );
-    expect(taskSrc).toMatch(/await suspendCloudSandboxesForUser\(userId\)/);
     expect(taskSrc).toMatch(
       /await ptySessionManager\.closeAll\(cleanup\.chatId\)[\s\S]*?await cleanup\.finishCloudSandboxLifecycle\(\)/,
     );
@@ -2131,9 +2121,9 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(taskSrc).toMatch(/recordFreeMonthlyCost\(\s*freeUsageSubject/);
   });
 
-  test("agent-long resolves one circuit-aware cloud provider for tools and prompt", () => {
+  test("agent-long uses E2B for tools and prompt", () => {
     const providerIdx = taskSrc.indexOf(
-      "await resolveCloudSandboxProviderForRun({ requestId: ctx.run.id });",
+      'const cloudSandboxProvider = "e2b" as const;',
     );
     const toolsIdx = taskSrc.indexOf("createTools(", providerIdx);
     const promptIdx = taskSrc.indexOf("systemPrompt(", toolsIdx);
@@ -2143,9 +2133,6 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(promptIdx).toBeGreaterThan(toolsIdx);
     expect(taskSrc.slice(toolsIdx, promptIdx)).toContain(
       "cloudSandboxProvider",
-    );
-    expect(taskSrc.slice(toolsIdx, promptIdx)).toContain(
-      "cloudSandboxProviderSelectionReason",
     );
     expect(taskSrc.slice(promptIdx, promptIdx + 700)).toContain(
       "cloudSandboxProvider",

@@ -1,12 +1,10 @@
-const mockShutdown = jest.fn().mockResolvedValue(undefined);
-const mockDispose = jest.fn();
+const mockStopAll = jest.fn();
 const mockConfirmProcessTermination = jest.fn().mockResolvedValue(true);
 
 jest.mock("../process-runner", () => ({
   ProcessRunner: jest.fn().mockImplementation(() => ({
     on: jest.fn(),
-    shutdown: mockShutdown,
-    dispose: mockDispose,
+    stopAll: mockStopAll,
   })),
   isPtyAvailable: () => true,
 }));
@@ -23,36 +21,20 @@ const config = {
   convexUrl: "http://127.0.0.1:3210",
   token: "test-token",
   name: "test",
-  authMode: "cloud" as const,
-  cloudSessionId: "test-session",
-  microvmId: "test-microvm",
 };
 
-describe("LocalSandboxClient in-process cleanup", () => {
+describe("LocalSandboxClient cleanup", () => {
   beforeEach(() => {
     jest.clearAllMocks();
-    mockShutdown.mockResolvedValue(undefined);
     mockConfirmProcessTermination.mockResolvedValue(true);
   });
 
-  it("disposes process resources exactly once across repeated cleanup", async () => {
+  it("stops process resources exactly once across repeated cleanup", async () => {
     const client = new LocalSandboxClient(config);
 
     await Promise.all([client.cleanup(), client.cleanup()]);
 
-    expect(mockShutdown).toHaveBeenCalledTimes(1);
-  });
-
-  it("allows a later lifecycle hook to retry failed process cleanup", async () => {
-    mockShutdown
-      .mockRejectedValueOnce(new Error("PTY still running"))
-      .mockResolvedValueOnce(undefined);
-    const client = new LocalSandboxClient(config);
-
-    await expect(client.cleanup()).rejects.toThrow("PTY still running");
-    await expect(client.cleanup()).resolves.toBeUndefined();
-
-    expect(mockShutdown).toHaveBeenCalledTimes(2);
+    expect(mockStopAll).toHaveBeenCalledTimes(1);
   });
 
   it("waits for streamed-command termination confirmation", async () => {
@@ -90,7 +72,7 @@ describe("LocalSandboxClient in-process cleanup", () => {
     expect(mockConfirmProcessTermination).toHaveBeenCalledTimes(1);
   });
 
-  it("reports a lifecycle fatal without exiting the lifecycle process", async () => {
+  it("reports an injected exit handler without exiting the process", async () => {
     const onExitRequested = jest.fn();
     const exitSpy = jest
       .spyOn(process, "exit")
@@ -112,24 +94,7 @@ describe("LocalSandboxClient in-process cleanup", () => {
     exitSpy.mockRestore();
   });
 
-  it("preserves the standalone CLI default exit behavior", async () => {
-    const exitSpy = jest
-      .spyOn(process, "exit")
-      .mockImplementation((() => undefined) as never);
-    const client = new LocalSandboxClient(config);
-
-    (
-      client as unknown as {
-        requestExit: (code: number, error: Error) => void;
-      }
-    ).requestExit(1, new Error("relay failed"));
-    await new Promise((resolve) => setTimeout(resolve, 0));
-
-    expect(exitSpy).toHaveBeenCalledWith(1);
-    exitSpy.mockRestore();
-  });
-
-  it("does not report the local sandbox ready before relay subscription", async () => {
+  it("does not report readiness before relay subscription", async () => {
     let relayStarted!: () => void;
     const setupStarted = new Promise<void>((resolve) => {
       relayStarted = resolve;
@@ -139,17 +104,10 @@ describe("LocalSandboxClient in-process cleanup", () => {
       markRelayReady = resolve;
     });
     const logSpy = jest.spyOn(console, "log").mockImplementation(() => {});
-    const client = new LocalSandboxClient({
-      convexUrl: "http://127.0.0.1:3210",
-      token: "test-token",
-      name: "test",
-      authMode: "local",
-    });
+    const client = new LocalSandboxClient(config);
     (
       client as unknown as {
-        convexHttp: {
-          mutation: jest.Mock;
-        };
+        convexHttp: { mutation: jest.Mock };
       }
     ).convexHttp.mutation = jest.fn().mockResolvedValue({
       success: true,
@@ -161,7 +119,6 @@ describe("LocalSandboxClient in-process cleanup", () => {
     (
       client as unknown as {
         setupCentrifugo: () => Promise<void>;
-        startIdleCheck: () => void;
       }
     ).setupCentrifugo = jest.fn(async () => {
       relayStarted();
@@ -175,22 +132,15 @@ describe("LocalSandboxClient in-process cleanup", () => {
 
     const start = client.start();
     await setupStarted;
-
-    const logsBeforeRelay = logSpy.mock.calls.flat().join("\n");
-    expect(logsBeforeRelay).toContain("✓ Authenticated");
-    expect(logsBeforeRelay).toContain("Connecting to command relay");
-    expect(logsBeforeRelay).not.toContain("Local sandbox is ready");
+    expect(logSpy.mock.calls.flat().join("\n")).not.toContain(
+      "Local sandbox is ready",
+    );
 
     markRelayReady();
     await start;
-
-    const logsAfterRelay = logSpy.mock.calls.flat().join("\n");
-    expect(logsAfterRelay).toContain("✓ Connected to command relay");
-    expect(logsAfterRelay).toContain("Local sandbox is ready");
-    expect(logsAfterRelay.indexOf("✓ Connected to command relay")).toBeLessThan(
-      logsAfterRelay.indexOf("Local sandbox is ready"),
+    expect(logSpy.mock.calls.flat().join("\n")).toContain(
+      "Local sandbox is ready",
     );
-
     logSpy.mockRestore();
   });
 });

@@ -2,6 +2,7 @@ import { Sandbox } from "@e2b/code-interpreter";
 import type { SandboxBootInfo, SandboxContext } from "@/types";
 import { NotFoundError, getUserFacingE2BErrorMessage } from "./e2b-errors";
 import { isExpectedAlreadyGoneCleanupError } from "@/lib/utils/cleanup-errors";
+import { retryWithBackoff } from "./retry-with-backoff";
 
 type SandboxReadyPath = SandboxBootInfo["path"];
 
@@ -12,6 +13,8 @@ export const E2B_SANDBOX_LEASE_REQUEST_TIMEOUT_MS = 5 * 1000;
 // Retry config for E2B 429 rate limits
 const RATE_LIMIT_COOLDOWN_MS = 1_000;
 const MAX_CREATE_RETRIES = 3;
+const MAX_DISCOVERY_RETRIES = 3;
+const MAX_CONNECT_RETRIES = 3;
 
 export const refreshE2BSandboxLease = async (
   sandbox: Sandbox,
@@ -181,7 +184,30 @@ export const ensureSandboxConnection = async (
         },
       },
     });
-    const existingSandbox = (await paginator.nextItems())[0];
+    const listedSandboxes = await retryWithBackoff(
+      () => paginator.nextItems(),
+      {
+        maxRetries: MAX_DISCOVERY_RETRIES,
+        baseDelayMs: 400,
+        jitterMs: 40,
+      },
+    );
+    // A user should normally have one sandbox. If a previous ambiguous create
+    // produced duplicates, prefer an active compatible sandbox so we do not
+    // attach to a newer paused duplicate while work is still running.
+    const existingSandbox =
+      listedSandboxes.find(
+        (candidate) =>
+          candidate.state === "running" &&
+          candidate.metadata?.sandboxVersion === SANDBOX_VERSION,
+      ) ??
+      listedSandboxes.find((candidate) => candidate.state === "running") ??
+      listedSandboxes.find(
+        (candidate) =>
+          candidate.state === "paused" &&
+          candidate.metadata?.sandboxVersion === SANDBOX_VERSION,
+      ) ??
+      listedSandboxes[0];
 
     const hasVersionMismatch =
       existingSandbox &&
@@ -227,9 +253,17 @@ export const ensureSandboxConnection = async (
       // With auto-pause, we don't need to manually pause before resuming
       // Sandbox.connect() handles both running and paused sandboxes automatically
       try {
-        const sandbox = await Sandbox.connect(existingSandbox.sandboxId, {
-          timeoutMs: BASH_SANDBOX_AUTOPAUSE_TIMEOUT,
-        });
+        const sandbox = await retryWithBackoff(
+          () =>
+            Sandbox.connect(existingSandbox.sandboxId, {
+              timeoutMs: BASH_SANDBOX_AUTOPAUSE_TIMEOUT,
+            }),
+          {
+            maxRetries: MAX_CONNECT_RETRIES,
+            baseDelayMs: 400,
+            jitterMs: 40,
+          },
+        );
         setSandbox(sandbox);
         reportBoot("reuse_existing", 0);
         return { sandbox };
@@ -251,7 +285,8 @@ export const ensureSandboxConnection = async (
           // The listed state can become stale while connect is pending. Never
           // destroy a shared user sandbox here: another run may have resumed
           // it by the time this failure is observed. The attachment path owns
-          // bounded provider recovery and can retry safely on AWS.
+          // bounded provider recovery after the E2B reconnect retries are
+          // exhausted.
           throw e;
         }
       }
@@ -270,7 +305,7 @@ export const ensureSandboxConnection = async (
       try {
         const sandbox = await Sandbox.create(SANDBOX_TEMPLATE, {
           timeoutMs: BASH_SANDBOX_AUTOPAUSE_TIMEOUT,
-          lifecycle: { onTimeout: "pause" },
+          lifecycle: { onTimeout: "pause", autoResume: true },
           secure: true,
           metadata: {
             userID,

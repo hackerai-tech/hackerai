@@ -159,7 +159,7 @@ export interface ChatWideEvent {
   sandbox?: {
     type: "e2b" | "desktop" | "remote-connection";
     name?: string;
-    provider?: "e2b" | "aws-lambda-microvm";
+    provider?: "e2b";
   };
 
   // Sandbox boot timing — fires once per request, only when actual work is done

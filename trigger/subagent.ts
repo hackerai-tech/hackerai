@@ -99,7 +99,6 @@ import {
   subagentOutcomeEventUuid,
 } from "@/lib/analytics/subagents";
 import { phLogger } from "@/lib/posthog/server";
-import { resolvePersistedSubagentCloudSandboxProvider } from "@/lib/ai/subagents/sandbox-identity";
 import { ptySessionManager } from "@/lib/ai/tools/utils/pty-session-manager";
 import {
   extractErrorDetails,
@@ -679,13 +678,6 @@ export const subagentTask = task({
               inputSchema: profile.finalResultTool.schema,
               execute: acceptResult,
             });
-            const cloudSandboxProvider =
-              resolvePersistedSubagentCloudSandboxProvider({
-                subscription: row.subscription,
-                sandboxPreference: row.sandbox_preference,
-                sandboxIdentity: row.sandbox_identity,
-              });
-
             const {
               tools: unguardedTools,
               ensureSandbox,
@@ -726,8 +718,6 @@ export const subagentTask = task({
                 }),
                 ptyScopeId: row.subagent_id,
                 chargeSandboxRuntime: false,
-                cloudSandboxProvider,
-                cloudSandboxProviderSelectionReason: "persisted_subagent",
               },
             );
             const tools = guardSubagentToolExecutions(

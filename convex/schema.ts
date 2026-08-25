@@ -703,16 +703,6 @@ export default defineSchema({
     started_at: v.number(),
   }).index("by_user_id", ["user_id"]),
 
-  // Short-lived lease held while Data Controls stops a user's sandboxes and
-  // deletes their durable workspace. This closes the acquisition/deletion
-  // race without permanently fencing the account when a request is interrupted.
-  cloud_sandbox_deletion_fences: defineTable({
-    user_id: v.string(),
-    operation_id: v.string(),
-    started_at: v.number(),
-    expires_at: v.number(),
-  }).index("by_user_id", ["user_id"]),
-
   user_suspensions: defineTable({
     user_id: v.string(),
     status: v.union(v.literal("active"), v.literal("resolved")),
@@ -790,6 +780,8 @@ export default defineSchema({
     connection_name: v.string(),
     container_id: v.optional(v.string()),
     client_version: v.string(),
+    // Keep accepting legacy cloud rows until production data has been purged.
+    // No current writer creates them, and connection queries exclude them.
     mode: v.union(
       v.literal("docker"),
       v.literal("dangerous"),
@@ -831,68 +823,8 @@ export default defineSchema({
     .index("by_user_id", ["user_id"])
     .index("by_connection_id", ["connection_id"])
     .index("by_user_and_status", ["user_id", "status"])
+    .index("by_user_and_status_and_mode", ["user_id", "status", "mode"])
     .index("by_status_and_created_at", ["status", "created_at"]),
-
-  // Server-created, user-scoped AWS Lambda MicroVM sessions. `status` tracks
-  // the logical reusable session lifecycle; `aws_state` records the latest
-  // observed physical AWS state. `running` is retained for legacy rows and is
-  // lazily migrated to `active` when the row is next observed.
-  cloud_sandbox_sessions: defineTable({
-    user_id: v.string(),
-    session_id: v.string(),
-    provider: v.literal("aws-lambda-microvm"),
-    status: v.union(
-      v.literal("starting"),
-      v.literal("active"),
-      v.literal("running"),
-      v.literal("failed"),
-      v.literal("terminated"),
-    ),
-    bootstrap_token_hash: v.string(),
-    bootstrap_expires_at: v.number(),
-    microvm_id: v.optional(v.string()),
-    connection_id: v.optional(v.string()),
-    region: v.string(),
-    requested_region: v.optional(v.string()),
-    placement_reason: v.optional(v.string()),
-    image_identifier: v.string(),
-    image_version: v.optional(v.string()),
-    egress_connector_arn: v.optional(v.string()),
-    egress_ipv4_address: v.optional(v.string()),
-    failover_from_region: v.optional(v.string()),
-    failover_error_name: v.optional(v.string()),
-    failover_started_at: v.optional(v.number()),
-    failover_completed_at: v.optional(v.number()),
-    failover_duration_ms: v.optional(v.number()),
-    failover_outcome: v.optional(
-      v.union(v.literal("succeeded"), v.literal("failed")),
-    ),
-    created_at: v.number(),
-    updated_at: v.number(),
-    last_connected_at: v.optional(v.number()),
-    relay_ready_at: v.optional(v.number()),
-    aws_state: v.optional(
-      v.union(
-        v.literal("PENDING"),
-        v.literal("RUNNING"),
-        v.literal("SUSPENDING"),
-        v.literal("SUSPENDED"),
-        v.literal("TERMINATING"),
-        v.literal("TERMINATED"),
-      ),
-    ),
-    aws_state_checked_at: v.optional(v.number()),
-    ended_at: v.optional(v.number()),
-    failure_code: v.optional(v.string()),
-  })
-    .index("by_user_id", ["user_id"])
-    .index("by_user_and_status", ["user_id", "status"])
-    .index("by_session_id", ["session_id"])
-    .index("by_status_and_updated_at", ["status", "updated_at"])
-    .index("by_status_and_aws_state_checked_at", [
-      "status",
-      "aws_state_checked_at",
-    ]),
 
   // Per-request usage logs for the usage dashboard
   usage_logs: defineTable({

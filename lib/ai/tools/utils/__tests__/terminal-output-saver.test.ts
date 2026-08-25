@@ -15,19 +15,16 @@ const CHAT_KEY = createHash("sha256")
 
 const createSandbox = ({
   sandboxKind,
-  cloudProvider,
   nativeFileRelay = false,
   statSizeBytes,
   listedFiles = [],
 }: {
   sandboxKind?: "centrifugo";
-  cloudProvider?: "aws-lambda-microvm";
   nativeFileRelay?: boolean;
   statSizeBytes?: number;
   listedFiles?: Array<{ name: string }>;
 } = {}) => ({
   ...(sandboxKind ? { sandboxKind } : {}),
-  ...(cloudProvider ? { getCloudProvider: () => cloudProvider } : {}),
   ...(sandboxKind ? { supportsNativeFileRelay: () => nativeFileRelay } : {}),
   commands: {
     run: jest.fn(async () => ({
@@ -80,29 +77,6 @@ describe("saveFullOutputToFile", () => {
 
     expect(savedPath).toMatch(
       new RegExp(`^/tmp/terminal_full_output/chat-${CHAT_KEY}/`),
-    );
-    jest.useRealTimers();
-  });
-
-  it("stores AWS Lambda MicroVM output under the direct mutation root", async () => {
-    jest.useFakeTimers().setSystemTime(new Date("2026-07-16T15:30:45.123Z"));
-    const sandbox = createSandbox({
-      sandboxKind: "centrifugo",
-      cloudProvider: "aws-lambda-microvm",
-    });
-
-    const savedPath = await saveFullOutputToFile(
-      sandbox as any,
-      "full output",
-      CHAT_ID,
-    );
-
-    expect(savedPath).toBe(
-      `/home/user/terminal_full_output/chat-${CHAT_KEY}/2026-07-16_15-30-45_123Z.txt`,
-    );
-    expect(sandbox.commands.run).toHaveBeenCalledWith(
-      `mkdir -p /home/user/terminal_full_output/chat-${CHAT_KEY}`,
-      { timeoutMs: 5000 },
     );
     jest.useRealTimers();
   });

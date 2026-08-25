@@ -5,7 +5,6 @@ import { phLogger } from "@/lib/posthog/server";
 import { FULL_OUTPUT_SAVED_MESSAGE } from "@/lib/token-utils";
 import {
   asCommonSandbox,
-  isAwsLambdaMicrovmSandbox,
   isCentrifugoSandbox,
   isE2BSandbox,
 } from "./sandbox-types";
@@ -13,8 +12,7 @@ import {
 export const MAX_SAVED_TERMINAL_OUTPUT_FILES = 10;
 const DESKTOP_RELAY_RETRY_DELAY_MS = 250;
 
-type TerminalOutputPersistenceProvider =
-  "e2b" | "aws-lambda-microvm" | "desktop" | "centrifugo";
+type TerminalOutputPersistenceProvider = "e2b" | "desktop" | "centrifugo";
 type TerminalOutputPersistenceFailureCategory =
   | "timeout"
   | "transport"
@@ -35,7 +33,6 @@ export type TerminalOutputPersistenceTelemetry = {
 const getPersistenceProvider = (
   sandbox: AnySandbox,
 ): TerminalOutputPersistenceProvider => {
-  if (isAwsLambdaMicrovmSandbox(sandbox)) return "aws-lambda-microvm";
   if (isCentrifugoSandbox(sandbox)) {
     if (
       typeof sandbox.supportsNativeFileRelay === "function" &&
@@ -132,10 +129,9 @@ const emitPersistenceFailure = (args: {
 
 /** Builds a stable, non-identifying output directory for one chat scope. */
 const getOutputDirectory = (sandbox: AnySandbox, scopeId?: string): string => {
-  const baseDirectory =
-    isE2BSandbox(sandbox) || isAwsLambdaMicrovmSandbox(sandbox)
-      ? "/home/user/terminal_full_output"
-      : "/tmp/terminal_full_output";
+  const baseDirectory = isE2BSandbox(sandbox)
+    ? "/home/user/terminal_full_output"
+    : "/tmp/terminal_full_output";
   const scopeKey = scopeId
     ? createHash("sha256").update(scopeId).digest("hex").slice(0, 16)
     : "unscoped";
@@ -165,9 +161,9 @@ const pruneOldSavedOutputs = async (
 
 /**
  * Save full terminal output to a file in the sandbox when it exceeds token limits.
- * E2B and AWS Lambda MicroVMs save under ~/terminal_full_output/. Desktop and
- * other Centrifugo sandboxes save under /tmp/terminal_full_output/. Each chat
- * gets an isolated retained directory.
+ * E2B saves under ~/terminal_full_output/. Desktop and other Centrifugo
+ * sandboxes save under /tmp/terminal_full_output/. Each chat gets an isolated
+ * retained directory.
  * Returns the file path if saved, or null if saving failed.
  */
 export async function saveFullOutputToFile(

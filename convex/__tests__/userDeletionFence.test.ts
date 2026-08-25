@@ -33,7 +33,6 @@ describe("user deletion fence", () => {
     const accountRoute = read("app/api/delete-account/route.ts");
     const chats = read("convex/chats.ts");
     const subagents = read("convex/subagents.ts");
-    const localSandbox = read("convex/localSandbox.ts");
 
     expect(
       accountRoute.indexOf('stage = "begin_user_data_deletion"'),
@@ -48,9 +47,6 @@ describe("user deletion fence", () => {
     );
     expect(subagents).toMatch(
       /reserveForBackend = mutation[\s\S]*?isUserDeletionFenced\(ctx\.db, args\.userId\)/,
-    );
-    expect(localSandbox).toMatch(
-      /beginCloudSession = mutation[\s\S]*?isUserDeletionFenced\(ctx\.db, args\.userId\)/,
     );
   });
 });

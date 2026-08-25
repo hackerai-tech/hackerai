@@ -232,7 +232,6 @@ RUN set -eux; \
     mv "$httpx_bin" /usr/local/bin/httpx; \
     chmod +x /usr/local/bin/httpx; \
     rm -rf /tmp/httpx_extracted /tmp/httpx.zip; \
-    # Katana's Go dependency graph exceeds Lambda MicroVM builder scratch space.
     # Use a pinned ProjectDiscovery release and verify its published checksum.
     KATANA_VERSION="1.7.0"; \
     KATANA_ARCHIVE="katana_${KATANA_VERSION}_${platform}.zip"; \

@@ -1,7 +1,6 @@
 const mockGetSandboxWithFallbackGuard = jest.fn();
 const mockResetSandbox = jest.fn();
 const mockQuarantineLocalConnection = jest.fn();
-const mockIsAwsLambdaMicrovmSandbox = jest.fn();
 const mockIsE2BSandbox = jest.fn();
 let mockTrackSandboxUsage: ((sandbox: unknown) => void) | undefined;
 
@@ -40,13 +39,7 @@ jest.mock("../utils/sandbox-manager", () => ({
 }));
 
 jest.mock("../utils/sandbox-types", () => ({
-  isAwsLambdaMicrovmSandbox: (...args: unknown[]) =>
-    mockIsAwsLambdaMicrovmSandbox(...args),
   isE2BSandbox: (...args: unknown[]) => mockIsE2BSandbox(...args),
-}));
-
-jest.mock("../utils/aws-lambda-microvm", () => ({
-  AWS_LAMBDA_MICROVM_REGION: "us-east-1",
 }));
 
 jest.mock("../utils/sandbox-fallback", () => ({
@@ -59,7 +52,6 @@ jest.mock("@/lib/posthog/server", () => ({
 }));
 
 import { createTools } from "..";
-import { AWS_LAMBDA_MICROVM_COST_PER_MS } from "../utils/aws-lambda-microvm-cost";
 import { E2B_COST_PER_MS } from "../utils/e2b-cost";
 
 describe("sandbox acquisition serialization", () => {
@@ -67,7 +59,6 @@ describe("sandbox acquisition serialization", () => {
     jest.clearAllMocks();
     mockResetSandbox.mockResolvedValue(undefined);
     mockQuarantineLocalConnection.mockResolvedValue(undefined);
-    mockIsAwsLambdaMicrovmSandbox.mockReturnValue(false);
     mockIsE2BSandbox.mockReturnValue(false);
     mockTrackSandboxUsage = undefined;
   });
@@ -115,11 +106,8 @@ describe("sandbox acquisition serialization", () => {
     );
   });
 
-  it("accounts for provider changes as separate cost segments", () => {
+  it("accounts for E2B runtime", () => {
     jest.useFakeTimers();
-    mockIsAwsLambdaMicrovmSandbox.mockImplementation(
-      (sandbox: { provider?: string } | null) => sandbox?.provider === "aws",
-    );
     mockIsE2BSandbox.mockImplementation(
       (sandbox: { provider?: string } | null) => sandbox?.provider === "e2b",
     );
@@ -138,27 +126,19 @@ describe("sandbox acquisition serialization", () => {
 
     mockTrackSandboxUsage?.({ provider: "e2b" });
     jest.advanceTimersByTime(1_000);
-    mockTrackSandboxUsage?.({ provider: "aws" });
-    jest.advanceTimersByTime(2_000);
 
-    expect(getSandboxSessionCost()).toBeCloseTo(
-      E2B_COST_PER_MS * 1_000 + AWS_LAMBDA_MICROVM_COST_PER_MS * 2_000,
-      12,
-    );
+    expect(getSandboxSessionCost()).toBeCloseTo(E2B_COST_PER_MS * 1_000, 12);
     expect(getSandboxSessionUsage()).toEqual({
-      totalCostDollars:
-        E2B_COST_PER_MS * 1_000 + AWS_LAMBDA_MICROVM_COST_PER_MS * 2_000,
+      totalCostDollars: E2B_COST_PER_MS * 1_000,
       e2bRuntimeMs: 1_000,
       e2bCostDollars: E2B_COST_PER_MS * 1_000,
-      awsLambdaMicrovmRuntimeMs: 2_000,
-      awsLambdaMicrovmCostDollars: AWS_LAMBDA_MICROVM_COST_PER_MS * 2_000,
     });
   });
 
   it("does not charge shared sandbox runtime to a child agent", () => {
     jest.useFakeTimers();
-    mockIsAwsLambdaMicrovmSandbox.mockImplementation(
-      (sandbox: { provider?: string } | null) => sandbox?.provider === "aws",
+    mockIsE2BSandbox.mockImplementation(
+      (sandbox: { provider?: string } | null) => sandbox?.provider === "e2b",
     );
     const { getSandboxSessionCost, getSandboxSessionUsage } = createTools(
       "user-1",
@@ -186,7 +166,7 @@ describe("sandbox acquisition serialization", () => {
       { chargeSandboxRuntime: false },
     );
 
-    mockTrackSandboxUsage?.({ provider: "aws" });
+    mockTrackSandboxUsage?.({ provider: "e2b" });
     jest.advanceTimersByTime(5_000);
 
     expect(getSandboxSessionCost()).toBe(0);
@@ -194,16 +174,11 @@ describe("sandbox acquisition serialization", () => {
       totalCostDollars: 0,
       e2bRuntimeMs: 0,
       e2bCostDollars: 0,
-      awsLambdaMicrovmRuntimeMs: 0,
-      awsLambdaMicrovmCostDollars: 0,
     });
   });
 
   it("stops cloud runtime billing while a non-cloud sandbox is active", () => {
     jest.useFakeTimers();
-    mockIsAwsLambdaMicrovmSandbox.mockImplementation(
-      (sandbox: { provider?: string } | null) => sandbox?.provider === "aws",
-    );
     mockIsE2BSandbox.mockImplementation(
       (sandbox: { provider?: string } | null) => sandbox?.provider === "e2b",
     );
@@ -224,16 +199,13 @@ describe("sandbox acquisition serialization", () => {
     jest.advanceTimersByTime(1_000);
     mockTrackSandboxUsage?.({ provider: "local" });
     jest.advanceTimersByTime(2_000);
-    mockTrackSandboxUsage?.({ provider: "aws" });
+    mockTrackSandboxUsage?.({ provider: "e2b" });
     jest.advanceTimersByTime(3_000);
 
     expect(getSandboxSessionUsage()).toEqual({
-      totalCostDollars:
-        E2B_COST_PER_MS * 1_000 + AWS_LAMBDA_MICROVM_COST_PER_MS * 3_000,
-      e2bRuntimeMs: 1_000,
-      e2bCostDollars: E2B_COST_PER_MS * 1_000,
-      awsLambdaMicrovmRuntimeMs: 3_000,
-      awsLambdaMicrovmCostDollars: AWS_LAMBDA_MICROVM_COST_PER_MS * 3_000,
+      totalCostDollars: E2B_COST_PER_MS * 4_000,
+      e2bRuntimeMs: 4_000,
+      e2bCostDollars: E2B_COST_PER_MS * 4_000,
     });
   });
 });

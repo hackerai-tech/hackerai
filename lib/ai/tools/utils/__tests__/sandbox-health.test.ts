@@ -62,6 +62,36 @@ describe("sandbox health resource observations", () => {
     });
   });
 
+  test("lets the readiness command auto-resume a paused sandbox", async () => {
+    const sandbox = makeE2BSandbox();
+    (sandbox.isRunning as jest.Mock).mockResolvedValue(false);
+    const onResourceMetrics = jest.fn();
+
+    await expect(
+      waitForSandboxReady(sandbox, 1, undefined, onResourceMetrics),
+    ).resolves.toBeUndefined();
+
+    expect(sandbox.commands.run).toHaveBeenCalledWith("echo ready", {
+      timeoutMs: 5000,
+      displayName: "",
+    });
+    expect(sandbox.getMetrics).toHaveBeenCalledTimes(1);
+    expect(onResourceMetrics).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: "health_sample" }),
+    );
+  });
+
+  test("uses the command as authoritative when the status probe fails", async () => {
+    const sandbox = makeE2BSandbox();
+    (sandbox.isRunning as jest.Mock).mockRejectedValue(
+      new Error("temporary status failure"),
+    );
+
+    await expect(waitForSandboxReady(sandbox, 1)).resolves.toBeUndefined();
+
+    expect(sandbox.commands.run).toHaveBeenCalledTimes(1);
+  });
+
   test("reports final readiness failures with the latest resource metrics", async () => {
     const sandbox = makeE2BSandbox();
     (sandbox.commands.run as jest.Mock).mockRejectedValue(
@@ -71,7 +101,7 @@ describe("sandbox health resource observations", () => {
 
     await expect(
       waitForSandboxReady(sandbox, 1, undefined, onResourceMetrics),
-    ).rejects.toThrow("Sandbox running but not ready");
+    ).rejects.toThrow("Sandbox not ready");
 
     expect(onResourceMetrics).toHaveBeenLastCalledWith({
       kind: "failure",

@@ -531,7 +531,7 @@ const processPdfFile = async (pdf: Blob): Promise<FileItemChunk[]> => {
   const arrayBuffer = await pdf.arrayBuffer();
   const typedArray = new Uint8Array(arrayBuffer);
 
-  const doc = await getDocument({ data: typedArray }).promise;
+  const doc = await getDocument(typedArray).promise;
   const textPages: string[] = [];
 
   for (let i = 1; i <= doc.numPages; i++) {
