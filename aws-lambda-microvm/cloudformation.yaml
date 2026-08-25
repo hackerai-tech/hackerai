@@ -139,6 +139,23 @@ Resources:
       NatGatewayId: !Ref EgressNatGateway
       RouteTableId: !Ref EgressPrivateRouteTable
 
+  # Keep same-region workspace checkpoint traffic off the metered NAT path.
+  # S3 bucket policies and IAM still authorize requests; the default endpoint
+  # policy avoids blocking legitimate public or customer-provided S3 URLs.
+  EgressS3GatewayEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      ServiceName: !Sub "com.amazonaws.${AWS::Region}.s3"
+      VpcEndpointType: Gateway
+      VpcId: !Ref EgressVpc
+      RouteTableIds:
+        - !Ref EgressPrivateRouteTable
+      Tags:
+        - Key: Name
+          Value: !Sub "hackerai-microvm-s3-${AWS::Region}"
+        - Key: application
+          Value: hackerai
+
   EgressPrivateRouteTableAssociation:
     Type: AWS::EC2::SubnetRouteTableAssociation
     Properties:

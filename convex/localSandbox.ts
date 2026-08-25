@@ -67,6 +67,7 @@ const CLOUD_SESSION_TOKEN_TTL_MS = 9 * 60 * 60 * 1000;
 const CLOUD_SESSION_STARTING_STALE_MS = 2 * 60 * 1000;
 const CLOUD_SANDBOX_DELETION_FENCE_TTL_MS = 2 * 60 * 1000;
 const RELAY_READY_CLIENT_VERSION = "aws-lambda-microvm-relay-ready-v1";
+const ACTIVE_SUBAGENT_STATUSES = ["queued", "running", "finalizing"] as const;
 
 const cloudSessionStatus = v.union(
   v.literal("starting"),
@@ -108,6 +109,7 @@ const cloudSessionForBackend = v.object({
   createdAt: v.number(),
   updatedAt: v.number(),
   bootstrapExpiresAt: v.number(),
+  lastConnectedAt: v.optional(v.number()),
   relayReadyAt: v.optional(v.number()),
   awsState: v.optional(cloudMicrovmState),
   awsStateCheckedAt: v.optional(v.number()),
@@ -147,6 +149,7 @@ function serializeCloudSession(session: {
   created_at: number;
   updated_at: number;
   bootstrap_expires_at: number;
+  last_connected_at?: number;
   relay_ready_at?: number;
   aws_state?:
     | "PENDING"
@@ -179,6 +182,7 @@ function serializeCloudSession(session: {
     createdAt: session.created_at,
     updatedAt: session.updated_at,
     bootstrapExpiresAt: session.bootstrap_expires_at,
+    lastConnectedAt: session.last_connected_at,
     relayReadyAt: session.relay_ready_at,
     awsState: session.aws_state,
     awsStateCheckedAt: session.aws_state_checked_at,
@@ -925,6 +929,100 @@ export const listCloudSessionsForReconciliation = query({
         userId: session.user_id,
         session: serializeCloudSession(session),
       }));
+  },
+});
+
+/** Fail-closed ownership and activity gate for scheduled orphan cleanup. */
+export const getCloudSessionOrphanCleanupEligibility = query({
+  args: {
+    serviceKey: v.string(),
+    userId: v.string(),
+    sessionId: v.string(),
+    microvmId: v.string(),
+    staleBeforeMs: v.number(),
+  },
+  returns: v.object({
+    eligible: v.boolean(),
+    reason: v.union(
+      v.literal("eligible"),
+      v.literal("session_not_owned"),
+      v.literal("session_not_active"),
+      v.literal("recent_activity"),
+      v.literal("active_parent_run"),
+      v.literal("active_subagent"),
+    ),
+    lastActivityAt: v.optional(v.number()),
+  }),
+  handler: async (ctx, args) => {
+    validateServiceKey(args.serviceKey);
+    const session = await ctx.db
+      .query("cloud_sandbox_sessions")
+      .withIndex("by_session_id", (q) => q.eq("session_id", args.sessionId))
+      .unique();
+    if (
+      !session ||
+      session.user_id !== args.userId ||
+      session.microvm_id !== args.microvmId
+    ) {
+      return { eligible: false, reason: "session_not_owned" as const };
+    }
+    if (session.status !== "active" && session.status !== "running") {
+      return { eligible: false, reason: "session_not_active" as const };
+    }
+
+    const connection = session.connection_id
+      ? await ctx.db
+          .query("local_sandbox_connections")
+          .withIndex("by_connection_id", (q) =>
+            q.eq("connection_id", session.connection_id!),
+          )
+          .unique()
+      : null;
+    const lastActivityAt = Math.max(
+      session.created_at,
+      session.last_connected_at ?? 0,
+      session.relay_ready_at ?? 0,
+      connection?.last_heartbeat ?? 0,
+    );
+    if (lastActivityAt >= args.staleBeforeMs) {
+      return {
+        eligible: false,
+        reason: "recent_activity" as const,
+        lastActivityAt,
+      };
+    }
+
+    const activeParentRun = await ctx.db
+      .query("chats")
+      .withIndex("by_user_and_active_trigger_run", (q) =>
+        q.eq("user_id", args.userId).gt("active_trigger_run_id", ""),
+      )
+      .first();
+    if (activeParentRun) {
+      return {
+        eligible: false,
+        reason: "active_parent_run" as const,
+        lastActivityAt,
+      };
+    }
+
+    for (const status of ACTIVE_SUBAGENT_STATUSES) {
+      const activeSubagent = await ctx.db
+        .query("subagent_runs")
+        .withIndex("by_user_and_status", (q) =>
+          q.eq("user_id", args.userId).eq("status", status),
+        )
+        .first();
+      if (activeSubagent) {
+        return {
+          eligible: false,
+          reason: "active_subagent" as const,
+          lastActivityAt,
+        };
+      }
+    }
+
+    return { eligible: true, reason: "eligible" as const, lastActivityAt };
   },
 });
 

@@ -487,6 +487,92 @@ describe("cloud sandbox session cleanup", () => {
     );
   });
 
+  it("allows orphan cleanup only after activity and all owners are stale", async () => {
+    const staleAt = Date.now() - 30 * 60 * 1_000;
+    const query = jest.fn((table: string) => ({
+      withIndex: jest.fn(() => ({
+        unique: jest.fn().mockResolvedValue(
+          table === "cloud_sandbox_sessions"
+            ? {
+                user_id: "user-orphan",
+                session_id: "session-orphan",
+                microvm_id: "microvm-orphan",
+                status: "active",
+                created_at: staleAt,
+                last_connected_at: staleAt,
+                connection_id: "connection-orphan",
+              }
+            : table === "local_sandbox_connections"
+              ? { last_heartbeat: staleAt }
+              : null,
+        ),
+        first: jest.fn().mockResolvedValue(null),
+      })),
+    }));
+    const { getCloudSessionOrphanCleanupEligibility } =
+      await import("../localSandbox");
+
+    await expect(
+      getCloudSessionOrphanCleanupEligibility.handler(
+        { db: { query } } as never,
+        {
+          serviceKey: "service-key",
+          userId: "user-orphan",
+          sessionId: "session-orphan",
+          microvmId: "microvm-orphan",
+          staleBeforeMs: Date.now() - 15 * 60 * 1_000,
+        },
+      ),
+    ).resolves.toEqual({
+      eligible: true,
+      reason: "eligible",
+      lastActivityAt: staleAt,
+    });
+    expect(query).toHaveBeenCalledWith("chats");
+    expect(query).toHaveBeenCalledWith("subagent_runs");
+  });
+
+  it("protects a stale session that still has an active parent run", async () => {
+    const staleAt = Date.now() - 30 * 60 * 1_000;
+    const query = jest.fn((table: string) => ({
+      withIndex: jest.fn(() => ({
+        unique: jest.fn().mockResolvedValue(
+          table === "cloud_sandbox_sessions"
+            ? {
+                user_id: "user-owned",
+                session_id: "session-owned",
+                microvm_id: "microvm-owned",
+                status: "active",
+                created_at: staleAt,
+              }
+            : null,
+        ),
+        first: jest
+          .fn()
+          .mockResolvedValue(table === "chats" ? { _id: "chat-1" } : null),
+      })),
+    }));
+    const { getCloudSessionOrphanCleanupEligibility } =
+      await import("../localSandbox");
+
+    await expect(
+      getCloudSessionOrphanCleanupEligibility.handler(
+        { db: { query } } as never,
+        {
+          serviceKey: "service-key",
+          userId: "user-owned",
+          sessionId: "session-owned",
+          microvmId: "microvm-owned",
+          staleBeforeMs: Date.now() - 15 * 60 * 1_000,
+        },
+      ),
+    ).resolves.toEqual({
+      eligible: false,
+      reason: "active_parent_run",
+      lastActivityAt: staleAt,
+    });
+  });
+
   it("records failed regional failover timing when the replacement ends", async () => {
     const failoverStartedAt = Date.now() - 25;
     const patch = jest.fn().mockResolvedValue(undefined);

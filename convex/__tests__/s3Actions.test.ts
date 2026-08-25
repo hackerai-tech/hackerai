@@ -50,6 +50,10 @@ describe("s3Actions", () => {
       limit: 400,
       reset: Date.now() + 5 * 60 * 60 * 1000,
     });
+    const { copyS3Object } = await import("../s3Utils");
+    (
+      copyS3Object as jest.MockedFunction<typeof copyS3Object>
+    ).mockResolvedValue({ copied: true });
 
     // Setup environment variables
     process.env.AWS_S3_ACCESS_KEY_ID = "test-access-key";
@@ -92,12 +96,24 @@ describe("s3Actions", () => {
     });
 
     it("restores the newest snapshot across all workspace regions", async () => {
-      const { getS3ObjectMetadata, generateS3DownloadUrl } =
+      const { copyS3Object, getS3ObjectMetadata, generateS3DownloadUrl } =
         await import("../s3Utils");
       (getS3ObjectMetadata as jest.MockedFunction<typeof getS3ObjectMetadata>)
-        .mockResolvedValueOnce({ exists: true, lastModifiedMs: 100 })
-        .mockResolvedValueOnce({ exists: true, lastModifiedMs: 300 })
-        .mockResolvedValueOnce({ exists: true, lastModifiedMs: 200 });
+        .mockResolvedValueOnce({
+          exists: true,
+          lastModifiedMs: 100,
+          eTag: '"east-100"',
+        })
+        .mockResolvedValueOnce({
+          exists: true,
+          lastModifiedMs: 300,
+          eTag: '"west-300"',
+        })
+        .mockResolvedValueOnce({
+          exists: true,
+          lastModifiedMs: 200,
+          eTag: '"eu-200"',
+        });
       (
         generateS3DownloadUrl as jest.MockedFunction<
           typeof generateS3DownloadUrl
@@ -114,9 +130,15 @@ describe("s3Actions", () => {
         }),
       ).resolves.toBe("https://s3.example/download");
       expect(getS3ObjectMetadata).toHaveBeenCalledTimes(3);
-      expect(generateS3DownloadUrl).toHaveBeenCalledWith(
+      expect(copyS3Object).toHaveBeenCalledWith(
         "users/user_123/microvm-workspace/v1/workspace.tar.gz",
         { region: "us-west-2", bucketName: "workspace-west" },
+        { region: "us-east-1", bucketName: "workspace-east" },
+        { ifMatch: '"east-100"' },
+      );
+      expect(generateS3DownloadUrl).toHaveBeenCalledWith(
+        "users/user_123/microvm-workspace/v1/workspace.tar.gz",
+        { region: "us-east-1", bucketName: "workspace-east" },
       );
     });
 
@@ -124,9 +146,21 @@ describe("s3Actions", () => {
       const { getS3ObjectMetadata, generateS3DownloadUrl } =
         await import("../s3Utils");
       (getS3ObjectMetadata as jest.MockedFunction<typeof getS3ObjectMetadata>)
-        .mockResolvedValueOnce({ exists: true, lastModifiedMs: 300 })
-        .mockResolvedValueOnce({ exists: true, lastModifiedMs: 100 })
-        .mockResolvedValueOnce({ exists: true, lastModifiedMs: 300 });
+        .mockResolvedValueOnce({
+          exists: true,
+          lastModifiedMs: 300,
+          eTag: '"east-300"',
+        })
+        .mockResolvedValueOnce({
+          exists: true,
+          lastModifiedMs: 100,
+          eTag: '"west-100"',
+        })
+        .mockResolvedValueOnce({
+          exists: true,
+          lastModifiedMs: 300,
+          eTag: '"eu-300"',
+        });
       (
         generateS3DownloadUrl as jest.MockedFunction<
           typeof generateS3DownloadUrl
@@ -141,6 +175,8 @@ describe("s3Actions", () => {
         region: "eu-west-1",
       });
 
+      const { copyS3Object } = await import("../s3Utils");
+      expect(copyS3Object).not.toHaveBeenCalled();
       expect(generateS3DownloadUrl).toHaveBeenCalledWith(
         "users/user_123/microvm-workspace/v1/workspace.tar.gz",
         { region: "eu-west-1", bucketName: "workspace-eu" },
@@ -171,7 +207,11 @@ describe("s3Actions", () => {
         await import("../s3Utils");
       const regionalOutage = new Error("regional S3 unavailable");
       (getS3ObjectMetadata as jest.MockedFunction<typeof getS3ObjectMetadata>)
-        .mockResolvedValueOnce({ exists: true, lastModifiedMs: 100 })
+        .mockResolvedValueOnce({
+          exists: true,
+          lastModifiedMs: 100,
+          eTag: '"east-100"',
+        })
         .mockRejectedValueOnce(regionalOutage)
         .mockResolvedValueOnce({ exists: false });
       const { getMicrovmWorkspaceDownloadUrlAction } =
@@ -185,6 +225,106 @@ describe("s3Actions", () => {
         }),
       ).rejects.toBe(regionalOutage);
       expect(generateS3DownloadUrl).not.toHaveBeenCalled();
+    });
+
+    it("fails closed when a cross-region restore cannot be localized", async () => {
+      const { copyS3Object, getS3ObjectMetadata, generateS3DownloadUrl } =
+        await import("../s3Utils");
+      (getS3ObjectMetadata as jest.MockedFunction<typeof getS3ObjectMetadata>)
+        .mockResolvedValueOnce({
+          exists: true,
+          lastModifiedMs: 100,
+          eTag: '"east-100"',
+        })
+        .mockResolvedValueOnce({
+          exists: true,
+          lastModifiedMs: 300,
+          eTag: '"west-300"',
+        })
+        .mockResolvedValueOnce({ exists: false });
+      const copyFailure = new Error("cross-region copy failed");
+      (
+        copyS3Object as jest.MockedFunction<typeof copyS3Object>
+      ).mockRejectedValue(copyFailure);
+      const { getMicrovmWorkspaceDownloadUrlAction } =
+        await import("../s3Actions");
+
+      await expect(
+        getMicrovmWorkspaceDownloadUrlAction.handler({} as any, {
+          serviceKey: "service-key",
+          userId: "user_123",
+          region: "us-east-1",
+        }),
+      ).rejects.toBe(copyFailure);
+      expect(generateS3DownloadUrl).not.toHaveBeenCalled();
+    });
+
+    it("does not overwrite a checkpoint that changes during restore localization", async () => {
+      const { copyS3Object, getS3ObjectMetadata, generateS3DownloadUrl } =
+        await import("../s3Utils");
+      (getS3ObjectMetadata as jest.MockedFunction<typeof getS3ObjectMetadata>)
+        .mockResolvedValueOnce({
+          exists: true,
+          lastModifiedMs: 100,
+          eTag: '"east-100"',
+        })
+        .mockResolvedValueOnce({
+          exists: true,
+          lastModifiedMs: 300,
+          eTag: '"west-300"',
+        })
+        .mockResolvedValueOnce({ exists: false });
+      (
+        copyS3Object as jest.MockedFunction<typeof copyS3Object>
+      ).mockResolvedValue({ copied: false });
+      (
+        generateS3DownloadUrl as jest.MockedFunction<
+          typeof generateS3DownloadUrl
+        >
+      ).mockResolvedValue("https://s3.example/current-local-checkpoint");
+      const { getMicrovmWorkspaceDownloadUrlAction } =
+        await import("../s3Actions");
+
+      await expect(
+        getMicrovmWorkspaceDownloadUrlAction.handler({} as any, {
+          serviceKey: "service-key",
+          userId: "user_123",
+          region: "us-east-1",
+        }),
+      ).resolves.toBe("https://s3.example/current-local-checkpoint");
+      expect(copyS3Object).toHaveBeenCalledWith(
+        "users/user_123/microvm-workspace/v1/workspace.tar.gz",
+        { region: "us-west-2", bucketName: "workspace-west" },
+        { region: "us-east-1", bucketName: "workspace-east" },
+        { ifMatch: '"east-100"' },
+      );
+    });
+
+    it("fails closed when a destination ETag is unavailable for a conditional copy", async () => {
+      const { copyS3Object, getS3ObjectMetadata } = await import("../s3Utils");
+      (getS3ObjectMetadata as jest.MockedFunction<typeof getS3ObjectMetadata>)
+        .mockResolvedValueOnce({
+          exists: true,
+          lastModifiedMs: 100,
+          eTag: null,
+        })
+        .mockResolvedValueOnce({
+          exists: true,
+          lastModifiedMs: 300,
+          eTag: '"west-300"',
+        })
+        .mockResolvedValueOnce({ exists: false });
+      const { getMicrovmWorkspaceDownloadUrlAction } =
+        await import("../s3Actions");
+
+      await expect(
+        getMicrovmWorkspaceDownloadUrlAction.handler({} as any, {
+          serviceKey: "service-key",
+          userId: "user_123",
+          region: "us-east-1",
+        }),
+      ).rejects.toThrow("S3 workspace metadata in us-east-1 is missing ETag");
+      expect(copyS3Object).not.toHaveBeenCalled();
     });
 
     it("fails closed when a regional bucket is not configured", async () => {

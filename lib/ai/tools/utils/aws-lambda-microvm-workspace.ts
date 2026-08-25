@@ -14,7 +14,11 @@ const WORKSPACE_CHECKPOINT_SCRIPT = "/tmp/.hackerai-workspace-v1-checkpoint.sh";
 const WORKSPACE_CHECKPOINT_PID = "/tmp/.hackerai-workspace-v1-checkpoint.pid";
 const WORKSPACE_CHECKPOINT_START_LOCK =
   "/tmp/.hackerai-workspace-v1-checkpoint-start.lock";
-const WORKSPACE_CHECKPOINT_INTERVAL_SECONDS = 2 * 60;
+const WORKSPACE_CHECKPOINT_FINGERPRINT =
+  "/tmp/.hackerai-workspace-v1-checkpoint.fingerprint";
+const WORKSPACE_ACTIVE_CHECKPOINT_INTERVAL_SECONDS = 5 * 60;
+const WORKSPACE_QUIET_CHECKPOINT_INTERVAL_SECONDS = 10 * 60;
+const WORKSPACE_CHECKPOINT_FINGERPRINT_TIMEOUT_SECONDS = 10;
 const WORKSPACE_CHECKPOINT_TAR_TIMEOUT_SECONDS = 45;
 const WORKSPACE_CHECKPOINT_UPLOAD_TIMEOUT_SECONDS = 50;
 const WORKSPACE_CHECKPOINT_CONNECT_TIMEOUT_SECONDS = 15;
@@ -37,6 +41,27 @@ type WorkspaceSandbox = {
 
 function shellQuote(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+function workspaceFingerprintCommand(): string {
+  return [
+    `(cd ${shellQuote(WORKSPACE_ROOT)} && find . \\`,
+    "  \\( -path './.cache' -o -path './.npm/_cacache' -o -path './.local/share/pnpm/store' -o -name node_modules \\) -prune -o " +
+      "\\",
+    "  -printf '%P\\0%y\\0%s\\0%T@\\0%l\\0' | LC_ALL=C sort -z | sha256sum | cut -d' ' -f1)",
+  ].join("\n");
+}
+
+function boundedWorkspaceFingerprintCommand(): string {
+  return [
+    "timeout",
+    "--signal=TERM",
+    "--kill-after=2s",
+    `${WORKSPACE_CHECKPOINT_FINGERPRINT_TIMEOUT_SECONDS}s`,
+    "/bin/bash",
+    "-c",
+    shellQuote(`set -euo pipefail; ${workspaceFingerprintCommand()}`),
+  ].join(" ");
 }
 
 function transferError(
@@ -118,19 +143,37 @@ export function buildWorkspaceSnapshotCommand(uploadUrl: string) {
 export function buildWorkspaceCheckpointScript() {
   return [
     "#!/bin/bash",
+    `interval=${WORKSPACE_ACTIVE_CHECKPOINT_INTERVAL_SECONDS}`,
+    "workspace_fingerprint() {",
+    `  ${boundedWorkspaceFingerprintCommand()}`,
+    "}",
     "while true; do",
-    `  sleep ${WORKSPACE_CHECKPOINT_INTERVAL_SECONDS}`,
+    '  sleep "$interval"',
     "  (",
     "    set -eu",
-    "    flock -n 9 || exit 0",
+    "    flock -n 9 || exit 11",
+    '    fingerprint="$(workspace_fingerprint)"',
+    `    fingerprint_file=${shellQuote(WORKSPACE_CHECKPOINT_FINGERPRINT)}`,
+    '    if [ -r "$fingerprint_file" ] && [ "$(cat "$fingerprint_file")" = "$fingerprint" ]; then exit 10; fi',
     '    archive="$(mktemp /tmp/hackerai-workspace.XXXXXX.tar.gz)"',
-    "    trap 'rm -f \"$archive\"' EXIT",
+    '    fingerprint_tmp="${fingerprint_file}.$$"',
+    '    trap \'rm -f "$archive" "$fingerprint_tmp"\' EXIT',
     "    tar_status=0",
     `    timeout --signal=TERM --kill-after=5s ${WORKSPACE_CHECKPOINT_TAR_TIMEOUT_SECONDS}s tar --create --gzip --file="$archive" --directory=${shellQuote(WORKSPACE_ROOT)} --warning=no-file-changed --exclude='./.cache' --exclude='./.npm/_cacache' --exclude='./.local/share/pnpm/store' --exclude='*/node_modules' . || tar_status=$?`,
     '    [ "$tar_status" -le 1 ]',
     `    upload_url="$(cat ${shellQuote(WORKSPACE_UPLOAD_URL_FILE)})"`,
     `    timeout --signal=TERM --kill-after=5s ${WORKSPACE_CHECKPOINT_UPLOAD_TIMEOUT_SECONDS}s curl --fail --silent --show-error --connect-timeout ${WORKSPACE_CHECKPOINT_CONNECT_TIMEOUT_SECONDS} --max-time ${WORKSPACE_CHECKPOINT_UPLOAD_TIMEOUT_SECONDS} --retry 3 --retry-all-errors --request PUT --upload-file "$archive" "$upload_url"`,
-    `  ) 9>${shellQuote(WORKSPACE_SNAPSHOT_LOCK)} || true`,
+    '    printf \'%s\\n\' "$fingerprint" > "$fingerprint_tmp"',
+    '    mv "$fingerprint_tmp" "$fingerprint_file"',
+    `  ) 9>${shellQuote(WORKSPACE_SNAPSHOT_LOCK)}`,
+    '  checkpoint_status="$?"',
+    '  if [ "$checkpoint_status" -eq 0 ]; then',
+    `    interval=${WORKSPACE_ACTIVE_CHECKPOINT_INTERVAL_SECONDS}`,
+    '  elif [ "$checkpoint_status" -eq 10 ]; then',
+    `    interval=${WORKSPACE_QUIET_CHECKPOINT_INTERVAL_SECONDS}`,
+    "  else",
+    `    interval=${WORKSPACE_ACTIVE_CHECKPOINT_INTERVAL_SECONDS}`,
+    "  fi",
     "done",
   ].join("\n");
 }
@@ -143,9 +186,15 @@ export function buildWorkspaceCheckpointCommand(uploadUrl: string) {
     `url_file=${shellQuote(WORKSPACE_UPLOAD_URL_FILE)}`,
     `script=${shellQuote(WORKSPACE_CHECKPOINT_SCRIPT)}`,
     `pid_file=${shellQuote(WORKSPACE_CHECKPOINT_PID)}`,
+    `fingerprint_file=${shellQuote(WORKSPACE_CHECKPOINT_FINGERPRINT)}`,
     'url_tmp="${url_file}.$$"',
     `printf '%s' ${shellQuote(uploadUrl)} > "$url_tmp"`,
     'mv "$url_tmp" "$url_file"',
+    `if [ ! -r "$fingerprint_file" ] && fingerprint="$(${boundedWorkspaceFingerprintCommand()})"; then`,
+    '  fingerprint_tmp="${fingerprint_file}.$$"',
+    '  printf \'%s\\n\' "$fingerprint" > "$fingerprint_tmp"',
+    '  mv "$fingerprint_tmp" "$fingerprint_file"',
+    "fi",
     'if [ ! -x "$script" ]; then',
     '  script_tmp="${script}.$$"',
     `  printf '%s\n' ${shellQuote(checkpointScript)} > "$script_tmp"`,

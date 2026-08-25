@@ -25,6 +25,7 @@ export type CloudSandboxSuspensionSummary = {
   terminated: number;
   alreadyGone: number;
   workspacesSaved: number;
+  ownershipProtected: number;
 };
 
 export async function ensureCloudSandboxConnection(options: {
@@ -172,6 +173,7 @@ export async function suspendCloudSandboxesForUser(
       terminated: 0,
       alreadyGone: 0,
       workspacesSaved: 0,
+      ownershipProtected: 0,
     };
   }
 

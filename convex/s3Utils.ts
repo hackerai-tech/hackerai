@@ -4,6 +4,7 @@ import {
   GetObjectCommand,
   DeleteObjectCommand,
   HeadObjectCommand,
+  CopyObjectCommand,
 } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { v4 as uuidv4 } from "uuid";
@@ -159,9 +160,10 @@ export async function generateS3DownloadUrl(
 }
 
 export type S3ObjectMetadata =
-  { exists: false } | { exists: true; lastModifiedMs: number | null };
+  | { exists: false }
+  | { exists: true; lastModifiedMs: number | null; eTag: string | null };
 
-/** Read object presence and its S3-authoritative modification time. */
+/** Read object presence plus its S3-authoritative modification time and ETag. */
 export async function getS3ObjectMetadata(
   s3Key: string,
   target?: S3ObjectTarget,
@@ -176,6 +178,7 @@ export async function getS3ObjectMetadata(
     return {
       exists: true,
       lastModifiedMs: result.LastModified?.getTime() ?? null,
+      eTag: result.ETag ?? null,
     };
   } catch (error) {
     const record =
@@ -197,6 +200,45 @@ export async function getS3ObjectMetadata(
         `S3 metadata access denied in ${region} (HTTP 403); verify s3:GetObject permission for the target key`,
         { cause: error },
       );
+    }
+    throw error;
+  }
+}
+
+/**
+ * Copy a trusted object into another regional bucket. The copy runs inside S3,
+ * so a MicroVM never has to download a cross-region workspace through NAT.
+ * The destination precondition keeps a concurrent checkpoint from being
+ * overwritten by the restore copy.
+ */
+export async function copyS3Object(
+  s3Key: string,
+  source: S3ObjectTarget,
+  destination: S3ObjectTarget,
+  destinationCondition: { ifMatch: string } | { ifNoneMatch: "*" },
+): Promise<{ copied: boolean }> {
+  const s3Client = getS3Client(destination.region);
+  const encodedKey = s3Key.split("/").map(encodeURIComponent).join("/");
+  try {
+    await s3Client.send(
+      new CopyObjectCommand({
+        Bucket: destination.bucketName,
+        Key: s3Key,
+        CopySource: `${source.bucketName}/${encodedKey}`,
+        ...(destinationCondition && "ifMatch" in destinationCondition
+          ? { IfMatch: destinationCondition.ifMatch }
+          : { IfNoneMatch: "*" }),
+      }),
+    );
+    return { copied: true };
+  } catch (error) {
+    const statusCode =
+      error && typeof error === "object"
+        ? (error as { $metadata?: { httpStatusCode?: unknown } }).$metadata
+            ?.httpStatusCode
+        : undefined;
+    if (statusCode === 412) {
+      return { copied: false };
     }
     throw error;
   }

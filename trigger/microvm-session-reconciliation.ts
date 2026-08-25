@@ -8,6 +8,11 @@ import { reconcileAwsLambdaMicrovmSessions } from "@/lib/ai/tools/utils/aws-lamb
 export const reconcileAwsLambdaMicrovmSessionState = schedules.task({
   id: "reconcile-aws-lambda-microvm-session-state",
   cron: "*/10 * * * *",
+  queue: {
+    name: "aws-lambda-microvm-reconciliation",
+    concurrencyLimit: 1,
+  },
+  ttl: "10m",
   retry: {
     maxAttempts: 3,
     factor: 2,
@@ -15,7 +20,10 @@ export const reconcileAwsLambdaMicrovmSessionState = schedules.task({
     maxTimeoutInMs: 30_000,
     randomize: true,
   },
-  maxDuration: 300,
+  // A forced workspace snapshot may use most of its ten-minute transfer
+  // budget. Serial execution plus the provider's one-cleanup-per-sweep limit
+  // prevents overlapping orphan cleanup while state checks continue in bulk.
+  maxDuration: 900,
   run: async () => {
     if (!process.env.CONVEX_SERVICE_ROLE_KEY?.trim()) {
       logger.info("AWS Lambda MicroVM reconciliation skipped", {

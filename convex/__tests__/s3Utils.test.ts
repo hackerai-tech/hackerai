@@ -305,7 +305,7 @@ describe("s3Utils", () => {
       const lastModified = new Date("2026-08-24T04:00:00.000Z");
       const mockSend = jest
         .fn()
-        .mockResolvedValue({ LastModified: lastModified });
+        .mockResolvedValue({ LastModified: lastModified, ETag: '"etag-42"' });
       (S3Client as jest.MockedClass<typeof S3Client>).mockImplementation(
         () => ({ send: mockSend }) as unknown as S3Client,
       );
@@ -319,7 +319,88 @@ describe("s3Utils", () => {
       ).resolves.toEqual({
         exists: true,
         lastModifiedMs: lastModified.getTime(),
+        eTag: '"etag-42"',
       });
+    });
+  });
+
+  describe("copyS3Object", () => {
+    it("copies a workspace into the destination region server-side", async () => {
+      const { S3Client, CopyObjectCommand } =
+        await import("@aws-sdk/client-s3");
+      const mockSend = jest.fn().mockResolvedValue({});
+      (S3Client as jest.MockedClass<typeof S3Client>).mockImplementation(
+        () => ({ send: mockSend }) as unknown as S3Client,
+      );
+      const { copyS3Object } = await import("../s3Utils");
+
+      await expect(
+        copyS3Object(
+          "users/user%2F123/microvm-workspace/v1/workspace.tar.gz",
+          { region: "us-west-2", bucketName: "workspace-west" },
+          { region: "eu-west-1", bucketName: "workspace-eu" },
+          { ifMatch: '"destination-etag"' },
+        ),
+      ).resolves.toEqual({ copied: true });
+
+      expect(S3Client).toHaveBeenCalledWith(
+        expect.objectContaining({ region: "eu-west-1" }),
+      );
+      expect(CopyObjectCommand).toHaveBeenCalledWith({
+        Bucket: "workspace-eu",
+        Key: "users/user%2F123/microvm-workspace/v1/workspace.tar.gz",
+        CopySource:
+          "workspace-west/users/user%252F123/microvm-workspace/v1/workspace.tar.gz",
+        IfMatch: '"destination-etag"',
+      });
+      expect(mockSend).toHaveBeenCalledTimes(1);
+    });
+
+    it("preserves a concurrently updated destination checkpoint", async () => {
+      const { S3Client, CopyObjectCommand } =
+        await import("@aws-sdk/client-s3");
+      const mockSend = jest.fn().mockRejectedValue({
+        name: "PreconditionFailed",
+        $metadata: { httpStatusCode: 412 },
+      });
+      (S3Client as jest.MockedClass<typeof S3Client>).mockImplementation(
+        () => ({ send: mockSend }) as unknown as S3Client,
+      );
+      const { copyS3Object } = await import("../s3Utils");
+
+      await expect(
+        copyS3Object(
+          "workspace.tar.gz",
+          { region: "us-west-2", bucketName: "workspace-west" },
+          { region: "us-east-1", bucketName: "workspace-east" },
+          { ifNoneMatch: "*" },
+        ),
+      ).resolves.toEqual({ copied: false });
+      expect(CopyObjectCommand).toHaveBeenCalledWith(
+        expect.objectContaining({ IfNoneMatch: "*" }),
+      );
+    });
+
+    it("propagates a conditional conflict when the destination may be absent", async () => {
+      const { S3Client } = await import("@aws-sdk/client-s3");
+      const conflict = {
+        name: "ConditionalRequestConflict",
+        $metadata: { httpStatusCode: 409 },
+      };
+      const mockSend = jest.fn().mockRejectedValue(conflict);
+      (S3Client as jest.MockedClass<typeof S3Client>).mockImplementation(
+        () => ({ send: mockSend }) as unknown as S3Client,
+      );
+      const { copyS3Object } = await import("../s3Utils");
+
+      await expect(
+        copyS3Object(
+          "workspace.tar.gz",
+          { region: "us-west-2", bucketName: "workspace-west" },
+          { region: "us-east-1", bucketName: "workspace-east" },
+          { ifNoneMatch: "*" },
+        ),
+      ).rejects.toBe(conflict);
     });
   });
 });
