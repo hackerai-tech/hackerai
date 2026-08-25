@@ -780,7 +780,13 @@ export default defineSchema({
     connection_name: v.string(),
     container_id: v.optional(v.string()),
     client_version: v.string(),
-    mode: v.union(v.literal("docker"), v.literal("dangerous")),
+    // Keep accepting legacy cloud rows until production data has been purged.
+    // No current writer creates them, and connection queries exclude them.
+    mode: v.union(
+      v.literal("docker"),
+      v.literal("dangerous"),
+      v.literal("cloud"),
+    ),
     os_info: v.optional(
       v.object({
         platform: v.string(),

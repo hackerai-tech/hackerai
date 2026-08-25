@@ -835,14 +835,29 @@ export class LocalSandboxClient {
     }, 1000).unref();
   }
 
-  private terminateActiveStreamCommands(): void {
-    for (const [commandId, proc] of this.activeStreamCommands) {
-      console.log(
-        chalk.yellow(`[CMD] Terminating active command ${commandId}`),
+  private async terminateActiveStreamCommands(): Promise<void> {
+    const commands = [...this.activeStreamCommands.entries()];
+    const results = await Promise.all(
+      commands.map(async ([commandId, proc]) => {
+        console.log(
+          chalk.yellow(`[CMD] Terminating active command ${commandId}`),
+        );
+        const confirmed = await confirmProcessTermination(
+          proc,
+          () => this.terminateProcessTree(proc),
+          undefined,
+          () => isProcessTreeTerminationConfirmed(proc),
+        );
+        if (confirmed) this.activeStreamCommands.delete(commandId);
+        return confirmed;
+      }),
+    );
+    const unconfirmed = results.filter((confirmed) => !confirmed).length;
+    if (unconfirmed > 0) {
+      throw new Error(
+        `Could not confirm termination of ${unconfirmed} command process tree(s)`,
       );
-      this.terminateProcessTree(proc);
     }
-    this.activeStreamCommands.clear();
   }
 
   private async streamCommand(
@@ -1127,7 +1142,7 @@ export class LocalSandboxClient {
     this.processRunner.stopAll();
 
     // Stop all active streamed commands before dropping the realtime connection.
-    this.terminateActiveStreamCommands();
+    await this.terminateActiveStreamCommands();
 
     // Disconnect Centrifugo
     if (this.subscription) {

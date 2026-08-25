@@ -167,6 +167,7 @@ export const regenerateToken = mutation({
       .withIndex("by_user_and_status", (q) =>
         q.eq("user_id", userId).eq("status", "connected"),
       )
+      .filter((q) => q.neq(q.field("mode"), "cloud"))
       .collect();
 
     const now = Date.now();
@@ -679,6 +680,7 @@ export const listConnections = query({
       .withIndex("by_user_and_status", (q) =>
         q.eq("user_id", userId).eq("status", "connected"),
       )
+      .filter((q) => q.neq(q.field("mode"), "cloud"))
       .collect();
 
     return connections.map((conn) => ({
@@ -726,6 +728,7 @@ export const listConnectionsForBackend = query({
       .withIndex("by_user_and_status", (q) =>
         q.eq("user_id", args.userId).eq("status", "connected"),
       )
+      .filter((q) => q.neq(q.field("mode"), "cloud"))
       .collect();
 
     return connections.map((conn) => ({
