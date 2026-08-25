@@ -56,7 +56,7 @@ Use the current task schema as the authority. A typical run is:
 ```json
 {
   "question": "What kinds of users are our highest-spending customers, what recurring work do they use HackerAI for, and why do they pay?",
-  "cohortLabel": "Top 10 users by PostHog-recorded lifetime paid spend",
+  "cohortLabel": "PostHog top-spender research cohort",
   "userIds": ["internal-user-id-1", "internal-user-id-2", "internal-user-id-3"],
   "maxChatsPerUser": 12
 }
