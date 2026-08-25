@@ -23,27 +23,32 @@ describe("cloud sandbox provider selection", () => {
     }
   });
 
-  it("defaults to AWS after the full rollout", () => {
+  it("defaults to E2B", () => {
     delete process.env.CLOUD_SANDBOX_PROVIDER;
     delete process.env.AWS_LAMBDA_MICROVM_IMAGE_ID;
     delete process.env.AWS_LAMBDA_MICROVM_RELEASE_MANIFEST;
-    expect(getCloudSandboxProvider()).toBe("aws-lambda-microvm");
+    expect(getCloudSandboxProvider()).toBe("e2b");
   });
 
-  it("selects AWS when an atomic regional release manifest is configured", () => {
+  it("does not let a stale AWS release manifest override the E2B default", () => {
     delete process.env.CLOUD_SANDBOX_PROVIDER;
     delete process.env.AWS_LAMBDA_MICROVM_IMAGE_ID;
     process.env.AWS_LAMBDA_MICROVM_RELEASE_MANIFEST = "{}";
-    expect(getCloudSandboxProvider()).toBe("aws-lambda-microvm");
+    expect(getCloudSandboxProvider()).toBe("e2b");
   });
 
-  it("selects AWS when an image is explicitly configured", () => {
+  it("does not let a stale AWS image override the E2B default", () => {
     delete process.env.CLOUD_SANDBOX_PROVIDER;
     process.env.AWS_LAMBDA_MICROVM_IMAGE_ID = "arn:aws:lambda:microvm-image";
+    expect(getCloudSandboxProvider()).toBe("e2b");
+  });
+
+  it("honors an explicit AWS rollback", () => {
+    process.env.CLOUD_SANDBOX_PROVIDER = "aws-lambda-microvm";
     expect(getCloudSandboxProvider()).toBe("aws-lambda-microvm");
   });
 
-  it("honors an explicit E2B rollback even when an AWS image remains set", () => {
+  it("honors explicit E2B even when an AWS image remains set", () => {
     process.env.CLOUD_SANDBOX_PROVIDER = "e2b";
     process.env.AWS_LAMBDA_MICROVM_IMAGE_ID = "arn:aws:lambda:microvm-image";
     expect(getCloudSandboxProvider()).toBe("e2b");
