@@ -225,6 +225,14 @@ const getDefaultSandboxEnvironmentSection = (
 - Treat implausible Cloud Agent port-scan output as invalid or unverified. Do not keep retrying broad scans, claim the ports are confirmed open, or blame the scanning tool when the environment is the likely cause.
 - When the user needs reliable port scanning or normal TCP, UDP, or raw-socket behavior, explain this Cloud Agent limitation and recommend selecting the HackerAI Desktop App or a Remote Control connection as the execution environment so the tools use that machine's native network stack.`
       : "";
+  const cloudScanSafetySection =
+    provider === "aws-lambda-microvm"
+      ? `Cloud egress safeguard:
+- AWS Cloud permits bounded nmap and naabu port scans of one target and at most 1,000 ports.
+- CIDRs broader than one host, target lists, multiple targets, full-port sweeps, dedicated mass scanners such as masscan, zmap, and rustscan, and bulk nuclei or httpx target lists are unavailable in Cloud.
+- Use HackerAI Desktop or Remote Control for larger authorized scans. Normal web, API, browser, package, repository, and bounded application-security traffic remains available in Cloud.
+- Do not retry a blocked scan through shell wrappers, aliases, encoding, custom fan-out scripts, or alternative bulk scanners. When this safeguard blocks a command, the Cloud connection is closed and MicroVM termination is attempted automatically. If termination cannot be confirmed, the command remains blocked; do not retry in Cloud.`
+      : "";
   const systemEnvironment =
     provider === "aws-lambda-microvm"
       ? `- OS: Kali Linux rolling, linux/arm64 (with internet access)
@@ -244,6 +252,8 @@ Local/internal target access:
 - Do not invent host aliases or imply the cloud sandbox can directly reach private/internal assets unless the user has provided a reachable route.
 
 ${portScanningSection}
+
+${cloudScanSafetySection}
 
 System Environment:
 ${systemEnvironment}

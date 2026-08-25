@@ -87,6 +87,7 @@ import {
   isRegionalFailoverEligibleError,
   reconcileAwsLambdaMicrovmSessions,
   suspendAwsLambdaMicrovmsForUser,
+  terminateAwsLambdaMicrovmForSafety,
   terminateAwsLambdaMicrovmForUser,
 } from "../aws-lambda-microvm";
 
@@ -1335,6 +1336,75 @@ describe("AWS Lambda MicroVM development logging", () => {
 
     warnSpy.mockRestore();
     infoSpy.mockRestore();
+  });
+
+  it("terminates only the exact active MicroVM owned by the user for scan safety", async () => {
+    mockQuery.mockResolvedValueOnce([
+      {
+        sessionId: "session-target",
+        status: "running",
+        microvmId: "microvm-target",
+        region: "us-east-1",
+      },
+      {
+        sessionId: "session-other",
+        status: "running",
+        microvmId: "microvm-other",
+        region: "us-west-2",
+      },
+    ]);
+    mockSend
+      .mockResolvedValueOnce({ $metadata: { httpStatusCode: 200 } })
+      .mockResolvedValueOnce({ state: "TERMINATED" });
+    mockMutation.mockResolvedValue(true);
+    const warnSpy = jest.spyOn(console, "warn").mockImplementation();
+
+    await expect(
+      terminateAwsLambdaMicrovmForSafety({
+        userId: "user-safety",
+        microvmId: "microvm-target",
+        scanner: "nmap",
+      }),
+    ).resolves.toEqual({ status: "terminated" });
+
+    expect(mockSend).toHaveBeenCalledTimes(2);
+    expect(mockSend).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        input: { microvmIdentifier: "microvm-target" },
+      }),
+    );
+    expect(mockMutation).toHaveBeenCalledTimes(1);
+    expect(mockMutation.mock.calls[0][1]).toMatchObject({
+      userId: "user-safety",
+      sessionId: "session-target",
+      failureCode: "cloud_scan_safety_guard",
+    });
+    warnSpy.mockRestore();
+  });
+
+  it("refuses scan-safety termination when active ownership is absent", async () => {
+    mockQuery.mockResolvedValueOnce([
+      {
+        sessionId: "session-other",
+        status: "running",
+        microvmId: "microvm-other",
+        region: "us-east-1",
+      },
+    ]);
+    const warnSpy = jest.spyOn(console, "warn").mockImplementation();
+
+    await expect(
+      terminateAwsLambdaMicrovmForSafety({
+        userId: "user-safety",
+        microvmId: "microvm-unowned",
+        scanner: "masscan",
+      }),
+    ).resolves.toEqual({ status: "ownership_not_found" });
+
+    expect(mockSend).not.toHaveBeenCalled();
+    expect(mockMutation).not.toHaveBeenCalled();
+    warnSpy.mockRestore();
   });
 
   it("resolves an attachment race before declaring a starting session gone", async () => {

@@ -1940,6 +1940,104 @@ export async function terminateAwsLambdaMicrovmForUser(
 }
 
 /**
+ * Terminate one currently owned MicroVM after the Cloud scan safety guard
+ * blocks a command. The durable ownership check prevents a stale worker from
+ * terminating another user's replacement MicroVM.
+ */
+export async function terminateAwsLambdaMicrovmForSafety(args: {
+  userId: string;
+  microvmId: string;
+  scanner: string;
+}): Promise<{
+  status: "terminated" | "already_gone" | "ownership_not_found";
+}> {
+  const serviceKey = required("CONVEX_SERVICE_ROLE_KEY");
+  const sessions = (await getConvexClient().query(
+    api.localSandbox.listActiveCloudSessionsForBackend,
+    {
+      serviceKey,
+      userId: args.userId,
+    },
+  )) as CloudSession[];
+  const ownedSessions = sessions.filter(
+    (session) => session.microvmId === args.microvmId,
+  );
+
+  if (ownedSessions.length === 0) {
+    log("warn", "cloud_scan_safety_termination_skipped", {
+      user_id: args.userId,
+      microvm_id: args.microvmId,
+      scanner: args.scanner,
+      reason: "active_ownership_not_found",
+    });
+    return { status: "ownership_not_found" };
+  }
+
+  const regions = new Set(ownedSessions.map((session) => session.region));
+  if (regions.size !== 1) {
+    throw new Error(
+      "Owned Cloud sessions disagree about the MicroVM region; refusing safety termination",
+    );
+  }
+  const region = ownedSessions[0].region;
+  const outcome = await terminateMicrovm(args.microvmId, region);
+  if (outcome === "failed") {
+    await Promise.all(
+      ownedSessions.map((session) =>
+        markCleanupPending(
+          args.userId,
+          session.sessionId,
+          { serviceKey },
+          "cloud_scan_safety_termination_retry_required",
+        ),
+      ),
+    );
+    throw new Error("AWS did not accept the Cloud scan safety termination");
+  }
+
+  if (outcome === "terminated") {
+    try {
+      await confirmMicrovmTerminated(args.microvmId, region);
+    } catch (error) {
+      await Promise.all(
+        ownedSessions.map((session) =>
+          markCleanupPending(
+            args.userId,
+            session.sessionId,
+            { serviceKey },
+            "cloud_scan_safety_termination_confirmation_required",
+          ),
+        ),
+      );
+      throw error;
+    }
+  }
+
+  await Promise.all(
+    ownedSessions.map((session) =>
+      markEnded(
+        args.userId,
+        session.sessionId,
+        { serviceKey },
+        "terminated",
+        outcome === "already_gone"
+          ? "microvm_not_found"
+          : "cloud_scan_safety_guard",
+      ),
+    ),
+  );
+  log("warn", "cloud_scan_safety_microvm_terminated", {
+    user_id: args.userId,
+    microvm_id: args.microvmId,
+    scanner: args.scanner,
+    region,
+    sessions_ended: ownedSessions.length,
+    termination_status: outcome,
+  });
+  return { status: outcome };
+}
+
+/**
  * Stop compute for a user's reusable MicroVMs while retaining their state.
  *
  * The caller must first verify that no other Agent run is using the user's

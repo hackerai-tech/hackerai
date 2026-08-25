@@ -66,6 +66,8 @@ export interface PtySession {
   readCursor: number;
   /** Flipped once when the ring first drops any bytes. Never reset. */
   bufferTruncated: boolean;
+  /** Unsubmitted interactive input retained only for Cloud scan inspection. */
+  scanSafetyInputLine: string;
 }
 
 export interface CreateSessionOpts {
@@ -164,6 +166,7 @@ export class PtySessionManager {
         buffer: [],
         readCursor: 0,
         bufferTruncated: false,
+        scanSafetyInputLine: "",
         droppedBytes: 0,
         idleTimer: null,
         lifetimeTimer: null,

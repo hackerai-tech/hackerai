@@ -65,6 +65,7 @@ import {
   terminalInspectionMatches,
 } from "@/lib/chat/agent-auto-review-evidence";
 import { isLocalCommandRelayUnsubscribedError } from "./utils/local-sandbox-errors";
+import { enforceCloudScanSafety } from "./utils/cloud-scan-safety";
 
 const DEFAULT_STREAM_TIMEOUT_SECONDS =
   RUN_TERMINAL_DEFAULT_STREAM_TIMEOUT_SECONDS;
@@ -370,10 +371,36 @@ export const createRunTerminalCmd = (context: ToolContext) => {
         return result;
       };
 
+      const enforceAwsCloudScanGuard = async (
+        sandbox: Awaited<
+          ReturnType<typeof getApprovedExecutionSandbox>
+        >["sandbox"],
+      ) => {
+        const safety = await enforceCloudScanSafety({
+          command,
+          sandbox,
+          context,
+          toolCallId,
+          source: "terminal_exec",
+        });
+        if (!safety.blocked) return null;
+        return {
+          result: {
+            output: "",
+            exitCode: 126,
+            error: safety.error,
+            cloudScanSafetyBlocked: true,
+            cloudSessionTerminationStatus: safety.terminationStatus,
+          },
+        };
+      };
+
       // ─── Interactive PTY exec branch ─────────────────────────────────
       if (interactive) {
         try {
           const { sandbox } = await getApprovedExecutionSandbox();
+          const cloudScanBlock = await enforceAwsCloudScanGuard(sandbox);
+          if (cloudScanBlock) return cloudScanBlock;
           const isCentrifugo = isCentrifugoSandbox(sandbox);
           const isE2B = isE2BSandbox(sandbox);
 
@@ -513,6 +540,8 @@ export const createRunTerminalCmd = (context: ToolContext) => {
       try {
         // Get fresh sandbox and verify it's ready
         const { sandbox } = await getApprovedExecutionSandbox();
+        const cloudScanBlock = await enforceAwsCloudScanGuard(sandbox);
+        if (cloudScanBlock) return cloudScanBlock;
 
         const executeWithLocalRelayRecovery = async (
           sandboxInstance: typeof sandbox,

@@ -271,6 +271,31 @@ Commands run directly on the host OS "workstation" without Docker isolation. Be 
     );
   });
 
+  it("routes high-throughput AWS Cloud scans to Desktop or Remote", async () => {
+    const prompt = await systemPrompt(
+      "user_123",
+      "agent",
+      "pro",
+      "agent-model",
+      null,
+      null,
+      "full_access",
+      false,
+      "aws-lambda-microvm",
+    );
+
+    expect(prompt).toContain("Cloud egress safeguard:");
+    expect(prompt).toContain(
+      "bounded nmap and naabu port scans of one target and at most 1,000 ports",
+    );
+    expect(prompt).toContain("CIDRs broader than one host");
+    expect(prompt).toContain("full-port sweeps");
+    expect(prompt).toContain("HackerAI Desktop or Remote Control");
+    expect(prompt).toContain(
+      "Cloud connection is closed and MicroVM termination is attempted automatically",
+    );
+  });
+
   it("adds a compact finding quality contract in cloud and local agent modes", async () => {
     const cloudPrompt = await systemPrompt(
       "user_123",
