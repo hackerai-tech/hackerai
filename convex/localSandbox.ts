@@ -100,7 +100,9 @@ async function collectConnectedLocalConnections(
         .collect(),
     ),
   );
-  return groups.flat();
+  return groups
+    .flat()
+    .sort((left, right) => left._creationTime - right._creationTime);
 }
 
 export const getToken = mutation({
