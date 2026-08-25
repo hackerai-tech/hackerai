@@ -932,6 +932,7 @@ export const listCloudSessionsForReconciliation = query({
   },
 });
 
+/** Fail-closed ownership and activity gate for scheduled orphan cleanup. */
 export const getCloudSessionOrphanCleanupEligibility = query({
   args: {
     serviceKey: v.string(),

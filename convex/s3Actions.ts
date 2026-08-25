@@ -136,6 +136,7 @@ export const getMicrovmWorkspaceDownloadUrlAction = action({
           sourceRegion,
           target,
           lastModifiedMs: metadata.lastModifiedMs,
+          eTag: metadata.eTag,
         };
       }),
     );
@@ -156,12 +157,26 @@ export const getMicrovmWorkspaceDownloadUrlAction = action({
     });
     const restoreTarget = getMicrovmWorkspaceS3Target(args.region);
     if (latest.sourceRegion !== args.region) {
-      await copyS3Object(s3Key, latest.target, restoreTarget);
-      convexLogger.info("microvm_workspace_copied_to_restore_region", {
+      const destination = candidates.find(
+        (candidate) => candidate?.sourceRegion === args.region,
+      );
+      if (destination && !destination.eTag) {
+        throw new Error(
+          `S3 workspace metadata in ${args.region} is missing ETag`,
+        );
+      }
+      const result = await copyS3Object(
+        s3Key,
+        latest.target,
+        restoreTarget,
+        destination ? { ifMatch: destination.eTag! } : { ifNoneMatch: "*" },
+      );
+      convexLogger.info("microvm_workspace_restore_localized", {
         service: "microvm_workspace",
         environment: process.env.CONVEX_CLOUD_URL ? "cloud" : "unknown",
         source_region: latest.sourceRegion,
         destination_region: args.region,
+        outcome: result.copied ? "copied" : "destination_changed",
       });
     }
     return generateS3DownloadUrl(s3Key, restoreTarget);

@@ -125,6 +125,7 @@ export type AwsLambdaMicrovmReconciliationSummary = {
   orphanCleanupEligible: number;
   orphanCleanupSuspended: number;
   orphanCleanupTerminated: number;
+  orphanCleanupProtected: number;
   orphanCleanupFailures: number;
 };
 
@@ -144,6 +145,7 @@ export type AwsLambdaMicrovmSuspensionSummary = {
   terminated: number;
   alreadyGone: number;
   workspacesSaved: number;
+  ownershipProtected: number;
 };
 
 type AwsLambdaMicrovmConfig = {
@@ -668,6 +670,20 @@ async function recordCloudMicrovmState(
       },
     ),
   );
+}
+
+/** Read the authoritative Convex ownership gate immediately before cleanup. */
+async function getCloudSessionOrphanCleanupEligibility(args: {
+  serviceKey: string;
+  userId: string;
+  sessionId: string;
+  microvmId: string;
+  staleBeforeMs: number;
+}): Promise<CloudSessionOrphanCleanupEligibility> {
+  return (await getConvexClient().query(
+    api.localSandbox.getCloudSessionOrphanCleanupEligibility,
+    args,
+  )) as CloudSessionOrphanCleanupEligibility;
 }
 
 function asAwsMicrovmState(value: unknown): AwsMicrovmState | undefined {
@@ -1932,7 +1948,10 @@ export async function terminateAwsLambdaMicrovmForUser(
  */
 export async function suspendAwsLambdaMicrovmsForUser(
   userId: string,
-  options: { sessionId?: string } = {},
+  options: {
+    sessionId?: string;
+    orphanCleanup?: { microvmId: string; staleBeforeMs: number };
+  } = {},
 ): Promise<AwsLambdaMicrovmSuspensionSummary> {
   const serviceKey = required("CONVEX_SERVICE_ROLE_KEY");
   const activeSessions = (await getConvexClient().query(
@@ -1954,6 +1973,7 @@ export async function suspendAwsLambdaMicrovmsForUser(
     terminated: 0,
     alreadyGone: 0,
     workspacesSaved: 0,
+    ownershipProtected: 0,
   };
   const failures: unknown[] = [];
 
@@ -2070,6 +2090,42 @@ export async function suspendAwsLambdaMicrovmsForUser(
         region: session.region,
         duration_ms: Math.round(performance.now() - startedAt),
       });
+
+      if (options.orphanCleanup) {
+        let eligibility: CloudSessionOrphanCleanupEligibility;
+        try {
+          eligibility = await getCloudSessionOrphanCleanupEligibility({
+            serviceKey,
+            userId,
+            sessionId: session.sessionId,
+            microvmId: options.orphanCleanup.microvmId,
+            staleBeforeMs: options.orphanCleanup.staleBeforeMs,
+          });
+        } catch (error) {
+          failures.push(error);
+          log("warn", "cloud_sandbox_orphan_cleanup_recheck_failed", {
+            user_id: userId,
+            session_id: session.sessionId,
+            microvm_id: microvmId,
+            region: session.region,
+            failure_code: failureCode(error),
+            ...errorLogFields(error),
+          });
+          continue;
+        }
+        if (!eligibility.eligible) {
+          summary.ownershipProtected++;
+          log("info", "cloud_sandbox_orphan_cleanup_skipped", {
+            user_id: userId,
+            session_id: session.sessionId,
+            microvm_id: microvmId,
+            region: session.region,
+            reason: eligibility.reason,
+            phase: "post_snapshot",
+          });
+          continue;
+        }
+      }
 
       const response = await getClient(session.region).send(
         new SuspendMicrovmCommand({ microvmIdentifier: microvmId }),
@@ -2211,6 +2267,7 @@ export async function reconcileAwsLambdaMicrovmSessions(
     orphanCleanupEligible: 0,
     orphanCleanupSuspended: 0,
     orphanCleanupTerminated: 0,
+    orphanCleanupProtected: 0,
     orphanCleanupFailures: 0,
   };
   const errors: unknown[] = [];
@@ -2292,16 +2349,14 @@ export async function reconcileAwsLambdaMicrovmSessions(
   for (const { userId, session } of runningCandidates.values()) {
     if (!session.microvmId) continue;
     try {
-      const eligibility = (await getConvexClient().query(
-        api.localSandbox.getCloudSessionOrphanCleanupEligibility,
-        {
-          serviceKey,
-          userId,
-          sessionId: session.sessionId,
-          microvmId: session.microvmId,
-          staleBeforeMs: Date.now() - CONFIRMED_ORPHAN_STALE_MS,
-        },
-      )) as CloudSessionOrphanCleanupEligibility;
+      const staleBeforeMs = Date.now() - CONFIRMED_ORPHAN_STALE_MS;
+      const eligibility = await getCloudSessionOrphanCleanupEligibility({
+        serviceKey,
+        userId,
+        sessionId: session.sessionId,
+        microvmId: session.microvmId,
+        staleBeforeMs,
+      });
       summary.orphanCleanupChecked++;
       if (!eligibility.eligible) {
         log("debug", "cloud_sandbox_orphan_cleanup_skipped", {
@@ -2322,11 +2377,13 @@ export async function reconcileAwsLambdaMicrovmSessions(
       orphanCleanupBudget--;
       const stopped = await suspendAwsLambdaMicrovmsForUser(userId, {
         sessionId: session.sessionId,
+        orphanCleanup: { microvmId: session.microvmId, staleBeforeMs },
       });
       summary.orphanCleanupSuspended +=
         stopped.suspended + stopped.alreadySuspended;
       summary.orphanCleanupTerminated +=
         stopped.terminated + stopped.alreadyGone;
+      summary.orphanCleanupProtected += stopped.ownershipProtected;
       log("info", "cloud_sandbox_confirmed_orphan_cleanup_completed", {
         user_id: userId,
         session_id: session.sessionId,
@@ -2339,6 +2396,7 @@ export async function reconcileAwsLambdaMicrovmSessions(
         sessions_total: stopped.total,
         sessions_suspended: stopped.suspended + stopped.alreadySuspended,
         sessions_terminated: stopped.terminated + stopped.alreadyGone,
+        sessions_ownership_protected: stopped.ownershipProtected,
         workspaces_saved: stopped.workspacesSaved,
       });
     } catch (error) {

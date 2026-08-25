@@ -195,7 +195,9 @@ suspending the VM. A fresh replacement checks all three regional objects and
 selects the newest one using S3's server-side `LastModified` timestamps. If it
 came from another region, S3 copies it into the replacement VM's regional
 bucket before the guest downloads it, so restore traffic can use the local
-gateway endpoint instead of NAT. Near-lifetime replacement also snapshots
+gateway endpoint instead of NAT. The copy is conditional on the destination
+object version observed during selection, so a concurrent local checkpoint wins
+instead of being overwritten by an older restore. Near-lifetime replacement also snapshots
 before terminating the old VM. While a VM is running, a guest-side checkpoint
 process fingerprints the workspace before archiving. Changed workspaces
 checkpoint every five minutes; an unchanged workspace skips compression and
@@ -269,9 +271,11 @@ Optional controls:
   same snapshot-backed suspend after 15 minutes without a connection heartbeat
   and after Convex confirms that the user has neither an active parent run nor
   an active subagent. Reconciliation runs are serialized and clean up at most
-  one confirmed orphan per sweep so long snapshots cannot overlap. Missing
-  ownership evidence fails closed and leaves the VM for the platform lifecycle
-  backstop.
+  one confirmed orphan per sweep so long snapshots cannot overlap; queued runs
+  expire after ten minutes instead of accumulating. Ownership is checked again
+  after the forced snapshot and immediately before suspension; reconnecting
+  during the snapshot keeps the VM running. Missing ownership evidence fails
+  closed and leaves the VM for the platform lifecycle backstop.
 
 Never expose these variables with a `NEXT_PUBLIC_` prefix. AWS endpoint tokens
 are generated on demand by the Trigger.dev runtime, restricted to port 9000,

@@ -500,6 +500,7 @@ describe("AWS Lambda MicroVM development logging", () => {
       orphanCleanupEligible: 0,
       orphanCleanupSuspended: 0,
       orphanCleanupTerminated: 0,
+      orphanCleanupProtected: 0,
       orphanCleanupFailures: 0,
     });
     expect(mockMutation.mock.calls).toEqual(
@@ -545,7 +546,12 @@ describe("AWS Lambda MicroVM development logging", () => {
         reason: "eligible",
         lastActivityAt: staleAt,
       })
-      .mockResolvedValueOnce([session]);
+      .mockResolvedValueOnce([session])
+      .mockResolvedValueOnce({
+        eligible: true,
+        reason: "eligible",
+        lastActivityAt: staleAt,
+      });
     mockSend
       .mockResolvedValueOnce({
         state: "RUNNING",
@@ -572,6 +578,7 @@ describe("AWS Lambda MicroVM development logging", () => {
       orphanCleanupEligible: 1,
       orphanCleanupSuspended: 1,
       orphanCleanupTerminated: 0,
+      orphanCleanupProtected: 0,
       orphanCleanupFailures: 0,
     });
     expect(mockSnapshotWorkspace).toHaveBeenCalledWith(
@@ -581,6 +588,72 @@ describe("AWS Lambda MicroVM development logging", () => {
       }),
     );
     expect(mockSend.mock.calls).toHaveLength(3);
+    infoSpy.mockRestore();
+  });
+
+  it("keeps a stale MicroVM running when an owner reconnects during its snapshot", async () => {
+    const staleAt = Date.now() - 30 * 60 * 1_000;
+    const session = {
+      sessionId: "session-reactivated",
+      status: "active" as const,
+      microvmId: "microvm-reactivated",
+      region: "us-east-1",
+      imageIdentifier: process.env.AWS_LAMBDA_MICROVM_IMAGE_ID,
+      imageVersion: "6.0",
+      createdAt: staleAt,
+      updatedAt: staleAt,
+      lastConnectedAt: staleAt,
+      bootstrapExpiresAt: Date.now() + 60_000,
+    };
+    mockQuery
+      .mockResolvedValueOnce([{ userId: "user-reactivated", session }])
+      .mockResolvedValueOnce({
+        eligible: true,
+        reason: "eligible",
+        lastActivityAt: staleAt,
+      })
+      .mockResolvedValueOnce([session])
+      .mockResolvedValueOnce({
+        eligible: false,
+        reason: "active_parent_run",
+        lastActivityAt: Date.now(),
+      });
+    mockSend
+      .mockResolvedValueOnce({
+        state: "RUNNING",
+        endpoint: "microvm-reactivated.example.test",
+      })
+      .mockResolvedValueOnce({
+        state: "RUNNING",
+        endpoint: "microvm-reactivated.example.test",
+      });
+    mockMutation.mockResolvedValue(true);
+    const infoSpy = jest.spyOn(console, "info").mockImplementation();
+
+    await expect(reconcileAwsLambdaMicrovmSessions()).resolves.toEqual({
+      checked: 1,
+      running: 1,
+      suspended: 0,
+      terminal: 0,
+      failures: 0,
+      orphanCleanupChecked: 1,
+      orphanCleanupEligible: 1,
+      orphanCleanupSuspended: 0,
+      orphanCleanupTerminated: 0,
+      orphanCleanupProtected: 1,
+      orphanCleanupFailures: 0,
+    });
+    expect(mockSnapshotWorkspace).toHaveBeenCalledTimes(1);
+    expect(mockSend).toHaveBeenCalledTimes(2);
+    expect(
+      infoSpy.mock.calls
+        .map(([payload]) => JSON.parse(payload as string))
+        .find(
+          (payload) =>
+            payload.event === "cloud_sandbox_orphan_cleanup_skipped" &&
+            payload.phase === "post_snapshot",
+        ),
+    ).toMatchObject({ reason: "active_parent_run" });
     infoSpy.mockRestore();
   });
 
@@ -1404,6 +1477,7 @@ describe("AWS Lambda MicroVM development logging", () => {
         terminated: 0,
         alreadyGone: 0,
         workspacesSaved: 1,
+        ownershipProtected: 0,
       },
     );
 
@@ -1454,6 +1528,7 @@ describe("AWS Lambda MicroVM development logging", () => {
       terminated: 0,
       alreadyGone: 0,
       workspacesSaved: 1,
+      ownershipProtected: 0,
     });
 
     expect(mockSnapshotWorkspace).toHaveBeenCalledTimes(1);
@@ -1534,6 +1609,7 @@ describe("AWS Lambda MicroVM development logging", () => {
       terminated: 1,
       alreadyGone: 0,
       workspacesSaved: 1,
+      ownershipProtected: 0,
     });
     expect(mockSend).toHaveBeenCalledTimes(3);
     expect(mockMutation).toHaveBeenCalledWith(

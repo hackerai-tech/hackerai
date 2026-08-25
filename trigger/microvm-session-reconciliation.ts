@@ -12,6 +12,7 @@ export const reconcileAwsLambdaMicrovmSessionState = schedules.task({
     name: "aws-lambda-microvm-reconciliation",
     concurrencyLimit: 1,
   },
+  ttl: "10m",
   retry: {
     maxAttempts: 3,
     factor: 2,
