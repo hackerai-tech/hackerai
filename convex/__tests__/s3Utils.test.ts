@@ -341,7 +341,7 @@ describe("s3Utils", () => {
           { region: "eu-west-1", bucketName: "workspace-eu" },
           { ifMatch: '"destination-etag"' },
         ),
-      ).resolves.toEqual({ copied: true });
+      ).resolves.toEqual({ outcome: "copied" });
 
       expect(S3Client).toHaveBeenCalledWith(
         expect.objectContaining({ region: "eu-west-1" }),
@@ -375,13 +375,13 @@ describe("s3Utils", () => {
           { region: "us-east-1", bucketName: "workspace-east" },
           { ifNoneMatch: "*" },
         ),
-      ).resolves.toEqual({ copied: false });
+      ).resolves.toEqual({ outcome: "destination_changed" });
       expect(CopyObjectCommand).toHaveBeenCalledWith(
         expect.objectContaining({ IfNoneMatch: "*" }),
       );
     });
 
-    it("propagates a conditional conflict when the destination may be absent", async () => {
+    it("returns a retryable result for a conditional copy conflict", async () => {
       const { S3Client } = await import("@aws-sdk/client-s3");
       const conflict = {
         name: "ConditionalRequestConflict",
@@ -400,7 +400,7 @@ describe("s3Utils", () => {
           { region: "us-east-1", bucketName: "workspace-east" },
           { ifNoneMatch: "*" },
         ),
-      ).rejects.toBe(conflict);
+      ).resolves.toEqual({ outcome: "retryable_conflict" });
     });
   });
 });

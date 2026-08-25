@@ -80,6 +80,8 @@ const microvmWorkspaceRegionValidator = v.union(
     ...VLiteral<MicrovmWorkspaceRegion>[],
   ]),
 );
+const MICROVM_WORKSPACE_LOCALIZATION_ATTEMPTS = 3;
+const MICROVM_WORKSPACE_LOCALIZATION_RETRY_MS = 100;
 
 function getMicrovmWorkspaceS3Target(
   region: MicrovmWorkspaceRegion,
@@ -119,44 +121,54 @@ export const getMicrovmWorkspaceDownloadUrlAction = action({
   handler: async (_ctx, args) => {
     validateServiceKey(args.serviceKey);
     const s3Key = getMicrovmWorkspaceS3Key(args.userId);
-    const candidates = await Promise.all(
-      MICROVM_WORKSPACE_REGIONS.map(async (sourceRegion) => {
-        const target = getMicrovmWorkspaceS3Target(sourceRegion);
-        const metadata = await getS3ObjectMetadata(s3Key, target);
-        if (!metadata.exists) return null;
-        if (
-          metadata.lastModifiedMs === null ||
-          !Number.isFinite(metadata.lastModifiedMs)
-        ) {
-          throw new Error(
-            `S3 workspace metadata in ${sourceRegion} is missing LastModified`,
-          );
-        }
-        return {
-          sourceRegion,
-          target,
-          lastModifiedMs: metadata.lastModifiedMs,
-          eTag: metadata.eTag,
-        };
-      }),
-    );
-    const available = candidates.filter(
-      (candidate): candidate is NonNullable<typeof candidate> =>
-        candidate !== null,
-    );
-    if (available.length === 0) return null;
-    const latest = available.reduce((selected, candidate) => {
-      if (candidate.lastModifiedMs > selected.lastModifiedMs) return candidate;
-      if (
-        candidate.lastModifiedMs === selected.lastModifiedMs &&
-        candidate.sourceRegion === args.region
-      ) {
-        return candidate;
-      }
-      return selected;
-    });
     const restoreTarget = getMicrovmWorkspaceS3Target(args.region);
-    if (latest.sourceRegion !== args.region) {
+    for (
+      let attempt = 1;
+      attempt <= MICROVM_WORKSPACE_LOCALIZATION_ATTEMPTS;
+      attempt++
+    ) {
+      const candidates = await Promise.all(
+        MICROVM_WORKSPACE_REGIONS.map(async (sourceRegion) => {
+          const target = getMicrovmWorkspaceS3Target(sourceRegion);
+          const metadata = await getS3ObjectMetadata(s3Key, target);
+          if (!metadata.exists) return null;
+          if (
+            metadata.lastModifiedMs === null ||
+            !Number.isFinite(metadata.lastModifiedMs)
+          ) {
+            throw new Error(
+              `S3 workspace metadata in ${sourceRegion} is missing LastModified`,
+            );
+          }
+          return {
+            sourceRegion,
+            target,
+            lastModifiedMs: metadata.lastModifiedMs,
+            eTag: metadata.eTag,
+          };
+        }),
+      );
+      const available = candidates.filter(
+        (candidate): candidate is NonNullable<typeof candidate> =>
+          candidate !== null,
+      );
+      if (available.length === 0) return null;
+      const latest = available.reduce((selected, candidate) => {
+        if (candidate.lastModifiedMs > selected.lastModifiedMs) {
+          return candidate;
+        }
+        if (
+          candidate.lastModifiedMs === selected.lastModifiedMs &&
+          candidate.sourceRegion === args.region
+        ) {
+          return candidate;
+        }
+        return selected;
+      });
+      if (latest.sourceRegion === args.region) {
+        return generateS3DownloadUrl(s3Key, restoreTarget);
+      }
+
       const destination = candidates.find(
         (candidate) => candidate?.sourceRegion === args.region,
       );
@@ -171,15 +183,36 @@ export const getMicrovmWorkspaceDownloadUrlAction = action({
         restoreTarget,
         destination ? { ifMatch: destination.eTag! } : { ifNoneMatch: "*" },
       );
-      convexLogger.info("microvm_workspace_restore_localized", {
+      const logFields = {
         service: "microvm_workspace",
         environment: process.env.CONVEX_CLOUD_URL ? "cloud" : "unknown",
         source_region: latest.sourceRegion,
         destination_region: args.region,
-        outcome: result.copied ? "copied" : "destination_changed",
-      });
+        attempt,
+        outcome: result.outcome,
+      };
+      if (result.outcome === "retryable_conflict") {
+        convexLogger.warn(
+          "microvm_workspace_restore_localization_conflict",
+          logFields,
+        );
+        if (attempt < MICROVM_WORKSPACE_LOCALIZATION_ATTEMPTS) {
+          await new Promise((resolve) =>
+            setTimeout(
+              resolve,
+              MICROVM_WORKSPACE_LOCALIZATION_RETRY_MS * attempt,
+            ),
+          );
+          continue;
+        }
+        throw new Error(
+          `S3 workspace localization remained conflicted after ${attempt} attempts`,
+        );
+      }
+      convexLogger.info("microvm_workspace_restore_localized", logFields);
+      return generateS3DownloadUrl(s3Key, restoreTarget);
     }
-    return generateS3DownloadUrl(s3Key, restoreTarget);
+    throw new Error("S3 workspace localization exhausted its retry budget");
   },
 });
 

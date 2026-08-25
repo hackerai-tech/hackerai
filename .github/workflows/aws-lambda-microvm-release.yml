@@ -20,6 +20,11 @@ on:
       - "scripts/lib/aws-microvm-release-manifest.ts"
       - "scripts/lib/trigger-microvm-release-env.ts"
       - "lib/ai/tools/utils/aws-lambda-microvm-release.ts"
+      - "lib/ai/tools/utils/aws-lambda-microvm-workspace.ts"
+      - "lib/ai/tools/utils/aws-lambda-microvm.ts"
+      - "lib/ai/tools/utils/cloud-scan-safety.ts"
+      - "convex/s3Actions.ts"
+      - "convex/s3Utils.ts"
       - "package.json"
       - "pnpm-lock.yaml"
   workflow_dispatch:

@@ -265,6 +265,8 @@ function errorLogFields(
       ? (error as {
           name?: unknown;
           message?: unknown;
+          workspaceRestoreStage?: unknown;
+          cause?: unknown;
           $metadata?: {
             requestId?: unknown;
             httpStatusCode?: unknown;
@@ -272,6 +274,10 @@ function errorLogFields(
             totalRetryDelay?: unknown;
           };
         })
+      : null;
+  const causeRecord =
+    record?.cause && typeof record.cause === "object"
+      ? (record.cause as { name?: unknown; message?: unknown })
       : null;
   const rawMessage =
     error instanceof Error
@@ -290,6 +296,20 @@ function errorLogFields(
     error_message: rawMessage
       ? redactErrorMessage(rawMessage, additionalSecrets)
       : null,
+    workspace_restore_stage:
+      typeof record?.workspaceRestoreStage === "string"
+        ? record.workspaceRestoreStage
+        : null,
+    workspace_restore_cause_name:
+      typeof record?.workspaceRestoreStage === "string" &&
+      typeof causeRecord?.name === "string"
+        ? causeRecord.name
+        : null,
+    workspace_restore_cause_message:
+      typeof record?.workspaceRestoreStage === "string" &&
+      typeof causeRecord?.message === "string"
+        ? redactErrorMessage(causeRecord.message, additionalSecrets)
+        : null,
     aws_request_id:
       typeof record?.$metadata?.requestId === "string"
         ? record.$metadata.requestId
@@ -511,6 +531,9 @@ function isAwsNotFound(error: unknown): boolean {
 
 function failureCode(error: unknown): string {
   if (!(error instanceof Error)) return "unknown";
+  if (error.name === "AwsLambdaMicrovmWorkspaceRestoreError") {
+    return "workspace_restore_failed";
+  }
   if (error.name === "AccessDeniedException") return "access_denied";
   if (error.name === "ServiceQuotaExceededException") return "quota_exceeded";
   if (

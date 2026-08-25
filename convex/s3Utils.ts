@@ -216,7 +216,9 @@ export async function copyS3Object(
   source: S3ObjectTarget,
   destination: S3ObjectTarget,
   destinationCondition: { ifMatch: string } | { ifNoneMatch: "*" },
-): Promise<{ copied: boolean }> {
+): Promise<{
+  outcome: "copied" | "destination_changed" | "retryable_conflict";
+}> {
   const s3Client = getS3Client(destination.region);
   const encodedKey = s3Key.split("/").map(encodeURIComponent).join("/");
   try {
@@ -230,7 +232,7 @@ export async function copyS3Object(
           : { IfNoneMatch: "*" }),
       }),
     );
-    return { copied: true };
+    return { outcome: "copied" };
   } catch (error) {
     const statusCode =
       error && typeof error === "object"
@@ -238,7 +240,10 @@ export async function copyS3Object(
             ?.httpStatusCode
         : undefined;
     if (statusCode === 412) {
-      return { copied: false };
+      return { outcome: "destination_changed" };
+    }
+    if (statusCode === 409) {
+      return { outcome: "retryable_conflict" };
     }
     throw error;
   }

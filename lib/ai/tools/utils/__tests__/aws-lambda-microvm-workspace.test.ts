@@ -7,6 +7,7 @@ jest.mock("@/lib/db/convex-client", () => ({
 }));
 
 import {
+  AwsLambdaMicrovmWorkspaceRestoreError,
   buildWorkspaceCheckpointCommand,
   buildWorkspaceCheckpointScript,
   buildWorkspaceRestoreCommand,
@@ -82,6 +83,25 @@ describe("AWS Lambda MicroVM durable workspace", () => {
     const command = buildWorkspaceRestoreCommand(null);
     expect(command).not.toContain("curl ");
     expect(command).toContain('touch "$ready"');
+  });
+
+  it("identifies the Convex stage that prevents workspace restoration", async () => {
+    const convexError = new Error("[Request ID: test] Server Error");
+    mockAction.mockRejectedValueOnce(convexError);
+
+    const error = await restoreAwsLambdaMicrovmWorkspace({
+      userId: "user_123",
+      serviceKey: "service-key",
+      region: "us-east-1",
+      sandbox: { commands: { run: jest.fn() } },
+    }).catch((caught) => caught);
+
+    expect(error).toBeInstanceOf(AwsLambdaMicrovmWorkspaceRestoreError);
+    expect(error).toMatchObject({
+      name: "AwsLambdaMicrovmWorkspaceRestoreError",
+      workspaceRestoreStage: "get_download_url",
+      cause: convexError,
+    });
   });
 
   it("snapshots source files while excluding rebuildable dependency caches", async () => {

@@ -706,6 +706,70 @@ describe("AWS Lambda MicroVM development logging", () => {
     debugSpy.mockRestore();
   });
 
+  it("classifies and logs the exact workspace restore stage", async () => {
+    mockMutation
+      .mockResolvedValueOnce({
+        created: true,
+        session: {
+          sessionId: "session-restore-failed",
+          status: "starting",
+          region: "us-east-1",
+          imageIdentifier: process.env.AWS_LAMBDA_MICROVM_IMAGE_ID,
+          imageVersion: "6.0",
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+          bootstrapExpiresAt: Date.now() + 60_000,
+        },
+        cleanupCandidates: [],
+      })
+      .mockResolvedValueOnce(true)
+      .mockResolvedValueOnce(true);
+    mockSend
+      .mockResolvedValueOnce({
+        microvmId: "microvm-restore-failed",
+        state: "RUNNING",
+        endpoint: "microvm-restore-failed.example.test",
+        $metadata: { requestId: "run-restore-failed", httpStatusCode: 200 },
+      })
+      .mockResolvedValueOnce({ $metadata: { httpStatusCode: 200 } });
+    const restoreError = Object.assign(
+      new Error("Cloud workspace restore failed during get_download_url"),
+      {
+        name: "AwsLambdaMicrovmWorkspaceRestoreError",
+        workspaceRestoreStage: "get_download_url",
+        cause: new Error("[Request ID: test-request] Server Error"),
+      },
+    );
+    mockRestoreWorkspace.mockRejectedValueOnce(restoreError);
+    const errorSpy = jest.spyOn(console, "error").mockImplementation();
+    const debugSpy = jest.spyOn(console, "debug").mockImplementation();
+
+    await expect(
+      ensureAwsLambdaMicrovmConnection("user-restore-failed"),
+    ).rejects.toThrow(
+      "Failed creating AWS Lambda MicroVM sandbox (workspace_restore_failed)",
+    );
+
+    const failureEvent = JSON.parse(
+      errorSpy.mock.calls.at(-1)?.[0] as string,
+    ) as Record<string, unknown>;
+    expect(failureEvent).toMatchObject({
+      event: "cloud_sandbox_creation_failed",
+      failure_stage: "restore_workspace",
+      failure_code: "workspace_restore_failed",
+      error_name: "AwsLambdaMicrovmWorkspaceRestoreError",
+      workspace_restore_stage: "get_download_url",
+      workspace_restore_cause_name: "Error",
+      workspace_restore_cause_message:
+        "[Request ID: test-request] Server Error",
+      regional_failover_eligible: false,
+      primary_cleanup_confirmed: true,
+    });
+
+    errorSpy.mockRestore();
+    debugSpy.mockRestore();
+  });
+
   it("logs the rejected AWS phase and metadata without exposing tokens", async () => {
     const bootstrapToken = "bootstrap-token-that-must-not-leak";
     mockMutation

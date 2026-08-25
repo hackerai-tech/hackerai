@@ -53,7 +53,7 @@ describe("s3Actions", () => {
     const { copyS3Object } = await import("../s3Utils");
     (
       copyS3Object as jest.MockedFunction<typeof copyS3Object>
-    ).mockResolvedValue({ copied: true });
+    ).mockResolvedValue({ outcome: "copied" });
 
     // Setup environment variables
     process.env.AWS_S3_ACCESS_KEY_ID = "test-access-key";
@@ -276,7 +276,7 @@ describe("s3Actions", () => {
         .mockResolvedValueOnce({ exists: false });
       (
         copyS3Object as jest.MockedFunction<typeof copyS3Object>
-      ).mockResolvedValue({ copied: false });
+      ).mockResolvedValue({ outcome: "destination_changed" });
       (
         generateS3DownloadUrl as jest.MockedFunction<
           typeof generateS3DownloadUrl
@@ -298,6 +298,61 @@ describe("s3Actions", () => {
         { region: "us-east-1", bucketName: "workspace-east" },
         { ifMatch: '"east-100"' },
       );
+    });
+
+    it("re-reads regional metadata after a localization conflict", async () => {
+      const { copyS3Object, getS3ObjectMetadata, generateS3DownloadUrl } =
+        await import("../s3Utils");
+      (getS3ObjectMetadata as jest.MockedFunction<typeof getS3ObjectMetadata>)
+        .mockResolvedValueOnce({
+          exists: true,
+          lastModifiedMs: 100,
+          eTag: '"east-100"',
+        })
+        .mockResolvedValueOnce({
+          exists: true,
+          lastModifiedMs: 300,
+          eTag: '"west-300"',
+        })
+        .mockResolvedValueOnce({ exists: false })
+        .mockResolvedValueOnce({
+          exists: true,
+          lastModifiedMs: 400,
+          eTag: '"east-400"',
+        })
+        .mockResolvedValueOnce({
+          exists: true,
+          lastModifiedMs: 300,
+          eTag: '"west-300"',
+        })
+        .mockResolvedValueOnce({ exists: false });
+      (
+        copyS3Object as jest.MockedFunction<typeof copyS3Object>
+      ).mockResolvedValueOnce({ outcome: "retryable_conflict" });
+      (
+        generateS3DownloadUrl as jest.MockedFunction<
+          typeof generateS3DownloadUrl
+        >
+      ).mockResolvedValue("https://s3.example/current-local-checkpoint");
+      const warnSpy = jest.spyOn(console, "warn").mockImplementation();
+      const { getMicrovmWorkspaceDownloadUrlAction } =
+        await import("../s3Actions");
+
+      await expect(
+        getMicrovmWorkspaceDownloadUrlAction.handler({} as any, {
+          serviceKey: "service-key",
+          userId: "user_123",
+          region: "us-east-1",
+        }),
+      ).resolves.toBe("https://s3.example/current-local-checkpoint");
+      expect(getS3ObjectMetadata).toHaveBeenCalledTimes(6);
+      expect(copyS3Object).toHaveBeenCalledTimes(1);
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining(
+          '"event":"microvm_workspace_restore_localization_conflict"',
+        ),
+      );
+      warnSpy.mockRestore();
     });
 
     it("fails closed when a destination ETag is unavailable for a conditional copy", async () => {

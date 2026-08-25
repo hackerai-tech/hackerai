@@ -39,6 +39,34 @@ type WorkspaceSandbox = {
   };
 };
 
+type WorkspaceRestoreStage =
+  | "get_download_url"
+  | "restore_archive"
+  | "get_upload_url"
+  | "start_checkpoint";
+
+export class AwsLambdaMicrovmWorkspaceRestoreError extends Error {
+  readonly workspaceRestoreStage: WorkspaceRestoreStage;
+
+  constructor(stage: WorkspaceRestoreStage, cause: unknown) {
+    super(`Cloud workspace restore failed during ${stage}`, { cause });
+    this.name = "AwsLambdaMicrovmWorkspaceRestoreError";
+    this.workspaceRestoreStage = stage;
+  }
+}
+
+async function runRestoreStage<T>(
+  stage: WorkspaceRestoreStage,
+  operation: () => Promise<T>,
+): Promise<T> {
+  try {
+    return await operation();
+  } catch (error) {
+    if (error instanceof AwsLambdaMicrovmWorkspaceRestoreError) throw error;
+    throw new AwsLambdaMicrovmWorkspaceRestoreError(stage, error);
+  }
+}
+
 function shellQuote(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`;
 }
@@ -218,35 +246,43 @@ export async function restoreAwsLambdaMicrovmWorkspace(args: {
   region: AwsLambdaMicrovmRegion;
   sandbox: WorkspaceSandbox;
 }): Promise<{ snapshotAvailable: boolean }> {
-  const downloadUrl = await getConvexClient().action(
-    api.s3Actions.getMicrovmWorkspaceDownloadUrlAction,
-    {
-      serviceKey: args.serviceKey,
-      userId: args.userId,
-      region: args.region,
-    },
+  const downloadUrl = await runRestoreStage("get_download_url", () =>
+    getConvexClient().action(
+      api.s3Actions.getMicrovmWorkspaceDownloadUrlAction,
+      {
+        serviceKey: args.serviceKey,
+        userId: args.userId,
+        region: args.region,
+      },
+    ),
   );
-  const result = await args.sandbox.commands.run(
-    buildWorkspaceRestoreCommand(downloadUrl),
-    { timeoutMs: WORKSPACE_RESTORE_COMMAND_TIMEOUT_MS, displayName: "" },
-  );
-  if (result.exitCode !== 0) throw transferError("restore", result.exitCode);
+  await runRestoreStage("restore_archive", async () => {
+    const result = await args.sandbox.commands.run(
+      buildWorkspaceRestoreCommand(downloadUrl),
+      { timeoutMs: WORKSPACE_RESTORE_COMMAND_TIMEOUT_MS, displayName: "" },
+    );
+    if (result.exitCode !== 0) throw transferError("restore", result.exitCode);
+  });
 
-  const uploadUrl = await getConvexClient().action(
-    api.s3Actions.generateMicrovmWorkspaceUploadUrlAction,
-    {
-      serviceKey: args.serviceKey,
-      userId: args.userId,
-      region: args.region,
-    },
+  const uploadUrl = await runRestoreStage("get_upload_url", () =>
+    getConvexClient().action(
+      api.s3Actions.generateMicrovmWorkspaceUploadUrlAction,
+      {
+        serviceKey: args.serviceKey,
+        userId: args.userId,
+        region: args.region,
+      },
+    ),
   );
-  const checkpointResult = await args.sandbox.commands.run(
-    buildWorkspaceCheckpointCommand(uploadUrl),
-    { timeoutMs: WORKSPACE_TRANSFER_TIMEOUT_MS, displayName: "" },
-  );
-  if (checkpointResult.exitCode !== 0) {
-    throw transferError("checkpoint", checkpointResult.exitCode);
-  }
+  await runRestoreStage("start_checkpoint", async () => {
+    const checkpointResult = await args.sandbox.commands.run(
+      buildWorkspaceCheckpointCommand(uploadUrl),
+      { timeoutMs: WORKSPACE_TRANSFER_TIMEOUT_MS, displayName: "" },
+    );
+    if (checkpointResult.exitCode !== 0) {
+      throw transferError("checkpoint", checkpointResult.exitCode);
+    }
+  });
   return { snapshotAvailable: downloadUrl !== null };
 }
 
