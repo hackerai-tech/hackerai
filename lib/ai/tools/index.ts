@@ -49,6 +49,7 @@ import { phLogger } from "@/lib/posthog/server";
 import type { TriggerRunRegion } from "@/lib/api/trigger-region";
 import type { CloudSandboxAcquisitionContext } from "./utils/cloud-sandbox";
 import type { CloudSandboxProvider } from "./utils/cloud-sandbox-provider";
+import type { CloudSandboxProviderSelectionReason } from "./utils/cloud-sandbox-provider-circuit";
 
 export { isE2BSandbox };
 
@@ -58,6 +59,7 @@ export type CreateToolsRuntimePolicy = {
   ptyScopeId?: string;
   chargeSandboxRuntime?: boolean;
   cloudSandboxProvider?: CloudSandboxProvider;
+  cloudSandboxProviderSelectionReason?: CloudSandboxProviderSelectionReason;
   triggerRegion?: TriggerRunRegion;
 };
 
@@ -123,6 +125,7 @@ export const createTools = (
     triggerRegion: runtimePolicy.triggerRegion,
     runKind:
       runtimePolicy.chargeSandboxRuntime === false ? "subagent" : "parent",
+    providerSelectionReason: runtimePolicy.cloudSandboxProviderSelectionReason,
   };
 
   const trackSandboxUsage = (newSandbox: AnySandbox) => {
@@ -153,6 +156,8 @@ export const createTools = (
         chat_id: chatId,
         trigger_run_id: triggerRunId,
         provider,
+        provider_selection_reason:
+          runtimePolicy.cloudSandboxProviderSelectionReason ?? "configured",
         cloud_sandbox_transport:
           provider === "aws-lambda-microvm" ? "aws_websocket" : "e2b_sdk",
         subscription,
@@ -197,7 +202,7 @@ export const createTools = (
           provider === "aws-lambda-microvm"
             ? sandboxBootInfo?.failover_duration_ms
             : undefined,
-        cloud_sandbox_provider_event_version: 5,
+        cloud_sandbox_provider_event_version: 6,
       });
     }
   };

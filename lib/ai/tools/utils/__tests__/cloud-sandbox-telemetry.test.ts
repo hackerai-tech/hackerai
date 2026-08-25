@@ -1,4 +1,7 @@
 const mockEnsureSandboxConnection = jest.fn();
+const mockEnsureAwsLambdaMicrovmConnection = jest.fn();
+const mockRecordAwsSandboxAcquisitionFailure = jest.fn();
+const mockRecordAwsSandboxHalfOpenSuccess = jest.fn();
 const mockEvent = jest.fn();
 
 jest.mock("../sandbox", () => ({
@@ -10,9 +13,27 @@ jest.mock("@/lib/posthog/server", () => ({
   phLogger: { event: (...args: unknown[]) => mockEvent(...args) },
 }));
 
+jest.mock("../aws-lambda-microvm", () => ({
+  ensureAwsLambdaMicrovmConnection: (...args: unknown[]) =>
+    mockEnsureAwsLambdaMicrovmConnection(...args),
+}));
+
+jest.mock("../cloud-sandbox-provider-circuit", () => ({
+  recordAwsSandboxAcquisitionFailure: (...args: unknown[]) =>
+    mockRecordAwsSandboxAcquisitionFailure(...args),
+  recordAwsSandboxHalfOpenSuccess: (...args: unknown[]) =>
+    mockRecordAwsSandboxHalfOpenSuccess(...args),
+}));
+
 import { ensureCloudSandboxConnection } from "../cloud-sandbox";
 
 describe("cloud sandbox operational telemetry", () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockRecordAwsSandboxAcquisitionFailure.mockResolvedValue({ opened: false });
+    mockRecordAwsSandboxHalfOpenSuccess.mockResolvedValue(undefined);
+  });
+
   it("attributes acquisition failures without rollout properties", async () => {
     const failure = Object.assign(new Error("private target detail"), {
       name: "SandboxUnavailableError",
@@ -56,5 +77,58 @@ describe("cloud sandbox operational telemetry", () => {
     expect(JSON.stringify(mockEvent.mock.calls[0])).not.toContain(
       "private target detail",
     );
+  });
+
+  it("records only final AWS acquisition failures in the provider circuit", async () => {
+    const failure = Object.assign(new Error("denied"), {
+      name: "AccessDeniedException",
+    });
+    mockEnsureAwsLambdaMicrovmConnection.mockRejectedValueOnce(failure);
+
+    await expect(
+      ensureCloudSandboxConnection({
+        userId: "user-ultra",
+        setSandbox: jest.fn(),
+        context: {
+          provider: "aws-lambda-microvm",
+          providerSelectionReason: "primary_aws",
+          triggerRunId: "run-aws",
+        },
+      }),
+    ).rejects.toBe(failure);
+
+    expect(mockRecordAwsSandboxAcquisitionFailure).toHaveBeenCalledWith(
+      failure,
+      {
+        requestId: "run-aws",
+        source: "sandbox_acquisition",
+        halfOpenProbe: false,
+      },
+    );
+    expect(mockRecordAwsSandboxHalfOpenSuccess).not.toHaveBeenCalled();
+  });
+
+  it("closes a half-open circuit only after AWS acquisition succeeds", async () => {
+    const sandbox = { getConnectionId: () => "microvm-1" };
+    mockEnsureAwsLambdaMicrovmConnection.mockResolvedValueOnce(sandbox);
+    const setSandbox = jest.fn();
+
+    await expect(
+      ensureCloudSandboxConnection({
+        userId: "user-ultra",
+        setSandbox,
+        context: {
+          provider: "aws-lambda-microvm",
+          providerSelectionReason: "circuit_half_open_probe",
+          triggerRunId: "run-probe",
+        },
+      }),
+    ).resolves.toEqual({ sandbox });
+
+    expect(mockRecordAwsSandboxHalfOpenSuccess).toHaveBeenCalledWith({
+      requestId: "run-probe",
+    });
+    expect(setSandbox).toHaveBeenCalledWith(sandbox);
+    expect(mockRecordAwsSandboxAcquisitionFailure).not.toHaveBeenCalled();
   });
 });

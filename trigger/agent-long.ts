@@ -20,7 +20,7 @@ import {
 import type { Geo } from "@vercel/functions";
 import type { TriggerRunRegion } from "@/lib/api/trigger-region";
 import PostHogClient from "@/app/posthog";
-import { getCloudSandboxProvider } from "@/lib/ai/tools/utils/cloud-sandbox-provider";
+import { resolveCloudSandboxProviderForRun } from "@/lib/ai/tools/utils/cloud-sandbox-provider-circuit";
 import { recordGroupedSpikeAlert } from "@/lib/observability/grouped-spike-alert";
 
 import { systemPrompt } from "@/lib/system-prompt";
@@ -2621,7 +2621,9 @@ export const agentLongTask = task({
         selectedModelOverride,
       });
       const posthog = PostHogClient();
-      const cloudSandboxProvider = getCloudSandboxProvider();
+      const cloudSandboxProviderSelection =
+        await resolveCloudSandboxProviderForRun({ requestId: ctx.run.id });
+      const cloudSandboxProvider = cloudSandboxProviderSelection.provider;
 
       const baseTodos: Todo[] = getBaseTodosForRequest(
         (chat?.todos as unknown as Todo[]) || [],
@@ -3294,6 +3296,8 @@ export const agentLongTask = task({
               auxiliaryVision,
               {
                 cloudSandboxProvider,
+                cloudSandboxProviderSelectionReason:
+                  cloudSandboxProviderSelection.reason,
                 triggerRegion,
                 ...(subagentsEnabled
                   ? {

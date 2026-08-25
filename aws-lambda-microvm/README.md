@@ -144,9 +144,14 @@ reuses a MicroVM:
 
 ```dotenv
 CLOUD_SANDBOX_PROVIDER=aws-lambda-microvm
+CLOUD_SANDBOX_AUTO_FAILOVER_ENABLED=true
 AWS_LAMBDA_MICROVM_RELEASE_MANIFEST=<atomic JSON manifest produced by the release workflow>
 AWS_ACCESS_KEY_ID=<runtime identity key for an initial test>
 AWS_SECRET_ACCESS_KEY=<runtime identity secret for an initial test>
+E2B_API_KEY=<standby provider credential>
+E2B_TEMPLATE=terminal-agent-sandbox
+UPSTASH_REDIS_REST_URL=<shared provider-circuit store>
+UPSTASH_REDIS_REST_TOKEN=<shared provider-circuit credential>
 CONVEX_SERVICE_ROLE_KEY=<existing server role key>
 NEXT_PUBLIC_CONVEX_URL=<existing Convex deployment URL>
 ```
@@ -162,6 +167,23 @@ defaults explicitly to US East. A running or suspended sandbox remains pinned
 to its persisted region and image until it ends; a later request never silently
 migrates its memory, disk, or outbound source location. Neither Trigger.dev nor
 Vercel needs `AWS_REGION` or `AWS_LAMBDA_MICROVM_REGION` at runtime.
+
+When E2B and Upstash are configured, a one-minute Trigger health task detects
+account-wide AWS authentication or authorization loss and opens a distributed
+provider circuit. New parent Agent runs then select E2B before their tools and
+system prompt are created. A completed AWS acquisition can also close a
+half-open circuit; retryable provider failures open the global circuit only
+after three failures within two minutes and only after the launcher's regional
+recovery has already failed. Account-access failures retry AWS after six hours;
+provider outages retry after 15 minutes, with one distributed half-open probe.
+
+Provider selection remains fixed for each durable run. Existing AWS sessions
+and subagents are never migrated mid-run, and a command rejected by the Cloud
+scan-safety guard cannot activate or traverse the provider fallback. E2B does
+not restore the regional AWS S3 workspace archive, so continuity covers new
+Agent work rather than transparent recovery of an AWS MicroVM filesystem.
+Set `CLOUD_SANDBOX_AUTO_FAILOVER_ENABLED=false` to disable automatic routing,
+or set `CLOUD_SANDBOX_PROVIDER=e2b` for an explicit operator rollback.
 
 For a new session only, a regional capacity failure can make one bounded
 cross-region attempt. US East tries Oregon, Oregon tries US East, and Ireland

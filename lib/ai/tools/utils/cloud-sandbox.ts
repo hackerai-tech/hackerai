@@ -8,6 +8,11 @@ import { ensureSandboxConnection } from "./sandbox";
 import { isAwsLambdaMicrovmSandbox, isE2BSandbox } from "./sandbox-types";
 import { phLogger } from "@/lib/posthog/server";
 import type { TriggerRunRegion } from "@/lib/api/trigger-region";
+import type { CloudSandboxProviderSelectionReason } from "./cloud-sandbox-provider-circuit";
+import {
+  recordAwsSandboxAcquisitionFailure,
+  recordAwsSandboxHalfOpenSuccess,
+} from "./cloud-sandbox-provider-circuit";
 
 export type CloudSandboxAcquisitionContext = {
   provider?: CloudSandboxProvider;
@@ -16,6 +21,7 @@ export type CloudSandboxAcquisitionContext = {
   triggerRunId?: string;
   runKind?: "parent" | "subagent";
   triggerRegion?: TriggerRunRegion;
+  providerSelectionReason?: CloudSandboxProviderSelectionReason;
 };
 
 export type CloudSandboxSuspensionSummary = {
@@ -50,6 +56,13 @@ export async function ensureCloudSandboxConnection(options: {
         options.context?.triggerRegion,
         options.context?.triggerRunId,
       );
+      if (
+        options.context?.providerSelectionReason === "circuit_half_open_probe"
+      ) {
+        await recordAwsSandboxHalfOpenSuccess({
+          requestId: options.context?.triggerRunId,
+        });
+      }
       options.setSandbox(sandbox);
       return { sandbox };
     }
@@ -68,6 +81,15 @@ export async function ensureCloudSandboxConnection(options: {
       },
     );
   } catch (error) {
+    if (provider === "aws-lambda-microvm") {
+      await recordAwsSandboxAcquisitionFailure(error, {
+        requestId: options.context?.triggerRunId,
+        source: "sandbox_acquisition",
+        halfOpenProbe:
+          options.context?.providerSelectionReason ===
+          "circuit_half_open_probe",
+      });
+    }
     phLogger.event("cloud_sandbox_acquisition_failed", {
       userId: options.userId,
       chat_id: options.context?.chatId,
