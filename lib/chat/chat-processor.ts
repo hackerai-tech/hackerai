@@ -37,8 +37,7 @@ export const getMaxStepsForUser = (mode: ChatMode): number => {
  * @param mode - Chat mode (ask or agent)
  * @param hasImageAttachment - Whether any message has an image attachment.
  * @param hasPdfAttachment - Whether any message has a PDF attachment.
- *   Paid Auto normally uses DeepSeek V4 Flash 0731 for text/PDF prompts. A
- *   staged Pro Plus/Ultra treatment promotes Auto to DeepSeek V4 Pro 0813.
+ *   Pro Plus/Ultra Auto uses DeepSeek V4 Pro 0813 for text/PDF prompts.
  *   Explicit Standard stays on Flash, Pro uses Pro 0813, and Max uses Grok
  *   4.6. Images retain their existing direct or auxiliary vision behavior.
  * @returns Model name to use
@@ -52,7 +51,6 @@ export function selectModel(
   options: {
     extraUsageAvailable?: boolean;
     auxiliaryVisionEnabled?: boolean;
-    proPlusUltraDeepSeekProDefaultEnabled?: boolean;
   } = {},
 ): ModelName {
   const isAgent = isAgentMode(mode);
@@ -70,7 +68,6 @@ export function selectModel(
   const hasProviderImage =
     !!hasImageAttachment && !options.auxiliaryVisionEnabled;
   const paidAutoTextModel: ModelName =
-    options.proPlusUltraDeepSeekProDefaultEnabled &&
     (subscription === "pro-plus" || subscription === "ultra") &&
     !hasImageAttachment
       ? "model-deepseek-v4-pro-0813"
@@ -99,9 +96,8 @@ export function selectModel(
     return autoModel;
   }
 
-  // Paid Standard mirrors each mode's Auto split, but uses explicit keys so
-  // any UI that reads `getModelDisplayName` shows the picked model rather than
-  // the auto-router label.
+  // Explicit Standard remains on Flash even when Pro Plus/Ultra Auto uses Pro.
+  // Keep an explicit key so model display surfaces show the selected tier.
   if (allowedSelectedModel === "hackerai-standard") {
     return hasProviderImage ? "model-grok-4.5" : "model-deepseek-v4-flash-0731";
   }
@@ -652,7 +648,6 @@ export async function processChatMessages({
   extraUsageAvailable = false,
   allowLocalDesktopFiles = false,
   auxiliaryVisionEnabled = false,
-  proPlusUltraDeepSeekProDefaultEnabled = false,
   chatId,
   triggerRunId,
   requestId,
@@ -666,7 +661,6 @@ export async function processChatMessages({
   extraUsageAvailable?: boolean;
   allowLocalDesktopFiles?: boolean;
   auxiliaryVisionEnabled?: boolean;
-  proPlusUltraDeepSeekProDefaultEnabled?: boolean;
   chatId?: string;
   triggerRunId?: string;
   requestId?: string;
@@ -750,7 +744,6 @@ export async function processChatMessages({
     {
       extraUsageAvailable,
       auxiliaryVisionEnabled,
-      proPlusUltraDeepSeekProDefaultEnabled,
     },
   );
 

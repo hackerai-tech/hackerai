@@ -152,12 +152,6 @@ import {
   getActiveDeepSeekV4Pro0813ExperimentAssignment,
   getDeepSeekV4Pro0813ExperimentContext,
 } from "@/lib/experiments/deepseek-v4-pro-0813";
-import {
-  captureProPlusUltraDeepSeekProDefaultExposure,
-  evaluateProPlusUltraDeepSeekProDefault,
-  getActiveProPlusUltraDeepSeekProDefaultAssignment,
-  getProPlusUltraDeepSeekProDefaultContext,
-} from "@/lib/experiments/pro-plus-ultra-deepseek-pro-default";
 import { isEligibleForAuxiliaryDeepSeekVision } from "@/lib/chat/auxiliary-vision-eligibility";
 import type { AgentAutoReviewAssignment } from "@/lib/experiments/agent-auto-review";
 import { PAID_FUNNEL_EVENTS } from "@/lib/analytics/paid-funnel";
@@ -2628,15 +2622,6 @@ export const agentLongTask = task({
       });
       const posthog = PostHogClient();
       const cloudSandboxProvider = getCloudSandboxProvider();
-      const deepSeekProDefaultAssignment =
-        await evaluateProPlusUltraDeepSeekProDefault({
-          posthog,
-          userId,
-          subscription,
-          selectedModelOverride,
-          hasImageAttachment: attachmentCounts.imageCount > 0,
-          requestId: ctx.run.id,
-        });
 
       const baseTodos: Todo[] = getBaseTodosForRequest(
         (chat?.todos as unknown as Todo[]) || [],
@@ -2660,8 +2645,6 @@ export const agentLongTask = task({
         extraUsageAvailable,
         allowLocalDesktopFiles: sandboxPreference === "desktop",
         auxiliaryVisionEnabled,
-        proPlusUltraDeepSeekProDefaultEnabled:
-          deepSeekProDefaultAssignment?.variant === "deepseek_pro",
         chatId,
         triggerRunId: ctx.run.id,
         requestId: ctx.run.id,
@@ -2974,15 +2957,7 @@ export const agentLongTask = task({
                 deepSeekV4Pro0813Experiment,
                 selectedModel,
               );
-            let activeDeepSeekProDefaultAssignment =
-              getActiveProPlusUltraDeepSeekProDefaultAssignment(
-                deepSeekProDefaultAssignment,
-                selectedModel,
-              );
             let routingExperimentContext =
-              getProPlusUltraDeepSeekProDefaultContext(
-                activeDeepSeekProDefaultAssignment,
-              ) ??
               getDeepSeekV4Pro0813ExperimentContext(
                 activeDeepSeekV4Pro0813Experiment,
               );
@@ -3515,15 +3490,7 @@ export const agentLongTask = task({
                     deepSeekV4Pro0813Experiment,
                     selectedModel,
                   );
-                activeDeepSeekProDefaultAssignment =
-                  getActiveProPlusUltraDeepSeekProDefaultAssignment(
-                    deepSeekProDefaultAssignment,
-                    selectedModel,
-                  );
                 routingExperimentContext =
-                  getProPlusUltraDeepSeekProDefaultContext(
-                    activeDeepSeekProDefaultAssignment,
-                  ) ??
                   getDeepSeekV4Pro0813ExperimentContext(
                     activeDeepSeekV4Pro0813Experiment,
                   );
@@ -4530,19 +4497,6 @@ export const agentLongTask = task({
 
             let result;
             try {
-              captureProPlusUltraDeepSeekProDefaultExposure({
-                posthog,
-                userId,
-                subscription,
-                mode,
-                endpoint,
-                selectedModelOverride,
-                selectedModel,
-                configuredModel: configuredModelId,
-                chatId,
-                triggerRunId: ctx.run.id,
-                assignment: activeDeepSeekProDefaultAssignment,
-              });
               captureDeepSeekV4Pro0813ExperimentExposure({
                 posthog,
                 userId,

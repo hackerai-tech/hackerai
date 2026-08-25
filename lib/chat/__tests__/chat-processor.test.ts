@@ -160,32 +160,34 @@ describe("selectModel", () => {
     ["ask", "ultra"],
     ["agent", "ultra"],
   ] as const)(
-    "routes %s %s Auto text to DeepSeek V4 Pro in the treatment",
+    "routes %s %s Auto text to DeepSeek V4 Pro",
     (mode, subscription) => {
-      expect(
-        selectModel(mode, subscription, "auto", false, false, {
-          proPlusUltraDeepSeekProDefaultEnabled: true,
-        }),
-      ).toBe("model-deepseek-v4-pro-0813");
+      expect(selectModel(mode, subscription, "auto", false, false)).toBe(
+        "model-deepseek-v4-pro-0813",
+      );
+    },
+  );
+
+  it.each(["pro-plus", "ultra"] as const)(
+    "routes %s Auto PDFs to DeepSeek V4 Pro",
+    (subscription) => {
+      expect(selectModel("agent", subscription, "auto", false, true)).toBe(
+        "model-deepseek-v4-pro-0813",
+      );
     },
   );
 
   it.each(["pro", "team"] as const)(
-    "does not change %s Auto routing in the treatment",
+    "keeps %s Auto routing on DeepSeek V4 Flash",
     (subscription) => {
-      expect(
-        selectModel("agent", subscription, "auto", false, false, {
-          proPlusUltraDeepSeekProDefaultEnabled: true,
-        }),
-      ).toBe("model-deepseek-v4-flash-0731");
+      expect(selectModel("agent", subscription, "auto", false, false)).toBe(
+        "model-deepseek-v4-flash-0731",
+      );
     },
   );
 
-  it("keeps explicit models and image routes unchanged in the treatment", () => {
-    const treatment = {
-      auxiliaryVisionEnabled: true,
-      proPlusUltraDeepSeekProDefaultEnabled: true,
-    };
+  it("keeps explicit models and image routes unchanged", () => {
+    const auxiliaryVision = { auxiliaryVisionEnabled: true };
 
     expect(
       selectModel(
@@ -194,15 +196,22 @@ describe("selectModel", () => {
         "hackerai-standard",
         false,
         false,
-        treatment,
+        auxiliaryVision,
       ),
     ).toBe("model-deepseek-v4-flash-0731");
     expect(
-      selectModel("agent", "pro-plus", "hackerai-pro", false, false, treatment),
+      selectModel(
+        "agent",
+        "pro-plus",
+        "hackerai-pro",
+        false,
+        false,
+        auxiliaryVision,
+      ),
     ).toBe("model-deepseek-v4-pro-0813");
-    expect(selectModel("agent", "ultra", "auto", true, false, treatment)).toBe(
-      "model-deepseek-v4-flash-0731",
-    );
+    expect(
+      selectModel("agent", "ultra", "auto", true, false, auxiliaryVision),
+    ).toBe("model-deepseek-v4-flash-0731");
   });
 
   it("routes HackerAI Pro through DeepSeek V4 Pro 0813", () => {
@@ -236,25 +245,43 @@ describe("selectModel", () => {
   });
 
   it.each(["pro", "pro-plus", "ultra", "team"] as const)(
-    "routes paid %s Auto/Standard text to DeepSeek V4 Flash 0731 in both modes",
+    "routes paid %s explicit Standard text to DeepSeek V4 Flash 0731 in both modes",
     (subscription) => {
       for (const mode of ["ask", "agent"] as const) {
-        for (const selectedModel of ["auto", "hackerai-standard"] as const) {
-          expect(selectModel(mode, subscription, selectedModel)).toBe(
-            "model-deepseek-v4-flash-0731",
-          );
-        }
+        expect(selectModel(mode, subscription, "hackerai-standard")).toBe(
+          "model-deepseek-v4-flash-0731",
+        );
+      }
+    },
+  );
+
+  it.each(["pro", "team"] as const)(
+    "routes paid %s Auto text to DeepSeek V4 Flash 0731 in both modes",
+    (subscription) => {
+      for (const mode of ["ask", "agent"] as const) {
+        expect(selectModel(mode, subscription, "auto")).toBe(
+          "model-deepseek-v4-flash-0731",
+        );
       }
     },
   );
 
   // Default model selection by mode
   describe("default models (no override)", () => {
-    it.each(["pro", "pro-plus", "ultra", "team"] as const)(
+    it.each(["pro", "team"] as const)(
       "should return DeepSeek V4 Flash 0731 for paid agent text on %s",
       (subscription) => {
         expect(selectModel("agent", subscription)).toBe(
           "model-deepseek-v4-flash-0731",
+        );
+      },
+    );
+
+    it.each(["pro-plus", "ultra"] as const)(
+      "should return DeepSeek V4 Pro 0813 for paid agent text on %s",
+      (subscription) => {
+        expect(selectModel("agent", subscription)).toBe(
+          "model-deepseek-v4-pro-0813",
         );
       },
     );
@@ -297,8 +324,8 @@ describe("selectModel", () => {
       expect(selectModel("ask", "free")).toBe("ask-model-free");
     });
 
-    it("should return DeepSeek V4 Flash 0731 for ultra subscription with no image/PDF", () => {
-      expect(selectModel("ask", "ultra")).toBe("model-deepseek-v4-flash-0731");
+    it("should return DeepSeek V4 Pro 0813 for ultra subscription with no image/PDF", () => {
+      expect(selectModel("ask", "ultra")).toBe("model-deepseek-v4-pro-0813");
     });
 
     it("should return DeepSeek V4 Flash 0731 for team subscription with no image/PDF", () => {
