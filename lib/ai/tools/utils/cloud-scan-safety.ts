@@ -2,7 +2,7 @@ import type { AnySandbox, ToolContext } from "@/types";
 import { isAwsLambdaMicrovmSandbox } from "./sandbox-types";
 
 const CLOUD_SCAN_BLOCK_MESSAGE =
-  "HackerAI Cloud permits bounded port scans of one target and at most 1,000 ports. This command used or obscured a broader scope, so the cloud session was terminated before it ran. Narrow the command to one target and 1,000 or fewer ports, or use HackerAI Desktop or Remote Control for larger authorized scans.";
+  "HackerAI Cloud permits bounded port scans of one target and at most 1,000 ports. This command used or obscured a broader scope, so it was blocked before execution, the Cloud connection was closed, and MicroVM termination was attempted. Narrow the command to one target and 1,000 or fewer ports, or use HackerAI Desktop or Remote Control for larger authorized scans.";
 
 const HIGH_THROUGHPUT_SCANNERS = [
   "hping",
@@ -74,16 +74,19 @@ const stripHeredocBodies = (command: string): string => {
   return kept.join("\n");
 };
 
-const shellCommandSegments = (rawCommand: string): string[] => {
+type ShellCommandSegment = { command: string; receivesPipe: boolean };
+
+const shellCommandSegments = (rawCommand: string): ShellCommandSegment[] => {
   const command = stripHeredocBodies(rawCommand);
-  const segments: string[] = [];
+  const segments: ShellCommandSegment[] = [];
   let start = 0;
   let quote: "'" | '"' | null = null;
   let escaped = false;
+  let receivesPipe = false;
 
   const push = (end: number) => {
     const segment = command.slice(start, end).trim();
-    if (segment) segments.push(segment);
+    if (segment) segments.push({ command: segment, receivesPipe });
   };
 
   for (let index = 0; index < command.length; index++) {
@@ -112,15 +115,18 @@ const shellCommandSegments = (rawCommand: string): string[] => {
       char === "\n"
     ) {
       push(index);
-      if (char === "|" && command[index + 1] === char) {
+      const logicalOr = char === "|" && command[index + 1] === char;
+      if (logicalOr) {
         index++;
       }
+      receivesPipe = char === "|" && !logicalOr;
       start = index + 1;
       continue;
     }
     if (char === "&" && command[index + 1] === "&") {
       push(index);
       index++;
+      receivesPipe = false;
       start = index + 1;
     }
   }
@@ -150,8 +156,102 @@ const EXECUTION_WRAPPERS = new Set([
   "xargs",
 ]);
 
+const WRAPPER_VALUE_OPTIONS: Record<string, ReadonlySet<string>> = {
+  env: new Set(["-C", "-S", "-u", "--chdir", "--split-string", "--unset"]),
+  ionice: new Set(["-c", "-n", "-p", "-P", "-u"]),
+  nice: new Set(["-n", "--adjustment"]),
+  stdbuf: new Set(["-e", "-i", "-o", "--error", "--input", "--output"]),
+  sudo: new Set([
+    "-C",
+    "-D",
+    "-g",
+    "-h",
+    "-p",
+    "-R",
+    "-r",
+    "-T",
+    "-t",
+    "-u",
+    "--chdir",
+    "--group",
+    "--host",
+    "--prompt",
+    "--role",
+    "--type",
+    "--user",
+  ]),
+  time: new Set(["-f", "-o", "--format", "--output"]),
+  timeout: new Set(["-k", "-s", "--kill-after", "--signal"]),
+  xargs: new Set([
+    "-a",
+    "-d",
+    "-E",
+    "-I",
+    "-L",
+    "-n",
+    "-P",
+    "-s",
+    "--arg-file",
+    "--delimiter",
+    "--eof",
+    "--max-args",
+    "--max-chars",
+    "--max-lines",
+    "--max-procs",
+    "--replace",
+  ]),
+};
+
 const executableName = (token: string): string =>
   token.split("/").at(-1)?.toLowerCase() ?? "";
+
+const skipWrapperOptions = (
+  tokens: string[],
+  start: number,
+  wrapper: string,
+): number => {
+  const valueOptions = WRAPPER_VALUE_OPTIONS[wrapper] ?? new Set<string>();
+  let index = start;
+  while (index < tokens.length) {
+    const token = tokens[index];
+    if (token === "--") return index + 1;
+    if (!token.startsWith("-") || token === "-") break;
+    const option = token.split("=", 1)[0];
+    index++;
+    if (valueOptions.has(option) && token === option) index++;
+  }
+  return index;
+};
+
+const resolveExecutedCommand = (
+  tokens: string[],
+): { index: number; name: string } | null => {
+  let index = 0;
+  while (/^[A-Z_][A-Z0-9_]*=/i.test(tokens[index] ?? "")) index++;
+
+  while (index < tokens.length) {
+    const name = executableName(tokens[index]);
+    if (!EXECUTION_WRAPPERS.has(name)) return { index, name };
+    index = skipWrapperOptions(tokens, index + 1, name);
+    while (/^[A-Z_][A-Z0-9_]*=/i.test(tokens[index] ?? "")) index++;
+    if (name === "timeout" || name === "taskset") index++;
+  }
+  return null;
+};
+
+const nestedShellPayload = (tokens: string[]): string | null => {
+  const command = resolveExecutedCommand(tokens);
+  if (!command) return null;
+  if (command.name === "eval") {
+    return tokens.slice(command.index + 1).join(" ");
+  }
+  if (!/^(?:bash|sh|zsh)$/.test(command.name)) return null;
+  const args = tokens.slice(command.index + 1);
+  const commandOption = args.findIndex((token) =>
+    /^-[A-Za-z]*c[A-Za-z]*$/.test(token),
+  );
+  return commandOption < 0 ? null : (args[commandOption + 1] ?? null);
+};
 
 const scannerInExecutingPosition = (
   segment: string,
@@ -161,25 +261,16 @@ const scannerInExecutingPosition = (
   index: number;
 } | null => {
   const tokens = shellTokens(segment);
-  let first = 0;
-  while (/^[A-Z_][A-Z0-9_]*=/i.test(tokens[first] ?? "")) first++;
-  const index = tokens.findIndex((token, tokenIndex) => {
-    if (tokenIndex < first) return false;
-    return HIGH_THROUGHPUT_SCANNERS.includes(
-      executableName(token) as HighThroughputScanner,
-    );
-  });
-  if (index < 0) return null;
+  const command = resolveExecutedCommand(tokens);
   if (
-    index !== first &&
-    !EXECUTION_WRAPPERS.has(executableName(tokens[first] ?? ""))
-  ) {
+    !command ||
+    !HIGH_THROUGHPUT_SCANNERS.includes(command.name as HighThroughputScanner)
+  )
     return null;
-  }
   return {
-    scanner: executableName(tokens[index]) as HighThroughputScanner,
+    scanner: command.name as HighThroughputScanner,
     tokens,
-    index,
+    index: command.index,
   };
 };
 
@@ -367,21 +458,11 @@ const isBoundedCloudPortScan = (
   );
 };
 
-const isBulkHttpProbe = (segment: string): boolean => {
-  const tokens = shellTokens(segment);
-  let first = 0;
-  while (/^[A-Z_][A-Z0-9_]*=/i.test(tokens[first] ?? "")) first++;
-  const toolIndex = tokens.findIndex((token) =>
-    /^(?:nuclei|httpx)$/i.test(executableName(token)),
-  );
-  if (toolIndex < 0) return false;
-  if (
-    toolIndex !== first &&
-    !EXECUTION_WRAPPERS.has(executableName(tokens[first] ?? ""))
-  ) {
-    return false;
-  }
-  const args = tokens.slice(toolIndex + 1);
+const isBulkHttpProbe = (segment: ShellCommandSegment): boolean => {
+  const tokens = shellTokens(segment.command);
+  const command = resolveExecutedCommand(tokens);
+  if (!command || !/^(?:nuclei|httpx)$/i.test(command.name)) return false;
+  const args = tokens.slice(command.index + 1);
   if (
     args.length === 1 &&
     /^(?:-h|--help|-version|--version)$/i.test(args[0])
@@ -412,6 +493,7 @@ const isBulkHttpProbe = (segment: string): boolean => {
         !/^(?:-u|--url|-target|--target)$/i.test(args[index - 1] ?? ""),
     ),
   );
+  if (targets.length === 0) return segment.receivesPipe;
   return targets.length !== 1 || !probeTargetIsSingleHost(targets[0]);
 };
 
@@ -433,13 +515,19 @@ export function detectCloudScanCommand(
   }
 
   for (const segment of shellCommandSegments(command)) {
-    const wrappedCommand = segment.match(shellWrapperPattern)?.[2];
+    const wrappedCommand = segment.command.match(shellWrapperPattern)?.[2];
     if (wrappedCommand) {
       const wrappedDetection = detectCloudScanCommand(wrappedCommand);
       if (wrappedDetection) return wrappedDetection;
     }
 
-    const scannerMatch = scannerInExecutingPosition(segment);
+    const nestedPayload = nestedShellPayload(shellTokens(segment.command));
+    if (nestedPayload) {
+      const nestedDetection = detectCloudScanCommand(nestedPayload);
+      if (nestedDetection) return nestedDetection;
+    }
+
+    const scannerMatch = scannerInExecutingPosition(segment.command);
     if (scannerMatch) {
       const scannerArgs = scannerMatch.tokens.slice(scannerMatch.index + 1);
       if (
@@ -474,6 +562,7 @@ export function detectCloudScanCommand(
   return null;
 }
 
+/** Reconstruct the current interactive shell line without retaining history. */
 export function updateTerminalScanSafetyInput(
   currentLine: string,
   input: string,
@@ -523,7 +612,11 @@ const logSafetyEvent = (
 };
 
 type SafetyDependencies = {
-  terminate: (args: { userId: string; microvmId: string }) => Promise<{
+  terminate: (args: {
+    userId: string;
+    microvmId: string;
+    scanner: CloudScanSafetyDetection["scanner"];
+  }) => Promise<{
     status: "terminated" | "already_gone" | "ownership_not_found";
   }>;
 };
@@ -576,6 +669,7 @@ export async function enforceCloudScanSafety(args: {
     const result = await (args.dependencies ?? defaultDependencies).terminate({
       userId: args.context.userID,
       microvmId,
+      scanner: detection.scanner,
     });
     terminationStatus = result.status;
     logSafetyEvent("warn", "cloud_scan_session_contained", {

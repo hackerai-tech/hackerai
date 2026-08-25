@@ -291,7 +291,9 @@ Commands run directly on the host OS "workstation" without Docker isolation. Be 
     expect(prompt).toContain("CIDRs broader than one host");
     expect(prompt).toContain("full-port sweeps");
     expect(prompt).toContain("HackerAI Desktop or Remote Control");
-    expect(prompt).toContain("The Cloud session is terminated automatically");
+    expect(prompt).toContain(
+      "Cloud connection is closed and MicroVM termination is attempted automatically",
+    );
   });
 
   it("adds a compact finding quality contract in cloud and local agent modes", async () => {

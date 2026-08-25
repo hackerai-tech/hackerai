@@ -24,6 +24,8 @@ describe("Cloud scan safety", () => {
     ["naabu -host 203.0.113.10 -p 1-1001", "naabu"],
     [`bash -lc 'nmap -p- 203.0.113.10'`, "nmap"],
     [`bash -c "nmap -p- 203.0.113.10" sentinel`, "nmap"],
+    ["bash -c nmap -p- 203.0.113.10", "nmap"],
+    [`eval "nmap -p- 203.0.113.10"`, "nmap"],
     ["nuclei --list targets.txt", "bulk_http_probe"],
     ["nuclei -list targets.txt", "bulk_http_probe"],
     ["httpx -l targets.txt", "bulk_http_probe"],
@@ -47,6 +49,10 @@ describe("Cloud scan safety", () => {
     "nuclei -u https://example.com",
     "httpx -u https://example.com",
     "httpx --version",
+    "httpx",
+    "nuclei",
+    "sudo apt install nmap",
+    "sudo apt install httpx",
     "nmap -sV 203.0.113.10",
     "nmap -p 1-1000 203.0.113.10",
     "nmap -p 22,80,443 example.com",
@@ -95,6 +101,7 @@ describe("Cloud scan safety", () => {
     expect(terminate).toHaveBeenCalledWith({
       userId: "user-1",
       microvmId: "microvm-owned",
+      scanner: "nmap",
     });
     expect(resetSandbox).toHaveBeenCalledWith("cloud_scan_safety_guard");
     expect(warn.mock.calls.flat().join(" ")).not.toContain(target);

@@ -1363,6 +1363,7 @@ describe("AWS Lambda MicroVM development logging", () => {
       terminateAwsLambdaMicrovmForSafety({
         userId: "user-safety",
         microvmId: "microvm-target",
+        scanner: "nmap",
       }),
     ).resolves.toEqual({ status: "terminated" });
 
@@ -1397,6 +1398,7 @@ describe("AWS Lambda MicroVM development logging", () => {
       terminateAwsLambdaMicrovmForSafety({
         userId: "user-safety",
         microvmId: "microvm-unowned",
+        scanner: "masscan",
       }),
     ).resolves.toEqual({ status: "ownership_not_found" });
 

@@ -1947,6 +1947,7 @@ export async function terminateAwsLambdaMicrovmForUser(
 export async function terminateAwsLambdaMicrovmForSafety(args: {
   userId: string;
   microvmId: string;
+  scanner: string;
 }): Promise<{
   status: "terminated" | "already_gone" | "ownership_not_found";
 }> {
@@ -1966,6 +1967,7 @@ export async function terminateAwsLambdaMicrovmForSafety(args: {
     log("warn", "cloud_scan_safety_termination_skipped", {
       user_id: args.userId,
       microvm_id: args.microvmId,
+      scanner: args.scanner,
       reason: "active_ownership_not_found",
     });
     return { status: "ownership_not_found" };
@@ -2027,6 +2029,7 @@ export async function terminateAwsLambdaMicrovmForSafety(args: {
   log("warn", "cloud_scan_safety_microvm_terminated", {
     user_id: args.userId,
     microvm_id: args.microvmId,
+    scanner: args.scanner,
     region,
     sessions_ended: ownedSessions.length,
     termination_status: outcome,
