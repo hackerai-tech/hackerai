@@ -44,7 +44,7 @@ describe("user research privacy controls", () => {
   it("accepts a bounded request without a Linear reference", () => {
     const request = {
       question: "What recurring work creates the most customer value?",
-      cohortLabel: "Approved production research cohort",
+      cohortLabel: "PostHog top-spender research cohort",
       userIds: ["user-1", "user-2", "user-3"],
       maxChatsPerUser: 12,
     };
@@ -221,7 +221,7 @@ ${"QUJD".repeat(16)}
   it("keeps every profile in a valid bounded cohort payload", () => {
     const prompt = buildCohortPrompt({
       question: "Which recurring user types and jobs appear?",
-      cohortLabel: "Reconciled paid cohort",
+      cohortLabel: "PostHog paid cohort",
       profiles: Array.from({ length: 20 }, (_, index) => ({
         pseudonym: `U${String(index + 1).padStart(2, "0")}`,
         profile: {

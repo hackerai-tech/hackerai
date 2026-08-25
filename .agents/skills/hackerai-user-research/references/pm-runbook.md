@@ -2,25 +2,32 @@
 
 ## 1. Prepare the cohort
 
-Start from a specific research request made by an authorized PM. The request
-must define the question, cohort rule, exclusions, and intended aggregate
-output. A Linear issue may be included for optional tracking, but its presence
-or state is not an authorization control. For spend-ranked research, use
-PostHog's Stripe-synced lifetime net paid amount when available and current.
-Exclude refunds/disputes, internal and test users, fraud, duplicates, and
-unmatched customers. Open Stripe only to resolve discrepancies or payer/account
-ownership. Produce internal Convex/WorkOS user IDs, not emails or Stripe IDs.
+Start from a specific research request made by an authorized PM using the scoped
+PM gateway. The request must define the question, cohort rule, exclusions, and
+intended aggregate output. The gateway key establishes access to the workflow;
+do not request separate per-run approval or inspect Linear state or comments for
+authorization. A Linear issue may be included only for optional tracking.
+
+Select the cohort entirely in PostHog. For spend-ranked research, use PostHog's
+available Stripe-synced lifetime paid amount and account mapping. Exclude
+internal and test users, known fraud or abuse, duplicates, and unmatched
+customers using data available in PostHog. Do not open Stripe or require Stripe
+access. If PostHog does not establish an exact refund, dispute, payer, or account
+adjustment, use the best supported PostHog ranking and record the limitation in
+the aggregate report. Produce internal Convex/WorkOS user IDs, not emails or
+billing customer IDs.
 
 ## 2. Run through Codex
 
 Ask Codex:
 
-> Use $hackerai-user-research. Select the reconciled top-spender cohort, run the
+> Use $hackerai-user-research. Select the PostHog top-spender cohort, run the
 > analysis, wait for it, and give me the aggregate findings with coverage,
 > confidence, unknowns, and recommended experiments.
 
-Codex should use the skill's `scripts/run-research.mjs` gateway runner and wait
-for completion. The PM's Codex environment must contain the scoped
+Codex should proceed from the authorized PM's request without checking for
+another approval. It should use the skill's `scripts/run-research.mjs` gateway
+runner and wait for completion. The PM's Codex environment must contain the scoped
 `HACKERAI_PM_USER_RESEARCH_KEY`; it must not contain Trigger or Convex service
 keys. The runner always calls the production gateway at
 `https://hackerai.co/api/internal/user-research`; no Preview URL or Preview PM
@@ -33,6 +40,9 @@ and zero-data-retention routing required.
 The request JSON is temporary restricted data because it contains internal user
 IDs. Create it outside the repository with mode 600, pass its path to the
 runner, then remove it. Never commit it or copy it into Linear.
+
+The scoped gateway key authenticates the PM runner to the restricted production
+endpoint. It is not a per-run approval and does not require a Linear issue.
 
 ## 3. Interpret the result
 
