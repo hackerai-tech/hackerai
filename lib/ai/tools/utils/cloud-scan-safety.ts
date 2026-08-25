@@ -232,6 +232,19 @@ const resolveExecutedCommand = (
   while (index < tokens.length) {
     const name = executableName(tokens[index]);
     if (!EXECUTION_WRAPPERS.has(name)) return { index, name };
+    if (name === "command") {
+      const args = tokens.slice(index + 1);
+      const operandIndex = args.findIndex((token) => !token.startsWith("-"));
+      const options = args.slice(
+        0,
+        operandIndex < 0 ? args.length : operandIndex,
+      );
+      if (
+        options.some((token) => /^-[pvV]+$/.test(token) && /[vV]/.test(token))
+      ) {
+        return null;
+      }
+    }
     index = skipWrapperOptions(tokens, index + 1, name);
     while (/^[A-Z_][A-Z0-9_]*=/i.test(tokens[index] ?? "")) index++;
     if (name === "timeout" || name === "taskset") index++;

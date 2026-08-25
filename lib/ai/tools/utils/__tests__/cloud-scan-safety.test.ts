@@ -44,6 +44,8 @@ describe("Cloud scan safety", () => {
     "python3 -m pytest",
     "echo nmap",
     "command -v nmap",
+    "command -v nmap >/dev/null 2>&1 || echo missing",
+    "command -p -V /usr/bin/nmap",
     "nmap --version",
     "printf 'use naabu on Desktop'",
     "nuclei -u https://example.com",
