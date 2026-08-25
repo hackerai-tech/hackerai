@@ -168,14 +168,16 @@ to its persisted region and image until it ends; a later request never silently
 migrates its memory, disk, or outbound source location. Neither Trigger.dev nor
 Vercel needs `AWS_REGION` or `AWS_LAMBDA_MICROVM_REGION` at runtime.
 
-When E2B and Upstash are configured, a one-minute Trigger health task detects
-account-wide AWS authentication or authorization loss and opens a distributed
-provider circuit. New parent Agent runs then select E2B before their tools and
-system prompt are created. A completed AWS acquisition can also close a
-half-open circuit; retryable provider failures open the global circuit only
-after three failures within two minutes and only after the launcher's regional
-recovery has already failed. Account-access failures retry AWS after six hours;
-provider outages retry after 15 minutes, with one distributed half-open probe.
+When E2B and Upstash are configured and
+`CLOUD_SANDBOX_AUTO_FAILOVER_ENABLED=true`, a one-minute Trigger health task
+detects account-wide AWS authentication or authorization loss and opens a
+distributed provider circuit. New parent Agent runs then select E2B before
+their tools and system prompt are created. A completed AWS acquisition can also
+close a half-open circuit; retryable provider failures open the global circuit
+only after three failures within two minutes and only after the launcher's
+regional recovery has already failed. Account-access failures retry AWS after
+six hours; provider outages retry after 15 minutes, with one distributed
+half-open probe.
 
 Provider selection remains fixed for each durable run. Existing AWS sessions
 and subagents are never migrated mid-run, and a command rejected by the Cloud

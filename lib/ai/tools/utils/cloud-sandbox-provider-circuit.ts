@@ -387,7 +387,7 @@ export async function recordAwsSandboxAcquisitionFailure(
         ex: CIRCUIT_STATE_TTL_SECONDS,
       });
     }
-    await redis.del(HALF_OPEN_LOCK_KEY);
+    await redis.del(HALF_OPEN_LOCK_KEY, counterKey);
     if (newlyOpened) {
       log("warn", "cloud_sandbox_provider_circuit_opened", {
         request_id: options.requestId ?? null,
@@ -457,13 +457,17 @@ async function closeAwsSandboxCircuit(
       await redis.eval(
         `
           if redis.call("GET", KEYS[1]) == ARGV[1] then
-            redis.call("DEL", KEYS[1])
-            redis.call("DEL", KEYS[2])
+            redis.call("DEL", KEYS[1], KEYS[2], KEYS[3], KEYS[4])
             return 1
           end
           return 0
         `,
-        [CIRCUIT_KEY, HALF_OPEN_LOCK_KEY],
+        [
+          CIRCUIT_KEY,
+          HALF_OPEN_LOCK_KEY,
+          `${FAILURE_COUNTER_PREFIX}:account_access`,
+          `${FAILURE_COUNTER_PREFIX}:provider_unavailable`,
+        ],
         [JSON.stringify(previousState)],
       ),
     );
@@ -495,6 +499,7 @@ export async function recordAwsAccountHealthProbeSuccess(
 export const CLOUD_SANDBOX_PROVIDER_CIRCUIT_CONSTANTS = {
   circuitKey: CIRCUIT_KEY,
   halfOpenLockKey: HALF_OPEN_LOCK_KEY,
+  failureCounterPrefix: FAILURE_COUNTER_PREFIX,
   transientFailureThreshold: TRANSIENT_FAILURE_THRESHOLD,
   accountRetryDelayMs: ACCOUNT_RETRY_DELAY_MS,
   transientRetryDelayMs: TRANSIENT_RETRY_DELAY_MS,

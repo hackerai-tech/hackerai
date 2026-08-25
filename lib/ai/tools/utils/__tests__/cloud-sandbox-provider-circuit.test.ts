@@ -186,6 +186,11 @@ describe("cloud sandbox provider circuit", () => {
       opened: true,
       failureClass: "provider_unavailable",
     });
+    expect(
+      redis.values.has(
+        `${CLOUD_SANDBOX_PROVIDER_CIRCUIT_CONSTANTS.failureCounterPrefix}:provider_unavailable`,
+      ),
+    ).toBe(false);
   });
 
   test("does not open globally for a transient health-probe failure", async () => {
@@ -305,6 +310,14 @@ describe("cloud sandbox provider circuit", () => {
       CLOUD_SANDBOX_PROVIDER_CIRCUIT_CONSTANTS.halfOpenLockKey,
       "probe",
     );
+    redis.values.set(
+      `${CLOUD_SANDBOX_PROVIDER_CIRCUIT_CONSTANTS.failureCounterPrefix}:account_access`,
+      1,
+    );
+    redis.values.set(
+      `${CLOUD_SANDBOX_PROVIDER_CIRCUIT_CONSTANTS.failureCounterPrefix}:provider_unavailable`,
+      3,
+    );
 
     await recordAwsSandboxHalfOpenSuccess(
       { requestId: "probe" },
@@ -316,6 +329,16 @@ describe("cloud sandbox provider circuit", () => {
     expect(
       redis.values.has(
         CLOUD_SANDBOX_PROVIDER_CIRCUIT_CONSTANTS.halfOpenLockKey,
+      ),
+    ).toBe(false);
+    expect(
+      redis.values.has(
+        `${CLOUD_SANDBOX_PROVIDER_CIRCUIT_CONSTANTS.failureCounterPrefix}:account_access`,
+      ),
+    ).toBe(false);
+    expect(
+      redis.values.has(
+        `${CLOUD_SANDBOX_PROVIDER_CIRCUIT_CONSTANTS.failureCounterPrefix}:provider_unavailable`,
       ),
     ).toBe(false);
   });
