@@ -740,8 +740,8 @@ describe("captureUsageSettlement", () => {
       },
       forced: false,
       experiment: {
-        key: "pro_plus_ultra_deepseek_pro_default_v1",
-        variant: "deepseek_pro",
+        key: "test_routing_experiment_v1",
+        variant: "treatment",
       },
     });
 
@@ -784,9 +784,9 @@ describe("captureUsageSettlement", () => {
           isUsageSettlementSuccessSampled("settlement_123"),
         settlement_success_sample_rate: 0.005,
         settlement_event_version: 2,
-        experiment_key: "pro_plus_ultra_deepseek_pro_default_v1",
-        experiment_variant: "deepseek_pro",
-        "$feature/pro_plus_ultra_deepseek_pro_default_v1": "deepseek_pro",
+        experiment_key: "test_routing_experiment_v1",
+        experiment_variant: "treatment",
+        "$feature/test_routing_experiment_v1": "treatment",
       },
     });
   });

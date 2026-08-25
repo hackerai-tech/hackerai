@@ -159,12 +159,6 @@ import {
   getActiveDeepSeekV4Pro0813ExperimentAssignment,
   getDeepSeekV4Pro0813ExperimentContext,
 } from "@/lib/experiments/deepseek-v4-pro-0813";
-import {
-  captureProPlusUltraDeepSeekProDefaultExposure,
-  evaluateProPlusUltraDeepSeekProDefault,
-  getActiveProPlusUltraDeepSeekProDefaultAssignment,
-  getProPlusUltraDeepSeekProDefaultContext,
-} from "@/lib/experiments/pro-plus-ultra-deepseek-pro-default";
 import { isEligibleForAuxiliaryDeepSeekVision } from "@/lib/chat/auxiliary-vision-eligibility";
 import {
   capturePaidDailyFreeAllowanceServerEvent,
@@ -389,23 +383,12 @@ export const createChatHandler = () => {
         subscription,
       );
       const attachmentCounts = countFileAttachments(truncatedMessages);
-      const routingPosthog = (posthog ??= PostHogClient());
       const auxiliaryVisionEnabled =
         (isAgentMode(mode) || attachmentCounts.imageCount > 0) &&
         isEligibleForAuxiliaryDeepSeekVision({
           subscription,
           selectedModelOverride,
         });
-      const deepSeekProDefaultAssignment =
-        await evaluateProPlusUltraDeepSeekProDefault({
-          posthog: routingPosthog,
-          userId,
-          subscription,
-          selectedModelOverride,
-          hasImageAttachment: attachmentCounts.imageCount > 0,
-          requestId: req.headers.get("x-vercel-id") ?? undefined,
-        });
-
       await handleInitialChatAndUserMessage({
         chatId,
         userId,
@@ -451,8 +434,6 @@ export const createChatHandler = () => {
         allowLocalDesktopFiles:
           isAgentMode(mode) && sandboxPreference === "desktop",
         auxiliaryVisionEnabled,
-        proPlusUltraDeepSeekProDefaultEnabled:
-          deepSeekProDefaultAssignment?.variant === "deepseek_pro",
         chatId,
         requestId: req.headers.get("x-vercel-id") ?? undefined,
       });
@@ -621,18 +602,9 @@ export const createChatHandler = () => {
           deepSeekV4Pro0813Experiment,
           selectedModel,
         );
-      let activeDeepSeekProDefaultAssignment =
-        getActiveProPlusUltraDeepSeekProDefaultAssignment(
-          deepSeekProDefaultAssignment,
-          selectedModel,
-        );
-      let routingExperimentContext =
-        getProPlusUltraDeepSeekProDefaultContext(
-          activeDeepSeekProDefaultAssignment,
-        ) ??
-        getDeepSeekV4Pro0813ExperimentContext(
-          activeDeepSeekV4Pro0813Experiment,
-        );
+      let routingExperimentContext = getDeepSeekV4Pro0813ExperimentContext(
+        activeDeepSeekV4Pro0813Experiment,
+      );
 
       const freeMonthlyBudgetSnapshot =
         subscription === "free"
@@ -951,15 +923,7 @@ export const createChatHandler = () => {
                     deepSeekV4Pro0813Experiment,
                     selectedModel,
                   );
-                activeDeepSeekProDefaultAssignment =
-                  getActiveProPlusUltraDeepSeekProDefaultAssignment(
-                    deepSeekProDefaultAssignment,
-                    selectedModel,
-                  );
                 routingExperimentContext =
-                  getProPlusUltraDeepSeekProDefaultContext(
-                    activeDeepSeekProDefaultAssignment,
-                  ) ??
                   getDeepSeekV4Pro0813ExperimentContext(
                     activeDeepSeekV4Pro0813Experiment,
                   );
@@ -1534,18 +1498,6 @@ export const createChatHandler = () => {
 
             let result;
             try {
-              captureProPlusUltraDeepSeekProDefaultExposure({
-                posthog,
-                userId,
-                subscription,
-                mode,
-                endpoint,
-                selectedModelOverride,
-                selectedModel,
-                configuredModel: configuredModelId,
-                chatId,
-                assignment: activeDeepSeekProDefaultAssignment,
-              });
               captureDeepSeekV4Pro0813ExperimentExposure({
                 posthog,
                 userId,
