@@ -727,6 +727,7 @@ export const subagentTask = task({
                 ptyScopeId: row.subagent_id,
                 chargeSandboxRuntime: false,
                 cloudSandboxProvider,
+                cloudSandboxProviderSelectionReason: "persisted_subagent",
               },
             );
             const tools = guardSubagentToolExecutions(

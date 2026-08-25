@@ -2,6 +2,7 @@ import {
   CreateMicrovmAuthTokenCommand,
   GetMicrovmCommand,
   LambdaMicrovmsClient,
+  ListMicrovmsCommand,
   ResumeMicrovmCommand,
   RunMicrovmCommand,
   type RunMicrovmCommandInput,
@@ -433,6 +434,13 @@ function getClient(region: string): LambdaMicrovmsClient {
   const created = new LambdaMicrovmsClient({ region, maxAttempts: 4 });
   clients.set(region, created);
   return created;
+}
+
+/** Read-only control-plane probe used to detect account-wide access loss. */
+export async function probeAwsLambdaMicrovmAccountAccess(): Promise<void> {
+  await getClient(AWS_LAMBDA_MICROVM_REGION).send(
+    new ListMicrovmsCommand({ maxResults: 1 }),
+  );
 }
 
 function getConfigForPersistedSession(

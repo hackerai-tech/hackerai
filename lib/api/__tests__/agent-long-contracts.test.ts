@@ -2131,9 +2131,9 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(taskSrc).toMatch(/recordFreeMonthlyCost\(\s*freeUsageSubject/);
   });
 
-  test("agent-long resolves the configured cloud provider once for tools and prompt", () => {
+  test("agent-long resolves one circuit-aware cloud provider for tools and prompt", () => {
     const providerIdx = taskSrc.indexOf(
-      "const cloudSandboxProvider = getCloudSandboxProvider();",
+      "await resolveCloudSandboxProviderForRun({ requestId: ctx.run.id });",
     );
     const toolsIdx = taskSrc.indexOf("createTools(", providerIdx);
     const promptIdx = taskSrc.indexOf("systemPrompt(", toolsIdx);
@@ -2143,6 +2143,9 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(promptIdx).toBeGreaterThan(toolsIdx);
     expect(taskSrc.slice(toolsIdx, promptIdx)).toContain(
       "cloudSandboxProvider",
+    );
+    expect(taskSrc.slice(toolsIdx, promptIdx)).toContain(
+      "cloudSandboxProviderSelectionReason",
     );
     expect(taskSrc.slice(promptIdx, promptIdx + 700)).toContain(
       "cloudSandboxProvider",
