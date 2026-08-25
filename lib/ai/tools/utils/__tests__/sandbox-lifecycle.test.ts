@@ -225,6 +225,105 @@ describe("E2B sandbox lease lifecycle", () => {
     expect(setSandbox).toHaveBeenCalledWith(connectedSandbox);
   });
 
+  it("creates new sandboxes with pause and automatic resume enabled", async () => {
+    const createdSandbox = { sandboxId: "sandbox-2" } as unknown as Sandbox;
+    sandboxApi.list.mockReturnValue({
+      nextItems: jest.fn(async () => []),
+    });
+    sandboxApi.create.mockResolvedValue(createdSandbox);
+
+    const result = await ensureSandboxConnection({
+      userID: "user-1",
+      setSandbox: jest.fn(),
+    });
+
+    expect(result.sandbox).toBe(createdSandbox);
+    expect(sandboxApi.create).toHaveBeenCalledWith(
+      "terminal-agent-sandbox",
+      expect.objectContaining({
+        timeoutMs: BASH_SANDBOX_AUTOPAUSE_TIMEOUT,
+        lifecycle: { onTimeout: "pause", autoResume: true },
+        secure: true,
+        metadata: expect.objectContaining({ sandboxVersion: "v12" }),
+      }),
+    );
+  });
+
+  it("prefers a running sandbox over a newer paused duplicate", async () => {
+    const connectedSandbox = {
+      sandboxId: "sandbox-running",
+    } as unknown as Sandbox;
+    sandboxApi.list.mockReturnValue({
+      nextItems: jest.fn(async () => [
+        {
+          sandboxId: "sandbox-paused",
+          state: "paused",
+          metadata: { sandboxVersion: "v12" },
+        },
+        {
+          sandboxId: "sandbox-running",
+          state: "running",
+          metadata: { sandboxVersion: "v12" },
+        },
+      ]),
+    });
+    sandboxApi.connect.mockResolvedValue(connectedSandbox);
+
+    const result = await ensureSandboxConnection({
+      userID: "user-1",
+      setSandbox: jest.fn(),
+    });
+
+    expect(result.sandbox).toBe(connectedSandbox);
+    expect(sandboxApi.connect).toHaveBeenCalledWith("sandbox-running", {
+      timeoutMs: BASH_SANDBOX_AUTOPAUSE_TIMEOUT,
+    });
+  });
+
+  it("retries a transient connect failure before reusing the sandbox", async () => {
+    jest.useFakeTimers();
+    const connectedSandbox = { sandboxId: "sandbox-1" } as unknown as Sandbox;
+    listSandbox();
+    sandboxApi.connect
+      .mockRejectedValueOnce(new Error("temporary transport failure"))
+      .mockResolvedValue(connectedSandbox);
+
+    const connection = ensureSandboxConnection({
+      userID: "user-1",
+      setSandbox: jest.fn(),
+    });
+    await jest.advanceTimersByTimeAsync(1_000);
+
+    await expect(connection).resolves.toEqual({ sandbox: connectedSandbox });
+    expect(sandboxApi.connect).toHaveBeenCalledTimes(2);
+  });
+
+  it("retries a transient sandbox discovery failure", async () => {
+    jest.useFakeTimers();
+    const connectedSandbox = { sandboxId: "sandbox-1" } as unknown as Sandbox;
+    const nextItems = jest
+      .fn()
+      .mockRejectedValueOnce(new Error("temporary list failure"))
+      .mockResolvedValue([
+        {
+          sandboxId: "sandbox-1",
+          state: "running",
+          metadata: { sandboxVersion: "v12" },
+        },
+      ]);
+    sandboxApi.list.mockReturnValue({ nextItems });
+    sandboxApi.connect.mockResolvedValue(connectedSandbox);
+
+    const connection = ensureSandboxConnection({
+      userID: "user-1",
+      setSandbox: jest.fn(),
+    });
+    await jest.advanceTimersByTimeAsync(1_000);
+
+    await expect(connection).resolves.toEqual({ sandbox: connectedSandbox });
+    expect(nextItems).toHaveBeenCalledTimes(2);
+  });
+
   it("defers version replacement while the shared sandbox is running", async () => {
     const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
     try {

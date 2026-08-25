@@ -384,11 +384,12 @@ local/desktop sandbox support also keeps its existing Centrifugo values there.
 Vercel retains only the AWS credentials and Convex key required by Data
 Controls cleanup. They are not copied through GitHub Actions.
 
-## 5. Validate the paid-plan release
+## 5. Validate the AWS rollback path
 
-AWS Lambda MicroVMs are the default cloud sandbox for every paid plan. The
-application continues to hard-gate Free users to local-only behavior, and
-`CLOUD_SANDBOX_PROVIDER=e2b` remains the explicit emergency rollback.
+E2B is the default cloud sandbox. AWS Lambda MicroVMs remain available for an
+explicit operational rollback with
+`CLOUD_SANDBOX_PROVIDER=aws-lambda-microvm`. The application continues to
+hard-gate Free users to local-only behavior.
 
 Measure provider health with `cloud_sandbox_provider_selected`. It includes the
 provider, transport (`aws_websocket` or `e2b_sdk`), subscription tier, Trigger
@@ -463,13 +464,14 @@ the MicroVM becomes `TERMINATED` in AWS. Check the
 `hackerai-agent_run` PostHog events plus structured `cloud_sandbox_*` logs for
 the test user.
 
-## Rollback
+## Switching to the AWS rollback
 
-To route production users to E2B, terminate existing AWS MicroVM sessions from
-Data Controls or AWS, set `CLOUD_SANDBOX_PROVIDER=e2b` in Trigger.dev, and
-redeploy it. Per-run AWS configuration or quota failures never silently retry
-on E2B; they remain attributed to AWS so the failure-rate guardrail stays
-honest.
+To route production users to AWS, first validate the regional release manifest
+and runtime credentials, set
+`CLOUD_SANDBOX_PROVIDER=aws-lambda-microvm` in Trigger.dev, and redeploy it.
+Per-run E2B failures never silently retry on AWS; provider selection stays
+explicit so failure-rate attribution remains honest. To return to the E2B
+default, remove the override or set `CLOUD_SANDBOX_PROVIDER=e2b` and redeploy.
 
 ## Known boundaries
 

@@ -234,26 +234,36 @@ export async function waitForSandboxReady(
   try {
     await retryWithBackoff(
       async () => {
-        // For E2B Sandbox, check if it's running first
+        let observedMetrics = false;
+
+        // isRunning() is a useful diagnostic, but it is not authoritative for
+        // readiness: a paused E2B sandbox can be resumed by the command below.
         if (isE2BSandbox(sandbox)) {
-          const running = await sandbox.isRunning();
-          if (!running) {
-            throw new Error("Sandbox is not running");
+          let running = false;
+          try {
+            running = await sandbox.isRunning();
+          } catch {
+            // A transient control-plane status failure should not prevent the
+            // command path from proving that the sandbox is usable.
           }
 
-          // Check resource metrics for early warning
-          const metrics = await checkSandboxMetrics(sandbox);
-          if (metrics) {
-            notifyResourceObserver(onResourceMetrics, {
-              kind: "health_sample",
-              source: "pre_command_health_check",
-              metrics: stripWarning(metrics)!,
-            });
-          }
-          if (metrics?.warning) {
-            console.warn(
-              `[Sandbox Health] Resource pressure detected: ${metrics.warning}`,
-            );
+          if (running) {
+            // Check resource metrics for early warning without making metrics
+            // availability part of the readiness decision.
+            const metrics = await checkSandboxMetrics(sandbox);
+            if (metrics) {
+              observedMetrics = true;
+              notifyResourceObserver(onResourceMetrics, {
+                kind: "health_sample",
+                source: "pre_command_health_check",
+                metrics: stripWarning(metrics)!,
+              });
+            }
+            if (metrics?.warning) {
+              console.warn(
+                `[Sandbox Health] Resource pressure detected: ${metrics.warning}`,
+              );
+            }
           }
         }
 
@@ -264,6 +274,25 @@ export async function waitForSandboxReady(
             // Hide from local CLI output (empty string = hide)
             displayName: "",
           } as { timeoutMs: number; displayName?: string });
+
+          // If the status probe saw a paused sandbox (or failed), the command
+          // above is the operation that can auto-resume it. Sample metrics only
+          // after that succeeds so a paused state is not treated as a failure.
+          if (isE2BSandbox(sandbox) && !observedMetrics) {
+            const metrics = await checkSandboxMetrics(sandbox);
+            if (metrics) {
+              notifyResourceObserver(onResourceMetrics, {
+                kind: "health_sample",
+                source: "pre_command_health_check",
+                metrics: stripWarning(metrics)!,
+              });
+            }
+            if (metrics?.warning) {
+              console.warn(
+                `[Sandbox Health] Resource pressure detected: ${metrics.warning}`,
+              );
+            }
+          }
         } catch (error) {
           // Enrich error with metrics context for debugging
           let metricsContext = "";
@@ -276,11 +305,11 @@ export async function waitForSandboxReady(
           // Re-throw original error to preserve instanceof checks for
           // isPermanentError (AuthenticationError, TemplateError, etc.)
           if (error instanceof Error) {
-            error.message = `Sandbox running but not ready to execute commands${metricsContext}: ${error.message}`;
+            error.message = `Sandbox not ready to execute commands${metricsContext}: ${error.message}`;
             throw error;
           }
           throw new Error(
-            `Sandbox running but not ready to execute commands${metricsContext}: ${error}`,
+            `Sandbox not ready to execute commands${metricsContext}: ${error}`,
           );
         }
       },
