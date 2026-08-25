@@ -1,8 +1,9 @@
 # Customer research privacy policy
 
 Use customer messages only for a specific internal research purpose requested by
-an authorized PM. The request must define the cohort and intended output. A
-Linear issue is optional tracking metadata, not an authorization control.
+an authorized PM using the scoped PM gateway. The request must define the cohort
+and intended output. Do not require a separate per-run approval record or check
+Linear status or comments. A Linear issue is optional tracking metadata only.
 
 ## Allowed
 

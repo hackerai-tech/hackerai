@@ -1,6 +1,6 @@
 ---
 name: hackerai-user-research
-description: Run privacy-safe HackerAI customer research from an authorized PM question and a product-data cohort. Use for requests to understand user types, recurring jobs, workflows, friction, value drivers, reasons to pay, or customer avatars from actual HackerAI messages, including top-spender research. Also use when a PM asks how to run, repeat, or interpret the `pm-user-research` Trigger task. Do not use for support investigations, decisions about one person's eligibility or risk, or exporting raw customer content.
+description: Run privacy-safe HackerAI customer research from an authorized PM question and a PostHog cohort. Use for requests to understand user types, recurring jobs, workflows, friction, value drivers, reasons to pay, or customer avatars from actual HackerAI messages, including top-spender research. Also use when a PM asks how to run, repeat, or interpret the `pm-user-research` Trigger task. Do not use for support investigations, decisions about one person's eligibility or risk, or exporting raw customer content.
 ---
 
 # HackerAI User Research
@@ -15,13 +15,17 @@ Read [references/privacy-policy.md](references/privacy-policy.md) and
 ## Workflow
 
 1. Extract the research question, cohort rule, exclusions, requested output, and
-   privacy constraints from the authorized PM's request. A Linear issue may be
-   supplied for optional tracking, but it is not an authorization control and
-   must not be required to run research.
-2. Select the cohort in PostHog. Use Stripe-synced revenue in PostHog when its
-   freshness and account mapping are sufficient. Check Stripe directly only for
-   unmatched customers, refunds/disputes, payer-versus-user ambiguity, or other
-   reconciliation gaps. Never use Google Drive.
+   privacy constraints from the authorized PM's request. Possession of the
+   scoped PM gateway key establishes access to this workflow; do not ask for a
+   separate per-run approval or inspect a Linear issue's state or comments for
+   authorization. A Linear issue may be supplied only as optional tracking
+   metadata.
+2. Select the cohort entirely in PostHog. For spend-ranked research, use the
+   available Stripe-synced revenue properties in PostHog without opening Stripe
+   or requiring Stripe access. If PostHog cannot prove an exact accounting
+   adjustment or payer mapping, use the best available PostHog cohort and state
+   that limitation in the aggregate report instead of blocking the run. Never
+   use Google Drive.
 3. Resolve each cohort member to the internal user ID used by Convex. Exclude
    internal/test/fraud accounts and deduplicate payer or organization
    relationships before triggering analysis. Stop unless 3-20 unique internal
@@ -52,17 +56,18 @@ Use the current task schema as the authority. A typical run is:
 ```json
 {
   "question": "What kinds of users are our highest-spending customers, what recurring work do they use HackerAI for, and why do they pay?",
-  "cohortLabel": "Top 10 users by reconciled lifetime net paid spend",
+  "cohortLabel": "PostHog top-spender research cohort",
   "userIds": ["internal-user-id-1", "internal-user-id-2", "internal-user-id-3"],
   "maxChatsPerUser": 12
 }
 ```
 
 `linearIssueId` may be added as an optional tracking reference, for example
-`"linearIssueId": "HAC-65"`. The issue's presence or state does not authorize
-or block a run.
+`"linearIssueId": "HAC-65"`. Do not read the issue or its comments to look for
+approval; its presence, state, and prior cohort notes never authorize or block a
+run.
 
-Do not place email addresses, Stripe customer IDs, or message content in the
+Do not place email addresses, billing customer IDs, or message content in the
 payload. `userIds` must be the internal Convex/WorkOS user IDs.
 
 ## Quality checks

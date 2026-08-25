@@ -43,7 +43,7 @@ const originalHash = process.env.PM_USER_RESEARCH_RUNNER_KEY_SHA256;
 
 const validPayload = {
   question: "What recurring work creates the most customer value?",
-  cohortLabel: "Approved production research cohort",
+  cohortLabel: "PostHog top-spender research cohort",
   userIds: ["user-1", "user-2", "user-3"],
   maxChatsPerUser: 12,
 };
@@ -80,7 +80,7 @@ const validResult = {
     followUpExperiments: [
       {
         hypothesis: "Verified practitioners value faster activation.",
-        test: "Run an approved verified-practitioner cohort.",
+        test: "Run a verified-practitioner cohort.",
         successMetric: "Activation and repeat Agent usage",
       },
     ],
