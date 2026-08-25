@@ -59,7 +59,13 @@ describe("getModerationResult", () => {
   });
 
   afterEach(() => {
-    process.env.OPENROUTER_API_KEY = originalOpenRouterApiKey;
+    // Assigning `undefined` would coerce to the string "undefined", which is
+    // truthy and would leak a fake key into every later test in this worker.
+    if (originalOpenRouterApiKey === undefined) {
+      delete process.env.OPENROUTER_API_KEY;
+    } else {
+      process.env.OPENROUTER_API_KEY = originalOpenRouterApiKey;
+    }
   });
 
   it("treats tokenizer special sentinels as normal text", async () => {

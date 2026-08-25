@@ -53,7 +53,13 @@ describe("processChatMessages authorization metadata", () => {
   });
 
   afterEach(() => {
-    process.env.OPENROUTER_API_KEY = originalOpenRouterApiKey;
+    // Assigning `undefined` would coerce to the string "undefined", which is
+    // truthy and would leak a fake key into every later test in this worker.
+    if (originalOpenRouterApiKey === undefined) {
+      delete process.env.OPENROUTER_API_KEY;
+    } else {
+      process.env.OPENROUTER_API_KEY = originalOpenRouterApiKey;
+    }
   });
 
   it("returns the authorization decision without changing provider-ready UI messages", async () => {
