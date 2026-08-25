@@ -1624,6 +1624,66 @@ describe("AWS Lambda MicroVM development logging", () => {
     warnSpy.mockRestore();
   });
 
+  it("keeps an orphan MicroVM running when its owner reconnects before fallback termination", async () => {
+    const session = {
+      sessionId: "session-fallback-reactivated",
+      status: "running" as const,
+      microvmId: "microvm-fallback-reactivated",
+      region: "us-east-1",
+    };
+    mockQuery
+      .mockResolvedValueOnce([session])
+      .mockResolvedValueOnce({
+        eligible: true,
+        reason: "eligible",
+        lastActivityAt: Date.now() - 30 * 60 * 1_000,
+      })
+      .mockResolvedValueOnce({
+        eligible: false,
+        reason: "active_parent_run",
+        lastActivityAt: Date.now(),
+      });
+    mockSend
+      .mockResolvedValueOnce({
+        state: "RUNNING",
+        endpoint: "microvm-fallback-reactivated.example.test",
+      })
+      .mockRejectedValueOnce(new Error("suspend failed"));
+    const infoSpy = jest.spyOn(console, "info").mockImplementation();
+    const warnSpy = jest.spyOn(console, "warn").mockImplementation();
+
+    await expect(
+      suspendAwsLambdaMicrovmsForUser("user-fallback-reactivated", {
+        sessionId: session.sessionId,
+        orphanCleanup: {
+          microvmId: session.microvmId,
+          staleBeforeMs: Date.now() - 15 * 60 * 1_000,
+        },
+      }),
+    ).resolves.toEqual({
+      total: 1,
+      suspended: 0,
+      alreadySuspended: 0,
+      terminated: 0,
+      alreadyGone: 0,
+      workspacesSaved: 1,
+      ownershipProtected: 1,
+    });
+    expect(mockSend).toHaveBeenCalledTimes(2);
+    expect(
+      infoSpy.mock.calls
+        .map(([payload]) => JSON.parse(payload as string))
+        .find(
+          (payload) =>
+            payload.event === "cloud_sandbox_orphan_cleanup_skipped" &&
+            payload.phase === "pre_termination",
+        ),
+    ).toMatchObject({ reason: "active_parent_run" });
+
+    infoSpy.mockRestore();
+    warnSpy.mockRestore();
+  });
+
   it("keeps a session retryable when suspend and termination both fail", async () => {
     mockQuery.mockResolvedValueOnce([
       {

@@ -2191,6 +2191,42 @@ export async function suspendAwsLambdaMicrovmsForUser(
         failures.push(error);
         continue;
       }
+      if (options.orphanCleanup) {
+        let eligibility: CloudSessionOrphanCleanupEligibility;
+        try {
+          eligibility = await getCloudSessionOrphanCleanupEligibility({
+            serviceKey,
+            userId,
+            sessionId: session.sessionId,
+            microvmId: options.orphanCleanup.microvmId,
+            staleBeforeMs: options.orphanCleanup.staleBeforeMs,
+          });
+        } catch (recheckError) {
+          failures.push(recheckError);
+          log("warn", "cloud_sandbox_orphan_cleanup_recheck_failed", {
+            user_id: userId,
+            session_id: session.sessionId,
+            microvm_id: microvmId,
+            region: session.region,
+            phase: "pre_termination",
+            failure_code: failureCode(recheckError),
+            ...errorLogFields(recheckError),
+          });
+          continue;
+        }
+        if (!eligibility.eligible) {
+          summary.ownershipProtected++;
+          log("info", "cloud_sandbox_orphan_cleanup_skipped", {
+            user_id: userId,
+            session_id: session.sessionId,
+            microvm_id: microvmId,
+            region: session.region,
+            reason: eligibility.reason,
+            phase: "pre_termination",
+          });
+          continue;
+        }
+      }
       const terminationOutcome = await terminateMicrovm(
         microvmId,
         session.region,

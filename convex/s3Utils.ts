@@ -237,7 +237,7 @@ export async function copyS3Object(
         ? (error as { $metadata?: { httpStatusCode?: unknown } }).$metadata
             ?.httpStatusCode
         : undefined;
-    if (statusCode === 409 || statusCode === 412) {
+    if (statusCode === 412) {
       return { copied: false };
     }
     throw error;

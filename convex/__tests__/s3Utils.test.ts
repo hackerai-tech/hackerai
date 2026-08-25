@@ -380,5 +380,27 @@ describe("s3Utils", () => {
         expect.objectContaining({ IfNoneMatch: "*" }),
       );
     });
+
+    it("propagates a conditional conflict when the destination may be absent", async () => {
+      const { S3Client } = await import("@aws-sdk/client-s3");
+      const conflict = {
+        name: "ConditionalRequestConflict",
+        $metadata: { httpStatusCode: 409 },
+      };
+      const mockSend = jest.fn().mockRejectedValue(conflict);
+      (S3Client as jest.MockedClass<typeof S3Client>).mockImplementation(
+        () => ({ send: mockSend }) as unknown as S3Client,
+      );
+      const { copyS3Object } = await import("../s3Utils");
+
+      await expect(
+        copyS3Object(
+          "workspace.tar.gz",
+          { region: "us-west-2", bucketName: "workspace-west" },
+          { region: "us-east-1", bucketName: "workspace-east" },
+          { ifNoneMatch: "*" },
+        ),
+      ).rejects.toBe(conflict);
+    });
   });
 });
