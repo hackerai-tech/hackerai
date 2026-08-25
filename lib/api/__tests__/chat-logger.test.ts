@@ -97,6 +97,12 @@ describe("captureAgentRun", () => {
       activeModelStreamDurationMs: 30_000,
       activeTerminalWaitDurationMs: 10_000,
       activeSandboxRecoveryDurationMs: 2_000,
+      messageCount: 14,
+      estimatedInputTokens: 28_000,
+      attachmentCount: 3,
+      imageAttachmentCount: 2,
+      isNewChat: false,
+      hadSummarization: true,
       upstreamProvider: "Cloudflare",
       providerErrorProvider: "DeepInfra",
       providerErrorCategory: "timeout",
@@ -132,6 +138,22 @@ describe("captureAgentRun", () => {
         active_model_stream_duration_ms: 30_000,
         active_terminal_wait_duration_ms: 10_000,
         active_sandbox_recovery_duration_ms: 2_000,
+        performance_diagnostics_version: 1,
+        initial_delay_phase: "pre_model",
+        initial_delay_phase_duration_ms: 875,
+        provider_first_chunk_duration_ms: 415,
+        primary_runtime_phase: "approval_wait",
+        primary_runtime_phase_duration_ms: 90_000,
+        accounted_runtime_duration_ms: 132_875,
+        unattributed_runtime_duration_ms: 0,
+        first_output_slow: false,
+        runtime_slow: false,
+        message_count: 14,
+        estimated_input_tokens: 28_000,
+        attachment_count: 3,
+        image_attachment_count: 2,
+        is_new_chat: false,
+        had_summarization: true,
         upstream_provider: "Cloudflare",
         provider_error_provider: "DeepInfra",
         provider_error_category: "timeout",
@@ -191,8 +213,71 @@ describe("captureAgentRun", () => {
         active_model_stream_duration_ms: 0,
         active_terminal_wait_duration_ms: 0,
         active_sandbox_recovery_duration_ms: 0,
+        performance_diagnostics_version: 1,
+        initial_delay_phase: "none",
+        primary_runtime_phase: "none",
+        first_output_slow: false,
+        runtime_slow: false,
       }),
     );
+  });
+
+  it("emits a structured warning for a slow run without user content", () => {
+    const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+
+    try {
+      captureAgentRun({
+        posthog: null,
+        userId: "user_123",
+        chatId: "chat_slow",
+        mode: "agent",
+        subscription: "pro",
+        sandboxInfo: { type: "e2b", provider: "e2b" },
+        outcome: "success",
+        selectedModel: "agent-model",
+        configuredModelId: "deepseek/deepseek-v4-pro",
+        responseModel: "deepseek/deepseek-v4-pro",
+        triggerRunId: "run_slow",
+        triggerUsageDurationMs: 130_000,
+        requestToFirstModelStartMs: 2_000,
+        requestToFirstModelChunkMs: 20_000,
+        activeModelStreamDurationMs: 100_000,
+        activeTerminalWaitDurationMs: 20_000,
+        messageCount: 18,
+        estimatedInputTokens: 32_000,
+        attachmentCount: 1,
+        imageAttachmentCount: 1,
+        isNewChat: false,
+        hadSummarization: false,
+        upstreamProvider: "DeepInfra",
+      });
+
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+      expect(JSON.parse(warnSpy.mock.calls[0][0] as string)).toEqual(
+        expect.objectContaining({
+          level: "warn",
+          message: "Slow agent run detected",
+          event: "agent_performance_diagnostic",
+          service: "agent-long",
+          chat_id: "chat_slow",
+          trigger_run_id: "run_slow",
+          configured_model: "deepseek/deepseek-v4-pro",
+          upstream_provider: "DeepInfra",
+          trigger_usage_duration_ms: 130_000,
+          request_to_first_model_chunk_ms: 20_000,
+          active_model_stream_duration_ms: 100_000,
+          active_terminal_wait_duration_ms: 20_000,
+          first_output_slow: true,
+          runtime_slow: true,
+          initial_delay_phase: "provider_first_chunk",
+          primary_runtime_phase: "model_stream",
+          image_attachment_count: 1,
+        }),
+      );
+      expect(warnSpy.mock.calls[0][0]).not.toContain("user_123");
+    } finally {
+      warnSpy.mockRestore();
+    }
   });
 
   it("captures explicit step-limit and current-run todo measurements", () => {
@@ -529,6 +614,14 @@ describe("captureAgentCompletionAnalytics", () => {
         active_model_stream_duration_ms: 8_000,
         active_terminal_wait_duration_ms: 4_000,
         active_sandbox_recovery_duration_ms: 0,
+        performance_diagnostics_version: 1,
+        initial_delay_phase: "none",
+        initial_delay_phase_duration_ms: 0,
+        primary_runtime_phase: "model_stream",
+        primary_runtime_phase_duration_ms: 8_000,
+        accounted_runtime_duration_ms: 12_000,
+        unattributed_runtime_duration_ms: 345,
+        runtime_slow: false,
         response_model: "deepseek/deepseek-v4-pro",
         fallback_served: false,
         sandbox_type: "e2b",

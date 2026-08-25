@@ -35,6 +35,7 @@ import {
   type ExperimentAnalyticsContext,
 } from "@/lib/analytics/experiment-context";
 import type { AgentStepLimitTelemetry } from "@/lib/analytics/agent-step-limit-telemetry";
+import { buildAgentPerformanceDiagnostics } from "@/lib/analytics/agent-performance-diagnostics";
 import {
   EXTRA_USAGE_MULTIPLIER,
   extraUsagePointsToDollars,
@@ -1267,6 +1268,12 @@ type AgentCompletionAnalyticsArgs = {
   activeModelStreamDurationMs?: number;
   activeTerminalWaitDurationMs?: number;
   activeSandboxRecoveryDurationMs?: number;
+  messageCount?: number;
+  estimatedInputTokens?: number;
+  attachmentCount?: number;
+  imageAttachmentCount?: number;
+  isNewChat?: boolean;
+  hadSummarization?: boolean;
   isAutoContinue?: boolean;
   stepLimitTelemetry?: AgentStepLimitTelemetry;
   experiment?: ExperimentAnalyticsContext;
@@ -1309,6 +1316,12 @@ export function captureAgentRun({
   activeModelStreamDurationMs,
   activeTerminalWaitDurationMs,
   activeSandboxRecoveryDurationMs,
+  messageCount,
+  estimatedInputTokens,
+  attachmentCount,
+  imageAttachmentCount,
+  isNewChat,
+  hadSummarization,
   isAutoContinue,
   stepLimitTelemetry,
   experiment,
@@ -1320,7 +1333,116 @@ export function captureAgentRun({
   providerRecoveryModels,
   providerRecoverySucceeded,
 }: Omit<AgentCompletionAnalyticsArgs, "endpoint" | "chatLogger">) {
-  if (!posthog || mode !== "agent") return;
+  if (mode !== "agent") return;
+  const performanceDiagnostics = buildAgentPerformanceDiagnostics({
+    triggerUsageDurationMs,
+    routePreTriggerDurationMs,
+    triggerTaskStartLatencyMs,
+    taskToFirstModelStartMs,
+    requestToFirstModelStartMs,
+    requestToFirstModelChunkMs,
+    approvalWaitDurationMs,
+    activeModelStreamDurationMs,
+    activeTerminalWaitDurationMs,
+    activeSandboxRecoveryDurationMs,
+  });
+  const performanceDiagnosticProperties = performanceDiagnostics
+    ? {
+        performance_diagnostics_version: performanceDiagnostics.version,
+        initial_delay_phase: performanceDiagnostics.initialDelayPhase,
+        initial_delay_phase_duration_ms:
+          performanceDiagnostics.initialDelayPhaseDurationMs,
+        ...(performanceDiagnostics.providerFirstChunkDurationMs !==
+          undefined && {
+          provider_first_chunk_duration_ms:
+            performanceDiagnostics.providerFirstChunkDurationMs,
+        }),
+        primary_runtime_phase: performanceDiagnostics.primaryRuntimePhase,
+        primary_runtime_phase_duration_ms:
+          performanceDiagnostics.primaryRuntimePhaseDurationMs,
+        accounted_runtime_duration_ms:
+          performanceDiagnostics.accountedRuntimeDurationMs,
+        ...(performanceDiagnostics.unattributedRuntimeDurationMs !==
+          undefined && {
+          unattributed_runtime_duration_ms:
+            performanceDiagnostics.unattributedRuntimeDurationMs,
+        }),
+        ...(performanceDiagnostics.firstOutputSlow !== undefined && {
+          first_output_slow: performanceDiagnostics.firstOutputSlow,
+        }),
+        ...(performanceDiagnostics.runtimeSlow !== undefined && {
+          runtime_slow: performanceDiagnostics.runtimeSlow,
+        }),
+      }
+    : undefined;
+
+  if (
+    performanceDiagnostics?.firstOutputSlow ||
+    performanceDiagnostics?.runtimeSlow
+  ) {
+    logger.warn("Slow agent run detected", {
+      event: "agent_performance_diagnostic",
+      service: "agent-long",
+      chat_id: chatId,
+      ...(triggerRunId && { trigger_run_id: triggerRunId }),
+      outcome,
+      subscription_tier: subscription,
+      selected_model: selectedModel,
+      configured_model: configuredModelId,
+      ...(responseModel && { response_model: responseModel }),
+      ...(upstreamProvider && { upstream_provider: upstreamProvider }),
+      ...(sandboxInfo?.type && { sandbox_type: sandboxInfo.type }),
+      ...(sandboxInfo?.provider && {
+        sandbox_provider: sandboxInfo.provider,
+      }),
+      ...(triggerUsageDurationMs !== undefined && {
+        trigger_usage_duration_ms: triggerUsageDurationMs,
+      }),
+      ...(requestToFirstModelChunkMs !== undefined && {
+        request_to_first_model_chunk_ms: requestToFirstModelChunkMs,
+      }),
+      ...(triggerTaskStartLatencyMs !== undefined && {
+        trigger_task_start_latency_ms: triggerTaskStartLatencyMs,
+      }),
+      ...(activeModelStreamDurationMs !== undefined && {
+        active_model_stream_duration_ms: activeModelStreamDurationMs,
+      }),
+      ...(activeTerminalWaitDurationMs !== undefined && {
+        active_terminal_wait_duration_ms: activeTerminalWaitDurationMs,
+      }),
+      ...(approvalWaitDurationMs !== undefined && {
+        approval_wait_duration_ms: approvalWaitDurationMs,
+      }),
+      ...(activeSandboxRecoveryDurationMs !== undefined && {
+        active_sandbox_recovery_duration_ms: activeSandboxRecoveryDurationMs,
+      }),
+      ...(finishReason && { finish_reason: finishReason }),
+      ...(abortSource && { abort_source: abortSource }),
+      ...(providerErrorCategory && {
+        provider_error_category: providerErrorCategory,
+      }),
+      ...(providerErrorStatusCode !== undefined && {
+        provider_error_status_code: providerErrorStatusCode,
+      }),
+      ...performanceDiagnosticProperties,
+      ...(messageCount !== undefined && { message_count: messageCount }),
+      ...(estimatedInputTokens !== undefined && {
+        estimated_input_tokens: estimatedInputTokens,
+      }),
+      ...(attachmentCount !== undefined && {
+        attachment_count: attachmentCount,
+      }),
+      ...(imageAttachmentCount !== undefined && {
+        image_attachment_count: imageAttachmentCount,
+      }),
+      ...(isNewChat !== undefined && { is_new_chat: isNewChat }),
+      ...(hadSummarization !== undefined && {
+        had_summarization: hadSummarization,
+      }),
+    });
+  }
+
+  if (!posthog) return;
   posthog.capture({
     distinctId: userId,
     event: "hackerai-agent_run",
@@ -1376,6 +1498,21 @@ export function captureAgentRun({
       }),
       ...(activeSandboxRecoveryDurationMs !== undefined && {
         active_sandbox_recovery_duration_ms: activeSandboxRecoveryDurationMs,
+      }),
+      ...performanceDiagnosticProperties,
+      ...(messageCount !== undefined && { message_count: messageCount }),
+      ...(estimatedInputTokens !== undefined && {
+        estimated_input_tokens: estimatedInputTokens,
+      }),
+      ...(attachmentCount !== undefined && {
+        attachment_count: attachmentCount,
+      }),
+      ...(imageAttachmentCount !== undefined && {
+        image_attachment_count: imageAttachmentCount,
+      }),
+      ...(isNewChat !== undefined && { is_new_chat: isNewChat }),
+      ...(hadSummarization !== undefined && {
+        had_summarization: hadSummarization,
       }),
       ...(isAutoContinue !== undefined && {
         is_auto_continue: isAutoContinue,
@@ -1472,6 +1609,12 @@ export function captureAgentCompletionAnalytics(
     activeModelStreamDurationMs: args.activeModelStreamDurationMs,
     activeTerminalWaitDurationMs: args.activeTerminalWaitDurationMs,
     activeSandboxRecoveryDurationMs: args.activeSandboxRecoveryDurationMs,
+    messageCount: args.messageCount,
+    estimatedInputTokens: args.estimatedInputTokens,
+    attachmentCount: args.attachmentCount,
+    imageAttachmentCount: args.imageAttachmentCount,
+    isNewChat: args.isNewChat,
+    hadSummarization: args.hadSummarization,
     isAutoContinue: args.isAutoContinue,
     stepLimitTelemetry: args.stepLimitTelemetry,
     experiment: args.experiment,
