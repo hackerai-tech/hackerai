@@ -174,10 +174,11 @@ detects account-wide AWS authentication or authorization loss and opens a
 distributed provider circuit. New parent Agent runs then select E2B before
 their tools and system prompt are created. A completed AWS acquisition can also
 close a half-open circuit; retryable provider failures open the global circuit
-only after three failures within two minutes and only after the launcher's
-regional recovery has already failed. Account-access failures retry AWS after
-six hours; provider outages retry after 15 minutes, with one distributed
-half-open probe.
+only after three final acquisition failures within two minutes. This includes
+attach, endpoint, workspace-restore, and ready-state failures; a `run_microvm`
+failure is counted only after its bounded regional recovery has also failed.
+Account-access failures retry AWS after six hours; provider outages retry after
+15 minutes, with one distributed half-open probe.
 
 Provider selection remains fixed for each durable run. Existing AWS sessions
 and subagents are never migrated mid-run, and a command rejected by the Cloud
