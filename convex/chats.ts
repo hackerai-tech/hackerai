@@ -765,8 +765,8 @@ export const saveChat = mutation({
  * toggles them in the UI, before sending. Client-callable, ownership-checked.
  *
  * Intentionally does NOT bump `update_time` (would reorder the sidebar) or
- * touch stream state — those side effects belong to `updateChat`, which only
- * the backend should call at end-of-stream.
+ * touch stream state. A visible user-message insert records new activity in
+ * `messages.saveMessage`; end-of-stream chat fields are handled by `updateChat`.
  */
 export const updateChatPreferences = mutation({
   args: {

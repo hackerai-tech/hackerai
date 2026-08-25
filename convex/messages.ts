@@ -494,7 +494,7 @@ async function ensureChatWritableForMessageInsert(
   chatId: string,
   userId: string,
   role: "user" | "assistant" | "system",
-): Promise<void> {
+): Promise<Doc<"chats">> {
   const chat = await loadOwnedChat(ctx, chatId, userId);
 
   if (chat.canceled_at !== undefined) {
@@ -502,7 +502,7 @@ async function ensureChatWritableForMessageInsert(
       await ctx.db.patch(chat._id, {
         canceled_at: undefined,
       });
-      return;
+      return chat;
     }
 
     throw new ConvexError({
@@ -510,6 +510,8 @@ async function ensureChatWritableForMessageInsert(
       message: "This chat is no longer accepting new messages",
     });
   }
+
+  return chat;
 }
 
 /**
@@ -542,6 +544,7 @@ export const saveMessage = mutation({
   handler: async (ctx, args) => {
     validateServiceKey(args.serviceKey);
     let failureStage = "start";
+    let chatForInsert: Doc<"chats"> | null = null;
 
     try {
       const ensureOwnedFiles = async (
@@ -695,7 +698,7 @@ export const saveMessage = mutation({
         }
 
         failureStage = "verify_chat_writable_for_insert";
-        await ensureChatWritableForMessageInsert(
+        chatForInsert = await ensureChatWritableForMessageInsert(
           ctx,
           args.chatId,
           args.userId,
@@ -712,6 +715,7 @@ export const saveMessage = mutation({
       failureStage = "extract_content";
       const content = extractTextFromParts(partsForSave);
 
+      const now = Date.now();
       const messageDocumentBase = {
         id: args.id,
         chat_id: args.chatId,
@@ -719,7 +723,7 @@ export const saveMessage = mutation({
         role: args.role,
         parts: partsForSave,
         file_ids: fileIdsForSave,
-        update_time: Date.now(),
+        update_time: now,
         model: args.model,
         mode: args.mode,
         generation_started_at: args.generationStartedAt,
@@ -800,6 +804,15 @@ export const saveMessage = mutation({
         ...messageDocumentBase,
         content: indexedContent?.content,
       });
+
+      // Move the chat to the top of the sidebar as soon as the user submits a
+      // visible message. Existing-message retries return above, so they do not
+      // create artificial activity. Hidden user messages are automatic Agent
+      // continuations rather than new user activity.
+      if (args.role === "user" && args.isHidden !== true && chatForInsert) {
+        failureStage = "update_chat_activity";
+        await ctx.db.patch(chatForInsert._id, { update_time: now });
+      }
 
       // Mark attached files as linked so purge won't remove them.
       // Batch-read in parallel, skip no-op patches when already attached.
