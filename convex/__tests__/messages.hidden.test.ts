@@ -160,6 +160,70 @@ describe("saveMessage — is_hidden handling", () => {
       "messages",
       expect.objectContaining({ is_hidden: true }),
     );
+    expect(mockCtx.db.patch).not.toHaveBeenCalledWith(
+      "chat-doc-1",
+      expect.objectContaining({ update_time: expect.any(Number) }),
+    );
+  });
+
+  it("bumps chat activity when a visible user message is inserted", async () => {
+    setupExistingMessage(null);
+
+    const { saveMessage } = await import("../messages");
+
+    await saveMessage.handler(mockCtx, {
+      serviceKey: SERVICE_KEY,
+      id: "msg-visible-user",
+      chatId: CHAT_ID,
+      userId: USER_ID,
+      role: "user" as const,
+      parts: [{ type: "text", text: "move this chat to the top" }],
+    });
+
+    const insertedMessage = mockCtx.db.insert.mock.calls[0]?.[1];
+    expect(mockCtx.db.patch).toHaveBeenCalledWith("chat-doc-1", {
+      update_time: insertedMessage.update_time,
+    });
+  });
+
+  it("does not bump chat activity for assistant message inserts", async () => {
+    setupExistingMessage(null);
+
+    const { saveMessage } = await import("../messages");
+
+    await saveMessage.handler(mockCtx, {
+      serviceKey: SERVICE_KEY,
+      id: "msg-visible-assistant",
+      chatId: CHAT_ID,
+      userId: USER_ID,
+      role: "assistant" as const,
+      parts: [{ type: "text", text: "response" }],
+    });
+
+    expect(mockCtx.db.patch).not.toHaveBeenCalledWith(
+      "chat-doc-1",
+      expect.objectContaining({ update_time: expect.any(Number) }),
+    );
+  });
+
+  it("does not bump chat activity when an existing user message is retried", async () => {
+    setupExistingMessage(makeMessage());
+
+    const { saveMessage } = await import("../messages");
+
+    await saveMessage.handler(mockCtx, {
+      serviceKey: SERVICE_KEY,
+      id: "msg-1",
+      chatId: CHAT_ID,
+      userId: USER_ID,
+      role: "user" as const,
+      parts: [{ type: "text", text: "hello" }],
+    });
+
+    expect(mockCtx.db.patch).not.toHaveBeenCalledWith(
+      "chat-doc-1",
+      expect.objectContaining({ update_time: expect.any(Number) }),
+    );
   });
 
   it("stores the Trigger run ID on an inserted assistant message", async () => {
@@ -426,6 +490,9 @@ describe("saveMessage — is_hidden handling", () => {
 
     expect(mockCtx.db.patch).toHaveBeenCalledWith("chat-doc-1", {
       canceled_at: undefined,
+    });
+    expect(mockCtx.db.patch).toHaveBeenCalledWith("chat-doc-1", {
+      update_time: expect.any(Number),
     });
     expect(mockCtx.db.insert).toHaveBeenCalledWith(
       "messages",
