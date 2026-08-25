@@ -84,6 +84,25 @@ async function validateToken(
   return { valid: true, userId: tokenRecord.user_id };
 }
 
+const LOCAL_CONNECTION_MODES = ["docker", "dangerous"] as const;
+
+async function collectConnectedLocalConnections(
+  db: DatabaseReader,
+  userId: string,
+) {
+  const groups = await Promise.all(
+    LOCAL_CONNECTION_MODES.map((mode) =>
+      db
+        .query("local_sandbox_connections")
+        .withIndex("by_user_and_status_and_mode", (q) =>
+          q.eq("user_id", userId).eq("status", "connected").eq("mode", mode),
+        )
+        .collect(),
+    ),
+  );
+  return groups.flat();
+}
+
 export const getToken = mutation({
   args: {},
   returns: v.object({
@@ -162,13 +181,7 @@ export const regenerateToken = mutation({
     // Disconnect existing *connected* rows. Skip already-disconnected rows so
     // we don't clobber their original disconnect_reason/disconnected_at —
     // those are the diagnostic signal we're trying to preserve.
-    const connections = await ctx.db
-      .query("local_sandbox_connections")
-      .withIndex("by_user_and_status", (q) =>
-        q.eq("user_id", userId).eq("status", "connected"),
-      )
-      .filter((q) => q.neq(q.field("mode"), "cloud"))
-      .collect();
+    const connections = await collectConnectedLocalConnections(ctx.db, userId);
 
     const now = Date.now();
     for (const connection of connections) {
@@ -675,13 +688,7 @@ export const listConnections = query({
 
     const userId = identity.subject;
 
-    const connections = await ctx.db
-      .query("local_sandbox_connections")
-      .withIndex("by_user_and_status", (q) =>
-        q.eq("user_id", userId).eq("status", "connected"),
-      )
-      .filter((q) => q.neq(q.field("mode"), "cloud"))
-      .collect();
+    const connections = await collectConnectedLocalConnections(ctx.db, userId);
 
     return connections.map((conn) => ({
       connectionId: conn.connection_id,
@@ -723,13 +730,10 @@ export const listConnectionsForBackend = query({
   handler: async (ctx, args) => {
     validateServiceKey(args.serviceKey);
 
-    const connections = await ctx.db
-      .query("local_sandbox_connections")
-      .withIndex("by_user_and_status", (q) =>
-        q.eq("user_id", args.userId).eq("status", "connected"),
-      )
-      .filter((q) => q.neq(q.field("mode"), "cloud"))
-      .collect();
+    const connections = await collectConnectedLocalConnections(
+      ctx.db,
+      args.userId,
+    );
 
     return connections.map((conn) => ({
       connectionId: conn.connection_id,

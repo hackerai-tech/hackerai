@@ -823,6 +823,7 @@ export default defineSchema({
     .index("by_user_id", ["user_id"])
     .index("by_connection_id", ["connection_id"])
     .index("by_user_and_status", ["user_id", "status"])
+    .index("by_user_and_status_and_mode", ["user_id", "status", "mode"])
     .index("by_status_and_created_at", ["status", "created_at"]),
 
   // Per-request usage logs for the usage dashboard
