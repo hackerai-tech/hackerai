@@ -25,7 +25,7 @@ You'll need the following accounts:
 
 - [OpenRouter](https://openrouter.ai/) - AI model provider
 - [OpenAI](https://platform.openai.com/) - Content moderation
-- [E2B](https://e2b.dev/) or [AWS Lambda MicroVMs](https://docs.aws.amazon.com/lambda/latest/dg/lambda-microvms-guide.html) - Isolated cloud execution in Agent mode
+- [E2B](https://e2b.dev/) - Isolated cloud execution in Agent mode
 - [Convex](https://www.convex.dev/) - Database and backend
 - [WorkOS](https://workos.com/) - Authentication and user management
 - [Trigger.dev](https://trigger.dev/) - Required durable runtime for agent tasks

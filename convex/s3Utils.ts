@@ -4,7 +4,6 @@ import {
   GetObjectCommand,
   DeleteObjectCommand,
   HeadObjectCommand,
-  CopyObjectCommand,
 } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { v4 as uuidv4 } from "uuid";
@@ -24,28 +23,13 @@ function getRequiredEnvVar(name: string): string {
   return value;
 }
 
-export type S3ObjectTarget = {
-  region: string;
-  bucketName: string;
-};
-
-function getS3ObjectTarget(target?: S3ObjectTarget): S3ObjectTarget {
-  return (
-    target ?? {
-      region: getRequiredEnvVar("AWS_S3_REGION"),
-      bucketName: getRequiredEnvVar("AWS_S3_BUCKET_NAME"),
-    }
-  );
-}
-
 /**
  * Get S3 client with credentials from environment variables
  */
-export function getS3Client(
-  region = getRequiredEnvVar("AWS_S3_REGION"),
-): S3Client {
+export function getS3Client(): S3Client {
   const accessKeyId = getRequiredEnvVar("AWS_S3_ACCESS_KEY_ID");
   const secretAccessKey = getRequiredEnvVar("AWS_S3_SECRET_ACCESS_KEY");
+  const region = getRequiredEnvVar("AWS_S3_REGION");
 
   return new S3Client({
     region,
@@ -111,34 +95,13 @@ export async function generateS3UploadUrl(
   }
 }
 
-/** Generate a presigned upload URL for a trusted, pre-scoped S3 key. */
-export async function generateS3UploadUrlForKey(
-  s3Key: string,
-  expiresIn = getS3UrlLifetimeSeconds(),
-  target?: S3ObjectTarget,
-): Promise<string> {
-  const { region, bucketName } = getS3ObjectTarget(target);
-  const s3Client = getS3Client(region);
-  const command = new PutObjectCommand({
-    Bucket: bucketName,
-    Key: s3Key,
-  });
-
-  return getSignedUrl(s3Client, command, {
-    expiresIn,
-  });
-}
-
 /**
  * Generate presigned URL for file download
  */
-export async function generateS3DownloadUrl(
-  s3Key: string,
-  target?: S3ObjectTarget,
-): Promise<string> {
+export async function generateS3DownloadUrl(s3Key: string): Promise<string> {
   try {
-    const { region, bucketName } = getS3ObjectTarget(target);
-    const s3Client = getS3Client(region);
+    const s3Client = getS3Client();
+    const bucketName = getRequiredEnvVar("AWS_S3_BUCKET_NAME");
 
     const command = new GetObjectCommand({
       Bucket: bucketName,
@@ -159,114 +122,13 @@ export async function generateS3DownloadUrl(
   }
 }
 
-export type S3ObjectMetadata =
-  | { exists: false }
-  | { exists: true; lastModifiedMs: number | null; eTag: string | null };
-
-/** Read object presence plus its S3-authoritative modification time and ETag. */
-export async function getS3ObjectMetadata(
-  s3Key: string,
-  target?: S3ObjectTarget,
-): Promise<S3ObjectMetadata> {
-  const { region, bucketName } = getS3ObjectTarget(target);
-  const s3Client = getS3Client(region);
-
-  try {
-    const result = await s3Client.send(
-      new HeadObjectCommand({ Bucket: bucketName, Key: s3Key }),
-    );
-    return {
-      exists: true,
-      lastModifiedMs: result.LastModified?.getTime() ?? null,
-      eTag: result.ETag ?? null,
-    };
-  } catch (error) {
-    const record =
-      error && typeof error === "object"
-        ? (error as {
-            name?: unknown;
-            $metadata?: { httpStatusCode?: unknown };
-          })
-        : null;
-    if (
-      record?.name === "NotFound" ||
-      record?.name === "NoSuchKey" ||
-      record?.$metadata?.httpStatusCode === 404
-    ) {
-      return { exists: false };
-    }
-    if (record?.$metadata?.httpStatusCode === 403) {
-      throw new Error(
-        `S3 metadata access denied in ${region} (HTTP 403); verify s3:GetObject permission for the target key`,
-        { cause: error },
-      );
-    }
-    throw error;
-  }
-}
-
-/**
- * Copy a trusted object into another regional bucket. The copy runs inside S3,
- * so a MicroVM never has to download a cross-region workspace through NAT.
- * The destination precondition keeps a concurrent checkpoint from being
- * overwritten by the restore copy.
- */
-export async function copyS3Object(
-  s3Key: string,
-  source: S3ObjectTarget,
-  destination: S3ObjectTarget,
-  destinationCondition: { ifMatch: string } | { ifNoneMatch: "*" },
-): Promise<{
-  outcome: "copied" | "destination_changed" | "retryable_conflict";
-}> {
-  const s3Client = getS3Client(destination.region);
-  const encodedKey = s3Key.split("/").map(encodeURIComponent).join("/");
-  try {
-    await s3Client.send(
-      new CopyObjectCommand({
-        Bucket: destination.bucketName,
-        Key: s3Key,
-        CopySource: `${source.bucketName}/${encodedKey}`,
-        ...(destinationCondition && "ifMatch" in destinationCondition
-          ? { IfMatch: destinationCondition.ifMatch }
-          : { IfNoneMatch: "*" }),
-      }),
-    );
-    return { outcome: "copied" };
-  } catch (error) {
-    const statusCode =
-      error && typeof error === "object"
-        ? (error as { $metadata?: { httpStatusCode?: unknown } }).$metadata
-            ?.httpStatusCode
-        : undefined;
-    if (statusCode === 412) {
-      return { outcome: "destination_changed" };
-    }
-    if (statusCode === 409) {
-      return { outcome: "retryable_conflict" };
-    }
-    throw error;
-  }
-}
-
-/** Return whether an S3 object exists without treating a missing key as an error. */
-export async function s3ObjectExists(
-  s3Key: string,
-  target?: S3ObjectTarget,
-): Promise<boolean> {
-  return (await getS3ObjectMetadata(s3Key, target)).exists;
-}
-
 /**
  * Delete object from S3
  */
-export async function deleteS3Object(
-  s3Key: string,
-  target?: S3ObjectTarget,
-): Promise<void> {
+export async function deleteS3Object(s3Key: string): Promise<void> {
   try {
-    const { region, bucketName } = getS3ObjectTarget(target);
-    const s3Client = getS3Client(region);
+    const s3Client = getS3Client();
+    const bucketName = getRequiredEnvVar("AWS_S3_BUCKET_NAME");
 
     const command = new DeleteObjectCommand({
       Bucket: bucketName,

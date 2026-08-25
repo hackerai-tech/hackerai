@@ -314,8 +314,6 @@ export const POST = async (req: NextRequest) => {
       "account-deleted",
     );
 
-    // Provider cleanup must finish while the Convex session rows still retain
-    // the AWS MicroVM identifiers needed for termination and safe retries.
     stage = "terminate_cloud_sandboxes";
     await terminateCloudSandboxesForUser(userId);
 

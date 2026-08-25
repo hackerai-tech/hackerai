@@ -40,16 +40,14 @@ import { FileAccumulator } from "./utils/file-accumulator";
 import { BackgroundProcessTracker } from "./utils/background-process-tracker";
 import { ptySessionManager } from "./utils/pty-session-manager";
 import { createPtyParserLogBudget } from "./utils/pty-output-formatter";
-import { isAwsLambdaMicrovmSandbox, isE2BSandbox } from "./utils/sandbox-types";
+import { isE2BSandbox } from "./utils/sandbox-types";
 import { getSandboxWithFallbackGuard } from "./utils/sandbox-fallback";
 import { createE2BResourcePressureObserver } from "@/lib/analytics/sandbox-resource-pressure";
 import { E2B_COST_PER_MS } from "./utils/e2b-cost";
-import { AWS_LAMBDA_MICROVM_COST_PER_MS } from "./utils/aws-lambda-microvm-cost";
 import { phLogger } from "@/lib/posthog/server";
 import type { TriggerRunRegion } from "@/lib/api/trigger-region";
 import type { CloudSandboxAcquisitionContext } from "./utils/cloud-sandbox";
 import type { CloudSandboxProvider } from "./utils/cloud-sandbox-provider";
-import type { CloudSandboxProviderSelectionReason } from "./utils/cloud-sandbox-provider-circuit";
 
 export { isE2BSandbox };
 
@@ -59,7 +57,6 @@ export type CreateToolsRuntimePolicy = {
   ptyScopeId?: string;
   chargeSandboxRuntime?: boolean;
   cloudSandboxProvider?: CloudSandboxProvider;
-  cloudSandboxProviderSelectionReason?: CloudSandboxProviderSelectionReason;
   triggerRegion?: TriggerRunRegion;
 };
 
@@ -67,13 +64,10 @@ export type SandboxSessionUsage = {
   totalCostDollars: number;
   e2bRuntimeMs: number;
   e2bCostDollars: number;
-  awsLambdaMicrovmRuntimeMs: number;
-  awsLambdaMicrovmCostDollars: number;
 };
 
 const emptySandboxRuntimeMs = (): Record<CloudSandboxProvider, number> => ({
   e2b: 0,
-  "aws-lambda-microvm": 0,
 });
 
 // Factory function to create tools with context
@@ -125,16 +119,11 @@ export const createTools = (
     triggerRegion: runtimePolicy.triggerRegion,
     runKind:
       runtimePolicy.chargeSandboxRuntime === false ? "subagent" : "parent",
-    providerSelectionReason: runtimePolicy.cloudSandboxProviderSelectionReason,
   };
 
   const trackSandboxUsage = (newSandbox: AnySandbox) => {
     sandbox = newSandbox;
-    const provider = isAwsLambdaMicrovmSandbox(newSandbox)
-      ? "aws-lambda-microvm"
-      : isE2BSandbox(newSandbox)
-        ? "e2b"
-        : null;
+    const provider = isE2BSandbox(newSandbox) ? "e2b" : null;
     const now = Date.now();
     if (
       sandboxCostSegmentStartedAt !== null &&
@@ -156,52 +145,15 @@ export const createTools = (
         chat_id: chatId,
         trigger_run_id: triggerRunId,
         provider,
-        provider_selection_reason:
-          runtimePolicy.cloudSandboxProviderSelectionReason ?? "configured",
-        cloud_sandbox_transport:
-          provider === "aws-lambda-microvm" ? "aws_websocket" : "e2b_sdk",
+        provider_selection_reason: "configured",
+        cloud_sandbox_transport: "e2b_sdk",
         subscription,
         subscription_tier: subscription,
         agent_run_kind: cloudSandboxContext.runKind,
         sandbox_boot_path: sandboxBootInfo?.path,
         sandbox_acquisition_duration_ms: sandboxBootInfo?.duration_ms,
         sandbox_create_attempts: sandboxBootInfo?.create_attempts,
-        region:
-          provider === "aws-lambda-microvm"
-            ? sandboxBootInfo?.region
-            : undefined,
-        trigger_region:
-          provider === "aws-lambda-microvm"
-            ? sandboxBootInfo?.trigger_region
-            : undefined,
-        requested_region:
-          provider === "aws-lambda-microvm"
-            ? sandboxBootInfo?.requested_region
-            : undefined,
-        region_placement_reason:
-          provider === "aws-lambda-microvm"
-            ? sandboxBootInfo?.placement_reason
-            : undefined,
-        microvm_release_id:
-          provider === "aws-lambda-microvm"
-            ? sandboxBootInfo?.release_id
-            : undefined,
-        image_version:
-          provider === "aws-lambda-microvm"
-            ? (sandboxBootInfo?.image_version ?? "latest")
-            : (process.env.E2B_TEMPLATE ?? "terminal-agent-sandbox"),
-        region_failover_from:
-          provider === "aws-lambda-microvm"
-            ? sandboxBootInfo?.failover_from_region
-            : undefined,
-        region_failover_error_name:
-          provider === "aws-lambda-microvm"
-            ? sandboxBootInfo?.failover_error_name
-            : undefined,
-        region_failover_duration_ms:
-          provider === "aws-lambda-microvm"
-            ? sandboxBootInfo?.failover_duration_ms
-            : undefined,
+        image_version: process.env.E2B_TEMPLATE ?? "terminal-agent-sandbox",
         cloud_sandbox_provider_event_version: 6,
       });
     }
@@ -394,8 +346,6 @@ export const createTools = (
         totalCostDollars: 0,
         e2bRuntimeMs: 0,
         e2bCostDollars: 0,
-        awsLambdaMicrovmRuntimeMs: 0,
-        awsLambdaMicrovmCostDollars: 0,
       };
     }
 
@@ -405,14 +355,10 @@ export const createTools = (
         Date.now() - sandboxCostSegmentStartedAt;
     }
     const e2bCostDollars = runtimeMs.e2b * E2B_COST_PER_MS;
-    const awsLambdaMicrovmCostDollars =
-      runtimeMs["aws-lambda-microvm"] * AWS_LAMBDA_MICROVM_COST_PER_MS;
     return {
-      totalCostDollars: e2bCostDollars + awsLambdaMicrovmCostDollars,
+      totalCostDollars: e2bCostDollars,
       e2bRuntimeMs: runtimeMs.e2b,
       e2bCostDollars,
-      awsLambdaMicrovmRuntimeMs: runtimeMs["aws-lambda-microvm"],
-      awsLambdaMicrovmCostDollars,
     };
   };
 

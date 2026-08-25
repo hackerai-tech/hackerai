@@ -20,7 +20,6 @@ import {
 import type { Geo } from "@vercel/functions";
 import type { TriggerRunRegion } from "@/lib/api/trigger-region";
 import PostHogClient from "@/app/posthog";
-import { resolveCloudSandboxProviderForRun } from "@/lib/ai/tools/utils/cloud-sandbox-provider-circuit";
 import { recordGroupedSpikeAlert } from "@/lib/observability/grouped-spike-alert";
 
 import { systemPrompt } from "@/lib/system-prompt";
@@ -92,7 +91,6 @@ import {
   updateChat,
   updateChatTitle,
   getUserCustomization,
-  getActiveTriggerRunsForUser,
   setActiveTriggerRun,
   setActiveAgentApprovalPending,
   persistAgentApprovalGrant,
@@ -102,7 +100,6 @@ import {
   prepareForNewStream,
   setConvexUrl,
 } from "@/lib/db/actions";
-import { suspendCloudSandboxesForUser } from "@/lib/ai/tools/utils/cloud-sandbox";
 import { stringifyRedactedError } from "@/lib/utils/error-redaction";
 import { resolveProjectExecutionContext } from "@/lib/chat/project-context";
 import {
@@ -279,7 +276,6 @@ import {
 import {
   cancelSubagentsForParent,
   listActiveSubagentsForParent,
-  listActiveSubagentsForUser,
   listSubagentsForParent,
   markSubagentResultConsumedForParent,
   markSubagentResultInjectedForParent,
@@ -2180,128 +2176,8 @@ const finishCloudSandboxLifecycleForParentRun = async ({
       clearApprovalPending: true,
     });
   } catch (error) {
-    // Continue to the authoritative user-wide query. If the compare-clear did
-    // not commit, the current run is filtered below while every other run
-    // remains a reason to keep the shared MicroVM active.
-    triggerLogger.warn(
-      "[agent-long] active run clear failed before sandbox wind-down",
-      {
-        event: "agent_cloud_sandbox_active_run_clear_failed",
-        user_id: userId,
-        chat_id: chatId,
-        trigger_run_id: triggerRunId,
-        error: stringifyRedactedError(error),
-      },
-    );
-  }
-
-  try {
-    const activeSubagents = await listActiveSubagentsForParent(triggerRunId);
-    if (activeSubagents.length > 0) {
-      triggerLogger.info(
-        "[agent-long] shared sandbox retained for active subagents",
-        {
-          event: "agent_cloud_sandbox_suspend_skipped",
-          user_id: userId,
-          chat_id: chatId,
-          trigger_run_id: triggerRunId,
-          active_subagent_count: activeSubagents.length,
-          reason: "subagents_active",
-        },
-      );
-      return;
-    }
-  } catch (error) {
-    triggerLogger.error("[agent-long] failed to check active subagents", {
-      event: "agent_cloud_sandbox_active_subagents_check_failed",
-      user_id: userId,
-      chat_id: chatId,
-      trigger_run_id: triggerRunId,
-      error: stringifyRedactedError(error),
-    });
-    return;
-  }
-
-  try {
-    const activeUserSubagents = await listActiveSubagentsForUser(userId);
-    if (activeUserSubagents.runs.length > 0 || activeUserSubagents.hasMore) {
-      triggerLogger.info(
-        "[agent-long] shared sandbox retained for user-wide active subagents",
-        {
-          event: "agent_cloud_sandbox_suspend_skipped",
-          user_id: userId,
-          chat_id: chatId,
-          trigger_run_id: triggerRunId,
-          active_subagent_count: activeUserSubagents.runs.length,
-          active_subagents_truncated: activeUserSubagents.hasMore,
-          reason: "user_subagents_active",
-        },
-      );
-      return;
-    }
-  } catch (error) {
-    triggerLogger.error(
-      "[agent-long] failed to check user-wide active subagents",
-      {
-        event: "agent_cloud_sandbox_user_subagents_check_failed",
-        user_id: userId,
-        chat_id: chatId,
-        trigger_run_id: triggerRunId,
-        error: stringifyRedactedError(error),
-      },
-    );
-    return;
-  }
-
-  let activeRuns: Awaited<ReturnType<typeof getActiveTriggerRunsForUser>>;
-  try {
-    activeRuns = await getActiveTriggerRunsForUser({ userId });
-  } catch (error) {
-    // Do not risk suspending a shared MicroVM when its active users cannot be
-    // established. The platform maximum duration remains the final backstop.
-    triggerLogger.error("[agent-long] failed to check shared sandbox users", {
-      event: "agent_cloud_sandbox_active_runs_check_failed",
-      user_id: userId,
-      chat_id: chatId,
-      trigger_run_id: triggerRunId,
-      error: stringifyRedactedError(error),
-    });
-    return;
-  }
-
-  const otherRuns = activeRuns.runs.filter(
-    (run) => run.triggerRunId !== triggerRunId,
-  );
-  if (otherRuns.length > 0 || activeRuns.hasMore) {
-    triggerLogger.info("[agent-long] shared sandbox retained for active runs", {
-      event: "agent_cloud_sandbox_suspend_skipped",
-      user_id: userId,
-      chat_id: chatId,
-      trigger_run_id: triggerRunId,
-      other_active_run_count: otherRuns.length,
-      active_runs_truncated: activeRuns.hasMore,
-      reason: "other_agent_runs_active",
-    });
-    return;
-  }
-
-  try {
-    const result = await suspendCloudSandboxesForUser(userId);
-    if (result.total > 0) {
-      triggerLogger.info("[agent-long] shared sandbox wind-down completed", {
-        event: "agent_cloud_sandbox_wind_down_completed",
-        user_id: userId,
-        chat_id: chatId,
-        trigger_run_id: triggerRunId,
-        ...result,
-      });
-    }
-  } catch (error) {
-    // Wind-down retains an unsaved VM so its checkpoint loop can retry. Once a
-    // snapshot exists, a failed suspend can still terminate as a cost backstop.
-    // Preserve the Agent result while surfacing the cleanup failure.
-    triggerLogger.error("[agent-long] shared sandbox wind-down failed", {
-      event: "agent_cloud_sandbox_wind_down_failed",
+    triggerLogger.warn("[agent-long] active run clear failed", {
+      event: "agent_cloud_sandbox_active_run_clear_failed",
       user_id: userId,
       chat_id: chatId,
       trigger_run_id: triggerRunId,
@@ -2621,9 +2497,7 @@ export const agentLongTask = task({
         selectedModelOverride,
       });
       const posthog = PostHogClient();
-      const cloudSandboxProviderSelection =
-        await resolveCloudSandboxProviderForRun({ requestId: ctx.run.id });
-      const cloudSandboxProvider = cloudSandboxProviderSelection.provider;
+      const cloudSandboxProvider = "e2b" as const;
 
       const baseTodos: Todo[] = getBaseTodosForRequest(
         (chat?.todos as unknown as Todo[]) || [],
@@ -3296,8 +3170,6 @@ export const agentLongTask = task({
               auxiliaryVision,
               {
                 cloudSandboxProvider,
-                cloudSandboxProviderSelectionReason:
-                  cloudSandboxProviderSelection.reason,
                 triggerRegion,
                 ...(subagentsEnabled
                   ? {

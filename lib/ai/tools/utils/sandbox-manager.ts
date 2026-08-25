@@ -106,7 +106,7 @@ export class DefaultSandboxManager implements SandboxManager {
   async resetSandbox(_reason?: string): Promise<void> {
     // E2B is shared per user, so recovery only forgets its SDK connection.
     // Relay sandboxes own a websocket client, which is safe to close while the
-    // underlying local host or MicroVM continues running.
+    // underlying sandbox continues running.
     const sandbox = this.sandbox;
     this.sandbox = null;
     if (sandbox && !isE2BSandbox(sandbox)) {

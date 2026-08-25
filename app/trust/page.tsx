@@ -72,7 +72,7 @@ const subprocessors: Subprocessor[] = [
   },
   {
     name: "E2B",
-    purpose: "Emergency rollback cloud sandboxes",
+    purpose: "Cloud sandboxes",
     dataCategories: "Commands, command output, files inside the sandbox",
   },
   {
@@ -81,10 +81,9 @@ const subprocessors: Subprocessor[] = [
     dataCategories: "Account data, tasks, messages, files, settings",
   },
   {
-    name: "Amazon Web Services (Lambda MicroVMs and S3)",
-    purpose: "Cloud sandboxes and file storage",
-    dataCategories:
-      "Commands, command output, files inside the sandbox, uploaded files",
+    name: "Amazon Web Services (S3)",
+    purpose: "File storage",
+    dataCategories: "Uploaded files",
   },
   {
     name: "Upstash / Redis",
@@ -232,10 +231,9 @@ export default function TrustPage() {
           <div className="grid gap-6 md:grid-cols-2">
             <Section icon={Terminal} title="Execution environments">
               <p>
-                By default, terminal and browser actions run in an isolated AWS
-                Lambda MicroVM tied to your account, separate from our
-                application infrastructure. You can delete your sandboxes at any
-                time from Settings &rarr; Data controls.
+                By default, terminal and browser actions run in an isolated E2B
+                cloud sandbox. You can delete your sandboxes at any time from
+                Settings &rarr; Data controls.
               </p>
               <p>
                 A local execution mode is also available. It runs commands

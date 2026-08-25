@@ -216,29 +216,13 @@ Setup instructions: https://help.hackerai.co/en/articles/12961920-connecting-a-h
 </local_machine_access>`;
 
 const getDefaultSandboxEnvironmentSection = (
-  provider: CloudSandboxProvider = getCloudSandboxProvider(),
+  _provider: CloudSandboxProvider = getCloudSandboxProvider(),
 ): string => {
-  const portScanningSection =
-    provider === "e2b"
-      ? `Port-scanning limitation:
+  const portScanningSection = `Port-scanning limitation:
 - Cloud Agent networking can produce false-positive TCP port results where many or all ports appear open. This can affect naabu, nmap TCP connect scans, nc, and other tools that rely on successful outbound connections; changing scanner flags may not fix the underlying network behavior.
 - Treat implausible Cloud Agent port-scan output as invalid or unverified. Do not keep retrying broad scans, claim the ports are confirmed open, or blame the scanning tool when the environment is the likely cause.
-- When the user needs reliable port scanning or normal TCP, UDP, or raw-socket behavior, explain this Cloud Agent limitation and recommend selecting the HackerAI Desktop App or a Remote Control connection as the execution environment so the tools use that machine's native network stack.`
-      : "";
-  const cloudScanSafetySection =
-    provider === "aws-lambda-microvm"
-      ? `Cloud egress safeguard:
-- AWS Cloud permits bounded nmap and naabu port scans of one target and at most 1,000 ports.
-- CIDRs broader than one host, target lists, multiple targets, full-port sweeps, dedicated mass scanners such as masscan, zmap, and rustscan, and bulk nuclei or httpx target lists are unavailable in Cloud.
-- Use HackerAI Desktop or Remote Control for larger authorized scans. Normal web, API, browser, package, repository, and bounded application-security traffic remains available in Cloud.
-- Do not retry a blocked scan through shell wrappers, aliases, encoding, custom fan-out scripts, or alternative bulk scanners. When this safeguard blocks a command, the Cloud connection is closed and MicroVM termination is attempted automatically. If termination cannot be confirmed, the command remains blocked; do not retry in Cloud.`
-      : "";
-  const systemEnvironment =
-    provider === "aws-lambda-microvm"
-      ? `- OS: Kali Linux rolling, linux/arm64 (with internet access)
-- Compute: 2 baseline vCPU and 4 GiB RAM, with short vertical bursts managed by AWS. Avoid running multiple sustained CPU-intensive cracking, fuzzing, or scanning jobs concurrently.
-- User: \`root\` (with sudo privileges)`
-      : `- OS: Debian GNU/Linux 12 linux/amd64 (with internet access)
+- When the user needs reliable port scanning or normal TCP, UDP, or raw-socket behavior, explain this Cloud Agent limitation and recommend selecting the HackerAI Desktop App or a Remote Control connection as the execution environment so the tools use that machine's native network stack.`;
+  const systemEnvironment = `- OS: Debian GNU/Linux 12 linux/amd64 (with internet access)
 - Compute: 4 vCPU, 4 GiB RAM. Avoid running multiple CPU-intensive cracking, fuzzing, or scanning jobs concurrently.
 - User: \`root\` (with sudo privileges)`;
 
@@ -253,14 +237,12 @@ Local/internal target access:
 
 ${portScanningSection}
 
-${cloudScanSafetySection}
-
 System Environment:
 ${systemEnvironment}
 - Home directory: /home/user
 - User attachments are available in /home/user/upload. If a specific file is not found, ask the user to re-upload and resend their message with the file attached
 - Inline image attachments are already visible in the conversation. If an \`inline_image_attachment\` also lists a sandbox path, use that path only for file-system operations such as metadata extraction, conversion, or scripting; do not call the file view action just to describe the image.
-${provider === "e2b" ? "- VPN connectivity is not available due to missing TUN/TAP device support in the sandbox environment" : "- Before using a VPN, check whether /dev/net/tun is present and whether the selected AWS network connector permits the required traffic"}
+- VPN connectivity is not available due to missing TUN/TAP device support in the sandbox environment
 
 Development Environment:
 - Python 3.12.11 (commands: python3, pip3)
