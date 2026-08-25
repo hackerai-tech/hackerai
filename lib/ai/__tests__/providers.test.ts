@@ -766,6 +766,53 @@ describe("OpenRouter request normalization", () => {
     }
   });
 
+  it("rejects duplicate filenames instead of removing an ambiguous file part", async () => {
+    const warnSpy = jest
+      .spyOn(console, "warn")
+      .mockImplementation(() => undefined);
+    const fetchMock = jest.fn();
+    const patchedFetch = createOpenRouterPatchFetch(
+      fetchMock as unknown as typeof fetch,
+    );
+    const perFileData = "a".repeat(OPENROUTER_REQUEST_MAX_BYTES / 2);
+
+    try {
+      const response = await patchedFetch("https://openrouter.test/chat", {
+        method: "POST",
+        body: JSON.stringify({
+          model: "deepseek/deepseek-v4-flash-0731",
+          messages: [
+            {
+              role: "user",
+              content: [
+                {
+                  type: "text",
+                  text: '<attachment filename="report.pdf" local_path="/home/user/upload/report.pdf" />',
+                },
+                {
+                  type: "file",
+                  file: { filename: "report.pdf", file_data: perFileData },
+                },
+                {
+                  type: "file",
+                  file: { filename: "report.pdf", file_data: perFileData },
+                },
+              ],
+            },
+          ],
+        }),
+      });
+
+      expect(response.status).toBe(413);
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining('"action":"rejected"'),
+      );
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
   it("measures after encrypted reasoning normalization reduces the body", async () => {
     const fetchMock = jest
       .fn()

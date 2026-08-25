@@ -524,10 +524,7 @@ const createSandboxPdfRecoveryBody = (
   if (!isRecord(body) || !Array.isArray(body.messages)) {
     return { body, changed: false };
   }
-  const sandboxAttachmentFilenames = collectSandboxAttachmentFilenames(
-    body.messages,
-  );
-  if (sandboxAttachmentFilenames.size === 0) {
+  if (collectSandboxAttachmentFilenames(body.messages).size === 0) {
     return { body, changed: false };
   }
 
@@ -538,10 +535,28 @@ const createSandboxPdfRecoveryBody = (
     if (message.role === "user") lastUserMessageIndex = index;
     if (!Array.isArray(message.content)) return message;
 
+    // The provider file part does not retain a stable attachment ID. Limit a
+    // filename match to the same message and reject duplicate names there.
+    const sandboxAttachmentFilenames = collectSandboxAttachmentFilenames([
+      message,
+    ]);
+    const filePartFilenameCounts = new Map<string, number>();
+    message.content.forEach((part) => {
+      if (!isFileRequestPart(part)) return;
+      const filename = getFileRequestFilename(part);
+      if (!filename) return;
+      filePartFilenameCounts.set(
+        filename,
+        (filePartFilenameCounts.get(filename) ?? 0) + 1,
+      );
+    });
+
     const content = message.content.filter((part) => {
       const filename = getFileRequestFilename(part);
       const shouldRemove =
-        Boolean(filename && sandboxAttachmentFilenames.has(filename)) &&
+        filename !== undefined &&
+        sandboxAttachmentFilenames.has(filename) &&
+        filePartFilenameCounts.get(filename) === 1 &&
         (removeAllFileParts ? isFileRequestPart(part) : isPdfRequestPart(part));
       removedFilePart ||= shouldRemove;
       return !shouldRemove;
