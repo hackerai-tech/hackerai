@@ -13,6 +13,7 @@ import {
   MALFORMED_PDF_USER_RESPONSE,
   makeOpenRouterToolChoiceCompatibleWithXaiReasoning,
   normalizeOpenRouterRequestForKimi,
+  OPENROUTER_REQUEST_MAX_BYTES,
   PDF_PARSER_ENGINE_HEADER,
   PDF_PARSER_RECOVERY_HEADER,
   sanitizeOpenRouterEncryptedReasoning,
@@ -640,6 +641,166 @@ describe("makeOpenRouterToolChoiceCompatibleWithXaiReasoning", () => {
 });
 
 describe("OpenRouter request normalization", () => {
+  it("allows a request exactly at the complete serialized byte limit", async () => {
+    const fetchMock = jest
+      .fn()
+      .mockResolvedValueOnce(new Response("ok", { status: 200 }));
+    const patchedFetch = createOpenRouterPatchFetch(
+      fetchMock as unknown as typeof fetch,
+    );
+    const body = " ".repeat(OPENROUTER_REQUEST_MAX_BYTES);
+
+    await patchedFetch("https://openrouter.test/chat", {
+      method: "POST",
+      body,
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0][1].body).toBe(body);
+  });
+
+  it("enforces the aggregate request limit and falls back to sandbox-backed files", async () => {
+    const warnSpy = jest
+      .spyOn(console, "warn")
+      .mockImplementation(() => undefined);
+    const fetchMock = jest
+      .fn()
+      .mockResolvedValueOnce(new Response("ok", { status: 200 }));
+    const patchedFetch = createOpenRouterPatchFetch(
+      fetchMock as unknown as typeof fetch,
+    );
+    const perFileData = "a".repeat(OPENROUTER_REQUEST_MAX_BYTES / 2);
+
+    try {
+      await patchedFetch("https://openrouter.test/chat", {
+        method: "POST",
+        headers: { "content-length": "stale" },
+        body: JSON.stringify({
+          model: "deepseek/deepseek-v4-flash-0731",
+          user: "user_test_request_size_guard",
+          plugins: [{ id: "file-parser" }],
+          messages: [
+            {
+              role: "user",
+              content: [
+                {
+                  type: "text",
+                  text: '<attachment filename="first.bin" local_path="/home/user/upload/first.bin" /><attachment filename="second.bin" local_path="/home/user/upload/second.bin" />',
+                },
+                {
+                  type: "file",
+                  file: { filename: "first.bin", file_data: perFileData },
+                },
+                {
+                  type: "file",
+                  file: { filename: "second.bin", file_data: perFileData },
+                },
+              ],
+            },
+          ],
+        }),
+      });
+
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      const sentInit = fetchMock.mock.calls[0][1];
+      const sentBody = String(sentInit.body);
+      expect(new TextEncoder().encode(sentBody).byteLength).toBeLessThanOrEqual(
+        OPENROUTER_REQUEST_MAX_BYTES,
+      );
+      expect(new Headers(sentInit.headers).has("content-length")).toBe(false);
+      expect(sentBody).not.toContain(perFileData);
+      expect(sentBody).toContain("inspect the files with sandbox tools");
+      expect(JSON.parse(sentBody).plugins).toEqual([]);
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining('"action":"sandbox_file_fallback"'),
+      );
+      const logEvent = JSON.parse(String(warnSpy.mock.calls[0][0]));
+      expect(logEvent).toMatchObject({
+        reason: "request_limit_exceeded",
+        user_id: "user_test_request_size_guard",
+      });
+      const serializedLogEvent = JSON.stringify(logEvent);
+      expect(serializedLogEvent).not.toContain("first.bin");
+      expect(serializedLogEvent).not.toContain(perFileData.slice(0, 1024));
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it("rejects an oversized request locally when no safe fallback can fit", async () => {
+    const warnSpy = jest
+      .spyOn(console, "warn")
+      .mockImplementation(() => undefined);
+    const fetchMock = jest.fn();
+    const patchedFetch = createOpenRouterPatchFetch(
+      fetchMock as unknown as typeof fetch,
+    );
+
+    try {
+      const response = await patchedFetch("https://openrouter.test/chat", {
+        method: "POST",
+        body: JSON.stringify({
+          model: "deepseek/deepseek-v4-flash-0731",
+          messages: [
+            {
+              role: "user",
+              content: "x".repeat(OPENROUTER_REQUEST_MAX_BYTES),
+            },
+          ],
+        }),
+      });
+
+      expect(response.status).toBe(413);
+      expect(
+        response.headers.get("x-hackerai-openrouter-request-size-guard"),
+      ).toBe("rejected");
+      expect(await response.json()).toMatchObject({
+        error: { code: "request_too_large" },
+      });
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining('"action":"rejected"'),
+      );
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it("measures after encrypted reasoning normalization reduces the body", async () => {
+    const fetchMock = jest
+      .fn()
+      .mockResolvedValueOnce(new Response("ok", { status: 200 }));
+    const patchedFetch = createOpenRouterPatchFetch(
+      fetchMock as unknown as typeof fetch,
+    );
+
+    await patchedFetch("https://openrouter.test/chat", {
+      method: "POST",
+      body: JSON.stringify({
+        model: "x-ai/grok-4.5",
+        messages: [
+          {
+            role: "assistant",
+            content: "Visible reasoning remains available.",
+            reasoning_details: [
+              {
+                type: "reasoning.encrypted",
+                data: "x".repeat(OPENROUTER_REQUEST_MAX_BYTES),
+              },
+            ],
+          },
+        ],
+      }),
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const sentBody = String(fetchMock.mock.calls[0][1].body);
+    expect(new TextEncoder().encode(sentBody).byteLength).toBeLessThan(
+      OPENROUTER_REQUEST_MAX_BYTES,
+    );
+    expect(sentBody).not.toContain('"reasoning_details"');
+  });
+
   it("removes endpoint-pinned reasoning before a cross-model Agent step", async () => {
     const fetchMock = jest
       .fn()
