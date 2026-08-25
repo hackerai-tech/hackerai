@@ -88,10 +88,7 @@ export function useSandboxPreference(
       if (typeof window === "undefined") return "e2b";
       const stored = localStorage.getItem("sandbox-preference");
       if (stored && stored !== "tauri") return stored as SandboxPreference;
-      // Default to Cloud on Desktop; user can switch to Local if desired
-      // if (activeBridge?.getConnectionId())
-      //   return activeBridge.getConnectionId()!;
-      return "e2b";
+      return isTauriEnvironment() ? "desktop" : "e2b";
     });
 
   const connectDesktopMutation = useMutation(api.localSandbox.connectDesktop);
@@ -202,7 +199,7 @@ export function useSandboxPreference(
 
     bridgeStateListener = updateBridgeState;
 
-    // Already running — just sync bridge active state (keep Cloud as default)
+    // Already running — just sync bridge active state.
     if (activeBridge?.getConnectionId()) {
       syncBridgeState(true, "connected");
       // setSandboxPreferenceState(activeBridge.getConnectionId()!);
@@ -280,8 +277,6 @@ export function useSandboxPreference(
 
         setDesktopBridgeActive(true);
         setDesktopBridgeStatus("connected");
-        // Keep Cloud selected by default; user can switch to Local if desired
-        // setSandboxPreferenceState(connectionId);
       } catch (error) {
         if (cancelled) return;
         if (bridgeRecoveryTimer) {

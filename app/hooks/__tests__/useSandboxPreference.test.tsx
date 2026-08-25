@@ -49,6 +49,28 @@ describe("useSandboxPreference", () => {
     window.localStorage.clear();
   });
 
+  it("defaults Desktop to the local sandbox when no preference is saved", () => {
+    const { result } = renderHook(() => useSandboxPreference(false));
+
+    expect(result.current.sandboxPreference).toBe("desktop");
+  });
+
+  it("defaults the web app to the cloud sandbox when no preference is saved", () => {
+    mockIsTauriEnvironment.mockReturnValue(false);
+
+    const { result } = renderHook(() => useSandboxPreference(false));
+
+    expect(result.current.sandboxPreference).toBe("e2b");
+  });
+
+  it("preserves an explicit saved cloud preference on Desktop", () => {
+    window.localStorage.setItem("sandbox-preference", "e2b");
+
+    const { result } = renderHook(() => useSandboxPreference(false));
+
+    expect(result.current.sandboxPreference).toBe("e2b");
+  });
+
   it("does not initialize the desktop bridge in a web browser", async () => {
     mockIsTauriEnvironment.mockReturnValue(false);
 
