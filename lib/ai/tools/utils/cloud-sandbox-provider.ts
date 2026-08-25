@@ -1,4 +1,4 @@
-export type CloudSandboxProvider = "e2b" | "aws-lambda-microvm";
+export type CloudSandboxProvider = "e2b";
 
 /**
  * Resolve the configured cloud sandbox provider, defaulting to E2B and
@@ -6,16 +6,14 @@ export type CloudSandboxProvider = "e2b" | "aws-lambda-microvm";
  */
 export function getCloudSandboxProvider(): CloudSandboxProvider {
   const configured = process.env.CLOUD_SANDBOX_PROVIDER?.trim();
-  if (configured === "e2b" || configured === "aws-lambda-microvm") {
+  if (configured === "e2b") {
     return configured;
   }
   if (configured) {
     throw new Error(
-      `Unsupported CLOUD_SANDBOX_PROVIDER: ${configured}. Expected e2b or aws-lambda-microvm.`,
+      `Unsupported CLOUD_SANDBOX_PROVIDER: ${configured}. Expected e2b.`,
     );
   }
 
-  // E2B is the default cloud provider. AWS remains available through the
-  // explicit environment setting above as an operational rollback.
   return "e2b";
 }

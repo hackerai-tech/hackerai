@@ -4,8 +4,7 @@
  * HackerAI Local Sandbox Client
  *
  * Connects to HackerAI backend via Convex for connection lifecycle
- * and uses either Centrifugo or AWS's authenticated endpoint for real-time
- * command transport and streaming output.
+ * and uses Centrifugo for real-time command relay and streaming output.
  *
  * Runs commands directly on the host OS (no Docker isolation).
  *
@@ -15,21 +14,9 @@
 
 import { ConvexHttpClient } from "convex/browser";
 import { Centrifuge, Subscription, PublicationContext } from "centrifuge";
-import WebSocket, { WebSocketServer } from "ws";
+import WebSocket from "ws";
 import { spawn, ChildProcess } from "child_process";
-import { constants as fsConstants } from "fs";
-import { lstat, mkdir, open, realpath } from "fs/promises";
-import { createServer, type IncomingMessage, type ServerResponse } from "http";
 import os from "os";
-import {
-  basename,
-  dirname,
-  isAbsolute,
-  join,
-  relative,
-  resolve,
-  sep,
-} from "path";
 import {
   truncateOutput,
   MAX_OUTPUT_SIZE,
@@ -48,15 +35,6 @@ import {
 } from "./command-cancellation";
 import { CentrifugoPublishQueue } from "./centrifugo-transport";
 import { buildCentrifugoTransportConfig } from "./centrifugo-endpoints";
-import {
-  CloudImagePrimeError,
-  primeCloudImageWorkingSet,
-} from "./cloud-image-prime";
-import { InProcessRelayLifecycle } from "./cloud-relay-lifecycle";
-import {
-  CloudDirectTransport,
-  type DirectTransportDisconnect,
-} from "./cloud-direct-transport";
 
 const DEFAULT_SHELL = getDefaultShell(os.platform());
 
@@ -75,13 +53,6 @@ const api = {
     connect: "localSandbox:connect" as const,
     disconnect: "localSandbox:disconnect" as const,
     refreshCentrifugoToken: "localSandbox:refreshCentrifugoToken" as const,
-    connectCloud: "localSandbox:connectCloud" as const,
-    markCloudRelayReady: "localSandbox:markCloudRelayReady" as const,
-    refreshCloudCentrifugoToken:
-      "localSandbox:refreshCloudCentrifugoToken" as const,
-    disconnectCloud: "localSandbox:disconnectCloud" as const,
-    reportCloudLifecycleState:
-      "localSandbox:reportCloudLifecycleState" as const,
   },
 };
 
@@ -100,10 +71,6 @@ export interface Config {
   convexUrl: string;
   token: string;
   name: string;
-  authMode: "local" | "cloud" | "direct-cloud";
-  cloudSessionId?: string;
-  microvmId?: string;
-  lifecycleCallback?: CloudLifecycleCallback;
 }
 
 interface OsInfo {
@@ -167,27 +134,6 @@ interface CentrifugoCommandCancelResultMessage {
   canceled: boolean;
 }
 
-interface FileMutationMessage {
-  type: "file_write" | "file_append";
-  requestId: string;
-  path: string;
-  content: string;
-  isBase64?: boolean;
-  allowedRoot?: string;
-  targetConnectionId: string;
-}
-
-interface FileOkMessage {
-  type: "file_ok";
-  requestId: string;
-}
-
-interface FileErrorMessage {
-  type: "file_error";
-  requestId: string;
-  message: string;
-}
-
 // --- PTY incoming message types ---
 
 interface PtyCreateMessage {
@@ -229,7 +175,6 @@ type CentrifugoPtyIncomingMessage =
 type TargetedIncomingMessage =
   | CentrifugoCommandMessage
   | CentrifugoCommandCancelMessage
-  | FileMutationMessage
   | CentrifugoPtyIncomingMessage;
 
 function isTargetedIncomingMessage(
@@ -242,30 +187,14 @@ function isTargetedIncomingMessage(
     type?: unknown;
     targetConnectionId?: unknown;
   };
-  if (typeof targetConnectionId !== "string") return false;
-  if (type === "file_write" || type === "file_append") {
-    const { requestId, path, content, isBase64, allowedRoot } = message as {
-      requestId?: unknown;
-      path?: unknown;
-      content?: unknown;
-      isBase64?: unknown;
-      allowedRoot?: unknown;
-    };
-    return (
-      typeof requestId === "string" &&
-      typeof path === "string" &&
-      typeof content === "string" &&
-      (isBase64 === undefined || typeof isBase64 === "boolean") &&
-      (allowedRoot === undefined || typeof allowedRoot === "string")
-    );
-  }
   return (
-    type === "command" ||
-    type === "command_cancel" ||
-    type === "pty_create" ||
-    type === "pty_input" ||
-    type === "pty_resize" ||
-    type === "pty_kill"
+    typeof targetConnectionId === "string" &&
+    (type === "command" ||
+      type === "command_cancel" ||
+      type === "pty_create" ||
+      type === "pty_input" ||
+      type === "pty_resize" ||
+      type === "pty_kill")
   );
 }
 
@@ -301,143 +230,10 @@ type CentrifugoOutgoingMessage =
   | CentrifugoExitMessage
   | CentrifugoErrorMessage
   | CentrifugoCommandCancelResultMessage
-  | FileOkMessage
-  | FileErrorMessage
   | CentrifugoPtyReadyMessage
   | CentrifugoPtyDataMessage
   | CentrifugoPtyExitMessage
   | CentrifugoPtyErrorMessage;
-
-function isPathInside(root: string, candidate: string): boolean {
-  const relativePath = relative(root, candidate);
-  return (
-    relativePath === "" ||
-    (relativePath !== ".." &&
-      !relativePath.startsWith(`..${sep}`) &&
-      !isAbsolute(relativePath))
-  );
-}
-
-function isMissingPathError(error: unknown): boolean {
-  return (
-    typeof error === "object" &&
-    error !== null &&
-    "code" in error &&
-    error.code === "ENOENT"
-  );
-}
-
-function decodeFileMutationContent(message: FileMutationMessage): Buffer {
-  if (!message.isBase64) return Buffer.from(message.content, "utf8");
-  const decoded = Buffer.from(message.content, "base64");
-  if (decoded.toString("base64") !== message.content) {
-    throw new Error("Invalid base64 file content");
-  }
-  return decoded;
-}
-
-async function prepareFileMutationPath(
-  rawPath: string,
-  rawAllowedRoot?: string,
-): Promise<{
-  parentPath: string;
-  targetName: string;
-  realAllowedRoot: string;
-}> {
-  if (!rawAllowedRoot) {
-    throw new Error("Direct file mutation is missing its allowed root");
-  }
-
-  const allowedRoot = resolve(rawAllowedRoot);
-  const targetPath = resolve(rawPath);
-  if (!isPathInside(allowedRoot, targetPath) || targetPath === allowedRoot) {
-    throw new Error("Direct file mutation path is outside its allowed root");
-  }
-
-  const parentPath = dirname(targetPath);
-  const realAllowedRoot = await realpath(allowedRoot);
-  let existingAncestor = parentPath;
-  for (;;) {
-    try {
-      existingAncestor = await realpath(existingAncestor);
-      break;
-    } catch (error) {
-      if (!isMissingPathError(error)) throw error;
-      const nextAncestor = dirname(existingAncestor);
-      if (nextAncestor === existingAncestor) throw error;
-      existingAncestor = nextAncestor;
-    }
-  }
-  if (!isPathInside(realAllowedRoot, existingAncestor)) {
-    throw new Error("Direct file mutation parent escapes its allowed root");
-  }
-
-  await mkdir(parentPath, { recursive: true });
-  const realParentPath = await realpath(parentPath);
-  if (!isPathInside(realAllowedRoot, realParentPath)) {
-    throw new Error("Direct file mutation parent escapes its allowed root");
-  }
-
-  try {
-    const target = await lstat(targetPath);
-    if (target.isSymbolicLink()) {
-      throw new Error("Direct file mutation cannot target a symbolic link");
-    }
-  } catch (error) {
-    if (!isMissingPathError(error)) throw error;
-  }
-  return {
-    parentPath,
-    targetName: basename(targetPath),
-    realAllowedRoot,
-  };
-}
-
-async function mutatePreparedFile(
-  prepared: Awaited<ReturnType<typeof prepareFileMutationPath>>,
-  content: Buffer,
-  append: boolean,
-): Promise<void> {
-  const parentHandle = await open(
-    prepared.parentPath,
-    fsConstants.O_RDONLY | fsConstants.O_DIRECTORY | fsConstants.O_NOFOLLOW,
-  );
-  try {
-    // AWS MicroVM guests are Linux, where /proc keeps the final lookup anchored
-    // to this verified directory descriptor even if its pathname is replaced.
-    // The pathname fallback supports non-Linux local package tests only.
-    const anchoredParentPath =
-      os.platform() === "linux"
-        ? `/proc/self/fd/${parentHandle.fd}`
-        : prepared.parentPath;
-    const openedParentPath = await realpath(anchoredParentPath);
-    if (!isPathInside(prepared.realAllowedRoot, openedParentPath)) {
-      throw new Error("Direct file mutation parent escapes its allowed root");
-    }
-
-    const flags = append
-      ? fsConstants.O_WRONLY |
-        fsConstants.O_CREAT |
-        fsConstants.O_APPEND |
-        fsConstants.O_NOFOLLOW
-      : fsConstants.O_WRONLY |
-        fsConstants.O_CREAT |
-        fsConstants.O_TRUNC |
-        fsConstants.O_NOFOLLOW;
-    const targetHandle = await open(
-      join(anchoredParentPath, prepared.targetName),
-      flags,
-      0o600,
-    );
-    try {
-      await targetHandle.writeFile(content);
-    } finally {
-      await targetHandle.close();
-    }
-  } finally {
-    await parentHandle.close();
-  }
-}
 
 interface ConnectResult {
   success: boolean;
@@ -483,8 +279,6 @@ function isInvalidTokenError(error: unknown): boolean {
 
 type LocalSandboxClientOptions = {
   onExitRequested?: (code: number, error: Error) => void;
-  directTransport?: CloudDirectTransport;
-  beforeDirectFileDescriptorOpen?: () => void | Promise<void>;
 };
 
 export class LocalSandboxClient {
@@ -511,34 +305,6 @@ export class LocalSandboxClient {
     this.lastActivityTime = Date.now();
     this.processRunner = new ProcessRunner();
     this.setupProcessRunnerListeners();
-  }
-
-  async primeStartupWorkingSet(): Promise<void> {
-    const command = {
-      type: "command",
-      commandId: "image-validation",
-      command: "printf hackerai-image-prime",
-      targetConnectionId: "image-validation",
-    };
-    const parsed = JSON.parse(JSON.stringify(command)) as unknown;
-    if (!isTargetedIncomingMessage(parsed)) {
-      throw new Error("Command protocol priming failed");
-    }
-    const queue = new CentrifugoPublishQueue(async (fragment) => {
-      JSON.parse(JSON.stringify(fragment));
-    });
-    await queue.publish({
-      type: "exit",
-      commandId: "image-validation",
-      exitCode: 0,
-    });
-    this.getOsInfo();
-    this.getCapabilities();
-  }
-
-  disposePrimedResources(): void {
-    this.isShuttingDown = true;
-    this.processRunner.dispose();
   }
 
   private requestExit(code: number, error: Error): void {
@@ -617,26 +383,12 @@ export class LocalSandboxClient {
   }
 
   async start(): Promise<void> {
-    if (this.config.authMode !== "local") {
-      console.log(
-        JSON.stringify({
-          timestamp: new Date().toISOString(),
-          level: "info",
-          event: "cloud_sandbox_guest_starting",
-          service: "hackerai-cloud-sandbox-agent",
-          environment: "aws-lambda-microvm",
-          request_id: this.config.cloudSessionId ?? null,
-          microvm_id: this.config.microvmId ?? null,
-        }),
-      );
-    } else {
-      console.log(chalk.blue("🚀 Starting HackerAI local sandbox..."));
-      console.log(
-        chalk.yellow(
-          "⚠️  Commands run directly on your OS without any isolation.",
-        ),
-      );
-    }
+    console.log(chalk.blue("🚀 Starting HackerAI local sandbox..."));
+    console.log(
+      chalk.yellow(
+        "⚠️  Commands run directly on your OS without any isolation.",
+      ),
+    );
     await this.connect();
   }
 
@@ -657,43 +409,18 @@ export class LocalSandboxClient {
   }
 
   private async connect(): Promise<void> {
-    if (this.config.authMode === "direct-cloud") {
-      if (!this.options.directTransport || !this.config.microvmId) {
-        throw new Error("Direct cloud transport is not configured");
-      }
-      this.connectionId = this.config.microvmId;
-      this.options.directTransport.start({
-        onMessage: (message) => this.handleIncomingMessage(message),
-        onDisconnect: (pending) => this.handleDirectDisconnect(pending),
-      });
-      return;
-    }
-
-    if (this.config.authMode === "local") {
-      console.log(chalk.blue("Connecting to HackerAI..."));
-    }
+    console.log(chalk.blue("Connecting to HackerAI..."));
 
     try {
       const result = (await this.convexHttp.mutation(
-        (this.config.authMode === "cloud"
-          ? api.localSandbox.connectCloud
-          : api.localSandbox.connect) as never,
-        (this.config.authMode === "cloud"
-          ? {
-              sessionId: this.config.cloudSessionId,
-              bootstrapToken: this.config.token,
-              microvmId: this.config.microvmId,
-              clientVersion: "aws-lambda-microvm-relay-ready-v1",
-              osInfo: this.getOsInfo(),
-              capabilities: this.getCapabilities(),
-            }
-          : {
-              token: this.config.token,
-              connectionName: this.config.name,
-              clientVersion: "1.0.0",
-              osInfo: this.getOsInfo(),
-              capabilities: this.getCapabilities(),
-            }) as never,
+        api.localSandbox.connect as never,
+        {
+          token: this.config.token,
+          connectionName: this.config.name,
+          clientVersion: "1.0.0",
+          osInfo: this.getOsInfo(),
+          capabilities: this.getCapabilities(),
+        } as never,
       )) as ConnectResult;
 
       if (
@@ -707,50 +434,29 @@ export class LocalSandboxClient {
       this.userId = result.userId;
       this.connectionId = result.connectionId;
 
-      if (this.config.authMode === "local") {
-        console.log(chalk.green("✓ Authenticated"));
-        console.log(chalk.blue("Connecting to command relay..."));
-      }
+      console.log(chalk.green("✓ Authenticated"));
+      console.log(chalk.blue("Connecting to command relay..."));
 
       await this.setupCentrifugo(
         result.centrifugoWsUrl,
         result.centrifugoToken,
       );
-      if (this.config.authMode === "local") {
-        console.log(
-          chalk.green(
-            `✓ Connected to command relay (${this.relayTransport ?? "unknown transport"})`,
-          ),
-        );
-        console.log(chalk.bold(chalk.green("🎉 Local sandbox is ready!")));
-        console.log(chalk.gray(`Connection: ${this.connectionId}`));
-      }
-      if (this.config.authMode === "cloud") {
-        const ready = (await this.convexHttp.mutation(
-          api.localSandbox.markCloudRelayReady as never,
-          {
-            sessionId: this.config.cloudSessionId,
-            bootstrapToken: this.config.token,
-            microvmId: this.config.microvmId,
-            connectionId: this.connectionId,
-          } as never,
-        )) as boolean;
-        if (!ready) {
-          throw new Error("Cloud relay could not be marked ready");
-        }
-      }
-      if (this.config.authMode === "local") {
-        this.startIdleCheck();
-      }
+      console.log(
+        chalk.green(
+          `✓ Connected to command relay (${this.relayTransport ?? "unknown transport"})`,
+        ),
+      );
+      console.log(chalk.bold(chalk.green("🎉 Local sandbox is ready!")));
+      console.log(chalk.gray(`Connection: ${this.connectionId}`));
+      this.startIdleCheck();
     } catch (error: unknown) {
       const err = error as { data?: { message?: string }; message?: string };
       const errorMessage =
         err?.data?.message || err?.message || JSON.stringify(error);
       console.error(chalk.red("❌ Connection failed:"), errorMessage);
       if (
-        this.config.authMode === "local" &&
-        (errorMessage.includes("Invalid token") ||
-          errorMessage.includes("token"))
+        errorMessage.includes("Invalid token") ||
+        errorMessage.includes("token")
       ) {
         console.error(chalk.yellow("Please regenerate your token in Settings"));
       }
@@ -781,28 +487,18 @@ export class LocalSandboxClient {
         let result: RefreshTokenResult;
         try {
           result = (await this.convexHttp.mutation(
-            (this.config.authMode === "cloud"
-              ? api.localSandbox.refreshCloudCentrifugoToken
-              : api.localSandbox.refreshCentrifugoToken) as never,
-            (this.config.authMode === "cloud"
-              ? {
-                  sessionId: this.config.cloudSessionId,
-                  bootstrapToken: this.config.token,
-                  connectionId: this.connectionId,
-                }
-              : {
-                  token: this.config.token,
-                  connectionId: this.connectionId,
-                }) as never,
+            api.localSandbox.refreshCentrifugoToken as never,
+            {
+              token: this.config.token,
+              connectionId: this.connectionId,
+            } as never,
           )) as RefreshTokenResult;
         } catch (error) {
           if (isInvalidTokenError(error)) {
             console.error(chalk.red("\n❌ Token rejected by server."));
-            if (this.config.authMode === "local") {
-              console.error(
-                chalk.yellow("Please regenerate your token in Settings."),
-              );
-            }
+            console.error(
+              chalk.yellow("Please regenerate your token in Settings."),
+            );
             // cleanup() synchronously calls centrifuge.disconnect() before any
             // awaits, so by the time we re-throw below Centrifuge is in a
             // terminal state and won't invoke getToken again.
@@ -867,7 +563,70 @@ export class LocalSandboxClient {
     });
 
     this.subscription.on("publication", (ctx: PublicationContext) => {
-      this.handleIncomingMessage(ctx.data);
+      if (this.isShuttingDown) return;
+
+      const message = ctx.data;
+
+      if (!isTargetedIncomingMessage(message)) {
+        return;
+      }
+
+      if (message.targetConnectionId !== this.connectionId) {
+        return;
+      }
+
+      this.lastActivityTime = Date.now();
+
+      switch (message.type) {
+        case "command":
+          this.handleCommand(message as CentrifugoCommandMessage).catch(
+            (error: unknown) => {
+              const errorMsg =
+                error instanceof Error ? error.message : JSON.stringify(error);
+              console.error(chalk.red(`Error handling command: ${errorMsg}`));
+            },
+          );
+          break;
+
+        case "command_cancel":
+          this.handleCommandCancel(
+            message as CentrifugoCommandCancelMessage,
+          ).catch((error: unknown) => {
+            console.error(
+              chalk.red(
+                `[CMD] Failed to handle cancellation: ${error instanceof Error ? error.message : String(error)}`,
+              ),
+            );
+          });
+          break;
+
+        case "pty_create":
+          this.handlePtyCreate(message as PtyCreateMessage).catch(
+            (error: unknown) => {
+              const errorMsg =
+                error instanceof Error ? error.message : String(error);
+              console.error(
+                chalk.red(`[PTY] Error creating session: ${errorMsg}`),
+              );
+            },
+          );
+          break;
+
+        case "pty_input":
+          this.handlePtyInput(message as PtyInputMessage);
+          break;
+
+        case "pty_resize":
+          this.handlePtyResize(message as PtyResizeMessage);
+          break;
+
+        case "pty_kill":
+          this.handlePtyKill(message as PtyKillMessage);
+          break;
+
+        default:
+          break;
+      }
     });
 
     this.centrifuge.on("disconnected", (ctx) => {
@@ -894,11 +653,6 @@ export class LocalSandboxClient {
 
     this.centrifuge.on("connected", (ctx) => {
       this.relayTransport = ctx.transport;
-      if (this.config.authMode !== "local") {
-        console.log(
-          chalk.green(`✓ Connected to command relay (${ctx.transport})`),
-        );
-      }
     });
 
     const ready = new Promise<void>((resolve, reject) => {
@@ -912,8 +666,6 @@ export class LocalSandboxClient {
       };
       this.subscription?.once("subscribed", () => finish());
       this.subscription?.on("error", (ctx) => {
-        // Centrifuge retries recoverable subscription errors. Keep waiting for
-        // `subscribed` until the bounded startup timeout expires.
         console.warn(
           chalk.yellow(
             `Command relay subscription error; retrying: ${ctx.error?.message ?? "unknown"}`,
@@ -930,16 +682,6 @@ export class LocalSandboxClient {
   private async publishToChannel(
     data: CentrifugoOutgoingMessage,
   ): Promise<void> {
-    if (this.config.authMode === "direct-cloud") {
-      if (!this.options.directTransport) {
-        throw new Error("Direct cloud transport is not configured");
-      }
-      await this.options.directTransport.publish(
-        data as unknown as Record<string, unknown>,
-      );
-      return;
-    }
-
     if (!this.publishQueue) {
       console.error(chalk.red("Cannot publish: no active subscription"));
       return;
@@ -955,125 +697,6 @@ export class LocalSandboxClient {
     }
   }
 
-  private handleIncomingMessage(message: unknown): void {
-    if (this.isShuttingDown || !isTargetedIncomingMessage(message)) return;
-    if (message.targetConnectionId !== this.connectionId) return;
-
-    this.lastActivityTime = Date.now();
-    switch (message.type) {
-      case "command":
-        this.handleCommand(message).catch((error: unknown) => {
-          const errorMsg =
-            error instanceof Error ? error.message : JSON.stringify(error);
-          console.error(
-            chalk.red(
-              this.config.authMode === "direct-cloud"
-                ? "Error handling direct command"
-                : `Error handling command: ${errorMsg}`,
-            ),
-          );
-        });
-        break;
-      case "command_cancel":
-        this.handleCommandCancel(message).catch((error: unknown) => {
-          console.error(
-            chalk.red(
-              `[CMD] Failed to handle cancellation: ${error instanceof Error ? error.message : String(error)}`,
-            ),
-          );
-        });
-        break;
-      case "file_write":
-      case "file_append":
-        this.handleFileMutation(message).catch((error: unknown) => {
-          console.error(
-            chalk.red(
-              this.config.authMode === "direct-cloud"
-                ? "[FILE] Direct file mutation failed"
-                : `[FILE] File mutation failed: ${error instanceof Error ? error.message : String(error)}`,
-            ),
-          );
-        });
-        break;
-      case "pty_create":
-        this.handlePtyCreate(message).catch((error: unknown) => {
-          const errorMsg =
-            error instanceof Error ? error.message : String(error);
-          console.error(chalk.red(`[PTY] Error creating session: ${errorMsg}`));
-        });
-        break;
-      case "pty_input":
-        this.handlePtyInput(message);
-        break;
-      case "pty_resize":
-        this.handlePtyResize(message);
-        break;
-      case "pty_kill":
-        this.handlePtyKill(message);
-        break;
-    }
-  }
-
-  private async handleFileMutation(
-    message: FileMutationMessage,
-  ): Promise<void> {
-    const requestId =
-      typeof message.requestId === "string" ? message.requestId : "invalid";
-    try {
-      if (this.config.authMode !== "direct-cloud") {
-        throw new Error("Native file mutations require direct cloud transport");
-      }
-      if (
-        typeof message.requestId !== "string" ||
-        typeof message.path !== "string" ||
-        typeof message.content !== "string" ||
-        (message.isBase64 !== undefined &&
-          typeof message.isBase64 !== "boolean") ||
-        (message.allowedRoot !== undefined &&
-          typeof message.allowedRoot !== "string")
-      ) {
-        throw new Error("Invalid direct file mutation request");
-      }
-
-      const prepared = await prepareFileMutationPath(
-        message.path,
-        message.allowedRoot,
-      );
-      const content = decodeFileMutationContent(message);
-      await this.options.beforeDirectFileDescriptorOpen?.();
-      await mutatePreparedFile(
-        prepared,
-        content,
-        message.type === "file_append",
-      );
-      await this.publishToChannel({ type: "file_ok", requestId });
-    } catch (error) {
-      await this.publishToChannel({
-        type: "file_error",
-        requestId,
-        message: error instanceof Error ? error.message : String(error),
-      });
-      throw error;
-    }
-  }
-
-  private handleDirectDisconnect(pending: DirectTransportDisconnect): void {
-    for (const commandId of pending.commandIds) {
-      void this.handleCommandCancel({
-        type: "command_cancel",
-        commandId,
-        targetConnectionId: this.connectionId ?? "",
-      }).catch(() => undefined);
-    }
-    for (const sessionId of pending.sessionIds) {
-      this.handlePtyKill({
-        type: "pty_kill",
-        sessionId,
-        targetConnectionId: this.connectionId ?? "",
-      });
-    }
-  }
-
   private async handleCommand(msg: CentrifugoCommandMessage): Promise<void> {
     const { commandId, command, env, cwd, timeout, background, displayName } =
       msg;
@@ -1082,14 +705,8 @@ export class LocalSandboxClient {
     // - displayName === "" (empty string): hide command entirely
     // - displayName === "something": show that instead of command
     // - displayName === undefined: show actual command
-    // CloudWatch guest logs must never contain user commands, arguments,
-    // targets, working directories, environment values, or command output.
-    const shouldShow =
-      this.config.authMode !== "direct-cloud" && displayName !== "";
-    const displayText =
-      this.config.authMode === "direct-cloud"
-        ? "direct command"
-        : displayName || command;
+    const shouldShow = displayName !== "";
+    const displayText = displayName || command;
     if (shouldShow) {
       console.log(chalk.cyan(`▶ ${background ? "[BG] " : ""}${displayText}`));
     }
@@ -1162,13 +779,7 @@ export class LocalSandboxClient {
         commandId,
         message: truncateOutput(message),
       });
-      console.log(
-        chalk.red(
-          this.config.authMode === "direct-cloud"
-            ? "✗ Direct command failed"
-            : `✗ ${displayText}: ${message}`,
-        ),
-      );
+      console.log(chalk.red(`✗ ${displayText}: ${message}`));
     }
   }
 
@@ -1224,29 +835,14 @@ export class LocalSandboxClient {
     }, 1000).unref();
   }
 
-  private async terminateActiveStreamCommands(): Promise<void> {
-    const commands = [...this.activeStreamCommands.entries()];
-    const results = await Promise.all(
-      commands.map(async ([commandId, proc]) => {
-        console.log(
-          chalk.yellow(`[CMD] Terminating active command ${commandId}`),
-        );
-        const confirmed = await confirmProcessTermination(
-          proc,
-          () => this.terminateProcessTree(proc),
-          undefined,
-          () => isProcessTreeTerminationConfirmed(proc),
-        );
-        if (confirmed) this.activeStreamCommands.delete(commandId);
-        return confirmed;
-      }),
-    );
-    const unconfirmed = results.filter((confirmed) => !confirmed).length;
-    if (unconfirmed > 0) {
-      throw new Error(
-        `Could not confirm termination of ${unconfirmed} command process tree(s)`,
+  private terminateActiveStreamCommands(): void {
+    for (const [commandId, proc] of this.activeStreamCommands) {
+      console.log(
+        chalk.yellow(`[CMD] Terminating active command ${commandId}`),
       );
+      this.terminateProcessTree(proc);
     }
+    this.activeStreamCommands.clear();
   }
 
   private async streamCommand(
@@ -1421,13 +1017,7 @@ export class LocalSandboxClient {
   private async handlePtyCreate(msg: PtyCreateMessage): Promise<void> {
     const { sessionId, command, cols, rows, cwd, env } = msg;
 
-    console.log(
-      chalk.cyan(
-        this.config.authMode === "direct-cloud"
-          ? `[PTY] Creating session ${sessionId}`
-          : `[PTY] Creating session ${sessionId}: ${command}`,
-      ),
-    );
+    console.log(chalk.cyan(`[PTY] Creating session ${sessionId}: ${command}`));
 
     try {
       const opts: ProcessRunOptions = {};
@@ -1454,11 +1044,7 @@ export class LocalSandboxClient {
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error);
       console.error(
-        chalk.red(
-          this.config.authMode === "direct-cloud"
-            ? `[PTY] Failed to create session ${sessionId}`
-            : `[PTY] Failed to create session ${sessionId}: ${message}`,
-        ),
+        chalk.red(`[PTY] Failed to create session ${sessionId}: ${message}`),
       );
       await this.publishToChannel({
         type: "pty_error",
@@ -1522,34 +1108,26 @@ export class LocalSandboxClient {
     }
   }
 
-  async cleanup(options: { terminated?: boolean } = {}): Promise<void> {
+  async cleanup(): Promise<void> {
     if (this.cleanupPromise) return this.cleanupPromise;
-    this.cleanupPromise = this.performCleanup(options).catch((error) => {
+    this.cleanupPromise = this.performCleanup().catch((error) => {
       this.cleanupPromise = undefined;
       throw error;
     });
     return this.cleanupPromise;
   }
 
-  private async performCleanup(options: {
-    terminated?: boolean;
-  }): Promise<void> {
+  private async performCleanup(): Promise<void> {
     console.log(chalk.blue("\n🧹 Cleaning up..."));
 
     this.isShuttingDown = true;
     this.stopIdleCheck();
 
-    // Confirm both PTY and streamed-command process trees are gone before AWS
-    // snapshots a suspended VM or completes termination.
-    const processShutdown = Promise.all([
-      this.processRunner.shutdown(),
-      this.terminateActiveStreamCommands(),
-    ]);
+    // Stop all PTY sessions
+    this.processRunner.stopAll();
 
-    const directTransportShutdown =
-      this.config.authMode === "direct-cloud"
-        ? this.options.directTransport?.stop()
-        : undefined;
+    // Stop all active streamed commands before dropping the realtime connection.
+    this.terminateActiveStreamCommands();
 
     // Disconnect Centrifugo
     if (this.subscription) {
@@ -1562,27 +1140,16 @@ export class LocalSandboxClient {
       this.centrifuge = undefined;
     }
 
-    await Promise.all([processShutdown, directTransportShutdown]);
-
-    if (this.connectionId && this.config.authMode !== "direct-cloud") {
+    if (this.connectionId) {
       let disconnectTimeout: NodeJS.Timeout | undefined;
       try {
         await Promise.race([
           this.convexHttp.mutation(
-            (this.config.authMode === "cloud"
-              ? api.localSandbox.disconnectCloud
-              : api.localSandbox.disconnect) as never,
-            (this.config.authMode === "cloud"
-              ? {
-                  sessionId: this.config.cloudSessionId,
-                  bootstrapToken: this.config.token,
-                  connectionId: this.connectionId,
-                  terminated: options.terminated === true,
-                }
-              : {
-                  token: this.config.token,
-                  connectionId: this.connectionId,
-                }) as never,
+            api.localSandbox.disconnect as never,
+            {
+              token: this.config.token,
+              connectionId: this.connectionId,
+            } as never,
           ),
           new Promise<never>(
             (_, reject) =>
@@ -1614,413 +1181,6 @@ const hasFlag = (flag: string): boolean => {
   return args.includes(flag);
 };
 
-interface CloudLifecycleCallback {
-  convexUrl: string;
-  bootstrapToken: string;
-}
-
-interface CloudLifecyclePayload {
-  sessionId: string;
-  connectionName?: string;
-  lifecycleCallback?: CloudLifecycleCallback;
-}
-
-async function readJsonBody(request: IncomingMessage): Promise<unknown> {
-  let body = "";
-  for await (const chunk of request) {
-    body += chunk.toString();
-    if (body.length > 32 * 1024) {
-      throw new Error("Lifecycle payload exceeds 32 KiB");
-    }
-  }
-  return body ? JSON.parse(body) : {};
-}
-
-function writeLifecycleResponse(
-  response: ServerResponse,
-  statusCode: number,
-  body: Record<string, unknown>,
-): void {
-  response.writeHead(statusCode, { "content-type": "application/json" });
-  response.end(JSON.stringify(body));
-}
-
-function parseCloudLifecyclePayload(value: unknown): {
-  microvmId: string;
-  config: CloudLifecyclePayload | null;
-  smokeTest: boolean;
-} {
-  if (!value || typeof value !== "object") {
-    throw new Error("Invalid lifecycle request");
-  }
-  const record = value as Record<string, unknown>;
-  const microvmId = record.microvmId;
-  const rawPayload = record.runHookPayload;
-  if (typeof microvmId !== "string" || typeof rawPayload !== "string") {
-    throw new Error("Lifecycle request is missing MicroVM bootstrap data");
-  }
-  const payload = JSON.parse(rawPayload) as Partial<CloudLifecyclePayload>;
-  if (
-    payload &&
-    typeof payload === "object" &&
-    (payload as Record<string, unknown>).smokeTest === true
-  ) {
-    return {
-      microvmId,
-      config: { sessionId: "image-smoke-test" },
-      smokeTest: true,
-    };
-  }
-  if (typeof payload.sessionId !== "string") {
-    throw new Error("Invalid cloud bootstrap payload");
-  }
-  let lifecycleCallback: CloudLifecycleCallback | undefined;
-  if (payload.lifecycleCallback !== undefined) {
-    const callback = payload.lifecycleCallback;
-    if (
-      !callback ||
-      typeof callback !== "object" ||
-      typeof callback.convexUrl !== "string" ||
-      typeof callback.bootstrapToken !== "string" ||
-      callback.bootstrapToken.length === 0
-    ) {
-      throw new Error("Invalid cloud lifecycle callback");
-    }
-    const callbackUrl = new URL(callback.convexUrl);
-    if (callbackUrl.protocol !== "https:") {
-      throw new Error("Cloud lifecycle callback must use HTTPS");
-    }
-    lifecycleCallback = {
-      convexUrl: callbackUrl.toString().replace(/\/$/, ""),
-      bootstrapToken: callback.bootstrapToken,
-    };
-  }
-  return {
-    microvmId,
-    smokeTest: false,
-    config: {
-      sessionId: payload.sessionId,
-      connectionName: payload.connectionName,
-      lifecycleCallback,
-    },
-  };
-}
-
-async function startCloudLifecycleServer(): Promise<void> {
-  let lifecycleConfig: Config | null = null;
-  const directTransport = new CloudDirectTransport();
-  const relay = new InProcessRelayLifecycle<Config>(
-    (config, onFatal) =>
-      new LocalSandboxClient(config, {
-        onExitRequested: (_code, error) => onFatal(error),
-        directTransport,
-      }),
-    (error) => {
-      console.error(
-        JSON.stringify({
-          timestamp: new Date().toISOString(),
-          level: "error",
-          event: "cloud_sandbox_guest_failed",
-          service: "hackerai-cloud-sandbox-agent",
-          environment: "aws-lambda-microvm",
-          request_id: lifecycleConfig?.cloudSessionId ?? null,
-          error: error.message,
-        }),
-      );
-    },
-    (error) => {
-      console.error(
-        JSON.stringify({
-          timestamp: new Date().toISOString(),
-          level: "error",
-          event: "cloud_sandbox_guest_restart_failed",
-          service: "hackerai-cloud-sandbox-agent",
-          environment: "aws-lambda-microvm",
-          request_id: lifecycleConfig?.cloudSessionId ?? null,
-          error: error.message,
-        }),
-      );
-    },
-  );
-
-  const reportLifecycleState = async (
-    config: Config | null,
-    state: "RUNNING" | "SUSPENDING" | "SUSPENDED" | "TERMINATING",
-  ): Promise<void> => {
-    if (
-      !config?.lifecycleCallback ||
-      !config.cloudSessionId ||
-      !config.microvmId
-    ) {
-      return;
-    }
-    const startedAt = performance.now();
-    let timeout: ReturnType<typeof setTimeout> | undefined;
-    try {
-      const client = new ConvexHttpClient(config.lifecycleCallback.convexUrl);
-      const reported = await Promise.race([
-        client.mutation(
-          api.localSandbox.reportCloudLifecycleState as never,
-          {
-            sessionId: config.cloudSessionId,
-            bootstrapToken: config.lifecycleCallback.bootstrapToken,
-            microvmId: config.microvmId,
-            state,
-          } as never,
-        ),
-        new Promise<never>((_resolve, reject) => {
-          timeout = setTimeout(
-            () => reject(new Error("Lifecycle callback timed out")),
-            2_000,
-          );
-        }),
-      ]);
-      if (!reported) throw new Error("Lifecycle callback was rejected");
-      console.log(
-        JSON.stringify({
-          timestamp: new Date().toISOString(),
-          level: "info",
-          event: "cloud_sandbox_lifecycle_state_reported",
-          service: "hackerai-cloud-sandbox-agent",
-          environment: "aws-lambda-microvm",
-          request_id: config.cloudSessionId,
-          microvm_id: config.microvmId,
-          microvm_state: state,
-          duration_ms: Math.round(performance.now() - startedAt),
-        }),
-      );
-    } catch (error) {
-      // AWS lifecycle progress must not depend on Convex availability. The
-      // scheduled control-plane reconciliation repairs missed callbacks.
-      console.warn(
-        JSON.stringify({
-          timestamp: new Date().toISOString(),
-          level: "warn",
-          event: "cloud_sandbox_lifecycle_state_report_failed",
-          service: "hackerai-cloud-sandbox-agent",
-          environment: "aws-lambda-microvm",
-          request_id: config.cloudSessionId,
-          microvm_id: config.microvmId,
-          microvm_state: state,
-          duration_ms: Math.round(performance.now() - startedAt),
-          error_name: error instanceof Error ? error.name : typeof error,
-          error_message:
-            error instanceof Error
-              ? error.message.slice(0, 500)
-              : String(error).slice(0, 500),
-        }),
-      );
-    } finally {
-      if (timeout) clearTimeout(timeout);
-    }
-  };
-
-  const primeImage = async (hook: string): Promise<void> => {
-    const result = await primeCloudImageWorkingSet({
-      primeRelay: async () => {
-        const client = new LocalSandboxClient({
-          convexUrl: "http://127.0.0.1",
-          token: "image-validation",
-          name: "image-validation",
-          authMode: "cloud",
-          cloudSessionId: "image-validation",
-          microvmId: "image-validation",
-        });
-        try {
-          await client.primeStartupWorkingSet();
-        } finally {
-          client.disposePrimedResources();
-        }
-      },
-    });
-    console.log(
-      JSON.stringify({
-        timestamp: new Date().toISOString(),
-        level: "info",
-        event: "cloud_sandbox_image_primed",
-        service: "hackerai-cloud-sandbox-agent",
-        environment: "aws-lambda-microvm",
-        request_id: "image-build",
-        hook,
-        duration_ms: result.duration_ms,
-        step_count: result.steps.length,
-        steps: result.steps,
-      }),
-    );
-  };
-
-  const server = createServer(async (request, response) => {
-    const path = request.url?.split("?", 1)[0] ?? "/";
-    const requestId = lifecycleConfig?.cloudSessionId ?? "image-build";
-    try {
-      if (request.method === "GET" && path === "/health") {
-        writeLifecycleResponse(response, 200, {
-          ok: true,
-          connected: relay.running,
-        });
-        return;
-      }
-
-      if (
-        request.method === "POST" &&
-        (path === "/aws/lambda-microvms/runtime/v1/ready" ||
-          path === "/aws/lambda-microvms/runtime/v1/validate")
-      ) {
-        await primeImage(path.endsWith("/ready") ? "ready" : "validate");
-        writeLifecycleResponse(response, 200, { ok: true, primed: true });
-        return;
-      }
-
-      if (
-        request.method === "POST" &&
-        path === "/aws/lambda-microvms/runtime/v1/run"
-      ) {
-        const { microvmId, config, smokeTest } = parseCloudLifecyclePayload(
-          await readJsonBody(request),
-        );
-        if (!config) throw new Error("Cloud sandbox bootstrap is missing");
-        lifecycleConfig = {
-          convexUrl: "http://127.0.0.1",
-          token: "",
-          name: config.connectionName ?? "AWS Lambda MicroVM",
-          authMode: "direct-cloud",
-          cloudSessionId: config.sessionId,
-          microvmId,
-          lifecycleCallback: config.lifecycleCallback,
-        };
-        await relay.run(lifecycleConfig);
-        writeLifecycleResponse(response, 200, { ok: true, smokeTest });
-        return;
-      }
-
-      if (
-        request.method === "POST" &&
-        path === "/aws/lambda-microvms/runtime/v1/suspend"
-      ) {
-        await relay.suspend();
-        await reportLifecycleState(lifecycleConfig, "SUSPENDING");
-        writeLifecycleResponse(response, 200, { ok: true });
-        return;
-      }
-
-      if (
-        request.method === "POST" &&
-        path === "/aws/lambda-microvms/runtime/v1/resume"
-      ) {
-        await relay.resume();
-        await reportLifecycleState(lifecycleConfig, "RUNNING");
-        writeLifecycleResponse(response, 200, { ok: true });
-        return;
-      }
-
-      if (
-        request.method === "POST" &&
-        path === "/aws/lambda-microvms/runtime/v1/terminate"
-      ) {
-        await relay.terminate();
-        await reportLifecycleState(lifecycleConfig, "TERMINATING");
-        lifecycleConfig = null;
-        writeLifecycleResponse(response, 200, { ok: true });
-        return;
-      }
-
-      writeLifecycleResponse(response, 404, { error: "not_found" });
-    } catch (error) {
-      const primeError =
-        error instanceof CloudImagePrimeError ? error : undefined;
-      console.error(
-        JSON.stringify({
-          timestamp: new Date().toISOString(),
-          level: "error",
-          event: "cloud_sandbox_lifecycle_hook_failed",
-          service: "hackerai-cloud-sandbox-agent",
-          environment: "aws-lambda-microvm",
-          request_id: requestId,
-          hook: path,
-          failure_step: primeError?.step ?? null,
-          completed_steps: primeError?.completedSteps ?? null,
-          cause_error:
-            primeError?.cause instanceof Error
-              ? primeError.cause.message.slice(0, 500)
-              : null,
-          error: error instanceof Error ? error.message : String(error),
-        }),
-      );
-      writeLifecycleResponse(response, 500, { error: "lifecycle_hook_failed" });
-    }
-  });
-
-  const directServer = createServer((_request, response) => {
-    writeLifecycleResponse(response, 426, { error: "websocket_required" });
-  });
-  const directWebSockets = new WebSocketServer({
-    noServer: true,
-    maxPayload: 4 * 1024 * 1024,
-    perMessageDeflate: false,
-  });
-  directServer.on("upgrade", (request, socket, head) => {
-    const path = request.url?.split("?", 1)[0] ?? "/";
-    if (path !== "/sandbox") {
-      socket.destroy();
-      return;
-    }
-    directWebSockets.handleUpgrade(request, socket, head, (webSocket) => {
-      directTransport.accept(webSocket);
-    });
-  });
-
-  const shutdown = async (): Promise<void> => {
-    try {
-      await relay.terminate();
-    } catch (error) {
-      console.error(
-        JSON.stringify({
-          timestamp: new Date().toISOString(),
-          level: "error",
-          event: "cloud_sandbox_shutdown_cleanup_failed",
-          service: "hackerai-cloud-sandbox-agent",
-          environment: "aws-lambda-microvm",
-          request_id: lifecycleConfig?.cloudSessionId ?? "signal",
-          failure_code: "guest_termination_failed",
-          error: error instanceof Error ? error.message : String(error),
-        }),
-      );
-    }
-    directWebSockets.close();
-    directServer.close();
-    server.close(() => process.exit(0));
-  };
-  process.on("SIGINT", () => void shutdown());
-  process.on("SIGTERM", () => void shutdown());
-
-  server.listen(8080, "0.0.0.0", () => {
-    console.log(
-      JSON.stringify({
-        timestamp: new Date().toISOString(),
-        level: "info",
-        event: "cloud_sandbox_lifecycle_server_ready",
-        service: "hackerai-cloud-sandbox-agent",
-        environment: "aws-lambda-microvm",
-        request_id: "image-build",
-        port: 8080,
-      }),
-    );
-  });
-  directServer.listen(9000, "0.0.0.0", () => {
-    console.log(
-      JSON.stringify({
-        timestamp: new Date().toISOString(),
-        level: "info",
-        event: "cloud_sandbox_direct_server_ready",
-        service: "hackerai-cloud-sandbox-agent",
-        environment: "aws-lambda-microvm",
-        request_id: "image-build",
-        port: 9000,
-      }),
-    );
-  });
-}
-
 export function main(): void {
   // Show help
   if (hasFlag("--help") || hasFlag("-h")) {
@@ -2051,77 +1211,59 @@ ${chalk.cyan("Auto-termination:")}
     process.exit(0);
   }
 
-  if (hasFlag("--cloud-lifecycle")) {
-    void startCloudLifecycleServer().catch((error: unknown) => {
-      console.error(
-        JSON.stringify({
-          timestamp: new Date().toISOString(),
-          level: "error",
-          event: "cloud_sandbox_lifecycle_server_failed",
-          service: "hackerai-cloud-sandbox-agent",
-          environment: "aws-lambda-microvm",
-          request_id: "startup",
-          error: error instanceof Error ? error.message : String(error),
-        }),
-      );
-      process.exit(1);
-    });
-  } else {
-    const config: Config = {
-      convexUrl: getArg("--convex-url") || PRODUCTION_CONVEX_URL,
-      token: getArg("--token") || "",
-      name: getArg("--name") || os.hostname(),
-      authMode: "local",
-    };
+  const config: Config = {
+    convexUrl: getArg("--convex-url") || PRODUCTION_CONVEX_URL,
+    token: getArg("--token") || "",
+    name: getArg("--name") || os.hostname(),
+  };
 
-    if (!config.token) {
-      console.error(chalk.red("❌ No authentication token provided"));
+  if (!config.token) {
+    console.error(chalk.red("❌ No authentication token provided"));
+    console.error(
+      chalk.yellow("Usage: npx @hackerai/local --token YOUR_TOKEN"),
+    );
+    console.error(
+      chalk.yellow("Get your token from HackerAI Settings > Agents"),
+    );
+    process.exit(1);
+  }
+
+  const client = new LocalSandboxClient(config);
+
+  process.on("SIGINT", async () => {
+    console.log(chalk.yellow("\n🛑 Shutting down..."));
+    try {
+      await client.cleanup();
+      process.exit(0);
+    } catch (error) {
       console.error(
-        chalk.yellow("Usage: npx @hackerai/local --token YOUR_TOKEN"),
-      );
-      console.error(
-        chalk.yellow("Get your token from HackerAI Settings > Agents"),
+        chalk.red(
+          `Cleanup failed: ${error instanceof Error ? error.message : String(error)}`,
+        ),
       );
       process.exit(1);
     }
+  });
 
-    const client = new LocalSandboxClient(config);
-
-    process.on("SIGINT", async () => {
-      console.log(chalk.yellow("\n🛑 Shutting down..."));
-      try {
-        await client.cleanup();
-        process.exit(0);
-      } catch (error) {
-        console.error(
-          chalk.red(
-            `Cleanup failed: ${error instanceof Error ? error.message : String(error)}`,
-          ),
-        );
-        process.exit(1);
-      }
-    });
-
-    process.on("SIGTERM", async () => {
-      try {
-        await client.cleanup();
-        process.exit(0);
-      } catch (error) {
-        console.error(
-          chalk.red(
-            `Cleanup failed: ${error instanceof Error ? error.message : String(error)}`,
-          ),
-        );
-        process.exit(1);
-      }
-    });
-
-    client.start().catch((error: unknown) => {
-      const message = error instanceof Error ? error.message : String(error);
-      console.error(chalk.red("Fatal error:"), message);
+  process.on("SIGTERM", async () => {
+    try {
+      await client.cleanup();
+      process.exit(0);
+    } catch (error) {
+      console.error(
+        chalk.red(
+          `Cleanup failed: ${error instanceof Error ? error.message : String(error)}`,
+        ),
+      );
       process.exit(1);
-    });
-  }
+    }
+  });
+
+  client.start().catch((error: unknown) => {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(chalk.red("Fatal error:"), message);
+    process.exit(1);
+  });
 }
 
 if (require.main === module) {

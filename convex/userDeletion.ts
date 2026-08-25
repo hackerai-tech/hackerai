@@ -21,7 +21,6 @@ export const USER_DELETION_TABLE_POLICY = {
     "team_member_usage",
     "local_sandbox_tokens",
     "local_sandbox_connections",
-    "cloud_sandbox_sessions",
     "cancellation_reason_details",
     "research_run_members",
     "research_user_profiles",
@@ -397,11 +396,6 @@ async function cleanupUserDataForUser(
   >(ctx, budget, "local_sandbox_connections", "by_user_id", (q) =>
     q.eq("user_id", userId),
   );
-  const cloudSandboxSessionsBatch = await collectByIndexBatch<
-    Doc<"cloud_sandbox_sessions">
-  >(ctx, budget, "cloud_sandbox_sessions", "by_user_id", (q) =>
-    q.eq("user_id", userId),
-  );
   const extraUsageBatch = await collectByIndexBatch<Doc<"extra_usage">>(
     ctx,
     budget,
@@ -454,7 +448,6 @@ async function cleanupUserDataForUser(
     messagesBatch,
     localSandboxTokensBatch,
     localSandboxConnectionsBatch,
-    cloudSandboxSessionsBatch,
     extraUsageBatch,
     teamMemberUsageBatch,
     cancellationReasonDetailsBatch,
@@ -471,7 +464,6 @@ async function cleanupUserDataForUser(
   const customization = customizationBatch.docs;
   const localSandboxTokens = localSandboxTokensBatch.docs;
   const localSandboxConnections = localSandboxConnectionsBatch.docs;
-  const cloudSandboxSessions = cloudSandboxSessionsBatch.docs;
   const extraUsage = extraUsageBatch.docs;
   const teamMemberUsage = teamMemberUsageBatch.docs;
   const cancellationReasonDetails = cancellationReasonDetailsBatch.docs;
@@ -512,13 +504,6 @@ async function cleanupUserDataForUser(
     stats,
     "local_sandbox_connections",
     localSandboxConnections,
-    mode,
-  );
-  await deleteDocs(
-    ctx,
-    stats,
-    "cloud_sandbox_sessions",
-    cloudSandboxSessions,
     mode,
   );
   await deleteDocs(ctx, stats, "extra_usage", extraUsage, mode);

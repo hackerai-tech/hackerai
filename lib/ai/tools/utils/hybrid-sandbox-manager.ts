@@ -13,7 +13,6 @@ import {
   type CentrifugoConfig,
 } from "./centrifugo-sandbox";
 import {
-  isAwsLambdaMicrovmSandbox,
   isCentrifugoSandbox,
   isE2BSandbox,
   type ConnectionInfo,
@@ -90,7 +89,6 @@ export function isSameLocalMachine(
   return (
     current.name === candidate.name &&
     current.isDesktop === candidate.isDesktop &&
-    current.cloudProvider === candidate.cloudProvider &&
     current.osInfo.platform === candidate.osInfo.platform &&
     current.osInfo.arch === candidate.osInfo.arch &&
     current.osInfo.release === candidate.osInfo.release &&
@@ -815,8 +813,7 @@ export class HybridSandboxManager implements SandboxManager {
 
   setSandbox(sandbox: SandboxInstance): void {
     this.sandbox = sandbox;
-    this.isLocal =
-      isCentrifugoSandbox(sandbox) && !isAwsLambdaMicrovmSandbox(sandbox);
+    this.isLocal = isCentrifugoSandbox(sandbox);
     if (this.isLocal && isCentrifugoSandbox(sandbox)) {
       this.currentConnectionId = sandbox.getConnectionId();
       this.currentConnectionName = sandbox.getConnectionName();

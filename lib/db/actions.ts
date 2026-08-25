@@ -816,42 +816,6 @@ export async function getActiveTriggerRunsForUser({
   }
 }
 
-export async function beginCloudSandboxDeletionForUser({
-  userId,
-}: {
-  userId: string;
-}) {
-  try {
-    return await getConvexClient().mutation(
-      api.localSandbox.beginCloudSandboxDeletion,
-      { serviceKey, userId },
-    );
-  } catch (error) {
-    throw databaseError("localSandbox.beginCloudSandboxDeletion", error, {
-      user_id: userId,
-    });
-  }
-}
-
-export async function finishCloudSandboxDeletionForUser({
-  userId,
-  operationId,
-}: {
-  userId: string;
-  operationId: string;
-}) {
-  try {
-    return await getConvexClient().mutation(
-      api.localSandbox.finishCloudSandboxDeletion,
-      { serviceKey, userId, operationId },
-    );
-  } catch (error) {
-    throw databaseError("localSandbox.finishCloudSandboxDeletion", error, {
-      user_id: userId,
-    });
-  }
-}
-
 export async function fenceAndGetActiveAgentResourcesForUser({
   userId,
 }: {

@@ -256,13 +256,6 @@ describe("security validation subagent runtime contracts", () => {
     expect(parent).not.toContain("vulnerability_report");
   });
 
-  it("inherits the parent cloud provider from the persisted sandbox", () => {
-    const child = read("trigger/subagent.ts");
-    expect(child).toContain("resolvePersistedSubagentCloudSandboxProvider");
-    expect(child).toContain("sandboxIdentity: row.sandbox_identity");
-    expect(child).toContain("cloudSandboxProvider,");
-  });
-
   it("deletes child transcripts in bounded batches before deleting the child", () => {
     const chats = read("convex/chats.ts");
     expect(chats).toContain("async function deleteSubagentDataForChat");
