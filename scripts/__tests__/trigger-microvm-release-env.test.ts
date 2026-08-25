@@ -34,7 +34,6 @@ describe("Trigger.dev MicroVM release environment sync", () => {
       accessToken: "tr_pat_test",
       projectRef: "proj_test",
       variables: {
-        CLOUD_SANDBOX_PROVIDER: "aws-lambda-microvm",
         AWS_LAMBDA_MICROVM_RELEASE_MANIFEST: JSON.stringify(releaseManifest),
         AWS_LAMBDA_MICROVM_IMAGE_ID:
           "arn:aws:lambda:us-east-1:123:microvm-image:test",

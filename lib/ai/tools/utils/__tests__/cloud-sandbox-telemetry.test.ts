@@ -108,6 +108,49 @@ describe("cloud sandbox operational telemetry", () => {
     expect(mockRecordAwsSandboxHalfOpenSuccess).not.toHaveBeenCalled();
   });
 
+  it("falls back to E2B within the same request after a classified AWS quota failure", async () => {
+    const failure = Object.assign(new Error("account memory quota reached"), {
+      name: "ServiceQuotaExceededException",
+    });
+    const e2bSandbox = { sandboxId: "e2b-fallback" };
+    mockEnsureAwsLambdaMicrovmConnection.mockRejectedValueOnce(failure);
+    mockRecordAwsSandboxAcquisitionFailure.mockResolvedValueOnce({
+      opened: false,
+      failureClass: "provider_unavailable",
+    });
+    mockEnsureSandboxConnection.mockResolvedValueOnce({
+      sandbox: e2bSandbox,
+    });
+
+    await expect(
+      ensureCloudSandboxConnection({
+        userId: "user-pro",
+        setSandbox: jest.fn(),
+        context: {
+          provider: "aws-lambda-microvm",
+          providerSelectionReason: "primary_aws",
+          subscription: "pro",
+          chatId: "chat-quota",
+          triggerRunId: "run-quota",
+          runKind: "parent",
+          triggerRegion: "eu-central-1",
+        },
+      }),
+    ).resolves.toEqual({ sandbox: e2bSandbox });
+
+    expect(mockEnsureSandboxConnection).toHaveBeenCalledTimes(1);
+    expect(mockEvent).toHaveBeenCalledWith(
+      "cloud_sandbox_provider_fallback_succeeded",
+      expect.objectContaining({
+        userId: "user-pro",
+        provider: "aws-lambda-microvm",
+        fallback_provider: "e2b",
+        failure_class: "provider_unavailable",
+        trigger_region: "eu-central-1",
+      }),
+    );
+  });
+
   it("closes a half-open circuit only after AWS acquisition succeeds", async () => {
     const sandbox = { getConnectionId: () => "microvm-1" };
     mockEnsureAwsLambdaMicrovmConnection.mockResolvedValueOnce(sandbox);

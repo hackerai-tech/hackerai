@@ -22,6 +22,7 @@ on:
       - "lib/ai/tools/utils/aws-lambda-microvm-release.ts"
       - "lib/ai/tools/utils/aws-lambda-microvm-workspace.ts"
       - "lib/ai/tools/utils/aws-lambda-microvm.ts"
+      - "lib/ai/tools/utils/cloud-sandbox.ts"
       - "lib/ai/tools/utils/cloud-scan-safety.ts"
       - "convex/s3Actions.ts"
       - "convex/s3Utils.ts"

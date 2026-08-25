@@ -4,7 +4,6 @@ import { parseAwsLambdaMicrovmReleaseManifest } from "../../lib/ai/tools/utils/a
 export const TRIGGER_MICROVM_RELEASE_ENVIRONMENT = "prod" as const;
 
 export const TRIGGER_MICROVM_RELEASE_ENV_NAMES = [
-  "CLOUD_SANDBOX_PROVIDER",
   "AWS_LAMBDA_MICROVM_RELEASE_MANIFEST",
   "AWS_LAMBDA_MICROVM_IMAGE_ID",
   "AWS_LAMBDA_MICROVM_IMAGE_VERSION",
@@ -38,7 +37,6 @@ export function getTriggerMicrovmReleaseConfig(
     accessToken: required(env, "TRIGGER_ACCESS_TOKEN"),
     projectRef: required(env, "TRIGGER_PROJECT_ID"),
     variables: {
-      CLOUD_SANDBOX_PROVIDER: "aws-lambda-microvm",
       AWS_LAMBDA_MICROVM_RELEASE_MANIFEST: JSON.stringify(manifest),
       AWS_LAMBDA_MICROVM_IMAGE_ID: east.imageIdentifier,
       AWS_LAMBDA_MICROVM_IMAGE_VERSION: east.imageVersion,

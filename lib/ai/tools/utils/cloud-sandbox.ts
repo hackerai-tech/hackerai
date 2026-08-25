@@ -34,6 +34,26 @@ export type CloudSandboxSuspensionSummary = {
   ownershipProtected: number;
 };
 
+const ensureE2BCloudSandboxConnection = (options: {
+  userId: string;
+  initialSandbox?: AnySandbox | null;
+  setSandbox: (sandbox: AnySandbox) => void;
+  onBoot?: (info: SandboxBootInfo) => void;
+}) =>
+  ensureSandboxConnection(
+    {
+      userID: options.userId,
+      setSandbox: options.setSandbox,
+      onBoot: options.onBoot,
+    },
+    {
+      initialSandbox:
+        options.initialSandbox && isE2BSandbox(options.initialSandbox)
+          ? options.initialSandbox
+          : null,
+    },
+  );
+
 export async function ensureCloudSandboxConnection(options: {
   userId: string;
   initialSandbox?: AnySandbox | null;
@@ -67,28 +87,22 @@ export async function ensureCloudSandboxConnection(options: {
       return { sandbox };
     }
 
-    return await ensureSandboxConnection(
-      {
-        userID: options.userId,
-        setSandbox: options.setSandbox,
-        onBoot: options.onBoot,
-      },
-      {
-        initialSandbox:
-          options.initialSandbox && isE2BSandbox(options.initialSandbox)
-            ? options.initialSandbox
-            : null,
-      },
-    );
+    return await ensureE2BCloudSandboxConnection(options);
   } catch (error) {
+    let awsFailureClass:
+      | Awaited<
+          ReturnType<typeof recordAwsSandboxAcquisitionFailure>
+        >["failureClass"]
+      | undefined;
     if (provider === "aws-lambda-microvm") {
-      await recordAwsSandboxAcquisitionFailure(error, {
+      const recorded = await recordAwsSandboxAcquisitionFailure(error, {
         requestId: options.context?.triggerRunId,
         source: "sandbox_acquisition",
         halfOpenProbe:
           options.context?.providerSelectionReason ===
           "circuit_half_open_probe",
       });
+      awsFailureClass = recorded.failureClass;
     }
     phLogger.event("cloud_sandbox_acquisition_failed", {
       userId: options.userId,
@@ -106,6 +120,44 @@ export async function ensureCloudSandboxConnection(options: {
       error_name: error instanceof Error ? error.name : "UnknownError",
       cloud_sandbox_acquisition_failed_event_version: 2,
     });
+
+    if (provider === "aws-lambda-microvm" && awsFailureClass) {
+      const fallbackStartedAt = Date.now();
+      try {
+        const fallback = await ensureE2BCloudSandboxConnection(options);
+        phLogger.event("cloud_sandbox_provider_fallback_succeeded", {
+          userId: options.userId,
+          chat_id: options.context?.chatId,
+          trigger_run_id: options.context?.triggerRunId,
+          provider: "aws-lambda-microvm",
+          fallback_provider: "e2b",
+          failure_class: awsFailureClass,
+          subscription_tier: options.context?.subscription,
+          agent_run_kind: options.context?.runKind ?? "parent",
+          trigger_region: options.context?.triggerRegion,
+          duration_ms: Date.now() - fallbackStartedAt,
+        });
+        return fallback;
+      } catch (fallbackError) {
+        phLogger.event("cloud_sandbox_provider_fallback_failed", {
+          userId: options.userId,
+          chat_id: options.context?.chatId,
+          trigger_run_id: options.context?.triggerRunId,
+          provider: "aws-lambda-microvm",
+          fallback_provider: "e2b",
+          failure_class: awsFailureClass,
+          subscription_tier: options.context?.subscription,
+          agent_run_kind: options.context?.runKind ?? "parent",
+          trigger_region: options.context?.triggerRegion,
+          duration_ms: Date.now() - fallbackStartedAt,
+          error_name:
+            fallbackError instanceof Error
+              ? fallbackError.name
+              : "UnknownError",
+        });
+        throw fallbackError;
+      }
+    }
     throw error;
   }
 }
