@@ -10,9 +10,11 @@ The integration is ARM64-only because Lambda MicroVMs currently support
 Graviton only. The image grants `ALL` guest OS capabilities so tools that need
 raw sockets can run inside the VM. The AWS-managed authenticated endpoint uses
 `ALL_INGRESS`; it is not an unauthenticated public listener. Outbound internet
-access uses a regional VPC connector whose private subnet routes through a NAT
-Gateway and retained Elastic IP. Replacing a MicroVM therefore does not change
-the public source IPv4 address observed by an authorized target.
+access uses a regional VPC connector whose private subnet routes arbitrary
+internet traffic through a NAT Gateway and retained Elastic IP. Same-region S3
+traffic uses the private route table's S3 gateway endpoint instead, avoiding
+NAT processing without changing the public source IPv4 address observed by an
+authorized target.
 
 ## 1. Provision AWS prerequisites
 
@@ -56,6 +58,12 @@ Each regional stack output includes `EgressNetworkConnectorArn` and
 deletion cannot silently release the address. If the stack is intentionally
 removed, clean up the retained address separately only after every customer has
 been notified and migrated.
+
+Each stack also associates a no-hourly-charge S3 gateway endpoint with the
+MicroVM private route table. Updating only `cloudformation.yaml` intentionally
+does not trigger the costly image-release workflow. Apply the stack update in
+all three regions with the commands above after reviewing the CloudFormation
+change set; no image rebuild is required.
 
 Availability tradeoff: each region intentionally uses one NAT Gateway and one
 Elastic IP in one Availability Zone. This keeps the published allowlist to one
@@ -184,12 +192,17 @@ After the last active parent run or subagent finishes, the guest archives
 `/home/user` and uploads it to one private, user-scoped `workspace.tar.gz`
 object in the workspace bucket matching the MicroVM's AWS region before
 suspending the VM. A fresh replacement checks all three regional objects and
-restores the newest one, using S3's server-side `LastModified` timestamps,
-before any Agent tool can use the new VM. Near-lifetime replacement also
-snapshots before terminating the old VM. While a VM is running, a guest-side
-checkpoint process refreshes the object in that VM's region every two minutes
-using a scoped eight-hour upload URL. This bounds data loss if Trigger.dev
-reaches its hard task cutoff before normal Agent cleanup can run.
+selects the newest one using S3's server-side `LastModified` timestamps. If it
+came from another region, S3 copies it into the replacement VM's regional
+bucket before the guest downloads it, so restore traffic can use the local
+gateway endpoint instead of NAT. Near-lifetime replacement also snapshots
+before terminating the old VM. While a VM is running, a guest-side checkpoint
+process fingerprints the workspace before archiving. Changed workspaces
+checkpoint every five minutes; an unchanged workspace skips compression and
+upload and backs off to ten minutes. Normal Agent completion and near-lifetime
+replacement still force a full snapshot. This bounds data loss if Trigger.dev
+reaches its hard task cutoff before normal Agent cleanup can run without
+repeatedly uploading an unchanged archive.
 
 The archive keeps source files, dotfiles, and Git state, but excludes
 rebuildable `node_modules`, pnpm/npm caches, and the general home cache. The S3
@@ -215,7 +228,8 @@ condition to `users/*/microvm-workspace/v1/*`, so `HeadObject` can distinguish a
 new workspace from an authorization failure. S3 credentials are never placed
 inside the guest. Every regional metadata lookup must succeed before restore
 chooses an object, so an outage cannot be mistaken for an empty or older
-workspace.
+workspace. Cross-region `CopyObject` uses the same source `s3:GetObject` and
+destination `s3:PutObject` permissions; there is no separate S3 copy action.
 
 Workspace buckets must be never-versioned: `GetBucketVersioning` must return no
 status. Reject buckets whose status is `Enabled` or `Suspended`; S3 cannot return
@@ -250,7 +264,14 @@ Optional controls:
   workspace snapshot succeeds. If both snapshot and suspend fail, the VM is
   retained until the maximum-duration backstop rather than deleting the only
   project copy. Replacement cleanup and Data Controls termination remain
-  additional safety boundaries.
+  additional safety boundaries. The ten-minute reconciliation task also checks
+  physically running sessions for confirmed orphaning. It only initiates the
+  same snapshot-backed suspend after 15 minutes without a connection heartbeat
+  and after Convex confirms that the user has neither an active parent run nor
+  an active subagent. Reconciliation runs are serialized and clean up at most
+  one confirmed orphan per sweep so long snapshots cannot overlap. Missing
+  ownership evidence fails closed and leaves the VM for the platform lifecycle
+  backstop.
 
 Never expose these variables with a `NEXT_PUBLIC_` prefix. AWS endpoint tokens
 are generated on demand by the Trigger.dev runtime, restricted to port 9000,

@@ -92,7 +92,7 @@ describe("s3Actions", () => {
     });
 
     it("restores the newest snapshot across all workspace regions", async () => {
-      const { getS3ObjectMetadata, generateS3DownloadUrl } =
+      const { copyS3Object, getS3ObjectMetadata, generateS3DownloadUrl } =
         await import("../s3Utils");
       (getS3ObjectMetadata as jest.MockedFunction<typeof getS3ObjectMetadata>)
         .mockResolvedValueOnce({ exists: true, lastModifiedMs: 100 })
@@ -114,9 +114,14 @@ describe("s3Actions", () => {
         }),
       ).resolves.toBe("https://s3.example/download");
       expect(getS3ObjectMetadata).toHaveBeenCalledTimes(3);
-      expect(generateS3DownloadUrl).toHaveBeenCalledWith(
+      expect(copyS3Object).toHaveBeenCalledWith(
         "users/user_123/microvm-workspace/v1/workspace.tar.gz",
         { region: "us-west-2", bucketName: "workspace-west" },
+        { region: "us-east-1", bucketName: "workspace-east" },
+      );
+      expect(generateS3DownloadUrl).toHaveBeenCalledWith(
+        "users/user_123/microvm-workspace/v1/workspace.tar.gz",
+        { region: "us-east-1", bucketName: "workspace-east" },
       );
     });
 
@@ -141,6 +146,8 @@ describe("s3Actions", () => {
         region: "eu-west-1",
       });
 
+      const { copyS3Object } = await import("../s3Utils");
+      expect(copyS3Object).not.toHaveBeenCalled();
       expect(generateS3DownloadUrl).toHaveBeenCalledWith(
         "users/user_123/microvm-workspace/v1/workspace.tar.gz",
         { region: "eu-west-1", bucketName: "workspace-eu" },
@@ -184,6 +191,30 @@ describe("s3Actions", () => {
           region: "us-east-1",
         }),
       ).rejects.toBe(regionalOutage);
+      expect(generateS3DownloadUrl).not.toHaveBeenCalled();
+    });
+
+    it("fails closed when a cross-region restore cannot be localized", async () => {
+      const { copyS3Object, getS3ObjectMetadata, generateS3DownloadUrl } =
+        await import("../s3Utils");
+      (getS3ObjectMetadata as jest.MockedFunction<typeof getS3ObjectMetadata>)
+        .mockResolvedValueOnce({ exists: true, lastModifiedMs: 100 })
+        .mockResolvedValueOnce({ exists: true, lastModifiedMs: 300 })
+        .mockResolvedValueOnce({ exists: false });
+      const copyFailure = new Error("cross-region copy failed");
+      (
+        copyS3Object as jest.MockedFunction<typeof copyS3Object>
+      ).mockRejectedValue(copyFailure);
+      const { getMicrovmWorkspaceDownloadUrlAction } =
+        await import("../s3Actions");
+
+      await expect(
+        getMicrovmWorkspaceDownloadUrlAction.handler({} as any, {
+          serviceKey: "service-key",
+          userId: "user_123",
+          region: "us-east-1",
+        }),
+      ).rejects.toBe(copyFailure);
       expect(generateS3DownloadUrl).not.toHaveBeenCalled();
     });
 

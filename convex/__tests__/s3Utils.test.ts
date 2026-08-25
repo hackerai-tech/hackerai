@@ -322,4 +322,33 @@ describe("s3Utils", () => {
       });
     });
   });
+
+  describe("copyS3Object", () => {
+    it("copies a workspace into the destination region server-side", async () => {
+      const { S3Client, CopyObjectCommand } =
+        await import("@aws-sdk/client-s3");
+      const mockSend = jest.fn().mockResolvedValue({});
+      (S3Client as jest.MockedClass<typeof S3Client>).mockImplementation(
+        () => ({ send: mockSend }) as unknown as S3Client,
+      );
+      const { copyS3Object } = await import("../s3Utils");
+
+      await copyS3Object(
+        "users/user%2F123/microvm-workspace/v1/workspace.tar.gz",
+        { region: "us-west-2", bucketName: "workspace-west" },
+        { region: "eu-west-1", bucketName: "workspace-eu" },
+      );
+
+      expect(S3Client).toHaveBeenCalledWith(
+        expect.objectContaining({ region: "eu-west-1" }),
+      );
+      expect(CopyObjectCommand).toHaveBeenCalledWith({
+        Bucket: "workspace-eu",
+        Key: "users/user%2F123/microvm-workspace/v1/workspace.tar.gz",
+        CopySource:
+          "workspace-west/users/user%252F123/microvm-workspace/v1/workspace.tar.gz",
+      });
+      expect(mockSend).toHaveBeenCalledTimes(1);
+    });
+  });
 });

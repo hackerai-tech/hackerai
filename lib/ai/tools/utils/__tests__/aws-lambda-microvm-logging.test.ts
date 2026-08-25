@@ -496,6 +496,11 @@ describe("AWS Lambda MicroVM development logging", () => {
       suspended: 1,
       terminal: 1,
       failures: 0,
+      orphanCleanupChecked: 0,
+      orphanCleanupEligible: 0,
+      orphanCleanupSuspended: 0,
+      orphanCleanupTerminated: 0,
+      orphanCleanupFailures: 0,
     });
     expect(mockMutation.mock.calls).toEqual(
       expect.arrayContaining([
@@ -516,6 +521,66 @@ describe("AWS Lambda MicroVM development logging", () => {
         ]),
       ]),
     );
+    infoSpy.mockRestore();
+  });
+
+  it("snapshot-suspends a stale running MicroVM with no active owner", async () => {
+    const staleAt = Date.now() - 30 * 60 * 1_000;
+    const session = {
+      sessionId: "session-orphan",
+      status: "active" as const,
+      microvmId: "microvm-orphan",
+      region: "us-east-1",
+      imageIdentifier: process.env.AWS_LAMBDA_MICROVM_IMAGE_ID,
+      imageVersion: "6.0",
+      createdAt: staleAt,
+      updatedAt: staleAt,
+      lastConnectedAt: staleAt,
+      bootstrapExpiresAt: Date.now() + 60_000,
+    };
+    mockQuery
+      .mockResolvedValueOnce([{ userId: "user-orphan", session }])
+      .mockResolvedValueOnce({
+        eligible: true,
+        reason: "eligible",
+        lastActivityAt: staleAt,
+      })
+      .mockResolvedValueOnce([session]);
+    mockSend
+      .mockResolvedValueOnce({
+        state: "RUNNING",
+        endpoint: "microvm-orphan.example.test",
+      })
+      .mockResolvedValueOnce({
+        state: "RUNNING",
+        endpoint: "microvm-orphan.example.test",
+      })
+      .mockResolvedValueOnce({
+        state: "SUSPENDING",
+        $metadata: { requestId: "suspend-orphan", httpStatusCode: 200 },
+      });
+    mockMutation.mockResolvedValue(true);
+    const infoSpy = jest.spyOn(console, "info").mockImplementation();
+
+    await expect(reconcileAwsLambdaMicrovmSessions()).resolves.toEqual({
+      checked: 1,
+      running: 1,
+      suspended: 0,
+      terminal: 0,
+      failures: 0,
+      orphanCleanupChecked: 1,
+      orphanCleanupEligible: 1,
+      orphanCleanupSuspended: 1,
+      orphanCleanupTerminated: 0,
+      orphanCleanupFailures: 0,
+    });
+    expect(mockSnapshotWorkspace).toHaveBeenCalledWith(
+      expect.objectContaining({
+        userId: "user-orphan",
+        region: "us-east-1",
+      }),
+    );
+    expect(mockSend.mock.calls).toHaveLength(3);
     infoSpy.mockRestore();
   });
 

@@ -68,7 +68,12 @@ describe("AWS Lambda MicroVM durable workspace", () => {
       region: "us-west-2",
     });
     const checkpointCommand = run.mock.calls[1][0] as string;
-    expect(checkpointCommand).toContain("sleep 120");
+    expect(checkpointCommand).toContain("interval=300");
+    expect(checkpointCommand).toContain('sleep "$interval"');
+    expect(checkpointCommand).toContain("checkpoint.fingerprint");
+    expect(checkpointCommand.indexOf('mv "$fingerprint_tmp"')).toBeLessThan(
+      checkpointCommand.indexOf("nohup /bin/bash"),
+    );
     expect(checkpointCommand).toContain("nohup /bin/bash");
     expect(checkpointCommand).toContain("exec 8>&-");
   });
@@ -184,9 +189,24 @@ describe("AWS Lambda MicroVM durable workspace", () => {
 
   it("keeps fatal checkpoint tar errors from reaching the upload", () => {
     const script = buildWorkspaceCheckpointScript();
+    expect(script).not.toContain("if (");
     expect(script).toContain("tar_status=0");
     expect(script).toContain("tar_status=$?");
     expect(script).toContain('[ "$tar_status" -le 1 ]');
+  });
+
+  it("skips unchanged checkpoints and backs off quiet workspaces", () => {
+    const script = buildWorkspaceCheckpointScript();
+
+    expect(script).toContain("workspace_fingerprint()");
+    expect(script).toContain("sha256sum");
+    expect(script).toContain("-name node_modules");
+    expect(script).toContain("exit 10");
+    expect(script).toContain('checkpoint_status="$?"');
+    expect(script).toContain("interval=600");
+    expect(script.indexOf('--upload-file "$archive"')).toBeLessThan(
+      script.indexOf('mv "$fingerprint_tmp" "$fingerprint_file"'),
+    );
   });
 
   it("bounds detached checkpoint work below the final snapshot lock wait", () => {
@@ -194,7 +214,10 @@ describe("AWS Lambda MicroVM durable workspace", () => {
 
     expect(script).toContain("timeout --signal=TERM --kill-after=5s 45s tar");
     expect(script).toContain("timeout --signal=TERM --kill-after=5s 50s curl");
+    expect(script).toContain(
+      "timeout --signal=TERM --kill-after=2s 10s /bin/bash -c",
+    );
     expect(script).toContain("--connect-timeout 15 --max-time 50");
-    expect(45 + 5 + 50 + 5).toBeLessThan(120);
+    expect(10 + 2 + 45 + 5 + 50 + 5).toBeLessThan(120);
   });
 });

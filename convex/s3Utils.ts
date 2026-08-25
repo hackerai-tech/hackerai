@@ -4,6 +4,7 @@ import {
   GetObjectCommand,
   DeleteObjectCommand,
   HeadObjectCommand,
+  CopyObjectCommand,
 } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { v4 as uuidv4 } from "uuid";
@@ -200,6 +201,26 @@ export async function getS3ObjectMetadata(
     }
     throw error;
   }
+}
+
+/**
+ * Copy a trusted object into another regional bucket. The copy runs inside S3,
+ * so a MicroVM never has to download a cross-region workspace through NAT.
+ */
+export async function copyS3Object(
+  s3Key: string,
+  source: S3ObjectTarget,
+  destination: S3ObjectTarget,
+): Promise<void> {
+  const s3Client = getS3Client(destination.region);
+  const encodedKey = s3Key.split("/").map(encodeURIComponent).join("/");
+  await s3Client.send(
+    new CopyObjectCommand({
+      Bucket: destination.bucketName,
+      Key: s3Key,
+      CopySource: `${source.bucketName}/${encodedKey}`,
+    }),
+  );
 }
 
 /** Return whether an S3 object exists without treating a missing key as an error. */

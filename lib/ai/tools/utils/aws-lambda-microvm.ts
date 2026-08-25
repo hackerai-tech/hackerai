@@ -37,6 +37,8 @@ const DEFAULT_MAX_DURATION_SECONDS = 8 * 60 * 60;
 const DEFAULT_MIN_REMAINING_SECONDS = 2 * 60 * 60 + 5 * 60;
 const DIRECT_IDLE_SECONDS = 5 * 60;
 const DIRECT_SUSPENDED_SECONDS = 30 * 60;
+const CONFIRMED_ORPHAN_STALE_MS = 15 * 60 * 1_000;
+const CONFIRMED_ORPHAN_CLEANUP_LIMIT = 1;
 const SESSION_READY_TIMEOUT_MS = 90_000;
 const USER_DELETION_TERMINATION_CONFIRM_TIMEOUT_MS =
   process.env.NODE_ENV === "test" ? 1_000 : 15_000;
@@ -81,6 +83,7 @@ type CloudSession = {
   createdAt: number;
   updatedAt: number;
   bootstrapExpiresAt: number;
+  lastConnectedAt?: number;
   relayReadyAt?: number;
   awsState?: AwsMicrovmState;
   awsStateCheckedAt?: number;
@@ -100,12 +103,29 @@ type CloudSessionReconciliationCandidate = {
   session: CloudSession;
 };
 
+type CloudSessionOrphanCleanupEligibility = {
+  eligible: boolean;
+  reason:
+    | "eligible"
+    | "session_not_owned"
+    | "session_not_active"
+    | "recent_activity"
+    | "active_parent_run"
+    | "active_subagent";
+  lastActivityAt?: number;
+};
+
 export type AwsLambdaMicrovmReconciliationSummary = {
   checked: number;
   running: number;
   suspended: number;
   terminal: number;
   failures: number;
+  orphanCleanupChecked: number;
+  orphanCleanupEligible: number;
+  orphanCleanupSuspended: number;
+  orphanCleanupTerminated: number;
+  orphanCleanupFailures: number;
 };
 
 type CloudSessionCleanupCandidate = {
@@ -1912,15 +1932,21 @@ export async function terminateAwsLambdaMicrovmForUser(
  */
 export async function suspendAwsLambdaMicrovmsForUser(
   userId: string,
+  options: { sessionId?: string } = {},
 ): Promise<AwsLambdaMicrovmSuspensionSummary> {
   const serviceKey = required("CONVEX_SERVICE_ROLE_KEY");
-  const sessions = (await getConvexClient().query(
+  const activeSessions = (await getConvexClient().query(
     api.localSandbox.listActiveCloudSessionsForBackend,
     {
       serviceKey,
       userId,
     },
   )) as CloudSession[];
+  const sessions = options.sessionId
+    ? activeSessions.filter(
+        (session) => session.sessionId === options.sessionId,
+      )
+    : activeSessions;
   const summary: AwsLambdaMicrovmSuspensionSummary = {
     total: sessions.length,
     suspended: 0,
@@ -2181,8 +2207,18 @@ export async function reconcileAwsLambdaMicrovmSessions(
     suspended: 0,
     terminal: 0,
     failures: 0,
+    orphanCleanupChecked: 0,
+    orphanCleanupEligible: 0,
+    orphanCleanupSuspended: 0,
+    orphanCleanupTerminated: 0,
+    orphanCleanupFailures: 0,
   };
   const errors: unknown[] = [];
+  const runningCandidates = new Map<
+    string,
+    CloudSessionReconciliationCandidate
+  >();
+  let orphanCleanupBudget = CONFIRMED_ORPHAN_CLEANUP_LIMIT;
 
   for (let offset = 0; offset < candidates.length; offset += 10) {
     const batch = candidates.slice(offset, offset + 10);
@@ -2212,8 +2248,12 @@ export async function reconcileAwsLambdaMicrovmSessions(
               : undefined,
           );
           summary.checked++;
-          if (state === "RUNNING" || state === "PENDING") summary.running++;
-          else if (state === "SUSPENDED" || state === "SUSPENDING") {
+          if (state === "RUNNING" || state === "PENDING") {
+            summary.running++;
+            if (state === "RUNNING" && !runningCandidates.has(userId)) {
+              runningCandidates.set(userId, { userId, session });
+            }
+          } else if (state === "SUSPENDED" || state === "SUSPENDING") {
             summary.suspended++;
           } else summary.terminal++;
         } catch (error) {
@@ -2247,6 +2287,73 @@ export async function reconcileAwsLambdaMicrovmSessions(
         }
       }),
     );
+  }
+
+  for (const { userId, session } of runningCandidates.values()) {
+    if (!session.microvmId) continue;
+    try {
+      const eligibility = (await getConvexClient().query(
+        api.localSandbox.getCloudSessionOrphanCleanupEligibility,
+        {
+          serviceKey,
+          userId,
+          sessionId: session.sessionId,
+          microvmId: session.microvmId,
+          staleBeforeMs: Date.now() - CONFIRMED_ORPHAN_STALE_MS,
+        },
+      )) as CloudSessionOrphanCleanupEligibility;
+      summary.orphanCleanupChecked++;
+      if (!eligibility.eligible) {
+        log("debug", "cloud_sandbox_orphan_cleanup_skipped", {
+          user_id: userId,
+          session_id: session.sessionId,
+          microvm_id: session.microvmId,
+          region: session.region,
+          reason: eligibility.reason,
+          last_activity_age_ms:
+            eligibility.lastActivityAt === undefined
+              ? null
+              : Math.max(0, Date.now() - eligibility.lastActivityAt),
+        });
+        continue;
+      }
+
+      summary.orphanCleanupEligible++;
+      orphanCleanupBudget--;
+      const stopped = await suspendAwsLambdaMicrovmsForUser(userId, {
+        sessionId: session.sessionId,
+      });
+      summary.orphanCleanupSuspended +=
+        stopped.suspended + stopped.alreadySuspended;
+      summary.orphanCleanupTerminated +=
+        stopped.terminated + stopped.alreadyGone;
+      log("info", "cloud_sandbox_confirmed_orphan_cleanup_completed", {
+        user_id: userId,
+        session_id: session.sessionId,
+        microvm_id: session.microvmId,
+        region: session.region,
+        last_activity_age_ms:
+          eligibility.lastActivityAt === undefined
+            ? null
+            : Math.max(0, Date.now() - eligibility.lastActivityAt),
+        sessions_total: stopped.total,
+        sessions_suspended: stopped.suspended + stopped.alreadySuspended,
+        sessions_terminated: stopped.terminated + stopped.alreadyGone,
+        workspaces_saved: stopped.workspacesSaved,
+      });
+    } catch (error) {
+      summary.orphanCleanupFailures++;
+      errors.push(error);
+      log("warn", "cloud_sandbox_confirmed_orphan_cleanup_failed", {
+        user_id: userId,
+        session_id: session.sessionId,
+        microvm_id: session.microvmId,
+        region: session.region,
+        failure_code: failureCode(error),
+        ...errorLogFields(error),
+      });
+    }
+    if (orphanCleanupBudget <= 0) break;
   }
 
   log("info", "cloud_sandbox_state_reconciliation_completed", summary);
