@@ -10,16 +10,19 @@ called through the repo-owned Codex skill `$hackerai-user-research`.
    no separate per-run approval record is required. A Linear issue is optional
    tracking metadata and does not authorize or block a run.
 2. Uses service-keyed Convex queries to sample up to 20 chats across each user's
-   observed date range.
+   observed date range, or within a bounded pre-event window when every cohort
+   member has an event timestamp.
 3. Reads bounded text excerpts from the beginning and end of each chat. The
    excerpt query excludes files, tool outputs, reasoning parts, hidden/system
    messages, and message/chat identifiers.
 4. Redacts direct identifiers, targets, secrets, paths, code blocks, and command
    arguments before sending evidence to the model.
 5. Runs one profile worker per user in parallel, then synthesizes the cohort.
-6. Stores the audit record, structured per-user profiles keyed by internal user
-   ID, aggregate report, evidence coverage, token usage, and provider cost in
-   Convex.
+6. Stores the audit record, bounded PostHog cohort provenance, structured
+   per-user profiles keyed by internal user ID, aggregate report, evidence
+   coverage, token usage, and provider cost in Convex. The audit stores only a
+   query fingerprint and declared limitations, never raw SQL or request
+   payloads.
 
 Both stages use `x-ai/grok-4.6` through the existing OpenRouter
 provider with reasoning set to low and zero-data-retention routing
@@ -36,7 +39,8 @@ only after at least three user profiles are available.
 
 - `userResearch.createRun` and `markRunRunning`: create the auditable purpose and
   processing record.
-- `userResearch.listRepresentativeChats`: select bounded chats across time.
+- `userResearch.listRepresentativeChats`: select bounded chats across time or
+  inside a configured pre-event evidence window.
 - `userResearch.getMessageExcerpt`: return bounded, text-only conversation
   excerpts after ownership verification.
 - `userResearch.saveUserProfile` and `listProfiles`: persist and read structured
@@ -81,6 +85,14 @@ not add PMs to the Trigger organization or give them Trigger/Convex credentials.
 
 `HACKERAI_PM_USER_RESEARCH_KEY` authenticates the scoped runner; it is not a
 per-run approval mechanism and is unrelated to Linear.
+
+For event-based questions such as churn, pass `samplingMode: "pre_event"`, a
+bounded `evidenceWindowDays`, and exactly one `{ userId, anchorAt }` entry in
+`evidenceAnchors` for every cohort user. `anchorAt` is the PostHog event time in
+milliseconds. Behavioral evidence remains low-confidence for causal
+attribution even when it immediately precedes the event; combine it with an
+explicit survey or experiment before treating a friction pattern as the reason
+for churn.
 
 ### PostHog identity and revenue contract
 

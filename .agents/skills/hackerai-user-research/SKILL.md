@@ -26,12 +26,18 @@ Read [references/privacy-policy.md](references/privacy-policy.md) and
    adjustment or payer mapping, use the best available PostHog cohort and state
    that limitation in the aggregate report instead of blocking the run. Never
    use Google Drive.
+   Record the production PostHog project, cohort selection timestamp, a SHA-256
+   fingerprint of the selection query, and any known selection limitations. Do
+   not place the raw query in the gateway payload or report.
 3. Resolve each cohort member to the internal user ID used by Convex. Exclude
    internal/test/fraud accounts and deduplicate payer or organization
    relationships before triggering analysis. For authenticated HackerAI users,
    select PostHog `distinct_id` as the internal Convex/WorkOS user ID; do not
    require a duplicate person property or infer identity from email. Stop unless
    3-20 unique internal user IDs remain after filtering.
+   For event-based questions, also select the PostHog event timestamp for each
+   user. Use it as that user's evidence anchor; do not substitute one shared
+   timestamp for the cohort.
 4. Create a mode-600 temporary JSON request outside the repository using the
    gateway payload below. Run
    `node .agents/skills/hackerai-user-research/scripts/run-research.mjs --payload <path>`.
@@ -61,9 +67,31 @@ Use the current task schema as the authority. A typical run is:
   "question": "What kinds of users are our highest-spending customers, what recurring work do they use HackerAI for, and why do they pay?",
   "cohortLabel": "PostHog top-spender research cohort",
   "userIds": ["internal-user-id-1", "internal-user-id-2", "internal-user-id-3"],
+  "cohortSource": "posthog",
+  "posthogProjectId": 144137,
+  "cohortSelectedAt": 1788000000000,
+  "selectionQueryFingerprint": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+  "selectionLimitations": ["Historical revenue coverage is incomplete"],
   "maxChatsPerUser": 12
 }
 ```
+
+For churn or another event-based question, add:
+
+```json
+{
+  "samplingMode": "pre_event",
+  "evidenceWindowDays": 60,
+  "evidenceAnchors": [
+    { "userId": "internal-user-id-1", "anchorAt": 1787702400000 },
+    { "userId": "internal-user-id-2", "anchorAt": 1787788800000 },
+    { "userId": "internal-user-id-3", "anchorAt": 1787875200000 }
+  ]
+}
+```
+
+`evidenceAnchors` must contain exactly one PostHog event timestamp for every
+cohort user. Omit sampling fields for ordinary representative-history research.
 
 `linearIssueId` may be added as an optional tracking reference, for example
 `"linearIssueId": "HAC-65"`. Do not read the issue or its comments to look for
@@ -83,6 +111,10 @@ payload. `userIds` must be the internal Convex/WorkOS user IDs.
   multiple chats and users.
 - Keep observed product behavior separate from acquisition or messaging
   hypotheses.
+- Treat behavioral explanations of churn or conversion as low-confidence
+  causal evidence even when pre-event sampling is used. Compare them with
+  explicit survey reasons or a controlled experiment before making causal
+  claims.
 - Say `unknown` when the evidence does not establish context. Never infer a
   company or occupation from an email address.
 - A failed or partial run is not permission to inspect messages manually. Fix
