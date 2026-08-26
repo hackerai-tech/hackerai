@@ -2204,6 +2204,7 @@ export type AgentLongPayload = {
   userLocation: Geo;
   triggerRegion?: TriggerRunRegion;
   isAutoContinue?: boolean;
+  isAutomaticContinuation?: boolean;
   regenerate?: boolean;
   isNewChat?: boolean;
   limitRescue?: LimitRescueRequest;
@@ -2283,6 +2284,7 @@ export const agentLongTask = task({
       userLocation,
       triggerRegion = "us-east-1",
       isAutoContinue,
+      isAutomaticContinuation,
       regenerate,
       isNewChat,
       limitRescue,
@@ -5172,7 +5174,7 @@ export const agentLongTask = task({
                           stoppedDueToPostSummarizationIncomplete:
                             state.stoppedDueToPostSummarizationIncomplete,
                         });
-                      if (autoContinueStopSource && !isAutoContinue) {
+                      if (autoContinueStopSource && !isAutomaticContinuation) {
                         writeAutoContinue(writer);
                         phLogger.info("Agent auto-continue signaled", {
                           event: "agent_auto_continue_signaled",
@@ -5183,7 +5185,10 @@ export const agentLongTask = task({
                           last_step_input_tokens: state.lastStepInputTokens,
                           had_summarization: summarizationTracker.hasSummarized,
                         });
-                      } else if (autoContinueStopSource && isAutoContinue) {
+                      } else if (
+                        autoContinueStopSource &&
+                        isAutomaticContinuation
+                      ) {
                         phLogger.info("Agent auto-continue limit reached", {
                           event: "agent_auto_continue_suppressed",
                           chat_id: chatId,

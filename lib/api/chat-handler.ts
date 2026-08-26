@@ -254,6 +254,7 @@ export const createChatHandler = () => {
         sandboxPreference,
         selectedModel: rawSelectedModel,
         isAutoContinue,
+        isAutomaticContinuation,
         useClientMessagesForRegenerate,
         limitRescue: rawLimitRescue,
         projectId: rawProjectId,
@@ -266,6 +267,7 @@ export const createChatHandler = () => {
         sandboxPreference?: SandboxPreference;
         selectedModel?: string;
         isAutoContinue?: boolean;
+        isAutomaticContinuation?: boolean;
         useClientMessagesForRegenerate?: boolean;
         limitRescue?: unknown;
         projectId?: unknown;
@@ -2509,7 +2511,7 @@ export const createChatHandler = () => {
                     if (
                       autoContinueStopSource &&
                       isAgentMode(mode) &&
-                      !isAutoContinue
+                      !isAutomaticContinuation
                     ) {
                       writeAutoContinue(writer);
                       phLogger.info("Agent auto-continue signaled", {
@@ -2524,7 +2526,7 @@ export const createChatHandler = () => {
                     } else if (
                       autoContinueStopSource &&
                       isAgentMode(mode) &&
-                      isAutoContinue
+                      isAutomaticContinuation
                     ) {
                       phLogger.info("Agent auto-continue limit reached", {
                         event: "agent_auto_continue_suppressed",

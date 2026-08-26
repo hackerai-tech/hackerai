@@ -133,6 +133,7 @@ export function useAutoContinue({
           body: {
             mode: chatMode,
             isAutoContinue: true,
+            isAutomaticContinuation: true,
             todos: todosRef.current,
             sandboxPreference: sandboxPreferenceRef.current,
             agentPermissionMode: agentPermissionModeRef.current,

@@ -145,6 +145,7 @@ describe("useAutoContinue", () => {
         body: {
           mode: "agent",
           isAutoContinue: true,
+          isAutomaticContinuation: true,
           todos,
           sandboxPreference: "local-123",
           agentPermissionMode: "full_access",
@@ -181,6 +182,7 @@ describe("useAutoContinue", () => {
       {
         body: expect.objectContaining({
           isAutoContinue: true,
+          isAutomaticContinuation: true,
           mode: "agent",
         }),
       },

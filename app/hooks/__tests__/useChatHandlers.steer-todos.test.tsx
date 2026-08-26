@@ -14,6 +14,7 @@ const mockSetMessages = jest.fn();
 const mockSetTodos = jest.fn();
 const mockClearInput = jest.fn();
 const mockClearUploadedFiles = jest.fn();
+const mockResetAutoContinueCount = jest.fn();
 let mockInput = "";
 
 const todos: Todo[] = [
@@ -296,6 +297,7 @@ describe("useChatHandlers steer todo handoff", () => {
         isSendingNowRef: { current: false },
         hasManuallyStoppedRef: { current: true },
         activeTriggerRunRef: { current: undefined },
+        resetAutoContinueCount: mockResetAutoContinueCount,
       }),
     );
 
@@ -305,6 +307,7 @@ describe("useChatHandlers steer todo handoff", () => {
 
     expect(mockCancelStream).not.toHaveBeenCalled();
     expect(globalThis.fetch).not.toHaveBeenCalled();
+    expect(mockResetAutoContinueCount).toHaveBeenCalledTimes(1);
     expect(mockRemoveQueuedMessage).toHaveBeenCalledWith("queued-1");
     expect(mockSendMessage).toHaveBeenCalledWith(
       expect.objectContaining({ text: "Change direction" }),
@@ -327,6 +330,7 @@ describe("useChatHandlers steer todo handoff", () => {
         isSendingNowRef: { current: false },
         hasManuallyStoppedRef: { current: true },
         activeTriggerRunRef: { current: undefined },
+        resetAutoContinueCount: mockResetAutoContinueCount,
       }),
     );
 
@@ -340,12 +344,46 @@ describe("useChatHandlers steer todo handoff", () => {
       fileIds: undefined,
       todos: [],
     });
+    expect(mockResetAutoContinueCount).toHaveBeenCalledTimes(1);
     expect(mockSetTodos).toHaveBeenCalledWith([]);
     expect(regenerate).toHaveBeenCalledWith(
       expect.objectContaining({
         body: expect.objectContaining({
           todos: [],
           regenerate: true,
+        }),
+      }),
+    );
+  });
+
+  it("resets the continuation count before a manual continue", () => {
+    const { result } = renderHook(() =>
+      useChatHandlers({
+        chatId: "chat-1",
+        messages,
+        sendMessage: mockSendMessage,
+        stop: mockStop,
+        regenerate: jest.fn(),
+        setMessages: mockSetMessages,
+        isExistingChat: true,
+        status: "ready",
+        isSendingNowRef: { current: false },
+        hasManuallyStoppedRef: { current: true },
+        activeTriggerRunRef: { current: undefined },
+        resetAutoContinueCount: mockResetAutoContinueCount,
+      }),
+    );
+
+    act(() => {
+      result.current.handleContinue();
+    });
+
+    expect(mockResetAutoContinueCount).toHaveBeenCalledTimes(1);
+    expect(mockSendMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ metadata: { isAutoContinue: true } }),
+      expect.objectContaining({
+        body: expect.not.objectContaining({
+          isAutomaticContinuation: true,
         }),
       }),
     );
