@@ -80,6 +80,7 @@ const emptySandboxRuntimeMs = (): Record<CloudSandboxProvider, number> => ({
   miosa: 0,
   e2b: 0,
 });
+const MIOSA_USAGE_READ_TIMEOUT_MS = 2_000;
 
 // Factory function to create tools with context
 export const createTools = (
@@ -122,11 +123,24 @@ export const createTools = (
   const readMiosaCostDollars = async (
     miosaSandbox: Extract<AnySandbox, { sandboxKind: "miosa" }>,
   ): Promise<number | null> => {
+    let timeout: ReturnType<typeof setTimeout> | undefined;
     try {
-      const usage = await miosaSandbox.sdkSandbox.usage();
+      const usage = await Promise.race([
+        miosaSandbox.sdkSandbox.usage(),
+        new Promise<null>((resolve) => {
+          timeout = setTimeout(
+            () => resolve(null),
+            MIOSA_USAGE_READ_TIMEOUT_MS,
+          );
+          timeout.unref?.();
+        }),
+      ]);
+      if (!usage) return null;
       return usage.estimated_cost_cents / 100;
     } catch {
       return null;
+    } finally {
+      if (timeout) clearTimeout(timeout);
     }
   };
 
@@ -393,18 +407,18 @@ export const createTools = (
     const e2bCostDollars = runtimeMs.e2b * E2B_COST_PER_MS;
     let miosaCostDollars = latestMiosaCostDollars;
     if (isMiosaSandbox(sandbox) && miosaCostBaselinePromise) {
-      let baseline = await miosaCostBaselinePromise;
+      const baseline = await miosaCostBaselinePromise;
       if (baseline === null) {
         miosaCostBaselinePromise = readMiosaCostDollars(sandbox);
-        baseline = await miosaCostBaselinePromise;
-      }
-      const current = await readMiosaCostDollars(sandbox);
-      if (baseline !== null && current !== null) {
-        latestMiosaCostDollars = Math.max(
-          latestMiosaCostDollars,
-          current - baseline,
-        );
-        miosaCostDollars = latestMiosaCostDollars;
+      } else {
+        const current = await readMiosaCostDollars(sandbox);
+        if (current !== null) {
+          latestMiosaCostDollars = Math.max(
+            latestMiosaCostDollars,
+            current - baseline,
+          );
+          miosaCostDollars = latestMiosaCostDollars;
+        }
       }
     }
     return {

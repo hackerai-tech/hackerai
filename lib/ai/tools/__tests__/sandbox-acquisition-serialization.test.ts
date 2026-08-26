@@ -253,7 +253,34 @@ describe("sandbox acquisition serialization", () => {
 
     mockTrackSandboxUsage?.({ provider: "miosa", sdkSandbox: { usage } });
 
+    await expect(getSandboxSessionCost()).resolves.toBe(0);
     await expect(getSandboxSessionCost()).resolves.toBeCloseTo(0.05, 12);
+  });
+
+  it("bounds a stalled MIOSA usage read during step settlement", async () => {
+    jest.useFakeTimers();
+    mockIsMiosaSandbox.mockImplementation(
+      (sandbox: { provider?: string } | null) => sandbox?.provider === "miosa",
+    );
+    const usage = jest.fn(() => new Promise<never>(() => undefined));
+    const { getSandboxSessionCost } = createTools(
+      "user-1",
+      "chat-1",
+      {} as never,
+      "agent",
+      {} as never,
+      undefined,
+      true,
+      undefined,
+      "e2b",
+      "service-key",
+    );
+
+    mockTrackSandboxUsage?.({ provider: "miosa", sdkSandbox: { usage } });
+    const cost = getSandboxSessionCost();
+    await jest.advanceTimersByTimeAsync(2_000);
+
+    await expect(cost).resolves.toBe(0);
   });
 
   it("stops cloud runtime billing while a non-cloud sandbox is active", async () => {
