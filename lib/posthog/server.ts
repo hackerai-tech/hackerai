@@ -134,14 +134,9 @@ function sanitizeExceptionForCapture(error: Error): Error {
 
 function sanitizeErrorForConsole(error: unknown): unknown {
   if (error instanceof Error) {
-    const serialized = [
-      error.message,
-      error.stack ?? "",
-      stringifyUnknown(error),
-    ].join("\n");
-    return redactSensitiveErrorMessage(serialized) === serialized
-      ? error
-      : sanitizeExceptionForCapture(error);
+    // Always clone Error instances so enumerable provider-specific fields such
+    // as responseBody, data, and cause cannot reach console/Trigger telemetry.
+    return sanitizeExceptionForCapture(error);
   }
   if (error === undefined) return undefined;
   return redactSensitiveErrorMessage(stringifyUnknown(error));

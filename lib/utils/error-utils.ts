@@ -25,14 +25,6 @@ const truncate = (str: string, max: number): string => {
   return str.length > max ? str.slice(0, max) + "…" : str;
 };
 
-const SENSITIVE_KEYS = new Set([
-  "requestBodyValues",
-  "prompt",
-  "messages",
-  "content",
-  "text",
-]);
-
 const OPENROUTER_DETAIL_MAX_LENGTH = 500;
 
 const parseJsonObject = (
@@ -236,44 +228,6 @@ export const isProviderContextOrMediaOverflowError = (
 ): boolean => classifyProviderOverflowError(error) !== null;
 
 /**
- * Removes sensitive user data from provider error objects.
- * Fields containing user prompts/messages are completely removed.
- * Uses WeakSet to guard against circular references.
- */
-const removeSensitiveData = (data: unknown): unknown => {
-  const seen = new WeakSet<object>();
-
-  const recurse = (value: unknown): unknown => {
-    if (value === null || value === undefined) return value;
-    if (typeof value === "string") {
-      return redactSensitiveErrorMessage(value);
-    }
-    if (typeof value !== "object") return value;
-
-    if (seen.has(value)) return "[Circular]";
-    seen.add(value);
-
-    if (Array.isArray(value)) {
-      return value.map(recurse);
-    }
-
-    const obj = value as Record<string, unknown>;
-    const cleaned: Record<string, unknown> = {};
-
-    for (const [key, val] of Object.entries(obj)) {
-      if (SENSITIVE_KEYS.has(key)) {
-        continue;
-      }
-      cleaned[key] = recurse(val);
-    }
-
-    return cleaned;
-  };
-
-  return recurse(data);
-};
-
-/**
  * Extracts structured error details for logging to PostHog or other services.
  * Handles both standard Error objects and provider-specific error formats (AI SDK, etc.)
  * Sensitive user data (prompts, messages) is removed from the output.
@@ -313,14 +267,23 @@ export const extractErrorDetails = (
           ? redactSensitiveErrorMessage(source.url)
           : source.url;
     }
-    if (details.responseBody === undefined && "responseBody" in source) {
-      details.responseBody = removeSensitiveData(source.responseBody);
+    if (details.responseBodyPresent === undefined && "responseBody" in source) {
+      // Provider response bodies can contain parsed attachments, file
+      // annotations, inline images, or user text under provider-specific keys.
+      // Keep only presence/size diagnostics; getOpenRouterProviderInfo below
+      // extracts the bounded status, provider, request ID, and reason fields.
+      details.responseBodyPresent = source.responseBody !== undefined;
+      if (typeof source.responseBody === "string") {
+        details.responseBodyLength = source.responseBody.length;
+      }
     }
     if (details.isRetryable === undefined && "isRetryable" in source) {
       details.isRetryable = source.isRetryable;
     }
-    if (details.providerData === undefined && "data" in source) {
-      details.providerData = removeSensitiveData(source.data);
+    if (details.providerDataPresent === undefined && "data" in source) {
+      // `data` is an opaque provider payload with the same privacy risks as a
+      // response body. Never copy it into telemetry.
+      details.providerDataPresent = source.data !== undefined;
     }
     if (details.cause === undefined && "cause" in source && source.cause) {
       details.cause = redactSensitiveErrorMessage(
