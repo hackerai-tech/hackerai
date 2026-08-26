@@ -43,9 +43,6 @@ cap-fs-ext = "3.4.5"
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
-[target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_System_Threading"] }
-
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.5"
 objc2-web-kit = { version = "0.2", features = ["WKWebView", "WKNavigation", "objc2-app-kit"] }

@@ -76,10 +76,18 @@ export function useAutoContinue({
   }, [clearScheduledAutoContinue, setIsAutoContinuing]);
 
   useEffect(() => {
+    autoContinueCountRef.current = 0;
     pendingAutoContinueRef.current = false;
     lastProcessedIndexRef.current = 0;
     clearAutoContinueLifecycle();
-  }, [chatId, clearAutoContinueLifecycle]);
+    setIsAutoResuming(false);
+    setAutoContinueCount(0);
+  }, [
+    chatId,
+    clearAutoContinueLifecycle,
+    setAutoContinueCount,
+    setIsAutoResuming,
+  ]);
 
   // Detect data-auto-continue signal and immediately mark pending
   useEffect(() => {

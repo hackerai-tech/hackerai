@@ -1349,6 +1349,19 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     }
   });
 
+  test("the direct chat boundary strictly normalizes automatic continuation flags", () => {
+    expect(chatHandlerSrc).toMatch(/isAutoContinue:\s*rawIsAutoContinue/);
+    expect(chatHandlerSrc).toMatch(
+      /isAutomaticContinuation:\s*rawIsAutomaticContinuation/,
+    );
+    expect(chatHandlerSrc).toMatch(
+      /const isAutoContinue = rawIsAutoContinue === true/,
+    );
+    expect(chatHandlerSrc).toMatch(
+      /isAutoContinue && rawIsAutomaticContinuation === true/,
+    );
+  });
+
   test("handled user rate limits are returned after the UI error chunk is flushed", () => {
     const waitIdx = taskSrc.indexOf("await waitUntilComplete()");
     const streamErrorIdx = taskSrc.indexOf("if (terminalStreamError)", waitIdx);

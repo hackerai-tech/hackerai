@@ -253,8 +253,8 @@ export const createChatHandler = () => {
         regenerate,
         sandboxPreference,
         selectedModel: rawSelectedModel,
-        isAutoContinue,
-        isAutomaticContinuation,
+        isAutoContinue: rawIsAutoContinue,
+        isAutomaticContinuation: rawIsAutomaticContinuation,
         useClientMessagesForRegenerate,
         limitRescue: rawLimitRescue,
         projectId: rawProjectId,
@@ -278,6 +278,9 @@ export const createChatHandler = () => {
         "projectId",
         rawProjectId,
       );
+      const isAutoContinue = rawIsAutoContinue === true;
+      const isAutomaticContinuation =
+        isAutoContinue && rawIsAutomaticContinuation === true;
       outerChatId = chatId;
 
       const limitRescue: LimitRescueRequest | undefined = isLimitRescueRequest(

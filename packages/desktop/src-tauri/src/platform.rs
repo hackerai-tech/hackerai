@@ -248,48 +248,18 @@ pub async fn cancel_process_tree(pid: u32) -> bool {
 
     #[cfg(windows)]
     {
-        let taskkill = tokio::process::Command::new("taskkill")
+        return tokio::process::Command::new("taskkill")
             .args(["/PID", &pid.to_string(), "/T", "/F"])
             .output()
-            .await;
-        return match taskkill {
-            Ok(output) => cancellation_succeeded(
-                output.status.success(),
-                windows_process_is_running(pid),
-            ),
-            Err(_) => false,
-        };
+            .await
+            .map(|output| output.status.success())
+            .unwrap_or(false);
     }
 
     #[cfg(not(any(unix, windows)))]
     {
         false
     }
-}
-
-fn cancellation_succeeded(
-    termination_succeeded: bool,
-    process_is_running: bool,
-) -> bool {
-    termination_succeeded || !process_is_running
-}
-
-#[cfg(windows)]
-fn windows_process_is_running(pid: u32) -> bool {
-    use windows_sys::Win32::Foundation::{CloseHandle, ERROR_INVALID_PARAMETER};
-    use windows_sys::Win32::System::Threading::{
-        OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
-    };
-
-    let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
-    if handle.is_null() {
-        return std::io::Error::last_os_error().raw_os_error()
-            != Some(ERROR_INVALID_PARAMETER as i32);
-    }
-    unsafe {
-        CloseHandle(handle);
-    }
-    true
 }
 
 #[cfg(unix)]
@@ -300,24 +270,4 @@ fn process_group_is_running(pid: u32) -> bool {
         return true;
     }
     std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
-}
-
-#[cfg(test)]
-mod cancellation_tests {
-    use super::cancellation_succeeded;
-
-    #[test]
-    fn cancellation_succeeds_when_process_exits_after_lookup() {
-        assert!(cancellation_succeeded(false, false));
-    }
-
-    #[test]
-    fn cancellation_preserves_real_termination_failures() {
-        assert!(!cancellation_succeeded(false, true));
-    }
-
-    #[test]
-    fn cancellation_succeeds_when_taskkill_succeeds() {
-        assert!(cancellation_succeeded(true, true));
-    }
 }
