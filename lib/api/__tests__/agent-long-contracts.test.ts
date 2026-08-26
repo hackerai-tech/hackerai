@@ -1341,8 +1341,25 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     for (const source of [chatHandlerSrc, taskSrc]) {
       expect(source).toMatch(/getAgentAutoContinueStopSource\(\{/);
       expect(source).toMatch(/finishReason:\s*state\.streamFinishReason/);
+      expect(source).toMatch(
+        /if \(\s*autoContinueStopSource[\s\S]{0,100}!isAutomaticContinuation\s*\) \{\s*writeAutoContinue/,
+      );
       expect(source).toMatch(/writeAutoContinue\(writer\)/);
+      expect(source).toMatch(/agent_auto_continue_suppressed/);
     }
+  });
+
+  test("the direct chat boundary strictly normalizes automatic continuation flags", () => {
+    expect(chatHandlerSrc).toMatch(/isAutoContinue:\s*rawIsAutoContinue/);
+    expect(chatHandlerSrc).toMatch(
+      /isAutomaticContinuation:\s*rawIsAutomaticContinuation/,
+    );
+    expect(chatHandlerSrc).toMatch(
+      /const isAutoContinue = rawIsAutoContinue === true/,
+    );
+    expect(chatHandlerSrc).toMatch(
+      /isAutoContinue && rawIsAutomaticContinuation === true/,
+    );
   });
 
   test("handled user rate limits are returned after the UI error chunk is flushed", () => {
@@ -1538,6 +1555,9 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     for (const source of [taskSrc, chatHandlerSrc]) {
       expect(source).toMatch(/getAgentAutoContinueStopSource\(\{/);
       expect(source).toMatch(/autoContinueStopSource/);
+      expect(source).toMatch(
+        /if \(\s*autoContinueStopSource[\s\S]{0,100}!isAutomaticContinuation\s*\) \{\s*writeAutoContinue/,
+      );
       expect(source).toMatch(/agent_auto_continue_signaled/);
     }
   });

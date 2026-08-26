@@ -785,6 +785,7 @@ export const useChatHandlers = ({
     }
 
     setIsAutoResuming(false);
+    resetAutoContinueCount?.();
 
     // Stop any active stream first to prevent message order issues and wasted tokens
     if (hasActiveRunToReplace()) {
@@ -884,6 +885,7 @@ export const useChatHandlers = ({
   const handleContinue = (selectedModelOverride?: SelectedModel) => {
     if (status === "streaming" || status === "submitted") return;
     hasManuallyStoppedRef.current = false;
+    resetAutoContinueCount?.();
     const continuationSelectedModel =
       selectedModelOverride ?? requestSelectedModelRef.current;
     runChatAction("continue response", () =>
@@ -909,6 +911,7 @@ export const useChatHandlers = ({
   const handleSendNow = async (messageId: string) => {
     const message = messageQueue.find((m) => m.id === messageId);
     if (!message) return;
+    resetAutoContinueCount?.();
 
     // Set flag to prevent auto-processing from interfering
     isSendingNowRef.current = true;

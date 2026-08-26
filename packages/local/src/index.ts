@@ -794,7 +794,7 @@ export class LocalSandboxClient {
           undefined,
           () => isProcessTreeTerminationConfirmed(proc),
         )
-      : false;
+      : true;
     await this.publishToChannel({
       type: "command_cancel_result",
       commandId: msg.commandId,

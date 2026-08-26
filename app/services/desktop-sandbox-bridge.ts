@@ -1148,7 +1148,9 @@ export class DesktopSandboxBridge {
   private async handleCommandCancel(
     command: CommandCancelMessage,
   ): Promise<void> {
-    let canceled = false;
+    // Cancellation is idempotent: if the command already left the active set,
+    // there is no process left to terminate.
+    let canceled = !this.activeCommands.has(command.commandId);
     if (this.activeCommands.has(command.commandId)) {
       try {
         const { invoke } = await import("@tauri-apps/api/core");

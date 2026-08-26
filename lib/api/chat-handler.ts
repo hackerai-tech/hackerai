@@ -253,7 +253,8 @@ export const createChatHandler = () => {
         regenerate,
         sandboxPreference,
         selectedModel: rawSelectedModel,
-        isAutoContinue,
+        isAutoContinue: rawIsAutoContinue,
+        isAutomaticContinuation: rawIsAutomaticContinuation,
         useClientMessagesForRegenerate,
         limitRescue: rawLimitRescue,
         projectId: rawProjectId,
@@ -266,6 +267,7 @@ export const createChatHandler = () => {
         sandboxPreference?: SandboxPreference;
         selectedModel?: string;
         isAutoContinue?: boolean;
+        isAutomaticContinuation?: boolean;
         useClientMessagesForRegenerate?: boolean;
         limitRescue?: unknown;
         projectId?: unknown;
@@ -276,6 +278,9 @@ export const createChatHandler = () => {
         "projectId",
         rawProjectId,
       );
+      const isAutoContinue = rawIsAutoContinue === true;
+      const isAutomaticContinuation =
+        isAutoContinue && rawIsAutomaticContinuation === true;
       outerChatId = chatId;
 
       const limitRescue: LimitRescueRequest | undefined = isLimitRescueRequest(
@@ -2506,7 +2511,11 @@ export const createChatHandler = () => {
                         stoppedDueToPostSummarizationIncomplete:
                           state.stoppedDueToPostSummarizationIncomplete,
                       });
-                    if (autoContinueStopSource && isAgentMode(mode)) {
+                    if (
+                      autoContinueStopSource &&
+                      isAgentMode(mode) &&
+                      !isAutomaticContinuation
+                    ) {
                       writeAutoContinue(writer);
                       phLogger.info("Agent auto-continue signaled", {
                         event: "agent_auto_continue_signaled",
@@ -2516,6 +2525,19 @@ export const createChatHandler = () => {
                         stop_source: autoContinueStopSource,
                         last_step_input_tokens: state.lastStepInputTokens,
                         had_summarization: summarizationTracker.hasSummarized,
+                      });
+                    } else if (
+                      autoContinueStopSource &&
+                      isAgentMode(mode) &&
+                      isAutomaticContinuation
+                    ) {
+                      phLogger.info("Agent auto-continue limit reached", {
+                        event: "agent_auto_continue_suppressed",
+                        chat_id: chatId,
+                        assistant_id: assistantMessageId,
+                        finish_reason: state.streamFinishReason,
+                        stop_source: autoContinueStopSource,
+                        reason: "continuation_run",
                       });
                     }
                     shutdownPostHog(posthog);

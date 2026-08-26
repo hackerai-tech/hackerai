@@ -2204,6 +2204,7 @@ export type AgentLongPayload = {
   userLocation: Geo;
   triggerRegion?: TriggerRunRegion;
   isAutoContinue?: boolean;
+  isAutomaticContinuation?: boolean;
   regenerate?: boolean;
   isNewChat?: boolean;
   limitRescue?: LimitRescueRequest;
@@ -2283,6 +2284,7 @@ export const agentLongTask = task({
       userLocation,
       triggerRegion = "us-east-1",
       isAutoContinue,
+      isAutomaticContinuation,
       regenerate,
       isNewChat,
       limitRescue,
@@ -5172,7 +5174,7 @@ export const agentLongTask = task({
                           stoppedDueToPostSummarizationIncomplete:
                             state.stoppedDueToPostSummarizationIncomplete,
                         });
-                      if (autoContinueStopSource) {
+                      if (autoContinueStopSource && !isAutomaticContinuation) {
                         writeAutoContinue(writer);
                         phLogger.info("Agent auto-continue signaled", {
                           event: "agent_auto_continue_signaled",
@@ -5182,6 +5184,18 @@ export const agentLongTask = task({
                           stop_source: autoContinueStopSource,
                           last_step_input_tokens: state.lastStepInputTokens,
                           had_summarization: summarizationTracker.hasSummarized,
+                        });
+                      } else if (
+                        autoContinueStopSource &&
+                        isAutomaticContinuation
+                      ) {
+                        phLogger.info("Agent auto-continue limit reached", {
+                          event: "agent_auto_continue_suppressed",
+                          chat_id: chatId,
+                          assistant_id: assistantMessageId,
+                          finish_reason: state.streamFinishReason,
+                          stop_source: autoContinueStopSource,
+                          reason: "continuation_run",
                         });
                       }
                       posthog?.shutdown();

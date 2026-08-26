@@ -172,6 +172,7 @@ type AgentTriggerRequestBody = {
   agentPermissionMode?: AgentPermissionMode;
   selectedModel?: string;
   isAutoContinue?: boolean;
+  isAutomaticContinuation?: boolean;
   limitRescue?: LimitRescueRequest;
   agentRunRequestId?: string;
   projectId?: string;
@@ -254,6 +255,8 @@ const parseAgentTriggerRequestBody = async (
       selectedModel:
         typeof body.selectedModel === "string" ? body.selectedModel : undefined,
       isAutoContinue: body.isAutoContinue === true,
+      isAutomaticContinuation:
+        body.isAutoContinue === true && body.isAutomaticContinuation === true,
       limitRescue: isLimitRescueRequest(body.limitRescue)
         ? body.limitRescue
         : undefined,
@@ -436,6 +439,7 @@ export const createAgentTriggerPost =
         agentPermissionMode = "full_access",
         selectedModel: rawSelectedModel,
         isAutoContinue,
+        isAutomaticContinuation,
         limitRescue,
         agentRunRequestId,
         projectId: requestedProjectId,
@@ -677,6 +681,7 @@ export const createAgentTriggerPost =
         userLocation,
         triggerRegion,
         isAutoContinue,
+        isAutomaticContinuation,
         regenerate,
         limitRescue,
         isNewChat,
