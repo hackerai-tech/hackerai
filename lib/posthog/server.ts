@@ -19,7 +19,10 @@ export async function getPostHogFeatureFlagForUser(
   const client = getClient();
   if (!client) return false;
   try {
-    return (await client.getFeatureFlag(flagKey, userId)) === true;
+    const flags = await client.evaluateFlags(userId, {
+      flagKeys: [flagKey],
+    });
+    return flags.getFlag(flagKey) === true;
   } catch {
     return false;
   }

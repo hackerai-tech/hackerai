@@ -7,6 +7,7 @@ export type CloudSandboxSelectionReason =
 
 export const MIOSA_CLOUD_SANDBOX_ROLLOUT_FLAG =
   "miosa_cloud_sandbox_rollout_v1";
+export const MIOSA_CLOUD_SANDBOX_ENVIRONMENT_PROPERTY = "hackerai_environment";
 
 /**
  * Resolve an explicit provider override. Without one, production request
@@ -27,12 +28,25 @@ export function getCloudSandboxProvider(): CloudSandboxProvider {
 }
 
 type FeatureFlagClient = {
-  getFeatureFlag: (
-    flagKey: string,
+  evaluateFlags: (
     distinctId: string,
-    options?: { sendFeatureFlagEvents?: boolean },
-  ) => Promise<unknown>;
+    options?: {
+      flagKeys?: string[];
+      personProperties?: Record<string, string>;
+    },
+  ) => Promise<{ getFlag: (flagKey: string) => unknown }>;
 };
+
+export function getCloudSandboxFlagEnvironment(
+  environment: NodeJS.ProcessEnv = process.env,
+): string {
+  return (
+    environment.VERCEL_ENV ??
+    environment.TRIGGER_ENV ??
+    environment.NODE_ENV ??
+    "unknown"
+  );
+}
 
 /**
  * Selects the request's preferred cloud provider. Explicit environment
@@ -58,12 +72,17 @@ export async function selectCloudSandboxProvider(options: {
   }
 
   try {
-    const enabled =
-      (await options.featureFlagClient?.getFeatureFlag(
-        MIOSA_CLOUD_SANDBOX_ROLLOUT_FLAG,
-        options.userId,
-        { sendFeatureFlagEvents: false },
-      )) === true;
+    const flags = await options.featureFlagClient?.evaluateFlags(
+      options.userId,
+      {
+        flagKeys: [MIOSA_CLOUD_SANDBOX_ROLLOUT_FLAG],
+        personProperties: {
+          [MIOSA_CLOUD_SANDBOX_ENVIRONMENT_PROPERTY]:
+            getCloudSandboxFlagEnvironment(),
+        },
+      },
+    );
+    const enabled = flags?.getFlag(MIOSA_CLOUD_SANDBOX_ROLLOUT_FLAG) === true;
     return enabled
       ? { provider: "miosa", reason: "miosa_rollout" }
       : { provider: "e2b", reason: "miosa_rollout_control" };

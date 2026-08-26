@@ -1,5 +1,6 @@
 import {
   getCloudSandboxProvider,
+  MIOSA_CLOUD_SANDBOX_ENVIRONMENT_PROPERTY,
   MIOSA_CLOUD_SANDBOX_ROLLOUT_FLAG,
   selectCloudSandboxProvider,
 } from "../cloud-sandbox-provider";
@@ -7,6 +8,7 @@ import {
 describe("cloud sandbox provider selection", () => {
   const originalProvider = process.env.CLOUD_SANDBOX_PROVIDER;
   const originalMiosaKey = process.env.MIOSA_API_KEY;
+  const originalVercelEnvironment = process.env.VERCEL_ENV;
 
   afterEach(() => {
     if (originalProvider === undefined) {
@@ -16,6 +18,8 @@ describe("cloud sandbox provider selection", () => {
     }
     if (originalMiosaKey === undefined) delete process.env.MIOSA_API_KEY;
     else process.env.MIOSA_API_KEY = originalMiosaKey;
+    if (originalVercelEnvironment === undefined) delete process.env.VERCEL_ENV;
+    else process.env.VERCEL_ENV = originalVercelEnvironment;
   });
 
   it("defaults to E2B", () => {
@@ -36,36 +40,42 @@ describe("cloud sandbox provider selection", () => {
   it("selects MIOSA only for an enabled rollout assignment with credentials", async () => {
     delete process.env.CLOUD_SANDBOX_PROVIDER;
     process.env.MIOSA_API_KEY = "msk_test";
-    const getFeatureFlag = jest.fn(async () => true);
+    process.env.VERCEL_ENV = "preview";
+    const getFlag = jest.fn(() => true);
+    const evaluateFlags = jest.fn(async () => ({ getFlag }));
 
     await expect(
       selectCloudSandboxProvider({
         userId: "user-1",
-        featureFlagClient: { getFeatureFlag },
+        featureFlagClient: { evaluateFlags },
       }),
     ).resolves.toEqual({ provider: "miosa", reason: "miosa_rollout" });
-    expect(getFeatureFlag).toHaveBeenCalledWith(
-      MIOSA_CLOUD_SANDBOX_ROLLOUT_FLAG,
-      "user-1",
-      { sendFeatureFlagEvents: false },
-    );
+    expect(evaluateFlags).toHaveBeenCalledWith("user-1", {
+      flagKeys: [MIOSA_CLOUD_SANDBOX_ROLLOUT_FLAG],
+      personProperties: {
+        [MIOSA_CLOUD_SANDBOX_ENVIRONMENT_PROPERTY]: "preview",
+      },
+    });
+    expect(getFlag).toHaveBeenCalledWith(MIOSA_CLOUD_SANDBOX_ROLLOUT_FLAG);
   });
 
   it("keeps E2B when MIOSA credentials are unavailable", async () => {
     delete process.env.CLOUD_SANDBOX_PROVIDER;
     delete process.env.MIOSA_API_KEY;
-    const getFeatureFlag = jest.fn(async () => true);
+    const evaluateFlags = jest.fn(async () => ({
+      getFlag: () => true,
+    }));
 
     await expect(
       selectCloudSandboxProvider({
         userId: "user-1",
-        featureFlagClient: { getFeatureFlag },
+        featureFlagClient: { evaluateFlags },
       }),
     ).resolves.toEqual({
       provider: "e2b",
       reason: "miosa_credentials_unavailable",
     });
-    expect(getFeatureFlag).not.toHaveBeenCalled();
+    expect(evaluateFlags).not.toHaveBeenCalled();
   });
 
   it("fails closed for an unsupported provider", () => {

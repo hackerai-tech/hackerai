@@ -392,6 +392,7 @@ describe("sandbox acquisition serialization", () => {
   });
 
   it("retains MIOSA cost settlement after falling back to E2B", async () => {
+    jest.useFakeTimers();
     mockIsMiosaSandbox.mockImplementation(
       (sandbox: { provider?: string } | null) => sandbox?.provider === "miosa",
     );
