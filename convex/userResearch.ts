@@ -375,38 +375,20 @@ export const listRepresentativeChats = query({
         ? evidenceWindowEndAt - evidenceWindowDays * DAY_MS
         : undefined;
 
-    const oldestQuery =
-      samplingMode === "pre_event"
-        ? ctx.db
-            .query("chats")
-            .withIndex("by_user_and_updated", (q) =>
-              q
-                .eq("user_id", args.userId)
-                .gte("update_time", evidenceWindowStartAt!)
-                .lte("update_time", evidenceWindowEndAt!),
-            )
-        : ctx.db
-            .query("chats")
-            .withIndex("by_user_and_updated", (q) =>
-              q.eq("user_id", args.userId),
-            );
-    const newestQuery =
-      samplingMode === "pre_event"
-        ? ctx.db
-            .query("chats")
-            .withIndex("by_user_and_updated", (q) =>
-              q
-                .eq("user_id", args.userId)
-                .gte("update_time", evidenceWindowStartAt!)
-                .lte("update_time", evidenceWindowEndAt!),
-            )
-        : ctx.db
-            .query("chats")
-            .withIndex("by_user_and_updated", (q) =>
-              q.eq("user_id", args.userId),
-            );
-    const oldest = await oldestQuery.order("asc").first();
-    const newest = await newestQuery.order("desc").first();
+    const queryChats = (minimumUpdatedAt?: number) =>
+      ctx.db.query("chats").withIndex("by_user_and_updated", (q) => {
+        const scoped = q.eq("user_id", args.userId);
+        const lowerBound =
+          minimumUpdatedAt ??
+          (samplingMode === "pre_event" ? evidenceWindowStartAt : undefined);
+        if (lowerBound === undefined) return scoped;
+        const afterLowerBound = scoped.gte("update_time", lowerBound);
+        return samplingMode === "pre_event"
+          ? afterLowerBound.lte("update_time", evidenceWindowEndAt!)
+          : afterLowerBound;
+      });
+    const oldest = await queryChats().order("asc").first();
+    const newest = await queryChats().order("desc").first();
     if (!oldest || !newest) return [];
 
     const selected = new Map<string, typeof oldest>();
@@ -419,25 +401,7 @@ export const listRepresentativeChats = query({
           bucketCount === 1
             ? oldest.update_time
             : oldest.update_time + (span * index) / (bucketCount - 1);
-        if (samplingMode === "pre_event") {
-          return ctx.db
-            .query("chats")
-            .withIndex("by_user_and_updated", (q) =>
-              q
-                .eq("user_id", args.userId)
-                .gte("update_time", target)
-                .lte("update_time", evidenceWindowEndAt!),
-            )
-            .order("asc")
-            .take(3);
-        }
-        return ctx.db
-          .query("chats")
-          .withIndex("by_user_and_updated", (q) =>
-            q.eq("user_id", args.userId).gte("update_time", target),
-          )
-          .order("asc")
-          .take(3);
+        return queryChats(target).order("asc").take(3);
       }),
     );
     for (const candidates of bucketCandidates) {
@@ -448,22 +412,7 @@ export const listRepresentativeChats = query({
     }
 
     if (selected.size < args.maxChats) {
-      const recent = await (
-        samplingMode === "pre_event"
-          ? ctx.db
-              .query("chats")
-              .withIndex("by_user_and_updated", (q) =>
-                q
-                  .eq("user_id", args.userId)
-                  .gte("update_time", evidenceWindowStartAt!)
-                  .lte("update_time", evidenceWindowEndAt!),
-              )
-          : ctx.db
-              .query("chats")
-              .withIndex("by_user_and_updated", (q) =>
-                q.eq("user_id", args.userId),
-              )
-      )
+      const recent = await queryChats()
         .order("desc")
         .take(args.maxChats * 3);
       for (const chat of recent) {
