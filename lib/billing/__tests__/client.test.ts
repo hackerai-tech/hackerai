@@ -50,6 +50,7 @@ describe("billing client", () => {
     const input = {
       cancellationReason: {
         reasonCategory: "other",
+        reasonSubcategory: "billing_or_renewal",
         reasonDetails: "Testing the cancellation flow",
       },
     } as const;

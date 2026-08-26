@@ -74,6 +74,22 @@ describe("cancelSubscriptionAction", () => {
     }
   });
 
+  it("rejects a structured follow-up that does not match the main reason", async () => {
+    const { default: cancelSubscriptionAction } =
+      await import("../cancel-subscription");
+
+    await expect(
+      cancelSubscriptionAction({
+        cancellationReason: {
+          reasonCategory: "missing_feature",
+          reasonSubcategory: "billing_or_renewal",
+          reasonDetails: "This pairing should not be accepted",
+        },
+      }),
+    ).rejects.toThrow("Please select what best describes the issue");
+    expect(mockGetBillingActionContext).not.toHaveBeenCalled();
+  });
+
   it("returns success without updating Stripe when cancellation is already scheduled", async () => {
     mockListSubscriptions.mockResolvedValue({
       data: [
@@ -103,6 +119,7 @@ describe("cancelSubscriptionAction", () => {
       cancelSubscriptionAction({
         cancellationReason: {
           reasonCategory: "other",
+          reasonSubcategory: "billing_or_renewal",
           reasonDetails: "Already handled",
         },
       }),
@@ -158,6 +175,7 @@ describe("cancelSubscriptionAction", () => {
       cancelSubscriptionAction({
         cancellationReason: {
           reasonCategory: "other",
+          reasonSubcategory: "billing_or_renewal",
           reasonDetails: "Done for now",
         },
       }),
@@ -225,6 +243,7 @@ describe("cancelSubscriptionAction", () => {
       cancelSubscriptionAction({
         cancellationReason: {
           reasonCategory: "too_expensive",
+          reasonSubcategory: "too_expensive_low_frequency",
           reasonDetails: "The renewal payment failed",
         },
       }),
@@ -291,14 +310,27 @@ describe("cancelSubscriptionAction", () => {
     await cancelSubscriptionAction({
       cancellationReason: {
         reasonCategory: "other",
+        reasonSubcategory: "billing_or_renewal",
         reasonDetails: "Done for now",
       },
     });
 
+    expect(mockConvexMutation).toHaveBeenNthCalledWith(
+      1,
+      expect.anything(),
+      expect.objectContaining({
+        reasonCategory: "other",
+        reasonSubcategory: "billing_or_renewal",
+        reasonDetails: "Done for now",
+      }),
+    );
     expect(mockPostHogEvent).toHaveBeenCalledTimes(1);
     expect(mockPostHogEvent).toHaveBeenCalledWith(
       PAID_FUNNEL_EVENTS.cancellationReasonSubmitted,
-      expect.any(Object),
+      expect.objectContaining({
+        reason_category: "other",
+        reason_subcategory: "billing_or_renewal",
+      }),
     );
   });
 
@@ -340,6 +372,7 @@ describe("cancelSubscriptionAction", () => {
     await cancelSubscriptionAction({
       cancellationReason: {
         reasonCategory: "other",
+        reasonSubcategory: "billing_or_renewal",
         reasonDetails: "Done for now",
       },
     });
@@ -384,6 +417,7 @@ describe("cancelSubscriptionAction", () => {
       cancelSubscriptionAction({
         cancellationReason: {
           reasonCategory: "other",
+          reasonSubcategory: "billing_or_renewal",
           reasonDetails: "Done for now",
         },
       }),
@@ -414,6 +448,7 @@ describe("cancelSubscriptionAction", () => {
       cancelSubscriptionAction({
         cancellationReason: {
           reasonCategory: "other",
+          reasonSubcategory: "billing_or_renewal",
           reasonDetails: "Done for now",
         },
       }),
@@ -442,6 +477,7 @@ describe("cancelSubscriptionAction", () => {
       cancelSubscriptionAction({
         cancellationReason: {
           reasonCategory: "other",
+          reasonSubcategory: "billing_or_renewal",
           reasonDetails: "Done for now",
         },
       }),
@@ -464,6 +500,7 @@ describe("cancelSubscriptionAction", () => {
       cancelSubscriptionAction({
         cancellationReason: {
           reasonCategory: "other",
+          reasonSubcategory: "billing_or_renewal",
           reasonDetails: "Done for now",
         },
       }),

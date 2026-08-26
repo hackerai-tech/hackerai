@@ -17,6 +17,7 @@ export const PAID_FUNNEL_EVENTS = {
   checkoutRedirectSuppressed: "checkout_redirect_suppressed",
   cancellationStarted: "cancellation_started",
   cancellationReasonSelected: "cancellation_reason_selected",
+  cancellationReasonFollowUpSelected: "cancellation_reason_follow_up_selected",
   cancellationReasonSubmitted: "cancellation_reason_free_text_submitted",
   cancellationCompleted: "cancellation_completed",
   cancellationReversed: "cancellation_reversed",

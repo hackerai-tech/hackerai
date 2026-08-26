@@ -10,8 +10,11 @@ import {
 import { getBillingActionContext } from "@/lib/actions/billing-context";
 import {
   isCancellationReasonCategory,
+  isCancellationReasonSubcategory,
+  isCancellationReasonSubcategoryForCategory,
   normalizeCancellationReasonDetails,
   type CancellationReasonCategory,
+  type CancellationReasonSubcategory,
 } from "@/lib/billing/cancellation-reasons";
 import { getConvexClient } from "@/lib/db/convex-client";
 import { phLogger } from "@/lib/posthog/server";
@@ -25,6 +28,7 @@ import type { SubscriptionTier } from "@/types";
 
 type CancellationReasonInput = {
   reasonCategory?: unknown;
+  reasonSubcategory?: unknown;
   reasonDetails?: unknown;
 };
 
@@ -34,6 +38,7 @@ type CancelSubscriptionInput = {
 
 type ParsedCancellationReasonInput = {
   reasonCategory: CancellationReasonCategory;
+  reasonSubcategory: CancellationReasonSubcategory;
   reasonDetails: string;
 };
 
@@ -51,6 +56,7 @@ function parseCancellationReasonInput(
   value: CancelSubscriptionInput["cancellationReason"],
 ): ParsedCancellationReasonInput {
   const reasonCategory = value?.reasonCategory;
+  const reasonSubcategory = value?.reasonSubcategory;
   const reasonDetails = normalizeCancellationReasonDetails(
     value?.reasonDetails,
   );
@@ -59,12 +65,23 @@ function parseCancellationReasonInput(
     throw new Error("Please select the main cancellation reason");
   }
 
+  if (
+    !isCancellationReasonSubcategory(reasonSubcategory) ||
+    !isCancellationReasonSubcategoryForCategory(
+      reasonCategory,
+      reasonSubcategory,
+    )
+  ) {
+    throw new Error("Please select what best describes the issue");
+  }
+
   if (!reasonDetails) {
     throw new Error("Please write a cancellation reason before continuing");
   }
 
   return {
     reasonCategory,
+    reasonSubcategory,
     reasonDetails,
   };
 }
@@ -220,6 +237,7 @@ export default async function cancelSubscriptionAction(
           plan: subscriptionContext.plan,
           subscriptionTier: subscriptionContext.tier,
           reasonCategory: cancellationReason.reasonCategory,
+          reasonSubcategory: cancellationReason.reasonSubcategory,
           reasonDetails: cancellationReason.reasonDetails,
           accountCreatedAt,
           accountAgeDays,
@@ -320,6 +338,7 @@ export default async function cancelSubscriptionAction(
       subscription_tier: subscriptionContext.tier,
       plan: subscriptionContext.plan,
       reason_category: cancellationReason.reasonCategory,
+      reason_subcategory: cancellationReason.reasonSubcategory,
       reason_details_length: cancellationReason.reasonDetails.length,
       stripe_customer_id: stripeCustomerId,
       stripe_subscription_id: subscriptionContext.id,
@@ -334,6 +353,7 @@ export default async function cancelSubscriptionAction(
         subscription_tier: subscriptionContext.tier,
         plan: subscriptionContext.plan,
         reason_category: cancellationReason.reasonCategory,
+        reason_subcategory: cancellationReason.reasonSubcategory,
         cancellation_completion_type: cancelImmediately
           ? "immediate_in_app"
           : "scheduled_in_app",

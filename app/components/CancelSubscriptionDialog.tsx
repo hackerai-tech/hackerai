@@ -31,7 +31,10 @@ import {
 import type { SubscriptionTier } from "@/types";
 import {
   CANCELLATION_REASON_OPTIONS,
+  CANCELLATION_REASON_SUBCATEGORY_OPTIONS,
+  getCancellationReasonSubcategoryOptions,
   type CancellationReasonCategory,
+  type CancellationReasonSubcategory,
 } from "@/lib/billing/cancellation-reasons";
 import { captureAuthenticatedEvent } from "@/lib/analytics/client";
 import {
@@ -52,13 +55,14 @@ type CancellationResult = {
   alreadyScheduled?: boolean;
 };
 
-type CancellationStep = "feedback" | "confirm";
+type CancellationStep = "reason" | "details" | "confirm";
 
 const reasonOptionBadges = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("");
 const visibleCancellationReasonValues: CancellationReasonCategory[] = [
   "too_expensive",
   "not_using_enough",
   "missing_feature",
+  "results_not_good_enough",
   "hit_usage_limits",
   "too_slow_or_unreliable",
   "other",
@@ -108,11 +112,14 @@ export const CancelSubscriptionDialog = ({
   const [reasonCategory, setReasonCategory] = useState<
     CancellationReasonCategory | ""
   >("");
+  const [reasonSubcategory, setReasonSubcategory] = useState<
+    CancellationReasonSubcategory | ""
+  >("");
   const [reasonDetails, setReasonDetails] = useState("");
   const [showValidation, setShowValidation] = useState(false);
   const [cancellationResult, setCancellationResult] =
     useState<CancellationResult | null>(null);
-  const [step, setStep] = useState<CancellationStep>("feedback");
+  const [step, setStep] = useState<CancellationStep>("reason");
   const openRef = useRef(open);
   const wasOpenRef = useRef(false);
   const requestIdRef = useRef(0);
@@ -136,11 +143,12 @@ export const CancelSubscriptionDialog = ({
     if (!open) {
       requestIdRef.current += 1;
       setReasonCategory("");
+      setReasonSubcategory("");
       setReasonDetails("");
       setShowValidation(false);
       setIsProcessing(false);
       setCancellationResult(null);
-      setStep("feedback");
+      setStep("reason");
       return;
     }
 
@@ -158,22 +166,42 @@ export const CancelSubscriptionDialog = ({
     );
   }, [open, subscription]);
 
+  const handleContinueToDetails = useCallback(() => {
+    if (!reasonCategory) {
+      setShowValidation(true);
+      return;
+    }
+
+    setShowValidation(false);
+    setStep("details");
+  }, [reasonCategory]);
+
   const handleContinueToConfirmation = useCallback(() => {
     const trimmedReasonDetails = reasonDetails.trim();
-    if (!reasonCategory || !trimmedReasonDetails) {
+    if (!reasonCategory) {
+      setShowValidation(true);
+      setStep("reason");
+      return;
+    }
+    if (!reasonSubcategory || !trimmedReasonDetails) {
       setShowValidation(true);
       return;
     }
 
     setShowValidation(false);
     setStep("confirm");
-  }, [reasonCategory, reasonDetails]);
+  }, [reasonCategory, reasonDetails, reasonSubcategory]);
 
   const handleCancelSubscription = useCallback(async () => {
     const trimmedReasonDetails = reasonDetails.trim();
-    if (!reasonCategory || !trimmedReasonDetails) {
+    if (!reasonCategory) {
       setShowValidation(true);
-      setStep("feedback");
+      setStep("reason");
+      return;
+    }
+    if (!reasonSubcategory || !trimmedReasonDetails) {
+      setShowValidation(true);
+      setStep("details");
       return;
     }
 
@@ -184,6 +212,7 @@ export const CancelSubscriptionDialog = ({
       const result = await cancelSubscription({
         cancellationReason: {
           reasonCategory,
+          reasonSubcategory,
           reasonDetails: trimmedReasonDetails,
         },
       });
@@ -221,12 +250,18 @@ export const CancelSubscriptionDialog = ({
         setIsProcessing(false);
       }
     }
-  }, [onCancellationCompleted, reasonCategory, reasonDetails]);
+  }, [
+    onCancellationCompleted,
+    reasonCategory,
+    reasonDetails,
+    reasonSubcategory,
+  ]);
 
   const handleReasonCategoryChange = useCallback(
     (value: string) => {
       const nextReasonCategory = value as CancellationReasonCategory;
       setReasonCategory(nextReasonCategory);
+      setReasonSubcategory("");
       setShowValidation(false);
       captureAuthenticatedEvent(
         PAID_FUNNEL_EVENTS.cancellationReasonSelected,
@@ -241,9 +276,34 @@ export const CancelSubscriptionDialog = ({
     [subscription],
   );
 
+  const handleReasonSubcategoryChange = useCallback(
+    (value: string) => {
+      if (!reasonCategory) return;
+
+      const nextReasonSubcategory = value as CancellationReasonSubcategory;
+      setReasonSubcategory(nextReasonSubcategory);
+      setShowValidation(false);
+      captureAuthenticatedEvent(
+        PAID_FUNNEL_EVENTS.cancellationReasonFollowUpSelected,
+        paidFunnelProperties({
+          subscription_tier: subscription,
+          reason_category: reasonCategory,
+          reason_subcategory: nextReasonSubcategory,
+          surface: "cancel_subscription_dialog",
+          source: "account_settings",
+        }),
+      );
+    },
+    [reasonCategory, subscription],
+  );
+
   const handleBack = useCallback(() => {
     if (step === "confirm") {
-      setStep("feedback");
+      setStep("details");
+      return;
+    }
+    if (step === "details") {
+      setStep("reason");
       return;
     }
 
@@ -253,9 +313,11 @@ export const CancelSubscriptionDialog = ({
   const features = getFeaturesForTier(subscription);
   const planName = getPlanDisplayName(subscription);
   const trimmedReasonDetails = reasonDetails.trim();
-  const hasRequiredReason = Boolean(reasonCategory && trimmedReasonDetails);
+  const hasRequiredReason = Boolean(reasonCategory);
+  const hasRequiredDetails = Boolean(reasonSubcategory && trimmedReasonDetails);
   const detailsMissing = showValidation && !trimmedReasonDetails;
   const categoryMissing = showValidation && !reasonCategory;
+  const subcategoryMissing = showValidation && !reasonSubcategory;
   const periodEndDate = cancellationResult?.currentPeriodEnd
     ? new Intl.DateTimeFormat(undefined, {
         month: "long",
@@ -265,6 +327,7 @@ export const CancelSubscriptionDialog = ({
     : null;
   const canceledImmediately = cancellationResult?.cancelAtPeriodEnd === false;
   const isConfirmStep = step === "confirm";
+  const isDetailsStep = step === "details";
   const StepIcon = cancellationResult
     ? CheckCircle2
     : isConfirmStep
@@ -276,13 +339,22 @@ export const CancelSubscriptionDialog = ({
       : "Cancellation scheduled"
     : isConfirmStep
       ? "Final confirmation"
-      : "Your feedback";
+      : isDetailsStep
+        ? "Your feedback"
+        : "Main reason";
   const selectedReasonLabel = CANCELLATION_REASON_OPTIONS.find(
     (option) => option.value === reasonCategory,
   )?.label;
+  const selectedReasonSubcategoryLabel =
+    CANCELLATION_REASON_SUBCATEGORY_OPTIONS.find(
+      (option) => option.value === reasonSubcategory,
+    )?.label;
   const visibleCancellationReasonOptions = CANCELLATION_REASON_OPTIONS.filter(
     (option) => visibleCancellationReasonValues.includes(option.value),
   );
+  const visibleReasonSubcategoryOptions = reasonCategory
+    ? getCancellationReasonSubcategoryOptions(reasonCategory)
+    : [];
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
@@ -359,8 +431,16 @@ export const CancelSubscriptionDialog = ({
               </div>
 
               <div className="mt-5 rounded-md border border-border bg-background/60 p-3 text-sm text-muted-foreground">
-                <span className="font-medium text-foreground">Reason:</span>{" "}
-                {selectedReasonLabel}
+                <p>
+                  <span className="font-medium text-foreground">Reason:</span>{" "}
+                  {selectedReasonLabel}
+                </p>
+                <p className="mt-1">
+                  <span className="font-medium text-foreground">
+                    What happened:
+                  </span>{" "}
+                  {selectedReasonSubcategoryLabel}
+                </p>
               </div>
             </div>
 
@@ -376,6 +456,125 @@ export const CancelSubscriptionDialog = ({
                 ) : (
                   "Confirm & Cancel"
                 )}
+              </Button>
+              <Button
+                variant="outline"
+                onClick={handleBack}
+                disabled={isProcessing}
+                className="h-11 w-full sm:w-36"
+              >
+                Back
+              </Button>
+            </div>
+          </>
+        ) : isDetailsStep ? (
+          <>
+            <div className="min-h-0 flex-1 overflow-y-auto px-6 py-7 sm:px-8">
+              <DialogHeader className="gap-3 text-left sm:text-left">
+                <DialogTitle className="text-3xl leading-tight font-semibold sm:text-4xl">
+                  Tell us what happened
+                </DialogTitle>
+                <DialogDescription className="text-base leading-7">
+                  A little more detail helps us focus on the right improvement.
+                </DialogDescription>
+              </DialogHeader>
+
+              <div className="mt-6 rounded-md border border-border bg-muted/40 p-3 text-sm">
+                <span className="font-medium text-foreground">
+                  Main reason:
+                </span>{" "}
+                <span className="text-muted-foreground">
+                  {selectedReasonLabel}
+                </span>
+              </div>
+
+              <div className="mt-6 space-y-2">
+                <Label id="cancellation-reason-subcategory-label">
+                  What best describes what happened?
+                </Label>
+                <div
+                  className="space-y-2"
+                  role="radiogroup"
+                  aria-labelledby="cancellation-reason-subcategory-label"
+                  aria-invalid={subcategoryMissing}
+                >
+                  {visibleReasonSubcategoryOptions.map((option, index) => {
+                    const isSelected = reasonSubcategory === option.value;
+
+                    return (
+                      <button
+                        key={option.value}
+                        type="button"
+                        role="radio"
+                        aria-checked={isSelected}
+                        onClick={() =>
+                          handleReasonSubcategoryChange(option.value)
+                        }
+                        disabled={isProcessing}
+                        className={cn(
+                          "flex min-h-12 w-full items-center gap-3 rounded-md border px-4 py-2.5 text-left text-sm font-medium transition-colors focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none disabled:pointer-events-none disabled:opacity-50",
+                          isSelected
+                            ? "border-violet-500/70 bg-premium-bg text-foreground"
+                            : "border-border bg-muted/40 text-foreground hover:bg-muted",
+                        )}
+                      >
+                        <span
+                          className={cn(
+                            "flex size-7 shrink-0 items-center justify-center rounded-md text-xs font-semibold",
+                            isSelected
+                              ? "bg-premium-text text-background"
+                              : "bg-premium-bg text-premium-text",
+                          )}
+                        >
+                          {index + 1}
+                        </span>
+                        <span>{option.label}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+                {subcategoryMissing ? (
+                  <p className="text-xs text-destructive">
+                    Please select what best describes the issue.
+                  </p>
+                ) : null}
+              </div>
+
+              <div className="mt-6 space-y-2">
+                <Label htmlFor="cancellation-reason-details">
+                  Tell us a little more
+                </Label>
+                <Textarea
+                  id="cancellation-reason-details"
+                  value={reasonDetails}
+                  onChange={(event) => {
+                    setReasonDetails(event.target.value);
+                    setShowValidation(false);
+                  }}
+                  maxLength={2000}
+                  disabled={isProcessing}
+                  aria-invalid={detailsMissing}
+                  placeholder="A short note is required before continuing."
+                  className="min-h-28 resize-none bg-muted/30"
+                />
+                {detailsMissing ? (
+                  <p className="text-xs text-destructive">
+                    Please write a cancellation reason.
+                  </p>
+                ) : null}
+              </div>
+            </div>
+
+            <div className="flex flex-col-reverse gap-3 border-t border-border px-6 py-5 sm:flex-row sm:items-center sm:justify-between sm:px-8">
+              <Button
+                onClick={handleContinueToConfirmation}
+                disabled={isProcessing}
+                className={cn(
+                  "h-11 w-full sm:w-36",
+                  !hasRequiredDetails && "opacity-60",
+                )}
+              >
+                Next
               </Button>
               <Button
                 variant="outline"
@@ -443,35 +642,11 @@ export const CancelSubscriptionDialog = ({
                   Please select a main reason.
                 </p>
               ) : null}
-
-              <div className="mt-6 space-y-2">
-                <Label htmlFor="cancellation-reason-details">
-                  Tell us what happened
-                </Label>
-                <Textarea
-                  id="cancellation-reason-details"
-                  value={reasonDetails}
-                  onChange={(event) => {
-                    setReasonDetails(event.target.value);
-                    setShowValidation(false);
-                  }}
-                  maxLength={2000}
-                  disabled={isProcessing}
-                  aria-invalid={detailsMissing}
-                  placeholder="A short note is required before continuing."
-                  className="min-h-28 resize-none bg-muted/30"
-                />
-                {detailsMissing ? (
-                  <p className="text-xs text-destructive">
-                    Please write a cancellation reason.
-                  </p>
-                ) : null}
-              </div>
             </div>
 
             <div className="flex flex-col-reverse gap-3 border-t border-border px-6 py-5 sm:flex-row sm:items-center sm:justify-between sm:px-8">
               <Button
-                onClick={handleContinueToConfirmation}
+                onClick={handleContinueToDetails}
                 disabled={isProcessing}
                 className={cn(
                   "h-11 w-full sm:w-36",
