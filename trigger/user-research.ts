@@ -13,24 +13,54 @@ import {
   normalizeCohortSynthesis,
   normalizeResearchUserProfile,
   pmUserResearchPayloadSchema,
+  researchSamplingModeSchema,
   researchUserProfileSchema,
+  sanitizeResearchText,
   USER_RESEARCH_MODEL_KEY,
   USER_RESEARCH_MIN_COHORT_SIZE,
   USER_RESEARCH_PROMPT_VERSION,
   USER_RESEARCH_PROVIDER_OPTIONS,
+  type ResearchBasis,
   type ResearchCohortReport,
   type ResearchCoverage,
 } from "@/lib/research/user-research";
 
 const MAX_MESSAGES_PER_CHAT = 80;
 
-const workerPayloadSchema = z.object({
-  analysisId: z.uuid(),
-  userId: z.string().trim().min(1).max(200),
-  pseudonym: z.string().regex(/^U\d{2}$/),
-  question: z.string().trim().min(10).max(1_000),
-  maxChatsPerUser: z.number().int().min(3).max(20),
-});
+const workerPayloadSchema = z
+  .object({
+    analysisId: z.uuid(),
+    userId: z.string().trim().min(1).max(200),
+    pseudonym: z.string().regex(/^U\d{2}$/),
+    question: z.string().trim().min(10).max(1_000),
+    maxChatsPerUser: z.number().int().min(3).max(20),
+    samplingMode: researchSamplingModeSchema,
+    evidenceWindowDays: z.number().int().min(1).max(365).optional(),
+    evidenceAnchorAt: z.number().int().positive().optional(),
+  })
+  .superRefine((payload, ctx) => {
+    const hasAnyWindow =
+      payload.evidenceWindowDays !== undefined ||
+      payload.evidenceAnchorAt !== undefined;
+    const hasCompleteWindow =
+      payload.evidenceWindowDays !== undefined &&
+      payload.evidenceAnchorAt !== undefined;
+    if (payload.samplingMode === "pre_event" && !hasCompleteWindow) {
+      ctx.addIssue({
+        code: "custom",
+        message: "pre_event workers require a complete evidence window",
+        path: ["samplingMode"],
+        input: payload.samplingMode,
+      });
+    } else if (payload.samplingMode === "representative" && hasAnyWindow) {
+      ctx.addIssue({
+        code: "custom",
+        message: "representative workers cannot use an evidence window",
+        path: ["samplingMode"],
+        input: payload.samplingMode,
+      });
+    }
+  });
 
 export { pmUserResearchPayloadSchema } from "@/lib/research/user-research";
 
@@ -105,6 +135,17 @@ export const analyzeUserResearchProfile = schemaTask({
       ),
       askChats: evidence.filter((chat) => chat.mode === "ask").length,
       agentChats: evidence.filter((chat) => chat.mode === "agent").length,
+      samplingMode: payload.samplingMode,
+      ...(payload.samplingMode === "pre_event" &&
+      payload.evidenceAnchorAt !== undefined &&
+      payload.evidenceWindowDays !== undefined
+        ? {
+            evidenceWindowStartAt:
+              payload.evidenceAnchorAt -
+              payload.evidenceWindowDays * 24 * 60 * 60 * 1_000,
+            evidenceWindowEndAt: payload.evidenceAnchorAt,
+          }
+        : {}),
       ...(firstActivityAt ? { firstActivityAt } : {}),
       ...(lastActivityAt ? { lastActivityAt } : {}),
       truncatedChats: evidence.filter((chat) => chat.truncated).length,
@@ -113,6 +154,15 @@ export const analyzeUserResearchProfile = schemaTask({
     const prompt = buildUserProfilePrompt({
       question: payload.question,
       pseudonym: payload.pseudonym,
+      evidenceWindow: {
+        samplingMode: payload.samplingMode,
+        ...(coverage.evidenceWindowStartAt !== undefined
+          ? { startAt: coverage.evidenceWindowStartAt }
+          : {}),
+        ...(coverage.evidenceWindowEndAt !== undefined
+          ? { endAt: coverage.evidenceWindowEndAt }
+          : {}),
+      },
       chats: evidence,
     });
     assertResearchPromptIsSafe(prompt);
@@ -162,9 +212,21 @@ export const pmUserResearch = schemaTask({
   run: async (payload) => {
     const { client, serviceKey } = getResearchClient();
     const analysisId = crypto.randomUUID();
+    const evidenceAnchors = new Map(
+      (payload.evidenceAnchors ?? []).map((anchor) => [
+        anchor.userId,
+        anchor.anchorAt,
+      ]),
+    );
+    const selectionLimitations = payload.selectionLimitations
+      .map(sanitizeResearchText)
+      .filter(Boolean);
     const members = payload.userIds.map((userId, index) => ({
       userId,
       pseudonym: `U${String(index + 1).padStart(2, "0")}`,
+      ...(evidenceAnchors.has(userId)
+        ? { evidenceAnchorAt: evidenceAnchors.get(userId)! }
+        : {}),
     }));
 
     await client.mutation(api.userResearch.createRun, {
@@ -176,9 +238,22 @@ export const pmUserResearch = schemaTask({
       question: payload.question,
       cohortLabel: payload.cohortLabel,
       requestedBy: payload.requestedBy,
+      cohortSource: payload.cohortSource,
+      posthogProjectId: payload.posthogProjectId,
+      cohortSelectedAt: payload.cohortSelectedAt,
+      selectionQueryFingerprint: payload.selectionQueryFingerprint,
+      selectionLimitations,
+      samplingMode: payload.samplingMode,
+      ...(payload.evidenceWindowDays !== undefined
+        ? { evidenceWindowDays: payload.evidenceWindowDays }
+        : {}),
       members,
       maxChatsPerUser: payload.maxChatsPerUser,
       model: GROK_4_6_SLUG,
+      reasoningEnabled:
+        USER_RESEARCH_PROVIDER_OPTIONS.openrouter.reasoning.enabled,
+      reasoningEffort:
+        USER_RESEARCH_PROVIDER_OPTIONS.openrouter.reasoning.effort,
     });
     try {
       await client.mutation(api.userResearch.markRunRunning, {
@@ -193,6 +268,13 @@ export const pmUserResearch = schemaTask({
             pseudonym,
             question: payload.question,
             maxChatsPerUser: payload.maxChatsPerUser,
+            samplingMode: payload.samplingMode,
+            ...(payload.evidenceWindowDays !== undefined
+              ? { evidenceWindowDays: payload.evidenceWindowDays }
+              : {}),
+            ...(evidenceAnchors.has(userId)
+              ? { evidenceAnchorAt: evidenceAnchors.get(userId)! }
+              : {}),
           },
         })),
       );
@@ -216,10 +298,32 @@ export const pmUserResearch = schemaTask({
         );
       }
 
+      const researchBasis: ResearchBasis = {
+        cohortSource: payload.cohortSource,
+        posthogProjectId: payload.posthogProjectId,
+        cohortSelectedAt: payload.cohortSelectedAt,
+        selectionQueryFingerprint: payload.selectionQueryFingerprint,
+        selectionLimitations,
+        samplingMode: payload.samplingMode,
+        ...(payload.evidenceWindowDays !== undefined
+          ? { evidenceWindowDays: payload.evidenceWindowDays }
+          : {}),
+        // Conversation behavior can explain friction and jobs, but it does not
+        // establish the user's causal reason for cancelling.
+        causalAttributionConfidence: "low",
+      };
+      const profilesWithBasis = profiles.map((profile) => ({
+        ...profile,
+        coverage: {
+          ...profile.coverage,
+          samplingMode: profile.coverage.samplingMode ?? payload.samplingMode,
+        },
+      }));
       const prompt = buildCohortPrompt({
         question: payload.question,
         cohortLabel: payload.cohortLabel,
-        profiles,
+        researchBasis,
+        profiles: profilesWithBasis,
       });
       assertResearchPromptIsSafe(prompt);
       const result = await generateText({
@@ -237,6 +341,7 @@ export const pmUserResearch = schemaTask({
       );
       const report: ResearchCohortReport = {
         ...synthesis,
+        researchBasis,
         coverage: {
           usersRequested: payload.userIds.length,
           usersAnalyzed: profiles.length,

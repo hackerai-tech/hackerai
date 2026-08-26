@@ -9,6 +9,7 @@ import { validateUserResearchServiceKey } from "./lib/userResearchAuth";
 import {
   researchCohortReportValidator,
   researchCoverageValidator,
+  researchSamplingModeValidator,
   researchUserProfileValidator,
 } from "./userResearchValidators";
 
@@ -19,6 +20,10 @@ const MAX_CHATS_PER_USER = 20;
 const MIN_MESSAGES_PER_CHAT = 20;
 const MAX_MESSAGES_PER_CHAT = 120;
 const MAX_MESSAGE_CHARS = 8_000;
+const DAY_MS = 24 * 60 * 60 * 1_000;
+const MAX_EVIDENCE_WINDOW_DAYS = 365;
+const MAX_SELECTION_LIMITATIONS = 8;
+const SHA_256_PATTERN = /^[a-f0-9]{64}$/;
 
 const researchChatValidator = v.object({
   chatId: v.string(),
@@ -112,14 +117,24 @@ export const createRun = mutation({
     question: v.string(),
     cohortLabel: v.string(),
     requestedBy: v.string(),
+    cohortSource: v.literal("posthog"),
+    posthogProjectId: v.number(),
+    cohortSelectedAt: v.number(),
+    selectionQueryFingerprint: v.string(),
+    selectionLimitations: v.array(v.string()),
+    samplingMode: researchSamplingModeValidator,
+    evidenceWindowDays: v.optional(v.number()),
     members: v.array(
       v.object({
         userId: v.string(),
         pseudonym: v.string(),
+        evidenceAnchorAt: v.optional(v.number()),
       }),
     ),
     maxChatsPerUser: v.number(),
     model: v.string(),
+    reasoningEnabled: v.boolean(),
+    reasoningEffort: v.literal("low"),
   },
   returns: v.null(),
   handler: async (ctx, args) => {
@@ -136,6 +151,67 @@ export const createRun = mutation({
       MAX_CHATS_PER_USER,
       "maxChatsPerUser",
     );
+    if (
+      !Number.isInteger(args.posthogProjectId) ||
+      args.posthogProjectId <= 0
+    ) {
+      throw new ConvexError("posthogProjectId must be a positive integer");
+    }
+    if (
+      !Number.isInteger(args.cohortSelectedAt) ||
+      args.cohortSelectedAt <= 0
+    ) {
+      throw new ConvexError("cohortSelectedAt must be a positive timestamp");
+    }
+    if (!SHA_256_PATTERN.test(args.selectionQueryFingerprint)) {
+      throw new ConvexError(
+        "selectionQueryFingerprint must be a SHA-256 hex digest",
+      );
+    }
+    if (args.selectionLimitations.length > MAX_SELECTION_LIMITATIONS) {
+      throw new ConvexError("selectionLimitations exceeds the bounded limit");
+    }
+    if (
+      args.selectionLimitations.some(
+        (limitation) =>
+          limitation.trim().length === 0 || limitation.length > 300,
+      )
+    ) {
+      throw new ConvexError("selectionLimitations contains an invalid entry");
+    }
+    if (args.samplingMode === "pre_event") {
+      if (args.evidenceWindowDays === undefined) {
+        throw new ConvexError(
+          "evidenceWindowDays is required for pre_event sampling",
+        );
+      }
+      assertIntegerInRange(
+        args.evidenceWindowDays,
+        1,
+        MAX_EVIDENCE_WINDOW_DAYS,
+        "evidenceWindowDays",
+      );
+      if (
+        args.members.some(
+          (member) =>
+            member.evidenceAnchorAt === undefined ||
+            !Number.isInteger(member.evidenceAnchorAt) ||
+            member.evidenceAnchorAt <= 0 ||
+            member.evidenceAnchorAt > args.cohortSelectedAt,
+        )
+      ) {
+        throw new ConvexError(
+          "Every pre_event member requires an evidenceAnchorAt no later than cohort selection",
+        );
+      }
+    } else if (
+      args.evidenceWindowDays !== undefined ||
+      args.members.some((member) => member.evidenceAnchorAt !== undefined)
+    ) {
+      throw new ConvexError(
+        "Evidence windows and anchors require pre_event sampling",
+      );
+    }
 
     const existing = await ctx.db
       .query("research_runs")
@@ -145,8 +221,44 @@ export const createRun = mutation({
       if (
         existing.linear_issue_id !== args.linearIssueId ||
         existing.question !== args.question ||
-        existing.cohort_size !== args.members.length
+        existing.cohort_label !== args.cohortLabel ||
+        existing.requested_by !== args.requestedBy ||
+        existing.cohort_source !== args.cohortSource ||
+        existing.posthog_project_id !== args.posthogProjectId ||
+        existing.cohort_selected_at !== args.cohortSelectedAt ||
+        existing.selection_query_fingerprint !==
+          args.selectionQueryFingerprint ||
+        JSON.stringify(existing.selection_limitations ?? []) !==
+          JSON.stringify(args.selectionLimitations) ||
+        (existing.sampling_mode ?? "representative") !== args.samplingMode ||
+        existing.evidence_window_days !== args.evidenceWindowDays ||
+        existing.cohort_size !== args.members.length ||
+        existing.max_chats_per_user !== args.maxChatsPerUser ||
+        existing.model !== args.model ||
+        existing.reasoning_enabled !== args.reasoningEnabled ||
+        existing.reasoning_effort !== args.reasoningEffort
       ) {
+        throw new ConvexError("analysisId already belongs to another run");
+      }
+      const existingMembers = await ctx.db
+        .query("research_run_members")
+        .withIndex("by_analysis_and_user", (q) =>
+          q.eq("analysis_id", args.analysisId),
+        )
+        .take(MAX_RESEARCH_COHORT_SIZE + 1);
+      const expectedMembers = args.members
+        .map(
+          (member) =>
+            `${member.userId}:${member.pseudonym}:${member.evidenceAnchorAt ?? ""}`,
+        )
+        .sort();
+      const actualMembers = existingMembers
+        .map(
+          (member) =>
+            `${member.user_id}:${member.pseudonym}:${member.evidence_anchor_at ?? ""}`,
+        )
+        .sort();
+      if (JSON.stringify(expectedMembers) !== JSON.stringify(actualMembers)) {
         throw new ConvexError("analysisId already belongs to another run");
       }
       return null;
@@ -168,10 +280,20 @@ export const createRun = mutation({
       question: args.question,
       cohort_label: args.cohortLabel,
       requested_by: args.requestedBy,
+      cohort_source: args.cohortSource,
+      posthog_project_id: args.posthogProjectId,
+      cohort_selected_at: args.cohortSelectedAt,
+      selection_query_fingerprint: args.selectionQueryFingerprint,
+      selection_limitations: args.selectionLimitations,
+      sampling_mode: args.samplingMode,
+      ...(args.evidenceWindowDays !== undefined
+        ? { evidence_window_days: args.evidenceWindowDays }
+        : {}),
       cohort_size: args.members.length,
       max_chats_per_user: args.maxChatsPerUser,
       model: args.model,
-      reasoning_enabled: false,
+      reasoning_enabled: args.reasoningEnabled,
+      reasoning_effort: args.reasoningEffort,
       status: "queued",
       profiles_completed: 0,
       profiles_failed: 0,
@@ -184,6 +306,9 @@ export const createRun = mutation({
           analysis_id: args.analysisId,
           user_id: member.userId,
           pseudonym: member.pseudonym,
+          ...(member.evidenceAnchorAt !== undefined
+            ? { evidence_anchor_at: member.evidenceAnchorAt }
+            : {}),
           created_at: now,
         }),
       ),
@@ -213,10 +338,7 @@ export const markRunRunning = mutation({
   },
 });
 
-/**
- * Select chats across the full observed date range instead of only taking the
- * newest rows. Each read is index-bounded and the caller can request at most 20.
- */
+/** Select bounded chats across either lifetime history or a pre-event window. */
 export const listRepresentativeChats = query({
   args: {
     serviceKey: v.string(),
@@ -227,7 +349,11 @@ export const listRepresentativeChats = query({
   returns: v.array(researchChatValidator),
   handler: async (ctx, args) => {
     validateUserResearchServiceKey(args.serviceKey);
-    await getRunningResearchMember(ctx, args.analysisId, args.userId);
+    const { run, member } = await getRunningResearchMember(
+      ctx,
+      args.analysisId,
+      args.userId,
+    );
     assertIntegerInRange(
       args.maxChats,
       MIN_CHATS_PER_USER,
@@ -235,16 +361,52 @@ export const listRepresentativeChats = query({
       "maxChats",
     );
 
-    const oldest = await ctx.db
-      .query("chats")
-      .withIndex("by_user_and_updated", (q) => q.eq("user_id", args.userId))
-      .order("asc")
-      .first();
-    const newest = await ctx.db
-      .query("chats")
-      .withIndex("by_user_and_updated", (q) => q.eq("user_id", args.userId))
-      .order("desc")
-      .first();
+    const samplingMode = run.sampling_mode ?? "representative";
+    const evidenceWindowEndAt = member.evidence_anchor_at;
+    const evidenceWindowDays = run.evidence_window_days;
+    if (
+      samplingMode === "pre_event" &&
+      (evidenceWindowEndAt === undefined || evidenceWindowDays === undefined)
+    ) {
+      throw new ConvexError("Pre-event research evidence window is incomplete");
+    }
+    const evidenceWindowStartAt =
+      evidenceWindowEndAt !== undefined && evidenceWindowDays !== undefined
+        ? evidenceWindowEndAt - evidenceWindowDays * DAY_MS
+        : undefined;
+
+    const oldestQuery =
+      samplingMode === "pre_event"
+        ? ctx.db
+            .query("chats")
+            .withIndex("by_user_and_updated", (q) =>
+              q
+                .eq("user_id", args.userId)
+                .gte("update_time", evidenceWindowStartAt!)
+                .lte("update_time", evidenceWindowEndAt!),
+            )
+        : ctx.db
+            .query("chats")
+            .withIndex("by_user_and_updated", (q) =>
+              q.eq("user_id", args.userId),
+            );
+    const newestQuery =
+      samplingMode === "pre_event"
+        ? ctx.db
+            .query("chats")
+            .withIndex("by_user_and_updated", (q) =>
+              q
+                .eq("user_id", args.userId)
+                .gte("update_time", evidenceWindowStartAt!)
+                .lte("update_time", evidenceWindowEndAt!),
+            )
+        : ctx.db
+            .query("chats")
+            .withIndex("by_user_and_updated", (q) =>
+              q.eq("user_id", args.userId),
+            );
+    const oldest = await oldestQuery.order("asc").first();
+    const newest = await newestQuery.order("desc").first();
     if (!oldest || !newest) return [];
 
     const selected = new Map<string, typeof oldest>();
@@ -257,6 +419,18 @@ export const listRepresentativeChats = query({
           bucketCount === 1
             ? oldest.update_time
             : oldest.update_time + (span * index) / (bucketCount - 1);
+        if (samplingMode === "pre_event") {
+          return ctx.db
+            .query("chats")
+            .withIndex("by_user_and_updated", (q) =>
+              q
+                .eq("user_id", args.userId)
+                .gte("update_time", target)
+                .lte("update_time", evidenceWindowEndAt!),
+            )
+            .order("asc")
+            .take(3);
+        }
         return ctx.db
           .query("chats")
           .withIndex("by_user_and_updated", (q) =>
@@ -274,9 +448,22 @@ export const listRepresentativeChats = query({
     }
 
     if (selected.size < args.maxChats) {
-      const recent = await ctx.db
-        .query("chats")
-        .withIndex("by_user_and_updated", (q) => q.eq("user_id", args.userId))
+      const recent = await (
+        samplingMode === "pre_event"
+          ? ctx.db
+              .query("chats")
+              .withIndex("by_user_and_updated", (q) =>
+                q
+                  .eq("user_id", args.userId)
+                  .gte("update_time", evidenceWindowStartAt!)
+                  .lte("update_time", evidenceWindowEndAt!),
+              )
+          : ctx.db
+              .query("chats")
+              .withIndex("by_user_and_updated", (q) =>
+                q.eq("user_id", args.userId),
+              )
+      )
         .order("desc")
         .take(args.maxChats * 3);
       for (const chat of recent) {
@@ -392,7 +579,7 @@ export const saveUserProfile = mutation({
   returns: v.null(),
   handler: async (ctx, args) => {
     validateUserResearchServiceKey(args.serviceKey);
-    const { run, member } = await getRunningResearchMember(
+    const { member } = await getRunningResearchMember(
       ctx,
       args.analysisId,
       args.userId,
@@ -430,19 +617,6 @@ export const saveUserProfile = mutation({
       });
     }
 
-    const profiles = await ctx.db
-      .query("research_user_profiles")
-      .withIndex("by_analysis_and_user", (q) =>
-        q.eq("analysis_id", args.analysisId),
-      )
-      .take(MAX_RESEARCH_COHORT_SIZE + 1);
-    if (profiles.length > MAX_RESEARCH_COHORT_SIZE) {
-      throw new ConvexError("Research run exceeds the cohort limit");
-    }
-    await ctx.db.patch(run._id, {
-      profiles_completed: profiles.length,
-      updated_at: now,
-    });
     return null;
   },
 });
@@ -583,9 +757,21 @@ export const failRun = mutation({
       .query("research_runs")
       .withIndex("by_analysis_id", (q) => q.eq("analysis_id", args.analysisId))
       .unique();
-    if (!run) return null;
+    if (!run || run.status === "completed" || run.status === "failed") {
+      return null;
+    }
+    const profiles = await ctx.db
+      .query("research_user_profiles")
+      .withIndex("by_analysis_and_user", (q) =>
+        q.eq("analysis_id", args.analysisId),
+      )
+      .take(MAX_RESEARCH_COHORT_SIZE + 1);
+    if (profiles.length > MAX_RESEARCH_COHORT_SIZE) {
+      throw new ConvexError("Research run exceeds the cohort limit");
+    }
     await ctx.db.patch(run._id, {
       status: "failed",
+      profiles_completed: profiles.length,
       error: args.error.slice(0, 500),
       updated_at: Date.now(),
     });

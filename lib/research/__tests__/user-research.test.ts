@@ -46,16 +46,68 @@ describe("user research privacy controls", () => {
       question: "What recurring work creates the most customer value?",
       cohortLabel: "PostHog top-spender research cohort",
       userIds: ["user-1", "user-2", "user-3"],
+      cohortSelectedAt: Date.UTC(2026, 7, 25),
+      selectionQueryFingerprint:
+        "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
       maxChatsPerUser: 12,
     };
 
-    expect(pmUserResearchGatewayRequestSchema.parse(request)).toEqual(request);
+    expect(pmUserResearchGatewayRequestSchema.parse(request)).toEqual({
+      ...request,
+      cohortSource: "posthog",
+      posthogProjectId: 144137,
+      selectionLimitations: [],
+      samplingMode: "representative",
+    });
     expect(
       pmUserResearchGatewayRequestSchema.parse({
         ...request,
         linearIssueId: "HAC-65",
       }).linearIssueId,
     ).toBe("HAC-65");
+    expect(
+      pmUserResearchGatewayRequestSchema.safeParse({
+        ...request,
+        cohortSelectedAt: undefined,
+      }).success,
+    ).toBe(false);
+    expect(
+      pmUserResearchGatewayRequestSchema.safeParse({
+        ...request,
+        selectionQueryFingerprint: undefined,
+      }).success,
+    ).toBe(false);
+  });
+
+  it("requires a bounded anchor for every user in pre-event research", () => {
+    const request = {
+      question: "What friction appeared before these users cancelled?",
+      cohortLabel: "Recent paid cancellation cohort",
+      userIds: ["user-1", "user-2", "user-3"],
+      cohortSelectedAt: Date.UTC(2026, 7, 25),
+      selectionQueryFingerprint:
+        "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      samplingMode: "pre_event",
+      evidenceWindowDays: 60,
+      evidenceAnchors: [
+        { userId: "user-1", anchorAt: Date.UTC(2026, 7, 20) },
+        { userId: "user-2", anchorAt: Date.UTC(2026, 7, 21) },
+        { userId: "user-3", anchorAt: Date.UTC(2026, 7, 22) },
+      ],
+      maxChatsPerUser: 12,
+    };
+
+    expect(pmUserResearchGatewayRequestSchema.parse(request)).toMatchObject({
+      samplingMode: "pre_event",
+      evidenceWindowDays: 60,
+      evidenceAnchors: request.evidenceAnchors,
+    });
+    expect(() =>
+      pmUserResearchGatewayRequestSchema.parse({
+        ...request,
+        evidenceAnchors: request.evidenceAnchors.slice(0, 2),
+      }),
+    ).toThrow("one evidence anchor for every cohort user");
   });
 
   it("pins Grok 4.6 for text-only research with low reasoning", () => {
@@ -222,6 +274,16 @@ ${"QUJD".repeat(16)}
     const prompt = buildCohortPrompt({
       question: "Which recurring user types and jobs appear?",
       cohortLabel: "PostHog paid cohort",
+      researchBasis: {
+        cohortSource: "posthog",
+        posthogProjectId: 144137,
+        cohortSelectedAt: Date.UTC(2026, 7, 25),
+        selectionQueryFingerprint:
+          "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        selectionLimitations: [],
+        samplingMode: "representative",
+        causalAttributionConfidence: "low",
+      },
       profiles: Array.from({ length: 20 }, (_, index) => ({
         pseudonym: `U${String(index + 1).padStart(2, "0")}`,
         profile: {
@@ -239,6 +301,7 @@ ${"QUJD".repeat(16)}
           messagesReviewed: 240,
           askChats: 4,
           agentChats: 8,
+          samplingMode: "representative" as const,
           truncatedChats: 2,
         },
       })),
@@ -252,6 +315,10 @@ ${"QUJD".repeat(16)}
     expect(payload).toContain("profile-19");
     expect(payload).toContain("bug_bounty_hunter");
     expect(payload).toContain('"confidence":"high"');
+    expect(payload).toContain('"causalAttributionConfidence":"low"');
+    expect(payload).not.toContain(
+      "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    );
   });
 
   it("caps model evidence counts and lowers confidence for sparse users", () => {
@@ -317,7 +384,14 @@ ${"QUJD".repeat(16)}
           "Missing avatar",
           "Security Learner",
         ],
-        crossCohortPatterns: [],
+        crossCohortPatterns: [
+          {
+            pattern: "Repeated multi-step Agent work",
+            basis: "observed",
+            evidenceUserCount: 20,
+            confidence: "high",
+          },
+        ],
         unknowns: [],
         followUpExperiments: [],
         privacyNote: "Aggregate only",
@@ -330,6 +404,7 @@ ${"QUJD".repeat(16)}
       "Uses [email omitted] for repeated work",
     );
     expect(normalized.avatars[0].evidenceUserCount).toBe(4);
+    expect(normalized.crossCohortPatterns[0].evidenceUserCount).toBe(4);
     expect(normalized.primaryAvatar).toBe("Independent Operator");
     expect(normalized.secondaryAvatars).toEqual(["Security Learner"]);
   });

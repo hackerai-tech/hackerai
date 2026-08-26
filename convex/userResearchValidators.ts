@@ -6,6 +6,11 @@ export const researchConfidenceValidator = v.union(
   v.literal("high"),
 );
 
+export const researchSamplingModeValidator = v.union(
+  v.literal("representative"),
+  v.literal("pre_event"),
+);
+
 export const researchUserTypeValidator = v.union(
   v.literal("bug_bounty_hunter"),
   v.literal("solo_pentester"),
@@ -50,6 +55,9 @@ export const researchCoverageValidator = v.object({
   messagesReviewed: v.number(),
   askChats: v.number(),
   agentChats: v.number(),
+  samplingMode: v.optional(researchSamplingModeValidator),
+  evidenceWindowStartAt: v.optional(v.number()),
+  evidenceWindowEndAt: v.optional(v.number()),
   firstActivityAt: v.optional(v.number()),
   lastActivityAt: v.optional(v.number()),
   truncatedChats: v.number(),
@@ -75,6 +83,25 @@ export const researchExperimentValidator = v.object({
   hypothesis: v.string(),
   test: v.string(),
   successMetric: v.string(),
+  baselineRequired: v.optional(v.boolean()),
+});
+
+const researchCohortPatternValidator = v.object({
+  pattern: v.string(),
+  basis: v.union(v.literal("observed"), v.literal("inferred")),
+  evidenceUserCount: v.number(),
+  confidence: researchConfidenceValidator,
+});
+
+const researchBasisValidator = v.object({
+  cohortSource: v.literal("posthog"),
+  posthogProjectId: v.number(),
+  cohortSelectedAt: v.number(),
+  selectionQueryFingerprint: v.string(),
+  selectionLimitations: v.array(v.string()),
+  samplingMode: researchSamplingModeValidator,
+  evidenceWindowDays: v.optional(v.number()),
+  causalAttributionConfidence: researchConfidenceValidator,
 });
 
 export const researchCohortReportValidator = v.object({
@@ -83,10 +110,16 @@ export const researchCohortReportValidator = v.object({
   avatars: v.array(researchAvatarValidator),
   primaryAvatar: v.string(),
   secondaryAvatars: v.array(v.string()),
-  crossCohortPatterns: v.array(v.string()),
+  // Keep accepting reports written before v2 while all new reports use the
+  // structured form with an explicit evidence basis.
+  crossCohortPatterns: v.array(
+    v.union(v.string(), researchCohortPatternValidator),
+  ),
   unknowns: v.array(v.string()),
   followUpExperiments: v.array(researchExperimentValidator),
   privacyNote: v.string(),
+  // Optional only for schema evolution; v2 writers always include it.
+  researchBasis: v.optional(researchBasisValidator),
   coverage: v.object({
     usersRequested: v.number(),
     usersAnalyzed: v.number(),

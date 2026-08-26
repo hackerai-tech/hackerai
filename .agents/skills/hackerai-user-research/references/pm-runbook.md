@@ -21,6 +21,12 @@ duplicate person property or infer the mapping from email. Produce those
 internal user IDs for the restricted gateway payload, not emails or billing
 customer IDs.
 
+Record `posthogProjectId`, the cohort selection timestamp, a SHA-256 fingerprint
+of the selection query, and short limitations that affect interpretation. Never
+send the raw query. For event-based research such as churn, select the event
+timestamp beside each user ID and provide it as that member's evidence anchor.
+Use a bounded pre-event window; do not use one cohort-wide timestamp.
+
 ## 2. Run through Codex
 
 Ask Codex:
@@ -54,6 +60,9 @@ Use the aggregate report to understand supported user types, customer avatars,
 and decisions. Always include coverage and confidence. Detailed profiles remain
 restricted in Convex. Treat acquisition channels and marketing messages as
 hypotheses until a separate experiment validates them.
+Behavioral messages, including messages immediately before a cancellation, do
+not establish the user's causal cancellation reason. Keep causal confidence low
+unless a separate survey or experiment supplies direct evidence.
 
 ## 4. Share safely
 
