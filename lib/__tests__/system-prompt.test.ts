@@ -200,6 +200,9 @@ Commands run directly on the host OS "workstation" without Docker isolation. Be 
     expect(prompt).not.toContain(
       "agent-browser is installed in the cloud sandbox",
     );
+    expect(prompt).not.toContain("Python 3.12.11");
+    expect(prompt).not.toContain("Node.js 20.19.4");
+    expect(prompt).not.toContain("Golang 1.24.2");
   });
 
   it("does not claim E2B-only tools for MIOSA rollout sandboxes", async () => {

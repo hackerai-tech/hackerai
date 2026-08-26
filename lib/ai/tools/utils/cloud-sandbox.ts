@@ -167,48 +167,62 @@ export async function terminateCloudSandboxesForUser(userId: string): Promise<{
   alreadyGone: number;
 }> {
   const totals = { total: 0, killed: 0, alreadyGone: 0 };
+  const failures: unknown[] = [];
 
   if (process.env.MIOSA_API_KEY) {
-    const result = await terminateMiosaSandboxesForUser(userId);
-    totals.total += result.total;
-    totals.killed += result.killed;
-    totals.alreadyGone += result.alreadyGone;
+    try {
+      const result = await terminateMiosaSandboxesForUser(userId);
+      totals.total += result.total;
+      totals.killed += result.killed;
+      totals.alreadyGone += result.alreadyGone;
+    } catch (error) {
+      failures.push(error);
+      console.error("Failed to clean up MIOSA sandboxes:", error);
+    }
   }
 
   if (process.env.E2B_API_KEY) {
-    const paginator = (await import("@e2b/code-interpreter")).Sandbox.list({
-      query: { metadata: { userID: userId } },
-    });
-    const sandboxes = [];
-    do {
-      sandboxes.push(...(await paginator.nextItems()));
-    } while (paginator.hasNext);
-    let killed = 0;
-    let alreadyGone = 0;
-    const { isExpectedMissingResourceCleanupError } =
-      await import("@/lib/utils/cleanup-errors");
-    const { Sandbox } = await import("@e2b/code-interpreter");
-    for (const sandbox of sandboxes) {
-      try {
-        await Sandbox.kill(sandbox.sandboxId);
-        killed++;
-      } catch (error) {
-        if (isExpectedMissingResourceCleanupError(error)) {
-          alreadyGone++;
-          console.debug(
-            `Sandbox ${sandbox.sandboxId} was already gone during delete`,
-            error,
-          );
-          continue;
+    try {
+      const paginator = (await import("@e2b/code-interpreter")).Sandbox.list({
+        query: { metadata: { userID: userId } },
+      });
+      const sandboxes = [];
+      do {
+        sandboxes.push(...(await paginator.nextItems()));
+      } while (paginator.hasNext);
+      let killed = 0;
+      let alreadyGone = 0;
+      const { isExpectedMissingResourceCleanupError } =
+        await import("@/lib/utils/cleanup-errors");
+      const { Sandbox } = await import("@e2b/code-interpreter");
+      for (const sandbox of sandboxes) {
+        try {
+          await Sandbox.kill(sandbox.sandboxId);
+          killed++;
+        } catch (error) {
+          if (isExpectedMissingResourceCleanupError(error)) {
+            alreadyGone++;
+            console.debug(
+              `Sandbox ${sandbox.sandboxId} was already gone during delete`,
+              error,
+            );
+            continue;
+          }
+          console.error(`Failed to kill sandbox ${sandbox.sandboxId}:`, error);
+          throw error;
         }
-        console.error(`Failed to kill sandbox ${sandbox.sandboxId}:`, error);
-        throw error;
       }
+      totals.total += sandboxes.length;
+      totals.killed += killed;
+      totals.alreadyGone += alreadyGone;
+    } catch (error) {
+      failures.push(error);
     }
-    totals.total += sandboxes.length;
-    totals.killed += killed;
-    totals.alreadyGone += alreadyGone;
   }
 
+  if (failures.length === 1) throw failures[0];
+  if (failures.length > 1) {
+    throw new AggregateError(failures, "Cloud sandbox cleanup failed");
+  }
   return totals;
 }

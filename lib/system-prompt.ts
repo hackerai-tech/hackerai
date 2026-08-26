@@ -240,6 +240,14 @@ const getDefaultSandboxEnvironmentSection = (
 ${SANDBOX_TOOL_RECIPES_SECTION}
 
 ${AGENT_BROWSER_SECTION}`;
+  const developmentEnvironment =
+    provider === "miosa"
+      ? `Development Environment:
+- Probe runtime and package versions before relying on them; the configured MIOSA template can vary.`
+      : `Development Environment:
+- Python 3.12.11 (commands: python3, pip3)
+- Node.js 20.19.4 (commands: node, npm)
+- Golang 1.24.2 (commands: go)`;
 
   return `<sandbox_environment>
 IMPORTANT: All tools operate in an isolated sandbox environment that is individual to each user. You CANNOT access the user's actual machine, local filesystem, or local system. Tools can ONLY interact with the sandbox environment described below.
@@ -259,10 +267,7 @@ ${systemEnvironment}
 - Inline image attachments are already visible in the conversation. If an \`inline_image_attachment\` also lists a sandbox path, use that path only for file-system operations such as metadata extraction, conversion, or scripting; do not call the file view action just to describe the image.
 - VPN connectivity is not available due to missing TUN/TAP device support in the sandbox environment
 
-Development Environment:
-- Python 3.12.11 (commands: python3, pip3)
-- Node.js 20.19.4 (commands: node, npm)
-- Golang 1.24.2 (commands: go)
+${developmentEnvironment}
 
 ${installedTools}
 </sandbox_environment>`;

@@ -124,4 +124,37 @@ describe("MIOSA sandbox adapter", () => {
       { cwd: "/home/user" },
     );
   });
+
+  it("terminates the remote process group when a foreground command is aborted", async () => {
+    const sdkSandbox = createSdkSandbox();
+    let finishStream: (() => void) | undefined;
+    const streamFinished = new Promise<void>((resolve) => {
+      finishStream = resolve;
+    });
+    async function* stream() {
+      await streamFinished;
+    }
+    sdkSandbox.exec.stream.mockImplementation(stream);
+    sdkSandbox.exec.run.mockImplementation(async () => {
+      finishStream?.();
+      return { stdout: "", stderr: "", exitCode: 0 };
+    });
+    const sandbox = new MiosaSandbox(sdkSandbox as never);
+    const controller = new AbortController();
+    const command = sandbox.commands.run("sleep 60", {
+      signal: controller.signal,
+    });
+
+    controller.abort();
+
+    await expect(command).rejects.toMatchObject({ name: "AbortError" });
+    expect(sdkSandbox.exec.stream).toHaveBeenCalledWith(
+      expect.stringContaining("setsid bash -lc"),
+      { cwd: "/home/user" },
+    );
+    expect(sdkSandbox.exec.run).toHaveBeenCalledWith(
+      expect.stringContaining("kill -TERM --"),
+      { timeoutSec: 5 },
+    );
+  });
 });

@@ -116,25 +116,16 @@ export class MiosaSandbox {
       const stdout: string[] = [];
       const stderr: string[] = [];
       let exitCode = 0;
-
-      const abortPromise = options.signal
-        ? new Promise<never>((_, reject) => {
-            options.signal!.addEventListener(
-              "abort",
-              () =>
-                reject(
-                  new DOMException("The operation was aborted", "AbortError"),
-                ),
-              { once: true },
-            );
-          })
-        : null;
+      const processIdPath = `/tmp/hackerai-foreground-${randomUUID()}.pid`;
+      const streamedCommand = options.signal
+        ? `setsid bash -lc ${shellQuote(
+            `echo $$ > ${shellQuote(processIdPath)}; bash -lc ${shellQuote(command)}; status=$?; rm -f -- ${shellQuote(processIdPath)}; exit $status`,
+          )}`
+        : command;
+      const stream = this.sdkSandbox.exec.stream(streamedCommand, sdkOptions);
 
       const consumeStream = async (): Promise<void> => {
-        for await (const event of this.sdkSandbox.exec.stream(
-          command,
-          sdkOptions,
-        )) {
+        for await (const event of stream) {
           if (event.type === "exit") {
             exitCode = Number(event.exitCode ?? event.exit_code ?? 0);
             continue;
@@ -153,10 +144,44 @@ export class MiosaSandbox {
         }
       };
 
-      if (abortPromise) {
-        await Promise.race([consumeStream(), abortPromise]);
-      } else {
-        await consumeStream();
+      const abortError = new DOMException(
+        "The operation was aborted",
+        "AbortError",
+      );
+      let abortHandler: (() => void) | undefined;
+      const abortPromise = options.signal
+        ? new Promise<never>((_, reject) => {
+            let abortStarted = false;
+            abortHandler = () => {
+              if (abortStarted) return;
+              abortStarted = true;
+              void this.sdkSandbox.exec
+                .run(
+                  `for i in $(seq 1 40); do if [ -f ${shellQuote(processIdPath)} ]; then pid=$(cat ${shellQuote(processIdPath)}); kill -TERM -- -"$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null || true; sleep 0.2; kill -KILL -- -"$pid" 2>/dev/null || kill -KILL "$pid" 2>/dev/null || true; rm -f -- ${shellQuote(processIdPath)}; break; fi; sleep 0.05; done`,
+                  { timeoutSec: 5 },
+                )
+                .finally(() => {
+                  void stream.return?.().catch(() => undefined);
+                  reject(abortError);
+                });
+            };
+            options.signal!.addEventListener("abort", abortHandler, {
+              once: true,
+            });
+            if (options.signal!.aborted) abortHandler();
+          })
+        : null;
+
+      try {
+        if (abortPromise) {
+          await Promise.race([consumeStream(), abortPromise]);
+        } else {
+          await consumeStream();
+        }
+      } finally {
+        if (abortHandler) {
+          options.signal?.removeEventListener("abort", abortHandler);
+        }
       }
 
       return {

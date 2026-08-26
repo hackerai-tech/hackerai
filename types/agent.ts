@@ -192,7 +192,8 @@ export type AgentToolApprovalGrant = "full_access" | "target_prefix";
 export type AgentToolApprovalGrantKind =
   "terminal_command" | "terminal_interaction" | "file_change";
 
-export type AgentApprovalSandboxIdentity = "e2b" | `connection:${string}`;
+export type AgentApprovalSandboxIdentity =
+  "e2b" | "miosa" | `connection:${string}`;
 
 const AGENT_APPROVAL_SANDBOX_SCOPE_VERSION =
   "agent-approval-sandbox-scope-v1" as const;
@@ -212,6 +213,7 @@ const isAgentApprovalSandboxIdentity = (
   value: unknown,
 ): value is AgentApprovalSandboxIdentity =>
   value === "e2b" ||
+  value === "miosa" ||
   (typeof value === "string" &&
     value.startsWith("connection:") &&
     value.length > "connection:".length &&

@@ -1722,7 +1722,7 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
       stepIndexArgIdx,
     );
     const sandboxCostIdx = agentStreamRunnerSrc.indexOf(
-      "ctx.getSandboxCostDollars?.() ?? 0",
+      "await ctx.getSandboxCostDollars?.()",
       upstreamCostArgIdx,
     );
     const triggerRunCostIdx = agentStreamRunnerSrc.indexOf(
@@ -2122,13 +2122,14 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
   });
 
   test("agent-long uses the selected cloud provider for tools and prompt", () => {
-    const providerIdx = taskSrc.indexOf(
-      "const cloudSandboxSelection = await selectCloudSandboxProvider({",
-    );
+    const providerIdx = taskSrc.indexOf("const cloudSandboxSelection =");
     const toolsIdx = taskSrc.indexOf("createTools(", providerIdx);
     const promptIdx = taskSrc.indexOf("systemPrompt(", toolsIdx);
 
     expect(providerIdx).toBeGreaterThan(-1);
+    expect(taskSrc.slice(providerIdx, toolsIdx)).toContain(
+      "selectCloudSandboxProvider({",
+    );
     expect(toolsIdx).toBeGreaterThan(providerIdx);
     expect(promptIdx).toBeGreaterThan(toolsIdx);
     expect(taskSrc.slice(toolsIdx, promptIdx)).toContain(

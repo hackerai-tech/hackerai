@@ -478,10 +478,16 @@ export const createChatHandler = () => {
 
       // PostHog client for analytics.
       posthog ??= PostHogClient();
-      const cloudSandboxSelection = await selectCloudSandboxProvider({
-        userId,
-        featureFlagClient: posthog,
-      });
+      const cloudSandboxSelection =
+        isAgentMode(mode) && (!sandboxPreference || sandboxPreference === "e2b")
+          ? await selectCloudSandboxProvider({
+              userId,
+              featureFlagClient: posthog,
+            })
+          : ({
+              provider: "e2b",
+              reason: "miosa_rollout_control",
+            } as const);
 
       const fileCounts = countFileAttachments(truncatedMessages);
       const chatLogContext = {

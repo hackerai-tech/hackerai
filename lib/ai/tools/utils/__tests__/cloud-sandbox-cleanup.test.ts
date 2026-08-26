@@ -100,4 +100,25 @@ describe("cloud sandbox cleanup", () => {
     expect(mockTerminateMiosaSandboxesForUser).toHaveBeenCalledWith("user_123");
     expect(mockKillE2BSandbox).toHaveBeenCalledWith("sandbox-e2b");
   });
+
+  it("still cleans up E2B when MIOSA cleanup fails", async () => {
+    process.env.MIOSA_API_KEY = "msk_test";
+    process.env.E2B_API_KEY = "e2b-test-key";
+    mockTerminateMiosaSandboxesForUser.mockRejectedValue(
+      new Error("MIOSA unavailable"),
+    );
+    mockListE2BSandboxes.mockReturnValue({
+      nextItems: jest.fn(async () => [{ sandboxId: "sandbox-e2b" }]),
+      hasNext: false,
+    } as ReturnType<typeof Sandbox.list>);
+    mockKillE2BSandbox.mockResolvedValue(undefined);
+    const errorSpy = jest.spyOn(console, "error").mockImplementation();
+
+    await expect(terminateCloudSandboxesForUser("user_123")).rejects.toThrow(
+      "MIOSA unavailable",
+    );
+    expect(mockKillE2BSandbox).toHaveBeenCalledWith("sandbox-e2b");
+
+    errorSpy.mockRestore();
+  });
 });

@@ -195,7 +195,6 @@ import type {
 import {
   AGENT_TOOL_APPROVAL_PROTOCOL_VERSION,
   canUseExtraUsage,
-  getAgentApprovalConnectionSandboxIdentity,
   getAgentToolApprovalPromptKind,
   getAgentApprovalTargetPrefixForSandbox,
   normalizeMaxModelForSubscription,
@@ -213,6 +212,7 @@ import {
 } from "@/lib/api/agent-stream-runner";
 import {
   assertLocalSandboxFallbackAllowed,
+  getAgentApprovalSandboxIdentity,
   getSandboxFallbackPromptReminder,
   prepareSandboxContextForPrompt,
   writeSandboxFallbackEvent,
@@ -264,7 +264,6 @@ import {
   omitTrailingStepStartAssistantMessage,
 } from "@/lib/chat/multimodal-tool-result-recovery";
 import { FREE_AGENT_LONG_RUN_LOCK_TTL_SECONDS } from "@/lib/rate-limit/free-config";
-import { isCentrifugoSandbox } from "@/lib/ai/tools/utils/sandbox-types";
 import { AgentRunTimingTracker } from "@/lib/chat/agent-run-timing";
 import { AgentLongMemoryTelemetry } from "@/lib/chat/agent-long-memory-telemetry";
 import {
@@ -2498,10 +2497,16 @@ export const agentLongTask = task({
         selectedModelOverride,
       });
       const posthog = PostHogClient();
-      const cloudSandboxSelection = await selectCloudSandboxProvider({
-        userId,
-        featureFlagClient: posthog,
-      });
+      const cloudSandboxSelection =
+        !sandboxPreference || sandboxPreference === "e2b"
+          ? await selectCloudSandboxProvider({
+              userId,
+              featureFlagClient: posthog,
+            })
+          : ({
+              provider: "e2b",
+              reason: "miosa_rollout_control",
+            } as const);
       const cloudSandboxProvider = cloudSandboxSelection.provider;
 
       const baseTodos: Todo[] = getBaseTodosForRequest(
@@ -3074,18 +3079,11 @@ export const agentLongTask = task({
             };
             let approvalSandboxManager: SandboxManager | undefined;
             const resolveApprovalSandboxIdentity = async () => {
-              if (!sandboxPreference || sandboxPreference === "e2b") {
-                return "e2b" as const;
-              }
               if (!approvalSandboxManager) {
                 throw new Error("Sandbox manager is unavailable for approval");
               }
               const { sandbox } = await approvalSandboxManager.getSandbox();
-              return isCentrifugoSandbox(sandbox)
-                ? getAgentApprovalConnectionSandboxIdentity(
-                    sandbox.getConnectionId(),
-                  )
-                : ("e2b" as const);
+              return getAgentApprovalSandboxIdentity(sandbox);
             };
             const requestToolApproval = buildAgentToolApprovalRequester({
               agentPermissionMode,

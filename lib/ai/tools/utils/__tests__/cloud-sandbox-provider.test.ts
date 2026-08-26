@@ -47,6 +47,7 @@ describe("cloud sandbox provider selection", () => {
     expect(getFeatureFlag).toHaveBeenCalledWith(
       MIOSA_CLOUD_SANDBOX_ROLLOUT_FLAG,
       "user-1",
+      { sendFeatureFlagEvents: false },
     );
   });
 

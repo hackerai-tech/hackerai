@@ -644,7 +644,7 @@ export type AgentStreamContext = {
     retention: ProviderRequestRetentionDiagnostics,
   ) => void;
   /** Current cumulative runtime cost outside UsageTracker, such as a sandbox. */
-  getSandboxCostDollars?: () => number;
+  getSandboxCostDollars?: () => number | Promise<number>;
   /** Current cumulative Trigger.dev run cost, including compute and invocation. */
   getTriggerRunCostDollars?: () => number;
   settleUsageAfterStep?: (args: {
@@ -1719,7 +1719,7 @@ export async function createAgentStream(
         stepOpenRouterMetadata.openrouter_upstream_inference_cost,
       );
 
-      const sandboxCostDollars = ctx.getSandboxCostDollars?.() ?? 0;
+      const sandboxCostDollars = (await ctx.getSandboxCostDollars?.()) ?? 0;
       const triggerRunCostDollars = ctx.getTriggerRunCostDollars?.() ?? 0;
       const currentCostDollars =
         ctx.usageTracker.computeCostDollars(modelName) +

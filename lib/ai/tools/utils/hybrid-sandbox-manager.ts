@@ -558,7 +558,7 @@ export class HybridSandboxManager implements SandboxManager {
   }
 
   async supportsInteractivePty(): Promise<boolean> {
-    if (this.sandboxPreference === "e2b") {
+    if (!this.isLocal) {
       return this.activeCloudProvider === "e2b";
     }
 

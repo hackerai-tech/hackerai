@@ -116,7 +116,19 @@ export const createTools = (
   let currentModelName = modelName;
   let sandboxOperationQueue: Promise<void> = Promise.resolve();
   let pendingSandbox: Promise<AnySandbox> | null = null;
-  let miosaCostBaselinePromise: Promise<number> | null = null;
+  let miosaCostBaselinePromise: Promise<number | null> | null = null;
+  let latestMiosaCostDollars = 0;
+
+  const readMiosaCostDollars = async (
+    miosaSandbox: Extract<AnySandbox, { sandboxKind: "miosa" }>,
+  ): Promise<number | null> => {
+    try {
+      const usage = await miosaSandbox.sdkSandbox.usage();
+      return usage.estimated_cost_cents / 100;
+    } catch {
+      return null;
+    }
+  };
 
   const recordSandboxBoot = (info: SandboxBootInfo) => {
     sandboxBootInfo = info;
@@ -138,10 +150,7 @@ export const createTools = (
     sandbox = newSandbox;
     const provider = getCloudSandboxProviderForInstance(newSandbox);
     if (isMiosaSandbox(newSandbox) && !miosaCostBaselinePromise) {
-      miosaCostBaselinePromise = newSandbox.sdkSandbox
-        .usage()
-        .then((usage) => usage.estimated_cost_cents / 100)
-        .catch(() => 0);
+      miosaCostBaselinePromise = readMiosaCostDollars(newSandbox);
     }
     const now = Date.now();
     if (
@@ -382,16 +391,21 @@ export const createTools = (
         Date.now() - sandboxCostSegmentStartedAt;
     }
     const e2bCostDollars = runtimeMs.e2b * E2B_COST_PER_MS;
-    let miosaCostDollars = 0;
+    let miosaCostDollars = latestMiosaCostDollars;
     if (isMiosaSandbox(sandbox) && miosaCostBaselinePromise) {
-      const [baseline, current] = await Promise.all([
-        miosaCostBaselinePromise,
-        sandbox.sdkSandbox
-          .usage()
-          .then((usage) => usage.estimated_cost_cents / 100)
-          .catch(() => 0),
-      ]);
-      miosaCostDollars = Math.max(0, current - baseline);
+      let baseline = await miosaCostBaselinePromise;
+      if (baseline === null) {
+        miosaCostBaselinePromise = readMiosaCostDollars(sandbox);
+        baseline = await miosaCostBaselinePromise;
+      }
+      const current = await readMiosaCostDollars(sandbox);
+      if (baseline !== null && current !== null) {
+        latestMiosaCostDollars = Math.max(
+          latestMiosaCostDollars,
+          current - baseline,
+        );
+        miosaCostDollars = latestMiosaCostDollars;
+      }
     }
     return {
       totalCostDollars: e2bCostDollars + miosaCostDollars,
@@ -402,16 +416,16 @@ export const createTools = (
     };
   };
 
-  const getSandboxSessionCost = (): number => {
+  const getSandboxSessionCost = async (): Promise<number> => {
     if (runtimePolicy.chargeSandboxRuntime === false) return 0;
     let e2bRuntimeMs = sandboxAccumulatedRuntimeMs.e2b;
     if (sandboxCostSegmentStartedAt !== null && sandboxCostProvider === "e2b") {
       e2bRuntimeMs += Date.now() - sandboxCostSegmentStartedAt;
     }
-    // MIOSA exposes provider-reported cost asynchronously. Final settlement
-    // uses getSandboxSessionUsage(); the live budget callback remains sync and
-    // includes the configured E2B duration estimate only.
-    return e2bRuntimeMs * E2B_COST_PER_MS;
+    const miosaCostDollars = isMiosaSandbox(sandbox)
+      ? (await getSandboxSessionUsage()).miosaCostDollars
+      : latestMiosaCostDollars;
+    return e2bRuntimeMs * E2B_COST_PER_MS + miosaCostDollars;
   };
 
   return {

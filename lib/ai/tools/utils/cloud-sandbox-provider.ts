@@ -27,7 +27,11 @@ export function getCloudSandboxProvider(): CloudSandboxProvider {
 }
 
 type FeatureFlagClient = {
-  getFeatureFlag: (flagKey: string, distinctId: string) => Promise<unknown>;
+  getFeatureFlag: (
+    flagKey: string,
+    distinctId: string,
+    options?: { sendFeatureFlagEvents?: boolean },
+  ) => Promise<unknown>;
 };
 
 /**
@@ -58,6 +62,7 @@ export async function selectCloudSandboxProvider(options: {
       (await options.featureFlagClient?.getFeatureFlag(
         MIOSA_CLOUD_SANDBOX_ROLLOUT_FLAG,
         options.userId,
+        { sendFeatureFlagEvents: false },
       )) === true;
     return enabled
       ? { provider: "miosa", reason: "miosa_rollout" }

@@ -79,6 +79,30 @@ describe("sandbox-scoped reusable Agent approval grants", () => {
     ).toBeNull();
   });
 
+  it("does not reuse approval grants between E2B and MIOSA", () => {
+    const e2bGrant = serializeSandboxScopedAgentApprovalTargetPrefix({
+      sandboxIdentity: "e2b",
+      targetPrefix,
+    });
+    const miosaGrant = serializeSandboxScopedAgentApprovalTargetPrefix({
+      sandboxIdentity: "miosa",
+      targetPrefix,
+    });
+
+    expect(
+      getAgentApprovalTargetPrefixForSandbox({
+        persistedTargetPrefix: e2bGrant,
+        sandboxIdentity: "miosa",
+      }),
+    ).toBeNull();
+    expect(
+      getAgentApprovalTargetPrefixForSandbox({
+        persistedTargetPrefix: miosaGrant,
+        sandboxIdentity: "e2b",
+      }),
+    ).toBeNull();
+  });
+
   it("does not reuse a grant on another local connection", () => {
     const persistedTargetPrefix =
       serializeSandboxScopedAgentApprovalTargetPrefix({

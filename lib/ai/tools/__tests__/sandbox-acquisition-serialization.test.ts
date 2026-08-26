@@ -136,7 +136,10 @@ describe("sandbox acquisition serialization", () => {
     mockTrackSandboxUsage?.({ provider: "e2b" });
     jest.advanceTimersByTime(1_000);
 
-    expect(getSandboxSessionCost()).toBeCloseTo(E2B_COST_PER_MS * 1_000, 12);
+    await expect(getSandboxSessionCost()).resolves.toBeCloseTo(
+      E2B_COST_PER_MS * 1_000,
+      12,
+    );
     await expect(getSandboxSessionUsage()).resolves.toEqual({
       totalCostDollars: E2B_COST_PER_MS * 1_000,
       miosaRuntimeMs: 0,
@@ -180,7 +183,7 @@ describe("sandbox acquisition serialization", () => {
     mockTrackSandboxUsage?.({ provider: "e2b" });
     jest.advanceTimersByTime(5_000);
 
-    expect(getSandboxSessionCost()).toBe(0);
+    await expect(getSandboxSessionCost()).resolves.toBe(0);
     await expect(getSandboxSessionUsage()).resolves.toEqual({
       totalCostDollars: 0,
       miosaRuntimeMs: 0,
@@ -198,7 +201,7 @@ describe("sandbox acquisition serialization", () => {
     const usage = jest
       .fn()
       .mockResolvedValueOnce({ estimated_cost_cents: 100 })
-      .mockResolvedValueOnce({ estimated_cost_cents: 125 });
+      .mockResolvedValue({ estimated_cost_cents: 125 });
     const { getSandboxSessionCost, getSandboxSessionUsage } = createTools(
       "user-1",
       "chat-1",
@@ -215,7 +218,7 @@ describe("sandbox acquisition serialization", () => {
     mockTrackSandboxUsage?.({ provider: "miosa", sdkSandbox: { usage } });
     jest.advanceTimersByTime(2_000);
 
-    expect(getSandboxSessionCost()).toBe(0);
+    await expect(getSandboxSessionCost()).resolves.toBe(0.25);
     await expect(getSandboxSessionUsage()).resolves.toEqual({
       totalCostDollars: 0.25,
       miosaRuntimeMs: 2_000,
@@ -223,7 +226,34 @@ describe("sandbox acquisition serialization", () => {
       e2bRuntimeMs: 0,
       e2bCostDollars: 0,
     });
-    expect(usage).toHaveBeenCalledTimes(2);
+    expect(usage).toHaveBeenCalledTimes(3);
+  });
+
+  it("does not treat a failed MIOSA baseline read as zero cost", async () => {
+    mockIsMiosaSandbox.mockImplementation(
+      (sandbox: { provider?: string } | null) => sandbox?.provider === "miosa",
+    );
+    const usage = jest
+      .fn()
+      .mockRejectedValueOnce(new Error("usage unavailable"))
+      .mockResolvedValueOnce({ estimated_cost_cents: 125 })
+      .mockResolvedValueOnce({ estimated_cost_cents: 130 });
+    const { getSandboxSessionCost } = createTools(
+      "user-1",
+      "chat-1",
+      {} as never,
+      "agent",
+      {} as never,
+      undefined,
+      true,
+      undefined,
+      "e2b",
+      "service-key",
+    );
+
+    mockTrackSandboxUsage?.({ provider: "miosa", sdkSandbox: { usage } });
+
+    await expect(getSandboxSessionCost()).resolves.toBeCloseTo(0.05, 12);
   });
 
   it("stops cloud runtime billing while a non-cloud sandbox is active", async () => {
