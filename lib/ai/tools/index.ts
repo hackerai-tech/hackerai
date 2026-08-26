@@ -49,6 +49,8 @@ import { getSandboxWithFallbackGuard } from "./utils/sandbox-fallback";
 import { createE2BResourcePressureObserver } from "@/lib/analytics/sandbox-resource-pressure";
 import { E2B_COST_PER_MS } from "./utils/e2b-cost";
 import { phLogger } from "@/lib/posthog/server";
+import { logger } from "@/lib/logger";
+import { redactSensitiveErrorMessage } from "@/lib/utils/error-redaction";
 import type { TriggerRunRegion } from "@/lib/api/trigger-region";
 import type { CloudSandboxAcquisitionContext } from "./utils/cloud-sandbox";
 import type {
@@ -81,6 +83,7 @@ const emptySandboxRuntimeMs = (): Record<CloudSandboxProvider, number> => ({
   e2b: 0,
 });
 const MIOSA_USAGE_READ_TIMEOUT_MS = 2_000;
+const MIOSA_USAGE_CACHE_TTL_MS = 1_000;
 
 // Factory function to create tools with context
 export const createTools = (
@@ -125,6 +128,10 @@ export const createTools = (
   };
   const miosaCostSources = new Map<string, MiosaCostSource>();
   const miosaUsageReads = new Map<string, Promise<number | null>>();
+  let cachedMiosaCostSettlement: {
+    settledAt: number;
+    totalCostDollars: number;
+  } | null = null;
 
   const readMiosaCostDollars = async (
     miosaSandbox: MiosaSandboxInstance,
@@ -135,7 +142,23 @@ export const createTools = (
       providerRead = miosaSandbox.sdkSandbox
         .usage()
         .then((usage) => usage.estimated_cost_cents / 100)
-        .catch(() => null);
+        .catch((error) => {
+          logger.warn("MIOSA usage read failed", {
+            event: "miosa_usage_read_failed",
+            service: "agent-tools",
+            environment:
+              process.env.VERCEL_ENV ?? process.env.NODE_ENV ?? "unknown",
+            request_id: triggerRunId ?? chatId,
+            chat_id: chatId,
+            sandbox_id: sandboxId,
+            provider: "miosa",
+            error:
+              error instanceof Error
+                ? redactSensitiveErrorMessage(error.message)
+                : "non_error_rejection",
+          });
+          return null;
+        });
       miosaUsageReads.set(sandboxId, providerRead);
       void providerRead.then(() => {
         if (miosaUsageReads.get(sandboxId) === providerRead) {
@@ -190,6 +213,7 @@ export const createTools = (
           baselinePromise: readMiosaCostDollars(newSandbox),
           latestCostDollars: 0,
         });
+        cachedMiosaCostSettlement = null;
       }
     }
     const now = Date.now();
@@ -414,11 +438,24 @@ export const createTools = (
     return buildTools();
   };
 
-  const settleMiosaCostDollars = async (): Promise<number> => {
+  const settleMiosaCostDollars = async (
+    forceFresh = false,
+  ): Promise<number> => {
+    const now = Date.now();
+    if (
+      !forceFresh &&
+      cachedMiosaCostSettlement &&
+      now - cachedMiosaCostSettlement.settledAt < MIOSA_USAGE_CACHE_TTL_MS
+    ) {
+      return cachedMiosaCostSettlement.totalCostDollars;
+    }
+
+    let cacheable = true;
     await Promise.all(
       [...miosaCostSources.values()].map(async (source) => {
         const baseline = await source.baselinePromise;
         if (baseline === null) {
+          cacheable = false;
           source.baselinePromise = readMiosaCostDollars(source.sandbox);
           return;
         }
@@ -428,13 +465,22 @@ export const createTools = (
             source.latestCostDollars,
             current - baseline,
           );
+        } else {
+          cacheable = false;
         }
       }),
     );
-    return [...miosaCostSources.values()].reduce(
+    const totalCostDollars = [...miosaCostSources.values()].reduce(
       (total, source) => total + source.latestCostDollars,
       0,
     );
+    if (cacheable) {
+      cachedMiosaCostSettlement = {
+        settledAt: Date.now(),
+        totalCostDollars,
+      };
+    }
+    return totalCostDollars;
   };
 
   const getSandboxSessionUsage = async (): Promise<SandboxSessionUsage> => {
@@ -454,7 +500,7 @@ export const createTools = (
         Date.now() - sandboxCostSegmentStartedAt;
     }
     const e2bCostDollars = runtimeMs.e2b * E2B_COST_PER_MS;
-    const miosaCostDollars = await settleMiosaCostDollars();
+    const miosaCostDollars = await settleMiosaCostDollars(true);
     return {
       totalCostDollars: e2bCostDollars + miosaCostDollars,
       miosaRuntimeMs: runtimeMs.miosa,

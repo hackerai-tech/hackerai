@@ -3,6 +3,7 @@ const mockResetSandbox = jest.fn();
 const mockQuarantineLocalConnection = jest.fn();
 const mockIsE2BSandbox = jest.fn();
 const mockIsMiosaSandbox = jest.fn();
+const mockLoggerWarn = jest.fn();
 let mockTrackSandboxUsage: ((sandbox: unknown) => void) | undefined;
 
 jest.mock("../run-terminal-cmd", () => ({ createRunTerminalCmd: jest.fn() }));
@@ -57,6 +58,9 @@ jest.mock("../utils/sandbox-fallback", () => ({
 
 jest.mock("@/lib/posthog/server", () => ({
   phLogger: { event: jest.fn() },
+}));
+jest.mock("@/lib/logger", () => ({
+  logger: { warn: (...args: unknown[]) => mockLoggerWarn(...args) },
 }));
 
 import { createTools } from "..";
@@ -234,6 +238,51 @@ describe("sandbox acquisition serialization", () => {
     expect(usage).toHaveBeenCalledTimes(3);
   });
 
+  it("caches step cost briefly while keeping final MIOSA settlement fresh", async () => {
+    jest.useFakeTimers();
+    mockIsMiosaSandbox.mockImplementation(
+      (sandbox: { provider?: string } | null) => sandbox?.provider === "miosa",
+    );
+    const usage = jest
+      .fn()
+      .mockResolvedValueOnce({ estimated_cost_cents: 100 })
+      .mockResolvedValueOnce({ estimated_cost_cents: 125 })
+      .mockResolvedValueOnce({ estimated_cost_cents: 150 })
+      .mockResolvedValueOnce({ estimated_cost_cents: 175 });
+    const { getSandboxSessionCost, getSandboxSessionUsage } = createTools(
+      "user-1",
+      "chat-1",
+      {} as never,
+      "agent",
+      {} as never,
+      undefined,
+      true,
+      undefined,
+      "e2b",
+      "service-key",
+    );
+
+    mockTrackSandboxUsage?.({
+      provider: "miosa",
+      sandboxId: "miosa-1",
+      sdkSandbox: { usage },
+    });
+    await jest.advanceTimersByTimeAsync(0);
+
+    await expect(getSandboxSessionCost()).resolves.toBe(0.25);
+    await expect(getSandboxSessionCost()).resolves.toBe(0.25);
+    expect(usage).toHaveBeenCalledTimes(2);
+
+    await expect(getSandboxSessionUsage()).resolves.toMatchObject({
+      miosaCostDollars: 0.5,
+    });
+    expect(usage).toHaveBeenCalledTimes(3);
+
+    await jest.advanceTimersByTimeAsync(1_000);
+    await expect(getSandboxSessionCost()).resolves.toBe(0.75);
+    expect(usage).toHaveBeenCalledTimes(4);
+  });
+
   it("does not treat a failed MIOSA baseline read as zero cost", async () => {
     mockIsMiosaSandbox.mockImplementation(
       (sandbox: { provider?: string } | null) => sandbox?.provider === "miosa",
@@ -264,6 +313,14 @@ describe("sandbox acquisition serialization", () => {
 
     await expect(getSandboxSessionCost()).resolves.toBe(0);
     await expect(getSandboxSessionCost()).resolves.toBeCloseTo(0.05, 12);
+    expect(mockLoggerWarn).toHaveBeenCalledWith(
+      "MIOSA usage read failed",
+      expect.objectContaining({
+        event: "miosa_usage_read_failed",
+        request_id: "chat-1",
+        sandbox_id: "miosa-1",
+      }),
+    );
   });
 
   it("bounds a stalled MIOSA usage read during step settlement", async () => {
