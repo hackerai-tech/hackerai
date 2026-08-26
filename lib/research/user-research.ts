@@ -172,6 +172,13 @@ export const researchCohortReportSchema = cohortSynthesisSchema.extend({
 export const pmUserResearchResultSchema = z.object({
   analysisId: z.uuid(),
   status: z.literal("completed"),
+  userIds: z
+    .array(z.string().trim().min(1).max(200))
+    .min(USER_RESEARCH_MIN_COHORT_SIZE)
+    .max(USER_RESEARCH_MAX_COHORT_SIZE)
+    .refine((userIds) => new Set(userIds).size === userIds.length, {
+      message: "userIds must be unique",
+    }),
   failedProfiles: z.number().int().min(0).max(20),
   usersAnalyzed: z.number().int().min(USER_RESEARCH_MIN_COHORT_SIZE).max(20),
   report: researchCohortReportSchema,

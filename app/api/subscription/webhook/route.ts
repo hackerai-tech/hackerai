@@ -619,6 +619,62 @@ async function recordSubscriptionRevenue({
   ]);
 }
 
+function emitInvoicePaidRevenueAnalytics({
+  invoice,
+  stripeEventId,
+  customerId,
+  userIds,
+  orgId,
+  tier,
+  subscription,
+}: {
+  invoice: Stripe.Invoice;
+  stripeEventId: string;
+  customerId: string;
+  userIds: string[];
+  orgId?: string;
+  tier: SubscriptionTier;
+  subscription: Stripe.Subscription;
+}) {
+  const amountPaidDollars = centsToDollars(invoice.amount_paid);
+  if (amountPaidDollars <= 0 || userIds.length === 0) return;
+
+  const price = subscription.items?.data[0]?.price;
+  const attributedRevenueDollars = amountPaidDollars / userIds.length;
+
+  for (const uid of userIds) {
+    phLogger.event(
+      PAID_FUNNEL_EVENTS.invoicePaid,
+      paidFunnelProperties({
+        userId: uid,
+        org_id: orgId,
+        subscription_tier: tier,
+        plan: price?.lookup_key ?? tier,
+        billing_interval: priceBillingInterval(price),
+        billing_interval_count: price?.recurring?.interval_count,
+        billing_reason: invoice.billing_reason,
+        attempt_count: invoice.attempt_count ?? undefined,
+        ...(typeof invoice.attempt_count === "number" &&
+          invoice.attempt_count > 1 && { recovery_result: "recovered" }),
+        amount_paid_dollars: amountPaidDollars,
+        attributed_revenue_dollars: attributedRevenueDollars,
+        user_count: userIds.length,
+        currency: invoice.currency,
+        stripe_event_id: stripeEventId,
+        stripe_event_type: "invoice.paid",
+        stripe_customer_id: customerId,
+        stripe_subscription_id: subscription.id,
+        stripe_invoice_id: invoice.id,
+        stripe_price_id: price?.id,
+        $insert_id: `${PAID_FUNNEL_EVENTS.invoicePaid}:${stripeEventId}:${uid}`,
+        $set: {
+          subscription_tier: tier,
+        },
+      }),
+    );
+  }
+}
+
 async function recordPaidStartMix({
   invoice,
   customerId,
@@ -940,6 +996,16 @@ async function handleInvoicePaid(
     });
   }
 
+  emitInvoicePaidRevenueAnalytics({
+    invoice,
+    stripeEventId,
+    customerId,
+    userIds,
+    orgId: orgId ?? undefined,
+    tier,
+    subscription,
+  });
+
   if (resetMode.mode === "skip") {
     console.log(
       `[Subscription Webhook] invoice.paid (${resetMode.reason}): skipping bucket reset for invoice ${invoice.id}`,
@@ -1018,7 +1084,7 @@ async function handleInvoicePaid(
     isRecoveredReset(resetResults[index]),
   );
   if (recoveredUserIds.length > 0) {
-    const structuredRecovery = await recordInvoluntaryChurnEvent({
+    await recordInvoluntaryChurnEvent({
       stripeEventId,
       stripeEventType: "invoice.paid",
       occurredAt: eventOccurredAtMs,
@@ -1032,27 +1098,6 @@ async function handleInvoicePaid(
       invoicePaidEligible: true,
       priorFailureKnown: true,
     });
-    for (const uid of structuredRecovery.recoveredUserIds) {
-      phLogger.event(
-        PAID_FUNNEL_EVENTS.invoicePaid,
-        paidFunnelProperties({
-          userId: uid,
-          org_id: orgId,
-          subscription_tier: tier,
-          plan: recoveryPrice?.lookup_key,
-          stripe_event_id: stripeEventId,
-          stripe_event_type: "invoice.paid",
-          stripe_customer_id: customerId,
-          stripe_subscription_id: subscription.id,
-          stripe_invoice_id: invoice.id,
-          attempt_count: invoice.attempt_count ?? undefined,
-          amount_paid_dollars: centsToDollars(invoice.amount_paid),
-          currency: invoice.currency,
-          recovery_result: "recovered",
-          $insert_id: `${PAID_FUNNEL_EVENTS.invoicePaid}:${stripeEventId}:${uid}`,
-        }),
-      );
-    }
   }
 
   for (const [index, result] of resetResults.entries()) {

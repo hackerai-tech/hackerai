@@ -143,8 +143,8 @@ export const analyzeUserResearchProfile = schemaTask({
       ...usage,
     });
 
-    // Do not persist raw messages, direct user IDs, or the detailed profile in
-    // Trigger child outputs. The parent reads the restricted Convex record.
+    // Do not persist raw messages or the detailed profile in Trigger child
+    // outputs. The parent reads the restricted Convex record.
     return {
       pseudonym: payload.pseudonym,
       chatsReviewed: coverage.chatsReviewed,
@@ -264,6 +264,7 @@ export const pmUserResearch = schemaTask({
       return {
         analysisId,
         status: "completed" as const,
+        userIds: payload.userIds,
         failedProfiles: failedPseudonyms.length,
         usersAnalyzed: profiles.length,
         report,

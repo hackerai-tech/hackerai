@@ -11,13 +11,15 @@ called through the repo-owned Codex skill `$hackerai-user-research`.
    tracking metadata and does not authorize or block a run.
 2. Uses service-keyed Convex queries to sample up to 20 chats across each user's
    observed date range.
-3. Reads bounded text excerpts from the beginning and end of each chat. It never
-   returns files, tool outputs, reasoning parts, hidden/system messages, or IDs.
+3. Reads bounded text excerpts from the beginning and end of each chat. The
+   excerpt query excludes files, tool outputs, reasoning parts, hidden/system
+   messages, and message/chat identifiers.
 4. Redacts direct identifiers, targets, secrets, paths, code blocks, and command
    arguments before sending evidence to the model.
 5. Runs one profile worker per user in parallel, then synthesizes the cohort.
-6. Stores the audit record, structured pseudonymized profiles, aggregate report,
-   evidence coverage, token usage, and provider cost in Convex.
+6. Stores the audit record, structured per-user profiles keyed by internal user
+   ID, aggregate report, evidence coverage, token usage, and provider cost in
+   Convex.
 
 Both stages use `x-ai/grok-4.6` through the existing OpenRouter
 provider with reasoning set to low and zero-data-retention routing
@@ -60,7 +62,8 @@ The Vercel Production environment also exposes a narrow PM gateway at
 `PM_USER_RESEARCH_RUNNER_KEY_SHA256` with the SHA-256 digest of the scoped key
 held by the PM. The gateway records `pm-gateway` as the requester, uses Vercel's
 existing `TRIGGER_SECRET_KEY` server-side, can start only `pm-user-research`, and
-returns status/output only for runs carrying its gateway tag. It never returns
+returns status/output only for runs carrying its gateway tag. A completed result
+includes the selected internal user IDs and aggregate report. It never returns
 task payloads, other runs, worker profiles, or provider diagnostics. The PM
 runner uses the fixed production URL, so Preview needs no PM gateway URL or key.
 
@@ -78,3 +81,20 @@ not add PMs to the Trigger organization or give them Trigger/Convex credentials.
 
 `HACKERAI_PM_USER_RESEARCH_KEY` authenticates the scoped runner; it is not a
 per-run approval mechanism and is unrelated to Linear.
+
+### PostHog identity and revenue contract
+
+- An authenticated HackerAI person's PostHog `distinct_id` is the internal
+  WorkOS/Convex user ID. Cohort queries should select `distinct_id AS user_id`
+  directly; no duplicate person property or email-based lookup is required.
+  Display these IDs as ordinary cohort output and include them in requested
+  Linear updates; do not hide or pseudonymize them.
+- Every eligible successful subscription invoice emits an idempotent
+  `invoice_paid` event. `amount_paid_dollars` is the payer-level amount;
+  `attributed_revenue_dollars` splits that amount evenly across the active
+  WorkOS members resolved for the payer, so person-level rankings must sum the
+  attributed field rather than the gross field.
+- `invoice_paid` instrumentation is prospective and does not backfill older
+  renewals. Historical rankings should continue to prefer the Stripe-synced
+  PostHog lifetime metric and document any missing customer mapping, refund,
+  dispute, or pre-instrumentation coverage.

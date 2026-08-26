@@ -28,8 +28,10 @@ Read [references/privacy-policy.md](references/privacy-policy.md) and
    use Google Drive.
 3. Resolve each cohort member to the internal user ID used by Convex. Exclude
    internal/test/fraud accounts and deduplicate payer or organization
-   relationships before triggering analysis. Stop unless 3-20 unique internal
-   user IDs remain after filtering.
+   relationships before triggering analysis. For authenticated HackerAI users,
+   select PostHog `distinct_id` as the internal Convex/WorkOS user ID; do not
+   require a duplicate person property or infer identity from email. Stop unless
+   3-20 unique internal user IDs remain after filtering.
 4. Create a mode-600 temporary JSON request outside the repository using the
    gateway payload below. Run
    `node .agents/skills/hackerai-user-research/scripts/run-research.mjs --payload <path>`.
@@ -37,17 +39,18 @@ Read [references/privacy-policy.md](references/privacy-policy.md) and
    environment and always calls the production HackerAI gateway. Never print
    the key, put it in the request, or use Trigger
    dashboard access. Remove the temporary request after the command reads it.
-5. Wait for the runner to return a completed aggregate. Keep the returned
+5. Wait for the runner to return a completed result. Keep the returned
    `analysisId`; it is the audit and lookup key for the restricted Convex
    records. Do not substitute direct Trigger access if the gateway fails.
-6. Present only the aggregate answer, evidence coverage, supported user types,
-   avatars, primary/secondary target, confidence, unknowns, and experiments.
-   Detailed pseudonym-level profiles remain in restricted Convex records and are
-   not returned through Trigger.
+6. Present the returned internal Convex/WorkOS user IDs together
+   with the aggregate answer, evidence coverage, supported user types, avatars,
+   primary/secondary target, confidence, unknowns, and experiments. User IDs are
+   ordinary cohort-selection output and must not be hidden or replaced with
+   pseudonyms. Detailed profiles remain in restricted Convex records and are not
+   returned through Trigger.
 7. Update an optional Linear issue only when asked. Copy aggregate findings,
-   coverage, confidence, unknowns, and experiments. Never copy cohort IDs,
-   pseudonym-level profiles, raw evidence, direct identifiers, or per-user
-   findings or targeting decisions.
+   cohort IDs, coverage, confidence, unknowns, and experiments. Never copy raw
+   evidence, customer message content, secrets, or restricted profile records.
 
 ## Gateway payload
 
@@ -87,7 +90,9 @@ payload. `userIds` must be the internal Convex/WorkOS user IDs.
 
 ## Result boundary
 
-The gateway returns only aggregate internal research and cannot read other
-Trigger tasks or runs. Detailed profiles remain restricted and deletion-aware
-in Convex. The aggregate report is the only part that may be copied to an
-optional Linear issue, under the same privacy rules.
+The gateway returns internal cohort user IDs and aggregate research, and cannot
+read other Trigger tasks or runs. Detailed profiles remain restricted and
+deletion-aware in Convex. Display cohort IDs as normal research output. They may
+also be copied to an optional Linear issue when requested. Raw customer content,
+secrets, and restricted profile records remain protected by the same privacy
+rules.

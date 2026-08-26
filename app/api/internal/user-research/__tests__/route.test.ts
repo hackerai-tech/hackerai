@@ -51,6 +51,7 @@ const validPayload = {
 const validResult = {
   analysisId: "c6e714d8-1da5-4ef4-be1c-39363a0c83fc",
   status: "completed",
+  userIds: validPayload.userIds,
   failedProfiles: 0,
   usersAnalyzed: 3,
   report: {
@@ -278,7 +279,7 @@ describe("PM user research gateway", () => {
     expect(triggerTask).not.toHaveBeenCalled();
   });
 
-  it("returns only the validated aggregate result for a gateway run", async () => {
+  it("returns the validated result with cohort user IDs", async () => {
     retrieveRun.mockResolvedValue({
       taskIdentifier: "pm-user-research",
       tags: ["pm-user-research-gateway"],

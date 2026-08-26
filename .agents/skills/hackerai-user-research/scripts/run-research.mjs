@@ -87,7 +87,8 @@ export async function main() {
   if (!key) throw new Error("HACKERAI_PM_USER_RESEARCH_KEY is required");
 
   const payloadStats = await stat(args.payloadPath);
-  if (!payloadStats.isFile()) throw new Error("Research request must be a file");
+  if (!payloadStats.isFile())
+    throw new Error("Research request must be a file");
   if ((payloadStats.mode & 0o077) !== 0) {
     throw new Error("Research request must not be readable by group or others");
   }
@@ -114,7 +115,7 @@ export async function main() {
     return;
   }
 
-  console.error(`Research run ${started.runId} queued; waiting for aggregate result.`);
+  console.error(`Research run ${started.runId} queued; waiting for result.`);
   const deadline = Date.now() + MAX_WAIT_MS;
   let polls = 0;
   while (Date.now() < deadline) {
@@ -127,14 +128,14 @@ export async function main() {
       return;
     }
     if (status.status === "failed") {
-      throw new Error("Research run failed without a shareable aggregate report");
+      throw new Error("Research run failed without a shareable report");
     }
     polls += 1;
     if (polls % 3 === 0) {
       console.error(`Research run ${started.runId} is still running.`);
     }
   }
-  throw new Error("Timed out waiting for the research aggregate after 35 minutes");
+  throw new Error("Timed out waiting for the research result after 35 minutes");
 }
 
 if (
