@@ -19,7 +19,11 @@ import {
   observeSandboxRecovery,
   observeTerminalTimeoutRecovery,
 } from "./utils/sandbox-health";
-import { isE2BSandbox, isCentrifugoSandbox } from "./utils/sandbox-types";
+import {
+  isCloudSandbox,
+  isE2BSandbox,
+  isCentrifugoSandbox,
+} from "./utils/sandbox-types";
 import {
   buildSandboxCommandOptions,
   augmentCommandPath,
@@ -586,9 +590,9 @@ export const createRunTerminalCmd = (context: ToolContext) => {
           };
         }
 
-        // Only health-check E2B sandboxes — local sandboxes don't need it
+        // Health-check cloud sandboxes; local sandboxes have relay-specific checks.
         // (they relay commands through Convex and have their own connectivity)
-        if (isE2BSandbox(sandbox)) {
+        if (isCloudSandbox(sandbox)) {
           try {
             await waitForSandboxReady(
               sandbox,

@@ -62,6 +62,7 @@ import {
 } from "@/lib/token-utils";
 import { ChatSDKError } from "@/lib/errors";
 import PostHogClient from "@/app/posthog";
+import { selectCloudSandboxProvider } from "@/lib/ai/tools/utils/cloud-sandbox-provider";
 import {
   captureAgentBudgetAbort,
   captureAgentCompletionAnalytics,
@@ -477,6 +478,10 @@ export const createChatHandler = () => {
 
       // PostHog client for analytics.
       posthog ??= PostHogClient();
+      const cloudSandboxSelection = await selectCloudSandboxProvider({
+        userId,
+        featureFlagClient: posthog,
+      });
 
       const fileCounts = countFileAttachments(truncatedMessages);
       const chatLogContext = {
@@ -748,6 +753,10 @@ export const createChatHandler = () => {
               projectContext.workingDirectory,
               undefined,
               auxiliaryVision,
+              {
+                cloudSandboxProvider: cloudSandboxSelection.provider,
+                cloudSandboxSelectionReason: cloudSandboxSelection.reason,
+              },
             );
 
             // Helper to send file metadata via stream for resumable stream clients
@@ -954,6 +963,9 @@ export const createChatHandler = () => {
               selectedModel,
               userCustomization,
               sandboxContext,
+              "full_access",
+              false,
+              cloudSandboxSelection.provider,
             );
 
             const systemPromptTokens = safeCountTokens(currentSystemPrompt);
@@ -1082,7 +1094,7 @@ export const createChatHandler = () => {
                 // Wait for it so its provider cost is included exactly once.
                 await titlePromise;
                 // Add cloud sandbox session cost (duration-based).
-                const sandboxUsage = getSandboxSessionUsage();
+                const sandboxUsage = await getSandboxSessionUsage();
                 const sandboxCost = sandboxUsage.totalCostDollars;
                 if (sandboxCost > 0) {
                   usageTracker.providerCost += sandboxCost;

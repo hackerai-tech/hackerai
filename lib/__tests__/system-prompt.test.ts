@@ -202,6 +202,29 @@ Commands run directly on the host OS "workstation" without Docker isolation. Be 
     );
   });
 
+  it("does not claim E2B-only tools for MIOSA rollout sandboxes", async () => {
+    const prompt = await systemPrompt(
+      "user_123",
+      "agent",
+      "pro",
+      "agent-model",
+      null,
+      null,
+      "full_access",
+      false,
+      "miosa",
+    );
+
+    expect(prompt).toContain(
+      "The MIOSA template provides general Python and Node command execution.",
+    );
+    expect(prompt).toContain("probe with `command -v <tool>`");
+    expect(prompt).not.toContain("Pre-installed Pentesting Tools:");
+    expect(prompt).not.toContain(
+      "agent-browser is installed in the cloud sandbox",
+    );
+  });
+
   it("keeps all three Agent approval mode contracts distinct", async () => {
     const ask = await systemPrompt(
       "user_123",

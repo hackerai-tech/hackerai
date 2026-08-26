@@ -5,6 +5,7 @@ import type {
   SandboxManager,
   SandboxType,
 } from "@/types";
+import type { CloudSandboxProvider } from "./cloud-sandbox-provider";
 import { refreshE2BSandboxLeaseBestEffort } from "./sandbox";
 import { SANDBOX_ENVIRONMENT_TOOLS } from "./sandbox-tools";
 import {
@@ -12,7 +13,7 @@ import {
   type CloudSandboxAcquisitionContext,
 } from "./cloud-sandbox";
 import { getCloudSandboxProvider } from "./cloud-sandbox-provider";
-import { isE2BSandbox } from "./sandbox-types";
+import { isCentrifugoSandbox, isE2BSandbox } from "./sandbox-types";
 import { isExpectedAlreadyGoneCleanupError } from "@/lib/utils/cleanup-errors";
 
 // One failed initial readiness check plus one failed reconnect is enough to
@@ -24,6 +25,7 @@ export class DefaultSandboxManager implements SandboxManager {
   private sandbox: AnySandbox | null = null;
   private healthFailureCount = 0;
   private sandboxUnavailable = false;
+  private activeCloudProvider: CloudSandboxProvider;
 
   constructor(
     private userID: string,
@@ -33,6 +35,8 @@ export class DefaultSandboxManager implements SandboxManager {
     private cloudSandboxContext?: CloudSandboxAcquisitionContext,
   ) {
     this.sandbox = initialSandbox || null;
+    this.activeCloudProvider =
+      cloudSandboxContext?.provider ?? getCloudSandboxProvider();
   }
 
   recordHealthFailure(): boolean {
@@ -55,7 +59,7 @@ export class DefaultSandboxManager implements SandboxManager {
   getSandboxInfo(): SandboxInfo | null {
     return {
       type: "e2b",
-      provider: this.cloudSandboxContext?.provider ?? getCloudSandboxProvider(),
+      provider: this.activeCloudProvider,
     };
   }
 
@@ -90,6 +94,7 @@ export class DefaultSandboxManager implements SandboxManager {
       context: this.cloudSandboxContext,
     });
     this.sandbox = result.sandbox;
+    this.activeCloudProvider = result.provider;
 
     if (!this.sandbox) {
       throw new Error("Failed to initialize sandbox");
@@ -109,7 +114,7 @@ export class DefaultSandboxManager implements SandboxManager {
     // underlying sandbox continues running.
     const sandbox = this.sandbox;
     this.sandbox = null;
-    if (sandbox && !isE2BSandbox(sandbox)) {
+    if (sandbox && isCentrifugoSandbox(sandbox)) {
       await sandbox.close().catch((error) => {
         if (isExpectedAlreadyGoneCleanupError(error)) {
           console.debug(`[${this.userID}] Sandbox relay was already closed`);
@@ -121,5 +126,9 @@ export class DefaultSandboxManager implements SandboxManager {
         }
       });
     }
+  }
+
+  async supportsInteractivePty(): Promise<boolean> {
+    return this.activeCloudProvider === "e2b";
   }
 }

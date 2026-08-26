@@ -5,14 +5,16 @@ import { phLogger } from "@/lib/posthog/server";
 import { FULL_OUTPUT_SAVED_MESSAGE } from "@/lib/token-utils";
 import {
   asCommonSandbox,
+  isCloudSandbox,
   isCentrifugoSandbox,
-  isE2BSandbox,
+  isMiosaSandbox,
 } from "./sandbox-types";
 
 export const MAX_SAVED_TERMINAL_OUTPUT_FILES = 10;
 const DESKTOP_RELAY_RETRY_DELAY_MS = 250;
 
-type TerminalOutputPersistenceProvider = "e2b" | "desktop" | "centrifugo";
+type TerminalOutputPersistenceProvider =
+  "miosa" | "e2b" | "desktop" | "centrifugo";
 type TerminalOutputPersistenceFailureCategory =
   | "timeout"
   | "transport"
@@ -42,6 +44,7 @@ const getPersistenceProvider = (
     }
     return "centrifugo";
   }
+  if (isMiosaSandbox(sandbox)) return "miosa";
   return "e2b";
 };
 
@@ -129,7 +132,7 @@ const emitPersistenceFailure = (args: {
 
 /** Builds a stable, non-identifying output directory for one chat scope. */
 const getOutputDirectory = (sandbox: AnySandbox, scopeId?: string): string => {
-  const baseDirectory = isE2BSandbox(sandbox)
+  const baseDirectory = isCloudSandbox(sandbox)
     ? "/home/user/terminal_full_output"
     : "/tmp/terminal_full_output";
   const scopeKey = scopeId

@@ -1737,8 +1737,10 @@ export function captureUsageCost({
       non_model_cost_dollars: usage.nonModelCostDollars,
       ...(sandboxUsage && {
         sandbox_cost_accounting_version: 1,
-        sandbox_cost_source: "configured_baseline_estimate",
+        sandbox_cost_source: "provider_specific",
         sandbox_cost_dollars: sandboxUsage.totalCostDollars,
+        sandbox_miosa_runtime_ms: sandboxUsage.miosaRuntimeMs,
+        sandbox_miosa_cost_dollars: sandboxUsage.miosaCostDollars,
         sandbox_e2b_runtime_ms: sandboxUsage.e2bRuntimeMs,
         sandbox_e2b_cost_dollars: sandboxUsage.e2bCostDollars,
       }),

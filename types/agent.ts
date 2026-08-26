@@ -8,11 +8,12 @@ import type { PtySessionManager } from "@/lib/ai/tools/utils/pty-session-manager
 import type { PtyParserLogBudget } from "@/lib/ai/tools/utils/pty-output-formatter";
 import type { ChatMode, SubscriptionTier } from "./chat";
 import type { CentrifugoSandbox } from "@/lib/ai/tools/utils/centrifugo-sandbox";
+import type { MiosaSandbox } from "@/lib/ai/tools/utils/miosa-sandbox";
 import type { SandboxFallbackInfo } from "@/lib/ai/tools/utils/hybrid-sandbox-manager";
 import type { CloudSandboxProvider } from "@/lib/ai/tools/utils/cloud-sandbox-provider";
 
-// Union type for E2B Sandbox and local CentrifugoSandbox
-export type AnySandbox = Sandbox | CentrifugoSandbox;
+// Union type for cloud providers and local CentrifugoSandbox.
+export type AnySandbox = Sandbox | MiosaSandbox | CentrifugoSandbox;
 
 // Type guard to check if sandbox is E2B
 export type IsE2BSandboxFn = (s: AnySandbox | null) => s is Sandbox;

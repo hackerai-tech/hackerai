@@ -2121,9 +2121,9 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(taskSrc).toMatch(/recordFreeMonthlyCost\(\s*freeUsageSubject/);
   });
 
-  test("agent-long uses E2B for tools and prompt", () => {
+  test("agent-long uses the selected cloud provider for tools and prompt", () => {
     const providerIdx = taskSrc.indexOf(
-      'const cloudSandboxProvider = "e2b" as const;',
+      "const cloudSandboxSelection = await selectCloudSandboxProvider({",
     );
     const toolsIdx = taskSrc.indexOf("createTools(", providerIdx);
     const promptIdx = taskSrc.indexOf("systemPrompt(", toolsIdx);
@@ -2133,6 +2133,9 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(promptIdx).toBeGreaterThan(toolsIdx);
     expect(taskSrc.slice(toolsIdx, promptIdx)).toContain(
       "cloudSandboxProvider",
+    );
+    expect(taskSrc.slice(toolsIdx, promptIdx)).toContain(
+      "cloudSandboxSelectionReason: cloudSandboxSelection.reason",
     );
     expect(taskSrc.slice(promptIdx, promptIdx + 700)).toContain(
       "cloudSandboxProvider",

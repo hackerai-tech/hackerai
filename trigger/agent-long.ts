@@ -25,6 +25,7 @@ import { recordGroupedSpikeAlert } from "@/lib/observability/grouped-spike-alert
 import { systemPrompt } from "@/lib/system-prompt";
 import { getResumeSection } from "@/lib/system-prompt/resume";
 import { createTools } from "@/lib/ai/tools";
+import { selectCloudSandboxProvider } from "@/lib/ai/tools/utils/cloud-sandbox-provider";
 import { ptySessionManager } from "@/lib/ai/tools/utils/pty-session-manager";
 import { generateTitleFromUserMessageWithWriter } from "@/lib/actions";
 import { createTrackedProvider } from "@/lib/ai/providers";
@@ -2497,7 +2498,11 @@ export const agentLongTask = task({
         selectedModelOverride,
       });
       const posthog = PostHogClient();
-      const cloudSandboxProvider = "e2b" as const;
+      const cloudSandboxSelection = await selectCloudSandboxProvider({
+        userId,
+        featureFlagClient: posthog,
+      });
+      const cloudSandboxProvider = cloudSandboxSelection.provider;
 
       const baseTodos: Todo[] = getBaseTodosForRequest(
         (chat?.todos as unknown as Todo[]) || [],
@@ -3170,6 +3175,7 @@ export const agentLongTask = task({
               auxiliaryVision,
               {
                 cloudSandboxProvider,
+                cloudSandboxSelectionReason: cloudSandboxSelection.reason,
                 triggerRegion,
                 ...(subagentsEnabled
                   ? {
@@ -3517,7 +3523,7 @@ export const agentLongTask = task({
                 // Title generation starts in parallel with the main run. Wait
                 // for it so its provider cost cannot race final settlement.
                 await titlePromise;
-                const sandboxUsage = getSandboxSessionUsage();
+                const sandboxUsage = await getSandboxSessionUsage();
                 const sandboxCost = sandboxUsage.totalCostDollars;
                 if (sandboxCost > 0) {
                   usageTracker.providerCost += sandboxCost;

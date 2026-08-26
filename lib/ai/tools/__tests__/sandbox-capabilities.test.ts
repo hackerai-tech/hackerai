@@ -16,7 +16,11 @@ import {
   buildSandboxCommandOptions,
   MAX_COMMAND_EXECUTION_TIME,
 } from "../utils/sandbox-command-options";
-import { isE2BSandbox } from "../utils/sandbox-types";
+import {
+  isCloudSandbox,
+  isE2BSandbox,
+  isMiosaSandbox,
+} from "../utils/sandbox-types";
 
 // Mock E2B sandbox (has jupyterUrl property - this is how isE2BSandbox detects it)
 const createMockE2BSandbox = () => ({
@@ -27,6 +31,11 @@ const createMockE2BSandbox = () => ({
 // Mock CentrifugoSandbox (no jupyterUrl property)
 const createMockCentrifugoSandbox = () => ({
   sandboxKind: "centrifugo" as const,
+  commands: { run: jest.fn() },
+});
+
+const createMockMiosaSandbox = () => ({
+  sandboxKind: "miosa" as const,
   commands: { run: jest.fn() },
 });
 
@@ -68,12 +77,18 @@ describe("Sandbox Capabilities for Network Tools", () => {
   });
 
   describe("Sandbox Type Detection", () => {
-    it("should correctly identify E2B vs Centrifugo sandbox", () => {
+    it("should distinguish E2B, MIOSA, and Centrifugo sandboxes", () => {
       const e2bSandbox = createMockE2BSandbox();
+      const miosaSandbox = createMockMiosaSandbox();
       const centrifugoSandbox = createMockCentrifugoSandbox();
 
       expect(isE2BSandbox(e2bSandbox as any)).toBe(true);
+      expect(isE2BSandbox(miosaSandbox as any)).toBe(false);
       expect(isE2BSandbox(centrifugoSandbox as any)).toBe(false);
+      expect(isMiosaSandbox(miosaSandbox as any)).toBe(true);
+      expect(isCloudSandbox(e2bSandbox as any)).toBe(true);
+      expect(isCloudSandbox(miosaSandbox as any)).toBe(true);
+      expect(isCloudSandbox(centrifugoSandbox as any)).toBe(false);
       expect(isE2BSandbox(null)).toBe(false);
     });
   });

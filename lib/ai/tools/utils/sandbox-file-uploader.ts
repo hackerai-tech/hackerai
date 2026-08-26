@@ -4,7 +4,11 @@ import { ConvexError } from "convex/values";
 import { api } from "@/convex/_generated/api";
 import { Id } from "@/convex/_generated/dataModel";
 import type { AnySandbox } from "@/types";
-import { isCentrifugoSandbox, isE2BSandbox } from "./sandbox-types";
+import {
+  getCloudSandboxProviderForInstance,
+  isCentrifugoSandbox,
+  isE2BSandbox,
+} from "./sandbox-types";
 import { buildSandboxCommandOptions } from "./sandbox-command-options";
 import { generateS3UploadUrl } from "@/convex/s3Utils";
 import { getConvexClient } from "@/lib/db/convex-client";
@@ -220,8 +224,10 @@ function assertSandboxFileSizeAllowed(fileName: string, size: number): void {
   );
 }
 
-function getSandboxLogType(sandbox: AnySandbox): "e2b" | "centrifugo" {
-  return isE2BSandbox(sandbox) ? "e2b" : "centrifugo";
+function getSandboxLogType(
+  sandbox: AnySandbox,
+): "miosa" | "e2b" | "centrifugo" {
+  return getCloudSandboxProviderForInstance(sandbox) ?? "centrifugo";
 }
 
 function errorToLog(error: unknown) {
@@ -320,7 +326,11 @@ async function uploadGeneratedFileFromSandboxToUrl(args: {
   const { sandbox, fullPath, uploadUrl, mediaType } = args;
   const fileName = getFileNameFromPath(fullPath);
 
-  if (!isE2BSandbox(sandbox) && sandbox.files?.uploadToUrl) {
+  if (
+    !isE2BSandbox(sandbox) &&
+    "uploadToUrl" in sandbox.files &&
+    typeof sandbox.files.uploadToUrl === "function"
+  ) {
     try {
       await sandbox.files.uploadToUrl(fullPath, uploadUrl, mediaType);
       return;
