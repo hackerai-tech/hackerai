@@ -37,24 +37,20 @@ type FeatureFlagClient = {
   ) => Promise<{ getFlag: (flagKey: string) => unknown }>;
 };
 
-export function getCloudSandboxFlagEnvironment(
-  environment: NodeJS.ProcessEnv = process.env,
+export function normalizeCloudSandboxFlagEnvironment(
+  environment: string,
 ): string {
-  return (
-    environment.VERCEL_ENV ??
-    environment.TRIGGER_ENV ??
-    environment.NODE_ENV ??
-    "unknown"
-  );
+  return environment.trim().toLowerCase();
 }
 
 /**
- * Selects the request's preferred cloud provider. Explicit environment
- * configuration is useful for local/staging smoke tests; production leaves it
- * unset and uses stable PostHog distinct-id assignment.
+ * Selects the request's preferred cloud provider. Callers supply their
+ * execution environment explicitly so durable workers do not infer deployment
+ * context from NODE_ENV.
  */
 export async function selectCloudSandboxProvider(options: {
   userId: string;
+  environment: string;
   featureFlagClient?: FeatureFlagClient | null;
 }): Promise<{
   provider: CloudSandboxProvider;
@@ -78,7 +74,7 @@ export async function selectCloudSandboxProvider(options: {
         flagKeys: [MIOSA_CLOUD_SANDBOX_ROLLOUT_FLAG],
         personProperties: {
           [MIOSA_CLOUD_SANDBOX_ENVIRONMENT_PROPERTY]:
-            getCloudSandboxFlagEnvironment(),
+            normalizeCloudSandboxFlagEnvironment(options.environment),
         },
       },
     );

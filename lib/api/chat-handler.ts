@@ -482,6 +482,7 @@ export const createChatHandler = () => {
         isAgentMode(mode) && (!sandboxPreference || sandboxPreference === "e2b")
           ? await selectCloudSandboxProvider({
               userId,
+              environment: process.env.VERCEL_ENV ?? "development",
               featureFlagClient: posthog,
             })
           : ({

@@ -2501,6 +2501,7 @@ export const agentLongTask = task({
         !sandboxPreference || sandboxPreference === "e2b"
           ? await selectCloudSandboxProvider({
               userId,
+              environment: ctx.environment.type,
               featureFlagClient: posthog,
             })
           : ({

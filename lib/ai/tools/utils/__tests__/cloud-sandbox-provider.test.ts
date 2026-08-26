@@ -2,13 +2,13 @@ import {
   getCloudSandboxProvider,
   MIOSA_CLOUD_SANDBOX_ENVIRONMENT_PROPERTY,
   MIOSA_CLOUD_SANDBOX_ROLLOUT_FLAG,
+  normalizeCloudSandboxFlagEnvironment,
   selectCloudSandboxProvider,
 } from "../cloud-sandbox-provider";
 
 describe("cloud sandbox provider selection", () => {
   const originalProvider = process.env.CLOUD_SANDBOX_PROVIDER;
   const originalMiosaKey = process.env.MIOSA_API_KEY;
-  const originalVercelEnvironment = process.env.VERCEL_ENV;
 
   afterEach(() => {
     if (originalProvider === undefined) {
@@ -18,8 +18,15 @@ describe("cloud sandbox provider selection", () => {
     }
     if (originalMiosaKey === undefined) delete process.env.MIOSA_API_KEY;
     else process.env.MIOSA_API_KEY = originalMiosaKey;
-    if (originalVercelEnvironment === undefined) delete process.env.VERCEL_ENV;
-    else process.env.VERCEL_ENV = originalVercelEnvironment;
+  });
+
+  it.each([
+    ["PREVIEW", "preview"],
+    ["PRODUCTION", "production"],
+    ["STAGING", "staging"],
+    ["DEVELOPMENT", "development"],
+  ])("normalizes the %s execution environment", (environment, expected) => {
+    expect(normalizeCloudSandboxFlagEnvironment(environment)).toBe(expected);
   });
 
   it("defaults to E2B", () => {
@@ -40,13 +47,13 @@ describe("cloud sandbox provider selection", () => {
   it("selects MIOSA only for an enabled rollout assignment with credentials", async () => {
     delete process.env.CLOUD_SANDBOX_PROVIDER;
     process.env.MIOSA_API_KEY = "msk_test";
-    process.env.VERCEL_ENV = "preview";
     const getFlag = jest.fn(() => true);
     const evaluateFlags = jest.fn(async () => ({ getFlag }));
 
     await expect(
       selectCloudSandboxProvider({
         userId: "user-1",
+        environment: "PREVIEW",
         featureFlagClient: { evaluateFlags },
       }),
     ).resolves.toEqual({ provider: "miosa", reason: "miosa_rollout" });
@@ -69,6 +76,7 @@ describe("cloud sandbox provider selection", () => {
     await expect(
       selectCloudSandboxProvider({
         userId: "user-1",
+        environment: "PREVIEW",
         featureFlagClient: { evaluateFlags },
       }),
     ).resolves.toEqual({
