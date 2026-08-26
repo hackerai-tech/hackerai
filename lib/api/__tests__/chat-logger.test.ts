@@ -1160,6 +1160,60 @@ describe("createChatLogger provider stream termination", () => {
     }
   });
 
+  it("never emits opaque provider payloads in provider error telemetry", () => {
+    const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+
+    try {
+      const chatLogger = createChatLogger({
+        chatId: "chat_private_provider_payload",
+        endpoint: "/api/agent-long",
+      });
+      const privateAttachmentText = "PRIVATE_ATTACHMENT_TEXT";
+      const inlineImage = "data:image/png;base64,PRIVATE_INLINE_IMAGE";
+      const responseBody = JSON.stringify({
+        id: "gen-private-provider-payload",
+        error: {
+          code: 400,
+          message:
+            "The document could not be downloaded from the provided URL.",
+          metadata: {
+            provider_name: "DeepSeek",
+            file_annotations: [
+              { parsed_content: privateAttachmentText, preview: inlineImage },
+            ],
+          },
+        },
+      });
+      const err = Object.assign(new Error("Provider request failed"), {
+        name: "AI_APICallError",
+        statusCode: 400,
+        responseBody,
+        data: JSON.parse(responseBody),
+      });
+
+      chatLogger.recordProviderError(err, {
+        mode: "agent",
+        model: "model-deepseek-v4-pro",
+        requestedModelSlug: "deepseek/deepseek-v4-pro-0813",
+      });
+
+      const serializedTelemetry = errorSpy.mock.calls
+        .flat()
+        .map((value) =>
+          typeof value === "string" ? value : JSON.stringify(value),
+        )
+        .join("\n");
+      expect(serializedTelemetry).toContain('"responseBodyPresent":true');
+      expect(serializedTelemetry).toContain('"providerDataPresent":true');
+      expect(serializedTelemetry).not.toContain(privateAttachmentText);
+      expect(serializedTelemetry).not.toContain(inlineImage);
+      expect(serializedTelemetry).not.toContain('"responseBody":');
+      expect(serializedTelemetry).not.toContain('"providerData":');
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
   it("logs nested provider raw errors for generic 400 provider wrappers", () => {
     const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
     const logSpy = jest.spyOn(console, "log").mockImplementation(() => {});
@@ -1278,7 +1332,8 @@ describe("createChatLogger provider stream termination", () => {
       expect(capturedError?.message).toBe(
         "tool_result without corresponding tool_use",
       );
-      expect(capturedError?.cause).toBe(providerError);
+      expect("cause" in (capturedError ?? {})).toBe(false);
+      expect(capturedError).not.toBe(providerError);
     } finally {
       errorSpy.mockRestore();
     }

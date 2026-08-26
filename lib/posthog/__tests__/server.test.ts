@@ -151,6 +151,39 @@ describe("phLogger", () => {
     }
   });
 
+  it("omits enumerable provider payloads from error console fallbacks", () => {
+    const consoleError = jest
+      .spyOn(console, "error")
+      .mockImplementation(() => undefined);
+    const privateAttachmentText = "PRIVATE_ATTACHMENT_TEXT";
+    const inlineImage = "data:image/png;base64,PRIVATE_INLINE_IMAGE";
+    const error = Object.assign(new Error("Provider request failed"), {
+      responseBody: JSON.stringify({
+        file_annotations: [{ parsed_content: privateAttachmentText }],
+      }),
+      data: { preview: inlineImage },
+    });
+    mockCaptureException.mockImplementationOnce(() => {
+      throw new Error("telemetry unavailable");
+    });
+
+    try {
+      phLogger.error("provider_failed", { error });
+
+      const safeFields = consoleError.mock.calls[0]?.[1] as
+        { error?: Error } | undefined;
+      const serialized = JSON.stringify(consoleError.mock.calls);
+      expect(safeFields?.error).toBeInstanceOf(Error);
+      expect(safeFields?.error?.message).toBe("Provider request failed");
+      expect("responseBody" in (safeFields?.error ?? {})).toBe(false);
+      expect(serialized).not.toContain(privateAttachmentText);
+      expect(serialized).not.toContain(inlineImage);
+      expect(serialized).not.toContain("responseBody");
+    } finally {
+      consoleError.mockRestore();
+    }
+  });
+
   it("passes stable event UUIDs to PostHog without leaking them into properties", () => {
     phLogger.event("checkout_started", {
       userId: "user_123",

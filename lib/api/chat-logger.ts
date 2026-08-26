@@ -156,13 +156,14 @@ function posthogProviderException(
     }
     return enriched;
   }
-  if (message === "Provider streaming error" || message === error.message) {
-    return error;
-  }
-
   const enriched = new Error(message);
   enriched.name = error.name;
-  (enriched as Error & { cause?: unknown }).cause = error;
+  if (typeof details.errorStack === "string") {
+    enriched.stack = details.errorStack;
+  }
+  // Do not attach the original provider error as a cause. AI SDK errors carry
+  // enumerable responseBody/data fields, and telemetry transports may traverse
+  // or serialize those properties even when the top-level message is safe.
   return enriched;
 }
 
