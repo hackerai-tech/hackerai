@@ -117,16 +117,37 @@ export const createTools = (
   let currentModelName = modelName;
   let sandboxOperationQueue: Promise<void> = Promise.resolve();
   let pendingSandbox: Promise<AnySandbox> | null = null;
-  let miosaCostBaselinePromise: Promise<number | null> | null = null;
-  let latestMiosaCostDollars = 0;
+  type MiosaSandboxInstance = Extract<AnySandbox, { sandboxKind: "miosa" }>;
+  type MiosaCostSource = {
+    sandbox: MiosaSandboxInstance;
+    baselinePromise: Promise<number | null>;
+    latestCostDollars: number;
+  };
+  const miosaCostSources = new Map<string, MiosaCostSource>();
+  const miosaUsageReads = new Map<string, Promise<number | null>>();
 
   const readMiosaCostDollars = async (
-    miosaSandbox: Extract<AnySandbox, { sandboxKind: "miosa" }>,
+    miosaSandbox: MiosaSandboxInstance,
   ): Promise<number | null> => {
+    const sandboxId = miosaSandbox.sandboxId;
+    let providerRead = miosaUsageReads.get(sandboxId);
+    if (!providerRead) {
+      providerRead = miosaSandbox.sdkSandbox
+        .usage()
+        .then((usage) => usage.estimated_cost_cents / 100)
+        .catch(() => null);
+      miosaUsageReads.set(sandboxId, providerRead);
+      void providerRead.then(() => {
+        if (miosaUsageReads.get(sandboxId) === providerRead) {
+          miosaUsageReads.delete(sandboxId);
+        }
+      });
+    }
+
     let timeout: ReturnType<typeof setTimeout> | undefined;
     try {
-      const usage = await Promise.race([
-        miosaSandbox.sdkSandbox.usage(),
+      return await Promise.race([
+        providerRead,
         new Promise<null>((resolve) => {
           timeout = setTimeout(
             () => resolve(null),
@@ -135,10 +156,6 @@ export const createTools = (
           timeout.unref?.();
         }),
       ]);
-      if (!usage) return null;
-      return usage.estimated_cost_cents / 100;
-    } catch {
-      return null;
     } finally {
       if (timeout) clearTimeout(timeout);
     }
@@ -163,8 +180,17 @@ export const createTools = (
   const trackSandboxUsage = (newSandbox: AnySandbox) => {
     sandbox = newSandbox;
     const provider = getCloudSandboxProviderForInstance(newSandbox);
-    if (isMiosaSandbox(newSandbox) && !miosaCostBaselinePromise) {
-      miosaCostBaselinePromise = readMiosaCostDollars(newSandbox);
+    if (isMiosaSandbox(newSandbox)) {
+      const existingSource = miosaCostSources.get(newSandbox.sandboxId);
+      if (existingSource) {
+        existingSource.sandbox = newSandbox;
+      } else {
+        miosaCostSources.set(newSandbox.sandboxId, {
+          sandbox: newSandbox,
+          baselinePromise: readMiosaCostDollars(newSandbox),
+          latestCostDollars: 0,
+        });
+      }
     }
     const now = Date.now();
     if (
@@ -388,6 +414,29 @@ export const createTools = (
     return buildTools();
   };
 
+  const settleMiosaCostDollars = async (): Promise<number> => {
+    await Promise.all(
+      [...miosaCostSources.values()].map(async (source) => {
+        const baseline = await source.baselinePromise;
+        if (baseline === null) {
+          source.baselinePromise = readMiosaCostDollars(source.sandbox);
+          return;
+        }
+        const current = await readMiosaCostDollars(source.sandbox);
+        if (current !== null) {
+          source.latestCostDollars = Math.max(
+            source.latestCostDollars,
+            current - baseline,
+          );
+        }
+      }),
+    );
+    return [...miosaCostSources.values()].reduce(
+      (total, source) => total + source.latestCostDollars,
+      0,
+    );
+  };
+
   const getSandboxSessionUsage = async (): Promise<SandboxSessionUsage> => {
     if (runtimePolicy.chargeSandboxRuntime === false) {
       return {
@@ -405,22 +454,7 @@ export const createTools = (
         Date.now() - sandboxCostSegmentStartedAt;
     }
     const e2bCostDollars = runtimeMs.e2b * E2B_COST_PER_MS;
-    let miosaCostDollars = latestMiosaCostDollars;
-    if (isMiosaSandbox(sandbox) && miosaCostBaselinePromise) {
-      const baseline = await miosaCostBaselinePromise;
-      if (baseline === null) {
-        miosaCostBaselinePromise = readMiosaCostDollars(sandbox);
-      } else {
-        const current = await readMiosaCostDollars(sandbox);
-        if (current !== null) {
-          latestMiosaCostDollars = Math.max(
-            latestMiosaCostDollars,
-            current - baseline,
-          );
-          miosaCostDollars = latestMiosaCostDollars;
-        }
-      }
-    }
+    const miosaCostDollars = await settleMiosaCostDollars();
     return {
       totalCostDollars: e2bCostDollars + miosaCostDollars,
       miosaRuntimeMs: runtimeMs.miosa,
@@ -436,9 +470,7 @@ export const createTools = (
     if (sandboxCostSegmentStartedAt !== null && sandboxCostProvider === "e2b") {
       e2bRuntimeMs += Date.now() - sandboxCostSegmentStartedAt;
     }
-    const miosaCostDollars = isMiosaSandbox(sandbox)
-      ? (await getSandboxSessionUsage()).miosaCostDollars
-      : latestMiosaCostDollars;
+    const miosaCostDollars = await settleMiosaCostDollars();
     return e2bRuntimeMs * E2B_COST_PER_MS + miosaCostDollars;
   };
 
