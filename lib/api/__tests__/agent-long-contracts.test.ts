@@ -1341,7 +1341,11 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     for (const source of [chatHandlerSrc, taskSrc]) {
       expect(source).toMatch(/getAgentAutoContinueStopSource\(\{/);
       expect(source).toMatch(/finishReason:\s*state\.streamFinishReason/);
+      expect(source).toMatch(
+        /if \(\s*autoContinueStopSource[\s\S]{0,100}!isAutoContinue\s*\) \{\s*writeAutoContinue/,
+      );
       expect(source).toMatch(/writeAutoContinue\(writer\)/);
+      expect(source).toMatch(/agent_auto_continue_suppressed/);
     }
   });
 
@@ -1538,6 +1542,9 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     for (const source of [taskSrc, chatHandlerSrc]) {
       expect(source).toMatch(/getAgentAutoContinueStopSource\(\{/);
       expect(source).toMatch(/autoContinueStopSource/);
+      expect(source).toMatch(
+        /if \(\s*autoContinueStopSource[\s\S]{0,100}!isAutoContinue\s*\) \{\s*writeAutoContinue/,
+      );
       expect(source).toMatch(/agent_auto_continue_signaled/);
     }
   });

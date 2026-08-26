@@ -2506,7 +2506,11 @@ export const createChatHandler = () => {
                         stoppedDueToPostSummarizationIncomplete:
                           state.stoppedDueToPostSummarizationIncomplete,
                       });
-                    if (autoContinueStopSource && isAgentMode(mode)) {
+                    if (
+                      autoContinueStopSource &&
+                      isAgentMode(mode) &&
+                      !isAutoContinue
+                    ) {
                       writeAutoContinue(writer);
                       phLogger.info("Agent auto-continue signaled", {
                         event: "agent_auto_continue_signaled",
@@ -2516,6 +2520,19 @@ export const createChatHandler = () => {
                         stop_source: autoContinueStopSource,
                         last_step_input_tokens: state.lastStepInputTokens,
                         had_summarization: summarizationTracker.hasSummarized,
+                      });
+                    } else if (
+                      autoContinueStopSource &&
+                      isAgentMode(mode) &&
+                      isAutoContinue
+                    ) {
+                      phLogger.info("Agent auto-continue limit reached", {
+                        event: "agent_auto_continue_suppressed",
+                        chat_id: chatId,
+                        assistant_id: assistantMessageId,
+                        finish_reason: state.streamFinishReason,
+                        stop_source: autoContinueStopSource,
+                        reason: "continuation_run",
                       });
                     }
                     shutdownPostHog(posthog);

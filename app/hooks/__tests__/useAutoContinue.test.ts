@@ -294,7 +294,7 @@ describe("useAutoContinue", () => {
     expect(result.current.isAutoContinuing).toBe(false);
   });
 
-  it("increments autoContinueCount in context after each auto-continue", () => {
+  it("increments autoContinueCount in context up to the limit", () => {
     const sendMessage = jest.fn();
     let params = buildParams({ status: "streaming", sendMessage });
     let stream: DataStreamEntry[] = [];
@@ -306,7 +306,7 @@ describe("useAutoContinue", () => {
 
     expect(result.current.autoContinueCount).toBe(0);
 
-    for (let i = 1; i <= 3; i++) {
+    for (let i = 1; i <= MAX_AUTO_CONTINUES; i++) {
       params = { ...params, status: "streaming" };
       rerender(params);
 

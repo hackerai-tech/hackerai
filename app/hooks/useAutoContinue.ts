@@ -9,7 +9,7 @@ import {
 } from "@/app/components/DataStreamProvider";
 import { useLatestRef } from "./useLatestRef";
 
-export const MAX_AUTO_CONTINUES = 5;
+export const MAX_AUTO_CONTINUES = 1;
 export const AUTO_CONTINUE_PROMPT =
   "Continue from the latest saved progress. Do not restart the original task or repeat completed work.";
 const AUTO_CONTINUE_SETTLE_DELAY_MS = 250;
