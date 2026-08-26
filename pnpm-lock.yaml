@@ -359,8 +359,8 @@ importers:
         specifier: ^30.4.1
         version: 30.4.1
       '@miosa/cli':
-        specifier: 1.1.16
-        version: 1.1.16(@types/node@25.9.3)(@types/react@19.2.18)
+        specifier: 1.1.18
+        version: 1.1.18(@types/node@25.9.3)(@types/react@19.2.18)
       '@playwright/test':
         specifier: ^1.62.1
         version: 1.62.1
@@ -2372,8 +2372,8 @@ packages:
   '@microsoft/fetch-event-source@2.0.1':
     resolution: {integrity: sha512-W6CLUJ2eBMw3Rec70qrsEW0jOm/3twwJv21mrmj2yORiaVmVYGS4sSS5yUwvQc1ZlDLYGPnClVWmUUMagKNsfA==}
 
-  '@miosa/cli@1.1.16':
-    resolution: {integrity: sha512-l+jR8B0H4SZggrQ2V36VGdZ6kQDJeA9WUV6VdYFQoYxJMAwyspsbVpHawIVac4PZR3p4+vA4oEGUUE6vDf1Bcw==}
+  '@miosa/cli@1.1.18':
+    resolution: {integrity: sha512-jOCSmUn47zD21XkubKch0kG4adlAcCerIPaP7bJdu3QkLfFXdsGeyNZUi+vB9NJdVVGdvHbKDFVciLTHHVfjhA==}
     engines: {node: '>=20'}
     hasBin: true
 
@@ -10141,7 +10141,7 @@ snapshots:
 
   '@microsoft/fetch-event-source@2.0.1': {}
 
-  '@miosa/cli@1.1.16(@types/node@25.9.3)(@types/react@19.2.18)':
+  '@miosa/cli@1.1.18(@types/node@25.9.3)(@types/react@19.2.18)':
     dependencies:
       chalk: 5.6.2
       commander: 12.1.0
@@ -13981,7 +13981,7 @@ snapshots:
       isstream: 0.1.2
       jsonwebtoken: 9.0.3
       mime-types: 2.1.35
-      retry-axios: 2.6.0(axios@1.18.0)
+      retry-axios: 2.6.0(axios@1.18.0(debug@4.4.3))
       tough-cookie: 4.1.4
     transitivePeerDependencies:
       - supports-color
@@ -16306,7 +16306,7 @@ snapshots:
 
   resumable-stream@2.2.12: {}
 
-  retry-axios@2.6.0(axios@1.18.0):
+  retry-axios@2.6.0(axios@1.18.0(debug@4.4.3)):
     dependencies:
       axios: 1.18.0(debug@4.4.3)
 

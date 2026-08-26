@@ -154,7 +154,7 @@
   "devDependencies": {
     "@eslint/eslintrc": "^3.3.6",
     "@jest/globals": "^30.4.1",
-    "@miosa/cli": "1.1.16",
+    "@miosa/cli": "1.1.18",
     "@playwright/test": "^1.62.1",
     "@posthog/cli": "0.15.0",
     "@tailwindcss/postcss": "^4.3.3",
