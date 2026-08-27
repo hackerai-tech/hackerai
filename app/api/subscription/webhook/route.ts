@@ -96,11 +96,10 @@ function stripeEventOccurredAtMs(event: Stripe.Event): number {
     : Date.now();
 }
 
-/** Return the immutable Price ID recorded on a subscription invoice line. */
-async function invoiceSubscriptionPriceId(
+/** Return every invoice line, following Stripe pagination when necessary. */
+async function invoiceLineItems(
   invoice: Stripe.Invoice,
-  subscriptionId: string,
-): Promise<string | undefined> {
+): Promise<Stripe.InvoiceLineItem[]> {
   let lines = invoice.lines?.data ?? [];
   if (invoice.lines?.has_more) {
     lines = [];
@@ -110,15 +109,22 @@ async function invoiceSubscriptionPriceId(
       lines.push(line);
     }
   }
-  const candidates = lines.filter((line) => {
-    const lineSubscriptionId =
-      stripeObjectId(line.subscription) ??
-      line.parent?.subscription_item_details?.subscription ??
-      line.parent?.invoice_item_details?.subscription ??
-      undefined;
-    return lineSubscriptionId === subscriptionId;
-  });
-  const priceId = (line: Stripe.InvoiceLineItem) =>
+  return lines;
+}
+
+function invoiceLineSubscriptionId(
+  line: Stripe.InvoiceLineItem,
+): string | undefined {
+  return (
+    stripeObjectId(line.subscription) ??
+    line.parent?.subscription_item_details?.subscription ??
+    line.parent?.invoice_item_details?.subscription ??
+    undefined
+  );
+}
+
+function invoiceLinePriceId(line: Stripe.InvoiceLineItem): string | undefined {
+  return (
     stripeObjectId(line.pricing?.price_details?.price) ??
     stripeObjectId(
       (
@@ -126,17 +132,73 @@ async function invoiceSubscriptionPriceId(
           price?: string | Stripe.Price | null;
         }
       ).price,
-    );
-  const isProration = (line: Stripe.InvoiceLineItem) =>
+    ) ??
+    undefined
+  );
+}
+
+function invoiceLineIsProration(line: Stripe.InvoiceLineItem): boolean {
+  return (
     line.parent?.subscription_item_details?.proration === true ||
-    line.parent?.invoice_item_details?.proration === true;
+    line.parent?.invoice_item_details?.proration === true
+  );
+}
+
+/** Return the immutable Price ID recorded on a subscription invoice line. */
+async function invoiceSubscriptionPriceId(
+  invoice: Stripe.Invoice,
+  subscriptionId: string,
+): Promise<string | undefined> {
+  const lines = await invoiceLineItems(invoice);
+  const candidates = lines.filter(
+    (line) => invoiceLineSubscriptionId(line) === subscriptionId,
+  );
 
   const recurringLine = candidates.find(
-    (line) => !isProration(line) && line.amount > 0 && priceId(line),
+    (line) =>
+      !invoiceLineIsProration(line) &&
+      line.amount > 0 &&
+      invoiceLinePriceId(line),
   );
   const selectedLine =
-    recurringLine ?? candidates.find((line) => priceId(line));
-  return selectedLine ? priceId(selectedLine) : undefined;
+    recurringLine ?? candidates.find((line) => invoiceLinePriceId(line));
+  return selectedLine ? invoiceLinePriceId(selectedLine) : undefined;
+}
+
+/**
+ * Attribute a refund only when every positive priced line belongs to the same
+ * subscription and Price. Mixed invoices need explicit line-level evidence
+ * from an operator workflow before they can safely affect subscription revenue.
+ */
+async function subscriptionRefundPriceId(
+  invoice: Stripe.Invoice,
+  subscriptionId: string,
+): Promise<{
+  priceId?: string;
+  billableLineCount: number;
+  targetLineCount: number;
+}> {
+  const billableLines = (await invoiceLineItems(invoice)).filter(
+    (line) => line.amount > 0 && invoiceLinePriceId(line),
+  );
+  const targetLines = billableLines.filter(
+    (line) => invoiceLineSubscriptionId(line) === subscriptionId,
+  );
+  const targetPriceIds = new Set(
+    targetLines
+      .map((line) => invoiceLinePriceId(line))
+      .filter((priceId): priceId is string => Boolean(priceId)),
+  );
+  const isUnambiguous =
+    billableLines.length > 0 &&
+    targetLines.length === billableLines.length &&
+    targetPriceIds.size === 1;
+
+  return {
+    priceId: isUnambiguous ? [...targetPriceIds][0] : undefined,
+    billableLineCount: billableLines.length,
+    targetLineCount: targetLines.length,
+  };
 }
 
 // =============================================================================
@@ -1595,7 +1657,7 @@ async function handleSubscriptionRefund(
   stripeEventId: string,
   stripeEventType: "refund.created" | "refund.updated",
 ): Promise<void> {
-  if (refund.status && refund.status !== "succeeded") return;
+  if (refund.status !== "succeeded") return;
 
   const chargeId = stripeObjectId(refund.charge);
   if (!chargeId || refund.amount <= 0) return;
@@ -1621,18 +1683,22 @@ async function handleSubscriptionRefund(
   const { userIds, orgId } = await resolveUserIdsFromCustomer(customerId);
   if (userIds.length === 0) return;
 
-  const invoicePriceId = await invoiceSubscriptionPriceId(
+  const refundAttribution = await subscriptionRefundPriceId(
     invoice,
     subscriptionId,
   );
+  const invoicePriceId = refundAttribution.priceId;
   if (!invoicePriceId) {
-    phLogger.warn("subscription_refund_invoice_price_missing", {
+    phLogger.warn("subscription_refund_attribution_unavailable", {
+      stripe_refund_id: refund.id,
       stripe_invoice_id: invoiceId,
       stripe_subscription_id: subscriptionId,
+      refund_amount_dollars: centsToDollars(refund.amount),
+      billable_line_count: refundAttribution.billableLineCount,
+      target_subscription_line_count: refundAttribution.targetLineCount,
+      requires_manual_reconciliation: true,
     });
-    throw new Error(
-      "Historical subscription Price missing from refund invoice",
-    );
+    return;
   }
   let price: Stripe.Price;
   try {

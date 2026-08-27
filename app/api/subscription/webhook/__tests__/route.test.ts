@@ -566,7 +566,7 @@ describe("POST /api/subscription/webhook", () => {
         has_more: true,
         data: [
           {
-            amount: 500,
+            amount: 0,
             subscription: null,
             parent: {
               type: "invoice_item_details",
@@ -585,7 +585,7 @@ describe("POST /api/subscription/webhook", () => {
     mockListInvoiceLineItems.mockReturnValue({
       async *[Symbol.asyncIterator]() {
         yield {
-          amount: 500,
+          amount: 0,
           subscription: null,
           parent: {
             type: "invoice_item_details",
@@ -684,6 +684,133 @@ describe("POST /api/subscription/webhook", () => {
     );
   });
 
+  it("ignores refunds whose status is null", async () => {
+    mockConstructEvent.mockReturnValue({
+      id: "evt_refund_null_status",
+      type: "refund.updated",
+      data: {
+        object: {
+          id: "re_null_status",
+          status: null,
+          amount: 2900,
+          currency: "usd",
+          charge: "ch_null_status",
+        },
+      },
+    });
+
+    const { POST } = await import("../route");
+    const response = await POST(makeWebhookRequest());
+
+    expect(response.status).toBe(200);
+    expect(mockRetrieveCharge).not.toHaveBeenCalled();
+    expect(mockConvexMutation).not.toHaveBeenCalledWith(
+      "unitEconomics.recordRevenueEvent",
+      expect.anything(),
+    );
+    expect(mockPostHogEvent).not.toHaveBeenCalledWith(
+      "subscription_refunded",
+      expect.anything(),
+    );
+  });
+
+  it("skips a partial refund on a mixed subscription and add-on invoice", async () => {
+    mockConstructEvent.mockReturnValue({
+      id: "evt_refund_mixed_invoice",
+      type: "refund.created",
+      data: {
+        object: {
+          id: "re_mixed_invoice",
+          status: "succeeded",
+          amount: 500,
+          currency: "usd",
+          charge: "ch_mixed_invoice",
+        },
+      },
+    });
+    mockRetrieveCharge.mockResolvedValue({
+      id: "ch_mixed_invoice",
+      customer: "cus_mixed_invoice",
+      invoice: "in_mixed_invoice",
+    } as never);
+    mockRetrieveInvoice.mockResolvedValue({
+      id: "in_mixed_invoice",
+      customer: "cus_mixed_invoice",
+      parent: {
+        subscription_details: { subscription: "sub_mixed_invoice" },
+      },
+      lines: {
+        data: [
+          subscriptionInvoiceLine("sub_mixed_invoice", "price_pro_29", 2900),
+          {
+            amount: 500,
+            subscription: null,
+            parent: {
+              type: "invoice_item_details",
+              invoice_item_details: {
+                subscription: null,
+                proration: false,
+              },
+            },
+            pricing: {
+              price_details: { price: "price_addon" },
+            },
+          },
+        ],
+      },
+    } as never);
+    mockRetrieveCustomer.mockResolvedValue({
+      id: "cus_mixed_invoice",
+      deleted: false,
+      metadata: { workOSOrganizationId: "org_mixed_invoice" },
+    } as never);
+    mockListMemberships.mockResolvedValue({
+      autoPagination: jest
+        .fn()
+        .mockResolvedValue([{ userId: "user_mixed_invoice" }]),
+    } as never);
+    mockRetrieveSubscription.mockResolvedValue({
+      id: "sub_mixed_invoice",
+      metadata: {},
+      items: {
+        data: [
+          {
+            price: {
+              id: "price_pro_29",
+              lookup_key: "pro-monthly-plan-29-experiment",
+            },
+          },
+        ],
+      },
+    } as never);
+
+    const { POST } = await import("../route");
+    const response = await POST(makeWebhookRequest());
+
+    expect(response.status).toBe(200);
+    expect(mockRetrievePrice).not.toHaveBeenCalled();
+    expect(mockPostHogWarn).toHaveBeenCalledWith(
+      "subscription_refund_attribution_unavailable",
+      expect.objectContaining({
+        stripe_refund_id: "re_mixed_invoice",
+        stripe_invoice_id: "in_mixed_invoice",
+        stripe_subscription_id: "sub_mixed_invoice",
+        refund_amount_dollars: 5,
+        billable_line_count: 2,
+        target_subscription_line_count: 1,
+        requires_manual_reconciliation: true,
+      }),
+    );
+    expect(mockConvexMutation).not.toHaveBeenCalledWith(
+      "unitEconomics.recordRevenueEvent",
+      expect.anything(),
+    );
+    expect(mockPostHogEvent).not.toHaveBeenCalledWith(
+      "subscription_refunded",
+      expect.anything(),
+    );
+  });
+
   it("retries HAC-46 refunds when the historical invoice Price is unavailable", async () => {
     mockConstructEvent.mockReturnValue({
       id: "evt_refund_hac46_retry",
@@ -772,7 +899,7 @@ describe("POST /api/subscription/webhook", () => {
     ).toHaveLength(1);
   });
 
-  it("retries refunds when the invoice has no line for the refunded subscription", async () => {
+  it("skips refunds without a line for the refunded subscription", async () => {
     mockConstructEvent.mockReturnValue({
       id: "evt_refund_missing_subscription_line",
       type: "refund.created",
@@ -845,10 +972,21 @@ describe("POST /api/subscription/webhook", () => {
 
     const { POST } = await import("../route");
 
-    await expect(POST(makeWebhookRequest())).rejects.toThrow(
-      "Historical subscription Price missing from refund invoice",
-    );
+    const response = await POST(makeWebhookRequest());
+
+    expect(response.status).toBe(200);
     expect(mockRetrievePrice).not.toHaveBeenCalled();
+    expect(mockPostHogWarn).toHaveBeenCalledWith(
+      "subscription_refund_attribution_unavailable",
+      expect.objectContaining({
+        stripe_refund_id: "re_missing_subscription_line",
+        stripe_invoice_id: "in_missing_subscription_line",
+        stripe_subscription_id: "sub_missing_subscription_line",
+        billable_line_count: 1,
+        target_subscription_line_count: 0,
+        requires_manual_reconciliation: true,
+      }),
+    );
     expect(mockConvexMutation).not.toHaveBeenCalledWith(
       "unitEconomics.recordRevenueEvent",
       expect.anything(),
