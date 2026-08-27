@@ -4,9 +4,9 @@ import { useConvexAuth, useMutation, usePaginatedQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import type { Id } from "@/convex/_generated/dataModel";
 
-export const useProjects = (initialNumItems = 10) => {
+export const useProjects = (initialNumItems = 10, shouldFetch = true) => {
   const { isLoading, isAuthenticated } = useConvexAuth();
-  const shouldRunQuery = !isLoading && isAuthenticated;
+  const shouldRunQuery = shouldFetch && !isLoading && isAuthenticated;
   const query = usePaginatedQuery(
     api.projects.listProjects,
     shouldRunQuery ? {} : "skip",

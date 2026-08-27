@@ -3,6 +3,11 @@ import { describe, expect, it, jest } from "@jest/globals";
 import { render, screen } from "@testing-library/react";
 
 let mockSidebarState: "expanded" | "collapsed" = "expanded";
+const mockUseProjects = jest.fn(() => ({
+  results: [],
+  status: "Exhausted" as const,
+  loadMore: jest.fn(),
+}));
 
 jest.mock("@/components/ui/sidebar", () => {
   const Wrapper = ({ children }: { children: React.ReactNode }) => (
@@ -35,11 +40,7 @@ jest.mock("@/app/hooks/useChats", () => ({
   }),
 }));
 jest.mock("@/app/hooks/useProjects", () => ({
-  useProjects: () => ({
-    results: [],
-    status: "Exhausted",
-    loadMore: jest.fn(),
-  }),
+  useProjects: mockUseProjects,
 }));
 jest.mock("../SidebarHeader", () => ({
   __esModule: true,
@@ -54,8 +55,13 @@ jest.mock("../SidebarUserNav", () => ({
   default: () => <div>Footer</div>,
 }));
 jest.mock("../SidebarChatSections", () => ({
-  SidebarChatSections: () => (
-    <div data-testid="sidebar-chat-sections">Task sections</div>
+  SidebarChatSections: ({ projects }: { projects?: unknown[] }) => (
+    <div
+      data-testid="sidebar-chat-sections"
+      data-project-count={projects?.length}
+    >
+      Task sections
+    </div>
   ),
 }));
 
@@ -64,6 +70,11 @@ const MainSidebar = require("../Sidebar")
 
 const chatListData = {
   results: [{ _id: "chat-doc", id: "chat-1", title: "Target notes" }],
+  status: "Exhausted" as const,
+  loadMore: jest.fn(),
+};
+const projectListData = {
+  results: [],
   status: "Exhausted" as const,
   loadMore: jest.fn(),
 };
@@ -93,7 +104,14 @@ describe("MainSidebar", () => {
   });
 
   it("adds consistent side gutters to the mobile sidebar", () => {
-    render(<MainSidebar isMobileOverlay={true} chatListData={chatListData} />);
+    mockUseProjects.mockClear();
+    render(
+      <MainSidebar
+        isMobileOverlay={true}
+        chatListData={chatListData}
+        projectListData={projectListData}
+      />,
+    );
 
     expect(screen.getByTestId("sidebar-header")).toHaveAttribute(
       "data-mobile",
@@ -101,6 +119,11 @@ describe("MainSidebar", () => {
     );
     expect(screen.getByTestId("mobile-sidebar-chat-content")).toHaveClass(
       "px-2",
+    );
+    expect(mockUseProjects).toHaveBeenCalledWith(10, false);
+    expect(screen.getByTestId("sidebar-chat-sections")).toHaveAttribute(
+      "data-project-count",
+      "0",
     );
   });
 });

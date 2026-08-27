@@ -22,13 +22,15 @@ import { SidebarProjectListProvider } from "../contexts/SidebarProjectList";
 
 /** Chat list data lifted from parent so the subscription stays active when sidebar closes. */
 export type ChatListData = ReturnType<typeof useChats>;
+/** Project list data lifted for the same reason, including an already-resolved empty list. */
+export type ProjectListData = ReturnType<typeof useProjects>;
 
-// ChatList component content - receives data from parent to avoid refetch on open/close
-const ChatListContent: FC<{ chatListData: ChatListData }> = ({
-  chatListData,
-}) => {
+// List content receives live data from its owner so mobile overlay remounts do not refetch.
+const ChatListContent: FC<{
+  chatListData: ChatListData;
+  projectListData: ProjectListData;
+}> = ({ chatListData, projectListData }) => {
   const scrollContainerRef = useRef<HTMLDivElement>(null);
-  const projectListData = useProjects();
 
   return (
     <div
@@ -60,7 +62,8 @@ const DesktopSidebarContent: FC<{
   isMobile: boolean;
   handleCloseSidebar: () => void;
   chatListData: ChatListData;
-}> = ({ isMobile, handleCloseSidebar, chatListData }) => {
+  projectListData: ProjectListData;
+}> = ({ isMobile, handleCloseSidebar, chatListData, projectListData }) => {
   const { state } = useSidebar();
   const isCollapsed = state === "collapsed";
 
@@ -91,7 +94,10 @@ const DesktopSidebarContent: FC<{
               data-testid="sidebar-chat-list-visibility"
             >
               {/* Keep project subscriptions and section state alive across collapse. */}
-              <ChatListContent chatListData={chatListData} />
+              <ChatListContent
+                chatListData={chatListData}
+                projectListData={projectListData}
+              />
             </div>
           </SidebarGroupContent>
         </SidebarGroup>
@@ -109,12 +115,23 @@ const MainSidebar: FC<{
   isMobileOverlay?: boolean;
   /** When provided (e.g. from ChatLayout), avoids refetching when sidebar opens/closes */
   chatListData?: ChatListData;
-}> = ({ isMobileOverlay = false, chatListData: chatListDataProp }) => {
+  /** Keeps the resolved project list alive too, especially the empty state on mobile. */
+  projectListData?: ProjectListData;
+}> = ({
+  isMobileOverlay = false,
+  chatListData: chatListDataProp,
+  projectListData: projectListDataProp,
+}) => {
   const isMobile = useIsMobile();
   const { setChatSidebarOpen } = useGlobalStateActions();
   // Use lifted data when provided; otherwise subscribe here (e.g. SharedChatView)
   const chatListDataFromHook = useChats(chatListDataProp === undefined);
   const chatListData = chatListDataProp ?? chatListDataFromHook;
+  const projectListDataFromHook = useProjects(
+    10,
+    projectListDataProp === undefined,
+  );
+  const projectListData = projectListDataProp ?? projectListDataFromHook;
 
   const handleCloseSidebar = () => {
     setChatSidebarOpen(false);
@@ -137,7 +154,10 @@ const MainSidebar: FC<{
             className="flex-1 overflow-hidden px-2"
             data-testid="mobile-sidebar-chat-content"
           >
-            <ChatListContent chatListData={chatListData} />
+            <ChatListContent
+              chatListData={chatListData}
+              projectListData={projectListData}
+            />
           </div>
 
           {/* Footer */}
@@ -154,6 +174,7 @@ const MainSidebar: FC<{
       isMobile={isMobile ?? false}
       handleCloseSidebar={handleCloseSidebar}
       chatListData={chatListData}
+      projectListData={projectListData}
     />
   );
 };
