@@ -69,6 +69,26 @@ describe("Strix subagent skills", () => {
     });
   });
 
+  it("canonicalizes skill sets for stable persisted ids and prompt prefixes", () => {
+    const forward = resolveSubagentSkills([
+      "cloud/aws",
+      "vulnerabilities/idor",
+    ]);
+    const reverse = resolveSubagentSkills([
+      "vulnerabilities/idor",
+      "cloud/aws",
+    ]);
+
+    expect(forward).toMatchObject({
+      success: true,
+      skills: [{ id: "cloud/aws" }, { id: "vulnerabilities/idor" }],
+    });
+    expect(reverse).toEqual(forward);
+    expect(
+      renderSubagentSkillKnowledge(["vulnerabilities/idor", "cloud/aws"]),
+    ).toBe(renderSubagentSkillKnowledge(["cloud/aws", "vulnerabilities/idor"]));
+  });
+
   it("renders bounded specialist knowledge only when explicitly requested", () => {
     expect(renderSubagentSkillKnowledge([])).toBe(
       "No specialist skills were assigned.",

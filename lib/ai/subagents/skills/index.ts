@@ -100,6 +100,10 @@ export const resolveSubagentSkills = (
     };
   }
 
+  // Keep persisted ids and rendered prompt sections canonical so the same
+  // assigned skill set produces an identical cacheable prompt prefix.
+  resolved.sort((left, right) => left.id.localeCompare(right.id));
+
   const totalBytes = resolved.reduce(
     (total, skill) => total + skill.contentBytes,
     0,
