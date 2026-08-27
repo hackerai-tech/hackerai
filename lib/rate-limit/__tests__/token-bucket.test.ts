@@ -330,6 +330,9 @@ describe("token-bucket", () => {
       expect(
         isUserRateLimitKey(`free_monthly_cost:${userId}:2026-06`, userId),
       ).toBe(true);
+      expect(
+        isUserRateLimitKey(`free_usage_budget_started:v1:${userId}`, userId),
+      ).toBe(true);
       expect(isUserRateLimitKey(`free_run_lock:${userId}`, userId)).toBe(true);
       expect(
         isUserRateLimitKey(`team:debt_applied:org_123:${userId}`, userId),
