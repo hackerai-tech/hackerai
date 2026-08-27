@@ -38,6 +38,7 @@ type SubagentLifecycleEvent = BaseSubagentEvent & {
   resultAvailable?: boolean;
   resultRecoveryCount?: number;
   resultSubmissionCount?: number;
+  skillCount?: number;
 };
 
 const boundedCategory = (value: string | undefined): string | undefined =>
@@ -109,6 +110,7 @@ export const captureSubagentLifecycleEvent = (
     result_available: fields.resultAvailable,
     result_recovery_count: fields.resultRecoveryCount,
     result_submission_count: fields.resultSubmissionCount,
+    skill_count: fields.skillCount,
     environment: runtimeEnvironment(),
     service_version: serviceVersion(),
   });

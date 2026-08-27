@@ -55,6 +55,7 @@ import {
 import type { subagentTask } from "@/trigger/subagent";
 import { resultFromPersistedSubagent } from "@/lib/ai/subagents/persisted-result";
 import { toSubagentHandle } from "@/lib/ai/subagents/agent-handle";
+import { resolveSubagentSkills } from "@/lib/ai/subagents/skills";
 import { cancelAgentTriggerRun } from "@/lib/api/agent-approval-session";
 import type { TriggerRunRegion } from "@/lib/api/trigger-region";
 
@@ -97,7 +98,7 @@ export const createCreateAgentTool = (
   config: SubagentToolsRuntimeConfig,
 ) =>
   tool({
-    description: `Spawn one named, bounded security subagent that runs asynchronously. Choose profile=security_task for focused code analysis, artifact investigation, reconnaissance, or testing; choose profile=security_validation only to independently reproduce or reject a concrete vulnerability candidate. security_task accepts a free-form task and success criteria but cannot load skills or independently confirm a vulnerability. The tool returns a short parent-scoped agent_id for coordination.`,
+    description: `Spawn one named, bounded security subagent that runs asynchronously. Choose profile=security_task for focused code analysis, artifact investigation, reconnaissance, or testing and assign the smallest relevant set of exact ids from <available_subagent_skills> (1-3 normally, up to 5 when clearly needed). Skills supply server-reviewed specialist methodology but never grant tools, permissions, or broader scope. Choose profile=security_validation only to independently reproduce or reject a concrete vulnerability candidate. The tool returns a short parent-scoped agent_id for coordination.`,
     inputSchema: createAgentInputSchema,
     execute: async (input, execution) => {
       const parsed = createAgentInputSchema.parse(input);
@@ -115,12 +116,27 @@ export const createCreateAgentTool = (
       if (!profileEnabled) {
         return { success: false, error: `The ${profile} profile is disabled.` };
       }
-      if (profile === "security_task" && (parsed.skills?.length ?? 0) > 0) {
-        return {
-          success: false,
-          error:
-            "security_task uses fixed server tools and does not accept skills.",
-        };
+      let skills: string[];
+      if (profile === "security_validation") {
+        const validationSkills = parsed.skills ?? [];
+        if (
+          validationSkills.length > 0 &&
+          (validationSkills.length !== 1 ||
+            validationSkills[0] !== "security_validation")
+        ) {
+          return {
+            success: false,
+            error:
+              "security_validation only accepts the security_validation policy marker, not specialist task skills.",
+          };
+        }
+        skills = validationSkills;
+      } else {
+        const resolvedSkills = resolveSubagentSkills(parsed.skills ?? []);
+        if (!resolvedSkills.success) {
+          return { success: false, error: resolvedSkills.error };
+        }
+        skills = resolvedSkills.skills.map((skill) => skill.id);
       }
       const parentTriggerRunId = context.triggerRunId;
       const parentMessageId = context.assistantMessageId;
@@ -195,7 +211,6 @@ export const createCreateAgentTool = (
         throw error;
       });
       const sandboxIdentity = getSubagentSandboxIdentity(sandbox);
-      const skills = parsed.skills ?? [];
       const candidateFingerprint = createAgentFingerprint({
         profile,
         name: parsed.name,
@@ -284,6 +299,7 @@ export const createCreateAgentTool = (
           parentTriggerRunId,
           profile,
           status: "queued",
+          skillCount: skills.length,
         });
       }
 

@@ -35,7 +35,7 @@ describe("systemPrompt security instructions", () => {
     );
   });
 
-  it("exposes the free-form security_task policy without runtime skills", async () => {
+  it("exposes the free-form security_task policy with specialist skills", async () => {
     const prompt = await systemPrompt(
       "user_123",
       "agent",
@@ -52,7 +52,10 @@ describe("systemPrompt security instructions", () => {
     expect(prompt).toContain("<focused_security_tasks>");
     expect(prompt).toContain('profile="security_task"');
     expect(prompt).toContain("The task is free-form");
-    expect(prompt).toContain("Do not pass skills");
+    expect(prompt).toContain("<available_subagent_skills");
+    expect(prompt).toContain("vulnerabilities/idor:");
+    expect(prompt).toContain("frameworks/nextjs:");
+    expect(prompt).toContain("Skills provide methodology only");
     expect(prompt).toContain("one-active and three-total limits");
     expect(prompt).not.toContain("<independent_validation>");
   });

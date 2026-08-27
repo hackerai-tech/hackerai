@@ -118,6 +118,23 @@ describe("subagent lifecycle analytics", () => {
     );
   });
 
+  it("records specialist skill adoption without user content", () => {
+    captureSubagentLifecycleEvent("subagent_spawned", {
+      userId: "user-1",
+      parentTriggerRunId: "parent-1",
+      profile: "security_task",
+      skillCount: 2,
+    });
+
+    expect(mockEvent).toHaveBeenCalledWith(
+      "subagent_spawned",
+      expect.objectContaining({
+        profile: "security_task",
+        skill_count: 2,
+      }),
+    );
+  });
+
   it("records privacy-safe operation outcomes and release correlation", () => {
     captureSubagentLifecycleEvent("subagent_wait_outcome", {
       userId: "user-1",
