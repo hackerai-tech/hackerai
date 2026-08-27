@@ -181,15 +181,14 @@ export const ensureSandboxConnection = async (
       getE2BClusterRouting(triggerRegion);
 
     // Step 1: Look for an existing sandbox across configured clusters. US is
-    // deliberately checked first so this rollout never migrates a live user.
-    let existingSandbox:
-      | {
-          info: Awaited<
-            ReturnType<ReturnType<typeof Sandbox.list>["nextItems"]>
-          >[number];
-          cluster: E2BClusterConfig;
-        }
-      | undefined;
+    // deliberately checked first so it wins ties between equally viable ones.
+    type DiscoveredSandbox = {
+      info: Awaited<
+        ReturnType<ReturnType<typeof Sandbox.list>["nextItems"]>
+      >[number];
+      cluster: E2BClusterConfig;
+    };
+    const discoveredSandboxes: DiscoveredSandbox[] = [];
     for (const cluster of discoveryClusters) {
       const paginator = Sandbox.list({
         ...cluster.connectionOptions,
@@ -208,26 +207,26 @@ export const ensureSandboxConnection = async (
           jitterMs: 40,
         },
       );
-      // A user should normally have one sandbox. If a previous ambiguous
-      // create produced duplicates, prefer an active compatible sandbox.
-      const candidate =
-        listedSandboxes.find(
-          (sandbox) =>
-            sandbox.state === "running" &&
-            sandbox.metadata?.sandboxVersion === SANDBOX_VERSION,
-        ) ??
-        listedSandboxes.find((sandbox) => sandbox.state === "running") ??
-        listedSandboxes.find(
-          (sandbox) =>
-            sandbox.state === "paused" &&
-            sandbox.metadata?.sandboxVersion === SANDBOX_VERSION,
-        ) ??
-        listedSandboxes[0];
-      if (candidate) {
-        existingSandbox = { info: candidate, cluster };
-        break;
-      }
+      discoveredSandboxes.push(
+        ...listedSandboxes.map((info) => ({ info, cluster })),
+      );
     }
+
+    // Rank across both clusters so a compatible running sandbox always wins.
+    // Discovery order keeps US as the tie-breaker for equally ranked entries.
+    const existingSandbox =
+      discoveredSandboxes.find(
+        ({ info }) =>
+          info.state === "running" &&
+          info.metadata?.sandboxVersion === SANDBOX_VERSION,
+      ) ??
+      discoveredSandboxes.find(({ info }) => info.state === "running") ??
+      discoveredSandboxes.find(
+        ({ info }) =>
+          info.state === "paused" &&
+          info.metadata?.sandboxVersion === SANDBOX_VERSION,
+      ) ??
+      discoveredSandboxes[0];
 
     const existingSandboxInfo = existingSandbox?.info;
     const existingCluster = existingSandbox?.cluster;

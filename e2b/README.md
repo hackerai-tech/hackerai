@@ -20,7 +20,7 @@ Before you begin, make sure you have:
 For the separate EU cluster, add its server-side credentials without replacing
 the US key:
 
-```
+```dotenv
 E2B_EU_API_KEY=your_eu_api_key_here
 E2B_EU_DOMAIN=e2b-juliett.dev
 ```
