@@ -282,6 +282,10 @@ describe("POST /api/delete-account", () => {
     expect(mockConvexMutation.mock.invocationCallOrder[2]).toBeLessThan(
       mockDeleteUser.mock.invocationCallOrder[0],
     );
+    expect(mockDeleteUserRateLimitKeys).toHaveBeenCalledWith(
+      "user_123",
+      "free_quota:v1:identity_hash",
+    );
   });
 
   it("deletes billing and organization resources for a solo admin organization", async () => {

@@ -602,7 +602,10 @@ export const subagentTask = task({
         row.free_quota_subject,
       );
       if (row.subscription === "free") {
-        await checkFreeMonthlyCostLimit(row.free_quota_subject ?? row.user_id);
+        await checkFreeMonthlyCostLimit(
+          row.free_quota_subject ?? row.user_id,
+          row.user_id,
+        );
       }
 
       runtimeStage = "context_resolution";

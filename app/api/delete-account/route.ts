@@ -396,7 +396,7 @@ export const POST = async (req: NextRequest) => {
     // Purge Redis rate-limit keys. Best-effort: WorkOS user deletion proceeds
     // even if this fails so the account is not left in a half-deleted state.
     stage = "delete_rate_limit_keys";
-    await deleteUserRateLimitKeys(userId).catch((err) => {
+    await deleteUserRateLimitKeys(userId, freeQuotaSubject).catch((err) => {
       console.warn(
         "Failed to clear Redis rate-limit keys during account deletion:",
         err,
