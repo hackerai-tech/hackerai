@@ -115,6 +115,15 @@ const canceledChild = {
   completed_at: Date.now() - 1_000,
 };
 
+const skilledTaskChild = {
+  ...activeChild,
+  subagent_id: "sa_skilled_task",
+  profile: "security_task",
+  title: "Authorization specialist",
+  objective: "Inspect object-level authorization boundaries.",
+  skills: ["vulnerabilities/idor", "analysis/source_aware_discovery"],
+};
+
 const persistedAssistantCreatedAt = Date.now() - 60_000;
 
 describe("SubagentsSidebar", () => {
@@ -231,6 +240,47 @@ describe("SubagentsSidebar", () => {
 
     fireEvent.keyDown(window, { key: "Escape" });
     expect(closeSidebar).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows assigned specialist skills only in the opened child details", () => {
+    mockUseQuery.mockImplementation((query, args) => {
+      if (query === "listForParentMessage") return [skilledTaskChild];
+      if (query === "getOwned") {
+        return args === "skip" ? undefined : skilledTaskChild;
+      }
+      return [];
+    });
+
+    render(
+      <SubagentsSidebar
+        content={{
+          kind: "subagents",
+          parentMessageId: "parent-message",
+          toolCallId: "tool-1",
+        }}
+        closeSidebar={jest.fn()}
+      />,
+    );
+
+    expect(screen.queryByLabelText("Assigned skills")).not.toBeInTheDocument();
+
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: /Open Authorization specialist, Working/i,
+      }),
+    );
+
+    const skills = screen.getByLabelText("Assigned skills");
+    expect(skills).toHaveTextContent("Skills · 2");
+    const idorSkill = screen.getByText("IDOR");
+    expect(idorSkill).toBeVisible();
+    expect(idorSkill).toHaveAttribute(
+      "title",
+      "IDOR · Included when this specialist started",
+    );
+    expect(skills).toHaveTextContent("Source aware discovery");
+    expect(skills).toHaveTextContent("Included when this specialist started.");
+    expect(screen.queryByText("vulnerabilities/idor")).not.toBeInTheDocument();
   });
 
   it("records a privacy-safe transcript failure when realtime disconnects", () => {

@@ -13,29 +13,39 @@ describe("subagent profiles", () => {
       "file",
       "web_search",
       "open_url",
+      "search_skills",
+      "load_skill",
     ]);
     expect(profile.systemPrompt).toContain("Never delegate another agent");
-    expect(profile.systemPrompt).toContain("server-assigned specialist skills");
+    expect(profile.systemPrompt).toContain(
+      "No specialist skill content is loaded automatically",
+    );
     expect(profile.systemPrompt).toContain(
       "consult its local version and help output",
     );
-    const prompt = profile.buildPrompt(
-      {
-        name: "Authorization mapper",
-        objective: "Trace the endpoint authorization path.",
-        success_criteria: ["Identify the enforcing function."],
-        skills: ["vulnerabilities/idor"],
-      },
-      [],
-    );
+    const row = {
+      name: "Authorization mapper",
+      objective: "Trace the endpoint authorization path.",
+      success_criteria: ["Identify the enforcing function."],
+      skills: ["vulnerabilities/idor"],
+    };
+    const systemPrompt = profile.buildSystemPrompt(row);
+    const prompt = profile.buildPrompt(row, []);
     expect(prompt).toContain("1. Identify the enforcing function.");
-    expect(prompt).toContain("## Skill: vulnerabilities/idor");
-    expect(prompt).toContain("Object-level authorization failures");
+    expect(prompt).not.toContain("## Skill: vulnerabilities/idor");
+    expect(systemPrompt).toContain("## Skill: vulnerabilities/idor");
+    expect(systemPrompt).toContain("Object-level authorization failures");
+    expect(profile.buildSystemPrompt({ ...row, skills: [] })).not.toContain(
+      "<specialized_knowledge>",
+    );
   });
 
   it("keeps vulnerability confirmation in the validation profile", () => {
-    expect(
-      getSubagentProfileDefinition("security_validation").finalResultTool.name,
-    ).toBe("submit_validation_result");
+    const profile = getSubagentProfileDefinition("security_validation");
+    expect(profile.finalResultTool.name).toBe("submit_validation_result");
+    expect(profile.allowedToolNames).toContain("load_skill");
+    expect(profile.buildSystemPrompt({ objective: "Validate" })).not.toContain(
+      "<specialized_knowledge>",
+    );
   });
 });

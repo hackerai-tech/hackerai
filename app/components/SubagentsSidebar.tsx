@@ -30,6 +30,7 @@ import { AgentToolGroupRow } from "./AgentToolGroupRow";
 import { FeedbackInput } from "./FeedbackInput";
 import { MessageActions } from "./MessageActions";
 import { MemoizedMarkdown } from "./MemoizedMarkdown";
+import { SubagentSkillBadges } from "./SubagentSkillBadges";
 import { useSubagentRealtime } from "@/app/hooks/useSubagentRealtime";
 import { captureAuthenticatedEvent } from "@/lib/analytics/client";
 import {
@@ -54,6 +55,7 @@ type ChildSummary = {
   status: SubagentStatus;
   name?: string;
   objective?: string;
+  skills?: string[];
   title?: string;
   subtitle?: string;
   candidate?: { title: string; affected_asset: string };
@@ -677,6 +679,7 @@ const Transcript = memo(function Transcript({
               />
             </div>
           </section>
+          <SubagentSkillBadges skills={child.skills} />
           {visibleMessages.length === 0 && state !== "error" && (
             <section className="min-w-0">
               <div className="mb-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">

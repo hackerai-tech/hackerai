@@ -18,8 +18,16 @@ export type SubagentSkill = {
 
 type GeneratedSkill = SubagentSkill & { internal: boolean };
 
-const selectableSkills = (strixRegistry.skills as GeneratedSkill[])
+const selectableSkills: SubagentSkill[] = (
+  strixRegistry.skills as GeneratedSkill[]
+)
   .filter((skill) => !skill.internal)
+  .map((skill) => ({
+    ...skill,
+    description:
+      getSubagentSkillSafetyOverride(skill.id)?.catalogDescription ??
+      skill.description,
+  }))
   .sort((left, right) => left.id.localeCompare(right.id));
 const skillsById = new Map(selectableSkills.map((skill) => [skill.id, skill]));
 const aliases = new Map<string, SubagentSkill[]>();
@@ -82,7 +90,7 @@ export const resolveSubagentSkills = (
   if (invalid.length > 0) {
     return {
       success: false,
-      error: `Unknown subagent skill(s): ${invalid.join(", ")}. Use exact ids from <available_subagent_skills>.`,
+      error: `Unknown subagent skill(s): ${invalid.join(", ")}. Use search_skills to find exact category-qualified ids.`,
     };
   }
   if (ambiguous.length > 0) {
@@ -91,6 +99,10 @@ export const resolveSubagentSkills = (
       error: `Ambiguous subagent skill(s): ${ambiguous.join(", ")}. Use category-qualified ids.`,
     };
   }
+
+  // Keep persisted ids and rendered prompt sections canonical so the same
+  // assigned skill set produces an identical cacheable prompt prefix.
+  resolved.sort((left, right) => left.id.localeCompare(right.id));
 
   const totalBytes = resolved.reduce(
     (total, skill) => total + skill.contentBytes,
@@ -105,44 +117,4 @@ export const resolveSubagentSkills = (
   }
 
   return { success: true, skills: resolved };
-};
-
-const escapeXml = (value: string): string =>
-  value
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;");
-
-export const getSubagentSkillCatalogPrompt = (): string => {
-  const grouped = new Map<string, SubagentSkill[]>();
-  for (const skill of selectableSkills) {
-    grouped.set(skill.category, [
-      ...(grouped.get(skill.category) ?? []),
-      skill,
-    ]);
-  }
-  const catalog = [...grouped.entries()]
-    .map(
-      ([category, skills]) =>
-        `[${category}]\n${skills
-          .map(
-            (skill) =>
-              `- ${skill.id}: ${escapeXml(
-                (
-                  getSubagentSkillSafetyOverride(skill.id)
-                    ?.catalogDescription ?? skill.description
-                )
-                  .replaceAll(/\s+/g, " ")
-                  .trim(),
-              )}`,
-          )
-          .join("\n")}`,
-    )
-    .join("\n\n");
-
-  return `<available_subagent_skills source="usestrix/strix" commit="${STRIX_SUBAGENT_SKILL_SOURCE_COMMIT}">
-Choose the smallest relevant set for a specialist security_task: 1-3 skills normally, or up to ${MAX_SUBAGENT_SKILLS} when the task clearly needs them. Use exact category-qualified ids. A skill supplies methodology only; it does not grant tools, permissions, authorization, or broader scope. Use no skill only when none applies.
-
-${catalog}
-</available_subagent_skills>`;
 };
