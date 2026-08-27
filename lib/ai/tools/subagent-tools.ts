@@ -98,7 +98,7 @@ export const createCreateAgentTool = (
   config: SubagentToolsRuntimeConfig,
 ) =>
   tool({
-    description: `Spawn one named, bounded security subagent that runs asynchronously. Choose profile=security_task for focused code analysis, artifact investigation, reconnaissance, or testing and assign 1-3 exact ids from <available_subagent_skills> when relevant (maximum 5). Skills supply server-reviewed specialist methodology but never grant tools, permissions, or broader scope. Choose profile=security_validation only to independently reproduce or reject a concrete vulnerability candidate. The tool returns a short parent-scoped agent_id for coordination.`,
+    description: `Spawn one named, bounded security subagent that runs asynchronously. Choose profile=security_task for focused code analysis, artifact investigation, reconnaissance, or testing and assign the smallest relevant set of exact ids from <available_subagent_skills> (1-3 normally, up to 5 when clearly needed). Skills supply server-reviewed specialist methodology but never grant tools, permissions, or broader scope. Choose profile=security_validation only to independently reproduce or reject a concrete vulnerability candidate. The tool returns a short parent-scoped agent_id for coordination.`,
     inputSchema: createAgentInputSchema,
     execute: async (input, execution) => {
       const parsed = createAgentInputSchema.parse(input);

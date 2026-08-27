@@ -56,6 +56,7 @@ describe("Strix subagent skills", () => {
     expect(catalog).toContain("<available_subagent_skills");
     expect(catalog).toContain("frameworks/nextjs:");
     expect(catalog).not.toContain("analysis/counterevidence:");
+    expect(catalog).toContain("up to 5 when the task clearly needs them");
 
     const knowledge = renderSubagentSkillKnowledge(["vulnerabilities/idor"]);
     expect(knowledge).toContain("<specialized_knowledge>");

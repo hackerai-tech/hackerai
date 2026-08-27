@@ -141,7 +141,7 @@ export const getSubagentSkillCatalogPrompt = (): string => {
     .join("\n\n");
 
   return `<available_subagent_skills source="usestrix/strix" commit="${STRIX_SUBAGENT_SKILL_SOURCE_COMMIT}">
-Choose 1-3 closely related skills for a specialist security_task. Use exact category-qualified ids. A skill supplies methodology only; it does not grant tools, permissions, authorization, or broader scope. Use no skill only when none applies. Maximum ${MAX_SUBAGENT_SKILLS}.
+Choose the smallest relevant set for a specialist security_task: 1-3 skills normally, or up to ${MAX_SUBAGENT_SKILLS} when the task clearly needs them. Use exact category-qualified ids. A skill supplies methodology only; it does not grant tools, permissions, authorization, or broader scope. Use no skill only when none applies.
 
 ${catalog}
 </available_subagent_skills>`;
