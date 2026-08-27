@@ -55,6 +55,7 @@ import { subagentTask } from "@/trigger/subagent";
 import { resultFromPersistedSubagent } from "@/lib/ai/subagents/persisted-result";
 import { toSubagentHandle } from "@/lib/ai/subagents/agent-handle";
 import { cancelAgentTriggerRun } from "@/lib/api/agent-approval-session";
+import type { TriggerRunRegion } from "@/lib/api/trigger-region";
 
 export type SubagentToolsRuntimeConfig = {
   organizationId?: string;
@@ -62,6 +63,7 @@ export type SubagentToolsRuntimeConfig = {
   permissionMode: AgentPermissionMode;
   subscription: SubscriptionTier;
   freeQuotaSubject?: string;
+  triggerRegion?: TriggerRunRegion;
   securityTaskEnabled: boolean;
   securityValidationEnabled: boolean;
 };
@@ -290,7 +292,11 @@ export const createCreateAgentTool = (
             scope: "global",
           });
           await subagentTask.trigger(
-            { subagentId, convexUrl: getConvexUrl() },
+            {
+              subagentId,
+              convexUrl: getConvexUrl(),
+              triggerRegion: config.triggerRegion,
+            },
             {
               idempotencyKey: key,
               idempotencyKeyTTL: "6h",
@@ -306,6 +312,7 @@ export const createCreateAgentTool = (
                 parentToolCallId: execution.toolCallId,
                 profile,
               },
+              region: config.triggerRegion,
             },
           );
         } catch {

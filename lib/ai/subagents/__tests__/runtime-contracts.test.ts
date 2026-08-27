@@ -37,7 +37,8 @@ describe("security validation subagent runtime contracts", () => {
     const tools = read("lib/ai/tools/subagent-tools.ts");
     const tokenRoute = read("app/api/subagents/[subagentId]/token/route.ts");
     expect(tools).toContain("subagentTask.trigger(");
-    expect(tools).toContain("{ subagentId, convexUrl: getConvexUrl() }");
+    expect(tools).toContain("triggerRegion: config.triggerRegion");
+    expect(tools).toContain("region: config.triggerRegion");
     expect(tools).not.toContain("triggerAndWait");
     expect(tools).toContain("claimNextTerminalSubagentForParent");
     expect(tools).toContain("await wait.for");
@@ -49,6 +50,7 @@ describe("security validation subagent runtime contracts", () => {
       "expirationTime: `${SUBAGENT_TOKEN_TTL_SECONDS}s`",
     );
     const child = read("trigger/subagent.ts");
+    expect(child).toContain("triggerRegion: payload.triggerRegion");
     expectMarkerOrder(
       child,
       "setConvexUrl(payload.convexUrl)",

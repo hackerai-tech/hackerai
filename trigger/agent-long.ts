@@ -3182,6 +3182,7 @@ export const agentLongTask = task({
                           permissionMode: agentPermissionMode,
                           subscription,
                           freeQuotaSubject,
+                          triggerRegion,
                           securityTaskEnabled: securityTaskSubagentsEnabled,
                           securityValidationEnabled:
                             securityValidationSubagentsEnabled,
