@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useMutation } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import { Button } from "@/components/ui/button";
@@ -13,6 +13,7 @@ import {
   Server,
   ExternalLink,
   LoaderCircle,
+  Check,
 } from "lucide-react";
 import { toast } from "sonner";
 import { runCommand, convexUrlFlag } from "@/lib/utils/sandbox-command";
@@ -46,6 +47,7 @@ interface UseAutoSelectNewRemoteConnectionArgs {
   setSandboxPreference: (preference: SandboxPreference) => void;
   selectedModel: SelectedModel;
   setSelectedModel: (model: SelectedModel) => void;
+  onNewConnection?: () => void;
 }
 
 function useAutoSelectNewRemoteConnection({
@@ -57,6 +59,7 @@ function useAutoSelectNewRemoteConnection({
   setSandboxPreference,
   selectedModel,
   setSelectedModel,
+  onNewConnection,
 }: UseAutoSelectNewRemoteConnectionArgs) {
   const previousRemoteConnectionIdsRef = useRef<Set<string> | null>(null);
 
@@ -79,6 +82,8 @@ function useAutoSelectNewRemoteConnection({
     );
     if (!newConnection) return;
 
+    onNewConnection?.();
+
     if (sandboxPreference !== newConnection.connectionId) {
       setSandboxPreference(newConnection.connectionId);
     }
@@ -96,6 +101,7 @@ function useAutoSelectNewRemoteConnection({
   }, [
     chatMode,
     connections,
+    onNewConnection,
     sandboxPreference,
     selectedModel,
     setChatMode,
@@ -108,6 +114,11 @@ function useAutoSelectNewRemoteConnection({
 const RemoteControlTab = () => {
   const [token, setToken] = useState<string | null>(null);
   const [isPreparingCommand, setIsPreparingCommand] = useState(false);
+  const [isCommandCopied, setIsCommandCopied] = useState(false);
+  const [showConnectSetup, setShowConnectSetup] = useState(false);
+  const copiedResetTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null,
+  );
 
   const {
     chatMode,
@@ -122,6 +133,7 @@ const RemoteControlTab = () => {
 
   const tokenResult = useMutation(api.localSandbox.getToken);
   const regenerateToken = useMutation(api.localSandbox.regenerateToken);
+  const hideConnectSetup = useCallback(() => setShowConnectSetup(false), []);
 
   useAutoSelectNewRemoteConnection({
     chatMode,
@@ -132,7 +144,17 @@ const RemoteControlTab = () => {
     setSandboxPreference,
     setSelectedModel,
     subscription,
+    onNewConnection: hideConnectSetup,
   });
+
+  useEffect(
+    () => () => {
+      if (copiedResetTimeoutRef.current) {
+        clearTimeout(copiedResetTimeoutRef.current);
+      }
+    },
+    [],
+  );
 
   const activeConnections = connections ?? [];
 
@@ -169,6 +191,14 @@ const RemoteControlTab = () => {
         await navigator.clipboard.writeText(await commandPromise);
       }
 
+      if (copiedResetTimeoutRef.current) {
+        clearTimeout(copiedResetTimeoutRef.current);
+      }
+      setIsCommandCopied(true);
+      copiedResetTimeoutRef.current = setTimeout(() => {
+        setIsCommandCopied(false);
+        copiedResetTimeoutRef.current = null;
+      }, 2_000);
       toast.success("Connect command copied. Paste it into your terminal.");
     } catch (error) {
       console.error("Failed to prepare connect command:", error);
@@ -182,6 +212,7 @@ const RemoteControlTab = () => {
     try {
       const result = await regenerateToken();
       setToken(result.token);
+      setIsCommandCopied(false);
       toast.success("Access token reset. Existing connections were stopped.");
     } catch (error) {
       console.error("Failed to regenerate token:", error);
@@ -237,6 +268,17 @@ const RemoteControlTab = () => {
                 </div>
               </div>
             ))}
+            {!showConnectSetup ? (
+              <Button
+                variant="outline"
+                size="sm"
+                className="w-full"
+                onClick={() => setShowConnectSetup(true)}
+              >
+                <Terminal className="mr-2 h-3.5 w-3.5" />
+                Connect another machine
+              </Button>
+            ) : null}
           </div>
         ) : (
           <div className="flex flex-col items-center justify-center py-6 px-4 bg-muted/30 rounded-lg">
@@ -252,56 +294,72 @@ const RemoteControlTab = () => {
       </div>
 
       {/* Quick Connect */}
-      <div className="space-y-3">
-        <h4 className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-          Quick Start
-        </h4>
-        <div className="overflow-hidden rounded-lg border bg-muted/30">
-          <div className="flex items-center gap-2 p-2">
-            <Terminal className="ml-1 h-4 w-4 shrink-0 text-muted-foreground" />
-            <code className="min-w-0 flex-1 overflow-x-auto whitespace-nowrap py-2 font-mono text-xs text-foreground">
-              {`${runCommand} --token <token>${convexUrlFlag}`}
-            </code>
-            <Button
-              size="sm"
-              className="shrink-0 gap-1.5"
-              onClick={handleCopyConnectCommand}
-              disabled={isPreparingCommand}
-              aria-label="Copy connect command"
-            >
-              {isPreparingCommand ? (
-                <LoaderCircle className="h-4 w-4 animate-spin" />
-              ) : (
-                <Copy className="h-4 w-4" />
-              )}
-              <span className="hidden sm:inline">
-                {isPreparingCommand ? "Preparing..." : "Copy"}
-              </span>
-            </Button>
+      {activeConnections.length === 0 || showConnectSetup ? (
+        <div className="space-y-3">
+          <h4 className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+            {activeConnections.length > 0
+              ? "Connect Another Machine"
+              : "Quick Start"}
+          </h4>
+          <div className="overflow-hidden rounded-lg border bg-muted/30">
+            <div className="flex items-center gap-2 p-2">
+              <Terminal className="ml-1 h-4 w-4 shrink-0 text-muted-foreground" />
+              <code className="min-w-0 flex-1 overflow-x-auto whitespace-nowrap py-2 font-mono text-xs text-foreground">
+                {`${runCommand} --token <token>${convexUrlFlag}`}
+              </code>
+              <Button
+                size="sm"
+                className="shrink-0 gap-1.5"
+                onClick={handleCopyConnectCommand}
+                disabled={isPreparingCommand}
+                aria-label={
+                  isPreparingCommand
+                    ? "Preparing connect command"
+                    : isCommandCopied
+                      ? "Connect command copied"
+                      : "Copy connect command"
+                }
+              >
+                {isPreparingCommand ? (
+                  <LoaderCircle className="h-4 w-4 animate-spin" />
+                ) : isCommandCopied ? (
+                  <Check className="h-4 w-4" />
+                ) : (
+                  <Copy className="h-4 w-4" />
+                )}
+                <span aria-live="polite">
+                  {isPreparingCommand
+                    ? "Preparing..."
+                    : isCommandCopied
+                      ? "Copied"
+                      : "Copy command"}
+                </span>
+              </Button>
+            </div>
+            <p className="border-t px-3 py-2 text-xs text-muted-foreground">
+              {isPreparingCommand
+                ? "Preparing connect command..."
+                : "Secure token included automatically when copied."}
+            </p>
           </div>
-          <p className="border-t px-3 py-2 text-xs text-muted-foreground">
-            {isPreparingCommand
-              ? "Preparing connect command..."
-              : "Secure token included automatically when copied."}
-          </p>
+          <div className="flex items-center justify-between gap-3">
+            <p className="text-xs text-muted-foreground">
+              Paste and run it in your terminal to connect this machine.
+            </p>
+            {token ? (
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-7 shrink-0 px-2 text-xs text-muted-foreground hover:text-foreground"
+                onClick={handleRegenerateToken}
+              >
+                <RefreshCw className="mr-1 h-3 w-3" />
+                Reset token
+              </Button>
+            ) : null}
+          </div>
         </div>
-        <div className="flex items-center justify-between gap-3">
-          <p className="text-xs text-muted-foreground">
-            Paste and run it in your terminal to connect this machine.
-          </p>
-          {token && (
-            <Button
-              variant="ghost"
-              size="sm"
-              className="h-7 shrink-0 px-2 text-xs text-muted-foreground hover:text-foreground"
-              onClick={handleRegenerateToken}
-            >
-              <RefreshCw className="mr-1 h-3 w-3" />
-              Reset token
-            </Button>
-          )}
-        </div>
-      </div>
+      ) : null}
 
       {/* Security Notice - Compact */}
       <div className="flex items-start gap-2 p-3 bg-yellow-500/10 rounded-lg text-xs">

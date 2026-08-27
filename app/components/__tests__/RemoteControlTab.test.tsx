@@ -137,6 +137,12 @@ describe("RemoteControlTab", () => {
     expect(toast.success).toHaveBeenCalledWith(
       "Local sandbox connected. Switched to Agent mode.",
     );
+    expect(
+      screen.getByRole("button", { name: "Connect another machine" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Copy connect command" }),
+    ).not.toBeInTheDocument();
   });
 
   it("does not switch modes when an existing connection appears on initial query load", async () => {
@@ -165,10 +171,30 @@ describe("RemoteControlTab", () => {
     expect(screen.queryByText("No active connections")).not.toBeInTheDocument();
   });
 
+  it("replaces setup with a connect-another action when already connected", () => {
+    mockConnections = [remoteConnection];
+    render(<RemoteControlTab />);
+
+    expect(screen.queryByText("Quick Start")).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Copy connect command" }),
+    ).not.toBeInTheDocument();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Connect another machine" }),
+    );
+
+    expect(screen.getByText("Connect Another Machine")).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Copy connect command" }),
+    ).toBeInTheDocument();
+  });
+
   it("generates a token and copies a ready-to-run command in one action", async () => {
     render(<RemoteControlTab />);
 
     expect(screen.getByText(/--token <token>/)).toBeInTheDocument();
+    expect(screen.getByText("Copy command")).toBeInTheDocument();
 
     fireEvent.click(
       screen.getByRole("button", { name: "Copy connect command" }),
@@ -183,6 +209,9 @@ describe("RemoteControlTab", () => {
     expect(toast.success).toHaveBeenCalledWith(
       "Connect command copied. Paste it into your terminal.",
     );
+    expect(
+      screen.getByRole("button", { name: "Connect command copied" }),
+    ).toHaveTextContent("Copied");
     expect(screen.queryByText(/test-token/)).not.toBeInTheDocument();
     expect(toast.error).not.toHaveBeenCalled();
   });
