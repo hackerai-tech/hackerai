@@ -57,6 +57,7 @@ function formatCancellationDate(currentPeriodEnd?: number) {
 
 function formatRenewalPrice(status: AccountCancellationStatus | null) {
   if (
+    status?.cancelAtPeriodEnd ||
     status?.renewalAmountDollars === undefined ||
     !status.renewalCurrency ||
     !status.renewalInterval

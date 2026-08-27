@@ -96,6 +96,41 @@ function stripeEventOccurredAtMs(event: Stripe.Event): number {
     : Date.now();
 }
 
+/** Return the immutable Price ID recorded on a subscription invoice line. */
+function invoiceSubscriptionPriceId(
+  invoice: Stripe.Invoice,
+  subscriptionId: string,
+): string | undefined {
+  const lines = invoice.lines?.data ?? [];
+  const candidates = lines.filter((line) => {
+    const lineSubscriptionId =
+      stripeObjectId(line.subscription) ??
+      line.parent?.subscription_item_details?.subscription ??
+      line.parent?.invoice_item_details?.subscription ??
+      undefined;
+    return !lineSubscriptionId || lineSubscriptionId === subscriptionId;
+  });
+  const priceId = (line: Stripe.InvoiceLineItem) =>
+    stripeObjectId(line.pricing?.price_details?.price) ??
+    stripeObjectId(
+      (
+        line as Stripe.InvoiceLineItem & {
+          price?: string | Stripe.Price | null;
+        }
+      ).price,
+    );
+  const isProration = (line: Stripe.InvoiceLineItem) =>
+    line.parent?.subscription_item_details?.proration === true ||
+    line.parent?.invoice_item_details?.proration === true;
+
+  const recurringLine = candidates.find(
+    (line) => !isProration(line) && line.amount > 0 && priceId(line),
+  );
+  const selectedLine =
+    recurringLine ?? candidates.find((line) => priceId(line));
+  return selectedLine ? priceId(selectedLine) : undefined;
+}
+
 // =============================================================================
 // Tier Resolution
 // =============================================================================
@@ -1543,7 +1578,23 @@ async function handleSubscriptionRefund(
   const { userIds, orgId } = await resolveUserIdsFromCustomer(customerId);
   if (userIds.length === 0) return;
 
-  const price = resolved.subscription.items?.data[0]?.price;
+  const currentPrice = resolved.subscription.items?.data[0]?.price;
+  const invoicePriceId = invoiceSubscriptionPriceId(invoice, subscriptionId);
+  let price = currentPrice;
+  if (invoicePriceId) {
+    try {
+      price = await stripe.prices.retrieve(invoicePriceId);
+    } catch (error) {
+      phLogger.warn("subscription_refund_invoice_price_retrieve_failed", {
+        stripe_invoice_id: invoiceId,
+        stripe_price_id: invoicePriceId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+  const refundedTier = price?.lookup_key
+    ? (planLookupKeyToTier(price.lookup_key) ?? resolved.tier)
+    : resolved.tier;
   const pricingExperiment = proMonthlyPricingAssignmentFromMetadata(
     resolved.subscription.metadata,
     price?.lookup_key,
@@ -1612,7 +1663,7 @@ async function handleSubscriptionRefund(
       paidFunnelProperties({
         userId,
         org_id: orgId,
-        subscription_tier: resolved.tier,
+        subscription_tier: refundedTier,
         plan: price?.lookup_key,
         stripe_price_lookup_key: price?.lookup_key,
         billing_interval: priceBillingInterval(price),

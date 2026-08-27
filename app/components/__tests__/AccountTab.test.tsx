@@ -104,6 +104,10 @@ describe("AccountTab", () => {
       hasActiveSubscription: true,
       cancelAtPeriodEnd: true,
       currentPeriodEnd,
+      renewalAmountDollars: 29,
+      renewalCurrency: "usd",
+      renewalInterval: "month",
+      renewalIntervalCount: 1,
     } as never);
 
     render(<AccountTab />);
@@ -112,6 +116,7 @@ describe("AccountTab", () => {
     expect(
       screen.getByText(`Your plan stays active until ${expectedPeriodEnd}.`),
     ).toBeVisible();
+    expect(screen.queryByText(/renews at/i)).not.toBeInTheDocument();
 
     const user = userEvent.setup();
     await user.click(screen.getAllByRole("button", { name: /manage/i })[0]);

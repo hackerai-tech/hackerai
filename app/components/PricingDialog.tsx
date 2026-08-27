@@ -232,6 +232,8 @@ const PricingDialog: React.FC<PricingDialogProps> = ({
   >();
   const [pricingExperimentResolved, setPricingExperimentResolved] =
     React.useState(false);
+  const [pricingExperimentUnavailable, setPricingExperimentUnavailable] =
+    React.useState(false);
   const [showConfirmDialog, setShowConfirmDialog] = React.useState(false);
   const [pendingUpgrade, setPendingUpgrade] = React.useState<{
     plan: string;
@@ -244,9 +246,11 @@ const PricingDialog: React.FC<PricingDialogProps> = ({
       ? pricingExperiment.displayedAmountDollars
       : PRICING.pro.monthly;
   const displayedMonthlyProPrice =
-    subscription === "free" && !pricingExperimentResolved
-      ? "…"
-      : monthlyProPrice;
+    subscription === "free" && pricingExperimentUnavailable
+      ? "—"
+      : subscription === "free" && !pricingExperimentResolved
+        ? "…"
+        : monthlyProPrice;
   const activePricingExperiment =
     subscription === "free" && !isYearly ? pricingExperiment : undefined;
 
@@ -258,6 +262,7 @@ const PricingDialog: React.FC<PricingDialogProps> = ({
     }
 
     const controller = new AbortController();
+    setPricingExperimentUnavailable(false);
     void fetch("/api/pricing/pro-monthly-experiment", {
       cache: "no-store",
       signal: controller.signal,
@@ -270,6 +275,7 @@ const PricingDialog: React.FC<PricingDialogProps> = ({
           priceLookupKey?: unknown;
           displayedAmountDollars?: unknown;
         };
+        if (controller.signal.aborted) return;
         const expected = proMonthlyPricingAssignmentForVariant(
           value.variant === "test" ? "test" : "control",
         );
@@ -277,16 +283,15 @@ const PricingDialog: React.FC<PricingDialogProps> = ({
           value.key === expected.key &&
           value.priceLookupKey === expected.priceLookupKey &&
           value.displayedAmountDollars === expected.displayedAmountDollars;
-        setPricingExperiment(
-          isValid ? expected : proMonthlyPricingAssignmentForVariant("control"),
-        );
+        if (!isValid) throw new Error("Invalid pricing assignment");
+        setPricingExperiment(expected);
+        setPricingExperimentResolved(true);
       })
       .catch((error: unknown) => {
         if ((error as { name?: unknown })?.name === "AbortError") return;
-        setPricingExperiment(proMonthlyPricingAssignmentForVariant("control"));
-      })
-      .finally(() => {
-        if (!controller.signal.aborted) setPricingExperimentResolved(true);
+        setPricingExperiment(undefined);
+        setPricingExperimentUnavailable(true);
+        setPricingExperimentResolved(false);
       });
 
     return () => controller.abort();
@@ -446,10 +451,13 @@ const PricingDialog: React.FC<PricingDialogProps> = ({
       };
     } else if (user) {
       return {
-        text: pricingIntentCopy?.proButtonText ?? "Get Pro",
+        text:
+          subscription === "free" && !isYearly && pricingExperimentUnavailable
+            ? "Pricing unavailable"
+            : (pricingIntentCopy?.proButtonText ?? "Get Pro"),
         disabled:
           upgradeLoading ||
-          (subscription === "free" && !pricingExperimentResolved),
+          (subscription === "free" && !isYearly && !pricingExperimentResolved),
         className: "",
         variant: "default" as const,
         onClick: () =>

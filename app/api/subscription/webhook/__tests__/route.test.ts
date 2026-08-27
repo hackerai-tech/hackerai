@@ -21,6 +21,7 @@ const mockListSubscriptions = jest.fn();
 const mockRetrieveInvoice = jest.fn();
 const mockRetrievePaymentIntent = jest.fn();
 const mockRetrieveCharge = jest.fn();
+const mockRetrievePrice = jest.fn();
 const mockListMemberships = jest.fn();
 const mockConvexMutation = jest.fn();
 const mockFreezeRateLimitBucketForDelinquency = jest.fn();
@@ -66,6 +67,9 @@ jest.mock("@/app/api/stripe", () => ({
     },
     charges: {
       retrieve: mockRetrieveCharge,
+    },
+    prices: {
+      retrieve: mockRetrievePrice,
     },
   },
 }));
@@ -535,6 +539,24 @@ describe("POST /api/subscription/webhook", () => {
       parent: {
         subscription_details: { subscription: "sub_hac46" },
       },
+      lines: {
+        data: [
+          {
+            amount: 2900,
+            subscription: "sub_hac46",
+            parent: {
+              type: "subscription_item_details",
+              subscription_item_details: {
+                subscription: "sub_hac46",
+                proration: false,
+              },
+            },
+            pricing: {
+              price_details: { price: "price_pro_29" },
+            },
+          },
+        ],
+      },
     } as never);
     mockRetrieveCustomer.mockResolvedValue({
       id: "cus_hac46",
@@ -552,12 +574,12 @@ describe("POST /api/subscription/webhook", () => {
           {
             quantity: 1,
             price: {
-              id: "price_pro_29",
-              lookup_key: "pro-monthly-plan-29-experiment",
+              id: "price_pro_plus_60",
+              lookup_key: "pro-plus-monthly-plan",
               recurring: { interval: "month", interval_count: 1 },
               product: {
-                id: "prod_pro",
-                name: "HackerAI Pro",
+                id: "prod_pro_plus",
+                name: "HackerAI Pro+",
                 metadata: {},
               },
             },
@@ -565,11 +587,18 @@ describe("POST /api/subscription/webhook", () => {
         ],
       },
     } as never);
+    mockRetrievePrice.mockResolvedValue({
+      id: "price_pro_29",
+      lookup_key: "pro-monthly-plan-29-experiment",
+      recurring: { interval: "month", interval_count: 1 },
+      product: "prod_pro",
+    } as never);
 
     const { POST } = await import("../route");
     const response = await POST(makeWebhookRequest());
 
     expect(response.status).toBe(200);
+    expect(mockRetrievePrice).toHaveBeenCalledWith("price_pro_29");
     expect(mockConvexMutation).toHaveBeenCalledWith(
       "unitEconomics.recordRevenueEvent",
       expect.objectContaining({
@@ -585,6 +614,7 @@ describe("POST /api/subscription/webhook", () => {
       "subscription_refunded",
       expect.objectContaining({
         userId: "user_hac46",
+        subscription_tier: "pro",
         experiment_key: "hac46-pro-monthly-29-pricing",
         experiment_variant: "test",
         refund_amount_dollars: 29,
