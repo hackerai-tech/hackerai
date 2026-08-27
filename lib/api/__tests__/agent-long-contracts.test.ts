@@ -206,26 +206,38 @@ const toolExecutionSources = [
   },
 ];
 
-describe("auxiliary vision failover contracts", () => {
+describe("direct vision and summary recovery contracts", () => {
   test.each([
     ["agent-long", taskSrc],
     ["chat handler", chatHandlerSrc],
-  ])("%s switches attachment failures to direct vision", (_name, source) => {
-    expect(source).toContain("createAuxiliaryVisionFailoverController");
-    expect(source).toMatch(
-      /auxiliaryVisionFailover\.activate\(\{\s*error,\s*source: "attachment",\s*\}\);/,
-    );
-    expect(source).toMatch(
-      /selectedModel = [\s\S]*?resolveAgentModelForImageToolResults\([\s\S]*?selectedModel[\s\S]*?true[\s\S]*?false[\s\S]*?\);/,
-    );
-    expect(source).toMatch(
-      /activeDeepSeekV4Pro0813Experiment =\s*getActiveDeepSeekV4Pro0813ExperimentAssignment\([\s\S]*?selectedModel[\s\S]*?\);/,
-    );
-    expect(source).toMatch(
-      /get auxiliaryVisionEnabled\(\) \{\s*return auxiliaryVisionFailover\.isEnabled\(\);\s*\}/,
-    );
-    expect(source).not.toContain("AUXILIARY_VISION_UNAVAILABLE_MESSAGE");
-  });
+  ])(
+    "%s activates MiniMax summaries only after direct vision fails",
+    (_name, source) => {
+      expect(source).toContain("createVisionSummaryRecoveryController");
+      expect(source).toMatch(/available: directGlmVisionEnabled/);
+      expect(source).toMatch(
+        /const shouldRetryWithVisionSummary =[\s\S]*?directGlmVisionEnabled[\s\S]*?hasTerminalProviderStreamError/,
+      );
+      expect(source).toMatch(
+        /visionSummaryRecovery\.activate\(\{[\s\S]*?source: hasImageAttachmentForRecovery/,
+      );
+      expect(source).toMatch(
+        /describeImageAttachmentsWithAuxiliaryVision\(\{[\s\S]*?cacheDescription:\s*cacheAuxiliaryVisionDescription/,
+      );
+      expect(
+        source.match(
+          /omitImageViewToolResultsForProviderRetry\(\s*state\.finalMessages,?\s*\)\.messages/g,
+        ),
+      ).toHaveLength(2);
+      expect(source).toMatch(
+        /catch \(summaryError\) \{[^}]*?event:\s*"vision_summary_recovery_failed"/,
+      );
+      expect(source).toMatch(
+        /get auxiliaryVisionEnabled\(\) \{\s*return visionSummaryRecovery\.isEnabled\(\);\s*\}/,
+      );
+      expect(source).not.toContain("AUXILIARY_VISION_UNAVAILABLE_MESSAGE");
+    },
+  );
 });
 
 describe("agent tool schemas — Head Start bundle boundary", () => {
@@ -1588,7 +1600,7 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
       retryDecisionIdx,
     );
     const retryModelIdx = taskSrc.indexOf(
-      "const retryModel = shouldRetryWithoutImageToolResults",
+      "const retryModel = shouldRetryWithVisionSummary",
       terminalProviderErrorIdx,
     );
     const fallbackIdx = taskSrc.indexOf(
@@ -1621,7 +1633,7 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
       retryDecisionIdx,
     );
     const retryModelIdx = chatHandlerSrc.indexOf(
-      "const retryModel = shouldRetryWithoutImageToolResults",
+      "const retryModel = shouldRetryWithVisionSummary",
       terminalProviderErrorIdx,
     );
     const fallbackIdx = chatHandlerSrc.indexOf(
@@ -1686,7 +1698,7 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
       );
       const catchResetIdx = source.indexOf(resetCall, catchModelSwitchIdx);
       const catchRetryStreamIdx = source.indexOf(
-        "createStream(fallbackModel)",
+        "createStream(apiRetryModel)",
         catchResetIdx,
       );
 
@@ -1695,7 +1707,7 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
       expect(catchRetryStreamIdx).toBeGreaterThan(catchResetIdx);
 
       const retryModelIdx = source.indexOf(
-        "const retryModel = shouldRetryWithoutImageToolResults",
+        "const retryModel = shouldRetryWithVisionSummary",
       );
       const modelSwitchIdx = source.indexOf(
         "retryUsedFallbackModel =",

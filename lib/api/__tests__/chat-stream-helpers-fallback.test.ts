@@ -31,6 +31,7 @@ const GROK_SLUG = "x-ai/grok-4.6";
 const KIMI_K3_SLUG = "moonshotai/kimi-k3";
 const GLM_5_2_SLUG = "z-ai/glm-5.2";
 const GLM_SLUG = "z-ai/glm-5.3";
+const DEEPSEEK_VISION_SLUG = "deepseek/deepseek-v4-flash-vision-exp";
 const DEEPSEEK_FLASH_SLUG = "deepseek/deepseek-v4-flash-0731";
 const DEEPSEEK_FLASH_CANONICAL_SLUG = "deepseek/deepseek-v4-flash-20260731";
 const DEEPSEEK_FLASH_PREVIOUS_SLUG = "deepseek/deepseek-v4-flash";
@@ -171,6 +172,22 @@ describe("buildProviderOptions fallback chain", () => {
       user: "user-1",
     });
   });
+
+  it.each([
+    ["model-glm-5.3-flash", "low"],
+    ["model-glm-5.3-flash-pro", "high"],
+  ] as const)(
+    "routes %s directly with %s reasoning and DeepSeek Vision fallback",
+    (modelName, effort) => {
+      const opts = buildProviderOptions(true, "user-1", modelName, "agent");
+      expect(opts.openrouter).toMatchObject({
+        reasoning: { enabled: true, effort },
+        models: [DEEPSEEK_VISION_SLUG],
+        provider: { sort: "latency", data_collection: "deny" },
+        user: "user-1",
+      });
+    },
+  );
 
   it("resolves Kimi K3 fallback through the active Grok route", () => {
     const opts = buildProviderOptions(
@@ -783,6 +800,14 @@ describe("isExplicitDeepSeekProSelectionForRetry", () => {
 });
 
 describe("getRetryFallbackModel", () => {
+  it.each(["model-glm-5.3-flash", "model-glm-5.3-flash-pro"] as const)(
+    "keeps DeepSeek Vision as the direct provider fallback for %s",
+    (modelName) => {
+      expect(getRetryFallbackModel(modelName, "agent")).toBe(
+        "model-deepseek-v4-flash-vision",
+      );
+    },
+  );
   it("uses DeepSeek Flash 0731 for app-side retry after free Ask DeepSeek fails", () => {
     expect(getRetryFallbackModel("ask-model-free", "ask")).toBe(
       "model-deepseek-v4-flash-0731",

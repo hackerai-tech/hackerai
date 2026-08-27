@@ -211,7 +211,7 @@ describe("selectModel", () => {
     ).toBe("model-deepseek-v4-pro-0813");
     expect(
       selectModel("agent", "ultra", "auto", true, false, auxiliaryVision),
-    ).toBe("model-deepseek-v4-flash-0731");
+    ).toBe("model-deepseek-v4-pro-0813");
   });
 
   it("routes HackerAI Pro through DeepSeek V4 Pro 0813", () => {
@@ -242,6 +242,36 @@ describe("selectModel", () => {
         auxiliaryVisionEnabled: true,
       }),
     ).toBe("model-deepseek-v4-flash-0731");
+  });
+
+  it.each(["ask", "agent"] as const)(
+    "routes Standard %s image prompts directly to GLM 5.3 Flash",
+    (mode) => {
+      expect(
+        selectModel(mode, "pro", "hackerai-standard", true, false, {
+          directGlmVisionEnabled: true,
+        }),
+      ).toBe("model-glm-5.3-flash");
+    },
+  );
+
+  it.each(["ask", "agent"] as const)(
+    "routes Pro %s image prompts directly to GLM 5.3 Flash Pro",
+    (mode) => {
+      expect(
+        selectModel(mode, "pro", "hackerai-pro", true, false, {
+          directGlmVisionEnabled: true,
+        }),
+      ).toBe("model-glm-5.3-flash-pro");
+    },
+  );
+
+  it("uses the Pro GLM vision route for Pro Plus Auto images", () => {
+    expect(
+      selectModel("agent", "pro-plus", "auto", true, false, {
+        directGlmVisionEnabled: true,
+      }),
+    ).toBe("model-glm-5.3-flash-pro");
   });
 
   it.each(["pro", "pro-plus", "ultra", "team"] as const)(

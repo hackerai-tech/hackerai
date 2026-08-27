@@ -523,6 +523,29 @@ describe("token-bucket", () => {
       },
     );
 
+    it.each([
+      "model-glm-5.3-flash",
+      "model-glm-5.3-flash-pro",
+      "z-ai/glm-5.3-flash",
+    ])(
+      "should use the conservative GLM 5.3 Flash ceiling for %s ($0.15/$0.50)",
+      (modelName) => {
+        expect(calculateTokenCost(1_000_000, "input", modelName)).toBe(2100);
+        expect(calculateTokenCost(1_000_000, "output", modelName)).toBe(7000);
+      },
+    );
+
+    it.each([
+      "model-deepseek-v4-flash-vision",
+      "deepseek/deepseek-v4-flash-vision-exp",
+    ])(
+      "should use the DeepSeek vision peak ceiling for %s ($0.44/$1.32)",
+      (modelName) => {
+        expect(calculateTokenCost(1_000_000, "input", modelName)).toBe(6160);
+        expect(calculateTokenCost(1_000_000, "output", modelName)).toBe(18480);
+      },
+    );
+
     it.each(["model-kimi-k3", "model-opus-4.6"])(
       "should use Kimi K3 pricing for %s ($3.00/$15.00)",
       (modelName) => {
