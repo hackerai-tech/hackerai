@@ -83,6 +83,19 @@ export function findLatestTimelineAnchorMessageId(
   return null;
 }
 
+export function findActiveTimelineAnchorMessageId(
+  messages: readonly ChatMessage[],
+  status: ChatStatus,
+): string | null {
+  // Settled histories rely on initialScrollAtEnd. Retaining the turn anchor
+  // lets delayed row measurements overwrite that completed-chat position.
+  if (status !== "submitted" && status !== "streaming") {
+    return null;
+  }
+
+  return findLatestTimelineAnchorMessageId(messages);
+}
+
 export function findMessageTimelineAnchorIndex(
   rows: readonly ChatTimelineRow[],
   messageId: string | null,
