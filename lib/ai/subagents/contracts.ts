@@ -122,8 +122,9 @@ export const createAgentInputSchema = z
       .max(MAX_SUBAGENT_CONTEXT_REFS)
       .nullable()
       .default(null),
-    // Kept only for compatibility with the original validation profile.
-    // security_task rejects non-empty skills at the tool boundary.
+    // security_task accepts server-reviewed catalog ids. The legacy
+    // security_validation marker still selects the independent validator when
+    // profile is omitted.
     skills: z
       .array(z.string().trim().min(1).max(80))
       .max(MAX_SUBAGENT_SKILLS)

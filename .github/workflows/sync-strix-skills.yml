@@ -1,0 +1,88 @@
+name: Sync Strix skills
+
+on:
+  schedule:
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: sync-strix-skills
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 20.x
+
+      - name: Sync and validate vendored skills
+        run: |
+          node scripts/sync-strix-skills.mjs
+          node scripts/sync-strix-skills.mjs --check
+
+      - name: Prepare update
+        id: update
+        shell: bash
+        run: |
+          if [[ -z "$(git status --porcelain)" ]]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          source_commit=$(node -p "require('./third_party/strix-skills/UPSTREAM.json').sourceCommit")
+          short_commit=${source_commit:0:12}
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+          echo "source_commit=$source_commit" >> "$GITHUB_OUTPUT"
+          echo "short_commit=$short_commit" >> "$GITHUB_OUTPUT"
+
+      - name: Open or update sync PR
+        if: steps.update.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_COMMIT: ${{ steps.update.outputs.source_commit }}
+          SHORT_COMMIT: ${{ steps.update.outputs.short_commit }}
+        shell: bash
+        run: |
+          branch="automation/strix-skills-sync"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -C "$branch"
+          git add third_party/strix-skills lib/ai/subagents/skills/strix-skill-*.generated.json
+          git commit -m "chore(skills): sync Strix skills to $SHORT_COMMIT"
+          git push --force origin "HEAD:refs/heads/$branch"
+
+          cat > /tmp/strix-skills-pr.md <<EOF
+          Automated vendored-skill update from [usestrix/strix](https://github.com/usestrix/strix/commit/$SOURCE_COMMIT).
+
+          - Upstream commit: \`$SOURCE_COMMIT\`
+          - Runtime activation remains governed by HackerAI's local skill registry and safety wrapper.
+          - This PR is intentionally not auto-merged. Review prompt changes, tool assumptions, authorization boundaries, and test results before merging.
+
+          The generated registry and every vendored file are hash-checked by \`pnpm skills:sync:strix:check\`.
+          EOF
+
+          existing=$(gh pr list --head "$branch" --base main --state open --json number --jq '.[0].number // empty')
+          if [[ -n "$existing" ]]; then
+            gh pr edit "$existing" \
+              --title "chore(skills): sync Strix skills to $SHORT_COMMIT" \
+              --body-file /tmp/strix-skills-pr.md
+          else
+            gh pr create \
+              --base main \
+              --head "$branch" \
+              --title "chore(skills): sync Strix skills to $SHORT_COMMIT" \
+              --body-file /tmp/strix-skills-pr.md
+          fi

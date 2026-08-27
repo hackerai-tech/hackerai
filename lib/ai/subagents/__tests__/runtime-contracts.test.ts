@@ -33,6 +33,21 @@ describe("security validation subagent runtime contracts", () => {
     expect(source).not.toMatch(/allowedToolNames:[\s\S]{0,500}"delegate_task"/);
   });
 
+  it("loads only validated server-reviewed skills into focused task children", () => {
+    const tools = read("lib/ai/tools/subagent-tools.ts");
+    const profiles = read("lib/ai/subagents/profiles.ts");
+    expect(tools).toContain("resolveSubagentSkills");
+    expect(tools).toContain("skills = resolvedSkills.skills.map");
+    expect(tools).not.toContain(
+      "security_task uses fixed server tools and does not accept skills",
+    );
+    expect(profiles).toContain("renderSubagentSkillKnowledge");
+    expect(profiles).toContain("load additional skills");
+    expect(profiles).not.toMatch(
+      /allowedToolNames:[\s\S]{0,500}"create_agent"/,
+    );
+  });
+
   it("starts asynchronously, waits durably, and scopes the browser token to the owned child run", () => {
     const tools = read("lib/ai/tools/subagent-tools.ts");
     const tokenRoute = read("app/api/subagents/[subagentId]/token/route.ts");

@@ -15,6 +15,7 @@ import {
 } from "@/lib/ai/providers";
 import { getCloudSandboxProvider } from "@/lib/ai/tools/utils/cloud-sandbox-provider";
 import type { CloudSandboxProvider } from "@/lib/ai/tools/utils/cloud-sandbox-provider";
+import { getSubagentSkillCatalogPrompt } from "@/lib/ai/subagents/skills";
 
 // Constants
 const DATE_FORMAT_OPTIONS: Intl.DateTimeFormatOptions = {
@@ -474,11 +475,13 @@ If the child does not return a completed structured result, leave the candidate 
 Always refer to a child by its exact returned name when describing its start, update, or completion. Do not claim that validation is independent until wait_for_agents returns that child's successful completed result.
 </independent_validation>`;
 
-const SECURITY_TASK_SUBAGENT_SECTION = `<focused_security_tasks>
+const getSecurityTaskSubagentSection = (): string => `<focused_security_tasks>
 Use create_agent with profile="security_task" for a clearly bounded security subtask that can make useful progress independently, such as focused code analysis, artifact investigation, reconnaissance, or testing. The task is free-form; do not invent a fixed task kind. Provide a distinct name, explicit success_criteria, scope and authorization boundaries, and only the minimal context needed.
-security_task uses a fixed server-controlled tool set. Do not pass skills. It cannot delegate, expand scope, create or promote a vulnerability report, or independently confirm a vulnerability. Use security_validation when the purpose is to reproduce or reject a concrete vulnerability candidate.
+security_task uses a fixed server-controlled tool set. Assign 1-3 relevant specialist skills using exact ids from the catalog below, with a hard maximum of 5. Skills provide methodology only and do not grant tools, permissions, target authorization, or additional scope. It cannot delegate, expand scope, create or promote a vulnerability report, or independently confirm a vulnerability. Use security_validation when the purpose is to reproduce or reject a concrete vulnerability candidate.
 create_agent is asynchronous. Continue useful parent work, use list_agents for durable status, send_message_to_agent only for material updates, wait_for_agents with target_agent_ids when waiting for specific children, and cancel_agent when a child is no longer useful or has the wrong scope. Respect the one-active and three-total limits instead of repeatedly retrying blocked creation.
 Treat a security_task result as supporting work. Inspect its task_status, evidence_refs, artifacts, limitations, and next_steps before using it. Never describe it as independent vulnerability confirmation.
+
+${getSubagentSkillCatalogPrompt()}
 </focused_security_tasks>`;
 
 // Core system prompt with optimized structure
@@ -539,7 +542,7 @@ The current date is ${currentDateTime}.`;
       sections.push(SECURITY_VALIDATION_SUBAGENT_SECTION);
     }
     if (securityTaskSubagentsEnabled) {
-      sections.push(SECURITY_TASK_SUBAGENT_SECTION);
+      sections.push(getSecurityTaskSubagentSection());
     }
   }
 
