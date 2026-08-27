@@ -51,6 +51,7 @@ export function selectModel(
   options: {
     extraUsageAvailable?: boolean;
     auxiliaryVisionEnabled?: boolean;
+    directGlmVisionEnabled?: boolean;
   } = {},
 ): ModelName {
   const isAgent = isAgentMode(mode);
@@ -59,8 +60,9 @@ export function selectModel(
     subscription,
     options,
   );
-  // In control, DeepSeek image prompts promote to a media-capable route. The
-  // auxiliary treatment replaces images with descriptions before inference.
+  // Paid Standard/Pro image prompts use GLM Flash directly, with DeepSeek
+  // Vision configured as its provider fallback. The auxiliary treatment is
+  // reserved for MiniMax summary recovery after both direct routes fail.
   // PDFs remain on DeepSeek via OpenRouter's file parser in both routes.
   const isFreeAsk = !isAgent && subscription === "free";
   const hasAskImage =
@@ -68,10 +70,22 @@ export function selectModel(
   const hasProviderImage =
     !!hasImageAttachment && !options.auxiliaryVisionEnabled;
   const paidAutoTextModel: ModelName =
-    (subscription === "pro-plus" || subscription === "ultra") &&
-    !hasImageAttachment
+    subscription === "pro-plus" || subscription === "ultra"
       ? "model-deepseek-v4-pro-0813"
       : "model-deepseek-v4-flash-0731";
+  const directVisionModel: ModelName =
+    allowedSelectedModel === "hackerai-pro" ||
+    ((!allowedSelectedModel || allowedSelectedModel === "auto") &&
+      paidAutoTextModel === "model-deepseek-v4-pro-0813")
+      ? "model-glm-5.3-flash-pro"
+      : "model-glm-5.3-flash";
+  if (
+    options.directGlmVisionEnabled &&
+    hasImageAttachment &&
+    allowedSelectedModel !== "hackerai-max"
+  ) {
+    return directVisionModel;
+  }
   const paidAskMediaModel: ModelName = hasAskImage
     ? "model-grok-4.5"
     : paidAutoTextModel;
@@ -648,6 +662,7 @@ export async function processChatMessages({
   extraUsageAvailable = false,
   allowLocalDesktopFiles = false,
   auxiliaryVisionEnabled = false,
+  directGlmVisionEnabled = false,
   chatId,
   triggerRunId,
   requestId,
@@ -661,6 +676,7 @@ export async function processChatMessages({
   extraUsageAvailable?: boolean;
   allowLocalDesktopFiles?: boolean;
   auxiliaryVisionEnabled?: boolean;
+  directGlmVisionEnabled?: boolean;
   chatId?: string;
   triggerRunId?: string;
   requestId?: string;
@@ -744,6 +760,7 @@ export async function processChatMessages({
     {
       extraUsageAvailable,
       auxiliaryVisionEnabled,
+      directGlmVisionEnabled,
     },
   );
 

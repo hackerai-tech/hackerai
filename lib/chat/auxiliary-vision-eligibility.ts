@@ -1,6 +1,6 @@
 import type { SelectedModel, SubscriptionTier } from "@/types";
 
-export function isEligibleForAuxiliaryDeepSeekVision({
+export function isEligibleForDirectGlmVision({
   subscription,
   selectedModelOverride,
 }: {

@@ -138,6 +138,8 @@ import {
 
 const STANDARD_AGENT_VISION_MODEL = "model-grok-4.5";
 const PRO_AGENT_VISION_MODEL = "model-grok-4.5-pro";
+const STANDARD_AGENT_GLM_VISION_MODEL = "model-glm-5.3-flash";
+const PRO_AGENT_GLM_VISION_MODEL = "model-glm-5.3-flash-pro";
 const FREE_AGENT_VISION_MODEL = "model-grok-4.6";
 const STANDARD_AGENT_TEXT_MODEL = "model-deepseek-v4-flash-0731";
 const PRO_AGENT_TEXT_MODEL = "model-deepseek-v4-pro-0813";
@@ -198,6 +200,12 @@ export const resolveAgentModelAfterSummarization = (
   if (modelName === PRO_AGENT_VISION_MODEL) {
     return PRO_AGENT_TEXT_MODEL;
   }
+  if (modelName === STANDARD_AGENT_GLM_VISION_MODEL) {
+    return STANDARD_AGENT_TEXT_MODEL;
+  }
+  if (modelName === PRO_AGENT_GLM_VISION_MODEL) {
+    return PRO_AGENT_TEXT_MODEL;
+  }
   return modelName;
 };
 
@@ -207,9 +215,22 @@ export const resolveAgentModelForImageToolResults = (
   hasImageToolResults: boolean,
   selectedModelOverride?: SelectedModel,
   auxiliaryVisionEnabled = false,
+  directGlmVisionEnabled = false,
 ): string => {
   if (mode !== "agent" || !hasImageToolResults || auxiliaryVisionEnabled) {
     return modelName;
+  }
+  if (directGlmVisionEnabled) {
+    if (
+      selectedModelOverride === "hackerai-pro" ||
+      (!selectedModelOverride &&
+        (modelName === "model-deepseek-v4-pro" ||
+          modelName === "model-deepseek-v4-pro-0813" ||
+          modelName === PRO_AGENT_GLM_VISION_MODEL))
+    ) {
+      return PRO_AGENT_GLM_VISION_MODEL;
+    }
+    return STANDARD_AGENT_GLM_VISION_MODEL;
   }
   if (modelName === "agent-model-free") {
     return FREE_AGENT_VISION_MODEL;
@@ -611,6 +632,8 @@ export type AgentStreamContext = {
   platformAuthorized: boolean;
   /** Images are represented as auxiliary descriptions; never promote the active model. */
   auxiliaryVisionEnabled?: boolean;
+  /** Eligible paid image turns promote directly to GLM Flash before summary recovery. */
+  directGlmVisionEnabled?: boolean;
   providerReasoningOverride?: {
     modelName: string;
     reasoning: ProviderReasoningOverride;
@@ -945,6 +968,7 @@ export async function createAgentStream(
       streamHasImageViewResults,
       ctx.selectedModelOverride,
       ctx.auxiliaryVisionEnabled,
+      ctx.directGlmVisionEnabled,
     );
   const getEffectiveModelInfo = () => {
     const effectiveModelName = getEffectiveModelName();

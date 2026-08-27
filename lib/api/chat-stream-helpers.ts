@@ -23,6 +23,8 @@ import type {
   UserCustomization,
 } from "@/types";
 import {
+  DEEPSEEK_V4_FLASH_VISION_SLUG,
+  GLM_5_3_FLASH_SLUG,
   GLM_5_3_SLUG,
   GROK_4_5_SLUG,
   GROK_4_6_SLUG,
@@ -621,6 +623,8 @@ const MODEL_FALLBACK_CHAIN: Partial<Record<ModelName, readonly ModelName[]>> = {
   "model-opus-4.6": ["model-grok-4.6"],
   "model-glm-5.2": KIMI_K3_THEN_GROK_FALLBACK_CHAIN,
   "model-glm-5.3": ["model-kimi-k3"],
+  "model-glm-5.3-flash": ["model-deepseek-v4-flash-vision"],
+  "model-glm-5.3-flash-pro": ["model-deepseek-v4-flash-vision"],
   "fallback-agent-model": GROK_4_6_FALLBACK_CHAIN,
   "fallback-ask-model": GROK_4_6_FALLBACK_CHAIN,
   "model-kimi-k3": ["model-grok-4.6"],
@@ -677,6 +681,7 @@ const HIGH_REASONING_MODELS = [
   "model-deepseek-v4-pro-0813",
   "model-glm-5.2",
   "model-glm-5.3",
+  "model-glm-5.3-flash-pro",
   "model-opus-4.6",
 ] as const satisfies readonly ModelName[];
 
@@ -757,6 +762,12 @@ export function getRetryFallbackModel(
   }
   if (modelName === "model-glm-5.3") {
     return "model-kimi-k3";
+  }
+  if (
+    modelName === "model-glm-5.3-flash" ||
+    modelName === "model-glm-5.3-flash-pro"
+  ) {
+    return "model-deepseek-v4-flash-vision";
   }
   return "model-grok-4.6";
 }
@@ -862,6 +873,8 @@ const OPENROUTER_RESPONSE_MODEL_COST_KEYS: Record<string, string> = {
   "z-ai/glm-5.2-20260616": "model-glm-5.2",
   "z-ai/glm-5.3": "model-glm-5.3",
   "z-ai/glm-5.3-20260816": "model-glm-5.3",
+  [GLM_5_3_FLASH_SLUG]: "model-glm-5.3-flash",
+  [DEEPSEEK_V4_FLASH_VISION_SLUG]: "model-deepseek-v4-flash-vision",
   "moonshotai/kimi-k3": "model-kimi-k3",
   "moonshotai/kimi-k3-20260715": "model-kimi-k3",
 };
@@ -942,9 +955,10 @@ export function buildProviderOptions(
       })
     : fallbackSlugs;
   // OpenRouter applies one reasoning configuration to both the primary model
-  // and every provider fallback. The Standard vision key uses medium while
-  // GLM 5.3, Pro vision, and Grok 4.6 routes remain high.
+  // and every provider fallback. Standard GLM vision uses low, legacy Standard
+  // Grok vision uses medium, and Pro/full reasoning routes remain high.
   const isMediumGrok45Vision = modelName === "model-grok-4.5" && isGrok45;
+  const isStandardGlmFlashVision = modelName === "model-glm-5.3-flash";
   const routesThroughHighReasoningModel =
     isGrok45 ||
     isGrok46 ||
@@ -954,30 +968,35 @@ export function buildProviderOptions(
   const providerRouting = modelId
     ? getOpenRouterProviderRoutingForModel(modelId)
     : undefined;
-  const reasoning = isMediumGrok45Vision
+  const reasoning = isStandardGlmFlashVision
     ? {
         enabled: true,
-        effort: "medium",
+        effort: "low",
       }
-    : routesThroughHighReasoningModel
-      ? isHighOrGreaterReasoningOverride(options.reasoningOverride)
-        ? options.reasoningOverride
-        : {
-            enabled: true,
-            effort: "high",
-          }
-      : (options.reasoningOverride ??
-        (isHighReasoningModel(modelName) || isAgentDeepSeekV4
-          ? {
+    : isMediumGrok45Vision
+      ? {
+          enabled: true,
+          effort: "medium",
+        }
+      : routesThroughHighReasoningModel
+        ? isHighOrGreaterReasoningOverride(options.reasoningOverride)
+          ? options.reasoningOverride
+          : {
               enabled: true,
               effort: "high",
             }
-          : isReasoningModel
+        : (options.reasoningOverride ??
+          (isHighReasoningModel(modelName) || isAgentDeepSeekV4
             ? {
                 enabled: true,
-                ...(isDeepSeekV4 ? { effort: "xhigh" } : {}),
+                effort: "high",
               }
-            : { enabled: false }));
+            : isReasoningModel
+              ? {
+                  enabled: true,
+                  ...(isDeepSeekV4 ? { effort: "xhigh" } : {}),
+                }
+              : { enabled: false }));
 
   return {
     openrouter: {
