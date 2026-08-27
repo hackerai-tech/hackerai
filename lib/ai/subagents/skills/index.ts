@@ -1,6 +1,7 @@
 import strixRegistry from "./strix-skill-catalog.generated.json";
 
 import { MAX_SUBAGENT_SKILLS } from "../contracts";
+import { getSubagentSkillSafetyOverride } from "./safety-overrides";
 
 const MAX_SELECTED_SKILL_BYTES = 96 * 1024;
 
@@ -126,7 +127,14 @@ export const getSubagentSkillCatalogPrompt = (): string => {
         `[${category}]\n${skills
           .map(
             (skill) =>
-              `- ${skill.id}: ${escapeXml(skill.description.replaceAll(/\s+/g, " ").trim())}`,
+              `- ${skill.id}: ${escapeXml(
+                (
+                  getSubagentSkillSafetyOverride(skill.id)
+                    ?.catalogDescription ?? skill.description
+                )
+                  .replaceAll(/\s+/g, " ")
+                  .trim(),
+              )}`,
           )
           .join("\n")}`,
     )

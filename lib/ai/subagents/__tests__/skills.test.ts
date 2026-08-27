@@ -9,6 +9,7 @@ import {
   resolveSubagentSkills,
 } from "../skills";
 import { renderSubagentSkillKnowledge } from "../skills/knowledge";
+import { listSubagentSkillSafetyOverrideIds } from "../skills/safety-overrides";
 
 describe("Strix subagent skills", () => {
   it("exposes the vendored selectable catalog without internal orchestration skills", () => {
@@ -23,6 +24,14 @@ describe("Strix subagent skills", () => {
     expect(
       listSubagentSkills().some(
         (skill) => skill.id === "analysis/counterevidence",
+      ),
+    ).toBe(false);
+    expect(
+      listSubagentSkills().some((skill) => skill.id === "scan_modes/deep"),
+    ).toBe(false);
+    expect(
+      listSubagentSkills().some(
+        (skill) => skill.id === "coordination/root_agent",
       ),
     ).toBe(false);
   });
@@ -55,5 +64,31 @@ describe("Strix subagent skills", () => {
     expect(knowledge).toContain("does not grant tools");
     expect(knowledge.match(/<specialized_knowledge>/g)).toHaveLength(1);
     expect(knowledge.match(/<\/specialized_knowledge>/g)).toHaveLength(1);
+  });
+
+  it("applies local safety corrections without modifying vendored files", () => {
+    for (const skillId of listSubagentSkillSafetyOverrideIds()) {
+      expect(resolveSubagentSkills([skillId])).toMatchObject({ success: true });
+    }
+
+    const aws = renderSubagentSkillKnowledge(["cloud/aws"]);
+    expect(aws).toContain("HackerAI runtime override (takes precedence)");
+    expect(aws).toContain("Never pass access keys");
+
+    const dependency = renderSubagentSkillKnowledge([
+      "custom/dependency_cve_scanning",
+    ]);
+    expect(dependency).toContain(
+      "create_dependency_report and create_vulnerability_report tools are unavailable",
+    );
+
+    const nosql = renderSubagentSkillKnowledge([
+      "vulnerabilities/nosql_injection",
+    ]);
+    expect(nosql).toContain("Never use unbounded loops");
+
+    expect(getSubagentSkillCatalogPrompt()).toContain(
+      "custom/dependency_cve_scanning: Supply-chain/SCA playbook for returning lockfile",
+    );
   });
 });
