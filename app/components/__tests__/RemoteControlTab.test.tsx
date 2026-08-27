@@ -202,6 +202,47 @@ describe("RemoteControlTab", () => {
     );
   });
 
+  it("disables the action while the connect command is being prepared", async () => {
+    let resolveToken: ((value: { token: string }) => void) | undefined;
+    mockGetToken.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveToken = resolve;
+        }),
+    );
+    render(<RemoteControlTab />);
+
+    const copyButton = screen.getByRole("button", {
+      name: "Copy connect command",
+    });
+    fireEvent.click(copyButton);
+
+    expect(copyButton).toBeDisabled();
+    expect(
+      screen.getByText("Preparing connect command..."),
+    ).toBeInTheDocument();
+
+    resolveToken?.({ token: "test-token" });
+    await waitFor(() => expect(copyButton).toBeEnabled());
+  });
+
+  it("allows the generated token to be reset", async () => {
+    render(<RemoteControlTab />);
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Copy connect command" }),
+    );
+    const resetButton = await screen.findByRole("button", {
+      name: "Reset token",
+    });
+    fireEvent.click(resetButton);
+
+    await waitFor(() => expect(mockRegenerateToken).toHaveBeenCalledTimes(1));
+    expect(toast.success).toHaveBeenLastCalledWith(
+      "Access token reset. Existing connections were stopped.",
+    );
+  });
+
   it("handles a rejected clipboard write without a false success", async () => {
     mockWriteText.mockRejectedValue(
       new DOMException("Document is not focused"),
