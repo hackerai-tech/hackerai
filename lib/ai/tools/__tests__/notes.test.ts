@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, jest } from "@jest/globals";
+import { asSchema } from "ai";
 
 import type { ToolContext } from "@/types";
 
@@ -62,21 +63,29 @@ describe("note tools", () => {
   });
 
   it("normalizes nullish list filters while preserving free-form tags", async () => {
-    expect(
-      listNotesToolInputSchema.safeParse({ category: "none" }).success,
-    ).toBe(true);
-
-    await runTool(createListNotes(context), {
-      category: "none",
+    const parsedInput = listNotesToolInputSchema.parse({
+      category: " NONE ",
       search: " Undefined ",
       tags: ["none", "null", "nil", "undefined"],
     });
+    expect(parsedInput.category).toBe("none");
+
+    await runTool(createListNotes(context), parsedInput);
 
     expect(mockListNotes).toHaveBeenCalledWith({
       userId: "user-1",
       category: undefined,
       search: undefined,
       tags: ["none", "null", "nil", "undefined"],
+    });
+  });
+
+  it("serializes the normalized list schema for model tool calls", () => {
+    expect(asSchema(listNotesToolInputSchema).jsonSchema).toMatchObject({
+      type: "object",
+      properties: {
+        category: expect.any(Object),
+      },
     });
   });
 

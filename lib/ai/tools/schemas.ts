@@ -601,9 +601,16 @@ export const NULLISH_OPTIONAL_QUERY_FILTER_VALUES = [
   "nil",
   "undefined",
 ] as const;
-const nullishOptionalQueryFilterValueSchema = z.enum(
-  NULLISH_OPTIONAL_QUERY_FILTER_VALUES,
-);
+export type NullishOptionalQueryFilterValue =
+  (typeof NULLISH_OPTIONAL_QUERY_FILTER_VALUES)[number];
+export const NULLISH_OPTIONAL_QUERY_FILTER_PATTERN =
+  /^\s*(?:null|none|nil|undefined)\s*$/i;
+const nullishOptionalQueryFilterValueSchema = z
+  .string()
+  .regex(NULLISH_OPTIONAL_QUERY_FILTER_PATTERN)
+  .transform(
+    (value) => value.trim().toLowerCase() as NullishOptionalQueryFilterValue,
+  );
 
 export const createNoteToolInputSchema = z.object({
   title: z.string().describe("A concise, descriptive title for the note"),

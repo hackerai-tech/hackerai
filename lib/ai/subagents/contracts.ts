@@ -248,6 +248,7 @@ export const securityTaskCoverageEntrySchema = z.object({
   outcome: z.string().trim().min(1).max(500),
   evidence_refs: z
     .array(z.string().trim().min(1).max(500))
+    .min(1)
     .max(MAX_SECURITY_TASK_COVERAGE_EVIDENCE_REFS),
 });
 export type SecurityTaskCoverageEntry = z.infer<

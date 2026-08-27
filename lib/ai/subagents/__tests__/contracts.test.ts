@@ -160,10 +160,46 @@ describe("subagent contracts", () => {
             surface: `Surface ${index}`,
             risk_area: "Authorization",
             outcome: "No issue identified in the reviewed path.",
-            evidence_refs: [],
+            evidence_refs: [`file:surface-${index}`],
           }),
         ),
       }),
     ).toThrow();
+  });
+
+  it("requires evidence for coverage at both result boundaries", () => {
+    const coverage = [
+      {
+        surface: "API authorization middleware",
+        risk_area: "Object-level authorization",
+        outcome: "Enforcement was traced to the ownership check.",
+        evidence_refs: [],
+      },
+    ];
+
+    expect(
+      securityTaskResultSchema.safeParse({
+        task_status: "completed",
+        summary: "Reviewed the authorization path.",
+        evidence_refs: [],
+        artifacts: [],
+        limitations: [],
+        next_steps: [],
+        coverage,
+      }).success,
+    ).toBe(false);
+    expect(
+      agentSecurityTaskResultSchema.safeParse({
+        profile: "security_task",
+        status: "completed",
+        task_status: "completed",
+        summary: "Reviewed the authorization path.",
+        evidence_refs: [],
+        artifacts: [],
+        limitations: [],
+        next_steps: [],
+        coverage,
+      }).success,
+    ).toBe(false);
   });
 });

@@ -13,23 +13,17 @@ import {
   type DeleteNoteToolInput,
   listNotesTool,
   type ListNotesToolInput,
-  NULLISH_OPTIONAL_QUERY_FILTER_VALUES,
+  type NullishOptionalQueryFilterValue,
+  NULLISH_OPTIONAL_QUERY_FILTER_PATTERN,
   updateNoteTool,
   type UpdateNoteToolInput,
 } from "./schemas";
 
-type NullishOptionalQueryFilterValue =
-  (typeof NULLISH_OPTIONAL_QUERY_FILTER_VALUES)[number];
-
-const nullishOptionalQueryFilterValues = new Set<string>(
-  NULLISH_OPTIONAL_QUERY_FILTER_VALUES,
-);
-
+/** Treats explicit nulls and common model placeholders as omitted query filters. */
 const isNullishOptionalQueryFilter = (
   value: string | null | undefined,
 ): value is NullishOptionalQueryFilterValue | null | undefined =>
-  value == null ||
-  nullishOptionalQueryFilterValues.has(value.trim().toLowerCase());
+  value == null || NULLISH_OPTIONAL_QUERY_FILTER_PATTERN.test(value);
 
 /**
  * Create a new personal note to record observations, findings, or research.

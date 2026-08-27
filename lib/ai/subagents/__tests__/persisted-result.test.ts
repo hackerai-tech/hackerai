@@ -115,7 +115,7 @@ describe("resultFromPersistedSubagent", () => {
             surface: "",
             risk_area: "Authorization",
             outcome: "Invalid because the surface is empty.",
-            evidence_refs: [],
+            evidence_refs: ["file:/tmp/invalid.txt"],
           },
           ...Array.from({ length: 9 }, (_, index) => ({
             surface: `Surface ${index}`,
@@ -136,5 +136,10 @@ describe("resultFromPersistedSubagent", () => {
     expect(
       result.profile === "security_task" ? result.coverage : undefined,
     ).toHaveLength(8);
+    const exposedCoverage =
+      result.profile === "security_task" ? (result.coverage ?? []) : [];
+    expect(exposedCoverage.every((entry) => entry.surface.length > 0)).toBe(
+      true,
+    );
   });
 });
