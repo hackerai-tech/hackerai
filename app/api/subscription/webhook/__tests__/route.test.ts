@@ -19,6 +19,7 @@ const mockRetrieveSubscription = jest.fn();
 const mockUpdateSubscription = jest.fn();
 const mockListSubscriptions = jest.fn();
 const mockRetrieveInvoice = jest.fn();
+const mockListInvoiceLineItems = jest.fn();
 const mockRetrievePaymentIntent = jest.fn();
 const mockRetrieveCharge = jest.fn();
 const mockRetrievePrice = jest.fn();
@@ -61,6 +62,7 @@ jest.mock("@/app/api/stripe", () => ({
     },
     invoices: {
       retrieve: mockRetrieveInvoice,
+      listLineItems: mockListInvoiceLineItems,
     },
     paymentIntents: {
       retrieve: mockRetrievePaymentIntent,
@@ -540,6 +542,7 @@ describe("POST /api/subscription/webhook", () => {
         subscription_details: { subscription: "sub_hac46" },
       },
       lines: {
+        has_more: true,
         data: [
           {
             amount: 500,
@@ -555,21 +558,39 @@ describe("POST /api/subscription/webhook", () => {
               price_details: { price: "price_unrelated_addon" },
             },
           },
-          {
-            amount: 2900,
-            subscription: "sub_hac46",
-            parent: {
-              type: "subscription_item_details",
-              subscription_item_details: {
-                subscription: "sub_hac46",
-                proration: false,
-              },
-            },
-            pricing: {
-              price_details: { price: "price_pro_29" },
+        ],
+      },
+    } as never);
+    mockListInvoiceLineItems.mockReturnValue({
+      async *[Symbol.asyncIterator]() {
+        yield {
+          amount: 500,
+          subscription: null,
+          parent: {
+            type: "invoice_item_details",
+            invoice_item_details: {
+              subscription: null,
+              proration: false,
             },
           },
-        ],
+          pricing: {
+            price_details: { price: "price_unrelated_addon" },
+          },
+        };
+        yield {
+          amount: 2900,
+          subscription: "sub_hac46",
+          parent: {
+            type: "subscription_item_details",
+            subscription_item_details: {
+              subscription: "sub_hac46",
+              proration: false,
+            },
+          },
+          pricing: {
+            price_details: { price: "price_pro_29" },
+          },
+        };
       },
     } as never);
     mockRetrieveCustomer.mockResolvedValue({
@@ -612,6 +633,9 @@ describe("POST /api/subscription/webhook", () => {
     const response = await POST(makeWebhookRequest());
 
     expect(response.status).toBe(200);
+    expect(mockListInvoiceLineItems).toHaveBeenCalledWith("in_hac46", {
+      limit: 100,
+    });
     expect(mockRetrievePrice).toHaveBeenCalledWith("price_pro_29");
     expect(mockConvexMutation).toHaveBeenCalledWith(
       "unitEconomics.recordRevenueEvent",
@@ -725,6 +749,93 @@ describe("POST /api/subscription/webhook", () => {
         ([mutation]) => mutation === "extraUsage.checkAndMarkWebhook",
       ),
     ).toHaveLength(1);
+  });
+
+  it("retries refunds when the invoice has no line for the refunded subscription", async () => {
+    mockConstructEvent.mockReturnValue({
+      id: "evt_refund_missing_subscription_line",
+      type: "refund.created",
+      data: {
+        object: {
+          id: "re_missing_subscription_line",
+          status: "succeeded",
+          amount: 2900,
+          currency: "usd",
+          charge: "ch_missing_subscription_line",
+        },
+      },
+    });
+    mockRetrieveCharge.mockResolvedValue({
+      id: "ch_missing_subscription_line",
+      customer: "cus_missing_subscription_line",
+      invoice: "in_missing_subscription_line",
+    } as never);
+    mockRetrieveInvoice.mockResolvedValue({
+      id: "in_missing_subscription_line",
+      customer: "cus_missing_subscription_line",
+      parent: {
+        subscription_details: {
+          subscription: "sub_missing_subscription_line",
+        },
+      },
+      lines: {
+        data: [
+          {
+            amount: 2900,
+            subscription: "sub_different",
+            parent: {
+              type: "subscription_item_details",
+              subscription_item_details: {
+                subscription: "sub_different",
+                proration: false,
+              },
+            },
+            pricing: {
+              price_details: { price: "price_different" },
+            },
+          },
+        ],
+      },
+    } as never);
+    mockRetrieveCustomer.mockResolvedValue({
+      id: "cus_missing_subscription_line",
+      deleted: false,
+      metadata: { workOSOrganizationId: "org_missing_subscription_line" },
+    } as never);
+    mockListMemberships.mockResolvedValue({
+      autoPagination: jest
+        .fn()
+        .mockResolvedValue([{ userId: "user_missing_subscription_line" }]),
+    } as never);
+    mockRetrieveSubscription.mockResolvedValue({
+      id: "sub_missing_subscription_line",
+      metadata: {},
+      items: {
+        data: [
+          {
+            price: {
+              id: "price_current",
+              lookup_key: "pro-monthly-plan",
+            },
+          },
+        ],
+      },
+    } as never);
+
+    const { POST } = await import("../route");
+
+    await expect(POST(makeWebhookRequest())).rejects.toThrow(
+      "Historical subscription Price missing from refund invoice",
+    );
+    expect(mockRetrievePrice).not.toHaveBeenCalled();
+    expect(mockConvexMutation).not.toHaveBeenCalledWith(
+      "unitEconomics.recordRevenueEvent",
+      expect.anything(),
+    );
+    expect(mockPostHogEvent).not.toHaveBeenCalledWith(
+      "subscription_refunded",
+      expect.anything(),
+    );
   });
 
   it("skips legacy PentestGPT invoices before resolving the old product as a HackerAI tier", async () => {

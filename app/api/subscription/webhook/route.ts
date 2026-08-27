@@ -97,11 +97,19 @@ function stripeEventOccurredAtMs(event: Stripe.Event): number {
 }
 
 /** Return the immutable Price ID recorded on a subscription invoice line. */
-function invoiceSubscriptionPriceId(
+async function invoiceSubscriptionPriceId(
   invoice: Stripe.Invoice,
   subscriptionId: string,
-): string | undefined {
-  const lines = invoice.lines?.data ?? [];
+): Promise<string | undefined> {
+  let lines = invoice.lines?.data ?? [];
+  if (invoice.lines?.has_more) {
+    lines = [];
+    for await (const line of stripe.invoices.listLineItems(invoice.id, {
+      limit: 100,
+    })) {
+      lines.push(line);
+    }
+  }
   const candidates = lines.filter((line) => {
     const lineSubscriptionId =
       stripeObjectId(line.subscription) ??
@@ -1578,20 +1586,29 @@ async function handleSubscriptionRefund(
   const { userIds, orgId } = await resolveUserIdsFromCustomer(customerId);
   if (userIds.length === 0) return;
 
-  const currentPrice = resolved.subscription.items?.data[0]?.price;
-  const invoicePriceId = invoiceSubscriptionPriceId(invoice, subscriptionId);
-  let price = currentPrice;
-  if (invoicePriceId) {
-    try {
-      price = await stripe.prices.retrieve(invoicePriceId);
-    } catch (error) {
-      phLogger.warn("subscription_refund_invoice_price_retrieve_failed", {
-        stripe_invoice_id: invoiceId,
-        stripe_price_id: invoicePriceId,
-        error: error instanceof Error ? error.message : String(error),
-      });
-      throw error;
-    }
+  const invoicePriceId = await invoiceSubscriptionPriceId(
+    invoice,
+    subscriptionId,
+  );
+  if (!invoicePriceId) {
+    phLogger.warn("subscription_refund_invoice_price_missing", {
+      stripe_invoice_id: invoiceId,
+      stripe_subscription_id: subscriptionId,
+    });
+    throw new Error(
+      "Historical subscription Price missing from refund invoice",
+    );
+  }
+  let price: Stripe.Price;
+  try {
+    price = await stripe.prices.retrieve(invoicePriceId);
+  } catch (error) {
+    phLogger.warn("subscription_refund_invoice_price_retrieve_failed", {
+      stripe_invoice_id: invoiceId,
+      stripe_price_id: invoicePriceId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    throw error;
   }
   const refundedTier = price?.lookup_key
     ? (planLookupKeyToTier(price.lookup_key) ?? resolved.tier)
@@ -2235,7 +2252,8 @@ async function handleSubscriptionDeleted(
  * - Endpoint URL: https://your-domain.com/api/subscription/webhook
  * - Events: checkout.session.completed, invoice.paid,
  *   invoice.payment_failed, customer.subscription.updated,
- *   customer.subscription.deleted, payment_method.attached, customer.updated
+ *   customer.subscription.deleted, payment_method.attached, customer.updated,
+ *   refund.created, refund.updated
  */
 export async function POST(req: NextRequest) {
   const body = await req.text();
