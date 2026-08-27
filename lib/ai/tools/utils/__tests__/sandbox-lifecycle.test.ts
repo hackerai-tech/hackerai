@@ -59,12 +59,22 @@ const listSandbox = (
 };
 
 describe("E2B sandbox lease lifecycle", () => {
+  const originalEnv = process.env;
+
   beforeEach(() => {
     jest.clearAllMocks();
+    process.env = { ...originalEnv };
+    delete process.env.E2B_EU_API_KEY;
+    delete process.env.E2B_EU_DOMAIN;
+    delete process.env.E2B_EU_TEMPLATE;
   });
 
   afterEach(() => {
     jest.useRealTimers();
+  });
+
+  afterAll(() => {
+    process.env = originalEnv;
   });
 
   it("always refreshes the same fixed cloud lease", async () => {
@@ -247,6 +257,191 @@ describe("E2B sandbox lease lifecycle", () => {
         metadata: expect.objectContaining({ sandboxVersion: "v12" }),
       }),
     );
+  });
+
+  it("creates a fresh EU sandbox for an EU Trigger run when EU is configured", async () => {
+    process.env.E2B_EU_API_KEY = "e2b-eu-test-key";
+    process.env.E2B_EU_DOMAIN = "e2b-juliett.dev";
+    const createdSandbox = { sandboxId: "sandbox-eu" } as unknown as Sandbox;
+    sandboxApi.list
+      .mockReturnValueOnce({ nextItems: jest.fn(async () => []) })
+      .mockReturnValueOnce({ nextItems: jest.fn(async () => []) });
+    sandboxApi.create.mockResolvedValue(createdSandbox);
+
+    const result = await ensureSandboxConnection(
+      { userID: "user-1", setSandbox: jest.fn() },
+      { triggerRegion: "eu-central-1" },
+    );
+
+    expect(result.sandbox).toBe(createdSandbox);
+    expect(sandboxApi.list).toHaveBeenCalledTimes(2);
+    expect(sandboxApi.list).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        apiKey: "e2b-eu-test-key",
+        domain: "e2b-juliett.dev",
+      }),
+    );
+    expect(sandboxApi.create).toHaveBeenCalledWith(
+      "terminal-agent-sandbox",
+      expect.objectContaining({
+        apiKey: "e2b-eu-test-key",
+        domain: "e2b-juliett.dev",
+        metadata: expect.objectContaining({ e2bCluster: "eu" }),
+      }),
+    );
+  });
+
+  it("keeps reusing an existing US sandbox for an EU Trigger run", async () => {
+    process.env.E2B_EU_API_KEY = "e2b-eu-test-key";
+    const connectedSandbox = {
+      sandboxId: "sandbox-us",
+    } as unknown as Sandbox;
+    sandboxApi.list
+      .mockReturnValueOnce({
+        nextItems: jest.fn(async () => [
+          {
+            sandboxId: "sandbox-us",
+            state: "running",
+            metadata: { sandboxVersion: "v12" },
+          },
+        ]),
+      })
+      .mockReturnValueOnce({ nextItems: jest.fn(async () => []) });
+    sandboxApi.connect.mockResolvedValue(connectedSandbox);
+
+    const result = await ensureSandboxConnection(
+      { userID: "user-1", setSandbox: jest.fn() },
+      { triggerRegion: "eu-central-1" },
+    );
+
+    expect(result.sandbox).toBe(connectedSandbox);
+    expect(sandboxApi.list).toHaveBeenCalledTimes(2);
+    expect(sandboxApi.connect).toHaveBeenCalledWith("sandbox-us", {
+      timeoutMs: BASH_SANDBOX_AUTOPAUSE_TIMEOUT,
+    });
+  });
+
+  it("falls back to the US cluster when the optional EU key is absent", async () => {
+    const createdSandbox = { sandboxId: "sandbox-us" } as unknown as Sandbox;
+    sandboxApi.list.mockReturnValue({
+      nextItems: jest.fn(async () => []),
+    });
+    sandboxApi.create.mockResolvedValue(createdSandbox);
+
+    await ensureSandboxConnection(
+      { userID: "user-1", setSandbox: jest.fn() },
+      { triggerRegion: "eu-central-1" },
+    );
+
+    expect(sandboxApi.list).toHaveBeenCalledTimes(1);
+    expect(sandboxApi.create).toHaveBeenCalledWith(
+      "terminal-agent-sandbox",
+      expect.not.objectContaining({
+        apiKey: expect.anything(),
+        domain: expect.anything(),
+      }),
+    );
+  });
+
+  it("reuses an EU sandbox if a later run is placed in a US Trigger region", async () => {
+    process.env.E2B_EU_API_KEY = "e2b-eu-test-key";
+    const connectedSandbox = {
+      sandboxId: "sandbox-eu",
+    } as unknown as Sandbox;
+    sandboxApi.list
+      .mockReturnValueOnce({ nextItems: jest.fn(async () => []) })
+      .mockReturnValueOnce({
+        nextItems: jest.fn(async () => [
+          {
+            sandboxId: "sandbox-eu",
+            state: "paused",
+            metadata: { sandboxVersion: "v12" },
+          },
+        ]),
+      });
+    sandboxApi.connect.mockResolvedValue(connectedSandbox);
+
+    const result = await ensureSandboxConnection(
+      { userID: "user-1", setSandbox: jest.fn() },
+      { triggerRegion: "us-east-1" },
+    );
+
+    expect(result.sandbox).toBe(connectedSandbox);
+    expect(sandboxApi.connect).toHaveBeenCalledWith("sandbox-eu", {
+      apiKey: "e2b-eu-test-key",
+      domain: "e2b-juliett.dev",
+      timeoutMs: BASH_SANDBOX_AUTOPAUSE_TIMEOUT,
+    });
+  });
+
+  it("prefers a running compatible EU sandbox over a stale paused US sandbox", async () => {
+    process.env.E2B_EU_API_KEY = "e2b-eu-test-key";
+    const connectedSandbox = {
+      sandboxId: "sandbox-eu",
+    } as unknown as Sandbox;
+    sandboxApi.list
+      .mockReturnValueOnce({
+        nextItems: jest.fn(async () => [
+          {
+            sandboxId: "sandbox-us-stale",
+            state: "paused",
+            metadata: { sandboxVersion: "v10" },
+          },
+        ]),
+      })
+      .mockReturnValueOnce({
+        nextItems: jest.fn(async () => [
+          {
+            sandboxId: "sandbox-eu",
+            state: "running",
+            metadata: { sandboxVersion: "v12" },
+          },
+        ]),
+      });
+    sandboxApi.connect.mockResolvedValue(connectedSandbox);
+
+    const result = await ensureSandboxConnection(
+      { userID: "user-1", setSandbox: jest.fn() },
+      { triggerRegion: "eu-central-1" },
+    );
+
+    expect(result.sandbox).toBe(connectedSandbox);
+    expect(sandboxApi.connect).toHaveBeenCalledWith("sandbox-eu", {
+      apiKey: "e2b-eu-test-key",
+      domain: "e2b-juliett.dev",
+      timeoutMs: BASH_SANDBOX_AUTOPAUSE_TIMEOUT,
+    });
+    expect(sandboxApi.kill).not.toHaveBeenCalled();
+    expect(sandboxApi.create).not.toHaveBeenCalled();
+  });
+
+  it("creates the replacement in EU when a listed US sandbox has expired", async () => {
+    process.env.E2B_EU_API_KEY = "e2b-eu-test-key";
+    const createdSandbox = { sandboxId: "sandbox-eu" } as unknown as Sandbox;
+    listSandbox({ sandboxId: "sandbox-expired-us" });
+    sandboxApi.connect.mockRejectedValue(new Error("sandbox not found"));
+    sandboxApi.create.mockResolvedValue(createdSandbox);
+    const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+
+    try {
+      const result = await ensureSandboxConnection(
+        { userID: "user-1", setSandbox: jest.fn() },
+        { triggerRegion: "eu-central-1" },
+      );
+
+      expect(result.sandbox).toBe(createdSandbox);
+      expect(sandboxApi.create).toHaveBeenCalledWith(
+        "terminal-agent-sandbox",
+        expect.objectContaining({
+          apiKey: "e2b-eu-test-key",
+          domain: "e2b-juliett.dev",
+          metadata: expect.objectContaining({ e2bCluster: "eu" }),
+        }),
+      );
+    } finally {
+      errorSpy.mockRestore();
+    }
   });
 
   it("prefers a running sandbox over a newer paused duplicate", async () => {

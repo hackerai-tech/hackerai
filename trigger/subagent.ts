@@ -105,6 +105,7 @@ import {
   getUserFriendlyProviderError,
 } from "@/lib/utils/error-utils";
 import { ChatSDKError, serializeChatSDKErrorForStream } from "@/lib/errors";
+import type { TriggerRunRegion } from "@/lib/api/trigger-region";
 
 type SubagentTaskOutput = {
   subagentId: string;
@@ -127,6 +128,7 @@ const loadPersistedTerminalOutput = async (
 type SubagentTaskPayload = {
   subagentId: string;
   convexUrl?: string;
+  triggerRegion?: TriggerRunRegion;
 };
 
 type CancellationCleanup = {
@@ -718,6 +720,7 @@ export const subagentTask = task({
                 }),
                 ptyScopeId: row.subagent_id,
                 chargeSandboxRuntime: false,
+                triggerRegion: payload.triggerRegion,
               },
             );
             const tools = guardSubagentToolExecutions(

@@ -1,6 +1,7 @@
 import {
   idempotencyKeys,
   logger as triggerLogger,
+  tasks,
   wait,
 } from "@trigger.dev/sdk";
 import { tool, type UIMessageStreamWriter } from "ai";
@@ -51,10 +52,11 @@ import {
   subagentOperationEventUuid,
   subagentResultClaimedEventUuid,
 } from "@/lib/analytics/subagents";
-import { subagentTask } from "@/trigger/subagent";
+import type { subagentTask } from "@/trigger/subagent";
 import { resultFromPersistedSubagent } from "@/lib/ai/subagents/persisted-result";
 import { toSubagentHandle } from "@/lib/ai/subagents/agent-handle";
 import { cancelAgentTriggerRun } from "@/lib/api/agent-approval-session";
+import type { TriggerRunRegion } from "@/lib/api/trigger-region";
 
 export type SubagentToolsRuntimeConfig = {
   organizationId?: string;
@@ -62,6 +64,7 @@ export type SubagentToolsRuntimeConfig = {
   permissionMode: AgentPermissionMode;
   subscription: SubscriptionTier;
   freeQuotaSubject?: string;
+  triggerRegion?: TriggerRunRegion;
   securityTaskEnabled: boolean;
   securityValidationEnabled: boolean;
 };
@@ -289,8 +292,13 @@ export const createCreateAgentTool = (
           const key = await idempotencyKeys.create([profile, subagentId], {
             scope: "global",
           });
-          await subagentTask.trigger(
-            { subagentId, convexUrl: getConvexUrl() },
+          await tasks.trigger<typeof subagentTask>(
+            "hackerai-subagent",
+            {
+              subagentId,
+              convexUrl: getConvexUrl(),
+              triggerRegion: config.triggerRegion,
+            },
             {
               idempotencyKey: key,
               idempotencyKeyTTL: "6h",
@@ -306,6 +314,7 @@ export const createCreateAgentTool = (
                 parentToolCallId: execution.toolCallId,
                 profile,
               },
+              region: config.triggerRegion,
             },
           );
         } catch {

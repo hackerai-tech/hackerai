@@ -17,6 +17,14 @@ Before you begin, make sure you have:
    E2B_API_KEY=your_api_key_here
    ```
 
+For the separate EU cluster, add its server-side credentials without replacing
+the US key:
+
+```dotenv
+E2B_EU_API_KEY=your_eu_api_key_here
+E2B_EU_DOMAIN=e2b-juliett.dev
+```
+
 ## Building the Template
 
 ```bash
@@ -25,7 +33,18 @@ pnpm run e2b:build:dev
 
 # For production
 pnpm run e2b:build:prod
+
+# For the EU development template
+pnpm run e2b:build:eu:dev
+
+# For the EU production template
+pnpm run e2b:build:eu:prod
 ```
+
+The EU commands pass the separate key and `e2b-juliett.dev` domain directly to
+the E2B SDK. They do not overwrite or reuse `E2B_API_KEY`. Set
+`E2B_EU_TEMPLATE` only when the EU template alias should differ from
+`terminal-agent-sandbox-dev` or `terminal-agent-sandbox`.
 
 ## Using the Template in a Sandbox
 

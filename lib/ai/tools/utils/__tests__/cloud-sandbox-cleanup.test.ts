@@ -22,6 +22,9 @@ describe("cloud sandbox cleanup", () => {
     jest.clearAllMocks();
     process.env = { ...originalEnv };
     delete process.env.E2B_API_KEY;
+    delete process.env.E2B_EU_API_KEY;
+    delete process.env.E2B_EU_DOMAIN;
+    delete process.env.E2B_EU_TEMPLATE;
   });
 
   afterAll(() => {
@@ -67,5 +70,38 @@ describe("cloud sandbox cleanup", () => {
     );
 
     errorSpy.mockRestore();
+  });
+
+  it("terminates sandboxes in both configured clusters", async () => {
+    process.env.E2B_API_KEY = "e2b-us-test-key";
+    process.env.E2B_EU_API_KEY = "e2b-eu-test-key";
+    mockListE2BSandboxes
+      .mockReturnValueOnce({
+        nextItems: jest.fn(async () => [{ sandboxId: "sandbox-us" }]),
+        hasNext: false,
+      } as ReturnType<typeof Sandbox.list>)
+      .mockReturnValueOnce({
+        nextItems: jest.fn(async () => [{ sandboxId: "sandbox-eu" }]),
+        hasNext: false,
+      } as ReturnType<typeof Sandbox.list>);
+    mockKillE2BSandbox.mockResolvedValue(undefined);
+
+    await expect(terminateCloudSandboxesForUser("user_123")).resolves.toEqual({
+      total: 2,
+      killed: 2,
+      alreadyGone: 0,
+    });
+    expect(mockListE2BSandboxes).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        apiKey: "e2b-eu-test-key",
+        domain: "e2b-juliett.dev",
+      }),
+    );
+    expect(mockKillE2BSandbox).toHaveBeenNthCalledWith(1, "sandbox-us");
+    expect(mockKillE2BSandbox).toHaveBeenNthCalledWith(2, "sandbox-eu", {
+      apiKey: "e2b-eu-test-key",
+      domain: "e2b-juliett.dev",
+    });
   });
 });
