@@ -977,9 +977,10 @@ export const GLM_5_3_SLUG = "z-ai/glm-5.3";
 export const GROK_4_5_SLUG = "x-ai/grok-4.5";
 export const GROK_4_6_SLUG = "x-ai/grok-4.6";
 // Prefer DeepSeek's purpose-built vision model for auxiliary image analysis,
-// with MiMo-V2.5 retained as the cyber-friendly provider fallback.
+// then fall back to GLM Flash and MiniMax M3 in that order.
 export const AUXILIARY_VISION_SLUG = "deepseek/deepseek-v4-flash-vision-exp";
-export const AUXILIARY_VISION_FALLBACK_SLUG = "xiaomi/mimo-v2.5";
+export const AUXILIARY_VISION_FALLBACK_SLUG = "z-ai/glm-5.3-flash";
+export const AUXILIARY_VISION_SECONDARY_FALLBACK_SLUG = "minimax/minimax-m3";
 export const DEEPSEEK_V4_PRO_SLUG = "deepseek/deepseek-v4-pro";
 export const DEEPSEEK_V4_PRO_0813_SLUG = "deepseek/deepseek-v4-pro-0813";
 export const DEEPSEEK_V4_FLASH_SLUG = "deepseek/deepseek-v4-flash-0731";

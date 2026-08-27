@@ -18,7 +18,10 @@ import {
   getLimitPressureContext,
   type LimitCapReason,
 } from "@/lib/limit-pressure";
-import { isUserRateLimitKey } from "./key-cleanup";
+import {
+  isFreeQuotaSubjectRateLimitKey,
+  isUserRateLimitKey,
+} from "./key-cleanup";
 import { NORMAL_USAGE_MULTIPLIER, POINTS_PER_DOLLAR } from "./usage-pricing";
 
 export { isUserRateLimitKey } from "./key-cleanup";
@@ -1682,12 +1685,13 @@ export const capCurrentCycleAllocation = async (
  * Namespaces (keep in sync with key builders in this file and sliding-window.ts):
  *   - usage:monthly:<userId>:*       — monthly token bucket (any tier)
  *   - upgrade:carryover:<userId>:*   — tier-change stash, claim, and completion keys
- *   - free_limit:<userId>:*          — free-tier shared ask/agent sliding window
- *   - free_referral_bonus:<userId>   — one-time free request units from referral signup
- *   - free_referral_bonus_grant:*:<userId> — referral bonus grant idempotency marker
- *   - free_agent_limit:<userId>:*    — legacy free-tier agent sliding window
- *   - free_monthly_cost:<userId>:*   — free-tier monthly provider/tool cost cap
- *   - free_run_lock:<userId>         — free-tier active-run concurrency lock
+ *   - free_limit:<quotaSubject>:*    — free-tier shared ask/agent sliding window
+ *   - free_referral_bonus:<quotaSubject> — one-time free request units from referral signup
+ *   - free_referral_bonus_grant:*:<quotaSubject> — referral bonus grant idempotency marker
+ *   - free_agent_limit:<quotaSubject>:* — legacy free-tier agent sliding window
+ *   - free_monthly_cost:<quotaSubject>:* — free-tier monthly provider/tool cost cap
+ *   - free_usage_budget_started:v1:<quotaSubject> — free budget experiment marker
+ *   - free_run_lock:<quotaSubject>   — free-tier active-run concurrency lock
  *   - team:debt_applied:*:<userId>   — seat-debt idempotency flag (org-scoped)
  *
  * Deliberately NOT included: team:removed_usage:<orgId> (org counter, not
@@ -1695,18 +1699,22 @@ export const capCurrentCycleAllocation = async (
  */
 export const deleteUserRateLimitKeys = async (
   userId: string,
+  freeQuotaSubject?: string,
 ): Promise<number> => {
   const redis = createRedisClient();
   if (!redis) return 0;
 
   try {
-    const keys = Array.from(
-      new Set(
-        (await scanRedisKeys(redis, `*${userId}*`)).filter((key) =>
-          isUserRateLimitKey(key, userId),
-        ),
-      ),
+    const userKeys = (await scanRedisKeys(redis, `*${userId}*`)).filter((key) =>
+      isUserRateLimitKey(key, userId),
     );
+    const freeQuotaKeys =
+      freeQuotaSubject && freeQuotaSubject !== userId
+        ? (await scanRedisKeys(redis, `*${freeQuotaSubject}*`)).filter((key) =>
+            isFreeQuotaSubjectRateLimitKey(key, freeQuotaSubject),
+          )
+        : [];
+    const keys = Array.from(new Set([...userKeys, ...freeQuotaKeys]));
     if (keys.length === 0) return 0;
     await deleteRedisKeys(redis, keys);
     return keys.length;

@@ -1,5 +1,6 @@
 import {
   AUXILIARY_VISION_FALLBACK_SLUG,
+  AUXILIARY_VISION_SECONDARY_FALLBACK_SLUG,
   AUXILIARY_VISION_SLUG,
   createOpenRouterPatchFetch,
   enrichOpenRouterStreamError,
@@ -125,7 +126,8 @@ describe("provider registry", () => {
       ).modelId,
     ).toBe("deepseek/deepseek-v4-flash-vision-exp");
     expect(AUXILIARY_VISION_SLUG).toBe("deepseek/deepseek-v4-flash-vision-exp");
-    expect(AUXILIARY_VISION_FALLBACK_SLUG).toBe("xiaomi/mimo-v2.5");
+    expect(AUXILIARY_VISION_FALLBACK_SLUG).toBe("z-ai/glm-5.3-flash");
+    expect(AUXILIARY_VISION_SECONDARY_FALLBACK_SLUG).toBe("minimax/minimax-m3");
     expect(getModelCutoffDate("auxiliary-vision-model")).toBe("July 2026");
     expect(
       (myProvider.languageModel("model-grok-4.6") as { modelId: string })
