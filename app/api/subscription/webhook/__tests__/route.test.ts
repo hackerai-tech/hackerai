@@ -195,6 +195,27 @@ function hydratedPaymentIntent() {
   };
 }
 
+function subscriptionInvoiceLine(
+  subscriptionId: string,
+  priceId: string,
+  amount: number,
+) {
+  return {
+    amount,
+    subscription: subscriptionId,
+    parent: {
+      type: "subscription_item_details",
+      subscription_item_details: {
+        subscription: subscriptionId,
+        proration: false,
+      },
+    },
+    pricing: {
+      price_details: { price: priceId },
+    },
+  };
+}
+
 function mockInvoicePaymentFailedAnalytics({
   invoicePaymentIntent = expandedInvoicePaymentIntent(),
   paymentIntent = hydratedPaymentIntent(),
@@ -1003,6 +1024,11 @@ describe("POST /api/subscription/webhook", () => {
                 subscription: "sub_terminal",
               },
             },
+            lines: {
+              data: [
+                subscriptionInvoiceLine("sub_terminal", "price_pro", 2500),
+              ],
+            },
             status_transitions: {
               paid_at: 1_784_456_277,
             },
@@ -1122,6 +1148,11 @@ describe("POST /api/subscription/webhook", () => {
               subscription: "sub_old_invoice",
             },
           },
+          lines: {
+            data: [
+              subscriptionInvoiceLine("sub_old_invoice", "price_pro", 2500),
+            ],
+          },
           status_transitions: {
             paid_at: 1_784_456_277,
           },
@@ -1221,6 +1252,15 @@ describe("POST /api/subscription/webhook", () => {
             subscription_details: {
               subscription: "sub_pro_20",
             },
+          },
+          lines: {
+            data: [
+              subscriptionInvoiceLine(
+                "sub_pro_20",
+                HACKERAI_PRO_20_MONTHLY_PRICE_ID,
+                2000,
+              ),
+            ],
           },
           status_transitions: {
             paid_at: 1_782_000_000,
@@ -1353,6 +1393,9 @@ describe("POST /api/subscription/webhook", () => {
           parent: {
             subscription_details: { subscription: "sub_team" },
           },
+          lines: {
+            data: [subscriptionInvoiceLine("sub_team", "price_team", 3000)],
+          },
           status_transitions: { paid_at: 1_782_000_000 },
         },
       },
@@ -1412,6 +1455,113 @@ describe("POST /api/subscription/webhook", () => {
     }
   });
 
+  it("attributes a paid invoice to its historical Price after the subscription Price changes", async () => {
+    mockConstructEvent.mockReturnValue({
+      id: "evt_invoice_paid_historical_price",
+      type: "invoice.paid",
+      data: {
+        object: {
+          id: "in_historical_price",
+          customer: "cus_historical_price",
+          amount_paid: 2900,
+          currency: "usd",
+          billing_reason: "subscription_create",
+          parent: {
+            subscription_details: {
+              subscription: "sub_historical_price",
+            },
+          },
+          lines: {
+            data: [
+              subscriptionInvoiceLine(
+                "sub_historical_price",
+                "price_pro_29",
+                2900,
+              ),
+            ],
+          },
+          status_transitions: { paid_at: 1_782_000_000 },
+        },
+      },
+    });
+    mockRetrieveCustomer.mockResolvedValue({
+      deleted: false,
+      id: "cus_historical_price",
+      metadata: { workOSOrganizationId: "org_historical_price" },
+    } as never);
+    mockListMemberships.mockResolvedValue({
+      autoPagination: jest
+        .fn()
+        .mockResolvedValue([{ userId: "user_historical_price" }]),
+    } as never);
+    mockRetrieveSubscription.mockResolvedValue({
+      id: "sub_historical_price",
+      status: "active",
+      latest_invoice: "in_historical_price",
+      metadata: {
+        pricingExperimentKey: "hac46-pro-monthly-29-pricing",
+        pricingExperimentVariant: "test",
+        pricingExperimentPriceLookupKey: "pro-monthly-plan-29-experiment",
+      },
+      items: {
+        data: [
+          {
+            quantity: 1,
+            current_period_end: 1_785_000_000,
+            price: {
+              id: "price_pro_plus_60",
+              lookup_key: "pro-plus-monthly-plan",
+              recurring: { interval: "month", interval_count: 1 },
+              product: {
+                id: "prod_pro_plus",
+                name: "HackerAI Pro Plus",
+                metadata: {},
+              },
+            },
+          },
+        ],
+      },
+    } as never);
+    mockRetrievePrice.mockResolvedValue({
+      id: "price_pro_29",
+      lookup_key: "pro-monthly-plan-29-experiment",
+      unit_amount: 2900,
+      recurring: { interval: "month", interval_count: 1 },
+      product: "prod_pro",
+    } as never);
+
+    const { POST } = await import("../route");
+    const response = await POST(makeWebhookRequest());
+
+    expect(response.status).toBe(200);
+    expect(mockRetrievePrice).toHaveBeenCalledWith("price_pro_29");
+    expect(mockConvexMutation).toHaveBeenCalledWith(
+      "unitEconomics.recordRevenueEvent",
+      expect.objectContaining({
+        stripePriceId: "price_pro_29",
+        plan: "pro-monthly-plan-29-experiment",
+      }),
+    );
+    expect(mockConvexMutation).toHaveBeenCalledWith(
+      "unitEconomics.recordPaidStartEvent",
+      expect.objectContaining({
+        stripePriceId: "price_pro_29",
+        plan: "pro-monthly-plan-29-experiment",
+      }),
+    );
+    for (const eventName of ["invoice_paid", "subscription_started"]) {
+      expect(mockPostHogEvent).toHaveBeenCalledWith(
+        eventName,
+        expect.objectContaining({
+          stripe_price_id: "price_pro_29",
+          stripe_price_lookup_key: "pro-monthly-plan-29-experiment",
+          experiment_key: "hac46-pro-monthly-29-pricing",
+          experiment_variant: "test",
+        }),
+      );
+    }
+  });
+
   it("emits recovery when invoice.paid arrives before the failure webhook", async () => {
     const periodEnd = 1_785_000_000;
     mockResetRateLimitBucketAfterPayment.mockResolvedValueOnce({
@@ -1431,6 +1581,15 @@ describe("POST /api/subscription/webhook", () => {
           attempt_count: 2,
           parent: {
             subscription_details: { subscription: "sub_reordered" },
+          },
+          lines: {
+            data: [
+              subscriptionInvoiceLine(
+                "sub_reordered",
+                HACKERAI_PRO_20_MONTHLY_PRICE_ID,
+                2000,
+              ),
+            ],
           },
           status_transitions: { paid_at: 1_782_000_000 },
         },
@@ -1501,6 +1660,11 @@ describe("POST /api/subscription/webhook", () => {
           billing_reason: "subscription_update",
           parent: {
             subscription_details: { subscription: "sub_upgrade" },
+          },
+          lines: {
+            data: [
+              subscriptionInvoiceLine("sub_upgrade", "price_pro_plus", 1459),
+            ],
           },
           status_transitions: { paid_at: nowSeconds },
         },
