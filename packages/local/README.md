@@ -32,11 +32,12 @@ Commands run directly on your host OS. The client connects to HackerAI and relay
 | `--convex-url URL` | Override backend URL (for development)                 |
 | `--help, -h`       | Show help message                                      |
 
-## Getting Your Token
+## Connecting From HackerAI
 
 1. Go to [HackerAI Settings](https://hackerai.co/settings)
-2. Navigate to the "Agents" tab
-3. Click "Generate Token" or copy your existing token
+2. Open "Remote Control"
+3. Click "Copy connect command"
+4. Paste and run the command in your terminal
 
 ## Security
 

@@ -4,17 +4,15 @@ import { useEffect, useRef, useState } from "react";
 import { useMutation } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import {
   Circle,
   Copy,
-  Eye,
-  EyeOff,
   RefreshCw,
   AlertTriangle,
   Terminal,
   Server,
   ExternalLink,
+  LoaderCircle,
 } from "lucide-react";
 import { toast } from "sonner";
 import { runCommand, convexUrlFlag } from "@/lib/utils/sandbox-command";
@@ -38,54 +36,6 @@ interface LocalConnection {
   lastSeen: number;
   isDesktop: boolean;
 }
-
-interface CommandBlockProps {
-  label: string;
-  command: string;
-  onCopy: () => void;
-  warning?: boolean;
-}
-
-const CommandBlock = ({
-  label,
-  command,
-  onCopy,
-  warning,
-}: CommandBlockProps) => (
-  <div className="space-y-1.5">
-    <div
-      className={`text-xs font-medium flex items-center gap-1.5 ${warning ? "text-yellow-700 dark:text-yellow-400" : ""}`}
-    >
-      {label}
-      {warning && <AlertTriangle className="h-3 w-3" />}
-    </div>
-    <div className="flex gap-2">
-      <code
-        className={`flex-1 p-2.5 rounded-lg font-mono text-xs overflow-x-auto ${
-          warning
-            ? "bg-yellow-500/5 border border-yellow-500/20 text-yellow-900 dark:text-yellow-100"
-            : "bg-zinc-900 dark:bg-zinc-950 text-zinc-300 dark:text-zinc-400"
-        }`}
-      >
-        {command}
-      </code>
-      <Button
-        variant="outline"
-        size="icon"
-        className="shrink-0 h-9 w-9"
-        onClick={onCopy}
-        aria-label={`Copy ${label} command`}
-      >
-        <Copy className="h-4 w-4" />
-      </Button>
-    </div>
-    {warning && (
-      <p className="text-xs text-yellow-600 dark:text-yellow-400">
-        Commands run directly on host OS - no isolation
-      </p>
-    )}
-  </div>
-);
 
 interface UseAutoSelectNewRemoteConnectionArgs {
   connections: LocalConnection[] | undefined;
@@ -156,9 +106,8 @@ function useAutoSelectNewRemoteConnection({
 }
 
 const RemoteControlTab = () => {
-  const [showToken, setShowToken] = useState(false);
   const [token, setToken] = useState<string | null>(null);
-  const [isLoadingToken, setIsLoadingToken] = useState(false);
+  const [isPreparingCommand, setIsPreparingCommand] = useState(false);
 
   const {
     chatMode,
@@ -187,16 +136,45 @@ const RemoteControlTab = () => {
 
   const activeConnections = connections ?? [];
 
-  const handleGetToken = async () => {
-    setIsLoadingToken(true);
+  const handleCopyConnectCommand = async () => {
+    setIsPreparingCommand(true);
+
     try {
-      const result = await tokenResult();
-      setToken(result.token);
+      const commandPromise = (async () => {
+        let commandToken = token;
+
+        if (!commandToken) {
+          const result = await tokenResult();
+          commandToken = result.token;
+          setToken(commandToken);
+        }
+
+        return `${runCommand} --token ${commandToken}${convexUrlFlag}`;
+      })();
+
+      // Start the clipboard write during the click gesture. Safari can expire
+      // clipboard permission while waiting for the token request to finish.
+      if (
+        typeof ClipboardItem !== "undefined" &&
+        typeof navigator.clipboard.write === "function"
+      ) {
+        await navigator.clipboard.write([
+          new ClipboardItem({
+            "text/plain": commandPromise.then(
+              (command) => new Blob([command], { type: "text/plain" }),
+            ),
+          }),
+        ]);
+      } else {
+        await navigator.clipboard.writeText(await commandPromise);
+      }
+
+      toast.success("Connect command copied. Paste it into your terminal.");
     } catch (error) {
-      console.error("Failed to get token:", error);
-      toast.error("Failed to get token");
+      console.error("Failed to prepare connect command:", error);
+      toast.error("Failed to copy connect command");
     } finally {
-      setIsLoadingToken(false);
+      setIsPreparingCommand(false);
     }
   };
 
@@ -204,42 +182,11 @@ const RemoteControlTab = () => {
     try {
       const result = await regenerateToken();
       setToken(result.token);
-      toast.success("Token regenerated successfully");
-      setShowToken(false);
+      toast.success("Access token reset. Existing connections were stopped.");
     } catch (error) {
       console.error("Failed to regenerate token:", error);
-      toast.error("Failed to regenerate token");
+      toast.error("Failed to reset access token");
     }
-  };
-
-  const copyToClipboard = async (
-    text: string,
-    successMessage: string,
-    errorMessage: string,
-  ) => {
-    try {
-      await navigator.clipboard.writeText(text);
-      toast.success(successMessage);
-    } catch {
-      toast.error(errorMessage);
-    }
-  };
-
-  const handleCopyCommand = (command: string) =>
-    copyToClipboard(
-      command,
-      "Command copied to clipboard",
-      "Failed to copy command",
-    );
-
-  const handleCopyToken = () => {
-    if (!token) return;
-
-    return copyToClipboard(
-      token,
-      "Token copied to clipboard",
-      "Failed to copy token",
-    );
   };
 
   return (
@@ -304,89 +251,53 @@ const RemoteControlTab = () => {
         )}
       </div>
 
-      {/* Token Management */}
-      <div className="space-y-3">
-        <div className="flex items-center justify-between">
-          <h4 className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-            Auth Token
-          </h4>
-          {token && (
-            <Button
-              variant="ghost"
-              size="sm"
-              className="h-6 text-xs text-muted-foreground hover:text-foreground"
-              onClick={handleRegenerateToken}
-            >
-              <RefreshCw className="h-3 w-3 mr-1" />
-              Regenerate
-            </Button>
-          )}
-        </div>
-
-        {!token ? (
-          <Button
-            onClick={handleGetToken}
-            disabled={isLoadingToken}
-            variant="outline"
-            size="sm"
-            className="w-full sm:w-auto"
-          >
-            <Terminal className="h-3.5 w-3.5 mr-2" />
-            {isLoadingToken ? "Loading..." : "Generate Token"}
-          </Button>
-        ) : (
-          <div className="flex gap-2">
-            <div className="flex-1 relative">
-              <Input
-                type={showToken ? "text" : "password"}
-                value={token}
-                readOnly
-                className="font-mono text-xs pr-20 bg-muted/50 border-0"
-              />
-              <div className="absolute right-1 top-1/2 -translate-y-1/2 flex gap-0.5">
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="h-7 w-7 p-0"
-                  onClick={() => setShowToken(!showToken)}
-                >
-                  {showToken ? (
-                    <EyeOff className="h-3.5 w-3.5" />
-                  ) : (
-                    <Eye className="h-3.5 w-3.5" />
-                  )}
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="h-7 w-7 p-0"
-                  onClick={handleCopyToken}
-                  aria-label="Copy auth token"
-                >
-                  <Copy className="h-3.5 w-3.5" />
-                </Button>
-              </div>
-            </div>
-          </div>
-        )}
-      </div>
-
-      {/* Setup Commands */}
+      {/* Quick Connect */}
       <div className="space-y-3">
         <h4 className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
           Quick Start
         </h4>
-
-        <CommandBlock
-          label="Connect Machine"
-          warning
-          command={`${runCommand} --token ${showToken && token ? token : "<token>"}${convexUrlFlag}`}
-          onCopy={() =>
-            handleCopyCommand(
-              `${runCommand} --token ${token || "YOUR_TOKEN"}${convexUrlFlag}`,
-            )
-          }
-        />
+        <Button
+          variant="outline"
+          className="h-auto w-full justify-start gap-3 whitespace-normal p-3 text-left"
+          onClick={handleCopyConnectCommand}
+          disabled={isPreparingCommand}
+          aria-label="Copy connect command"
+        >
+          <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-muted">
+            <Terminal className="h-4 w-4" />
+          </span>
+          <span className="flex min-w-0 flex-1 flex-col items-start gap-0.5">
+            <span className="font-medium">
+              {isPreparingCommand
+                ? "Preparing connect command..."
+                : "Copy connect command"}
+            </span>
+            <span className="text-xs font-normal text-muted-foreground">
+              Secure token included automatically
+            </span>
+          </span>
+          {isPreparingCommand ? (
+            <LoaderCircle className="h-4 w-4 shrink-0 animate-spin" />
+          ) : (
+            <Copy className="h-4 w-4 shrink-0" />
+          )}
+        </Button>
+        <div className="flex items-center justify-between gap-3">
+          <p className="text-xs text-muted-foreground">
+            Paste and run it in your terminal to connect this machine.
+          </p>
+          {token && (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-7 shrink-0 px-2 text-xs text-muted-foreground hover:text-foreground"
+              onClick={handleRegenerateToken}
+            >
+              <RefreshCw className="mr-1 h-3 w-3" />
+              Reset token
+            </Button>
+          )}
+        </div>
       </div>
 
       {/* Security Notice - Compact */}

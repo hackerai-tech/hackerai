@@ -165,55 +165,75 @@ describe("RemoteControlTab", () => {
     expect(screen.queryByText("No active connections")).not.toBeInTheDocument();
   });
 
-  it("reports command copy success only after the clipboard write succeeds", async () => {
+  it("generates a token and copies a ready-to-run command in one action", async () => {
     render(<RemoteControlTab />);
 
     fireEvent.click(
-      screen.getByRole("button", { name: "Copy Connect Machine command" }),
+      screen.getByRole("button", { name: "Copy connect command" }),
     );
 
     await waitFor(() => {
       expect(mockWriteText).toHaveBeenCalledWith(
-        expect.stringContaining("--token YOUR_TOKEN"),
+        expect.stringContaining("--token test-token"),
       );
     });
-    expect(toast.success).toHaveBeenCalledWith("Command copied to clipboard");
+    expect(mockGetToken).toHaveBeenCalledTimes(1);
+    expect(toast.success).toHaveBeenCalledWith(
+      "Connect command copied. Paste it into your terminal.",
+    );
     expect(toast.error).not.toHaveBeenCalled();
   });
 
-  it("handles a rejected command clipboard write without a false success", async () => {
+  it("reuses the generated token when the command is copied again", async () => {
+    render(<RemoteControlTab />);
+
+    const copyButton = screen.getByRole("button", {
+      name: "Copy connect command",
+    });
+    fireEvent.click(copyButton);
+    await waitFor(() => expect(mockWriteText).toHaveBeenCalledTimes(1));
+
+    fireEvent.click(copyButton);
+    await waitFor(() => expect(mockWriteText).toHaveBeenCalledTimes(2));
+
+    expect(mockGetToken).toHaveBeenCalledTimes(1);
+    expect(mockWriteText).toHaveBeenLastCalledWith(
+      expect.stringContaining("--token test-token"),
+    );
+  });
+
+  it("handles a rejected clipboard write without a false success", async () => {
     mockWriteText.mockRejectedValue(
       new DOMException("Document is not focused"),
     );
     render(<RemoteControlTab />);
 
     fireEvent.click(
-      screen.getByRole("button", { name: "Copy Connect Machine command" }),
+      screen.getByRole("button", { name: "Copy connect command" }),
     );
 
     await waitFor(() => {
-      expect(toast.error).toHaveBeenCalledWith("Failed to copy command");
+      expect(toast.error).toHaveBeenCalledWith(
+        "Failed to copy connect command",
+      );
     });
     expect(toast.success).not.toHaveBeenCalled();
   });
 
-  it("handles a rejected token clipboard write without a false success", async () => {
-    mockWriteText.mockRejectedValue(
-      new DOMException("Clipboard write requires user activation"),
-    );
+  it("does not copy a placeholder command when token generation fails", async () => {
+    mockGetToken.mockRejectedValue(new Error("Token service unavailable"));
     render(<RemoteControlTab />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Generate Token" }));
-    await waitFor(() => {
-      expect(screen.getByDisplayValue("test-token")).toBeInTheDocument();
-    });
-
-    fireEvent.click(screen.getByRole("button", { name: "Copy auth token" }));
+    fireEvent.click(
+      screen.getByRole("button", { name: "Copy connect command" }),
+    );
 
     await waitFor(() => {
-      expect(mockWriteText).toHaveBeenCalledWith("test-token");
-      expect(toast.error).toHaveBeenCalledWith("Failed to copy token");
+      expect(toast.error).toHaveBeenCalledWith(
+        "Failed to copy connect command",
+      );
     });
+    expect(mockWriteText).not.toHaveBeenCalled();
     expect(toast.success).not.toHaveBeenCalled();
   });
 });
