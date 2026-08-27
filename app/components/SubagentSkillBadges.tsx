@@ -53,7 +53,7 @@ export const SubagentSkillBadges = ({
         {assignedSkills.map((skill) => (
           <span
             key={skill}
-            title={`${skill} · Included when this specialist started`}
+            title={`${formatSubagentSkillLabel(skill)} · Included when this specialist started`}
             className="inline-flex max-w-full items-center rounded-md border border-border/60 bg-muted/40 px-2 py-1 text-xs text-muted-foreground"
           >
             {formatSubagentSkillLabel(skill)}

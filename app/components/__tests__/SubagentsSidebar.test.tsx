@@ -272,7 +272,12 @@ describe("SubagentsSidebar", () => {
 
     const skills = screen.getByLabelText("Assigned skills");
     expect(skills).toHaveTextContent("Skills · 2");
-    expect(skills).toHaveTextContent("IDOR");
+    const idorSkill = screen.getByText("IDOR");
+    expect(idorSkill).toBeVisible();
+    expect(idorSkill).toHaveAttribute(
+      "title",
+      "IDOR · Included when this specialist started",
+    );
     expect(skills).toHaveTextContent("Source aware discovery");
     expect(skills).toHaveTextContent("Included when this specialist started.");
     expect(screen.queryByText("vulnerabilities/idor")).not.toBeInTheDocument();
