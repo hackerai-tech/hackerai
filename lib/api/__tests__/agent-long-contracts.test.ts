@@ -2148,8 +2148,11 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(taskSrc).toMatch(
       /acquireFreeRunConcurrencyLock\(\s*freeUsageSubject/,
     );
-    expect(taskSrc).toMatch(
-      /checkFreeMonthlyCostLimit\(freeUsageSubject, userId\)/,
+    expect(
+      taskSrc.match(/checkFreeMonthlyCostLimit\(freeUsageSubject, userId\)/g),
+    ).toHaveLength(3);
+    expect(taskSrc).not.toMatch(
+      /checkFreeMonthlyCostLimit\(freeUsageSubject\)/,
     );
     expect(taskSrc).toMatch(/recordFreeMonthlyCost\(\s*freeUsageSubject/);
   });
@@ -2169,6 +2172,37 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     );
     expect(taskSrc.slice(promptIdx, promptIdx + 700)).toContain(
       "cloudSandboxProvider",
+    );
+  });
+
+  test("agent-long releases the flagged E2B idle lease only after active work settles", () => {
+    expect(taskSrc).toContain("keepE2BLeaseAliveForRun: true");
+    expect(taskSrc).toMatch(
+      /finishE2BIdleLeaseRelease = async \(\) => \{[\s\S]*await stopE2BSandboxRunLeaseHeartbeat\(\);[\s\S]*finalizeE2BIdleLeaseRelease\(/,
+    );
+
+    const finalCleanupIdx = taskSrc.lastIndexOf(
+      "await ptySessionManager.closeAll(chatId)",
+    );
+    const lifecycleFinishIdx = taskSrc.indexOf(
+      "await finishCloudSandboxLifecycle()",
+      finalCleanupIdx,
+    );
+    const idleLeaseReleaseIdx = taskSrc.indexOf(
+      "await finishE2BIdleLeaseRelease?.()",
+      finalCleanupIdx,
+    );
+    expect(finalCleanupIdx).toBeGreaterThan(-1);
+    expect(idleLeaseReleaseIdx).toBeGreaterThan(finalCleanupIdx);
+    expect(lifecycleFinishIdx).toBeGreaterThan(finalCleanupIdx);
+    expect(lifecycleFinishIdx).toBeGreaterThan(idleLeaseReleaseIdx);
+
+    const onCancelIdx = taskSrc.indexOf("onCancel: async");
+    const runIdx = taskSrc.indexOf("run: async", onCancelIdx);
+    expect(onCancelIdx).toBeGreaterThan(-1);
+    expect(runIdx).toBeGreaterThan(onCancelIdx);
+    expect(taskSrc.slice(onCancelIdx, runIdx)).not.toContain(
+      "finishE2BIdleLeaseRelease",
     );
   });
 

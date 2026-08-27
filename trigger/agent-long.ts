@@ -143,6 +143,7 @@ import {
   type AgentApiEndpoint,
 } from "@/lib/api/agent-endpoints";
 import { phLogger } from "@/lib/posthog/server";
+import { finalizeE2BIdleLeaseRelease } from "@/lib/experiments/e2b-idle-lease-release";
 import {
   captureDeepSeekV4Pro0813ExperimentExposure,
   evaluateDeepSeekV4Pro0813Experiment,
@@ -2423,6 +2424,7 @@ export const agentLongTask = task({
     let observedUsageTracker: UsageTracker | undefined;
     const hasObservedUsage = () => !!observedUsageTracker?.hasUsage;
     let cloudSandboxLifecyclePromise: Promise<void> | undefined;
+    let finishE2BIdleLeaseRelease: (() => Promise<void>) | undefined;
     const finishCloudSandboxLifecycle = () => {
       cloudSandboxLifecyclePromise ??= finishCloudSandboxLifecycleForParentRun({
         chatId,
@@ -3138,6 +3140,8 @@ export const agentLongTask = task({
               sandboxManager,
               getSandboxSessionCost,
               getSandboxSessionUsage,
+              releaseE2BSandboxIdleLease,
+              stopE2BSandboxRunLeaseHeartbeat,
               setCurrentModelName,
               getToolsForModel,
             } = createTools(
@@ -3173,6 +3177,7 @@ export const agentLongTask = task({
               {
                 cloudSandboxProvider,
                 triggerRegion,
+                keepE2BLeaseAliveForRun: true,
                 ...(subagentsEnabled
                   ? {
                       additionalTools: (toolContext) => ({
@@ -3197,6 +3202,20 @@ export const agentLongTask = task({
                   : {}),
               },
             );
+            finishE2BIdleLeaseRelease = async () => {
+              await stopE2BSandboxRunLeaseHeartbeat();
+              const usage = getSandboxSessionUsage();
+              await finalizeE2BIdleLeaseRelease({
+                userId,
+                chatId,
+                triggerRunId: ctx.run.id,
+                triggerRegion,
+                subscription,
+                e2bRuntimeMs: usage.e2bRuntimeMs,
+                releaseLease: releaseE2BSandboxIdleLease,
+              });
+              await phLogger.flush().catch(() => undefined);
+            };
             if (securityValidationSubagentsEnabled) {
               captureSubagentLifecycleEvent("subagent_available", {
                 userId,
@@ -5414,6 +5433,15 @@ export const agentLongTask = task({
           );
         }
       }
+      await finishE2BIdleLeaseRelease?.().catch((error) => {
+        triggerLogger.warn("[agent-long] E2B idle lease release failed", {
+          event: "agent_e2b_idle_lease_release_failed",
+          user_id: userId,
+          chat_id: chatId,
+          trigger_run_id: ctx.run.id,
+          error: stringifyRedactedError(error),
+        });
+      });
       await finishCloudSandboxLifecycle();
       runCleanupMap.delete(ctx.run.id);
     }

@@ -22,10 +22,13 @@ jest.mock("@e2b/code-interpreter", () => {
 import { Sandbox } from "@e2b/code-interpreter";
 import {
   BASH_SANDBOX_AUTOPAUSE_TIMEOUT,
+  E2B_SANDBOX_IDLE_RELEASE_TIMEOUT_MS,
   E2B_SANDBOX_LEASE_HEARTBEAT_INTERVAL_MS,
   E2B_SANDBOX_LEASE_REQUEST_TIMEOUT_MS,
   ensureSandboxConnection,
+  releaseE2BSandboxIdleLeaseBestEffort,
   refreshE2BSandboxLease,
+  startE2BSandboxLeaseHeartbeat,
   withE2BSandboxLeaseHeartbeat,
 } from "../sandbox";
 import { DefaultSandboxManager } from "../sandbox-manager";
@@ -87,6 +90,123 @@ describe("E2B sandbox lease lifecycle", () => {
     expect(setTimeout).toHaveBeenCalledWith(BASH_SANDBOX_AUTOPAUSE_TIMEOUT, {
       requestTimeoutMs: E2B_SANDBOX_LEASE_REQUEST_TIMEOUT_MS,
     });
+  });
+
+  it("shortens the idle lease without pausing or killing the sandbox", async () => {
+    const setTimeout = jest.fn(async () => undefined);
+    const sandbox = {
+      sandboxId: "sandbox-1",
+      setTimeout,
+      pause: jest.fn(),
+      kill: jest.fn(),
+    } as unknown as Sandbox;
+
+    await expect(releaseE2BSandboxIdleLeaseBestEffort(sandbox)).resolves.toBe(
+      true,
+    );
+
+    expect(setTimeout).toHaveBeenCalledWith(
+      E2B_SANDBOX_IDLE_RELEASE_TIMEOUT_MS,
+      { requestTimeoutMs: E2B_SANDBOX_LEASE_REQUEST_TIMEOUT_MS },
+    );
+    expect(
+      (sandbox as unknown as { pause: jest.Mock }).pause,
+    ).not.toHaveBeenCalled();
+    expect(
+      (sandbox as unknown as { kill: jest.Mock }).kill,
+    ).not.toHaveBeenCalled();
+  });
+
+  it("fails open when shortening the idle lease is unavailable", async () => {
+    const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+    const sandbox = {
+      sandboxId: "sandbox-1",
+      setTimeout: jest.fn(async () => {
+        throw new Error("temporary release failure");
+      }),
+    } as unknown as Sandbox;
+
+    try {
+      await expect(releaseE2BSandboxIdleLeaseBestEffort(sandbox)).resolves.toBe(
+        false,
+      );
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining("e2b_sandbox_idle_lease_release_failed"),
+      );
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it("lets an active worker heartbeat restore the normal shared lease", async () => {
+    jest.useFakeTimers();
+    jest.setSystemTime(0);
+    let remoteExpiryMs = 0;
+    const sandbox = {
+      sandboxId: "sandbox-1",
+      setTimeout: jest.fn(async (timeoutMs: number) => {
+        remoteExpiryMs = Date.now() + timeoutMs;
+      }),
+    } as unknown as Sandbox;
+    let finishOperation!: () => void;
+    const activeRun = withE2BSandboxLeaseHeartbeat(
+      sandbox,
+      () =>
+        new Promise<void>((resolve) => {
+          finishOperation = resolve;
+        }),
+    );
+
+    await releaseE2BSandboxIdleLeaseBestEffort(sandbox);
+    expect(remoteExpiryMs).toBe(E2B_SANDBOX_IDLE_RELEASE_TIMEOUT_MS);
+
+    await jest.advanceTimersByTimeAsync(
+      E2B_SANDBOX_LEASE_HEARTBEAT_INTERVAL_MS,
+    );
+    expect(remoteExpiryMs).toBe(Date.now() + BASH_SANDBOX_AUTOPAUSE_TIMEOUT);
+
+    finishOperation();
+    await activeRun;
+  });
+
+  it("waits for an in-flight run heartbeat before cleanup releases the lease", async () => {
+    jest.useFakeTimers();
+    let finishRefresh!: () => void;
+    const setTimeout = jest.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          finishRefresh = resolve;
+        }),
+    );
+    const sandbox = {
+      sandboxId: "sandbox-1",
+      setTimeout,
+    } as unknown as Sandbox;
+    const heartbeat = startE2BSandboxLeaseHeartbeat(
+      () => sandbox,
+      "run_heartbeat",
+    );
+
+    await jest.advanceTimersByTimeAsync(
+      E2B_SANDBOX_LEASE_HEARTBEAT_INTERVAL_MS,
+    );
+    expect(setTimeout).toHaveBeenCalledTimes(1);
+
+    let stopped = false;
+    const stop = heartbeat.stop().then(() => {
+      stopped = true;
+    });
+    await Promise.resolve();
+    expect(stopped).toBe(false);
+
+    finishRefresh();
+    await stop;
+    expect(stopped).toBe(true);
+
+    await jest.advanceTimersByTimeAsync(
+      E2B_SANDBOX_LEASE_HEARTBEAT_INTERVAL_MS,
+    );
+    expect(setTimeout).toHaveBeenCalledTimes(1);
   });
 
   it("renews after one minute without duplicating acquisition and stops afterward", async () => {
