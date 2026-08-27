@@ -4,6 +4,7 @@ import { generateText, type UIMessage } from "ai";
 
 import {
   AUXILIARY_VISION_FALLBACK_SLUG,
+  AUXILIARY_VISION_SECONDARY_FALLBACK_SLUG,
   AUXILIARY_VISION_SLUG,
   myProvider,
 } from "@/lib/ai/providers";
@@ -14,10 +15,14 @@ export const AUXILIARY_VISION_TIMEOUT_MS = 20_000;
 export const AUXILIARY_VISION_MAX_OUTPUT_TOKENS = 1_200;
 export const AUXILIARY_VISION_MAX_IMAGES_PER_TURN = 10;
 export const AUXILIARY_VISION_MAX_CONCURRENCY = 3;
+const AUXILIARY_VISION_FALLBACK_SLUGS = [
+  AUXILIARY_VISION_FALLBACK_SLUG,
+  AUXILIARY_VISION_SECONDARY_FALLBACK_SLUG,
+] as const;
 export const AUXILIARY_VISION_PROVIDER_OPTIONS = {
   openrouter: {
     reasoning: { enabled: false },
-    models: [AUXILIARY_VISION_FALLBACK_SLUG],
+    models: [...AUXILIARY_VISION_FALLBACK_SLUGS],
     provider: { sort: "latency", data_collection: "deny" },
   },
 };
@@ -257,7 +262,9 @@ export async function describeImageWithAuxiliaryVision({
         trigger_run_id: triggerRunId,
         source,
         model,
-        fallback_served: model === AUXILIARY_VISION_FALLBACK_SLUG,
+        fallback_served: AUXILIARY_VISION_FALLBACK_SLUGS.includes(
+          model as (typeof AUXILIARY_VISION_FALLBACK_SLUGS)[number],
+        ),
         media_type: mediaType,
         duration_ms: durationMs,
         input_tokens: result.usage?.inputTokens ?? 0,
@@ -374,7 +381,9 @@ export async function describeImageAttachmentsWithAuxiliaryVision({
         fileId &&
         typeof partRecord.auxiliaryVisionDescription === "string" &&
         (partRecord.auxiliaryVisionModel === AUXILIARY_VISION_SLUG ||
-          partRecord.auxiliaryVisionModel === AUXILIARY_VISION_FALLBACK_SLUG)
+          AUXILIARY_VISION_FALLBACK_SLUGS.includes(
+            partRecord.auxiliaryVisionModel as (typeof AUXILIARY_VISION_FALLBACK_SLUGS)[number],
+          ))
           ? partRecord.auxiliaryVisionDescription
           : undefined;
       const filename = partFilename
