@@ -20,6 +20,7 @@ const mockCreateCheckoutSession = jest.fn();
 const mockPostHogEvent = jest.fn();
 const mockPostHogWarn = jest.fn();
 const mockPostHogFlush = jest.fn();
+const mockGetPostHogFeatureFlagVariant = jest.fn();
 const mockResponseCookieDelete = jest.fn();
 
 jest.mock("next/server", () => {
@@ -78,6 +79,7 @@ jest.mock("@/app/api/stripe", () => ({
 }));
 
 jest.mock("@/lib/posthog/server", () => ({
+  getPostHogFeatureFlagVariantForUser: mockGetPostHogFeatureFlagVariant,
   phLogger: {
     event: mockPostHogEvent,
     warn: mockPostHogWarn,
@@ -108,6 +110,7 @@ describe("POST /api/subscribe", () => {
     process.env.NEXT_PUBLIC_BASE_URL = "https://hackerai.example";
     process.env.CONVEX_SERVICE_ROLE_KEY = "service_key";
     delete process.env.REFERRAL_PROGRAM_ENABLED;
+    mockGetPostHogFeatureFlagVariant.mockResolvedValue("control");
 
     mockConvexMutation.mockResolvedValue(null);
 
@@ -127,6 +130,7 @@ describe("POST /api/subscribe", () => {
       data: [
         {
           id: "price_pro",
+          lookup_key: "pro-monthly-plan",
           recurring: { interval: "month", interval_count: 1 },
           unit_amount: 2000,
           currency: "usd",
@@ -369,10 +373,12 @@ describe("POST /api/subscribe", () => {
       const body = await response.json();
 
       expect(response.status).toBe(200);
-      expect(body).toEqual({
-        url: "https://stripe.example/existing-checkout",
-        checkoutAttemptId: "ca_retry_123",
-      });
+      expect(body).toEqual(
+        expect.objectContaining({
+          url: "https://stripe.example/existing-checkout",
+          checkoutAttemptId: "ca_retry_123",
+        }),
+      );
       expect(mockListCheckoutSessions).toHaveBeenNthCalledWith(1, {
         customer: "cus_existing_org",
         status: "open",
@@ -388,6 +394,10 @@ describe("POST /api/subscribe", () => {
         metadata: {
           workOSOrganizationId: "org_team",
           requestedPlan: "pro-monthly-plan",
+          resolvedPriceLookupKey: "pro-monthly-plan",
+          pricingExperimentKey: "hac46-pro-monthly-29-pricing",
+          pricingExperimentVariant: "control",
+          pricingExperimentPriceLookupKey: "pro-monthly-plan",
           checkoutAttemptId: "ca_retry_123",
           userId: "user_123",
           checkoutQuantity: "1",
@@ -497,10 +507,12 @@ describe("POST /api/subscribe", () => {
     const body = await response.json();
 
     expect(response.status).toBe(200);
-    expect(body).toEqual({
-      url: "https://stripe.example/checkout",
-      checkoutAttemptId: expect.stringMatching(/^ca_/),
-    });
+    expect(body).toEqual(
+      expect.objectContaining({
+        url: "https://stripe.example/checkout",
+        checkoutAttemptId: expect.stringMatching(/^ca_/),
+      }),
+    );
     expect(mockRetrieveCustomer).toHaveBeenCalledWith("cus_existing_org");
     expect(mockUpdateCustomer).toHaveBeenCalledWith("cus_existing_org", {
       metadata: {
@@ -554,10 +566,12 @@ describe("POST /api/subscribe", () => {
     const body = await response.json();
 
     expect(response.status).toBe(200);
-    expect(body).toEqual({
-      url: "https://stripe.example/checkout",
-      checkoutAttemptId: expect.stringMatching(/^ca_/),
-    });
+    expect(body).toEqual(
+      expect.objectContaining({
+        url: "https://stripe.example/checkout",
+        checkoutAttemptId: expect.stringMatching(/^ca_/),
+      }),
+    );
     expect(mockCreateCustomer).not.toHaveBeenCalled();
     expect(mockUpdateOrganization).toHaveBeenCalledWith({
       organization: "org_team",
@@ -659,10 +673,12 @@ describe("POST /api/subscribe", () => {
     const body = await response.json();
 
     expect(response.status).toBe(200);
-    expect(body).toEqual({
-      url: "https://stripe.example/checkout",
-      checkoutAttemptId: expect.stringMatching(/^ca_/),
-    });
+    expect(body).toEqual(
+      expect.objectContaining({
+        url: "https://stripe.example/checkout",
+        checkoutAttemptId: expect.stringMatching(/^ca_/),
+      }),
+    );
     expect(mockConvexMutation).toHaveBeenNthCalledWith(
       1,
       expect.anything(),
@@ -846,6 +862,114 @@ describe("POST /api/subscribe", () => {
         reason: "monthly_exhausted",
         limit_type: "monthly",
         $insert_id: "checkout_started:ca_limit_pressure_123",
+      }),
+    );
+  });
+
+  it("uses the server-assigned $29 Price for the test cohort", async () => {
+    mockGetPostHogFeatureFlagVariant.mockResolvedValueOnce("test");
+    mockListOrganizationMemberships.mockResolvedValue({ data: [] } as never);
+    mockCreateOrganization.mockResolvedValue({ id: "org_new" } as never);
+    mockCreateCustomer.mockResolvedValue({
+      id: "cus_new",
+      metadata: {},
+    } as never);
+    mockListPrices.mockResolvedValue({
+      data: [
+        {
+          id: "price_pro_29",
+          lookup_key: "pro-monthly-plan-29-experiment",
+          active: true,
+          type: "recurring",
+          product: "prod_hackerai_pro",
+          recurring: { interval: "month", interval_count: 1 },
+          unit_amount: 2900,
+          currency: "usd",
+        },
+        {
+          id: "price_pro_25",
+          lookup_key: "pro-monthly-plan",
+          active: true,
+          type: "recurring",
+          product: "prod_hackerai_pro",
+          recurring: { interval: "month", interval_count: 1 },
+          unit_amount: 2500,
+          currency: "usd",
+        },
+      ],
+    } as never);
+
+    const { POST } = await import("../route");
+    const response = await POST(
+      makeRequest({
+        plan: "pro-monthly-plan",
+        checkoutAttemptId: "ca_hac46_test_123",
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(mockListPrices).toHaveBeenCalledWith({
+      lookup_keys: ["pro-monthly-plan-29-experiment", "pro-monthly-plan"],
+    });
+    expect(mockCreateCheckoutSession).toHaveBeenCalledWith(
+      expect.objectContaining({
+        line_items: [{ price: "price_pro_29", quantity: 1 }],
+        integration_identifier: "hackerai_pricing_kqtmxvra",
+        metadata: expect.objectContaining({
+          requestedPlan: "pro-monthly-plan",
+          resolvedPriceLookupKey: "pro-monthly-plan-29-experiment",
+          pricingExperimentKey: "hac46-pro-monthly-29-pricing",
+          pricingExperimentVariant: "test",
+          pricingExperimentPriceLookupKey: "pro-monthly-plan-29-experiment",
+        }),
+        subscription_data: expect.objectContaining({
+          metadata: expect.objectContaining({
+            requestedPlan: "pro-monthly-plan",
+            resolvedPriceLookupKey: "pro-monthly-plan-29-experiment",
+            pricingExperimentVariant: "test",
+          }),
+        }),
+      }),
+    );
+    expect(mockPostHogEvent).toHaveBeenCalledWith(
+      "checkout_started",
+      expect.objectContaining({
+        experiment_key: "hac46-pro-monthly-29-pricing",
+        experiment_variant: "test",
+        "$feature/hac46-pro-monthly-29-pricing": "test",
+        plan: "pro-monthly-plan-29-experiment",
+        stripe_price_lookup_key: "pro-monthly-plan-29-experiment",
+        displayed_amount_dollars: 29,
+        charged_amount_dollars: 29,
+        stripe_price_id: "price_pro_29",
+      }),
+    );
+  });
+
+  it("does not accept the experimental lookup key from the client", async () => {
+    mockListOrganizationMemberships.mockResolvedValue({ data: [] } as never);
+    mockCreateOrganization.mockResolvedValue({ id: "org_new" } as never);
+    mockCreateCustomer.mockResolvedValue({
+      id: "cus_new",
+      metadata: {},
+    } as never);
+
+    const { POST } = await import("../route");
+    const response = await POST(
+      makeRequest({ plan: "pro-monthly-plan-29-experiment" }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(mockListPrices).toHaveBeenCalledWith({
+      lookup_keys: ["pro-monthly-plan"],
+    });
+    expect(mockCreateCheckoutSession).toHaveBeenCalledWith(
+      expect.objectContaining({
+        line_items: [{ price: "price_pro", quantity: 1 }],
+        metadata: expect.objectContaining({
+          requestedPlan: "pro-monthly-plan",
+          resolvedPriceLookupKey: "pro-monthly-plan",
+        }),
       }),
     );
   });

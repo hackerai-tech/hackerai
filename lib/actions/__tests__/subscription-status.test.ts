@@ -40,6 +40,20 @@ describe("getSubscriptionCancellationStatusAction", () => {
           status: "active",
           cancel_at_period_end: true,
           current_period_end: 1_782_444_800,
+          items: {
+            data: [
+              {
+                quantity: 1,
+                price: {
+                  id: "price_pro_29",
+                  lookup_key: "pro-monthly-plan-29-experiment",
+                  unit_amount: 2900,
+                  currency: "usd",
+                  recurring: { interval: "month", interval_count: 1 },
+                },
+              },
+            ],
+          },
         },
       ],
     } as never);
@@ -52,11 +66,18 @@ describe("getSubscriptionCancellationStatusAction", () => {
       cancelAtPeriodEnd: true,
       currentPeriodEnd: 1_782_444_800_000,
       subscriptionStatus: "active",
+      stripePriceId: "price_pro_29",
+      stripePriceLookupKey: "pro-monthly-plan-29-experiment",
+      renewalAmountDollars: 29,
+      renewalCurrency: "usd",
+      renewalInterval: "month",
+      renewalIntervalCount: 1,
     });
     expect(mockListSubscriptions).toHaveBeenCalledWith({
       customer: "cus_123",
       status: "all",
       limit: 10,
+      expand: ["data.items.data.price"],
     });
   });
 

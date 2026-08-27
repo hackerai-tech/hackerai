@@ -55,6 +55,30 @@ function formatCancellationDate(currentPeriodEnd?: number) {
   }).format(new Date(currentPeriodEnd));
 }
 
+function formatRenewalPrice(status: AccountCancellationStatus | null) {
+  if (
+    status?.renewalAmountDollars === undefined ||
+    !status.renewalCurrency ||
+    !status.renewalInterval
+  ) {
+    return null;
+  }
+
+  const amount = new Intl.NumberFormat(undefined, {
+    style: "currency",
+    currency: status.renewalCurrency.toUpperCase(),
+    maximumFractionDigits: Number.isInteger(status.renewalAmountDollars)
+      ? 0
+      : 2,
+  }).format(status.renewalAmountDollars);
+  const intervalCount = status.renewalIntervalCount ?? 1;
+  const interval =
+    intervalCount === 1
+      ? status.renewalInterval
+      : `${intervalCount} ${status.renewalInterval}s`;
+  return `${amount} every ${interval}`;
+}
+
 const AccountTab = () => {
   const { subscription, setMigrateFromPentestgptDialogOpen } = useGlobalState();
   const [showDeleteAccount, setShowDeleteAccount] = useState(false);
@@ -98,6 +122,7 @@ const AccountTab = () => {
   const cancellationEndDate = formatCancellationDate(
     currentCancellationStatus?.currentPeriodEnd,
   );
+  const renewalPrice = formatRenewalPrice(currentCancellationStatus);
   const noActiveSubscription =
     currentCancellationStatus?.hasActiveSubscription === false;
   const cancellationScheduled =
@@ -215,6 +240,11 @@ const AccountTab = () => {
                       ? "HackerAI Pro"
                       : "Get HackerAI Pro"}
             </div>
+            {renewalPrice && (
+              <div className="mt-0.5 text-sm text-muted-foreground">
+                Renews at {renewalPrice}
+              </div>
+            )}
           </div>
           {subscription !== "free" ? (
             canManageBilling ? (

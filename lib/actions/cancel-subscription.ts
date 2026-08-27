@@ -25,6 +25,11 @@ import {
   planLookupKeyToTier,
 } from "@/lib/analytics/paid-funnel";
 import type { SubscriptionTier } from "@/types";
+import {
+  proMonthlyPricingAssignmentFromMetadata,
+  proMonthlyPricingExperimentProperties,
+  type ProMonthlyPricingExperimentAssignment,
+} from "@/lib/experiments/pro-monthly-pricing";
 
 type CancellationReasonInput = {
   reasonCategory?: unknown;
@@ -50,6 +55,7 @@ type SubscriptionContext = {
   tier?: SubscriptionTier;
   currentPeriodEnd?: number;
   cancelAtPeriodEnd: boolean;
+  pricingExperiment?: ProMonthlyPricingExperimentAssignment;
 };
 
 function parseCancellationReasonInput(
@@ -141,6 +147,10 @@ async function getActiveSubscriptionContext(
     tier: subscriptionTierFromLookupKey(price?.lookup_key),
     currentPeriodEnd: currentPeriodEndMs(currentSubscription),
     cancelAtPeriodEnd: currentSubscription.cancel_at_period_end === true,
+    pricingExperiment: proMonthlyPricingAssignmentFromMetadata(
+      currentSubscription.metadata,
+      price?.lookup_key,
+    ),
   };
 }
 
@@ -337,11 +347,15 @@ export default async function cancelSubscriptionAction(
       org_id: organizationId,
       subscription_tier: subscriptionContext.tier,
       plan: subscriptionContext.plan,
+      stripe_price_lookup_key: subscriptionContext.plan,
       reason_category: cancellationReason.reasonCategory,
       reason_subcategory: cancellationReason.reasonSubcategory,
       reason_details_length: cancellationReason.reasonDetails.length,
       stripe_customer_id: stripeCustomerId,
       stripe_subscription_id: subscriptionContext.id,
+      ...proMonthlyPricingExperimentProperties(
+        subscriptionContext.pricingExperiment,
+      ),
     }),
   );
   if (shouldEmitCancellationCompleted) {
@@ -352,6 +366,7 @@ export default async function cancelSubscriptionAction(
         org_id: organizationId,
         subscription_tier: subscriptionContext.tier,
         plan: subscriptionContext.plan,
+        stripe_price_lookup_key: subscriptionContext.plan,
         reason_category: cancellationReason.reasonCategory,
         reason_subcategory: cancellationReason.reasonSubcategory,
         cancellation_completion_type: cancelImmediately
@@ -361,6 +376,9 @@ export default async function cancelSubscriptionAction(
         stripe_customer_id: stripeCustomerId,
         stripe_subscription_id: subscriptionContext.id,
         stripe_price_id: subscriptionContext.priceId,
+        ...proMonthlyPricingExperimentProperties(
+          subscriptionContext.pricingExperiment,
+        ),
         $insert_id: cancellationCompletionInsertId(subscriptionContext.id),
       }),
     );

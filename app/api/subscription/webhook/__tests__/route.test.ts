@@ -20,6 +20,7 @@ const mockUpdateSubscription = jest.fn();
 const mockListSubscriptions = jest.fn();
 const mockRetrieveInvoice = jest.fn();
 const mockRetrievePaymentIntent = jest.fn();
+const mockRetrieveCharge = jest.fn();
 const mockListMemberships = jest.fn();
 const mockConvexMutation = jest.fn();
 const mockFreezeRateLimitBucketForDelinquency = jest.fn();
@@ -62,6 +63,9 @@ jest.mock("@/app/api/stripe", () => ({
     },
     paymentIntents: {
       retrieve: mockRetrievePaymentIntent,
+    },
+    charges: {
+      retrieve: mockRetrieveCharge,
     },
   },
 }));
@@ -425,6 +429,170 @@ describe("POST /api/subscription/webhook", () => {
     expect(body).toEqual({ received: true });
     expect(mockConvexMutation).not.toHaveBeenCalled();
     expect(mockPostHogEvent).not.toHaveBeenCalled();
+  });
+
+  it("carries the HAC-46 assignment into checkout success analytics", async () => {
+    const experimentMetadata = {
+      pricingExperimentKey: "hac46-pro-monthly-29-pricing",
+      pricingExperimentVariant: "test",
+      pricingExperimentPriceLookupKey: "pro-monthly-plan-29-experiment",
+    };
+    mockConstructEvent.mockReturnValue({
+      id: "evt_checkout_hac46",
+      type: "checkout.session.completed",
+      data: {
+        object: {
+          id: "cs_hac46",
+          mode: "subscription",
+          payment_status: "paid",
+          amount_total: 2900,
+          currency: "usd",
+          customer: "cus_hac46",
+          subscription: "sub_hac46",
+          metadata: {
+            userId: "user_hac46",
+            workOSOrganizationId: "org_hac46",
+            requestedPlan: "pro-monthly-plan",
+            checkoutAttemptId: "ca_hac46_123",
+            checkoutType: "new_subscription",
+            ...experimentMetadata,
+          },
+        },
+      },
+    });
+    mockRetrieveSubscription.mockResolvedValue({
+      id: "sub_hac46",
+      metadata: experimentMetadata,
+      items: {
+        data: [
+          {
+            quantity: 1,
+            price: {
+              id: "price_pro_29",
+              lookup_key: "pro-monthly-plan-29-experiment",
+              recurring: { interval: "month", interval_count: 1 },
+              product: {
+                id: "prod_pro",
+                name: "HackerAI Pro",
+                metadata: {},
+              },
+            },
+          },
+        ],
+      },
+    } as never);
+
+    const { POST } = await import("../route");
+    const response = await POST(makeWebhookRequest());
+
+    expect(response.status).toBe(200);
+    expect(mockPostHogEvent).toHaveBeenCalledWith(
+      "checkout_succeeded",
+      expect.objectContaining({
+        userId: "user_hac46",
+        experiment_key: "hac46-pro-monthly-29-pricing",
+        experiment_variant: "test",
+        "$feature/hac46-pro-monthly-29-pricing": "test",
+        plan: "pro-monthly-plan-29-experiment",
+        requested_plan: "pro-monthly-plan",
+        stripe_price_lookup_key: "pro-monthly-plan-29-experiment",
+        displayed_amount_dollars: 29,
+        charged_amount_dollars: 29,
+        stripe_price_id: "price_pro_29",
+      }),
+    );
+  });
+
+  it("records HAC-46 subscription refunds as negative contribution", async () => {
+    const experimentMetadata = {
+      pricingExperimentKey: "hac46-pro-monthly-29-pricing",
+      pricingExperimentVariant: "test",
+      pricingExperimentPriceLookupKey: "pro-monthly-plan-29-experiment",
+    };
+    mockConstructEvent.mockReturnValue({
+      id: "evt_refund_hac46",
+      type: "refund.created",
+      data: {
+        object: {
+          id: "re_hac46",
+          status: "succeeded",
+          amount: 2900,
+          currency: "usd",
+          created: 1_788_000_000,
+          charge: "ch_hac46",
+          payment_intent: "pi_hac46",
+        },
+      },
+    });
+    mockRetrieveCharge.mockResolvedValue({
+      id: "ch_hac46",
+      customer: "cus_hac46",
+      invoice: "in_hac46",
+    } as never);
+    mockRetrieveInvoice.mockResolvedValue({
+      id: "in_hac46",
+      customer: "cus_hac46",
+      parent: {
+        subscription_details: { subscription: "sub_hac46" },
+      },
+    } as never);
+    mockRetrieveCustomer.mockResolvedValue({
+      id: "cus_hac46",
+      deleted: false,
+      metadata: { workOSOrganizationId: "org_hac46" },
+    } as never);
+    mockListMemberships.mockResolvedValue({
+      autoPagination: jest.fn().mockResolvedValue([{ userId: "user_hac46" }]),
+    } as never);
+    mockRetrieveSubscription.mockResolvedValue({
+      id: "sub_hac46",
+      metadata: experimentMetadata,
+      items: {
+        data: [
+          {
+            quantity: 1,
+            price: {
+              id: "price_pro_29",
+              lookup_key: "pro-monthly-plan-29-experiment",
+              recurring: { interval: "month", interval_count: 1 },
+              product: {
+                id: "prod_pro",
+                name: "HackerAI Pro",
+                metadata: {},
+              },
+            },
+          },
+        ],
+      },
+    } as never);
+
+    const { POST } = await import("../route");
+    const response = await POST(makeWebhookRequest());
+
+    expect(response.status).toBe(200);
+    expect(mockConvexMutation).toHaveBeenCalledWith(
+      "unitEconomics.recordRevenueEvent",
+      expect.objectContaining({
+        entityType: "user",
+        entityId: "user_hac46",
+        grossRevenueDollars: -29,
+        netRevenueDollars: -29,
+        stripePriceId: "price_pro_29",
+        plan: "pro-monthly-plan-29-experiment",
+      }),
+    );
+    expect(mockPostHogEvent).toHaveBeenCalledWith(
+      "subscription_refunded",
+      expect.objectContaining({
+        userId: "user_hac46",
+        experiment_key: "hac46-pro-monthly-29-pricing",
+        experiment_variant: "test",
+        refund_amount_dollars: 29,
+        charged_amount_dollars: -29,
+        stripe_refund_id: "re_hac46",
+        stripe_price_lookup_key: "pro-monthly-plan-29-experiment",
+      }),
+    );
   });
 
   it("skips legacy PentestGPT invoices before resolving the old product as a HackerAI tier", async () => {

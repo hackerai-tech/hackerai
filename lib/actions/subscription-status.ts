@@ -61,6 +61,7 @@ export default async function getSubscriptionCancellationStatusAction(): Promise
       customer: stripeCustomerId,
       status: "all",
       limit: 10,
+      expand: ["data.items.data.price"],
     });
   } catch (error) {
     phLogger.error("billing_subscription_status_action_failed", {
@@ -84,11 +85,27 @@ export default async function getSubscriptionCancellationStatusAction(): Promise
   }
 
   const latestInvoiceId = stripeObjectId(currentSubscription.latest_invoice);
+  const item = currentSubscription.items?.data[0];
+  const price = item?.price;
+  const renewalAmountDollars =
+    price?.unit_amount == null
+      ? undefined
+      : (price.unit_amount * (item.quantity ?? 1)) / 100;
   return {
     hasActiveSubscription: true,
     cancelAtPeriodEnd: currentSubscription.cancel_at_period_end === true,
     currentPeriodEnd: currentPeriodEndMs(currentSubscription),
     subscriptionStatus: currentSubscription.status,
     ...(latestInvoiceId && { latestInvoiceId }),
+    ...(price?.id && { stripePriceId: price.id }),
+    ...(price?.lookup_key && { stripePriceLookupKey: price.lookup_key }),
+    ...(renewalAmountDollars !== undefined && { renewalAmountDollars }),
+    ...(price?.currency && { renewalCurrency: price.currency }),
+    ...(price?.recurring?.interval && {
+      renewalInterval: price.recurring.interval,
+    }),
+    ...(price?.recurring?.interval_count && {
+      renewalIntervalCount: price.recurring.interval_count,
+    }),
   };
 }

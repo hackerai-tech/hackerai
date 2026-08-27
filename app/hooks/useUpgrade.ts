@@ -17,6 +17,10 @@ import {
   getRecentCheckoutNavigation,
   rememberCheckoutNavigation,
 } from "@/lib/billing/checkout-navigation-guard";
+import {
+  proMonthlyPricingExperimentProperties,
+  type ProMonthlyPricingExperimentAssignment,
+} from "@/lib/experiments/pro-monthly-pricing";
 
 // Keep a tab's upgrade ownership across pricing dialog remounts. Server routes
 // remain authoritative across page loads and tabs, including open-session reuse.
@@ -36,6 +40,7 @@ export const useUpgrade = () => {
       surface?: string;
       reason?: string;
       limit_type?: string;
+      pricing_experiment?: ProMonthlyPricingExperimentAssignment;
     } = {},
   ) => {
     e?.preventDefault();
@@ -70,6 +75,9 @@ export const useUpgrade = () => {
             limit_type: analyticsContext.limit_type,
             suppression_reason: "recent_navigation",
             guard_window_ms: CHECKOUT_NAVIGATION_GUARD_WINDOW_MS,
+            ...proMonthlyPricingExperimentProperties(
+              analyticsContext.pricing_experiment,
+            ),
           },
         );
         toast.info("Checkout is already opening", {
@@ -126,6 +134,9 @@ export const useUpgrade = () => {
           reason: analyticsContext.reason,
           limit_type: analyticsContext.limit_type,
           checkout_type: "new_subscription",
+          ...proMonthlyPricingExperimentProperties(
+            analyticsContext.pricing_experiment,
+          ),
         });
 
         const res = await fetch("/api/subscribe", {
@@ -146,7 +157,7 @@ export const useUpgrade = () => {
           return;
         }
 
-        const { error, url } = data;
+        const { error, url, pricingExperiment } = data;
 
         if (url) {
           window.location.href = url;
@@ -161,12 +172,15 @@ export const useUpgrade = () => {
             quantity,
             from_tier: currentSubscription ?? "free",
             to_tier: toTier,
-            billing_interval: billingInterval,
             surface: analyticsContext.surface,
             source: analyticsContext.source,
             reason: analyticsContext.reason,
             limit_type: analyticsContext.limit_type,
             checkout_type: "new_subscription",
+            ...proMonthlyPricingExperimentProperties(
+              pricingExperiment ?? analyticsContext.pricing_experiment,
+            ),
+            billing_interval: billingInterval,
           });
           navigationStarted = true;
           return;

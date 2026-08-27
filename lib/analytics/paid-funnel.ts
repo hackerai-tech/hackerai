@@ -28,6 +28,7 @@ export const PAID_FUNNEL_EVENTS = {
   paymentUpdateOpened: "payment_update_opened",
   paymentMethodUpdated: "payment_method_updated",
   invoicePaid: "invoice_paid",
+  subscriptionRefunded: "subscription_refunded",
   limitHit: "limit_hit",
   paidDailyFreeAllowanceImpressed: "paid_daily_free_allowance_impressed",
   paidDailyFreeAllowanceClicked: "paid_daily_free_allowance_clicked",
