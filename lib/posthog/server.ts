@@ -16,12 +16,20 @@ export async function getPostHogFeatureFlagForUser(
   flagKey: string,
   userId: string,
 ): Promise<boolean> {
+  return (await getPostHogFeatureFlagValueForUser(flagKey, userId)) === true;
+}
+
+export async function getPostHogFeatureFlagValueForUser(
+  flagKey: string,
+  userId: string,
+): Promise<boolean | null> {
   const client = getClient();
-  if (!client) return false;
+  if (!client) return null;
   try {
-    return (await client.getFeatureFlag(flagKey, userId)) === true;
+    const value = await client.getFeatureFlag(flagKey, userId);
+    return typeof value === "boolean" ? value : null;
   } catch {
-    return false;
+    return null;
   }
 }
 

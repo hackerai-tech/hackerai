@@ -20,8 +20,11 @@ jest.mock("@/lib/posthog/logs", () => ({
   flushPostHogLogs: jest.fn(),
 }));
 
-const { getPostHogFeatureFlagForUser, phLogger } =
-  require("../server") as typeof import("../server");
+const {
+  getPostHogFeatureFlagForUser,
+  getPostHogFeatureFlagValueForUser,
+  phLogger,
+} = require("../server") as typeof import("../server");
 
 describe("phLogger", () => {
   beforeEach(() => {
@@ -46,6 +49,18 @@ describe("phLogger", () => {
     await expect(
       getPostHogFeatureFlagForUser("agent-subagents", "user_123"),
     ).resolves.toBe(false);
+  });
+
+  it("distinguishes a disabled boolean flag from an unavailable evaluation", async () => {
+    mockGetFeatureFlag.mockResolvedValueOnce(false);
+    await expect(
+      getPostHogFeatureFlagValueForUser("e2b-idle-lease-release", "user_123"),
+    ).resolves.toBe(false);
+
+    mockGetFeatureFlag.mockRejectedValueOnce(new Error("unavailable"));
+    await expect(
+      getPostHogFeatureFlagValueForUser("e2b-idle-lease-release", "user_123"),
+    ).resolves.toBeNull();
   });
 
   it("keeps info and warning records in Logs without duplicating product events", () => {

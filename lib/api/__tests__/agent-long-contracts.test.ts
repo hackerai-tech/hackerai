@@ -2170,6 +2170,23 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     );
   });
 
+  test("agent-long releases the flagged E2B idle lease only after active work settles", () => {
+    expect(taskSrc).toContain("keepE2BLeaseAliveForRun: true");
+    expect(taskSrc).toMatch(
+      /finishE2BIdleLeaseRelease = async \(\) => \{[\s\S]*await stopE2BSandboxRunLeaseHeartbeat\(\);[\s\S]*finalizeE2BIdleLeaseRelease\(/,
+    );
+
+    const finalCleanupIdx = taskSrc.lastIndexOf(
+      "await ptySessionManager.closeAll(chatId)",
+    );
+    const lifecycleFinishIdx = taskSrc.indexOf(
+      "await finishCloudSandboxLifecycle()",
+      finalCleanupIdx,
+    );
+    expect(finalCleanupIdx).toBeGreaterThan(-1);
+    expect(lifecycleFinishIdx).toBeGreaterThan(finalCleanupIdx);
+  });
+
   test("agent-long disables whole-task retries for its shared UI stream", () => {
     expect(taskSrc).toMatch(
       /Streaming tasks must not retry:[\s\S]*retry:\s*\{\s*maxAttempts:\s*1\s*\}/,

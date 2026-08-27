@@ -5,110 +5,26 @@ import { isExpectedAlreadyGoneCleanupError } from "@/lib/utils/cleanup-errors";
 import { retryWithBackoff } from "./retry-with-backoff";
 import { getE2BClusterRouting, type E2BClusterConfig } from "./e2b-cluster";
 import type { TriggerRunRegion } from "@/lib/api/trigger-region";
+import { BASH_SANDBOX_AUTOPAUSE_TIMEOUT } from "./e2b-lease";
+export {
+  BASH_SANDBOX_AUTOPAUSE_TIMEOUT,
+  E2B_SANDBOX_IDLE_RELEASE_TIMEOUT_MS,
+  E2B_SANDBOX_LEASE_HEARTBEAT_INTERVAL_MS,
+  E2B_SANDBOX_LEASE_REQUEST_TIMEOUT_MS,
+  refreshE2BSandboxLease,
+  refreshE2BSandboxLeaseBestEffort,
+  releaseE2BSandboxIdleLeaseBestEffort,
+  startE2BSandboxLeaseHeartbeat,
+  withE2BSandboxLeaseHeartbeat,
+} from "./e2b-lease";
 
 type SandboxReadyPath = SandboxBootInfo["path"];
 
-export const BASH_SANDBOX_AUTOPAUSE_TIMEOUT = 7 * 60 * 1000;
-export const E2B_SANDBOX_LEASE_HEARTBEAT_INTERVAL_MS = 60 * 1000;
-export const E2B_SANDBOX_LEASE_REQUEST_TIMEOUT_MS = 5 * 1000;
 // Retry config for E2B 429 rate limits
 const RATE_LIMIT_COOLDOWN_MS = 1_000;
 const MAX_CREATE_RETRIES = 3;
 const MAX_DISCOVERY_RETRIES = 3;
 const MAX_CONNECT_RETRIES = 3;
-
-export const refreshE2BSandboxLease = async (
-  sandbox: Sandbox,
-): Promise<number> => {
-  await sandbox.setTimeout(BASH_SANDBOX_AUTOPAUSE_TIMEOUT, {
-    requestTimeoutMs: E2B_SANDBOX_LEASE_REQUEST_TIMEOUT_MS,
-  });
-  return BASH_SANDBOX_AUTOPAUSE_TIMEOUT;
-};
-
-type E2BSandboxLeaseRefreshSource =
-  "foreground_heartbeat" | "default_manager_cache" | "hybrid_manager_cache";
-
-const logLeaseRefreshFailure = (
-  sandbox: Sandbox,
-  source: E2BSandboxLeaseRefreshSource,
-  error: unknown,
-): void => {
-  console.warn(
-    JSON.stringify({
-      timestamp: new Date().toISOString(),
-      level: "warn",
-      event: "e2b_sandbox_lease_refresh_failed",
-      service: "chat-handler",
-      environment: process.env.VERCEL_ENV ?? process.env.NODE_ENV ?? "unknown",
-      request_id: process.env.VERCEL_REQUEST_ID ?? null,
-      sandbox_id: sandbox.sandboxId,
-      source,
-      error: error instanceof Error ? error.message : String(error),
-    }),
-  );
-};
-
-export const refreshE2BSandboxLeaseBestEffort = async (
-  sandbox: Sandbox,
-  options: {
-    source: E2BSandboxLeaseRefreshSource;
-    logFailure?: boolean;
-  },
-): Promise<boolean> => {
-  try {
-    await refreshE2BSandboxLease(sandbox);
-    return true;
-  } catch (error) {
-    if (options.logFailure !== false) {
-      logLeaseRefreshFailure(sandbox, options.source, error);
-    }
-    return false;
-  }
-};
-
-/**
- * Keeps the fixed per-user sandbox lease alive only while the caller is
- * actively waiting for foreground work. Every Trigger worker writes the same
- * seven-minute lease, so independently connected workers cannot shorten a
- * longer operation owned by another run.
- */
-export const withE2BSandboxLeaseHeartbeat = async <T>(
-  sandbox: Sandbox,
-  operation: () => Promise<T>,
-): Promise<T> => {
-  let refreshInFlight = false;
-  let heartbeatFailureLogged = false;
-  const refresh = async (): Promise<void> => {
-    if (refreshInFlight) return;
-    refreshInFlight = true;
-    try {
-      const refreshed = await refreshE2BSandboxLeaseBestEffort(sandbox, {
-        source: "foreground_heartbeat",
-        logFailure: !heartbeatFailureLogged,
-      });
-      heartbeatFailureLogged = !refreshed;
-    } finally {
-      refreshInFlight = false;
-    }
-  };
-
-  // Acquisition already creates, connects, or refreshes the seven-minute
-  // lease. Delay the first heartbeat so foreground startup does not make a
-  // duplicate E2B API request.
-  const heartbeat = setInterval(() => {
-    void refresh();
-  }, E2B_SANDBOX_LEASE_HEARTBEAT_INTERVAL_MS);
-  (
-    heartbeat as ReturnType<typeof setInterval> & { unref?: () => void }
-  ).unref?.();
-
-  try {
-    return await operation();
-  } finally {
-    clearInterval(heartbeat);
-  }
-};
 
 const logSandboxKillFailure = (
   userID: string,
