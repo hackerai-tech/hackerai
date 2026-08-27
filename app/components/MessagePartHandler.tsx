@@ -15,6 +15,7 @@ import type { ChatStatus } from "@/types";
 import type { FileDetails } from "@/types/file";
 import { ReasoningHandler } from "./ReasoningHandler";
 import { SubagentToolHandler } from "./tools/SubagentToolHandler";
+import { SubagentSkillToolHandler } from "./tools/SubagentSkillToolHandler";
 
 interface MessagePartHandlerProps {
   message: UIMessage;
@@ -311,6 +312,24 @@ export const MessagePartHandler = memo(function MessagePartHandler({
     case "tool-cancel_agent":
       return (
         <SubagentToolHandler message={message} part={part} status={status} />
+      );
+
+    case "tool-search_skills":
+      return (
+        <SubagentSkillToolHandler
+          part={part}
+          status={status}
+          toolName="search_skills"
+        />
+      );
+
+    case "tool-load_skill":
+      return (
+        <SubagentSkillToolHandler
+          part={part}
+          status={status}
+          toolName="load_skill"
+        />
       );
 
     case "tool-create_note":
