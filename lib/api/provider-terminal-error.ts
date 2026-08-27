@@ -3,6 +3,7 @@ import {
   extractErrorDetails,
   getProviderErrorCategory,
   getProviderStatusCode,
+  isLocalOpenRouterRequestSizeGuardError,
   type ProviderErrorCategory,
 } from "@/lib/utils/error-utils";
 
@@ -22,6 +23,7 @@ export class ProviderTerminalError extends Error {
   readonly model: string;
   readonly category: ProviderErrorCategory;
   readonly statusCode?: number;
+  readonly origin?: "local_request_size_guard";
   readonly openrouterGenerationId?: string;
   readonly openrouterRequestId?: string;
   readonly openrouterUpstreamId?: string;
@@ -43,11 +45,15 @@ export class ProviderTerminalError extends Error {
         ? details.providerName
         : providerFromModel(model));
     const statusCode = getProviderStatusCode(details);
+    const origin = isLocalOpenRouterRequestSizeGuardError(cause)
+      ? "local_request_size_guard"
+      : undefined;
     const message = [
       "Provider terminal error",
       `provider=${fingerprintToken(provider)}`,
       `model=${fingerprintToken(model)}`,
       `category=${fingerprintToken(category)}`,
+      origin ? `origin=${origin}` : undefined,
       statusCode ? `status=${statusCode}` : undefined,
     ]
       .filter(Boolean)
@@ -59,6 +65,7 @@ export class ProviderTerminalError extends Error {
     this.model = model ?? "unknown";
     this.category = category;
     this.statusCode = statusCode;
+    this.origin = origin;
     this.openrouterGenerationId =
       context.openRouterMetadata?.openrouter_generation_id;
     this.openrouterRequestId =

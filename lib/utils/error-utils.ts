@@ -69,6 +69,21 @@ const collectErrorSources = (
   return sources;
 };
 
+const OPENROUTER_REQUEST_SIZE_GUARD_HEADER =
+  "x-hackerai-openrouter-request-size-guard";
+
+export const isLocalOpenRouterRequestSizeGuardError = (
+  error: unknown,
+): boolean =>
+  collectErrorSources(error).some((source) => {
+    if (!isRecord(source) || !isRecord(source.responseHeaders)) return false;
+    return Object.entries(source.responseHeaders).some(
+      ([name, value]) =>
+        name.toLowerCase() === OPENROUTER_REQUEST_SIZE_GUARD_HEADER &&
+        value === "rejected",
+    );
+  });
+
 const getOpenRouterPayload = (
   source: unknown,
 ): Record<string, unknown> | null => {
