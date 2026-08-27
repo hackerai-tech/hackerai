@@ -60,6 +60,17 @@ describe("acquireFreeRunConcurrencyLock", () => {
       type: "rate_limit",
       surface: "chat",
       cause: expect.stringContaining("already have a free request running"),
+      metadata: {
+        subscription: "free",
+        capReason: "free_concurrency",
+        limitType: "concurrency",
+        costGuardrail: false,
+        paidMonthlyExhaustion: false,
+        upgradeAvailable: false,
+        addCreditAvailable: false,
+        primaryCta: undefined,
+        eligibleCtas: [],
+      },
     });
   });
 

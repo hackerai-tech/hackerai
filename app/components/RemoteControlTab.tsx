@@ -185,6 +185,8 @@ const RemoteControlTab = () => {
     subscription,
   });
 
+  const activeConnections = connections ?? [];
+
   const handleGetToken = async () => {
     setIsLoadingToken(true);
     try {
@@ -264,27 +266,30 @@ const RemoteControlTab = () => {
         <h4 className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
           Connections
         </h4>
-        {connections && connections.filter((c) => !c.isDesktop).length > 0 ? (
+        {activeConnections.length > 0 ? (
           <div className="space-y-2">
-            {connections
-              .filter((conn) => !conn.isDesktop)
-              .map((conn) => (
-                <div
-                  key={conn.connectionId}
-                  className="flex items-center gap-3 p-3 bg-muted/50 rounded-lg"
-                >
-                  <div className="relative">
-                    <Circle className="h-2.5 w-2.5 fill-green-500 text-green-500" />
-                    <Circle className="h-2.5 w-2.5 fill-green-500 text-green-500 absolute inset-0 animate-ping opacity-75" />
+            {activeConnections.map((conn) => (
+              <div
+                key={conn.connectionId}
+                className="flex items-center gap-3 p-3 bg-muted/50 rounded-lg"
+              >
+                <div className="relative">
+                  <Circle className="h-2.5 w-2.5 fill-green-500 text-green-500" />
+                  <Circle className="h-2.5 w-2.5 fill-green-500 text-green-500 absolute inset-0 animate-ping opacity-75" />
+                </div>
+                <Server className="h-4 w-4 text-muted-foreground shrink-0" />
+                <div className="flex-1 min-w-0">
+                  <div className="font-medium text-sm">
+                    {conn.osInfo?.hostname || conn.name}
                   </div>
-                  <Server className="h-4 w-4 text-muted-foreground shrink-0" />
-                  <div className="flex-1 min-w-0">
-                    <div className="font-medium text-sm">
-                      {conn.osInfo?.hostname || conn.name}
-                    </div>
+                  <div className="text-xs text-muted-foreground">
+                    {conn.isDesktop
+                      ? "Desktop app connected"
+                      : "Remote Control connected"}
                   </div>
                 </div>
-              ))}
+              </div>
+            ))}
           </div>
         ) : (
           <div className="flex flex-col items-center justify-center py-6 px-4 bg-muted/30 rounded-lg">

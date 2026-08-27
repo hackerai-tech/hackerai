@@ -2077,6 +2077,7 @@ const withAgentLongStreamHeartbeat = (
 type RunCleanupState = {
   usageRefundTracker: UsageRefundTracker;
   hasObservedUsage: () => boolean;
+  releaseFreeRunLock: () => Promise<void>;
   chatLogger: ChatLogger | undefined;
   chatId: string;
   userId: string;
@@ -2246,6 +2247,16 @@ export const agentLongTask = task({
     if (!cleanup.hasObservedUsage()) {
       await cleanup.usageRefundTracker.refund().catch(() => {});
     }
+    await cleanup.releaseFreeRunLock().catch((error) => {
+      triggerLogger.warn("[agent-long] canceled run lock release failed", {
+        event: "agent_free_run_lock_release_failed",
+        user_id: cleanup.userId,
+        chat_id: cleanup.chatId,
+        trigger_run_id: ctx.run.id,
+        cleanup_source: "on_cancel",
+        error: stringifyRedactedError(error),
+      });
+    });
     if (cleanup.subagentsEnabled) {
       await settleSubagentsForParentRun(
         ctx.run.id,
@@ -2436,6 +2447,7 @@ export const agentLongTask = task({
     runCleanupMap.set(ctx.run.id, {
       usageRefundTracker,
       hasObservedUsage,
+      releaseFreeRunLock: releaseFreeRunLockOnce,
       chatLogger,
       chatId,
       userId,
@@ -5409,6 +5421,15 @@ export const agentLongTask = task({
 
       throw error;
     } finally {
+      await releaseFreeRunLockOnce().catch((error) => {
+        triggerLogger.warn("[agent-long] free run lock release failed", {
+          event: "agent_free_run_lock_release_failed",
+          user_id: userId,
+          chat_id: chatId,
+          trigger_run_id: ctx.run.id,
+          error: stringifyRedactedError(error),
+        });
+      });
       runtimeSettlementWatchdog?.dispose();
       memoryTelemetry.dispose();
       activeRuntimeBudget?.dispose();

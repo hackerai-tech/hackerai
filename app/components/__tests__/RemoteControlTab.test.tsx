@@ -90,6 +90,19 @@ const remoteConnection: MockConnection = {
   isDesktop: false,
 };
 
+const desktopConnection: MockConnection = {
+  connectionId: "conn-desktop-1",
+  name: "HackerAI Desktop",
+  osInfo: {
+    platform: "darwin",
+    arch: "arm64",
+    release: "25.0.0",
+    hostname: "bobbys-mac",
+  },
+  lastSeen: 123,
+  isDesktop: true,
+};
+
 describe("RemoteControlTab", () => {
   beforeEach(() => {
     jest.clearAllMocks();
@@ -140,6 +153,16 @@ describe("RemoteControlTab", () => {
     expect(mockSetSelectedModel).not.toHaveBeenCalled();
     expect(mockSetChatMode).not.toHaveBeenCalled();
     expect(toast.success).not.toHaveBeenCalled();
+  });
+
+  it("shows a desktop bridge as an active connection", () => {
+    mockConnections = [desktopConnection];
+
+    render(<RemoteControlTab />);
+
+    expect(screen.getByText("bobbys-mac")).toBeInTheDocument();
+    expect(screen.getByText("Desktop app connected")).toBeInTheDocument();
+    expect(screen.queryByText("No active connections")).not.toBeInTheDocument();
   });
 
   it("reports command copy success only after the clipboard write succeeds", async () => {
