@@ -2406,11 +2406,33 @@ export const agentLongTask = task({
     const usageRefundTracker = new UsageRefundTracker();
     usageRefundTracker.setUser(userId, subscription, organizationId);
     let releaseFreeRunLock: (() => Promise<void>) | undefined;
+    let releaseFreeRunLockPromise: Promise<void> | undefined;
     const releaseFreeRunLockOnce = async () => {
+      if (releaseFreeRunLockPromise) return releaseFreeRunLockPromise;
       const release = releaseFreeRunLock;
       if (!release) return;
-      releaseFreeRunLock = undefined;
-      await release();
+      releaseFreeRunLockPromise = release()
+        .then(() => {
+          if (releaseFreeRunLock === release) {
+            releaseFreeRunLock = undefined;
+          }
+        })
+        .finally(() => {
+          releaseFreeRunLockPromise = undefined;
+        });
+      await releaseFreeRunLockPromise;
+    };
+    const releaseFreeRunLockBestEffort = async (cleanupSource: string) => {
+      await releaseFreeRunLockOnce().catch((error) => {
+        triggerLogger.warn("[agent-long] free run lock release failed", {
+          event: "agent_free_run_lock_release_failed",
+          user_id: userId,
+          chat_id: chatId,
+          trigger_run_id: ctx.run.id,
+          cleanup_source: cleanupSource,
+          error: stringifyRedactedError(error),
+        });
+      });
     };
 
     let chatLogger: ChatLogger | undefined = createChatLogger({
@@ -5332,7 +5354,7 @@ export const agentLongTask = task({
       metadata.set("status", "done");
       await phLogger.flush().catch(() => {});
     } catch (error) {
-      await releaseFreeRunLockOnce();
+      await releaseFreeRunLockBestEffort("outer_catch");
       memoryTelemetry.checkpoint({ phase: "run_failed", force: true });
       const chatMissingAfterStream =
         streamPiped &&
@@ -5421,15 +5443,7 @@ export const agentLongTask = task({
 
       throw error;
     } finally {
-      await releaseFreeRunLockOnce().catch((error) => {
-        triggerLogger.warn("[agent-long] free run lock release failed", {
-          event: "agent_free_run_lock_release_failed",
-          user_id: userId,
-          chat_id: chatId,
-          trigger_run_id: ctx.run.id,
-          error: stringifyRedactedError(error),
-        });
-      });
+      await releaseFreeRunLockBestEffort("outer_finally");
       runtimeSettlementWatchdog?.dispose();
       memoryTelemetry.dispose();
       activeRuntimeBudget?.dispose();

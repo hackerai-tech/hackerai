@@ -201,7 +201,18 @@ describe("agent-long post-wait authorization contract", () => {
 
     expect(outerFinally).toBeGreaterThan(-1);
     expect(cleanupEnd).toBeGreaterThan(cleanupAnchor);
-    expect(outerCleanupSource).toContain("await releaseFreeRunLockOnce()");
+    expect(outerCleanupSource).toContain(
+      'await releaseFreeRunLockBestEffort("outer_finally")',
+    );
+  });
+
+  it("keeps failed lock releases retryable without replacing run errors", () => {
+    expect(taskSource).toMatch(
+      /releaseFreeRunLockPromise = release\(\)[\s\S]*releaseFreeRunLock = undefined[\s\S]*\.finally\(\(\) => \{[\s\S]*releaseFreeRunLockPromise = undefined/,
+    );
+    expect(taskSource).toContain(
+      'await releaseFreeRunLockBestEffort("outer_catch")',
+    );
   });
 
   it("releases the free concurrency lock from Trigger cancellation cleanup", () => {
