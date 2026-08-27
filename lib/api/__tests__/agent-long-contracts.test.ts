@@ -225,6 +225,12 @@ describe("direct vision and summary recovery contracts", () => {
         /describeImageAttachmentsWithAuxiliaryVision\(\{[\s\S]*?cacheDescription:\s*cacheAuxiliaryVisionDescription/,
       );
       expect(source).toMatch(
+        /messages:\s*omitImageViewToolResultsForProviderRetry\(\s*state\.finalMessages,?\s*\)\.messages/,
+      );
+      expect(source).toMatch(
+        /catch \(summaryError\) \{[\s\S]*?event:\s*"vision_summary_recovery_failed"/,
+      );
+      expect(source).toMatch(
         /get auxiliaryVisionEnabled\(\) \{\s*return visionSummaryRecovery\.isEnabled\(\);\s*\}/,
       );
       expect(source).not.toContain("AUXILIARY_VISION_UNAVAILABLE_MESSAGE");

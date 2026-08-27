@@ -1527,20 +1527,29 @@ export const createChatHandler = () => {
                         ? "attachment"
                         : "file_view",
                   });
-                  state.finalMessages =
-                    await describeImageAttachmentsWithAuxiliaryVision({
-                      messages: state.finalMessages,
-                      requestId: req.headers.get("x-vercel-id") ?? undefined,
-                      userId,
-                      chatId,
-                      abortSignal: userStopSignal.signal,
-                      onCost: (costDollars) => {
-                        usageTracker.providerCost += costDollars;
-                        usageTracker.nonModelCost += costDollars;
-                        chatLogger?.getBuilder().addToolCost(costDollars);
-                      },
-                      cacheDescription: cacheAuxiliaryVisionDescription,
-                    });
+                  try {
+                    state.finalMessages =
+                      await describeImageAttachmentsWithAuxiliaryVision({
+                        messages: omitImageViewToolResultsForProviderRetry(
+                          state.finalMessages,
+                        ).messages,
+                        requestId: req.headers.get("x-vercel-id") ?? undefined,
+                        userId,
+                        chatId,
+                        abortSignal: userStopSignal.signal,
+                        onCost: (costDollars) => {
+                          usageTracker.providerCost += costDollars;
+                          usageTracker.nonModelCost += costDollars;
+                          chatLogger?.getBuilder().addToolCost(costDollars);
+                        },
+                        cacheDescription: cacheAuxiliaryVisionDescription,
+                      });
+                  } catch (summaryError) {
+                    preemptiveTimeout?.clear();
+                    await usageRefundTracker.refund();
+                    chatLogger?.emitUnexpectedError(summaryError);
+                    throw error;
+                  }
                 }
                 result = await createStream(apiRetryModel);
               } else {
@@ -1571,6 +1580,7 @@ export const createChatHandler = () => {
                 },
                 onFinish: async ({ messages, isAborted }) => {
                   let retryScheduled = false;
+                  let visionSummaryRecoveryFailure: unknown;
                   try {
                     const lastAssistantMessage = messages
                       .slice()
@@ -1694,6 +1704,61 @@ export const createChatHandler = () => {
                             : fallbackModel;
                       const retryModelSlug =
                         trackedProvider.languageModel(retryModel).modelId;
+                      const shouldAttemptProviderRetry =
+                        (!isAborted || stoppedDueToAssistantContentLoop) &&
+                        (isAutoModel ||
+                          shouldRetryWithVisionSummary ||
+                          providerContentBlocked ||
+                          shouldRetryWithoutImageToolResults ||
+                          loopTriggeredRetry ||
+                          shouldRetryInterruptedToolInput ||
+                          shouldRetryExplicitDeepSeekProReasoning);
+                      let recoveredVisionMessages:
+                        typeof state.finalMessages | undefined;
+                      if (
+                        shouldAttemptProviderRetry &&
+                        shouldRetryWithVisionSummary
+                      ) {
+                        visionSummaryRecovery.activate({
+                          error: visionSummaryRecoveryError,
+                          source: hasImageAttachmentForRecovery
+                            ? "attachment"
+                            : "file_view",
+                        });
+                        try {
+                          recoveredVisionMessages =
+                            await describeImageAttachmentsWithAuxiliaryVision({
+                              messages:
+                                omitImageViewToolResultsForProviderRetry(
+                                  state.finalMessages,
+                                ).messages,
+                              requestId:
+                                req.headers.get("x-vercel-id") ?? undefined,
+                              userId,
+                              chatId,
+                              abortSignal: userStopSignal.signal,
+                              onCost: (costDollars) => {
+                                usageTracker.providerCost += costDollars;
+                                usageTracker.nonModelCost += costDollars;
+                                chatLogger
+                                  ?.getBuilder()
+                                  .addToolCost(costDollars);
+                              },
+                              cacheDescription: cacheAuxiliaryVisionDescription,
+                            });
+                        } catch (summaryError) {
+                          visionSummaryRecoveryFailure = summaryError;
+                          phLogger.error("Vision summary recovery failed", {
+                            event: "vision_summary_recovery_failed",
+                            chatId,
+                            endpoint,
+                            mode,
+                            userId,
+                            subscription,
+                            ...extractErrorDetails(summaryError),
+                          });
+                        }
+                      }
                       phLogger.warn(
                         shouldRetryWithVisionSummary
                           ? "Direct vision routes failed - retrying with MiniMax summary"
@@ -1744,14 +1809,8 @@ export const createChatHandler = () => {
                       // For image-tool rejection, retry the same selected model
                       // after replacing image outputs with text placeholders.
                       if (
-                        (!isAborted || stoppedDueToAssistantContentLoop) &&
-                        (isAutoModel ||
-                          shouldRetryWithVisionSummary ||
-                          providerContentBlocked ||
-                          shouldRetryWithoutImageToolResults ||
-                          loopTriggeredRetry ||
-                          shouldRetryInterruptedToolInput ||
-                          shouldRetryExplicitDeepSeekProReasoning)
+                        shouldAttemptProviderRetry &&
+                        !visionSummaryRecoveryFailure
                       ) {
                         isRetryWithFallback = true;
                         state.lastStepInputTokens = 0;
@@ -1780,29 +1839,7 @@ export const createChatHandler = () => {
                           providerContentBlocked;
                         resetServedModelTelemetryForRetry(state);
                         if (shouldRetryWithVisionSummary) {
-                          visionSummaryRecovery.activate({
-                            error: visionSummaryRecoveryError,
-                            source: hasImageAttachmentForRecovery
-                              ? "attachment"
-                              : "file_view",
-                          });
-                          state.finalMessages =
-                            await describeImageAttachmentsWithAuxiliaryVision({
-                              messages: state.finalMessages,
-                              requestId:
-                                req.headers.get("x-vercel-id") ?? undefined,
-                              userId,
-                              chatId,
-                              abortSignal: userStopSignal.signal,
-                              onCost: (costDollars) => {
-                                usageTracker.providerCost += costDollars;
-                                usageTracker.nonModelCost += costDollars;
-                                chatLogger
-                                  ?.getBuilder()
-                                  .addToolCost(costDollars);
-                              },
-                              cacheDescription: cacheAuxiliaryVisionDescription,
-                            });
+                          state.finalMessages = recoveredVisionMessages!;
                           usageTracker.resetModelLeg();
                         } else if (shouldRetryWithoutImageToolResults) {
                           state.finalMessages =
@@ -2213,7 +2250,8 @@ export const createChatHandler = () => {
                       );
                     const outcome = isAborted
                       ? "aborted"
-                      : finalProviderContentBlocked
+                      : finalProviderContentBlocked ||
+                          visionSummaryRecoveryFailure
                         ? "error"
                         : "success";
                     captureAgentCompletionAnalytics({
@@ -2254,7 +2292,11 @@ export const createChatHandler = () => {
                         todoRunMetrics: getTodoManager().getRunMetrics(),
                       }),
                     });
-                    if (finalProviderContentBlocked) {
+                    if (visionSummaryRecoveryFailure) {
+                      chatLogger!.emitUnexpectedError(
+                        visionSummaryRecoveryFailure,
+                      );
+                    } else if (finalProviderContentBlocked) {
                       chatLogger!.emitUnexpectedError(
                         state.providerError ??
                           createProviderContentBlockedFinishReasonError(),

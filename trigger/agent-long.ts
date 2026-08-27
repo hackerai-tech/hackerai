@@ -4451,21 +4451,28 @@ export const agentLongTask = task({
                         ? "attachment"
                         : "file_view",
                   });
-                  state.finalMessages =
-                    await describeImageAttachmentsWithAuxiliaryVision({
-                      messages: state.finalMessages,
-                      requestId: ctx.run.id,
-                      userId,
-                      chatId,
-                      triggerRunId: ctx.run.id,
-                      abortSignal: userStopSignal.signal,
-                      onCost: (costDollars) => {
-                        usageTracker.providerCost += costDollars;
-                        usageTracker.nonModelCost += costDollars;
-                        chatLogger?.getBuilder().addToolCost(costDollars);
-                      },
-                      cacheDescription: cacheAuxiliaryVisionDescription,
-                    });
+                  try {
+                    state.finalMessages =
+                      await describeImageAttachmentsWithAuxiliaryVision({
+                        messages: omitImageViewToolResultsForProviderRetry(
+                          state.finalMessages,
+                        ).messages,
+                        requestId: ctx.run.id,
+                        userId,
+                        chatId,
+                        triggerRunId: ctx.run.id,
+                        abortSignal: userStopSignal.signal,
+                        onCost: (costDollars) => {
+                          usageTracker.providerCost += costDollars;
+                          usageTracker.nonModelCost += costDollars;
+                          chatLogger?.getBuilder().addToolCost(costDollars);
+                        },
+                        cacheDescription: cacheAuxiliaryVisionDescription,
+                      });
+                  } catch (summaryError) {
+                    chatLogger?.emitUnexpectedError(summaryError);
+                    throw error;
+                  }
                 }
                 result = await createStream(apiRetryModel);
               } else {
@@ -4608,8 +4615,7 @@ export const agentLongTask = task({
                       const shouldContinueAfterProviderDisconnect = Boolean(
                         providerDisconnectContinuation,
                       );
-
-                      if (
+                      const shouldAttemptProviderRetry =
                         (shouldRetryWithFallback ||
                           shouldRetryWithoutImageToolResults ||
                           shouldRetryWithVisionSummary ||
@@ -4624,7 +4630,58 @@ export const agentLongTask = task({
                           state.stoppedDueToDoomLoop ||
                           shouldRetryInterruptedToolInput ||
                           shouldRetryExplicitDeepSeekProReasoning ||
-                          shouldContinueAfterProviderDisconnect)
+                          shouldContinueAfterProviderDisconnect);
+                      let recoveredVisionMessages:
+                        typeof state.finalMessages | undefined;
+                      let visionSummaryRecoveryFailure: unknown;
+                      if (
+                        shouldAttemptProviderRetry &&
+                        shouldRetryWithVisionSummary
+                      ) {
+                        visionSummaryRecovery.activate({
+                          error: visionSummaryRecoveryError,
+                          source: hasImageAttachmentForRecovery
+                            ? "attachment"
+                            : "file_view",
+                        });
+                        try {
+                          recoveredVisionMessages =
+                            await describeImageAttachmentsWithAuxiliaryVision({
+                              messages:
+                                omitImageViewToolResultsForProviderRetry(
+                                  state.finalMessages,
+                                ).messages,
+                              requestId: ctx.run.id,
+                              userId,
+                              chatId,
+                              triggerRunId: ctx.run.id,
+                              abortSignal: userStopSignal.signal,
+                              onCost: (costDollars) => {
+                                usageTracker.providerCost += costDollars;
+                                usageTracker.nonModelCost += costDollars;
+                                chatLogger
+                                  ?.getBuilder()
+                                  .addToolCost(costDollars);
+                              },
+                              cacheDescription: cacheAuxiliaryVisionDescription,
+                            });
+                        } catch (summaryError) {
+                          visionSummaryRecoveryFailure = summaryError;
+                          phLogger.error("Vision summary recovery failed", {
+                            event: "vision_summary_recovery_failed",
+                            chatId,
+                            mode,
+                            userId,
+                            subscription,
+                            triggerRunId: ctx.run.id,
+                            ...extractErrorDetails(summaryError),
+                          });
+                        }
+                      }
+
+                      if (
+                        shouldAttemptProviderRetry &&
+                        !visionSummaryRecoveryFailure
                       ) {
                         const retryReason = shouldRetryWithVisionSummary
                           ? "vision_summary_recovery"
@@ -4716,29 +4773,7 @@ export const agentLongTask = task({
                           providerContentBlocked;
                         resetAgentStreamStateForRetry(state);
                         if (shouldRetryWithVisionSummary) {
-                          visionSummaryRecovery.activate({
-                            error: visionSummaryRecoveryError,
-                            source: hasImageAttachmentForRecovery
-                              ? "attachment"
-                              : "file_view",
-                          });
-                          state.finalMessages =
-                            await describeImageAttachmentsWithAuxiliaryVision({
-                              messages: state.finalMessages,
-                              requestId: ctx.run.id,
-                              userId,
-                              chatId,
-                              triggerRunId: ctx.run.id,
-                              abortSignal: userStopSignal.signal,
-                              onCost: (costDollars) => {
-                                usageTracker.providerCost += costDollars;
-                                usageTracker.nonModelCost += costDollars;
-                                chatLogger
-                                  ?.getBuilder()
-                                  .addToolCost(costDollars);
-                              },
-                              cacheDescription: cacheAuxiliaryVisionDescription,
-                            });
+                          state.finalMessages = recoveredVisionMessages!;
                           usageTracker.resetModelLeg();
                         } else if (providerDisconnectContinuation) {
                           state.finalMessages = [
