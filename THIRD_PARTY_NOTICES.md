@@ -13,3 +13,7 @@ License, Version 2.0. A copy of the upstream license is included at
 Vendored files under `third_party/strix-skills/skills` are unmodified upstream
 copies. HackerAI runtime compatibility and safety instructions are applied by
 the local subagent skill registry rather than by changing those files.
+
+The upstream `tooling` category is intentionally not imported. HackerAI agents
+use the availability, version, and help output of tools installed in their
+sandbox as the source of truth for CLI syntax.

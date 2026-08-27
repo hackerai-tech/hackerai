@@ -1,4 +1,6 @@
 import { describe, expect, it } from "@jest/globals";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import upstreamManifest from "@/third_party/strix-skills/UPSTREAM.json";
 
 import {
@@ -12,7 +14,7 @@ import { renderSubagentSkillKnowledge } from "../skills/knowledge";
 import { listSubagentSkillSafetyOverrideIds } from "../skills/safety-overrides";
 
 describe("Strix subagent skills", () => {
-  it("exposes the vendored selectable catalog without internal orchestration skills", () => {
+  it("exposes methodology skills without internal orchestration or tooling skills", () => {
     expect(STRIX_SUBAGENT_SKILL_COUNT).toBe(
       upstreamManifest.selectableSkillCount,
     );
@@ -34,6 +36,19 @@ describe("Strix subagent skills", () => {
         (skill) => skill.id === "coordination/root_agent",
       ),
     ).toBe(false);
+    expect(
+      listSubagentSkills().some((skill) => skill.category === "tooling"),
+    ).toBe(false);
+    expect(
+      Object.keys(upstreamManifest.files).some((path) =>
+        path.startsWith("tooling/"),
+      ),
+    ).toBe(false);
+    expect(
+      existsSync(
+        join(process.cwd(), "third_party", "strix-skills", "skills", "tooling"),
+      ),
+    ).toBe(false);
   });
 
   it("resolves qualified ids and unambiguous Strix aliases", () => {
@@ -49,6 +64,10 @@ describe("Strix subagent skills", () => {
       success: false,
       error: expect.stringContaining("Unknown subagent skill"),
     });
+    expect(resolveSubagentSkills(["tooling/nmap"])).toEqual({
+      success: false,
+      error: expect.stringContaining("Unknown subagent skill"),
+    });
   });
 
   it("renders a discoverable catalog and bounded specialist knowledge", () => {
@@ -56,6 +75,7 @@ describe("Strix subagent skills", () => {
     expect(catalog).toContain("<available_subagent_skills");
     expect(catalog).toContain("frameworks/nextjs:");
     expect(catalog).not.toContain("analysis/counterevidence:");
+    expect(catalog).not.toContain("[tooling]");
     expect(catalog).toContain("up to 5 when the task clearly needs them");
 
     const knowledge = renderSubagentSkillKnowledge(["vulnerabilities/idor"]);

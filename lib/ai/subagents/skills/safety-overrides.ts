@@ -27,15 +27,6 @@ const overrides: Record<string, SkillSafetyOverride> = {
   "technologies/grafana_prometheus": {
     instructions: `Do not treat Grafana image rendering as arbitrary-URL full-read SSRF without verifying the deployed vulnerable renderer/version, endpoint behavior, authentication boundary, and observable access to a scoped internal resource. Preserve the exact exploit preconditions and do not generalize one renderer issue to every /api/render deployment.`,
   },
-  "tooling/katana": {
-    instructions: `For endpoint discovery JSONL, omit raw requests and response bodies with -or -ob. Keep crawl duration, depth, concurrency, rate, per-response bytes, and output volume explicitly bounded; use a lower -mrs when bodies are genuinely required.`,
-  },
-  "tooling/naabu": {
-    instructions: `Use the supported SYN scan form -scan-type s. Supply proxy values only in the syntax supported by the installed Naabu version, such as ip[:port] or fqdn[:port]; do not pass a SOCKS URL or rely on an unverified version-specific compatibility claim.`,
-  },
-  "tooling/sqlmap": {
-    instructions: `Do not dump production PII, credentials, tokens, or other sensitive columns by default. Demonstrate extraction with synthetic or non-sensitive data and the minimum rows/columns needed. Production-data extraction requires explicit task approval plus redaction and artifact-handling constraints.`,
-  },
   "vulnerabilities/nosql_injection": {
     instructions: `Gate $where and related server-side JavaScript probes on the effective security.javascriptEnabled setting, not the MongoDB version. Never use unbounded loops, catastrophic regexes, huge arrays, or heavy aggregations against a non-disposable service. Prefer a short bounded timing differential under a hard query/client timeout; destructive or availability testing requires an explicitly isolated disposable database and a defined hard stop. Redis client calls such as execute_command("SET", userKey, value) preserve argument boundaries; claim command injection only when user input reaches raw RESP, a shell, or another boundary that actually reparses commands.`,
   },

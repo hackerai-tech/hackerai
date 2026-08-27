@@ -16,6 +16,9 @@ describe("subagent profiles", () => {
     ]);
     expect(profile.systemPrompt).toContain("Never delegate another agent");
     expect(profile.systemPrompt).toContain("server-assigned specialist skills");
+    expect(profile.systemPrompt).toContain(
+      "consult its local version and help output",
+    );
     const prompt = profile.buildPrompt(
       {
         name: "Authorization mapper",
