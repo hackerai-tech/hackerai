@@ -7,6 +7,7 @@ export function getPaidDailyFreeAllowanceCtaText(mode?: ChatMode): string {
 }
 
 export type LimitCapReason =
+  | "free_concurrency"
   | "daily_requests_exhausted"
   | "free_monthly_exhausted"
   | "monthly_exhausted"
@@ -24,6 +25,7 @@ export type LimitCapReason =
   | (string & {});
 
 export type LimitType =
+  | "concurrency"
   | "daily_requests"
   | "free_monthly"
   | "monthly"
@@ -70,6 +72,7 @@ export function getLimitTypeForCapReason(
   capReason: LimitCapReason | undefined,
 ): LimitType {
   if (!capReason) return "monthly";
+  if (capReason === "free_concurrency") return "concurrency";
   if (capReason.startsWith("paid_daily_free_allowance")) {
     return "paid_daily_free_allowance";
   }
@@ -117,7 +120,7 @@ export function shouldShowUpgradeCta(args: {
 }): boolean {
   const { subscription, capReason } = args;
   if (!UPGRADABLE_TIERS.has(subscription)) return false;
-  if (subscription === "free") return true;
+  if (subscription === "free") return capReason !== "free_concurrency";
 
   return !capReason || DIRECT_EXTRA_USAGE_REASONS.has(capReason);
 }

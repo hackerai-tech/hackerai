@@ -146,6 +146,7 @@ export const MessageErrorState = ({
   const canUpgrade = shouldShowUpgradeCta({ subscription, capReason });
   const extraUsageCta = getExtraUsageLimitCta({ subscription, capReason });
   const limitType = getLimitTypeForCapReason(capReason);
+  const isConcurrencyLimit = limitType === "concurrency";
   const upgradeCtaText =
     subscription === "free" &&
     (limitType === "daily_requests" || limitType === "free_monthly")
@@ -170,7 +171,8 @@ export const MessageErrorState = ({
     canUsePaidDailyFreeAllowance &&
     extraUsageCta?.analyticsText === "Add Credits";
   const showRateLimitRetry = !shouldFocusPaidAllowanceActions;
-  const showRateLimitUsage = !shouldFocusPaidAllowanceActions;
+  const showRateLimitUsage =
+    !shouldFocusPaidAllowanceActions && !isConcurrencyLimit;
   const showUpgrade = canUpgrade && !shouldFocusPaidAllowanceActions;
   const isDirectAddCredits = extraUsageCta?.analyticsText === "Add Credits";
   const isPaymentRecovery = capReason === "auto_reload_failed";
