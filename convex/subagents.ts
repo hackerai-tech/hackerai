@@ -91,6 +91,7 @@ const subagentSummaryValidator = v.object({
   status: statusValidator,
   name: v.string(),
   objective: v.string(),
+  skills: v.optional(v.array(v.string())),
   title: v.string(),
   subtitle: v.optional(v.string()),
   candidate: v.optional(candidateValidator),
@@ -134,6 +135,7 @@ const toSummary = (row: {
   name?: string;
   objective: string;
   success_criteria?: string[];
+  skills?: string[];
   status:
     | "queued"
     | "running"
@@ -171,6 +173,7 @@ const toSummary = (row: {
   status: row.status,
   name: row.name ?? row.candidate?.title ?? "Subagent",
   objective: row.objective,
+  skills: row.skills,
   title: row.name ?? row.candidate?.title ?? "Subagent",
   subtitle: row.candidate?.affected_asset,
   candidate: row.candidate,

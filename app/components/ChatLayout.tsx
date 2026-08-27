@@ -5,6 +5,7 @@ import dynamic from "next/dynamic";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { useGlobalState } from "../contexts/GlobalState";
 import { useChats } from "../hooks/useChats";
+import { useProjects } from "../hooks/useProjects";
 import { SidebarProvider } from "@/components/ui/sidebar";
 import MainSidebar from "./Sidebar";
 import {
@@ -29,8 +30,9 @@ export function ChatLayout({ children }: { children: React.ReactNode }) {
   const isMobile = useIsMobile();
   const { chatSidebarOpen, setChatSidebarOpen } = useGlobalState();
   const panelRef = useRef<HTMLDivElement>(null);
-  // Keep chat list subscription in layout so it doesn't refetch when sidebar opens/closes
+  // Keep list subscriptions in the layout so mobile overlay remounts do not refetch.
   const chatListData = useChats();
+  const projectListData = useProjects();
   const previousActiveElementRef = useRef<HTMLElement | null>(null);
 
   // Settings dialog — local state, opened via custom event from anywhere
@@ -147,7 +149,10 @@ export function ChatLayout({ children }: { children: React.ReactNode }) {
             onOpenChange={setChatSidebarOpen}
             defaultOpen={true}
           >
-            <MainSidebar chatListData={chatListData} />
+            <MainSidebar
+              chatListData={chatListData}
+              projectListData={projectListData}
+            />
           </SidebarProvider>
         </div>
       )}
@@ -174,7 +179,11 @@ export function ChatLayout({ children }: { children: React.ReactNode }) {
             className="w-full max-w-80 h-full bg-background shadow-lg transform transition-transform duration-300 ease-in-out"
             onClick={(e) => e.stopPropagation()}
           >
-            <MainSidebar isMobileOverlay={true} chatListData={chatListData} />
+            <MainSidebar
+              isMobileOverlay={true}
+              chatListData={chatListData}
+              projectListData={projectListData}
+            />
           </div>
         </div>
       )}

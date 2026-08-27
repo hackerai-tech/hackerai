@@ -52,9 +52,17 @@ describe("systemPrompt security instructions", () => {
     expect(prompt).toContain("<focused_security_tasks>");
     expect(prompt).toContain('profile="security_task"');
     expect(prompt).toContain("The task is free-form");
-    expect(prompt).toContain("<available_subagent_skills");
-    expect(prompt).toContain("vulnerabilities/idor:");
-    expect(prompt).toContain("frameworks/nextjs:");
+    expect(prompt).not.toContain("<available_subagent_skills");
+    expect(prompt).not.toContain("vulnerabilities/idor:");
+    expect(prompt).not.toContain("frameworks/nextjs:");
+    expect(prompt).toContain(
+      "No specialist skill catalog or content is loaded automatically",
+    );
+    expect(prompt).toContain("Use search_skills");
+    expect(prompt).toContain("Use load_skill");
+    expect(prompt).toContain(
+      "permanently included in that child's system prompt",
+    );
     expect(prompt).toContain("Skills provide methodology only");
     expect(prompt).toContain("one-active and three-total limits");
     expect(prompt).not.toContain("<independent_validation>");

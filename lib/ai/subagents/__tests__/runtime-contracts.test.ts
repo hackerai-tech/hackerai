@@ -42,7 +42,23 @@ describe("security validation subagent runtime contracts", () => {
       "security_task uses fixed server tools and does not accept skills",
     );
     expect(profiles).toContain("renderSubagentSkillKnowledge");
-    expect(profiles).toContain("load additional skills");
+    expect(profiles).toContain("buildSystemPrompt");
+    expect(profiles).toContain("dynamically loaded content is a tool result");
+    expect(read("trigger/subagent.ts")).toContain(
+      "const systemPrompt = profile.buildSystemPrompt(row)",
+    );
+    expect(read("trigger/agent-long.ts")).toContain(
+      "search_skills: createSearchSkillsTool()",
+    );
+    expect(read("trigger/agent-long.ts")).toContain(
+      "load_skill: createLoadSkillTool()",
+    );
+    expect(read("trigger/subagent.ts")).toContain(
+      "search_skills: createSearchSkillsTool()",
+    );
+    expect(read("trigger/subagent.ts")).toContain(
+      "load_skill: createLoadSkillTool()",
+    );
     expect(profiles).not.toMatch(
       /allowedToolNames:[\s\S]{0,500}"create_agent"/,
     );

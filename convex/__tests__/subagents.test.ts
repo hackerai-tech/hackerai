@@ -256,6 +256,7 @@ describe("subagent presentation", () => {
       profile: "security_validation" as const,
       status: "running" as const,
       objective: "Inspect profile rendering for script injection.",
+      skills: ["vulnerabilities/idor", "analysis/source_aware_discovery"],
       candidate: args.candidate,
       created_at: 1,
       updated_at: 2,
@@ -288,6 +289,7 @@ describe("subagent presentation", () => {
       expect.objectContaining({
         profile: "security_validation",
         objective: "Inspect profile rendering for script injection.",
+        skills: ["vulnerabilities/idor", "analysis/source_aware_discovery"],
         title: "Stored XSS",
         subtitle: "https://example.test/profile",
       }),

@@ -98,7 +98,7 @@ import { useParams, useRouter } from "next/navigation";
 import { ConvexErrorBoundary } from "./ConvexErrorBoundary";
 import { useAutoResume } from "../hooks/useAutoResume";
 import { useAutoContinue } from "../hooks/useAutoContinue";
-import { findLatestTimelineAnchorMessageId } from "./message-timeline-rows";
+import { findActiveTimelineAnchorMessageId } from "./message-timeline-rows";
 import { useLatestRef } from "../hooks/useLatestRef";
 import { useDataStreamDispatch } from "./DataStreamProvider";
 import {
@@ -1805,8 +1805,8 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   // Auto-continue prompts are hidden from the timeline and must not replace
   // the user-visible anchor.
   const timelineAnchorMessageId = useMemo(
-    () => findLatestTimelineAnchorMessageId(messages),
-    [messages],
+    () => findActiveTimelineAnchorMessageId(messages, status),
+    [messages, status],
   );
   const { scrollRef, contentRef, scrollToBottom, isAtBottom } =
     useMessageScroll(timelineAnchorMessageId);

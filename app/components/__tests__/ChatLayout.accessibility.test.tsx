@@ -23,6 +23,13 @@ jest.mock("@/app/hooks/useChats", () => ({
     loadMore: jest.fn(),
   }),
 }));
+jest.mock("@/app/hooks/useProjects", () => ({
+  useProjects: () => ({
+    results: [],
+    status: "Exhausted",
+    loadMore: jest.fn(),
+  }),
+}));
 jest.mock("@/components/ui/sidebar", () => ({
   SidebarProvider: ({ children }: { children: ReactNode }) => (
     <div>{children}</div>
@@ -30,7 +37,18 @@ jest.mock("@/components/ui/sidebar", () => ({
 }));
 jest.mock("../Sidebar", () => ({
   __esModule: true,
-  default: () => <div>Task navigation</div>,
+  default: ({
+    projectListData,
+  }: {
+    projectListData?: { results?: unknown[] };
+  }) => (
+    <div
+      data-testid="main-sidebar"
+      data-project-count={projectListData?.results?.length}
+    >
+      Task navigation
+    </div>
+  ),
 }));
 jest.mock("@/lib/utils/settings-dialog", () => ({
   onOpenSettingsDialog: () => () => undefined,
@@ -50,5 +68,18 @@ describe("ChatLayout mobile accessibility", () => {
     expect(
       screen.getByRole("dialog", { name: "Task sidebar" }),
     ).toHaveAttribute("aria-modal", "true");
+  });
+
+  it("passes the persistent empty project result into the mobile sidebar", () => {
+    render(
+      <ChatLayout>
+        <main>Task content</main>
+      </ChatLayout>,
+    );
+
+    expect(screen.getByTestId("main-sidebar")).toHaveAttribute(
+      "data-project-count",
+      "0",
+    );
   });
 });

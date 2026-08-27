@@ -1,6 +1,7 @@
 import {
   createStableChatTimelineRowsState,
   deriveChatTimelineRows,
+  findActiveTimelineAnchorMessageId,
   findLatestTimelineAnchorMessageId,
   findMessageTimelineAnchorIndex,
   stabilizeChatTimelineRows,
@@ -47,6 +48,30 @@ describe("deriveChatTimelineRows", () => {
 
     expect(findLatestTimelineAnchorMessageId(messages)).toBe("user-1");
     expect(findLatestTimelineAnchorMessageId([])).toBeNull();
+  });
+
+  it("anchors only while the latest response is active", () => {
+    const messages = [
+      {
+        id: "user-1",
+        role: "user",
+        parts: [{ type: "text", text: "Question" }],
+      },
+      {
+        id: "assistant-1",
+        role: "assistant",
+        parts: [{ type: "text", text: "Answer" }],
+      },
+    ] as ChatMessage[];
+
+    expect(findActiveTimelineAnchorMessageId(messages, "submitted")).toBe(
+      "user-1",
+    );
+    expect(findActiveTimelineAnchorMessageId(messages, "streaming")).toBe(
+      "user-1",
+    );
+    expect(findActiveTimelineAnchorMessageId(messages, "ready")).toBeNull();
+    expect(findActiveTimelineAnchorMessageId(messages, "error")).toBeNull();
   });
 
   it("finds the sent message row used to anchor a new turn", () => {

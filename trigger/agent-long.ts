@@ -275,6 +275,10 @@ import {
   createWaitForAgentsTool,
 } from "@/lib/ai/tools/subagent-tools";
 import {
+  createLoadSkillTool,
+  createSearchSkillsTool,
+} from "@/lib/ai/tools/subagent-skill-tools";
+import {
   cancelSubagentsForParent,
   listActiveSubagentsForParent,
   listSubagentsForParent,
@@ -3231,6 +3235,12 @@ export const agentLongTask = task({
                           createSendMessageToAgentTool(toolContext),
                         wait_for_agents: createWaitForAgentsTool(toolContext),
                         cancel_agent: createCancelAgentTool(toolContext),
+                        ...(securityTaskSubagentsEnabled
+                          ? {
+                              search_skills: createSearchSkillsTool(),
+                              load_skill: createLoadSkillTool(),
+                            }
+                          : {}),
                       }),
                     }
                   : {}),
