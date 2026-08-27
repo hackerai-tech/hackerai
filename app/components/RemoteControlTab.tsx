@@ -114,6 +114,7 @@ function useAutoSelectNewRemoteConnection({
 const RemoteControlTab = () => {
   const [token, setToken] = useState<string | null>(null);
   const [isPreparingCommand, setIsPreparingCommand] = useState(false);
+  const [isResettingToken, setIsResettingToken] = useState(false);
   const [isCommandCopied, setIsCommandCopied] = useState(false);
   const [showConnectSetup, setShowConnectSetup] = useState(false);
   const copiedResetTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(
@@ -209,14 +210,22 @@ const RemoteControlTab = () => {
   };
 
   const handleRegenerateToken = async () => {
+    setIsResettingToken(true);
+
     try {
       const result = await regenerateToken();
       setToken(result.token);
+      if (copiedResetTimeoutRef.current) {
+        clearTimeout(copiedResetTimeoutRef.current);
+        copiedResetTimeoutRef.current = null;
+      }
       setIsCommandCopied(false);
       toast.success("Access token reset. Existing connections were stopped.");
     } catch (error) {
       console.error("Failed to regenerate token:", error);
       toast.error("Failed to reset access token");
+    } finally {
+      setIsResettingToken(false);
     }
   };
 
@@ -311,7 +320,7 @@ const RemoteControlTab = () => {
                 size="sm"
                 className="shrink-0 gap-1.5"
                 onClick={handleCopyConnectCommand}
-                disabled={isPreparingCommand}
+                disabled={isPreparingCommand || isResettingToken}
                 aria-label={
                   isPreparingCommand
                     ? "Preparing connect command"
@@ -352,9 +361,12 @@ const RemoteControlTab = () => {
                 size="sm"
                 className="h-7 shrink-0 px-2 text-xs text-muted-foreground hover:text-foreground"
                 onClick={handleRegenerateToken}
+                disabled={isPreparingCommand || isResettingToken}
               >
-                <RefreshCw className="mr-1 h-3 w-3" />
-                Reset token
+                <RefreshCw
+                  className={`mr-1 h-3 w-3 ${isResettingToken ? "animate-spin" : ""}`}
+                />
+                {isResettingToken ? "Resetting..." : "Reset token"}
               </Button>
             ) : null}
           </div>

@@ -275,6 +275,49 @@ describe("RemoteControlTab", () => {
     );
   });
 
+  it("keeps command copying and token reset mutually exclusive", async () => {
+    render(<RemoteControlTab />);
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Copy connect command" }),
+    );
+    const resetButton = await screen.findByRole("button", {
+      name: "Reset token",
+    });
+
+    let resolveClipboard: (() => void) | undefined;
+    mockWriteText.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveClipboard = resolve;
+        }),
+    );
+    const copyButton = screen.getByRole("button", {
+      name: "Connect command copied",
+    });
+    fireEvent.click(copyButton);
+
+    expect(resetButton).toBeDisabled();
+    await waitFor(() => expect(mockWriteText).toHaveBeenCalledTimes(2));
+    resolveClipboard?.();
+    await waitFor(() => expect(resetButton).toBeEnabled());
+
+    let resolveReset: ((value: { token: string }) => void) | undefined;
+    mockRegenerateToken.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveReset = resolve;
+        }),
+    );
+    fireEvent.click(resetButton);
+
+    expect(copyButton).toBeDisabled();
+    expect(resetButton).toHaveTextContent("Resetting...");
+    await waitFor(() => expect(mockRegenerateToken).toHaveBeenCalledTimes(1));
+    resolveReset?.({ token: "regenerated-token" });
+    await waitFor(() => expect(copyButton).toBeEnabled());
+  });
+
   it("handles a rejected clipboard write without a false success", async () => {
     mockWriteText.mockRejectedValue(
       new DOMException("Document is not focused"),
