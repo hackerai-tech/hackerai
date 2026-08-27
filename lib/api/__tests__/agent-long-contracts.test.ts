@@ -2183,8 +2183,22 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
       "await finishCloudSandboxLifecycle()",
       finalCleanupIdx,
     );
+    const idleLeaseReleaseIdx = taskSrc.indexOf(
+      "await finishE2BIdleLeaseRelease?.()",
+      finalCleanupIdx,
+    );
     expect(finalCleanupIdx).toBeGreaterThan(-1);
+    expect(idleLeaseReleaseIdx).toBeGreaterThan(finalCleanupIdx);
     expect(lifecycleFinishIdx).toBeGreaterThan(finalCleanupIdx);
+    expect(lifecycleFinishIdx).toBeGreaterThan(idleLeaseReleaseIdx);
+
+    const onCancelIdx = taskSrc.indexOf("onCancel: async");
+    const runIdx = taskSrc.indexOf("run: async", onCancelIdx);
+    expect(onCancelIdx).toBeGreaterThan(-1);
+    expect(runIdx).toBeGreaterThan(onCancelIdx);
+    expect(taskSrc.slice(onCancelIdx, runIdx)).not.toContain(
+      "finishE2BIdleLeaseRelease",
+    );
   });
 
   test("agent-long disables whole-task retries for its shared UI stream", () => {

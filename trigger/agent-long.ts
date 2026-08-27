@@ -2163,23 +2163,11 @@ const finishCloudSandboxLifecycleForParentRun = async ({
   chatId,
   userId,
   triggerRunId,
-  finishE2BIdleLeaseRelease,
 }: {
   chatId: string;
   userId: string;
   triggerRunId: string;
-  finishE2BIdleLeaseRelease?: () => Promise<void>;
 }): Promise<void> => {
-  await finishE2BIdleLeaseRelease?.().catch((error) => {
-    triggerLogger.warn("[agent-long] E2B idle lease release failed", {
-      event: "agent_e2b_idle_lease_release_failed",
-      user_id: userId,
-      chat_id: chatId,
-      trigger_run_id: triggerRunId,
-      error: stringifyRedactedError(error),
-    });
-  });
-
   try {
     await setActiveTriggerRun({
       chatId,
@@ -2442,7 +2430,6 @@ export const agentLongTask = task({
         chatId,
         userId,
         triggerRunId: ctx.run.id,
-        finishE2BIdleLeaseRelease,
       });
       return cloudSandboxLifecyclePromise;
     };
@@ -5446,6 +5433,15 @@ export const agentLongTask = task({
           );
         }
       }
+      await finishE2BIdleLeaseRelease?.().catch((error) => {
+        triggerLogger.warn("[agent-long] E2B idle lease release failed", {
+          event: "agent_e2b_idle_lease_release_failed",
+          user_id: userId,
+          chat_id: chatId,
+          trigger_run_id: ctx.run.id,
+          error: stringifyRedactedError(error),
+        });
+      });
       await finishCloudSandboxLifecycle();
       runCleanupMap.delete(ctx.run.id);
     }

@@ -49,6 +49,10 @@ const evaluateFlagWithTimeout = async (
   }
 };
 
+/**
+ * Evaluates and records the eligible experiment assignment, shortening the
+ * settled sandbox lease only for treatment users and failing closed otherwise.
+ */
 export async function finalizeE2BIdleLeaseRelease({
   userId,
   chatId,

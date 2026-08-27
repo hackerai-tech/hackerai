@@ -87,6 +87,10 @@ export type E2BSandboxLeaseHeartbeat = {
   stop: () => Promise<void>;
 };
 
+/**
+ * Starts a renewable lease heartbeat and returns an async stop operation that
+ * waits for any refresh already in flight, preventing cleanup ordering races.
+ */
 export const startE2BSandboxLeaseHeartbeat = (
   getSandbox: () => Sandbox | null,
   source: Extract<
@@ -129,6 +133,7 @@ export const startE2BSandboxLeaseHeartbeat = (
   };
 };
 
+/** Keeps an E2B lease renewable for exactly the lifetime of one operation. */
 export const withE2BSandboxLeaseHeartbeat = async <T>(
   sandbox: Sandbox,
   operation: () => Promise<T>,
