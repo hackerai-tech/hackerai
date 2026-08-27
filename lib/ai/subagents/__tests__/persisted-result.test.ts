@@ -69,6 +69,14 @@ describe("resultFromPersistedSubagent", () => {
           artifacts: [{ path: "/tmp/findings.md", description: "Notes" }],
           limitations: ["No live target access."],
           next_steps: ["Validate the suspicious request."],
+          coverage: [
+            {
+              surface: "Uploaded request artifact",
+              risk_area: "Authorization",
+              outcome: "A suspicious ownership check was identified.",
+              evidence_refs: ["file:/tmp/sample.json"],
+            },
+          ],
         },
       }),
     ).toEqual({
@@ -80,6 +88,53 @@ describe("resultFromPersistedSubagent", () => {
       artifacts: [{ path: "/tmp/findings.md", description: "Notes" }],
       limitations: ["No live target access."],
       next_steps: ["Validate the suspicious request."],
+      coverage: [
+        {
+          surface: "Uploaded request artifact",
+          risk_area: "Authorization",
+          outcome: "A suspicious ownership check was identified.",
+          evidence_refs: ["file:/tmp/sample.json"],
+        },
+      ],
     });
+  });
+
+  it("drops malformed coverage entries and caps the parent-visible result", () => {
+    const result = resultFromPersistedSubagent({
+      profile: "security_task",
+      status: "completed",
+      structured_result: {
+        task_status: "completed",
+        summary: "Reviewed the assigned surfaces.",
+        evidence_refs: [],
+        artifacts: [],
+        limitations: [],
+        next_steps: [],
+        coverage: [
+          {
+            surface: "",
+            risk_area: "Authorization",
+            outcome: "Invalid because the surface is empty.",
+            evidence_refs: [],
+          },
+          ...Array.from({ length: 9 }, (_, index) => ({
+            surface: `Surface ${index}`,
+            risk_area: "Authorization",
+            outcome: "No issue identified in the reviewed path.",
+            evidence_refs: [`file:/tmp/evidence-${index}.txt`],
+          })),
+        ],
+      },
+    });
+
+    expect(result).toMatchObject({
+      profile: "security_task",
+      coverage: expect.arrayContaining([
+        expect.objectContaining({ surface: "Surface 0" }),
+      ]),
+    });
+    expect(
+      result.profile === "security_task" ? result.coverage : undefined,
+    ).toHaveLength(8);
   });
 });

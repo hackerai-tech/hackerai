@@ -1,7 +1,9 @@
 import {
   agentSecurityTaskResultSchema,
   agentValidationResultSchema,
+  MAX_SECURITY_TASK_COVERAGE_ITEMS,
   securityTaskArtifactSchema,
+  securityTaskCoverageEntrySchema,
   securityTaskStatusSchema,
   SUBAGENT_TERMINAL_STATUSES,
   subagentVerdictSchema,
@@ -72,6 +74,14 @@ export const resultFromPersistedSubagent = (
           })
           .slice(0, 8)
       : [];
+    const coverage = Array.isArray(result.coverage)
+      ? result.coverage
+          .flatMap((item) => {
+            const parsed = securityTaskCoverageEntrySchema.safeParse(item);
+            return parsed.success ? [parsed.data] : [];
+          })
+          .slice(0, MAX_SECURITY_TASK_COVERAGE_ITEMS)
+      : [];
     const candidate = {
       profile: "security_task" as const,
       status: terminalStatus,
@@ -81,6 +91,7 @@ export const resultFromPersistedSubagent = (
       artifacts,
       limitations: boundedStringArray(result.limitations, 8, 500),
       next_steps: boundedStringArray(result.next_steps, 8, 500),
+      ...(coverage.length > 0 ? { coverage } : {}),
     };
     const parsed = agentSecurityTaskResultSchema.safeParse(candidate);
     if (parsed.success) return parsed.data;

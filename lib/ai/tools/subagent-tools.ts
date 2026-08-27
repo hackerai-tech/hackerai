@@ -759,7 +759,7 @@ export const createCancelAgentTool = (context: ToolContext) =>
 
 export const createWaitForAgentsTool = (context: ToolContext) =>
   tool({
-    description: `Pause until a subagent finishes or the timeout elapses. Optionally pass target_agent_ids to wait only for selected children. This waits for durable child state, not terminal commands. A structured result is returned once to the parent; only security_validation with a confirmed verdict counts as independent vulnerability confirmation.`,
+    description: `Pause until a subagent finishes or the timeout elapses. Optionally pass target_agent_ids to wait only for selected children. This waits for durable child state, not terminal commands. A structured result is returned once to the parent; security_task results may include a bounded summary of surfaces and risk areas actually assessed. Only security_validation with a confirmed verdict counts as independent vulnerability confirmation.`,
     inputSchema: waitForAgentsInputSchema,
     execute: async (input, execution) => {
       const parsed = waitForAgentsInputSchema.parse(input);

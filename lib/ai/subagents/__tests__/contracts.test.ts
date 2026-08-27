@@ -6,6 +6,8 @@ import {
   agentValidationResultSchema,
   agentSecurityTaskResultSchema,
   createAgentInputSchema,
+  MAX_SECURITY_TASK_COVERAGE_ITEMS,
+  securityTaskResultSchema,
   securityValidationResultSchema,
   sendMessageToAgentInputSchema,
   waitForAgentsResultSchema,
@@ -122,7 +124,46 @@ describe("subagent contracts", () => {
         artifacts: [{ path: "/tmp/auth-map.md" }],
         limitations: ["Dynamic behavior was not exercised."],
         next_steps: ["Run the focused endpoint test."],
+        coverage: [
+          {
+            surface: "API authorization middleware",
+            risk_area: "Object-level authorization",
+            outcome: "Enforcement was traced to the ownership check.",
+            evidence_refs: ["file:src/auth.ts:42"],
+          },
+        ],
       }),
-    ).toMatchObject({ profile: "security_task", task_status: "partial" });
+    ).toMatchObject({
+      profile: "security_task",
+      task_status: "partial",
+      coverage: [
+        {
+          surface: "API authorization middleware",
+          risk_area: "Object-level authorization",
+        },
+      ],
+    });
+  });
+
+  it("bounds optional security task coverage", () => {
+    expect(() =>
+      securityTaskResultSchema.parse({
+        task_status: "completed",
+        summary: "Reviewed the assigned surfaces.",
+        evidence_refs: [],
+        artifacts: [],
+        limitations: [],
+        next_steps: [],
+        coverage: Array.from(
+          { length: MAX_SECURITY_TASK_COVERAGE_ITEMS + 1 },
+          (_, index) => ({
+            surface: `Surface ${index}`,
+            risk_area: "Authorization",
+            outcome: "No issue identified in the reviewed path.",
+            evidence_refs: [],
+          }),
+        ),
+      }),
+    ).toThrow();
   });
 });

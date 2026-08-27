@@ -19,6 +19,7 @@ describe("subagent profiles", () => {
     expect(profile.systemPrompt).toContain(
       "consult its local version and help output",
     );
+    expect(profile.systemPrompt).toContain("coverage entry");
     const prompt = profile.buildPrompt(
       {
         name: "Authorization mapper",
@@ -31,6 +32,7 @@ describe("subagent profiles", () => {
     expect(prompt).toContain("1. Identify the enforcing function.");
     expect(prompt).toContain("## Skill: vulnerabilities/idor");
     expect(prompt).toContain("Object-level authorization failures");
+    expect(prompt).toContain("optional coverage array");
   });
 
   it("keeps vulnerability confirmation in the validation profile", () => {

@@ -13,9 +13,23 @@ import {
   type DeleteNoteToolInput,
   listNotesTool,
   type ListNotesToolInput,
+  NULLISH_OPTIONAL_QUERY_FILTER_VALUES,
   updateNoteTool,
   type UpdateNoteToolInput,
 } from "./schemas";
+
+type NullishOptionalQueryFilterValue =
+  (typeof NULLISH_OPTIONAL_QUERY_FILTER_VALUES)[number];
+
+const nullishOptionalQueryFilterValues = new Set<string>(
+  NULLISH_OPTIONAL_QUERY_FILTER_VALUES,
+);
+
+const isNullishOptionalQueryFilter = (
+  value: string | null | undefined,
+): value is NullishOptionalQueryFilterValue | null | undefined =>
+  value == null ||
+  nullishOptionalQueryFilterValues.has(value.trim().toLowerCase());
 
 /**
  * Create a new personal note to record observations, findings, or research.
@@ -71,9 +85,11 @@ export const createListNotes = (context: ToolContext) => {
       try {
         const result = await listNotes({
           userId: context.userID,
-          category,
+          category: isNullishOptionalQueryFilter(category)
+            ? undefined
+            : category,
           tags,
-          search,
+          search: isNullishOptionalQueryFilter(search) ? undefined : search,
         });
 
         if (!result.success) {
