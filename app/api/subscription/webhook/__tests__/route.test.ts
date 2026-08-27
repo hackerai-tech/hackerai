@@ -542,6 +542,20 @@ describe("POST /api/subscription/webhook", () => {
       lines: {
         data: [
           {
+            amount: 500,
+            subscription: null,
+            parent: {
+              type: "invoice_item_details",
+              invoice_item_details: {
+                subscription: null,
+                proration: false,
+              },
+            },
+            pricing: {
+              price_details: { price: "price_unrelated_addon" },
+            },
+          },
+          {
             amount: 2900,
             subscription: "sub_hac46",
             parent: {
@@ -623,6 +637,94 @@ describe("POST /api/subscription/webhook", () => {
         stripe_price_lookup_key: "pro-monthly-plan-29-experiment",
       }),
     );
+  });
+
+  it("retries HAC-46 refunds when the historical invoice Price is unavailable", async () => {
+    mockConstructEvent.mockReturnValue({
+      id: "evt_refund_hac46_retry",
+      type: "refund.created",
+      data: {
+        object: {
+          id: "re_hac46_retry",
+          status: "succeeded",
+          amount: 2900,
+          currency: "usd",
+          charge: "ch_hac46_retry",
+        },
+      },
+    });
+    mockRetrieveCharge.mockResolvedValue({
+      id: "ch_hac46_retry",
+      customer: "cus_hac46_retry",
+      invoice: "in_hac46_retry",
+    } as never);
+    mockRetrieveInvoice.mockResolvedValue({
+      id: "in_hac46_retry",
+      customer: "cus_hac46_retry",
+      parent: {
+        subscription_details: { subscription: "sub_hac46_retry" },
+      },
+      lines: {
+        data: [
+          {
+            amount: 2900,
+            subscription: "sub_hac46_retry",
+            parent: {
+              type: "subscription_item_details",
+              subscription_item_details: {
+                subscription: "sub_hac46_retry",
+                proration: false,
+              },
+            },
+            pricing: {
+              price_details: { price: "price_pro_29" },
+            },
+          },
+        ],
+      },
+    } as never);
+    mockRetrieveCustomer.mockResolvedValue({
+      id: "cus_hac46_retry",
+      deleted: false,
+      metadata: { workOSOrganizationId: "org_hac46_retry" },
+    } as never);
+    mockListMemberships.mockResolvedValue({
+      autoPagination: jest.fn().mockResolvedValue([{ userId: "user_retry" }]),
+    } as never);
+    mockRetrieveSubscription.mockResolvedValue({
+      id: "sub_hac46_retry",
+      metadata: {},
+      items: {
+        data: [
+          {
+            price: {
+              id: "price_pro_plus_60",
+              lookup_key: "pro-plus-monthly-plan",
+            },
+          },
+        ],
+      },
+    } as never);
+    mockRetrievePrice.mockRejectedValue(new Error("Stripe unavailable"));
+
+    const { POST } = await import("../route");
+
+    await expect(POST(makeWebhookRequest())).rejects.toThrow(
+      "Stripe unavailable",
+    );
+    expect(mockConvexMutation).not.toHaveBeenCalledWith(
+      "unitEconomics.recordRevenueEvent",
+      expect.anything(),
+    );
+    expect(mockPostHogEvent).not.toHaveBeenCalledWith(
+      "subscription_refunded",
+      expect.anything(),
+    );
+    expect(
+      mockConvexMutation.mock.calls.filter(
+        ([mutation]) => mutation === "extraUsage.checkAndMarkWebhook",
+      ),
+    ).toHaveLength(1);
   });
 
   it("skips legacy PentestGPT invoices before resolving the old product as a HackerAI tier", async () => {

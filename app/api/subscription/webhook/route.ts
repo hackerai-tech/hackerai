@@ -108,7 +108,7 @@ function invoiceSubscriptionPriceId(
       line.parent?.subscription_item_details?.subscription ??
       line.parent?.invoice_item_details?.subscription ??
       undefined;
-    return !lineSubscriptionId || lineSubscriptionId === subscriptionId;
+    return lineSubscriptionId === subscriptionId;
   });
   const priceId = (line: Stripe.InvoiceLineItem) =>
     stripeObjectId(line.pricing?.price_details?.price) ??
@@ -1590,6 +1590,7 @@ async function handleSubscriptionRefund(
         stripe_price_id: invoicePriceId,
         error: error instanceof Error ? error.message : String(error),
       });
+      throw error;
     }
   }
   const refundedTier = price?.lookup_key
