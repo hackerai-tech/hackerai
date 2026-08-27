@@ -168,6 +168,8 @@ describe("RemoteControlTab", () => {
   it("generates a token and copies a ready-to-run command in one action", async () => {
     render(<RemoteControlTab />);
 
+    expect(screen.getByText(/--token <token>/)).toBeInTheDocument();
+
     fireEvent.click(
       screen.getByRole("button", { name: "Copy connect command" }),
     );
@@ -181,6 +183,7 @@ describe("RemoteControlTab", () => {
     expect(toast.success).toHaveBeenCalledWith(
       "Connect command copied. Paste it into your terminal.",
     );
+    expect(screen.queryByText(/test-token/)).not.toBeInTheDocument();
     expect(toast.error).not.toHaveBeenCalled();
   });
 

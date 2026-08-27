@@ -256,32 +256,35 @@ const RemoteControlTab = () => {
         <h4 className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
           Quick Start
         </h4>
-        <Button
-          variant="outline"
-          className="h-auto w-full justify-start gap-3 whitespace-normal p-3 text-left"
-          onClick={handleCopyConnectCommand}
-          disabled={isPreparingCommand}
-          aria-label="Copy connect command"
-        >
-          <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-muted">
-            <Terminal className="h-4 w-4" />
-          </span>
-          <span className="flex min-w-0 flex-1 flex-col items-start gap-0.5">
-            <span className="font-medium">
-              {isPreparingCommand
-                ? "Preparing connect command..."
-                : "Copy connect command"}
-            </span>
-            <span className="text-xs font-normal text-muted-foreground">
-              Secure token included automatically
-            </span>
-          </span>
-          {isPreparingCommand ? (
-            <LoaderCircle className="h-4 w-4 shrink-0 animate-spin" />
-          ) : (
-            <Copy className="h-4 w-4 shrink-0" />
-          )}
-        </Button>
+        <div className="overflow-hidden rounded-lg border bg-muted/30">
+          <div className="flex items-center gap-2 p-2">
+            <Terminal className="ml-1 h-4 w-4 shrink-0 text-muted-foreground" />
+            <code className="min-w-0 flex-1 overflow-x-auto whitespace-nowrap py-2 font-mono text-xs text-foreground">
+              {`${runCommand} --token <token>${convexUrlFlag}`}
+            </code>
+            <Button
+              size="sm"
+              className="shrink-0 gap-1.5"
+              onClick={handleCopyConnectCommand}
+              disabled={isPreparingCommand}
+              aria-label="Copy connect command"
+            >
+              {isPreparingCommand ? (
+                <LoaderCircle className="h-4 w-4 animate-spin" />
+              ) : (
+                <Copy className="h-4 w-4" />
+              )}
+              <span className="hidden sm:inline">
+                {isPreparingCommand ? "Preparing..." : "Copy"}
+              </span>
+            </Button>
+          </div>
+          <p className="border-t px-3 py-2 text-xs text-muted-foreground">
+            {isPreparingCommand
+              ? "Preparing connect command..."
+              : "Secure token included automatically when copied."}
+          </p>
+        </div>
         <div className="flex items-center justify-between gap-3">
           <p className="text-xs text-muted-foreground">
             Paste and run it in your terminal to connect this machine.
