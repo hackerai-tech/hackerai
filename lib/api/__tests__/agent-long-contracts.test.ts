@@ -1173,6 +1173,17 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     );
   });
 
+  test("full-access runs expose both subagent profiles without a rollout flag", () => {
+    expect(routeSrc).toMatch(
+      /const securityValidationSubagentsEnabled\s*=\s*agentPermissionMode === "full_access";/,
+    );
+    expect(routeSrc).toMatch(
+      /const securityTaskSubagentsEnabled\s*=\s*securityValidationSubagentsEnabled;/,
+    );
+    expect(routeSrc).not.toContain("resolveSecurityTaskSubagentsEnabled");
+    expect(routeSrc).not.toContain("subagent-feature");
+  });
+
   test("parent delivery is acknowledged only after result injection and synthesis", () => {
     expect(taskSrc).toMatch(
       /subagentCompletionGate:[\s\S]*?markInjected:[\s\S]*?markSubagentResultInjectedForParent/,

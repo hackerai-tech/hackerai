@@ -65,7 +65,6 @@ import {
   closeAgentApprovalSession,
 } from "@/lib/api/agent-approval-session";
 import { createAgentRunCorrelationToken } from "@/lib/api/agent-run-correlation";
-import { resolveSecurityTaskSubagentsEnabled } from "@/lib/posthog/subagent-feature";
 import {
   DEFAULT_AGENT_AUTO_REVIEW_ASSIGNMENT,
   type AgentAutoReviewAssignment,
@@ -458,6 +457,7 @@ export const createAgentTriggerPost =
         getTriggerRegionForVercelRequest(req, userLocation) ?? "us-east-1";
       const securityValidationSubagentsEnabled =
         agentPermissionMode === "full_access";
+      const securityTaskSubagentsEnabled = securityValidationSubagentsEnabled;
 
       assertFreeAgentGates({
         mode: "agent",
@@ -492,14 +492,10 @@ export const createAgentTriggerPost =
       // These independent authorization/config reads used to run serially
       // before Trigger was called. Overlap them so the worker starts booting as
       // soon as possible after the suspension check succeeds.
-      const [existingChat, userCustomization, securityTaskSubagentsEnabled] =
-        await Promise.all([
-          getChatById({ id: chatId }),
-          getUserCustomization({ userId }),
-          agentPermissionMode === "full_access"
-            ? resolveSecurityTaskSubagentsEnabled(userId)
-            : Promise.resolve(false),
-        ]);
+      const [existingChat, userCustomization] = await Promise.all([
+        getChatById({ id: chatId }),
+        getUserCustomization({ userId }),
+      ]);
 
       // Fetch existing chat to: (a) detect isNewChat for title generation,
       // (b) pass to handleInitialChatAndUserMessage so it skips saveChat on
