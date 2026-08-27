@@ -20,6 +20,7 @@ import { fileURLToPath } from "node:url";
 const REPOSITORY = "https://github.com/usestrix/strix.git";
 const DEFAULT_REF = "main";
 const INTERNAL_CATEGORIES = new Set(["analysis", "coordination", "scan_modes"]);
+const EXCLUDED_CATEGORIES = new Set(["tooling"]);
 const MAX_SKILL_BYTES = 64 * 1024;
 const MAX_TOTAL_SKILL_BYTES = 2 * 1024 * 1024;
 
@@ -80,6 +81,8 @@ const listMarkdownFiles = async (root) => {
         throw new Error(`Strix skill source contains a symlink: ${absolute}`);
       }
       if (entry.isDirectory()) {
+        const sourcePath = toPosix(relative(root, absolute));
+        if (EXCLUDED_CATEGORIES.has(sourcePath)) continue;
         await visit(absolute);
       } else if (entry.isFile() && entry.name.endsWith(".md")) {
         files.push(absolute);
@@ -270,7 +273,8 @@ const updateArtifacts = async () => {
     await cp(sourceSkillsRoot, vendorSkillsRoot, {
       recursive: true,
       filter: (source) => {
-        const statPath = relative(sourceSkillsRoot, source);
+        const statPath = toPosix(relative(sourceSkillsRoot, source));
+        if (EXCLUDED_CATEGORIES.has(statPath.split("/")[0])) return false;
         return (
           statPath === "" ||
           source.endsWith(".md") ||
