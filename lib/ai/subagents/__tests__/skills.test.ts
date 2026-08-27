@@ -6,7 +6,6 @@ import upstreamManifest from "@/third_party/strix-skills/UPSTREAM.json";
 import {
   STRIX_SUBAGENT_SKILL_COUNT,
   STRIX_SUBAGENT_SKILL_SOURCE_COMMIT,
-  getSubagentSkillCatalogPrompt,
   listSubagentSkills,
   resolveSubagentSkills,
 } from "../skills";
@@ -70,14 +69,10 @@ describe("Strix subagent skills", () => {
     });
   });
 
-  it("renders a discoverable catalog and bounded specialist knowledge", () => {
-    const catalog = getSubagentSkillCatalogPrompt();
-    expect(catalog).toContain("<available_subagent_skills");
-    expect(catalog).toContain("frameworks/nextjs:");
-    expect(catalog).not.toContain("analysis/counterevidence:");
-    expect(catalog).not.toContain("[tooling]");
-    expect(catalog).toContain("up to 5 when the task clearly needs them");
-
+  it("renders bounded specialist knowledge only when explicitly requested", () => {
+    expect(renderSubagentSkillKnowledge([])).toBe(
+      "No specialist skills were assigned.",
+    );
     const knowledge = renderSubagentSkillKnowledge(["vulnerabilities/idor"]);
     expect(knowledge).toContain("<specialized_knowledge>");
     expect(knowledge).toContain("## Skill: vulnerabilities/idor");
@@ -108,8 +103,10 @@ describe("Strix subagent skills", () => {
     ]);
     expect(nosql).toContain("Never use unbounded loops");
 
-    expect(getSubagentSkillCatalogPrompt()).toContain(
-      "custom/dependency_cve_scanning: Supply-chain/SCA playbook for returning lockfile",
-    );
+    expect(
+      listSubagentSkills().find(
+        (skill) => skill.id === "custom/dependency_cve_scanning",
+      )?.description,
+    ).toContain("Supply-chain/SCA playbook for returning lockfile");
   });
 });
