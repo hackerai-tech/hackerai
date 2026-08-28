@@ -250,6 +250,7 @@ import {
   detectAssistantContentLoopFromParts,
   getNextDeepSeekProDisconnectRetryModel,
   prepareProviderDisconnectContinuation,
+  shouldRetryProviderStreamAfterNonDurableOutputLimit,
   shouldRetryProviderStreamAfterReasoningOnlyOutput,
   shouldRetryProviderStreamAfterInterruptedToolInput,
   shouldRetryAgentLongWithFallback,
@@ -4551,6 +4552,11 @@ export const agentLongTask = task({
                           lastAssistantMessageParts,
                           { hasTerminalProviderStreamError },
                         );
+                      const shouldRetryNonDurableOutputLimit =
+                        shouldRetryProviderStreamAfterNonDurableOutputLimit(
+                          lastAssistantMessageParts,
+                          { finishReason: state.streamFinishReason },
+                        );
                       const shouldRetryExplicitDeepSeekProReasoning =
                         shouldRetryReasoningOnlyProviderError &&
                         isExplicitDeepSeekProSelectionForRetry({
@@ -4568,6 +4574,7 @@ export const agentLongTask = task({
                           {
                             hasTerminalProviderStreamError:
                               hasTerminalProviderStreamError,
+                            finishReason: state.streamFinishReason,
                             providerContentBlocked,
                             stoppedDueToDoomLoop: state.stoppedDueToDoomLoop,
                             stoppedDueToAssistantContentLoop,
@@ -4707,9 +4714,11 @@ export const agentLongTask = task({
                                     ? "doom_loop"
                                     : shouldRetryInterruptedToolInput
                                       ? "interrupted_tool_input"
-                                      : shouldRetryReasoningOnlyProviderError
-                                        ? "reasoning_only_provider_error"
-                                        : "incomplete_stream";
+                                      : shouldRetryNonDurableOutputLimit
+                                        ? "non_durable_output_limit"
+                                        : shouldRetryReasoningOnlyProviderError
+                                          ? "reasoning_only_provider_error"
+                                          : "incomplete_stream";
                         const blockedProviderModel = providerContentBlocked
                           ? state.responseModel
                           : undefined;
@@ -4753,6 +4762,7 @@ export const agentLongTask = task({
                                 ? assistantContentLoopDetection
                                 : undefined,
                             shouldRetryInterruptedToolInput,
+                            shouldRetryNonDurableOutputLimit,
                             imageToolResultsOmitted: imageRecovery.omittedCount,
                             visionSummaryRecovery: shouldRetryWithVisionSummary,
                             disconnectRemovedPartCount:

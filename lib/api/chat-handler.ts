@@ -204,6 +204,7 @@ import {
 } from "@/lib/chat/multimodal-tool-result-recovery";
 import {
   detectAssistantContentLoopFromParts,
+  shouldRetryProviderStreamAfterNonDurableOutputLimit,
   shouldRetryProviderStreamAfterReasoningOnlyOutput,
   shouldRetryProviderStreamAfterInterruptedToolInput,
   shouldRetryProviderStreamWithFallback,
@@ -1611,6 +1612,11 @@ export const createChatHandler = () => {
                         lastAssistantMessageParts,
                         { hasTerminalProviderStreamError },
                       );
+                    const shouldRetryNonDurableOutputLimit =
+                      shouldRetryProviderStreamAfterNonDurableOutputLimit(
+                        lastAssistantMessageParts,
+                        { finishReason: state.streamFinishReason },
+                      );
                     const shouldRetryExplicitDeepSeekProReasoning =
                       shouldRetryReasoningOnlyProviderError &&
                       isExplicitDeepSeekProSelectionForRetry({
@@ -1628,6 +1634,7 @@ export const createChatHandler = () => {
                         {
                           hasTerminalProviderStreamError:
                             hasTerminalProviderStreamError,
+                          finishReason: state.streamFinishReason,
                           providerContentBlocked,
                           stoppedDueToDoomLoop: state.stoppedDueToDoomLoop,
                           stoppedDueToAssistantContentLoop,
@@ -1678,9 +1685,11 @@ export const createChatHandler = () => {
                                 ? "doom_loop"
                                 : shouldRetryInterruptedToolInput
                                   ? "interrupted_tool_input"
-                                  : shouldRetryReasoningOnlyProviderError
-                                    ? "reasoning_only_provider_error"
-                                    : "incomplete_stream";
+                                  : shouldRetryNonDurableOutputLimit
+                                    ? "non_durable_output_limit"
+                                    : shouldRetryReasoningOnlyProviderError
+                                      ? "reasoning_only_provider_error"
+                                      : "incomplete_stream";
                       const blockedProviderModel = providerContentBlocked
                         ? state.responseModel
                         : undefined;
@@ -1799,6 +1808,7 @@ export const createChatHandler = () => {
                               ? assistantContentLoopDetection
                               : undefined,
                           shouldRetryInterruptedToolInput,
+                          shouldRetryNonDurableOutputLimit,
                           imageToolResultsOmitted: imageRecovery.omittedCount,
                           visionSummaryRecovery: shouldRetryWithVisionSummary,
                         },
