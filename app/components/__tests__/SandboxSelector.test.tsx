@@ -85,6 +85,32 @@ describe("SandboxSelector", () => {
     expect(screen.getByRole("button", { name: /4p3x/i })).toBeInTheDocument();
   });
 
+  it("caps long remote names in the chat toolbar without losing the full name", () => {
+    const hostname = "admin1-HP-EliteDesk-800-G3-SFF-with-a-long-suffix";
+    mockGlobalState.desktopBridgeStatus = "connected";
+    mockGlobalState.localConnections = [
+      {
+        connectionId: "remote-office-pc",
+        isDesktop: false,
+        name: "Office PC",
+        osInfo: { hostname },
+      },
+    ];
+
+    render(<SandboxSelector value="remote-office-pc" size="toolbar" />);
+
+    expect(screen.getByRole("button", { name: hostname })).toHaveClass(
+      "max-w-44",
+      "min-w-0",
+    );
+    expect(screen.getByTitle(hostname)).toBeInTheDocument();
+    expect(screen.getByText(hostname)).toHaveClass(
+      "min-w-0",
+      "flex-1",
+      "truncate",
+    );
+  });
+
   it("selects a healthy remote runner while the embedded bridge reconnects", async () => {
     const onChange = jest.fn();
     mockGlobalState.localConnections = [

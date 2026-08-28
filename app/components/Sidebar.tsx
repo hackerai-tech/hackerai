@@ -113,12 +113,14 @@ const DesktopSidebarContent: FC<{
 
 const MainSidebar: FC<{
   isMobileOverlay?: boolean;
+  onClose?: () => void;
   /** When provided (e.g. from ChatLayout), avoids refetching when sidebar opens/closes */
   chatListData?: ChatListData;
   /** Keeps the resolved project list alive too, especially the empty state on mobile. */
   projectListData?: ProjectListData;
 }> = ({
   isMobileOverlay = false,
+  onClose,
   chatListData: chatListDataProp,
   projectListData: projectListDataProp,
 }) => {
@@ -134,6 +136,10 @@ const MainSidebar: FC<{
   const projectListData = projectListDataProp ?? projectListDataFromHook;
 
   const handleCloseSidebar = () => {
+    if (onClose) {
+      onClose();
+      return;
+    }
     setChatSidebarOpen(false);
   };
 

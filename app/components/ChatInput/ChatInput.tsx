@@ -74,6 +74,11 @@ interface ChatInputProps {
   isResolvingInitialState?: boolean;
 }
 
+const COMPACT_AGENT_CONTROLS_BREAKPOINT_PX = 720;
+
+const shouldUseCompactAgentControls = (width: number): boolean =>
+  width > 0 && width < COMPACT_AGENT_CONTROLS_BREAKPOINT_PX;
+
 const ChatInputLoadingState = ({
   showAgentControls,
 }: {
@@ -297,7 +302,30 @@ export const ChatInput = ({
   );
   const [isStoppingAgent, setIsStoppingAgent] = useState(false);
   const [isReconnecting, setIsReconnecting] = useState(false);
+  const [compactAgentControls, setCompactAgentControls] = useState(false);
+  const chatInputContainerRef = useRef<HTMLDivElement>(null);
   const showAgentApprovalPrompt = !!approvalRequest && !isStoppingAgent;
+
+  useLayoutEffect(() => {
+    const container = chatInputContainerRef.current;
+    if (!container) return;
+
+    const updateCompactLayout = (width: number) => {
+      const nextCompact = shouldUseCompactAgentControls(width);
+      setCompactAgentControls((current) =>
+        current === nextCompact ? current : nextCompact,
+      );
+    };
+
+    updateCompactLayout(container.getBoundingClientRect().width);
+    if (typeof ResizeObserver === "undefined") return;
+
+    const observer = new ResizeObserver(([entry]) => {
+      if (entry) updateCompactLayout(entry.contentRect.width);
+    });
+    observer.observe(container);
+    return () => observer.disconnect();
+  }, []);
 
   useEffect(() => {
     if (!isGenerating && !activeToolApprovalRequest && !storedApprovalRequest) {
@@ -760,7 +788,11 @@ export const ChatInput = ({
 
   return (
     <div className={`relative px-4 min-w-0 ${isCentered ? "" : "pb-3"}`}>
-      <div className="mx-auto w-full max-w-full min-w-0 sm:max-w-[768px] sm:min-w-[390px] flex flex-col flex-1">
+      <div
+        ref={chatInputContainerRef}
+        className="mx-auto flex w-full min-w-0 max-w-full flex-1 flex-col sm:min-w-[390px] sm:max-w-[768px]"
+        data-testid="chat-input-container"
+      >
         {isOffline && (
           <div
             role="status"
@@ -855,6 +887,7 @@ export const ChatInput = ({
               autoFocus={autoFocus}
             />
             <ChatInputToolbar
+              compactAgentControls={compactAgentControls}
               onAttachClick={handleAttachClick}
               isGenerating={isGenerating}
               hideStop={hideStop}
@@ -871,11 +904,12 @@ export const ChatInput = ({
           </div>
         )}
 
-        {/* Compact mobile Agent controls below the input. Desktop keeps these
-            selectors in the main toolbar where there is room for them. */}
+        {/* Compact Agent controls below the input. The composer switches to
+            this strip whenever its own width is constrained, even on desktop. */}
         {isAgent && !showAgentApprovalPrompt && (
           <div
-            className="chat-input-glass-context relative z-0 order-3 mx-6 -mt-2 flex h-10 min-w-0 items-center gap-2 rounded-b-[18px] border border-t-0 border-black/8 px-3 pt-2 md:hidden dark:border-border/70"
+            className={`chat-input-glass-context relative z-0 order-3 mx-6 -mt-2 flex h-10 min-w-0 items-center gap-2 rounded-b-[18px] border border-t-0 border-black/8 px-3 pt-2 dark:border-border/70 ${compactAgentControls ? "" : "md:hidden"}`}
+            data-compact={compactAgentControls ? "true" : "false"}
             data-testid="chat-input-agent-context"
           >
             <SandboxSelector
@@ -883,7 +917,7 @@ export const ChatInput = ({
               onChange={setSandboxPreference}
             />
             <div
-              className="ml-auto min-w-0 md:hidden"
+              className={`ml-auto min-w-0 ${compactAgentControls ? "" : "md:hidden"}`}
               data-testid="chat-input-mobile-permission"
             >
               <AgentPermissionSelector analyticsSurface="chat_input" />

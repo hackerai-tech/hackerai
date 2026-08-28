@@ -15,10 +15,12 @@ import { isAgentMode } from "@/lib/utils/mode-helpers";
 import { FreeAskComputerActivation } from "./FreeAskComputerActivation";
 
 export interface ChatInputToolbarProps extends SubmitStopButtonProps {
+  compactAgentControls?: boolean;
   onAttachClick: () => void;
 }
 
 export function ChatInputToolbar({
+  compactAgentControls = false,
   onAttachClick,
   chatMode,
   isOnline = true,
@@ -45,38 +47,53 @@ export function ChatInputToolbar({
   );
 
   return (
-    <div className="px-3 flex gap-2 items-center min-w-0">
-      <div className="shrink-0">
-        <AttachmentButton onAttachClick={onAttachClick} disabled={!isOnline} />
+    <div className="flex min-w-0 items-center gap-2 px-3">
+      <div
+        className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden"
+        data-testid="chat-input-toolbar-controls"
+      >
+        <div className="shrink-0">
+          <AttachmentButton
+            onAttachClick={onAttachClick}
+            disabled={!isOnline}
+          />
+        </div>
+        {user &&
+        chatModeAccessResolved &&
+        !paidAgentOnlyActive &&
+        !freeDesktopAgentOnlyActive ? (
+          <ChatModeSelector />
+        ) : null}
+        {showFreeAskComputerActivation ? <FreeAskComputerActivation /> : null}
+        {isAgentMode(chatMode) ? (
+          <>
+            <div
+              className={
+                compactAgentControls ? "hidden" : "hidden shrink-0 md:block"
+              }
+              data-testid="chat-input-desktop-permission"
+            >
+              <AgentPermissionSelector analyticsSurface="chat_input" />
+            </div>
+            <div
+              className={
+                compactAgentControls ? "hidden" : "hidden min-w-0 md:block"
+              }
+              data-testid="chat-input-desktop-sandbox"
+            >
+              <SandboxSelector
+                value={sandboxPreference}
+                onChange={setSandboxPreference}
+                size="toolbar"
+              />
+            </div>
+          </>
+        ) : null}
       </div>
-      {user &&
-      chatModeAccessResolved &&
-      !paidAgentOnlyActive &&
-      !freeDesktopAgentOnlyActive ? (
-        <ChatModeSelector />
-      ) : null}
-      {showFreeAskComputerActivation ? <FreeAskComputerActivation /> : null}
-      {isAgentMode(chatMode) ? (
-        <>
-          <div
-            className="hidden md:block"
-            data-testid="chat-input-desktop-permission"
-          >
-            <AgentPermissionSelector analyticsSurface="chat_input" />
-          </div>
-          <div
-            className="hidden md:block"
-            data-testid="chat-input-desktop-sandbox"
-          >
-            <SandboxSelector
-              value={sandboxPreference}
-              onChange={setSandboxPreference}
-              size="toolbar"
-            />
-          </div>
-        </>
-      ) : null}
-      <div className="ml-auto shrink-0 flex items-center gap-2.5">
+      <div
+        className="flex shrink-0 items-center gap-2.5"
+        data-testid="chat-input-primary-actions"
+      >
         {user ? (
           <ModelSelector
             value={selectedModel}
