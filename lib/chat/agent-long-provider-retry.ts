@@ -217,6 +217,7 @@ const isFallbackSafeProviderPart = (part: unknown): boolean => {
   return (
     type === "step-start" ||
     type === "reasoning" ||
+    (type === "text" && !getPartText(part)?.trim()) ||
     (type != null && FALLBACK_SAFE_METADATA_PART_TYPES.has(type))
   );
 };

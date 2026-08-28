@@ -149,6 +149,10 @@ describe("shouldRetryAgentLongWithFallback", () => {
     { label: "empty output", parts: [] },
     { label: "only a step boundary", parts: [{ type: "step-start" }] },
     {
+      label: "only blank text",
+      parts: [{ type: "text", text: "  \n\t" }],
+    },
+    {
       label: "hidden reasoning and metadata",
       parts: [
         { type: "data-agent-heartbeat", data: { at: 1 } },
