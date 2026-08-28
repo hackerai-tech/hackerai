@@ -77,6 +77,7 @@ const freeMonthlyCostKey = (userId: string, bucket: string) =>
 const freeUsageBudgetStartedKey = (userId: string) =>
   `free_usage_budget_started:${FREE_USAGE_BUDGET_MARKER_VERSION}:${userId}`;
 
+/** Resolve the assigned budget phase while preserving the $0.25 safe fallback. */
 async function getFreeMonthlyBudgetDecision({
   redis,
   quotaSubject,
@@ -139,6 +140,7 @@ async function getFreeMonthlyBudgetDecision({
   }
 }
 
+/** Identify the deployed revision used to reconcile API and Trigger workers. */
 const getServiceVersion = () =>
   (
     process.env.VERCEL_GIT_COMMIT_SHA ??
@@ -147,6 +149,7 @@ const getServiceVersion = () =>
     "dev"
   ).slice(0, 64);
 
+/** Emit one privacy-safe policy decision for cross-surface reconciliation. */
 const captureFreeUsageBudgetEnforcement = ({
   userId,
   surface,
