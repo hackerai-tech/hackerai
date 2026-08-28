@@ -1,7 +1,7 @@
 import { wrapProviderTerminalError } from "../provider-terminal-error";
 
 describe("wrapProviderTerminalError", () => {
-  it("creates stable provider/model/category fingerprint fields and retains IDs", () => {
+  it("uses a low-cardinality fingerprint while retaining provider diagnostics", () => {
     const cause = Object.assign(new Error("Network connection lost."), {
       statusCode: 502,
     });
@@ -16,7 +16,7 @@ describe("wrapProviderTerminalError", () => {
     });
 
     expect(error.message).toBe(
-      "Provider terminal error provider=deepinfra model=deepseek_deepseek-v4-flash-0731 category=provider_5xx status=502",
+      "Provider terminal error category=provider_5xx status=502",
     );
     expect(error).toMatchObject({
       name: "ProviderTerminalError",
@@ -31,8 +31,17 @@ describe("wrapProviderTerminalError", () => {
     });
   });
 
-  it("produces a different Trigger fingerprint message for xAI failures", () => {
-    const error = wrapProviderTerminalError(
+  it("groups providers and models that share the same terminal category", () => {
+    const deepInfraError = wrapProviderTerminalError(
+      Object.assign(new Error("Network connection lost."), {
+        statusCode: 502,
+      }),
+      {
+        model: "deepseek/deepseek-v4-flash-0731",
+        openRouterMetadata: { provider_name: "DeepInfra" },
+      },
+    );
+    const xaiError = wrapProviderTerminalError(
       Object.assign(new Error("Internal error during token generation"), {
         statusCode: 502,
       }),
@@ -42,8 +51,17 @@ describe("wrapProviderTerminalError", () => {
       },
     );
 
-    expect(error.message).toBe(
-      "Provider terminal error provider=xai model=x-ai_grok-4.5 category=provider_5xx status=502",
+    expect(xaiError.message).toBe(deepInfraError.message);
+    expect(xaiError).toMatchObject({
+      provider: "xAI",
+      model: "x-ai/grok-4.5",
+    });
+    expect(deepInfraError).toMatchObject({
+      provider: "DeepInfra",
+      model: "deepseek/deepseek-v4-flash-0731",
+    });
+    expect(xaiError.message).toBe(
+      "Provider terminal error category=provider_5xx status=502",
     );
   });
 
@@ -68,11 +86,11 @@ describe("wrapProviderTerminalError", () => {
     );
 
     expect(localRejection.message).toBe(
-      "Provider terminal error provider=deepseek model=deepseek_deepseek-v4-flash-0731 category=provider_4xx origin=local_request_size_guard status=413",
+      "Provider terminal error category=provider_4xx origin=local_request_size_guard status=413",
     );
     expect(localRejection.origin).toBe("local_request_size_guard");
     expect(upstreamRejection.message).toBe(
-      "Provider terminal error provider=deepseek model=deepseek_deepseek-v4-flash-0731 category=provider_4xx status=413",
+      "Provider terminal error category=provider_4xx status=413",
     );
     expect(upstreamRejection.origin).toBeUndefined();
   });
