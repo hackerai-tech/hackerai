@@ -94,6 +94,7 @@ import {
 import { coerceSelectedModel } from "@/types/chat";
 import { v4 as uuidv4 } from "uuid";
 import { useIsMobile } from "@/hooks/use-mobile";
+import { useComputerSidebarOverlay } from "@/hooks/use-workspace-layout";
 import { useParams, useRouter } from "next/navigation";
 import { ConvexErrorBoundary } from "./ConvexErrorBoundary";
 import { useAutoResume } from "../hooks/useAutoResume";
@@ -516,6 +517,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   const routeChatId = params?.id as string | undefined;
   const router = useRouter();
   const isMobile = useIsMobile();
+  const computerSidebarOverlay = useComputerSidebarOverlay();
   const { setDataStream, setIsAutoResuming } = useDataStreamDispatch();
   const {
     isLoading: isConvexAuthLoading,
@@ -532,6 +534,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     chatMode,
     setChatMode,
     sidebarOpen,
+    closeSidebar,
     chatSidebarOpen,
     initializeChat,
     setTodos,
@@ -2212,11 +2215,15 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
           </div>
 
           {/* Desktop Computer Sidebar */}
-          {!isMobile && (
+          {!computerSidebarOverlay && (
             <div
-              className={`transition-[width] duration-300 min-w-0 ${
-                sidebarOpen ? "w-1/2 flex-shrink-0" : "w-0 overflow-hidden"
+              className={`min-w-0 transition-[width] duration-300 ${
+                sidebarOpen
+                  ? "w-[44%] min-w-[400px] max-w-[560px] flex-shrink-0"
+                  : "w-0 overflow-hidden"
               }`}
+              data-layout="split"
+              data-testid="computer-sidebar-container"
             >
               {sidebarOpen && (
                 <ComputerSidebar messages={messages} status={status} />
@@ -2231,9 +2238,19 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
           />
         </div>
 
-        {/* Mobile Computer Sidebar */}
-        {isMobile && sidebarOpen && (
-          <div className="flex fixed inset-0 z-50 bg-background items-center justify-center p-4">
+        {/* Computer overlay for mobile and narrow desktop workspaces. */}
+        {computerSidebarOverlay && sidebarOpen && (
+          <div
+            className="fixed inset-0 z-50 flex items-center justify-center bg-background p-4"
+            role="dialog"
+            aria-modal="true"
+            aria-label="HackerAI’s Computer"
+            data-layout="overlay"
+            data-testid="computer-sidebar-container"
+            onKeyDown={(event) => {
+              if (event.key === "Escape") closeSidebar();
+            }}
+          >
             <div className="w-full max-w-4xl h-full">
               <ComputerSidebar messages={messages} status={status} />
             </div>

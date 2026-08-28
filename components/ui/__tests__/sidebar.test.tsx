@@ -85,6 +85,27 @@ describe("SidebarProvider", () => {
     expect(onOpenChange).toHaveBeenCalledWith(false);
   });
 
+  it("does not persist temporary controlled sidebar state", () => {
+    const onOpenChange = jest.fn();
+    const { mainSidebarStorage } = require("@/lib/utils/sidebar-storage");
+    mainSidebarStorage.save.mockClear();
+
+    render(
+      <SidebarProvider
+        open={false}
+        onOpenChange={onOpenChange}
+        persistOpenState={false}
+      >
+        <div>content</div>
+      </SidebarProvider>,
+    );
+
+    fireEvent.keyDown(window, { key: "s", metaKey: true, shiftKey: true });
+
+    expect(onOpenChange).toHaveBeenCalledWith(true);
+    expect(mainSidebarStorage.save).not.toHaveBeenCalled();
+  });
+
   it("does not replace the sidebar shortcut with Cmd/Ctrl+B", () => {
     const onOpenChange = jest.fn();
 

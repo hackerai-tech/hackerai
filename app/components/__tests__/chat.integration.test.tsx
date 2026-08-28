@@ -1,5 +1,12 @@
 import "@testing-library/jest-dom";
-import { describe, it, expect, jest, beforeEach } from "@jest/globals";
+import {
+  afterAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  jest,
+} from "@jest/globals";
 import {
   fireEvent,
   render,
@@ -24,6 +31,8 @@ const mockStop = jest.fn();
 const mockRegenerate = jest.fn();
 const mockResumeStream = jest.fn();
 let mockRouteParams: Record<string, string> = {};
+let mockComputerOverlayMedia = false;
+const originalMatchMedia = window.matchMedia;
 
 jest.mock("@ai-sdk/react", () => ({
   useChat: jest.fn(() => ({
@@ -40,6 +49,7 @@ jest.mock("@ai-sdk/react", () => ({
 
 jest.mock("next/navigation", () => ({
   useParams: jest.fn(() => mockRouteParams),
+  usePathname: jest.fn(() => "/"),
   useRouter: jest.fn(() => ({
     push: jest.fn(),
     replace: jest.fn(),
@@ -251,8 +261,37 @@ const ChatTitleHandoffHarness = ({
   );
 };
 
+const OpenComputerSidebarHarness = () => {
+  const { openSidebar, sidebarOpen } = useGlobalState();
+
+  return (
+    <>
+      <span data-testid="computer-open-state">
+        {sidebarOpen ? "open" : "closed"}
+      </span>
+      <button
+        type="button"
+        onClick={() =>
+          openSidebar({
+            command: "echo ready",
+            output: "ready",
+            isExecuting: false,
+            toolCallId: "responsive-layout-test",
+          })
+        }
+      >
+        Open Computer
+      </button>
+    </>
+  );
+};
+
 describe("Chat Component Integration", () => {
   let mockUseChat: jest.Mock;
+
+  afterAll(() => {
+    window.matchMedia = originalMatchMedia;
+  });
 
   beforeEach(() => {
     jest.clearAllMocks();
@@ -260,6 +299,22 @@ describe("Chat Component Integration", () => {
     convexReact.resetMockConvexAuth?.();
     convexReact.resetMockConvexQueries?.();
     mockRouteParams = {};
+    mockComputerOverlayMedia = false;
+    window.matchMedia = jest.fn(
+      (query: string) =>
+        ({
+          get matches() {
+            return query === "(max-width: 949px)" && mockComputerOverlayMedia;
+          },
+          media: query,
+          onchange: null,
+          addEventListener: jest.fn(),
+          removeEventListener: jest.fn(),
+          addListener: jest.fn(),
+          removeListener: jest.fn(),
+          dispatchEvent: jest.fn(),
+        }) as MediaQueryList,
+    );
     const { useChat } = require("@ai-sdk/react");
     mockUseChat = useChat as jest.Mock;
 
@@ -587,7 +642,54 @@ describe("Chat Component Integration", () => {
       expect(screen.getByTestId("sidebar")).toBeInTheDocument();
     });
 
-    // Mobile layout (sidebar hidden in main layout, shown as overlay) is covered by
-    // ChatLayout structure and useIsMobile; full behavior can be asserted in e2e or ChatLayout unit tests.
+    it("uses a bounded split pane for Computer on wide workspaces", async () => {
+      render(
+        <TestWrapper>
+          <OpenComputerSidebarHarness />
+          <Chat autoResume={false} />
+        </TestWrapper>,
+      );
+
+      fireEvent.click(screen.getByRole("button", { name: "Open Computer" }));
+
+      await waitFor(() => {
+        expect(screen.getByTestId("computer-sidebar")).toBeInTheDocument();
+      });
+      expect(screen.getByTestId("computer-sidebar-container")).toHaveAttribute(
+        "data-layout",
+        "split",
+      );
+      expect(screen.getByTestId("computer-sidebar-container")).toHaveClass(
+        "w-[44%]",
+        "min-w-[400px]",
+        "max-w-[560px]",
+      );
+    });
+
+    it("uses an accessible Computer overlay on narrow workspaces", async () => {
+      mockComputerOverlayMedia = true;
+
+      render(
+        <TestWrapper>
+          <OpenComputerSidebarHarness />
+          <Chat autoResume={false} />
+        </TestWrapper>,
+      );
+
+      fireEvent.click(screen.getByRole("button", { name: "Open Computer" }));
+
+      expect(screen.getByTestId("computer-open-state")).toHaveTextContent(
+        "open",
+      );
+      expect(
+        await screen.findByTestId("computer-sidebar-container"),
+      ).toHaveAttribute("data-layout", "overlay");
+      expect(
+        screen.getByRole("dialog", { name: "HackerAI’s Computer" }),
+      ).toBeInTheDocument();
+      expect(screen.getByTestId("computer-sidebar")).toBeInTheDocument();
+    });
+
+    // Mobile task navigation is covered by ChatLayout accessibility tests.
   });
 });
