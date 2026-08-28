@@ -4,8 +4,10 @@ import {
   getNextDeepSeekProDisconnectRetryModel,
   prepareProviderDisconnectContinuation,
   shouldRetryAgentLongWithFallback,
+  shouldRetryProviderStreamAfterNonDurableOutputLimit,
   shouldRetryProviderStreamAfterReasoningOnlyOutput,
   shouldRetryProviderStreamAfterInterruptedToolInput,
+  shouldRerouteAutomaticContinuationAfterOutputLimit,
 } from "../agent-long-provider-retry";
 import type { UIMessage } from "ai";
 
@@ -144,6 +146,58 @@ describe("getNextDeepSeekProDisconnectRetryModel", () => {
 });
 
 describe("shouldRetryAgentLongWithFallback", () => {
+  it.each([
+    { label: "empty output", parts: [] },
+    { label: "only a step boundary", parts: [{ type: "step-start" }] },
+    {
+      label: "hidden reasoning and metadata",
+      parts: [
+        { type: "data-agent-heartbeat", data: { at: 1 } },
+        { type: "step-start" },
+        { type: "reasoning", text: "thinking", state: "done" },
+        { type: "data-context-usage", data: { usedTokens: 100 } },
+      ],
+    },
+  ])("retries an output limit with $label", ({ parts }) => {
+    expect(
+      shouldRetryAgentLongWithFallback(parts, {
+        hasTerminalProviderStreamError: false,
+        finishReason: "length",
+      }),
+    ).toBe(true);
+  });
+
+  it.each([
+    {
+      label: "visible text",
+      parts: [{ type: "text", text: "partial answer" }],
+    },
+    {
+      label: "a completed tool call",
+      parts: [
+        {
+          type: "tool-run_terminal_cmd",
+          state: "output-available",
+          output: { result: { exitCode: 0 } },
+        },
+      ],
+    },
+  ])("preserves $label at the output limit", ({ parts }) => {
+    expect(
+      shouldRetryProviderStreamAfterNonDurableOutputLimit(parts, {
+        finishReason: "length",
+      }),
+    ).toBe(false);
+  });
+
+  it("does not retry empty output after a normal stop", () => {
+    expect(
+      shouldRetryProviderStreamAfterNonDurableOutputLimit([], {
+        finishReason: "stop",
+      }),
+    ).toBe(false);
+  });
+
   it("preserves the legacy retry for streams that only emitted step-start", () => {
     expect(
       shouldRetryAgentLongWithFallback([{ type: "step-start" }], {
@@ -417,6 +471,43 @@ describe("shouldRetryAgentLongWithFallback", () => {
         },
       ),
     ).toBe(false);
+  });
+});
+
+describe("shouldRerouteAutomaticContinuationAfterOutputLimit", () => {
+  it("reroutes Auto after an automatic output-limit continuation", () => {
+    expect(
+      shouldRerouteAutomaticContinuationAfterOutputLimit({
+        previousFinishReason: "length",
+        isAutomaticContinuation: true,
+        isAutoModel: true,
+      }),
+    ).toBe(true);
+  });
+
+  it.each([
+    {
+      label: "a normal prior stop",
+      previousFinishReason: "stop",
+      isAutomaticContinuation: true,
+      isAutoModel: true,
+    },
+    {
+      label: "a user-authored continuation",
+      previousFinishReason: "length",
+      isAutomaticContinuation: false,
+      isAutoModel: true,
+    },
+    {
+      label: "an explicitly selected model",
+      previousFinishReason: "length",
+      isAutomaticContinuation: true,
+      isAutoModel: false,
+    },
+  ])("does not reroute $label", (state) => {
+    expect(shouldRerouteAutomaticContinuationAfterOutputLimit(state)).toBe(
+      false,
+    );
   });
 });
 

@@ -251,9 +251,11 @@ import {
   detectAssistantContentLoopFromParts,
   getNextDeepSeekProDisconnectRetryModel,
   prepareProviderDisconnectContinuation,
+  shouldRetryProviderStreamAfterNonDurableOutputLimit,
   shouldRetryProviderStreamAfterReasoningOnlyOutput,
   shouldRetryProviderStreamAfterInterruptedToolInput,
   shouldRetryAgentLongWithFallback,
+  shouldRerouteAutomaticContinuationAfterOutputLimit,
 } from "@/lib/chat/agent-long-provider-retry";
 import {
   ProviderTerminalError,
@@ -2591,6 +2593,38 @@ export const agentLongTask = task({
         selectedModel = deepSeekV4Pro0813Experiment.modelKey;
       }
 
+      if (
+        shouldRerouteAutomaticContinuationAfterOutputLimit({
+          previousFinishReason: chat?.finish_reason,
+          isAutomaticContinuation: isAutomaticContinuation === true,
+          isAutoModel: isAutoModelSelectionForRetry({
+            selectedModel,
+            selectedModelOverride,
+          }),
+        })
+      ) {
+        const previousModel = selectedModel;
+        selectedModel = getRetryFallbackModel(selectedModel, mode);
+        phLogger.warn(
+          "[agent-long] Output-limit continuation rerouted to fallback",
+          {
+            timestamp: new Date().toISOString(),
+            level: "warn",
+            event: "agent_output_limit_continuation_rerouted",
+            service: "agent-long",
+            environment:
+              process.env.TRIGGER_ENV ??
+              process.env.VERCEL_ENV ??
+              process.env.NODE_ENV ??
+              "unknown",
+            request_id: ctx.run.id,
+            chat_id: chatId,
+            previous_model: previousModel,
+            selected_model: selectedModel,
+          },
+        );
+      }
+
       const notesEnabled = userCustomization?.include_notes ?? true;
 
       const estimatedInputTokens = await estimatePreflightInputTokens({
@@ -4556,6 +4590,11 @@ export const agentLongTask = task({
                           lastAssistantMessageParts,
                           { hasTerminalProviderStreamError },
                         );
+                      const shouldRetryNonDurableOutputLimit =
+                        shouldRetryProviderStreamAfterNonDurableOutputLimit(
+                          lastAssistantMessageParts,
+                          { finishReason: state.streamFinishReason },
+                        );
                       const shouldRetryExplicitDeepSeekProReasoning =
                         shouldRetryReasoningOnlyProviderError &&
                         isExplicitDeepSeekProSelectionForRetry({
@@ -4573,6 +4612,7 @@ export const agentLongTask = task({
                           {
                             hasTerminalProviderStreamError:
                               hasTerminalProviderStreamError,
+                            finishReason: state.streamFinishReason,
                             providerContentBlocked,
                             stoppedDueToDoomLoop: state.stoppedDueToDoomLoop,
                             stoppedDueToAssistantContentLoop,
@@ -4640,9 +4680,11 @@ export const agentLongTask = task({
                                   ? "doom_loop"
                                   : shouldRetryInterruptedToolInput
                                     ? "interrupted_tool_input"
-                                    : shouldRetryReasoningOnlyProviderError
-                                      ? "reasoning_only_provider_error"
-                                      : "incomplete_stream";
+                                    : shouldRetryNonDurableOutputLimit
+                                      ? "non_durable_output_limit"
+                                      : shouldRetryReasoningOnlyProviderError
+                                        ? "reasoning_only_provider_error"
+                                        : "incomplete_stream";
                         const blockedProviderModel = providerContentBlocked
                           ? state.responseModel
                           : undefined;
@@ -4677,6 +4719,7 @@ export const agentLongTask = task({
                                 ? assistantContentLoopDetection
                                 : undefined,
                             shouldRetryInterruptedToolInput,
+                            shouldRetryNonDurableOutputLimit,
                             imageToolResultsOmitted: imageRecovery.omittedCount,
                             disconnectRemovedPartCount:
                               providerDisconnectContinuation?.removedPartCount,

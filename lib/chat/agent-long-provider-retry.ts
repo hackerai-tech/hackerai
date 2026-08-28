@@ -1,4 +1,5 @@
 import { hasMeaningfulToolInput } from "@/lib/chat/tool-abort-utils";
+import { OUTPUT_LIMIT_FINISH_REASON } from "@/lib/chat/stop-conditions";
 import type { UIMessage } from "ai";
 
 type MessagePartLike = {
@@ -13,6 +14,7 @@ type MessagePartLike = {
 
 type RetryDecisionOptions = {
   hasTerminalProviderStreamError: boolean;
+  finishReason?: string;
   providerContentBlocked?: boolean;
   stoppedDueToDoomLoop?: boolean;
   stoppedDueToAssistantContentLoop?: boolean;
@@ -25,6 +27,15 @@ export type AssistantContentLoopDetection = {
   repeatedText?: string;
   repeatCount?: number;
 };
+
+export const shouldRerouteAutomaticContinuationAfterOutputLimit = (state: {
+  previousFinishReason?: string;
+  isAutomaticContinuation: boolean;
+  isAutoModel: boolean;
+}): boolean =>
+  state.previousFinishReason === OUTPUT_LIMIT_FINISH_REASON &&
+  state.isAutomaticContinuation &&
+  state.isAutoModel;
 
 const FALLBACK_SAFE_METADATA_PART_TYPES = new Set([
   "data-agent-heartbeat",
@@ -227,6 +238,9 @@ const isReasoningOnlyProviderOutput = (parts: unknown[]): boolean =>
   hasReasoningPart(parts) &&
   parts.every(isFallbackSafeProviderPart);
 
+const isOutputLimitWithoutDurableOutput = (parts: unknown[]): boolean =>
+  parts.every(isFallbackSafeProviderPart);
+
 const isInterruptedToolInputOnlyProviderOutput = (parts: unknown[]): boolean =>
   parts.length > 0 &&
   parts.some(isRestartableInterruptedToolInput) &&
@@ -353,6 +367,13 @@ export const shouldRetryProviderStreamAfterReasoningOnlyOutput = (
   options.hasTerminalProviderStreamError &&
   isReasoningOnlyProviderOutput(parts);
 
+export const shouldRetryProviderStreamAfterNonDurableOutputLimit = (
+  parts: unknown[],
+  options: Pick<RetryDecisionOptions, "finishReason">,
+): boolean =>
+  options.finishReason === OUTPUT_LIMIT_FINISH_REASON &&
+  isOutputLimitWithoutDurableOutput(parts);
+
 export const shouldRetryProviderStreamWithFallback = (
   parts: unknown[],
   options: RetryDecisionOptions,
@@ -361,6 +382,14 @@ export const shouldRetryProviderStreamWithFallback = (
   // configured fallback model; the caller's bounded retry guard keeps a second
   // content-filter finish terminal.
   if (options.providerContentBlocked) return true;
+
+  // A provider can consume the entire output allowance as hidden reasoning
+  // and return no text or completed tool call. Treat that as a failed model
+  // leg so Auto can make one bounded fallback attempt instead of persisting an
+  // empty `length` response and repeating the same route on continuation.
+  if (shouldRetryProviderStreamAfterNonDurableOutputLimit(parts, options)) {
+    return true;
+  }
 
   // Preserve the older guard for streams that never got past the first step.
   if (isOnlyStepStart(parts)) return true;

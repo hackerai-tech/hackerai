@@ -204,9 +204,11 @@ import {
 } from "@/lib/chat/multimodal-tool-result-recovery";
 import {
   detectAssistantContentLoopFromParts,
+  shouldRetryProviderStreamAfterNonDurableOutputLimit,
   shouldRetryProviderStreamAfterReasoningOnlyOutput,
   shouldRetryProviderStreamAfterInterruptedToolInput,
   shouldRetryProviderStreamWithFallback,
+  shouldRerouteAutomaticContinuationAfterOutputLimit,
 } from "@/lib/chat/agent-long-provider-retry";
 import { FREE_RUN_LOCK_TTL_SECONDS } from "@/lib/rate-limit/free-config";
 
@@ -465,6 +467,33 @@ export const createChatHandler = () => {
         });
       if (deepSeekV4Pro0813Experiment) {
         selectedModel = deepSeekV4Pro0813Experiment.modelKey;
+      }
+
+      if (
+        shouldRerouteAutomaticContinuationAfterOutputLimit({
+          previousFinishReason: chat?.finish_reason,
+          isAutomaticContinuation,
+          isAutoModel: isAutoModelSelectionForRetry({
+            selectedModel,
+            selectedModelOverride,
+          }),
+        })
+      ) {
+        const previousModel = selectedModel;
+        selectedModel = getRetryFallbackModel(selectedModel, mode);
+        phLogger.warn("Output-limit continuation rerouted to fallback", {
+          timestamp: new Date().toISOString(),
+          level: "warn",
+          event: "agent_output_limit_continuation_rerouted",
+          service: "chat-handler",
+          environment:
+            process.env.VERCEL_ENV ?? process.env.NODE_ENV ?? "unknown",
+          request_id: req.headers.get("x-vercel-id") ?? chatId,
+          chat_id: chatId,
+          endpoint,
+          previous_model: previousModel,
+          selected_model: selectedModel,
+        });
       }
 
       const notesEnabled =
@@ -1622,6 +1651,11 @@ export const createChatHandler = () => {
                         lastAssistantMessageParts,
                         { hasTerminalProviderStreamError },
                       );
+                    const shouldRetryNonDurableOutputLimit =
+                      shouldRetryProviderStreamAfterNonDurableOutputLimit(
+                        lastAssistantMessageParts,
+                        { finishReason: state.streamFinishReason },
+                      );
                     const shouldRetryExplicitDeepSeekProReasoning =
                       shouldRetryReasoningOnlyProviderError &&
                       isExplicitDeepSeekProSelectionForRetry({
@@ -1639,6 +1673,7 @@ export const createChatHandler = () => {
                         {
                           hasTerminalProviderStreamError:
                             hasTerminalProviderStreamError,
+                          finishReason: state.streamFinishReason,
                           providerContentBlocked,
                           stoppedDueToDoomLoop: state.stoppedDueToDoomLoop,
                           stoppedDueToAssistantContentLoop,
@@ -1670,9 +1705,11 @@ export const createChatHandler = () => {
                               ? "doom_loop"
                               : shouldRetryInterruptedToolInput
                                 ? "interrupted_tool_input"
-                                : shouldRetryReasoningOnlyProviderError
-                                  ? "reasoning_only_provider_error"
-                                  : "incomplete_stream";
+                                : shouldRetryNonDurableOutputLimit
+                                  ? "non_durable_output_limit"
+                                  : shouldRetryReasoningOnlyProviderError
+                                    ? "reasoning_only_provider_error"
+                                    : "incomplete_stream";
                       const blockedProviderModel = providerContentBlocked
                         ? state.responseModel
                         : undefined;
@@ -1725,6 +1762,7 @@ export const createChatHandler = () => {
                               ? assistantContentLoopDetection
                               : undefined,
                           shouldRetryInterruptedToolInput,
+                          shouldRetryNonDurableOutputLimit,
                           imageToolResultsOmitted: imageRecovery.omittedCount,
                         },
                       );
