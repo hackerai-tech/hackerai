@@ -51,6 +51,7 @@ describe("Strix subagent skills", () => {
   });
 
   it("resolves qualified ids and unambiguous Strix aliases", () => {
+    expect(resolveSubagentSkills([])).toEqual({ success: true, skills: [] });
     expect(resolveSubagentSkills(["vulnerabilities/idor"])).toMatchObject({
       success: true,
       skills: [{ id: "vulnerabilities/idor" }],
