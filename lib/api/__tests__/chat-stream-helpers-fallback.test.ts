@@ -270,9 +270,10 @@ describe("buildProviderOptions fallback chain", () => {
     });
   });
 
-  it("limits free Ask OpenRouter fallbacks to Flash 0731, Pro 0813, then GLM 5.3", () => {
+  it("runs free Ask on GLM 5.3 Flash with DeepSeek and GLM fallbacks", () => {
     const opts = buildProviderOptions(false, "user-1", "ask-model-free", "ask");
     expect(opts.openrouter).toMatchObject({
+      provider: { sort: "latency", data_collection: "deny" },
       models: [DEEPSEEK_FLASH_SLUG, DEEPSEEK_V4_PRO_0813_SLUG, GLM_SLUG],
       user: "user-1",
     });
@@ -808,7 +809,7 @@ describe("getRetryFallbackModel", () => {
       );
     },
   );
-  it("uses DeepSeek Flash 0731 for app-side retry after free Ask DeepSeek fails", () => {
+  it("uses DeepSeek Flash 0731 for app-side retry after free Ask GLM Flash fails", () => {
     expect(getRetryFallbackModel("ask-model-free", "ask")).toBe(
       "model-deepseek-v4-flash-0731",
     );

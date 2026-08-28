@@ -1007,12 +1007,12 @@ export const getOpenRouterProviderRoutingForModel = (
 
 const buildProviderMap = (
   or: OpenRouterInstance,
-  freeAskDeepSeekSlug = DEEPSEEK_V4_FLASH_PREVIOUS_SLUG,
+  freeAskModelSlug = GLM_5_3_FLASH_SLUG,
   freeAgentDeepSeekSlug = DEEPSEEK_V4_FLASH_SLUG,
 ) =>
   ({
     "ask-model": or(GROK_4_6_SLUG),
-    "ask-model-free": or(freeAskDeepSeekSlug),
+    "ask-model-free": or(freeAskModelSlug),
     "agent-model": or(GROK_4_6_SLUG),
     "agent-model-free": or(freeAgentDeepSeekSlug),
     "model-grok-4.6": or(GROK_4_6_SLUG),
@@ -1115,7 +1115,6 @@ export function isAnthropicModel(modelName: string): boolean {
 /** Returns whether a provider key uses a DeepSeek V4 route. */
 export function isDeepSeekModel(modelName: string): boolean {
   return (
-    modelName === "ask-model-free" ||
     modelName === "agent-model-free" ||
     modelName === "agent-auto-review-model" ||
     modelName === "model-deepseek-v4-flash-0731" ||
@@ -1156,6 +1155,7 @@ export function supportsMultimodalToolResults(modelName?: string): boolean {
   const normalized = modelName.toLowerCase();
 
   return (
+    normalized === "ask-model-free" ||
     normalized === "model-glm-5.3-flash" ||
     normalized === "model-glm-5.3-flash-pro" ||
     normalized === "model-deepseek-v4-flash-vision" ||

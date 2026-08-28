@@ -173,7 +173,7 @@ describe("systemPrompt security instructions", () => {
     }
   });
 
-  it("does not invent a cutoff for the free DeepSeek routes", async () => {
+  it("does not invent a cutoff for the free Ask route", async () => {
     const prompt = await systemPrompt(
       "user_123",
       "ask",

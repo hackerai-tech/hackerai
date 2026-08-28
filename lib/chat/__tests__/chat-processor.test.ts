@@ -524,7 +524,7 @@ describe("selectModel", () => {
       expect(selectModel("ask", "free", "hackerai-pro")).toBe("ask-model-free");
     });
 
-    it("should keep free ask Standard on the free DeepSeek route", () => {
+    it("should keep free ask Standard on the free GLM Flash route", () => {
       expect(selectModel("ask", "free", "hackerai-standard")).toBe(
         "ask-model-free",
       );

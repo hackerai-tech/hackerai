@@ -113,7 +113,7 @@ describe("provider registry", () => {
     expect(
       (myProvider.languageModel("ask-model-free") as { modelId: string })
         .modelId,
-    ).toBe("deepseek/deepseek-v4-flash");
+    ).toBe("z-ai/glm-5.3-flash");
     expect(
       (myProvider.languageModel("agent-model-free") as { modelId: string })
         .modelId,
@@ -250,6 +250,7 @@ describe("provider registry", () => {
   });
 
   it("classifies the active DeepSeek tier routes as DeepSeek", () => {
+    expect(isDeepSeekModel("ask-model-free")).toBe(false);
     expect(isDeepSeekModel("model-deepseek-v4-flash-0731")).toBe(true);
     expect(isDeepSeekModel("model-deepseek-v4-pro")).toBe(true);
     expect(isDeepSeekModel("model-deepseek-v4-pro-0813")).toBe(true);
@@ -260,7 +261,7 @@ describe("provider registry", () => {
     const provider = createTrackedProvider();
     expect(
       (provider.languageModel("ask-model-free") as { modelId: string }).modelId,
-    ).toBe("deepseek/deepseek-v4-flash");
+    ).toBe("z-ai/glm-5.3-flash");
     expect(
       (provider.languageModel("agent-model-free") as { modelId: string })
         .modelId,
@@ -1197,6 +1198,7 @@ describe("supportsMultimodalToolResults", () => {
   });
 
   it("allows active multimodal keys and slugs used after image tool results", () => {
+    expect(supportsMultimodalToolResults("ask-model-free")).toBe(true);
     expect(supportsMultimodalToolResults("model-glm-5.3-flash")).toBe(true);
     expect(supportsMultimodalToolResults("model-glm-5.3-flash-pro")).toBe(true);
     expect(

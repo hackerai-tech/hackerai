@@ -592,7 +592,7 @@ const DEEPSEEK_V4_FLASH_0731_FALLBACK_CHAIN = [
   ...PRO_TEXT_FALLBACK_CHAIN,
 ] as const satisfies readonly ModelName[];
 
-const DEEPSEEK_V4_FLASH_PREVIOUS_FALLBACK_CHAIN = [
+const FREE_ASK_GLM_FLASH_FALLBACK_CHAIN = [
   "model-deepseek-v4-flash-0731",
   ...DEEPSEEK_V4_FLASH_0731_FALLBACK_CHAIN,
 ] as const satisfies readonly ModelName[];
@@ -609,7 +609,7 @@ const HACKERAI_PRO_FALLBACK_CHAIN = [
 ] as const satisfies readonly ModelName[];
 
 const MODEL_FALLBACK_CHAIN: Partial<Record<ModelName, readonly ModelName[]>> = {
-  "ask-model-free": DEEPSEEK_V4_FLASH_PREVIOUS_FALLBACK_CHAIN,
+  "ask-model-free": FREE_ASK_GLM_FLASH_FALLBACK_CHAIN,
   "agent-model-free": DEEPSEEK_V4_FLASH_0731_FALLBACK_CHAIN,
   "model-deepseek-v4-flash-0731": DEEPSEEK_V4_FLASH_0731_FALLBACK_CHAIN,
   "model-deepseek-v4-pro": PRO_TEXT_FALLBACK_CHAIN,
