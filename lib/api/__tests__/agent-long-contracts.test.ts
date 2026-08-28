@@ -62,6 +62,11 @@ const routeSrc = fs.readFileSync(
   "utf8",
 );
 
+const machineRoutingSrc = fs.readFileSync(
+  path.resolve(__dirname, "../../experiments/agent-machine-routing.ts"),
+  "utf8",
+);
+
 const agentRouteSrc = fs.readFileSync(
   path.resolve(__dirname, "../../../app/api/agent/route.ts"),
   "utf8",
@@ -1268,6 +1273,39 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     );
     expect(routeSrc).toMatch(
       /shouldRequireAgentApprovalWorkerVersion\(\)[\s\S]*!approvalWorkerVersion[\s\S]*temporarily unavailable/,
+    );
+  });
+
+  test("lightweight machine routing stays fail-closed and uses one decision for every trigger path", () => {
+    expect(machineRoutingSrc).toMatch(
+      /subscription !== "pro" && subscription !== "pro-plus"/,
+    );
+    expect(machineRoutingSrc).toMatch(/if \(!isNewChat\)/);
+    expect(machineRoutingSrc).toMatch(/requestMessageCount !== 1/);
+    expect(machineRoutingSrc).toMatch(
+      /requestMessageBytes > AGENT_LIGHTWEIGHT_REQUEST_MAX_BYTES/,
+    );
+    expect(machineRoutingSrc).toMatch(/if \(hasFileAttachment\)/);
+    expect(machineRoutingSrc).toMatch(/if \(hasProjectContext\)/);
+    expect(machineRoutingSrc).toMatch(/if \(hasTodos\)/);
+    expect(machineRoutingSrc).toMatch(/if \(subagentsEnabled\)/);
+    expect(routeSrc).toMatch(
+      /subagentsEnabled:\s*securityValidationSubagentsEnabled\s*\|\|\s*securityTaskSubagentsEnabled/,
+    );
+    expect(machineRoutingSrc).toMatch(
+      /machine: lightweightSmall1xEnabled \? "small-1x" : "small-2x"/,
+    );
+    expect(routeSrc).toMatch(
+      /const machineRoutingFlagPromise = machineRoutingEligibility\.eligible/,
+    );
+    expect(routeSrc).toMatch(
+      /const triggerMachine = machineRoutingDecision\.machine/,
+    );
+    expect(routeSrc).toMatch(
+      /const approvalTriggerConfig\s*=\s*{[\s\S]*?machine:\s*triggerMachine/,
+    );
+    expect(routeSrc).toMatch(
+      /tasks\.trigger<[\s\S]*?triggerOptions[\s\S]*?getAgentMachineRoutingExposure/,
     );
   });
 

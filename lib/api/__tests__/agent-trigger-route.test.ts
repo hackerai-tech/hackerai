@@ -30,6 +30,7 @@ const mockCancelAgentTriggerRun = jest.fn<any>();
 const mockCloseAgentApprovalSession = jest.fn<any>();
 
 jest.mock("next/server", () => ({
+  after: jest.fn(),
   NextRequest: class NextRequest {},
   NextResponse: class NextResponse {},
 }));

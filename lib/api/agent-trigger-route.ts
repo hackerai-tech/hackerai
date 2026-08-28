@@ -1,4 +1,4 @@
-import { NextRequest, NextResponse } from "next/server";
+import { after, NextRequest, NextResponse } from "next/server";
 import { createHash } from "crypto";
 import { tasks, auth, idempotencyKeys, sessions } from "@trigger.dev/sdk";
 import type { agentLongTask } from "@/trigger/agent-long";
@@ -16,6 +16,7 @@ import {
 import {
   assertFreeAgentGates,
   buildExtraUsageConfig,
+  hasFileAttachments,
 } from "@/lib/api/chat-stream-helpers";
 import {
   AGENT_TRIGGER_TASK_ID,
@@ -69,6 +70,15 @@ import {
   DEFAULT_AGENT_AUTO_REVIEW_ASSIGNMENT,
   type AgentAutoReviewAssignment,
 } from "@/lib/experiments/agent-auto-review";
+import {
+  AGENT_LIGHTWEIGHT_SMALL_1X_FEATURE_FLAG,
+  getAgentLightweightMachineEligibility,
+  getAgentMachineRoutingExposure,
+  getAgentMachineRoutingFlagBeforeDeadline,
+  getBaselineAgentTriggerMachine,
+  resolveAgentMachineRouting,
+} from "@/lib/experiments/agent-machine-routing";
+import { getPostHogFeatureFlagForUser, phLogger } from "@/lib/posthog/server";
 
 const AGENT_TRIGGER_PRIORITY_BY_SUBSCRIPTION: Record<SubscriptionTier, number> =
   {
@@ -131,24 +141,9 @@ export const createAgentTriggerPayloadTooLargeResponse = () =>
 const getAgentTriggerPriority = (subscription: SubscriptionTier) =>
   AGENT_TRIGGER_PRIORITY_BY_SUBSCRIPTION[subscription];
 
-type AgentTriggerMachinePreset = "small-1x" | "small-2x";
-
-const AGENT_TRIGGER_MACHINE_BY_SUBSCRIPTION: Record<
-  SubscriptionTier,
-  AgentTriggerMachinePreset
-> = {
-  free: "small-1x",
-  // Long Pro runs can exceed the 512 MB small-1x ceiling while retaining
-  // provider checkpoints and tool output. Match the other paid tiers so a
-  // recoverable stream does not become an unrecoverable worker OOM.
-  pro: "small-2x",
-  "pro-plus": "small-2x",
-  ultra: "small-2x",
-  team: "small-2x",
-};
-
+/** Return the unchanged subscription baseline outside the routing experiment. */
 export const getAgentTriggerMachine = (subscription: SubscriptionTier) =>
-  AGENT_TRIGGER_MACHINE_BY_SUBSCRIPTION[subscription];
+  getBaselineAgentTriggerMachine(subscription);
 
 type AgentDeploymentEnvironment = {
   NODE_ENV?: string;
@@ -592,14 +587,50 @@ export const createAgentTriggerPost =
         localDesktopAttachmentsPrepared = true;
       }
 
-      await handleInitialChatAndUserMessage({
-        chatId,
-        userId,
-        messages: messagesForPersistence,
-        regenerate,
-        chat: existingChat ?? null,
-        isHidden: isAutoContinue ? true : undefined,
-        projectId: projectContext.projectId,
+      const requestMessageBytes =
+        getAgentTriggerPayloadSizeBytes(requestMessages);
+      const requestHasFileAttachments = hasFileAttachments(requestMessages);
+      const machineRoutingEligibility = getAgentLightweightMachineEligibility({
+        subscription,
+        isNewChat,
+        regenerate: regenerate === true,
+        isAutoContinue: isAutoContinue === true,
+        isAutomaticContinuation: isAutomaticContinuation === true,
+        hasLimitRescue: limitRescue !== undefined,
+        requestMessageCount: requestMessages.length,
+        requestMessageBytes,
+        hasFileAttachment: requestHasFileAttachments,
+        localDesktopAttachmentsPrepared,
+        hasProjectContext: projectContext.projectId !== undefined,
+        hasTodos: Array.isArray(todos) && todos.length > 0,
+        subagentsEnabled:
+          securityValidationSubagentsEnabled || securityTaskSubagentsEnabled,
+      });
+      const machineRoutingFlagPromise = machineRoutingEligibility.eligible
+        ? getAgentMachineRoutingFlagBeforeDeadline(
+            getPostHogFeatureFlagForUser(
+              AGENT_LIGHTWEIGHT_SMALL_1X_FEATURE_FLAG,
+              userId,
+            ),
+          )
+        : Promise.resolve(false);
+
+      const [, lightweightSmall1xEnabled] = await Promise.all([
+        handleInitialChatAndUserMessage({
+          chatId,
+          userId,
+          messages: messagesForPersistence,
+          regenerate,
+          chat: existingChat ?? null,
+          isHidden: isAutoContinue ? true : undefined,
+          projectId: projectContext.projectId,
+        }),
+        machineRoutingFlagPromise,
+      ]);
+      const machineRoutingDecision = resolveAgentMachineRouting({
+        subscription,
+        eligibility: machineRoutingEligibility,
+        lightweightSmall1xEnabled,
       });
 
       // Snapshot permission behavior once for this run. UI changes made while
@@ -609,6 +640,9 @@ export const createAgentTriggerPost =
       const triggerTags = [`user_${userId}`, `chat_${chatId}`];
       if (subscription !== "free") triggerTags.push(`sub_${subscription}`);
       triggerTags.push(permissionSnapshot.triggerTag);
+      if (machineRoutingDecision.eligible) {
+        triggerTags.push(`machine_route_${machineRoutingDecision.variant}`);
+      }
 
       // Persisted chats are rehydrated from Convex inside the task after the
       // route saves the latest user message. Avoid sending the same history
@@ -620,7 +654,7 @@ export const createAgentTriggerPost =
 
       const triggerRequestedAt = Date.now();
       const triggerPriority = getAgentTriggerPriority(subscription);
-      const triggerMachine = getAgentTriggerMachine(subscription);
+      const triggerMachine = machineRoutingDecision.machine;
       // Trigger.dev's atomic Vercel integration pins the app and worker from the
       // same commit. Reuse that pin so Sessions cannot schedule an older worker.
       const approvalWorkerVersion =
@@ -706,6 +740,13 @@ export const createAgentTriggerPost =
         triggerRequestedAt,
         triggerPriority,
         triggerMachine,
+        machineRoutingFlagKey: AGENT_LIGHTWEIGHT_SMALL_1X_FEATURE_FLAG,
+        machineRoutingEligible: machineRoutingDecision.eligible,
+        machineRoutingEligibilityReason: machineRoutingDecision.reason,
+        machineRoutingVariant: machineRoutingDecision.variant,
+        requestMessageCount: requestMessages.length,
+        requestMessageBytes,
+        requestHasFileAttachments,
         triggerPayloadMessageCount: messagesForPayload.length,
         agentPermissionMode: permissionSnapshot.mode,
         securityValidationSubagentsEnabled,
@@ -815,6 +856,24 @@ export const createAgentTriggerPost =
       }
 
       const triggerCompletedAt = Date.now();
+      const machineRoutingExposure = getAgentMachineRoutingExposure({
+        decision: machineRoutingDecision,
+        subscription,
+        endpoint,
+        runId,
+        isNewChat,
+        requestMessageCount: requestMessages.length,
+        requestMessageBytes,
+        requestHasFileAttachments,
+        localDesktopAttachmentsPrepared,
+      });
+      if (machineRoutingExposure) {
+        phLogger.event(machineRoutingExposure.event, {
+          ...machineRoutingExposure.properties,
+          userId,
+        });
+        after(() => phLogger.flush());
+      }
 
       // Access-token creation and durable association are independent, so
       // overlap them while treating every post-start failure as terminal.
