@@ -11,6 +11,7 @@ import { fenceAndGetActiveAgentResourcesForUser } from "@/lib/db/actions";
 import { closeAndCancelAgentResources } from "@/lib/api/agent-deletion-cleanup";
 import { cancelSubagentsForUserDeletion } from "@/lib/db/subagents";
 import { terminateCloudSandboxesForUser } from "@/lib/ai/tools/utils/cloud-sandbox";
+import { ACCOUNT_CLEANUP_IN_PROGRESS_CODE } from "@/lib/account-deletion";
 
 type OrganizationMembership = Awaited<
   ReturnType<typeof workos.userManagement.listOrganizationMemberships>
@@ -171,7 +172,7 @@ async function deleteConvexUserData(
   userId: string,
   serviceKey: string,
   requestId: string,
-) {
+): Promise<boolean> {
   const convex = getConvexClient();
   let progressStatsBatches = 0;
   let batchesWithProgress = 0;
@@ -205,12 +206,12 @@ async function deleteConvexUserData(
     }
 
     if (!parsedResult.hasMore) {
-      return;
+      return true;
     }
   }
 
-  logger.error("account_cleanup_batch_limit_exhausted", undefined, {
-    event: "account_cleanup_batch_limit_exhausted",
+  logger.warn("account_cleanup_continuation_required", {
+    event: "account_cleanup_continuation_required",
     service: "hackerai-web",
     environment: process.env.VERCEL_ENV ?? process.env.NODE_ENV,
     request_id: requestId,
@@ -227,9 +228,7 @@ async function deleteConvexUserData(
     last_batch_s3_objects_queued: lastProgress?.s3ObjectsQueued,
   });
 
-  throw new Error(
-    "Account cleanup is taking longer than expected. Please contact support so we can finish deleting this account.",
-  );
+  return false;
 }
 
 export const POST = async (req: NextRequest) => {
@@ -320,7 +319,17 @@ export const POST = async (req: NextRequest) => {
     // Own app-data cleanup on the server so account deletion does not depend
     // on the browser successfully running a Convex mutation before this route.
     stage = "delete_convex_user_data";
-    await deleteConvexUserData(userId, serviceKey, requestId);
+    const cleanupComplete = await deleteConvexUserData(
+      userId,
+      serviceKey,
+      requestId,
+    );
+    if (!cleanupComplete) {
+      return NextResponse.json(
+        { code: ACCOUNT_CLEANUP_IN_PROGRESS_CODE },
+        { status: 409 },
+      );
+    }
 
     // Process each organization from memberships. Only delete org-level billing
     // and identity resources after proving this user is the sole active admin.
