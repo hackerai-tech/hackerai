@@ -22,10 +22,22 @@ import {
   isFreeQuotaSubjectRateLimitKey,
   isUserRateLimitKey,
 } from "./key-cleanup";
-import { NORMAL_USAGE_MULTIPLIER, POINTS_PER_DOLLAR } from "./usage-pricing";
+import {
+  NORMAL_USAGE_MULTIPLIER,
+  EXTRA_USAGE_REQUEST_MULTIPLIER,
+  POINTS_PER_DOLLAR,
+  includedPointsToExtraUsagePoints,
+  extraUsagePointsToIncludedPoints,
+} from "./usage-pricing";
 
 export { isUserRateLimitKey } from "./key-cleanup";
-export { NORMAL_USAGE_MULTIPLIER, POINTS_PER_DOLLAR } from "./usage-pricing";
+export {
+  NORMAL_USAGE_MULTIPLIER,
+  POINTS_PER_DOLLAR,
+  EXTRA_USAGE_REQUEST_MULTIPLIER,
+  includedPointsToExtraUsagePoints,
+  extraUsagePointsToIncludedPoints,
+} from "./usage-pricing";
 
 // =============================================================================
 // Configuration
@@ -203,7 +215,7 @@ const getModelPricing = (
 const normalizeTokenCount = (value: number): number =>
   Number.isFinite(value) ? Math.max(0, value) : 0;
 
-/** Convert raw provider/tool spend into billable user-balance points. */
+/** Convert raw provider/tool spend into paid-plan included-usage points. */
 export const billableCostDollarsToPoints = (costDollars: number): number =>
   Number.isFinite(costDollars) && costDollars > 0
     ? Math.max(
@@ -243,8 +255,11 @@ export type UsageDeductionFailureReason =
   | "deduction_failed";
 
 export interface UsageDeductionResult {
+  /** Points deducted from the paid plan's included-usage bucket. */
   includedPointsDeducted: number;
+  /** Stored points deducted from the prepaid Extra Usage balance. */
   extraUsagePointsDeducted: number;
+  /** Uncovered cost expressed in included-usage pricing points. */
   uncoveredPoints: number;
   usageDeductionFailed: boolean;
   usageDeductionFailureReason?: UsageDeductionFailureReason;
@@ -334,10 +349,12 @@ const deductAdditionalUsagePoints = async ({
   ): UsageDeductionResult => {
     const coveredPoints =
       nonNegativePoints(includedPointsDeducted) +
-      nonNegativePoints(extraUsagePointsDeducted);
+      extraUsagePointsToIncludedPoints(
+        nonNegativePoints(extraUsagePointsDeducted),
+      );
     const uncoveredPoints = Math.max(
       0,
-      normalizedAdditionalCost - coveredPoints,
+      Math.ceil(normalizedAdditionalCost - coveredPoints),
     );
     return {
       includedPointsDeducted: nonNegativePoints(includedPointsDeducted),
@@ -367,10 +384,12 @@ const deductAdditionalUsagePoints = async ({
   }
 
   const fromExtraUsage = normalizedAdditionalCost - includedDeducted;
+  const extraUsagePointsToDeduct =
+    includedPointsToExtraUsagePoints(fromExtraUsage);
   let extraUsageDeducted = 0;
   let failureReason: UsageDeductionFailureReason | undefined;
 
-  if (fromExtraUsage > 0) {
+  if (extraUsagePointsToDeduct > 0) {
     if (
       extraUsageConfig?.enabled &&
       (extraUsageConfig.hasBalance || extraUsageConfig.autoReloadEnabled)
@@ -382,12 +401,12 @@ const deductAdditionalUsagePoints = async ({
             ? await deductFromTeamBalance(
                 organizationId!,
                 userId,
-                fromExtraUsage,
+                extraUsagePointsToDeduct,
                 usageSettlementId,
               )
             : await deductFromBalance(
                 userId,
-                fromExtraUsage,
+                extraUsagePointsToDeduct,
                 usageSettlementId,
               );
         } catch (error) {
@@ -401,7 +420,7 @@ const deductAdditionalUsagePoints = async ({
         }
       })();
       if (deductResult.success) {
-        extraUsageDeducted = fromExtraUsage;
+        extraUsageDeducted = extraUsagePointsToDeduct;
       } else {
         failureReason = getDeductionFailureReason(deductResult);
       }
@@ -986,9 +1005,10 @@ export const checkTokenBucketLimit = async (
     const shortfall = extraUsageConfig?.chargeAllUsage
       ? estimatedCost
       : Math.max(0, estimatedCost - monthlyCheck.remaining);
+    const extraUsageShortfall = includedPointsToExtraUsagePoints(shortfall);
 
     // If we're over limit, try extra usage (prepaid balance)
-    if (shortfall > 0) {
+    if (extraUsageShortfall > 0) {
       if (
         extraUsageConfig?.enabled &&
         (extraUsageConfig.hasBalance || extraUsageConfig.autoReloadEnabled)
@@ -997,8 +1017,12 @@ export const checkTokenBucketLimit = async (
         // everyone else hits their personal balance.
         const isTeamPool = subscription === "team" && !!organizationId;
         const deductResult = isTeamPool
-          ? await deductFromTeamBalance(organizationId!, userId, shortfall)
-          : await deductFromBalance(userId, shortfall);
+          ? await deductFromTeamBalance(
+              organizationId!,
+              userId,
+              extraUsageShortfall,
+            )
+          : await deductFromBalance(userId, extraUsageShortfall);
 
         if (deductResult.success) {
           // Extra usage covered the shortfall. Deduct only what subscription contributed.
@@ -1014,9 +1038,13 @@ export const checkTokenBucketLimit = async (
           if (!monthlyResult.success) {
             try {
               if (isTeamPool) {
-                await refundToTeamBalance(organizationId!, userId, shortfall);
+                await refundToTeamBalance(
+                  organizationId!,
+                  userId,
+                  extraUsageShortfall,
+                );
               } else {
-                await refundToBalance(userId, shortfall);
+                await refundToBalance(userId, extraUsageShortfall);
               }
             } catch (refundError) {
               console.error(
@@ -1027,7 +1055,7 @@ export const checkTokenBucketLimit = async (
             throw monthlyLimitError(monthlyResult.reset);
           }
 
-          return buildResult(monthlyResult, bucketDeduct, shortfall);
+          return buildResult(monthlyResult, bucketDeduct, extraUsageShortfall);
         }
 
         // Deduction failed - check why
@@ -1239,8 +1267,12 @@ export const deductUsage = async (
     failureReason?: UsageDeductionResult["usageDeductionFailureReason"],
   ): UsageDeductionResult => {
     const coveredPoints =
-      result.includedPointsDeducted + result.extraUsagePointsDeducted;
-    const uncoveredPoints = Math.max(0, actualCostPoints - coveredPoints);
+      result.includedPointsDeducted +
+      extraUsagePointsToIncludedPoints(result.extraUsagePointsDeducted);
+    const uncoveredPoints = Math.max(
+      0,
+      Math.ceil(actualCostPoints - coveredPoints),
+    );
     return {
       ...result,
       uncoveredPoints,
@@ -1319,7 +1351,8 @@ export const deductUsage = async (
 
     const initialCoveredPoints =
       initialDeduction !== undefined
-        ? initialIncludedPoints + initialExtraUsagePoints
+        ? initialIncludedPoints +
+          extraUsagePointsToIncludedPoints(initialExtraUsagePoints)
         : estimatedInputCost;
 
     // Calculate the difference between what has already been deducted and actual cost
@@ -1329,8 +1362,11 @@ export const deductUsage = async (
     if (costDifference < 0) {
       const pointsToRefund = Math.abs(costDifference);
       const extraUsageRefundTarget = Math.min(
-        pointsToRefund,
         initialExtraUsagePoints,
+        Math.floor(
+          (pointsToRefund * EXTRA_USAGE_REQUEST_MULTIPLIER) /
+            NORMAL_USAGE_MULTIPLIER,
+        ),
       );
 
       if (extraUsageRefundTarget > 0) {
@@ -1355,8 +1391,11 @@ export const deductUsage = async (
         );
       }
 
+      const refundedExtraUsageCoverage = extraUsagePointsToIncludedPoints(
+        extraUsageRefundTarget,
+      );
       const includedRefundPoints = Math.min(
-        pointsToRefund - extraUsageRefundTarget,
+        Math.max(0, Math.floor(pointsToRefund - refundedExtraUsageCoverage)),
         initialIncludedPoints,
       );
       if (includedRefundPoints > 0) {
@@ -1381,7 +1420,7 @@ export const deductUsage = async (
       monthly,
       userId,
       subscription,
-      additionalCostPoints: costDifference,
+      additionalCostPoints: Math.ceil(costDifference),
       extraUsageConfig,
       organizationId,
       usageSettlementId,

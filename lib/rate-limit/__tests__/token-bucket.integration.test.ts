@@ -789,7 +789,7 @@ describe("token-bucket async functions", () => {
       const estimatedCost = calculateTokenCost(estimatedInputTokens, "input");
       const providerCostDollars = 0.003;
 
-      expect(estimatedCost).toBe(54);
+      expect(estimatedCost).toBe(57);
 
       const result = await deductUsage(
         "user-123",
@@ -804,15 +804,15 @@ describe("token-bucket async functions", () => {
         undefined,
         {
           pointsDeducted: 17,
-          extraUsagePointsDeducted: 37,
+          extraUsagePointsDeducted: 38,
         },
       );
 
-      expect(mockRefundToBalance).toHaveBeenCalledWith("user-123", 12);
+      expect(mockRefundToBalance).toHaveBeenCalledWith("user-123", 11);
       expect(mockHincrbyFn).not.toHaveBeenCalled();
       expect(result).toEqual({
         includedPointsDeducted: 17,
-        extraUsagePointsDeducted: 25,
+        extraUsagePointsDeducted: 27,
         uncoveredPoints: 0,
         usageDeductionFailed: false,
       });
@@ -844,14 +844,14 @@ describe("token-bucket async functions", () => {
         undefined,
         {
           pointsDeducted: 17,
-          extraUsagePointsDeducted: 37,
+          extraUsagePointsDeducted: 38,
         },
       );
 
       expect(result).toEqual({
         includedPointsDeducted: 17,
-        extraUsagePointsDeducted: 37,
-        uncoveredPoints: 30,
+        extraUsagePointsDeducted: 38,
+        uncoveredPoints: 33,
         usageDeductionFailed: true,
         usageDeductionFailureReason: "deduction_failed",
       });
@@ -987,7 +987,7 @@ describe("token-bucket async functions", () => {
         servedModel,
       );
 
-      expect(expectedAdditional).toBe(73_640);
+      expect(expectedAdditional).toBe(78_900);
       expect(mockLimitFn).toHaveBeenCalledWith(
         expect.any(String),
         expect.objectContaining({ rate: expectedAdditional }),
@@ -1046,7 +1046,7 @@ describe("token-bucket async functions", () => {
         servedModel,
       );
 
-      expect(expectedAdditional).toBe(3_920);
+      expect(expectedAdditional).toBe(4_200);
       expect(mockLimitFn).toHaveBeenCalledWith(
         expect.any(String),
         expect.objectContaining({ rate: expectedAdditional }),
@@ -1488,7 +1488,7 @@ describe("token-bucket async functions", () => {
         undefined,
         {
           pointsDeducted: 0,
-          extraUsagePointsDeducted: 7,
+          extraUsagePointsDeducted: 8,
         },
       );
 
@@ -1500,7 +1500,7 @@ describe("token-bucket async functions", () => {
       );
       expect(result).toEqual({
         includedPointsDeducted: 0,
-        extraUsagePointsDeducted: 70,
+        extraUsagePointsDeducted: 71,
         uncoveredPoints: 0,
         usageDeductionFailed: false,
       });
@@ -1524,9 +1524,9 @@ describe("token-bucket async functions", () => {
         limit: 250000,
       });
 
-      // Estimated 1000 input = 7 points, actual provider cost = $0.005 = 70 billable points.
-      // Difference = 70 - 7 = 63 additional needed.
-      // Bucket has 10, so fromBucket=10, fromExtraUsage=53.
+      // Estimated 1000 input = 8 included points, actual provider cost = $0.005 = 75 included points.
+      // Difference = 67 additional included points. The bucket covers 10, and
+      // the remaining 57 included points become 54 stored Extra Usage points.
       const result = await deductUsage(
         "user-123",
         "pro",
@@ -1546,15 +1546,15 @@ describe("token-bucket async functions", () => {
         expect.any(String),
         expect.objectContaining({ rate: 10 }),
       );
-      // Should deduct the overflow (53) from extra usage
+      // Should deduct the converted overflow from Extra Usage.
       expect(mockDeductFromBalance).toHaveBeenCalledWith(
         "user-123",
-        53,
+        54,
         undefined,
       );
       expect(result).toEqual({
-        includedPointsDeducted: 17,
-        extraUsagePointsDeducted: 53,
+        includedPointsDeducted: 18,
+        extraUsagePointsDeducted: 54,
         uncoveredPoints: 0,
         usageDeductionFailed: false,
       });
@@ -1594,13 +1594,13 @@ describe("token-bucket async functions", () => {
 
       expect(mockDeductFromBalance).toHaveBeenCalledWith(
         "user-123",
-        53,
+        54,
         undefined,
       );
       expect(result).toEqual({
-        includedPointsDeducted: 17,
+        includedPointsDeducted: 18,
         extraUsagePointsDeducted: 0,
-        uncoveredPoints: 53,
+        uncoveredPoints: 57,
         usageDeductionFailed: true,
         usageDeductionFailureReason: "insufficient_funds",
       });
@@ -1640,9 +1640,9 @@ describe("token-bucket async functions", () => {
       );
 
       expect(result).toEqual({
-        includedPointsDeducted: 17,
+        includedPointsDeducted: 18,
         extraUsagePointsDeducted: 0,
-        uncoveredPoints: 53,
+        uncoveredPoints: 57,
         usageDeductionFailed: true,
         usageDeductionFailureReason: "monthly_cap_exceeded",
       });
@@ -1684,9 +1684,9 @@ describe("token-bucket async functions", () => {
       );
 
       expect(result).toEqual({
-        includedPointsDeducted: 17,
+        includedPointsDeducted: 18,
         extraUsagePointsDeducted: 0,
-        uncoveredPoints: 53,
+        uncoveredPoints: 57,
         usageDeductionFailed: true,
         usageDeductionFailureReason: "auto_reload_failed",
       });
@@ -1734,13 +1734,13 @@ describe("token-bucket async functions", () => {
       expect(mockDeductFromTeamBalance).toHaveBeenCalledWith(
         "org-123",
         "user-123",
-        53,
+        54,
         undefined,
       );
       expect(result).toEqual({
-        includedPointsDeducted: 17,
+        includedPointsDeducted: 18,
         extraUsagePointsDeducted: 0,
-        uncoveredPoints: 53,
+        uncoveredPoints: 57,
         usageDeductionFailed: true,
         usageDeductionFailureReason: "member_cap_exceeded",
       });
@@ -1812,12 +1812,12 @@ describe("token-bucket async functions", () => {
       );
       expect(mockDeductFromBalance).toHaveBeenCalledWith(
         "user-123",
-        33,
+        31,
         undefined,
       );
       expect(result).toEqual({
         includedPointsDeducted: 10,
-        extraUsagePointsDeducted: 33,
+        extraUsagePointsDeducted: 31,
         uncoveredPoints: 0,
         usageDeductionFailed: false,
       });
@@ -1836,12 +1836,12 @@ describe("token-bucket async functions", () => {
       expect(mockLimitFn).not.toHaveBeenCalled();
       expect(mockDeductFromBalance).toHaveBeenCalledWith(
         "user-123",
-        43,
+        41,
         undefined,
       );
       expect(result).toEqual({
         includedPointsDeducted: 0,
-        extraUsagePointsDeducted: 43,
+        extraUsagePointsDeducted: 41,
         uncoveredPoints: 0,
         usageDeductionFailed: false,
       });
@@ -1875,7 +1875,7 @@ describe("token-bucket async functions", () => {
 
       expect(mockDeductFromBalance).toHaveBeenCalledWith(
         "user-123",
-        33,
+        31,
         "settlement-123",
       );
     });
@@ -1943,12 +1943,12 @@ describe("token-bucket async functions", () => {
 
       expect(mockDeductFromBalance).toHaveBeenCalledWith(
         "user-123",
-        43,
+        41,
         undefined,
       );
       expect(result).toEqual({
         includedPointsDeducted: 0,
-        extraUsagePointsDeducted: 43,
+        extraUsagePointsDeducted: 41,
         uncoveredPoints: 0,
         usageDeductionFailed: false,
       });
@@ -2008,14 +2008,14 @@ describe("token-bucket async functions", () => {
         undefined,
         0,
         undefined,
-        { pointsDeducted: 38, extraUsagePointsDeducted: 37 },
+        { pointsDeducted: 38, extraUsagePointsDeducted: 35 },
       );
 
       expect(mockLimitFn).not.toHaveBeenCalled();
       expect(mockDeductFromBalance).not.toHaveBeenCalled();
       expect(result).toEqual({
         includedPointsDeducted: 38,
-        extraUsagePointsDeducted: 32,
+        extraUsagePointsDeducted: 35,
         uncoveredPoints: 0,
         usageDeductionFailed: false,
       });
