@@ -163,7 +163,13 @@ jest.mock("../ChatInput", () => ({
 }));
 
 jest.mock("../ComputerSidebar", () => ({
-  ComputerSidebar: () => <div data-testid="computer-sidebar">Sidebar</div>,
+  ComputerSidebar: () => (
+    <div data-testid="computer-sidebar">
+      Sidebar
+      <button type="button">First computer action</button>
+      <button type="button">Last computer action</button>
+    </div>
+  ),
 }));
 
 jest.mock("../ChatHeader", () => ({
@@ -676,7 +682,9 @@ describe("Chat Component Integration", () => {
         </TestWrapper>,
       );
 
-      fireEvent.click(screen.getByRole("button", { name: "Open Computer" }));
+      const trigger = screen.getByRole("button", { name: "Open Computer" });
+      trigger.focus();
+      fireEvent.click(trigger);
 
       expect(screen.getByTestId("computer-open-state")).toHaveTextContent(
         "open",
@@ -688,6 +696,26 @@ describe("Chat Component Integration", () => {
         screen.getByRole("dialog", { name: "HackerAI’s Computer" }),
       ).toBeInTheDocument();
       expect(screen.getByTestId("computer-sidebar")).toBeInTheDocument();
+
+      const firstAction = screen.getByRole("button", {
+        name: "First computer action",
+      });
+      const lastAction = screen.getByRole("button", {
+        name: "Last computer action",
+      });
+      await waitFor(() => expect(firstAction).toHaveFocus());
+
+      lastAction.focus();
+      fireEvent.keyDown(document, { key: "Tab" });
+      expect(firstAction).toHaveFocus();
+
+      fireEvent.keyDown(document, { key: "Escape" });
+      await waitFor(() => {
+        expect(
+          screen.queryByRole("dialog", { name: "HackerAI’s Computer" }),
+        ).not.toBeInTheDocument();
+      });
+      expect(trigger).toHaveFocus();
     });
 
     // Mobile task navigation is covered by ChatLayout accessibility tests.
