@@ -27,6 +27,8 @@ export const SUBAGENT_MAX_RESULT_RECOVERIES = 1;
 export const SUBAGENT_MAX_RESULT_RECOVERY_FAILURE_RETRIES = 1;
 export const SECURITY_VALIDATION_RESULT_MAX_BYTES = 8 * 1024;
 export const SECURITY_TASK_RESULT_MAX_BYTES = 8 * 1024;
+export const MAX_SECURITY_TASK_COVERAGE_ITEMS = 8;
+export const MAX_SECURITY_TASK_COVERAGE_EVIDENCE_REFS = 4;
 export const SUBAGENT_MAX_COST_DOLLARS = 1;
 export const SUBAGENT_MAX_PARENT_COST_DOLLARS = 3;
 
@@ -240,6 +242,19 @@ export const securityTaskArtifactSchema = z.object({
   description: z.string().trim().min(1).max(500).optional(),
 });
 
+export const securityTaskCoverageEntrySchema = z.object({
+  surface: z.string().trim().min(1).max(200),
+  risk_area: z.string().trim().min(1).max(200),
+  outcome: z.string().trim().min(1).max(500),
+  evidence_refs: z
+    .array(z.string().trim().min(1).max(500))
+    .min(1)
+    .max(MAX_SECURITY_TASK_COVERAGE_EVIDENCE_REFS),
+});
+export type SecurityTaskCoverageEntry = z.infer<
+  typeof securityTaskCoverageEntrySchema
+>;
+
 export const securityTaskResultSchema = z.object({
   task_status: securityTaskStatusSchema,
   summary: z.string().trim().min(1).max(2_000),
@@ -247,6 +262,10 @@ export const securityTaskResultSchema = z.object({
   artifacts: z.array(securityTaskArtifactSchema).max(8),
   limitations: z.array(z.string().trim().min(1).max(500)).max(8),
   next_steps: z.array(z.string().trim().min(1).max(500)).max(8),
+  coverage: z
+    .array(securityTaskCoverageEntrySchema)
+    .max(MAX_SECURITY_TASK_COVERAGE_ITEMS)
+    .optional(),
 });
 export type SecurityTaskResult = z.infer<typeof securityTaskResultSchema>;
 export type SubagentStructuredResult =
@@ -276,6 +295,10 @@ export const agentSecurityTaskResultSchema = z.object({
   artifacts: z.array(securityTaskArtifactSchema).max(8),
   limitations: z.array(z.string().max(500)).max(8),
   next_steps: z.array(z.string().max(500)).max(8),
+  coverage: z
+    .array(securityTaskCoverageEntrySchema)
+    .max(MAX_SECURITY_TASK_COVERAGE_ITEMS)
+    .optional(),
 });
 export type AgentSecurityTaskResult = z.infer<
   typeof agentSecurityTaskResultSchema
