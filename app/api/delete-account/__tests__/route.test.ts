@@ -151,6 +151,7 @@ const mockTerminateCloudSandboxesForUser =
 const mockLoggerError = logger.error as jest.MockedFunction<
   typeof logger.error
 >;
+const mockLoggerWarn = logger.warn as jest.MockedFunction<typeof logger.warn>;
 
 const request = () => ({
   url: "https://hackerai.test/api/delete-account",
@@ -577,7 +578,7 @@ describe("POST /api/delete-account", () => {
     expect(mockLoggerError).not.toHaveBeenCalled();
   });
 
-  it("logs bounded aggregate progress when the request cleanup limit is exhausted", async () => {
+  it("returns a continuation response with bounded progress when cleanup needs another request", async () => {
     mockListOrganizationMemberships.mockResolvedValueOnce({
       data: [],
     } as never);
@@ -597,14 +598,13 @@ describe("POST /api/delete-account", () => {
     const response = await POST(request() as any);
     const body = await response.json();
 
-    expect(response.status).toBe(500);
-    expect(body.error).toContain("taking longer than expected");
+    expect(response.status).toBe(409);
+    expect(body).toEqual({ code: "account_cleanup_in_progress" });
     expect(mockConvexMutation).toHaveBeenCalledTimes(52);
-    expect(mockLoggerError).toHaveBeenCalledWith(
-      "account_cleanup_batch_limit_exhausted",
-      undefined,
+    expect(mockLoggerWarn).toHaveBeenCalledWith(
+      "account_cleanup_continuation_required",
       {
-        event: "account_cleanup_batch_limit_exhausted",
+        event: "account_cleanup_continuation_required",
         service: "hackerai-web",
         environment: process.env.VERCEL_ENV ?? process.env.NODE_ENV,
         request_id: "iad1::opaque-request",
@@ -624,6 +624,7 @@ describe("POST /api/delete-account", () => {
     expect(mockDeleteOrganizationMembership).not.toHaveBeenCalled();
     expect(mockDeleteUserRateLimitKeys).not.toHaveBeenCalled();
     expect(mockDeleteUser).not.toHaveBeenCalled();
+    expect(mockLoggerError).not.toHaveBeenCalled();
   });
 
   it("does not delete external identity resources when Convex cleanup returns an unexpected shape", async () => {
