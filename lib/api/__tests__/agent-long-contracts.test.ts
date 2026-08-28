@@ -2160,9 +2160,12 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(taskSrc).toMatch(
       /acquireFreeRunConcurrencyLock\(\s*freeUsageSubject/,
     );
+    expect(taskSrc).toMatch(
+      /checkFreeMonthlyCostLimit\(\s*freeUsageSubject,\s*userId,\s*"trigger_agent_long",\s*\)/,
+    );
     expect(
       taskSrc.match(/checkFreeMonthlyCostLimit\(freeUsageSubject, userId\)/g),
-    ).toHaveLength(3);
+    ).toHaveLength(2);
     expect(taskSrc).not.toMatch(
       /checkFreeMonthlyCostLimit\(freeUsageSubject\)/,
     );

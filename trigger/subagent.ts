@@ -609,6 +609,7 @@ export const subagentTask = task({
         await checkFreeMonthlyCostLimit(
           row.free_quota_subject ?? row.user_id,
           row.user_id,
+          "trigger_subagent",
         );
       }
 

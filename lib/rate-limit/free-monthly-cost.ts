@@ -1,5 +1,8 @@
 import { ChatSDKError } from "@/lib/errors";
-import { getPostHogFeatureFlagVariantForUser } from "@/lib/posthog/server";
+import {
+  getPostHogFeatureFlagVariantForUser,
+  phLogger,
+} from "@/lib/posthog/server";
 import {
   FREE_RECURRING_COST_LIMIT_USD_EXPERIMENT,
   getFreeMonthlyCostLimitDollars,
@@ -28,6 +31,17 @@ return nextUsed
 export const FREE_USAGE_BUDGET_EXPERIMENT_KEY = "free_usage_budget_v1";
 export const FREE_USAGE_BUDGET_TREATMENT_VARIANT = "test";
 const FREE_USAGE_BUDGET_MARKER_VERSION = "v1";
+const FREE_USAGE_BUDGET_POLICY_VERSION = 1;
+
+export type FreeUsageBudgetEnforcementSurface =
+  "api_chat" | "trigger_agent_long" | "trigger_subagent";
+
+type FreeUsageBudgetDecision = {
+  limitDollars: number;
+  variant: "control" | "test" | "unresolved";
+  phase: "control" | "activation" | "recurring" | "safe_fallback";
+  fallbackReason?: "variant_unresolved" | "marker_unavailable";
+};
 
 export interface FreeMonthlyCostSnapshot {
   monthlyLimitPoints: number;
@@ -63,7 +77,8 @@ const freeMonthlyCostKey = (userId: string, bucket: string) =>
 const freeUsageBudgetStartedKey = (userId: string) =>
   `free_usage_budget_started:${FREE_USAGE_BUDGET_MARKER_VERSION}:${userId}`;
 
-async function getFreeMonthlyLimitDollars({
+/** Resolve the assigned budget phase while preserving the $0.25 safe fallback. */
+async function getFreeMonthlyBudgetDecision({
   redis,
   quotaSubject,
   userId,
@@ -73,14 +88,25 @@ async function getFreeMonthlyLimitDollars({
   quotaSubject: string;
   userId: string;
   bucket: string;
-}): Promise<number> {
+}): Promise<FreeUsageBudgetDecision> {
   const controlLimit = getFreeMonthlyCostLimitDollars();
   const variant = await getPostHogFeatureFlagVariantForUser(
     FREE_USAGE_BUDGET_EXPERIMENT_KEY,
     userId,
   );
   if (variant !== FREE_USAGE_BUDGET_TREATMENT_VARIANT) {
-    return controlLimit;
+    return variant === "control"
+      ? {
+          limitDollars: controlLimit,
+          variant: "control",
+          phase: "control",
+        }
+      : {
+          limitDollars: controlLimit,
+          variant: "unresolved",
+          phase: "safe_fallback",
+          fallbackReason: "variant_unresolved",
+        };
   }
 
   const markerKey = freeUsageBudgetStartedKey(quotaSubject);
@@ -93,13 +119,72 @@ async function getFreeMonthlyLimitDollars({
     }
 
     return startedBucket === bucket
-      ? controlLimit
-      : FREE_RECURRING_COST_LIMIT_USD_EXPERIMENT;
+      ? {
+          limitDollars: controlLimit,
+          variant: "test",
+          phase: "activation",
+        }
+      : {
+          limitDollars: FREE_RECURRING_COST_LIMIT_USD_EXPERIMENT,
+          variant: "test",
+          phase: "recurring",
+        };
   } catch {
     // A marker failure must not unexpectedly tighten an existing user's cap.
-    return controlLimit;
+    return {
+      limitDollars: controlLimit,
+      variant: "test",
+      phase: "safe_fallback",
+      fallbackReason: "marker_unavailable",
+    };
   }
 }
+
+/** Identify the deployed revision used to reconcile API and Trigger workers. */
+const getServiceVersion = () =>
+  (
+    process.env.VERCEL_GIT_COMMIT_SHA ??
+    process.env.GITHUB_SHA ??
+    process.env.TRIGGER_VERSION ??
+    "dev"
+  ).slice(0, 64);
+
+/** Emit one privacy-safe policy decision for cross-surface reconciliation. */
+const captureFreeUsageBudgetEnforcement = ({
+  userId,
+  surface,
+  bucket,
+  decision,
+  limitPoints,
+  usedPoints,
+  remainingPoints,
+}: {
+  userId: string;
+  surface: FreeUsageBudgetEnforcementSurface;
+  bucket: string;
+  decision: FreeUsageBudgetDecision;
+  limitPoints: number;
+  usedPoints: number;
+  remainingPoints: number;
+}) => {
+  phLogger.event("free_usage_budget_enforcement", {
+    userId,
+    experiment_key: FREE_USAGE_BUDGET_EXPERIMENT_KEY,
+    policy_version: FREE_USAGE_BUDGET_POLICY_VERSION,
+    service_version: getServiceVersion(),
+    enforcement_surface: surface,
+    enforcement_result: remainingPoints > 0 ? "allowed" : "blocked",
+    variant: decision.variant,
+    budget_phase: decision.phase,
+    budget_month: bucket,
+    monthly_limit_dollars: limitPoints / POINTS_PER_DOLLAR,
+    monthly_used_dollars: usedPoints / POINTS_PER_DOLLAR,
+    monthly_remaining_dollars: remainingPoints / POINTS_PER_DOLLAR,
+    ...(decision.fallbackReason && {
+      fallback_reason: decision.fallbackReason,
+    }),
+  });
+};
 
 const getLimitMessage = (reset: number) =>
   `You've used your free monthly usage. Free usage resets on ${new Date(
@@ -110,9 +195,16 @@ const getLimitMessage = (reset: number) =>
     timeZone: "UTC",
   })}. Upgrade for higher limits and more features.`;
 
+/**
+ * Enforce the free monthly cost cap and optionally emit one initial-preflight
+ * decision for cross-surface experiment monitoring.
+ */
 export async function checkFreeMonthlyCostLimit(
   quotaSubject: string,
   userId = quotaSubject,
+  // Supply a surface only for the initial preflight. Durable rechecks omit it
+  // so this temporary experiment telemetry emits once per worker execution.
+  enforcementSurface?: FreeUsageBudgetEnforcementSurface,
 ): Promise<FreeMonthlyCostSnapshot> {
   const { bucket, reset } = getCurrentUtcMonthWindow();
   const redis = createRedisClient();
@@ -137,20 +229,31 @@ export async function checkFreeMonthlyCostLimit(
     );
   }
 
-  const limitPoints = dollarsToPoints(
-    await getFreeMonthlyLimitDollars({
-      redis,
-      quotaSubject,
-      userId,
-      bucket,
-    }),
-  );
+  const budgetDecision = await getFreeMonthlyBudgetDecision({
+    redis,
+    quotaSubject,
+    userId,
+    bucket,
+  });
+  const limitPoints = dollarsToPoints(budgetDecision.limitDollars);
 
   const usedPoints = Math.max(
     0,
     Number((await redis.get(freeMonthlyCostKey(quotaSubject, bucket))) ?? 0),
   );
   const remainingPoints = Math.max(0, limitPoints - usedPoints);
+
+  if (enforcementSurface) {
+    captureFreeUsageBudgetEnforcement({
+      userId,
+      surface: enforcementSurface,
+      bucket,
+      decision: budgetDecision,
+      limitPoints,
+      usedPoints,
+      remainingPoints,
+    });
+  }
 
   if (remainingPoints <= 0) {
     throw new ChatSDKError("rate_limit:chat", getLimitMessage(reset), {
