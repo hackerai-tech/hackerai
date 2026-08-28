@@ -23,6 +23,7 @@ describe("subagent profiles", () => {
     expect(profile.systemPrompt).toContain(
       "consult its local version and help output",
     );
+    expect(profile.systemPrompt).toContain("coverage entry");
     const row = {
       name: "Authorization mapper",
       objective: "Trace the endpoint authorization path.",
@@ -35,6 +36,7 @@ describe("subagent profiles", () => {
     expect(prompt).not.toContain("## Skill: vulnerabilities/idor");
     expect(systemPrompt).toContain("## Skill: vulnerabilities/idor");
     expect(systemPrompt).toContain("Object-level authorization failures");
+    expect(prompt).toContain("optional coverage array");
     expect(profile.buildSystemPrompt({ ...row, skills: [] })).not.toContain(
       "<specialized_knowledge>",
     );

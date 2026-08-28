@@ -974,13 +974,16 @@ type OpenRouterInstance = typeof openrouter;
 export const KIMI_K3_SLUG = "moonshotai/kimi-k3";
 export const GLM_5_2_SLUG = "z-ai/glm-5.2";
 export const GLM_5_3_SLUG = "z-ai/glm-5.3";
+export const GLM_5_3_FLASH_SLUG = "z-ai/glm-5.3-flash";
 export const GROK_4_5_SLUG = "x-ai/grok-4.5";
 export const GROK_4_6_SLUG = "x-ai/grok-4.6";
-// Prefer DeepSeek's purpose-built vision model for auxiliary image analysis,
-// then fall back to GLM Flash and MiniMax M3 in that order.
-export const AUXILIARY_VISION_SLUG = "deepseek/deepseek-v4-flash-vision-exp";
-export const AUXILIARY_VISION_FALLBACK_SLUG = "z-ai/glm-5.3-flash";
-export const AUXILIARY_VISION_SECONDARY_FALLBACK_SLUG = "minimax/minimax-m3";
+export const DEEPSEEK_V4_FLASH_VISION_SLUG =
+  "deepseek/deepseek-v4-flash-vision-exp";
+export const MINIMAX_M3_SLUG = "minimax/minimax-m3";
+// MiniMax is deliberately isolated to the final text-summary recovery. Normal
+// image turns route the original pixels through GLM Flash and then DeepSeek
+// Vision, so the lossy description hop is paid only when both direct routes fail.
+export const AUXILIARY_VISION_SLUG = MINIMAX_M3_SLUG;
 export const DEEPSEEK_V4_PRO_SLUG = "deepseek/deepseek-v4-pro";
 export const DEEPSEEK_V4_PRO_0813_SLUG = "deepseek/deepseek-v4-pro-0813";
 export const DEEPSEEK_V4_FLASH_SLUG = "deepseek/deepseek-v4-flash-0731";
@@ -989,10 +992,18 @@ const TITLE_GENERATOR_DEEPSEEK_SLUG = "deepseek/deepseek-v4-flash";
 
 export const getOpenRouterProviderRoutingForModel = (
   modelSlug: string,
-): { ignore: string[] } | undefined =>
-  modelSlug === DEEPSEEK_V4_FLASH_PREVIOUS_SLUG
-    ? { ignore: ["novita"] }
-    : undefined;
+):
+  | { ignore: string[] }
+  | { sort: "latency"; data_collection: "deny" }
+  | undefined => {
+  if (modelSlug === DEEPSEEK_V4_FLASH_PREVIOUS_SLUG) {
+    return { ignore: ["novita"] };
+  }
+  if (modelSlug === GLM_5_3_FLASH_SLUG) {
+    return { sort: "latency", data_collection: "deny" };
+  }
+  return undefined;
+};
 
 const buildProviderMap = (
   or: OpenRouterInstance,
@@ -1018,6 +1029,9 @@ const buildProviderMap = (
     "model-opus-4.6": or(KIMI_K3_SLUG),
     "model-glm-5.2": or(GLM_5_2_SLUG),
     "model-glm-5.3": or(GLM_5_3_SLUG),
+    "model-glm-5.3-flash": or(GLM_5_3_FLASH_SLUG),
+    "model-glm-5.3-flash-pro": or(GLM_5_3_FLASH_SLUG),
+    "model-deepseek-v4-flash-vision": or(DEEPSEEK_V4_FLASH_VISION_SLUG),
     "model-kimi-k3": or(KIMI_K3_SLUG),
     "fallback-agent-model": or(GROK_4_6_SLUG),
     "fallback-ask-model": or(GROK_4_6_SLUG),
@@ -1046,6 +1060,9 @@ export const modelCutoffDates: Partial<Record<ModelName, string>> &
   "model-deepseek-v4-pro-0813": "August 2026",
   "model-opus-4.6": "July 2026",
   "model-glm-5.2": "June 2026",
+  "model-glm-5.3-flash": "August 2026",
+  "model-glm-5.3-flash-pro": "August 2026",
+  "model-deepseek-v4-flash-vision": "August 2026",
   "fallback-agent-model": "August 2026",
   "fallback-ask-model": "August 2026",
   "title-generator-model": "May 2025",
@@ -1069,6 +1086,9 @@ export const modelDisplayNames: Record<ModelName, string> &
   "model-opus-4.6": "Moonshot Kimi K3",
   "model-glm-5.2": "Z.ai GLM 5.2",
   "model-glm-5.3": "Z.ai GLM 5.3",
+  "model-glm-5.3-flash": "Z.ai GLM 5.3 Flash",
+  "model-glm-5.3-flash-pro": "Z.ai GLM 5.3 Flash",
+  "model-deepseek-v4-flash-vision": "DeepSeek V4 Flash Vision",
   "model-kimi-k3": "Moonshot Kimi K3",
   "fallback-agent-model": "Auto, an intelligent model router built by HackerAI",
   "fallback-ask-model": "Auto, an intelligent model router built by HackerAI",
@@ -1136,6 +1156,11 @@ export function supportsMultimodalToolResults(modelName?: string): boolean {
   const normalized = modelName.toLowerCase();
 
   return (
+    normalized === "model-glm-5.3-flash" ||
+    normalized === "model-glm-5.3-flash-pro" ||
+    normalized === "model-deepseek-v4-flash-vision" ||
+    normalized.includes("z-ai/glm-5.3-flash") ||
+    normalized.includes("deepseek-v4-flash-vision") ||
     isKimiModel(normalized) ||
     isGrokModel(normalized) ||
     isAnthropicModel(normalized) ||

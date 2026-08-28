@@ -1,7 +1,7 @@
 import {
-  AUXILIARY_VISION_FALLBACK_SLUG,
-  AUXILIARY_VISION_SECONDARY_FALLBACK_SLUG,
   AUXILIARY_VISION_SLUG,
+  DEEPSEEK_V4_FLASH_VISION_SLUG,
+  GLM_5_3_FLASH_SLUG,
   createOpenRouterPatchFetch,
   enrichOpenRouterStreamError,
   getModelCutoffDate,
@@ -124,10 +124,23 @@ describe("provider registry", () => {
           modelId: string;
         }
       ).modelId,
-    ).toBe("deepseek/deepseek-v4-flash-vision-exp");
-    expect(AUXILIARY_VISION_SLUG).toBe("deepseek/deepseek-v4-flash-vision-exp");
-    expect(AUXILIARY_VISION_FALLBACK_SLUG).toBe("z-ai/glm-5.3-flash");
-    expect(AUXILIARY_VISION_SECONDARY_FALLBACK_SLUG).toBe("minimax/minimax-m3");
+    ).toBe("minimax/minimax-m3");
+    expect(AUXILIARY_VISION_SLUG).toBe("minimax/minimax-m3");
+    expect(GLM_5_3_FLASH_SLUG).toBe("z-ai/glm-5.3-flash");
+    expect(DEEPSEEK_V4_FLASH_VISION_SLUG).toBe(
+      "deepseek/deepseek-v4-flash-vision-exp",
+    );
+    expect(
+      (myProvider.languageModel("model-glm-5.3-flash") as { modelId: string })
+        .modelId,
+    ).toBe(GLM_5_3_FLASH_SLUG);
+    expect(
+      (
+        myProvider.languageModel("model-deepseek-v4-flash-vision") as {
+          modelId: string;
+        }
+      ).modelId,
+    ).toBe(DEEPSEEK_V4_FLASH_VISION_SLUG);
     expect(getModelCutoffDate("auxiliary-vision-model")).toBe("July 2026");
     expect(
       (myProvider.languageModel("model-grok-4.6") as { modelId: string })
@@ -1184,6 +1197,15 @@ describe("supportsMultimodalToolResults", () => {
   });
 
   it("allows active multimodal keys and slugs used after image tool results", () => {
+    expect(supportsMultimodalToolResults("model-glm-5.3-flash")).toBe(true);
+    expect(supportsMultimodalToolResults("model-glm-5.3-flash-pro")).toBe(true);
+    expect(
+      supportsMultimodalToolResults("model-deepseek-v4-flash-vision"),
+    ).toBe(true);
+    expect(supportsMultimodalToolResults(GLM_5_3_FLASH_SLUG)).toBe(true);
+    expect(supportsMultimodalToolResults(DEEPSEEK_V4_FLASH_VISION_SLUG)).toBe(
+      true,
+    );
     expect(supportsMultimodalToolResults("model-grok-4.5")).toBe(true);
     expect(supportsMultimodalToolResults("model-grok-4.5-pro")).toBe(true);
     expect(supportsMultimodalToolResults("model-grok-4.6-pro")).toBe(true);

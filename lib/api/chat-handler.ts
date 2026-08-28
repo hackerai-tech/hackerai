@@ -117,7 +117,7 @@ import { v4 as uuidv4 } from "uuid";
 import { processChatMessages, selectModel } from "@/lib/chat/chat-processor";
 import { cacheAuxiliaryVisionDescription } from "@/lib/utils/file-transform-utils";
 import {
-  createAuxiliaryVisionFailoverController,
+  createVisionSummaryRecoveryController,
   describeImageAttachmentsWithAuxiliaryVision,
   describeImageWithAuxiliaryVision,
 } from "@/lib/chat/auxiliary-vision";
@@ -159,7 +159,7 @@ import {
   getActiveDeepSeekV4Pro0813ExperimentAssignment,
   getDeepSeekV4Pro0813ExperimentContext,
 } from "@/lib/experiments/deepseek-v4-pro-0813";
-import { isEligibleForAuxiliaryDeepSeekVision } from "@/lib/chat/auxiliary-vision-eligibility";
+import { isEligibleForDirectGlmVision } from "@/lib/chat/auxiliary-vision-eligibility";
 import {
   capturePaidDailyFreeAllowanceServerEvent,
   createPaidDailyFreeAllowanceBudgetSnapshot,
@@ -187,7 +187,6 @@ import { isAgentMode } from "@/lib/utils/mode-helpers";
 import {
   createAgentStream,
   initAgentStreamState,
-  resolveAgentModelForImageToolResults,
   resetServedModelTelemetryForRetry,
   retryUsesDifferentModel,
   type AgentStreamContext,
@@ -201,6 +200,7 @@ import {
 import {
   omitImageViewToolResultsForProviderRetry,
   omitTrailingStepStartAssistantMessage,
+  uiMessagesContainImageViewResult,
 } from "@/lib/chat/multimodal-tool-result-recovery";
 import {
   detectAssistantContentLoopFromParts,
@@ -390,9 +390,9 @@ export const createChatHandler = () => {
         subscription,
       );
       const attachmentCounts = countFileAttachments(truncatedMessages);
-      const auxiliaryVisionEnabled =
+      const directGlmVisionEnabled =
         (isAgentMode(mode) || attachmentCounts.imageCount > 0) &&
-        isEligibleForAuxiliaryDeepSeekVision({
+        isEligibleForDirectGlmVision({
           subscription,
           selectedModelOverride,
         });
@@ -440,7 +440,7 @@ export const createChatHandler = () => {
         extraUsageAvailable,
         allowLocalDesktopFiles:
           isAgentMode(mode) && sandboxPreference === "desktop",
-        auxiliaryVisionEnabled,
+        directGlmVisionEnabled,
         chatId,
         requestId: req.headers.get("x-vercel-id") ?? undefined,
       });
@@ -672,8 +672,8 @@ export const createChatHandler = () => {
       });
 
       const summarizationTracker = new SummarizationTracker();
-      const auxiliaryVisionFailover = createAuxiliaryVisionFailoverController({
-        enabled: auxiliaryVisionEnabled,
+      const visionSummaryRecovery = createVisionSummaryRecoveryController({
+        available: directGlmVisionEnabled,
         service: "chat-handler",
         requestId: req.headers.get("x-vercel-id") ?? undefined,
         userId,
@@ -696,9 +696,9 @@ export const createChatHandler = () => {
         execute: async ({ writer }) => {
           try {
             const usageTracker = new UsageTracker();
-            const auxiliaryVision = auxiliaryVisionFailover.isEnabled()
+            const auxiliaryVision = directGlmVisionEnabled
               ? {
-                  isEnabled: auxiliaryVisionFailover.isEnabled,
+                  isEnabled: visionSummaryRecovery.isEnabled,
                   isAborted: () => userStopSignal.signal.aborted,
                   describeImage: async (args: {
                     image: string;
@@ -706,26 +706,18 @@ export const createChatHandler = () => {
                     filename?: string;
                     source: "file_view";
                   }) => {
-                    try {
-                      return await describeImageWithAuxiliaryVision({
-                        ...args,
-                        requestId: req.headers.get("x-vercel-id") ?? undefined,
-                        userId,
-                        chatId,
-                        abortSignal: userStopSignal.signal,
-                        onCost: (costDollars) => {
-                          usageTracker.providerCost += costDollars;
-                          usageTracker.nonModelCost += costDollars;
-                          chatLogger?.getBuilder().addToolCost(costDollars);
-                        },
-                      });
-                    } catch (error) {
-                      auxiliaryVisionFailover.activate({
-                        error,
-                        source: "file_view",
-                      });
-                      throw error;
-                    }
+                    return await describeImageWithAuxiliaryVision({
+                      ...args,
+                      requestId: req.headers.get("x-vercel-id") ?? undefined,
+                      userId,
+                      chatId,
+                      abortSignal: userStopSignal.signal,
+                      onCost: (costDollars) => {
+                        usageTracker.providerCost += costDollars;
+                        usageTracker.nonModelCost += costDollars;
+                        chatLogger?.getBuilder().addToolCost(costDollars);
+                      },
+                    });
                   },
                 }
               : undefined;
@@ -914,57 +906,6 @@ export const createChatHandler = () => {
               }
             }
 
-            if (auxiliaryVisionFailover.isEnabled()) {
-              try {
-                processedMessages =
-                  await describeImageAttachmentsWithAuxiliaryVision({
-                    messages: processedMessages,
-                    requestId: req.headers.get("x-vercel-id") ?? undefined,
-                    userId,
-                    chatId,
-                    abortSignal: userStopSignal.signal,
-                    onCost: (costDollars) => {
-                      usageTracker.providerCost += costDollars;
-                      usageTracker.nonModelCost += costDollars;
-                      chatLogger?.getBuilder().addToolCost(costDollars);
-                    },
-                    cacheDescription: cacheAuxiliaryVisionDescription,
-                  });
-              } catch (error) {
-                if (userStopSignal.signal.aborted) throw error;
-                auxiliaryVisionFailover.activate({
-                  error,
-                  source: "attachment",
-                });
-                selectedModel = isAgentMode(mode)
-                  ? resolveAgentModelForImageToolResults(
-                      selectedModel,
-                      mode,
-                      true,
-                      selectedModelOverride,
-                      false,
-                    )
-                  : selectModel(
-                      mode,
-                      subscription,
-                      selectedModelOverride,
-                      true,
-                      false,
-                      { extraUsageAvailable, auxiliaryVisionEnabled: false },
-                    );
-                activeDeepSeekV4Pro0813Experiment =
-                  getActiveDeepSeekV4Pro0813ExperimentAssignment(
-                    deepSeekV4Pro0813Experiment,
-                    selectedModel,
-                  );
-                routingExperimentContext =
-                  getDeepSeekV4Pro0813ExperimentContext(
-                    activeDeepSeekV4Pro0813Experiment,
-                  );
-                chatLogger?.setChat(chatLogContext, selectedModel);
-              }
-            }
-
             // Generate the title in parallel for new tasks.
             const titlePromise = isNewChat
               ? generateTitleFromUserMessageWithWriter(
@@ -1093,8 +1034,6 @@ export const createChatHandler = () => {
               selectedModelOverride,
             });
             const fallbackModel = getRetryFallbackModel(selectedModel, mode);
-            const fallbackModelId =
-              trackedProvider.languageModel(fallbackModel).modelId;
             let activeModelName = selectedModel;
 
             let hasRecordedUsage = false;
@@ -1476,8 +1415,9 @@ export const createChatHandler = () => {
               isReasoningModel,
               platformAuthorized,
               get auxiliaryVisionEnabled() {
-                return auxiliaryVisionFailover.isEnabled();
+                return visionSummaryRecovery.isEnabled();
               },
+              directGlmVisionEnabled,
               maxDurationMs: AGENT_MAX_STREAM_DURATION_MS,
               writer,
               abortController: userStopSignal,
@@ -1544,12 +1484,27 @@ export const createChatHandler = () => {
               });
               result = await createStream(selectedModel);
             } catch (error) {
+              const shouldRecoverVisionApiError =
+                directGlmVisionEnabled &&
+                !visionSummaryRecovery.isEnabled() &&
+                (countFileAttachments(state.finalMessages).imageCount > 0 ||
+                  uiMessagesContainImageViewResult(state.finalMessages));
               // If provider returns an API error before streaming, retry with fallback.
               if (
                 isProviderApiError(error) &&
                 !isRetryWithFallback &&
-                isAutoModel
+                (isAutoModel || shouldRecoverVisionApiError)
               ) {
+                const apiRetryModel = shouldRecoverVisionApiError
+                  ? selectModel(
+                      mode,
+                      subscription,
+                      selectedModelOverride,
+                      false,
+                      false,
+                      { extraUsageAvailable },
+                    )
+                  : fallbackModel;
                 phLogger.error("Provider API error, retrying with fallback", {
                   error,
                   chatId,
@@ -1557,8 +1512,9 @@ export const createChatHandler = () => {
                   mode,
                   originalModel: selectedModel,
                   requestedModelSlug: configuredModelId,
-                  fallbackModel,
-                  fallbackModelSlug: fallbackModelId,
+                  fallbackModel: apiRetryModel,
+                  fallbackModelSlug:
+                    trackedProvider.languageModel(apiRetryModel).modelId,
                   userId,
                   subscription,
                   preFallbackCacheReadTokens: usageTracker.cacheReadTokens,
@@ -1569,7 +1525,7 @@ export const createChatHandler = () => {
                 isRetryWithFallback = true;
                 retryUsedFallbackModel = retryUsesDifferentModel(
                   selectedModel,
-                  fallbackModel,
+                  apiRetryModel,
                 );
                 resetServedModelTelemetryForRetry(state);
                 state.lastStepInputTokens = 0;
@@ -1592,7 +1548,39 @@ export const createChatHandler = () => {
                 // only billed for the fallback. Non-model spend (sandbox/tools)
                 // is preserved.
                 usageTracker.resetModelLeg();
-                result = await createStream(fallbackModel);
+                if (shouldRecoverVisionApiError) {
+                  visionSummaryRecovery.activate({
+                    error,
+                    source:
+                      countFileAttachments(state.finalMessages).imageCount > 0
+                        ? "attachment"
+                        : "file_view",
+                  });
+                  try {
+                    state.finalMessages =
+                      await describeImageAttachmentsWithAuxiliaryVision({
+                        messages: omitImageViewToolResultsForProviderRetry(
+                          state.finalMessages,
+                        ).messages,
+                        requestId: req.headers.get("x-vercel-id") ?? undefined,
+                        userId,
+                        chatId,
+                        abortSignal: userStopSignal.signal,
+                        onCost: (costDollars) => {
+                          usageTracker.providerCost += costDollars;
+                          usageTracker.nonModelCost += costDollars;
+                          chatLogger?.getBuilder().addToolCost(costDollars);
+                        },
+                        cacheDescription: cacheAuxiliaryVisionDescription,
+                      });
+                  } catch (summaryError) {
+                    preemptiveTimeout?.clear();
+                    await usageRefundTracker.refund();
+                    chatLogger?.emitUnexpectedError(summaryError);
+                    throw error;
+                  }
+                }
+                result = await createStream(apiRetryModel);
               } else {
                 throw error;
               }
@@ -1621,6 +1609,7 @@ export const createChatHandler = () => {
                 },
                 onFinish: async ({ messages, isAborted }) => {
                   let retryScheduled = false;
+                  let visionSummaryRecoveryFailure: unknown;
                   try {
                     const lastAssistantMessage = messages
                       .slice()
@@ -1686,61 +1675,146 @@ export const createChatHandler = () => {
                         : { messages, omittedCount: 0 };
                     const shouldRetryWithoutImageToolResults =
                       imageRecovery.omittedCount > 0 && !isAborted;
+                    const hasImageAttachmentForRecovery =
+                      countFileAttachments(state.finalMessages).imageCount > 0;
+                    const hasImageToolResultForRecovery =
+                      uiMessagesContainImageViewResult(state.finalMessages);
+                    const shouldRetryWithVisionSummary =
+                      directGlmVisionEnabled &&
+                      !visionSummaryRecovery.isEnabled() &&
+                      !providerContentBlocked &&
+                      hasTerminalProviderStreamError &&
+                      (shouldRetryWithFallback ||
+                        shouldRetryWithoutImageToolResults) &&
+                      (hasImageAttachmentForRecovery ||
+                        hasImageToolResultForRecovery);
+                    const visionSummaryRecoveryError =
+                      state.providerError ??
+                      new Error("Direct vision route failed");
 
                     if (
                       (shouldRetryWithFallback ||
-                        shouldRetryWithoutImageToolResults) &&
+                        shouldRetryWithoutImageToolResults ||
+                        shouldRetryWithVisionSummary) &&
                       !isRetryWithFallback
                     ) {
                       const loopTriggeredRetry =
                         stoppedDueToAssistantContentLoop ||
                         state.stoppedDueToDoomLoop;
-                      const retryReason = shouldRetryWithoutImageToolResults
-                        ? "image_tool_result_rejection"
-                        : providerContentBlocked
-                          ? "content_filter"
-                          : stoppedDueToAssistantContentLoop
-                            ? "assistant_content_loop"
-                            : state.stoppedDueToDoomLoop
-                              ? "doom_loop"
-                              : shouldRetryInterruptedToolInput
-                                ? "interrupted_tool_input"
-                                : shouldRetryNonDurableOutputLimit
-                                  ? "non_durable_output_limit"
-                                  : shouldRetryReasoningOnlyProviderError
-                                    ? "reasoning_only_provider_error"
-                                    : "incomplete_stream";
+                      const retryReason = shouldRetryWithVisionSummary
+                        ? "vision_summary_recovery"
+                        : shouldRetryWithoutImageToolResults
+                          ? "image_tool_result_rejection"
+                          : providerContentBlocked
+                            ? "content_filter"
+                            : stoppedDueToAssistantContentLoop
+                              ? "assistant_content_loop"
+                              : state.stoppedDueToDoomLoop
+                                ? "doom_loop"
+                                : shouldRetryInterruptedToolInput
+                                  ? "interrupted_tool_input"
+                                  : shouldRetryNonDurableOutputLimit
+                                    ? "non_durable_output_limit"
+                                    : shouldRetryReasoningOnlyProviderError
+                                      ? "reasoning_only_provider_error"
+                                      : "incomplete_stream";
                       const blockedProviderModel = providerContentBlocked
                         ? state.responseModel
                         : undefined;
-                      const retryModel = shouldRetryWithoutImageToolResults
-                        ? selectedModel
-                        : providerContentBlocked
-                          ? getContentFilterRetryModel(
-                              selectedModel,
-                              mode,
-                              blockedProviderModel,
-                            )
-                          : fallbackModel;
+                      const retryModel = shouldRetryWithVisionSummary
+                        ? selectModel(
+                            mode,
+                            subscription,
+                            selectedModelOverride,
+                            false,
+                            false,
+                            { extraUsageAvailable },
+                          )
+                        : shouldRetryWithoutImageToolResults
+                          ? selectedModel
+                          : providerContentBlocked
+                            ? getContentFilterRetryModel(
+                                selectedModel,
+                                mode,
+                                blockedProviderModel,
+                              )
+                            : fallbackModel;
                       const retryModelSlug =
                         trackedProvider.languageModel(retryModel).modelId;
+                      const shouldAttemptProviderRetry =
+                        (!isAborted || stoppedDueToAssistantContentLoop) &&
+                        (isAutoModel ||
+                          shouldRetryWithVisionSummary ||
+                          providerContentBlocked ||
+                          shouldRetryWithoutImageToolResults ||
+                          loopTriggeredRetry ||
+                          shouldRetryInterruptedToolInput ||
+                          shouldRetryExplicitDeepSeekProReasoning);
+                      let recoveredVisionMessages:
+                        typeof state.finalMessages | undefined;
+                      if (
+                        shouldAttemptProviderRetry &&
+                        shouldRetryWithVisionSummary
+                      ) {
+                        visionSummaryRecovery.activate({
+                          error: visionSummaryRecoveryError,
+                          source: hasImageAttachmentForRecovery
+                            ? "attachment"
+                            : "file_view",
+                        });
+                        try {
+                          recoveredVisionMessages =
+                            await describeImageAttachmentsWithAuxiliaryVision({
+                              messages:
+                                omitImageViewToolResultsForProviderRetry(
+                                  state.finalMessages,
+                                ).messages,
+                              requestId:
+                                req.headers.get("x-vercel-id") ?? undefined,
+                              userId,
+                              chatId,
+                              abortSignal: userStopSignal.signal,
+                              onCost: (costDollars) => {
+                                usageTracker.providerCost += costDollars;
+                                usageTracker.nonModelCost += costDollars;
+                                chatLogger
+                                  ?.getBuilder()
+                                  .addToolCost(costDollars);
+                              },
+                              cacheDescription: cacheAuxiliaryVisionDescription,
+                            });
+                        } catch (summaryError) {
+                          visionSummaryRecoveryFailure = summaryError;
+                          phLogger.error("Vision summary recovery failed", {
+                            event: "vision_summary_recovery_failed",
+                            chatId,
+                            endpoint,
+                            mode,
+                            userId,
+                            subscription,
+                            ...extractErrorDetails(summaryError),
+                          });
+                        }
+                      }
                       phLogger.warn(
-                        shouldRetryWithoutImageToolResults
-                          ? "Provider rejected image tool output - retrying without images"
-                          : retryReason === "content_filter"
-                            ? "Provider content filter triggered fallback model retry"
-                            : retryReason === "assistant_content_loop"
-                              ? "Assistant content loop detected - triggering fallback"
-                              : retryReason === "doom_loop"
-                                ? "Agent doom loop detected - triggering fallback"
-                                : retryReason === "interrupted_tool_input"
-                                  ? "Provider stream errored during tool input - triggering bounded fallback"
-                                  : retryReason ===
-                                      "reasoning_only_provider_error"
-                                    ? "Provider stream errored after reasoning-only output - triggering bounded fallback"
-                                    : hasTerminalProviderStreamError
-                                      ? "Provider stream errored before useful output - triggering fallback"
-                                      : "Stream finished incomplete - triggering fallback",
+                        shouldRetryWithVisionSummary
+                          ? "Direct vision routes failed - retrying with MiniMax summary"
+                          : shouldRetryWithoutImageToolResults
+                            ? "Provider rejected image tool output - retrying without images"
+                            : retryReason === "content_filter"
+                              ? "Provider content filter triggered fallback model retry"
+                              : retryReason === "assistant_content_loop"
+                                ? "Assistant content loop detected - triggering fallback"
+                                : retryReason === "doom_loop"
+                                  ? "Agent doom loop detected - triggering fallback"
+                                  : retryReason === "interrupted_tool_input"
+                                    ? "Provider stream errored during tool input - triggering bounded fallback"
+                                    : retryReason ===
+                                        "reasoning_only_provider_error"
+                                      ? "Provider stream errored after reasoning-only output - triggering bounded fallback"
+                                      : hasTerminalProviderStreamError
+                                        ? "Provider stream errored before useful output - triggering fallback"
+                                        : "Stream finished incomplete - triggering fallback",
                         {
                           chatId,
                           endpoint,
@@ -1764,6 +1838,7 @@ export const createChatHandler = () => {
                           shouldRetryInterruptedToolInput,
                           shouldRetryNonDurableOutputLimit,
                           imageToolResultsOmitted: imageRecovery.omittedCount,
+                          visionSummaryRecovery: shouldRetryWithVisionSummary,
                         },
                       );
 
@@ -1772,13 +1847,8 @@ export const createChatHandler = () => {
                       // For image-tool rejection, retry the same selected model
                       // after replacing image outputs with text placeholders.
                       if (
-                        (!isAborted || stoppedDueToAssistantContentLoop) &&
-                        (isAutoModel ||
-                          providerContentBlocked ||
-                          shouldRetryWithoutImageToolResults ||
-                          loopTriggeredRetry ||
-                          shouldRetryInterruptedToolInput ||
-                          shouldRetryExplicitDeepSeekProReasoning)
+                        shouldAttemptProviderRetry &&
+                        !visionSummaryRecoveryFailure
                       ) {
                         isRetryWithFallback = true;
                         state.lastStepInputTokens = 0;
@@ -1806,7 +1876,10 @@ export const createChatHandler = () => {
                           retryUsesDifferentModel(selectedModel, retryModel) ||
                           providerContentBlocked;
                         resetServedModelTelemetryForRetry(state);
-                        if (shouldRetryWithoutImageToolResults) {
+                        if (shouldRetryWithVisionSummary) {
+                          state.finalMessages = recoveredVisionMessages!;
+                          usageTracker.resetModelLeg();
+                        } else if (shouldRetryWithoutImageToolResults) {
                           state.finalMessages =
                             omitTrailingStepStartAssistantMessage(
                               imageRecovery.messages,
@@ -2215,7 +2288,8 @@ export const createChatHandler = () => {
                       );
                     const outcome = isAborted
                       ? "aborted"
-                      : finalProviderContentBlocked
+                      : finalProviderContentBlocked ||
+                          visionSummaryRecoveryFailure
                         ? "error"
                         : "success";
                     captureAgentCompletionAnalytics({
@@ -2256,7 +2330,11 @@ export const createChatHandler = () => {
                         todoRunMetrics: getTodoManager().getRunMetrics(),
                       }),
                     });
-                    if (finalProviderContentBlocked) {
+                    if (visionSummaryRecoveryFailure) {
+                      chatLogger!.emitUnexpectedError(
+                        visionSummaryRecoveryFailure,
+                      );
+                    } else if (finalProviderContentBlocked) {
                       chatLogger!.emitUnexpectedError(
                         state.providerError ??
                           createProviderContentBlockedFinishReasonError(),

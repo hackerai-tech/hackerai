@@ -1,15 +1,15 @@
 jest.mock("server-only", () => ({}));
 
 import {
-  AUXILIARY_VISION_FALLBACK_SLUG,
-  AUXILIARY_VISION_SECONDARY_FALLBACK_SLUG,
   AUXILIARY_VISION_SLUG,
+  DEEPSEEK_V4_FLASH_VISION_SLUG,
+  GLM_5_3_FLASH_SLUG,
 } from "@/lib/ai/providers";
 import {
   AUXILIARY_VISION_MAX_CONCURRENCY,
   AUXILIARY_VISION_MAX_IMAGES_PER_TURN,
   AUXILIARY_VISION_PROVIDER_OPTIONS,
-  createAuxiliaryVisionFailoverController,
+  createVisionSummaryRecoveryController,
   describeImageAttachmentsWithAuxiliaryVision,
   describeImageWithAuxiliaryVision,
   type AuxiliaryVisionModelRunner,
@@ -25,17 +25,14 @@ describe("auxiliary vision", () => {
     jest.restoreAllMocks();
   });
 
-  it("falls back from DeepSeek vision to GLM Flash and then MiniMax", () => {
+  it("uses MiniMax only for the final vision-summary recovery", () => {
     expect(AUXILIARY_VISION_PROVIDER_OPTIONS).toEqual({
       openrouter: {
         reasoning: { enabled: false },
-        models: [
-          AUXILIARY_VISION_FALLBACK_SLUG,
-          AUXILIARY_VISION_SECONDARY_FALLBACK_SLUG,
-        ],
         provider: { sort: "latency", data_collection: "deny" },
       },
     });
+    expect(AUXILIARY_VISION_SLUG).toBe("minimax/minimax-m3");
   });
 
   it("prefixes sandbox base64, records cost, and returns text", async () => {
@@ -75,33 +72,33 @@ describe("auxiliary vision", () => {
     });
   });
 
-  it.each([
-    AUXILIARY_VISION_FALLBACK_SLUG,
-    AUXILIARY_VISION_SECONDARY_FALLBACK_SLUG,
-  ])("records provider fallback model %s", async (fallbackModel) => {
-    const result = await describeImageWithAuxiliaryVision({
-      image: "aW1hZ2U=",
-      mediaType: "image/png",
-      source: "attachment",
-      modelRunner: async () => ({
-        text: "Fallback description",
+  it.each([DEEPSEEK_V4_FLASH_VISION_SLUG, GLM_5_3_FLASH_SLUG])(
+    "records an unexpected summary model %s",
+    async (fallbackModel) => {
+      const result = await describeImageWithAuxiliaryVision({
+        image: "aW1hZ2U=",
+        mediaType: "image/png",
+        source: "attachment",
+        modelRunner: async () => ({
+          text: "Fallback description",
+          model: fallbackModel,
+        }),
+      });
+
+      expect(result.model).toBe(fallbackModel);
+      const payload = JSON.parse(
+        (console.info as jest.Mock).mock.calls[0][0] as string,
+      );
+      expect(payload).toMatchObject({
         model: fallbackModel,
-      }),
-    });
+        fallback_served: true,
+      });
+    },
+  );
 
-    expect(result.model).toBe(fallbackModel);
-    const payload = JSON.parse(
-      (console.info as jest.Mock).mock.calls[0][0] as string,
-    );
-    expect(payload).toMatchObject({
-      model: fallbackModel,
-      fallback_served: true,
-    });
-  });
-
-  it("activates direct vision failover once with bounded diagnostics", () => {
-    const controller = createAuxiliaryVisionFailoverController({
-      enabled: true,
+  it("activates MiniMax summary recovery once with bounded diagnostics", () => {
+    const controller = createVisionSummaryRecoveryController({
+      available: true,
       service: "chat-handler",
       requestId: "request-1",
       userId: "user-1",
@@ -113,7 +110,7 @@ describe("auxiliary vision", () => {
     expect(
       controller.activate({ error: providerError, source: "attachment" }),
     ).toBe(true);
-    expect(controller.isEnabled()).toBe(false);
+    expect(controller.isEnabled()).toBe(true);
     expect(
       controller.activate({ error: providerError, source: "file_view" }),
     ).toBe(false);
@@ -123,14 +120,14 @@ describe("auxiliary vision", () => {
       (console.warn as jest.Mock).mock.calls[0][0] as string,
     );
     expect(payload).toMatchObject({
-      event: "auxiliary_vision_failover_activated",
+      event: "vision_summary_recovery_activated",
       service: "chat-handler",
       request_id: "request-1",
       user_id: "user-1",
       chat_id: "chat-1",
       trigger_run_id: "run-1",
       source: "attachment",
-      fallback_route: "direct_vision",
+      fallback_route: "minimax_vision_summary",
       failure_reason: "provider_error",
       error_name: "Error",
       failed_image_count: 1,
@@ -139,8 +136,8 @@ describe("auxiliary vision", () => {
   });
 
   it("does not activate failover for a user cancellation", () => {
-    const controller = createAuxiliaryVisionFailoverController({
-      enabled: true,
+    const controller = createVisionSummaryRecoveryController({
+      available: true,
       service: "agent-long",
       isUserAborted: () => true,
     });
@@ -151,13 +148,13 @@ describe("auxiliary vision", () => {
         source: "attachment",
       }),
     ).toBe(false);
-    expect(controller.isEnabled()).toBe(true);
+    expect(controller.isEnabled()).toBe(false);
     expect(console.warn).not.toHaveBeenCalled();
   });
 
   it("classifies a descriptor timeout without logging its message", () => {
-    const controller = createAuxiliaryVisionFailoverController({
-      enabled: true,
+    const controller = createVisionSummaryRecoveryController({
+      available: true,
       service: "agent-long",
     });
 
@@ -260,10 +257,7 @@ describe("auxiliary vision", () => {
     });
   });
 
-  it.each([
-    AUXILIARY_VISION_FALLBACK_SLUG,
-    AUXILIARY_VISION_SECONDARY_FALLBACK_SLUG,
-  ])(
+  it.each([DEEPSEEK_V4_FLASH_VISION_SLUG, GLM_5_3_FLASH_SLUG])(
     "reuses owned-file descriptions generated by fallback %s",
     async (fallbackModel) => {
       const modelRunner =
