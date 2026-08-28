@@ -10,6 +10,7 @@ import type { ChatApiEndpoint } from "@/lib/api/agent-endpoints";
 import type { OpenRouterModelMetadata } from "@/lib/api/openrouter-metadata";
 import { getProviderUsageRawModelCost } from "@/lib/provider-usage-cost";
 import { redactSensitiveErrorMessage } from "@/lib/utils/error-redaction";
+import type { CloudSandboxProvider } from "@/lib/ai/tools/utils/cloud-sandbox-provider";
 
 export interface ProviderRequestDiagnostics {
   model: string;
@@ -159,7 +160,7 @@ export interface ChatWideEvent {
   sandbox?: {
     type: "e2b" | "desktop" | "remote-connection";
     name?: string;
-    provider?: "e2b";
+    provider?: CloudSandboxProvider;
   };
 
   // Sandbox boot timing — fires once per request, only when actual work is done

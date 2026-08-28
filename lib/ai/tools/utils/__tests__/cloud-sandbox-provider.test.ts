@@ -21,6 +21,11 @@ describe("cloud sandbox provider selection", () => {
     expect(getCloudSandboxProvider()).toBe("e2b");
   });
 
+  it("honors an explicit MIOSA provider", () => {
+    process.env.CLOUD_SANDBOX_PROVIDER = "miosa";
+    expect(getCloudSandboxProvider()).toBe("miosa");
+  });
+
   it("fails closed for an unsupported provider", () => {
     process.env.CLOUD_SANDBOX_PROVIDER = "unknown-provider";
     expect(() => getCloudSandboxProvider()).toThrow(

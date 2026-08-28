@@ -74,6 +74,7 @@ export type SandboxSessionUsage = {
 
 const emptySandboxRuntimeMs = (): Record<CloudSandboxProvider, number> => ({
   e2b: 0,
+  miosa: 0,
 });
 
 // Factory function to create tools with context
