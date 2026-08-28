@@ -13,6 +13,7 @@ describe("free monthly cost limit", () => {
   const mockEval = jest.fn();
   const mockSet = jest.fn();
   const mockGetFeatureFlagVariantForUser = jest.fn();
+  const mockPostHogEvent = jest.fn();
   const originalEnv = process.env.FREE_MONTHLY_COST_LIMIT_USD;
 
   beforeEach(() => {
@@ -43,6 +44,7 @@ describe("free monthly cost limit", () => {
       }));
       jest.doMock("@/lib/posthog/server", () => ({
         getPostHogFeatureFlagVariantForUser: mockGetFeatureFlagVariantForUser,
+        phLogger: { event: mockPostHogEvent },
       }));
 
       isolatedModule = require("../free-monthly-cost");
@@ -95,6 +97,40 @@ describe("free monthly cost limit", () => {
       "free_usage_budget_started:v1:free_quota:v1:subject",
       "2026-08",
       { nx: true },
+    );
+  });
+
+  it("captures the applied treatment policy and enforcement surface", async () => {
+    jest.useFakeTimers().setSystemTime(new Date("2026-08-27T12:00:00Z"));
+    mockGetFeatureFlagVariantForUser.mockResolvedValue("test");
+    mockCreateRedisClient.mockReturnValue({
+      get: mockGet,
+      eval: mockEval,
+      set: mockSet,
+    });
+    const { checkFreeMonthlyCostLimit } = getIsolatedModule();
+
+    await checkFreeMonthlyCostLimit(
+      "free_quota:v1:subject",
+      "user-123",
+      "trigger_agent_long",
+    );
+
+    expect(mockPostHogEvent).toHaveBeenCalledWith(
+      "free_usage_budget_enforcement",
+      expect.objectContaining({
+        userId: "user-123",
+        experiment_key: "free_usage_budget_v1",
+        policy_version: 1,
+        enforcement_surface: "trigger_agent_long",
+        enforcement_result: "allowed",
+        variant: "test",
+        budget_phase: "activation",
+        budget_month: "2026-08",
+        monthly_limit_dollars: 0.25,
+        monthly_used_dollars: 0,
+        monthly_remaining_dollars: 0.25,
+      }),
     );
   });
 
@@ -166,6 +202,32 @@ describe("free monthly cost limit", () => {
     expect(mockSet).not.toHaveBeenCalled();
   });
 
+  it("identifies unresolved assignments as safe fallbacks", async () => {
+    mockCreateRedisClient.mockReturnValue({
+      get: mockGet,
+      eval: mockEval,
+      set: mockSet,
+    });
+    const { checkFreeMonthlyCostLimit } = getIsolatedModule();
+
+    await checkFreeMonthlyCostLimit(
+      "free_quota:v1:subject",
+      "user-123",
+      "api_chat",
+    );
+
+    expect(mockPostHogEvent).toHaveBeenCalledWith(
+      "free_usage_budget_enforcement",
+      expect.objectContaining({
+        enforcement_surface: "api_chat",
+        variant: "unresolved",
+        budget_phase: "safe_fallback",
+        fallback_reason: "variant_unresolved",
+        monthly_limit_dollars: 0.25,
+      }),
+    );
+  });
+
   it("throws a rate-limit error when the monthly free cost cap is exhausted", async () => {
     process.env.FREE_MONTHLY_COST_LIMIT_USD = "0.01";
     mockCreateRedisClient.mockReturnValue({
@@ -176,11 +238,21 @@ describe("free monthly cost limit", () => {
     mockGet.mockResolvedValue(100);
     const { checkFreeMonthlyCostLimit } = getIsolatedModule();
 
-    await expect(checkFreeMonthlyCostLimit("user-123")).rejects.toMatchObject({
+    await expect(
+      checkFreeMonthlyCostLimit("user-123", "user-123", "trigger_subagent"),
+    ).rejects.toMatchObject({
       type: "rate_limit",
       surface: "chat",
       cause: expect.stringContaining("free monthly usage"),
     });
+    expect(mockPostHogEvent).toHaveBeenCalledWith(
+      "free_usage_budget_enforcement",
+      expect.objectContaining({
+        enforcement_surface: "trigger_subagent",
+        enforcement_result: "blocked",
+        monthly_remaining_dollars: 0,
+      }),
+    );
   });
 
   it("records actual free usage cost as monthly points", async () => {

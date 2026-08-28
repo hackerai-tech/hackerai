@@ -2874,7 +2874,11 @@ export const agentLongTask = task({
 
             const freeMonthlyBudgetSnapshot =
               subscription === "free"
-                ? await checkFreeMonthlyCostLimit(freeUsageSubject, userId)
+                ? await checkFreeMonthlyCostLimit(
+                    freeUsageSubject,
+                    userId,
+                    "trigger_agent_long",
+                  )
                 : null;
 
             usageRefundTracker.recordDeductions(rateLimitInfo);
