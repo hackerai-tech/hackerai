@@ -51,12 +51,14 @@ const AGENT_TRIGGER_MACHINE_BY_SUBSCRIPTION: Record<
   team: "small-2x",
 };
 
+/** Return the established subscription machine when no treatment applies. */
 export function getBaselineAgentTriggerMachine(
   subscription: SubscriptionTier,
 ): AgentTriggerMachinePreset {
   return AGENT_TRIGGER_MACHINE_BY_SUBSCRIPTION[subscription];
 }
 
+/** Return the first failed safety guard, or mark the request treatment-eligible. */
 export function getAgentLightweightMachineEligibility({
   subscription,
   isNewChat,
@@ -114,6 +116,7 @@ export function getAgentLightweightMachineEligibility({
   return { eligible: true, reason: "eligible" };
 }
 
+/** Resolve one machine decision shared by direct tasks and approval Sessions. */
 export function resolveAgentMachineRouting({
   subscription,
   eligibility,
@@ -138,6 +141,7 @@ export function resolveAgentMachineRouting({
   };
 }
 
+/** Bound remote flag latency and fail closed to the existing paid baseline. */
 export async function getAgentMachineRoutingFlagBeforeDeadline(
   evaluation: Promise<boolean>,
   timeoutMs = AGENT_MACHINE_ROUTING_FLAG_TIMEOUT_MS,
@@ -150,11 +154,14 @@ export async function getAgentMachineRoutingFlagBeforeDeadline(
         timeout = setTimeout(() => resolve(false), timeoutMs);
       }),
     ]);
+  } catch {
+    return false;
   } finally {
     if (timeout) clearTimeout(timeout);
   }
 }
 
+/** Build content-free exposure properties only after an eligible run is scheduled. */
 export function getAgentMachineRoutingExposure({
   decision,
   subscription,

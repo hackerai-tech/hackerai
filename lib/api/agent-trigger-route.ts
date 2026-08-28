@@ -141,6 +141,7 @@ export const createAgentTriggerPayloadTooLargeResponse = () =>
 const getAgentTriggerPriority = (subscription: SubscriptionTier) =>
   AGENT_TRIGGER_PRIORITY_BY_SUBSCRIPTION[subscription];
 
+/** Return the unchanged subscription baseline outside the routing experiment. */
 export const getAgentTriggerMachine = (subscription: SubscriptionTier) =>
   getBaselineAgentTriggerMachine(subscription);
 

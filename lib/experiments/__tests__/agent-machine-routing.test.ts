@@ -145,6 +145,12 @@ describe("Agent machine routing", () => {
     await expect(
       getAgentMachineRoutingFlagBeforeDeadline(Promise.resolve(true), 100),
     ).resolves.toBe(true);
+    await expect(
+      getAgentMachineRoutingFlagBeforeDeadline(
+        Promise.reject(new Error("PostHog unavailable")),
+        100,
+      ),
+    ).resolves.toBe(false);
   });
 
   it("builds a privacy-safe exposure only for eligible scheduled runs", () => {
