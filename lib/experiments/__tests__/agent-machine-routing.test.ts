@@ -21,6 +21,7 @@ const eligibleInput = {
   localDesktopAttachmentsPrepared: false,
   hasProjectContext: false,
   hasTodos: false,
+  subagentsEnabled: false,
 };
 
 describe("Agent machine routing", () => {
@@ -77,6 +78,7 @@ describe("Agent machine routing", () => {
     ],
     ["project context", { hasProjectContext: true }, "project_context"],
     ["existing todos", { hasTodos: true }, "existing_todos"],
+    ["enabled subagents", { subagentsEnabled: true }, "subagents_enabled"],
   ] as const)("excludes %s", (_name, overrides, reason) => {
     expect(
       getAgentLightweightMachineEligibility({

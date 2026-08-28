@@ -22,7 +22,8 @@ export type AgentLightweightMachineEligibilityReason =
   | "file_attachment"
   | "desktop_local_attachment"
   | "project_context"
-  | "existing_todos";
+  | "existing_todos"
+  | "subagents_enabled";
 
 export type AgentLightweightMachineEligibility = {
   eligible: boolean;
@@ -72,6 +73,7 @@ export function getAgentLightweightMachineEligibility({
   localDesktopAttachmentsPrepared,
   hasProjectContext,
   hasTodos,
+  subagentsEnabled,
 }: {
   subscription: SubscriptionTier;
   isNewChat: boolean;
@@ -85,6 +87,7 @@ export function getAgentLightweightMachineEligibility({
   localDesktopAttachmentsPrepared: boolean;
   hasProjectContext: boolean;
   hasTodos: boolean;
+  subagentsEnabled: boolean;
 }): AgentLightweightMachineEligibility {
   if (subscription !== "pro" && subscription !== "pro-plus") {
     return { eligible: false, reason: "unsupported_subscription" };
@@ -112,6 +115,9 @@ export function getAgentLightweightMachineEligibility({
     return { eligible: false, reason: "project_context" };
   }
   if (hasTodos) return { eligible: false, reason: "existing_todos" };
+  if (subagentsEnabled) {
+    return { eligible: false, reason: "subagents_enabled" };
+  }
 
   return { eligible: true, reason: "eligible" };
 }

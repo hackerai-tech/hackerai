@@ -1288,6 +1288,10 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(machineRoutingSrc).toMatch(/if \(hasFileAttachment\)/);
     expect(machineRoutingSrc).toMatch(/if \(hasProjectContext\)/);
     expect(machineRoutingSrc).toMatch(/if \(hasTodos\)/);
+    expect(machineRoutingSrc).toMatch(/if \(subagentsEnabled\)/);
+    expect(routeSrc).toMatch(
+      /subagentsEnabled:\s*securityValidationSubagentsEnabled\s*\|\|\s*securityTaskSubagentsEnabled/,
+    );
     expect(machineRoutingSrc).toMatch(
       /machine: lightweightSmall1xEnabled \? "small-1x" : "small-2x"/,
     );

@@ -603,6 +603,8 @@ export const createAgentTriggerPost =
         localDesktopAttachmentsPrepared,
         hasProjectContext: projectContext.projectId !== undefined,
         hasTodos: Array.isArray(todos) && todos.length > 0,
+        subagentsEnabled:
+          securityValidationSubagentsEnabled || securityTaskSubagentsEnabled,
       });
       const machineRoutingFlagPromise = machineRoutingEligibility.eligible
         ? getAgentMachineRoutingFlagBeforeDeadline(
