@@ -55,7 +55,7 @@ export const resolveSubagentSkills = (
   if (requested.length > MAX_SUBAGENT_SKILLS) {
     return {
       success: false,
-      error: `Choose at most ${MAX_SUBAGENT_SKILLS} subagent skills; prefer 1-3 closely related skills.`,
+      error: `Choose at most ${MAX_SUBAGENT_SKILLS} subagent skills.`,
     };
   }
 

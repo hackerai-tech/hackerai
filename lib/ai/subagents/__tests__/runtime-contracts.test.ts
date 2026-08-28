@@ -38,6 +38,8 @@ describe("security validation subagent runtime contracts", () => {
     const profiles = read("lib/ai/subagents/profiles.ts");
     expect(tools).toContain("resolveSubagentSkills");
     expect(tools).toContain("skills = resolvedSkills.skills.map");
+    expect(tools).toContain("Skills are optional: omit them by default");
+    expect(tools).not.toContain("1-3 normally");
     expect(tools).not.toContain(
       "security_task uses fixed server tools and does not accept skills",
     );
