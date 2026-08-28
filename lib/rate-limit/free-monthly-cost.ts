@@ -195,6 +195,10 @@ const getLimitMessage = (reset: number) =>
     timeZone: "UTC",
   })}. Upgrade for higher limits and more features.`;
 
+/**
+ * Enforce the free monthly cost cap and optionally emit one initial-preflight
+ * decision for cross-surface experiment monitoring.
+ */
 export async function checkFreeMonthlyCostLimit(
   quotaSubject: string,
   userId = quotaSubject,
