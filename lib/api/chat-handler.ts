@@ -208,7 +208,6 @@ import {
   shouldRetryProviderStreamAfterReasoningOnlyOutput,
   shouldRetryProviderStreamAfterInterruptedToolInput,
   shouldRetryProviderStreamWithFallback,
-  shouldRerouteAutomaticContinuationAfterOutputLimit,
 } from "@/lib/chat/agent-long-provider-retry";
 import { FREE_RUN_LOCK_TTL_SECONDS } from "@/lib/rate-limit/free-config";
 
@@ -467,33 +466,6 @@ export const createChatHandler = () => {
         });
       if (deepSeekV4Pro0813Experiment) {
         selectedModel = deepSeekV4Pro0813Experiment.modelKey;
-      }
-
-      if (
-        shouldRerouteAutomaticContinuationAfterOutputLimit({
-          previousFinishReason: chat?.finish_reason,
-          isAutomaticContinuation,
-          isAutoModel: isAutoModelSelectionForRetry({
-            selectedModel,
-            selectedModelOverride,
-          }),
-        })
-      ) {
-        const previousModel = selectedModel;
-        selectedModel = getRetryFallbackModel(selectedModel, mode);
-        phLogger.warn("Output-limit continuation rerouted to fallback", {
-          timestamp: new Date().toISOString(),
-          level: "warn",
-          event: "agent_output_limit_continuation_rerouted",
-          service: "chat-handler",
-          environment:
-            process.env.VERCEL_ENV ?? process.env.NODE_ENV ?? "unknown",
-          request_id: req.headers.get("x-vercel-id") ?? chatId,
-          chat_id: chatId,
-          endpoint,
-          previous_model: previousModel,
-          selected_model: selectedModel,
-        });
       }
 
       const notesEnabled =

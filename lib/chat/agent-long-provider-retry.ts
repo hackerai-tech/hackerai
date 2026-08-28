@@ -28,15 +28,6 @@ export type AssistantContentLoopDetection = {
   repeatCount?: number;
 };
 
-export const shouldRerouteAutomaticContinuationAfterOutputLimit = (state: {
-  previousFinishReason?: string;
-  isAutomaticContinuation: boolean;
-  isAutoModel: boolean;
-}): boolean =>
-  state.previousFinishReason === OUTPUT_LIMIT_FINISH_REASON &&
-  state.isAutomaticContinuation &&
-  state.isAutoModel;
-
 const FALLBACK_SAFE_METADATA_PART_TYPES = new Set([
   "data-agent-heartbeat",
   "data-context-usage",
@@ -385,8 +376,10 @@ export const shouldRetryProviderStreamWithFallback = (
 
   // A provider can consume the entire output allowance as hidden reasoning
   // and return no text or completed tool call. Treat that as a failed model
-  // leg so Auto can make one bounded fallback attempt instead of persisting an
-  // empty `length` response and repeating the same route on continuation.
+  // leg so Auto can make one bounded fallback attempt instead of persisting a
+  // successful-looking empty response. Output-bearing turns are deliberately
+  // excluded: their text and completed tool effects must be saved, and the
+  // existing bounded continuation keeps the user's selected model.
   if (shouldRetryProviderStreamAfterNonDurableOutputLimit(parts, options)) {
     return true;
   }

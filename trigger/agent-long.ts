@@ -254,7 +254,6 @@ import {
   shouldRetryProviderStreamAfterReasoningOnlyOutput,
   shouldRetryProviderStreamAfterInterruptedToolInput,
   shouldRetryAgentLongWithFallback,
-  shouldRerouteAutomaticContinuationAfterOutputLimit,
 } from "@/lib/chat/agent-long-provider-retry";
 import {
   ProviderTerminalError,
@@ -2591,38 +2590,6 @@ export const agentLongTask = task({
         });
       if (deepSeekV4Pro0813Experiment) {
         selectedModel = deepSeekV4Pro0813Experiment.modelKey;
-      }
-
-      if (
-        shouldRerouteAutomaticContinuationAfterOutputLimit({
-          previousFinishReason: chat?.finish_reason,
-          isAutomaticContinuation: isAutomaticContinuation === true,
-          isAutoModel: isAutoModelSelectionForRetry({
-            selectedModel,
-            selectedModelOverride,
-          }),
-        })
-      ) {
-        const previousModel = selectedModel;
-        selectedModel = getRetryFallbackModel(selectedModel, mode);
-        phLogger.warn(
-          "[agent-long] Output-limit continuation rerouted to fallback",
-          {
-            timestamp: new Date().toISOString(),
-            level: "warn",
-            event: "agent_output_limit_continuation_rerouted",
-            service: "agent-long",
-            environment:
-              process.env.TRIGGER_ENV ??
-              process.env.VERCEL_ENV ??
-              process.env.NODE_ENV ??
-              "unknown",
-            request_id: ctx.run.id,
-            chat_id: chatId,
-            previous_model: previousModel,
-            selected_model: selectedModel,
-          },
-        );
       }
 
       const notesEnabled = userCustomization?.include_notes ?? true;

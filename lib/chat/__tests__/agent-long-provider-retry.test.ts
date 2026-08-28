@@ -7,7 +7,6 @@ import {
   shouldRetryProviderStreamAfterNonDurableOutputLimit,
   shouldRetryProviderStreamAfterReasoningOnlyOutput,
   shouldRetryProviderStreamAfterInterruptedToolInput,
-  shouldRerouteAutomaticContinuationAfterOutputLimit,
 } from "../agent-long-provider-retry";
 import type { UIMessage } from "ai";
 
@@ -185,6 +184,12 @@ describe("shouldRetryAgentLongWithFallback", () => {
   ])("preserves $label at the output limit", ({ parts }) => {
     expect(
       shouldRetryProviderStreamAfterNonDurableOutputLimit(parts, {
+        finishReason: "length",
+      }),
+    ).toBe(false);
+    expect(
+      shouldRetryAgentLongWithFallback(parts, {
+        hasTerminalProviderStreamError: false,
         finishReason: "length",
       }),
     ).toBe(false);
@@ -471,43 +476,6 @@ describe("shouldRetryAgentLongWithFallback", () => {
         },
       ),
     ).toBe(false);
-  });
-});
-
-describe("shouldRerouteAutomaticContinuationAfterOutputLimit", () => {
-  it("reroutes Auto after an automatic output-limit continuation", () => {
-    expect(
-      shouldRerouteAutomaticContinuationAfterOutputLimit({
-        previousFinishReason: "length",
-        isAutomaticContinuation: true,
-        isAutoModel: true,
-      }),
-    ).toBe(true);
-  });
-
-  it.each([
-    {
-      label: "a normal prior stop",
-      previousFinishReason: "stop",
-      isAutomaticContinuation: true,
-      isAutoModel: true,
-    },
-    {
-      label: "a user-authored continuation",
-      previousFinishReason: "length",
-      isAutomaticContinuation: false,
-      isAutoModel: true,
-    },
-    {
-      label: "an explicitly selected model",
-      previousFinishReason: "length",
-      isAutomaticContinuation: true,
-      isAutoModel: false,
-    },
-  ])("does not reroute $label", (state) => {
-    expect(shouldRerouteAutomaticContinuationAfterOutputLimit(state)).toBe(
-      false,
-    );
   });
 });
 
