@@ -143,7 +143,6 @@ import {
   type AgentApiEndpoint,
 } from "@/lib/api/agent-endpoints";
 import { phLogger } from "@/lib/posthog/server";
-import { finalizeE2BIdleLeaseRelease } from "@/lib/experiments/e2b-idle-lease-release";
 import {
   captureDeepSeekV4Pro0813ExperimentExposure,
   evaluateDeepSeekV4Pro0813Experiment,
@@ -3241,17 +3240,7 @@ export const agentLongTask = task({
             );
             finishE2BIdleLeaseRelease = async () => {
               await stopE2BSandboxRunLeaseHeartbeat();
-              const usage = getSandboxSessionUsage();
-              await finalizeE2BIdleLeaseRelease({
-                userId,
-                chatId,
-                triggerRunId: ctx.run.id,
-                triggerRegion,
-                subscription,
-                e2bRuntimeMs: usage.e2bRuntimeMs,
-                releaseLease: releaseE2BSandboxIdleLease,
-              });
-              await phLogger.flush().catch(() => undefined);
+              await releaseE2BSandboxIdleLease();
             };
             if (securityValidationSubagentsEnabled) {
               captureSubagentLifecycleEvent("subagent_available", {
