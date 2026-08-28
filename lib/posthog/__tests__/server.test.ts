@@ -55,12 +55,12 @@ describe("phLogger", () => {
   it("distinguishes a disabled boolean flag from an unavailable evaluation", async () => {
     mockGetFeatureFlag.mockResolvedValueOnce(false);
     await expect(
-      getPostHogFeatureFlagValueForUser("e2b-idle-lease-release", "user_123"),
+      getPostHogFeatureFlagValueForUser("example-feature-flag", "user_123"),
     ).resolves.toBe(false);
 
     mockGetFeatureFlag.mockRejectedValueOnce(new Error("unavailable"));
     await expect(
-      getPostHogFeatureFlagValueForUser("e2b-idle-lease-release", "user_123"),
+      getPostHogFeatureFlagValueForUser("example-feature-flag", "user_123"),
     ).resolves.toBeNull();
   });
 

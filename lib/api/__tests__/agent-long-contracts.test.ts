@@ -2187,10 +2187,10 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     );
   });
 
-  test("agent-long releases the flagged E2B idle lease only after active work settles", () => {
+  test("agent-long releases the E2B idle lease only after active work settles", () => {
     expect(taskSrc).toContain("keepE2BLeaseAliveForRun: true");
     expect(taskSrc).toMatch(
-      /finishE2BIdleLeaseRelease = async \(\) => \{[\s\S]*await stopE2BSandboxRunLeaseHeartbeat\(\);[\s\S]*finalizeE2BIdleLeaseRelease\(/,
+      /finishE2BIdleLeaseRelease = async \(\) => \{[\s\S]*await stopE2BSandboxRunLeaseHeartbeat\(\);[\s\S]*await releaseE2BSandboxIdleLease\(\);/,
     );
 
     const finalCleanupIdx = taskSrc.lastIndexOf(
