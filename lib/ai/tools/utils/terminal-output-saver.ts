@@ -11,6 +11,8 @@ import {
 
 export const MAX_SAVED_TERMINAL_OUTPUT_FILES = 10;
 const DESKTOP_RELAY_RETRY_DELAY_MS = 250;
+export const FULL_OUTPUT_SAVE_FAILED_MESSAGE =
+  "\n[Full terminal output could not be saved. The output below is truncated. Do not rerun the original command unchanged. If the omitted content is necessary, use a safe, read-only follow-up with narrower output, filters, or line ranges. Otherwise, explain the limitation and continue.]";
 
 type TerminalOutputPersistenceProvider = "e2b" | "desktop" | "centrifugo";
 type TerminalOutputPersistenceFailureCategory =
@@ -48,10 +50,20 @@ const getPersistenceProvider = (
 export const classifyTerminalOutputPersistenceFailure = (
   error: unknown,
 ): TerminalOutputPersistenceFailureCategory => {
-  const message = error instanceof Error ? error.message.toLowerCase() : "";
+  const message = (
+    error instanceof Error
+      ? error.message
+      : error && typeof error === "object"
+        ? (["message", "error", "reason", "code"]
+            .map((key) => (error as Record<string, unknown>)[key])
+            .find((value): value is string => typeof value === "string") ?? "")
+        : typeof error === "string"
+          ? error
+          : ""
+  ).toLowerCase();
   if (/timed?\s*out|timeout/.test(message)) return "timeout";
   if (
-    /not subscribed|relay is not available|reconnect the desktop app/.test(
+    /not subscribed|relay is not available|reconnect the desktop app|connection(?: is)? inactive|connection_inactive/.test(
       message,
     )
   ) {
@@ -86,7 +98,9 @@ const canRetryDesktopRelayFailure = (
   category: TerminalOutputPersistenceFailureCategory,
 ): boolean =>
   provider === "desktop" &&
-  (category === "transport" || category === "relay_unavailable");
+  (category === "transport" ||
+    category === "relay_unavailable" ||
+    category === "unknown");
 
 const emitPersistenceFailure = (args: {
   provider: TerminalOutputPersistenceProvider;
@@ -321,7 +335,8 @@ export async function saveTruncatedOutput(opts: {
   );
 
   if (!savedPath) {
-    return "";
+    await terminalWriter(FULL_OUTPUT_SAVE_FAILED_MESSAGE);
+    return FULL_OUTPUT_SAVE_FAILED_MESSAGE;
   }
 
   const saveMsg = FULL_OUTPUT_SAVED_MESSAGE(
