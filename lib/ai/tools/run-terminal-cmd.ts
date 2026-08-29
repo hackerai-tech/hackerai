@@ -22,6 +22,7 @@ import {
 import {
   isCloudSandbox,
   isE2BSandbox,
+  isMiosaSandbox,
   isCentrifugoSandbox,
 } from "./utils/sandbox-types";
 import {
@@ -381,13 +382,13 @@ export const createRunTerminalCmd = (context: ToolContext) => {
           const isCentrifugo = isCentrifugoSandbox(sandbox);
           const isE2B = isE2BSandbox(sandbox);
 
-          if (!isE2B && !isCentrifugo) {
+          if (!isE2B && !isCentrifugo && !isMiosaSandbox(sandbox)) {
             return {
               result: {
                 output: "",
                 exitCode: 1,
                 error:
-                  "Interactive PTY requires E2B or local (Centrifugo) sandbox.",
+                  "Interactive PTY requires E2B, MIOSA, or local (Centrifugo) sandbox.",
               },
             };
           }
@@ -441,6 +442,17 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                   cols,
                   rows,
                   cwd: sandbox.getWorkingDirectory(),
+                });
+              }
+              if (isMiosaSandbox(sandbox)) {
+                const { createMiosaPtyHandle } = await import(
+                  "./utils/miosa-pty-adapter"
+                );
+                return createMiosaPtyHandle(sandbox, {
+                  cols,
+                  rows,
+                  cwd: buildSandboxCommandOptions(sandbox).cwd,
+                  envs: agentBrowserEnv,
                 });
               }
               return createE2BPtyHandle(sandbox, {
@@ -1130,9 +1142,13 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                     onStderr: forwardCommandOutput,
                   },
             );
-            const agentBrowserEnv = isE2BSandbox(sandboxInstance)
-              ? getAgentBrowserRuntimeEnv(command)
-              : undefined;
+            // agent-browser is installed in MIOSA sandboxes too, and needs the
+            // same runtime env there. Gating this on E2B alone left Chromium
+            // running without its configured flags on MIOSA.
+            const agentBrowserEnv =
+              isE2BSandbox(sandboxInstance) || isMiosaSandbox(sandboxInstance)
+                ? getAgentBrowserRuntimeEnv(command)
+                : undefined;
             const runOptions = isCentrifugoSandbox(sandboxInstance)
               ? {
                   ...commonOptions,
