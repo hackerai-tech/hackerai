@@ -112,8 +112,8 @@ importers:
         specifier: 3.3.8
         version: 3.3.8(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
       '@miosa/sdk':
-        specifier: 3.0.0
-        version: 3.0.0
+        specifier: 3.0.1
+        version: 3.0.1
       '@monaco-editor/react':
         specifier: ^4.7.0
         version: 4.7.0(monaco-editor@0.55.1)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
@@ -359,8 +359,8 @@ importers:
         specifier: ^30.4.1
         version: 30.4.1
       '@miosa/cli':
-        specifier: 1.1.18
-        version: 1.1.18(@types/node@25.9.3)(@types/react@19.2.18)
+        specifier: 1.1.19
+        version: 1.1.19(@types/node@25.9.3)(@types/react@19.2.18)
       '@playwright/test':
         specifier: ^1.62.1
         version: 1.62.1
@@ -2372,13 +2372,13 @@ packages:
   '@microsoft/fetch-event-source@2.0.1':
     resolution: {integrity: sha512-W6CLUJ2eBMw3Rec70qrsEW0jOm/3twwJv21mrmj2yORiaVmVYGS4sSS5yUwvQc1ZlDLYGPnClVWmUUMagKNsfA==}
 
-  '@miosa/cli@1.1.18':
-    resolution: {integrity: sha512-jOCSmUn47zD21XkubKch0kG4adlAcCerIPaP7bJdu3QkLfFXdsGeyNZUi+vB9NJdVVGdvHbKDFVciLTHHVfjhA==}
+  '@miosa/cli@1.1.19':
+    resolution: {integrity: sha512-5lbOvwNnVXWaIavC2Wpvy0zFTZ+fssx46PY1EAaaOm9vJRJPIIlQxx++hF3mw/vwkv55DtIxjMSTjyKR7eIp0w==}
     engines: {node: '>=20'}
     hasBin: true
 
-  '@miosa/sdk@3.0.0':
-    resolution: {integrity: sha512-OeZbVuWk7FMi77UUtNl1uTvT9hfcIKKV3n2Kqv61jATDpyPZD8M1YccgemMVso8ojruW0v/2j/5Ah8pBBDnhDQ==}
+  '@miosa/sdk@3.0.1':
+    resolution: {integrity: sha512-f949pMBMpXht2BWafpi6fqPFlH6xU4XGkAbW7yJ84PbLaW4Wu1Txec7I0/9JvBIcjou8RKLLzfGP9e3/85V3Vw==}
     engines: {node: '>=18.0.0'}
 
   '@modelcontextprotocol/sdk@1.29.0':
@@ -10141,7 +10141,7 @@ snapshots:
 
   '@microsoft/fetch-event-source@2.0.1': {}
 
-  '@miosa/cli@1.1.18(@types/node@25.9.3)(@types/react@19.2.18)':
+  '@miosa/cli@1.1.19(@types/node@25.9.3)(@types/react@19.2.18)':
     dependencies:
       chalk: 5.6.2
       commander: 12.1.0
@@ -10159,7 +10159,7 @@ snapshots:
       - react-devtools-core
       - utf-8-validate
 
-  '@miosa/sdk@3.0.0':
+  '@miosa/sdk@3.0.1':
     optionalDependencies:
       undici: 7.28.0
       ws: 8.21.3
