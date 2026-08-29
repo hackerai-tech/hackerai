@@ -48,6 +48,7 @@ const {
   reconcileAttachedRun,
   reconcileQueuedReservation,
   reserveForBackend,
+  resumeForBackend,
   sendMessageForBackend,
   setMessageFeedback,
 } = require("../subagents") as typeof import("../subagents");
@@ -86,6 +87,7 @@ const makeCtx = ({
   deletionFenced?: boolean;
 }) => {
   const insert = jest.fn<any>().mockResolvedValue("subagent-doc");
+  const patch = jest.fn<any>().mockResolvedValue(undefined);
   const runAfter = jest.fn<any>().mockResolvedValue(undefined);
   const chain = {
     eq: jest.fn<any>(),
@@ -123,11 +125,76 @@ const makeCtx = ({
     }),
   }));
   return {
-    ctx: { db: { query, insert }, scheduler: { runAfter } } as any,
+    ctx: { db: { query, insert, patch }, scheduler: { runAfter } } as any,
     insert,
+    patch,
     runAfter,
   };
 };
+
+describe("subagent continuation", () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  it("only resumes successfully completed general children", async () => {
+    const { ctx, patch } = makeCtx({
+      parentRuns: [
+        {
+          _id: "run-1",
+          subagent_id: "sa_failed",
+          profile: "general",
+          status: "failed",
+        },
+      ],
+    });
+
+    await expect(
+      resumeForBackend.handler(ctx, {
+        serviceKey: "service-key",
+        userId: "user-1",
+        chatId: "chat-1",
+        parentTriggerRunId: "parent-run",
+        targetAgentId: "sa_failed",
+        followUp: "Check one more thing",
+      }),
+    ).resolves.toEqual({ outcome: "not_resumable" });
+    expect(patch).not.toHaveBeenCalled();
+  });
+
+  it("requeues a completed general child with a bounded continuation", async () => {
+    const { ctx, patch, runAfter } = makeCtx({
+      parentRuns: [
+        {
+          _id: "run-1",
+          subagent_id: "sa_completed",
+          profile: "general",
+          status: "completed",
+          created_at: 123,
+          cost_dollars: 0.5,
+        },
+      ],
+    });
+
+    await expect(
+      resumeForBackend.handler(ctx, {
+        serviceKey: "service-key",
+        userId: "user-1",
+        chatId: "chat-1",
+        parentTriggerRunId: "parent-run",
+        targetAgentId: "sa_completed",
+        followUp: "Check one more thing",
+      }),
+    ).resolves.toEqual({ outcome: "resumed", subagentId: "sa_completed" });
+    expect(patch).toHaveBeenCalledWith(
+      "run-1",
+      expect.objectContaining({
+        status: "queued",
+        continuation_count: 1,
+        continuation_prompt: "Check one more thing",
+      }),
+    );
+    expect(runAfter).toHaveBeenCalled();
+  });
+});
 
 describe("subagent reservation", () => {
   beforeEach(() => jest.clearAllMocks());

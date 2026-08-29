@@ -1881,7 +1881,7 @@ export const resumeForBackend = mutation({
         toSubagentHandle(candidate.subagent_id) === args.targetAgentId,
     );
     if (!row) return { outcome: "not_found" as const };
-    if (row.profile !== "general" || isActiveStatus(row.status))
+    if (row.profile !== "general" || row.status !== "completed")
       return { outcome: "not_resumable" as const };
     if (
       rows.filter((candidate) => isActiveStatus(candidate.status)).length >=
