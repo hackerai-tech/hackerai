@@ -269,7 +269,8 @@ import { AgentRunTimingTracker } from "@/lib/chat/agent-run-timing";
 import { AgentLongMemoryTelemetry } from "@/lib/chat/agent-long-memory-telemetry";
 import {
   createCancelAgentTool,
-  createCreateAgentTool,
+  createContinueAgentTool,
+  createDelegateTaskTool,
   createListAgentsTool,
   createSendMessageToAgentTool,
   createWaitForAgentsTool,
@@ -2216,8 +2217,7 @@ export type AgentLongPayload = {
   limitRescue?: LimitRescueRequest;
   endpoint?: AgentApiEndpoint;
   analyticsRequestContext?: AnalyticsRequestContext;
-  securityValidationSubagentsEnabled?: boolean;
-  securityTaskSubagentsEnabled?: boolean;
+  genericDelegationEnabled?: boolean;
   convexUrl?: string;
   requestTiming?: {
     routeStartedAt: number;
@@ -2306,11 +2306,9 @@ export const agentLongTask = task({
       limitRescue,
       endpoint: payloadEndpoint,
       analyticsRequestContext,
-      securityValidationSubagentsEnabled = false,
-      securityTaskSubagentsEnabled = false,
+      genericDelegationEnabled = false,
     } = payload;
-    const subagentsEnabled =
-      securityValidationSubagentsEnabled || securityTaskSubagentsEnabled;
+    const subagentsEnabled = genericDelegationEnabled;
     let selectedModelOverride = rawSelectedModelOverride;
     const endpoint = payloadEndpoint ?? LEGACY_AGENT_API_ENDPOINT;
     const freeUsageSubject = freeQuotaSubject ?? userId;
@@ -3215,28 +3213,29 @@ export const agentLongTask = task({
                 ...(subagentsEnabled
                   ? {
                       additionalTools: (toolContext) => ({
-                        create_agent: createCreateAgentTool(toolContext, {
+                        delegate_task: createDelegateTaskTool(toolContext, {
                           organizationId,
                           sandboxPreference,
                           permissionMode: agentPermissionMode,
                           subscription,
                           freeQuotaSubject,
                           triggerRegion,
-                          securityTaskEnabled: securityTaskSubagentsEnabled,
-                          securityValidationEnabled:
-                            securityValidationSubagentsEnabled,
+                        }),
+                        continue_agent: createContinueAgentTool(toolContext, {
+                          organizationId,
+                          sandboxPreference,
+                          permissionMode: agentPermissionMode,
+                          subscription,
+                          freeQuotaSubject,
+                          triggerRegion,
                         }),
                         list_agents: createListAgentsTool(toolContext),
                         send_message_to_agent:
                           createSendMessageToAgentTool(toolContext),
                         wait_for_agents: createWaitForAgentsTool(toolContext),
                         cancel_agent: createCancelAgentTool(toolContext),
-                        ...(securityTaskSubagentsEnabled
-                          ? {
-                              search_skills: createSearchSkillsTool(),
-                              load_skill: createLoadSkillTool(),
-                            }
-                          : {}),
+                        search_skills: createSearchSkillsTool(),
+                        load_skill: createLoadSkillTool(),
                       }),
                     }
                   : {}),
@@ -3246,23 +3245,12 @@ export const agentLongTask = task({
               await stopE2BSandboxRunLeaseHeartbeat();
               await releaseE2BSandboxIdleLease();
             };
-            if (securityValidationSubagentsEnabled) {
+            if (genericDelegationEnabled) {
               captureSubagentLifecycleEvent("subagent_available", {
                 userId,
-                eventUuid: subagentAvailabilityEventUuid(ctx.run.id),
+                eventUuid: subagentAvailabilityEventUuid(ctx.run.id, "general"),
                 parentTriggerRunId: ctx.run.id,
-                profile: "security_validation",
-              });
-            }
-            if (securityTaskSubagentsEnabled) {
-              captureSubagentLifecycleEvent("subagent_available", {
-                userId,
-                eventUuid: subagentAvailabilityEventUuid(
-                  ctx.run.id,
-                  "security_task",
-                ),
-                parentTriggerRunId: ctx.run.id,
-                profile: "security_task",
+                profile: "general",
               });
             }
             approvalSandboxManager = sandboxManager;
@@ -3430,9 +3418,8 @@ export const agentLongTask = task({
                 userCustomization,
                 sandboxContext,
                 agentPermissionMode,
-                securityValidationSubagentsEnabled,
+                genericDelegationEnabled,
                 cloudSandboxProvider,
-                securityTaskSubagentsEnabled,
               ),
               injectNotesIntoMessages(finalMessages, noteInjectionOpts),
             ]);

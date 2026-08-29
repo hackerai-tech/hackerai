@@ -12,6 +12,8 @@ import type {
   SubagentStatus,
   SubagentProfile,
   SubagentStructuredResult,
+  SubagentCapabilityBundle,
+  SubagentProgressEventType,
   ValidationConfidence,
 } from "@/lib/ai/subagents/contracts";
 import type { SubscriptionTier } from "@/types/chat";
@@ -35,6 +37,12 @@ export type PersistedSubagent = {
   success_criteria?: string[];
   inherit_context?: boolean;
   skills?: string[];
+  capability_bundles?: SubagentCapabilityBundle[];
+  task_complexity?: "low" | "medium" | "high";
+  expected_duration_minutes?: number;
+  output_kind?: string;
+  continuation_count?: number;
+  continuation_prompt?: string;
   candidate?: SecurityValidationCandidate;
   candidate_fingerprint: string;
   context_refs: SubagentContextRef[];
@@ -83,6 +91,10 @@ export const reserveSubagent = async (args: {
   successCriteria?: string[];
   inheritContext?: boolean;
   skills?: string[];
+  capabilityBundles?: SubagentCapabilityBundle[];
+  taskComplexity?: "low" | "medium" | "high";
+  expectedDurationMinutes?: number;
+  outputKind?: string;
   candidate?: SecurityValidationCandidate;
   candidateFingerprint: string;
   contextRefs?: SubagentContextRef[];
@@ -279,6 +291,15 @@ export const saveSubagentMessage = async (args: {
     ...args,
   });
 
+export const getSubagentMessages = async (args: {
+  subagentId: string;
+  userId: string;
+}) =>
+  await getConvexClient().query(api.subagents.getMessagesForBackend, {
+    serviceKey,
+    ...args,
+  });
+
 export const sendMessageToSubagent = async (args: {
   targetAgentId: string;
   userId: string;
@@ -315,6 +336,67 @@ export const consumePendingSubagentMessages = async (args: {
     messageType: SubagentMessageType;
     priority: SubagentMessagePriority;
   }>;
+
+export const recordSubagentEvent = async (args: {
+  subagentId: string;
+  triggerRunId: string;
+  eventType: SubagentProgressEventType;
+  message: string;
+  refs: string[];
+}) =>
+  await getConvexClient().mutation(api.subagents.recordEventForBackend, {
+    serviceKey,
+    ...args,
+  });
+
+export const consumeSubagentEventsForParent = async (args: {
+  userId: string;
+  chatId: string;
+  parentTriggerRunId: string;
+  targetAgentIds?: string[];
+}) =>
+  await getConvexClient().mutation(
+    api.subagents.consumeEventsForParentBackend,
+    { serviceKey, ...args },
+  );
+
+export const updateSubagentWorkLedger = async (args: {
+  subagentId: string;
+  triggerRunId: string;
+  status: "pending" | "in_progress" | "blocked" | "completed";
+  dependencies: string[];
+  refs: string[];
+  claims: Array<{ claim: string; provenance: string }>;
+  assessedScope: string[];
+  unassessedScope: string[];
+  artifacts: Array<{ path: string; description?: string }>;
+}) =>
+  await getConvexClient().mutation(api.subagents.updateWorkLedgerForBackend, {
+    serviceKey,
+    ...args,
+  });
+
+export const listSubagentWorkLedgerForParent = async (args: {
+  userId: string;
+  chatId: string;
+  parentTriggerRunId: string;
+}) =>
+  await getConvexClient().query(api.subagents.listWorkLedgerForParentBackend, {
+    serviceKey,
+    ...args,
+  });
+
+export const resumeSubagentForParent = async (args: {
+  userId: string;
+  chatId: string;
+  parentTriggerRunId: string;
+  targetAgentId: string;
+  followUp: string;
+}) =>
+  await getConvexClient().mutation(api.subagents.resumeForBackend, {
+    serviceKey,
+    ...args,
+  });
 
 export type ParentSubagentState = {
   terminal: (PersistedSubagent & { title?: string }) | null;

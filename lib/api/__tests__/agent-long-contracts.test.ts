@@ -1190,15 +1190,16 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     );
   });
 
-  test("full-access runs expose both subagent profiles without a rollout flag", () => {
+  test("full-access runs gate generic delegation behind the rollout flag", () => {
     expect(routeSrc).toMatch(
-      /const securityValidationSubagentsEnabled\s*=\s*agentPermissionMode === "full_access";/,
+      /const genericDelegationFlagPromise\s*=\s*agentPermissionMode === "full_access"/,
     );
     expect(routeSrc).toMatch(
-      /const securityTaskSubagentsEnabled\s*=\s*securityValidationSubagentsEnabled;/,
+      /existingChat, userCustomization, genericDelegationEnabled[\s\S]*Promise\.all/,
     );
-    expect(routeSrc).not.toContain("resolveSecurityTaskSubagentsEnabled");
-    expect(routeSrc).not.toContain("subagent-feature");
+    expect(routeSrc).toContain('"agent-generic-delegation-v1"');
+    expect(routeSrc).not.toContain("securityValidationSubagentsEnabled");
+    expect(routeSrc).not.toContain("securityTaskSubagentsEnabled");
   });
 
   test("parent delivery is acknowledged only after result injection and synthesis", () => {
@@ -1245,7 +1246,7 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
       /onToolFailure,\s*requestToolApproval,\s*agentPermissionMode === "auto_review" &&\s*autoReviewAssignment\?\.phase !== undefined,\s*runTimingTracker\.measureActiveTime,\s*projectContext\.workingDirectory,\s*ctx\.run\.id,\s*auxiliaryVision,\s*{\s*cloudSandboxProvider,/,
     );
     expect(taskSrc).toMatch(
-      /additionalTools:[\s\S]*create_agent:[\s\S]*send_message_to_agent:[\s\S]*wait_for_agents:/,
+      /additionalTools:[\s\S]*delegate_task:[\s\S]*continue_agent:[\s\S]*send_message_to_agent:[\s\S]*wait_for_agents:/,
     );
     expect(taskSrc).not.toContain("vulnerability_report");
   });

@@ -1145,6 +1145,7 @@ export default defineSchema({
     parent_trigger_run_id: v.string(),
     trigger_run_id: v.optional(v.string()),
     profile: v.union(
+      v.literal("general"),
       v.literal("security_task"),
       v.literal("security_validation"),
     ),
@@ -1155,6 +1156,12 @@ export default defineSchema({
     success_criteria: v.optional(v.array(v.string())),
     inherit_context: v.optional(v.boolean()),
     skills: v.optional(v.array(v.string())),
+    capability_bundles: v.optional(v.array(v.string())),
+    task_complexity: v.optional(v.string()),
+    expected_duration_minutes: v.optional(v.number()),
+    output_kind: v.optional(v.string()),
+    continuation_count: v.optional(v.number()),
+    continuation_prompt: v.optional(v.string()),
     candidate: v.optional(
       v.object({
         title: v.string(),
@@ -1287,6 +1294,57 @@ export default defineSchema({
       "external_message_id",
     ])
     .index("by_user_id", ["user_id"]),
+
+  subagent_events: defineTable({
+    subagent_id: v.string(),
+    user_id: v.string(),
+    parent_trigger_run_id: v.string(),
+    event_type: v.union(
+      v.literal("progress"),
+      v.literal("question"),
+      v.literal("blocker"),
+      v.literal("artifact"),
+      v.literal("result"),
+    ),
+    message: v.string(),
+    refs: v.array(v.string()),
+    consumed_at: v.optional(v.number()),
+    created_at: v.number(),
+  })
+    .index("by_subagent", ["subagent_id"])
+    .index("by_parent_run", ["parent_trigger_run_id"])
+    .index("by_parent_run_and_consumed_at", [
+      "parent_trigger_run_id",
+      "consumed_at",
+    ]),
+
+  subagent_work_items: defineTable({
+    subagent_id: v.string(),
+    user_id: v.string(),
+    parent_trigger_run_id: v.string(),
+    owner: v.string(),
+    status: v.union(
+      v.literal("pending"),
+      v.literal("in_progress"),
+      v.literal("blocked"),
+      v.literal("completed"),
+    ),
+    dependencies: v.array(v.string()),
+    refs: v.array(v.string()),
+    claims: v.array(v.object({ claim: v.string(), provenance: v.string() })),
+    assessed_scope: v.array(v.string()),
+    unassessed_scope: v.array(v.string()),
+    artifacts: v.array(
+      v.object({
+        path: v.string(),
+        description: v.optional(v.string()),
+      }),
+    ),
+    created_at: v.number(),
+    updated_at: v.number(),
+  })
+    .index("by_subagent", ["subagent_id"])
+    .index("by_parent_run", ["parent_trigger_run_id"]),
 
   // Webhook idempotency (prevents double-crediting on Stripe retries)
   processed_webhooks: defineTable({

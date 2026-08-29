@@ -3,6 +3,12 @@ import { describe, expect, it } from "@jest/globals";
 import { getSubagentProfileDefinition } from "../profiles";
 
 describe("subagent profiles", () => {
+  it("defines a generic profile whose tools come from server capability bundles", () => {
+    const profile = getSubagentProfileDefinition("general");
+    expect(profile.finalResultTool.name).toBe("submit_task_result");
+    expect(profile.systemPrompt).toContain("durable work ledger");
+    expect(profile.systemPrompt).toContain("Never delegate another worker");
+  });
   it("defines a generic security task with fixed tools and assigned skills", () => {
     const profile = getSubagentProfileDefinition("security_task");
 

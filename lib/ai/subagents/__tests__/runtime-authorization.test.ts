@@ -169,4 +169,52 @@ describe("subagent runtime authorization", () => {
     ).rejects.toThrow("revoked");
     expect(execute).not.toHaveBeenCalled();
   });
+
+  it("enforces read-only file capability after runtime authorization", async () => {
+    const execute = jest.fn(async () => "written");
+    const guarded = guardSubagentToolExecutions(
+      { file: { execute } as never },
+      async () => undefined,
+      { canWriteFiles: false },
+    );
+
+    await expect(
+      guarded.file.execute?.(
+        { action: "write", path: "/tmp/result.txt", text: "unsafe" },
+        {
+          toolCallId: "tool-write",
+          messages: [],
+          abortSignal: undefined,
+        } as never,
+      ),
+    ).rejects.toThrow("does not permit file writes");
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it("prevents browser-only workers from using the terminal as general shell authority", async () => {
+    const execute = jest.fn(async () => "ran");
+    const guarded = guardSubagentToolExecutions(
+      { run_terminal_cmd: { execute } as never },
+      async () => undefined,
+      { canWriteFiles: false, browserCommandsOnly: true },
+    );
+
+    await expect(
+      guarded.run_terminal_cmd.execute?.({ command: "rm -rf /tmp/project" }, {
+        toolCallId: "tool-shell",
+        messages: [],
+        abortSignal: undefined,
+      } as never),
+    ).rejects.toThrow("only permits direct agent-browser commands");
+    await expect(
+      guarded.run_terminal_cmd.execute?.(
+        { command: "agent-browser snapshot -i" },
+        {
+          toolCallId: "tool-browser",
+          messages: [],
+          abortSignal: undefined,
+        } as never,
+      ),
+    ).resolves.toBe("ran");
+  });
 });

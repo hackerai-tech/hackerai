@@ -110,6 +110,7 @@ export function extractSidebarContentFromMessage(
     if (
       (part.type === "tool-delegate_task" ||
         part.type === "tool-create_agent" ||
+        part.type === "tool-continue_agent" ||
         part.type === "tool-send_message_to_agent" ||
         part.type === "tool-wait_for_agents") &&
       part.toolCallId &&

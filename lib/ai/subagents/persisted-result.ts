@@ -1,5 +1,6 @@
 import {
   agentSecurityTaskResultSchema,
+  agentGeneralTaskResultSchema,
   agentValidationResultSchema,
   MAX_SECURITY_TASK_COVERAGE_ITEMS,
   securityTaskArtifactSchema,
@@ -64,7 +65,7 @@ export const resultFromPersistedSubagent = (
     boundedString(row.summary, 2_000) ??
     "Subagent did not finish.";
 
-  if (row.profile === "security_task") {
+  if (row.profile !== "security_validation") {
     const taskStatus = securityTaskStatusSchema.safeParse(result.task_status);
     const artifacts = Array.isArray(result.artifacts)
       ? result.artifacts
@@ -83,7 +84,7 @@ export const resultFromPersistedSubagent = (
           .slice(0, MAX_SECURITY_TASK_COVERAGE_ITEMS)
       : [];
     const candidate = {
-      profile: "security_task" as const,
+      profile: row.profile,
       status: terminalStatus,
       task_status: taskStatus.success ? taskStatus.data : null,
       summary,
@@ -93,13 +94,19 @@ export const resultFromPersistedSubagent = (
       next_steps: boundedStringArray(result.next_steps, 8, 500),
       ...(coverage.length > 0 ? { coverage } : {}),
     };
-    const parsed = agentSecurityTaskResultSchema.safeParse(candidate);
+    const parsed =
+      row.profile === "general"
+        ? agentGeneralTaskResultSchema.safeParse(candidate)
+        : agentSecurityTaskResultSchema.safeParse(candidate);
     if (parsed.success) return parsed.data;
     return {
-      profile: "security_task",
+      profile: row.profile,
       status: terminalStatus,
       task_status: null,
-      summary: "Security task result could not be read.",
+      summary:
+        row.profile === "general"
+          ? "Task result could not be read."
+          : "Security task result could not be read.",
       evidence_refs: [],
       artifacts: [],
       limitations: [],

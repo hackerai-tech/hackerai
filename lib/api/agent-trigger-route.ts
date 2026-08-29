@@ -450,9 +450,10 @@ export const createAgentTriggerPost =
       const userLocation = geolocation(req);
       const triggerRegion =
         getTriggerRegionForVercelRequest(req, userLocation) ?? "us-east-1";
-      const securityValidationSubagentsEnabled =
-        agentPermissionMode === "full_access";
-      const securityTaskSubagentsEnabled = securityValidationSubagentsEnabled;
+      const genericDelegationFlagPromise =
+        agentPermissionMode === "full_access"
+          ? getPostHogFeatureFlagForUser("agent-generic-delegation-v1", userId)
+          : Promise.resolve(false);
 
       assertFreeAgentGates({
         mode: "agent",
@@ -487,10 +488,12 @@ export const createAgentTriggerPost =
       // These independent authorization/config reads used to run serially
       // before Trigger was called. Overlap them so the worker starts booting as
       // soon as possible after the suspension check succeeds.
-      const [existingChat, userCustomization] = await Promise.all([
-        getChatById({ id: chatId }),
-        getUserCustomization({ userId }),
-      ]);
+      const [existingChat, userCustomization, genericDelegationEnabled] =
+        await Promise.all([
+          getChatById({ id: chatId }),
+          getUserCustomization({ userId }),
+          genericDelegationFlagPromise,
+        ]);
 
       // Fetch existing chat to: (a) detect isNewChat for title generation,
       // (b) pass to handleInitialChatAndUserMessage so it skips saveChat on
@@ -724,8 +727,7 @@ export const createAgentTriggerPost =
         isNewChat,
         endpoint,
         analyticsRequestContext,
-        securityValidationSubagentsEnabled,
-        securityTaskSubagentsEnabled,
+        genericDelegationEnabled,
         convexUrl: process.env.NEXT_PUBLIC_CONVEX_URL,
         requestTiming: {
           routeStartedAt,
@@ -757,8 +759,7 @@ export const createAgentTriggerPost =
         requestHasFileAttachments,
         triggerPayloadMessageCount: messagesForPayload.length,
         agentPermissionMode: permissionSnapshot.mode,
-        securityValidationSubagentsEnabled,
-        securityTaskSubagentsEnabled,
+        genericDelegationEnabled,
         approvalProtocolVersion: AGENT_APPROVAL_PROTOCOL_VERSION,
         ...(approvalWorkerVersion ? { approvalWorkerVersion } : {}),
         ...(approvalSessionId ? { approvalSessionId } : {}),
