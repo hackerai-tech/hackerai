@@ -1288,15 +1288,23 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(machineRoutingSrc).toMatch(/if \(hasFileAttachment\)/);
     expect(machineRoutingSrc).toMatch(/if \(hasProjectContext\)/);
     expect(machineRoutingSrc).toMatch(/if \(hasTodos\)/);
-    expect(machineRoutingSrc).toMatch(/if \(subagentsEnabled\)/);
     expect(routeSrc).toMatch(
-      /subagentsEnabled:\s*securityValidationSubagentsEnabled\s*\|\|\s*securityTaskSubagentsEnabled/,
+      /isFullAccessParent:\s*agentPermissionMode === "full_access"/,
+    );
+    expect(machineRoutingSrc).toMatch(
+      /AGENT_FULL_ACCESS_LIGHTWEIGHT_SMALL_1X_FEATURE_FLAG/,
+    );
+    expect(machineRoutingSrc).toMatch(
+      /isFullAccessParent[\s\S]*cohort:\s*"full_access"/,
     );
     expect(machineRoutingSrc).toMatch(
       /machine: lightweightSmall1xEnabled \? "small-1x" : "small-2x"/,
     );
     expect(routeSrc).toMatch(
-      /const machineRoutingFlagPromise = machineRoutingEligibility\.eligible/,
+      /const machineRoutingFlagPromise = machineRoutingExperiment/,
+    );
+    expect(routeSrc).toMatch(
+      /getPostHogFeatureFlagForUser\(\s*machineRoutingExperiment\.featureFlagKey/,
     );
     expect(routeSrc).toMatch(
       /const triggerMachine = machineRoutingDecision\.machine/,

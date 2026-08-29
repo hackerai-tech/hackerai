@@ -71,9 +71,9 @@ import {
   type AgentAutoReviewAssignment,
 } from "@/lib/experiments/agent-auto-review";
 import {
-  AGENT_LIGHTWEIGHT_SMALL_1X_FEATURE_FLAG,
   getAgentLightweightMachineEligibility,
   getAgentMachineRoutingExposure,
+  getAgentMachineRoutingExperiment,
   getAgentMachineRoutingFlagBeforeDeadline,
   getBaselineAgentTriggerMachine,
   resolveAgentMachineRouting,
@@ -603,13 +603,15 @@ export const createAgentTriggerPost =
         localDesktopAttachmentsPrepared,
         hasProjectContext: projectContext.projectId !== undefined,
         hasTodos: Array.isArray(todos) && todos.length > 0,
-        subagentsEnabled:
-          securityValidationSubagentsEnabled || securityTaskSubagentsEnabled,
       });
-      const machineRoutingFlagPromise = machineRoutingEligibility.eligible
+      const machineRoutingExperiment = getAgentMachineRoutingExperiment({
+        eligibility: machineRoutingEligibility,
+        isFullAccessParent: agentPermissionMode === "full_access",
+      });
+      const machineRoutingFlagPromise = machineRoutingExperiment
         ? getAgentMachineRoutingFlagBeforeDeadline(
             getPostHogFeatureFlagForUser(
-              AGENT_LIGHTWEIGHT_SMALL_1X_FEATURE_FLAG,
+              machineRoutingExperiment.featureFlagKey,
               userId,
             ),
           )
@@ -642,6 +644,11 @@ export const createAgentTriggerPost =
       triggerTags.push(permissionSnapshot.triggerTag);
       if (machineRoutingDecision.eligible) {
         triggerTags.push(`machine_route_${machineRoutingDecision.variant}`);
+        if (machineRoutingExperiment) {
+          triggerTags.push(
+            `machine_route_cohort_${machineRoutingExperiment.cohort}`,
+          );
+        }
       }
 
       // Persisted chats are rehydrated from Convex inside the task after the
@@ -740,7 +747,8 @@ export const createAgentTriggerPost =
         triggerRequestedAt,
         triggerPriority,
         triggerMachine,
-        machineRoutingFlagKey: AGENT_LIGHTWEIGHT_SMALL_1X_FEATURE_FLAG,
+        machineRoutingFlagKey: machineRoutingExperiment?.featureFlagKey,
+        machineRoutingCohort: machineRoutingExperiment?.cohort,
         machineRoutingEligible: machineRoutingDecision.eligible,
         machineRoutingEligibilityReason: machineRoutingDecision.reason,
         machineRoutingVariant: machineRoutingDecision.variant,
@@ -858,6 +866,7 @@ export const createAgentTriggerPost =
       const triggerCompletedAt = Date.now();
       const machineRoutingExposure = getAgentMachineRoutingExposure({
         decision: machineRoutingDecision,
+        experiment: machineRoutingExperiment,
         subscription,
         endpoint,
         runId,

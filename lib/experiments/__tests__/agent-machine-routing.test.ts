@@ -1,7 +1,9 @@
 import {
+  AGENT_FULL_ACCESS_LIGHTWEIGHT_SMALL_1X_FEATURE_FLAG,
   AGENT_LIGHTWEIGHT_REQUEST_MAX_BYTES,
   getAgentLightweightMachineEligibility,
   getAgentMachineRoutingExposure,
+  getAgentMachineRoutingExperiment,
   getAgentMachineRoutingFlagBeforeDeadline,
   getBaselineAgentTriggerMachine,
   resolveAgentMachineRouting,
@@ -21,7 +23,6 @@ const eligibleInput = {
   localDesktopAttachmentsPrepared: false,
   hasProjectContext: false,
   hasTodos: false,
-  subagentsEnabled: false,
 };
 
 describe("Agent machine routing", () => {
@@ -78,7 +79,6 @@ describe("Agent machine routing", () => {
     ],
     ["project context", { hasProjectContext: true }, "project_context"],
     ["existing todos", { hasTodos: true }, "existing_todos"],
-    ["enabled subagents", { subagentsEnabled: true }, "subagents_enabled"],
   ] as const)("excludes %s", (_name, overrides, reason) => {
     expect(
       getAgentLightweightMachineEligibility({
@@ -89,6 +89,35 @@ describe("Agent machine routing", () => {
           eligibleInput.subscription,
       }),
     ).toEqual({ eligible: false, reason });
+  });
+
+  it("keeps standard and full-access first turns in independent cohorts", () => {
+    const eligibility = { eligible: true, reason: "eligible" } as const;
+
+    expect(
+      getAgentMachineRoutingExperiment({
+        eligibility,
+        isFullAccessParent: false,
+      }),
+    ).toEqual({
+      cohort: "standard",
+      featureFlagKey: "agent_lightweight_small_1x_v1",
+    });
+    expect(
+      getAgentMachineRoutingExperiment({
+        eligibility,
+        isFullAccessParent: true,
+      }),
+    ).toEqual({
+      cohort: "full_access",
+      featureFlagKey: AGENT_FULL_ACCESS_LIGHTWEIGHT_SMALL_1X_FEATURE_FLAG,
+    });
+    expect(
+      getAgentMachineRoutingExperiment({
+        eligibility: { eligible: false, reason: "existing_chat" },
+        isFullAccessParent: true,
+      }),
+    ).toBeUndefined();
   });
 
   it("keeps eligible control users on small-2x", () => {
@@ -163,6 +192,10 @@ describe("Agent machine routing", () => {
         variant: "test",
         machine: "small-1x",
       },
+      experiment: {
+        cohort: "full_access",
+        featureFlagKey: AGENT_FULL_ACCESS_LIGHTWEIGHT_SMALL_1X_FEATURE_FLAG,
+      },
       subscription: "pro",
       endpoint: "/api/agent",
       runId: "run_123",
@@ -176,9 +209,10 @@ describe("Agent machine routing", () => {
     expect(exposure).toEqual({
       event: "agent_machine_routing_exposed",
       properties: expect.objectContaining({
-        experiment_key: "agent_lightweight_small_1x_v1",
+        experiment_key: "agent_full_access_lightweight_small_1x_v1",
         experiment_variant: "test",
-        "$feature/agent_lightweight_small_1x_v1": true,
+        "$feature/agent_full_access_lightweight_small_1x_v1": true,
+        machine_routing_cohort: "full_access",
         trigger_run_id: "run_123",
         selected_machine: "small-1x",
         request_message_bytes: 1_024,
@@ -196,6 +230,7 @@ describe("Agent machine routing", () => {
           variant: "ineligible",
           machine: "small-2x",
         },
+        experiment: undefined,
         subscription: "pro",
         endpoint: "/api/agent",
         runId: "run_456",

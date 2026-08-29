@@ -2,6 +2,8 @@ import type { SubscriptionTier } from "@/types";
 
 export const AGENT_LIGHTWEIGHT_SMALL_1X_FEATURE_FLAG =
   "agent_lightweight_small_1x_v1";
+export const AGENT_FULL_ACCESS_LIGHTWEIGHT_SMALL_1X_FEATURE_FLAG =
+  "agent_full_access_lightweight_small_1x_v1";
 export const AGENT_MACHINE_ROUTING_EXPOSURE_EVENT =
   "agent_machine_routing_exposed";
 export const AGENT_LIGHTWEIGHT_REQUEST_MAX_BYTES = 32 * 1024;
@@ -22,8 +24,7 @@ export type AgentLightweightMachineEligibilityReason =
   | "file_attachment"
   | "desktop_local_attachment"
   | "project_context"
-  | "existing_todos"
-  | "subagents_enabled";
+  | "existing_todos";
 
 export type AgentLightweightMachineEligibility = {
   eligible: boolean;
@@ -37,6 +38,15 @@ export type AgentMachineRoutingDecision = {
   reason: AgentLightweightMachineEligibilityReason;
   variant: AgentMachineRoutingVariant;
   machine: AgentTriggerMachinePreset;
+};
+
+export type AgentMachineRoutingCohort = "standard" | "full_access";
+
+export type AgentMachineRoutingExperiment = {
+  cohort: AgentMachineRoutingCohort;
+  featureFlagKey:
+    | typeof AGENT_LIGHTWEIGHT_SMALL_1X_FEATURE_FLAG
+    | typeof AGENT_FULL_ACCESS_LIGHTWEIGHT_SMALL_1X_FEATURE_FLAG;
 };
 
 const AGENT_TRIGGER_MACHINE_BY_SUBSCRIPTION: Record<
@@ -73,7 +83,6 @@ export function getAgentLightweightMachineEligibility({
   localDesktopAttachmentsPrepared,
   hasProjectContext,
   hasTodos,
-  subagentsEnabled,
 }: {
   subscription: SubscriptionTier;
   isNewChat: boolean;
@@ -87,7 +96,6 @@ export function getAgentLightweightMachineEligibility({
   localDesktopAttachmentsPrepared: boolean;
   hasProjectContext: boolean;
   hasTodos: boolean;
-  subagentsEnabled: boolean;
 }): AgentLightweightMachineEligibility {
   if (subscription !== "pro" && subscription !== "pro-plus") {
     return { eligible: false, reason: "unsupported_subscription" };
@@ -115,11 +123,29 @@ export function getAgentLightweightMachineEligibility({
     return { eligible: false, reason: "project_context" };
   }
   if (hasTodos) return { eligible: false, reason: "existing_todos" };
-  if (subagentsEnabled) {
-    return { eligible: false, reason: "subagents_enabled" };
-  }
 
   return { eligible: true, reason: "eligible" };
+}
+
+/** Select an independent flag so full-access canary traffic cannot dilute v1. */
+export function getAgentMachineRoutingExperiment({
+  eligibility,
+  isFullAccessParent,
+}: {
+  eligibility: AgentLightweightMachineEligibility;
+  isFullAccessParent: boolean;
+}): AgentMachineRoutingExperiment | undefined {
+  if (!eligibility.eligible) return undefined;
+
+  return isFullAccessParent
+    ? {
+        cohort: "full_access",
+        featureFlagKey: AGENT_FULL_ACCESS_LIGHTWEIGHT_SMALL_1X_FEATURE_FLAG,
+      }
+    : {
+        cohort: "standard",
+        featureFlagKey: AGENT_LIGHTWEIGHT_SMALL_1X_FEATURE_FLAG,
+      };
 }
 
 /** Resolve one machine decision shared by direct tasks and approval Sessions. */
@@ -170,6 +196,7 @@ export async function getAgentMachineRoutingFlagBeforeDeadline(
 /** Build content-free exposure properties only after an eligible run is scheduled. */
 export function getAgentMachineRoutingExposure({
   decision,
+  experiment,
   subscription,
   endpoint,
   runId,
@@ -180,6 +207,7 @@ export function getAgentMachineRoutingExposure({
   localDesktopAttachmentsPrepared,
 }: {
   decision: AgentMachineRoutingDecision;
+  experiment: AgentMachineRoutingExperiment | undefined;
   subscription: SubscriptionTier;
   endpoint: string;
   runId: string;
@@ -194,17 +222,17 @@ export function getAgentMachineRoutingExposure({
       properties: Record<string, unknown>;
     }
   | undefined {
-  if (!decision.eligible || decision.variant === "ineligible") {
+  if (!decision.eligible || decision.variant === "ineligible" || !experiment) {
     return undefined;
   }
 
   return {
     event: AGENT_MACHINE_ROUTING_EXPOSURE_EVENT,
     properties: {
-      experiment_key: AGENT_LIGHTWEIGHT_SMALL_1X_FEATURE_FLAG,
+      experiment_key: experiment.featureFlagKey,
       experiment_variant: decision.variant,
-      [`$feature/${AGENT_LIGHTWEIGHT_SMALL_1X_FEATURE_FLAG}`]:
-        decision.variant === "test",
+      [`$feature/${experiment.featureFlagKey}`]: decision.variant === "test",
+      machine_routing_cohort: experiment.cohort,
       subscription,
       subscription_tier: subscription,
       endpoint,
