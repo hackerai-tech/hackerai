@@ -1312,7 +1312,11 @@ export default defineSchema({
     created_at: v.number(),
   })
     .index("by_subagent", ["subagent_id"])
-    .index("by_parent_run", ["parent_trigger_run_id"]),
+    .index("by_parent_run", ["parent_trigger_run_id"])
+    .index("by_parent_run_and_consumed_at", [
+      "parent_trigger_run_id",
+      "consumed_at",
+    ]),
 
   subagent_work_items: defineTable({
     subagent_id: v.string(),

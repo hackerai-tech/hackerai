@@ -1749,13 +1749,15 @@ export const consumeEventsForParentBackend = mutation({
     );
     const events = await ctx.db
       .query("subagent_events")
-      .withIndex("by_parent_run", (q) =>
-        q.eq("parent_trigger_run_id", args.parentTriggerRunId),
+      .withIndex("by_parent_run_and_consumed_at", (q) =>
+        q
+          .eq("parent_trigger_run_id", args.parentTriggerRunId)
+          .eq("consumed_at", undefined),
       )
       .order("asc")
-      .take(32);
+      .take(MAX_SUBAGENTS_PER_PARENT_RUN * MAX_SUBAGENT_PROGRESS_EVENTS);
     const pending = events
-      .filter((event) => !event.consumed_at && allowed.has(event.subagent_id))
+      .filter((event) => allowed.has(event.subagent_id))
       .slice(0, 8);
     const now = Date.now();
     await Promise.all(
