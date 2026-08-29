@@ -104,7 +104,11 @@ const getSubagentLifecycleGroupKey = (part: MessagePart) => {
     return null;
   }
 
-  if (candidate.type === "tool-create_agent") {
+  if (
+    candidate.type === "tool-create_agent" ||
+    candidate.type === "tool-delegate_task" ||
+    candidate.type === "tool-continue_agent"
+  ) {
     return "subagent:started";
   }
   if (candidate.type === "tool-send_message_to_agent") {

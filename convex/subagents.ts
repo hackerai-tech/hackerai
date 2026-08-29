@@ -12,7 +12,8 @@ import {
   MAX_SUBAGENTS_PER_PARENT_RUN,
   SUBAGENT_MAX_COST_DOLLARS,
   SUBAGENT_MAX_DURATION_SECONDS,
-  SUBAGENT_MAX_PARENT_COST_DOLLARS,
+  SUBAGENT_ORCHESTRATION_BUDGET_DOLLARS,
+  SUBAGENT_PARENT_SYNTHESIS_RESERVE_DOLLARS,
   SUBAGENT_MAX_QUEUE_SECONDS,
   SUBAGENT_WATCHDOG_GRACE_SECONDS,
 } from "../lib/ai/subagents/contracts";
@@ -31,6 +32,7 @@ const statusValidator = v.union(
 );
 
 const profileValidator = v.union(
+  v.literal("general"),
   v.literal("security_task"),
   v.literal("security_validation"),
 );
@@ -111,6 +113,7 @@ const subagentSummaryValidator = v.object({
 
 const ACTIVE_SUBAGENT_STATUSES = ["queued", "running", "finalizing"] as const;
 const SUBAGENT_DELETION_CANCELLATION_BATCH_SIZE = 100;
+const MAX_SUBAGENT_PROGRESS_EVENTS = 32;
 const isActiveStatus = (status: string): boolean =>
   ACTIVE_SUBAGENT_STATUSES.some((activeStatus) => activeStatus === status);
 const isPendingDeletionCancellation = (
@@ -131,7 +134,7 @@ const toSummary = (row: {
   parent_message_id: string;
   parent_tool_call_id: string;
   trigger_run_id?: string;
-  profile: "security_task" | "security_validation";
+  profile: "general" | "security_task" | "security_validation";
   name?: string;
   objective: string;
   success_criteria?: string[];
@@ -207,6 +210,10 @@ export const reserveForBackend = mutation({
     successCriteria: v.optional(v.array(v.string())),
     inheritContext: v.optional(v.boolean()),
     skills: v.optional(v.array(v.string())),
+    capabilityBundles: v.optional(v.array(v.string())),
+    taskComplexity: v.optional(v.string()),
+    expectedDurationMinutes: v.optional(v.number()),
+    outputKind: v.optional(v.string()),
     candidate: v.optional(candidateValidator),
     candidateFingerprint: v.string(),
     contextRefs: v.optional(v.array(v.any())),
@@ -308,12 +315,15 @@ export const reserveForBackend = mutation({
       (total, row) => total + (row.cost_dollars ?? 0),
       0,
     );
-    if (parentCostDollars >= SUBAGENT_MAX_PARENT_COST_DOLLARS) {
+    const childBudgetDollars =
+      SUBAGENT_ORCHESTRATION_BUDGET_DOLLARS -
+      SUBAGENT_PARENT_SYNTHESIS_RESERVE_DOLLARS;
+    if (parentCostDollars >= childBudgetDollars) {
       return { outcome: "spend_limit" as const };
     }
     const childCostLimitDollars = Math.min(
       SUBAGENT_MAX_COST_DOLLARS,
-      SUBAGENT_MAX_PARENT_COST_DOLLARS - parentCostDollars,
+      childBudgetDollars - parentCostDollars,
     );
     if (
       parentRuns.filter((row) => isActiveStatus(row.status)).length >=
@@ -360,6 +370,10 @@ export const reserveForBackend = mutation({
       success_criteria: args.successCriteria,
       inherit_context: args.inheritContext,
       skills: args.skills,
+      capability_bundles: args.capabilityBundles,
+      task_complexity: args.taskComplexity,
+      expected_duration_minutes: args.expectedDurationMinutes,
+      output_kind: args.outputKind,
       candidate: args.candidate,
       candidate_fingerprint: args.candidateFingerprint,
       context_refs: contextRefs,
@@ -371,6 +385,21 @@ export const reserveForBackend = mutation({
       free_quota_subject: args.freeQuotaSubject,
       user_location: args.userLocation,
       cost_limit_dollars: childCostLimitDollars,
+      created_at: now,
+      updated_at: now,
+    });
+    await ctx.db.insert("subagent_work_items", {
+      subagent_id: args.subagentId,
+      user_id: args.userId,
+      parent_trigger_run_id: args.parentTriggerRunId,
+      owner: args.name ?? "Subagent",
+      status: "pending",
+      dependencies: [],
+      refs: [],
+      claims: [],
+      assessed_scope: [],
+      unassessed_scope: [],
+      artifacts: [],
       created_at: now,
       updated_at: now,
     });
@@ -1310,8 +1339,18 @@ export const finishForBackend = mutation({
       cancel_reason: isCanceledUsageFinalization
         ? (row.cancel_reason ?? args.cancelReason)
         : args.cancelReason,
-      cost_dollars: args.costDollars ?? row.cost_dollars,
-      step_count: args.stepCount ?? row.step_count,
+      cost_dollars:
+        args.costDollars === undefined
+          ? row.cost_dollars
+          : (row.continuation_count ?? 0) > 0
+            ? (row.cost_dollars ?? 0) + args.costDollars
+            : args.costDollars,
+      step_count:
+        args.stepCount === undefined
+          ? row.step_count
+          : (row.continuation_count ?? 0) > 0
+            ? (row.step_count ?? 0) + args.stepCount
+            : args.stepCount,
       completed_at: isCanceledUsageFinalization
         ? (row.completed_at ?? Date.now())
         : Date.now(),
@@ -1368,6 +1407,26 @@ export const saveMessageForBackend = mutation({
       });
     }
     return true;
+  },
+});
+
+export const getMessagesForBackend = query({
+  args: { serviceKey: v.string(), subagentId: v.string(), userId: v.string() },
+  returns: v.array(v.any()),
+  handler: async (ctx, args) => {
+    validateServiceKey(args.serviceKey);
+    const run = await ctx.db
+      .query("subagent_runs")
+      .withIndex("by_subagent_id", (q) => q.eq("subagent_id", args.subagentId))
+      .first();
+    if (!run || run.user_id !== args.userId) return [];
+    return await ctx.db
+      .query("subagent_messages")
+      .withIndex("by_subagent_and_created_at", (q) =>
+        q.eq("subagent_id", args.subagentId),
+      )
+      .order("asc")
+      .take(200);
   },
 });
 
@@ -1604,5 +1663,266 @@ export const resolveContextForBackend = query({
     }
 
     return resolved;
+  },
+});
+
+export const recordEventForBackend = mutation({
+  args: {
+    serviceKey: v.string(),
+    subagentId: v.string(),
+    triggerRunId: v.string(),
+    eventType: v.union(
+      v.literal("progress"),
+      v.literal("question"),
+      v.literal("blocker"),
+      v.literal("artifact"),
+      v.literal("result"),
+    ),
+    message: v.string(),
+    refs: v.array(v.string()),
+  },
+  returns: v.boolean(),
+  handler: async (ctx, args) => {
+    validateServiceKey(args.serviceKey);
+    const row = await ctx.db
+      .query("subagent_runs")
+      .withIndex("by_subagent_id", (q) => q.eq("subagent_id", args.subagentId))
+      .first();
+    if (
+      !row ||
+      row.trigger_run_id !== args.triggerRunId ||
+      !isActiveStatus(row.status)
+    ) {
+      return false;
+    }
+    const eventCount = (
+      await ctx.db
+        .query("subagent_events")
+        .withIndex("by_subagent", (q) => q.eq("subagent_id", args.subagentId))
+        .take(MAX_SUBAGENT_PROGRESS_EVENTS + 1)
+    ).length;
+    if (eventCount >= MAX_SUBAGENT_PROGRESS_EVENTS) return false;
+    await ctx.db.insert("subagent_events", {
+      subagent_id: row.subagent_id,
+      user_id: row.user_id,
+      parent_trigger_run_id: row.parent_trigger_run_id,
+      event_type: args.eventType,
+      message: args.message,
+      refs: args.refs,
+      created_at: Date.now(),
+    });
+    return true;
+  },
+});
+
+export const consumeEventsForParentBackend = mutation({
+  args: {
+    serviceKey: v.string(),
+    userId: v.string(),
+    chatId: v.string(),
+    parentTriggerRunId: v.string(),
+    targetAgentIds: v.optional(v.array(v.string())),
+  },
+  returns: v.array(v.any()),
+  handler: async (ctx, args) => {
+    validateServiceKey(args.serviceKey);
+    const runs = await ctx.db
+      .query("subagent_runs")
+      .withIndex("by_user_chat_and_parent_run", (q) =>
+        q
+          .eq("user_id", args.userId)
+          .eq("chat_id", args.chatId)
+          .eq("parent_trigger_run_id", args.parentTriggerRunId),
+      )
+      .take(MAX_SUBAGENTS_PER_PARENT_RUN);
+    const scopedRuns = args.targetAgentIds?.length
+      ? runs.filter((run) =>
+          args.targetAgentIds?.some(
+            (target) =>
+              target === run.subagent_id ||
+              target === toSubagentHandle(run.subagent_id),
+          ),
+        )
+      : runs;
+    const allowed = new Map(
+      scopedRuns.map((run) => [run.subagent_id, run.name ?? "Subagent"]),
+    );
+    const events = await ctx.db
+      .query("subagent_events")
+      .withIndex("by_parent_run", (q) =>
+        q.eq("parent_trigger_run_id", args.parentTriggerRunId),
+      )
+      .order("asc")
+      .take(32);
+    const pending = events
+      .filter((event) => !event.consumed_at && allowed.has(event.subagent_id))
+      .slice(0, 8);
+    const now = Date.now();
+    await Promise.all(
+      pending.map((event) => ctx.db.patch(event._id, { consumed_at: now })),
+    );
+    return pending.map((event) => ({
+      agentId: event.subagent_id,
+      agentName: allowed.get(event.subagent_id),
+      eventType: event.event_type,
+      message: event.message,
+      refs: event.refs,
+      createdAt: event.created_at,
+    }));
+  },
+});
+
+export const updateWorkLedgerForBackend = mutation({
+  args: {
+    serviceKey: v.string(),
+    subagentId: v.string(),
+    triggerRunId: v.string(),
+    status: v.union(
+      v.literal("pending"),
+      v.literal("in_progress"),
+      v.literal("blocked"),
+      v.literal("completed"),
+    ),
+    dependencies: v.array(v.string()),
+    refs: v.array(v.string()),
+    claims: v.array(v.object({ claim: v.string(), provenance: v.string() })),
+    assessedScope: v.array(v.string()),
+    unassessedScope: v.array(v.string()),
+    artifacts: v.array(
+      v.object({ path: v.string(), description: v.optional(v.string()) }),
+    ),
+  },
+  returns: v.boolean(),
+  handler: async (ctx, args) => {
+    validateServiceKey(args.serviceKey);
+    const run = await ctx.db
+      .query("subagent_runs")
+      .withIndex("by_subagent_id", (q) => q.eq("subagent_id", args.subagentId))
+      .first();
+    if (
+      !run ||
+      run.trigger_run_id !== args.triggerRunId ||
+      !isActiveStatus(run.status)
+    )
+      return false;
+    const item = await ctx.db
+      .query("subagent_work_items")
+      .withIndex("by_subagent", (q) => q.eq("subagent_id", args.subagentId))
+      .first();
+    if (!item) return false;
+    await ctx.db.patch(item._id, {
+      status: args.status,
+      dependencies: args.dependencies,
+      refs: args.refs,
+      claims: args.claims,
+      assessed_scope: args.assessedScope,
+      unassessed_scope: args.unassessedScope,
+      artifacts: args.artifacts,
+      updated_at: Date.now(),
+    });
+    return true;
+  },
+});
+
+export const listWorkLedgerForParentBackend = query({
+  args: {
+    serviceKey: v.string(),
+    userId: v.string(),
+    chatId: v.string(),
+    parentTriggerRunId: v.string(),
+  },
+  returns: v.array(v.any()),
+  handler: async (ctx, args) => {
+    validateServiceKey(args.serviceKey);
+    const runs = await ctx.db
+      .query("subagent_runs")
+      .withIndex("by_user_chat_and_parent_run", (q) =>
+        q
+          .eq("user_id", args.userId)
+          .eq("chat_id", args.chatId)
+          .eq("parent_trigger_run_id", args.parentTriggerRunId),
+      )
+      .take(MAX_SUBAGENTS_PER_PARENT_RUN);
+    const ids = new Set(runs.map((run) => run.subagent_id));
+    const items = await ctx.db
+      .query("subagent_work_items")
+      .withIndex("by_parent_run", (q) =>
+        q.eq("parent_trigger_run_id", args.parentTriggerRunId),
+      )
+      .take(MAX_SUBAGENTS_PER_PARENT_RUN);
+    return items.filter((item) => ids.has(item.subagent_id));
+  },
+});
+
+export const resumeForBackend = mutation({
+  args: {
+    serviceKey: v.string(),
+    userId: v.string(),
+    chatId: v.string(),
+    parentTriggerRunId: v.string(),
+    targetAgentId: v.string(),
+    followUp: v.string(),
+  },
+  returns: v.any(),
+  handler: async (ctx, args) => {
+    validateServiceKey(args.serviceKey);
+    const rows = await ctx.db
+      .query("subagent_runs")
+      .withIndex("by_user_chat_and_parent_run", (q) =>
+        q
+          .eq("user_id", args.userId)
+          .eq("chat_id", args.chatId)
+          .eq("parent_trigger_run_id", args.parentTriggerRunId),
+      )
+      .take(MAX_SUBAGENTS_PER_PARENT_RUN);
+    const row = rows.find(
+      (candidate) =>
+        candidate.subagent_id === args.targetAgentId ||
+        toSubagentHandle(candidate.subagent_id) === args.targetAgentId,
+    );
+    if (!row) return { outcome: "not_found" as const };
+    if (row.profile !== "general" || isActiveStatus(row.status))
+      return { outcome: "not_resumable" as const };
+    if (
+      rows.filter((candidate) => isActiveStatus(candidate.status)).length >=
+      MAX_ACTIVE_SUBAGENTS_PER_PARENT_RUN
+    )
+      return { outcome: "active_limit" as const };
+    const childBudgetDollars =
+      SUBAGENT_ORCHESTRATION_BUDGET_DOLLARS -
+      SUBAGENT_PARENT_SYNTHESIS_RESERVE_DOLLARS;
+    const spentDollars = rows.reduce(
+      (total, candidate) => total + (candidate.cost_dollars ?? 0),
+      0,
+    );
+    const remainingDollars = childBudgetDollars - spentDollars;
+    if (remainingDollars <= 0) return { outcome: "spend_limit" as const };
+    const now = Date.now();
+    await ctx.db.patch(row._id, {
+      status: "queued",
+      trigger_run_id: undefined,
+      continuation_count: (row.continuation_count ?? 0) + 1,
+      continuation_prompt: args.followUp,
+      cost_limit_dollars: Math.min(SUBAGENT_MAX_COST_DOLLARS, remainingDollars),
+      summary: undefined,
+      structured_result: undefined,
+      failure_code: undefined,
+      failure_reason: undefined,
+      cancel_reason: undefined,
+      parent_delivery_claim_id: undefined,
+      parent_delivery_claimed_at: undefined,
+      parent_delivery_claim_expires_at: undefined,
+      parent_result_injected_at: undefined,
+      parent_result_consumed_at: undefined,
+      parent_notified_at: undefined,
+      completed_at: undefined,
+      updated_at: now,
+    });
+    await ctx.scheduler.runAfter(
+      SUBAGENT_MAX_QUEUE_SECONDS * 1_000,
+      internal.subagents.reconcileQueuedReservation,
+      { subagentId: row.subagent_id, expectedCreatedAt: row.created_at },
+    );
+    return { outcome: "resumed" as const, subagentId: row.subagent_id };
   },
 });

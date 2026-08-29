@@ -65,6 +65,10 @@ export async function assertSubagentRuntimeAuthorized(args: {
 export function guardSubagentToolExecutions(
   tools: ToolSet,
   authorize: () => Promise<void>,
+  capabilities?: {
+    canWriteFiles: boolean;
+    browserCommandsOnly?: boolean;
+  },
 ): ToolSet {
   return Object.fromEntries(
     Object.entries(tools).map(([name, definition]) => {
@@ -77,6 +81,38 @@ export function guardSubagentToolExecutions(
           ...definition,
           execute: async (...args: Parameters<typeof execute>) => {
             await authorize();
+            if (
+              name === "file" &&
+              !capabilities?.canWriteFiles &&
+              typeof args[0] === "object" &&
+              args[0] !== null &&
+              "action" in args[0] &&
+              !["read", "view"].includes(
+                String((args[0] as { action?: unknown }).action),
+              )
+            ) {
+              throw new SubagentRuntimeAuthorizationError(
+                "The delegated capability bundle does not permit file writes",
+              );
+            }
+            if (
+              name === "run_terminal_cmd" &&
+              capabilities?.browserCommandsOnly &&
+              typeof args[0] === "object" &&
+              args[0] !== null
+            ) {
+              const command = String(
+                (args[0] as { command?: unknown }).command ?? "",
+              ).trim();
+              if (
+                !/^agent-browser(?:\s|$)/.test(command) ||
+                /[;&|><`$\n\r]/.test(command)
+              ) {
+                throw new SubagentRuntimeAuthorizationError(
+                  "The browser_qa capability only permits direct agent-browser commands",
+                );
+              }
+            }
             return await execute(...args);
           },
         },

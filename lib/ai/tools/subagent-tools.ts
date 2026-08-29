@@ -14,13 +14,15 @@ import type {
 } from "@/types/chat";
 import {
   cancelAgentInputSchema,
-  createAgentInputSchema,
+  continueAgentInputSchema,
+  delegateTaskInputSchema,
+  GENERAL_SUBAGENT_PROFILE,
   listAgentsInputSchema,
   sendMessageToAgentInputSchema,
   waitForAgentsInputSchema,
   SUBAGENT_ACTIVE_STATUSES,
-  type SubagentProfile,
   type SubagentLifecycleData,
+  type SubagentProfile,
 } from "@/lib/ai/subagents/contracts";
 import {
   createAgentFingerprint,
@@ -28,7 +30,10 @@ import {
   createSubagentUpdateMessageId,
 } from "@/lib/ai/subagents/fingerprint";
 import { getSubagentSandboxIdentity } from "@/lib/ai/subagents/sandbox-identity";
-import { SUBAGENT_TEXT_MODEL } from "@/lib/ai/subagents/model-routing";
+import {
+  resolveInitialSubagentModel,
+  resolveSubagentTriggerPriority,
+} from "@/lib/ai/subagents/model-routing";
 import { getSubagentRecoveryErrorDiagnostics } from "@/lib/ai/subagents/runtime-recovery";
 import { getSandboxWithFallbackGuard } from "@/lib/ai/tools/utils/sandbox-fallback";
 import {
@@ -40,6 +45,9 @@ import {
   reserveSubagent,
   cancelSubagentForUser,
   sendMessageToSubagent,
+  consumeSubagentEventsForParent,
+  listSubagentWorkLedgerForParent,
+  resumeSubagentForParent,
   type PersistedSubagent,
 } from "@/lib/db/subagents";
 import { getConvexUrl } from "@/lib/db/convex-client";
@@ -58,6 +66,7 @@ import { toSubagentHandle } from "@/lib/ai/subagents/agent-handle";
 import { resolveSubagentSkills } from "@/lib/ai/subagents/skills";
 import { cancelAgentTriggerRun } from "@/lib/api/agent-approval-session";
 import type { TriggerRunRegion } from "@/lib/api/trigger-region";
+import { phLogger } from "@/lib/posthog/server";
 
 export type SubagentToolsRuntimeConfig = {
   organizationId?: string;
@@ -66,8 +75,6 @@ export type SubagentToolsRuntimeConfig = {
   subscription: SubscriptionTier;
   freeQuotaSubject?: string;
   triggerRegion?: TriggerRunRegion;
-  securityTaskEnabled: boolean;
-  securityValidationEnabled: boolean;
 };
 
 const writeLifecycle = (
@@ -87,69 +94,54 @@ const agentName = (row: PersistedSubagent & { title?: string }): string =>
 const reservationError = (outcome: string): string =>
   ({
     active_limit:
-      "Another subagent is already active. Wait for it to finish before creating another.",
+      "Two subagents are already active. Wait for one to finish before delegating another task.",
     total_limit: "This parent run has reached its subagent limit.",
     spend_limit: "This parent run has reached its subagent spend limit.",
     chat_missing: "The chat is unavailable or no longer owned by this user.",
   })[outcome] ?? "The subagent could not be created.";
 
-export const createCreateAgentTool = (
+export const createDelegateTaskTool = (
   context: ToolContext,
   config: SubagentToolsRuntimeConfig,
 ) =>
   tool({
-    description: `Spawn one named, bounded security subagent that runs asynchronously. Choose profile=security_task for focused code analysis, artifact investigation, reconnaissance, or testing. Skills are optional: omit them by default and assign exact ids returned by search_skills only when directly relevant to the bounded task, up to 5. Complete assigned skill content is permanently included in the child's system prompt. Skills supply server-reviewed specialist methodology but never grant tools, permissions, or broader scope. Choose profile=security_validation only to independently reproduce or reject a concrete vulnerability candidate and omit skills. The tool returns a short parent-scoped agent_id for coordination.`,
-    inputSchema: createAgentInputSchema,
+    description: `Delegate one named, bounded task to an asynchronous child. Up to two siblings may run at once and four may be created per parent run. Choose the smallest server-validated capability bundle, give explicit success criteria, and continue useful parent work while it runs. Skills are optional methodology and never grant authority. The child cannot delegate.`,
+    inputSchema: delegateTaskInputSchema,
     execute: async (input, execution) => {
-      const parsed = createAgentInputSchema.parse(input);
-      const profile: SubagentProfile =
-        parsed.profile ??
-        (config.securityValidationEnabled &&
-        parsed.skills?.includes("security_validation")
-          ? "security_validation"
-          : config.securityTaskEnabled
-            ? "security_task"
-            : "security_validation");
-      const profileEnabled =
-        (profile === "security_task" && config.securityTaskEnabled) ||
-        (profile === "security_validation" && config.securityValidationEnabled);
-      if (!profileEnabled) {
-        return { success: false, error: `The ${profile} profile is disabled.` };
+      const parsed = delegateTaskInputSchema.parse(input);
+      const profile = GENERAL_SUBAGENT_PROFILE;
+      phLogger.event("generic_delegation_feature_exposed", {
+        userId: context.userID,
+        parent_trigger_run_id: context.triggerRunId,
+        capability_count: parsed.capabilities.length,
+        complexity: parsed.complexity,
+        expected_duration_minutes: parsed.expected_duration_minutes,
+        output_kind: parsed.output_kind,
+      });
+      if (parsed.capabilities.includes("external_connectors")) {
+        return {
+          success: false,
+          error:
+            "external_connectors is not available to delegated children yet. Use the connector in the parent and pass only the required result reference.",
+        };
       }
-      let skills: string[];
-      if (profile === "security_validation") {
-        const validationSkills = parsed.skills ?? [];
-        if (
-          validationSkills.length > 0 &&
-          (validationSkills.length !== 1 ||
-            validationSkills[0] !== "security_validation")
-        ) {
-          return {
-            success: false,
-            error:
-              "security_validation only accepts the security_validation policy marker, not specialist task skills.",
-          };
-        }
-        skills = validationSkills;
-      } else {
-        const resolvedSkills = resolveSubagentSkills(parsed.skills ?? []);
-        if (!resolvedSkills.success) {
-          return { success: false, error: resolvedSkills.error };
-        }
-        skills = resolvedSkills.skills.map((skill) => skill.id);
+      const resolvedSkills = resolveSubagentSkills(parsed.skills ?? []);
+      if (!resolvedSkills.success) {
+        return { success: false, error: resolvedSkills.error };
       }
+      const skills = resolvedSkills.skills.map((skill) => skill.id);
       const parentTriggerRunId = context.triggerRunId;
       const parentMessageId = context.assistantMessageId;
       if (!parentTriggerRunId || !parentMessageId) {
         return {
           success: false,
-          error: "create_agent is only available inside a durable Agent run.",
+          error: "delegate_task is only available inside a durable Agent run.",
         };
       }
       if (config.permissionMode !== "full_access") {
         return {
           success: false,
-          error: "create_agent requires Full access for the shared sandbox.",
+          error: "delegate_task requires Full access for the shared sandbox.",
         };
       }
 
@@ -238,7 +230,16 @@ export const createCreateAgentTool = (
         sandboxPreference: config.sandboxPreference,
         sandboxIdentity,
         permissionMode: config.permissionMode,
-        selectedModel: SUBAGENT_TEXT_MODEL,
+        capabilityBundles: parsed.capabilities,
+        taskComplexity: parsed.complexity,
+        expectedDurationMinutes: parsed.expected_duration_minutes,
+        outputKind: parsed.output_kind,
+        selectedModel: resolveInitialSubagentModel({
+          capabilities: parsed.capabilities,
+          complexity: parsed.complexity,
+          expectedDurationMinutes: parsed.expected_duration_minutes,
+          outputKind: parsed.output_kind,
+        }),
         subscription: config.subscription,
         freeQuotaSubject: config.freeQuotaSubject,
         userLocation: context.userLocation,
@@ -301,6 +302,15 @@ export const createCreateAgentTool = (
           status: "queued",
           skillCount: skills.length,
         });
+      } else {
+        captureSubagentLifecycleEvent("subagent_duplicate_reused", {
+          userId: context.userID,
+          subagentId,
+          parentTriggerRunId,
+          profile,
+          status: record.status,
+          outcome: "fingerprint_match",
+        });
       }
 
       if (record.status === "queued" && !record.trigger_run_id) {
@@ -318,6 +328,12 @@ export const createCreateAgentTool = (
             {
               idempotencyKey: key,
               idempotencyKeyTTL: "6h",
+              priority: resolveSubagentTriggerPriority({
+                capabilities: parsed.capabilities,
+                complexity: parsed.complexity,
+                expectedDurationMinutes: parsed.expected_duration_minutes,
+                outputKind: parsed.output_kind,
+              }),
               tags: [
                 `subagent_${subagentId}`,
                 `parent_${parentTriggerRunId}`,
@@ -380,14 +396,131 @@ export const createCreateAgentTool = (
         agent_id: agentHandle,
         name: agentName(record),
         status: record.status,
-        message: `Spawned '${agentName(record)}' (${agentHandle}) running in parallel. Before your final answer, call wait_for_agents targeting ${agentHandle} so its result is incorporated.`,
+        message: `Delegated to '${agentName(record)}' (${agentHandle}) in parallel. Continue useful work, inspect progress with list_agents or wait_for_agents, and consume its terminal result before the final answer.`,
+      };
+    },
+  });
+
+export const createContinueAgentTool = (
+  context: ToolContext,
+  config: SubagentToolsRuntimeConfig,
+) =>
+  tool({
+    description:
+      "Resume a completed general subagent from its persisted transcript for one bounded follow-up. Reuses the same agent_id, ledger, and evidence instead of spawning a replacement.",
+    inputSchema: continueAgentInputSchema,
+    execute: async (input, execution) => {
+      const parsed = continueAgentInputSchema.parse(input);
+      const parentTriggerRunId = context.triggerRunId;
+      if (!parentTriggerRunId || !context.assistantMessageId) {
+        return {
+          success: false,
+          error: "continue_agent requires a durable Agent run.",
+        };
+      }
+      const outcome = (await resumeSubagentForParent({
+        userId: context.userID,
+        chatId: context.chatId,
+        parentTriggerRunId,
+        targetAgentId: parsed.target_agent_id,
+        followUp: parsed.follow_up,
+      })) as { outcome: string; subagentId?: string };
+      if (outcome.outcome !== "resumed" || !outcome.subagentId) {
+        return {
+          success: false,
+          error:
+            outcome.outcome === "active_limit"
+              ? reservationError("active_limit")
+              : outcome.outcome === "not_resumable"
+                ? "Only completed general subagents can be resumed."
+                : "The target subagent was not found.",
+        };
+      }
+      const row = await getSubagent(outcome.subagentId);
+      if (!row)
+        return { success: false, error: "The resumed subagent was not found." };
+      try {
+        const key = await idempotencyKeys.create(
+          [
+            "general",
+            row.subagent_id,
+            `continuation_${row.continuation_count ?? 1}`,
+          ],
+          { scope: "global" },
+        );
+        await tasks.trigger<typeof subagentTask>(
+          "hackerai-subagent",
+          {
+            subagentId: row.subagent_id,
+            convexUrl: getConvexUrl(),
+            triggerRegion: config.triggerRegion,
+          },
+          {
+            idempotencyKey: key,
+            idempotencyKeyTTL: "6h",
+            priority: resolveSubagentTriggerPriority({
+              capabilities: row.capability_bundles ?? ["code_read"],
+              complexity: row.task_complexity ?? "medium",
+              expectedDurationMinutes: row.expected_duration_minutes ?? 8,
+              outputKind: row.output_kind ?? "answer",
+            }),
+            tags: [
+              `subagent_${row.subagent_id}`,
+              `parent_${parentTriggerRunId}`,
+              `user_${context.userID}`,
+              "profile_general",
+            ],
+            metadata: {
+              subagentId: row.subagent_id,
+              parentTriggerRunId,
+              parentToolCallId: execution.toolCallId,
+              profile: "general",
+              continuationCount: row.continuation_count ?? 1,
+            },
+            region: config.triggerRegion,
+          },
+        );
+      } catch {
+        await failUnattachedSubagent({
+          subagentId: row.subagent_id,
+          parentTriggerRunId,
+          failureCode: "continuation_trigger_failed",
+          summary: "Subagent continuation could not be started.",
+        }).catch(() => false);
+        return {
+          success: false,
+          agent_id: toSubagentHandle(row.subagent_id),
+          error: "The continuation could not be started.",
+        };
+      }
+      writeLifecycle(context.writer, {
+        subagent_id: row.subagent_id,
+        parent_message_id: row.parent_message_id,
+        parent_tool_call_id: execution.toolCallId,
+        agent_name: agentName(row),
+        event: "started",
+        status: "queued",
+      });
+      captureSubagentLifecycleEvent("subagent_resumed", {
+        userId: context.userID,
+        subagentId: row.subagent_id,
+        parentTriggerRunId,
+        profile: "general",
+        status: "queued",
+      });
+      return {
+        success: true,
+        agent_id: toSubagentHandle(row.subagent_id),
+        name: agentName(row),
+        status: "queued" as const,
+        message: "Resumed from the persisted child transcript.",
       };
     },
   });
 
 export const createSendMessageToAgentTool = (context: ToolContext) =>
   tool({
-    description: `Send an essential update to a live subagent's inbox with the short target_agent_id handle returned by create_agent, plus message, message_type, and priority. Use this only for new evidence, a focused question, or a concrete correction that changes an active independent validation. Do not send routine status pings or repeat context the child already has.`,
+    description: `Send an essential update to a live subagent using the short target_agent_id returned by delegate_task. Use this only for new evidence, a focused answer, or a concrete correction; do not send routine status pings.`,
     inputSchema: sendMessageToAgentInputSchema,
     execute: async (input, execution) => {
       const parsed = sendMessageToAgentInputSchema.parse(input);
@@ -538,11 +671,23 @@ export const createListAgentsTool = (context: ToolContext) =>
         };
       }
       const operationStartedAt = Date.now();
-      const agents = await listSubagentsForParent({
-        userId: context.userID,
-        chatId: context.chatId,
-        parentTriggerRunId: context.triggerRunId,
-      }).catch((error) => {
+      const [agents, work_ledger, events] = await Promise.all([
+        listSubagentsForParent({
+          userId: context.userID,
+          chatId: context.chatId,
+          parentTriggerRunId: context.triggerRunId,
+        }),
+        listSubagentWorkLedgerForParent({
+          userId: context.userID,
+          chatId: context.chatId,
+          parentTriggerRunId: context.triggerRunId,
+        }),
+        consumeSubagentEventsForParent({
+          userId: context.userID,
+          chatId: context.chatId,
+          parentTriggerRunId: context.triggerRunId,
+        }),
+      ]).catch((error) => {
         captureSubagentLifecycleEvent("subagent_list_outcome", {
           userId: context.userID,
           eventUuid: subagentOperationEventUuid(
@@ -580,6 +725,32 @@ export const createListAgentsTool = (context: ToolContext) =>
           profile: row.profile,
           status: row.status,
           result_available: row.structured_result !== undefined,
+        })),
+        events,
+        work_ledger: (
+          work_ledger as Array<{
+            subagent_id: string;
+            owner: string;
+            status: string;
+            dependencies: string[];
+            refs: string[];
+            claims: Array<{ claim: string; provenance: string }>;
+            assessed_scope: string[];
+            unassessed_scope: string[];
+            artifacts: Array<{ path: string; description?: string }>;
+            updated_at: number;
+          }>
+        ).map((item) => ({
+          agent_id: toSubagentHandle(item.subagent_id),
+          owner: item.owner,
+          status: item.status,
+          dependencies: item.dependencies,
+          refs: item.refs,
+          claims: item.claims,
+          assessed_scope: item.assessed_scope,
+          unassessed_scope: item.unassessed_scope,
+          artifacts: item.artifacts,
+          updated_at: item.updated_at,
         })),
       };
     },
@@ -759,7 +930,7 @@ export const createCancelAgentTool = (context: ToolContext) =>
 
 export const createWaitForAgentsTool = (context: ToolContext) =>
   tool({
-    description: `Pause until a subagent finishes or the timeout elapses. Optionally pass target_agent_ids to wait only for selected children. This waits for durable child state, not terminal commands. A structured result is returned once to the parent; security_task results may include a bounded summary of surfaces and risk areas actually assessed. Only security_validation with a confirmed verdict counts as independent vulnerability confirmation.`,
+    description: `Pause until a child reports material progress, asks a question, hits a blocker, produces an artifact, finishes, or the timeout elapses. Optionally target selected agent ids. Terminal results are delivered durably once; progress events are bounded and parent-mediated.`,
     inputSchema: waitForAgentsInputSchema,
     execute: async (input, execution) => {
       const parsed = waitForAgentsInputSchema.parse(input);
@@ -788,6 +959,7 @@ export const createWaitForAgentsTool = (context: ToolContext) =>
       }: {
         outcome:
           | "agent_finished"
+          | "progress"
           | "no_active_agents"
           | "timeout"
           | "targets_not_found"
@@ -816,6 +988,37 @@ export const createWaitForAgentsTool = (context: ToolContext) =>
           errorCategory,
         });
       while (true) {
+        const progressEvents = (await consumeSubagentEventsForParent({
+          userId: context.userID,
+          chatId: context.chatId,
+          parentTriggerRunId: context.triggerRunId,
+          targetAgentIds: parsed.target_agent_ids ?? undefined,
+        })) as Array<{
+          agentId: string;
+          agentName: string;
+          eventType:
+            "progress" | "question" | "blocker" | "artifact" | "result";
+          message: string;
+          refs: string[];
+          createdAt: number;
+        }>;
+        const targetedProgress = progressEvents;
+        if (targetedProgress.length > 0) {
+          captureWaitOutcome({ outcome: "progress", activeCount: 0 });
+          return {
+            success: true,
+            wait_outcome: "progress" as const,
+            reason: parsed.reason,
+            events: targetedProgress.map((event) => ({
+              agent_id: toSubagentHandle(event.agentId),
+              agent_name: event.agentName,
+              event_type: event.eventType,
+              message: event.message,
+              refs: event.refs,
+              created_at: event.createdAt,
+            })),
+          };
+        }
         const state = await claimNextTerminalSubagentForParent({
           userId: context.userID,
           chatId: context.chatId,

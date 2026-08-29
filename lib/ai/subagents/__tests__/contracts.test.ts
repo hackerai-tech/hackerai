@@ -2,10 +2,17 @@ import { describe, expect, it } from "@jest/globals";
 
 import {
   SUBAGENT_MAX_ACTIVE_SECONDS,
+  MAX_ACTIVE_SUBAGENTS_PER_PARENT_RUN,
+  MAX_SUBAGENTS_PER_PARENT_RUN,
+  SUBAGENT_PARENT_SYNTHESIS_RESERVE_DOLLARS,
   SUBAGENT_RESULT_DEADLINE_SECONDS,
   agentValidationResultSchema,
   agentSecurityTaskResultSchema,
   createAgentInputSchema,
+  delegateTaskInputSchema,
+  continueAgentInputSchema,
+  reportToParentInputSchema,
+  updateWorkLedgerInputSchema,
   MAX_SECURITY_TASK_COVERAGE_ITEMS,
   securityTaskResultSchema,
   securityValidationResultSchema,
@@ -19,6 +26,12 @@ describe("subagent contracts", () => {
     expect(SUBAGENT_RESULT_DEADLINE_SECONDS).toBeLessThan(
       SUBAGENT_MAX_ACTIVE_SECONDS,
     );
+  });
+
+  it("allows limited sibling parallelism while reserving parent synthesis", () => {
+    expect(MAX_ACTIVE_SUBAGENTS_PER_PARENT_RUN).toBe(2);
+    expect(MAX_SUBAGENTS_PER_PARENT_RUN).toBe(4);
+    expect(SUBAGENT_PARENT_SYNTHESIS_RESERVE_DOLLARS).toBeGreaterThan(0);
   });
 
   it("matches the create_agent parameter contract", () => {
@@ -43,6 +56,54 @@ describe("subagent contracts", () => {
         success_criteria: ["Identify the enforcing function"],
       }).profile,
     ).toBe("security_task");
+  });
+
+  it("keeps profiles out of the generic delegate_task contract", () => {
+    expect(
+      delegateTaskInputSchema.parse({
+        name: "Repository mapper",
+        task: "Map the data flow.",
+      }),
+    ).toMatchObject({
+      capabilities: ["code_read"],
+      complexity: "medium",
+      expected_duration_minutes: 8,
+      output_kind: "answer",
+    });
+    expect(() =>
+      delegateTaskInputSchema.parse({
+        name: "Validator",
+        task: "Validate this.",
+        profile: "security_validation",
+      }),
+    ).toThrow();
+    expect(
+      continueAgentInputSchema.parse({
+        target_agent_id: "sa_123",
+        follow_up: "Check the remaining branch.",
+      }),
+    ).toMatchObject({ target_agent_id: "sa_123" });
+  });
+
+  it("bounds typed progress and work-ledger updates", () => {
+    expect(
+      reportToParentInputSchema.parse({
+        event_type: "blocker",
+        message: "Need the test URL.",
+      }),
+    ).toEqual({
+      event_type: "blocker",
+      message: "Need the test URL.",
+      refs: [],
+    });
+    expect(
+      updateWorkLedgerInputSchema.parse({ status: "in_progress" }),
+    ).toMatchObject({
+      status: "in_progress",
+      claims: [],
+      assessed_scope: [],
+      unassessed_scope: [],
+    });
   });
 
   it("matches the send_message_to_agent and wait_for_agents contracts", () => {

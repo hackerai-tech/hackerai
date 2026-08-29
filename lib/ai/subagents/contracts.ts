@@ -3,9 +3,11 @@ import { z } from "zod";
 export const SECURITY_TASK_SUBAGENT_PROFILE = "security_task" as const;
 export const SECURITY_VALIDATION_SUBAGENT_PROFILE =
   "security_validation" as const;
+export const GENERAL_SUBAGENT_PROFILE = "general" as const;
 /** @deprecated Prefer an explicit profile constant. */
 export const SUBAGENT_PROFILE = SECURITY_VALIDATION_SUBAGENT_PROFILE;
 export const subagentProfileSchema = z.enum([
+  GENERAL_SUBAGENT_PROFILE,
   SECURITY_TASK_SUBAGENT_PROFILE,
   SECURITY_VALIDATION_SUBAGENT_PROFILE,
 ]);
@@ -14,8 +16,8 @@ export const MAX_SUBAGENT_CONTEXT_REFS = 8;
 export const MAX_SUBAGENT_SKILLS = 5;
 export const MAX_SUBAGENT_SUCCESS_CRITERIA = 8;
 export const MAX_SUBAGENT_WAIT_SECONDS = 300;
-export const MAX_SUBAGENTS_PER_PARENT_RUN = 3;
-export const MAX_ACTIVE_SUBAGENTS_PER_PARENT_RUN = 1;
+export const MAX_SUBAGENTS_PER_PARENT_RUN = 4;
+export const MAX_ACTIVE_SUBAGENTS_PER_PARENT_RUN = 2;
 export const SUBAGENT_MAX_ACTIVE_SECONDS = 15 * 60;
 export const SUBAGENT_RESULT_DEADLINE_SECONDS = 12 * 60;
 export const SUBAGENT_MAX_DURATION_SECONDS = 17 * 60;
@@ -31,6 +33,46 @@ export const MAX_SECURITY_TASK_COVERAGE_ITEMS = 8;
 export const MAX_SECURITY_TASK_COVERAGE_EVIDENCE_REFS = 4;
 export const SUBAGENT_MAX_COST_DOLLARS = 1;
 export const SUBAGENT_MAX_PARENT_COST_DOLLARS = 3;
+export const SUBAGENT_PARENT_SYNTHESIS_RESERVE_DOLLARS = 1;
+export const SUBAGENT_ORCHESTRATION_BUDGET_DOLLARS =
+  SUBAGENT_MAX_PARENT_COST_DOLLARS + SUBAGENT_PARENT_SYNTHESIS_RESERVE_DOLLARS;
+
+export const subagentCapabilityBundleSchema = z.enum([
+  "code_read",
+  "code_write",
+  "web_research",
+  "browser_qa",
+  "terminal",
+  "external_connectors",
+]);
+export type SubagentCapabilityBundle = z.infer<
+  typeof subagentCapabilityBundleSchema
+>;
+
+export const subagentTaskComplexitySchema = z.enum(["low", "medium", "high"]);
+export type SubagentTaskComplexity = z.infer<
+  typeof subagentTaskComplexitySchema
+>;
+
+export const subagentOutputKindSchema = z.enum([
+  "answer",
+  "code_change",
+  "research_notes",
+  "qa_report",
+  "artifact",
+]);
+export type SubagentOutputKind = z.infer<typeof subagentOutputKindSchema>;
+
+export const subagentProgressEventTypeSchema = z.enum([
+  "progress",
+  "question",
+  "blocker",
+  "artifact",
+  "result",
+]);
+export type SubagentProgressEventType = z.infer<
+  typeof subagentProgressEventTypeSchema
+>;
 
 export const subagentStatusSchema = z.enum([
   "queued",
@@ -137,6 +179,52 @@ export const createAgentInputSchema = z
 
 export type CreateAgentInput = z.infer<typeof createAgentInputSchema>;
 
+export const delegateTaskInputSchema = z
+  .object({
+    name: z.string().trim().min(1).max(120),
+    task: z.string().trim().min(1).max(4_000),
+    success_criteria: z
+      .array(z.string().trim().min(1).max(500))
+      .max(MAX_SUBAGENT_SUCCESS_CRITERIA)
+      .default([]),
+    inherit_context: z.boolean().default(true),
+    context_refs: z
+      .array(subagentContextRefSchema)
+      .max(MAX_SUBAGENT_CONTEXT_REFS)
+      .nullable()
+      .default(null),
+    skills: z
+      .array(z.string().trim().min(1).max(80))
+      .max(MAX_SUBAGENT_SKILLS)
+      .nullable()
+      .default(null),
+    capabilities: z
+      .array(subagentCapabilityBundleSchema)
+      .min(1)
+      .max(6)
+      .default(["code_read"]),
+    complexity: subagentTaskComplexitySchema.default("medium"),
+    expected_duration_minutes: z.number().int().min(1).max(15).default(8),
+    output_kind: subagentOutputKindSchema.default("answer"),
+  })
+  .strict();
+export type DelegateTaskInput = z.infer<typeof delegateTaskInputSchema>;
+
+export const continueAgentInputSchema = z
+  .object({
+    target_agent_id: z.string().trim().min(1).max(100),
+    follow_up: z.string().trim().min(1).max(2_000),
+  })
+  .strict();
+
+export const reportToParentInputSchema = z
+  .object({
+    event_type: subagentProgressEventTypeSchema,
+    message: z.string().trim().min(1).max(2_000),
+    refs: z.array(z.string().trim().min(1).max(1_000)).max(8).default([]),
+  })
+  .strict();
+
 export const subagentMessageTypeSchema = z.enum([
   "query",
   "instruction",
@@ -242,6 +330,32 @@ export const securityTaskArtifactSchema = z.object({
   description: z.string().trim().min(1).max(500).optional(),
 });
 
+export const updateWorkLedgerInputSchema = z
+  .object({
+    status: z.enum(["pending", "in_progress", "blocked", "completed"]),
+    dependencies: z.array(z.string().trim().min(1).max(100)).max(8).default([]),
+    refs: z.array(z.string().trim().min(1).max(1_000)).max(16).default([]),
+    claims: z
+      .array(
+        z.object({
+          claim: z.string().trim().min(1).max(1_000),
+          provenance: z.string().trim().min(1).max(1_000),
+        }),
+      )
+      .max(16)
+      .default([]),
+    assessed_scope: z
+      .array(z.string().trim().min(1).max(500))
+      .max(16)
+      .default([]),
+    unassessed_scope: z
+      .array(z.string().trim().min(1).max(500))
+      .max(16)
+      .default([]),
+    artifacts: z.array(securityTaskArtifactSchema).max(8).default([]),
+  })
+  .strict();
+
 export const securityTaskCoverageEntrySchema = z.object({
   surface: z.string().trim().min(1).max(200),
   risk_area: z.string().trim().min(1).max(200),
@@ -304,9 +418,15 @@ export type AgentSecurityTaskResult = z.infer<
   typeof agentSecurityTaskResultSchema
 >;
 
+export const agentGeneralTaskResultSchema =
+  agentSecurityTaskResultSchema.extend({
+    profile: z.literal(GENERAL_SUBAGENT_PROFILE),
+  });
+
 export const agentSubagentResultSchema = z.discriminatedUnion("profile", [
   agentValidationResultSchema,
   agentSecurityTaskResultSchema,
+  agentGeneralTaskResultSchema,
 ]);
 export type AgentSubagentResult = z.infer<typeof agentSubagentResultSchema>;
 
@@ -331,6 +451,7 @@ export const waitForAgentsResultSchema = z.object({
   success: z.boolean(),
   wait_outcome: z.enum([
     "agent_finished",
+    "progress",
     "timeout",
     "no_active_agents",
     "targets_not_found",
@@ -346,6 +467,18 @@ export const waitForAgentsResultSchema = z.object({
         agent_id: z.string(),
         name: z.string(),
         status: subagentStatusSchema,
+      }),
+    )
+    .optional(),
+  events: z
+    .array(
+      z.object({
+        agent_id: z.string(),
+        agent_name: z.string(),
+        event_type: subagentProgressEventTypeSchema,
+        message: z.string(),
+        refs: z.array(z.string()),
+        created_at: z.number(),
       }),
     )
     .optional(),
@@ -373,6 +506,8 @@ export const cancelAgentResultSchema = z.object({
   status: subagentStatusSchema.optional(),
   error: z.string().optional(),
 });
+
+export const continueAgentResultSchema = createAgentResultSchema;
 
 export const subagentLifecycleDataSchema = z.object({
   subagent_id: z.string(),

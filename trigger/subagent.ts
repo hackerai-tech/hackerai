@@ -39,6 +39,8 @@ import {
   SUBAGENT_MAX_STEPS,
   SUBAGENT_RESULT_DEADLINE_SECONDS,
   SUBAGENT_TERMINAL_STATUSES,
+  reportToParentInputSchema,
+  updateWorkLedgerInputSchema,
   type SubagentStructuredResult,
 } from "@/lib/ai/subagents/contracts";
 import {
@@ -54,7 +56,10 @@ import {
   shouldStartSubagentResultRecovery,
   type SubagentRecoveryErrorDiagnostics,
 } from "@/lib/ai/subagents/runtime-recovery";
-import { getSubagentProfileDefinition } from "@/lib/ai/subagents/profiles";
+import {
+  getSubagentProfileDefinition,
+  resolveSubagentAllowedToolNames,
+} from "@/lib/ai/subagents/profiles";
 import {
   resolveSubagentModelForImageToolResults,
   SUBAGENT_TEXT_MODEL,
@@ -69,10 +74,13 @@ import {
   consumePendingSubagentMessages,
   finishSubagent,
   getSubagent,
+  getSubagentMessages,
   markSubagentFinalizing,
   recordSubagentRecovery,
   resolveSubagentContext,
   saveSubagentMessage,
+  recordSubagentEvent,
+  updateSubagentWorkLedger,
 } from "@/lib/db/subagents";
 import { setConvexUrl } from "@/lib/db/convex-client";
 import { sanitizeForConvexValue } from "@/lib/db/convex-value-sanitizer";
@@ -139,7 +147,7 @@ type CancellationCleanup = {
   subagentId: string;
   userId: string;
   parentTriggerRunId: string;
-  profile: "security_task" | "security_validation";
+  profile: "general" | "security_task" | "security_validation";
 };
 
 const cancellationCleanup = new Map<string, CancellationCleanup>();
@@ -218,7 +226,7 @@ const captureCompletion = (
     ...(row.profile === "security_validation" && "verdict" in result
       ? { verdict: result.verdict }
       : {}),
-    ...(row.profile === "security_task" && "task_status" in result
+    ...(row.profile !== "security_validation" && "task_status" in result
       ? { taskStatus: result.task_status }
       : {}),
     durationMs,
@@ -615,12 +623,18 @@ export const subagentTask = task({
 
       runtimeStage = "context_resolution";
       const resolvedContext = await resolveSubagentContext(row.subagent_id);
+      const persistedMessages = row.continuation_count
+        ? await getSubagentMessages({
+            subagentId: row.subagent_id,
+            userId: row.user_id,
+          })
+        : [];
       const systemPrompt = profile.buildSystemPrompt(row);
       const prompt = profile.buildPrompt(row, resolvedContext);
       await saveSubagentMessage({
         subagentId: row.subagent_id,
         userId: row.user_id,
-        sequence: 0,
+        sequence: (row.continuation_count ?? 0) * 10_000,
         role: "user",
         parts: [{ type: "text", text: prompt }],
       });
@@ -689,6 +703,46 @@ export const subagentTask = task({
               inputSchema: profile.finalResultTool.schema,
               execute: acceptResult,
             });
+            const reportToParent = tool({
+              description:
+                "Report a bounded material progress update, question, blocker, artifact, or result signal to the parent. Do not use for routine narration.",
+              inputSchema: reportToParentInputSchema,
+              execute: async (input) => {
+                const parsed = reportToParentInputSchema.parse(input);
+                const recorded = await recordSubagentEvent({
+                  subagentId: row.subagent_id,
+                  triggerRunId: ctx.run.id,
+                  eventType: parsed.event_type,
+                  message: parsed.message,
+                  refs: parsed.refs,
+                });
+                return { recorded };
+              },
+            });
+            const updateWorkLedger = tool({
+              description:
+                "Replace this child's durable work-ledger entry with current status, dependencies, evidence refs, provenance-backed claims, assessed and unassessed scope, and artifacts.",
+              inputSchema: updateWorkLedgerInputSchema,
+              execute: async (input) => {
+                const parsed = updateWorkLedgerInputSchema.parse(input);
+                const updated = await updateSubagentWorkLedger({
+                  subagentId: row.subagent_id,
+                  triggerRunId: ctx.run.id,
+                  status: parsed.status,
+                  dependencies: parsed.dependencies,
+                  refs: parsed.refs,
+                  claims: parsed.claims,
+                  assessedScope: parsed.assessed_scope,
+                  unassessedScope: parsed.unassessed_scope,
+                  artifacts: parsed.artifacts,
+                });
+                return { updated };
+              },
+            });
+            const allowedToolNames = resolveSubagentAllowedToolNames(
+              row.profile,
+              row.capability_bundles,
+            );
             const {
               tools: unguardedTools,
               ensureSandbox,
@@ -721,12 +775,14 @@ export const subagentTask = task({
               undefined,
               {
                 allowedToolNames: [
-                  ...profile.allowedToolNames,
+                  ...allowedToolNames,
                   profile.finalResultTool.name,
                 ],
                 additionalTools: () => ({
                   search_skills: createSearchSkillsTool(),
                   load_skill: createLoadSkillTool(),
+                  report_to_parent: reportToParent,
+                  update_work_ledger: updateWorkLedger,
                   [profile.finalResultTool.name]: submitResult,
                 }),
                 ptyScopeId: row.subagent_id,
@@ -737,6 +793,17 @@ export const subagentTask = task({
             const tools = guardSubagentToolExecutions(
               unguardedTools,
               assertRuntimeAuthorized,
+              {
+                canWriteFiles:
+                  row.profile !== "general" ||
+                  (row.capability_bundles ?? []).includes("code_write"),
+                browserCommandsOnly:
+                  row.profile === "general" &&
+                  (row.capability_bundles ?? []).includes("browser_qa") &&
+                  !(row.capability_bundles ?? []).some((capability) =>
+                    ["terminal", "code_write"].includes(capability),
+                  ),
+              },
             );
             runtimeStage = "sandbox_acquisition";
             await assertRuntimeAuthorized();
@@ -781,7 +848,24 @@ export const subagentTask = task({
                 `sa${row.subagent_id}a${generationAttempt}s${stepIndex}`,
               );
             };
+            const resumedConversation = row.continuation_count
+              ? await convertToModelMessages(
+                  persistedMessages.flatMap((message) =>
+                    message.role === "system"
+                      ? []
+                      : [
+                          {
+                            id: String(message._id),
+                            role: message.role,
+                            parts: message.parts as UIMessage["parts"],
+                          },
+                        ],
+                  ) as UIMessage[],
+                  { tools, ignoreIncompleteToolCalls: true },
+                ).catch(() => [])
+              : [];
             const conversationMessages: ModelMessage[] = [
+              ...resumedConversation,
               { role: "user", content: prompt },
             ];
             const parentUpdates = new Map<string, ModelMessage>();
@@ -1109,7 +1193,8 @@ export const subagentTask = task({
                       row.subagent_id,
                       row.user_id,
                       messages,
-                      generationAttempt * 100,
+                      (row.continuation_count ?? 0) * 10_000 +
+                        generationAttempt * 100,
                     );
                   },
                 });

@@ -97,7 +97,8 @@ const nameForAgentId = (
       return candidate.data.agent_name;
     }
     if (
-      candidate?.type === "tool-create_agent" &&
+      (candidate?.type === "tool-create_agent" ||
+        candidate?.type === "tool-delegate_task") &&
       candidate?.output?.agent_id === agentId &&
       candidate?.output?.name
     ) {
@@ -188,12 +189,16 @@ const presentationForPart = (
         ? "Subagents"
         : "Subagent");
   const parentMessageId = lifecycle?.data?.parent_message_id ?? message.id;
-  const isCreate = type === "tool-create_agent";
+  const isLegacy =
+    type === "tool-delegate_task" && input?.profile_input !== undefined;
+  const isCreate =
+    type === "tool-create_agent" ||
+    (type === "tool-delegate_task" && !isLegacy);
+  const isContinue = type === "tool-continue_agent";
   const isList = type === "tool-list_agents";
   const isSend = type === "tool-send_message_to_agent";
   const isWait = type === "tool-wait_for_agents";
   const isCancel = type === "tool-cancel_agent";
-  const isLegacy = type === "tool-delegate_task";
   const hasChildLifecycle = Boolean(lifecycle?.data?.subagent_id);
   const failed = Boolean(errorText) || output?.success === false;
   const legacyCanOpen =
@@ -205,7 +210,7 @@ const presentationForPart = (
       : hasChildLifecycle ||
         (isCreate && output?.success === true) ||
         (isList && output?.success === true) ||
-        ((isSend || isWait || isCancel) &&
+        ((isSend || isWait || isCancel || isContinue) &&
           output?.success === true &&
           agentId));
   const waiting =
@@ -221,6 +226,10 @@ const presentationForPart = (
       : waiting
         ? "starting"
         : "started working";
+    action = `${agentName} ${suffix}`;
+    showAsChip = true;
+  } else if (isContinue) {
+    suffix = failed ? "resume failed" : waiting ? "resuming" : "resumed";
     action = `${agentName} ${suffix}`;
     showAsChip = true;
   } else if (isList) {
@@ -245,6 +254,8 @@ const presentationForPart = (
         : singleTargetAgentId
           ? "Waiting for subagent"
           : "Waiting for subagents";
+    } else if (output?.wait_outcome === "progress") {
+      action = "Subagent progress received";
     } else if (output?.wait_outcome === "targets_not_found") {
       action = "Subagent targets not found";
     } else if (output?.wait_outcome === "timeout") {

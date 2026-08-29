@@ -159,12 +159,27 @@ describe("subagent reservation", () => {
     expect(insert).not.toHaveBeenCalled();
   });
 
-  it("enforces one active child per parent run transactionally", async () => {
+  it("allows two active siblings and blocks the third transactionally", async () => {
     const { ctx, insert } = makeCtx({
-      parentRuns: [{ status: "running" }],
+      parentRuns: [{ status: "running" }, { status: "queued" }],
     });
     await expect(reserveForBackend.handler(ctx, args)).resolves.toEqual({
       outcome: "active_limit",
+    });
+    expect(insert).not.toHaveBeenCalled();
+  });
+
+  it("caps a parent run at four total children", async () => {
+    const { ctx, insert } = makeCtx({
+      parentRuns: [
+        { status: "completed" },
+        { status: "failed" },
+        { status: "canceled" },
+        { status: "timed_out" },
+      ],
+    });
+    await expect(reserveForBackend.handler(ctx, args)).resolves.toEqual({
+      outcome: "total_limit",
     });
     expect(insert).not.toHaveBeenCalled();
   });
