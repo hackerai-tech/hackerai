@@ -213,6 +213,52 @@ const buildArtifacts = async ({ skillsRoot, sourceCommit }) => {
 
 const stableJson = (value) => `${JSON.stringify(value, null, 2)}\n`;
 
+const findMatchingVendoredSourceCommit = async (artifacts) => {
+  try {
+    const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+    const sourceCommit = manifest.sourceCommit;
+    if (typeof sourceCommit !== "string" || sourceCommit.length === 0) {
+      return undefined;
+    }
+
+    const expected = {
+      manifest: { ...artifacts.manifest, sourceCommit },
+      generatedCatalog: { ...artifacts.generatedCatalog, sourceCommit },
+      generatedContent: { ...artifacts.generatedContent, sourceCommit },
+    };
+    const vendored = await buildArtifacts({
+      skillsRoot: vendorSkillsRoot,
+      sourceCommit,
+    });
+    vendored.manifest.licenseSha256 = sha256(
+      await readFile(join(vendorRoot, "LICENSE")),
+    );
+
+    if (stableJson(expected.manifest) !== stableJson(vendored.manifest)) {
+      return undefined;
+    }
+    if (stableJson(expected.manifest) !== stableJson(manifest)) {
+      return undefined;
+    }
+    if (
+      stableJson(expected.generatedCatalog) !==
+      (await readFile(generatedCatalogPath, "utf8"))
+    ) {
+      return undefined;
+    }
+    if (
+      stableJson(expected.generatedContent) !==
+      (await readFile(generatedContentPath, "utf8"))
+    ) {
+      return undefined;
+    }
+
+    return sourceCommit;
+  } catch {
+    return undefined;
+  }
+};
+
 const checkArtifacts = async () => {
   const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
   const expected = await buildArtifacts({
@@ -267,6 +313,15 @@ const updateArtifacts = async () => {
       sourceCommit,
     });
     artifacts.manifest.licenseSha256 = sha256(await readFile(sourceLicense));
+
+    const matchingSourceCommit =
+      await findMatchingVendoredSourceCommit(artifacts);
+    if (matchingSourceCommit) {
+      console.log(
+        `No Strix skill changes at ${sourceCommit}; retaining ${matchingSourceCommit}`,
+      );
+      return;
+    }
 
     await rm(vendorSkillsRoot, { recursive: true, force: true });
     await mkdir(vendorRoot, { recursive: true });
