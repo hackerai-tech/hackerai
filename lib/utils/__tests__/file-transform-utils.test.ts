@@ -757,6 +757,48 @@ describe("processMessageFiles image size guards", () => {
     ]);
   });
 
+  it("probes legacy Agent images without trusted size before provider use", async () => {
+    mockConvexAction.mockResolvedValue([
+      {
+        url: "https://storage.example/legacy-large.png",
+        mediaType: "image/png",
+        name: "legacy-large.png",
+      },
+    ]);
+    global.fetch = jest.fn(async (_url, init?: RequestInit) => {
+      expect(init?.method).toBe("HEAD");
+      return responseLike({
+        headers: { "content-length": String(40 * 1024 * 1024) },
+      });
+    }) as any;
+
+    const result = await processMessageFiles(
+      makeMessage({
+        type: "file",
+        fileId: "file_legacy_large",
+        mediaType: "image/png",
+        name: "legacy-large.png",
+      }),
+      "agent",
+      "user123",
+      "/home/user/upload",
+      "pro",
+    );
+
+    expect(result.sandboxFiles).toHaveLength(1);
+    expect(result.sandboxFiles[0]).toMatchObject({
+      kind: "url",
+      url: "https://storage.example/legacy-large.png",
+    });
+    expect(result.messages[0].parts).toEqual([
+      { type: "text", text: "what is this?" },
+      {
+        type: "text",
+        text: `<attachment filename="legacy-large.png" local_path="${result.sandboxFiles[0].localPath}" />`,
+      },
+    ]);
+  });
+
   it("falls back to legacy file URL action when metadata-aware action is not deployed", async () => {
     mockConvexAction
       .mockRejectedValueOnce(

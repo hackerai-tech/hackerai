@@ -698,8 +698,10 @@ const applyUrlsToFileParts = async (
       typeof file.sizeBytes === "number"
         ? ({ bytes: file.sizeBytes, source: "file_record" } as const)
         : null;
+    // Legacy stored images can lack trusted size metadata in either mode.
+    // Probe Agent images too so oversized files stay sandbox-only.
     const shouldProbeImageSize =
-      isSupportedImage && file.url && mode !== "agent" && !trustedImageSize;
+      isSupportedImage && file.url && !trustedImageSize;
     const probedImageSize = shouldProbeImageSize
       ? await probeImageSize(file.url, MAX_IMAGE_SIZE)
       : null;
