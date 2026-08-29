@@ -114,6 +114,25 @@ const subagentSummaryValidator = v.object({
 const ACTIVE_SUBAGENT_STATUSES = ["queued", "running", "finalizing"] as const;
 const SUBAGENT_DELETION_CANCELLATION_BATCH_SIZE = 100;
 const MAX_SUBAGENT_PROGRESS_EVENTS = 32;
+const workLedgerSummaryValidator = v.object({
+  subagent_id: v.string(),
+  owner: v.string(),
+  status: v.union(
+    v.literal("pending"),
+    v.literal("in_progress"),
+    v.literal("blocked"),
+    v.literal("completed"),
+  ),
+  dependencies: v.array(v.string()),
+  refs: v.array(v.string()),
+  claims: v.array(v.object({ claim: v.string(), provenance: v.string() })),
+  assessed_scope: v.array(v.string()),
+  unassessed_scope: v.array(v.string()),
+  artifacts: v.array(
+    v.object({ path: v.string(), description: v.optional(v.string()) }),
+  ),
+  updated_at: v.number(),
+});
 const isActiveStatus = (status: string): boolean =>
   ACTIVE_SUBAGENT_STATUSES.some((activeStatus) => activeStatus === status);
 const isPendingDeletionCancellation = (
@@ -1833,7 +1852,7 @@ export const listWorkLedgerForParentBackend = query({
     chatId: v.string(),
     parentTriggerRunId: v.string(),
   },
-  returns: v.array(v.any()),
+  returns: v.array(workLedgerSummaryValidator),
   handler: async (ctx, args) => {
     validateServiceKey(args.serviceKey);
     const runs = await ctx.db
@@ -1852,7 +1871,20 @@ export const listWorkLedgerForParentBackend = query({
         q.eq("parent_trigger_run_id", args.parentTriggerRunId),
       )
       .take(MAX_SUBAGENTS_PER_PARENT_RUN);
-    return items.filter((item) => ids.has(item.subagent_id));
+    return items
+      .filter((item) => ids.has(item.subagent_id))
+      .map((item) => ({
+        subagent_id: item.subagent_id,
+        owner: item.owner,
+        status: item.status,
+        dependencies: item.dependencies,
+        refs: item.refs,
+        claims: item.claims,
+        assessed_scope: item.assessed_scope,
+        unassessed_scope: item.unassessed_scope,
+        artifacts: item.artifacts,
+        updated_at: item.updated_at,
+      }));
   },
 });
 

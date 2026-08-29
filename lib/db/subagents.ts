@@ -376,28 +376,15 @@ export const updateSubagentWorkLedger = async (args: {
     ...args,
   });
 
-export type SubagentWorkLedgerRow = {
-  subagent_id: string;
-  owner: string;
-  status: "pending" | "in_progress" | "blocked" | "completed";
-  dependencies: string[];
-  refs: string[];
-  claims: Array<{ claim: string; provenance: string }>;
-  assessed_scope: string[];
-  unassessed_scope: string[];
-  artifacts: Array<{ path: string; description?: string }>;
-  updated_at: number;
-};
-
 export const listSubagentWorkLedgerForParent = async (args: {
   userId: string;
   chatId: string;
   parentTriggerRunId: string;
-}): Promise<SubagentWorkLedgerRow[]> =>
-  (await getConvexClient().query(api.subagents.listWorkLedgerForParentBackend, {
+}) =>
+  await getConvexClient().query(api.subagents.listWorkLedgerForParentBackend, {
     serviceKey,
     ...args,
-  })) as SubagentWorkLedgerRow[];
+  });
 
 export const resumeSubagentForParent = async (args: {
   userId: string;
