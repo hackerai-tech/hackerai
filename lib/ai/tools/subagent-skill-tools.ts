@@ -140,7 +140,7 @@ export const loadSubagentSkills = (input: LoadSkillInput) => {
 export const createSearchSkillsTool = () =>
   tool({
     description:
-      "Search the server-reviewed security skill library without loading full skill content. With no query or category, returns category counts. Use returned exact ids with load_skill or create_agent.",
+      "Search the server-reviewed security skill library without loading full skill content. With no query or category, returns category counts. Use returned exact ids with load_skill or delegate_task.",
     inputSchema: searchSkillsInputSchema,
     execute: async (input) => searchSubagentSkills(input),
   });

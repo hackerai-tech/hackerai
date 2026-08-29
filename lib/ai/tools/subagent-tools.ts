@@ -437,8 +437,15 @@ export const createContinueAgentTool = (
         };
       }
       const row = await getSubagent(outcome.subagentId);
-      if (!row)
+      if (!row) {
+        await failUnattachedSubagent({
+          subagentId: outcome.subagentId,
+          parentTriggerRunId,
+          failureCode: "continuation_lookup_failed",
+          summary: "Subagent continuation could not be started.",
+        }).catch(() => false);
         return { success: false, error: "The resumed subagent was not found." };
+      }
       try {
         const key = await idempotencyKeys.create(
           [
@@ -727,20 +734,7 @@ export const createListAgentsTool = (context: ToolContext) =>
           result_available: row.structured_result !== undefined,
         })),
         events,
-        work_ledger: (
-          work_ledger as Array<{
-            subagent_id: string;
-            owner: string;
-            status: string;
-            dependencies: string[];
-            refs: string[];
-            claims: Array<{ claim: string; provenance: string }>;
-            assessed_scope: string[];
-            unassessed_scope: string[];
-            artifacts: Array<{ path: string; description?: string }>;
-            updated_at: number;
-          }>
-        ).map((item) => ({
+        work_ledger: work_ledger.map((item) => ({
           agent_id: toSubagentHandle(item.subagent_id),
           owner: item.owner,
           status: item.status,

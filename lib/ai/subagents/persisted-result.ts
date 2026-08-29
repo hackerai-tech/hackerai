@@ -103,7 +103,10 @@ export const resultFromPersistedSubagent = (
       profile: row.profile,
       status: terminalStatus,
       task_status: null,
-      summary: "Security task result could not be read.",
+      summary:
+        row.profile === "general"
+          ? "Task result could not be read."
+          : "Security task result could not be read.",
       evidence_refs: [],
       artifacts: [],
       limitations: [],

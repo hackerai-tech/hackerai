@@ -862,7 +862,24 @@ export const subagentTask = task({
                         ],
                   ) as UIMessage[],
                   { tools, ignoreIncompleteToolCalls: true },
-                ).catch(() => [])
+                ).catch((error) => {
+                  triggerLogger.warn("[subagent] resumed transcript dropped", {
+                    event: "subagent_resumed_transcript_conversion_failed",
+                    service: "hackerai-subagent",
+                    environment:
+                      process.env.TRIGGER_ENV ??
+                      process.env.NODE_ENV ??
+                      "unknown",
+                    subagent_id: row.subagent_id,
+                    trigger_run_id: ctx.run.id,
+                    parent_trigger_run_id: row.parent_trigger_run_id,
+                    user_id: row.user_id,
+                    persisted_message_count: persistedMessages.length,
+                    error_name:
+                      error instanceof Error ? error.name : "UnknownError",
+                  });
+                  return [];
+                })
               : [];
             const conversationMessages: ModelMessage[] = [
               ...resumedConversation,

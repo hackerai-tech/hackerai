@@ -132,7 +132,6 @@ export function extractSidebarContentFromMessage(
         toolCallId: part.toolCallId,
         ...(part.type !== "tool-create_agent" &&
         part.type !== "tool-delegate_task" &&
-        part.type !== "tool-continue_agent" &&
         selectedSubagentId
           ? { selectedSubagentId }
           : {}),
