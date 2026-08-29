@@ -765,12 +765,25 @@ describe("processMessageFiles image size guards", () => {
         name: "legacy-large.png",
       },
     ]);
-    global.fetch = jest.fn(async (_url, init?: RequestInit) => {
-      expect(init?.method).toBe("HEAD");
+    const cancelRangeBody = jest.fn(async () => undefined);
+    const fetchSpy = jest.fn(async (_url, init?: RequestInit) => {
+      if (init?.method === "HEAD") {
+        return responseLike({});
+      }
       return responseLike({
-        headers: { "content-length": String(40 * 1024 * 1024) },
+        status: 206,
+        headers: {
+          "content-range": `bytes 0-${5 * 1024 * 1024}/${40 * 1024 * 1024}`,
+        },
+        body: {
+          cancel: cancelRangeBody,
+          getReader: () => {
+            throw new Error("Known range total should avoid reading the body");
+          },
+        },
       });
-    }) as any;
+    });
+    global.fetch = fetchSpy as any;
 
     const result = await processMessageFiles(
       makeMessage({
@@ -785,7 +798,13 @@ describe("processMessageFiles image size guards", () => {
       "pro",
     );
 
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    expect(cancelRangeBody).toHaveBeenCalledTimes(1);
     expect(result.sandboxFiles).toHaveLength(1);
+    const localPath = result.sandboxFiles[0].localPath;
+    expect(localPath).toMatch(
+      /^\/home\/user\/upload\/[a-f0-9]{64}\/legacy-large\.png$/,
+    );
     expect(result.sandboxFiles[0]).toMatchObject({
       kind: "url",
       url: "https://storage.example/legacy-large.png",
@@ -794,7 +813,7 @@ describe("processMessageFiles image size guards", () => {
       { type: "text", text: "what is this?" },
       {
         type: "text",
-        text: `<attachment filename="legacy-large.png" local_path="${result.sandboxFiles[0].localPath}" />`,
+        text: `<attachment filename="legacy-large.png" local_path="${localPath}" />`,
       },
     ]);
   });

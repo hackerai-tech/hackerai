@@ -229,12 +229,16 @@ const probeDownloadSize = async (
       signal: controller.signal,
     });
 
-    if (!response.ok) return null;
+    if (!response.ok) {
+      await response.body?.cancel().catch(() => undefined);
+      return null;
+    }
 
     const rangeTotal = parseContentRangeTotal(
       response.headers.get("content-range"),
     );
     if (rangeTotal != null) {
+      await response.body?.cancel().catch(() => undefined);
       return { bytes: rangeTotal, source: "content_range" };
     }
 
@@ -242,6 +246,7 @@ const probeDownloadSize = async (
       response.headers.get("content-length"),
     );
     if (contentLength != null && response.status !== 206) {
+      await response.body?.cancel().catch(() => undefined);
       return { bytes: contentLength, source: "content_length" };
     }
 
