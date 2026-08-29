@@ -10,6 +10,7 @@ import {
 } from "./miosa-sandbox";
 import { phLogger } from "@/lib/posthog/server";
 import type { TriggerRunRegion } from "@/lib/api/trigger-region";
+import { getConfiguredE2BClustersForCleanup } from "./e2b-cluster";
 
 export type CloudSandboxAcquisitionContext = {
   provider?: CloudSandboxProvider;
@@ -26,6 +27,7 @@ const ensureE2BCloudSandboxConnection = (options: {
   initialSandbox?: AnySandbox | null;
   setSandbox: (sandbox: AnySandbox) => void;
   onBoot?: (info: SandboxBootInfo) => void;
+  context?: CloudSandboxAcquisitionContext;
 }) =>
   ensureSandboxConnection(
     {
@@ -38,6 +40,7 @@ const ensureE2BCloudSandboxConnection = (options: {
         options.initialSandbox && isE2BSandbox(options.initialSandbox)
           ? options.initialSandbox
           : null,
+      triggerRegion: options.context?.triggerRegion,
     },
   );
 
@@ -181,9 +184,11 @@ export async function terminateCloudSandboxesForUser(userId: string): Promise<{
     }
   }
 
-  if (process.env.E2B_API_KEY) {
+  for (const cluster of getConfiguredE2BClustersForCleanup()) {
     try {
-      const paginator = (await import("@e2b/code-interpreter")).Sandbox.list({
+      const { Sandbox } = await import("@e2b/code-interpreter");
+      const paginator = Sandbox.list({
+        ...cluster.connectionOptions,
         query: { metadata: { userID: userId } },
       });
       const sandboxes = [];
@@ -194,10 +199,13 @@ export async function terminateCloudSandboxesForUser(userId: string): Promise<{
       let alreadyGone = 0;
       const { isExpectedMissingResourceCleanupError } =
         await import("@/lib/utils/cleanup-errors");
-      const { Sandbox } = await import("@e2b/code-interpreter");
       for (const sandbox of sandboxes) {
         try {
-          await Sandbox.kill(sandbox.sandboxId);
+          if (cluster.connectionOptions) {
+            await Sandbox.kill(sandbox.sandboxId, cluster.connectionOptions);
+          } else {
+            await Sandbox.kill(sandbox.sandboxId);
+          }
           killed++;
         } catch (error) {
           if (isExpectedMissingResourceCleanupError(error)) {

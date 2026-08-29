@@ -29,10 +29,10 @@ import { selectCloudSandboxProvider } from "@/lib/ai/tools/utils/cloud-sandbox-p
 import { ptySessionManager } from "@/lib/ai/tools/utils/pty-session-manager";
 import { generateTitleFromUserMessageWithWriter } from "@/lib/actions";
 import { createTrackedProvider } from "@/lib/ai/providers";
-import { processChatMessages } from "@/lib/chat/chat-processor";
+import { processChatMessages, selectModel } from "@/lib/chat/chat-processor";
 import { cacheAuxiliaryVisionDescription } from "@/lib/utils/file-transform-utils";
 import {
-  createAuxiliaryVisionFailoverController,
+  createVisionSummaryRecoveryController,
   describeImageAttachmentsWithAuxiliaryVision,
   describeImageWithAuxiliaryVision,
 } from "@/lib/chat/auxiliary-vision";
@@ -150,7 +150,7 @@ import {
   getActiveDeepSeekV4Pro0813ExperimentAssignment,
   getDeepSeekV4Pro0813ExperimentContext,
 } from "@/lib/experiments/deepseek-v4-pro-0813";
-import { isEligibleForAuxiliaryDeepSeekVision } from "@/lib/chat/auxiliary-vision-eligibility";
+import { isEligibleForDirectGlmVision } from "@/lib/chat/auxiliary-vision-eligibility";
 import type { AgentAutoReviewAssignment } from "@/lib/experiments/agent-auto-review";
 import { PAID_FUNNEL_EVENTS } from "@/lib/analytics/paid-funnel";
 import type { AnalyticsRequestContext } from "@/lib/analytics/request-context";
@@ -204,7 +204,6 @@ import {
 import {
   createAgentStream,
   initAgentStreamState,
-  resolveAgentModelForImageToolResults,
   resetServedModelTelemetryForRetry,
   retryUsesDifferentModel,
   type AgentStreamContext,
@@ -251,6 +250,7 @@ import {
   detectAssistantContentLoopFromParts,
   getNextDeepSeekProDisconnectRetryModel,
   prepareProviderDisconnectContinuation,
+  shouldRetryProviderStreamAfterNonDurableOutputLimit,
   shouldRetryProviderStreamAfterReasoningOnlyOutput,
   shouldRetryProviderStreamAfterInterruptedToolInput,
   shouldRetryAgentLongWithFallback,
@@ -262,6 +262,7 @@ import {
 import {
   omitImageViewToolResultsForProviderRetry,
   omitTrailingStepStartAssistantMessage,
+  uiMessagesContainImageViewResult,
 } from "@/lib/chat/multimodal-tool-result-recovery";
 import { FREE_AGENT_LONG_RUN_LOCK_TTL_SECONDS } from "@/lib/rate-limit/free-config";
 import { AgentRunTimingTracker } from "@/lib/chat/agent-run-timing";
@@ -273,6 +274,10 @@ import {
   createSendMessageToAgentTool,
   createWaitForAgentsTool,
 } from "@/lib/ai/tools/subagent-tools";
+import {
+  createLoadSkillTool,
+  createSearchSkillsTool,
+} from "@/lib/ai/tools/subagent-skill-tools";
 import {
   cancelSubagentsForParent,
   listActiveSubagentsForParent,
@@ -2076,6 +2081,7 @@ const withAgentLongStreamHeartbeat = (
 type RunCleanupState = {
   usageRefundTracker: UsageRefundTracker;
   hasObservedUsage: () => boolean;
+  releaseFreeRunLock: () => Promise<void>;
   chatLogger: ChatLogger | undefined;
   chatId: string;
   userId: string;
@@ -2204,6 +2210,7 @@ export type AgentLongPayload = {
   userLocation: Geo;
   triggerRegion?: TriggerRunRegion;
   isAutoContinue?: boolean;
+  isAutomaticContinuation?: boolean;
   regenerate?: boolean;
   isNewChat?: boolean;
   limitRescue?: LimitRescueRequest;
@@ -2244,6 +2251,16 @@ export const agentLongTask = task({
     if (!cleanup.hasObservedUsage()) {
       await cleanup.usageRefundTracker.refund().catch(() => {});
     }
+    await cleanup.releaseFreeRunLock().catch((error) => {
+      triggerLogger.warn("[agent-long] canceled run lock release failed", {
+        event: "agent_free_run_lock_release_failed",
+        user_id: cleanup.userId,
+        chat_id: cleanup.chatId,
+        trigger_run_id: ctx.run.id,
+        cleanup_source: "on_cancel",
+        error: stringifyRedactedError(error),
+      });
+    });
     if (cleanup.subagentsEnabled) {
       await settleSubagentsForParentRun(
         ctx.run.id,
@@ -2283,6 +2300,7 @@ export const agentLongTask = task({
       userLocation,
       triggerRegion = "us-east-1",
       isAutoContinue,
+      isAutomaticContinuation,
       regenerate,
       isNewChat,
       limitRescue,
@@ -2392,11 +2410,33 @@ export const agentLongTask = task({
     const usageRefundTracker = new UsageRefundTracker();
     usageRefundTracker.setUser(userId, subscription, organizationId);
     let releaseFreeRunLock: (() => Promise<void>) | undefined;
+    let releaseFreeRunLockPromise: Promise<void> | undefined;
     const releaseFreeRunLockOnce = async () => {
+      if (releaseFreeRunLockPromise) return releaseFreeRunLockPromise;
       const release = releaseFreeRunLock;
       if (!release) return;
-      releaseFreeRunLock = undefined;
-      await release();
+      releaseFreeRunLockPromise = release()
+        .then(() => {
+          if (releaseFreeRunLock === release) {
+            releaseFreeRunLock = undefined;
+          }
+        })
+        .finally(() => {
+          releaseFreeRunLockPromise = undefined;
+        });
+      await releaseFreeRunLockPromise;
+    };
+    const releaseFreeRunLockBestEffort = async (cleanupSource: string) => {
+      await releaseFreeRunLockOnce().catch((error) => {
+        triggerLogger.warn("[agent-long] free run lock release failed", {
+          event: "agent_free_run_lock_release_failed",
+          user_id: userId,
+          chat_id: chatId,
+          trigger_run_id: ctx.run.id,
+          cleanup_source: cleanupSource,
+          error: stringifyRedactedError(error),
+        });
+      });
     };
 
     let chatLogger: ChatLogger | undefined = createChatLogger({
@@ -2421,6 +2461,7 @@ export const agentLongTask = task({
     let observedUsageTracker: UsageTracker | undefined;
     const hasObservedUsage = () => !!observedUsageTracker?.hasUsage;
     let cloudSandboxLifecyclePromise: Promise<void> | undefined;
+    let finishE2BIdleLeaseRelease: (() => Promise<void>) | undefined;
     const finishCloudSandboxLifecycle = () => {
       cloudSandboxLifecyclePromise ??= finishCloudSandboxLifecycleForParentRun({
         chatId,
@@ -2432,6 +2473,7 @@ export const agentLongTask = task({
     runCleanupMap.set(ctx.run.id, {
       usageRefundTracker,
       hasObservedUsage,
+      releaseFreeRunLock: releaseFreeRunLockOnce,
       chatLogger,
       chatId,
       userId,
@@ -2492,7 +2534,7 @@ export const agentLongTask = task({
         selectedModelOverride,
         subscription,
       );
-      const auxiliaryVisionEnabled = isEligibleForAuxiliaryDeepSeekVision({
+      const directGlmVisionEnabled = isEligibleForDirectGlmVision({
         subscription,
         selectedModelOverride,
       });
@@ -2531,7 +2573,7 @@ export const agentLongTask = task({
         modelOverride: selectedModelOverride,
         extraUsageAvailable,
         allowLocalDesktopFiles: sandboxPreference === "desktop",
-        auxiliaryVisionEnabled,
+        directGlmVisionEnabled,
         chatId,
         triggerRunId: ctx.run.id,
         requestId: ctx.run.id,
@@ -2679,8 +2721,8 @@ export const agentLongTask = task({
         PaidDailyFreeAllowanceReservation | undefined;
 
       let streamError: unknown;
-      const auxiliaryVisionFailover = createAuxiliaryVisionFailoverController({
-        enabled: auxiliaryVisionEnabled,
+      const visionSummaryRecovery = createVisionSummaryRecoveryController({
+        available: directGlmVisionEnabled,
         service: "agent-long",
         requestId: ctx.run.id,
         userId,
@@ -2700,9 +2742,9 @@ export const agentLongTask = task({
           try {
             const usageTracker = new UsageTracker();
             observedUsageTracker = usageTracker;
-            const auxiliaryVision = auxiliaryVisionFailover.isEnabled()
+            const auxiliaryVision = directGlmVisionEnabled
               ? {
-                  isEnabled: auxiliaryVisionFailover.isEnabled,
+                  isEnabled: visionSummaryRecovery.isEnabled,
                   isAborted: () => userStopSignal.signal.aborted,
                   describeImage: async (args: {
                     image: string;
@@ -2710,27 +2752,19 @@ export const agentLongTask = task({
                     filename?: string;
                     source: "file_view";
                   }) => {
-                    try {
-                      return await describeImageWithAuxiliaryVision({
-                        ...args,
-                        requestId: ctx.run.id,
-                        userId,
-                        chatId,
-                        triggerRunId: ctx.run.id,
-                        abortSignal: userStopSignal.signal,
-                        onCost: (costDollars) => {
-                          usageTracker.providerCost += costDollars;
-                          usageTracker.nonModelCost += costDollars;
-                          chatLogger?.getBuilder().addToolCost(costDollars);
-                        },
-                      });
-                    } catch (error) {
-                      auxiliaryVisionFailover.activate({
-                        error,
-                        source: "file_view",
-                      });
-                      throw error;
-                    }
+                    return await describeImageWithAuxiliaryVision({
+                      ...args,
+                      requestId: ctx.run.id,
+                      userId,
+                      chatId,
+                      triggerRunId: ctx.run.id,
+                      abortSignal: userStopSignal.signal,
+                      onCost: (costDollars) => {
+                        usageTracker.providerCost += costDollars;
+                        usageTracker.nonModelCost += costDollars;
+                        chatLogger?.getBuilder().addToolCost(costDollars);
+                      },
+                    });
                   },
                 }
               : undefined;
@@ -2851,7 +2885,11 @@ export const agentLongTask = task({
 
             const freeMonthlyBudgetSnapshot =
               subscription === "free"
-                ? await checkFreeMonthlyCostLimit(freeUsageSubject)
+                ? await checkFreeMonthlyCostLimit(
+                    freeUsageSubject,
+                    userId,
+                    "trigger_agent_long",
+                  )
                 : null;
 
             usageRefundTracker.recordDeductions(rateLimitInfo);
@@ -2988,7 +3026,7 @@ export const agentLongTask = task({
                 freeQuotaSubject,
               );
               if (authorization.subscription === "free") {
-                await checkFreeMonthlyCostLimit(freeUsageSubject);
+                await checkFreeMonthlyCostLimit(freeUsageSubject, userId);
                 const lock = await acquireFreeRunConcurrencyLock(
                   freeUsageSubject,
                   FREE_AGENT_LONG_RUN_LOCK_TTL_SECONDS,
@@ -3075,7 +3113,7 @@ export const agentLongTask = task({
                 freeQuotaSubject,
               );
               if (currentEntitlement.subscription === "free") {
-                await checkFreeMonthlyCostLimit(freeUsageSubject);
+                await checkFreeMonthlyCostLimit(freeUsageSubject, userId);
               }
             };
             let approvalSandboxManager: SandboxManager | undefined;
@@ -3140,6 +3178,8 @@ export const agentLongTask = task({
               sandboxManager,
               getSandboxSessionCost,
               getSandboxSessionUsage,
+              releaseE2BSandboxIdleLease,
+              stopE2BSandboxRunLeaseHeartbeat,
               setCurrentModelName,
               getToolsForModel,
             } = createTools(
@@ -3176,6 +3216,7 @@ export const agentLongTask = task({
                 cloudSandboxProvider,
                 cloudSandboxSelectionReason: cloudSandboxSelection.reason,
                 triggerRegion,
+                keepE2BLeaseAliveForRun: true,
                 ...(subagentsEnabled
                   ? {
                       additionalTools: (toolContext) => ({
@@ -3185,6 +3226,7 @@ export const agentLongTask = task({
                           permissionMode: agentPermissionMode,
                           subscription,
                           freeQuotaSubject,
+                          triggerRegion,
                           securityTaskEnabled: securityTaskSubagentsEnabled,
                           securityValidationEnabled:
                             securityValidationSubagentsEnabled,
@@ -3194,11 +3236,21 @@ export const agentLongTask = task({
                           createSendMessageToAgentTool(toolContext),
                         wait_for_agents: createWaitForAgentsTool(toolContext),
                         cancel_agent: createCancelAgentTool(toolContext),
+                        ...(securityTaskSubagentsEnabled
+                          ? {
+                              search_skills: createSearchSkillsTool(),
+                              load_skill: createLoadSkillTool(),
+                            }
+                          : {}),
                       }),
                     }
                   : {}),
               },
             );
+            finishE2BIdleLeaseRelease = async () => {
+              await stopE2BSandboxRunLeaseHeartbeat();
+              await releaseE2BSandboxIdleLease();
+            };
             if (securityValidationSubagentsEnabled) {
               captureSubagentLifecycleEvent("subagent_available", {
                 userId,
@@ -3336,49 +3388,6 @@ export const agentLongTask = task({
               }
             }
 
-            if (auxiliaryVisionFailover.isEnabled()) {
-              try {
-                processedMessages =
-                  await describeImageAttachmentsWithAuxiliaryVision({
-                    messages: processedMessages,
-                    requestId: ctx.run.id,
-                    userId,
-                    chatId,
-                    triggerRunId: ctx.run.id,
-                    abortSignal: userStopSignal.signal,
-                    onCost: (costDollars) => {
-                      usageTracker.providerCost += costDollars;
-                      usageTracker.nonModelCost += costDollars;
-                      chatLogger?.getBuilder().addToolCost(costDollars);
-                    },
-                    cacheDescription: cacheAuxiliaryVisionDescription,
-                  });
-              } catch (error) {
-                if (userStopSignal.signal.aborted) throw error;
-                auxiliaryVisionFailover.activate({
-                  error,
-                  source: "attachment",
-                });
-                selectedModel = resolveAgentModelForImageToolResults(
-                  selectedModel,
-                  mode,
-                  true,
-                  selectedModelOverride,
-                  false,
-                );
-                activeDeepSeekV4Pro0813Experiment =
-                  getActiveDeepSeekV4Pro0813ExperimentAssignment(
-                    deepSeekV4Pro0813Experiment,
-                    selectedModel,
-                  );
-                routingExperimentContext =
-                  getDeepSeekV4Pro0813ExperimentContext(
-                    activeDeepSeekV4Pro0813Experiment,
-                  );
-                chatLogger?.setChat(chatLogContext, selectedModel);
-              }
-            }
-
             const titlePromise = isNewChat
               ? generateTitleFromUserMessageWithWriter(
                   messagesForProcessing,
@@ -3503,8 +3512,6 @@ export const agentLongTask = task({
               selectedModelOverride,
             });
             const fallbackModel = getRetryFallbackModel(selectedModel, mode);
-            const fallbackModelId =
-              trackedProvider.languageModel(fallbackModel).modelId;
             let activeModelName = selectedModel;
 
             let hasRecordedUsage = false;
@@ -4044,8 +4051,9 @@ export const agentLongTask = task({
               isReasoningModel: true, // long mode is always agent mode
               platformAuthorized,
               get auxiliaryVisionEnabled() {
-                return auxiliaryVisionFailover.isEnabled();
+                return visionSummaryRecovery.isEnabled();
               },
+              directGlmVisionEnabled,
               maxDurationMs: agentLongMaxDurationMs,
               getActiveElapsedTimeMs: runtimeBudget.getElapsedTimeMs,
               writer,
@@ -4396,12 +4404,27 @@ export const agentLongTask = task({
               });
               result = await createStream(selectedModel);
             } catch (error) {
+              const shouldRecoverVisionApiError =
+                directGlmVisionEnabled &&
+                !visionSummaryRecovery.isEnabled() &&
+                (countFileAttachments(state.finalMessages).imageCount > 0 ||
+                  uiMessagesContainImageViewResult(state.finalMessages));
               if (
                 isProviderApiError(error) &&
                 !isInvalidImageInputError(error) &&
                 !isRetryWithFallback &&
-                isAutoModel
+                (isAutoModel || shouldRecoverVisionApiError)
               ) {
+                const apiRetryModel = shouldRecoverVisionApiError
+                  ? selectModel(
+                      mode,
+                      subscription,
+                      selectedModelOverride,
+                      false,
+                      false,
+                      { extraUsageAvailable },
+                    )
+                  : fallbackModel;
                 phLogger.error(
                   "[agent-long] Provider API error, retrying with fallback",
                   {
@@ -4409,8 +4432,9 @@ export const agentLongTask = task({
                     chatId,
                     originalModel: selectedModel,
                     requestedModelSlug: configuredModelId,
-                    fallbackModel,
-                    fallbackModelSlug: fallbackModelId,
+                    fallbackModel: apiRetryModel,
+                    fallbackModelSlug:
+                      trackedProvider.languageModel(apiRetryModel).modelId,
                     userId,
                     subscription,
                     preFallbackCacheReadTokens: usageTracker.cacheReadTokens,
@@ -4421,14 +4445,45 @@ export const agentLongTask = task({
                 isRetryWithFallback = true;
                 retryUsedFallbackModel = retryUsesDifferentModel(
                   selectedModel,
-                  fallbackModel,
+                  apiRetryModel,
                 );
                 streamError = undefined;
                 resetAgentStreamStateForRetry(state);
                 preFallbackCacheRead = usageTracker.cacheReadTokens;
                 preFallbackCacheWrite = usageTracker.cacheWriteTokens;
                 usageTracker.resetModelLeg();
-                result = await createStream(fallbackModel);
+                if (shouldRecoverVisionApiError) {
+                  visionSummaryRecovery.activate({
+                    error,
+                    source:
+                      countFileAttachments(state.finalMessages).imageCount > 0
+                        ? "attachment"
+                        : "file_view",
+                  });
+                  try {
+                    state.finalMessages =
+                      await describeImageAttachmentsWithAuxiliaryVision({
+                        messages: omitImageViewToolResultsForProviderRetry(
+                          state.finalMessages,
+                        ).messages,
+                        requestId: ctx.run.id,
+                        userId,
+                        chatId,
+                        triggerRunId: ctx.run.id,
+                        abortSignal: userStopSignal.signal,
+                        onCost: (costDollars) => {
+                          usageTracker.providerCost += costDollars;
+                          usageTracker.nonModelCost += costDollars;
+                          chatLogger?.getBuilder().addToolCost(costDollars);
+                        },
+                        cacheDescription: cacheAuxiliaryVisionDescription,
+                      });
+                  } catch (summaryError) {
+                    chatLogger?.emitUnexpectedError(summaryError);
+                    throw error;
+                  }
+                }
+                result = await createStream(apiRetryModel);
               } else {
                 throw error;
               }
@@ -4495,6 +4550,11 @@ export const agentLongTask = task({
                           lastAssistantMessageParts,
                           { hasTerminalProviderStreamError },
                         );
+                      const shouldRetryNonDurableOutputLimit =
+                        shouldRetryProviderStreamAfterNonDurableOutputLimit(
+                          lastAssistantMessageParts,
+                          { finishReason: state.streamFinishReason },
+                        );
                       const shouldRetryExplicitDeepSeekProReasoning =
                         shouldRetryReasoningOnlyProviderError &&
                         isExplicitDeepSeekProSelectionForRetry({
@@ -4512,6 +4572,7 @@ export const agentLongTask = task({
                           {
                             hasTerminalProviderStreamError:
                               hasTerminalProviderStreamError,
+                            finishReason: state.streamFinishReason,
                             providerContentBlocked,
                             stoppedDueToDoomLoop: state.stoppedDueToDoomLoop,
                             stoppedDueToAssistantContentLoop,
@@ -4526,6 +4587,24 @@ export const agentLongTask = task({
                           : { messages: finishedMessages, omittedCount: 0 };
                       const shouldRetryWithoutImageToolResults =
                         imageRecovery.omittedCount > 0 && !isAborted;
+                      const hasImageAttachmentForRecovery =
+                        countFileAttachments(state.finalMessages).imageCount >
+                        0;
+                      const hasImageToolResultForRecovery =
+                        uiMessagesContainImageViewResult(state.finalMessages);
+                      const shouldRetryWithVisionSummary =
+                        directGlmVisionEnabled &&
+                        !visionSummaryRecovery.isEnabled() &&
+                        !providerContentBlocked &&
+                        hasTerminalProviderStreamError &&
+                        (shouldRetryWithFallback ||
+                          shouldRetryWithoutImageToolResults) &&
+                        (hasImageAttachmentForRecovery ||
+                          hasImageToolResultForRecovery);
+                      const visionSummaryRecoveryError =
+                        streamError ??
+                        state.providerError ??
+                        new Error("Direct vision route failed");
                       const normalizedFinishedMessages = finishedMessages
                         .map((message) =>
                           message.role === "assistant"
@@ -4551,49 +4630,114 @@ export const agentLongTask = task({
                       const shouldContinueAfterProviderDisconnect = Boolean(
                         providerDisconnectContinuation,
                       );
-
-                      if (
+                      const shouldAttemptProviderRetry =
                         (shouldRetryWithFallback ||
                           shouldRetryWithoutImageToolResults ||
+                          shouldRetryWithVisionSummary ||
                           shouldContinueAfterProviderDisconnect) &&
                         !isRetryWithFallback &&
                         (!isAborted || stoppedDueToAssistantContentLoop) &&
                         (isAutoModel ||
+                          shouldRetryWithVisionSummary ||
                           providerContentBlocked ||
                           shouldRetryWithoutImageToolResults ||
                           stoppedDueToAssistantContentLoop ||
                           state.stoppedDueToDoomLoop ||
                           shouldRetryInterruptedToolInput ||
                           shouldRetryExplicitDeepSeekProReasoning ||
-                          shouldContinueAfterProviderDisconnect)
+                          shouldContinueAfterProviderDisconnect);
+                      let recoveredVisionMessages:
+                        typeof state.finalMessages | undefined;
+                      let visionSummaryRecoveryFailure: unknown;
+                      if (
+                        shouldAttemptProviderRetry &&
+                        shouldRetryWithVisionSummary
                       ) {
-                        const retryReason = shouldRetryWithoutImageToolResults
-                          ? "image_tool_result_rejection"
-                          : shouldContinueAfterProviderDisconnect
-                            ? "provider_disconnect_continuation"
-                            : providerContentBlocked
-                              ? "content_filter"
-                              : stoppedDueToAssistantContentLoop
-                                ? "assistant_content_loop"
-                                : state.stoppedDueToDoomLoop
-                                  ? "doom_loop"
-                                  : shouldRetryInterruptedToolInput
-                                    ? "interrupted_tool_input"
-                                    : shouldRetryReasoningOnlyProviderError
-                                      ? "reasoning_only_provider_error"
-                                      : "incomplete_stream";
+                        visionSummaryRecovery.activate({
+                          error: visionSummaryRecoveryError,
+                          source: hasImageAttachmentForRecovery
+                            ? "attachment"
+                            : "file_view",
+                        });
+                        try {
+                          recoveredVisionMessages =
+                            await describeImageAttachmentsWithAuxiliaryVision({
+                              messages:
+                                omitImageViewToolResultsForProviderRetry(
+                                  state.finalMessages,
+                                ).messages,
+                              requestId: ctx.run.id,
+                              userId,
+                              chatId,
+                              triggerRunId: ctx.run.id,
+                              abortSignal: userStopSignal.signal,
+                              onCost: (costDollars) => {
+                                usageTracker.providerCost += costDollars;
+                                usageTracker.nonModelCost += costDollars;
+                                chatLogger
+                                  ?.getBuilder()
+                                  .addToolCost(costDollars);
+                              },
+                              cacheDescription: cacheAuxiliaryVisionDescription,
+                            });
+                        } catch (summaryError) {
+                          visionSummaryRecoveryFailure = summaryError;
+                          phLogger.error("Vision summary recovery failed", {
+                            event: "vision_summary_recovery_failed",
+                            chatId,
+                            mode,
+                            userId,
+                            subscription,
+                            triggerRunId: ctx.run.id,
+                            ...extractErrorDetails(summaryError),
+                          });
+                        }
+                      }
+
+                      if (
+                        shouldAttemptProviderRetry &&
+                        !visionSummaryRecoveryFailure
+                      ) {
+                        const retryReason = shouldRetryWithVisionSummary
+                          ? "vision_summary_recovery"
+                          : shouldRetryWithoutImageToolResults
+                            ? "image_tool_result_rejection"
+                            : shouldContinueAfterProviderDisconnect
+                              ? "provider_disconnect_continuation"
+                              : providerContentBlocked
+                                ? "content_filter"
+                                : stoppedDueToAssistantContentLoop
+                                  ? "assistant_content_loop"
+                                  : state.stoppedDueToDoomLoop
+                                    ? "doom_loop"
+                                    : shouldRetryInterruptedToolInput
+                                      ? "interrupted_tool_input"
+                                      : shouldRetryNonDurableOutputLimit
+                                        ? "non_durable_output_limit"
+                                        : shouldRetryReasoningOnlyProviderError
+                                          ? "reasoning_only_provider_error"
+                                          : "incomplete_stream";
                         const blockedProviderModel = providerContentBlocked
                           ? state.responseModel
                           : undefined;
-                        const retryModel = shouldRetryWithoutImageToolResults
-                          ? selectedModel
-                          : providerContentBlocked
-                            ? getContentFilterRetryModel(
-                                selectedModel,
-                                mode,
-                                blockedProviderModel,
-                              )
-                            : fallbackModel;
+                        const retryModel = shouldRetryWithVisionSummary
+                          ? selectModel(
+                              mode,
+                              subscription,
+                              selectedModelOverride,
+                              false,
+                              false,
+                              { extraUsageAvailable },
+                            )
+                          : shouldRetryWithoutImageToolResults
+                            ? selectedModel
+                            : providerContentBlocked
+                              ? getContentFilterRetryModel(
+                                  selectedModel,
+                                  mode,
+                                  blockedProviderModel,
+                                )
+                              : fallbackModel;
                         const retryModelSlug =
                           trackedProvider.languageModel(retryModel).modelId;
                         phLogger.warn(
@@ -4616,7 +4760,9 @@ export const agentLongTask = task({
                                 ? assistantContentLoopDetection
                                 : undefined,
                             shouldRetryInterruptedToolInput,
+                            shouldRetryNonDurableOutputLimit,
                             imageToolResultsOmitted: imageRecovery.omittedCount,
+                            visionSummaryRecovery: shouldRetryWithVisionSummary,
                             disconnectRemovedPartCount:
                               providerDisconnectContinuation?.removedPartCount,
                             disconnectPreservedCompletedToolCount:
@@ -4625,7 +4771,10 @@ export const agentLongTask = task({
                               providerDisconnectContinuation?.preservedTextPartCount,
                           },
                         );
-                        if (providerDisconnectContinuation) {
+                        if (
+                          providerDisconnectContinuation &&
+                          !shouldRetryWithVisionSummary
+                        ) {
                           recordProviderDisconnectRecoveryAttempt({
                             failedModel: selectedModel,
                             retryModel,
@@ -4641,7 +4790,10 @@ export const agentLongTask = task({
                           retryUsesDifferentModel(selectedModel, retryModel) ||
                           providerContentBlocked;
                         resetAgentStreamStateForRetry(state);
-                        if (providerDisconnectContinuation) {
+                        if (shouldRetryWithVisionSummary) {
+                          state.finalMessages = recoveredVisionMessages!;
+                          usageTracker.resetModelLeg();
+                        } else if (providerDisconnectContinuation) {
                           state.finalMessages = [
                             ...state.finalMessages,
                             ...providerDisconnectContinuation.messages,
@@ -5177,7 +5329,7 @@ export const agentLongTask = task({
                           stoppedDueToPostSummarizationIncomplete:
                             state.stoppedDueToPostSummarizationIncomplete,
                         });
-                      if (autoContinueStopSource) {
+                      if (autoContinueStopSource && !isAutomaticContinuation) {
                         writeAutoContinue(writer);
                         phLogger.info("Agent auto-continue signaled", {
                           event: "agent_auto_continue_signaled",
@@ -5187,6 +5339,18 @@ export const agentLongTask = task({
                           stop_source: autoContinueStopSource,
                           last_step_input_tokens: state.lastStepInputTokens,
                           had_summarization: summarizationTracker.hasSummarized,
+                        });
+                      } else if (
+                        autoContinueStopSource &&
+                        isAutomaticContinuation
+                      ) {
+                        phLogger.info("Agent auto-continue limit reached", {
+                          event: "agent_auto_continue_suppressed",
+                          chat_id: chatId,
+                          assistant_id: assistantMessageId,
+                          finish_reason: state.streamFinishReason,
+                          stop_source: autoContinueStopSource,
+                          reason: "continuation_run",
                         });
                       }
                       posthog?.shutdown();
@@ -5291,7 +5455,7 @@ export const agentLongTask = task({
       metadata.set("status", "done");
       await phLogger.flush().catch(() => {});
     } catch (error) {
-      await releaseFreeRunLockOnce();
+      await releaseFreeRunLockBestEffort("outer_catch");
       memoryTelemetry.checkpoint({ phase: "run_failed", force: true });
       const chatMissingAfterStream =
         streamPiped &&
@@ -5380,6 +5544,7 @@ export const agentLongTask = task({
 
       throw error;
     } finally {
+      await releaseFreeRunLockBestEffort("outer_finally");
       runtimeSettlementWatchdog?.dispose();
       memoryTelemetry.dispose();
       activeRuntimeBudget?.dispose();
@@ -5404,6 +5569,15 @@ export const agentLongTask = task({
           );
         }
       }
+      await finishE2BIdleLeaseRelease?.().catch((error) => {
+        triggerLogger.warn("[agent-long] E2B idle lease release failed", {
+          event: "agent_e2b_idle_lease_release_failed",
+          user_id: userId,
+          chat_id: chatId,
+          trigger_run_id: ctx.run.id,
+          error: stringifyRedactedError(error),
+        });
+      });
       await finishCloudSandboxLifecycle();
       runCleanupMap.delete(ctx.run.id);
     }

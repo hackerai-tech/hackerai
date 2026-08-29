@@ -6,9 +6,11 @@ import type { ReactNode } from "react";
 import { ChatSDKError, serializeChatSDKErrorForStream } from "@/lib/errors";
 import { getPaidDailyFreeAllowanceCtaText } from "@/lib/limit-pressure";
 
+let mockSubscription: "free" | "pro" = "pro";
+
 jest.mock("@/app/contexts/GlobalState", () => ({
   GlobalStateProvider: ({ children }: { children: ReactNode }) => children,
-  useGlobalState: () => ({ subscription: "pro" }),
+  useGlobalState: () => ({ subscription: mockSubscription }),
 }));
 
 jest.mock("@/lib/utils/settings-dialog", () => ({
@@ -46,6 +48,7 @@ const { openSettingsDialog } = require("@/lib/utils/settings-dialog");
 describe("MessageErrorState", () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockSubscription = "pro";
     mockConvexAction.mockResolvedValue({
       hasPaymentMethod: true,
       paymentMethodLast4: "4242",
@@ -101,6 +104,34 @@ describe("MessageErrorState", () => {
 
     fireEvent.click(screen.getByRole("button", { name: /^retry$/i }));
     expect(onRetry).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows a concurrency retry without usage or upgrade actions", () => {
+    mockSubscription = "free";
+    const error = new ChatSDKError(
+      "rate_limit:chat",
+      "You already have a free request running. Please wait for it to finish before starting another one.",
+      {
+        subscription: "free",
+        capReason: "free_concurrency",
+        limitType: "concurrency",
+      },
+    );
+
+    render(
+      <TestWrapper>
+        <MessageErrorState error={error} onRetry={jest.fn()} />
+      </TestWrapper>,
+    );
+
+    expect(
+      screen.getByText(/already have a free request running/i),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Try Again" }),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "View Usage" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Upgrade Plan" })).toBeNull();
   });
 
   it("shows a focused Add Credits plus free Ask CTA when allowance is available", async () => {

@@ -211,6 +211,53 @@ describe("ChatInputToolbar", () => {
     );
     expect(screen.getByTestId("chat-input-desktop-sandbox")).toHaveClass(
       "hidden",
+      "min-w-0",
+      "md:block",
+    );
+  });
+
+  it("keeps model and send actions outside the flexible toolbar controls", () => {
+    mockAuthUser({ id: "user_123" });
+
+    render(<ChatInputToolbar {...defaultProps} chatMode="agent" />);
+
+    expect(screen.getByTestId("chat-input-toolbar-controls")).toHaveClass(
+      "min-w-0",
+      "flex-1",
+      "overflow-hidden",
+    );
+    expect(screen.getByTestId("chat-input-primary-actions")).toHaveClass(
+      "shrink-0",
+    );
+    expect(screen.getByTestId("chat-input-primary-actions")).toContainElement(
+      screen.getByTestId("model-selector"),
+    );
+    expect(screen.getByTestId("chat-input-primary-actions")).toContainElement(
+      screen.getByRole("button", { name: "Send" }),
+    );
+  });
+
+  it("moves Agent controls out of the toolbar in compact layout", () => {
+    mockAuthUser({ id: "user_123" });
+
+    render(
+      <ChatInputToolbar
+        {...defaultProps}
+        chatMode="agent"
+        compactAgentControls
+      />,
+    );
+
+    expect(screen.getByTestId("chat-input-desktop-permission")).toHaveClass(
+      "hidden",
+    );
+    expect(screen.getByTestId("chat-input-desktop-permission")).not.toHaveClass(
+      "md:block",
+    );
+    expect(screen.getByTestId("chat-input-desktop-sandbox")).toHaveClass(
+      "hidden",
+    );
+    expect(screen.getByTestId("chat-input-desktop-sandbox")).not.toHaveClass(
       "md:block",
     );
   });

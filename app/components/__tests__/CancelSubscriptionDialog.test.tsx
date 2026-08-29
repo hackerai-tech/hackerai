@@ -39,6 +39,28 @@ describe("CancelSubscriptionDialog", () => {
     ).toBeInTheDocument();
   });
 
+  it("shows structured follow-ups for the selected reason", async () => {
+    const user = userEvent.setup();
+    render(<CancelSubscriptionDialog open={true} onOpenChange={jest.fn()} />);
+
+    await user.click(screen.getByRole("radio", { name: /missing feature/i }));
+    await user.click(screen.getByRole("button", { name: "Next" }));
+
+    expect(
+      screen.getByRole("radio", {
+        name: /a capability i need is missing/i,
+      }),
+    ).toBeVisible();
+    expect(
+      screen.getByRole("radio", {
+        name: /agent used the wrong execution environment/i,
+      }),
+    ).toBeVisible();
+    expect(
+      screen.queryByRole("radio", { name: /billing or renewal issue/i }),
+    ).not.toBeInTheDocument();
+  });
+
   it("confirms that retries stopped when a past-due subscription is canceled immediately", async () => {
     const onCancellationCompleted = jest.fn();
     mockCancelSubscription.mockResolvedValue({
@@ -57,12 +79,24 @@ describe("CancelSubscriptionDialog", () => {
     );
 
     await user.click(screen.getByRole("radio", { name: /other/i }));
+    await user.click(screen.getByRole("button", { name: "Next" }));
+    await user.click(
+      screen.getByRole("radio", { name: /a billing or renewal issue/i }),
+    );
     await user.type(
-      screen.getByLabelText("Tell us what happened"),
+      screen.getByLabelText("Tell us a little more"),
       "The renewal failed",
     );
     await user.click(screen.getByRole("button", { name: "Next" }));
     await user.click(screen.getByRole("button", { name: "Confirm & Cancel" }));
+
+    expect(mockCancelSubscription).toHaveBeenCalledWith({
+      cancellationReason: {
+        reasonCategory: "other",
+        reasonSubcategory: "billing_or_renewal",
+        reasonDetails: "The renewal failed",
+      },
+    });
 
     expect(
       await screen.findByRole("heading", { name: "Subscription canceled" }),

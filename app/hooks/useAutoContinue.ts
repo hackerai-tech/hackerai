@@ -9,7 +9,7 @@ import {
 } from "@/app/components/DataStreamProvider";
 import { useLatestRef } from "./useLatestRef";
 
-export const MAX_AUTO_CONTINUES = 5;
+export const MAX_AUTO_CONTINUES = 1;
 export const AUTO_CONTINUE_PROMPT =
   "Continue from the latest saved progress. Do not restart the original task or repeat completed work.";
 const AUTO_CONTINUE_SETTLE_DELAY_MS = 250;
@@ -76,10 +76,18 @@ export function useAutoContinue({
   }, [clearScheduledAutoContinue, setIsAutoContinuing]);
 
   useEffect(() => {
+    autoContinueCountRef.current = 0;
     pendingAutoContinueRef.current = false;
     lastProcessedIndexRef.current = 0;
     clearAutoContinueLifecycle();
-  }, [chatId, clearAutoContinueLifecycle]);
+    setIsAutoResuming(false);
+    setAutoContinueCount(0);
+  }, [
+    chatId,
+    clearAutoContinueLifecycle,
+    setAutoContinueCount,
+    setIsAutoResuming,
+  ]);
 
   // Detect data-auto-continue signal and immediately mark pending
   useEffect(() => {
@@ -133,6 +141,7 @@ export function useAutoContinue({
           body: {
             mode: chatMode,
             isAutoContinue: true,
+            isAutomaticContinuation: true,
             todos: todosRef.current,
             sandboxPreference: sandboxPreferenceRef.current,
             agentPermissionMode: agentPermissionModeRef.current,

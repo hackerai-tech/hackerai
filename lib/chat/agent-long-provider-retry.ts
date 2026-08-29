@@ -1,4 +1,5 @@
 import { hasMeaningfulToolInput } from "@/lib/chat/tool-abort-utils";
+import { OUTPUT_LIMIT_FINISH_REASON } from "@/lib/chat/stop-conditions";
 import type { UIMessage } from "ai";
 
 type MessagePartLike = {
@@ -13,6 +14,7 @@ type MessagePartLike = {
 
 type RetryDecisionOptions = {
   hasTerminalProviderStreamError: boolean;
+  finishReason?: string;
   providerContentBlocked?: boolean;
   stoppedDueToDoomLoop?: boolean;
   stoppedDueToAssistantContentLoop?: boolean;
@@ -215,6 +217,7 @@ const isFallbackSafeProviderPart = (part: unknown): boolean => {
   return (
     type === "step-start" ||
     type === "reasoning" ||
+    (type === "text" && !getPartText(part)?.trim()) ||
     (type != null && FALLBACK_SAFE_METADATA_PART_TYPES.has(type))
   );
 };
@@ -225,6 +228,9 @@ const hasReasoningPart = (parts: unknown[]): boolean =>
 const isReasoningOnlyProviderOutput = (parts: unknown[]): boolean =>
   parts.length > 0 &&
   hasReasoningPart(parts) &&
+  parts.every(isFallbackSafeProviderPart);
+
+const isOutputLimitWithoutDurableOutput = (parts: unknown[]): boolean =>
   parts.every(isFallbackSafeProviderPart);
 
 const isInterruptedToolInputOnlyProviderOutput = (parts: unknown[]): boolean =>
@@ -353,6 +359,13 @@ export const shouldRetryProviderStreamAfterReasoningOnlyOutput = (
   options.hasTerminalProviderStreamError &&
   isReasoningOnlyProviderOutput(parts);
 
+export const shouldRetryProviderStreamAfterNonDurableOutputLimit = (
+  parts: unknown[],
+  options: Pick<RetryDecisionOptions, "finishReason">,
+): boolean =>
+  options.finishReason === OUTPUT_LIMIT_FINISH_REASON &&
+  isOutputLimitWithoutDurableOutput(parts);
+
 export const shouldRetryProviderStreamWithFallback = (
   parts: unknown[],
   options: RetryDecisionOptions,
@@ -361,6 +374,16 @@ export const shouldRetryProviderStreamWithFallback = (
   // configured fallback model; the caller's bounded retry guard keeps a second
   // content-filter finish terminal.
   if (options.providerContentBlocked) return true;
+
+  // A provider can consume the entire output allowance as hidden reasoning
+  // and return no text or completed tool call. Treat that as a failed model
+  // leg so Auto can make one bounded fallback attempt instead of persisting a
+  // successful-looking empty response. Output-bearing turns are deliberately
+  // excluded: their text and completed tool effects must be saved, and the
+  // existing bounded continuation keeps the user's selected model.
+  if (shouldRetryProviderStreamAfterNonDurableOutputLimit(parts, options)) {
+    return true;
+  }
 
   // Preserve the older guard for streams that never got past the first step.
   if (isOnlyStepStart(parts)) return true;

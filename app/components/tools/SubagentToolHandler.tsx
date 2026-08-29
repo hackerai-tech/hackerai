@@ -151,6 +151,14 @@ const presentationForPart = (
   status: ChatStatus,
 ): SubagentPresentation => {
   const { toolCallId, state, input, output, errorText, type } = part;
+  const targetAgentIds = Array.isArray(input?.target_agent_ids)
+    ? input.target_agent_ids.filter(
+        (candidate: unknown): candidate is string =>
+          typeof candidate === "string" && candidate.length > 0,
+      )
+    : [];
+  const singleTargetAgentId =
+    targetAgentIds.length === 1 ? targetAgentIds[0] : undefined;
   const lifecycle = (message.parts as any[]).find(
     (candidate: any) =>
       candidate?.type === "data-subagent-lifecycle" &&
@@ -160,7 +168,8 @@ const presentationForPart = (
     lifecycle?.data?.subagent_id ??
     output?.agent_id ??
     output?.target_agent_id ??
-    input?.target_agent_id;
+    input?.target_agent_id ??
+    singleTargetAgentId;
   const legacyTitle =
     input?.profile_input?.candidate?.title ??
     input?.objective ??
@@ -227,7 +236,15 @@ const presentationForPart = (
   } else if (isWait) {
     const terminalStatus = output?.result?.status ?? lifecycle?.data?.status;
     if (waiting) {
-      action = "Waiting for subagents";
+      const singleTargetAgentName = nameForAgentId(
+        message,
+        singleTargetAgentId,
+      );
+      action = singleTargetAgentName
+        ? `Waiting for ${singleTargetAgentName}`
+        : singleTargetAgentId
+          ? "Waiting for subagent"
+          : "Waiting for subagents";
     } else if (output?.wait_outcome === "targets_not_found") {
       action = "Subagent targets not found";
     } else if (output?.wait_outcome === "timeout") {

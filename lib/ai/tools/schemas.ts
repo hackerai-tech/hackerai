@@ -7,7 +7,6 @@ type ModelAwareToolSchemaOptions = {
 
 const usesDeepSeekToolBrief = (modelName?: string): boolean =>
   modelName?.includes("deepseek") === true ||
-  modelName === "ask-model-free" ||
   modelName === "agent-model-free" ||
   modelName === "agent-auto-review-model";
 
@@ -595,6 +594,22 @@ export const NOTE_CATEGORIES = [
   "plan",
 ] as const;
 const noteCategorySchema = z.enum(NOTE_CATEGORIES);
+export const NULLISH_OPTIONAL_QUERY_FILTER_VALUES = [
+  "null",
+  "none",
+  "nil",
+  "undefined",
+] as const;
+export type NullishOptionalQueryFilterValue =
+  (typeof NULLISH_OPTIONAL_QUERY_FILTER_VALUES)[number];
+export const NULLISH_OPTIONAL_QUERY_FILTER_PATTERN =
+  /^\s*(?:null|none|nil|undefined)\s*$/i;
+const nullishOptionalQueryFilterValueSchema = z
+  .string()
+  .regex(NULLISH_OPTIONAL_QUERY_FILTER_PATTERN)
+  .transform(
+    (value) => value.trim().toLowerCase() as NullishOptionalQueryFilterValue,
+  );
 
 export const createNoteToolInputSchema = z.object({
   title: z.string().describe("A concise, descriptive title for the note"),
@@ -661,7 +676,9 @@ Use tags like "critical", "confirmed", "needs-verification" to track finding sta
 export type CreateNoteToolInput = z.infer<typeof createNoteToolInputSchema>;
 
 export const listNotesToolInputSchema = z.object({
-  category: noteCategorySchema
+  category: z
+    .union([noteCategorySchema, nullishOptionalQueryFilterValueSchema])
+    .nullable()
     .optional()
     .describe(
       'Filter notes by category. Valid values: "general", "findings", "methodology", "questions", "plan". Omit to include all categories.',
@@ -672,6 +689,7 @@ export const listNotesToolInputSchema = z.object({
     .describe("Filter notes that have any of the specified tags (OR logic)"),
   search: z
     .string()
+    .nullable()
     .optional()
     .describe("Full-text search query to filter notes by title or content"),
 });

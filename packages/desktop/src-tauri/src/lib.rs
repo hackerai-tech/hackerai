@@ -1383,7 +1383,9 @@ async fn cancel_stream_command(
     if let Some(pid) = pid {
         Ok(platform::cancel_process_tree(pid).await)
     } else {
-        Ok(false)
+        // Cancellation is idempotent. The command may have exited and removed
+        // itself from the map while the cancellation request was in flight.
+        Ok(true)
     }
 }
 

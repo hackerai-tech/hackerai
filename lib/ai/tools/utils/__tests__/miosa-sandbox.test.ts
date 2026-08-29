@@ -13,7 +13,7 @@ import { ensureMiosaSandboxConnection, MiosaSandbox } from "../miosa-sandbox";
 const createSdkSandbox = () => ({
   id: "miosa-1",
   state: "running",
-  templateId: "miosa-sandbox",
+  templateId: "hackerai-kali-promoted",
   data: { id: "miosa-1", state: "running", boot_path: "created" },
   exec: {
     run: jest.fn(async () => ({ stdout: "", stderr: "", exitCode: 0 })),
@@ -39,7 +39,7 @@ describe("MIOSA sandbox adapter", () => {
     process.env = {
       ...originalEnv,
       MIOSA_API_KEY: "msk_test",
-      MIOSA_TEMPLATE_ID: "miosa-sandbox",
+      MIOSA_TEMPLATE_ID: "hackerai-kali-promoted",
     };
   });
 
@@ -63,7 +63,7 @@ describe("MIOSA sandbox adapter", () => {
     expect(mockGetOrCreate).toHaveBeenCalledWith(
       expect.objectContaining({
         name: expect.stringMatching(/^hackerai-[a-f0-9]{24}$/),
-        templateId: "miosa-sandbox",
+        templateId: "hackerai-kali-promoted",
         persistent: true,
         idleTimeoutSec: 420,
         waitUntilReady: true,

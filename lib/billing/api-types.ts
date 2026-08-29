@@ -1,4 +1,7 @@
-import type { CancellationReasonCategory } from "@/lib/billing/cancellation-reasons";
+import type {
+  CancellationReasonCategory,
+  CancellationReasonSubcategory,
+} from "@/lib/billing/cancellation-reasons";
 
 export type SubscriptionCancellationStatus = {
   hasActiveSubscription: boolean;
@@ -19,6 +22,7 @@ export type KeepSubscriptionResult = {
 
 export type CancellationReasonInput = {
   reasonCategory: CancellationReasonCategory;
+  reasonSubcategory: CancellationReasonSubcategory;
   reasonDetails: string;
 };
 

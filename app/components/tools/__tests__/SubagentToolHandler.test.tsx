@@ -205,6 +205,91 @@ describe("SubagentToolHandler", () => {
     ).toBeInTheDocument();
   });
 
+  it("names the exact targeted subagent while waiting", () => {
+    render(
+      <SubagentToolHandler
+        message={
+          {
+            id: "wait-message",
+            role: "assistant",
+            parts: [
+              {
+                type: "tool-create_agent",
+                toolCallId: "tool-create-1",
+                state: "output-available",
+                output: {
+                  success: true,
+                  agent_id: "sa_idor",
+                  name: "invoice-idor-handler-review",
+                },
+              },
+            ],
+          } as any
+        }
+        status="streaming"
+        part={{
+          type: "tool-wait_for_agents",
+          toolCallId: "tool-wait-1",
+          state: "input-available",
+          input: { target_agent_ids: ["sa_idor"] },
+        }}
+      />,
+    );
+
+    expect(
+      screen.getByText("Waiting for invoice-idor-handler-review"),
+    ).toBeVisible();
+  });
+
+  it("uses singular wording for one unnamed target", () => {
+    render(
+      <SubagentToolHandler
+        message={{ id: "wait-message", role: "assistant", parts: [] } as any}
+        status="streaming"
+        part={{
+          type: "tool-wait_for_agents",
+          toolCallId: "tool-wait-1",
+          state: "input-available",
+          input: { target_agent_ids: ["sa_unknown"] },
+        }}
+      />,
+    );
+
+    expect(screen.getByText("Waiting for subagent")).toBeVisible();
+  });
+
+  it("keeps plural wording for multiple or unspecified targets", () => {
+    const { rerender } = render(
+      <SubagentToolHandler
+        message={{ id: "wait-message", role: "assistant", parts: [] } as any}
+        status="streaming"
+        part={{
+          type: "tool-wait_for_agents",
+          toolCallId: "tool-wait-1",
+          state: "input-available",
+          input: { target_agent_ids: ["sa_one", "sa_two"] },
+        }}
+      />,
+    );
+
+    expect(screen.getByText("Waiting for subagents")).toBeVisible();
+
+    rerender(
+      <SubagentToolHandler
+        message={{ id: "wait-message", role: "assistant", parts: [] } as any}
+        status="streaming"
+        part={{
+          type: "tool-wait_for_agents",
+          toolCallId: "tool-wait-2",
+          state: "input-available",
+          input: {},
+        }}
+      />,
+    );
+
+    expect(screen.getByText("Waiting for subagents")).toBeVisible();
+  });
+
   it("opens the run-level sidebar from list_agents", () => {
     render(
       <SubagentToolHandler

@@ -3,111 +3,28 @@ import type { SandboxBootInfo, SandboxContext } from "@/types";
 import { NotFoundError, getUserFacingE2BErrorMessage } from "./e2b-errors";
 import { isExpectedAlreadyGoneCleanupError } from "@/lib/utils/cleanup-errors";
 import { retryWithBackoff } from "./retry-with-backoff";
+import { getE2BClusterRouting, type E2BClusterConfig } from "./e2b-cluster";
+import type { TriggerRunRegion } from "@/lib/api/trigger-region";
+import { BASH_SANDBOX_AUTOPAUSE_TIMEOUT } from "./e2b-lease";
+export {
+  BASH_SANDBOX_AUTOPAUSE_TIMEOUT,
+  E2B_SANDBOX_IDLE_RELEASE_TIMEOUT_MS,
+  E2B_SANDBOX_LEASE_HEARTBEAT_INTERVAL_MS,
+  E2B_SANDBOX_LEASE_REQUEST_TIMEOUT_MS,
+  refreshE2BSandboxLease,
+  refreshE2BSandboxLeaseBestEffort,
+  releaseE2BSandboxIdleLeaseBestEffort,
+  startE2BSandboxLeaseHeartbeat,
+  withE2BSandboxLeaseHeartbeat,
+} from "./e2b-lease";
 
 type SandboxReadyPath = SandboxBootInfo["path"];
 
-const SANDBOX_TEMPLATE = process.env.E2B_TEMPLATE || "terminal-agent-sandbox";
-export const BASH_SANDBOX_AUTOPAUSE_TIMEOUT = 7 * 60 * 1000;
-export const E2B_SANDBOX_LEASE_HEARTBEAT_INTERVAL_MS = 60 * 1000;
-export const E2B_SANDBOX_LEASE_REQUEST_TIMEOUT_MS = 5 * 1000;
 // Retry config for E2B 429 rate limits
 const RATE_LIMIT_COOLDOWN_MS = 1_000;
 const MAX_CREATE_RETRIES = 3;
 const MAX_DISCOVERY_RETRIES = 3;
 const MAX_CONNECT_RETRIES = 3;
-
-export const refreshE2BSandboxLease = async (
-  sandbox: Sandbox,
-): Promise<number> => {
-  await sandbox.setTimeout(BASH_SANDBOX_AUTOPAUSE_TIMEOUT, {
-    requestTimeoutMs: E2B_SANDBOX_LEASE_REQUEST_TIMEOUT_MS,
-  });
-  return BASH_SANDBOX_AUTOPAUSE_TIMEOUT;
-};
-
-type E2BSandboxLeaseRefreshSource =
-  "foreground_heartbeat" | "default_manager_cache" | "hybrid_manager_cache";
-
-const logLeaseRefreshFailure = (
-  sandbox: Sandbox,
-  source: E2BSandboxLeaseRefreshSource,
-  error: unknown,
-): void => {
-  console.warn(
-    JSON.stringify({
-      timestamp: new Date().toISOString(),
-      level: "warn",
-      event: "e2b_sandbox_lease_refresh_failed",
-      service: "chat-handler",
-      environment: process.env.VERCEL_ENV ?? process.env.NODE_ENV ?? "unknown",
-      request_id: process.env.VERCEL_REQUEST_ID ?? null,
-      sandbox_id: sandbox.sandboxId,
-      source,
-      error: error instanceof Error ? error.message : String(error),
-    }),
-  );
-};
-
-export const refreshE2BSandboxLeaseBestEffort = async (
-  sandbox: Sandbox,
-  options: {
-    source: E2BSandboxLeaseRefreshSource;
-    logFailure?: boolean;
-  },
-): Promise<boolean> => {
-  try {
-    await refreshE2BSandboxLease(sandbox);
-    return true;
-  } catch (error) {
-    if (options.logFailure !== false) {
-      logLeaseRefreshFailure(sandbox, options.source, error);
-    }
-    return false;
-  }
-};
-
-/**
- * Keeps the fixed per-user sandbox lease alive only while the caller is
- * actively waiting for foreground work. Every Trigger worker writes the same
- * seven-minute lease, so independently connected workers cannot shorten a
- * longer operation owned by another run.
- */
-export const withE2BSandboxLeaseHeartbeat = async <T>(
-  sandbox: Sandbox,
-  operation: () => Promise<T>,
-): Promise<T> => {
-  let refreshInFlight = false;
-  let heartbeatFailureLogged = false;
-  const refresh = async (): Promise<void> => {
-    if (refreshInFlight) return;
-    refreshInFlight = true;
-    try {
-      const refreshed = await refreshE2BSandboxLeaseBestEffort(sandbox, {
-        source: "foreground_heartbeat",
-        logFailure: !heartbeatFailureLogged,
-      });
-      heartbeatFailureLogged = !refreshed;
-    } finally {
-      refreshInFlight = false;
-    }
-  };
-
-  // Acquisition already creates, connects, or refreshes the seven-minute
-  // lease. Delay the first heartbeat so foreground startup does not make a
-  // duplicate E2B API request.
-  const heartbeat = setInterval(() => {
-    void refresh();
-  }, E2B_SANDBOX_LEASE_HEARTBEAT_INTERVAL_MS);
-  (
-    heartbeat as ReturnType<typeof setInterval> & { unref?: () => void }
-  ).unref?.();
-
-  try {
-    return await operation();
-  } finally {
-    clearInterval(heartbeat);
-  }
-};
 
 const logSandboxKillFailure = (
   userID: string,
@@ -156,10 +73,11 @@ export const ensureSandboxConnection = async (
   context: SandboxContext,
   options: {
     initialSandbox?: Sandbox | null;
+    triggerRegion?: TriggerRunRegion;
   } = {},
 ): Promise<{ sandbox: Sandbox }> => {
   const { userID, setSandbox, onBoot } = context;
-  const { initialSandbox } = options;
+  const { initialSandbox, triggerRegion } = options;
 
   // Return existing sandbox if already connected
   if (initialSandbox) {
@@ -175,60 +93,86 @@ export const ensureSandboxConnection = async (
     });
   };
   try {
-    // Step 1: Look for existing sandbox for this user
-    const paginator = Sandbox.list({
-      query: {
-        metadata: {
-          userID,
-          template: SANDBOX_TEMPLATE,
-        },
-      },
-    });
-    const listedSandboxes = await retryWithBackoff(
-      () => paginator.nextItems(),
-      {
-        maxRetries: MAX_DISCOVERY_RETRIES,
-        baseDelayMs: 400,
-        jitterMs: 40,
-      },
-    );
-    // A user should normally have one sandbox. If a previous ambiguous create
-    // produced duplicates, prefer an active compatible sandbox so we do not
-    // attach to a newer paused duplicate while work is still running.
-    const existingSandbox =
-      listedSandboxes.find(
-        (candidate) =>
-          candidate.state === "running" &&
-          candidate.metadata?.sandboxVersion === SANDBOX_VERSION,
-      ) ??
-      listedSandboxes.find((candidate) => candidate.state === "running") ??
-      listedSandboxes.find(
-        (candidate) =>
-          candidate.state === "paused" &&
-          candidate.metadata?.sandboxVersion === SANDBOX_VERSION,
-      ) ??
-      listedSandboxes[0];
+    const { discoveryClusters, createCluster } =
+      getE2BClusterRouting(triggerRegion);
 
+    // Step 1: Look for an existing sandbox across configured clusters. US is
+    // deliberately checked first so it wins ties between equally viable ones.
+    type DiscoveredSandbox = {
+      info: Awaited<
+        ReturnType<ReturnType<typeof Sandbox.list>["nextItems"]>
+      >[number];
+      cluster: E2BClusterConfig;
+    };
+    const discoveredSandboxes: DiscoveredSandbox[] = [];
+    for (const cluster of discoveryClusters) {
+      const paginator = Sandbox.list({
+        ...cluster.connectionOptions,
+        query: {
+          metadata: {
+            userID,
+            template: cluster.template,
+          },
+        },
+      });
+      const listedSandboxes = await retryWithBackoff(
+        () => paginator.nextItems(),
+        {
+          maxRetries: MAX_DISCOVERY_RETRIES,
+          baseDelayMs: 400,
+          jitterMs: 40,
+        },
+      );
+      discoveredSandboxes.push(
+        ...listedSandboxes.map((info) => ({ info, cluster })),
+      );
+    }
+
+    // Rank across both clusters so a compatible running sandbox always wins.
+    // Discovery order keeps US as the tie-breaker for equally ranked entries.
+    const existingSandbox =
+      discoveredSandboxes.find(
+        ({ info }) =>
+          info.state === "running" &&
+          info.metadata?.sandboxVersion === SANDBOX_VERSION,
+      ) ??
+      discoveredSandboxes.find(({ info }) => info.state === "running") ??
+      discoveredSandboxes.find(
+        ({ info }) =>
+          info.state === "paused" &&
+          info.metadata?.sandboxVersion === SANDBOX_VERSION,
+      ) ??
+      discoveredSandboxes[0];
+
+    const existingSandboxInfo = existingSandbox?.info;
+    const existingCluster = existingSandbox?.cluster;
     const hasVersionMismatch =
-      existingSandbox &&
-      existingSandbox.metadata?.sandboxVersion !== SANDBOX_VERSION;
+      existingSandboxInfo &&
+      existingSandboxInfo.metadata?.sandboxVersion !== SANDBOX_VERSION;
     const canReplaceExistingSandbox =
-      hasVersionMismatch && existingSandbox.state === "paused";
+      hasVersionMismatch && existingSandboxInfo.state === "paused";
 
     // Step 2: Migrate only an idle, paused sandbox. A running sandbox may
     // contain commands owned by another Agent run for the same user.
-    if (canReplaceExistingSandbox) {
+    if (canReplaceExistingSandbox && existingCluster) {
       console.log(
         `[${userID}] Sandbox version mismatch (expected ${SANDBOX_VERSION}), deleting old sandbox`,
       );
       try {
-        await Sandbox.kill(existingSandbox.sandboxId);
+        if (existingCluster.connectionOptions) {
+          await Sandbox.kill(
+            existingSandboxInfo.sandboxId,
+            existingCluster.connectionOptions,
+          );
+        } else {
+          await Sandbox.kill(existingSandboxInfo.sandboxId);
+        }
       } catch (killError) {
         logSandboxKillFailure(userID, "Failed to kill old sandbox", killError);
       }
       createPath = "create_after_version_mismatch";
       // Skip to creating new sandbox
-    } else if (existingSandbox?.sandboxId) {
+    } else if (existingSandboxInfo?.sandboxId && existingCluster) {
       if (hasVersionMismatch) {
         console.warn(
           JSON.stringify({
@@ -240,10 +184,10 @@ export const ensureSandboxConnection = async (
               process.env.VERCEL_ENV ?? process.env.NODE_ENV ?? "unknown",
             request_id: process.env.VERCEL_REQUEST_ID ?? null,
             user_id: userID,
-            sandbox_id: existingSandbox.sandboxId,
-            sandbox_state: existingSandbox.state,
+            sandbox_id: existingSandboxInfo.sandboxId,
+            sandbox_state: existingSandboxInfo.state,
             current_version:
-              existingSandbox.metadata?.sandboxVersion ?? "missing",
+              existingSandboxInfo.metadata?.sandboxVersion ?? "missing",
             expected_version: SANDBOX_VERSION,
           }),
         );
@@ -255,7 +199,8 @@ export const ensureSandboxConnection = async (
       try {
         const sandbox = await retryWithBackoff(
           () =>
-            Sandbox.connect(existingSandbox.sandboxId, {
+            Sandbox.connect(existingSandboxInfo.sandboxId, {
+              ...existingCluster.connectionOptions,
               timeoutMs: BASH_SANDBOX_AUTOPAUSE_TIMEOUT,
             }),
           {
@@ -274,12 +219,12 @@ export const ensureSandboxConnection = async (
           (e instanceof Error && e.message?.includes("not found"))
         ) {
           console.error(
-            `[${userID}] Sandbox ${existingSandbox.sandboxId} expired/deleted, creating new one`,
+            `[${userID}] Sandbox ${existingSandboxInfo.sandboxId} expired/deleted, creating new one`,
           );
           createPath = "create_after_expired";
         } else {
           console.error(
-            `[${userID}] Unexpected error resuming sandbox ${existingSandbox.sandboxId}:`,
+            `[${userID}] Unexpected error resuming sandbox ${existingSandboxInfo.sandboxId}:`,
             e,
           );
           // The listed state can become stale while connect is pending. Never
@@ -303,15 +248,17 @@ export const ensureSandboxConnection = async (
       }
 
       try {
-        const sandbox = await Sandbox.create(SANDBOX_TEMPLATE, {
+        const sandbox = await Sandbox.create(createCluster.template, {
+          ...createCluster.connectionOptions,
           timeoutMs: BASH_SANDBOX_AUTOPAUSE_TIMEOUT,
           lifecycle: { onTimeout: "pause", autoResume: true },
           secure: true,
           metadata: {
             userID,
-            template: SANDBOX_TEMPLATE,
+            template: createCluster.template,
             secure: "true",
             sandboxVersion: SANDBOX_VERSION,
+            e2bCluster: createCluster.cluster,
           },
         });
 

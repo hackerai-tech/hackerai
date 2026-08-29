@@ -280,6 +280,83 @@ describe("extractErrorDetails -> wrapped provider errors", () => {
     expect(getProviderErrorCategory(details)).toBe("provider_4xx");
     expect(JSON.stringify(details)).not.toContain("SECRET_PROMPT_TEXT");
   });
+
+  it("omits opaque provider payloads while retaining bounded diagnostics", () => {
+    const privateAttachmentText = "PRIVATE_ATTACHMENT_TEXT";
+    const inlineImage = "data:image/png;base64,PRIVATE_INLINE_IMAGE";
+    const responseBody = JSON.stringify({
+      id: "gen-private-provider-payload",
+      error: {
+        code: 400,
+        message: "The document could not be downloaded from the provided URL.",
+        metadata: {
+          provider_name: "DeepSeek",
+          file_annotations: [
+            { parsed_content: privateAttachmentText, preview: inlineImage },
+          ],
+        },
+      },
+    });
+    const err = apiCallError({
+      statusCode: 400,
+      responseBody,
+      data: {
+        id: "gen-private-provider-payload",
+        error: {
+          code: 400,
+          message:
+            "The document could not be downloaded from the provided URL.",
+          metadata: {
+            provider_name: "DeepSeek",
+            file_annotations: [
+              { parsed_content: privateAttachmentText, preview: inlineImage },
+            ],
+          },
+        },
+      },
+    });
+
+    const details = extractErrorDetails(err);
+    const serialized = JSON.stringify(details);
+
+    expect(details).toMatchObject({
+      statusCode: 400,
+      responseBodyPresent: true,
+      responseBodyLength: responseBody.length,
+      providerDataPresent: true,
+      providerName: "DeepSeek",
+      providerErrorCode: 400,
+      providerErrorMessage:
+        "The document could not be downloaded from the provided URL.",
+      openrouterGenerationId: "gen-private-provider-payload",
+    });
+    expect(details).not.toHaveProperty("responseBody");
+    expect(details).not.toHaveProperty("providerData");
+    expect(serialized).not.toContain(privateAttachmentText);
+    expect(serialized).not.toContain(inlineImage);
+  });
+
+  it("omits malformed response bodies and circular provider data", () => {
+    const privateAttachmentText = "PRIVATE_ATTACHMENT_TEXT";
+    const responseBody = `<html>${privateAttachmentText}</html>`;
+    const providerData: Record<string, unknown> = {
+      annotation: privateAttachmentText,
+    };
+    providerData.circular = providerData;
+    const err = apiCallError({ responseBody, data: providerData });
+
+    const details = extractErrorDetails(err);
+    const serialized = JSON.stringify(details);
+
+    expect(details).toMatchObject({
+      responseBodyPresent: true,
+      responseBodyLength: responseBody.length,
+      providerDataPresent: true,
+    });
+    expect(details).not.toHaveProperty("responseBody");
+    expect(details).not.toHaveProperty("providerData");
+    expect(serialized).not.toContain(privateAttachmentText);
+  });
 });
 
 describe("provider error classification", () => {

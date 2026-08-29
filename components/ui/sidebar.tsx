@@ -57,6 +57,7 @@ function SidebarProvider({
   defaultOpen = true,
   open: openProp,
   onOpenChange: setOpenProp,
+  persistOpenState = true,
   className,
   style,
   children,
@@ -65,6 +66,7 @@ function SidebarProvider({
   defaultOpen?: boolean;
   open?: boolean;
   onOpenChange?: (open: boolean) => void;
+  persistOpenState?: boolean;
 }) {
   const isMobile = useIsMobile();
   const [openMobile, setOpenMobile] = React.useState(false);
@@ -85,7 +87,11 @@ function SidebarProvider({
       }
 
       // Persist state on desktop only
-      if (isMobile === false && typeof window !== "undefined") {
+      if (
+        persistOpenState &&
+        isMobile === false &&
+        typeof window !== "undefined"
+      ) {
         mainSidebarStorage.save(openState, false);
         // Keep cookie for backward compatibility
         try {
@@ -95,7 +101,7 @@ function SidebarProvider({
         }
       }
     },
-    [setOpenProp, open, isMobile],
+    [setOpenProp, open, isMobile, persistOpenState],
   );
 
   // Helper to toggle the sidebar.

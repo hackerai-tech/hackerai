@@ -153,6 +153,7 @@ describe("billing API routes", () => {
       request({
         cancellationReason: {
           reasonCategory: "too_expensive",
+          reasonSubcategory: "too_expensive_low_frequency",
           reasonDetails: "Budget changed",
         },
       }) as never,
@@ -162,6 +163,7 @@ describe("billing API routes", () => {
     expect(mockCancelSubscription).toHaveBeenCalledWith({
       cancellationReason: {
         reasonCategory: "too_expensive",
+        reasonSubcategory: "too_expensive_low_frequency",
         reasonDetails: "Budget changed",
       },
     });

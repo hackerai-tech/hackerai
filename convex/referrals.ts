@@ -143,14 +143,12 @@ async function addPersonalCredits(
   if (row) {
     await ctx.db.patch(row._id, {
       balance_points: newBalancePoints,
-      ...(options?.activateForPaidUse && { auto_reload_enabled: false }),
       updated_at: now,
     });
   } else {
     await ctx.db.insert("extra_usage", {
       user_id: userId,
       balance_points: newBalancePoints,
-      ...(options?.activateForPaidUse && { auto_reload_enabled: false }),
       updated_at: now,
     });
   }
@@ -1122,7 +1120,7 @@ export const awardConversionReward = mutation({
       referralCode: attribution.referral_code,
       subscriptionTier: referrerSubscriptionTier,
       organizationId: referrerOrganizationId,
-      activatePersonalCreditsForPaidUse: false,
+      activatePersonalCreditsForPaidUse: true,
       stripeCheckoutSessionId: args.stripeCheckoutSessionId,
       stripeCustomerId: args.stripeCustomerId,
       stripeSubscriptionId: args.stripeSubscriptionId,

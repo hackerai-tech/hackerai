@@ -4,6 +4,7 @@ import {
   getNextDeepSeekProDisconnectRetryModel,
   prepareProviderDisconnectContinuation,
   shouldRetryAgentLongWithFallback,
+  shouldRetryProviderStreamAfterNonDurableOutputLimit,
   shouldRetryProviderStreamAfterReasoningOnlyOutput,
   shouldRetryProviderStreamAfterInterruptedToolInput,
 } from "../agent-long-provider-retry";
@@ -144,6 +145,68 @@ describe("getNextDeepSeekProDisconnectRetryModel", () => {
 });
 
 describe("shouldRetryAgentLongWithFallback", () => {
+  it.each([
+    { label: "empty output", parts: [] },
+    { label: "only a step boundary", parts: [{ type: "step-start" }] },
+    {
+      label: "only blank text",
+      parts: [{ type: "text", text: "  \n\t" }],
+    },
+    {
+      label: "hidden reasoning and metadata",
+      parts: [
+        { type: "data-agent-heartbeat", data: { at: 1 } },
+        { type: "step-start" },
+        { type: "reasoning", text: "thinking", state: "done" },
+        { type: "data-context-usage", data: { usedTokens: 100 } },
+      ],
+    },
+  ])("retries an output limit with $label", ({ parts }) => {
+    expect(
+      shouldRetryAgentLongWithFallback(parts, {
+        hasTerminalProviderStreamError: false,
+        finishReason: "length",
+      }),
+    ).toBe(true);
+  });
+
+  it.each([
+    {
+      label: "visible text",
+      parts: [{ type: "text", text: "partial answer" }],
+    },
+    {
+      label: "a completed tool call",
+      parts: [
+        {
+          type: "tool-run_terminal_cmd",
+          state: "output-available",
+          output: { result: { exitCode: 0 } },
+        },
+      ],
+    },
+  ])("preserves $label at the output limit", ({ parts }) => {
+    expect(
+      shouldRetryProviderStreamAfterNonDurableOutputLimit(parts, {
+        finishReason: "length",
+      }),
+    ).toBe(false);
+    expect(
+      shouldRetryAgentLongWithFallback(parts, {
+        hasTerminalProviderStreamError: false,
+        finishReason: "length",
+      }),
+    ).toBe(false);
+  });
+
+  it("does not retry empty output after a normal stop", () => {
+    expect(
+      shouldRetryProviderStreamAfterNonDurableOutputLimit([], {
+        finishReason: "stop",
+      }),
+    ).toBe(false);
+  });
+
   it("preserves the legacy retry for streams that only emitted step-start", () => {
     expect(
       shouldRetryAgentLongWithFallback([{ type: "step-start" }], {

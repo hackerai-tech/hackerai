@@ -3,10 +3,12 @@ import { beforeEach, describe, expect, it, jest } from "@jest/globals";
 const mockCapture = jest.fn();
 const mockCaptureException = jest.fn();
 const mockGetFlag = jest.fn();
+const mockGetFeatureFlag = jest.fn();
 const mockEvaluateFlags = jest.fn();
 const mockPostHogClient = jest.fn(() => ({
   capture: mockCapture,
   captureException: mockCaptureException,
+  getFeatureFlag: mockGetFeatureFlag,
   evaluateFlags: mockEvaluateFlags,
 }));
 const mockEmitPostHogLog = jest.fn(() => true);
@@ -21,14 +23,19 @@ jest.mock("@/lib/posthog/logs", () => ({
   flushPostHogLogs: jest.fn(),
 }));
 
-const { getPostHogFeatureFlagForUser, phLogger } =
-  require("../server") as typeof import("../server");
+const {
+  getPostHogFeatureFlagForUser,
+  getPostHogFeatureFlagValueForUser,
+  getPostHogFeatureFlagVariantForUser,
+  phLogger,
+} = require("../server") as typeof import("../server");
 
 describe("phLogger", () => {
   beforeEach(() => {
     mockCapture.mockClear();
     mockCaptureException.mockClear();
     mockGetFlag.mockReset();
+    mockGetFeatureFlag.mockReset();
     mockEvaluateFlags.mockReset();
     mockPostHogClient.mockClear();
     mockEmitPostHogLog.mockClear();
@@ -49,6 +56,35 @@ describe("phLogger", () => {
     await expect(
       getPostHogFeatureFlagForUser("agent-subagents", "user_123"),
     ).resolves.toBe(false);
+  });
+
+  it("distinguishes a disabled boolean flag from an unavailable evaluation", async () => {
+    mockGetFeatureFlag.mockResolvedValueOnce(false);
+    await expect(
+      getPostHogFeatureFlagValueForUser("example-feature-flag", "user_123"),
+    ).resolves.toBe(false);
+
+    mockGetFeatureFlag.mockRejectedValueOnce(new Error("unavailable"));
+    await expect(
+      getPostHogFeatureFlagValueForUser("example-feature-flag", "user_123"),
+    ).resolves.toBeNull();
+  });
+
+  it("evaluates multivariate flags and ignores non-variant values", async () => {
+    mockGetFeatureFlag.mockResolvedValueOnce("activation_0_10_monthly_0_15");
+    await expect(
+      getPostHogFeatureFlagVariantForUser("free_usage_budget_v1", "user_123"),
+    ).resolves.toBe("activation_0_10_monthly_0_15");
+
+    mockGetFeatureFlag.mockResolvedValueOnce(true);
+    await expect(
+      getPostHogFeatureFlagVariantForUser("free_usage_budget_v1", "user_123"),
+    ).resolves.toBeUndefined();
+
+    mockGetFeatureFlag.mockRejectedValueOnce(new Error("unavailable"));
+    await expect(
+      getPostHogFeatureFlagVariantForUser("free_usage_budget_v1", "user_123"),
+    ).resolves.toBeUndefined();
   });
 
   it("keeps info and warning records in Logs without duplicating product events", () => {
@@ -149,6 +185,39 @@ describe("phLogger", () => {
       expect(serialized).not.toContain("user-files");
       expect(serialized).not.toContain("access-key");
       expect(serialized).not.toContain("signature-secret");
+    } finally {
+      consoleError.mockRestore();
+    }
+  });
+
+  it("omits enumerable provider payloads from error console fallbacks", () => {
+    const consoleError = jest
+      .spyOn(console, "error")
+      .mockImplementation(() => undefined);
+    const privateAttachmentText = "PRIVATE_ATTACHMENT_TEXT";
+    const inlineImage = "data:image/png;base64,PRIVATE_INLINE_IMAGE";
+    const error = Object.assign(new Error("Provider request failed"), {
+      responseBody: JSON.stringify({
+        file_annotations: [{ parsed_content: privateAttachmentText }],
+      }),
+      data: { preview: inlineImage },
+    });
+    mockCaptureException.mockImplementationOnce(() => {
+      throw new Error("telemetry unavailable");
+    });
+
+    try {
+      phLogger.error("provider_failed", { error });
+
+      const safeFields = consoleError.mock.calls[0]?.[1] as
+        { error?: Error } | undefined;
+      const serialized = JSON.stringify(consoleError.mock.calls);
+      expect(safeFields?.error).toBeInstanceOf(Error);
+      expect(safeFields?.error?.message).toBe("Provider request failed");
+      expect("responseBody" in (safeFields?.error ?? {})).toBe(false);
+      expect(serialized).not.toContain(privateAttachmentText);
+      expect(serialized).not.toContain(inlineImage);
+      expect(serialized).not.toContain("responseBody");
     } finally {
       consoleError.mockRestore();
     }

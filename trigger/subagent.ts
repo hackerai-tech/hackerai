@@ -23,6 +23,10 @@ import {
 import { agentUiStream } from "./streams";
 import { createTools } from "@/lib/ai/tools";
 import { createTrackedProvider } from "@/lib/ai/providers";
+import {
+  createLoadSkillTool,
+  createSearchSkillsTool,
+} from "@/lib/ai/tools/subagent-skill-tools";
 import type { ModelName } from "@/lib/ai/providers";
 import {
   guardLanguageModelProviderResponse,
@@ -105,6 +109,7 @@ import {
   getUserFriendlyProviderError,
 } from "@/lib/utils/error-utils";
 import { ChatSDKError, serializeChatSDKErrorForStream } from "@/lib/errors";
+import type { TriggerRunRegion } from "@/lib/api/trigger-region";
 
 type SubagentTaskOutput = {
   subagentId: string;
@@ -127,6 +132,7 @@ const loadPersistedTerminalOutput = async (
 type SubagentTaskPayload = {
   subagentId: string;
   convexUrl?: string;
+  triggerRegion?: TriggerRunRegion;
 };
 
 type CancellationCleanup = {
@@ -600,11 +606,16 @@ export const subagentTask = task({
         row.free_quota_subject,
       );
       if (row.subscription === "free") {
-        await checkFreeMonthlyCostLimit(row.free_quota_subject ?? row.user_id);
+        await checkFreeMonthlyCostLimit(
+          row.free_quota_subject ?? row.user_id,
+          row.user_id,
+          "trigger_subagent",
+        );
       }
 
       runtimeStage = "context_resolution";
       const resolvedContext = await resolveSubagentContext(row.subagent_id);
+      const systemPrompt = profile.buildSystemPrompt(row);
       const prompt = profile.buildPrompt(row, resolvedContext);
       await saveSubagentMessage({
         subagentId: row.subagent_id,
@@ -714,10 +725,13 @@ export const subagentTask = task({
                   profile.finalResultTool.name,
                 ],
                 additionalTools: () => ({
+                  search_skills: createSearchSkillsTool(),
+                  load_skill: createLoadSkillTool(),
                   [profile.finalResultTool.name]: submitResult,
                 }),
                 ptyScopeId: row.subagent_id,
                 chargeSandboxRuntime: false,
+                triggerRegion: payload.triggerRegion,
               },
             );
             const tools = guardSubagentToolExecutions(
@@ -886,7 +900,7 @@ export const subagentTask = task({
                   generationAttempt,
                   0,
                 ),
-                system: profile.systemPrompt,
+                system: systemPrompt,
                 messages: conversationMessages,
                 tools: structuredResultRecovery ? undefined : tools,
                 output: structuredResultRecovery

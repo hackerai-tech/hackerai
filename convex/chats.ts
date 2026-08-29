@@ -1172,7 +1172,8 @@ export const pinChat = mutation({
 });
 
 /**
- * Unpin a chat. It will appear at the top of the unpinned list (update_time is set to now).
+ * Unpin a chat without changing its activity time, so it returns to its
+ * chronological position in the unpinned list.
  */
 export const unpinChat = mutation({
   args: {
@@ -1206,10 +1207,12 @@ export const unpinChat = mutation({
         message: "Unauthorized: Chat does not belong to user",
       });
     }
+    if (chat.pinned_at == null) {
+      return null; // Already unpinned
+    }
 
     await ctx.db.patch(chat._id, {
       pinned_at: undefined,
-      update_time: Date.now(),
     });
     return null;
   },

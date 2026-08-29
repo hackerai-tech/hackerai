@@ -94,11 +94,12 @@ import {
 import { coerceSelectedModel } from "@/types/chat";
 import { v4 as uuidv4 } from "uuid";
 import { useIsMobile } from "@/hooks/use-mobile";
+import { useComputerSidebarOverlay } from "@/hooks/use-workspace-layout";
 import { useParams, useRouter } from "next/navigation";
 import { ConvexErrorBoundary } from "./ConvexErrorBoundary";
 import { useAutoResume } from "../hooks/useAutoResume";
 import { useAutoContinue } from "../hooks/useAutoContinue";
-import { findLatestTimelineAnchorMessageId } from "./message-timeline-rows";
+import { findActiveTimelineAnchorMessageId } from "./message-timeline-rows";
 import { useLatestRef } from "../hooks/useLatestRef";
 import { useDataStreamDispatch } from "./DataStreamProvider";
 import {
@@ -516,6 +517,9 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   const routeChatId = params?.id as string | undefined;
   const router = useRouter();
   const isMobile = useIsMobile();
+  const computerSidebarOverlay = useComputerSidebarOverlay();
+  const computerDialogRef = useRef<HTMLDivElement>(null);
+  const computerDialogPreviousFocusRef = useRef<HTMLElement | null>(null);
   const { setDataStream, setIsAutoResuming } = useDataStreamDispatch();
   const {
     isLoading: isConvexAuthLoading,
@@ -532,6 +536,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     chatMode,
     setChatMode,
     sidebarOpen,
+    closeSidebar,
     chatSidebarOpen,
     initializeChat,
     setTodos,
@@ -557,6 +562,71 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     useAgentApproval();
   const { hasResolvedInitialPresentation, markInitialPresentationResolved } =
     useChatRoutePresentation();
+
+  useEffect(() => {
+    if (!computerSidebarOverlay || !sidebarOpen) return;
+
+    const dialog = computerDialogRef.current;
+    if (!dialog) return;
+
+    computerDialogPreviousFocusRef.current =
+      document.activeElement instanceof HTMLElement
+        ? document.activeElement
+        : null;
+
+    const getFocusableElements = () =>
+      Array.from(
+        dialog.querySelectorAll<HTMLElement>(
+          [
+            "a[href]",
+            "button:not([disabled])",
+            "input:not([disabled])",
+            "select:not([disabled])",
+            "textarea:not([disabled])",
+            '[tabindex]:not([tabindex="-1"])',
+          ].join(", "),
+        ),
+      );
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        closeSidebar();
+        return;
+      }
+
+      if (event.key !== "Tab") return;
+
+      const focusableElements = getFocusableElements();
+      if (focusableElements.length === 0) {
+        event.preventDefault();
+        dialog.focus();
+        return;
+      }
+
+      const firstElement = focusableElements[0];
+      const lastElement = focusableElements[focusableElements.length - 1];
+      if (event.shiftKey && document.activeElement === firstElement) {
+        event.preventDefault();
+        lastElement.focus();
+      } else if (!event.shiftKey && document.activeElement === lastElement) {
+        event.preventDefault();
+        firstElement.focus();
+      }
+    };
+
+    const focusTimeout = window.setTimeout(() => {
+      (getFocusableElements()[0] ?? dialog).focus();
+    }, 0);
+    document.addEventListener("keydown", handleKeyDown);
+
+    return () => {
+      window.clearTimeout(focusTimeout);
+      document.removeEventListener("keydown", handleKeyDown);
+      const previousFocus = computerDialogPreviousFocusRef.current;
+      if (previousFocus?.isConnected) previousFocus.focus();
+    };
+  }, [closeSidebar, computerSidebarOverlay, sidebarOpen]);
 
   // Simple logic: use route chatId if provided, otherwise generate new one
   const [chatId, setChatId] = useState<string>(() => {
@@ -1805,8 +1875,8 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   // Auto-continue prompts are hidden from the timeline and must not replace
   // the user-visible anchor.
   const timelineAnchorMessageId = useMemo(
-    () => findLatestTimelineAnchorMessageId(messages),
-    [messages],
+    () => findActiveTimelineAnchorMessageId(messages, status),
+    [messages, status],
   );
   const { scrollRef, contentRef, scrollToBottom, isAtBottom } =
     useMessageScroll(timelineAnchorMessageId);
@@ -2212,11 +2282,15 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
           </div>
 
           {/* Desktop Computer Sidebar */}
-          {!isMobile && (
+          {!computerSidebarOverlay && (
             <div
-              className={`transition-[width] duration-300 min-w-0 ${
-                sidebarOpen ? "w-1/2 flex-shrink-0" : "w-0 overflow-hidden"
+              className={`min-w-0 transition-[width] duration-300 ${
+                sidebarOpen
+                  ? "w-[44%] min-w-[400px] max-w-[560px] flex-shrink-0"
+                  : "w-0 overflow-hidden"
               }`}
+              data-layout="split"
+              data-testid="computer-sidebar-container"
             >
               {sidebarOpen && (
                 <ComputerSidebar messages={messages} status={status} />
@@ -2231,9 +2305,18 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
           />
         </div>
 
-        {/* Mobile Computer Sidebar */}
-        {isMobile && sidebarOpen && (
-          <div className="flex fixed inset-0 z-50 bg-background items-center justify-center p-4">
+        {/* Computer overlay for mobile and narrow desktop workspaces. */}
+        {computerSidebarOverlay && sidebarOpen && (
+          <div
+            ref={computerDialogRef}
+            className="fixed inset-0 z-50 flex items-center justify-center bg-background p-4"
+            role="dialog"
+            aria-modal="true"
+            aria-label="HackerAI’s Computer"
+            tabIndex={-1}
+            data-layout="overlay"
+            data-testid="computer-sidebar-container"
+          >
             <div className="w-full max-w-4xl h-full">
               <ComputerSidebar messages={messages} status={status} />
             </div>

@@ -424,6 +424,30 @@ describe("targetConnectionId filtering", () => {
 });
 
 describe("command cancellation acknowledgement", () => {
+  it("acknowledges cancellation when the command already exited", async () => {
+    const bridge = new DesktopSandboxBridge(buildConfig());
+    await bridge.start();
+    const handler = getPublicationHandler();
+    const invokeHandler = jest.fn().mockResolvedValue(undefined);
+    mockInvokeHandler = invokeHandler;
+
+    handler({
+      data: {
+        type: "command_cancel",
+        commandId: "cmd-already-gone",
+        targetConnectionId: "conn-123",
+      },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(invokeHandler).not.toHaveBeenCalled();
+    expect(mockSubscription.publish).toHaveBeenCalledWith({
+      type: "command_cancel_result",
+      commandId: "cmd-already-gone",
+      canceled: true,
+    });
+  });
+
   it.each([true, false])(
     "publishes the native cancellation result when invoke returns %s",
     async (nativeResult) => {

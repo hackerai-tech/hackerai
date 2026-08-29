@@ -714,11 +714,12 @@ describe("captureUsageCost", () => {
         included_points_deducted: 1000,
         extra_usage_points_deducted: 3200,
         usage_economics_version: 2,
-        usage_pricing_version: "request-1.30-extra-1.50-v1",
-        request_usage_multiplier: 1.3,
-        included_usage_multiplier: 1.3,
-        extra_usage_multiplier: 1.5,
-        effective_extra_usage_multiplier: 1.95,
+        usage_pricing_version: "request-1.50-extra-1.40-v2",
+        request_usage_multiplier: 1.5,
+        included_usage_multiplier: 1.5,
+        extra_usage_multiplier: 1.4,
+        extra_usage_balance_multiplier: 1.5,
+        effective_extra_usage_multiplier: 2.1,
         included_usage_value_dollars: 0.1,
         extra_usage_charge_dollars: 0.48,
         covered_usage_value_dollars: 0.58,
@@ -864,11 +865,12 @@ describe("captureUsageSettlement", () => {
         usage_deduction_failed: true,
         usage_deduction_failure_reason: "monthly_cap_exceeded",
         forced: false,
-        usage_pricing_version: "request-1.30-extra-1.50-v1",
-        request_usage_multiplier: 1.3,
-        included_usage_multiplier: 1.3,
-        extra_usage_multiplier: 1.5,
-        effective_extra_usage_multiplier: 1.95,
+        usage_pricing_version: "request-1.50-extra-1.40-v2",
+        request_usage_multiplier: 1.5,
+        included_usage_multiplier: 1.5,
+        extra_usage_multiplier: 1.4,
+        extra_usage_balance_multiplier: 1.5,
+        effective_extra_usage_multiplier: 2.1,
         settlement_capture_reason: "anomaly",
         settlement_run_sampled:
           isUsageSettlementSuccessSampled("settlement_123"),
@@ -1164,6 +1166,60 @@ describe("createChatLogger provider stream termination", () => {
     }
   });
 
+  it("never emits opaque provider payloads in provider error telemetry", () => {
+    const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+
+    try {
+      const chatLogger = createChatLogger({
+        chatId: "chat_private_provider_payload",
+        endpoint: "/api/agent-long",
+      });
+      const privateAttachmentText = "PRIVATE_ATTACHMENT_TEXT";
+      const inlineImage = "data:image/png;base64,PRIVATE_INLINE_IMAGE";
+      const responseBody = JSON.stringify({
+        id: "gen-private-provider-payload",
+        error: {
+          code: 400,
+          message:
+            "The document could not be downloaded from the provided URL.",
+          metadata: {
+            provider_name: "DeepSeek",
+            file_annotations: [
+              { parsed_content: privateAttachmentText, preview: inlineImage },
+            ],
+          },
+        },
+      });
+      const err = Object.assign(new Error("Provider request failed"), {
+        name: "AI_APICallError",
+        statusCode: 400,
+        responseBody,
+        data: JSON.parse(responseBody),
+      });
+
+      chatLogger.recordProviderError(err, {
+        mode: "agent",
+        model: "model-deepseek-v4-pro",
+        requestedModelSlug: "deepseek/deepseek-v4-pro-0813",
+      });
+
+      const serializedTelemetry = errorSpy.mock.calls
+        .flat()
+        .map((value) =>
+          typeof value === "string" ? value : JSON.stringify(value),
+        )
+        .join("\n");
+      expect(serializedTelemetry).toContain('"responseBodyPresent":true');
+      expect(serializedTelemetry).toContain('"providerDataPresent":true');
+      expect(serializedTelemetry).not.toContain(privateAttachmentText);
+      expect(serializedTelemetry).not.toContain(inlineImage);
+      expect(serializedTelemetry).not.toContain('"responseBody":');
+      expect(serializedTelemetry).not.toContain('"providerData":');
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
   it("logs nested provider raw errors for generic 400 provider wrappers", () => {
     const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
     const logSpy = jest.spyOn(console, "log").mockImplementation(() => {});
@@ -1282,7 +1338,8 @@ describe("createChatLogger provider stream termination", () => {
       expect(capturedError?.message).toBe(
         "tool_result without corresponding tool_use",
       );
-      expect(capturedError?.cause).toBe(providerError);
+      expect("cause" in (capturedError ?? {})).toBe(false);
+      expect(capturedError).not.toBe(providerError);
     } finally {
       errorSpy.mockRestore();
     }

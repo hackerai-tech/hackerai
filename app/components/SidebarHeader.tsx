@@ -117,6 +117,7 @@ const SidebarHeaderContentImpl: FC<SidebarHeaderContentImplProps> = ({
 
   const handleNewChat = () => {
     startNewChat();
+    if (isMobileOverlay) handleCloseSidebar();
   };
 
   const handleSearchOpen = () => {

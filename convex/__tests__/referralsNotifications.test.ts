@@ -275,7 +275,7 @@ describe("referral reward notifications", () => {
     expect(tables.referral_rewards[1].notification_seen_at).toBeUndefined();
   });
 
-  it("adds referrer credits without changing their extra usage preference", async () => {
+  it("enables extra usage for referral credits without changing auto-reload", async () => {
     const { awardConversionReward } = await import("../referrals");
     const { ctx, tables, queryCalls } = makeMockCtx({
       referral_attributions: [
@@ -311,6 +311,15 @@ describe("referral reward notifications", () => {
           updated_at: 1,
         },
       ],
+      extra_usage: [
+        {
+          _id: "extra_usage_1",
+          user_id: USER_ID,
+          balance_points: 20_000,
+          auto_reload_enabled: true,
+          updated_at: 1,
+        },
+      ],
     });
 
     const result = await awardConversionReward.handler(ctx, {
@@ -328,11 +337,12 @@ describe("referral reward notifications", () => {
     expect(tables.extra_usage).toMatchObject([
       {
         user_id: USER_ID,
-        balance_points: 100_000,
+        balance_points: 120_000,
+        auto_reload_enabled: true,
       },
     ]);
-    expect(tables.user_customization[0].extra_usage_enabled).toBe(false);
-    expect(queryCalls).not.toContain("user_customization");
+    expect(tables.user_customization[0].extra_usage_enabled).toBe(true);
+    expect(queryCalls).toContain("user_customization");
   });
 
   it("withholds conversion rewards from free referrer codes", async () => {
@@ -422,14 +432,6 @@ describe("referral reward notifications", () => {
           updated_at: 1,
         },
       ],
-      user_customization: [
-        {
-          _id: "customization_1",
-          user_id: USER_ID,
-          extra_usage_enabled: false,
-          updated_at: 1,
-        },
-      ],
     });
 
     const result = await awardConversionReward.handler(ctx, {
@@ -451,6 +453,11 @@ describe("referral reward notifications", () => {
         balance_points: 100_000,
       },
     ]);
-    expect(tables.user_customization[0].extra_usage_enabled).toBe(false);
+    expect(tables.user_customization).toMatchObject([
+      {
+        user_id: USER_ID,
+        extra_usage_enabled: true,
+      },
+    ]);
   });
 });

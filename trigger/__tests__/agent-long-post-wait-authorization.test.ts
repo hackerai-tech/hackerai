@@ -170,7 +170,7 @@ describe("agent-long post-wait authorization contract", () => {
     const resume = taskSource.indexOf("activeRuntimeBudget.resume()", wait);
     const capacity = taskSource.indexOf("await checkRateLimitCapacity(");
     const monthlyCost = taskSource.indexOf(
-      "await checkFreeMonthlyCostLimit(freeUsageSubject)",
+      "await checkFreeMonthlyCostLimit(freeUsageSubject, userId)",
       capacity,
     );
     const reacquire = taskSource.indexOf(
@@ -186,6 +186,43 @@ describe("agent-long post-wait authorization contract", () => {
     expect(capacity).toBeGreaterThan(-1);
     expect(monthlyCost).toBeGreaterThan(capacity);
     expect(reacquire).toBeGreaterThan(monthlyCost);
+  });
+
+  it("releases the free concurrency lock from the outer task cleanup", () => {
+    const cleanupAnchor = taskSource.indexOf(
+      "runtimeSettlementWatchdog?.dispose()",
+    );
+    const outerFinally = taskSource.lastIndexOf("} finally {", cleanupAnchor);
+    const cleanupEnd = taskSource.indexOf(
+      "runCleanupMap.delete(ctx.run.id)",
+      cleanupAnchor,
+    );
+    const outerCleanupSource = taskSource.slice(outerFinally, cleanupEnd);
+
+    expect(outerFinally).toBeGreaterThan(-1);
+    expect(cleanupEnd).toBeGreaterThan(cleanupAnchor);
+    expect(outerCleanupSource).toContain(
+      'await releaseFreeRunLockBestEffort("outer_finally")',
+    );
+  });
+
+  it("keeps failed lock releases retryable without replacing run errors", () => {
+    expect(taskSource).toMatch(
+      /releaseFreeRunLockPromise = release\(\)[\s\S]*releaseFreeRunLock = undefined[\s\S]*\.finally\(\(\) => \{[\s\S]*releaseFreeRunLockPromise = undefined/,
+    );
+    expect(taskSource).toContain(
+      'await releaseFreeRunLockBestEffort("outer_catch")',
+    );
+  });
+
+  it("releases the free concurrency lock from Trigger cancellation cleanup", () => {
+    const onCancelStart = taskSource.indexOf("onCancel: async");
+    const runStart = taskSource.indexOf("run: async", onCancelStart);
+    const onCancelSource = taskSource.slice(onCancelStart, runStart);
+
+    expect(onCancelStart).toBeGreaterThan(-1);
+    expect(runStart).toBeGreaterThan(onCancelStart);
+    expect(onCancelSource).toContain("await cleanup.releaseFreeRunLock()");
   });
 
   it("checks fresh suspension, ownership, model, and billing state", () => {

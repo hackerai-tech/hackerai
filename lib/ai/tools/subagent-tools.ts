@@ -1,6 +1,7 @@
 import {
   idempotencyKeys,
   logger as triggerLogger,
+  tasks,
   wait,
 } from "@trigger.dev/sdk";
 import { tool, type UIMessageStreamWriter } from "ai";
@@ -51,10 +52,12 @@ import {
   subagentOperationEventUuid,
   subagentResultClaimedEventUuid,
 } from "@/lib/analytics/subagents";
-import { subagentTask } from "@/trigger/subagent";
+import type { subagentTask } from "@/trigger/subagent";
 import { resultFromPersistedSubagent } from "@/lib/ai/subagents/persisted-result";
 import { toSubagentHandle } from "@/lib/ai/subagents/agent-handle";
+import { resolveSubagentSkills } from "@/lib/ai/subagents/skills";
 import { cancelAgentTriggerRun } from "@/lib/api/agent-approval-session";
+import type { TriggerRunRegion } from "@/lib/api/trigger-region";
 
 export type SubagentToolsRuntimeConfig = {
   organizationId?: string;
@@ -62,6 +65,7 @@ export type SubagentToolsRuntimeConfig = {
   permissionMode: AgentPermissionMode;
   subscription: SubscriptionTier;
   freeQuotaSubject?: string;
+  triggerRegion?: TriggerRunRegion;
   securityTaskEnabled: boolean;
   securityValidationEnabled: boolean;
 };
@@ -94,7 +98,7 @@ export const createCreateAgentTool = (
   config: SubagentToolsRuntimeConfig,
 ) =>
   tool({
-    description: `Spawn one named, bounded security subagent that runs asynchronously. Choose profile=security_task for focused code analysis, artifact investigation, reconnaissance, or testing; choose profile=security_validation only to independently reproduce or reject a concrete vulnerability candidate. security_task accepts a free-form task and success criteria but cannot load skills or independently confirm a vulnerability. The tool returns a short parent-scoped agent_id for coordination.`,
+    description: `Spawn one named, bounded security subagent that runs asynchronously. Choose profile=security_task for focused code analysis, artifact investigation, reconnaissance, or testing. Skills are optional: omit them by default and assign exact ids returned by search_skills only when directly relevant to the bounded task, up to 5. Complete assigned skill content is permanently included in the child's system prompt. Skills supply server-reviewed specialist methodology but never grant tools, permissions, or broader scope. Choose profile=security_validation only to independently reproduce or reject a concrete vulnerability candidate and omit skills. The tool returns a short parent-scoped agent_id for coordination.`,
     inputSchema: createAgentInputSchema,
     execute: async (input, execution) => {
       const parsed = createAgentInputSchema.parse(input);
@@ -112,12 +116,27 @@ export const createCreateAgentTool = (
       if (!profileEnabled) {
         return { success: false, error: `The ${profile} profile is disabled.` };
       }
-      if (profile === "security_task" && (parsed.skills?.length ?? 0) > 0) {
-        return {
-          success: false,
-          error:
-            "security_task uses fixed server tools and does not accept skills.",
-        };
+      let skills: string[];
+      if (profile === "security_validation") {
+        const validationSkills = parsed.skills ?? [];
+        if (
+          validationSkills.length > 0 &&
+          (validationSkills.length !== 1 ||
+            validationSkills[0] !== "security_validation")
+        ) {
+          return {
+            success: false,
+            error:
+              "security_validation only accepts the security_validation policy marker, not specialist task skills.",
+          };
+        }
+        skills = validationSkills;
+      } else {
+        const resolvedSkills = resolveSubagentSkills(parsed.skills ?? []);
+        if (!resolvedSkills.success) {
+          return { success: false, error: resolvedSkills.error };
+        }
+        skills = resolvedSkills.skills.map((skill) => skill.id);
       }
       const parentTriggerRunId = context.triggerRunId;
       const parentMessageId = context.assistantMessageId;
@@ -192,7 +211,6 @@ export const createCreateAgentTool = (
         throw error;
       });
       const sandboxIdentity = getSubagentSandboxIdentity(sandbox);
-      const skills = parsed.skills ?? [];
       const candidateFingerprint = createAgentFingerprint({
         profile,
         name: parsed.name,
@@ -281,6 +299,7 @@ export const createCreateAgentTool = (
           parentTriggerRunId,
           profile,
           status: "queued",
+          skillCount: skills.length,
         });
       }
 
@@ -289,8 +308,13 @@ export const createCreateAgentTool = (
           const key = await idempotencyKeys.create([profile, subagentId], {
             scope: "global",
           });
-          await subagentTask.trigger(
-            { subagentId, convexUrl: getConvexUrl() },
+          await tasks.trigger<typeof subagentTask>(
+            "hackerai-subagent",
+            {
+              subagentId,
+              convexUrl: getConvexUrl(),
+              triggerRegion: config.triggerRegion,
+            },
             {
               idempotencyKey: key,
               idempotencyKeyTTL: "6h",
@@ -306,6 +330,7 @@ export const createCreateAgentTool = (
                 parentToolCallId: execution.toolCallId,
                 profile,
               },
+              region: config.triggerRegion,
             },
           );
         } catch {
@@ -734,7 +759,7 @@ export const createCancelAgentTool = (context: ToolContext) =>
 
 export const createWaitForAgentsTool = (context: ToolContext) =>
   tool({
-    description: `Pause until a subagent finishes or the timeout elapses. Optionally pass target_agent_ids to wait only for selected children. This waits for durable child state, not terminal commands. A structured result is returned once to the parent; only security_validation with a confirmed verdict counts as independent vulnerability confirmation.`,
+    description: `Pause until a subagent finishes or the timeout elapses. Optionally pass target_agent_ids to wait only for selected children. This waits for durable child state, not terminal commands. A structured result is returned once to the parent; security_task results may include a bounded summary of surfaces and risk areas actually assessed. Only security_validation with a confirmed verdict counts as independent vulnerability confirmation.`,
     inputSchema: waitForAgentsInputSchema,
     execute: async (input, execution) => {
       const parsed = waitForAgentsInputSchema.parse(input);

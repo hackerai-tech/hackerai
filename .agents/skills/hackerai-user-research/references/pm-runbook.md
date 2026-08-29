@@ -14,8 +14,18 @@ internal and test users, known fraud or abuse, duplicates, and unmatched
 customers using data available in PostHog. Do not open Stripe or require Stripe
 access. If PostHog does not establish an exact refund, dispute, payer, or account
 adjustment, use the best supported PostHog ranking and record the limitation in
-the aggregate report. Produce internal Convex/WorkOS user IDs, not emails or
-billing customer IDs.
+the aggregate report. For authenticated HackerAI users, PostHog `distinct_id`
+is the internal Convex/WorkOS user ID because the application identifies users
+with their WorkOS ID. Select `distinct_id AS user_id` directly; do not require a
+duplicate person property or infer the mapping from email. Produce those
+internal user IDs for the restricted gateway payload, not emails or billing
+customer IDs.
+
+Record `posthogProjectId`, the cohort selection timestamp, a SHA-256 fingerprint
+of the selection query, and short limitations that affect interpretation. Never
+send the raw query. For event-based research such as churn, select the event
+timestamp beside each user ID and provide it as that member's evidence anchor.
+Use a bounded pre-event window; do not use one cohort-wide timestamp.
 
 ## 2. Run through Codex
 
@@ -32,14 +42,14 @@ runner and wait for completion. The PM's Codex environment must contain the scop
 keys. The runner always calls the production gateway at
 `https://hackerai.co/api/internal/user-research`; no Preview URL or Preview PM
 gateway key is required. The gateway can start and read only
-`pm-user-research`, and it returns only the aggregate result. The task runs one
-parallel worker per user and a final cohort synthesis. Both calls use
+`pm-user-research`, and it returns the cohort user IDs and aggregate result. The
+task runs one parallel worker per user and a final cohort synthesis. Both calls use
 `x-ai/grok-4.6` with OpenRouter reasoning set to low
 and zero-data-retention routing required.
 
-The request JSON is temporary restricted data because it contains internal user
-IDs. Create it outside the repository with mode 600, pass its path to the
-runner, then remove it. Never commit it or copy it into Linear.
+Create the temporary request JSON outside the repository with mode 600, pass its
+path to the runner, then remove it. Never commit the request file. User IDs from
+the completed result may be copied into Linear when requested.
 
 The scoped gateway key authenticates the PM runner to the restricted production
 endpoint. It is not a per-run approval and does not require a Linear issue.
@@ -50,10 +60,15 @@ Use the aggregate report to understand supported user types, customer avatars,
 and decisions. Always include coverage and confidence. Detailed profiles remain
 restricted in Convex. Treat acquisition channels and marketing messages as
 hypotheses until a separate experiment validates them.
+Behavioral messages, including messages immediately before a cancellation, do
+not establish the user's causal cancellation reason. Keep causal confidence low
+unless a separate survey or experiment supplies direct evidence.
 
 ## 4. Share safely
 
 Keep the gateway key, request payload, Trigger records, and Convex records
-restricted. If optional Linear tracking is used, its update may include only the
-aggregate answer, avatars, coverage, confidence, unknowns, and experiments. Do
-not include the cohort IDs or pseudonym-level profiles.
+restricted. Display the internal Convex/WorkOS IDs returned by the gateway as
+ordinary cohort output; do not hide or pseudonymize them. If optional Linear
+tracking is used, its update may include the cohort IDs, aggregate answer,
+avatars, coverage, confidence, unknowns, and experiments. Do not include raw
+customer content, secrets, or restricted profile records.

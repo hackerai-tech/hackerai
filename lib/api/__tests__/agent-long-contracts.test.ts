@@ -62,6 +62,11 @@ const routeSrc = fs.readFileSync(
   "utf8",
 );
 
+const machineRoutingSrc = fs.readFileSync(
+  path.resolve(__dirname, "../../experiments/agent-machine-routing.ts"),
+  "utf8",
+);
+
 const agentRouteSrc = fs.readFileSync(
   path.resolve(__dirname, "../../../app/api/agent/route.ts"),
   "utf8",
@@ -206,26 +211,38 @@ const toolExecutionSources = [
   },
 ];
 
-describe("auxiliary vision failover contracts", () => {
+describe("direct vision and summary recovery contracts", () => {
   test.each([
     ["agent-long", taskSrc],
     ["chat handler", chatHandlerSrc],
-  ])("%s switches attachment failures to direct vision", (_name, source) => {
-    expect(source).toContain("createAuxiliaryVisionFailoverController");
-    expect(source).toMatch(
-      /auxiliaryVisionFailover\.activate\(\{\s*error,\s*source: "attachment",\s*\}\);/,
-    );
-    expect(source).toMatch(
-      /selectedModel = [\s\S]*?resolveAgentModelForImageToolResults\([\s\S]*?selectedModel[\s\S]*?true[\s\S]*?false[\s\S]*?\);/,
-    );
-    expect(source).toMatch(
-      /activeDeepSeekV4Pro0813Experiment =\s*getActiveDeepSeekV4Pro0813ExperimentAssignment\([\s\S]*?selectedModel[\s\S]*?\);/,
-    );
-    expect(source).toMatch(
-      /get auxiliaryVisionEnabled\(\) \{\s*return auxiliaryVisionFailover\.isEnabled\(\);\s*\}/,
-    );
-    expect(source).not.toContain("AUXILIARY_VISION_UNAVAILABLE_MESSAGE");
-  });
+  ])(
+    "%s activates MiniMax summaries only after direct vision fails",
+    (_name, source) => {
+      expect(source).toContain("createVisionSummaryRecoveryController");
+      expect(source).toMatch(/available: directGlmVisionEnabled/);
+      expect(source).toMatch(
+        /const shouldRetryWithVisionSummary =[\s\S]*?directGlmVisionEnabled[\s\S]*?hasTerminalProviderStreamError/,
+      );
+      expect(source).toMatch(
+        /visionSummaryRecovery\.activate\(\{[\s\S]*?source: hasImageAttachmentForRecovery/,
+      );
+      expect(source).toMatch(
+        /describeImageAttachmentsWithAuxiliaryVision\(\{[\s\S]*?cacheDescription:\s*cacheAuxiliaryVisionDescription/,
+      );
+      expect(
+        source.match(
+          /omitImageViewToolResultsForProviderRetry\(\s*state\.finalMessages,?\s*\)\.messages/g,
+        ),
+      ).toHaveLength(2);
+      expect(source).toMatch(
+        /catch \(summaryError\) \{[^}]*?event:\s*"vision_summary_recovery_failed"/,
+      );
+      expect(source).toMatch(
+        /get auxiliaryVisionEnabled\(\) \{\s*return visionSummaryRecovery\.isEnabled\(\);\s*\}/,
+      );
+      expect(source).not.toContain("AUXILIARY_VISION_UNAVAILABLE_MESSAGE");
+    },
+  );
 });
 
 describe("agent tool schemas — Head Start bundle boundary", () => {
@@ -1173,6 +1190,17 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     );
   });
 
+  test("full-access runs expose both subagent profiles without a rollout flag", () => {
+    expect(routeSrc).toMatch(
+      /const securityValidationSubagentsEnabled\s*=\s*agentPermissionMode === "full_access";/,
+    );
+    expect(routeSrc).toMatch(
+      /const securityTaskSubagentsEnabled\s*=\s*securityValidationSubagentsEnabled;/,
+    );
+    expect(routeSrc).not.toContain("resolveSecurityTaskSubagentsEnabled");
+    expect(routeSrc).not.toContain("subagent-feature");
+  });
+
   test("parent delivery is acknowledged only after result injection and synthesis", () => {
     expect(taskSrc).toMatch(
       /subagentCompletionGate:[\s\S]*?markInjected:[\s\S]*?markSubagentResultInjectedForParent/,
@@ -1245,6 +1273,39 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     );
     expect(routeSrc).toMatch(
       /shouldRequireAgentApprovalWorkerVersion\(\)[\s\S]*!approvalWorkerVersion[\s\S]*temporarily unavailable/,
+    );
+  });
+
+  test("lightweight machine routing stays fail-closed and uses one decision for every trigger path", () => {
+    expect(machineRoutingSrc).toMatch(
+      /subscription !== "pro" && subscription !== "pro-plus"/,
+    );
+    expect(machineRoutingSrc).toMatch(/if \(!isNewChat\)/);
+    expect(machineRoutingSrc).toMatch(/requestMessageCount !== 1/);
+    expect(machineRoutingSrc).toMatch(
+      /requestMessageBytes > AGENT_LIGHTWEIGHT_REQUEST_MAX_BYTES/,
+    );
+    expect(machineRoutingSrc).toMatch(/if \(hasFileAttachment\)/);
+    expect(machineRoutingSrc).toMatch(/if \(hasProjectContext\)/);
+    expect(machineRoutingSrc).toMatch(/if \(hasTodos\)/);
+    expect(machineRoutingSrc).toMatch(/if \(subagentsEnabled\)/);
+    expect(routeSrc).toMatch(
+      /subagentsEnabled:\s*securityValidationSubagentsEnabled\s*\|\|\s*securityTaskSubagentsEnabled/,
+    );
+    expect(machineRoutingSrc).toMatch(
+      /machine: lightweightSmall1xEnabled \? "small-1x" : "small-2x"/,
+    );
+    expect(routeSrc).toMatch(
+      /const machineRoutingFlagPromise = machineRoutingEligibility\.eligible/,
+    );
+    expect(routeSrc).toMatch(
+      /const triggerMachine = machineRoutingDecision\.machine/,
+    );
+    expect(routeSrc).toMatch(
+      /const approvalTriggerConfig\s*=\s*{[\s\S]*?machine:\s*triggerMachine/,
+    );
+    expect(routeSrc).toMatch(
+      /tasks\.trigger<[\s\S]*?triggerOptions[\s\S]*?getAgentMachineRoutingExposure/,
     );
   });
 
@@ -1341,8 +1402,25 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     for (const source of [chatHandlerSrc, taskSrc]) {
       expect(source).toMatch(/getAgentAutoContinueStopSource\(\{/);
       expect(source).toMatch(/finishReason:\s*state\.streamFinishReason/);
+      expect(source).toMatch(
+        /if \(\s*autoContinueStopSource[\s\S]{0,100}!isAutomaticContinuation\s*\) \{\s*writeAutoContinue/,
+      );
       expect(source).toMatch(/writeAutoContinue\(writer\)/);
+      expect(source).toMatch(/agent_auto_continue_suppressed/);
     }
+  });
+
+  test("the direct chat boundary strictly normalizes automatic continuation flags", () => {
+    expect(chatHandlerSrc).toMatch(/isAutoContinue:\s*rawIsAutoContinue/);
+    expect(chatHandlerSrc).toMatch(
+      /isAutomaticContinuation:\s*rawIsAutomaticContinuation/,
+    );
+    expect(chatHandlerSrc).toMatch(
+      /const isAutoContinue = rawIsAutoContinue === true/,
+    );
+    expect(chatHandlerSrc).toMatch(
+      /isAutoContinue && rawIsAutomaticContinuation === true/,
+    );
   });
 
   test("handled user rate limits are returned after the UI error chunk is flushed", () => {
@@ -1538,6 +1616,9 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     for (const source of [taskSrc, chatHandlerSrc]) {
       expect(source).toMatch(/getAgentAutoContinueStopSource\(\{/);
       expect(source).toMatch(/autoContinueStopSource/);
+      expect(source).toMatch(
+        /if \(\s*autoContinueStopSource[\s\S]{0,100}!isAutomaticContinuation\s*\) \{\s*writeAutoContinue/,
+      );
       expect(source).toMatch(/agent_auto_continue_signaled/);
     }
   });
@@ -1557,7 +1638,7 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
       retryDecisionIdx,
     );
     const retryModelIdx = taskSrc.indexOf(
-      "const retryModel = shouldRetryWithoutImageToolResults",
+      "const retryModel = shouldRetryWithVisionSummary",
       terminalProviderErrorIdx,
     );
     const fallbackIdx = taskSrc.indexOf(
@@ -1590,7 +1671,7 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
       retryDecisionIdx,
     );
     const retryModelIdx = chatHandlerSrc.indexOf(
-      "const retryModel = shouldRetryWithoutImageToolResults",
+      "const retryModel = shouldRetryWithVisionSummary",
       terminalProviderErrorIdx,
     );
     const fallbackIdx = chatHandlerSrc.indexOf(
@@ -1655,7 +1736,7 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
       );
       const catchResetIdx = source.indexOf(resetCall, catchModelSwitchIdx);
       const catchRetryStreamIdx = source.indexOf(
-        "createStream(fallbackModel)",
+        "createStream(apiRetryModel)",
         catchResetIdx,
       );
 
@@ -1664,7 +1745,7 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
       expect(catchRetryStreamIdx).toBeGreaterThan(catchResetIdx);
 
       const retryModelIdx = source.indexOf(
-        "const retryModel = shouldRetryWithoutImageToolResults",
+        "const retryModel = shouldRetryWithVisionSummary",
       );
       const modelSwitchIdx = source.indexOf(
         "retryUsedFallbackModel =",
@@ -2117,7 +2198,15 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(taskSrc).toMatch(
       /acquireFreeRunConcurrencyLock\(\s*freeUsageSubject/,
     );
-    expect(taskSrc).toMatch(/checkFreeMonthlyCostLimit\(freeUsageSubject\)/);
+    expect(taskSrc).toMatch(
+      /checkFreeMonthlyCostLimit\(\s*freeUsageSubject,\s*userId,\s*"trigger_agent_long",\s*\)/,
+    );
+    expect(
+      taskSrc.match(/checkFreeMonthlyCostLimit\(freeUsageSubject, userId\)/g),
+    ).toHaveLength(2);
+    expect(taskSrc).not.toMatch(
+      /checkFreeMonthlyCostLimit\(freeUsageSubject\)/,
+    );
     expect(taskSrc).toMatch(/recordFreeMonthlyCost\(\s*freeUsageSubject/);
   });
 
@@ -2143,6 +2232,37 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     );
     expect(taskSrc.slice(promptIdx, promptIdx + 700)).toContain(
       "cloudSandboxProvider",
+    );
+  });
+
+  test("agent-long releases the E2B idle lease only after active work settles", () => {
+    expect(taskSrc).toContain("keepE2BLeaseAliveForRun: true");
+    expect(taskSrc).toMatch(
+      /finishE2BIdleLeaseRelease = async \(\) => \{[\s\S]*await stopE2BSandboxRunLeaseHeartbeat\(\);[\s\S]*await releaseE2BSandboxIdleLease\(\);/,
+    );
+
+    const finalCleanupIdx = taskSrc.lastIndexOf(
+      "await ptySessionManager.closeAll(chatId)",
+    );
+    const lifecycleFinishIdx = taskSrc.indexOf(
+      "await finishCloudSandboxLifecycle()",
+      finalCleanupIdx,
+    );
+    const idleLeaseReleaseIdx = taskSrc.indexOf(
+      "await finishE2BIdleLeaseRelease?.()",
+      finalCleanupIdx,
+    );
+    expect(finalCleanupIdx).toBeGreaterThan(-1);
+    expect(idleLeaseReleaseIdx).toBeGreaterThan(finalCleanupIdx);
+    expect(lifecycleFinishIdx).toBeGreaterThan(finalCleanupIdx);
+    expect(lifecycleFinishIdx).toBeGreaterThan(idleLeaseReleaseIdx);
+
+    const onCancelIdx = taskSrc.indexOf("onCancel: async");
+    const runIdx = taskSrc.indexOf("run: async", onCancelIdx);
+    expect(onCancelIdx).toBeGreaterThan(-1);
+    expect(runIdx).toBeGreaterThan(onCancelIdx);
+    expect(taskSrc.slice(onCancelIdx, runIdx)).not.toContain(
+      "finishE2BIdleLeaseRelease",
     );
   });
 

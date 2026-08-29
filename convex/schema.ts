@@ -304,6 +304,19 @@ export default defineSchema({
       v.literal("temporary_pause"),
       v.literal("other"),
     ),
+    reason_subcategory: v.optional(
+      v.union(
+        v.literal("too_expensive_low_frequency"),
+        v.literal("insufficient_included_usage"),
+        v.literal("failed_or_incomplete_task"),
+        v.literal("slow_or_disconnected_agent"),
+        v.literal("wrong_execution_environment"),
+        v.literal("model_quality"),
+        v.literal("billing_or_renewal"),
+        v.literal("missing_capability"),
+        v.literal("other"),
+      ),
+    ),
     reason_details_id: v.optional(v.id("cancellation_reason_details")),
     status: v.union(v.literal("started"), v.literal("completed")),
     source: v.union(v.literal("in_app"), v.literal("billing_portal")),
@@ -1051,10 +1064,22 @@ export default defineSchema({
     question: v.string(),
     cohort_label: v.string(),
     requested_by: v.string(),
+    // Optional for compatibility with v1 audit rows. New runs always write
+    // bounded provenance without storing the source query or request payload.
+    cohort_source: v.optional(v.literal("posthog")),
+    posthog_project_id: v.optional(v.number()),
+    cohort_selected_at: v.optional(v.number()),
+    selection_query_fingerprint: v.optional(v.string()),
+    selection_limitations: v.optional(v.array(v.string())),
+    sampling_mode: v.optional(
+      v.union(v.literal("representative"), v.literal("pre_event")),
+    ),
+    evidence_window_days: v.optional(v.number()),
     cohort_size: v.number(),
     max_chats_per_user: v.number(),
     model: v.string(),
     reasoning_enabled: v.boolean(),
+    reasoning_effort: v.optional(v.literal("low")),
     status: researchRunStatusValidator,
     profiles_completed: v.number(),
     profiles_failed: v.number(),
@@ -1073,6 +1098,7 @@ export default defineSchema({
     analysis_id: v.string(),
     user_id: v.string(),
     pseudonym: v.string(),
+    evidence_anchor_at: v.optional(v.number()),
     created_at: v.number(),
   })
     .index("by_analysis_and_user", ["analysis_id", "user_id"])

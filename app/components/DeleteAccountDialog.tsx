@@ -15,11 +15,46 @@ import { toast } from "sonner";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Loader2, Lock, TriangleAlert } from "lucide-react";
+import {
+  ACCOUNT_CLEANUP_IN_PROGRESS_CODE,
+  MAX_ACCOUNT_CLEANUP_REQUESTS,
+} from "@/lib/account-deletion";
 
 type DeleteAccountDialogProps = {
   open: boolean;
   onOpenChange: (open: boolean) => void;
 };
+
+type DeleteAccountResponse = {
+  code?: string;
+  error?: string;
+};
+
+async function requestAccountDeletion() {
+  for (let attempt = 0; attempt < MAX_ACCOUNT_CLEANUP_REQUESTS; attempt++) {
+    const response = await fetch("/api/delete-account", { method: "POST" });
+    const data = (await response
+      .json()
+      .catch(() => ({}))) as DeleteAccountResponse;
+
+    if (
+      response.status === 409 &&
+      data.code === ACCOUNT_CLEANUP_IN_PROGRESS_CODE
+    ) {
+      continue;
+    }
+
+    if (!response.ok) {
+      throw new Error(data.error || "Failed to delete account");
+    }
+
+    return;
+  }
+
+  throw new Error(
+    "Account cleanup is still in progress after the bounded retry window",
+  );
+}
 
 export const DeleteAccountDialog = ({
   open,
@@ -78,11 +113,7 @@ export const DeleteAccountDialog = ({
     try {
       // Delete Convex data, cancel Stripe subs, remove WorkOS org(s), and
       // delete the WorkOS user server-side.
-      const res = await fetch("/api/delete-account", { method: "POST" });
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
-        throw new Error(data?.error || "Failed to cancel subscriptions");
-      }
+      await requestAccountDeletion();
       // Clear HttpOnly auth cookies on the server, then redirect home
       try {
         await fetch("/api/clear-auth-cookies", { method: "POST" });

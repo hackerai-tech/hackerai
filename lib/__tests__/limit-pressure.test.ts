@@ -6,6 +6,21 @@ import {
 } from "../limit-pressure";
 
 describe("limit pressure helpers", () => {
+  it("classifies free concurrency separately without an upgrade CTA", () => {
+    expect(
+      getLimitPressureContext({
+        subscription: "free",
+        capReason: "free_concurrency",
+      }),
+    ).toMatchObject({
+      limitType: "concurrency",
+      upgradeAvailable: false,
+      addCreditAvailable: false,
+      primaryCta: undefined,
+      eligibleCtas: [],
+    });
+  });
+
   it("routes free limit pressure to upgrade only", () => {
     expect(
       getLimitPressureContext({

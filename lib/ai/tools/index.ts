@@ -21,6 +21,7 @@ import {
 // the added complexity. The agent should use run_terminal_cmd with rg instead.
 // import { createMatch } from "./match";
 import type { ToolSet, UIMessageStreamWriter } from "ai";
+import type { Sandbox } from "@e2b/code-interpreter";
 import type {
   ChatMode,
   ToolContext,
@@ -57,6 +58,11 @@ import type {
   CloudSandboxProvider,
   CloudSandboxSelectionReason,
 } from "./utils/cloud-sandbox-provider";
+import {
+  releaseE2BSandboxIdleLeaseBestEffort,
+  startE2BSandboxLeaseHeartbeat,
+  type E2BSandboxLeaseHeartbeat,
+} from "./utils/e2b-lease";
 
 export { isE2BSandbox };
 
@@ -68,6 +74,7 @@ export type CreateToolsRuntimePolicy = {
   cloudSandboxProvider?: CloudSandboxProvider;
   cloudSandboxSelectionReason?: CloudSandboxSelectionReason;
   triggerRegion?: TriggerRunRegion;
+  keepE2BLeaseAliveForRun?: boolean;
 };
 
 export type SandboxSessionUsage = {
@@ -117,6 +124,8 @@ export const createTools = (
   const sandboxAccumulatedRuntimeMs = emptySandboxRuntimeMs();
   let providerSelectionRecorded = false;
   let sandboxBootInfo: SandboxBootInfo | null = null;
+  let lastE2BSandbox: Sandbox | null = null;
+  let runLeaseHeartbeat: E2BSandboxLeaseHeartbeat | null = null;
   let currentModelName = modelName;
   let sandboxOperationQueue: Promise<void> = Promise.resolve();
   let pendingSandbox: Promise<AnySandbox> | null = null;
@@ -214,6 +223,15 @@ export const createTools = (
           latestCostDollars: 0,
         });
         cachedMiosaCostSettlement = null;
+      }
+    }
+    if (isE2BSandbox(newSandbox)) {
+      lastE2BSandbox = newSandbox;
+      if (runtimePolicy.keepE2BLeaseAliveForRun && !runLeaseHeartbeat) {
+        runLeaseHeartbeat = startE2BSandboxLeaseHeartbeat(
+          () => lastE2BSandbox,
+          "run_heartbeat",
+        );
       }
     }
     const now = Date.now();
@@ -520,6 +538,17 @@ export const createTools = (
     return e2bRuntimeMs * E2B_COST_PER_MS + miosaCostDollars;
   };
 
+  const releaseE2BSandboxIdleLease = async (): Promise<boolean> => {
+    if (!lastE2BSandbox) return false;
+    return releaseE2BSandboxIdleLeaseBestEffort(lastE2BSandbox);
+  };
+
+  const stopE2BSandboxRunLeaseHeartbeat = async (): Promise<void> => {
+    const heartbeat = runLeaseHeartbeat;
+    runLeaseHeartbeat = null;
+    await heartbeat?.stop();
+  };
+
   return {
     tools,
     getSandbox,
@@ -529,6 +558,8 @@ export const createTools = (
     sandboxManager,
     getSandboxSessionCost,
     getSandboxSessionUsage,
+    releaseE2BSandboxIdleLease,
+    stopE2BSandboxRunLeaseHeartbeat,
     setCurrentModelName,
     getToolsForModel,
   };

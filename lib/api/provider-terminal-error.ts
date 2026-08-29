@@ -3,25 +3,24 @@ import {
   extractErrorDetails,
   getProviderErrorCategory,
   getProviderStatusCode,
+  isLocalOpenRouterRequestSizeGuardError,
   type ProviderErrorCategory,
 } from "@/lib/utils/error-utils";
-
-const fingerprintToken = (value: string | undefined): string =>
-  (value ?? "unknown")
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9._-]+/g, "_")
-    .replace(/^_+|_+$/g, "") || "unknown";
 
 const providerFromModel = (model: string | undefined): string | undefined =>
   model?.includes("/") ? model.split("/", 1)[0] : undefined;
 
-/** Stable provider failure envelope used by Trigger.dev error fingerprinting. */
+/**
+ * Low-cardinality provider failure envelope used by Trigger.dev error
+ * fingerprinting. Provider and model remain structured fields for diagnosis,
+ * but do not create a separate unresolved error group for every upstream.
+ */
 export class ProviderTerminalError extends Error {
   readonly provider: string;
   readonly model: string;
   readonly category: ProviderErrorCategory;
   readonly statusCode?: number;
+  readonly origin?: "local_request_size_guard";
   readonly openrouterGenerationId?: string;
   readonly openrouterRequestId?: string;
   readonly openrouterUpstreamId?: string;
@@ -43,11 +42,13 @@ export class ProviderTerminalError extends Error {
         ? details.providerName
         : providerFromModel(model));
     const statusCode = getProviderStatusCode(details);
+    const origin = isLocalOpenRouterRequestSizeGuardError(cause)
+      ? "local_request_size_guard"
+      : undefined;
     const message = [
       "Provider terminal error",
-      `provider=${fingerprintToken(provider)}`,
-      `model=${fingerprintToken(model)}`,
-      `category=${fingerprintToken(category)}`,
+      `category=${category}`,
+      origin ? `origin=${origin}` : undefined,
       statusCode ? `status=${statusCode}` : undefined,
     ]
       .filter(Boolean)
@@ -59,6 +60,7 @@ export class ProviderTerminalError extends Error {
     this.model = model ?? "unknown";
     this.category = category;
     this.statusCode = statusCode;
+    this.origin = origin;
     this.openrouterGenerationId =
       context.openRouterMetadata?.openrouter_generation_id;
     this.openrouterRequestId =

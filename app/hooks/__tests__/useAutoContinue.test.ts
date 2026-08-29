@@ -145,6 +145,7 @@ describe("useAutoContinue", () => {
         body: {
           mode: "agent",
           isAutoContinue: true,
+          isAutomaticContinuation: true,
           todos,
           sandboxPreference: "local-123",
           agentPermissionMode: "full_access",
@@ -181,6 +182,7 @@ describe("useAutoContinue", () => {
       {
         body: expect.objectContaining({
           isAutoContinue: true,
+          isAutomaticContinuation: true,
           mode: "agent",
         }),
       },
@@ -294,7 +296,7 @@ describe("useAutoContinue", () => {
     expect(result.current.isAutoContinuing).toBe(false);
   });
 
-  it("increments autoContinueCount in context after each auto-continue", () => {
+  it("increments autoContinueCount in context up to the limit", () => {
     const sendMessage = jest.fn();
     let params = buildParams({ status: "streaming", sendMessage });
     let stream: DataStreamEntry[] = [];
@@ -306,7 +308,7 @@ describe("useAutoContinue", () => {
 
     expect(result.current.autoContinueCount).toBe(0);
 
-    for (let i = 1; i <= 3; i++) {
+    for (let i = 1; i <= MAX_AUTO_CONTINUES; i++) {
       params = { ...params, status: "streaming" };
       rerender(params);
 
@@ -350,6 +352,54 @@ describe("useAutoContinue", () => {
 
     expect(result.current.autoContinueCount).toBe(0);
     expect(result.current.isAutoContinuing).toBe(false);
+  });
+
+  it("resets the continuation allowance when the chat changes", () => {
+    const sendMessage = jest.fn();
+    let params = buildParams({ status: "streaming", sendMessage });
+    const chatOneSignal: DataStreamEntry = {
+      type: "data-auto-continue",
+      data: {},
+      __chatId: "chat-1",
+    };
+
+    const { result, rerender } = renderHook(
+      (p: UseAutoContinueParams) => useTestHarness(p),
+      { initialProps: params, wrapper: createWrapper() },
+    );
+
+    act(() => {
+      result.current.setDataStream([chatOneSignal] as any);
+    });
+    params = { ...params, status: "ready" };
+    rerender(params);
+    act(() => {
+      jest.advanceTimersByTime(500);
+    });
+    expect(result.current.autoContinueCount).toBe(1);
+
+    params = { ...params, chatId: "chat-2", status: "streaming" };
+    rerender(params);
+    expect(result.current.autoContinueCount).toBe(0);
+
+    act(() => {
+      result.current.setDataStream([
+        chatOneSignal,
+        {
+          type: "data-auto-continue",
+          data: {},
+          __chatId: "chat-2",
+        },
+      ] as any);
+    });
+    params = { ...params, status: "ready" };
+    rerender(params);
+    act(() => {
+      jest.advanceTimersByTime(500);
+    });
+
+    expect(sendMessage).toHaveBeenCalledTimes(2);
+    expect(result.current.autoContinueCount).toBe(1);
   });
 
   it("cancels a scheduled continuation when manual submission resets it", () => {

@@ -35,6 +35,18 @@ const reasonCategoryValidator = v.union(
   v.literal("other"),
 );
 
+const reasonSubcategoryValidator = v.union(
+  v.literal("too_expensive_low_frequency"),
+  v.literal("insufficient_included_usage"),
+  v.literal("failed_or_incomplete_task"),
+  v.literal("slow_or_disconnected_agent"),
+  v.literal("wrong_execution_environment"),
+  v.literal("model_quality"),
+  v.literal("billing_or_renewal"),
+  v.literal("missing_capability"),
+  v.literal("other"),
+);
+
 const usageSegmentValidator = v.union(
   v.literal("none"),
   v.literal("light"),
@@ -57,6 +69,16 @@ type CancellationReasonCategory =
   | "hit_usage_limits"
   | "switched_tool"
   | "temporary_pause"
+  | "other";
+type CancellationReasonSubcategory =
+  | "too_expensive_low_frequency"
+  | "insufficient_included_usage"
+  | "failed_or_incomplete_task"
+  | "slow_or_disconnected_agent"
+  | "wrong_execution_environment"
+  | "model_quality"
+  | "billing_or_renewal"
+  | "missing_capability"
   | "other";
 
 function usageSegment(requestCount: number): RecentUsageSegment {
@@ -117,6 +139,9 @@ export const recordCancellationStarted = mutation({
     plan: v.optional(v.string()),
     subscriptionTier: v.optional(subscriptionTierValidator),
     reasonCategory: reasonCategoryValidator,
+    // Optional during rollout so an older app server can still record the
+    // broad reason while the new survey deploy propagates.
+    reasonSubcategory: v.optional(reasonSubcategoryValidator),
     reasonDetails: v.string(),
     accountCreatedAt: v.optional(v.number()),
     accountAgeDays: v.optional(v.number()),
@@ -140,6 +165,7 @@ export const recordCancellationStarted = mutation({
       plan: args.plan,
       subscription_tier: args.subscriptionTier,
       reason_category: args.reasonCategory,
+      reason_subcategory: args.reasonSubcategory,
       status: "started",
       source: args.source ?? "in_app",
       started_at: now,
@@ -238,6 +264,7 @@ export const getCancellationReasonReport = query({
       subscriptionTier: v.string(),
       recentUsageSegment: usageSegmentValidator,
       reasonCategory: reasonCategoryValidator,
+      reasonSubcategory: v.union(reasonSubcategoryValidator, v.null()),
       startedCount: v.number(),
       completedCount: v.number(),
     }),
@@ -271,6 +298,7 @@ export const getCancellationReasonReport = query({
         subscriptionTier: string;
         recentUsageSegment: RecentUsageSegment;
         reasonCategory: CancellationReasonCategory;
+        reasonSubcategory: CancellationReasonSubcategory | null;
         startedCount: number;
         completedCount: number;
       }
@@ -297,12 +325,14 @@ export const getCancellationReasonReport = query({
         tier,
         row.recent_usage_segment,
         row.reason_category,
+        row.reason_subcategory ?? "unknown",
       ].join("|");
       const group = groups.get(key) ?? {
         plan,
         subscriptionTier: tier,
         recentUsageSegment: row.recent_usage_segment,
         reasonCategory: row.reason_category,
+        reasonSubcategory: row.reason_subcategory ?? null,
         startedCount: 0,
         completedCount: 0,
       };
@@ -336,6 +366,7 @@ export const getCancellationFeedbackForAnalysis = internalQuery({
     v.object({
       createdAt: v.string(),
       reasonCategory: v.union(reasonCategoryValidator, v.null()),
+      reasonSubcategory: v.union(reasonSubcategoryValidator, v.null()),
       subscriptionTier: v.union(subscriptionTierValidator, v.null()),
       plan: v.union(v.string(), v.null()),
       status: v.union(v.literal("started"), v.literal("completed"), v.null()),
@@ -381,6 +412,7 @@ export const getCancellationFeedbackForAnalysis = internalQuery({
         return {
           createdAt: new Date(detail.created_at).toISOString(),
           reasonCategory: reason?.reason_category ?? null,
+          reasonSubcategory: reason?.reason_subcategory ?? null,
           subscriptionTier: reason?.subscription_tier ?? null,
           plan: reason?.plan ?? null,
           status: reason?.status ?? null,

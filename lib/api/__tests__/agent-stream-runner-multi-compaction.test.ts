@@ -211,6 +211,45 @@ describe("resolveAgentModelForImageToolResults", () => {
     ).toBe("model-grok-4.5-pro");
   });
 
+  it("uses direct GLM Flash for Standard image tool results", () => {
+    expect(
+      resolveAgentModelForImageToolResults(
+        "model-deepseek-v4-flash-0731",
+        "agent",
+        true,
+        "hackerai-standard",
+        false,
+        true,
+      ),
+    ).toBe("model-glm-5.3-flash");
+  });
+
+  it("uses direct GLM Flash Pro for Pro image tool results", () => {
+    expect(
+      resolveAgentModelForImageToolResults(
+        "model-deepseek-v4-pro-0813",
+        "agent",
+        true,
+        "hackerai-pro",
+        false,
+        true,
+      ),
+    ).toBe("model-glm-5.3-flash-pro");
+  });
+
+  it("keeps the DeepSeek text model during MiniMax summary recovery", () => {
+    expect(
+      resolveAgentModelForImageToolResults(
+        "model-deepseek-v4-pro-0813",
+        "agent",
+        true,
+        "hackerai-pro",
+        true,
+        true,
+      ),
+    ).toBe("model-deepseek-v4-pro-0813");
+  });
+
   it.each(["model-deepseek-v4-flash-0731", "model-deepseek-v4-pro-0813"])(
     "keeps %s active when image tool results have auxiliary descriptions",
     (modelName) => {
@@ -273,6 +312,20 @@ describe("resolveAgentModelAfterSummarization", () => {
     ).toBe("model-deepseek-v4-flash-0731");
     expect(
       resolveAgentModelAfterSummarization("model-grok-4.5-pro", "agent", false),
+    ).toBe("model-deepseek-v4-pro-0813");
+    expect(
+      resolveAgentModelAfterSummarization(
+        "model-glm-5.3-flash",
+        "agent",
+        false,
+      ),
+    ).toBe("model-deepseek-v4-flash-0731");
+    expect(
+      resolveAgentModelAfterSummarization(
+        "model-glm-5.3-flash-pro",
+        "agent",
+        false,
+      ),
     ).toBe("model-deepseek-v4-pro-0813");
   });
 

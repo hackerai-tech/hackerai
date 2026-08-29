@@ -33,9 +33,12 @@ describe("systemPrompt security instructions", () => {
     expect(enabled).toContain(
       "Do not substitute parent-run tools to repeat the same validation",
     );
+    expect(enabled).toContain('profile="security_validation"');
+    expect(enabled).toContain("omit skills");
+    expect(enabled).not.toContain('set skills to ["security_validation"]');
   });
 
-  it("exposes the free-form security_task policy without runtime skills", async () => {
+  it("exposes the free-form security_task policy with optional specialist skills", async () => {
     const prompt = await systemPrompt(
       "user_123",
       "agent",
@@ -52,7 +55,21 @@ describe("systemPrompt security instructions", () => {
     expect(prompt).toContain("<focused_security_tasks>");
     expect(prompt).toContain('profile="security_task"');
     expect(prompt).toContain("The task is free-form");
-    expect(prompt).toContain("Do not pass skills");
+    expect(prompt).not.toContain("<available_subagent_skills");
+    expect(prompt).not.toContain("vulnerabilities/idor:");
+    expect(prompt).not.toContain("frameworks/nextjs:");
+    expect(prompt).toContain("Specialist skills are optional");
+    expect(prompt).toContain(
+      "Do not search for, load, or assign skills by default",
+    );
+    expect(prompt).toContain("otherwise omit skills");
+    expect(prompt).not.toContain("1-3 skills normally");
+    expect(prompt).toContain("Use search_skills");
+    expect(prompt).toContain("Use load_skill");
+    expect(prompt).toContain(
+      "permanently included in that child's system prompt",
+    );
+    expect(prompt).toContain("Skills provide methodology only");
     expect(prompt).toContain("one-active and three-total limits");
     expect(prompt).not.toContain("<independent_validation>");
   });
@@ -156,7 +173,7 @@ describe("systemPrompt security instructions", () => {
     }
   });
 
-  it("does not invent a cutoff for the free DeepSeek routes", async () => {
+  it("does not invent a cutoff for the free Ask route", async () => {
     const prompt = await systemPrompt(
       "user_123",
       "ask",

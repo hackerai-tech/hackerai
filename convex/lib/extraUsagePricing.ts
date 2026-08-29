@@ -1,3 +1,5 @@
+// This multiplier defines the dollar value of stored Extra Usage points.
+// Keep it stable so pricing changes do not revalue existing prepaid balances.
 export const EXTRA_USAGE_MULTIPLIER = 1.5;
 export const EXTRA_USAGE_POINTS_PER_DOLLAR = 10_000;
 

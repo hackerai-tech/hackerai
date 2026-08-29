@@ -41,6 +41,7 @@ import {
   extraUsagePointsToDollars,
 } from "@/convex/lib/extraUsagePricing";
 import {
+  EXTRA_USAGE_REQUEST_MULTIPLIER,
   NORMAL_USAGE_MULTIPLIER,
   POINTS_PER_DOLLAR,
 } from "@/lib/rate-limit/usage-pricing";
@@ -68,15 +69,16 @@ import {
 } from "@/lib/limit-pressure";
 
 export const USAGE_SETTLEMENT_SUCCESS_SAMPLE_RATE = 0.005;
-export const USAGE_PRICING_VERSION = `request-${NORMAL_USAGE_MULTIPLIER.toFixed(2)}-extra-${EXTRA_USAGE_MULTIPLIER.toFixed(2)}-v1`;
+export const USAGE_PRICING_VERSION = `request-${NORMAL_USAGE_MULTIPLIER.toFixed(2)}-extra-${EXTRA_USAGE_REQUEST_MULTIPLIER.toFixed(2)}-v2`;
 
 const usagePricingAnalyticsProperties = {
   usage_pricing_version: USAGE_PRICING_VERSION,
   request_usage_multiplier: NORMAL_USAGE_MULTIPLIER,
   included_usage_multiplier: NORMAL_USAGE_MULTIPLIER,
-  extra_usage_multiplier: EXTRA_USAGE_MULTIPLIER,
+  extra_usage_multiplier: EXTRA_USAGE_REQUEST_MULTIPLIER,
+  extra_usage_balance_multiplier: EXTRA_USAGE_MULTIPLIER,
   effective_extra_usage_multiplier: Number(
-    (NORMAL_USAGE_MULTIPLIER * EXTRA_USAGE_MULTIPLIER).toFixed(4),
+    (EXTRA_USAGE_REQUEST_MULTIPLIER * EXTRA_USAGE_MULTIPLIER).toFixed(4),
   ),
 } as const;
 
@@ -156,13 +158,14 @@ function posthogProviderException(
     }
     return enriched;
   }
-  if (message === "Provider streaming error" || message === error.message) {
-    return error;
-  }
-
   const enriched = new Error(message);
   enriched.name = error.name;
-  (enriched as Error & { cause?: unknown }).cause = error;
+  if (typeof details.errorStack === "string") {
+    enriched.stack = details.errorStack;
+  }
+  // Do not attach the original provider error as a cause. AI SDK errors carry
+  // enumerable responseBody/data fields, and telemetry transports may traverse
+  // or serialize those properties even when the top-level message is safe.
   return enriched;
 }
 

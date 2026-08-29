@@ -45,12 +45,24 @@ const validPayload = {
   question: "What recurring work creates the most customer value?",
   cohortLabel: "PostHog top-spender research cohort",
   userIds: ["user-1", "user-2", "user-3"],
+  cohortSelectedAt: Date.UTC(2026, 7, 25),
+  selectionQueryFingerprint:
+    "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
   maxChatsPerUser: 12,
+};
+
+const validTriggeredPayload = {
+  ...validPayload,
+  cohortSource: "posthog",
+  posthogProjectId: 144137,
+  selectionLimitations: [],
+  samplingMode: "representative",
 };
 
 const validResult = {
   analysisId: "c6e714d8-1da5-4ef4-be1c-39363a0c83fc",
   status: "completed",
+  userIds: validPayload.userIds,
   failedProfiles: 0,
   usersAnalyzed: 3,
   report: {
@@ -75,16 +87,33 @@ const validResult = {
     ],
     primaryAvatar: "Independent security practitioner",
     secondaryAvatars: [],
-    crossCohortPatterns: ["Multi-step Agent usage"],
+    crossCohortPatterns: [
+      {
+        pattern: "Multi-step Agent usage",
+        basis: "observed",
+        evidenceUserCount: 3,
+        confidence: "high",
+      },
+    ],
     unknowns: ["Profession and authorization remain unknown"],
     followUpExperiments: [
       {
         hypothesis: "Verified practitioners value faster activation.",
         test: "Run a verified-practitioner cohort.",
         successMetric: "Activation and repeat Agent usage",
+        baselineRequired: true,
       },
     ],
     privacyNote: "Aggregate findings only.",
+    researchBasis: {
+      cohortSource: "posthog",
+      posthogProjectId: 144137,
+      cohortSelectedAt: validPayload.cohortSelectedAt,
+      selectionQueryFingerprint: validPayload.selectionQueryFingerprint,
+      selectionLimitations: [],
+      samplingMode: "representative",
+      causalAttributionConfidence: "low",
+    },
     coverage: {
       usersRequested: 3,
       usersAnalyzed: 3,
@@ -167,7 +196,7 @@ describe("PM user research gateway", () => {
     });
     expect(triggerTask).toHaveBeenCalledWith(
       "pm-user-research",
-      { ...validPayload, requestedBy: "pm-gateway" },
+      { ...validTriggeredPayload, requestedBy: "pm-gateway" },
       {
         idempotencyKey: "pm-research:research-request-123",
         idempotencyKeyTTL: "24h",
@@ -191,7 +220,7 @@ describe("PM user research gateway", () => {
     expect(triggerTask).toHaveBeenCalledWith(
       "pm-user-research",
       {
-        ...validPayload,
+        ...validTriggeredPayload,
         linearIssueId: "HAC-65",
         requestedBy: "pm-gateway",
       },
@@ -278,7 +307,7 @@ describe("PM user research gateway", () => {
     expect(triggerTask).not.toHaveBeenCalled();
   });
 
-  it("returns only the validated aggregate result for a gateway run", async () => {
+  it("returns the validated result with cohort user IDs", async () => {
     retrieveRun.mockResolvedValue({
       taskIdentifier: "pm-user-research",
       tags: ["pm-user-research-gateway"],

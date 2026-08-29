@@ -917,9 +917,88 @@ describe("POST /api/subscription/webhook", () => {
         stripe_invoice_id: "in_pro_20",
         attempt_count: 3,
         recovery_result: "recovered",
+        amount_paid_dollars: 20,
+        attributed_revenue_dollars: 20,
+        user_count: 1,
+        $set: {
+          subscription_tier: "pro",
+        },
         $insert_id: "invoice_paid:evt_invoice_paid_pro_20:user_pro_20",
       }),
     );
+  });
+
+  it("records every successful invoice with per-user attributed revenue", async () => {
+    mockConstructEvent.mockReturnValue({
+      id: "evt_invoice_paid_team",
+      type: "invoice.paid",
+      data: {
+        object: {
+          id: "in_team",
+          customer: "cus_team",
+          amount_paid: 3000,
+          currency: "usd",
+          billing_reason: "subscription_cycle",
+          parent: {
+            subscription_details: { subscription: "sub_team" },
+          },
+          status_transitions: { paid_at: 1_782_000_000 },
+        },
+      },
+    });
+    mockRetrieveCustomer.mockResolvedValue({
+      deleted: false,
+      id: "cus_team",
+      metadata: { workOSOrganizationId: "org_team" },
+    } as never);
+    mockListMemberships.mockResolvedValue({
+      autoPagination: jest
+        .fn()
+        .mockResolvedValue([
+          { userId: "user_team_a" },
+          { userId: "user_team_b" },
+        ]),
+    } as never);
+    mockRetrieveSubscription.mockResolvedValue({
+      id: "sub_team",
+      status: "active",
+      latest_invoice: "in_team",
+      metadata: {},
+      items: {
+        data: [
+          {
+            quantity: 2,
+            current_period_end: 1_785_000_000,
+            price: {
+              id: "price_team",
+              lookup_key: "team-monthly-plan",
+              recurring: { interval: "month", interval_count: 1 },
+            },
+          },
+        ],
+      },
+    } as never);
+
+    const { POST } = await import("../route");
+    const response = await POST(makeWebhookRequest());
+
+    expect(response.status).toBe(200);
+    for (const userId of ["user_team_a", "user_team_b"]) {
+      expect(mockPostHogEvent).toHaveBeenCalledWith(
+        PAID_FUNNEL_EVENTS.invoicePaid,
+        expect.objectContaining({
+          userId,
+          amount_paid_dollars: 30,
+          attributed_revenue_dollars: 15,
+          user_count: 2,
+          stripe_invoice_id: "in_team",
+          $insert_id: `invoice_paid:evt_invoice_paid_team:${userId}`,
+          $set: {
+            subscription_tier: "team",
+          },
+        }),
+      );
+    }
   });
 
   it("emits recovery when invoice.paid arrives before the failure webhook", async () => {

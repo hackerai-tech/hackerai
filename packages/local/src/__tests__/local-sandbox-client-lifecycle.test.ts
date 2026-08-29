@@ -72,6 +72,33 @@ describe("LocalSandboxClient cleanup", () => {
     expect(mockConfirmProcessTermination).toHaveBeenCalledTimes(1);
   });
 
+  it("acknowledges cancellation when the streamed command already exited", async () => {
+    const client = new LocalSandboxClient(config);
+    const publishToChannel = jest.fn().mockResolvedValue(undefined);
+    const privateClient = client as unknown as {
+      handleCommandCancel: (message: {
+        type: "command_cancel";
+        commandId: string;
+        targetConnectionId: string;
+      }) => Promise<void>;
+      publishToChannel: typeof publishToChannel;
+    };
+    privateClient.publishToChannel = publishToChannel;
+
+    await privateClient.handleCommandCancel({
+      type: "command_cancel",
+      commandId: "command-already-gone",
+      targetConnectionId: "connection-1",
+    });
+
+    expect(mockConfirmProcessTermination).not.toHaveBeenCalled();
+    expect(publishToChannel).toHaveBeenCalledWith({
+      type: "command_cancel_result",
+      commandId: "command-already-gone",
+      canceled: true,
+    });
+  });
+
   it("reports an injected exit handler without exiting the process", async () => {
     const onExitRequested = jest.fn();
     const exitSpy = jest

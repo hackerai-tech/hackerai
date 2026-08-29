@@ -33,11 +33,46 @@ describe("security validation subagent runtime contracts", () => {
     expect(source).not.toMatch(/allowedToolNames:[\s\S]{0,500}"delegate_task"/);
   });
 
+  it("loads only validated server-reviewed skills into focused task children", () => {
+    const tools = read("lib/ai/tools/subagent-tools.ts");
+    const profiles = read("lib/ai/subagents/profiles.ts");
+    expect(tools).toContain("resolveSubagentSkills");
+    expect(tools).toContain("skills = resolvedSkills.skills.map");
+    expect(tools).toContain("Skills are optional: omit them by default");
+    expect(tools).not.toContain("1-3 normally");
+    expect(tools).not.toContain(
+      "security_task uses fixed server tools and does not accept skills",
+    );
+    expect(profiles).toContain("renderSubagentSkillKnowledge");
+    expect(profiles).toContain("buildSystemPrompt");
+    expect(profiles).toContain("dynamically loaded content is a tool result");
+    expect(read("trigger/subagent.ts")).toContain(
+      "const systemPrompt = profile.buildSystemPrompt(row)",
+    );
+    expect(read("trigger/agent-long.ts")).toContain(
+      "search_skills: createSearchSkillsTool()",
+    );
+    expect(read("trigger/agent-long.ts")).toContain(
+      "load_skill: createLoadSkillTool()",
+    );
+    expect(read("trigger/subagent.ts")).toContain(
+      "search_skills: createSearchSkillsTool()",
+    );
+    expect(read("trigger/subagent.ts")).toContain(
+      "load_skill: createLoadSkillTool()",
+    );
+    expect(profiles).not.toMatch(
+      /allowedToolNames:[\s\S]{0,500}"create_agent"/,
+    );
+  });
+
   it("starts asynchronously, waits durably, and scopes the browser token to the owned child run", () => {
     const tools = read("lib/ai/tools/subagent-tools.ts");
     const tokenRoute = read("app/api/subagents/[subagentId]/token/route.ts");
-    expect(tools).toContain("subagentTask.trigger(");
-    expect(tools).toContain("{ subagentId, convexUrl: getConvexUrl() }");
+    expect(tools).toContain("tasks.trigger<typeof subagentTask>(");
+    expect(tools).toContain('"hackerai-subagent"');
+    expect(tools).toContain("triggerRegion: config.triggerRegion");
+    expect(tools).toContain("region: config.triggerRegion");
     expect(tools).not.toContain("triggerAndWait");
     expect(tools).toContain("claimNextTerminalSubagentForParent");
     expect(tools).toContain("await wait.for");
@@ -49,6 +84,7 @@ describe("security validation subagent runtime contracts", () => {
       "expirationTime: `${SUBAGENT_TOKEN_TTL_SECONDS}s`",
     );
     const child = read("trigger/subagent.ts");
+    expect(child).toContain("triggerRegion: payload.triggerRegion");
     expectMarkerOrder(
       child,
       "setConvexUrl(payload.convexUrl)",

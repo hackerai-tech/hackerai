@@ -18,11 +18,26 @@ import {
   getLimitPressureContext,
   type LimitCapReason,
 } from "@/lib/limit-pressure";
-import { isUserRateLimitKey } from "./key-cleanup";
-import { NORMAL_USAGE_MULTIPLIER, POINTS_PER_DOLLAR } from "./usage-pricing";
+import {
+  isFreeQuotaSubjectRateLimitKey,
+  isUserRateLimitKey,
+} from "./key-cleanup";
+import {
+  NORMAL_USAGE_MULTIPLIER,
+  EXTRA_USAGE_REQUEST_MULTIPLIER,
+  POINTS_PER_DOLLAR,
+  includedPointsToExtraUsagePoints,
+  extraUsagePointsToIncludedPoints,
+} from "./usage-pricing";
 
 export { isUserRateLimitKey } from "./key-cleanup";
-export { NORMAL_USAGE_MULTIPLIER, POINTS_PER_DOLLAR } from "./usage-pricing";
+export {
+  NORMAL_USAGE_MULTIPLIER,
+  POINTS_PER_DOLLAR,
+  EXTRA_USAGE_REQUEST_MULTIPLIER,
+  includedPointsToExtraUsagePoints,
+  extraUsagePointsToIncludedPoints,
+} from "./usage-pricing";
 
 // =============================================================================
 // Configuration
@@ -90,6 +105,20 @@ const GLM_5_3_PRICING: ModelPricing = {
   cacheRead: 0.26,
   cacheWrite: 1.4,
 };
+// Use the undiscounted OpenRouter ceiling so budget checks remain conservative
+// when the launch promotion or selected upstream provider changes.
+const GLM_5_3_FLASH_PRICING: ModelPricing = {
+  input: 0.15,
+  output: 0.5,
+  cacheRead: 0.03,
+  cacheWrite: 0.15,
+};
+const DEEPSEEK_V4_FLASH_VISION_PRICING: ModelPricing = {
+  input: 0.44,
+  output: 1.32,
+  cacheRead: 0.014,
+  cacheWrite: 0.44,
+};
 const KIMI_K3_PRICING: ModelPricing = {
   input: 3.0,
   output: 15.0,
@@ -110,19 +139,24 @@ const MODEL_PRICING_MAP: Record<string, ModelPricing> = {
   "agent-model": GROK_4_6_BASE_PRICING,
   "fallback-agent-model": GROK_4_6_BASE_PRICING,
   "fallback-ask-model": GROK_4_6_BASE_PRICING,
+  // Free Ask uses GLM 5.3 Flash. Keep the undiscounted ceiling so usage
+  // accounting remains conservative if launch pricing changes.
+  "ask-model-free": GLM_5_3_FLASH_PRICING,
   // DeepSeek V4 Flash 0731 rates from OpenRouter: $0.14 in / $0.28 out per 1M tokens.
-  "ask-model-free": DEEPSEEK_V4_FLASH_0731_PRICING,
   "agent-model-free": DEEPSEEK_V4_FLASH_0731_PRICING,
   "agent-auto-review-model": DEEPSEEK_V4_FLASH_0731_PRICING,
   "model-deepseek-v4-flash-0731": DEEPSEEK_V4_FLASH_0731_PRICING,
   "model-deepseek-v4-pro": DEEPSEEK_V4_PRO_PRICING,
   "model-deepseek-v4-pro-0813": DEEPSEEK_V4_PRO_PRICING,
+  "model-deepseek-v4-flash-vision": DEEPSEEK_V4_FLASH_VISION_PRICING,
   // Persisted Max compatibility key; the active provider route is Kimi K3.
   "model-opus-4.6": KIMI_K3_PRICING,
   // Baseline OpenRouter rates: $0.76 in / $2.42 out per 1M tokens.
   "model-glm-5.2": GLM_5_2_PRICING,
   // OpenRouter rates: $1.40 in / $4.40 out / $0.26 cached input per 1M tokens.
   "model-glm-5.3": GLM_5_3_PRICING,
+  "model-glm-5.3-flash": GLM_5_3_FLASH_PRICING,
+  "model-glm-5.3-flash-pro": GLM_5_3_FLASH_PRICING,
   // OpenRouter rates: $3.00 in / $15.00 out / $0.30 cached input per 1M tokens.
   "model-kimi-k3": KIMI_K3_PRICING,
   // Provider response ids can reach accounting before local-key normalization.
@@ -136,11 +170,13 @@ const MODEL_PRICING_MAP: Record<string, ModelPricing> = {
   "deepseek/deepseek-v4-flash-20260731": DEEPSEEK_V4_FLASH_0731_PRICING,
   "deepseek/deepseek-v4-pro": DEEPSEEK_V4_PRO_PRICING,
   "deepseek/deepseek-v4-pro-0813": DEEPSEEK_V4_PRO_PRICING,
+  "deepseek/deepseek-v4-flash-vision-exp": DEEPSEEK_V4_FLASH_VISION_PRICING,
   "anthropic/claude-opus-4.6": OPUS_4_6_PRICING,
   "z-ai/glm-5.2": GLM_5_2_PRICING,
   "z-ai/glm-5.2-20260616": GLM_5_2_PRICING,
   "z-ai/glm-5.3": GLM_5_3_PRICING,
   "z-ai/glm-5.3-20260816": GLM_5_3_PRICING,
+  "z-ai/glm-5.3-flash": GLM_5_3_FLASH_PRICING,
   "moonshotai/kimi-k3": KIMI_K3_PRICING,
   "moonshotai/kimi-k3-20260715": KIMI_K3_PRICING,
 };
@@ -181,7 +217,7 @@ const getModelPricing = (
 const normalizeTokenCount = (value: number): number =>
   Number.isFinite(value) ? Math.max(0, value) : 0;
 
-/** Convert raw provider/tool spend into billable user-balance points. */
+/** Convert raw provider/tool spend into paid-plan included-usage points. */
 export const billableCostDollarsToPoints = (costDollars: number): number =>
   Number.isFinite(costDollars) && costDollars > 0
     ? Math.max(
@@ -221,8 +257,11 @@ export type UsageDeductionFailureReason =
   | "deduction_failed";
 
 export interface UsageDeductionResult {
+  /** Points deducted from the paid plan's included-usage bucket. */
   includedPointsDeducted: number;
+  /** Stored points deducted from the prepaid Extra Usage balance. */
   extraUsagePointsDeducted: number;
+  /** Uncovered cost expressed in included-usage pricing points. */
   uncoveredPoints: number;
   usageDeductionFailed: boolean;
   usageDeductionFailureReason?: UsageDeductionFailureReason;
@@ -312,10 +351,12 @@ const deductAdditionalUsagePoints = async ({
   ): UsageDeductionResult => {
     const coveredPoints =
       nonNegativePoints(includedPointsDeducted) +
-      nonNegativePoints(extraUsagePointsDeducted);
+      extraUsagePointsToIncludedPoints(
+        nonNegativePoints(extraUsagePointsDeducted),
+      );
     const uncoveredPoints = Math.max(
       0,
-      normalizedAdditionalCost - coveredPoints,
+      Math.ceil(normalizedAdditionalCost - coveredPoints),
     );
     return {
       includedPointsDeducted: nonNegativePoints(includedPointsDeducted),
@@ -345,10 +386,12 @@ const deductAdditionalUsagePoints = async ({
   }
 
   const fromExtraUsage = normalizedAdditionalCost - includedDeducted;
+  const extraUsagePointsToDeduct =
+    includedPointsToExtraUsagePoints(fromExtraUsage);
   let extraUsageDeducted = 0;
   let failureReason: UsageDeductionFailureReason | undefined;
 
-  if (fromExtraUsage > 0) {
+  if (extraUsagePointsToDeduct > 0) {
     if (
       extraUsageConfig?.enabled &&
       (extraUsageConfig.hasBalance || extraUsageConfig.autoReloadEnabled)
@@ -360,12 +403,12 @@ const deductAdditionalUsagePoints = async ({
             ? await deductFromTeamBalance(
                 organizationId!,
                 userId,
-                fromExtraUsage,
+                extraUsagePointsToDeduct,
                 usageSettlementId,
               )
             : await deductFromBalance(
                 userId,
-                fromExtraUsage,
+                extraUsagePointsToDeduct,
                 usageSettlementId,
               );
         } catch (error) {
@@ -379,7 +422,7 @@ const deductAdditionalUsagePoints = async ({
         }
       })();
       if (deductResult.success) {
-        extraUsageDeducted = fromExtraUsage;
+        extraUsageDeducted = extraUsagePointsToDeduct;
       } else {
         failureReason = getDeductionFailureReason(deductResult);
       }
@@ -964,9 +1007,10 @@ export const checkTokenBucketLimit = async (
     const shortfall = extraUsageConfig?.chargeAllUsage
       ? estimatedCost
       : Math.max(0, estimatedCost - monthlyCheck.remaining);
+    const extraUsageShortfall = includedPointsToExtraUsagePoints(shortfall);
 
     // If we're over limit, try extra usage (prepaid balance)
-    if (shortfall > 0) {
+    if (extraUsageShortfall > 0) {
       if (
         extraUsageConfig?.enabled &&
         (extraUsageConfig.hasBalance || extraUsageConfig.autoReloadEnabled)
@@ -975,8 +1019,12 @@ export const checkTokenBucketLimit = async (
         // everyone else hits their personal balance.
         const isTeamPool = subscription === "team" && !!organizationId;
         const deductResult = isTeamPool
-          ? await deductFromTeamBalance(organizationId!, userId, shortfall)
-          : await deductFromBalance(userId, shortfall);
+          ? await deductFromTeamBalance(
+              organizationId!,
+              userId,
+              extraUsageShortfall,
+            )
+          : await deductFromBalance(userId, extraUsageShortfall);
 
         if (deductResult.success) {
           // Extra usage covered the shortfall. Deduct only what subscription contributed.
@@ -992,9 +1040,13 @@ export const checkTokenBucketLimit = async (
           if (!monthlyResult.success) {
             try {
               if (isTeamPool) {
-                await refundToTeamBalance(organizationId!, userId, shortfall);
+                await refundToTeamBalance(
+                  organizationId!,
+                  userId,
+                  extraUsageShortfall,
+                );
               } else {
-                await refundToBalance(userId, shortfall);
+                await refundToBalance(userId, extraUsageShortfall);
               }
             } catch (refundError) {
               console.error(
@@ -1005,7 +1057,7 @@ export const checkTokenBucketLimit = async (
             throw monthlyLimitError(monthlyResult.reset);
           }
 
-          return buildResult(monthlyResult, bucketDeduct, shortfall);
+          return buildResult(monthlyResult, bucketDeduct, extraUsageShortfall);
         }
 
         // Deduction failed - check why
@@ -1217,8 +1269,12 @@ export const deductUsage = async (
     failureReason?: UsageDeductionResult["usageDeductionFailureReason"],
   ): UsageDeductionResult => {
     const coveredPoints =
-      result.includedPointsDeducted + result.extraUsagePointsDeducted;
-    const uncoveredPoints = Math.max(0, actualCostPoints - coveredPoints);
+      result.includedPointsDeducted +
+      extraUsagePointsToIncludedPoints(result.extraUsagePointsDeducted);
+    const uncoveredPoints = Math.max(
+      0,
+      Math.ceil(actualCostPoints - coveredPoints),
+    );
     return {
       ...result,
       uncoveredPoints,
@@ -1297,7 +1353,8 @@ export const deductUsage = async (
 
     const initialCoveredPoints =
       initialDeduction !== undefined
-        ? initialIncludedPoints + initialExtraUsagePoints
+        ? initialIncludedPoints +
+          extraUsagePointsToIncludedPoints(initialExtraUsagePoints)
         : estimatedInputCost;
 
     // Calculate the difference between what has already been deducted and actual cost
@@ -1307,8 +1364,11 @@ export const deductUsage = async (
     if (costDifference < 0) {
       const pointsToRefund = Math.abs(costDifference);
       const extraUsageRefundTarget = Math.min(
-        pointsToRefund,
         initialExtraUsagePoints,
+        Math.floor(
+          (pointsToRefund * EXTRA_USAGE_REQUEST_MULTIPLIER) /
+            NORMAL_USAGE_MULTIPLIER,
+        ),
       );
 
       if (extraUsageRefundTarget > 0) {
@@ -1333,8 +1393,11 @@ export const deductUsage = async (
         );
       }
 
+      const refundedExtraUsageCoverage = extraUsagePointsToIncludedPoints(
+        extraUsageRefundTarget,
+      );
       const includedRefundPoints = Math.min(
-        pointsToRefund - extraUsageRefundTarget,
+        Math.max(0, Math.floor(pointsToRefund - refundedExtraUsageCoverage)),
         initialIncludedPoints,
       );
       if (includedRefundPoints > 0) {
@@ -1359,7 +1422,7 @@ export const deductUsage = async (
       monthly,
       userId,
       subscription,
-      additionalCostPoints: costDifference,
+      additionalCostPoints: Math.ceil(costDifference),
       extraUsageConfig,
       organizationId,
       usageSettlementId,
@@ -1682,12 +1745,13 @@ export const capCurrentCycleAllocation = async (
  * Namespaces (keep in sync with key builders in this file and sliding-window.ts):
  *   - usage:monthly:<userId>:*       — monthly token bucket (any tier)
  *   - upgrade:carryover:<userId>:*   — tier-change stash, claim, and completion keys
- *   - free_limit:<userId>:*          — free-tier shared ask/agent sliding window
- *   - free_referral_bonus:<userId>   — one-time free request units from referral signup
- *   - free_referral_bonus_grant:*:<userId> — referral bonus grant idempotency marker
- *   - free_agent_limit:<userId>:*    — legacy free-tier agent sliding window
- *   - free_monthly_cost:<userId>:*   — free-tier monthly provider/tool cost cap
- *   - free_run_lock:<userId>         — free-tier active-run concurrency lock
+ *   - free_limit:<quotaSubject>:*    — free-tier shared ask/agent sliding window
+ *   - free_referral_bonus:<quotaSubject> — one-time free request units from referral signup
+ *   - free_referral_bonus_grant:*:<quotaSubject> — referral bonus grant idempotency marker
+ *   - free_agent_limit:<quotaSubject>:* — legacy free-tier agent sliding window
+ *   - free_monthly_cost:<quotaSubject>:* — free-tier monthly provider/tool cost cap
+ *   - free_usage_budget_started:v1:<quotaSubject> — free budget experiment marker
+ *   - free_run_lock:<quotaSubject>   — free-tier active-run concurrency lock
  *   - team:debt_applied:*:<userId>   — seat-debt idempotency flag (org-scoped)
  *
  * Deliberately NOT included: team:removed_usage:<orgId> (org counter, not
@@ -1695,18 +1759,22 @@ export const capCurrentCycleAllocation = async (
  */
 export const deleteUserRateLimitKeys = async (
   userId: string,
+  freeQuotaSubject?: string,
 ): Promise<number> => {
   const redis = createRedisClient();
   if (!redis) return 0;
 
   try {
-    const keys = Array.from(
-      new Set(
-        (await scanRedisKeys(redis, `*${userId}*`)).filter((key) =>
-          isUserRateLimitKey(key, userId),
-        ),
-      ),
+    const userKeys = (await scanRedisKeys(redis, `*${userId}*`)).filter((key) =>
+      isUserRateLimitKey(key, userId),
     );
+    const freeQuotaKeys =
+      freeQuotaSubject && freeQuotaSubject !== userId
+        ? (await scanRedisKeys(redis, `*${freeQuotaSubject}*`)).filter((key) =>
+            isFreeQuotaSubjectRateLimitKey(key, freeQuotaSubject),
+          )
+        : [];
+    const keys = Array.from(new Set([...userKeys, ...freeQuotaKeys]));
     if (keys.length === 0) return 0;
     await deleteRedisKeys(redis, keys);
     return keys.length;

@@ -28,6 +28,34 @@ export async function getPostHogFeatureFlagForUser(
   }
 }
 
+export async function getPostHogFeatureFlagValueForUser(
+  flagKey: string,
+  userId: string,
+): Promise<boolean | null> {
+  const client = getClient();
+  if (!client) return null;
+  try {
+    const value = await client.getFeatureFlag(flagKey, userId);
+    return typeof value === "boolean" ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function getPostHogFeatureFlagVariantForUser(
+  flagKey: string,
+  userId: string,
+): Promise<string | undefined> {
+  const client = getClient();
+  if (!client) return undefined;
+  try {
+    const value = await client.getFeatureFlag(flagKey, userId);
+    return typeof value === "string" ? value : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 type LogFields = Record<string, unknown> & {
   userId?: string;
   error?: unknown;
@@ -137,14 +165,9 @@ function sanitizeExceptionForCapture(error: Error): Error {
 
 function sanitizeErrorForConsole(error: unknown): unknown {
   if (error instanceof Error) {
-    const serialized = [
-      error.message,
-      error.stack ?? "",
-      stringifyUnknown(error),
-    ].join("\n");
-    return redactSensitiveErrorMessage(serialized) === serialized
-      ? error
-      : sanitizeExceptionForCapture(error);
+    // Always clone Error instances so enumerable provider-specific fields such
+    // as responseBody, data, and cause cannot reach console/Trigger telemetry.
+    return sanitizeExceptionForCapture(error);
   }
   if (error === undefined) return undefined;
   return redactSensitiveErrorMessage(stringifyUnknown(error));
