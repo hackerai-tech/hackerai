@@ -302,9 +302,10 @@ XAI_API_KEY=${envVars.XAI_API_KEY}
 # =============================================================================
 # CODE EXECUTION - CLOUD SANDBOX (Required for Agent Mode)
 # =============================================================================
-# MIOSA is gradually enabled by PostHog. E2B remains the acquisition fallback.
+# MIOSA is gradually enabled by PostHog. Set the promoted HackerAI template ID
+# supplied by MIOSA before enabling it. E2B remains the acquisition fallback.
 MIOSA_API_KEY=${envVars.MIOSA_API_KEY}
-MIOSA_TEMPLATE_ID=miosa-sandbox
+MIOSA_TEMPLATE_ID=
 
 # Sign up at: https://e2b.dev/
 E2B_API_KEY=${envVars.E2B_API_KEY}

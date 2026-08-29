@@ -6,7 +6,6 @@ import type {
 import type { SandboxBootInfo, SandboxContext } from "@/types";
 
 const MIOSA_SANDBOX_VERSION = "v1";
-const MIOSA_DEFAULT_TEMPLATE = "miosa-sandbox";
 const MIOSA_ACTIVITY_TIMEOUT_SECONDS = 24 * 60 * 60;
 const MIOSA_IDLE_TIMEOUT_SECONDS = 7 * 60;
 const MIOSA_SNAPSHOT_EXPIRATION_DAYS = 30;
@@ -271,12 +270,19 @@ export async function ensureMiosaSandboxConnection(
     return { sandbox: options.initialSandbox };
   }
 
+  const templateId = process.env.MIOSA_TEMPLATE_ID?.trim();
+  if (!templateId) {
+    throw new Error(
+      "MIOSA_TEMPLATE_ID must identify the promoted HackerAI sandbox template",
+    );
+  }
+
   const startedAt = performance.now();
   const client = await createMiosaClient();
   const externalUserId = sandboxNameForUser(context.userID);
   const sdkSandbox = await client.sandboxes.getOrCreate({
     name: externalUserId,
-    templateId: process.env.MIOSA_TEMPLATE_ID ?? MIOSA_DEFAULT_TEMPLATE,
+    templateId,
     persistent: true,
     timeoutSec: MIOSA_ACTIVITY_TIMEOUT_SECONDS,
     idleTimeoutSec: MIOSA_IDLE_TIMEOUT_SECONDS,
@@ -306,8 +312,7 @@ export async function ensureMiosaSandboxConnection(
     path: bootPathFromMiosa(sdkSandbox),
     duration_ms: Math.round(performance.now() - startedAt),
     create_attempts: bootPathFromMiosa(sdkSandbox) === "create_fresh" ? 1 : 0,
-    image_version:
-      process.env.MIOSA_TEMPLATE_ID ?? sdkSandbox.templateId ?? undefined,
+    image_version: templateId,
   });
   return { sandbox };
 }

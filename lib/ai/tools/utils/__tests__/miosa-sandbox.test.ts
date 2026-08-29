@@ -80,6 +80,20 @@ describe("MIOSA sandbox adapter", () => {
     );
   });
 
+  it("rejects acquisition when no promoted template is configured", async () => {
+    delete process.env.MIOSA_TEMPLATE_ID;
+
+    await expect(
+      ensureMiosaSandboxConnection({
+        userID: "user-1",
+        setSandbox: jest.fn(),
+      }),
+    ).rejects.toThrow(
+      "MIOSA_TEMPLATE_ID must identify the promoted HackerAI sandbox template",
+    );
+    expect(mockGetOrCreate).not.toHaveBeenCalled();
+  });
+
   it("maps streaming stdout, stderr, and exit status", async () => {
     const sdkSandbox = createSdkSandbox();
     async function* stream() {

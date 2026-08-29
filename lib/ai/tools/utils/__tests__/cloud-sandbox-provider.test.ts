@@ -9,6 +9,7 @@ import {
 describe("cloud sandbox provider selection", () => {
   const originalProvider = process.env.CLOUD_SANDBOX_PROVIDER;
   const originalMiosaKey = process.env.MIOSA_API_KEY;
+  const originalMiosaTemplate = process.env.MIOSA_TEMPLATE_ID;
 
   afterEach(() => {
     if (originalProvider === undefined) {
@@ -18,6 +19,11 @@ describe("cloud sandbox provider selection", () => {
     }
     if (originalMiosaKey === undefined) delete process.env.MIOSA_API_KEY;
     else process.env.MIOSA_API_KEY = originalMiosaKey;
+    if (originalMiosaTemplate === undefined) {
+      delete process.env.MIOSA_TEMPLATE_ID;
+    } else {
+      process.env.MIOSA_TEMPLATE_ID = originalMiosaTemplate;
+    }
   });
 
   it.each([
@@ -44,9 +50,10 @@ describe("cloud sandbox provider selection", () => {
     expect(getCloudSandboxProvider()).toBe("miosa");
   });
 
-  it("selects MIOSA only for an enabled rollout assignment with credentials", async () => {
+  it("selects MIOSA only for an enabled rollout assignment with complete configuration", async () => {
     delete process.env.CLOUD_SANDBOX_PROVIDER;
     process.env.MIOSA_API_KEY = "msk_test";
+    process.env.MIOSA_TEMPLATE_ID = "hackerai-kali-promoted";
     const getFlag = jest.fn(() => true);
     const evaluateFlags = jest.fn(async () => ({ getFlag }));
 
@@ -66,25 +73,34 @@ describe("cloud sandbox provider selection", () => {
     expect(getFlag).toHaveBeenCalledWith(MIOSA_CLOUD_SANDBOX_ROLLOUT_FLAG);
   });
 
-  it("keeps E2B when MIOSA credentials are unavailable", async () => {
-    delete process.env.CLOUD_SANDBOX_PROVIDER;
-    delete process.env.MIOSA_API_KEY;
-    const evaluateFlags = jest.fn(async () => ({
-      getFlag: () => true,
-    }));
+  it.each([
+    ["API key", undefined, "hackerai-kali-promoted"],
+    ["template ID", "msk_test", undefined],
+  ])(
+    "keeps E2B when the MIOSA %s is unavailable",
+    async (_missingField, apiKey, templateId) => {
+      delete process.env.CLOUD_SANDBOX_PROVIDER;
+      if (apiKey === undefined) delete process.env.MIOSA_API_KEY;
+      else process.env.MIOSA_API_KEY = apiKey;
+      if (templateId === undefined) delete process.env.MIOSA_TEMPLATE_ID;
+      else process.env.MIOSA_TEMPLATE_ID = templateId;
+      const evaluateFlags = jest.fn(async () => ({
+        getFlag: () => true,
+      }));
 
-    await expect(
-      selectCloudSandboxProvider({
-        userId: "user-1",
-        environment: "PREVIEW",
-        featureFlagClient: { evaluateFlags },
-      }),
-    ).resolves.toEqual({
-      provider: "e2b",
-      reason: "miosa_credentials_unavailable",
-    });
-    expect(evaluateFlags).not.toHaveBeenCalled();
-  });
+      await expect(
+        selectCloudSandboxProvider({
+          userId: "user-1",
+          environment: "PREVIEW",
+          featureFlagClient: { evaluateFlags },
+        }),
+      ).resolves.toEqual({
+        provider: "e2b",
+        reason: "miosa_configuration_unavailable",
+      });
+      expect(evaluateFlags).not.toHaveBeenCalled();
+    },
+  );
 
   it("fails closed for an unsupported provider", () => {
     process.env.CLOUD_SANDBOX_PROVIDER = "unknown-provider";

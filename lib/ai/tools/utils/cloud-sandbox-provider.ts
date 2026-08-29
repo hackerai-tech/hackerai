@@ -3,7 +3,7 @@ export type CloudSandboxSelectionReason =
   | "configured"
   | "miosa_rollout"
   | "miosa_rollout_control"
-  | "miosa_credentials_unavailable";
+  | "miosa_configuration_unavailable";
 
 export const MIOSA_CLOUD_SANDBOX_ROLLOUT_FLAG =
   "miosa_cloud_sandbox_rollout_v1";
@@ -60,10 +60,13 @@ export async function selectCloudSandboxProvider(options: {
     return { provider: getCloudSandboxProvider(), reason: "configured" };
   }
 
-  if (!process.env.MIOSA_API_KEY) {
+  if (
+    !process.env.MIOSA_API_KEY?.trim() ||
+    !process.env.MIOSA_TEMPLATE_ID?.trim()
+  ) {
     return {
       provider: "e2b",
-      reason: "miosa_credentials_unavailable",
+      reason: "miosa_configuration_unavailable",
     };
   }
 

@@ -250,7 +250,7 @@ export const createTools = (
         sandbox_create_attempts: sandboxBootInfo?.create_attempts,
         image_version:
           provider === "miosa"
-            ? (process.env.MIOSA_TEMPLATE_ID ?? "miosa-sandbox")
+            ? process.env.MIOSA_TEMPLATE_ID
             : (process.env.E2B_TEMPLATE ?? "terminal-agent-sandbox"),
         cloud_sandbox_provider_event_version: 7,
       });
