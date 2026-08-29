@@ -12,7 +12,7 @@ import {
 export const MAX_SAVED_TERMINAL_OUTPUT_FILES = 10;
 const DESKTOP_RELAY_RETRY_DELAY_MS = 250;
 export const FULL_OUTPUT_SAVE_FAILED_MESSAGE =
-  "\n[Full terminal output could not be saved. The output below is truncated. Rerun the command with narrower output, filters, or line ranges before relying on omitted content.]";
+  "\n[Full terminal output could not be saved. The output below is truncated. Do not rerun the original command unchanged. If the omitted content is necessary, use a safe, read-only follow-up with narrower output, filters, or line ranges. Otherwise, explain the limitation and continue.]";
 
 type TerminalOutputPersistenceProvider = "e2b" | "desktop" | "centrifugo";
 type TerminalOutputPersistenceFailureCategory =

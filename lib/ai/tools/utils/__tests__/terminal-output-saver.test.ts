@@ -272,6 +272,12 @@ describe("saveFullOutputToFile", () => {
         scopeId: CHAT_ID,
       }),
     ).resolves.toBe(FULL_OUTPUT_SAVE_FAILED_MESSAGE);
+    expect(FULL_OUTPUT_SAVE_FAILED_MESSAGE).toContain(
+      "Do not rerun the original command unchanged",
+    );
+    expect(FULL_OUTPUT_SAVE_FAILED_MESSAGE).toContain(
+      "use a safe, read-only follow-up",
+    );
     expect(terminalWriter).toHaveBeenCalledWith(
       FULL_OUTPUT_SAVE_FAILED_MESSAGE,
     );
