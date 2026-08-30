@@ -12,8 +12,8 @@ import {
   FIRST_TOUCH_ATTRIBUTION_COOKIE_NAME,
   FIRST_TOUCH_ATTRIBUTION_MAX_AGE_SECONDS,
   createFirstTouchAttribution,
-  serializeFirstTouchAttribution,
 } from "@/lib/analytics/acquisition";
+import { serializeSignedFirstTouchAttribution } from "@/lib/analytics/acquisition-cookie";
 
 const AUTHKIT_BYPASS_PATHS = new Set([
   "/api/health/connectivity",
@@ -122,6 +122,13 @@ function isBrowserRequest(request: NextRequest): boolean {
   return accept.includes("text/html");
 }
 
+function isLikelyBot(request: NextRequest): boolean {
+  const userAgent = request.headers.get("user-agent") ?? "";
+  return /bot|crawler|spider|slurp|headless|facebookexternalhit|preview|uptime|betterstack/i.test(
+    userAgent,
+  );
+}
+
 const SESSION_HEADER = "x-workos-session";
 
 function withAttributionCookies(
@@ -140,26 +147,26 @@ function withAttributionCookies(
       "/desktop-callback",
       "/desktop-login",
     ].includes(pathname) &&
+    !isLikelyBot(request) &&
     !request.cookies.has("wos-session") &&
     !request.cookies.has(FIRST_TOUCH_ATTRIBUTION_COOKIE_NAME);
 
   if (shouldCaptureFirstTouch) {
-    response.cookies.set(
-      FIRST_TOUCH_ATTRIBUTION_COOKIE_NAME,
-      serializeFirstTouchAttribution(
-        createFirstTouchAttribution({
-          url: request.nextUrl,
-          referer: request.headers.get("referer"),
-        }),
-      ),
-      {
+    const value = serializeSignedFirstTouchAttribution(
+      createFirstTouchAttribution({
+        url: request.nextUrl,
+        referer: request.headers.get("referer"),
+      }),
+    );
+    if (value) {
+      response.cookies.set(FIRST_TOUCH_ATTRIBUTION_COOKIE_NAME, value, {
         httpOnly: true,
         secure: process.env.NODE_ENV === "production",
         sameSite: "lax",
         maxAge: FIRST_TOUCH_ATTRIBUTION_MAX_AGE_SECONDS,
         path: "/",
-      },
-    );
+      });
+    }
   }
 
   const referralCode =
