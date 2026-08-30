@@ -178,6 +178,17 @@ export const buildAgentPermissionRunSnapshot = (mode: AgentPermissionMode) => ({
   requiresApprovalSession: mode === "ask_approval" || mode === "auto_review",
 });
 
+export const AGENT_APPROVAL_TRIGGER_TAG_LIMIT = 5;
+
+/**
+ * Session records accept more tags than their persisted trigger config. Keep
+ * the ordered run-identifying tags and leave lower-priority cohort tags on the
+ * Session record and in metadata.
+ */
+export const getAgentApprovalTriggerTags = (
+  triggerTags: readonly string[],
+): string[] => triggerTags.slice(0, AGENT_APPROVAL_TRIGGER_TAG_LIMIT);
+
 type AgentTriggerRequestParseResult =
   | { ok: true; body: AgentTriggerRequestBody }
   | { ok: false; response: NextResponse };
@@ -816,7 +827,7 @@ export const createAgentTriggerPost =
           const approvalTriggerConfig = {
             basePayload: agentPayload,
             machine: triggerMachine,
-            tags: triggerTags,
+            tags: getAgentApprovalTriggerTags(triggerTags),
             region: triggerRegion,
             ...(approvalWorkerVersion
               ? { lockToVersion: approvalWorkerVersion }
