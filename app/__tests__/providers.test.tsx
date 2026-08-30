@@ -338,6 +338,10 @@ describe("PostHogProvider", () => {
         subscription: "pro",
       },
       {
+        acquisition_attribution_version: 1,
+        acquisition_source_bucket: "github",
+        acquisition_attribution_source: "post_auth_identify",
+        referral_link_present: false,
         first_touch_attribution_version: 1,
         first_touch_source: "github",
         first_touch_medium: "social",

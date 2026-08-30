@@ -5,9 +5,7 @@ import {
   withRecoverableAuthkitCallbackErrorSuppressed,
 } from "@/lib/auth/authkit-callback-logging";
 import { cookies } from "next/headers";
-import { after, NextRequest, NextResponse } from "next/server";
-import { captureSignupAcquisitionAttribution } from "@/lib/analytics/signup-acquisition";
-import { phLogger } from "@/lib/posthog/server";
+import { NextRequest, NextResponse } from "next/server";
 
 const isValidLocalPath = (path: string): boolean => {
   return (
@@ -100,11 +98,6 @@ const buildRecoveryResponse = async (
 };
 
 const authHandler = handleAuth({
-  onSuccess: async ({ user, state }) => {
-    if (captureSignupAcquisitionAttribution({ user, state })) {
-      after(() => phLogger.flush());
-    }
-  },
   onError: async ({ error, request }) => {
     return buildRecoveryResponse(request as NextRequest, error);
   },
