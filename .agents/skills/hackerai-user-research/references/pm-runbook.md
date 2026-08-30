@@ -54,6 +54,45 @@ the completed result may be copied into Linear when requested.
 The scoped gateway key authenticates the PM runner to the restricted production
 endpoint. It is not a per-run approval and does not require a Linear issue.
 
+### Run from Slack
+
+Slack requests must explicitly mention Codex and carry the complete bounded
+cohort. Begin the message with:
+
+> @codex Use $hackerai-user-research.
+
+Then include the authorized research question, cohort rule, every internal
+Convex/WorkOS user ID, and the requested aggregate output. For churn or other
+event-based research, include one event timestamp beside every user ID and the
+event label or reason when known. State that the timestamp is the per-user
+evidence anchor, specify the pre-event window, and require the same privacy
+boundary as the gateway workflow.
+
+Do not send a Slack request that merely says to analyze churn, refers to a cohort
+"above," or expects Slack Codex to discover the IDs. Do not ask Slack Codex to
+read messages directly. The request must tell it to use this skill and run the
+bounded gateway workflow. If the Slack Codex environment lacks the scoped PM
+gateway key, it must report that configuration blocker rather than browse
+customer messages manually.
+
+A minimal event-based handoff has this shape:
+
+```text
+@codex Use $hackerai-user-research. Run the bounded customer-research gateway
+for this authorized question: <question>.
+
+Cohort: <cohort rule>
+Evidence window: 60 days before each user's event anchor
+Users and anchors:
+- <internal-user-id-1> — <event reason> — <event timestamp in milliseconds>
+- <internal-user-id-2> — <event reason> — <event timestamp in milliseconds>
+- <internal-user-id-3> — <event reason> — <event timestamp in milliseconds>
+
+Return the cohort IDs, evidence coverage, aggregate findings, confidence,
+unknowns, and recommended experiments. Do not return raw messages, quotes,
+customer content, or restricted per-user profiles.
+```
+
 ## 3. Interpret the result
 
 Use the aggregate report to understand supported user types, customer avatars,

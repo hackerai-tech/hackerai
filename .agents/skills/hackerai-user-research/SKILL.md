@@ -57,6 +57,15 @@ Read [references/privacy-policy.md](references/privacy-policy.md) and
 7. Update an optional Linear issue only when asked. Copy aggregate findings,
    cohort IDs, coverage, confidence, unknowns, and experiments. Never copy raw
    evidence, customer message content, secrets, or restricted profile records.
+8. When the PM asks to continue the research in Slack, return one self-contained,
+   paste-ready request that begins with `@codex Use $hackerai-user-research.`
+   Include the authorized research question, cohort rule, every internal user ID,
+   and each user's event anchor for event-based research. Include known event
+   labels, such as cancellation reasons, when they help interpret the cohort.
+   State the requested evidence window, aggregate output, and privacy constraints.
+   Do not refer to IDs or context "above," and do not expect Slack Codex to infer
+   or reselect the cohort. Tell Slack Codex to run the bounded gateway workflow;
+   a Slack handoff is not permission to browse customer messages manually.
 
 ## Gateway payload
 
