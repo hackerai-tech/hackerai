@@ -516,6 +516,141 @@ export const OPENROUTER_REQUEST_MAX_BYTES = 5 * 1024 * 1024;
 
 const OPENROUTER_REQUEST_SIZE_GUARD_HEADER =
   "x-hackerai-openrouter-request-size-guard";
+const OPENROUTER_REQUEST_BYTES_BEFORE_HEADER =
+  "x-hackerai-openrouter-request-bytes-before";
+const OPENROUTER_REQUEST_BYTES_AFTER_HEADER =
+  "x-hackerai-openrouter-request-bytes-after";
+const OPENROUTER_REQUEST_LIMIT_BYTES_HEADER =
+  "x-hackerai-openrouter-request-limit-bytes";
+
+const TOOL_MEDIA_REQUEST_RECOVERY_INSTRUCTION =
+  "Inline media from this tool result was omitted because the serialized provider request exceeded its byte limit. Use the original user attachment if it is still available; otherwise create a smaller copy and view it again.";
+
+const getUtf8ByteLength = (value: string): number =>
+  new TextEncoder().encode(value).byteLength;
+
+type OpenRouterRequestSizeDiagnostics = {
+  messageCount: number;
+  toolMessageCount: number;
+  providerFilePartCount: number;
+  inlineToolMediaPartCount: number;
+  inlineToolMediaBytes: number;
+};
+
+const isInlineDataUrl = (value: unknown): value is string =>
+  typeof value === "string" && /^data:[^,]+,/i.test(value);
+
+const isInlineToolMediaPart = (part: unknown): boolean => {
+  if (!isRecord(part)) return false;
+  if (part.type === "image_url" && isRecord(part.image_url)) {
+    return isInlineDataUrl(part.image_url.url);
+  }
+  if (part.type === "video_url" && isRecord(part.video_url)) {
+    return isInlineDataUrl(part.video_url.url);
+  }
+  if (part.type === "file" && isRecord(part.file)) {
+    return isInlineDataUrl(part.file.file_data);
+  }
+  return (
+    part.type === "input_audio" &&
+    isRecord(part.input_audio) &&
+    typeof part.input_audio.data === "string"
+  );
+};
+
+const getOpenRouterRequestSizeDiagnostics = (
+  body: unknown,
+): OpenRouterRequestSizeDiagnostics => {
+  const diagnostics: OpenRouterRequestSizeDiagnostics = {
+    messageCount: 0,
+    toolMessageCount: 0,
+    providerFilePartCount: 0,
+    inlineToolMediaPartCount: 0,
+    inlineToolMediaBytes: 0,
+  };
+  if (!isRecord(body) || !Array.isArray(body.messages)) return diagnostics;
+
+  diagnostics.messageCount = body.messages.length;
+  body.messages.forEach((message) => {
+    if (!isRecord(message)) return;
+    if (message.role === "tool") diagnostics.toolMessageCount += 1;
+    if (!Array.isArray(message.content)) return;
+    message.content.forEach((part) => {
+      if (isFileRequestPart(part)) diagnostics.providerFilePartCount += 1;
+      if (message.role !== "tool" || !isInlineToolMediaPart(part)) return;
+      diagnostics.inlineToolMediaPartCount += 1;
+      diagnostics.inlineToolMediaBytes += getUtf8ByteLength(
+        JSON.stringify(part),
+      );
+    });
+  });
+  return diagnostics;
+};
+
+const createToolMediaRequestRecoveryBody = (
+  body: unknown,
+  maxBytes: number,
+): { body: unknown; changed: boolean; removedPartCount: number } => {
+  if (!isRecord(body) || !Array.isArray(body.messages)) {
+    return { body, changed: false, removedPartCount: 0 };
+  }
+
+  const messages = body.messages.map((message) =>
+    isRecord(message) && Array.isArray(message.content)
+      ? { ...message, content: [...message.content] }
+      : message,
+  );
+  const candidates: Array<{
+    messageIndex: number;
+    contentIndex: number;
+    bytes: number;
+  }> = [];
+
+  messages.forEach((message, messageIndex) => {
+    if (
+      !isRecord(message) ||
+      message.role !== "tool" ||
+      !Array.isArray(message.content)
+    ) {
+      return;
+    }
+    message.content.forEach((part, contentIndex) => {
+      if (!isInlineToolMediaPart(part)) return;
+      candidates.push({
+        messageIndex,
+        contentIndex,
+        bytes: getUtf8ByteLength(JSON.stringify(part)),
+      });
+    });
+  });
+
+  // Remove the largest inline tool payloads first so recovery loses as little
+  // visual context as possible. User-authored media is deliberately untouched.
+  candidates.sort(
+    (left, right) =>
+      right.bytes - left.bytes || left.messageIndex - right.messageIndex,
+  );
+
+  let removedPartCount = 0;
+  let recoveredBody: unknown = { ...body, messages };
+  for (const candidate of candidates) {
+    const message = messages[candidate.messageIndex];
+    if (!isRecord(message) || !Array.isArray(message.content)) continue;
+    message.content[candidate.contentIndex] = {
+      type: "text",
+      text: TOOL_MEDIA_REQUEST_RECOVERY_INSTRUCTION,
+    };
+    removedPartCount += 1;
+    recoveredBody = { ...body, messages };
+    if (getUtf8ByteLength(JSON.stringify(recoveredBody)) <= maxBytes) break;
+  }
+
+  return {
+    body: recoveredBody,
+    changed: removedPartCount > 0,
+    removedPartCount,
+  };
+};
 
 const createSandboxPdfRecoveryBody = (
   body: unknown,
@@ -637,9 +772,6 @@ const logPdfParserRecovery = (
   );
 };
 
-const getUtf8ByteLength = (value: string): number =>
-  new TextEncoder().encode(value).byteLength;
-
 const getOpenRouterRequestLogContext = (
   body: unknown,
 ): { model?: string; userId?: string } => {
@@ -657,17 +789,29 @@ const getOpenRouterRequestLogContext = (
 };
 
 const logOpenRouterRequestSizeGuard = ({
+  requestId,
   action,
   requestBytesBefore,
   requestBytesAfter,
   model,
   userId,
+  diagnostics,
+  removedProviderFilePartCount,
+  removedToolMediaPartCount,
 }: {
-  action: "sandbox_file_fallback" | "rejected";
+  requestId: string;
+  action:
+    | "sandbox_file_fallback"
+    | "tool_media_fallback"
+    | "sandbox_file_and_tool_media_fallback"
+    | "rejected";
   requestBytesBefore: number;
   requestBytesAfter: number;
   model?: string;
   userId?: string;
+  diagnostics: OpenRouterRequestSizeDiagnostics;
+  removedProviderFilePartCount: number;
+  removedToolMediaPartCount: number;
 }) => {
   console.warn(
     JSON.stringify({
@@ -680,6 +824,7 @@ const logOpenRouterRequestSizeGuard = ({
         process.env.VERCEL_ENV ??
         process.env.NODE_ENV ??
         "unknown",
+      request_id: requestId,
       reason: "request_limit_exceeded",
       action,
       model,
@@ -687,18 +832,27 @@ const logOpenRouterRequestSizeGuard = ({
       request_bytes_before: requestBytesBefore,
       request_bytes_after: requestBytesAfter,
       limit_bytes: OPENROUTER_REQUEST_MAX_BYTES,
+      message_count: diagnostics.messageCount,
+      tool_message_count: diagnostics.toolMessageCount,
+      provider_file_part_count: diagnostics.providerFilePartCount,
+      inline_tool_media_part_count: diagnostics.inlineToolMediaPartCount,
+      inline_tool_media_bytes: diagnostics.inlineToolMediaBytes,
+      removed_provider_file_part_count: removedProviderFilePartCount,
+      removed_tool_media_part_count: removedToolMediaPartCount,
     }),
   );
 };
 
 const createOpenRouterRequestTooLargeResponse = (
-  requestBytes: number,
+  requestBytesBefore: number,
+  requestBytesAfter: number,
+  requestId: string,
 ): Response =>
   new Response(
     JSON.stringify({
       error: {
         code: "request_too_large",
-        message: `OpenRouter request is ${requestBytes} bytes, exceeding the ${OPENROUTER_REQUEST_MAX_BYTES}-byte limit, and no safe request reduction fit within the limit.`,
+        message: `OpenRouter request is ${requestBytesAfter} bytes, exceeding the ${OPENROUTER_REQUEST_MAX_BYTES}-byte limit, and no safe request reduction fit within the limit.`,
       },
     }),
     {
@@ -706,6 +860,12 @@ const createOpenRouterRequestTooLargeResponse = (
       headers: {
         "content-type": "application/json",
         [OPENROUTER_REQUEST_SIZE_GUARD_HEADER]: "rejected",
+        [OPENROUTER_REQUEST_BYTES_BEFORE_HEADER]: String(requestBytesBefore),
+        [OPENROUTER_REQUEST_BYTES_AFTER_HEADER]: String(requestBytesAfter),
+        [OPENROUTER_REQUEST_LIMIT_BYTES_HEADER]: String(
+          OPENROUTER_REQUEST_MAX_BYTES,
+        ),
+        "x-hackerai-request-id": requestId,
       },
     },
   );
@@ -718,13 +878,54 @@ const enforceOpenRouterRequestSizeLimit = (
   const requestBytesBefore = getUtf8ByteLength(init.body);
   if (requestBytesBefore <= OPENROUTER_REQUEST_MAX_BYTES) return { init };
 
+  const requestId = globalThis.crypto.randomUUID();
   let fallbackBody: string | undefined;
   let requestContext: { model?: string; userId?: string } = {};
+  let diagnostics: OpenRouterRequestSizeDiagnostics = {
+    messageCount: 0,
+    toolMessageCount: 0,
+    providerFilePartCount: 0,
+    inlineToolMediaPartCount: 0,
+    inlineToolMediaBytes: 0,
+  };
+  let removedProviderFilePartCount = 0;
+  let removedToolMediaPartCount = 0;
   try {
     const parsedBody = JSON.parse(init.body) as unknown;
     requestContext = getOpenRouterRequestLogContext(parsedBody);
-    const fallback = createSandboxPdfRecoveryBody(parsedBody, true);
-    if (fallback.changed) fallbackBody = JSON.stringify(fallback.body);
+    diagnostics = getOpenRouterRequestSizeDiagnostics(parsedBody);
+
+    const sandboxFallback = createSandboxPdfRecoveryBody(parsedBody, true);
+    let recoveryBody = sandboxFallback.changed
+      ? sandboxFallback.body
+      : parsedBody;
+    if (sandboxFallback.changed) {
+      const afterSandboxDiagnostics =
+        getOpenRouterRequestSizeDiagnostics(recoveryBody);
+      removedProviderFilePartCount = Math.max(
+        0,
+        diagnostics.providerFilePartCount -
+          afterSandboxDiagnostics.providerFilePartCount,
+      );
+    }
+
+    if (
+      getUtf8ByteLength(JSON.stringify(recoveryBody)) >
+      OPENROUTER_REQUEST_MAX_BYTES
+    ) {
+      const toolMediaFallback = createToolMediaRequestRecoveryBody(
+        recoveryBody,
+        OPENROUTER_REQUEST_MAX_BYTES,
+      );
+      if (toolMediaFallback.changed) {
+        recoveryBody = toolMediaFallback.body;
+        removedToolMediaPartCount = toolMediaFallback.removedPartCount;
+      }
+    }
+
+    if (sandboxFallback.changed || removedToolMediaPartCount > 0) {
+      fallbackBody = JSON.stringify(recoveryBody);
+    }
   } catch {
     // Only valid JSON request bodies can use the attachment fallback.
   }
@@ -733,11 +934,21 @@ const enforceOpenRouterRequestSizeLimit = (
     ? getUtf8ByteLength(fallbackBody)
     : requestBytesBefore;
   if (fallbackBody && requestBytesAfter <= OPENROUTER_REQUEST_MAX_BYTES) {
+    const action =
+      removedProviderFilePartCount > 0 && removedToolMediaPartCount > 0
+        ? "sandbox_file_and_tool_media_fallback"
+        : removedToolMediaPartCount > 0
+          ? "tool_media_fallback"
+          : "sandbox_file_fallback";
     logOpenRouterRequestSizeGuard({
-      action: "sandbox_file_fallback",
+      requestId,
+      action,
       requestBytesBefore,
       requestBytesAfter,
       ...requestContext,
+      diagnostics,
+      removedProviderFilePartCount,
+      removedToolMediaPartCount,
     });
     const headers = new Headers(init.headers);
     headers.delete("content-length");
@@ -745,14 +956,22 @@ const enforceOpenRouterRequestSizeLimit = (
   }
 
   logOpenRouterRequestSizeGuard({
+    requestId,
     action: "rejected",
     requestBytesBefore,
     requestBytesAfter,
     ...requestContext,
+    diagnostics,
+    removedProviderFilePartCount,
+    removedToolMediaPartCount,
   });
   return {
     init,
-    rejection: createOpenRouterRequestTooLargeResponse(requestBytesAfter),
+    rejection: createOpenRouterRequestTooLargeResponse(
+      requestBytesBefore,
+      requestBytesAfter,
+      requestId,
+    ),
   };
 };
 

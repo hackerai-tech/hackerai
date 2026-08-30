@@ -1374,6 +1374,11 @@ type AgentLongErrorSummary = {
   cause?: string;
   loginRequired: boolean;
   statusCode?: number;
+  providerErrorOrigin?: "local_request_size_guard";
+  localRequestId?: string;
+  requestBytesBefore?: number;
+  requestBytesAfter?: number;
+  requestLimitBytes?: number;
   dbOperation?: string;
   dbErrorName?: string;
   dbErrorMessage?: string;
@@ -1631,6 +1636,22 @@ const classifyAgentLongError = (error: unknown): AgentLongErrorSummary => {
     loginRequired: false,
     statusCode:
       typeof details.statusCode === "number" ? details.statusCode : undefined,
+    providerErrorOrigin:
+      error instanceof ProviderTerminalError ? error.origin : undefined,
+    localRequestId:
+      error instanceof ProviderTerminalError ? error.localRequestId : undefined,
+    requestBytesBefore:
+      error instanceof ProviderTerminalError
+        ? error.requestBytesBefore
+        : undefined,
+    requestBytesAfter:
+      error instanceof ProviderTerminalError
+        ? error.requestBytesAfter
+        : undefined,
+    requestLimitBytes:
+      error instanceof ProviderTerminalError
+        ? error.requestLimitBytes
+        : undefined,
   };
 };
 
@@ -1754,6 +1775,21 @@ const recordAgentLongFailureForDashboard = async (
 
   if (summary.code) metadata.set("errorCode", summary.code);
   if (summary.statusCode) metadata.set("errorStatusCode", summary.statusCode);
+  if (summary.providerErrorOrigin) {
+    metadata.set("providerErrorOrigin", summary.providerErrorOrigin);
+  }
+  if (summary.localRequestId) {
+    metadata.set("providerLocalRequestId", summary.localRequestId);
+  }
+  if (summary.requestBytesBefore !== undefined) {
+    metadata.set("providerRequestBytesBefore", summary.requestBytesBefore);
+  }
+  if (summary.requestBytesAfter !== undefined) {
+    metadata.set("providerRequestBytesAfter", summary.requestBytesAfter);
+  }
+  if (summary.requestLimitBytes !== undefined) {
+    metadata.set("providerRequestLimitBytes", summary.requestLimitBytes);
+  }
   if (summary.cause) metadata.set("errorCause", summary.cause);
   if (summary.dbOperation) metadata.set("dbOperation", summary.dbOperation);
   if (summary.dbErrorName) metadata.set("dbErrorName", summary.dbErrorName);
@@ -1859,12 +1895,28 @@ const recordAgentLongFailureForDashboard = async (
     stage: "terminal_error",
   });
 
-  const { emptyAfterProcessingMetadata, ...summaryLogFields } = summary;
+  const {
+    emptyAfterProcessingMetadata,
+    providerErrorOrigin,
+    localRequestId,
+    requestBytesBefore,
+    requestBytesAfter,
+    requestLimitBytes,
+    ...summaryLogFields
+  } = summary;
   const logFields = {
     chatId: context.chatId,
     userId: context.userId,
     runId: context.runId,
     phase: context.phase,
+    request_id: context.runId,
+    chat_id: context.chatId,
+    user_id: context.userId,
+    provider_error_origin: providerErrorOrigin,
+    provider_local_request_id: localRequestId,
+    provider_request_bytes_before: requestBytesBefore,
+    provider_request_bytes_after: requestBytesAfter,
+    provider_request_limit_bytes: requestLimitBytes,
     ...summaryLogFields,
     ...emptyAfterProcessingMetadata,
   };

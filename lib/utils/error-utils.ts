@@ -71,18 +71,67 @@ const collectErrorSources = (
 
 const OPENROUTER_REQUEST_SIZE_GUARD_HEADER =
   "x-hackerai-openrouter-request-size-guard";
+const OPENROUTER_REQUEST_BYTES_BEFORE_HEADER =
+  "x-hackerai-openrouter-request-bytes-before";
+const OPENROUTER_REQUEST_BYTES_AFTER_HEADER =
+  "x-hackerai-openrouter-request-bytes-after";
+const OPENROUTER_REQUEST_LIMIT_BYTES_HEADER =
+  "x-hackerai-openrouter-request-limit-bytes";
+
+export type LocalOpenRouterRequestSizeGuardDetails = {
+  requestId?: string;
+  requestBytesBefore?: number;
+  requestBytesAfter?: number;
+  limitBytes?: number;
+};
+
+const getResponseHeader = (
+  source: Record<string, unknown>,
+  headerName: string,
+): string | undefined => {
+  if (!isRecord(source.responseHeaders)) return undefined;
+  const entry = Object.entries(source.responseHeaders).find(
+    ([name]) => name.toLowerCase() === headerName,
+  );
+  return typeof entry?.[1] === "string" ? entry[1] : undefined;
+};
+
+const parseNonNegativeInteger = (
+  value: string | undefined,
+): number | undefined => {
+  if (value === undefined || !/^\d+$/.test(value)) return undefined;
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) ? parsed : undefined;
+};
+
+export const getLocalOpenRouterRequestSizeGuardDetails = (
+  error: unknown,
+): LocalOpenRouterRequestSizeGuardDetails | undefined => {
+  const guardSource = collectErrorSources(error).find(
+    (source) =>
+      isRecord(source) &&
+      getResponseHeader(source, OPENROUTER_REQUEST_SIZE_GUARD_HEADER) ===
+        "rejected",
+  );
+  if (!isRecord(guardSource)) return undefined;
+
+  return {
+    requestId: getResponseHeader(guardSource, "x-hackerai-request-id"),
+    requestBytesBefore: parseNonNegativeInteger(
+      getResponseHeader(guardSource, OPENROUTER_REQUEST_BYTES_BEFORE_HEADER),
+    ),
+    requestBytesAfter: parseNonNegativeInteger(
+      getResponseHeader(guardSource, OPENROUTER_REQUEST_BYTES_AFTER_HEADER),
+    ),
+    limitBytes: parseNonNegativeInteger(
+      getResponseHeader(guardSource, OPENROUTER_REQUEST_LIMIT_BYTES_HEADER),
+    ),
+  };
+};
 
 export const isLocalOpenRouterRequestSizeGuardError = (
   error: unknown,
-): boolean =>
-  collectErrorSources(error).some((source) => {
-    if (!isRecord(source) || !isRecord(source.responseHeaders)) return false;
-    return Object.entries(source.responseHeaders).some(
-      ([name, value]) =>
-        name.toLowerCase() === OPENROUTER_REQUEST_SIZE_GUARD_HEADER &&
-        value === "rejected",
-    );
-  });
+): boolean => getLocalOpenRouterRequestSizeGuardDetails(error) !== undefined;
 
 const getOpenRouterPayload = (
   source: unknown,

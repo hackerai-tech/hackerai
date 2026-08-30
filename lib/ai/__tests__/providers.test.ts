@@ -743,6 +743,91 @@ describe("OpenRouter request normalization", () => {
     }
   });
 
+  it("removes oversized inline tool media while preserving user media and text tool output", async () => {
+    const warnSpy = jest
+      .spyOn(console, "warn")
+      .mockImplementation(() => undefined);
+    const fetchMock = jest
+      .fn()
+      .mockResolvedValueOnce(new Response("ok", { status: 200 }));
+    const patchedFetch = createOpenRouterPatchFetch(
+      fetchMock as unknown as typeof fetch,
+    );
+    const inlineToolImage = `data:image/jpeg;base64,${"a".repeat(
+      OPENROUTER_REQUEST_MAX_BYTES - 512 * 1024,
+    )}`;
+    const logOutput = "log line\n".repeat(80_000);
+
+    try {
+      await patchedFetch("https://openrouter.test/chat", {
+        method: "POST",
+        headers: { "content-length": "stale" },
+        body: JSON.stringify({
+          model: "deepseek/deepseek-v4-flash-0731",
+          user: "user_test_tool_media_guard",
+          messages: [
+            {
+              role: "user",
+              content: [
+                { type: "text", text: "Analyze this image and log." },
+                {
+                  type: "image_url",
+                  image_url: { url: "https://files.test/photo.jpg" },
+                },
+              ],
+            },
+            {
+              role: "tool",
+              tool_call_id: "view_1",
+              content: [
+                { type: "text", text: "Viewing image file: photo.jpg" },
+                {
+                  type: "image_url",
+                  image_url: { url: inlineToolImage },
+                },
+              ],
+            },
+            {
+              role: "tool",
+              tool_call_id: "read_1",
+              content: logOutput,
+            },
+          ],
+        }),
+      });
+
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      const sentInit = fetchMock.mock.calls[0][1];
+      const sentBody = String(sentInit.body);
+      expect(new TextEncoder().encode(sentBody).byteLength).toBeLessThanOrEqual(
+        OPENROUTER_REQUEST_MAX_BYTES,
+      );
+      expect(new Headers(sentInit.headers).has("content-length")).toBe(false);
+      expect(sentBody).not.toContain(inlineToolImage);
+      expect(sentBody).toContain("https://files.test/photo.jpg");
+      expect(JSON.parse(sentBody).messages[2].content).toBe(logOutput);
+      expect(sentBody).toContain(
+        "Inline media from this tool result was omitted",
+      );
+
+      const guardLog = JSON.parse(String(warnSpy.mock.calls[0][0]));
+      expect(guardLog).toMatchObject({
+        event: "openrouter_request_size_guard",
+        action: "tool_media_fallback",
+        user_id: "user_test_tool_media_guard",
+        inline_tool_media_part_count: 1,
+        removed_tool_media_part_count: 1,
+        removed_provider_file_part_count: 0,
+      });
+      expect(guardLog.request_id).toEqual(expect.any(String));
+      expect(guardLog.inline_tool_media_bytes).toBeGreaterThan(
+        OPENROUTER_REQUEST_MAX_BYTES - 512 * 1024,
+      );
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
   it("rejects an oversized request locally when no safe fallback can fit", async () => {
     const warnSpy = jest
       .spyOn(console, "warn")
@@ -770,6 +855,18 @@ describe("OpenRouter request normalization", () => {
       expect(
         response.headers.get("x-hackerai-openrouter-request-size-guard"),
       ).toBe("rejected");
+      expect(
+        response.headers.get("x-hackerai-openrouter-request-bytes-before"),
+      ).toMatch(/^\d+$/);
+      expect(
+        response.headers.get("x-hackerai-openrouter-request-bytes-after"),
+      ).toMatch(/^\d+$/);
+      expect(
+        response.headers.get("x-hackerai-openrouter-request-limit-bytes"),
+      ).toBe(String(OPENROUTER_REQUEST_MAX_BYTES));
+      expect(response.headers.get("x-hackerai-request-id")).toEqual(
+        expect.any(String),
+      );
       expect(await response.json()).toMatchObject({
         error: { code: "request_too_large" },
       });

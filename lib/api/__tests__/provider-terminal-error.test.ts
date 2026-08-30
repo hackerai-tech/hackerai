@@ -70,6 +70,10 @@ describe("wrapProviderTerminalError", () => {
       statusCode: 413,
       responseHeaders: {
         "X-HackerAI-OpenRouter-Request-Size-Guard": "rejected",
+        "X-HackerAI-OpenRouter-Request-Bytes-Before": "7083624",
+        "X-HackerAI-OpenRouter-Request-Bytes-After": "6012345",
+        "X-HackerAI-OpenRouter-Request-Limit-Bytes": "5242880",
+        "X-HackerAI-Request-Id": "size-guard-1",
       },
     });
     const localRejection = wrapProviderTerminalError(
@@ -89,6 +93,12 @@ describe("wrapProviderTerminalError", () => {
       "Provider terminal error category=provider_4xx origin=local_request_size_guard status=413",
     );
     expect(localRejection.origin).toBe("local_request_size_guard");
+    expect(localRejection).toMatchObject({
+      localRequestId: "size-guard-1",
+      requestBytesBefore: 7_083_624,
+      requestBytesAfter: 6_012_345,
+      requestLimitBytes: 5_242_880,
+    });
     expect(upstreamRejection.message).toBe(
       "Provider terminal error category=provider_4xx status=413",
     );
