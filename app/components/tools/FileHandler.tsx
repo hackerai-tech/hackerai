@@ -16,6 +16,7 @@ import {
   ToolApprovalControls,
   useAgentAutoReviewLifecycleDisplay,
 } from "./ToolApprovalControls";
+import { getFileToolDisplayTarget } from "./file-tool-display";
 
 interface FileInput {
   action: "view" | "read" | "write" | "append" | "edit";
@@ -116,7 +117,7 @@ export const FileHandler = memo(function FileHandler({
   const briefLabel = (fallback: string) =>
     useBriefOnly ? briefText : fallback;
   const briefTarget = (fallback: string | undefined) =>
-    useBriefOnly ? undefined : fallback;
+    useBriefOnly ? undefined : getFileToolDisplayTarget(fallback);
   const errorLabel = (failed: string, stopped: string) =>
     isStoppedByUser ? stopped : failed;
 
@@ -325,7 +326,7 @@ export const FileHandler = memo(function FileHandler({
         FILE_APPROVAL_TITLES[action ?? "write"] ??
         "Allow HackerAI to change this file?"
       }
-      target={target}
+      target={getFileToolDisplayTarget(target)}
       detail="Approve to continue, or deny to stop this file change."
       kind="file"
       autoReview={autoReview}
@@ -346,7 +347,10 @@ export const FileHandler = memo(function FileHandler({
           <ToolBlock
             icon={icon}
             action={display.action}
-            target={getToolApprovalDisplayTarget({ sendState, target })}
+            target={getToolApprovalDisplayTarget({
+              sendState,
+              target: getFileToolDisplayTarget(target),
+            })}
             isShimmer={display.isShimmer}
             isClickable={isClickable}
             onClick={isClickable ? handleOpenInSidebar : undefined}
@@ -414,7 +418,9 @@ export const FileHandler = memo(function FileHandler({
               key={toolCallId}
               icon={<FileText />}
               action="Stopped reading"
-              target={`${input.path}${getFileRange()}`}
+              target={getFileToolDisplayTarget(
+                `${input.path}${getFileRange()}`,
+              )}
             />
           );
         }
@@ -433,7 +439,9 @@ export const FileHandler = memo(function FileHandler({
               key={toolCallId}
               icon={<FileText />}
               action="Stopped reading"
-              target={`${input.path}${getFileRange()}`}
+              target={getFileToolDisplayTarget(
+                `${input.path}${getFileRange()}`,
+              )}
             />
           );
         }
@@ -488,7 +496,7 @@ export const FileHandler = memo(function FileHandler({
               key={toolCallId}
               icon={<FilePlus />}
               action="Stopped writing"
-              target={input.path}
+              target={getFileToolDisplayTarget(input.path)}
               isClickable={isClickable}
               onClick={isClickable ? handleOpenInSidebar : undefined}
               onKeyDown={isClickable ? handleKeyDown : undefined}
@@ -517,7 +525,7 @@ export const FileHandler = memo(function FileHandler({
               key={toolCallId}
               icon={<FilePlus />}
               action="Stopped writing"
-              target={input.path}
+              target={getFileToolDisplayTarget(input.path)}
               isClickable={isClickable}
               onClick={isClickable ? handleOpenInSidebar : undefined}
               onKeyDown={isClickable ? handleKeyDown : undefined}
@@ -582,7 +590,7 @@ export const FileHandler = memo(function FileHandler({
               key={toolCallId}
               icon={<FileOutput />}
               action="Stopped appending to"
-              target={input.path}
+              target={getFileToolDisplayTarget(input.path)}
               isClickable={isClickable}
               onClick={isClickable ? handleOpenInSidebar : undefined}
               onKeyDown={isClickable ? handleKeyDown : undefined}
@@ -611,7 +619,7 @@ export const FileHandler = memo(function FileHandler({
               key={toolCallId}
               icon={<FileOutput />}
               action="Stopped appending to"
-              target={input.path}
+              target={getFileToolDisplayTarget(input.path)}
               isClickable={isClickable}
               onClick={isClickable ? handleOpenInSidebar : undefined}
               onKeyDown={isClickable ? handleKeyDown : undefined}
@@ -672,7 +680,7 @@ export const FileHandler = memo(function FileHandler({
               key={toolCallId}
               icon={<FilePen />}
               action="Stopped editing"
-              target={input.path}
+              target={getFileToolDisplayTarget(input.path)}
             />
           );
         }
@@ -691,7 +699,7 @@ export const FileHandler = memo(function FileHandler({
               key={toolCallId}
               icon={<FilePen />}
               action="Stopped editing"
-              target={input.path}
+              target={getFileToolDisplayTarget(input.path)}
             />
           );
         }

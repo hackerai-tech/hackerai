@@ -19,6 +19,7 @@ import {
   TooltipContent,
 } from "@/components/ui/tooltip";
 import { isUserStoppedToolError } from "@/lib/chat/tool-abort-utils";
+import { getFileToolDisplayTarget } from "./file-tool-display";
 
 interface DiffDataPart {
   type: "data-diff";
@@ -82,8 +83,7 @@ export const FileToolsHandler = ({
       (state === "input-streaming" || state === "input-available")
     ) {
       const writeInput = input as
-        | { file_path: string; contents: string }
-        | undefined;
+        { file_path: string; contents: string } | undefined;
       if (!writeInput?.file_path) return null;
       if (state === "input-streaming" && !writeInput.contents) return null;
       return {
@@ -100,8 +100,7 @@ export const FileToolsHandler = ({
 
     if (type === "tool-read_file") {
       const readInput = input as
-        | { target_file: string; offset?: number; limit?: number }
-        | undefined;
+        { target_file: string; offset?: number; limit?: number } | undefined;
       if (!readInput) return null;
       const readOutput = output as { result: string };
       const cleanContent = readOutput?.result?.replace(/^\s*\d+\|/gm, "") || "";
@@ -124,8 +123,7 @@ export const FileToolsHandler = ({
 
     if (type === "tool-write_file") {
       const writeInput = input as
-        | { file_path: string; contents: string }
-        | undefined;
+        { file_path: string; contents: string } | undefined;
       if (!writeInput) return null;
       return {
         path: writeInput.file_path,
@@ -206,8 +204,7 @@ export const FileToolsHandler = ({
   const renderReadFileTool = () => {
     const { toolCallId, state, input } = part;
     const readInput = input as
-      | { target_file: string; offset?: number; limit?: number }
-      | undefined;
+      { target_file: string; offset?: number; limit?: number } | undefined;
 
     const getFileRange = () => {
       if (!readInput) return "";
@@ -241,7 +238,9 @@ export const FileToolsHandler = ({
             action="Reading"
             target={
               readInput
-                ? `${readInput.target_file}${getFileRange()}`
+                ? getFileToolDisplayTarget(
+                    `${readInput.target_file}${getFileRange()}`,
+                  )
                 : undefined
             }
             isShimmer={true}
@@ -256,7 +255,9 @@ export const FileToolsHandler = ({
               key={toolCallId}
               icon={<FileText />}
               action="Read"
-              target={`${readInput.target_file}${getFileRange()}`}
+              target={getFileToolDisplayTarget(
+                `${readInput.target_file}${getFileRange()}`,
+              )}
               isClickable={isClickable}
               onClick={handleOpenInSidebar}
               onKeyDown={handleKeyDown}
@@ -272,7 +273,9 @@ export const FileToolsHandler = ({
             key={toolCallId}
             icon={<FileText />}
             action={errorLabel("Failed to read", "Stopped reading")}
-            target={`${readInput.target_file}${getFileRange()}`}
+            target={getFileToolDisplayTarget(
+              `${readInput.target_file}${getFileRange()}`,
+            )}
           />
         );
       default:
@@ -283,8 +286,7 @@ export const FileToolsHandler = ({
   const renderWriteFileTool = () => {
     const { toolCallId, state, input } = part;
     const writeInput = input as
-      | { file_path: string; contents: string }
-      | undefined;
+      { file_path: string; contents: string } | undefined;
 
     switch (state) {
       case "input-streaming": {
@@ -298,7 +300,9 @@ export const FileToolsHandler = ({
             key={toolCallId}
             icon={<FilePlus />}
             action={hasContent ? "Creating" : "Creating file"}
-            target={hasFilePath ? writeInput.file_path : undefined}
+            target={getFileToolDisplayTarget(
+              hasFilePath ? writeInput.file_path : undefined,
+            )}
             isShimmer={true}
             isClickable={isClickable}
             onClick={isClickable ? handleOpenInSidebar : undefined}
@@ -313,7 +317,7 @@ export const FileToolsHandler = ({
             key={toolCallId}
             icon={<FilePlus />}
             action="Writing to"
-            target={writeInput?.file_path}
+            target={getFileToolDisplayTarget(writeInput?.file_path)}
             isShimmer={true}
             isClickable={isClickable}
             onClick={isClickable ? handleOpenInSidebar : undefined}
@@ -328,7 +332,7 @@ export const FileToolsHandler = ({
               key={toolCallId}
               icon={<FilePlus />}
               action="Successfully wrote"
-              target={writeInput.file_path}
+              target={getFileToolDisplayTarget(writeInput.file_path)}
               isClickable={isClickable}
               onClick={handleOpenInSidebar}
               onKeyDown={handleKeyDown}
@@ -343,7 +347,7 @@ export const FileToolsHandler = ({
             key={toolCallId}
             icon={<FilePlus />}
             action={errorLabel("Failed to write", "Stopped writing")}
-            target={writeInput.file_path}
+            target={getFileToolDisplayTarget(writeInput.file_path)}
           />
         );
       default:
@@ -354,8 +358,7 @@ export const FileToolsHandler = ({
   const renderDeleteFileTool = () => {
     const { toolCallId, state, input, output } = part;
     const deleteInput = input as
-      | { target_file: string; explanation: string }
-      | undefined;
+      { target_file: string; explanation: string } | undefined;
 
     switch (state) {
       case "input-streaming":
@@ -373,7 +376,7 @@ export const FileToolsHandler = ({
             key={toolCallId}
             icon={<FileMinus />}
             action="Deleting"
-            target={deleteInput?.target_file}
+            target={getFileToolDisplayTarget(deleteInput?.target_file)}
             isShimmer={true}
           />
         ) : null;
@@ -387,7 +390,7 @@ export const FileToolsHandler = ({
             key={toolCallId}
             icon={<FileMinus />}
             action={isSuccess ? "Successfully deleted" : "Failed to delete"}
-            target={deleteInput.target_file}
+            target={getFileToolDisplayTarget(deleteInput.target_file)}
           />
         );
       }
@@ -398,7 +401,7 @@ export const FileToolsHandler = ({
             key={toolCallId}
             icon={<FileMinus />}
             action={errorLabel("Failed to delete", "Stopped deleting")}
-            target={deleteInput.target_file}
+            target={getFileToolDisplayTarget(deleteInput.target_file)}
           />
         );
       default:
@@ -435,7 +438,7 @@ export const FileToolsHandler = ({
             action={
               searchReplaceInput?.replace_all ? "Replacing all in" : "Editing"
             }
-            target={searchReplaceInput?.file_path}
+            target={getFileToolDisplayTarget(searchReplaceInput?.file_path)}
             isShimmer={true}
           />
         ) : null;
@@ -451,7 +454,7 @@ export const FileToolsHandler = ({
               key={toolCallId}
               icon={<FilePen />}
               action={isSuccess ? "Successfully edited" : "Failed to edit"}
-              target={searchReplaceInput.file_path}
+              target={getFileToolDisplayTarget(searchReplaceInput.file_path)}
               isClickable={isClickable}
               onClick={handleOpenInSidebar}
               onKeyDown={handleKeyDown}
@@ -467,7 +470,7 @@ export const FileToolsHandler = ({
             key={toolCallId}
             icon={<FilePen />}
             action={errorLabel("Failed to edit", "Stopped editing")}
-            target={searchReplaceInput.file_path}
+            target={getFileToolDisplayTarget(searchReplaceInput.file_path)}
           />
         );
       default:
@@ -508,7 +511,7 @@ export const FileToolsHandler = ({
                 ? `Making ${multiEditInput.edits.length} edits to`
                 : "Making edits"
             }
-            target={multiEditInput?.file_path}
+            target={getFileToolDisplayTarget(multiEditInput?.file_path)}
             isShimmer={true}
           />
         ) : null;
@@ -529,7 +532,7 @@ export const FileToolsHandler = ({
                   ? `Successfully applied ${multiEditInput.edits.length} edits`
                   : "Failed to apply edits"
               }
-              target={multiEditInput.file_path}
+              target={getFileToolDisplayTarget(multiEditInput.file_path)}
             />
             <OpenFileButton filePath={multiEditInput.file_path} />
           </div>
@@ -542,7 +545,7 @@ export const FileToolsHandler = ({
             key={toolCallId}
             icon={<FilePen />}
             action={errorLabel("Failed to apply edits", "Stopped editing")}
-            target={multiEditInput.file_path}
+            target={getFileToolDisplayTarget(multiEditInput.file_path)}
           />
         );
       default:
