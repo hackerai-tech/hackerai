@@ -1,4 +1,5 @@
 jest.mock("../utils/sandbox-file-uploader", () => ({
+  getSandboxUploadedFileUrl: jest.fn(),
   uploadSandboxFileToConvex: jest.fn(),
 }));
 
@@ -11,7 +12,10 @@ jest.mock("@/lib/logger", () => ({
 }));
 
 import { createFile } from "../file";
-import { uploadSandboxFileToConvex } from "../utils/sandbox-file-uploader";
+import {
+  getSandboxUploadedFileUrl,
+  uploadSandboxFileToConvex,
+} from "../utils/sandbox-file-uploader";
 import { phLogger } from "@/lib/posthog/server";
 import type { ToolContext } from "@/types";
 
@@ -24,6 +28,10 @@ type FakeCommandResult = {
 const mockUploadSandboxFileToConvex =
   uploadSandboxFileToConvex as jest.MockedFunction<
     typeof uploadSandboxFileToConvex
+  >;
+const mockGetSandboxUploadedFileUrl =
+  getSandboxUploadedFileUrl as jest.MockedFunction<
+    typeof getSandboxUploadedFileUrl
   >;
 const mockPhEvent = phLogger.event as jest.MockedFunction<
   typeof phLogger.event
@@ -581,14 +589,18 @@ describe("file tool large text safety", () => {
 describe("file tool image view", () => {
   beforeEach(() => {
     mockUploadSandboxFileToConvex.mockReset();
+    mockGetSandboxUploadedFileUrl.mockReset();
     mockPhEvent.mockReset();
   });
 
   test("allows Kimi to view sandbox images as multimodal tool output", async () => {
     mockUploadSandboxFileToConvex.mockResolvedValue({
+      url: "https://s3.example/screenshot.png?signature=fresh",
       fileId: "file-1" as never,
       name: "screenshot.png",
       mediaType: "image/png",
+      sizeBytes: 68,
+      tokens: 0,
     });
 
     const commandRun = jest
@@ -601,20 +613,6 @@ describe("file tool image view", () => {
             mediaType: "image/png",
             sizeBytes: 68,
             kind: "image",
-          }),
-          stderr: "",
-          exitCode: 0,
-        };
-      })
-      .mockImplementationOnce(async (_command, opts) => {
-        expect(opts.envVars.HACKERAI_FILE_VIEW_INCLUDE_DATA).toBe("1");
-        return {
-          stdout: JSON.stringify({
-            path: "/tmp/screenshot.png",
-            mediaType: "image/png",
-            sizeBytes: 68,
-            kind: "image",
-            data: VALID_PNG_BASE64,
           }),
           stderr: "",
           exitCode: 0,
@@ -644,12 +642,16 @@ describe("file tool image view", () => {
           text: "Viewing image file: screenshot.png (image/png, 68 bytes).",
         },
         {
-          type: "image-data",
-          data: VALID_PNG_BASE64,
-          mediaType: "image/png",
+          type: "image-url",
+          url: "https://s3.example/screenshot.png?signature=fresh",
         },
       ],
     });
+
+    expect(commandRun).toHaveBeenCalledTimes(1);
+    expect(mockGetSandboxUploadedFileUrl).not.toHaveBeenCalled();
+    expect(result).not.toHaveProperty("url");
+    expect(result).not.toHaveProperty("previewFiles.0.url");
 
     expect(mockPhEvent).toHaveBeenCalledTimes(1);
     expect(mockPhEvent).toHaveBeenCalledWith(
@@ -677,9 +679,12 @@ describe("file tool image view", () => {
 
   test("allows a non-vision Agent model to initiate a vision handoff", async () => {
     mockUploadSandboxFileToConvex.mockResolvedValue({
+      url: "https://s3.example/screenshot.png?signature=fresh",
       fileId: "file-1" as never,
       name: "screenshot.png",
       mediaType: "image/png",
+      sizeBytes: 68,
+      tokens: 0,
     });
 
     const commandRun = jest
@@ -692,20 +697,6 @@ describe("file tool image view", () => {
             mediaType: "image/png",
             sizeBytes: 68,
             kind: "image",
-          }),
-          stderr: "",
-          exitCode: 0,
-        };
-      })
-      .mockImplementationOnce(async (_command, opts) => {
-        expect(opts.envVars.HACKERAI_FILE_VIEW_INCLUDE_DATA).toBe("1");
-        return {
-          stdout: JSON.stringify({
-            path: "/tmp/screenshot.png",
-            mediaType: "image/png",
-            sizeBytes: 68,
-            kind: "image",
-            data: VALID_PNG_BASE64,
           }),
           stderr: "",
           exitCode: 0,
@@ -738,6 +729,111 @@ describe("file tool image view", () => {
     });
 
     await expect(runToModelOutput(tool, result)).resolves.toEqual({
+      type: "content",
+      value: [
+        {
+          type: "text",
+          text: "Viewing image file: screenshot.png (image/png, 68 bytes).",
+        },
+        {
+          type: "image-url",
+          url: "https://s3.example/screenshot.png?signature=fresh",
+        },
+      ],
+    });
+    expect(commandRun).toHaveBeenCalledTimes(1);
+  });
+
+  test("refreshes the signed URL for a persisted image tool result", async () => {
+    mockGetSandboxUploadedFileUrl.mockResolvedValue(
+      "https://s3.example/screenshot.png?signature=renewed",
+    );
+    const commandRun = jest.fn<Promise<FakeCommandResult>, [string, any?]>();
+    const sandbox = makeSandbox(commandRun);
+    const tool = createFile(
+      makeContext(sandbox, { modelName: "model-kimi-k3" }),
+    );
+
+    await expect(
+      runToModelOutput(tool, {
+        action: "view",
+        content: "Viewing image file: screenshot.png (image/png, 68 bytes).",
+        path: "/tmp/screenshot.png",
+        filename: "screenshot.png",
+        mediaType: "image/png",
+        sizeBytes: 68,
+        kind: "image",
+        previewUploadSucceeded: true,
+        previewFiles: [
+          {
+            fileId: "file-1",
+            name: "screenshot.png",
+            mediaType: "image/png",
+          },
+        ],
+      }),
+    ).resolves.toEqual({
+      type: "content",
+      value: [
+        {
+          type: "text",
+          text: "Viewing image file: screenshot.png (image/png, 68 bytes).",
+        },
+        {
+          type: "image-url",
+          url: "https://s3.example/screenshot.png?signature=renewed",
+        },
+      ],
+    });
+
+    expect(mockGetSandboxUploadedFileUrl).toHaveBeenCalledWith({
+      fileId: "file-1",
+      userId: "user-1",
+    });
+    expect(commandRun).not.toHaveBeenCalled();
+  });
+
+  test("falls back to inline image data when a signed URL cannot be refreshed", async () => {
+    mockGetSandboxUploadedFileUrl.mockRejectedValue(
+      new Error("temporary URL refresh failure"),
+    );
+    const commandRun = jest.fn(async (_command, opts) => {
+      expect(opts.envVars.HACKERAI_FILE_VIEW_INCLUDE_DATA).toBe("1");
+      return {
+        stdout: JSON.stringify({
+          path: "/tmp/screenshot.png",
+          mediaType: "image/png",
+          sizeBytes: 68,
+          kind: "image",
+          data: VALID_PNG_BASE64,
+        }),
+        stderr: "",
+        exitCode: 0,
+      };
+    });
+    const tool = createFile(
+      makeContext(makeSandbox(commandRun), { modelName: "model-kimi-k3" }),
+    );
+
+    await expect(
+      runToModelOutput(tool, {
+        action: "view",
+        content: "Viewing image file: screenshot.png (image/png, 68 bytes).",
+        path: "/tmp/screenshot.png",
+        filename: "screenshot.png",
+        mediaType: "image/png",
+        sizeBytes: 68,
+        kind: "image",
+        previewUploadSucceeded: true,
+        previewFiles: [
+          {
+            fileId: "file-1",
+            name: "screenshot.png",
+            mediaType: "image/png",
+          },
+        ],
+      }),
+    ).resolves.toEqual({
       type: "content",
       value: [
         {

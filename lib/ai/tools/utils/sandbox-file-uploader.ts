@@ -31,6 +31,40 @@ export type UploadedFileInfo = {
 };
 
 /**
+ * Mint a fresh, user-scoped download URL for a previously uploaded sandbox
+ * file. Presigned S3 URLs are intentionally not persisted in tool output
+ * because they expire; the stable file ID is persisted instead.
+ */
+export async function getSandboxUploadedFileUrl(args: {
+  fileId: Id<"files">;
+  userId: string;
+}): Promise<string | undefined> {
+  if (!process.env.NEXT_PUBLIC_CONVEX_URL) {
+    throw new Error(
+      "NEXT_PUBLIC_CONVEX_URL is required for sandbox file downloads",
+    );
+  }
+
+  if (!process.env.CONVEX_SERVICE_ROLE_KEY) {
+    throw new Error(
+      "CONVEX_SERVICE_ROLE_KEY is required for sandbox file downloads. " +
+        "This is a server-only secret and must never be exposed to the client.",
+    );
+  }
+
+  const urls = await getConvexClient().action(
+    api.s3Actions.getFileUrlsByFileIdsAction,
+    {
+      serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY,
+      userId: args.userId,
+      fileIds: [args.fileId],
+    },
+  );
+
+  return urls[0] ?? undefined;
+}
+
+/**
  * Extract error message from ConvexError or regular Error
  * Ensures user-friendly error messages are properly displayed
  */

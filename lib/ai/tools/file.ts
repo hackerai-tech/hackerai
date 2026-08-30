@@ -9,11 +9,15 @@ import { truncateOutput } from "@/lib/token-utils";
 import { supportsMultimodalToolResults } from "@/lib/ai/providers";
 import { buildSandboxCommandOptions } from "./utils/sandbox-command-options";
 import { isCentrifugoSandbox } from "./utils/sandbox-types";
-import { uploadSandboxFileToConvex } from "./utils/sandbox-file-uploader";
+import {
+  getSandboxUploadedFileUrl,
+  uploadSandboxFileToConvex,
+} from "./utils/sandbox-file-uploader";
 import type { Id } from "@/convex/_generated/dataModel";
 import { logger } from "@/lib/logger";
 import { phLogger } from "@/lib/posthog/server";
 import { validateImageBytes } from "@/lib/utils/image-validation";
+import { validateDownloadUrl } from "./utils/path-validation";
 import {
   getSandboxWithFallbackGuard,
   resolveToolErrorMessage,
@@ -560,7 +564,7 @@ function classifyFileViewError(error: unknown): FileViewErrorClassification {
 
 function captureFileViewImageUsage(args: {
   context: ToolContext;
-  sandbox: any;
+  sandbox?: any;
   path: string;
   stage: FileViewStage;
   outcome: FileViewImageUsageOutcome;
@@ -608,7 +612,7 @@ function captureFileViewImageUsage(args: {
     subscription_tier: context.subscription,
     model: getActiveModelName(context),
     configured_model: context.modelName,
-    sandbox_type: getViewSandboxType(sandbox),
+    ...(sandbox ? { sandbox_type: getViewSandboxType(sandbox) } : {}),
     file_extension: getFileExtension(path),
     stage,
     outcome,
@@ -1252,7 +1256,7 @@ async function uploadViewPreviewFiles(args: {
   sandbox: any;
   sourcePath: string;
   payload: SandboxViewPayload;
-}): Promise<ViewPreviewFile[]> {
+}): Promise<{ files: ViewPreviewFile[]; url: string }> {
   const { context, sandbox, sourcePath, payload } = args;
 
   const uploaded = await uploadSandboxFileToConvex({
@@ -1263,14 +1267,17 @@ async function uploadViewPreviewFiles(args: {
     name: getFilename(sourcePath),
   });
 
-  return [
-    {
-      fileId: uploaded.fileId,
-      name: uploaded.name,
-      mediaType: uploaded.mediaType,
-      s3Key: uploaded.s3Key,
-    },
-  ];
+  return {
+    files: [
+      {
+        fileId: uploaded.fileId,
+        name: uploaded.name,
+        mediaType: uploaded.mediaType,
+        s3Key: uploaded.s3Key,
+      },
+    ],
+    url: uploaded.url,
+  };
 }
 
 export const createFile = (context: ToolContext) => {
@@ -1296,6 +1303,7 @@ export const createFile = (context: ToolContext) => {
     canHandoffMultimodalFiles ||
     canViewMultimodalFiles();
   const auxiliaryDescriptionCache = new Map<string, Promise<string>>();
+  const previewUrlCache = new Map<string, string>();
   const describeViewPayload = (
     viewPayload: SandboxViewPayload,
     filename: string,
@@ -1430,12 +1438,16 @@ export const createFile = (context: ToolContext) => {
             let previewFiles: ViewPreviewFile[] = [];
             let previewUploadError: string | undefined;
             try {
-              previewFiles = await uploadViewPreviewFiles({
+              const uploadedPreview = await uploadViewPreviewFiles({
                 context,
                 sandbox,
                 sourcePath: path,
                 payload: viewPayload,
               });
+              previewFiles = uploadedPreview.files;
+              const previewFileId = String(uploadedPreview.files[0].fileId);
+              validateDownloadUrl(uploadedPreview.url);
+              previewUrlCache.set(previewFileId, uploadedPreview.url);
             } catch (error) {
               previewUploadError =
                 error instanceof Error ? error.message : String(error);
@@ -1812,6 +1824,50 @@ export const createFile = (context: ToolContext) => {
 
           const viewStartedAt = Date.now();
           let outputSandbox: any | undefined;
+          const previewFile = viewOutput.previewFiles?.[0];
+          if (previewFile) {
+            try {
+              const previewFileId = String(previewFile.fileId);
+              let imageUrl = previewUrlCache.get(previewFileId);
+              if (!imageUrl) {
+                imageUrl = await getSandboxUploadedFileUrl({
+                  fileId: previewFile.fileId,
+                  userId: context.userID,
+                });
+              }
+
+              if (imageUrl) {
+                validateDownloadUrl(imageUrl);
+                previewUrlCache.set(previewFileId, imageUrl);
+                try {
+                  captureFileViewImageUsage({
+                    context,
+                    path: viewOutput.path,
+                    stage: "model_output",
+                    outcome: "success",
+                    durationMs: Date.now() - viewStartedAt,
+                    mediaType: viewOutput.mediaType,
+                    sizeBytes: viewOutput.sizeBytes,
+                    previewUploadSucceeded: viewOutput.previewUploadSucceeded,
+                  });
+                } catch {
+                  // Telemetry must never break a successful image handoff.
+                }
+
+                return {
+                  type: "content" as const,
+                  value: [
+                    { type: "text" as const, text: viewOutput.content },
+                    { type: "image-url" as const, url: imageUrl },
+                  ],
+                };
+              }
+            } catch {
+              // Fall back to a validated inline image when the preview URL is
+              // unavailable, expired, or temporarily cannot be refreshed.
+            }
+          }
+
           try {
             const { sandbox } = await getSandboxForFileTool();
             outputSandbox = sandbox;
