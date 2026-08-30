@@ -1,4 +1,11 @@
-import { beforeEach, describe, expect, it, jest } from "@jest/globals";
+import {
+  afterAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  jest,
+} from "@jest/globals";
 import type { NextRequest } from "next/server";
 
 const mockAuthkit = jest.fn();
@@ -11,6 +18,7 @@ const mockNextResponseJson = jest.fn((body: unknown, init?: unknown) =>
 const mockNextResponseRedirect = jest.fn((url: URL, init?: unknown) =>
   mockCreateResponse("redirect", url, init),
 );
+const originalCookiePassword = process.env.WORKOS_COOKIE_PASSWORD;
 
 function mockCreateResponse(kind: string, body?: unknown, init?: unknown) {
   return {
@@ -73,12 +81,22 @@ function createRequest({
 }
 
 describe("proxy", () => {
+  afterAll(() => {
+    if (originalCookiePassword === undefined) {
+      delete process.env.WORKOS_COOKIE_PASSWORD;
+    } else {
+      process.env.WORKOS_COOKIE_PASSWORD = originalCookiePassword;
+    }
+  });
+
   beforeEach(() => {
     jest.resetModules();
     mockAuthkit.mockReset();
     mockNextResponseNext.mockClear();
     mockNextResponseJson.mockClear();
     mockNextResponseRedirect.mockClear();
+    process.env.WORKOS_COOKIE_PASSWORD =
+      "test-cookie-password-with-32-characters";
   });
 
   it.each([
@@ -186,7 +204,9 @@ describe("proxy", () => {
     );
     expect(firstTouchCookieCall).toBeDefined();
     const [, value, options] = firstTouchCookieCall!;
-    expect(JSON.parse(decodeURIComponent(String(value)))).toMatchObject({
+    const { parseFirstTouchAttributionCookie } =
+      await import("@/lib/analytics/acquisition-cookie");
+    expect(parseFirstTouchAttributionCookie(String(value))).toMatchObject({
       version: 1,
       source: "github",
       medium: "social",
@@ -203,6 +223,29 @@ describe("proxy", () => {
       maxAge: 90 * 24 * 60 * 60,
       path: "/",
     });
+  });
+
+  it("does not store attribution for likely bot traffic", async () => {
+    mockAuthkit.mockResolvedValue({
+      session: { user: null },
+      headers: new Headers(),
+      authorizationUrl: "https://signin.hackerai.co/login",
+    });
+    const { default: proxy } = await import("../proxy");
+
+    const response = await proxy(
+      createRequest({
+        pathname: "/?utm_source=bot_campaign",
+        accept: "text/html",
+        userAgent: "Googlebot/2.1",
+      }),
+    );
+
+    expect(
+      response.cookies.set.mock.calls.some(
+        ([name]: [string]) => name === "hackerai_first_touch_attribution",
+      ),
+    ).toBe(false);
   });
 
   it("does not overwrite existing first-touch attribution", async () => {

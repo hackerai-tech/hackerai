@@ -15,10 +15,8 @@ import { PostHogProvider } from "./providers";
 import { DataStreamProvider } from "./components/DataStreamProvider";
 import { ChunkLoadRecovery } from "./components/ChunkLoadRecovery";
 import { resolveClientInitialAuth } from "@/lib/auth/initial-auth";
-import {
-  FIRST_TOUCH_ATTRIBUTION_COOKIE_NAME,
-  parseFirstTouchAttribution,
-} from "@/lib/analytics/acquisition";
+import { FIRST_TOUCH_ATTRIBUTION_COOKIE_NAME } from "@/lib/analytics/acquisition";
+import { parseFirstTouchAttributionCookie } from "@/lib/analytics/acquisition-cookie";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -123,7 +121,7 @@ export default async function RootLayout({
     getInitialAuth(),
     cookies(),
   ]);
-  const firstTouchAttribution = parseFirstTouchAttribution(
+  const firstTouchAttribution = parseFirstTouchAttributionCookie(
     cookieStore.get(FIRST_TOUCH_ATTRIBUTION_COOKIE_NAME)?.value,
   );
 
