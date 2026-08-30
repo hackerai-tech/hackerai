@@ -10,6 +10,7 @@ export const AGENT_AUTO_CONTINUE_RECOVERY_FINISHED_EVENT =
 
 export type AgentAutoContinueUsageProtectionAssignment = "control" | "test";
 
+/** Restrict the experiment to paid, system-started recovery runs. */
 export const isAgentAutoContinueUsageProtectionEligible = ({
   subscription,
   isAutomaticContinuation,
@@ -18,6 +19,7 @@ export const isAgentAutoContinueUsageProtectionEligible = ({
   isAutomaticContinuation: boolean;
 }): boolean => subscription !== "free" && isAutomaticContinuation;
 
+/** Preserve flag unavailability while mapping boolean evaluations to cohorts. */
 export const resolveAgentAutoContinueUsageProtectionAssignment = (
   flagValue: boolean | null,
 ): AgentAutoContinueUsageProtectionAssignment | undefined => {
@@ -25,6 +27,7 @@ export const resolveAgentAutoContinueUsageProtectionAssignment = (
   return flagValue ? "test" : "control";
 };
 
+/** Record a privacy-safe terminal exposure and confirmed refund outcome. */
 export const captureAgentAutoContinueRecoveryFinished = ({
   posthog,
   userId,

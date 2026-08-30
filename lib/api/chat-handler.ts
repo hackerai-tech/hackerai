@@ -982,6 +982,28 @@ export const createChatHandler = () => {
                   )
                 : { usedTokens: 0, maxTokens: 0 },
             );
+            const protectTerminalAutomaticContinuation = async () => {
+              const stopSource = getAgentAutoContinueStopSource({
+                finishReason: state.streamFinishReason,
+                stoppedDueToTokenExhaustion: state.stoppedDueToTokenExhaustion,
+                stoppedDueToElapsedTimeout: state.stoppedDueToElapsedTimeout,
+                stoppedDueToPostSummarizationIncomplete:
+                  state.stoppedDueToPostSummarizationIncomplete,
+              });
+              if (isAutomaticContinuation) {
+                await protectIncompleteAutomaticContinuation({
+                  assignment: autoContinueUsageProtectionAssignment,
+                  stopSource,
+                  usageRefundTracker,
+                  writer,
+                  posthog,
+                  userId,
+                  subscription,
+                  endpoint,
+                });
+              }
+              return stopSource;
+            };
 
             // Mid-stream budget enforcement. Paid users use their subscription
             // bucket; free users use an internal monthly cost cap.
@@ -1961,6 +1983,7 @@ export const createChatHandler = () => {
                                 // reason to budget-exhausted; do it before
                                 // analytics and persistence consume state.
                                 await deductAccumulatedUsage(retryMessageId);
+                                await protectTerminalAutomaticContinuation();
                                 const providerContentBlocked =
                                   isProviderContentFilterFinishReason(
                                     state.streamFinishReason,
@@ -2615,27 +2638,7 @@ export const createChatHandler = () => {
                     }
 
                     const autoContinueStopSource =
-                      getAgentAutoContinueStopSource({
-                        finishReason: state.streamFinishReason,
-                        stoppedDueToTokenExhaustion:
-                          state.stoppedDueToTokenExhaustion,
-                        stoppedDueToElapsedTimeout:
-                          state.stoppedDueToElapsedTimeout,
-                        stoppedDueToPostSummarizationIncomplete:
-                          state.stoppedDueToPostSummarizationIncomplete,
-                      });
-                    if (isAutomaticContinuation) {
-                      await protectIncompleteAutomaticContinuation({
-                        assignment: autoContinueUsageProtectionAssignment,
-                        stopSource: autoContinueStopSource,
-                        usageRefundTracker,
-                        writer,
-                        posthog,
-                        userId,
-                        subscription,
-                        endpoint,
-                      });
-                    }
+                      await protectTerminalAutomaticContinuation();
                     if (
                       autoContinueStopSource &&
                       isAgentMode(mode) &&

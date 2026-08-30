@@ -11,6 +11,7 @@ import type { UsageRefundTracker } from "@/lib/rate-limit/refund";
 import { writeAutoContinueUsageProtected } from "@/lib/utils/stream-writer-utils";
 import type { SubscriptionTier } from "@/types";
 
+/** Restore a treatment recovery's usage only after it ends incomplete again. */
 export const protectIncompleteAutomaticContinuation = async ({
   assignment,
   stopSource,

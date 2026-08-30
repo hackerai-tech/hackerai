@@ -93,6 +93,7 @@ describe("UsageRefundTracker", () => {
       125,
       125,
       undefined,
+      expect.any(String),
     );
   });
 
@@ -161,6 +162,9 @@ describe("UsageRefundTracker", () => {
     await tracker.refund();
 
     expect(refundUsage).toHaveBeenCalledTimes(2);
+    expect(refundUsage.mock.calls[0]?.[5]).toEqual(
+      refundUsage.mock.calls[1]?.[5],
+    );
     consoleError.mockRestore();
   });
 
@@ -202,6 +206,7 @@ describe("UsageRefundTracker", () => {
       100,
       50,
       undefined,
+      expect.any(String),
     );
     expect(refundUsage).toHaveBeenNthCalledWith(
       2,
@@ -209,6 +214,7 @@ describe("UsageRefundTracker", () => {
       "pro",
       0,
       50,
+      undefined,
       undefined,
     );
   });

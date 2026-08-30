@@ -1430,13 +1430,47 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
       expect(source).toMatch(
         /assignment:\s*autoContinueUsageProtectionAssignment/,
       );
-      expect(source).toMatch(/stopSource:\s*autoContinueStopSource/);
+      expect(source).toMatch(/stopSource,/);
     }
     expect(routeSrc).toMatch(/AGENT_AUTO_CONTINUE_USAGE_PROTECTION_FLAG/);
     expect(routeSrc).toMatch(/autoContinueUsageProtectionAssignment,/);
     expect(taskSrc).toMatch(
       /autoContinueUsageProtectionAssignment\?:\s*AgentAutoContinueUsageProtectionAssignment/,
     );
+  });
+
+  test("fallback and final retry completion paths preserve automatic recovery protection", () => {
+    const directRetryDeductionIdx = chatHandlerSrc.indexOf(
+      "await deductAccumulatedUsage(retryMessageId)",
+    );
+    const directRetryProtectionIdx = chatHandlerSrc.indexOf(
+      "await protectTerminalAutomaticContinuation()",
+      directRetryDeductionIdx,
+    );
+    expect(directRetryDeductionIdx).toBeGreaterThan(-1);
+    expect(directRetryProtectionIdx).toBeGreaterThan(directRetryDeductionIdx);
+
+    const triggerFinalizerIdx = taskSrc.indexOf(
+      "const finalizeRetryStream = async",
+    );
+    const triggerRetryDeductionIdx = taskSrc.indexOf(
+      "await deductAccumulatedUsage()",
+      triggerFinalizerIdx,
+    );
+    const triggerRetryProtectionIdx = taskSrc.indexOf(
+      "await protectTerminalAutomaticContinuation()",
+      triggerRetryDeductionIdx,
+    );
+    expect(triggerFinalizerIdx).toBeGreaterThan(-1);
+    expect(triggerRetryProtectionIdx).toBeGreaterThan(triggerRetryDeductionIdx);
+
+    const finalRetryFinishIdx = taskSrc.indexOf("messages: finalRetryMessages");
+    const finalRetryFinalizeIdx = taskSrc.indexOf(
+      "await finalizeRetryStream({",
+      finalRetryFinishIdx,
+    );
+    expect(finalRetryFinishIdx).toBeGreaterThan(-1);
+    expect(finalRetryFinalizeIdx).toBeGreaterThan(finalRetryFinishIdx);
   });
 
   test("the direct chat boundary strictly normalizes automatic continuation flags", () => {

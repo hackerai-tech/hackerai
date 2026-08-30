@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import type { RateLimitInfo, SubscriptionTier } from "@/types";
 import { refundUsage, type UsageDeductionResult } from "./token-bucket";
 
@@ -20,6 +21,7 @@ export class UsageRefundTracker {
   private subscription: SubscriptionTier | undefined;
   private organizationId: string | undefined;
   private refundInFlight: Promise<UsageRefundOutcome> | undefined;
+  private includedRefundId: string | undefined;
 
   /**
    * Set user context for refunds.
@@ -94,12 +96,17 @@ export class UsageRefundTracker {
 
     let result;
     try {
+      const includedRefundId =
+        this.pointsDeducted > 0
+          ? (this.includedRefundId ??= randomUUID())
+          : undefined;
       result = await refundUsage(
         this.userId,
         this.subscription,
         this.pointsDeducted,
         this.extraUsagePointsDeducted,
         this.organizationId,
+        includedRefundId,
       );
     } catch (error) {
       console.error("Failed to refund usage:", error);
@@ -115,6 +122,7 @@ export class UsageRefundTracker {
       0,
       this.pointsDeducted - result.includedPointsRefunded,
     );
+    if (this.pointsDeducted === 0) this.includedRefundId = undefined;
     this.extraUsagePointsDeducted = Math.max(
       0,
       this.extraUsagePointsDeducted - result.extraUsagePointsRefunded,

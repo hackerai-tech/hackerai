@@ -192,6 +192,7 @@ export const writeAutoContinue = (writer: UIMessageStreamWriter): void => {
   });
 };
 
+/** Confirm that every tracked deduction for an automatic recovery was restored. */
 export const writeAutoContinueUsageProtected = (
   writer: UIMessageStreamWriter,
 ): void => {
