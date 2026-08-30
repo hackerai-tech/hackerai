@@ -1198,7 +1198,7 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
       /const genericDelegationFlagPromise\s*=\s*agentPermissionMode === "full_access"/,
     );
     expect(routeSrc).toMatch(
-      /existingChat, userCustomization, genericDelegationEnabled[\s\S]*Promise\.all/,
+      /existingChat,[\s\S]{0,200}userCustomization,[\s\S]{0,200}genericDelegationEnabled,[\s\S]{0,200}Promise\.all/,
     );
     expect(routeSrc).toContain('"agent-generic-delegation-v1"');
     expect(routeSrc).not.toContain("securityValidationSubagentsEnabled");
@@ -1415,11 +1415,62 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
       expect(source).toMatch(/getAgentAutoContinueStopSource\(\{/);
       expect(source).toMatch(/finishReason:\s*state\.streamFinishReason/);
       expect(source).toMatch(
-        /if \(\s*autoContinueStopSource[\s\S]{0,100}!isAutomaticContinuation\s*\) \{\s*writeAutoContinue/,
+        /if \(\s*autoContinueStopSource\s*&&[\s\S]{0,100}!isAutomaticContinuation\s*\)/,
       );
       expect(source).toMatch(/writeAutoContinue\(writer\)/);
       expect(source).toMatch(/agent_auto_continue_suppressed/);
     }
+  });
+
+  test("both Agent backends protect only a bounded automatic recovery that stops incomplete", () => {
+    for (const source of [chatHandlerSrc, taskSrc]) {
+      expect(source).toMatch(
+        /if \(isAutomaticContinuation\) \{\s*await protectIncompleteAutomaticContinuation\(\{/,
+      );
+      expect(source).toMatch(
+        /assignment:\s*autoContinueUsageProtectionAssignment/,
+      );
+      expect(source).toMatch(/stopSource,/);
+    }
+    expect(routeSrc).toMatch(/AGENT_AUTO_CONTINUE_USAGE_PROTECTION_FLAG/);
+    expect(routeSrc).toMatch(/autoContinueUsageProtectionAssignment,/);
+    expect(taskSrc).toMatch(
+      /autoContinueUsageProtectionAssignment\?:\s*AgentAutoContinueUsageProtectionAssignment/,
+    );
+  });
+
+  test("fallback and final retry completion paths preserve automatic recovery protection", () => {
+    const directRetryDeductionIdx = chatHandlerSrc.indexOf(
+      "await deductAccumulatedUsage(retryMessageId)",
+    );
+    const directRetryProtectionIdx = chatHandlerSrc.indexOf(
+      "await protectTerminalAutomaticContinuation()",
+      directRetryDeductionIdx,
+    );
+    expect(directRetryDeductionIdx).toBeGreaterThan(-1);
+    expect(directRetryProtectionIdx).toBeGreaterThan(directRetryDeductionIdx);
+
+    const triggerFinalizerIdx = taskSrc.indexOf(
+      "const finalizeRetryStream = async",
+    );
+    const triggerRetryDeductionIdx = taskSrc.indexOf(
+      "await deductAccumulatedUsage()",
+      triggerFinalizerIdx,
+    );
+    const triggerRetryProtectionIdx = taskSrc.indexOf(
+      "await protectTerminalAutomaticContinuation()",
+      triggerRetryDeductionIdx,
+    );
+    expect(triggerFinalizerIdx).toBeGreaterThan(-1);
+    expect(triggerRetryProtectionIdx).toBeGreaterThan(triggerRetryDeductionIdx);
+
+    const finalRetryFinishIdx = taskSrc.indexOf("messages: finalRetryMessages");
+    const finalRetryFinalizeIdx = taskSrc.indexOf(
+      "await finalizeRetryStream({",
+      finalRetryFinishIdx,
+    );
+    expect(finalRetryFinishIdx).toBeGreaterThan(-1);
+    expect(finalRetryFinalizeIdx).toBeGreaterThan(finalRetryFinishIdx);
   });
 
   test("the direct chat boundary strictly normalizes automatic continuation flags", () => {
@@ -1629,7 +1680,7 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
       expect(source).toMatch(/getAgentAutoContinueStopSource\(\{/);
       expect(source).toMatch(/autoContinueStopSource/);
       expect(source).toMatch(
-        /if \(\s*autoContinueStopSource[\s\S]{0,100}!isAutomaticContinuation\s*\) \{\s*writeAutoContinue/,
+        /if \(\s*autoContinueStopSource\s*&&[\s\S]{0,100}!isAutomaticContinuation\s*\)/,
       );
       expect(source).toMatch(/agent_auto_continue_signaled/);
     }

@@ -774,10 +774,10 @@ describe("token-bucket async functions", () => {
       // Should refund the difference (70 - 28 = 42 points)
       const expectedRefund =
         estimatedCost - billableCostDollarsToPoints(providerCostDollars);
-      expect(mockHincrbyFn).toHaveBeenCalledWith(
-        expect.stringContaining("usage:monthly"),
-        "tokens",
-        expectedRefund,
+      expect(mockEvalFn).toHaveBeenCalledWith(
+        expect.stringContaining('redis.call("HSET", bucketKey'),
+        ["usage:monthly:user-123:pro"],
+        [expect.stringMatching(/^usage-refund:/), expectedRefund, 250_000],
       );
       // Should NOT call limiter to deduct more
       expect(mockLimitFn).not.toHaveBeenCalled();
@@ -884,10 +884,10 @@ describe("token-bucket async functions", () => {
 
       // Should refund the difference (70 - 35 = 35 points)
       const expectedRefund = estimatedCost - actualCost;
-      expect(mockHincrbyFn).toHaveBeenCalledWith(
-        expect.stringContaining("usage:monthly"),
-        "tokens",
-        expectedRefund,
+      expect(mockEvalFn).toHaveBeenCalledWith(
+        expect.stringContaining('redis.call("HSET", bucketKey'),
+        ["usage:monthly:user-123:pro"],
+        [expect.stringMatching(/^usage-refund:/), expectedRefund, 250_000],
       );
     });
 
@@ -1061,16 +1061,29 @@ describe("token-bucket async functions", () => {
   });
 
   describe("refundUsage", () => {
-    it("should refund bucket tokens via Redis hincrby", async () => {
+    it("atomically refunds bucket tokens with a stable idempotency marker", async () => {
       const { refundUsage } = getIsolatedModule();
 
-      await refundUsage("user-123", "pro", 1000, 0);
-
-      expect(mockHincrbyFn).toHaveBeenCalledWith(
-        expect.stringContaining("usage:monthly"),
-        "tokens",
+      const result = await refundUsage(
+        "user-123",
+        "pro",
         1000,
+        0,
+        undefined,
+        "refund-123",
       );
+
+      expect(mockEvalFn).toHaveBeenCalledWith(
+        expect.stringContaining('redis.call("HSET", bucketKey'),
+        ["usage:monthly:user-123:pro"],
+        ["usage-refund:refund-123", 1000, 250_000],
+      );
+      expect(result).toEqual({
+        includedPointsRefunded: 1000,
+        extraUsagePointsRefunded: 0,
+        includedRefundFailed: false,
+        extraUsageRefundFailed: false,
+      });
     });
 
     it("should refund extra usage balance when provided", async () => {
@@ -1084,33 +1097,98 @@ describe("token-bucket async functions", () => {
     it("should not refund if no points deducted", async () => {
       const { refundUsage } = getIsolatedModule();
 
-      await refundUsage("user-123", "pro", 0, 0);
+      const result = await refundUsage("user-123", "pro", 0, 0);
 
       expect(mockHincrbyFn).not.toHaveBeenCalled();
       expect(mockRefundToBalance).not.toHaveBeenCalled();
+      expect(result).toEqual({
+        includedPointsRefunded: 0,
+        extraUsagePointsRefunded: 0,
+        includedRefundFailed: false,
+        extraUsageRefundFailed: false,
+      });
+    });
+
+    it("reports a failed extra-usage refund without hiding the included refund", async () => {
+      const { refundUsage } = getIsolatedModule();
+      mockRefundToBalance.mockResolvedValueOnce({
+        success: false,
+        newBalanceDollars: 0,
+      });
+
+      const result = await refundUsage("user-123", "pro", 1000, 500);
+
+      expect(result).toEqual({
+        includedPointsRefunded: 1000,
+        extraUsagePointsRefunded: 0,
+        includedRefundFailed: false,
+        extraUsageRefundFailed: true,
+      });
     });
 
     it("should cap refunded tokens at bucket limit", async () => {
       const { refundUsage, getBudgetLimits } = getIsolatedModule();
       const { monthly: monthlyLimit } = getBudgetLimits("pro");
 
-      mockHincrbyFn.mockResolvedValue(monthlyLimit + 10000);
+      await refundUsage("user-123", "pro", 50000, 0, undefined, "refund-cap");
 
-      await refundUsage("user-123", "pro", 50000, 0);
-
-      expect(mockHsetFn).toHaveBeenCalled();
+      expect(mockEvalFn).toHaveBeenCalledWith(
+        expect.stringContaining("math.min(currentTokens + pointsToRefund"),
+        ["usage:monthly:user-123:pro"],
+        ["usage-refund:refund-cap", 50_000, monthlyLimit],
+      );
     });
 
     it("caps refunds at the stored cycle allocation", async () => {
       const { refundUsage } = getIsolatedModule();
-      mockHgetFn.mockResolvedValue(200_000);
-      mockHincrbyFn.mockResolvedValue(210_000);
 
-      await refundUsage("user-123", "pro", 50_000, 0);
+      await refundUsage(
+        "user-123",
+        "pro",
+        50_000,
+        0,
+        undefined,
+        "refund-cycle",
+      );
 
-      expect(mockHsetFn).toHaveBeenCalledWith("usage:monthly:user-123:pro", {
-        tokens: 200_000,
+      expect(mockEvalFn).toHaveBeenCalledWith(
+        expect.stringContaining(
+          'redis.call("HGET", bucketKey, "cycleAllocation")',
+        ),
+        ["usage:monthly:user-123:pro"],
+        ["usage-refund:refund-cycle", 50_000, 250_000],
+      );
+    });
+
+    it("retries an ambiguous response without applying the bucket refund twice", async () => {
+      const { refundUsage } = getIsolatedModule();
+      const consoleError = jest
+        .spyOn(console, "error")
+        .mockImplementation(() => undefined);
+      mockEvalFn
+        .mockRejectedValueOnce(new Error("response lost after execution"))
+        .mockResolvedValueOnce([0, 51_000]);
+
+      await expect(
+        refundUsage("user-123", "pro", 1_000, 0, undefined, "refund-ambiguous"),
+      ).resolves.toMatchObject({
+        includedPointsRefunded: 0,
+        includedRefundFailed: true,
       });
+      await expect(
+        refundUsage("user-123", "pro", 1_000, 0, undefined, "refund-ambiguous"),
+      ).resolves.toMatchObject({
+        includedPointsRefunded: 1_000,
+        includedRefundFailed: false,
+      });
+
+      expect(mockEvalFn).toHaveBeenNthCalledWith(
+        2,
+        expect.any(String),
+        ["usage:monthly:user-123:pro"],
+        ["usage-refund:refund-ambiguous", 1_000, 250_000],
+      );
+      consoleError.mockRestore();
     });
   });
 
@@ -2141,10 +2219,10 @@ describe("token-bucket async functions", () => {
 
       await refundUsage("user-123", "pro", deducted, 0);
 
-      expect(mockHincrbyFn).toHaveBeenCalledWith(
-        expect.any(String),
-        "tokens",
-        deducted,
+      expect(mockEvalFn).toHaveBeenCalledWith(
+        expect.stringContaining('redis.call("HSET", bucketKey'),
+        ["usage:monthly:user-123:pro"],
+        [expect.stringMatching(/^usage-refund:/), deducted, 250_000],
       );
     });
   });

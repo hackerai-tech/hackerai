@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { Ratelimit } from "@upstash/ratelimit";
 import { ChatSDKError } from "@/lib/errors";
 import type {
@@ -1401,7 +1402,14 @@ export const deductUsage = async (
         initialIncludedPoints,
       );
       if (includedRefundPoints > 0) {
-        await refundBucketTokens(userId, subscription, includedRefundPoints);
+        await refundBucketTokens(
+          userId,
+          subscription,
+          includedRefundPoints,
+          usageSettlementId
+            ? `${usageSettlementId}:settlement-refund`
+            : randomUUID(),
+        );
         lastKnownDeductionResult = buildDeductionResult(
           0,
           0,
@@ -1443,42 +1451,51 @@ export const deductUsage = async (
 
 /**
  * Refund bucket tokens by adding capacity back to the monthly token bucket.
- * Uses direct Redis operations since Upstash Ratelimit doesn't have a native refund method.
+ * The token update and per-refund marker are written atomically so an
+ * ambiguous network response can be retried without applying credit twice.
  */
+const REFUND_BUCKET_TOKENS_SCRIPT = `
+local bucketKey = KEYS[1]
+local refundField = ARGV[1]
+local pointsToRefund = tonumber(ARGV[2])
+local defaultLimit = tonumber(ARGV[3])
+
+local currentTokens = tonumber(redis.call("HGET", bucketKey, "tokens") or "0")
+if redis.call("HEXISTS", bucketKey, refundField) == 1 then
+  return {0, currentTokens}
+end
+
+local cycleAllocation = tonumber(redis.call("HGET", bucketKey, "cycleAllocation"))
+local refundCap = cycleAllocation or defaultLimit
+local nextTokens = math.min(currentTokens + pointsToRefund, refundCap)
+redis.call("HSET", bucketKey, "tokens", nextTokens, refundField, pointsToRefund)
+return {1, nextTokens}
+`;
+
 const refundBucketTokens = async (
   userId: string,
   subscription: SubscriptionTier,
   pointsToRefund: number,
-): Promise<void> => {
-  if (pointsToRefund <= 0) return;
+  refundId: string,
+): Promise<boolean> => {
+  if (pointsToRefund <= 0) return true;
 
   const redis = createRedisClient();
-  if (!redis) return;
+  if (!redis) return false;
 
   const { monthly: monthlyLimit } = getBudgetLimits(subscription);
   const monthlyKey = getMonthlyBucketKey(userId, subscription);
 
   try {
-    const monthlyTokens = await redis.hincrby(
-      monthlyKey,
-      "tokens",
-      pointsToRefund,
+    await redis.eval(
+      REFUND_BUCKET_TOKENS_SCRIPT,
+      [monthlyKey],
+      [`usage-refund:${refundId}`, pointsToRefund, monthlyLimit],
     );
-
-    const cycleAllocation = await getStoredCycleAllocation(
-      redis,
-      monthlyKey,
-      monthlyLimit,
-    );
-    const refundCap = cycleAllocation ?? monthlyLimit;
-
-    // Cap refunds at the current cycle allocation, which may be lower than
-    // the broad subscription tier for grandfathered or prorated users.
-    if (monthlyTokens > refundCap) {
-      await redis.hset(monthlyKey, { tokens: refundCap });
-    }
+    return true;
   } catch (error) {
     console.error("Failed to refund bucket tokens:", error);
+    return false;
   }
 };
 
@@ -2434,39 +2451,52 @@ export const applyTeamSeatDebt = async (
  * Refund usage when a request fails after credits were deducted.
  * Refunds both token bucket credits and extra usage balance.
  */
+export type UsageRefundResult = {
+  includedPointsRefunded: number;
+  extraUsagePointsRefunded: number;
+  includedRefundFailed: boolean;
+  extraUsageRefundFailed: boolean;
+};
+
 export const refundUsage = async (
   userId: string,
   subscription: SubscriptionTier,
   pointsDeducted: number,
   extraUsagePointsDeducted: number,
   organizationId?: string,
-): Promise<void> => {
-  const refundPromises: Promise<void>[] = [];
-
-  if (pointsDeducted > 0) {
-    refundPromises.push(
-      refundBucketTokens(userId, subscription, pointsDeducted),
-    );
-  }
-
-  if (extraUsagePointsDeducted > 0) {
+  includedRefundId: string = randomUUID(),
+): Promise<UsageRefundResult> => {
+  const includedRefundPromise =
+    pointsDeducted > 0
+      ? refundBucketTokens(
+          userId,
+          subscription,
+          pointsDeducted,
+          includedRefundId,
+        )
+      : Promise.resolve(true);
+  const extraUsageRefundPromise = (async () => {
+    if (extraUsagePointsDeducted <= 0) return true;
     const isTeamPool = subscription === "team" && !!organizationId;
-    refundPromises.push(
-      isTeamPool
-        ? refundToTeamBalance(
-            organizationId!,
-            userId,
-            extraUsagePointsDeducted,
-          ).then(() => {})
-        : refundToBalance(userId, extraUsagePointsDeducted).then(() => {}),
-    );
-  }
+    const result = isTeamPool
+      ? await refundToTeamBalance(
+          organizationId!,
+          userId,
+          extraUsagePointsDeducted,
+        )
+      : await refundToBalance(userId, extraUsagePointsDeducted);
+    return result.success;
+  })();
 
-  if (refundPromises.length > 0) {
-    try {
-      await Promise.all(refundPromises);
-    } catch (error) {
-      console.error("Failed to refund usage:", error);
-    }
-  }
+  const [includedRefunded, extraUsageRefunded] = await Promise.all([
+    includedRefundPromise,
+    extraUsageRefundPromise,
+  ]);
+
+  return {
+    includedPointsRefunded: includedRefunded ? pointsDeducted : 0,
+    extraUsagePointsRefunded: extraUsageRefunded ? extraUsagePointsDeducted : 0,
+    includedRefundFailed: pointsDeducted > 0 && !includedRefunded,
+    extraUsageRefundFailed: extraUsagePointsDeducted > 0 && !extraUsageRefunded,
+  };
 };
