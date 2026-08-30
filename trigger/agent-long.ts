@@ -209,6 +209,8 @@ import {
   type AgentStreamContext,
   type AgentStreamState,
 } from "@/lib/api/agent-stream-runner";
+import { protectIncompleteAutomaticContinuation } from "@/lib/api/agent-auto-continue-usage-protection";
+import type { AgentAutoContinueUsageProtectionAssignment } from "@/lib/experiments/agent-auto-continue-usage-protection";
 import {
   assertLocalSandboxFallbackAllowed,
   getSandboxFallbackPromptReminder,
@@ -2264,6 +2266,7 @@ export type AgentLongPayload = {
   triggerRegion?: TriggerRunRegion;
   isAutoContinue?: boolean;
   isAutomaticContinuation?: boolean;
+  autoContinueUsageProtectionAssignment?: AgentAutoContinueUsageProtectionAssignment;
   regenerate?: boolean;
   isNewChat?: boolean;
   limitRescue?: LimitRescueRequest;
@@ -2353,6 +2356,7 @@ export const agentLongTask = task({
       triggerRegion = "us-east-1",
       isAutoContinue,
       isAutomaticContinuation,
+      autoContinueUsageProtectionAssignment,
       regenerate,
       isNewChat,
       limitRescue,
@@ -5363,6 +5367,18 @@ export const agentLongTask = task({
                           stoppedDueToPostSummarizationIncomplete:
                             state.stoppedDueToPostSummarizationIncomplete,
                         });
+                      if (isAutomaticContinuation) {
+                        await protectIncompleteAutomaticContinuation({
+                          assignment: autoContinueUsageProtectionAssignment,
+                          stopSource: autoContinueStopSource,
+                          usageRefundTracker,
+                          writer,
+                          posthog,
+                          userId,
+                          subscription,
+                          endpoint,
+                        });
+                      }
                       if (autoContinueStopSource && !isAutomaticContinuation) {
                         writeAutoContinue(writer);
                         phLogger.info("Agent auto-continue signaled", {

@@ -1449,11 +1449,11 @@ const refundBucketTokens = async (
   userId: string,
   subscription: SubscriptionTier,
   pointsToRefund: number,
-): Promise<void> => {
-  if (pointsToRefund <= 0) return;
+): Promise<boolean> => {
+  if (pointsToRefund <= 0) return true;
 
   const redis = createRedisClient();
-  if (!redis) return;
+  if (!redis) return false;
 
   const { monthly: monthlyLimit } = getBudgetLimits(subscription);
   const monthlyKey = getMonthlyBucketKey(userId, subscription);
@@ -1477,8 +1477,10 @@ const refundBucketTokens = async (
     if (monthlyTokens > refundCap) {
       await redis.hset(monthlyKey, { tokens: refundCap });
     }
+    return true;
   } catch (error) {
     console.error("Failed to refund bucket tokens:", error);
+    return false;
   }
 };
 
@@ -2434,39 +2436,46 @@ export const applyTeamSeatDebt = async (
  * Refund usage when a request fails after credits were deducted.
  * Refunds both token bucket credits and extra usage balance.
  */
+export type UsageRefundResult = {
+  includedPointsRefunded: number;
+  extraUsagePointsRefunded: number;
+  includedRefundFailed: boolean;
+  extraUsageRefundFailed: boolean;
+};
+
 export const refundUsage = async (
   userId: string,
   subscription: SubscriptionTier,
   pointsDeducted: number,
   extraUsagePointsDeducted: number,
   organizationId?: string,
-): Promise<void> => {
-  const refundPromises: Promise<void>[] = [];
-
-  if (pointsDeducted > 0) {
-    refundPromises.push(
-      refundBucketTokens(userId, subscription, pointsDeducted),
-    );
-  }
-
-  if (extraUsagePointsDeducted > 0) {
+): Promise<UsageRefundResult> => {
+  const includedRefundPromise =
+    pointsDeducted > 0
+      ? refundBucketTokens(userId, subscription, pointsDeducted)
+      : Promise.resolve(true);
+  const extraUsageRefundPromise = (async () => {
+    if (extraUsagePointsDeducted <= 0) return true;
     const isTeamPool = subscription === "team" && !!organizationId;
-    refundPromises.push(
-      isTeamPool
-        ? refundToTeamBalance(
-            organizationId!,
-            userId,
-            extraUsagePointsDeducted,
-          ).then(() => {})
-        : refundToBalance(userId, extraUsagePointsDeducted).then(() => {}),
-    );
-  }
+    const result = isTeamPool
+      ? await refundToTeamBalance(
+          organizationId!,
+          userId,
+          extraUsagePointsDeducted,
+        )
+      : await refundToBalance(userId, extraUsagePointsDeducted);
+    return result.success;
+  })();
 
-  if (refundPromises.length > 0) {
-    try {
-      await Promise.all(refundPromises);
-    } catch (error) {
-      console.error("Failed to refund usage:", error);
-    }
-  }
+  const [includedRefunded, extraUsageRefunded] = await Promise.all([
+    includedRefundPromise,
+    extraUsageRefundPromise,
+  ]);
+
+  return {
+    includedPointsRefunded: includedRefunded ? pointsDeducted : 0,
+    extraUsagePointsRefunded: extraUsageRefunded ? extraUsagePointsDeducted : 0,
+    includedRefundFailed: pointsDeducted > 0 && !includedRefunded,
+    extraUsageRefundFailed: extraUsagePointsDeducted > 0 && !extraUsageRefunded,
+  };
 };

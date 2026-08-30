@@ -9,6 +9,7 @@ const TRAILING_METADATA_PART_TYPES = new Set([
   "data-agent-auto-review-lifecycle",
   "data-appendMessage",
   "data-auto-continue",
+  "data-auto-continue-usage-protected",
   "data-context-usage",
   "data-diff",
   "data-file-metadata",

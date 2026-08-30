@@ -191,3 +191,12 @@ export const writeAutoContinue = (writer: UIMessageStreamWriter): void => {
     data: { shouldContinue: true },
   });
 };
+
+export const writeAutoContinueUsageProtected = (
+  writer: UIMessageStreamWriter,
+): void => {
+  writer.write({
+    type: "data-auto-continue-usage-protected",
+    data: { status: "restored" },
+  });
+};

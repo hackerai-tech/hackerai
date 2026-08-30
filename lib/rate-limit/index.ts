@@ -55,6 +55,7 @@ export {
   POINTS_PER_DOLLAR,
   type UsageDeductionFailureReason,
   type UsageDeductionResult,
+  type UsageRefundResult,
   type CycleAllocationCapResult,
   type BillingCreditTransitionIdentity,
   type DelinquencyCreditHoldResult,

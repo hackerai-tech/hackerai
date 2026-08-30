@@ -1,9 +1,17 @@
 import type { RateLimitInfo, SubscriptionTier } from "@/types";
 import { refundUsage, type UsageDeductionResult } from "./token-bucket";
 
+export type UsageRefundOutcome = {
+  status: "refunded" | "partial" | "failed" | "skipped";
+  includedPointsRefunded: number;
+  extraUsagePointsRefunded: number;
+  includedPointsRemaining: number;
+  extraUsagePointsRemaining: number;
+};
+
 /**
  * Tracks usage deductions and handles refunds on error.
- * Ensures refunds only happen once, even if multiple error handlers trigger.
+ * Serializes concurrent refunds and keeps only unconfirmed amounts retryable.
  */
 export class UsageRefundTracker {
   private pointsDeducted = 0;
@@ -11,7 +19,7 @@ export class UsageRefundTracker {
   private userId: string | undefined;
   private subscription: SubscriptionTier | undefined;
   private organizationId: string | undefined;
-  private hasRefunded = false;
+  private refundInFlight: Promise<UsageRefundOutcome> | undefined;
 
   /**
    * Set user context for refunds.
@@ -55,30 +63,72 @@ export class UsageRefundTracker {
   }
 
   /**
-   * Refund all deducted credits (idempotent - only refunds once).
+   * Refund all tracked deductions without duplicating confirmed refunds.
    * Call this from error handlers to restore credits on failure.
    */
   async refund(): Promise<void> {
-    if (this.hasRefunded || !this.hasDeductions()) {
-      return;
-    }
+    await this.refundWithResult();
+  }
 
+  /** Refund tracked deductions and report only amounts confirmed restored. */
+  async refundWithResult(): Promise<UsageRefundOutcome> {
+    if (this.refundInFlight) return this.refundInFlight;
+    this.refundInFlight = this.performRefund().finally(() => {
+      this.refundInFlight = undefined;
+    });
+    return this.refundInFlight;
+  }
+
+  private async performRefund(): Promise<UsageRefundOutcome> {
+    const skipped = (): UsageRefundOutcome => ({
+      status: "skipped",
+      includedPointsRefunded: 0,
+      extraUsagePointsRefunded: 0,
+      includedPointsRemaining: this.pointsDeducted,
+      extraUsagePointsRemaining: this.extraUsagePointsDeducted,
+    });
+    if (!this.hasDeductions()) return skipped();
     if (!this.userId || !this.subscription) {
-      return;
+      return skipped();
     }
 
+    let result;
     try {
-      await refundUsage(
+      result = await refundUsage(
         this.userId,
         this.subscription,
         this.pointsDeducted,
         this.extraUsagePointsDeducted,
         this.organizationId,
       );
-      this.hasRefunded = true;
     } catch (error) {
       console.error("Failed to refund usage:", error);
-      // Flag stays false, allowing retry on transient failures
+      return {
+        status: "failed",
+        includedPointsRefunded: 0,
+        extraUsagePointsRefunded: 0,
+        includedPointsRemaining: this.pointsDeducted,
+        extraUsagePointsRemaining: this.extraUsagePointsDeducted,
+      };
     }
+    this.pointsDeducted = Math.max(
+      0,
+      this.pointsDeducted - result.includedPointsRefunded,
+    );
+    this.extraUsagePointsDeducted = Math.max(
+      0,
+      this.extraUsagePointsDeducted - result.extraUsagePointsRefunded,
+    );
+
+    const refundedAny =
+      result.includedPointsRefunded > 0 || result.extraUsagePointsRefunded > 0;
+    const hasRemaining = this.hasDeductions();
+    return {
+      status: hasRemaining ? (refundedAny ? "partial" : "failed") : "refunded",
+      includedPointsRefunded: result.includedPointsRefunded,
+      extraUsagePointsRefunded: result.extraUsagePointsRefunded,
+      includedPointsRemaining: this.pointsDeducted,
+      extraUsagePointsRemaining: this.extraUsagePointsDeducted,
+    };
   }
 }

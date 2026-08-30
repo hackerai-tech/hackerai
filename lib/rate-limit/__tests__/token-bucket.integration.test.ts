@@ -1064,13 +1064,19 @@ describe("token-bucket async functions", () => {
     it("should refund bucket tokens via Redis hincrby", async () => {
       const { refundUsage } = getIsolatedModule();
 
-      await refundUsage("user-123", "pro", 1000, 0);
+      const result = await refundUsage("user-123", "pro", 1000, 0);
 
       expect(mockHincrbyFn).toHaveBeenCalledWith(
         expect.stringContaining("usage:monthly"),
         "tokens",
         1000,
       );
+      expect(result).toEqual({
+        includedPointsRefunded: 1000,
+        extraUsagePointsRefunded: 0,
+        includedRefundFailed: false,
+        extraUsageRefundFailed: false,
+      });
     });
 
     it("should refund extra usage balance when provided", async () => {
@@ -1084,10 +1090,33 @@ describe("token-bucket async functions", () => {
     it("should not refund if no points deducted", async () => {
       const { refundUsage } = getIsolatedModule();
 
-      await refundUsage("user-123", "pro", 0, 0);
+      const result = await refundUsage("user-123", "pro", 0, 0);
 
       expect(mockHincrbyFn).not.toHaveBeenCalled();
       expect(mockRefundToBalance).not.toHaveBeenCalled();
+      expect(result).toEqual({
+        includedPointsRefunded: 0,
+        extraUsagePointsRefunded: 0,
+        includedRefundFailed: false,
+        extraUsageRefundFailed: false,
+      });
+    });
+
+    it("reports a failed extra-usage refund without hiding the included refund", async () => {
+      const { refundUsage } = getIsolatedModule();
+      mockRefundToBalance.mockResolvedValueOnce({
+        success: false,
+        newBalanceDollars: 0,
+      });
+
+      const result = await refundUsage("user-123", "pro", 1000, 500);
+
+      expect(result).toEqual({
+        includedPointsRefunded: 1000,
+        extraUsagePointsRefunded: 0,
+        includedRefundFailed: false,
+        extraUsageRefundFailed: true,
+      });
     });
 
     it("should cap refunded tokens at bucket limit", async () => {

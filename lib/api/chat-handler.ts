@@ -149,7 +149,10 @@ import {
   writeAutoContinue,
 } from "@/lib/utils/stream-writer-utils";
 import { Id } from "@/convex/_generated/dataModel";
-import { phLogger } from "@/lib/posthog/server";
+import {
+  getPostHogFeatureFlagValueForUser,
+  phLogger,
+} from "@/lib/posthog/server";
 import { PAID_FUNNEL_EVENTS } from "@/lib/analytics/paid-funnel";
 import { readAnalyticsRequestContext } from "@/lib/analytics/request-context";
 import { buildAgentStepLimitTelemetry } from "@/lib/analytics/agent-step-limit-telemetry";
@@ -210,6 +213,12 @@ import {
   shouldRetryProviderStreamWithFallback,
 } from "@/lib/chat/agent-long-provider-retry";
 import { FREE_RUN_LOCK_TTL_SECONDS } from "@/lib/rate-limit/free-config";
+import { protectIncompleteAutomaticContinuation } from "@/lib/api/agent-auto-continue-usage-protection";
+import {
+  AGENT_AUTO_CONTINUE_USAGE_PROTECTION_FLAG,
+  isAgentAutoContinueUsageProtectionEligible,
+  resolveAgentAutoContinueUsageProtectionAssignment,
+} from "@/lib/experiments/agent-auto-continue-usage-protection";
 
 function getStreamContext() {
   try {
@@ -299,6 +308,16 @@ export const createChatHandler = () => {
 
       const { userId, subscription, organizationId, freeQuotaSubject } =
         await getUserIDAndPro(req);
+      const autoContinueUsageProtectionAssignmentPromise =
+        isAgentAutoContinueUsageProtectionEligible({
+          subscription,
+          isAutomaticContinuation,
+        })
+          ? getPostHogFeatureFlagValueForUser(
+              AGENT_AUTO_CONTINUE_USAGE_PROTECTION_FLAG,
+              userId,
+            ).then(resolveAgentAutoContinueUsageProtectionAssignment)
+          : Promise.resolve(undefined);
       const freeUsageSubject = freeQuotaSubject ?? userId;
       let selectedModelOverride: SelectedModel | undefined =
         normalizeSelectedModelOverrideForSubscription(
@@ -483,6 +502,8 @@ export const createChatHandler = () => {
 
       // PostHog client for analytics.
       posthog ??= PostHogClient();
+      const autoContinueUsageProtectionAssignment =
+        await autoContinueUsageProtectionAssignmentPromise;
 
       const fileCounts = countFileAttachments(truncatedMessages);
       const chatLogContext = {
@@ -2603,6 +2624,18 @@ export const createChatHandler = () => {
                         stoppedDueToPostSummarizationIncomplete:
                           state.stoppedDueToPostSummarizationIncomplete,
                       });
+                    if (isAutomaticContinuation) {
+                      await protectIncompleteAutomaticContinuation({
+                        assignment: autoContinueUsageProtectionAssignment,
+                        stopSource: autoContinueStopSource,
+                        usageRefundTracker,
+                        writer,
+                        posthog,
+                        userId,
+                        subscription,
+                        endpoint,
+                      });
+                    }
                     if (
                       autoContinueStopSource &&
                       isAgentMode(mode) &&

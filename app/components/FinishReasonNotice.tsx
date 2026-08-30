@@ -21,8 +21,11 @@ export const FinishReasonNotice = ({
   finishReason,
   onContinue,
 }: FinishReasonNoticeProps) => {
-  const { isAutoResuming, isAutoContinuing } = useDataStreamState();
+  const { dataStream, isAutoResuming, isAutoContinuing } = useDataStreamState();
   const [hasContinued, setHasContinued] = useState(false);
+  const usageProtected = dataStream.some(
+    (part) => part.type === "data-auto-continue-usage-protected",
+  );
 
   if (!finishReason) return null;
 
@@ -90,7 +93,15 @@ export const FinishReasonNotice = ({
   return (
     <div className="mt-2 w-full">
       <div className="bg-muted text-muted-foreground rounded-lg px-3 py-2 border border-border flex items-center justify-between gap-3 flex-wrap">
-        <span>{content}</span>
+        <div className="flex flex-col gap-1">
+          <span>{content}</span>
+          {usageProtected ? (
+            <span className="text-foreground">
+              This automatic recovery attempt didn&apos;t finish, so its usage
+              was restored.
+            </span>
+          ) : null}
+        </div>
         {showContinue && (
           <Button
             type="button"
