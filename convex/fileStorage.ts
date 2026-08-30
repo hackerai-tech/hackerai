@@ -100,6 +100,8 @@ export const deleteFile = mutation({
     if (file.s3_key) {
       await ctx.scheduler.runAfter(0, internal.s3Cleanup.deleteS3ObjectAction, {
         s3Key: file.s3_key,
+        ...(file.s3_region ? { s3Region: file.s3_region } : {}),
+        ...(file.s3_bucket ? { s3Bucket: file.s3_bucket } : {}),
       });
     } else {
       console.warn(
@@ -320,7 +322,11 @@ export const purgeExpiredUnattachedFiles = internalMutation({
           await ctx.scheduler.runAfter(
             0,
             internal.s3Cleanup.deleteS3ObjectAction,
-            { s3Key: file.s3_key },
+            {
+              s3Key: file.s3_key,
+              ...(file.s3_region ? { s3Region: file.s3_region } : {}),
+              ...(file.s3_bucket ? { s3Bucket: file.s3_bucket } : {}),
+            },
           );
         } else {
           console.warn(
@@ -345,6 +351,8 @@ export const purgeExpiredUnattachedFiles = internalMutation({
 const fileForStorageLookupValidator = v.union(
   v.object({
     s3_key: v.optional(v.string()),
+    s3_region: v.optional(v.string()),
+    s3_bucket: v.optional(v.string()),
     user_id: v.string(),
     name: v.string(),
     media_type: v.string(),
@@ -363,6 +371,8 @@ const toFileForStorageLookup = (file: Doc<"files"> | null) => {
   // whose diagnostic values can include user-authored file content.
   return {
     ...(file.s3_key !== undefined ? { s3_key: file.s3_key } : {}),
+    ...(file.s3_region !== undefined ? { s3_region: file.s3_region } : {}),
+    ...(file.s3_bucket !== undefined ? { s3_bucket: file.s3_bucket } : {}),
     user_id: file.user_id,
     name: file.name,
     media_type: file.media_type,
@@ -408,6 +418,21 @@ export const getFilesByIds = internalQuery({
   },
 });
 
+/** Resolve an upload reservation by its opaque S3 key. */
+export const getFileByS3Key = internalQuery({
+  args: {
+    s3Key: v.string(),
+  },
+  returns: fileForStorageLookupValidator,
+  handler: async (ctx, args) => {
+    const file = await ctx.db
+      .query("files")
+      .withIndex("by_s3_key", (q) => q.eq("s3_key", args.s3Key))
+      .unique();
+    return toFileForStorageLookup(file);
+  },
+});
+
 export const createPendingS3File = internalMutation({
   args: {
     s3Key: v.string(),
@@ -415,6 +440,8 @@ export const createPendingS3File = internalMutation({
     name: v.string(),
     mediaType: v.string(),
     size: v.number(),
+    s3Region: v.optional(v.string()),
+    s3Bucket: v.optional(v.string()),
   },
   returns: v.id("files"),
   handler: async (ctx, args) => {
@@ -442,6 +469,8 @@ export const createPendingS3File = internalMutation({
 
     const fileId = await ctx.db.insert("files", {
       s3_key: args.s3Key,
+      s3_region: args.s3Region,
+      s3_bucket: args.s3Bucket,
       user_id: args.userId,
       name: args.name,
       media_type: args.mediaType,
@@ -473,6 +502,8 @@ export const saveFileToDb = internalMutation({
     fileTokenSize: v.number(),
     content: v.optional(v.string()),
     trustedServiceGenerated: v.optional(v.boolean()),
+    s3Region: v.optional(v.string()),
+    s3Bucket: v.optional(v.string()),
   },
   returns: v.id("files"),
   handler: async (ctx, args) => {
@@ -531,6 +562,8 @@ export const saveFileToDb = internalMutation({
 
     const fileId = await ctx.db.insert("files", {
       s3_key: args.s3Key,
+      s3_region: args.s3Region,
+      s3_bucket: args.s3Bucket,
       user_id: args.userId,
       name: args.name,
       media_type: args.mediaType,

@@ -261,6 +261,13 @@ AWS_S3_SECRET_ACCESS_KEY=
 AWS_S3_REGION=us-east-1
 AWS_S3_BUCKET_NAME=
 
+# Regional storage rollout. Keep false until the matching bucket names and IAM
+# access are configured in both Convex and Trigger.dev for this environment.
+S3_REGIONAL_STORAGE_ENABLED=false
+AWS_S3_BUCKET_NAME_EU_CENTRAL_1=
+AWS_S3_BUCKET_NAME_US_EAST_1=
+AWS_S3_BUCKET_NAME_US_WEST_2=
+
 # Optional S3 configuration (defaults shown, uncomment to override)
 # S3_URL_LIFETIME_SECONDS=3600
 # S3_URL_EXPIRATION_BUFFER_SECONDS=300

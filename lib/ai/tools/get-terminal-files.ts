@@ -74,6 +74,7 @@ export const createGetTerminalFiles = (context: ToolContext) => {
                 sandbox,
                 userId: context.userID,
                 fullPath: filePath,
+                storageRegion: context.triggerRegion,
               });
 
               context.fileAccumulator.add({

@@ -2,8 +2,25 @@
 
 import { internalAction } from "./_generated/server";
 import { v } from "convex/values";
-import { deleteS3Object } from "./s3Utils";
+import { deleteS3Object, getStoredS3Location } from "./s3Utils";
 import { convexLogger } from "./lib/logger";
+
+const s3ObjectValidator = v.object({
+  s3Key: v.string(),
+  s3Region: v.optional(v.string()),
+  s3Bucket: v.optional(v.string()),
+});
+
+const deleteStoredS3Object = (
+  s3Key: string,
+  s3Region?: string,
+  s3Bucket?: string,
+) => {
+  const storageLocation = getStoredS3Location(s3Region, s3Bucket);
+  return storageLocation
+    ? deleteS3Object(s3Key, storageLocation)
+    : deleteS3Object(s3Key);
+};
 
 /**
  * Delete a single S3 object by key
@@ -17,11 +34,13 @@ import { convexLogger } from "./lib/logger";
 export const deleteS3ObjectAction = internalAction({
   args: {
     s3Key: v.string(),
+    s3Region: v.optional(v.string()),
+    s3Bucket: v.optional(v.string()),
   },
   returns: v.null(),
   handler: async (ctx, args) => {
     try {
-      await deleteS3Object(args.s3Key);
+      await deleteStoredS3Object(args.s3Key, args.s3Region, args.s3Bucket);
       // console.log(`Successfully deleted S3 object: ${args.s3Key}`);
     } catch (error) {
       convexLogger.error("s3_object_delete_failed", {
@@ -48,12 +67,22 @@ export const deleteS3ObjectAction = internalAction({
  */
 export const deleteS3ObjectsBatchAction = internalAction({
   args: {
-    s3Keys: v.array(v.string()),
+    s3Keys: v.optional(v.array(v.string())),
+    s3Objects: v.optional(v.array(s3ObjectValidator)),
   },
   returns: v.null(),
   handler: async (ctx, args) => {
+    const s3Objects =
+      args.s3Objects ??
+      (args.s3Keys ?? []).map((s3Key) => ({
+        s3Key,
+        s3Region: undefined,
+        s3Bucket: undefined,
+      }));
     const results = await Promise.allSettled(
-      args.s3Keys.map((key) => deleteS3Object(key)),
+      s3Objects.map((object) =>
+        deleteStoredS3Object(object.s3Key, object.s3Region, object.s3Bucket),
+      ),
     );
 
     const failed = results.filter(
@@ -61,11 +90,11 @@ export const deleteS3ObjectsBatchAction = internalAction({
     );
     if (failed.length > 0) {
       convexLogger.error("s3_object_batch_delete_failed", {
-        totalCount: args.s3Keys.length,
+        totalCount: s3Objects.length,
         failedCount: failed.length,
-        failedKeys: args.s3Keys.filter(
-          (_, i) => results[i].status === "rejected",
-        ),
+        failedKeys: s3Objects
+          .map((object) => object.s3Key)
+          .filter((_, i) => results[i].status === "rejected"),
         firstError:
           failed[0].reason instanceof Error
             ? {

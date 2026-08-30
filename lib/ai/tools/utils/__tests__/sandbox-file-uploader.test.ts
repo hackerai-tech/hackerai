@@ -65,6 +65,10 @@ describe("uploadSandboxFileToConvex", () => {
     mockGenerateS3UploadUrl.mockResolvedValue({
       uploadUrl: "https://s3.example/upload",
       s3Key: "users/u1/file.txt",
+      storageLocation: {
+        region: "us-west-2",
+        bucket: "test-west-bucket",
+      },
     });
     mockConvexAction = jest.fn(async () => ({
       url: "https://s3.example/download",
@@ -157,6 +161,8 @@ describe("uploadSandboxFileToConvex", () => {
         name: "report.txt",
         size: 1234,
         s3Key: "users/u1/file.txt",
+        s3Region: "us-west-2",
+        s3Bucket: "test-west-bucket",
       }),
     );
     expect(saved).toMatchObject({

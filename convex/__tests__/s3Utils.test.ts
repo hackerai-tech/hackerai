@@ -12,6 +12,10 @@ describe("s3Utils", () => {
     process.env.AWS_S3_SECRET_ACCESS_KEY = "test-secret-key";
     process.env.AWS_S3_REGION = "us-east-1";
     process.env.AWS_S3_BUCKET_NAME = "test-bucket";
+    delete process.env.S3_REGIONAL_STORAGE_ENABLED;
+    delete process.env.AWS_S3_BUCKET_NAME_EU_CENTRAL_1;
+    delete process.env.AWS_S3_BUCKET_NAME_US_EAST_1;
+    delete process.env.AWS_S3_BUCKET_NAME_US_WEST_2;
   });
 
   describe("generateS3Key", () => {
@@ -96,6 +100,10 @@ describe("s3Utils", () => {
       // UUID is mocked as "test-uuid-{counter}" in tests
       expect(result.s3Key).toMatch(/^users\/user123\/\d+-test-uuid-\d+\.pdf$/);
       expect(mockGetSignedUrl).toHaveBeenCalled();
+      expect(result.storageLocation).toEqual({
+        region: "us-east-1",
+        bucket: "test-bucket",
+      });
     });
 
     it("should bind expected content length into the PutObject command", async () => {
@@ -130,6 +138,71 @@ describe("s3Utils", () => {
 
       const callArgs = mockGetSignedUrl.mock.calls[0];
       expect(callArgs[2]).toEqual(expect.objectContaining({ expiresIn: 3600 }));
+    });
+
+    it("routes enabled uploads to the requested regional bucket", async () => {
+      const { S3Client, PutObjectCommand } = await import("@aws-sdk/client-s3");
+      const { getSignedUrl } = await import("@aws-sdk/s3-request-presigner");
+      (
+        getSignedUrl as jest.MockedFunction<typeof getSignedUrl>
+      ).mockResolvedValue("https://s3.amazonaws.com/signed-url");
+      process.env.S3_REGIONAL_STORAGE_ENABLED = "true";
+      process.env.AWS_S3_BUCKET_NAME_EU_CENTRAL_1 = "test-eu-bucket";
+
+      const { generateS3UploadUrl } = await import("../s3Utils");
+      const result = await generateS3UploadUrl(
+        "test.pdf",
+        "application/pdf",
+        "user123",
+        1024,
+        "eu-central-1",
+      );
+
+      expect(result.storageLocation).toEqual({
+        region: "eu-central-1",
+        bucket: "test-eu-bucket",
+      });
+      expect(S3Client).toHaveBeenCalledWith(
+        expect.objectContaining({ region: "eu-central-1" }),
+      );
+      expect(PutObjectCommand).toHaveBeenCalledWith(
+        expect.objectContaining({ Bucket: "test-eu-bucket" }),
+      );
+    });
+
+    it("keeps using legacy storage while regional routing is disabled", async () => {
+      process.env.S3_REGIONAL_STORAGE_ENABLED = "false";
+      process.env.AWS_S3_BUCKET_NAME_EU_CENTRAL_1 = "test-eu-bucket";
+
+      const { resolveS3UploadLocation } = await import("../s3Utils");
+
+      expect(resolveS3UploadLocation("eu-central-1")).toEqual({
+        region: "us-east-1",
+        bucket: "test-bucket",
+      });
+    });
+
+    it("fails closed when an enabled regional bucket is missing", async () => {
+      process.env.S3_REGIONAL_STORAGE_ENABLED = "true";
+      const { resolveS3UploadLocation } = await import("../s3Utils");
+
+      expect(() => resolveS3UploadLocation("eu-central-1")).toThrow(
+        "AWS_S3_BUCKET_NAME_EU_CENTRAL_1",
+      );
+    });
+  });
+
+  describe("getStoredS3Location", () => {
+    it("uses legacy fallback only when both locator fields are absent", async () => {
+      const { getStoredS3Location } = await import("../s3Utils");
+
+      expect(getStoredS3Location()).toBeUndefined();
+      expect(getStoredS3Location("us-west-2", "  exact-west-bucket  ")).toEqual(
+        { region: "us-west-2", bucket: "exact-west-bucket" },
+      );
+      expect(() => getStoredS3Location("us-west-2")).toThrow(
+        "Incomplete S3 storage location metadata",
+      );
     });
   });
 

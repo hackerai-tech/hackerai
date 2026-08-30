@@ -38,6 +38,7 @@ jest.mock("../_generated/api", () => ({
   internal: {
     fileStorage: {
       saveFileToDb: "internal.fileStorage.saveFileToDb",
+      getFileByS3Key: "internal.fileStorage.getFileByS3Key",
     },
     s3Cleanup: {
       deleteS3ObjectAction: "internal.s3Cleanup.deleteS3ObjectAction",
@@ -48,6 +49,7 @@ jest.mock("../_generated/api", () => ({
 jest.mock("../s3Utils", () => ({
   generateS3DownloadUrl: jest.fn(),
   getS3ObjectSizeBytes: jest.fn(),
+  getStoredS3Location: jest.fn(),
 }));
 
 jest.mock("pdfjs-serverless", () => ({
@@ -128,7 +130,7 @@ describe("fileActions saveFile upload policy", () => {
       scheduler: {
         runAfter: jest.fn().mockResolvedValue(undefined),
       },
-      runQuery: jest.fn(),
+      runQuery: jest.fn().mockResolvedValue({ user_id: "user123" }),
       runMutation: jest.fn().mockResolvedValue("file_123"),
     }) as any;
 
@@ -138,8 +140,9 @@ describe("fileActions saveFile upload policy", () => {
     delete process.env.UPSTASH_REDIS_REST_TOKEN;
     global.fetch = jest.fn() as any;
 
-    const { generateS3DownloadUrl, getS3ObjectSizeBytes } =
+    const { generateS3DownloadUrl, getS3ObjectSizeBytes, getStoredS3Location } =
       await import("../s3Utils");
+    (getStoredS3Location as jest.Mock).mockReturnValue(undefined);
     (generateS3DownloadUrl as jest.Mock).mockResolvedValue(
       "https://s3.example/download",
     );
@@ -212,7 +215,10 @@ describe("fileActions saveFile upload policy", () => {
       { s3Key: "users/user123/notes.txt" },
     );
     expect(global.fetch).not.toHaveBeenCalled();
-    expect(ctx.runQuery).not.toHaveBeenCalled();
+    expect(ctx.runQuery).toHaveBeenCalledWith(
+      "internal.fileStorage.getFileByS3Key",
+      { s3Key: "users/user123/notes.txt" },
+    );
     expect(ctx.runMutation).toHaveBeenCalledWith(
       "internal.fileStorage.saveFileToDb",
       expect.objectContaining({
@@ -275,7 +281,10 @@ describe("fileActions saveFile upload policy", () => {
       { s3Key: "users/user123/orphan.txt" },
     );
     expect(global.fetch).not.toHaveBeenCalled();
-    expect(ctx.runQuery).not.toHaveBeenCalled();
+    expect(ctx.runQuery).toHaveBeenCalledWith(
+      "internal.fileStorage.getFileByS3Key",
+      { s3Key: "users/user123/orphan.txt" },
+    );
     expect(ctx.runMutation).toHaveBeenCalledWith(
       "internal.fileStorage.saveFileToDb",
       expect.objectContaining({ s3Key: "users/user123/orphan.txt" }),

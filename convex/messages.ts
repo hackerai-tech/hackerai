@@ -1321,7 +1321,11 @@ export const deleteLastAssistantMessage = mutation({
                     await ctx.scheduler.runAfter(
                       0,
                       internal.s3Cleanup.deleteS3ObjectAction,
-                      { s3Key: file.s3_key },
+                      {
+                        s3Key: file.s3_key,
+                        ...(file.s3_region ? { s3Region: file.s3_region } : {}),
+                        ...(file.s3_bucket ? { s3Bucket: file.s3_bucket } : {}),
+                      },
                     );
                   }
                   await fileCountAggregate.deleteIfExists(ctx, file);
@@ -2048,7 +2052,11 @@ export const regenerateWithNewContent = mutation({
               await ctx.scheduler.runAfter(
                 0,
                 internal.s3Cleanup.deleteS3ObjectAction,
-                { s3Key: file.s3_key },
+                {
+                  s3Key: file.s3_key,
+                  ...(file.s3_region ? { s3Region: file.s3_region } : {}),
+                  ...(file.s3_bucket ? { s3Bucket: file.s3_bucket } : {}),
+                },
               );
             }
             // Delete from aggregate
@@ -2103,7 +2111,11 @@ export const regenerateWithNewContent = mutation({
                   await ctx.scheduler.runAfter(
                     0,
                     internal.s3Cleanup.deleteS3ObjectAction,
-                    { s3Key: file.s3_key },
+                    {
+                      s3Key: file.s3_key,
+                      ...(file.s3_region ? { s3Region: file.s3_region } : {}),
+                      ...(file.s3_bucket ? { s3Bucket: file.s3_bucket } : {}),
+                    },
                   );
                 }
                 // Delete from aggregate

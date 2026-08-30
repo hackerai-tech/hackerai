@@ -1261,6 +1261,7 @@ async function uploadViewPreviewFiles(args: {
     fullPath: sourcePath,
     mediaType: payload.mediaType,
     name: getFilename(sourcePath),
+    storageRegion: context.triggerRegion,
   });
 
   return [
