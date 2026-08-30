@@ -80,7 +80,7 @@ export const deleteS3ObjectsBatchAction = internalAction({
         s3Bucket: undefined,
       }));
     const results = await Promise.allSettled(
-      s3Objects.map((object) =>
+      s3Objects.map(async (object) =>
         deleteStoredS3Object(object.s3Key, object.s3Region, object.s3Bucket),
       ),
     );
