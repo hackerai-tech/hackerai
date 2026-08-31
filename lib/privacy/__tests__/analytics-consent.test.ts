@@ -39,6 +39,9 @@ describe("analytics consent", () => {
     expect(countryCodeFromHeaders(new Headers({ "cf-ipcountry": "fr" }))).toBe(
       "FR",
     );
+    expect(countryCodeFromHeaders(new Headers({ "cf-ipcountry": "XX" }))).toBe(
+      null,
+    );
   });
 
   it("rejects unknown consent cookie values", () => {

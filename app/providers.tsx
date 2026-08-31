@@ -38,11 +38,11 @@ function isEnglishLocale(locale: string | null | undefined) {
 }
 
 export function PostHogProvider({
-  analyticsAllowed = true,
+  analyticsAllowed,
   children,
   firstTouchAttribution = null,
 }: {
-  analyticsAllowed?: boolean;
+  analyticsAllowed: boolean;
   children: React.ReactNode;
   firstTouchAttribution?: FirstTouchAttribution | null;
 }) {

@@ -49,7 +49,9 @@ export function countryCodeFromHeaders(headers: Headers): string | null {
   const rawCountryCode =
     headers.get("x-vercel-ip-country") ?? headers.get("cf-ipcountry");
   const countryCode = rawCountryCode?.trim().toUpperCase();
-  return countryCode && /^[A-Z]{2}$/.test(countryCode) ? countryCode : null;
+  return countryCode && countryCode !== "XX" && /^[A-Z]{2}$/.test(countryCode)
+    ? countryCode
+    : null;
 }
 
 export function requiresAnalyticsConsent({

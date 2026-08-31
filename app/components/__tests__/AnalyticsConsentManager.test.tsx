@@ -114,6 +114,24 @@ describe("AnalyticsConsentManager", () => {
     ).toHaveAttribute("aria-pressed", "true");
   });
 
+  it("keeps analytics blocked and reports a failed save", async () => {
+    mockSaveAnalyticsConsent.mockRejectedValue(new Error("network"));
+    const user = userEvent.setup();
+    render(
+      <AnalyticsConsentManager consentRequired initialConsent={null}>
+        <div>App content</div>
+      </AnalyticsConsentManager>,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Allow analytics" }));
+
+    expect(await screen.findByRole("alert")).toBeInTheDocument();
+    expect(screen.getByTestId("posthog-provider")).toHaveAttribute(
+      "data-analytics-allowed",
+      "false",
+    );
+  });
+
   it("does not interrupt an unregulated visitor without a saved choice", () => {
     render(
       <AnalyticsConsentManager consentRequired={false} initialConsent={null}>
@@ -122,7 +140,9 @@ describe("AnalyticsConsentManager", () => {
     );
 
     expect(screen.queryByText("Your analytics choice")).not.toBeInTheDocument();
-    expect(screen.queryByText("Privacy choices")).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Privacy choices" }),
+    ).toBeInTheDocument();
     expect(screen.getByTestId("posthog-provider")).toHaveAttribute(
       "data-analytics-allowed",
       "true",

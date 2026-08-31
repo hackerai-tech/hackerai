@@ -149,7 +149,7 @@ export function AnalyticsConsentManager({
         </section>
       ) : null}
 
-      {!needsInitialChoice && (consentRequired || consent !== null) ? (
+      {!needsInitialChoice ? (
         <Button
           type="button"
           variant="outline"

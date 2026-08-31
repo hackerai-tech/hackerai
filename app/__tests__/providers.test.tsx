@@ -33,6 +33,7 @@ const { useGlobalState } = jest.requireMock<
 >("../contexts/GlobalState");
 const {
   confirmAuthenticatedAnalyticsUserId,
+  getPostHogClient,
   loadPostHogClient,
   setAuthenticatedAnalyticsUserId,
 } = jest.requireMock<typeof import("@/lib/analytics/client")>(
@@ -45,6 +46,7 @@ const mockUseAuth = useAuth as jest.Mock;
 const mockUseGlobalState = useGlobalState as jest.Mock;
 const mockConfirmAuthenticatedAnalyticsUserId =
   confirmAuthenticatedAnalyticsUserId as jest.Mock;
+const mockGetPostHogClient = getPostHogClient as jest.Mock;
 const mockLoadPostHogClient = loadPostHogClient as jest.Mock;
 const mockSetAuthenticatedAnalyticsUserId =
   setAuthenticatedAnalyticsUserId as jest.Mock;
@@ -55,6 +57,7 @@ describe("PostHogProvider", () => {
     process.env.NEXT_PUBLIC_POSTHOG_KEY = "phc_test";
     process.env.NEXT_PUBLIC_POSTHOG_HOST = "https://us.i.posthog.com";
     window.localStorage.clear();
+    mockGetPostHogClient.mockReturnValue(null);
 
     mockUseGlobalState.mockReturnValue({
       subscription: "pro",
@@ -88,7 +91,7 @@ describe("PostHogProvider", () => {
     mockLoadPostHogClient.mockResolvedValue(posthog);
 
     render(
-      <PostHogProvider>
+      <PostHogProvider analyticsAllowed>
         <div>child</div>
       </PostHogProvider>,
     );
@@ -184,7 +187,7 @@ describe("PostHogProvider", () => {
       mockLoadPostHogClient.mockResolvedValue(posthog);
 
       render(
-        <PostHogProvider>
+        <PostHogProvider analyticsAllowed>
           <div>child</div>
         </PostHogProvider>,
       );
@@ -226,7 +229,7 @@ describe("PostHogProvider", () => {
 
     try {
       render(
-        <PostHogProvider>
+        <PostHogProvider analyticsAllowed>
           <div>child</div>
         </PostHogProvider>,
       );
@@ -244,7 +247,7 @@ describe("PostHogProvider", () => {
     mockUseAuth.mockReturnValue({ user: null });
 
     render(
-      <PostHogProvider>
+      <PostHogProvider analyticsAllowed>
         <div>child</div>
       </PostHogProvider>,
     );
@@ -270,6 +273,26 @@ describe("PostHogProvider", () => {
     expect(
       window.localStorage.getItem(POSTHOG_IDENTITY_SIGNATURE_STORAGE_KEY),
     ).toBeNull();
+  });
+
+  it("stops and clears a loaded PostHog client when consent is withdrawn", () => {
+    const posthog = {
+      __loaded: true,
+      stopSessionRecording: jest.fn(),
+      reset: jest.fn(),
+      opt_out_capturing: jest.fn(),
+    };
+    mockGetPostHogClient.mockReturnValue(posthog);
+
+    render(
+      <PostHogProvider analyticsAllowed={false}>
+        <div>child</div>
+      </PostHogProvider>,
+    );
+
+    expect(posthog.stopSessionRecording).toHaveBeenCalledTimes(1);
+    expect(posthog.reset).toHaveBeenCalledTimes(1);
+    expect(posthog.opt_out_capturing).toHaveBeenCalledTimes(1);
   });
 
   it("does not resend unchanged person properties across app loads", async () => {
@@ -307,7 +330,7 @@ describe("PostHogProvider", () => {
     mockLoadPostHogClient.mockResolvedValue(posthog);
 
     render(
-      <PostHogProvider>
+      <PostHogProvider analyticsAllowed>
         <div>child</div>
       </PostHogProvider>,
     );
@@ -334,6 +357,7 @@ describe("PostHogProvider", () => {
 
     render(
       <PostHogProvider
+        analyticsAllowed
         firstTouchAttribution={{
           version: 1,
           source: "github",
@@ -389,7 +413,7 @@ describe("PostHogProvider", () => {
     mockLoadPostHogClient.mockResolvedValue(posthog);
 
     render(
-      <PostHogProvider>
+      <PostHogProvider analyticsAllowed>
         <div>child</div>
       </PostHogProvider>,
     );
