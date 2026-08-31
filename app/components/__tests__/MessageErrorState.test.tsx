@@ -1,5 +1,12 @@
 import "@testing-library/jest-dom";
-import { describe, expect, it, jest, beforeEach } from "@jest/globals";
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  jest,
+} from "@jest/globals";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
@@ -55,6 +62,10 @@ describe("MessageErrorState", () => {
       paymentMethodBrand: "visa",
       url: null,
     });
+  });
+
+  afterEach(() => {
+    jest.restoreAllMocks();
   });
 
   it("does not offer same-payload retry for provider content blocks", () => {
@@ -191,6 +202,7 @@ describe("MessageErrorState", () => {
   });
 
   it("opens Checkout directly and marks the stopped task for resume", async () => {
+    jest.spyOn(Date, "now").mockReturnValue(Date.UTC(2026, 7, 20));
     const user = userEvent.setup();
     const error = new ChatSDKError(
       "rate_limit:chat",

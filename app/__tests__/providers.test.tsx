@@ -253,6 +253,25 @@ describe("PostHogProvider", () => {
     expect(mockLoadPostHogClient).not.toHaveBeenCalled();
   });
 
+  it("does not initialize or identify PostHog without analytics permission", () => {
+    window.localStorage.setItem(
+      POSTHOG_IDENTITY_SIGNATURE_STORAGE_KEY,
+      "previous-identity",
+    );
+
+    render(
+      <PostHogProvider analyticsAllowed={false}>
+        <div>child</div>
+      </PostHogProvider>,
+    );
+
+    expect(mockSetAuthenticatedAnalyticsUserId).toHaveBeenCalledWith(null);
+    expect(mockLoadPostHogClient).not.toHaveBeenCalled();
+    expect(
+      window.localStorage.getItem(POSTHOG_IDENTITY_SIGNATURE_STORAGE_KEY),
+    ).toBeNull();
+  });
+
   it("does not resend unchanged person properties across app loads", async () => {
     const posthog = {
       __loaded: false,

@@ -14,6 +14,11 @@ import {
   createFirstTouchAttribution,
 } from "@/lib/analytics/acquisition";
 import { serializeSignedFirstTouchAttribution } from "@/lib/analytics/acquisition-cookie";
+import {
+  ANALYTICS_CONSENT_COOKIE_NAME,
+  countryCodeFromHeaders,
+  getAnalyticsConsentDecision,
+} from "@/lib/privacy/analytics-consent";
 
 const AUTHKIT_BYPASS_PATHS = new Set([
   "/api/health/connectivity",
@@ -135,6 +140,22 @@ function withAttributionCookies(
   request: NextRequest,
   response: NextResponse,
 ): NextResponse {
+  const analyticsConsent = getAnalyticsConsentDecision({
+    cookieValue: request.cookies.get(ANALYTICS_CONSENT_COOKIE_NAME)?.value,
+    countryCode: countryCodeFromHeaders(request.headers),
+    failClosed: process.env.NODE_ENV === "production",
+  });
+  if (!analyticsConsent.analyticsAllowed) {
+    response.cookies.delete(FIRST_TOUCH_ATTRIBUTION_COOKIE_NAME);
+    response.cookies.delete(REFERRAL_COOKIE_NAME);
+    response.cookies.delete(REFERRAL_COOKIE_CREATED_AT_NAME);
+    const postHogKey = process.env.NEXT_PUBLIC_POSTHOG_KEY?.trim();
+    if (postHogKey) {
+      response.cookies.delete(`ph_${postHogKey}_posthog`);
+    }
+    return response;
+  }
+
   const pathname = request.nextUrl.pathname;
   const shouldCaptureFirstTouch =
     (request.method === "GET" || request.method === "HEAD") &&

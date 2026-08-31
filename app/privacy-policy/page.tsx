@@ -28,6 +28,10 @@ export default function PrivacyPolicyPage() {
           HackerAI Privacy Policy
         </h1>
 
+        <p className="text-center text-sm text-muted-foreground">
+          Last updated August 31, 2026
+        </p>
+
         <div className="mt-4 text-lg leading-relaxed text-card-foreground">
           <p className="mb-6">
             Welcome to HackerAI. This Privacy Policy explains how HackerAI LLC
@@ -55,6 +59,24 @@ export default function PrivacyPolicyPage() {
               or content you create, upload, or share through the Service,
               including but not limited to penetration testing results,
               vulnerability reports, and security assessments.
+            </li>
+            <li className="mb-3">
+              <strong>Cookies and Browser Storage:</strong> We use essential
+              cookies to provide authentication, account security, requested
+              redirects, and other core Service functionality. We also use
+              optional cookies and browser storage for first-touch and referral
+              attribution and for PostHog product analytics, browser error
+              diagnostics, and, for eligible paid accounts, session replay.
+              PostHog analytics can include an account identifier, email, name,
+              subscription, device and session identifiers, product usage
+              events, and diagnostic information. Where consent is required,
+              optional browser analytics and attribution storage remain off
+              until you allow them. Rejecting optional analytics does not limit
+              the Service. You can change or withdraw your choice at any time
+              using the <strong>Privacy choices</strong> control in the Service.
+              Limited server-side operational logs and analytics may still be
+              processed as necessary to secure, operate, bill for, and improve
+              the Service in accordance with applicable law.
             </li>
             <li className="mb-3">
               <strong>How We Use Your Information:</strong> The information we
@@ -119,7 +141,7 @@ export default function PrivacyPolicyPage() {
 
           <p className="mt-6">
             By accessing or using our Service, you acknowledge that you have
-            read, understood, and agreed to be bound by this Privacy Policy.
+            read and understood this Privacy Policy.
           </p>
         </div>
       </div>
