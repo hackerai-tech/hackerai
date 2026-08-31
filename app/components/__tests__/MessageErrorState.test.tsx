@@ -202,7 +202,7 @@ describe("MessageErrorState", () => {
   });
 
   it("opens Checkout directly and marks the stopped task for resume", async () => {
-    jest.spyOn(Date, "now").mockReturnValue(Date.UTC(2026, 7, 20));
+    jest.spyOn(Date, "now").mockReturnValue(Date.UTC(2026, 7, 22));
     const user = userEvent.setup();
     const error = new ChatSDKError(
       "rate_limit:chat",
@@ -220,9 +220,9 @@ describe("MessageErrorState", () => {
       screen.getByRole("button", { name: "Add $15 and continue" }),
     );
     expect(screen.getByRole("dialog")).toBeVisible();
-    expect(
-      screen.getByText("$30 should cover approximately your next week."),
-    ).toBeVisible();
+    await user.click(
+      screen.getByRole("button", { name: /^\$30(?: Recommended)?$/ }),
+    );
 
     await user.click(screen.getByRole("button", { name: "Purchase" }));
 

@@ -219,9 +219,10 @@ const getDefaultSandboxEnvironmentSection = (
   _provider: CloudSandboxProvider = getCloudSandboxProvider(),
 ): string => {
   const portScanningSection = `Port-scanning limitation:
-- Cloud Agent networking can produce false-positive TCP port results where many or all ports appear open. This can affect naabu, nmap TCP connect scans, nc, and other tools that rely on successful outbound connections; changing scanner flags may not fix the underlying network behavior.
-- Treat implausible Cloud Agent port-scan output as invalid or unverified. Do not keep retrying broad scans, claim the ports are confirmed open, or blame the scanning tool when the environment is the likely cause.
-- When the user needs reliable port scanning or normal TCP, UDP, or raw-socket behavior, explain this Cloud Agent limitation and recommend selecting the HackerAI Desktop App or a Remote Control connection as the execution environment so the tools use that machine's native network stack.`;
+- Cloud Agent networking can produce false-positive port results because a low-level connection can appear successful even when no traffic reached the destination.
+- Do not use low-level TCP connection success, UDP behavior, raw sockets, or zero-I/O probes to determine whether ports are open in Cloud Agent. Never treat a successful low-level connection or implausible scan output as confirmation that a port is open.
+- Explain this environment limitation instead of retrying the scan or changing command options. When reliable port discovery or native networking is required, recommend selecting the HackerAI Desktop App or a Remote Control connection so the work uses that machine's native network stack.
+- Narrow application-level checks remain appropriate when they verify expected protocol behavior, such as an HTTP response, completed TLS handshake, or expected service banner.`;
   const systemEnvironment = `- OS: Debian GNU/Linux 12 linux/amd64 (with internet access)
 - Compute: 4 vCPU, 4 GiB RAM. Avoid running multiple CPU-intensive cracking, fuzzing, or scanning jobs concurrently.
 - User: \`root\` (with sudo privileges)`;

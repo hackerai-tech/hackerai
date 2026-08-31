@@ -391,6 +391,7 @@ describe("shouldDropExpectedFrontendException", () => {
     for (const value of [
       "NotFoundError: Failed to execute 'insertBefore' on 'Node': The node before which the new node is to be inserted is not a child of this node.",
       "NotFoundError: Failed to execute 'removeChild' on 'Node': The node to be removed is not a child of this node.",
+      "NotFoundError: Node.removeChild: The node to be removed is not a child of this node",
       "NotFoundError: The object can not be found here.",
     ]) {
       expect(
@@ -403,6 +404,18 @@ describe("shouldDropExpectedFrontendException", () => {
         }),
       ).toBe(true);
     }
+
+    expect(
+      shouldDropExpectedFrontendException({
+        event: "$exception",
+        properties: {
+          $exception_types: ["DOMException"],
+          $exception_values: [
+            "NotFoundError: Node.removeChild: Application state is unavailable",
+          ],
+        },
+      }),
+    ).toBe(false);
   });
 
   it("drops exact opaque synthetic browser exceptions", () => {
