@@ -1,4 +1,5 @@
 import { Sandbox } from "@e2b/code-interpreter";
+import type { SandboxInfo, SandboxNetworkUpdate } from "e2b";
 import type { SandboxBootInfo, SandboxContext } from "@/types";
 import { NotFoundError, getUserFacingE2BErrorMessage } from "./e2b-errors";
 import { isExpectedAlreadyGoneCleanupError } from "@/lib/utils/cleanup-errors";
@@ -85,19 +86,33 @@ export const ensureSandboxConnection = async (
   const reconcileEgressProxy = async (
     sandbox: Sandbox,
     path: SandboxReadyPath | "initial_connection",
-    hadEgressProxy = false,
+    existingInfo: Pick<SandboxInfo, "allowInternetAccess" | "network">,
   ): Promise<void> => {
+    const preservedNetwork: SandboxNetworkUpdate = {
+      ...(existingInfo.network?.allowOut !== undefined && {
+        allowOut: existingInfo.network.allowOut,
+      }),
+      ...(existingInfo.network?.denyOut !== undefined && {
+        denyOut: existingInfo.network.denyOut,
+      }),
+      ...(existingInfo.network?.rules !== undefined && {
+        rules: existingInfo.network.rules,
+      }),
+      ...(existingInfo.allowInternetAccess !== undefined && {
+        allowInternetAccess: existingInfo.allowInternetAccess,
+      }),
+    };
+
     if (!egressProxy) {
-      if (hadEgressProxy) {
-        await sandbox.updateNetwork({});
+      if (existingInfo.network?.egressProxy) {
+        await sandbox.updateNetwork(preservedNetwork);
       }
       return;
     }
 
-    // updateNetwork replaces the whole mutable network configuration. This
-    // utility currently owns that state, so always send the complete desired
-    // configuration when attaching the proxy to a reusable sandbox.
-    await sandbox.updateNetwork({ egressProxy });
+    // updateNetwork replaces the whole mutable network configuration, so
+    // preserve restrictions that may have been applied by another caller.
+    await sandbox.updateNetwork({ ...preservedNetwork, egressProxy });
     phLogger.event("e2b_egress_proxy_exposure", {
       userId: userID,
       sandbox_id: sandbox.sandboxId,
@@ -107,7 +122,12 @@ export const ensureSandboxConnection = async (
 
   // Return existing sandbox if already connected
   if (initialSandbox) {
-    await reconcileEgressProxy(initialSandbox, "initial_connection");
+    const initialSandboxInfo = await initialSandbox.getInfo();
+    await reconcileEgressProxy(
+      initialSandbox,
+      "initial_connection",
+      initialSandboxInfo,
+    );
     return { sandbox: initialSandbox };
   }
   const startedAt = performance.now();
@@ -239,7 +259,7 @@ export const ensureSandboxConnection = async (
         await reconcileEgressProxy(
           sandbox,
           "reuse_existing",
-          existingSandboxInfo.network?.egressProxy !== undefined,
+          existingSandboxInfo,
         );
         setSandbox(sandbox);
         reportBoot("reuse_existing", 0);
