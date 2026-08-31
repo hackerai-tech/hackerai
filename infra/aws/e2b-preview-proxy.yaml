@@ -1,0 +1,220 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Preview-only authenticated SOCKS5 gateway for E2B BYO proxy testing.
+
+Parameters:
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+  SubnetId:
+    Type: AWS::EC2::Subnet::Id
+  AmiId:
+    Type: AWS::EC2::Image::Id
+    Description: Ubuntu 24.04 ARM64 AMI.
+  InstanceType:
+    Type: String
+    Default: t4g.nano
+    AllowedValues:
+      - t4g.nano
+      - t4g.micro
+
+Resources:
+  ProxySecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Description: E2B preview SOCKS5 credentials.
+      GenerateSecretString:
+        SecretStringTemplate: '{"username":"e2b-preview"}'
+        GenerateStringKey: password
+        PasswordLength: 40
+        ExcludePunctuation: true
+      Tags:
+        - Key: Project
+          Value: HackerAI
+        - Key: Purpose
+          Value: E2B-BYOP-preview
+        - Key: LinearIssue
+          Value: HAC-88
+
+  ProxyRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+      Policies:
+        - PolicyName: ReadProxyCredentials
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource: !Ref ProxySecret
+      Tags:
+        - Key: Project
+          Value: HackerAI
+        - Key: Purpose
+          Value: E2B-BYOP-preview
+        - Key: LinearIssue
+          Value: HAC-88
+
+  ProxyInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - !Ref ProxyRole
+
+  ProxySecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Authenticated SOCKS5 access for E2B preview testing
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - Description: E2B BYO proxy TCP traffic
+          IpProtocol: tcp
+          FromPort: 1080
+          ToPort: 1080
+          CidrIp: 0.0.0.0/0
+      SecurityGroupEgress:
+        - IpProtocol: "-1"
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: hackerai-e2b-preview-proxy
+        - Key: Project
+          Value: HackerAI
+        - Key: Purpose
+          Value: E2B-BYOP-preview
+        - Key: LinearIssue
+          Value: HAC-88
+
+  ProxyInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !Ref AmiId
+      InstanceType: !Ref InstanceType
+      IamInstanceProfile: !Ref ProxyInstanceProfile
+      SubnetId: !Ref SubnetId
+      SecurityGroupIds:
+        - !Ref ProxySecurityGroup
+      MetadataOptions:
+        HttpEndpoint: enabled
+        HttpTokens: required
+        HttpPutResponseHopLimit: 1
+      BlockDeviceMappings:
+        - DeviceName: /dev/sda1
+          Ebs:
+            DeleteOnTermination: true
+            Encrypted: true
+            VolumeSize: 8
+            VolumeType: gp3
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          set -euo pipefail
+          export DEBIAN_FRONTEND=noninteractive
+
+          apt-get update
+          apt-get install -y ca-certificates curl dante-server jq unzip
+
+          if ! command -v aws >/dev/null 2>&1; then
+            work_dir=$(mktemp -d)
+            curl --fail --silent --show-error --location \
+              https://awscli.amazonaws.com/awscli-exe-linux-aarch64.zip \
+              --output "$work_dir/awscliv2.zip"
+            unzip -q "$work_dir/awscliv2.zip" -d "$work_dir"
+            "$work_dir/aws/install"
+            rm -rf "$work_dir"
+          fi
+
+          secret_json=$(aws secretsmanager get-secret-value \
+            --region ${AWS::Region} \
+            --secret-id ${ProxySecret} \
+            --query SecretString \
+            --output text)
+          proxy_username=$(printf '%s' "$secret_json" | jq -r .username)
+          proxy_password=$(printf '%s' "$secret_json" | jq -r .password)
+
+          if ! id "$proxy_username" >/dev/null 2>&1; then
+            useradd --system --no-create-home --shell /usr/sbin/nologin "$proxy_username"
+          fi
+          printf '%s:%s\n' "$proxy_username" "$proxy_password" | chpasswd
+          unset proxy_password secret_json
+
+          external_interface=$(ip route show default | awk 'NR == 1 { print $5 }')
+          cat >/etc/danted.conf <<EOF
+          logoutput: syslog
+          internal: 0.0.0.0 port = 1080
+          external: $external_interface
+          clientmethod: none
+          socksmethod: username
+          # Dante needs root only for shadow-password verification, then drops
+          # connection handling to nobody via user.notprivileged.
+          user.privileged: root
+          user.notprivileged: nobody
+
+          client pass {
+            from: 0.0.0.0/0 to: 0.0.0.0/0
+            log: connect error
+          }
+
+          socks pass {
+            from: 0.0.0.0/0 to: 0.0.0.0/0
+            command: connect
+            protocol: tcp
+            log: connect error
+          }
+
+          socks block {
+            from: 0.0.0.0/0 to: 0.0.0.0/0
+            log: connect error
+          }
+          EOF
+
+          chmod 600 /etc/danted.conf
+          systemctl enable --now danted
+          systemctl enable --now snap.amazon-ssm-agent.amazon-ssm-agent.service || true
+      Tags:
+        - Key: Name
+          Value: hackerai-e2b-preview-proxy
+        - Key: Project
+          Value: HackerAI
+        - Key: Purpose
+          Value: E2B-BYOP-preview
+        - Key: LinearIssue
+          Value: HAC-88
+
+  ProxyElasticIp:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+      Tags:
+        - Key: Name
+          Value: hackerai-e2b-preview-proxy
+        - Key: Project
+          Value: HackerAI
+        - Key: Purpose
+          Value: E2B-BYOP-preview
+        - Key: LinearIssue
+          Value: HAC-88
+
+  ProxyElasticIpAssociation:
+    Type: AWS::EC2::EIPAssociation
+    Properties:
+      AllocationId: !GetAtt ProxyElasticIp.AllocationId
+      InstanceId: !Ref ProxyInstance
+
+Outputs:
+  ProxyAddress:
+    Description: E2B egress proxy address.
+    Value: !Sub "${ProxyElasticIp}:1080"
+  ProxySecretArn:
+    Description: Secrets Manager ARN containing the SOCKS5 username and password.
+    Value: !Ref ProxySecret
+  ProxyInstanceId:
+    Description: EC2 instance ID for SSM and operational checks.
+    Value: !Ref ProxyInstance
