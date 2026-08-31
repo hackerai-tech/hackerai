@@ -1,18 +1,23 @@
 "use client";
 
 import Link from "next/link";
-import { ShieldCheck } from "lucide-react";
-import { useState } from "react";
+import { XIcon } from "lucide-react";
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useId,
+  useMemo,
+  useState,
+} from "react";
 import { saveAnalyticsConsent } from "@/app/actions/analytics-consent";
 import { PostHogProvider } from "@/app/providers";
 import { Button } from "@/components/ui/button";
 import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
 import type { FirstTouchAttribution } from "@/lib/analytics/acquisition";
 import {
   type AnalyticsConsent,
@@ -32,27 +37,42 @@ type ChoiceButtonsProps = {
   onChoose: (choice: AnalyticsConsent) => void;
 };
 
+type AnalyticsConsentPreferencesContextValue = {
+  available: boolean;
+  consent: AnalyticsConsent | null;
+  isSaving: boolean;
+  saveError: string | null;
+  chooseConsent: (choice: AnalyticsConsent) => Promise<boolean>;
+};
+
+const AnalyticsConsentPreferencesContext =
+  createContext<AnalyticsConsentPreferencesContextValue | null>(null);
+
+export function useAnalyticsConsentPreferencesAvailable() {
+  return useContext(AnalyticsConsentPreferencesContext)?.available ?? false;
+}
+
 function ChoiceButtons({
   currentChoice = null,
   disabled,
   onChoose,
 }: ChoiceButtonsProps) {
   return (
-    <div className="flex flex-col gap-2 sm:flex-row">
+    <div className="grid grid-cols-2 gap-2">
       <Button
         type="button"
+        size="sm"
         variant={currentChoice === "declined" ? "secondary" : "outline"}
-        className="min-w-36 flex-1"
         disabled={disabled}
         aria-pressed={currentChoice === "declined"}
         onClick={() => onChoose("declined")}
       >
-        Reject analytics
+        Decline
       </Button>
       <Button
         type="button"
+        size="sm"
         variant={currentChoice === "accepted" ? "secondary" : "outline"}
-        className="min-w-36 flex-1"
         disabled={disabled}
         aria-pressed={currentChoice === "accepted"}
         onClick={() => onChoose("accepted")}
@@ -65,19 +85,88 @@ function ChoiceButtons({
 
 function ConsentExplanation() {
   return (
-    <p className="text-muted-foreground text-sm leading-6">
-      HackerAI uses optional browser storage for PostHog product analytics,
-      diagnostics, and—on eligible paid accounts—session replay. Rejecting
-      analytics will not affect the service. Read our{" "}
+    <p className="text-muted-foreground text-pretty text-sm leading-5">
+      We use optional cookies to understand product usage, diagnose errors, and
+      replay sessions on eligible paid accounts. HackerAI works the same if you
+      decline. Read our{" "}
       <Link
         href="/privacy-policy"
         target="_blank"
+        rel="noreferrer"
         className="text-foreground underline underline-offset-4"
       >
         Privacy Policy
       </Link>
       .
     </p>
+  );
+}
+
+export function AnalyticsConsentPreferences({
+  children,
+}: {
+  children: React.ReactElement;
+}) {
+  const preferences = useContext(AnalyticsConsentPreferencesContext);
+  const [open, setOpen] = useState(false);
+  const titleId = useId();
+
+  if (!preferences?.available) return null;
+
+  const chooseConsent = async (choice: AnalyticsConsent) => {
+    if (await preferences.chooseConsent(choice)) {
+      setOpen(false);
+    }
+  };
+
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>{children}</PopoverTrigger>
+      <PopoverContent
+        align="end"
+        side="top"
+        sideOffset={8}
+        collisionPadding={12}
+        aria-labelledby={titleId}
+        className="w-[calc(100vw-1.5rem)] max-w-sm rounded-xl p-4 shadow-xl"
+      >
+        <div className="mb-3 flex items-center justify-between gap-3">
+          <div>
+            <h2 id={titleId} className="text-sm font-semibold">
+              Cookie settings
+            </h2>
+            <p className="text-muted-foreground mt-0.5 text-xs">
+              {preferences.consent === "accepted"
+                ? "Analytics allowed"
+                : preferences.consent === "declined"
+                  ? "Analytics declined"
+                  : "No saved preference"}
+            </p>
+          </div>
+          <button
+            type="button"
+            aria-label="Close cookie settings"
+            className="text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:ring-ring rounded-md p-1.5 focus-visible:ring-2 focus-visible:outline-none"
+            onClick={() => setOpen(false)}
+          >
+            <XIcon aria-hidden="true" className="size-4" />
+          </button>
+        </div>
+        <ConsentExplanation />
+        {preferences.saveError ? (
+          <p role="alert" className="text-destructive mt-3 text-sm">
+            {preferences.saveError}
+          </p>
+        ) : null}
+        <div className="mt-4">
+          <ChoiceButtons
+            currentChoice={preferences.consent}
+            disabled={preferences.isSaving}
+            onChoose={(choice) => void chooseConsent(choice)}
+          />
+        </div>
+      </PopoverContent>
+    </Popover>
   );
 }
 
@@ -89,98 +178,68 @@ export function AnalyticsConsentManager({
 }: AnalyticsConsentManagerProps) {
   const [consent, setConsent] = useState(initialConsent);
   const [isSaving, setIsSaving] = useState(false);
-  const [preferencesOpen, setPreferencesOpen] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
 
-  const analyticsAllowed = isAnalyticsAllowed({
-    consent,
-    consentRequired,
-  });
+  const analyticsAllowed = isAnalyticsAllowed({ consent, consentRequired });
   const needsInitialChoice = consentRequired && consent === null;
 
-  const chooseConsent = async (choice: AnalyticsConsent) => {
+  const chooseConsent = useCallback(async (choice: AnalyticsConsent) => {
     setIsSaving(true);
     setSaveError(null);
     try {
       await saveAnalyticsConsent(choice);
       setConsent(choice);
-      setPreferencesOpen(false);
+      return true;
     } catch {
-      setSaveError("We couldn't save your privacy choice. Please try again.");
+      setSaveError("We couldn't save your choice. Please try again.");
+      return false;
     } finally {
       setIsSaving(false);
     }
-  };
+  }, []);
+
+  const preferences = useMemo(
+    () => ({
+      available: !needsInitialChoice,
+      consent,
+      isSaving,
+      saveError,
+      chooseConsent,
+    }),
+    [consent, isSaving, needsInitialChoice, saveError, chooseConsent],
+  );
 
   return (
-    <PostHogProvider
-      analyticsAllowed={analyticsAllowed}
-      firstTouchAttribution={firstTouchAttribution}
-    >
-      {children}
+    <AnalyticsConsentPreferencesContext.Provider value={preferences}>
+      <PostHogProvider
+        analyticsAllowed={analyticsAllowed}
+        firstTouchAttribution={firstTouchAttribution}
+      >
+        {children}
 
-      {needsInitialChoice ? (
-        <section
-          aria-label="Analytics privacy choices"
-          className="fixed inset-x-3 bottom-3 z-[70] mx-auto max-w-3xl rounded-2xl border border-border bg-background/95 p-4 shadow-2xl backdrop-blur sm:bottom-5 sm:p-5"
-        >
-          <div className="flex flex-col gap-4 sm:flex-row sm:items-start">
-            <div className="flex min-w-0 flex-1 gap-3">
-              <span className="mt-0.5 rounded-full border border-border bg-muted p-2 text-foreground">
-                <ShieldCheck aria-hidden="true" className="size-4" />
-              </span>
-              <div className="space-y-2">
-                <h2 className="text-base font-semibold">
-                  Your analytics choice
-                </h2>
-                <ConsentExplanation />
-                {saveError ? (
-                  <p role="alert" className="text-destructive text-sm">
-                    {saveError}
-                  </p>
-                ) : null}
-              </div>
-            </div>
-            <ChoiceButtons
-              disabled={isSaving}
-              onChoose={(choice) => void chooseConsent(choice)}
-            />
-          </div>
-        </section>
-      ) : null}
-
-      {!needsInitialChoice ? (
-        <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          className="fixed bottom-3 left-3 z-50 bg-background/90 text-xs shadow-md backdrop-blur"
-          onClick={() => setPreferencesOpen(true)}
-        >
-          Privacy choices
-        </Button>
-      ) : null}
-
-      <Dialog open={preferencesOpen} onOpenChange={setPreferencesOpen}>
-        <DialogContent className="sm:max-w-md">
-          <DialogHeader>
-            <DialogTitle>Analytics privacy choices</DialogTitle>
-            <DialogDescription asChild>
+        {needsInitialChoice ? (
+          <section
+            aria-label="Analytics cookie choices"
+            className="bg-background/95 fixed inset-x-3 bottom-3 z-[70] ml-auto rounded-xl border p-4 shadow-xl backdrop-blur sm:right-5 sm:bottom-5 sm:left-auto sm:w-[24rem]"
+          >
+            <h2 className="text-sm font-semibold">Optional analytics</h2>
+            <div className="mt-2">
               <ConsentExplanation />
-            </DialogDescription>
-          </DialogHeader>
-          {saveError ? (
-            <p role="alert" className="text-destructive text-sm">
-              {saveError}
-            </p>
-          ) : null}
-          <ChoiceButtons
-            currentChoice={consent}
-            disabled={isSaving}
-            onChoose={(choice) => void chooseConsent(choice)}
-          />
-        </DialogContent>
-      </Dialog>
-    </PostHogProvider>
+            </div>
+            {saveError ? (
+              <p role="alert" className="text-destructive mt-3 text-sm">
+                {saveError}
+              </p>
+            ) : null}
+            <div className="mt-4">
+              <ChoiceButtons
+                disabled={isSaving}
+                onChoose={(choice) => void chooseConsent(choice)}
+              />
+            </div>
+          </section>
+        ) : null}
+      </PostHogProvider>
+    </AnalyticsConsentPreferencesContext.Provider>
   );
 }

@@ -25,8 +25,19 @@ jest.mock("@/app/providers", () => ({
   ),
 }));
 
-const { AnalyticsConsentManager } =
+const { AnalyticsConsentManager, AnalyticsConsentPreferences } =
   require("../AnalyticsConsentManager") as typeof import("../AnalyticsConsentManager");
+
+function TestContent() {
+  return (
+    <>
+      <div>App content</div>
+      <AnalyticsConsentPreferences>
+        <button type="button">Cookie settings</button>
+      </AnalyticsConsentPreferences>
+    </>
+  );
+}
 
 describe("AnalyticsConsentManager", () => {
   beforeEach(() => {
@@ -37,15 +48,18 @@ describe("AnalyticsConsentManager", () => {
   it("blocks analytics and asks covered visitors for a choice", () => {
     render(
       <AnalyticsConsentManager consentRequired initialConsent={null}>
-        <div>App content</div>
+        <TestContent />
       </AnalyticsConsentManager>,
     );
 
-    expect(screen.getByText("Your analytics choice")).toBeInTheDocument();
+    expect(screen.getByText("Optional analytics")).toBeInTheDocument();
     expect(screen.getByTestId("posthog-provider")).toHaveAttribute(
       "data-analytics-allowed",
       "false",
     );
+    expect(
+      screen.queryByRole("button", { name: "Cookie settings" }),
+    ).not.toBeInTheDocument();
     expect(screen.getByText("App content")).toBeInTheDocument();
   });
 
@@ -53,11 +67,11 @@ describe("AnalyticsConsentManager", () => {
     const user = userEvent.setup();
     render(
       <AnalyticsConsentManager consentRequired initialConsent={null}>
-        <div>App content</div>
+        <TestContent />
       </AnalyticsConsentManager>,
     );
 
-    await user.click(screen.getByRole("button", { name: "Reject analytics" }));
+    await user.click(screen.getByRole("button", { name: "Decline" }));
 
     await waitFor(() =>
       expect(mockSaveAnalyticsConsent).toHaveBeenCalledWith("declined"),
@@ -67,13 +81,14 @@ describe("AnalyticsConsentManager", () => {
       "false",
     );
     expect(
-      screen.getByRole("button", { name: "Privacy choices" }),
+      screen.getByRole("button", { name: "Cookie settings" }),
     ).toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: "Privacy choices" }));
-    expect(
-      screen.getByRole("button", { name: "Reject analytics" }),
-    ).toHaveAttribute("aria-pressed", "true");
+    await user.click(screen.getByRole("button", { name: "Cookie settings" }));
+    expect(screen.getByRole("button", { name: "Decline" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
     expect(
       screen.getByRole("button", { name: "Allow analytics" }),
     ).toHaveAttribute("aria-pressed", "false");
@@ -90,7 +105,7 @@ describe("AnalyticsConsentManager", () => {
     const user = userEvent.setup();
     render(
       <AnalyticsConsentManager consentRequired initialConsent={null}>
-        <div>App content</div>
+        <TestContent />
       </AnalyticsConsentManager>,
     );
 
@@ -108,7 +123,7 @@ describe("AnalyticsConsentManager", () => {
       ),
     );
 
-    await user.click(screen.getByRole("button", { name: "Privacy choices" }));
+    await user.click(screen.getByRole("button", { name: "Cookie settings" }));
     expect(
       screen.getByRole("button", { name: "Allow analytics" }),
     ).toHaveAttribute("aria-pressed", "true");
@@ -119,7 +134,7 @@ describe("AnalyticsConsentManager", () => {
     const user = userEvent.setup();
     render(
       <AnalyticsConsentManager consentRequired initialConsent={null}>
-        <div>App content</div>
+        <TestContent />
       </AnalyticsConsentManager>,
     );
 
@@ -135,14 +150,17 @@ describe("AnalyticsConsentManager", () => {
   it("does not interrupt an unregulated visitor without a saved choice", () => {
     render(
       <AnalyticsConsentManager consentRequired={false} initialConsent={null}>
-        <div>App content</div>
+        <TestContent />
       </AnalyticsConsentManager>,
     );
 
-    expect(screen.queryByText("Your analytics choice")).not.toBeInTheDocument();
+    expect(screen.queryByText("Optional analytics")).not.toBeInTheDocument();
     expect(
-      screen.getByRole("button", { name: "Privacy choices" }),
+      screen.getByRole("button", { name: "Cookie settings" }),
     ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Privacy choices" }),
+    ).not.toBeInTheDocument();
     expect(screen.getByTestId("posthog-provider")).toHaveAttribute(
       "data-analytics-allowed",
       "true",

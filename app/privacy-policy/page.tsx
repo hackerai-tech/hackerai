@@ -73,7 +73,7 @@ export default function PrivacyPolicyPage() {
               optional browser analytics and attribution storage remain off
               until you allow them. Rejecting optional analytics does not limit
               the Service. You can change or withdraw your choice at any time
-              using the <strong>Privacy choices</strong> control in the Service.
+              using the <strong>Cookie settings</strong> control in the Service.
               Limited server-side operational logs and analytics may still be
               processed as necessary to secure, operate, bill for, and improve
               the Service in accordance with applicable law.
