@@ -62,11 +62,6 @@ const routeSrc = fs.readFileSync(
   "utf8",
 );
 
-const machineRoutingSrc = fs.readFileSync(
-  path.resolve(__dirname, "../../experiments/agent-machine-routing.ts"),
-  "utf8",
-);
-
 const agentRouteSrc = fs.readFileSync(
   path.resolve(__dirname, "../../../app/api/agent/route.ts"),
   "utf8",
@@ -1254,7 +1249,21 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(taskSrc).not.toContain("vulnerability_report");
   });
 
-  test("direct runs use small subscription-aware Trigger.dev priority offsets", () => {
+  test("direct runs use fixed subscription machines and priority offsets", () => {
+    expect(routeSrc).toMatch(
+      /AGENT_TRIGGER_MACHINE_BY_SUBSCRIPTION:\s*Record<[\s\S]*SubscriptionTier,[\s\S]*AgentTriggerMachinePreset/,
+    );
+    expect(routeSrc).toMatch(/free:\s*"small-1x"/);
+    expect(routeSrc).toMatch(/pro:\s*"small-2x"/);
+    expect(routeSrc).toMatch(/"pro-plus":\s*"small-2x"/);
+    expect(routeSrc).toMatch(/ultra:\s*"small-2x"/);
+    expect(routeSrc).toMatch(/team:\s*"small-2x"/);
+    expect(routeSrc).toMatch(
+      /const triggerMachine = getAgentTriggerMachine\(subscription\)/,
+    );
+    expect(routeSrc).not.toMatch(
+      /machineRouting|agent_machine_routing_exposed/,
+    );
     expect(routeSrc).toMatch(
       /AGENT_TRIGGER_PRIORITY_BY_SUBSCRIPTION:\s*Record<\s*SubscriptionTier,\s*number\s*>/,
     );
@@ -1277,47 +1286,6 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     );
     expect(routeSrc).toMatch(
       /shouldRequireAgentApprovalWorkerVersion\(\)[\s\S]*!approvalWorkerVersion[\s\S]*temporarily unavailable/,
-    );
-  });
-
-  test("lightweight machine routing stays fail-closed and uses one decision for every trigger path", () => {
-    expect(machineRoutingSrc).toMatch(
-      /subscription !== "pro" && subscription !== "pro-plus"/,
-    );
-    expect(machineRoutingSrc).toMatch(/if \(!isNewChat\)/);
-    expect(machineRoutingSrc).toMatch(/requestMessageCount !== 1/);
-    expect(machineRoutingSrc).toMatch(
-      /requestMessageBytes > AGENT_LIGHTWEIGHT_REQUEST_MAX_BYTES/,
-    );
-    expect(machineRoutingSrc).toMatch(/if \(hasFileAttachment\)/);
-    expect(machineRoutingSrc).toMatch(/if \(hasProjectContext\)/);
-    expect(machineRoutingSrc).toMatch(/if \(hasTodos\)/);
-    expect(routeSrc).toMatch(
-      /isFullAccessParent:\s*agentPermissionMode === "full_access"/,
-    );
-    expect(machineRoutingSrc).toMatch(
-      /AGENT_FULL_ACCESS_LIGHTWEIGHT_SMALL_1X_FEATURE_FLAG/,
-    );
-    expect(machineRoutingSrc).toMatch(
-      /isFullAccessParent[\s\S]*cohort:\s*"full_access"/,
-    );
-    expect(machineRoutingSrc).toMatch(
-      /machine: lightweightSmall1xEnabled \? "small-1x" : "small-2x"/,
-    );
-    expect(routeSrc).toMatch(
-      /const machineRoutingFlagPromise = machineRoutingExperiment/,
-    );
-    expect(routeSrc).toMatch(
-      /getPostHogFeatureFlagForUser\(\s*machineRoutingExperiment\.featureFlagKey/,
-    );
-    expect(routeSrc).toMatch(
-      /const triggerMachine = machineRoutingDecision\.machine/,
-    );
-    expect(routeSrc).toMatch(
-      /const approvalTriggerConfig\s*=\s*{[\s\S]*?machine:\s*triggerMachine/,
-    );
-    expect(routeSrc).toMatch(
-      /tasks\.trigger<[\s\S]*?triggerOptions[\s\S]*?getAgentMachineRoutingExposure/,
     );
   });
 

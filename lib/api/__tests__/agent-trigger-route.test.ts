@@ -389,8 +389,8 @@ describe("Agent trigger route lifecycle", () => {
       "chat_chat-1",
       "sub_pro",
       "permission_auto_review",
-      "machine_route_test",
-      "machine_route_cohort_standard",
+      "future_tag_1",
+      "future_tag_2",
     ];
 
     expect(getAgentApprovalTriggerTags(triggerTags)).toEqual(
