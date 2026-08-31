@@ -239,6 +239,7 @@ export const createDelegateTaskTool = (
           complexity: parsed.complexity,
           expectedDurationMinutes: parsed.expected_duration_minutes,
           outputKind: parsed.output_kind,
+          subscription: config.subscription,
         }),
         subscription: config.subscription,
         freeQuotaSubject: config.freeQuotaSubject,

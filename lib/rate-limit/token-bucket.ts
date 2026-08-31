@@ -140,11 +140,11 @@ const MODEL_PRICING_MAP: Record<string, ModelPricing> = {
   "agent-model": GROK_4_6_BASE_PRICING,
   "fallback-agent-model": GROK_4_6_BASE_PRICING,
   "fallback-ask-model": GROK_4_6_BASE_PRICING,
-  // Free Ask uses GLM 5.3 Flash. Keep the undiscounted ceiling so usage
+  // Free Ask and Agent use GLM 5.3 Flash. Keep the undiscounted ceiling so usage
   // accounting remains conservative if launch pricing changes.
   "ask-model-free": GLM_5_3_FLASH_PRICING,
+  "agent-model-free": GLM_5_3_FLASH_PRICING,
   // DeepSeek V4 Flash 0731 rates from OpenRouter: $0.14 in / $0.28 out per 1M tokens.
-  "agent-model-free": DEEPSEEK_V4_FLASH_0731_PRICING,
   "agent-auto-review-model": DEEPSEEK_V4_FLASH_0731_PRICING,
   "model-deepseek-v4-flash-0731": DEEPSEEK_V4_FLASH_0731_PRICING,
   "model-deepseek-v4-pro": DEEPSEEK_V4_PRO_PRICING,
@@ -158,6 +158,7 @@ const MODEL_PRICING_MAP: Record<string, ModelPricing> = {
   "model-glm-5.3": GLM_5_3_PRICING,
   "model-glm-5.3-flash": GLM_5_3_FLASH_PRICING,
   "model-glm-5.3-flash-pro": GLM_5_3_FLASH_PRICING,
+  "model-glm-5.3-flash-agent": GLM_5_3_FLASH_PRICING,
   // OpenRouter rates: $3.00 in / $15.00 out / $0.30 cached input per 1M tokens.
   "model-kimi-k3": KIMI_K3_PRICING,
   // Provider response ids can reach accounting before local-key normalization.

@@ -3,17 +3,20 @@ import { describe, expect, it } from "@jest/globals";
 import {
   resolveSubagentModelForImageToolResults,
   resolveInitialSubagentModel,
+  resolveSubagentTextModel,
   resolveSubagentTriggerPriority,
-  SUBAGENT_TEXT_MODEL,
+  SUBAGENT_FREE_TEXT_MODEL,
+  SUBAGENT_PAID_TEXT_MODEL,
   SUBAGENT_VISION_MODEL,
 } from "../model-routing";
 
 describe("subagent model routing", () => {
-  it("uses DeepSeek V4 Flash for the default text route", () => {
-    expect(SUBAGENT_TEXT_MODEL).toBe("agent-model-free");
+  it("uses GLM for free text work and preserves DeepSeek for paid text work", () => {
+    expect(resolveSubagentTextModel("free")).toBe(SUBAGENT_FREE_TEXT_MODEL);
+    expect(resolveSubagentTextModel("pro")).toBe(SUBAGENT_PAID_TEXT_MODEL);
     expect(
-      resolveSubagentModelForImageToolResults(SUBAGENT_TEXT_MODEL, false),
-    ).toBe(SUBAGENT_TEXT_MODEL);
+      resolveSubagentModelForImageToolResults(SUBAGENT_FREE_TEXT_MODEL, false),
+    ).toBe(SUBAGENT_FREE_TEXT_MODEL);
   });
 
   it("prioritizes browser QA and longer complex children", () => {
@@ -23,6 +26,7 @@ describe("subagent model routing", () => {
         complexity: "medium",
         expectedDurationMinutes: 5,
         outputKind: "qa_report",
+        subscription: "free",
       }),
     ).toBe(10);
     expect(
@@ -31,6 +35,7 @@ describe("subagent model routing", () => {
         complexity: "high",
         expectedDurationMinutes: 10,
         outputKind: "answer",
+        subscription: "free",
       }),
     ).toBe(5);
     expect(
@@ -66,13 +71,14 @@ describe("subagent model routing", () => {
         complexity: "low",
         expectedDurationMinutes: 3,
         outputKind: "research_notes",
+        subscription: "free",
       }),
-    ).toBe(SUBAGENT_TEXT_MODEL);
+    ).toBe(SUBAGENT_FREE_TEXT_MODEL);
   });
 
   it("promotes to Grok 4.5 when an image tool result appears", () => {
     expect(
-      resolveSubagentModelForImageToolResults(SUBAGENT_TEXT_MODEL, true),
+      resolveSubagentModelForImageToolResults(SUBAGENT_FREE_TEXT_MODEL, true),
     ).toBe(SUBAGENT_VISION_MODEL);
   });
 

@@ -7,7 +7,6 @@ type ModelAwareToolSchemaOptions = {
 
 const usesDeepSeekToolBrief = (modelName?: string): boolean =>
   modelName?.includes("deepseek") === true ||
-  modelName === "agent-model-free" ||
   modelName === "agent-auto-review-model";
 
 export const createToolBriefSchema = ({

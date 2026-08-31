@@ -149,6 +149,12 @@ import {
   getActiveDeepSeekV4Pro0813ExperimentAssignment,
   getDeepSeekV4Pro0813ExperimentContext,
 } from "@/lib/experiments/deepseek-v4-pro-0813";
+import {
+  capturePaidAgentGlm53FlashExperimentExposure,
+  evaluatePaidAgentGlm53FlashExperiment,
+  getActivePaidAgentGlm53FlashExperimentAssignment,
+  getPaidAgentGlm53FlashExperimentContext,
+} from "@/lib/experiments/paid-agent-glm-5-3-flash";
 import { isEligibleForDirectGlmVision } from "@/lib/chat/auxiliary-vision-eligibility";
 import type { AgentAutoReviewAssignment } from "@/lib/experiments/agent-auto-review";
 import { PAID_FUNNEL_EVENTS } from "@/lib/analytics/paid-funnel";
@@ -2640,6 +2646,18 @@ export const agentLongTask = task({
       if (deepSeekV4Pro0813Experiment) {
         selectedModel = deepSeekV4Pro0813Experiment.modelKey;
       }
+      const paidAgentGlm53FlashExperiment =
+        await evaluatePaidAgentGlm53FlashExperiment({
+          posthog,
+          userId,
+          mode,
+          subscription,
+          selectedModel,
+          requestId: ctx.run.id,
+        });
+      if (paidAgentGlm53FlashExperiment) {
+        selectedModel = paidAgentGlm53FlashExperiment.modelKey;
+      }
 
       const notesEnabled = userCustomization?.include_notes ?? true;
 
@@ -2917,7 +2935,15 @@ export const agentLongTask = task({
                 deepSeekV4Pro0813Experiment,
                 selectedModel,
               );
+            let activePaidAgentGlm53FlashExperiment =
+              getActivePaidAgentGlm53FlashExperimentAssignment(
+                paidAgentGlm53FlashExperiment,
+                selectedModel,
+              );
             let routingExperimentContext =
+              getPaidAgentGlm53FlashExperimentContext(
+                activePaidAgentGlm53FlashExperiment,
+              ) ??
               getDeepSeekV4Pro0813ExperimentContext(
                 activeDeepSeekV4Pro0813Experiment,
               );
@@ -4426,6 +4452,16 @@ export const agentLongTask = task({
 
             let result;
             try {
+              capturePaidAgentGlm53FlashExperimentExposure({
+                posthog,
+                userId,
+                subscription,
+                mode,
+                selectedModelOverride,
+                selectedModel,
+                configuredModel: configuredModelId,
+                assignment: activePaidAgentGlm53FlashExperiment,
+              });
               captureDeepSeekV4Pro0813ExperimentExposure({
                 posthog,
                 userId,

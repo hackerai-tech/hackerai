@@ -117,7 +117,7 @@ describe("provider registry", () => {
     expect(
       (myProvider.languageModel("agent-model-free") as { modelId: string })
         .modelId,
-    ).toBe("deepseek/deepseek-v4-flash-0731");
+    ).toBe("z-ai/glm-5.3-flash");
     expect(
       (
         myProvider.languageModel("auxiliary-vision-model") as {
@@ -133,6 +133,13 @@ describe("provider registry", () => {
     expect(
       (myProvider.languageModel("model-glm-5.3-flash") as { modelId: string })
         .modelId,
+    ).toBe(GLM_5_3_FLASH_SLUG);
+    expect(
+      (
+        myProvider.languageModel("model-glm-5.3-flash-agent") as {
+          modelId: string;
+        }
+      ).modelId,
     ).toBe(GLM_5_3_FLASH_SLUG);
     expect(
       (
@@ -251,13 +258,14 @@ describe("provider registry", () => {
 
   it("classifies the active DeepSeek tier routes as DeepSeek", () => {
     expect(isDeepSeekModel("ask-model-free")).toBe(false);
+    expect(isDeepSeekModel("agent-model-free")).toBe(false);
     expect(isDeepSeekModel("model-deepseek-v4-flash-0731")).toBe(true);
     expect(isDeepSeekModel("model-deepseek-v4-pro")).toBe(true);
     expect(isDeepSeekModel("model-deepseek-v4-pro-0813")).toBe(true);
     expect(isDeepSeekModel("agent-auto-review-model")).toBe(true);
   });
 
-  it("keeps tracked free routes split by mode", () => {
+  it("keeps both tracked free routes on GLM 5.3 Flash", () => {
     const provider = createTrackedProvider();
     expect(
       (provider.languageModel("ask-model-free") as { modelId: string }).modelId,
@@ -265,7 +273,7 @@ describe("provider registry", () => {
     expect(
       (provider.languageModel("agent-model-free") as { modelId: string })
         .modelId,
-    ).toBe("deepseek/deepseek-v4-flash-0731");
+    ).toBe("z-ai/glm-5.3-flash");
   });
 
   it.each([
@@ -1312,8 +1320,11 @@ describe("supportsMultimodalToolResults", () => {
     expect(supportsMultimodalToolResults("x-ai/grok-4.6")).toBe(true);
   });
 
-  it("rejects text-only DeepSeek model keys", () => {
-    expect(supportsMultimodalToolResults("agent-model-free")).toBe(false);
+  it("accepts free GLM Agent while rejecting text-only DeepSeek model keys", () => {
+    expect(supportsMultimodalToolResults("agent-model-free")).toBe(true);
+    expect(supportsMultimodalToolResults("model-glm-5.3-flash-agent")).toBe(
+      true,
+    );
     expect(supportsMultimodalToolResults("model-deepseek-v4-pro")).toBe(false);
     expect(supportsMultimodalToolResults("model-deepseek-v4-pro-0813")).toBe(
       false,

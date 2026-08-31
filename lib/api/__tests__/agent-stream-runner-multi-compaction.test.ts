@@ -85,7 +85,6 @@ jest.mock("@/lib/chat/multimodal-tool-result-recovery", () => ({
 jest.mock("@/lib/ai/providers", () => ({
   isAnthropicModel: () => false,
   isDeepSeekModel: (modelName: string) =>
-    modelName === "agent-model-free" ||
     modelName.startsWith("model-deepseek-v4"),
   PDF_PARSER_ENGINE_HEADER: "x-hackerai-openrouter-pdf-parser-engine",
   PDF_PARSER_RECOVERY_HEADER: "x-hackerai-openrouter-pdf-parser-recovery",
@@ -282,10 +281,10 @@ describe("resolveAgentModelForImageToolResults", () => {
     ).toBe("model-glm-5.3");
   });
 
-  it("switches free DeepSeek Agent steps to Grok after image tool results", () => {
+  it("keeps the multimodal free GLM Agent active after image tool results", () => {
     expect(
       resolveAgentModelForImageToolResults("agent-model-free", "agent", true),
-    ).toBe("model-grok-4.6");
+    ).toBe("agent-model-free");
   });
 
   it("does not change Ask routes or multimodal Agent models", () => {

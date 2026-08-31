@@ -1227,13 +1227,13 @@ export const getOpenRouterProviderRoutingForModel = (
 const buildProviderMap = (
   or: OpenRouterInstance,
   freeAskModelSlug = GLM_5_3_FLASH_SLUG,
-  freeAgentDeepSeekSlug = DEEPSEEK_V4_FLASH_SLUG,
+  freeAgentModelSlug = GLM_5_3_FLASH_SLUG,
 ) =>
   ({
     "ask-model": or(GROK_4_6_SLUG),
     "ask-model-free": or(freeAskModelSlug),
     "agent-model": or(GROK_4_6_SLUG),
-    "agent-model-free": or(freeAgentDeepSeekSlug),
+    "agent-model-free": or(freeAgentModelSlug),
     "model-grok-4.6": or(GROK_4_6_SLUG),
     // Separate internal keys use the same Grok 4.5 provider model while
     // provider reasoning options distinguish Standard from Pro vision.
@@ -1250,6 +1250,7 @@ const buildProviderMap = (
     "model-glm-5.3": or(GLM_5_3_SLUG),
     "model-glm-5.3-flash": or(GLM_5_3_FLASH_SLUG),
     "model-glm-5.3-flash-pro": or(GLM_5_3_FLASH_SLUG),
+    "model-glm-5.3-flash-agent": or(GLM_5_3_FLASH_SLUG),
     "model-deepseek-v4-flash-vision": or(DEEPSEEK_V4_FLASH_VISION_SLUG),
     "model-kimi-k3": or(KIMI_K3_SLUG),
     "fallback-agent-model": or(GROK_4_6_SLUG),
@@ -1281,6 +1282,7 @@ export const modelCutoffDates: Partial<Record<ModelName, string>> &
   "model-glm-5.2": "June 2026",
   "model-glm-5.3-flash": "August 2026",
   "model-glm-5.3-flash-pro": "August 2026",
+  "model-glm-5.3-flash-agent": "August 2026",
   "model-deepseek-v4-flash-vision": "August 2026",
   "fallback-agent-model": "August 2026",
   "fallback-ask-model": "August 2026",
@@ -1307,6 +1309,7 @@ export const modelDisplayNames: Record<ModelName, string> &
   "model-glm-5.3": "Z.ai GLM 5.3",
   "model-glm-5.3-flash": "Z.ai GLM 5.3 Flash",
   "model-glm-5.3-flash-pro": "Z.ai GLM 5.3 Flash",
+  "model-glm-5.3-flash-agent": "Z.ai GLM 5.3 Flash",
   "model-deepseek-v4-flash-vision": "DeepSeek V4 Flash Vision",
   "model-kimi-k3": "Moonshot Kimi K3",
   "fallback-agent-model": "Auto, an intelligent model router built by HackerAI",
@@ -1334,7 +1337,6 @@ export function isAnthropicModel(modelName: string): boolean {
 /** Returns whether a provider key uses a DeepSeek V4 route. */
 export function isDeepSeekModel(modelName: string): boolean {
   return (
-    modelName === "agent-model-free" ||
     modelName === "agent-auto-review-model" ||
     modelName === "model-deepseek-v4-flash-0731" ||
     modelName === "model-deepseek-v4-pro" ||
@@ -1375,8 +1377,10 @@ export function supportsMultimodalToolResults(modelName?: string): boolean {
 
   return (
     normalized === "ask-model-free" ||
+    normalized === "agent-model-free" ||
     normalized === "model-glm-5.3-flash" ||
     normalized === "model-glm-5.3-flash-pro" ||
+    normalized === "model-glm-5.3-flash-agent" ||
     normalized === "model-deepseek-v4-flash-vision" ||
     normalized.includes("z-ai/glm-5.3-flash") ||
     normalized.includes("deepseek-v4-flash-vision") ||

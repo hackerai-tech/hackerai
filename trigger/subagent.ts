@@ -62,7 +62,7 @@ import {
 } from "@/lib/ai/subagents/profiles";
 import {
   resolveSubagentModelForImageToolResults,
-  SUBAGENT_TEXT_MODEL,
+  resolveSubagentTextModel,
 } from "@/lib/ai/subagents/model-routing";
 import { assertSubagentSandboxIdentity } from "@/lib/ai/subagents/sandbox-identity";
 import {
@@ -498,7 +498,8 @@ export const subagentTask = task({
       Awaited<ReturnType<typeof checkRateLimitCapacity>> | undefined;
     let usageSettled = false;
     let triggerRunCostRecorded = false;
-    const selectedModel = row.selected_model ?? SUBAGENT_TEXT_MODEL;
+    const selectedModel =
+      row.selected_model ?? resolveSubagentTextModel(row.subscription);
     let activeModelName = selectedModel;
     metadata
       .set("selectedModel", selectedModel)
