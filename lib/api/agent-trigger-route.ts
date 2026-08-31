@@ -78,17 +78,7 @@ import {
   getBaselineAgentTriggerMachine,
   resolveAgentMachineRouting,
 } from "@/lib/experiments/agent-machine-routing";
-import {
-  getPostHogFeatureFlagForUser,
-  getPostHogFeatureFlagValueForUser,
-  phLogger,
-} from "@/lib/posthog/server";
-import {
-  AGENT_AUTO_CONTINUE_USAGE_PROTECTION_FLAG,
-  isAgentAutoContinueUsageProtectionEligible,
-  resolveAgentAutoContinueUsageProtectionAssignment,
-  type AgentAutoContinueUsageProtectionAssignment,
-} from "@/lib/experiments/agent-auto-continue-usage-protection";
+import { getPostHogFeatureFlagForUser, phLogger } from "@/lib/posthog/server";
 
 const AGENT_TRIGGER_PRIORITY_BY_SUBSCRIPTION: Record<SubscriptionTier, number> =
   {
@@ -475,18 +465,6 @@ export const createAgentTriggerPost =
         agentPermissionMode === "full_access"
           ? getPostHogFeatureFlagForUser("agent-generic-delegation-v1", userId)
           : Promise.resolve(false);
-      const autoContinueUsageProtectionAssignmentPromise =
-        isAgentAutoContinueUsageProtectionEligible({
-          subscription,
-          isAutomaticContinuation: isAutomaticContinuation === true,
-        })
-          ? getPostHogFeatureFlagValueForUser(
-              AGENT_AUTO_CONTINUE_USAGE_PROTECTION_FLAG,
-              userId,
-            ).then(resolveAgentAutoContinueUsageProtectionAssignment)
-          : Promise.resolve<
-              AgentAutoContinueUsageProtectionAssignment | undefined
-            >(undefined);
 
       assertFreeAgentGates({
         mode: "agent",
@@ -521,17 +499,12 @@ export const createAgentTriggerPost =
       // These independent authorization/config reads used to run serially
       // before Trigger was called. Overlap them so the worker starts booting as
       // soon as possible after the suspension check succeeds.
-      const [
-        existingChat,
-        userCustomization,
-        genericDelegationEnabled,
-        autoContinueUsageProtectionAssignment,
-      ] = await Promise.all([
-        getChatById({ id: chatId }),
-        getUserCustomization({ userId }),
-        genericDelegationFlagPromise,
-        autoContinueUsageProtectionAssignmentPromise,
-      ]);
+      const [existingChat, userCustomization, genericDelegationEnabled] =
+        await Promise.all([
+          getChatById({ id: chatId }),
+          getUserCustomization({ userId }),
+          genericDelegationFlagPromise,
+        ]);
 
       // Fetch existing chat to: (a) detect isNewChat for title generation,
       // (b) pass to handleInitialChatAndUserMessage so it skips saveChat on
@@ -760,7 +733,6 @@ export const createAgentTriggerPost =
         triggerRegion,
         isAutoContinue,
         isAutomaticContinuation,
-        autoContinueUsageProtectionAssignment,
         regenerate,
         limitRescue,
         isNewChat,
