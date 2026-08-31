@@ -191,6 +191,9 @@ describe("MessageErrorState", () => {
   });
 
   it("opens Checkout directly and marks the stopped task for resume", async () => {
+    const dateNowSpy = jest
+      .spyOn(Date, "now")
+      .mockReturnValue(Date.UTC(2026, 7, 22));
     const user = userEvent.setup();
     const error = new ChatSDKError(
       "rate_limit:chat",
@@ -225,6 +228,7 @@ describe("MessageErrorState", () => {
       ),
     );
     expect(openSettingsDialog).not.toHaveBeenCalled();
+    dateNowSpy.mockRestore();
   });
 
   it("opens payment-method recovery directly for auto-reload failures", async () => {
