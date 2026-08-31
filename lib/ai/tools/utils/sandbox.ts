@@ -6,6 +6,8 @@ import { retryWithBackoff } from "./retry-with-backoff";
 import { getE2BClusterRouting, type E2BClusterConfig } from "./e2b-cluster";
 import type { TriggerRunRegion } from "@/lib/api/trigger-region";
 import { BASH_SANDBOX_AUTOPAUSE_TIMEOUT } from "./e2b-lease";
+import { phLogger } from "@/lib/posthog/server";
+import { getE2BEgressProxyForUser } from "./e2b-egress-proxy";
 export {
   BASH_SANDBOX_AUTOPAUSE_TIMEOUT,
   E2B_SANDBOX_IDLE_RELEASE_TIMEOUT_MS,
@@ -78,9 +80,28 @@ export const ensureSandboxConnection = async (
 ): Promise<{ sandbox: Sandbox }> => {
   const { userID, setSandbox, onBoot } = context;
   const { initialSandbox, triggerRegion } = options;
+  const egressProxy = getE2BEgressProxyForUser(userID);
+
+  const applyEgressProxy = async (
+    sandbox: Sandbox,
+    path: SandboxReadyPath | "initial_connection",
+  ): Promise<void> => {
+    if (!egressProxy) return;
+
+    // updateNetwork replaces the whole mutable network configuration. This
+    // utility currently owns that state, so always send the complete desired
+    // configuration when attaching the proxy to a reusable sandbox.
+    await sandbox.updateNetwork({ egressProxy });
+    phLogger.event("e2b_egress_proxy_exposure", {
+      userId: userID,
+      sandbox_id: sandbox.sandboxId,
+      acquisition_path: path,
+    });
+  };
 
   // Return existing sandbox if already connected
   if (initialSandbox) {
+    await applyEgressProxy(initialSandbox, "initial_connection");
     return { sandbox: initialSandbox };
   }
   const startedAt = performance.now();
@@ -209,6 +230,7 @@ export const ensureSandboxConnection = async (
             jitterMs: 40,
           },
         );
+        await applyEgressProxy(sandbox, "reuse_existing");
         setSandbox(sandbox);
         reportBoot("reuse_existing", 0);
         return { sandbox };
@@ -253,6 +275,7 @@ export const ensureSandboxConnection = async (
           timeoutMs: BASH_SANDBOX_AUTOPAUSE_TIMEOUT,
           lifecycle: { onTimeout: "pause", autoResume: true },
           secure: true,
+          ...(egressProxy && { network: { egressProxy } }),
           metadata: {
             userID,
             template: createCluster.template,
@@ -262,6 +285,13 @@ export const ensureSandboxConnection = async (
           },
         });
 
+        if (egressProxy) {
+          phLogger.event("e2b_egress_proxy_exposure", {
+            userId: userID,
+            sandbox_id: sandbox.sandboxId,
+            acquisition_path: createPath,
+          });
+        }
         setSandbox(sandbox);
         reportBoot(createPath, attempt + 1);
         return { sandbox };

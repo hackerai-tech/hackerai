@@ -19,7 +19,18 @@ jest.mock("@e2b/code-interpreter", () => {
   };
 });
 
+jest.mock("@/lib/posthog/server", () => ({
+  phLogger: {
+    event: jest.fn(),
+    warn: jest.fn(),
+    error: jest.fn(),
+    info: jest.fn(),
+    flush: jest.fn(),
+  },
+}));
+
 import { Sandbox } from "@e2b/code-interpreter";
+import { phLogger } from "@/lib/posthog/server";
 import {
   BASH_SANDBOX_AUTOPAUSE_TIMEOUT,
   E2B_SANDBOX_IDLE_RELEASE_TIMEOUT_MS,
@@ -41,6 +52,7 @@ type MockSandboxApi = {
 };
 
 const sandboxApi = Sandbox as unknown as MockSandboxApi;
+const mockCaptureEvent = phLogger.event as jest.Mock;
 
 const listSandbox = (
   overrides: Partial<{
@@ -70,6 +82,10 @@ describe("E2B sandbox lease lifecycle", () => {
     delete process.env.E2B_EU_API_KEY;
     delete process.env.E2B_EU_DOMAIN;
     delete process.env.E2B_EU_TEMPLATE;
+    delete process.env.E2B_EGRESS_PROXY_ADDRESS;
+    delete process.env.E2B_EGRESS_PROXY_USERNAME;
+    delete process.env.E2B_EGRESS_PROXY_PASSWORD;
+    delete process.env.E2B_EGRESS_PROXY_ALLOWED_USER_IDS;
   });
 
   afterEach(() => {
@@ -355,6 +371,65 @@ describe("E2B sandbox lease lifecycle", () => {
     expect(setSandbox).toHaveBeenCalledWith(connectedSandbox);
   });
 
+  it("applies the proxy to a reusable sandbox before exposing it", async () => {
+    process.env.E2B_EGRESS_PROXY_ADDRESS = "proxy.example.com:1080";
+    process.env.E2B_EGRESS_PROXY_USERNAME = "proxy-user";
+    process.env.E2B_EGRESS_PROXY_PASSWORD = "proxy-password";
+    process.env.E2B_EGRESS_PROXY_ALLOWED_USER_IDS = "user-1";
+    const updateNetwork = jest.fn(async () => undefined);
+    const connectedSandbox = {
+      sandboxId: "sandbox-1",
+      updateNetwork,
+    } as unknown as Sandbox;
+    listSandbox();
+    sandboxApi.connect.mockResolvedValue(connectedSandbox);
+    const setSandbox = jest.fn();
+
+    await ensureSandboxConnection({ userID: "user-1", setSandbox });
+
+    expect(updateNetwork).toHaveBeenCalledWith({
+      egressProxy: {
+        address: "proxy.example.com:1080",
+        username: "proxy-user",
+        password: "proxy-password",
+      },
+    });
+    expect(updateNetwork.mock.invocationCallOrder[0]).toBeLessThan(
+      setSandbox.mock.invocationCallOrder[0],
+    );
+    expect(mockCaptureEvent).toHaveBeenCalledWith("e2b_egress_proxy_exposure", {
+      userId: "user-1",
+      sandbox_id: "sandbox-1",
+      acquisition_path: "reuse_existing",
+    });
+  });
+
+  it("fails closed when E2B cannot apply the proxy to a reusable sandbox", async () => {
+    process.env.E2B_EGRESS_PROXY_ADDRESS = "proxy.example.com:1080";
+    process.env.E2B_EGRESS_PROXY_ALLOWED_USER_IDS = "user-1";
+    const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const connectedSandbox = {
+        sandboxId: "sandbox-1",
+        updateNetwork: jest.fn(async () => {
+          throw new Error("proxy unavailable");
+        }),
+      } as unknown as Sandbox;
+      listSandbox();
+      sandboxApi.connect.mockResolvedValue(connectedSandbox);
+      const setSandbox = jest.fn();
+
+      await expect(
+        ensureSandboxConnection({ userID: "user-1", setSandbox }),
+      ).rejects.toThrow("proxy unavailable");
+
+      expect(setSandbox).not.toHaveBeenCalled();
+      expect(mockCaptureEvent).not.toHaveBeenCalled();
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
   it("creates new sandboxes with pause and automatic resume enabled", async () => {
     const createdSandbox = { sandboxId: "sandbox-2" } as unknown as Sandbox;
     sandboxApi.list.mockReturnValue({
@@ -377,6 +452,63 @@ describe("E2B sandbox lease lifecycle", () => {
         metadata: expect.objectContaining({ sandboxVersion: "v12" }),
       }),
     );
+  });
+
+  it("passes the proxy to sandbox creation without persisting credentials in metadata", async () => {
+    process.env.E2B_EGRESS_PROXY_ADDRESS = "proxy.example.com:1080";
+    process.env.E2B_EGRESS_PROXY_USERNAME = "proxy-user";
+    process.env.E2B_EGRESS_PROXY_PASSWORD = "proxy-password";
+    process.env.E2B_EGRESS_PROXY_ALLOWED_USER_IDS = "user-1";
+    sandboxApi.list.mockReturnValue({
+      nextItems: jest.fn(async () => []),
+    });
+    const createdSandbox = { sandboxId: "sandbox-2" } as unknown as Sandbox;
+    sandboxApi.create.mockResolvedValue(createdSandbox);
+
+    await ensureSandboxConnection({ userID: "user-1", setSandbox: jest.fn() });
+
+    expect(sandboxApi.create).toHaveBeenCalledWith(
+      "terminal-agent-sandbox",
+      expect.objectContaining({
+        network: {
+          egressProxy: {
+            address: "proxy.example.com:1080",
+            username: "proxy-user",
+            password: "proxy-password",
+          },
+        },
+        metadata: expect.not.objectContaining({
+          address: expect.anything(),
+          username: expect.anything(),
+          password: expect.anything(),
+        }),
+      }),
+    );
+    expect(mockCaptureEvent).toHaveBeenCalledWith(
+      "e2b_egress_proxy_exposure",
+      expect.objectContaining({
+        userId: "user-1",
+        sandbox_id: "sandbox-2",
+        acquisition_path: "create_fresh",
+      }),
+    );
+  });
+
+  it("does not proxy a user outside the rollout allowlist", async () => {
+    process.env.E2B_EGRESS_PROXY_ADDRESS = "proxy.example.com:1080";
+    process.env.E2B_EGRESS_PROXY_ALLOWED_USER_IDS = "user-2";
+    sandboxApi.list.mockReturnValue({
+      nextItems: jest.fn(async () => []),
+    });
+    sandboxApi.create.mockResolvedValue({
+      sandboxId: "sandbox-2",
+    } as unknown as Sandbox);
+
+    await ensureSandboxConnection({ userID: "user-1", setSandbox: jest.fn() });
+
+    const createOptions = sandboxApi.create.mock.calls[0][1];
+    expect(createOptions).not.toHaveProperty("network");
+    expect(mockCaptureEvent).not.toHaveBeenCalled();
   });
 
   it("creates a fresh EU sandbox for an EU Trigger run when EU is configured", async () => {
