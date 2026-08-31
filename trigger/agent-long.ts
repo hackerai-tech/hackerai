@@ -209,8 +209,6 @@ import {
   type AgentStreamContext,
   type AgentStreamState,
 } from "@/lib/api/agent-stream-runner";
-import { protectIncompleteAutomaticContinuation } from "@/lib/api/agent-auto-continue-usage-protection";
-import type { AgentAutoContinueUsageProtectionAssignment } from "@/lib/experiments/agent-auto-continue-usage-protection";
 import {
   assertLocalSandboxFallbackAllowed,
   getSandboxFallbackPromptReminder,
@@ -2266,7 +2264,6 @@ export type AgentLongPayload = {
   triggerRegion?: TriggerRunRegion;
   isAutoContinue?: boolean;
   isAutomaticContinuation?: boolean;
-  autoContinueUsageProtectionAssignment?: AgentAutoContinueUsageProtectionAssignment;
   regenerate?: boolean;
   isNewChat?: boolean;
   limitRescue?: LimitRescueRequest;
@@ -2356,7 +2353,6 @@ export const agentLongTask = task({
       triggerRegion = "us-east-1",
       isAutoContinue,
       isAutomaticContinuation,
-      autoContinueUsageProtectionAssignment,
       regenerate,
       isNewChat,
       limitRescue,
@@ -3500,27 +3496,6 @@ export const agentLongTask = task({
             // read back here in toUIMessageStream.onFinish.
             const state = initAgentStreamState(finalMessages, initialCtxUsage);
             terminalAgentState = state;
-            const protectTerminalAutomaticContinuation = async () => {
-              const stopSource = getAgentAutoContinueStopSource({
-                finishReason: state.streamFinishReason,
-                stoppedDueToTokenExhaustion: state.stoppedDueToTokenExhaustion,
-                stoppedDueToPostSummarizationIncomplete:
-                  state.stoppedDueToPostSummarizationIncomplete,
-              });
-              if (isAutomaticContinuation) {
-                await protectIncompleteAutomaticContinuation({
-                  assignment: autoContinueUsageProtectionAssignment,
-                  stopSource,
-                  usageRefundTracker,
-                  writer,
-                  posthog,
-                  userId,
-                  subscription,
-                  endpoint,
-                });
-              }
-              return stopSource;
-            };
 
             const budgetSnapshot = captureBudgetSnapshot({
               rateLimitInfo,
@@ -4302,7 +4277,6 @@ export const agentLongTask = task({
               // Final reconciliation can change the finish reason to
               // budget-exhausted; do it before analytics and persistence.
               await deductAccumulatedUsage();
-              await protectTerminalAutomaticContinuation();
               const outcome = retryAborted
                 ? "aborted"
                 : isTerminalProviderStreamError(state)
@@ -5382,7 +5356,13 @@ export const agentLongTask = task({
                       // their plan cap are large enough that the user should
                       // explicitly decide whether to continue.
                       const autoContinueStopSource =
-                        await protectTerminalAutomaticContinuation();
+                        getAgentAutoContinueStopSource({
+                          finishReason: state.streamFinishReason,
+                          stoppedDueToTokenExhaustion:
+                            state.stoppedDueToTokenExhaustion,
+                          stoppedDueToPostSummarizationIncomplete:
+                            state.stoppedDueToPostSummarizationIncomplete,
+                        });
                       if (autoContinueStopSource && !isAutomaticContinuation) {
                         writeAutoContinue(writer);
                         phLogger.info("Agent auto-continue signaled", {

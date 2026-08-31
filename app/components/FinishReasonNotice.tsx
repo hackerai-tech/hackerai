@@ -21,11 +21,8 @@ export const FinishReasonNotice = ({
   finishReason,
   onContinue,
 }: FinishReasonNoticeProps) => {
-  const { dataStream, isAutoResuming, isAutoContinuing } = useDataStreamState();
+  const { isAutoResuming, isAutoContinuing } = useDataStreamState();
   const [hasContinued, setHasContinued] = useState(false);
-  const usageProtected = dataStream.some(
-    (part) => part.type === "data-auto-continue-usage-protected",
-  );
 
   if (!finishReason) return null;
 
@@ -44,28 +41,39 @@ export const FinishReasonNotice = ({
 
   const getNoticeContent = () => {
     if (finishReason === "tool-calls") {
-      return <>Reached the step limit for this turn.</>;
+      return (
+        <>Reached the step limit for this turn. Completed work was saved.</>
+      );
     }
 
     if (finishReason === "timeout" || finishReason === "preemptive-timeout") {
-      return <>Reached the time limit for this turn.</>;
+      return (
+        <>Reached the time limit for this turn. Completed work was saved.</>
+      );
     }
 
     if (finishReason === OUTPUT_LIMIT_FINISH_REASON) {
       return (
         <>
           The response reached its output limit before finishing. Continue to
-          resume where it stopped.
+          resume where it stopped; completed work was saved.
         </>
       );
     }
 
     if (finishReason === "context-limit") {
-      return <>Reached the context limit for this conversation.</>;
+      return (
+        <>
+          Reached the context limit for this conversation. Completed work was
+          saved.
+        </>
+      );
     }
 
     if (finishReason === POST_SUMMARIZATION_INCOMPLETE_FINISH_REASON) {
-      return <>Paused after compacting the conversation.</>;
+      return (
+        <>Paused after compacting the conversation. Completed work was saved.</>
+      );
     }
 
     if (finishReason === AGENT_RUN_SPEND_CAP_FINISH_REASON) {
@@ -93,15 +101,7 @@ export const FinishReasonNotice = ({
   return (
     <div className="mt-2 w-full">
       <div className="bg-muted text-muted-foreground rounded-lg px-3 py-2 border border-border flex items-center justify-between gap-3 flex-wrap">
-        <div className="flex flex-col gap-1">
-          <span>{content}</span>
-          {usageProtected ? (
-            <span className="text-foreground">
-              This automatic recovery attempt didn&apos;t finish, so its usage
-              was restored.
-            </span>
-          ) : null}
-        </div>
+        <span>{content}</span>
         {showContinue && (
           <Button
             type="button"

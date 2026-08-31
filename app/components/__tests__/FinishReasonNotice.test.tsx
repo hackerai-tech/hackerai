@@ -8,40 +8,30 @@ import { DataStreamProvider, useDataStream } from "../DataStreamProvider";
 import { MAX_AUTO_CONTINUES } from "@/app/hooks/useAutoContinue";
 import { POST_SUMMARIZATION_INCOMPLETE_FINISH_REASON } from "@/lib/chat/stop-conditions";
 import type { ChatMode, SelectedModel } from "@/types/chat";
-import type { ScopedDataUIPart } from "../DataStreamProvider";
 
 function DataStreamSetter({
   isAutoResuming,
   isAutoContinuing,
   autoContinueCount,
-  dataStream,
   children,
 }: {
   isAutoResuming?: boolean;
   isAutoContinuing?: boolean;
   autoContinueCount?: number;
-  dataStream?: ScopedDataUIPart[];
   children: React.ReactNode;
 }) {
-  const {
-    setDataStream,
-    setIsAutoResuming,
-    setIsAutoContinuing,
-    setAutoContinueCount,
-  } = useDataStream();
+  const { setIsAutoResuming, setIsAutoContinuing, setAutoContinueCount } =
+    useDataStream();
 
   React.useEffect(() => {
     if (isAutoResuming !== undefined) setIsAutoResuming(isAutoResuming);
     if (isAutoContinuing !== undefined) setIsAutoContinuing(isAutoContinuing);
     if (autoContinueCount !== undefined)
       setAutoContinueCount(autoContinueCount);
-    if (dataStream !== undefined) setDataStream(dataStream);
   }, [
     isAutoResuming,
     isAutoContinuing,
     autoContinueCount,
-    dataStream,
-    setDataStream,
     setIsAutoResuming,
     setIsAutoContinuing,
     setAutoContinueCount,
@@ -63,7 +53,6 @@ function renderNotice(
     isAutoResuming?: boolean;
     isAutoContinuing?: boolean;
     autoContinueCount?: number;
-    dataStream?: ScopedDataUIPart[];
   },
 ) {
   return render(
@@ -175,26 +164,10 @@ describe("FinishReasonNotice", () => {
       ).toBeInTheDocument();
     });
 
-    it("confirms when an incomplete automatic recovery had its usage restored", () => {
-      renderNotice(
-        { finishReason: "tool-calls", mode: "agent" },
-        {
-          isAutoResuming: false,
-          autoContinueCount: MAX_AUTO_CONTINUES,
-          dataStream: [
-            {
-              type: "data-auto-continue-usage-protected",
-              data: { status: "restored" },
-            },
-          ],
-        },
-      );
+    it("confirms that completed work was preserved at the step limit", () => {
+      renderNotice({ finishReason: "tool-calls", mode: "agent" });
 
-      expect(
-        screen.getByText(
-          /This automatic recovery attempt didn't finish, so its usage was restored/i,
-        ),
-      ).toBeInTheDocument();
+      expect(screen.getByText(/Completed work was saved/i)).toBeInTheDocument();
     });
 
     it.each([
