@@ -171,6 +171,7 @@ describe("ChatItem project actions", () => {
     });
     const taskOptionsMenu = moveTrigger.closest('[role="menu"]');
     expect(taskOptionsMenu).toHaveClass(
+      "z-[60]",
       "min-w-52",
       "rounded-xl",
       "border-border/80",
@@ -198,6 +199,7 @@ describe("ChatItem project actions", () => {
     const destinationItem = await screen.findByRole("menuitem", {
       name: "Acme target",
     });
+    expect(destinationItem.closest('[role="menu"]')).toHaveClass("z-[60]");
     expect(destinationItem).toHaveClass(
       "h-9",
       "gap-2.5",
