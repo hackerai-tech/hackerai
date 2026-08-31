@@ -12,12 +12,27 @@ jest.mock("@workos-inc/authkit-nextjs/components", () => ({
 jest.mock("@workos-inc/widgets/workos-widgets", () => ({
   WorkOsWidgets: ({
     children,
+    className,
     style,
+    theme,
   }: {
     children: ReactNode;
+    className?: string;
     style?: CSSProperties;
+    theme?: {
+      appearance?: string;
+      grayColor?: string;
+      panelBackground?: string;
+    };
   }) => (
-    <div data-testid="workos-widgets-provider" style={style}>
+    <div
+      className={className}
+      data-appearance={theme?.appearance}
+      data-gray-color={theme?.grayColor}
+      data-panel-background={theme?.panelBackground}
+      data-testid="workos-widgets-provider"
+      style={style}
+    >
       {children}
     </div>
   ),
@@ -44,6 +59,21 @@ describe("SecurityTab", () => {
     expect(screen.getByTestId("workos-widgets-provider")).toBeInTheDocument();
     expect(screen.getByTestId("workos-widgets-provider")).toHaveStyle(
       "block-size: auto; min-block-size: auto",
+    );
+    expect(screen.getByTestId("workos-widgets-provider")).toHaveClass(
+      "hackerai-security-widget",
+    );
+    expect(screen.getByTestId("workos-widgets-provider")).toHaveAttribute(
+      "data-appearance",
+      "inherit",
+    );
+    expect(screen.getByTestId("workos-widgets-provider")).toHaveAttribute(
+      "data-gray-color",
+      "gray",
+    );
+    expect(screen.getByTestId("workos-widgets-provider")).toHaveAttribute(
+      "data-panel-background",
+      "solid",
     );
     expect(
       screen.getByTestId("workos-user-security-widget"),
