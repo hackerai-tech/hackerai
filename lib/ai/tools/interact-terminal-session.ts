@@ -24,6 +24,12 @@ import {
   getSandboxWithFallbackGuard,
   resolveToolErrorMessage,
 } from "./utils/sandbox-fallback";
+import { isE2BSandbox } from "./utils/sandbox-types";
+import {
+  captureCloudPortScanAttempt,
+  classifyCloudPortScan,
+  E2B_PORT_SCAN_BLOCK_MESSAGE,
+} from "./utils/cloud-port-scan-guard";
 
 // ─── Interactive PTY constants ──────────────────────────────────────────
 const MAX_INPUT_BYTES_PER_SEND = 8 * 1024;
@@ -338,8 +344,8 @@ export const createInteractTerminalSession = (context: ToolContext) => {
         const priorExit = peekSessionExit(session);
         if (priorExit) return exitedSendError(sessionId, priorExit, false);
 
-        const sandboxMismatch = await verifySessionSandboxIdentity(session);
-        if (sandboxMismatch) return sandboxMismatch;
+        const sessionSandbox = await getMatchingSessionSandbox(session);
+        if ("error" in sessionSandbox) return sessionSandbox.error;
 
         // Translate and size-check before approval so the exact bounded action
         // reaching the reviewer is the action that can subsequently execute.
@@ -348,6 +354,19 @@ export const createInteractTerminalSession = (context: ToolContext) => {
           return errorResult(
             `Input exceeds MAX_INPUT_BYTES_PER_SEND=${MAX_INPUT_BYTES_PER_SEND} (got ${bytes.byteLength}).`,
           );
+        }
+
+        const cloudPortScan = classifyCloudPortScan(input);
+        if (cloudPortScan && isE2BSandbox(sessionSandbox.sandbox)) {
+          captureCloudPortScanAttempt(context, cloudPortScan);
+          return {
+            result: {
+              output: "",
+              error: E2B_PORT_SCAN_BLOCK_MESSAGE,
+              commandBlocked: true,
+              blockedReason: "unreliable_e2b_port_scan",
+            },
+          };
         }
 
         const reviewState = captureTerminalReviewState(session);

@@ -20,6 +20,7 @@ describe("classifyCloudPortScan", () => {
       "nc -zv example.com 1-1000",
       { scanner: "netcat", scanKind: "zero_io_connect" },
     ],
+    ["nc -v example.com 20-30", { scanner: "netcat", scanKind: "broad_tcp" }],
     [
       "curl example.com | env FOO=bar naabu -silent",
       { scanner: "naabu", scanKind: "broad_tcp" },

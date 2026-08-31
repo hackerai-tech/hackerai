@@ -1,3 +1,6 @@
+import type { ToolContext } from "@/types";
+import { phLogger } from "@/lib/posthog/server";
+
 export const MAX_NARROW_NMAP_PORTS = 16;
 
 export type CloudPortScanClassification = {
@@ -7,6 +10,23 @@ export type CloudPortScanClassification = {
 
 export const E2B_PORT_SCAN_BLOCK_MESSAGE =
   "Blocked an unreliable Cloud Agent port scan. E2B networking can make closed ports appear open, so this command's results cannot be treated as confirmed evidence. Do not retry this scan or claim that any ports are confirmed from E2B scan output. Use the HackerAI Desktop App or Remote Control for native TCP, UDP, or raw network scanning. Narrow application-level checks are still available when appropriate, such as curl for HTTP, openssl s_client for TLS, or ssh for SSH.";
+
+export function captureCloudPortScanAttempt(
+  context: ToolContext,
+  classification: CloudPortScanClassification,
+): void {
+  phLogger.event("cloud_port_scan_attempted", {
+    userId: context.userID,
+    chat_id: context.chatId,
+    trigger_run_id: context.triggerRunId,
+    mode: context.mode,
+    subscription: context.subscription,
+    scanner: classification.scanner,
+    scan_kind: classification.scanKind,
+    action: "blocked",
+    cloud_port_scan_event_version: 1,
+  });
+}
 
 const SHELL_SEPARATORS = new Set([";", "\n", "|"]);
 const ASSIGNMENT_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*=/;
@@ -313,9 +333,14 @@ function classifyInvocation(invocation: {
     return { scanner: "naabu", scanKind: "broad_tcp" };
   }
   if (["nc", "ncat", "netcat"].includes(invocation.name)) {
-    return hasShortFlag(invocation.args, "z") ||
-      invocation.args.includes("--zero")
-      ? { scanner: "netcat", scanKind: "zero_io_connect" }
+    const scansPortRange = invocation.args.some((arg) => /^\d+-\d+$/.test(arg));
+    const zeroIo =
+      hasShortFlag(invocation.args, "z") || invocation.args.includes("--zero");
+    return zeroIo || scansPortRange
+      ? {
+          scanner: "netcat",
+          scanKind: zeroIo ? "zero_io_connect" : "broad_tcp",
+        }
       : null;
   }
   return invocation.name === "nmap" ? classifyNmap(invocation.args) : null;

@@ -66,8 +66,8 @@ import {
   terminalInspectionMatches,
 } from "@/lib/chat/agent-auto-review-evidence";
 import { isLocalCommandRelayUnsubscribedError } from "./utils/local-sandbox-errors";
-import { phLogger } from "@/lib/posthog/server";
 import {
+  captureCloudPortScanAttempt,
   classifyCloudPortScan,
   E2B_PORT_SCAN_BLOCK_MESSAGE,
 } from "./utils/cloud-port-scan-guard";
@@ -290,17 +290,7 @@ export const createRunTerminalCmd = (context: ToolContext) => {
 
         if (!cloudPortScanAttemptRecorded) {
           cloudPortScanAttemptRecorded = true;
-          phLogger.event("cloud_port_scan_attempted", {
-            userId: context.userID,
-            chat_id: context.chatId,
-            trigger_run_id: context.triggerRunId,
-            mode: context.mode,
-            subscription: context.subscription,
-            scanner: cloudPortScan.scanner,
-            scan_kind: cloudPortScan.scanKind,
-            action: "blocked",
-            cloud_port_scan_event_version: 1,
-          });
+          captureCloudPortScanAttempt(context, cloudPortScan);
         }
 
         return {

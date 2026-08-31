@@ -25,6 +25,17 @@ jest.mock("@e2b/code-interpreter", () => ({
   Sandbox: class {},
 }));
 
+jest.mock("@/lib/posthog/server", () => ({
+  phLogger: {
+    event: jest.fn(),
+    error: jest.fn(),
+    warn: jest.fn(),
+    info: jest.fn(),
+    flush: jest.fn(),
+  },
+}));
+
+import { phLogger } from "@/lib/posthog/server";
 import { createInteractTerminalSession } from "../interact-terminal-session";
 import { createRunTerminalCmd } from "../run-terminal-cmd";
 import { createCommandSessionHandle } from "../utils/command-session-handle";
@@ -67,6 +78,9 @@ const realWaitForOutput = jest.requireActual("../utils/pty-wait-utils")
   .waitForOutput as typeof waitForOutput;
 const mockWaitForOutput = waitForOutput as jest.MockedFunction<
   typeof waitForOutput
+>;
+const mockPhEvent = phLogger.event as jest.MockedFunction<
+  typeof phLogger.event
 >;
 const immediateWaitForOutput: typeof waitForOutput = async (
   session,
@@ -244,6 +258,7 @@ describe("interact_terminal_session — PTY action dispatch", () => {
   beforeEach(() => {
     mockCreateE2BPtyHandle.mockReset();
     mockWaitForOutput.mockImplementation(immediateWaitForOutput);
+    mockPhEvent.mockClear();
   });
 
   test("send on unknown session returns structured error", async () => {
@@ -396,6 +411,47 @@ describe("interact_terminal_session — PTY action dispatch", () => {
 
     expect(result.result.error).toMatch(/exceeds MAX_INPUT_BYTES_PER_SEND/);
     expect(handle.sendInputCalls.length).toBe(before);
+  });
+
+  test("blocks broad scans sent to an existing E2B PTY", async () => {
+    const e2b = makeFakeE2BSandbox();
+    const handle = makeFakeHandle();
+    const { context } = makeContext({ sandbox: e2b });
+    const sessionId = await createSession(context, handle);
+    const before = handle.sendInputCalls.length;
+
+    const result = (await runTool(createInteractTerminalSession(context), {
+      action: "send",
+      session: sessionId,
+      input: "nmap -sT -p 1-1000 private-target.example\n",
+    })) as {
+      result: {
+        commandBlocked?: boolean;
+        blockedReason?: string;
+        error?: string;
+      };
+    };
+
+    expect(handle.sendInputCalls).toHaveLength(before);
+    expect(result.result).toMatchObject({
+      commandBlocked: true,
+      blockedReason: "unreliable_e2b_port_scan",
+    });
+    expect(result.result.error).toContain("cannot be treated as confirmed");
+    expect(mockPhEvent).toHaveBeenCalledWith("cloud_port_scan_attempted", {
+      userId: "u1",
+      chat_id: "chat-1",
+      trigger_run_id: undefined,
+      mode: "agent",
+      subscription: undefined,
+      scanner: "nmap",
+      scan_kind: "broad_tcp",
+      action: "blocked",
+      cloud_port_scan_event_version: 1,
+    });
+    expect(JSON.stringify(mockPhEvent.mock.calls)).not.toContain(
+      "private-target.example",
+    );
   });
 
   test("send forwards destructive-looking input", async () => {
