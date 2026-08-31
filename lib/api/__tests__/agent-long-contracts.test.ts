@@ -1422,6 +1422,21 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     }
   });
 
+  test("both Agent backends require an explicit continuation after elapsed timeout", () => {
+    for (const source of [chatHandlerSrc, taskSrc]) {
+      const autoContinueIdx = source.lastIndexOf(
+        "const autoContinueStopSource =",
+      );
+      const autoContinueEndIdx = source.indexOf("});", autoContinueIdx);
+
+      expect(autoContinueIdx).toBeGreaterThan(-1);
+      expect(autoContinueEndIdx).toBeGreaterThan(autoContinueIdx);
+      expect(source.slice(autoContinueIdx, autoContinueEndIdx)).not.toContain(
+        "stoppedDueToElapsedTimeout",
+      );
+    }
+  });
+
   test("incomplete Agent turns persist and bill observed work before offering continuation", () => {
     for (const source of [chatHandlerSrc, taskSrc]) {
       const autoContinueIdx = source.lastIndexOf(

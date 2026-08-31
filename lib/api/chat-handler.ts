@@ -2598,8 +2598,6 @@ export const createChatHandler = () => {
                         finishReason: state.streamFinishReason,
                         stoppedDueToTokenExhaustion:
                           state.stoppedDueToTokenExhaustion,
-                        stoppedDueToElapsedTimeout:
-                          state.stoppedDueToElapsedTimeout,
                         stoppedDueToPostSummarizationIncomplete:
                           state.stoppedDueToPostSummarizationIncomplete,
                       });
