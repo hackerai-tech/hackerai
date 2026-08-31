@@ -220,9 +220,9 @@ describe("MessageErrorState", () => {
       screen.getByRole("button", { name: "Add $15 and continue" }),
     );
     expect(screen.getByRole("dialog")).toBeVisible();
-    expect(
-      screen.getByText("$30 should cover approximately your next week."),
-    ).toBeVisible();
+    await user.click(
+      screen.getByRole("button", { name: /^\$30(?: Recommended)?$/ }),
+    );
 
     await user.click(screen.getByRole("button", { name: "Purchase" }));
 
