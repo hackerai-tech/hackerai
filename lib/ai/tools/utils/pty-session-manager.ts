@@ -66,12 +66,6 @@ export interface PtySession {
   readCursor: number;
   /** Flipped once when the ring first drops any bytes. Never reset. */
   bufferTruncated: boolean;
-  /**
-   * Best-effort mirror of text typed since the last submitted/cancelled PTY
-   * line. The E2B port-scan guard uses this to classify commands split across
-   * multiple `interact_terminal_session` sends. It is never logged or emitted.
-   */
-  unsubmittedInput: string;
 }
 
 export interface CreateSessionOpts {
@@ -170,7 +164,6 @@ export class PtySessionManager {
         buffer: [],
         readCursor: 0,
         bufferTruncated: false,
-        unsubmittedInput: "",
         droppedBytes: 0,
         idleTimer: null,
         lifetimeTimer: null,

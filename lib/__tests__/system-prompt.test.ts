@@ -611,18 +611,30 @@ Commands run directly on the host OS "workstation" without Docker isolation. Be 
 
     expect(cloudPrompt).toContain("<sandbox_environment>");
     expect(cloudPrompt).toContain(
-      "Cloud Agent networking can produce false-positive TCP port results where many or all ports appear open",
+      "Cloud Agent networking can produce false-positive port results because a low-level connection can appear successful",
     );
     expect(cloudPrompt).toContain(
-      "Treat implausible Cloud Agent port-scan output as invalid or unverified",
+      "Do not run broad, low-level TCP, UDP, or raw-socket port discovery in Cloud Agent",
+    );
+    expect(cloudPrompt).toContain(
+      "Never treat a successful low-level connection or implausible scan output as confirmation that a port is open",
     );
     expect(cloudPrompt).toContain(
       "recommend selecting the HackerAI Desktop App or a Remote Control connection",
     );
-    expect(cloudPrompt).toContain("normal TCP, UDP, or raw-socket behavior");
+    expect(cloudPrompt).toContain(
+      "Narrow application-level checks remain appropriate when they verify expected protocol behavior",
+    );
+    const portScanningPolicy = cloudPrompt.match(
+      /Port-scanning limitation:[\s\S]*?\n\nSystem Environment:/,
+    )?.[0];
+    expect(portScanningPolicy).toBeDefined();
+    expect(portScanningPolicy).not.toMatch(
+      /\b(?:masscan|naabu|nc|netcat|nmap)\b/i,
+    );
     expect(localPrompt).not.toContain("Port-scanning limitation:");
     expect(localPrompt).not.toContain(
-      "Cloud Agent networking can produce false-positive TCP port results",
+      "Cloud Agent networking can produce false-positive port results",
     );
   });
 

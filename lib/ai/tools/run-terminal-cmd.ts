@@ -3,7 +3,6 @@ import { CommandExitError } from "@e2b/code-interpreter";
 import { randomUUID } from "crypto";
 import type {
   AgentAutoReviewTerminalInspection,
-  AnySandbox,
   SandboxReadinessFailureReason,
   ToolContext,
 } from "@/types";
@@ -66,11 +65,6 @@ import {
   terminalInspectionMatches,
 } from "@/lib/chat/agent-auto-review-evidence";
 import { isLocalCommandRelayUnsubscribedError } from "./utils/local-sandbox-errors";
-import {
-  captureCloudPortScanAttempt,
-  classifyCloudPortScan,
-  E2B_PORT_SCAN_BLOCK_MESSAGE,
-} from "./utils/cloud-port-scan-guard";
 
 const DEFAULT_STREAM_TIMEOUT_SECONDS =
   RUN_TERMINAL_DEFAULT_STREAM_TIMEOUT_SECONDS;
@@ -283,26 +277,6 @@ export const createRunTerminalCmd = (context: ToolContext) => {
         timeout ?? DEFAULT_STREAM_TIMEOUT_SECONDS,
         MAX_TIMEOUT_SECONDS,
       );
-      const cloudPortScan = classifyCloudPortScan(command);
-      let cloudPortScanAttemptRecorded = false;
-      const blockUnreliableE2BPortScan = (sandbox: AnySandbox) => {
-        if (!cloudPortScan || !isE2BSandbox(sandbox)) return null;
-
-        if (!cloudPortScanAttemptRecorded) {
-          cloudPortScanAttemptRecorded = true;
-          captureCloudPortScanAttempt(context, cloudPortScan);
-        }
-
-        return {
-          result: {
-            output: "",
-            exitCode: 1,
-            error: E2B_PORT_SCAN_BLOCK_MESSAGE,
-            commandBlocked: true,
-            blockedReason: "unreliable_e2b_port_scan",
-          },
-        };
-      };
 
       let terminalInspection: AgentAutoReviewTerminalInspection | undefined;
       const inspectionKind = context.autoReviewEvidenceEnabled
@@ -402,8 +376,6 @@ export const createRunTerminalCmd = (context: ToolContext) => {
           const { sandbox } = await getApprovedExecutionSandbox();
           const isCentrifugo = isCentrifugoSandbox(sandbox);
           const isE2B = isE2BSandbox(sandbox);
-          const blockedPortScan = blockUnreliableE2BPortScan(sandbox);
-          if (blockedPortScan) return blockedPortScan;
 
           if (!isE2B && !isCentrifugo) {
             return {
@@ -541,8 +513,6 @@ export const createRunTerminalCmd = (context: ToolContext) => {
       try {
         // Get fresh sandbox and verify it's ready
         const { sandbox } = await getApprovedExecutionSandbox();
-        const blockedPortScan = blockUnreliableE2BPortScan(sandbox);
-        if (blockedPortScan) return blockedPortScan;
         const executeWithLocalRelayRecovery = async (
           sandboxInstance: typeof sandbox,
         ) => {
@@ -600,9 +570,6 @@ export const createRunTerminalCmd = (context: ToolContext) => {
 
             // The relay presence check rejects before the command is published,
             // so one retry on the verified same-machine successor is safe.
-            const blockedRecoveredPortScan =
-              blockUnreliableE2BPortScan(recoveredSandbox);
-            if (blockedRecoveredPortScan) return blockedRecoveredPortScan;
             return executeCommand(recoveredSandbox);
           }
         };
