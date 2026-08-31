@@ -258,6 +258,8 @@ export default defineSchema({
 
   files: defineTable({
     s3_key: v.optional(v.string()),
+    s3_region: v.optional(v.string()),
+    s3_bucket: v.optional(v.string()),
     user_id: v.string(),
     name: v.string(),
     media_type: v.string(),

@@ -285,10 +285,18 @@ async function deleteFiles(
   const unique = uniqueDocs(files);
   increment(stats.deleted, "files", unique.length);
 
-  const s3Keys = unique
-    .map((file) => file.s3_key)
-    .filter((key): key is string => typeof key === "string" && key.length > 0);
-  stats.s3ObjectsQueued += s3Keys.length;
+  const s3Objects = unique.flatMap((file) =>
+    file.s3_key
+      ? [
+          {
+            s3Key: file.s3_key,
+            ...(file.s3_region ? { s3Region: file.s3_region } : {}),
+            ...(file.s3_bucket ? { s3Bucket: file.s3_bucket } : {}),
+          },
+        ]
+      : [],
+  );
+  stats.s3ObjectsQueued += s3Objects.length;
 
   if (mode === "dryRun") return;
 
@@ -297,14 +305,19 @@ async function deleteFiles(
     await ctx.db.delete(file._id);
   }
 
-  if (s3Keys.length > 0) {
+  if (s3Objects.length > 0) {
+    const cleanupArgs = s3Objects.some(
+      (object) => object.s3Region || object.s3Bucket,
+    )
+      ? { s3Objects }
+      : { s3Keys: s3Objects.map((object) => object.s3Key) };
     await ctx.scheduler.runAfter(
       0,
       internal.s3Cleanup.deleteS3ObjectsBatchAction,
-      { s3Keys },
+      cleanupArgs,
     );
     console.log(
-      `Scheduled deletion of ${s3Keys.length} S3 objects for deleted user data cleanup`,
+      `Scheduled deletion of ${s3Objects.length} S3 objects for deleted user data cleanup`,
     );
   }
 }

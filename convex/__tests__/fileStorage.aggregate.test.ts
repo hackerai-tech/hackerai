@@ -17,6 +17,7 @@ jest.mock("convex/values", () => ({
     optional: jest.fn(() => "optional"),
     object: jest.fn(() => "object"),
     union: jest.fn(() => "union"),
+    literal: jest.fn(() => "literal"),
     array: jest.fn(() => "array"),
     boolean: jest.fn(() => "boolean"),
   },
@@ -326,6 +327,8 @@ describe("fileStorage - Aggregate Integration", () => {
         name: "test.pdf",
         mediaType: "application/pdf",
         size: 1024,
+        s3Region: "us-west-2",
+        s3Bucket: "test-west-bucket",
         fileTokenSize: 100,
         trustedServiceGenerated: true,
       });
@@ -336,6 +339,8 @@ describe("fileStorage - Aggregate Integration", () => {
         expect.objectContaining({
           user_id: testUserId,
           s3_key: "users/test-user-123/test.pdf",
+          s3_region: "us-west-2",
+          s3_bucket: "test-west-bucket",
           name: "test.pdf",
           is_attached: false,
         }),
@@ -587,6 +592,8 @@ describe("fileStorage - Aggregate Integration", () => {
         name: "file.pdf",
         mediaType: "application/pdf",
         size: 1024,
+        s3Region: "us-west-2",
+        s3Bucket: "test-west-bucket",
       });
 
       expect(result).toBe(testFileId);
@@ -594,6 +601,8 @@ describe("fileStorage - Aggregate Integration", () => {
         "files",
         expect.objectContaining({
           s3_key: "users/test-user-123/file.pdf",
+          s3_region: "us-west-2",
+          s3_bucket: "test-west-bucket",
           user_id: testUserId,
           size: 1024,
           file_token_size: 0,

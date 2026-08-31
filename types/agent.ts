@@ -10,6 +10,7 @@ import type { ChatMode, SubscriptionTier } from "./chat";
 import type { CentrifugoSandbox } from "@/lib/ai/tools/utils/centrifugo-sandbox";
 import type { SandboxFallbackInfo } from "@/lib/ai/tools/utils/hybrid-sandbox-manager";
 import type { CloudSandboxProvider } from "@/lib/ai/tools/utils/cloud-sandbox-provider";
+import type { S3StorageRegion } from "@/lib/constants/s3";
 
 // Union type for E2B Sandbox and local CentrifugoSandbox
 export type AnySandbox = Sandbox | CentrifugoSandbox;
@@ -691,6 +692,8 @@ export interface ToolContext {
   assistantMessageId?: string;
   /** Trigger.dev run ID when tools execute inside a durable Agent task. */
   triggerRunId?: string;
+  /** Trigger.dev placement region, reused for generated-file storage. */
+  triggerRegion?: S3StorageRegion;
   fileAccumulator: FileAccumulator;
   backgroundProcessTracker: BackgroundProcessTracker;
   /** Manages interactive PTY sessions for `run_terminal_cmd` interactive actions. */

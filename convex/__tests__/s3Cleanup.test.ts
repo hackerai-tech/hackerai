@@ -17,6 +17,10 @@ jest.mock("convex/values", () => ({
     string: jest.fn(() => "string"),
     array: jest.fn(() => "array"),
     null: jest.fn(() => "null"),
+    optional: jest.fn(() => "optional"),
+    union: jest.fn(() => "union"),
+    literal: jest.fn(() => "literal"),
+    object: jest.fn(() => "object"),
   },
 }));
 
@@ -64,6 +68,10 @@ describe("s3Cleanup", () => {
           string: jest.fn(() => "string"),
           array: jest.fn(() => "array"),
           null: jest.fn(() => "null"),
+          optional: jest.fn(() => "optional"),
+          union: jest.fn(() => "union"),
+          literal: jest.fn(() => "literal"),
+          object: jest.fn(() => "object"),
         },
       }));
 
@@ -122,6 +130,82 @@ describe("s3Cleanup", () => {
       expect(mockDeleteS3Object).toHaveBeenCalledWith(args.s3Keys[0]);
       expect(mockDeleteS3Object).toHaveBeenCalledWith(args.s3Keys[1]);
       expect(mockDeleteS3Object).toHaveBeenCalledWith(args.s3Keys[2]);
+    });
+
+    it("deletes regional objects from their persisted location", async () => {
+      const { deleteS3Object, getStoredS3Location } =
+        await import("../s3Utils");
+      const storageLocation = {
+        region: "us-west-2" as const,
+        bucket: "test-west-bucket",
+      };
+      (
+        getStoredS3Location as jest.MockedFunction<typeof getStoredS3Location>
+      ).mockReturnValue(storageLocation);
+      const { deleteS3ObjectsBatchAction } = await import("../s3Cleanup");
+
+      await deleteS3ObjectsBatchAction.handler(
+        {},
+        {
+          s3Objects: [
+            {
+              s3Key: "users/user123/regional.pdf",
+              s3Region: "us-west-2",
+              s3Bucket: "test-west-bucket",
+            },
+          ],
+        },
+      );
+
+      expect(getStoredS3Location).toHaveBeenCalledWith(
+        "us-west-2",
+        "test-west-bucket",
+      );
+      expect(deleteS3Object).toHaveBeenCalledWith(
+        "users/user123/regional.pdf",
+        storageLocation,
+      );
+    });
+
+    it("continues after malformed location metadata fails synchronously", async () => {
+      jest.spyOn(console, "error").mockImplementation(() => {});
+      const { deleteS3Object, getStoredS3Location } =
+        await import("../s3Utils");
+      (
+        getStoredS3Location as jest.MockedFunction<typeof getStoredS3Location>
+      ).mockImplementation((region, bucket) => {
+        if (region && !bucket) {
+          throw new Error("Incomplete S3 storage location metadata");
+        }
+        return undefined;
+      });
+      const { deleteS3ObjectsBatchAction } = await import("../s3Cleanup");
+
+      await expect(
+        deleteS3ObjectsBatchAction.handler(
+          {},
+          {
+            s3Objects: [
+              {
+                s3Key: "users/user123/malformed.pdf",
+                s3Region: "us-west-2",
+              },
+              { s3Key: "users/user123/legacy.pdf" },
+            ],
+          },
+        ),
+      ).resolves.toBeNull();
+
+      expect(deleteS3Object).toHaveBeenCalledTimes(1);
+      expect(deleteS3Object).toHaveBeenCalledWith("users/user123/legacy.pdf");
+      const logged = JSON.parse(
+        (console.error as jest.Mock).mock.calls[0][0] as string,
+      );
+      expect(logged).toMatchObject({
+        event: "s3_object_batch_delete_failed",
+        failedCount: 1,
+        failedKeys: ["users/user123/malformed.pdf"],
+      });
     });
 
     it("should log error count when some deletions fail", async () => {

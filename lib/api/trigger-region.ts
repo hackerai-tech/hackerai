@@ -1,6 +1,7 @@
 import type { Geo } from "@vercel/functions";
+import type { S3StorageRegion } from "@/lib/constants/s3";
 
-export type TriggerRunRegion = "eu-central-1" | "us-east-1" | "us-west-2";
+export type TriggerRunRegion = S3StorageRegion;
 
 type VercelGeoLocation = Pick<
   Geo,
