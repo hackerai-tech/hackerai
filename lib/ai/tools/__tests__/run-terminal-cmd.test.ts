@@ -362,6 +362,139 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
     });
   });
 
+  test("blocks broad E2B port scans before terminal execution with privacy-safe telemetry", async () => {
+    const e2b = makeFakeE2BSandbox();
+    const { context } = makeContext({ sandbox: e2b });
+
+    const result = (await runTool(createRunTerminalCmd(context), {
+      command: "nmap -sT -p 1-1000 private-target.example",
+      is_background: false,
+      interactive: false,
+    })) as {
+      result: {
+        commandBlocked: boolean;
+        blockedReason: string;
+        error: string;
+      };
+    };
+
+    expect(e2b.commands.run).not.toHaveBeenCalled();
+    expect(result.result).toMatchObject({
+      commandBlocked: true,
+      blockedReason: "unreliable_e2b_port_scan",
+    });
+    expect(result.result.error).toContain("cannot be treated as confirmed");
+    expect(result.result.error).toContain("HackerAI Desktop App");
+    expect(result.result.error).toContain("Remote Control");
+    expect(result.result.error).toContain("curl");
+    expect(mockPhEvent).toHaveBeenCalledTimes(1);
+    expect(mockPhEvent).toHaveBeenCalledWith("cloud_port_scan_attempted", {
+      userId: "u1",
+      chat_id: "chat-1",
+      trigger_run_id: "run-test",
+      mode: "agent",
+      subscription: "pro",
+      scanner: "nmap",
+      scan_kind: "broad_tcp",
+      action: "blocked",
+      cloud_port_scan_event_version: 1,
+    });
+    expect(JSON.stringify(mockPhEvent.mock.calls)).not.toContain(
+      "private-target.example",
+    );
+    expect(mockPhEvent.mock.calls[0]?.[1]).not.toHaveProperty("command");
+    expect(mockPhEvent.mock.calls[0]?.[1]).not.toHaveProperty("output");
+    expect(mockPhEvent.mock.calls[0]?.[1]).not.toHaveProperty("target");
+  });
+
+  test("blocks broad E2B scans before creating an interactive PTY", async () => {
+    const e2b = makeFakeE2BSandbox();
+    const { context } = makeContext({ sandbox: e2b });
+
+    const result = (await runTool(createRunTerminalCmd(context), {
+      command: "sudo masscan 192.0.2.0/24 -p0-65535",
+      is_background: false,
+      interactive: true,
+    })) as { result: { commandBlocked: boolean } };
+
+    expect(result.result.commandBlocked).toBe(true);
+    expect(mockCreateE2BPtyHandle).not.toHaveBeenCalled();
+    expect(mockPhEvent).toHaveBeenCalledTimes(1);
+  });
+
+  test("allows narrow application probes to execute in E2B", async () => {
+    const started = {
+      pid: 8181,
+      wait: jest.fn(async () => ({
+        stdout: "HTTP/2 200\n",
+        stderr: "",
+        exitCode: 0,
+      })),
+      kill: jest.fn(async () => true),
+    };
+    const run = jest.fn(async (command: string) =>
+      command === "echo ready"
+        ? { stdout: "ready\n", stderr: "", exitCode: 0 }
+        : started,
+    );
+    const e2b = {
+      ...makeFakeE2BSandbox(),
+      sandboxId: "sandbox-test",
+      commands: { run },
+    };
+    const { context } = makeContext({ sandbox: e2b });
+
+    const result = (await runTool(createRunTerminalCmd(context), {
+      command: "curl -I https://example.com",
+      is_background: false,
+      interactive: false,
+      timeout: 1,
+    })) as { result: { exitCode: number; output: string } };
+
+    expect(result.result.exitCode).toBe(0);
+    expect(result.result.output).toContain("HTTP/2 200");
+    expect(run).toHaveBeenCalledWith("echo ready", expect.any(Object));
+    expect(run).toHaveBeenCalledWith(
+      "curl -I https://example.com",
+      expect.objectContaining({ background: true }),
+    );
+    expect(mockPhEvent).not.toHaveBeenCalledWith(
+      "cloud_port_scan_attempted",
+      expect.anything(),
+    );
+  });
+
+  test("does not apply the E2B scan guard to Desktop or Remote Control", async () => {
+    const run = jest.fn(async () => ({
+      stdout: "native scan\n",
+      stderr: "",
+      exitCode: 0,
+    }));
+    const desktop = {
+      sandboxKind: "centrifugo" as const,
+      getConnectionId: () => "desktop-a",
+      isWindows: () => false,
+      commands: { run },
+    };
+    const { context } = makeContext({ sandbox: desktop });
+
+    const result = (await runTool(createRunTerminalCmd(context), {
+      command: "nmap -sS -p- example.com",
+      is_background: false,
+      interactive: false,
+    })) as { result: { exitCode: number; output: string } };
+
+    expect(result.result.exitCode).toBe(0);
+    expect(run).toHaveBeenCalledWith(
+      expect.stringContaining("nmap -sS -p- example.com"),
+      expect.any(Object),
+    );
+    expect(mockPhEvent).not.toHaveBeenCalledWith(
+      "cloud_port_scan_attempted",
+      expect.anything(),
+    );
+  });
+
   test("forwards the user-facing justification and reusable argv prefix", async () => {
     const nonE2B = {
       sandboxKind: "centrifugo" as const,
