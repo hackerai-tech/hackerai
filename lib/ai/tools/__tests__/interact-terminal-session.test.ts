@@ -454,6 +454,53 @@ describe("interact_terminal_session — PTY action dispatch", () => {
     );
   });
 
+  test("blocks a broad scan split across E2B PTY sends", async () => {
+    const e2b = makeFakeE2BSandbox();
+    const handle = makeFakeHandle();
+    const { context } = makeContext({ sandbox: e2b });
+    const sessionId = await createSession(context, handle);
+    const tool = createInteractTerminalSession(context);
+    const before = handle.sendInputCalls.length;
+
+    const first = (await runTool(tool, {
+      action: "send",
+      session: sessionId,
+      input: "nm",
+    })) as { result: { error?: string } };
+    expect(first.result.error).toBeUndefined();
+    expect(new TextDecoder().decode(handle.sendInputCalls[before])).toBe("nm");
+
+    const blocked = (await runTool(tool, {
+      action: "send",
+      session: sessionId,
+      input: "ap -sT -p 1-1000 split-target.example\n",
+    })) as {
+      result: {
+        commandBlocked?: boolean;
+        blockedReason?: string;
+        error?: string;
+      };
+    };
+
+    expect(handle.sendInputCalls).toHaveLength(before + 1);
+    expect(blocked.result).toMatchObject({
+      commandBlocked: true,
+      blockedReason: "unreliable_e2b_port_scan",
+    });
+    expect(blocked.result.error).toContain("cannot be treated as confirmed");
+    expect(mockPhEvent).toHaveBeenCalledWith(
+      "cloud_port_scan_attempted",
+      expect.objectContaining({
+        scanner: "nmap",
+        scan_kind: "broad_tcp",
+        action: "blocked",
+      }),
+    );
+    expect(JSON.stringify(mockPhEvent.mock.calls)).not.toContain(
+      "split-target.example",
+    );
+  });
+
   test("send forwards destructive-looking input", async () => {
     const e2b = makeFakeE2BSandbox();
     const handle = makeFakeHandle();

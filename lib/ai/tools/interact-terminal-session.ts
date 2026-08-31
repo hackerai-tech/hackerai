@@ -45,6 +45,66 @@ const SEND_IMMEDIATE_OUTPUT_WINDOW_MS = 500;
 // `timeout` remains the hard ceiling for processes that never settle.
 const WAIT_QUIET_WINDOW_MS = 500;
 const MAX_AUTO_REVIEW_TERMINAL_OUTPUT_CHARS = 6_000;
+const MAX_TRACKED_UNSUBMITTED_INPUT_CHARS = 32 * 1024;
+
+type PendingInputAnalysis = {
+  classification: ReturnType<typeof classifyCloudPortScan>;
+  nextUnsubmittedInput: string;
+};
+
+/**
+ * Mirrors the shell's current unsubmitted line closely enough to stop a scan
+ * command assembled across multiple PTY sends. Control keys that cancel or
+ * edit the line update the mirror, while terminal-navigation escape sequences
+ * are ignored because their resulting application state cannot be inferred.
+ */
+function analyzePendingPtyInput(
+  previousInput: string,
+  bytes: Uint8Array,
+): PendingInputAnalysis {
+  let pending = previousInput;
+  const decoded = new TextDecoder().decode(bytes);
+
+  for (let index = 0; index < decoded.length; index += 1) {
+    const char = decoded[index];
+
+    if (char === "\r" || char === "\n") {
+      const classification = classifyCloudPortScan(pending);
+      if (classification) {
+        return { classification, nextUnsubmittedInput: previousInput };
+      }
+      pending = "";
+      continue;
+    }
+
+    if (char === "\x03" || char === "\x15") {
+      pending = "";
+      continue;
+    }
+
+    if (char === "\x7f" || char === "\x08") {
+      pending = pending.slice(0, -1);
+      continue;
+    }
+
+    if (char === "\x17") {
+      pending = pending.replace(/\s*\S+\s*$/, "");
+      continue;
+    }
+
+    const codePoint = char.codePointAt(0) ?? 0;
+    if (char === "\t" || codePoint >= 0x20) pending += char;
+
+    if (pending.length > MAX_TRACKED_UNSUBMITTED_INPUT_CHARS) {
+      pending = pending.slice(-MAX_TRACKED_UNSUBMITTED_INPUT_CHARS);
+    }
+  }
+
+  return {
+    classification: classifyCloudPortScan(pending),
+    nextUnsubmittedInput: pending,
+  };
+}
 
 export const createInteractTerminalSession = (context: ToolContext) => {
   const { writer, chatId, ptySessionManager } = context;
@@ -356,7 +416,11 @@ export const createInteractTerminalSession = (context: ToolContext) => {
           );
         }
 
-        const cloudPortScan = classifyCloudPortScan(input);
+        const pendingInputAnalysis = analyzePendingPtyInput(
+          session.unsubmittedInput,
+          bytes,
+        );
+        const cloudPortScan = pendingInputAnalysis.classification;
         if (cloudPortScan && isE2BSandbox(sessionSandbox.sandbox)) {
           captureCloudPortScanAttempt(context, cloudPortScan);
           return {
@@ -405,6 +469,7 @@ export const createInteractTerminalSession = (context: ToolContext) => {
             `Failed to send input: ${err instanceof Error ? err.message : String(err)}`,
           );
         }
+        session.unsubmittedInput = pendingInputAnalysis.nextUnsubmittedInput;
         session.lastActivityAt = Date.now();
         // Capture the immediate response chunk — prompts that echo a reply
         // ("Hello, X!") show up here. Use action=wait for processes that
