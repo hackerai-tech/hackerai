@@ -59,6 +59,7 @@ const listSandbox = (
     sandboxId: string;
     state: "running" | "paused";
     metadata: Record<string, string>;
+    network: { egressProxy?: { address: string; username?: string } };
   }> = {},
 ) => {
   sandboxApi.list.mockReturnValue({
@@ -428,6 +429,29 @@ describe("E2B sandbox lease lifecycle", () => {
     } finally {
       errorSpy.mockRestore();
     }
+  });
+
+  it("clears an existing proxy when the user leaves the rollout allowlist", async () => {
+    process.env.E2B_EGRESS_PROXY_ADDRESS = "proxy.example.com:1080";
+    process.env.E2B_EGRESS_PROXY_ALLOWED_USER_IDS = "user-2";
+    const updateNetwork = jest.fn(async () => undefined);
+    const connectedSandbox = {
+      sandboxId: "sandbox-1",
+      updateNetwork,
+    } as unknown as Sandbox;
+    listSandbox({
+      network: { egressProxy: { address: "proxy.example.com:1080" } },
+    });
+    sandboxApi.connect.mockResolvedValue(connectedSandbox);
+    const setSandbox = jest.fn();
+
+    await ensureSandboxConnection({ userID: "user-1", setSandbox });
+
+    expect(updateNetwork).toHaveBeenCalledWith({});
+    expect(updateNetwork.mock.invocationCallOrder[0]).toBeLessThan(
+      setSandbox.mock.invocationCallOrder[0],
+    );
+    expect(mockCaptureEvent).not.toHaveBeenCalled();
   });
 
   it("creates new sandboxes with pause and automatic resume enabled", async () => {

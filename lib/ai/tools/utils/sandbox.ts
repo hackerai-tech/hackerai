@@ -82,11 +82,17 @@ export const ensureSandboxConnection = async (
   const { initialSandbox, triggerRegion } = options;
   const egressProxy = getE2BEgressProxyForUser(userID);
 
-  const applyEgressProxy = async (
+  const reconcileEgressProxy = async (
     sandbox: Sandbox,
     path: SandboxReadyPath | "initial_connection",
+    hadEgressProxy = false,
   ): Promise<void> => {
-    if (!egressProxy) return;
+    if (!egressProxy) {
+      if (hadEgressProxy) {
+        await sandbox.updateNetwork({});
+      }
+      return;
+    }
 
     // updateNetwork replaces the whole mutable network configuration. This
     // utility currently owns that state, so always send the complete desired
@@ -101,7 +107,7 @@ export const ensureSandboxConnection = async (
 
   // Return existing sandbox if already connected
   if (initialSandbox) {
-    await applyEgressProxy(initialSandbox, "initial_connection");
+    await reconcileEgressProxy(initialSandbox, "initial_connection");
     return { sandbox: initialSandbox };
   }
   const startedAt = performance.now();
@@ -230,7 +236,11 @@ export const ensureSandboxConnection = async (
             jitterMs: 40,
           },
         );
-        await applyEgressProxy(sandbox, "reuse_existing");
+        await reconcileEgressProxy(
+          sandbox,
+          "reuse_existing",
+          existingSandboxInfo.network?.egressProxy !== undefined,
+        );
         setSandbox(sandbox);
         reportBoot("reuse_existing", 0);
         return { sandbox };
