@@ -614,7 +614,7 @@ Commands run directly on the host OS "workstation" without Docker isolation. Be 
       "Cloud Agent networking can produce false-positive port results because a low-level connection can appear successful",
     );
     expect(cloudPrompt).toContain(
-      "Do not run broad, low-level TCP, UDP, or raw-socket port discovery in Cloud Agent",
+      "Do not use low-level TCP connection success, UDP behavior, raw sockets, or zero-I/O probes to determine whether ports are open in Cloud Agent",
     );
     expect(cloudPrompt).toContain(
       "Never treat a successful low-level connection or implausible scan output as confirmation that a port is open",
