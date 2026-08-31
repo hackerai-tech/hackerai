@@ -9,6 +9,53 @@
   z-index: 60;
 }
 
+/* Keep the embedded WorkOS security card visually aligned with HackerAI. */
+.hackerai-security-widget {
+  container-type: inline-size;
+  --color-panel-solid: var(--card);
+  --color-panel: var(--card);
+  --base-card-surface-box-shadow: 0 0 0 1px var(--border);
+  --gray-2: color-mix(in srgb, var(--muted) 50%, var(--card));
+  --gray-4: var(--border);
+  --gray-11: var(--muted-foreground);
+  --gray-12: var(--foreground);
+}
+
+.hackerai-security-widget .woswidgets-card-list-item:not(:first-child) {
+  border-color: var(--border);
+}
+
+.hackerai-security-widget .woswidgets-button.button--secondary {
+  color: var(--foreground);
+  background-color: transparent;
+  box-shadow: inset 0 0 0 1px var(--border);
+}
+
+@media (hover: hover) {
+  .hackerai-security-widget .woswidgets-button.button--secondary:hover {
+    background-color: var(--muted);
+  }
+}
+
+@container (max-width: 26rem) {
+  .hackerai-security-widget .woswidgets-card-list-item .rt-Grid {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .hackerai-security-widget .woswidgets-card-list-item .woswidgets-button {
+    grid-column: 2;
+    justify-self: start;
+    width: fit-content;
+    max-width: 100%;
+    height: auto;
+    min-height: var(--space-6);
+    margin-top: var(--space-1);
+    padding-block: var(--space-1);
+    white-space: normal;
+    text-wrap: balance;
+  }
+}
+
 @custom-variant dark (&:is(.dark *));
 @custom-variant desktop (@media (min-width: 950px));
 @custom-variant touch-device (@media (hover: none));
