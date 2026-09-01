@@ -80,13 +80,18 @@ export function getStoredS3Location(
   return { region, bucket: bucket.trim() };
 }
 
-export function getS3Client(location?: S3StorageLocation): S3Client {
+/** Create an S3 client with optional path-style object addressing. */
+export function getS3Client(
+  location?: S3StorageLocation,
+  options: { forcePathStyle?: boolean } = {},
+): S3Client {
   const accessKeyId = getRequiredEnvVar("AWS_S3_ACCESS_KEY_ID");
   const secretAccessKey = getRequiredEnvVar("AWS_S3_SECRET_ACCESS_KEY");
   const region = location?.region ?? getLegacyS3StorageLocation().region;
 
   return new S3Client({
     region,
+    ...(options.forcePathStyle ? { forcePathStyle: true } : {}),
     // Presigned browser uploads do not provide the body while signing. The
     // SDK's default WHEN_SUPPORTED behavior otherwise signs the CRC32 of an
     // empty body, which S3 rejects when the browser PUTs the real file.
@@ -163,7 +168,13 @@ export async function generateS3DownloadUrl(
 ): Promise<string> {
   try {
     const location = storageLocation ?? getLegacyS3StorageLocation();
-    const s3Client = getS3Client(location);
+    // A production sandbox TLS path rejected the EU virtual-hosted bucket name
+    // even though the S3 certificate is valid. EU files use S3's supported
+    // path-style form so the bucket is not part of the TLS hostname. Keep
+    // legacy and other regional URL shapes unchanged without incident evidence.
+    const s3Client = getS3Client(location, {
+      forcePathStyle: storageLocation?.region === "eu-central-1",
+    });
 
     const command = new GetObjectCommand({
       Bucket: location.bucket,

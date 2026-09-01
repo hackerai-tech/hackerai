@@ -25,6 +25,7 @@ import type {
 } from "@/types";
 import { canUseExtraUsage } from "@/types";
 import { ChatSDKError } from "@/lib/errors";
+import { getLimitPressureContext } from "@/lib/limit-pressure";
 
 // Re-export token bucket functions
 export {
@@ -78,6 +79,7 @@ export {
 // Re-export utilities
 export { createRedisClient, formatTimeRemaining } from "./redis";
 export { UsageRefundTracker } from "./refund";
+export { isHandledUserRateLimitError } from "./error-classification";
 export {
   addUsageDeductionDelta,
   createUsageSettlementState,
@@ -200,5 +202,13 @@ export const checkRateLimitCapacity = async (
   throw new ChatSDKError(
     "rate_limit:chat",
     "Your current usage limit no longer allows this approved operation. Start a new Agent request after your limit resets or add extra usage credits.",
+    {
+      subscription,
+      capReason: "monthly_exhausted",
+      ...getLimitPressureContext({
+        subscription,
+        capReason: "monthly_exhausted",
+      }),
+    },
   );
 };

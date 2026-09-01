@@ -2194,6 +2194,45 @@ export const saveLatestSummary = mutation({
 });
 
 /**
+ * Attach a transcript sidecar to the current summary after the sandbox write
+ * completes. The cutoff guard prevents a late background save from replacing
+ * a newer compaction checkpoint.
+ */
+export const attachLatestSummaryTranscript = mutation({
+  args: {
+    serviceKey: v.string(),
+    chatId: v.string(),
+    summaryUpToMessageId: v.string(),
+    summaryText: v.string(),
+    transcriptPath: v.string(),
+  },
+  returns: v.boolean(),
+  handler: async (ctx, args) => {
+    validateServiceKey(args.serviceKey);
+
+    const chat = await ctx.db
+      .query("chats")
+      .withIndex("by_chat_id", (q) => q.eq("id", args.chatId))
+      .first();
+    if (!chat?.latest_summary_id) return false;
+
+    const summary = await ctx.db.get(chat.latest_summary_id);
+    if (
+      !summary ||
+      summary.summary_up_to_message_id !== args.summaryUpToMessageId
+    ) {
+      return false;
+    }
+
+    await ctx.db.patch(summary._id, {
+      summary_text: args.summaryText,
+      transcript_path: args.transcriptPath,
+    });
+    return true;
+  },
+});
+
+/**
  * Batch cleanup for legacy summary telemetry fields.
  *
  * Run repeatedly in production with the returned cursor until isDone is true,

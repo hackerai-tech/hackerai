@@ -1266,6 +1266,11 @@ type AgentCompletionAnalyticsArgs = {
   taskToFirstModelStartMs?: number;
   requestToFirstModelStartMs?: number;
   requestToFirstModelChunkMs?: number;
+  startupSubphaseTimingVersion?: 1;
+  startupSummaryGenerationDurationMs?: number;
+  startupTranscriptSavingDurationMs?: number;
+  startupSandboxContextDurationMs?: number;
+  startupMessageSerializationDurationMs?: number;
   approvalWaitCount?: number;
   approvalWaitDurationMs?: number;
   activeModelStreamDurationMs?: number;
@@ -1314,6 +1319,11 @@ export function captureAgentRun({
   taskToFirstModelStartMs,
   requestToFirstModelStartMs,
   requestToFirstModelChunkMs,
+  startupSubphaseTimingVersion,
+  startupSummaryGenerationDurationMs,
+  startupTranscriptSavingDurationMs,
+  startupSandboxContextDurationMs,
+  startupMessageSerializationDurationMs,
   approvalWaitCount,
   approvalWaitDurationMs,
   activeModelStreamDurationMs,
@@ -1407,6 +1417,24 @@ export function captureAgentRun({
       ...(triggerTaskStartLatencyMs !== undefined && {
         trigger_task_start_latency_ms: triggerTaskStartLatencyMs,
       }),
+      ...(startupSubphaseTimingVersion !== undefined && {
+        startup_subphase_timing_version: startupSubphaseTimingVersion,
+      }),
+      ...(startupSummaryGenerationDurationMs !== undefined && {
+        startup_summary_generation_duration_ms:
+          startupSummaryGenerationDurationMs,
+      }),
+      ...(startupTranscriptSavingDurationMs !== undefined && {
+        startup_transcript_saving_duration_ms:
+          startupTranscriptSavingDurationMs,
+      }),
+      ...(startupSandboxContextDurationMs !== undefined && {
+        startup_sandbox_context_duration_ms: startupSandboxContextDurationMs,
+      }),
+      ...(startupMessageSerializationDurationMs !== undefined && {
+        startup_message_serialization_duration_ms:
+          startupMessageSerializationDurationMs,
+      }),
       ...(activeModelStreamDurationMs !== undefined && {
         active_model_stream_duration_ms: activeModelStreamDurationMs,
       }),
@@ -1486,6 +1514,24 @@ export function captureAgentRun({
       }),
       ...(requestToFirstModelChunkMs !== undefined && {
         request_to_first_model_chunk_ms: requestToFirstModelChunkMs,
+      }),
+      ...(startupSubphaseTimingVersion !== undefined && {
+        startup_subphase_timing_version: startupSubphaseTimingVersion,
+      }),
+      ...(startupSummaryGenerationDurationMs !== undefined && {
+        startup_summary_generation_duration_ms:
+          startupSummaryGenerationDurationMs,
+      }),
+      ...(startupTranscriptSavingDurationMs !== undefined && {
+        startup_transcript_saving_duration_ms:
+          startupTranscriptSavingDurationMs,
+      }),
+      ...(startupSandboxContextDurationMs !== undefined && {
+        startup_sandbox_context_duration_ms: startupSandboxContextDurationMs,
+      }),
+      ...(startupMessageSerializationDurationMs !== undefined && {
+        startup_message_serialization_duration_ms:
+          startupMessageSerializationDurationMs,
       }),
       ...(approvalWaitCount !== undefined && {
         approval_wait_count: approvalWaitCount,
@@ -1607,6 +1653,12 @@ export function captureAgentCompletionAnalytics(
     taskToFirstModelStartMs: args.taskToFirstModelStartMs,
     requestToFirstModelStartMs: args.requestToFirstModelStartMs,
     requestToFirstModelChunkMs: args.requestToFirstModelChunkMs,
+    startupSubphaseTimingVersion: args.startupSubphaseTimingVersion,
+    startupSummaryGenerationDurationMs: args.startupSummaryGenerationDurationMs,
+    startupTranscriptSavingDurationMs: args.startupTranscriptSavingDurationMs,
+    startupSandboxContextDurationMs: args.startupSandboxContextDurationMs,
+    startupMessageSerializationDurationMs:
+      args.startupMessageSerializationDurationMs,
     approvalWaitCount: args.approvalWaitCount,
     approvalWaitDurationMs: args.approvalWaitDurationMs,
     activeModelStreamDurationMs: args.activeModelStreamDurationMs,

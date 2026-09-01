@@ -26,6 +26,7 @@ import { MAX_TOKENS_PAID, safeCountTokens } from "@/lib/token-utils";
 
 const mockGenerateText = jest.fn<() => Promise<any>>();
 const mockSaveChatSummary = jest.fn<() => Promise<void>>();
+const mockAttachChatSummaryTranscript = jest.fn<() => Promise<boolean>>();
 const mockProviderLanguageModel = jest.fn(
   (modelName: string) => ({ modelId: modelName }) as unknown as LanguageModel,
 );
@@ -37,6 +38,7 @@ jest.doMock("ai", () => ({
 }));
 jest.doMock("@/lib/db/actions", () => ({
   saveChatSummary: mockSaveChatSummary,
+  attachChatSummaryTranscript: mockAttachChatSummaryTranscript,
 }));
 jest.doMock("@/lib/ai/providers", () => ({
   GROK_4_5_SLUG: "x-ai/grok-4.6",
@@ -265,6 +267,7 @@ describe("checkAndSummarizeIfNeeded", () => {
     jest.spyOn(console, "warn").mockImplementation(() => {});
     jest.spyOn(console, "error").mockImplementation(() => {});
     mockSaveChatSummary.mockResolvedValue(undefined);
+    mockAttachChatSummaryTranscript.mockResolvedValue(true);
     mockWriter = createMockWriter();
   });
 
@@ -917,7 +920,7 @@ describe("checkAndSummarizeIfNeeded", () => {
         metadata: expect.objectContaining({
           reason: "token_threshold",
           promptVersion: SUMMARY_PROMPT_VERSION,
-          model: "test-model",
+          model: "model-glm-5.3-flash",
           status: "completed",
           retainedTail: expect.objectContaining({
             start_message_id: "msg-4",
@@ -937,6 +940,96 @@ describe("checkAndSummarizeIfNeeded", () => {
     expect(persistedMetadata?.cacheWriteTokens).toBeUndefined();
     expect(persistedMetadata?.cost).toBeUndefined();
     expect(persistedMetadata?.estimatedCompactedInputTokens).toBeUndefined();
+  });
+
+  it("uses GLM 5.3 Flash instead of the selected model for compaction", async () => {
+    mockGenerateText.mockResolvedValue({ text: "Summary" });
+
+    await checkAndSummarizeForTest(
+      fourMessagesAboveThreshold,
+      "pro",
+      mockLanguageModel,
+      "agent",
+      mockWriter,
+      "chat-fast-compaction",
+    );
+
+    expect(mockProviderLanguageModel).toHaveBeenCalledWith(
+      "model-glm-5.3-flash",
+    );
+    expect(mockGenerateText).toHaveBeenCalledWith(
+      expect.objectContaining({
+        model: expect.objectContaining({ modelId: "model-glm-5.3-flash" }),
+        providerOptions: {
+          openrouter: {
+            reasoning: { enabled: true, effort: "low" },
+          },
+        },
+      }),
+    );
+  });
+
+  it("does not wait for transcript saving before returning the summary", async () => {
+    mockGenerateText.mockResolvedValue({
+      text: "Fast summary",
+      usage: { inputTokens: 10, outputTokens: 2 },
+    });
+    let finishWrite!: () => void;
+    const writePending = new Promise<void>((resolve) => {
+      finishWrite = resolve;
+    });
+    const sandbox = {
+      commands: {
+        run: jest.fn<() => Promise<any>>().mockResolvedValue({
+          stdout: "",
+          stderr: "",
+          exitCode: 0,
+        }),
+      },
+      files: {
+        write: jest.fn<() => Promise<void>>().mockReturnValue(writePending),
+      },
+    };
+    const backgroundWork: Promise<void>[] = [];
+    const phaseDurations: Array<[string, number]> = [];
+
+    const result = await checkAndSummarizeIfNeeded({
+      uiMessages: fourMessagesAboveThreshold,
+      subscription: "pro",
+      languageModel: mockLanguageModel,
+      mode: "agent",
+      writer: mockWriter,
+      chatId: "chat-background-transcript",
+      ensureSandbox: async () => sandbox as any,
+      onPhaseDuration: (phase, durationMs) =>
+        phaseDurations.push([phase, durationMs]),
+      registerBackgroundWork: (work) => backgroundWork.push(work),
+    });
+
+    expect(result.summaryText).toBe("Fast summary");
+    expect(sandbox.files.write).toHaveBeenCalledTimes(1);
+    expect(mockAttachChatSummaryTranscript).not.toHaveBeenCalled();
+    expect(backgroundWork).toHaveLength(1);
+    expect(phaseDurations.map(([phase]) => phase)).toContain(
+      "summary_generation",
+    );
+
+    finishWrite();
+    await Promise.all(backgroundWork);
+
+    expect(mockAttachChatSummaryTranscript).toHaveBeenCalledWith(
+      expect.objectContaining({
+        chatId: "chat-background-transcript",
+        summaryUpToMessageId: "msg-3",
+        transcriptPath: expect.stringContaining(
+          "/home/user/agent-transcripts/",
+        ),
+        summaryText: expect.stringContaining("Transcript location:"),
+      }),
+    );
+    expect(phaseDurations.map(([phase]) => phase)).toContain(
+      "transcript_saving",
+    );
   });
 
   it("should skip database persistence when chatId is absent", async () => {

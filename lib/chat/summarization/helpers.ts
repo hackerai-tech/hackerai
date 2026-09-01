@@ -13,7 +13,7 @@ import {
   truncateContent,
   safeCountTokens,
 } from "@/lib/token-utils";
-import { saveChatSummary } from "@/lib/db/actions";
+import { attachChatSummaryTranscript, saveChatSummary } from "@/lib/db/actions";
 import { SubscriptionTier, ChatMode, Todo } from "@/types";
 import type { Id } from "@/convex/_generated/dataModel";
 import { createPromptSerializationTools } from "@/lib/ai/tools/prompt-serialization";
@@ -894,5 +894,28 @@ export const persistSummary = async (
     });
   } catch (error) {
     console.error("[Summarization] Failed to save summary:", error);
+  }
+};
+
+export const persistSummaryTranscript = async (
+  chatId: string | null,
+  summaryText: string,
+  cutoffMessageId: string,
+  transcriptPath: string,
+): Promise<void> => {
+  if (!chatId) return;
+
+  try {
+    await attachChatSummaryTranscript({
+      chatId,
+      summaryText,
+      summaryUpToMessageId: cutoffMessageId,
+      transcriptPath,
+    });
+  } catch (error) {
+    console.error(
+      "[Summarization] Failed to attach summary transcript:",
+      error,
+    );
   }
 };

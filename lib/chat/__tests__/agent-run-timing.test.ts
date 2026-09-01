@@ -87,6 +87,52 @@ describe("AgentRunTimingTracker", () => {
     );
   });
 
+  it("records separate startup subphase durations", async () => {
+    let now = 100;
+    const tracker = new AgentRunTimingTracker(() => now);
+
+    await tracker.measureStartupPhase("sandbox_context", async () => {
+      now += 20;
+    });
+    tracker.recordStartupPhaseDuration("message_serialization", 5);
+    tracker.recordStartupPhaseDuration("message_serialization", 7);
+    tracker.recordStartupPhaseDuration("summary_generation", 80);
+    tracker.recordStartupPhaseDuration("transcript_saving", 30);
+
+    expect(tracker.snapshot()).toEqual(
+      expect.objectContaining({
+        startupSubphaseTimingVersion: 1,
+        startupSummaryGenerationDurationMs: 80,
+        startupTranscriptSavingDurationMs: 30,
+        startupSandboxContextDurationMs: 20,
+        startupMessageSerializationDurationMs: 12,
+      }),
+    );
+  });
+
+  it("ignores non-transcript subphases after the first model starts", () => {
+    let now = 0;
+    const tracker = new AgentRunTimingTracker(() => now);
+
+    tracker.startModelStream();
+    tracker.recordStartupPhaseDuration("message_serialization", 40);
+    tracker.recordStartupPhaseDuration("summary_generation", 50);
+    tracker.recordStartupPhaseDuration("transcript_saving", 60);
+
+    expect(tracker.snapshot()).toEqual(
+      expect.objectContaining({
+        startupSubphaseTimingVersion: 1,
+        startupTranscriptSavingDurationMs: 60,
+      }),
+    );
+    expect(tracker.snapshot()).not.toHaveProperty(
+      "startupMessageSerializationDurationMs",
+    );
+    expect(tracker.snapshot()).not.toHaveProperty(
+      "startupSummaryGenerationDurationMs",
+    );
+  });
+
   it("ignores invalid startup ordering", () => {
     const tracker = new AgentRunTimingTracker(() => 2_000);
     tracker.initializeStartup({

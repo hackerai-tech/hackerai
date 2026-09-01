@@ -1935,6 +1935,26 @@ export async function saveChatSummary({
   }
 }
 
+export async function attachChatSummaryTranscript({
+  chatId,
+  summaryText,
+  summaryUpToMessageId,
+  transcriptPath,
+}: {
+  chatId: string;
+  summaryText: string;
+  summaryUpToMessageId: string;
+  transcriptPath: string;
+}): Promise<boolean> {
+  return getConvexClient().mutation(api.chats.attachLatestSummaryTranscript, {
+    serviceKey,
+    chatId,
+    summaryText,
+    summaryUpToMessageId,
+    transcriptPath,
+  });
+}
+
 export async function getLatestSummary({ chatId }: { chatId: string }) {
   try {
     const summary = await getConvexClient().query(
