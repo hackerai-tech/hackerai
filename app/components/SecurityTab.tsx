@@ -54,12 +54,14 @@ const SecurityTab = () => {
     <div className="space-y-6">
       <div data-testid="workos-user-security">
         <WorkOsWidgets
+          className="hackerai-security-widget"
           style={{ blockSize: "auto", minBlockSize: "auto" }}
           theme={{
-            appearance: "dark",
+            appearance: "inherit",
             accentColor: "gray",
-            grayColor: "slate",
+            grayColor: "gray",
             hasBackground: false,
+            panelBackground: "solid",
             fontFamily: "var(--font-geist-sans)",
           }}
         >
@@ -91,7 +93,7 @@ const SecurityTab = () => {
           </Button>
         </div>
 
-        <div className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-4 p-4">
+        <div className="grid grid-cols-[auto_minmax(0,1fr)] items-center gap-x-4 gap-y-3 p-4 sm:grid-cols-[auto_minmax(0,1fr)_auto]">
           <div
             aria-hidden="true"
             className="flex size-8 items-center justify-center rounded-md border bg-muted/50"
@@ -111,7 +113,7 @@ const SecurityTab = () => {
             variant="destructive"
             size="sm"
             onClick={handleLogoutAll}
-            className="shrink-0 bg-red-600 text-white hover:bg-red-700"
+            className="col-start-2 w-fit shrink-0 bg-red-600 text-white hover:bg-red-700 sm:col-start-3 sm:row-start-1"
           >
             Log out all
           </Button>

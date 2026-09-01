@@ -468,7 +468,6 @@ export const createChatHandler = () => {
       if (deepSeekV4Pro0813Experiment) {
         selectedModel = deepSeekV4Pro0813Experiment.modelKey;
       }
-
       const notesEnabled =
         (subscription !== "free" || isAgentMode(mode)) &&
         (userCustomization?.include_notes ?? true);
@@ -615,12 +614,12 @@ export const createChatHandler = () => {
         });
       }
 
-      let activeDeepSeekV4Pro0813Experiment =
+      const activeDeepSeekV4Pro0813Experiment =
         getActiveDeepSeekV4Pro0813ExperimentAssignment(
           deepSeekV4Pro0813Experiment,
           selectedModel,
         );
-      let routingExperimentContext = getDeepSeekV4Pro0813ExperimentContext(
+      const routingExperimentContext = getDeepSeekV4Pro0813ExperimentContext(
         activeDeepSeekV4Pro0813Experiment,
       );
 
@@ -2617,8 +2616,6 @@ export const createChatHandler = () => {
                         finishReason: state.streamFinishReason,
                         stoppedDueToTokenExhaustion:
                           state.stoppedDueToTokenExhaustion,
-                        stoppedDueToElapsedTimeout:
-                          state.stoppedDueToElapsedTimeout,
                         stoppedDueToPostSummarizationIncomplete:
                           state.stoppedDueToPostSummarizationIncomplete,
                       });

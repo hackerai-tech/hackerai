@@ -92,7 +92,7 @@ interface ChatItemProps {
 }
 
 const CHAT_OPTIONS_CONTENT_CLASS =
-  "z-50 min-w-52 rounded-xl border-border/80 p-1.5 shadow-xl";
+  "min-w-52 rounded-xl border-border/80 p-1.5 shadow-xl";
 const CHAT_OPTION_ITEM_CLASS =
   "h-9 gap-2.5 rounded-md px-2.5 py-1.5 text-sm font-normal text-foreground focus:bg-accent focus:text-foreground data-[highlighted]:bg-accent data-[highlighted]:text-foreground";
 const CHAT_OPTION_DESTRUCTIVE_ITEM_CLASS =

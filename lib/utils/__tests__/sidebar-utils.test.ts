@@ -55,6 +55,69 @@ describe("terminal sidebar output", () => {
     });
   });
 
+  it("keeps a resumed child selected from continuation lifecycle data", () => {
+    const [subagents] = extractSidebarContentFromMessage({
+      id: "continuation-message",
+      role: "assistant",
+      parts: [
+        {
+          type: "tool-continue_agent",
+          toolCallId: "continue-1",
+          state: "output-available",
+          input: {
+            target_agent_id: "sa_requested",
+            follow_up: "Check one more thing",
+          },
+          output: { success: true, agent_id: "sa_resumed" },
+        },
+        {
+          type: "data-subagent-lifecycle",
+          data: {
+            subagent_id: "sa_resumed",
+            parent_message_id: "original-parent-message",
+            parent_tool_call_id: "continue-1",
+            agent_name: "Resumed worker",
+            event: "started",
+            status: "queued",
+          },
+        },
+      ],
+    });
+
+    expect(subagents).toEqual({
+      kind: "subagents",
+      parentMessageId: "original-parent-message",
+      toolCallId: "continue-1",
+      selectedSubagentId: "sa_resumed",
+    });
+  });
+
+  it("keeps the resumed agent id from persisted continuation output", () => {
+    const [subagents] = extractSidebarContentFromMessage({
+      id: "persisted-continuation-message",
+      role: "assistant",
+      parts: [
+        {
+          type: "tool-continue_agent",
+          toolCallId: "continue-persisted",
+          state: "output-available",
+          input: {
+            target_agent_id: "sa_requested",
+            follow_up: "Check one more thing",
+          },
+          output: { success: true, agent_id: "sa_resumed" },
+        },
+      ],
+    });
+
+    expect(subagents).toEqual({
+      kind: "subagents",
+      parentMessageId: "persisted-continuation-message",
+      toolCallId: "continue-persisted",
+      selectedSubagentId: "sa_resumed",
+    });
+  });
+
   it("links an update block back to the named child and its creation message", () => {
     const [subagents] = extractSidebarContentFromMessage({
       id: "update-message",

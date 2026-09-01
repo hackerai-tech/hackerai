@@ -140,8 +140,7 @@ const STANDARD_AGENT_VISION_MODEL = "model-grok-4.5";
 const PRO_AGENT_VISION_MODEL = "model-grok-4.5-pro";
 const STANDARD_AGENT_GLM_VISION_MODEL = "model-glm-5.3-flash";
 const PRO_AGENT_GLM_VISION_MODEL = "model-glm-5.3-flash-pro";
-const FREE_AGENT_VISION_MODEL = "model-grok-4.6";
-const STANDARD_AGENT_TEXT_MODEL = "model-deepseek-v4-flash-0731";
+const STANDARD_AGENT_TEXT_MODEL = "model-glm-5.3-flash-agent";
 const PRO_AGENT_TEXT_MODEL = "model-deepseek-v4-pro-0813";
 
 const uiMessagesContainImageAttachment = (messages: UIMessage[]): boolean =>
@@ -231,9 +230,6 @@ export const resolveAgentModelForImageToolResults = (
       return PRO_AGENT_GLM_VISION_MODEL;
     }
     return STANDARD_AGENT_GLM_VISION_MODEL;
-  }
-  if (modelName === "agent-model-free") {
-    return FREE_AGENT_VISION_MODEL;
   }
   if (
     selectedModelOverride === "hackerai-pro" ||

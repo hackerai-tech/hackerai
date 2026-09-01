@@ -219,9 +219,10 @@ const getDefaultSandboxEnvironmentSection = (
   provider: CloudSandboxProvider = getCloudSandboxProvider(),
 ): string => {
   const portScanningSection = `Port-scanning limitation:
-- Cloud Agent networking can produce false-positive TCP port results where many or all ports appear open. This can affect naabu, nmap TCP connect scans, nc, and other tools that rely on successful outbound connections; changing scanner flags may not fix the underlying network behavior.
-- Treat implausible Cloud Agent port-scan output as invalid or unverified. Do not keep retrying broad scans, claim the ports are confirmed open, or blame the scanning tool when the environment is the likely cause.
-- When the user needs reliable port scanning or normal TCP, UDP, or raw-socket behavior, explain this Cloud Agent limitation and recommend selecting the HackerAI Desktop App or a Remote Control connection as the execution environment so the tools use that machine's native network stack.`;
+- Cloud Agent networking can produce false-positive port results because a low-level connection can appear successful even when no traffic reached the destination.
+- Do not use low-level TCP connection success, UDP behavior, raw sockets, or zero-I/O probes to determine whether ports are open in Cloud Agent. Never treat a successful low-level connection or implausible scan output as confirmation that a port is open.
+- Explain this environment limitation instead of retrying the scan or changing command options. When reliable port discovery or native networking is required, recommend selecting the HackerAI Desktop App or a Remote Control connection so the work uses that machine's native network stack.
+- Narrow application-level checks remain appropriate when they verify expected protocol behavior, such as an HTTP response, completed TLS handshake, or expected service banner.`;
   const systemEnvironment =
     provider === "miosa"
       ? `- OS: isolated Linux sandbox (with internet access)
@@ -480,23 +481,12 @@ edit code, run terminal commands, or execute code. ${agentModeCTA}
   return `${modeReminder}${getProductQuestionsSection()}`;
 };
 
-const SECURITY_VALIDATION_SUBAGENT_SECTION = `<independent_validation>
-The security_validation profile is restricted to independent validation of concrete vulnerability candidates with sufficient evidence to reproduce or reject them.
-Do not create an agent for reconnaissance, broad research, discovery, code review, generic testing, or a simple one-shot command. Do not create one unless you can name the affected asset, weakness class, claimed impact, minimum relevant evidence, success criteria, and authorization boundaries in task.
-For create_agent, set profile="security_validation", choose a distinct human-readable name, omit skills, and use inherit_context only when the latest user message contains necessary validation context. The child is independent and must reproduce or reject the candidate; do not ask it to trust your conclusion.
-create_agent starts the child asynchronously and returns a short parent-scoped agent_id handle. Use that exact handle as target_agent_id when essential new evidence, a focused question, or a concrete correction changes that active validation; do not send status pings.
-Continue useful parent work while the child runs, then call wait_for_agents. You must receive the structured terminal result before treating the candidate as independently validated. Treat only result.status=completed with result.verdict=confirmed as independently confirmed. Rejected, inconclusive, failed, canceled, or timed-out validation is not confirmation.
-If the child does not return a completed structured result, leave the candidate unvalidated. Do not substitute parent-run tools to repeat the same validation or present the parent's own checks as independent validation.
-Always refer to a child by its exact returned name when describing its start, update, or completion. Do not claim that validation is independent until wait_for_agents returns that child's successful completed result.
-</independent_validation>`;
-
-const getSecurityTaskSubagentSection = (): string => `<focused_security_tasks>
-Use create_agent with profile="security_task" for a clearly bounded security subtask that can make useful progress independently, such as focused code analysis, artifact investigation, reconnaissance, or testing. The task is free-form; do not invent a fixed task kind. Provide a distinct name, explicit success_criteria, scope and authorization boundaries, and only the minimal context needed.
-Specialist skills are optional. Do not search for, load, or assign skills by default. Use search_skills only when a skill is directly relevant to the bounded task, then assign the smallest useful set of exact category-qualified ids, with a hard maximum of 5; otherwise omit skills. The complete assigned skill content is permanently included in that child's system prompt. Use load_skill only when you need full methodology in your own conversation; it returns content as an on-demand tool result and does not change your system prompt.
-security_task uses a fixed server-controlled tool set. Skills provide methodology only and do not grant tools, permissions, target authorization, or additional scope. It cannot delegate, expand scope, create or promote a vulnerability report, or independently confirm a vulnerability. Use security_validation when the purpose is to reproduce or reject a concrete vulnerability candidate.
-create_agent is asynchronous. Continue useful parent work, use list_agents for durable status, send_message_to_agent only for material updates, wait_for_agents with target_agent_ids when waiting for specific children, and cancel_agent when a child is no longer useful or has the wrong scope. Respect the one-active and three-total limits instead of repeatedly retrying blocked creation.
-Treat a security_task result as supporting work. Inspect its task_status, evidence_refs, artifacts, limitations, and next_steps before using it. Never describe it as independent vulnerability confirmation.
-</focused_security_tasks>`;
+const GENERIC_DELEGATION_SECTION = `<generic_delegation>
+Use delegate_task for a clearly bounded task that can progress independently. Give it a distinct name, explicit success criteria, minimal context, expected duration and output, and only the smallest required capability bundles. Capability bundles are server-validated authority; skills provide methodology only and never add tools or scope.
+Delegation is asynchronous and depth is fixed at one. At most two siblings may be active and four children may be created per parent run. Continue useful parent work while children run. Use list_agents to read durable progress and the shared work ledger, wait_for_agents for typed progress or terminal results, send_message_to_agent only for material updates or answers, continue_agent for a bounded follow-up on a completed child's persisted transcript, and cancel_agent when work is no longer useful.
+Children can report progress, questions, blockers, artifacts, and results through a parent-mediated channel. Answer questions or unblock work deliberately; do not create peer-to-peer chatter. Use ledger claims only with their provenance, distinguish assessed from unassessed scope, and inspect limitations before synthesis.
+Reserve enough time and budget to integrate child results. Do not delegate when the remaining parent budget is needed for synthesis, and never finish while a required child result remains unconsumed.
+</generic_delegation>`;
 
 // Core system prompt with optimized structure
 export const systemPrompt = async (
@@ -507,9 +497,8 @@ export const systemPrompt = async (
   userCustomization?: UserCustomization | null,
   sandboxContext?: string | null,
   agentPermissionMode: AgentPermissionMode = "full_access",
-  securityValidationSubagentsEnabled: boolean = false,
+  genericDelegationEnabled: boolean = false,
   cloudSandboxProvider?: CloudSandboxProvider,
-  securityTaskSubagentsEnabled: boolean = false,
 ): Promise<string> => {
   const shouldIncludeNotes =
     (subscription !== "free" || mode === "agent") &&
@@ -552,11 +541,8 @@ The current date is ${currentDateTime}.`;
         cloudSandboxProvider,
       ),
     );
-    if (securityValidationSubagentsEnabled) {
-      sections.push(SECURITY_VALIDATION_SUBAGENT_SECTION);
-    }
-    if (securityTaskSubagentsEnabled) {
-      sections.push(getSecurityTaskSubagentSection());
+    if (genericDelegationEnabled) {
+      sections.push(GENERIC_DELEGATION_SECTION);
     }
   }
 

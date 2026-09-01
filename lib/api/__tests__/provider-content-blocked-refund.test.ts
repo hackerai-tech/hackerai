@@ -7,7 +7,12 @@ describe("provider content-blocked refund lifecycle", () => {
   beforeEach(() => {
     jest.resetModules();
     jest.clearAllMocks();
-    refundUsage.mockResolvedValue(undefined);
+    refundUsage.mockResolvedValue({
+      includedPointsRefunded: 100,
+      extraUsagePointsRefunded: 0,
+      includedRefundFailed: false,
+      extraUsageRefundFailed: false,
+    });
   });
 
   const createLifecycle = (hasUsage: () => boolean) => {
@@ -53,10 +58,17 @@ describe("provider content-blocked refund lifecycle", () => {
   });
 
   it("serializes concurrent settled callbacks into one external refund", async () => {
-    let completeRefund: (() => void) | undefined;
+    let completeRefund:
+      | ((value: {
+          includedPointsRefunded: number;
+          extraUsagePointsRefunded: number;
+          includedRefundFailed: boolean;
+          extraUsageRefundFailed: boolean;
+        }) => void)
+      | undefined;
     refundUsage.mockImplementationOnce(
       () =>
-        new Promise<void>((resolve) => {
+        new Promise((resolve) => {
           completeRefund = resolve;
         }),
     );
@@ -71,7 +83,12 @@ describe("provider content-blocked refund lifecycle", () => {
     const abortRefund = lifecycle({ error, settled: true });
 
     expect(refundUsage).toHaveBeenCalledTimes(1);
-    completeRefund?.();
+    completeRefund?.({
+      includedPointsRefunded: 100,
+      extraUsagePointsRefunded: 0,
+      includedRefundFailed: false,
+      extraUsageRefundFailed: false,
+    });
     await Promise.all([finishRefund, abortRefund]);
     expect(refundUsage).toHaveBeenCalledTimes(1);
   });

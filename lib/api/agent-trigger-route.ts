@@ -1,4 +1,4 @@
-import { after, NextRequest, NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { createHash } from "crypto";
 import { tasks, auth, idempotencyKeys, sessions } from "@trigger.dev/sdk";
 import type { agentLongTask } from "@/trigger/agent-long";
@@ -16,7 +16,6 @@ import {
 import {
   assertFreeAgentGates,
   buildExtraUsageConfig,
-  hasFileAttachments,
 } from "@/lib/api/chat-stream-helpers";
 import {
   AGENT_TRIGGER_TASK_ID,
@@ -70,15 +69,20 @@ import {
   DEFAULT_AGENT_AUTO_REVIEW_ASSIGNMENT,
   type AgentAutoReviewAssignment,
 } from "@/lib/experiments/agent-auto-review";
-import {
-  AGENT_LIGHTWEIGHT_SMALL_1X_FEATURE_FLAG,
-  getAgentLightweightMachineEligibility,
-  getAgentMachineRoutingExposure,
-  getAgentMachineRoutingFlagBeforeDeadline,
-  getBaselineAgentTriggerMachine,
-  resolveAgentMachineRouting,
-} from "@/lib/experiments/agent-machine-routing";
-import { getPostHogFeatureFlagForUser, phLogger } from "@/lib/posthog/server";
+import { getPostHogFeatureFlagForUser } from "@/lib/posthog/server";
+
+type AgentTriggerMachinePreset = "small-1x" | "small-2x";
+
+const AGENT_TRIGGER_MACHINE_BY_SUBSCRIPTION: Record<
+  SubscriptionTier,
+  AgentTriggerMachinePreset
+> = {
+  free: "small-1x",
+  pro: "small-2x",
+  "pro-plus": "small-2x",
+  ultra: "small-2x",
+  team: "small-2x",
+};
 
 const AGENT_TRIGGER_PRIORITY_BY_SUBSCRIPTION: Record<SubscriptionTier, number> =
   {
@@ -141,9 +145,9 @@ export const createAgentTriggerPayloadTooLargeResponse = () =>
 const getAgentTriggerPriority = (subscription: SubscriptionTier) =>
   AGENT_TRIGGER_PRIORITY_BY_SUBSCRIPTION[subscription];
 
-/** Return the unchanged subscription baseline outside the routing experiment. */
+/** Keep paid Agent starts on the latency-optimized 1 GB worker. */
 export const getAgentTriggerMachine = (subscription: SubscriptionTier) =>
-  getBaselineAgentTriggerMachine(subscription);
+  AGENT_TRIGGER_MACHINE_BY_SUBSCRIPTION[subscription];
 
 type AgentDeploymentEnvironment = {
   NODE_ENV?: string;
@@ -177,6 +181,17 @@ export const buildAgentPermissionRunSnapshot = (mode: AgentPermissionMode) => ({
   triggerTag: `permission_${mode}`,
   requiresApprovalSession: mode === "ask_approval" || mode === "auto_review",
 });
+
+export const AGENT_APPROVAL_TRIGGER_TAG_LIMIT = 5;
+
+/**
+ * Session records accept more tags than their persisted trigger config. Keep
+ * the ordered run-identifying tags and leave lower-priority cohort tags on the
+ * Session record and in metadata.
+ */
+export const getAgentApprovalTriggerTags = (
+  triggerTags: readonly string[],
+): string[] => triggerTags.slice(0, AGENT_APPROVAL_TRIGGER_TAG_LIMIT);
 
 type AgentTriggerRequestParseResult =
   | { ok: true; body: AgentTriggerRequestBody }
@@ -450,9 +465,10 @@ export const createAgentTriggerPost =
       const userLocation = geolocation(req);
       const triggerRegion =
         getTriggerRegionForVercelRequest(req, userLocation) ?? "us-east-1";
-      const securityValidationSubagentsEnabled =
-        agentPermissionMode === "full_access";
-      const securityTaskSubagentsEnabled = securityValidationSubagentsEnabled;
+      const genericDelegationFlagPromise =
+        agentPermissionMode === "full_access"
+          ? getPostHogFeatureFlagForUser("agent-generic-delegation-v1", userId)
+          : Promise.resolve(false);
 
       assertFreeAgentGates({
         mode: "agent",
@@ -487,10 +503,12 @@ export const createAgentTriggerPost =
       // These independent authorization/config reads used to run serially
       // before Trigger was called. Overlap them so the worker starts booting as
       // soon as possible after the suspension check succeeds.
-      const [existingChat, userCustomization] = await Promise.all([
-        getChatById({ id: chatId }),
-        getUserCustomization({ userId }),
-      ]);
+      const [existingChat, userCustomization, genericDelegationEnabled] =
+        await Promise.all([
+          getChatById({ id: chatId }),
+          getUserCustomization({ userId }),
+          genericDelegationFlagPromise,
+        ]);
 
       // Fetch existing chat to: (a) detect isNewChat for title generation,
       // (b) pass to handleInitialChatAndUserMessage so it skips saveChat on
@@ -587,50 +605,14 @@ export const createAgentTriggerPost =
         localDesktopAttachmentsPrepared = true;
       }
 
-      const requestMessageBytes =
-        getAgentTriggerPayloadSizeBytes(requestMessages);
-      const requestHasFileAttachments = hasFileAttachments(requestMessages);
-      const machineRoutingEligibility = getAgentLightweightMachineEligibility({
-        subscription,
-        isNewChat,
-        regenerate: regenerate === true,
-        isAutoContinue: isAutoContinue === true,
-        isAutomaticContinuation: isAutomaticContinuation === true,
-        hasLimitRescue: limitRescue !== undefined,
-        requestMessageCount: requestMessages.length,
-        requestMessageBytes,
-        hasFileAttachment: requestHasFileAttachments,
-        localDesktopAttachmentsPrepared,
-        hasProjectContext: projectContext.projectId !== undefined,
-        hasTodos: Array.isArray(todos) && todos.length > 0,
-        subagentsEnabled:
-          securityValidationSubagentsEnabled || securityTaskSubagentsEnabled,
-      });
-      const machineRoutingFlagPromise = machineRoutingEligibility.eligible
-        ? getAgentMachineRoutingFlagBeforeDeadline(
-            getPostHogFeatureFlagForUser(
-              AGENT_LIGHTWEIGHT_SMALL_1X_FEATURE_FLAG,
-              userId,
-            ),
-          )
-        : Promise.resolve(false);
-
-      const [, lightweightSmall1xEnabled] = await Promise.all([
-        handleInitialChatAndUserMessage({
-          chatId,
-          userId,
-          messages: messagesForPersistence,
-          regenerate,
-          chat: existingChat ?? null,
-          isHidden: isAutoContinue ? true : undefined,
-          projectId: projectContext.projectId,
-        }),
-        machineRoutingFlagPromise,
-      ]);
-      const machineRoutingDecision = resolveAgentMachineRouting({
-        subscription,
-        eligibility: machineRoutingEligibility,
-        lightweightSmall1xEnabled,
+      await handleInitialChatAndUserMessage({
+        chatId,
+        userId,
+        messages: messagesForPersistence,
+        regenerate,
+        chat: existingChat ?? null,
+        isHidden: isAutoContinue ? true : undefined,
+        projectId: projectContext.projectId,
       });
 
       // Snapshot permission behavior once for this run. UI changes made while
@@ -640,9 +622,6 @@ export const createAgentTriggerPost =
       const triggerTags = [`user_${userId}`, `chat_${chatId}`];
       if (subscription !== "free") triggerTags.push(`sub_${subscription}`);
       triggerTags.push(permissionSnapshot.triggerTag);
-      if (machineRoutingDecision.eligible) {
-        triggerTags.push(`machine_route_${machineRoutingDecision.variant}`);
-      }
 
       // Persisted chats are rehydrated from Convex inside the task after the
       // route saves the latest user message. Avoid sending the same history
@@ -654,7 +633,7 @@ export const createAgentTriggerPost =
 
       const triggerRequestedAt = Date.now();
       const triggerPriority = getAgentTriggerPriority(subscription);
-      const triggerMachine = machineRoutingDecision.machine;
+      const triggerMachine = getAgentTriggerMachine(subscription);
       // Trigger.dev's atomic Vercel integration pins the app and worker from the
       // same commit. Reuse that pin so Sessions cannot schedule an older worker.
       const approvalWorkerVersion =
@@ -717,8 +696,7 @@ export const createAgentTriggerPost =
         isNewChat,
         endpoint,
         analyticsRequestContext,
-        securityValidationSubagentsEnabled,
-        securityTaskSubagentsEnabled,
+        genericDelegationEnabled,
         convexUrl: process.env.NEXT_PUBLIC_CONVEX_URL,
         requestTiming: {
           routeStartedAt,
@@ -740,17 +718,10 @@ export const createAgentTriggerPost =
         triggerRequestedAt,
         triggerPriority,
         triggerMachine,
-        machineRoutingFlagKey: AGENT_LIGHTWEIGHT_SMALL_1X_FEATURE_FLAG,
-        machineRoutingEligible: machineRoutingDecision.eligible,
-        machineRoutingEligibilityReason: machineRoutingDecision.reason,
-        machineRoutingVariant: machineRoutingDecision.variant,
         requestMessageCount: requestMessages.length,
-        requestMessageBytes,
-        requestHasFileAttachments,
         triggerPayloadMessageCount: messagesForPayload.length,
         agentPermissionMode: permissionSnapshot.mode,
-        securityValidationSubagentsEnabled,
-        securityTaskSubagentsEnabled,
+        genericDelegationEnabled,
         approvalProtocolVersion: AGENT_APPROVAL_PROTOCOL_VERSION,
         ...(approvalWorkerVersion ? { approvalWorkerVersion } : {}),
         ...(approvalSessionId ? { approvalSessionId } : {}),
@@ -807,7 +778,7 @@ export const createAgentTriggerPost =
           const approvalTriggerConfig = {
             basePayload: agentPayload,
             machine: triggerMachine,
-            tags: triggerTags,
+            tags: getAgentApprovalTriggerTags(triggerTags),
             region: triggerRegion,
             ...(approvalWorkerVersion
               ? { lockToVersion: approvalWorkerVersion }
@@ -856,24 +827,6 @@ export const createAgentTriggerPost =
       }
 
       const triggerCompletedAt = Date.now();
-      const machineRoutingExposure = getAgentMachineRoutingExposure({
-        decision: machineRoutingDecision,
-        subscription,
-        endpoint,
-        runId,
-        isNewChat,
-        requestMessageCount: requestMessages.length,
-        requestMessageBytes,
-        requestHasFileAttachments,
-        localDesktopAttachmentsPrepared,
-      });
-      if (machineRoutingExposure) {
-        phLogger.event(machineRoutingExposure.event, {
-          ...machineRoutingExposure.properties,
-          userId,
-        });
-        after(() => phLogger.flush());
-      }
 
       // Access-token creation and durable association are independent, so
       // overlap them while treating every post-start failure as terminal.

@@ -2285,9 +2285,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
           {!computerSidebarOverlay && (
             <div
               className={`min-w-0 transition-[width] duration-300 ${
-                sidebarOpen
-                  ? "w-[44%] min-w-[400px] max-w-[560px] flex-shrink-0"
-                  : "w-0 overflow-hidden"
+                sidebarOpen ? "w-1/2 flex-shrink-0" : "w-0 overflow-hidden"
               }`}
               data-layout="split"
               data-testid="computer-sidebar-container"

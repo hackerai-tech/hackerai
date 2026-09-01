@@ -666,9 +666,7 @@ describe("Chat Component Integration", () => {
         "split",
       );
       expect(screen.getByTestId("computer-sidebar-container")).toHaveClass(
-        "w-[44%]",
-        "min-w-[400px]",
-        "max-w-[560px]",
+        "w-1/2",
       );
     });
 

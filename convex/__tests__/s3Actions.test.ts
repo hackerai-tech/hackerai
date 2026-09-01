@@ -51,6 +51,11 @@ describe("s3Actions", () => {
       reset: Date.now() + 5 * 60 * 60 * 1000,
     });
 
+    const { getStoredS3Location } = await import("../s3Utils");
+    (
+      getStoredS3Location as jest.MockedFunction<typeof getStoredS3Location>
+    ).mockReturnValue(undefined);
+
     // Setup environment variables
     process.env.AWS_S3_ACCESS_KEY_ID = "test-access-key";
     process.env.AWS_S3_SECRET_ACCESS_KEY = "test-secret-key";
@@ -67,6 +72,7 @@ describe("s3Actions", () => {
       mockGenerateS3UploadUrl.mockResolvedValue({
         uploadUrl: "https://s3.amazonaws.com/test-upload-url",
         s3Key: "users/user123/123-uuid-test.pdf",
+        storageLocation: { region: "us-east-1", bucket: "test-bucket" },
       });
 
       const { generateS3UploadUrlAction } = await import("../s3Actions");
@@ -119,6 +125,8 @@ describe("s3Actions", () => {
           name: "test.pdf",
           mediaType: "application/pdf",
           size: 1024,
+          s3Region: "us-east-1",
+          s3Bucket: "test-bucket",
         },
       );
 
@@ -209,6 +217,50 @@ describe("s3Actions", () => {
           contentType: "application/pdf",
         }),
       ).rejects.toThrow("Unauthenticated");
+    });
+
+    it("uses the persisted bucket and region for regional files", async () => {
+      const { generateS3DownloadUrl, getStoredS3Location } =
+        await import("../s3Utils");
+      const storageLocation = {
+        region: "eu-central-1" as const,
+        bucket: "test-eu-bucket",
+      };
+      (
+        getStoredS3Location as jest.MockedFunction<typeof getStoredS3Location>
+      ).mockReturnValue(storageLocation);
+      (
+        generateS3DownloadUrl as jest.MockedFunction<
+          typeof generateS3DownloadUrl
+        >
+      ).mockResolvedValue("https://s3.example/regional-download");
+      const { getFileUrlAction } = await import("../s3Actions");
+      const mockCtx = {
+        auth: {
+          getUserIdentity: jest.fn().mockResolvedValue({ subject: "user123" }),
+        },
+        runQuery: jest.fn().mockResolvedValue({
+          s3_key: "users/user123/regional.pdf",
+          s3_region: "eu-central-1",
+          s3_bucket: "test-eu-bucket",
+          user_id: "user123",
+          name: "regional.pdf",
+          media_type: "application/pdf",
+          size: 1024,
+        }),
+      } as any;
+
+      await expect(
+        getFileUrlAction.handler(mockCtx, { fileId: "file123" as any }),
+      ).resolves.toBe("https://s3.example/regional-download");
+      expect(getStoredS3Location).toHaveBeenCalledWith(
+        "eu-central-1",
+        "test-eu-bucket",
+      );
+      expect(generateS3DownloadUrl).toHaveBeenCalledWith(
+        "users/user123/regional.pdf",
+        storageLocation,
+      );
     });
 
     it("should throw error for empty fileName", async () => {
@@ -370,6 +422,7 @@ describe("s3Actions", () => {
         mockGenerateS3UploadUrl.mockResolvedValue({
           uploadUrl: "https://s3.amazonaws.com/test-upload-url",
           s3Key: `users/user123/123-uuid-${testCase.fileName}`,
+          storageLocation: { region: "us-east-1", bucket: "test-bucket" },
         });
 
         // Create mock context with runQuery for storage check
@@ -447,6 +500,7 @@ describe("s3Actions", () => {
       mockGenerateS3UploadUrl.mockResolvedValue({
         uploadUrl: "https://s3.amazonaws.com/test-upload-url",
         s3Key: "users/user123/123-uuid-test.pdf",
+        storageLocation: { region: "us-east-1", bucket: "test-bucket" },
       });
 
       // Mock rate limit to return null (Redis not configured)

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "@jest/globals";
 import {
+  acquisitionSourceBucket,
   createFirstTouchAttribution,
   firstTouchPersonProperties,
   parseFirstTouchAttribution,
@@ -46,6 +47,19 @@ describe("first-touch acquisition attribution", () => {
     });
     expect(
       createFirstTouchAttribution({
+        url: new URL("https://hackerai.co/"),
+        referer:
+          "android-app://com.google.android.googlequicksearchbox/https/www.google.com",
+        capturedAt,
+      }),
+    ).toMatchObject({
+      source: "google",
+      medium: "organic",
+      referringDomain: "com.google.android.googlequicksearchbox",
+      entrySurface: "home",
+    });
+    expect(
+      createFirstTouchAttribution({
         url: new URL("https://hackerai.co/?ref=SAFE123"),
         referer: null,
         capturedAt,
@@ -70,6 +84,38 @@ describe("first-touch acquisition attribution", () => {
       referringDomain: "$direct",
     });
   });
+
+  it.each([
+    ["google", "organic", "google.com", "home", "organic_search"],
+    [
+      "com.google.android.googlequicksearchbox",
+      "referral",
+      "com.google.android.googlequicksearchbox",
+      "home",
+      "organic_search",
+    ],
+    ["user_referral", "referral", "$direct", "invite", "referral_link"],
+    ["github", "social", "github.com", "home", "github"],
+    ["reddit.com", "referral", "reddit.com", "home", "community"],
+    ["chatgpt.com", "referral", "chatgpt.com", "home", "ai_assistant"],
+    ["newsletter", "email", "$direct", "home", "campaign"],
+    ["$direct", "none", "$direct", "home", "direct_or_dark"],
+    ["partner.example", "referral", "partner.example", "home", "unknown"],
+  ] as const)(
+    "buckets %s / %s as %s",
+    (source, medium, referringDomain, entrySurface, expected) => {
+      expect(
+        acquisitionSourceBucket({
+          version: 1,
+          source,
+          medium,
+          referringDomain,
+          entrySurface,
+          capturedAt: capturedAt.toISOString(),
+        }),
+      ).toBe(expected);
+    },
+  );
 
   it("round-trips valid values and rejects tampered cookies", () => {
     const attribution = createFirstTouchAttribution({
@@ -98,12 +144,36 @@ describe("first-touch acquisition attribution", () => {
     });
 
     expect(firstTouchPersonProperties(attribution)).toEqual({
+      acquisition_attribution_version: 1,
+      acquisition_source_bucket: "github",
+      acquisition_attribution_source: "post_auth_identify",
+      referral_link_present: false,
       first_touch_attribution_version: 1,
       first_touch_source: "github",
       first_touch_medium: "campaign",
       first_touch_referring_domain: "github.com",
       first_touch_entry_surface: "trust",
       first_touch_captured_at: capturedAt.toISOString(),
+    });
+  });
+
+  it("adds a normalized search engine without adding another event", () => {
+    const attribution = createFirstTouchAttribution({
+      url: new URL("https://hackerai.co/"),
+      referer:
+        "android-app://com.google.android.googlequicksearchbox/https/www.google.com",
+      capturedAt,
+    });
+
+    expect(firstTouchPersonProperties(attribution)).toMatchObject({
+      acquisition_attribution_version: 1,
+      acquisition_source_bucket: "organic_search",
+      acquisition_attribution_source: "post_auth_identify",
+      referral_link_present: false,
+      search_engine: "google",
+      first_touch_source: "google",
+      first_touch_medium: "organic",
+      first_touch_referring_domain: "com.google.android.googlequicksearchbox",
     });
   });
 });

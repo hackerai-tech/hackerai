@@ -1,9 +1,9 @@
 import type { OpenRouterModelMetadata } from "@/lib/api/openrouter-metadata";
 import {
   extractErrorDetails,
+  getLocalOpenRouterRequestSizeGuardDetails,
   getProviderErrorCategory,
   getProviderStatusCode,
-  isLocalOpenRouterRequestSizeGuardError,
   type ProviderErrorCategory,
 } from "@/lib/utils/error-utils";
 
@@ -21,6 +21,10 @@ export class ProviderTerminalError extends Error {
   readonly category: ProviderErrorCategory;
   readonly statusCode?: number;
   readonly origin?: "local_request_size_guard";
+  readonly localRequestId?: string;
+  readonly requestBytesBefore?: number;
+  readonly requestBytesAfter?: number;
+  readonly requestLimitBytes?: number;
   readonly openrouterGenerationId?: string;
   readonly openrouterRequestId?: string;
   readonly openrouterUpstreamId?: string;
@@ -42,9 +46,8 @@ export class ProviderTerminalError extends Error {
         ? details.providerName
         : providerFromModel(model));
     const statusCode = getProviderStatusCode(details);
-    const origin = isLocalOpenRouterRequestSizeGuardError(cause)
-      ? "local_request_size_guard"
-      : undefined;
+    const localSizeGuard = getLocalOpenRouterRequestSizeGuardDetails(cause);
+    const origin = localSizeGuard ? "local_request_size_guard" : undefined;
     const message = [
       "Provider terminal error",
       `category=${category}`,
@@ -61,6 +64,10 @@ export class ProviderTerminalError extends Error {
     this.category = category;
     this.statusCode = statusCode;
     this.origin = origin;
+    this.localRequestId = localSizeGuard?.requestId;
+    this.requestBytesBefore = localSizeGuard?.requestBytesBefore;
+    this.requestBytesAfter = localSizeGuard?.requestBytesAfter;
+    this.requestLimitBytes = localSizeGuard?.limitBytes;
     this.openrouterGenerationId =
       context.openRouterMetadata?.openrouter_generation_id;
     this.openrouterRequestId =

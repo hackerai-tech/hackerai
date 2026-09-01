@@ -76,6 +76,7 @@ jest.mock("@/lib/utils/sandbox-file-utils", () => ({
 }));
 
 const {
+  AGENT_APPROVAL_TRIGGER_TAG_LIMIT,
   AGENT_TRIGGER_PAYLOAD_MAX_BYTES,
   buildAgentApprovalSessionId,
   buildAgentPermissionRunSnapshot,
@@ -83,6 +84,7 @@ const {
   createAgentTriggerPayloadTooLargeResponse,
   createAgentTriggerPost,
   finalizeStartedAgentRun,
+  getAgentApprovalTriggerTags,
   getAgentTriggerPayloadSizeBytes,
   getAgentTriggerMachine,
   isAgentTriggerPayloadSizeTooLarge,
@@ -379,6 +381,22 @@ describe("Agent trigger route lifecycle", () => {
       requiresApprovalSession: false,
     });
     expect(autoReviewRun.mode).toBe("auto_review");
+  });
+
+  it("caps approval trigger tags while preserving ordered run identifiers", () => {
+    const triggerTags = [
+      "user_user-1",
+      "chat_chat-1",
+      "sub_pro",
+      "permission_auto_review",
+      "future_tag_1",
+      "future_tag_2",
+    ];
+
+    expect(getAgentApprovalTriggerTags(triggerTags)).toEqual(
+      triggerTags.slice(0, AGENT_APPROVAL_TRIGGER_TAG_LIMIT),
+    );
+    expect(getAgentApprovalTriggerTags(triggerTags)).toHaveLength(5);
   });
 
   it.each([

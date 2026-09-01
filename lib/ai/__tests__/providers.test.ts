@@ -117,7 +117,7 @@ describe("provider registry", () => {
     expect(
       (myProvider.languageModel("agent-model-free") as { modelId: string })
         .modelId,
-    ).toBe("deepseek/deepseek-v4-flash-0731");
+    ).toBe("z-ai/glm-5.3-flash");
     expect(
       (
         myProvider.languageModel("auxiliary-vision-model") as {
@@ -133,6 +133,13 @@ describe("provider registry", () => {
     expect(
       (myProvider.languageModel("model-glm-5.3-flash") as { modelId: string })
         .modelId,
+    ).toBe(GLM_5_3_FLASH_SLUG);
+    expect(
+      (
+        myProvider.languageModel("model-glm-5.3-flash-agent") as {
+          modelId: string;
+        }
+      ).modelId,
     ).toBe(GLM_5_3_FLASH_SLUG);
     expect(
       (
@@ -251,13 +258,14 @@ describe("provider registry", () => {
 
   it("classifies the active DeepSeek tier routes as DeepSeek", () => {
     expect(isDeepSeekModel("ask-model-free")).toBe(false);
+    expect(isDeepSeekModel("agent-model-free")).toBe(false);
     expect(isDeepSeekModel("model-deepseek-v4-flash-0731")).toBe(true);
     expect(isDeepSeekModel("model-deepseek-v4-pro")).toBe(true);
     expect(isDeepSeekModel("model-deepseek-v4-pro-0813")).toBe(true);
     expect(isDeepSeekModel("agent-auto-review-model")).toBe(true);
   });
 
-  it("keeps tracked free routes split by mode", () => {
+  it("keeps both tracked free routes on GLM 5.3 Flash", () => {
     const provider = createTrackedProvider();
     expect(
       (provider.languageModel("ask-model-free") as { modelId: string }).modelId,
@@ -265,7 +273,7 @@ describe("provider registry", () => {
     expect(
       (provider.languageModel("agent-model-free") as { modelId: string })
         .modelId,
-    ).toBe("deepseek/deepseek-v4-flash-0731");
+    ).toBe("z-ai/glm-5.3-flash");
   });
 
   it.each([
@@ -743,6 +751,91 @@ describe("OpenRouter request normalization", () => {
     }
   });
 
+  it("removes oversized inline tool media while preserving user media and text tool output", async () => {
+    const warnSpy = jest
+      .spyOn(console, "warn")
+      .mockImplementation(() => undefined);
+    const fetchMock = jest
+      .fn()
+      .mockResolvedValueOnce(new Response("ok", { status: 200 }));
+    const patchedFetch = createOpenRouterPatchFetch(
+      fetchMock as unknown as typeof fetch,
+    );
+    const inlineToolImage = `data:image/jpeg;base64,${"a".repeat(
+      OPENROUTER_REQUEST_MAX_BYTES - 512 * 1024,
+    )}`;
+    const logOutput = "log line\n".repeat(80_000);
+
+    try {
+      await patchedFetch("https://openrouter.test/chat", {
+        method: "POST",
+        headers: { "content-length": "stale" },
+        body: JSON.stringify({
+          model: "deepseek/deepseek-v4-flash-0731",
+          user: "user_test_tool_media_guard",
+          messages: [
+            {
+              role: "user",
+              content: [
+                { type: "text", text: "Analyze this image and log." },
+                {
+                  type: "image_url",
+                  image_url: { url: "https://files.test/photo.jpg" },
+                },
+              ],
+            },
+            {
+              role: "tool",
+              tool_call_id: "view_1",
+              content: [
+                { type: "text", text: "Viewing image file: photo.jpg" },
+                {
+                  type: "image_url",
+                  image_url: { url: inlineToolImage },
+                },
+              ],
+            },
+            {
+              role: "tool",
+              tool_call_id: "read_1",
+              content: logOutput,
+            },
+          ],
+        }),
+      });
+
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      const sentInit = fetchMock.mock.calls[0][1];
+      const sentBody = String(sentInit.body);
+      expect(new TextEncoder().encode(sentBody).byteLength).toBeLessThanOrEqual(
+        OPENROUTER_REQUEST_MAX_BYTES,
+      );
+      expect(new Headers(sentInit.headers).has("content-length")).toBe(false);
+      expect(sentBody).not.toContain(inlineToolImage);
+      expect(sentBody).toContain("https://files.test/photo.jpg");
+      expect(JSON.parse(sentBody).messages[2].content).toBe(logOutput);
+      expect(sentBody).toContain(
+        "Inline media from this tool result was omitted",
+      );
+
+      const guardLog = JSON.parse(String(warnSpy.mock.calls[0][0]));
+      expect(guardLog).toMatchObject({
+        event: "openrouter_request_size_guard",
+        action: "tool_media_fallback",
+        user_id: "user_test_tool_media_guard",
+        inline_tool_media_part_count: 1,
+        removed_tool_media_part_count: 1,
+        removed_provider_file_part_count: 0,
+      });
+      expect(guardLog.request_id).toEqual(expect.any(String));
+      expect(guardLog.inline_tool_media_bytes).toBeGreaterThan(
+        OPENROUTER_REQUEST_MAX_BYTES - 512 * 1024,
+      );
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
   it("rejects an oversized request locally when no safe fallback can fit", async () => {
     const warnSpy = jest
       .spyOn(console, "warn")
@@ -770,6 +863,18 @@ describe("OpenRouter request normalization", () => {
       expect(
         response.headers.get("x-hackerai-openrouter-request-size-guard"),
       ).toBe("rejected");
+      expect(
+        response.headers.get("x-hackerai-openrouter-request-bytes-before"),
+      ).toMatch(/^\d+$/);
+      expect(
+        response.headers.get("x-hackerai-openrouter-request-bytes-after"),
+      ).toMatch(/^\d+$/);
+      expect(
+        response.headers.get("x-hackerai-openrouter-request-limit-bytes"),
+      ).toBe(String(OPENROUTER_REQUEST_MAX_BYTES));
+      expect(response.headers.get("x-hackerai-request-id")).toEqual(
+        expect.any(String),
+      );
       expect(await response.json()).toMatchObject({
         error: { code: "request_too_large" },
       });
@@ -1215,8 +1320,11 @@ describe("supportsMultimodalToolResults", () => {
     expect(supportsMultimodalToolResults("x-ai/grok-4.6")).toBe(true);
   });
 
-  it("rejects text-only DeepSeek model keys", () => {
-    expect(supportsMultimodalToolResults("agent-model-free")).toBe(false);
+  it("accepts free GLM Agent while rejecting text-only DeepSeek model keys", () => {
+    expect(supportsMultimodalToolResults("agent-model-free")).toBe(true);
+    expect(supportsMultimodalToolResults("model-glm-5.3-flash-agent")).toBe(
+      true,
+    );
     expect(supportsMultimodalToolResults("model-deepseek-v4-pro")).toBe(false);
     expect(supportsMultimodalToolResults("model-deepseek-v4-pro-0813")).toBe(
       false,

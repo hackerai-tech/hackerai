@@ -31,12 +31,12 @@ describe("ModelSelector tier ↔ provider drift", () => {
     expect([...askIds].sort()).toEqual([...agentIds].sort());
   });
 
-  it("HackerAI Standard resolves to DeepSeek V4 Flash 0731 in both modes", () => {
+  it("HackerAI Standard resolves to the mode-specific Flash provider", () => {
     expect(resolveTierToProviderKey("hackerai-standard", "ask")).toBe(
       "model-deepseek-v4-flash-0731",
     );
     expect(resolveTierToProviderKey("hackerai-standard", "agent")).toBe(
-      "model-deepseek-v4-flash-0731",
+      "model-glm-5.3-flash-agent",
     );
   });
 
@@ -72,11 +72,11 @@ describe("ModelSelector tier ↔ provider drift", () => {
     }
   });
 
-  it("discloses DeepSeek V4 Flash 0731 for Agent Standard", () => {
+  it("discloses GLM 5.3 Flash for Agent Standard", () => {
     expect(
       AGENT_MODEL_OPTIONS.find((option) => option.id === "hackerai-standard")
         ?.poweredBy,
-    ).toBe("DeepSeek V4 Flash 0731");
+    ).toBe("Z.ai GLM 5.3 Flash");
   });
 
   it("discloses DeepSeek V4 Pro 0813 for HackerAI Pro", () => {

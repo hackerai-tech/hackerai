@@ -41,28 +41,39 @@ export const FinishReasonNotice = ({
 
   const getNoticeContent = () => {
     if (finishReason === "tool-calls") {
-      return <>Reached the step limit for this turn.</>;
+      return (
+        <>Reached the step limit for this turn. Completed work was saved.</>
+      );
     }
 
     if (finishReason === "timeout" || finishReason === "preemptive-timeout") {
-      return <>Reached the time limit for this turn.</>;
+      return (
+        <>Reached the time limit for this turn. Completed work was saved.</>
+      );
     }
 
     if (finishReason === OUTPUT_LIMIT_FINISH_REASON) {
       return (
         <>
           The response reached its output limit before finishing. Continue to
-          resume where it stopped.
+          resume where it stopped; completed work was saved.
         </>
       );
     }
 
     if (finishReason === "context-limit") {
-      return <>Reached the context limit for this conversation.</>;
+      return (
+        <>
+          Reached the context limit for this conversation. Completed work was
+          saved.
+        </>
+      );
     }
 
     if (finishReason === POST_SUMMARIZATION_INCOMPLETE_FINISH_REASON) {
-      return <>Paused after compacting the conversation.</>;
+      return (
+        <>Paused after compacting the conversation. Completed work was saved.</>
+      );
     }
 
     if (finishReason === AGENT_RUN_SPEND_CAP_FINISH_REASON) {

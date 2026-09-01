@@ -31,6 +31,7 @@ import {
   writeGeneratedTextAttachment,
 } from "./useTauri";
 import { PASTED_TEXT_ATTACHMENT_MIN_CHARS } from "@/lib/utils/pasted-text-attachments";
+import { getPreferredFileStorageRegion } from "@/lib/storage/file-storage-region";
 
 // Show warning when remaining uploads are at or below this threshold
 const RATE_LIMIT_WARNING_THRESHOLD = 10;
@@ -160,6 +161,9 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
     sandboxPreference,
   } = useGlobalState();
   const uploadedFilesRef = useRef(uploadedFiles);
+  const preferredStorageRegionPromiseRef = useRef<ReturnType<
+    typeof getPreferredFileStorageRegion
+  > | null>(null);
 
   useEffect(() => {
     uploadedFilesRef.current = uploadedFiles;
@@ -356,13 +360,18 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
           sandboxPreference,
         });
 
-        // Step 1: Generate presigned S3 upload URL
+        // Step 1: Generate presigned S3 upload URL in the closest configured
+        // storage region. Region lookup failure safely uses legacy storage.
+        preferredStorageRegionPromiseRef.current ??=
+          getPreferredFileStorageRegion();
+        const storageRegion = await preferredStorageRegionPromiseRef.current;
         const { uploadUrl, s3Key, rateLimit } = await generateS3UploadUrlAction(
           {
             fileName: file.name,
             contentType: file.type || "application/octet-stream",
             size: file.size,
             mode,
+            ...(storageRegion ? { storageRegion } : {}),
           },
         );
 

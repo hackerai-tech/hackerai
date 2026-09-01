@@ -63,6 +63,8 @@ export const captureSubagentLifecycleEvent = (
     | "subagent_create_blocked"
     | "subagent_create_failed"
     | "subagent_spawned"
+    | "subagent_duplicate_reused"
+    | "subagent_resumed"
     | "subagent_updated"
     | "subagent_list_outcome"
     | "subagent_update_outcome"

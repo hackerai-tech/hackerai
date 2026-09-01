@@ -12,7 +12,11 @@ import {
 import { buildSandboxCommandOptions } from "./sandbox-command-options";
 import { generateS3UploadUrl } from "@/convex/s3Utils";
 import { getConvexClient } from "@/lib/db/convex-client";
-import { MAX_GENERATED_FILE_SIZE_BYTES } from "@/lib/constants/s3";
+import {
+  MAX_GENERATED_FILE_SIZE_BYTES,
+  type S3StorageLocation,
+  type S3StorageRegion,
+} from "@/lib/constants/s3";
 import { logger } from "@/lib/logger";
 
 const DEFAULT_MEDIA_TYPE = "application/octet-stream";
@@ -33,6 +37,40 @@ export type UploadedFileInfo = {
   s3Key?: string;
   sizeBytes: number;
 };
+
+/**
+ * Mint a fresh, user-scoped download URL for a previously uploaded sandbox
+ * file. Presigned S3 URLs are intentionally not persisted in tool output
+ * because they expire; the stable file ID is persisted instead.
+ */
+export async function getSandboxUploadedFileUrl(args: {
+  fileId: Id<"files">;
+  userId: string;
+}): Promise<string | undefined> {
+  if (!process.env.NEXT_PUBLIC_CONVEX_URL) {
+    throw new Error(
+      "NEXT_PUBLIC_CONVEX_URL is required for sandbox file downloads",
+    );
+  }
+
+  if (!process.env.CONVEX_SERVICE_ROLE_KEY) {
+    throw new Error(
+      "CONVEX_SERVICE_ROLE_KEY is required for sandbox file downloads. " +
+        "This is a server-only secret and must never be exposed to the client.",
+    );
+  }
+
+  const urls = await getConvexClient().action(
+    api.s3Actions.getFileUrlsByFileIdsAction,
+    {
+      serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY,
+      userId: args.userId,
+      fileIds: [args.fileId],
+    },
+  );
+
+  return urls[0] ?? undefined;
+}
 
 /**
  * Extract error message from ConvexError or regular Error
@@ -403,6 +441,7 @@ export async function uploadSandboxFileToConvex(args: {
   fullPath: string;
   mediaType?: string;
   name?: string;
+  storageRegion?: S3StorageRegion;
 }): Promise<UploadedFileInfo> {
   if (!process.env.NEXT_PUBLIC_CONVEX_URL) {
     throw new Error(
@@ -438,15 +477,20 @@ export async function uploadSandboxFileToConvex(args: {
 
   let uploadUrl: string;
   let s3Key: string;
+  let storageLocation: S3StorageLocation;
   try {
-    const generatedUrl = await generateS3UploadUrl(
-      name,
-      mediaType,
-      userId,
-      fileSize,
-    );
+    const generatedUrl = args.storageRegion
+      ? await generateS3UploadUrl(
+          name,
+          mediaType,
+          userId,
+          fileSize,
+          args.storageRegion,
+        )
+      : await generateS3UploadUrl(name, mediaType, userId, fileSize);
     uploadUrl = generatedUrl.uploadUrl;
     s3Key = generatedUrl.s3Key;
+    storageLocation = generatedUrl.storageLocation;
   } catch (error) {
     logger.error(
       "sandbox_generated_file_upload_url_failed",
@@ -503,6 +547,8 @@ export async function uploadSandboxFileToConvex(args: {
         size: fileSize,
         serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
         userId,
+        s3Region: storageLocation.region,
+        s3Bucket: storageLocation.bucket,
       },
     );
 

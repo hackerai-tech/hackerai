@@ -330,6 +330,7 @@ export const createTools = (
     ptyScopeId: runtimePolicy.ptyScopeId,
     assistantMessageId,
     triggerRunId,
+    triggerRegion: runtimePolicy.triggerRegion,
     fileAccumulator,
     backgroundProcessTracker,
     ptySessionManager,

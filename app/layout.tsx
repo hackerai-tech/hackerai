@@ -11,14 +11,17 @@ import { AgentAutoReviewAvailabilityProvider } from "./contexts/AgentAutoReviewA
 import { ConvexClientProvider } from "@/components/ConvexClientProvider";
 import { TodoBlockProvider } from "./contexts/TodoBlockContext";
 import { AgentApprovalProvider } from "./contexts/AgentApprovalContext";
-import { PostHogProvider } from "./providers";
+import { AnalyticsConsentManager } from "./components/AnalyticsConsentManager";
 import { DataStreamProvider } from "./components/DataStreamProvider";
 import { ChunkLoadRecovery } from "./components/ChunkLoadRecovery";
 import { resolveClientInitialAuth } from "@/lib/auth/initial-auth";
+import { FIRST_TOUCH_ATTRIBUTION_COOKIE_NAME } from "@/lib/analytics/acquisition";
+import { parseFirstTouchAttributionCookie } from "@/lib/analytics/acquisition-cookie";
 import {
-  FIRST_TOUCH_ATTRIBUTION_COOKIE_NAME,
-  parseFirstTouchAttribution,
-} from "@/lib/analytics/acquisition";
+  ANALYTICS_CONSENT_COOKIE_NAME,
+  countryCodeFromHeaders,
+  getAnalyticsConsentDecision,
+} from "@/lib/privacy/analytics-consent";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -119,18 +122,30 @@ export default async function RootLayout({
 }>) {
   // Supplying server-resolved auth prevents AuthKitProvider from invoking its
   // getAuth Server Action on every mount.
-  const [initialAuth, cookieStore] = await Promise.all([
+  const [initialAuth, cookieStore, requestHeaders] = await Promise.all([
     getInitialAuth(),
     cookies(),
+    headers(),
   ]);
-  const firstTouchAttribution = parseFirstTouchAttribution(
+  const firstTouchAttribution = parseFirstTouchAttributionCookie(
     cookieStore.get(FIRST_TOUCH_ATTRIBUTION_COOKIE_NAME)?.value,
   );
+  const analyticsConsent = getAnalyticsConsentDecision({
+    cookieValue: cookieStore.get(ANALYTICS_CONSENT_COOKIE_NAME)?.value,
+    countryCode: countryCodeFromHeaders(requestHeaders),
+    // If a production proxy ever stops providing country data, ask rather
+    // than silently placing optional analytics storage on a covered visitor.
+    failClosed: process.env.NODE_ENV === "production",
+  });
 
   const content = (
     <GlobalStateProvider>
-      <AgentAutoReviewAvailabilityProvider>
-        <PostHogProvider firstTouchAttribution={firstTouchAttribution}>
+      <AnalyticsConsentManager
+        consentRequired={analyticsConsent.consentRequired}
+        firstTouchAttribution={firstTouchAttribution}
+        initialConsent={analyticsConsent.consent}
+      >
+        <AgentAutoReviewAvailabilityProvider>
           <ChunkLoadRecovery />
           <DataStreamProvider>
             <TodoBlockProvider>
@@ -142,8 +157,8 @@ export default async function RootLayout({
               </AgentApprovalProvider>
             </TodoBlockProvider>
           </DataStreamProvider>
-        </PostHogProvider>
-      </AgentAutoReviewAvailabilityProvider>
+        </AgentAutoReviewAvailabilityProvider>
+      </AnalyticsConsentManager>
     </GlobalStateProvider>
   );
 

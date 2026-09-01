@@ -85,7 +85,6 @@ jest.mock("@/lib/chat/multimodal-tool-result-recovery", () => ({
 jest.mock("@/lib/ai/providers", () => ({
   isAnthropicModel: () => false,
   isDeepSeekModel: (modelName: string) =>
-    modelName === "agent-model-free" ||
     modelName.startsWith("model-deepseek-v4"),
   PDF_PARSER_ENGINE_HEADER: "x-hackerai-openrouter-pdf-parser-engine",
   PDF_PARSER_RECOVERY_HEADER: "x-hackerai-openrouter-pdf-parser-recovery",
@@ -282,10 +281,10 @@ describe("resolveAgentModelForImageToolResults", () => {
     ).toBe("model-glm-5.3");
   });
 
-  it("switches free DeepSeek Agent steps to Grok after image tool results", () => {
+  it("keeps the multimodal free GLM Agent active after image tool results", () => {
     expect(
       resolveAgentModelForImageToolResults("agent-model-free", "agent", true),
-    ).toBe("model-grok-4.6");
+    ).toBe("agent-model-free");
   });
 
   it("does not change Ask routes or multimodal Agent models", () => {
@@ -306,10 +305,10 @@ describe("resolveAgentModelForImageToolResults", () => {
 });
 
 describe("resolveAgentModelAfterSummarization", () => {
-  it("returns Standard and Pro vision routes to their DeepSeek text routes", () => {
+  it("returns Standard and Pro vision routes to their text routes", () => {
     expect(
       resolveAgentModelAfterSummarization("model-grok-4.5", "agent", false),
-    ).toBe("model-deepseek-v4-flash-0731");
+    ).toBe("model-glm-5.3-flash-agent");
     expect(
       resolveAgentModelAfterSummarization("model-grok-4.5-pro", "agent", false),
     ).toBe("model-deepseek-v4-pro-0813");
@@ -319,7 +318,7 @@ describe("resolveAgentModelAfterSummarization", () => {
         "agent",
         false,
       ),
-    ).toBe("model-deepseek-v4-flash-0731");
+    ).toBe("model-glm-5.3-flash-agent");
     expect(
       resolveAgentModelAfterSummarization(
         "model-glm-5.3-flash-pro",
@@ -796,7 +795,7 @@ describe("createAgentStream repeated compaction", () => {
   });
 
   it.each([
-    ["model-grok-4.5", "model-deepseek-v4-flash-0731"],
+    ["model-grok-4.5", "model-glm-5.3-flash-agent"],
     ["model-grok-4.5-pro", "model-deepseek-v4-pro-0813"],
   ])(
     "switches %s back to %s after a text-only persisted summary",

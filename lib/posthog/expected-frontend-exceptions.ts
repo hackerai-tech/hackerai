@@ -32,6 +32,7 @@ const MANUAL_CHAT_STOP_ABORT_MESSAGES = new Set([
 const REACT_DOM_MUTATION_MESSAGES = new Set([
   "NotFoundError: Failed to execute 'insertBefore' on 'Node': The node before which the new node is to be inserted is not a child of this node.",
   "NotFoundError: Failed to execute 'removeChild' on 'Node': The node to be removed is not a child of this node.",
+  "NotFoundError: Node.removeChild: The node to be removed is not a child of this node",
   "NotFoundError: The object can not be found here.",
 ]);
 

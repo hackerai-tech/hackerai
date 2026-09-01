@@ -3,8 +3,10 @@ import { describe, expect, it, jest } from "@jest/globals";
 import { phLogger } from "@/lib/posthog/server";
 import {
   classifyTerminalOutputPersistenceFailure,
+  FULL_OUTPUT_SAVE_FAILED_MESSAGE,
   MAX_SAVED_TERMINAL_OUTPUT_FILES,
   saveFullOutputToFile,
+  saveTruncatedOutput,
 } from "../terminal-output-saver";
 
 const CHAT_ID = "chat_123";
@@ -133,6 +135,40 @@ describe("saveFullOutputToFile", () => {
     jest.useRealTimers();
   });
 
+  it("retries an unknown desktop relay failure once", async () => {
+    jest.useFakeTimers().setSystemTime(new Date("2026-07-16T15:30:45.123Z"));
+    const sandbox = createSandbox({
+      sandboxKind: "centrifugo",
+      nativeFileRelay: true,
+    });
+    sandbox.files.write
+      .mockRejectedValueOnce({ code: "unclassified_desktop_failure" })
+      .mockResolvedValueOnce(undefined);
+    const infoSpy = jest.spyOn(console, "info").mockImplementation(() => {});
+
+    const savePromise = saveFullOutputToFile(
+      sandbox as any,
+      "full output",
+      CHAT_ID,
+    );
+    await jest.advanceTimersByTimeAsync(250);
+
+    await expect(savePromise).resolves.toContain(
+      `/tmp/terminal_full_output/chat-${CHAT_KEY}/`,
+    );
+    expect(sandbox.files.write).toHaveBeenCalledTimes(2);
+    infoSpy.mockRestore();
+    jest.useRealTimers();
+  });
+
+  it("classifies inactive desktop connections as relay unavailable", () => {
+    expect(
+      classifyTerminalOutputPersistenceFailure({
+        reason: "connection_inactive",
+      }),
+    ).toBe("relay_unavailable");
+  });
+
   it("does not repeat a completed desktop relay timeout", async () => {
     const sandbox = createSandbox({
       sandboxKind: "centrifugo",
@@ -215,6 +251,37 @@ describe("saveFullOutputToFile", () => {
       { timeoutMs: 5000 },
     );
     jest.useRealTimers();
+  });
+
+  it("tells the agent when truncated output could not be persisted", async () => {
+    const sandbox = createSandbox();
+    sandbox.files.write.mockRejectedValueOnce(new Error("Permission denied"));
+    const terminalWriter = jest.fn(async () => undefined);
+    const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+    const handler = {
+      wasTruncated: () => true,
+      getFullOutput: () => "full output",
+      wasFullOutputCapped: () => false,
+    };
+
+    await expect(
+      saveTruncatedOutput({
+        handler: handler as any,
+        sandbox: sandbox as any,
+        terminalWriter,
+        scopeId: CHAT_ID,
+      }),
+    ).resolves.toBe(FULL_OUTPUT_SAVE_FAILED_MESSAGE);
+    expect(FULL_OUTPUT_SAVE_FAILED_MESSAGE).toContain(
+      "Do not rerun the original command unchanged",
+    );
+    expect(FULL_OUTPUT_SAVE_FAILED_MESSAGE).toContain(
+      "use a safe, read-only follow-up",
+    );
+    expect(terminalWriter).toHaveBeenCalledWith(
+      FULL_OUTPUT_SAVE_FAILED_MESSAGE,
+    );
+    warnSpy.mockRestore();
   });
 
   it("removes saved outputs beyond the per-chat retention limit", async () => {

@@ -164,6 +164,12 @@ describe("FinishReasonNotice", () => {
       ).toBeInTheDocument();
     });
 
+    it("confirms that completed work was preserved at the step limit", () => {
+      renderNotice({ finishReason: "tool-calls", mode: "agent" });
+
+      expect(screen.getByText(/Completed work was saved/i)).toBeInTheDocument();
+    });
+
     it.each([
       {
         finishReason: "context-limit",

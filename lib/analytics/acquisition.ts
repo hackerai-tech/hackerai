@@ -6,6 +6,28 @@ export const FIRST_TOUCH_ATTRIBUTION_MAX_AGE_SECONDS = 90 * 24 * 60 * 60;
 
 const SAFE_CAMPAIGN_LABEL = /^[A-Za-z0-9_$_.:-]{1,80}$/;
 const OWNED_HOST_SUFFIXES = ["hackerai.co"] as const;
+const GOOGLE_ANDROID_SEARCH_APP = "com.google.android.googlequicksearchbox";
+
+const COMMUNITY_DOMAINS = new Set([
+  "discord.com",
+  "facebook.com",
+  "linkedin.com",
+  "reddit.com",
+  "tiktok.com",
+  "twitter.com",
+  "x.com",
+  "youtube.com",
+]);
+
+const AI_ASSISTANT_DOMAINS = new Set([
+  "chatgpt.com",
+  "claude.ai",
+  "copilot.microsoft.com",
+  "gemini.google.com",
+  "grok.com",
+  "openai.com",
+  "perplexity.ai",
+]);
 
 export type FirstTouchAttribution = {
   version: typeof FIRST_TOUCH_ATTRIBUTION_VERSION;
@@ -24,6 +46,16 @@ export type FirstTouchAttribution = {
     | "other_public";
   capturedAt: string;
 };
+
+export type AcquisitionSourceBucket =
+  | "organic_search"
+  | "referral_link"
+  | "community"
+  | "github"
+  | "ai_assistant"
+  | "campaign"
+  | "direct_or_dark"
+  | "unknown";
 
 function normalizeCampaignLabel(value: string | null): string | undefined {
   if (!value) return undefined;
@@ -83,7 +115,8 @@ function classifyReferrer(referringDomain: string | null): {
 
   if (
     referringDomain === "google.com" ||
-    referringDomain.endsWith(".google.com")
+    referringDomain.endsWith(".google.com") ||
+    referringDomain === GOOGLE_ANDROID_SEARCH_APP
   ) {
     return { source: "google", medium: "organic" };
   }
@@ -98,6 +131,89 @@ function classifyReferrer(referringDomain: string | null): {
   }
 
   return { source: referringDomain, medium: "referral" };
+}
+
+function domainMatches(domain: string, candidates: Set<string>): boolean {
+  for (const candidate of candidates) {
+    if (domain === candidate || domain.endsWith(`.${candidate}`)) return true;
+  }
+  return false;
+}
+
+export function acquisitionSourceBucket(
+  attribution: FirstTouchAttribution,
+): AcquisitionSourceBucket {
+  const source = attribution.source.toLowerCase();
+  const medium = attribution.medium.toLowerCase();
+  const domain = attribution.referringDomain.toLowerCase();
+
+  if (source === "user_referral" || attribution.entrySurface === "invite") {
+    return "referral_link";
+  }
+  if (
+    medium === "organic" ||
+    (medium === "referral" &&
+      (source === GOOGLE_ANDROID_SEARCH_APP ||
+        domain === GOOGLE_ANDROID_SEARCH_APP))
+  ) {
+    return "organic_search";
+  }
+  if (
+    source === "github" ||
+    source === "github.com" ||
+    domain === "github.com" ||
+    domain.endsWith(".github.com")
+  ) {
+    return "github";
+  }
+  if (
+    domainMatches(source, AI_ASSISTANT_DOMAINS) ||
+    domainMatches(domain, AI_ASSISTANT_DOMAINS)
+  ) {
+    return "ai_assistant";
+  }
+  if (
+    domainMatches(source, COMMUNITY_DOMAINS) ||
+    domainMatches(domain, COMMUNITY_DOMAINS)
+  ) {
+    return "community";
+  }
+  if (source === "$direct" && domain === "$direct") {
+    return "direct_or_dark";
+  }
+  if (
+    attribution.campaign ||
+    ["campaign", "cpc", "email", "paid", "ppc", "social"].includes(medium)
+  ) {
+    return "campaign";
+  }
+  return "unknown";
+}
+
+function searchEngine(attribution: FirstTouchAttribution): string | undefined {
+  if (acquisitionSourceBucket(attribution) !== "organic_search") {
+    return undefined;
+  }
+
+  const source = attribution.source.toLowerCase();
+  const domain = attribution.referringDomain.toLowerCase();
+  if (
+    source === "google" ||
+    source === GOOGLE_ANDROID_SEARCH_APP ||
+    domain === "google.com" ||
+    domain.endsWith(".google.com") ||
+    domain === GOOGLE_ANDROID_SEARCH_APP
+  ) {
+    return "google";
+  }
+  if (source === "bing" || domain === "bing.com") return "bing";
+  if (source === "duckduckgo.com" || domain === "duckduckgo.com") {
+    return "duckduckgo";
+  }
+  if (source === "search.brave.com" || domain === "search.brave.com") {
+    return "brave";
+  }
+  return source;
 }
 
 export function createFirstTouchAttribution({
@@ -186,8 +302,16 @@ export function parseFirstTouchAttribution(
 
 export function firstTouchPersonProperties(
   attribution: FirstTouchAttribution,
-): Record<string, string | number> {
+): Record<string, string | number | boolean> {
+  const sourceBucket = acquisitionSourceBucket(attribution);
+  const organicSearchEngine = searchEngine(attribution);
+
   return {
+    acquisition_attribution_version: attribution.version,
+    acquisition_source_bucket: sourceBucket,
+    acquisition_attribution_source: "post_auth_identify",
+    referral_link_present: sourceBucket === "referral_link",
+    ...(organicSearchEngine ? { search_engine: organicSearchEngine } : {}),
     first_touch_attribution_version: attribution.version,
     first_touch_source: attribution.source,
     first_touch_medium: attribution.medium,

@@ -38,14 +38,14 @@ describe("security validation subagent runtime contracts", () => {
     const profiles = read("lib/ai/subagents/profiles.ts");
     expect(tools).toContain("resolveSubagentSkills");
     expect(tools).toContain("skills = resolvedSkills.skills.map");
-    expect(tools).toContain("Skills are optional: omit them by default");
+    expect(tools).toContain("Skills are optional methodology");
     expect(tools).not.toContain("1-3 normally");
     expect(tools).not.toContain(
       "security_task uses fixed server tools and does not accept skills",
     );
     expect(profiles).toContain("renderSubagentSkillKnowledge");
     expect(profiles).toContain("buildSystemPrompt");
-    expect(profiles).toContain("dynamically loaded content is a tool result");
+    expect(profiles).toContain("methodology only");
     expect(read("trigger/subagent.ts")).toContain(
       "const systemPrompt = profile.buildSystemPrompt(row)",
     );
@@ -113,10 +113,13 @@ describe("security validation subagent runtime contracts", () => {
     );
   });
 
-  it("uses the cheap text model and promotes one-way for image results", () => {
+  it("routes by task requirements and promotes one-way for image results", () => {
     const tools = read("lib/ai/tools/subagent-tools.ts");
     const child = read("trigger/subagent.ts");
-    expect(tools).toContain("selectedModel: SUBAGENT_TEXT_MODEL");
+    expect(tools).toContain("selectedModel: resolveInitialSubagentModel");
+    expect(read("lib/ai/subagents/model-routing.ts")).toContain(
+      'input.capabilities.includes("browser_qa")',
+    );
     expect(tools).not.toContain(
       "selectedModel: context.getCurrentModelName?.() ?? context.modelName",
     );
@@ -224,7 +227,7 @@ describe("security validation subagent runtime contracts", () => {
     expect(tools).toContain('failureCode: "child_trigger_failed"');
     expect(child).toContain("pipeSubagentUiMessageStream");
     expect(tools).toContain(
-      "Before your final answer, call wait_for_agents targeting",
+      "consume its terminal result before the final answer",
     );
     expect(parent).toContain('"subagent_parent_settlement"');
     expect(parent).toContain("undelivered_count");

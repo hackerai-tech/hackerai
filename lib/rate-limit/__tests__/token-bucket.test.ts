@@ -538,8 +538,10 @@ describe("token-bucket", () => {
 
     it.each([
       "ask-model-free",
+      "agent-model-free",
       "model-glm-5.3-flash",
       "model-glm-5.3-flash-pro",
+      "model-glm-5.3-flash-agent",
       "z-ai/glm-5.3-flash",
     ])(
       "should use the conservative GLM 5.3 Flash ceiling for %s ($0.15/$0.50)",
@@ -580,7 +582,6 @@ describe("token-bucket", () => {
     );
 
     it.each([
-      "agent-model-free",
       "agent-auto-review-model",
       "deepseek/deepseek-v4-flash-0731",
       "deepseek/deepseek-v4-flash-20260731",

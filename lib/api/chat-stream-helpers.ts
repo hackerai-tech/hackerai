@@ -560,9 +560,10 @@ export class SummarizationTracker {
  * stream, OpenRouter rolls forward through this list and bills at the served
  * model's rate (response.modelId reflects what actually ran).
  *
- * Paid Auto/Standard use DeepSeek V4 Flash 0731, Pro uses DeepSeek V4 Pro
- * 0813, and Max uses Grok 4.6. Historical aliases remain recognized for
- * in-flight requests and cost accounting.
+ * Paid Agent Standard uses GLM 5.3 Flash while Ask Standard remains on
+ * DeepSeek V4 Flash 0731. Pro uses DeepSeek V4 Pro 0813, and Max uses Grok
+ * 4.6. Historical aliases remain recognized for in-flight requests and cost
+ * accounting.
  *
  * Keys and values are registry names (see lib/ai/providers.ts) — the actual
  * OpenRouter slugs are resolved at request-build time so this stays in sync
@@ -597,6 +598,11 @@ const FREE_ASK_GLM_FLASH_FALLBACK_CHAIN = [
   ...DEEPSEEK_V4_FLASH_0731_FALLBACK_CHAIN,
 ] as const satisfies readonly ModelName[];
 
+const AGENT_GLM_FLASH_FALLBACK_CHAIN = [
+  "model-deepseek-v4-flash-0731",
+  ...DEEPSEEK_V4_FLASH_0731_FALLBACK_CHAIN,
+] as const satisfies readonly ModelName[];
+
 const DEEPSEEK_V4_PRO_0813_FALLBACK_CHAIN = [
   ...PRO_TEXT_FALLBACK_CHAIN,
 ] as const satisfies readonly ModelName[];
@@ -610,7 +616,8 @@ const HACKERAI_PRO_FALLBACK_CHAIN = [
 
 const MODEL_FALLBACK_CHAIN: Partial<Record<ModelName, readonly ModelName[]>> = {
   "ask-model-free": FREE_ASK_GLM_FLASH_FALLBACK_CHAIN,
-  "agent-model-free": DEEPSEEK_V4_FLASH_0731_FALLBACK_CHAIN,
+  "agent-model-free": AGENT_GLM_FLASH_FALLBACK_CHAIN,
+  "model-glm-5.3-flash-agent": AGENT_GLM_FLASH_FALLBACK_CHAIN,
   "model-deepseek-v4-flash-0731": DEEPSEEK_V4_FLASH_0731_FALLBACK_CHAIN,
   "model-deepseek-v4-pro": PRO_TEXT_FALLBACK_CHAIN,
   "model-deepseek-v4-pro-0813": DEEPSEEK_V4_PRO_0813_FALLBACK_CHAIN,
@@ -674,6 +681,7 @@ export function isExplicitDeepSeekProSelectionForRetry({
 }
 
 const HIGH_REASONING_MODELS = [
+  "agent-model-free",
   "model-grok-4.5-pro",
   "model-grok-4.6",
   "model-grok-4.6-pro",
@@ -682,6 +690,7 @@ const HIGH_REASONING_MODELS = [
   "model-glm-5.2",
   "model-glm-5.3",
   "model-glm-5.3-flash-pro",
+  "model-glm-5.3-flash-agent",
   "model-opus-4.6",
 ] as const satisfies readonly ModelName[];
 
@@ -728,8 +737,11 @@ export function getRetryFallbackModel(
 ): ModelName {
   if (
     modelName === "agent-model-free" ||
-    modelName === "model-deepseek-v4-flash-0731"
+    modelName === "model-glm-5.3-flash-agent"
   ) {
+    return "model-deepseek-v4-flash-0731";
+  }
+  if (modelName === "model-deepseek-v4-flash-0731") {
     return "model-deepseek-v4-pro-0813";
   }
   if (modelName === "ask-model-free") {
@@ -862,8 +874,8 @@ const OPENROUTER_RESPONSE_MODEL_COST_KEYS: Record<string, string> = {
   "anthropic/claude-opus-4.6": "model-opus-4.6",
   "deepseek/deepseek-v4-flash": "deepseek/deepseek-v4-flash",
   "deepseek/deepseek-v4-flash-20260423": "deepseek/deepseek-v4-flash",
-  "deepseek/deepseek-v4-flash-0731": "agent-model-free",
-  "deepseek/deepseek-v4-flash-20260731": "agent-model-free",
+  "deepseek/deepseek-v4-flash-0731": "model-deepseek-v4-flash-0731",
+  "deepseek/deepseek-v4-flash-20260731": "model-deepseek-v4-flash-0731",
   "deepseek/deepseek-v4-pro-0813": "model-deepseek-v4-pro-0813",
   "deepseek/deepseek-v4-pro-20260813": "model-deepseek-v4-pro-0813",
   "x-ai/grok-4.5": "model-grok-4.5",

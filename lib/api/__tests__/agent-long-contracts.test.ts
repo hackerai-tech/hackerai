@@ -62,11 +62,6 @@ const routeSrc = fs.readFileSync(
   "utf8",
 );
 
-const machineRoutingSrc = fs.readFileSync(
-  path.resolve(__dirname, "../../experiments/agent-machine-routing.ts"),
-  "utf8",
-);
-
 const agentRouteSrc = fs.readFileSync(
   path.resolve(__dirname, "../../../app/api/agent/route.ts"),
   "utf8",
@@ -870,6 +865,9 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
   test("runs are triggered with filterable queued metadata and tags", () => {
     expect(routeSrc).toMatch(/tags:\s*triggerTags/);
     expect(routeSrc).toMatch(
+      /tags:\s*getAgentApprovalTriggerTags\(triggerTags\)/,
+    );
+    expect(routeSrc).toMatch(
       /const permissionSnapshot\s*=\s*buildAgentPermissionRunSnapshot\(agentPermissionMode\)/,
     );
     expect(routeSrc).toMatch(
@@ -1190,15 +1188,16 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     );
   });
 
-  test("full-access runs expose both subagent profiles without a rollout flag", () => {
+  test("full-access runs gate generic delegation behind the rollout flag", () => {
     expect(routeSrc).toMatch(
-      /const securityValidationSubagentsEnabled\s*=\s*agentPermissionMode === "full_access";/,
+      /const genericDelegationFlagPromise\s*=\s*agentPermissionMode === "full_access"/,
     );
     expect(routeSrc).toMatch(
-      /const securityTaskSubagentsEnabled\s*=\s*securityValidationSubagentsEnabled;/,
+      /existingChat, userCustomization, genericDelegationEnabled[\s\S]*Promise\.all/,
     );
-    expect(routeSrc).not.toContain("resolveSecurityTaskSubagentsEnabled");
-    expect(routeSrc).not.toContain("subagent-feature");
+    expect(routeSrc).toContain('"agent-generic-delegation-v1"');
+    expect(routeSrc).not.toContain("securityValidationSubagentsEnabled");
+    expect(routeSrc).not.toContain("securityTaskSubagentsEnabled");
   });
 
   test("parent delivery is acknowledged only after result injection and synthesis", () => {
@@ -1245,12 +1244,26 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
       /onToolFailure,\s*requestToolApproval,\s*agentPermissionMode === "auto_review" &&\s*autoReviewAssignment\?\.phase !== undefined,\s*runTimingTracker\.measureActiveTime,\s*projectContext\.workingDirectory,\s*ctx\.run\.id,\s*auxiliaryVision,\s*{\s*cloudSandboxProvider,/,
     );
     expect(taskSrc).toMatch(
-      /additionalTools:[\s\S]*create_agent:[\s\S]*send_message_to_agent:[\s\S]*wait_for_agents:/,
+      /additionalTools:[\s\S]*delegate_task:[\s\S]*continue_agent:[\s\S]*send_message_to_agent:[\s\S]*wait_for_agents:/,
     );
     expect(taskSrc).not.toContain("vulnerability_report");
   });
 
-  test("direct runs use small subscription-aware Trigger.dev priority offsets", () => {
+  test("direct runs use fixed subscription machines and priority offsets", () => {
+    expect(routeSrc).toMatch(
+      /AGENT_TRIGGER_MACHINE_BY_SUBSCRIPTION:\s*Record<[\s\S]*SubscriptionTier,[\s\S]*AgentTriggerMachinePreset/,
+    );
+    expect(routeSrc).toMatch(/free:\s*"small-1x"/);
+    expect(routeSrc).toMatch(/pro:\s*"small-2x"/);
+    expect(routeSrc).toMatch(/"pro-plus":\s*"small-2x"/);
+    expect(routeSrc).toMatch(/ultra:\s*"small-2x"/);
+    expect(routeSrc).toMatch(/team:\s*"small-2x"/);
+    expect(routeSrc).toMatch(
+      /const triggerMachine = getAgentTriggerMachine\(subscription\)/,
+    );
+    expect(routeSrc).not.toMatch(
+      /machineRouting|agent_machine_routing_exposed/,
+    );
     expect(routeSrc).toMatch(
       /AGENT_TRIGGER_PRIORITY_BY_SUBSCRIPTION:\s*Record<\s*SubscriptionTier,\s*number\s*>/,
     );
@@ -1273,39 +1286,6 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     );
     expect(routeSrc).toMatch(
       /shouldRequireAgentApprovalWorkerVersion\(\)[\s\S]*!approvalWorkerVersion[\s\S]*temporarily unavailable/,
-    );
-  });
-
-  test("lightweight machine routing stays fail-closed and uses one decision for every trigger path", () => {
-    expect(machineRoutingSrc).toMatch(
-      /subscription !== "pro" && subscription !== "pro-plus"/,
-    );
-    expect(machineRoutingSrc).toMatch(/if \(!isNewChat\)/);
-    expect(machineRoutingSrc).toMatch(/requestMessageCount !== 1/);
-    expect(machineRoutingSrc).toMatch(
-      /requestMessageBytes > AGENT_LIGHTWEIGHT_REQUEST_MAX_BYTES/,
-    );
-    expect(machineRoutingSrc).toMatch(/if \(hasFileAttachment\)/);
-    expect(machineRoutingSrc).toMatch(/if \(hasProjectContext\)/);
-    expect(machineRoutingSrc).toMatch(/if \(hasTodos\)/);
-    expect(machineRoutingSrc).toMatch(/if \(subagentsEnabled\)/);
-    expect(routeSrc).toMatch(
-      /subagentsEnabled:\s*securityValidationSubagentsEnabled\s*\|\|\s*securityTaskSubagentsEnabled/,
-    );
-    expect(machineRoutingSrc).toMatch(
-      /machine: lightweightSmall1xEnabled \? "small-1x" : "small-2x"/,
-    );
-    expect(routeSrc).toMatch(
-      /const machineRoutingFlagPromise = machineRoutingEligibility\.eligible/,
-    );
-    expect(routeSrc).toMatch(
-      /const triggerMachine = machineRoutingDecision\.machine/,
-    );
-    expect(routeSrc).toMatch(
-      /const approvalTriggerConfig\s*=\s*{[\s\S]*?machine:\s*triggerMachine/,
-    );
-    expect(routeSrc).toMatch(
-      /tasks\.trigger<[\s\S]*?triggerOptions[\s\S]*?getAgentMachineRoutingExposure/,
     );
   });
 
@@ -1407,6 +1387,46 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
       );
       expect(source).toMatch(/writeAutoContinue\(writer\)/);
       expect(source).toMatch(/agent_auto_continue_suppressed/);
+    }
+  });
+
+  test("both Agent backends require an explicit continuation after elapsed timeout", () => {
+    for (const source of [chatHandlerSrc, taskSrc]) {
+      const autoContinueIdx = source.lastIndexOf(
+        "const autoContinueStopSource =",
+      );
+      const autoContinueEndIdx = source.indexOf("});", autoContinueIdx);
+
+      expect(autoContinueIdx).toBeGreaterThan(-1);
+      expect(autoContinueEndIdx).toBeGreaterThan(autoContinueIdx);
+      expect(source.slice(autoContinueIdx, autoContinueEndIdx)).not.toContain(
+        "stoppedDueToElapsedTimeout",
+      );
+    }
+  });
+
+  test("incomplete Agent turns persist and bill observed work before offering continuation", () => {
+    for (const source of [chatHandlerSrc, taskSrc]) {
+      const autoContinueIdx = source.lastIndexOf(
+        "const autoContinueStopSource =",
+      );
+      const persistenceIdx = source.lastIndexOf(
+        "sendFileMetadataToStream(accumulatedFiles)",
+        autoContinueIdx,
+      );
+      const deductionIdx = source.lastIndexOf(
+        "await deductAccumulatedUsage",
+        autoContinueIdx,
+      );
+
+      expect(autoContinueIdx).toBeGreaterThan(-1);
+      expect(persistenceIdx).toBeGreaterThan(-1);
+      expect(deductionIdx).toBeGreaterThan(-1);
+      expect(persistenceIdx).toBeLessThan(autoContinueIdx);
+      expect(deductionIdx).toBeLessThan(autoContinueIdx);
+      expect(source.slice(deductionIdx, autoContinueIdx)).not.toContain(
+        "usageRefundTracker.refund",
+      );
     }
   });
 

@@ -2,7 +2,11 @@
 
 import { action } from "./_generated/server";
 import { v, ConvexError } from "convex/values";
-import { generateS3UploadUrl, generateS3DownloadUrl } from "./s3Utils";
+import {
+  generateS3UploadUrl,
+  generateS3DownloadUrl,
+  getStoredS3Location,
+} from "./s3Utils";
 import { internal } from "./_generated/api";
 import { validateServiceKey } from "./lib/utils";
 import { convexLogger } from "./lib/logger";
@@ -19,6 +23,8 @@ type StorageUsage = {
 /** File record returned by internal.fileStorage.getFileById */
 type FileRecord = {
   s3_key?: string;
+  s3_region?: string;
+  s3_bucket?: string;
   user_id: string;
   name: string;
   media_type: string;
@@ -26,6 +32,23 @@ type FileRecord = {
   auxiliary_vision_description?: string;
   auxiliary_vision_model?: string;
 } | null;
+
+const s3StorageRegionValidator = v.union(
+  v.literal("eu-central-1"),
+  v.literal("us-east-1"),
+  v.literal("us-west-2"),
+);
+
+const getFileStorageLocation = (file: NonNullable<FileRecord>) =>
+  getStoredS3Location(file.s3_region, file.s3_bucket);
+
+const generateFileDownloadUrl = (file: NonNullable<FileRecord>) => {
+  if (!file.s3_key) throw new Error("File has no S3 object reference");
+  const storageLocation = getFileStorageLocation(file);
+  return storageLocation
+    ? generateS3DownloadUrl(file.s3_key, storageLocation)
+    : generateS3DownloadUrl(file.s3_key);
+};
 
 const getFileLookupErrorFields = (error: unknown) => {
   const errorMessage = error instanceof Error ? error.message : "";
@@ -92,6 +115,7 @@ export const generateS3UploadUrlAction = action({
     contentType: v.string(),
     size: v.optional(v.number()),
     mode: v.optional(v.union(v.literal("ask"), v.literal("agent"))),
+    storageRegion: v.optional(s3StorageRegionValidator),
   },
   returns: v.object({
     uploadUrl: v.string(),
@@ -187,12 +211,20 @@ export const generateS3UploadUrlAction = action({
 
     try {
       // Generate presigned upload URL with user-scoped S3 key
-      const { uploadUrl, s3Key } = await generateS3UploadUrl(
-        args.fileName,
-        args.contentType,
-        userId,
-        args.size,
-      );
+      const { uploadUrl, s3Key, storageLocation } = args.storageRegion
+        ? await generateS3UploadUrl(
+            args.fileName,
+            args.contentType,
+            userId,
+            args.size,
+            args.storageRegion,
+          )
+        : await generateS3UploadUrl(
+            args.fileName,
+            args.contentType,
+            userId,
+            args.size,
+          );
 
       await ctx.runMutation(internal.fileStorage.createPendingS3File, {
         s3Key,
@@ -200,6 +232,8 @@ export const generateS3UploadUrlAction = action({
         name: args.fileName,
         mediaType: args.contentType,
         size: args.size,
+        s3Region: storageLocation.region,
+        s3Bucket: storageLocation.bucket,
       });
 
       return {
@@ -282,7 +316,7 @@ export const getFileUrlAction = action({
       }
 
       // S3 file: Generate presigned download URL (valid for 1 hour)
-      return await generateS3DownloadUrl(file.s3_key);
+      return await generateFileDownloadUrl(file);
     } catch (error) {
       convexLogger.error("file_get_url_failed", {
         userId: identity.subject,
@@ -357,7 +391,7 @@ export const getFileUrlsByFileIdsAction = action({
           }
 
           if (file.s3_key) {
-            return await generateS3DownloadUrl(file.s3_key);
+            return await generateFileDownloadUrl(file);
           }
 
           return null;
@@ -431,7 +465,7 @@ export const getFileUrlInfosByFileIdsAction = action({
 
             if (file.s3_key) {
               return {
-                url: await generateS3DownloadUrl(file.s3_key),
+                url: await generateFileDownloadUrl(file),
                 sizeBytes: file.size,
                 mediaType: file.media_type,
                 name: file.name,
@@ -535,7 +569,7 @@ export const getFileUrlsBatchAction = action({
           continue;
         }
 
-        const url = await generateS3DownloadUrl(file.s3_key);
+        const url = await generateFileDownloadUrl(file);
         urlMap[fileId] = url;
       } catch (error) {
         // Log error but continue processing other files (partial failure handling)

@@ -1,4 +1,11 @@
-import { beforeEach, describe, expect, it, jest } from "@jest/globals";
+import {
+  afterAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  jest,
+} from "@jest/globals";
 import type { NextRequest } from "next/server";
 
 const mockAuthkit = jest.fn();
@@ -11,6 +18,7 @@ const mockNextResponseJson = jest.fn((body: unknown, init?: unknown) =>
 const mockNextResponseRedirect = jest.fn((url: URL, init?: unknown) =>
   mockCreateResponse("redirect", url, init),
 );
+const originalCookiePassword = process.env.WORKOS_COOKIE_PASSWORD;
 
 function mockCreateResponse(kind: string, body?: unknown, init?: unknown) {
   return {
@@ -44,6 +52,7 @@ function createRequest({
   method = "GET",
   headers = {},
   cookieNames = [],
+  cookieValues = {},
 }: {
   pathname: string;
   accept?: string;
@@ -52,6 +61,7 @@ function createRequest({
   method?: string;
   headers?: Record<string, string>;
   cookieNames?: string[];
+  cookieValues?: Record<string, string>;
 }): NextRequest {
   const url = new URL(pathname, "https://hackerai.co");
   return {
@@ -66,41 +76,63 @@ function createRequest({
     cookies: {
       has: jest.fn(
         (name: string) =>
-          (name === "wos-session" && hasSession) || cookieNames.includes(name),
+          (name === "wos-session" && hasSession) ||
+          cookieNames.includes(name) ||
+          Object.hasOwn(cookieValues, name),
+      ),
+      get: jest.fn((name: string) =>
+        Object.hasOwn(cookieValues, name)
+          ? { name, value: cookieValues[name] }
+          : undefined,
       ),
     },
   } as unknown as NextRequest;
 }
 
 describe("proxy", () => {
+  afterAll(() => {
+    if (originalCookiePassword === undefined) {
+      delete process.env.WORKOS_COOKIE_PASSWORD;
+    } else {
+      process.env.WORKOS_COOKIE_PASSWORD = originalCookiePassword;
+    }
+  });
+
   beforeEach(() => {
     jest.resetModules();
     mockAuthkit.mockReset();
     mockNextResponseNext.mockClear();
     mockNextResponseJson.mockClear();
     mockNextResponseRedirect.mockClear();
+    process.env.WORKOS_COOKIE_PASSWORD =
+      "test-cookie-password-with-32-characters";
   });
 
   it.each([
     "/api/health/connectivity",
     "/api/health/core",
     "/api/health/trigger-agent-mode",
-  ])("bypasses AuthKit for the health endpoint %s", async (pathname) => {
-    const { default: proxy } = await import("../proxy");
+    "/api/cron/platform-costs/convex",
+    "/api/cron/platform-costs/vercel",
+  ])(
+    "bypasses AuthKit for the independently authenticated endpoint %s",
+    async (pathname) => {
+      const { default: proxy } = await import("../proxy");
 
-    const response = await proxy(
-      createRequest({
-        pathname,
-        hasSession: true,
-      }),
-    );
+      const response = await proxy(
+        createRequest({
+          pathname,
+          hasSession: true,
+        }),
+      );
 
-    expect(response).toMatchObject({ kind: "next" });
-    expect(mockAuthkit).not.toHaveBeenCalled();
-    expect(mockNextResponseNext).toHaveBeenCalledWith();
-    expect(mockNextResponseJson).not.toHaveBeenCalled();
-    expect(mockNextResponseRedirect).not.toHaveBeenCalled();
-  });
+      expect(response).toMatchObject({ kind: "next" });
+      expect(mockAuthkit).not.toHaveBeenCalled();
+      expect(mockNextResponseNext).toHaveBeenCalledWith();
+      expect(mockNextResponseJson).not.toHaveBeenCalled();
+      expect(mockNextResponseRedirect).not.toHaveBeenCalled();
+    },
+  );
 
   it("bypasses AuthKit for the independently authenticated user-research gateway", async () => {
     const { default: proxy } = await import("../proxy");
@@ -186,7 +218,9 @@ describe("proxy", () => {
     );
     expect(firstTouchCookieCall).toBeDefined();
     const [, value, options] = firstTouchCookieCall!;
-    expect(JSON.parse(decodeURIComponent(String(value)))).toMatchObject({
+    const { parseFirstTouchAttributionCookie } =
+      await import("@/lib/analytics/acquisition-cookie");
+    expect(parseFirstTouchAttributionCookie(String(value))).toMatchObject({
       version: 1,
       source: "github",
       medium: "social",
@@ -203,6 +237,108 @@ describe("proxy", () => {
       maxAge: 90 * 24 * 60 * 60,
       path: "/",
     });
+  });
+
+  it("does not set optional attribution cookies before EU consent", async () => {
+    mockAuthkit.mockResolvedValue({
+      session: { user: null },
+      headers: new Headers(),
+      authorizationUrl: "https://signin.hackerai.co/login",
+    });
+    const { default: proxy } = await import("../proxy");
+
+    const response = await proxy(
+      createRequest({
+        pathname: "/?utm_source=github&referral_code=ABCDEF",
+        accept: "text/html",
+        userAgent: "Mozilla/5.0",
+        headers: { "x-vercel-ip-country": "DE" },
+      }),
+    );
+
+    expect(response.cookies.set).not.toHaveBeenCalled();
+    expect(response.cookies.delete).toHaveBeenCalledWith(
+      "hackerai_first_touch_attribution",
+    );
+    expect(response.cookies.delete).toHaveBeenCalledWith("hackerai_ref");
+    expect(response.cookies.delete).toHaveBeenCalledWith("hackerai_ref_at");
+  });
+
+  it("sets optional attribution cookies after EU consent", async () => {
+    mockAuthkit.mockResolvedValue({
+      session: { user: null },
+      headers: new Headers(),
+      authorizationUrl: "https://signin.hackerai.co/login",
+    });
+    const { default: proxy } = await import("../proxy");
+
+    const response = await proxy(
+      createRequest({
+        pathname: "/?utm_source=github&referral_code=ABCDEF",
+        accept: "text/html",
+        userAgent: "Mozilla/5.0",
+        headers: { "x-vercel-ip-country": "DE" },
+        cookieValues: { hackerai_analytics_consent: "accepted" },
+      }),
+    );
+
+    expect(response.cookies.set).toHaveBeenCalledWith(
+      "hackerai_ref",
+      "ABCDEF",
+      expect.any(Object),
+    );
+    expect(
+      response.cookies.set.mock.calls.some(
+        ([name]: [string]) => name === "hackerai_first_touch_attribution",
+      ),
+    ).toBe(true);
+  });
+
+  it("honors an analytics rejection outside the EU", async () => {
+    mockAuthkit.mockResolvedValue({
+      session: { user: null },
+      headers: new Headers(),
+      authorizationUrl: "https://signin.hackerai.co/login",
+    });
+    const { default: proxy } = await import("../proxy");
+
+    const response = await proxy(
+      createRequest({
+        pathname: "/?utm_source=github",
+        accept: "text/html",
+        userAgent: "Mozilla/5.0",
+        headers: { "x-vercel-ip-country": "US" },
+        cookieValues: { hackerai_analytics_consent: "declined" },
+      }),
+    );
+
+    expect(response.cookies.set).not.toHaveBeenCalled();
+    expect(response.cookies.delete).toHaveBeenCalledWith(
+      "hackerai_first_touch_attribution",
+    );
+  });
+
+  it("does not store attribution for likely bot traffic", async () => {
+    mockAuthkit.mockResolvedValue({
+      session: { user: null },
+      headers: new Headers(),
+      authorizationUrl: "https://signin.hackerai.co/login",
+    });
+    const { default: proxy } = await import("../proxy");
+
+    const response = await proxy(
+      createRequest({
+        pathname: "/?utm_source=bot_campaign",
+        accept: "text/html",
+        userAgent: "Googlebot/2.1",
+      }),
+    );
+
+    expect(
+      response.cookies.set.mock.calls.some(
+        ([name]: [string]) => name === "hackerai_first_touch_attribution",
+      ),
+    ).toBe(false);
   });
 
   it("does not overwrite existing first-touch attribution", async () => {

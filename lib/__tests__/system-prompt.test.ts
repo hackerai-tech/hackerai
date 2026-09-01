@@ -2,7 +2,7 @@ import { describe, expect, it } from "@jest/globals";
 import { systemPrompt } from "@/lib/system-prompt";
 
 describe("systemPrompt security instructions", () => {
-  it("exposes only the independent validation subagent policy when enabled", async () => {
+  it("exposes generic bounded delegation when enabled", async () => {
     const disabled = await systemPrompt(
       "user_123",
       "agent",
@@ -24,21 +24,19 @@ describe("systemPrompt security instructions", () => {
       true,
     );
 
-    expect(disabled).not.toContain("<independent_validation>");
-    expect(enabled).toContain("<independent_validation>");
-    expect(enabled).toContain("Do not create an agent for reconnaissance");
+    expect(disabled).not.toContain("<generic_delegation>");
+    expect(enabled).toContain("<generic_delegation>");
+    expect(enabled).toContain("Use delegate_task");
     expect(enabled).not.toContain("vulnerability_report");
-    expect(enabled).not.toContain("report_eligible");
-    expect(enabled).toContain("result.verdict=confirmed");
-    expect(enabled).toContain(
-      "Do not substitute parent-run tools to repeat the same validation",
-    );
-    expect(enabled).toContain('profile="security_validation"');
-    expect(enabled).toContain("omit skills");
-    expect(enabled).not.toContain('set skills to ["security_validation"]');
+    expect(enabled).not.toContain("security_validation");
+    expect(enabled).not.toContain("security_task");
+    expect(enabled).toContain("two siblings may be active");
+    expect(enabled).toContain("four children may be created");
+    expect(enabled).toContain("shared work ledger");
+    expect(enabled).toContain("continue_agent");
   });
 
-  it("exposes the free-form security_task policy with optional specialist skills", async () => {
+  it("does not expose legacy security profiles through extra arguments", async () => {
     const prompt = await systemPrompt(
       "user_123",
       "agent",
@@ -49,28 +47,10 @@ describe("systemPrompt security instructions", () => {
       "full_access",
       false,
       undefined,
-      true,
     );
 
-    expect(prompt).toContain("<focused_security_tasks>");
-    expect(prompt).toContain('profile="security_task"');
-    expect(prompt).toContain("The task is free-form");
-    expect(prompt).not.toContain("<available_subagent_skills");
-    expect(prompt).not.toContain("vulnerabilities/idor:");
-    expect(prompt).not.toContain("frameworks/nextjs:");
-    expect(prompt).toContain("Specialist skills are optional");
-    expect(prompt).toContain(
-      "Do not search for, load, or assign skills by default",
-    );
-    expect(prompt).toContain("otherwise omit skills");
-    expect(prompt).not.toContain("1-3 skills normally");
-    expect(prompt).toContain("Use search_skills");
-    expect(prompt).toContain("Use load_skill");
-    expect(prompt).toContain(
-      "permanently included in that child's system prompt",
-    );
-    expect(prompt).toContain("Skills provide methodology only");
-    expect(prompt).toContain("one-active and three-total limits");
+    expect(prompt).not.toContain("<generic_delegation>");
+    expect(prompt).not.toContain("<focused_security_tasks>");
     expect(prompt).not.toContain("<independent_validation>");
   });
 
@@ -657,18 +637,30 @@ Commands run directly on the host OS "workstation" without Docker isolation. Be 
 
     expect(cloudPrompt).toContain("<sandbox_environment>");
     expect(cloudPrompt).toContain(
-      "Cloud Agent networking can produce false-positive TCP port results where many or all ports appear open",
+      "Cloud Agent networking can produce false-positive port results because a low-level connection can appear successful",
     );
     expect(cloudPrompt).toContain(
-      "Treat implausible Cloud Agent port-scan output as invalid or unverified",
+      "Do not use low-level TCP connection success, UDP behavior, raw sockets, or zero-I/O probes to determine whether ports are open in Cloud Agent",
+    );
+    expect(cloudPrompt).toContain(
+      "Never treat a successful low-level connection or implausible scan output as confirmation that a port is open",
     );
     expect(cloudPrompt).toContain(
       "recommend selecting the HackerAI Desktop App or a Remote Control connection",
     );
-    expect(cloudPrompt).toContain("normal TCP, UDP, or raw-socket behavior");
+    expect(cloudPrompt).toContain(
+      "Narrow application-level checks remain appropriate when they verify expected protocol behavior",
+    );
+    const portScanningPolicy = cloudPrompt.match(
+      /Port-scanning limitation:[\s\S]*?\n\nSystem Environment:/,
+    )?.[0];
+    expect(portScanningPolicy).toBeDefined();
+    expect(portScanningPolicy).not.toMatch(
+      /\b(?:masscan|naabu|nc|netcat|nmap)\b/i,
+    );
     expect(localPrompt).not.toContain("Port-scanning limitation:");
     expect(localPrompt).not.toContain(
-      "Cloud Agent networking can produce false-positive TCP port results",
+      "Cloud Agent networking can produce false-positive port results",
     );
   });
 

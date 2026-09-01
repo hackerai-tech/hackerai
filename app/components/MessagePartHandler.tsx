@@ -35,6 +35,7 @@ interface MessagePartHandlerProps {
 const SUBAGENT_TOOL_PART_TYPES = new Set([
   "tool-delegate_task",
   "tool-create_agent",
+  "tool-continue_agent",
   "tool-list_agents",
   "tool-send_message_to_agent",
   "tool-wait_for_agents",
@@ -306,6 +307,7 @@ export const MessagePartHandler = memo(function MessagePartHandler({
 
     case "tool-delegate_task":
     case "tool-create_agent":
+    case "tool-continue_agent":
     case "tool-list_agents":
     case "tool-send_message_to_agent":
     case "tool-wait_for_agents":

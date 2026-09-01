@@ -17,6 +17,7 @@ jest.mock("convex/values", () => ({
     optional: jest.fn(() => "optional"),
     object: jest.fn(() => "object"),
     union: jest.fn(() => "union"),
+    literal: jest.fn(() => "literal"),
     array: jest.fn(() => "array"),
     boolean: jest.fn(() => "boolean"),
   },

@@ -757,6 +757,67 @@ describe("processMessageFiles image size guards", () => {
     ]);
   });
 
+  it("probes legacy Agent images without trusted size before provider use", async () => {
+    mockConvexAction.mockResolvedValue([
+      {
+        url: "https://storage.example/legacy-large.png",
+        mediaType: "image/png",
+        name: "legacy-large.png",
+      },
+    ]);
+    const cancelRangeBody = jest.fn(async () => undefined);
+    const fetchSpy = jest.fn(async (_url, init?: RequestInit) => {
+      if (init?.method === "HEAD") {
+        return responseLike({});
+      }
+      return responseLike({
+        status: 206,
+        headers: {
+          "content-range": `bytes 0-${5 * 1024 * 1024}/${40 * 1024 * 1024}`,
+        },
+        body: {
+          cancel: cancelRangeBody,
+          getReader: () => {
+            throw new Error("Known range total should avoid reading the body");
+          },
+        },
+      });
+    });
+    global.fetch = fetchSpy as any;
+
+    const result = await processMessageFiles(
+      makeMessage({
+        type: "file",
+        fileId: "file_legacy_large",
+        mediaType: "image/png",
+        name: "legacy-large.png",
+      }),
+      "agent",
+      "user123",
+      "/home/user/upload",
+      "pro",
+    );
+
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    expect(cancelRangeBody).toHaveBeenCalledTimes(1);
+    expect(result.sandboxFiles).toHaveLength(1);
+    const localPath = result.sandboxFiles[0].localPath;
+    expect(localPath).toMatch(
+      /^\/home\/user\/upload\/[a-f0-9]{64}\/legacy-large\.png$/,
+    );
+    expect(result.sandboxFiles[0]).toMatchObject({
+      kind: "url",
+      url: "https://storage.example/legacy-large.png",
+    });
+    expect(result.messages[0].parts).toEqual([
+      { type: "text", text: "what is this?" },
+      {
+        type: "text",
+        text: `<attachment filename="legacy-large.png" local_path="${localPath}" />`,
+      },
+    ]);
+  });
+
   it("falls back to legacy file URL action when metadata-aware action is not deployed", async () => {
     mockConvexAction
       .mockRejectedValueOnce(
