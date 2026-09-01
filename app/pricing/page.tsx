@@ -48,23 +48,20 @@ export default function PricingPage() {
       <main>
         <section className="border-b border-border/80">
           <div className="mx-auto max-w-6xl px-4 py-14 sm:px-6 sm:py-18">
-            <div className="max-w-3xl">
-              <p className="text-sm font-medium text-muted-foreground">
-                HackerAI pricing
-              </p>
-              <p className="mt-2 text-xs text-muted-foreground">
+            <div className="mx-auto max-w-3xl text-center">
+              <p className="text-xs text-muted-foreground">
                 Last updated{" "}
                 <time dateTime={PUBLIC_PAGE_LAST_MODIFIED.pricing}>
                   {formatPublicPageDate(PUBLIC_PAGE_LAST_MODIFIED.pricing)}
                 </time>
               </p>
               <h1 className="mt-3 text-4xl font-semibold leading-tight sm:text-5xl">
-                Start locally. Add cloud capacity when you need it.
+                Pricing
               </h1>
-              <p className="mt-5 max-w-2xl text-lg leading-8 text-muted-foreground">
-                Free includes basic AI access and Agent mode with a local
-                sandbox. Paid plans add stronger model access, higher limits,
-                files, larger context, and cloud agents.
+              <p className="mx-auto mt-5 max-w-2xl text-lg leading-8 text-muted-foreground">
+                Start free with Agent mode and local execution. Upgrade when you
+                need stronger model access, higher usage, files, larger context,
+                or cloud agents.
               </p>
             </div>
           </div>

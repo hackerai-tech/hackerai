@@ -4,13 +4,23 @@ import React from "react";
 import Link from "next/link";
 import { HackerAISVG } from "@/components/icons/hackerai-svg";
 import { Button } from "@/components/ui/button";
+import {
+  Sheet,
+  SheetClose,
+  SheetContent,
+  SheetFooter,
+  SheetHeader,
+  SheetTitle,
+  SheetTrigger,
+} from "@/components/ui/sheet";
 import { useAuth } from "@workos-inc/authkit-nextjs/components";
 import { navigateToAuth } from "@/app/hooks/useTauri";
-import { Download } from "lucide-react";
+import { ArrowRight, Download, Menu } from "lucide-react";
 
 const publicNavigation = [
   { href: "/product", label: "Product" },
   { href: "/pricing", label: "Pricing" },
+  { href: "/download", label: "Download" },
   { href: "/trust", label: "Trust" },
 ] as const;
 
@@ -42,11 +52,13 @@ const Header: React.FC<HeaderProps> = ({ chatTitle, hideDownload = false }) => {
           )}
           {!chatTitle && (
             <nav className="flex items-center gap-1" aria-label="Primary">
-              {publicNavigation.map((item) => (
-                <Button key={item.href} asChild variant="ghost" size="sm">
-                  <Link href={item.href}>{item.label}</Link>
-                </Button>
-              ))}
+              {publicNavigation.map((item) =>
+                item.href !== "/download" ? (
+                  <Button key={item.href} asChild variant="ghost" size="sm">
+                    <Link href={item.href}>{item.label}</Link>
+                  </Button>
+                ) : null,
+              )}
             </nav>
           )}
           {!loading && !user && (
@@ -100,30 +112,67 @@ const Header: React.FC<HeaderProps> = ({ chatTitle, hideDownload = false }) => {
           </span>
         </div>
         {!loading && !user && (
-          <div className="flex items-center gap-2">
-            <Button
-              data-testid="sign-in-button-mobile"
-              onClick={() => navigateToAuth("/login")}
-              variant="default"
-              size="sm"
-              className="rounded-[10px]"
+          <Sheet>
+            <SheetTrigger asChild>
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                aria-label="Open navigation"
+              >
+                <Menu className="size-5" />
+              </Button>
+            </SheetTrigger>
+            <SheetContent
+              side="right"
+              className="w-full gap-0 border-border p-0 sm:max-w-sm"
             >
-              Sign in
-            </Button>
-            <Button
-              data-testid="sign-up-button-mobile"
-              onClick={() =>
-                navigateToAuth("/signup", {
-                  preferSignInForReturningUser: true,
-                })
-              }
-              variant="outline"
-              size="sm"
-              className="rounded-[10px]"
-            >
-              Get started
-            </Button>
-          </div>
+              <SheetHeader className="border-b border-border px-5 py-5">
+                <SheetTitle>HackerAI</SheetTitle>
+              </SheetHeader>
+              <nav
+                className="flex flex-col gap-1 px-3 py-4"
+                aria-label="Mobile"
+              >
+                {publicNavigation.map((item) =>
+                  item.href === "/download" && hideDownload ? null : (
+                    <SheetClose key={item.href} asChild>
+                      <Link
+                        href={item.href}
+                        className="rounded-md px-3 py-3 text-base font-medium text-foreground hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+                      >
+                        {item.label}
+                      </Link>
+                    </SheetClose>
+                  ),
+                )}
+              </nav>
+              <SheetFooter className="mt-0 grid grid-cols-2 gap-2 border-t border-border p-4">
+                <SheetClose asChild>
+                  <Button
+                    data-testid="sign-in-button-mobile"
+                    onClick={() => navigateToAuth("/login")}
+                    variant="outline"
+                  >
+                    Sign in
+                  </Button>
+                </SheetClose>
+                <SheetClose asChild>
+                  <Button
+                    data-testid="sign-up-button-mobile"
+                    onClick={() =>
+                      navigateToAuth("/signup", {
+                        preferSignInForReturningUser: true,
+                      })
+                    }
+                  >
+                    Get started
+                    <ArrowRight className="size-4" />
+                  </Button>
+                </SheetClose>
+              </SheetFooter>
+            </SheetContent>
+          </Sheet>
         )}
       </div>
     </header>
