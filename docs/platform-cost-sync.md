@@ -37,13 +37,14 @@ which avoids unnecessary warehouse sync churn.
 
 ## Production environment
 
-The only platform-cost-specific variables are `CRON_SECRET`,
-`VERCEL_BILLING_READ_TOKEN`, and `VERCEL_BILLING_TEAM_ID`.
+The platform-cost-specific variables are `CRON_SECRET`,
+`VERCEL_BILLING_READ_TOKEN`, `VERCEL_BILLING_TEAM_ID`, and
+`CONVEX_DEPLOYMENT_URL`.
 
-The jobs reuse the app's existing `CONVEX_DEPLOY_KEY`,
-`NEXT_PUBLIC_CONVEX_URL`, and `CONVEX_SERVICE_ROLE_KEY` configuration.
-`NEXT_PUBLIC_CONVEX_URL` must be the canonical
-`https://<deployment>.convex.cloud` URL; custom domains do not expose the
+The jobs reuse the app's existing `CONVEX_DEPLOY_KEY` and
+`CONVEX_SERVICE_ROLE_KEY` configuration. `CONVEX_DEPLOYMENT_URL` must be the
+canonical `https://<deployment>.convex.cloud` URL. Custom application domains,
+including those configured through `NEXT_PUBLIC_CONVEX_URL`, do not expose the
 authenticated deployment-usage endpoint.
 
 The Vercel token should be scoped to the owning team and used only for this

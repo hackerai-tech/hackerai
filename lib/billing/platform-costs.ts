@@ -326,7 +326,7 @@ export function convexUsageBaseUrl(configuredUrl: string): string {
     url.pathname !== "/"
   ) {
     throw new Error(
-      "NEXT_PUBLIC_CONVEX_URL must be a canonical https://*.convex.cloud URL",
+      "CONVEX_DEPLOYMENT_URL must be a canonical https://*.convex.cloud URL",
     );
   }
   return url.origin;

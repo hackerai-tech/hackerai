@@ -31,7 +31,7 @@ export async function GET(request: Request) {
   try {
     const deployKey = requireEnvironment("CONVEX_DEPLOY_KEY");
     const convexUrl = convexUsageBaseUrl(
-      requireEnvironment("NEXT_PUBLIC_CONVEX_URL"),
+      requireEnvironment("CONVEX_DEPLOYMENT_URL"),
     );
     const usage = await fetchWithRetry(
       `${convexUrl.replace(/\/$/, "")}/api/v1/get_current_usage`,
