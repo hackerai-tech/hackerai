@@ -112,8 +112,8 @@ importers:
         specifier: 3.3.8
         version: 3.3.8(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
       '@miosa/sdk':
-        specifier: 3.0.2
-        version: 3.0.2
+        specifier: 3.1.0
+        version: 3.1.0
       '@monaco-editor/react':
         specifier: ^4.7.0
         version: 4.7.0(monaco-editor@0.55.1)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
@@ -359,8 +359,8 @@ importers:
         specifier: ^30.4.1
         version: 30.4.1
       '@miosa/cli':
-        specifier: 1.1.22
-        version: 1.1.22(@types/node@25.9.3)(@types/react@19.2.18)
+        specifier: 1.2.0
+        version: 1.2.0(@types/node@25.9.3)(@types/react@19.2.18)
       '@playwright/test':
         specifier: ^1.62.1
         version: 1.62.1
@@ -2372,13 +2372,13 @@ packages:
   '@microsoft/fetch-event-source@2.0.1':
     resolution: {integrity: sha512-W6CLUJ2eBMw3Rec70qrsEW0jOm/3twwJv21mrmj2yORiaVmVYGS4sSS5yUwvQc1ZlDLYGPnClVWmUUMagKNsfA==}
 
-  '@miosa/cli@1.1.22':
-    resolution: {integrity: sha512-yFuMEbqnKLiyHkZ7Ngv9JDZkcJSfqEJP+qRhvVnX3/ar+GA10MJ+kodc3wyD5K1qcfUEDxZXXcfPHpug+q6+dQ==}
+  '@miosa/cli@1.2.0':
+    resolution: {integrity: sha512-D/xWYUV51gQeixrvzqRkfxg6GtdMbRnr6F58APODZJsN+l7y6e8k9KSsjzAhN978X+tblgqr8zZZ9ThwQ6hR5A==}
     engines: {node: '>=20'}
     hasBin: true
 
-  '@miosa/sdk@3.0.2':
-    resolution: {integrity: sha512-rtHF9+NO43bh31soXLeAjuGMCadO6PdoRdi+2YLKOplXxLuHfRPxP1bxkK3j3SRMgmP1IElumibQlAVJQOGDkA==}
+  '@miosa/sdk@3.1.0':
+    resolution: {integrity: sha512-0j7FgIEpKyqMBN/fw3mu3f6USvIaMhEEkjhROKo3rFmQJ+q2DEvBqsllxGtbdnrM6R8fJu4CuXIqmV2UtMQhOw==}
     engines: {node: '>=18.0.0'}
 
   '@modelcontextprotocol/sdk@1.29.0':
@@ -10141,7 +10141,7 @@ snapshots:
 
   '@microsoft/fetch-event-source@2.0.1': {}
 
-  '@miosa/cli@1.1.22(@types/node@25.9.3)(@types/react@19.2.18)':
+  '@miosa/cli@1.2.0(@types/node@25.9.3)(@types/react@19.2.18)':
     dependencies:
       chalk: 5.6.2
       commander: 12.1.0
@@ -10159,7 +10159,7 @@ snapshots:
       - react-devtools-core
       - utf-8-validate
 
-  '@miosa/sdk@3.0.2':
+  '@miosa/sdk@3.1.0':
     optionalDependencies:
       undici: 7.28.0
       ws: 8.21.3
@@ -13981,7 +13981,7 @@ snapshots:
       isstream: 0.1.2
       jsonwebtoken: 9.0.3
       mime-types: 2.1.35
-      retry-axios: 2.6.0(axios@1.18.0(debug@4.4.3))
+      retry-axios: 2.6.0(axios@1.18.0)
       tough-cookie: 4.1.4
     transitivePeerDependencies:
       - supports-color
@@ -16306,7 +16306,7 @@ snapshots:
 
   resumable-stream@2.2.12: {}
 
-  retry-axios@2.6.0(axios@1.18.0(debug@4.4.3)):
+  retry-axios@2.6.0(axios@1.18.0):
     dependencies:
       axios: 1.18.0(debug@4.4.3)
 

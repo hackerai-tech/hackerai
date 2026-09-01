@@ -74,7 +74,7 @@
     "@e2b/code-interpreter": "2.7.1",
     "@langchain/community": "^1.1.29",
     "@legendapp/list": "3.3.8",
-    "@miosa/sdk": "3.0.2",
+    "@miosa/sdk": "3.1.0",
     "@monaco-editor/react": "^4.7.0",
     "@openrouter/ai-sdk-provider": "^2.10.0",
     "@posthog/ai": "8.8.0",
@@ -158,7 +158,7 @@
   "devDependencies": {
     "@eslint/eslintrc": "^3.3.6",
     "@jest/globals": "^30.4.1",
-    "@miosa/cli": "1.1.22",
+    "@miosa/cli": "1.2.0",
     "@playwright/test": "^1.62.1",
     "@posthog/cli": "0.15.0",
     "@tailwindcss/postcss": "^4.3.3",
