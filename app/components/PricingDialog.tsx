@@ -29,7 +29,7 @@ import {
   PRO_MONTHLY_PRICING_EXPOSURE_EVENT,
   proMonthlyPricingAssignmentForVariant,
   proMonthlyPricingExperimentProperties,
-  type ProMonthlyPricingExperimentAssignment,
+  type ProMonthlyPricingExperimentPresentation,
 } from "@/lib/experiments/pro-monthly-pricing";
 
 interface PricingDialogProps {
@@ -228,7 +228,7 @@ const PricingDialog: React.FC<PricingDialogProps> = ({
   const [isYearly, setIsYearly] = React.useState(false);
   const capturedPricingCtaImpressionRef = React.useRef(false);
   const [pricingExperiment, setPricingExperiment] = React.useState<
-    ProMonthlyPricingExperimentAssignment | undefined
+    ProMonthlyPricingExperimentPresentation | undefined
   >();
   const [pricingExperimentResolved, setPricingExperimentResolved] =
     React.useState(false);
@@ -274,17 +274,27 @@ const PricingDialog: React.FC<PricingDialogProps> = ({
           variant?: unknown;
           priceLookupKey?: unknown;
           displayedAmountDollars?: unknown;
+          stripePriceId?: unknown;
         };
         if (controller.signal.aborted) return;
         const expected = proMonthlyPricingAssignmentForVariant(
           value.variant === "test" ? "test" : "control",
         );
+        const stripePriceId =
+          typeof value.stripePriceId === "string" &&
+          value.stripePriceId.length > 0
+            ? value.stripePriceId
+            : undefined;
         const isValid =
           value.key === expected.key &&
           value.priceLookupKey === expected.priceLookupKey &&
-          value.displayedAmountDollars === expected.displayedAmountDollars;
+          value.displayedAmountDollars === expected.displayedAmountDollars &&
+          stripePriceId;
         if (!isValid) throw new Error("Invalid pricing assignment");
-        setPricingExperiment(expected);
+        setPricingExperiment({
+          ...expected,
+          stripePriceId,
+        });
         setPricingExperimentResolved(true);
       })
       .catch((error: unknown) => {

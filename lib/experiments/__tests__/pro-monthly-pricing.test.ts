@@ -4,6 +4,7 @@ import {
   proMonthlyPricingAssignmentForVariant,
   proMonthlyPricingAssignmentFromMetadata,
   proMonthlyPricingExperimentMetadata,
+  proMonthlyPricingExperimentProperties,
 } from "@/lib/experiments/pro-monthly-pricing";
 
 describe("HAC-46 Pro monthly pricing experiment", () => {
@@ -54,5 +55,18 @@ describe("HAC-46 Pro monthly pricing experiment", () => {
     expect(
       proMonthlyPricingAssignmentFromMetadata(metadata, "pro-monthly-plan"),
     ).toBeUndefined();
+  });
+
+  it("includes the resolved Stripe Price ID in client analytics", () => {
+    expect(
+      proMonthlyPricingExperimentProperties({
+        ...proMonthlyPricingAssignmentForVariant("test"),
+        stripePriceId: "price_pro_29",
+      }),
+    ).toMatchObject({
+      experiment_variant: "test",
+      stripe_price_lookup_key: "pro-monthly-plan-29-experiment",
+      stripe_price_id: "price_pro_29",
+    });
   });
 });

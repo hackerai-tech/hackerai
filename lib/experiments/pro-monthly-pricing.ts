@@ -21,6 +21,11 @@ export type ProMonthlyPricingExperimentAssignment = {
   billingInterval: "month";
 };
 
+export type ProMonthlyPricingExperimentPresentation =
+  ProMonthlyPricingExperimentAssignment & {
+    stripePriceId: string;
+  };
+
 const ASSIGNMENTS: Record<
   ProMonthlyPricingExperimentVariant,
   ProMonthlyPricingExperimentAssignment
@@ -79,6 +84,11 @@ export function proMonthlyPricingExperimentProperties(
   assignment: ProMonthlyPricingExperimentAssignment | undefined,
 ): Record<string, unknown> {
   if (!assignment) return {};
+  const stripePriceId =
+    "stripePriceId" in assignment &&
+    typeof assignment.stripePriceId === "string"
+      ? assignment.stripePriceId
+      : undefined;
   return {
     experiment_key: assignment.key,
     experiment_variant: assignment.variant,
@@ -87,6 +97,7 @@ export function proMonthlyPricingExperimentProperties(
     displayed_amount_dollars: assignment.displayedAmountDollars,
     billing_interval: assignment.billingInterval,
     currency: assignment.currency,
+    ...(stripePriceId && { stripe_price_id: stripePriceId }),
   };
 }
 

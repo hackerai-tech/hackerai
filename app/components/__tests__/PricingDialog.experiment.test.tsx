@@ -87,6 +87,7 @@ describe("PricingDialog HAC-46 assignment", () => {
           variant: "test",
           priceLookupKey: "pro-monthly-plan-29-experiment",
           displayedAmountDollars: 29,
+          stripePriceId: "price_pro_29",
         }),
       });
     });
@@ -103,6 +104,7 @@ describe("PricingDialog HAC-46 assignment", () => {
         variant: "control",
         priceLookupKey: "pro-monthly-plan",
         displayedAmountDollars: 25,
+        stripePriceId: "price_pro_25",
       }),
     });
 

@@ -326,14 +326,41 @@ describe("useUpgrade checkout attempts", () => {
       response({
         ok: true,
         status: 200,
-        body: { url: `${window.location.origin}/#checkout` },
+        body: {
+          url: `${window.location.origin}/#checkout`,
+          pricingExperiment: {
+            key: "hac46-pro-monthly-29-pricing",
+            variant: "test",
+            priceLookupKey: "pro-monthly-plan-29-experiment",
+            displayedAmountDollars: 29,
+            currency: "usd",
+            billingInterval: "month",
+            stripePriceId: "price_pro_29",
+          },
+        },
       }),
     );
     mockNewCheckoutAttemptId.mockReturnValue("ca_redirect_123");
     const { result } = renderHook(() => useUpgrade());
 
     await act(async () => {
-      await result.current.handleUpgrade("pro-monthly-plan");
+      await result.current.handleUpgrade(
+        "pro-monthly-plan",
+        undefined,
+        undefined,
+        "free",
+        {
+          pricing_experiment: {
+            key: "hac46-pro-monthly-29-pricing",
+            variant: "test",
+            priceLookupKey: "pro-monthly-plan-29-experiment",
+            displayedAmountDollars: 29,
+            currency: "usd",
+            billingInterval: "month",
+            stripePriceId: "price_pro_29",
+          },
+        },
+      );
     });
     await act(async () => {
       await result.current.handleUpgrade("pro-monthly-plan");
@@ -343,5 +370,13 @@ describe("useUpgrade checkout attempts", () => {
     expect(global.fetch).toHaveBeenCalledTimes(1);
     expect(mockNewCheckoutAttemptId).toHaveBeenCalledTimes(1);
     expect(result.current.upgradeLoading).toBe(true);
+    expect(mockCaptureAuthenticatedEvent).toHaveBeenCalledWith(
+      "checkout_intent_clicked",
+      expect.objectContaining({ stripe_price_id: "price_pro_29" }),
+    );
+    expect(mockCaptureAuthenticatedEvent).toHaveBeenCalledWith(
+      "checkout_redirected",
+      expect.objectContaining({ stripe_price_id: "price_pro_29" }),
+    );
   });
 });

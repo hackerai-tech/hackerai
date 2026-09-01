@@ -789,7 +789,12 @@ export const POST = async (req: NextRequest) => {
     return json({
       url: session.url,
       checkoutAttemptId,
-      ...(pricingExperiment && { pricingExperiment }),
+      ...(pricingExperiment && {
+        pricingExperiment: {
+          ...pricingExperiment,
+          stripePriceId: selectedPrice.id,
+        },
+      }),
     });
   } catch (error: unknown) {
     if (error instanceof ChatSDKError) {

@@ -908,6 +908,17 @@ describe("POST /api/subscribe", () => {
     );
 
     expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      pricingExperiment: {
+        key: "hac46-pro-monthly-29-pricing",
+        variant: "test",
+        priceLookupKey: "pro-monthly-plan-29-experiment",
+        displayedAmountDollars: 29,
+        currency: "usd",
+        billingInterval: "month",
+        stripePriceId: "price_pro_29",
+      },
+    });
     expect(mockListPrices).toHaveBeenCalledWith({
       lookup_keys: ["pro-monthly-plan-29-experiment", "pro-monthly-plan"],
     });

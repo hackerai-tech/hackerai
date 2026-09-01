@@ -19,7 +19,7 @@ import {
 } from "@/lib/billing/checkout-navigation-guard";
 import {
   proMonthlyPricingExperimentProperties,
-  type ProMonthlyPricingExperimentAssignment,
+  type ProMonthlyPricingExperimentPresentation,
 } from "@/lib/experiments/pro-monthly-pricing";
 
 // Keep a tab's upgrade ownership across pricing dialog remounts. Server routes
@@ -40,7 +40,7 @@ export const useUpgrade = () => {
       surface?: string;
       reason?: string;
       limit_type?: string;
-      pricing_experiment?: ProMonthlyPricingExperimentAssignment;
+      pricing_experiment?: ProMonthlyPricingExperimentPresentation;
     } = {},
   ) => {
     e?.preventDefault();
