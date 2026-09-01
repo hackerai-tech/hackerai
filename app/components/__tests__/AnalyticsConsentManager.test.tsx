@@ -172,7 +172,7 @@ describe("AnalyticsConsentManager", () => {
     );
   });
 
-  it("forwards assistant first-touch attribution after signup", () => {
+  it("forwards assistant first-touch attribution to PostHog", () => {
     render(
       <AnalyticsConsentManager
         consentRequired={false}
