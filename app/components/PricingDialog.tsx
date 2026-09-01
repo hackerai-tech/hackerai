@@ -70,6 +70,9 @@ type PricingIntentCopy = {
   ultraButtonText: string;
 };
 
+const PRICING_EXPOSURE_RETRY_MS = 500;
+const PRICING_EXPOSURE_MAX_ATTEMPTS = 10;
+
 export function getPricingIntentCopy(
   context: PricingDialogContext | undefined,
   subscription: string,
@@ -227,6 +230,7 @@ const PricingDialog: React.FC<PricingDialogProps> = ({
   const { upgradeLoading, handleUpgrade } = useUpgrade();
   const [isYearly, setIsYearly] = React.useState(false);
   const capturedPricingCtaImpressionRef = React.useRef(false);
+  const capturedPricingExperimentExposureRef = React.useRef(false);
   const [pricingExperiment, setPricingExperiment] = React.useState<
     ProMonthlyPricingExperimentPresentation | undefined
   >();
@@ -256,10 +260,7 @@ const PricingDialog: React.FC<PricingDialogProps> = ({
 
   React.useEffect(() => {
     if (!isOpen || pricingExperimentResolved) return;
-    if (subscription !== "free") {
-      setPricingExperimentResolved(true);
-      return;
-    }
+    if (subscription !== "free") return;
 
     const controller = new AbortController();
     setPricingExperimentUnavailable(false);
@@ -316,6 +317,45 @@ const PricingDialog: React.FC<PricingDialogProps> = ({
 
   React.useEffect(() => {
     if (!isOpen) {
+      capturedPricingExperimentExposureRef.current = false;
+      return;
+    }
+    if (
+      !activePricingExperiment ||
+      capturedPricingExperimentExposureRef.current
+    ) {
+      return;
+    }
+
+    let exposureCaptureAttempts = 0;
+    let exposureRetryTimeout: ReturnType<typeof setTimeout> | undefined;
+    const captureExperimentExposure = () => {
+      exposureCaptureAttempts += 1;
+      if (
+        captureAuthenticatedEvent(
+          PRO_MONTHLY_PRICING_EXPOSURE_EVENT,
+          proMonthlyPricingExperimentProperties(activePricingExperiment),
+        )
+      ) {
+        capturedPricingExperimentExposureRef.current = true;
+        return;
+      }
+      if (exposureCaptureAttempts < PRICING_EXPOSURE_MAX_ATTEMPTS) {
+        exposureRetryTimeout = setTimeout(
+          captureExperimentExposure,
+          PRICING_EXPOSURE_RETRY_MS,
+        );
+      }
+    };
+    captureExperimentExposure();
+
+    return () => {
+      if (exposureRetryTimeout) clearTimeout(exposureRetryTimeout);
+    };
+  }, [activePricingExperiment, isOpen]);
+
+  React.useEffect(() => {
+    if (!isOpen) {
       capturedPricingCtaImpressionRef.current = false;
       return;
     }
@@ -327,12 +367,6 @@ const PricingDialog: React.FC<PricingDialogProps> = ({
       return;
     }
     capturedPricingCtaImpressionRef.current = true;
-    if (activePricingExperiment) {
-      captureAuthenticatedEvent(
-        PRO_MONTHLY_PRICING_EXPOSURE_EVENT,
-        proMonthlyPricingExperimentProperties(activePricingExperiment),
-      );
-    }
     captureUpgradeCtaImpression({
       surface: "pricing_dialog",
       source: context?.source ?? "plan_cards",

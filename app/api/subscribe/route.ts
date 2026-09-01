@@ -29,8 +29,10 @@ import {
 import { checkoutStartedEventUuid } from "@/lib/analytics/paid-funnel-server";
 import {
   PRO_MONTHLY_CONTROL_LOOKUP_KEY,
+  PRO_MONTHLY_PRICING_METADATA,
   proMonthlyPricingExperimentMetadata,
   proMonthlyPricingExperimentProperties,
+  type ProMonthlyPricingExperimentAssignment,
 } from "@/lib/experiments/pro-monthly-pricing";
 import { evaluateProMonthlyPricingExperiment } from "@/lib/experiments/pro-monthly-pricing.server";
 
@@ -63,11 +65,13 @@ function isReusableCheckoutSession(
     organizationId,
     requestedPlan,
     resolvedPriceLookupKey,
+    pricingExperiment,
     quantity,
   }: {
     organizationId: string;
     requestedPlan: string;
     resolvedPriceLookupKey: string;
+    pricingExperiment: ProMonthlyPricingExperimentAssignment | undefined;
     quantity: number;
   },
 ): boolean {
@@ -80,6 +84,16 @@ function isReusableCheckoutSession(
     previousResolvedPriceLookupKey
       ? previousResolvedPriceLookupKey !== resolvedPriceLookupKey
       : resolvedPriceLookupKey !== requestedPlan
+  ) {
+    return false;
+  }
+  if (
+    session.metadata?.[PRO_MONTHLY_PRICING_METADATA.experimentKey] !==
+      pricingExperiment?.key ||
+    session.metadata?.[PRO_MONTHLY_PRICING_METADATA.experimentVariant] !==
+      pricingExperiment?.variant ||
+    session.metadata?.[PRO_MONTHLY_PRICING_METADATA.priceLookupKey] !==
+      pricingExperiment?.priceLookupKey
   ) {
     return false;
   }
@@ -199,12 +213,14 @@ async function findReusableCheckoutSession({
   organizationId,
   requestedPlan,
   resolvedPriceLookupKey,
+  pricingExperiment,
   quantity,
 }: {
   customerId: string;
   organizationId: string;
   requestedPlan: string;
   resolvedPriceLookupKey: string;
+  pricingExperiment: ProMonthlyPricingExperimentAssignment | undefined;
   quantity: number;
 }): Promise<Stripe.Checkout.Session | undefined> {
   let startingAfter: string | undefined;
@@ -221,6 +237,7 @@ async function findReusableCheckoutSession({
         organizationId,
         requestedPlan,
         resolvedPriceLookupKey,
+        pricingExperiment,
         quantity,
       }),
     );
@@ -604,6 +621,7 @@ export const POST = async (req: NextRequest) => {
       organizationId: organization.id,
       requestedPlan: subscriptionLevel,
       resolvedPriceLookupKey,
+      pricingExperiment,
       quantity,
     });
     const reusedCheckoutSession = Boolean(session);

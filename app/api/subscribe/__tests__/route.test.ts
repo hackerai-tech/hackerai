@@ -314,7 +314,7 @@ describe("POST /api/subscribe", () => {
     }
   });
 
-  it("reuses a matching legacy open Checkout Session", async () => {
+  it("reuses an open Checkout Session with matching experiment metadata", async () => {
     mockListOrganizationMemberships.mockResolvedValue({
       data: [
         {
@@ -353,6 +353,10 @@ describe("POST /api/subscribe", () => {
             metadata: {
               workOSOrganizationId: "org_team",
               requestedPlan: "pro-monthly-plan",
+              resolvedPriceLookupKey: "pro-monthly-plan",
+              pricingExperimentKey: "hac46-pro-monthly-29-pricing",
+              pricingExperimentVariant: "control",
+              pricingExperimentPriceLookupKey: "pro-monthly-plan",
               checkoutAttemptId: "ca_original",
             },
           },
@@ -428,6 +432,60 @@ describe("POST /api/subscribe", () => {
     } finally {
       warnSpy.mockRestore();
     }
+  });
+
+  it("does not reuse a legacy session that lacks experiment metadata", async () => {
+    mockListOrganizationMemberships.mockResolvedValue({
+      data: [{ organizationId: "org_team", role: { slug: "admin" } }],
+    } as never);
+    mockGetOrganization.mockResolvedValue({
+      id: "org_team",
+      stripeCustomerId: "cus_existing_org",
+    } as never);
+    mockRetrieveCustomer.mockResolvedValue({
+      id: "cus_existing_org",
+      metadata: { workOSOrganizationId: "org_team" },
+    } as never);
+    mockListCheckoutSessions.mockResolvedValue({
+      data: [
+        {
+          id: "cs_legacy",
+          url: "https://stripe.example/legacy-checkout",
+          metadata: {
+            workOSOrganizationId: "org_team",
+            requestedPlan: "pro-monthly-plan",
+          },
+        },
+      ],
+      has_more: false,
+    } as never);
+
+    const { POST } = await import("../route");
+    const response = await POST(
+      makeRequest({
+        plan: "pro-monthly-plan",
+        checkoutAttemptId: "ca_control_123",
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(mockUpdateCheckoutSession).not.toHaveBeenCalled();
+    expect(mockCreateCheckoutSession).toHaveBeenCalledWith(
+      expect.objectContaining({
+        metadata: expect.objectContaining({
+          pricingExperimentKey: "hac46-pro-monthly-29-pricing",
+          pricingExperimentVariant: "control",
+          pricingExperimentPriceLookupKey: "pro-monthly-plan",
+        }),
+        subscription_data: {
+          metadata: expect.objectContaining({
+            pricingExperimentKey: "hac46-pro-monthly-29-pricing",
+            pricingExperimentVariant: "control",
+            pricingExperimentPriceLookupKey: "pro-monthly-plan",
+          }),
+        },
+      }),
+    );
   });
 
   it("returns a safe conflict response when Stripe's pending-session limit is reached", async () => {

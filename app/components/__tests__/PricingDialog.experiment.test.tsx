@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, jest } from "@jest/globals";
 
 const mockHandleUpgrade = jest.fn();
 const mockFetch = jest.fn();
+const mockCaptureAuthenticatedEvent = jest.fn();
 
 jest.mock("@workos-inc/authkit-nextjs/components", () => ({
   useAuth: () => ({ user: { id: "user_free" } }),
@@ -29,7 +30,7 @@ jest.mock("@/app/hooks/useTauri", () => ({
 }));
 
 jest.mock("@/lib/analytics/client", () => ({
-  captureAuthenticatedEvent: jest.fn(),
+  captureAuthenticatedEvent: mockCaptureAuthenticatedEvent,
   captureUpgradeCtaImpression: jest.fn(),
 }));
 
@@ -60,10 +61,15 @@ const PricingDialog = require("../PricingDialog")
 describe("PricingDialog HAC-46 assignment", () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockCaptureAuthenticatedEvent.mockReturnValue(true);
     Object.defineProperty(globalThis, "fetch", {
       configurable: true,
       value: mockFetch,
     });
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
   });
 
   it("keeps monthly Pro disabled until the $29 assignment resolves", async () => {
@@ -121,5 +127,38 @@ describe("PricingDialog HAC-46 assignment", () => {
     await waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(2));
     expect(await screen.findByText("25")).toBeVisible();
     expect(screen.getByRole("button", { name: "Get Pro" })).toBeEnabled();
+  });
+
+  it("retries experiment exposure until PostHog accepts it", async () => {
+    jest.useFakeTimers();
+    mockCaptureAuthenticatedEvent
+      .mockReturnValueOnce(false)
+      .mockReturnValueOnce(false)
+      .mockReturnValueOnce(true);
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        key: "hac46-pro-monthly-29-pricing",
+        variant: "test",
+        priceLookupKey: "pro-monthly-plan-29-experiment",
+        displayedAmountDollars: 29,
+        stripePriceId: "price_pro_29",
+      }),
+    });
+
+    render(<PricingDialog isOpen onClose={jest.fn()} />);
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(screen.getByText("29")).toBeVisible();
+    expect(mockCaptureAuthenticatedEvent).toHaveBeenCalledTimes(1);
+
+    act(() => jest.advanceTimersByTime(500));
+    expect(mockCaptureAuthenticatedEvent).toHaveBeenCalledTimes(2);
+
+    act(() => jest.advanceTimersByTime(500));
+    expect(mockCaptureAuthenticatedEvent).toHaveBeenCalledTimes(3);
   });
 });
