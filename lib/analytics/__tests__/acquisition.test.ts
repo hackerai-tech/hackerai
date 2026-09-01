@@ -85,6 +85,78 @@ describe("first-touch acquisition attribution", () => {
     });
   });
 
+  it("distinguishes assistant referrers, UTM-only markers, and intermediary visits", () => {
+    const directReferrer = createFirstTouchAttribution({
+      url: new URL("https://hackerai.co/product"),
+      referer: "https://chatgpt.com/c/opaque-conversation-id",
+      capturedAt,
+    });
+    const utmOnly = createFirstTouchAttribution({
+      url: new URL("https://hackerai.co/pricing?utm_source=chatgpt"),
+      referer: null,
+      capturedAt,
+    });
+    const intermediary = createFirstTouchAttribution({
+      url: new URL("https://hackerai.co/?utm_source=chatgpt"),
+      referer: "https://www.google.com/search?q=hackerai",
+      capturedAt,
+    });
+
+    expect(firstTouchPersonProperties(directReferrer)).toMatchObject({
+      acquisition_source_bucket: "ai_assistant",
+      ai_assistant_source: "chatgpt",
+      ai_assistant_evidence: "referrer_domain",
+      first_touch_entry_surface: "product",
+    });
+    expect(firstTouchPersonProperties(utmOnly)).toMatchObject({
+      acquisition_source_bucket: "ai_assistant",
+      ai_assistant_source: "chatgpt",
+      ai_assistant_evidence: "utm_source_no_referrer",
+      first_touch_entry_surface: "pricing",
+    });
+    expect(firstTouchPersonProperties(intermediary)).toMatchObject({
+      acquisition_source_bucket: "ai_assistant",
+      ai_assistant_source: "chatgpt",
+      ai_assistant_evidence: "utm_source_intermediary",
+      first_touch_referring_domain: "google.com",
+    });
+  });
+
+  it("recognizes Gemini as an assistant before generic Google search", () => {
+    const attribution = createFirstTouchAttribution({
+      url: new URL("https://hackerai.co/"),
+      referer: "https://gemini.google.com/app/example",
+      capturedAt,
+    });
+
+    expect(attribution).toMatchObject({
+      source: "gemini.google.com",
+      medium: "referral",
+    });
+    expect(firstTouchPersonProperties(attribution)).toMatchObject({
+      acquisition_source_bucket: "ai_assistant",
+      ai_assistant_source: "gemini",
+      ai_assistant_evidence: "referrer_domain",
+    });
+  });
+
+  it("normalizes assistant subdomains without recording a full referral URL", () => {
+    const attribution = createFirstTouchAttribution({
+      url: new URL("https://hackerai.co/"),
+      referer: "https://chat.openai.com/share/opaque-id?private=value",
+      capturedAt,
+    });
+
+    expect(firstTouchPersonProperties(attribution)).toMatchObject({
+      acquisition_source_bucket: "ai_assistant",
+      ai_assistant_source: "chatgpt",
+      ai_assistant_evidence: "referrer_domain",
+      first_touch_referring_domain: "chat.openai.com",
+    });
+    expect(JSON.stringify(attribution)).not.toContain("opaque-id");
+    expect(JSON.stringify(attribution)).not.toContain("private");
+  });
+
   it.each([
     ["google", "organic", "google.com", "home", "organic_search"],
     [

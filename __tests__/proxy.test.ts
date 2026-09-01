@@ -192,6 +192,29 @@ describe("proxy", () => {
     },
   );
 
+  it.each(["/product", "/pricing"])(
+    "serves the public discovery page %s without authentication",
+    async (pathname) => {
+      mockAuthkit.mockResolvedValue({
+        session: { user: null },
+        headers: new Headers(),
+        authorizationUrl: "https://signin.hackerai.co/login",
+      });
+      const { default: proxy } = await import("../proxy");
+
+      const response = await proxy(
+        createRequest({
+          pathname,
+          accept: "text/html",
+          userAgent: "Mozilla/5.0",
+        }),
+      );
+
+      expect(response).toMatchObject({ kind: "next" });
+      expect(mockNextResponseRedirect).not.toHaveBeenCalled();
+    },
+  );
+
   it("stores sanitized first-touch attribution before authentication", async () => {
     mockAuthkit.mockResolvedValue({
       session: { user: null },

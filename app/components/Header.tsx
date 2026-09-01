@@ -8,6 +8,12 @@ import { useAuth } from "@workos-inc/authkit-nextjs/components";
 import { navigateToAuth } from "@/app/hooks/useTauri";
 import { Download } from "lucide-react";
 
+const publicNavigation = [
+  { href: "/product", label: "Product" },
+  { href: "/pricing", label: "Pricing" },
+  { href: "/trust", label: "Trust" },
+] as const;
+
 interface HeaderProps {
   chatTitle?: string;
   hideDownload?: boolean;
@@ -34,7 +40,15 @@ const Header: React.FC<HeaderProps> = ({ chatTitle, hideDownload = false }) => {
               </span>
             </div>
           )}
-          {!chatTitle && <div className="flex gap-[40px]"></div>}
+          {!chatTitle && (
+            <nav className="flex items-center gap-1" aria-label="Primary">
+              {publicNavigation.map((item) => (
+                <Button key={item.href} asChild variant="ghost" size="sm">
+                  <Link href={item.href}>{item.label}</Link>
+                </Button>
+              ))}
+            </nav>
+          )}
           {!loading && !user && (
             <div className="flex gap-2 items-center">
               {!hideDownload && (

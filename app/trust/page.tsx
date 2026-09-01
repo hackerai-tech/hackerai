@@ -15,8 +15,10 @@ import {
   Terminal,
   Trash2,
 } from "lucide-react";
+import { canonicalMetadata } from "@/lib/seo/site";
 
 export const metadata: Metadata = {
+  ...canonicalMetadata("/trust"),
   title: "Security & Trust | HackerAI",
   description:
     "How HackerAI handles your data: AI providers, sandbox execution, storage, billing, account security, and subprocessors.",

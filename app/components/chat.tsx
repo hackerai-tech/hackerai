@@ -111,6 +111,7 @@ import { formatTaskUiCopy } from "@/app/utils/task-ui-copy";
 import { finalizeNewChatRoute } from "./chat-route";
 
 import { HackingSuggestions } from "./HackingSuggestions";
+import { AcquisitionSurvey } from "./AcquisitionSurvey";
 
 const AGENT_LONG_SILENT_COMPLETION_POLL_DELAY_MS = 5_000;
 const AGENT_LONG_SILENT_COMPLETION_POLL_INTERVAL_MS = 5_000;
@@ -2091,6 +2092,24 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   const branchedFromChatId = chatDataForCurrentChat?.branched_from_chat_id;
   const branchedFromChatTitle = (chatDataForCurrentChat as any)
     ?.branched_from_title;
+  const [surveyActivation, setSurveyActivation] = useState<{
+    chatId: string;
+    mode: "ask" | "agent";
+  } | null>(null);
+  useEffect(() => {
+    if (status !== "submitted" && status !== "streaming") return;
+    setSurveyActivation({
+      chatId,
+      mode: chatMode === "agent" ? "agent" : "ask",
+    });
+  }, [chatId, chatMode, status]);
+  const lastMessage = messages.at(-1);
+  const acquisitionSurveyEligible =
+    surveyActivation?.chatId === chatId &&
+    status === "ready" &&
+    lastMessage?.role === "assistant" &&
+    hasVisibleAssistantContent([lastMessage]) &&
+    messages.some((message) => message.role === "user");
 
   return (
     <ConvexErrorBoundary>
@@ -2124,6 +2143,10 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
         isExistingChat={isExistingChat}
         messageCount={messages.length}
         onSubmit={handleSubmit}
+      />
+      <AcquisitionSurvey
+        eligible={acquisitionSurveyEligible}
+        activationMode={surveyActivation?.mode ?? "ask"}
       />
       <div className="flex min-h-0 flex-1 w-full flex-col bg-background overflow-hidden">
         <div className="flex min-h-0 flex-1 min-w-0 relative">
