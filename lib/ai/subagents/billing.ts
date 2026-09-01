@@ -39,8 +39,6 @@ export const checkSubagentBillingCapacity = async (
   if (input.subscription === "free") {
     await dependencies.checkFreeMonthlyCostLimit(
       input.freeQuotaSubject ?? input.userId,
-      input.userId,
-      "trigger_subagent",
     );
     return undefined;
   }

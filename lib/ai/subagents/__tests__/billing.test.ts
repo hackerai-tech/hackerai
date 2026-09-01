@@ -42,11 +42,7 @@ describe("checkSubagentBillingCapacity", () => {
       ),
     ).resolves.toBeUndefined();
 
-    expect(checkFreeMonthlyCostLimit).toHaveBeenCalledWith(
-      "quota-subject",
-      "user-123",
-      "trigger_subagent",
-    );
+    expect(checkFreeMonthlyCostLimit).toHaveBeenCalledWith("quota-subject");
     expect(checkRateLimitCapacity).not.toHaveBeenCalled();
   });
 

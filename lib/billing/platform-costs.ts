@@ -317,30 +317,17 @@ export function completedUtcDayWindow(
   };
 }
 
-export function convexUsageBaseUrl(
-  deployKey: string,
-  configuredUrl?: string,
-): string {
-  if (configuredUrl?.trim()) {
-    const url = new URL(configuredUrl);
-    if (
-      url.protocol !== "https:" ||
-      !url.hostname.endsWith(".convex.cloud") ||
-      url.pathname !== "/"
-    ) {
-      throw new Error(
-        "CONVEX_DEPLOYMENT_URL must be a canonical https://*.convex.cloud URL",
-      );
-    }
-    return url.origin;
-  }
-
-  const keyTarget = deployKey.slice(0, deployKey.indexOf("|"));
-  const match = /^(?:prod|dev):([a-z0-9-]+)$/.exec(keyTarget);
-  if (!match) {
+export function convexUsageBaseUrl(configuredUrl: string): string {
+  const url = new URL(configuredUrl);
+  if (
+    url.protocol !== "https:" ||
+    !/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.convex\.cloud$/.test(url.hostname) ||
+    url.port !== "" ||
+    url.pathname !== "/"
+  ) {
     throw new Error(
-      "CONVEX_DEPLOYMENT_URL is required for this deploy key format",
+      "CONVEX_DEPLOYMENT_URL must be a canonical https://*.convex.cloud URL",
     );
   }
-  return `https://${match[1]}.convex.cloud`;
+  return url.origin;
 }

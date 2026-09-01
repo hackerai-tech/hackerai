@@ -1768,7 +1768,7 @@ export const capCurrentCycleAllocation = async (
  *   - free_referral_bonus_grant:*:<quotaSubject> — referral bonus grant idempotency marker
  *   - free_agent_limit:<quotaSubject>:* — legacy free-tier agent sliding window
  *   - free_monthly_cost:<quotaSubject>:* — free-tier monthly provider/tool cost cap
- *   - free_usage_budget_started:v1:<quotaSubject> — free budget experiment marker
+ *   - free_usage_budget_started:v1:<quotaSubject> — retired experiment marker cleanup
  *   - free_run_lock:<quotaSubject>   — free-tier active-run concurrency lock
  *   - team:debt_applied:*:<userId>   — seat-debt idempotency flag (org-scoped)
  *

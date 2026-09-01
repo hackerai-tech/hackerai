@@ -112,22 +112,27 @@ describe("proxy", () => {
     "/api/health/connectivity",
     "/api/health/core",
     "/api/health/trigger-agent-mode",
-  ])("bypasses AuthKit for the health endpoint %s", async (pathname) => {
-    const { default: proxy } = await import("../proxy");
+    "/api/cron/platform-costs/convex",
+    "/api/cron/platform-costs/vercel",
+  ])(
+    "bypasses AuthKit for the independently authenticated endpoint %s",
+    async (pathname) => {
+      const { default: proxy } = await import("../proxy");
 
-    const response = await proxy(
-      createRequest({
-        pathname,
-        hasSession: true,
-      }),
-    );
+      const response = await proxy(
+        createRequest({
+          pathname,
+          hasSession: true,
+        }),
+      );
 
-    expect(response).toMatchObject({ kind: "next" });
-    expect(mockAuthkit).not.toHaveBeenCalled();
-    expect(mockNextResponseNext).toHaveBeenCalledWith();
-    expect(mockNextResponseJson).not.toHaveBeenCalled();
-    expect(mockNextResponseRedirect).not.toHaveBeenCalled();
-  });
+      expect(response).toMatchObject({ kind: "next" });
+      expect(mockAuthkit).not.toHaveBeenCalled();
+      expect(mockNextResponseNext).toHaveBeenCalledWith();
+      expect(mockNextResponseJson).not.toHaveBeenCalled();
+      expect(mockNextResponseRedirect).not.toHaveBeenCalled();
+    },
+  );
 
   it("bypasses AuthKit for the independently authenticated user-research gateway", async () => {
     const { default: proxy } = await import("../proxy");
