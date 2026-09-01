@@ -40,7 +40,7 @@ index 48babd8e1868c58577252b8a27660fcb73e7ef98..508678797dee7f5f2c505465e8a652f1
 +        errorText.includes('session ended due to inactivity'));
 +};
 +/**
-+ * Client-triggered server actions run after middleware, so a session can end
++ * Client-invoked server actions run after middleware, so a session can end
 + * between the middleware check and the action's refresh. Treat only WorkOS's
 + * exact ended-session response as signed out; all other auth errors still fail
 + * visibly so configuration, provider, and authorization defects are not hidden.
