@@ -165,6 +165,9 @@ describe("s3Utils", () => {
       expect(S3Client).toHaveBeenCalledWith(
         expect.objectContaining({ region: "eu-central-1" }),
       );
+      expect(S3Client).toHaveBeenCalledWith(
+        expect.not.objectContaining({ forcePathStyle: true }),
+      );
       expect(PutObjectCommand).toHaveBeenCalledWith(
         expect.objectContaining({ Bucket: "test-eu-bucket" }),
       );
@@ -224,6 +227,52 @@ describe("s3Utils", () => {
 
       expect(url).toBe("https://s3.amazonaws.com/download-url");
       expect(mockGetSignedUrl).toHaveBeenCalled();
+      const { S3Client } = await import("@aws-sdk/client-s3");
+      expect(S3Client).toHaveBeenCalledWith(
+        expect.not.objectContaining({ forcePathStyle: true }),
+      );
+    });
+
+    it("uses a path-style hostname for persisted EU files", async () => {
+      const { S3Client } = await import("@aws-sdk/client-s3");
+      const { getSignedUrl } = await import("@aws-sdk/s3-request-presigner");
+      (
+        getSignedUrl as jest.MockedFunction<typeof getSignedUrl>
+      ).mockResolvedValue("https://s3.eu-central-1.amazonaws.com/download-url");
+
+      const { generateS3DownloadUrl } = await import("../s3Utils");
+      await generateS3DownloadUrl("users/user123/123-uuid-test.pdf", {
+        region: "eu-central-1",
+        bucket: "test-eu-bucket",
+      });
+
+      expect(S3Client).toHaveBeenCalledWith(
+        expect.objectContaining({
+          region: "eu-central-1",
+          forcePathStyle: true,
+        }),
+      );
+      expect(getSignedUrl).toHaveBeenCalled();
+    });
+
+    it("keeps virtual-hosted URLs for persisted non-EU files", async () => {
+      const { S3Client } = await import("@aws-sdk/client-s3");
+      const { getSignedUrl } = await import("@aws-sdk/s3-request-presigner");
+      (
+        getSignedUrl as jest.MockedFunction<typeof getSignedUrl>
+      ).mockResolvedValue(
+        "https://test-west-bucket.s3.us-west-2.amazonaws.com/download-url",
+      );
+
+      const { generateS3DownloadUrl } = await import("../s3Utils");
+      await generateS3DownloadUrl("users/user123/123-uuid-test.pdf", {
+        region: "us-west-2",
+        bucket: "test-west-bucket",
+      });
+
+      expect(S3Client).toHaveBeenCalledWith(
+        expect.not.objectContaining({ forcePathStyle: true }),
+      );
     });
   });
 
