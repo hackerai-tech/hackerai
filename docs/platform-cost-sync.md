@@ -35,19 +35,17 @@ which avoids unnecessary warehouse sync churn.
   economics. The separate table prevents platform overhead from being counted
   in both user-level and organization-level economics.
 
-## Required production environment
+## Production environment
 
-- `CRON_SECRET`
-- `VERCEL_BILLING_READ_TOKEN`
-- `VERCEL_BILLING_TEAM_ID`
-- `CONVEX_DEPLOY_KEY`
-- `NEXT_PUBLIC_CONVEX_URL`
-- `CONVEX_SERVICE_ROLE_KEY`
+The only platform-cost-specific variables are `CRON_SECRET` and
+`VERCEL_BILLING_READ_TOKEN`.
 
-`CONVEX_DEPLOYMENT_URL` is only required when `CONVEX_DEPLOY_KEY` is not a
-deployment-scoped `prod:<deployment>|...` or `dev:<deployment>|...` key. When
-set, it must be the canonical `https://<deployment>.convex.cloud` URL; custom
-domains do not expose the authenticated deployment-usage endpoint.
+The jobs reuse the app's existing `CONVEX_DEPLOY_KEY`,
+`NEXT_PUBLIC_CONVEX_URL`, and `CONVEX_SERVICE_ROLE_KEY` configuration. The
+non-secret HackerAI Vercel team ID is fixed in the Vercel sync route, so it does
+not need to be duplicated in production configuration. `NEXT_PUBLIC_CONVEX_URL`
+must be the canonical `https://<deployment>.convex.cloud` URL; custom domains do
+not expose the authenticated deployment-usage endpoint.
 
 The Vercel token should be scoped to the owning team and used only for this
 billing-read integration. Never log it or expose it to the browser.
