@@ -1,40 +1,9 @@
 "use client";
 
-import { Authenticated, Unauthenticated } from "convex/react";
-import Link from "next/link";
-import { ArrowLeft } from "lucide-react";
-import { Button } from "@/components/ui/button";
-import Header from "@/app/components/Header";
-import { HackerAISVG } from "@/components/icons/hackerai-svg";
+import { PublicSiteHeader } from "@/components/public/PublicSiteHeader";
 import { DownloadSection, useDetectedPlatform } from "./DownloadSection";
 import { downloadLinks } from "./constants";
 import { AppleIcon, WindowsIcon, LinuxIcon } from "./icons";
-
-function AuthenticatedHeader() {
-  return (
-    <header className="w-full px-6 max-sm:px-4 flex-shrink-0">
-      <div className="py-[10px] flex gap-10 items-center justify-between">
-        <div className="flex items-center gap-2">
-          <HackerAISVG theme="dark" scale={0.15} />
-          <span className="text-foreground text-xl font-semibold max-sm:text-lg">
-            HackerAI
-          </span>
-        </div>
-        <Button
-          asChild
-          variant="ghost"
-          size="default"
-          className="rounded-[10px]"
-        >
-          <Link href="/">
-            <ArrowLeft className="h-4 w-4 mr-1.5" />
-            Back to Task
-          </Link>
-        </Button>
-      </div>
-    </header>
-  );
-}
 
 function DownloadContent() {
   const detected = useDetectedPlatform();
@@ -110,14 +79,10 @@ function DownloadContent() {
 export function DownloadPageContent() {
   return (
     <div className="min-h-screen bg-background">
-      <Authenticated>
-        <AuthenticatedHeader />
+      <PublicSiteHeader />
+      <main>
         <DownloadContent />
-      </Authenticated>
-      <Unauthenticated>
-        <Header hideDownload />
-        <DownloadContent />
-      </Unauthenticated>
+      </main>
     </div>
   );
 }

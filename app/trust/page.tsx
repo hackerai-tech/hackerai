@@ -15,6 +15,7 @@ import {
   Terminal,
   Trash2,
 } from "lucide-react";
+import { PublicSiteHeader } from "@/components/public/PublicSiteHeader";
 import { canonicalMetadata } from "@/lib/seo/site";
 
 export const metadata: Metadata = {
@@ -169,9 +170,9 @@ const CheckList = ({ items }: { items: React.ReactNode[] }) => (
   </ul>
 );
 
-export default function TrustPage() {
+function TrustContent() {
   return (
-    <div className="min-h-dvh bg-background px-4 py-12 sm:px-6">
+    <main className="bg-background px-4 py-12 sm:px-6">
       <div className="mx-auto max-w-4xl">
         {/* Hero */}
         <header className="mb-12 text-center">
@@ -409,6 +410,15 @@ export default function TrustPage() {
           </p>
         </footer>
       </div>
+    </main>
+  );
+}
+
+export default function TrustPage() {
+  return (
+    <div className="min-h-dvh bg-background">
+      <PublicSiteHeader />
+      <TrustContent />
     </div>
   );
 }
