@@ -69,6 +69,7 @@ import {
   checkFreeMonthlyCostLimit,
   checkRateLimit,
   checkRateLimitCapacity,
+  isHandledUserRateLimitError,
   deductUsage,
   deductUsageDelta,
   addUsageDeductionDelta,
@@ -1360,12 +1361,6 @@ const getEmptyAfterProcessingTriggerMetadata = (
   return diagnostics;
 };
 
-const OPERATIONAL_RATE_LIMIT_CAUSE_PATTERNS = [
-  /rate limiting service .*not configured/i,
-  /rate limiting service unavailable/i,
-  /extra usage billing is temporarily unavailable/i,
-];
-
 type AgentLongErrorSummary = {
   category: string;
   code?: string;
@@ -1412,16 +1407,6 @@ type AgentLongErrorSummary = {
   uploadFailureProtocol?: string;
   uploadFailureUrlLength?: number;
   uploadRetriedWithFreshSandbox?: boolean;
-};
-
-const isHandledUserRateLimitError = (error: unknown): error is ChatSDKError => {
-  if (!(error instanceof ChatSDKError)) return false;
-  if (error.type !== "rate_limit" || error.surface !== "chat") return false;
-
-  const cause = typeof error.cause === "string" ? error.cause : error.message;
-  return !OPERATIONAL_RATE_LIMIT_CAUSE_PATTERNS.some((pattern) =>
-    pattern.test(cause),
-  );
 };
 
 const isChatNotFoundError = (error: ChatSDKError): boolean => {

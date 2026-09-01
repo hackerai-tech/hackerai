@@ -93,11 +93,11 @@ import { toolResultsContainImageViewResult } from "@/lib/chat/multimodal-tool-re
 import { UsageTracker } from "@/lib/usage-tracker";
 import { resolveTriggerRunCost } from "@/lib/billing/trigger-run-cost";
 import {
-  checkFreeMonthlyCostLimit,
-  checkRateLimitCapacity,
   deductUsage,
+  isHandledUserRateLimitError,
   recordFreeMonthlyCost,
 } from "@/lib/rate-limit";
+import { checkSubagentBillingCapacity } from "@/lib/ai/subagents/billing";
 import {
   buildExtraUsageConfig,
   getContentFilterRetryModel,
@@ -494,8 +494,7 @@ export const subagentTask = task({
     let deferredForParentUpdate = false;
     let extraUsageConfig:
       Awaited<ReturnType<typeof buildExtraUsageConfig>> | undefined;
-    let rateLimitInfo:
-      Awaited<ReturnType<typeof checkRateLimitCapacity>> | undefined;
+    let rateLimitInfo: Awaited<ReturnType<typeof checkSubagentBillingCapacity>>;
     let usageSettled = false;
     let triggerRunCostRecorded = false;
     const selectedModel =
@@ -605,22 +604,14 @@ export const subagentTask = task({
         organizationId: row.organization_id,
         failClosedOnLookupError: true,
       });
-      rateLimitInfo = await checkRateLimitCapacity(
-        row.user_id,
-        "agent",
-        row.subscription,
+      rateLimitInfo = await checkSubagentBillingCapacity({
+        userId: row.user_id,
+        organizationId: row.organization_id,
+        subscription: row.subscription,
+        freeQuotaSubject: row.free_quota_subject,
         extraUsageConfig,
-        selectedModel,
-        row.organization_id,
-        row.free_quota_subject,
-      );
-      if (row.subscription === "free") {
-        await checkFreeMonthlyCostLimit(
-          row.free_quota_subject ?? row.user_id,
-          row.user_id,
-          "trigger_subagent",
-        );
-      }
+        modelName: selectedModel,
+      });
 
       runtimeStage = "context_resolution";
       const resolvedContext = await resolveSubagentContext(row.subagent_id);
@@ -1603,6 +1594,13 @@ export const subagentTask = task({
       );
       return { subagentId: row.subagent_id, status: "completed" };
     } catch (error) {
+      const handledRateLimitError = isHandledUserRateLimitError(error)
+        ? error
+        : null;
+      const rateLimitCapReason =
+        typeof handledRateLimitError?.metadata?.capReason === "string"
+          ? handledRateLimitError.metadata.capReason
+          : undefined;
       const outerRuntimeDiagnostics =
         getSubagentRecoveryErrorDiagnostics(error);
       const terminalFailure = activeTimedOut
@@ -1623,12 +1621,19 @@ export const subagentTask = task({
                 code: "spend_cap",
                 summary: `Subagent reached its $${costLimitDollars.toFixed(2)} spend limit.`,
               }
-            : {
-                status: "failed" as const,
-                code: "runtime_error",
-                summary:
-                  "Subagent failed before producing a structured result.",
-              };
+            : handledRateLimitError
+              ? {
+                  status: "failed" as const,
+                  code: "rate_limit",
+                  summary:
+                    "Subagent could not start because the current usage limit was reached.",
+                }
+              : {
+                  status: "failed" as const,
+                  code: "runtime_error",
+                  summary:
+                    "Subagent failed before producing a structured result.",
+                };
       const fallbackCostDollars =
         usageTracker.computeCostDollars(selectedModel, responseModel) +
         (triggerRunCostRecorded
@@ -1644,6 +1649,10 @@ export const subagentTask = task({
         status: terminalFailure.status,
         summary: terminalFailure.summary,
         failureCode: terminalFailure.code,
+        ...(handledRateLimitError &&
+          typeof handledRateLimitError.cause === "string" && {
+            failureReason: handledRateLimitError.cause,
+          }),
         ...(terminalFailure.status === "canceled"
           ? { cancelReason: terminalFailure.code }
           : {}),
@@ -1677,6 +1686,33 @@ export const subagentTask = task({
           metadata.set("status", persistedOutput.status);
           return persistedOutput;
         }
+      }
+      if (handledRateLimitError) {
+        await tags.add("rate_limited").catch(() => undefined);
+        triggerLogger.info("[subagent] run rate limited", {
+          event: "subagent_run_rate_limited",
+          service: "hackerai-subagent",
+          environment:
+            process.env.TRIGGER_ENV ?? process.env.NODE_ENV ?? "unknown",
+          user_id: row.user_id,
+          subagent_id: row.subagent_id,
+          parent_trigger_run_id: row.parent_trigger_run_id,
+          trigger_run_id: ctx.run.id,
+          failure_code: terminalFailure.code,
+          failure_stage: runtimeStage,
+          ...(rateLimitCapReason && { cap_reason: rateLimitCapReason }),
+        });
+        metadata
+          .set("status", "rate_limited")
+          .set("failureCode", terminalFailure.code)
+          .set("failureStage", runtimeStage)
+          .set("blockedCategory", "rate_limit")
+          .set("blockedCode", "rate_limit:chat")
+          .set("blockedAt", new Date().toISOString());
+        if (rateLimitCapReason) {
+          metadata.set("capReason", rateLimitCapReason);
+        }
+        return { subagentId: row.subagent_id, status: "failed" };
       }
       triggerLogger.error("[subagent] run failed", {
         event: "subagent_run_failed",

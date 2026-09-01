@@ -78,6 +78,7 @@ export {
 // Re-export utilities
 export { createRedisClient, formatTimeRemaining } from "./redis";
 export { UsageRefundTracker } from "./refund";
+export { isHandledUserRateLimitError } from "./error-classification";
 export {
   addUsageDeductionDelta,
   createUsageSettlementState,
