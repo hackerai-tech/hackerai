@@ -155,23 +155,17 @@ describe("platform cost normalization", () => {
   });
 
   it("uses Convex's canonical deployment URL for admin usage requests", () => {
-    expect(convexUsageBaseUrl("prod:happy-capybara-123|secret-value")).toBe(
-      "https://happy-capybara-123.convex.cloud",
+    expect(convexUsageBaseUrl("https://careful-otter-456.convex.cloud")).toBe(
+      "https://careful-otter-456.convex.cloud",
     );
-    expect(
-      convexUsageBaseUrl(
-        "project:team:project|secret-value",
-        "https://careful-otter-456.convex.cloud",
-      ),
-    ).toBe("https://careful-otter-456.convex.cloud");
+    expect(() => convexUsageBaseUrl("https://example.com")).toThrow(
+      "canonical https://*.convex.cloud URL",
+    );
+    expect(() => convexUsageBaseUrl("https://.convex.cloud")).toThrow(
+      "canonical https://*.convex.cloud URL",
+    );
     expect(() =>
-      convexUsageBaseUrl("project:team:project|secret-value"),
-    ).toThrow("CONVEX_DEPLOYMENT_URL is required");
-    expect(() =>
-      convexUsageBaseUrl(
-        "prod:happy-capybara-123|secret-value",
-        "https://example.com",
-      ),
+      convexUsageBaseUrl("https://careful-otter-456.convex.cloud:8443"),
     ).toThrow("canonical https://*.convex.cloud URL");
   });
 });
