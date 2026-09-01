@@ -196,6 +196,18 @@ describe("security validation subagent runtime contracts", () => {
     );
   });
 
+  it("requires durable terminal state before returning handled quota blocks", () => {
+    const child = read("trigger/subagent.ts");
+    const finalizationGuard =
+      'if (handledRateLimitError && finishOutcome !== "updated")';
+    const handledReturn =
+      'return { subagentId: row.subagent_id, status: "failed" };';
+
+    expect(child).toContain("failureReason: handledRateLimitFailureReason");
+    expectMarkerOrder(child, finalizationGuard, handledReturn);
+    expect(child).toContain('event: "subagent_rate_limit_finalization_failed"');
+  });
+
   it("propagates parent cancellation and refuses a canceled queued child", () => {
     const parent = read("trigger/agent-long.ts");
     const parentSettlement = read("lib/ai/subagents/parent-settlement.ts");

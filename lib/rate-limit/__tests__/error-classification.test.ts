@@ -7,9 +7,32 @@ describe("isHandledUserRateLimitError", () => {
   it("handles user quota exhaustion", () => {
     expect(
       isHandledUserRateLimitError(
-        new ChatSDKError("rate_limit:chat", "Daily requests exhausted"),
+        new ChatSDKError("rate_limit:chat", "Daily requests exhausted", {
+          capReason: "daily_requests_exhausted",
+        }),
       ),
     ).toBe(true);
+  });
+
+  it("fails closed for unknown chat rate-limit errors", () => {
+    expect(
+      isHandledUserRateLimitError(
+        new ChatSDKError(
+          "rate_limit:chat",
+          "Current billing authorization could not be verified",
+        ),
+      ),
+    ).toBe(false);
+  });
+
+  it("does not handle explicitly operational cap reasons", () => {
+    expect(
+      isHandledUserRateLimitError(
+        new ChatSDKError("rate_limit:chat", "Billing unavailable", {
+          capReason: "billing_unavailable",
+        }),
+      ),
+    ).toBe(false);
   });
 
   it.each([

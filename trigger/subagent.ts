@@ -1601,6 +1601,11 @@ export const subagentTask = task({
         typeof handledRateLimitError?.metadata?.capReason === "string"
           ? handledRateLimitError.metadata.capReason
           : undefined;
+      const handledRateLimitFailureReason = handledRateLimitError
+        ? typeof handledRateLimitError.cause === "string"
+          ? handledRateLimitError.cause
+          : handledRateLimitError.message
+        : undefined;
       const outerRuntimeDiagnostics =
         getSubagentRecoveryErrorDiagnostics(error);
       const terminalFailure = activeTimedOut
@@ -1643,22 +1648,25 @@ export const subagentTask = task({
         costDollars: fallbackCostDollars,
         billingFailure: true,
       }));
+      let finishSubagentError: unknown;
       const finishOutcome = await finishSubagent({
         subagentId: row.subagent_id,
         triggerRunId: ctx.run.id,
         status: terminalFailure.status,
         summary: terminalFailure.summary,
         failureCode: terminalFailure.code,
-        ...(handledRateLimitError &&
-          typeof handledRateLimitError.cause === "string" && {
-            failureReason: handledRateLimitError.cause,
-          }),
+        ...(handledRateLimitFailureReason && {
+          failureReason: handledRateLimitFailureReason,
+        }),
         ...(terminalFailure.status === "canceled"
           ? { cancelReason: terminalFailure.code }
           : {}),
         costDollars: settlement.costDollars,
         stepCount,
-      }).catch(() => null);
+      }).catch((finishError) => {
+        finishSubagentError = finishError;
+        return null;
+      });
       if (finishOutcome === "updated") {
         captureSubagentTerminalOutcome({
           userId: row.user_id,
@@ -1686,6 +1694,32 @@ export const subagentTask = task({
           metadata.set("status", persistedOutput.status);
           return persistedOutput;
         }
+      }
+      if (handledRateLimitError && finishOutcome !== "updated") {
+        const finalizationError =
+          finishSubagentError ??
+          new Error(
+            `Subagent rate-limit finalization failed: ${finishOutcome ?? "unknown"}`,
+          );
+        const finalizationDiagnostics = extractErrorDetails(finalizationError);
+        triggerLogger.error("[subagent] rate-limit finalization failed", {
+          event: "subagent_rate_limit_finalization_failed",
+          service: "hackerai-subagent",
+          environment:
+            process.env.TRIGGER_ENV ?? process.env.NODE_ENV ?? "unknown",
+          user_id: row.user_id,
+          subagent_id: row.subagent_id,
+          parent_trigger_run_id: row.parent_trigger_run_id,
+          trigger_run_id: ctx.run.id,
+          finish_outcome: finishOutcome ?? "error",
+          error_name: finalizationDiagnostics.errorName,
+          error_message: finalizationDiagnostics.errorMessage,
+        });
+        metadata
+          .set("status", "failed")
+          .set("failureCode", "rate_limit_finalization_failed")
+          .set("failureStage", "finalization");
+        throw finalizationError;
       }
       if (handledRateLimitError) {
         await tags.add("rate_limited").catch(() => undefined);

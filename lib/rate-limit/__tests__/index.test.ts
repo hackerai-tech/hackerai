@@ -221,7 +221,13 @@ describe("checkRateLimit", () => {
 
       await expect(
         checkRateLimitCapacity("user-123", "agent", "pro"),
-      ).rejects.toMatchObject({ type: "rate_limit" });
+      ).rejects.toMatchObject({
+        type: "rate_limit",
+        metadata: {
+          subscription: "pro",
+          capReason: "monthly_exhausted",
+        },
+      });
     });
 
     it("allows exhausted included capacity when current extra usage is usable", async () => {
