@@ -18,6 +18,22 @@ import { captureQueuedAuthenticatedEvent } from "@/lib/analytics/client";
 
 type SurveyState = "idle" | "visible" | "complete";
 
+function hasCompletedSurveyInStorage() {
+  try {
+    return Boolean(window.localStorage.getItem(ACQUISITION_SURVEY_STORAGE_KEY));
+  } catch {
+    return false;
+  }
+}
+
+function storeSurveyCompletion(value: "dismissed" | "submitted") {
+  try {
+    window.localStorage.setItem(ACQUISITION_SURVEY_STORAGE_KEY, value);
+  } catch {
+    // Storage may be blocked or full; the survey should still close and record.
+  }
+}
+
 export function AcquisitionSurvey({
   eligible,
   activationMode,
@@ -33,7 +49,7 @@ export function AcquisitionSurvey({
   useEffect(() => {
     if (!eligible || hasCheckedAvailabilityRef.current) return;
     hasCheckedAvailabilityRef.current = true;
-    if (window.localStorage.getItem(ACQUISITION_SURVEY_STORAGE_KEY)) {
+    if (hasCompletedSurveyInStorage()) {
       return;
     }
 
@@ -73,7 +89,7 @@ export function AcquisitionSurvey({
   }, [activationMode, eligible]);
 
   const dismiss = () => {
-    window.localStorage.setItem(ACQUISITION_SURVEY_STORAGE_KEY, "dismissed");
+    storeSurveyCompletion("dismissed");
     setState("complete");
     captureQueuedAuthenticatedEvent({
       event: "acquisition_survey_dismissed",
@@ -89,7 +105,7 @@ export function AcquisitionSurvey({
   const submit = () => {
     if (!firstHeard || !mainReason) return;
     const answeredAt = new Date().toISOString();
-    window.localStorage.setItem(ACQUISITION_SURVEY_STORAGE_KEY, "submitted");
+    storeSurveyCompletion("submitted");
     setState("complete");
     captureQueuedAuthenticatedEvent({
       event: "acquisition_survey_submitted",

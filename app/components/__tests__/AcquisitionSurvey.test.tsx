@@ -84,4 +84,41 @@ describe("AcquisitionSurvey", () => {
       "submitted",
     );
   });
+
+  it("still closes and captures when browser storage is unavailable", async () => {
+    const storageSpy = jest
+      .spyOn(Storage.prototype, "setItem")
+      .mockImplementation(() => {
+        throw new DOMException("Storage is blocked", "SecurityError");
+      });
+
+    try {
+      render(<AcquisitionSurvey eligible activationMode="ask" />);
+
+      fireEvent.change(
+        await screen.findByLabelText(
+          "Where did you first hear about HackerAI?",
+        ),
+        { target: { value: "ai_assistant" } },
+      );
+      fireEvent.change(
+        screen.getByLabelText("What was your main reason for trying it?"),
+        { target: { value: "security_agent" } },
+      );
+      fireEvent.click(screen.getByRole("button", { name: "Submit" }));
+
+      await waitFor(() => {
+        expect(
+          screen.queryByRole("heading", {
+            name: "Help us improve discovery",
+          }),
+        ).not.toBeInTheDocument();
+      });
+      expect(mockCaptureQueuedAuthenticatedEvent).toHaveBeenCalledWith(
+        expect.objectContaining({ event: "acquisition_survey_submitted" }),
+      );
+    } finally {
+      storageSpy.mockRestore();
+    }
+  });
 });
