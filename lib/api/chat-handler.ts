@@ -613,11 +613,7 @@ export const createChatHandler = () => {
 
       const freeMonthlyBudgetSnapshot =
         subscription === "free"
-          ? await checkFreeMonthlyCostLimit(
-              freeUsageSubject,
-              userId,
-              "api_chat",
-            )
+          ? await checkFreeMonthlyCostLimit(freeUsageSubject)
           : null;
 
       usageRefundTracker.recordDeductions(rateLimitInfo);

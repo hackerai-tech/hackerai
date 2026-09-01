@@ -2923,11 +2923,7 @@ export const agentLongTask = task({
 
             const freeMonthlyBudgetSnapshot =
               subscription === "free"
-                ? await checkFreeMonthlyCostLimit(
-                    freeUsageSubject,
-                    userId,
-                    "trigger_agent_long",
-                  )
+                ? await checkFreeMonthlyCostLimit(freeUsageSubject)
                 : null;
 
             usageRefundTracker.recordDeductions(rateLimitInfo);
@@ -3064,7 +3060,7 @@ export const agentLongTask = task({
                 freeQuotaSubject,
               );
               if (authorization.subscription === "free") {
-                await checkFreeMonthlyCostLimit(freeUsageSubject, userId);
+                await checkFreeMonthlyCostLimit(freeUsageSubject);
                 const lock = await acquireFreeRunConcurrencyLock(
                   freeUsageSubject,
                   FREE_AGENT_LONG_RUN_LOCK_TTL_SECONDS,
@@ -3151,7 +3147,7 @@ export const agentLongTask = task({
                 freeQuotaSubject,
               );
               if (currentEntitlement.subscription === "free") {
-                await checkFreeMonthlyCostLimit(freeUsageSubject, userId);
+                await checkFreeMonthlyCostLimit(freeUsageSubject);
               }
             };
             let approvalSandboxManager: SandboxManager | undefined;
