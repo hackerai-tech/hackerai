@@ -86,9 +86,8 @@ function ChoiceButtons({
 function ConsentExplanation() {
   return (
     <p className="text-muted-foreground text-pretty text-sm leading-5">
-      We use optional cookies to understand product usage, diagnose errors, and
-      replay sessions on eligible paid accounts. HackerAI works the same if you
-      decline. Read our{" "}
+      We use optional cookies to understand product usage and diagnose errors.
+      HackerAI works the same if you decline. Read our{" "}
       <Link
         href="/privacy-policy"
         target="_blank"

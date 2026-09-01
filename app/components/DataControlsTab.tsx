@@ -155,7 +155,7 @@ const DataControlsTab = () => {
               <div className="min-w-0">
                 <div className="font-medium">Analytics cookies</div>
                 <div className="text-muted-foreground mt-1 text-sm">
-                  Control optional product analytics and session replay
+                  Control optional product analytics
                 </div>
               </div>
               <AnalyticsConsentPreferences>

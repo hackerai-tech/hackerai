@@ -53,6 +53,7 @@ describe("AnalyticsConsentManager", () => {
     );
 
     expect(screen.getByText("Optional analytics")).toBeInTheDocument();
+    expect(screen.queryByText(/session replay/i)).not.toBeInTheDocument();
     expect(screen.getByTestId("posthog-provider")).toHaveAttribute(
       "data-analytics-allowed",
       "false",
