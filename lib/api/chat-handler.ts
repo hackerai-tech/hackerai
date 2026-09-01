@@ -127,6 +127,10 @@ import {
   shouldSkipAbortedMessageSave,
   shouldUseUpdateOnlyForAbortedSave,
 } from "@/lib/chat/abort-persistence";
+import {
+  BACKGROUND_WORK_DRAIN_TIMEOUT_MS,
+  drainBackgroundWork,
+} from "@/lib/chat/background-work-drain";
 import { createTrackedProvider } from "@/lib/ai/providers";
 import {
   getSandboxUploadFailureMetadata,
@@ -1365,6 +1369,34 @@ export const createChatHandler = () => {
                 userStopSignal.abort();
               };
 
+            const backgroundStreamWork = new Set<Promise<void>>();
+            const registerBackgroundStreamWork = (work: Promise<void>) => {
+              backgroundStreamWork.add(work);
+              void work.then(
+                () => backgroundStreamWork.delete(work),
+                () => backgroundStreamWork.delete(work),
+              );
+            };
+            const drainBackgroundStreamWork = async () => {
+              const result = await drainBackgroundWork(backgroundStreamWork, {
+                signal: userStopSignal.signal,
+              });
+              if (result.status !== "completed") {
+                phLogger.warn("Agent background work drain incomplete", {
+                  event: "agent_background_work_drain_incomplete",
+                  service: "chat-handler",
+                  chat_id: chatId,
+                  user_id: userId,
+                  mode,
+                  endpoint,
+                  drain_status: result.status,
+                  pending_work_count: result.pendingCount,
+                  drain_duration_ms: result.durationMs,
+                  drain_timeout_ms: BACKGROUND_WORK_DRAIN_TIMEOUT_MS,
+                });
+              }
+            };
+
             // Shared runner context.
             const streamCtx: AgentStreamContext = {
               trackedProvider,
@@ -1400,6 +1432,7 @@ export const createChatHandler = () => {
               ensureSandbox,
               chatLogger,
               usageRefundTracker,
+              registerBackgroundWork: registerBackgroundStreamWork,
               getSandboxCostDollars: getSandboxSessionCost,
               settleUsageAfterStep,
               ...(useMaxKimiReasoning && {
@@ -1931,6 +1964,7 @@ export const createChatHandler = () => {
                                   userId,
                                   mode,
                                 });
+                                await drainBackgroundStreamWork();
                                 // Final reconciliation can change the finish
                                 // reason to budget-exhausted; do it before
                                 // analytics and persistence consume state.
@@ -2249,6 +2283,7 @@ export const createChatHandler = () => {
                       cacheWriteTokens: usageTracker.cacheWriteTokens,
                     });
                     captureToolCalls({ posthog, chatLogger, userId, mode });
+                    await drainBackgroundStreamWork();
                     // Final reconciliation can change the finish reason to
                     // budget-exhausted; do it before analytics and persistence
                     // consume state.
@@ -2470,6 +2505,7 @@ export const createChatHandler = () => {
                             has_usage_to_record: hasUsageToRecord,
                           }),
                         );
+                        await drainBackgroundStreamWork();
                         await deductAccumulatedUsage();
                         shutdownPostHog(posthog);
                         return;

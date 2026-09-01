@@ -394,6 +394,59 @@ describe("saveLatestSummary — previous_summaries chain", () => {
     expectNoSummaryTelemetry(insertedDoc);
   });
 
+  it("attaches a completed transcript to the matching latest summary", async () => {
+    const chat = makeChatDoc();
+    const summary = makeSummaryDoc();
+    mockCtx.db.query.mockReturnValue({
+      withIndex: jest.fn().mockReturnValue({
+        first: jest.fn<any>().mockResolvedValue(chat),
+      }),
+    });
+    mockCtx.db.get.mockResolvedValue(summary);
+    const { attachLatestSummaryTranscript } = await import("../chats");
+
+    const attached = await attachLatestSummaryTranscript.handler(mockCtx, {
+      serviceKey: SERVICE_KEY,
+      chatId: CHAT_ID,
+      summaryUpToMessageId: "msg-cutoff",
+      summaryText:
+        "current summary\n\nTranscript location: /tmp/transcript.json",
+      transcriptPath: "/tmp/transcript.json",
+    });
+
+    expect(attached).toBe(true);
+    expect(mockCtx.db.patch).toHaveBeenCalledWith(SUMMARY_DOC_ID, {
+      summary_text:
+        "current summary\n\nTranscript location: /tmp/transcript.json",
+      transcript_path: "/tmp/transcript.json",
+    });
+  });
+
+  it("does not attach a late transcript after a newer summary wins", async () => {
+    const chat = makeChatDoc();
+    const summary = makeSummaryDoc({
+      summary_up_to_message_id: "msg-newer-cutoff",
+    });
+    mockCtx.db.query.mockReturnValue({
+      withIndex: jest.fn().mockReturnValue({
+        first: jest.fn<any>().mockResolvedValue(chat),
+      }),
+    });
+    mockCtx.db.get.mockResolvedValue(summary);
+    const { attachLatestSummaryTranscript } = await import("../chats");
+
+    const attached = await attachLatestSummaryTranscript.handler(mockCtx, {
+      serviceKey: SERVICE_KEY,
+      chatId: CHAT_ID,
+      summaryUpToMessageId: "msg-old-cutoff",
+      summaryText: "stale summary with transcript",
+      transcriptPath: "/tmp/stale-transcript.json",
+    });
+
+    expect(attached).toBe(false);
+    expect(mockCtx.db.patch).not.toHaveBeenCalled();
+  });
+
   it("should remove legacy summary telemetry fields in cleanup batches", async () => {
     const paginate = jest.fn<any>().mockResolvedValue({
       page: [

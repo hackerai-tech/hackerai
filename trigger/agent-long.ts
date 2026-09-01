@@ -266,6 +266,10 @@ import {
 import { FREE_AGENT_LONG_RUN_LOCK_TTL_SECONDS } from "@/lib/rate-limit/free-config";
 import { isCentrifugoSandbox } from "@/lib/ai/tools/utils/sandbox-types";
 import { AgentRunTimingTracker } from "@/lib/chat/agent-run-timing";
+import {
+  BACKGROUND_WORK_DRAIN_TIMEOUT_MS,
+  drainBackgroundWork,
+} from "@/lib/chat/background-work-drain";
 import { AgentLongMemoryTelemetry } from "@/lib/chat/agent-long-memory-telemetry";
 import {
   createCancelAgentTool,
@@ -2388,6 +2392,40 @@ export const agentLongTask = task({
     const taskStartTime = Date.now();
     const agentLongMaxDurationMs = getAgentLongMaxDurationMs(subscription);
     const runTimingTracker = new AgentRunTimingTracker();
+    const backgroundRunWork = new Set<Promise<void>>();
+    const registerBackgroundRunWork = (work: Promise<void>) => {
+      backgroundRunWork.add(work);
+      void work.then(
+        () => backgroundRunWork.delete(work),
+        () => backgroundRunWork.delete(work),
+      );
+    };
+    const drainBackgroundRunWork = async () => {
+      const result = await drainBackgroundWork(backgroundRunWork, {
+        signal: triggerSignal,
+      });
+      if (result.status !== "completed") {
+        triggerLogger.warn("[agent-long] background work drain incomplete", {
+          event: "agent_background_work_drain_incomplete",
+          service: "agent-long",
+          environment:
+            process.env.TRIGGER_ENV ??
+            process.env.VERCEL_ENV ??
+            process.env.NODE_ENV ??
+            "unknown",
+          request_id: ctx.run.id,
+          run_id: ctx.run.id,
+          chat_id: chatId,
+          user_id: userId,
+          mode,
+          endpoint,
+          drain_status: result.status,
+          pending_work_count: result.pendingCount,
+          drain_duration_ms: result.durationMs,
+          drain_timeout_ms: BACKGROUND_WORK_DRAIN_TIMEOUT_MS,
+        });
+      }
+    };
     if (payload.requestTiming) {
       runTimingTracker.initializeStartup({
         requestStartedAt: payload.requestTiming.routeStartedAt,
@@ -3321,18 +3359,23 @@ export const agentLongTask = task({
               });
             };
 
-            const sandboxPromptContext = await prepareSandboxContextForPrompt({
-              sandboxManager,
-              writer,
-              eventId: `sandbox-fallback-${assistantMessageId}`,
-              emitFallbackEvent: false,
-              onContextError: (err) => {
-                console.warn(
-                  "[agent-long] Failed to get sandbox context:",
-                  err,
-                );
-              },
-            });
+            const sandboxPromptContext =
+              await runTimingTracker.measureStartupPhase(
+                "sandbox_context",
+                () =>
+                  prepareSandboxContextForPrompt({
+                    sandboxManager,
+                    writer,
+                    eventId: `sandbox-fallback-${assistantMessageId}`,
+                    emitFallbackEvent: false,
+                    onContextError: (err) => {
+                      console.warn(
+                        "[agent-long] Failed to get sandbox context:",
+                        err,
+                      );
+                    },
+                  }),
+              );
             const sandboxContext = sandboxPromptContext.sandboxContext;
             const sandboxFallbackReminder = getSandboxFallbackPromptReminder(
               sandboxPromptContext.fallbackInfo,
@@ -4101,6 +4144,9 @@ export const agentLongTask = task({
               onModelStreamStart: runTimingTracker.startModelStream,
               onModelStreamFinish: runTimingTracker.finishModelStream,
               onModelChunk: runTimingTracker.recordFirstModelChunk,
+              onStartupPhaseDuration:
+                runTimingTracker.recordStartupPhaseDuration,
+              registerBackgroundWork: registerBackgroundRunWork,
               onProviderRequestDiagnostics: (providerRequest, retention) => {
                 if (
                   memoryTelemetry.checkpoint({
@@ -4269,6 +4315,7 @@ export const agentLongTask = task({
                 cacheWriteTokens: fallbackCacheWrite,
               });
               captureToolCalls({ posthog, chatLogger, userId, mode });
+              await drainBackgroundRunWork();
               // Final reconciliation can change the finish reason to
               // budget-exhausted; do it before analytics and persistence.
               await deductAccumulatedUsage();
@@ -5089,6 +5136,7 @@ export const agentLongTask = task({
                         cacheWriteTokens: usageTracker.cacheWriteTokens,
                       });
                       captureToolCalls({ posthog, chatLogger, userId, mode });
+                      await drainBackgroundRunWork();
                       // Final reconciliation can change the finish reason to
                       // budget-exhausted; do it before analytics and
                       // persistence consume state.
