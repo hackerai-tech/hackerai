@@ -47,7 +47,7 @@ function makeCtx(initial: StoredRow[] = []) {
           predicate(q);
           const matches = rows.filter(
             (row) =>
-              row.entity_type === constraints.entity_type &&
+              row.vendor === constraints.vendor &&
               row.day >= constraints["gte:day"] &&
               row.day <= constraints["lte:day"],
           );
@@ -114,11 +114,9 @@ describe("replaceVendorCostWindow", () => {
       unchanged: 0,
     });
     expect(rows[0]).toMatchObject({
-      entity_type: "platform",
       vendor: "vercel",
-      non_model_cost_dollars: 12.5,
-      total_cost_dollars: 12.5,
-      gross_profit_dollars: -12.5,
+      recognized_cost_dollars: 12.5,
+      gross_profit_impact_dollars: -12.5,
     });
 
     await expect(replace(ctx)).resolves.toEqual({
@@ -149,8 +147,8 @@ describe("replaceVendorCostWindow", () => {
     });
     expect(rows[0]).toMatchObject({
       billed_cost_dollars: 9,
-      non_model_cost_dollars: 9,
-      gross_profit_dollars: -9,
+      recognized_cost_dollars: 9,
+      gross_profit_impact_dollars: -9,
     });
 
     await expect(replace(ctx, { rows: [] })).resolves.toEqual({
@@ -183,9 +181,8 @@ describe("replaceVendorCostWindow", () => {
       vendor: "convex",
       cost_status: "metered",
       usage_quantity: 42,
-      non_model_cost_dollars: 0,
-      total_cost_dollars: 0,
-      gross_profit_dollars: 0,
+      recognized_cost_dollars: 0,
+      gross_profit_impact_dollars: 0,
     });
     expect(rows[0].billed_cost_dollars).toBeUndefined();
   });

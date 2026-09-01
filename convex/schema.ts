@@ -1026,38 +1026,13 @@ export default defineSchema({
     .index("by_tier_interval_day", ["tier", "billing_interval", "day"]),
 
   // Compact daily rows intended for dashboarding and PostHog warehouse sync.
-  // Query either entity_type=user for per-user profitability,
-  // entity_type=organization for team pool/subscription reporting, or
-  // entity_type=platform for shared vendor costs and metered usage.
+  // Query either entity_type=user for per-user profitability or
+  // entity_type=organization for team pool/subscription reporting.
   unit_economics_daily: defineTable({
-    entity_type: v.union(
-      v.literal("user"),
-      v.literal("organization"),
-      v.literal("platform"),
-    ),
+    entity_type: v.union(v.literal("user"), v.literal("organization")),
     entity_id: v.string(),
     user_id: v.optional(v.string()),
     organization_id: v.optional(v.string()),
-    vendor: v.optional(v.union(v.literal("vercel"), v.literal("convex"))),
-    service_name: v.optional(v.string()),
-    service_category: v.optional(v.string()),
-    charge_category: v.optional(v.string()),
-    billing_currency: v.optional(v.string()),
-    cost_status: v.optional(
-      v.union(
-        v.literal("billed"),
-        v.literal("estimated"),
-        v.literal("metered"),
-      ),
-    ),
-    billed_cost_dollars: v.optional(v.number()),
-    effective_cost_dollars: v.optional(v.number()),
-    usage_quantity: v.optional(v.number()),
-    usage_unit: v.optional(v.string()),
-    source_period_start: v.optional(v.string()),
-    source_period_end: v.optional(v.string()),
-    source_observed_at: v.optional(v.number()),
-    source_charge_count: v.optional(v.number()),
     day: v.string(),
     gross_revenue_dollars: v.number(),
     net_revenue_dollars: v.number(),
@@ -1082,6 +1057,37 @@ export default defineSchema({
     .index("by_type_day", ["entity_type", "day"])
     .index("by_user_day", ["user_id", "day"])
     .index("by_org_day", ["organization_id", "day"]),
+
+  // Shared infrastructure charges and provider usage. This remains separate
+  // from user economics so platform overhead is never allocated or counted
+  // more than once by accident.
+  platform_costs_daily: defineTable({
+    vendor: v.union(v.literal("vercel"), v.literal("convex")),
+    entity_id: v.string(),
+    day: v.string(),
+    service_name: v.string(),
+    service_category: v.string(),
+    charge_category: v.optional(v.string()),
+    billing_currency: v.optional(v.string()),
+    cost_status: v.union(
+      v.literal("billed"),
+      v.literal("estimated"),
+      v.literal("metered"),
+    ),
+    billed_cost_dollars: v.optional(v.number()),
+    effective_cost_dollars: v.optional(v.number()),
+    recognized_cost_dollars: v.number(),
+    gross_profit_impact_dollars: v.number(),
+    usage_quantity: v.optional(v.number()),
+    usage_unit: v.optional(v.string()),
+    source_period_start: v.string(),
+    source_period_end: v.string(),
+    source_observed_at: v.number(),
+    source_charge_count: v.optional(v.number()),
+    updated_at: v.number(),
+  })
+    .index("by_day", ["day"])
+    .index("by_vendor_day", ["vendor", "day"]),
 
   // Restricted, privacy-safe product research. Raw messages are read only by
   // the service-keyed analysis task and are never stored in these tables.

@@ -1,6 +1,6 @@
 # Platform cost sync
 
-Shared infrastructure costs use the existing Convex `unit_economics_daily`
+Shared infrastructure costs use a dedicated Convex `platform_costs_daily`
 table and its PostHog data warehouse sync. They are not emitted as PostHog
 events, so retries do not consume event volume and corrected billing rows can
 replace prior values.
@@ -13,8 +13,8 @@ replace prior values.
 3. Convex deployment usage is read from the same endpoint used by the official
    `convex deployment usage` command and normalized by metric and UTC day.
 4. A service-keyed Convex mutation replaces the bounded vendor/day window.
-5. The existing PostHog Convex warehouse source syncs the rows from
-   `convex_unit_economics_daily`.
+5. The PostHog Convex warehouse source syncs the rows from
+   `convex_platform_costs_daily`.
 
 The Vercel job runs daily and re-reads the previous 35 complete UTC days because
 billing data can be corrected after first publication. The Convex job runs at
@@ -23,16 +23,17 @@ which avoids unnecessary warehouse sync churn.
 
 ## Cost semantics
 
-- Vercel rows use `cost_status = 'billed'`. `billed_cost_dollars` is recognized
-  in `non_model_cost_dollars`, `total_cost_dollars`, and
-  `gross_profit_dollars`.
+- Vercel rows use `cost_status = 'billed'`. `billed_cost_dollars` is copied to
+  `recognized_cost_dollars` and its negative profit effect is stored in
+  `gross_profit_impact_dollars`.
 - Convex's documented CLI exposes metered deployment usage but not historical
   invoice-dollar allocations. Convex rows therefore use
   `cost_status = 'metered'`, preserve `usage_quantity` and `usage_unit`, and do
   not invent a dollar cost. They can be reconciled to an invoice later without
   rewriting the ingestion path.
-- Platform rows use `entity_type = 'platform'`. Profit queries should add these
-  rows once to either user-level or organization-level economics, not to both.
+- Profit queries should subtract `recognized_cost_dollars` once from aggregate
+  economics. The separate table prevents platform overhead from being counted
+  in both user-level and organization-level economics.
 
 ## Required production environment
 
@@ -61,9 +62,8 @@ SELECT
     vendor,
     service_name,
     sum(billed_cost_dollars) AS billed_cost_dollars
-FROM convex_unit_economics_daily
-WHERE entity_type = 'platform'
-  AND cost_status = 'billed'
+FROM convex_platform_costs_daily
+WHERE cost_status = 'billed'
 GROUP BY day, vendor, service_name
 ORDER BY day DESC, billed_cost_dollars DESC
 ```
@@ -76,9 +76,8 @@ SELECT
     service_name,
     usage_unit,
     sum(usage_quantity) AS usage_quantity
-FROM convex_unit_economics_daily
-WHERE entity_type = 'platform'
-  AND vendor = 'convex'
+FROM convex_platform_costs_daily
+WHERE vendor = 'convex'
   AND cost_status = 'metered'
 GROUP BY day, service_name, usage_unit
 ORDER BY day DESC, service_name

@@ -3,7 +3,6 @@ import { v } from "convex/values";
 import { validateServiceKey } from "./lib/utils";
 
 const MAX_ROWS_PER_SYNC = 5_000;
-const MAX_PLATFORM_ROWS_PER_WINDOW = MAX_ROWS_PER_SYNC * 2;
 
 const vendorValidator = v.union(v.literal("vercel"), v.literal("convex"));
 const costStatusValidator = v.union(
@@ -74,7 +73,6 @@ function toStoredRow(vendor: Vendor, row: PlatformCostRow, observedAt: number) {
   const recognizedCost = row.costStatus === "metered" ? 0 : billedCost;
 
   return {
-    entity_type: "platform" as const,
     entity_id: entityId(vendor, row),
     vendor,
     service_name: row.serviceName,
@@ -91,21 +89,8 @@ function toStoredRow(vendor: Vendor, row: PlatformCostRow, observedAt: number) {
     source_observed_at: observedAt,
     source_charge_count: row.sourceChargeCount,
     day: row.day,
-    gross_revenue_dollars: 0,
-    net_revenue_dollars: 0,
-    model_cost_dollars: 0,
-    non_model_cost_dollars: recognizedCost,
-    total_cost_dollars: recognizedCost,
-    gross_profit_dollars: recognizedCost === 0 ? 0 : -recognizedCost,
-    included_usage_cost_dollars: 0,
-    extra_usage_cost_dollars: 0,
-    usage_request_count: 0,
-    revenue_event_count: 0,
-    input_tokens: 0,
-    output_tokens: 0,
-    cache_read_tokens: 0,
-    cache_write_tokens: 0,
-    total_tokens: 0,
+    recognized_cost_dollars: recognizedCost,
+    gross_profit_impact_dollars: recognizedCost === 0 ? 0 : -recognizedCost,
     updated_at: observedAt,
   };
 }
@@ -175,21 +160,20 @@ export const replaceVendorCostWindow = mutation({
       incoming.set(key, stored);
     }
 
-    const platformRows = await ctx.db
-      .query("unit_economics_daily")
-      .withIndex("by_type_day", (q) =>
+    const existing = await ctx.db
+      .query("platform_costs_daily")
+      .withIndex("by_vendor_day", (q) =>
         q
-          .eq("entity_type", "platform")
+          .eq("vendor", args.vendor)
           .gte("day", args.startDay)
           .lte("day", args.endDay),
       )
-      .take(MAX_PLATFORM_ROWS_PER_WINDOW + 1);
-    if (platformRows.length > MAX_PLATFORM_ROWS_PER_WINDOW) {
+      .take(MAX_ROWS_PER_SYNC + 1);
+    if (existing.length > MAX_ROWS_PER_SYNC) {
       throw new Error(
         "existing platform rows exceed the safe replacement limit",
       );
     }
-    const existing = platformRows.filter((row) => row.vendor === args.vendor);
 
     let inserted = 0;
     let updated = 0;
@@ -215,7 +199,7 @@ export const replaceVendorCostWindow = mutation({
     }
 
     for (const row of incoming.values()) {
-      await ctx.db.insert("unit_economics_daily", row);
+      await ctx.db.insert("platform_costs_daily", row);
       inserted += 1;
     }
 
