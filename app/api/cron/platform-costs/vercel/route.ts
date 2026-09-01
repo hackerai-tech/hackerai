@@ -17,6 +17,9 @@ export const runtime = "nodejs";
 export const maxDuration = 120;
 
 const RECONCILIATION_DAYS = 35;
+// Stable, non-secret identifier for the HackerAI Vercel team. Keeping it here
+// avoids requiring a duplicate production environment variable.
+const HACKERAI_VERCEL_TEAM_ID = "team_hxFubfIkaQ2A55N5nZeTifXH";
 
 export async function GET(request: Request) {
   const requestId = request.headers.get("x-vercel-id") ?? randomUUID();
@@ -31,12 +34,11 @@ export async function GET(request: Request) {
   const startedAt = Date.now();
   try {
     const token = requireEnvironment("VERCEL_BILLING_READ_TOKEN");
-    const teamId = requireEnvironment("VERCEL_BILLING_TEAM_ID");
     const window = completedUtcDayWindow(startedAt, RECONCILIATION_DAYS);
     const url = new URL("https://api.vercel.com/v1/billing/charges");
     url.searchParams.set("from", window.from);
     url.searchParams.set("to", window.to);
-    url.searchParams.set("teamId", teamId);
+    url.searchParams.set("teamId", HACKERAI_VERCEL_TEAM_ID);
 
     const rows = await fetchWithRetry(
       url.toString(),
