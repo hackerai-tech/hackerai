@@ -177,6 +177,25 @@ describe("security validation subagent runtime contracts", () => {
     expect(child).toMatch(/deductUsage\([\s\S]*?extraUsageConfig,/);
   });
 
+  it("inherits free parent request authorization and handles quota blocks", () => {
+    const child = read("trigger/subagent.ts");
+    const billing = read("lib/ai/subagents/billing.ts");
+    expect(child).toContain("checkSubagentBillingCapacity");
+    expect(billing).toContain('if (input.subscription === "free")');
+    expect(billing).toContain("checkFreeMonthlyCostLimit");
+    expect(billing).toContain("return undefined");
+    expect(billing).toContain("checkRateLimitCapacity");
+    expect(child).toContain("isHandledUserRateLimitError");
+    expect(child).toContain('event: "subagent_run_rate_limited"');
+    expect(child).toContain('.set("status", "rate_limited")');
+    expect(child).toContain('tags.add("rate_limited")');
+    expectMarkerOrder(
+      child,
+      "if (handledRateLimitError)",
+      'triggerLogger.error("[subagent] run failed"',
+    );
+  });
+
   it("propagates parent cancellation and refuses a canceled queued child", () => {
     const parent = read("trigger/agent-long.ts");
     const parentSettlement = read("lib/ai/subagents/parent-settlement.ts");
