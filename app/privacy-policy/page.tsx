@@ -72,11 +72,12 @@ export default function PrivacyPolicyPage() {
               events, and diagnostic information. Where consent is required,
               optional browser analytics and attribution storage remain off
               until you allow them. Rejecting optional analytics does not limit
-              the Service. You can change or withdraw your choice at any time
-              using the <strong>Cookie settings</strong> control in the Service.
-              Limited server-side operational logs and analytics may still be
-              processed as necessary to secure, operate, bill for, and improve
-              the Service in accordance with applicable law.
+              the Service. When we ask for consent, you can later change or
+              withdraw that saved choice using the{" "}
+              <strong>Cookie settings</strong> control in the Service. Limited
+              server-side operational logs and analytics may still be processed
+              as necessary to secure, operate, bill for, and improve the Service
+              in accordance with applicable law.
             </li>
             <li className="mb-3">
               <strong>How We Use Your Information:</strong> The information we
