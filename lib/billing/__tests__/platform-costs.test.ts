@@ -161,5 +161,11 @@ describe("platform cost normalization", () => {
     expect(() => convexUsageBaseUrl("https://example.com")).toThrow(
       "canonical https://*.convex.cloud URL",
     );
+    expect(() => convexUsageBaseUrl("https://.convex.cloud")).toThrow(
+      "canonical https://*.convex.cloud URL",
+    );
+    expect(() =>
+      convexUsageBaseUrl("https://careful-otter-456.convex.cloud:8443"),
+    ).toThrow("canonical https://*.convex.cloud URL");
   });
 });
