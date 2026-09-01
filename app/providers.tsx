@@ -40,10 +40,12 @@ function isEnglishLocale(locale: string | null | undefined) {
 export function PostHogProvider({
   analyticsAllowed,
   children,
+  consentRequired = false,
   firstTouchAttribution = null,
 }: {
   analyticsAllowed: boolean;
   children: React.ReactNode;
+  consentRequired?: boolean;
   firstTouchAttribution?: FirstTouchAttribution | null;
 }) {
   const { subscription } = useGlobalState();
@@ -179,7 +181,9 @@ export function PostHogProvider({
         const replayLocale =
           userLocale == null ? window.navigator.language : userLocale;
         const shouldRecordSession =
-          subscription !== "free" && isEnglishLocale(replayLocale);
+          !consentRequired &&
+          subscription !== "free" &&
+          isEnglishLocale(replayLocale);
 
         if (shouldRecordSession) {
           if (!posthog.sessionRecordingStarted()) {
@@ -197,6 +201,7 @@ export function PostHogProvider({
     };
   }, [
     analyticsAllowed,
+    consentRequired,
     firstTouchAttribution,
     subscription,
     userEmail,
