@@ -37,10 +37,10 @@ export const getMaxStepsForUser = (mode: ChatMode): number => {
  * @param mode - Chat mode (ask or agent)
  * @param hasImageAttachment - Whether any message has an image attachment.
  * @param hasPdfAttachment - Whether any message has a PDF attachment.
- *   Pro Plus/Ultra Auto uses DeepSeek V4 Pro 0813 for text/PDF prompts.
- *   Paid Agent Standard uses GLM 5.3 Flash, Ask Standard stays on DeepSeek
- *   V4 Flash 0731, Pro uses Pro 0813, and Max uses Grok 4.6. Images retain
- *   their existing direct or auxiliary vision behavior.
+ *   Pro Plus Auto mirrors the mode-specific Standard route: Agent uses GLM
+ *   5.3 Flash and Ask uses DeepSeek V4 Flash 0731. Ultra Auto uses DeepSeek
+ *   V4 Pro 0813. Explicit Pro uses Pro 0813, and Max uses Grok 4.6. Images
+ *   retain their existing direct or auxiliary vision behavior.
  * @returns Model name to use
  */
 export function selectModel(
@@ -74,7 +74,7 @@ export function selectModel(
     ? "model-glm-5.3-flash-agent"
     : "model-deepseek-v4-flash-0731";
   const paidAutoTextModel: ModelName =
-    subscription === "pro-plus" || subscription === "ultra"
+    subscription === "ultra"
       ? "model-deepseek-v4-pro-0813"
       : paidStandardTextModel;
   const directVisionModel: ModelName =
@@ -114,7 +114,7 @@ export function selectModel(
     return autoModel;
   }
 
-  // Explicit Standard remains on Flash even when Pro Plus/Ultra Auto uses Pro.
+  // Explicit Standard remains on Flash even when Ultra Auto uses Pro.
   // Keep an explicit key so model display surfaces show the selected tier.
   if (allowedSelectedModel === "hackerai-standard") {
     return hasProviderImage ? "model-grok-4.5" : paidStandardTextModel;

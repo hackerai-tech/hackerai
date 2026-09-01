@@ -155,27 +155,37 @@ describe("limitImageParts", () => {
 // ==========================================================================
 describe("selectModel", () => {
   it.each([
-    ["ask", "pro-plus"],
-    ["agent", "pro-plus"],
-    ["ask", "ultra"],
-    ["agent", "ultra"],
+    ["ask", "model-deepseek-v4-flash-0731"],
+    ["agent", "model-glm-5.3-flash-agent"],
   ] as const)(
-    "routes %s %s Auto text to DeepSeek V4 Pro",
-    (mode, subscription) => {
-      expect(selectModel(mode, subscription, "auto", false, false)).toBe(
+    "routes %s Pro Plus Auto text to the Standard model",
+    (mode, expected) => {
+      expect(selectModel(mode, "pro-plus", "auto", false, false)).toBe(
+        expected,
+      );
+    },
+  );
+
+  it.each(["ask", "agent"] as const)(
+    "routes %s Ultra Auto text to DeepSeek V4 Pro",
+    (mode) => {
+      expect(selectModel(mode, "ultra", "auto", false, false)).toBe(
         "model-deepseek-v4-pro-0813",
       );
     },
   );
 
-  it.each(["pro-plus", "ultra"] as const)(
-    "routes %s Auto PDFs to DeepSeek V4 Pro",
-    (subscription) => {
-      expect(selectModel("agent", subscription, "auto", false, true)).toBe(
-        "model-deepseek-v4-pro-0813",
-      );
-    },
-  );
+  it("routes Pro Plus Agent Auto PDFs to GLM 5.3 Flash", () => {
+    expect(selectModel("agent", "pro-plus", "auto", false, true)).toBe(
+      "model-glm-5.3-flash-agent",
+    );
+  });
+
+  it("routes Ultra Auto PDFs to DeepSeek V4 Pro", () => {
+    expect(selectModel("agent", "ultra", "auto", false, true)).toBe(
+      "model-deepseek-v4-pro-0813",
+    );
+  });
 
   it.each(["pro", "team"] as const)(
     "routes %s Agent Auto to GLM 5.3 Flash",
@@ -266,12 +276,12 @@ describe("selectModel", () => {
     },
   );
 
-  it("uses the Pro GLM vision route for Pro Plus Auto images", () => {
+  it("uses the Standard GLM vision route for Pro Plus Auto images", () => {
     expect(
       selectModel("agent", "pro-plus", "auto", true, false, {
         directGlmVisionEnabled: true,
       }),
-    ).toBe("model-glm-5.3-flash-pro");
+    ).toBe("model-glm-5.3-flash");
   });
 
   it.each(["pro", "pro-plus", "ultra", "team"] as const)(
@@ -286,8 +296,8 @@ describe("selectModel", () => {
     },
   );
 
-  it.each(["pro", "team"] as const)(
-    "routes paid %s Auto text to the mode-specific Flash model",
+  it.each(["pro", "pro-plus", "team"] as const)(
+    "routes paid %s Auto text to the mode-specific Standard model",
     (subscription) => {
       expect(selectModel("ask", subscription, "auto")).toBe(
         "model-deepseek-v4-flash-0731",
@@ -300,7 +310,7 @@ describe("selectModel", () => {
 
   // Default model selection by mode
   describe("default models (no override)", () => {
-    it.each(["pro", "team"] as const)(
+    it.each(["pro", "pro-plus", "team"] as const)(
       "should return GLM 5.3 Flash for paid agent text on %s",
       (subscription) => {
         expect(selectModel("agent", subscription)).toBe(
@@ -309,14 +319,9 @@ describe("selectModel", () => {
       },
     );
 
-    it.each(["pro-plus", "ultra"] as const)(
-      "should return DeepSeek V4 Pro 0813 for paid agent text on %s",
-      (subscription) => {
-        expect(selectModel("agent", subscription)).toBe(
-          "model-deepseek-v4-pro-0813",
-        );
-      },
-    );
+    it("should return DeepSeek V4 Pro 0813 for paid agent text on Ultra", () => {
+      expect(selectModel("agent", "ultra")).toBe("model-deepseek-v4-pro-0813");
+    });
 
     it("should return Grok 4.5 medium for paid Agent Auto with an image", () => {
       expect(selectModel("agent", "pro", undefined, true, false)).toBe(
