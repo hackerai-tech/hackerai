@@ -99,6 +99,10 @@ import {
 } from "@/lib/rate-limit";
 import { checkSubagentBillingCapacity } from "@/lib/ai/subagents/billing";
 import {
+  finalizeHandledSubagentRateLimit,
+  type SubagentTerminalOutput as SubagentTaskOutput,
+} from "@/lib/ai/subagents/rate-limit-finalization";
+import {
   buildExtraUsageConfig,
   getContentFilterRetryModel,
 } from "@/lib/api/chat-stream-helpers";
@@ -118,11 +122,6 @@ import {
 } from "@/lib/utils/error-utils";
 import { ChatSDKError, serializeChatSDKErrorForStream } from "@/lib/errors";
 import type { TriggerRunRegion } from "@/lib/api/trigger-region";
-
-type SubagentTaskOutput = {
-  subagentId: string;
-  status: "completed" | "failed" | "canceled" | "timed_out";
-};
 
 const loadPersistedTerminalOutput = async (
   subagentId: string,
@@ -1648,26 +1647,7 @@ export const subagentTask = task({
         costDollars: fallbackCostDollars,
         billingFailure: true,
       }));
-      let finishSubagentError: unknown;
-      const finishOutcome = await finishSubagent({
-        subagentId: row.subagent_id,
-        triggerRunId: ctx.run.id,
-        status: terminalFailure.status,
-        summary: terminalFailure.summary,
-        failureCode: terminalFailure.code,
-        ...(handledRateLimitFailureReason && {
-          failureReason: handledRateLimitFailureReason,
-        }),
-        ...(terminalFailure.status === "canceled"
-          ? { cancelReason: terminalFailure.code }
-          : {}),
-        costDollars: settlement.costDollars,
-        stepCount,
-      }).catch((finishError) => {
-        finishSubagentError = finishError;
-        return null;
-      });
-      if (finishOutcome === "updated") {
+      const captureTerminalOutcome = () => {
         captureSubagentTerminalOutcome({
           userId: row.user_id,
           subagentId: row.subagent_id,
@@ -1686,42 +1666,46 @@ export const subagentTask = task({
           resultRecoveryCount: resultRecoveriesUsed,
           resultSubmissionCount: resultSubmissionAttempts,
         });
-      } else {
-        const persistedOutput = await loadPersistedTerminalOutput(
-          row.subagent_id,
-        ).catch(() => null);
-        if (persistedOutput) {
-          metadata.set("status", persistedOutput.status);
-          return persistedOutput;
-        }
-      }
-      if (handledRateLimitError && finishOutcome !== "updated") {
-        const finalizationError =
-          finishSubagentError ??
-          new Error(
-            `Subagent rate-limit finalization failed: ${finishOutcome ?? "unknown"}`,
-          );
-        const finalizationDiagnostics = extractErrorDetails(finalizationError);
-        triggerLogger.error("[subagent] rate-limit finalization failed", {
-          event: "subagent_rate_limit_finalization_failed",
-          service: "hackerai-subagent",
-          environment:
-            process.env.TRIGGER_ENV ?? process.env.NODE_ENV ?? "unknown",
-          user_id: row.user_id,
-          subagent_id: row.subagent_id,
-          parent_trigger_run_id: row.parent_trigger_run_id,
-          trigger_run_id: ctx.run.id,
-          finish_outcome: finishOutcome ?? "error",
-          error_name: finalizationDiagnostics.errorName,
-          error_message: finalizationDiagnostics.errorMessage,
-        });
-        metadata
-          .set("status", "failed")
-          .set("failureCode", "rate_limit_finalization_failed")
-          .set("failureStage", "finalization");
-        throw finalizationError;
-      }
+      };
       if (handledRateLimitError) {
+        const finalization = await finalizeHandledSubagentRateLimit(
+          {
+            subagentId: row.subagent_id,
+            triggerRunId: ctx.run.id,
+            status: "failed",
+            summary: terminalFailure.summary,
+            failureCode: terminalFailure.code,
+            ...(handledRateLimitFailureReason && {
+              failureReason: handledRateLimitFailureReason,
+            }),
+            costDollars: settlement.costDollars,
+            stepCount,
+          },
+          {
+            environment:
+              process.env.TRIGGER_ENV ?? process.env.NODE_ENV ?? "unknown",
+            userId: row.user_id,
+            subagentId: row.subagent_id,
+            parentTriggerRunId: row.parent_trigger_run_id,
+            triggerRunId: ctx.run.id,
+          },
+          {
+            finishSubagent,
+            loadPersistedTerminalOutput,
+            captureTerminalOutcome,
+            logError: (message, fields) => triggerLogger.error(message, fields),
+            recordFinalizationFailureMetadata: () => {
+              metadata
+                .set("status", "failed")
+                .set("failureCode", "rate_limit_finalization_failed")
+                .set("failureStage", "finalization");
+            },
+          },
+        );
+        if (!finalization.updated) {
+          metadata.set("status", finalization.output.status);
+          return finalization.output;
+        }
         await tags.add("rate_limited").catch(() => undefined);
         triggerLogger.info("[subagent] run rate limited", {
           event: "subagent_run_rate_limited",
@@ -1746,7 +1730,30 @@ export const subagentTask = task({
         if (rateLimitCapReason) {
           metadata.set("capReason", rateLimitCapReason);
         }
-        return { subagentId: row.subagent_id, status: "failed" };
+        return finalization.output;
+      }
+      const finishOutcome = await finishSubagent({
+        subagentId: row.subagent_id,
+        triggerRunId: ctx.run.id,
+        status: terminalFailure.status,
+        summary: terminalFailure.summary,
+        failureCode: terminalFailure.code,
+        ...(terminalFailure.status === "canceled"
+          ? { cancelReason: terminalFailure.code }
+          : {}),
+        costDollars: settlement.costDollars,
+        stepCount,
+      }).catch(() => null);
+      if (finishOutcome === "updated") {
+        captureTerminalOutcome();
+      } else {
+        const persistedOutput = await loadPersistedTerminalOutput(
+          row.subagent_id,
+        ).catch(() => null);
+        if (persistedOutput) {
+          metadata.set("status", persistedOutput.status);
+          return persistedOutput;
+        }
       }
       triggerLogger.error("[subagent] run failed", {
         event: "subagent_run_failed",
