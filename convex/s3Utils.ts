@@ -80,6 +80,7 @@ export function getStoredS3Location(
   return { region, bucket: bucket.trim() };
 }
 
+/** Create an S3 client with optional path-style object addressing. */
 export function getS3Client(
   location?: S3StorageLocation,
   options: { forcePathStyle?: boolean } = {},
