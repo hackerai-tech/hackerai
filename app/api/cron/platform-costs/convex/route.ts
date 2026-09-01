@@ -47,13 +47,14 @@ export async function GET(request: Request) {
       },
       async (response) => parseConvexDeploymentUsage(await response.json()),
     );
-    const rows = mapConvexUsageToRows(usage, startedAt);
-    const day = new Date(startedAt).toISOString().slice(0, 10);
+    const observedAt = Date.now();
+    const rows = mapConvexUsageToRows(usage, observedAt);
+    const day = new Date(observedAt).toISOString().slice(0, 10);
     const result = await replaceCostWindow({
       vendor: "convex",
       startDay: day,
       endDay: day,
-      observedAt: startedAt,
+      observedAt,
       rows,
     });
 
