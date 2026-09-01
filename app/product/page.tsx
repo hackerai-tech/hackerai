@@ -23,11 +23,9 @@ import {
   GITHUB_URL,
   HELP_CENTER_URL,
   LOCAL_AGENT_HELP_URL,
-  PUBLIC_PAGE_LAST_MODIFIED,
   SOFTWARE_APPLICATION_JSON_LD,
   STATUS_PAGE_URL,
   canonicalMetadata,
-  formatPublicPageDate,
 } from "@/lib/seo/site";
 
 const description =
@@ -94,12 +92,6 @@ export default function ProductPage() {
             <div>
               <p className="text-sm font-medium text-muted-foreground">
                 AI-assisted penetration testing
-              </p>
-              <p className="mt-2 text-xs text-muted-foreground">
-                Last updated{" "}
-                <time dateTime={PUBLIC_PAGE_LAST_MODIFIED.product}>
-                  {formatPublicPageDate(PUBLIC_PAGE_LAST_MODIFIED.product)}
-                </time>
               </p>
               <h1 className="mt-3 text-4xl font-semibold leading-tight sm:text-5xl">
                 HackerAI
