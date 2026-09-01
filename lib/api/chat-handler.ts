@@ -127,6 +127,10 @@ import {
   shouldSkipAbortedMessageSave,
   shouldUseUpdateOnlyForAbortedSave,
 } from "@/lib/chat/abort-persistence";
+import {
+  BACKGROUND_WORK_DRAIN_TIMEOUT_MS,
+  drainBackgroundWork,
+} from "@/lib/chat/background-work-drain";
 import { createTrackedProvider } from "@/lib/ai/providers";
 import {
   getSandboxUploadFailureMetadata,
@@ -1374,8 +1378,22 @@ export const createChatHandler = () => {
               );
             };
             const drainBackgroundStreamWork = async () => {
-              while (backgroundStreamWork.size > 0) {
-                await Promise.allSettled([...backgroundStreamWork]);
+              const result = await drainBackgroundWork(backgroundStreamWork, {
+                signal: userStopSignal.signal,
+              });
+              if (result.status !== "completed") {
+                phLogger.warn("Agent background work drain incomplete", {
+                  event: "agent_background_work_drain_incomplete",
+                  service: "chat-handler",
+                  chat_id: chatId,
+                  user_id: userId,
+                  mode,
+                  endpoint,
+                  drain_status: result.status,
+                  pending_work_count: result.pendingCount,
+                  drain_duration_ms: result.durationMs,
+                  drain_timeout_ms: BACKGROUND_WORK_DRAIN_TIMEOUT_MS,
+                });
               }
             };
 

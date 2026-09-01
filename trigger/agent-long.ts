@@ -266,6 +266,10 @@ import {
 import { FREE_AGENT_LONG_RUN_LOCK_TTL_SECONDS } from "@/lib/rate-limit/free-config";
 import { isCentrifugoSandbox } from "@/lib/ai/tools/utils/sandbox-types";
 import { AgentRunTimingTracker } from "@/lib/chat/agent-run-timing";
+import {
+  BACKGROUND_WORK_DRAIN_TIMEOUT_MS,
+  drainBackgroundWork,
+} from "@/lib/chat/background-work-drain";
 import { AgentLongMemoryTelemetry } from "@/lib/chat/agent-long-memory-telemetry";
 import {
   createCancelAgentTool,
@@ -2397,8 +2401,29 @@ export const agentLongTask = task({
       );
     };
     const drainBackgroundRunWork = async () => {
-      while (backgroundRunWork.size > 0) {
-        await Promise.allSettled([...backgroundRunWork]);
+      const result = await drainBackgroundWork(backgroundRunWork, {
+        signal: triggerSignal,
+      });
+      if (result.status !== "completed") {
+        triggerLogger.warn("[agent-long] background work drain incomplete", {
+          event: "agent_background_work_drain_incomplete",
+          service: "agent-long",
+          environment:
+            process.env.TRIGGER_ENV ??
+            process.env.VERCEL_ENV ??
+            process.env.NODE_ENV ??
+            "unknown",
+          request_id: ctx.run.id,
+          run_id: ctx.run.id,
+          chat_id: chatId,
+          user_id: userId,
+          mode,
+          endpoint,
+          drain_status: result.status,
+          pending_work_count: result.pendingCount,
+          drain_duration_ms: result.durationMs,
+          drain_timeout_ms: BACKGROUND_WORK_DRAIN_TIMEOUT_MS,
+        });
       }
     };
     if (payload.requestTiming) {
