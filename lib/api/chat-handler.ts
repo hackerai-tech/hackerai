@@ -159,12 +159,6 @@ import {
   getActiveDeepSeekV4Pro0813ExperimentAssignment,
   getDeepSeekV4Pro0813ExperimentContext,
 } from "@/lib/experiments/deepseek-v4-pro-0813";
-import {
-  capturePaidAgentGlm53FlashExperimentExposure,
-  evaluatePaidAgentGlm53FlashExperiment,
-  getActivePaidAgentGlm53FlashExperimentAssignment,
-  getPaidAgentGlm53FlashExperimentContext,
-} from "@/lib/experiments/paid-agent-glm-5-3-flash";
 import { isEligibleForDirectGlmVision } from "@/lib/chat/auxiliary-vision-eligibility";
 import {
   capturePaidDailyFreeAllowanceServerEvent,
@@ -473,19 +467,6 @@ export const createChatHandler = () => {
       if (deepSeekV4Pro0813Experiment) {
         selectedModel = deepSeekV4Pro0813Experiment.modelKey;
       }
-      const paidAgentGlm53FlashExperiment =
-        await evaluatePaidAgentGlm53FlashExperiment({
-          posthog: (posthog ??= PostHogClient()),
-          userId,
-          mode,
-          subscription,
-          selectedModel,
-          requestId: req.headers.get("x-vercel-id") ?? undefined,
-        });
-      if (paidAgentGlm53FlashExperiment) {
-        selectedModel = paidAgentGlm53FlashExperiment.modelKey;
-      }
-
       const notesEnabled =
         (subscription !== "free" || isAgentMode(mode)) &&
         (userCustomization?.include_notes ?? true);
@@ -621,23 +602,14 @@ export const createChatHandler = () => {
         });
       }
 
-      let activeDeepSeekV4Pro0813Experiment =
+      const activeDeepSeekV4Pro0813Experiment =
         getActiveDeepSeekV4Pro0813ExperimentAssignment(
           deepSeekV4Pro0813Experiment,
           selectedModel,
         );
-      let activePaidAgentGlm53FlashExperiment =
-        getActivePaidAgentGlm53FlashExperimentAssignment(
-          paidAgentGlm53FlashExperiment,
-          selectedModel,
-        );
-      let routingExperimentContext =
-        getPaidAgentGlm53FlashExperimentContext(
-          activePaidAgentGlm53FlashExperiment,
-        ) ??
-        getDeepSeekV4Pro0813ExperimentContext(
-          activeDeepSeekV4Pro0813Experiment,
-        );
+      const routingExperimentContext = getDeepSeekV4Pro0813ExperimentContext(
+        activeDeepSeekV4Pro0813Experiment,
+      );
 
       const freeMonthlyBudgetSnapshot =
         subscription === "free"
@@ -1475,16 +1447,6 @@ export const createChatHandler = () => {
 
             let result;
             try {
-              capturePaidAgentGlm53FlashExperimentExposure({
-                posthog,
-                userId,
-                subscription,
-                mode,
-                selectedModelOverride,
-                selectedModel,
-                configuredModel: configuredModelId,
-                assignment: activePaidAgentGlm53FlashExperiment,
-              });
               captureDeepSeekV4Pro0813ExperimentExposure({
                 posthog,
                 userId,

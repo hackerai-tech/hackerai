@@ -305,10 +305,10 @@ describe("resolveAgentModelForImageToolResults", () => {
 });
 
 describe("resolveAgentModelAfterSummarization", () => {
-  it("returns Standard and Pro vision routes to their DeepSeek text routes", () => {
+  it("returns Standard and Pro vision routes to their text routes", () => {
     expect(
       resolveAgentModelAfterSummarization("model-grok-4.5", "agent", false),
-    ).toBe("model-deepseek-v4-flash-0731");
+    ).toBe("model-glm-5.3-flash-agent");
     expect(
       resolveAgentModelAfterSummarization("model-grok-4.5-pro", "agent", false),
     ).toBe("model-deepseek-v4-pro-0813");
@@ -318,7 +318,7 @@ describe("resolveAgentModelAfterSummarization", () => {
         "agent",
         false,
       ),
-    ).toBe("model-deepseek-v4-flash-0731");
+    ).toBe("model-glm-5.3-flash-agent");
     expect(
       resolveAgentModelAfterSummarization(
         "model-glm-5.3-flash-pro",
@@ -795,7 +795,7 @@ describe("createAgentStream repeated compaction", () => {
   });
 
   it.each([
-    ["model-grok-4.5", "model-deepseek-v4-flash-0731"],
+    ["model-grok-4.5", "model-glm-5.3-flash-agent"],
     ["model-grok-4.5-pro", "model-deepseek-v4-pro-0813"],
   ])(
     "switches %s back to %s after a text-only persisted summary",

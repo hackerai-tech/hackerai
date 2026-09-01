@@ -140,7 +140,7 @@ const STANDARD_AGENT_VISION_MODEL = "model-grok-4.5";
 const PRO_AGENT_VISION_MODEL = "model-grok-4.5-pro";
 const STANDARD_AGENT_GLM_VISION_MODEL = "model-glm-5.3-flash";
 const PRO_AGENT_GLM_VISION_MODEL = "model-glm-5.3-flash-pro";
-const STANDARD_AGENT_TEXT_MODEL = "model-deepseek-v4-flash-0731";
+const STANDARD_AGENT_TEXT_MODEL = "model-glm-5.3-flash-agent";
 const PRO_AGENT_TEXT_MODEL = "model-deepseek-v4-pro-0813";
 
 const uiMessagesContainImageAttachment = (messages: UIMessage[]): boolean =>

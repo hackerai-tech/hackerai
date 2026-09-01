@@ -560,9 +560,10 @@ export class SummarizationTracker {
  * stream, OpenRouter rolls forward through this list and bills at the served
  * model's rate (response.modelId reflects what actually ran).
  *
- * Paid Auto/Standard use DeepSeek V4 Flash 0731, Pro uses DeepSeek V4 Pro
- * 0813, and Max uses Grok 4.6. Historical aliases remain recognized for
- * in-flight requests and cost accounting.
+ * Paid Agent Standard uses GLM 5.3 Flash while Ask Standard remains on
+ * DeepSeek V4 Flash 0731. Pro uses DeepSeek V4 Pro 0813, and Max uses Grok
+ * 4.6. Historical aliases remain recognized for in-flight requests and cost
+ * accounting.
  *
  * Keys and values are registry names (see lib/ai/providers.ts) — the actual
  * OpenRouter slugs are resolved at request-build time so this stays in sync

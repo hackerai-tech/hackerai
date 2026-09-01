@@ -1400,18 +1400,20 @@ export function supportsMultimodalToolResults(modelName?: string): boolean {
 /**
  * Map a HackerAI tier id to the underlying provider key for a given mode.
  * Returns `null` for `"auto"` (the caller routes to the auto-router model
- * key instead). Standard maps to DeepSeek V4 Flash 0731, Pro to DeepSeek V4
- * Pro 0813, and Max to Grok 4.6 in both modes; media-aware promotion happens
- * in `selectModel`.
+ * key instead). Standard maps to GLM 5.3 Flash in Agent and DeepSeek V4 Flash
+ * 0731 in Ask. Pro maps to DeepSeek V4 Pro 0813 and Max to Grok 4.6 in both
+ * modes; media-aware promotion happens in `selectModel`.
  */
 export function resolveTierToProviderKey(
   tier: SelectedModel,
-  _mode: ChatMode,
+  mode: ChatMode,
 ): ModelName | null {
   if (tier === "auto") return null;
   switch (tier) {
     case "hackerai-standard":
-      return "model-deepseek-v4-flash-0731";
+      return mode === "agent"
+        ? "model-glm-5.3-flash-agent"
+        : "model-deepseek-v4-flash-0731";
     case "hackerai-pro":
       return "model-deepseek-v4-pro-0813";
     case "hackerai-max":
