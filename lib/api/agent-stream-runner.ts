@@ -130,6 +130,7 @@ import type {
   ProviderRequestRetentionDiagnostics,
 } from "@/lib/logger";
 import type { ChatMode, SelectedModel, SubscriptionTier } from "@/types";
+import type { AgentStartupPhase } from "@/lib/chat/agent-run-timing";
 import { namespaceLanguageModelToolCalls } from "@/lib/ai/tool-call-id-namespace";
 import {
   guardLanguageModelProviderResponse,
@@ -658,6 +659,11 @@ export type AgentStreamContext = {
   onModelStreamStart?: () => void;
   onModelStreamFinish?: () => void;
   onModelChunk?: () => void;
+  onStartupPhaseDuration?: (
+    phase: AgentStartupPhase,
+    durationMs: number,
+  ) => void;
+  registerBackgroundWork?: (work: Promise<void>) => void;
   onProviderRequestDiagnostics?: (
     diagnostics: ProviderRequestDiagnostics,
     retention: ProviderRequestRetentionDiagnostics,
@@ -1077,10 +1083,23 @@ export async function createAgentStream(
     initialModelInfo.modelName,
   );
   const promptSerializationTools = createPromptSerializationTools(ctx.tools);
+  const initialSerializationStartedAt = Date.now();
+  let initialSerializedMessages: ModelMessage[];
+  try {
+    initialSerializedMessages = await convertToModelMessages(
+      state.finalMessages,
+      {
+        tools: promptSerializationTools,
+      },
+    );
+  } finally {
+    ctx.onStartupPhaseDuration?.(
+      "message_serialization",
+      Date.now() - initialSerializationStartedAt,
+    );
+  }
   const initialModelMessages = prepareProviderMessages(
-    await convertToModelMessages(state.finalMessages, {
-      tools: promptSerializationTools,
-    }),
+    initialSerializedMessages,
     initialModelInfo.modelName,
   );
   recordProviderRequestDiagnostics({
@@ -1192,6 +1211,8 @@ export async function createAgentStream(
               ),
               transcriptMessages: state.transcriptSourceMessages,
               providerPromptPressure,
+              onPhaseDuration: ctx.onStartupPhaseDuration,
+              registerBackgroundWork: ctx.registerBackgroundWork,
             });
 
             if (result.summarizationAttempted) {
@@ -1226,12 +1247,21 @@ export async function createAgentStream(
               const providerOptions = getStepProviderOptions(
                 continuationModelInfo.modelName,
               );
-              let summarizedModelMessages = await convertToModelMessages(
-                result.summarizedMessages,
-                {
-                  tools: createPromptSerializationTools(ctx.tools),
-                },
-              );
+              const summarySerializationStartedAt = Date.now();
+              let summarizedModelMessages: ModelMessage[];
+              try {
+                summarizedModelMessages = await convertToModelMessages(
+                  result.summarizedMessages,
+                  {
+                    tools: createPromptSerializationTools(ctx.tools),
+                  },
+                );
+              } finally {
+                ctx.onStartupPhaseDuration?.(
+                  "message_serialization",
+                  Date.now() - summarySerializationStartedAt,
+                );
+              }
               state.postSummarizationContinuationActive = true;
               state.postSummarizationToolCallCount = 0;
               state.postSummarizationText = "";
@@ -1315,6 +1345,7 @@ export async function createAgentStream(
                       part.text.includes("<context_summary>"),
                   ),
                 ),
+              registerBackgroundWork: ctx.registerBackgroundWork,
             });
 
             if (!inRunResult) {

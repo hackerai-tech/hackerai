@@ -34,6 +34,7 @@ import {
   isSummaryMessage,
   extractSummaryText,
   buildSummaryPersistenceMetadata,
+  persistSummaryTranscript,
   resolveSummarizationMaxTokens,
 } from "./helpers";
 import type { SummarizationResult } from "./helpers";
@@ -51,6 +52,14 @@ type CompactionLogReason =
 
 type SummarizationAttempt = "primary" | "fallback";
 
+export type ContextCompactionPhase = "summary_generation" | "transcript_saving";
+export type ContextCompactionPhaseReporter = (
+  phase: ContextCompactionPhase,
+  durationMs: number,
+) => void;
+export type BackgroundWorkRegistrar = (work: Promise<void>) => void;
+
+export const CONTEXT_COMPACTION_MODEL_NAME = "model-glm-5.3-flash";
 const SUMMARIZATION_RETRY_MODEL_BY_MODE: Record<ChatMode, string> = {
   ask: "fallback-ask-model",
   agent: "fallback-agent-model",
@@ -202,6 +211,26 @@ const buildSummarizationRetryProviderOptions = (
   return retryProviderOptions;
 };
 
+const buildContextCompactionProviderOptions = (
+  providerOptions?: Record<string, Record<string, unknown>>,
+): Record<string, Record<string, unknown>> => {
+  const openrouter = providerOptions?.openrouter ?? {};
+  return {
+    openrouter: {
+      ...(typeof openrouter.user === "string" ? { user: openrouter.user } : {}),
+      reasoning: { enabled: true, effort: "low" },
+    },
+  };
+};
+
+const reportPhaseDuration = (
+  reporter: ContextCompactionPhaseReporter | undefined,
+  phase: ContextCompactionPhase,
+  startedAt: number,
+) => {
+  reporter?.(phase, Math.max(0, Math.round(Date.now() - startedAt)));
+};
+
 const logContextCompactionRetrying = ({
   chatId,
   mode,
@@ -231,6 +260,7 @@ const logContextCompactionRetrying = ({
       mode,
       subscription,
       reason,
+      compaction_model: CONTEXT_COMPACTION_MODEL_NAME,
       summarization_attempt: attempt,
       model_id: getLanguageModelId(languageModel),
       retry_model_name: retryModelName,
@@ -297,6 +327,8 @@ export interface CheckAndSummarizeOptions {
   transcriptMessages?: UIMessage[];
   maxTokensOverride?: number;
   providerPromptPressure?: ProviderPromptPressure | null;
+  onPhaseDuration?: ContextCompactionPhaseReporter;
+  registerBackgroundWork?: BackgroundWorkRegistrar;
 }
 
 /**
@@ -397,6 +429,7 @@ const logContextCompactionStarted = ({
       mode,
       subscription,
       reason,
+      compaction_model: CONTEXT_COMPACTION_MODEL_NAME,
       total_estimated_tokens: totalEstimatedTokens,
       system_prompt_tokens: systemPromptTokens,
       provider_input_tokens: providerInputTokens,
@@ -423,7 +456,6 @@ const logContextCompactionStarted = ({
 const generateSummaryTextWithRetry = async ({
   messagesToSummarize,
   modelMessages,
-  languageModel,
   mode,
   chatSystemPrompt,
   hasExistingSummary,
@@ -434,10 +466,10 @@ const generateSummaryTextWithRetry = async ({
   chatId,
   subscription,
   reason,
+  onPhaseDuration,
 }: {
   messagesToSummarize: UIMessage[];
   modelMessages?: ModelMessage[];
-  languageModel: LanguageModel;
   mode: ChatMode;
   chatSystemPrompt: string;
   hasExistingSummary: boolean;
@@ -448,74 +480,140 @@ const generateSummaryTextWithRetry = async ({
   chatId: string | null;
   subscription: SubscriptionTier;
   reason: CompactionLogReason;
+  onPhaseDuration?: ContextCompactionPhaseReporter;
 }): Promise<
   Awaited<ReturnType<typeof generateSummaryText>> & {
     languageModel: LanguageModel;
     attempt: SummarizationAttempt;
   }
 > => {
+  const summaryLanguageModel = myProvider.languageModel(
+    CONTEXT_COMPACTION_MODEL_NAME,
+  );
+  const startedAt = Date.now();
   try {
-    const result = await generateSummaryText(
-      messagesToSummarize,
-      languageModel,
-      mode,
-      chatSystemPrompt,
-      hasExistingSummary,
-      tools,
-      providerOptions,
-      abortSignal,
-      modelMessages,
-      summaryInputMaxTokens,
-    );
-
-    return {
-      ...result,
-      languageModel,
-      attempt: "primary",
-    };
-  } catch (error) {
-    if (abortSignal?.aborted || !isMalformedProviderJsonError(error)) {
-      throw error;
-    }
-
-    const retryModelName = SUMMARIZATION_RETRY_MODEL_BY_MODE[mode];
-    const retryLanguageModel = myProvider.languageModel(retryModelName);
-    logContextCompactionRetrying({
-      chatId,
-      mode,
-      subscription,
-      reason,
-      attempt: "primary",
-      languageModel,
-      retryModelName,
-      error,
-    });
-
     let result: Awaited<ReturnType<typeof generateSummaryText>>;
     try {
       result = await generateSummaryText(
         messagesToSummarize,
-        retryLanguageModel,
+        summaryLanguageModel,
         mode,
         chatSystemPrompt,
         hasExistingSummary,
-        undefined,
-        buildSummarizationRetryProviderOptions(providerOptions),
+        tools,
+        buildContextCompactionProviderOptions(providerOptions),
         abortSignal,
         modelMessages,
         summaryInputMaxTokens,
       );
-    } catch (retryError) {
-      markSummarizationAttemptError(retryError, "fallback");
-      throw retryError;
+    } catch (error) {
+      if (abortSignal?.aborted || !isMalformedProviderJsonError(error)) {
+        throw error;
+      }
+
+      const retryModelName = SUMMARIZATION_RETRY_MODEL_BY_MODE[mode];
+      const retryLanguageModel = myProvider.languageModel(retryModelName);
+      logContextCompactionRetrying({
+        chatId,
+        mode,
+        subscription,
+        reason,
+        attempt: "primary",
+        languageModel: summaryLanguageModel,
+        retryModelName,
+        error,
+      });
+
+      try {
+        result = await generateSummaryText(
+          messagesToSummarize,
+          retryLanguageModel,
+          mode,
+          chatSystemPrompt,
+          hasExistingSummary,
+          undefined,
+          buildSummarizationRetryProviderOptions(providerOptions),
+          abortSignal,
+          modelMessages,
+          summaryInputMaxTokens,
+        );
+      } catch (retryError) {
+        markSummarizationAttemptError(retryError, "fallback");
+        throw retryError;
+      }
+
+      return {
+        ...result,
+        languageModel: retryLanguageModel,
+        attempt: "fallback",
+      };
     }
 
     return {
       ...result,
-      languageModel: retryLanguageModel,
-      attempt: "fallback",
+      languageModel: summaryLanguageModel,
+      attempt: "primary",
     };
+  } finally {
+    reportPhaseDuration(onPhaseDuration, "summary_generation", startedAt);
   }
+};
+
+const startTranscriptSave = ({
+  messages,
+  modelMessages,
+  ensureSandbox,
+  mode,
+  chatId,
+  scope,
+  onPhaseDuration,
+}: {
+  messages: UIMessage[];
+  modelMessages?: ModelMessage[];
+  ensureSandbox?: EnsureSandbox;
+  mode: ChatMode;
+  chatId: string | null;
+  scope: "durable" | "run_scoped";
+  onPhaseDuration?: ContextCompactionPhaseReporter;
+}) => {
+  let settledPath: string | null | undefined;
+  const startedAt = Date.now();
+  const promise: Promise<string | null> =
+    ensureSandbox && mode === "agent"
+      ? ensureSandbox()
+          .then((sandbox) =>
+            saveTranscriptToSandbox(messages, sandbox, modelMessages),
+          )
+          .catch((error) => {
+            console.error(
+              JSON.stringify({
+                level: "error",
+                event: "chat_context_transcript_save_failed",
+                service: "chat-handler",
+                timestamp: new Date().toISOString(),
+                chat_id: chatId ?? undefined,
+                mode,
+                persistence: scope,
+                error_message:
+                  error instanceof Error ? error.message : String(error),
+              }),
+            );
+            return null;
+          })
+      : Promise.resolve(null);
+
+  const trackedPromise = promise.then((path) => {
+    settledPath = path;
+    return path;
+  });
+  void trackedPromise.finally(() => {
+    reportPhaseDuration(onPhaseDuration, "transcript_saving", startedAt);
+  });
+
+  return {
+    promise: trackedPromise,
+    getSettledPath: () => settledPath,
+  };
 };
 
 export interface CompactModelMessagesInRunOptions {
@@ -539,6 +637,8 @@ export interface CompactModelMessagesInRunOptions {
   providerPromptPressure?: ProviderPromptPressure | null;
   compactionIndex: number;
   hasExistingSummary: boolean;
+  onPhaseDuration?: ContextCompactionPhaseReporter;
+  registerBackgroundWork?: BackgroundWorkRegistrar;
 }
 
 export interface InRunModelCompactionResult {
@@ -558,7 +658,6 @@ export const compactModelMessagesInRun = async ({
   modelMessages,
   transcriptModelMessages,
   subscription,
-  languageModel,
   mode,
   writer,
   chatId,
@@ -574,6 +673,8 @@ export const compactModelMessagesInRun = async ({
   providerPromptPressure,
   compactionIndex,
   hasExistingSummary,
+  onPhaseDuration,
+  registerBackgroundWork,
 }: CompactModelMessagesInRunOptions): Promise<InRunModelCompactionResult | null> => {
   const summarizationThreshold = getSummarizationThresholdTokens(maxTokens);
   const compactionReason = getCompactionLogReason({
@@ -594,6 +695,7 @@ export const compactModelMessagesInRun = async ({
       reason: compactionReason,
       compaction_index: compactionIndex,
       persistence: "run_scoped",
+      compaction_model: CONTEXT_COMPACTION_MODEL_NAME,
       model_message_count: modelMessages.length,
       provider_input_tokens: providerInputTokens,
       max_tokens: maxTokens,
@@ -610,7 +712,6 @@ export const compactModelMessagesInRun = async ({
     const summaryPromise = generateSummaryTextWithRetry({
       messagesToSummarize: [],
       modelMessages,
-      languageModel,
       mode,
       chatSystemPrompt,
       hasExistingSummary,
@@ -621,26 +722,21 @@ export const compactModelMessagesInRun = async ({
       chatId,
       subscription,
       reason: compactionReason,
+      onPhaseDuration,
     });
-    const transcriptPromise: Promise<string | null> =
-      ensureSandbox && mode === "agent"
-        ? ensureSandbox()
-            .then((sandbox) =>
-              saveTranscriptToSandbox([], sandbox, transcriptModelMessages),
-            )
-            .catch((error) => {
-              console.error(
-                "[Summarization] Failed to ensure sandbox for in-run transcript:",
-                error,
-              );
-              return null;
-            })
-        : Promise.resolve(null);
+    const transcriptSave = startTranscriptSave({
+      messages: [],
+      modelMessages: transcriptModelMessages,
+      ensureSandbox,
+      mode,
+      chatId,
+      scope: "run_scoped",
+      onPhaseDuration,
+    });
+    registerBackgroundWork?.(transcriptSave.promise.then(() => undefined));
 
-    const [summaryResult, savedPath] = await Promise.all([
-      summaryPromise,
-      transcriptPromise,
-    ]);
+    const summaryResult = await summaryPromise;
+    const savedPath = transcriptSave.getSettledPath();
     let finalSummaryText = summaryResult.text;
     if (savedPath) finalSummaryText += buildTranscriptNotice(savedPath);
 
@@ -655,6 +751,7 @@ export const compactModelMessagesInRun = async ({
         subscription,
         compaction_index: compactionIndex,
         persistence: "run_scoped",
+        compaction_model: CONTEXT_COMPACTION_MODEL_NAME,
         summary_input_tokens: summaryResult.usage.inputTokens,
         summary_output_tokens: summaryResult.usage.outputTokens,
         estimated_compacted_input_tokens:
@@ -679,7 +776,7 @@ export const compactModelMessagesInRun = async ({
       languageModel:
         failedAttempt === "fallback"
           ? myProvider.languageModel(SUMMARIZATION_RETRY_MODEL_BY_MODE[mode])
-          : languageModel,
+          : myProvider.languageModel(CONTEXT_COMPACTION_MODEL_NAME),
       fallbackResult: "no_summarization",
       error,
     });
@@ -760,7 +857,6 @@ const saveTranscriptToSandbox = async (
 export const checkAndSummarizeIfNeeded = async ({
   uiMessages,
   subscription,
-  languageModel,
   mode,
   writer,
   chatId,
@@ -777,6 +873,8 @@ export const checkAndSummarizeIfNeeded = async ({
   transcriptMessages,
   maxTokensOverride,
   providerPromptPressure,
+  onPhaseDuration,
+  registerBackgroundWork,
 }: CheckAndSummarizeOptions): Promise<SummarizationResult> => {
   // Detect and separate synthetic summary message from real messages
   let realMessages: UIMessage[];
@@ -882,7 +980,6 @@ export const checkAndSummarizeIfNeeded = async ({
     // independent (transcript is formatted from raw messages, not the summary).
     const summaryPromise = generateSummaryTextWithRetry({
       messagesToSummarize,
-      languageModel,
       mode,
       chatSystemPrompt,
       hasExistingSummary: !!existingSummaryText,
@@ -893,33 +990,23 @@ export const checkAndSummarizeIfNeeded = async ({
       chatId,
       subscription,
       reason: compactionReason,
+      onPhaseDuration,
     });
 
     // In agent modes, save the full transcript of summarized messages to the sandbox
     // so the agent can consult the raw conversation later if context is lost
-    const transcriptPromise: Promise<string | null> =
-      ensureSandbox && mode === "agent"
-        ? ensureSandbox()
-            .then((sandbox) =>
-              saveTranscriptToSandbox(
-                transcriptMessages ?? tailSelection.headMessages,
-                sandbox,
-                modelMessages,
-              ),
-            )
-            .catch((error) => {
-              console.error(
-                "[Summarization] Failed to ensure sandbox for transcript:",
-                error,
-              );
-              return null;
-            })
-        : Promise.resolve(null);
+    const transcriptSave = startTranscriptSave({
+      messages: transcriptMessages ?? tailSelection.headMessages,
+      modelMessages,
+      ensureSandbox,
+      mode,
+      chatId,
+      scope: "durable",
+      onPhaseDuration,
+    });
 
-    const [summaryResult, savedPath] = await Promise.all([
-      summaryPromise,
-      transcriptPromise,
-    ]);
+    const summaryResult = await summaryPromise;
+    const savedPath = transcriptSave.getSettledPath();
 
     const {
       text: summaryText,
@@ -943,6 +1030,19 @@ export const checkAndSummarizeIfNeeded = async ({
 
     await persistSummary(chatId, finalSummaryText, cutoffMessageId, metadata);
 
+    if (savedPath === undefined) {
+      const attachTranscriptWork = transcriptSave.promise.then(async (path) => {
+        if (!path) return;
+        await persistSummaryTranscript(
+          chatId,
+          `${summaryText}${buildTranscriptNotice(path)}`,
+          cutoffMessageId,
+          path,
+        );
+      });
+      registerBackgroundWork?.(attachTranscriptWork);
+    }
+
     return {
       summarizationAttempted: true,
       needsSummarization: true,
@@ -965,7 +1065,7 @@ export const checkAndSummarizeIfNeeded = async ({
       languageModel:
         failedAttempt === "fallback"
           ? myProvider.languageModel(SUMMARIZATION_RETRY_MODEL_BY_MODE[mode])
-          : languageModel,
+          : myProvider.languageModel(CONTEXT_COMPACTION_MODEL_NAME),
       fallbackResult: "no_summarization",
       error,
     });

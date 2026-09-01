@@ -1365,6 +1365,20 @@ export const createChatHandler = () => {
                 userStopSignal.abort();
               };
 
+            const backgroundStreamWork = new Set<Promise<void>>();
+            const registerBackgroundStreamWork = (work: Promise<void>) => {
+              backgroundStreamWork.add(work);
+              void work.then(
+                () => backgroundStreamWork.delete(work),
+                () => backgroundStreamWork.delete(work),
+              );
+            };
+            const drainBackgroundStreamWork = async () => {
+              while (backgroundStreamWork.size > 0) {
+                await Promise.allSettled([...backgroundStreamWork]);
+              }
+            };
+
             // Shared runner context.
             const streamCtx: AgentStreamContext = {
               trackedProvider,
@@ -1400,6 +1414,7 @@ export const createChatHandler = () => {
               ensureSandbox,
               chatLogger,
               usageRefundTracker,
+              registerBackgroundWork: registerBackgroundStreamWork,
               getSandboxCostDollars: getSandboxSessionCost,
               settleUsageAfterStep,
               ...(useMaxKimiReasoning && {
@@ -1931,6 +1946,7 @@ export const createChatHandler = () => {
                                   userId,
                                   mode,
                                 });
+                                await drainBackgroundStreamWork();
                                 // Final reconciliation can change the finish
                                 // reason to budget-exhausted; do it before
                                 // analytics and persistence consume state.
@@ -2249,6 +2265,7 @@ export const createChatHandler = () => {
                       cacheWriteTokens: usageTracker.cacheWriteTokens,
                     });
                     captureToolCalls({ posthog, chatLogger, userId, mode });
+                    await drainBackgroundStreamWork();
                     // Final reconciliation can change the finish reason to
                     // budget-exhausted; do it before analytics and persistence
                     // consume state.
@@ -2470,6 +2487,7 @@ export const createChatHandler = () => {
                             has_usage_to_record: hasUsageToRecord,
                           }),
                         );
+                        await drainBackgroundStreamWork();
                         await deductAccumulatedUsage();
                         shutdownPostHog(posthog);
                         return;
