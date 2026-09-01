@@ -38,9 +38,11 @@ function isEnglishLocale(locale: string | null | undefined) {
 }
 
 export function PostHogProvider({
+  analyticsAllowed,
   children,
   firstTouchAttribution = null,
 }: {
+  analyticsAllowed: boolean;
   children: React.ReactNode;
   firstTouchAttribution?: FirstTouchAttribution | null;
 }) {
@@ -56,11 +58,16 @@ export function PostHogProvider({
     const posthogKey = process.env.NEXT_PUBLIC_POSTHOG_KEY;
     if (!posthogKey) return;
 
-    const shouldTrack = Boolean(userId);
-    setAuthenticatedAnalyticsUserId(userId ?? null);
+    const shouldTrack = Boolean(userId) && analyticsAllowed;
+    setAuthenticatedAnalyticsUserId(shouldTrack ? userId! : null);
 
     if (!shouldTrack) {
       lastIdentifiedSignature = null;
+      try {
+        window.localStorage.removeItem(POSTHOG_IDENTITY_SIGNATURE_STORAGE_KEY);
+      } catch {
+        // Storage can be unavailable in privacy-restricted browsers.
+      }
       const posthog = getPostHogClient();
       if (posthog?.__loaded) {
         posthog.stopSessionRecording();
@@ -189,6 +196,7 @@ export function PostHogProvider({
       cancelled = true;
     };
   }, [
+    analyticsAllowed,
     firstTouchAttribution,
     subscription,
     userEmail,

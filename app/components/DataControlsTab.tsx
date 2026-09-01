@@ -16,9 +16,15 @@ import { toast } from "sonner";
 import { useGlobalState } from "@/app/contexts/GlobalState";
 import { ManageSharedChatsDialog } from "./ManageSharedChatsDialog";
 import { formatTaskUiCopy } from "@/app/utils/task-ui-copy";
+import {
+  AnalyticsConsentPreferences,
+  useAnalyticsConsentPreferencesAvailable,
+} from "@/app/components/AnalyticsConsentManager";
 
 const DataControlsTab = () => {
   const { subscription } = useGlobalState();
+  const analyticsPreferencesAvailable =
+    useAnalyticsConsentPreferencesAvailable();
   const [showDeleteChats, setShowDeleteChats] = useState(false);
   const [isDeletingChats, setIsDeletingChats] = useState(false);
   const [showDeleteSandboxes, setShowDeleteSandboxes] = useState(false);
@@ -137,6 +143,30 @@ const DataControlsTab = () => {
           </div>
         </div>
       )}
+
+      {analyticsPreferencesAvailable ? (
+        <>
+          {/* Divider */}
+          <div className="border-t" />
+
+          {/* Analytics Cookie Section */}
+          <div>
+            <div className="flex items-center justify-between gap-4 py-3">
+              <div className="min-w-0">
+                <div className="font-medium">Analytics cookies</div>
+                <div className="text-muted-foreground mt-1 text-sm">
+                  Control optional product analytics
+                </div>
+              </div>
+              <AnalyticsConsentPreferences>
+                <Button variant="outline" size="sm">
+                  Manage
+                </Button>
+              </AnalyticsConsentPreferences>
+            </div>
+          </div>
+        </>
+      ) : null}
 
       {/* Divider */}
       <div className="border-t" />
