@@ -3,6 +3,7 @@ import { v } from "convex/values";
 import { validateServiceKey } from "./lib/utils";
 
 const MAX_ROWS_PER_SYNC = 5_000;
+const MAX_PLATFORM_ROWS_PER_WINDOW = MAX_ROWS_PER_SYNC * 2;
 
 const vendorValidator = v.union(v.literal("vercel"), v.literal("convex"));
 const costStatusValidator = v.union(
@@ -174,18 +175,21 @@ export const replaceVendorCostWindow = mutation({
       incoming.set(key, stored);
     }
 
-    const existing = await ctx.db
+    const platformRows = await ctx.db
       .query("unit_economics_daily")
-      .withIndex("by_vendor_day", (q) =>
+      .withIndex("by_type_day", (q) =>
         q
-          .eq("vendor", args.vendor)
+          .eq("entity_type", "platform")
           .gte("day", args.startDay)
           .lte("day", args.endDay),
       )
-      .take(MAX_ROWS_PER_SYNC + 1);
-    if (existing.length > MAX_ROWS_PER_SYNC) {
-      throw new Error("existing vendor rows exceed the safe replacement limit");
+      .take(MAX_PLATFORM_ROWS_PER_WINDOW + 1);
+    if (platformRows.length > MAX_PLATFORM_ROWS_PER_WINDOW) {
+      throw new Error(
+        "existing platform rows exceed the safe replacement limit",
+      );
     }
+    const existing = platformRows.filter((row) => row.vendor === args.vendor);
 
     let inserted = 0;
     let updated = 0;

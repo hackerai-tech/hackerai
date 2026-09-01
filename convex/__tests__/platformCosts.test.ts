@@ -47,7 +47,7 @@ function makeCtx(initial: StoredRow[] = []) {
           predicate(q);
           const matches = rows.filter(
             (row) =>
-              row.vendor === constraints.vendor &&
+              row.entity_type === constraints.entity_type &&
               row.day >= constraints["gte:day"] &&
               row.day <= constraints["lte:day"],
           );

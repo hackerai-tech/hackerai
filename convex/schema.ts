@@ -1081,8 +1081,7 @@ export default defineSchema({
     .index("by_day", ["day"])
     .index("by_type_day", ["entity_type", "day"])
     .index("by_user_day", ["user_id", "day"])
-    .index("by_org_day", ["organization_id", "day"])
-    .index("by_vendor_day", ["vendor", "day"]),
+    .index("by_org_day", ["organization_id", "day"]),
 
   // Restricted, privacy-safe product research. Raw messages are read only by
   // the service-keyed analysis task and are never stored in these tables.
