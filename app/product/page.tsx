@@ -22,9 +22,12 @@ import { Button } from "@/components/ui/button";
 import {
   GITHUB_URL,
   HELP_CENTER_URL,
+  LOCAL_AGENT_HELP_URL,
+  PUBLIC_PAGE_LAST_MODIFIED,
   SOFTWARE_APPLICATION_JSON_LD,
   STATUS_PAGE_URL,
   canonicalMetadata,
+  formatPublicPageDate,
 } from "@/lib/seo/site";
 
 const description =
@@ -38,6 +41,7 @@ export const metadata: Metadata = {
     title: "HackerAI Product",
     description,
     type: "website",
+    url: "/product",
     images: ["/images/hackerai-workspace.png"],
   },
   twitter: {
@@ -68,8 +72,8 @@ const capabilities = [
   },
   {
     icon: Search,
-    title: "Security-focused models",
-    copy: "Choose from available AI models and keep the investigation, tool output, and findings in one task workspace.",
+    title: "Evidence and reporting",
+    copy: "Keep investigation notes, tool output, and findings in one task workspace, then use validated evidence to prepare report-ready material.",
   },
 ] as const;
 
@@ -90,6 +94,12 @@ export default function ProductPage() {
             <div>
               <p className="text-sm font-medium text-muted-foreground">
                 AI-assisted penetration testing
+              </p>
+              <p className="mt-2 text-xs text-muted-foreground">
+                Last updated{" "}
+                <time dateTime={PUBLIC_PAGE_LAST_MODIFIED.product}>
+                  {formatPublicPageDate(PUBLIC_PAGE_LAST_MODIFIED.product)}
+                </time>
               </p>
               <h1 className="mt-3 text-4xl font-semibold leading-tight sm:text-5xl">
                 HackerAI
@@ -164,6 +174,15 @@ export default function ProductPage() {
                   <HardDrive className="size-4" />
                   Your machine, your tools, your local environment
                 </div>
+                <a
+                  href={LOCAL_AGENT_HELP_URL}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="mt-3 inline-flex items-center gap-2 rounded-sm text-sm font-medium text-foreground underline underline-offset-4 hover:text-foreground/80 focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+                >
+                  Local Agent setup guide
+                  <ExternalLink className="size-4" />
+                </a>
               </div>
               <div>
                 <Cloud className="size-6" aria-hidden="true" />
@@ -188,6 +207,43 @@ export default function ProductPage() {
           </div>
         </section>
 
+        <section className="border-b border-border/80">
+          <div className="mx-auto max-w-6xl px-4 py-14 sm:px-6 sm:py-18">
+            <div className="max-w-2xl">
+              <h2 className="text-3xl font-semibold">Current limitations</h2>
+              <p className="mt-3 leading-7 text-muted-foreground">
+                HackerAI accelerates security work, but it does not replace
+                practitioner judgment, authorization, or independent validation.
+              </p>
+            </div>
+            <div className="mt-8 grid border-y border-border lg:grid-cols-3">
+              <div className="py-6 lg:pr-7">
+                <h3 className="font-semibold">Review every result</h3>
+                <p className="mt-2 text-sm leading-6 text-muted-foreground">
+                  AI output and tool actions can be incomplete or incorrect.
+                  Validate evidence and impact before reporting or acting on it.
+                </p>
+              </div>
+              <div className="border-t border-border py-6 lg:border-t-0 lg:border-l lg:px-7">
+                <h3 className="font-semibold">
+                  Connect local tools explicitly
+                </h3>
+                <p className="mt-2 text-sm leading-6 text-muted-foreground">
+                  Connecting a machine for direct local command execution
+                  requires HackerAI Desktop or the Local Agent CLI.
+                </p>
+              </div>
+              <div className="border-t border-border py-6 lg:border-t-0 lg:border-l lg:pl-7">
+                <h3 className="font-semibold">Access varies by plan</h3>
+                <p className="mt-2 text-sm leading-6 text-muted-foreground">
+                  Model access, included usage, files, context, and cloud-agent
+                  capacity depend on the selected plan and current availability.
+                </p>
+              </div>
+            </div>
+          </div>
+        </section>
+
         <section className="border-b border-border/80 bg-card/30">
           <div className="mx-auto grid max-w-6xl gap-10 px-4 py-14 sm:px-6 sm:py-18 lg:grid-cols-[1fr_320px] lg:items-center">
             <div className="max-w-2xl">
@@ -196,8 +252,8 @@ export default function ProductPage() {
               </h2>
               <p className="mt-3 leading-7 text-muted-foreground">
                 Start a task in the browser, install HackerAI Desktop when you
-                want to connect local tools, or use the mobile app to review and
-                continue work away from your desk.
+                want to connect local tools, or use the mobile web app to review
+                and continue work away from your desk.
               </p>
               <Button asChild variant="outline" className="mt-6">
                 <Link href="/download">View all downloads</Link>

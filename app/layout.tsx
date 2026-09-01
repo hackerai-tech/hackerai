@@ -23,6 +23,7 @@ import {
   SITE_DESCRIPTION,
   SITE_NAME,
   SITE_URL,
+  WEBSITE_JSON_LD,
 } from "@/lib/seo/site";
 import {
   ANALYTICS_CONSENT_COOKIE_NAME,
@@ -182,6 +183,7 @@ export default async function RootLayout({
         />
         <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
         <JsonLd data={ORGANIZATION_JSON_LD} />
+        <JsonLd data={WEBSITE_JSON_LD} />
       </head>
       <body className="antialiased h-full">
         <ConvexClientProvider initialAuth={initialAuth}>

@@ -12,13 +12,17 @@ jest.mock("@/app/providers", () => ({
   PostHogProvider: ({
     analyticsAllowed,
     children,
+    firstTouchAttribution,
   }: {
     analyticsAllowed: boolean;
     children: React.ReactNode;
+    firstTouchAttribution?: { source: string; referringDomain: string } | null;
   }) => (
     <div
       data-testid="posthog-provider"
       data-analytics-allowed={analyticsAllowed}
+      data-first-touch-source={firstTouchAttribution?.source}
+      data-first-touch-referrer={firstTouchAttribution?.referringDomain}
     >
       {children}
     </div>
@@ -165,6 +169,34 @@ describe("AnalyticsConsentManager", () => {
     expect(screen.getByTestId("posthog-provider")).toHaveAttribute(
       "data-analytics-allowed",
       "true",
+    );
+  });
+
+  it("forwards assistant first-touch attribution after signup", () => {
+    render(
+      <AnalyticsConsentManager
+        consentRequired={false}
+        initialConsent={null}
+        firstTouchAttribution={{
+          version: 1,
+          source: "chatgpt",
+          medium: "campaign",
+          referringDomain: "$direct",
+          entrySurface: "product",
+          capturedAt: "2026-09-01T12:00:00.000Z",
+        }}
+      >
+        <TestContent />
+      </AnalyticsConsentManager>,
+    );
+
+    expect(screen.getByTestId("posthog-provider")).toHaveAttribute(
+      "data-first-touch-source",
+      "chatgpt",
+    );
+    expect(screen.getByTestId("posthog-provider")).toHaveAttribute(
+      "data-first-touch-referrer",
+      "$direct",
     );
   });
 

@@ -9,6 +9,14 @@ export const SITE_LOGO_URL = `${SITE_URL}/icon-512x512.png`;
 export const SITE_SCREENSHOT_URL = `${SITE_URL}/images/hackerai-workspace.png`;
 export const GITHUB_URL = "https://github.com/hackerai-tech/hackerai";
 export const HELP_CENTER_URL = "https://help.hackerai.co/en/";
+export const LOCAL_AGENT_HELP_URL =
+  "https://help.hackerai.co/en/articles/12961920-connecting-a-hackerai-agent-to-your-local-machine";
+export const EXTRA_USAGE_HELP_URL =
+  "https://help.hackerai.co/en/articles/13455916-extra-usage-for-paid-hackerai-plans";
+export const CANCELLATION_HELP_URL =
+  "https://help.hackerai.co/en/articles/14053370-how-do-i-cancel-my-hackerai-subscription";
+export const REFUND_HELP_URL =
+  "https://help.hackerai.co/en/articles/12242991-how-do-i-request-a-refund-for-my-hackerai-subscription";
 export const STATUS_PAGE_URL = "https://status.hackerai.co/";
 
 export const PUBLIC_PAGE_LAST_MODIFIED = {
@@ -20,6 +28,13 @@ export const PUBLIC_PAGE_LAST_MODIFIED = {
   privacy: "2026-08-31",
   terms: "2026-06-24",
 } as const;
+
+export function formatPublicPageDate(date: string): string {
+  return new Intl.DateTimeFormat("en-US", {
+    dateStyle: "long",
+    timeZone: "UTC",
+  }).format(new Date(`${date}T00:00:00Z`));
+}
 
 export function canonicalMetadata(
   path: `/${string}` | "/",
@@ -47,6 +62,39 @@ export const ORGANIZATION_JSON_LD = {
   sameAs: [GITHUB_URL],
 } as const;
 
+export const WEBSITE_JSON_LD = {
+  "@context": "https://schema.org",
+  "@type": "WebSite",
+  "@id": `${SITE_URL}/#website`,
+  name: SITE_NAME,
+  url: SITE_URL,
+  description: SITE_DESCRIPTION,
+  publisher: {
+    "@id": `${SITE_URL}/#organization`,
+  },
+} as const;
+
+const PAID_PLAN_OFFERS = (
+  [
+    ["pro", "HackerAI Pro"],
+    ["pro-plus", "HackerAI Pro+"],
+    ["ultra", "HackerAI Ultra"],
+    ["team", "HackerAI Team (per seat)"],
+  ] as const
+).map(([key, name]) => ({
+  "@type": "Offer",
+  name,
+  price: String(PRICING[key].monthly),
+  priceCurrency: "USD",
+  url: `${SITE_URL}/pricing`,
+  priceSpecification: {
+    "@type": "UnitPriceSpecification",
+    price: String(PRICING[key].monthly),
+    priceCurrency: "USD",
+    billingDuration: "P1M",
+  },
+}));
+
 export const SOFTWARE_APPLICATION_JSON_LD = {
   "@context": "https://schema.org",
   "@type": "SoftwareApplication",
@@ -58,6 +106,7 @@ export const SOFTWARE_APPLICATION_JSON_LD = {
   applicationSubCategory: "Penetration testing assistant",
   operatingSystem: "Web, macOS, Windows, Linux, iOS, Android",
   image: SITE_SCREENSHOT_URL,
+  dateModified: PUBLIC_PAGE_LAST_MODIFIED.product,
   publisher: {
     "@id": `${SITE_URL}/#organization`,
   },
@@ -69,18 +118,6 @@ export const SOFTWARE_APPLICATION_JSON_LD = {
       priceCurrency: "USD",
       url: `${SITE_URL}/pricing`,
     },
-    {
-      "@type": "Offer",
-      name: "HackerAI Pro",
-      price: String(PRICING.pro.monthly),
-      priceCurrency: "USD",
-      url: `${SITE_URL}/pricing`,
-      priceSpecification: {
-        "@type": "UnitPriceSpecification",
-        price: String(PRICING.pro.monthly),
-        priceCurrency: "USD",
-        billingDuration: "P1M",
-      },
-    },
+    ...PAID_PLAN_OFFERS,
   ],
 } as const;

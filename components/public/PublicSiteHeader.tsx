@@ -36,7 +36,9 @@ export function PublicSiteHeader() {
 
         <div className="flex items-center gap-2">
           <Button asChild variant="ghost" size="sm" className="hidden sm:flex">
-            <Link href="/login">Sign in</Link>
+            <Link href="/login" prefetch={false}>
+              Sign in
+            </Link>
           </Button>
           <Button asChild size="sm">
             <Link href="/signup">

@@ -7,9 +7,14 @@ import { PublicSiteHeader } from "@/components/public/PublicSiteHeader";
 import { JsonLd } from "@/components/seo/JsonLd";
 import { Button } from "@/components/ui/button";
 import {
+  CANCELLATION_HELP_URL,
+  EXTRA_USAGE_HELP_URL,
   HELP_CENTER_URL,
+  PUBLIC_PAGE_LAST_MODIFIED,
+  REFUND_HELP_URL,
   SOFTWARE_APPLICATION_JSON_LD,
   canonicalMetadata,
+  formatPublicPageDate,
 } from "@/lib/seo/site";
 import { PricingPlans } from "./PricingPlans";
 
@@ -24,6 +29,7 @@ export const metadata: Metadata = {
     title: "HackerAI Pricing",
     description,
     type: "website",
+    url: "/pricing",
   },
   twitter: {
     card: "summary",
@@ -46,6 +52,12 @@ export default function PricingPage() {
               <p className="text-sm font-medium text-muted-foreground">
                 HackerAI pricing
               </p>
+              <p className="mt-2 text-xs text-muted-foreground">
+                Last updated{" "}
+                <time dateTime={PUBLIC_PAGE_LAST_MODIFIED.pricing}>
+                  {formatPublicPageDate(PUBLIC_PAGE_LAST_MODIFIED.pricing)}
+                </time>
+              </p>
               <h1 className="mt-3 text-4xl font-semibold leading-tight sm:text-5xl">
                 Start locally. Add cloud capacity when you need it.
               </h1>
@@ -62,7 +74,7 @@ export default function PricingPage() {
           <div className="mx-auto max-w-6xl px-4 py-12 sm:px-6 sm:py-16">
             <PricingPlans />
 
-            <div className="mt-12 grid gap-8 bg-card/30 py-10 lg:grid-cols-2">
+            <div className="mt-12 grid gap-8 border-y border-border bg-card/30 py-10 lg:grid-cols-3">
               <div>
                 <ShieldCheck className="size-5" aria-hidden="true" />
                 <h2 className="mt-4 text-xl font-semibold">
@@ -78,18 +90,61 @@ export default function PricingPage() {
                 </Button>
               </div>
               <div>
-                <h2 className="text-xl font-semibold">Billing questions</h2>
+                <h2 className="text-xl font-semibold">Extra Usage</h2>
                 <p className="mt-2 max-w-xl text-sm leading-6 text-muted-foreground">
-                  Usage varies by plan and model. Review the in-product usage
-                  display for your current allowance, or use the official Help
-                  Center for subscription and billing guidance.
+                  Pro, Pro+, and Ultra can optionally continue after included
+                  monthly usage runs out. Extra Usage uses a prepaid balance, is
+                  charged separately from the subscription, and must be enabled
+                  from Settings.
                 </p>
-                <Button asChild variant="outline" className="mt-5">
-                  <a href={HELP_CENTER_URL} target="_blank" rel="noreferrer">
-                    Help Center
+                <a
+                  href={EXTRA_USAGE_HELP_URL}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="mt-3 inline-flex items-center gap-2 rounded-sm text-sm font-medium text-foreground underline underline-offset-4 hover:text-foreground/80 focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+                >
+                  Extra Usage guide
+                  <ExternalLink className="size-4" />
+                </a>
+              </div>
+              <div>
+                <h2 className="text-xl font-semibold">
+                  Cancellation and refunds
+                </h2>
+                <p className="mt-2 max-w-xl text-sm leading-6 text-muted-foreground">
+                  Cancel from Account settings to stop renewal; paid access
+                  continues through the current billing period. Refund
+                  eligibility depends on location and timing.
+                </p>
+                <div className="mt-3 flex flex-wrap gap-x-5 gap-y-2">
+                  <a
+                    href={CANCELLATION_HELP_URL}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-flex items-center gap-2 rounded-sm text-sm font-medium text-foreground underline underline-offset-4 hover:text-foreground/80 focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+                  >
+                    Cancellation guide
                     <ExternalLink className="size-4" />
                   </a>
-                </Button>
+                  <a
+                    href={REFUND_HELP_URL}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-flex items-center gap-2 rounded-sm text-sm font-medium text-foreground underline underline-offset-4 hover:text-foreground/80 focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+                  >
+                    Refund policy
+                    <ExternalLink className="size-4" />
+                  </a>
+                </div>
+                <a
+                  href={HELP_CENTER_URL}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="mt-3 inline-flex items-center gap-1 text-sm text-muted-foreground underline underline-offset-4 hover:text-foreground"
+                >
+                  All billing help
+                  <ExternalLink className="size-3.5" />
+                </a>
               </div>
             </div>
           </div>
