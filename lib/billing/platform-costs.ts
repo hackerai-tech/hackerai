@@ -321,8 +321,7 @@ export function convexUsageBaseUrl(configuredUrl: string): string {
   const url = new URL(configuredUrl);
   if (
     url.protocol !== "https:" ||
-    url.hostname === ".convex.cloud" ||
-    !url.hostname.endsWith(".convex.cloud") ||
+    !/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.convex\.cloud$/.test(url.hostname) ||
     url.port !== "" ||
     url.pathname !== "/"
   ) {
