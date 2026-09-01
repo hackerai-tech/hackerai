@@ -199,6 +199,34 @@ describe("PostHogProvider", () => {
     },
   );
 
+  it("does not record sessions where analytics consent is required", async () => {
+    const posthog = {
+      __loaded: false,
+      init: jest.fn(),
+      set_config: jest.fn(),
+      opt_in_capturing: jest.fn(),
+      has_opted_out_capturing: jest.fn(() => false),
+      identify: jest.fn(),
+      sessionRecordingStarted: jest.fn(() => false),
+      startSessionRecording: jest.fn(),
+      stopSessionRecording: jest.fn(),
+      reset: jest.fn(),
+      opt_out_capturing: jest.fn(),
+    };
+    mockLoadPostHogClient.mockResolvedValue(posthog);
+
+    render(
+      <PostHogProvider analyticsAllowed consentRequired>
+        <div>child</div>
+      </PostHogProvider>,
+    );
+
+    await waitFor(() =>
+      expect(posthog.stopSessionRecording).toHaveBeenCalledTimes(1),
+    );
+    expect(posthog.startSessionRecording).not.toHaveBeenCalled();
+  });
+
   it("falls back to the primary browser locale when account locale is missing", async () => {
     const languageSpy = jest
       .spyOn(window.navigator, "language", "get")
