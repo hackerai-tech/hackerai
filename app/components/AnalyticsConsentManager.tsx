@@ -200,13 +200,13 @@ export function AnalyticsConsentManager({
 
   const preferences = useMemo(
     () => ({
-      available: !needsInitialChoice,
+      available: consent !== null,
       consent,
       isSaving,
       saveError,
       chooseConsent,
     }),
-    [consent, isSaving, needsInitialChoice, saveError, chooseConsent],
+    [consent, isSaving, saveError, chooseConsent],
   );
 
   return (

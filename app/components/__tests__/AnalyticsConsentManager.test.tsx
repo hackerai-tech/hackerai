@@ -156,14 +156,34 @@ describe("AnalyticsConsentManager", () => {
 
     expect(screen.queryByText("Optional analytics")).not.toBeInTheDocument();
     expect(
-      screen.getByRole("button", { name: "Cookie settings" }),
-    ).toBeInTheDocument();
+      screen.queryByRole("button", { name: "Cookie settings" }),
+    ).not.toBeInTheDocument();
     expect(
       screen.queryByRole("button", { name: "Privacy choices" }),
     ).not.toBeInTheDocument();
     expect(screen.getByTestId("posthog-provider")).toHaveAttribute(
       "data-analytics-allowed",
       "true",
+    );
+  });
+
+  it("keeps preferences available when an unregulated visitor has a saved choice", () => {
+    render(
+      <AnalyticsConsentManager
+        consentRequired={false}
+        initialConsent="declined"
+      >
+        <TestContent />
+      </AnalyticsConsentManager>,
+    );
+
+    expect(screen.queryByText("Optional analytics")).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Cookie settings" }),
+    ).toBeInTheDocument();
+    expect(screen.getByTestId("posthog-provider")).toHaveAttribute(
+      "data-analytics-allowed",
+      "false",
     );
   });
 });
