@@ -77,6 +77,21 @@ describe("AccountTab", () => {
     window.history.replaceState(null, "", "/");
   });
 
+  it("shows the actual Stripe renewal amount and interval", async () => {
+    mockGetSubscriptionCancellationStatus.mockResolvedValue({
+      hasActiveSubscription: true,
+      cancelAtPeriodEnd: false,
+      renewalAmountDollars: 29,
+      renewalCurrency: "usd",
+      renewalInterval: "month",
+      renewalIntervalCount: 1,
+    } as never);
+
+    render(<AccountTab />);
+
+    expect(await screen.findByText("Renews at $29 every month")).toBeVisible();
+  });
+
   it("shows scheduled cancellation state instead of the cancel action", async () => {
     const currentPeriodEnd = Date.UTC(2026, 6, 31, 12);
     const expectedPeriodEnd = new Intl.DateTimeFormat(undefined, {
@@ -89,6 +104,10 @@ describe("AccountTab", () => {
       hasActiveSubscription: true,
       cancelAtPeriodEnd: true,
       currentPeriodEnd,
+      renewalAmountDollars: 29,
+      renewalCurrency: "usd",
+      renewalInterval: "month",
+      renewalIntervalCount: 1,
     } as never);
 
     render(<AccountTab />);
@@ -97,6 +116,7 @@ describe("AccountTab", () => {
     expect(
       screen.getByText(`Your plan stays active until ${expectedPeriodEnd}.`),
     ).toBeVisible();
+    expect(screen.queryByText(/renews at/i)).not.toBeInTheDocument();
 
     const user = userEvent.setup();
     await user.click(screen.getAllByRole("button", { name: /manage/i })[0]);

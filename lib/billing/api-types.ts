@@ -9,6 +9,12 @@ export type SubscriptionCancellationStatus = {
   currentPeriodEnd?: number;
   subscriptionStatus?: "active" | "trialing" | "past_due" | "unpaid";
   latestInvoiceId?: string;
+  stripePriceId?: string;
+  stripePriceLookupKey?: string;
+  renewalAmountDollars?: number;
+  renewalCurrency?: string;
+  renewalInterval?: string;
+  renewalIntervalCount?: number;
 };
 
 export type BillingPortalFlow = "payment_method";

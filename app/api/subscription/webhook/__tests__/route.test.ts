@@ -19,7 +19,10 @@ const mockRetrieveSubscription = jest.fn();
 const mockUpdateSubscription = jest.fn();
 const mockListSubscriptions = jest.fn();
 const mockRetrieveInvoice = jest.fn();
+const mockListInvoiceLineItems = jest.fn();
 const mockRetrievePaymentIntent = jest.fn();
+const mockRetrieveCharge = jest.fn();
+const mockRetrievePrice = jest.fn();
 const mockListMemberships = jest.fn();
 const mockConvexMutation = jest.fn();
 const mockFreezeRateLimitBucketForDelinquency = jest.fn();
@@ -59,9 +62,16 @@ jest.mock("@/app/api/stripe", () => ({
     },
     invoices: {
       retrieve: mockRetrieveInvoice,
+      listLineItems: mockListInvoiceLineItems,
     },
     paymentIntents: {
       retrieve: mockRetrievePaymentIntent,
+    },
+    charges: {
+      retrieve: mockRetrieveCharge,
+    },
+    prices: {
+      retrieve: mockRetrievePrice,
     },
   },
 }));
@@ -181,6 +191,27 @@ function hydratedPaymentIntent() {
           funding: "debit",
         },
       },
+    },
+  };
+}
+
+function subscriptionInvoiceLine(
+  subscriptionId: string,
+  priceId: string,
+  amount: number,
+) {
+  return {
+    amount,
+    subscription: subscriptionId,
+    parent: {
+      type: "subscription_item_details",
+      subscription_item_details: {
+        subscription: subscriptionId,
+        proration: false,
+      },
+    },
+    pricing: {
+      price_details: { price: priceId },
     },
   };
 }
@@ -427,6 +458,545 @@ describe("POST /api/subscription/webhook", () => {
     expect(mockPostHogEvent).not.toHaveBeenCalled();
   });
 
+  it("carries the HAC-46 assignment into checkout success analytics", async () => {
+    const experimentMetadata = {
+      pricingExperimentKey: "hac46-pro-monthly-29-pricing",
+      pricingExperimentVariant: "test",
+      pricingExperimentPriceLookupKey: "pro-monthly-plan-29-experiment",
+    };
+    mockConstructEvent.mockReturnValue({
+      id: "evt_checkout_hac46",
+      type: "checkout.session.completed",
+      data: {
+        object: {
+          id: "cs_hac46",
+          mode: "subscription",
+          payment_status: "paid",
+          amount_total: 2900,
+          currency: "usd",
+          customer: "cus_hac46",
+          subscription: "sub_hac46",
+          metadata: {
+            userId: "user_hac46",
+            workOSOrganizationId: "org_hac46",
+            requestedPlan: "pro-monthly-plan",
+            checkoutAttemptId: "ca_hac46_123",
+            checkoutType: "new_subscription",
+            ...experimentMetadata,
+          },
+        },
+      },
+    });
+    mockRetrieveSubscription.mockResolvedValue({
+      id: "sub_hac46",
+      metadata: experimentMetadata,
+      items: {
+        data: [
+          {
+            quantity: 1,
+            price: {
+              id: "price_pro_29",
+              lookup_key: "pro-monthly-plan-29-experiment",
+              recurring: { interval: "month", interval_count: 1 },
+              product: {
+                id: "prod_pro",
+                name: "HackerAI Pro",
+                metadata: {},
+              },
+            },
+          },
+        ],
+      },
+    } as never);
+
+    const { POST } = await import("../route");
+    const response = await POST(makeWebhookRequest());
+
+    expect(response.status).toBe(200);
+    expect(mockPostHogEvent).toHaveBeenCalledWith(
+      "checkout_succeeded",
+      expect.objectContaining({
+        userId: "user_hac46",
+        experiment_key: "hac46-pro-monthly-29-pricing",
+        experiment_variant: "test",
+        "$feature/hac46-pro-monthly-29-pricing": "test",
+        plan: "pro-monthly-plan-29-experiment",
+        requested_plan: "pro-monthly-plan",
+        stripe_price_lookup_key: "pro-monthly-plan-29-experiment",
+        displayed_amount_dollars: 29,
+        charged_amount_dollars: 29,
+        stripe_price_id: "price_pro_29",
+      }),
+    );
+  });
+
+  it("records HAC-46 subscription refunds as negative contribution", async () => {
+    const experimentMetadata = {
+      pricingExperimentKey: "hac46-pro-monthly-29-pricing",
+      pricingExperimentVariant: "test",
+      pricingExperimentPriceLookupKey: "pro-monthly-plan-29-experiment",
+    };
+    mockConstructEvent.mockReturnValue({
+      id: "evt_refund_hac46",
+      type: "refund.created",
+      data: {
+        object: {
+          id: "re_hac46",
+          status: "succeeded",
+          amount: 2900,
+          currency: "usd",
+          created: 1_788_000_000,
+          charge: "ch_hac46",
+          payment_intent: "pi_hac46",
+        },
+      },
+    });
+    mockRetrieveCharge.mockResolvedValue({
+      id: "ch_hac46",
+      customer: "cus_hac46",
+      invoice: "in_hac46",
+    } as never);
+    mockRetrieveInvoice.mockResolvedValue({
+      id: "in_hac46",
+      customer: "cus_hac46",
+      parent: {
+        subscription_details: { subscription: "sub_hac46" },
+      },
+      lines: {
+        has_more: true,
+        data: [
+          {
+            amount: 0,
+            subscription: null,
+            parent: {
+              type: "invoice_item_details",
+              invoice_item_details: {
+                subscription: null,
+                proration: false,
+              },
+            },
+            pricing: {
+              price_details: { price: "price_unrelated_addon" },
+            },
+          },
+        ],
+      },
+    } as never);
+    mockListInvoiceLineItems.mockReturnValue({
+      async *[Symbol.asyncIterator]() {
+        yield {
+          amount: 0,
+          subscription: null,
+          parent: {
+            type: "invoice_item_details",
+            invoice_item_details: {
+              subscription: null,
+              proration: false,
+            },
+          },
+          pricing: {
+            price_details: { price: "price_unrelated_addon" },
+          },
+        };
+        yield {
+          amount: 2900,
+          subscription: "sub_hac46",
+          parent: {
+            type: "subscription_item_details",
+            subscription_item_details: {
+              subscription: "sub_hac46",
+              proration: false,
+            },
+          },
+          pricing: {
+            price_details: { price: "price_pro_29" },
+          },
+        };
+      },
+    } as never);
+    mockRetrieveCustomer.mockResolvedValue({
+      id: "cus_hac46",
+      deleted: false,
+      metadata: { workOSOrganizationId: "org_hac46" },
+    } as never);
+    mockListMemberships.mockResolvedValue({
+      autoPagination: jest.fn().mockResolvedValue([{ userId: "user_hac46" }]),
+    } as never);
+    mockRetrieveSubscription.mockResolvedValue({
+      id: "sub_hac46",
+      metadata: experimentMetadata,
+      items: {
+        data: [
+          {
+            quantity: 1,
+            price: {
+              id: "price_pro_plus_60",
+              lookup_key: "pro-plus-monthly-plan",
+              recurring: { interval: "month", interval_count: 1 },
+              product: {
+                id: "prod_pro_plus",
+                name: "HackerAI Pro+",
+                metadata: {},
+              },
+            },
+          },
+        ],
+      },
+    } as never);
+    mockRetrievePrice.mockResolvedValue({
+      id: "price_pro_29",
+      lookup_key: "pro-monthly-plan-29-experiment",
+      recurring: { interval: "month", interval_count: 1 },
+      product: "prod_pro",
+    } as never);
+
+    const { POST } = await import("../route");
+    const response = await POST(makeWebhookRequest());
+
+    expect(response.status).toBe(200);
+    expect(mockListInvoiceLineItems).toHaveBeenCalledWith("in_hac46", {
+      limit: 100,
+    });
+    expect(mockRetrievePrice).toHaveBeenCalledWith("price_pro_29");
+    expect(mockConvexMutation).toHaveBeenCalledWith(
+      "unitEconomics.recordRevenueEvent",
+      expect.objectContaining({
+        entityType: "user",
+        entityId: "user_hac46",
+        grossRevenueDollars: -29,
+        netRevenueDollars: -29,
+        stripePriceId: "price_pro_29",
+        plan: "pro-monthly-plan-29-experiment",
+      }),
+    );
+    expect(mockPostHogEvent).toHaveBeenCalledWith(
+      "subscription_refunded",
+      expect.objectContaining({
+        userId: "user_hac46",
+        subscription_tier: "pro",
+        experiment_key: "hac46-pro-monthly-29-pricing",
+        experiment_variant: "test",
+        refund_amount_dollars: 29,
+        charged_amount_dollars: -29,
+        stripe_refund_id: "re_hac46",
+        stripe_price_lookup_key: "pro-monthly-plan-29-experiment",
+      }),
+    );
+  });
+
+  it("ignores refunds whose status is null", async () => {
+    mockConstructEvent.mockReturnValue({
+      id: "evt_refund_null_status",
+      type: "refund.updated",
+      data: {
+        object: {
+          id: "re_null_status",
+          status: null,
+          amount: 2900,
+          currency: "usd",
+          charge: "ch_null_status",
+        },
+      },
+    });
+
+    const { POST } = await import("../route");
+    const response = await POST(makeWebhookRequest());
+
+    expect(response.status).toBe(200);
+    expect(mockRetrieveCharge).not.toHaveBeenCalled();
+    expect(mockConvexMutation).not.toHaveBeenCalledWith(
+      "unitEconomics.recordRevenueEvent",
+      expect.anything(),
+    );
+    expect(mockPostHogEvent).not.toHaveBeenCalledWith(
+      "subscription_refunded",
+      expect.anything(),
+    );
+  });
+
+  it("skips a partial refund on a mixed subscription and add-on invoice", async () => {
+    mockConstructEvent.mockReturnValue({
+      id: "evt_refund_mixed_invoice",
+      type: "refund.created",
+      data: {
+        object: {
+          id: "re_mixed_invoice",
+          status: "succeeded",
+          amount: 500,
+          currency: "usd",
+          charge: "ch_mixed_invoice",
+        },
+      },
+    });
+    mockRetrieveCharge.mockResolvedValue({
+      id: "ch_mixed_invoice",
+      customer: "cus_mixed_invoice",
+      invoice: "in_mixed_invoice",
+    } as never);
+    mockRetrieveInvoice.mockResolvedValue({
+      id: "in_mixed_invoice",
+      customer: "cus_mixed_invoice",
+      parent: {
+        subscription_details: { subscription: "sub_mixed_invoice" },
+      },
+      lines: {
+        data: [
+          subscriptionInvoiceLine("sub_mixed_invoice", "price_pro_29", 2900),
+          {
+            amount: 500,
+            subscription: null,
+            parent: {
+              type: "invoice_item_details",
+              invoice_item_details: {
+                subscription: null,
+                proration: false,
+              },
+            },
+            pricing: {
+              price_details: { price: "price_addon" },
+            },
+          },
+        ],
+      },
+    } as never);
+    mockRetrieveCustomer.mockResolvedValue({
+      id: "cus_mixed_invoice",
+      deleted: false,
+      metadata: { workOSOrganizationId: "org_mixed_invoice" },
+    } as never);
+    mockListMemberships.mockResolvedValue({
+      autoPagination: jest
+        .fn()
+        .mockResolvedValue([{ userId: "user_mixed_invoice" }]),
+    } as never);
+    mockRetrieveSubscription.mockResolvedValue({
+      id: "sub_mixed_invoice",
+      metadata: {},
+      items: {
+        data: [
+          {
+            price: {
+              id: "price_pro_29",
+              lookup_key: "pro-monthly-plan-29-experiment",
+            },
+          },
+        ],
+      },
+    } as never);
+
+    const { POST } = await import("../route");
+    const response = await POST(makeWebhookRequest());
+
+    expect(response.status).toBe(200);
+    expect(mockRetrievePrice).not.toHaveBeenCalled();
+    expect(mockPostHogWarn).toHaveBeenCalledWith(
+      "subscription_refund_attribution_unavailable",
+      expect.objectContaining({
+        stripe_refund_id: "re_mixed_invoice",
+        stripe_invoice_id: "in_mixed_invoice",
+        stripe_subscription_id: "sub_mixed_invoice",
+        refund_amount_dollars: 5,
+        billable_line_count: 2,
+        target_subscription_line_count: 1,
+        requires_manual_reconciliation: true,
+      }),
+    );
+    expect(mockConvexMutation).not.toHaveBeenCalledWith(
+      "unitEconomics.recordRevenueEvent",
+      expect.anything(),
+    );
+    expect(mockPostHogEvent).not.toHaveBeenCalledWith(
+      "subscription_refunded",
+      expect.anything(),
+    );
+  });
+
+  it("retries HAC-46 refunds when the historical invoice Price is unavailable", async () => {
+    mockConstructEvent.mockReturnValue({
+      id: "evt_refund_hac46_retry",
+      type: "refund.created",
+      data: {
+        object: {
+          id: "re_hac46_retry",
+          status: "succeeded",
+          amount: 2900,
+          currency: "usd",
+          charge: "ch_hac46_retry",
+        },
+      },
+    });
+    mockRetrieveCharge.mockResolvedValue({
+      id: "ch_hac46_retry",
+      customer: "cus_hac46_retry",
+      invoice: "in_hac46_retry",
+    } as never);
+    mockRetrieveInvoice.mockResolvedValue({
+      id: "in_hac46_retry",
+      customer: "cus_hac46_retry",
+      parent: {
+        subscription_details: { subscription: "sub_hac46_retry" },
+      },
+      lines: {
+        data: [
+          {
+            amount: 2900,
+            subscription: "sub_hac46_retry",
+            parent: {
+              type: "subscription_item_details",
+              subscription_item_details: {
+                subscription: "sub_hac46_retry",
+                proration: false,
+              },
+            },
+            pricing: {
+              price_details: { price: "price_pro_29" },
+            },
+          },
+        ],
+      },
+    } as never);
+    mockRetrieveCustomer.mockResolvedValue({
+      id: "cus_hac46_retry",
+      deleted: false,
+      metadata: { workOSOrganizationId: "org_hac46_retry" },
+    } as never);
+    mockListMemberships.mockResolvedValue({
+      autoPagination: jest.fn().mockResolvedValue([{ userId: "user_retry" }]),
+    } as never);
+    mockRetrieveSubscription.mockResolvedValue({
+      id: "sub_hac46_retry",
+      metadata: {},
+      items: {
+        data: [
+          {
+            price: {
+              id: "price_pro_plus_60",
+              lookup_key: "pro-plus-monthly-plan",
+            },
+          },
+        ],
+      },
+    } as never);
+    mockRetrievePrice.mockRejectedValue(new Error("Stripe unavailable"));
+
+    const { POST } = await import("../route");
+
+    await expect(POST(makeWebhookRequest())).rejects.toThrow(
+      "Stripe unavailable",
+    );
+    expect(mockConvexMutation).not.toHaveBeenCalledWith(
+      "unitEconomics.recordRevenueEvent",
+      expect.anything(),
+    );
+    expect(mockPostHogEvent).not.toHaveBeenCalledWith(
+      "subscription_refunded",
+      expect.anything(),
+    );
+    expect(
+      mockConvexMutation.mock.calls.filter(
+        ([mutation]) => mutation === "extraUsage.checkAndMarkWebhook",
+      ),
+    ).toHaveLength(1);
+  });
+
+  it("skips refunds without a line for the refunded subscription", async () => {
+    mockConstructEvent.mockReturnValue({
+      id: "evt_refund_missing_subscription_line",
+      type: "refund.created",
+      data: {
+        object: {
+          id: "re_missing_subscription_line",
+          status: "succeeded",
+          amount: 2900,
+          currency: "usd",
+          charge: "ch_missing_subscription_line",
+        },
+      },
+    });
+    mockRetrieveCharge.mockResolvedValue({
+      id: "ch_missing_subscription_line",
+      customer: "cus_missing_subscription_line",
+      invoice: "in_missing_subscription_line",
+    } as never);
+    mockRetrieveInvoice.mockResolvedValue({
+      id: "in_missing_subscription_line",
+      customer: "cus_missing_subscription_line",
+      parent: {
+        subscription_details: {
+          subscription: "sub_missing_subscription_line",
+        },
+      },
+      lines: {
+        data: [
+          {
+            amount: 2900,
+            subscription: "sub_different",
+            parent: {
+              type: "subscription_item_details",
+              subscription_item_details: {
+                subscription: "sub_different",
+                proration: false,
+              },
+            },
+            pricing: {
+              price_details: { price: "price_different" },
+            },
+          },
+        ],
+      },
+    } as never);
+    mockRetrieveCustomer.mockResolvedValue({
+      id: "cus_missing_subscription_line",
+      deleted: false,
+      metadata: { workOSOrganizationId: "org_missing_subscription_line" },
+    } as never);
+    mockListMemberships.mockResolvedValue({
+      autoPagination: jest
+        .fn()
+        .mockResolvedValue([{ userId: "user_missing_subscription_line" }]),
+    } as never);
+    mockRetrieveSubscription.mockResolvedValue({
+      id: "sub_missing_subscription_line",
+      metadata: {},
+      items: {
+        data: [
+          {
+            price: {
+              id: "price_current",
+              lookup_key: "pro-monthly-plan",
+            },
+          },
+        ],
+      },
+    } as never);
+
+    const { POST } = await import("../route");
+
+    const response = await POST(makeWebhookRequest());
+
+    expect(response.status).toBe(200);
+    expect(mockRetrievePrice).not.toHaveBeenCalled();
+    expect(mockPostHogWarn).toHaveBeenCalledWith(
+      "subscription_refund_attribution_unavailable",
+      expect.objectContaining({
+        stripe_refund_id: "re_missing_subscription_line",
+        stripe_invoice_id: "in_missing_subscription_line",
+        stripe_subscription_id: "sub_missing_subscription_line",
+        billable_line_count: 1,
+        target_subscription_line_count: 0,
+        requires_manual_reconciliation: true,
+      }),
+    );
+    expect(mockConvexMutation).not.toHaveBeenCalledWith(
+      "unitEconomics.recordRevenueEvent",
+      expect.anything(),
+    );
+    expect(mockPostHogEvent).not.toHaveBeenCalledWith(
+      "subscription_refunded",
+      expect.anything(),
+    );
+  });
+
   it("skips legacy PentestGPT invoices before resolving the old product as a HackerAI tier", async () => {
     mockConstructEvent.mockReturnValue({
       id: "evt_invoice_paid_legacy",
@@ -592,6 +1162,11 @@ describe("POST /api/subscription/webhook", () => {
                 subscription: "sub_terminal",
               },
             },
+            lines: {
+              data: [
+                subscriptionInvoiceLine("sub_terminal", "price_pro", 2500),
+              ],
+            },
             status_transitions: {
               paid_at: 1_784_456_277,
             },
@@ -711,6 +1286,11 @@ describe("POST /api/subscription/webhook", () => {
               subscription: "sub_old_invoice",
             },
           },
+          lines: {
+            data: [
+              subscriptionInvoiceLine("sub_old_invoice", "price_pro", 2500),
+            ],
+          },
           status_transitions: {
             paid_at: 1_784_456_277,
           },
@@ -810,6 +1390,15 @@ describe("POST /api/subscription/webhook", () => {
             subscription_details: {
               subscription: "sub_pro_20",
             },
+          },
+          lines: {
+            data: [
+              subscriptionInvoiceLine(
+                "sub_pro_20",
+                HACKERAI_PRO_20_MONTHLY_PRICE_ID,
+                2000,
+              ),
+            ],
           },
           status_transitions: {
             paid_at: 1_782_000_000,
@@ -942,6 +1531,9 @@ describe("POST /api/subscription/webhook", () => {
           parent: {
             subscription_details: { subscription: "sub_team" },
           },
+          lines: {
+            data: [subscriptionInvoiceLine("sub_team", "price_team", 3000)],
+          },
           status_transitions: { paid_at: 1_782_000_000 },
         },
       },
@@ -1001,6 +1593,113 @@ describe("POST /api/subscription/webhook", () => {
     }
   });
 
+  it("attributes a paid invoice to its historical Price after the subscription Price changes", async () => {
+    mockConstructEvent.mockReturnValue({
+      id: "evt_invoice_paid_historical_price",
+      type: "invoice.paid",
+      data: {
+        object: {
+          id: "in_historical_price",
+          customer: "cus_historical_price",
+          amount_paid: 2900,
+          currency: "usd",
+          billing_reason: "subscription_create",
+          parent: {
+            subscription_details: {
+              subscription: "sub_historical_price",
+            },
+          },
+          lines: {
+            data: [
+              subscriptionInvoiceLine(
+                "sub_historical_price",
+                "price_pro_29",
+                2900,
+              ),
+            ],
+          },
+          status_transitions: { paid_at: 1_782_000_000 },
+        },
+      },
+    });
+    mockRetrieveCustomer.mockResolvedValue({
+      deleted: false,
+      id: "cus_historical_price",
+      metadata: { workOSOrganizationId: "org_historical_price" },
+    } as never);
+    mockListMemberships.mockResolvedValue({
+      autoPagination: jest
+        .fn()
+        .mockResolvedValue([{ userId: "user_historical_price" }]),
+    } as never);
+    mockRetrieveSubscription.mockResolvedValue({
+      id: "sub_historical_price",
+      status: "active",
+      latest_invoice: "in_historical_price",
+      metadata: {
+        pricingExperimentKey: "hac46-pro-monthly-29-pricing",
+        pricingExperimentVariant: "test",
+        pricingExperimentPriceLookupKey: "pro-monthly-plan-29-experiment",
+      },
+      items: {
+        data: [
+          {
+            quantity: 1,
+            current_period_end: 1_785_000_000,
+            price: {
+              id: "price_pro_plus_60",
+              lookup_key: "pro-plus-monthly-plan",
+              recurring: { interval: "month", interval_count: 1 },
+              product: {
+                id: "prod_pro_plus",
+                name: "HackerAI Pro Plus",
+                metadata: {},
+              },
+            },
+          },
+        ],
+      },
+    } as never);
+    mockRetrievePrice.mockResolvedValue({
+      id: "price_pro_29",
+      lookup_key: "pro-monthly-plan-29-experiment",
+      unit_amount: 2900,
+      recurring: { interval: "month", interval_count: 1 },
+      product: "prod_pro",
+    } as never);
+
+    const { POST } = await import("../route");
+    const response = await POST(makeWebhookRequest());
+
+    expect(response.status).toBe(200);
+    expect(mockRetrievePrice).toHaveBeenCalledWith("price_pro_29");
+    expect(mockConvexMutation).toHaveBeenCalledWith(
+      "unitEconomics.recordRevenueEvent",
+      expect.objectContaining({
+        stripePriceId: "price_pro_29",
+        plan: "pro-monthly-plan-29-experiment",
+      }),
+    );
+    expect(mockConvexMutation).toHaveBeenCalledWith(
+      "unitEconomics.recordPaidStartEvent",
+      expect.objectContaining({
+        stripePriceId: "price_pro_29",
+        plan: "pro-monthly-plan-29-experiment",
+      }),
+    );
+    for (const eventName of ["invoice_paid", "subscription_started"]) {
+      expect(mockPostHogEvent).toHaveBeenCalledWith(
+        eventName,
+        expect.objectContaining({
+          stripe_price_id: "price_pro_29",
+          stripe_price_lookup_key: "pro-monthly-plan-29-experiment",
+          experiment_key: "hac46-pro-monthly-29-pricing",
+          experiment_variant: "test",
+        }),
+      );
+    }
+  });
+
   it("emits recovery when invoice.paid arrives before the failure webhook", async () => {
     const periodEnd = 1_785_000_000;
     mockResetRateLimitBucketAfterPayment.mockResolvedValueOnce({
@@ -1020,6 +1719,15 @@ describe("POST /api/subscription/webhook", () => {
           attempt_count: 2,
           parent: {
             subscription_details: { subscription: "sub_reordered" },
+          },
+          lines: {
+            data: [
+              subscriptionInvoiceLine(
+                "sub_reordered",
+                HACKERAI_PRO_20_MONTHLY_PRICE_ID,
+                2000,
+              ),
+            ],
           },
           status_transitions: { paid_at: 1_782_000_000 },
         },
@@ -1090,6 +1798,11 @@ describe("POST /api/subscription/webhook", () => {
           billing_reason: "subscription_update",
           parent: {
             subscription_details: { subscription: "sub_upgrade" },
+          },
+          lines: {
+            data: [
+              subscriptionInvoiceLine("sub_upgrade", "price_pro_plus", 1459),
+            ],
           },
           status_transitions: { paid_at: nowSeconds },
         },
