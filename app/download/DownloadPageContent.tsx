@@ -2,8 +2,8 @@
 
 import { ExternalLink } from "lucide-react";
 
+import Header from "@/app/components/Header";
 import { PublicSiteFooter } from "@/components/public/PublicSiteFooter";
-import { PublicSiteHeader } from "@/components/public/PublicSiteHeader";
 import { LOCAL_AGENT_HELP_URL } from "@/lib/seo/site";
 import { DownloadSection, useDetectedPlatform } from "./DownloadSection";
 import { downloadLinks } from "./constants";
@@ -18,7 +18,7 @@ function DownloadContent() {
     <div className="mx-auto max-w-3xl px-4 py-14 sm:px-6 sm:py-20">
       <div className="space-y-8">
         <div className="text-center">
-          <h1 className="text-4xl font-semibold tracking-tight text-foreground sm:text-5xl">
+          <h1 className="text-5xl font-medium leading-[1.05] tracking-tight text-foreground sm:text-6xl">
             {isMobile ? "Install HackerAI" : "Download HackerAI"}
           </h1>
           <p className="mx-auto mt-4 max-w-2xl text-lg leading-8 text-muted-foreground">
@@ -98,7 +98,7 @@ function DownloadContent() {
 export function DownloadPageContent() {
   return (
     <div className="flex min-h-dvh flex-col bg-background text-foreground">
-      <PublicSiteHeader currentPath="/download" />
+      <Header currentPath="/download" hideDownload />
       <main className="flex-1">
         <DownloadContent />
       </main>

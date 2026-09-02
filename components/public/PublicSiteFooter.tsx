@@ -1,54 +1,97 @@
 import Link from "next/link";
 import { ExternalLink } from "lucide-react";
 
+import { HackerAISVG } from "@/components/icons/hackerai-svg";
 import { GITHUB_URL, HELP_CENTER_URL, STATUS_PAGE_URL } from "@/lib/seo/site";
 
-const internalLinks = [
-  { href: "/product", label: "Product" },
-  { href: "/pricing", label: "Pricing" },
-  { href: "/download", label: "Download" },
-  { href: "/trust", label: "Security & Trust" },
-  { href: "/privacy-policy", label: "Privacy" },
-  { href: "/terms-of-service", label: "Terms" },
-] as const;
+type FooterLink = { href: string; label: string; external?: boolean };
 
-const externalLinks = [
-  { href: GITHUB_URL, label: "GitHub" },
-  { href: HELP_CENTER_URL, label: "Help Center" },
-  { href: STATUS_PAGE_URL, label: "Status" },
-] as const;
+const columns: ReadonlyArray<{ title: string; links: readonly FooterLink[] }> =
+  [
+    {
+      title: "Product",
+      links: [
+        { href: "/product", label: "Product" },
+        { href: "/pricing", label: "Pricing" },
+        { href: "/download", label: "Download" },
+      ],
+    },
+    {
+      title: "Company",
+      links: [
+        { href: "/trust", label: "Security & Trust" },
+        { href: "/privacy-policy", label: "Privacy Policy" },
+        { href: "/terms-of-service", label: "Terms of Service" },
+      ],
+    },
+    {
+      title: "Resources",
+      links: [
+        { href: GITHUB_URL, label: "GitHub", external: true },
+        { href: HELP_CENTER_URL, label: "Help Center", external: true },
+        { href: STATUS_PAGE_URL, label: "Status", external: true },
+      ],
+    },
+  ];
+
+const linkClassName =
+  "inline-flex items-center gap-1.5 rounded-sm text-sm text-muted-foreground hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none";
 
 export function PublicSiteFooter() {
+  const year = new Date().getFullYear();
+
   return (
     <footer className="border-t border-border/80">
-      <div className="mx-auto flex max-w-6xl flex-col gap-6 px-4 py-10 text-sm text-muted-foreground sm:px-6 lg:flex-row lg:items-center lg:justify-between">
-        <div>
-          <p className="font-medium text-foreground">HackerAI LLC</p>
-          <p className="mt-1">AI-assisted security work for authorized use.</p>
-        </div>
-        <nav className="flex flex-wrap gap-x-5 gap-y-3" aria-label="Footer">
-          {internalLinks.map((item) => (
+      <div className="mx-auto max-w-6xl px-4 py-12 sm:px-6">
+        <div className="grid gap-10 md:grid-cols-[1.4fr_1fr_1fr_1fr]">
+          <div>
             <Link
-              key={item.href}
-              href={item.href}
-              className="rounded-sm hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+              href="/"
+              className="inline-flex items-center gap-2 rounded-md focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+              aria-label="HackerAI home"
             >
-              {item.label}
+              <HackerAISVG theme="dark" scale={0.12} />
+              <span className="text-lg font-semibold text-foreground">
+                HackerAI
+              </span>
             </Link>
+            <p className="mt-4 max-w-xs text-sm leading-6 text-muted-foreground">
+              An AI agent for penetration testing. Built for authorized security
+              work.
+            </p>
+          </div>
+          {columns.map((column) => (
+            <nav key={column.title} aria-label={column.title}>
+              <h2 className="text-sm font-medium text-foreground">
+                {column.title}
+              </h2>
+              <ul className="mt-4 space-y-3">
+                {column.links.map((link) => (
+                  <li key={link.href}>
+                    {link.external ? (
+                      <a
+                        href={link.href}
+                        target="_blank"
+                        rel="noreferrer"
+                        className={linkClassName}
+                      >
+                        {link.label}
+                        <ExternalLink className="size-3.5" aria-hidden="true" />
+                      </a>
+                    ) : (
+                      <Link href={link.href} className={linkClassName}>
+                        {link.label}
+                      </Link>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            </nav>
           ))}
-          {externalLinks.map((item) => (
-            <a
-              key={item.href}
-              href={item.href}
-              target="_blank"
-              rel="noreferrer"
-              className="inline-flex items-center gap-1 rounded-sm hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
-            >
-              {item.label}
-              <ExternalLink className="size-3.5" aria-hidden="true" />
-            </a>
-          ))}
-        </nav>
+        </div>
+        <p className="mt-12 border-t border-border/80 pt-6 text-xs text-muted-foreground">
+          &copy; {year} HackerAI LLC
+        </p>
       </div>
     </footer>
   );

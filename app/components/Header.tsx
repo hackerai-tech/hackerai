@@ -12,6 +12,7 @@ import {
   SheetTitle,
   SheetTrigger,
 } from "@/components/ui/sheet";
+import { cn } from "@/lib/utils";
 import { useAuth } from "@workos-inc/authkit-nextjs/components";
 import { navigateToAuth } from "@/app/hooks/useTauri";
 import { Download, Menu } from "lucide-react";
@@ -23,24 +24,36 @@ const publicNavigation = [
   { href: "/trust", label: "Trust" },
 ] as const;
 
+export type PublicNavigationPath = (typeof publicNavigation)[number]["href"];
+
 interface HeaderProps {
   chatTitle?: string;
   hideDownload?: boolean;
+  /** Path of the public page rendering the header, used to mark the current link. */
+  currentPath?: PublicNavigationPath;
 }
 
-const Header: React.FC<HeaderProps> = ({ chatTitle, hideDownload = false }) => {
+const Header: React.FC<HeaderProps> = ({
+  chatTitle,
+  hideDownload = false,
+  currentPath,
+}) => {
   const { user, loading } = useAuth();
 
   return (
     <header className="w-full px-6 max-sm:px-4 flex-shrink-0">
       {/* Desktop header */}
       <div className="py-[10px] flex gap-10 items-center justify-between max-md:hidden">
-        <div className="flex items-center gap-2">
+        <Link
+          href="/"
+          className="flex items-center gap-2 rounded-md focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+          aria-label="HackerAI home"
+        >
           <HackerAISVG theme="dark" scale={0.15} />
           <span className="text-foreground text-xl font-semibold">
             HackerAI
           </span>
-        </div>
+        </Link>
         <div className="flex flex-1 gap-2 justify-between items-center">
           {chatTitle && (
             <div className="flex-1 text-center">
@@ -51,13 +64,30 @@ const Header: React.FC<HeaderProps> = ({ chatTitle, hideDownload = false }) => {
           )}
           {!chatTitle && (
             <nav className="flex items-center gap-1" aria-label="Primary">
-              {publicNavigation.map((item) =>
-                item.href !== "/download" ? (
-                  <Button key={item.href} asChild variant="ghost" size="sm">
-                    <Link href={item.href}>{item.label}</Link>
+              {publicNavigation.map((item) => {
+                if (item.href === "/download") return null;
+                const isCurrent = item.href === currentPath;
+                return (
+                  <Button
+                    key={item.href}
+                    asChild
+                    variant="ghost"
+                    size="sm"
+                    className={cn(
+                      isCurrent
+                        ? "bg-accent text-foreground"
+                        : "text-muted-foreground hover:text-foreground",
+                    )}
+                  >
+                    <Link
+                      href={item.href}
+                      aria-current={isCurrent ? "page" : undefined}
+                    >
+                      {item.label}
+                    </Link>
                   </Button>
-                ) : null,
-              )}
+                );
+              })}
             </nav>
           )}
           {!loading && !user && (
@@ -104,12 +134,16 @@ const Header: React.FC<HeaderProps> = ({ chatTitle, hideDownload = false }) => {
 
       {/* Mobile header */}
       <div className="py-3 flex items-center justify-between md:hidden">
-        <div className="flex items-center gap-2">
+        <Link
+          href="/"
+          className="flex items-center gap-2 rounded-md focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+          aria-label="HackerAI home"
+        >
           <HackerAISVG theme="dark" scale={0.12} />
           <span className="text-foreground text-lg font-semibold">
             HackerAI
           </span>
-        </div>
+        </Link>
         {!loading && !user && (
           <div className="flex items-center gap-2">
             <Button
@@ -157,18 +191,24 @@ const Header: React.FC<HeaderProps> = ({ chatTitle, hideDownload = false }) => {
                   className="flex flex-col gap-1 px-3 py-4"
                   aria-label="Mobile"
                 >
-                  {publicNavigation.map((item) =>
-                    item.href === "/download" && hideDownload ? null : (
+                  {publicNavigation.map((item) => {
+                    if (item.href === "/download" && hideDownload) return null;
+                    const isCurrent = item.href === currentPath;
+                    return (
                       <SheetClose key={item.href} asChild>
                         <Link
                           href={item.href}
-                          className="rounded-md px-3 py-3 text-base font-medium text-foreground hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+                          aria-current={isCurrent ? "page" : undefined}
+                          className={cn(
+                            "rounded-md px-3 py-3 text-base font-medium text-foreground hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none",
+                            isCurrent && "bg-accent",
+                          )}
                         >
                           {item.label}
                         </Link>
                       </SheetClose>
-                    ),
-                  )}
+                    );
+                  })}
                 </nav>
               </SheetContent>
             </Sheet>

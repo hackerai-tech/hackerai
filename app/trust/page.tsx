@@ -15,8 +15,8 @@ import {
   Terminal,
   Trash2,
 } from "lucide-react";
+import Header from "@/app/components/Header";
 import { PublicSiteFooter } from "@/components/public/PublicSiteFooter";
-import { PublicSiteHeader } from "@/components/public/PublicSiteHeader";
 import {
   HELP_CENTER_URL as DEFAULT_HELP_CENTER_URL,
   PUBLIC_PAGE_LAST_MODIFIED,
@@ -185,7 +185,7 @@ function TrustContent() {
               aria-hidden="true"
             />
           </div>
-          <h1 className="text-4xl font-semibold leading-tight text-foreground sm:text-5xl">
+          <h1 className="text-5xl font-medium leading-[1.05] tracking-tight text-foreground sm:text-6xl">
             Security &amp; Trust
           </h1>
           <p className="mx-auto mt-5 max-w-2xl text-lg leading-8 text-muted-foreground">
@@ -424,7 +424,7 @@ function TrustContent() {
 export default function TrustPage() {
   return (
     <div className="min-h-dvh bg-background text-foreground">
-      <PublicSiteHeader currentPath="/trust" />
+      <Header currentPath="/trust" />
       <TrustContent />
       <PublicSiteFooter />
     </div>

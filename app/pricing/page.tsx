@@ -2,8 +2,8 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { CreditCard, ExternalLink, ShieldCheck, Undo2 } from "lucide-react";
 
+import Header from "@/app/components/Header";
 import { PublicSiteFooter } from "@/components/public/PublicSiteFooter";
-import { PublicSiteHeader } from "@/components/public/PublicSiteHeader";
 import { JsonLd } from "@/components/seo/JsonLd";
 import { Button } from "@/components/ui/button";
 import {
@@ -47,13 +47,13 @@ export default function PricingPage() {
   return (
     <div className="min-h-dvh bg-background text-foreground">
       <JsonLd data={SOFTWARE_APPLICATION_JSON_LD} />
-      <PublicSiteHeader currentPath="/pricing" />
+      <Header currentPath="/pricing" />
       <main>
         <section className="border-b border-border/80">
           <div className="mx-auto max-w-6xl px-4 py-14 sm:px-6 sm:py-18">
             <div className="mx-auto max-w-3xl text-center">
               <p className="text-sm font-medium text-muted-foreground">Plans</p>
-              <h1 className="mt-3 text-4xl font-semibold leading-tight sm:text-5xl">
+              <h1 className="mt-3 text-5xl font-medium leading-[1.05] tracking-tight sm:text-6xl">
                 Pricing
               </h1>
               <p className="mx-auto mt-5 max-w-2xl text-lg leading-8 text-muted-foreground">

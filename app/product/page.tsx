@@ -8,15 +8,14 @@ import {
   ExternalLink,
   FileUp,
   GitBranch,
-  HardDrive,
   MonitorCog,
   Search,
   ShieldCheck,
   Terminal,
 } from "lucide-react";
 
+import Header from "@/app/components/Header";
 import { PublicSiteFooter } from "@/components/public/PublicSiteFooter";
-import { PublicSiteHeader } from "@/components/public/PublicSiteHeader";
 import { JsonLd } from "@/components/seo/JsonLd";
 import { Button } from "@/components/ui/button";
 import {
@@ -56,22 +55,37 @@ const capabilities = [
   {
     icon: Bot,
     title: "Ask and Agent modes",
-    copy: "Use focused chat for analysis or let Agent mode plan and carry out longer security workflows with tool access.",
+    copy: "Ask for focused analysis. Switch to Agent when you want the model to plan and run a longer workflow with tools.",
   },
   {
     icon: Terminal,
-    title: "Terminal and browser tools",
-    copy: "Run commands, inspect output, browse pages, and keep tool evidence alongside the task conversation.",
+    title: "Terminal and browser",
+    copy: "Run commands, read output, and browse targets. Every tool call stays in the task alongside the conversation.",
   },
   {
     icon: FileUp,
     title: "Files and long context",
-    copy: "Upload reports, screenshots, source files, and structured data so the model can work from the material you provide.",
+    copy: "Upload reports, screenshots, source, and structured data. The model works from what you give it.",
   },
   {
     icon: Search,
     title: "Evidence and reporting",
-    copy: "Keep notes, tool output, and findings together in one task, then turn validated evidence into report-ready material.",
+    copy: "Notes, tool output, and findings live in one task. Turn validated evidence into report-ready material.",
+  },
+] as const;
+
+const expectations = [
+  {
+    title: "Review every result",
+    copy: "AI output and tool actions can be incomplete or wrong. Validate evidence and impact before you report or act.",
+  },
+  {
+    title: "Local tools are opt-in",
+    copy: "Nothing runs on your machine until you connect HackerAI Desktop or the Local Agent CLI.",
+  },
+  {
+    title: "Access varies by plan",
+    copy: "Model access, included usage, files, context, and cloud-agent capacity depend on your plan and current availability.",
   },
 ] as const;
 
@@ -81,43 +95,50 @@ const officialLinks = [
   { href: STATUS_PAGE_URL, label: "Status page", icon: ExternalLink },
 ] as const;
 
+const sectionTitle = "text-3xl font-medium tracking-tight sm:text-4xl";
+const sectionLead = "mt-4 text-lg leading-8 text-muted-foreground";
+const card = "rounded-xl border border-border bg-card p-6";
+const inlineLink =
+  "mt-5 inline-flex items-center gap-2 rounded-sm text-sm font-medium text-foreground underline underline-offset-4 hover:text-foreground/80 focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none";
+
 export default function ProductPage() {
   return (
     <div className="min-h-dvh bg-background text-foreground">
       <JsonLd data={SOFTWARE_APPLICATION_JSON_LD} />
-      <PublicSiteHeader currentPath="/product" />
+      <Header currentPath="/product" />
       <main>
+        {/* Hero */}
         <section className="border-b border-border/80">
-          <div className="mx-auto grid max-w-6xl gap-10 px-4 py-14 sm:px-6 sm:py-20 lg:grid-cols-[0.85fr_1.15fr] lg:items-center">
-            <div>
-              <p className="text-sm font-medium text-muted-foreground">
-                Product
-              </p>
-              <h1 className="mt-3 text-4xl font-semibold leading-tight sm:text-5xl">
-                An AI agent for penetration testing
+          <div className="mx-auto max-w-6xl px-4 pt-16 pb-14 sm:px-6 sm:pt-24 sm:pb-20">
+            <div className="mx-auto max-w-3xl text-center">
+              <h1 className="text-5xl font-medium leading-[1.05] tracking-tight sm:text-6xl">
+                Hands-On Pentesting
+                <br className="hidden sm:block" /> With an AI Agent.
               </h1>
-              <p className="mt-5 max-w-xl text-lg leading-8 text-muted-foreground">
-                HackerAI gives individual security practitioners one task
-                workspace with AI reasoning, terminal and browser tools, file
-                analysis, and a clear choice between running on your own machine
-                or in an isolated cloud sandbox.
+              <p className="mx-auto mt-6 max-w-2xl text-lg leading-8 text-muted-foreground">
+                Recon, terminal, browser, and files in one workspace.
+                <br className="hidden sm:block" /> Run it on your machine or in
+                an isolated cloud sandbox.
               </p>
-              <div className="mt-8 flex flex-wrap gap-3">
+              <div className="mt-8 flex flex-wrap items-center justify-center gap-3">
                 <Button asChild size="lg">
                   <Link href="/signup">
                     Start free
                     <ArrowRight className="size-4" />
                   </Link>
                 </Button>
-                <Button asChild size="lg" variant="outline">
-                  <Link href="/pricing">View pricing</Link>
+                <Button asChild size="lg" variant="ghost">
+                  <Link href="/pricing">
+                    View pricing
+                    <ArrowRight className="size-4" />
+                  </Link>
                 </Button>
               </div>
             </div>
-            <div className="overflow-hidden rounded-lg border border-border bg-card shadow-2xl shadow-black/15">
+            <div className="mx-auto mt-14 max-w-5xl overflow-hidden rounded-xl border border-border bg-card shadow-2xl shadow-black/30">
               <Image
                 src="/images/hackerai-workspace.png"
-                alt="HackerAI signed-in task workspace with the sidebar, mode selector, and prompt input"
+                alt="HackerAI Agent mode running a scan against an authorized target, with terminal output shown in the task"
                 width={1440}
                 height={900}
                 priority
@@ -127,21 +148,22 @@ export default function ProductPage() {
           </div>
         </section>
 
-        <section className="border-b border-border/80 bg-card/30">
-          <div className="mx-auto max-w-6xl px-4 py-14 sm:px-6 sm:py-18">
-            <div className="max-w-2xl">
-              <h2 className="text-3xl font-semibold">One security workspace</h2>
-              <p className="mt-3 leading-7 text-muted-foreground">
-                Built for authorized security assessments, bug bounty research,
-                study, and technical investigation. You stay responsible for
-                authorization, scope, and reviewing every result.
+        {/* Capabilities */}
+        <section className="border-b border-border/80">
+          <div className="mx-auto max-w-6xl px-4 py-16 sm:px-6 sm:py-24">
+            <div className="mx-auto max-w-2xl text-center">
+              <h2 className={sectionTitle}>One workspace for the engagement</h2>
+              <p className={sectionLead}>
+                Ask questions, run tools, and keep evidence in the same task.
+                Built for authorized assessments, bug bounty research, study,
+                and technical investigation.
               </p>
             </div>
-            <div className="mt-9 grid gap-px overflow-hidden rounded-lg border border-border bg-border sm:grid-cols-2 lg:grid-cols-4">
+            <div className="mt-12 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
               {capabilities.map(({ icon: Icon, title, copy }) => (
-                <article key={title} className="bg-background p-6">
+                <article key={title} className={card}>
                   <Icon className="size-5" aria-hidden="true" />
-                  <h3 className="mt-5 font-semibold">{title}</h3>
+                  <h3 className="mt-5 text-lg font-medium">{title}</h3>
                   <p className="mt-2 text-sm leading-6 text-muted-foreground">
                     {copy}
                   </p>
@@ -151,112 +173,98 @@ export default function ProductPage() {
           </div>
         </section>
 
+        {/* Execution */}
         <section className="border-b border-border/80">
-          <div className="mx-auto max-w-6xl px-4 py-14 sm:px-6 sm:py-18">
-            <div className="grid gap-10 lg:grid-cols-2">
-              <div>
-                <MonitorCog className="size-6" aria-hidden="true" />
-                <h2 className="mt-4 text-2xl font-semibold">Run locally</h2>
+          <div className="mx-auto max-w-6xl px-4 py-16 sm:px-6 sm:py-24">
+            <div className="max-w-2xl">
+              <h2 className={sectionTitle}>Runs where you need it</h2>
+              <p className={sectionLead}>
+                Choose local or cloud execution per task. The boundaries are
+                documented, not implied.
+              </p>
+            </div>
+            <div className="mt-12 grid gap-4 lg:grid-cols-2">
+              <article className={card}>
+                <MonitorCog className="size-5" aria-hidden="true" />
+                <h3 className="mt-5 text-xl font-medium">On your machine</h3>
                 <p className="mt-3 leading-7 text-muted-foreground">
                   HackerAI Desktop and the Local Agent CLI connect Agent mode to
-                  your own machine. Commands run with your user&apos;s
-                  privileges and without container isolation, so use local mode
-                  on a dedicated testing environment that you control.
+                  your own tools. Commands run with your user&apos;s privileges
+                  and without container isolation, so use local mode on a
+                  dedicated testing environment that you control.
                 </p>
-                <div className="mt-5 flex items-center gap-2 text-sm text-muted-foreground">
-                  <HardDrive className="size-4" aria-hidden="true" />
-                  Your machine, your tools, your local environment
-                </div>
                 <a
                   href={LOCAL_AGENT_HELP_URL}
                   target="_blank"
                   rel="noreferrer"
-                  className="mt-3 inline-flex items-center gap-2 rounded-sm text-sm font-medium text-foreground underline underline-offset-4 hover:text-foreground/80 focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+                  className={inlineLink}
                 >
                   Local Agent setup guide
                   <ExternalLink className="size-4" aria-hidden="true" />
                 </a>
-              </div>
-              <div>
-                <Cloud className="size-6" aria-hidden="true" />
-                <h2 className="mt-4 text-2xl font-semibold">
-                  Run in the cloud
-                </h2>
+              </article>
+              <article className={card}>
+                <Cloud className="size-5" aria-hidden="true" />
+                <h3 className="mt-5 text-xl font-medium">In the cloud</h3>
                 <p className="mt-3 leading-7 text-muted-foreground">
                   Cloud Agent sessions run terminal and browser actions in an
                   isolated E2B sandbox. Sandboxes, uploaded files, and task
                   context are processed by HackerAI and the subprocessors listed
                   on the Security &amp; Trust page.
                 </p>
-                <div className="mt-5 flex items-center gap-2 text-sm text-muted-foreground">
+                <Link href="/trust" className={inlineLink}>
                   <ShieldCheck className="size-4" aria-hidden="true" />
-                  Isolated execution with documented data boundaries
-                </div>
-              </div>
+                  Read Security &amp; Trust
+                </Link>
+              </article>
             </div>
-            <Button asChild variant="outline" className="mt-9">
-              <Link href="/trust">Read Security &amp; Trust</Link>
-            </Button>
           </div>
         </section>
 
+        {/* Expectations */}
         <section className="border-b border-border/80">
-          <div className="mx-auto max-w-6xl px-4 py-14 sm:px-6 sm:py-18">
+          <div className="mx-auto max-w-6xl px-4 py-16 sm:px-6 sm:py-24">
             <div className="max-w-2xl">
-              <h2 className="text-3xl font-semibold">What to expect</h2>
-              <p className="mt-3 leading-7 text-muted-foreground">
+              <h2 className={sectionTitle}>What to expect</h2>
+              <p className={sectionLead}>
                 HackerAI speeds up security work. It does not replace
                 practitioner judgment, authorization, or independent validation.
               </p>
             </div>
-            <div className="mt-8 grid border-y border-border lg:grid-cols-3">
-              <div className="py-6 lg:pr-7">
-                <h3 className="font-semibold">Review every result</h3>
-                <p className="mt-2 text-sm leading-6 text-muted-foreground">
-                  AI output and tool actions can be incomplete or incorrect.
-                  Validate evidence and impact before reporting or acting on it.
-                </p>
-              </div>
-              <div className="border-t border-border py-6 lg:border-t-0 lg:border-l lg:px-7">
-                <h3 className="font-semibold">
-                  Connect local tools explicitly
-                </h3>
-                <p className="mt-2 text-sm leading-6 text-muted-foreground">
-                  Running commands directly on a machine requires HackerAI
-                  Desktop or the Local Agent CLI. Nothing runs locally until you
-                  connect it.
-                </p>
-              </div>
-              <div className="border-t border-border py-6 lg:border-t-0 lg:border-l lg:pl-7">
-                <h3 className="font-semibold">Access varies by plan</h3>
-                <p className="mt-2 text-sm leading-6 text-muted-foreground">
-                  Model access, included usage, files, context, and cloud-agent
-                  capacity depend on the selected plan and current availability.
-                </p>
-              </div>
+            <div className="mt-12 grid gap-4 lg:grid-cols-3">
+              {expectations.map(({ title, copy }) => (
+                <article key={title} className={card}>
+                  <h3 className="text-lg font-medium">{title}</h3>
+                  <p className="mt-2 text-sm leading-6 text-muted-foreground">
+                    {copy}
+                  </p>
+                </article>
+              ))}
             </div>
           </div>
         </section>
 
-        <section className="border-b border-border/80 bg-card/30">
-          <div className="mx-auto grid max-w-6xl gap-10 px-4 py-14 sm:px-6 sm:py-18 lg:grid-cols-[1fr_320px] lg:items-center">
+        {/* Platforms */}
+        <section className="border-b border-border/80">
+          <div className="mx-auto grid max-w-6xl gap-12 px-4 py-16 sm:px-6 sm:py-24 lg:grid-cols-[1fr_320px] lg:items-center">
             <div className="max-w-2xl">
-              <h2 className="text-3xl font-semibold">
-                Web, desktop, and mobile
-              </h2>
-              <p className="mt-3 leading-7 text-muted-foreground">
+              <h2 className={sectionTitle}>Web, desktop, and mobile</h2>
+              <p className={sectionLead}>
                 Start a task in the browser, install HackerAI Desktop when you
                 want to connect local tools, and pick up the same task on your
                 phone from the mobile web app.
               </p>
-              <Button asChild variant="outline" className="mt-6">
-                <Link href="/download">View all downloads</Link>
+              <Button asChild variant="outline" className="mt-8">
+                <Link href="/download">
+                  View all downloads
+                  <ArrowRight className="size-4" />
+                </Link>
               </Button>
             </div>
-            <div className="mx-auto w-full max-w-[280px] overflow-hidden rounded-lg border border-border bg-card shadow-xl shadow-black/15">
+            <div className="mx-auto w-full max-w-[280px] overflow-hidden rounded-xl border border-border bg-card shadow-xl shadow-black/30">
               <Image
                 src="/images/hackerai-mobile.png"
-                alt="HackerAI signed-in mobile web workspace"
+                alt="HackerAI mobile web app showing the same Agent task on a phone"
                 width={390}
                 height={844}
                 className="h-auto w-full"
@@ -265,25 +273,47 @@ export default function ProductPage() {
           </div>
         </section>
 
+        {/* Closing CTA */}
         <section>
-          <div className="mx-auto max-w-6xl px-4 py-14 sm:px-6 sm:py-18">
-            <div className="flex flex-col gap-6 lg:flex-row lg:items-end lg:justify-between">
-              <div className="max-w-2xl">
-                <h2 className="text-3xl font-semibold">Verify the details</h2>
-                <p className="mt-3 leading-7 text-muted-foreground">
-                  Review the public source code, operating guidance, service
-                  status, privacy policy, and subprocessors before choosing an
-                  execution mode.
-                </p>
+          <div className="mx-auto max-w-6xl px-4 py-16 sm:px-6 sm:py-24">
+            <div className="mx-auto max-w-2xl text-center">
+              <h2 className={sectionTitle}>Start in minutes</h2>
+              <p className={sectionLead}>
+                Sign up, pick a target you are authorized to test, and run your
+                first task in the browser. Free needs no payment method.
+              </p>
+              <div className="mt-8 flex flex-wrap items-center justify-center gap-3">
+                <Button asChild size="lg">
+                  <Link href="/signup">
+                    Start free
+                    <ArrowRight className="size-4" />
+                  </Link>
+                </Button>
+                <Button asChild size="lg" variant="ghost">
+                  <Link href="/pricing">
+                    View pricing
+                    <ArrowRight className="size-4" />
+                  </Link>
+                </Button>
               </div>
-              <div className="flex flex-wrap gap-3">
+            </div>
+            <div className="mt-14 flex flex-col items-center gap-4 border-t border-border pt-8 text-sm text-muted-foreground sm:flex-row sm:justify-between">
+              <p>
+                Verify the details yourself. Source code, guidance, status, and
+                subprocessors are public.
+              </p>
+              <div className="flex flex-wrap gap-x-5 gap-y-2">
                 {officialLinks.map(({ href, label, icon: Icon }) => (
-                  <Button key={href} asChild variant="outline">
-                    <a href={href} target="_blank" rel="noreferrer">
-                      <Icon className="size-4" aria-hidden="true" />
-                      {label}
-                    </a>
-                  </Button>
+                  <a
+                    key={href}
+                    href={href}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-flex items-center gap-1.5 rounded-sm font-medium text-foreground hover:text-foreground/80 focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+                  >
+                    <Icon className="size-4" aria-hidden="true" />
+                    {label}
+                  </a>
                 ))}
               </div>
             </div>

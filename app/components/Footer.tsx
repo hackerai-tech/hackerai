@@ -39,20 +39,6 @@ const Footer: React.FC = () => {
         </a>
         . <span className="text-muted-foreground">&middot;</span>{" "}
         <a
-          href="/product"
-          className="text-foreground underline decoration-foreground"
-        >
-          Product
-        </a>{" "}
-        <span className="text-muted-foreground">&middot;</span>{" "}
-        <a
-          href="/pricing"
-          className="text-foreground underline decoration-foreground"
-        >
-          Pricing
-        </a>{" "}
-        <span className="text-muted-foreground">&middot;</span>{" "}
-        <a
           href="/trust"
           target="_blank"
           className="text-foreground underline decoration-foreground"
