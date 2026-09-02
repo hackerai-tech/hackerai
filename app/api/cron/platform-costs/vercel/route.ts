@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { NextResponse } from "next/server";
 import {
   completedUtcDayWindow,
+  filterRowsToDayWindow,
   parseVercelFocusStream,
 } from "@/lib/billing/platform-costs";
 import {
@@ -38,7 +39,7 @@ export async function GET(request: Request) {
     url.searchParams.set("to", window.to);
     url.searchParams.set("teamId", teamId);
 
-    const rows = await fetchWithRetry(
+    const fetchedRows = await fetchWithRetry(
       url.toString(),
       {
         headers: {
@@ -55,6 +56,11 @@ export async function GET(request: Request) {
         return await parseVercelFocusStream(response.body);
       },
     );
+    const rows = filterRowsToDayWindow(
+      fetchedRows,
+      window.startDay,
+      window.endDay,
+    );
     const result = await replaceCostWindow({
       vendor: "vercel",
       startDay: window.startDay,
@@ -68,6 +74,7 @@ export async function GET(request: Request) {
       vendor: "vercel",
       duration_ms: Date.now() - startedAt,
       row_count: rows.length,
+      excluded_row_count: fetchedRows.length - rows.length,
       start_day: window.startDay,
       end_day: window.endDay,
       ...result,

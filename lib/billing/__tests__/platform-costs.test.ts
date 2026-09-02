@@ -1,6 +1,7 @@
 import {
   completedUtcDayWindow,
   convexUsageBaseUrl,
+  filterRowsToDayWindow,
   mapConvexUsageToRows,
   parseConvexDeploymentUsage,
   parseVercelFocusStream,
@@ -101,6 +102,39 @@ describe("platform cost normalization", () => {
         ]),
       ),
     ).rejects.toThrow("BilledCost must be finite");
+  });
+
+  it("excludes Vercel charge periods that only overlap a day window boundary", async () => {
+    const base = {
+      BillingCurrency: "USD",
+      ChargePeriodEnd: "2026-07-29T07:00:00.000Z",
+      ChargeCategory: "Usage",
+      ServiceName: "Fluid compute",
+      ServiceCategory: "Compute",
+      BilledCost: 1,
+    };
+    const rows = await parseVercelFocusStream(
+      jsonlStream([
+        {
+          ...base,
+          ChargePeriodStart: "2026-07-28T07:00:00.000Z",
+        },
+        {
+          ...base,
+          ChargePeriodStart: "2026-07-29T07:00:00.000Z",
+          ChargePeriodEnd: "2026-07-30T07:00:00.000Z",
+        },
+        {
+          ...base,
+          ChargePeriodStart: "2026-09-02T07:00:00.000Z",
+          ChargePeriodEnd: "2026-09-03T07:00:00.000Z",
+        },
+      ]),
+    );
+
+    expect(filterRowsToDayWindow(rows, "2026-07-29", "2026-09-01")).toEqual([
+      expect.objectContaining({ day: "2026-07-29" }),
+    ]);
   });
 
   it("maps Convex deployment usage to metered rows without fake dollars", () => {

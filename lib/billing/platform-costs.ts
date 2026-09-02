@@ -229,6 +229,19 @@ export async function parseVercelFocusStream(
     );
 }
 
+/**
+ * Keep only rows whose normalized UTC day belongs to the replacement window.
+ * Vercel may return a charge period that overlaps the requested range even
+ * when that period starts on the preceding day.
+ */
+export function filterRowsToDayWindow(
+  rows: PlatformCostRow[],
+  startDay: string,
+  endDay: string,
+): PlatformCostRow[] {
+  return rows.filter((row) => row.day >= startDay && row.day <= endDay);
+}
+
 const CONVEX_CATEGORY_BY_METRIC: Record<string, string> = {
   actionComputeConvexGbHours: "compute",
   actionComputeCpuGbHours: "compute",
