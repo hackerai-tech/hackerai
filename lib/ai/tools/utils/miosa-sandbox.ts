@@ -5,10 +5,16 @@ import type {
 } from "@miosa/sdk";
 import type { SandboxBootInfo, SandboxContext } from "@/types";
 
-const MIOSA_SANDBOX_VERSION = "v1";
+const MIOSA_SANDBOX_VERSION = "v2";
 const MIOSA_ACTIVITY_TIMEOUT_SECONDS = 24 * 60 * 60;
 const MIOSA_IDLE_TIMEOUT_SECONDS = 7 * 60;
 const MIOSA_SNAPSHOT_EXPIRATION_DAYS = 30;
+const MIOSA_CPU_COUNT = 4;
+const MIOSA_MEMORY_MB = 4 * 1024;
+const MIOSA_DISK_SIZE_MB = 20 * 1024;
+const MIOSA_RUNTIME_CONTAINER_NAME = "hackerai-agent";
+const DEFAULT_MIOSA_RUNTIME_IMAGE =
+  "hackerai/sandbox@sha256:d00f2c023977f57fc3fa6effc6ea41de28d445170bfa2314564e5eab2ef03976";
 
 type MiosaCommandOptions = {
   cwd?: string;
@@ -31,12 +37,76 @@ type MiosaCommandResult = {
 const shellQuote = (value: string): string =>
   `'${value.replaceAll("'", `'"'"'`)}'`;
 
-const sandboxNameForUser = (userId: string): string =>
+const externalUserIdForUser = (userId: string): string =>
   `hackerai-${createHash("sha256").update(userId).digest("hex").slice(0, 24)}`;
+
+const sandboxNameForUser = (userId: string): string =>
+  `${externalUserIdForUser(userId)}-${MIOSA_SANDBOX_VERSION}`;
 
 const normalizeStreamLine = (line: unknown): string => {
   const value = typeof line === "string" ? line : String(line ?? "");
   return value.endsWith("\n") ? value : `${value}\n`;
+};
+
+const dockerExecCommand = (
+  command: string,
+  options: Pick<MiosaCommandOptions, "cwd" | "envVars" | "envs"> = {},
+): string => {
+  const env = { ...options.envVars, ...options.envs };
+  const envArgs = Object.entries(env).flatMap(([key, value]) => [
+    "--env",
+    shellQuote(`${key}=${value}`),
+  ]);
+  return [
+    "docker exec",
+    "--workdir",
+    shellQuote(options.cwd ?? "/home/user"),
+    ...envArgs,
+    shellQuote(MIOSA_RUNTIME_CONTAINER_NAME),
+    "bash -lc",
+    shellQuote(command),
+  ].join(" ");
+};
+
+const runtimeInitializationCommand = (runtimeImage: string): string => {
+  const image = shellQuote(runtimeImage);
+  const container = shellQuote(MIOSA_RUNTIME_CONTAINER_NAME);
+  return [
+    "set -eu",
+    "mkdir -p /home/user/upload /home/user/agent-transcripts /home/user/terminal_full_output /home/user/agent-browser-screenshots",
+    `docker image inspect ${image} >/dev/null 2>&1 || docker pull ${image}`,
+    `expected_image_id=$(docker image inspect --format '{{.Id}}' ${image})`,
+    `container_image_id=$(docker inspect --format '{{.Image}}' ${container} 2>/dev/null || true)`,
+    `if [ -n "$container_image_id" ] && [ "$container_image_id" != "$expected_image_id" ]; then docker rm -f ${container}; container_image_id=; fi`,
+    `if [ -z "$container_image_id" ]; then docker run -d --name ${container} --restart unless-stopped --network host --cap-add=NET_RAW --cap-add=NET_ADMIN --cap-add=SYS_PTRACE --env HOME=/home/user --workdir /home/user --volume /home/user:/home/user ${image} sleep infinity; elif [ "$(docker inspect --format '{{.State.Running}}' ${container})" != "true" ]; then docker start ${container}; fi`,
+    `docker exec --workdir /home/user ${container} bash -lc 'test -x /usr/bin/nmap && test -x /usr/bin/nuclei && test -x /usr/bin/ffuf'`,
+  ].join("; ");
+};
+
+const initializeMiosaRuntime = async (
+  sdkSandbox: MiosaSdkSandbox,
+  runtimeImage: string,
+): Promise<void> => {
+  const stream = sdkSandbox.exec.stream(
+    runtimeInitializationCommand(runtimeImage),
+    { timeoutSec: 15 * 60 },
+  );
+  const stderr: string[] = [];
+  let exitCode: number | null = null;
+  for await (const event of stream) {
+    if (event.type === "stderr") stderr.push(event.data);
+    if (event.type === "exit") {
+      exitCode = Number(event.exitCode ?? event.exit_code ?? 0);
+    }
+  }
+  if (exitCode === null) {
+    throw new Error("MIOSA runtime initialization ended without an exit event");
+  }
+  if (exitCode !== 0) {
+    throw new Error(
+      stderr.join("").trim() || "Failed to initialize MIOSA sandbox runtime",
+    );
+  }
 };
 
 const createMiosaClient = async (): Promise<MiosaClient> => {
@@ -83,10 +153,6 @@ export class MiosaSandbox {
       }
 
       const sdkOptions = {
-        cwd: options.cwd ?? "/home/user",
-        ...((options.envVars || options.envs) && {
-          env: { ...options.envVars, ...options.envs },
-        }),
         ...(options.timeoutMs && {
           timeoutSec: Math.max(1, Math.ceil(options.timeoutMs / 1000)),
         }),
@@ -100,7 +166,7 @@ export class MiosaSandbox {
           `>${shellQuote(outputPath)} 2>&1 < /dev/null & printf '%s' \"$!\"`,
         ].join(" ");
         const result = await this.sdkSandbox.exec.run(
-          detachedCommand,
+          dockerExecCommand(detachedCommand, options),
           sdkOptions,
         );
         const pid = Number.parseInt(result.stdout.trim(), 10);
@@ -121,7 +187,10 @@ export class MiosaSandbox {
             `echo $$ > ${shellQuote(processIdPath)}; bash -lc ${shellQuote(command)}; status=$?; rm -f -- ${shellQuote(processIdPath)}; exit $status`,
           )}`
         : command;
-      const stream = this.sdkSandbox.exec.stream(streamedCommand, sdkOptions);
+      const stream = this.sdkSandbox.exec.stream(
+        dockerExecCommand(streamedCommand, options),
+        sdkOptions,
+      );
 
       const consumeStream = async (): Promise<void> => {
         for await (const event of stream) {
@@ -156,7 +225,9 @@ export class MiosaSandbox {
               abortStarted = true;
               void this.sdkSandbox.exec
                 .run(
-                  `for i in $(seq 1 40); do if [ -f ${shellQuote(processIdPath)} ]; then pid=$(cat ${shellQuote(processIdPath)}); kill -TERM -- -"$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null || true; sleep 0.2; kill -KILL -- -"$pid" 2>/dev/null || kill -KILL "$pid" 2>/dev/null || true; rm -f -- ${shellQuote(processIdPath)}; break; fi; sleep 0.05; done`,
+                  dockerExecCommand(
+                    `for i in $(seq 1 40); do if [ -f ${shellQuote(processIdPath)} ]; then pid=$(cat ${shellQuote(processIdPath)}); kill -TERM -- -"$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null || true; sleep 0.2; kill -KILL -- -"$pid" 2>/dev/null || kill -KILL "$pid" 2>/dev/null || true; rm -f -- ${shellQuote(processIdPath)}; break; fi; sleep 0.05; done`,
+                  ),
                   { timeoutSec: 5 },
                 )
                 .finally(() => {
@@ -190,7 +261,9 @@ export class MiosaSandbox {
       };
     },
     kill: async (pid: number): Promise<boolean> => {
-      const result = await this.sdkSandbox.exec.run(`kill -9 ${pid}`);
+      const result = await this.sdkSandbox.exec.run(
+        dockerExecCommand(`kill -9 ${pid}`),
+      );
       return result.exitCode === 0;
     },
   };
@@ -279,10 +352,13 @@ export async function ensureMiosaSandboxConnection(
 
   const startedAt = performance.now();
   const client = await createMiosaClient();
-  const externalUserId = sandboxNameForUser(context.userID);
+  const externalUserId = externalUserIdForUser(context.userID);
   const sdkSandbox = await client.sandboxes.getOrCreate({
-    name: externalUserId,
+    name: sandboxNameForUser(context.userID),
     templateId,
+    cpuCount: MIOSA_CPU_COUNT,
+    memoryMb: MIOSA_MEMORY_MB,
+    diskSizeMb: MIOSA_DISK_SIZE_MB,
     persistent: true,
     timeoutSec: MIOSA_ACTIVITY_TIMEOUT_SECONDS,
     idleTimeoutSec: MIOSA_IDLE_TIMEOUT_SECONDS,
@@ -297,15 +373,9 @@ export async function ensureMiosaSandboxConnection(
       sandboxVersion: MIOSA_SANDBOX_VERSION,
     },
   });
-  const initialization = await sdkSandbox.exec.run(
-    "mkdir -p /home/user/upload /home/user/agent-transcripts /home/user/terminal_full_output /home/user/agent-browser-screenshots",
-    { timeoutSec: 10 },
-  );
-  if (initialization.exitCode !== 0) {
-    throw new Error(
-      initialization.stderr || "Failed to initialize MIOSA sandbox paths",
-    );
-  }
+  const runtimeImage =
+    process.env.MIOSA_RUNTIME_IMAGE?.trim() || DEFAULT_MIOSA_RUNTIME_IMAGE;
+  await initializeMiosaRuntime(sdkSandbox, runtimeImage);
   const sandbox = new MiosaSandbox(sdkSandbox);
   context.setSandbox(sandbox);
   context.onBoot?.({
@@ -322,7 +392,7 @@ export async function terminateMiosaSandboxesForUser(
 ): Promise<{ total: number; killed: number; alreadyGone: number }> {
   const client = await createMiosaClient();
   const sandboxes = await client.sandboxes.list({
-    externalUserId: sandboxNameForUser(userId),
+    externalUserId: externalUserIdForUser(userId),
   });
   let killed = 0;
   let alreadyGone = 0;

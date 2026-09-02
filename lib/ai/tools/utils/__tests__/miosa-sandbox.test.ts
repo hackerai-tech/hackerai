@@ -17,7 +17,9 @@ const createSdkSandbox = () => ({
   data: { id: "miosa-1", state: "running", boot_path: "created" },
   exec: {
     run: jest.fn(async () => ({ stdout: "", stderr: "", exitCode: 0 })),
-    stream: jest.fn(),
+    stream: jest.fn(async function* () {
+      yield { type: "exit", exit_code: 0 };
+    }),
   },
   files: {
     write: jest.fn(),
@@ -62,17 +64,22 @@ describe("MIOSA sandbox adapter", () => {
     expect(result.sandbox).toBeInstanceOf(MiosaSandbox);
     expect(mockGetOrCreate).toHaveBeenCalledWith(
       expect.objectContaining({
-        name: expect.stringMatching(/^hackerai-[a-f0-9]{24}$/),
+        name: expect.stringMatching(/^hackerai-[a-f0-9]{24}-v2$/),
         templateId: "hackerai-kali-promoted",
+        cpuCount: 4,
+        memoryMb: 4096,
+        diskSizeMb: 20480,
         persistent: true,
         idleTimeoutSec: 420,
         waitUntilReady: true,
         externalUserId: expect.stringMatching(/^hackerai-[a-f0-9]{24}$/),
       }),
     );
-    expect(sdkSandbox.exec.run).toHaveBeenCalledWith(
-      expect.stringContaining("mkdir -p /home/user/upload"),
-      { timeoutSec: 10 },
+    expect(sdkSandbox.exec.stream).toHaveBeenCalledWith(
+      expect.stringMatching(
+        /mkdir -p \/home\/user\/upload[\s\S]*docker image inspect[\s\S]*docker run -d[\s\S]*hackerai-agent/,
+      ),
+      { timeoutSec: 900 },
     );
     expect(setSandbox).toHaveBeenCalledWith(result.sandbox);
     expect(onBoot).toHaveBeenCalledWith(
@@ -113,10 +120,12 @@ describe("MIOSA sandbox adapter", () => {
       stderr: "warning",
       exitCode: 7,
     });
-    expect(sdkSandbox.exec.stream).toHaveBeenCalledWith("example", {
-      cwd: "/home/user",
-      timeoutSec: 2,
-    });
+    expect(sdkSandbox.exec.stream).toHaveBeenCalledWith(
+      expect.stringMatching(
+        /docker exec[\s\S]*hackerai-agent[\s\S]*bash -lc[\s\S]*example/,
+      ),
+      { timeoutSec: 2 },
+    );
     expect(onStdout).toHaveBeenCalledWith("hello\n");
     expect(onStderr).toHaveBeenCalledWith("warning\n");
   });
@@ -134,8 +143,10 @@ describe("MIOSA sandbox adapter", () => {
       sandbox.commands.run("npm run dev", { background: true }),
     ).resolves.toEqual({ stdout: "", stderr: "", exitCode: 0, pid: 4321 });
     expect(sdkSandbox.exec.run).toHaveBeenCalledWith(
-      expect.stringContaining("nohup bash -lc 'npm run dev'"),
-      { cwd: "/home/user" },
+      expect.stringMatching(
+        /docker exec[\s\S]*hackerai-agent[\s\S]*nohup bash -lc/,
+      ),
+      {},
     );
   });
 
@@ -163,12 +174,37 @@ describe("MIOSA sandbox adapter", () => {
 
     await expect(command).rejects.toMatchObject({ name: "AbortError" });
     expect(sdkSandbox.exec.stream).toHaveBeenCalledWith(
-      expect.stringContaining("setsid bash -lc"),
-      { cwd: "/home/user" },
+      expect.stringMatching(
+        /docker exec[\s\S]*hackerai-agent[\s\S]*setsid bash -lc/,
+      ),
+      {},
     );
     expect(sdkSandbox.exec.run).toHaveBeenCalledWith(
-      expect.stringContaining("kill -TERM --"),
+      expect.stringMatching(
+        /docker exec[\s\S]*hackerai-agent[\s\S]*kill -TERM --/,
+      ),
       { timeoutSec: 5 },
+    );
+  });
+
+  it("maps cwd and environment variables into the Kali container", async () => {
+    const sdkSandbox = createSdkSandbox();
+    async function* stream() {
+      yield { type: "exit", exit_code: 0 };
+    }
+    sdkSandbox.exec.stream.mockImplementation(stream);
+    const sandbox = new MiosaSandbox(sdkSandbox as never);
+
+    await sandbox.commands.run("pwd", {
+      cwd: "/home/user/workspace",
+      envVars: { TARGET_HOST: "example.com" },
+    });
+
+    expect(sdkSandbox.exec.stream).toHaveBeenCalledWith(
+      expect.stringMatching(
+        /docker exec --workdir '\/home\/user\/workspace' --env 'TARGET_HOST=example\.com' 'hackerai-agent'/,
+      ),
+      {},
     );
   });
 });
