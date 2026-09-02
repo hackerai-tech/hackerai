@@ -112,13 +112,13 @@ export default function ProductPage() {
         <section className="border-b border-border/80">
           <div className="mx-auto max-w-6xl px-4 pt-16 pb-14 sm:px-6 sm:pt-24 sm:pb-20">
             <div className="mx-auto max-w-3xl text-center">
-              <h1 className="text-5xl font-medium leading-[1.05] tracking-tight sm:text-6xl">
+              <h1 className="text-5xl font-medium leading-[1.05] tracking-tight text-balance sm:text-6xl">
                 The AI Agent
                 <br className="hidden sm:block" /> for Penetration Testing.
               </h1>
-              <p className="mx-auto mt-6 max-w-2xl text-lg leading-8 text-muted-foreground">
-                Point it at a target. It runs the recon, the tools, and the
-                checks, and keeps the evidence.
+              <p className="mx-auto mt-6 max-w-2xl text-lg leading-8 text-pretty text-muted-foreground">
+                Point it at a target. It runs the recon, the tools, and keeps
+                the evidence.
                 <br className="hidden sm:block" /> On your machine or in an
                 isolated cloud sandbox.
               </p>
