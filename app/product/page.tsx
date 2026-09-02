@@ -113,14 +113,13 @@ export default function ProductPage() {
           <div className="mx-auto max-w-6xl px-4 pt-16 pb-14 sm:px-6 sm:pt-24 sm:pb-20">
             <div className="mx-auto max-w-3xl text-center">
               <h1 className="text-5xl font-medium leading-[1.05] tracking-tight sm:text-6xl">
-                Anyone Can List Findings.
-                <br className="hidden sm:block" /> Pentesters Have to Prove
-                Them.
+                The AI Agent
+                <br className="hidden sm:block" /> for Penetration Testing.
               </h1>
               <p className="mx-auto mt-6 max-w-2xl text-lg leading-8 text-muted-foreground">
-                HackerAI is an AI agent that works a target the way you would:
-                it runs the recon, the tools, and the checks, and keeps every
-                step as evidence. You stay in control, on your machine or in an
+                Point it at a target. It runs the recon, the tools, and the
+                checks, and keeps the evidence.
+                <br className="hidden sm:block" /> On your machine or in an
                 isolated cloud sandbox.
               </p>
               <div className="mt-8 flex flex-wrap items-center justify-center gap-3">
