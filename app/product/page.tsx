@@ -11,6 +11,7 @@ import {
   MonitorCog,
   Search,
   ShieldCheck,
+  SlidersHorizontal,
   Terminal,
 } from "lucide-react";
 
@@ -54,23 +55,23 @@ export const dynamic = "force-static";
 const capabilities = [
   {
     icon: Bot,
-    title: "Ask and Agent modes",
-    copy: "Ask for focused analysis. Switch to Agent when you want the model to plan and run a longer workflow with tools.",
+    title: "Ask, or let it run",
+    copy: "Ask for focused analysis. Switch to Agent and it plans and executes multi-step work with the tools it needs.",
   },
   {
     icon: Terminal,
     title: "Terminal and browser",
-    copy: "Run commands, read output, and browse targets. Every tool call stays in the task alongside the conversation.",
+    copy: "Run commands, browse targets, read the output. Every tool call stays in the task, in order.",
   },
   {
     icon: FileUp,
     title: "Files and long context",
-    copy: "Upload reports, screenshots, source, and structured data. The model works from what you give it.",
+    copy: "Drop in reports, screenshots, source, and data. The model works from what you give it.",
   },
   {
     icon: Search,
-    title: "Evidence and reporting",
-    copy: "Notes, tool output, and findings live in one task. Turn validated evidence into report-ready material.",
+    title: "Evidence-first results",
+    copy: "Notes, tool output, and findings stay attached to the task. Validated evidence turns into report-ready material.",
   },
 ] as const;
 
@@ -112,13 +113,14 @@ export default function ProductPage() {
           <div className="mx-auto max-w-6xl px-4 pt-16 pb-14 sm:px-6 sm:pt-24 sm:pb-20">
             <div className="mx-auto max-w-3xl text-center">
               <h1 className="text-5xl font-medium leading-[1.05] tracking-tight sm:text-6xl">
-                Hands-On Pentesting
-                <br className="hidden sm:block" /> With an AI Agent.
+                Find It. Prove It.
+                <br className="hidden sm:block" /> Report It.
               </h1>
               <p className="mx-auto mt-6 max-w-2xl text-lg leading-8 text-muted-foreground">
-                Recon, terminal, browser, and files in one workspace.
-                <br className="hidden sm:block" /> Run it on your machine or in
-                an isolated cloud sandbox.
+                HackerAI is an AI agent that runs the tools, keeps the evidence,
+                and drafts the write-up with you.
+                <br className="hidden sm:block" /> On your machine or in an
+                isolated cloud sandbox.
               </p>
               <div className="mt-8 flex flex-wrap items-center justify-center gap-3">
                 <Button asChild size="lg">
@@ -152,10 +154,10 @@ export default function ProductPage() {
         <section className="border-b border-border/80">
           <div className="mx-auto max-w-6xl px-4 py-16 sm:px-6 sm:py-24">
             <div className="mx-auto max-w-2xl text-center">
-              <h2 className={sectionTitle}>One workspace for the engagement</h2>
+              <h2 className={sectionTitle}>From first scan to final report</h2>
               <p className={sectionLead}>
-                Ask questions, run tools, and keep the evidence in one task.
-                From recon to report, nothing gets lost between windows.
+                One task holds the whole engagement. Ask questions, run tools,
+                and keep every artifact where you can find it.
               </p>
             </div>
             <div className="mt-12 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
@@ -176,13 +178,24 @@ export default function ProductPage() {
         <section className="border-b border-border/80">
           <div className="mx-auto max-w-6xl px-4 py-16 sm:px-6 sm:py-24">
             <div className="max-w-2xl">
-              <h2 className={sectionTitle}>Runs where you need it</h2>
+              <h2 className={sectionTitle}>Workflows you control</h2>
               <p className={sectionLead}>
-                Choose local or cloud execution per task. The boundaries are
-                documented, not implied.
+                Local or cloud, per task. You pick the environment and how much
+                the agent may do on its own.
               </p>
             </div>
-            <div className="mt-12 grid gap-4 lg:grid-cols-2">
+            <div className="mt-12 grid gap-4 lg:grid-cols-3">
+              <article className={card}>
+                <SlidersHorizontal className="size-5" aria-hidden="true" />
+                <h3 className="mt-5 text-xl font-medium">
+                  You set the guardrails
+                </h3>
+                <p className="mt-3 leading-7 text-muted-foreground">
+                  Choose a permission level per task: ask for approval on every
+                  action, auto review, or full access. Change it any time from
+                  the task input.
+                </p>
+              </article>
               <article className={card}>
                 <MonitorCog className="size-5" aria-hidden="true" />
                 <h3 className="mt-5 text-xl font-medium">On your machine</h3>
@@ -278,8 +291,8 @@ export default function ProductPage() {
             <div className="mx-auto max-w-2xl text-center">
               <h2 className={sectionTitle}>Start in minutes</h2>
               <p className={sectionLead}>
-                Sign up, pick your target, and run your first task in the
-                browser. Free needs no payment method.
+                No complex setup. Sign up, pick your target, and run your first
+                task in the browser. Free needs no payment method.
               </p>
               <div className="mt-8 flex flex-wrap items-center justify-center gap-3">
                 <Button asChild size="lg">
