@@ -74,9 +74,9 @@ export default function PricingPage() {
                   Local or cloud execution
                 </h2>
                 <p className="mt-2 max-w-xl text-sm leading-6 text-muted-foreground">
-                  Local mode runs commands on your machine without container
-                  isolation. Cloud agents run in an isolated E2B sandbox and use
-                  the subprocessors listed on the Security &amp; Trust page.
+                  Local mode runs commands on your own machine. Cloud agents run
+                  in an isolated sandbox we host. Both are spelled out on the
+                  Security &amp; Trust page.
                 </p>
                 <Button asChild variant="outline" className="mt-5">
                   <Link href="/trust">Read Security &amp; Trust</Link>

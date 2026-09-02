@@ -28,7 +28,7 @@ import {
 } from "@/lib/seo/site";
 
 const description =
-  "See how HackerAI combines security-focused AI, Agent mode, terminal and browser tools, files, and local or cloud execution for authorized penetration testing.";
+  "See how HackerAI combines security-focused AI, Agent mode, terminal and browser tools, files, and local or cloud execution for penetration testing.";
 
 export const metadata: Metadata = {
   ...canonicalMetadata("/product"),
@@ -138,7 +138,7 @@ export default function ProductPage() {
             <div className="mx-auto mt-14 max-w-5xl overflow-hidden rounded-xl border border-border bg-card shadow-2xl shadow-black/30">
               <Image
                 src="/images/hackerai-workspace.png"
-                alt="HackerAI Agent mode running a scan against an authorized target, with terminal output shown in the task"
+                alt="HackerAI Agent mode running a service scan, with reasoning and commands shown in the task"
                 width={1440}
                 height={900}
                 priority
@@ -154,9 +154,8 @@ export default function ProductPage() {
             <div className="mx-auto max-w-2xl text-center">
               <h2 className={sectionTitle}>One workspace for the engagement</h2>
               <p className={sectionLead}>
-                Ask questions, run tools, and keep evidence in the same task.
-                Built for authorized assessments, bug bounty research, study,
-                and technical investigation.
+                Ask questions, run tools, and keep the evidence in one task.
+                From recon to report, nothing gets lost between windows.
               </p>
             </div>
             <div className="mt-12 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
@@ -208,9 +207,9 @@ export default function ProductPage() {
                 <h3 className="mt-5 text-xl font-medium">In the cloud</h3>
                 <p className="mt-3 leading-7 text-muted-foreground">
                   Cloud Agent sessions run terminal and browser actions in an
-                  isolated E2B sandbox. Sandboxes, uploaded files, and task
-                  context are processed by HackerAI and the subprocessors listed
-                  on the Security &amp; Trust page.
+                  isolated sandbox we host. Delete it whenever you like from
+                  Settings. What we process, and who processes it, is spelled
+                  out on the Security &amp; Trust page.
                 </p>
                 <Link href="/trust" className={inlineLink}>
                   <ShieldCheck className="size-4" aria-hidden="true" />
@@ -279,8 +278,8 @@ export default function ProductPage() {
             <div className="mx-auto max-w-2xl text-center">
               <h2 className={sectionTitle}>Start in minutes</h2>
               <p className={sectionLead}>
-                Sign up, pick a target you are authorized to test, and run your
-                first task in the browser. Free needs no payment method.
+                Sign up, pick your target, and run your first task in the
+                browser. Free needs no payment method.
               </p>
               <div className="mt-8 flex flex-wrap items-center justify-center gap-3">
                 <Button asChild size="lg">

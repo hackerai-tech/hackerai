@@ -56,8 +56,7 @@ export function PublicSiteFooter() {
               </span>
             </Link>
             <p className="mt-4 max-w-xs text-sm leading-6 text-muted-foreground">
-              An AI agent for penetration testing. Built for authorized security
-              work.
+              An AI agent for penetration testing.
             </p>
           </div>
           {columns.map((column) => (
