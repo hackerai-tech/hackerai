@@ -19,6 +19,7 @@ export const maxDuration = 120;
 
 const RECONCILIATION_DAYS = 35;
 
+/** Reconcile the completed Vercel billing window into persisted daily costs. */
 export async function GET(request: Request) {
   const requestId = request.headers.get("x-vercel-id") ?? randomUUID();
   if (!isAuthorizedCronRequest(request)) {
