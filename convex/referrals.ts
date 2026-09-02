@@ -134,6 +134,12 @@ async function addPersonalCredits(
   options?: { activateForPaidUse?: boolean },
 ) {
   const amountPoints = dollarsToPoints(amountDollars);
+  const customization = options?.activateForPaidUse
+    ? await ctx.db
+        .query("user_customization")
+        .withIndex("by_user_id", (q) => q.eq("user_id", userId))
+        .first()
+    : null;
   const row = await ctx.db
     .query("extra_usage")
     .withIndex("by_user_id", (q) => q.eq("user_id", userId))
@@ -143,6 +149,10 @@ async function addPersonalCredits(
   if (row) {
     await ctx.db.patch(row._id, {
       balance_points: newBalancePoints,
+      ...(options?.activateForPaidUse &&
+      customization?.extra_usage_enabled !== true
+        ? { auto_reload_enabled: false }
+        : {}),
       updated_at: now,
     });
   } else {
@@ -154,11 +164,6 @@ async function addPersonalCredits(
   }
 
   if (options?.activateForPaidUse) {
-    const customization = await ctx.db
-      .query("user_customization")
-      .withIndex("by_user_id", (q) => q.eq("user_id", userId))
-      .first();
-
     if (customization) {
       await ctx.db.patch(customization._id, {
         extra_usage_enabled: true,

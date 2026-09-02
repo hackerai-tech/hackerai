@@ -80,11 +80,16 @@ const makeCtx = ({
   parentRuns = [],
   sameCandidate = [],
   deletionFenced = false,
+  chat = {
+    id: "chat-1",
+    user_id: "user-1",
+  },
 }: {
   exact?: Record<string, any> | null;
   parentRuns?: Array<Record<string, any>>;
   sameCandidate?: Array<Record<string, any>>;
   deletionFenced?: boolean;
+  chat?: Record<string, any> | null;
 }) => {
   const insert = jest.fn<any>().mockResolvedValue("subagent-doc");
   const patch = jest.fn<any>().mockResolvedValue(undefined);
@@ -105,10 +110,7 @@ const makeCtx = ({
       }
       if (table === "chats") {
         return {
-          first: jest.fn<any>().mockResolvedValue({
-            id: "chat-1",
-            user_id: "user-1",
-          }),
+          first: jest.fn<any>().mockResolvedValue(chat),
         };
       }
       if (indexName === "by_parent_run_and_tool_call") {
@@ -193,6 +195,66 @@ describe("subagent continuation", () => {
       }),
     );
     expect(runAfter).toHaveBeenCalled();
+  });
+
+  it("does not resume a child after account deletion starts", async () => {
+    const { ctx, patch, runAfter } = makeCtx({
+      deletionFenced: true,
+      parentRuns: [
+        {
+          _id: "run-1",
+          subagent_id: "sa_completed",
+          profile: "general",
+          status: "completed",
+          created_at: 123,
+        },
+      ],
+    });
+
+    await expect(
+      resumeForBackend.handler(ctx, {
+        serviceKey: "service-key",
+        userId: "user-1",
+        chatId: "chat-1",
+        parentTriggerRunId: "parent-run",
+        targetAgentId: "sa_completed",
+        followUp: "Continue after deletion",
+      }),
+    ).resolves.toEqual({ outcome: "not_found" });
+    expect(patch).not.toHaveBeenCalled();
+    expect(runAfter).not.toHaveBeenCalled();
+  });
+
+  it("does not resume a child after chat deletion starts", async () => {
+    const { ctx, patch, runAfter } = makeCtx({
+      chat: {
+        id: "chat-1",
+        user_id: "user-1",
+        deletion_started_at: 123,
+      },
+      parentRuns: [
+        {
+          _id: "run-1",
+          subagent_id: "sa_completed",
+          profile: "general",
+          status: "completed",
+          created_at: 123,
+        },
+      ],
+    });
+
+    await expect(
+      resumeForBackend.handler(ctx, {
+        serviceKey: "service-key",
+        userId: "user-1",
+        chatId: "chat-1",
+        parentTriggerRunId: "parent-run",
+        targetAgentId: "sa_completed",
+        followUp: "Continue after deletion",
+      }),
+    ).resolves.toEqual({ outcome: "not_found" });
+    expect(patch).not.toHaveBeenCalled();
+    expect(runAfter).not.toHaveBeenCalled();
   });
 });
 

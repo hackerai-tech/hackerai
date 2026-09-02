@@ -48,5 +48,8 @@ describe("user deletion fence", () => {
     expect(subagents).toMatch(
       /reserveForBackend = mutation[\s\S]*?isUserDeletionFenced\(ctx\.db, args\.userId\)/,
     );
+    expect(subagents).toMatch(
+      /resumeForBackend = mutation[\s\S]*?isUserDeletionFenced\(ctx\.db, args\.userId\)/,
+    );
   });
 });

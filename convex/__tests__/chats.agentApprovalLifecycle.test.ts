@@ -107,6 +107,107 @@ describe("Agent approval lifecycle guards", () => {
     expect(patch).not.toHaveBeenCalled();
   });
 
+  it("deletes all child records before deleting a chat", async () => {
+    const tables: Record<string, Array<Record<string, any>>> = {
+      chats: [
+        {
+          _id: "chat-doc-1",
+          id: "chat-1",
+          user_id: "user-1",
+          canceled_at: 1,
+        },
+      ],
+      messages: [],
+      chat_summaries: [],
+      subagent_runs: [
+        {
+          _id: "subagent-run-1",
+          subagent_id: "sa-1",
+          chat_id: "chat-1",
+          status: "completed",
+        },
+      ],
+      subagent_messages: [
+        {
+          _id: "subagent-message-1",
+          subagent_id: "sa-1",
+        },
+      ],
+      subagent_events: [
+        {
+          _id: "subagent-event-1",
+          subagent_id: "sa-1",
+        },
+      ],
+      subagent_work_items: [
+        {
+          _id: "subagent-work-1",
+          subagent_id: "sa-1",
+        },
+      ],
+    };
+    const deletedIds: string[] = [];
+    const query = jest.fn((table: string) => ({
+      withIndex: jest.fn((_index: string, build: (q: any) => unknown) => {
+        const filters: Array<[string, unknown]> = [];
+        const q = {
+          eq: (field: string, value: unknown) => {
+            filters.push([field, value]);
+            return q;
+          },
+        };
+        build(q);
+        const rows = () =>
+          (tables[table] ?? []).filter((candidate) =>
+            filters.every(([field, value]) => candidate[field] === value),
+          );
+        return {
+          first: jest.fn(async () => rows()[0] ?? null),
+          take: jest.fn(async (limit: number) => rows().slice(0, limit)),
+        };
+      }),
+    }));
+    const db = {
+      query,
+      patch: jest.fn<any>().mockResolvedValue(undefined),
+      delete: jest.fn(async (id: string) => {
+        deletedIds.push(id);
+        for (const [table, rows] of Object.entries(tables)) {
+          tables[table] = rows.filter((candidate) => candidate._id !== id);
+        }
+      }),
+    };
+    const ctx = {
+      db,
+      scheduler: { runAfter: jest.fn<any>().mockResolvedValue(undefined) },
+    } as any;
+
+    await expect(
+      deleteChatForBackend.handler(ctx, {
+        serviceKey: "service-key",
+        chatId: "chat-1",
+        userId: "user-1",
+        expectedTriggerRunId: null,
+        expectedApprovalSessionId: null,
+      }),
+    ).resolves.toBe("deleted");
+
+    expect(tables.subagent_messages).toHaveLength(0);
+    expect(tables.subagent_events).toHaveLength(0);
+    expect(tables.subagent_work_items).toHaveLength(0);
+    expect(tables.subagent_runs).toHaveLength(0);
+    expect(tables.chats).toHaveLength(0);
+    expect(deletedIds.indexOf("subagent-event-1")).toBeLessThan(
+      deletedIds.indexOf("subagent-run-1"),
+    );
+    expect(deletedIds.indexOf("subagent-work-1")).toBeLessThan(
+      deletedIds.indexOf("subagent-run-1"),
+    );
+    expect(deletedIds.indexOf("subagent-run-1")).toBeLessThan(
+      deletedIds.indexOf("chat-doc-1"),
+    );
+  });
+
   it("does not attach a new run after chat deletion starts", async () => {
     const { ctx, patch } = makeCtx({
       _id: "chat-doc-1",
