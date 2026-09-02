@@ -131,9 +131,10 @@ function parseArgs(argv: string[]): Options {
     throw new Error("Select only one orphan cleanup per run");
   }
 
+  const maxOrphanNumItems = options.orphanSubagentTable ? 100 : 1000;
   options.orphanNumItems = Math.min(
     Math.max(Math.round(options.orphanNumItems), 1),
-    1000,
+    maxOrphanNumItems,
   );
 
   return options;
