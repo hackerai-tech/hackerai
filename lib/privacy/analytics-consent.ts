@@ -3,6 +3,11 @@ export const ANALYTICS_CONSENT_MAX_AGE_SECONDS = 180 * 24 * 60 * 60;
 
 export type AnalyticsConsent = "accepted" | "declined";
 
+export type AnalyticsConsentStatus = {
+  consent: AnalyticsConsent | null;
+  consentRequired: boolean;
+};
+
 const CONSENT_REQUIRED_COUNTRY_CODES = new Set([
   // European Union
   "AT",
