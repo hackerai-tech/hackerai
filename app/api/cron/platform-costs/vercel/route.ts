@@ -19,6 +19,7 @@ export const maxDuration = 120;
 
 const RECONCILIATION_DAYS = 35;
 
+/** Reconciles completed Vercel billing days into the platform cost table. */
 export async function GET(request: Request) {
   const requestId = request.headers.get("x-vercel-id") ?? randomUUID();
   if (!isAuthorizedCronRequest(request)) {

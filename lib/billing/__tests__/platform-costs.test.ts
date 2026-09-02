@@ -126,6 +126,11 @@ describe("platform cost normalization", () => {
         },
         {
           ...base,
+          ChargePeriodStart: "2026-09-01T07:00:00.000Z",
+          ChargePeriodEnd: "2026-09-02T07:00:00.000Z",
+        },
+        {
+          ...base,
           ChargePeriodStart: "2026-09-02T07:00:00.000Z",
           ChargePeriodEnd: "2026-09-03T07:00:00.000Z",
         },
@@ -134,6 +139,7 @@ describe("platform cost normalization", () => {
 
     expect(filterRowsToDayWindow(rows, "2026-07-29", "2026-09-01")).toEqual([
       expect.objectContaining({ day: "2026-07-29" }),
+      expect.objectContaining({ day: "2026-09-01" }),
     ]);
   });
 
