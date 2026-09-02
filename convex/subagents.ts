@@ -111,6 +111,22 @@ const subagentSummaryValidator = v.object({
   updated_at: v.number(),
 });
 
+async function isSubagentChatAvailable(
+  ctx: MutationCtx,
+  userId: string,
+  chatId: string,
+) {
+  const chat = await ctx.db
+    .query("chats")
+    .withIndex("by_chat_id", (q) => q.eq("id", chatId))
+    .first();
+  return (
+    chat !== null &&
+    chat.user_id === userId &&
+    chat.deletion_started_at === undefined
+  );
+}
+
 const ACTIVE_SUBAGENT_STATUSES = ["queued", "running", "finalizing"] as const;
 const SUBAGENT_DELETION_CANCELLATION_BATCH_SIZE = 100;
 const MAX_SUBAGENT_PROGRESS_EVENTS = 32;
@@ -263,16 +279,7 @@ export const reserveForBackend = mutation({
     if (await isUserDeletionFenced(ctx.db, args.userId)) {
       return { outcome: "chat_missing" as const };
     }
-
-    const chat = await ctx.db
-      .query("chats")
-      .withIndex("by_chat_id", (q) => q.eq("id", args.chatId))
-      .first();
-    if (
-      !chat ||
-      chat.user_id !== args.userId ||
-      chat.deletion_started_at !== undefined
-    ) {
+    if (!(await isSubagentChatAvailable(ctx, args.userId, args.chatId))) {
       return { outcome: "chat_missing" as const };
     }
 
@@ -1900,6 +1907,12 @@ export const resumeForBackend = mutation({
   returns: v.any(),
   handler: async (ctx, args) => {
     validateServiceKey(args.serviceKey);
+    if (await isUserDeletionFenced(ctx.db, args.userId)) {
+      return { outcome: "not_found" as const };
+    }
+    if (!(await isSubagentChatAvailable(ctx, args.userId, args.chatId))) {
+      return { outcome: "not_found" as const };
+    }
     const rows = await ctx.db
       .query("subagent_runs")
       .withIndex("by_user_chat_and_parent_run", (q) =>
