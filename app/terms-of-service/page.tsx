@@ -1,6 +1,8 @@
 import type { Metadata } from "next";
+import { canonicalMetadata } from "@/lib/seo/site";
 
 export const metadata: Metadata = {
+  ...canonicalMetadata("/terms-of-service"),
   title: "Terms of Service | HackerAI",
   description: "Terms of Service and conditions for HackerAI services.",
   openGraph: {

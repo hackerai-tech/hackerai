@@ -29,6 +29,23 @@ const AI_ASSISTANT_DOMAINS = new Set([
   "perplexity.ai",
 ]);
 
+const AI_ASSISTANT_SOURCE_ALIASES = new Map([
+  ["chatgpt", "chatgpt"],
+  ["chatgpt.com", "chatgpt"],
+  ["openai", "chatgpt"],
+  ["openai.com", "chatgpt"],
+  ["claude", "claude"],
+  ["claude.ai", "claude"],
+  ["copilot", "copilot"],
+  ["copilot.microsoft.com", "copilot"],
+  ["gemini", "gemini"],
+  ["gemini.google.com", "gemini"],
+  ["grok", "grok"],
+  ["grok.com", "grok"],
+  ["perplexity", "perplexity"],
+  ["perplexity.ai", "perplexity"],
+]);
+
 export type FirstTouchAttribution = {
   version: typeof FIRST_TOUCH_ATTRIBUTION_VERSION;
   source: string;
@@ -37,6 +54,8 @@ export type FirstTouchAttribution = {
   referringDomain: string;
   entrySurface:
     | "home"
+    | "product"
+    | "pricing"
     | "download"
     | "trust"
     | "signup"
@@ -98,6 +117,8 @@ function getEntrySurface(
   pathname: string,
 ): FirstTouchAttribution["entrySurface"] {
   if (pathname === "/" || pathname === "/index") return "home";
+  if (pathname === "/product") return "product";
+  if (pathname === "/pricing") return "pricing";
   if (pathname === "/download") return "download";
   if (pathname === "/trust") return "trust";
   if (pathname === "/signup") return "signup";
@@ -112,6 +133,10 @@ function classifyReferrer(referringDomain: string | null): {
   medium: string;
 } {
   if (!referringDomain) return { source: "$direct", medium: "none" };
+
+  if (domainMatches(referringDomain, AI_ASSISTANT_DOMAINS)) {
+    return { source: referringDomain, medium: "referral" };
+  }
 
   if (
     referringDomain === "google.com" ||
@@ -140,6 +165,46 @@ function domainMatches(domain: string, candidates: Set<string>): boolean {
   return false;
 }
 
+type AiAssistantEvidence =
+  "referrer_domain" | "utm_source_no_referrer" | "utm_source_intermediary";
+
+function normalizeAssistantSource(value: string): string | undefined {
+  const normalized = value.toLowerCase();
+  const directMatch = AI_ASSISTANT_SOURCE_ALIASES.get(normalized);
+  if (directMatch) return directMatch;
+
+  for (const domain of AI_ASSISTANT_DOMAINS) {
+    if (normalized.endsWith(`.${domain}`)) {
+      return AI_ASSISTANT_SOURCE_ALIASES.get(domain);
+    }
+  }
+  return undefined;
+}
+
+function aiAssistantAttribution(attribution: FirstTouchAttribution):
+  | {
+      source: string;
+      evidence: AiAssistantEvidence;
+    }
+  | undefined {
+  const referringDomain = attribution.referringDomain.toLowerCase();
+  const referrerSource = normalizeAssistantSource(referringDomain);
+  if (referrerSource && domainMatches(referringDomain, AI_ASSISTANT_DOMAINS)) {
+    return { source: referrerSource, evidence: "referrer_domain" };
+  }
+
+  const markedSource = normalizeAssistantSource(attribution.source);
+  if (!markedSource) return undefined;
+
+  return {
+    source: markedSource,
+    evidence:
+      referringDomain === "$direct"
+        ? "utm_source_no_referrer"
+        : "utm_source_intermediary",
+  };
+}
+
 export function acquisitionSourceBucket(
   attribution: FirstTouchAttribution,
 ): AcquisitionSourceBucket {
@@ -149,6 +214,9 @@ export function acquisitionSourceBucket(
 
   if (source === "user_referral" || attribution.entrySurface === "invite") {
     return "referral_link";
+  }
+  if (aiAssistantAttribution(attribution)) {
+    return "ai_assistant";
   }
   if (
     medium === "organic" ||
@@ -165,12 +233,6 @@ export function acquisitionSourceBucket(
     domain.endsWith(".github.com")
   ) {
     return "github";
-  }
-  if (
-    domainMatches(source, AI_ASSISTANT_DOMAINS) ||
-    domainMatches(domain, AI_ASSISTANT_DOMAINS)
-  ) {
-    return "ai_assistant";
   }
   if (
     domainMatches(source, COMMUNITY_DOMAINS) ||
@@ -280,6 +342,8 @@ export function parseFirstTouchAttribution(
         parsed.referringDomain !== "$direct") ||
       ![
         "home",
+        "product",
+        "pricing",
         "download",
         "trust",
         "signup",
@@ -305,6 +369,7 @@ export function firstTouchPersonProperties(
 ): Record<string, string | number | boolean> {
   const sourceBucket = acquisitionSourceBucket(attribution);
   const organicSearchEngine = searchEngine(attribution);
+  const assistantAttribution = aiAssistantAttribution(attribution);
 
   return {
     acquisition_attribution_version: attribution.version,
@@ -312,6 +377,12 @@ export function firstTouchPersonProperties(
     acquisition_attribution_source: "post_auth_identify",
     referral_link_present: sourceBucket === "referral_link",
     ...(organicSearchEngine ? { search_engine: organicSearchEngine } : {}),
+    ...(assistantAttribution
+      ? {
+          ai_assistant_source: assistantAttribution.source,
+          ai_assistant_evidence: assistantAttribution.evidence,
+        }
+      : {}),
     first_touch_attribution_version: attribution.version,
     first_touch_source: attribution.source,
     first_touch_medium: attribution.medium,

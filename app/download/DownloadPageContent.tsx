@@ -1,40 +1,13 @@
 "use client";
 
-import { Authenticated, Unauthenticated } from "convex/react";
-import Link from "next/link";
-import { ArrowLeft } from "lucide-react";
-import { Button } from "@/components/ui/button";
+import { ExternalLink } from "lucide-react";
+
 import Header from "@/app/components/Header";
-import { HackerAISVG } from "@/components/icons/hackerai-svg";
+import { PublicSiteFooter } from "@/components/public/PublicSiteFooter";
+import { LOCAL_AGENT_HELP_URL } from "@/lib/seo/site";
 import { DownloadSection, useDetectedPlatform } from "./DownloadSection";
 import { downloadLinks } from "./constants";
 import { AppleIcon, WindowsIcon, LinuxIcon } from "./icons";
-
-function AuthenticatedHeader() {
-  return (
-    <header className="w-full px-6 max-sm:px-4 flex-shrink-0">
-      <div className="py-[10px] flex gap-10 items-center justify-between">
-        <div className="flex items-center gap-2">
-          <HackerAISVG theme="dark" scale={0.15} />
-          <span className="text-foreground text-xl font-semibold max-sm:text-lg">
-            HackerAI
-          </span>
-        </div>
-        <Button
-          asChild
-          variant="ghost"
-          size="default"
-          className="rounded-[10px]"
-        >
-          <Link href="/">
-            <ArrowLeft className="h-4 w-4 mr-1.5" />
-            Back to Task
-          </Link>
-        </Button>
-      </div>
-    </header>
-  );
-}
 
 function DownloadContent() {
   const detected = useDetectedPlatform();
@@ -42,27 +15,42 @@ function DownloadContent() {
     detected?.platform === "ios" || detected?.platform === "android";
 
   return (
-    <div className="px-4 py-8 pb-16 md:px-0">
-      <div className="container mx-auto max-w-3xl space-y-8">
+    <div className="mx-auto max-w-3xl px-4 py-14 sm:px-6 sm:py-20">
+      <div className="space-y-8">
         <div className="text-center">
-          <h1 className="mb-4 text-4xl font-bold text-card-foreground">
+          <h1 className="text-5xl font-medium leading-[1.05] tracking-tight text-foreground sm:text-6xl">
             {isMobile ? "Install HackerAI" : "Download HackerAI"}
           </h1>
-          <p className="text-lg text-muted-foreground">
+          <p className="mx-auto mt-4 max-w-2xl text-lg leading-8 text-muted-foreground">
             {isMobile
-              ? "Add the app to your home screen"
-              : "Get the desktop app for the best experience"}
+              ? "Add HackerAI to your home screen to open it like a native app."
+              : "Install the desktop app when you want Agent mode to run tools on your own machine. Everything else works in the browser."}
           </p>
+          {!isMobile && (
+            <a
+              href={LOCAL_AGENT_HELP_URL}
+              target="_blank"
+              rel="noreferrer"
+              className="mt-4 inline-flex items-center gap-2 rounded-sm text-sm font-medium text-foreground underline underline-offset-4 hover:text-foreground/80 focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+            >
+              Local Agent setup guide
+              <ExternalLink className="size-4" aria-hidden="true" />
+            </a>
+          )}
         </div>
 
         <DownloadSection />
 
         {!isMobile && (
-          <div className="rounded-md border bg-card p-6 shadow-lg">
-            <h2 className="mb-4 text-xl font-semibold text-card-foreground">
-              Desktop Downloads
+          <div className="rounded-lg border border-border bg-card p-6">
+            <h2 className="text-xl font-semibold text-card-foreground">
+              All desktop downloads
             </h2>
-            <div className="grid gap-4 sm:grid-cols-2">
+            <p className="mt-1 text-sm text-muted-foreground">
+              Pick the build that matches your operating system and CPU
+              architecture.
+            </p>
+            <div className="mt-5 grid gap-3 sm:grid-cols-2">
               <DownloadCard
                 title="macOS"
                 subtitle="Universal (Intel & Apple Silicon)"
@@ -109,15 +97,12 @@ function DownloadContent() {
 
 export function DownloadPageContent() {
   return (
-    <div className="min-h-screen bg-background">
-      <Authenticated>
-        <AuthenticatedHeader />
+    <div className="flex min-h-dvh flex-col bg-background text-foreground">
+      <Header currentPath="/download" />
+      <main className="flex-1">
         <DownloadContent />
-      </Authenticated>
-      <Unauthenticated>
-        <Header hideDownload />
-        <DownloadContent />
-      </Unauthenticated>
+      </main>
+      <PublicSiteFooter />
     </div>
   );
 }
@@ -136,7 +121,7 @@ function DownloadCard({
   return (
     <a
       href={href}
-      className="flex items-center gap-3 rounded-md border bg-background p-4 transition-colors hover:bg-accent"
+      className="flex items-center gap-3 rounded-md border border-border bg-background p-4 transition-colors hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
     >
       <div className="text-muted-foreground">{icon}</div>
       <div>

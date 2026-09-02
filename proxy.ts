@@ -54,6 +54,8 @@ const UNAUTHENTICATED_PATHS = new Set([
   "/terms-of-service",
   "/trust",
   "/download",
+  "/product",
+  "/pricing",
   "/manifest.json",
 ]);
 

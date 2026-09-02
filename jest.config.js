@@ -8,6 +8,13 @@ const createJestConfig = nextJest({
 // Add any custom config to be passed to Jest
 const customJestConfig = {
   setupFilesAfterEnv: ["<rootDir>/jest.setup.js"],
+  // The default spawns one jsdom worker per core minus one. On a busy machine
+  // (dev server, Playwright, or an editor running alongside the pre-commit
+  // hook) that oversubscribes memory and a worker can die mid-suite, which
+  // Jest reports as a suite FAIL with every test passing. Half the cores plus
+  // a per-worker memory ceiling keeps the run stable; CI already pins workers.
+  maxWorkers: "50%",
+  workerIdleMemoryLimit: "1GB",
   testEnvironment: "jest-environment-jsdom",
   moduleNameMapper: {
     "^jose$": "<rootDir>/__mocks__/jose.ts",
