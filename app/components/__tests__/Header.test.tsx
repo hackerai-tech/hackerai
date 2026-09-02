@@ -50,13 +50,10 @@ describe("Header", () => {
       );
     }
 
-    // The open menu repeats the header row: auth actions and a close button.
-    mockNavigateToAuth.mockClear();
-    await user.click(within(dialog).getByTestId("sign-in-button-menu"));
-    expect(mockNavigateToAuth).toHaveBeenCalledWith("/login");
-    expect(
-      within(dialog).getByRole("button", { name: "Close navigation" }),
-    ).toBeInTheDocument();
+    // The header stays in place; the same button now closes the menu.
+    expect(screen.getByTestId("sign-in-button-mobile")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Close navigation" }));
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   });
 
   it("omits the current download destination when requested", async () => {
