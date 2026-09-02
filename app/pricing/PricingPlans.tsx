@@ -6,7 +6,9 @@ import { ArrowRight, Check } from "lucide-react";
 
 import BillingFrequencySelector from "@/app/components/BillingFrequencySelector";
 import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
 import {
+  PLAN_HEADERS,
   PRICING,
   freeFeatures,
   proFeatures,
@@ -21,28 +23,39 @@ const plans = [
   {
     key: "free",
     name: "Free",
-    description: "Explore HackerAI",
+    description: "Try HackerAI",
     features: freeFeatures,
+    featureHeader: PLAN_HEADERS.free,
   },
   {
     key: "pro",
     name: "Pro",
     description: "For regular security work",
     features: proFeatures,
+    featureHeader: PLAN_HEADERS.pro,
   },
   {
     key: "pro-plus",
     name: "Pro+",
     description: "For higher-volume workflows",
-    features: [...proFeatures, ...proPlusFeatures],
+    features: proPlusFeatures,
+    featureHeader: PLAN_HEADERS["pro-plus"],
   },
   {
     key: "ultra",
     name: "Ultra",
     description: "For intensive daily use",
-    features: [...proFeatures, ...ultraFeatures],
+    features: ultraFeatures,
+    featureHeader: PLAN_HEADERS.ultra,
   },
 ] as const;
+
+/** Mirrors the plan highlighted in the in-app pricing dialog. */
+const RECOMMENDED_PLAN = "pro-plus";
+
+function billingNote(frequency: BillingFrequency) {
+  return frequency === "yearly" ? "Per month, billed yearly" : "Billed monthly";
+}
 
 export function PricingPlans() {
   const [frequency, setFrequency] = useState<BillingFrequency>("monthly");
@@ -53,7 +66,8 @@ export function PricingPlans() {
         <div>
           <h2 className="text-2xl font-semibold">Individual plans</h2>
           <p className="mt-2 text-sm text-muted-foreground">
-            Prices are in USD. Change or cancel your plan from account settings.
+            Prices in USD. Change or cancel your plan any time from account
+            settings.
           </p>
         </div>
         <BillingFrequencySelector value={frequency} onChange={setFrequency} />
@@ -62,50 +76,58 @@ export function PricingPlans() {
       <div className="mt-8 grid gap-px overflow-hidden rounded-lg border border-border bg-border md:grid-cols-2 xl:grid-cols-4">
         {plans.map((plan) => {
           const price = plan.key === "free" ? 0 : PRICING[plan.key][frequency];
-          const featured = plan.key === "pro";
+          const recommended = plan.key === RECOMMENDED_PLAN;
 
           return (
             <article
               key={plan.key}
-              className={`flex min-h-[430px] flex-col bg-background p-6 ${
-                featured ? "ring-1 ring-inset ring-foreground/30" : ""
-              }`}
+              aria-label={`${plan.name} plan`}
+              className={cn(
+                "flex flex-col bg-background p-6",
+                recommended && "ring-1 ring-inset ring-foreground/30",
+              )}
             >
               <div className="flex h-6 items-center justify-between gap-2">
                 <h3 className="text-lg font-semibold">{plan.name}</h3>
-                {featured ? (
-                  <span className="text-xs font-medium text-muted-foreground">
-                    Most popular
+                {recommended ? (
+                  <span className="rounded-full border border-border px-2 py-0.5 text-xs font-medium text-foreground">
+                    Recommended
                   </span>
                 ) : null}
               </div>
-              <p className="mt-2 h-10 text-sm leading-5 text-muted-foreground">
+              <p className="mt-2 min-h-10 text-sm leading-5 text-muted-foreground">
                 {plan.description}
               </p>
               <div className="mt-5 flex h-12 items-end gap-1">
                 <span className="text-4xl font-semibold">${price}</span>
                 <span className="pb-1 text-sm text-muted-foreground">
-                  {plan.key === "free" ? "forever" : "/ month"}
+                  / month
                 </span>
               </div>
-              <p className="mt-2 h-10 text-xs leading-5 text-muted-foreground">
+              <p className="mt-2 min-h-5 text-xs leading-5 text-muted-foreground">
                 {plan.key === "free"
                   ? "No payment method required"
-                  : frequency === "yearly"
-                    ? "Monthly equivalent, billed annually"
-                    : "Billed monthly"}
+                  : billingNote(frequency)}
               </p>
               <Button
                 asChild
                 className="mt-5 w-full"
-                variant={featured ? "default" : "outline"}
+                variant={recommended ? "default" : "outline"}
               >
                 <Link href="/signup">
                   {plan.key === "free" ? "Start free" : `Choose ${plan.name}`}
                   <ArrowRight className="size-4" />
                 </Link>
               </Button>
-              <ul className="mt-6 space-y-3 text-sm">
+              {plan.featureHeader ? (
+                <p className="mt-6 text-sm font-medium">{plan.featureHeader}</p>
+              ) : null}
+              <ul
+                className={cn(
+                  "space-y-3 text-sm",
+                  plan.featureHeader ? "mt-3" : "mt-6",
+                )}
+              >
                 {plan.features.map((feature) => (
                   <li key={feature.text} className="flex items-start gap-2.5">
                     <Check
@@ -123,12 +145,15 @@ export function PricingPlans() {
         })}
       </div>
 
-      <section className="mt-10 grid gap-7 border-y border-border py-9 lg:grid-cols-[1fr_auto] lg:items-center">
+      <section
+        aria-label="Team plan"
+        className="mt-8 grid gap-6 rounded-lg border border-border p-6 sm:p-8 lg:grid-cols-[1fr_auto] lg:items-center"
+      >
         <div>
           <h2 className="text-2xl font-semibold">Team</h2>
           <p className="mt-2 max-w-2xl text-sm leading-6 text-muted-foreground">
-            Shared billing and seat management with 2x more usage than Pro for
-            each seat. HackerAI remains optimized for hands-on practitioners.
+            Everything in Pro for every seat, plus shared billing and seat
+            management for a group of practitioners.
           </p>
           <ul className="mt-4 flex flex-wrap gap-x-6 gap-y-2 text-sm text-muted-foreground">
             {teamFeatures.map((feature) => (
@@ -139,7 +164,7 @@ export function PricingPlans() {
             ))}
           </ul>
         </div>
-        <div className="flex items-center gap-5 lg:justify-end">
+        <div className="flex flex-wrap items-center gap-5 lg:justify-end">
           <div>
             <span className="text-3xl font-semibold">
               ${PRICING.team[frequency]}
@@ -149,11 +174,14 @@ export function PricingPlans() {
               / seat / month
             </span>
             <p className="mt-1 text-xs text-muted-foreground">
-              {frequency === "yearly" ? "Billed annually" : "Billed monthly"}
+              {billingNote(frequency)}
             </p>
           </div>
           <Button asChild>
-            <Link href="/signup">Choose Team</Link>
+            <Link href="/signup">
+              Choose Team
+              <ArrowRight className="size-4" />
+            </Link>
           </Button>
         </div>
       </section>

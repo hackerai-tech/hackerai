@@ -71,35 +71,36 @@ const capabilities = [
   {
     icon: Search,
     title: "Evidence and reporting",
-    copy: "Keep investigation notes, tool output, and findings in one task workspace, then use validated evidence to prepare report-ready material.",
+    copy: "Keep notes, tool output, and findings together in one task, then turn validated evidence into report-ready material.",
   },
 ] as const;
 
 const officialLinks = [
   { href: GITHUB_URL, label: "Source code", icon: GitBranch },
   { href: HELP_CENTER_URL, label: "Help Center", icon: ExternalLink },
-  { href: STATUS_PAGE_URL, label: "Service status", icon: ExternalLink },
+  { href: STATUS_PAGE_URL, label: "Status page", icon: ExternalLink },
 ] as const;
 
 export default function ProductPage() {
   return (
     <div className="min-h-dvh bg-background text-foreground">
       <JsonLd data={SOFTWARE_APPLICATION_JSON_LD} />
-      <PublicSiteHeader />
+      <PublicSiteHeader currentPath="/product" />
       <main>
         <section className="border-b border-border/80">
           <div className="mx-auto grid max-w-6xl gap-10 px-4 py-14 sm:px-6 sm:py-20 lg:grid-cols-[0.85fr_1.15fr] lg:items-center">
             <div>
               <p className="text-sm font-medium text-muted-foreground">
-                AI-assisted penetration testing
+                Product
               </p>
               <h1 className="mt-3 text-4xl font-semibold leading-tight sm:text-5xl">
-                HackerAI
+                An AI agent for penetration testing
               </h1>
               <p className="mt-5 max-w-xl text-lg leading-8 text-muted-foreground">
-                A task workspace for individual security practitioners who need
-                AI reasoning, terminal and browser tools, file analysis, and a
-                clear choice between local and cloud execution.
+                HackerAI gives individual security practitioners one task
+                workspace with AI reasoning, terminal and browser tools, file
+                analysis, and a clear choice between running on your own machine
+                or in an isolated cloud sandbox.
               </p>
               <div className="mt-8 flex flex-wrap gap-3">
                 <Button asChild size="lg">
@@ -116,7 +117,7 @@ export default function ProductPage() {
             <div className="overflow-hidden rounded-lg border border-border bg-card shadow-2xl shadow-black/15">
               <Image
                 src="/images/hackerai-workspace.png"
-                alt="HackerAI task workspace showing a security workflow"
+                alt="HackerAI signed-in task workspace with the sidebar, mode selector, and prompt input"
                 width={1440}
                 height={900}
                 priority
@@ -131,9 +132,9 @@ export default function ProductPage() {
             <div className="max-w-2xl">
               <h2 className="text-3xl font-semibold">One security workspace</h2>
               <p className="mt-3 leading-7 text-muted-foreground">
-                HackerAI is designed for authorized security assessments, bug
-                bounty research, study, and technical investigation. You remain
-                responsible for authorization, scope, and reviewing results.
+                Built for authorized security assessments, bug bounty research,
+                study, and technical investigation. You stay responsible for
+                authorization, scope, and reviewing every result.
               </p>
             </div>
             <div className="mt-9 grid gap-px overflow-hidden rounded-lg border border-border bg-border sm:grid-cols-2 lg:grid-cols-4">
@@ -157,13 +158,13 @@ export default function ProductPage() {
                 <MonitorCog className="size-6" aria-hidden="true" />
                 <h2 className="mt-4 text-2xl font-semibold">Run locally</h2>
                 <p className="mt-3 leading-7 text-muted-foreground">
-                  HackerAI Desktop and CLI can connect Agent mode to your own
-                  machine. Commands run with your user&apos;s privileges and are
-                  not container-isolated, so local mode is best used on a
-                  dedicated testing environment that you control.
+                  HackerAI Desktop and the Local Agent CLI connect Agent mode to
+                  your own machine. Commands run with your user&apos;s
+                  privileges and without container isolation, so use local mode
+                  on a dedicated testing environment that you control.
                 </p>
                 <div className="mt-5 flex items-center gap-2 text-sm text-muted-foreground">
-                  <HardDrive className="size-4" />
+                  <HardDrive className="size-4" aria-hidden="true" />
                   Your machine, your tools, your local environment
                 </div>
                 <a
@@ -173,7 +174,7 @@ export default function ProductPage() {
                   className="mt-3 inline-flex items-center gap-2 rounded-sm text-sm font-medium text-foreground underline underline-offset-4 hover:text-foreground/80 focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
                 >
                   Local Agent setup guide
-                  <ExternalLink className="size-4" />
+                  <ExternalLink className="size-4" aria-hidden="true" />
                 </a>
               </div>
               <div>
@@ -183,12 +184,12 @@ export default function ProductPage() {
                 </h2>
                 <p className="mt-3 leading-7 text-muted-foreground">
                   Cloud Agent sessions run terminal and browser actions in an
-                  isolated E2B sandbox. Cloud sandboxes, uploaded files, and
-                  task context are processed by HackerAI and the subprocessors
-                  documented on the Trust page.
+                  isolated E2B sandbox. Sandboxes, uploaded files, and task
+                  context are processed by HackerAI and the subprocessors listed
+                  on the Security &amp; Trust page.
                 </p>
                 <div className="mt-5 flex items-center gap-2 text-sm text-muted-foreground">
-                  <ShieldCheck className="size-4" />
+                  <ShieldCheck className="size-4" aria-hidden="true" />
                   Isolated execution with documented data boundaries
                 </div>
               </div>
@@ -202,9 +203,9 @@ export default function ProductPage() {
         <section className="border-b border-border/80">
           <div className="mx-auto max-w-6xl px-4 py-14 sm:px-6 sm:py-18">
             <div className="max-w-2xl">
-              <h2 className="text-3xl font-semibold">Current limitations</h2>
+              <h2 className="text-3xl font-semibold">What to expect</h2>
               <p className="mt-3 leading-7 text-muted-foreground">
-                HackerAI accelerates security work, but it does not replace
+                HackerAI speeds up security work. It does not replace
                 practitioner judgment, authorization, or independent validation.
               </p>
             </div>
@@ -221,8 +222,9 @@ export default function ProductPage() {
                   Connect local tools explicitly
                 </h3>
                 <p className="mt-2 text-sm leading-6 text-muted-foreground">
-                  Connecting a machine for direct local command execution
-                  requires HackerAI Desktop or the Local Agent CLI.
+                  Running commands directly on a machine requires HackerAI
+                  Desktop or the Local Agent CLI. Nothing runs locally until you
+                  connect it.
                 </p>
               </div>
               <div className="border-t border-border py-6 lg:border-t-0 lg:border-l lg:pl-7">
@@ -244,8 +246,8 @@ export default function ProductPage() {
               </h2>
               <p className="mt-3 leading-7 text-muted-foreground">
                 Start a task in the browser, install HackerAI Desktop when you
-                want to connect local tools, or use the mobile web app to review
-                and continue work away from your desk.
+                want to connect local tools, and pick up the same task on your
+                phone from the mobile web app.
               </p>
               <Button asChild variant="outline" className="mt-6">
                 <Link href="/download">View all downloads</Link>
@@ -254,7 +256,7 @@ export default function ProductPage() {
             <div className="mx-auto w-full max-w-[280px] overflow-hidden rounded-lg border border-border bg-card shadow-xl shadow-black/15">
               <Image
                 src="/images/hackerai-mobile.png"
-                alt="HackerAI mobile web workspace"
+                alt="HackerAI signed-in mobile web workspace"
                 width={390}
                 height={844}
                 className="h-auto w-full"
@@ -278,7 +280,7 @@ export default function ProductPage() {
                 {officialLinks.map(({ href, label, icon: Icon }) => (
                   <Button key={href} asChild variant="outline">
                     <a href={href} target="_blank" rel="noreferrer">
-                      <Icon className="size-4" />
+                      <Icon className="size-4" aria-hidden="true" />
                       {label}
                     </a>
                   </Button>

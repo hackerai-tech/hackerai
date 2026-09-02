@@ -20,9 +20,16 @@ describe("Header", () => {
     mockNavigateToAuth.mockClear();
   });
 
-  it("provides public navigation and auth actions in the mobile menu", async () => {
+  it("keeps auth actions in the header and navigation in the mobile menu", async () => {
     const user = userEvent.setup();
     render(<Header />);
+
+    await user.click(screen.getByTestId("sign-in-button-mobile"));
+    expect(mockNavigateToAuth).toHaveBeenCalledWith("/login");
+    await user.click(screen.getByTestId("sign-up-button-mobile"));
+    expect(mockNavigateToAuth).toHaveBeenCalledWith("/signup", {
+      preferSignInForReturningUser: true,
+    });
 
     await user.click(screen.getByRole("button", { name: "Open navigation" }));
 
@@ -43,18 +50,9 @@ describe("Header", () => {
       );
     }
 
-    await user.click(within(dialog).getByRole("button", { name: "Sign in" }));
-    expect(mockNavigateToAuth).toHaveBeenCalledWith("/login");
-
-    await user.click(screen.getByRole("button", { name: "Open navigation" }));
-    await user.click(
-      within(await screen.findByRole("dialog")).getByRole("button", {
-        name: /get started/i,
-      }),
-    );
-    expect(mockNavigateToAuth).toHaveBeenCalledWith("/signup", {
-      preferSignInForReturningUser: true,
-    });
+    expect(
+      within(dialog).queryByRole("button", { name: "Sign in" }),
+    ).not.toBeInTheDocument();
   });
 
   it("omits the current download destination when requested", async () => {

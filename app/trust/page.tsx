@@ -15,8 +15,15 @@ import {
   Terminal,
   Trash2,
 } from "lucide-react";
+import { PublicSiteFooter } from "@/components/public/PublicSiteFooter";
 import { PublicSiteHeader } from "@/components/public/PublicSiteHeader";
-import { canonicalMetadata } from "@/lib/seo/site";
+import {
+  HELP_CENTER_URL as DEFAULT_HELP_CENTER_URL,
+  PUBLIC_PAGE_LAST_MODIFIED,
+  STATUS_PAGE_URL,
+  canonicalMetadata,
+  formatPublicPageDate,
+} from "@/lib/seo/site";
 
 export const metadata: Metadata = {
   ...canonicalMetadata("/trust"),
@@ -39,12 +46,8 @@ export const metadata: Metadata = {
 
 export const dynamic = "force-static";
 
-const LAST_UPDATED = "August 22, 2026";
-
 const HELP_CENTER_URL =
-  process.env.NEXT_PUBLIC_HELP_CENTER_URL || "https://help.hackerai.co/en/";
-
-const STATUS_PAGE_URL = "https://status.hackerai.co/";
+  process.env.NEXT_PUBLIC_HELP_CENTER_URL || DEFAULT_HELP_CENTER_URL;
 
 interface Subprocessor {
   name: string;
@@ -172,26 +175,30 @@ const CheckList = ({ items }: { items: React.ReactNode[] }) => (
 
 function TrustContent() {
   return (
-    <main className="bg-background px-4 py-12 sm:px-6">
+    <main className="bg-background px-4 py-14 sm:px-6 sm:py-20">
       <div className="mx-auto max-w-4xl">
         {/* Hero */}
         <header className="mb-12 text-center">
           <div className="mx-auto mb-6 flex size-14 items-center justify-center rounded-2xl border border-border bg-card shadow-sm">
-            <ShieldCheck className="size-7 text-foreground" />
+            <ShieldCheck
+              className="size-7 text-foreground"
+              aria-hidden="true"
+            />
           </div>
-          <h1 className="text-4xl font-semibold tracking-tight text-foreground sm:text-5xl">
+          <h1 className="text-4xl font-semibold leading-tight text-foreground sm:text-5xl">
             Security &amp; Trust
           </h1>
-          <p className="mx-auto mt-4 max-w-2xl text-lg leading-relaxed text-muted-foreground">
+          <p className="mx-auto mt-5 max-w-2xl text-lg leading-8 text-muted-foreground">
             HackerAI is an AI agent for penetration testing and security work.
             This page describes the data we process, where agent code runs, and
             the services we rely on to operate.
           </p>
-          <div className="mt-6 flex flex-wrap items-center justify-center gap-2">
-            <span className="inline-flex items-center gap-1.5 rounded-full border border-border bg-card px-3 py-1 text-xs font-medium text-muted-foreground">
-              Last updated {LAST_UPDATED}
-            </span>
-          </div>
+          <p className="mt-6 inline-flex items-center rounded-full border border-border bg-card px-3 py-1 text-xs font-medium text-muted-foreground">
+            Last updated{" "}
+            <time className="ml-1" dateTime={PUBLIC_PAGE_LAST_MODIFIED.trust}>
+              {formatPublicPageDate(PUBLIC_PAGE_LAST_MODIFIED.trust)}
+            </time>
+          </p>
         </header>
 
         <div className="space-y-6">
@@ -386,8 +393,8 @@ function TrustContent() {
             {[
               { href: "/privacy-policy", label: "Privacy Policy" },
               { href: "/terms-of-service", label: "Terms of Service" },
-              { href: HELP_CENTER_URL, label: "Help center" },
-              { href: STATUS_PAGE_URL, label: "Status Page" },
+              { href: HELP_CENTER_URL, label: "Help Center" },
+              { href: STATUS_PAGE_URL, label: "Status page" },
             ].map((link) => (
               <a
                 key={link.href}
@@ -416,9 +423,10 @@ function TrustContent() {
 
 export default function TrustPage() {
   return (
-    <div className="min-h-dvh bg-background">
-      <PublicSiteHeader />
+    <div className="min-h-dvh bg-background text-foreground">
+      <PublicSiteHeader currentPath="/trust" />
       <TrustContent />
+      <PublicSiteFooter />
     </div>
   );
 }

@@ -5,9 +5,18 @@ import userEvent from "@testing-library/user-event";
 import { PublicSiteHeader } from "../PublicSiteHeader";
 
 describe("PublicSiteHeader", () => {
-  it("provides public navigation and auth actions in the mobile menu", async () => {
+  it("keeps auth actions in the header and navigation in the mobile menu", async () => {
     const user = userEvent.setup();
-    render(<PublicSiteHeader />);
+    render(<PublicSiteHeader currentPath="/pricing" />);
+
+    const signInLinks = screen.getAllByRole("link", { name: "Sign in" });
+    const signUpLinks = screen.getAllByRole("link", { name: /get started/i });
+    expect(signInLinks).toHaveLength(2);
+    expect(signUpLinks).toHaveLength(2);
+    for (const link of signInLinks)
+      expect(link).toHaveAttribute("href", "/login");
+    for (const link of signUpLinks)
+      expect(link).toHaveAttribute("href", "/signup");
 
     await user.click(screen.getByRole("button", { name: "Open navigation" }));
 
@@ -29,10 +38,10 @@ describe("PublicSiteHeader", () => {
     }
 
     expect(
-      within(dialog).getByRole("link", { name: "Sign in" }),
-    ).toHaveAttribute("href", "/login");
+      within(navigation).getByRole("link", { name: "Pricing" }),
+    ).toHaveAttribute("aria-current", "page");
     expect(
-      within(dialog).getByRole("link", { name: /get started/i }),
-    ).toHaveAttribute("href", "/signup");
+      within(dialog).queryByRole("link", { name: "Sign in" }),
+    ).not.toBeInTheDocument();
   });
 });
