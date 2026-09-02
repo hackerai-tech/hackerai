@@ -17,6 +17,12 @@ export type PlatformCostRow = {
   sourceChargeCount?: number;
 };
 
+export type PlatformCostWindowPartition = {
+  rows: PlatformCostRow[];
+  excludedBeforeStart: number;
+  excludedAfterEnd: number;
+};
+
 type VercelFocusCharge = {
   BilledCost?: unknown;
   EffectiveCost?: unknown;
@@ -227,6 +233,35 @@ export async function parseVercelFocusStream(
         a.usageUnit?.localeCompare(b.usageUnit ?? "") ||
         0,
     );
+}
+
+/**
+ * Keep a streamed provider response inside the exact replacement boundary.
+ * The Convex mutation remains the final invariant guard, while this partition
+ * prevents an upstream boundary row from aborting an otherwise valid sync.
+ */
+export function partitionPlatformCostRowsByDayWindow(
+  rows: readonly PlatformCostRow[],
+  startDay: string,
+  endDay: string,
+): PlatformCostWindowPartition {
+  const partition: PlatformCostWindowPartition = {
+    rows: [],
+    excludedBeforeStart: 0,
+    excludedAfterEnd: 0,
+  };
+
+  for (const row of rows) {
+    if (row.day < startDay) {
+      partition.excludedBeforeStart += 1;
+    } else if (row.day > endDay) {
+      partition.excludedAfterEnd += 1;
+    } else {
+      partition.rows.push(row);
+    }
+  }
+
+  return partition;
 }
 
 const CONVEX_CATEGORY_BY_METRIC: Record<string, string> = {

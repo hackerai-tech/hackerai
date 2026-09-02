@@ -2,6 +2,7 @@ import {
   completedUtcDayWindow,
   convexUsageBaseUrl,
   mapConvexUsageToRows,
+  partitionPlatformCostRowsByDayWindow,
   parseConvexDeploymentUsage,
   parseVercelFocusStream,
 } from "../platform-costs";
@@ -151,6 +152,35 @@ describe("platform cost normalization", () => {
       to: "2026-09-01T00:00:00.000Z",
       startDay: "2026-07-28",
       endDay: "2026-08-31",
+    });
+  });
+
+  it("partitions provider rows at both replacement-window boundaries", () => {
+    const makeRow = (day: string) => ({
+      day,
+      serviceName: `service-${day}`,
+      serviceCategory: "Compute",
+      costStatus: "billed" as const,
+      billedCostDollars: 1,
+      sourcePeriodStart: `${day}T00:00:00.000Z`,
+      sourcePeriodEnd: `${day}T23:59:59.999Z`,
+    });
+
+    expect(
+      partitionPlatformCostRowsByDayWindow(
+        [
+          makeRow("2026-07-27"),
+          makeRow("2026-07-28"),
+          makeRow("2026-08-31"),
+          makeRow("2026-09-01"),
+        ],
+        "2026-07-28",
+        "2026-08-31",
+      ),
+    ).toEqual({
+      rows: [makeRow("2026-07-28"), makeRow("2026-08-31")],
+      excludedBeforeStart: 1,
+      excludedAfterEnd: 1,
     });
   });
 
