@@ -138,7 +138,7 @@ async function addPersonalCredits(
     ? await ctx.db
         .query("user_customization")
         .withIndex("by_user_id", (q) => q.eq("user_id", userId))
-        .unique()
+        .first()
     : null;
   const row = await ctx.db
     .query("extra_usage")
