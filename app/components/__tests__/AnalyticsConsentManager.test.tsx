@@ -1,8 +1,18 @@
-import { beforeEach, describe, expect, it, jest } from "@jest/globals";
+import {
+  afterAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  jest,
+} from "@jest/globals";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { SWRConfig } from "swr";
 
 const mockSaveAnalyticsConsent = jest.fn<() => Promise<void>>();
+const mockFetch = jest.fn<typeof fetch>();
+const originalFetch = global.fetch;
 
 jest.mock("@/app/actions/analytics-consent", () => ({
   saveAnalyticsConsent: mockSaveAnalyticsConsent,
@@ -43,10 +53,21 @@ function TestContent() {
   );
 }
 
+function renderWithFreshSWR(children: React.ReactNode) {
+  return render(
+    <SWRConfig value={{ provider: () => new Map() }}>{children}</SWRConfig>,
+  );
+}
+
 describe("AnalyticsConsentManager", () => {
   beforeEach(() => {
     jest.clearAllMocks();
     mockSaveAnalyticsConsent.mockResolvedValue(undefined);
+    global.fetch = mockFetch;
+  });
+
+  afterAll(() => {
+    global.fetch = originalFetch;
   });
 
   it("blocks analytics and asks covered visitors for a choice", () => {
@@ -169,6 +190,84 @@ describe("AnalyticsConsentManager", () => {
     expect(screen.getByTestId("posthog-provider")).toHaveAttribute(
       "data-analytics-allowed",
       "true",
+    );
+  });
+
+  it("resolves a static-page visitor before enabling analytics", async () => {
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({ consent: null, consentRequired: false }),
+    } as Response);
+
+    renderWithFreshSWR(
+      <AnalyticsConsentManager
+        consentRequired
+        initialConsent={null}
+        initialDecisionResolved={false}
+      >
+        <TestContent />
+      </AnalyticsConsentManager>,
+    );
+
+    expect(screen.queryByText("Optional analytics")).not.toBeInTheDocument();
+    expect(screen.getByTestId("posthog-provider")).toHaveAttribute(
+      "data-analytics-allowed",
+      "false",
+    );
+
+    await waitFor(() =>
+      expect(screen.getByTestId("posthog-provider")).toHaveAttribute(
+        "data-analytics-allowed",
+        "true",
+      ),
+    );
+    expect(mockFetch).toHaveBeenCalledWith("/api/analytics-consent", {
+      cache: "no-store",
+      credentials: "same-origin",
+    });
+    expect(screen.queryByText("Optional analytics")).not.toBeInTheDocument();
+  });
+
+  it("asks a covered static-page visitor after resolving their region", async () => {
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({ consent: null, consentRequired: true }),
+    } as Response);
+
+    renderWithFreshSWR(
+      <AnalyticsConsentManager
+        consentRequired
+        initialConsent={null}
+        initialDecisionResolved={false}
+      >
+        <TestContent />
+      </AnalyticsConsentManager>,
+    );
+
+    expect(await screen.findByText("Optional analytics")).toBeInTheDocument();
+    expect(screen.getByTestId("posthog-provider")).toHaveAttribute(
+      "data-analytics-allowed",
+      "false",
+    );
+  });
+
+  it("fails closed when static-page consent resolution fails", async () => {
+    mockFetch.mockRejectedValue(new Error("network"));
+
+    renderWithFreshSWR(
+      <AnalyticsConsentManager
+        consentRequired={false}
+        initialConsent={null}
+        initialDecisionResolved={false}
+      >
+        <TestContent />
+      </AnalyticsConsentManager>,
+    );
+
+    expect(await screen.findByText("Optional analytics")).toBeInTheDocument();
+    expect(screen.getByTestId("posthog-provider")).toHaveAttribute(
+      "data-analytics-allowed",
+      "false",
     );
   });
 

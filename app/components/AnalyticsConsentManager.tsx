@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { XIcon } from "lucide-react";
+import useSWRImmutable from "swr/immutable";
 import {
   createContext,
   useCallback,
@@ -21,7 +22,9 @@ import {
 import type { FirstTouchAttribution } from "@/lib/analytics/acquisition";
 import {
   type AnalyticsConsent,
+  type AnalyticsConsentStatus,
   isAnalyticsAllowed,
+  parseAnalyticsConsent,
 } from "@/lib/privacy/analytics-consent";
 
 type AnalyticsConsentManagerProps = {
@@ -29,6 +32,7 @@ type AnalyticsConsentManagerProps = {
   consentRequired: boolean;
   firstTouchAttribution?: FirstTouchAttribution | null;
   initialConsent: AnalyticsConsent | null;
+  initialDecisionResolved?: boolean;
 };
 
 type ChoiceButtonsProps = {
@@ -47,6 +51,31 @@ type AnalyticsConsentPreferencesContextValue = {
 
 const AnalyticsConsentPreferencesContext =
   createContext<AnalyticsConsentPreferencesContextValue | null>(null);
+
+const ANALYTICS_CONSENT_STATUS_ENDPOINT = "/api/analytics-consent";
+
+async function fetchAnalyticsConsentStatus(
+  url: string,
+): Promise<AnalyticsConsentStatus> {
+  const response = await fetch(url, {
+    cache: "no-store",
+    credentials: "same-origin",
+  });
+  if (!response.ok) {
+    throw new Error("Unable to resolve analytics consent");
+  }
+
+  const status = (await response.json()) as Partial<AnalyticsConsentStatus>;
+  const consent = parseAnalyticsConsent(status.consent);
+  if (
+    typeof status.consentRequired !== "boolean" ||
+    (status.consent !== null && consent === null)
+  ) {
+    throw new Error("Invalid analytics consent response");
+  }
+
+  return { consent, consentRequired: status.consentRequired };
+}
 
 export function useAnalyticsConsentPreferencesAvailable() {
   return useContext(AnalyticsConsentPreferencesContext)?.available ?? false;
@@ -174,20 +203,50 @@ export function AnalyticsConsentManager({
   consentRequired,
   firstTouchAttribution = null,
   initialConsent,
+  initialDecisionResolved = true,
 }: AnalyticsConsentManagerProps) {
-  const [consent, setConsent] = useState(initialConsent);
+  const [chosenConsent, setChosenConsent] = useState<AnalyticsConsent | null>(
+    null,
+  );
   const [isSaving, setIsSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
 
-  const analyticsAllowed = isAnalyticsAllowed({ consent, consentRequired });
-  const needsInitialChoice = consentRequired && consent === null;
+  const { data: runtimeStatus, error: runtimeStatusError } =
+    useSWRImmutable<AnalyticsConsentStatus>(
+      initialDecisionResolved ? null : ANALYTICS_CONSENT_STATUS_ENDPOINT,
+      fetchAnalyticsConsentStatus,
+      { shouldRetryOnError: false },
+    );
+
+  const decisionResolved =
+    initialDecisionResolved ||
+    runtimeStatus !== undefined ||
+    runtimeStatusError !== undefined;
+  const runtimeResolutionFailed =
+    !initialDecisionResolved && runtimeStatusError !== undefined;
+  const effectiveConsentRequired =
+    !decisionResolved || runtimeResolutionFailed
+      ? true
+      : (runtimeStatus?.consentRequired ?? consentRequired);
+  const resolvedConsent =
+    runtimeStatus === undefined ? initialConsent : runtimeStatus.consent;
+  const consent = chosenConsent ?? resolvedConsent;
+
+  const analyticsAllowed =
+    decisionResolved &&
+    isAnalyticsAllowed({
+      consent,
+      consentRequired: effectiveConsentRequired,
+    });
+  const needsInitialChoice =
+    decisionResolved && effectiveConsentRequired && consent === null;
 
   const chooseConsent = useCallback(async (choice: AnalyticsConsent) => {
     setIsSaving(true);
     setSaveError(null);
     try {
       await saveAnalyticsConsent(choice);
-      setConsent(choice);
+      setChosenConsent(choice);
       return true;
     } catch {
       setSaveError("We couldn't save your choice. Please try again.");
@@ -199,20 +258,20 @@ export function AnalyticsConsentManager({
 
   const preferences = useMemo(
     () => ({
-      available: consent !== null,
+      available: decisionResolved && consent !== null,
       consent,
       isSaving,
       saveError,
       chooseConsent,
     }),
-    [consent, isSaving, saveError, chooseConsent],
+    [consent, decisionResolved, isSaving, saveError, chooseConsent],
   );
 
   return (
     <AnalyticsConsentPreferencesContext.Provider value={preferences}>
       <PostHogProvider
         analyticsAllowed={analyticsAllowed}
-        consentRequired={consentRequired}
+        consentRequired={effectiveConsentRequired}
         firstTouchAttribution={firstTouchAttribution}
       >
         {children}

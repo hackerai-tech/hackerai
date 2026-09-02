@@ -21,6 +21,7 @@ import {
 } from "@/lib/privacy/analytics-consent";
 
 const AUTHKIT_BYPASS_PATHS = new Set([
+  "/api/analytics-consent",
   "/api/health/connectivity",
   "/api/health/core",
   "/api/health/trigger-agent-mode",

@@ -138,9 +138,10 @@ export default async function RootLayout({
   const firstTouchAttribution = parseFirstTouchAttributionCookie(
     cookieStore.get(FIRST_TOUCH_ATTRIBUTION_COOKIE_NAME)?.value,
   );
+  const countryCode = countryCodeFromHeaders(requestHeaders);
   const analyticsConsent = getAnalyticsConsentDecision({
     cookieValue: cookieStore.get(ANALYTICS_CONSENT_COOKIE_NAME)?.value,
-    countryCode: countryCodeFromHeaders(requestHeaders),
+    countryCode,
     // If a production proxy ever stops providing country data, ask rather
     // than silently placing optional analytics storage on a covered visitor.
     failClosed: process.env.NODE_ENV === "production",
@@ -152,6 +153,7 @@ export default async function RootLayout({
         consentRequired={analyticsConsent.consentRequired}
         firstTouchAttribution={firstTouchAttribution}
         initialConsent={analyticsConsent.consent}
+        initialDecisionResolved={countryCode !== null}
       >
         <AgentAutoReviewAvailabilityProvider>
           <ChunkLoadRecovery />
