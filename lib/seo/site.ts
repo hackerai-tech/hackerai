@@ -24,7 +24,7 @@ export const PUBLIC_PAGE_LAST_MODIFIED = {
   product: "2026-09-02",
   pricing: "2026-09-02",
   download: "2026-09-02",
-  trust: "2026-08-25",
+  trust: "2026-09-02",
   privacy: "2026-08-31",
   terms: "2026-06-24",
 } as const;

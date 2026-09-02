@@ -9,6 +9,7 @@ import {
   Database,
   ExternalLink as ExternalLinkIcon,
   FileText,
+  Globe,
   KeyRound,
   Network,
   ShieldCheck,
@@ -78,7 +79,7 @@ const subprocessors: Subprocessor[] = [
   },
   {
     name: "E2B",
-    purpose: "Cloud sandboxes",
+    purpose: "Cloud sandboxes (US, or EU for connections from Europe)",
     dataCategories: "Commands, command output, files inside the sandbox",
   },
   {
@@ -88,7 +89,8 @@ const subprocessors: Subprocessor[] = [
   },
   {
     name: "Amazon Web Services (S3)",
-    purpose: "File storage",
+    purpose:
+      "File storage (US regions, or eu-central-1 for connections from Europe)",
     dataCategories: "Uploaded files",
   },
   {
@@ -113,7 +115,8 @@ const subprocessors: Subprocessor[] = [
   },
   {
     name: "Trigger.dev",
-    purpose: "Background execution of long-running agent tasks",
+    purpose:
+      "Background execution of long-running agent tasks (US regions, or eu-central-1 for connections from Europe)",
     dataCategories: "Task payloads including conversation context",
   },
   {
@@ -269,6 +272,28 @@ function TrustContent() {
               />
             </Section>
           </div>
+
+          <Section icon={Globe} title="Where your data is processed">
+            <p>
+              Agent runs, new cloud sandboxes, and new file uploads are placed
+              by the location you connect from. Connections from Europe use our
+              EU region (Frankfurt, eu-central-1). Connections from North
+              America use the nearest US region. This is decided per request
+              from your IP address, not from an account setting, so a VPN or
+              travel changes it.
+            </p>
+            <p>
+              Sandboxes and files created before regional placement was
+              introduced stay where they were created until you delete them.
+            </p>
+            <p>
+              The primary database, AI model providers, web search, content
+              moderation, authentication, billing, and analytics are not
+              regional. See the{" "}
+              <InlineLink href="/privacy-policy">Privacy Policy</InlineLink> for
+              international processing.
+            </p>
+          </Section>
 
           <div className="grid gap-6 md:grid-cols-2">
             <Section icon={CreditCard} title="Billing">
