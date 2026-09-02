@@ -140,7 +140,7 @@ export default function ProductPage() {
             <div className="mx-auto mt-14 max-w-5xl overflow-hidden rounded-xl border border-border bg-card shadow-2xl shadow-black/30">
               <Image
                 src="/images/hackerai-workspace.png"
-                alt="HackerAI Agent mode running a service scan, with reasoning and commands shown in the task"
+                alt="HackerAI Agent mode running recon on hackerai.co: a to-do plan, reasoning, and commands executing in the task"
                 width={1440}
                 height={900}
                 priority
@@ -280,7 +280,7 @@ export default function ProductPage() {
             <div className="mx-auto w-full max-w-[280px] overflow-hidden rounded-xl border border-border bg-card shadow-xl shadow-black/30">
               <Image
                 src="/images/hackerai-mobile.png"
-                alt="HackerAI mobile web app showing the same Agent task on a phone"
+                alt="HackerAI mobile web app running the same recon task on a phone"
                 width={390}
                 height={844}
                 className="h-auto w-full"
