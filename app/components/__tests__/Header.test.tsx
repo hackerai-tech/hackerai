@@ -56,9 +56,9 @@ describe("Header", () => {
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   });
 
-  it("omits the current download destination when requested", async () => {
+  it("keeps every page in the menu and marks the current one", async () => {
     const user = userEvent.setup();
-    render(<Header hideDownload />);
+    render(<Header currentPath="/download" />);
 
     await user.click(screen.getByRole("button", { name: "Open navigation" }));
 
@@ -66,8 +66,12 @@ describe("Header", () => {
       "navigation",
       { name: "Mobile" },
     );
+    const download = within(navigation).getByRole("link", {
+      name: "Download",
+    });
+    expect(download).toHaveAttribute("aria-current", "page");
     expect(
-      within(navigation).queryByRole("link", { name: "Download" }),
-    ).not.toBeInTheDocument();
+      within(navigation).getByRole("link", { name: "Trust" }),
+    ).not.toHaveAttribute("aria-current");
   });
 });

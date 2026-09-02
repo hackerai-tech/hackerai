@@ -33,16 +33,11 @@ export type PublicNavigationPath = (typeof publicNavigation)[number]["href"];
 
 interface HeaderProps {
   chatTitle?: string;
-  hideDownload?: boolean;
   /** Path of the public page rendering the header, used to mark the current link. */
   currentPath?: PublicNavigationPath;
 }
 
-const Header: React.FC<HeaderProps> = ({
-  chatTitle,
-  hideDownload = false,
-  currentPath,
-}) => {
+const Header: React.FC<HeaderProps> = ({ chatTitle, currentPath }) => {
   const { user, loading } = useAuth();
   const [menuOpen, setMenuOpen] = useState(false);
   const headerRef = useRef<HTMLElement | null>(null);
@@ -134,19 +129,25 @@ const Header: React.FC<HeaderProps> = ({
           )}
           {!loading && !user && (
             <div className="flex gap-2 items-center">
-              {!hideDownload && (
-                <Button
-                  asChild
-                  variant="ghost"
-                  size="default"
-                  className="rounded-[10px]"
+              <Button
+                asChild
+                variant="ghost"
+                size="default"
+                className={cn(
+                  "rounded-[10px]",
+                  currentPath === "/download" && "bg-accent text-foreground",
+                )}
+              >
+                <Link
+                  href="/download"
+                  aria-current={
+                    currentPath === "/download" ? "page" : undefined
+                  }
                 >
-                  <Link href="/download">
-                    <Download className="h-4 w-4 mr-1.5" />
-                    Download
-                  </Link>
-                </Button>
-              )}
+                  <Download className="h-4 w-4 mr-1.5" />
+                  Download
+                </Link>
+              </Button>
               <Button
                 data-testid="sign-in-button"
                 onClick={() => navigateToAuth("/login")}
@@ -244,7 +245,6 @@ const Header: React.FC<HeaderProps> = ({
             <p className="text-xl font-semibold">Explore</p>
             <ul className="mt-3">
               {publicNavigation.map((item) => {
-                if (item.href === "/download" && hideDownload) return null;
                 const isCurrent = item.href === currentPath;
                 const Icon = item.icon;
                 return (

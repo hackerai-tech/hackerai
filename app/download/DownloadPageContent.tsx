@@ -98,7 +98,7 @@ function DownloadContent() {
 export function DownloadPageContent() {
   return (
     <div className="flex min-h-dvh flex-col bg-background text-foreground">
-      <Header currentPath="/download" hideDownload />
+      <Header currentPath="/download" />
       <main className="flex-1">
         <DownloadContent />
       </main>
