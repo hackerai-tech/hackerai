@@ -55,37 +55,37 @@ export const dynamic = "force-static";
 const capabilities = [
   {
     icon: Bot,
-    title: "Ask, or let it run",
-    copy: "Ask for focused analysis. Switch to Agent and it plans and executes multi-step work with the tools it needs.",
+    title: "Point It at a Target. It Does the Work.",
+    copy: "Ask for focused analysis, or switch to Agent and it plans and runs multi-step work with the tools it needs. The more context you give it, the further it gets.",
   },
   {
     icon: Terminal,
-    title: "Terminal and browser",
-    copy: "Run commands, browse targets, read the output. Every tool call stays in the task, in order.",
+    title: "Real Tools. Raw Output.",
+    copy: "A terminal and a browser are in the loop. It runs the commands, opens the pages, and shows you the output as it came back, not a summary of it.",
   },
   {
     icon: FileUp,
-    title: "Files and long context",
-    copy: "Drop in reports, screenshots, source, and data. The model works from what you give it.",
+    title: "Your Context. Its Starting Point.",
+    copy: "Drop in reports, screenshots, source, and data. HackerAI works from what you give it instead of guessing at your environment.",
   },
   {
     icon: Search,
-    title: "Evidence-first results",
-    copy: "Notes, tool output, and findings stay attached to the task. Validated evidence turns into report-ready material.",
+    title: "Every Finding, Traced End to End.",
+    copy: "Commands, output, notes, and findings stay attached to the task. Every claim in your write-up points back to what actually ran.",
   },
 ] as const;
 
 const expectations = [
   {
-    title: "Review every result",
-    copy: "AI output and tool actions can be incomplete or wrong. Validate evidence and impact before you report or act.",
+    title: "You Validate. It Assists.",
+    copy: "AI output and tool actions can be incomplete or wrong. Confirm evidence and impact before you report or act on it.",
   },
   {
-    title: "Local tools are opt-in",
-    copy: "Nothing runs on your machine until you connect HackerAI Desktop or the Local Agent CLI.",
+    title: "Nothing Local Until You Say So.",
+    copy: "Commands only run on your machine after you connect HackerAI Desktop or the Local Agent CLI.",
   },
   {
-    title: "Access varies by plan",
+    title: "Plans Set the Limits.",
     copy: "Model access, included usage, files, context, and cloud-agent capacity depend on your plan and current availability.",
   },
 ] as const;
@@ -113,13 +113,14 @@ export default function ProductPage() {
           <div className="mx-auto max-w-6xl px-4 pt-16 pb-14 sm:px-6 sm:pt-24 sm:pb-20">
             <div className="mx-auto max-w-3xl text-center">
               <h1 className="text-5xl font-medium leading-[1.05] tracking-tight sm:text-6xl">
-                Find It. Prove It.
-                <br className="hidden sm:block" /> Report It.
+                Anyone Can List Findings.
+                <br className="hidden sm:block" /> Pentesters Have to Prove
+                Them.
               </h1>
               <p className="mx-auto mt-6 max-w-2xl text-lg leading-8 text-muted-foreground">
-                HackerAI is an AI agent that runs the tools, keeps the evidence,
-                and drafts the write-up with you.
-                <br className="hidden sm:block" /> On your machine or in an
+                HackerAI is an AI agent that works a target the way you would:
+                it runs the recon, the tools, and the checks, and keeps every
+                step as evidence. You stay in control, on your machine or in an
                 isolated cloud sandbox.
               </p>
               <div className="mt-8 flex flex-wrap items-center justify-center gap-3">
@@ -154,10 +155,14 @@ export default function ProductPage() {
         <section className="border-b border-border/80">
           <div className="mx-auto max-w-6xl px-4 py-16 sm:px-6 sm:py-24">
             <div className="mx-auto max-w-2xl text-center">
-              <h2 className={sectionTitle}>From first scan to final report</h2>
+              <h2 className={sectionTitle}>
+                Findings Are Cheap. Proof Is the Job.
+              </h2>
               <p className={sectionLead}>
-                One task holds the whole engagement. Ask questions, run tools,
-                and keep every artifact where you can find it.
+                Scanners produce lists. Pentesters, bug bounty hunters, and red
+                teams need reproducible evidence and a write-up that holds up.
+                HackerAI keeps the whole engagement in one task, from first scan
+                to final report.
               </p>
             </div>
             <div className="mt-12 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
@@ -178,32 +183,32 @@ export default function ProductPage() {
         <section className="border-b border-border/80">
           <div className="mx-auto max-w-6xl px-4 py-16 sm:px-6 sm:py-24">
             <div className="max-w-2xl">
-              <h2 className={sectionTitle}>Workflows you control</h2>
+              <h2 className={sectionTitle}>Full Control, Wherever It Runs.</h2>
               <p className={sectionLead}>
-                Local or cloud, per task. You pick the environment and how much
-                the agent may do on its own.
+                Local or cloud, per task. You define the environment and how
+                much the agent may do on its own.
               </p>
             </div>
             <div className="mt-12 grid gap-4 lg:grid-cols-3">
               <article className={card}>
                 <SlidersHorizontal className="size-5" aria-hidden="true" />
                 <h3 className="mt-5 text-xl font-medium">
-                  You set the guardrails
+                  You Set the Guardrails.
                 </h3>
                 <p className="mt-3 leading-7 text-muted-foreground">
-                  Choose a permission level per task: ask for approval on every
-                  action, auto review, or full access. Change it any time from
+                  Pick a permission level per task: approve every action, let it
+                  auto-review, or give it full access. Change it any time from
                   the task input.
                 </p>
               </article>
               <article className={card}>
                 <MonitorCog className="size-5" aria-hidden="true" />
-                <h3 className="mt-5 text-xl font-medium">On your machine</h3>
+                <h3 className="mt-5 text-xl font-medium">On Your Machine.</h3>
                 <p className="mt-3 leading-7 text-muted-foreground">
                   HackerAI Desktop and the Local Agent CLI connect Agent mode to
-                  your own tools. Commands run with your user&apos;s privileges
-                  and without container isolation, so use local mode on a
-                  dedicated testing environment that you control.
+                  your own toolchain. Commands run with your user&apos;s
+                  privileges and without container isolation, so use local mode
+                  on a dedicated testing box you control.
                 </p>
                 <a
                   href={LOCAL_AGENT_HELP_URL}
@@ -217,7 +222,7 @@ export default function ProductPage() {
               </article>
               <article className={card}>
                 <Cloud className="size-5" aria-hidden="true" />
-                <h3 className="mt-5 text-xl font-medium">In the cloud</h3>
+                <h3 className="mt-5 text-xl font-medium">In the Cloud.</h3>
                 <p className="mt-3 leading-7 text-muted-foreground">
                   Cloud Agent sessions run terminal and browser actions in an
                   isolated sandbox we host. Delete it whenever you like from
@@ -237,10 +242,10 @@ export default function ProductPage() {
         <section className="border-b border-border/80">
           <div className="mx-auto max-w-6xl px-4 py-16 sm:px-6 sm:py-24">
             <div className="max-w-2xl">
-              <h2 className={sectionTitle}>What to expect</h2>
+              <h2 className={sectionTitle}>Proof, Not Promises.</h2>
               <p className={sectionLead}>
-                HackerAI speeds up security work. It does not replace
-                practitioner judgment, authorization, or independent validation.
+                HackerAI speeds up security work. It does not replace your
+                judgment, your authorization, or your validation.
               </p>
             </div>
             <div className="mt-12 grid gap-4 lg:grid-cols-3">
@@ -260,11 +265,11 @@ export default function ProductPage() {
         <section className="border-b border-border/80">
           <div className="mx-auto grid max-w-6xl gap-12 px-4 py-16 sm:px-6 sm:py-24 lg:grid-cols-[1fr_320px] lg:items-center">
             <div className="max-w-2xl">
-              <h2 className={sectionTitle}>Web, desktop, and mobile</h2>
+              <h2 className={sectionTitle}>Web, Desktop, and Mobile.</h2>
               <p className={sectionLead}>
-                Start a task in the browser, install HackerAI Desktop when you
-                want to connect local tools, and pick up the same task on your
-                phone from the mobile web app.
+                Start a task in the browser. Install HackerAI Desktop when you
+                want to connect local tools. Pick up the same task on your phone
+                from the mobile web app.
               </p>
               <Button asChild variant="outline" className="mt-8">
                 <Link href="/download">
@@ -289,10 +294,10 @@ export default function ProductPage() {
         <section>
           <div className="mx-auto max-w-6xl px-4 py-16 sm:px-6 sm:py-24">
             <div className="mx-auto max-w-2xl text-center">
-              <h2 className={sectionTitle}>Start in minutes</h2>
+              <h2 className={sectionTitle}>Point It at Your Next Target.</h2>
               <p className={sectionLead}>
-                No complex setup. Sign up, pick your target, and run your first
-                task in the browser. Free needs no payment method.
+                No setup to speak of. Sign up, pick your target, and run your
+                first task in the browser. Free needs no payment method.
               </p>
               <div className="mt-8 flex flex-wrap items-center justify-center gap-3">
                 <Button asChild size="lg">
