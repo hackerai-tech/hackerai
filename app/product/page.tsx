@@ -1,5 +1,4 @@
 import type { Metadata } from "next";
-import Image from "next/image";
 import Link from "next/link";
 import {
   ArrowRight,
@@ -17,6 +16,7 @@ import {
 
 import Header from "@/app/components/Header";
 import { PublicSiteFooter } from "@/components/public/PublicSiteFooter";
+import { ZoomableImage } from "@/components/public/ZoomableImage";
 import { JsonLd } from "@/components/seo/JsonLd";
 import { Button } from "@/components/ui/button";
 import {
@@ -137,16 +137,14 @@ export default function ProductPage() {
                 </Button>
               </div>
             </div>
-            <div className="mx-auto mt-14 max-w-5xl overflow-hidden rounded-xl border border-border bg-card shadow-2xl shadow-black/30">
-              <Image
-                src="/images/hackerai-workspace.png"
-                alt="HackerAI Agent mode running recon on hackerai.co: a to-do plan, reasoning, and commands executing in the task"
-                width={1440}
-                height={900}
-                priority
-                className="h-auto w-full"
-              />
-            </div>
+            <ZoomableImage
+              src="/images/hackerai-workspace.png"
+              alt="HackerAI Agent mode running recon on hackerai.co: a to-do plan, reasoning, and commands executing in the task"
+              width={2240}
+              height={1400}
+              priority
+              frameClassName="mx-auto mt-14 max-w-5xl rounded-xl border border-border bg-card shadow-2xl shadow-black/30"
+            />
           </div>
         </section>
 
@@ -277,15 +275,13 @@ export default function ProductPage() {
                 </Link>
               </Button>
             </div>
-            <div className="mx-auto w-full max-w-[280px] overflow-hidden rounded-xl border border-border bg-card shadow-xl shadow-black/30">
-              <Image
-                src="/images/hackerai-mobile.png"
-                alt="HackerAI mobile web app running the same recon task on a phone"
-                width={390}
-                height={844}
-                className="h-auto w-full"
-              />
-            </div>
+            <ZoomableImage
+              src="/images/hackerai-mobile.png"
+              alt="HackerAI mobile web app running the same recon task on a phone"
+              width={780}
+              height={1688}
+              frameClassName="mx-auto max-w-[280px] rounded-xl border border-border bg-card shadow-xl shadow-black/30"
+            />
           </div>
         </section>
 
