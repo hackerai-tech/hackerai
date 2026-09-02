@@ -10,11 +10,9 @@ import {
   CANCELLATION_HELP_URL,
   EXTRA_USAGE_HELP_URL,
   HELP_CENTER_URL,
-  PUBLIC_PAGE_LAST_MODIFIED,
   REFUND_HELP_URL,
   SOFTWARE_APPLICATION_JSON_LD,
   canonicalMetadata,
-  formatPublicPageDate,
 } from "@/lib/seo/site";
 import { PricingPlans } from "./PricingPlans";
 
@@ -60,15 +58,6 @@ export default function PricingPage() {
                 Start free with Agent mode on your own machine. Upgrade when you
                 need the best models, higher limits, file uploads, a larger
                 context window, or cloud agents.
-              </p>
-              <p className="mt-6 inline-flex items-center rounded-full border border-border bg-card px-3 py-1 text-xs font-medium text-muted-foreground">
-                Last updated{" "}
-                <time
-                  className="ml-1"
-                  dateTime={PUBLIC_PAGE_LAST_MODIFIED.pricing}
-                >
-                  {formatPublicPageDate(PUBLIC_PAGE_LAST_MODIFIED.pricing)}
-                </time>
               </p>
             </div>
           </div>
